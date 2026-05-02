@@ -70,6 +70,7 @@ export default function PromotionsPage() {
 
   const canCreate  = role === 'admin' || role === 'manager';
   const canApprove = role === 'admin';
+  const canArchive = role === 'admin';
 
   async function doAction(p, action, note) {
     try {
@@ -152,7 +153,7 @@ export default function PromotionsPage() {
                               className="rounded bg-brand-error px-2 py-1 text-xs text-white hover:opacity-90">退回</button>
                           </>
                         )}
-                        {canCreate && p.status !== 'archived' && (
+                        {canArchive && p.status !== 'archived' && (
                           <button onClick={() => setConfirm({ p, action: 'archive', label: '停用' })}
                             className="rounded bg-gray-200 px-2 py-1 text-xs text-gray-700 hover:bg-gray-300">停用</button>
                         )}
