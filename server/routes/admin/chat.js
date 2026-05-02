@@ -31,7 +31,7 @@ function scopedVenueId(req) {
   return req.adminUser.venue_id || '__no_venue__';
 }
 
-router.get('/rooms', requireAdminAuth, async (req, res) => {
+router.get('/rooms', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
   try {
     const list = await chatRooms.listRoomsForAdmin({
       venueId: scopedVenueId(req),
@@ -44,12 +44,12 @@ router.get('/rooms', requireAdminAuth, async (req, res) => {
   }
 });
 
-router.get('/rooms/:id/messages', requireAdminAuth, async (req, res) => {
+router.get('/rooms/:id/messages', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
   try {
     const meta = await chatRooms.getRoomMeta(req.params.id);
     if (!meta) return res.status(404).json({ error: 'not found' });
-    // manager / staff 只能看自己場館的聊天室（避免 IDOR：拿到任意 roomId 跨館讀）
-    if (req.adminUser.role !== 'admin' && meta.venue?.id !== req.adminUser.venue_id) {
+    // manager 只能看自己場館的聊天室（避免 IDOR：拿到任意 roomId 跨館讀）
+    if (req.adminUser.role === 'manager' && meta.venue?.id !== req.adminUser.venue_id) {
       return res.status(403).json({ error: 'forbidden' });
     }
     const limit = Math.min(Number(req.query.limit) || 200, 500);
