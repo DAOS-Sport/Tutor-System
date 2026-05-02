@@ -4,12 +4,37 @@ run = "cd server && npm install && npm run dev"
 channel = "stable-24_05"
 
 [deployment]
-run = ["sh", "-c", "cd server && npm start"]
-deploymentTarget = "cloudrun"
+run = ["bash", "-c", "cd server && npm start"]
+deploymentTarget = "autoscale"
+build = ["bash", "-c", "cd server && npm install && cd ../client/admin && npm install && npm run build && cd ../liff && npm install && npm run build"]
 
 [[ports]]
 localPort = 3000
-externalPort = 80
+externalPort = 3000
 
 [agent]
 expertMode = true
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start application"
+
+[[workflows.workflow]]
+name = "Start application"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd server && npm start"
+waitForPort = 3000
+
+[workflows.workflow.metadata]
+outputType = "console"

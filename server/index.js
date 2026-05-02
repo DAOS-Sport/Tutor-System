@@ -1,4 +1,5 @@
 require('dotenv').config();
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const http = require('http');
@@ -36,6 +37,23 @@ app.use('/api/notifications', require('./routes/notifications'));
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', ts: new Date().toISOString() }));
 
+// ── Static frontends ────────────────────────
+// Vite 會把 admin / liff 兩個前端 build 到 server/public/{admin,liff}
+const PUBLIC_DIR = path.join(__dirname, 'public');
+app.use('/admin', express.static(path.join(PUBLIC_DIR, 'admin')));
+app.use('/liff', express.static(path.join(PUBLIC_DIR, 'liff')));
+
+// SPA fallback：將子路徑導回對應前端的 index.html，讓 React Router 接手
+app.get('/admin/*', (req, res, next) => {
+  res.sendFile(path.join(PUBLIC_DIR, 'admin', 'index.html'), (err) => err && next(err));
+});
+app.get('/liff/*', (req, res, next) => {
+  res.sendFile(path.join(PUBLIC_DIR, 'liff', 'index.html'), (err) => err && next(err));
+});
+
+// 根路徑導向後台首頁
+app.get('/', (req, res) => res.redirect('/admin/'));
+
 // ── WebSocket (聊天室) ───────────────────────
 initWebSocket(server);
 
@@ -43,6 +61,6 @@ initWebSocket(server);
 initCronJobs();
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`DAOS Server running on port ${PORT}`);
 });
