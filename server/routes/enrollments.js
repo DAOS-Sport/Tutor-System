@@ -19,6 +19,9 @@ const { requireParent } = require('../middlewares/parentAuth');
 const router = express.Router();
 router.use(requireParent);
 
+// 伺服器端授權的單期基準價（與 LIFF mock BASE_PRICES 對齊；未來可移到 admin_settings）
+const BASE_PRICES = { 1: 9000, 2: 6000, 3: 4500 };
+
 function genEnrollmentId() {
   const ts = Date.now().toString(36).toUpperCase();
   const rand = Math.floor(Math.random() * 1296).toString(36).toUpperCase().padStart(2, '0');
@@ -48,8 +51,26 @@ router.post('/', async (req, res) => {
     }
     const parentRow = pr.rows[0];
 
-    // ── 後端重算 (server-authoritative) ────────────────────────────────
-    const original = Math.max(0, Math.round(Number(p.original_price) || 0));
+    // ── 後端重算 (server-authoritative)：完全忽略 client 的 original_price ──
+    const courseTypeNum = Number(p.course_type);
+    const basePrice = BASE_PRICES[courseTypeNum];
+    if (!basePrice) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'invalid course_type' });
+    }
+    let multiplier = 1;
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (p.coach && p.coach.id && UUID_RE.test(String(p.coach.id))) {
+      await client.query('SAVEPOINT coach_lookup');
+      try {
+        const cr = await client.query(`SELECT pricing_multiplier FROM coaches WHERE id = $1 AND is_active = TRUE`, [p.coach.id]);
+        if (cr.rowCount) multiplier = Number(cr.rows[0].pricing_multiplier) || 1;
+        await client.query('RELEASE SAVEPOINT coach_lookup');
+      } catch (_) {
+        await client.query('ROLLBACK TO SAVEPOINT coach_lookup');
+      }
+    }
+    const original = Math.round(basePrice * multiplier);
     const couponCode = p.promotion && p.promotion.coupon_code ? String(p.promotion.coupon_code).trim() : null;
     let preview;
     try {
