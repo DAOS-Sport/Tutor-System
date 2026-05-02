@@ -12,7 +12,7 @@
 const express = require('express');
 const router = express.Router();
 const { pool } = require('../models/db');
-const { signCoachToken, requireCoach, requireCoachOwner } = require('../middlewares/coachAuth');
+const { signCoachToken, requireCoach, requireCoachOwner, byPhoneRateLimit, logFailedLogin } = require('../middlewares/coachAuth');
 
 /**
  * 將 DB 欄位 pricing_multiplier 同時對外曝露為 multiplier，
@@ -59,11 +59,19 @@ router.get('/', async (req, res) => {
 });
 
 /**
- * 教練端登入：以手機作為憑據，回傳 coach + token。
- * 注意：本 MVP 與家長端相同，使用「手機驗證」作為唯一識別；正式版本應以 LINE LIFF id_token 換 token。
+ * 教練端登入：以手機作為憑據，回傳 coach + 短期 (12h) JWT。
+ *
+ * ⚠ 已知限制（追蹤於 follow-up task #23）：
+ *   本 MVP 與家長端相同，使用「手機驗證」作為唯一識別。正式版本應改為：
+ *     1) LIFF 端取得 LINE id_token；
+ *     2) 後端驗證 audience = LINE_LOGIN_CHANNEL_ID, issuer = https://access.line.me；
+ *     3) 比對 coaches.line_uid 必須已綁定且匹配；
+ *     4) 同步 Ragic H01 在職狀態 (is_active) 才簽發 token。
+ *   現階段緩解措施：12h 短 TTL + per-IP 速率限制 + 失敗紀錄 console.warn。
  */
-router.get('/by-phone', async (req, res) => {
+router.get('/by-phone', byPhoneRateLimit, async (req, res) => {
   const { phone } = req.query;
+  const ip = (req.headers['x-forwarded-for']?.split(',')[0] || req.ip || 'unknown').trim();
   if (!phone) return res.status(400).json({ error: 'phone is required' });
   try {
     const r = await pool.query(
@@ -74,7 +82,10 @@ router.get('/by-phone', async (req, res) => {
        FROM coaches c WHERE c.phone = $1 AND c.is_active = TRUE`,
       [phone]
     );
-    if (r.rows.length === 0) return res.status(404).json({ error: 'not found' });
+    if (r.rows.length === 0) {
+      logFailedLogin(ip, phone, 'phone-not-found');
+      return res.status(404).json({ error: 'not found' });
+    }
     const coach = withMultiplierAlias(r.rows[0]);
     const token = signCoachToken({ coachId: coach.id, phone: coach.phone });
     res.json({ ...coach, token });
