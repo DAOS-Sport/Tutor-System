@@ -101,9 +101,9 @@ function initCronJobs() {
                WHERE cr.course_session_id = ls.session_id
                  AND cr.checked_in_at::date = CURRENT_DATE
             )
-            AND NOT EXISTS (
-              SELECT 1 FROM course_evaluations ce WHERE ce.course_period_id = cp.id
-            )`
+            -- 不再以「period 已有任一 invitation」為前置過濾，
+            -- 改全交由 ensureInvitation() 之 ON CONFLICT 保證冪等，
+            -- 避免之前部分推播失敗導致同期間其他家長永遠補不到 invitation。`
       );
       for (const row of due.rows) {
         const created = await evaluations.ensureInvitation(row.id);

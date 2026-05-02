@@ -29,6 +29,7 @@ export default function EvaluationFormPage() {
   const navigate = useNavigate();
   const toast = useToast();
   const [data, setData] = useState(null);
+  const [loadError, setLoadError] = useState(null);
   const [form, setForm] = useState({ score_teaching: 0, score_attitude: 0, score_progress: 0, score_overall: 0, comment: '', renew_intent: 'unknown' });
   const [busy, setBusy] = useState(false);
 
@@ -44,9 +45,21 @@ export default function EvaluationFormPage() {
           });
         }
       })
-      .catch((e) => toast.error(e?.response?.data?.error || '載入失敗'));
+      .catch((e) => {
+        const msg = e?.response?.data?.error || (e?.response?.status === 404 ? '查無此評鑑邀請' : '載入失敗');
+        setLoadError(msg);
+        toast.error(msg);
+      });
   }, [id]); // eslint-disable-line
 
+  if (loadError) {
+    return (
+      <div className="px-4 py-8 text-center">
+        <p className="text-sm text-gray-600">{loadError}</p>
+        <button onClick={() => navigate(-1)} className="mt-4 rounded-full bg-brand-primary px-5 py-2 text-sm text-white active:opacity-80">返回</button>
+      </div>
+    );
+  }
   if (!data) return <div className="px-4 py-6"><LoadingSpinner label="載入中…" /></div>;
   const submitted = !!data.submitted_at;
 
