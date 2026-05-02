@@ -54,6 +54,13 @@ router.post('/', async (req, res) => {
       throw err;
     }
 
+    // 解析 parents.id：以 phone 對應 parents 表，找不到則 NULL（不阻擋報名）
+    let parentUuid = null;
+    try {
+      const pr = await client.query(`SELECT id FROM parents WHERE phone = $1 LIMIT 1`, [p.parent_phone]);
+      if (pr.rowCount) parentUuid = pr.rows[0].id;
+    } catch (_) { /* parents table 不存在 / mock 環境 → 留 null */ }
+
     const enrollmentId = genEnrollmentId();
     const studentNames = p.students.map((s) => s.name);
     const submittedAt = new Date();
@@ -75,7 +82,7 @@ router.post('/', async (req, res) => {
     if (preview.promotion && preview.discountAmount > 0) {
       usage = await promotions.recordUsage({
         promotionId: preview.promotion.id,
-        parentId: null, // LIFF 端目前無 parents.id 對應 (mock parent)
+        parentId: parentUuid, // 以 phone 解析自 parents 表，無對應則 null
         coursePeriodId: null, // 對帳通過後再產 course_period
         adminEnrollmentId: enrollmentId,
         originalPrice: preview.originalPrice,

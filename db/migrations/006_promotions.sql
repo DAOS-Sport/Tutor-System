@@ -49,6 +49,10 @@ CREATE TABLE IF NOT EXISTS promotion_usages (
 CREATE INDEX IF NOT EXISTS idx_promo_usages_promo ON promotion_usages(promotion_id);
 CREATE INDEX IF NOT EXISTS idx_promo_usages_parent ON promotion_usages(parent_id);
 
+-- 連結 LIFF 報名單（admin_enrollments.id 為 TEXT，故不設 FK）
+ALTER TABLE promotion_usages ADD COLUMN IF NOT EXISTS admin_enrollment_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_promo_usages_enrollment ON promotion_usages(admin_enrollment_id);
+
 CREATE TABLE IF NOT EXISTS promotion_audit_logs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   promotion_id UUID NOT NULL REFERENCES promotions(id) ON DELETE CASCADE,
