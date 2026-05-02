@@ -1,0 +1,335 @@
+/**
+ * LINE Messaging API 封裝
+ * 各場館獨立 Channel Token，依 venue_id 選對應 Token
+ * 所有通知使用 LINE Flex Message 格式，套用品牌色系
+ */
+const axios = require('axios');
+
+const BRAND = {
+  primary:  '#15316a',  // 深海藍（主色）
+  teal:     '#31aeab',  // 青碧綠
+  green:    '#97bf36',  // 草地綠
+  amber:    '#e8a020',  // 警示橘黃
+  gold:     '#c9a84c',  // 資深教練金色
+  white:    '#ffffff',
+};
+
+function getToken(venueId) {
+  const tokens = JSON.parse(process.env.LINE_MESSAGING_TOKENS || '{}');
+  const token = tokens[venueId];
+  if (!token) throw new Error(`No LINE token for venue: ${venueId}`);
+  return token;
+}
+
+async function pushMessage(lineUserId, messages, venueId) {
+  const token = getToken(venueId);
+  await axios.post('https://api.line.me/v2/bot/message/push', {
+    to: lineUserId,
+    messages,
+  }, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+// ── Flex Message 模板 ────────────────────────
+
+function flexHeader(text, color = BRAND.primary) {
+  return {
+    type: 'box', layout: 'vertical',
+    backgroundColor: color,
+    paddingAll: '16px',
+    contents: [{
+      type: 'text', text,
+      color: BRAND.white, size: 'md', weight: 'bold',
+    }],
+  };
+}
+
+function flexButton(label, action, color = BRAND.teal) {
+  return {
+    type: 'button',
+    style: 'primary',
+    color,
+    action: { type: 'uri', label, uri: action },
+  };
+}
+
+// 報名成功通知
+function enrollmentSuccess({ coachName, venueName, courseType, finalPrice, liffUrl }) {
+  return [{
+    type: 'flex', altText: '課程報名成功！',
+    contents: {
+      type: 'bubble',
+      header: flexHeader('✅ 課程報名成功'),
+      body: {
+        type: 'box', layout: 'vertical', spacing: 'sm',
+        contents: [
+          { type: 'text', text: `教練：${coachName}`, size: 'sm' },
+          { type: 'text', text: `場館：${venueName}`, size: 'sm' },
+          { type: 'text', text: `組別：1 對 ${courseType}`, size: 'sm' },
+          { type: 'text', text: `費用：NT$ ${finalPrice.toLocaleString()}`, size: 'sm' },
+          { type: 'separator', margin: 'md' },
+          { type: 'text', text: '請等待主管對帳確認，確認後課程即自動開通。', size: 'xs', color: '#888888', wrap: true },
+        ],
+      },
+    },
+  }];
+}
+
+// 課程開通通知
+function courseActivated({ coachName, venueName, liffUrl }) {
+  return [{
+    type: 'flex', altText: '課程已開通！請前往選擇上課時間',
+    contents: {
+      type: 'bubble',
+      header: flexHeader('🎉 課程已開通！', BRAND.teal),
+      body: {
+        type: 'box', layout: 'vertical', spacing: 'sm',
+        contents: [
+          { type: 'text', text: `教練：${coachName}`, size: 'sm' },
+          { type: 'text', text: `場館：${venueName}`, size: 'sm' },
+          { type: 'text', text: '請點擊下方按鈕選擇上課時間', size: 'sm', wrap: true },
+        ],
+      },
+      footer: {
+        type: 'box', layout: 'vertical',
+        contents: [flexButton('選擇上課時間 →', liffUrl, BRAND.teal)],
+      },
+    },
+  }];
+}
+
+// 選槽成功（1v1 即時確認）
+function slotBooked({ coachName, venueName, scheduledAt, liffUrl }) {
+  return [{
+    type: 'flex', altText: '課程時段預約成功！',
+    contents: {
+      type: 'bubble',
+      header: flexHeader('📅 課程時段確認！', BRAND.green),
+      body: {
+        type: 'box', layout: 'vertical', spacing: 'sm',
+        contents: [
+          { type: 'text', text: `教練：${coachName}`, size: 'sm' },
+          { type: 'text', text: `場館：${venueName}`, size: 'sm' },
+          { type: 'text', text: `時間：${scheduledAt}`, size: 'sm', weight: 'bold' },
+        ],
+      },
+    },
+  }];
+}
+
+// 1vN 同組確認邀請
+function groupConfirmInvite({ initiatorName, coachName, scheduledAt, agreeUrl, rejectUrl }) {
+  return [{
+    type: 'flex', altText: `${initiatorName} 已選取課程時段，請確認`,
+    contents: {
+      type: 'bubble',
+      header: flexHeader('📋 課程時段確認邀請'),
+      body: {
+        type: 'box', layout: 'vertical', spacing: 'sm',
+        contents: [
+          { type: 'text', text: `${initiatorName} 已選取以下時段：`, size: 'sm', wrap: true },
+          { type: 'text', text: `教練：${coachName}`, size: 'sm' },
+          { type: 'text', text: `時間：${scheduledAt}`, size: 'sm', weight: 'bold' },
+          { type: 'text', text: '請於 1 小時內確認，逾時視為同意。', size: 'xs', color: '#888888', wrap: true },
+        ],
+      },
+      footer: {
+        type: 'box', layout: 'vertical', spacing: 'sm',
+        contents: [
+          flexButton('✅ 同意', agreeUrl, BRAND.green),
+          flexButton('❌ 不同意', rejectUrl, '#e24b4a'),
+        ],
+      },
+    },
+  }];
+}
+
+// 上課前提醒
+function sessionReminder({ coachName, venueName, scheduledAt, role }) {
+  const title = role === 'coach' ? '即將上課提醒（教練）' : '📢 上課提醒';
+  return [{
+    type: 'flex', altText: `距離上課還有 1 小時`,
+    contents: {
+      type: 'bubble',
+      header: flexHeader(title, BRAND.amber),
+      body: {
+        type: 'box', layout: 'vertical', spacing: 'sm',
+        contents: [
+          { type: 'text', text: `教練：${coachName}`, size: 'sm' },
+          { type: 'text', text: `場館：${venueName}`, size: 'sm' },
+          { type: 'text', text: `時間：${scheduledAt}`, size: 'sm', weight: 'bold' },
+          { type: 'text', text: '距上課還有 1 小時，請提前準備。', size: 'xs', color: '#888888', wrap: true },
+        ],
+      },
+    },
+  }];
+}
+
+// 自助取消通知（教練端）
+function selfCancelToCoach({ studentName, scheduledAt, cancelType }) {
+  const isNormal = cancelType === 'normal';
+  return [{
+    type: 'flex', altText: `${studentName} 已取消課程`,
+    contents: {
+      type: 'bubble',
+      header: flexHeader('課程取消通知', isNormal ? BRAND.amber : '#e24b4a'),
+      body: {
+        type: 'box', layout: 'vertical', spacing: 'sm',
+        contents: [
+          { type: 'text', text: `學員：${studentName}`, size: 'sm' },
+          { type: 'text', text: `原上課時間：${scheduledAt}`, size: 'sm' },
+          { type: 'text', text: isNormal ? '正常取消（堂數已歸還，時段已釋出）' : '逾時取消（堂數已扣除，時段已釋出）', size: 'xs', wrap: true, color: isNormal ? '#3B6D11' : '#A32D2D' },
+        ],
+      },
+    },
+  }];
+}
+
+// 堂數快到期提醒
+function expiryReminder({ coachName, remainingSessions, expiresAt, liffUrl }) {
+  return [{
+    type: 'flex', altText: '課程堂數即將到期',
+    contents: {
+      type: 'bubble',
+      header: flexHeader('⚠️ 課程即將到期', BRAND.amber),
+      body: {
+        type: 'box', layout: 'vertical', spacing: 'sm',
+        contents: [
+          { type: 'text', text: `教練：${coachName}`, size: 'sm' },
+          { type: 'text', text: `剩餘堂數：${remainingSessions} 堂`, size: 'sm', weight: 'bold' },
+          { type: 'text', text: `到期日：${expiresAt}`, size: 'sm' },
+          { type: 'text', text: '請盡快安排上課，以免堂數到期失效。', size: 'xs', color: '#888888', wrap: true },
+        ],
+      },
+    },
+  }];
+}
+
+// 課前規劃發布通知
+function coursePlanPublished({ coachName, liffUrl }) {
+  return [{
+    type: 'flex', altText: '教練已為您建立課前規劃',
+    contents: {
+      type: 'bubble',
+      header: flexHeader('📝 課前規劃已發布', BRAND.gold),
+      body: {
+        type: 'box', layout: 'vertical', spacing: 'sm',
+        contents: [
+          { type: 'text', text: `${coachName} 教練已建立本期課程學習規劃，請查閱。`, size: 'sm', wrap: true },
+        ],
+      },
+      footer: {
+        type: 'box', layout: 'vertical',
+        contents: [flexButton('查看課前規劃 →', liffUrl, BRAND.gold)],
+      },
+    },
+  }];
+}
+
+// 授課記錄發布通知
+function sessionRecordPublished({ coachName, sessionDate, liffUrl }) {
+  return [{
+    type: 'flex', altText: '教練已完成本堂授課記錄',
+    contents: {
+      type: 'bubble',
+      header: flexHeader('📖 授課記錄已完成', BRAND.teal),
+      body: {
+        type: 'box', layout: 'vertical', spacing: 'sm',
+        contents: [
+          { type: 'text', text: `${coachName} 教練已完成 ${sessionDate} 的授課記錄。`, size: 'sm', wrap: true },
+        ],
+      },
+      footer: {
+        type: 'box', layout: 'vertical',
+        contents: [flexButton('查看授課記錄 →', liffUrl, BRAND.teal)],
+      },
+    },
+  }];
+}
+
+// 期末評鑑邀請
+function evaluationInvite({ coachName, liffUrl }) {
+  return [{
+    type: 'flex', altText: '請為本期課程進行評鑑',
+    contents: {
+      type: 'bubble',
+      header: flexHeader('⭐ 課程期末評鑑', BRAND.gold),
+      body: {
+        type: 'box', layout: 'vertical', spacing: 'sm',
+        contents: [
+          { type: 'text', text: `與 ${coachName} 教練的課程本期圓滿結束！`, size: 'sm', wrap: true },
+          { type: 'text', text: '請花 1 分鐘填寫評鑑，您的回饋對教練很重要。', size: 'xs', color: '#888888', wrap: true },
+        ],
+      },
+      footer: {
+        type: 'box', layout: 'vertical',
+        contents: [flexButton('填寫期末評鑑 →', liffUrl, BRAND.gold)],
+      },
+    },
+  }];
+}
+
+// 關鍵字警示（主管）
+function keywordAlert({ coachName, parentName, keyword, chatUrl }) {
+  return [{
+    type: 'flex', altText: '聊天室關鍵字警示',
+    contents: {
+      type: 'bubble',
+      header: flexHeader('🚨 聊天室警示', '#e24b4a'),
+      body: {
+        type: 'box', layout: 'vertical', spacing: 'sm',
+        contents: [
+          { type: 'text', text: `教練：${coachName}`, size: 'sm' },
+          { type: 'text', text: `家長：${parentName}`, size: 'sm' },
+          { type: 'text', text: `觸發關鍵字：「${keyword}」`, size: 'sm', color: '#e24b4a', weight: 'bold' },
+          { type: 'text', text: '請進入後台查閱對話內容。', size: 'xs', color: '#888888', wrap: true },
+        ],
+      },
+      footer: {
+        type: 'box', layout: 'vertical',
+        contents: [flexButton('查閱對話 →', chatUrl, '#e24b4a')],
+      },
+    },
+  }];
+}
+
+// MGM 推薦方獎勵通知
+function mgmRewardIssued({ refereeName, couponDetails, liffUrl }) {
+  return [{
+    type: 'flex', altText: '您的推薦獎勵已發放！',
+    contents: {
+      type: 'bubble',
+      header: flexHeader('🎁 推薦獎勵發放！', BRAND.green),
+      body: {
+        type: 'box', layout: 'vertical', spacing: 'sm',
+        contents: [
+          { type: 'text', text: `您推薦的 ${refereeName} 已完成體驗課！`, size: 'sm', wrap: true },
+          { type: 'text', text: `獎勵：${couponDetails}`, size: 'sm', weight: 'bold' },
+        ],
+      },
+      footer: {
+        type: 'box', layout: 'vertical',
+        contents: [flexButton('查看我的優惠券 →', liffUrl, BRAND.green)],
+      },
+    },
+  }];
+}
+
+module.exports = {
+  pushMessage,
+  templates: {
+    enrollmentSuccess,
+    courseActivated,
+    slotBooked,
+    groupConfirmInvite,
+    sessionReminder,
+    selfCancelToCoach,
+    expiryReminder,
+    coursePlanPublished,
+    sessionRecordPublished,
+    evaluationInvite,
+    keywordAlert,
+    mgmRewardIssued,
+  },
+};
