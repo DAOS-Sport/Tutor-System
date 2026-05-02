@@ -70,12 +70,15 @@ const ROOM_BASE_SELECT = `
            WHERE e.course_period_id = cp.id AND e.status = 'active') AS student_names,
          (SELECT array_agg(DISTINCT s.parent_id)
             FROM course_period_enrollments e JOIN students s ON s.id = e.student_id
-           WHERE e.course_period_id = cp.id AND e.status = 'active') AS parent_ids
+           WHERE e.course_period_id = cp.id AND e.status = 'active') AS parent_ids,
+         (SELECT MAX(m.created_at) FROM messages m WHERE m.chat_room_id = cr.id) AS last_message_at
     FROM chat_rooms cr
     JOIN course_periods cp ON cp.id = cr.course_period_id
     JOIN coaches co ON co.id = cp.coach_id
     JOIN venues v   ON v.id  = cp.venue_id
 `;
+// 排序：最近活躍訊息優先，沒有訊息時 fallback 到聊天室建立時間
+const ROOM_RECENCY_ORDER = `ORDER BY COALESCE((SELECT MAX(m.created_at) FROM messages m WHERE m.chat_room_id = cr.id), cr.created_at) DESC`;
 
 async function _hydrate(rows, viewer) {
   if (!rows.length) return [];
@@ -137,13 +140,13 @@ async function listRoomsForParent(parentId) {
       JOIN students s ON s.id = e.student_id
       WHERE e.course_period_id = cp.id AND e.status = 'active' AND s.parent_id = $1
     )
-    ORDER BY cr.created_at DESC
+    ${ROOM_RECENCY_ORDER}
   `, [parentId]);
   return _hydrate(r.rows, { type: 'parent', id: parentId });
 }
 
 async function listRoomsForCoach(coachId) {
-  const r = await pool.query(`${ROOM_BASE_SELECT} WHERE cp.coach_id = $1 ORDER BY cr.created_at DESC`, [coachId]);
+  const r = await pool.query(`${ROOM_BASE_SELECT} WHERE cp.coach_id = $1 ${ROOM_RECENCY_ORDER}`, [coachId]);
   return _hydrate(r.rows, { type: 'coach', id: coachId });
 }
 
@@ -158,7 +161,7 @@ async function listRoomsForAdmin({ search, venueId } = {}) {
   }
   const sql = `${ROOM_BASE_SELECT}
                ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-               ORDER BY cr.created_at DESC LIMIT 200`;
+               ${ROOM_RECENCY_ORDER} LIMIT 200`;
   const r = await pool.query(sql, args);
   return _hydrate(r.rows, { type: 'admin', id: null });
 }

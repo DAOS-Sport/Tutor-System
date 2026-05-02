@@ -212,14 +212,17 @@ router.patch('/alerts/:id', requireAdminAuth, requireAdminRole('admin', 'manager
       const raw = req.body.review_note;
       note = raw == null ? null : String(raw).slice(0, 500).trim() || null;
     }
+    // 審核稽核：reviewed_by 帶 admin/manager 自己的 id（admin JWT.sub）
+    const reviewerId = req.adminUser?.sub || req.adminUser?.id || null;
     const r = await pool.query(
       `UPDATE keyword_alerts
           SET status = $1::alert_status,
               review_note = CASE WHEN $4::boolean THEN $2 ELSE COALESCE($2, review_note) END,
-              reviewed_at = NOW()
+              reviewed_at = NOW(),
+              reviewed_by = $5
         WHERE id = $3
-        RETURNING id, status, review_note, reviewed_at`,
-      [status, note, req.params.id, hasNote]
+        RETURNING id, status, review_note, reviewed_at, reviewed_by`,
+      [status, note, req.params.id, hasNote, reviewerId]
     );
     if (!r.rowCount) return res.status(404).json({ error: 'not found' });
     res.json(r.rows[0]);

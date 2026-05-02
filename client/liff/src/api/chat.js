@@ -1,9 +1,21 @@
 import { http, callApi, USE_MOCK } from './client';
 import { mockDb } from './mock';
 
+// 從 localStorage 取得目前角色（mock 模式下用來讓 chat 行為角色正確）
+function _viewer() {
+  try {
+    const raw = localStorage.getItem('daos.user');
+    if (!raw) return { type: 'parent', id: 'P0001' };
+    const u = JSON.parse(raw);
+    const role = u?.role || (u?.coach ? 'coach' : 'parent');
+    const id = u?.data?.id || u?.coach?.id || u?.parent?.id || (role === 'coach' ? 'C001' : 'P0001');
+    return { type: role, id };
+  } catch { return { type: 'parent', id: 'P0001' }; }
+}
+
 // ── 房間清單 ────────────────────────────────
 export function listRooms() {
-  return callApi('/chat/rooms', {}, () => mockDb.chatRooms());
+  return callApi('/chat/rooms', {}, () => mockDb.chatRooms(_viewer()));
 }
 
 export function getRoom(roomId) {
@@ -22,7 +34,7 @@ export function sendText(roomId, content) {
   return callApi(
     `/chat/rooms/${roomId}/messages`,
     { method: 'post', data: { content } },
-    () => mockDb.chatSendText(roomId, content)
+    () => mockDb.chatSendText(roomId, content, _viewer())
   );
 }
 
@@ -37,7 +49,7 @@ export function markRead(roomId, messageIds) {
 // ── 多媒體上傳 ─────────────────────────────
 export async function uploadFile(roomId, file, caption = '') {
   if (USE_MOCK) {
-    return mockDb.chatUploadFile(roomId, file, caption);
+    return mockDb.chatUploadFile(roomId, file, caption, _viewer());
   }
   const fd = new FormData();
   fd.append('file', file);

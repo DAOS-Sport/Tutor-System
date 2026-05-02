@@ -211,7 +211,7 @@ CREATE TABLE IF NOT EXISTS keyword_alerts (
   message_id UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
   triggered_keyword VARCHAR(100) NOT NULL,
   status alert_status NOT NULL DEFAULT 'pending',
-  reviewed_by UUID,
+  reviewed_by TEXT REFERENCES admin_users(id) ON DELETE SET NULL,
   reviewed_at TIMESTAMPTZ,
   review_note TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

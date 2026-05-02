@@ -348,12 +348,13 @@ export const mockDb = {
     return r ? JSON.parse(JSON.stringify(r)) : null;
   },
   chatMessages: (roomId) => (CHAT_MESSAGES[roomId] || []).slice(-80).map((m) => ({ ...m })),
-  chatSendText: (roomId, content) => {
+  chatSendText: (roomId, content, viewer = { type: 'parent', id: 'P0001' }) => {
     if (!CHAT_MESSAGES[roomId]) CHAT_MESSAGES[roomId] = [];
     const m = {
       id: `MSG${++_msgSeq}`,
       chat_room_id: roomId,
-      sender_type: 'parent', sender_id: 'P0001',
+      sender_type: viewer.type || 'parent',
+      sender_id: viewer.id || (viewer.type === 'coach' ? 'C001' : 'P0001'),
       message_type: 'text', content,
       media_url: null, media_filename: null, media_size_bytes: null,
       created_at: new Date().toISOString(), read_by_me: true,
@@ -361,14 +362,15 @@ export const mockDb = {
     CHAT_MESSAGES[roomId].push(m);
     return JSON.parse(JSON.stringify(m));
   },
-  chatUploadFile: (roomId, file, caption) => {
+  chatUploadFile: (roomId, file, caption, viewer = { type: 'parent', id: 'P0001' }) => {
     if (!CHAT_MESSAGES[roomId]) CHAT_MESSAGES[roomId] = [];
     const isImg = file.type?.startsWith('image/');
     const url = URL.createObjectURL(file);
     const m = {
       id: `MSG${++_msgSeq}`,
       chat_room_id: roomId,
-      sender_type: 'parent', sender_id: 'P0001',
+      sender_type: viewer.type || 'parent',
+      sender_id: viewer.id || (viewer.type === 'coach' ? 'C001' : 'P0001'),
       message_type: isImg ? 'image' : 'file',
       content: caption || null,
       media_url: url, media_filename: file.name, media_size_bytes: file.size,
