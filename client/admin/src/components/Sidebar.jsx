@@ -22,7 +22,7 @@ const NAV_GROUPS = [
   {
     title: '報名與對帳',
     items: [
-      { to: '/reconcile',   label: '待對帳清單 (F-M02)', roles: ['admin', 'manager', 'staff'] },
+      { to: '/reconcile',   label: '待對帳清單 (F-M02)', roles: ['admin', 'manager'] },
       { to: '/enrollments', label: '所有報名 (F-R02)',   roles: ['admin', 'manager', 'staff'] },
       { to: '/refund',      label: '退課處理 (F-R04)',   roles: ['admin', 'manager'] },
     ],

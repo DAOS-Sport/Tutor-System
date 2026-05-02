@@ -9,6 +9,14 @@ import { venuesApi } from '../api/venues';
 import { roleLabel } from '../utils/format';
 
 const ROLE_TONE = { admin: 'primary', manager: 'teal', staff: 'gold', coach: 'green' };
+const ROLE_OPTIONS = [
+  { value: 'admin',   label: '系統管理員' },
+  { value: 'manager', label: '主管' },
+  { value: 'staff',   label: '行政櫃檯' },
+  { value: 'coach',   label: '教練' },
+];
+const MULTIPLIER_MIN = 1.00;
+const MULTIPLIER_MAX = 1.50;
 
 export default function StaffPage() {
   const toast = useToast();
@@ -29,11 +37,24 @@ export default function StaffPage() {
 
   async function saveEdit() {
     if (!editing) return;
+    // 教練修課係數依規格 100% – 150%（1.00–1.50）
+    let mult = Number(editing.multiplier);
+    if (editing.role === 'coach') {
+      if (Number.isNaN(mult)) {
+        toast.error('修課係數必須為數字');
+        return;
+      }
+      if (mult < MULTIPLIER_MIN || mult > MULTIPLIER_MAX) {
+        toast.error(`修課係數需介於 ${MULTIPLIER_MIN.toFixed(2)} – ${MULTIPLIER_MAX.toFixed(2)}（100% – 150%）`);
+        return;
+      }
+    }
     setBusy(true);
     try {
       const patch = {
-        is_senior: !!editing.is_senior,
-        multiplier: Number(editing.multiplier) || 1,
+        role: editing.role,
+        is_senior: editing.role === 'coach' ? !!editing.is_senior : false,
+        multiplier: editing.role === 'coach' ? mult : 1,
         active: !!editing.active,
         venue_id: editing.venue_id || null,
       };
@@ -84,7 +105,7 @@ export default function StaffPage() {
 
   return (
     <div>
-      <PageHeader title="員工帳號管理" subtitle="F-A02 · 教練可調整資深旗標與修課係數" />
+      <PageHeader title="員工帳號管理" subtitle="F-A02 · 指派角色 / 場館；教練可調整資深旗標與修課係數（1.00 – 1.50）" />
       <DataTable columns={columns} rows={staff} rowKey={(r) => r.id} />
 
       {editing && (
@@ -98,6 +119,17 @@ export default function StaffPage() {
           <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl">
             <h3 className="mb-4 text-lg font-bold text-brand-primary">編輯員工 — {editing.name}</h3>
             <div className="space-y-4">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">角色</label>
+                <select
+                  value={editing.role}
+                  onChange={(e) => setEditing({ ...editing, role: e.target.value })}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2"
+                >
+                  {ROLE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+                <p className="mt-1 text-xs text-gray-500">變更角色會同步調整其登入後可見的選單與權限。</p>
+              </div>
               <div>
                 <label className="mb-1 block text-sm font-medium text-gray-700">所屬場館</label>
                 <select
@@ -120,13 +152,19 @@ export default function StaffPage() {
                     <span>資深教練（可建立學習歷程、會顯示金色徽章）</span>
                   </label>
                   <div>
-                    <label className="mb-1 block text-sm font-medium text-gray-700">修課係數</label>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">
+                      修課係數（100% – 150%）
+                    </label>
                     <input
-                      type="number" step="0.01" min="0.5" max="2"
+                      type="number"
+                      step="0.01"
+                      min={MULTIPLIER_MIN}
+                      max={MULTIPLIER_MAX}
                       value={editing.multiplier}
                       onChange={(e) => setEditing({ ...editing, multiplier: e.target.value })}
                       className="w-full rounded-lg border border-gray-300 px-3 py-2"
                     />
+                    <p className="mt-1 text-xs text-gray-500">資深教練 1.30 ~ 1.50；一般 1.00 ~ 1.20。</p>
                   </div>
                 </>
               )}
