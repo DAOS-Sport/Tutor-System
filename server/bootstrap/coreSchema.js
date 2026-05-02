@@ -471,6 +471,10 @@ CREATE TABLE IF NOT EXISTS promotion_usages (
 CREATE INDEX IF NOT EXISTS idx_promo_usages_promo ON promotion_usages(promotion_id);
 CREATE INDEX IF NOT EXISTS idx_promo_usages_parent ON promotion_usages(parent_id);
 
+-- 連結 LIFF 報名單（admin_enrollments.id 為 TEXT，故不設 FK）
+DO $$ BEGIN ALTER TABLE promotion_usages ADD COLUMN IF NOT EXISTS admin_enrollment_id TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+CREATE INDEX IF NOT EXISTS idx_promo_usages_enrollment ON promotion_usages(admin_enrollment_id);
+
 -- promotion_audit_logs：建立 / 送審 / 核准 / 拒絕 / 停用 軌跡
 CREATE TABLE IF NOT EXISTS promotion_audit_logs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

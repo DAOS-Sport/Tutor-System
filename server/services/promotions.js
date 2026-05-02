@@ -130,13 +130,29 @@ async function previewBestDiscount({ originalPrice, courseType, venueId, periodC
  * 紀錄優惠使用（寫入 promotion_usages，並 +1 current_uses）。
  * 通常在報名/結帳交易內呼叫；可傳入既有 client 共用 transaction。
  */
-async function recordUsage({ promotionId, parentId, coursePeriodId, originalPrice, discountAmount, finalPrice }, client) {
+async function recordUsage({ promotionId, parentId, coursePeriodId, adminEnrollmentId, originalPrice, discountAmount, finalPrice }, client) {
   if (!promotionId) return null;
   const db = client || pool;
+  // 套用前的最後一道防線：在交易內 lock 該筆 promotion 並驗證 status / 使用量
+  const lock = await db.query(
+    `SELECT status, max_uses, current_uses FROM promotions WHERE id = $1 FOR UPDATE`,
+    [promotionId]
+  );
+  if (!lock.rowCount) {
+    const err = new Error('折價券不存在'); err.code = 'COUPON_INVALID'; throw err;
+  }
+  if (lock.rows[0].status !== 'active') {
+    const err = new Error('折價券尚未啟用'); err.code = 'COUPON_NOT_ACTIVE'; throw err;
+  }
+  if (lock.rows[0].max_uses != null && lock.rows[0].current_uses >= lock.rows[0].max_uses) {
+    const err = new Error('折價券使用次數已用盡'); err.code = 'COUPON_EXHAUSTED'; throw err;
+  }
   const r = await db.query(
-    `INSERT INTO promotion_usages (promotion_id, parent_id, course_period_id, original_price, discount_amount, final_price)
-     VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, created_at`,
-    [promotionId, parentId || null, coursePeriodId || null, originalPrice, discountAmount, finalPrice]
+    `INSERT INTO promotion_usages (promotion_id, parent_id, course_period_id, admin_enrollment_id,
+        original_price, discount_amount, final_price)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id, created_at`,
+    [promotionId, parentId || null, coursePeriodId || null, adminEnrollmentId || null,
+     originalPrice, discountAmount, finalPrice]
   );
   await db.query(`UPDATE promotions SET current_uses = current_uses + 1 WHERE id = $1`, [promotionId]);
   return r.rows[0];

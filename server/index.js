@@ -28,6 +28,7 @@ app.use('/api/sessions',      require('./routes/sessions'));     // course_sessi
 app.use('/api/checkins',      require('./routes/checkins'));
 app.use('/api/payments',      require('./routes/payments'));
 app.use('/api/promotions',    require('./routes/promotions'));
+app.use('/api/enrollments',   require('./routes/enrollments'));  // F-S02 LIFF 報名建立 + promotion_usages
 app.use('/api/referrals',     require('./routes/referrals'));    // MGM
 app.use('/api/transfers',     require('./routes/transfers'));
 app.use('/api/refunds',       require('./routes/refunds'));
