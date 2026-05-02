@@ -51,8 +51,16 @@ app.get('/liff/*', (req, res, next) => {
   res.sendFile(path.join(PUBLIC_DIR, 'liff', 'index.html'), (err) => err && next(err));
 });
 
-// 根路徑導向後台首頁
-app.get('/', (req, res) => res.redirect('/admin/'));
+// 根路徑：若是從 LINE LIFF 開啟（會帶 liff.state / liff.referrer 等 query），
+// 導去 /liff/ 並保留原本 query；其餘一律導向後台首頁。
+app.get('/', (req, res) => {
+  const isLiff = Object.keys(req.query).some((k) => k.startsWith('liff.'));
+  if (isLiff) {
+    const qs = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+    return res.redirect('/liff/' + qs);
+  }
+  res.redirect('/admin/');
+});
 
 // ── WebSocket (聊天室) ───────────────────────
 initWebSocket(server);

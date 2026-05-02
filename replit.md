@@ -33,7 +33,7 @@
   - `/api/*` → 後端 API
   - `/admin/*` → 後台 SPA（含 React Router fallback）
   - `/liff/*` → LIFF SPA（含 React Router fallback）
-  - `/` → 302 轉址到 `/admin/`
+  - `/` → 預設 302 轉到 `/admin/`；若 query 帶有 `liff.*` 參數（LINE 開啟 LIFF 時會附），則改導到 `/liff/` 並保留 query
   - `/health` → 健康檢查
 - WebSocket 透過同一個 HTTP server 啟動（`initWebSocket(server)`）。
 
