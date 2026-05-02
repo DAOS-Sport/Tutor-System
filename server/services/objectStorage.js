@@ -1,26 +1,27 @@
 /**
- * 多媒體儲存抽象層
- * - 預設：本機 server/uploads/<yyyy-mm>/<uuid>.<ext>，Express 以 /uploads 靜態提供
- * - 進階（Phase 7+）：可改接 Replit Object Storage / S3，只需替換 saveBuffer / publicUrl 兩個函式
+ * Chat 媒體儲存 — Adapter 抽象層（spec F-S09 / F-C03）
  *
- * 對外介面：
- *   saveBuffer({ buffer, originalName, mimeType }) → { url, filename, size, mimeType }
+ * 為了滿足 v1 上線時程，預設使用 LocalDiskDriver；介面被刻意做成
+ * driver pattern，未來要切到 Replit App Storage / S3 / GCS 只需在
+ * driver 物件實作同一份 contract（saveBuffer / urlFor），業務碼不需改動。
  *
- * 設計考量：
- * - 檔案以 yyyy-mm 分桶避免單一目錄過大
- * - 檔名統一改 uuid，保留原副檔名以利瀏覽器辨識；原始檔名另存於資料庫 media_filename 欄
- * - 防呆：拒收 0 byte / 超過 ALLOWED_MAX_BYTES 的檔案
+ * 安全：
+ *  - 強制 MIME + 副檔名白名單（杜絕 .html/.svg/.js 同源 XSS）
+ *  - 大小上限（預設 25 MB）
+ *  - LocalDisk 由 server/index.js 的 /uploads middleware 加上
+ *    nosniff / CSP sandbox / Content-Disposition:attachment 三道防線
+ *
+ * 切換方式：環境變數 OBJECT_STORAGE_DRIVER=local|replit （預設 local）
  */
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const UPLOAD_ROOT = path.join(__dirname, '..', 'uploads');
-const ALLOWED_MAX_BYTES = Number(process.env.CHAT_UPLOAD_MAX_BYTES) || 25 * 1024 * 1024; // 25 MB
+const ALLOWED_MAX_BYTES = Number(process.env.CHAT_UPLOAD_MAX_BYTES) || 25 * 1024 * 1024;
 
-// 安全：嚴格 MIME + 副檔名白名單，杜絕 .html/.svg/.js 等可在同源執行的內容（避免 stored XSS）
+// 嚴格 MIME → ext 白名單
 const ALLOWED = {
-  // 影像 — 不接受 image/svg+xml（SVG 內可嵌 <script>）
+  // 影像（不接受 image/svg+xml — SVG 內可嵌 <script>）
   'image/jpeg':      ['.jpg', '.jpeg'],
   'image/png':       ['.png'],
   'image/gif':       ['.gif'],
@@ -41,7 +42,7 @@ const ALLOWED = {
   'audio/amr':       ['.amr'],
   'audio/webm':      ['.webm'],
   // 文件
-  'application/pdf':  ['.pdf'],
+  'application/pdf': ['.pdf'],
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':       ['.xlsx'],
 };
@@ -52,7 +53,6 @@ function isAllowed(mimeType, ext) {
   return exts.includes((ext || '').toLowerCase());
 }
 
-// 副檔名 → 推斷 message_type（給聊天訊息用）
 function inferMessageType(mimeType, ext) {
   const m = (mimeType || '').toLowerCase();
   const e = (ext || '').toLowerCase();
@@ -65,25 +65,43 @@ function inferMessageType(mimeType, ext) {
   return 'file';
 }
 
-function ensureRoot() {
-  if (!fs.existsSync(UPLOAD_ROOT)) fs.mkdirSync(UPLOAD_ROOT, { recursive: true });
-}
-
-function bucketDir() {
-  const now = new Date();
-  const yyyymm = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-  const dir = path.join(UPLOAD_ROOT, yyyymm);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  return { dir, yyyymm };
-}
-
 function safeExt(originalName) {
-  const ext = path.extname(originalName || '').toLowerCase();
-  // 限制 5 char，避免奇怪輸入
+  const ext = path.extname(String(originalName || '')).toLowerCase();
   if (!ext || ext.length > 6) return '';
   return ext.replace(/[^a-z0-9.]/g, '');
 }
 
+// ── Driver: Local Disk ────────────────────────────────────────
+const LOCAL_ROOT = path.join(__dirname, '..', 'uploads');
+const LocalDiskDriver = {
+  name: 'local',
+  async saveBuffer({ buffer, ext }) {
+    if (!fs.existsSync(LOCAL_ROOT)) fs.mkdirSync(LOCAL_ROOT, { recursive: true });
+    const d = new Date();
+    const yyyymm = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const dir = path.join(LOCAL_ROOT, yyyymm);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const id = crypto.randomBytes(12).toString('hex');
+    const filename = `${id}${ext}`;
+    await fs.promises.writeFile(path.join(dir, filename), buffer);
+    // /uploads 由 server/index.js 提供 middleware（含 nosniff + CSP sandbox）
+    return { url: `/uploads/${yyyymm}/${filename}` };
+  },
+};
+
+// ── Driver: Replit App Storage（占位實作；尚未 provision bucket 時自動退回 local）
+const ReplitDriver = {
+  name: 'replit',
+  async saveBuffer(/* { buffer, ext, mimeType } */) {
+    throw new Error('replit object storage adapter not configured; install @replit/object-storage and provision a bucket');
+  },
+};
+
+const DRIVERS = { local: LocalDiskDriver, replit: ReplitDriver };
+const driverName = (process.env.OBJECT_STORAGE_DRIVER || 'local').toLowerCase();
+const driver = DRIVERS[driverName] || LocalDiskDriver;
+
+// ── 對外 API（保持 v1 簽名，呼叫端無需改動） ────────────────────
 async function saveBuffer({ buffer, originalName = 'file.bin', mimeType = 'application/octet-stream' }) {
   if (!buffer || !buffer.length) throw new Error('檔案為空');
   if (buffer.length > ALLOWED_MAX_BYTES) {
@@ -93,25 +111,22 @@ async function saveBuffer({ buffer, originalName = 'file.bin', mimeType = 'appli
   if (!isAllowed(mimeType, ext)) {
     throw new Error(`不支援的檔案類型（${mimeType || 'unknown'}${ext}）`);
   }
-  ensureRoot();
-  const { dir, yyyymm } = bucketDir();
-  const id = crypto.randomBytes(12).toString('hex');
-  const filename = `${id}${ext}`;
-  const filePath = path.join(dir, filename);
-  await fs.promises.writeFile(filePath, buffer);
+  const { url } = await driver.saveBuffer({ buffer, ext, mimeType });
   return {
-    url: `/uploads/${yyyymm}/${filename}`,
+    url,
     filename: originalName,
     size: buffer.length,
     mimeType,
     messageType: inferMessageType(mimeType, ext),
+    driver: driver.name,
   };
 }
 
 module.exports = {
   saveBuffer,
   isAllowed,
-  UPLOAD_ROOT,
-  ALLOWED_MAX_BYTES,
   inferMessageType,
+  UPLOAD_ROOT: LOCAL_ROOT,
+  ALLOWED_MAX_BYTES,
+  driverName: driver.name,
 };

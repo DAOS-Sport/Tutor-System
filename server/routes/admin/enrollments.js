@@ -138,6 +138,17 @@ router.post('/:id/reconcile', requireAdminAuth, requireAdminRole('admin', 'manag
     );
 
     await client.query('COMMIT');
+
+    // 對帳通過 = 等同此筆轉「進行中」→ 立即補對應 course_period 的 chat_room
+    // （admin_enrollments 與 core course_periods 是兩套 schema；這裡用 backfill 兜底，
+    // 確保任何已 active 但缺房間的 period 都被補上，不依賴單筆 1:1 對應。）
+    try {
+      const chatRooms = require('../../services/chatRooms');
+      await chatRooms.backfillRoomsForActivePeriods();
+    } catch (e) {
+      console.warn('[reconcile] backfill chat rooms failed:', e.message);
+    }
+
     res.json(await readEnrollment(id));
   } catch (err) {
     await client.query('ROLLBACK');

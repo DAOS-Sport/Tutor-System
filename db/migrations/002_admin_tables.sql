@@ -9,9 +9,15 @@ CREATE TABLE IF NOT EXISTS admin_users (
   name TEXT NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('admin','manager','staff')),
   venue_id TEXT,
+  line_uid VARCHAR(100) UNIQUE,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- 已存在環境的安全升級（向前相容）：補 line_uid 欄位 → 主管收關鍵字警示 Flex
+DO $$ BEGIN
+  ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS line_uid VARCHAR(100) UNIQUE;
+EXCEPTION WHEN duplicate_column THEN NULL; END $$;
 
 CREATE TABLE IF NOT EXISTS admin_venues (
   id TEXT PRIMARY KEY,

@@ -25,6 +25,37 @@ async function ensureRoomForPeriod(periodId) {
   return r.rows[0];
 }
 
+/**
+ * 將 course_period 切到 active，並冪等建立對應 chat_room（spec F-S09）。
+ * 呼叫端可以是 admin 對帳通過、cron 排程或任何後端流程，保證
+ * 「狀態變 active 即有聊天室」的不變式不會漂移。
+ */
+async function transitionPeriodToActive(periodId) {
+  const upd = await pool.query(
+    `UPDATE course_periods SET status = 'active', updated_at = NOW()
+       WHERE id = $1 AND status <> 'active'
+       RETURNING id`,
+    [periodId]
+  );
+  const room = await ensureRoomForPeriod(periodId);
+  return { activated: upd.rowCount > 0, room };
+}
+
+/**
+ * 後援：把所有 active 但缺 chat_room 的 period 補上（cron 用）。
+ * 與 bootstrap.ensureChatRoomsForActivePeriods 等價，留在 service 給排程引用。
+ */
+async function backfillRoomsForActivePeriods() {
+  const r = await pool.query(`
+    INSERT INTO chat_rooms (course_period_id)
+    SELECT cp.id FROM course_periods cp
+    LEFT JOIN chat_rooms cr ON cr.course_period_id = cp.id
+    WHERE cp.status = 'active' AND cr.id IS NULL
+    ON CONFLICT (course_period_id) DO NOTHING
+    RETURNING id`);
+  return r.rowCount;
+}
+
 const ROOM_BASE_SELECT = `
   SELECT cr.id AS room_id,
          cr.course_period_id,
@@ -164,6 +195,8 @@ async function getRoomMeta(roomId) {
 
 module.exports = {
   ensureRoomForPeriod,
+  transitionPeriodToActive,
+  backfillRoomsForActivePeriods,
   listRoomsForParent,
   listRoomsForCoach,
   listRoomsForAdmin,

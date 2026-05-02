@@ -5,8 +5,21 @@
 const cron = require('node-cron');
 const { pool } = require('../models/db');
 const line = require('../services/line');
+const chatRooms = require('../services/chatRooms');
 
 function initCronJobs() {
+  // ── 每 5 分鐘：補 active period 的 chat_room（防漂移；spec F-S09）──
+  // 任何「直接 UPDATE course_periods.status='active'」或 race condition 都會被這個排程兜底。
+  cron.schedule('*/5 * * * *', async () => {
+    try {
+      const n = await chatRooms.backfillRoomsForActivePeriods();
+      if (n > 0) console.log(`[Cron/chat] backfilled ${n} chat_rooms for active periods`);
+    } catch (err) {
+      console.warn('[Cron/chat] backfill failed:', err.message);
+    }
+  });
+
+
   // ── 每分鐘：1vN 槽位逾時自動確認 ──────────
   cron.schedule('* * * * *', async () => {
     const res = await pool.query(
