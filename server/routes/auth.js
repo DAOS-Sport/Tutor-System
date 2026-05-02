@@ -14,8 +14,26 @@ const { signParentToken } = require('../middlewares/parentAuth');
 
 const router = express.Router();
 
+// per-IP 速率限制（與 coach by-phone 同樣 5 / 5min → 429），抑制電話號碼暴搜
+const _attempts = new Map(); // ip → [ts...]
+const WINDOW_MS = 5 * 60 * 1000;
+const MAX_ATTEMPTS = 5;
+function _rateLimited(ip) {
+  const now = Date.now();
+  const arr = (_attempts.get(ip) || []).filter((t) => now - t < WINDOW_MS);
+  arr.push(now);
+  _attempts.set(ip, arr);
+  if (_attempts.size > 5000) _attempts.clear(); // crude GC
+  return arr.length > MAX_ATTEMPTS;
+}
+
 router.post('/parent-login', async (req, res) => {
   try {
+    const ip = req.ip || req.socket?.remoteAddress || 'unknown';
+    if (_rateLimited(ip)) {
+      console.warn('[auth/parent-login] rate-limited ip=', ip);
+      return res.status(429).json({ error: '嘗試次數過多，請稍後再試' });
+    }
     const phone = String(req.body?.phone || '').trim();
     if (!phone) return res.status(400).json({ error: '手機必填' });
     const r = await pool.query(

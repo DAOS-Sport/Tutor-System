@@ -46,7 +46,7 @@ export default function App() {
         <Route path="/revive"   element={<RequireAuth roles={['admin', 'manager']}><RevivePage /></RequireAuth>} />
 
         {/* 聊天監察（Phase 4） */}
-        <Route path="/chat-logs" element={<RequireAuth roles={ALL}><ChatLogsPage /></RequireAuth>} />
+        <Route path="/chat-logs" element={<RequireAuth roles={['admin', 'manager']}><ChatLogsPage /></RequireAuth>} />
         <Route path="/alerts"    element={<RequireAuth roles={['admin', 'manager']}><AlertsPage /></RequireAuth>} />
         <Route path="/keywords"  element={<RequireAuth roles={['admin']}><KeywordsPage /></RequireAuth>} />
       </Route>

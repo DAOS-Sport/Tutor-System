@@ -169,8 +169,8 @@ async function canAccess({ roomId, role, userId, venueId } = {}) {
     const r = await pool.query(`SELECT 1 FROM chat_rooms WHERE id = $1`, [roomId]);
     return r.rowCount > 0;
   }
-  if (role === 'manager' || role === 'staff') {
-    // venue-scoped：必須是該 venueId 內的 room（與 admin HTTP 端 staff/manager 範圍一致）
+  if (role === 'manager') {
+    // venue-scoped：必須是該 venueId 內的 room（與 admin HTTP 端 manager 範圍一致）
     if (!venueId) return false;
     const r = await pool.query(
       `SELECT 1 FROM chat_rooms cr
@@ -178,6 +178,8 @@ async function canAccess({ roomId, role, userId, venueId } = {}) {
         WHERE cr.id = $1 AND cp.venue_id = $2`, [roomId, venueId]);
     return r.rowCount > 0;
   }
+  // staff 不得查閱聊天內容（F-M03 policy，docs/adr_phase4_chat.md §4）
+  if (role === 'staff') return false;
   if (role === 'coach') {
     const r = await pool.query(
       `SELECT 1 FROM chat_rooms cr JOIN course_periods cp ON cp.id = cr.course_period_id
