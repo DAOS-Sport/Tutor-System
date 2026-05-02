@@ -277,7 +277,7 @@ export const mockDb = {
         try {
           mockDb.createSlot({ coach_id, venue_id, start_at: start.toISOString(), duration_minutes });
           created++;
-        } catch (err) { skipped++; errors.push({ start_at: start.toISOString(), reason: err.message }); }
+        } catch (err) { skipped++; errors.push({ start_at: start.toISOString(), venue_id, error: err.message }); }
       }
     }
     return { created, skipped, errors };

@@ -73,7 +73,12 @@ async function batchCreateSlots(slots) {
       created++;
     } catch (err) {
       skipped++;
-      errors.push({ slot, reason: err.message });
+      // 統一錯誤格式：{ start_at, error } — 前端 BatchResultModal 直接消費
+      errors.push({
+        start_at: slot.startAt || slot.start_at || null,
+        venue_id: slot.venueId || slot.venue_id || null,
+        error: err.message,
+      });
     }
   }
   return { created, skipped, errors };

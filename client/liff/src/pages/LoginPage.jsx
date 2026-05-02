@@ -1,11 +1,25 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import liff from '@line/liff';
 import { parentsApi } from '../api/parents';
 import { coachesApi } from '../api/coaches';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { isValidTWPhone } from '../utils/format';
 import LoadingSpinner from '../components/LoadingSpinner';
+
+/**
+ * 從 LIFF SDK 取得 ID Token；若 LIFF 未初始化或未登入則回傳 null
+ * （dev / mock 模式下會走 phone-only 後備路徑）
+ */
+function tryGetLineIdToken() {
+  try {
+    if (typeof liff?.getIDToken === 'function' && liff.isLoggedIn?.()) {
+      return liff.getIDToken() || null;
+    }
+  } catch { /* swallow — 走 phone-only fallback */ }
+  return null;
+}
 
 /**
  * LIFF 登入：以手機作為通用識別。
@@ -36,10 +50,12 @@ export default function LoginPage() {
         navigate('/', { replace: true });
         return;
       }
-      // 嘗試教練端登入：明確區分「真的查無此手機(404)」vs「速率限制(429)」vs「其他錯誤(5xx/network)」
+      // 嘗試教練端登入：傳入 LINE id_token（若有）以走雙因素驗證；
+      // 明確區分「真的查無此手機(404)」vs「速率限制(429)」vs「其他錯誤(5xx/network)」
+      const idToken = tryGetLineIdToken();
       let coach = null;
       try {
-        coach = await coachesApi.byPhone(trimmed);
+        coach = await coachesApi.byPhone(trimmed, idToken);
       } catch (err) {
         const status = err?.response?.status;
         if (status === 429) {

@@ -1,16 +1,17 @@
 /**
  * 教練端 LIFF 授權中介層
- * - signCoachToken({coachId, phone}): 簽發 12 小時 JWT (短 TTL，配合家長 by-phone 驗證 MVP)
+ * - signCoachToken({coachId, phone, lineUid}): 簽發 12 小時 JWT
  * - requireCoach: 必須持有有效 JWT 且 type === 'coach'
  * - requireCoachOwner(paramName): 確認路徑參數所指 coach 與 token 內 coachId 一致 (IDOR 防護)
- * - byPhoneRateLimit: 對 /coaches/by-phone 做 per-IP+phone 速率限制 (防暴力枚舉手機)
+ * - byPhoneRateLimit: 對 /coaches/by-phone 做 per-IP 速率限制 (防暴力枚舉手機)
  *
- * ⚠ 已知限制（追蹤於 follow-up task #23）：
- *   目前 token 簽發僅基於手機驗證（與家長端 MVP 相同），尚未驗證 LINE id_token / line_uid 綁定。
- *   正式版本應改為「LIFF 取 id_token → 後端驗證 audience+issuer → 對 coaches.line_uid 比對 → 才簽發 token」。
- *   本檔暫採取的緩解措施：(1) 短 TTL 12h；(2) by-phone rate limit；(3) 失敗嘗試 console.warn 紀錄。
+ * 認證設計：
+ *   - 生產環境 (NODE_ENV=production 或 REQUIRE_LINE_ID_TOKEN=1)：手機 + LIFF id_token 雙因素必填
+ *     LINE 驗證見 services/lineAuth.js，比對 coaches.line_uid 後才簽發 token
+ *   - 開發環境且未帶 id_token 時：允許 phone-only 後備（並輸出 warn log）
+ *   - 速率限制 + 失敗紀錄 console.warn 始終啟用
  *
- * Token payload 結構：{ coachId, phone, type: 'coach', iat, exp }
+ * Token payload 結構：{ coachId, phone, lineUid?, type: 'coach', iat, exp }
  */
 const jwt = require('jsonwebtoken');
 
@@ -27,8 +28,10 @@ function getSecret() {
   return s;
 }
 
-function signCoachToken({ coachId, phone }) {
-  return jwt.sign({ coachId, phone, type: 'coach' }, getSecret(), { expiresIn: TOKEN_TTL });
+function signCoachToken({ coachId, phone, lineUid = null }) {
+  const payload = { coachId, phone, type: 'coach' };
+  if (lineUid) payload.lineUid = lineUid;
+  return jwt.sign(payload, getSecret(), { expiresIn: TOKEN_TTL });
 }
 
 function requireCoach(req, res, next) {
@@ -37,7 +40,7 @@ function requireCoach(req, res, next) {
   try {
     const payload = jwt.verify(token, getSecret());
     if (payload.type !== 'coach') return res.status(403).json({ error: 'Coach token required' });
-    req.coach = { id: payload.coachId, phone: payload.phone };
+    req.coach = { id: payload.coachId, phone: payload.phone, lineUid: payload.lineUid || null };
     next();
   } catch {
     res.status(401).json({ error: 'Invalid or expired token' });

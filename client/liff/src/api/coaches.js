@@ -8,9 +8,13 @@ export const coachesApi = {
   detail: (id) =>
     callApi(`/coaches/${id}`, { method: 'get' }, () => mockDb.coach(id)),
 
-  // 教練端登入：以手機比對 coaches.phone
-  byPhone: (phone) =>
-    callApi('/coaches/by-phone', { method: 'get', params: { phone } }, () => mockDb.coachByPhone(phone)),
+  // 教練端登入：手機 +（如可取得）LINE id_token 雙因素
+  byPhone: (phone, idToken = null) =>
+    callApi(
+      '/coaches/by-phone',
+      { method: 'get', params: idToken ? { phone, id_token: idToken } : { phone } },
+      () => mockDb.coachByPhone(phone)
+    ),
 
   // 個人介紹文字
   updateBio: (id, bio_rich_text) =>

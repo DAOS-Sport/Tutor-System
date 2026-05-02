@@ -21,8 +21,11 @@
 - 注意 H01 與 H05/Z01/Z02 的 Ragic AP_Name 不同（H01 用 `standardzhtw`，其餘用 `xinsheng`），表單路徑前綴各自獨立。
 
 ## 教練端 LIFF (Task #14 已完成)
-- 登入：手機 → `GET /api/coaches/by-phone` 回傳 coach + JWT (12 小時)；token 存 `localStorage.daos.user.token`，axios interceptor 自動附 `Authorization: Bearer …`
-- 登入端點安全緩解：per-IP 速率限制（5 attempts / 5min → 429）+ 失敗紀錄 console.warn；**LINE id_token 雙因素驗證為 follow-up #23**（追蹤項）
+- 登入：手機 + LIFF id_token 雙因素 → `GET /api/coaches/by-phone?phone=…&id_token=…` 回傳 coach + JWT (12 小時)
+  - 生產環境 (`NODE_ENV=production` 或 `REQUIRE_LINE_ID_TOKEN=1`)：必填 id_token，後端呼叫 LINE Verify API → 比對/綁定 `coaches.line_uid`
+  - 開發環境若未提供 id_token：phone-only fallback（console.warn）
+- token 存 `localStorage.daos.user.token`，axios interceptor 自動附 `Authorization: Bearer …`；payload 含 `lineUid`（若已驗證）
+- 登入端點安全緩解：per-IP 速率限制（5 attempts / 5min → 429）+ 失敗紀錄 console.warn + 12h 短 TTL
 - AuthContext storage shape: `{ role: 'parent'|'coach', data: {...}, token: string|null }`（後向相容：仍曝露 `parent` / `coach` getter）
 - 路由保護：`<RequireParent>` / `<RequireCoach>` 互斥導頁；BottomNav 視 role 顯示 4 / 3 個 tab
 - 教練分頁：`/coach`(今日)、`/coach/schedule`(週/月排課總表)、`/coach/profile`(bio + 介紹圖排序)

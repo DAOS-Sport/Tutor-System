@@ -13,6 +13,7 @@ const express = require('express');
 const router = express.Router();
 const { pool } = require('../models/db');
 const { signCoachToken, requireCoach, requireCoachOwner, byPhoneRateLimit, logFailedLogin } = require('../middlewares/coachAuth');
+const { verifyLineIdToken, isLineVerificationRequired } = require('../services/lineAuth');
 
 /**
  * 將 DB 欄位 pricing_multiplier 同時對外曝露為 multiplier，
@@ -59,20 +60,23 @@ router.get('/', async (req, res) => {
 });
 
 /**
- * 教練端登入：以手機作為憑據，回傳 coach + 短期 (12h) JWT。
+ * 教練端登入：手機 + （生產環境）LINE id_token 雙因素驗證
  *
- * ⚠ 已知限制（追蹤於 follow-up task #23）：
- *   本 MVP 與家長端相同，使用「手機驗證」作為唯一識別。正式版本應改為：
- *     1) LIFF 端取得 LINE id_token；
- *     2) 後端驗證 audience = LINE_LOGIN_CHANNEL_ID, issuer = https://access.line.me；
- *     3) 比對 coaches.line_uid 必須已綁定且匹配；
- *     4) 同步 Ragic H01 在職狀態 (is_active) 才簽發 token。
- *   現階段緩解措施：12h 短 TTL + per-IP 速率限制 + 失敗紀錄 console.warn。
+ * 流程：
+ *   1) 必填 phone 在 H01 (coaches.phone) 找到啟用中的教練
+ *   2) 若 LINE 驗證為必要 (NODE_ENV=production 或 REQUIRE_LINE_ID_TOKEN=1)：
+ *      - 必填 id_token，呼叫 LINE Verify API → 取出 sub (line_uid)
+ *      - 若 coach.line_uid IS NULL → 首次綁定（寫回 DB）
+ *      - 若 coach.line_uid 已存在 → 必須與 sub 完全相符；不符 → 403
+ *   3) 若非生產環境且未提供 id_token → 走 phone-only 後備路徑（並 console.warn）
+ *   4) 簽發短期 (12h) JWT，payload 包含 lineUid（若有）
  */
 router.get('/by-phone', byPhoneRateLimit, async (req, res) => {
-  const { phone } = req.query;
+  const phone = req.query.phone;
+  const idToken = req.query.id_token || req.headers['x-line-id-token'];
   const ip = (req.headers['x-forwarded-for']?.split(',')[0] || req.ip || 'unknown').trim();
   if (!phone) return res.status(400).json({ error: 'phone is required' });
+
   try {
     const r = await pool.query(
       `SELECT c.*, COALESCE(
@@ -86,8 +90,39 @@ router.get('/by-phone', byPhoneRateLimit, async (req, res) => {
       logFailedLogin(ip, phone, 'phone-not-found');
       return res.status(404).json({ error: 'not found' });
     }
-    const coach = withMultiplierAlias(r.rows[0]);
-    const token = signCoachToken({ coachId: coach.id, phone: coach.phone });
+    let coach = withMultiplierAlias(r.rows[0]);
+
+    // ── LINE id_token 驗證（生產環境強制；開發環境若有提供 id_token 也驗證）──
+    let verifiedLineUid = null;
+    if (idToken) {
+      try {
+        const lineProfile = await verifyLineIdToken(idToken);
+        verifiedLineUid = lineProfile.sub;
+      } catch (err) {
+        logFailedLogin(ip, phone, `line-verify-failed: ${err.message}`);
+        return res.status(401).json({ error: `LINE 身分驗證失敗：${err.message}` });
+      }
+    } else if (isLineVerificationRequired()) {
+      logFailedLogin(ip, phone, 'missing-id-token');
+      return res.status(401).json({ error: 'LINE id_token is required in this environment' });
+    } else {
+      console.warn(`[coachAuth] phone-only fallback (dev): ip=${ip} phone=${phone}`);
+    }
+
+    // ── 比對 / 綁定 line_uid ──
+    if (verifiedLineUid) {
+      if (coach.line_uid && String(coach.line_uid) !== String(verifiedLineUid)) {
+        logFailedLogin(ip, phone, `line_uid-mismatch: stored=${coach.line_uid} vs verified=${verifiedLineUid}`);
+        return res.status(403).json({ error: '此手機已綁定不同的 LINE 帳號，請聯繫管理員' });
+      }
+      if (!coach.line_uid) {
+        await pool.query(`UPDATE coaches SET line_uid = $1, updated_at = NOW() WHERE id = $2`, [verifiedLineUid, coach.id]);
+        coach.line_uid = verifiedLineUid;
+        console.log(`[coachAuth] bound line_uid for coach=${coach.id}`);
+      }
+    }
+
+    const token = signCoachToken({ coachId: coach.id, phone: coach.phone, lineUid: coach.line_uid || null });
     res.json({ ...coach, token });
   } catch (err) {
     res.status(500).json({ error: err.message });
