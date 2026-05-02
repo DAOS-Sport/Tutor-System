@@ -378,11 +378,19 @@ export const mockDb = {
   adminChatRooms: ({ search, q } = {}) => {
     // 接受 search（與後端 /api/admin/chat/rooms?search= 對齊）；保留 q 為向後相容別名
     const kw = (search || q || '').trim();
-    return CHAT_ROOMS_ADMIN.map((r) => ({
-      ...r,
-      last_message_at: (CHAT_MSG_ADMIN[r.id] || []).slice(-1)[0]?.created_at || null,
-      message_count: (CHAT_MSG_ADMIN[r.id] || []).length,
-    })).filter((r) => !kw
+    return CHAT_ROOMS_ADMIN.map((r) => {
+      const msgs = CHAT_MSG_ADMIN[r.id] || [];
+      const lm = msgs[msgs.length - 1];
+      // 與 server services/chatRooms.js _hydrate 對齊的 shape
+      const last_message = lm ? {
+        sender_type: lm.sender_type,
+        message_type: lm.message_type,
+        content: lm.content || null,
+        media_filename: lm.media_filename || null,
+        created_at: lm.created_at,
+      } : null;
+      return { ...r, last_message, message_count: msgs.length };
+    }).filter((r) => !kw
       || r.coach?.name?.includes(kw)
       || (r.student_names || []).some((n) => n.includes(kw))
       || r.id.includes(kw));
