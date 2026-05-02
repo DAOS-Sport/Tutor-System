@@ -1,20 +1,21 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { coachesApi } from '../api/coaches';
-import { coursesApi } from '../api/courses';
-import { venuesApi } from '../api/venues';
 import { parentsApi } from '../api/parents';
-import { promotionsApi } from '../api/promotions';
 import { enrollmentsApi } from '../api/enrollments';
 import LoadingSpinner from '../components/LoadingSpinner';
 import ConfirmModal from '../components/ConfirmModal';
-import { Section, StudentRow } from '../components/enroll/EnrollmentParts';
+import CourseTypeSelector from '../components/enroll/CourseTypeSelector';
+import SelfStudentSelector from '../components/enroll/SelfStudentSelector';
 import PartnerLookup from '../components/enroll/PartnerLookup';
 import PriceBreakdown from '../components/enroll/PriceBreakdown';
 import BankTransferBlock from '../components/enroll/BankTransferBlock';
+import EnrollmentSummary from '../components/enroll/EnrollmentSummary';
+import ErrorBlock from '../components/enroll/ErrorBlock';
+import useEnrollmentBoot from '../hooks/useEnrollmentBoot';
+import useEnrollmentPricing from '../hooks/useEnrollmentPricing';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
-import { formatTWD, isValidTWPhone, isValidLast5, courseTypeLabel } from '../utils/format';
+import { isValidTWPhone, isValidLast5 } from '../utils/format';
 
 export default function EnrollmentPage() {
   const [params] = useSearchParams();
@@ -26,8 +27,6 @@ export default function EnrollmentPage() {
   const initialCourseType = Number(params.get('courseType') || 1);
   const coachId = params.get('coach');
 
-  const [bootData, setBootData] = useState(null);
-  const [bootError, setBootError] = useState(null);
   const [courseType, setCourseType] = useState(initialCourseType);
   const [selectedSelfStudents, setSelectedSelfStudents] = useState([]);
   const [partnerPhone, setPartnerPhone] = useState('');
@@ -38,29 +37,10 @@ export default function EnrollmentPage() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  useEffect(() => {
-    let alive = true;
-    setBootError(null);
-    Promise.all([
-      coachesApi.detail(coachId),
-      venuesApi.detail(venueId),
-      coursesApi.basePrice(courseType),
-      promotionsApi.list(),
-    ])
-      .then(([coach, venue, bp, promos]) => {
-        if (!alive) return;
-        setBootData({ coach, venue, basePrice: bp.original_price, promos });
-      })
-      .catch(() => {
-        if (!alive) return;
-        setBootError('資料載入失敗');
-        toast.error('資料載入失敗');
-      });
-    return () => {
-      alive = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [coachId, venueId, courseType]);
+  const onBootError = useCallback((m) => toast.error(m), [toast]);
+  const { bootData, bootError } = useEnrollmentBoot({
+    coachId, venueId, courseType, onError: onBootError,
+  });
 
   // 切換組別時重置學員選擇
   useEffect(() => {
@@ -70,19 +50,7 @@ export default function EnrollmentPage() {
     setPartnerPhone('');
   }, [courseType]);
 
-  const pricing = useMemo(() => {
-    if (!bootData) return null;
-    const base = bootData.basePrice;
-    const afterMultiplier = Math.round(base * (bootData.coach?.multiplier || 1));
-    const autoPromo = (bootData.promos || []).find((p) => p.is_auto_apply);
-    let final = afterMultiplier;
-    let discount = 0;
-    if (autoPromo) {
-      final = Math.round(afterMultiplier * autoPromo.value);
-      discount = afterMultiplier - final;
-    }
-    return { base, afterMultiplier, final, discount, promo: autoPromo };
-  }, [bootData]);
+  const pricing = useEnrollmentPricing(bootData);
 
   if (bootError) return <ErrorBlock message={bootError} onBack={() => navigate('/', { replace: true })} />;
   if (!bootData || !pricing) return <LoadingSpinner fullPage label="載入課程資訊…" />;
@@ -213,38 +181,15 @@ export default function EnrollmentPage() {
         <p className="mt-0.5 text-xs text-gray-500">{venue.name}</p>
       </div>
 
-      <Section title="選擇組別">
-        <div className="grid grid-cols-3 gap-2">
-          {[1, 2, 3].map((t) => (
-            <button
-              key={t}
-              type="button"
-              onClick={() => setCourseType(t)}
-              className={`rounded-lg border-2 py-2.5 text-sm font-bold transition ${
-                courseType === t
-                  ? 'border-brand-teal bg-brand-teal text-white'
-                  : 'border-gray-200 bg-white text-gray-600'
-              }`}
-            >
-              {courseTypeLabel(t)}
-            </button>
-          ))}
-        </div>
-      </Section>
+      <CourseTypeSelector courseType={courseType} onChange={setCourseType} />
 
-      <Section title={`選擇學員（已選 ${totalSelected}/${requiredStudentCount}）`}>
-        <p className="mb-2 text-xs text-gray-500">{parent.name}（您）名下：</p>
-        <div className="space-y-2">
-          {parent.students.map((s) => (
-            <StudentRow
-              key={s.id}
-              student={s}
-              checked={selectedSelfStudents.includes(s.id)}
-              onToggle={() => toggleSelf(s.id)}
-            />
-          ))}
-        </div>
-      </Section>
+      <SelfStudentSelector
+        parent={parent}
+        totalSelected={totalSelected}
+        requiredStudentCount={requiredStudentCount}
+        selectedSelfStudents={selectedSelfStudents}
+        onToggle={toggleSelf}
+      />
 
       {courseType > 1 && (
         <PartnerLookup
@@ -284,33 +229,15 @@ export default function EnrollmentPage() {
         onCancel={() => setConfirmOpen(false)}
         onConfirm={handleConfirmSubmit}
       >
-        <ul className="space-y-1.5 text-sm">
-          <li><b>場館：</b>{venue.name}</li>
-          <li><b>教練：</b>{coach.name}{coach.is_senior ? '（資深）' : ''}</li>
-          <li><b>組別：</b>{courseTypeLabel(courseType)}</li>
-          <li>
-            <b>學員：</b>
-            {allSelectedStudents.map((s) => `${s.name}（${s._ownerName}）`).join('、')}
-          </li>
-          <li><b>應繳：</b><span className="font-bold text-brand-primary">{formatTWD(pricing.final)}</span></li>
-          <li><b>轉帳末 5 碼：</b>{last5}</li>
-        </ul>
+        <EnrollmentSummary
+          venue={venue}
+          coach={coach}
+          courseType={courseType}
+          allSelectedStudents={allSelectedStudents}
+          pricing={pricing}
+          last5={last5}
+        />
       </ConfirmModal>
-    </div>
-  );
-}
-
-function ErrorBlock({ message, onBack }) {
-  return (
-    <div className="px-4 py-8 text-center">
-      <div className="mb-3 text-sm text-brand-error">{message}</div>
-      <button
-        type="button"
-        onClick={onBack}
-        className="rounded-lg bg-brand-primary px-4 py-2 text-sm font-bold text-white"
-      >
-        回首頁
-      </button>
     </div>
   );
 }
