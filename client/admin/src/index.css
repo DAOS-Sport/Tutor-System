@@ -10,4 +10,12 @@
   --brand-amber:   #e8a020;
   --brand-gold:    #c9a84c;
 }
-body { font-family: 'Noto Sans TC', 'Inter', sans-serif; }
+
+html, body, #root {
+  height: 100%;
+}
+body {
+  font-family: 'Noto Sans TC', 'Inter', sans-serif;
+  background: #f3f4f6;
+  color: #1f2937;
+}

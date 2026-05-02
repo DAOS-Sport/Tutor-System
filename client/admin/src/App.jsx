@@ -1,16 +1,49 @@
-import { Routes, Route } from 'react-router-dom';
+import React from 'react';
+import { Navigate, Route, Routes } from 'react-router-dom';
+import AppLayout from './components/AppLayout';
+import RequireAuth from './components/RequireAuth';
+import LoginPage from './pages/LoginPage';
+import DashboardPage from './pages/DashboardPage';
+import SettingsPage from './pages/SettingsPage';
+import StaffPage from './pages/StaffPage';
+import VenuesPage from './pages/VenuesPage';
+import CourseIntrosPage from './pages/CourseIntrosPage';
+import ReconcilePage from './pages/ReconcilePage';
+import EnrollmentsPage from './pages/EnrollmentsPage';
+import RefundPage from './pages/RefundPage';
+import SessionsPage from './pages/SessionsPage';
+import CheckinPage from './pages/CheckinPage';
+import RevivePage from './pages/RevivePage';
+
+const ALL = ['admin', 'manager', 'staff'];
 
 export default function App() {
   return (
     <Routes>
-      <Route
-        path="/"
-        element={
-          <div className="p-6 text-brand-primary font-bold text-xl">
-            DAOS 後台（建構中）
-          </div>
-        }
-      />
+      <Route path="/login" element={<LoginPage />} />
+
+      <Route element={<RequireAuth roles={ALL}><AppLayout /></RequireAuth>}>
+        <Route index element={<Navigate to="/dashboard" replace />} />
+        <Route path="/dashboard" element={<DashboardPage />} />
+
+        {/* 系統設定（admin only） */}
+        <Route path="/settings"      element={<RequireAuth roles={['admin']}><SettingsPage /></RequireAuth>} />
+        <Route path="/staff"         element={<RequireAuth roles={['admin']}><StaffPage /></RequireAuth>} />
+        <Route path="/venues"        element={<RequireAuth roles={['admin']}><VenuesPage /></RequireAuth>} />
+        <Route path="/course-intros" element={<RequireAuth roles={['admin']}><CourseIntrosPage /></RequireAuth>} />
+
+        {/* 報名與對帳 */}
+        <Route path="/reconcile"   element={<RequireAuth roles={ALL}><ReconcilePage /></RequireAuth>} />
+        <Route path="/enrollments" element={<RequireAuth roles={ALL}><EnrollmentsPage /></RequireAuth>} />
+        <Route path="/refund"      element={<RequireAuth roles={['admin', 'manager']}><RefundPage /></RequireAuth>} />
+
+        {/* 場館營運 */}
+        <Route path="/sessions" element={<RequireAuth roles={ALL}><SessionsPage /></RequireAuth>} />
+        <Route path="/checkin"  element={<RequireAuth roles={ALL}><CheckinPage /></RequireAuth>} />
+        <Route path="/revive"   element={<RequireAuth roles={['admin', 'manager']}><RevivePage /></RequireAuth>} />
+      </Route>
+
+      <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
   );
 }

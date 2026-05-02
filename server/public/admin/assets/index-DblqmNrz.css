@@ -1,1 +1,0 @@
-@import"https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Inter:wght@400;500;700&display=swap";@tailwind base;@tailwind components;@tailwind utilities;:root{--brand-primary: #15316a;--brand-teal: #31aeab;--brand-green: #97bf36;--brand-amber: #e8a020;--brand-gold: #c9a84c}body{font-family:Noto Sans TC,Inter,sans-serif}

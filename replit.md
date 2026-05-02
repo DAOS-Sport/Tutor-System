@@ -114,6 +114,71 @@
 - Phase 5：學習歷程（資深教練專屬）、期末評鑑、`StarRating`
 - Phase 6：MGM 推薦、後台管理（admin/）
 
+## 後台 Admin 進度
+
+### Phase 3（後台管理基礎）— 已完成
+位於 `client/admin/src/`，使用 React 18 + Vite + Tailwind + react-router-dom。桌機優先 Sidebar Layout，每頁 ≤ 250 行。
+
+**架構：**
+- `main.jsx` — 用 `BrowserRouter basename="/admin"` 包 `<AuthProvider>` + `<ToastProvider>`
+- `App.jsx` — 13 條 route，全部走 `<RequireAuth roles=[...]>` 守門
+- `components/AppLayout.jsx` — Sidebar (w-64) + Header (h-16) + main scroll 區
+- `components/Sidebar.jsx` — 4 群組 nav，依 `useAuth().role` 動態 hide/show 項目
+- `components/Header.jsx` — 顯示姓名、角色 badge、登出按鈕
+- `components/RequireAuth.jsx` — 未登入導 `/login`；已登入但無權限顯示拒絕畫面
+- `components/{DataTable,StatusBadge,PageHeader,ConfirmDialog,LoadingSpinner}.jsx` — 通用元件
+
+**13 個頁面：**
+| Path | 元件 | 對應 spec | 角色 |
+|---|---|---|---|
+| `/login` | `LoginPage` | — | 公開 |
+| `/dashboard` | `DashboardPage` | 自製概覽 | 全部 |
+| `/settings` | `SettingsPage` | F-A01 系統設定 | admin |
+| `/staff` | `StaffPage` | F-A02 員工管理 | admin |
+| `/venues` | `VenuesPage` | F-A03 場館設定 | admin |
+| `/course-intros` | `CourseIntrosPage` | F-A04 / F-M06 課程介紹 | admin |
+| `/reconcile` | `ReconcilePage` | F-M02 待對帳 | 全部 |
+| `/enrollments` | `EnrollmentsPage` | F-R02 所有報名 | 全部 |
+| `/refund` | `RefundPage` | F-R04 退課 | admin/manager |
+| `/sessions` | `SessionsPage` | F-R01 今日課程 | 全部 |
+| `/checkin` | `CheckinPage` | F-R03 簽到驗證 | 全部 |
+| `/revive` | `RevivePage` | F-M05 退課復活 | admin/manager |
+
+**狀態與 API：**
+- `context/AuthContext.jsx` — 用 `localStorage(daos.admin.user)` 暫存 user，跨分頁 `storage` 事件同步；提供 `isAdmin/isManager/isStaff` 旗標
+- `context/ToastContext.jsx` — 與 LIFF 同款 4 色 Toast
+- `api/client.js` — `callApi()` 走 `/api/admin/*`；`USE_MOCK = VITE_USE_MOCK !== 'false'`；遇 501 自動 fallback 到 mock
+- `api/mock.js` — 集中 mock dataset：3 員工帳號、3 場館、6 員工、5 筆 enrollment、4 個今日 sessions、2 個已取消時段、課介 1/2/3、全域 settings 7 個欄位
+- `api/{auth,staff,venues,settings,courseIntros,enrollments,sessions}.js` — domain modules
+
+**Mock 帳號（密碼 = 帳號）：**
+- `admin / admin` — 系統管理員（看得到 13 頁全部）
+- `manager / manager` — 場館主管（板橋館，無系統設定 4 頁）
+- `staff / staff` — 行政櫃檯（板橋館，無退課/復活，且報名/對帳清單依 `venue_id` 過濾）
+
+### Admin Phase 3 與後端的銜接點
+這些 endpoint 目前由 `server/routes/admin.js` 全部回 501 stub。Phase 3 admin UI 已用 mock 補位，後續任務只要把這些 endpoint 實作好（response shape 對齊 `client/admin/src/api/mock.js`），admin 就能無縫切換：
+
+| Endpoint | mock 回應 |
+|---|---|
+| `POST /api/admin/auth/login` | `mockDb.login(username, password)` |
+| `GET /api/admin/staff` | `mockDb.staff()` |
+| `PATCH /api/admin/staff/:id` | `mockDb.updateStaff(id, patch)` |
+| `GET /api/admin/venues` | `mockDb.venues()` |
+| `PATCH /api/admin/venues/:id` | `mockDb.updateVenue(id, patch)` |
+| `GET /api/admin/settings` | `mockDb.settings()` |
+| `PATCH /api/admin/settings` | `mockDb.updateSettings(patch)` |
+| `GET /api/admin/course-intros` | `mockDb.courseIntros()` |
+| `PATCH /api/admin/course-intros/:type` | `mockDb.updateCourseIntro(type, patch)` |
+| `GET /api/admin/enrollments?status=&search=&venueId=` | `mockDb.enrollments(filters)` |
+| `POST /api/admin/enrollments/:id/reconcile` | `mockDb.reconcile(id, by)` |
+| `GET /api/admin/enrollments/:id/refund-preview` | `mockDb.refundPreview(id)` |
+| `POST /api/admin/enrollments/:id/refund` | `mockDb.refundEnrollment(id, reason, by)` |
+| `GET /api/admin/sessions/today?venueId=` | `mockDb.todaySessions(venueId)` |
+| `GET /api/admin/sessions/verify-checkin?phone=&periodId=` | `mockDb.verifyCheckin(q)` |
+| `GET /api/admin/sessions/cancelled` | `mockDb.cancelledSessions()` |
+| `POST /api/admin/sessions/:id/revive` | `mockDb.reviveSession(id)` |
+
 ## 變更紀錄
 - 2026-05-02：完成 LIFF Phase 1（任務 #7）。實作 7 個正式頁面 + 2 個 placeholder、6 個全域元件、雙 Context（Auth/Toast）、7 個 API 模組與 mock dataset、共用 utils；新增 `react-hook-form` 依賴、`postcss.config.js`；修正 `main.jsx` 加上無 LIFF_ID 的 dev fallback。`vite build` 通過（158 modules，401KB / 127KB gzip）。後端 19 個 stub 路由不變，LIFF 全程走 mock 模式以驗證 happy path；後續可由 `VITE_USE_MOCK=false` 切到真實 API，並透過 501 自動 fallback 機制漸進實作後端。
 - 2026-05-02：完成 SurveyJS Creator 評估報告，結論為「**不建議整合**」（授權費 USD $589/dev/年、套件巨大、與 Ragic 雙向同步設計衝突）。完整分析詳見 `docs/eval/surveyjs-creator.md`，含替代方案比較與分階段建議。
