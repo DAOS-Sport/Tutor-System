@@ -97,7 +97,7 @@ function initCronJobs() {
           if (!uid) continue;
           const msg = line.templates.evaluationInvite({
             coachName: row.coach_name,
-            liffUrl: `${LIFF_URL}#/eval/${inv.id}`,
+            liffUrl: `${LIFF_URL}#/evaluation/${inv.id}`,
           });
           try { await line.pushMessage(uid, msg, row.venue_id); }
           catch (e) { console.warn('[Cron/eval] push invite failed:', e.message); }
@@ -113,7 +113,7 @@ function initCronJobs() {
         if (!uid) { await evaluations.markReminderSent(r.id); continue; }
         const msg = line.templates.evaluationInvite({
           coachName: coach.rows[0]?.name || '',
-          liffUrl: `${LIFF_URL}#/eval/${r.id}`,
+          liffUrl: `${LIFF_URL}#/evaluation/${r.id}`,
         });
         try {
           await line.pushMessage(uid, msg, r.venue_id);

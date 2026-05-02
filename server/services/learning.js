@@ -114,6 +114,19 @@ async function upsertRecord(sessionId, coachId, fields) {
   const v = {};
   for (const k of RECORD_FIELDS) v[k] = String(fields?.[k] || '').slice(0, 4000);
   const media = _mediaList(fields?.media);
+  // 已提交的紀錄在覆寫前先快照舊內容，確保「送出後修改保留版本歷史」（F-C05）。
+  const prior = await getRecord(sessionId);
+  if (prior && prior.status === 'submitted') {
+    const ver = await pool.query(
+      `SELECT COALESCE(MAX(version_no),0)+1 AS next FROM session_record_versions WHERE session_record_id = $1`,
+      [prior.id]
+    );
+    await pool.query(
+      `INSERT INTO session_record_versions (session_record_id, version_no, snapshot, edited_by)
+       VALUES ($1, $2, $3::jsonb, $4)`,
+      [prior.id, ver.rows[0].next, JSON.stringify(prior), coachId]
+    );
+  }
   const r = await pool.query(
     `INSERT INTO session_records (course_session_id, course_period_id, coach_id, summary, highlights, improvements, homework, media)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
@@ -149,18 +162,7 @@ async function submitRecord(sessionId, coachId) {
   if (String(existing.coach_id) !== String(coachId)) {
     const e = new Error('Forbidden'); e.status = 403; throw e;
   }
-  // 若已 submitted → 寫入版本快照後重新提交
-  if (existing.status === 'submitted') {
-    const ver = await pool.query(
-      `SELECT COALESCE(MAX(version_no),0)+1 AS next FROM session_record_versions WHERE session_record_id = $1`,
-      [existing.id]
-    );
-    await pool.query(
-      `INSERT INTO session_record_versions (session_record_id, version_no, snapshot, edited_by)
-       VALUES ($1, $2, $3::jsonb, $4)`,
-      [existing.id, ver.rows[0].next, JSON.stringify(existing), coachId]
-    );
-  }
+  // 版本快照已在 upsertRecord 覆寫舊內容前完成，這裡只翻 status。
   const r = await pool.query(
     `UPDATE session_records
         SET status = 'submitted',

@@ -25,6 +25,7 @@ export default function SessionRecordFormPage() {
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [newPersonal, setNewPersonal] = useState('');
 
   useEffect(() => {
     if (!coach?.id || !sessionId) return;
@@ -45,6 +46,36 @@ export default function SessionRecordFormPage() {
     if (!f) return [];
     return tags.system.filter((t) => t.category_name === f.cat);
   }, [tags, activeField]);
+
+  const personalForActive = useMemo(() => {
+    const f = FIELDS.find((x) => x.key === activeField);
+    if (!f) return [];
+    return (tags.personal || []).filter((t) => t.category_name === f.cat || !t.category_id);
+  }, [tags, activeField]);
+
+  async function addPersonal() {
+    const text = newPersonal.trim();
+    if (!text) return;
+    const f = FIELDS.find((x) => x.key === activeField);
+    const cat = tags.system.find((t) => t.category_name === f?.cat);
+    try {
+      const created = await learnApi.addPersonalTag({
+        category_id: cat?.category_id || null,
+        label: text.slice(0, 40),
+        text_template: text,
+      });
+      setTags((prev) => ({ ...prev, personal: [...(prev.personal || []), { ...created, category_name: f?.cat }] }));
+      setNewPersonal('');
+    } catch (e) { toast.error(e?.response?.data?.error || '新增失敗'); }
+  }
+
+  async function removePersonal(t) {
+    if (!confirm(`刪除個人標籤「${t.label}」？`)) return;
+    try {
+      await learnApi.removePersonalTag(t.id);
+      setTags((prev) => ({ ...prev, personal: prev.personal.filter((x) => x.id !== t.id) }));
+    } catch (e) { toast.error(e?.response?.data?.error || '刪除失敗'); }
+  }
 
   function setField(k, v) { setForm((f) => ({ ...f, [k]: v })); }
 
@@ -142,6 +173,27 @@ export default function SessionRecordFormPage() {
           ))}
           {tagsForActive.length === 0 && <p className="text-xs text-gray-400">此分類暫無標籤</p>}
         </div>
+
+        <div className="mt-3 border-t border-dashed border-gray-200 pt-2">
+          <p className="text-[11px] font-bold text-brand-primary">我的常用</p>
+          <div className="mt-1 flex flex-wrap gap-1.5">
+            {personalForActive.map((t) => (
+              <span key={t.id} className="inline-flex items-center gap-1 rounded-full bg-brand-gold/10 px-2.5 py-1 text-xs">
+                <button type="button" onClick={() => applyTag(t)} className="font-bold text-brand-gold">+ {t.label}</button>
+                <button type="button" onClick={() => removePersonal(t)} className="text-[10px] text-red-500" aria-label="刪除">×</button>
+              </span>
+            ))}
+            {personalForActive.length === 0 && <p className="text-[11px] text-gray-400">尚無個人標籤</p>}
+          </div>
+          <div className="mt-2 flex gap-2">
+            <input value={newPersonal} onChange={(e) => setNewPersonal(e.target.value)}
+                   placeholder="新增個人常用文案…" maxLength={120}
+                   className="flex-1 rounded border border-gray-200 px-2 py-1 text-xs" />
+            <button type="button" onClick={addPersonal} disabled={!newPersonal.trim()}
+                    className="rounded bg-brand-gold px-3 py-1 text-xs font-bold text-white disabled:opacity-50">＋</button>
+          </div>
+        </div>
+
         {form.tags?.length > 0 && (
           <p className="mt-2 text-[11px] text-gray-500">已附加：{form.tags.join('、')}</p>
         )}
