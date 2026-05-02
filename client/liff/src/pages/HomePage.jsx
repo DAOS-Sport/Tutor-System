@@ -4,6 +4,7 @@ import CourseCard from '../components/CourseCard';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { promotionsApi } from '../api/promotions';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 import { formatTWDate } from '../utils/format';
 
 const COURSE_TYPES = [
@@ -15,19 +16,24 @@ const COURSE_TYPES = [
 export default function HomePage() {
   const navigate = useNavigate();
   const { parent } = useAuth();
+  const toast = useToast();
   const [promos, setPromos] = useState(null);
-  const [err, setErr] = useState(null);
 
   useEffect(() => {
     let alive = true;
     promotionsApi
       .list()
-      .then((d) => alive && setPromos(d))
-      .catch(() => alive && setErr('優惠資訊載入失敗'));
+      .then((d) => alive && setPromos(d || []))
+      .catch(() => {
+        if (!alive) return;
+        // 優惠載入失敗不阻擋首頁，用 toast 提示且把 promos 設為空陣列讓 UI 繼續渲染
+        setPromos([]);
+        toast.error('優惠資訊載入失敗');
+      });
     return () => {
       alive = false;
     };
-  }, []);
+  }, [toast]);
 
   return (
     <div className="px-4 py-4">
@@ -60,8 +66,6 @@ export default function HomePage() {
           </section>
         )
       )}
-
-      {err && <div className="mb-4 rounded-md bg-brand-error-soft px-3 py-2 text-xs text-brand-error-strong">{err}</div>}
 
       <section>
         <h3 className="mb-3 text-sm font-bold text-brand-primary">課程組別</h3>

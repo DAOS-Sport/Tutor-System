@@ -17,17 +17,29 @@ export default function MyCoursesPage() {
   const toast = useToast();
   const [courses, setCourses] = useState(null);
   const [filter, setFilter] = useState('all');
+  const [loadError, setLoadError] = useState(null);
 
-  useEffect(() => {
+  function load() {
+    setLoadError(null);
+    setCourses(null);
     let alive = true;
     coursesApi
       .myCourses(parent.id)
-      .then((d) => alive && setCourses(d))
-      .catch(() => alive && toast.error('課程資料載入失敗'));
+      .then((d) => alive && setCourses(d || []))
+      .catch(() => {
+        if (!alive) return;
+        setLoadError('課程資料載入失敗');
+        toast.error('課程資料載入失敗');
+      });
     return () => {
       alive = false;
     };
-  }, [parent.id, toast]);
+  }
+
+  useEffect(() => {
+    return load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parent.id]);
 
   const filtered = useMemo(() => {
     if (!courses) return null;
@@ -65,7 +77,18 @@ export default function MyCoursesPage() {
         ))}
       </div>
 
-      {filtered === null ? (
+      {loadError ? (
+        <div className="rounded-2xl border-2 border-dashed border-brand-error/40 bg-white px-6 py-10 text-center">
+          <div className="mb-3 text-sm text-brand-error">{loadError}</div>
+          <button
+            type="button"
+            onClick={load}
+            className="rounded-lg bg-brand-primary px-4 py-2 text-sm font-bold text-white"
+          >
+            重新載入
+          </button>
+        </div>
+      ) : filtered === null ? (
         <LoadingSpinner label="載入課程中…" />
       ) : filtered.length === 0 ? (
         <EmptyState />

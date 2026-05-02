@@ -10,18 +10,38 @@ export default function VenueSelectPage() {
   const navigate = useNavigate();
   const toast = useToast();
   const [venues, setVenues] = useState(null);
+  const [loadError, setLoadError] = useState(null);
 
   useEffect(() => {
     let alive = true;
+    setLoadError(null);
     venuesApi
       .list()
-      .then((d) => alive && setVenues(d))
-      .catch(() => alive && toast.error('場館清單載入失敗'));
+      .then((d) => alive && setVenues(d || []))
+      .catch(() => {
+        if (!alive) return;
+        setLoadError('場館清單載入失敗');
+        toast.error('場館清單載入失敗');
+      });
     return () => {
       alive = false;
     };
   }, [toast]);
 
+  if (loadError) {
+    return (
+      <div className="px-4 py-8 text-center">
+        <div className="mb-3 text-sm text-brand-error">{loadError}</div>
+        <button
+          type="button"
+          onClick={() => navigate('/', { replace: true })}
+          className="rounded-lg bg-brand-primary px-4 py-2 text-sm font-bold text-white"
+        >
+          回首頁
+        </button>
+      </div>
+    );
+  }
   if (!venues) return <LoadingSpinner fullPage label="載入場館中…" />;
 
   return (
