@@ -28,7 +28,7 @@ export const adminEvalApi = {
 
 // ── 教練介紹送審 (F-C06) ─────────────────────
 export const adminIntrosApi = {
-  list: (status = 'pending') =>
+  list: (status = 'pending_review') =>
     callApi('/admin/learn/intros', { params: { status } }, () => []),
   approve: (coachId) =>
     callApi(`/admin/learn/intros/${coachId}/approve`, { method: 'post' }, () => ({ id: coachId, intro_review_status: 'published' })),

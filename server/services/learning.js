@@ -215,19 +215,25 @@ async function listTags(coachId) {
   let personal = { rows: [] };
   if (coachId) {
     personal = await pool.query(
-      `SELECT id, label, text_template FROM coach_personal_tags WHERE coach_id = $1 ORDER BY created_at DESC`,
+      `SELECT p.id, p.label, p.text_template, p.category_id, c.name AS category_name
+         FROM coach_personal_tags p
+         LEFT JOIN tag_categories c ON c.id = p.category_id
+        WHERE p.coach_id = $1 ORDER BY p.created_at DESC`,
       [coachId]
     );
   }
   return { system: sys.rows, personal: personal.rows };
 }
 
-async function addPersonalTag(coachId, { label, text_template }) {
+async function addPersonalTag(coachId, { label, text_template, category_id }) {
   const r = await pool.query(
-    `INSERT INTO coach_personal_tags (coach_id, label, text_template) VALUES ($1, $2, $3)
-     ON CONFLICT (coach_id, label) DO UPDATE SET text_template = EXCLUDED.text_template
-     RETURNING id, label, text_template`,
-    [coachId, String(label || '').slice(0, 40), String(text_template || '').slice(0, 1000)]
+    `INSERT INTO coach_personal_tags (coach_id, category_id, label, text_template)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (coach_id, label) DO UPDATE
+       SET text_template = EXCLUDED.text_template,
+           category_id   = EXCLUDED.category_id
+     RETURNING id, label, text_template, category_id`,
+    [coachId, category_id || null, String(label || '').slice(0, 40), String(text_template || '').slice(0, 1000)]
   );
   return r.rows[0];
 }

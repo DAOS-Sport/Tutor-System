@@ -25,11 +25,15 @@ CREATE TABLE IF NOT EXISTS tag_library (
 CREATE TABLE IF NOT EXISTS coach_personal_tags (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   coach_id UUID NOT NULL REFERENCES coaches(id) ON DELETE CASCADE,
+  category_id UUID REFERENCES tag_categories(id) ON DELETE SET NULL,
   label VARCHAR(40) NOT NULL,
   text_template TEXT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE(coach_id, label)
 );
+DO $$ BEGIN
+  ALTER TABLE coach_personal_tags ADD COLUMN IF NOT EXISTS category_id UUID REFERENCES tag_categories(id) ON DELETE SET NULL;
+EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
 -- ── 課前規劃 (F-C04) ──
 CREATE TABLE IF NOT EXISTS lesson_plans (

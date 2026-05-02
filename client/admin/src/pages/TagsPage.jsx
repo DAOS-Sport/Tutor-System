@@ -2,12 +2,15 @@ import React, { useEffect, useMemo, useState } from 'react';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
+import { useAuth } from '../context/AuthContext';
 import { adminTagsApi } from '../api/learn';
 
 const EMPTY_TAG = { category_id: '', label: '', text_template: '', is_active: true };
 
 export default function TagsPage() {
   const toast = useToast();
+  const { user } = useAuth();
+  const canDeleteCategory = user?.role === 'admin';
   const [data, setData] = useState(null);
   const [tagForm, setTagForm] = useState(EMPTY_TAG);
   const [editId, setEditId] = useState(null);
@@ -88,7 +91,9 @@ export default function TagsPage() {
             {data.categories.map((c) => (
               <li key={c.id} className="flex items-center justify-between rounded bg-gray-50 px-2 py-1.5 text-sm">
                 <span>{c.name}</span>
-                <button type="button" onClick={() => removeCategory(c)} className="text-xs text-red-500 hover:underline">刪除</button>
+                {canDeleteCategory && (
+                  <button type="button" onClick={() => removeCategory(c)} className="text-xs text-red-500 hover:underline">刪除</button>
+                )}
               </li>
             ))}
           </ul>
