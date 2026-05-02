@@ -95,7 +95,7 @@ function initCronJobs() {
            FROM course_periods cp
            JOIN coaches co ON co.id = cp.coach_id
            JOIN last_sess ls ON ls.course_period_id = cp.id
-          WHERE cp.status = 'active'
+          WHERE cp.status IN ('active','completed')
             AND EXISTS (
               SELECT 1 FROM checkin_records cr
                WHERE cr.course_session_id = ls.session_id
