@@ -17,6 +17,10 @@ import RevivePage from './pages/RevivePage';
 import ChatLogsPage from './pages/ChatLogsPage';
 import AlertsPage from './pages/AlertsPage';
 import KeywordsPage from './pages/KeywordsPage';
+import TagsPage from './pages/TagsPage';
+import CoachEvalPage from './pages/CoachEvalPage';
+import EvalThresholdPage from './pages/EvalThresholdPage';
+import CoachIntrosReviewPage from './pages/CoachIntrosReviewPage';
 
 const ALL = ['admin', 'manager', 'staff'];
 
@@ -49,6 +53,12 @@ export default function App() {
         <Route path="/chat-logs" element={<RequireAuth roles={['admin', 'manager']}><ChatLogsPage /></RequireAuth>} />
         <Route path="/alerts"    element={<RequireAuth roles={['admin', 'manager']}><AlertsPage /></RequireAuth>} />
         <Route path="/keywords"  element={<RequireAuth roles={['admin']}><KeywordsPage /></RequireAuth>} />
+
+        {/* 學習歷程 (Phase 5) */}
+        <Route path="/tags"                 element={<RequireAuth roles={['admin', 'manager']}><TagsPage /></RequireAuth>} />
+        <Route path="/coach-eval"           element={<RequireAuth roles={['admin', 'manager']}><CoachEvalPage /></RequireAuth>} />
+        <Route path="/eval-thresholds"      element={<RequireAuth roles={['admin']}><EvalThresholdPage /></RequireAuth>} />
+        <Route path="/coach-intros-review"  element={<RequireAuth roles={['admin', 'manager']}><CoachIntrosReviewPage /></RequireAuth>} />
       </Route>
 
       <Route path="*" element={<Navigate to="/dashboard" replace />} />

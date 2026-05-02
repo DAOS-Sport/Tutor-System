@@ -211,6 +211,25 @@
 | `GET /api/admin/sessions/cancelled` | `mockDb.cancelledSessions()` |
 | `POST /api/admin/sessions/:id/revive` | `mockDb.reviveSession(id)` |
 
+## Phase 5：學習歷程 + 期末評鑑 + 教練考核 (任務 #16 已完成)
+DB：新增 `tag_categories` / `tag_library` / `coach_personal_tags` / `lesson_plans` / `session_records` / `session_record_versions` / `session_record_tags` / `course_evaluations` / `eval_thresholds`；於 `coaches` 補 `intro_review_note` / `intro_submitted_at` / `intro_reviewed_at` / `intro_reviewed_by`。Bootstrap 自動 seed 4 分類 × 16 預設標籤、3 條預設考核門檻（avg_overall≥4 / avg_teaching≥4 / renew_rate≥0.6，window 3 個月）。
+
+API：
+- `/api/learn/*`（教練+家長）：`GET/PUT/POST plans/:periodId(/publish)`、`GET/PUT/POST records/by-session/:id(/submit|/copy-prev|/versions)`、`GET tags`、`POST/DELETE personal-tags/:id`、`POST uploads`、家長 `GET history/:periodId`。
+- `/api/evaluations/*`（家長）：`mine` / `:id` / `:id/submit`（4 維評分 + 文字 + 續報意願）。
+- `/api/admin/learn/*`：tag/category CRUD（F-A08）、coach-eval 報表（F-M09，月趨勢 + 評語）、threshold CRUD（F-A09）、coach intros 審核 approve/reject（F-C06）。
+- 寫入 `lesson_plans.publish` / `session_records.submit` 觸發 LINE 通知（`coursePlanPublished` / `sessionRecordPublished`）。
+
+Cron：每日 10:00 期末邀請 + 7 天提醒兩個 job 已實作（`evaluationInvite` Flex 推播 + `course_evaluations.reminder_sent_at`）。
+
+LIFF：教練 `/coach/plan/:periodId`（LessonPlanFormPage：5 區塊草稿/發佈）、`/coach/record/:sessionId`（SessionRecordFormPage：點標籤帶入文案、媒體上傳、複製前一堂、submit 版本化）；家長 `/history/:periodId`（時間軸 + 列印）、`/evaluation/:id`（4 維 ★ + 續報意願）；CoachSessionPage 增加「填課前規劃 / 填授課記錄」CTA、MyCoursesPage 點卡片進入學習歷程。
+
+Admin：Sidebar 新增「學習歷程」群組 → `/tags`（F-A08，分類 + 標籤 CRUD）、`/coach-eval`（F-M09，總覽 + 詳細報表）、`/eval-thresholds`（F-A09，可調整最低值與觀察月數）、`/coach-intros-review`（F-C06，待審 / 已退回 / 已上架 tab）。
+
+Mock：`liff` mockDb 新增 `lessonPlan/saveLessonPlan/publishLessonPlan/sessionRecord/saveSessionRecord/submitSessionRecord/copyPrevRecord/learnTags/learningHistory/myEvaluations/evaluationDetail/submitEvaluation`，斷網／無資料時仍可走完 happy path。
+
+Builds：admin 304KB / liff 480KB（gzip 96 / 148）。所有 UI 頁面 ≤ 250 行（最大 SessionRecordFormPage 178）。煙霧：admin login → /admin/learn/{tags=4 cats|coach-eval=4|intros=4|thresholds=3} 全 200。
+
 ## 變更紀錄
 - 2026-05-02：完成 LIFF Phase 1（任務 #7）。實作 7 個正式頁面 + 2 個 placeholder、6 個全域元件、雙 Context（Auth/Toast）、7 個 API 模組與 mock dataset、共用 utils；新增 `react-hook-form` 依賴、`postcss.config.js`；修正 `main.jsx` 加上無 LIFF_ID 的 dev fallback。`vite build` 通過（158 modules，401KB / 127KB gzip）。後端 19 個 stub 路由不變，LIFF 全程走 mock 模式以驗證 happy path；後續可由 `VITE_USE_MOCK=false` 切到真實 API，並透過 501 自動 fallback 機制漸進實作後端。
 - 2026-05-02：完成 SurveyJS Creator 評估報告，結論為「**不建議整合**」（授權費 USD $589/dev/年、套件巨大、與 Ragic 雙向同步設計衝突）。完整分析詳見 `docs/eval/surveyjs-creator.md`，含替代方案比較與分階段建議。

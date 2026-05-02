@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { coursesApi } from '../api/courses';
 import CourseCard from '../components/CourseCard';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -13,6 +14,7 @@ const FILTERS = [
 ];
 
 export default function MyCoursesPage() {
+  const navigate = useNavigate();
   const { parent } = useAuth();
   const toast = useToast();
   const [courses, setCourses] = useState(null);
@@ -95,7 +97,7 @@ export default function MyCoursesPage() {
       ) : (
         <div className="space-y-3">
           {filtered.map((cp) => (
-            <CourseCard key={cp.id} variant="period" period={cp} onClick={() => {}} />
+            <CourseCard key={cp.id} variant="period" period={cp} onClick={() => navigate(`/history/${cp.id}`)} />
           ))}
         </div>
       )}

@@ -21,6 +21,10 @@ import CoachScheduleWeekPage from './pages/CoachScheduleWeekPage';
 import CoachProfilePage from './pages/CoachProfilePage';
 import CoachSessionPage from './pages/CoachSessionPage';
 import CoachStudentsPage from './pages/CoachStudentsPage';
+import LessonPlanFormPage from './pages/LessonPlanFormPage';
+import SessionRecordFormPage from './pages/SessionRecordFormPage';
+import LearningHistoryPage from './pages/LearningHistoryPage';
+import EvaluationFormPage from './pages/EvaluationFormPage';
 
 function RequireAuth() {
   const { isAuthed } = useAuth();
@@ -75,6 +79,9 @@ export default function App() {
               <Route element={<AppLayout title="報名完成" />}>
                 <Route path="/enroll-success" element={<EnrollmentSuccessPage />} />
               </Route>
+              {/* 學習歷程 / 期末評鑑 (Phase 5) */}
+              <Route path="/history/:periodId" element={<LearningHistoryPage />} />
+              <Route path="/evaluation/:id" element={<EvaluationFormPage />} />
             </Route>
 
             {/* ── 教練分頁 ── */}
@@ -89,6 +96,9 @@ export default function App() {
               <Route element={<AppLayout showBackButton title="授課入口" />}>
                 <Route path="/coach/session/:id" element={<CoachSessionPage />} />
               </Route>
+              {/* 課前規劃 / 授課記錄 (Phase 5) */}
+              <Route path="/coach/plan/:periodId" element={<LessonPlanFormPage />} />
+              <Route path="/coach/record/:sessionId" element={<SessionRecordFormPage />} />
               <Route path="/coach/chat/:roomId" element={<ChatRoomPage />} />
             </Route>
           </Route>

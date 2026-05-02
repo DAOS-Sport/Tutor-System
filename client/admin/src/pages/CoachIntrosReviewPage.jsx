@@ -1,0 +1,107 @@
+import React, { useEffect, useState } from 'react';
+import PageHeader from '../components/PageHeader';
+import LoadingSpinner from '../components/LoadingSpinner';
+import StatusBadge from '../components/StatusBadge';
+import { useToast } from '../context/ToastContext';
+import { adminIntrosApi } from '../api/learn';
+
+const STATUS_TONE = {
+  draft: 'gold', pending_review: 'orange', published: 'green', rejected: 'orange',
+};
+const STATUS_LABEL = {
+  draft: '草稿', pending_review: '待審', published: '已上架', rejected: '退回',
+};
+
+export default function CoachIntrosReviewPage() {
+  const { toast } = useToast();
+  const [filter, setFilter] = useState('pending_review');
+  const [list, setList] = useState(null);
+  const [busyId, setBusyId] = useState(null);
+
+  function reload() {
+    setList(null);
+    adminIntrosApi.list(filter)
+      .then((r) => setList(Array.isArray(r) ? r : []))
+      .catch((e) => { setList([]); toast(e?.response?.data?.error || e.message, 'error'); });
+  }
+  useEffect(reload, [filter]); // eslint-disable-line
+
+  async function approve(c) {
+    setBusyId(c.id);
+    try { await adminIntrosApi.approve(c.id); toast(`已上架：${c.name}`, 'success'); reload(); }
+    catch (e) { toast(e?.response?.data?.error || '上架失敗', 'error'); }
+    finally { setBusyId(null); }
+  }
+
+  async function reject(c) {
+    const note = prompt(`退回「${c.name}」的原因：`);
+    if (!note || !note.trim()) return;
+    setBusyId(c.id);
+    try { await adminIntrosApi.reject(c.id, note.trim()); toast('已退回', 'success'); reload(); }
+    catch (e) { toast(e?.response?.data?.error || '退回失敗', 'error'); }
+    finally { setBusyId(null); }
+  }
+
+  return (
+    <div className="p-6">
+      <PageHeader title="教練特色專區審核" subtitle="F-C06 / 教練編輯送審 → 主管核可後上架" />
+
+      <div className="mt-3 mb-4 inline-flex gap-2 rounded-full border border-gray-200 bg-white p-1 text-xs">
+        {[['pending_review', '待審'], ['rejected', '已退回'], ['published', '已上架'], ['all', '全部']].map(([v, l]) => (
+          <button key={v} onClick={() => setFilter(v)}
+            className={`rounded-full px-3 py-1 ${filter === v ? 'bg-brand-primary text-white' : 'text-gray-600'}`}>
+            {l}
+          </button>
+        ))}
+      </div>
+
+      {!list && <LoadingSpinner />}
+      {list && list.length === 0 && <p className="text-sm text-gray-500">目前沒有符合條件的教練。</p>}
+
+      <ul className="space-y-3">
+        {list?.map((c) => (
+          <li key={c.id} className="rounded-2xl border border-gray-200 bg-white p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-base font-bold text-brand-primary">{c.name}</h3>
+                <p className="mt-0.5 text-xs text-gray-500">{c.phone}</p>
+              </div>
+              <StatusBadge tone={STATUS_TONE[c.intro_review_status] || 'teal'} label={STATUS_LABEL[c.intro_review_status] || c.intro_review_status} />
+            </div>
+
+            <div className="mt-2 max-h-40 overflow-y-auto rounded bg-gray-50 p-3 text-sm text-gray-800 whitespace-pre-wrap">
+              {c.bio_rich_text || <span className="text-gray-400">（教練尚未填寫介紹）</span>}
+            </div>
+
+            {Array.isArray(c.media) && c.media.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {c.media.map((m, i) => (
+                  <a key={i} href={m.url} target="_blank" rel="noreferrer"
+                     className="rounded border border-gray-200 px-2 py-1 text-[10px] text-gray-600 hover:bg-gray-50">
+                    [{m.type}] {m.alt || m.url.slice(-20)}
+                  </a>
+                ))}
+              </div>
+            )}
+
+            {c.intro_review_note && (
+              <p className="mt-2 rounded bg-orange-50 p-2 text-xs text-orange-700">退回原因：{c.intro_review_note}</p>
+            )}
+
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[11px] text-gray-500">
+              <span>送審於：{c.intro_submitted_at ? new Date(c.intro_submitted_at).toLocaleString() : '—'} · 審核於：{c.intro_reviewed_at ? new Date(c.intro_reviewed_at).toLocaleString() : '—'}</span>
+              {c.intro_review_status === 'pending_review' && (
+                <div className="flex gap-2">
+                  <button disabled={busyId === c.id} onClick={() => reject(c)}
+                    className="rounded border border-orange-400 px-3 py-1 text-xs font-bold text-orange-600 disabled:opacity-50">退回</button>
+                  <button disabled={busyId === c.id} onClick={() => approve(c)}
+                    className="rounded bg-brand-green px-3 py-1 text-xs font-bold text-white disabled:opacity-50">上架</button>
+                </div>
+              )}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}

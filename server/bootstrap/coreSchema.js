@@ -218,6 +218,136 @@ CREATE TABLE IF NOT EXISTS keyword_alerts (
 );
 CREATE INDEX IF NOT EXISTS idx_alerts_status ON keyword_alerts(status);
 CREATE INDEX IF NOT EXISTS idx_alerts_room ON keyword_alerts(chat_room_id);
+
+-- ─── Phase 5: 學習歷程 + 期末評鑑 + 標籤庫 + 教練介紹送審 ────────────────
+-- 標籤庫（F-A08）：分類 + 系統預設 + 教練個人標籤
+CREATE TABLE IF NOT EXISTS tag_categories (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name VARCHAR(40) NOT NULL UNIQUE,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS tag_library (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  category_id UUID NOT NULL REFERENCES tag_categories(id) ON DELETE CASCADE,
+  label VARCHAR(40) NOT NULL,
+  text_template TEXT NOT NULL,             -- 點擊後自動帶入授課記錄文案
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(category_id, label)
+);
+
+CREATE TABLE IF NOT EXISTS coach_personal_tags (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  coach_id UUID NOT NULL REFERENCES coaches(id) ON DELETE CASCADE,
+  label VARCHAR(40) NOT NULL,
+  text_template TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(coach_id, label)
+);
+
+-- 課前規劃（F-C04）：每個 course_period 一份，draft → published
+CREATE TABLE IF NOT EXISTS lesson_plans (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  course_period_id UUID NOT NULL REFERENCES course_periods(id) ON DELETE CASCADE,
+  coach_id UUID NOT NULL REFERENCES coaches(id) ON DELETE RESTRICT,
+  goals TEXT NOT NULL DEFAULT '',
+  expected_outcomes TEXT NOT NULL DEFAULT '',
+  learning_plan TEXT NOT NULL DEFAULT '',
+  initial_assessment TEXT NOT NULL DEFAULT '',
+  notes TEXT NOT NULL DEFAULT '',
+  status VARCHAR(10) NOT NULL DEFAULT 'draft',  -- draft | published
+  published_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(course_period_id)
+);
+
+-- 授課記錄（F-C05）：每堂課一筆，draft → submitted；submitted 之後改寫入 versions
+CREATE TABLE IF NOT EXISTS session_records (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  course_session_id UUID NOT NULL REFERENCES course_sessions(id) ON DELETE CASCADE,
+  course_period_id UUID NOT NULL REFERENCES course_periods(id) ON DELETE CASCADE,
+  coach_id UUID NOT NULL REFERENCES coaches(id) ON DELETE RESTRICT,
+  summary TEXT NOT NULL DEFAULT '',         -- 上課摘要
+  highlights TEXT NOT NULL DEFAULT '',      -- 表現亮點
+  improvements TEXT NOT NULL DEFAULT '',    -- 待加強
+  homework TEXT NOT NULL DEFAULT '',        -- 回家練習
+  status VARCHAR(10) NOT NULL DEFAULT 'draft', -- draft | submitted
+  media JSONB NOT NULL DEFAULT '[]'::jsonb, -- [{ url, mime, name, size }]
+  submitted_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(course_session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_records_period ON session_records(course_period_id);
+
+CREATE TABLE IF NOT EXISTS session_record_versions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  session_record_id UUID NOT NULL REFERENCES session_records(id) ON DELETE CASCADE,
+  version_no INTEGER NOT NULL,
+  snapshot JSONB NOT NULL,                  -- 完整欄位快照
+  edited_by UUID NOT NULL REFERENCES coaches(id) ON DELETE RESTRICT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(session_record_id, version_no)
+);
+
+CREATE TABLE IF NOT EXISTS session_record_tags (
+  session_record_id UUID NOT NULL REFERENCES session_records(id) ON DELETE CASCADE,
+  tag_library_id UUID REFERENCES tag_library(id) ON DELETE SET NULL,
+  personal_tag_id UUID REFERENCES coach_personal_tags(id) ON DELETE SET NULL,
+  label VARCHAR(40) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (session_record_id, label)
+);
+
+-- 期末評鑑（F-S12 / F-M09）：每個 course_period 一筆 invitation → submission
+CREATE TABLE IF NOT EXISTS course_evaluations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  course_period_id UUID NOT NULL REFERENCES course_periods(id) ON DELETE CASCADE,
+  parent_id UUID NOT NULL REFERENCES parents(id) ON DELETE CASCADE,
+  coach_id UUID NOT NULL REFERENCES coaches(id) ON DELETE RESTRICT,
+  invited_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  reminder_sent_at TIMESTAMPTZ,
+  submitted_at TIMESTAMPTZ,
+  -- 4 維度星星（1-5）；NULL 表示尚未填寫
+  score_teaching INTEGER,
+  score_attitude INTEGER,
+  score_progress INTEGER,
+  score_overall INTEGER,
+  comment TEXT NOT NULL DEFAULT '',
+  renew_intent VARCHAR(10) NOT NULL DEFAULT 'unknown', -- yes | no | unknown
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(course_period_id, parent_id)
+);
+CREATE INDEX IF NOT EXISTS idx_eval_coach ON course_evaluations(coach_id);
+CREATE INDEX IF NOT EXISTS idx_eval_submitted ON course_evaluations(submitted_at);
+
+-- 考核門檻（F-A09）：admin 設定後系統據此判斷教練是否達標
+CREATE TABLE IF NOT EXISTS eval_thresholds (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  metric VARCHAR(40) NOT NULL UNIQUE,    -- avg_overall / avg_teaching / renew_rate
+  min_value NUMERIC(5,2) NOT NULL,
+  window_months INTEGER NOT NULL DEFAULT 3,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 教練介紹送審（F-C06）：教練端編輯 → 主管審核
+DO $$ BEGIN
+  ALTER TABLE coaches ADD COLUMN IF NOT EXISTS intro_review_note TEXT;
+EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE coaches ADD COLUMN IF NOT EXISTS intro_submitted_at TIMESTAMPTZ;
+EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE coaches ADD COLUMN IF NOT EXISTS intro_reviewed_at TIMESTAMPTZ;
+EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE coaches ADD COLUMN IF NOT EXISTS intro_reviewed_by TEXT REFERENCES admin_users(id) ON DELETE SET NULL;
+EXCEPTION WHEN undefined_table THEN NULL; END $$;
 `;
 
 // 預設關鍵字清單（F-A07，可在後台增減 / 停用）
@@ -386,6 +516,69 @@ async function seedSlotsAndSessions() {
   console.log('[core bootstrap] seeded coaches + venues + parents + 8 demo slots for C001');
 }
 
+// Phase 5 — 預設標籤庫（F-A08；4 大類 × 4 標籤）
+const DEFAULT_TAG_CATEGORIES = [
+  { name: '表現亮點',
+    tags: [
+      { label: '專注度高', text: '本堂上課專注度高，能全程跟上節奏。' },
+      { label: '進步明顯', text: '相較上堂課，技術動作有明顯進步。' },
+      { label: '主動發問', text: '能主動發問並嘗試各種變化。' },
+      { label: '團隊默契佳', text: '與同組學員配合度佳，團隊默契良好。' },
+    ]},
+  { name: '需加強',
+    tags: [
+      { label: '握拍偏緊', text: '握拍仍偏緊，下一堂建議放鬆手腕並重複正手揮拍練習。' },
+      { label: '步伐慢半拍', text: '步伐稍慢半拍，建議加強左右側併步移動。' },
+      { label: '專注度待提升', text: '中段有些分心，下堂課將安排短回合互動以維持專注。' },
+      { label: '回擊節奏不穩', text: '回擊節奏尚不穩定，將以多球練習穩定動作。' },
+    ]},
+  { name: '回家練習',
+    tags: [
+      { label: '揮拍 30 下', text: '回家練習正手揮拍 30 下 × 2 組。' },
+      { label: '對牆球', text: '可在家對牆練習控球 5 分鐘。' },
+      { label: '核心訓練', text: '加強核心：平板支撐 30 秒 × 3 組。' },
+      { label: '柔軟度', text: '記得拉筋與肩膀柔軟度練習，預防運動傷害。' },
+    ]},
+  { name: '上課摘要',
+    tags: [
+      { label: '基本動作', text: '本堂以基本動作（握拍 / 站姿 / 揮拍軌跡）為主。' },
+      { label: '正反手對抽', text: '本堂進行正反手對抽訓練，含定點與移位變化。' },
+      { label: '發球練習', text: '本堂安排發球練習，含上手 / 下手與站位調整。' },
+      { label: '對打模擬', text: '後段進行對打模擬，鍛鍊比賽情境應變能力。' },
+    ]},
+];
+
+const DEFAULT_THRESHOLDS = [
+  { metric: 'avg_overall',  min_value: 4.00, window_months: 3 },
+  { metric: 'avg_teaching', min_value: 4.00, window_months: 3 },
+  { metric: 'renew_rate',   min_value: 0.60, window_months: 6 },
+];
+
+async function seedTagsAndThresholds() {
+  for (const cat of DEFAULT_TAG_CATEGORIES) {
+    await pool.query(
+      `INSERT INTO tag_categories (name) VALUES ($1) ON CONFLICT (name) DO NOTHING`,
+      [cat.name]
+    );
+    const c = await pool.query(`SELECT id FROM tag_categories WHERE name = $1`, [cat.name]);
+    if (c.rows.length === 0) continue;
+    for (const t of cat.tags) {
+      await pool.query(
+        `INSERT INTO tag_library (category_id, label, text_template)
+         VALUES ($1, $2, $3) ON CONFLICT (category_id, label) DO NOTHING`,
+        [c.rows[0].id, t.label, t.text]
+      );
+    }
+  }
+  for (const th of DEFAULT_THRESHOLDS) {
+    await pool.query(
+      `INSERT INTO eval_thresholds (metric, min_value, window_months, is_active)
+       VALUES ($1, $2, $3, TRUE) ON CONFLICT (metric) DO NOTHING`,
+      [th.metric, th.min_value, th.window_months]
+    );
+  }
+}
+
 async function seedKeywords() {
   for (const k of DEFAULT_KEYWORDS) {
     await pool.query(
@@ -413,6 +606,7 @@ async function bootstrap() {
     await seedVenuesCoachesParents();
     await seedSlotsAndSessions();
     await seedKeywords();
+    await seedTagsAndThresholds();
     await ensureChatRoomsForActivePeriods();
     console.log('[core bootstrap] ready');
   } catch (err) {

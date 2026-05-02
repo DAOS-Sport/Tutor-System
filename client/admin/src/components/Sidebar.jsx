@@ -43,6 +43,15 @@ const NAV_GROUPS = [
       { to: '/keywords',  label: '關鍵字管理 (F-A07)', roles: ['admin'] },
     ],
   },
+  {
+    title: '學習歷程',
+    items: [
+      { to: '/tags',            label: '標籤庫 (F-A08)',       roles: ['admin', 'manager'] },
+      { to: '/coach-eval',      label: '教練考核 (F-M09)',     roles: ['admin', 'manager'] },
+      { to: '/eval-thresholds', label: '考核門檻 (F-A09)',     roles: ['admin'] },
+      { to: '/coach-intros-review', label: '教練介紹送審 (F-C06)', roles: ['admin', 'manager'] },
+    ],
+  },
 ];
 
 function canSee(item, role) {
@@ -90,7 +99,7 @@ export default function Sidebar() {
         })}
       </nav>
       <div className="border-t border-white/10 px-4 py-3 text-[11px] text-white/50">
-        v1.0 Phase 3 · mock 模式
+        v1.0 Phase 5
       </div>
     </aside>
   );

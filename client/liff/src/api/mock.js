@@ -409,3 +409,48 @@ const CHAT_MESSAGES = {
   ],
   CR002: [],
 };
+
+// ── Phase 5 mock：學習歷程／評鑑（最小可用） ─────────────────────
+const _learnPlans = {};      // periodId -> plan
+const _learnRecords = {};    // sessionId -> record
+let _evalSeq = 0;
+const _evals = [
+  { id: 'EV001', course_period_id: 'CP0003', coach_id: 'C003', coach_name: '張嘉豪',
+    invited_at: new Date(Date.now() - 5 * 86400000).toISOString(), submitted_at: null },
+];
+const _learnTags = {
+  system: [
+    { id: 'T1', category_id: 'CAT1', category_name: '上課摘要', label: '握拍練習', text_template: '本堂專注於正手握拍與基礎揮拍動作。' },
+    { id: 'T2', category_id: 'CAT2', category_name: '表現亮點', label: '專注力佳', text_template: '今日學員專注力極佳，全程投入。' },
+    { id: 'T3', category_id: 'CAT3', category_name: '需加強', label: '腳步移動', text_template: '腳步啟動稍慢，建議在家做側併步練習。' },
+    { id: 'T4', category_id: 'CAT4', category_name: '回家練習', label: '揮拍 30 下', text_template: '每日空揮 30 下，建立肌肉記憶。' },
+  ],
+  personal: [],
+};
+
+Object.assign(mockDb, {
+  lessonPlan: (periodId) => _learnPlans[periodId] || null,
+  saveLessonPlan: (periodId, data) => { _learnPlans[periodId] = { ...(_learnPlans[periodId] || {}), ...data, course_period_id: periodId, status: 'draft' }; return _learnPlans[periodId]; },
+  publishLessonPlan: (periodId) => { _learnPlans[periodId] = { ...(_learnPlans[periodId] || {}), status: 'published', published_at: new Date().toISOString() }; return _learnPlans[periodId]; },
+
+  sessionRecord: (sessionId) => _learnRecords[sessionId] || null,
+  saveSessionRecord: (sessionId, data) => { _learnRecords[sessionId] = { ...(_learnRecords[sessionId] || {}), ...data, session_id: sessionId, status: data.status || 'draft' }; return _learnRecords[sessionId]; },
+  submitSessionRecord: (sessionId) => { _learnRecords[sessionId] = { ...(_learnRecords[sessionId] || {}), status: 'submitted', submitted_at: new Date().toISOString() }; return _learnRecords[sessionId]; },
+  copyPrevRecord: () => null,
+  learnTags: () => JSON.parse(JSON.stringify(_learnTags)),
+
+  learningHistory: (periodId) => ({
+    plan: _learnPlans[periodId] && _learnPlans[periodId].status === 'published' ? _learnPlans[periodId] : null,
+    records: Object.values(_learnRecords).filter((r) => r.status === 'submitted')
+      .map((r, i) => ({ ...r, scheduled_at: new Date(Date.now() - (5 - i) * 86400000).toISOString() })),
+  }),
+
+  myEvaluations: () => _evals.map((e) => ({ ...e })),
+  evaluationDetail: (id) => _evals.find((e) => e.id === id) || null,
+  submitEvaluation: (id, data) => {
+    const e = _evals.find((x) => x.id === id);
+    if (!e) return null;
+    Object.assign(e, data, { submitted_at: new Date().toISOString() });
+    return { ...e };
+  },
+});

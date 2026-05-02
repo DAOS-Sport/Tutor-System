@@ -6,6 +6,9 @@ const cron = require('node-cron');
 const { pool } = require('../models/db');
 const line = require('../services/line');
 const chatRooms = require('../services/chatRooms');
+const evaluations = require('../services/evaluations');
+
+const LIFF_URL = process.env.LIFF_URL || 'https://liff.line.me/-';
 
 function initCronJobs() {
   // ── 每 5 分鐘：補 active period 的 chat_room（防漂移；spec F-S09）──
@@ -75,35 +78,52 @@ function initCronJobs() {
     }
   });
 
-  // ── 每天 10:00：期末評鑑邀請 ─────────────
+  // ── 每天 10:00：期末評鑑邀請 + 7 天提醒 ────────
   cron.schedule('0 10 * * *', async () => {
-    // 找今天完成最後一堂課的課程期
-    const res = await pool.query(
-      `SELECT cp.id, cp.venue_id
-       FROM course_periods cp
-       WHERE cp.status = 'active'
-         AND cp.used_sessions >= cp.total_sessions
-         AND NOT EXISTS (
-           SELECT 1 FROM course_evaluations ce WHERE ce.course_period_id = cp.id
-         )`
-    );
-    for (const row of res.rows) {
-      // TODO: 建立 evaluation 記錄並發送邀請 Flex Message
-    }
-  });
+    try {
+      // (a) 課程期已修完且尚未建立 invitation → 為每位家長建立 1 筆並推播
+      const due = await pool.query(
+        `SELECT cp.id, cp.venue_id, co.name AS coach_name
+           FROM course_periods cp JOIN coaches co ON co.id = cp.coach_id
+          WHERE cp.status = 'active'
+            AND cp.used_sessions >= cp.total_sessions
+            AND NOT EXISTS (SELECT 1 FROM course_evaluations ce WHERE ce.course_period_id = cp.id)`
+      );
+      for (const row of due.rows) {
+        const created = await evaluations.ensureInvitation(row.id);
+        for (const inv of created) {
+          const parent = await pool.query(`SELECT line_uid FROM parents WHERE id = $1`, [inv.parent_id]);
+          const uid = parent.rows[0]?.line_uid;
+          if (!uid) continue;
+          const msg = line.templates.evaluationInvite({
+            coachName: row.coach_name,
+            liffUrl: `${LIFF_URL}#/eval/${inv.id}`,
+          });
+          try { await line.pushMessage(uid, msg, row.venue_id); }
+          catch (e) { console.warn('[Cron/eval] push invite failed:', e.message); }
+        }
+      }
 
-  // ── 每天 10:00：期末評鑑 7 天提醒（同任務繼續）
-  cron.schedule('0 10 * * *', async () => {
-    const res = await pool.query(
-      `SELECT ce.id, ce.parent_id, cp.venue_id
-       FROM course_evaluations ce
-       JOIN course_periods cp ON ce.course_period_id = cp.id
-       WHERE ce.submitted_at IS NULL
-         AND ce.reminder_sent_at IS NULL
-         AND ce.invited_at < NOW() - INTERVAL '7 days'`
-    );
-    for (const row of res.rows) {
-      // TODO: 發送提醒 Flex Message 並更新 reminder_sent_at
+      // (b) 邀請超過 7 天未填且未提醒 → 推一次提醒並標記
+      const remind = await evaluations.listInvitesForReminder();
+      for (const r of remind) {
+        const parent = await pool.query(`SELECT line_uid FROM parents WHERE id = $1`, [r.parent_id]);
+        const coach = await pool.query(`SELECT name FROM coaches WHERE id = $1`, [r.coach_id]);
+        const uid = parent.rows[0]?.line_uid;
+        if (!uid) { await evaluations.markReminderSent(r.id); continue; }
+        const msg = line.templates.evaluationInvite({
+          coachName: coach.rows[0]?.name || '',
+          liffUrl: `${LIFF_URL}#/eval/${r.id}`,
+        });
+        try {
+          await line.pushMessage(uid, msg, r.venue_id);
+          await evaluations.markReminderSent(r.id);
+        } catch (e) {
+          console.warn('[Cron/eval] push reminder failed:', e.message);
+        }
+      }
+    } catch (e) {
+      console.warn('[Cron/eval] failed:', e.message);
     }
   });
 

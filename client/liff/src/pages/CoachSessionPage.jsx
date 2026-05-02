@@ -70,15 +70,24 @@ export default function CoachSessionPage() {
       <section className="mt-5 space-y-2">
         <button
           type="button"
-          onClick={() => toast.info('簽到流程將於 Phase 5 開放')}
+          onClick={() => toast.info('簽到流程將於後續開放')}
           className="w-full rounded-xl bg-brand-teal py-3 text-sm font-bold text-white active:opacity-90"
         >
           學員簽到
         </button>
+        {session.course_period_id && (
+          <button
+            type="button"
+            onClick={() => navigate(`/coach/plan/${session.course_period_id}`)}
+            className="w-full rounded-xl border border-brand-primary/30 bg-white py-3 text-sm font-bold text-brand-primary active:bg-brand-primary/5"
+          >
+            填寫課前規劃
+          </button>
+        )}
         <button
           type="button"
-          onClick={() => toast.info('授課記錄表單將於 Phase 5 開放')}
-          className="w-full rounded-xl border border-brand-primary/30 bg-white py-3 text-sm font-bold text-brand-primary active:bg-brand-primary/5"
+          onClick={() => navigate(`/coach/record/${id}`)}
+          className="w-full rounded-xl bg-brand-primary py-3 text-sm font-bold text-white active:opacity-90"
         >
           填寫授課記錄
         </button>
