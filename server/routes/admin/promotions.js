@@ -216,6 +216,6 @@ router.post('/:id/reject',  (req, res) => {
   if (!note) return res.status(400).json({ error: '退回時必須填寫退回原因' });
   return transition(req, res, ['pending_review'], 'rejected', 'reject', ['admin']).catch((e) => { console.error(e); res.status(500).json({ error: 'reject failed' }); });
 });
-router.post('/:id/archive', (req, res) => transition(req, res, ['draft', 'pending_review', 'active', 'rejected'], 'archived', 'archive', ['admin', 'manager']).catch((e) => { console.error(e); res.status(500).json({ error: 'archive failed' }); }));
+router.post('/:id/archive', (req, res) => transition(req, res, ['draft', 'pending_review', 'active', 'rejected'], 'archived', 'archive', ['admin']).catch((e) => { console.error(e); res.status(500).json({ error: 'archive failed' }); }));
 
 module.exports = router;
