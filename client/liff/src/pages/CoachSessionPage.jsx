@@ -26,7 +26,7 @@ export default function CoachSessionPage() {
   useEffect(() => {
     if (!coach?.id || !id) return;
     let alive = true;
-    sessionsApi.get(id)
+    sessionsApi.detail(id)
       .then((d) => alive && setSession(d))
       .catch((err) => {
         if (!alive) return;
