@@ -71,20 +71,28 @@ router.get('/rooms/:id/messages', requireLiffUser, authzRoom, async (req, res) =
         LIMIT $${args.length}`,
       args
     );
-    // 已讀狀態：對 viewer 而言（自己發的不算未讀）
+    // 已讀狀態：
+    //   read_by_me   = viewer 已讀此訊息（控制收訊端未讀指示）
+    //   read_by_peer = 對手方已讀此訊息（控制 viewer 自己發出去的「已讀」）
     const ids = r.rows.map((m) => m.id);
-    let readSet = new Set();
+    const myReads = new Set();
+    const peerReads = new Set();
     if (ids.length) {
       const rd = await pool.query(
-        `SELECT message_id FROM message_reads
-          WHERE message_id = ANY($1) AND reader_type = $2 AND reader_id = $3`,
-        [ids, req.liffUser.type, req.liffUser.id]
+        `SELECT message_id, reader_type, reader_id FROM message_reads
+          WHERE message_id = ANY($1)`,
+        [ids]
       );
-      readSet = new Set(rd.rows.map((x) => x.message_id));
+      const myType = req.liffUser.type, myId = req.liffUser.id;
+      for (const x of rd.rows) {
+        if (x.reader_type === myType && x.reader_id === myId) myReads.add(x.message_id);
+        else peerReads.add(x.message_id);
+      }
     }
     res.json(r.rows.reverse().map((m) => ({
       ...m,
-      read_by_me: readSet.has(m.id) || (m.sender_type === req.liffUser.type && m.sender_id === req.liffUser.id),
+      read_by_me: myReads.has(m.id),
+      read_by_peer: peerReads.has(m.id),
     })));
   } catch (err) {
     console.error('[chat messages]', err);

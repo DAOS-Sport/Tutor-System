@@ -57,7 +57,13 @@ export default function ChatRoomPage() {
     const sub = subscribeRoom(roomId, {
       onMessage: (m) => setMessages((prev) => prev.find((x) => x.id === m.id) ? prev : [...prev, m]),
       onRead: (data) => {
-        setMessages((prev) => prev.map((m) => data.message_ids.includes(m.id) ? { ...m, read_by_me: true } : m));
+        // WS read 廣播是「對手方標已讀」事件 — 對 viewer 而言應更新 read_by_peer
+        // （供自己發出去的訊息顯示「已讀」），而非更新 read_by_me。
+        const isSelfEcho = data.reader_type === myType && data.reader_id === myId;
+        setMessages((prev) => prev.map((m) => {
+          if (!data.message_ids.includes(m.id)) return m;
+          return isSelfEcho ? { ...m, read_by_me: true } : { ...m, read_by_peer: true };
+        }));
       },
     });
     wsRef.current = sub;
@@ -142,7 +148,7 @@ export default function ChatRoomPage() {
                   : <MediaBubble m={m} />}
                 <div className={`mt-1 flex items-center gap-1 text-[10px] ${mine ? 'text-white/70 justify-end' : 'text-gray-400'}`}>
                   <span>{fmtTime(m.created_at)}</span>
-                  {mine && m.read_by_me && <span>· 已讀</span>}
+                  {mine && m.read_by_peer && <span>· 已讀</span>}
                 </div>
               </div>
             </div>
