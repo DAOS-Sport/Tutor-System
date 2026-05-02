@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { coachesApi } from '../api/coaches';
 import { coursesApi } from '../api/courses';
 import { venuesApi } from '../api/venues';
-import { promotionsApi } from '../api/promotions';
 
 export default function useEnrollmentBoot({ coachId, venueId, courseType, onError }) {
   const [bootData, setBootData] = useState(null);
@@ -15,11 +14,10 @@ export default function useEnrollmentBoot({ coachId, venueId, courseType, onErro
       coachesApi.detail(coachId),
       venuesApi.detail(venueId),
       coursesApi.basePrice(courseType),
-      promotionsApi.list(),
     ])
-      .then(([coach, venue, bp, promos]) => {
+      .then(([coach, venue, bp]) => {
         if (!alive) return;
-        setBootData({ coach, venue, basePrice: bp.original_price, promos });
+        setBootData({ coach, venue, basePrice: bp.original_price });
       })
       .catch(() => {
         if (!alive) return;

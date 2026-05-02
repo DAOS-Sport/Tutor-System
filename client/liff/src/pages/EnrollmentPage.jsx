@@ -36,6 +36,8 @@ export default function EnrollmentPage() {
   const [last5, setLast5] = useState('');
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [couponInput, setCouponInput] = useState('');
+  const [activeCoupon, setActiveCoupon] = useState('');
 
   const onBootError = useCallback((m) => toast.error(m), [toast]);
   const { bootData, bootError } = useEnrollmentBoot({
@@ -50,7 +52,11 @@ export default function EnrollmentPage() {
     setPartnerPhone('');
   }, [courseType]);
 
-  const pricing = useEnrollmentPricing(bootData);
+  const pricing = useEnrollmentPricing(bootData, {
+    courseType,
+    venueId,
+    couponCode: activeCoupon || undefined,
+  });
 
   if (bootError) return <ErrorBlock message={bootError} onBack={() => navigate('/', { replace: true })} />;
   if (!bootData || !pricing) return <LoadingSpinner fullPage label="載入課程資訊…" />;
@@ -157,6 +163,9 @@ export default function EnrollmentPage() {
         original_price: pricing.afterMultiplier,
         final_price: pricing.final,
         transfer_last_5: last5,
+        promotion: pricing.promo
+          ? { id: pricing.promo.id, discount: pricing.discount, coupon_code: pricing.promo.coupon_code || null }
+          : null,
       });
       setConfirmOpen(false);
       navigate('/enroll-success', { state: { period }, replace: true });
@@ -204,6 +213,33 @@ export default function EnrollmentPage() {
       )}
 
       <PriceBreakdown pricing={pricing} multiplier={coach.multiplier} />
+
+      <div className="mt-2 rounded-xl border border-gray-200 bg-white p-3">
+        <label className="mb-1 block text-xs font-medium text-gray-600">折價券代碼（選填）</label>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={couponInput}
+            onChange={(e) => setCouponInput(e.target.value.toUpperCase())}
+            placeholder="輸入後按右側按鈕套用"
+            className="flex-1 rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm uppercase focus:border-brand-teal focus:outline-none"
+          />
+          {activeCoupon ? (
+            <button type="button" onClick={() => { setActiveCoupon(''); setCouponInput(''); }}
+              className="rounded-lg bg-gray-200 px-3 py-2 text-sm font-bold text-gray-700">取消</button>
+          ) : (
+            <button type="button" onClick={() => setActiveCoupon(couponInput.trim())}
+              disabled={!couponInput.trim() || pricing.previewLoading}
+              className="rounded-lg bg-brand-teal px-3 py-2 text-sm font-bold text-white disabled:opacity-50">套用</button>
+          )}
+        </div>
+        {pricing.previewError && (
+          <p className="mt-1 text-xs text-brand-error">{pricing.previewError}</p>
+        )}
+        {activeCoupon && pricing.promo && pricing.discount > 0 && (
+          <p className="mt-1 text-xs text-brand-green">已套用：{pricing.promo.name}（折抵 NT${pricing.discount.toLocaleString()}）</p>
+        )}
+      </div>
 
       <BankTransferBlock
         venue={venue}

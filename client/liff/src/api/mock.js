@@ -167,6 +167,29 @@ export const mockDb = {
     return c ? { ...c, venue_ids: c.venues } : null;
   },
   promotions: () => PROMOTIONS.slice(),
+  previewPromotion: ({ originalPrice, courseType, venueId, periodCount, couponCode }) => {
+    const op = Math.max(0, Math.round(Number(originalPrice) || 0));
+    if (!op) return { originalPrice: 0, discountAmount: 0, finalPrice: 0, promotion: null };
+    const COUPONS = { 'WELCOME10': { id: 'P_C10', name: '新生 9 折券', description: '新會員專屬', type: 'PERCENTAGE', value: 0.9 } };
+    if (couponCode) {
+      const c = COUPONS[String(couponCode).trim().toUpperCase()];
+      if (!c) { const err = new Error('折價券代碼無效'); err.code = 'COUPON_INVALID'; throw err; }
+      const discount = Math.round(op * (1 - c.value));
+      return { originalPrice: op, discountAmount: discount, finalPrice: op - discount,
+        promotion: { id: c.id, name: c.name, description: c.description, type: c.type, coupon_code: couponCode } };
+    }
+    let best = null, bestDiscount = 0;
+    for (const p of PROMOTIONS) {
+      if (!p.is_auto_apply) continue;
+      const threshOk = !p.threshold || (p.threshold.type === 'PERIOD_COUNT' && (periodCount || 1) >= p.threshold.value);
+      if (!threshOk) continue;
+      const d = p.type === 'PERCENTAGE' ? Math.round(op * (1 - p.value)) : Math.min(op, Math.round(p.value));
+      if (d > bestDiscount) { best = p; bestDiscount = d; }
+    }
+    if (!best) return { originalPrice: op, discountAmount: 0, finalPrice: op, promotion: null };
+    return { originalPrice: op, discountAmount: bestDiscount, finalPrice: op - bestDiscount,
+      promotion: { id: best.id, name: best.title, description: best.description, type: best.type, coupon_code: null } };
+  },
   basePrice: (courseType) => BASE_PRICES[courseType] || 0,
 
   parentByPhone: (phone) => {

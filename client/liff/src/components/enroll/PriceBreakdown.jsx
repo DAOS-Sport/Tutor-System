@@ -10,9 +10,9 @@ export default function PriceBreakdown({ pricing, multiplier }) {
         label={`套用係數 ${Math.round((multiplier || 1) * 100)}%`}
         value={formatTWD(pricing.afterMultiplier)}
       />
-      {pricing.promo && (
+      {pricing.promo && pricing.discount > 0 && (
         <Row
-          label={`優惠：${pricing.promo.title}`}
+          label={`優惠：${pricing.promo.name || pricing.promo.title}${pricing.promo.coupon_code ? ` (${pricing.promo.coupon_code})` : ''}`}
           value={`-${formatTWD(pricing.discount)}`}
           valueCls="text-brand-green"
         />

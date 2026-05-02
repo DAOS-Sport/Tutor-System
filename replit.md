@@ -230,6 +230,25 @@ Mock：`liff` mockDb 新增 `lessonPlan/saveLessonPlan/publishLessonPlan/session
 
 Builds：admin 304KB / liff 480KB（gzip 96 / 148）。所有 UI 頁面 ≤ 250 行（最大 SessionRecordFormPage 178）。煙霧：admin login → /admin/learn/{tags=4 cats|coach-eval=4|intros=4|thresholds=3} 全 200。
 
+## Phase 6 (上)：優惠活動 + 折價券 + 購課套用 (任務 #17 已完成)
+DB：新增 `promotions` / `promotion_usages` / `promotion_audit_logs`（migration 006 + coreSchema bootstrap）。
+- promotions 欄位：name / description / type(`PERCENTAGE`|`FIXED_AMOUNT`) / discount_value(NUMERIC，PERCENTAGE 為「保留比例」0..1) / min_threshold_type(`PERIOD_COUNT`) / min_threshold_value / applicable_course_types(INTEGER[]) / applicable_venue_ids(VARCHAR[]) / coupon_code(UNIQUE，NULL=自動套用) / start_date / end_date / max_uses / current_uses / status(`draft`/`pending_review`/`active`/`rejected`/`archived`) / 審核欄位 + 軌跡。
+- promotion_usages：parent_id / promotion_id / course_period_id + 三欄金額供對帳；`recordUsage()` 由 enrollment 流程在交易內呼叫。
+
+API：
+- 公開 `/api/promotions`（GET 進行中自動套用列表，coupon code 不外露） 與 `/api/promotions/preview`（POST：原價 + 組別 + 場館 + 可選 couponCode → 最佳折抵；coupon 錯誤回 400 + code）。
+- 後台 `/api/admin/promotions`：list / create(draft) / detail(含 audit + usage stats) / patch / submit / approve(admin) / reject(admin, note) / archive；另有 `/active` 給 R05。Manager 建草稿 → 送審 → admin 核准 → active。
+
+服務：`server/services/promotions.js` 內含 `listActivePromotions` / `previewBestDiscount`（自動 + 折價券分支，scope/threshold/exhausted/window 全檢查）/ `recordUsage`（寫 promotion_usages + UPDATE current_uses）。
+
+LIFF：購課頁 `useEnrollmentPricing` 改為純 base/multiplier 結構 + 內建呼叫 `promotionsApi.preview` 拿最佳折抵；新增折價券輸入區（套用 / 取消，錯誤訊息直顯紅字）；EnrollmentPage create payload 帶 promotion 區塊（promotion_id + discount + coupon_code）供未來 enrollment 寫入時 call `recordUsage`。HomePage 橫幅維持讀 `/api/promotions`。
+
+Admin：Sidebar 新增「行銷與優惠」群組 → `/promotions`（F-M07/F-A05：篩選 + 表格 + 狀態流轉按鈕，退回需備註）、`/promotions-active`（F-R05：唯讀進行中）；`PromotionFormModal` 支援自訂或自動產生折價券代碼、組別/場館多選 chips、起迄日驗證。
+
+Mock：LIFF mockDb 新增 `previewPromotion`，含 WELCOME10 折價券測試代碼，斷網仍可走完試算流程。
+
+煙霧：admin login → 建立 → submit → approve → /api/promotions/active 與 /api/promotions（LIFF 公開）皆出現該活動；preview 自動套用 11700 → 11115（折抵 585）；coupon=WELCOME10 → 折抵 500；coupon=NOPE 回 COUPON_INVALID 400。
+
 ## 變更紀錄
 - 2026-05-02：完成 LIFF Phase 1（任務 #7）。實作 7 個正式頁面 + 2 個 placeholder、6 個全域元件、雙 Context（Auth/Toast）、7 個 API 模組與 mock dataset、共用 utils；新增 `react-hook-form` 依賴、`postcss.config.js`；修正 `main.jsx` 加上無 LIFF_ID 的 dev fallback。`vite build` 通過（158 modules，401KB / 127KB gzip）。後端 19 個 stub 路由不變，LIFF 全程走 mock 模式以驗證 happy path；後續可由 `VITE_USE_MOCK=false` 切到真實 API，並透過 501 自動 fallback 機制漸進實作後端。
 - 2026-05-02：完成 SurveyJS Creator 評估報告，結論為「**不建議整合**」（授權費 USD $589/dev/年、套件巨大、與 Ragic 雙向同步設計衝突）。完整分析詳見 `docs/eval/surveyjs-creator.md`，含替代方案比較與分階段建議。

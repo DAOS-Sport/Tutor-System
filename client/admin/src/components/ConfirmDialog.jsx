@@ -3,7 +3,7 @@ import React, { useEffect } from 'react';
 export default function ConfirmDialog({
   open, title, children,
   confirmLabel = '確認', cancelLabel = '取消',
-  onConfirm, onCancel, busy = false, tone = 'primary',
+  onConfirm, onCancel, busy = false, tone = 'primary', confirmDisabled = false,
 }) {
   useEffect(() => {
     if (!open) return;
@@ -45,7 +45,7 @@ export default function ConfirmDialog({
             type="button"
             className={`rounded-lg px-4 py-2 text-sm font-bold disabled:opacity-50 ${confirmStyle}`}
             onClick={onConfirm}
-            disabled={busy}
+            disabled={busy || confirmDisabled}
           >
             {busy ? '處理中…' : confirmLabel}
           </button>

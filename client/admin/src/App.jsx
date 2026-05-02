@@ -21,6 +21,8 @@ import TagsPage from './pages/TagsPage';
 import CoachEvalPage from './pages/CoachEvalPage';
 import EvalThresholdPage from './pages/EvalThresholdPage';
 import CoachIntrosReviewPage from './pages/CoachIntrosReviewPage';
+import PromotionsPage from './pages/PromotionsPage';
+import PromotionsActivePage from './pages/PromotionsActivePage';
 
 const ALL = ['admin', 'manager', 'staff'];
 
@@ -53,6 +55,10 @@ export default function App() {
         <Route path="/chat-logs" element={<RequireAuth roles={['admin', 'manager']}><ChatLogsPage /></RequireAuth>} />
         <Route path="/alerts"    element={<RequireAuth roles={['admin', 'manager']}><AlertsPage /></RequireAuth>} />
         <Route path="/keywords"  element={<RequireAuth roles={['admin']}><KeywordsPage /></RequireAuth>} />
+
+        {/* 行銷與優惠 (Phase 6) */}
+        <Route path="/promotions"        element={<RequireAuth roles={['admin', 'manager']}><PromotionsPage /></RequireAuth>} />
+        <Route path="/promotions-active" element={<RequireAuth roles={ALL}><PromotionsActivePage /></RequireAuth>} />
 
         {/* 學習歷程 (Phase 5) */}
         <Route path="/tags"                 element={<RequireAuth roles={['admin', 'manager']}><TagsPage /></RequireAuth>} />
