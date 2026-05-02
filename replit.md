@@ -161,8 +161,22 @@
 - `manager / manager` — 場館主管（板橋館，無系統設定 / 員工 / 場館 三頁；但保有課程介紹 F-M06）
 - `staff / staff` — 行政櫃檯（板橋館，僅可見 Dashboard / Enrollments(讀) / Sessions / Checkin 四頁；不可見對帳、退課、復活、所有系統設定；且報名清單依 `venue_id` 過濾）
 
-### Admin Phase 3 與後端的銜接點
-這些 endpoint 目前由 `server/routes/admin.js` 全部回 501 stub。Phase 3 admin UI 已用 mock 補位，後續任務只要把這些 endpoint 實作好（response shape 對齊 `client/admin/src/api/mock.js`），admin 就能無縫切換：
+### Admin Phase 3 與後端的銜接點 ✅ 已實作（任務 #12）
+`server/routes/admin.js` 已改為 mount 7 個子路由（`server/routes/admin/{auth,staff,venues,settings,courseIntros,enrollments,sessions}.js`），所有 response shape 與 `client/admin/src/api/mock.js` 完全一致。
+- 認證：`POST /api/admin/auth/login` 用 bcrypt 比對 `admin_users.password_hash`，回傳 JWT（`JWT_SECRET`，預設 7 天），前端 `client/admin/src/api/client.js` 攔截器自動帶 `Authorization: Bearer`，遇 401 清 localStorage 並導回 `/admin/login`。
+- **production 安全規則**：
+  1. `JWT_SECRET`（≥ 16 chars）為必要 env；缺少時 `assertSecretConfigured()` 在 startup 直接 throw → process exit。non-production 才允許 fallback secret（會 log 警告）。
+  2. `admin/admin`、`manager/manager`、`staff/staff` 這類 well-known 弱密碼**只**在 non-production 自動 seed。production 必須提供 `ADMIN_BOOTSTRAP_PASSWORD`（會套用到三個 seed 帳號）；若缺，user seed 自動跳過並提示 operator 手動建帳號。
+- 授權（已在 server 端強制）：
+  - admin only：`GET /staff`、`PATCH /staff/:id`、`GET /settings`、`PATCH /settings`、`PATCH /venues/:id`、`POST /sessions/:id/revive`
+  - admin + manager：`GET /course-intros`、`PATCH /course-intros/:type`、`POST /enrollments/:id/reconcile`、`POST /enrollments/:id/refund`、`GET /sessions/cancelled`
+  - 全角色（含 staff）：`GET /venues`（staff/manager 看不到 `line_token` / 銀行欄位）、`GET /enrollments`（staff 強制鎖在 `req.adminUser.venue_id`，忽略 client 端的 `venueId`）、`GET /sessions/today`（同 staff 場館鎖）、`GET /sessions/verify-checkin`（staff 跨館查詢一律回 `found:false`）
+- Postgres：`db/migrations/002_admin_tables.sql` 建 9 張 `admin_*` 表（users/venues/staff/settings/course_intros/enrollments/enrollment_audit_logs/today_sessions/cancelled_sessions）。`server/bootstrap/admin.js` 在 server 啟動時 idempotent 建表 + 第一次空表時 seed（含 24 筆 enrollments + audit logs，密碼 bcrypt hash）。
+- Audit log：對帳 / 退費 / 復活 都寫入 `admin_enrollment_audit_logs`（by_user / reason / refund_amount）。退費理由必填。
+- Ragic 同步（best-effort）：`server/services/ragicAdmin.js` 在 `GET /staff` 與 `GET /venues` 時呼叫 H01 / H05 並 upsert 進系統 DB；無 Ragic credential 時 noop，失敗時 swallow + warn，不阻擋使用者操作。系統內部欄位（role / multiplier / is_senior / line_token / 銀行帳戶）一律以系統 DB 為準，不會被 Ragic 蓋掉。
+- 前端切換：`VITE_USE_MOCK=false npx vite build` 會把 mock 模組整段 tree-shake 掉（dist 內 `mockDb` 為 0 個出現）；admin 13 頁全部走真實後端，重整後狀態保留。
+
+下表為原 mock 對應表（response shape 不變）：
 
 | Endpoint | mock 回應 |
 |---|---|
@@ -189,4 +203,5 @@
 - 2026-05-02：完成 SurveyJS Creator 評估報告，結論為「**不建議整合**」（授權費 USD $589/dev/年、套件巨大、與 Ragic 雙向同步設計衝突）。完整分析詳見 `docs/eval/surveyjs-creator.md`，含替代方案比較與分階段建議。
 - 2026-05-02：補完 `docs/ragic_api.md` 的 H01／H05／Z01／Z02 欄位對照（含 Field ID、表單 metadata、API Key 環境變數說明）。Z02 段落標註附件來源欄位疑似與 Z01 重複，待使用者確認真實欄位後再行更新。
 - 2026-05-02：修復部署。將 `.replit` 部署目標從 `cloudrun` 改為 `autoscale`，新增 build 指令同時建置 server / admin / liff。`server/index.js` 加入靜態檔案服務（`/admin`、`/liff`）與 SPA fallback、根路徑轉址，並把 listen 綁到 `0.0.0.0`。為 `client/admin/` 補齊 `index.html`、`src/main.jsx`、`src/App.jsx`、`src/index.css` 最小骨架；為 `server/routes/` 19 個尚未實作的 route 建立暫時 stub（回傳 501 Not Implemented），讓 server 能正常啟動。
+- 2026-05-02：完成 Admin 後端實作（任務 #12）。把 `server/routes/admin.js` 從 501 stub 換成 7 個子路由（auth/staff/venues/settings/courseIntros/enrollments/sessions），response shape 與 `client/admin/src/api/mock.js` 1:1 對齊。新增 `db/migrations/002_admin_tables.sql`（9 張 `admin_*` 表）、`server/bootstrap/admin.js`（啟動時 idempotent 建表 + seed 3 帳號 / 3 場館 / 6 員工 / 7 設定 / 3 課介 / 24 報名 + audit logs / 4 今日 session / 2 已取消時段；密碼 bcrypt 雜湊）、`server/middlewares/adminAuth.js`（JWT 簽 / 驗 / 角色 RBAC，使用 `JWT_SECRET`）、`server/services/ragicAdmin.js`（H01/H05 best-effort 同步，無 Ragic credential 時 noop）。`client/admin/src/api/client.js` 加 axios interceptor 自動帶 Bearer token、遇 401 自動登出。對帳 / 退費 / 復活 都寫 `admin_enrollment_audit_logs`（by_user/reason/refund_amount，退費理由必填）。E2E 測試：3 帳號登入、staff/manager/admin RBAC、reconcile/refund/refund-preview/revive、staff multiplier 1.0–1.5 校驗、settings PATCH 持久化全部通過；`VITE_USE_MOCK=false` build 後 mock 模組 0 出現於 bundle，靜態檔由 Express 直送 `/admin/`。
 - 2026-05-02：完成 Admin Phase 3（任務 #11）。把 `client/admin/` 從一行 placeholder 擴成 13 頁完整桌機後台：登入 + Dashboard + Settings(F-A01) + Staff(F-A02) + Venues(F-A03) + CourseIntros(F-A04/F-M06) + Reconcile(F-M02) + Enrollments(F-R02) + Refund(F-R04) + Sessions(F-R01) + Checkin(F-R03) + Revive(F-M05)；含 9 個共用元件、雙 Context（Auth/Toast）、7 個 domain API 模組與 24 筆 mock 資料、`/api/admin/*` 自動 fallback 到 mock。每頁 ≤ 250 行；`vite build` 117 modules → 265KB / 86KB gzip。煙霧測試 `/admin/*`、SPA fallback、501 stub、LIFF 隔離全部通過。後端 17 條 endpoint 仍為 501 stub，後續任務 #12 接手實作真實 backend。

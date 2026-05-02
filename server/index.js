@@ -5,6 +5,8 @@ const cors = require('cors');
 const http = require('http');
 const { initWebSocket } = require('./services/websocket');
 const { initCronJobs } = require('./cron');
+const { bootstrap: bootstrapAdmin } = require('./bootstrap/admin');
+const { assertSecretConfigured } = require('./middlewares/adminAuth');
 
 const app = express();
 const server = http.createServer(app);
@@ -69,6 +71,24 @@ initWebSocket(server);
 initCronJobs();
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`DAOS Server running on port ${PORT}`);
-});
+
+// 啟動順序：
+// 1) production 必須有 JWT_SECRET（assertSecretConfigured 會 throw 讓 process exit）
+// 2) bootstrap admin_* 表（idempotent，production 缺 ADMIN_BOOTSTRAP_PASSWORD 時會跳過 user seed）
+// 3) listen
+(async () => {
+  try {
+    assertSecretConfigured();
+  } catch (err) {
+    console.error(err.message);
+    process.exit(1);
+  }
+  try {
+    await bootstrapAdmin();
+  } catch (err) {
+    console.error('Admin bootstrap failed (server will still start, but /api/admin may error):', err.message);
+  }
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`DAOS Server running on port ${PORT}`);
+  });
+})();
