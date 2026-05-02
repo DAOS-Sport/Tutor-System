@@ -6,14 +6,14 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import SlotChip from '../components/coach/SlotChip';
 import AddSlotModal from '../components/coach/AddSlotModal';
 import BatchAddSlotModal from '../components/coach/BatchAddSlotModal';
+import BatchResultModal from '../components/coach/BatchResultModal';
 import SlotActionSheet from '../components/coach/SlotActionSheet';
+import MonthGrid from '../components/coach/MonthGrid';
 
 const WEEKDAY_TC = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
 
 function startOfWeek(d) { const x = new Date(d); x.setHours(0,0,0,0); x.setDate(x.getDate() - x.getDay()); return x; }
 function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
-function startOfMonth(d) { const x = new Date(d.getFullYear(), d.getMonth(), 1); x.setHours(0,0,0,0); return x; }
-function startOfNextMonth(d) { return new Date(d.getFullYear(), d.getMonth() + 1, 1); }
 
 function sameYMD(a, b) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
@@ -40,12 +40,21 @@ export default function CoachScheduleWeekPage() {
   const toast = useToast();
   const [view, setView] = useState('week'); // 'week' | 'month'
   const [anchor, setAnchor] = useState(() => startOfWeek(new Date()));
-  const [venueFilter, setVenueFilter] = useState('all'); // 'all' | venue_id
+  const [venueFilter, setVenueFilter] = useState(() => new Set()); // 空集合 = 全部
   const [slots, setSlots] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [showBatch, setShowBatch] = useState(false);
   const [activeSlot, setActiveSlot] = useState(null);
+  const [batchResult, setBatchResult] = useState(null);
   const [reload, setReload] = useState(0);
+
+  function toggleVenue(v) {
+    setVenueFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(v)) next.delete(v); else next.add(v);
+      return next;
+    });
+  }
 
   const venueIds = coach?.venue_ids || [];
 
@@ -66,7 +75,7 @@ export default function CoachScheduleWeekPage() {
   }, [coach?.id, range.from, range.to, reload, toast]);
 
   const filteredSlots = useMemo(
-    () => (slots || []).filter((s) => venueFilter === 'all' || s.venue_id === venueFilter),
+    () => (slots || []).filter((s) => venueFilter.size === 0 || venueFilter.has(s.venue_id)),
     [slots, venueFilter]
   );
 
@@ -113,9 +122,9 @@ export default function CoachScheduleWeekPage() {
           <button onClick={() => shift(1)} className="rounded-lg px-2 py-1 text-brand-primary active:bg-gray-100">›</button>
         </div>
         <div className="mt-2 flex flex-wrap gap-1.5">
-          <FilterChip active={venueFilter === 'all'} onClick={() => setVenueFilter('all')}>全部</FilterChip>
+          <FilterChip active={venueFilter.size === 0} onClick={() => setVenueFilter(new Set())}>全部</FilterChip>
           {venueIds.map((v) => (
-            <FilterChip key={v} active={venueFilter === v} onClick={() => setVenueFilter(v)}>{v} 館</FilterChip>
+            <FilterChip key={v} active={venueFilter.has(v)} onClick={() => toggleVenue(v)}>{v} 館</FilterChip>
           ))}
         </div>
       </header>
@@ -160,8 +169,11 @@ export default function CoachScheduleWeekPage() {
       {showBatch && (
         <BatchAddSlotModal coachId={coach.id} venueIds={venueIds}
           onClose={() => setShowBatch(false)}
-          onDone={(r) => { toast.success(`已建立 ${r.created} 筆，跳過 ${r.skipped} 筆`); refresh(); }}
+          onDone={(r) => { setBatchResult(r); refresh(); }}
           onError={(msg) => toast.error(msg)} />
+      )}
+      {batchResult && (
+        <BatchResultModal result={batchResult} onClose={() => setBatchResult(null)} />
       )}
       {activeSlot && (
         <SlotActionSheet slot={activeSlot}
@@ -169,75 +181,6 @@ export default function CoachScheduleWeekPage() {
           onMutated={() => { toast.success('已更新'); refresh(); }}
           onError={(msg) => toast.error(msg)} />
       )}
-    </div>
-  );
-}
-
-/**
- * 月視圖：色塊概覽（規格 F-C02 月視圖）
- * - 7 欄 × N 列日曆網格；非本月以淡色顯示
- * - 每格底部有最多 3 條色條：available(綠) / booked(藍) / blocked(灰)；超過顯 +n
- * - 點任一日 → 切回週視圖並 anchor 到該週週日
- */
-function MonthGrid({ anchor, slots, onPickDate }) {
-  const monthStart = startOfMonth(anchor);
-  const monthEnd = startOfNextMonth(monthStart);
-  const gridStart = startOfWeek(monthStart);
-  const gridEnd = (() => { const e = startOfWeek(monthEnd); return monthEnd > e ? addDays(e, 7) : e; })();
-
-  const cells = [];
-  for (let d = new Date(gridStart); d < gridEnd; d = addDays(d, 1)) cells.push(new Date(d));
-  const today = new Date();
-
-  function bucketsFor(d) {
-    const ds = slots.filter((s) => sameYMD(new Date(s.start_at), d));
-    const counts = { available: 0, booked: 0, blocked: 0 };
-    for (const s of ds) {
-      if (s.status === 'available') counts.available++;
-      else if (s.status === 'booked' || s.status === 'pending_group_confirm') counts.booked++;
-      else if (s.status === 'blocked') counts.blocked++;
-    }
-    return counts;
-  }
-
-  return (
-    <div>
-      <div className="grid grid-cols-7 gap-1 text-center text-[10px] font-bold text-gray-400">
-        {WEEKDAY_TC.map((w) => <div key={w} className="py-1">{w.slice(1)}</div>)}
-      </div>
-      <div className="grid grid-cols-7 gap-1">
-        {cells.map((d) => {
-          const inMonth = d >= monthStart && d < monthEnd;
-          const isToday = sameYMD(d, today);
-          const c = bucketsFor(d);
-          const total = c.available + c.booked + c.blocked;
-          return (
-            <button
-              key={d.toISOString()}
-              onClick={() => onPickDate(d)}
-              className={`flex h-14 flex-col rounded-lg border p-1 text-left text-[11px] transition active:scale-95 ${
-                inMonth ? 'bg-white border-gray-200' : 'bg-gray-50 border-gray-100 opacity-60'
-              } ${isToday ? 'ring-2 ring-brand-teal' : ''}`}
-            >
-              <span className={`text-[11px] font-bold ${isToday ? 'text-brand-teal' : inMonth ? 'text-brand-primary' : 'text-gray-400'}`}>
-                {d.getDate()}
-              </span>
-              {total > 0 && (
-                <div className="mt-auto flex gap-0.5">
-                  {c.available > 0 && <span className="h-1 flex-1 rounded bg-brand-green" title={`可預約 ${c.available}`} />}
-                  {c.booked    > 0 && <span className="h-1 flex-1 rounded bg-brand-teal"  title={`已預約 ${c.booked}`} />}
-                  {c.blocked   > 0 && <span className="h-1 flex-1 rounded bg-gray-400"    title={`封鎖 ${c.blocked}`} />}
-                </div>
-              )}
-            </button>
-          );
-        })}
-      </div>
-      <div className="mt-3 flex items-center justify-center gap-3 text-[10px] text-gray-500">
-        <span className="flex items-center gap-1"><span className="h-2 w-3 rounded bg-brand-green" />可預約</span>
-        <span className="flex items-center gap-1"><span className="h-2 w-3 rounded bg-brand-teal" />已預約</span>
-        <span className="flex items-center gap-1"><span className="h-2 w-3 rounded bg-gray-400" />封鎖</span>
-      </div>
     </div>
   );
 }

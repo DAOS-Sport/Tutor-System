@@ -12,13 +12,14 @@ const PARENT_TABS = [
 const COACH_TABS = [
   { to: '/coach',          label: '今日',     end: true,  icon: HomeIcon },
   { to: '/coach/schedule', label: '排課總表', end: false, icon: CalendarIcon },
+  { to: '/coach/students', label: '學員',     end: false, icon: UsersIcon },
   { to: '/coach/profile',  label: '個人',     end: false, icon: UserIcon },
 ];
 
 export default function BottomNav() {
   const { role } = useAuth();
   const tabs = role === 'coach' ? COACH_TABS : PARENT_TABS;
-  const cols = tabs.length === 4 ? 'grid-cols-4' : 'grid-cols-3';
+  const cols = tabs.length >= 4 ? 'grid-cols-4' : 'grid-cols-3';
 
   return (
     <nav className="fixed inset-x-0 bottom-0 z-30 mx-auto w-full max-w-[390px] border-t border-gray-200 bg-white">
@@ -84,6 +85,16 @@ function CalendarIcon({ active }) {
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={active ? 2.4 : 2}>
       <rect x="3" y="5" width="18" height="16" rx="2" />
       <path d="M3 10h18M8 3v4M16 3v4" strokeLinecap="round" />
+    </svg>
+  );
+}
+function UsersIcon({ active }) {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={active ? 2.4 : 2}>
+      <circle cx="9" cy="8" r="3.5" />
+      <path d="M2 20c0-3 3-5 7-5s7 2 7 5" strokeLinecap="round" />
+      <circle cx="17" cy="9" r="2.5" />
+      <path d="M15 14c3 0 7 1.5 7 4" strokeLinecap="round" />
     </svg>
   );
 }

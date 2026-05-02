@@ -19,6 +19,7 @@ import CoachTodayPage from './pages/CoachTodayPage';
 import CoachScheduleWeekPage from './pages/CoachScheduleWeekPage';
 import CoachProfilePage from './pages/CoachProfilePage';
 import CoachSessionPage from './pages/CoachSessionPage';
+import CoachStudentsPage from './pages/CoachStudentsPage';
 
 function RequireAuth() {
   const { isAuthed } = useAuth();
@@ -79,6 +80,7 @@ export default function App() {
               <Route element={<AppLayout />}>
                 <Route path="/coach" element={<CoachTodayPage />} />
                 <Route path="/coach/schedule" element={<CoachScheduleWeekPage />} />
+                <Route path="/coach/students" element={<CoachStudentsPage />} />
                 <Route path="/coach/profile" element={<CoachProfilePage />} />
               </Route>
               <Route element={<AppLayout showBackButton title="授課入口" />}>
