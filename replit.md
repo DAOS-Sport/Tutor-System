@@ -27,7 +27,7 @@
 
 ## 部署設定
 - Target：`autoscale`（單一服務）
-- Build：依序 `npm install` server、admin、liff，並把兩個前端 build 到 `server/public/{admin,liff}`
+- Build：依序 `npm install` server、admin、liff，並把兩個前端 build 到 `server/public/{admin,liff}`。LIFF build 階段會把 `LIFF_ID` 透過 `VITE_LIFF_ID` 注入給 Vite，前端用 `import.meta.env.VITE_LIFF_ID` 初始化 LIFF SDK。
 - Run：`cd server && npm start`（`node index.js`）
 - 由 Express 同時提供：
   - `/api/*` → 後端 API
