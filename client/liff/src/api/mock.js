@@ -309,7 +309,7 @@ export const mockDb = {
   updateCoachBio: (coachId, bio) => {
     const c = COACHES.find(x => x.id === coachId);
     if (c) c.bio = bio;
-    return { id: coachId, bio_rich_text: bio, intro_review_status: 'submitted' };
+    return { id: coachId, bio_rich_text: bio, intro_review_status: 'pending_review' };
   },
 
   coachMedia: (coachId) => (COACH_MEDIA[coachId] || []).slice().sort((a, b) => a.sort_order - b.sort_order),

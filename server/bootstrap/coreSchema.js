@@ -354,6 +354,10 @@ CREATE INDEX IF NOT EXISTS idx_eval_alerts_pending ON eval_threshold_alerts(noti
 DO $$ BEGIN
   ALTER TABLE coaches ADD COLUMN IF NOT EXISTS intro_review_note TEXT;
 EXCEPTION WHEN undefined_table THEN NULL; END $$;
+-- 一次性升級舊資料：legacy 'submitted' → 'pending_review'（與 admin 端一致）
+DO $$ BEGIN
+  UPDATE coaches SET intro_review_status = 'pending_review' WHERE intro_review_status = 'submitted';
+EXCEPTION WHEN undefined_column THEN NULL; END $$;
 DO $$ BEGIN
   ALTER TABLE coaches ADD COLUMN IF NOT EXISTS intro_submitted_at TIMESTAMPTZ;
 EXCEPTION WHEN undefined_table THEN NULL; END $$;

@@ -138,6 +138,10 @@ EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN
   ALTER TABLE coaches ADD COLUMN IF NOT EXISTS intro_review_note TEXT;
 EXCEPTION WHEN undefined_table THEN NULL; END $$;
+-- legacy 升級：早期 coach 端寫入 'submitted'，admin 端期望 'pending_review'
+DO $$ BEGIN
+  UPDATE coaches SET intro_review_status = 'pending_review' WHERE intro_review_status = 'submitted';
+EXCEPTION WHEN undefined_column THEN NULL; END $$;
 DO $$ BEGIN
   ALTER TABLE coaches ADD COLUMN IF NOT EXISTS intro_submitted_at TIMESTAMPTZ;
 EXCEPTION WHEN undefined_table THEN NULL; END $$;

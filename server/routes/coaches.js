@@ -143,7 +143,10 @@ router.put('/:id/bio', requireCoach, requireCoachOwner('id'), async (req, res) =
   const { bio_rich_text } = req.body || {};
   try {
     const r = await pool.query(
-      `UPDATE coaches SET bio_rich_text = $1, intro_review_status = 'submitted', updated_at = NOW()
+      `UPDATE coaches SET bio_rich_text = $1,
+                         intro_review_status = 'pending_review',
+                         intro_submitted_at = NOW(),
+                         updated_at = NOW()
        WHERE id = $2 RETURNING id, bio_rich_text, intro_review_status`,
       [bio_rich_text || '', req.params.id]
     );

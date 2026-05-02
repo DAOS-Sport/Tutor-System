@@ -137,11 +137,20 @@ function initCronJobs() {
       }
       const pending = await evaluations.listPendingAlerts();
       if (!pending.length) return;
-      // 收件人：所有 admin / manager 且設定了 line_uid（與 keywordAlert 相同模式）
+      // 收件人：admin / manager 且設定了 line_uid；每位主管帶自己的 venue_id
+      // （pushMessage 需要 venueId 解析 channel token；無 venue 的 admin 用任一啟用場館兜底）。
       const mgrs = await pool.query(
-        `SELECT line_uid FROM admin_users WHERE role IN ('admin','manager') AND line_uid IS NOT NULL`
+        `SELECT line_uid, venue_id FROM admin_users
+          WHERE role IN ('admin','manager') AND line_uid IS NOT NULL`
       );
-      const uids = mgrs.rows.map((r) => r.line_uid).filter(Boolean);
+      let fallbackVenue = null;
+      if (mgrs.rows.some((m) => !m.venue_id)) {
+        const v = await pool.query(`SELECT id FROM venues WHERE is_active = TRUE ORDER BY id LIMIT 1`);
+        fallbackVenue = v.rows[0]?.id || null;
+      }
+      const targets = mgrs.rows
+        .map((m) => ({ uid: m.line_uid, venueId: m.venue_id || fallbackVenue }))
+        .filter((t) => t.uid && t.venueId);
       const adminUrl = (process.env.ADMIN_URL || '').replace(/\/$/, '');
       const dashboardUrl = adminUrl ? `${adminUrl}/admin/coach-eval` : 'https://example.com/admin/coach-eval';
       for (const a of pending) {
@@ -149,11 +158,21 @@ function initCronJobs() {
           `【教練考核警示】\n${a.coach_name}：${a.metric}\n` +
           `近 ${a.window_months} 個月觀察值 ${a.observed_value ?? '—'}（門檻 ${a.min_value}）\n` +
           `${dashboardUrl}`;
-        for (const uid of uids) {
-          try { await line.pushMessage(uid, [{ type: 'text', text }]); }
-          catch (e) { console.warn('[Cron/eval-threshold] push failed:', e.message); }
+        let delivered = 0;
+        for (const t of targets) {
+          try {
+            await line.pushMessage(t.uid, [{ type: 'text', text }], t.venueId);
+            delivered += 1;
+          } catch (e) {
+            console.warn('[Cron/eval-threshold] push failed:', e.message);
+          }
         }
-        await evaluations.markAlertNotified(a.id);
+        // 至少一位主管成功收到才標記，避免永久遺失通知（下次 cron 會重試）。
+        if (delivered > 0) {
+          await evaluations.markAlertNotified(a.id);
+        } else {
+          console.warn(`[Cron/eval-threshold] alert ${a.id} undelivered; will retry next run`);
+        }
       }
     } catch (e) {
       console.warn('[Cron/eval-threshold] failed:', e.message);
