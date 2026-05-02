@@ -11,14 +11,58 @@ function fmtTime(iso) {
   return d.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
-function MediaBubble({ m }) {
-  if (m.message_type === 'image') return <img src={m.media_url} alt="" className="max-h-64 max-w-full rounded-lg" />;
-  if (m.message_type === 'video') return <video src={m.media_url} controls className="max-h-64 max-w-full rounded-lg" />;
-  if (m.message_type === 'voice') return <audio src={m.media_url} controls className="w-full" />;
+function fmtSize(bytes) {
+  if (!bytes && bytes !== 0) return '';
+  const u = ['B', 'KB', 'MB', 'GB'];
+  let n = Number(bytes), i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return `${n < 10 ? n.toFixed(1) : Math.round(n)} ${u[i]}`;
+}
+
+function FileMeta({ m, light }) {
+  const cls = light ? 'text-white/75' : 'text-gray-500';
   return (
-    <a href={m.media_url} target="_blank" rel="noreferrer" className="flex items-center gap-2 underline">
-      📎 {m.media_filename || '附件'}
-    </a>
+    <div className={`mt-1 text-[10px] ${cls}`}>
+      {m.media_filename ? <span className="break-all">{m.media_filename}</span> : null}
+      {m.media_size_bytes ? <span> · {fmtSize(m.media_size_bytes)}</span> : null}
+    </div>
+  );
+}
+
+function MediaBubble({ m, mine }) {
+  if (m.message_type === 'image') {
+    return (
+      <div>
+        <a href={m.media_url} target="_blank" rel="noreferrer">
+          <img src={m.media_url} alt={m.media_filename || ''} className="max-h-64 max-w-full rounded-lg" />
+        </a>
+        <FileMeta m={m} light={mine} />
+      </div>
+    );
+  }
+  if (m.message_type === 'video') {
+    return (
+      <div>
+        <video src={m.media_url} controls className="max-h-64 max-w-full rounded-lg" />
+        <FileMeta m={m} light={mine} />
+      </div>
+    );
+  }
+  if (m.message_type === 'voice') {
+    return (
+      <div>
+        <audio src={m.media_url} controls className="w-full" />
+        <FileMeta m={m} light={mine} />
+      </div>
+    );
+  }
+  return (
+    <div>
+      <a href={m.media_url} target="_blank" rel="noreferrer" className="flex items-center gap-2 underline">
+        📎 {m.media_filename || '附件'}
+      </a>
+      <FileMeta m={m} light={mine} />
+    </div>
   );
 }
 
@@ -145,7 +189,7 @@ export default function ChatRoomPage() {
               }`}>
                 {m.message_type === 'text'
                   ? <span className="whitespace-pre-wrap break-words">{m.content}</span>
-                  : <MediaBubble m={m} />}
+                  : <MediaBubble m={m} mine={mine} />}
                 <div className={`mt-1 flex items-center gap-1 text-[10px] ${mine ? 'text-white/70 justify-end' : 'text-gray-400'}`}>
                   <span>{fmtTime(m.created_at)}</span>
                   {mine && m.read_by_peer && <span>· 已讀</span>}

@@ -2,8 +2,11 @@
  * WebSocket 服務（聊天室即時推播）
  *
  * 連線：ws(s)://host/ws?token=<JWT>&room=<chat_room_id>
- *  - JWT 驗證：parent / coach token（與 HTTP 路由共用 secret）
- *  - room 授權：透過 chatRooms.canAccess 嚴格檢查；admin token 不接受 WS（admin 只走 HTTP 唯讀）
+ *  - JWT 驗證：parent / coach / admin / manager / staff token（共用 JWT_SECRET）
+ *  - room 授權：透過 chatRooms.canAccess 嚴格檢查
+ *      · parent / coach：必須是該 period 的參與者
+ *      · admin / manager / staff：依 chatRooms.canAccess（admin 全域、manager/staff 由 HTTP 端
+ *        venue 範圍內已過濾的 list 取得 roomId 後訂閱）— WS 只接收訊息/已讀廣播，不寫入。
  *
  * 訊息格式（server → client）：
  *   { type: 'message',  data: { id, sender_type, sender_id, message_type, content, media_url, ... } }
@@ -71,7 +74,13 @@ function initWebSocket(server) {
     let role, userId;
     if (payload.type === 'parent') { role = 'parent'; userId = payload.parentId; }
     else if (payload.type === 'coach') { role = 'coach'; userId = payload.coachId; }
-    else return ws.close(4003, 'LIFF token only');
+    else if (payload.role && ['admin', 'manager', 'staff'].includes(payload.role)) {
+      // admin token 走 routes/admin/auth.js 簽發，payload.role 帶角色
+      role = payload.role;
+      userId = payload.sub || null;
+    } else {
+      return ws.close(4003, 'Unsupported token type');
+    }
 
     const ok = await canAccess({ roomId, role, userId }).catch(() => false);
     if (!ok) return ws.close(4003, 'Forbidden');
