@@ -224,7 +224,7 @@ Cron：每日 10:00 期末邀請 + 7 天提醒兩個 job 已實作（`evaluation
 
 LIFF：教練 `/coach/plan/:periodId`（LessonPlanFormPage：5 區塊草稿/發佈）、`/coach/record/:sessionId`（SessionRecordFormPage：點標籤帶入文案、媒體上傳、複製前一堂、submit 版本化）；家長 `/history/:periodId`（時間軸 + 列印）、`/evaluation/:id`（4 維 ★ + 續報意願）；CoachSessionPage 增加「填課前規劃 / 填授課記錄」CTA、MyCoursesPage 點卡片進入學習歷程。
 
-Admin：Sidebar 新增「學習歷程」群組 → `/tags`（F-A08，分類 + 標籤 CRUD）、`/coach-eval`（F-M09，總覽 + 詳細報表）、`/eval-thresholds`（F-A09，可調整最低值與觀察月數）、`/coach-intros-review`（F-C06，待審 / 已退回 / 已上架 tab）。
+Admin：Sidebar 新增「學習歷程」群組 → `/tags`（F-A08，分類 + 標籤 CRUD）、`/coach-eval`（F-M09，總覽 + 詳細報表）、`/eval-threshold`（F-A09，可調整最低值與觀察月數）、`/coach-intros-review`（F-C06，待審 / 已退回 / 已上架 tab）。
 
 Mock：`liff` mockDb 新增 `lessonPlan/saveLessonPlan/publishLessonPlan/sessionRecord/saveSessionRecord/submitSessionRecord/copyPrevRecord/learnTags/learningHistory/myEvaluations/evaluationDetail/submitEvaluation`，斷網／無資料時仍可走完 happy path。
 
