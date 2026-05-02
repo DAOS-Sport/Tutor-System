@@ -143,7 +143,7 @@ router.get('/history/:periodId', requireParent, async (req, res) => {
       `SELECT 1 FROM course_period_enrollments e
        JOIN students s ON s.id = e.student_id
        WHERE e.course_period_id = $1 AND s.parent_id = $2
-         AND e.status IN ('active','completed','withdrawn') LIMIT 1`,
+         AND e.status IN ('active','transferred_out') LIMIT 1`,
       [req.params.periodId, req.parent.id]
     );
     if (!guard.rowCount) return res.status(403).json({ error: 'Forbidden' });
