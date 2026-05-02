@@ -79,8 +79,8 @@ async function previewBestDiscount({ originalPrice, courseType, venueId, periodC
 
   if (couponCode) {
     const rc = await pool.query(
-      `SELECT * FROM promotions WHERE coupon_code = $1`,
-      [couponCode.trim()]
+      `SELECT * FROM promotions WHERE UPPER(coupon_code) = UPPER($1)`,
+      [String(couponCode).trim()]
     );
     if (rc.rowCount === 0) {
       const err = new Error('折價券代碼無效');
