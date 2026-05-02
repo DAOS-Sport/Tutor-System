@@ -119,6 +119,11 @@
 ### Phase 3（後台管理基礎）— 已完成
 位於 `client/admin/src/`，使用 React 18 + Vite + Tailwind + react-router-dom。桌機優先 Sidebar Layout，每頁 ≤ 250 行。
 
+**響應式行為（明確的設計取捨）：**
+- 主要使用情境是場館主管 / 管理員在桌機上做日常營運，因此採桌機優先設計。
+- Sidebar (`w-64`) 套用 `hidden md:flex`，斷點 `md` (≥ 768px) 以上才顯示；< 768px 時 Sidebar 會被完全隱藏，目前**不**提供漢堡選單或抽屜替代方案。
+- 平板（768px – 1023px）可正常使用所有功能；手機（< 768px）僅能看到 Header + 內容區，無法切換頁面 — 預期由 LIFF 行動端覆蓋家長 / 教練的手機情境，後台手機支援列為後續任務範圍。
+
 **架構：**
 - `main.jsx` — 用 `BrowserRouter basename="/admin"` 包 `<AuthProvider>` + `<ToastProvider>`
 - `App.jsx` — 13 條 route，全部走 `<RequireAuth roles=[...]>` 守門
@@ -136,9 +141,9 @@
 | `/settings` | `SettingsPage` | F-A01 系統設定 | admin |
 | `/staff` | `StaffPage` | F-A02 員工管理 | admin |
 | `/venues` | `VenuesPage` | F-A03 場館設定 | admin |
-| `/course-intros` | `CourseIntrosPage` | F-A04 / F-M06 課程介紹 | admin |
-| `/reconcile` | `ReconcilePage` | F-M02 待對帳 | 全部 |
-| `/enrollments` | `EnrollmentsPage` | F-R02 所有報名 | 全部 |
+| `/course-intros` | `CourseIntrosPage` | F-A04 / F-M06 課程介紹 | admin/manager |
+| `/reconcile` | `ReconcilePage` | F-M02 待對帳 | admin/manager |
+| `/enrollments` | `EnrollmentsPage` | F-R02 所有報名 | 全部（櫃檯依 venue_id 過濾） |
 | `/refund` | `RefundPage` | F-R04 退課 | admin/manager |
 | `/sessions` | `SessionsPage` | F-R01 今日課程 | 全部 |
 | `/checkin` | `CheckinPage` | F-R03 簽到驗證 | 全部 |
@@ -148,13 +153,13 @@
 - `context/AuthContext.jsx` — 用 `localStorage(daos.admin.user)` 暫存 user，跨分頁 `storage` 事件同步；提供 `isAdmin/isManager/isStaff` 旗標
 - `context/ToastContext.jsx` — 與 LIFF 同款 4 色 Toast
 - `api/client.js` — `callApi()` 走 `/api/admin/*`；`USE_MOCK = VITE_USE_MOCK !== 'false'`；遇 501 自動 fallback 到 mock
-- `api/mock.js` — 集中 mock dataset：3 員工帳號、3 場館、6 員工、5 筆 enrollment、4 個今日 sessions、2 個已取消時段、課介 1/2/3、全域 settings 7 個欄位
+- `api/mock.js` — 集中 mock dataset：3 登入帳號、3 場館、6 員工（含 4 教練 + 1 主管 + 1 櫃檯）、24 筆 enrollment（pending_payment 8、confirmed 3、active 9、cancelled 2、refunded 2）、4 個今日 sessions、2 個已取消時段、課介 1/2/3、全域 settings 7 個欄位
 - `api/{auth,staff,venues,settings,courseIntros,enrollments,sessions}.js` — domain modules
 
 **Mock 帳號（密碼 = 帳號）：**
 - `admin / admin` — 系統管理員（看得到 13 頁全部）
-- `manager / manager` — 場館主管（板橋館，無系統設定 4 頁）
-- `staff / staff` — 行政櫃檯（板橋館，無退課/復活，且報名/對帳清單依 `venue_id` 過濾）
+- `manager / manager` — 場館主管（板橋館，無系統設定 / 員工 / 場館 三頁；但保有課程介紹 F-M06）
+- `staff / staff` — 行政櫃檯（板橋館，僅可見 Dashboard / Enrollments(讀) / Sessions / Checkin 四頁；不可見對帳、退課、復活、所有系統設定；且報名清單依 `venue_id` 過濾）
 
 ### Admin Phase 3 與後端的銜接點
 這些 endpoint 目前由 `server/routes/admin.js` 全部回 501 stub。Phase 3 admin UI 已用 mock 補位，後續任務只要把這些 endpoint 實作好（response shape 對齊 `client/admin/src/api/mock.js`），admin 就能無縫切換：
@@ -184,3 +189,4 @@
 - 2026-05-02：完成 SurveyJS Creator 評估報告，結論為「**不建議整合**」（授權費 USD $589/dev/年、套件巨大、與 Ragic 雙向同步設計衝突）。完整分析詳見 `docs/eval/surveyjs-creator.md`，含替代方案比較與分階段建議。
 - 2026-05-02：補完 `docs/ragic_api.md` 的 H01／H05／Z01／Z02 欄位對照（含 Field ID、表單 metadata、API Key 環境變數說明）。Z02 段落標註附件來源欄位疑似與 Z01 重複，待使用者確認真實欄位後再行更新。
 - 2026-05-02：修復部署。將 `.replit` 部署目標從 `cloudrun` 改為 `autoscale`，新增 build 指令同時建置 server / admin / liff。`server/index.js` 加入靜態檔案服務（`/admin`、`/liff`）與 SPA fallback、根路徑轉址，並把 listen 綁到 `0.0.0.0`。為 `client/admin/` 補齊 `index.html`、`src/main.jsx`、`src/App.jsx`、`src/index.css` 最小骨架；為 `server/routes/` 19 個尚未實作的 route 建立暫時 stub（回傳 501 Not Implemented），讓 server 能正常啟動。
+- 2026-05-02：完成 Admin Phase 3（任務 #11）。把 `client/admin/` 從一行 placeholder 擴成 13 頁完整桌機後台：登入 + Dashboard + Settings(F-A01) + Staff(F-A02) + Venues(F-A03) + CourseIntros(F-A04/F-M06) + Reconcile(F-M02) + Enrollments(F-R02) + Refund(F-R04) + Sessions(F-R01) + Checkin(F-R03) + Revive(F-M05)；含 9 個共用元件、雙 Context（Auth/Toast）、7 個 domain API 模組與 24 筆 mock 資料、`/api/admin/*` 自動 fallback 到 mock。每頁 ≤ 250 行；`vite build` 117 modules → 265KB / 86KB gzip。煙霧測試 `/admin/*`、SPA fallback、501 stub、LIFF 隔離全部通過。後端 17 條 endpoint 仍為 501 stub，後續任務 #12 接手實作真實 backend。
