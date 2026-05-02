@@ -144,8 +144,12 @@ router.patch('/:id', requireAdminRole('admin', 'manager'), async (req, res) => {
     const old = cur.rows[0];
     const role = req.adminUser.role;
     // manager 只能改 draft / rejected；admin 額外允許改 active（用於微調 description / max_uses）
-    if (!['draft', 'rejected'].includes(old.status) && role !== 'admin') {
-      return res.status(400).json({ error: '此狀態不可編輯（請先停用）' });
+    // 任何角色都不得直接改 pending_review（請先 reject）或 archived
+    const editable = role === 'admin'
+      ? ['draft', 'rejected', 'active']
+      : ['draft', 'rejected'];
+    if (!editable.includes(old.status)) {
+      return res.status(400).json({ error: `狀態 ${old.status} 不可編輯` });
     }
     const p = { ...old, ...req.body };
     const errs = validatePayload(p);
