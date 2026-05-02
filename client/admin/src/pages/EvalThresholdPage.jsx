@@ -71,7 +71,8 @@ export default function EvalThresholdPage() {
                     <div className="text-[10px] text-gray-500">{t.metric}</div>
                   </td>
                   <td>
-                    <input type="number" step="0.01" min="0" max="5"
+                    <input type="number" step="0.01" min="0"
+                      max={t.metric === 'renew_rate' ? 1 : 5}
                       value={v('min_value')}
                       onChange={(e) => setField(t.metric, 'min_value', e.target.value)}
                       className="w-24 rounded border px-2 py-1 text-sm" />

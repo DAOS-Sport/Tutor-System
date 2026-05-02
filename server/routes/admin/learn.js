@@ -126,10 +126,21 @@ router.put('/thresholds', requireAdminRole('admin'), wrap(async (req, res) => {
   const { metric, min_value, window_months, is_active } = req.body || {};
   if (!metric || min_value === undefined)
     return res.status(400).json({ error: 'metric / min_value required' });
+  const m = String(metric).slice(0, 40);
+  const mv = Number(min_value);
+  // metric-specific range guard：renew_rate 為 0–1，其餘評分 0–5
+  const max = m === 'renew_rate' ? 1 : 5;
+  if (!Number.isFinite(mv) || mv < 0 || mv > max) {
+    return res.status(400).json({ error: `min_value 必須介於 0–${max}（${m}）` });
+  }
+  const wm = Number(window_months) || 3;
+  if (wm < 1 || wm > 24) {
+    return res.status(400).json({ error: 'window_months 必須介於 1–24' });
+  }
   const row = await evals.upsertThreshold({
-    metric: String(metric).slice(0, 40),
-    min_value: Number(min_value),
-    window_months: Number(window_months) || 3,
+    metric: m,
+    min_value: mv,
+    window_months: wm,
     is_active: is_active === undefined ? true : !!is_active,
   });
   res.json(row);
