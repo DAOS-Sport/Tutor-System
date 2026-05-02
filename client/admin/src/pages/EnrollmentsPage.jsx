@@ -10,6 +10,8 @@ import {
   formatTWD, formatTWDateTime, courseTypeLabel,
   paymentStatusLabel, paymentStatusTone,
 } from '../utils/format';
+import { exportEnrollmentsCsv } from '../utils/csvExport';
+import { useToast } from '../context/ToastContext';
 
 const STATUS_OPTIONS = [
   { value: '',                 label: '全部狀態' },
@@ -22,6 +24,7 @@ const STATUS_OPTIONS = [
 
 export default function EnrollmentsPage() {
   const { user, isStaff } = useAuth();
+  const toast = useToast();
   const [filters, setFilters] = useState({ status: '', search: '' });
   const [list, setList] = useState(null);
   const [venues, setVenues] = useState([]);
@@ -55,6 +58,27 @@ export default function EnrollmentsPage() {
       <PageHeader
         title="所有報名"
         subtitle={`F-R02 · 共 ${list?.length ?? '—'} 筆${isStaff ? '（限本場館）' : ''}`}
+        actions={
+          <button
+            type="button"
+            onClick={() => {
+              if (!list || list.length === 0) {
+                toast.error('沒有可匯出的資料');
+                return;
+              }
+              exportEnrollmentsCsv({
+                filenamePrefix: 'enrollments',
+                enrollments: list,
+                venueName: (id) => venueMap[id] || id,
+              });
+              toast.success(`已匯出 ${list.length} 筆報名資料`);
+            }}
+            disabled={!list}
+            className="rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            匯出 CSV
+          </button>
+        }
       />
 
       <div className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">

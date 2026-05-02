@@ -9,6 +9,7 @@ import { useAuth } from '../context/AuthContext';
 import { enrollmentsApi } from '../api/enrollments';
 import { venuesApi } from '../api/venues';
 import { formatTWD, formatTWDateTime, courseTypeLabel } from '../utils/format';
+import { exportEnrollmentsCsv } from '../utils/csvExport';
 
 export default function ReconcilePage() {
   const toast = useToast();
@@ -86,6 +87,26 @@ export default function ReconcilePage() {
       <PageHeader
         title="待對帳清單"
         subtitle={`F-M02 · 共 ${list.length} 筆等待對帳${isStaff ? '（限本場館，唯讀）' : ''}`}
+        actions={
+          <button
+            type="button"
+            onClick={() => {
+              if (!list || list.length === 0) {
+                toast.error('沒有可匯出的資料');
+                return;
+              }
+              exportEnrollmentsCsv({
+                filenamePrefix: 'reconcile',
+                enrollments: list,
+                venueName,
+              });
+              toast.success(`已匯出 ${list.length} 筆對帳資料`);
+            }}
+            className="rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary"
+          >
+            匯出 CSV
+          </button>
+        }
       />
       <DataTable columns={columns} rows={list} rowKey={(r) => r.id} empty="目前沒有待對帳的報名" />
       <ConfirmDialog
