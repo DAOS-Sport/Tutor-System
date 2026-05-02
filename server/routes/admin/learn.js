@@ -38,7 +38,7 @@ function sendError(res, label, e) {
 }
 
 // ── 標籤庫 ───────────────────────────────
-router.get('/tags', wrap(async (_req, res) => {
+router.get('/tags', requireAdminRole('admin', 'manager'), wrap(async (_req, res) => {
   const cats = await pool.query(`SELECT * FROM tag_categories ORDER BY sort_order, name`);
   const tags = await pool.query(
     `SELECT * FROM tag_library ORDER BY category_id, sort_order, label`
@@ -118,7 +118,7 @@ router.get('/coach-eval/:coachId', requireAdminRole('admin', 'manager'), wrap(as
 }));
 
 // ── 門檻 (F-A09) ────────────────────────────
-router.get('/thresholds', wrap(async (_req, res) => {
+router.get('/thresholds', requireAdminRole('admin', 'manager'), wrap(async (_req, res) => {
   res.json(await evals.thresholds());
 }));
 
@@ -136,7 +136,7 @@ router.put('/thresholds', requireAdminRole('admin'), wrap(async (req, res) => {
 }));
 
 // ── 教練介紹送審 (F-C06) ────────────────────
-router.get('/intros', wrap(async (req, res) => {
+router.get('/intros', requireAdminRole('admin', 'manager'), wrap(async (req, res) => {
   const status = req.query.status || 'pending';
   const where = status === 'all'
     ? `WHERE is_active = TRUE`
