@@ -156,6 +156,8 @@ export default function EnrollmentPage() {
     try {
       const period = await enrollmentsApi.create({
         parent_id: parent.id,
+        parent_name: parent.name,
+        parent_phone: parent.phone,
         coach: { id: coach.id, name: coach.name, is_senior: coach.is_senior },
         venue: { id: venue.id, name: venue.name },
         course_type: courseType,
