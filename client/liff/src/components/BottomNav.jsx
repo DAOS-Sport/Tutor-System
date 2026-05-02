@@ -1,18 +1,29 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 
-const TABS = [
-  { to: '/', label: '首頁', end: true, icon: HomeIcon },
+const PARENT_TABS = [
+  { to: '/',           label: '首頁',     end: true,  icon: HomeIcon },
   { to: '/my-courses', label: '我的課程', end: false, icon: BookIcon },
-  { to: '/chat', label: '聊天', end: false, icon: ChatIcon },
-  { to: '/profile', label: '個人', end: false, icon: UserIcon },
+  { to: '/chat',       label: '聊天',     end: false, icon: ChatIcon },
+  { to: '/profile',    label: '個人',     end: false, icon: UserIcon },
+];
+
+const COACH_TABS = [
+  { to: '/coach',          label: '今日',     end: true,  icon: HomeIcon },
+  { to: '/coach/schedule', label: '排課總表', end: false, icon: CalendarIcon },
+  { to: '/coach/profile',  label: '個人',     end: false, icon: UserIcon },
 ];
 
 export default function BottomNav() {
+  const { role } = useAuth();
+  const tabs = role === 'coach' ? COACH_TABS : PARENT_TABS;
+  const cols = tabs.length === 4 ? 'grid-cols-4' : 'grid-cols-3';
+
   return (
     <nav className="fixed inset-x-0 bottom-0 z-30 mx-auto w-full max-w-[390px] border-t border-gray-200 bg-white">
-      <ul className="grid grid-cols-4">
-        {TABS.map(({ to, label, end, icon: Icon }) => (
+      <ul className={`grid ${cols}`}>
+        {tabs.map(({ to, label, end, icon: Icon }) => (
           <li key={to}>
             <NavLink
               to={to}
@@ -65,6 +76,14 @@ function UserIcon({ active }) {
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={active ? 2.4 : 2}>
       <circle cx="12" cy="8" r="4" />
       <path d="M4 21c0-4 4-7 8-7s8 3 8 7" strokeLinecap="round" />
+    </svg>
+  );
+}
+function CalendarIcon({ active }) {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={active ? 2.4 : 2}>
+      <rect x="3" y="5" width="18" height="16" rx="2" />
+      <path d="M3 10h18M8 3v4M16 3v4" strokeLinecap="round" />
     </svg>
   );
 }

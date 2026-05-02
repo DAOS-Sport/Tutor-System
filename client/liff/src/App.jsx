@@ -15,12 +15,28 @@ import MyCoursesPage from './pages/MyCoursesPage';
 import ChatPage from './pages/ChatPage';
 import ProfilePage from './pages/ProfilePage';
 
+import CoachTodayPage from './pages/CoachTodayPage';
+import CoachScheduleWeekPage from './pages/CoachScheduleWeekPage';
+import CoachProfilePage from './pages/CoachProfilePage';
+
 function RequireAuth() {
   const { isAuthed } = useAuth();
   const location = useLocation();
-  if (!isAuthed) {
-    return <Navigate to="/login" state={{ from: location }} replace />;
-  }
+  if (!isAuthed) return <Navigate to="/login" state={{ from: location }} replace />;
+  return <Outlet />;
+}
+
+function RequireParent() {
+  const { role } = useAuth();
+  if (role === 'coach') return <Navigate to="/coach" replace />;
+  if (role !== 'parent') return <Navigate to="/login" replace />;
+  return <Outlet />;
+}
+
+function RequireCoach() {
+  const { role } = useAuth();
+  if (role === 'parent') return <Navigate to="/" replace />;
+  if (role !== 'coach') return <Navigate to="/login" replace />;
   return <Outlet />;
 }
 
@@ -29,34 +45,41 @@ export default function App() {
     <ToastProvider>
       <AuthProvider>
         <Routes>
-          {/* 公開路由（登入 / 註冊）— 仍套用 mobile 容器但無 BottomNav */}
           <Route element={<AppLayout />}>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
           </Route>
 
-          {/* 需登入路由 */}
           <Route element={<RequireAuth />}>
-            {/* Tab 頁：底部有 BottomNav */}
-            <Route element={<AppLayout />}>
-              <Route path="/" element={<HomePage />} />
-              <Route path="/my-courses" element={<MyCoursesPage />} />
-              <Route path="/chat" element={<ChatPage />} />
-              <Route path="/profile" element={<ProfilePage />} />
+            {/* ── 家長分頁 ── */}
+            <Route element={<RequireParent />}>
+              <Route element={<AppLayout />}>
+                <Route path="/" element={<HomePage />} />
+                <Route path="/my-courses" element={<MyCoursesPage />} />
+                <Route path="/chat" element={<ChatPage />} />
+                <Route path="/profile" element={<ProfilePage />} />
+              </Route>
+              <Route element={<AppLayout showBackButton title="選擇場館" />}>
+                <Route path="/venue" element={<VenueSelectPage />} />
+              </Route>
+              <Route element={<AppLayout showBackButton title="選擇教練" />}>
+                <Route path="/coaches" element={<CoachListPage />} />
+              </Route>
+              <Route element={<AppLayout showBackButton title="課程報名" />}>
+                <Route path="/enroll" element={<EnrollmentPage />} />
+              </Route>
+              <Route element={<AppLayout title="報名完成" />}>
+                <Route path="/enroll-success" element={<EnrollmentSuccessPage />} />
+              </Route>
             </Route>
 
-            {/* 報名流程：頂部有返回按鈕 */}
-            <Route element={<AppLayout showBackButton title="選擇場館" />}>
-              <Route path="/venue" element={<VenueSelectPage />} />
-            </Route>
-            <Route element={<AppLayout showBackButton title="選擇教練" />}>
-              <Route path="/coaches" element={<CoachListPage />} />
-            </Route>
-            <Route element={<AppLayout showBackButton title="課程報名" />}>
-              <Route path="/enroll" element={<EnrollmentPage />} />
-            </Route>
-            <Route element={<AppLayout title="報名完成" />}>
-              <Route path="/enroll-success" element={<EnrollmentSuccessPage />} />
+            {/* ── 教練分頁 ── */}
+            <Route element={<RequireCoach />}>
+              <Route element={<AppLayout />}>
+                <Route path="/coach" element={<CoachTodayPage />} />
+                <Route path="/coach/schedule" element={<CoachScheduleWeekPage />} />
+                <Route path="/coach/profile" element={<CoachProfilePage />} />
+              </Route>
             </Route>
           </Route>
 

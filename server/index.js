@@ -6,6 +6,7 @@ const http = require('http');
 const { initWebSocket } = require('./services/websocket');
 const { initCronJobs } = require('./cron');
 const { bootstrap: bootstrapAdmin } = require('./bootstrap/admin');
+const { bootstrap: bootstrapCore } = require('./bootstrap/coreSchema');
 const { assertSecretConfigured } = require('./middlewares/adminAuth');
 
 const app = express();
@@ -87,6 +88,11 @@ const PORT = process.env.PORT || 3000;
     await bootstrapAdmin();
   } catch (err) {
     console.error('Admin bootstrap failed (server will still start, but /api/admin may error):', err.message);
+  }
+  try {
+    await bootstrapCore();
+  } catch (err) {
+    console.error('Core schema bootstrap failed (LIFF coach module may error):', err.message);
   }
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`DAOS Server running on port ${PORT}`);

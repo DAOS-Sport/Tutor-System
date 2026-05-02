@@ -1,14 +1,21 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { parentsApi } from '../api/parents';
+import { coachesApi } from '../api/coaches';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { isValidTWPhone } from '../utils/format';
 import LoadingSpinner from '../components/LoadingSpinner';
 
+/**
+ * LIFF 登入：以手機作為通用識別。
+ *  1. 先試家長 (Z01) — 找到 → 走家長分頁
+ *  2. 找不到再試教練 (H01) — 找到 → 走教練分頁
+ *  3. 都找不到 → 引導家長註冊
+ */
 export default function LoginPage() {
   const navigate = useNavigate();
-  const { setParent } = useAuth();
+  const { setParent, setCoach } = useAuth();
   const toast = useToast();
   const [phone, setPhone] = useState('');
   const [busy, setBusy] = useState(false);
@@ -21,15 +28,24 @@ export default function LoginPage() {
     }
     setBusy(true);
     try {
-      const found = await parentsApi.findByPhone(phone.trim());
-      if (found) {
-        setParent(found);
-        toast.success(`歡迎回來，${found.name}`);
+      const trimmed = phone.trim();
+      const parent = await parentsApi.findByPhone(trimmed);
+      if (parent) {
+        setParent(parent);
+        toast.success(`歡迎回來，${parent.name}`);
         navigate('/', { replace: true });
-      } else {
-        toast.info('查無此手機，請完成註冊');
-        navigate(`/register?phone=${encodeURIComponent(phone.trim())}`, { replace: true });
+        return;
       }
+      let coach = null;
+      try { coach = await coachesApi.byPhone(trimmed); } catch { coach = null; }
+      if (coach) {
+        setCoach(coach);
+        toast.success(`歡迎，${coach.name} 教練`);
+        navigate('/coach', { replace: true });
+        return;
+      }
+      toast.info('查無此手機，請完成家長註冊');
+      navigate(`/register?phone=${encodeURIComponent(trimmed)}`, { replace: true });
     } catch (err) {
       toast.error('查詢失敗，請稍後再試');
     } finally {
@@ -50,7 +66,7 @@ export default function LoginPage() {
       <form onSubmit={handleSubmit} className="w-full max-w-[320px] space-y-4">
         <div>
           <label htmlFor="phone" className="mb-1 block text-sm font-medium text-gray-700">
-            家長手機號碼
+            手機號碼
           </label>
           <input
             id="phone"
@@ -62,7 +78,7 @@ export default function LoginPage() {
             className="w-full rounded-lg border border-gray-300 px-4 py-3 text-base focus:border-brand-teal focus:outline-none focus:ring-2 focus:ring-brand-teal/30"
             disabled={busy}
           />
-          <p className="mt-1 text-xs text-gray-500">系統會自動比對既有家長資料</p>
+          <p className="mt-1 text-xs text-gray-500">系統會自動判斷家長 / 教練身分</p>
         </div>
 
         <button
@@ -73,11 +89,12 @@ export default function LoginPage() {
           {busy ? '查詢中…' : '登入 / 開始註冊'}
         </button>
 
-        {busy && <LoadingSpinner label="比對 Ragic Z01 中…" />}
+        {busy && <LoadingSpinner label="比對 Z01 / H01 中…" />}
 
-        <p className="pt-4 text-center text-xs text-gray-400">
-          試用帳號（mock）：0912345678
-        </p>
+        <div className="pt-4 text-center text-xs leading-5 text-gray-400">
+          試用帳號（mock）
+          <br />家長：0912345678　教練：0911000001
+        </div>
       </form>
     </div>
   );

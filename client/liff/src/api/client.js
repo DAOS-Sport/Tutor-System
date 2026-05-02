@@ -10,6 +10,22 @@ export const http = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
+// 自動為每筆請求附上目前登入者的 JWT（教練 / 家長皆同；mock 模式不會走到這裡）
+http.interceptors.request.use((config) => {
+  try {
+    const raw = localStorage.getItem('daos.user');
+    if (raw) {
+      const u = JSON.parse(raw);
+      const tk = u?.token || u?.data?.token;
+      if (tk) {
+        config.headers = config.headers || {};
+        config.headers.Authorization = `Bearer ${tk}`;
+      }
+    }
+  } catch { /* localStorage 不可用時略過 */ }
+  return config;
+});
+
 // 模擬網路延遲，讓 LoadingSpinner 真的有機會出現
 function delay(value, ms = 280) {
   return new Promise((resolve) => setTimeout(() => resolve(value), ms));

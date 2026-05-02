@@ -2,7 +2,10 @@ import React from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import BottomNav from './BottomNav';
 
-const TAB_PATHS = ['/', '/my-courses', '/chat', '/profile'];
+const TAB_PATHS = [
+  '/', '/my-courses', '/chat', '/profile',
+  '/coach', '/coach/schedule', '/coach/profile',
+];
 
 /**
  * 統一手機寬度容器：

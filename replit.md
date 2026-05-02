@@ -8,7 +8,7 @@
 
 ## 架構與目錄
 - `server/` — Node.js + Express API
-  - `routes/`、`services/`（含 `ragic.js`、`line.js`、`promotions.js`、`slots.js`、`websocket.js`）、`models/`、`middlewares/`、`cron/`
+  - `routes/`、`services/`（含 `ragic.js`、`line.js`、`promotions.js`、`slots.js`、`websocket.js`）、`models/`、`middlewares/`（含 `adminAuth.js`、`coachAuth.js`、`auth.js`）、`cron/`、`bootstrap/`（`adminBootstrap.js` + `coreSchema.js` 啟動時自動建表 + 種子）
 - `client/`
   - `liff/` — 學員／教練 LIFF Web App（React）
   - `admin/` — 後台 Web App（React）
@@ -19,6 +19,15 @@
 - 主要 Key 都在 `.env.example`，正式部署時請放 Replit Secrets。
 - Ragic 相關：`RAGIC_API_KEY`、`RAGIC_BASE_URL`、`RAGIC_FORM_H01/H05/Z01/Z02`。
 - 注意 H01 與 H05/Z01/Z02 的 Ragic AP_Name 不同（H01 用 `standardzhtw`，其餘用 `xinsheng`），表單路徑前綴各自獨立。
+
+## 教練端 LIFF (Task #14 已完成)
+- 登入：手機 → `GET /api/coaches/by-phone` 回傳 coach + JWT (30 天)；token 存 `localStorage.daos.user.token`，axios interceptor 自動附 `Authorization: Bearer …`
+- AuthContext storage shape: `{ role: 'parent'|'coach', data: {...}, token: string|null }`（後向相容：仍曝露 `parent` / `coach` getter）
+- 路由保護：`<RequireParent>` / `<RequireCoach>` 互斥導頁；BottomNav 視 role 顯示 4 / 3 個 tab
+- 教練分頁：`/coach`(今日)、`/coach/schedule`(週/月排課總表)、`/coach/profile`(bio + 介紹圖排序)
+- 後端授權：`server/middlewares/coachAuth.js` 提供 `requireCoach` + `requireCoachOwner(paramName)`；slots / sessions / coaches 寫入端點皆需 token 且 IDOR-blocked (本人 only)
+- 並發保護：`server/services/slots.js#createSlot` 用 `pg_advisory_xact_lock(hashtext(coach_id))` 包住「衝突檢查 + INSERT」，5 個並發同 start_at 請求測試 → 1 success + 4 conflict（已驗證）
+- Multiplier 相容：`coaches.js` 將 DB 的 `pricing_multiplier (NUMERIC)` 同時對外曝露為 `multiplier (Number)`，避免家長端 CoachCard / useEnrollmentPricing 在切換 mock=false 時計算錯誤
 
 ## 文件
 - 文件索引以 `README.md` 為主。

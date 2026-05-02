@@ -5,11 +5,17 @@
 const { pool } = require('../models/db');
 
 /**
- * 衝突偵測
+ * 衝突偵測（共用：可在任意 client / pool 上執行）
  * 同一教練，新槽位時間區間不可與任何 available/booked 槽位重疊（跨場館均計算）
  */
-async function detectConflict(coachId, startAt, durationMinutes, excludeSlotId = null) {
-  const res = await pool.query(
+async function detectConflict(coachIdOrClient, startAtMaybe, durationMinutesMaybe, excludeSlotId = null) {
+  // 支援兩種呼叫：detectConflict(coachId, startAt, dur)（舊）/ detectConflictOn(client, ...) 內部使用
+  const db = pool;
+  return _detectConflictOn(db, coachIdOrClient, startAtMaybe, durationMinutesMaybe, excludeSlotId);
+}
+
+async function _detectConflictOn(db, coachId, startAt, durationMinutes, excludeSlotId = null) {
+  const res = await db.query(
     `SELECT cas.id, cas.venue_id, cas.start_at, cas.duration_minutes, v.name AS venue_name
      FROM coach_availability_slots cas
      JOIN venues v ON cas.venue_id = v.id
@@ -24,20 +30,36 @@ async function detectConflict(coachId, startAt, durationMinutes, excludeSlotId =
 }
 
 /**
- * 建立單一槽位
+ * 建立單一槽位（含並發保護）
+ *
+ * 並發保護：使用 transaction-scoped advisory lock with key = hashtext(coachId)
+ * 確保「衝突檢查 + INSERT」對同一教練序列化執行，避免兩個並發請求都通過檢查、
+ * 卻插入互相重疊的時段。Lock 在 COMMIT/ROLLBACK 時自動釋放。
  */
 async function createSlot({ coachId, venueId, startAt, durationMinutes, notes }) {
-  const conflicts = await detectConflict(coachId, startAt, durationMinutes);
-  if (conflicts.length > 0) {
-    const c = conflicts[0];
-    throw new Error(`時段衝突：與 ${c.venue_name} ${new Date(c.start_at).toLocaleString('zh-TW')} 的課程重疊`);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [String(coachId)]);
+
+    const conflicts = await _detectConflictOn(client, coachId, startAt, durationMinutes);
+    if (conflicts.length > 0) {
+      const c = conflicts[0];
+      throw new Error(`時段衝突：與 ${c.venue_name} ${new Date(c.start_at).toLocaleString('zh-TW')} 的課程重疊`);
+    }
+    const res = await client.query(
+      `INSERT INTO coach_availability_slots (coach_id, venue_id, start_at, duration_minutes, status, notes)
+       VALUES ($1, $2, $3, $4, 'available', $5) RETURNING *`,
+      [coachId, venueId, startAt, durationMinutes || 60, notes]
+    );
+    await client.query('COMMIT');
+    return res.rows[0];
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
   }
-  const res = await pool.query(
-    `INSERT INTO coach_availability_slots (coach_id, venue_id, start_at, duration_minutes, status, notes)
-     VALUES ($1, $2, $3, $4, 'available', $5) RETURNING *`,
-    [coachId, venueId, startAt, durationMinutes || 60, notes]
-  );
-  return res.rows[0];
 }
 
 /**
