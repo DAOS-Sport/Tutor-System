@@ -26,18 +26,25 @@ async function getRoomVenueId(roomId) {
 }
 
 /**
- * 動態挑出 admin_users 表中具備 line_uid 的主管。
- * 若該欄位尚未在資料庫中存在，pg 會丟錯，這裡安全 fallback 為空陣列。
+ * 動態挑出 admin_users 表中具備 line_uid 的主管，且具該場館權限：
+ *   - admin   全域可收
+ *   - manager 必須 venue_id = roomVenueId（避免跨館資訊外洩）
+ *   - staff   不收（policy: staff 不應收到關鍵字命中）
+ *
+ * 若 line_uid 欄位尚未在資料庫中存在，pg 會丟錯，這裡安全 fallback 為空陣列。
  */
-async function listSupervisors() {
+async function listSupervisors(roomVenueId) {
   const supervisors = [];
   try {
     const r = await pool.query(`
-      SELECT name, role, line_uid
+      SELECT name, role, line_uid, venue_id
         FROM admin_users
-       WHERE role IN ('admin','manager')
-         AND line_uid IS NOT NULL AND line_uid <> ''
-    `);
+       WHERE line_uid IS NOT NULL AND line_uid <> ''
+         AND (
+           role = 'admin'
+           OR (role = 'manager' AND venue_id = $1)
+         )
+    `, [roomVenueId]);
     for (const u of r.rows) supervisors.push({ ...u, source: 'admin_users' });
   } catch (err) {
     if (!/column .*line_uid.* does not exist/i.test(err.message)) {
@@ -49,18 +56,18 @@ async function listSupervisors() {
 
 async function notifyKeywordAlert({ roomId, message, alerts }) {
   try {
-    const supervisors = await listSupervisors();
-    const summary = alerts.map((a) => a.triggered_keyword).join('、');
-    console.log(`[chat-alert] room=${roomId} keywords=[${summary}] supervisors=${supervisors.length}`);
-
-    if (!lineService || typeof lineService.pushKeywordAlert !== 'function') return;
-    if (!supervisors.length) return;
-
     const venueId = await getRoomVenueId(roomId);
     if (!venueId) {
       console.warn('[chat-alert] no venueId for room', roomId);
       return;
     }
+    // 嚴格按 room venue 挑收件人 — admin 全收、該場館 manager、其他角色不收
+    const supervisors = await listSupervisors(venueId);
+    const summary = alerts.map((a) => a.triggered_keyword).join('、');
+    console.log(`[chat-alert] room=${roomId} venue=${venueId} keywords=[${summary}] supervisors=${supervisors.length}`);
+
+    if (!lineService || typeof lineService.pushKeywordAlert !== 'function') return;
+    if (!supervisors.length) return;
 
     for (const sup of supervisors) {
       try {
