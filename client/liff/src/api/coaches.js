@@ -9,10 +9,15 @@ export const coachesApi = {
     callApi(`/coaches/${id}`, { method: 'get' }, () => mockDb.coach(id)),
 
   // 教練端登入：手機 +（如可取得）LINE id_token 雙因素
+  // 安全考量：id_token 走 header（X-Line-Id-Token）而非 query string，避免在 access log / proxy 留痕
   byPhone: (phone, idToken = null) =>
     callApi(
       '/coaches/by-phone',
-      { method: 'get', params: idToken ? { phone, id_token: idToken } : { phone } },
+      {
+        method: 'get',
+        params: { phone },
+        headers: idToken ? { 'X-Line-Id-Token': idToken } : undefined,
+      },
       () => mockDb.coachByPhone(phone)
     ),
 

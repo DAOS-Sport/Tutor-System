@@ -14,6 +14,8 @@ const WEEKDAY_TC = ['週日', '週一', '週二', '週三', '週四', '週五', 
 
 function startOfWeek(d) { const x = new Date(d); x.setHours(0,0,0,0); x.setDate(x.getDate() - x.getDay()); return x; }
 function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+function startOfMonth(d) { const x = new Date(d.getFullYear(), d.getMonth(), 1); x.setHours(0,0,0,0); return x; }
+function startOfNextMonth(d) { return new Date(d.getFullYear(), d.getMonth() + 1, 1); }
 
 function sameYMD(a, b) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();

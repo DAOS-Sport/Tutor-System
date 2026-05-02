@@ -37,14 +37,14 @@ function delay(value, ms = 280) {
  * - 真實模式：呼叫後端，若收到 501（stub）→ 自動 fallback 到 mockFn
  */
 export async function callApi(path, options = {}, mockFn) {
-  const { method = 'get', data, params } = options;
+  const { method = 'get', data, params, headers } = options;
 
   if (USE_MOCK) {
     return delay(typeof mockFn === 'function' ? mockFn() : mockFn);
   }
 
   try {
-    const res = await http.request({ url: path, method, data, params });
+    const res = await http.request({ url: path, method, data, params, headers });
     return res.data;
   } catch (err) {
     const status = err?.response?.status;
