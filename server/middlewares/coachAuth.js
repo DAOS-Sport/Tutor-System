@@ -17,16 +17,10 @@ const jwt = require('jsonwebtoken');
 
 const TOKEN_TTL = '12h';
 
-function getSecret() {
-  const s = process.env.JWT_SECRET;
-  if (!s || s.length < 16) {
-    if (process.env.NODE_ENV === 'production') {
-      throw new Error('[coachAuth] JWT_SECRET 未設定（production 強制）');
-    }
-    return 'dev-only-fallback-secret-please-set-real-jwt-secret';
-  }
-  return s;
-}
+// 與 adminAuth.getSecret() 共用同一 fallback，確保跨 middleware 的 JWT
+// 都用相同 secret 簽發/驗證；production 一律強制 JWT_SECRET。
+const { getSecret: _adminGetSecret } = require('./adminAuth');
+function getSecret() { return _adminGetSecret(); }
 
 function signCoachToken({ coachId, phone, lineUid = null }) {
   const payload = { coachId, phone, type: 'coach' };

@@ -337,10 +337,11 @@ export const mockDb = {
   },
 
   // ── 聊天室（Phase 4 mock）──────────────────────────────────────────
-  chatRooms: () => CHAT_ROOMS.map((r) => ({
+  chatRooms: (viewer = { type: 'parent' }) => CHAT_ROOMS.map((r) => ({
     ...r,
     last_message: (CHAT_MESSAGES[r.id] || []).slice(-1)[0] || null,
-    unread_count: (CHAT_MESSAGES[r.id] || []).filter((m) => !m.read_by_me && m.sender_type !== 'parent').length,
+    // 對方傳的 (sender_type !== viewer.type) 才算未讀，避免 mock 模式下教練視角顯示錯誤
+    unread_count: (CHAT_MESSAGES[r.id] || []).filter((m) => !m.read_by_me && m.sender_type !== viewer.type).length,
   })),
   chatRoom: (id) => {
     const r = CHAT_ROOMS.find((x) => x.id === id);

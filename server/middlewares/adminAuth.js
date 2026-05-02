@@ -76,4 +76,4 @@ function assertSecretConfigured() {
   }
 }
 
-module.exports = { signToken, verifyToken, requireAdminAuth, requireAdminRole, assertSecretConfigured };
+module.exports = { signToken, verifyToken, requireAdminAuth, requireAdminRole, assertSecretConfigured, getSecret };

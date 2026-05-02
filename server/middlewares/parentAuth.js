@@ -11,16 +11,10 @@ const jwt = require('jsonwebtoken');
 
 const TTL = '12h';
 
-function getSecret() {
-  const s = process.env.JWT_SECRET;
-  if (!s || s.length < 16) {
-    if (process.env.NODE_ENV === 'production') {
-      throw new Error('[parentAuth] JWT_SECRET 未設定（production 強制）');
-    }
-    return 'dev-only-fallback-secret-please-set-real-jwt-secret';
-  }
-  return s;
-}
+// 與 adminAuth.getSecret() 共用同一 fallback，避免 admin 簽的 JWT 在 WS 端
+// 因 secret 不一致而 verify 失敗。production 一律強制 JWT_SECRET。
+const { getSecret: _adminGetSecret } = require('./adminAuth');
+function getSecret() { return _adminGetSecret(); }
 
 function signParentToken({ parentId, phone, lineUid = null }) {
   const payload = { parentId, phone, type: 'parent' };

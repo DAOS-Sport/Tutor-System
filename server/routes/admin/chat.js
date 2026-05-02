@@ -203,15 +203,23 @@ router.patch('/alerts/:id', requireAdminAuth, requireAdminRole('admin', 'manager
         return res.status(403).json({ error: 'forbidden' });
       }
     }
-    const note = req.body?.review_note ? String(req.body.review_note).slice(0, 500) : null;
+    // review_note 語意：
+    //   undefined → 不動現有值（COALESCE 路徑）
+    //   string    → 覆寫（含空字串 '' → 視為清空，存 null 方便 UI 一致呈現「—」）
+    const hasNote = Object.prototype.hasOwnProperty.call(req.body || {}, 'review_note');
+    let note = null;
+    if (hasNote) {
+      const raw = req.body.review_note;
+      note = raw == null ? null : String(raw).slice(0, 500).trim() || null;
+    }
     const r = await pool.query(
       `UPDATE keyword_alerts
           SET status = $1::alert_status,
-              review_note = COALESCE($2, review_note),
+              review_note = CASE WHEN $4::boolean THEN $2 ELSE COALESCE($2, review_note) END,
               reviewed_at = NOW()
         WHERE id = $3
         RETURNING id, status, review_note, reviewed_at`,
-      [status, note, req.params.id]
+      [status, note, req.params.id, hasNote]
     );
     if (!r.rowCount) return res.status(404).json({ error: 'not found' });
     res.json(r.rows[0]);
