@@ -152,9 +152,10 @@ router.get('/alerts', requireAdminAuth, requireAdminRole('admin', 'manager'), as
     const args = [];
     const wh = [];
     if (status) { args.push(status); wh.push(`a.status = $${args.length}`); }
-    // manager 限定自己場館
-    if (req.adminUser.role === 'manager' && req.adminUser.venue_id) {
-      args.push(req.adminUser.venue_id); wh.push(`cp.venue_id = $${args.length}`);
+    // manager 限定自己場館；無 venue_id 即 fail closed（與 scopedVenueId 一致）
+    if (req.adminUser.role === 'manager') {
+      args.push(req.adminUser.venue_id || '__no_venue__');
+      wh.push(`cp.venue_id = $${args.length}`);
     }
     const where = wh.length ? `WHERE ${wh.join(' AND ')}` : '';
     const r = await pool.query(`
@@ -189,8 +190,9 @@ router.patch('/alerts/:id', requireAdminAuth, requireAdminRole('admin', 'manager
     if (!['pending', 'reviewed', 'no_issue', 'resolved'].includes(status)) {
       return res.status(400).json({ error: 'invalid status' });
     }
-    // manager 只能改自己場館的警示（避免跨館 IDOR）
+    // manager 只能改自己場館的警示（避免跨館 IDOR）；無 venue_id fail closed
     if (req.adminUser.role === 'manager') {
+      if (!req.adminUser.venue_id) return res.status(403).json({ error: 'forbidden' });
       const own = await pool.query(`
         SELECT cp.venue_id FROM keyword_alerts a
           JOIN chat_rooms cr     ON cr.id = a.chat_room_id
