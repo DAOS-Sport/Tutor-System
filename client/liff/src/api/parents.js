@@ -15,4 +15,7 @@ export const parentsApi = {
 
   create: (data) =>
     callApi('/parents', { method: 'post', data }, () => mockDb.createParent(data)),
+
+  findByPhonePublic: (phone) =>
+    callApi('/parents/by-phone', { params: { phone } }, () => mockDb.parentByPhone(phone)),
 };

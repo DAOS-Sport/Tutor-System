@@ -27,6 +27,7 @@ router.use('/chat',          require('./admin/chat'));
 router.use('/periods',       require('./admin/periods'));
 router.use('/learn',         require('./admin/learn'));   // F-A08 / F-M09 / F-A09 / F-C06
 router.use('/promotions',    require('./admin/promotions')); // F-M07 / F-A05 / F-R05
+router.use('/mgm-stats',     require('./admin/mgmStats'));   // F-M10
 
 // 兜底：呼叫到沒實作的路徑時，明確回 404 而不是被前面的 401 吞掉
 router.all('*', (req, res) => {

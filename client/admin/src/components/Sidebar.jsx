@@ -48,6 +48,7 @@ const NAV_GROUPS = [
     items: [
       { to: '/promotions',         label: '優惠活動 (F-M07/F-A05)', roles: ['admin', 'manager'] },
       { to: '/promotions-active',  label: '進行中優惠 (F-R05)',     roles: ['admin', 'manager', 'staff'] },
+      { to: '/mgm-stats',          label: 'MGM 推薦統計 (F-M10)',   roles: ['admin', 'manager'] },
     ],
   },
   {
@@ -106,7 +107,7 @@ export default function Sidebar() {
         })}
       </nav>
       <div className="border-t border-white/10 px-4 py-3 text-[11px] text-white/50">
-        v1.0 Phase 6 (上)
+        v1.0 Phase 6
       </div>
     </aside>
   );

@@ -485,6 +485,46 @@ CREATE TABLE IF NOT EXISTS promotion_audit_logs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_promo_audit_promo ON promotion_audit_logs(promotion_id);
+
+-- ─── Phase 6（下）: MGM 推薦裂變 (F-S10 / F-M10) ─────────────────────
+-- 補齊家長 / 學員的可選欄位（LIFF RegisterPage 用）
+DO $$ BEGIN
+  ALTER TABLE parents  ADD COLUMN IF NOT EXISTS email   VARCHAR(255);
+  ALTER TABLE parents  ADD COLUMN IF NOT EXISTS gender  VARCHAR(20);
+  ALTER TABLE students ADD COLUMN IF NOT EXISTS id_number VARCHAR(20);
+  ALTER TABLE students ADD COLUMN IF NOT EXISTS gender    VARCHAR(20);
+EXCEPTION WHEN undefined_table THEN NULL; END $$;
+
+CREATE TABLE IF NOT EXISTS referral_records (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  token VARCHAR(40) NOT NULL UNIQUE,
+  referrer_parent_id UUID NOT NULL REFERENCES parents(id) ON DELETE CASCADE,
+  coach_id UUID NOT NULL REFERENCES coaches(id) ON DELETE CASCADE,
+  referee_phone VARCHAR(20),
+  referee_parent_id UUID REFERENCES parents(id) ON DELETE SET NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending','registered','trial_paid','checked_in','reward_issued')),
+  experience_enrollment_id TEXT,
+  reward_promotion_id UUID REFERENCES promotions(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  registered_at TIMESTAMPTZ,
+  trial_paid_at TIMESTAMPTZ,
+  checked_in_at TIMESTAMPTZ,
+  reward_issued_at TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_referrals_referee_coach
+  ON referral_records(referee_phone, coach_id) WHERE referee_phone IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referral_records(referrer_parent_id);
+CREATE INDEX IF NOT EXISTS idx_referrals_coach ON referral_records(coach_id);
+CREATE INDEX IF NOT EXISTS idx_referrals_status ON referral_records(status);
+
+INSERT INTO promotions
+  (name, description, type, discount_value, applicable_course_types,
+   coupon_code, start_date, end_date, status, created_at, updated_at)
+SELECT 'MGM 體驗課 5 折', '推薦連結專用：新客戶體驗課 5 折', 'PERCENTAGE', 0.5,
+       ARRAY[1,2,3]::INTEGER[], 'TRIAL50', CURRENT_DATE - INTERVAL '1 day',
+       CURRENT_DATE + INTERVAL '5 years', 'active', NOW(), NOW()
+WHERE NOT EXISTS (SELECT 1 FROM promotions WHERE coupon_code = 'TRIAL50');
 `;
 
 // 預設關鍵字清單（F-A07，可在後台增減 / 停用）

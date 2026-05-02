@@ -41,6 +41,12 @@ app.use('/api/notifications', require('./routes/notifications'));
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', ts: new Date().toISOString() }));
 
+// MGM 短連結：/r/:token → /liff/#/register?ref=<token>
+app.get('/r/:token', (req, res) => {
+  const tk = encodeURIComponent(String(req.params.token || ''));
+  res.redirect(302, `/liff/#/register?ref=${tk}`);
+});
+
 // ── Static frontends ────────────────────────
 // Vite 會把 admin / liff 兩個前端 build 到 server/public/{admin,liff}
 const PUBLIC_DIR = path.join(__dirname, 'public');

@@ -43,6 +43,18 @@ export default function HomePage() {
         <p className="mt-1 text-xs opacity-80">挑選喜愛的組別與教練，立即報名 ✨</p>
       </section>
 
+      <button
+        type="button"
+        onClick={() => navigate('/referral')}
+        className="mb-5 flex w-full items-center justify-between rounded-2xl border border-brand-green/30 bg-gradient-to-r from-brand-green/10 to-brand-amber/10 p-3 text-left active:opacity-80"
+      >
+        <div>
+          <div className="text-sm font-bold text-brand-green">🎁 邀請好友拿正期 9 折券</div>
+          <div className="mt-0.5 text-[11px] text-gray-600">朋友透過你的連結報名體驗課享 5 折</div>
+        </div>
+        <span className="text-brand-green">›</span>
+      </button>
+
       {promos === null ? (
         <LoadingSpinner label="載入優惠中…" />
       ) : (

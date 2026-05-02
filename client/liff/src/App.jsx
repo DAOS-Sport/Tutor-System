@@ -25,6 +25,7 @@ import LessonPlanFormPage from './pages/LessonPlanFormPage';
 import SessionRecordFormPage from './pages/SessionRecordFormPage';
 import LearningHistoryPage from './pages/LearningHistoryPage';
 import EvaluationFormPage from './pages/EvaluationFormPage';
+import ReferralPage from './pages/ReferralPage';
 
 function RequireAuth() {
   const { isAuthed } = useAuth();
@@ -82,6 +83,10 @@ export default function App() {
               {/* 學習歷程 / 期末評鑑 (Phase 5) */}
               <Route path="/history/:periodId" element={<LearningHistoryPage />} />
               <Route path="/evaluation/:id" element={<EvaluationFormPage />} />
+              {/* MGM 推薦連結 (Phase 6 下) */}
+              <Route element={<AppLayout showBackButton title="邀請好友" />}>
+                <Route path="/referral" element={<ReferralPage />} />
+              </Route>
             </Route>
 
             {/* ── 教練分頁 ── */}

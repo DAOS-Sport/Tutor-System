@@ -39,6 +39,19 @@ export default function EnrollmentPage() {
   const [couponInput, setCouponInput] = useState('');
   const [activeCoupon, setActiveCoupon] = useState('');
 
+  // MGM：若有 pendingCoupon 對應同一教練，自動套用
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('daos.pendingCoupon');
+      if (!raw || !coachId) return;
+      const v = JSON.parse(raw);
+      if (v && v.coupon && v.coachId === coachId) {
+        setCouponInput(v.coupon);
+        setActiveCoupon(v.coupon);
+      }
+    } catch { /* noop */ }
+  }, [coachId]);
+
   const onBootError = useCallback((m) => toast.error(m), [toast]);
   const { bootData, bootError } = useEnrollmentBoot({
     coachId, venueId, courseType, onError: onBootError,
@@ -172,6 +185,7 @@ export default function EnrollmentPage() {
           : null,
       });
       setConfirmOpen(false);
+      try { localStorage.removeItem('daos.pendingCoupon'); } catch { /* noop */ }
       navigate('/enroll-success', { state: { period }, replace: true });
     } catch {
       toast.error('送出失敗，請稍後再試');

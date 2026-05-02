@@ -14,6 +14,7 @@
 const express = require('express');
 const { pool } = require('../models/db');
 const promotions = require('../services/promotions');
+const referrals = require('../services/referrals');
 const { requireParent } = require('../middlewares/parentAuth');
 
 const router = express.Router();
@@ -84,6 +85,24 @@ router.post('/', async (req, res) => {
     }
     const original = Math.round(basePrice * multiplier);
     const couponCode = p.promotion && p.promotion.coupon_code ? String(p.promotion.coupon_code).trim() : null;
+
+    // ── MGM 體驗課 5 折專用驗證：TRIAL50 僅限有對應 referral 的家長 ──
+    if (couponCode && couponCode.toUpperCase() === 'TRIAL50') {
+      const refCheck = await client.query(
+        `SELECT id FROM referral_records
+          WHERE referee_parent_id = $1 AND coach_id = $2
+            AND status IN ('pending','registered')`,
+        [parentRow.id, coachId]
+      );
+      if (!refCheck.rowCount) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: 'TRIAL50 僅限受推薦的新學員於對應教練使用',
+          code: 'COUPON_OUT_OF_SCOPE',
+        });
+      }
+    }
+
     let preview;
     try {
       preview = await promotions.previewBestDiscount({
@@ -137,6 +156,14 @@ router.post('/', async (req, res) => {
        VALUES ($1, $2, $3)`,
       [enrollmentId, '家長提交報名', parentRow.phone]
     );
+
+    // MGM：若使用 TRIAL50，更新 referral_records 為 trial_paid
+    if (couponCode && couponCode.toUpperCase() === 'TRIAL50') {
+      await referrals.markTrialPaid(
+        { refereeParentId: parentRow.id, coachId, enrollmentId },
+        client
+      );
+    }
 
     await client.query('COMMIT');
 

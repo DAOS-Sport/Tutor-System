@@ -249,6 +249,25 @@ Mock：LIFF mockDb 新增 `previewPromotion`，含 WELCOME10 折價券測試代�
 
 煙霧：admin login → 建立 → submit → approve → /api/promotions/active 與 /api/promotions（LIFF 公開）皆出現該活動；preview 自動套用 11700 → 11115（折抵 585）；coupon=WELCOME10 → 折抵 500；coupon=NOPE 回 COUPON_INVALID 400。
 
+## Phase 6 (下)：MGM 推薦連結 + 推薦統計 (任務 #18 已完成)
+DB：新增 `referral_records`（migration 007 + coreSchema bootstrap，皆 idempotent）。token UNIQUE、`UNIQUE(referee_phone, coach_id) WHERE referee_phone IS NOT NULL` partial index 防同手機重複推薦同教練；status 流轉 `pending → registered → trial_paid → checked_in → reward_issued`。同步補 `parents.email/gender`、`students.id_number/gender`、seed `TRIAL50` 體驗課 5 折 promo。
+
+服務：`server/services/referrals.js` 含 `createLink`（產 token、寫 record）、`findByToken`（含 referrer + coach 摘要）、`bindReferee`（註冊時若 ref_token 有效且非自推薦 → 寫 referee_parent_id + status=registered）、`markTrialPaid`（enrollment 提交時更新）、`issueRewardForEnrollment`（簽到時建立 9 折 `MGM***` promotion code、寫 reward_promotion_id、推 LINE Flex `mgmRewardIssued`）。所有狀態轉換可在外層交易內呼叫。
+
+API：
+- 公開 `GET /r/:token` → 302 redirect 到 `/liff/#/register?ref=<token>`（QR / LINE 分享進入點）。
+- LIFF (parent JWT)：`POST /api/referrals` 產連結、`GET /api/referrals/by-token/:token` 顯示推薦資訊（不需登入）、`GET /api/referrals/mine` 我的推薦清單。
+- LIFF：`POST /api/parents` 接受 `ref_token` → 註冊成功後綁定 referee。
+- LIFF：`POST /api/enrollments` 在交易內驗證 `TRIAL50` 僅限受推薦的 referee + 對應教練（否則 400 `COUPON_OUT_OF_SCOPE`），通過則 `markTrialPaid`。
+- 後台：`POST /api/admin/sessions/checkin {enrollmentId}` → 寫 `experience_checked_in_at` + 觸發 `issueRewardForEnrollment`（staff 限本場館）。
+- 後台：`GET /api/admin/mgm-stats?coachId&venueId&from&to` → 漏斗統計（`total / byStatus / conversionRate / coachRanking[]`）。
+
+LIFF：`RegisterPage` 讀 `?ref=` 顯示推薦人 + 教練資訊，註冊成功後若綁定成功 → 寫 `localStorage.daos.pendingCoupon = {coupon: 'TRIAL50', coachId}` 並導去 `/coaches/:coachId`。`EnrollmentPage` 讀 pendingCoupon 同教練自動套用，提交成功清除。新增 `ReferralPage`（場館內教練清單 → 一鍵產生連結 → 複製 / LINE 分享，下方列我的推薦紀錄含狀態徽章），HomePage 加綠色 entry banner。
+
+Admin：Sidebar「行銷與優惠」新增 `/mgm-stats`（admin/manager 可見），`MgmStatsPage` 含日期 + 場館 + 教練篩選、4 張 KPI、狀態分布 chips、教練被推薦排行表（含轉換率）。
+
+煙霧：health 200 / `/r/abc123` → 302 / `/api/referrals/by-token/...` 404（unknown token）/ `/api/admin/mgm-stats` 401（未登入）/ liff & admin 靜態頁 200。Builds：admin 324KB、liff 491KB（gzip 101 / 151）。所有新頁 ≤ 250 行（最大 RegisterPage 168）。
+
 ## 變更紀錄
 - 2026-05-02：完成 LIFF Phase 1（任務 #7）。實作 7 個正式頁面 + 2 個 placeholder、6 個全域元件、雙 Context（Auth/Toast）、7 個 API 模組與 mock dataset、共用 utils；新增 `react-hook-form` 依賴、`postcss.config.js`；修正 `main.jsx` 加上無 LIFF_ID 的 dev fallback。`vite build` 通過（158 modules，401KB / 127KB gzip）。後端 19 個 stub 路由不變，LIFF 全程走 mock 模式以驗證 happy path；後續可由 `VITE_USE_MOCK=false` 切到真實 API，並透過 501 自動 fallback 機制漸進實作後端。
 - 2026-05-02：完成 SurveyJS Creator 評估報告，結論為「**不建議整合**」（授權費 USD $589/dev/年、套件巨大、與 Ragic 雙向同步設計衝突）。完整分析詳見 `docs/eval/surveyjs-creator.md`，含替代方案比較與分階段建議。

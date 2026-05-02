@@ -159,4 +159,50 @@ router.post('/:id/revive', requireAdminAuth, requireAdminRole('admin', 'manager'
   }
 });
 
+/**
+ * F-R03 收尾：體驗課簽到觸發 MGM 推薦獎勵發放
+ *  POST /api/admin/sessions/checkin   { enrollmentId }
+ *  - 將 admin_enrollments.experience_checked_in_at 設為 NOW()
+ *  - 若該 enrollment 對應 referral_records，發放 9 折券給推薦方並推 LINE Flex
+ */
+router.post('/checkin', requireAdminAuth, async (req, res) => {
+  const enrollmentId = String(req.body?.enrollmentId || '').trim();
+  if (!enrollmentId) return res.status(400).json({ error: 'enrollmentId required' });
+  try {
+    const e = await pool.query(
+      `SELECT id, venue_id FROM admin_enrollments WHERE id = $1`,
+      [enrollmentId]
+    );
+    if (!e.rowCount) return res.status(404).json({ error: 'enrollment not found' });
+    if (req.adminUser.role === 'staff' && e.rows[0].venue_id !== req.adminUser.venue_id) {
+      return res.status(403).json({ error: '無權跨場館簽到' });
+    }
+    await pool.query(
+      `ALTER TABLE admin_enrollments
+         ADD COLUMN IF NOT EXISTS experience_checked_in_at TIMESTAMPTZ`
+    );
+    await pool.query(
+      `UPDATE admin_enrollments SET experience_checked_in_at = COALESCE(experience_checked_in_at, NOW())
+        WHERE id = $1`,
+      [enrollmentId]
+    );
+    const by = req.adminUser?.name || req.adminUser?.username || 'unknown';
+    await pool.query(
+      `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user)
+       VALUES ($1, $2, $3)`,
+      [enrollmentId, '體驗課簽到', by]
+    );
+
+    const referrals = require('../../services/referrals');
+    const line = require('../../services/line');
+    const reward = await referrals.issueRewardForEnrollment(enrollmentId, {
+      line, BRAND_LIFF_URL: (process.env.LIFF_URL || '/liff/'),
+    });
+    res.json({ ok: true, reward });
+  } catch (err) {
+    console.error('[admin/sessions/checkin]', err);
+    res.status(500).json({ error: 'checkin failed' });
+  }
+});
+
 module.exports = router;
