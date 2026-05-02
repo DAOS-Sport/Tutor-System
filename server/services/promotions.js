@@ -135,16 +135,24 @@ async function recordUsage({ promotionId, parentId, coursePeriodId, adminEnrollm
   const db = client || pool;
   // 套用前的最後一道防線：在交易內 lock 該筆 promotion 並驗證 status / 使用量
   const lock = await db.query(
-    `SELECT status, max_uses, current_uses FROM promotions WHERE id = $1 FOR UPDATE`,
+    `SELECT status, max_uses, current_uses, start_date, end_date FROM promotions WHERE id = $1 FOR UPDATE`,
     [promotionId]
   );
   if (!lock.rowCount) {
     const err = new Error('折價券不存在'); err.code = 'COUPON_INVALID'; throw err;
   }
-  if (lock.rows[0].status !== 'active') {
+  const row = lock.rows[0];
+  if (row.status !== 'active') {
     const err = new Error('折價券尚未啟用'); err.code = 'COUPON_NOT_ACTIVE'; throw err;
   }
-  if (lock.rows[0].max_uses != null && lock.rows[0].current_uses >= lock.rows[0].max_uses) {
+  const now = new Date();
+  if (row.start_date && new Date(row.start_date) > now) {
+    const err = new Error('折價券尚未開始'); err.code = 'COUPON_NOT_STARTED'; throw err;
+  }
+  if (row.end_date && new Date(row.end_date) < now) {
+    const err = new Error('折價券已過期'); err.code = 'COUPON_EXPIRED'; throw err;
+  }
+  if (row.max_uses != null && row.current_uses >= row.max_uses) {
     const err = new Error('折價券使用次數已用盡'); err.code = 'COUPON_EXHAUSTED'; throw err;
   }
   const r = await db.query(
