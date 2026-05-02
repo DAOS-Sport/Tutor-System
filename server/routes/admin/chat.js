@@ -179,6 +179,18 @@ router.patch('/alerts/:id', requireAdminAuth, requireAdminRole('admin', 'manager
     if (!['pending', 'reviewed', 'no_issue', 'resolved'].includes(status)) {
       return res.status(400).json({ error: 'invalid status' });
     }
+    // manager 只能改自己場館的警示（避免跨館 IDOR）
+    if (req.adminUser.role === 'manager') {
+      const own = await pool.query(`
+        SELECT cp.venue_id FROM keyword_alerts a
+          JOIN chat_rooms cr     ON cr.id = a.chat_room_id
+          JOIN course_periods cp ON cp.id = cr.course_period_id
+         WHERE a.id = $1`, [req.params.id]);
+      if (!own.rowCount) return res.status(404).json({ error: 'not found' });
+      if (own.rows[0].venue_id !== req.adminUser.venue_id) {
+        return res.status(403).json({ error: 'forbidden' });
+      }
+    }
     const note = req.body?.review_note ? String(req.body.review_note).slice(0, 500) : null;
     const r = await pool.query(
       `UPDATE keyword_alerts
