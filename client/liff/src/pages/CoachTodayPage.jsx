@@ -55,7 +55,7 @@ export default function CoachTodayPage() {
               <button
                 key={s.id}
                 type="button"
-                onClick={() => toast.info('授課入口將於下個版本開放（學習歷程 / 簽到 / 上課記錄）')}
+                onClick={() => navigate(`/coach/session/${s.id}`)}
                 className="w-full rounded-xl border border-brand-primary/15 bg-white p-3 text-left shadow-sm active:bg-brand-primary/5"
               >
                 <div className="flex items-baseline justify-between">

@@ -36,8 +36,26 @@ export default function LoginPage() {
         navigate('/', { replace: true });
         return;
       }
+      // 嘗試教練端登入：明確區分「真的查無此手機(404)」vs「速率限制(429)」vs「其他錯誤(5xx/network)」
       let coach = null;
-      try { coach = await coachesApi.byPhone(trimmed); } catch { coach = null; }
+      try {
+        coach = await coachesApi.byPhone(trimmed);
+      } catch (err) {
+        const status = err?.response?.status;
+        if (status === 429) {
+          toast.error('登入嘗試過於頻繁，請 5 分鐘後再試');
+          return;
+        }
+        if (status && status >= 500) {
+          toast.error('伺服器忙線中，請稍後再試');
+          return;
+        }
+        if (status && status !== 404) {
+          toast.error(`查詢失敗（${status}）`);
+          return;
+        }
+        coach = null; // 404 → 真的查無
+      }
       if (coach) {
         setCoach(coach);
         toast.success(`歡迎，${coach.name} 教練`);
@@ -47,7 +65,10 @@ export default function LoginPage() {
       toast.info('查無此手機，請完成家長註冊');
       navigate(`/register?phone=${encodeURIComponent(trimmed)}`, { replace: true });
     } catch (err) {
-      toast.error('查詢失敗，請稍後再試');
+      const status = err?.response?.status;
+      if (status === 429) toast.error('登入嘗試過於頻繁，請 5 分鐘後再試');
+      else if (status && status >= 500) toast.error('伺服器忙線中，請稍後再試');
+      else toast.error('查詢失敗，請稍後再試');
     } finally {
       setBusy(false);
     }
