@@ -21,12 +21,22 @@ const { invalidateCache } = require('../../services/keywordScanner');
 const router = express.Router();
 
 // ── 聊天室監察 ─────────────────────────────
+// 場館邊界 (broken-access-control 防護)：
+//   admin   → 可看全部，可用 ?venueId= 過濾
+//   manager → 只能看自己場館；忽略 query.venueId
+//   staff   → 只能看自己場館；忽略 query.venueId
+//   無 venue_id 的 manager/staff → fail closed（不可越權看全部）
+function scopedVenueId(req) {
+  if (req.adminUser.role === 'admin') return req.query.venueId;
+  return req.adminUser.venue_id || '__no_venue__';
+}
+
 router.get('/rooms', requireAdminAuth, async (req, res) => {
   try {
-    const venueId = req.adminUser.role === 'staff'
-      ? (req.adminUser.venue_id || '__no_venue__')
-      : req.query.venueId;
-    const list = await chatRooms.listRoomsForAdmin({ venueId, search: req.query.search });
+    const list = await chatRooms.listRoomsForAdmin({
+      venueId: scopedVenueId(req),
+      search: req.query.search,
+    });
     res.json(list);
   } catch (err) {
     console.error('[admin/chat/rooms]', err);
@@ -38,8 +48,8 @@ router.get('/rooms/:id/messages', requireAdminAuth, async (req, res) => {
   try {
     const meta = await chatRooms.getRoomMeta(req.params.id);
     if (!meta) return res.status(404).json({ error: 'not found' });
-    // staff 只能看自己場館的聊天室（避免 IDOR：拿到任意 roomId 跨館讀）
-    if (req.adminUser.role === 'staff' && meta.venue?.id !== req.adminUser.venue_id) {
+    // manager / staff 只能看自己場館的聊天室（避免 IDOR：拿到任意 roomId 跨館讀）
+    if (req.adminUser.role !== 'admin' && meta.venue?.id !== req.adminUser.venue_id) {
       return res.status(403).json({ error: 'forbidden' });
     }
     const limit = Math.min(Number(req.query.limit) || 200, 500);
