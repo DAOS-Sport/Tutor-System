@@ -72,7 +72,10 @@ export default function PromotionsPage() {
   const canApprove = role === 'admin';
   const canArchive = role === 'admin';
 
+  const [actionBusy, setActionBusy] = useState(false);
   async function doAction(p, action, note) {
+    if (actionBusy) return;
+    setActionBusy(true);
     try {
       const fn = promotionsApi[action];
       await fn(p.id, note);
@@ -81,6 +84,7 @@ export default function PromotionsPage() {
     } catch (e) {
       toast.error(e?.response?.data?.error || '操作失敗');
     } finally {
+      setActionBusy(false);
       setConfirm(null);
     }
   }
@@ -185,7 +189,8 @@ export default function PromotionsPage() {
         title={confirm ? `確定要「${confirm.label}」優惠：${confirm.p.name}？` : ''}
         confirmLabel={confirm?.label}
         requireNote={!!confirm?.requireNote}
-        onCancel={() => setConfirm(null)}
+        busy={actionBusy}
+        onCancel={() => !actionBusy && setConfirm(null)}
         onConfirm={(note) => doAction(confirm.p, confirm.action, note)}
       />
     </div>
