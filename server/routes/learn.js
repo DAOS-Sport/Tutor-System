@@ -142,7 +142,8 @@ router.get('/history/:periodId', requireParent, async (req, res) => {
     const guard = await pool.query(
       `SELECT 1 FROM course_period_enrollments e
        JOIN students s ON s.id = e.student_id
-       WHERE e.course_period_id = $1 AND s.parent_id = $2 AND e.status = 'active' LIMIT 1`,
+       WHERE e.course_period_id = $1 AND s.parent_id = $2
+         AND e.status IN ('active','completed','withdrawn') LIMIT 1`,
       [req.params.periodId, req.parent.id]
     );
     if (!guard.rowCount) return res.status(403).json({ error: 'Forbidden' });
@@ -178,7 +179,7 @@ async function notifyPlanPublished(periodId) {
   if (!r.rowCount) return;
   const { venue_id, coach_name, uids } = r.rows[0];
   if (!uids || uids.length === 0) return;
-  const liffUrl = (process.env.LIFF_URL || 'https://liff.line.me/-') + `?p=${periodId}#/history/${periodId}`;
+  const liffUrl = (process.env.LIFF_URL || 'https://liff.line.me/-') + `#/history/${periodId}`;
   const msg = line.templates.coursePlanPublished({ coachName: coach_name, liffUrl });
   for (const uid of uids) {
     try { await line.pushMessage(uid, msg, venue_id); }
