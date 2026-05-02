@@ -155,3 +155,36 @@ EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN
   ALTER TABLE coaches ADD COLUMN IF NOT EXISTS intro_reviewed_by TEXT REFERENCES admin_users(id) ON DELETE SET NULL;
 EXCEPTION WHEN undefined_table THEN NULL; END $$;
+
+-- ── 預設種子（idempotent；給「只跑 SQL migration、不跑 bootstrap」的部署環境）──
+INSERT INTO tag_categories (name) VALUES
+  ('表現亮點'),('需加強'),('回家練習'),('上課摘要')
+ON CONFLICT (name) DO NOTHING;
+
+INSERT INTO tag_library (category_id, label, text_template)
+SELECT c.id, v.label, v.text_template FROM (VALUES
+  ('表現亮點','專注度高','本堂上課專注度高，能全程跟上節奏。'),
+  ('表現亮點','進步明顯','相較上堂課，技術動作有明顯進步。'),
+  ('表現亮點','主動發問','能主動發問並嘗試各種變化。'),
+  ('表現亮點','團隊默契佳','與同組學員配合度佳，團隊默契良好。'),
+  ('需加強','握拍偏緊','握拍仍偏緊，下一堂建議放鬆手腕並重複正手揮拍練習。'),
+  ('需加強','步伐慢半拍','步伐稍慢半拍，建議加強左右側併步移動。'),
+  ('需加強','專注度待提升','中段有些分心，下堂課將安排短回合互動以維持專注。'),
+  ('需加強','回擊節奏不穩','回擊節奏尚不穩定，將以多球練習穩定動作。'),
+  ('回家練習','揮拍 30 下','回家練習正手揮拍 30 下 × 2 組。'),
+  ('回家練習','對牆球','可在家對牆練習控球 5 分鐘。'),
+  ('回家練習','核心訓練','加強核心：平板支撐 30 秒 × 3 組。'),
+  ('回家練習','柔軟度','記得拉筋與肩膀柔軟度練習，預防運動傷害。'),
+  ('上課摘要','基本動作','本堂以基本動作（握拍 / 站姿 / 揮拍軌跡）為主。'),
+  ('上課摘要','正反手對抽','本堂進行正反手對抽訓練，含定點與移位變化。'),
+  ('上課摘要','發球練習','本堂安排發球練習，含上手 / 下手與站位調整。'),
+  ('上課摘要','對打模擬','後段進行對打模擬，鍛鍊比賽情境應變能力。')
+) AS v(cat_name, label, text_template)
+JOIN tag_categories c ON c.name = v.cat_name
+ON CONFLICT (category_id, label) DO NOTHING;
+
+INSERT INTO eval_thresholds (metric, min_value, window_months, is_active) VALUES
+  ('avg_overall',  4.00, 3, TRUE),
+  ('avg_teaching', 4.00, 3, TRUE),
+  ('renew_rate',   0.60, 3, TRUE)
+ON CONFLICT (metric) DO NOTHING;

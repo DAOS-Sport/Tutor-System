@@ -574,7 +574,7 @@ const DEFAULT_TAG_CATEGORIES = [
 const DEFAULT_THRESHOLDS = [
   { metric: 'avg_overall',  min_value: 4.00, window_months: 3 },
   { metric: 'avg_teaching', min_value: 4.00, window_months: 3 },
-  { metric: 'renew_rate',   min_value: 0.60, window_months: 6 },
+  { metric: 'renew_rate',   min_value: 0.60, window_months: 3 },
 ];
 
 async function seedTagsAndThresholds() {

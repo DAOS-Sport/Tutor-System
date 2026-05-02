@@ -137,7 +137,7 @@ router.put('/thresholds', requireAdminRole('admin'), wrap(async (req, res) => {
 
 // ── 教練介紹送審 (F-C06) ────────────────────
 router.get('/intros', requireAdminRole('admin', 'manager'), wrap(async (req, res) => {
-  const status = req.query.status || 'pending';
+  const status = req.query.status || 'pending_review';
   const where = status === 'all'
     ? `WHERE is_active = TRUE`
     : `WHERE is_active = TRUE AND intro_review_status = $1`;
