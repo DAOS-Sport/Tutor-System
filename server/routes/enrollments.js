@@ -152,6 +152,9 @@ router.post('/', async (req, res) => {
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('[enrollments create]', err);
+    if (err && err.code && String(err.code).startsWith('COUPON_')) {
+      return res.status(400).json({ error: '折價券無法使用，請確認代碼或重新試算', code: 'COUPON_INVALID' });
+    }
     res.status(500).json({ error: 'enrollment create failed' });
   } finally {
     client.release();
