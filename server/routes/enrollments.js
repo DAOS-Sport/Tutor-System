@@ -14,8 +14,10 @@
 const express = require('express');
 const { pool } = require('../models/db');
 const promotions = require('../services/promotions');
+const { requireParent } = require('../middlewares/parentAuth');
 
 const router = express.Router();
+router.use(requireParent);
 
 function genEnrollmentId() {
   const ts = Date.now().toString(36).toUpperCase();
@@ -25,7 +27,7 @@ function genEnrollmentId() {
 
 router.post('/', async (req, res) => {
   const p = req.body || {};
-  if (!p.parent_name || !p.parent_phone || !p.coach || !p.venue || !p.course_type
+  if (!p.coach || !p.venue || !p.course_type
       || !Array.isArray(p.students) || !p.students.length) {
     return res.status(400).json({ error: '報名資料不完整' });
   }
@@ -33,6 +35,18 @@ router.post('/', async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // ── server-authoritative 身份綁定：忽略 client 傳來的 parent_name/phone/id
+    //    一律以 JWT 解出的 req.parent.id 為準，從 parents 表讀真實資料 ──
+    const pr = await client.query(
+      `SELECT id, name, phone FROM parents WHERE id = $1`,
+      [req.parent.id]
+    );
+    if (!pr.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'parent identity not found' });
+    }
+    const parentRow = pr.rows[0];
 
     // ── 後端重算 (server-authoritative) ────────────────────────────────
     const original = Math.max(0, Math.round(Number(p.original_price) || 0));
@@ -54,13 +68,7 @@ router.post('/', async (req, res) => {
       throw err;
     }
 
-    // 解析 parents.id：以 phone 對應 parents 表，找不到則 NULL（不阻擋報名）
-    let parentUuid = null;
-    try {
-      const pr = await client.query(`SELECT id FROM parents WHERE phone = $1 LIMIT 1`, [p.parent_phone]);
-      if (pr.rowCount) parentUuid = pr.rows[0].id;
-    } catch (_) { /* parents table 不存在 / mock 環境 → 留 null */ }
-
+    const parentUuid = parentRow.id;
     const enrollmentId = genEnrollmentId();
     const studentNames = p.students.map((s) => s.name);
     const submittedAt = new Date();
@@ -71,7 +79,7 @@ router.post('/', async (req, res) => {
           original_price, final_price, transfer_last_5, status, submitted_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending_payment',$11)`,
       [
-        enrollmentId, p.parent_name, p.parent_phone, studentNames,
+        enrollmentId, parentRow.name, parentRow.phone, studentNames,
         p.coach.name || String(p.coach), p.venue.id, Number(p.course_type),
         preview.originalPrice, preview.finalPrice, p.transfer_last_5 || null,
         submittedAt,
@@ -94,14 +102,14 @@ router.post('/', async (req, res) => {
     await client.query(
       `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user)
        VALUES ($1, $2, $3)`,
-      [enrollmentId, '家長提交報名', p.parent_phone]
+      [enrollmentId, '家長提交報名', parentRow.phone]
     );
 
     await client.query('COMMIT');
 
     res.status(201).json({
       id: enrollmentId,
-      parent_id: p.parent_id || null,
+      parent_id: parentRow.id,
       coach: p.coach,
       venue: p.venue,
       course_type: Number(p.course_type),
