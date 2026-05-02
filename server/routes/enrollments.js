@@ -111,6 +111,7 @@ router.post('/', async (req, res) => {
         venueId: p.venue.id || null,
         periodCount: 1,
         couponCode,
+        parentId: parentRow.id,
       });
     } catch (err) {
       await client.query('ROLLBACK');

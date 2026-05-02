@@ -11,6 +11,12 @@ ALTER TABLE parents  ADD COLUMN IF NOT EXISTS gender  VARCHAR(20);
 ALTER TABLE students ADD COLUMN IF NOT EXISTS id_number VARCHAR(20);
 ALTER TABLE students ADD COLUMN IF NOT EXISTS gender    VARCHAR(20);
 
+-- MGM 獎勵券持有者綁定（NULL = 公開券）
+ALTER TABLE promotions
+  ADD COLUMN IF NOT EXISTS eligible_parent_id UUID REFERENCES parents(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS idx_promotions_eligible_parent
+  ON promotions(eligible_parent_id) WHERE eligible_parent_id IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS referral_records (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   token VARCHAR(40) NOT NULL UNIQUE,

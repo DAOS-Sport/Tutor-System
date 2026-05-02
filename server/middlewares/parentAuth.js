@@ -54,4 +54,18 @@ function requireLiffUser(req, res, next) {
   }
 }
 
-module.exports = { signParentToken, requireParent, requireLiffUser, getSecret };
+// 選用：若有合法 parent JWT 就解析到 req.parent，沒有也放行
+function optionalParent(req, _res, next) {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (token) {
+    try {
+      const p = jwt.verify(token, getSecret());
+      if (p.type === 'parent') {
+        req.parent = { id: p.parentId, phone: p.phone, lineUid: p.lineUid || null };
+      }
+    } catch { /* 忽略，視為訪客 */ }
+  }
+  next();
+}
+
+module.exports = { signParentToken, requireParent, requireLiffUser, optionalParent, getSecret };

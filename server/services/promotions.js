@@ -72,7 +72,7 @@ async function listActivePromotions({ today } = {}) {
  *   - 若有 couponCode → 嚴格驗證該代碼（必須符合 status/日期/scope/max_uses）。
  *   - 若無 couponCode → 自動從 active 且 coupon_code IS NULL 的活動中挑「折抵最大」一筆。
  */
-async function previewBestDiscount({ originalPrice, courseType, venueId, periodCount = 1, couponCode = null }) {
+async function previewBestDiscount({ originalPrice, courseType, venueId, periodCount = 1, couponCode = null, parentId = null }) {
   const today = new Date().toISOString().slice(0, 10);
   const op = Math.max(0, Math.round(Number(originalPrice) || 0));
   if (!op) return { originalPrice: 0, discountAmount: 0, finalPrice: 0, promotion: null };
@@ -99,6 +99,9 @@ async function previewBestDiscount({ originalPrice, courseType, venueId, periodC
     if (!matchScope(p, { courseType, venueId, periodCount })) {
       const err = new Error('折價券不適用本次購課'); err.code = 'COUPON_OUT_OF_SCOPE'; throw err;
     }
+    if (p.eligible_parent_id && p.eligible_parent_id !== parentId) {
+      const err = new Error('此折價券僅限指定家長使用'); err.code = 'COUPON_NOT_OWNER'; throw err;
+    }
     const discount = computeDiscount(p, op);
     return {
       originalPrice: op,
@@ -113,6 +116,7 @@ async function previewBestDiscount({ originalPrice, courseType, venueId, periodC
   let bestDiscount = 0;
   for (const p of candidates) {
     if (p.coupon_code) continue; // 需要代碼的不自動套用
+    if (p.eligible_parent_id) continue; // 私人券不能自動套用
     if (!matchScope(p, { courseType, venueId, periodCount })) continue;
     const d = computeDiscount(p, op);
     if (d > bestDiscount) { best = p; bestDiscount = d; }
@@ -136,7 +140,7 @@ async function recordUsage({ promotionId, parentId, coursePeriodId, adminEnrollm
   // 套用前的最後一道防線：在交易內 lock 該筆 promotion 並驗證 status / 使用量
   // 在 lock 同時用 SQL CURRENT_DATE 做日期內含比較（避免 JS Date 把 end_date 當午夜）
   const lock = await db.query(
-    `SELECT status, max_uses, current_uses,
+    `SELECT status, max_uses, current_uses, eligible_parent_id,
             (start_date IS NULL OR start_date <= CURRENT_DATE) AS started,
             (end_date   IS NULL OR end_date   >= CURRENT_DATE) AS not_expired
        FROM promotions WHERE id = $1 FOR UPDATE`,
@@ -157,6 +161,9 @@ async function recordUsage({ promotionId, parentId, coursePeriodId, adminEnrollm
   }
   if (row.max_uses != null && row.current_uses >= row.max_uses) {
     const err = new Error('折價券使用次數已用盡'); err.code = 'COUPON_EXHAUSTED'; throw err;
+  }
+  if (row.eligible_parent_id && row.eligible_parent_id !== parentId) {
+    const err = new Error('此折價券僅限指定家長使用'); err.code = 'COUPON_NOT_OWNER'; throw err;
   }
   const r = await db.query(
     `INSERT INTO promotion_usages (promotion_id, parent_id, course_period_id, admin_enrollment_id,

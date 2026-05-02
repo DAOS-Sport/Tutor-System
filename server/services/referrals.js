@@ -159,14 +159,16 @@ async function issueRewardForEnrollment(enrollmentId, { line, BRAND_LIFF_URL } =
     const promoIns = await client.query(
       `INSERT INTO promotions
          (name, description, type, discount_value, applicable_course_types,
-          coupon_code, start_date, end_date, max_uses, status, created_at, updated_at)
+          coupon_code, eligible_parent_id, start_date, end_date, max_uses,
+          status, created_at, updated_at)
        VALUES ($1, $2, 'PERCENTAGE', $3, ARRAY[1,2,3]::INTEGER[],
-               $4, CURRENT_DATE, CURRENT_DATE + INTERVAL '60 days', 1, 'active', NOW(), NOW())
+               $4, $5, CURRENT_DATE, CURRENT_DATE + INTERVAL '60 days', 1,
+               'active', NOW(), NOW())
        RETURNING id`,
       [
         `MGM 推薦獎勵 9 折券（${r.referrer_name}）`,
-        '感謝您成功推薦新學員，可於 60 天內使用一次',
-        REWARD_PERCENTAGE, code,
+        '感謝您成功推薦新學員，可於 60 天內使用一次（僅限本人）',
+        REWARD_PERCENTAGE, code, r.referrer_parent_id,
       ]
     );
     const promoId = promoIns.rows[0].id;

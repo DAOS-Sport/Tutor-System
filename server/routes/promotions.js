@@ -7,6 +7,7 @@
  */
 const express = require('express');
 const promotions = require('../services/promotions');
+const { optionalParent } = require('../middlewares/parentAuth');
 
 const router = express.Router();
 
@@ -35,7 +36,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-router.post('/preview', async (req, res) => {
+router.post('/preview', optionalParent, async (req, res) => {
   try {
     const { originalPrice, courseType, venueId, periodCount, couponCode } = req.body || {};
     if (!originalPrice || !courseType) {
@@ -47,6 +48,7 @@ router.post('/preview', async (req, res) => {
       venueId: venueId || null,
       periodCount: periodCount ? Number(periodCount) : 1,
       couponCode: couponCode || null,
+      parentId: req.parent?.id || null,
     });
     res.json(r);
   } catch (err) {

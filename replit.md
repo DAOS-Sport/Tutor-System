@@ -266,7 +266,9 @@ LIFF：`RegisterPage` 讀 `?ref=` 顯示推薦人 + 教練資訊，註冊成功�
 
 Admin：Sidebar「行銷與優惠」新增 `/mgm-stats`（admin/manager 可見），`MgmStatsPage` 含日期 + 場館 + 教練篩選、4 張 KPI、狀態分布 chips、教練被推薦排行表（含轉換率）。
 
-煙霧：health 200 / `/r/abc123` → 302 / `/api/referrals/by-token/...` 404（unknown token）/ `/api/admin/mgm-stats` 401（未登入）/ liff & admin 靜態頁 200。Builds：admin 324KB、liff 491KB（gzip 101 / 151）。所有新頁 ≤ 250 行（最大 RegisterPage 168）。
+安全：MGM 9 折獎勵券於 `promotions` 新增 `eligible_parent_id` 欄位綁定持有者；`previewBestDiscount` / `recordUsage` 強制比對 `parentId`，非持有者回 `COUPON_NOT_OWNER`；自動套用流程跳過所有私人券。`/api/promotions/preview` 加 `optionalParent` 中介層自動帶入 JWT 中的 parentId。狀態機防重發：`issueRewardForEnrollment` 在交易內 `SELECT FOR UPDATE` referral row → 顯式三段式 `trial_paid → checked_in → reward_issued`，並以 `reward_promotion_id IS NULL` 條件式 UPDATE 杜絕並發重發。`bindReferee` 僅允許 `status='pending' AND referee_phone IS NULL` 的 row 被佔用（單次綁定，避免覆寫前綁定）。`markTrialPaid` 以 `(refereeParentId, coachId)` 為 scope，避免跨教練誤更新。
+
+煙霧：health 200 / `/r/abc123` → 302 / `/api/referrals/by-token/...` 404（unknown token）/ `/api/admin/mgm-stats` 401（未登入）/ `/api/promotions/preview` 200 / liff & admin 靜態頁 200。Builds：admin 324KB、liff 491KB（gzip 101 / 151）。所有新頁 ≤ 250 行（最大 RegisterPage 168）。
 
 ## 變更紀錄
 - 2026-05-02：完成 LIFF Phase 1（任務 #7）。實作 7 個正式頁面 + 2 個 placeholder、6 個全域元件、雙 Context（Auth/Toast）、7 個 API 模組與 mock dataset、共用 utils；新增 `react-hook-form` 依賴、`postcss.config.js`；修正 `main.jsx` 加上無 LIFF_ID 的 dev fallback。`vite build` 通過（158 modules，401KB / 127KB gzip）。後端 19 個 stub 路由不變，LIFF 全程走 mock 模式以驗證 happy path；後續可由 `VITE_USE_MOCK=false` 切到真實 API，並透過 501 自動 fallback 機制漸進實作後端。
