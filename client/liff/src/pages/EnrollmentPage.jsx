@@ -99,12 +99,6 @@ export default function EnrollmentPage() {
   const { coach, venue } = bootData;
   const requiredStudentCount = courseType; // 1v1=1, 1v2=2, 1v3=3
   const totalSelected = selectedSelfStudents.length + selectedPartnerStudents.length;
-  const canSubmit =
-    totalSelected === requiredStudentCount &&
-    selectionResolved &&
-    isValidLast5(last5) &&
-    !submitting &&
-    (courseType === 1 || (partnerLookup && selectedPartnerStudents.length > 0));
 
   const allSelectedStudents = [
     ...selectedSelfStudents
@@ -123,6 +117,13 @@ export default function EnrollmentPage() {
   // 防 stale ID：所有已勾選 ID 都必須能解析到實際學員物件，否則送出鈕就不該亮
   const selectionResolved =
     allSelectedStudents.length === selectedSelfStudents.length + selectedPartnerStudents.length;
+
+  const canSubmit =
+    totalSelected === requiredStudentCount &&
+    selectionResolved &&
+    isValidLast5(last5) &&
+    !submitting &&
+    (courseType === 1 || (partnerLookup && selectedPartnerStudents.length > 0));
 
   async function handleLookupPartner() {
     if (!isValidTWPhone(partnerPhone)) {
