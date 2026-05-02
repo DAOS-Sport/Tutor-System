@@ -39,9 +39,27 @@ async function getActiveVenues() {
   return Object.values(data).filter(r => r['營運性質'] !== '內勤單位');
 }
 
-// Z01：依手機查詢家長
+// Ragic 主要欄位 ID（詳見 docs/ragic_api.md）
+const FIELD = {
+  Z01: {
+    PHONE: '1001100',         // (報)行動電話
+  },
+  Z02: {
+    ID_NUMBER: '1001118',     // 身分證字號
+    STUDENT_CODE: '1001132',  // 學員編號
+    NAME: '1001115',          // 學員姓名
+    BIRTH_DATE: '1001116',    // 出生年月日
+    GENDER: '1001117',        // 學(性別)
+    BLOOD_TYPE: '1001880',    // 血型
+    VENUE: '1002175',         // 館別
+    PARENT_PHONE: '1001113',  // (報)行動電話
+    PARENT_NAME: '1001272',   // 家長姓名
+  },
+};
+
+// Z01：依手機查詢家長（用 Ragic 的 where 語法做精確過濾）
 async function getParentByPhone(phone) {
-  const data = await query(process.env.RAGIC_FORM_Z01, { '行動電話': phone });
+  const data = await query(process.env.RAGIC_FORM_Z01, { where: `${FIELD.Z01.PHONE},eq,${phone}` });
   const records = Object.values(data);
   return records[0] || null;
 }
@@ -58,14 +76,16 @@ async function upsertParent(parentData, ragicRecordId = null) {
   }
 }
 
-// Z02：依身分證字號查詢學員
+// Z02：依身分證字號查詢學員（必須用 where=<fid>,eq,... 才能精確過濾）
 async function getStudentByIdNumber(idNumber) {
-  const data = await query(process.env.RAGIC_FORM_Z02, { '身分證字號': idNumber });
+  const data = await query(process.env.RAGIC_FORM_Z02, { where: `${FIELD.Z02.ID_NUMBER},eq,${idNumber}` });
   const records = Object.values(data);
   return records[0] || null;
 }
 
 // Z02：回寫學員資料
+// studentData 建議直接以 Field ID 為 key（如 { '1001115': '王小明', '1001118': 'A123456789' }）
+// 中文欄位名也接受，但若 Ragic 後台改名會失效。
 async function upsertStudent(studentData, ragicRecordId = null) {
   try {
     const path = ragicRecordId
@@ -77,4 +97,4 @@ async function upsertStudent(studentData, ragicRecordId = null) {
   }
 }
 
-module.exports = { getActiveCoaches, getCounterStaff, getAllStaff, getActiveVenues, getParentByPhone, upsertParent, getStudentByIdNumber, upsertStudent };
+module.exports = { FIELD, getActiveCoaches, getCounterStaff, getAllStaff, getActiveVenues, getParentByPhone, upsertParent, getStudentByIdNumber, upsertStudent };
