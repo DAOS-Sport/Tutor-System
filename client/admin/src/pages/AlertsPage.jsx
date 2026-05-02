@@ -37,10 +37,17 @@ export default function AlertsPage() {
 
   useEffect(() => { reload(filter); }, [filter]); // eslint-disable-line
 
-  async function handleAck(id, status) {
+  const [editing, setEditing] = useState(null); // { id, status, note }
+
+  async function submitReview() {
+    if (!editing) return;
     try {
-      await adminAlertsApi.update(id, { status });
-      toast(`已更新為「${STATUS_LABEL[status]}」`, 'success');
+      await adminAlertsApi.update(editing.id, {
+        status: editing.status,
+        review_note: editing.note?.trim() || undefined,
+      });
+      toast(`已更新為「${STATUS_LABEL[editing.status]}」`, 'success');
+      setEditing(null);
       reload();
     } catch (e) { toast(e?.response?.data?.error || '更新失敗', 'error'); }
   }
@@ -67,17 +74,18 @@ export default function AlertsPage() {
     { key: 'status', label: '狀態', render: (r) => (
       <StatusBadge tone={STATUS_TONE[r.status] || 'teal'} label={STATUS_LABEL[r.status] || r.status} />
     )},
+    { key: 'review_note', label: '處理結果', render: (r) => (
+      r.review_note
+        ? <div className="max-w-xs whitespace-pre-wrap text-xs text-gray-700">{r.review_note}</div>
+        : <span className="text-xs text-gray-400">—</span>
+    )},
     { key: 'op', label: '操作', render: (r) => (
       r.status !== 'pending' && r.reviewed_at ? (
-        <span className="text-xs text-gray-400">{fmt(r.reviewed_at)}</span>
+        <button type="button" onClick={() => setEditing({ id: r.id, status: r.status, note: r.review_note || '' })}
+          className="text-xs text-brand-teal underline">{fmt(r.reviewed_at)} · 修改</button>
       ) : (
-        <select defaultValue="" onChange={(e) => e.target.value && handleAck(r.id, e.target.value)}
-          className="rounded-md border border-gray-300 px-2 py-1 text-xs">
-          <option value="" disabled>選擇處理…</option>
-          {NEXT_STATUS_OPTIONS.map((s) => (
-            <option key={s.v} value={s.v}>{s.label}</option>
-          ))}
-        </select>
+        <button type="button" onClick={() => setEditing({ id: r.id, status: 'reviewed', note: '' })}
+          className="rounded-md bg-brand-teal px-3 py-1 text-xs font-bold text-white hover:opacity-90">處理</button>
       )
     )},
   ];
@@ -101,6 +109,29 @@ export default function AlertsPage() {
 
       {!list ? <LoadingSpinner /> : (
         <DataTable columns={columns} rows={list} emptyText="目前沒有警示" />
+      )}
+
+      {editing && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4" onClick={() => setEditing(null)}>
+          <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md rounded-xl bg-white p-5 shadow-xl">
+            <h3 className="mb-3 text-base font-bold text-brand-primary">處理警示</h3>
+            <label className="mb-2 block text-xs font-bold text-gray-600">處理結果（review_note）</label>
+            <textarea rows={4} value={editing.note} onChange={(e) => setEditing({ ...editing, note: e.target.value.slice(0, 500) })}
+              placeholder="補充判定理由 / 已聯絡家長 / 教練回報… (最多 500 字)"
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none" />
+            <label className="mb-2 mt-3 block text-xs font-bold text-gray-600">狀態</label>
+            <select value={editing.status} onChange={(e) => setEditing({ ...editing, status: e.target.value })}
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+              {NEXT_STATUS_OPTIONS.map((s) => (
+                <option key={s.v} value={s.v}>{s.label}</option>
+              ))}
+            </select>
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" onClick={() => setEditing(null)} className="rounded-md bg-gray-200 px-3 py-2 text-xs font-bold text-gray-700">取消</button>
+              <button type="button" onClick={submitReview} className="rounded-md bg-brand-primary px-3 py-2 text-xs font-bold text-white hover:opacity-90">儲存</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -24,6 +24,7 @@ router.use('/course-intros', require('./admin/courseIntros'));
 router.use('/enrollments',   require('./admin/enrollments'));
 router.use('/sessions',      require('./admin/sessions'));
 router.use('/chat',          require('./admin/chat'));
+router.use('/periods',       require('./admin/periods'));
 
 // 兜底：呼叫到沒實作的路徑時，明確回 404 而不是被前面的 401 吞掉
 router.all('*', (req, res) => {
