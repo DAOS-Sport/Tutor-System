@@ -127,6 +127,39 @@ function initCronJobs() {
     }
   });
 
+  // ── 每天 10:30：考核門檻不達標偵測 → 通知主管 (F-A09) ────────
+  // 同月、同教練、同 metric 不重複（資料庫 UNIQUE 兜底）；推 LINE 給管理層 admin_users.line_uid。
+  cron.schedule('30 10 * * *', async () => {
+    try {
+      const created = await evaluations.detectBelowThreshold();
+      if (created.length) {
+        console.warn(`[Cron/eval-threshold] flagged ${created.length} below-threshold metric(s)`);
+      }
+      const pending = await evaluations.listPendingAlerts();
+      if (!pending.length) return;
+      // 收件人：所有 admin / manager 且設定了 line_uid（與 keywordAlert 相同模式）
+      const mgrs = await pool.query(
+        `SELECT line_uid FROM admin_users WHERE role IN ('admin','manager') AND line_uid IS NOT NULL`
+      );
+      const uids = mgrs.rows.map((r) => r.line_uid).filter(Boolean);
+      const adminUrl = (process.env.ADMIN_URL || '').replace(/\/$/, '');
+      const dashboardUrl = adminUrl ? `${adminUrl}/admin/coach-eval` : 'https://example.com/admin/coach-eval';
+      for (const a of pending) {
+        const text =
+          `【教練考核警示】\n${a.coach_name}：${a.metric}\n` +
+          `近 ${a.window_months} 個月觀察值 ${a.observed_value ?? '—'}（門檻 ${a.min_value}）\n` +
+          `${dashboardUrl}`;
+        for (const uid of uids) {
+          try { await line.pushMessage(uid, [{ type: 'text', text }]); }
+          catch (e) { console.warn('[Cron/eval-threshold] push failed:', e.message); }
+        }
+        await evaluations.markAlertNotified(a.id);
+      }
+    } catch (e) {
+      console.warn('[Cron/eval-threshold] failed:', e.message);
+    }
+  });
+
   console.log('[Cron] All cron jobs initialized');
 }
 

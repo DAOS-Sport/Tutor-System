@@ -335,6 +335,21 @@ CREATE TABLE IF NOT EXISTS eval_thresholds (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- 不達標警示（dedupe by coach+metric+月份；主管通知記錄）
+CREATE TABLE IF NOT EXISTS eval_threshold_alerts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  coach_id UUID NOT NULL REFERENCES coaches(id) ON DELETE CASCADE,
+  metric VARCHAR(40) NOT NULL,
+  observed_value NUMERIC(5,2),
+  min_value NUMERIC(5,2) NOT NULL,
+  window_months INTEGER NOT NULL,
+  period_month CHAR(7) NOT NULL,         -- 'YYYY-MM'：同月不重複通知
+  notified_at TIMESTAMPTZ,               -- 已推給主管的時間（NULL = 尚未推）
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(coach_id, metric, period_month)
+);
+CREATE INDEX IF NOT EXISTS idx_eval_alerts_pending ON eval_threshold_alerts(notified_at) WHERE notified_at IS NULL;
+
 -- 教練介紹送審（F-C06）：教練端編輯 → 主管審核
 DO $$ BEGIN
   ALTER TABLE coaches ADD COLUMN IF NOT EXISTS intro_review_note TEXT;

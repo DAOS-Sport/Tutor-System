@@ -2,20 +2,20 @@
  * 期末評鑑 + 教練考核 service
  *
  * 對外介面：
- *   - ensureInvitation(periodId)            建立或取得 invitation（cron / API 共用）
- *   - listForParent(parentId)               取得家長端尚未填或已填的全部 evaluations
- *   - getMine(evalId, parentId)             取得單筆（含完整題目）
- *   - submit(evalId, parentId, payload)     提交（4 維度 + comment + renew_intent）
- *   - listInvitesForReminder()              cron 用：找出 invited > 7 天且未提交未提醒
- *   - markReminderSent(evalId)
- *   - coachReport(coachId, { from, to })    F-M09 教練報表（avg + monthly trend + comments）
- *   - thresholds()                          目前生效門檻
- *   - evaluateCoachAgainstThresholds(coachId, today=now)  用於後台徽章
+ *   - ensureInvitation(periodId)
+ *   - listForParent(parentId) / getMine(evalId, parentId) / submit(...)
+ *   - listInvitesForReminder() / markReminderSent(evalId)
+ *   - coachReport(coachId, { from, to })          F-M09 教練詳細
+ *   - thresholds() / upsertThreshold(...)         F-A09
+ *   - listAllCoachReports({ from, to })           F-M09 列表（每 metric 套對應 window_months）
+ *   - detectBelowThreshold()                       F-A09 不達標偵測（dedupe by coach+metric+月）
+ *   - listPendingAlerts() / markAlertNotified(id)
  */
 const { pool } = require('../models/db');
 
 const MAX_COMMENT = 1000;
 const RENEW_VALUES = new Set(['yes', 'no', 'unknown']);
+const METRIC_KEYS = ['avg_overall', 'avg_teaching', 'avg_attitude', 'avg_progress', 'renew_rate'];
 
 function _clampScore(v) {
   const n = Number(v);
@@ -110,10 +110,7 @@ async function listInvitesForReminder() {
 }
 
 async function markReminderSent(evalId) {
-  await pool.query(
-    `UPDATE course_evaluations SET reminder_sent_at = NOW() WHERE id = $1`,
-    [evalId]
-  );
+  await pool.query(`UPDATE course_evaluations SET reminder_sent_at = NOW() WHERE id = $1`, [evalId]);
 }
 
 // ── 後台教練考核報表 (F-M09) ──────────────────
@@ -156,11 +153,7 @@ async function coachReport(coachId, { from, to } = {}) {
   const total = (Number(s.renew_yes) || 0) + (Number(s.renew_no) || 0);
   const renew_rate = total ? Number((s.renew_yes / total).toFixed(2)) : null;
 
-  return {
-    summary: { ...s, renew_rate },
-    monthly: monthly.rows,
-    comments: comments.rows,
-  };
+  return { summary: { ...s, renew_rate }, monthly: monthly.rows, comments: comments.rows };
 }
 
 async function thresholds() {
@@ -186,33 +179,96 @@ async function upsertThreshold({ metric, min_value, window_months, is_active }) 
   return r.rows[0];
 }
 
-async function listAllCoachReports({ from, to } = {}) {
+// 計算單一教練、單一 metric 在指定 window_months 內的觀察值。
+async function _windowedMetric(coachId, metric, windowMonths) {
+  const months = Math.max(1, Number(windowMonths) || 3);
+  const since = `NOW() - ($2 || ' months')::INTERVAL`;
+  if (metric === 'renew_rate') {
+    const r = await pool.query(
+      `SELECT SUM(CASE WHEN renew_intent='yes' THEN 1 ELSE 0 END)::int AS y,
+              SUM(CASE WHEN renew_intent='no'  THEN 1 ELSE 0 END)::int AS n,
+              COUNT(*) FILTER (WHERE submitted_at IS NOT NULL)::int AS submitted
+         FROM course_evaluations
+        WHERE coach_id = $1 AND submitted_at IS NOT NULL AND submitted_at >= ${since}`,
+      [coachId, String(months)]
+    );
+    const { y = 0, n = 0, submitted = 0 } = r.rows[0] || {};
+    const total = (Number(y) || 0) + (Number(n) || 0);
+    return { value: total ? Number((y / total).toFixed(2)) : null, sample: submitted };
+  }
+  const col = ({ avg_overall: 'score_overall', avg_teaching: 'score_teaching',
+                 avg_attitude: 'score_attitude', avg_progress: 'score_progress' })[metric];
+  if (!col) return { value: null, sample: 0 };
   const r = await pool.query(
-    `SELECT co.id, co.name, co.is_senior, co.intro_review_status,
-            COUNT(ce.id) FILTER (WHERE ce.submitted_at IS NOT NULL)::int AS n,
-            ROUND(AVG(ce.score_overall) FILTER (WHERE ce.submitted_at IS NOT NULL)::numeric, 2) AS avg_overall,
-            ROUND(AVG(ce.score_teaching) FILTER (WHERE ce.submitted_at IS NOT NULL)::numeric, 2) AS avg_teaching,
-            SUM(CASE WHEN ce.renew_intent = 'yes' THEN 1 ELSE 0 END)::int AS renew_yes,
-            SUM(CASE WHEN ce.renew_intent = 'no'  THEN 1 ELSE 0 END)::int AS renew_no
-       FROM coaches co
-       LEFT JOIN course_evaluations ce ON ce.coach_id = co.id
-            ${from ? `AND ce.submitted_at >= '${new Date(from).toISOString()}'` : ''}
-            ${to ? `AND ce.submitted_at <= '${new Date(to).toISOString()}'` : ''}
-      WHERE co.is_active = TRUE
-      GROUP BY co.id, co.name, co.is_senior, co.intro_review_status
-      ORDER BY avg_overall DESC NULLS LAST, co.name`
+    `SELECT ROUND(AVG(${col})::numeric, 2) AS v, COUNT(*)::int AS n
+       FROM course_evaluations
+      WHERE coach_id = $1 AND submitted_at IS NOT NULL AND submitted_at >= ${since}`,
+    [coachId, String(months)]
   );
-  const ths = await thresholds();
-  const map = Object.fromEntries(ths.filter((t) => t.is_active).map((t) => [t.metric, Number(t.min_value)]));
-  return r.rows.map((row) => {
-    const total = (Number(row.renew_yes) || 0) + (Number(row.renew_no) || 0);
-    const renew_rate = total ? Number((row.renew_yes / total).toFixed(2)) : null;
+  return { value: r.rows[0]?.v == null ? null : Number(r.rows[0].v), sample: r.rows[0]?.n || 0 };
+}
+
+async function listAllCoachReports() {
+  const coaches = await pool.query(
+    `SELECT co.id, co.name, co.is_senior, co.intro_review_status
+       FROM coaches co WHERE co.is_active = TRUE ORDER BY co.name`
+  );
+  const ths = (await thresholds()).filter((t) => t.is_active && METRIC_KEYS.includes(t.metric));
+  const out = [];
+  for (const co of coaches.rows) {
+    const metrics = {};
     const failed = [];
-    if (map.avg_overall && row.avg_overall != null && Number(row.avg_overall) < map.avg_overall) failed.push('avg_overall');
-    if (map.avg_teaching && row.avg_teaching != null && Number(row.avg_teaching) < map.avg_teaching) failed.push('avg_teaching');
-    if (map.renew_rate && renew_rate != null && renew_rate < map.renew_rate) failed.push('renew_rate');
-    return { ...row, renew_rate, failed_metrics: failed };
-  });
+    for (const th of ths) {
+      const { value, sample } = await _windowedMetric(co.id, th.metric, th.window_months);
+      metrics[th.metric] = { value, sample, min_value: Number(th.min_value), window_months: th.window_months };
+      if (value != null && Number(value) < Number(th.min_value)) failed.push(th.metric);
+    }
+    // 為 UI 兼容，再算一個全期 avg/n 作為總覽欄位
+    const overall = await pool.query(
+      `SELECT COUNT(*) FILTER (WHERE submitted_at IS NOT NULL)::int AS n,
+              ROUND(AVG(score_overall) FILTER (WHERE submitted_at IS NOT NULL)::numeric, 2) AS avg_overall,
+              ROUND(AVG(score_teaching) FILTER (WHERE submitted_at IS NOT NULL)::numeric, 2) AS avg_teaching
+         FROM course_evaluations WHERE coach_id = $1`,
+      [co.id]
+    );
+    out.push({ ...co, ...overall.rows[0], metrics, failed_metrics: failed });
+  }
+  return out;
+}
+
+// 不達標偵測（cron 用）：每個教練 / 每個啟用門檻 → 同月寫一次，UNIQUE 防重。
+async function detectBelowThreshold() {
+  const reports = await listAllCoachReports();
+  const month = new Date().toISOString().slice(0, 7); // YYYY-MM
+  const created = [];
+  for (const r of reports) {
+    for (const metric of r.failed_metrics || []) {
+      const m = r.metrics[metric];
+      const ins = await pool.query(
+        `INSERT INTO eval_threshold_alerts
+           (coach_id, metric, observed_value, min_value, window_months, period_month)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (coach_id, metric, period_month) DO NOTHING
+         RETURNING *`,
+        [r.id, metric, m?.value, m?.min_value, m?.window_months, month]
+      );
+      if (ins.rowCount) created.push({ ...ins.rows[0], coach_name: r.name });
+    }
+  }
+  return created;
+}
+
+async function listPendingAlerts() {
+  const r = await pool.query(
+    `SELECT a.*, co.name AS coach_name
+       FROM eval_threshold_alerts a JOIN coaches co ON co.id = a.coach_id
+      WHERE a.notified_at IS NULL ORDER BY a.created_at DESC`
+  );
+  return r.rows;
+}
+
+async function markAlertNotified(id) {
+  await pool.query(`UPDATE eval_threshold_alerts SET notified_at = NOW() WHERE id = $1`, [id]);
 }
 
 module.exports = {
@@ -220,4 +276,5 @@ module.exports = {
   listInvitesForReminder, markReminderSent,
   coachReport, listAllCoachReports,
   thresholds, upsertThreshold,
+  detectBelowThreshold, listPendingAlerts, markAlertNotified,
 };
