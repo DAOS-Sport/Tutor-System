@@ -134,8 +134,12 @@ async function recordUsage({ promotionId, parentId, coursePeriodId, adminEnrollm
   if (!promotionId) return null;
   const db = client || pool;
   // 套用前的最後一道防線：在交易內 lock 該筆 promotion 並驗證 status / 使用量
+  // 在 lock 同時用 SQL CURRENT_DATE 做日期內含比較（避免 JS Date 把 end_date 當午夜）
   const lock = await db.query(
-    `SELECT status, max_uses, current_uses, start_date, end_date FROM promotions WHERE id = $1 FOR UPDATE`,
+    `SELECT status, max_uses, current_uses,
+            (start_date IS NULL OR start_date <= CURRENT_DATE) AS started,
+            (end_date   IS NULL OR end_date   >= CURRENT_DATE) AS not_expired
+       FROM promotions WHERE id = $1 FOR UPDATE`,
     [promotionId]
   );
   if (!lock.rowCount) {
@@ -145,11 +149,10 @@ async function recordUsage({ promotionId, parentId, coursePeriodId, adminEnrollm
   if (row.status !== 'active') {
     const err = new Error('折價券尚未啟用'); err.code = 'COUPON_NOT_ACTIVE'; throw err;
   }
-  const now = new Date();
-  if (row.start_date && new Date(row.start_date) > now) {
+  if (!row.started) {
     const err = new Error('折價券尚未開始'); err.code = 'COUPON_NOT_STARTED'; throw err;
   }
-  if (row.end_date && new Date(row.end_date) < now) {
+  if (!row.not_expired) {
     const err = new Error('折價券已過期'); err.code = 'COUPON_EXPIRED'; throw err;
   }
   if (row.max_uses != null && row.current_uses >= row.max_uses) {
