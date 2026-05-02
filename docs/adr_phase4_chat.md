@@ -44,3 +44,13 @@
 - **實作**：`/api/admin/chat/rooms` + `/rooms/:id/messages` 加
   `requireAdminRole('admin', 'manager')`；admin Sidebar 「聊天紀錄」menu item 移除 staff。
 - **F-A07 警示**：同樣僅 admin / manager；manager 限自己場館，無 venue_id 一律 fail closed。
+
+## 5. 讀取回條（read receipt）語意
+
+- **MVP 簡化**：`messages.read_by_peer` 表示「房間內非自己角色的另一方有人已讀」。
+- **1vN（多家長共用一房）情境**：例如 1 教練 vs 多家長共讀房間，`read_by_peer=true`
+  代表「教練 OR 任一其他家長」其中之一已讀，不會在 UI 區分是哪一位 peer 讀過。
+  教練端看到 `read_by_peer=true` 時表示「至少有一位家長」已讀；家長端看到時表示
+  「教練 OR 其他家長」其中之一已讀。
+- **後續可演進**：若 PM 要求 1vN 房 per-peer 已讀清單，可改讀 `message_reads` 明細
+  彙總（已存在），不需 schema 變更。

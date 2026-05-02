@@ -27,8 +27,11 @@ async function ensureRoomForPeriod(periodId) {
 
 /**
  * 將 course_period 切到 active，並冪等建立對應 chat_room（spec F-S09）。
- * 呼叫端可以是 admin 對帳通過、cron 排程或任何後端流程，保證
- * 「狀態變 active 即有聊天室」的不變式不會漂移。
+ *
+ * 【作業不變式】所有「期數變成 active」的程式路徑都必須透過此 service entry，
+ * 才能保證 active ⇔ 有 chat_room 的不變式即時成立；若有人直接 SQL UPDATE
+ * 繞過此 entry，cron `backfillRoomsForActivePeriods()` 會在 5 分鐘內補上
+ * （兜底，不是即時）。新 admin/coach/cron 流程加入時請走此 service。
  */
 async function transitionPeriodToActive(periodId) {
   const upd = await pool.query(
