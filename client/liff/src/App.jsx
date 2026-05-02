@@ -12,7 +12,8 @@ import CoachListPage from './pages/CoachListPage';
 import EnrollmentPage from './pages/EnrollmentPage';
 import EnrollmentSuccessPage from './pages/EnrollmentSuccessPage';
 import MyCoursesPage from './pages/MyCoursesPage';
-import ChatPage from './pages/ChatPage';
+import ChatListPage from './pages/ChatListPage';
+import ChatRoomPage from './pages/ChatRoomPage';
 import ProfilePage from './pages/ProfilePage';
 
 import CoachTodayPage from './pages/CoachTodayPage';
@@ -58,9 +59,10 @@ export default function App() {
               <Route element={<AppLayout />}>
                 <Route path="/" element={<HomePage />} />
                 <Route path="/my-courses" element={<MyCoursesPage />} />
-                <Route path="/chat" element={<ChatPage />} />
+                <Route path="/chat" element={<ChatListPage />} />
                 <Route path="/profile" element={<ProfilePage />} />
               </Route>
+              <Route path="/chat/:roomId" element={<ChatRoomPage />} />
               <Route element={<AppLayout showBackButton title="選擇場館" />}>
                 <Route path="/venue" element={<VenueSelectPage />} />
               </Route>
@@ -81,11 +83,13 @@ export default function App() {
                 <Route path="/coach" element={<CoachTodayPage />} />
                 <Route path="/coach/schedule" element={<CoachScheduleWeekPage />} />
                 <Route path="/coach/students" element={<CoachStudentsPage />} />
+                <Route path="/coach/chat" element={<ChatListPage />} />
                 <Route path="/coach/profile" element={<CoachProfilePage />} />
               </Route>
               <Route element={<AppLayout showBackButton title="授課入口" />}>
                 <Route path="/coach/session/:id" element={<CoachSessionPage />} />
               </Route>
+              <Route path="/coach/chat/:roomId" element={<ChatRoomPage />} />
             </Route>
           </Route>
 

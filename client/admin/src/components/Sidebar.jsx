@@ -35,6 +35,14 @@ const NAV_GROUPS = [
       { to: '/revive',      label: '退課復活 (F-M05)',   roles: ['admin', 'manager'] },
     ],
   },
+  {
+    title: '聊天監察',
+    items: [
+      { to: '/chat-logs', label: '聊天紀錄 (F-M03)', roles: ['admin', 'manager', 'staff'] },
+      { to: '/alerts',    label: '關鍵字警示',       roles: ['admin', 'manager'] },
+      { to: '/keywords',  label: '關鍵字管理 (F-A07)', roles: ['admin'] },
+    ],
+  },
 ];
 
 function canSee(item, role) {

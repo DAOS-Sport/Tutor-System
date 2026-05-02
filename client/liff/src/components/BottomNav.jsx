@@ -10,16 +10,19 @@ const PARENT_TABS = [
 ];
 
 const COACH_TABS = [
-  { to: '/coach',          label: '今日',     end: true,  icon: HomeIcon },
-  { to: '/coach/schedule', label: '排課總表', end: false, icon: CalendarIcon },
-  { to: '/coach/students', label: '學員',     end: false, icon: UsersIcon },
-  { to: '/coach/profile',  label: '個人',     end: false, icon: UserIcon },
+  { to: '/coach',          label: '今日',   end: true,  icon: HomeIcon },
+  { to: '/coach/schedule', label: '排課',   end: false, icon: CalendarIcon },
+  { to: '/coach/students', label: '學員',   end: false, icon: UsersIcon },
+  { to: '/coach/chat',     label: '聊天',   end: false, icon: ChatIcon },
+  { to: '/coach/profile',  label: '個人',   end: false, icon: UserIcon },
 ];
+
+const COL_MAP = { 3: 'grid-cols-3', 4: 'grid-cols-4', 5: 'grid-cols-5' };
 
 export default function BottomNav() {
   const { role } = useAuth();
   const tabs = role === 'coach' ? COACH_TABS : PARENT_TABS;
-  const cols = tabs.length >= 4 ? 'grid-cols-4' : 'grid-cols-3';
+  const cols = COL_MAP[tabs.length] || 'grid-cols-4';
 
   return (
     <nav className="fixed inset-x-0 bottom-0 z-30 mx-auto w-full max-w-[390px] border-t border-gray-200 bg-white">

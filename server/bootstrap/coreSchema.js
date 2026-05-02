@@ -162,7 +162,79 @@ CREATE TABLE IF NOT EXISTS checkin_records (
   checked_in_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE(course_session_id, student_id)
 );
+
+-- ─── Phase 4: 聊天室 / 訊息 / 關鍵字警示 ───────────────────────────────
+DO $$ BEGIN CREATE TYPE alert_status AS ENUM ('pending','reviewed','no_issue','resolved'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+CREATE TABLE IF NOT EXISTS chat_rooms (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  course_period_id UUID NOT NULL REFERENCES course_periods(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(course_period_id)
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  chat_room_id UUID NOT NULL REFERENCES chat_rooms(id) ON DELETE CASCADE,
+  sender_type VARCHAR(10) NOT NULL,           -- 'parent' | 'coach' | 'system'
+  sender_id UUID,                             -- nullable for 'system'
+  message_type VARCHAR(10) NOT NULL DEFAULT 'text', -- text|image|voice|video|file
+  content TEXT,
+  media_url TEXT,
+  media_filename VARCHAR(255),
+  media_size_bytes BIGINT,
+  is_read BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_messages_room ON messages(chat_room_id);
+CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS message_reads (
+  message_id UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  reader_type VARCHAR(10) NOT NULL,           -- 'parent' | 'coach'
+  reader_id UUID NOT NULL,
+  read_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (message_id, reader_type, reader_id)
+);
+
+CREATE TABLE IF NOT EXISTS keyword_list (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  keyword VARCHAR(100) NOT NULL UNIQUE,
+  category VARCHAR(30) NOT NULL,              -- 違規收費 / 不當言論 / 私下交易 / 其他
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS keyword_alerts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  chat_room_id UUID NOT NULL REFERENCES chat_rooms(id) ON DELETE CASCADE,
+  message_id UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  triggered_keyword VARCHAR(100) NOT NULL,
+  status alert_status NOT NULL DEFAULT 'pending',
+  reviewed_by UUID,
+  reviewed_at TIMESTAMPTZ,
+  review_note TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_alerts_status ON keyword_alerts(status);
+CREATE INDEX IF NOT EXISTS idx_alerts_room ON keyword_alerts(chat_room_id);
 `;
+
+// 預設關鍵字清單（F-A07，可在後台增減 / 停用）
+const DEFAULT_KEYWORDS = [
+  { keyword: '私下', category: '私下交易' },
+  { keyword: '私訊', category: '私下交易' },
+  { keyword: '加 line', category: '私下交易' },
+  { keyword: '私下加', category: '私下交易' },
+  { keyword: '另外收費', category: '違規收費' },
+  { keyword: '額外收費', category: '違規收費' },
+  { keyword: '紅包', category: '違規收費' },
+  { keyword: '匯款', category: '違規收費' },
+  { keyword: '退費', category: '客訴風險' },
+  { keyword: '投訴', category: '客訴風險' },
+  { keyword: '檢舉', category: '客訴風險' },
+  { keyword: '退課', category: '客訴風險' },
+];
 
 // ------ Seed dataset ------
 const VENUES = [
@@ -314,11 +386,34 @@ async function seedSlotsAndSessions() {
   console.log('[core bootstrap] seeded coaches + venues + parents + 8 demo slots for C001');
 }
 
+async function seedKeywords() {
+  for (const k of DEFAULT_KEYWORDS) {
+    await pool.query(
+      `INSERT INTO keyword_list (keyword, category, is_active)
+       VALUES ($1, $2, TRUE) ON CONFLICT (keyword) DO NOTHING`,
+      [k.keyword, k.category]
+    );
+  }
+}
+
+// 確保所有 active 的 course_periods 都有對應 chat_room（向前相容）
+async function ensureChatRoomsForActivePeriods() {
+  await pool.query(`
+    INSERT INTO chat_rooms (course_period_id)
+    SELECT cp.id FROM course_periods cp
+    LEFT JOIN chat_rooms cr ON cr.course_period_id = cp.id
+    WHERE cp.status = 'active' AND cr.id IS NULL
+    ON CONFLICT (course_period_id) DO NOTHING
+  `);
+}
+
 async function bootstrap() {
   try {
     await ensureSchema();
     await seedVenuesCoachesParents();
     await seedSlotsAndSessions();
+    await seedKeywords();
+    await ensureChatRoomsForActivePeriods();
     console.log('[core bootstrap] ready');
   } catch (err) {
     console.error('[core bootstrap] FAILED:', err.message);

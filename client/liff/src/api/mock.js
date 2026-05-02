@@ -335,4 +335,74 @@ export const mockDb = {
     list.splice(idx, 1);
     return { ok: true };
   },
+
+  // ── 聊天室（Phase 4 mock）──────────────────────────────────────────
+  chatRooms: () => CHAT_ROOMS.map((r) => ({
+    ...r,
+    last_message: (CHAT_MESSAGES[r.id] || []).slice(-1)[0] || null,
+    unread_count: (CHAT_MESSAGES[r.id] || []).filter((m) => !m.read_by_me && m.sender_type !== 'parent').length,
+  })),
+  chatRoom: (id) => {
+    const r = CHAT_ROOMS.find((x) => x.id === id);
+    return r ? JSON.parse(JSON.stringify(r)) : null;
+  },
+  chatMessages: (roomId) => (CHAT_MESSAGES[roomId] || []).slice(-80).map((m) => ({ ...m })),
+  chatSendText: (roomId, content) => {
+    if (!CHAT_MESSAGES[roomId]) CHAT_MESSAGES[roomId] = [];
+    const m = {
+      id: `MSG${++_msgSeq}`,
+      chat_room_id: roomId,
+      sender_type: 'parent', sender_id: 'P0001',
+      message_type: 'text', content,
+      media_url: null, media_filename: null, media_size_bytes: null,
+      created_at: new Date().toISOString(), read_by_me: true,
+    };
+    CHAT_MESSAGES[roomId].push(m);
+    return JSON.parse(JSON.stringify(m));
+  },
+  chatUploadFile: (roomId, file, caption) => {
+    if (!CHAT_MESSAGES[roomId]) CHAT_MESSAGES[roomId] = [];
+    const isImg = file.type?.startsWith('image/');
+    const url = URL.createObjectURL(file);
+    const m = {
+      id: `MSG${++_msgSeq}`,
+      chat_room_id: roomId,
+      sender_type: 'parent', sender_id: 'P0001',
+      message_type: isImg ? 'image' : 'file',
+      content: caption || null,
+      media_url: url, media_filename: file.name, media_size_bytes: file.size,
+      created_at: new Date().toISOString(), read_by_me: true,
+    };
+    CHAT_MESSAGES[roomId].push(m);
+    return JSON.parse(JSON.stringify(m));
+  },
+  chatMarkRead: (roomId) => {
+    (CHAT_MESSAGES[roomId] || []).forEach((m) => { m.read_by_me = true; });
+    return { ok: true };
+  },
+};
+
+// ── Phase 4 mock 資料：兩間聊天室（家長 P0001 ↔ 教練 C001/C002）────
+const CHAT_ROOMS = [
+  { id: 'CR001', course_period_id: 'CP0001',
+    coach: { id: 'C001', name: '王志強' }, venue: { id: 'B', name: '夢想體育學院 板橋館' },
+    course_type: 1, period_status: 'active', student_names: ['張小明'] },
+  { id: 'CR002', course_period_id: 'CP0002',
+    coach: { id: 'C002', name: '林佳穎' }, venue: { id: 'B', name: '夢想體育學院 板橋館' },
+    course_type: 2, period_status: 'pending_payment', student_names: ['張小美', '李小龍'] },
+];
+let _msgSeq = 100;
+const CHAT_MESSAGES = {
+  CR001: [
+    { id: 'MSG001', chat_room_id: 'CR001', sender_type: 'coach', sender_id: 'C001',
+      message_type: 'text', content: '張媽媽您好，今天上課表現很好，已經能順利打到底線了！',
+      created_at: new Date(Date.now() - 86400000).toISOString(), read_by_me: true },
+    { id: 'MSG002', chat_room_id: 'CR001', sender_type: 'parent', sender_id: 'P0001',
+      message_type: 'text', content: '太棒了！謝謝教練！下週同樣時間嗎？',
+      created_at: new Date(Date.now() - 86000000).toISOString(), read_by_me: true },
+    { id: 'MSG003', chat_room_id: 'CR001', sender_type: 'coach', sender_id: 'C001',
+      message_type: 'text', content: '對，下週二下午 14:00。',
+      created_at: new Date(Date.now() - 3600000).toISOString(), read_by_me: false },
+  ],
+  CR002: [],
 };

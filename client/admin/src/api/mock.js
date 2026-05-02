@@ -373,4 +373,92 @@ export const mockDb = {
   },
 
   _newId: (prefix) => nid(prefix),
+
+  // ── 聊天監察（F-M03/F-A07 mock） ───────────────────────────────────
+  adminChatRooms: ({ q } = {}) => CHAT_ROOMS_ADMIN.map((r) => ({
+    ...r,
+    last_message_at: (CHAT_MSG_ADMIN[r.id] || []).slice(-1)[0]?.created_at || null,
+    message_count: (CHAT_MSG_ADMIN[r.id] || []).length,
+  })).filter((r) => !q
+    || r.coach?.name?.includes(q)
+    || (r.student_names || []).some((n) => n.includes(q))
+    || r.id.includes(q)),
+  adminChatRoom: (id) => {
+    const r = CHAT_ROOMS_ADMIN.find((x) => x.id === id);
+    return r ? JSON.parse(JSON.stringify(r)) : null;
+  },
+  adminChatMessages: (roomId) => (CHAT_MSG_ADMIN[roomId] || []).map((m) => ({ ...m })),
+  adminChatExport: (roomId) => {
+    const room = CHAT_ROOMS_ADMIN.find((r) => r.id === roomId);
+    return {
+      room: room ? { ...room } : null,
+      exported_at: new Date().toISOString(),
+      messages: (CHAT_MSG_ADMIN[roomId] || []).map((m) => ({ ...m })),
+    };
+  },
+
+  adminKeywords: () => KEYWORDS.map((k) => ({ ...k })),
+  adminCreateKeyword: ({ keyword, category = '其他', is_active = true }) => {
+    const k = { id: nid('KW'), keyword: keyword.trim(), category, is_active,
+      created_at: new Date().toISOString() };
+    KEYWORDS.push(k);
+    return { ...k };
+  },
+  adminUpdateKeyword: (id, patch) => {
+    const k = KEYWORDS.find((x) => x.id === id);
+    if (!k) throw new Error('關鍵字不存在');
+    Object.assign(k, patch);
+    return { ...k };
+  },
+  adminDeleteKeyword: (id) => {
+    const i = KEYWORDS.findIndex((x) => x.id === id);
+    if (i === -1) throw new Error('關鍵字不存在');
+    KEYWORDS.splice(i, 1);
+    return { ok: true };
+  },
+
+  adminAlerts: ({ status } = {}) => ALERTS
+    .filter((a) => !status || a.status === status)
+    .map((a) => ({ ...a })),
+  adminUpdateAlert: (id, patch) => {
+    const a = ALERTS.find((x) => x.id === id);
+    if (!a) throw new Error('警示不存在');
+    Object.assign(a, patch, { reviewed_at: new Date().toISOString() });
+    return { ...a };
+  },
 };
+
+// ── Phase 4 mock 資料：admin 聊天監察 + 關鍵字 + 警示 ─────────────────
+const CHAT_ROOMS_ADMIN = [
+  { id: 'CR001', coach: { id: 'C001', name: '王志強' }, venue: { id: 'B', name: '夢想體育學院 板橋館' },
+    course_type: 1, period_status: 'active', student_names: ['張小明'] },
+  { id: 'CR002', coach: { id: 'C002', name: '林佳穎' }, venue: { id: 'B', name: '夢想體育學院 板橋館' },
+    course_type: 2, period_status: 'pending_payment', student_names: ['張小美', '李小龍'] },
+];
+const CHAT_MSG_ADMIN = {
+  CR001: [
+    { id: 'MSG001', message_type: 'text', sender_type: 'coach', sender_name: '王志強',
+      content: '張媽媽您好，今天上課表現很好！', created_at: new Date(Date.now() - 86400000).toISOString() },
+    { id: 'MSG002', message_type: 'text', sender_type: 'parent', sender_name: '張媽媽',
+      content: '太棒了，謝謝教練！可以加你 line 嗎？', created_at: new Date(Date.now() - 86000000).toISOString() },
+    { id: 'MSG003', message_type: 'text', sender_type: 'coach', sender_name: '王志強',
+      content: '不好意思，學院規定統一在這裡溝通哦～', created_at: new Date(Date.now() - 3600000).toISOString() },
+  ],
+  CR002: [],
+};
+const KEYWORDS = [
+  { id: 'KW001', keyword: '加 line', category: '私下交易', is_active: true, created_at: new Date().toISOString() },
+  { id: 'KW002', keyword: '私下',    category: '私下交易', is_active: true, created_at: new Date().toISOString() },
+  { id: 'KW003', keyword: '紅包',    category: '違規收費', is_active: true, created_at: new Date().toISOString() },
+  { id: 'KW004', keyword: '退費',    category: '客訴風險', is_active: true, created_at: new Date().toISOString() },
+];
+const ALERTS = [
+  { id: 'AL001', triggered_keyword: '加 line', status: 'pending',
+    coach_name: '王志強', venue_name: '夢想體育學院 板橋館',
+    chat_room_id: 'CR001', message_id: 'MSG002',
+    sender_type: 'parent',
+    message_content: '太棒了，謝謝教練！可以加你 line 嗎？',
+    message_at: new Date(Date.now() - 86000000).toISOString(),
+    created_at: new Date(Date.now() - 86000000).toISOString(),
+    reviewed_at: null, review_note: null },
+];

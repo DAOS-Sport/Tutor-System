@@ -316,8 +316,24 @@ function mgmRewardIssued({ refereeName, couponDetails, liffUrl }) {
   }];
 }
 
+// 高階 helper：推 keywordAlert Flex 給單一主管 line_uid（呼叫端不必組 message）
+// venueId 必填：用於挑該場館的 LINE channel token（pushMessage 第三參數）
+async function pushKeywordAlert(lineUserId, { venueId, keyword, chatRoomId, snippet }) {
+  if (!venueId) throw new Error('pushKeywordAlert: venueId required');
+  const adminUrl = (process.env.ADMIN_URL || '').replace(/\/$/, '');
+  const chatUrl = adminUrl ? `${adminUrl}/admin/alerts` : `https://example.com/admin/alerts`;
+  const messages = keywordAlert({
+    coachName: '—',
+    parentName: snippet ? `「${snippet}…」` : '—',
+    keyword,
+    chatUrl,
+  });
+  return pushMessage(lineUserId, messages, venueId);
+}
+
 module.exports = {
   pushMessage,
+  pushKeywordAlert,
   templates: {
     enrollmentSuccess,
     courseActivated,

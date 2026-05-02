@@ -1,8 +1,197 @@
+/**
+ * /api/chat — 聊天室 HTTP API（家長 + 教練共用，admin 走 /api/admin/chat）
+ *
+ *  GET   /rooms                          列出我的聊天室（依角色）
+ *  GET   /rooms/:id                      取得房間 meta
+ *  GET   /rooms/:id/messages?before=&limit=  分頁歷史訊息（新→舊）
+ *  POST  /rooms/:id/messages             { content }                送文字
+ *  POST  /rooms/:id/upload               multipart file → 自動寫入訊息（type=image|video|voice|file）
+ *  POST  /rooms/:id/read                 { message_ids? }           標記已讀（未傳則整房未讀全標）
+ */
 const express = require('express');
-const router = express.Router();
+const multer = require('multer');
+const { pool } = require('../models/db');
+const { requireLiffUser } = require('../middlewares/parentAuth');
+const chatRooms = require('../services/chatRooms');
+const { saveBuffer, ALLOWED_MAX_BYTES } = require('../services/objectStorage');
+const { scanAndAlert } = require('../services/keywordScanner');
+const { broadcastMessage, broadcastRead } = require('../services/websocket');
+const { notifyKeywordAlert } = require('./_chatNotify');
 
-router.all('*', (req, res) => {
-  res.status(501).json({ error: 'Not implemented', module: 'chat', path: req.path });
+const router = express.Router();
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: ALLOWED_MAX_BYTES } });
+
+async function authzRoom(req, res, next) {
+  const ok = await chatRooms.canAccess({
+    roomId: req.params.id,
+    role: req.liffUser.type,
+    userId: req.liffUser.id,
+  });
+  if (!ok) return res.status(403).json({ error: '無權限存取此聊天室' });
+  next();
+}
+
+router.get('/rooms', requireLiffUser, async (req, res) => {
+  try {
+    const list = req.liffUser.type === 'parent'
+      ? await chatRooms.listRoomsForParent(req.liffUser.id)
+      : await chatRooms.listRoomsForCoach(req.liffUser.id);
+    res.json(list);
+  } catch (err) {
+    console.error('[chat/rooms]', err);
+    res.status(500).json({ error: 'list rooms failed' });
+  }
+});
+
+router.get('/rooms/:id', requireLiffUser, authzRoom, async (req, res) => {
+  try {
+    const meta = await chatRooms.getRoomMeta(req.params.id);
+    if (!meta) return res.status(404).json({ error: 'not found' });
+    res.json(meta);
+  } catch (err) {
+    console.error('[chat/rooms/:id]', err);
+    res.status(500).json({ error: 'get room failed' });
+  }
+});
+
+router.get('/rooms/:id/messages', requireLiffUser, authzRoom, async (req, res) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 50, 100);
+    const before = req.query.before;
+    const args = [req.params.id];
+    let where = `chat_room_id = $1`;
+    if (before) { args.push(before); where += ` AND created_at < $${args.length}`; }
+    args.push(limit);
+    const r = await pool.query(
+      `SELECT id, chat_room_id, sender_type, sender_id, message_type, content, media_url,
+              media_filename, media_size_bytes, created_at
+         FROM messages
+        WHERE ${where}
+        ORDER BY created_at DESC
+        LIMIT $${args.length}`,
+      args
+    );
+    // 已讀狀態：對 viewer 而言（自己發的不算未讀）
+    const ids = r.rows.map((m) => m.id);
+    let readSet = new Set();
+    if (ids.length) {
+      const rd = await pool.query(
+        `SELECT message_id FROM message_reads
+          WHERE message_id = ANY($1) AND reader_type = $2 AND reader_id = $3`,
+        [ids, req.liffUser.type, req.liffUser.id]
+      );
+      readSet = new Set(rd.rows.map((x) => x.message_id));
+    }
+    res.json(r.rows.reverse().map((m) => ({
+      ...m,
+      read_by_me: readSet.has(m.id) || (m.sender_type === req.liffUser.type && m.sender_id === req.liffUser.id),
+    })));
+  } catch (err) {
+    console.error('[chat messages]', err);
+    res.status(500).json({ error: 'list messages failed' });
+  }
+});
+
+async function _persistAndBroadcast({ roomId, sender, type, content, media }) {
+  const r = await pool.query(
+    `INSERT INTO messages (chat_room_id, sender_type, sender_id, message_type, content,
+                           media_url, media_filename, media_size_bytes)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     RETURNING id, chat_room_id, sender_type, sender_id, message_type, content,
+               media_url, media_filename, media_size_bytes, created_at`,
+    [roomId, sender.type, sender.id, type, content || null,
+     media?.url || null, media?.filename || null, media?.size || null]
+  );
+  const msg = r.rows[0];
+  broadcastMessage(roomId, msg);
+  if (type === 'text' && content) {
+    const alerts = await scanAndAlert({ messageId: msg.id, chatRoomId: roomId, content });
+    if (alerts.length) notifyKeywordAlert({ roomId, message: msg, alerts }).catch((e) =>
+      console.warn('[chat] notifyKeywordAlert failed:', e.message)
+    );
+  }
+  return msg;
+}
+
+router.post('/rooms/:id/messages', requireLiffUser, authzRoom, async (req, res) => {
+  try {
+    const content = String(req.body?.content || '').trim();
+    if (!content) return res.status(400).json({ error: '訊息內容必填' });
+    if (content.length > 2000) return res.status(400).json({ error: '訊息過長（上限 2000 字）' });
+    const msg = await _persistAndBroadcast({
+      roomId: req.params.id,
+      sender: req.liffUser,
+      type: 'text',
+      content,
+    });
+    res.status(201).json(msg);
+  } catch (err) {
+    console.error('[chat send]', err);
+    res.status(500).json({ error: 'send failed' });
+  }
+});
+
+router.post('/rooms/:id/upload', requireLiffUser, authzRoom, upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: '請選擇檔案' });
+    const saved = await saveBuffer({
+      buffer: req.file.buffer,
+      originalName: req.file.originalname,
+      mimeType: req.file.mimetype,
+    });
+    const msg = await _persistAndBroadcast({
+      roomId: req.params.id,
+      sender: req.liffUser,
+      type: saved.messageType,
+      content: req.body?.caption || null,
+      media: saved,
+    });
+    res.status(201).json(msg);
+  } catch (err) {
+    console.error('[chat upload]', err);
+    res.status(400).json({ error: err.message || 'upload failed' });
+  }
+});
+
+router.post('/rooms/:id/read', requireLiffUser, authzRoom, async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.message_ids) ? req.body.message_ids : null;
+    let toMark;
+    if (ids && ids.length) {
+      toMark = await pool.query(
+        `SELECT id FROM messages
+          WHERE id = ANY($1) AND chat_room_id = $2
+            AND NOT (sender_type = $3 AND sender_id = $4)`,
+        [ids, req.params.id, req.liffUser.type, req.liffUser.id]
+      );
+    } else {
+      toMark = await pool.query(
+        `SELECT id FROM messages
+          WHERE chat_room_id = $1 AND NOT (sender_type = $2 AND sender_id = $3)
+            AND NOT EXISTS (SELECT 1 FROM message_reads r
+                             WHERE r.message_id = messages.id
+                               AND r.reader_type = $2 AND r.reader_id = $3)`,
+        [req.params.id, req.liffUser.type, req.liffUser.id]
+      );
+    }
+    const messageIds = toMark.rows.map((x) => x.id);
+    for (const mid of messageIds) {
+      await pool.query(
+        `INSERT INTO message_reads (message_id, reader_type, reader_id)
+         VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        [mid, req.liffUser.type, req.liffUser.id]
+      );
+    }
+    if (messageIds.length) {
+      broadcastRead(req.params.id, {
+        reader_type: req.liffUser.type, reader_id: req.liffUser.id, message_ids: messageIds,
+      });
+    }
+    res.json({ ok: true, marked: messageIds.length });
+  } catch (err) {
+    console.error('[chat read]', err);
+    res.status(500).json({ error: 'mark read failed' });
+  }
 });
 
 module.exports = router;

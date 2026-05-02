@@ -14,6 +14,9 @@ import RefundPage from './pages/RefundPage';
 import SessionsPage from './pages/SessionsPage';
 import CheckinPage from './pages/CheckinPage';
 import RevivePage from './pages/RevivePage';
+import ChatLogsPage from './pages/ChatLogsPage';
+import AlertsPage from './pages/AlertsPage';
+import KeywordsPage from './pages/KeywordsPage';
 
 const ALL = ['admin', 'manager', 'staff'];
 
@@ -41,6 +44,11 @@ export default function App() {
         <Route path="/sessions" element={<RequireAuth roles={ALL}><SessionsPage /></RequireAuth>} />
         <Route path="/checkin"  element={<RequireAuth roles={ALL}><CheckinPage /></RequireAuth>} />
         <Route path="/revive"   element={<RequireAuth roles={['admin', 'manager']}><RevivePage /></RequireAuth>} />
+
+        {/* 聊天監察（Phase 4） */}
+        <Route path="/chat-logs" element={<RequireAuth roles={ALL}><ChatLogsPage /></RequireAuth>} />
+        <Route path="/alerts"    element={<RequireAuth roles={['admin', 'manager']}><AlertsPage /></RequireAuth>} />
+        <Route path="/keywords"  element={<RequireAuth roles={['admin']}><KeywordsPage /></RequireAuth>} />
       </Route>
 
       <Route path="*" element={<Navigate to="/dashboard" replace />} />

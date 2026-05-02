@@ -46,6 +46,22 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 app.use('/admin', express.static(path.join(PUBLIC_DIR, 'admin')));
 app.use('/liff', express.static(path.join(PUBLIC_DIR, 'liff')));
 
+// 聊天室媒體上傳（Phase 4）：本機 server/uploads 直接以 /uploads 對外
+// 安全：強制 X-Content-Type-Options + 對非媒體型一律以 attachment 下載，避免同源 XSS / iframe sandbox 逃逸
+app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
+  maxAge: '7d',
+  setHeaders(res, filePath) {
+    res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+    const lower = filePath.toLowerCase();
+    const isMedia = /\.(jpg|jpeg|png|gif|webp|heic|heif|mp4|m4v|mov|webm|mp3|wav|m4a|aac|ogg|amr)$/.test(lower);
+    if (!isMedia) {
+      res.setHeader('Content-Disposition', 'attachment');
+    }
+  },
+}));
+
 // SPA fallback：將子路徑導回對應前端的 index.html，讓 React Router 接手
 app.get('/admin/*', (req, res, next) => {
   res.sendFile(path.join(PUBLIC_DIR, 'admin', 'index.html'), (err) => err && next(err));
