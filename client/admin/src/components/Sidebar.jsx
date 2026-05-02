@@ -48,7 +48,7 @@ const NAV_GROUPS = [
     items: [
       { to: '/tags',            label: '標籤庫 (F-A08)',       roles: ['admin', 'manager'] },
       { to: '/coach-eval',      label: '教練考核 (F-M09)',     roles: ['admin', 'manager'] },
-      { to: '/eval-thresholds', label: '考核門檻 (F-A09)',     roles: ['admin'] },
+      { to: '/eval-threshold', label: '考核門檻 (F-A09)',     roles: ['admin'] },
       { to: '/coach-intros-review', label: '教練介紹送審 (F-C06)', roles: ['admin', 'manager'] },
     ],
   },

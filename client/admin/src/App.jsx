@@ -57,7 +57,7 @@ export default function App() {
         {/* 學習歷程 (Phase 5) */}
         <Route path="/tags"                 element={<RequireAuth roles={['admin', 'manager']}><TagsPage /></RequireAuth>} />
         <Route path="/coach-eval"           element={<RequireAuth roles={['admin', 'manager']}><CoachEvalPage /></RequireAuth>} />
-        <Route path="/eval-thresholds"      element={<RequireAuth roles={['admin']}><EvalThresholdPage /></RequireAuth>} />
+        <Route path="/eval-threshold"      element={<RequireAuth roles={['admin']}><EvalThresholdPage /></RequireAuth>} />
         <Route path="/coach-intros-review"  element={<RequireAuth roles={['admin', 'manager']}><CoachIntrosReviewPage /></RequireAuth>} />
       </Route>
 

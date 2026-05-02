@@ -81,13 +81,29 @@ function initCronJobs() {
   // ── 每天 10:00：期末評鑑邀請 + 7 天提醒 ────────
   cron.schedule('0 10 * * *', async () => {
     try {
-      // (a) 課程期已修完且尚未建立 invitation → 為每位家長建立 1 筆並推播
+      // (a) F-S12 觸發：「最後一堂的點名日 = 今天」且尚未建立 invitation。
+      // 以 checkin_records 的時間為準（不依賴 used_sessions 計數），符合
+      // 「最後一堂上完點名後當日寄發」規格。
       const due = await pool.query(
-        `SELECT cp.id, cp.venue_id, co.name AS coach_name
-           FROM course_periods cp JOIN coaches co ON co.id = cp.coach_id
+        `WITH last_sess AS (
+           SELECT DISTINCT ON (cs.course_period_id)
+                  cs.course_period_id, cs.id AS session_id, cs.scheduled_at
+             FROM course_sessions cs
+            ORDER BY cs.course_period_id, cs.scheduled_at DESC
+         )
+         SELECT cp.id, cp.venue_id, co.name AS coach_name
+           FROM course_periods cp
+           JOIN coaches co ON co.id = cp.coach_id
+           JOIN last_sess ls ON ls.course_period_id = cp.id
           WHERE cp.status = 'active'
-            AND cp.used_sessions >= cp.total_sessions
-            AND NOT EXISTS (SELECT 1 FROM course_evaluations ce WHERE ce.course_period_id = cp.id)`
+            AND EXISTS (
+              SELECT 1 FROM checkin_records cr
+               WHERE cr.course_session_id = ls.session_id
+                 AND cr.checked_in_at::date = CURRENT_DATE
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM course_evaluations ce WHERE ce.course_period_id = cp.id
+            )`
       );
       for (const row of due.rows) {
         const created = await evaluations.ensureInvitation(row.id);

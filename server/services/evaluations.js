@@ -223,15 +223,20 @@ async function listAllCoachReports() {
       metrics[th.metric] = { value, sample, min_value: Number(th.min_value), window_months: th.window_months };
       if (value != null && Number(value) < Number(th.min_value)) failed.push(th.metric);
     }
-    // 為 UI 兼容，再算一個全期 avg/n 作為總覽欄位
+    // 為 UI 兼容，再算一個全期 avg/n + renew_rate 作為總覽欄位
     const overall = await pool.query(
       `SELECT COUNT(*) FILTER (WHERE submitted_at IS NOT NULL)::int AS n,
               ROUND(AVG(score_overall) FILTER (WHERE submitted_at IS NOT NULL)::numeric, 2) AS avg_overall,
-              ROUND(AVG(score_teaching) FILTER (WHERE submitted_at IS NOT NULL)::numeric, 2) AS avg_teaching
+              ROUND(AVG(score_teaching) FILTER (WHERE submitted_at IS NOT NULL)::numeric, 2) AS avg_teaching,
+              SUM(CASE WHEN renew_intent='yes' THEN 1 ELSE 0 END)::int AS renew_yes,
+              SUM(CASE WHEN renew_intent='no'  THEN 1 ELSE 0 END)::int AS renew_no
          FROM course_evaluations WHERE coach_id = $1`,
       [co.id]
     );
-    out.push({ ...co, ...overall.rows[0], metrics, failed_metrics: failed });
+    const o = overall.rows[0] || {};
+    const totalRenew = (Number(o.renew_yes) || 0) + (Number(o.renew_no) || 0);
+    const renew_rate = totalRenew ? Number((o.renew_yes / totalRenew).toFixed(2)) : null;
+    out.push({ ...co, ...o, renew_rate, metrics, failed_metrics: failed });
   }
   return out;
 }
