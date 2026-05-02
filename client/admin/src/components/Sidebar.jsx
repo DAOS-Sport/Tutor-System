@@ -16,7 +16,7 @@ const NAV_GROUPS = [
       { to: '/settings',     label: '全域系統設定 (F-A01)', roles: ['admin'] },
       { to: '/staff',        label: '員工帳號管理 (F-A02)', roles: ['admin'] },
       { to: '/venues',       label: '場館設定 (F-A03)',     roles: ['admin'] },
-      { to: '/course-intros', label: '課程介紹 (F-A04)',     roles: ['admin'] },
+      { to: '/course-intros', label: '課程介紹 (F-A04/F-M06)', roles: ['admin', 'manager'] },
     ],
   },
   {

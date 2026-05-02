@@ -30,7 +30,7 @@ export default function App() {
         <Route path="/settings"      element={<RequireAuth roles={['admin']}><SettingsPage /></RequireAuth>} />
         <Route path="/staff"         element={<RequireAuth roles={['admin']}><StaffPage /></RequireAuth>} />
         <Route path="/venues"        element={<RequireAuth roles={['admin']}><VenuesPage /></RequireAuth>} />
-        <Route path="/course-intros" element={<RequireAuth roles={['admin']}><CourseIntrosPage /></RequireAuth>} />
+        <Route path="/course-intros" element={<RequireAuth roles={['admin', 'manager']}><CourseIntrosPage /></RequireAuth>} />
 
         {/* 報名與對帳 */}
         <Route path="/reconcile"   element={<RequireAuth roles={ALL}><ReconcilePage /></RequireAuth>} />

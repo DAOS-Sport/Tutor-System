@@ -13,6 +13,7 @@ import { formatTWD, formatTWDateTime, courseTypeLabel } from '../utils/format';
 export default function ReconcilePage() {
   const toast = useToast();
   const { user, isStaff } = useAuth();
+  const canReconcile = !isStaff; // staff 限唯讀（依需求 F-M02）
   const [list, setList] = useState(null);
   const [venues, setVenues] = useState([]);
   const [confirming, setConfirming] = useState(null);
@@ -58,29 +59,40 @@ export default function ReconcilePage() {
     { key: 'transfer_last_5', label: '末 5 碼', className: 'text-center', render: (r) => <span className="font-mono">{r.transfer_last_5}</span> },
     {
       key: 'actions', label: '操作', className: 'text-right',
-      render: (r) => (
+      render: (r) => canReconcile ? (
         <button
           className="rounded-md bg-brand-green px-3 py-1.5 text-xs font-bold text-white hover:bg-brand-teal"
           onClick={() => setConfirming(r)}
         >
           對帳通過
         </button>
+      ) : (
+        <span className="text-xs text-gray-400" title="僅主管 / 管理員可對帳">唯讀</span>
       ),
     },
   ];
+
+  async function doReconcileGuarded() {
+    if (!canReconcile) {
+      toast.error('您的角色（行政櫃檯）無對帳權限');
+      setConfirming(null);
+      return;
+    }
+    return doReconcile();
+  }
 
   return (
     <div>
       <PageHeader
         title="待對帳清單"
-        subtitle={`F-M02 · 共 ${list.length} 筆等待對帳${isStaff ? '（限本場館）' : ''}`}
+        subtitle={`F-M02 · 共 ${list.length} 筆等待對帳${isStaff ? '（限本場館，唯讀）' : ''}`}
       />
       <DataTable columns={columns} rows={list} rowKey={(r) => r.id} empty="目前沒有待對帳的報名" />
       <ConfirmDialog
         open={!!confirming}
         title="確認對帳通過？"
         onCancel={() => setConfirming(null)}
-        onConfirm={doReconcile}
+        onConfirm={doReconcileGuarded}
         busy={busy}
         confirmLabel="確認對帳"
       >
