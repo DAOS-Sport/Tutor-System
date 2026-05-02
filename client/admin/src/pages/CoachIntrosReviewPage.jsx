@@ -6,7 +6,7 @@ import { useToast } from '../context/ToastContext';
 import { adminIntrosApi } from '../api/learn';
 
 const STATUS_TONE = {
-  draft: 'gold', pending_review: 'orange', published: 'green', rejected: 'orange',
+  draft: 'gold', pending_review: 'amber', published: 'green', rejected: 'error',
 };
 const STATUS_LABEL = {
   draft: '草稿', pending_review: '待審', published: '已上架', rejected: '退回',
@@ -66,7 +66,7 @@ export default function CoachIntrosReviewPage() {
                 <h3 className="text-base font-bold text-brand-primary">{c.name}</h3>
                 <p className="mt-0.5 text-xs text-gray-500">{c.phone}</p>
               </div>
-              <StatusBadge tone={STATUS_TONE[c.intro_review_status] || 'teal'} label={STATUS_LABEL[c.intro_review_status] || c.intro_review_status} />
+              <StatusBadge tone={STATUS_TONE[c.intro_review_status] || 'teal'}>{STATUS_LABEL[c.intro_review_status] || c.intro_review_status}</StatusBadge>
             </div>
 
             <div className="mt-2 max-h-40 overflow-y-auto rounded bg-gray-50 p-3 text-sm text-gray-800 whitespace-pre-wrap">

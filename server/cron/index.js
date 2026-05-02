@@ -78,8 +78,11 @@ function initCronJobs() {
     }
   });
 
-  // ── 每天 10:00：期末評鑑邀請 + 7 天提醒 ────────
-  cron.schedule('0 10 * * *', async () => {
+  // ── 每小時 :05：期末評鑑邀請 + 7 天提醒 ────────
+  // 不限定 10:00，避免下午/晚上才上完課當天的期別錯過觸發。
+  // 觸發條件改為「最後一堂的最新點名時間在最近 24 小時內，且尚未建立
+  // 該家長的 invitation」；ensureInvitation() 之 ON CONFLICT 確保冪等。
+  cron.schedule('5 * * * *', async () => {
     try {
       // (a) F-S12 觸發：「最後一堂的點名日 = 今天」且尚未建立 invitation。
       // 以 checkin_records 的時間為準（不依賴 used_sessions 計數），符合
@@ -99,7 +102,7 @@ function initCronJobs() {
             AND EXISTS (
               SELECT 1 FROM checkin_records cr
                WHERE cr.course_session_id = ls.session_id
-                 AND cr.checked_in_at::date = CURRENT_DATE
+                 AND cr.checked_in_at >= NOW() - INTERVAL '25 hours'
             )
             -- 不再以「period 已有任一 invitation」為前置過濾，
             -- 改全交由 ensureInvitation() 之 ON CONFLICT 保證冪等，

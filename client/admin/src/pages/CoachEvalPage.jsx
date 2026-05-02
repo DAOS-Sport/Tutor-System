@@ -67,10 +67,10 @@ export default function CoachEvalPage() {
                     <td className="text-xs">{c.renew_rate != null ? `${Math.round(c.renew_rate * 100)}%` : '—'}</td>
                     <td>
                       {c.failed_metrics?.length
-                        ? <StatusBadge tone="orange" label={`不達標 ${c.failed_metrics.length}`} />
+                        ? <StatusBadge tone="amber">{`不達標 ${c.failed_metrics.length}`}</StatusBadge>
                         : c.n === 0
-                          ? <StatusBadge tone="teal" label="無資料" />
-                          : <StatusBadge tone="green" label="達標" />}
+                          ? <StatusBadge tone="teal">無資料</StatusBadge>
+                          : <StatusBadge tone="green">達標</StatusBadge>}
                     </td>
                   </tr>
                 ))}
