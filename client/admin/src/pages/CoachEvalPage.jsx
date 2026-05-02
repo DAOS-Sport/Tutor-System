@@ -21,7 +21,7 @@ function StarBar({ value }) {
 }
 
 export default function CoachEvalPage() {
-  const { toast } = useToast();
+  const toast = useToast();
   const [list, setList] = useState(null);
   const [activeId, setActiveId] = useState(null);
   const [report, setReport] = useState(null);
@@ -29,14 +29,14 @@ export default function CoachEvalPage() {
   useEffect(() => {
     adminEvalApi.listCoaches()
       .then((r) => setList(Array.isArray(r) ? r : []))
-      .catch((e) => { setList([]); toast(e?.response?.data?.error || e.message, 'error'); });
+      .catch((e) => { setList([]); toast.error(e?.response?.data?.error || e.message); });
   }, []); // eslint-disable-line
 
   function openCoach(c) {
     setActiveId(c.id); setReport(null);
     adminEvalApi.coachReport(c.id)
       .then(setReport)
-      .catch((e) => toast(e?.response?.data?.error || e.message, 'error'));
+      .catch((e) => toast.error(e?.response?.data?.error || e.message));
   }
 
   if (!list) return <div className="p-6"><LoadingSpinner /></div>;

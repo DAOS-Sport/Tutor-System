@@ -7,7 +7,7 @@ import { adminTagsApi } from '../api/learn';
 const EMPTY_TAG = { category_id: '', label: '', text_template: '', is_active: true };
 
 export default function TagsPage() {
-  const { toast } = useToast();
+  const toast = useToast();
   const [data, setData] = useState(null);
   const [tagForm, setTagForm] = useState(EMPTY_TAG);
   const [editId, setEditId] = useState(null);
@@ -18,7 +18,7 @@ export default function TagsPage() {
     setData(null);
     adminTagsApi.list()
       .then((r) => setData(r))
-      .catch((e) => { setData({ categories: [], tags: [] }); toast(e?.response?.data?.error || e.message, 'error'); });
+      .catch((e) => { setData({ categories: [], tags: [] }); toast.error(e?.response?.data?.error || e.message); });
   }
   useEffect(reload, []); // eslint-disable-line
 
@@ -36,39 +36,39 @@ export default function TagsPage() {
   async function submitTag(e) {
     e.preventDefault();
     if (!tagForm.category_id || !tagForm.label.trim() || !tagForm.text_template.trim()) {
-      toast('分類 / 標籤名稱 / 文案皆必填', 'error'); return;
+      toast.error('分類 / 標籤名稱 / 文案皆必填'); return;
     }
     setBusy(true);
     try {
       if (editId) await adminTagsApi.updateTag(editId, tagForm);
       else await adminTagsApi.createTag(tagForm);
-      toast('已儲存', 'success'); reset(); reload();
-    } catch (e2) { toast(e2?.response?.data?.error || '儲存失敗', 'error'); }
+      toast.success('已儲存'); reset(); reload();
+    } catch (e2) { toast.error(e2?.response?.data?.error || '儲存失敗'); }
     finally { setBusy(false); }
   }
 
   async function toggleActive(t) {
     try { await adminTagsApi.updateTag(t.id, { is_active: !t.is_active }); reload(); }
-    catch (e) { toast(e?.response?.data?.error || '更新失敗', 'error'); }
+    catch (e) { toast.error(e?.response?.data?.error || '更新失敗'); }
   }
 
   async function removeTag(t) {
     if (!confirm(`確定刪除標籤「${t.label}」？`)) return;
-    try { await adminTagsApi.removeTag(t.id); toast('已刪除', 'success'); reload(); }
-    catch (e) { toast(e?.response?.data?.error || '刪除失敗', 'error'); }
+    try { await adminTagsApi.removeTag(t.id); toast.success('已刪除'); reload(); }
+    catch (e) { toast.error(e?.response?.data?.error || '刪除失敗'); }
   }
 
   async function addCategory(e) {
     e.preventDefault();
     if (!catName.trim()) return;
     try { await adminTagsApi.createCategory({ name: catName.trim() }); setCatName(''); reload(); }
-    catch (e2) { toast(e2?.response?.data?.error || '新增失敗', 'error'); }
+    catch (e2) { toast.error(e2?.response?.data?.error || '新增失敗'); }
   }
 
   async function removeCategory(c) {
     if (!confirm(`刪除分類「${c.name}」會同時刪除其所有標籤，確定？`)) return;
     try { await adminTagsApi.removeCategory(c.id); reload(); }
-    catch (e) { toast(e?.response?.data?.error || '刪除失敗', 'error'); }
+    catch (e) { toast.error(e?.response?.data?.error || '刪除失敗'); }
   }
 
   if (!data) return <div className="p-6"><LoadingSpinner /></div>;

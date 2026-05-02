@@ -13,7 +13,7 @@ const STATUS_LABEL = {
 };
 
 export default function CoachIntrosReviewPage() {
-  const { toast } = useToast();
+  const toast = useToast();
   const [filter, setFilter] = useState('pending_review');
   const [list, setList] = useState(null);
   const [busyId, setBusyId] = useState(null);
@@ -22,14 +22,14 @@ export default function CoachIntrosReviewPage() {
     setList(null);
     adminIntrosApi.list(filter)
       .then((r) => setList(Array.isArray(r) ? r : []))
-      .catch((e) => { setList([]); toast(e?.response?.data?.error || e.message, 'error'); });
+      .catch((e) => { setList([]); toast.error(e?.response?.data?.error || e.message); });
   }
   useEffect(reload, [filter]); // eslint-disable-line
 
   async function approve(c) {
     setBusyId(c.id);
-    try { await adminIntrosApi.approve(c.id); toast(`已上架：${c.name}`, 'success'); reload(); }
-    catch (e) { toast(e?.response?.data?.error || '上架失敗', 'error'); }
+    try { await adminIntrosApi.approve(c.id); toast.success(`已上架：${c.name}`); reload(); }
+    catch (e) { toast.error(e?.response?.data?.error || '上架失敗'); }
     finally { setBusyId(null); }
   }
 
@@ -37,8 +37,8 @@ export default function CoachIntrosReviewPage() {
     const note = prompt(`退回「${c.name}」的原因：`);
     if (!note || !note.trim()) return;
     setBusyId(c.id);
-    try { await adminIntrosApi.reject(c.id, note.trim()); toast('已退回', 'success'); reload(); }
-    catch (e) { toast(e?.response?.data?.error || '退回失敗', 'error'); }
+    try { await adminIntrosApi.reject(c.id, note.trim()); toast.success('已退回'); reload(); }
+    catch (e) { toast.error(e?.response?.data?.error || '退回失敗'); }
     finally { setBusyId(null); }
   }
 

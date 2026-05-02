@@ -28,16 +28,25 @@ const evals = require('../../services/evaluations');
 const router = express.Router();
 router.use(requireAdminAuth);
 
+// async error wrapper：所有 handler 一律走此 wrapper，避免 unhandled rejection。
+const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+function sendError(res, label, e) {
+  console.error(`[admin/learn] ${label} failed:`, e?.message || e);
+  const status = Number(e?.status) || 500;
+  res.status(status).json({ error: e?.message || 'Internal Server Error' });
+}
+
 // ── 標籤庫 ───────────────────────────────
-router.get('/tags', async (_req, res) => {
+router.get('/tags', wrap(async (_req, res) => {
   const cats = await pool.query(`SELECT * FROM tag_categories ORDER BY sort_order, name`);
   const tags = await pool.query(
     `SELECT * FROM tag_library ORDER BY category_id, sort_order, label`
   );
   res.json({ categories: cats.rows, tags: tags.rows });
-});
+}));
 
-router.post('/tag-categories', requireAdminRole('admin', 'manager'), async (req, res) => {
+router.post('/tag-categories', requireAdminRole('admin', 'manager'), wrap(async (req, res) => {
   const { name, sort_order } = req.body || {};
   if (!name) return res.status(400).json({ error: 'name required' });
   try {
@@ -50,14 +59,14 @@ router.post('/tag-categories', requireAdminRole('admin', 'manager'), async (req,
     if (e.code === '23505') return res.status(409).json({ error: '此分類已存在' });
     throw e;
   }
-});
+}));
 
-router.delete('/tag-categories/:id', requireAdminRole('admin'), async (req, res) => {
+router.delete('/tag-categories/:id', requireAdminRole('admin'), wrap(async (req, res) => {
   await pool.query(`DELETE FROM tag_categories WHERE id = $1`, [req.params.id]);
   res.json({ ok: true });
-});
+}));
 
-router.post('/tags', requireAdminRole('admin', 'manager'), async (req, res) => {
+router.post('/tags', requireAdminRole('admin', 'manager'), wrap(async (req, res) => {
   const { category_id, label, text_template, sort_order } = req.body || {};
   if (!category_id || !label || !text_template)
     return res.status(400).json({ error: 'category_id / label / text_template required' });
@@ -72,9 +81,9 @@ router.post('/tags', requireAdminRole('admin', 'manager'), async (req, res) => {
     if (e.code === '23505') return res.status(409).json({ error: '同分類下已有相同標籤' });
     throw e;
   }
-});
+}));
 
-router.patch('/tags/:id', requireAdminRole('admin', 'manager'), async (req, res) => {
+router.patch('/tags/:id', requireAdminRole('admin', 'manager'), wrap(async (req, res) => {
   const sets = [];
   const args = [];
   for (const k of ['label', 'text_template', 'is_active', 'sort_order']) {
@@ -90,30 +99,30 @@ router.patch('/tags/:id', requireAdminRole('admin', 'manager'), async (req, res)
     args
   );
   res.json(r.rows[0] || null);
-});
+}));
 
-router.delete('/tags/:id', requireAdminRole('admin', 'manager'), async (req, res) => {
+router.delete('/tags/:id', requireAdminRole('admin', 'manager'), wrap(async (req, res) => {
   await pool.query(`DELETE FROM tag_library WHERE id = $1`, [req.params.id]);
   res.json({ ok: true });
-});
+}));
 
 // ── 考核報表 (F-M09) ────────────────────────
-router.get('/coach-eval', requireAdminRole('admin', 'manager'), async (req, res) => {
+router.get('/coach-eval', requireAdminRole('admin', 'manager'), wrap(async (req, res) => {
   const list = await evals.listAllCoachReports({ from: req.query.from, to: req.query.to });
   res.json(list);
-});
+}));
 
-router.get('/coach-eval/:coachId', requireAdminRole('admin', 'manager'), async (req, res) => {
+router.get('/coach-eval/:coachId', requireAdminRole('admin', 'manager'), wrap(async (req, res) => {
   const data = await evals.coachReport(req.params.coachId, { from: req.query.from, to: req.query.to });
   res.json(data);
-});
+}));
 
 // ── 門檻 (F-A09) ────────────────────────────
-router.get('/thresholds', async (_req, res) => {
+router.get('/thresholds', wrap(async (_req, res) => {
   res.json(await evals.thresholds());
-});
+}));
 
-router.put('/thresholds', requireAdminRole('admin'), async (req, res) => {
+router.put('/thresholds', requireAdminRole('admin'), wrap(async (req, res) => {
   const { metric, min_value, window_months, is_active } = req.body || {};
   if (!metric || min_value === undefined)
     return res.status(400).json({ error: 'metric / min_value required' });
@@ -124,10 +133,10 @@ router.put('/thresholds', requireAdminRole('admin'), async (req, res) => {
     is_active: is_active === undefined ? true : !!is_active,
   });
   res.json(row);
-});
+}));
 
 // ── 教練介紹送審 (F-C06) ────────────────────
-router.get('/intros', async (req, res) => {
+router.get('/intros', wrap(async (req, res) => {
   const status = req.query.status || 'pending';
   const where = status === 'all'
     ? `WHERE is_active = TRUE`
@@ -142,9 +151,9 @@ router.get('/intros', async (req, res) => {
     args
   );
   res.json(r.rows);
-});
+}));
 
-router.post('/intros/:coachId/approve', requireAdminRole('admin', 'manager'), async (req, res) => {
+router.post('/intros/:coachId/approve', requireAdminRole('admin', 'manager'), wrap(async (req, res) => {
   const r = await pool.query(
     `UPDATE coaches SET intro_review_status = 'published',
                        intro_reviewed_at = NOW(),
@@ -155,9 +164,9 @@ router.post('/intros/:coachId/approve', requireAdminRole('admin', 'manager'), as
   );
   if (!r.rowCount) return res.status(404).json({ error: 'coach not found' });
   res.json(r.rows[0]);
-});
+}));
 
-router.post('/intros/:coachId/reject', requireAdminRole('admin', 'manager'), async (req, res) => {
+router.post('/intros/:coachId/reject', requireAdminRole('admin', 'manager'), wrap(async (req, res) => {
   const note = String(req.body?.note || '').slice(0, 500);
   if (!note) return res.status(400).json({ error: 'note required' });
   const r = await pool.query(
@@ -170,6 +179,9 @@ router.post('/intros/:coachId/reject', requireAdminRole('admin', 'manager'), asy
   );
   if (!r.rowCount) return res.status(404).json({ error: 'coach not found' });
   res.json(r.rows[0]);
-});
+}));
+
+// 路由區段層級的 error middleware：把 wrap() 攔下的 rejection 轉成穩定 JSON。
+router.use((err, _req, res, _next) => sendError(res, 'admin/learn', err));
 
 module.exports = router;

@@ -13,7 +13,7 @@ const METRIC_LABELS = {
 };
 
 export default function EvalThresholdPage() {
-  const { toast } = useToast();
+  const toast = useToast();
   const [list, setList] = useState(null);
   const [draft, setDraft] = useState({});
 
@@ -21,7 +21,7 @@ export default function EvalThresholdPage() {
     setList(null);
     adminEvalApi.thresholds()
       .then((r) => { setList(Array.isArray(r) ? r : []); setDraft({}); })
-      .catch((e) => { setList([]); toast(e?.response?.data?.error || e.message, 'error'); });
+      .catch((e) => { setList([]); toast.error(e?.response?.data?.error || e.message); });
   }
   useEffect(reload, []); // eslint-disable-line
 
@@ -39,8 +39,8 @@ export default function EvalThresholdPage() {
         window_months: Number(merged.window_months) || 3,
         is_active: !!merged.is_active,
       });
-      toast('已儲存', 'success'); reload();
-    } catch (e) { toast(e?.response?.data?.error || '儲存失敗', 'error'); }
+      toast.success('已儲存'); reload();
+    } catch (e) { toast.error(e?.response?.data?.error || '儲存失敗'); }
   }
 
   if (!list) return <div className="p-6"><LoadingSpinner /></div>;
