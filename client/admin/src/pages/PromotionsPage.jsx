@@ -167,13 +167,18 @@ export default function PromotionsPage() {
         </div>
       )}
 
-      {editing && (
-        <PromotionFormModal
-          initial={editing}
-          onClose={() => setEditing(null)}
-          onSaved={() => { setEditing(null); load(); }}
-        />
-      )}
+      {editing && (() => {
+        const editableStatuses = role === 'admin' ? ['draft', 'rejected', 'active'] : ['draft', 'rejected'];
+        const ro = !!editing.id && !editableStatuses.includes(editing.status);
+        return (
+          <PromotionFormModal
+            initial={editing}
+            readOnly={ro}
+            onClose={() => setEditing(null)}
+            onSaved={() => { setEditing(null); load(); }}
+          />
+        );
+      })()}
 
       <ConfirmWithNote
         open={!!confirm}

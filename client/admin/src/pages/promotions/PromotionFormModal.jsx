@@ -9,7 +9,7 @@ function fieldClass(extra = '') {
   return `w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none ${extra}`;
 }
 
-export default function PromotionFormModal({ initial, onClose, onSaved }) {
+export default function PromotionFormModal({ initial, onClose, onSaved, readOnly = false }) {
   const isEdit = !!initial?.id;
   const toast = useToast();
   const [busy, setBusy] = useState(false);
@@ -34,6 +34,7 @@ export default function PromotionFormModal({ initial, onClose, onSaved }) {
   }
 
   async function save() {
+    if (readOnly) { toast.error('當前狀態不可編輯'); return; }
     if (!d.name.trim()) { toast.error('名稱必填'); return; }
     if (!d.end_date) { toast.error('結束日期必填'); return; }
     if (d.end_date < d.start_date) { toast.error('結束日期不可早於開始日期'); return; }
@@ -73,7 +74,11 @@ export default function PromotionFormModal({ initial, onClose, onSaved }) {
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-4" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
-        <h3 className="mb-4 text-lg font-bold text-brand-primary">{isEdit ? `檢視 / 編輯：${initial.name}` : '新增優惠活動'}</h3>
+        <h3 className="mb-4 text-lg font-bold text-brand-primary">
+          {isEdit ? `${readOnly ? '檢視' : '檢視 / 編輯'}：${initial.name}` : '新增優惠活動'}
+          {readOnly && <span className="ml-2 rounded-full bg-gray-200 px-2 py-0.5 text-xs text-gray-600">唯讀</span>}
+        </h3>
+        <fieldset disabled={readOnly} className={readOnly ? 'opacity-90' : ''}>
 
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
           <div className="md:col-span-2">
@@ -155,11 +160,14 @@ export default function PromotionFormModal({ initial, onClose, onSaved }) {
           </div>
         </div>
 
+        </fieldset>
         <div className="mt-6 flex justify-end gap-2">
-          <button onClick={onClose} className="rounded-lg border border-gray-300 px-4 py-2 text-sm">取消</button>
-          <button onClick={save} disabled={busy} className="rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary disabled:opacity-50">
-            {busy ? '儲存中…' : isEdit ? '儲存' : '建立草稿'}
-          </button>
+          <button onClick={onClose} className="rounded-lg border border-gray-300 px-4 py-2 text-sm">{readOnly ? '關閉' : '取消'}</button>
+          {!readOnly && (
+            <button onClick={save} disabled={busy} className="rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary disabled:opacity-50">
+              {busy ? '儲存中…' : isEdit ? '儲存' : '建立草稿'}
+            </button>
+          )}
         </div>
       </div>
     </div>
