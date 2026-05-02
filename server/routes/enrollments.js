@@ -58,14 +58,29 @@ router.post('/', async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'invalid course_type' });
     }
-    // 教練倍率：UUID 才查 DB（mock id 例如 "C1" 不是 UUID 直接視為 1.0，避免 SQL 22P02 汙染交易）。
-    // 若查詢本身失敗（DB/schema 異常）→ 不吞掉，往外丟 500，避免靜默用 multiplier=1 算錯帳。
-    let multiplier = 1;
+    // 教練必須為合法 UUID 並存在於 active coaches；倍率只能來自 DB（fail-closed，無 fallback）。
     const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    if (p.coach && p.coach.id && UUID_RE.test(String(p.coach.id))) {
-      const cr = await client.query(`SELECT pricing_multiplier FROM coaches WHERE id = $1 AND is_active = TRUE`, [p.coach.id]);
-      if (cr.rowCount) multiplier = Number(cr.rows[0].pricing_multiplier) || 1;
-      // 找不到 / 已停用 → multiplier 保持 1（明確的決定性 fallback，不是錯誤吞食）
+    const coachId = p.coach && p.coach.id ? String(p.coach.id) : '';
+    if (!UUID_RE.test(coachId)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'invalid coach id' });
+    }
+    const cr = await client.query(
+      `SELECT name, pricing_multiplier FROM coaches WHERE id = $1 AND is_active = TRUE`,
+      [coachId]
+    );
+    if (!cr.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'coach not found or inactive' });
+    }
+    const multiplier = Number(cr.rows[0].pricing_multiplier) || 1;
+    const coachName = cr.rows[0].name;
+    // 場館必須存在
+    const venueId = p.venue && p.venue.id ? String(p.venue.id) : '';
+    const vr = await client.query(`SELECT id FROM venues WHERE id = $1`, [venueId]);
+    if (!vr.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'venue not found' });
     }
     const original = Math.round(basePrice * multiplier);
     const couponCode = p.promotion && p.promotion.coupon_code ? String(p.promotion.coupon_code).trim() : null;
@@ -98,7 +113,7 @@ router.post('/', async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending_payment',$11)`,
       [
         enrollmentId, parentRow.name, parentRow.phone, studentNames,
-        p.coach.name || String(p.coach), p.venue.id, Number(p.course_type),
+        coachName, venueId, Number(p.course_type),
         preview.originalPrice, preview.finalPrice, p.transfer_last_5 || null,
         submittedAt,
       ]
