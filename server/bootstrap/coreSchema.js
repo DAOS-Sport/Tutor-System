@@ -252,6 +252,58 @@ DO $$ BEGIN
   ALTER TABLE coach_personal_tags ADD COLUMN IF NOT EXISTS category_id UUID REFERENCES tag_categories(id) ON DELETE SET NULL;
 EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
+-- ── 升級舊版（001_initial_schema.sql 已建立、欄位不同）── 與 005 migration 一致
+DO $$ BEGIN
+  ALTER TABLE session_records ADD COLUMN IF NOT EXISTS course_period_id UUID REFERENCES course_periods(id) ON DELETE CASCADE;
+  ALTER TABLE session_records ADD COLUMN IF NOT EXISTS coach_id UUID REFERENCES coaches(id) ON DELETE RESTRICT;
+  ALTER TABLE session_records ADD COLUMN IF NOT EXISTS summary TEXT NOT NULL DEFAULT '';
+  ALTER TABLE session_records ADD COLUMN IF NOT EXISTS highlights TEXT NOT NULL DEFAULT '';
+  ALTER TABLE session_records ADD COLUMN IF NOT EXISTS improvements TEXT NOT NULL DEFAULT '';
+  ALTER TABLE session_records ADD COLUMN IF NOT EXISTS homework TEXT NOT NULL DEFAULT '';
+  ALTER TABLE session_records ADD COLUMN IF NOT EXISTS media JSONB NOT NULL DEFAULT '[]'::jsonb;
+  ALTER TABLE session_records ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMPTZ;
+  BEGIN
+    ALTER TABLE session_records ALTER COLUMN status TYPE VARCHAR(10) USING status::text;
+    ALTER TABLE session_records ALTER COLUMN status SET DEFAULT 'draft';
+  EXCEPTION WHEN others THEN NULL; END;
+EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE session_record_versions ADD COLUMN IF NOT EXISTS version_no INTEGER;
+  ALTER TABLE session_record_versions ADD COLUMN IF NOT EXISTS snapshot JSONB;
+  ALTER TABLE session_record_versions ADD COLUMN IF NOT EXISTS edited_by UUID REFERENCES coaches(id) ON DELETE RESTRICT;
+  BEGIN ALTER TABLE session_record_versions ALTER COLUMN version_number DROP NOT NULL; EXCEPTION WHEN undefined_column THEN NULL; END;
+  BEGIN ALTER TABLE session_record_versions ALTER COLUMN content_snapshot DROP NOT NULL; EXCEPTION WHEN undefined_column THEN NULL; END;
+EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+              WHERE table_name = 'session_record_tags' AND column_name = 'tag_text') THEN
+    DROP TABLE session_record_tags CASCADE;
+  END IF;
+EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE course_evaluations ADD COLUMN IF NOT EXISTS coach_id UUID REFERENCES coaches(id) ON DELETE RESTRICT;
+  ALTER TABLE course_evaluations ADD COLUMN IF NOT EXISTS score_teaching INTEGER;
+  ALTER TABLE course_evaluations ADD COLUMN IF NOT EXISTS score_attitude INTEGER;
+  ALTER TABLE course_evaluations ADD COLUMN IF NOT EXISTS score_progress INTEGER;
+  ALTER TABLE course_evaluations ADD COLUMN IF NOT EXISTS score_overall INTEGER;
+  ALTER TABLE course_evaluations ADD COLUMN IF NOT EXISTS comment TEXT NOT NULL DEFAULT '';
+  ALTER TABLE course_evaluations ADD COLUMN IF NOT EXISTS renew_intent VARCHAR(10) NOT NULL DEFAULT 'unknown';
+  ALTER TABLE course_evaluations ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+  BEGIN
+    UPDATE course_evaluations SET
+      score_teaching = COALESCE(score_teaching, teaching_quality),
+      score_attitude = COALESCE(score_attitude, communication_attitude),
+      score_progress = COALESCE(score_progress, student_progress),
+      score_overall  = COALESCE(score_overall,  overall_satisfaction),
+      comment        = COALESCE(NULLIF(comment, ''), COALESCE(text_feedback, '')),
+      renew_intent   = CASE WHEN renew_intent <> 'unknown' THEN renew_intent
+                            WHEN renew_intention::text IN ('yes','no') THEN renew_intention::text
+                            ELSE 'unknown' END;
+  EXCEPTION WHEN undefined_column THEN NULL; END;
+  UPDATE course_evaluations ce SET coach_id = cp.coach_id
+    FROM course_periods cp WHERE ce.coach_id IS NULL AND ce.course_period_id = cp.id;
+EXCEPTION WHEN undefined_table THEN NULL; END $$;
+
 -- 課前規劃（F-C04）：每個 course_period 一份，draft → published
 CREATE TABLE IF NOT EXISTS lesson_plans (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -108,7 +108,9 @@ router.delete('/tags/:id', requireAdminRole('admin', 'manager'), wrap(async (req
 
 // ── 考核報表 (F-M09) ────────────────────────
 router.get('/coach-eval', requireAdminRole('admin', 'manager'), wrap(async (req, res) => {
-  const list = await evals.listAllCoachReports({ from: req.query.from, to: req.query.to });
+  // 注意：listAllCoachReports 內部依各 metric 的 window_months 取窗口，
+  // 不再接受 from/to 參數（避免雙重時間過濾造成混淆）。
+  const list = await evals.listAllCoachReports();
   res.json(list);
 }));
 
