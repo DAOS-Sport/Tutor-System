@@ -2,6 +2,88 @@
 -- F-C04 / F-C05 / F-S06 / F-S12 / F-M09 / F-A08 / F-A09 / F-C06
 -- Idempotent — 與 server/bootstrap/coreSchema.js 保持一致；可在 prod 重跑。
 -- Run: psql $DATABASE_URL -f db/migrations/005_learning_history.sql
+--
+-- ── 升級舊版（001_initial_schema.sql）：對應表已存在但欄位不同 ────────
+-- 1) session_records：舊版欄位 content_summary/performance_evaluation/...
+--    新版改為 summary/highlights/improvements/homework + coach_id +
+--    course_period_id + media JSONB + status('draft'|'submitted')。
+DO $$ BEGIN
+  ALTER TABLE session_records ADD COLUMN IF NOT EXISTS course_period_id UUID REFERENCES course_periods(id) ON DELETE CASCADE;
+  ALTER TABLE session_records ADD COLUMN IF NOT EXISTS coach_id UUID REFERENCES coaches(id) ON DELETE RESTRICT;
+  ALTER TABLE session_records ADD COLUMN IF NOT EXISTS summary TEXT NOT NULL DEFAULT '';
+  ALTER TABLE session_records ADD COLUMN IF NOT EXISTS highlights TEXT NOT NULL DEFAULT '';
+  ALTER TABLE session_records ADD COLUMN IF NOT EXISTS improvements TEXT NOT NULL DEFAULT '';
+  ALTER TABLE session_records ADD COLUMN IF NOT EXISTS homework TEXT NOT NULL DEFAULT '';
+  ALTER TABLE session_records ADD COLUMN IF NOT EXISTS media JSONB NOT NULL DEFAULT '[]'::jsonb;
+  ALTER TABLE session_records ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMPTZ;
+  -- 舊欄位保留（回填遷移由業務面負責），status 改為 VARCHAR 以支援新值。
+  BEGIN
+    ALTER TABLE session_records ALTER COLUMN status TYPE VARCHAR(10) USING status::text;
+    ALTER TABLE session_records ALTER COLUMN status SET DEFAULT 'draft';
+  EXCEPTION WHEN others THEN NULL; END;
+EXCEPTION WHEN undefined_table THEN NULL; END $$;
+CREATE INDEX IF NOT EXISTS idx_records_period ON session_records(course_period_id);
+
+-- 2) session_record_versions：舊版 version_number + content_snapshot；
+--    新版改 version_no + snapshot + edited_by。為相容兩種寫法都新增欄位，
+--    並讓兩組欄位都可 NULL（程式只寫新欄位）。
+DO $$ BEGIN
+  ALTER TABLE session_record_versions ADD COLUMN IF NOT EXISTS version_no INTEGER;
+  ALTER TABLE session_record_versions ADD COLUMN IF NOT EXISTS snapshot JSONB;
+  ALTER TABLE session_record_versions ADD COLUMN IF NOT EXISTS edited_by UUID REFERENCES coaches(id) ON DELETE RESTRICT;
+  ALTER TABLE session_record_versions ALTER COLUMN version_number DROP NOT NULL;
+  ALTER TABLE session_record_versions ALTER COLUMN content_snapshot DROP NOT NULL;
+EXCEPTION WHEN undefined_table OR undefined_column THEN NULL; END $$;
+DO $$ BEGIN
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_session_record_versions_no
+    ON session_record_versions(session_record_id, version_no);
+EXCEPTION WHEN undefined_table THEN NULL; END $$;
+
+-- 3) session_record_tags：舊版為 (id, tag_category, tag_text, ...) 含資料表
+--    結構衝突；新版以 (session_record_id, label) 為 PK 並關聯 tag_library /
+--    coach_personal_tags。若偵測到舊欄位 tag_text，安全 DROP 重建（舊資料
+--    與新流程不相容；F-C05 從 phase 5 才正式啟用）。
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_name = 'session_record_tags' AND column_name = 'tag_text'
+  ) THEN
+    DROP TABLE session_record_tags CASCADE;
+  END IF;
+EXCEPTION WHEN undefined_table THEN NULL; END $$;
+
+-- 4) course_evaluations：舊版欄位 teaching_quality / communication_attitude /
+--    student_progress / overall_satisfaction / text_feedback / renew_intention
+--    新版改 score_teaching/score_attitude/score_progress/score_overall +
+--    comment + renew_intent + coach_id。新增欄位 + 從舊欄位回填。
+DO $$ BEGIN
+  ALTER TABLE course_evaluations ADD COLUMN IF NOT EXISTS coach_id UUID REFERENCES coaches(id) ON DELETE RESTRICT;
+  ALTER TABLE course_evaluations ADD COLUMN IF NOT EXISTS score_teaching INTEGER;
+  ALTER TABLE course_evaluations ADD COLUMN IF NOT EXISTS score_attitude INTEGER;
+  ALTER TABLE course_evaluations ADD COLUMN IF NOT EXISTS score_progress INTEGER;
+  ALTER TABLE course_evaluations ADD COLUMN IF NOT EXISTS score_overall INTEGER;
+  ALTER TABLE course_evaluations ADD COLUMN IF NOT EXISTS comment TEXT NOT NULL DEFAULT '';
+  ALTER TABLE course_evaluations ADD COLUMN IF NOT EXISTS renew_intent VARCHAR(10) NOT NULL DEFAULT 'unknown';
+  ALTER TABLE course_evaluations ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+  -- 從舊欄位回填（僅在新欄位為 NULL 時複寫）
+  BEGIN
+    UPDATE course_evaluations SET
+      score_teaching = COALESCE(score_teaching, teaching_quality),
+      score_attitude = COALESCE(score_attitude, communication_attitude),
+      score_progress = COALESCE(score_progress, student_progress),
+      score_overall  = COALESCE(score_overall,  overall_satisfaction),
+      comment        = COALESCE(NULLIF(comment, ''), COALESCE(text_feedback, '')),
+      renew_intent   = CASE WHEN renew_intent <> 'unknown' THEN renew_intent
+                            WHEN renew_intention::text IN ('yes','no') THEN renew_intention::text
+                            ELSE 'unknown' END;
+  EXCEPTION WHEN undefined_column THEN NULL; END;
+  -- 從 course_periods 補 coach_id
+  UPDATE course_evaluations ce SET coach_id = cp.coach_id
+    FROM course_periods cp
+   WHERE ce.coach_id IS NULL AND ce.course_period_id = cp.id;
+EXCEPTION WHEN undefined_table THEN NULL; END $$;
+CREATE INDEX IF NOT EXISTS idx_eval_coach ON course_evaluations(coach_id);
+CREATE INDEX IF NOT EXISTS idx_eval_submitted ON course_evaluations(submitted_at);
 
 -- ── 標籤庫 (F-A08) ──
 CREATE TABLE IF NOT EXISTS tag_categories (
