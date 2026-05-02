@@ -5,8 +5,6 @@ import { mockDb } from './mock';
 export const adminChatApi = {
   listRooms: (params = {}) =>
     callApi('/admin/chat/rooms', { params }, () => mockDb.adminChatRooms(params)),
-  getRoom: (id) =>
-    callApi(`/admin/chat/rooms/${id}`, {}, () => mockDb.adminChatRoom(id)),
   listMessages: (id, params = {}) =>
     callApi(`/admin/chat/rooms/${id}/messages`, { params }, () => mockDb.adminChatMessages(id, params)),
 };

@@ -71,18 +71,19 @@ function initWebSocket(server) {
       return ws.close(4001, 'Invalid token');
     }
 
-    let role, userId;
+    let role, userId, venueId = null;
     if (payload.type === 'parent') { role = 'parent'; userId = payload.parentId; }
     else if (payload.type === 'coach') { role = 'coach'; userId = payload.coachId; }
     else if (payload.role && ['admin', 'manager', 'staff'].includes(payload.role)) {
-      // admin token 走 routes/admin/auth.js 簽發，payload.role 帶角色
+      // admin token 走 routes/admin/auth.js 簽發，payload.role/venue_id 帶角色與場館
       role = payload.role;
       userId = payload.sub || null;
+      venueId = payload.venue_id || null;
     } else {
       return ws.close(4003, 'Unsupported token type');
     }
 
-    const ok = await canAccess({ roomId, role, userId }).catch(() => false);
+    const ok = await canAccess({ roomId, role, userId, venueId }).catch(() => false);
     if (!ok) return ws.close(4003, 'Forbidden');
 
     ws.userType = role;

@@ -163,10 +163,19 @@ async function listRoomsForAdmin({ search, venueId } = {}) {
   return _hydrate(r.rows, { type: 'admin', id: null });
 }
 
-async function canAccess({ roomId, role, userId }) {
+async function canAccess({ roomId, role, userId, venueId } = {}) {
   if (!roomId) return false;
-  if (role === 'admin' || role === 'manager' || role === 'staff') {
+  if (role === 'admin') {
     const r = await pool.query(`SELECT 1 FROM chat_rooms WHERE id = $1`, [roomId]);
+    return r.rowCount > 0;
+  }
+  if (role === 'manager' || role === 'staff') {
+    // venue-scoped：必須是該 venueId 內的 room（與 admin HTTP 端 staff/manager 範圍一致）
+    if (!venueId) return false;
+    const r = await pool.query(
+      `SELECT 1 FROM chat_rooms cr
+         JOIN course_periods cp ON cp.id = cr.course_period_id
+        WHERE cr.id = $1 AND cp.venue_id = $2`, [roomId, venueId]);
     return r.rowCount > 0;
   }
   if (role === 'coach') {
