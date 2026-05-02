@@ -91,7 +91,9 @@ export default function EnrollmentPage() {
     totalSelected === requiredStudentCount &&
     selectionResolved &&
     isValidLast5(last5) &&
-    !submitting;
+    !submitting &&
+    !pricing.previewLoading &&
+    !pricing.previewError;
 
   async function handleLookupPartner() {
     if (!isValidTWPhone(partnerPhone)) {
