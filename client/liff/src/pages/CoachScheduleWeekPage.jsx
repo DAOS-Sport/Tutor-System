@@ -19,6 +19,22 @@ function sameYMD(a, b) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
+function FilterChip({ active, onClick, children }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`shrink-0 px-3 py-1 rounded-full text-xs border transition ${
+        active
+          ? 'bg-brand-primary text-white border-brand-primary'
+          : 'bg-white text-brand-primary border-brand-primary/30 hover:bg-brand-primary/5'
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
 export default function CoachScheduleWeekPage() {
   const { coach } = useAuth();
   const toast = useToast();
