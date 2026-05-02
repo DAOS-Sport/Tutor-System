@@ -56,7 +56,66 @@
 - 內建 `design`（design 子代理人委派）與新裝的 `frontend-design`、`ui-ux-pro-max` 並存
 - ui-ux-pro-max 的 `scripts/search.py` 真要跑時需先 `pip install rank-bm25 pandas numpy`
 
+## LIFF 前端進度
+
+### Phase 1（核心購課流程）— 已完成
+位於 `client/liff/src/`，使用 React 18 + Vite + Tailwind + react-router-dom + react-hook-form。
+
+**已實作的頁面（`pages/`）：**
+- `LoginPage.jsx` — 手機輸入 → mock 比對 Z01 → 找到設 parent / 找不到導去註冊
+- `RegisterPage.jsx` — 家長表單 + 多筆學員子表單（`useFieldArray` 動態增減）
+- `HomePage.jsx` — 三組別卡片 + 進行中優惠橫幅
+- `VenueSelectPage.jsx` — 場館選單
+- `CoachListPage.jsx` — 教練清單，資深教練金色徽章 + 已套修課係數的費用
+- `EnrollmentPage.jsx` — 報名核心：組別切換、自身學員勾選、1對多時的同組家長手機查詢與學員勾選、優惠自動試算、銀行帳號一鍵複製、轉帳末 5 碼驗證、ConfirmModal 摘要
+- `EnrollmentSuccessPage.jsx` — 「報名成功，等待對帳」結果頁
+- `MyCoursesPage.jsx` — 課程列表，支援「全部 / 待對帳 / 進行中 / 已結束」分頁與堂數進度條
+- `ChatPage.jsx`、`ProfilePage.jsx` — Phase 4／5 之前的 placeholder（Profile 已有學員清單與登出）
+
+**全域元件（`components/`）：** `AppLayout`（手機寬度容器 + Header + 條件式 BottomNav）、`BottomNav`、`CoachCard`、`CourseCard`（catalog/period 雙模式）、`LoadingSpinner`、`ConfirmModal`、SVG 圖示元件。
+
+**狀態與 API：**
+- `context/AuthContext.jsx` — 用 `localStorage` 暫存 parent，跨分頁 `storage` 事件同步
+- `context/ToastContext.jsx` — success / error / info / warning 四色 Toast
+- `api/client.js` — 統一入口 `callApi()`：mock 模式直接回 mock，真實模式碰到 501 自動 fallback 到 mock 並 console.warn
+- `api/mock.js` — 三場館、四教練、三家長、三筆已開通課程、兩個優惠的完整 mock dataset（含 1v1/1v2/1v3 三種狀態的 `CoursePeriod`）
+- `api/{auth,parents,coaches,courses,enrollments,venues,promotions}.js` — 各 domain 模組
+- `utils/format.js` — `formatTWD`（NT$ 千分位）、`formatTWDate`（含「週X」）、`isValidTWPhone`、`isValidLast5`、`isValidTWId`、課程狀態 / 組別 label 與顏色
+
+**樣式約束（已落地）：**
+- 全部使用 Tailwind `brand-{primary,teal,green,amber,gold}` token，無 hex 字面值
+- 行動優先 `max-w-[390px]` 居中容器，桌面兩側留 `bg-gray-100`
+- 字型 Noto Sans TC + Inter（`index.css` 已載 Google Fonts）
+- 報名流程頁有 Header + 返回按鈕；tab 頁有 BottomNav
+- LIFF SDK：`main.jsx` 加上「無 `VITE_LIFF_ID` → 跳過 liff.init 直接 mount」的 dev fallback，部署環境注入 ID 後行為不變
+
+**Mock 模式控制：** `import.meta.env.VITE_USE_MOCK !== 'false'`（預設 true）。Phase 2+ 後端真實實作後，build 時加 `VITE_USE_MOCK=false` 即切回真實 API；若後端某 endpoint 還沒實作回 501，client 會自動 fallback 到 mock 並印 warning，不會打斷使用者操作。
+
+### Phase 1 與後端的銜接點（給後續任務）
+這些 endpoint 目前由 `server/routes/*.js` 全部回 501 stub。Phase 1 LIFF 已用 mock 補位，後續任務只要把這些 endpoint 實作好（並讓 response shape 對齊 `client/liff/src/api/mock.js`），LIFF 就能無縫切換：
+| Endpoint | 模組 | mock 回應 |
+|---|---|---|
+| `GET /api/venues` | `routes/venues.js` | `mockDb.venues()` |
+| `GET /api/venues/:id` | 同上 | `mockDb.venue(id)` |
+| `GET /api/coaches?venueId=` | `routes/coaches.js` | `mockDb.coaches({ venueId })` |
+| `GET /api/coaches/:id` | 同上 | `mockDb.coach(id)` |
+| `GET /api/promotions` | `routes/promotions.js` | `mockDb.promotions()` |
+| `GET /api/parents/by-phone?phone=` | `routes/parents.js` | `mockDb.parentByPhone(phone)` |
+| `POST /api/parents` | 同上 | `mockDb.createParent(body)` |
+| `GET /api/courses/base-price?courseType=` | `routes/courses.js` | `{ original_price }` |
+| `GET /api/courses/mine?parentId=` | 同上 | `mockDb.myCourses(parentId)` |
+| `POST /api/enrollments` | 暫無對應檔（可放 `routes/courses.js` 子路由或新增 `enrollments.js`） | `mockDb.createEnrollment(body)` |
+| `POST /api/auth/bind-line` | `routes/auth.js` | `{ ok: true, bound_at }` |
+
+### Phase 2-6 待辦（不在本 Phase 1 範圍）
+- Phase 2：選槽日曆（`SlotCalendar`）、簽到（`CheckinPage`）、自助取消
+- Phase 3：教練端 LIFF（排課總表 F-C02、學員管理）
+- Phase 4：聊天室（含 WebSocket、關鍵字警示）
+- Phase 5：學習歷程（資深教練專屬）、期末評鑑、`StarRating`
+- Phase 6：MGM 推薦、後台管理（admin/）
+
 ## 變更紀錄
+- 2026-05-02：完成 LIFF Phase 1（任務 #7）。實作 7 個正式頁面 + 2 個 placeholder、6 個全域元件、雙 Context（Auth/Toast）、7 個 API 模組與 mock dataset、共用 utils；新增 `react-hook-form` 依賴、`postcss.config.js`；修正 `main.jsx` 加上無 LIFF_ID 的 dev fallback。`vite build` 通過（158 modules，401KB / 127KB gzip）。後端 19 個 stub 路由不變，LIFF 全程走 mock 模式以驗證 happy path；後續可由 `VITE_USE_MOCK=false` 切到真實 API，並透過 501 自動 fallback 機制漸進實作後端。
 - 2026-05-02：完成 SurveyJS Creator 評估報告，結論為「**不建議整合**」（授權費 USD $589/dev/年、套件巨大、與 Ragic 雙向同步設計衝突）。完整分析詳見 `docs/eval/surveyjs-creator.md`，含替代方案比較與分階段建議。
 - 2026-05-02：補完 `docs/ragic_api.md` 的 H01／H05／Z01／Z02 欄位對照（含 Field ID、表單 metadata、API Key 環境變數說明）。Z02 段落標註附件來源欄位疑似與 Z01 重複，待使用者確認真實欄位後再行更新。
 - 2026-05-02：修復部署。將 `.replit` 部署目標從 `cloudrun` 改為 `autoscale`，新增 build 指令同時建置 server / admin / liff。`server/index.js` 加入靜態檔案服務（`/admin`、`/liff`）與 SPA fallback、根路徑轉址，並把 listen 綁到 `0.0.0.0`。為 `client/admin/` 補齊 `index.html`、`src/main.jsx`、`src/App.jsx`、`src/index.css` 最小骨架；為 `server/routes/` 19 個尚未實作的 route 建立暫時 stub（回傳 501 Not Implemented），讓 server 能正常啟動。

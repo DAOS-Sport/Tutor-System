@@ -9,6 +9,9 @@ module.exports = {
           green:   '#97bf36',
           amber:   '#e8a020',
           gold:    '#c9a84c',
+          error:   '#d64545',
+          'error-soft': '#fdecec',
+          'error-strong': '#b53030',
         }
       },
       fontFamily: {

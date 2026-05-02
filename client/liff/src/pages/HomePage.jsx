@@ -1,0 +1,81 @@
+import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import CourseCard from '../components/CourseCard';
+import LoadingSpinner from '../components/LoadingSpinner';
+import { promotionsApi } from '../api/promotions';
+import { useAuth } from '../context/AuthContext';
+import { formatTWDate } from '../utils/format';
+
+const COURSE_TYPES = [
+  { type: 1, title: '1 對 1 個別教學', subtitle: '一位學員專屬教練', description: '完全客製化進度，最高效率提升技術。', basePrice: 9000 },
+  { type: 2, title: '1 對 2 雙人班', subtitle: '與好友共學', description: '兩位學員共享教練，互相切磋學習。', basePrice: 6000 },
+  { type: 3, title: '1 對 3 小團班', subtitle: '小組同訓', description: '三位學員精緻小班，氣氛輕鬆活潑。', basePrice: 4500 },
+];
+
+export default function HomePage() {
+  const navigate = useNavigate();
+  const { parent } = useAuth();
+  const [promos, setPromos] = useState(null);
+  const [err, setErr] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    promotionsApi
+      .list()
+      .then((d) => alive && setPromos(d))
+      .catch(() => alive && setErr('優惠資訊載入失敗'));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  return (
+    <div className="px-4 py-4">
+      <section className="mb-5 rounded-2xl bg-gradient-to-br from-brand-primary to-brand-teal p-4 text-white shadow-md">
+        <p className="text-xs opacity-90">您好，{parent?.name || '夢想學員'}</p>
+        <h2 className="mt-1 text-lg font-bold">準備好開始今天的訓練了嗎？</h2>
+        <p className="mt-1 text-xs opacity-80">挑選喜愛的組別與教練，立即報名 ✨</p>
+      </section>
+
+      {promos === null ? (
+        <LoadingSpinner label="載入優惠中…" />
+      ) : (
+        promos.length > 0 && (
+          <section className="mb-5">
+            <h3 className="mb-2 text-sm font-bold text-brand-primary">🔥 進行中優惠</h3>
+            <div className="space-y-2">
+              {promos.map((p) => (
+                <div
+                  key={p.id}
+                  className="rounded-xl border-l-4 border-brand-amber bg-amber-50 px-3 py-2.5 text-xs"
+                >
+                  <div className="font-bold text-brand-amber">{p.title}</div>
+                  <div className="mt-0.5 text-gray-600">{p.description}</div>
+                  <div className="mt-1 text-[11px] text-gray-400">
+                    至 {formatTWDate(p.expires_at)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )
+      )}
+
+      {err && <div className="mb-4 rounded-md bg-brand-error-soft px-3 py-2 text-xs text-brand-error-strong">{err}</div>}
+
+      <section>
+        <h3 className="mb-3 text-sm font-bold text-brand-primary">課程組別</h3>
+        <div className="space-y-3">
+          {COURSE_TYPES.map((t) => (
+            <CourseCard
+              key={t.type}
+              variant="catalog"
+              type={t}
+              onClick={() => navigate(`/venue?courseType=${t.type}`)}
+            />
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
