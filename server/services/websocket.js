@@ -2,11 +2,14 @@
  * WebSocket 服務（聊天室即時推播）
  *
  * 連線：ws(s)://host/ws?token=<JWT>&room=<chat_room_id>
- *  - JWT 驗證：parent / coach / admin / manager / staff token（共用 JWT_SECRET）
+ *  - JWT 驗證：parent / coach / admin / manager token（共用 JWT_SECRET）
+ *      · staff token 雖可 verify，但 chatRooms.canAccess('staff') 一律回 false →
+ *        會在 connection handler 內 close(4003)；F-M03 政策：staff 不得查閱聊天內容。
+ *        參考 docs/adr_phase4_chat.md §4。
  *  - room 授權：透過 chatRooms.canAccess 嚴格檢查
  *      · parent / coach：必須是該 period 的參與者
- *      · admin / manager / staff：依 chatRooms.canAccess（admin 全域、manager/staff 由 HTTP 端
- *        venue 範圍內已過濾的 list 取得 roomId 後訂閱）— WS 只接收訊息/已讀廣播，不寫入。
+ *      · admin：全域；manager：限自己 venue（WS 端從 admin JWT.venue_id 取得）
+ *      · WS 只接收訊息/已讀/上線廣播，不寫入（寫入走 HTTP POST /api/chat/rooms/:id/messages）
  *
  * 訊息格式（server → client）：
  *   { type: 'message',  data: { id, sender_type, sender_id, message_type, content, media_url, ... } }

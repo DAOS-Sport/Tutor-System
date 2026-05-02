@@ -112,7 +112,8 @@ async function _persistAndBroadcast({ roomId, sender, type, content, media }) {
   );
   const msg = r.rows[0];
   broadcastMessage(roomId, msg);
-  if (type === 'text' && content) {
+  // 關鍵字掃描：所有「有 content 字串」的訊息都掃，包含 image/file 附件 caption（spec F-A07）
+  if (content) {
     const alerts = await scanAndAlert({ messageId: msg.id, chatRoomId: roomId, content });
     if (alerts.length) notifyKeywordAlert({ roomId, message: msg, alerts }).catch((e) =>
       console.warn('[chat] notifyKeywordAlert failed:', e.message)
