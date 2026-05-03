@@ -14,6 +14,7 @@ router.get('/lessons', requireParent, async (req, res) => {
     const args = [req.parent.id];
     const conds = [
       `s.parent_id = $1`,
+      `cpe.status = 'active'`,
       `cs.status IN ('confirmed','completed','pending_group_confirm')`,
     ];
     if (req.query.from) {
