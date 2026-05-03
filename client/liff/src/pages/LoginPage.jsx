@@ -58,7 +58,6 @@ export default function LoginPage() {
   const toast = useToast();
   const [phone, setPhone] = useState('');
   const [busy, setBusy] = useState(false);
-  const [autoTried, setAutoTried] = useState(false);
   const autoRanRef = useRef(false);
 
   // 自動登入：偵測 referrer/path 是否為教練端 LIFF（COACH LIFF 的 endpoint URL 會帶 /coach 之類前綴），
@@ -83,7 +82,6 @@ export default function LoginPage() {
       if (res === 'unbound') {
         toast.info('此 LINE 帳號尚未綁定教練，請輸入手機完成首次綁定');
       }
-      setAutoTried(true);
     }).finally(() => setBusy(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

@@ -132,7 +132,14 @@ export default function CoachesPage() {
         : <span className="text-xs">{(r.venue_ids || []).map((v) => venueMap[v] || v).join('、')}</span> },
     { key: 'line_bound', label: 'LINE',
       render: (r) => r.line_bound
-        ? <StatusBadge tone="green">已綁</StatusBadge>
+        ? (
+          <span title={r.line_uid || ''} className="inline-flex items-center gap-1">
+            <StatusBadge tone="green">已綁</StatusBadge>
+            <span className="font-mono text-[11px] text-gray-500">
+              {String(r.line_uid || '').slice(0, 8)}…
+            </span>
+          </span>
+        )
         : <StatusBadge tone="gray">未綁</StatusBadge> },
     { key: 'intro_review_status', label: '簡介',
       render: (r) => <StatusBadge tone={INTRO_TONE[r.intro_review_status] || 'gray'}>
