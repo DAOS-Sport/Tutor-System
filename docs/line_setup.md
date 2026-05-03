@@ -48,7 +48,7 @@ https://liff.line.me/<LIFF_ID>?venue=C   ← C 場館（松山國小）
 https://liff.line.me/<LIFF_ID>/coach?venue=B   ← 教練端 + venue
 ```
 
-> 重要：絕對不要在 Endpoint URL 或分享連結用 `#/`。前端用 `BrowserRouter`（純路徑），`#` 後面的東西會被當成瀏覽器錨點，**不會**送到 React Router，會導致教練永遠落到家長首頁或登入頁。
+> 重要：絕對不要在 Endpoint URL 或分享連結加上 hash fragment（`#` 後接路徑的舊 HashRouter 寫法）。本前端用 `BrowserRouter`（純路徑），`#` 後面的東西會被當成瀏覽器錨點，**不會**送到 React Router，會導致教練永遠落到家長首頁或登入頁。
 
 ### 3. LINE Messaging API Channel（各場館各一個）
 **用途**：發送 LINE Flex Message，訊息從「各場館帳號」發出
