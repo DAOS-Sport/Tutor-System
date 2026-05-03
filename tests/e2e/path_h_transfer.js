@@ -53,11 +53,16 @@ const { call, assert, step, loginAdmin } = require('./_lib');
     const oldE = await pg.query(`SELECT status FROM course_period_enrollments WHERE id=$1`, [e.enrollment_id]);
     assert(oldE.rows[0].status === 'transferred_out', `原 enrollment.status=transferred_out`);
 
-    const newE = await pg.query(
-      `SELECT id FROM course_period_enrollments WHERE course_period_id=$1 AND status='active' AND student_id != $2 ORDER BY id DESC LIMIT 1`,
-      [e.course_period_id, e.student_id],
-    );
-    if (newE.rowCount) toEnrollmentId = newE.rows[0].id;
+    // 取得 approve 後新建立的 enrollment（後端用 to_student_id 寫入）
+    const tRow = await pg.query(`SELECT to_student_id FROM transfer_records WHERE id=$1`, [tid]);
+    if (tRow.rows[0].to_student_id) {
+      const newE = await pg.query(
+        `SELECT id FROM course_period_enrollments
+          WHERE course_period_id=$1 AND student_id=$2 AND status='active'`,
+        [e.course_period_id, tRow.rows[0].to_student_id],
+      );
+      if (newE.rowCount) toEnrollmentId = newE.rows[0].id;
+    }
   } finally {
     // 清理：把原 enrollment 狀態還原、刪除轉入 enrollment、刪除 transfer
     await pg.query(`UPDATE course_period_enrollments SET status='active' WHERE id=$1`, [e.enrollment_id]);

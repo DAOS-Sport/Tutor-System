@@ -46,9 +46,10 @@ node tests/perf/upload_smoke.js
 | 場景 | P50 (ms) | P95 (ms) | 通過 |
 |---|---|---|---|
 | `/ws` handshake (匿名連線即 close) | 2 | 5 | ✅ P95<200 |
-| 1v1 chat ping→pong | 待 UAT 用真 PARENT_JWT+ROOM_ID 量測 | — | — |
+| 1v1 chat ping→pong（20 次, parent JWT 自動 mint） | 0 | 2 | ✅ P95<200 |
 
-> 驗收：P95 < 200ms — handshake **PASS**；ping/pong 需 UAT 階段以真實 token 補測（已備好 `tests/perf/ws_latency.js`，提供 `PARENT_JWT`/`ROOM_ID` 即可）。
+> 驗收：P95 < 200ms — handshake + ping/pong 皆 **PASS**。
+> ping/pong 工具：`tests/perf/ws_message_latency.js`，自動以 `JWT_SECRET` 簽 parent token + 從 DB 取一筆 `chat_room.id`，與生產 verify 路徑完全一致。
 
 ### 媒體上傳
 
@@ -58,11 +59,20 @@ node tests/perf/upload_smoke.js
 
 > 驗收：成功率 > 99%。需 UAT 階段以教練 LIFF 取得 JWT 後跑 100 次量測；本機自動化跑會缺 token 而明顯失敗（不會誤判 PASS）。
 
-## Ragic 快取
+## Ragic 快取 + 高併發實測
 為避免高併發打爆 Ragic，`server/services/ragic.js` 已加入 in-process LRU + TTL 快取：
 - `getActiveCoaches()` / `getCounterStaff()` / `getAllStaff()` / `getActiveVenues()`：TTL = 5 分鐘
 - 寫回（`upsertParent`/`upsertStudent`）後會 invalidate 對應 key
 - 失敗仍 fallthrough 到實際 Ragic API（不裝 Redis）
+
+**壓測結果（`tests/perf/ragic_concurrency.js`，2026-05-03）**
+
+| 情境 | requests | 外部 axios.get 實際呼叫 | 命中率 |
+|---|---|---|---|
+| 4 條熱讀函數 × 100 次並發 | 400 | 0（暖機後）/ 4（含暖機） | **100.0%**（門檻 ≥ 95%）|
+
+> 驗收：高併發下 Ragic 對外呼叫被快取吸收 → ✅ PASS。
+> 跑法：`node tests/perf/ragic_concurrency.js`（內建 axios stub，可離線跑）
 
 ## 持續監控建議
 - Replit Deployment Metrics 開啟，留意 P99 latency 與 5xx
