@@ -4,8 +4,8 @@
 
 | 我是誰 | 用什麼裝置 | 入口網址 | 手冊 |
 |---|---|---|---|
-| 家長／學員 | 手機（LINE 內或瀏覽器） | LINE 內：`https://liff.line.me/<LIFF_ID>`；備用網頁：`https://daos-tutoring-courses.replit.app/liff/` | [家長使用手冊](./parent.md) |
-| 教練 | 手機（LINE 內） | LINE 內：`https://liff.line.me/<LIFF_ID>/coach`；備用網頁：`https://daos-tutoring-courses.replit.app/liff/coach` | [教練使用手冊](./coach.md) |
+| 家長／學員 | 手機（LINE 內或瀏覽器） | LINE 內：`https://liff.line.me/<LIFF_ID_PARENT>`；備用網頁：`https://daos-tutoring-courses.replit.app/liff/` | [家長使用手冊](./parent.md) |
+| 教練 | 手機（LINE 內） | LINE 內：`https://liff.line.me/<LIFF_ID_COACH>/coach`；備用網頁：`https://daos-tutoring-courses.replit.app/liff/coach` | [教練使用手冊](./coach.md) |
 | 系統管理員 | 桌機 / 平板 | `https://daos-tutoring-courses.replit.app/admin` | [系統管理員手冊](./admin.md) |
 | 場館主管 | 桌機 / 平板 | `https://daos-tutoring-courses.replit.app/admin` | [場館主管手冊](./manager.md) |
 | 行政櫃檯 | 桌機 / 平板 | `https://daos-tutoring-courses.replit.app/admin` | [行政櫃檯手冊](./staff.md) |

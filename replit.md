@@ -40,10 +40,10 @@
 
 ## 部署設定
 - 正式網址：`https://daos-tutoring-courses.replit.app`
-- LIFF：LINE Console 只建 **1 個** LIFF App，Endpoint URL 設 `https://daos-tutoring-courses.replit.app/liff/`（無 `#`，前端為 BrowserRouter）。家長分享 `https://liff.line.me/<LIFF_ID>`、教練分享 `https://liff.line.me/<LIFF_ID>/coach`，LIFF SDK 會把 `/coach` path 自動接到 Endpoint URL 後面送給前端。
-- `LIFF_URL` 環境變數設 `https://liff.line.me/<LIFF_ID>`（無結尾斜線，無 `#`）；cron / learn 會自動接 `/my-courses`、`/evaluation/:id`、`/history/:periodId`、`/referral` 等路徑。
+- LIFF：LINE Console 建 **2 個** LIFF App（家長端 + 教練端，掛同一個 LINE Login Channel 下），兩個 Endpoint URL 都設 `https://daos-tutoring-courses.replit.app/liff/`（無 `#`，前端為 BrowserRouter）。家長分享 `https://liff.line.me/<LIFF_ID_PARENT>`、教練分享 `https://liff.line.me/<LIFF_ID_COACH>/coach`。前端 `main.jsx` 會偵測 path 自動挑要 init 哪個 LIFF。
+- `LIFF_URL_PARENT` 環境變數設 `https://liff.line.me/<LIFF_ID_PARENT>`（無結尾斜線，無 `#`）；cron / learn / MGM 推播會自動接 `/my-courses`、`/evaluation/:id`、`/history/:periodId`、`/referral` 等路徑。`LIFF_URL_COACH` 保留供未來教練 push 用。舊的 `LIFF_URL` / `LIFF_ID` 仍是 fallback，建議切換完成後刪掉。
 - Target：`autoscale`（單一服務）
-- Build：依序 `npm install` server、admin、liff，並把兩個前端 build 到 `server/public/{admin,liff}`。LIFF build 階段會把 `LIFF_ID` 透過 `VITE_LIFF_ID` 注入給 Vite，前端用 `import.meta.env.VITE_LIFF_ID` 初始化 LIFF SDK。
+- Build：依序 `npm install` server、admin、liff，並把兩個前端 build 到 `server/public/{admin,liff}`。前端 LIFF ID 用 Replit secret 直接命名為 `VITE_LIFF_ID_PARENT` / `VITE_LIFF_ID_COACH`（Vite 會自動撿 `VITE_*` 寫進 bundle，不用改 `.replit`）；舊的 `LIFF_ID` 仍透過 `.replit` 的 `VITE_LIFF_ID="$LIFF_ID"` 當 fallback。前端 `main.jsx` 用 `import.meta.env.VITE_LIFF_ID_*` 依路徑初始化對應的 LIFF SDK。
 - Run：`cd server && npm start`（`node index.js`）
 - 由 Express 同時提供：
   - `/api/*` → 後端 API

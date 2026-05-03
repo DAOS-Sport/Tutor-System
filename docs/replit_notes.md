@@ -41,12 +41,14 @@ Replit 自動提供 HTTPS 域名。本專案正式網址：
 `https://daos-tutoring-courses.replit.app`
 
 ### LINE LIFF URL 設定
-在 LINE Developers Console 設定 **1 個** LIFF App：
-- Endpoint URL：`https://daos-tutoring-courses.replit.app/liff/`（注意：沒有 `#`，前端用 BrowserRouter）
+在 LINE Developers Console 設定 **2 個** LIFF App（家長端 + 教練端，掛在同一個 LINE Login Channel 下）：
+- 兩個 LIFF 的 Endpoint URL 都設 `https://daos-tutoring-courses.replit.app/liff/`（注意：沒有 `#`，前端用 BrowserRouter）
+- 家長端 → Replit secret 直接命名為 `VITE_LIFF_ID_PARENT`（Vite build 時自動撿到）
+- 教練端 → Replit secret 直接命名為 `VITE_LIFF_ID_COACH`
 
-家長／教練分享連結（同一個 LIFF_ID，靠路徑分流）：
-- 家長：`https://liff.line.me/<LIFF_ID>`
-- 教練：`https://liff.line.me/<LIFF_ID>/coach`
+家長／教練分享連結（兩個獨立 LIFF_ID，前端依路徑自動 init 對應 LIFF）：
+- 家長：`https://liff.line.me/<LIFF_ID_PARENT>`
+- 教練：`https://liff.line.me/<LIFF_ID_COACH>/coach`
 
 ### 本地開發測試 LIFF
 使用 `liff.init` 時加上 `liff.isInClient()` 判斷：

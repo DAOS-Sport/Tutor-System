@@ -5,7 +5,14 @@ import liff from '@line/liff';
 import App from './App';
 import './index.css';
 
-const LIFF_ID = import.meta.env.VITE_LIFF_ID;
+const LIFF_ID_PARENT = import.meta.env.VITE_LIFF_ID_PARENT || import.meta.env.VITE_LIFF_ID;
+const LIFF_ID_COACH = import.meta.env.VITE_LIFF_ID_COACH || import.meta.env.VITE_LIFF_ID;
+
+function pickLiffId() {
+  const path = window.location.pathname || '';
+  const isCoach = path.startsWith('/liff/coach') || path.startsWith('/coach');
+  return isCoach ? LIFF_ID_COACH : LIFF_ID_PARENT;
+}
 
 function mount() {
   ReactDOM.createRoot(document.getElementById('root')).render(
@@ -16,17 +23,16 @@ function mount() {
 }
 
 async function initLiff() {
-  // Phase 1 fallback：若沒設定 LIFF_ID（例如本機 vite dev / 預覽建置），
-  // 直接 mount，由 mock auth 流程接手；未來真實上線時 LIFF_ID 會在 build env 注入。
-  if (!LIFF_ID) {
+  const liffId = pickLiffId();
+  if (!liffId) {
     // eslint-disable-next-line no-console
-    console.warn('[liff] VITE_LIFF_ID 未設定，跳過 liff.init（dev / mock 模式）');
+    console.warn('[liff] VITE_LIFF_ID_PARENT / VITE_LIFF_ID_COACH 都未設定，跳過 liff.init（dev / mock 模式）');
     mount();
     return;
   }
 
   try {
-    await liff.init({ liffId: LIFF_ID });
+    await liff.init({ liffId });
     if (!liff.isLoggedIn()) {
       liff.login({ redirectUri: window.location.href });
       return;

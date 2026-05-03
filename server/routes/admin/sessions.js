@@ -196,7 +196,7 @@ router.post('/checkin', requireAdminAuth, async (req, res) => {
     const referrals = require('../../services/referrals');
     const line = require('../../services/line');
     const reward = await referrals.issueRewardForEnrollment(enrollmentId, {
-      line, BRAND_LIFF_URL: (process.env.LIFF_URL || '/liff/'),
+      line, BRAND_LIFF_URL: (process.env.LIFF_URL_PARENT || process.env.LIFF_URL || '/liff/'),
     });
     res.json({ ok: true, reward });
   } catch (err) {

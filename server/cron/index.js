@@ -8,7 +8,8 @@ const line = require('../services/line');
 const chatRooms = require('../services/chatRooms');
 const evaluations = require('../services/evaluations');
 
-const LIFF_URL = process.env.LIFF_URL || 'https://liff.line.me/-';
+// 對家長推播的 LIFF base URL；新版用 LIFF_URL_PARENT，舊版 LIFF_URL 為 fallback
+const LIFF_URL = process.env.LIFF_URL_PARENT || process.env.LIFF_URL || 'https://liff.line.me/-';
 
 function initCronJobs() {
   // ── 每 5 分鐘：補 active period 的 chat_room（防漂移；spec F-S09）──

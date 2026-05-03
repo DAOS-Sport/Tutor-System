@@ -196,7 +196,7 @@ async function issueRewardForEnrollment(enrollmentId, { line, BRAND_LIFF_URL } =
         const messages = line.templates.mgmRewardIssued({
           refereeName: r.referee_name || '您的推薦對象',
           couponDetails: `折價券代碼 ${code}（9 折，60 天內可用）`,
-          liffUrl: BRAND_LIFF_URL || '/liff/',
+          liffUrl: BRAND_LIFF_URL || process.env.LIFF_URL_PARENT || process.env.LIFF_URL || '/liff/',
         });
         await line.pushMessage(r.referrer_line_uid, messages, r.referrer_venue);
       }
