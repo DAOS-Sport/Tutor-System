@@ -1,7 +1,7 @@
-import { http } from './client';
+import { http, callApi } from './client';
+import { mockDb } from './mock';
 
-// 後台優惠活動 API：強制走真後端 axios（繞過 callApi 的 USE_MOCK 短路），
-// 確保 QA 在 mock 模式下仍能驗收真實後端行為。
+// 直打真後端（需要真實 JWT），用於 admin/manager 操作
 async function req(path, options = {}) {
   const { method = 'get', data, params } = options;
   const res = await http.request({ url: path, method, data, params });
@@ -9,8 +9,9 @@ async function req(path, options = {}) {
 }
 
 export const promotionsApi = {
-  list:    (params)        => req('/promotions', { params }),
-  active:  ()              => req('/promotions/active'),
+  // active：staff 也需要看，必須尊重 USE_MOCK（mock token 打不了真後端）
+  active:  ()              => callApi('/promotions/active', {}, () => mockDb.activePromotions()),
+  list:    (params)        => callApi('/promotions', { params }, () => mockDb.allPromotions(params)),
   detail:  (id)            => req(`/promotions/${id}`),
   create:  (payload)       => req('/promotions', { method: 'post', data: payload }),
   update:  (id, payload)   => req(`/promotions/${id}`, { method: 'patch', data: payload }),

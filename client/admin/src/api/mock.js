@@ -489,6 +489,13 @@ export const mockDb = {
     Object.assign(a, patch, { reviewed_at: new Date().toISOString() });
     return { ...a };
   },
+
+  activePromotions: () => PROMOTIONS
+    .filter((p) => p.status === 'active')
+    .map((p) => ({ ...p })),
+  allPromotions: ({ status, q } = {}) => PROMOTIONS
+    .filter((p) => (!status || p.status === status) && (!q || p.name.includes(q) || (p.coupon_code || '').includes(q)))
+    .map((p) => ({ ...p })),
 };
 
 // ── Phase 4 mock 資料：admin 聊天監察 + 關鍵字 + 警示 ─────────────────
@@ -524,4 +531,37 @@ const ALERTS = [
     message_at: new Date(Date.now() - 86000000).toISOString(),
     created_at: new Date(Date.now() - 86000000).toISOString(),
     reviewed_at: null, review_note: null },
+];
+
+const PROMOTIONS = [
+  {
+    id: 'P001', name: '春節 95 折', description: '全館自動套用',
+    type: 'PERCENTAGE', discount_value: '0.9500',
+    min_threshold_type: null, min_threshold_value: null,
+    applicable_course_types: null, applicable_venue_ids: null,
+    coupon_code: null,
+    start_date: todayISO(), end_date: (() => { const d = new Date(); d.setDate(d.getDate() + 14); return d.toISOString().slice(0, 10); })(),
+    max_uses: null, current_uses: 12,
+    status: 'active', review_note: null,
+    created_by: 'U001', reviewed_by: 'U001',
+    reviewed_at: new Date(Date.now() - 86400000 * 3).toISOString(),
+    submitted_at: new Date(Date.now() - 86400000 * 4).toISOString(),
+    created_at: new Date(Date.now() - 86400000 * 5).toISOString(),
+    updated_at: new Date(Date.now() - 86400000 * 3).toISOString(),
+  },
+  {
+    id: 'P002', name: '新生優惠 NT$500', description: '首次報名 1 對 1 折抵 500',
+    type: 'FIXED_AMOUNT', discount_value: '500',
+    min_threshold_type: 'PERIOD_COUNT', min_threshold_value: 1,
+    applicable_course_types: [1], applicable_venue_ids: null,
+    coupon_code: 'NEW500',
+    start_date: todayISO(), end_date: (() => { const d = new Date(); d.setDate(d.getDate() + 30); return d.toISOString().slice(0, 10); })(),
+    max_uses: 50, current_uses: 8,
+    status: 'active', review_note: null,
+    created_by: 'U002', reviewed_by: 'U001',
+    reviewed_at: new Date(Date.now() - 86400000 * 2).toISOString(),
+    submitted_at: new Date(Date.now() - 86400000 * 3).toISOString(),
+    created_at: new Date(Date.now() - 86400000 * 4).toISOString(),
+    updated_at: new Date(Date.now() - 86400000 * 2).toISOString(),
+  },
 ];
