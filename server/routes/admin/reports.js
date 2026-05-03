@@ -29,6 +29,16 @@ function venueScope(req) {
   return req.query.venueId || null;
 }
 
+// 給報表頁的篩選下拉用：manager 可呼叫的輕量教練清單（admin staff 端點需 admin role）
+router.get('/coach-options', async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT id, name FROM coaches WHERE is_active IS NOT FALSE ORDER BY name`
+    );
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 router.get('/revenue', async (req, res) => {
   try {
     const { from, to } = parseRange(req.query);

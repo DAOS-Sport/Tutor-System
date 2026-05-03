@@ -4,7 +4,6 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
 import { adminReportsApi } from '../api/reports';
 import { venuesApi } from '../api/venues';
-import { staffApi } from '../api/staff';
 import { rowsToCsv, downloadCsv } from '../utils/csvExport';
 
 const TABS = [
@@ -33,8 +32,8 @@ export default function ReportsPage() {
 
   useEffect(() => {
     venuesApi.list().then((r) => setVenues(r || [])).catch(() => setVenues([]));
-    staffApi.list().then((r) => setCoaches((r || []).filter((s) => s.role === 'coach' || s.is_coach)))
-      .catch(() => setCoaches([]));
+    // 用 reports/coach-options（manager 也可呼叫），不用 staffApi（admin only）。
+    adminReportsApi.coachOptions().then((r) => setCoaches(r || [])).catch(() => setCoaches([]));
   }, []);
 
   useEffect(() => {

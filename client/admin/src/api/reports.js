@@ -3,6 +3,8 @@ import { callApi } from './client';
 const empty = (extra = {}) => ({ from: '', to: '', rows: [], ...extra });
 
 export const adminReportsApi = {
+  coachOptions: () =>
+    callApi('/reports/coach-options', {}, () => []),
   revenue: (params) =>
     callApi('/reports/revenue', { params }, () => empty()),
   sessions: (params) =>
