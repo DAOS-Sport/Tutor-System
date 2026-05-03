@@ -9,23 +9,29 @@
 1. 進入 LINE Developers Console → 建立新 Provider（若無）
 2. 建立 LINE Login Channel
 3. 在 Channel 設定頁：
-   - Callback URL：`https://your-replit-url.repl.co/api/auth/line/callback`
+   - Callback URL：`https://daos-tutoring-courses.replit.app/api/auth/line/callback`
 4. 記錄 Channel ID 與 Channel Secret → 存入 Secrets
 
 ### 2. LIFF App（掛在 LINE Login Channel 下）
+建議建立兩個 LIFF App：家長端與教練端各一，方便分開分享連結與統計。
+
 設定步驟：
 1. 在 LINE Login Channel → LIFF → Add
 2. Size：Full（全螢幕）
-3. Endpoint URL：`https://your-replit-url.repl.co/liff`
+3. Endpoint URL（**正式網域**）：
+   - 家長端：`https://daos-tutoring-courses.replit.app/liff/#/`
+   - 教練端：`https://daos-tutoring-courses.replit.app/liff/#/coach`
 4. Module mode：開啟
 5. 記錄 LIFF ID（格式：`1234567890-xxxxxxxx`）→ 存入 Secrets
 
-**LIFF URL 帶 venue 參數使用方式**：
+**LIFF URL 帶 venue 參數使用方式**（給 LINE 推播 / 官方帳號選單用）：
 ```
 https://liff.line.me/{LIFF_ID}?venue=B   ← B 場館（新北高中）
 https://liff.line.me/{LIFF_ID}?venue=C   ← C 場館（松山國小）
 ```
 各場館的 LINE@ 官方帳號將對應的 LIFF URL 設為選單連結。
+
+> 注意：`liff.line.me/{LIFF_ID}` 是 LINE 內自動登入入口（會回傳 id_token），程式裡 `LIFF_URL` 環境變數要保留這個格式；`daos-tutoring-courses.replit.app` 則是 LIFF Endpoint URL，給 LINE Developers Console 設定用。
 
 ### 3. LINE Messaging API Channel（各場館各一個）
 **用途**：發送 LINE Flex Message，訊息從「各場館帳號」發出

@@ -37,12 +37,13 @@ const PORT = process.env.PORT || 3000;
 ## 4. LIFF 開發注意
 
 ### LIFF 必須在 HTTPS 環境
-Replit 自動提供 HTTPS 域名，格式：
-`https://your-project-name.your-username.repl.co`
+Replit 自動提供 HTTPS 域名。本專案正式網址：
+`https://daos-tutoring-courses.replit.app`
 
 ### LINE LIFF URL 設定
-在 LINE Developers Console 設定 LIFF URL 為 Replit 的 HTTPS URL。
-格式：`https://your-replit-url.repl.co/liff`
+在 LINE Developers Console 設定 LIFF Endpoint URL：
+- 家長端：`https://daos-tutoring-courses.replit.app/liff/#/`
+- 教練端：`https://daos-tutoring-courses.replit.app/liff/#/coach`
 
 ### 本地開發測試 LIFF
 使用 `liff.init` 時加上 `liff.isInClient()` 判斷：
@@ -59,7 +60,7 @@ Replit 支援 WebSocket，但注意：
 - 前端連線範例：
 ```js
 const ws = new WebSocket(
-  `wss://your-project.repl.co/ws?token=${jwt}&room=${chatRoomId}`
+  `wss://daos-tutoring-courses.replit.app/ws?token=${jwt}&room=${chatRoomId}`
 );
 ```
 

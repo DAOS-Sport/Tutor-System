@@ -39,6 +39,7 @@
 - 其他規格：`architecture_v7.md`、`schema_v2.sql`、`dev_schedule.md`、`brand_colors.md`、`replit_notes.md`、`line_setup.md`、`flex_messages.md`。
 
 ## 部署設定
+- 正式網址：`https://daos-tutoring-courses.replit.app`（LIFF Endpoint URL：家長 `/liff/#/`、教練 `/liff/#/coach`；`LIFF_URL` 環境變數仍維持 `https://liff.line.me/{LIFF_ID}` 以便 LINE 內推播自動登入）
 - Target：`autoscale`（單一服務）
 - Build：依序 `npm install` server、admin、liff，並把兩個前端 build 到 `server/public/{admin,liff}`。LIFF build 階段會把 `LIFF_ID` 透過 `VITE_LIFF_ID` 注入給 Vite，前端用 `import.meta.env.VITE_LIFF_ID` 初始化 LIFF SDK。
 - Run：`cd server && npm start`（`node index.js`）
