@@ -43,3 +43,11 @@ outputType = "console"
 [postMerge]
 path = "scripts/post-merge.sh"
 timeoutMs = 120000
+
+[userenv]
+
+[userenv.shared]
+VITE_LIFF_ID_PARENT = "2009958451-NmGZ4135"
+VITE_LIFF_ID_COACH = "2009958451-Xz4tru4a"
+LIFF_URL_PARENT = "https://liff.line.me/2009958451-NmGZ4135"
+LIFF_URL_COACH = "https://liff.line.me/2009958451-Xz4tru4a"
