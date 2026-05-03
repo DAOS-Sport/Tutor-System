@@ -387,7 +387,25 @@ Admin：
 - Ragic API 5 分鐘 in-process 快取（`RAGIC_CACHE_TTL_MS`），同一 process 連續同步只會打第一次；除錯時設 `RAGIC_CACHE_TTL_MS=0` 關掉。
 - 後台 admin GET `/api/admin/coaches` / `/api/admin/venues` 仍是 best-effort sync（catch swallow 不擋使用者）；要看真有跑成功，必看 console `[Ragic sync] coaches synced=N linked=M` log。
 
+## Phase 5 補強 + 後台編輯報名資料 + 多組家庭多 LINE 綁定 (本 session 已完成)
+
+### 後台編輯報名資料（EditEnrollmentModal）
+- `server/routes/admin/enrollments.js` 新增 `PATCH /:id`（admin/manager only）：可編輯 parent_name / phone / students / coach / course_type / original_price / final_price / transfer_last_5 / extra_parent_phones / notes；每次寫入 audit log。
+- `admin_enrollments` 新增 `extra_parent_phones TEXT[]`（多組家庭附加手機）與 `notes TEXT`（內部備註）欄位（bootstrap idempotent ALTER TABLE）。
+- `server/routes/admin/enrollments.js` 的 `readEnrollment()` helper 已含這兩個欄位。
+- `client/admin/src/pages/enrollments/EditEnrollmentModal.jsx`（新建）：多組家庭附加手機 textarea + 所有可編輯欄位，表單送出呼叫 `enrollmentsApi.update()`。
+- `EnrollmentsPage.jsx` 在 status ∈ EDITABLE_STATUSES（`pending_payment` / `payment_anomaly` / `confirmed` / `active`）且 `isAdmin || isManager` 時顯示「✏️ 編輯資料」按鈕，其餘 role 或最終狀態隱藏。
+
+### 多組家庭多 LINE 綁定
+- `server/routes/courses.js` `GET /mine`：改以 parent JWT 的 `phone OR ANY(extra_parent_phones)` 雙條件查詢 `admin_enrollments`，讓多組家庭共同持有的課程對每個綁定手機都可見。
+- `client/liff/src/api/courses.js` `myCourses()` 已指向 `/courses/mine`（正確實作）。
+
+### Phase 5 T09 Build + Smoke（本 session 最終驗證）
+- `admin` rebuild：374 kB（gzip 114 kB）；`liff` rebuild：503 kB（gzip 154 kB）。
+- Smoke：tags=4cats/16tags ✅、thresholds=3 ✅、coach-eval=173 coaches ✅、intros list ✅、evaluations/mine 401 ✅、PATCH /api/admin/enrollments/CP1001 200 ✅、courses/mine 401 ✅。
+
 ## 變更紀錄
+- 2026-05-03：Phase 5 全功能完成 + 後台編輯報名 + 多組家庭綁定（見上方 Phase 5 補強節）。
 - 2026-05-02：完成 LIFF Phase 1（任務 #7）。實作 7 個正式頁面 + 2 個 placeholder、6 個全域元件、雙 Context（Auth/Toast）、7 個 API 模組與 mock dataset、共用 utils；新增 `react-hook-form` 依賴、`postcss.config.js`；修正 `main.jsx` 加上無 LIFF_ID 的 dev fallback。`vite build` 通過（158 modules，401KB / 127KB gzip）。後端 19 個 stub 路由不變，LIFF 全程走 mock 模式以驗證 happy path；後續可由 `VITE_USE_MOCK=false` 切到真實 API，並透過 501 自動 fallback 機制漸進實作後端。
 - 2026-05-02：完成 SurveyJS Creator 評估報告，結論為「**不建議整合**」（授權費 USD $589/dev/年、套件巨大、與 Ragic 雙向同步設計衝突）。完整分析詳見 `docs/eval/surveyjs-creator.md`，含替代方案比較與分階段建議。
 - 2026-05-02：補完 `docs/ragic_api.md` 的 H01／H05／Z01／Z02 欄位對照（含 Field ID、表單 metadata、API Key 環境變數說明）。Z02 段落標註附件來源欄位疑似與 Z01 重複，待使用者確認真實欄位後再行更新。

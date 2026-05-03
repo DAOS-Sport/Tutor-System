@@ -280,6 +280,10 @@ async function ensureSchema() {
   await pool.query(`ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS invoice_image_url TEXT`);
   await pool.query(`ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS invoice_url TEXT`);
   await pool.query(`ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS invoice_issued_at TIMESTAMPTZ`);
+  // 多組家庭：額外家長手機（供 LIFF 課程查詢 OR 條件）
+  await pool.query(`ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS extra_parent_phones TEXT[] NOT NULL DEFAULT '{}'`);
+  // 後台備注欄
+  await pool.query(`ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS notes TEXT`);
 }
 
 async function seedIfEmpty() {

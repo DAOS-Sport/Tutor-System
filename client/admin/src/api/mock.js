@@ -356,6 +356,24 @@ export const mockDb = {
     return list.sort((a, b) => (b.submitted_at > a.submitted_at ? 1 : -1));
   },
 
+  updateEnrollment(id, patch) {
+    const e = ENROLLMENTS.find((x) => x.id === id);
+    if (!e) throw new Error('報名不存在');
+    if (['cancelled', 'refunded'].includes(e.status)) throw new Error('已結案報名不可編輯');
+    if (patch.parent_name !== undefined) e.parent_name = patch.parent_name;
+    if (patch.parent_phone !== undefined) e.parent_phone = patch.parent_phone;
+    if (Array.isArray(patch.students)) e.students = patch.students;
+    if (patch.coach !== undefined) e.coach = patch.coach;
+    if (patch.course_type !== undefined) e.course_type = Number(patch.course_type);
+    if (patch.original_price !== undefined) e.original_price = Number(patch.original_price);
+    if (patch.final_price !== undefined) e.final_price = Number(patch.final_price);
+    if (patch.transfer_last_5 !== undefined) e.transfer_last_5 = patch.transfer_last_5;
+    if (Array.isArray(patch.extra_parent_phones)) e.extra_parent_phones = patch.extra_parent_phones;
+    if (patch.notes !== undefined) e.notes = patch.notes;
+    e.audit_logs.push({ at: new Date().toISOString().slice(0, 19), action: '後台編輯報名資料', by: 'admin' });
+    return { ...e, audit_logs: e.audit_logs.map((a) => ({ ...a })) };
+  },
+
   reconcile(id, by) {
     const e = ENROLLMENTS.find((x) => x.id === id);
     if (!e) return null;

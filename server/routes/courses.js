@@ -62,6 +62,54 @@ router.get('/lessons', requireParent, async (req, res) => {
   }
 });
 
+/**
+ * GET /api/courses/mine — 家長查看所有報名（admin_enrollments）
+ * 支援主要手機 OR extra_parent_phones（多組家庭同組）
+ * requireParent 後 req.parent.phone 由 JWT 帶入
+ */
+router.get('/mine', requireParent, async (req, res) => {
+  try {
+    const phone = req.parent.phone;
+    const r = await pool.query(
+      `SELECT id, parent_name, parent_phone, students, coach, venue_id, course_type,
+              original_price, final_price, transfer_last_5, status, submitted_at,
+              total_sessions, used_sessions, refund_amount,
+              invoice_number, invoice_image_url, invoice_url, invoice_issued_at,
+              extra_parent_phones, notes
+         FROM admin_enrollments
+        WHERE parent_phone = $1 OR $1 = ANY(extra_parent_phones)
+        ORDER BY submitted_at DESC`,
+      [phone]
+    );
+    res.json(r.rows.map((row) => ({
+      id: row.id,
+      parent_name: row.parent_name,
+      parent_phone: row.parent_phone,
+      students: row.students || [],
+      coach: row.coach,
+      venue_id: row.venue_id,
+      course_type: row.course_type,
+      original_price: Number(row.original_price),
+      final_price: Number(row.final_price),
+      transfer_last_5: row.transfer_last_5,
+      payment_status: row.status,
+      submitted_at: row.submitted_at,
+      total_sessions: row.total_sessions,
+      used_sessions: row.used_sessions,
+      refund_amount: row.refund_amount != null ? Number(row.refund_amount) : null,
+      invoice_number: row.invoice_number || null,
+      invoice_image_url: row.invoice_image_url || null,
+      invoice_url: row.invoice_url || null,
+      invoice_issued_at: row.invoice_issued_at || null,
+      extra_parent_phones: row.extra_parent_phones || [],
+      notes: row.notes || null,
+    })));
+  } catch (e) {
+    console.error('[courses/mine]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.all('*', (req, res) => {
   res.status(501).json({ error: 'Not implemented', module: 'courses', path: req.path });
 });

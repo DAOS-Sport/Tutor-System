@@ -5,6 +5,9 @@ export const enrollmentsApi = {
   list: (filters = {}) =>
     callApi('/enrollments', { params: filters }, () => mockDb.enrollments(filters)),
 
+  update: (id, payload) =>
+    callApi(`/enrollments/${id}`, { method: 'patch', data: payload }, () => mockDb.updateEnrollment(id, payload)),
+
   uploadInvoice: (file) => {
     const form = new FormData();
     form.append('file', file);

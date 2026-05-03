@@ -60,6 +60,8 @@ async function readEnrollment(id) {
     invoice_image_url: row.invoice_image_url || null,
     invoice_url: row.invoice_url || null,
     invoice_issued_at: tsToString(row.invoice_issued_at),
+    extra_parent_phones: row.extra_parent_phones || [],
+    notes: row.notes || null,
     audit_logs: a.rows.map((x) => ({
       at: tsToString(x.at),
       action: x.action,
@@ -103,6 +105,74 @@ router.get('/', requireAdminAuth, async (req, res) => {
   } catch (err) {
     console.error('[admin/enrollments]', err);
     res.status(500).json({ error: 'list enrollments failed' });
+  }
+});
+
+/**
+ * PATCH /api/admin/enrollments/:id  — 後台編輯報名基本資料
+ * 可編輯欄位：parent_name, parent_phone, students[], coach, course_type,
+ *             original_price, final_price, transfer_last_5,
+ *             extra_parent_phones[], notes
+ * 不可在 cancelled / refunded 狀態下修改（業務資料已結案）。
+ */
+router.patch('/:id', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const body = req.body || {};
+    const cur = await pool.query(`SELECT * FROM admin_enrollments WHERE id = $1`, [id]);
+    if (!cur.rowCount) return res.status(404).json({ error: '報名不存在' });
+
+    const row = cur.rows[0];
+    if (['cancelled', 'refunded'].includes(row.status)) {
+      return res.status(400).json({ error: `狀態 ${row.status} 的報名不可再編輯` });
+    }
+
+    // 允許部分更新，未傳的欄位保留原值
+    const parentName       = body.parent_name       !== undefined ? String(body.parent_name).trim()   : row.parent_name;
+    const parentPhone      = body.parent_phone      !== undefined ? String(body.parent_phone).trim()  : row.parent_phone;
+    const students         = Array.isArray(body.students)         ? body.students.map((s) => String(s).trim()).filter(Boolean) : row.students;
+    const coach            = body.coach             !== undefined ? String(body.coach).trim()          : row.coach;
+    const courseType       = body.course_type       !== undefined ? Number(body.course_type)           : row.course_type;
+    const originalPrice    = body.original_price    !== undefined ? Number(body.original_price)        : row.original_price;
+    const finalPrice       = body.final_price       !== undefined ? Number(body.final_price)           : row.final_price;
+    const transferLast5    = body.transfer_last_5   !== undefined ? String(body.transfer_last_5).trim() : row.transfer_last_5;
+    const extraPhones      = Array.isArray(body.extra_parent_phones)
+      ? body.extra_parent_phones.map((p) => String(p).trim()).filter(Boolean)
+      : (row.extra_parent_phones || []);
+    const notes            = body.notes             !== undefined ? (body.notes ? String(body.notes).trim() : null) : row.notes;
+
+    if (!parentName) return res.status(400).json({ error: '家長姓名必填' });
+    if (!parentPhone) return res.status(400).json({ error: '家長手機必填' });
+    if (!students || students.length === 0) return res.status(400).json({ error: '學員名稱必填' });
+
+    await pool.query(
+      `UPDATE admin_enrollments SET
+         parent_name        = $2,
+         parent_phone       = $3,
+         students           = $4,
+         coach              = $5,
+         course_type        = $6,
+         original_price     = $7,
+         final_price        = $8,
+         transfer_last_5    = $9,
+         extra_parent_phones = $10,
+         notes              = $11,
+         updated_at         = NOW()
+       WHERE id = $1`,
+      [id, parentName, parentPhone, students, coach, courseType,
+       originalPrice, finalPrice, transferLast5, extraPhones, notes]
+    );
+
+    const by = req.adminUser?.name || req.adminUser?.username || 'unknown';
+    await pool.query(
+      `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user) VALUES ($1, $2, $3)`,
+      [id, '後台編輯報名資料', by]
+    );
+
+    res.json(await readEnrollment(id));
+  } catch (err) {
+    console.error('[admin/enrollments patch]', err);
+    res.status(500).json({ error: 'update failed' });
   }
 });
 

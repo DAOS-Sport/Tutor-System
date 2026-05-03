@@ -12,6 +12,7 @@ import {
 } from '../utils/format';
 import { exportEnrollmentsCsv } from '../utils/csvExport';
 import { useToast } from '../context/ToastContext';
+import EditEnrollmentModal from './enrollments/EditEnrollmentModal';
 
 const STATUS_OPTIONS = [
   { value: '',                 label: '全部狀態' },
@@ -22,13 +23,18 @@ const STATUS_OPTIONS = [
   { value: 'refunded',         label: '已退費' },
 ];
 
+const EDITABLE_STATUSES = ['pending_payment', 'confirmed', 'active'];
+
 export default function EnrollmentsPage() {
-  const { user, isStaff } = useAuth();
+  const { user, isStaff, isAdmin, isManager } = useAuth();
   const toast = useToast();
   const [filters, setFilters] = useState({ status: '', search: '' });
   const [list, setList] = useState(null);
   const [venues, setVenues] = useState([]);
   const [detail, setDetail] = useState(null);
+  const [editing, setEditing] = useState(null);
+
+  const canEdit = isAdmin || isManager;
 
   useEffect(() => { venuesApi.list().then(setVenues); }, []);
 
@@ -53,6 +59,12 @@ export default function EnrollmentsPage() {
     { key: 'status', label: '狀態', render: (r) => <StatusBadge tone={paymentStatusTone(r.status)}>{paymentStatusLabel(r.status)}</StatusBadge> },
   ];
 
+  function handleSaved(updated) {
+    setEditing(null);
+    setDetail(updated);
+    setList((prev) => prev ? prev.map((e) => (e.id === updated.id ? updated : e)) : prev);
+  }
+
   return (
     <div>
       <PageHeader
@@ -62,15 +74,8 @@ export default function EnrollmentsPage() {
           <button
             type="button"
             onClick={() => {
-              if (!list || list.length === 0) {
-                toast.error('沒有可匯出的資料');
-                return;
-              }
-              exportEnrollmentsCsv({
-                filenamePrefix: 'enrollments',
-                enrollments: list,
-                venueName: (id) => venueMap[id] || id,
-              });
+              if (!list || list.length === 0) { toast.error('沒有可匯出的資料'); return; }
+              exportEnrollmentsCsv({ filenamePrefix: 'enrollments', enrollments: list, venueName: (id) => venueMap[id] || id });
               toast.success(`已匯出 ${list.length} 筆報名資料`);
             }}
             disabled={!list}
@@ -100,7 +105,7 @@ export default function EnrollmentsPage() {
 
       {!list ? <LoadingSpinner /> : <DataTable columns={columns} rows={list} rowKey={(r) => r.id} empty="沒有符合條件的資料" />}
 
-      {detail && (
+      {detail && !editing && (
         <div
           className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-4"
           onClick={(e) => e.target === e.currentTarget && setDetail(null)}
@@ -108,7 +113,7 @@ export default function EnrollmentsPage() {
           aria-modal="true"
           aria-label="報名明細"
         >
-          <div className="w-full max-w-xl rounded-2xl bg-white p-6 shadow-xl">
+          <div className="w-full max-w-xl rounded-2xl bg-white p-6 shadow-xl max-h-[90vh] overflow-y-auto">
             <div className="mb-4 flex items-center justify-between">
               <h3 className="text-lg font-bold text-brand-primary">報名明細 {detail.id}</h3>
               <StatusBadge tone={paymentStatusTone(detail.status)}>{paymentStatusLabel(detail.status)}</StatusBadge>
@@ -125,8 +130,26 @@ export default function EnrollmentsPage() {
                 <div><dt className="text-gray-500">堂數</dt><dd>{detail.used_sessions || 0} / {detail.total_sessions}</dd></div>
               )}
             </dl>
+
+            {detail.extra_parent_phones && detail.extra_parent_phones.length > 0 && (
+              <div className="mt-4 rounded-xl border border-blue-100 bg-blue-50 p-3">
+                <div className="mb-1 text-xs font-bold text-blue-700">📱 附加家長手機（多組家庭）</div>
+                <div className="flex flex-wrap gap-2">
+                  {detail.extra_parent_phones.map((p) => (
+                    <span key={p} className="rounded-full bg-blue-100 px-2 py-0.5 font-mono text-xs text-blue-800">{p}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {detail.notes && (
+              <div className="mt-3 rounded-xl border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700">
+                <span className="font-bold text-gray-500">備注：</span>{detail.notes}
+              </div>
+            )}
+
             {detail.invoice_number && (
-              <div className="mt-5 rounded-xl border border-teal-200 bg-teal-50 p-4">
+              <div className="mt-4 rounded-xl border border-teal-200 bg-teal-50 p-4">
                 <div className="mb-3 text-sm font-bold text-teal-700">🧾 發票資訊</div>
                 <dl className="grid grid-cols-2 gap-3 text-sm">
                   <div>
@@ -142,12 +165,7 @@ export default function EnrollmentsPage() {
                   {detail.invoice_url && (
                     <div className="col-span-2">
                       <dt className="text-gray-500">電子發票查詢</dt>
-                      <dd>
-                        <a href={detail.invoice_url} target="_blank" rel="noreferrer"
-                          className="text-brand-teal underline hover:opacity-75">
-                          {detail.invoice_url}
-                        </a>
-                      </dd>
+                      <dd><a href={detail.invoice_url} target="_blank" rel="noreferrer" className="text-brand-teal underline hover:opacity-75">{detail.invoice_url}</a></dd>
                     </div>
                   )}
                   {detail.invoice_image_url && (
@@ -155,11 +173,7 @@ export default function EnrollmentsPage() {
                       <dt className="mb-1 text-gray-500">發票照片</dt>
                       <dd>
                         <a href={detail.invoice_image_url} target="_blank" rel="noreferrer">
-                          <img
-                            src={detail.invoice_image_url}
-                            alt="發票"
-                            className="max-h-40 rounded-lg border border-teal-200 object-contain"
-                          />
+                          <img src={detail.invoice_image_url} alt="發票" className="max-h-40 rounded-lg border border-teal-200 object-contain" />
                         </a>
                       </dd>
                     </div>
@@ -167,6 +181,7 @@ export default function EnrollmentsPage() {
                 </dl>
               </div>
             )}
+
             <div className="mt-5">
               <div className="mb-2 text-sm font-bold text-gray-700">操作紀錄</div>
               <ul className="space-y-1 text-xs text-gray-600">
@@ -179,7 +194,18 @@ export default function EnrollmentsPage() {
                 ))}
               </ul>
             </div>
-            <div className="mt-5 text-right">
+
+            <div className="mt-5 flex justify-between items-center">
+              {canEdit && EDITABLE_STATUSES.includes(detail.status) ? (
+                <button
+                  onClick={() => setEditing(detail)}
+                  className="rounded-lg bg-brand-primary px-4 py-2 text-sm font-bold text-white hover:bg-brand-teal"
+                >
+                  ✏️ 編輯資料
+                </button>
+              ) : (
+                <span />
+              )}
               <button
                 onClick={() => setDetail(null)}
                 className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
@@ -189,6 +215,14 @@ export default function EnrollmentsPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {editing && (
+        <EditEnrollmentModal
+          enrollment={editing}
+          onClose={() => setEditing(null)}
+          onSaved={handleSaved}
+        />
       )}
     </div>
   );
