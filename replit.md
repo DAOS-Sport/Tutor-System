@@ -231,7 +231,7 @@ Admin：Sidebar 新增「學習歷程」群組 → `/tags`（F-A08，分類 + �
 
 Mock：`liff` mockDb 新增 `lessonPlan/saveLessonPlan/publishLessonPlan/sessionRecord/saveSessionRecord/submitSessionRecord/copyPrevRecord/learnTags/learningHistory/myEvaluations/evaluationDetail/submitEvaluation`，斷網／無資料時仍可走完 happy path。
 
-Builds：admin 304KB / liff 480KB（gzip 96 / 148）。所有 UI 頁面 ≤ 250 行（最大 SessionRecordFormPage 178）。煙霧：admin login → /admin/learn/{tags=4 cats|coach-eval=4|intros=4|thresholds=3} 全 200。
+Builds：admin 359KB / liff 503KB（gzip 114 / 154）。所有 UI 頁面 ≤ 250 行（最大 SessionRecordFormPage 230）。煙霧（Phase 5 Session Plan 驗證）：health 200、admin login OK、tags=4cats/16tags、coach-eval=173 coaches、thresholds=3、intros=0 pending（seed 僅含草稿）、evaluations/mine 401（需家長 JWT）全部符合預期。
 
 ## Phase 6 (上)：優惠活動 + 折價券 + 購課套用 (任務 #17 已完成)
 DB：新增 `promotions` / `promotion_usages` / `promotion_audit_logs`（migration 006 + coreSchema bootstrap）。
