@@ -24,6 +24,8 @@ import CoachIntrosReviewPage from './pages/CoachIntrosReviewPage';
 import PromotionsPage from './pages/PromotionsPage';
 import PromotionsActivePage from './pages/PromotionsActivePage';
 import MgmStatsPage from './pages/MgmStatsPage';
+import TransfersReviewPage from './pages/TransfersReviewPage';
+import ReportsPage from './pages/ReportsPage';
 
 const ALL = ['admin', 'manager', 'staff'];
 
@@ -35,6 +37,7 @@ export default function App() {
       <Route element={<RequireAuth roles={ALL}><AppLayout /></RequireAuth>}>
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<DashboardPage />} />
+        <Route path="/reports"   element={<RequireAuth roles={['admin', 'manager']}><ReportsPage /></RequireAuth>} />
 
         {/* 系統設定（admin only） */}
         <Route path="/settings"      element={<RequireAuth roles={['admin']}><SettingsPage /></RequireAuth>} />
@@ -46,6 +49,7 @@ export default function App() {
         <Route path="/reconcile"   element={<RequireAuth roles={['admin', 'manager']}><ReconcilePage /></RequireAuth>} />
         <Route path="/enrollments" element={<RequireAuth roles={ALL}><EnrollmentsPage /></RequireAuth>} />
         <Route path="/refund"      element={<RequireAuth roles={['admin', 'manager']}><RefundPage /></RequireAuth>} />
+        <Route path="/transfers"   element={<RequireAuth roles={['admin', 'manager']}><TransfersReviewPage /></RequireAuth>} />
 
         {/* 場館營運 */}
         <Route path="/sessions" element={<RequireAuth roles={ALL}><SessionsPage /></RequireAuth>} />

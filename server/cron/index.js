@@ -44,38 +44,152 @@ function initCronJobs() {
     }
   });
 
-  // ── 每小時：上課前 1 小時提醒 ────────────
+  // ── 每小時：上課前 1 小時提醒 (F-S05) ────
+  // 抓未來 60–120 分鐘內的 confirmed sessions，推給教練 + 該堂所有學員之家長。
+  // notification_log UNIQUE(kind,ref_id,recipient_uid) 確保不重複推。
   cron.schedule('0 * * * *', async () => {
-    const targetTime = new Date(Date.now() + 60 * 60 * 1000);
-    const start = new Date(targetTime); start.setMinutes(0, 0, 0);
-    const end   = new Date(targetTime); end.setMinutes(59, 59, 999);
-    const res = await pool.query(
-      `SELECT cs.id, cs.scheduled_at, cp.coach_id, cp.venue_id, cp.id AS period_id
-       FROM course_sessions cs
-       JOIN course_periods cp ON cs.course_period_id = cp.id
-       WHERE cs.status = 'confirmed'
-         AND cs.scheduled_at BETWEEN $1 AND $2`,
-      [start.toISOString(), end.toISOString()]
-    );
-    for (const row of res.rows) {
-      // TODO: 查詢教練與學員 line_uid，發送提醒 Flex Message
-    }
+    try {
+      const start = new Date(Date.now() + 60 * 60 * 1000);
+      const end   = new Date(Date.now() + 120 * 60 * 1000);
+      const res = await pool.query(
+        `SELECT cs.id, cs.scheduled_at, cp.venue_id, cp.id AS period_id, cp.course_type,
+                co.name AS coach_name, co.line_uid AS coach_uid, v.name AS venue_name
+           FROM course_sessions cs
+           JOIN course_periods cp ON cs.course_period_id = cp.id
+           JOIN coaches co ON co.id = cp.coach_id
+           JOIN venues v ON v.id = cp.venue_id
+          WHERE cs.status IN ('confirmed','pending_group_confirm')
+            AND cs.scheduled_at BETWEEN $1 AND $2`,
+        [start.toISOString(), end.toISOString()]
+      );
+      for (const s of res.rows) {
+        // 取家長 line_uid（透過該 period 的 enrollments → students → parent）
+        const ps = await pool.query(
+          `SELECT DISTINCT p.line_uid FROM course_period_enrollments cpe
+             JOIN students st ON st.id = cpe.student_id
+             JOIN parents p ON p.id = st.parent_id
+            WHERE cpe.course_period_id = $1 AND cpe.status='active' AND p.line_uid IS NOT NULL`,
+          [s.period_id]
+        );
+        const targets = [
+          ...(s.coach_uid ? [{ uid: s.coach_uid, role: 'coach' }] : []),
+          ...ps.rows.map((r) => ({ uid: r.line_uid, role: 'parent' })),
+        ];
+        const startStr = new Date(s.scheduled_at).toLocaleString('zh-TW',
+          { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+        for (const t of targets) {
+          // claim send-right first：插入成功才推播，杜絕並發雙發
+          const claim = await pool.query(
+            `INSERT INTO notification_log (kind, ref_id, recipient_uid)
+             VALUES ('session_reminder_1h', $1, $2)
+             ON CONFLICT DO NOTHING RETURNING id`,
+            [s.id, t.uid]
+          );
+          if (!claim.rowCount) continue;
+          const msg = line.templates.sessionReminder({
+            coachName: s.coach_name, venueName: s.venue_name,
+            scheduledAt: startStr, role: t.role,
+          });
+          try {
+            await line.pushMessage(t.uid, msg, s.venue_id);
+          } catch (e) {
+            console.warn('[Cron/session-reminder] push failed:', e.message);
+            // push 失敗 → 釋放 claim 讓下次重試
+            await pool.query(`DELETE FROM notification_log WHERE id = $1`, [claim.rows[0].id])
+              .catch(() => {});
+          }
+        }
+      }
+    } catch (e) { console.warn('[Cron/session-reminder] failed:', e.message); }
   });
 
-  // ── 每天 09:00：堂數快到期提醒 ───────────
+  // ── 每天 09:00：堂數快到期提醒 (F-S05) ────
   cron.schedule('0 9 * * *', async () => {
-    const res = await pool.query(
-      `SELECT cp.id, cp.venue_id, cp.coach_id,
-              (cp.total_sessions - cp.used_sessions) AS remaining
-       FROM course_periods cp
-       WHERE cp.status = 'active'
-         AND cp.expires_at = CURRENT_DATE + (
-           SELECT value::INTEGER FROM system_settings WHERE key = 'expiry_notify_days'
-         )`
-    );
-    for (const row of res.rows) {
-      // TODO: 發送到期提醒 Flex Message 給家長
-    }
+    try {
+      const r = await pool.query(
+        `SELECT cp.id, cp.venue_id, cp.expires_at, cp.course_type,
+                (cp.total_sessions - cp.used_sessions) AS remaining,
+                co.name AS coach_name
+           FROM course_periods cp
+           JOIN coaches co ON co.id = cp.coach_id
+          WHERE cp.status = 'active'
+            AND cp.expires_at = CURRENT_DATE + (
+              SELECT COALESCE((SELECT value::INTEGER FROM admin_settings WHERE key='expiry_notify_days'), 14)
+            )`
+      );
+      for (const cp of r.rows) {
+        const ps = await pool.query(
+          `SELECT DISTINCT p.line_uid FROM course_period_enrollments cpe
+             JOIN students st ON st.id = cpe.student_id
+             JOIN parents p ON p.id = st.parent_id
+            WHERE cpe.course_period_id = $1 AND cpe.status='active' AND p.line_uid IS NOT NULL`,
+          [cp.id]
+        );
+        for (const row of ps.rows) {
+          const claim = await pool.query(
+            `INSERT INTO notification_log (kind, ref_id, recipient_uid)
+             VALUES ('expiry_reminder', $1, $2)
+             ON CONFLICT DO NOTHING RETURNING id`,
+            [cp.id, row.line_uid]
+          );
+          if (!claim.rowCount) continue;
+          const msg = line.templates.expiryReminder({
+            coachName: cp.coach_name, remainingSessions: cp.remaining,
+            expiresAt: new Date(cp.expires_at).toISOString().slice(0, 10),
+            liffUrl: `${LIFF_URL}#/my-courses`,
+          });
+          try { await line.pushMessage(row.line_uid, msg, cp.venue_id); }
+          catch (e) {
+            console.warn('[Cron/expiry] push failed:', e.message);
+            await pool.query(`DELETE FROM notification_log WHERE id = $1`, [claim.rows[0].id])
+              .catch(() => {});
+          }
+        }
+      }
+    } catch (e) { console.warn('[Cron/expiry] failed:', e.message); }
+  });
+
+  // ── 每天 09:30：MGM 體驗課當日提醒 (F-S10) ────
+  // 抓今天即將上 trial 的 referral_records（status=trial_paid 且該 enrollment 對應 session 在今天）
+  // → 推播給推薦方家長，提醒簽到後可獲獎勵。
+  cron.schedule('30 9 * * *', async () => {
+    try {
+      const r = await pool.query(
+        `SELECT rr.id, rr.referrer_parent_id, rp.line_uid AS referrer_uid,
+                referee.name AS referee_name, cp.venue_id
+           FROM referral_records rr
+           JOIN parents rp ON rp.id = rr.referrer_parent_id
+           LEFT JOIN parents referee ON referee.id = rr.referee_parent_id
+           LEFT JOIN admin_enrollments ae ON ae.id = rr.experience_enrollment_id
+           LEFT JOIN course_periods cp ON cp.coach_id = rr.coach_id AND cp.venue_id = ae.venue_id
+          WHERE rr.status = 'trial_paid' AND rp.line_uid IS NOT NULL
+            AND EXISTS (
+              SELECT 1 FROM course_sessions cs2
+               WHERE cs2.course_period_id = cp.id
+                 AND cs2.scheduled_at::date = CURRENT_DATE
+            )
+          LIMIT 100`
+      );
+      for (const row of r.rows) {
+        const claim = await pool.query(
+          `INSERT INTO notification_log (kind, ref_id, recipient_uid)
+           VALUES ('mgm_trial_today', $1, $2)
+           ON CONFLICT DO NOTHING RETURNING id`,
+          [row.id, row.referrer_uid]
+        );
+        if (!claim.rowCount) continue;
+        const msg = line.templates.mgmTrialTodayReminder({
+          refereeName: row.referee_name || '好友',
+          liffUrl: `${LIFF_URL}#/referral`,
+        });
+        try { await line.pushMessage(row.referrer_uid, msg, row.venue_id || 'B'); }
+        catch (e) {
+          console.warn('[Cron/mgm-trial] push failed:', e.message);
+          await pool.query(`DELETE FROM notification_log WHERE id = $1`, [claim.rows[0].id])
+            .catch(() => {});
+        }
+      }
+    } catch (e) { console.warn('[Cron/mgm-trial] failed:', e.message); }
   });
 
   // ── 每小時 :05：期末評鑑邀請 + 7 天提醒 ────────

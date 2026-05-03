@@ -294,6 +294,69 @@ function keywordAlert({ coachName, parentName, keyword, chatUrl }) {
   }];
 }
 
+// 課程轉讓送出（轉入方）
+function transferRequest({ fromParentName, courseInfo, sessionsRemaining, liffUrl }) {
+  return [{
+    type: 'flex', altText: '收到課程轉讓邀請',
+    contents: {
+      type: 'bubble',
+      header: flexHeader('🎁 收到課程轉讓', BRAND.teal),
+      body: {
+        type: 'box', layout: 'vertical', spacing: 'sm',
+        contents: [
+          { type: 'text', text: `${fromParentName} 想將以下課程轉讓給您：`, size: 'sm', wrap: true },
+          { type: 'text', text: courseInfo, size: 'sm', weight: 'bold' },
+          { type: 'text', text: `剩餘堂數：${sessionsRemaining} 堂`, size: 'sm' },
+          { type: 'text', text: '請等待主管審核，審核通過後課程將自動開通。', size: 'xs', color: '#888888', wrap: true },
+        ],
+      },
+    },
+  }];
+}
+
+// 課程轉讓審核結果（雙方收到）
+function transferReviewed({ approved, courseInfo, note, liffUrl }) {
+  const color = approved ? BRAND.green : '#e24b4a';
+  const title = approved ? '✅ 轉讓已通過' : '❌ 轉讓未通過';
+  return [{
+    type: 'flex', altText: title,
+    contents: {
+      type: 'bubble',
+      header: flexHeader(title, color),
+      body: {
+        type: 'box', layout: 'vertical', spacing: 'sm',
+        contents: [
+          { type: 'text', text: courseInfo, size: 'sm', weight: 'bold', wrap: true },
+          ...(note ? [{ type: 'text', text: `主管備註：${note}`, size: 'xs', color: '#666', wrap: true }] : []),
+          { type: 'text',
+            text: approved ? '課程已轉至新學員，可前往「我的課程」查看。' : '若有疑問請聯繫場館。',
+            size: 'xs', color: '#888888', wrap: true },
+        ],
+      },
+      ...(liffUrl ? { footer: { type: 'box', layout: 'vertical', contents: [flexButton('我的課程', liffUrl, color)] } } : {}),
+    },
+  }];
+}
+
+// MGM 體驗課當天 9 折提醒（推給推薦方）
+function mgmTrialTodayReminder({ refereeName, liffUrl }) {
+  return [{
+    type: 'flex', altText: '您推薦的好友今天上體驗課',
+    contents: {
+      type: 'bubble',
+      header: flexHeader('🎯 體驗課今日進行', BRAND.amber),
+      body: {
+        type: 'box', layout: 'vertical', spacing: 'sm',
+        contents: [
+          { type: 'text', text: `您推薦的 ${refereeName} 今天上體驗課！`, size: 'sm', wrap: true },
+          { type: 'text', text: '簽到完成後，您將獲得正期 9 折券。', size: 'sm', weight: 'bold' },
+        ],
+      },
+      ...(liffUrl ? { footer: { type: 'box', layout: 'vertical', contents: [flexButton('查看推薦進度', liffUrl, BRAND.amber)] } } : {}),
+    },
+  }];
+}
+
 // MGM 推薦方獎勵通知
 function mgmRewardIssued({ refereeName, couponDetails, liffUrl }) {
   return [{
@@ -347,5 +410,8 @@ module.exports = {
     evaluationInvite,
     keywordAlert,
     mgmRewardIssued,
+    transferRequest,
+    transferReviewed,
+    mgmTrialTodayReminder,
   },
 };

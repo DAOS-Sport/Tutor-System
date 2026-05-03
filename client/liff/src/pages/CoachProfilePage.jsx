@@ -72,14 +72,37 @@ export default function CoachProfilePage() {
 
   return (
     <div className="px-4 py-4">
-      <div className="mb-4 rounded-2xl bg-brand-primary p-4 text-white">
-        <div className="text-xs opacity-80">教練帳號</div>
-        <div className="mt-0.5 text-lg font-bold">{coach.name}</div>
-        <div className="mt-1 text-xs opacity-90">{coach.phone}</div>
-        <div className="mt-1 text-xs opacity-80">
-          {coach.is_senior ? '資深' : '一般'} · 倍率 ×{coach.pricing_multiplier || coach.multiplier || 1} ·
-          可教 {(coach.venue_ids || []).join(' / ')} 館
+      <div className="mb-4 rounded-2xl bg-gradient-to-br from-brand-primary to-brand-teal p-4 text-white shadow-md">
+        <div className="flex items-start justify-between">
+          <div>
+            <div className="text-xs opacity-80">教練帳號</div>
+            <div className="mt-0.5 text-lg font-bold">{coach.name}</div>
+            <div className="mt-0.5 text-xs opacity-90">{coach.phone}</div>
+          </div>
+          <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-bold ${
+            coach.is_senior ? 'bg-brand-amber text-white' : 'bg-white/20 text-white'
+          }`}>
+            {coach.is_senior ? '🏅 資深' : '一般'}
+          </span>
         </div>
+        <div className="mt-3 grid grid-cols-2 gap-2 text-[11px]">
+          <div className="rounded-lg bg-white/15 px-2.5 py-1.5">
+            <div className="opacity-80">收費倍率</div>
+            <div className="mt-0.5 text-base font-bold">×{coach.pricing_multiplier || coach.multiplier || 1}</div>
+          </div>
+          <div className="rounded-lg bg-white/15 px-2.5 py-1.5">
+            <div className="opacity-80">可教場館</div>
+            <div className="mt-0.5 text-base font-bold">{(coach.venue_ids || []).join(' / ') || '—'}</div>
+          </div>
+        </div>
+        {coach.intro_review_status && (
+          <div className="mt-2 text-[11px] opacity-90">
+            介紹狀態：{
+              { draft: '草稿', pending_review: '審核中', published: '已發布', rejected: '未通過' }[coach.intro_review_status]
+              || coach.intro_review_status
+            }
+          </div>
+        )}
       </div>
 
       <Section title="個人介紹（家長端可看）">

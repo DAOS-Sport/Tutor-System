@@ -533,6 +533,41 @@ SELECT 'MGM 體驗課 5 折', '推薦連結專用：新客戶體驗課 5 折', '
        ARRAY[1,2,3]::INTEGER[], 'TRIAL50', CURRENT_DATE - INTERVAL '1 day',
        CURRENT_DATE + INTERVAL '5 years', 'active', NOW(), NOW()
 WHERE NOT EXISTS (SELECT 1 FROM promotions WHERE coupon_code = 'TRIAL50');
+
+-- ─── Phase 7: 課程轉讓 (F-S08 / F-M04) ────────────────────────────────
+-- 簡化版 transfer_records（與 001_initial_schema.sql 結構一致，但 reviewed_by 用 admin_users.id）
+CREATE TABLE IF NOT EXISTS transfer_records (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  course_period_id UUID NOT NULL REFERENCES course_periods(id) ON DELETE RESTRICT,
+  from_student_id UUID NOT NULL REFERENCES students(id) ON DELETE RESTRICT,
+  from_parent_id UUID NOT NULL REFERENCES parents(id) ON DELETE RESTRICT,
+  to_phone VARCHAR(20) NOT NULL,
+  to_parent_id UUID REFERENCES parents(id) ON DELETE SET NULL,
+  to_student_id UUID REFERENCES students(id) ON DELETE SET NULL,
+  to_student_name VARCHAR(100),
+  sessions_remaining INTEGER NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'pending_review'
+    CHECK (status IN ('pending_review','approved','rejected','cancelled')),
+  reason TEXT NOT NULL DEFAULT '',
+  review_note TEXT,
+  reviewed_by TEXT REFERENCES admin_users(id) ON DELETE SET NULL,
+  reviewed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_transfers_status ON transfer_records(status);
+CREATE INDEX IF NOT EXISTS idx_transfers_from_parent ON transfer_records(from_parent_id);
+
+-- ─── Phase 7: Cron 通知 dedupe（防重複推播）─────────────────────────────
+CREATE TABLE IF NOT EXISTS notification_log (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  kind VARCHAR(40) NOT NULL,        -- 'session_reminder_1h' / 'expiry_reminder' / 'mgm_trial_today'
+  ref_id VARCHAR(80) NOT NULL,      -- session_id / period_id / referral_id
+  recipient_uid VARCHAR(100) NOT NULL,
+  sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(kind, ref_id, recipient_uid)
+);
+CREATE INDEX IF NOT EXISTS idx_notif_log_kind ON notification_log(kind, sent_at DESC);
 `;
 
 // 預設關鍵字清單（F-A07，可在後台增減 / 停用）

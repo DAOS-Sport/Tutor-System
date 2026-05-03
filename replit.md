@@ -270,6 +270,35 @@ Admin：Sidebar「行銷與優惠」新增 `/mgm-stats`（admin/manager 可見�
 
 煙霧：health 200 / `/r/abc123` → 302 / `/api/referrals/by-token/...` 404（unknown token）/ `/api/admin/mgm-stats` 401（未登入）/ `/api/promotions/preview` 200 / liff & admin 靜態頁 200。Builds：admin 324KB、liff 491KB（gzip 101 / 151）。所有新頁 ≤ 250 行（最大 RegisterPage 168）。
 
+## Phase 7：課程轉讓 + 報表 + 上課記錄 + LINE cron + 教練介紹優化 (任務 #19 已完成)
+DB：`server/bootstrap/coreSchema.js` 新增 `transfer_records`（pending_review/approved/rejected/cancelled，from→to phone 對應，sessions_remaining 快照、reason 必填、reviewer 軌跡）與 `notification_log`（UNIQUE `(kind, ref_id, recipient_uid)` 避免 cron 重複推播）。bootstrap idempotent，psql 驗證通過。
+
+服務／路由：
+- `server/services/transfers.js`：建立／審核交易內處理 sessions_remaining 過戶（from -=、to += 或 create row）、寫 admin_enrollment_audit_logs、status FSM 防重複審核。
+- `server/routes/transfers.js`（parent JWT）：POST 建立、GET /mine、PATCH /:id/cancel；自動以 to_phone 解析 to_parent_id。
+- `server/routes/admin/transfers.js`：GET 列表（status/q 篩選）、PATCH /:id/approve | /reject（限 admin/manager）；通過 LINE 推 `transferReviewed` 給雙方。
+- `server/routes/admin/reports.js`：5 endpoints — `/revenue`（依場館 / 月份）、`/sessions`（場館 / 教練上課堂數）、`/discounts`（每張券折抵總額 + 使用次數）、`/mgm-conversion`（複製 mgm-stats 漏斗 + 按月）、`/learning-completion`（plan/record 完成率）。皆支援 from/to/venueId/coachId 篩選。
+- `server/routes/courses.js` 新增 GET `/lessons`（parent JWT）：列出自己孩子各 enrollment 的剩餘堂數，給 LIFF 課程轉讓 / 我的課堂頁。
+- LINE templates 新增：`transferRequest`（推給家長 + 主管）、`transferReviewed`（雙方）、`mgmTrialTodayReminder`。
+
+Cron（`server/cron/index.js` 取代 3 個 TODO）：
+- 每小時：找 60–120 分鐘後即將開始的 sessions，依 enrollment → coach uid + parent uids 推 `sessionReminder`（帶 `scheduledAt` / `role`）。`notification_log` UNIQUE 鍵 `('session_reminder', sessionId, uid)` dedupe。
+- 每日 09:00：剩餘 ≤2 堂或 30 天內到期的 enrollments → 推 `expiryReminder(remainingSessions)` 給家長。
+- 每日 09:30：當天有體驗課的 MGM referee → 推 `mgmTrialTodayReminder` 給家長與被推薦教練。
+
+LIFF：
+- `TransferRequestPage`：選課程 → 填對方手機 + 堂數 + 理由 → submit。route 包在 `<AppLayout title="課程轉讓" showBackButton>`，內頁用簡單 h1（無 PageHeader 元件）。
+- `MyLessonsPage`：列出每個孩子的所有課程剩餘堂數、到期日，內含「申請轉讓」連結。
+- HomePage 加 2-button grid 進入「我的課堂」、「課程轉讓」。
+- `CoachProfilePage` 頂部優化：漸層 primary→teal 卡片、資深 / 一般 徽章、收費倍率與可教場館 2-grid、若有 `intro_review_status` 顯示中文狀態。
+
+Admin：
+- `TransfersReviewPage`：tabs（全部 / 待審 / 通過 / 拒絕）+ q 搜尋、approve/reject inline form（review_note 必填）。
+- `ReportsPage`：5 個 tabs 對應 5 endpoints，每 tab 共用 from/to/venueId/coachId 篩選列、表格 + 一鍵 CSV 匯出（utf-8 BOM，Excel 友善）。
+- Sidebar「報表」「課程轉讓」分組（admin/manager only）；`App.jsx` 註冊 `/reports`、`/transfers`、parent LIFF `/transfer/new`、`/my-lessons`。
+
+煙霧：DB schema psql 驗證通過；admin build 335KB / 104KB gzip、LIFF build 500KB / 154KB gzip（含 CoachProfile 改版）。Server 啟動 `[Cron] All cron jobs initialized` + `[core bootstrap] ready` 無錯。每個新頁 ≤ 250 行（最大 ReportsPage ~240）。
+
 ## 變更紀錄
 - 2026-05-02：完成 LIFF Phase 1（任務 #7）。實作 7 個正式頁面 + 2 個 placeholder、6 個全域元件、雙 Context（Auth/Toast）、7 個 API 模組與 mock dataset、共用 utils；新增 `react-hook-form` 依賴、`postcss.config.js`；修正 `main.jsx` 加上無 LIFF_ID 的 dev fallback。`vite build` 通過（158 modules，401KB / 127KB gzip）。後端 19 個 stub 路由不變，LIFF 全程走 mock 模式以驗證 happy path；後續可由 `VITE_USE_MOCK=false` 切到真實 API，並透過 501 自動 fallback 機制漸進實作後端。
 - 2026-05-02：完成 SurveyJS Creator 評估報告，結論為「**不建議整合**」（授權費 USD $589/dev/年、套件巨大、與 Ragic 雙向同步設計衝突）。完整分析詳見 `docs/eval/surveyjs-creator.md`，含替代方案比較與分階段建議。

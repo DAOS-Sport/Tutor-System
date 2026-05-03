@@ -46,7 +46,7 @@ export default function HomePage() {
       <button
         type="button"
         onClick={() => navigate('/referral')}
-        className="mb-5 flex w-full items-center justify-between rounded-2xl border border-brand-green/30 bg-gradient-to-r from-brand-green/10 to-brand-amber/10 p-3 text-left active:opacity-80"
+        className="mb-3 flex w-full items-center justify-between rounded-2xl border border-brand-green/30 bg-gradient-to-r from-brand-green/10 to-brand-amber/10 p-3 text-left active:opacity-80"
       >
         <div>
           <div className="text-sm font-bold text-brand-green">🎁 邀請好友拿正期 9 折券</div>
@@ -54,6 +54,19 @@ export default function HomePage() {
         </div>
         <span className="text-brand-green">›</span>
       </button>
+
+      <div className="mb-5 grid grid-cols-2 gap-2">
+        <button type="button" onClick={() => navigate('/my-lessons')}
+          className="rounded-2xl border border-brand-teal/30 bg-white p-3 text-left active:bg-brand-teal/5">
+          <div className="text-sm font-bold text-brand-teal">📋 上課記錄</div>
+          <div className="mt-0.5 text-[11px] text-gray-500">查看出席與教練筆記</div>
+        </button>
+        <button type="button" onClick={() => navigate('/transfer/new')}
+          className="rounded-2xl border border-brand-primary/20 bg-white p-3 text-left active:bg-gray-50">
+          <div className="text-sm font-bold text-brand-primary">🔁 課程轉讓</div>
+          <div className="mt-0.5 text-[11px] text-gray-500">將剩餘堂數轉給其他學員</div>
+        </button>
+      </div>
 
       {promos === null ? (
         <LoadingSpinner label="載入優惠中…" />

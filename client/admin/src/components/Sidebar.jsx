@@ -8,6 +8,7 @@ const NAV_GROUPS = [
     title: '營運總覽',
     items: [
       { to: '/dashboard', label: '今日總覽', roles: [] },
+      { to: '/reports',   label: '營運報表 (F-M01)', roles: ['admin', 'manager'] },
     ],
   },
   {
@@ -25,6 +26,7 @@ const NAV_GROUPS = [
       { to: '/reconcile',   label: '待對帳清單 (F-M02)', roles: ['admin', 'manager'] },
       { to: '/enrollments', label: '所有報名 (F-R02)',   roles: ['admin', 'manager', 'staff'] },
       { to: '/refund',      label: '退課處理 (F-R04)',   roles: ['admin', 'manager'] },
+      { to: '/transfers',   label: '課程轉讓審核 (F-M04)', roles: ['admin', 'manager'] },
     ],
   },
   {

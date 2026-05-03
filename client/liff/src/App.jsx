@@ -26,6 +26,8 @@ import SessionRecordFormPage from './pages/SessionRecordFormPage';
 import LearningHistoryPage from './pages/LearningHistoryPage';
 import EvaluationFormPage from './pages/EvaluationFormPage';
 import ReferralPage from './pages/ReferralPage';
+import TransferRequestPage from './pages/TransferRequestPage';
+import MyLessonsPage from './pages/MyLessonsPage';
 
 function RequireAuth() {
   const { isAuthed } = useAuth();
@@ -64,6 +66,7 @@ export default function App() {
               <Route element={<AppLayout />}>
                 <Route path="/" element={<HomePage />} />
                 <Route path="/my-courses" element={<MyCoursesPage />} />
+                <Route path="/my-lessons" element={<MyLessonsPage />} />
                 <Route path="/chat" element={<ChatListPage />} />
                 <Route path="/profile" element={<ProfilePage />} />
               </Route>
@@ -86,6 +89,9 @@ export default function App() {
               {/* MGM 推薦連結 (Phase 6 下) */}
               <Route element={<AppLayout showBackButton title="邀請好友" />}>
                 <Route path="/referral" element={<ReferralPage />} />
+              </Route>
+              <Route element={<AppLayout showBackButton title="課程轉讓" />}>
+                <Route path="/transfer/new" element={<TransferRequestPage />} />
               </Route>
             </Route>
 
