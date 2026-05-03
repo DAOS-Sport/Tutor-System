@@ -18,6 +18,7 @@ const router = express.Router();
 
 router.use('/auth',          require('./admin/auth'));
 router.use('/staff',         require('./admin/staff'));
+router.use('/coaches',       require('./admin/coaches'));   // F-C-Admin (Task #32)
 router.use('/venues',        require('./admin/venues'));
 router.use('/settings',      require('./admin/settings'));
 router.use('/course-intros', require('./admin/courseIntros'));

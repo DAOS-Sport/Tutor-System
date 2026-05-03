@@ -590,14 +590,14 @@ const DEFAULT_KEYWORDS = [
 const VENUES = [
   { id: 'B', name: '夢想體育學院 板橋館', full_address: '新北市板橋區文化路一段 188 號 3 樓' },
   { id: 'C', name: '夢想體育學院 中和館', full_address: '新北市中和區景平路 268 號 B1' },
-  { id: 'X', name: '夢想體育學院 新莊館', full_address: '新北市新莊區中正路 10 號 2 樓' },
+  // 注意：Task #32 起，'X' 假館（新莊館）已移除；真實環境靠 syncVenuesFromRagic 從 H05 同步
 ];
 
 const COACHES = [
   { ragic_id: 'C001', name: '王志強', phone: '0911000001', is_senior: true,  multiplier: 1.30, venues: ['B', 'C'], bio: '前國家代表隊選手，10 年青少年訓練經驗。' },
   { ragic_id: 'C002', name: '林佳穎', phone: '0911000002', is_senior: true,  multiplier: 1.50, venues: ['B'],      bio: '英國 LTA Level 3 認證教練，擅長 6-12 歲基礎培訓。' },
-  { ragic_id: 'C003', name: '張嘉豪', phone: '0911000003', is_senior: false, multiplier: 1.00, venues: ['B','C','X'], bio: '熱情活潑、耐心十足。' },
-  { ragic_id: 'C004', name: '黃詩涵', phone: '0911000004', is_senior: false, multiplier: 1.10, venues: ['C', 'X'], bio: '具備 5 年場館團體班經驗。' },
+  { ragic_id: 'C003', name: '張嘉豪', phone: '0911000003', is_senior: false, multiplier: 1.00, venues: ['B','C'], bio: '熱情活潑、耐心十足。' },
+  { ragic_id: 'C004', name: '黃詩涵', phone: '0911000004', is_senior: false, multiplier: 1.10, venues: ['C'], bio: '具備 5 年場館團體班經驗。' },
 ];
 
 const PARENTS = [

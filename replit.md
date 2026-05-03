@@ -322,6 +322,30 @@ Admin：
 - `node tests/e2e/run_all.js` 8/8 PASS。
 - 既有 admin (336KB) / liff (502KB) build 不變，本 phase 不動 client UI。
 
+## Task #32：後台教練資料管理頁 (F-C-Admin) + Ragic 同步補強 (已完成)
+
+### 根因
+系統有兩張平行教練表：`coaches`（LIFF 用，UUID PK，含 bio / multiplier / specialties / intro_review_status）vs `admin_staff`（後台 HR 用，工號 PK，已由 `syncStaffFromRagic` 同步 H01）。後台沒有任何頁面讀 `coaches` → 「看不到完整教練清單」。`coaches` 表原本只由 `coreSchema.js` 寫死 4 筆假資料，從未從 Ragic 同步。
+
+### 變更
+- `server/services/ragicAdmin.js` 新增 `syncCoachesFromRagic()`：H01 在職 + 應徵職務含「教練」→ upsert 到 `coaches`，key=`ragic_employee_id`；只更新 `name/phone/email/is_active`，系統內部欄位（`is_senior/pricing_multiplier/bio_rich_text/specialties/intro_review_status/line_uid`）以後台手動編輯為準。不在 Ragic 在職教練名單中的列 → 標 `is_active=false`（軟刪除）。
+- `server/services/ragicAdmin.js` 中 `syncVenuesFromRagic()` 加強：除了 `admin_venues` 之外，也鏡寫到 LIFF 用的 `venues` 表（同一個 id 對齊 FK），且不在 H05 履約中名單的 venue 標 `is_active=false`，避免後台一次清掉造成歷史 FK 斷裂。
+- `server/routes/admin/coaches.js`（新檔）：`GET /` 列表（先 best-effort sync）、`GET /:id` 詳細（含 `coach_bio_media` + `coach_venues`）、`PATCH /:id` 改 email / is_senior / multiplier(1.0–1.5) / specialties / bio_rich_text / is_active / venue_ids（M:N 全量替換，TRANSACTION 包起來且驗證 venue 存在）。全 admin only。
+- `server/routes/admin.js` mount `/api/admin/coaches`。
+- `client/admin/`：新增 `pages/CoachesPage.jsx`（≤230 行，編輯 modal 含可教場館 chip 多選）+ `api/coaches.js` + `mock.js` `COACHES_ADMIN` 4 筆 + Sidebar「教練資料 (F-C-Admin)」+ App.jsx `/coaches` route（admin only）。
+- `server/bootstrap/coreSchema.js` 清掉 'X' 假館（新莊館）+ 把 'X' 從教練 venue 名單移除（張嘉豪 ['B','C','X']→['B','C']、黃詩涵 ['C','X']→['C']）；既有 DB 不受影響（INSERT…ON CONFLICT DO NOTHING），新環境不再 seed 'X'。
+
+### 重要注意
+- H01 沒有「教練可教場館」欄位 → `coach_venues` (M:N) 由後台手動勾，不靠同步。
+- 缺 `RAGIC_API_KEY`/`RAGIC_BASE_URL`（dev fallback）時，`syncCoachesFromRagic`/`syncVenuesFromRagic` 直接 noop，使用者不被擋。
+- 既有 admin_staff F-A02 員工管理頁不變（`coaches` 與 `admin_staff` 暫時各管一半，未來可考慮整併另開 task）。
+
+### 煙霧
+- `psql` 確認 `coaches` 表 4 筆都在；`coach_venues` 後台 PATCH 後 M:N 替換正確（王志強 ['B','C']→['C']→['B','C'] 雙向驗證 OK）。
+- PATCH 校驗：multiplier=2.5 → 400；venue_ids=['B','ZZZ'] → 400 + ROLLBACK；無 token → 401。
+- `GET /api/admin/coaches/:id` 回傳含 `bio_media` 陣列。
+- admin build 通過：347KB / 107KB gzip（+2KB）。
+
 ## 變更紀錄
 - 2026-05-02：完成 LIFF Phase 1（任務 #7）。實作 7 個正式頁面 + 2 個 placeholder、6 個全域元件、雙 Context（Auth/Toast）、7 個 API 模組與 mock dataset、共用 utils；新增 `react-hook-form` 依賴、`postcss.config.js`；修正 `main.jsx` 加上無 LIFF_ID 的 dev fallback。`vite build` 通過（158 modules，401KB / 127KB gzip）。後端 19 個 stub 路由不變，LIFF 全程走 mock 模式以驗證 happy path；後續可由 `VITE_USE_MOCK=false` 切到真實 API，並透過 501 自動 fallback 機制漸進實作後端。
 - 2026-05-02：完成 SurveyJS Creator 評估報告，結論為「**不建議整合**」（授權費 USD $589/dev/年、套件巨大、與 Ragic 雙向同步設計衝突）。完整分析詳見 `docs/eval/surveyjs-creator.md`，含替代方案比較與分階段建議。

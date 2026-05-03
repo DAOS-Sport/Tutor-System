@@ -6,6 +6,7 @@ import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
 import SettingsPage from './pages/SettingsPage';
 import StaffPage from './pages/StaffPage';
+import CoachesPage from './pages/CoachesPage';
 import VenuesPage from './pages/VenuesPage';
 import CourseIntrosPage from './pages/CourseIntrosPage';
 import ReconcilePage from './pages/ReconcilePage';
@@ -42,6 +43,7 @@ export default function App() {
         {/* 系統設定（admin only） */}
         <Route path="/settings"      element={<RequireAuth roles={['admin']}><SettingsPage /></RequireAuth>} />
         <Route path="/staff"         element={<RequireAuth roles={['admin']}><StaffPage /></RequireAuth>} />
+        <Route path="/coaches"       element={<RequireAuth roles={['admin']}><CoachesPage /></RequireAuth>} />
         <Route path="/venues"        element={<RequireAuth roles={['admin']}><VenuesPage /></RequireAuth>} />
         <Route path="/course-intros" element={<RequireAuth roles={['admin', 'manager']}><CourseIntrosPage /></RequireAuth>} />
 

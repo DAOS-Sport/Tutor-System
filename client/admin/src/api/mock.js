@@ -39,6 +39,39 @@ const STAFF = [
   { id: 'S001', name: '小林櫃檯', role: 'staff', venue_id: 'B', phone: '0933000001', is_senior: false, multiplier: 1.00, active: true },
 ];
 
+// Task #32 — 教練資料 mock（USE_MOCK 模式或後端 501 fallback）
+// 真實環境會由 syncCoachesFromRagic 填入 coaches 表
+const COACHES_ADMIN = [
+  { id: 'c-001', ragic_employee_id: 'C001', name: '王志強', phone: '0911000001',
+    email: '', line_uid: 'U_c001', line_bound: true,
+    is_senior: true, pricing_multiplier: 1.30,
+    specialties: ['基礎技巧', '青少年班'],
+    bio_rich_text: '專注青少年網球啟蒙 8 年。',
+    is_active: true, intro_review_status: 'published',
+    venue_ids: ['B'] },
+  { id: 'c-002', ragic_employee_id: 'C002', name: '林佳穎', phone: '0911000002',
+    email: 'jiaying@daos.tw', line_uid: 'U_c002', line_bound: true,
+    is_senior: true, pricing_multiplier: 1.50,
+    specialties: ['體能訓練', '比賽選手'],
+    bio_rich_text: '前國手，10 年競技指導經驗。',
+    is_active: true, intro_review_status: 'published',
+    venue_ids: ['B'] },
+  { id: 'c-003', ragic_employee_id: 'C003', name: '張嘉豪', phone: '0911000003',
+    email: '', line_uid: '', line_bound: false,
+    is_senior: false, pricing_multiplier: 1.00,
+    specialties: ['基礎技巧'],
+    bio_rich_text: '熱情活潑、耐心十足。',
+    is_active: true, intro_review_status: 'pending',
+    venue_ids: ['B', 'C'] },
+  { id: 'c-004', ragic_employee_id: 'C004', name: '黃詩涵', phone: '0911000004',
+    email: '', line_uid: '', line_bound: false,
+    is_senior: false, pricing_multiplier: 1.10,
+    specialties: ['團體班'],
+    bio_rich_text: '具備 5 年場館團體班經驗。',
+    is_active: true, intro_review_status: 'draft',
+    venue_ids: ['C'] },
+];
+
 const SETTINGS = {
   sessions_per_period:    6,
   validity_days:        365,
@@ -275,6 +308,24 @@ export const mockDb = {
     if (!v) return null;
     Object.assign(v, patch);
     return { ...v };
+  },
+
+  // ── Task #32 教練資料 (F-C-Admin) ─────────────────────────────────────
+  coaches() { return COACHES_ADMIN.map((c) => ({ ...c, specialties: [...(c.specialties || [])], venue_ids: [...(c.venue_ids || [])] })); },
+  coachDetail(id) {
+    const c = COACHES_ADMIN.find((x) => x.id === id);
+    if (!c) return null;
+    return { ...c, specialties: [...(c.specialties || [])], venue_ids: [...(c.venue_ids || [])], bio_media: [] };
+  },
+  updateCoach(id, patch) {
+    const c = COACHES_ADMIN.find((x) => x.id === id);
+    if (!c) return null;
+    if (Array.isArray(patch.venue_ids)) c.venue_ids = [...patch.venue_ids];
+    if (Array.isArray(patch.specialties)) c.specialties = [...patch.specialties];
+    for (const k of ['email', 'is_senior', 'pricing_multiplier', 'bio_rich_text', 'is_active']) {
+      if (patch[k] !== undefined) c[k] = patch[k];
+    }
+    return { ...c, specialties: [...c.specialties], venue_ids: [...c.venue_ids] };
   },
 
   settings() { return { ...SETTINGS }; },
