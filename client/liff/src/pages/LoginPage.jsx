@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useEffect, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import liff from '@line/liff';
 import { parentsApi } from '../api/parents';
 import { coachesApi } from '../api/coaches';
@@ -22,17 +22,71 @@ function tryGetLineIdToken() {
 }
 
 /**
+ * 教練端 LIFF 自動登入（Task #34）：在 LINE App 內進入 /coach* path 時自動嘗試
+ *   liff.getProfile().userId + id_token → /api/coaches/by-line-uid → 成功直接進 /coach
+ *   失敗（404 未綁定 / 401 / 其他）→ 留在登入頁讓 user 改用手機表單完成首次綁定
+ * 回傳 'success' / 'unbound' / 'unavailable'
+ */
+async function tryCoachAutoLogin() {
+  try {
+    if (!liff?.isInClient?.() || !liff?.isLoggedIn?.()) return 'unavailable';
+    const idToken = liff.getIDToken?.();
+    if (!idToken) return 'unavailable';
+    const profile = await liff.getProfile();
+    const lineUid = profile?.userId;
+    if (!lineUid) return 'unavailable';
+    const coach = await coachesApi.byLineUid(lineUid, idToken);
+    return { status: 'success', coach };
+  } catch (err) {
+    const code = err?.response?.status;
+    if (code === 404) return 'unbound';
+    return 'unavailable';
+  }
+}
+
+/**
  * LIFF 登入：以手機作為通用識別。
+ *  0. 教練端 LIFF（path 含 /coach）+ LINE 內 + 已 LIFF login → 嘗試 by-line-uid 自動登入
  *  1. 先試家長 (Z01) — 找到 → 走家長分頁
  *  2. 找不到再試教練 (H01) — 找到 → 走教練分頁
  *  3. 都找不到 → 引導家長註冊
  */
 export default function LoginPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { setParent, setCoach } = useAuth();
   const toast = useToast();
   const [phone, setPhone] = useState('');
   const [busy, setBusy] = useState(false);
+  const [autoTried, setAutoTried] = useState(false);
+  const autoRanRef = useRef(false);
+
+  // 自動登入：偵測 referrer/path 是否為教練端 LIFF（COACH LIFF 的 endpoint URL 會帶 /coach 之類前綴），
+  // 或當前要去的 from path 包含 /coach
+  useEffect(() => {
+    if (autoRanRef.current) return;
+    autoRanRef.current = true;
+    const fromPath = location.state?.from?.pathname || '';
+    const referrer = (typeof document !== 'undefined' && document.referrer) || '';
+    const isCoachContext = /\/coach(\b|\/|$)/.test(fromPath)
+      || /\/coach(\b|\/|$)/.test(window.location.pathname)
+      || /\/coach(\b|\/|$)/.test(referrer);
+    if (!isCoachContext) return;
+    setBusy(true);
+    tryCoachAutoLogin().then((res) => {
+      if (res && typeof res === 'object' && res.status === 'success') {
+        setCoach(res.coach);
+        toast.success(`歡迎，${res.coach.name} 教練`);
+        navigate('/coach', { replace: true });
+        return;
+      }
+      if (res === 'unbound') {
+        toast.info('此 LINE 帳號尚未綁定教練，請輸入手機完成首次綁定');
+      }
+      setAutoTried(true);
+    }).finally(() => setBusy(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function handleSubmit(e) {
     e.preventDefault();

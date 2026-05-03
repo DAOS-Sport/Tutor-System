@@ -12,7 +12,7 @@
 const express = require('express');
 const router = express.Router();
 const { pool } = require('../models/db');
-const { signCoachToken, requireCoach, requireCoachOwner, byPhoneRateLimit, logFailedLogin } = require('../middlewares/coachAuth');
+const { signCoachToken, requireCoach, requireCoachOwner, byPhoneRateLimit, byLineUidRateLimit, logFailedLogin } = require('../middlewares/coachAuth');
 const { verifyLineIdToken, isLineVerificationRequired } = require('../services/lineAuth');
 
 /**
@@ -123,6 +123,55 @@ router.get('/by-phone', byPhoneRateLimit, async (req, res) => {
     }
 
     const token = signCoachToken({ coachId: coach.id, phone: coach.phone, lineUid: coach.line_uid || null });
+    res.json({ ...coach, token });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * 教練端 LIFF 自動登入（Task #34）
+ *  GET /api/coaches/by-line-uid?lineUid=Uxxx  + header X-Line-Id-Token: <id_token>
+ *  - 必填 lineUid + id_token；verifyLineIdToken(idToken).sub 必須等於 lineUid（防偽造）
+ *  - 找 coach where line_uid=$1 AND is_active=TRUE → 簽 token；找不到回 404（讓前端 fallback 手機）
+ */
+router.get('/by-line-uid', byLineUidRateLimit, async (req, res) => {
+  const lineUid = req.query.lineUid;
+  // 安全考量：id_token 僅接受 header（X-Line-Id-Token），不接受 query string
+  // — 避免在 access log / proxy / referrer 留下可重放的有效 token
+  const idToken = req.headers['x-line-id-token'];
+  const ip = (req.headers['x-forwarded-for']?.split(',')[0] || req.ip || 'unknown').trim();
+  if (!lineUid) return res.status(400).json({ error: 'lineUid is required' });
+  if (!idToken) {
+    logFailedLogin(ip, `lineUid=${lineUid}`, 'missing-id-token');
+    return res.status(401).json({ error: 'LINE id_token is required' });
+  }
+  try {
+    let verifiedSub;
+    try {
+      const profile = await verifyLineIdToken(idToken);
+      verifiedSub = profile.sub;
+    } catch (err) {
+      logFailedLogin(ip, `lineUid=${lineUid}`, `line-verify-failed: ${err.message}`);
+      return res.status(401).json({ error: `LINE 身分驗證失敗：${err.message}` });
+    }
+    if (String(verifiedSub) !== String(lineUid)) {
+      logFailedLogin(ip, `lineUid=${lineUid}`, `sub-mismatch verified=${verifiedSub}`);
+      return res.status(401).json({ error: 'lineUid 與 id_token sub 不符' });
+    }
+    const r = await pool.query(
+      `SELECT c.*, COALESCE(
+         (SELECT json_agg(cv.venue_id) FROM coach_venues cv WHERE cv.coach_id = c.id),
+         '[]'::json
+       ) AS venue_ids
+       FROM coaches c WHERE c.line_uid = $1 AND c.is_active = TRUE`,
+      [lineUid]
+    );
+    if (r.rows.length === 0) {
+      return res.status(404).json({ error: 'no coach bound to this LINE userId' });
+    }
+    const coach = withMultiplierAlias(r.rows[0]);
+    const token = signCoachToken({ coachId: coach.id, phone: coach.phone, lineUid: coach.line_uid });
     res.json({ ...coach, token });
   } catch (err) {
     res.status(500).json({ error: err.message });

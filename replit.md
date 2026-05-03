@@ -337,6 +337,24 @@ Admin：
 
 ### 重要注意
 - H01 沒有「教練可教場館」欄位 → `coach_venues` (M:N) 由後台手動勾，不靠同步。
+- **Task #34 補強**：`syncCoachesFromRagic()` 改為**會**同步 H01 的「LINE userid」欄位到 `coaches.line_uid`（先用 `RAGIC_FIELD_H01_LINE_UID` env 覆寫，否則多重鍵名 fallback + 啟發式比對）。upsert 時 `line_uid = COALESCE(coaches.line_uid, NULLIF($,''))` — 已綁的不會被空值或新值覆蓋，避免 Ragic 端打錯字洗掉現有綁定。
+
+## Task #34：教練端 LIFF 自動登入 + Ragic LINE userid 同步 (已完成)
+
+### 變更
+- `server/services/ragicAdmin.js`：新增 `extractLineUid(r)` 多重鍵名 fallback；`syncCoachesFromRagic` 同步 `line_uid` 並回傳 `{synced, linked}`。
+- `server/middlewares/coachAuth.js`：新增 `byLineUidRateLimit`（與 by-phone 相同 5min/5次參數但獨立計數）。
+- `server/routes/coaches.js`：新增 `GET /api/coaches/by-line-uid?lineUid=Uxxx` + header `X-Line-Id-Token` — 用 `verifyLineIdToken().sub` 比對防偽造，找到啟用中的 coach 簽 12h JWT。
+- `client/liff/src/api/coaches.js`：新增 `byLineUid(lineUid, idToken)`。
+- `client/liff/src/pages/LoginPage.jsx`：進場 useEffect 偵測教練端 context（path/referrer 含 `/coach`）+ `liff.isInClient() && isLoggedIn()` → `liff.getProfile().userId` + `getIDToken()` → `byLineUid` → 成功直接 navigate `/coach`；404（未綁）→ toast 提示改用手機完成首次綁定（保留原表單 fallback）。
+- `client/admin/src/pages/CoachesPage.jsx`：右上加「立即同步 Ragic」按鈕，toast 顯示 `已同步 N 位教練（其中 M 位完成 LINE 綁定）`。`line_bound` 欄位早已存在。
+- 文件：`docs/ragic_api.md`（H01 補 LINE userid 欄）、`docs/manuals/coach.md`（自動登入說明）。
+
+### 用法
+1. 管理員在 Ragic H01 對每位教練的「LINE userid」欄貼上 LINE userId（`U` 開頭 33 字）。
+2. 後台教練資料頁按「立即同步 Ragic」→ toast 顯示綁定數。
+3. 教練在 LINE 內點教練端 LIFF 連結（`liff.line.me/$VITE_LIFF_ID_COACH/coach`）→ 自動登入。
+4. fallback：找不到 / 未綁 → 手機表單，綁完後自動寫回 `coaches.line_uid`。
 - 缺 `RAGIC_API_KEY`/`RAGIC_BASE_URL`（dev fallback）時，`syncCoachesFromRagic`/`syncVenuesFromRagic` 直接 noop，使用者不被擋。
 - 既有 admin_staff F-A02 員工管理頁不變（`coaches` 與 `admin_staff` 暫時各管一半，未來可考慮整併另開 task）。
 

@@ -45,6 +45,22 @@ export default function CoachesPage() {
 
   if (!coaches) return <LoadingSpinner fullPage />;
 
+  async function syncFromRagic() {
+    setBusy(true);
+    try {
+      const fresh = await coachesApi.list();
+      setCoaches(fresh);
+      const total = fresh.length;
+      const linked = fresh.filter((c) => c.line_bound).length;
+      toast.success(`已同步 ${total} 位教練（其中 ${linked} 位完成 LINE 綁定）`);
+    } catch (err) {
+      console.error('[CoachesPage] sync failed:', err);
+      toast.error('同步失敗，請稍後再試');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function startEdit(row) {
     setEditing({
       ...row,
@@ -138,6 +154,16 @@ export default function CoachesPage() {
       <PageHeader
         title="教練資料 (F-C-Admin)"
         subtitle="從 Ragic H01 (在職 + 應徵職務含「教練」) 自動同步；可調整資深旗標、修課係數、專長、簡介與可教場館"
+        actions={(
+          <button
+            type="button"
+            onClick={syncFromRagic}
+            disabled={busy}
+            className="rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary disabled:opacity-50"
+          >
+            {busy ? '同步中…' : '立即同步 Ragic'}
+          </button>
+        )}
       />
       <DataTable columns={columns} rows={coaches} rowKey={(r) => r.id} />
 

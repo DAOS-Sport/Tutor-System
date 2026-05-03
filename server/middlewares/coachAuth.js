@@ -76,8 +76,32 @@ function byPhoneRateLimit(req, res, next) {
   next();
 }
 
+/**
+ * by-line-uid 速率限制（Task #34）：與 by-phone 共用視窗/上限參數，但獨立計數
+ * （避免一次自動登入失敗就把同 IP 的手機 fallback 也鎖掉）
+ */
+const LINE_UID_ATTEMPTS = new Map();
+function byLineUidRateLimit(req, res, next) {
+  const ip = (req.headers['x-forwarded-for']?.split(',')[0] || req.ip || 'unknown').trim();
+  const now = Date.now();
+  const rec = LINE_UID_ATTEMPTS.get(ip);
+  if (!rec || now - rec.windowStart > WINDOW_MS) {
+    LINE_UID_ATTEMPTS.set(ip, { count: 1, windowStart: now });
+    return next();
+  }
+  rec.count += 1;
+  if (rec.count > MAX_ATTEMPTS) {
+    console.warn(`[coachAuth] rate-limited by-line-uid: ip=${ip} attempts=${rec.count}`);
+    return res.status(429).json({ error: 'Too many login attempts. Please retry in 5 minutes.' });
+  }
+  next();
+}
+
 function logFailedLogin(ip, phone, reason) {
   console.warn(`[coachAuth] failed login: ip=${ip} phone=${phone} reason=${reason}`);
 }
 
-module.exports = { signCoachToken, requireCoach, requireCoachOwner, byPhoneRateLimit, logFailedLogin };
+module.exports = {
+  signCoachToken, requireCoach, requireCoachOwner,
+  byPhoneRateLimit, byLineUidRateLimit, logFailedLogin,
+};

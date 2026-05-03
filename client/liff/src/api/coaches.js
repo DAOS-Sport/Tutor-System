@@ -21,6 +21,19 @@ export const coachesApi = {
       () => mockDb.coachByPhone(phone)
     ),
 
+  // 教練端 LIFF 自動登入（Task #34）：用 LINE userId + id_token 直接登入，不用打手機
+  // mock 模式直接 reject，讓上層 fallback 到手機表單
+  byLineUid: (lineUid, idToken) =>
+    callApi(
+      '/coaches/by-line-uid',
+      {
+        method: 'get',
+        params: { lineUid },
+        headers: { 'X-Line-Id-Token': idToken },
+      },
+      () => Promise.reject(new Error('byLineUid not available in mock mode'))
+    ),
+
   // 個人介紹文字
   updateBio: (id, bio_rich_text) =>
     callApi(`/coaches/${id}/bio`, { method: 'put', data: { bio_rich_text } }, () =>

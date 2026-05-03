@@ -63,39 +63,69 @@ async function syncStaffFromRagic() {
 /**
  * 教練 Ragic 同步（Task #32）：H01 (在職 + 應徵職務含「教練」) → coaches。
  * - key = ragic_employee_id（即 H01 工號 3000935）
- * - 第一次匯入：填 name / phone / email；is_senior=false / multiplier=1.00 / intro=draft
- * - 後續同步：只更新 name / phone / email / is_active；
- *   系統內部欄位（is_senior / pricing_multiplier / bio_rich_text / specialties / intro_review_status / line_uid）
+ * - 第一次匯入：填 name / phone / email / line_uid（若 Ragic 有設）；
+ *   is_senior=false / multiplier=1.00 / intro=draft
+ * - 後續同步：name/phone/email/is_active 強制覆寫；line_uid 用 COALESCE 不覆蓋已綁定值
+ *   （避免 Ragic 端打字錯誤把現有綁定洗掉）；
+ *   系統內部欄位（is_senior / pricing_multiplier / bio_rich_text / specialties / intro_review_status）
  *   一律以後台手動編輯為準，不被覆寫
  * - 不在 Ragic 在職教練名單中的現有 coaches → is_active = FALSE（軟刪除）
  *
  * 注意：H01 沒有「教練可教場館」欄位，coach_venues (M:N) 只能由後台手動勾。
+ *
+ * LINE userid 欄位（Task #34）：
+ *   - 由管理員在 Ragic H01 手動維護「LINE userid」欄
+ *   - 實際欄位 ID 由 user 自行命名；以下用多重 fallback 鍵名 + 啟發式比對 + env 覆寫支援
+ *     env: RAGIC_FIELD_H01_LINE_UID（可填中文鍵名或 Ragic 數字 Field ID）
  */
+function extractLineUid(r) {
+  const explicit = process.env.RAGIC_FIELD_H01_LINE_UID;
+  if (explicit && r[explicit]) return String(r[explicit]).trim();
+  // 常見鍵名 fallback
+  const candidates = ['LINE userid', 'LINE userId', 'LINE UID', 'LINE uid',
+                      'LINE_USER_ID', 'lineUid', 'line_uid', 'Line userid'];
+  for (const k of candidates) {
+    if (r[k]) return String(r[k]).trim();
+  }
+  // 啟發式：scan keys 找包含 line + (user|uid) 的欄位
+  for (const k of Object.keys(r)) {
+    if (/line/i.test(k) && /(user.?id|uid)/i.test(k) && r[k]) {
+      return String(r[k]).trim();
+    }
+  }
+  return '';
+}
+
 async function syncCoachesFromRagic() {
   if (!ragicEnabled()) return { synced: 0, skipped: true };
   try {
     const records = await ragic.getActiveCoaches();
     const seenIds = new Set();
     let synced = 0;
+    let linked = 0;
     for (const r of records) {
       const ragicId = r['工號'] || r['3000935'];
       if (!ragicId) continue;
       const name = r['姓名'] || r['3000933'] || '';
       const phone = r['手機（公司）'] || r['3001424'] || r['手機（個人）'] || r['3000941'] || '';
       const email = r['Email'] || r['email'] || r['信箱'] || '';
+      const lineUid = extractLineUid(r);
       if (!name || !phone) continue;
       seenIds.add(String(ragicId));
-      // upsert：第一次插入填全部，後續只更新 name/phone/email/is_active，保留其餘
+      if (lineUid) linked += 1;
+      // upsert：第一次插入填全部，後續更新 name/phone/email/is_active；
+      // line_uid 用 COALESCE(NULLIF(...,''), coaches.line_uid) — 已綁的值不會被空字串/換值洗掉
       await pool.query(
-        `INSERT INTO coaches (ragic_employee_id, name, phone, email, is_active)
-         VALUES ($1, $2, $3, $4, TRUE)
+        `INSERT INTO coaches (ragic_employee_id, name, phone, email, line_uid, is_active)
+         VALUES ($1, $2, $3, $4, NULLIF($5, ''), TRUE)
          ON CONFLICT (ragic_employee_id) DO UPDATE SET
            name = EXCLUDED.name,
            phone = EXCLUDED.phone,
            email = COALESCE(NULLIF(EXCLUDED.email, ''), coaches.email),
+           line_uid = COALESCE(coaches.line_uid, NULLIF($5, '')),
            is_active = TRUE,
            updated_at = NOW()`,
-        [String(ragicId), name, phone, email]
+        [String(ragicId), name, phone, email, lineUid]
       );
       synced += 1;
     }
@@ -109,7 +139,8 @@ async function syncCoachesFromRagic() {
         [Array.from(seenIds)]
       );
     }
-    return { synced, skipped: false };
+    console.log(`[Ragic sync] coaches synced=${synced} linked=${linked}`);
+    return { synced, linked, skipped: false };
   } catch (err) {
     console.warn('[Ragic sync] coaches failed:', err.message);
     return { synced: 0, error: err.message };

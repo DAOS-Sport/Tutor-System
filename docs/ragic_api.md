@@ -129,6 +129,7 @@ GET https://ap7.ragic.com/xinsheng/general-information/11?api&def=1
 | 分機 | `3000938` |  |  |
 | 手機（公司）| `3001424` | `coaches.phone` |  |
 | E-mail（公司）| `3000940` | `coaches.email` |  |
+| LINE userid | （由 user 維護，欄位 ID 自定）| `coaches.line_uid` | Task #34 — 教練端 LIFF 自動登入用；`server/services/ragicAdmin.js` 用多重鍵名 fallback + `RAGIC_FIELD_H01_LINE_UID` env 覆寫；空白值不會洗掉系統內已綁定值 |
 
 **到離職與年資**
 
