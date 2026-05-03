@@ -109,15 +109,27 @@ router.get('/discounts', async (req, res) => {
 router.get('/mgm-conversion', async (req, res) => {
   try {
     const { from, to } = parseRange(req.query);
+    const venueId = venueScope(req);
+    const args = [from, to];
+    const conds = [];
+    if (req.query.coachId) { args.push(req.query.coachId); conds.push(`rr.coach_id = $${args.length}`); }
+    if (venueId) {
+      args.push(venueId);
+      // venue 由 referee enrollment 對應 admin_enrollments.venue_id 推得
+      conds.push(`EXISTS (SELECT 1 FROM admin_enrollments ae
+                            WHERE ae.id = rr.experience_enrollment_id AND ae.venue_id = $${args.length})`);
+    }
+    const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
     const r = await pool.query(
       `SELECT
-         COUNT(*) FILTER (WHERE created_at::date BETWEEN $1 AND $2)::int AS total_links,
-         COUNT(*) FILTER (WHERE registered_at::date BETWEEN $1 AND $2)::int AS registered,
-         COUNT(*) FILTER (WHERE trial_paid_at::date BETWEEN $1 AND $2)::int AS trial_paid,
-         COUNT(*) FILTER (WHERE checked_in_at::date BETWEEN $1 AND $2)::int AS checked_in,
-         COUNT(*) FILTER (WHERE reward_issued_at::date BETWEEN $1 AND $2)::int AS rewarded
-       FROM referral_records`,
-      [from, to]
+         COUNT(*) FILTER (WHERE rr.created_at::date BETWEEN $1 AND $2)::int AS total_links,
+         COUNT(*) FILTER (WHERE rr.registered_at::date BETWEEN $1 AND $2)::int AS registered,
+         COUNT(*) FILTER (WHERE rr.trial_paid_at::date BETWEEN $1 AND $2)::int AS trial_paid,
+         COUNT(*) FILTER (WHERE rr.checked_in_at::date BETWEEN $1 AND $2)::int AS checked_in,
+         COUNT(*) FILTER (WHERE rr.reward_issued_at::date BETWEEN $1 AND $2)::int AS rewarded
+       FROM referral_records rr
+       ${where}`,
+      args
     );
     const k = r.rows[0];
     const safe = (n, d) => (d > 0 ? Number((n / d * 100).toFixed(1)) : 0);
@@ -141,6 +153,7 @@ router.get('/learning-completion', async (req, res) => {
     const conds = [`cp.created_at::date BETWEEN $1 AND $2`, `co.is_senior = TRUE`];
     const args = [from, to];
     if (venueId) { args.push(venueId); conds.push(`cp.venue_id = $${args.length}`); }
+    if (req.query.coachId) { args.push(req.query.coachId); conds.push(`cp.coach_id = $${args.length}`); }
     const r = await pool.query(
       `SELECT cp.coach_id, co.name AS coach_name,
               COUNT(DISTINCT cp.id)::int AS periods,

@@ -114,7 +114,7 @@ function initCronJobs() {
            JOIN coaches co ON co.id = cp.coach_id
           WHERE cp.status = 'active'
             AND cp.expires_at = CURRENT_DATE + (
-              SELECT COALESCE((SELECT value::INTEGER FROM admin_settings WHERE key='expiry_notify_days'), 14)
+              SELECT COALESCE((SELECT value::INTEGER FROM admin_settings WHERE key='expiry_notice_days'), 60)
             )`
       );
       for (const cp of r.rows) {
