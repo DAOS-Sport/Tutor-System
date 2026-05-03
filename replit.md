@@ -39,7 +39,9 @@
 - 其他規格：`architecture_v7.md`、`schema_v2.sql`、`dev_schedule.md`、`brand_colors.md`、`replit_notes.md`、`line_setup.md`、`flex_messages.md`。
 
 ## 部署設定
-- 正式網址：`https://daos-tutoring-courses.replit.app`（LIFF Endpoint URL：家長 `/liff/#/`、教練 `/liff/#/coach`；`LIFF_URL` 環境變數仍維持 `https://liff.line.me/{LIFF_ID}` 以便 LINE 內推播自動登入）
+- 正式網址：`https://daos-tutoring-courses.replit.app`
+- LIFF：LINE Console 只建 **1 個** LIFF App，Endpoint URL 設 `https://daos-tutoring-courses.replit.app/liff/`（無 `#`，前端為 BrowserRouter）。家長分享 `https://liff.line.me/<LIFF_ID>`、教練分享 `https://liff.line.me/<LIFF_ID>/coach`，LIFF SDK 會把 `/coach` path 自動接到 Endpoint URL 後面送給前端。
+- `LIFF_URL` 環境變數設 `https://liff.line.me/<LIFF_ID>`（無結尾斜線，無 `#`）；cron / learn 會自動接 `/my-courses`、`/evaluation/:id`、`/history/:periodId`、`/referral` 等路徑。
 - Target：`autoscale`（單一服務）
 - Build：依序 `npm install` server、admin、liff，並把兩個前端 build 到 `server/public/{admin,liff}`。LIFF build 階段會把 `LIFF_ID` 透過 `VITE_LIFF_ID` 注入給 Vite，前端用 `import.meta.env.VITE_LIFF_ID` 初始化 LIFF SDK。
 - Run：`cd server && npm start`（`node index.js`）
@@ -256,7 +258,7 @@ DB：新增 `referral_records`（migration 007 + coreSchema bootstrap，皆 idem
 服務：`server/services/referrals.js` 含 `createLink`（產 token、寫 record）、`findByToken`（含 referrer + coach 摘要）、`bindReferee`（註冊時若 ref_token 有效且非自推薦 → 寫 referee_parent_id + status=registered）、`markTrialPaid`（enrollment 提交時更新）、`issueRewardForEnrollment`（簽到時建立 9 折 `MGM***` promotion code、寫 reward_promotion_id、推 LINE Flex `mgmRewardIssued`）。所有狀態轉換可在外層交易內呼叫。
 
 API：
-- 公開 `GET /r/:token` → 302 redirect 到 `/liff/#/register?ref=<token>`（QR / LINE 分享進入點）。
+- 公開 `GET /r/:token` → 302 redirect 到 `/liff/register?ref=<token>`（QR / LINE 分享進入點）。
 - LIFF (parent JWT)：`POST /api/referrals` 產連結、`GET /api/referrals/by-token/:token` 顯示推薦資訊（不需登入）、`GET /api/referrals/mine` 我的推薦清單。
 - LIFF：`POST /api/parents` 接受 `ref_token` → 註冊成功後綁定 referee。
 - LIFF：`POST /api/enrollments` 在交易內驗證 `TRIAL50` 僅限受推薦的 referee + 對應教練（否則 400 `COUPON_OUT_OF_SCOPE`），通過則 `markTrialPaid`。

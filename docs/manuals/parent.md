@@ -1,8 +1,8 @@
 # 家長／學員 使用手冊
 
 ## 一、開啟方式
-1. **建議**：在 LINE 內點各場館官方帳號選單 → 自動開啟 LIFF（會自動登入，免輸帳密）。
-2. **備案**：用瀏覽器開 `https://daos-tutoring-courses.replit.app/liff/#/`，需手動輸入手機。
+1. **建議**：在 LINE 內點各場館官方帳號選單 → 自動開啟 LIFF（會自動登入，免輸帳密）。直接連結：`https://liff.line.me/<LIFF_ID>`（管理員設好 LIFF App 後會公告實際的 LIFF_ID）。
+2. **備案**：用瀏覽器開 `https://daos-tutoring-courses.replit.app/liff/`，需手動輸入手機驗證。
 
 > 第一次開啟手機畫面看到「正在載入」就請耐心等 1–3 秒，系統正在初始化。
 

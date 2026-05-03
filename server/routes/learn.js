@@ -179,7 +179,7 @@ async function notifyPlanPublished(periodId) {
   if (!r.rowCount) return;
   const { venue_id, coach_name, uids } = r.rows[0];
   if (!uids || uids.length === 0) return;
-  const liffUrl = (process.env.LIFF_URL || 'https://liff.line.me/-') + `#/history/${periodId}`;
+  const liffUrl = (process.env.LIFF_URL || 'https://liff.line.me/-') + `/history/${periodId}`;
   const msg = line.templates.coursePlanPublished({ coachName: coach_name, liffUrl });
   for (const uid of uids) {
     try { await line.pushMessage(uid, msg, venue_id); }
@@ -203,7 +203,7 @@ async function notifyRecordSubmitted(sessionId) {
   if (!row.uids || row.uids.length === 0) return;
   const dt = new Date(row.scheduled_at);
   const dateStr = `${dt.getMonth()+1}/${dt.getDate()}`;
-  const liffUrl = (process.env.LIFF_URL || 'https://liff.line.me/-') + `#/history/${row.period_id}`;
+  const liffUrl = (process.env.LIFF_URL || 'https://liff.line.me/-') + `/history/${row.period_id}`;
   const msg = line.templates.sessionRecordPublished({ coachName: row.coach_name, sessionDate: dateStr, liffUrl });
   for (const uid of row.uids) {
     try { await line.pushMessage(uid, msg, row.venue_id); }

@@ -2,7 +2,8 @@
 
 ## 一、開啟方式
 - 在 LINE 內點教練專屬選單／連結 → 開啟 LIFF。
-- 網址：`https://daos-tutoring-courses.replit.app/liff/#/coach`
+- LINE 內連結：`https://liff.line.me/<LIFF_ID>/coach`（`<LIFF_ID>` 由系統管理員在 LINE Console 建好 LIFF App 後告知）。
+- 備用網頁版（測試用）：`https://daos-tutoring-courses.replit.app/liff/coach`
 - 第一次會要你輸入手機號碼 + 自動帶 LINE id_token，系統會把你的 LINE UID 綁到教練檔案（之後在 LINE 內開都會自動登入）。
 - 登入有效期 12 小時，超過要重新打開 LIFF 自動續期。
 

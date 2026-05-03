@@ -44,7 +44,7 @@ LINE Flex Message：Header `#15316a`、主按鈕 `#31aeab`、成功 `#97bf36`、
 ## 三、LINE 架構設計
 
 - 所有場館共用**單一 LINE Login Channel**，同一用戶 UID 永遠一致
-- LIFF 帶 venue 參數：`https://liff.line.me/xxxxx?venue=B`（LIFF Endpoint URL 設為 `https://daos-tutoring-courses.replit.app/liff/#/`）
+- LIFF 帶 venue 參數：`https://liff.line.me/{LIFF_ID}?venue=B`（LIFF Endpoint URL 設為 `https://daos-tutoring-courses.replit.app/liff/`，無 `#`）
 - 各場館獨立 Messaging API Channel（推播從各場館帳號發出，體驗自然）
 - 媒體儲存：Replit Object Storage
 

@@ -13,25 +13,42 @@
 4. 記錄 Channel ID 與 Channel Secret → 存入 Secrets
 
 ### 2. LIFF App（掛在 LINE Login Channel 下）
-建議建立兩個 LIFF App：家長端與教練端各一，方便分開分享連結與統計。
+**只建立 1 個 LIFF App**。前端 build 時只注入一個 `VITE_LIFF_ID`，家長／教練都用同一個 LIFF App，靠「同 LIFF_ID + 不同路徑」分流。
 
 設定步驟：
 1. 在 LINE Login Channel → LIFF → Add
 2. Size：Full（全螢幕）
-3. Endpoint URL（**正式網域**）：
-   - 家長端：`https://daos-tutoring-courses.replit.app/liff/#/`
-   - 教練端：`https://daos-tutoring-courses.replit.app/liff/#/coach`
-4. Module mode：開啟
-5. 記錄 LIFF ID（格式：`1234567890-xxxxxxxx`）→ 存入 Secrets
+3. Endpoint URL（**正式網域，注意結尾斜線、沒有 `#`**）：
+   `https://daos-tutoring-courses.replit.app/liff/`
+4. Scope：勾 `profile`、`openid`（取得 LINE id_token，教練登入需要）
+5. Module mode：開啟
+6. Bot link feature：依需求（建議 `On (Aggressive)`，加場館官方帳號好友）
+7. 點 Add → LINE 會給你 **LIFF ID**（格式 `1234567890-xxxxxxxx`）
 
-**LIFF URL 帶 venue 參數使用方式**（給 LINE 推播 / 官方帳號選單用）：
-```
-https://liff.line.me/{LIFF_ID}?venue=B   ← B 場館（新北高中）
-https://liff.line.me/{LIFF_ID}?venue=C   ← C 場館（松山國小）
-```
-各場館的 LINE@ 官方帳號將對應的 LIFF URL 設為選單連結。
+### 取得 LIFF ID 後設到 Replit Secrets
+| Secret | 值 | 用途 |
+|---|---|---|
+| `LIFF_ID` | LINE Console 給的 LIFF ID | 後端 verify id_token、組推播深連結 |
+| `LIFF_URL` | `https://liff.line.me/<LIFF_ID>` | 推播 Flex Message 的 base URL（程式會自動接 `/my-courses`、`/evaluation/:id` 等路徑） |
 
-> 注意：`liff.line.me/{LIFF_ID}` 是 LINE 內自動登入入口（會回傳 id_token），程式裡 `LIFF_URL` 環境變數要保留這個格式；`daos-tutoring-courses.replit.app` 則是 LIFF Endpoint URL，給 LINE Developers Console 設定用。
+設好 Secrets 後，重新部署一次 → Build 階段會把 `LIFF_ID` 注入給前端 `VITE_LIFF_ID`。
+
+### 對外分享連結（給家長／教練）
+| 對象 | 分享連結 | 開啟後落點 |
+|---|---|---|
+| 家長 | `https://liff.line.me/<LIFF_ID>` | `/liff/`（家長首頁） |
+| 教練 | `https://liff.line.me/<LIFF_ID>/coach` | `/liff/coach`（教練今日） |
+
+LIFF SDK 會自動把 `liff.line.me/{LIFF_ID}/coach` 後面的 `/coach` 拼到 Endpoint URL 後送給前端，BrowserRouter 看到 `/liff/coach` 就由 `<RequireCoach>` 接手。
+
+**LIFF URL 帶 venue 參數**（給場館官方帳號選單）：
+```
+https://liff.line.me/<LIFF_ID>?venue=B   ← B 場館（新北高中）
+https://liff.line.me/<LIFF_ID>?venue=C   ← C 場館（松山國小）
+https://liff.line.me/<LIFF_ID>/coach?venue=B   ← 教練端 + venue
+```
+
+> 重要：絕對不要在 Endpoint URL 或分享連結用 `#/`。前端用 `BrowserRouter`（純路徑），`#` 後面的東西會被當成瀏覽器錨點，**不會**送到 React Router，會導致教練永遠落到家長首頁或登入頁。
 
 ### 3. LINE Messaging API Channel（各場館各一個）
 **用途**：發送 LINE Flex Message，訊息從「各場館帳號」發出
