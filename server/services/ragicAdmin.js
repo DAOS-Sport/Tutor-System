@@ -234,6 +234,7 @@ async function syncVenuesFromRagic() {
         [codes]
       );
     }
+    console.log(`[Ragic sync] venues synced=${synced}`);
     return { synced, skipped: false };
   } catch (err) {
     console.warn('[Ragic sync] venues failed:', err.message);

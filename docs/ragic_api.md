@@ -69,16 +69,18 @@ API Key、帳號、表單路徑都透過環境變數注入，**請勿** 將明�
 
 > 註：以下範例已更新為與目前 `server/services/ragic.js` 一致的 URL 與查詢 key（與舊版本相比，URL 從占位符改為實際表單路徑、寫回範例改用 Field ID）。
 
+> ⚠️ **認證**：所有範例都需在 URL 加上 `&APIKey=<RAGIC_API_KEY>`（為了可讀性下方範例省略）。
+> Ragic **不接受** `Authorization: Basic` / `Bearer` header — 用 header 會被當 guest，回 `code:106`。
+> 程式中由 `server/services/ragic.js` 統一以 axios `params` 注入 `APIKey`，呼叫端不需手動拼。
+
 ### 查詢在職教練
 ```
-GET https://ap7.ragic.com/xinsheng/ragicforms4/20004?api&在職狀態=在職
-Authorization: Basic {base64(api_key)}
+GET https://ap7.ragic.com/xinsheng/ragicforms4/20004?api&在職狀態=在職&APIKey=<RAGIC_API_KEY>
 ```
 
 ### 查詢場館清單
 ```
-GET https://ap7.ragic.com/xinsheng/ragicforms4/7?api&履約狀態=履約中
-Authorization: Basic {base64(api_key)}
+GET https://ap7.ragic.com/xinsheng/ragicforms4/7?api&履約狀態=履約中&APIKey=<RAGIC_API_KEY>
 ```
 
 ### 依手機查詢家長
