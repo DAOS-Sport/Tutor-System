@@ -436,11 +436,15 @@ function invoiceIssued({ parentName, invoiceNumber, invoiceImageUrl, invoiceUrl,
   }
 
   bodyContents.push({ type: 'separator', margin: 'md' });
+  // format: AB12345678 → AB-12345678
+  const displayInvoice = invoiceNumber && invoiceNumber.length >= 3
+    ? `${invoiceNumber.slice(0, 2)}-${invoiceNumber.slice(2)}`
+    : invoiceNumber;
   bodyContents.push({
     type: 'box', layout: 'horizontal', margin: 'md',
     contents: [
       { type: 'text', text: '發票號碼', size: 'sm', color: '#888888', flex: 2 },
-      { type: 'text', text: invoiceNumber, size: 'sm', weight: 'bold', flex: 3, align: 'end' },
+      { type: 'text', text: displayInvoice, size: 'sm', weight: 'bold', flex: 3, align: 'end' },
     ],
   });
 
