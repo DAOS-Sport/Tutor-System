@@ -46,6 +46,13 @@ https://liff.line.me/{LIFF_ID}?venue=C   ← C 場館（松山國小）
 LINE_MESSAGING_TOKENS={"B":"token_for_B","C":"token_for_C","E":"token_for_E"}
 ```
 
+**Webhook URL**：
+本系統僅做 LINE 推播（push），不消費 LINE 端的 webhook 事件，因此每個場館的 Messaging API Channel 在 LINE Developers Console → Messaging API → Webhook settings 內：
+- **Use webhook：關閉**（OFF）
+- 若你之後要啟用（例如要接 follow / message 事件），Webhook URL 請設為：
+  `https://daos-tutoring-courses.replit.app/api/line/webhook/{venue_id}`
+  （目前 server 尚未實作對應路由，啟用前需先補 handler。）
+
 ## Flex Message 測試工具
 LINE Flex Message Simulator：
 https://developers.line.biz/flex-simulator/
