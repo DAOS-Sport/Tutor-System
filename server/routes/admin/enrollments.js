@@ -107,7 +107,26 @@ router.post('/:id/reconcile', requireAdminAuth, requireAdminRole('admin', 'manag
   try {
     await client.query('BEGIN');
     const { id } = req.params;
-    const by = (req.body && req.body.by) || req.adminUser?.name || req.adminUser?.username || 'unknown';
+    const body = req.body || {};
+    const by = body.by || req.adminUser?.name || req.adminUser?.username || 'unknown';
+
+    // Task #39：發票號碼 + 圖片 URL 為必填
+    const invoiceNumber = (body.invoice_number || '').trim();
+    const invoiceImageUrl = (body.invoice_image_url || '').trim();
+    const invoiceUrl = (body.invoice_url || '').trim();
+
+    if (!invoiceNumber) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: '發票號碼必填' });
+    }
+    if (!/^[A-Z]{2}\d{8}$/.test(invoiceNumber)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: '發票號碼格式錯誤（應為 2 大寫英文 + 8 數字）' });
+    }
+    if (!invoiceImageUrl) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: '發票照片必填' });
+    }
 
     const cur = await client.query(`SELECT * FROM admin_enrollments WHERE id = $1 FOR UPDATE`, [id]);
     if (!cur.rowCount) {
@@ -127,26 +146,58 @@ router.post('/:id/reconcile', requireAdminAuth, requireAdminRole('admin', 'manag
          SET status = 'confirmed',
              total_sessions = $2,
              used_sessions = 0,
+             invoice_number = $3,
+             invoice_image_url = $4,
+             invoice_url = $5,
+             invoice_issued_at = NOW(),
              updated_at = NOW()
        WHERE id = $1`,
-      [id, total]
+      [id, total, invoiceNumber, invoiceImageUrl, invoiceUrl || null]
     );
     await client.query(
       `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user)
        VALUES ($1, $2, $3)`,
-      [id, '對帳通過', by]
+      [id, `對帳通過（發票 ${invoiceNumber}）`, by]
     );
 
     await client.query('COMMIT');
 
     // 對帳通過 = 等同此筆轉「進行中」→ 立即補對應 course_period 的 chat_room
-    // （admin_enrollments 與 core course_periods 是兩套 schema；這裡用 backfill 兜底，
-    // 確保任何已 active 但缺房間的 period 都被補上，不依賴單筆 1:1 對應。）
     try {
       const chatRooms = require('../../services/chatRooms');
       await chatRooms.backfillRoomsForActivePeriods();
     } catch (e) {
       console.warn('[reconcile] backfill chat rooms failed:', e.message);
+    }
+
+    // Task #39：推播 LINE Flex 發票通知給家長
+    try {
+      const line = require('../../services/line');
+      const enrollment = cur.rows[0];
+      const parentPhone = enrollment.parent_phone;
+      if (parentPhone) {
+        const parentRow = await pool.query(
+          `SELECT line_uid FROM parents WHERE phone = $1`, [parentPhone]
+        );
+        const lineUid = parentRow.rows[0]?.line_uid;
+        if (lineUid) {
+          const publicBase = (process.env.PUBLIC_BASE_URL || process.env.ADMIN_URL || '').replace(/\/$/, '');
+          const absoluteImageUrl = invoiceImageUrl.startsWith('http')
+            ? invoiceImageUrl
+            : `${publicBase}${invoiceImageUrl}`;
+          const liffUrl = process.env.LIFF_URL_PARENT || process.env.LIFF_URL || '';
+          const messages = line.templates.invoiceIssued({
+            parentName: enrollment.parent_name,
+            invoiceNumber,
+            invoiceImageUrl: absoluteImageUrl,
+            invoiceUrl: invoiceUrl || null,
+            liffUrl,
+          });
+          await line.pushMessage(lineUid, messages, enrollment.venue_id);
+        }
+      }
+    } catch (e) {
+      console.warn('[reconcile] LINE push invoice failed:', e.message);
     }
 
     res.json(await readEnrollment(id));

@@ -1,9 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import DataTable from '../components/DataTable';
 import StatusBadge from '../components/StatusBadge';
-import ConfirmDialog from '../components/ConfirmDialog';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import { enrollmentsApi } from '../api/enrollments';
@@ -11,14 +10,160 @@ import { venuesApi } from '../api/venues';
 import { formatTWD, formatTWDateTime, courseTypeLabel } from '../utils/format';
 import { exportEnrollmentsCsv } from '../utils/csvExport';
 
+const INVOICE_RE = /^[A-Z]{2}\d{8}$/;
+
+function InvoiceModal({ enrollment, canReconcile, onCancel, onDone }) {
+  const toast = useToast();
+  const { user } = useAuth();
+  const fileRef = useRef(null);
+  const [invoiceNumber, setInvoiceNumber] = useState('');
+  const [invoiceUrl, setInvoiceUrl] = useState('');
+  const [imageFile, setImageFile] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape' && !busy) onCancel(); };
+    document.addEventListener('keydown', onKey);
+    document.body.style.overflow = 'hidden';
+    return () => { document.removeEventListener('keydown', onKey); document.body.style.overflow = ''; };
+  }, [busy, onCancel]);
+
+  function handleFile(file) {
+    if (!file) return;
+    if (!['image/jpeg', 'image/png'].includes(file.type)) { toast.error('只接受 JPG / PNG 圖片'); return; }
+    if (file.size > 5 * 1024 * 1024) { toast.error('圖片大小不得超過 5MB'); return; }
+    setImageFile(file);
+    setImagePreview(URL.createObjectURL(file));
+  }
+
+  const numOk = INVOICE_RE.test(invoiceNumber);
+  const canSubmit = numOk && imageFile && !busy && canReconcile;
+
+  async function handleSubmit() {
+    if (!canSubmit) return;
+    setBusy(true);
+    try {
+      setUploading(true);
+      const { url: imageUrl } = await enrollmentsApi.uploadInvoice(imageFile);
+      setUploading(false);
+      await enrollmentsApi.reconcile(enrollment.id, {
+        by: user.name,
+        invoice_number: invoiceNumber,
+        invoice_image_url: imageUrl,
+        invoice_url: invoiceUrl.trim() || undefined,
+      });
+      toast.success(`對帳通過，發票 ${invoiceNumber} 已記錄並推播家長`);
+      onDone();
+    } catch (err) {
+      setUploading(false);
+      toast.error(err?.response?.data?.error || '對帳失敗');
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-4"
+      onClick={(e) => e.target === e.currentTarget && !busy && onCancel()}
+      role="dialog" aria-modal="true" aria-label="對帳通過 — 輸入發票資訊"
+    >
+      <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl">
+        <h3 className="mb-1 text-lg font-bold text-brand-primary">對帳通過 — 輸入發票資訊</h3>
+        <p className="mb-4 text-xs text-gray-500">
+          {enrollment.id} ／ {enrollment.parent_name} ／ 應收 {formatTWD(enrollment.final_price)}，末 5 碼 <b>{enrollment.transfer_last_5}</b>
+        </p>
+
+        <div className="space-y-4">
+          <div>
+            <label className="mb-1 block text-sm font-semibold text-gray-700">
+              發票號碼 <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="text" maxLength={10}
+              className={`w-full rounded-lg border px-3 py-2 font-mono text-sm uppercase tracking-widest focus:outline-none focus:ring-2 ${numOk || !invoiceNumber ? 'border-gray-300 focus:ring-brand-teal' : 'border-red-400 focus:ring-red-400'}`}
+              placeholder="AA00000000"
+              value={invoiceNumber}
+              onChange={(e) => setInvoiceNumber(e.target.value.toUpperCase())}
+            />
+            {invoiceNumber && !numOk && (
+              <p className="mt-1 text-xs text-red-500">格式：2 大寫英文 + 8 數字，例如 AB12345678</p>
+            )}
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-semibold text-gray-700">
+              發票照片 <span className="text-red-500">*</span>
+              <span className="ml-2 font-normal text-gray-400">（JPG / PNG，≤ 5MB）</span>
+            </label>
+            <div
+              className={`relative flex min-h-28 flex-col items-center justify-center rounded-xl border-2 border-dashed p-4 transition ${imageFile ? 'border-brand-teal bg-brand-teal/5' : 'cursor-pointer border-gray-300 hover:border-brand-teal'}`}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => { e.preventDefault(); handleFile(e.dataTransfer.files?.[0]); }}
+              onClick={() => !imageFile && fileRef.current?.click()}
+            >
+              {imagePreview ? (
+                <>
+                  <img src={imagePreview} alt="發票預覽" className="max-h-40 rounded-lg object-contain" />
+                  <button
+                    type="button"
+                    className="mt-2 text-xs text-gray-500 underline hover:text-red-500"
+                    onClick={(e) => { e.stopPropagation(); setImageFile(null); setImagePreview(null); }}
+                  >重新選擇</button>
+                </>
+              ) : (
+                <div className="text-center text-sm text-gray-400">
+                  <div className="mb-1 text-3xl">📄</div>
+                  <div>拖放或點此選擇發票照片</div>
+                </div>
+              )}
+              <input ref={fileRef} type="file" accept="image/jpeg,image/png" className="hidden"
+                onChange={(e) => handleFile(e.target.files?.[0])} />
+            </div>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-semibold text-gray-700">
+              發票查詢連結
+              <span className="ml-2 font-normal text-gray-400">（選填）</span>
+            </label>
+            <input
+              type="url"
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-teal"
+              placeholder="https://inv.ezpay.com.tw/..."
+              value={invoiceUrl}
+              onChange={(e) => setInvoiceUrl(e.target.value)}
+            />
+          </div>
+
+          <div className="rounded-lg bg-amber-50 p-3 text-xs text-amber-700">
+            對帳後系統將開通 {enrollment.coach} 教練的課程，並透過 LINE 推播發票通知給家長。
+          </div>
+        </div>
+
+        <div className="mt-5 flex justify-end gap-3">
+          <button type="button" disabled={busy}
+            className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50"
+            onClick={onCancel}>取消</button>
+          <button type="button" disabled={!canSubmit}
+            className="rounded-lg bg-brand-green px-4 py-2 text-sm font-bold text-white hover:bg-brand-teal disabled:opacity-50"
+            onClick={handleSubmit}>
+            {uploading ? '上傳中…' : busy ? '處理中…' : '確認對帳'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ReconcilePage() {
   const toast = useToast();
   const { user, isStaff } = useAuth();
-  const canReconcile = !isStaff; // staff 限唯讀（依需求 F-M02）
+  const canReconcile = !isStaff;
   const [list, setList] = useState(null);
   const [venues, setVenues] = useState([]);
   const [confirming, setConfirming] = useState(null);
-  const [busy, setBusy] = useState(false);
 
   async function load() {
     const venueId = isStaff ? user?.venue_id : undefined;
@@ -31,21 +176,6 @@ export default function ReconcilePage() {
   useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
 
   if (!list) return <LoadingSpinner fullPage />;
-
-  async function doReconcile() {
-    if (!confirming) return;
-    setBusy(true);
-    try {
-      await enrollmentsApi.reconcile(confirming.id, user.name);
-      toast.success(`已對帳通過 ${confirming.id}`);
-      setConfirming(null);
-      await load();
-    } catch {
-      toast.error('對帳失敗');
-    } finally {
-      setBusy(false);
-    }
-  }
 
   const venueName = (id) => venues.find((v) => v.id === id)?.name || id;
 
@@ -61,26 +191,13 @@ export default function ReconcilePage() {
     {
       key: 'actions', label: '操作', className: 'text-right',
       render: (r) => canReconcile ? (
-        <button
-          className="rounded-md bg-brand-green px-3 py-1.5 text-xs font-bold text-white hover:bg-brand-teal"
-          onClick={() => setConfirming(r)}
-        >
-          對帳通過
-        </button>
+        <button className="rounded-md bg-brand-green px-3 py-1.5 text-xs font-bold text-white hover:bg-brand-teal"
+          onClick={() => setConfirming(r)}>對帳通過</button>
       ) : (
         <span className="text-xs text-gray-400" title="僅主管 / 管理員可對帳">唯讀</span>
       ),
     },
   ];
-
-  async function doReconcileGuarded() {
-    if (!canReconcile) {
-      toast.error('您的角色（行政櫃檯）無對帳權限');
-      setConfirming(null);
-      return;
-    }
-    return doReconcile();
-  }
 
   return (
     <div>
@@ -88,46 +205,26 @@ export default function ReconcilePage() {
         title="待對帳清單"
         subtitle={`F-M02 · 共 ${list.length} 筆等待對帳${isStaff ? '（限本場館，唯讀）' : ''}`}
         actions={
-          <button
-            type="button"
+          <button type="button"
             onClick={() => {
-              if (!list || list.length === 0) {
-                toast.error('沒有可匯出的資料');
-                return;
-              }
-              exportEnrollmentsCsv({
-                filenamePrefix: 'reconcile',
-                enrollments: list,
-                venueName,
-              });
+              if (!list || list.length === 0) { toast.error('沒有可匯出的資料'); return; }
+              exportEnrollmentsCsv({ filenamePrefix: 'reconcile', enrollments: list, venueName });
               toast.success(`已匯出 ${list.length} 筆對帳資料`);
             }}
-            className="rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary"
-          >
+            className="rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary">
             匯出 CSV
           </button>
         }
       />
       <DataTable columns={columns} rows={list} rowKey={(r) => r.id} empty="目前沒有待對帳的報名" />
-      <ConfirmDialog
-        open={!!confirming}
-        title="確認對帳通過？"
-        onCancel={() => setConfirming(null)}
-        onConfirm={doReconcileGuarded}
-        busy={busy}
-        confirmLabel="確認對帳"
-      >
-        {confirming && (
-          <div className="space-y-1 text-sm">
-            <div>報名編號：<b>{confirming.id}</b></div>
-            <div>家長：{confirming.parent_name}（{confirming.parent_phone}）</div>
-            <div>應收 {formatTWD(confirming.final_price)}，末 5 碼 <b>{confirming.transfer_last_5}</b></div>
-            <div className="mt-3 rounded bg-brand-amber/10 p-2 text-xs text-brand-amber">
-              對帳後系統將開通 {confirming.coach} 教練的課程，並透過 LINE 推播通知家長。
-            </div>
-          </div>
-        )}
-      </ConfirmDialog>
+      {confirming && (
+        <InvoiceModal
+          enrollment={confirming}
+          canReconcile={canReconcile}
+          onCancel={() => setConfirming(null)}
+          onDone={() => { setConfirming(null); load(); }}
+        />
+      )}
     </div>
   );
 }

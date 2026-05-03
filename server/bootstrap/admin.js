@@ -275,6 +275,11 @@ async function ensureSchema() {
   await pool.query(
     `ALTER TABLE admin_venues ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE`
   );
+  // Task #39：對帳時記錄發票資訊
+  await pool.query(`ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS invoice_number VARCHAR(20)`);
+  await pool.query(`ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS invoice_image_url TEXT`);
+  await pool.query(`ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS invoice_url TEXT`);
+  await pool.query(`ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS invoice_issued_at TIMESTAMPTZ`);
 }
 
 async function seedIfEmpty() {

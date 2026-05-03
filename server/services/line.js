@@ -379,6 +379,51 @@ function mgmRewardIssued({ refereeName, couponDetails, liffUrl }) {
   }];
 }
 
+// Task #39：對帳通過發票通知（推給家長）
+function invoiceIssued({ parentName, invoiceNumber, invoiceImageUrl, invoiceUrl, liffUrl }) {
+  const bubble = {
+    type: 'bubble',
+    hero: invoiceImageUrl ? {
+      type: 'image',
+      url: invoiceImageUrl,
+      size: 'full',
+      aspectRatio: '20:13',
+      aspectMode: 'cover',
+    } : undefined,
+    header: flexHeader('🧾 對帳通過・發票已開立', BRAND.teal),
+    body: {
+      type: 'box', layout: 'vertical', spacing: 'sm',
+      contents: [
+        { type: 'text', text: `親愛的 ${parentName || '家長'} 您好：`, size: 'sm', wrap: true },
+        { type: 'text', text: '您的報名款項對帳已通過，發票資訊如下：', size: 'sm', color: '#555555', wrap: true },
+        { type: 'separator', margin: 'md' },
+        {
+          type: 'box', layout: 'horizontal', margin: 'md',
+          contents: [
+            { type: 'text', text: '發票號碼', size: 'sm', color: '#888888', flex: 2 },
+            { type: 'text', text: invoiceNumber, size: 'sm', weight: 'bold', flex: 3, align: 'end' },
+          ],
+        },
+        ...(invoiceUrl ? [{
+          type: 'box', layout: 'horizontal', margin: 'sm',
+          contents: [
+            { type: 'text', text: '查詢連結', size: 'sm', color: '#888888', flex: 2 },
+            { type: 'text', text: '點此查詢', size: 'sm', color: BRAND.teal, flex: 3, align: 'end',
+              action: { type: 'uri', label: '查詢', uri: invoiceUrl } },
+          ],
+        }] : []),
+      ],
+    },
+    footer: liffUrl ? {
+      type: 'box', layout: 'vertical',
+      contents: [flexButton('登入查看訂單 →', `${liffUrl}/my-courses`, BRAND.primary)],
+    } : undefined,
+  };
+  if (!bubble.hero) delete bubble.hero;
+  if (!bubble.footer) delete bubble.footer;
+  return [{ type: 'flex', altText: `對帳通過・發票號碼 ${invoiceNumber}`, contents: bubble }];
+}
+
 // 高階 helper：推 keywordAlert Flex 給單一主管 line_uid（呼叫端不必組 message）
 // venueId 必填：用於挑該場館的 LINE channel token（pushMessage 第三參數）
 async function pushKeywordAlert(lineUserId, { venueId, keyword, chatRoomId, snippet }) {
@@ -413,5 +458,6 @@ module.exports = {
     transferRequest,
     transferReviewed,
     mgmTrialTodayReminder,
+    invoiceIssued,
   },
 };
