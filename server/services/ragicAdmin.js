@@ -21,6 +21,21 @@ function ragicEnabled() {
   return !!process.env.RAGIC_API_KEY && !!process.env.RAGIC_BASE_URL;
 }
 
+// Startup self-check（避免日後再次靜默失敗）：載入時印一次 enabled 狀態 + 缺哪個 env
+(function logRagicStatus() {
+  const hasKey = !!process.env.RAGIC_API_KEY;
+  const hasBase = !!process.env.RAGIC_BASE_URL;
+  if (hasKey && hasBase) {
+    let host = process.env.RAGIC_BASE_URL;
+    try { host = new URL(process.env.RAGIC_BASE_URL).host; } catch (_) {}
+    console.log(`[Ragic] sync enabled=true (base=${host})`);
+  } else {
+    const missing = [!hasKey && 'RAGIC_API_KEY', !hasBase && 'RAGIC_BASE_URL']
+      .filter(Boolean).join(', ');
+    console.warn(`[Ragic] sync DISABLED — missing ${missing}`);
+  }
+})();
+
 /**
  * 員工 Ragic 同步：把 H01 在職員工 upsert 到 admin_staff。
  * - 用 Ragic 工號（3000935）對到 admin_staff.ragic_record_id（同時當主鍵 id 的 fallback）
@@ -33,12 +48,14 @@ async function syncStaffFromRagic() {
     const records = await ragic.getAllStaff();
     let synced = 0;
     for (const r of records) {
-      const ragicId = r['工號'] || r['3000935'];
+      const ragicId = r['員工編號'] || r['工號'] || r['3000935'];
       if (!ragicId) continue;
       const name = r['姓名'] || r['3000933'] || '';
-      const phone = r['手機（公司）'] || r['3001424'] || r['手機（個人）'] || r['3000941'] || '';
-      const isCoach = (r['應徵職務'] || '').includes('教練') || (r['職稱'] || '').includes('教練');
-      const role = isCoach ? 'coach' : 'staff';
+      const phone = r['手機'] || r['手機（公司）'] || r['3001424'] || r['手機（個人）'] || r['3000941'] || '';
+      const role = r['應徵職務'];
+      const roleStr = Array.isArray(role) ? role.join(',') : (role || '');
+      const isCoach = roleStr.includes('教練') || (r['職稱'] || '').includes('教練');
+      const roleVal = isCoach ? 'coach' : 'staff';
       const isActive = (r['在職狀態'] || r['3000945']) === '在職';
       await pool.query(
         `INSERT INTO admin_staff (id, name, role, phone, is_senior, multiplier, active, ragic_record_id, last_synced_at)
@@ -49,7 +66,7 @@ async function syncStaffFromRagic() {
            active = EXCLUDED.active,
            ragic_record_id = EXCLUDED.ragic_record_id,
            last_synced_at = NOW()`,
-        [String(ragicId), name, role, phone, isActive]
+        [String(ragicId), name, roleVal, phone, isActive]
       );
       synced += 1;
     }
@@ -104,11 +121,11 @@ async function syncCoachesFromRagic() {
     let synced = 0;
     let linked = 0;
     for (const r of records) {
-      const ragicId = r['工號'] || r['3000935'];
+      const ragicId = r['員工編號'] || r['工號'] || r['3000935'];
       if (!ragicId) continue;
       const name = r['姓名'] || r['3000933'] || '';
-      const phone = r['手機（公司）'] || r['3001424'] || r['手機（個人）'] || r['3000941'] || '';
-      const email = r['Email'] || r['email'] || r['信箱'] || '';
+      const phone = r['手機'] || r['手機（公司）'] || r['3001424'] || r['手機（個人）'] || r['3000941'] || '';
+      const email = r['E-mail'] || r['Email'] || r['email'] || r['信箱'] || '';
       const lineUid = extractLineUid(r);
       if (!name || !phone) continue;
       seenIds.add(String(ragicId));

@@ -11,14 +11,26 @@
  */
 const axios = require('axios');
 
+// Ragic 認證：必須用 `APIKey=` query 參數（Basic / Bearer header 都會被當 guest 拒絕，回 code:106）
+// URL append：很多 RAGIC_FORM_* env 已帶 ?PAGEID=ruv，要用 & 而非第二個 ?，否則 ?api 會被吃進前一個 value
 const client = axios.create({
   baseURL: process.env.RAGIC_BASE_URL,
-  headers: { Authorization: `Basic ${Buffer.from(process.env.RAGIC_API_KEY).toString('base64')}` },
   timeout: 10000,
 });
 
+function _withApi(formPath) {
+  const sep = formPath.includes('?') ? '&' : '?';
+  return `${formPath}${sep}api`;
+}
+
 async function query(formPath, params = {}) {
-  const res = await client.get(`${formPath}?api`, { params });
+  const res = await client.get(_withApi(formPath), {
+    params: { ...params, APIKey: process.env.RAGIC_API_KEY },
+  });
+  // Ragic 錯誤回應仍是 200 + JSON：{ status:'ERROR', msg, code }；要顯式拋出，避免被當成資料 swallow
+  if (res.data && typeof res.data === 'object' && res.data.status === 'ERROR') {
+    throw new Error(`Ragic ${res.data.code}: ${res.data.msg}`);
+  }
   return res.data;
 }
 
@@ -183,10 +195,10 @@ async function getParentByPhone(phone) {
 async function upsertParent(parentData, ragicRecordId = null) {
   try {
     const payload = toFieldIdPayload(parentData, Z01_FIELDS, 'Z01');
-    const path = ragicRecordId
-      ? `${process.env.RAGIC_FORM_Z01}/${ragicRecordId}?api`
-      : `${process.env.RAGIC_FORM_Z01}?api`;
-    await client.post(path, payload);
+    const base = ragicRecordId
+      ? `${process.env.RAGIC_FORM_Z01}/${ragicRecordId}`
+      : process.env.RAGIC_FORM_Z01;
+    await client.post(_withApi(base), payload, { params: { APIKey: process.env.RAGIC_API_KEY } });
     _cacheInvalidate('z01:');
   } catch (err) {
     console.error('[Ragic] upsertParent failed:', err.message);
@@ -204,10 +216,10 @@ async function getStudentByIdNumber(idNumber) {
 async function upsertStudent(studentData, ragicRecordId = null) {
   try {
     const payload = toFieldIdPayload(studentData, Z02_FIELDS, 'Z02');
-    const path = ragicRecordId
-      ? `${process.env.RAGIC_FORM_Z02}/${ragicRecordId}?api`
-      : `${process.env.RAGIC_FORM_Z02}?api`;
-    await client.post(path, payload);
+    const base = ragicRecordId
+      ? `${process.env.RAGIC_FORM_Z02}/${ragicRecordId}`
+      : process.env.RAGIC_FORM_Z02;
+    await client.post(_withApi(base), payload, { params: { APIKey: process.env.RAGIC_API_KEY } });
     _cacheInvalidate('z02:');
   } catch (err) {
     console.error('[Ragic] upsertStudent failed:', err.message);
