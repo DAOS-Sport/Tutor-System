@@ -25,7 +25,8 @@ async function query(formPath, params = {}) {
 // ─────────────────────────────────────────────────────────────
 // 簡易 in-process TTL 快取，避免高併發打爆 Ragic（不引入 Redis）
 // ─────────────────────────────────────────────────────────────
-const CACHE_TTL_MS = Number(process.env.RAGIC_CACHE_TTL_MS || 5 * 60 * 1000);
+const CACHE_TTL_MS = Number(process.env.RAGIC_CACHE_TTL_MS ?? 5 * 60 * 1000);
+const CACHE_DISABLED = CACHE_TTL_MS <= 0;
 const CACHE_MAX = 64;
 const _cache = new Map(); // key -> { v, exp }
 function _cacheGet(key) {
@@ -42,6 +43,7 @@ function _cacheInvalidate(prefix) {
   for (const k of _cache.keys()) if (k.startsWith(prefix)) _cache.delete(k);
 }
 async function cached(key, fn) {
+  if (CACHE_DISABLED) return fn();
   const hit = _cacheGet(key);
   if (hit !== null) return hit;
   const v = await fn();

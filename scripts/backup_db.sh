@@ -46,7 +46,7 @@ if [[ "$UPLOADED" -ne 1 ]]; then
   exit 3
 fi
 
-# 30 天輪轉（清理本地 + 由 Object Storage lifecycle 控制遠端）
+# 30 天輪轉：本機臨時檔由本腳本刪除；遠端（Object Storage）保留期由 bucket lifecycle policy 控制
 find "$(dirname "$FILE")" -mtime +30 -name 'daos_*.sql.gz' -delete 2>/dev/null || true
 
 rm -rf "$TMPDIR"

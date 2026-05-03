@@ -51,7 +51,7 @@
 ## 6. 備份策略
 - 腳本：`scripts/backup_db.sh`
 - 排程：建議在 Replit Scheduled Deployments 設每日 03:00（台北）執行一次
-- 保留期：Object Storage 內 30 天滾動，腳本自動刪除超過 30 天的舊檔
+- 保留期：本地 30 天由 `scripts/backup_db.sh` 自行刪除；遠端（Object Storage）保留期由 bucket lifecycle policy 控制（建議 30~90 天），腳本端不主動刪除遠端
 - 還原步驟：`pg_restore -d $DATABASE_URL <下載的 .sql.gz>`（先解壓 `gunzip`）
 
 ## 7. 監控與告警（建議）
