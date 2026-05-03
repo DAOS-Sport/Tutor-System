@@ -5,9 +5,8 @@ Phase 8 測試套件。所有測試皆以 **本機 Node + curl + node-fetch** �
 
 ```
 tests/
-├── e2e/          # spec 8 條 E2E 路徑（A~H）的可重入腳本
-├── perf/         # 效能基線：autocannon HTTP、WS latency、上傳成功率
-└── flex/         # 18 種 Flex Message 觸發小工具（搭配 docs/flex_message_checklist.md）
+├── e2e/          # spec 8 條 E2E 路徑（A~H）+ Flex 18 結構驗證（皆於 run_all.js 內）
+└── perf/         # 效能基線：autocannon HTTP、WS handshake/ping-pong、Ragic 高併發、上傳成功率
 ```
 
 ## 跑法
@@ -31,7 +30,7 @@ node tests/e2e/path_a_purchase.js
 bash tests/perf/run_http_baseline.sh
 
 # 4. Flex 觸發
-node tests/flex/trigger_all.js   # 互動式選單
+# Flex 結構：已併入 run_all.js (Flex18 步驟)
 ```
 
 > 本資料夾的腳本以「煙霧 / smoke」為設計目標：

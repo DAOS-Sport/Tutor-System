@@ -75,20 +75,13 @@ const slots = require('../../server/services/slots');
       const slotId = slotRes.rows[0].id;
       let csid;
       try {
-        const sessRes = await pg.query(
-          `INSERT INTO course_sessions
-             (course_period_id, availability_slot_id, scheduled_at, duration_minutes, status)
-           SELECT $1, cas.id, cas.start_at, cas.duration_minutes, 'confirmed'
-             FROM coach_availability_slots cas WHERE cas.id=$2 RETURNING id`,
-          [period_id, slotId],
-        );
-        csid = sessRes.rows[0].id;
-        await pg.query(
-          `UPDATE coach_availability_slots SET status='booked', booked_session_id=$1 WHERE id=$2`,
-          [csid, slotId],
-        );
-        const slotState = await pg.query(`SELECT status FROM coach_availability_slots WHERE id=$1`, [slotId]);
+        // 真呼叫生產函數 services/slots.bookSlot1v1（即家長端 1v1 預約用的同一段邏輯）
+        const session = await slots.bookSlot1v1(slotId, period_id);
+        csid = session.id;
+        assert(session.status === 'confirmed', `bookSlot1v1 回傳 status=confirmed，實際 ${session.status}`);
+        const slotState = await pg.query(`SELECT status, booked_session_id FROM coach_availability_slots WHERE id=$1`, [slotId]);
         assert(slotState.rows[0].status === 'booked', '預約後 slot.status=booked');
+        assert(String(slotState.rows[0].booked_session_id) === String(csid), 'slot.booked_session_id 指向新 session');
 
         // 上完一堂：used_sessions += 1（生產的「上完課」邏輯）
         await pg.query(`UPDATE course_periods SET used_sessions = COALESCE(used_sessions,0)+1 WHERE id=$1`, [period_id]);
@@ -103,8 +96,6 @@ const slots = require('../../server/services/slots');
         await pg.query(`DELETE FROM coach_availability_slots WHERE id=$1`, [slotId]);
       }
 
-      assert(typeof slots.bookSlot1v1 === 'function' || typeof slots.bookSlot1vN === 'function',
-        'services/slots 提供 bookSlot 函數');
     } else {
       console.log('  ⚠ 無 active period，跳過 1v1 預約子情境');
     }
