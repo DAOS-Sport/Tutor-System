@@ -1,7 +1,78 @@
 import React, { useState } from 'react';
 import PageHeader from '../components/PageHeader';
 
+const BASE = typeof window !== 'undefined' ? window.location.origin : 'https://daos-tutoring-courses.replit.app';
+const ADM = `${BASE}/admin`;
+const LIFF = `${BASE}/liff`;
+
 const SECTIONS = [
+  {
+    id: 'urls',
+    title: '系統網址一覽',
+    icon: '🔗',
+    content: [
+      {
+        type: 'intro',
+        text: '以下為系統各入口及常用頁面的直接連結，點擊可在新分頁開啟。',
+      },
+      {
+        type: 'links',
+        title: '後台（管理員 / 主管 / 行政）',
+        rows: [
+          { label: '後台登入', url: `${ADM}/login`, note: '所有後台角色統一入口', roles: '全部' },
+          { label: '今日總覽 Dashboard', url: `${ADM}/dashboard`, note: '今日課程數、待對帳數、本月營收', roles: '全部' },
+          { label: '待對帳 (F-M02)', url: `${ADM}/reconcile`, note: '對帳入口，比對轉帳末5碼', roles: 'admin / manager' },
+          { label: '所有報名 (F-R02)', url: `${ADM}/enrollments`, note: '可篩狀態、場館、關鍵字', roles: '全部' },
+          { label: '今日課程 (F-R01)', url: `${ADM}/sessions`, note: '今天課表依時段排序', roles: '全部' },
+          { label: '簽到驗證 / 點名 (F-R03)', url: `${ADM}/checkin`, note: '輸入手機+期次確認簽到', roles: '全部' },
+          { label: '退課 (F-R04)', url: `${ADM}/refund`, note: '退費試算 → 確認 → 推播', roles: 'admin / manager' },
+          { label: '退課復活 (F-M05)', url: `${ADM}/revive`, note: '已取消時段一鍵復活', roles: 'admin / manager' },
+          { label: '課程轉讓審核', url: `${ADM}/transfers`, note: '審核家長提交的轉讓申請', roles: 'admin / manager' },
+          { label: '優惠活動 (F-M07/F-A05)', url: `${ADM}/promotions`, note: '建立 / 送審 / 核准優惠', roles: 'admin / manager' },
+          { label: '進行中優惠 (F-R05)', url: `${ADM}/promotions-active`, note: '唯讀清單', roles: '全部' },
+          { label: 'MGM 推薦統計 (F-M10)', url: `${ADM}/mgm-stats`, note: '推薦漏斗 + 教練排行', roles: 'admin / manager' },
+          { label: '標籤庫管理 (F-A08)', url: `${ADM}/tags`, note: '4大分類 × 系統標籤 CRUD', roles: 'admin / manager' },
+          { label: '教練考核報表 (F-M09)', url: `${ADM}/coach-eval`, note: '4維平均、月趨勢、評語', roles: 'admin / manager' },
+          { label: '考核門檻 (F-A09)', url: `${ADM}/eval-threshold`, note: '設定最低分與觀察月數', roles: 'admin' },
+          { label: '教練介紹審核 (F-C06)', url: `${ADM}/coach-intros-review`, note: '待審 / 已退回 / 已上架 tab', roles: 'admin / manager' },
+          { label: '課程介紹維護 (F-A04)', url: `${ADM}/course-intros`, note: '三組別文案 + 主圖', roles: 'admin / manager' },
+          { label: '教練資料 (F-C-Admin)', url: `${ADM}/coaches`, note: '同步 Ragic + 編輯係數 / 場館', roles: 'admin' },
+          { label: '員工管理 (F-A02)', url: `${ADM}/staff`, note: '新增 / 停用員工帳號', roles: 'admin' },
+          { label: '場館設定 (F-A03)', url: `${ADM}/venues`, note: '銀行帳號 + LINE Token', roles: 'admin' },
+          { label: '系統設定 (F-A01)', url: `${ADM}/settings`, note: '簽到時間範圍、退費規則等', roles: 'admin' },
+          { label: '報表 (F-B01)', url: `${ADM}/reports`, note: '營收 / 堂數 / 折扣 / MGM / 學習完成率', roles: 'admin / manager' },
+          { label: '系統 SOP（本頁）', url: `${ADM}/sop`, note: '完整操作說明手冊', roles: '全部' },
+        ],
+      },
+      {
+        type: 'links',
+        title: '前台 — 家長端 LIFF（手機 LINE 內開啟）',
+        rows: [
+          { label: '家長首頁（購課入口）', url: `${LIFF}/`, note: '三組別卡片 + 優惠橫幅', roles: '家長' },
+          { label: '我的課程', url: `${LIFF}/my-courses`, note: '全部 / 待對帳 / 進行中 / 已結束', roles: '家長' },
+          { label: '我的課堂（堂數總覽）', url: `${LIFF}/my-lessons`, note: '各孩子課程剩餘堂數、到期日', roles: '家長' },
+          { label: '學習歷程', url: `${LIFF}/history/:periodId`, note: '時間軸：課前規劃 + 每堂授課記錄 + 列印', roles: '家長' },
+          { label: '期末評鑑', url: `${LIFF}/evaluation/:id`, note: '4維星星評分 + 文字 + 續報意願', roles: '家長' },
+          { label: '邀請好友（MGM）', url: `${LIFF}/referral`, note: '產生推薦連結 / QR Code', roles: '家長' },
+          { label: '申請課程轉讓', url: `${LIFF}/transfer/new`, note: '填對方手機 + 堂數 + 理由', roles: '家長' },
+          { label: '我的（個人資料）', url: `${LIFF}/profile`, note: '學員清單、推薦紀錄、登出', roles: '家長' },
+        ],
+      },
+      {
+        type: 'links',
+        title: '前台 — 教練端 LIFF（手機 LINE 內開啟）',
+        rows: [
+          { label: '教練今日課程', url: `${LIFF}/coach`, note: '今天所有課、填課前規劃 / 授課記錄 CTA', roles: '教練' },
+          { label: '排課總表', url: `${LIFF}/coach/schedule`, note: '週 / 月切換、新增可用時段', roles: '教練' },
+          { label: '教練個人介紹', url: `${LIFF}/coach/profile`, note: '編輯 bio、上傳介紹圖、送審', roles: '教練' },
+        ],
+      },
+      {
+        type: 'note',
+        text: '📌 LIFF 連結以 LINE 內開啟才有自動登入功能；瀏覽器備用版請用上表的 /liff/* 路徑。教練連結須先由管理員完成 Ragic H01 LINE userid 綁定才能自動登入。',
+      },
+    ],
+  },
   {
     id: 'overview',
     title: '系統概覽',
@@ -410,10 +481,56 @@ function FaqList({ items }) {
   );
 }
 
+function LinksTable({ title, rows }) {
+  return (
+    <div>
+      {title && <div className="mb-2 font-semibold text-gray-700">{title}</div>}
+      <div className="overflow-x-auto rounded-lg border border-gray-200">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-50">
+            <tr>
+              <th className="px-4 py-2 text-left font-semibold text-gray-600">頁面名稱</th>
+              <th className="px-4 py-2 text-left font-semibold text-gray-600">網址</th>
+              <th className="px-4 py-2 text-left font-semibold text-gray-600">說明</th>
+              <th className="px-4 py-2 text-left font-semibold text-gray-600">可用角色</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {rows.map((row, i) => (
+              <tr key={i} className="hover:bg-blue-50">
+                <td className="px-4 py-2 font-medium text-gray-800">{row.label}</td>
+                <td className="px-4 py-2">
+                  <a
+                    href={row.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 rounded bg-brand-primary/10 px-2 py-0.5 font-mono text-xs text-brand-primary hover:bg-brand-primary/20 hover:underline"
+                  >
+                    {row.url.replace(window.location.origin, '')}
+                    <span className="opacity-60">↗</span>
+                  </a>
+                </td>
+                <td className="px-4 py-2 text-gray-600">{row.note}</td>
+                <td className="px-4 py-2">
+                  <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600">
+                    {row.roles}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function RenderBlock({ block }) {
   switch (block.type) {
     case 'intro':
       return <p className="text-gray-600">{block.text}</p>;
+    case 'links':
+      return <LinksTable title={block.title} rows={block.rows} />;
     case 'steps':
       return (
         <div>
@@ -443,7 +560,7 @@ function RenderBlock({ block }) {
 }
 
 export default function SopPage() {
-  const [active, setActive] = useState('overview');
+  const [active, setActive] = useState('urls');
   const section = SECTIONS.find((s) => s.id === active);
 
   return (
