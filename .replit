@@ -1,5 +1,5 @@
 run = "cd server && npm install && npm run dev"
-modules = ["nodejs-20", "python-3.11"]
+modules = ["nodejs-20", "python-3.11", "postgresql-16"]
 
 [nix]
 channel = "stable-24_05"
