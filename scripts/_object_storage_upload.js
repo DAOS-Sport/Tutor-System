@@ -15,7 +15,11 @@ const path = require('path');
   }
   let Client;
   try {
-    ({ Client } = require('@replit/object-storage'));
+    // 從 server/node_modules 解析（依賴裝在 server/package.json）
+    const resolved = require.resolve('@replit/object-storage', {
+      paths: [path.resolve(__dirname, '..', 'server', 'node_modules'), path.resolve(__dirname, '..')],
+    });
+    ({ Client } = require(resolved));
   } catch (_e) {
     console.error('[upload] @replit/object-storage SDK 未安裝且找不到 replit CLI，無法上傳遠端。');
     console.error('[upload] 解法：在 server 目錄 `npm i @replit/object-storage` 或安裝 replit CLI 後重跑。');
