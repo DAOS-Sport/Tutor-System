@@ -299,6 +299,26 @@ Admin：
 
 煙霧：DB schema psql 驗證通過；admin build 335KB / 104KB gzip、LIFF build 500KB / 154KB gzip（含 CoachProfile 改版）。Server 啟動 `[Cron] All cron jobs initialized` + `[core bootstrap] ready` 無錯。每個新頁 ≤ 250 行（最大 ReportsPage ~240）。
 
+## Phase 8：整合測試 + Flex 全項驗證 + 效能基線 + UAT 上線準備 (任務 #20 已完成)
+
+### 文件
+- `docs/flex_message_checklist.md`：18 種 Flex Message 對應表（spec # → 模板函數 → 觸發點 → 接收者 → 驗證紀錄欄）。
+- `docs/deploy_checklist.md`：上線前 8 大項檢查（Replit Secrets / LINE / Ragic / DB / Build / 備份 / 監控 / Cutover）。
+- `docs/perf_baseline.md`：HTTP（autocannon）/ WS / 上傳 三個基線量測流程與表格樣板（驗收線：API P95 <500ms、WS P95 <200ms、上傳成功率 >99%）。
+- `docs/uat_playbook.md`：行政 / 主管 / 教練 / 家長 4 角色共 14 條 UAT 案例 + P1/P2/P3 缺陷分級 + 簽核表。
+
+### 程式碼
+- `server/services/ragic.js` 加 in-process LRU+TTL 快取（預設 5 分鐘，可由 `RAGIC_CACHE_TTL_MS` 調整）：`getActiveCoaches/getCounterStaff/getAllStaff/getActiveVenues` 走 cache；`upsertParent/upsertStudent` 寫回後自動 invalidate `z01:` / `z02:`。
+- `scripts/backup_db.sh`：每日 `pg_dump | gzip` → Replit Object Storage（建議在 Scheduled Deployments 03:00 執行）。配套 `scripts/_object_storage_upload.js` 在沒有 replit CLI 時改用 SDK。
+- `tests/e2e/`：8 條路徑 (A 購課 / B 排課 / C 1vN / D 取消 / E 優惠 / F MGM / G 學習歷程 / H 轉讓) 各自 ≤ 30 行 smoke 腳本 + `run_all.js` 一鍵跑完，本機跑全部 ✅。
+- `tests/perf/run_http_baseline.sh`、`ws_latency.js`、`upload_smoke.js`：核心 API 4 路徑 autocannon、WebSocket 100 ping P50/P95、100 次上傳成功率。
+- `.env.example` 加 `RAGIC_CACHE_TTL_MS` / `BASE_URL` / `ADMIN_USERNAME` / `ADMIN_PASSWORD` 區塊。
+
+### 煙霧
+- `Start application` 啟動正常、`[Cron] All cron jobs initialized` + `[core bootstrap] ready`。
+- `node tests/e2e/run_all.js` 8/8 PASS。
+- 既有 admin (336KB) / liff (502KB) build 不變，本 phase 不動 client UI。
+
 ## 變更紀錄
 - 2026-05-02：完成 LIFF Phase 1（任務 #7）。實作 7 個正式頁面 + 2 個 placeholder、6 個全域元件、雙 Context（Auth/Toast）、7 個 API 模組與 mock dataset、共用 utils；新增 `react-hook-form` 依賴、`postcss.config.js`；修正 `main.jsx` 加上無 LIFF_ID 的 dev fallback。`vite build` 通過（158 modules，401KB / 127KB gzip）。後端 19 個 stub 路由不變，LIFF 全程走 mock 模式以驗證 happy path；後續可由 `VITE_USE_MOCK=false` 切到真實 API，並透過 501 自動 fallback 機制漸進實作後端。
 - 2026-05-02：完成 SurveyJS Creator 評估報告，結論為「**不建議整合**」（授權費 USD $589/dev/年、套件巨大、與 Ragic 雙向同步設計衝突）。完整分析詳見 `docs/eval/surveyjs-creator.md`，含替代方案比較與分階段建議。

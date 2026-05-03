@@ -22,27 +22,60 @@ async function query(formPath, params = {}) {
   return res.data;
 }
 
-// H01：在職教練
+// ─────────────────────────────────────────────────────────────
+// 簡易 in-process TTL 快取，避免高併發打爆 Ragic（不引入 Redis）
+// ─────────────────────────────────────────────────────────────
+const CACHE_TTL_MS = Number(process.env.RAGIC_CACHE_TTL_MS || 5 * 60 * 1000);
+const CACHE_MAX = 64;
+const _cache = new Map(); // key -> { v, exp }
+function _cacheGet(key) {
+  const hit = _cache.get(key);
+  if (!hit) return null;
+  if (hit.exp < Date.now()) { _cache.delete(key); return null; }
+  return hit.v;
+}
+function _cacheSet(key, v) {
+  if (_cache.size >= CACHE_MAX) _cache.delete(_cache.keys().next().value);
+  _cache.set(key, { v, exp: Date.now() + CACHE_TTL_MS });
+}
+function _cacheInvalidate(prefix) {
+  for (const k of _cache.keys()) if (k.startsWith(prefix)) _cache.delete(k);
+}
+async function cached(key, fn) {
+  const hit = _cacheGet(key);
+  if (hit !== null) return hit;
+  const v = await fn();
+  _cacheSet(key, v);
+  return v;
+}
+
+// H01：在職教練（5 分鐘快取）
 async function getActiveCoaches() {
-  const data = await query(process.env.RAGIC_FORM_H01, { '在職狀態': '在職' });
-  return Object.values(data).filter(r => r['應徵職務']?.includes('教練'));
+  return cached('h01:coaches', async () => {
+    const data = await query(process.env.RAGIC_FORM_H01, { '在職狀態': '在職' });
+    return Object.values(data).filter(r => r['應徵職務']?.includes('教練'));
+  });
 }
 
-// H01：行政櫃檯
+// H01：行政櫃檯（5 分鐘快取）
 async function getCounterStaff() {
-  const data = await query(process.env.RAGIC_FORM_H01, { '在職狀態': '在職' });
-  return Object.values(data).filter(r => r['應徵職務']?.includes('行政櫃檯'));
+  return cached('h01:counter', async () => {
+    const data = await query(process.env.RAGIC_FORM_H01, { '在職狀態': '在職' });
+    return Object.values(data).filter(r => r['應徵職務']?.includes('行政櫃檯'));
+  });
 }
 
-// H01：全員工（角色指派用）
+// H01：全員工（角色指派用，5 分鐘快取）
 async function getAllStaff() {
-  return Object.values(await query(process.env.RAGIC_FORM_H01));
+  return cached('h01:all', async () => Object.values(await query(process.env.RAGIC_FORM_H01)));
 }
 
-// H05：場館清單（履約中，非內勤）
+// H05：場館清單（履約中，非內勤；5 分鐘快取）
 async function getActiveVenues() {
-  const data = await query(process.env.RAGIC_FORM_H05, { '履約狀態': '履約中' });
-  return Object.values(data).filter(r => r['營運性質'] !== '內勤單位');
+  return cached('h05:venues', async () => {
+    const data = await query(process.env.RAGIC_FORM_H05, { '履約狀態': '履約中' });
+    return Object.values(data).filter(r => r['營運性質'] !== '內勤單位');
+  });
 }
 
 // =====================================================================
@@ -152,6 +185,7 @@ async function upsertParent(parentData, ragicRecordId = null) {
       ? `${process.env.RAGIC_FORM_Z01}/${ragicRecordId}?api`
       : `${process.env.RAGIC_FORM_Z01}?api`;
     await client.post(path, payload);
+    _cacheInvalidate('z01:');
   } catch (err) {
     console.error('[Ragic] upsertParent failed:', err.message);
   }
@@ -172,6 +206,7 @@ async function upsertStudent(studentData, ragicRecordId = null) {
       ? `${process.env.RAGIC_FORM_Z02}/${ragicRecordId}?api`
       : `${process.env.RAGIC_FORM_Z02}?api`;
     await client.post(path, payload);
+    _cacheInvalidate('z02:');
   } catch (err) {
     console.error('[Ragic] upsertStudent failed:', err.message);
   }
