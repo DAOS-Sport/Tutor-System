@@ -25,9 +25,17 @@ export default function CoachesPage() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    Promise.all([coachesApi.list(), venuesApi.list()]).then(([c, v]) => {
-      setCoaches(c); setVenues(v);
-    });
+    Promise.all([coachesApi.list(), venuesApi.list()])
+      .then(([c, v]) => {
+        setCoaches(c);
+        setVenues(v);
+      })
+      .catch((err) => {
+        console.error('[CoachesPage] load failed:', err);
+        toast.error('載入教練資料失敗，請重新整理');
+        setCoaches([]);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const venueMap = useMemo(

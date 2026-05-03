@@ -270,6 +270,11 @@ const DEFAULT_CANCELLED_SESSIONS = [
 async function ensureSchema() {
   const sql = fs.readFileSync(MIGRATION_FILE, 'utf8');
   await pool.query(sql);
+  // Task #32 補強：admin_venues 加 is_active，與 LIFF venues.is_active 對齊，
+  // 讓 syncVenuesFromRagic 能對兩表一致軟下架。
+  await pool.query(
+    `ALTER TABLE admin_venues ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE`
+  );
 }
 
 async function seedIfEmpty() {

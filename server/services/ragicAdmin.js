@@ -137,11 +137,12 @@ async function syncVenuesFromRagic() {
 
       // admin_venues（後台 F-A03 + 機敏資料）
       await pool.query(
-        `INSERT INTO admin_venues (id, code, name, address, line_token, bank_institution_name, bank_branch_name, account_holder, account_number, last_synced_at)
-         VALUES ($1, $1, $2, $3, '', '', '', '', '', NOW())
+        `INSERT INTO admin_venues (id, code, name, address, line_token, bank_institution_name, bank_branch_name, account_holder, account_number, is_active, last_synced_at)
+         VALUES ($1, $1, $2, $3, '', '', '', '', '', TRUE, NOW())
          ON CONFLICT (id) DO UPDATE SET
            name = EXCLUDED.name,
            address = COALESCE(NULLIF(admin_venues.address, ''), EXCLUDED.address),
+           is_active = TRUE,
            last_synced_at = NOW()`,
         [code, name, address]
       );
@@ -160,12 +161,18 @@ async function syncVenuesFromRagic() {
       );
       synced += 1;
     }
-    // 不在 Ragic 履約中名單的 → 標 is_active=false（admin_venues 用 last_synced_at + 沒被本輪更新隱含；venues 直接標）
+    // 不在 Ragic 履約中名單的 → admin_venues / venues 兩表一致軟下架
     if (seenCodes.size > 0) {
+      const codes = Array.from(seenCodes);
       await pool.query(
         `UPDATE venues SET is_active = FALSE, updated_at = NOW()
          WHERE id <> ALL($1::text[]) AND is_active = TRUE`,
-        [Array.from(seenCodes)]
+        [codes]
+      );
+      await pool.query(
+        `UPDATE admin_venues SET is_active = FALSE, updated_at = NOW()
+         WHERE id <> ALL($1::text[]) AND is_active = TRUE`,
+        [codes]
       );
     }
     return { synced, skipped: false };

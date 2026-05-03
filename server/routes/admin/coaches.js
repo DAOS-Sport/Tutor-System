@@ -145,15 +145,15 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
     // 可教場館 M:N 全量替換（只有 patch 有給 venue_ids 才動）
     if (Array.isArray(patch.venue_ids)) {
       const venueIds = patch.venue_ids.map((v) => String(v).trim()).filter(Boolean);
-      // 驗證所有 venue 存在
+      // 驗證所有 venue 存在且為履約中（已軟下架的 stale 場館不可指派）
       if (venueIds.length > 0) {
         const vr = await client.query(
-          `SELECT id FROM venues WHERE id = ANY($1::varchar[])`,
+          `SELECT id FROM venues WHERE id = ANY($1::varchar[]) AND is_active = TRUE`,
           [venueIds]
         );
         if (vr.rows.length !== venueIds.length) {
           await client.query('ROLLBACK');
-          return res.status(400).json({ error: '部分場館代碼不存在' });
+          return res.status(400).json({ error: '部分場館代碼不存在或已下架' });
         }
       }
       await client.query(`DELETE FROM coach_venues WHERE coach_id = $1`, [id]);
