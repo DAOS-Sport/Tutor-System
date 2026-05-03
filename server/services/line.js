@@ -380,47 +380,88 @@ function mgmRewardIssued({ refereeName, couponDetails, liffUrl }) {
 }
 
 // Task #39：對帳通過發票通知（推給家長）
-function invoiceIssued({ parentName, invoiceNumber, invoiceImageUrl, invoiceUrl, liffUrl }) {
+// params: parentName, invoiceNumber, invoiceImageUrl, invoiceUrl,
+//         coachName, venueName, courseType, finalPrice, liffUrl
+function invoiceIssued({ parentName, invoiceNumber, invoiceImageUrl, invoiceUrl,
+                          coachName, venueName, courseType, finalPrice, liffUrl }) {
+  const footerButtons = [];
+  if (invoiceUrl) {
+    footerButtons.push(flexButton('查看電子發票 →', invoiceUrl, BRAND.teal));
+  }
+  if (liffUrl) {
+    footerButtons.push(flexButton('登入查看訂單 →', `${liffUrl}/my-courses`, BRAND.primary));
+  }
+
+  const bodyContents = [
+    { type: 'text', text: `親愛的 ${parentName || '家長'} 您好：`, size: 'sm', wrap: true },
+    { type: 'text', text: '您的報名款項對帳已通過，課程已開通，發票資訊如下：', size: 'sm', color: '#555555', wrap: true },
+    { type: 'separator', margin: 'md' },
+  ];
+
+  if (coachName) {
+    bodyContents.push({
+      type: 'box', layout: 'horizontal', margin: 'md',
+      contents: [
+        { type: 'text', text: '教練', size: 'sm', color: '#888888', flex: 2 },
+        { type: 'text', text: coachName, size: 'sm', flex: 3, align: 'end' },
+      ],
+    });
+  }
+  if (venueName) {
+    bodyContents.push({
+      type: 'box', layout: 'horizontal', margin: 'sm',
+      contents: [
+        { type: 'text', text: '場館', size: 'sm', color: '#888888', flex: 2 },
+        { type: 'text', text: venueName, size: 'sm', flex: 3, align: 'end' },
+      ],
+    });
+  }
+  if (courseType) {
+    bodyContents.push({
+      type: 'box', layout: 'horizontal', margin: 'sm',
+      contents: [
+        { type: 'text', text: '組別', size: 'sm', color: '#888888', flex: 2 },
+        { type: 'text', text: courseType, size: 'sm', flex: 3, align: 'end' },
+      ],
+    });
+  }
+  if (finalPrice != null) {
+    bodyContents.push({
+      type: 'box', layout: 'horizontal', margin: 'sm',
+      contents: [
+        { type: 'text', text: '金額', size: 'sm', color: '#888888', flex: 2 },
+        { type: 'text', text: `NT$ ${Number(finalPrice).toLocaleString()}`, size: 'sm', weight: 'bold', flex: 3, align: 'end' },
+      ],
+    });
+  }
+
+  bodyContents.push({ type: 'separator', margin: 'md' });
+  bodyContents.push({
+    type: 'box', layout: 'horizontal', margin: 'md',
+    contents: [
+      { type: 'text', text: '發票號碼', size: 'sm', color: '#888888', flex: 2 },
+      { type: 'text', text: invoiceNumber, size: 'sm', weight: 'bold', flex: 3, align: 'end' },
+    ],
+  });
+
   const bubble = {
     type: 'bubble',
-    hero: invoiceImageUrl ? {
-      type: 'image',
-      url: invoiceImageUrl,
-      size: 'full',
-      aspectRatio: '20:13',
-      aspectMode: 'cover',
-    } : undefined,
+    ...(invoiceImageUrl ? {
+      hero: {
+        type: 'image',
+        url: invoiceImageUrl,
+        size: 'full',
+        aspectRatio: '20:13',
+        aspectMode: 'cover',
+      },
+    } : {}),
     header: flexHeader('🧾 對帳通過・發票已開立', BRAND.teal),
-    body: {
-      type: 'box', layout: 'vertical', spacing: 'sm',
-      contents: [
-        { type: 'text', text: `親愛的 ${parentName || '家長'} 您好：`, size: 'sm', wrap: true },
-        { type: 'text', text: '您的報名款項對帳已通過，發票資訊如下：', size: 'sm', color: '#555555', wrap: true },
-        { type: 'separator', margin: 'md' },
-        {
-          type: 'box', layout: 'horizontal', margin: 'md',
-          contents: [
-            { type: 'text', text: '發票號碼', size: 'sm', color: '#888888', flex: 2 },
-            { type: 'text', text: invoiceNumber, size: 'sm', weight: 'bold', flex: 3, align: 'end' },
-          ],
-        },
-        ...(invoiceUrl ? [{
-          type: 'box', layout: 'horizontal', margin: 'sm',
-          contents: [
-            { type: 'text', text: '查詢連結', size: 'sm', color: '#888888', flex: 2 },
-            { type: 'text', text: '點此查詢', size: 'sm', color: BRAND.teal, flex: 3, align: 'end',
-              action: { type: 'uri', label: '查詢', uri: invoiceUrl } },
-          ],
-        }] : []),
-      ],
-    },
-    footer: liffUrl ? {
-      type: 'box', layout: 'vertical',
-      contents: [flexButton('登入查看訂單 →', `${liffUrl}/my-courses`, BRAND.primary)],
-    } : undefined,
+    body: { type: 'box', layout: 'vertical', spacing: 'sm', contents: bodyContents },
+    ...(footerButtons.length ? {
+      footer: { type: 'box', layout: 'vertical', spacing: 'sm', contents: footerButtons },
+    } : {}),
   };
-  if (!bubble.hero) delete bubble.hero;
-  if (!bubble.footer) delete bubble.footer;
+
   return [{ type: 'flex', altText: `對帳通過・發票號碼 ${invoiceNumber}`, contents: bubble }];
 }
 

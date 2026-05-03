@@ -56,6 +56,10 @@ async function readEnrollment(id) {
     total_sessions: row.total_sessions,
     used_sessions: row.used_sessions,
     refund_amount: row.refund_amount != null ? Number(row.refund_amount) : undefined,
+    invoice_number: row.invoice_number || null,
+    invoice_image_url: row.invoice_image_url || null,
+    invoice_url: row.invoice_url || null,
+    invoice_issued_at: tsToString(row.invoice_issued_at),
     audit_logs: a.rows.map((x) => ({
       at: tsToString(x.at),
       action: x.action,
@@ -170,7 +174,7 @@ router.post('/:id/reconcile', requireAdminAuth, requireAdminRole('admin', 'manag
       console.warn('[reconcile] backfill chat rooms failed:', e.message);
     }
 
-    // Task #39：推播 LINE Flex 發票通知給家長
+    // Task #39：推播 LINE Flex 發票通知給家長（含課程資訊）
     try {
       const line = require('../../services/line');
       const enrollment = cur.rows[0];
@@ -186,11 +190,24 @@ router.post('/:id/reconcile', requireAdminAuth, requireAdminRole('admin', 'manag
             ? invoiceImageUrl
             : `${publicBase}${invoiceImageUrl}`;
           const liffUrl = process.env.LIFF_URL_PARENT || process.env.LIFF_URL || '';
+          // 查場館名稱
+          let venueName = enrollment.venue_id;
+          try {
+            const vRow = await pool.query(`SELECT name FROM admin_venues WHERE id = $1`, [enrollment.venue_id]);
+            if (vRow.rows[0]) venueName = vRow.rows[0].name;
+          } catch (_) { /* best-effort */ }
+          // 組別中文
+          const ctMap = { 1: '1 對 1', 2: '1 對 2', 3: '1 對 3' };
+          const courseTypeLabel = ctMap[enrollment.course_type] || `1 對 ${enrollment.course_type}`;
           const messages = line.templates.invoiceIssued({
             parentName: enrollment.parent_name,
             invoiceNumber,
             invoiceImageUrl: absoluteImageUrl,
             invoiceUrl: invoiceUrl || null,
+            coachName: enrollment.coach,
+            venueName,
+            courseType: courseTypeLabel,
+            finalPrice: enrollment.final_price,
             liffUrl,
           });
           await line.pushMessage(lineUid, messages, enrollment.venue_id);
