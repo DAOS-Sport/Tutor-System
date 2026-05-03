@@ -11,6 +11,7 @@ const PATHS = [
   ['F', 'path_f_mgm.js'],
   ['G', 'path_g_learning_history.js'],
   ['H', 'path_h_transfer.js'],
+  ['Flex18', 'flex_templates_verify.js'],
 ];
 
 const results = [];

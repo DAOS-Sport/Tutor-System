@@ -9,7 +9,10 @@ const N = Number(process.env.N || 100);
 (async () => {
   let WebSocket;
   try { WebSocket = require('ws'); }
-  catch { console.error('ws 套件未安裝；請 `cd server && npm i ws` 後重跑'); process.exit(2); }
+  catch {
+    try { WebSocket = require('../../server/node_modules/ws'); }
+    catch { console.error('ws 套件未安裝；請 `cd server && npm i ws` 後重跑'); process.exit(2); }
+  }
 
   const url = TOKEN && ROOM
     ? `${WS_BASE}?token=${encodeURIComponent(TOKEN)}&room=${encodeURIComponent(ROOM)}`

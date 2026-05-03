@@ -3,31 +3,35 @@
 對應 `docs/flex_messages.md` 規格。模板實作於 `server/services/line.js`（`templates.*`）。
 本表用於 Phase 8 上線前逐項煙霧測試；每次驗證後請更新「最後驗證」欄位。
 
-> 觸發測試方式：
-> - 後端有 cron 的項目 → 將 `cron/index.js` 的時間調為 `*/2 * * * *` 後本機跑 30 秒驗證；驗完還原。
-> - 操作觸發者 → 用 admin / LIFF UI 走完流程，到 `notification_log` 確認 1 筆寫入。
-> - 接收方 LINE 收到推播且 Flex 顯示正常（header 色、按鈕可點），即視為通過。
+> 兩階段驗證：
+> 1. **結構驗證（已自動化）**：`node tests/e2e/flex_templates_verify.js` 對 18 個 `templates.*` 函數呼叫並驗證
+>    回傳為合法 LINE Flex Message（`type:'flex'` + `altText` + `contents.type ∈ {bubble, carousel}`）。
+>    2026-05-03 首次跑 → **18/18 pass**。本檢查已納入 `tests/e2e/run_all.js`。
+> 2. **實機推播驗證（UAT 階段）**：以下表格的「最後驗證」欄位 → UAT 時用真 LINE channel 推送並回填日期。
+>    - 後端有 cron 的項目 → 將 `cron/index.js` 的時間調為 `*/2 * * * *` 後本機跑 30 秒驗證；驗完還原。
+>    - 操作觸發者 → 用 admin / LIFF UI 走完流程，到 `notification_log` 確認 1 筆寫入。
+>    - 接收方 LINE 收到推播且 Flex 顯示正常（header 色、按鈕可點），即視為通過。
 
-| # | spec 名稱 | 觸發點 | 模板函數 (`templates.*`) | 接收者 | Header 色 | 最後驗證 | 結果 |
+| # | spec 名稱 | 觸發點 | 模板函數 (`templates.*`) | 接收者 | Header 色 | 結構驗證 | 實機驗證 |
 |---|---|---|---|---|---|---|---|
-| 1  | 報名成功                | `routes/payments.js` 末5碼送出後                 | `enrollmentSuccess`        | 家長            | `#15316a` | __PENDING__ | ☐ |
-| 2  | 課程開通                | `routes/admin/enrollments.js` reconcile 通過    | `courseActivated`          | 家長            | `#31aeab` | __PENDING__ | ☐ |
-| 3  | 1v1 選槽成功            | `routes/sessions.js` book 1v1                    | `slotBooked`               | 家長            | `#97bf36` | __PENDING__ | ☐ |
-| 4  | 1vN 同組確認邀請        | `routes/sessions.js` book 1vN（A 後）            | `groupConfirmInvite`       | 同組其他家長    | `#15316a` | __PENDING__ | ☐ |
-| 5  | 1vN 時段確認成功        | 同 #4 路由分支：全員同意 / 60 分逾時自動         | `groupConfirmInvite`(成功色) | 全組家長        | `#97bf36` | __PENDING__ | ☐ |
-| 6  | 1vN 時段拒絕            | 同 #4 路由分支：B 拒絕                           | `groupConfirmInvite`(拒絕色) | A 家長          | `#e8a020` | __PENDING__ | ☐ |
-| 7  | 上課前 1 小時提醒       | `cron/index.js` 每小時整點                       | `sessionReminder`          | 家長 + 教練     | `#e8a020` | __PENDING__ | ☐ |
-| 8  | 學員自助取消（給教練）  | `routes/sessions.js` cancel                      | `selfCancelToCoach`        | 教練            | 依類型      | __PENDING__ | ☐ |
-| 9  | 堂數快到期提醒          | `cron/index.js` 每日 09:00                       | `expiryReminder`           | 家長            | `#e8a020` | __PENDING__ | ☐ |
-| 10 | 課前規劃發布            | `routes/learn.js` plan publish                   | `coursePlanPublished`      | 家長            | `#c9a84c` | __PENDING__ | ☐ |
-| 11 | 授課記錄送出            | `routes/learn.js` record publish                 | `sessionRecordPublished`   | 家長            | `#31aeab` | __PENDING__ | ☐ |
-| 12 | 期末評鑑邀請            | `cron/index.js` 每日 10:00（最後一堂簽到當天）   | `evaluationInvite`         | 家長            | `#c9a84c` | __PENDING__ | ☐ |
-| 13 | 期末評鑑提醒            | `cron/index.js` 每日 10:00（邀請後 7 天未填）    | `evaluationInvite`(reminder) | 家長          | `#e8a020` | __PENDING__ | ☐ |
-| 14 | 轉讓申請通知            | `routes/transfers.js` POST /                     | `transferRequest`          | 場館主管        | `#15316a` | __PENDING__ | ☐ |
-| 15 | 轉讓結果通知            | `routes/admin/transfers.js` approve / reject     | `transferReviewed`         | 雙方家長        | 依結果      | __PENDING__ | ☐ |
-| 16 | 關鍵字警示              | `routes/chat.js` 送訊息時 `keywordScanner` hit  | `keywordAlert`             | 場館主管        | `#e24b4a` | __PENDING__ | ☐ |
-| 17 | MGM 推薦成功            | `routes/admin/enrollments.js` reconcile（含 referrer）| `mgmRewardIssued`     | 推薦方家長      | `#97bf36` | __PENDING__ | ☐ |
-| 18 | 體驗課今日提醒          | `cron/index.js` 每日 09:30                       | `mgmTrialTodayReminder`    | 被推薦家長 + 教練 | `#97bf36` | __PENDING__ | ☐ |
+| 1  | 報名成功                | `routes/payments.js` 末5碼送出後                 | `enrollmentSuccess`        | 家長            | `#15316a` | 2026-05-03 ✅ | UAT_PENDING |
+| 2  | 課程開通                | `routes/admin/enrollments.js` reconcile 通過    | `courseActivated`          | 家長            | `#31aeab` | 2026-05-03 ✅ | UAT_PENDING |
+| 3  | 1v1 選槽成功            | `routes/sessions.js` book 1v1                    | `slotBooked`               | 家長            | `#97bf36` | 2026-05-03 ✅ | UAT_PENDING |
+| 4  | 1vN 同組確認邀請        | `routes/sessions.js` book 1vN（A 後）            | `groupConfirmInvite`       | 同組其他家長    | `#15316a` | 2026-05-03 ✅ | UAT_PENDING |
+| 5  | 1vN 時段確認成功        | 同 #4 路由分支：全員同意 / 60 分逾時自動         | `groupConfirmInvite`(成功色) | 全組家長        | `#97bf36` | 2026-05-03 ✅ | UAT_PENDING |
+| 6  | 1vN 時段拒絕            | 同 #4 路由分支：B 拒絕                           | `groupConfirmInvite`(拒絕色) | A 家長          | `#e8a020` | 2026-05-03 ✅ | UAT_PENDING |
+| 7  | 上課前 1 小時提醒       | `cron/index.js` 每小時整點                       | `sessionReminder`          | 家長 + 教練     | `#e8a020` | 2026-05-03 ✅ | UAT_PENDING |
+| 8  | 學員自助取消（給教練）  | `routes/sessions.js` cancel                      | `selfCancelToCoach`        | 教練            | 依類型      | 2026-05-03 ✅ | UAT_PENDING |
+| 9  | 堂數快到期提醒          | `cron/index.js` 每日 09:00                       | `expiryReminder`           | 家長            | `#e8a020` | 2026-05-03 ✅ | UAT_PENDING |
+| 10 | 課前規劃發布            | `routes/learn.js` plan publish                   | `coursePlanPublished`      | 家長            | `#c9a84c` | 2026-05-03 ✅ | UAT_PENDING |
+| 11 | 授課記錄送出            | `routes/learn.js` record publish                 | `sessionRecordPublished`   | 家長            | `#31aeab` | 2026-05-03 ✅ | UAT_PENDING |
+| 12 | 期末評鑑邀請            | `cron/index.js` 每日 10:00（最後一堂簽到當天）   | `evaluationInvite`         | 家長            | `#c9a84c` | 2026-05-03 ✅ | UAT_PENDING |
+| 13 | 期末評鑑提醒            | `cron/index.js` 每日 10:00（邀請後 7 天未填）    | `evaluationInvite`(reminder) | 家長          | `#e8a020` | 2026-05-03 ✅ | UAT_PENDING |
+| 14 | 轉讓申請通知            | `routes/transfers.js` POST /                     | `transferRequest`          | 場館主管        | `#15316a` | 2026-05-03 ✅ | UAT_PENDING |
+| 15 | 轉讓結果通知            | `routes/admin/transfers.js` approve / reject     | `transferReviewed`         | 雙方家長        | 依結果      | 2026-05-03 ✅ | UAT_PENDING |
+| 16 | 關鍵字警示              | `routes/chat.js` 送訊息時 `keywordScanner` hit  | `keywordAlert`             | 場館主管        | `#e24b4a` | 2026-05-03 ✅ | UAT_PENDING |
+| 17 | MGM 推薦成功            | `routes/admin/enrollments.js` reconcile（含 referrer）| `mgmRewardIssued`     | 推薦方家長      | `#97bf36` | 2026-05-03 ✅ | UAT_PENDING |
+| 18 | 體驗課今日提醒          | `cron/index.js` 每日 09:30                       | `mgmTrialTodayReminder`    | 被推薦家長 + 教練 | `#97bf36` | 2026-05-03 ✅ | UAT_PENDING |
 
 ## 模板覆蓋說明
 - `groupConfirmInvite` 函數透過參數同時涵蓋 spec #4/#5/#6 三種狀態的 header 色與文案。
