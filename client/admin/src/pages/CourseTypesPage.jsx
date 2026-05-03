@@ -1,0 +1,234 @@
+import React, { useEffect, useState } from 'react';
+import PageHeader from '../components/PageHeader';
+
+const API = '/api/admin/course-types';
+const token = () => localStorage.getItem('admin_token');
+const headers = () => ({ 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` });
+
+export default function CourseTypesPage() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState('');
+  const [saving, setSaving] = useState(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const [form, setForm] = useState({ course_type: '', label: '', max_students: '' });
+  const [addErr, setAddErr] = useState('');
+
+  async function load() {
+    setLoading(true);
+    try {
+      const r = await fetch(API, { headers: headers() });
+      const data = await r.json();
+      setRows(Array.isArray(data) ? data : []);
+    } catch { setErr('載入失敗'); }
+    setLoading(false);
+  }
+
+  useEffect(() => { load(); }, []);
+
+  async function toggleActive(row) {
+    setSaving(row.course_type);
+    try {
+      const r = await fetch(`${API}/${row.course_type}`, {
+        method: 'PATCH',
+        headers: headers(),
+        body: JSON.stringify({ is_active: !row.is_active }),
+      });
+      if (!r.ok) { const d = await r.json(); setErr(d.error || '更新失敗'); }
+      else await load();
+    } catch { setErr('更新失敗'); }
+    setSaving(null);
+  }
+
+  async function handleAdd(e) {
+    e.preventDefault();
+    setAddErr('');
+    const ct = parseInt(form.course_type, 10);
+    const ms = parseInt(form.max_students, 10);
+    if (isNaN(ct) || ct < 1) return setAddErr('課程編號必須為正整數');
+    if (!form.label.trim()) return setAddErr('請填寫名稱');
+    if (isNaN(ms) || ms < 1) return setAddErr('學生人數必須為正整數');
+    try {
+      const r = await fetch(API, {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({ course_type: ct, label: form.label.trim(), max_students: ms }),
+      });
+      const d = await r.json();
+      if (!r.ok) return setAddErr(d.error || '新增失敗');
+      setShowAdd(false);
+      setForm({ course_type: '', label: '', max_students: '' });
+      await load();
+    } catch { setAddErr('新增失敗'); }
+  }
+
+  async function handleDelete(row) {
+    if (!window.confirm(`確定刪除「${row.label}」嗎？（有報名記錄的類型無法刪除）`)) return;
+    setSaving(row.course_type);
+    try {
+      const r = await fetch(`${API}/${row.course_type}`, { method: 'DELETE', headers: headers() });
+      const d = await r.json();
+      if (!r.ok) setErr(d.error || '刪除失敗');
+      else await load();
+    } catch { setErr('刪除失敗'); }
+    setSaving(null);
+  }
+
+  const autoLabel = (ct) => {
+    const map = { 1:'一對一', 2:'一對二', 3:'一對三', 4:'一對四', 5:'一對五', 6:'一對六' };
+    return map[ct] || `一對${ct}`;
+  };
+
+  return (
+    <div className="p-6">
+      <PageHeader
+        title="課程需求管理"
+        subtitle="設定可用的師生比規格（一對一、一對二…）"
+        action={
+          <button
+            onClick={() => { setShowAdd(true); setAddErr(''); }}
+            className="rounded-lg bg-brand-primary px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
+          >
+            + 新增課程需求
+          </button>
+        }
+      />
+
+      {err && (
+        <div className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
+          {err}
+          <button className="ml-3 underline" onClick={() => setErr('')}>關閉</button>
+        </div>
+      )}
+
+      {/* 新增表單 */}
+      {showAdd && (
+        <div className="mb-6 rounded-xl border border-blue-200 bg-blue-50 p-5">
+          <div className="mb-3 font-semibold text-blue-800">新增課程需求</div>
+          <form onSubmit={handleAdd} className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-600">課程編號（正整數）</label>
+              <input
+                type="number" min="1"
+                value={form.course_type}
+                onChange={(e) => {
+                  const ct = e.target.value;
+                  setForm((f) => ({
+                    ...f,
+                    course_type: ct,
+                    label: f.label || autoLabel(parseInt(ct, 10)),
+                    max_students: f.max_students || ct,
+                  }));
+                }}
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
+                placeholder="例：4"
+                required
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-600">名稱（顯示用）</label>
+              <input
+                type="text"
+                value={form.label}
+                onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))}
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
+                placeholder="例：一對四"
+                required
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-600">最多學生人數</label>
+              <input
+                type="number" min="1"
+                value={form.max_students}
+                onChange={(e) => setForm((f) => ({ ...f, max_students: e.target.value }))}
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
+                placeholder="例：4"
+                required
+              />
+            </div>
+            {addErr && <p className="col-span-full text-sm text-red-600">{addErr}</p>}
+            <div className="col-span-full flex gap-2">
+              <button type="submit" className="rounded-lg bg-brand-primary px-5 py-2 text-sm font-semibold text-white hover:opacity-90">
+                新增
+              </button>
+              <button
+                type="button"
+                onClick={() => { setShowAdd(false); setForm({ course_type: '', label: '', max_students: '' }); setAddErr(''); }}
+                className="rounded-lg border border-gray-300 px-5 py-2 text-sm hover:bg-gray-50"
+              >
+                取消
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* 課程需求清單 */}
+      {loading ? (
+        <div className="py-16 text-center text-gray-400">載入中…</div>
+      ) : (
+        <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-5 py-3 text-left font-semibold text-gray-600">課程需求</th>
+                <th className="px-5 py-3 text-left font-semibold text-gray-600">最多學生</th>
+                <th className="px-5 py-3 text-left font-semibold text-gray-600">系統代碼</th>
+                <th className="px-5 py-3 text-left font-semibold text-gray-600">狀態</th>
+                <th className="px-5 py-3 text-right font-semibold text-gray-600">操作</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {rows.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="py-12 text-center text-gray-400">尚無課程需求設定</td>
+                </tr>
+              )}
+              {rows.map((row) => (
+                <tr key={row.course_type} className={`transition hover:bg-gray-50 ${!row.is_active ? 'opacity-50' : ''}`}>
+                  <td className="px-5 py-4 font-semibold text-gray-800">{row.label}</td>
+                  <td className="px-5 py-4 text-gray-600">{row.max_students} 人</td>
+                  <td className="px-5 py-4">
+                    <span className="rounded bg-gray-100 px-2 py-0.5 font-mono text-xs text-gray-500">
+                      course_type = {row.course_type}
+                    </span>
+                  </td>
+                  <td className="px-5 py-4">
+                    {row.is_active ? (
+                      <span className="rounded-full bg-green-100 px-3 py-1 text-xs font-semibold text-green-700">啟用中</span>
+                    ) : (
+                      <span className="rounded-full bg-gray-200 px-3 py-1 text-xs font-semibold text-gray-500">已停用</span>
+                    )}
+                  </td>
+                  <td className="px-5 py-4 text-right">
+                    <div className="flex justify-end gap-2">
+                      <button
+                        onClick={() => toggleActive(row)}
+                        disabled={saving === row.course_type}
+                        className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium hover:bg-gray-50 disabled:opacity-50"
+                      >
+                        {saving === row.course_type ? '…' : row.is_active ? '停用' : '啟用'}
+                      </button>
+                      <button
+                        onClick={() => handleDelete(row)}
+                        disabled={saving === row.course_type}
+                        className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
+                      >
+                        刪除
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="mt-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-700">
+        提示：已有報名記錄的課程需求無法刪除，請改為「停用」。停用後前台及報名流程中將不再顯示該規格。
+      </div>
+    </div>
+  );
+}

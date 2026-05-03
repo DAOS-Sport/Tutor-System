@@ -32,7 +32,8 @@ router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager'), async (r
 router.patch('/:type', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
   try {
     const ct = parseInt(req.params.type, 10);
-    if (![1, 2, 3].includes(ct)) return res.status(400).json({ error: 'course_type 僅支援 1/2/3' });
+    const valid = await pool.query(`SELECT 1 FROM course_type_configs WHERE course_type=$1`, [ct]);
+    if (!valid.rowCount) return res.status(400).json({ error: '無效的 course_type' });
     const cur = await pool.query(`SELECT * FROM admin_course_intros WHERE course_type = $1`, [ct]);
     if (!cur.rowCount) return res.status(404).json({ error: 'intro not found' });
 

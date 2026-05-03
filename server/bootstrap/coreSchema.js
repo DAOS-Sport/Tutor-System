@@ -84,6 +84,15 @@ CREATE TABLE IF NOT EXISTS students (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS course_type_configs (
+  course_type  INTEGER PRIMARY KEY,
+  label        VARCHAR(50) NOT NULL,
+  max_students INTEGER NOT NULL,
+  is_active    BOOLEAN NOT NULL DEFAULT TRUE,
+  sort_order   INTEGER NOT NULL DEFAULT 0,
+  created_at   TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS course_periods (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   coach_id UUID NOT NULL REFERENCES coaches(id) ON DELETE RESTRICT,
@@ -774,6 +783,21 @@ const DEFAULT_THRESHOLDS = [
   { metric: 'renew_rate',   min_value: 0.60, window_months: 3 },
 ];
 
+async function seedCourseTypeConfigs() {
+  const defaults = [
+    { course_type: 1, label: '一對一', max_students: 1, sort_order: 1 },
+    { course_type: 2, label: '一對二', max_students: 2, sort_order: 2 },
+    { course_type: 3, label: '一對三', max_students: 3, sort_order: 3 },
+  ];
+  for (const d of defaults) {
+    await pool.query(
+      `INSERT INTO course_type_configs (course_type, label, max_students, sort_order)
+       VALUES ($1,$2,$3,$4) ON CONFLICT (course_type) DO NOTHING`,
+      [d.course_type, d.label, d.max_students, d.sort_order]
+    );
+  }
+}
+
 async function seedTagsAndThresholds() {
   for (const cat of DEFAULT_TAG_CATEGORIES) {
     await pool.query(
@@ -827,6 +851,7 @@ async function bootstrap() {
     await seedSlotsAndSessions();
     await seedKeywords();
     await seedTagsAndThresholds();
+    await seedCourseTypeConfigs();
     await ensureChatRoomsForActivePeriods();
     console.log('[core bootstrap] ready');
   } catch (err) {

@@ -28,6 +28,7 @@ import MgmStatsPage from './pages/MgmStatsPage';
 import TransfersReviewPage from './pages/TransfersReviewPage';
 import ReportsPage from './pages/ReportsPage';
 import SopPage from './pages/SopPage';
+import CourseTypesPage from './pages/CourseTypesPage';
 
 const ALL = ['admin', 'manager', 'staff'];
 
@@ -47,6 +48,7 @@ export default function App() {
         <Route path="/coaches"       element={<RequireAuth roles={['admin']}><CoachesPage /></RequireAuth>} />
         <Route path="/venues"        element={<RequireAuth roles={['admin']}><VenuesPage /></RequireAuth>} />
         <Route path="/course-intros" element={<RequireAuth roles={['admin', 'manager']}><CourseIntrosPage /></RequireAuth>} />
+        <Route path="/course-types"  element={<RequireAuth roles={['admin']}><CourseTypesPage /></RequireAuth>} />
 
         {/* 報名與對帳 */}
         <Route path="/reconcile"   element={<RequireAuth roles={['admin', 'manager']}><ReconcilePage /></RequireAuth>} />

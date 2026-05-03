@@ -19,6 +19,7 @@ const NAV_GROUPS = [
       { to: '/coaches',      label: '教練資料 (F-C-Admin)', roles: ['admin'] },
       { to: '/venues',       label: '場館設定 (F-A03)',     roles: ['admin'] },
       { to: '/course-intros', label: '課程介紹 (F-A04/F-M06)', roles: ['admin', 'manager'] },
+      { to: '/course-types',  label: '課程需求管理',           roles: ['admin'] },
     ],
   },
   {
