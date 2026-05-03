@@ -3,6 +3,8 @@ import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
 import { adminReportsApi } from '../api/reports';
+import { venuesApi } from '../api/venues';
+import { staffApi } from '../api/staff';
 import { rowsToCsv, downloadCsv } from '../utils/csvExport';
 
 const TABS = [
@@ -23,7 +25,17 @@ export default function ReportsPage() {
   const toast = useToast();
   const [tab, setTab] = useState('revenue');
   const [range, setRange] = useState(defaultRange());
+  const [venueId, setVenueId] = useState('');
+  const [coachId, setCoachId] = useState('');
   const [data, setData] = useState(null);
+  const [venues, setVenues] = useState([]);
+  const [coaches, setCoaches] = useState([]);
+
+  useEffect(() => {
+    venuesApi.list().then((r) => setVenues(r || [])).catch(() => setVenues([]));
+    staffApi.list().then((r) => setCoaches((r || []).filter((s) => s.role === 'coach' || s.is_coach)))
+      .catch(() => setCoaches([]));
+  }, []);
 
   useEffect(() => {
     setData(null);
@@ -34,23 +46,30 @@ export default function ReportsPage() {
       mgm: adminReportsApi.mgmConversion,
       learning: adminReportsApi.learningCompletion,
     })[tab];
-    fn(range).then(setData).catch((e) => {
+    const params = { ...range };
+    if (venueId) params.venueId = venueId;
+    if (coachId) params.coachId = coachId;
+    fn(params).then(setData).catch((e) => {
       setData({ rows: [] });
       toast.error(e?.response?.data?.error || '報表載入失敗');
     });
-  }, [tab, range.from, range.to]); // eslint-disable-line
+  }, [tab, range.from, range.to, venueId, coachId]); // eslint-disable-line
 
   function exportCsv() {
     if (!data) return;
     const meta = TABLES[tab];
     const headers = meta.headers;
     const rows = (tab === 'mgm' ? mgmRows(data) : (data.rows || [])).map(meta.row);
-    downloadCsv(`report_${tab}_${range.from}_${range.to}.csv`, rowsToCsv(headers, rows));
+    const suffix = [venueId && `v${venueId}`, coachId && `c${coachId.slice(0,6)}`].filter(Boolean).join('_');
+    downloadCsv(
+      `report_${tab}_${range.from}_${range.to}${suffix ? '_' + suffix : ''}.csv`,
+      rowsToCsv(headers, rows)
+    );
   }
 
   return (
     <div>
-      <PageHeader title="營運報表 (F-M01)" subtitle="可依日期區間查詢；支援 CSV 匯出" />
+      <PageHeader title="營運報表 (F-M01)" subtitle="可依日期 / 場館 / 教練篩選；支援 CSV 匯出" />
 
       <div className="mb-3 flex flex-wrap items-center gap-2">
         {TABS.map((t) => (
@@ -59,19 +78,30 @@ export default function ReportsPage() {
               tab === t.key ? 'bg-brand-primary text-white' : 'bg-gray-100 text-gray-600'
             }`}>{t.label}</button>
         ))}
-        <div className="ml-auto flex items-center gap-2 text-xs">
-          <input type="date" value={range.from}
-            onChange={(e) => setRange({ ...range, from: e.target.value })}
-            className="rounded border border-gray-300 px-2 py-1" />
-          <span>～</span>
-          <input type="date" value={range.to}
-            onChange={(e) => setRange({ ...range, to: e.target.value })}
-            className="rounded border border-gray-300 px-2 py-1" />
-          <button onClick={exportCsv} disabled={!data}
-            className="rounded bg-brand-teal px-3 py-1 font-bold text-white disabled:opacity-50">
-            匯出 CSV
-          </button>
-        </div>
+      </div>
+
+      <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
+        <input type="date" value={range.from}
+          onChange={(e) => setRange({ ...range, from: e.target.value })}
+          className="rounded border border-gray-300 px-2 py-1" />
+        <span>～</span>
+        <input type="date" value={range.to}
+          onChange={(e) => setRange({ ...range, to: e.target.value })}
+          className="rounded border border-gray-300 px-2 py-1" />
+        <select value={venueId} onChange={(e) => setVenueId(e.target.value)}
+          className="rounded border border-gray-300 px-2 py-1">
+          <option value="">全部場館</option>
+          {venues.map((v) => <option key={v.id} value={v.id}>{v.name || v.id}</option>)}
+        </select>
+        <select value={coachId} onChange={(e) => setCoachId(e.target.value)}
+          className="rounded border border-gray-300 px-2 py-1">
+          <option value="">全部教練</option>
+          {coaches.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        <button onClick={exportCsv} disabled={!data}
+          className="ml-auto rounded bg-brand-teal px-3 py-1 font-bold text-white disabled:opacity-50">
+          匯出 CSV
+        </button>
       </div>
 
       {data === null ? <LoadingSpinner label="載入報表中…" />

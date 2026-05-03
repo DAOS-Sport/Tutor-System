@@ -1,5 +1,5 @@
 import { callApi } from './client';
 
 export const lessonsApi = {
-  mine: () => callApi('/courses/lessons', {}, () => []),
+  mine: (params = {}) => callApi('/courses/lessons', { params }, () => []),
 };
