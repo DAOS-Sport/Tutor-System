@@ -125,6 +125,48 @@ export default function EnrollmentsPage() {
                 <div><dt className="text-gray-500">堂數</dt><dd>{detail.used_sessions || 0} / {detail.total_sessions}</dd></div>
               )}
             </dl>
+            {detail.invoice_number && (
+              <div className="mt-5 rounded-xl border border-teal-200 bg-teal-50 p-4">
+                <div className="mb-3 text-sm font-bold text-teal-700">🧾 發票資訊</div>
+                <dl className="grid grid-cols-2 gap-3 text-sm">
+                  <div>
+                    <dt className="text-gray-500">發票號碼</dt>
+                    <dd className="font-mono font-bold text-teal-800">{detail.invoice_number}</dd>
+                  </div>
+                  {detail.invoice_issued_at && (
+                    <div>
+                      <dt className="text-gray-500">開立時間</dt>
+                      <dd>{formatTWDateTime(detail.invoice_issued_at)}</dd>
+                    </div>
+                  )}
+                  {detail.invoice_url && (
+                    <div className="col-span-2">
+                      <dt className="text-gray-500">電子發票查詢</dt>
+                      <dd>
+                        <a href={detail.invoice_url} target="_blank" rel="noreferrer"
+                          className="text-brand-teal underline hover:opacity-75">
+                          {detail.invoice_url}
+                        </a>
+                      </dd>
+                    </div>
+                  )}
+                  {detail.invoice_image_url && (
+                    <div className="col-span-2">
+                      <dt className="mb-1 text-gray-500">發票照片</dt>
+                      <dd>
+                        <a href={detail.invoice_image_url} target="_blank" rel="noreferrer">
+                          <img
+                            src={detail.invoice_image_url}
+                            alt="發票"
+                            className="max-h-40 rounded-lg border border-teal-200 object-contain"
+                          />
+                        </a>
+                      </dd>
+                    </div>
+                  )}
+                </dl>
+              </div>
+            )}
             <div className="mt-5">
               <div className="mb-2 text-sm font-bold text-gray-700">操作紀錄</div>
               <ul className="space-y-1 text-xs text-gray-600">
