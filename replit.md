@@ -364,6 +364,29 @@ Admin：
 - `GET /api/admin/coaches/:id` 回傳含 `bio_media` 陣列。
 - admin build 通過：347KB / 107KB gzip（+2KB）。
 
+## Task #37：修復 Ragic 同步沒在跑（教練 + 場館仍是 seed 假資料）(已完成)
+
+### 根因（三層）
+1. **`RAGIC_BASE_URL` 沒設**：`ragicEnabled()` 同時要求 `RAGIC_API_KEY` + `RAGIC_BASE_URL`，缺任一就 `if (!ragicEnabled()) return { skipped: true }` 整段 noop。
+2. **Ragic 認證方式錯**：原本用 `Authorization: Basic base64(API_KEY)` header — Ragic 拒絕，回 `code:106 "guest account"`。Ragic 只認 `?APIKey=<key>` **query 參數**。
+3. **欄位鍵名對不上**：H01 用 `員工編號`（不是 `工號`）/ `手機`（不是 `手機（公司）`）/ `E-mail`（不是 `Email`）；H05 用 `部門編號`（不是 `場館代號`）/ `部門名稱` / `完整地址`，外加可同步銀行 4 欄 `總機構名稱` / `分支機構名稱` / `戶名` / `帳號`。`應徵職務` 是 **陣列** `["教練"]` 不是字串（原 `.includes` 對 array 也 work，但要小心）。
+
+### 變更
+- **env**：補設 `RAGIC_BASE_URL=https://ap7.ragic.com`（shared）。
+- **`server/services/ragic.js`**：移除 Basic Auth header；`query()` 改用 axios `params` 傳 `APIKey`；新增 `_withApi()` helper 處理 `?` vs `&`（很多 `RAGIC_FORM_*` env 已含 `?PAGEID=ruv`）；Ragic 錯誤回應 `{status:'ERROR'}` 顯式拋出（不再被當資料 swallow）。`upsertParent` / `upsertStudent` 同步改造。
+- **`server/services/ragicAdmin.js`**：(a) 加 startup self-check，啟動時印 `[Ragic] sync enabled=true (base=...)` 或 `[Ragic] sync DISABLED — missing X, Y`；(b) `syncStaffFromRagic` / `syncCoachesFromRagic` 補 `員工編號` / `手機` / `E-mail` 欄位 fallback；(c) `syncVenuesFromRagic` 補 `部門編號` / `部門名稱` / `完整地址` + 銀行 4 欄（`COALESCE(NULLIF(local,''), ragic)` 後台已填則保留）。
+- **`docs/ragic_api.md`**：認證段改寫（`APIKey=` query），補 H01/H05 實際欄位對映表 + 啟動 self-check 說明。
+
+### 煙霧（直接呼叫 service 跑）
+- `coaches`：4 → 177 筆（173 從 Ragic 工號如 `0605038`、`1404381`；舊 seed C001–C004 自動 `is_active=FALSE`）。
+- `venues`：3 → 24 筆（B/C 仍在因仍為 H05 履約中；`X` 新莊館自動下架；7 筆帶完整銀行資料如「中國信託商業銀行 / 民權西路分行 / 駿斯運動事業…分公司 / 21254...」）。
+- `admin_venues`：銀行 4 欄填入；本地後台已修改的列不會被覆寫（COALESCE 保護）。
+- `linked=0`：H01 目前未開「LINE userid」欄；user 在 Ragic 加欄並填值後，`extractLineUid` 多重鍵名 + 啟發式比對會自動接上，無需改 code。
+
+### 後續注意
+- Ragic API 5 分鐘 in-process 快取（`RAGIC_CACHE_TTL_MS`），同一 process 連續同步只會打第一次；除錯時設 `RAGIC_CACHE_TTL_MS=0` 關掉。
+- 後台 admin GET `/api/admin/coaches` / `/api/admin/venues` 仍是 best-effort sync（catch swallow 不擋使用者）；要看真有跑成功，必看 console `[Ragic sync] coaches synced=N linked=M` log。
+
 ## 變更紀錄
 - 2026-05-02：完成 LIFF Phase 1（任務 #7）。實作 7 個正式頁面 + 2 個 placeholder、6 個全域元件、雙 Context（Auth/Toast）、7 個 API 模組與 mock dataset、共用 utils；新增 `react-hook-form` 依賴、`postcss.config.js`；修正 `main.jsx` 加上無 LIFF_ID 的 dev fallback。`vite build` 通過（158 modules，401KB / 127KB gzip）。後端 19 個 stub 路由不變，LIFF 全程走 mock 模式以驗證 happy path；後續可由 `VITE_USE_MOCK=false` 切到真實 API，並透過 501 自動 fallback 機制漸進實作後端。
 - 2026-05-02：完成 SurveyJS Creator 評估報告，結論為「**不建議整合**」（授權費 USD $589/dev/年、套件巨大、與 Ragic 雙向同步設計衝突）。完整分析詳見 `docs/eval/surveyjs-creator.md`，含替代方案比較與分階段建議。

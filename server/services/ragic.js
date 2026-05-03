@@ -63,11 +63,19 @@ async function cached(key, fn) {
   return v;
 }
 
+// 把 應徵職務 統一成可 substring-search 的字串（H01 該欄可能是 string 或 array，
+// array 元素也可能是 "體育署救生員,教練" 這種複合字串）
+function _roleStr(r) {
+  const v = r['應徵職務'];
+  if (Array.isArray(v)) return v.join(',');
+  return v || '';
+}
+
 // H01：在職教練（5 分鐘快取）
 async function getActiveCoaches() {
   return cached('h01:coaches', async () => {
     const data = await query(process.env.RAGIC_FORM_H01, { '在職狀態': '在職' });
-    return Object.values(data).filter(r => r['應徵職務']?.includes('教練'));
+    return Object.values(data).filter(r => _roleStr(r).includes('教練'));
   });
 }
 
@@ -75,7 +83,7 @@ async function getActiveCoaches() {
 async function getCounterStaff() {
   return cached('h01:counter', async () => {
     const data = await query(process.env.RAGIC_FORM_H01, { '在職狀態': '在職' });
-    return Object.values(data).filter(r => r['應徵職務']?.includes('行政櫃檯'));
+    return Object.values(data).filter(r => _roleStr(r).includes('行政櫃台') || _roleStr(r).includes('行政櫃檯'));
   });
 }
 

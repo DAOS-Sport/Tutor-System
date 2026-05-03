@@ -11,7 +11,7 @@ API Key、帳號、表單路徑都透過環境變數注入，**請勿** 將明�
 
 | 環境變數 | 範例值 | 說明 |
 |---|---|---|
-| `RAGIC_API_KEY` | `（敏感資料，存 Replit Secrets，切勿寫入 repo）` | Ragic API Key（程式會自動 base64 後放進 `Authorization: Basic <...>`）|
+| `RAGIC_API_KEY` | `（敏感資料，存 Replit Secrets，切勿寫入 repo）` | Ragic API Key。**必須**透過 `?APIKey=<key>` query 參數傳遞（Ragic 不接受 `Authorization: Basic` / `Bearer` header，會被當 guest 拒絕，回 `code:106`）|
 | `RAGIC_BASE_URL` | `https://ap7.ragic.com` | 依實際 Ragic Server 位置調整（本系統使用 `ap7`）|
 | `RAGIC_ACCOUNT` | `xinsheng` | Ragic 帳號（URL 第一段都是這個，與「AP_Name」不同）|
 | `RAGIC_FORM_H01` | `/xinsheng/ragicforms4/20004` | H01 教練在職狀態（AP_Name `standardzhtw`）|
@@ -27,6 +27,30 @@ API Key、帳號、表單路徑都透過環境變數注入，**請勿** 將明�
 1. 在 Replit Secrets（環境變數面板）建立上述 key。
 2. 開發環境也可複製 `.env.example` → `.env` 後填入。
 3. **不要把實際 Key 提交到 git**。
+4. ⚠️ `RAGIC_BASE_URL` 與 `RAGIC_API_KEY` **必須同時存在**，否則 `ragicEnabled()` 回 false → `syncCoachesFromRagic` / `syncVenuesFromRagic` 整段被 noop（dev 環境用，但 prod 缺一個就靜默不同步）。Server 啟動時會印 `[Ragic] sync enabled=true (base=...)` 或 `[Ragic] sync DISABLED — missing <var>`，缺哪個一秒看出。
+5. ⚠️ `RAGIC_FORM_*` 路徑若已含 `?PAGEID=ruv` 等 query string，程式會自動用 `&api` append（不是第二個 `?`），且 `APIKey` 會以 axios `params` 傳入，無需手動拼接。
+
+### H01 / H05 實際欄位對映（Task #37）
+
+實際打 Ragic API 取出的 record，欄位鍵名以 **中文欄位名** 為主（不是 Field ID 數字）。經 Plan mode 探查實機回應，本系統使用以下欄位：
+
+**H01 員工**（`syncCoachesFromRagic` / `syncStaffFromRagic` 用）：
+- `員工編號`（fallback `工號` / `3000935`）→ `coaches.ragic_employee_id`
+- `姓名`（fallback `3000933`）→ `coaches.name`
+- `手機`（fallback `手機（公司）` / `手機（個人）` / `3001424` / `3000941`）→ `coaches.phone`
+- `E-mail`（fallback `Email` / `3000940`）→ `coaches.email`
+- `應徵職務`（**陣列** `["教練"]`，可能多值如 `"體育署救生員,教練"`）→ filter 是否含「教練」
+- `在職狀態`（`"在職"` / `"離職"` / `"合約到期"` …，僅 `"在職"` 入 `coaches`）
+
+**H05 場館**（`syncVenuesFromRagic` 用）：
+- `部門編號`（fallback `場館代號` / `1000253`）→ `venues.id` / `admin_venues.id`
+- `部門名稱`（fallback `場館名稱` / `1000254`）→ `venues.name`
+- `完整地址`（fallback `場館地址` / `1000271`）→ `venues.full_address`
+- `總機構名稱`（`1001013`）→ `admin_venues.bank_institution_name`
+- `分支機構名稱`（`1001015`）→ `admin_venues.bank_branch_name`
+- `戶名`（`1001016`）→ `admin_venues.account_holder`
+- `帳號`（`1001017`）→ `admin_venues.account_number`
+- `履約狀態`（僅 `"履約中"`）+ `營運性質`（排除 `"內勤單位"`）
 
 ---
 

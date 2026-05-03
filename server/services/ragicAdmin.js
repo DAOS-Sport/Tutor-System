@@ -177,22 +177,33 @@ async function syncVenuesFromRagic() {
     const seenCodes = new Set();
     let synced = 0;
     for (const r of records) {
-      const code = (r['場館代號'] || r['館別代碼'] || '').toString().trim();
+      // H05 實際欄位：部門編號 / 部門名稱 / 完整地址 / 總機構名稱 / 分支機構名稱 / 戶名 / 帳號
+      // (舊欄位名 場館代號 / 場館名稱 / 場館地址 為 fallback，避免 Ragic UI 改名後同步失效)
+      const code = (r['部門編號'] || r['場館代號'] || r['館別代碼'] || r['1000253'] || '').toString().trim();
       if (!code) continue;
-      const name = r['場館名稱'] || r['館別名稱'] || code;
-      const address = r['場館地址'] || r['地址'] || '';
+      const name = r['部門名稱'] || r['場館名稱'] || r['館別名稱'] || r['1000254'] || code;
+      const address = r['完整地址'] || r['場館地址'] || r['地址'] || r['1000271'] || '';
+      const bankInst = r['總機構名稱'] || r['1001013'] || '';
+      const bankBranch = r['分支機構名稱'] || r['1001015'] || '';
+      const acctHolder = r['戶名'] || r['1001016'] || '';
+      const acctNumber = (r['帳號'] || r['1001017'] || '').toString();
       seenCodes.add(code);
 
       // admin_venues（後台 F-A03 + 機敏資料）
+      // 銀行 4 欄：本地未填則用 Ragic 值，本地已填則保留（後台手動修改優先）
       await pool.query(
         `INSERT INTO admin_venues (id, code, name, address, line_token, bank_institution_name, bank_branch_name, account_holder, account_number, is_active, last_synced_at)
-         VALUES ($1, $1, $2, $3, '', '', '', '', '', TRUE, NOW())
+         VALUES ($1, $1, $2, $3, '', $4, $5, $6, $7, TRUE, NOW())
          ON CONFLICT (id) DO UPDATE SET
            name = EXCLUDED.name,
            address = COALESCE(NULLIF(admin_venues.address, ''), EXCLUDED.address),
+           bank_institution_name = COALESCE(NULLIF(admin_venues.bank_institution_name, ''), EXCLUDED.bank_institution_name),
+           bank_branch_name = COALESCE(NULLIF(admin_venues.bank_branch_name, ''), EXCLUDED.bank_branch_name),
+           account_holder = COALESCE(NULLIF(admin_venues.account_holder, ''), EXCLUDED.account_holder),
+           account_number = COALESCE(NULLIF(admin_venues.account_number, ''), EXCLUDED.account_number),
            is_active = TRUE,
            last_synced_at = NOW()`,
-        [code, name, address]
+        [code, name, address, bankInst, bankBranch, acctHolder, acctNumber]
       );
 
       // venues（LIFF 業務面：教練選課、報名、coach_venues FK 都吃這張）
