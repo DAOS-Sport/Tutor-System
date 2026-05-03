@@ -17,8 +17,9 @@ const path = require('path');
   try {
     ({ Client } = require('@replit/object-storage'));
   } catch (_e) {
-    console.error('[upload] @replit/object-storage 未安裝，跳過遠端上傳；本地檔保留：', file);
-    return; // 不致命：腳本仍視為成功（檔案至少已產出）
+    console.error('[upload] @replit/object-storage SDK 未安裝且找不到 replit CLI，無法上傳遠端。');
+    console.error('[upload] 解法：在 server 目錄 `npm i @replit/object-storage` 或安裝 replit CLI 後重跑。');
+    process.exit(3); // 與 backup_db.sh 對應的非 0 exit code，避免靜默失敗
   }
   const c = new Client({ bucketId: process.env.REPLIT_OBJECT_STORAGE_BUCKET });
   const buf = fs.readFileSync(file);
