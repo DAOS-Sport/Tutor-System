@@ -27,6 +27,7 @@ import PromotionsActivePage from './pages/PromotionsActivePage';
 import MgmStatsPage from './pages/MgmStatsPage';
 import TransfersReviewPage from './pages/TransfersReviewPage';
 import ReportsPage from './pages/ReportsPage';
+import SopPage from './pages/SopPage';
 
 const ALL = ['admin', 'manager', 'staff'];
 
@@ -73,6 +74,7 @@ export default function App() {
         <Route path="/coach-eval"           element={<RequireAuth roles={['admin', 'manager']}><CoachEvalPage /></RequireAuth>} />
         <Route path="/eval-threshold"      element={<RequireAuth roles={['admin']}><EvalThresholdPage /></RequireAuth>} />
         <Route path="/coach-intros-review"  element={<RequireAuth roles={['admin', 'manager']}><CoachIntrosReviewPage /></RequireAuth>} />
+        <Route path="/sop" element={<SopPage />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/dashboard" replace />} />

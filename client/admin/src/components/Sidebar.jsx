@@ -63,6 +63,12 @@ const NAV_GROUPS = [
       { to: '/coach-intros-review', label: '教練介紹送審 (F-C06)', roles: ['admin', 'manager'] },
     ],
   },
+  {
+    title: '說明文件',
+    items: [
+      { to: '/sop', label: '系統操作 SOP', roles: [] },
+    ],
+  },
 ];
 
 function canSee(item, role) {
