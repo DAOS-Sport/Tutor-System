@@ -289,9 +289,17 @@ async function ensureSchema() {
 async function seedIfEmpty() {
   // Users — 在 production 必須提供 ADMIN_BOOTSTRAP_PASSWORD（由 operator 設定的強密碼），
   // 不允許 well-known 弱密碼帶進 production。
+  //
+  // 行為：
+  //   - 表空時：照常 INSERT seed 帳號
+  //   - 表非空 + ADMIN_BOOTSTRAP_PASSWORD 存在：把 DEFAULT_USERS 裡的 seed 帳號密碼更新成新密碼
+  //     （讓管理員改過密碼後重新部署能自動生效，而不必手動進 DB）
+  //   - 表非空 + 無密碼 + IS_PROD：warn，跳過
   const u = await pool.query('SELECT COUNT(*)::int AS n FROM admin_users');
+  const bootstrapPwd = process.env.ADMIN_BOOTSTRAP_PASSWORD;
+
   if (u.rows[0].n === 0) {
-    const bootstrapPwd = process.env.ADMIN_BOOTSTRAP_PASSWORD;
+    // 首次 seed
     if (IS_PROD && !bootstrapPwd) {
       console.warn(
         '[admin bootstrap] SKIPPED admin_users seed in production: ' +
@@ -315,6 +323,15 @@ async function seedIfEmpty() {
         console.log('[admin bootstrap] seeded admin_users (3 dev accounts: admin/manager/staff with weak passwords — NODE_ENV != production)');
       }
     }
+  } else if (bootstrapPwd) {
+    // 帳號已存在 + ADMIN_BOOTSTRAP_PASSWORD 有設定 → 同步更新 seed 帳號的密碼
+    const hash = await bcrypt.hash(bootstrapPwd, 10);
+    const seedUsernames = DEFAULT_USERS.map((x) => x.username);
+    await pool.query(
+      `UPDATE admin_users SET password_hash = $1 WHERE username = ANY($2::text[])`,
+      [hash, seedUsernames]
+    );
+    console.log('[admin bootstrap] synced admin_users passwords from ADMIN_BOOTSTRAP_PASSWORD');
   }
 
   // Venues
