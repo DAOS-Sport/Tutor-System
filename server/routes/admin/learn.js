@@ -159,7 +159,7 @@ router.get('/intros', requireAdminRole('admin', 'manager'), wrap(async (req, res
     `SELECT id, name, phone, intro_review_status, intro_review_note,
             intro_submitted_at, intro_reviewed_at, bio_rich_text,
             (SELECT json_agg(json_build_object('url', storage_url, 'type', media_type, 'alt', alt_text) ORDER BY sort_order)
-               FROM coach_bio_media WHERE coach_id = coaches.id) AS media
+               FROM coach_bio_media WHERE employee_id = coaches.id) AS media
        FROM coaches ${where} ORDER BY intro_submitted_at DESC NULLS LAST, name`,
     args
   );
@@ -167,12 +167,14 @@ router.get('/intros', requireAdminRole('admin', 'manager'), wrap(async (req, res
 }));
 
 router.post('/intros/:coachId/approve', requireAdminRole('admin', 'manager'), wrap(async (req, res) => {
+  // Task #51：寫入 employees（coaches view 不可寫）+ 'coach' = ANY(roles) 防呆。
   const r = await pool.query(
-    `UPDATE coaches SET intro_review_status = 'published',
-                       intro_reviewed_at = NOW(),
-                       intro_reviewed_by = $1,
-                       intro_review_note = NULL
-      WHERE id = $2 RETURNING id, name, intro_review_status`,
+    `UPDATE employees SET intro_review_status = 'published',
+                          intro_reviewed_at = NOW(),
+                          intro_reviewed_by = $1,
+                          intro_review_note = NULL
+      WHERE id = $2 AND 'coach' = ANY(roles)
+      RETURNING id, name, intro_review_status`,
     [req.adminUser.sub, req.params.coachId]
   );
   if (!r.rowCount) return res.status(404).json({ error: 'coach not found' });
@@ -182,12 +184,14 @@ router.post('/intros/:coachId/approve', requireAdminRole('admin', 'manager'), wr
 router.post('/intros/:coachId/reject', requireAdminRole('admin', 'manager'), wrap(async (req, res) => {
   const note = String(req.body?.note || '').slice(0, 500);
   if (!note) return res.status(400).json({ error: 'note required' });
+  // Task #51：寫入 employees + 'coach' = ANY(roles) 防呆。
   const r = await pool.query(
-    `UPDATE coaches SET intro_review_status = 'rejected',
-                       intro_reviewed_at = NOW(),
-                       intro_reviewed_by = $1,
-                       intro_review_note = $2
-      WHERE id = $3 RETURNING id, name, intro_review_status, intro_review_note`,
+    `UPDATE employees SET intro_review_status = 'rejected',
+                          intro_reviewed_at = NOW(),
+                          intro_reviewed_by = $1,
+                          intro_review_note = $2
+      WHERE id = $3 AND 'coach' = ANY(roles)
+      RETURNING id, name, intro_review_status, intro_review_note`,
     [req.adminUser.sub, note, req.params.coachId]
   );
   if (!r.rowCount) return res.status(404).json({ error: 'coach not found' });
