@@ -323,15 +323,20 @@ async function seedIfEmpty() {
         console.log('[admin bootstrap] seeded admin_users (3 dev accounts: admin/manager/staff with weak passwords — NODE_ENV != production)');
       }
     }
-  } else if (bootstrapPwd) {
-    // 帳號已存在 + ADMIN_BOOTSTRAP_PASSWORD 有設定 → 同步更新 seed 帳號的密碼
+  } else if (bootstrapPwd && process.env.ADMIN_FORCE_RESET_ON_BOOT === 'true') {
+    // 帳號已存在 + ADMIN_BOOTSTRAP_PASSWORD 有設定 + ADMIN_FORCE_RESET_ON_BOOT=true
+    // → 強制把 seed 帳號密碼更新成目前的 ADMIN_BOOTSTRAP_PASSWORD
+    // 這是 opt-in 行為，避免每次重啟都不預期地覆蓋管理員自行修改的密碼。
     const hash = await bcrypt.hash(bootstrapPwd, 10);
     const seedUsernames = DEFAULT_USERS.map((x) => x.username);
     await pool.query(
       `UPDATE admin_users SET password_hash = $1 WHERE username = ANY($2::text[])`,
       [hash, seedUsernames]
     );
-    console.log('[admin bootstrap] synced admin_users passwords from ADMIN_BOOTSTRAP_PASSWORD');
+    console.log('[admin bootstrap] ADMIN_FORCE_RESET_ON_BOOT: synced seed account passwords from ADMIN_BOOTSTRAP_PASSWORD');
+  } else if (!bootstrapPwd && IS_PROD) {
+    // production + 帳號已存在 + 無 ADMIN_BOOTSTRAP_PASSWORD → 正常情況，不做任何事
+    console.log('[admin bootstrap] admin_users already seeded, skipping password sync (production, no ADMIN_BOOTSTRAP_PASSWORD)');
   }
 
   // Venues
