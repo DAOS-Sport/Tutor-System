@@ -26,9 +26,15 @@ router.post('/login', async (req, res) => {
       [String(username).trim()]
     );
     const u = r.rows[0];
-    if (!u) return res.json(null);
+    if (!u) {
+      console.warn('[admin/auth/login] user not found:', String(username).trim());
+      return res.json(null);
+    }
     const ok = await bcrypt.compare(String(password), u.password_hash);
-    if (!ok) return res.json(null);
+    if (!ok) {
+      console.warn('[admin/auth/login] password mismatch for:', u.username, 'hash_prefix:', u.password_hash.slice(0, 20));
+      return res.json(null);
+    }
 
     const token = signToken({
       sub: u.id,
