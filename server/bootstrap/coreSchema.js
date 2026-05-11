@@ -5,8 +5,16 @@
  * - seed 一份示範資料（4 教練 / 3 場館 / 3 家長 / 4 學員 / 3 期課程 / 8 個槽位 / 4 個今日已預約 sessions）
  *   讓 VITE_USE_MOCK=false build 時，教練端 LIFF 真的有資料可看
  *
- * 注意：本檔與 admin bootstrap 並行運作（admin_* 是獨立 namespace），seed 內容刻意對齊
- * `server/bootstrap/admin.js` 的 DEFAULT_VENUES / DEFAULT_STAFF 以利日後合併。
+ * Task #51（employees 表合併）後的變動：
+ * - 新增 `employees` 表，roles TEXT[] 多角色（coach/counter/manager/system_admin）
+ * - 原 `coaches` 表改為一個 SELECT-only VIEW（FROM employees WHERE 'coach' = ANY(roles)），
+ *   讓散布在 routes 的 SELECT FROM coaches 在 step 4 改寫前繼續可用。寫入端必須改用 employees。
+ * - 11 個原本叫 coach_id 的欄位改成 employee_id（與 migration 003 同步）；FK 全部指 employees(id)。
+ * - 原 admin_users 仍由 server/bootstrap/admin.js 維護（不在此檔轉成 view，避免和該 bootstrap 衝突）；
+ *   被它指過的 6 個 FK 欄位（promotions.created_by/reviewed_by, promotion_audit_logs.by_user,
+ *   transfer_records.reviewed_by, keyword_alerts.reviewed_by, employees.intro_reviewed_by）
+ *   一律改為 UUID 指 employees(id)。Migration 003 已在 dev DB 執行；fresh DB 由本檔建出正確 shape。
+ * - 注意：本檔與 admin bootstrap 並行運作（admin_* 是獨立 namespace）。
  */
 const { pool } = require('../models/db');
 
@@ -33,32 +41,70 @@ CREATE TABLE IF NOT EXISTS venues (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS coaches (
+-- ─── Task #51：統一 employees 表（取代 coaches + admin_users） ─────────
+-- roles 採陣列（pg gin index）：'coach' / 'counter' / 'manager' / 'system_admin'
+CREATE TABLE IF NOT EXISTS employees (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  ragic_employee_id VARCHAR(50) NOT NULL UNIQUE,
+  ragic_employee_id VARCHAR(50) UNIQUE,
+  employee_number   VARCHAR(50) UNIQUE,
   name VARCHAR(100) NOT NULL,
-  phone VARCHAR(20) NOT NULL UNIQUE,
+  phone VARCHAR(20) UNIQUE,
+  email VARCHAR(255) UNIQUE,
   line_uid VARCHAR(100) UNIQUE,
-  email VARCHAR(255),
-  specialties TEXT[],
+  password_hash VARCHAR(255),
+  roles TEXT[] NOT NULL DEFAULT '{}',
+  venue_id VARCHAR(10) REFERENCES venues(id) ON DELETE SET NULL,
   is_senior BOOLEAN NOT NULL DEFAULT FALSE,
-  pricing_multiplier DECIMAL(5,2) NOT NULL DEFAULT 1.00,
+  pricing_multiplier NUMERIC(5,2) NOT NULL DEFAULT 1.00,
   bio_rich_text TEXT,
+  specialties TEXT[],
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
-  intro_review_status VARCHAR(20) NOT NULL DEFAULT 'draft',
+  intro_review_status VARCHAR(20),
+  intro_review_note TEXT,
+  intro_submitted_at TIMESTAMPTZ,
+  intro_reviewed_at TIMESTAMPTZ,
+  intro_reviewed_by UUID,
+  last_synced_at TIMESTAMPTZ,
+  last_login_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+CREATE INDEX IF NOT EXISTS idx_employees_roles    ON employees USING gin(roles);
+CREATE INDEX IF NOT EXISTS idx_employees_email    ON employees(email);
+CREATE INDEX IF NOT EXISTS idx_employees_phone    ON employees(phone);
+CREATE INDEX IF NOT EXISTS idx_employees_line_uid ON employees(line_uid);
+CREATE INDEX IF NOT EXISTS idx_employees_active   ON employees(is_active);
+DO $$ BEGIN
+  ALTER TABLE employees
+    ADD CONSTRAINT employees_intro_reviewed_by_fkey
+    FOREIGN KEY (intro_reviewed_by) REFERENCES employees(id) ON DELETE SET NULL;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- coaches 改為 view（backward-compat SELECT only）；若已是 table 則不動
+DO $body$
+DECLARE k char;
+BEGIN
+  SELECT relkind INTO k FROM pg_class WHERE oid = to_regclass('public.coaches');
+  IF k IS NULL OR k = 'v' THEN
+    EXECUTE 'CREATE OR REPLACE VIEW coaches AS '
+         || 'SELECT id, ragic_employee_id, name, phone, line_uid, email, specialties, '
+         ||        'is_senior, pricing_multiplier, bio_rich_text, is_active, '
+         ||        'intro_review_status, intro_review_note, intro_submitted_at, '
+         ||        'intro_reviewed_at, intro_reviewed_by, '
+         ||        'created_at, updated_at '
+         || 'FROM employees WHERE ''coach'' = ANY(roles)';
+  END IF;
+END $body$;
 
 CREATE TABLE IF NOT EXISTS coach_venues (
-  coach_id UUID NOT NULL REFERENCES coaches(id) ON DELETE CASCADE,
+  employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
   venue_id VARCHAR(10) NOT NULL REFERENCES venues(id) ON DELETE CASCADE,
-  PRIMARY KEY (coach_id, venue_id)
+  PRIMARY KEY (employee_id, venue_id)
 );
 
 CREATE TABLE IF NOT EXISTS coach_bio_media (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  coach_id UUID NOT NULL REFERENCES coaches(id) ON DELETE CASCADE,
+  employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
   media_type VARCHAR(10) NOT NULL DEFAULT 'image',
   storage_url TEXT NOT NULL,
   alt_text VARCHAR(200),
@@ -95,7 +141,7 @@ CREATE TABLE IF NOT EXISTS course_type_configs (
 
 CREATE TABLE IF NOT EXISTS course_periods (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  coach_id UUID NOT NULL REFERENCES coaches(id) ON DELETE RESTRICT,
+  employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE RESTRICT,
   venue_id VARCHAR(10) NOT NULL REFERENCES venues(id) ON DELETE RESTRICT,
   course_type INTEGER NOT NULL CHECK (course_type >= 1),
   total_sessions INTEGER NOT NULL DEFAULT 6,
@@ -119,7 +165,7 @@ CREATE TABLE IF NOT EXISTS course_period_enrollments (
 
 CREATE TABLE IF NOT EXISTS coach_availability_slots (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  coach_id UUID NOT NULL REFERENCES coaches(id) ON DELETE CASCADE,
+  employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
   venue_id VARCHAR(10) NOT NULL REFERENCES venues(id) ON DELETE RESTRICT,
   start_at TIMESTAMPTZ NOT NULL,
   duration_minutes INTEGER NOT NULL DEFAULT 60,
@@ -128,9 +174,9 @@ CREATE TABLE IF NOT EXISTS coach_availability_slots (
   notes TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW(),
-  UNIQUE(coach_id, start_at)
+  UNIQUE(employee_id, start_at)
 );
-CREATE INDEX IF NOT EXISTS idx_slots_coach ON coach_availability_slots(coach_id);
+CREATE INDEX IF NOT EXISTS idx_slots_coach ON coach_availability_slots(employee_id);
 CREATE INDEX IF NOT EXISTS idx_slots_start ON coach_availability_slots(start_at);
 
 CREATE TABLE IF NOT EXISTS course_sessions (
@@ -156,10 +202,9 @@ DO $$ BEGIN
     ADD CONSTRAINT fk_slot_session FOREIGN KEY (booked_session_id) REFERENCES course_sessions(id);
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
--- 已存在 schema 的安全升級（向前相容已套用 001_initial_schema.sql 的環境）
-DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS bio_rich_text TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
-DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS intro_review_status VARCHAR(20) NOT NULL DEFAULT 'draft'; EXCEPTION WHEN undefined_table THEN NULL; END $$;
-DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS pricing_multiplier NUMERIC(5,2) NOT NULL DEFAULT 1.00; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+-- 已存在 schema 的安全升級（已套用 001_initial_schema.sql 的環境）
+-- 註：原 ALTER TABLE coaches ADD COLUMN bio_rich_text/intro_review_status/pricing_multiplier 等
+--     已隨 task #51 移除（employees 表一次建齊；coaches 是 view，無法 ALTER）
 DO $$ BEGIN ALTER TABLE coach_availability_slots ADD COLUMN IF NOT EXISTS notes TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE coach_availability_slots ADD COLUMN IF NOT EXISTS booked_session_id UUID; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
@@ -220,7 +265,7 @@ CREATE TABLE IF NOT EXISTS keyword_alerts (
   message_id UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
   triggered_keyword VARCHAR(100) NOT NULL,
   status alert_status NOT NULL DEFAULT 'pending',
-  reviewed_by TEXT REFERENCES admin_users(id) ON DELETE SET NULL,
+  reviewed_by UUID REFERENCES employees(id) ON DELETE SET NULL,
   reviewed_at TIMESTAMPTZ,
   review_note TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -250,21 +295,21 @@ CREATE TABLE IF NOT EXISTS tag_library (
 
 CREATE TABLE IF NOT EXISTS coach_personal_tags (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  coach_id UUID NOT NULL REFERENCES coaches(id) ON DELETE CASCADE,
+  employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
   category_id UUID REFERENCES tag_categories(id) ON DELETE SET NULL,
   label VARCHAR(40) NOT NULL,
   text_template TEXT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW(),
-  UNIQUE(coach_id, label)
+  UNIQUE(employee_id, label)
 );
 DO $$ BEGIN
   ALTER TABLE coach_personal_tags ADD COLUMN IF NOT EXISTS category_id UUID REFERENCES tag_categories(id) ON DELETE SET NULL;
 EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
--- ── 升級舊版（001_initial_schema.sql 已建立、欄位不同）── 與 005 migration 一致
+-- ── 升級舊版（001_initial_schema.sql 已建立、欄位不同）── 與 005 migration + task #51 一致
 DO $$ BEGIN
   ALTER TABLE session_records ADD COLUMN IF NOT EXISTS course_period_id UUID REFERENCES course_periods(id) ON DELETE CASCADE;
-  ALTER TABLE session_records ADD COLUMN IF NOT EXISTS coach_id UUID REFERENCES coaches(id) ON DELETE RESTRICT;
+  ALTER TABLE session_records ADD COLUMN IF NOT EXISTS employee_id UUID REFERENCES employees(id) ON DELETE RESTRICT;
   ALTER TABLE session_records ADD COLUMN IF NOT EXISTS summary TEXT NOT NULL DEFAULT '';
   ALTER TABLE session_records ADD COLUMN IF NOT EXISTS highlights TEXT NOT NULL DEFAULT '';
   ALTER TABLE session_records ADD COLUMN IF NOT EXISTS improvements TEXT NOT NULL DEFAULT '';
@@ -279,7 +324,7 @@ EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN
   ALTER TABLE session_record_versions ADD COLUMN IF NOT EXISTS version_no INTEGER;
   ALTER TABLE session_record_versions ADD COLUMN IF NOT EXISTS snapshot JSONB;
-  ALTER TABLE session_record_versions ADD COLUMN IF NOT EXISTS edited_by UUID REFERENCES coaches(id) ON DELETE RESTRICT;
+  ALTER TABLE session_record_versions ADD COLUMN IF NOT EXISTS edited_by UUID REFERENCES employees(id) ON DELETE RESTRICT;
   BEGIN ALTER TABLE session_record_versions ALTER COLUMN version_number DROP NOT NULL; EXCEPTION WHEN undefined_column THEN NULL; END;
   BEGIN ALTER TABLE session_record_versions ALTER COLUMN content_snapshot DROP NOT NULL; EXCEPTION WHEN undefined_column THEN NULL; END;
 EXCEPTION WHEN undefined_table THEN NULL; END $$;
@@ -290,7 +335,7 @@ DO $$ BEGIN
   END IF;
 EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN
-  ALTER TABLE course_evaluations ADD COLUMN IF NOT EXISTS coach_id UUID REFERENCES coaches(id) ON DELETE RESTRICT;
+  ALTER TABLE course_evaluations ADD COLUMN IF NOT EXISTS employee_id UUID REFERENCES employees(id) ON DELETE RESTRICT;
   ALTER TABLE course_evaluations ADD COLUMN IF NOT EXISTS score_teaching INTEGER;
   ALTER TABLE course_evaluations ADD COLUMN IF NOT EXISTS score_attitude INTEGER;
   ALTER TABLE course_evaluations ADD COLUMN IF NOT EXISTS score_progress INTEGER;
@@ -309,15 +354,15 @@ DO $$ BEGIN
                             WHEN renew_intention::text IN ('yes','no') THEN renew_intention::text
                             ELSE 'unknown' END;
   EXCEPTION WHEN undefined_column THEN NULL; END;
-  UPDATE course_evaluations ce SET coach_id = cp.coach_id
-    FROM course_periods cp WHERE ce.coach_id IS NULL AND ce.course_period_id = cp.id;
+  UPDATE course_evaluations ce SET employee_id = cp.employee_id
+    FROM course_periods cp WHERE ce.employee_id IS NULL AND ce.course_period_id = cp.id;
 EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
 -- 課前規劃（F-C04）：每個 course_period 一份，draft → published
 CREATE TABLE IF NOT EXISTS lesson_plans (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   course_period_id UUID NOT NULL REFERENCES course_periods(id) ON DELETE CASCADE,
-  coach_id UUID NOT NULL REFERENCES coaches(id) ON DELETE RESTRICT,
+  employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE RESTRICT,
   goals TEXT NOT NULL DEFAULT '',
   expected_outcomes TEXT NOT NULL DEFAULT '',
   learning_plan TEXT NOT NULL DEFAULT '',
@@ -335,7 +380,7 @@ CREATE TABLE IF NOT EXISTS session_records (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   course_session_id UUID NOT NULL REFERENCES course_sessions(id) ON DELETE CASCADE,
   course_period_id UUID NOT NULL REFERENCES course_periods(id) ON DELETE CASCADE,
-  coach_id UUID NOT NULL REFERENCES coaches(id) ON DELETE RESTRICT,
+  employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE RESTRICT,
   summary TEXT NOT NULL DEFAULT '',         -- 上課摘要
   highlights TEXT NOT NULL DEFAULT '',      -- 表現亮點
   improvements TEXT NOT NULL DEFAULT '',    -- 待加強
@@ -354,7 +399,7 @@ CREATE TABLE IF NOT EXISTS session_record_versions (
   session_record_id UUID NOT NULL REFERENCES session_records(id) ON DELETE CASCADE,
   version_no INTEGER NOT NULL,
   snapshot JSONB NOT NULL,                  -- 完整欄位快照
-  edited_by UUID NOT NULL REFERENCES coaches(id) ON DELETE RESTRICT,
+  edited_by UUID NOT NULL REFERENCES employees(id) ON DELETE RESTRICT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE(session_record_id, version_no)
 );
@@ -373,7 +418,7 @@ CREATE TABLE IF NOT EXISTS course_evaluations (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   course_period_id UUID NOT NULL REFERENCES course_periods(id) ON DELETE CASCADE,
   parent_id UUID NOT NULL REFERENCES parents(id) ON DELETE CASCADE,
-  coach_id UUID NOT NULL REFERENCES coaches(id) ON DELETE RESTRICT,
+  employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE RESTRICT,
   invited_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   reminder_sent_at TIMESTAMPTZ,
   submitted_at TIMESTAMPTZ,
@@ -387,7 +432,7 @@ CREATE TABLE IF NOT EXISTS course_evaluations (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE(course_period_id, parent_id)
 );
-CREATE INDEX IF NOT EXISTS idx_eval_coach ON course_evaluations(coach_id);
+CREATE INDEX IF NOT EXISTS idx_eval_coach ON course_evaluations(employee_id);
 CREATE INDEX IF NOT EXISTS idx_eval_submitted ON course_evaluations(submitted_at);
 
 -- 考核門檻（F-A09）：admin 設定後系統據此判斷教練是否達標
@@ -400,10 +445,10 @@ CREATE TABLE IF NOT EXISTS eval_thresholds (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- 不達標警示（dedupe by coach+metric+月份；主管通知記錄）
+-- 不達標警示（dedupe by employee+metric+月份；主管通知記錄）
 CREATE TABLE IF NOT EXISTS eval_threshold_alerts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  coach_id UUID NOT NULL REFERENCES coaches(id) ON DELETE CASCADE,
+  employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
   metric VARCHAR(40) NOT NULL,
   observed_value NUMERIC(5,2),
   min_value NUMERIC(5,2) NOT NULL,
@@ -411,27 +456,16 @@ CREATE TABLE IF NOT EXISTS eval_threshold_alerts (
   period_month CHAR(7) NOT NULL,         -- 'YYYY-MM'：同月不重複通知
   notified_at TIMESTAMPTZ,               -- 已推給主管的時間（NULL = 尚未推）
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE(coach_id, metric, period_month)
+  UNIQUE(employee_id, metric, period_month)
 );
 CREATE INDEX IF NOT EXISTS idx_eval_alerts_pending ON eval_threshold_alerts(notified_at) WHERE notified_at IS NULL;
 
--- 教練介紹送審（F-C06）：教練端編輯 → 主管審核
+-- 教練介紹送審（F-C06）：employees.intro_review_* 欄位於本檔上方一次建齊；無須再 ALTER coaches。
+-- legacy 值 'submitted' → 'pending_review' 的一次性升級（對 employees）：
 DO $$ BEGIN
-  ALTER TABLE coaches ADD COLUMN IF NOT EXISTS intro_review_note TEXT;
-EXCEPTION WHEN undefined_table THEN NULL; END $$;
--- 一次性升級舊資料：legacy 'submitted' → 'pending_review'（與 admin 端一致）
-DO $$ BEGIN
-  UPDATE coaches SET intro_review_status = 'pending_review' WHERE intro_review_status = 'submitted';
+  UPDATE employees SET intro_review_status = 'pending_review'
+   WHERE intro_review_status = 'submitted';
 EXCEPTION WHEN undefined_column THEN NULL; END $$;
-DO $$ BEGIN
-  ALTER TABLE coaches ADD COLUMN IF NOT EXISTS intro_submitted_at TIMESTAMPTZ;
-EXCEPTION WHEN undefined_table THEN NULL; END $$;
-DO $$ BEGIN
-  ALTER TABLE coaches ADD COLUMN IF NOT EXISTS intro_reviewed_at TIMESTAMPTZ;
-EXCEPTION WHEN undefined_table THEN NULL; END $$;
-DO $$ BEGIN
-  ALTER TABLE coaches ADD COLUMN IF NOT EXISTS intro_reviewed_by TEXT REFERENCES admin_users(id) ON DELETE SET NULL;
-EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
 -- ── Phase 6 (上)：優惠活動 + 折價券 + 套用紀錄 ────────────────────────
 -- F-M07 主管建立 → F-A05 管理員核准 → 進入 active；LIFF 購課讀 active 自動比對 / 折價券代碼。
@@ -453,8 +487,8 @@ CREATE TABLE IF NOT EXISTS promotions (
   status VARCHAR(20) NOT NULL DEFAULT 'draft'
     CHECK (status IN ('draft','pending_review','active','rejected','archived')),
   review_note TEXT,
-  created_by TEXT REFERENCES admin_users(id) ON DELETE SET NULL,
-  reviewed_by TEXT REFERENCES admin_users(id) ON DELETE SET NULL,
+  created_by UUID REFERENCES employees(id) ON DELETE SET NULL,
+  reviewed_by UUID REFERENCES employees(id) ON DELETE SET NULL,
   reviewed_at TIMESTAMPTZ,
   submitted_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -489,7 +523,7 @@ CREATE TABLE IF NOT EXISTS promotion_audit_logs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   promotion_id UUID NOT NULL REFERENCES promotions(id) ON DELETE CASCADE,
   action VARCHAR(20) NOT NULL,
-  by_user TEXT REFERENCES admin_users(id) ON DELETE SET NULL,
+  by_user UUID REFERENCES employees(id) ON DELETE SET NULL,
   note TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -516,7 +550,7 @@ CREATE TABLE IF NOT EXISTS referral_records (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   token VARCHAR(40) NOT NULL UNIQUE,
   referrer_parent_id UUID NOT NULL REFERENCES parents(id) ON DELETE CASCADE,
-  coach_id UUID NOT NULL REFERENCES coaches(id) ON DELETE CASCADE,
+  employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
   referee_phone VARCHAR(20),
   referee_parent_id UUID REFERENCES parents(id) ON DELETE SET NULL,
   status VARCHAR(20) NOT NULL DEFAULT 'pending'
@@ -530,9 +564,9 @@ CREATE TABLE IF NOT EXISTS referral_records (
   reward_issued_at TIMESTAMPTZ
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_referrals_referee_coach
-  ON referral_records(referee_phone, coach_id) WHERE referee_phone IS NOT NULL;
+  ON referral_records(referee_phone, employee_id) WHERE referee_phone IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referral_records(referrer_parent_id);
-CREATE INDEX IF NOT EXISTS idx_referrals_coach ON referral_records(coach_id);
+CREATE INDEX IF NOT EXISTS idx_referrals_coach ON referral_records(employee_id);
 CREATE INDEX IF NOT EXISTS idx_referrals_status ON referral_records(status);
 
 INSERT INTO promotions
@@ -544,7 +578,6 @@ SELECT 'MGM 體驗課 5 折', '推薦連結專用：新客戶體驗課 5 折', '
 WHERE NOT EXISTS (SELECT 1 FROM promotions WHERE coupon_code = 'TRIAL50');
 
 -- ─── Phase 7: 課程轉讓 (F-S08 / F-M04) ────────────────────────────────
--- 簡化版 transfer_records（與 001_initial_schema.sql 結構一致，但 reviewed_by 用 admin_users.id）
 CREATE TABLE IF NOT EXISTS transfer_records (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   course_period_id UUID NOT NULL REFERENCES course_periods(id) ON DELETE RESTRICT,
@@ -559,7 +592,7 @@ CREATE TABLE IF NOT EXISTS transfer_records (
     CHECK (status IN ('pending_review','approved','rejected','cancelled')),
   reason TEXT NOT NULL DEFAULT '',
   review_note TEXT,
-  reviewed_by TEXT REFERENCES admin_users(id) ON DELETE SET NULL,
+  reviewed_by UUID REFERENCES employees(id) ON DELETE SET NULL,
   reviewed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -602,6 +635,7 @@ const VENUES = [
   // 注意：Task #32 起，'X' 假館（新莊館）已移除；真實環境靠 syncVenuesFromRagic 從 H05 同步
 ];
 
+// Task #51：教練 seed 改寫成 employees with roles=['coach']
 const COACHES = [
   { ragic_id: 'C001', name: '王志強', phone: '0911000001', is_senior: true,  multiplier: 1.30, venues: ['B', 'C'], bio: '前國家代表隊選手，10 年青少年訓練經驗。' },
   { ragic_id: 'C002', name: '林佳穎', phone: '0911000002', is_senior: true,  multiplier: 1.50, venues: ['B'],      bio: '英國 LTA Level 3 認證教練，擅長 6-12 歲基礎培訓。' },
@@ -636,17 +670,22 @@ async function seedVenuesCoachesParents() {
     );
   }
   for (const c of COACHES) {
+    // Task #51：seed 寫入 employees with roles=['coach']
     await pool.query(
-      `INSERT INTO coaches (ragic_employee_id, name, phone, is_senior, pricing_multiplier, bio_rich_text, is_active, intro_review_status)
-       VALUES ($1,$2,$3,$4,$5,$6,TRUE,'published') ON CONFLICT (ragic_employee_id) DO NOTHING`,
+      `INSERT INTO employees
+         (ragic_employee_id, name, phone, is_senior, pricing_multiplier,
+          bio_rich_text, is_active, intro_review_status, roles)
+       VALUES ($1,$2,$3,$4,$5,$6,TRUE,'published', ARRAY['coach'])
+       ON CONFLICT (ragic_employee_id) DO NOTHING`,
       [c.ragic_id, c.name, c.phone, c.is_senior, c.multiplier, c.bio]
     );
-    const r = await pool.query('SELECT id FROM coaches WHERE ragic_employee_id = $1', [c.ragic_id]);
-    const coachUuid = r.rows[0].id;
+    const r = await pool.query('SELECT id FROM employees WHERE ragic_employee_id = $1', [c.ragic_id]);
+    if (r.rows.length === 0) continue;
+    const employeeId = r.rows[0].id;
     for (const vid of c.venues) {
       await pool.query(
-        `INSERT INTO coach_venues (coach_id, venue_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-        [coachUuid, vid]
+        `INSERT INTO coach_venues (employee_id, venue_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+        [employeeId, vid]
       );
     }
   }
@@ -674,14 +713,16 @@ async function seedVenuesCoachesParents() {
 
 async function seedSlotsAndSessions() {
   // 對王志強（C001）建本週示範資料：今日已 booked 4 場 + available 4 場（教練端今日 / 週表都能看到）
-  const cr = await pool.query("SELECT id FROM coaches WHERE ragic_employee_id = 'C001'");
+  const cr = await pool.query(
+    "SELECT id FROM employees WHERE ragic_employee_id = 'C001' AND 'coach' = ANY(roles)"
+  );
   if (cr.rows.length === 0) return;
-  const coachId = cr.rows[0].id;
+  const employeeId = cr.rows[0].id;
 
   // 已存在則 skip（用第一筆當哨兵）
   const exist = await pool.query(
-    `SELECT 1 FROM coach_availability_slots WHERE coach_id = $1 LIMIT 1`,
-    [coachId]
+    `SELECT 1 FROM coach_availability_slots WHERE employee_id = $1 LIMIT 1`,
+    [employeeId]
   );
   if (exist.rows.length > 0) return;
 
@@ -693,15 +734,14 @@ async function seedSlotsAndSessions() {
      WHERE p.phone = '0912345678' AND s.name = '張小明' LIMIT 1`
   );
   if (parent.rows.length === 0 || student.rows.length === 0) return;
-  const parentId = parent.rows[0].id;
   const studentId = student.rows[0].id;
 
   const period = await pool.query(
-    `INSERT INTO course_periods (coach_id, venue_id, course_type, total_sessions, used_sessions,
+    `INSERT INTO course_periods (employee_id, venue_id, course_type, total_sessions, used_sessions,
        expires_at, original_price, final_price, status)
      VALUES ($1, 'B', 1, 6, 1, (NOW() + INTERVAL '6 months')::date, 9000, 11115, 'active')
      RETURNING id`,
-    [coachId]
+    [employeeId]
   );
   const periodId = period.rows[0].id;
   await pool.query(
@@ -726,9 +766,9 @@ async function seedSlotsAndSessions() {
   for (const s of plan) {
     const startAt = relHour(s.day, s.hour);
     const slot = await pool.query(
-      `INSERT INTO coach_availability_slots (coach_id, venue_id, start_at, duration_minutes, status)
+      `INSERT INTO coach_availability_slots (employee_id, venue_id, start_at, duration_minutes, status)
        VALUES ($1, $2, $3, 60, $4) RETURNING id`,
-      [coachId, s.venue, startAt.toISOString(), s.status]
+      [employeeId, s.venue, startAt.toISOString(), s.status]
     );
     if (s.status === 'booked') {
       const sess = await pool.query(
