@@ -130,28 +130,38 @@ async function syncCoachesFromRagic() {
       if (!name || !phone) continue;
       seenIds.add(String(ragicId));
       if (lineUid) linked += 1;
-      // upsert：第一次插入填全部，後續更新 name/phone/email/is_active；
-      // line_uid 用 COALESCE(NULLIF(...,''), coaches.line_uid) — 已綁的值不會被空字串/換值洗掉
+      // Task #51：寫入 employees（coaches view 不可寫）。
+      // 第一次 INSERT 時建立 employee row 並標記 roles=ARRAY['coach']。
+      // ON CONFLICT (ragic_employee_id) → 只更新從 Ragic 同步的「人事資料」欄位
+      // （name / phone / email / line_uid / is_active / last_synced_at / updated_at），
+      // 絕對不覆蓋系統內部欄位：roles / password_hash / is_senior / pricing_multiplier /
+      // bio_rich_text / specialties / intro_review_*（避免後台手動設定被 Ragic 蓋掉）。
+      // line_uid 用 COALESCE(employees.line_uid, NULLIF($5,'')) — 已綁的值不會被空字串/換值洗掉。
       await pool.query(
-        `INSERT INTO coaches (ragic_employee_id, name, phone, email, line_uid, is_active)
-         VALUES ($1, $2, $3, $4, NULLIF($5, ''), TRUE)
+        `INSERT INTO employees
+            (ragic_employee_id, name, phone, email, line_uid, roles, is_active, last_synced_at)
+         VALUES ($1, $2, $3, $4, NULLIF($5, ''), ARRAY['coach']::text[], TRUE, NOW())
          ON CONFLICT (ragic_employee_id) DO UPDATE SET
            name = EXCLUDED.name,
            phone = EXCLUDED.phone,
-           email = COALESCE(NULLIF(EXCLUDED.email, ''), coaches.email),
-           line_uid = COALESCE(coaches.line_uid, NULLIF($5, '')),
+           email = COALESCE(NULLIF(EXCLUDED.email, ''), employees.email),
+           line_uid = COALESCE(employees.line_uid, NULLIF($5, '')),
            is_active = TRUE,
+           last_synced_at = NOW(),
            updated_at = NOW()`,
         [String(ragicId), name, phone, email, lineUid]
       );
       synced += 1;
     }
-    // 不在 Ragic 在職教練名單中的 → 標 is_active = FALSE
+    // 不在 Ragic 在職教練名單中的 → 標 is_active = FALSE。
+    // 範圍鎖在「ragic 同步來的 coach role 員工」(ragic_employee_id IS NOT NULL +
+    // 'coach' = ANY(roles))，避免誤關閉手動建立的 admin/manager/counter 帳號。
     if (seenIds.size > 0) {
       await pool.query(
-        `UPDATE coaches SET is_active = FALSE, updated_at = NOW()
+        `UPDATE employees SET is_active = FALSE, updated_at = NOW()
          WHERE ragic_employee_id IS NOT NULL
            AND ragic_employee_id <> ALL($1::text[])
+           AND 'coach' = ANY(roles)
            AND is_active = TRUE`,
         [Array.from(seenIds)]
       );
