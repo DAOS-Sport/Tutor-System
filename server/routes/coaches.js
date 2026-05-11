@@ -2,12 +2,22 @@
  * coaches API（教練主檔）
  * - GET  /api/coaches                            列表（公開：家長端選擇教練）
  * - GET  /api/coaches/by-phone?phone=09xxxx      LIFF 教練端登入：回傳 coach 資訊 + JWT token
+ * - GET  /api/coaches/by-line-uid?lineUid=Uxxx   LIFF 教練端自動登入（Task #34）
  * - GET  /api/coaches/:id                        單筆細節（公開：家長端選擇教練看 bio）
  * - PUT  /api/coaches/:id/bio                    教練自編 bio（須登入且本人）
  * - GET  /api/coaches/:id/media                  介紹媒體列表（公開）
  * - POST /api/coaches/:id/media                  新增介紹媒體（須登入且本人）
  * - PATCH /api/coaches/:id/media/reorder         排序（須登入且本人）
  * - DELETE /api/coaches/:id/media/:mediaId       刪除（須登入且本人）
+ *
+ * Task #51（employees 表合併）變動：
+ *  - SELECT 仍可走 `coaches` view（backward-compat），但 JOIN coach_venues 的欄位
+ *    必須改成 `cv.employee_id`（migration 003 已 rename）→ 修掉教練登入失敗 bug
+ *  - coach_bio_media.coach_id 也已 rename → employee_id（5 處 SQL 同步改）
+ *  - 寫入端（UPDATE coaches）必須改 UPDATE employees（view 不可寫）：
+ *      * line_uid 寫回（首次綁定）
+ *      * bio_rich_text + intro_review_status + intro_submitted_at（送審）
+ *  - signCoachToken payload 內部 key 仍叫 `coachId`（於 coachAuth shim 內），未動
  */
 const express = require('express');
 const router = express.Router();
@@ -28,7 +38,7 @@ function withMultiplierAlias(row) {
 async function loadCoach(id) {
   const r = await pool.query(
     `SELECT c.*, COALESCE(
-       (SELECT json_agg(cv.venue_id) FROM coach_venues cv WHERE cv.coach_id = c.id),
+       (SELECT json_agg(cv.venue_id) FROM coach_venues cv WHERE cv.employee_id = c.id),
        '[]'::json
      ) AS venue_ids
      FROM coaches c WHERE c.id = $1`,
@@ -44,7 +54,7 @@ router.get('/', async (req, res) => {
       ? await pool.query(
           `SELECT c.id, c.name, c.is_senior, c.pricing_multiplier, c.bio_rich_text
            FROM coaches c
-           JOIN coach_venues cv ON cv.coach_id = c.id
+           JOIN coach_venues cv ON cv.employee_id = c.id
            WHERE cv.venue_id = $1 AND c.is_active = TRUE
            ORDER BY c.name`,
           [venueId]
@@ -63,10 +73,10 @@ router.get('/', async (req, res) => {
  * 教練端登入：手機 + （生產環境）LINE id_token 雙因素驗證
  *
  * 流程：
- *   1) 必填 phone 在 H01 (coaches.phone) 找到啟用中的教練
+ *   1) 必填 phone 在 H01 (employees.phone) 找到啟用中的教練
  *   2) 若 LINE 驗證為必要 (NODE_ENV=production 或 REQUIRE_LINE_ID_TOKEN=1)：
  *      - 必填 id_token，呼叫 LINE Verify API → 取出 sub (line_uid)
- *      - 若 coach.line_uid IS NULL → 首次綁定（寫回 DB）
+ *      - 若 coach.line_uid IS NULL → 首次綁定（寫回 employees）
  *      - 若 coach.line_uid 已存在 → 必須與 sub 完全相符；不符 → 403
  *   3) 若非生產環境且未提供 id_token → 走 phone-only 後備路徑（並 console.warn）
  *   4) 簽發短期 (12h) JWT，payload 包含 lineUid（若有）
@@ -80,7 +90,7 @@ router.get('/by-phone', byPhoneRateLimit, async (req, res) => {
   try {
     const r = await pool.query(
       `SELECT c.*, COALESCE(
-         (SELECT json_agg(cv.venue_id) FROM coach_venues cv WHERE cv.coach_id = c.id),
+         (SELECT json_agg(cv.venue_id) FROM coach_venues cv WHERE cv.employee_id = c.id),
          '[]'::json
        ) AS venue_ids
        FROM coaches c WHERE c.phone = $1 AND c.is_active = TRUE`,
@@ -109,14 +119,17 @@ router.get('/by-phone', byPhoneRateLimit, async (req, res) => {
       console.warn(`[coachAuth] phone-only fallback (dev): ip=${ip} phone=${phone}`);
     }
 
-    // ── 比對 / 綁定 line_uid ──
+    // ── 比對 / 綁定 line_uid（寫入 employees，不能寫 coaches view）──
     if (verifiedLineUid) {
       if (coach.line_uid && String(coach.line_uid) !== String(verifiedLineUid)) {
         logFailedLogin(ip, phone, `line_uid-mismatch: stored=${coach.line_uid} vs verified=${verifiedLineUid}`);
         return res.status(403).json({ error: '此手機已綁定不同的 LINE 帳號，請聯繫管理員' });
       }
       if (!coach.line_uid) {
-        await pool.query(`UPDATE coaches SET line_uid = $1, updated_at = NOW() WHERE id = $2`, [verifiedLineUid, coach.id]);
+        await pool.query(
+          `UPDATE employees SET line_uid = $1, updated_at = NOW() WHERE id = $2`,
+          [verifiedLineUid, coach.id]
+        );
         coach.line_uid = verifiedLineUid;
         console.log(`[coachAuth] bound line_uid for coach=${coach.id}`);
       }
@@ -161,7 +174,7 @@ router.get('/by-line-uid', byLineUidRateLimit, async (req, res) => {
     }
     const r = await pool.query(
       `SELECT c.*, COALESCE(
-         (SELECT json_agg(cv.venue_id) FROM coach_venues cv WHERE cv.coach_id = c.id),
+         (SELECT json_agg(cv.venue_id) FROM coach_venues cv WHERE cv.employee_id = c.id),
          '[]'::json
        ) AS venue_ids
        FROM coaches c WHERE c.line_uid = $1 AND c.is_active = TRUE`,
@@ -191,12 +204,15 @@ router.get('/:id', async (req, res) => {
 router.put('/:id/bio', requireCoach, requireCoachOwner('id'), async (req, res) => {
   const { bio_rich_text } = req.body || {};
   try {
+    // Task #51：寫入 employees（coaches 是 view 不可寫）。WHERE 加 'coach' = ANY(roles) 防呆，
+    // 避免錯把非教練 employee 的 bio 改掉（理論上 requireCoachOwner 已守門，這裡 defense-in-depth）。
     const r = await pool.query(
-      `UPDATE coaches SET bio_rich_text = $1,
-                         intro_review_status = 'pending_review',
-                         intro_submitted_at = NOW(),
-                         updated_at = NOW()
-       WHERE id = $2 RETURNING id, bio_rich_text, intro_review_status`,
+      `UPDATE employees SET bio_rich_text = $1,
+                            intro_review_status = 'pending_review',
+                            intro_submitted_at = NOW(),
+                            updated_at = NOW()
+       WHERE id = $2 AND 'coach' = ANY(roles)
+       RETURNING id, bio_rich_text, intro_review_status`,
       [bio_rich_text || '', req.params.id]
     );
     if (r.rows.length === 0) return res.status(404).json({ error: 'not found' });
@@ -209,7 +225,7 @@ router.put('/:id/bio', requireCoach, requireCoachOwner('id'), async (req, res) =
 router.get('/:id/media', async (req, res) => {
   const r = await pool.query(
     `SELECT id, media_type, storage_url, alt_text, sort_order
-     FROM coach_bio_media WHERE coach_id = $1 ORDER BY sort_order, created_at`,
+     FROM coach_bio_media WHERE employee_id = $1 ORDER BY sort_order, created_at`,
     [req.params.id]
   );
   res.json(r.rows);
@@ -219,11 +235,11 @@ router.post('/:id/media', requireCoach, requireCoachOwner('id'), async (req, res
   const { storage_url, alt_text = '', media_type = 'image' } = req.body || {};
   if (!storage_url) return res.status(400).json({ error: 'storage_url is required' });
   const max = await pool.query(
-    `SELECT COALESCE(MAX(sort_order), -1) AS m FROM coach_bio_media WHERE coach_id = $1`,
+    `SELECT COALESCE(MAX(sort_order), -1) AS m FROM coach_bio_media WHERE employee_id = $1`,
     [req.params.id]
   );
   const r = await pool.query(
-    `INSERT INTO coach_bio_media (coach_id, media_type, storage_url, alt_text, sort_order)
+    `INSERT INTO coach_bio_media (employee_id, media_type, storage_url, alt_text, sort_order)
      VALUES ($1, $2, $3, $4, $5) RETURNING *`,
     [req.params.id, media_type, storage_url, alt_text, max.rows[0].m + 1]
   );
@@ -238,7 +254,7 @@ router.patch('/:id/media/reorder', requireCoach, requireCoachOwner('id'), async 
     await client.query('BEGIN');
     for (let i = 0; i < ids.length; i++) {
       await client.query(
-        `UPDATE coach_bio_media SET sort_order = $1 WHERE id = $2 AND coach_id = $3`,
+        `UPDATE coach_bio_media SET sort_order = $1 WHERE id = $2 AND employee_id = $3`,
         [i, ids[i], req.params.id]
       );
     }
@@ -254,7 +270,7 @@ router.patch('/:id/media/reorder', requireCoach, requireCoachOwner('id'), async 
 
 router.delete('/:id/media/:mediaId', requireCoach, requireCoachOwner('id'), async (req, res) => {
   const r = await pool.query(
-    `DELETE FROM coach_bio_media WHERE id = $1 AND coach_id = $2 RETURNING id`,
+    `DELETE FROM coach_bio_media WHERE id = $1 AND employee_id = $2 RETURNING id`,
     [req.params.mediaId, req.params.id]
   );
   if (r.rows.length === 0) return res.status(404).json({ error: 'not found' });
