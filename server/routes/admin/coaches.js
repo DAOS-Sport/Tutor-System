@@ -40,16 +40,17 @@ function rowToCoach(r, venueIds = []) {
   };
 }
 
-/** 一次撈 coach + 對應 venue_ids（避免 N+1）。回傳 [{...coach, venue_ids}] */
+/** 一次撈 coach + 對應 venue_ids（避免 N+1）。回傳 [{...coach, venue_ids}]
+ *  Task #51：coaches 是 view（讀 OK）；coach_venues.coach_id 已 rename → employee_id。 */
 async function listCoachesWithVenues() {
   const [coachesRes, venuesRes] = await Promise.all([
     pool.query(`SELECT * FROM coaches ORDER BY is_active DESC, name`),
-    pool.query(`SELECT coach_id, venue_id FROM coach_venues`),
+    pool.query(`SELECT employee_id, venue_id FROM coach_venues`),
   ]);
   const venuesByCoach = new Map();
   for (const row of venuesRes.rows) {
-    if (!venuesByCoach.has(row.coach_id)) venuesByCoach.set(row.coach_id, []);
-    venuesByCoach.get(row.coach_id).push(row.venue_id);
+    if (!venuesByCoach.has(row.employee_id)) venuesByCoach.set(row.employee_id, []);
+    venuesByCoach.get(row.employee_id).push(row.venue_id);
   }
   return coachesRes.rows.map((r) => rowToCoach(r, (venuesByCoach.get(r.id) || []).sort()));
 }
@@ -71,10 +72,10 @@ router.get('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, res)
     const cur = await pool.query(`SELECT * FROM coaches WHERE id = $1`, [id]);
     if (!cur.rowCount) return res.status(404).json({ error: 'coach not found' });
     const [venuesRes, mediaRes] = await Promise.all([
-      pool.query(`SELECT venue_id FROM coach_venues WHERE coach_id = $1 ORDER BY venue_id`, [id]),
+      pool.query(`SELECT venue_id FROM coach_venues WHERE employee_id = $1 ORDER BY venue_id`, [id]),
       pool.query(
         `SELECT id, media_type, storage_url, alt_text, sort_order
-           FROM coach_bio_media WHERE coach_id = $1 ORDER BY sort_order, id`,
+           FROM coach_bio_media WHERE employee_id = $1 ORDER BY sort_order, id`,
         [id]
       ),
     ]);
@@ -128,8 +129,10 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
     };
 
     await client.query('BEGIN');
-    await client.query(
-      `UPDATE coaches SET
+    // Task #51：寫入 employees（coaches view 不可寫）。WHERE 加 'coach' = ANY(roles)
+    // defense-in-depth — 確保不會誤改到非教練 employee 的欄位。
+    const upd = await client.query(
+      `UPDATE employees SET
          email = $2,
          is_senior = $3,
          pricing_multiplier = $4,
@@ -137,10 +140,15 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
          bio_rich_text = $6,
          is_active = $7,
          updated_at = NOW()
-       WHERE id = $1`,
+       WHERE id = $1 AND 'coach' = ANY(roles)
+       RETURNING id`,
       [id, merged.email, merged.is_senior, merged.pricing_multiplier, specialties,
        merged.bio_rich_text, merged.is_active]
     );
+    if (!upd.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'coach not found' });
+    }
 
     // 可教場館 M:N 全量替換（只有 patch 有給 venue_ids 才動）
     if (Array.isArray(patch.venue_ids)) {
@@ -156,10 +164,10 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
           return res.status(400).json({ error: '部分場館代碼不存在或已下架' });
         }
       }
-      await client.query(`DELETE FROM coach_venues WHERE coach_id = $1`, [id]);
+      await client.query(`DELETE FROM coach_venues WHERE employee_id = $1`, [id]);
       for (const vid of venueIds) {
         await client.query(
-          `INSERT INTO coach_venues (coach_id, venue_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+          `INSERT INTO coach_venues (employee_id, venue_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
           [id, vid]
         );
       }
@@ -169,7 +177,7 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
     // 回傳完整最新狀態
     const [after, vAfter] = await Promise.all([
       pool.query(`SELECT * FROM coaches WHERE id = $1`, [id]),
-      pool.query(`SELECT venue_id FROM coach_venues WHERE coach_id = $1 ORDER BY venue_id`, [id]),
+      pool.query(`SELECT venue_id FROM coach_venues WHERE employee_id = $1 ORDER BY venue_id`, [id]),
     ]);
     res.json(rowToCoach(after.rows[0], vAfter.rows.map((r) => r.venue_id)));
   } catch (err) {
