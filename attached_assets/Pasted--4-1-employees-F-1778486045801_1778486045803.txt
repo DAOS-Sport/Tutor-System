@@ -1,0 +1,510 @@
+你是這個「個家教課程系統」的資深全端工程師。我需要你執行一次架構重構。
+
+**這次修改的唯一目標：將現有的 4 張員工身分表合併為 1 張 `employees` 表，解決多角色兼任的問題與現有的 FK 對應 Bug。**
+
+**不新增任何功能。不修改任何業務邏輯。只改身分資料表與相關的認證程式碼。**
+
+---
+
+## ⚠️ 執行規則（每一條都必須遵守）
+
+1. **開始前先列出計劃**：告訴我你打算修改哪些檔案，等我確認後再動手
+2. **逐步執行，逐步回報**：每完成一個步驟，主動告訴我完成了什麼，下一步要做什麼
+3. **不要跳步**：不可以在我確認前就跳到下一步
+4. **完成後逐一確認清單**：最後按照本 Prompt 結尾的「最終確認清單」逐一回答
+5. **不動業務邏輯**：slots.js / promotions.js / referrals.js / learning.js / evaluations.js / line.js 等業務邏輯服務不需要修改
+
+---
+
+## 背景說明（讀完再動手）
+
+目前系統有 4 張員工身分表：
+
+| 表名 | 位置 | 問題 |
+|---|---|---|
+| `coaches` | migration 001 | LIFF 教練登入用，正常使用 |
+| `staff_roles` | migration 001 | 只被 FK 參照，沒有登入邏輯，是問題根源 |
+| `admin_users` | migration 002 | 後台實際登入表（role 字串），正常使用 |
+| `admin_staff` | migration 002 | Ragic H01 鏡像，供員工管理頁面顯示 |
+
+目前 `payment_audit_logs.performed_by`、`transfer_records.reviewed_by` 等欄位 FK 指向 `staff_roles`，但後台操作者實際登入的是 `admin_users`，導致這些記錄無法寫入操作者 id（永遠是 NULL）。這是需要修正的核心 Bug。
+
+---
+
+## 步驟一：建立 Migration 檔案
+
+建立 `db/migrations/003_employee_unification.sql`。
+
+**這個檔案必須包含以下全部內容，一項都不能少：**
+
+### 1-A. 建立 employees 資料表
+
+```sql
+CREATE TABLE employees (
+  id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  ragic_employee_id   VARCHAR(50) UNIQUE,
+  employee_number     VARCHAR(50) UNIQUE,
+  name                VARCHAR(100) NOT NULL,
+  phone               VARCHAR(20) UNIQUE,
+  email               VARCHAR(255) UNIQUE,
+  line_uid            VARCHAR(100) UNIQUE,
+  password_hash       VARCHAR(255),
+  roles               TEXT[] NOT NULL DEFAULT '{}',
+  venue_id            VARCHAR(10) REFERENCES venues(id),
+  is_senior           BOOLEAN NOT NULL DEFAULT FALSE,
+  pricing_multiplier  DECIMAL(5,2) NOT NULL DEFAULT 1.00,
+  bio_rich_text       TEXT,
+  specialties         TEXT[],
+  is_active           BOOLEAN NOT NULL DEFAULT TRUE,
+  last_synced_at      TIMESTAMPTZ,
+  last_login_at       TIMESTAMPTZ,
+  created_at          TIMESTAMPTZ DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX idx_employees_phone    ON employees(phone);
+CREATE INDEX idx_employees_email    ON employees(email);
+CREATE INDEX idx_employees_line_uid ON employees(line_uid);
+CREATE INDEX idx_employees_roles    ON employees USING GIN(roles);
+CREATE INDEX idx_employees_active   ON employees(is_active);
+```
+
+### 1-B. 從 coaches 遷移（roles = ['coach']）
+
+```sql
+INSERT INTO employees (
+  ragic_employee_id, employee_number, name, phone, line_uid, email,
+  roles, is_senior, pricing_multiplier, bio_rich_text, specialties,
+  is_active, last_synced_at
+)
+SELECT
+  ragic_employee_id, employee_number, name, phone, line_uid, email,
+  ARRAY['coach']::TEXT[],
+  is_senior, pricing_multiplier, bio_rich_text, specialties,
+  is_active, last_synced_at
+FROM coaches
+ON CONFLICT (phone) DO NOTHING;
+```
+
+### 1-C. 從 admin_users 遷移（role 字串 → roles 陣列）
+
+admin_users.role 對應關係：
+- `'admin'` → `'system_admin'`
+- `'manager'` → `'manager'`
+- `'staff'` → `'counter'`
+
+```sql
+-- 已有的員工（從 coaches 遷移過來的），補充後台欄位
+UPDATE employees e
+SET
+  email = COALESCE(e.email, au.username),
+  password_hash = COALESCE(e.password_hash, au.password_hash),
+  venue_id = COALESCE(e.venue_id, au.venue_id),
+  roles = (
+    SELECT array_agg(DISTINCT r)
+    FROM unnest(array_append(e.roles,
+      CASE au.role
+        WHEN 'admin'   THEN 'system_admin'
+        WHEN 'manager' THEN 'manager'
+        WHEN 'staff'   THEN 'counter'
+        ELSE au.role
+      END
+    )) AS r
+  )
+FROM admin_users au
+JOIN admin_staff ast ON ast.id = au.id
+WHERE e.phone = ast.phone;
+
+-- 純後台人員（不在 coaches 中），建立新記錄
+INSERT INTO employees (name, email, password_hash, roles, venue_id, is_active)
+SELECT
+  au.name,
+  au.username,
+  au.password_hash,
+  ARRAY[CASE au.role WHEN 'admin' THEN 'system_admin' WHEN 'manager' THEN 'manager' ELSE 'counter' END]::TEXT[],
+  au.venue_id,
+  TRUE
+FROM admin_users au
+WHERE NOT EXISTS (
+  SELECT 1 FROM employees e WHERE e.email = au.username
+)
+ON CONFLICT (email) DO NOTHING;
+```
+
+### 1-D. 補充 ragic_employee_id（從 admin_staff）
+
+```sql
+UPDATE employees e
+SET ragic_employee_id = COALESCE(e.ragic_employee_id, ast.ragic_record_id)
+FROM admin_staff ast
+WHERE e.phone = ast.phone
+  AND ast.ragic_record_id IS NOT NULL
+  AND e.ragic_employee_id IS NULL;
+```
+
+### 1-E. 修改所有 FK（共 11 個，全部都要改）
+
+**以下 11 個欄位全部必須修改，一個都不能漏：**
+
+1. `coach_bio_media.coach_id` → `employee_id UUID REFERENCES employees(id)`
+2. `coach_availability_slots.coach_id` → `employee_id UUID REFERENCES employees(id)`
+3. `session_record_tags.coach_id` → `employee_id UUID REFERENCES employees(id)`
+4. `referral_records.referred_coach_id` → 改為 REFERENCES employees(id)
+5. `course_periods.coach_id` → `employee_id UUID REFERENCES employees(id)`
+6. `payment_audit_logs.performed_by` → 改為 REFERENCES employees(id)（nullable）
+7. `transfer_records.reviewed_by` → 改為 REFERENCES employees(id)（nullable）
+8. `refund_records.processed_by` → 改為 REFERENCES employees(id)（nullable）
+9. `keyword_alerts.reviewed_by` → 改為 REFERENCES employees(id)（nullable）
+10. `promotions.created_by` → 改為 REFERENCES employees(id)（nullable）
+11. `course_intros.updated_by` → 改為 REFERENCES employees(id)（nullable）
+
+**注意：** 修改 FK 之前，需要先把這些欄位現有的 FK constraint drop 掉，然後再 ADD CONSTRAINT 指向 employees。
+
+### 1-F. 重建 4 個 View
+
+**這 4 個 View 全部都必須重建，缺一不可：**
+
+1. `v_course_period_summary`：JOIN coaches 改為 JOIN employees，cp.coach_id 改為 cp.employee_id，co.name 等欄位不變
+2. `v_coach_weekly_schedule`：同上
+3. `v_coach_evaluation_avg`：同上
+4. `v_coach_available_slots`：同上，cas.coach_id 改為 cas.employee_id
+
+### 1-G. 舊表備份（不刪除）
+
+```sql
+ALTER TABLE coaches    RENAME TO coaches_v7_backup;
+ALTER TABLE staff_roles RENAME TO staff_roles_v7_backup;
+-- admin_users 和 admin_staff 暫時保留，確認資料正確後再決定是否備份
+```
+
+---
+
+**步驟一完成後，請把整個 migration SQL 檔案內容貼給我確認，再進行步驟二。**
+
+---
+
+## 步驟二：修改 server/middlewares/auth.js
+
+**修改角色判斷邏輯，從單一 role 字串改為 roles 陣列。**
+
+在檔案中加入：
+
+```javascript
+function hasRole(user, ...requiredRoles) {
+  if (!user?.roles || !Array.isArray(user.roles)) return false;
+  return requiredRoles.some(r => user.roles.includes(r));
+}
+```
+
+將現有的 `isAdmin`、`isManager`、`isCounter`、`isLiff` 全部改為使用 `hasRole`：
+
+```javascript
+const isCoach       = (req, res, next) => hasRole(req.user,'coach') ? next() : res.status(403).json({error:'Forbidden - 需要教練角色'});
+const isCounter     = (req, res, next) => hasRole(req.user,'counter','manager','system_admin') ? next() : res.status(403).json({error:'Forbidden - 需要櫃檯以上角色'});
+const isManager     = (req, res, next) => hasRole(req.user,'manager','system_admin') ? next() : res.status(403).json({error:'Forbidden - 需要主管以上角色'});
+const isSystemAdmin = (req, res, next) => hasRole(req.user,'system_admin') ? next() : res.status(403).json({error:'Forbidden - 需要系統管理員'});
+module.exports = { requireAuth, requireRole, hasRole, isCoach, isCounter, isManager, isSystemAdmin, isLiff };
+```
+
+**同時確認：** 匯出的函數名稱與所有路由引用的名稱一致，若路由有用到 `isAdmin`，確認改名為 `isSystemAdmin` 或維持別名相容。
+
+**步驟二完成後，請告訴我修改前後的對照。**
+
+---
+
+## 步驟三：修改 server/middlewares/adminAuth.js
+
+修改登入驗證的查詢來源，從 `admin_users` 改為 `employees`：
+
+```javascript
+// 後台登入端點（/api/admin/auth/login）改查 employees
+const r = await pool.query(
+  `SELECT id, email, password_hash, name, roles, venue_id
+   FROM employees
+   WHERE email = $1 AND is_active = true`,
+  [String(username).trim()]
+);
+const u = r.rows[0];
+// 確認有後台角色
+const hasBackendRole = u?.roles?.some(r => ['counter','manager','system_admin'].includes(r));
+if (!u || !hasBackendRole) return res.json(null);
+```
+
+修改 `signToken` 的 payload，從 `role` 字串改為 `roles` 陣列：
+
+```javascript
+const token = signToken({
+  sub: u.id,
+  name: u.name,
+  roles: u.roles,      // 陣列，不是字串
+  venue_id: u.venue_id,
+});
+```
+
+修改 `requireAdminRole` 從字串比對改為陣列比對：
+
+```javascript
+function requireAdminRole(...roles) {
+  return (req, res, next) => {
+    if (!req.adminUser) return res.status(401).json({ error: 'Unauthenticated' });
+    const ok = roles.some(r => req.adminUser.roles?.includes(r));
+    if (!ok) return res.status(403).json({ error: `需要角色：${roles.join('/')}` });
+    next();
+  };
+}
+```
+
+**步驟三完成後請告訴我。**
+
+---
+
+## 步驟四：修改 server/middlewares/coachAuth.js
+
+`signCoachToken` 改用 `employeeId`（employees.id），並在 payload 加入 `roles`：
+
+```javascript
+function signCoachToken({ employeeId, phone, lineUid = null }) {
+  const payload = { employeeId, phone, type: 'coach', roles: ['coach'] };
+  if (lineUid) payload.lineUid = lineUid;
+  return jwt.sign(payload, getSecret(), { expiresIn: TOKEN_TTL });
+}
+```
+
+`requireCoach` 改用 `payload.employeeId`：
+
+```javascript
+req.coach = {
+  id: payload.employeeId,   // 從 coaches.coachId 改為 employees.id
+  phone: payload.phone,
+  lineUid: payload.lineUid || null,
+};
+```
+
+**步驟四完成後請告訴我。**
+
+---
+
+## 步驟五：修改後端路由（server/routes/ 和 server/routes/admin/）
+
+**逐一修改以下路由，不能跳過任何一個：**
+
+### 5-A. server/routes/coaches.js
+找到所有查詢 `coaches` 資料表的 SQL，改為查詢 `employees`（加上 `roles @> ARRAY['coach']` 過濾）。
+
+找到所有插入/更新時用到 `coach_id` 欄位的地方，確認邏輯正確。
+
+### 5-B. server/routes/slots.js
+找到所有 `coach_id` 欄位的 SQL（INSERT / UPDATE / SELECT），改為 `employee_id`。
+確認衝突偵測查詢的 WHERE 條件從 `coach_id = $1` 改為 `employee_id = $1`。
+
+### 5-C. server/routes/courses.js
+找到 `coach_id` 欄位的所有 SQL，改為 `employee_id`。
+找到 JOIN coaches 的地方，改為 JOIN employees。
+
+### 5-D. server/routes/admin/auth.js
+登入查詢已在步驟三的 adminAuth.js 中修改，確認此路由呼叫方式正確。
+
+### 5-E. server/routes/admin/coaches.js
+改為查詢 `employees`（過濾 `roles @> ARRAY['coach']`），更新係數 / is_senior 的路由也改為操作 employees。
+
+### 5-F. server/routes/admin/staff.js
+改為查詢 `employees`（含所有角色），更新角色的路由改為操作 employees.roles 陣列。
+
+### 5-G. 其他含 FK 欄位的路由（確認操作者 id 記錄正確）
+
+確認以下路由在寫入操作記錄時，使用的是 `req.adminUser.sub`（employees.id）：
+- server/routes/payments.js → payment_audit_logs.performed_by
+- server/routes/admin/transfers.js → transfer_records.reviewed_by
+- server/routes/refunds.js → refund_records.processed_by
+- server/routes/admin/chat.js → keyword_alerts.reviewed_by
+- server/routes/admin/promotions.js → promotions.created_by
+- server/routes/admin/courseIntros.js → course_intros.updated_by
+
+**步驟五完成後，請列出修改過的路由檔案清單。**
+
+---
+
+## 步驟六：修改 server/services/ragicAdmin.js
+
+找到 `syncStaffFromRagic` 函數，將 upsert 目標從 `admin_staff` 改為 `employees`。
+
+**重要原則：**
+- Ragic 只決定 `is_active` 和基本資料（name, phone, specialties）
+- **不覆蓋 roles**（roles 由系統管理員手動設定）
+- **不覆蓋 password_hash**
+- **不覆蓋 is_senior / pricing_multiplier**（由主管在後台設定）
+
+```javascript
+// upsert 到 employees
+await pool.query(`
+  INSERT INTO employees (ragic_employee_id, name, phone, specialties, is_active, last_synced_at)
+  VALUES ($1, $2, $3, $4, $5, NOW())
+  ON CONFLICT (ragic_employee_id) DO UPDATE SET
+    name = EXCLUDED.name,
+    phone = EXCLUDED.phone,
+    specialties = EXCLUDED.specialties,
+    is_active = EXCLUDED.is_active,
+    last_synced_at = NOW()
+`, [ragicId, name, phone, specialties, isActive]);
+```
+
+**步驟六完成後請告訴我。**
+
+---
+
+## 步驟七：修改前端 LIFF（client/liff/src/）
+
+### 7-A. 找到所有角色判斷並修改
+
+在 `client/liff/src/` 目錄下搜尋以下字串，逐一修改：
+- `user.role === 'coach'` → `user.roles?.includes('coach')`
+- `user.role === 'parent'` → `user.roles?.includes('parent')` 或 `user.type === 'parent'`
+- `user.type === 'coach'` → `user.roles?.includes('coach')`
+
+### 7-B. 在教練端加入「切換至後台」按鈕
+
+在以下頁面的適當位置加入按鈕（右上角或頁面 header 區域）：
+- `client/liff/src/pages/CoachTodayPage.jsx`
+- `client/liff/src/components/AppLayout.jsx`（若教練端有共用 Layout）
+
+```jsx
+{user.hasBackendAccess && (
+  <button
+    onClick={() => window.open('/admin/', '_blank')}
+    className="text-xs px-2 py-1 rounded-full border border-[#15316a] text-[#15316a]"
+  >
+    切換至後台
+  </button>
+)}
+```
+
+`hasBackendAccess` 應在登入成功後由後端 response 帶回，或在前端計算：
+```javascript
+const hasBackendAccess = user.roles?.some(r => ['counter','manager','system_admin'].includes(r));
+```
+
+### 7-C. 確認 AuthContext
+
+在 `client/liff/src/context/AuthContext.jsx` 中，確認 user 物件儲存的 roles 為陣列（不是單一字串）。
+
+**步驟七完成後請告訴我。**
+
+---
+
+## 步驟八：修改後台前端（client/admin/src/）
+
+### 8-A. 修改 Sidebar.jsx
+
+找到側邊欄選單配置，加入依 roles 動態顯示的邏輯：
+
+```javascript
+const hasRole = (roles, ...required) => required.some(r => roles?.includes(r));
+
+// 每個選單項目加上 show 條件
+{ label: '今日課表',   path: '/today',     show: hasRole(roles, 'counter','manager','system_admin') },
+{ label: '對帳管理',   path: '/reconcile', show: hasRole(roles, 'manager','system_admin') },
+{ label: '員工管理',   path: '/staff',     show: hasRole(roles, 'system_admin') },
+// ... 其他項目依此類推
+```
+
+### 8-B. 修改 AuthContext.jsx（後台版）
+
+確認登入成功後，儲存的 user 物件包含 `roles` 陣列（從後端 response 帶回）。
+
+### 8-C. 修改 StaffPage.jsx
+
+改為從 `/api/admin/staff`（現在查的是 employees 表）拉取資料。
+
+顯示每位員工的 roles，改用多選勾選框而非單一下拉選單。
+
+更新角色時呼叫 `PATCH /api/admin/staff/:id`，傳入 `{ roles: ['coach','manager'] }` 等陣列形式。
+
+**步驟八完成後請告訴我。**
+
+---
+
+## 步驟九：整合測試（請逐一確認）
+
+完成所有步驟後，請執行以下驗證並告訴我每一項的結果：
+
+**資料庫驗證：**
+```sql
+-- 1. employees 資料表是否建立完成
+SELECT COUNT(*) FROM employees;
+
+-- 2. coaches_v7_backup 是否存在（確認遷移完成後備份）
+SELECT COUNT(*) FROM coaches_v7_backup;
+
+-- 3. 確認 FK 欄位名稱
+SELECT column_name FROM information_schema.columns
+WHERE table_name = 'course_periods' AND column_name = 'employee_id';
+
+SELECT column_name FROM information_schema.columns
+WHERE table_name = 'coach_availability_slots' AND column_name = 'employee_id';
+
+-- 4. 確認 Views 存在
+SELECT viewname FROM pg_views
+WHERE viewname IN ('v_course_period_summary','v_coach_weekly_schedule','v_coach_evaluation_avg','v_coach_available_slots');
+```
+
+**API 驗證：**
+- `GET /health` → 應回傳 200 `{"status":"ok"}`
+- `GET /api/coaches` → 應正常回傳教練列表
+
+**邏輯驗證（確認程式碼正確，不需要真的執行）：**
+- roles 為 `['coach','manager']` 的人，`isCoach` middleware 通過，且後台登入時 `isManager` 也通過
+- roles 為 `['counter']` 的人，後台登入後只看到「今日課表/報名管理/查驗簽到」，不看到「對帳管理/員工管理」
+
+---
+
+## 最終確認清單（完成後逐一回答「是」或「否 + 說明」）
+
+請逐一回答每一項，不可以用「都完成了」帶過：
+
+1. [ ] `employees` 資料表建立完成，且有正確的 9 個欄位（含 roles TEXT[]）？
+2. [ ] coaches 資料成功遷移至 employees，roles 設為 ['coach']？
+3. [ ] admin_users 資料成功遷移至 employees，role 字串正確轉換為 roles 陣列？
+4. [ ] admin_staff 的 ragic_employee_id 補充至 employees？
+5. [ ] 以下 11 個 FK 全部修改完成（逐一列出）？
+   - [ ] coach_bio_media.employee_id
+   - [ ] coach_availability_slots.employee_id
+   - [ ] session_record_tags.employee_id
+   - [ ] referral_records.referred_coach_id → employees
+   - [ ] course_periods.employee_id
+   - [ ] payment_audit_logs.performed_by → employees
+   - [ ] transfer_records.reviewed_by → employees
+   - [ ] refund_records.processed_by → employees
+   - [ ] keyword_alerts.reviewed_by → employees
+   - [ ] promotions.created_by → employees
+   - [ ] course_intros.updated_by → employees
+6. [ ] 4 個 View 全部重建完成？
+7. [ ] coaches 表備份為 coaches_v7_backup？
+8. [ ] auth.js 改為 roles 陣列判斷？
+9. [ ] adminAuth.js 登入改查 employees，requireAdminRole 改為陣列判斷？
+10. [ ] coachAuth.js 改用 employeeId？
+11. [ ] routes/coaches.js 改查 employees？
+12. [ ] routes/slots.js 的 coach_id 改為 employee_id？
+13. [ ] routes/courses.js 的 coach_id 改為 employee_id？
+14. [ ] routes/admin/staff.js 改查 employees？
+15. [ ] routes/admin/coaches.js 改查 employees？
+16. [ ] 操作記錄路由（payments / transfers / refunds / chat / promotions / courseIntros）確認使用 employees.id？
+17. [ ] ragicAdmin.js 同步目標改為 employees，且不覆蓋 roles / password_hash / is_senior？
+18. [ ] LIFF 前端角色判斷改為 roles.includes()？
+19. [ ] 教練端新增「切換至後台」按鈕（僅 hasBackendAccess 時顯示）？
+20. [ ] 後台 Sidebar 改為依 roles 動態顯示？
+21. [ ] 後台 AuthContext 儲存 roles 陣列？
+22. [ ] 後台 StaffPage 改為 roles 多選介面？
+23. [ ] `GET /health` 回傳 200？
+24. [ ] `GET /api/coaches` 正常回傳？
+25. [ ] 伺服器啟動無 crash？
+
+**以上 25 項全部確認通過後，才算本次優化完成。若有任何一項是「否」，請立即修正再回報。**
+
+---
+
+## 特別注意事項
+
+1. **不要修改家長端任何邏輯**：parents 表、學員端功能、enrollments、checkins 等完全不動
+2. **不要修改業務邏輯服務**：slots.js / promotions.js / referrals.js / learning.js / evaluations.js / line.js 等不需要改
+3. **roles 欄位不從 Ragic 同步**：ragicAdmin.js 同步時只更新 name / phone / is_active，roles 由管理員手動設定
+4. **manager 包含 counter 的所有功能**：isCounter 的 middleware 必須允許 manager 和 system_admin 通過
+5. **每一個 SQL 修改都需要先 DROP 舊的 CONSTRAINT 再 ADD 新的**
