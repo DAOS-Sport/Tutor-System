@@ -231,7 +231,7 @@ Admin：Sidebar 新增「學習歷程」群組 → `/tags`（F-A08，分類 + �
 
 Mock：`liff` mockDb 新增 `lessonPlan/saveLessonPlan/publishLessonPlan/sessionRecord/saveSessionRecord/submitSessionRecord/copyPrevRecord/learnTags/learningHistory/myEvaluations/evaluationDetail/submitEvaluation`，斷網／無資料時仍可走完 happy path。
 
-Builds：admin 359KB / liff 503KB（gzip 114 / 154）。所有 UI 頁面 ≤ 250 行（最大 SessionRecordFormPage 230）。煙霧（Phase 5 Session Plan 驗證）：health 200、admin login OK、tags=4cats/16tags、coach-eval=173 coaches、thresholds=3、intros=0 pending（seed 僅含草稿）、evaluations/mine 401（需家長 JWT）全部符合預期。
+Builds：admin 385KB / liff 505KB（gzip 122 / 155）。所有 UI 頁面 ≤ 250 行（最大 SessionRecordFormPage 230）。煙霧（Phase 5 Session Plan 驗證）：health 200、admin login OK、tags=4cats/16tags、coach-eval=175 coaches、thresholds=3、intros=0 pending（seed 僅含草稿）、evaluations/mine 401（需家長 JWT）全部符合預期。
 
 ## Phase 6 (上)：優惠活動 + 折價券 + 購課套用 (任務 #17 已完成)
 DB：新增 `promotions` / `promotion_usages` / `promotion_audit_logs`（migration 006 + coreSchema bootstrap）。
@@ -405,6 +405,7 @@ Admin：
 - Smoke：tags=4cats/16tags ✅、thresholds=3 ✅、coach-eval=173 coaches ✅、intros list ✅、evaluations/mine 401 ✅、PATCH /api/admin/enrollments/CP1001 200 ✅、courses/mine 401 ✅。
 
 ## 變更紀錄
+- 2026-05-11：正式環境登入修正 + Phase 5 全面驗證。`admin_users` 密碼 hash 直接更新（dream0935314711）；`client/admin/src/pages/LoginPage.jsx` 的 Mock hint 改為 `USE_MOCK && ...` 條件顯示；admin/liff 以 `VITE_USE_MOCK=false` 重建（admin 385KB/gzip 122KB，liff 505KB/gzip 155KB）。Phase 5 全端點 smoke test 通過：tags=4cats/16tags、thresholds=3、coach-eval=175 coaches，所有 DB 表確認存在。
 - 2026-05-03：Phase 5 全功能完成 + 後台編輯報名 + 多組家庭綁定（見上方 Phase 5 補強節）。
 - 2026-05-02：完成 LIFF Phase 1（任務 #7）。實作 7 個正式頁面 + 2 個 placeholder、6 個全域元件、雙 Context（Auth/Toast）、7 個 API 模組與 mock dataset、共用 utils；新增 `react-hook-form` 依賴、`postcss.config.js`；修正 `main.jsx` 加上無 LIFF_ID 的 dev fallback。`vite build` 通過（158 modules，401KB / 127KB gzip）。後端 19 個 stub 路由不變，LIFF 全程走 mock 模式以驗證 happy path；後續可由 `VITE_USE_MOCK=false` 切到真實 API，並透過 501 自動 fallback 機制漸進實作後端。
 - 2026-05-02：完成 SurveyJS Creator 評估報告，結論為「**不建議整合**」（授權費 USD $589/dev/年、套件巨大、與 Ragic 雙向同步設計衝突）。完整分析詳見 `docs/eval/surveyjs-creator.md`，含替代方案比較與分階段建議。

@@ -3,6 +3,7 @@ import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { authApi } from '../api/auth';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
+import { USE_MOCK } from '../api/client';
 
 export default function LoginPage() {
   const { setUser, isAuthed } = useAuth();
@@ -81,14 +82,16 @@ export default function LoginPage() {
           </button>
         </form>
 
-        <div className="mt-6 rounded-lg bg-gray-50 p-3 text-xs text-gray-600">
-          <div className="mb-1 font-bold text-gray-700">Mock 測試帳號（密碼=帳號）</div>
-          <ul className="list-disc pl-5">
-            <li><b>admin</b> — 系統管理員（看得到全部功能）</li>
-            <li><b>manager</b> — 場館主管（板橋館，無系統設定）</li>
-            <li><b>staff</b> — 行政櫃檯（板橋館，無退課/系統設定）</li>
-          </ul>
-        </div>
+        {USE_MOCK && (
+          <div className="mt-6 rounded-lg bg-gray-50 p-3 text-xs text-gray-600">
+            <div className="mb-1 font-bold text-gray-700">Mock 測試帳號（密碼=帳號）</div>
+            <ul className="list-disc pl-5">
+              <li><b>admin</b> — 系統管理員（看得到全部功能）</li>
+              <li><b>manager</b> — 場館主管（板橋館，無系統設定）</li>
+              <li><b>staff</b> — 行政櫃檯（板橋館，無退課/系統設定）</li>
+            </ul>
+          </div>
+        )}
       </div>
     </div>
   );
