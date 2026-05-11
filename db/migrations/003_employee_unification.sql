@@ -421,7 +421,7 @@ SELECT cp.id, cp.employee_id, e.name AS coach_name,
        cp.total_sessions, cp.used_sessions,
        (cp.total_sessions - cp.used_sessions) AS remaining_sessions,
        cp.expires_at, cp.status, cp.final_price,
-       cp.is_experience_course, cp.created_at
+       cp.created_at
 FROM course_periods cp
 JOIN employees e ON cp.employee_id = e.id
 JOIN venues v ON cp.venue_id = v.id;
@@ -446,13 +446,13 @@ CREATE OR REPLACE VIEW v_coach_evaluation_avg AS
 SELECT cp.employee_id, e.name AS coach_name,
        e.is_senior, e.pricing_multiplier,
        COUNT(ce.id) AS total_evaluations,
-       ROUND(AVG(ce.teaching_quality)::numeric,2)        AS avg_teaching_quality,
-       ROUND(AVG(ce.communication_attitude)::numeric,2)  AS avg_communication,
-       ROUND(AVG(ce.student_progress)::numeric,2)        AS avg_student_progress,
-       ROUND(AVG(ce.overall_satisfaction)::numeric,2)    AS avg_overall,
-       COUNT(CASE WHEN ce.renew_intention='yes'         THEN 1 END) AS renew_yes,
-       COUNT(CASE WHEN ce.renew_intention='no'          THEN 1 END) AS renew_no,
-       COUNT(CASE WHEN ce.renew_intention='considering' THEN 1 END) AS renew_considering
+       ROUND(AVG(ce.score_teaching)::numeric,2) AS avg_teaching_quality,
+       ROUND(AVG(ce.score_attitude)::numeric,2) AS avg_communication,
+       ROUND(AVG(ce.score_progress)::numeric,2) AS avg_student_progress,
+       ROUND(AVG(ce.score_overall)::numeric,2)  AS avg_overall,
+       COUNT(CASE WHEN ce.renew_intent='yes'         THEN 1 END) AS renew_yes,
+       COUNT(CASE WHEN ce.renew_intent='no'          THEN 1 END) AS renew_no,
+       COUNT(CASE WHEN ce.renew_intent='considering' THEN 1 END) AS renew_considering
 FROM course_evaluations ce
 JOIN course_periods cp ON ce.course_period_id = cp.id
 JOIN employees e ON cp.employee_id = e.id
