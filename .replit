@@ -5,7 +5,7 @@ modules = ["nodejs-20", "python-3.11", "postgresql-16"]
 channel = "stable-24_05"
 
 [deployment]
-run = ["bash", "-c", "cd server && npm start"]
+run = ["bash", "-c", "cd server && NODE_ENV=production npm start"]
 deploymentTarget = "autoscale"
 build = ["bash", "-c", "cd server && npm install && cd ../client/admin && npm install && npm run build && cd ../liff && npm install && VITE_LIFF_ID=\"$LIFF_ID\" npm run build"]
 
@@ -52,3 +52,6 @@ VITE_LIFF_ID_COACH = "2009958451-Xz4tru4a"
 LIFF_URL_PARENT = "https://liff.line.me/2009958451-NmGZ4135"
 LIFF_URL_COACH = "https://liff.line.me/2009958451-Xz4tru4a"
 RAGIC_BASE_URL = "https://ap7.ragic.com"
+
+[userenv.production]
+NODE_ENV = "production"
