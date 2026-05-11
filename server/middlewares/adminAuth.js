@@ -37,6 +37,7 @@ function deriveLegacyRole(roles) {
   if (roles.includes('system_admin')) return 'admin';
   if (roles.includes('manager'))      return 'manager';
   if (roles.includes('counter'))      return 'staff';
+  if (roles.includes('coach'))        return 'coach';
   return null;
 }
 // requireAdminRole 入參 normalize（舊名 → 新名；其他保持不變）
