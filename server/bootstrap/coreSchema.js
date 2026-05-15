@@ -433,6 +433,7 @@ CREATE INDEX IF NOT EXISTS idx_eval_alerts_pending ON eval_threshold_alerts(noti
 
 -- Task #65：Ragic 同步紀錄。每次 syncStaff/syncCoaches/syncVenues 結束（成功 / 失敗 / 跳過）寫一筆。
 -- 後台「Ragic 連線狀態」頁面用最新一筆 + 最新一筆 status='ok' 算狀態。
+-- (Task #65) ragic_sync_log
 CREATE TABLE IF NOT EXISTS ragic_sync_log (
   id BIGSERIAL PRIMARY KEY,
   form_code VARCHAR(40) NOT NULL,        -- H01_STAFF | H01_COACHES | H05_VENUES
@@ -445,6 +446,7 @@ CREATE TABLE IF NOT EXISTS ragic_sync_log (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_ragic_sync_log_form ON ragic_sync_log(form_code, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ragic_sync_log_job  ON ragic_sync_log(job_name, created_at DESC);
 
 -- 教練介紹送審（F-C06）：教練端編輯 → 主管審核
 DO $$ BEGIN

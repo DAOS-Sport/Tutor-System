@@ -400,11 +400,16 @@ async function getSyncStatusSnapshot() {
     out[job] = {
       form_code: meta.code,
       label: meta.label,
-      last_run_at:      latest.rows[0]?.created_at      || null,
-      last_status:      latest.rows[0]?.status          || null,
-      last_triggered_by:latest.rows[0]?.triggered_by    || null,
-      last_error:       latest.rows[0]?.error_message   || null,
-      last_success_at:  lastOk.rows[0]?.created_at      || null,
+      last_run_at:           latest.rows[0]?.created_at      || null,
+      last_status:           latest.rows[0]?.status          || null,
+      last_triggered_by:     latest.rows[0]?.triggered_by    || null,
+      last_error:            latest.rows[0]?.error_message   || null,
+      last_run_count:        latest.rows[0]?.synced_count ?? null,
+      last_run_duration_ms:  latest.rows[0]?.duration_ms  ?? null,
+      last_success_at:       lastOk.rows[0]?.created_at      || null,
+      last_success_count:    lastOk.rows[0]?.synced_count ?? null,
+      last_success_duration_ms: lastOk.rows[0]?.duration_ms  ?? null,
+      // 向後相容欄位（保留舊鍵；前端持續可用，含義仍以 success 為準）
       last_count:       lastOk.rows[0]?.synced_count ?? null,
       last_duration_ms: lastOk.rows[0]?.duration_ms  ?? null,
     };
