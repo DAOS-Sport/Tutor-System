@@ -46,7 +46,7 @@ function ragicEnabled() {
  * - active 變更為 false 時，連動把 admin_users (依 name 比對) is_active 設 false，
  *   讓該帳號無法登入；同樣尊重 admin_users.active_overridden_at
  */
-async function syncStaffFromRagic() {
+async function _syncStaffImpl() {
   if (!ragicEnabled()) return { synced: 0, skipped: true };
   try {
     const records = await ragic.getAllStaff();
@@ -143,7 +143,7 @@ function extractLineUid(r) {
   return '';
 }
 
-async function syncCoachesFromRagic() {
+async function _syncCoachesImpl() {
   if (!ragicEnabled()) return { synced: 0, skipped: true };
   try {
     const records = await ragic.getActiveCoaches();
@@ -200,7 +200,7 @@ async function syncCoachesFromRagic() {
 /**
  * 場館 Ragic 同步（H05 → admin_venues + venues）
  */
-async function syncVenuesFromRagic() {
+async function _syncVenuesImpl() {
   if (!ragicEnabled()) return { synced: 0, skipped: true };
   try {
     const records = await ragic.getActiveVenues();
@@ -297,6 +297,92 @@ function _kickoff(key, fn) {
 function kickoffSyncStaffAsync()   { _kickoff('staff',   syncStaffFromRagic); }
 function kickoffSyncCoachesAsync() { _kickoff('coaches', syncCoachesFromRagic); }
 function kickoffSyncVenuesAsync()  { _kickoff('venues',  syncVenuesFromRagic); }
+
+// ─────────────────────────────────────────────────────────────
+// Task #65：同步紀錄 + 健康檢查 helpers
+// 對外暴露的 syncXxxFromRagic 都是「impl + 寫一筆 ragic_sync_log」的 wrapper。
+// ─────────────────────────────────────────────────────────────
+const FORM_META = {
+  staff:   { code: 'H01_STAFF',   label: 'H01 員工 (admin_staff)',   impl: _syncStaffImpl },
+  coaches: { code: 'H01_COACHES', label: 'H01 教練 (coaches)',       impl: _syncCoachesImpl },
+  venues:  { code: 'H05_VENUES',  label: 'H05 場館 (venues)',        impl: _syncVenuesImpl },
+};
+
+async function _logSyncResult(jobName, formCode, result, durationMs, triggeredBy) {
+  const status = result?.skipped ? 'skipped' : (result?.error ? 'error' : 'ok');
+  try {
+    await pool.query(
+      `INSERT INTO ragic_sync_log (form_code, job_name, status, synced_count, error_message, duration_ms, triggered_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [formCode, jobName, status, result?.synced || 0, result?.error || null, durationMs, triggeredBy]
+    );
+  } catch (e) {
+    console.warn('[ragic_sync_log] insert failed:', e.message);
+  }
+}
+
+async function _runWithLog(jobName, triggeredBy = 'cron') {
+  const meta = FORM_META[jobName];
+  if (!meta) throw new Error(`unknown ragic sync job: ${jobName}`);
+  const t0 = Date.now();
+  let result;
+  try {
+    result = await meta.impl();
+  } catch (err) {
+    result = { synced: 0, error: err.message };
+  }
+  const dur = Date.now() - t0;
+  await _logSyncResult(jobName, meta.code, result, dur, triggeredBy);
+  return result;
+}
+
+async function syncStaffFromRagic(triggeredBy = 'cron')   { return _runWithLog('staff',   triggeredBy); }
+async function syncCoachesFromRagic(triggeredBy = 'cron') { return _runWithLog('coaches', triggeredBy); }
+async function syncVenuesFromRagic(triggeredBy = 'cron')  { return _runWithLog('venues',  triggeredBy); }
+
+function getRagicEnvFlags() {
+  return {
+    RAGIC_API_KEY:  !!process.env.RAGIC_API_KEY,
+    RAGIC_BASE_URL: !!process.env.RAGIC_BASE_URL,
+    RAGIC_FORM_H01: !!process.env.RAGIC_FORM_H01,
+    RAGIC_FORM_H05: !!process.env.RAGIC_FORM_H05,
+    RAGIC_FORM_Z01: !!process.env.RAGIC_FORM_Z01,
+    RAGIC_FORM_Z02: !!process.env.RAGIC_FORM_Z02,
+  };
+}
+
+/**
+ * 各 form 的同步狀態：最後一次執行 + 最後一次成功 + 最近錯誤。
+ * 給 GET /api/admin/ragic-status 用。
+ */
+async function getSyncStatusSnapshot() {
+  const out = {};
+  for (const [job, meta] of Object.entries(FORM_META)) {
+    const latest = await pool.query(
+      `SELECT status, synced_count, error_message, duration_ms, created_at, triggered_by
+         FROM ragic_sync_log WHERE form_code = $1 ORDER BY created_at DESC LIMIT 1`,
+      [meta.code]
+    );
+    const lastOk = await pool.query(
+      `SELECT synced_count, duration_ms, created_at
+         FROM ragic_sync_log WHERE form_code = $1 AND status = 'ok'
+         ORDER BY created_at DESC LIMIT 1`,
+      [meta.code]
+    );
+    out[job] = {
+      form_code: meta.code,
+      label: meta.label,
+      last_run_at:      latest.rows[0]?.created_at      || null,
+      last_status:      latest.rows[0]?.status          || null,
+      last_triggered_by:latest.rows[0]?.triggered_by    || null,
+      last_error:       latest.rows[0]?.error_message   || null,
+      last_success_at:  lastOk.rows[0]?.created_at      || null,
+      last_count:       lastOk.rows[0]?.synced_count ?? null,
+      last_duration_ms: lastOk.rows[0]?.duration_ms  ?? null,
+    };
+  }
+  return out;
+}
 
 // ─────────────────────────────────────────────────────────────
 // Task #54：兩階段場館同步（dry-run diff + 使用者確認後再寫入）
@@ -520,4 +606,6 @@ module.exports = {
   kickoffSyncCoachesAsync,
   kickoffSyncVenuesAsync,
   ragicEnabled,
+  getRagicEnvFlags,
+  getSyncStatusSnapshot,
 };

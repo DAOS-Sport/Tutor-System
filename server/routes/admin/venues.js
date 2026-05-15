@@ -64,7 +64,7 @@ router.get('/', requireAdminAuth, async (req, res) => {
 // Task #53：admin 立即同步 H05（同步等待結果，無 diff confirm；保留供 cron / 相容）
 router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
   try {
-    const result = await syncVenuesFromRagic();
+    const result = await syncVenuesFromRagic('manual');
     if (result && result.error) return res.status(502).json(result);
     res.json(result);
   } catch (err) {

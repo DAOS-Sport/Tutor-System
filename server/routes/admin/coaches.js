@@ -82,7 +82,7 @@ router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager'), async (r
 
 router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
   try {
-    const result = await syncCoachesFromRagic();
+    const result = await syncCoachesFromRagic('manual');
     if (result && result.error) return res.status(502).json(result);
     res.json(result);
   } catch (err) {

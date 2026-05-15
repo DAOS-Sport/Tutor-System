@@ -21,6 +21,7 @@ const NAV_GROUPS = [
       { to: '/venues',        label: '(F-A03) 場館設定',     roles: ['admin'] },
       { to: '/course-intros', label: '(F-A04/F-M06) 課程介紹', roles: ['admin', 'manager'] },
       { to: '/course-types',  label: '課程需求管理',           roles: ['admin'] },
+      { to: '/ragic-status',  label: 'Ragic 連線狀態',         roles: ['admin', 'manager'] },
     ],
   },
   {
