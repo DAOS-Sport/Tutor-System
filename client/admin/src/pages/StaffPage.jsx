@@ -32,8 +32,27 @@ export default function StaffPage() {
   }, []);
 
   const venueMap = useMemo(() => Object.fromEntries(venues.map((v) => [v.id, v.name])), [venues]);
+  const [togglingId, setTogglingId] = useState(null);
 
   if (!staff) return <LoadingSpinner fullPage />;
+
+  async function toggleActive(row) {
+    if (togglingId === row.id) return;
+    const next = !row.active;
+    // 樂觀更新：先翻轉 UI，失敗時還原
+    setStaff((arr) => arr.map((x) => (x.id === row.id ? { ...x, active: next } : x)));
+    setTogglingId(row.id);
+    try {
+      const res = await staffApi.update(row.id, { active: next });
+      setStaff((arr) => arr.map((x) => (x.id === res.id ? res : x)));
+      toast.success(`已${next ? '啟用' : '停用'} ${res.name}`);
+    } catch {
+      setStaff((arr) => arr.map((x) => (x.id === row.id ? { ...x, active: row.active } : x)));
+      toast.error('狀態切換失敗');
+    } finally {
+      setTogglingId(null);
+    }
+  }
 
   async function saveEdit() {
     if (!editing) return;
@@ -86,9 +105,39 @@ export default function StaffPage() {
     },
     {
       key: 'active', label: '狀態',
-      render: (r) => r.active
-        ? <StatusBadge tone="green">啟用</StatusBadge>
-        : <StatusBadge tone="gray">停用</StatusBadge>,
+      render: (r) => {
+        const busy = togglingId === r.id;
+        const on = !!r.active;
+        return (
+          <div className="inline-flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => toggleActive(r)}
+              disabled={busy}
+              role="switch"
+              aria-checked={on}
+              aria-busy={busy}
+              aria-label={`${on ? '停用' : '啟用'} ${r.name}`}
+              title={on ? '點擊停用' : '點擊啟用'}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors disabled:cursor-wait ${
+                on ? 'bg-brand-green' : 'bg-gray-300'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                  on ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+            {busy && (
+              <span
+                aria-hidden
+                className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-gray-300 border-t-brand-primary"
+              />
+            )}
+          </div>
+        );
+      },
     },
     {
       key: 'actions', label: '操作', className: 'text-right',

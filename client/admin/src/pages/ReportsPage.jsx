@@ -4,7 +4,8 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
 import { adminReportsApi } from '../api/reports';
 import { venuesApi } from '../api/venues';
-import { rowsToCsv, downloadCsv } from '../utils/csvExport';
+import { rowsToCsv, downloadCsv, downloadXlsx } from '../utils/csvExport';
+import ExportMenu from '../components/ExportMenu';
 
 const TABS = [
   { key: 'revenue',     label: '營收報表' },
@@ -54,21 +55,30 @@ export default function ReportsPage() {
     });
   }, [tab, range.from, range.to, venueId, coachId]); // eslint-disable-line
 
-  function exportCsv() {
-    if (!data) return;
+  function buildExport() {
     const meta = TABLES[tab];
     const headers = meta.headers;
     const rows = (tab === 'mgm' ? mgmRows(data) : (data.rows || [])).map(meta.row);
     const suffix = [venueId && `v${venueId}`, coachId && `c${coachId.slice(0,6)}`].filter(Boolean).join('_');
-    downloadCsv(
-      `report_${tab}_${range.from}_${range.to}${suffix ? '_' + suffix : ''}.csv`,
-      rowsToCsv(headers, rows)
-    );
+    const baseName = `report_${tab}_${range.from}_${range.to}${suffix ? '_' + suffix : ''}`;
+    return { headers, rows, baseName, label: meta.sheet || tab };
+  }
+
+  function exportCsv() {
+    if (!data) return;
+    const { headers, rows, baseName } = buildExport();
+    downloadCsv(`${baseName}.csv`, rowsToCsv(headers, rows));
+  }
+
+  function exportXlsx() {
+    if (!data) return;
+    const { headers, rows, baseName, label } = buildExport();
+    downloadXlsx(`${baseName}.xlsx`, headers, rows, label);
   }
 
   return (
     <div>
-      <PageHeader title="營運報表 (F-M01)" subtitle="可依日期 / 場館 / 教練篩選；支援 CSV 匯出" />
+      <PageHeader title="營運報表 (F-M01)" subtitle="可依日期 / 場館 / 教練篩選；支援 CSV / XLSX 匯出" />
 
       <div className="mb-3 flex flex-wrap items-center gap-2">
         {TABS.map((t) => (
@@ -97,10 +107,9 @@ export default function ReportsPage() {
           <option value="">全部教練</option>
           {coaches.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
-        <button onClick={exportCsv} disabled={!data}
-          className="ml-auto rounded bg-brand-teal px-3 py-1 font-bold text-white disabled:opacity-50">
-          匯出 CSV
-        </button>
+        <div className="ml-auto">
+          <ExportMenu disabled={!data} onExportCsv={exportCsv} onExportXlsx={exportXlsx} />
+        </div>
       </div>
 
       {data === null ? <LoadingSpinner label="載入報表中…" />

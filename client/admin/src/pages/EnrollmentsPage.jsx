@@ -10,8 +10,9 @@ import {
   formatTWD, formatTWDateTime, courseTypeLabel,
   paymentStatusLabel, paymentStatusTone,
 } from '../utils/format';
-import { exportEnrollmentsCsv } from '../utils/csvExport';
+import { exportEnrollmentsCsv, exportEnrollmentsXlsx } from '../utils/csvExport';
 import { useToast } from '../context/ToastContext';
+import ExportMenu from '../components/ExportMenu';
 import EditEnrollmentModal from './enrollments/EditEnrollmentModal';
 
 const STATUS_OPTIONS = [
@@ -71,18 +72,19 @@ export default function EnrollmentsPage() {
         title="所有報名"
         subtitle={`F-R02 · 共 ${list?.length ?? '—'} 筆${isStaff ? '（限本場館）' : ''}`}
         actions={
-          <button
-            type="button"
-            onClick={() => {
+          <ExportMenu
+            disabled={!list}
+            onExportCsv={() => {
               if (!list || list.length === 0) { toast.error('沒有可匯出的資料'); return; }
               exportEnrollmentsCsv({ filenamePrefix: 'enrollments', enrollments: list, venueName: (id) => venueMap[id] || id });
-              toast.success(`已匯出 ${list.length} 筆報名資料`);
+              toast.success(`已匯出 ${list.length} 筆報名資料 (CSV)`);
             }}
-            disabled={!list}
-            className="rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            匯出 CSV
-          </button>
+            onExportXlsx={() => {
+              if (!list || list.length === 0) { toast.error('沒有可匯出的資料'); return; }
+              exportEnrollmentsXlsx({ filenamePrefix: 'enrollments', enrollments: list, venueName: (id) => venueMap[id] || id });
+              toast.success(`已匯出 ${list.length} 筆報名資料 (XLSX)`);
+            }}
+          />
         }
       />
 

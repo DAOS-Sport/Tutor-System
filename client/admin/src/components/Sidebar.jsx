@@ -3,65 +3,66 @@ import { NavLink } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
 // 每個項目的 roles 控制可見性。空陣列表示所有登入者皆可見。
+// 顯示格式為「(代碼) 中文」，無代碼者僅顯示中文。
 const NAV_GROUPS = [
   {
     title: '營運總覽',
     items: [
       { to: '/dashboard', label: '今日總覽', roles: [] },
-      { to: '/reports',   label: '營運報表 (F-M01)', roles: ['admin', 'manager'] },
+      { to: '/reports',   label: '(F-M01) 營運報表', roles: ['admin', 'manager'] },
     ],
   },
   {
     title: '系統設定',
     items: [
-      { to: '/settings',     label: '全域系統設定 (F-A01)', roles: ['admin'] },
-      { to: '/staff',        label: '員工帳號管理 (F-A02)', roles: ['admin'] },
-      { to: '/coaches',      label: '教練資料 (F-C-Admin)', roles: ['admin'] },
-      { to: '/venues',       label: '場館設定 (F-A03)',     roles: ['admin'] },
-      { to: '/course-intros', label: '課程介紹 (F-A04/F-M06)', roles: ['admin', 'manager'] },
+      { to: '/settings',      label: '(F-A01) 全域系統設定', roles: ['admin'] },
+      { to: '/staff',         label: '(F-A02) 員工帳號管理', roles: ['admin'] },
+      { to: '/coaches',       label: '(F-C-Admin) 教練資料', roles: ['admin'] },
+      { to: '/venues',        label: '(F-A03) 場館設定',     roles: ['admin'] },
+      { to: '/course-intros', label: '(F-A04/F-M06) 課程介紹', roles: ['admin', 'manager'] },
       { to: '/course-types',  label: '課程需求管理',           roles: ['admin'] },
     ],
   },
   {
     title: '報名與對帳',
     items: [
-      { to: '/reconcile',   label: '待對帳清單 (F-M02)', roles: ['admin', 'manager'] },
-      { to: '/enrollments', label: '所有報名 (F-R02)',   roles: ['admin', 'manager', 'staff'] },
-      { to: '/refund',      label: '退課處理 (F-R04)',   roles: ['admin', 'manager'] },
-      { to: '/transfers',   label: '課程轉讓審核 (F-M04)', roles: ['admin', 'manager'] },
+      { to: '/reconcile',   label: '(F-M02) 待對帳清單', roles: ['admin', 'manager'] },
+      { to: '/enrollments', label: '(F-R02) 所有報名',   roles: ['admin', 'manager', 'staff'] },
+      { to: '/refund',      label: '(F-R04) 退課處理',   roles: ['admin', 'manager'] },
+      { to: '/transfers',   label: '(F-M04) 課程轉讓審核', roles: ['admin', 'manager'] },
     ],
   },
   {
     title: '場館營運',
     items: [
-      { to: '/sessions',    label: '今日課程 (F-R01)',   roles: ['admin', 'manager', 'staff'] },
-      { to: '/checkin',     label: '簽到驗證 (F-R03)',   roles: ['admin', 'manager', 'staff'] },
-      { to: '/revive',      label: '退課復活 (F-M05)',   roles: ['admin', 'manager'] },
+      { to: '/sessions', label: '(F-R01) 今日課程', roles: ['admin', 'manager', 'staff'] },
+      { to: '/checkin',  label: '(F-R03) 簽到驗證', roles: ['admin', 'manager', 'staff'] },
+      { to: '/revive',   label: '(F-M05) 扣課復活', roles: ['admin', 'manager'] },
     ],
   },
   {
     title: '聊天監察',
     items: [
-      { to: '/chat-logs', label: '聊天紀錄 (F-M03)', roles: ['admin', 'manager'] },
-      { to: '/alerts',    label: '關鍵字警示',       roles: ['admin', 'manager'] },
-      { to: '/keywords',  label: '關鍵字管理 (F-A07)', roles: ['admin'] },
+      { to: '/chat-logs', label: '(F-M03) 聊天紀錄',   roles: ['admin', 'manager'] },
+      { to: '/alerts',    label: '關鍵字警示',          roles: ['admin', 'manager'] },
+      { to: '/keywords',  label: '(F-A07) 關鍵字管理', roles: ['admin'] },
     ],
   },
   {
     title: '行銷與優惠',
     items: [
-      { to: '/promotions',         label: '優惠活動 (F-M07/F-A05)', roles: ['admin', 'manager'] },
-      { to: '/promotions-active',  label: '進行中優惠 (F-R05)',     roles: ['admin', 'manager', 'staff'] },
-      { to: '/mgm-stats',          label: 'MGM 推薦統計 (F-M10)',   roles: ['admin', 'manager'] },
+      { to: '/promotions',         label: '(F-M07/F-A05) 優惠活動', roles: ['admin', 'manager'] },
+      { to: '/promotions-active',  label: '(F-R05) 進行中優惠',     roles: ['admin', 'manager', 'staff'] },
+      { to: '/mgm-stats',          label: '(F-M10) MGM 推薦統計',   roles: ['admin', 'manager'] },
     ],
   },
   {
     title: '學習歷程',
     items: [
-      { to: '/tags',            label: '標籤庫 (F-A08)',       roles: ['admin', 'manager'] },
-      { to: '/coach-eval',      label: '教練考核 (F-M09)',     roles: ['admin', 'manager'] },
-      { to: '/eval-threshold', label: '考核門檻 (F-A09)',     roles: ['admin'] },
-      { to: '/coach-intros-review', label: '教練介紹送審 (F-C06)', roles: ['admin', 'manager'] },
+      { to: '/tags',                label: '(F-A08) 標籤庫',         roles: ['admin', 'manager'] },
+      { to: '/coach-eval',          label: '(F-M09) 教練考核',       roles: ['admin', 'manager'] },
+      { to: '/eval-threshold',      label: '(F-A09) 考核門檻',       roles: ['admin'] },
+      { to: '/coach-intros-review', label: '(F-C06) 教練介紹送審',   roles: ['admin', 'manager'] },
     ],
   },
   {

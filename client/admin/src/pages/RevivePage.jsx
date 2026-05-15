@@ -76,7 +76,7 @@ export default function RevivePage() {
   return (
     <div>
       <PageHeader
-        title="退課時段復活"
+        title="扣課復活"
         subtitle="F-M05 · 主管權限。將已扣除但未實際上課的堂數歸還給家長"
       />
       <DataTable columns={columns} rows={list} rowKey={(r) => r.id} empty="目前沒有需要處理的時段" />

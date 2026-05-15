@@ -26,7 +26,7 @@ const SECTIONS = [
           { label: '今日課程 (F-R01)', url: `${ADM}/sessions`, note: '今天課表依時段排序', roles: '全部' },
           { label: '簽到驗證 / 點名 (F-R03)', url: `${ADM}/checkin`, note: '輸入手機+期次確認簽到', roles: '全部' },
           { label: '退課 (F-R04)', url: `${ADM}/refund`, note: '退費試算 → 確認 → 推播', roles: 'admin / manager' },
-          { label: '退課復活 (F-M05)', url: `${ADM}/revive`, note: '已取消時段一鍵復活', roles: 'admin / manager' },
+          { label: '(F-M05) 扣課復活', url: `${ADM}/revive`, note: '已取消時段一鍵復活', roles: 'admin / manager' },
           { label: '課程轉讓審核', url: `${ADM}/transfers`, note: '審核家長提交的轉讓申請', roles: 'admin / manager' },
           { label: '優惠活動 (F-M07/F-A05)', url: `${ADM}/promotions`, note: '建立 / 送審 / 核准優惠', roles: 'admin / manager' },
           { label: '進行中優惠 (F-R05)', url: `${ADM}/promotions-active`, note: '唯讀清單', roles: '全部' },
@@ -190,7 +190,7 @@ const SECTIONS = [
         type: 'steps',
         title: '退課後復活流程（家長重新報名同課程）',
         steps: [
-          { step: '1', title: '在退課復活頁操作', desc: '進入「退課復活 (F-M05)」，找到已退課的報名記錄。' },
+          { step: '1', title: '在扣課復活頁操作', desc: '進入「(F-M05) 扣課復活」，找到已退課的報名記錄。' },
           { step: '2', title: '確認復活', desc: '確認後系統將狀態改回「進行中」，保留原有已上課堂數紀錄，重新開通聊天室。家長 LINE 收到復活通知。' },
         ],
       },

@@ -1,3 +1,4 @@
+import * as XLSX from 'xlsx';
 import {
   formatTWDateTime,
   courseTypeLabel,
@@ -31,6 +32,16 @@ export function downloadCsv(filename, csv) {
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
+// === XLSX (SheetJS) =========================================================
+// 直接以 aoa_to_sheet → writeFile 觸發瀏覽器下載；filename 需含 .xlsx。
+export function downloadXlsx(filename, headers, rows, sheetName = 'Sheet1') {
+  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, sheetName);
+  XLSX.writeFile(wb, filename);
+}
+
+// === Enrollments 共用列定義 =================================================
 function findReconcileLog(enrollment) {
   if (!enrollment?.audit_logs) return null;
   return enrollment.audit_logs.find((a) => a.action && a.action.indexOf('對帳通過') !== -1) || null;
@@ -77,4 +88,9 @@ export function exportEnrollmentsCsv({ filenamePrefix, enrollments, venueName })
   const rows = enrollments.map((e) => enrollmentToRow(e, venueName));
   const csv = rowsToCsv(ENROLLMENT_HEADERS, rows);
   downloadCsv(`${filenamePrefix}_${todayISO()}.csv`, csv);
+}
+
+export function exportEnrollmentsXlsx({ filenamePrefix, enrollments, venueName, sheetName = '報名資料' }) {
+  const rows = enrollments.map((e) => enrollmentToRow(e, venueName));
+  downloadXlsx(`${filenamePrefix}_${todayISO()}.xlsx`, ENROLLMENT_HEADERS, rows, sheetName);
 }
