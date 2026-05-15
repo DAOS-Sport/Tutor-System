@@ -318,7 +318,10 @@ async function seedIfEmpty() {
         '若已透過其他方式建立第一個 admin 帳號，可忽略此警告。'
       );
     } else {
-      const useEnvPwd = !!bootstrapPwd;
+      // Task #68：ADMIN_BOOTSTRAP_PASSWORD 只在 production 套用，避免 dev DB 被
+      // 強密碼覆寫造成「admin/admin 進不去」的混淆。dev 永遠用 DEFAULT_USERS 內的
+      // 弱密碼（admin/manager/staff = 帳號）方便開發 / 自動化測試。
+      const useEnvPwd = IS_PROD && !!bootstrapPwd;
       for (const x of DEFAULT_USERS) {
         const pwd = useEnvPwd ? bootstrapPwd : x.password;
         const hash = await bcrypt.hash(pwd, 10);

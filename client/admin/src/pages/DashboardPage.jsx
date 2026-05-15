@@ -60,11 +60,10 @@ export default function DashboardPage() {
       )}
 
       <div className="mt-8 rounded-xl border border-dashed border-gray-300 bg-white p-5 text-sm text-gray-600">
-        <div className="mb-2 font-bold text-gray-700">說明</div>
+        <div className="mb-2 font-bold text-gray-700">小提醒</div>
         <ul className="list-disc space-y-1 pl-5">
-          <li>目前後台處於 <b>mock 模式</b>，所有讀寫都在前端進行（重整後狀態保留於記憶體，重新整理頁面會重置）。</li>
-          <li>後端 <code>/api/admin/*</code> 一律回 501，<code>callApi()</code> 在偵測到 501 時會自動 fallback 到 mock。</li>
           <li>不同角色於左側 Sidebar 看到的功能項目不同，<b>RequireAuth</b> 也會擋 URL 直接拜訪。</li>
+          <li>櫃檯（staff）僅能看到本場館範圍的報名 / 課程資料；主管 / 管理員可跨場館。</li>
         </ul>
       </div>
     </div>

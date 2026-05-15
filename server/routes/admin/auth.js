@@ -13,8 +13,27 @@ const { signToken } = require('../../middlewares/adminAuth');
 
 const router = express.Router();
 
+// Task #68：per-IP 登入速率限制（5 次 / 5 分鐘 → 429），與 LIFF 家長 / 教練同策略,
+// 抑制弱密碼暴搜（後台帳號名單固定，破解風險高）。
+const _attempts = new Map(); // ip → [ts...]
+const WINDOW_MS = 5 * 60 * 1000;
+const MAX_ATTEMPTS = 5;
+function _rateLimited(ip) {
+  const now = Date.now();
+  const arr = (_attempts.get(ip) || []).filter((t) => now - t < WINDOW_MS);
+  arr.push(now);
+  _attempts.set(ip, arr);
+  if (_attempts.size > 5000) _attempts.clear();
+  return arr.length > MAX_ATTEMPTS;
+}
+
 router.post('/login', async (req, res) => {
   try {
+    const ip = req.ip || req.socket?.remoteAddress || 'unknown';
+    if (_rateLimited(ip)) {
+      console.warn('[admin/auth/login] rate-limited ip=', ip);
+      return res.status(429).json({ error: '嘗試次數過多，請稍後再試' });
+    }
     const { username, password } = req.body || {};
     if (!username || !password) {
       return res.status(400).json({ error: '請提供帳號密碼' });
