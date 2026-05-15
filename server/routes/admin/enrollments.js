@@ -234,22 +234,36 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin', 'manager'), asy
         );
         if (r2.rowCount) oldCoachUuid = r2.rows[0].id;
       }
-      // Lazy backfill admin_enrollment_id：parent_phone + old coach + old venue 三鍵命中且尚未連結
+      // Lazy backfill admin_enrollment_id（嚴格安全模式）：
+      //   只有在 (parent_phone + 舊 coach + 舊 venue + course_type) 命中且
+      //   ① 該 parent 在系統內僅有一筆同條件之 admin_enrollment（即本筆）
+      //   ② 命中的 period 也尚未被任何其他 admin_enrollment_id 連結
+      //   時才執行，避免多筆同手機/同教練的報名互相錯置。
       if (oldCoachUuid) {
-        await client.query(
-          `UPDATE course_periods cp
-              SET admin_enrollment_id = $1
-            WHERE cp.admin_enrollment_id IS NULL
-              AND cp.coach_id = $2
-              AND cp.venue_id = $3
-              AND EXISTS (
-                SELECT 1 FROM course_period_enrollments cpe
-                  JOIN students s ON s.id = cpe.student_id
-                  JOIN parents  p ON p.id = s.parent_id
-                 WHERE cpe.course_period_id = cp.id AND p.phone = $4
-              )`,
-          [id, oldCoachUuid, row.venue_id, row.parent_phone]
+        const ambiguity = await client.query(
+          `SELECT COUNT(*)::int AS n FROM admin_enrollments
+            WHERE parent_phone = $1 AND course_type = $2
+              AND COALESCE(coach_id, '00000000-0000-0000-0000-000000000000'::uuid) = $3
+              AND venue_id = $4`,
+          [row.parent_phone, row.course_type, oldCoachUuid, row.venue_id]
         );
+        if (ambiguity.rows[0].n <= 1) {
+          await client.query(
+            `UPDATE course_periods cp
+                SET admin_enrollment_id = $1
+              WHERE cp.admin_enrollment_id IS NULL
+                AND cp.coach_id = $2
+                AND cp.venue_id = $3
+                AND cp.course_type = $5
+                AND EXISTS (
+                  SELECT 1 FROM course_period_enrollments cpe
+                    JOIN students s ON s.id = cpe.student_id
+                    JOIN parents  p ON p.id = s.parent_id
+                   WHERE cpe.course_period_id = cp.id AND p.phone = $4
+                )`,
+            [id, oldCoachUuid, row.venue_id, row.parent_phone, row.course_type]
+          );
+        }
       }
       const periods = await client.query(
         `SELECT id FROM course_periods WHERE admin_enrollment_id = $1`, [id]
