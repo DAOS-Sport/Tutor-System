@@ -5,8 +5,8 @@ export const ragicStatusApi = {
     const r = await http.get('/ragic-status');
     return r.data;
   },
-  async sync(job = 'all') {
-    const r = await http.post('/ragic-status/sync', { job });
+  async sync(form = 'all') {
+    const r = await http.post(`/ragic-status/sync?form=${encodeURIComponent(form)}`);
     return r.data;
   },
 };

@@ -173,7 +173,7 @@ export default function RagicStatusPage() {
         <div className="font-bold text-gray-700">說明</div>
         <ul className="mt-1 list-disc space-y-1 pl-4">
           <li>「最後一次成功」是最近一筆 status=ok 的紀錄；「最後一次執行」可能是失敗或略過。</li>
-          <li>Z01 家長 / Z02 學員為「按請求查詢」，沒有定期同步，因此不在本頁顯示。</li>
+          <li>H01 員工 / 教練 與 H05 場館為定期 bulk sync；Z01 家長 / Z02 學員為「按請求查詢」，本頁的同步動作會發一次健康檢查 ping 驗證端點可用。</li>
           <li>每次同步會寫一筆 <span className="font-mono">ragic_sync_log</span>，可由 SQL 查詢歷史趨勢。</li>
         </ul>
       </div>

@@ -50,7 +50,7 @@ export default function App() {
         <Route path="/venues"        element={<RequireAuth roles={['admin']}><VenuesPage /></RequireAuth>} />
         <Route path="/course-intros" element={<RequireAuth roles={['admin', 'manager']}><CourseIntrosPage /></RequireAuth>} />
         <Route path="/course-types"  element={<RequireAuth roles={['admin']}><CourseTypesPage /></RequireAuth>} />
-        <Route path="/ragic-status"  element={<RequireAuth roles={['admin', 'manager']}><RagicStatusPage /></RequireAuth>} />
+        <Route path="/ragic-status"  element={<RequireAuth roles={['admin']}><RagicStatusPage /></RequireAuth>} />
 
         {/* 報名與對帳 */}
         <Route path="/reconcile"   element={<RequireAuth roles={['admin', 'manager']}><ReconcilePage /></RequireAuth>} />

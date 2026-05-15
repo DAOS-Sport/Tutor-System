@@ -301,11 +301,36 @@ function kickoffSyncVenuesAsync()  { _kickoff('venues',  syncVenuesFromRagic); }
 // ─────────────────────────────────────────────────────────────
 // Task #65：同步紀錄 + 健康檢查 helpers
 // 對外暴露的 syncXxxFromRagic 都是「impl + 寫一筆 ragic_sync_log」的 wrapper。
+// Z01 / Z02 是「按請求查詢」，沒有 bulk sync；用 getParentByPhone / getStudentByIdNumber
+// 對一個不存在的 key 發 where=eq 查詢當「ping」，驗證端點可用 + 回傳筆數（通常 0）。
 // ─────────────────────────────────────────────────────────────
+async function _pingZ01Impl() {
+  if (!ragicEnabled()) return { synced: 0, skipped: true };
+  if (!process.env.RAGIC_FORM_Z01) return { synced: 0, error: 'RAGIC_FORM_Z01 未設定' };
+  try {
+    const r = await ragic.getParentByPhone('__healthcheck__');
+    return { synced: r ? 1 : 0, skipped: false };
+  } catch (err) {
+    return { synced: 0, error: err.message };
+  }
+}
+async function _pingZ02Impl() {
+  if (!ragicEnabled()) return { synced: 0, skipped: true };
+  if (!process.env.RAGIC_FORM_Z02) return { synced: 0, error: 'RAGIC_FORM_Z02 未設定' };
+  try {
+    const r = await ragic.getStudentByIdNumber('__healthcheck__');
+    return { synced: r ? 1 : 0, skipped: false };
+  } catch (err) {
+    return { synced: 0, error: err.message };
+  }
+}
+
 const FORM_META = {
-  staff:   { code: 'H01_STAFF',   label: 'H01 員工 (admin_staff)',   impl: _syncStaffImpl },
-  coaches: { code: 'H01_COACHES', label: 'H01 教練 (coaches)',       impl: _syncCoachesImpl },
-  venues:  { code: 'H05_VENUES',  label: 'H05 場館 (venues)',        impl: _syncVenuesImpl },
+  staff:    { code: 'H01_STAFF',    label: 'H01 員工 (admin_staff)',  impl: _syncStaffImpl,   env: 'RAGIC_FORM_H01' },
+  coaches:  { code: 'H01_COACHES',  label: 'H01 教練 (coaches)',      impl: _syncCoachesImpl, env: 'RAGIC_FORM_H01' },
+  venues:   { code: 'H05_VENUES',   label: 'H05 場館 (venues)',       impl: _syncVenuesImpl,  env: 'RAGIC_FORM_H05' },
+  parents:  { code: 'Z01_PARENTS',  label: 'Z01 家長 (按請求查詢)',   impl: _pingZ01Impl,     env: 'RAGIC_FORM_Z01' },
+  students: { code: 'Z02_STUDENTS', label: 'Z02 學員 (按請求查詢)',   impl: _pingZ02Impl,     env: 'RAGIC_FORM_Z02' },
 };
 
 async function _logSyncResult(jobName, formCode, result, durationMs, triggeredBy) {
@@ -336,9 +361,12 @@ async function _runWithLog(jobName, triggeredBy = 'cron') {
   return result;
 }
 
-async function syncStaffFromRagic(triggeredBy = 'cron')   { return _runWithLog('staff',   triggeredBy); }
-async function syncCoachesFromRagic(triggeredBy = 'cron') { return _runWithLog('coaches', triggeredBy); }
-async function syncVenuesFromRagic(triggeredBy = 'cron')  { return _runWithLog('venues',  triggeredBy); }
+async function syncStaffFromRagic(triggeredBy = 'cron')    { return _runWithLog('staff',    triggeredBy); }
+async function syncCoachesFromRagic(triggeredBy = 'cron')  { return _runWithLog('coaches',  triggeredBy); }
+async function syncVenuesFromRagic(triggeredBy = 'cron')   { return _runWithLog('venues',   triggeredBy); }
+async function pingParentsFromRagic(triggeredBy = 'cron')  { return _runWithLog('parents',  triggeredBy); }
+async function pingStudentsFromRagic(triggeredBy = 'cron') { return _runWithLog('students', triggeredBy); }
+function getRagicJobNames() { return Object.keys(FORM_META); }
 
 function getRagicEnvFlags() {
   return {
@@ -608,4 +636,7 @@ module.exports = {
   ragicEnabled,
   getRagicEnvFlags,
   getSyncStatusSnapshot,
+  pingParentsFromRagic,
+  pingStudentsFromRagic,
+  getRagicJobNames,
 };
