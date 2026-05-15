@@ -44,29 +44,9 @@ function ragicEnabled() {
 // 由 admin 在「Ragic 待審核」頁面手動 approve / reject 後才真正套用。
 // ─────────────────────────────────────────────────────────────
 
-/** 穩定序列化（key 排序）→ 比對 JSON 不受欄位順序影響。 */
-function _stableStringify(obj) {
-  if (obj === null || typeof obj !== 'object') return JSON.stringify(obj);
-  if (Array.isArray(obj)) return '[' + obj.map(_stableStringify).join(',') + ']';
-  const keys = Object.keys(obj).sort();
-  return '{' + keys.map(k => JSON.stringify(k) + ':' + _stableStringify(obj[k])).join(',') + '}';
-}
-
-/** 同 entity 已有相同 payload 的 rejected row → 視為「admin 已拒」，本次 sync skip。 */
-async function _isPayloadRejected(entityType, entityId, payload) {
-  const target = _stableStringify(payload);
-  const r = await pool.query(
-    `SELECT payload_json FROM ragic_staging_changes
-       WHERE entity_type = $1 AND entity_id = $2 AND status = 'rejected'
-       ORDER BY reviewed_at DESC NULLS LAST LIMIT 20`,
-    [entityType, entityId]
-  );
-  return r.rows.some(row => _stableStringify(row.payload_json) === target);
-}
-
-/** Upsert 一筆 pending staging（同 entity 已有 pending → 更新；rejected payload 相同 → 不寫）。 */
+/** Upsert 一筆 pending staging（同 entity 已有 pending → 更新該 row 而非新增）。
+ *  注意：依 spec，rejected 不抑制 — 下次 Ragic 同步若仍有差異，會重新進待審區。 */
 async function _stageIfNotRejected(formCode, entityType, entityId, changeType, payload, diff) {
-  if (await _isPayloadRejected(entityType, entityId, payload)) return false;
   await pool.query(
     `INSERT INTO ragic_staging_changes
        (form_code, entity_type, entity_id, change_type, payload_json, diff_json, fetched_at, status)

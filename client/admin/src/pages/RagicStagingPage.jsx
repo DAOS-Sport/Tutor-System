@@ -255,7 +255,7 @@ export default function RagicStagingPage() {
         <div className="font-bold text-gray-700">說明</div>
         <ul className="mt-1 list-disc space-y-1 pl-4">
           <li>同步只會寫入差異；同 entity 已有 pending 時，新差異直接覆蓋舊的 pending row。</li>
-          <li>退回（rejected）後，下次同步若 Ragic 仍是相同內容，<span className="font-bold">不會</span>再進入待審；要重新觸發必須 Ragic 該欄位再次變更。</li>
+          <li>退回（rejected）後，下次 Ragic 同步若仍有差異，<span className="font-bold">會</span>重新進入待審區（依 spec）。如要永久忽略，請於 Ragic 端把資料調整為與系統一致。</li>
           <li>通過時仍尊重各欄位的 *_overridden_at 保護（後台手動編輯過的不會被覆蓋）。</li>
           <li>系統內部欄位（multiplier / is_senior / role / line_token / 銀行帳戶）永不從 Ragic 同步。</li>
         </ul>
