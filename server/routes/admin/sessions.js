@@ -38,6 +38,49 @@ function rowToCancelled(r) {
   };
 }
 
+/**
+ * Task #55：日期範圍 + 多場館篩選版本
+ *  GET /api/admin/sessions?from=YYYY-MM-DD&to=YYYY-MM-DD&venueIds=B,C
+ *  - 範圍最大 31 天；前端週課表視角用，條列也可呼叫
+ *  - staff 角色強制 venue_id = 自己場館（忽略 client 傳入的 venueIds）
+ */
+router.get('/', requireAdminAuth, async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    if (!from || !to || !/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+      return res.status(400).json({ error: 'from / to (YYYY-MM-DD) required' });
+    }
+    const fromD = new Date(from + 'T00:00:00Z');
+    const toD = new Date(to + 'T00:00:00Z');
+    if (isNaN(fromD) || isNaN(toD) || toD < fromD) {
+      return res.status(400).json({ error: 'invalid date range' });
+    }
+    const days = Math.round((toD - fromD) / 86400000) + 1;
+    if (days > 31) return res.status(400).json({ error: 'range max 31 days' });
+
+    let venueIds;
+    if (req.adminUser.role === 'staff') {
+      venueIds = [req.adminUser.venue_id || '__no_venue__'];
+    } else if (req.query.venueIds) {
+      const raw = String(req.query.venueIds);
+      venueIds = raw.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+
+    const args = [from, to];
+    let sql = `SELECT * FROM admin_today_sessions WHERE date >= $1 AND date <= $2`;
+    if (venueIds && venueIds.length) {
+      args.push(venueIds);
+      sql += ` AND venue_id = ANY($${args.length}::text[])`;
+    }
+    sql += ` ORDER BY date, start_time`;
+    const r = await pool.query(sql, args);
+    res.json(r.rows.map(rowToSession));
+  } catch (err) {
+    console.error('[admin/sessions]', err);
+    res.status(500).json({ error: 'load sessions failed' });
+  }
+});
+
 router.get('/today', requireAdminAuth, async (req, res) => {
   try {
     // staff 強制只看自己的場館；admin / manager 可帶 venueId 跨館篩選

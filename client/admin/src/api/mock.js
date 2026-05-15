@@ -440,6 +440,14 @@ export const mockDb = {
     return SESSIONS.filter((s) => !venueId || s.venue_id === venueId).map((s) => ({ ...s }));
   },
 
+  // Task #55：依日期範圍 + 多場館篩選；mock 內僅有今日 4 筆，仍可示範回傳結構
+  rangeSessions({ from, to, venueIds }) {
+    return SESSIONS
+      .filter((s) => (!from || s.date >= from) && (!to || s.date <= to))
+      .filter((s) => !venueIds || !venueIds.length || venueIds.includes(s.venue_id))
+      .map((s) => ({ ...s }));
+  },
+
   verifyCheckin({ phone, periodId }) {
     const e = ENROLLMENTS.find((x) =>
       (!periodId || x.id === periodId) &&
