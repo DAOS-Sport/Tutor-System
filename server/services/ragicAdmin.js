@@ -242,7 +242,9 @@ async function _syncVenuesImpl() {
         continue;
       }
       const diff = {};
-      for (const f of VENUE_SYNC_FIELDS) {
+      // Task #66：銀行欄位 (bank_*, account_*) 為系統內部欄位，不從 Ragic 同步
+      // 只 stage name / address / is_active
+      for (const f of ['name', 'address']) {
         if (cur[`${f}_overridden_at`] != null) continue;
         const from = cur[f] || '';
         const to = rv[f] || '';
@@ -352,23 +354,19 @@ async function _applyVenueChange(row, client) {
     );
     return;
   }
+  // Task #66：銀行欄位 / line_token 為系統內部欄位，apply 也不從 Ragic 寫入
+  // (新 row 用空值佔位；既有 row 完全保留原值)
   await client.query(
     `INSERT INTO admin_venues (id, code, name, address, line_token,
         bank_institution_name, bank_branch_name, account_holder, account_number,
         is_active, last_synced_at)
-     VALUES ($1,$1,$2,$3,'',$4,$5,$6,$7,TRUE,NOW())
+     VALUES ($1,$1,$2,$3,'','','','','',TRUE,NOW())
      ON CONFLICT (id) DO UPDATE SET
        name = CASE WHEN admin_venues.name_overridden_at IS NULL THEN EXCLUDED.name ELSE admin_venues.name END,
        address = CASE WHEN admin_venues.address_overridden_at IS NULL THEN EXCLUDED.address ELSE admin_venues.address END,
-       bank_institution_name = CASE WHEN admin_venues.bank_institution_name_overridden_at IS NULL THEN EXCLUDED.bank_institution_name ELSE admin_venues.bank_institution_name END,
-       bank_branch_name = CASE WHEN admin_venues.bank_branch_name_overridden_at IS NULL THEN EXCLUDED.bank_branch_name ELSE admin_venues.bank_branch_name END,
-       account_holder = CASE WHEN admin_venues.account_holder_overridden_at IS NULL THEN EXCLUDED.account_holder ELSE admin_venues.account_holder END,
-       account_number = CASE WHEN admin_venues.account_number_overridden_at IS NULL THEN EXCLUDED.account_number ELSE admin_venues.account_number END,
        is_active = CASE WHEN admin_venues.is_active_overridden_at IS NULL THEN TRUE ELSE admin_venues.is_active END,
        last_synced_at = NOW()`,
-    [code, p.name || code, p.address || '',
-     p.bank_institution_name || '', p.bank_branch_name || '',
-     p.account_holder || '', p.account_number || '']
+    [code, p.name || code, p.address || '']
   );
   await client.query(
     `INSERT INTO venues (id, name, full_address, is_active)

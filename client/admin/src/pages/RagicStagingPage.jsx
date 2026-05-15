@@ -182,7 +182,7 @@ export default function RagicStagingPage() {
     <div>
       <PageHeader
         title="Ragic 待審核"
-        description="Ragic 同步抓回的差異會先進入此區，由管理員人工審核後才寫入正式表。退回後同樣的內容下次同步不會再次出現。"
+        description="Ragic 同步抓回的差異會先進入此區，由管理員人工審核後才寫入正式表。退回的內容若 Ragic 端仍有差異，下次同步會重新進入待審區。"
         actions={
           filterStatus === 'pending' && pendingCount > 0 ? (
             <button
