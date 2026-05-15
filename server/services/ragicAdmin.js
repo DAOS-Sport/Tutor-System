@@ -2,9 +2,9 @@
  * Ragic 同步：後台員工 / 教練 / 場館（best-effort）
  *
  * 對照來源：docs/ragic_api.md
- *  - H01 員工 (在職 + 應徵職務含「教練」) → employees + roles=['coach']  (syncCoachesFromRagic)
- *  - H01 員工 (全部在職)                  → employees + roles=[] 待派    (syncStaffFromRagic, Task #51)
- *  - H05 場館 (履約中、非內勤單位)        → admin_venues + venues        (兩側鏡寫保持一致)
+ *  - H01 員工 (在職 + 應徵職務含「教練」) → coaches              (Task #32 新增)
+ *  - H01 員工 (全部在職)                  → admin_staff           (角色指派用，原本就有)
+ *  - H05 場館 (履約中、非內勤單位)        → admin_venues + venues  (兩側鏡寫保持一致)
  *
  * 規則：
  * - 沒設定 RAGIC_API_KEY / RAGIC_BASE_URL → 直接 noop（dev 環境正常）
@@ -37,56 +37,38 @@ function ragicEnabled() {
 })();
 
 /**
- * 員工 Ragic 同步（Task #51 已遷移到 employees）：H01 全部在職員工 → employees。
- * - key = ragic_employee_id（H01 工號 3000935）
- * - 第一次 INSERT：roles=[] 待 admin 在 F-A02 手動指派（非教練不自動推 'coach' 避免錯派）
- *   employees.roles 預設 NOT NULL DEFAULT '{}'，這裡顯式寫 '{}'::text[] 維持可讀性
- * - ON CONFLICT (ragic_employee_id)：只更新從 Ragic 同步的「人事資料」
- *   （name / phone / is_active / last_synced_at / updated_at），絕對不覆蓋系統內部欄位：
- *   roles / password_hash / is_senior / pricing_multiplier / venue_id /
- *   bio_rich_text / specialties / intro_review_* / line_uid / email
- *   （email/line_uid 由 syncCoachesFromRagic 處理；此處不動以免兩個 sync 互相覆蓋）
- * - 不在 Ragic 在職名單的 → 軟下架 is_active=FALSE，但範圍鎖在「非教練」員工
- *   （ragic_employee_id IS NOT NULL AND NOT 'coach'=ANY(roles)）
- *   coach 軟下架交給 syncCoachesFromRagic 處理，避免兩個 sweep 邏輯打架
+ * 員工 Ragic 同步：把 H01 在職員工 upsert 到 admin_staff。
+ * - 用 Ragic 工號（3000935）對到 admin_staff.ragic_record_id（同時當主鍵 id 的 fallback）
+ * - 第一次匯入時，預設 role 給 'coach'；若該員工含「行政櫃檯」字樣→ 'staff'
+ * - 已存在的列只更新 name / phone / venue_id（其他系統內部欄位保留）
  */
 async function syncStaffFromRagic() {
   if (!ragicEnabled()) return { synced: 0, skipped: true };
   try {
     const records = await ragic.getAllStaff();
-    const seenIds = new Set();
     let synced = 0;
     for (const r of records) {
       const ragicId = r['員工編號'] || r['工號'] || r['3000935'];
       if (!ragicId) continue;
       const name = r['姓名'] || r['3000933'] || '';
-      if (!name) continue;
       const phone = r['手機'] || r['手機（公司）'] || r['3001424'] || r['手機（個人）'] || r['3000941'] || '';
+      const role = r['應徵職務'];
+      const roleStr = Array.isArray(role) ? role.join(',') : (role || '');
+      const isCoach = roleStr.includes('教練') || (r['職稱'] || '').includes('教練');
+      const roleVal = isCoach ? 'coach' : 'staff';
       const isActive = (r['在職狀態'] || r['3000945']) === '在職';
-      seenIds.add(String(ragicId));
       await pool.query(
-        `INSERT INTO employees
-            (ragic_employee_id, name, phone, roles, is_active, last_synced_at)
-         VALUES ($1, $2, NULLIF($3, ''), '{}'::text[], $4, NOW())
-         ON CONFLICT (ragic_employee_id) DO UPDATE SET
+        `INSERT INTO admin_staff (id, name, role, phone, is_senior, multiplier, active, ragic_record_id, last_synced_at)
+         VALUES ($1, $2, $3, $4, FALSE, 1.00, $5, $1, NOW())
+         ON CONFLICT (id) DO UPDATE SET
            name = EXCLUDED.name,
-           phone = COALESCE(NULLIF($3, ''), employees.phone),
-           is_active = EXCLUDED.is_active,
-           last_synced_at = NOW(),
-           updated_at = NOW()`,
-        [String(ragicId), name, phone, isActive]
+           phone = EXCLUDED.phone,
+           active = EXCLUDED.active,
+           ragic_record_id = EXCLUDED.ragic_record_id,
+           last_synced_at = NOW()`,
+        [String(ragicId), name, roleVal, phone, isActive]
       );
       synced += 1;
-    }
-    if (seenIds.size > 0) {
-      await pool.query(
-        `UPDATE employees SET is_active = FALSE, updated_at = NOW()
-         WHERE ragic_employee_id IS NOT NULL
-           AND ragic_employee_id <> ALL($1::text[])
-           AND NOT ('coach' = ANY(roles))
-           AND is_active = TRUE`,
-        [Array.from(seenIds)]
-      );
     }
     return { synced, skipped: false };
   } catch (err) {
@@ -148,38 +130,28 @@ async function syncCoachesFromRagic() {
       if (!name || !phone) continue;
       seenIds.add(String(ragicId));
       if (lineUid) linked += 1;
-      // Task #51：寫入 employees（coaches view 不可寫）。
-      // 第一次 INSERT 時建立 employee row 並標記 roles=ARRAY['coach']。
-      // ON CONFLICT (ragic_employee_id) → 只更新從 Ragic 同步的「人事資料」欄位
-      // （name / phone / email / line_uid / is_active / last_synced_at / updated_at），
-      // 絕對不覆蓋系統內部欄位：roles / password_hash / is_senior / pricing_multiplier /
-      // bio_rich_text / specialties / intro_review_*（避免後台手動設定被 Ragic 蓋掉）。
-      // line_uid 用 COALESCE(employees.line_uid, NULLIF($5,'')) — 已綁的值不會被空字串/換值洗掉。
+      // upsert：第一次插入填全部，後續更新 name/phone/email/is_active；
+      // line_uid 用 COALESCE(NULLIF(...,''), coaches.line_uid) — 已綁的值不會被空字串/換值洗掉
       await pool.query(
-        `INSERT INTO employees
-            (ragic_employee_id, name, phone, email, line_uid, roles, is_active, last_synced_at)
-         VALUES ($1, $2, $3, $4, NULLIF($5, ''), ARRAY['coach']::text[], TRUE, NOW())
+        `INSERT INTO coaches (ragic_employee_id, name, phone, email, line_uid, is_active)
+         VALUES ($1, $2, $3, $4, NULLIF($5, ''), TRUE)
          ON CONFLICT (ragic_employee_id) DO UPDATE SET
            name = EXCLUDED.name,
            phone = EXCLUDED.phone,
-           email = COALESCE(NULLIF(EXCLUDED.email, ''), employees.email),
-           line_uid = COALESCE(employees.line_uid, NULLIF($5, '')),
+           email = COALESCE(NULLIF(EXCLUDED.email, ''), coaches.email),
+           line_uid = COALESCE(coaches.line_uid, NULLIF($5, '')),
            is_active = TRUE,
-           last_synced_at = NOW(),
            updated_at = NOW()`,
         [String(ragicId), name, phone, email, lineUid]
       );
       synced += 1;
     }
-    // 不在 Ragic 在職教練名單中的 → 標 is_active = FALSE。
-    // 範圍鎖在「ragic 同步來的 coach role 員工」(ragic_employee_id IS NOT NULL +
-    // 'coach' = ANY(roles))，避免誤關閉手動建立的 admin/manager/counter 帳號。
+    // 不在 Ragic 在職教練名單中的 → 標 is_active = FALSE
     if (seenIds.size > 0) {
       await pool.query(
-        `UPDATE employees SET is_active = FALSE, updated_at = NOW()
+        `UPDATE coaches SET is_active = FALSE, updated_at = NOW()
          WHERE ragic_employee_id IS NOT NULL
            AND ragic_employee_id <> ALL($1::text[])
-           AND 'coach' = ANY(roles)
            AND is_active = TRUE`,
         [Array.from(seenIds)]
       );

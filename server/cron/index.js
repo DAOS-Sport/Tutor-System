@@ -262,7 +262,7 @@ function initCronJobs() {
   });
 
   // ── 每天 10:30：考核門檻不達標偵測 → 通知主管 (F-A09) ────────
-  // 同月、同教練、同 metric 不重複（資料庫 UNIQUE 兜底）；推 LINE 給管理層 employees.line_uid。
+  // 同月、同教練、同 metric 不重複（資料庫 UNIQUE 兜底）；推 LINE 給管理層 admin_users.line_uid。
   cron.schedule('30 10 * * *', async () => {
     try {
       const created = await evaluations.detectBelowThreshold();
@@ -274,10 +274,8 @@ function initCronJobs() {
       // 收件人：admin / manager 且設定了 line_uid；每位主管帶自己的 venue_id
       // （pushMessage 需要 venueId 解析 channel token；無 venue 的 admin 用任一啟用場館兜底）。
       const mgrs = await pool.query(
-        `SELECT line_uid, venue_id FROM employees
-          WHERE ('system_admin' = ANY(roles) OR 'manager' = ANY(roles))
-            AND line_uid IS NOT NULL
-            AND is_active = TRUE`
+        `SELECT line_uid, venue_id FROM admin_users
+          WHERE role IN ('admin','manager') AND line_uid IS NOT NULL`
       );
       let fallbackVenue = null;
       if (mgrs.rows.some((m) => !m.venue_id)) {

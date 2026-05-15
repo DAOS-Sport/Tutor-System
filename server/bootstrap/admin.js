@@ -287,29 +287,22 @@ async function ensureSchema() {
 }
 
 async function seedIfEmpty() {
-  // Task #51 5A-5b：admin_users / admin_staff seed 已移除，全部改寫到 employees。
-  // - admin_users seed → employees seed（admin/manager/staff 三個 seed 帳號的「username」放在 email 欄；
-  //                       roles[] 用新 role 名：admin→system_admin / manager→manager / staff→counter）
-  // - admin_staff seed → 不再 seed（coaches 已於 Task #51 step 1 一次性遷入 employees）
+  // Users — 在 production 必須提供 ADMIN_BOOTSTRAP_PASSWORD（由 operator 設定的強密碼），
+  // 不允許 well-known 弱密碼帶進 production。
   //
-  // 帳號 seed/同步行為（同舊版邏輯，只是 target 換成 employees）：
-  //   - employees 中無 seed 帳號：首次 seed
-  //       * IS_PROD + 無 ADMIN_BOOTSTRAP_PASSWORD：warn skip
-  //       * 否則：INSERT 三筆，密碼用 env 或 DEFAULT_USERS 弱密碼
-  //   - 已存在 + ADMIN_BOOTSTRAP_PASSWORD：production 每次同步；dev 只有 ADMIN_FORCE_RESET_ON_BOOT=true 才同步
-  //   - 已存在 + 無 ADMIN_BOOTSTRAP_PASSWORD + IS_PROD：noop（正常情況）
-  const ROLE_MAP = { admin: 'system_admin', manager: 'manager', staff: 'counter' };
-  const seedEmails = DEFAULT_USERS.map((x) => x.username);
-  const u = await pool.query(
-    `SELECT COUNT(*)::int AS n FROM employees WHERE email = ANY($1::text[])`,
-    [seedEmails]
-  );
+  // 行為：
+  //   - 表空時：照常 INSERT seed 帳號
+  //   - 表非空 + ADMIN_BOOTSTRAP_PASSWORD 存在：把 DEFAULT_USERS 裡的 seed 帳號密碼更新成新密碼
+  //     （讓管理員改過密碼後重新部署能自動生效，而不必手動進 DB）
+  //   - 表非空 + 無密碼 + IS_PROD：warn，跳過
+  const u = await pool.query('SELECT COUNT(*)::int AS n FROM admin_users');
   const bootstrapPwd = process.env.ADMIN_BOOTSTRAP_PASSWORD;
 
   if (u.rows[0].n === 0) {
+    // 首次 seed
     if (IS_PROD && !bootstrapPwd) {
       console.warn(
-        '[admin bootstrap] SKIPPED employees admin seed in production: ' +
+        '[admin bootstrap] SKIPPED admin_users seed in production: ' +
         '請在 Replit Secrets 設定 ADMIN_BOOTSTRAP_PASSWORD（將會套用到 admin/manager/staff 三個 seed 帳號）後再重新啟動。' +
         '若已透過其他方式建立第一個 admin 帳號，可忽略此警告。'
       );
@@ -319,27 +312,31 @@ async function seedIfEmpty() {
         const pwd = useEnvPwd ? bootstrapPwd : x.password;
         const hash = await bcrypt.hash(pwd, 10);
         await pool.query(
-          `INSERT INTO employees (email, password_hash, name, roles, venue_id, is_active)
-           VALUES ($1, $2, $3, $4::text[], $5, TRUE)
-           ON CONFLICT (email) DO NOTHING`,
-          [x.username, hash, x.name, [ROLE_MAP[x.role]], x.venue_id]
+          `INSERT INTO admin_users (id, username, password_hash, name, role, venue_id)
+           VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING`,
+          [x.id, x.username, hash, x.name, x.role, x.venue_id]
         );
       }
       if (useEnvPwd) {
-        console.log('[admin bootstrap] seeded employees admin accounts (3 accounts, password = ADMIN_BOOTSTRAP_PASSWORD)');
+        console.log('[admin bootstrap] seeded admin_users (3 accounts, password = ADMIN_BOOTSTRAP_PASSWORD)');
       } else {
-        console.log('[admin bootstrap] seeded employees admin accounts (3 dev accounts: admin/manager/staff with weak passwords — NODE_ENV != production)');
+        console.log('[admin bootstrap] seeded admin_users (3 dev accounts: admin/manager/staff with weak passwords — NODE_ENV != production)');
       }
     }
-  } else if (bootstrapPwd && (IS_PROD || process.env.ADMIN_FORCE_RESET_ON_BOOT === 'true')) {
+  } else if (bootstrapPwd && process.env.ADMIN_FORCE_RESET_ON_BOOT === 'true') {
+    // 帳號已存在 + ADMIN_BOOTSTRAP_PASSWORD 有設定 + ADMIN_FORCE_RESET_ON_BOOT=true
+    // → 強制把 seed 帳號密碼更新成目前的 ADMIN_BOOTSTRAP_PASSWORD
+    // 這是 opt-in 行為，避免每次重啟都不預期地覆蓋管理員自行修改的密碼。
     const hash = await bcrypt.hash(bootstrapPwd, 10);
+    const seedUsernames = DEFAULT_USERS.map((x) => x.username);
     await pool.query(
-      `UPDATE employees SET password_hash = $1 WHERE email = ANY($2::text[])`,
-      [hash, seedEmails]
+      `UPDATE admin_users SET password_hash = $1 WHERE username = ANY($2::text[])`,
+      [hash, seedUsernames]
     );
-    console.log('[admin bootstrap] synced seed employee passwords from ADMIN_BOOTSTRAP_PASSWORD (IS_PROD=' + IS_PROD + ')');
+    console.log('[admin bootstrap] ADMIN_FORCE_RESET_ON_BOOT: synced seed account passwords from ADMIN_BOOTSTRAP_PASSWORD');
   } else if (!bootstrapPwd && IS_PROD) {
-    console.log('[admin bootstrap] employees admin accounts already seeded, skipping password sync (no ADMIN_BOOTSTRAP_PASSWORD)');
+    // production + 帳號已存在 + 無 ADMIN_BOOTSTRAP_PASSWORD → 正常情況，不做任何事
+    console.log('[admin bootstrap] admin_users already seeded, skipping password sync (production, no ADMIN_BOOTSTRAP_PASSWORD)');
   }
 
   // Venues
@@ -355,9 +352,18 @@ async function seedIfEmpty() {
     console.log('[admin bootstrap] seeded admin_venues (3 venues)');
   }
 
-  // Task #51 5A-5b：admin_staff seed 已移除（DEFAULT_STAFF 同保留為歷史參考但不再 INSERT）。
-  // coaches 已於 Task #51 step 1 一次性遷入 employees；非教練的 manager/counter 由 Ragic sync
-  // 或 employees admin seed 維護，不需要 admin_staff 這條 legacy 路徑。
+  // Staff
+  const s = await pool.query('SELECT COUNT(*)::int AS n FROM admin_staff');
+  if (s.rows[0].n === 0) {
+    for (const x of DEFAULT_STAFF) {
+      await pool.query(
+        `INSERT INTO admin_staff (id, name, role, venue_id, phone, is_senior, multiplier, active)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO NOTHING`,
+        [x.id, x.name, x.role, x.venue_id, x.phone, x.is_senior, x.multiplier, x.active]
+      );
+    }
+    console.log('[admin bootstrap] seeded admin_staff (6 records)');
+  }
 
   // Settings
   const st = await pool.query('SELECT COUNT(*)::int AS n FROM admin_settings');

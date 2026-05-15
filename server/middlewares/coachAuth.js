@@ -1,27 +1,17 @@
 /**
  * 教練端 LIFF 授權中介層
+ * - signCoachToken({coachId, phone, lineUid}): 簽發 12 小時 JWT
+ * - requireCoach: 必須持有有效 JWT 且 type === 'coach'
+ * - requireCoachOwner(paramName): 確認路徑參數所指 coach 與 token 內 coachId 一致 (IDOR 防護)
+ * - byPhoneRateLimit: 對 /coaches/by-phone 做 per-IP 速率限制 (防暴力枚舉手機)
  *
- * Task #51 employees 表合併後：
- * - 「coach」現在是 employees 表中 roles 陣列含 'coach' 的 employee
- * - JWT payload 主鍵欄位名 coachId → employeeId（仍指向 employees.id UUID）
- * - 新舊 token 並存期間（最多 12 小時）：requireCoach 同時接受 payload.employeeId 與 payload.coachId
- *
- * 對外 API：
- * - signCoachToken({employeeId, phone, lineUid?, roles?}): 簽發 12 小時 JWT
- *   （亦接受 legacy `coachId` 入參，方便 step 4 還沒改完的呼叫端短期相容）
- * - requireCoach: 必須持有有效 JWT 且 type === 'coach'，將身分注入 req.coach
- *   - req.coach = { id, phone, lineUid, roles[] }
- *   - req.coach.id = employees.id (UUID)
- * - requireCoachOwner(paramName): IDOR 防護，比對 req.params[paramName] === req.coach.id
- * - byPhoneRateLimit / byLineUidRateLimit: per-IP 速率限制（防暴力枚舉）
- *
- * 認證設計（不變）：
+ * 認證設計：
  *   - 生產環境 (NODE_ENV=production 或 REQUIRE_LINE_ID_TOKEN=1)：手機 + LIFF id_token 雙因素必填
- *     LINE 驗證見 services/lineAuth.js，比對 employees.line_uid 後才簽發 token
+ *     LINE 驗證見 services/lineAuth.js，比對 coaches.line_uid 後才簽發 token
  *   - 開發環境且未帶 id_token 時：允許 phone-only 後備（並輸出 warn log）
  *   - 速率限制 + 失敗紀錄 console.warn 始終啟用
  *
- * Token payload 結構：{ employeeId, phone, type: 'coach', lineUid?, roles?, iat, exp }
+ * Token payload 結構：{ coachId, phone, lineUid?, type: 'coach', iat, exp }
  */
 const jwt = require('jsonwebtoken');
 
@@ -32,21 +22,9 @@ const TOKEN_TTL = '12h';
 const { getSecret: _adminGetSecret } = require('./adminAuth');
 function getSecret() { return _adminGetSecret(); }
 
-/**
- * 簽發教練 JWT。
- * @param {Object} args
- * @param {string} [args.employeeId] - 新欄位（推薦）；employees.id UUID
- * @param {string} [args.coachId]    - Legacy 欄位（短期相容；step 4 後移除）
- * @param {string} args.phone
- * @param {string|null} [args.lineUid]
- * @param {string[]} [args.roles] - employees.roles 快照（可選；幫助前端做角色 UI）
- */
-function signCoachToken({ employeeId, coachId, phone, lineUid = null, roles = null }) {
-  const id = employeeId || coachId;
-  if (!id) throw new Error('signCoachToken: employeeId is required');
-  const payload = { employeeId: id, phone, type: 'coach' };
+function signCoachToken({ coachId, phone, lineUid = null }) {
+  const payload = { coachId, phone, type: 'coach' };
   if (lineUid) payload.lineUid = lineUid;
-  if (Array.isArray(roles) && roles.length) payload.roles = roles;
   return jwt.sign(payload, getSecret(), { expiresIn: TOKEN_TTL });
 }
 
@@ -56,15 +34,7 @@ function requireCoach(req, res, next) {
   try {
     const payload = jwt.verify(token, getSecret());
     if (payload.type !== 'coach') return res.status(403).json({ error: 'Coach token required' });
-    // 同時接受新欄位 employeeId 與 legacy coachId（in-flight tokens ≤12h）
-    const id = payload.employeeId || payload.coachId;
-    if (!id) return res.status(401).json({ error: 'Malformed coach token (missing employeeId)' });
-    req.coach = {
-      id,
-      phone: payload.phone,
-      lineUid: payload.lineUid || null,
-      roles: Array.isArray(payload.roles) ? payload.roles : ['coach'],
-    };
+    req.coach = { id: payload.coachId, phone: payload.phone, lineUid: payload.lineUid || null };
     next();
   } catch {
     res.status(401).json({ error: 'Invalid or expired token' });

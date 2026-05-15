@@ -26,33 +26,30 @@ async function getRoomVenueId(roomId) {
 }
 
 /**
- * 動態挑出 employees 表中具備 line_uid 的主管，且具該場館權限（Task #51 已遷移）：
- *   - system_admin 全域可收
- *   - manager      必須 venue_id = roomVenueId（避免跨館資訊外洩）
- *   - counter      不收（policy: 行政櫃檯不應收到關鍵字命中）
+ * 動態挑出 admin_users 表中具備 line_uid 的主管，且具該場館權限：
+ *   - admin   全域可收
+ *   - manager 必須 venue_id = roomVenueId（避免跨館資訊外洩）
+ *   - staff   不收（policy: staff 不應收到關鍵字命中）
  *
- * roles[] 改寫成 ANY() 條件；deriveLegacyRole 回傳的 'admin' 對應 'system_admin'。
- * 失敗安全 fallback 為空陣列。
+ * 若 line_uid 欄位尚未在資料庫中存在，pg 會丟錯，這裡安全 fallback 為空陣列。
  */
 async function listSupervisors(roomVenueId) {
   const supervisors = [];
   try {
     const r = await pool.query(`
-      SELECT name, roles, line_uid, venue_id
-        FROM employees
+      SELECT name, role, line_uid, venue_id
+        FROM admin_users
        WHERE line_uid IS NOT NULL AND line_uid <> ''
-         AND is_active = TRUE
          AND (
-           'system_admin' = ANY(roles)
-           OR ('manager' = ANY(roles) AND venue_id = $1)
+           role = 'admin'
+           OR (role = 'manager' AND venue_id = $1)
          )
     `, [roomVenueId]);
-    for (const u of r.rows) {
-      const role = u.roles.includes('system_admin') ? 'admin' : 'manager';
-      supervisors.push({ name: u.name, role, line_uid: u.line_uid, venue_id: u.venue_id, source: 'employees' });
-    }
+    for (const u of r.rows) supervisors.push({ ...u, source: 'admin_users' });
   } catch (err) {
-    console.warn('[chat-alert] listSupervisors employees error:', err.message);
+    if (!/column .*line_uid.* does not exist/i.test(err.message)) {
+      console.warn('[chat-alert] listSupervisors admin_users error:', err.message);
+    }
   }
   return supervisors;
 }

@@ -96,10 +96,10 @@ initCronJobs();
 
 const PORT = process.env.PORT || 3000;
 
-// 啟動順序（2026-05-15 outage 修正）：
+// 啟動順序：
 // 1) production 必須有 JWT_SECRET（assertSecretConfigured 會 throw 讓 process exit）
-// 2) listen 先開 → /health 立刻 200，避免 autoscale cold-start health check timeout
-// 3) bootstrap admin + core 在 background（idempotent；任何一段失敗單獨 log，不影響 health）
+// 2) bootstrap admin_* 表（idempotent，production 缺 ADMIN_BOOTSTRAP_PASSWORD 時會跳過 user seed）
+// 3) listen
 (async () => {
   try {
     assertSecretConfigured();
@@ -107,22 +107,17 @@ const PORT = process.env.PORT || 3000;
     console.error(err.message);
     process.exit(1);
   }
-  // Listen first so /health responds during cold-start bootstrap.
-  server.listen(PORT, '0.0.0.0', () => {
-    console.log(`DAOS Server running on port ${PORT} (bootstrap in background)`);
-  });
-  // Bootstrap runs after listen; routes that hit not-yet-created tables will error normally,
-  // but the instance stays alive and serves /health, avoiding autoscale kill loops.
   try {
     await bootstrapAdmin();
-    console.log('[bootstrap] admin ready');
   } catch (err) {
     console.error('Admin bootstrap failed (server will still start, but /api/admin may error):', err.message);
   }
   try {
     await bootstrapCore();
-    console.log('[bootstrap] core ready');
   } catch (err) {
     console.error('Core schema bootstrap failed (LIFF coach module may error):', err.message);
   }
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`DAOS Server running on port ${PORT}`);
+  });
 })();

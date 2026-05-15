@@ -89,8 +89,8 @@ router.get('/:id', requireAdminRole('admin', 'manager'), async (req, res) => {
     if (!r.rowCount) return res.status(404).json({ error: 'not found' });
     const audits = await pool.query(
       `SELECT a.action, a.note, a.created_at, u.name AS by_name
-         FROM promotion_audit_logs a LEFT JOIN employees u ON u.id = a.by_user
-        WHERE a.promotion_id = $1::uuid ORDER BY a.created_at DESC LIMIT 50`,
+         FROM promotion_audit_logs a LEFT JOIN admin_users u ON u.id = a.by_user
+        WHERE a.promotion_id = $1 ORDER BY a.created_at DESC LIMIT 50`,
       [req.params.id]
     );
     const usage = await pool.query(
