@@ -32,14 +32,18 @@ export default function CoachesPage() {
     venuesApi.list().then(setVenues).catch(() => setVenues([]));
   }, []);
 
+  function normalizeFilters(f) {
+    const out = { ...f };
+    if (out.venueId && venues.length) {
+      const match = venues.find((v) => v.id === out.venueId || v.name === out.venueId);
+      out.venueId = match ? match.id : out.venueId;
+    }
+    return out;
+  }
+
   useEffect(() => {
     let cancel = false;
-    const apiFilters = { ...filters };
-    if (apiFilters.venueId && venues.length) {
-      const match = venues.find((v) => v.id === apiFilters.venueId || v.name === apiFilters.venueId);
-      apiFilters.venueId = match ? match.id : apiFilters.venueId;
-    }
-    coachesApi.list(apiFilters)
+    coachesApi.list(normalizeFilters(filters))
       .then((c) => { if (!cancel) setCoaches(c); })
       .catch((err) => {
         if (cancel) return;
@@ -63,7 +67,7 @@ export default function CoachesPage() {
     try {
       const r = await coachesApi.syncRagic();
       if (r.skipped) toast.info('未設定 Ragic credentials，略過');
-      const fresh = await coachesApi.list(filters);
+      const fresh = await coachesApi.list(normalizeFilters(filters));
       setCoaches(fresh);
       if (!r.skipped) {
         const linked = fresh.filter((c) => c.line_bound).length;

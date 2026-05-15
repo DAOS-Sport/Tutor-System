@@ -36,11 +36,11 @@ function rowToCoach(r, venueIds = []) {
   };
 }
 
-async function listCoachesWithVenues(filterSql, filterParams) {
+async function listCoachesWithVenues(whereClause, filterParams) {
   const [coachesRes, venuesRes] = await Promise.all([
     pool.query(
       `SELECT c.* FROM coaches c
-        ${filterSql.where ? 'WHERE ' + filterSql.where : ''}
+        ${whereClause ? 'WHERE ' + whereClause : ''}
         ORDER BY c.is_active DESC, c.name`,
       filterParams
     ),
@@ -51,12 +51,7 @@ async function listCoachesWithVenues(filterSql, filterParams) {
     if (!venuesByCoach.has(row.coach_id)) venuesByCoach.set(row.coach_id, []);
     venuesByCoach.get(row.coach_id).push(row.venue_id);
   }
-  let coaches = coachesRes.rows.map((r) => rowToCoach(r, (venuesByCoach.get(r.id) || []).sort()));
-  // venueId 過濾必須等取到 M:N 關聯後才能套用
-  if (filterSql.venueId) {
-    coaches = coaches.filter((c) => c.venue_ids.includes(filterSql.venueId));
-  }
-  return coaches;
+  return coachesRes.rows.map((r) => rowToCoach(r, (venuesByCoach.get(r.id) || []).sort()));
 }
 
 router.get('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
@@ -71,11 +66,13 @@ router.get('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =>
     if (phone) { params.push(`%${phone}%`); where.push(`c.phone ILIKE $${params.length}`); }
     if (senior === 'yes') where.push(`c.is_senior = TRUE`);
     else if (senior === 'no') where.push(`(c.is_senior IS NULL OR c.is_senior = FALSE)`);
+    // venueId 改 SQL 端 JOIN coach_venues，避免拉全表後再 in-memory 過濾
+    if (venueId) {
+      params.push(venueId);
+      where.push(`EXISTS (SELECT 1 FROM coach_venues cv WHERE cv.coach_id = c.id AND cv.venue_id = $${params.length})`);
+    }
 
-    const coaches = await listCoachesWithVenues(
-      { where: where.join(' AND '), venueId: venueId || '' },
-      params
-    );
+    const coaches = await listCoachesWithVenues(where.join(' AND '), params);
     res.json(coaches);
   } catch (err) {
     console.error('[admin/coaches]', err);

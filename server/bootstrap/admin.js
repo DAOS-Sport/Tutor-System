@@ -295,6 +295,7 @@ async function ensureSchema() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_admin_staff_active ON admin_staff(active)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_admin_staff_venue ON admin_staff(venue_id)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_admin_users_active ON admin_users(is_active)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_admin_users_active_venue ON admin_users(is_active, venue_id)`);
 }
 
 async function seedIfEmpty() {

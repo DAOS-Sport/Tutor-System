@@ -27,16 +27,20 @@ export default function StaffPage() {
   // 場館載入一次（用作 combo 選項 + 顯示對照）
   useEffect(() => { venuesApi.list().then(setVenues).catch(() => setVenues([])); }, []);
 
+  // 把 combo 內的 venue 名稱統一反查回 id；給 useEffect 與 syncRagic 共用
+  function normalizeFilters(f) {
+    const out = { ...f };
+    if (out.venueId && venues.length) {
+      const match = venues.find((v) => v.id === out.venueId || v.name === out.venueId);
+      out.venueId = match ? match.id : out.venueId;
+    }
+    return out;
+  }
+
   // 過濾條件變動時重打 API（伺服器端過濾，避免 client 端二次處理）
   useEffect(() => {
     let cancel = false;
-    // 把 venueId 從 combo 名稱反查回 id（允許使用者直接輸入名稱）
-    const apiFilters = { ...filters };
-    if (apiFilters.venueId && venues.length) {
-      const match = venues.find((v) => v.id === apiFilters.venueId || v.name === apiFilters.venueId);
-      apiFilters.venueId = match ? match.id : apiFilters.venueId;
-    }
-    staffApi.list(apiFilters).then((s) => { if (!cancel) setStaff(s); });
+    staffApi.list(normalizeFilters(filters)).then((s) => { if (!cancel) setStaff(s); });
     return () => { cancel = true; };
   }, [filters, venues]);
 
@@ -46,7 +50,7 @@ export default function StaffPage() {
       const r = await staffApi.syncRagic();
       if (r.skipped) toast.info('未設定 Ragic credentials，略過');
       else toast.success(`已同步 ${r.synced || 0} 位員工`);
-      const fresh = await staffApi.list(filters);
+      const fresh = await staffApi.list(normalizeFilters(filters));
       setStaff(fresh);
     } catch {
       toast.error('Ragic 同步失敗');
