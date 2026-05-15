@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { enrollmentsApi } from '../../api/enrollments';
+import { venuesApi } from '../../api/venues';
+import { coachesApi } from '../../api/coaches';
 import { useToast } from '../../context/ToastContext';
-import { formatTWD } from '../../utils/format';
 
 const COURSE_TYPES = [
   { value: 1, label: '1 對 1 個別班' },
@@ -31,6 +32,19 @@ function Input({ value, onChange, type = 'text', placeholder, className = '' }) 
   );
 }
 
+function Select({ value, onChange, children, disabled, className = '' }) {
+  return (
+    <select
+      value={value}
+      disabled={disabled}
+      onChange={(e) => onChange(e.target.value)}
+      className={`w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-brand-teal disabled:bg-gray-100 disabled:text-gray-400 ${className}`}
+    >
+      {children}
+    </select>
+  );
+}
+
 export default function EditEnrollmentModal({ enrollment, onClose, onSaved }) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
@@ -38,7 +52,8 @@ export default function EditEnrollmentModal({ enrollment, onClose, onSaved }) {
   const [parentName, setParentName]         = useState(enrollment.parent_name || '');
   const [parentPhone, setParentPhone]       = useState(enrollment.parent_phone || '');
   const [students, setStudents]             = useState((enrollment.students || []).join('、'));
-  const [coach, setCoach]                   = useState(enrollment.coach || '');
+  const [venueId, setVenueId]               = useState(enrollment.venue_id || '');
+  const [coachId, setCoachId]               = useState(enrollment.coach_id || '');
   const [courseType, setCourseType]         = useState(enrollment.course_type || 1);
   const [originalPrice, setOriginalPrice]   = useState(enrollment.original_price ?? '');
   const [finalPrice, setFinalPrice]         = useState(enrollment.final_price ?? '');
@@ -46,14 +61,53 @@ export default function EditEnrollmentModal({ enrollment, onClose, onSaved }) {
   const [extraPhones, setExtraPhones]       = useState((enrollment.extra_parent_phones || []).join('\n'));
   const [notes, setNotes]                   = useState(enrollment.notes || '');
 
+  const [venues, setVenues] = useState([]);
+  const [coaches, setCoaches] = useState([]);
+  const [coachesLoading, setCoachesLoading] = useState(false);
   const [errors, setErrors] = useState({});
+
+  // 載入場館清單
+  useEffect(() => {
+    let alive = true;
+    venuesApi.list().then((d) => alive && setVenues(d || [])).catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
+  // 載入該場館的教練清單；換場館時 reset 教練選擇
+  useEffect(() => {
+    if (!venueId) { setCoaches([]); return; }
+    let alive = true;
+    setCoachesLoading(true);
+    coachesApi.list({ venueId, status: 'active' })
+      .then((d) => {
+        if (!alive) return;
+        const list = d || [];
+        setCoaches(list);
+        // 若目前 coachId 不在新場館的教練清單中 → reset；首次載入時若原 enrollment.coach_id 在內則保留
+        if (coachId && !list.some((c) => c.id === coachId)) setCoachId('');
+      })
+      .catch(() => alive && setCoaches([]))
+      .finally(() => alive && setCoachesLoading(false));
+    return () => { alive = false; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [venueId]);
+
+  const venueName = useMemo(
+    () => (venues.find((v) => v.id === venueId)?.name) || venueId,
+    [venues, venueId]
+  );
+  const newCoachName = useMemo(
+    () => (coaches.find((c) => c.id === coachId)?.name) || '',
+    [coaches, coachId]
+  );
 
   function validate() {
     const e = {};
     if (!parentName.trim()) e.parentName = '家長姓名必填';
     if (!parentPhone.trim()) e.parentPhone = '家長手機必填';
     if (!students.trim()) e.students = '至少填一位學員';
-    if (!coach.trim()) e.coach = '教練必填';
+    if (!venueId) e.venueId = '報名場館必填';
+    if (!coachId) e.coachId = '請選擇教練';
     if (Number(originalPrice) <= 0) e.originalPrice = '原價必須 > 0';
     if (Number(finalPrice) <= 0) e.finalPrice = '應收金額必須 > 0';
     return e;
@@ -74,7 +128,8 @@ export default function EditEnrollmentModal({ enrollment, onClose, onSaved }) {
         parent_name:          parentName.trim(),
         parent_phone:         parentPhone.trim(),
         students:             studentList,
-        coach:                coach.trim(),
+        venue_id:             venueId,
+        coach_id:             coachId,
         course_type:          Number(courseType),
         original_price:       Number(originalPrice),
         final_price:          Number(finalPrice),
@@ -82,7 +137,18 @@ export default function EditEnrollmentModal({ enrollment, onClose, onSaved }) {
         extra_parent_phones:  extraPhoneList,
         notes:                notes.trim() || null,
       });
-      toast.success('報名資料已更新');
+
+      const venueChanged = venueId !== enrollment.venue_id;
+      const coachChanged = newCoachName && newCoachName !== enrollment.coach;
+      if (venueChanged || coachChanged) {
+        const parts = [];
+        if (venueChanged) parts.push(`場館 ${venueName}`);
+        if (coachChanged) parts.push(`教練 ${enrollment.coach} → ${newCoachName}`);
+        const reassigned = updated?._transfer?.reassigned_sessions || 0;
+        toast.success(`已更新${parts.join('、')}${reassigned ? `（重新指派 ${reassigned} 堂未來課程）` : ''}`);
+      } else {
+        toast.success('報名資料已更新');
+      }
       onSaved(updated);
     } catch (err) {
       const msg = err?.response?.data?.error || '更新失敗，請稍後再試';
@@ -127,21 +193,34 @@ export default function EditEnrollmentModal({ enrollment, onClose, onSaved }) {
             {errors.students && <p className="mt-0.5 text-[11px] text-red-500">{errors.students}</p>}
           </Field>
 
+          <Field label="報名場館 *" hint="變更場館後教練選項會重新載入">
+            <Select value={venueId} onChange={setVenueId}>
+              <option value="">請選擇場館</option>
+              {venues.map((v) => (
+                <option key={v.id} value={v.id}>{v.name}</option>
+              ))}
+            </Select>
+            {errors.venueId && <p className="mt-0.5 text-[11px] text-red-500">{errors.venueId}</p>}
+          </Field>
+
           <div className="grid grid-cols-2 gap-3">
-            <Field label="教練 *">
-              <Input value={coach} onChange={setCoach} placeholder="如：王志強" />
-              {errors.coach && <p className="mt-0.5 text-[11px] text-red-500">{errors.coach}</p>}
+            <Field label="教練 *" hint={!venueId ? '請先選擇場館' : (coachesLoading ? '載入中…' : `本場館 ${coaches.length} 位在職教練`)}>
+              <Select value={coachId} onChange={setCoachId} disabled={!venueId || coachesLoading}>
+                <option value="">{venueId ? '請選擇教練' : '—'}</option>
+                {coaches.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}{c.is_senior ? ' ⭐' : ''}
+                  </option>
+                ))}
+              </Select>
+              {errors.coachId && <p className="mt-0.5 text-[11px] text-red-500">{errors.coachId}</p>}
             </Field>
             <Field label="組別">
-              <select
-                value={courseType}
-                onChange={(ev) => setCourseType(ev.target.value)}
-                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-brand-teal"
-              >
+              <Select value={courseType} onChange={setCourseType}>
                 {COURSE_TYPES.map((t) => (
                   <option key={t.value} value={t.value}>{t.label}</option>
                 ))}
-              </select>
+              </Select>
             </Field>
           </div>
 

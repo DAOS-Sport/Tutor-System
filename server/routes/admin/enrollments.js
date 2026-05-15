@@ -46,6 +46,7 @@ async function readEnrollment(id) {
     parent_phone: row.parent_phone,
     students: row.students || [],
     coach: row.coach,
+    coach_id: row.coach_id || null,
     venue_id: row.venue_id,
     course_type: row.course_type,
     original_price: Number(row.original_price),
@@ -116,14 +117,20 @@ router.get('/', requireAdminAuth, async (req, res) => {
  * 不可在 cancelled / refunded 狀態下修改（業務資料已結案）。
  */
 router.patch('/:id', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
+  const client = await pool.connect();
   try {
+    await client.query('BEGIN');
     const { id } = req.params;
     const body = req.body || {};
-    const cur = await pool.query(`SELECT * FROM admin_enrollments WHERE id = $1`, [id]);
-    if (!cur.rowCount) return res.status(404).json({ error: '報名不存在' });
+    const cur = await client.query(`SELECT * FROM admin_enrollments WHERE id = $1 FOR UPDATE`, [id]);
+    if (!cur.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: '報名不存在' });
+    }
 
     const row = cur.rows[0];
     if (['cancelled', 'refunded'].includes(row.status)) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ error: `狀態 ${row.status} 的報名不可再編輯` });
     }
 
@@ -131,7 +138,6 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin', 'manager'), asy
     const parentName       = body.parent_name       !== undefined ? String(body.parent_name).trim()   : row.parent_name;
     const parentPhone      = body.parent_phone      !== undefined ? String(body.parent_phone).trim()  : row.parent_phone;
     const students         = Array.isArray(body.students)         ? body.students.map((s) => String(s).trim()).filter(Boolean) : row.students;
-    const coach            = body.coach             !== undefined ? String(body.coach).trim()          : row.coach;
     const courseType       = body.course_type       !== undefined ? Number(body.course_type)           : row.course_type;
     const originalPrice    = body.original_price    !== undefined ? Number(body.original_price)        : row.original_price;
     const finalPrice       = body.final_price       !== undefined ? Number(body.final_price)           : row.final_price;
@@ -141,38 +147,161 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin', 'manager'), asy
       : (row.extra_parent_phones || []);
     const notes            = body.notes             !== undefined ? (body.notes ? String(body.notes).trim() : null) : row.notes;
 
-    if (!parentName) return res.status(400).json({ error: '家長姓名必填' });
-    if (!parentPhone) return res.status(400).json({ error: '家長手機必填' });
-    if (!students || students.length === 0) return res.status(400).json({ error: '學員名稱必填' });
+    // venue / coach 變更：venue_id 走 admin_venues 驗證；coach_id 走 coaches + coach_venues 驗證
+    let venueId  = row.venue_id;
+    let venueName = null;
+    let coachId   = row.coach_id || null;
+    let coachName = row.coach;
 
-    await pool.query(
+    if (body.venue_id !== undefined) {
+      venueId = String(body.venue_id).trim();
+      const vr = await client.query(`SELECT id, name FROM admin_venues WHERE id = $1`, [venueId]);
+      if (!vr.rowCount) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: `場館不存在：${venueId}` });
+      }
+      venueName = vr.rows[0].name;
+    }
+    if (body.coach_id !== undefined && body.coach_id) {
+      coachId = String(body.coach_id).trim();
+      const cr = await client.query(
+        `SELECT c.id, c.name FROM coaches c WHERE c.id = $1 AND c.is_active = TRUE`,
+        [coachId]
+      );
+      if (!cr.rowCount) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: '教練不存在或已停用' });
+      }
+      coachName = cr.rows[0].name;
+      // 驗證該教練屬於目標場館
+      const cv = await client.query(
+        `SELECT 1 FROM coach_venues WHERE coach_id = $1 AND venue_id = $2`,
+        [coachId, venueId]
+      );
+      if (!cv.rowCount) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: '此教練不在所選場館' });
+      }
+    } else if (body.coach !== undefined) {
+      // 向後相容：純文字編輯（不指定 coach_id）
+      coachName = String(body.coach).trim();
+    }
+
+    if (!parentName) { await client.query('ROLLBACK'); return res.status(400).json({ error: '家長姓名必填' }); }
+    if (!parentPhone) { await client.query('ROLLBACK'); return res.status(400).json({ error: '家長手機必填' }); }
+    if (!students || students.length === 0) { await client.query('ROLLBACK'); return res.status(400).json({ error: '學員名稱必填' }); }
+    if (!coachName) { await client.query('ROLLBACK'); return res.status(400).json({ error: '教練必填' }); }
+
+    await client.query(
       `UPDATE admin_enrollments SET
          parent_name        = $2,
          parent_phone       = $3,
          students           = $4,
          coach              = $5,
-         course_type        = $6,
-         original_price     = $7,
-         final_price        = $8,
-         transfer_last_5    = $9,
-         extra_parent_phones = $10,
-         notes              = $11,
+         coach_id           = $6,
+         venue_id           = $7,
+         course_type        = $8,
+         original_price     = $9,
+         final_price        = $10,
+         transfer_last_5    = $11,
+         extra_parent_phones = $12,
+         notes              = $13,
          updated_at         = NOW()
        WHERE id = $1`,
-      [id, parentName, parentPhone, students, coach, courseType,
+      [id, parentName, parentPhone, students, coachName, coachId, venueId, courseType,
        originalPrice, finalPrice, transferLast5, extraPhones, notes]
     );
 
     const by = req.adminUser?.name || req.adminUser?.username || 'unknown';
-    await pool.query(
-      `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user) VALUES ($1, $2, $3)`,
-      [id, '後台編輯報名資料', by]
-    );
+    const oldCoachName  = row.coach;
+    const oldVenueId    = row.venue_id;
+    const venueChanged  = venueId !== oldVenueId;
+    const coachChanged  = (coachId && coachId !== row.coach_id) || (coachName !== oldCoachName);
+    let reassignedSessions = 0;
 
-    res.json(await readEnrollment(id));
+    // 教練 / 場館變更 → 同步未來尚未上課的 sessions（best-effort）
+    // 透過 course_periods.admin_enrollment_id 軟連結；舊資料無連結時，這裡用
+    // (parent_phone + 舊 coach + 舊 venue) 做一次 lazy backfill，讓首次轉教練也能生效。
+    if ((coachChanged || venueChanged) && coachId) {
+      // Resolve 舊 coach UUID（admin_enrollments.coach_id 在升級前可能為 NULL，靠名稱反查）
+      let oldCoachUuid = row.coach_id;
+      if (!oldCoachUuid && row.coach && row.venue_id) {
+        const r2 = await client.query(
+          `SELECT c.id FROM coaches c
+             JOIN coach_venues cv ON cv.coach_id = c.id
+            WHERE c.name = $1 AND cv.venue_id = $2 LIMIT 1`,
+          [row.coach, row.venue_id]
+        );
+        if (r2.rowCount) oldCoachUuid = r2.rows[0].id;
+      }
+      // Lazy backfill admin_enrollment_id：parent_phone + old coach + old venue 三鍵命中且尚未連結
+      if (oldCoachUuid) {
+        await client.query(
+          `UPDATE course_periods cp
+              SET admin_enrollment_id = $1
+            WHERE cp.admin_enrollment_id IS NULL
+              AND cp.coach_id = $2
+              AND cp.venue_id = $3
+              AND EXISTS (
+                SELECT 1 FROM course_period_enrollments cpe
+                  JOIN students s ON s.id = cpe.student_id
+                  JOIN parents  p ON p.id = s.parent_id
+                 WHERE cpe.course_period_id = cp.id AND p.phone = $4
+              )`,
+          [id, oldCoachUuid, row.venue_id, row.parent_phone]
+        );
+      }
+      const periods = await client.query(
+        `SELECT id FROM course_periods WHERE admin_enrollment_id = $1`, [id]
+      );
+      const periodIds = periods.rows.map((r) => r.id);
+      if (periodIds.length > 0) {
+        // 1) 更新 period 主檔（讓教練 LIFF 的「我的學員 / 今日課程」立即看到）
+        await client.query(
+          `UPDATE course_periods SET coach_id = $2, venue_id = $3, updated_at = NOW()
+             WHERE id = ANY($1::uuid[])`,
+          [periodIds, coachId, venueId]
+        );
+        // 2) 只覆寫未來尚未上課的 sessions 之 coach_id（已上課保留原值）
+        const upd = await client.query(
+          `UPDATE course_sessions
+              SET coach_id = $2, updated_at = NOW()
+            WHERE course_period_id = ANY($1::uuid[])
+              AND scheduled_at > NOW()
+              AND status IN ('confirmed','pending_group_confirm')`,
+          [periodIds, coachId]
+        );
+        reassignedSessions = upd.rowCount || 0;
+      }
+    }
+
+    // Audit log
+    if (coachChanged || venueChanged) {
+      const reasonParts = [];
+      if (venueChanged) reasonParts.push(`場館 ${oldVenueId} → ${venueId}`);
+      if (coachChanged) reasonParts.push(`教練 ${oldCoachName} → ${coachName}`);
+      if (reassignedSessions > 0) reasonParts.push(`重新指派 ${reassignedSessions} 堂未來課程`);
+      await client.query(
+        `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user, reason)
+         VALUES ($1, $2, $3, $4)`,
+        [id, 'transfer_coach', by, reasonParts.join('；')]
+      );
+    } else {
+      await client.query(
+        `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user) VALUES ($1, $2, $3)`,
+        [id, '後台編輯報名資料', by]
+      );
+    }
+
+    await client.query('COMMIT');
+    const out = await readEnrollment(id);
+    res.json({ ...out, _transfer: { coach_changed: coachChanged, venue_changed: venueChanged, reassigned_sessions: reassignedSessions } });
   } catch (err) {
+    await client.query('ROLLBACK');
     console.error('[admin/enrollments patch]', err);
     res.status(500).json({ error: 'update failed' });
+  } finally {
+    client.release();
   }
 });
 

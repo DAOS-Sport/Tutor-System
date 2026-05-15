@@ -54,7 +54,7 @@ async function listCoachesWithVenues(whereClause, filterParams) {
   return coachesRes.rows.map((r) => rowToCoach(r, (venuesByCoach.get(r.id) || []).sort()));
 }
 
-router.get('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
   try {
     kickoffSyncCoachesAsync();
     const { status, venueId, name, phone, senior } = req.query;
