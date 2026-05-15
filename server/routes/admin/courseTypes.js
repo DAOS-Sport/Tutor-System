@@ -28,13 +28,16 @@ router.get('/', requireAdminAuth, AM, async (req, res) => {
 router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
   try {
     const { course_type, label, max_students } = req.body || {};
-    if (!course_type || !label || !max_students) {
+    if (course_type == null || label == null || max_students == null) {
       return res.status(400).json({ error: '缺少必填欄位：course_type / label / max_students' });
     }
     const ct = parseInt(course_type, 10);
     const ms = parseInt(max_students, 10);
+    const lb = String(label).trim();
     if (isNaN(ct) || ct < 1) return res.status(400).json({ error: 'course_type 必須為正整數' });
-    if (isNaN(ms) || ms < 1) return res.status(400).json({ error: 'max_students 必須為正整數' });
+    if (!lb) return res.status(400).json({ error: 'label 不可為空' });
+    if (lb.length > 50) return res.status(400).json({ error: 'label 長度不可超過 50' });
+    if (isNaN(ms) || ms < 1 || ms > 10) return res.status(400).json({ error: 'max_students 必須為 1–10' });
 
     const maxOrder = await pool.query(`SELECT COALESCE(MAX(sort_order),0) AS m FROM course_type_configs`);
     const nextOrder = maxOrder.rows[0].m + 1;
@@ -44,7 +47,7 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
        VALUES ($1,$2,$3,$4)
        ON CONFLICT (course_type) DO NOTHING
        RETURNING *`,
-      [ct, label.trim(), ms, nextOrder]
+      [ct, lb, ms, nextOrder]
     );
     if (!r.rowCount) return res.status(409).json({ error: `課程需求 ${ct} 已存在` });
     res.status(201).json(r.rows[0]);
@@ -62,9 +65,20 @@ router.patch('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, 
     if (!cur.rowCount) return res.status(404).json({ error: '找不到此課程需求' });
 
     const p = req.body || {};
-    const label       = p.label      !== undefined ? p.label.trim()          : cur.rows[0].label;
-    const max_students = p.max_students !== undefined ? parseInt(p.max_students,10) : cur.rows[0].max_students;
-    const is_active   = p.is_active  !== undefined ? Boolean(p.is_active)    : cur.rows[0].is_active;
+    let label = cur.rows[0].label;
+    if (p.label !== undefined) {
+      const lb = String(p.label).trim();
+      if (!lb) return res.status(400).json({ error: 'label 不可為空' });
+      if (lb.length > 50) return res.status(400).json({ error: 'label 長度不可超過 50' });
+      label = lb;
+    }
+    let max_students = cur.rows[0].max_students;
+    if (p.max_students !== undefined) {
+      const ms = parseInt(p.max_students, 10);
+      if (isNaN(ms) || ms < 1 || ms > 10) return res.status(400).json({ error: 'max_students 必須為 1–10' });
+      max_students = ms;
+    }
+    const is_active = p.is_active !== undefined ? Boolean(p.is_active) : cur.rows[0].is_active;
 
     const r = await pool.query(
       `UPDATE course_type_configs SET label=$2, max_students=$3, is_active=$4 WHERE course_type=$1 RETURNING *`,
