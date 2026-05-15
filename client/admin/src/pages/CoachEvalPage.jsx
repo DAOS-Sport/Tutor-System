@@ -2,8 +2,24 @@ import React, { useEffect, useState } from 'react';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import StatusBadge from '../components/StatusBadge';
+import ExportMenu from '../components/ExportMenu';
 import { useToast } from '../context/ToastContext';
 import { adminEvalApi } from '../api/learn';
+import { rowsToCsv, downloadCsv, downloadXlsx } from '../utils/csvExport';
+
+const COACH_EVAL_HEADERS = ['教練', '資深', '件數', '整體 avg', '教學 avg', '續報率', '不達標項目'];
+function coachEvalRow(c) {
+  return [
+    c.name,
+    c.is_senior ? 'Y' : '',
+    c.n,
+    c.avg_overall != null ? Number(c.avg_overall).toFixed(2) : '',
+    c.avg_teaching != null ? Number(c.avg_teaching).toFixed(2) : '',
+    c.renew_rate != null ? `${Math.round(c.renew_rate * 100)}%` : '',
+    (c.failed_metrics || []).join('、'),
+  ];
+}
+function todayStamp() { return new Date().toISOString().slice(0, 10); }
 
 const METRIC_LABEL = { avg_overall: '整體', avg_teaching: '教學' };
 
@@ -43,9 +59,31 @@ export default function CoachEvalPage() {
 
   const active = activeId ? list.find((x) => x.id === activeId) : null;
 
+  function doExport(kind) {
+    if (!list || list.length === 0) { toast.error('沒有可匯出的資料'); return; }
+    const rows = list.map(coachEvalRow);
+    const base = `coach_eval_${todayStamp()}`;
+    if (kind === 'csv') {
+      downloadCsv(`${base}.csv`, rowsToCsv(COACH_EVAL_HEADERS, rows));
+    } else {
+      downloadXlsx(`${base}.xlsx`, COACH_EVAL_HEADERS, rows, '教練考核');
+    }
+    toast.success(`已匯出 ${list.length} 筆教練資料 (${kind.toUpperCase()})`);
+  }
+
   return (
     <div className="p-6">
-      <PageHeader title="教練考核報表" subtitle="F-M09 / 期末評鑑彙總、月趨勢、家長評語" />
+      <PageHeader
+        title="教練考核報表"
+        subtitle="F-M09 / 期末評鑑彙總、月趨勢、家長評語"
+        actions={
+          <ExportMenu
+            disabled={!list || list.length === 0}
+            onExportCsv={() => doExport('csv')}
+            onExportXlsx={() => doExport('xlsx')}
+          />
+        }
+      />
 
       <section className="mt-4 grid gap-4 lg:grid-cols-2">
         <div className="rounded-2xl border border-gray-200 bg-white p-4">

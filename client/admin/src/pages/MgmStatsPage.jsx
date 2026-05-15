@@ -1,7 +1,17 @@
 import React, { useEffect, useState } from 'react';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
+import ExportMenu from '../components/ExportMenu';
+import { useToast } from '../context/ToastContext';
 import { mgmStatsApi } from '../api/mgmStats';
+import { rowsToCsv, downloadCsv, downloadXlsx } from '../utils/csvExport';
+
+const RANK_HEADERS = ['排名', '教練', '推薦總數', '已發獎勵', '轉換率'];
+function rankRow(r, idx) {
+  const rate = r.total ? Math.round((r.rewarded / r.total) * 1000) / 10 : 0;
+  return [idx + 1, r.coach_name, r.total, r.rewarded, `${rate}%`];
+}
+function todayStamp() { return new Date().toISOString().slice(0, 10); }
 
 const STATUS_LABEL = {
   pending: '已產生連結',
@@ -20,9 +30,27 @@ const STATUS_COLOR = {
 };
 
 export default function MgmStatsPage() {
+  const toast = useToast();
   const [filters, setFilters] = useState({ from: '', to: '', venueId: '', coachId: '' });
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+
+  function doExport(kind) {
+    if (!data || !data.coachRanking || data.coachRanking.length === 0) {
+      toast.error('沒有可匯出的資料');
+      return;
+    }
+    const rows = data.coachRanking.map((r, i) => rankRow(r, i));
+    const suffix = [filters.venueId && `v${filters.venueId}`, filters.coachId && `c${filters.coachId.slice(0, 6)}`]
+      .filter(Boolean).join('_');
+    const base = `mgm_ranking_${filters.from || 'all'}_${filters.to || todayStamp()}${suffix ? '_' + suffix : ''}`;
+    if (kind === 'csv') {
+      downloadCsv(`${base}.csv`, rowsToCsv(RANK_HEADERS, rows));
+    } else {
+      downloadXlsx(`${base}.xlsx`, RANK_HEADERS, rows, '教練推薦排行');
+    }
+    toast.success(`已匯出 ${rows.length} 筆推薦排行 (${kind.toUpperCase()})`);
+  }
 
   useEffect(() => {
     let alive = true;
@@ -41,7 +69,17 @@ export default function MgmStatsPage() {
 
   return (
     <div>
-      <PageHeader title="MGM 推薦統計" subtitle="F-M10 · 推薦連結轉換漏斗 + 各教練被推薦次數排行" />
+      <PageHeader
+        title="MGM 推薦統計"
+        subtitle="F-M10 · 推薦連結轉換漏斗 + 各教練被推薦次數排行"
+        actions={
+          <ExportMenu
+            disabled={!data || !data.coachRanking || data.coachRanking.length === 0}
+            onExportCsv={() => doExport('csv')}
+            onExportXlsx={() => doExport('xlsx')}
+          />
+        }
+      />
 
       <section className="mb-5 rounded-xl border border-gray-200 bg-white p-4">
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
