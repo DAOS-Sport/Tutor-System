@@ -448,6 +448,27 @@ CREATE TABLE IF NOT EXISTS ragic_sync_log (
 CREATE INDEX IF NOT EXISTS idx_ragic_sync_log_form ON ragic_sync_log(form_code, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ragic_sync_log_job  ON ragic_sync_log(job_name, created_at DESC);
 
+-- Task #66：Ragic 待審核區（同步先進 staging，admin 通過才合併到正式表）
+CREATE TABLE IF NOT EXISTS ragic_staging_changes (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  form_code   VARCHAR(40) NOT NULL,                 -- H01_STAFF | H01_COACHES | H05_VENUES
+  entity_type VARCHAR(20) NOT NULL,                 -- staff | coach | venue
+  entity_id   VARCHAR(50) NOT NULL,                 -- ragic_employee_id / venue code
+  change_type VARCHAR(20) NOT NULL,                 -- new | update | deactivate
+  payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,  -- 同步當下從 Ragic 抓到的完整可寫欄位
+  diff_json    JSONB,                               -- update：{field: {from, to}}；new/deactivate 可為 null
+  fetched_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  status       VARCHAR(20) NOT NULL DEFAULT 'pending', -- pending | approved | rejected | auto_resolved
+  reviewed_by  TEXT REFERENCES admin_users(id) ON DELETE SET NULL,
+  reviewed_at  TIMESTAMPTZ,
+  reject_reason TEXT
+);
+-- 同一 entity 同時最多一筆 pending（下次 sync 抓到新差異時直接更新此筆）
+CREATE UNIQUE INDEX IF NOT EXISTS uq_ragic_staging_pending
+  ON ragic_staging_changes(entity_type, entity_id) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_ragic_staging_status ON ragic_staging_changes(status, fetched_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ragic_staging_form ON ragic_staging_changes(form_code, status);
+
 -- 教練介紹送審（F-C06）：教練端編輯 → 主管審核
 DO $$ BEGIN
   ALTER TABLE coaches ADD COLUMN IF NOT EXISTS intro_review_note TEXT;

@@ -38,25 +38,81 @@ function ragicEnabled() {
   }
 })();
 
+// ─────────────────────────────────────────────────────────────
+// Task #66：staging 共用 helpers
+// 改造後 sync 不再直接 UPSERT 正式表，而是把差異寫進 ragic_staging_changes，
+// 由 admin 在「Ragic 待審核」頁面手動 approve / reject 後才真正套用。
+// ─────────────────────────────────────────────────────────────
+
+/** 穩定序列化（key 排序）→ 比對 JSON 不受欄位順序影響。 */
+function _stableStringify(obj) {
+  if (obj === null || typeof obj !== 'object') return JSON.stringify(obj);
+  if (Array.isArray(obj)) return '[' + obj.map(_stableStringify).join(',') + ']';
+  const keys = Object.keys(obj).sort();
+  return '{' + keys.map(k => JSON.stringify(k) + ':' + _stableStringify(obj[k])).join(',') + '}';
+}
+
+/** 同 entity 已有相同 payload 的 rejected row → 視為「admin 已拒」，本次 sync skip。 */
+async function _isPayloadRejected(entityType, entityId, payload) {
+  const target = _stableStringify(payload);
+  const r = await pool.query(
+    `SELECT payload_json FROM ragic_staging_changes
+       WHERE entity_type = $1 AND entity_id = $2 AND status = 'rejected'
+       ORDER BY reviewed_at DESC NULLS LAST LIMIT 20`,
+    [entityType, entityId]
+  );
+  return r.rows.some(row => _stableStringify(row.payload_json) === target);
+}
+
+/** Upsert 一筆 pending staging（同 entity 已有 pending → 更新；rejected payload 相同 → 不寫）。 */
+async function _stageIfNotRejected(formCode, entityType, entityId, changeType, payload, diff) {
+  if (await _isPayloadRejected(entityType, entityId, payload)) return false;
+  await pool.query(
+    `INSERT INTO ragic_staging_changes
+       (form_code, entity_type, entity_id, change_type, payload_json, diff_json, fetched_at, status)
+     VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, NOW(), 'pending')
+     ON CONFLICT (entity_type, entity_id) WHERE status = 'pending'
+     DO UPDATE SET form_code = EXCLUDED.form_code,
+                   change_type = EXCLUDED.change_type,
+                   payload_json = EXCLUDED.payload_json,
+                   diff_json = EXCLUDED.diff_json,
+                   fetched_at = NOW()`,
+    [formCode, entityType, entityId, changeType, JSON.stringify(payload), diff ? JSON.stringify(diff) : null]
+  );
+  return true;
+}
+
+/** 已無差異 → 把舊的 pending 標 auto_resolved（管理員可能已手動同步過）。 */
+async function _markPendingResolved(entityType, entityId) {
+  await pool.query(
+    `UPDATE ragic_staging_changes
+       SET status = 'auto_resolved', reviewed_at = NOW()
+       WHERE entity_type = $1 AND entity_id = $2 AND status = 'pending'`,
+    [entityType, entityId]
+  );
+}
+
 /**
- * 員工 Ragic 同步：H01 全員工 → admin_staff。
- * - active = (在職狀態==='在職')
- * - 若該列在 admin_staff 已有 active_overridden_at（後台手動勾過啟用 / 停用），
- *   則本次同步「不覆蓋 active」；name / phone / role 仍會更新
- * - active 變更為 false 時，連動把 admin_users (依 name 比對) is_active 設 false，
- *   讓該帳號無法登入；同樣尊重 admin_users.active_overridden_at
+ * 員工 Ragic 同步：H01 全員工 vs admin_staff，差異寫進 staging（不直接寫表）。
+ * - 偵測 name / phone / role / active 任一不同 → stage（active 在 overridden 時忽略）
+ * - 不在 Ragic 但 active 中 + 未 override → stage 'deactivate'
  */
 async function _syncStaffImpl() {
   if (!ragicEnabled()) return { synced: 0, skipped: true };
   try {
     const records = await ragic.getAllStaff();
-    let synced = 0;
-    let deactivatedLogins = 0;
+    const dbRows = (await pool.query(
+      `SELECT id, name, phone, role, active, active_overridden_at FROM admin_staff`
+    )).rows;
+    const dbMap = new Map(dbRows.map(r => [r.id, r]));
     const seenIds = new Set();
+    let staged = 0;
+
     for (const r of records) {
       const ragicId = r['員工編號'] || r['工號'] || r['3000935'];
       if (!ragicId) continue;
-      seenIds.add(String(ragicId));
+      const id = String(ragicId);
+      seenIds.add(id);
       const name = r['姓名'] || r['3000933'] || '';
       const phone = r['手機'] || r['手機（公司）'] || r['3001424'] || r['手機（個人）'] || r['3000941'] || '';
       const role = r['應徵職務'];
@@ -64,58 +120,35 @@ async function _syncStaffImpl() {
       const isCoach = roleStr.includes('教練') || (r['職稱'] || '').includes('教練');
       const roleVal = isCoach ? 'coach' : 'staff';
       const isActive = (r['在職狀態'] || r['3000945']) === '在職';
+      const payload = { id, name, phone, role: roleVal, is_active: isActive };
 
-      // 先讀目前覆寫狀態（避免覆蓋管理員手動設定）
-      const cur = await pool.query(
-        `SELECT active, active_overridden_at FROM admin_staff WHERE id = $1`,
-        [String(ragicId)]
-      );
-      const overridden = cur.rowCount && cur.rows[0].active_overridden_at != null;
-
-      await pool.query(
-        `INSERT INTO admin_staff (id, name, role, phone, is_senior, multiplier, active, ragic_record_id, last_synced_at)
-         VALUES ($1, $2, $3, $4, FALSE, 1.00, $5, $1, NOW())
-         ON CONFLICT (id) DO UPDATE SET
-           name = EXCLUDED.name,
-           phone = EXCLUDED.phone,
-           active = CASE
-             WHEN admin_staff.active_overridden_at IS NULL THEN EXCLUDED.active
-             ELSE admin_staff.active
-           END,
-           ragic_record_id = EXCLUDED.ragic_record_id,
-           last_synced_at = NOW()`,
-        [String(ragicId), name, roleVal, phone, isActive]
-      );
-
-      // 連動 admin login：當「Ragic 離職 + 後台未覆寫 active」時，停用對應 admin_users
-      if (!isActive && !overridden && name) {
-        const upd = await pool.query(
-          `UPDATE admin_users SET is_active = FALSE
-            WHERE name = $1
-              AND is_active = TRUE
-              AND (active_overridden_at IS NULL)
-            RETURNING id`,
-          [name]
-        );
-        deactivatedLogins += upd.rowCount;
+      const cur = dbMap.get(id);
+      if (!cur) {
+        if (await _stageIfNotRejected('H01_STAFF', 'staff', id, 'new', payload, null)) staged++;
+        continue;
       }
-      synced += 1;
+      const diff = {};
+      if ((cur.name || '') !== name) diff.name = { from: cur.name || '', to: name };
+      if ((cur.phone || '') !== phone) diff.phone = { from: cur.phone || '', to: phone };
+      if ((cur.role || '') !== roleVal) diff.role = { from: cur.role, to: roleVal };
+      if (cur.active_overridden_at == null && cur.active !== isActive) {
+        diff.active = { from: cur.active, to: isActive };
+      }
+      if (Object.keys(diff).length > 0) {
+        if (await _stageIfNotRejected('H01_STAFF', 'staff', id, 'update', payload, diff)) staged++;
+      } else {
+        await _markPendingResolved('staff', id);
+      }
     }
 
-    // 不在 H01 名單中的 admin_staff → 也標 active=false（尊重 override）
-    if (seenIds.size > 0) {
-      await pool.query(
-        `UPDATE admin_staff SET active = FALSE, last_synced_at = NOW()
-          WHERE id <> ALL($1::text[])
-            AND active = TRUE
-            AND active_overridden_at IS NULL`,
-        [Array.from(seenIds)]
-      );
+    // Ragic 名單外 + 仍 active + 未 override → deactivate stage
+    for (const r of dbRows) {
+      if (!r.active || r.active_overridden_at != null || seenIds.has(r.id)) continue;
+      const payload = { id: r.id, name: r.name, is_active: false };
+      const diff = { active: { from: true, to: false } };
+      if (await _stageIfNotRejected('H01_STAFF', 'staff', r.id, 'deactivate', payload, diff)) staged++;
     }
-    if (deactivatedLogins > 0) {
-      console.log(`[Ragic sync] staff synced=${synced} login_deactivated=${deactivatedLogins}`);
-    }
-    return { synced, deactivatedLogins, skipped: false };
+    return { synced: staged, staged, skipped: false };
   } catch (err) {
     console.warn('[Ragic sync] staff failed:', err.message);
     return { synced: 0, error: err.message };
@@ -147,9 +180,14 @@ async function _syncCoachesImpl() {
   if (!ragicEnabled()) return { synced: 0, skipped: true };
   try {
     const records = await ragic.getActiveCoaches();
+    const dbRows = (await pool.query(
+      `SELECT ragic_employee_id, name, phone, email, line_uid, is_active, active_overridden_at
+         FROM coaches WHERE ragic_employee_id IS NOT NULL`
+    )).rows;
+    const dbMap = new Map(dbRows.map(r => [r.ragic_employee_id, r]));
     const seenIds = new Set();
-    let synced = 0;
-    let linked = 0;
+    let staged = 0;
+
     for (const r of records) {
       const ragicId = r['員工編號'] || r['工號'] || r['3000935'];
       if (!ragicId) continue;
@@ -158,39 +196,41 @@ async function _syncCoachesImpl() {
       const email = r['E-mail'] || r['Email'] || r['email'] || r['信箱'] || '';
       const lineUid = extractLineUid(r);
       if (!name || !phone) continue;
-      seenIds.add(String(ragicId));
-      if (lineUid) linked += 1;
-      // is_active 尊重覆寫旗標
-      await pool.query(
-        `INSERT INTO coaches (ragic_employee_id, name, phone, email, line_uid, is_active)
-         VALUES ($1, $2, $3, $4, NULLIF($5, ''), TRUE)
-         ON CONFLICT (ragic_employee_id) DO UPDATE SET
-           name = EXCLUDED.name,
-           phone = EXCLUDED.phone,
-           email = COALESCE(NULLIF(EXCLUDED.email, ''), coaches.email),
-           line_uid = COALESCE(coaches.line_uid, NULLIF($5, '')),
-           is_active = CASE
-             WHEN coaches.active_overridden_at IS NULL THEN TRUE
-             ELSE coaches.is_active
-           END,
-           updated_at = NOW()`,
-        [String(ragicId), name, phone, email, lineUid]
-      );
-      synced += 1;
+      const id = String(ragicId);
+      seenIds.add(id);
+      const payload = { ragic_employee_id: id, name, phone, email, line_uid: lineUid, is_active: true };
+
+      const cur = dbMap.get(id);
+      if (!cur) {
+        if (await _stageIfNotRejected('H01_COACHES', 'coach', id, 'new', payload, null)) staged++;
+        continue;
+      }
+      const diff = {};
+      if ((cur.name || '') !== name) diff.name = { from: cur.name || '', to: name };
+      if ((cur.phone || '') !== phone) diff.phone = { from: cur.phone || '', to: phone };
+      // email 規則：Ragic 有值且與 DB 不同才視為 diff（DB 已有值不強制覆寫，但會顯示給 admin 確認）
+      if (email && (cur.email || '') !== email) diff.email = { from: cur.email || '', to: email };
+      // line_uid 規則：DB 沒值 + Ragic 有值才 diff（避免覆蓋已綁定的 line_uid）
+      if (lineUid && !cur.line_uid) diff.line_uid = { from: '', to: lineUid };
+      // is_active：only stage if currently inactive and not overridden
+      if (cur.active_overridden_at == null && !cur.is_active) {
+        diff.is_active = { from: false, to: true };
+      }
+      if (Object.keys(diff).length > 0) {
+        if (await _stageIfNotRejected('H01_COACHES', 'coach', id, 'update', payload, diff)) staged++;
+      } else {
+        await _markPendingResolved('coach', id);
+      }
     }
-    // 不在 Ragic 在職教練名單 → 標 is_active = FALSE（尊重 override）
-    if (seenIds.size > 0) {
-      await pool.query(
-        `UPDATE coaches SET is_active = FALSE, updated_at = NOW()
-         WHERE ragic_employee_id IS NOT NULL
-           AND ragic_employee_id <> ALL($1::text[])
-           AND is_active = TRUE
-           AND active_overridden_at IS NULL`,
-        [Array.from(seenIds)]
-      );
+
+    // 不在 Ragic 在職清單 + 仍 active + 未 override → deactivate stage
+    for (const r of dbRows) {
+      if (!r.is_active || r.active_overridden_at != null || seenIds.has(r.ragic_employee_id)) continue;
+      const payload = { ragic_employee_id: r.ragic_employee_id, name: r.name, is_active: false };
+      const diff = { is_active: { from: true, to: false } };
+      if (await _stageIfNotRejected('H01_COACHES', 'coach', r.ragic_employee_id, 'deactivate', payload, diff)) staged++;
     }
-    console.log(`[Ragic sync] coaches synced=${synced} linked=${linked}`);
-    return { synced, linked, skipped: false };
+    return { synced: staged, staged, skipped: false };
   } catch (err) {
     console.warn('[Ragic sync] coaches failed:', err.message);
     return { synced: 0, error: err.message };
@@ -198,77 +238,242 @@ async function _syncCoachesImpl() {
 }
 
 /**
- * 場館 Ragic 同步（H05 → admin_venues + venues）
+ * 場館 Ragic 同步（H05 vs admin_venues，差異寫進 staging）。
+ * - 比對 VENUE_SYNC_FIELDS + is_active；尊重各欄位的 *_overridden_at
  */
 async function _syncVenuesImpl() {
   if (!ragicEnabled()) return { synced: 0, skipped: true };
   try {
     const records = await ragic.getActiveVenues();
-    const seenCodes = new Set();
-    let synced = 0;
+    const ragicMap = new Map();
     for (const r of records) {
-      const code = (r['部門編號'] || r['場館代號'] || r['館別代碼'] || r['1000253'] || '').toString().trim();
-      if (!code) continue;
-      const name = r['部門名稱'] || r['場館名稱'] || r['館別名稱'] || r['1000254'] || code;
-      const address = r['完整地址'] || r['場館地址'] || r['地址'] || r['1000271'] || '';
-      const bankInst = r['總機構名稱'] || r['1001013'] || '';
-      const bankBranch = r['分支機構名稱'] || r['1001015'] || '';
-      const acctHolder = r['戶名'] || r['1001016'] || '';
-      const acctNumber = (r['帳號'] || r['1001017'] || '').toString();
-      seenCodes.add(code);
-
-      // Task #54：尊重 *_overridden_at — 後台手動編輯過的欄位不被自動 sync 蓋回；
-      // is_active 同理（後台手動翻轉 active 後 sync 不再覆蓋）。
-      await pool.query(
-        `INSERT INTO admin_venues (id, code, name, address, line_token, bank_institution_name, bank_branch_name, account_holder, account_number, is_active, last_synced_at)
-         VALUES ($1, $1, $2, $3, '', $4, $5, $6, $7, TRUE, NOW())
-         ON CONFLICT (id) DO UPDATE SET
-           name = CASE WHEN admin_venues.name_overridden_at IS NULL THEN EXCLUDED.name ELSE admin_venues.name END,
-           address = CASE WHEN admin_venues.address_overridden_at IS NULL THEN EXCLUDED.address ELSE admin_venues.address END,
-           bank_institution_name = CASE WHEN admin_venues.bank_institution_name_overridden_at IS NULL THEN EXCLUDED.bank_institution_name ELSE admin_venues.bank_institution_name END,
-           bank_branch_name = CASE WHEN admin_venues.bank_branch_name_overridden_at IS NULL THEN EXCLUDED.bank_branch_name ELSE admin_venues.bank_branch_name END,
-           account_holder = CASE WHEN admin_venues.account_holder_overridden_at IS NULL THEN EXCLUDED.account_holder ELSE admin_venues.account_holder END,
-           account_number = CASE WHEN admin_venues.account_number_overridden_at IS NULL THEN EXCLUDED.account_number ELSE admin_venues.account_number END,
-           is_active = CASE WHEN admin_venues.is_active_overridden_at IS NULL THEN TRUE ELSE admin_venues.is_active END,
-           last_synced_at = NOW()`,
-        [code, name, address, bankInst, bankBranch, acctHolder, acctNumber]
-      );
-
-      await pool.query(
-        `INSERT INTO venues (id, name, full_address, is_active)
-         VALUES ($1, $2, $3, TRUE)
-         ON CONFLICT (id) DO UPDATE SET
-           name = EXCLUDED.name,
-           full_address = COALESCE(NULLIF(venues.full_address, ''), EXCLUDED.full_address),
-           is_active = TRUE,
-           updated_at = NOW()`,
-        [code, name, address]
-      );
-      synced += 1;
+      const v = _mapRagicVenue(r);
+      if (v) ragicMap.set(v.code, v);
     }
-    if (seenCodes.size > 0) {
-      const codes = Array.from(seenCodes);
-      // Task #54：is_active_overridden_at 不為 null 的場館代表後台手動標 active，
-      // 不被自動 sync 軟刪除。venues 表跟著 admin_venues 走。
-      await pool.query(
-        `UPDATE admin_venues SET is_active = FALSE, updated_at = NOW()
-         WHERE id <> ALL($1::text[]) AND is_active = TRUE
-           AND is_active_overridden_at IS NULL`,
-        [codes]
-      );
-      await pool.query(
-        `UPDATE venues SET is_active = FALSE, updated_at = NOW()
-         WHERE id <> ALL($1::text[]) AND is_active = TRUE
-           AND id IN (SELECT id FROM admin_venues WHERE is_active_overridden_at IS NULL)`,
-        [codes]
-      );
+    const dbRows = (await pool.query(`SELECT * FROM admin_venues`)).rows;
+    const dbMap = new Map(dbRows.map(r => [r.id, r]));
+    let staged = 0;
+
+    for (const [code, rv] of ragicMap) {
+      const cur = dbMap.get(code);
+      const payload = { code, ...rv, is_active: true };
+      if (!cur) {
+        if (await _stageIfNotRejected('H05_VENUES', 'venue', code, 'new', payload, null)) staged++;
+        continue;
+      }
+      const diff = {};
+      for (const f of VENUE_SYNC_FIELDS) {
+        if (cur[`${f}_overridden_at`] != null) continue;
+        const from = cur[f] || '';
+        const to = rv[f] || '';
+        if (from !== to) diff[f] = { from, to };
+      }
+      if (cur.is_active_overridden_at == null && !cur.is_active) {
+        diff.is_active = { from: false, to: true };
+      }
+      if (Object.keys(diff).length > 0) {
+        if (await _stageIfNotRejected('H05_VENUES', 'venue', code, 'update', payload, diff)) staged++;
+      } else {
+        await _markPendingResolved('venue', code);
+      }
     }
-    console.log(`[Ragic sync] venues synced=${synced}`);
-    return { synced, skipped: false };
+
+    // 不在 Ragic 但 active 中 + 未 override → deactivate stage
+    for (const r of dbRows) {
+      if (!r.is_active || r.is_active_overridden_at != null || ragicMap.has(r.id)) continue;
+      const payload = { code: r.id, name: r.name, is_active: false };
+      const diff = { is_active: { from: true, to: false } };
+      if (await _stageIfNotRejected('H05_VENUES', 'venue', r.id, 'deactivate', payload, diff)) staged++;
+    }
+    return { synced: staged, staged, skipped: false };
   } catch (err) {
     console.warn('[Ragic sync] venues failed:', err.message);
     return { synced: 0, error: err.message };
   }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Task #66：Apply staged change（admin approve 後執行的真正 UPSERT）
+// 仍尊重 *_overridden_at 欄位保護（防呆：approve 後也不覆蓋人工設定）
+// ─────────────────────────────────────────────────────────────
+async function _applyStaffChange(row, client) {
+  const p = row.payload_json || {};
+  if (row.change_type === 'deactivate') {
+    await client.query(
+      `UPDATE admin_staff SET active = FALSE, last_synced_at = NOW()
+         WHERE id = $1 AND active_overridden_at IS NULL`,
+      [row.entity_id]
+    );
+    if (p.name) {
+      await client.query(
+        `UPDATE admin_users SET is_active = FALSE
+           WHERE name = $1 AND is_active = TRUE AND active_overridden_at IS NULL`,
+        [p.name]
+      );
+    }
+    return;
+  }
+  await client.query(
+    `INSERT INTO admin_staff (id, name, role, phone, is_senior, multiplier, active, ragic_record_id, last_synced_at)
+     VALUES ($1, $2, $3, $4, FALSE, 1.00, $5, $1, NOW())
+     ON CONFLICT (id) DO UPDATE SET
+       name = EXCLUDED.name,
+       phone = EXCLUDED.phone,
+       active = CASE WHEN admin_staff.active_overridden_at IS NULL THEN EXCLUDED.active ELSE admin_staff.active END,
+       ragic_record_id = EXCLUDED.ragic_record_id,
+       last_synced_at = NOW()`,
+    [row.entity_id, p.name || '', p.role || 'staff', p.phone || '', !!p.is_active]
+  );
+  if (p.is_active === false && p.name) {
+    await client.query(
+      `UPDATE admin_users SET is_active = FALSE
+         WHERE name = $1 AND is_active = TRUE AND active_overridden_at IS NULL`,
+      [p.name]
+    );
+  }
+}
+
+async function _applyCoachChange(row, client) {
+  const p = row.payload_json || {};
+  if (row.change_type === 'deactivate') {
+    await client.query(
+      `UPDATE coaches SET is_active = FALSE, updated_at = NOW()
+         WHERE ragic_employee_id = $1 AND active_overridden_at IS NULL`,
+      [row.entity_id]
+    );
+    return;
+  }
+  await client.query(
+    `INSERT INTO coaches (ragic_employee_id, name, phone, email, line_uid, is_active)
+     VALUES ($1, $2, $3, $4, NULLIF($5, ''), TRUE)
+     ON CONFLICT (ragic_employee_id) DO UPDATE SET
+       name = EXCLUDED.name,
+       phone = EXCLUDED.phone,
+       email = COALESCE(NULLIF(EXCLUDED.email, ''), coaches.email),
+       line_uid = COALESCE(coaches.line_uid, NULLIF($5, '')),
+       is_active = CASE WHEN coaches.active_overridden_at IS NULL THEN TRUE ELSE coaches.is_active END,
+       updated_at = NOW()`,
+    [row.entity_id, p.name || '', p.phone || '', p.email || '', p.line_uid || '']
+  );
+}
+
+async function _applyVenueChange(row, client) {
+  const p = row.payload_json || {};
+  const code = row.entity_id;
+  if (row.change_type === 'deactivate') {
+    await client.query(
+      `UPDATE admin_venues SET is_active = FALSE, updated_at = NOW()
+         WHERE id = $1 AND is_active_overridden_at IS NULL`,
+      [code]
+    );
+    await client.query(
+      `UPDATE venues SET is_active = FALSE, updated_at = NOW() WHERE id = $1`,
+      [code]
+    );
+    return;
+  }
+  await client.query(
+    `INSERT INTO admin_venues (id, code, name, address, line_token,
+        bank_institution_name, bank_branch_name, account_holder, account_number,
+        is_active, last_synced_at)
+     VALUES ($1,$1,$2,$3,'',$4,$5,$6,$7,TRUE,NOW())
+     ON CONFLICT (id) DO UPDATE SET
+       name = CASE WHEN admin_venues.name_overridden_at IS NULL THEN EXCLUDED.name ELSE admin_venues.name END,
+       address = CASE WHEN admin_venues.address_overridden_at IS NULL THEN EXCLUDED.address ELSE admin_venues.address END,
+       bank_institution_name = CASE WHEN admin_venues.bank_institution_name_overridden_at IS NULL THEN EXCLUDED.bank_institution_name ELSE admin_venues.bank_institution_name END,
+       bank_branch_name = CASE WHEN admin_venues.bank_branch_name_overridden_at IS NULL THEN EXCLUDED.bank_branch_name ELSE admin_venues.bank_branch_name END,
+       account_holder = CASE WHEN admin_venues.account_holder_overridden_at IS NULL THEN EXCLUDED.account_holder ELSE admin_venues.account_holder END,
+       account_number = CASE WHEN admin_venues.account_number_overridden_at IS NULL THEN EXCLUDED.account_number ELSE admin_venues.account_number END,
+       is_active = CASE WHEN admin_venues.is_active_overridden_at IS NULL THEN TRUE ELSE admin_venues.is_active END,
+       last_synced_at = NOW()`,
+    [code, p.name || code, p.address || '',
+     p.bank_institution_name || '', p.bank_branch_name || '',
+     p.account_holder || '', p.account_number || '']
+  );
+  await client.query(
+    `INSERT INTO venues (id, name, full_address, is_active)
+     VALUES ($1, $2, $3, TRUE)
+     ON CONFLICT (id) DO UPDATE SET
+       name = EXCLUDED.name,
+       full_address = COALESCE(NULLIF(venues.full_address, ''), EXCLUDED.full_address),
+       is_active = TRUE,
+       updated_at = NOW()`,
+    [code, p.name || code, p.address || '']
+  );
+}
+
+async function applyStagedChange(stagingId, byUserId) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // FOR UPDATE 防併發 approve 同一 row
+    const r = await client.query(`SELECT * FROM ragic_staging_changes WHERE id = $1 FOR UPDATE`, [stagingId]);
+    if (!r.rowCount) throw new Error('staging row not found');
+    const row = r.rows[0];
+    if (row.status !== 'pending') throw new Error(`status=${row.status}, only pending can be approved`);
+    if (row.entity_type === 'staff')      await _applyStaffChange(row, client);
+    else if (row.entity_type === 'coach') await _applyCoachChange(row, client);
+    else if (row.entity_type === 'venue') await _applyVenueChange(row, client);
+    else throw new Error(`unknown entity_type=${row.entity_type}`);
+    await client.query(
+      `UPDATE ragic_staging_changes
+         SET status = 'approved', reviewed_by = $2, reviewed_at = NOW()
+         WHERE id = $1`,
+      [stagingId, byUserId]
+    );
+    await client.query('COMMIT');
+    return row;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+async function rejectStagedChange(stagingId, byUserId, reason) {
+  if (!reason || !reason.trim()) throw new Error('reject_reason required');
+  const r = await pool.query(`SELECT status FROM ragic_staging_changes WHERE id = $1`, [stagingId]);
+  if (!r.rowCount) throw new Error('staging row not found');
+  if (r.rows[0].status !== 'pending') throw new Error(`status=${r.rows[0].status}, only pending can be rejected`);
+  await pool.query(
+    `UPDATE ragic_staging_changes
+       SET status = 'rejected', reviewed_by = $2, reviewed_at = NOW(), reject_reason = $3
+       WHERE id = $1`,
+    [stagingId, byUserId, reason.trim()]
+  );
+}
+
+async function listStagingChanges({ status = 'pending', form, search } = {}) {
+  const where = [];
+  const vals = [];
+  if (status && status !== 'all') {
+    vals.push(status);
+    where.push(`status = $${vals.length}`);
+  }
+  if (form) {
+    vals.push(form);
+    where.push(`form_code = $${vals.length}`);
+  }
+  if (search) {
+    vals.push(`%${search}%`);
+    where.push(`(entity_id ILIKE $${vals.length} OR payload_json::text ILIKE $${vals.length})`);
+  }
+  const sql = `SELECT s.*, u.name AS reviewer_name
+                 FROM ragic_staging_changes s
+                 LEFT JOIN admin_users u ON u.id = s.reviewed_by
+                 ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+                 ORDER BY (status = 'pending') DESC, fetched_at DESC
+                 LIMIT 500`;
+  const r = await pool.query(sql, vals);
+  return r.rows;
+}
+
+async function countStagingPending() {
+  const r = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM ragic_staging_changes WHERE status = 'pending'`
+  );
+  return r.rows[0].n;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -644,4 +849,9 @@ module.exports = {
   pingParentsFromRagic,
   pingStudentsFromRagic,
   getRagicJobNames,
+  // Task #66 staging
+  applyStagedChange,
+  rejectStagedChange,
+  listStagingChanges,
+  countStagingPending,
 };

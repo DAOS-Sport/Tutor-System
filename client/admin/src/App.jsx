@@ -30,6 +30,7 @@ import ReportsPage from './pages/ReportsPage';
 import SopPage from './pages/SopPage';
 import CourseTypesPage from './pages/CourseTypesPage';
 import RagicStatusPage from './pages/RagicStatusPage';
+import RagicStagingPage from './pages/RagicStagingPage';
 
 const ALL = ['admin', 'manager', 'staff'];
 
@@ -51,6 +52,7 @@ export default function App() {
         <Route path="/course-intros" element={<RequireAuth roles={['admin', 'manager']}><CourseIntrosPage /></RequireAuth>} />
         <Route path="/course-types"  element={<RequireAuth roles={['admin']}><CourseTypesPage /></RequireAuth>} />
         <Route path="/ragic-status"  element={<RequireAuth roles={['admin']}><RagicStatusPage /></RequireAuth>} />
+        <Route path="/ragic-staging" element={<RequireAuth roles={['admin']}><RagicStagingPage /></RequireAuth>} />
 
         {/* 報名與對帳 */}
         <Route path="/reconcile"   element={<RequireAuth roles={['admin', 'manager']}><ReconcilePage /></RequireAuth>} />

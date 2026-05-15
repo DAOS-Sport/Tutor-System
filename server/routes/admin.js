@@ -35,6 +35,7 @@ router.use('/reports',       require('./admin/reports'));    // F-M01
 router.use('/uploads',       require('./admin/uploads'));    // Task #39 發票上傳
 router.use('/course-types',  require('./admin/courseTypes')); // 課程需求管理
 router.use('/ragic-status',  require('./admin/ragicStatus')); // Task #65 Ragic 健康檢查
+router.use('/ragic-staging', require('./admin/ragicStaging')); // Task #66 Ragic 待審核區
 
 // 兜底：呼叫到沒實作的路徑時，明確回 404 而不是被前面的 401 吞掉
 router.all('*', (req, res) => {
