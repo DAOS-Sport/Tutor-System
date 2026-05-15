@@ -28,19 +28,31 @@ const JOB_RUNNERS = {
 };
 const ALL_JOBS = Object.keys(JOB_RUNNERS);
 
+function nextCronRunAt(now = new Date()) {
+  // schedule = '*/10 * * * *' → 下一個 :00 :10 :20 :30 :40 :50
+  const next = new Date(now.getTime());
+  next.setSeconds(0, 0);
+  const m = next.getMinutes();
+  const add = 10 - (m % 10);
+  next.setMinutes(m + add);
+  return next.toISOString();
+}
+
 router.get('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
   try {
     const env = ragicAdmin.getRagicEnvFlags();
     const missing = Object.entries(env).filter(([, v]) => !v).map(([k]) => k);
     const enabled = missing.length === 0;
     const forms = await ragicAdmin.getSyncStatusSnapshot();
+    const now = new Date();
     res.json({
       enabled,
       env,
       missing_env: missing,
       cron_schedule: '*/10 * * * *',
+      next_cron_run_at: nextCronRunAt(now),
       forms,
-      now: new Date().toISOString(),
+      now: now.toISOString(),
     });
   } catch (err) {
     console.error('[admin/ragic-status]', err);

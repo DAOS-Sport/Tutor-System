@@ -152,6 +152,7 @@ export default function RagicStatusPage() {
         <div className="mt-2 text-[11px] text-gray-500">
           Cron 排程：<span className="font-mono">{data.cron_schedule}</span>（每 10 分鐘）
           ・狀態抓取時間：{fmtDate(data.now)}
+          {data.next_cron_run_at ? <> ・下次 cron 預定：{fmtDate(data.next_cron_run_at)}</> : null}
         </div>
       </div>
 
