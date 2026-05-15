@@ -11,9 +11,16 @@ const { requireAdminAuth } = require('../../middlewares/adminAuth');
 
 const router = express.Router();
 
+// 以「Asia/Taipei (UTC+8)」為營運日期基準，避免 UTC 半夜跨日造成漏單
+const TZ = 'Asia/Taipei';
+function todayInTaipei() {
+  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' });
+  return fmt.format(new Date()); // YYYY-MM-DD
+}
+
 router.get('/', requireAdminAuth, async (req, res) => {
   try {
-    const date = String(req.query.date || '').trim() || new Date().toISOString().slice(0, 10);
+    const date = String(req.query.date || '').trim() || todayInTaipei();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'date format YYYY-MM-DD required' });
     const venueId = req.adminUser.role === 'staff'
       ? (req.adminUser.venue_id || '__no_venue__')
@@ -38,7 +45,7 @@ router.get('/', requireAdminAuth, async (req, res) => {
         JOIN students        s  ON s.id  = cr.student_id
    LEFT JOIN coaches         c  ON c.id  = cp.coach_id
    LEFT JOIN admin_venues    v  ON v.id  = cp.venue_id
-       WHERE (cr.checked_in_at AT TIME ZONE 'UTC')::date = $1::date
+       WHERE (cr.checked_in_at AT TIME ZONE 'Asia/Taipei')::date = $1::date
          ${venueWhere}
     `;
     const r1 = await pool.query(recSql, args);
@@ -59,7 +66,7 @@ router.get('/', requireAdminAuth, async (req, res) => {
         FROM admin_enrollments ae
    LEFT JOIN admin_venues      v ON v.id = ae.venue_id
        WHERE ae.experience_checked_in_at IS NOT NULL
-         AND (ae.experience_checked_in_at AT TIME ZONE 'UTC')::date = $1::date
+         AND (ae.experience_checked_in_at AT TIME ZONE 'Asia/Taipei')::date = $1::date
          ${venueWhere2}
     `;
     const r2 = await pool.query(expSql, args2);
