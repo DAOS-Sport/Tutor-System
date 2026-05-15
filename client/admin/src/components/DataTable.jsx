@@ -6,7 +6,7 @@ import React from 'react';
  * rows:    [obj...]
  * rowKey:  (row, idx) => string
  */
-export default function DataTable({ columns, rows, rowKey, empty = '目前沒有資料', className = '' }) {
+export default function DataTable({ columns, rows, rowKey, empty = '目前沒有資料', className = '', onRowClick }) {
   if (!rows || rows.length === 0) {
     return (
       <div className="rounded-lg border border-dashed border-gray-300 bg-white py-12 text-center text-sm text-gray-500">
@@ -31,7 +31,11 @@ export default function DataTable({ columns, rows, rowKey, empty = '目前沒有
         </thead>
         <tbody className="divide-y divide-gray-100">
           {rows.map((row, idx) => (
-            <tr key={rowKey ? rowKey(row, idx) : idx} className="hover:bg-gray-50">
+            <tr
+              key={rowKey ? rowKey(row, idx) : idx}
+              className={`hover:bg-gray-50 ${onRowClick ? 'cursor-pointer' : ''}`}
+              onClick={onRowClick ? () => onRowClick(row, idx) : undefined}
+            >
               {columns.map((c) => (
                 <td key={c.key} className={`px-4 py-3 align-middle text-gray-800 ${c.className || ''}`}>
                   {c.render ? c.render(row, idx) : row[c.key]}

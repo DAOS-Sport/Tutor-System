@@ -6,6 +6,7 @@ import StatusBadge from '../components/StatusBadge';
 import VenueMultiSelect from '../components/VenueMultiSelect';
 import DateRangeSelect, { rangeForPreset } from '../components/DateRangeSelect';
 import WeekGridView from '../components/WeekGridView';
+import SessionDetailModal from '../components/SessionDetailModal';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { sessionsApi } from '../api/sessions';
@@ -24,6 +25,7 @@ export default function SessionsPage() {
   const [venueIds, setVenueIds] = useState(() => (isStaff && user?.venue_id ? [user.venue_id] : []));
   const [list, setList] = useState(null);
   const [venues, setVenues] = useState([]);
+  const [detail, setDetail] = useState(null);
 
   // staff 強制鎖場館
   useEffect(() => {
@@ -33,14 +35,19 @@ export default function SessionsPage() {
   async function load() {
     setList(null);
     const effectiveVenues = isStaff && user?.venue_id ? [user.venue_id] : venueIds;
+    // 條列模式預設用 /today（保留 task spec「條列為預設」的當日視角）；
+    // 切到週課表或調整日期範圍後改用 /sessions range API。
+    const useToday = view === 'list' && preset === 'this_week' && range.from === rangeForPreset('this_week').from;
     const [data, vs] = await Promise.all([
-      sessionsApi.range({ from: range.from, to: range.to, venueIds: effectiveVenues }),
+      useToday
+        ? sessionsApi.today(effectiveVenues[0])
+        : sessionsApi.range({ from: range.from, to: range.to, venueIds: effectiveVenues }),
       venuesApi.list(),
     ]);
     setList(data);
     setVenues(vs);
   }
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [range.from, range.to, venueIds.join(','), user, isStaff]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [view, range.from, range.to, venueIds.join(','), user, isStaff]);
 
   const venueName = (id) => venues.find((v) => v.id === id)?.name || id;
 
@@ -131,11 +138,19 @@ export default function SessionsPage() {
           from={range.from}
           to={range.to}
           venues={venues}
-          onSelect={(s) => toast.info(`${s.date} ${s.start}-${s.end}・${venueName(s.venue_id)}・${s.coach}`)}
+          onSelect={(s) => setDetail(s)}
         />
       ) : (
-        <DataTable columns={columns} rows={list} rowKey={(r) => r.id} empty="所選範圍 / 場館內沒有課程" />
+        <DataTable
+          columns={columns}
+          rows={list}
+          rowKey={(r) => r.id}
+          empty="所選範圍 / 場館內沒有課程"
+          onRowClick={(r) => setDetail(r)}
+        />
       )}
+
+      <SessionDetailModal session={detail} venueName={venueName} onClose={() => setDetail(null)} />
     </div>
   );
 }

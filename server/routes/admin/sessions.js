@@ -55,8 +55,10 @@ router.get('/', requireAdminAuth, async (req, res) => {
     if (isNaN(fromD) || isNaN(toD) || toD < fromD) {
       return res.status(400).json({ error: 'invalid date range' });
     }
+    // Task #55：上限改為較寬鬆的 92 天（防呆，避免一次拉一年）；前端負責週課表
+    // 在 > 31 天時禁用 grid，後端不再硬擋條列模式的合理跨月查詢。
     const days = Math.round((toD - fromD) / 86400000) + 1;
-    if (days > 31) return res.status(400).json({ error: 'range max 31 days' });
+    if (days > 92) return res.status(400).json({ error: 'range max 92 days' });
 
     let venueIds;
     if (req.adminUser.role === 'staff') {

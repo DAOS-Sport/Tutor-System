@@ -22,9 +22,20 @@ const TONE = {
   3: 'border-brand-green/40 bg-brand-green/10 text-brand-green',
 };
 
-function parseHour(t) {
-  const [h] = String(t || '00:00').split(':').map(Number);
-  return Number.isFinite(h) ? h : 0;
+// Task #55：以「分鐘」為單位處理；half-hour grid 用 30 分鐘 slot
+function parseMinutes(t) {
+  const [hStr, mStr] = String(t || '00:00').split(':');
+  const h = Number(hStr); const m = Number(mStr) || 0;
+  return Number.isFinite(h) ? h * 60 + m : 0;
+}
+function fmtSlot(min) {
+  const h = Math.floor(min / 60); const m = min % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+// 把 raw start (HH:MM) 對齊到所屬 30 分鐘 slot
+function slotOf(t) {
+  const m = parseMinutes(t);
+  return m - (m % 30);
 }
 
 function dateAdd(iso, days) {
@@ -36,20 +47,22 @@ function dateAdd(iso, days) {
 export default function WeekGridView({ sessions, from, to, venues, onSelect }) {
   const venueName = (id) => venues.find((v) => v.id === id)?.name || id;
 
-  const { hours, weeks } = useMemo(() => {
-    let minH = 9; let maxH = 21;
+  const { slots, weeks } = useMemo(() => {
+    let minM = 9 * 60; let maxM = 21 * 60;
     sessions.forEach((s) => {
-      const h = parseHour(s.start);
-      const eh = parseHour(s.end) || h + 1;
-      if (h < minH) minH = h;
-      if (eh > maxH) maxH = eh;
+      const sm = slotOf(s.start);
+      const em = parseMinutes(s.end) || (sm + 60);
+      if (sm < minM) minM = sm;
+      if (em > maxM) maxM = em;
     });
-    minH = Math.max(0, Math.min(minH, 9));
-    maxH = Math.min(24, Math.max(maxH, 21));
-    const hh = [];
-    for (let i = minH; i < maxH; i += 1) hh.push(i);
+    // 對齊半小時、收斂到一日內
+    minM = Math.max(0, Math.min(minM, 9 * 60));
+    minM = minM - (minM % 30);
+    maxM = Math.min(24 * 60, Math.max(maxM, 21 * 60));
+    if (maxM % 30) maxM = maxM + (30 - (maxM % 30));
+    const sl = [];
+    for (let i = minM; i < maxM; i += 30) sl.push(i);
 
-    // Build week chunks: 從 from 起，每 7 天一段
     const ws = [];
     let cursor = from;
     while (cursor <= to) {
@@ -57,15 +70,15 @@ export default function WeekGridView({ sessions, from, to, venues, onSelect }) {
       ws.push({ start: cursor, end: end > to ? to : end });
       cursor = dateAdd(cursor, 7);
     }
-    return { hours: hh, weeks: ws };
+    return { slots: sl, weeks: ws };
   }, [sessions, from, to]);
 
-  // index: dateISO -> hour -> sessions
+  // index: dateISO -> slotMin -> sessions
   const byCell = useMemo(() => {
     const m = new Map();
     sessions.forEach((s) => {
-      const h = parseHour(s.start);
-      const key = `${s.date}|${h}`;
+      const sm = slotOf(s.start);
+      const key = `${s.date}|${sm}`;
       if (!m.has(key)) m.set(key, []);
       m.get(key).push(s);
     });
@@ -105,16 +118,18 @@ export default function WeekGridView({ sessions, from, to, venues, onSelect }) {
                   );
                 })}
               </div>
-              {hours.map((h) => (
-                <div key={h} className="grid border-b border-gray-100 last:border-b-0"
+              {slots.map((sm) => {
+                const isHourTop = sm % 60 === 0;
+                return (
+                <div key={sm} className={`grid ${isHourTop ? 'border-b border-gray-200' : 'border-b border-dashed border-gray-100'} last:border-b-0`}
                      style={{ gridTemplateColumns: `64px repeat(${dates.length}, minmax(96px, 1fr))` }}>
-                  <div className="border-r border-gray-100 bg-gray-50 px-2 py-1 text-xs font-mono text-gray-500">
-                    {String(h).padStart(2, '0')}:00
+                  <div className={`border-r border-gray-100 bg-gray-50 px-2 py-1 text-xs font-mono ${isHourTop ? 'text-gray-600 font-semibold' : 'text-gray-400'}`}>
+                    {fmtSlot(sm)}
                   </div>
                   {dates.map((d) => {
-                    const items = byCell.get(`${d}|${h}`) || [];
+                    const items = byCell.get(`${d}|${sm}`) || [];
                     return (
-                      <div key={d} className={`min-h-[56px] border-l border-gray-100 p-1 space-y-1 ${items.length ? '' : 'bg-gray-50/40'}`}>
+                      <div key={d} className={`min-h-[40px] border-l border-gray-100 p-1 space-y-1 ${items.length ? '' : 'bg-gray-50/40'}`}>
                         {items.map((s) => (
                           <button
                             key={s.id}
@@ -131,7 +146,8 @@ export default function WeekGridView({ sessions, from, to, venues, onSelect }) {
                     );
                   })}
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         );
