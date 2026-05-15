@@ -33,39 +33,56 @@ router.get('/', requireAdminAuth, AM, async (req, res) => {
 });
 
 router.patch('/:type', requireAdminAuth, AM, async (req, res) => {
+  const client = await pool.connect();
   try {
     const ct = parseInt(req.params.type, 10);
     if (isNaN(ct)) return res.status(400).json({ error: 'invalid type' });
-    const cfg = await pool.query(`SELECT label FROM course_type_configs WHERE course_type=$1`, [ct]);
-    if (!cfg.rowCount) return res.status(400).json({ error: '無效的 course_type' });
+
+    await client.query('BEGIN');
+    const cfg = await client.query(`SELECT label FROM course_type_configs WHERE course_type=$1`, [ct]);
+    if (!cfg.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: '無效的 course_type' });
+    }
     const label = cfg.rows[0].label;
 
     const p = req.body || {};
-    // 確保 intro 列存在（理論上 POST course-type 時就會建；保險）
-    await pool.query(
+    // 長度驗證（與 course_type_configs.label 一致）
+    if (p.title !== undefined) {
+      const t = String(p.title);
+      if (!t.trim()) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'title 不可為空' }); }
+      if (t.length > 50) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'title 長度不可超過 50' }); }
+    }
+    if (p.body !== undefined && String(p.body).length > 1000) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'body 長度不可超過 1000' });
+    }
+    if (p.image_url !== undefined && String(p.image_url).length > 500) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'image_url 長度不可超過 500' });
+    }
+
+    // 原子化：INSERT 預設列；若已存在則套用 patch（COALESCE 保留未提供欄位）
+    const newTitleArg = p.title !== undefined ? String(p.title) : null;
+    const newBodyArg  = p.body  !== undefined ? String(p.body)  : null;
+    const newImgArg   = p.image_url !== undefined ? String(p.image_url) : null;
+    const r = await client.query(
       `INSERT INTO admin_course_intros (course_type, title, body, image_url, title_overridden)
-       VALUES ($1, $2, '', '', FALSE)
-       ON CONFLICT (course_type) DO NOTHING`,
-      [ct, label]
-    );
-    const cur = await pool.query(`SELECT * FROM admin_course_intros WHERE course_type = $1`, [ct]);
-    const existing = cur.rows[0];
-
-    const newTitle = p.title !== undefined ? String(p.title) : existing.title;
-    const newBody  = p.body  !== undefined ? String(p.body)  : existing.body;
-    const newImage = p.image_url !== undefined ? String(p.image_url) : existing.image_url;
-    // Task #67：title 一旦被 admin 改成跟 label 不同，就標記為 overridden（label 同步不再覆蓋）
-    let titleOverridden = existing.title_overridden;
-    if (p.title !== undefined && newTitle !== label) titleOverridden = true;
-    if (p.title !== undefined && newTitle === label) titleOverridden = false;
-
-    const r = await pool.query(
-      `UPDATE admin_course_intros SET
-         title = $2, body = $3, image_url = $4, title_overridden = $5, updated_at = NOW()
-       WHERE course_type = $1
+       VALUES ($1, COALESCE($2, $5), COALESCE($3, ''), COALESCE($4, ''),
+               CASE WHEN $2 IS NULL THEN FALSE ELSE ($2 <> $5) END)
+       ON CONFLICT (course_type) DO UPDATE SET
+         title  = COALESCE($2, admin_course_intros.title),
+         body   = COALESCE($3, admin_course_intros.body),
+         image_url = COALESCE($4, admin_course_intros.image_url),
+         title_overridden = CASE
+           WHEN $2 IS NULL THEN admin_course_intros.title_overridden
+           ELSE ($2 <> $5)
+         END,
+         updated_at = NOW()
        RETURNING course_type, title, body, image_url, title_overridden`,
-      [ct, newTitle, newBody, newImage, titleOverridden]
+      [ct, newTitleArg, newBodyArg, newImgArg, label]
     );
+    await client.query('COMMIT');
     const row = r.rows[0];
     res.json({
       course_type: row.course_type,
@@ -75,8 +92,11 @@ router.patch('/:type', requireAdminAuth, AM, async (req, res) => {
       title_overridden: row.title_overridden,
     });
   } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('[admin/course-intros/:type PATCH]', err);
     res.status(500).json({ error: 'update intro failed' });
+  } finally {
+    client.release();
   }
 });
 
