@@ -105,6 +105,7 @@
 ---
 
 ## 變更紀錄
+- 2026-05-15：**修 production cold-start outage**（2026-05-15 04:58 GMT+8 outage，1 日 uptime 83%）。`server/index.js` 啟動順序改為 `listen` 先開（`/health` 立刻 200）→ `bootstrapAdmin/bootstrapCore` 在 background 執行。原本 cold instance 上 bootstrap 常 >10s，autoscale health-check timeout 反覆殺 instance 造成 ~4hr 中斷。Dev smoke 通過後須重新 publish 才會套到 production。如要徹底避免 cold-start，可改 Reserved VM 或設 autoscale `minInstances=1`。
 - 2026-05-15：**Task #51 employees 表合併完成**。三表合一（coaches/admin_users/admin_staff → employees with roles TEXT[]）；coaches 改 view；DROP 舊表 + CASCADE 清掉 462 rows legacy；bootstrap admin seed 改寫 employees；`db/migrations/002_admin_tables.sql` 同步清掉 admin_users/admin_staff CREATE TABLE。post-DROP 8 條 smoke 全綠（admin/coach login + staff/venues list + promo audit + IDOR + cron）。
 - 2026-05-11：正式環境登入修正 + Phase 5 全面驗證。`admin_users` 密碼 hash 直接更新（dream0935314711）；`client/admin/src/pages/LoginPage.jsx` 的 Mock hint 改為 `USE_MOCK && ...` 條件顯示；admin/liff 以 `VITE_USE_MOCK=false` 重建（admin 385KB/gzip 122KB，liff 505KB/gzip 155KB）。Phase 5 全端點 smoke：tags=4cats/16tags、thresholds=3、coach-eval=175 coaches。
 - 2026-05-03：Phase 5 全功能完成 + 後台編輯報名 + 多組家庭綁定。
