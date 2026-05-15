@@ -1,43 +1,43 @@
 import React, { useEffect, useState } from 'react';
 import PageHeader from '../components/PageHeader';
+import LoadingSpinner from '../components/LoadingSpinner';
+import { useToast } from '../context/ToastContext';
+import { courseTypesApi } from '../api/courseTypes';
 
-const API = '/api/admin/course-types';
-const token = () => localStorage.getItem('admin_token');
-const headers = () => ({ 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` });
+const autoLabel = (ct) => {
+  const map = { 1: '一對一', 2: '一對二', 3: '一對三', 4: '一對四', 5: '一對五', 6: '一對六' };
+  return map[ct] || `一對${ct}`;
+};
 
 export default function CourseTypesPage() {
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState('');
+  const toast = useToast();
+  const [rows, setRows] = useState(null);
   const [saving, setSaving] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState({ course_type: '', label: '', max_students: '' });
   const [addErr, setAddErr] = useState('');
 
   async function load() {
-    setLoading(true);
     try {
-      const r = await fetch(API, { headers: headers() });
-      const data = await r.json();
+      const data = await courseTypesApi.list();
       setRows(Array.isArray(data) ? data : []);
-    } catch { setErr('載入失敗'); }
-    setLoading(false);
+    } catch (e) {
+      const msg = e?.response?.data?.error || '載入失敗';
+      toast.error(msg);
+      setRows([]);
+    }
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function toggleActive(row) {
     setSaving(row.course_type);
     try {
-      const r = await fetch(`${API}/${row.course_type}`, {
-        method: 'PATCH',
-        headers: headers(),
-        body: JSON.stringify({ is_active: !row.is_active }),
-      });
-      if (!r.ok) { const d = await r.json(); setErr(d.error || '更新失敗'); }
-      else await load();
-    } catch { setErr('更新失敗'); }
-    setSaving(null);
+      await courseTypesApi.update(row.course_type, { is_active: !row.is_active });
+      await load();
+    } catch (e) {
+      toast.error(e?.response?.data?.error || '更新失敗');
+    } finally { setSaving(null); }
   }
 
   async function handleAdd(e) {
@@ -47,44 +47,38 @@ export default function CourseTypesPage() {
     const ms = parseInt(form.max_students, 10);
     if (isNaN(ct) || ct < 1) return setAddErr('課程編號必須為正整數');
     if (!form.label.trim()) return setAddErr('請填寫名稱');
-    if (isNaN(ms) || ms < 1) return setAddErr('學生人數必須為正整數');
+    if (isNaN(ms) || ms < 1 || ms > 10) return setAddErr('學生人數需為 1–10 之間');
     try {
-      const r = await fetch(API, {
-        method: 'POST',
-        headers: headers(),
-        body: JSON.stringify({ course_type: ct, label: form.label.trim(), max_students: ms }),
-      });
-      const d = await r.json();
-      if (!r.ok) return setAddErr(d.error || '新增失敗');
+      await courseTypesApi.create({ course_type: ct, label: form.label.trim(), max_students: ms });
       setShowAdd(false);
       setForm({ course_type: '', label: '', max_students: '' });
+      toast.success(`已新增「${form.label.trim()}」`);
       await load();
-    } catch { setAddErr('新增失敗'); }
+    } catch (e) {
+      setAddErr(e?.response?.data?.error || '新增失敗');
+    }
   }
 
   async function handleDelete(row) {
     if (!window.confirm(`確定刪除「${row.label}」嗎？（有報名記錄的類型無法刪除）`)) return;
     setSaving(row.course_type);
     try {
-      const r = await fetch(`${API}/${row.course_type}`, { method: 'DELETE', headers: headers() });
-      const d = await r.json();
-      if (!r.ok) setErr(d.error || '刪除失敗');
-      else await load();
-    } catch { setErr('刪除失敗'); }
-    setSaving(null);
+      await courseTypesApi.remove(row.course_type);
+      toast.success(`已刪除「${row.label}」`);
+      await load();
+    } catch (e) {
+      toast.error(e?.response?.data?.error || '刪除失敗');
+    } finally { setSaving(null); }
   }
 
-  const autoLabel = (ct) => {
-    const map = { 1:'一對一', 2:'一對二', 3:'一對三', 4:'一對四', 5:'一對五', 6:'一對六' };
-    return map[ct] || `一對${ct}`;
-  };
+  if (!rows) return <LoadingSpinner fullPage />;
 
   return (
-    <div className="p-6">
+    <div>
       <PageHeader
         title="課程需求管理"
-        subtitle="設定可用的師生比規格（一對一、一對二…）"
-        action={
+        subtitle="F-A07 · 設定可用的師生比規格（停用後 LIFF 報名頁不再顯示）"
+        actions={
           <button
             onClick={() => { setShowAdd(true); setAddErr(''); }}
             className="rounded-lg bg-brand-primary px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
@@ -94,14 +88,6 @@ export default function CourseTypesPage() {
         }
       />
 
-      {err && (
-        <div className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
-          {err}
-          <button className="ml-3 underline" onClick={() => setErr('')}>關閉</button>
-        </div>
-      )}
-
-      {/* 新增表單 */}
       {showAdd && (
         <div className="mb-6 rounded-xl border border-blue-200 bg-blue-50 p-5">
           <div className="mb-3 font-semibold text-blue-800">新增課程需求</div>
@@ -137,9 +123,9 @@ export default function CourseTypesPage() {
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-gray-600">最多學生人數</label>
+              <label className="mb-1 block text-xs font-medium text-gray-600">最多學生人數（1–10）</label>
               <input
-                type="number" min="1"
+                type="number" min="1" max="10"
                 value={form.max_students}
                 onChange={(e) => setForm((f) => ({ ...f, max_students: e.target.value }))}
                 className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
@@ -164,70 +150,65 @@ export default function CourseTypesPage() {
         </div>
       )}
 
-      {/* 課程需求清單 */}
-      {loading ? (
-        <div className="py-16 text-center text-gray-400">載入中…</div>
-      ) : (
-        <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50">
+      <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-50">
+            <tr>
+              <th className="px-5 py-3 text-left font-semibold text-gray-600">課程需求</th>
+              <th className="px-5 py-3 text-left font-semibold text-gray-600">最多學生</th>
+              <th className="px-5 py-3 text-left font-semibold text-gray-600">系統代碼</th>
+              <th className="px-5 py-3 text-left font-semibold text-gray-600">狀態</th>
+              <th className="px-5 py-3 text-right font-semibold text-gray-600">操作</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {rows.length === 0 && (
               <tr>
-                <th className="px-5 py-3 text-left font-semibold text-gray-600">課程需求</th>
-                <th className="px-5 py-3 text-left font-semibold text-gray-600">最多學生</th>
-                <th className="px-5 py-3 text-left font-semibold text-gray-600">系統代碼</th>
-                <th className="px-5 py-3 text-left font-semibold text-gray-600">狀態</th>
-                <th className="px-5 py-3 text-right font-semibold text-gray-600">操作</th>
+                <td colSpan={5} className="py-12 text-center text-gray-400">尚無課程需求設定</td>
               </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {rows.length === 0 && (
-                <tr>
-                  <td colSpan={5} className="py-12 text-center text-gray-400">尚無課程需求設定</td>
-                </tr>
-              )}
-              {rows.map((row) => (
-                <tr key={row.course_type} className={`transition hover:bg-gray-50 ${!row.is_active ? 'opacity-50' : ''}`}>
-                  <td className="px-5 py-4 font-semibold text-gray-800">{row.label}</td>
-                  <td className="px-5 py-4 text-gray-600">{row.max_students} 人</td>
-                  <td className="px-5 py-4">
-                    <span className="rounded bg-gray-100 px-2 py-0.5 font-mono text-xs text-gray-500">
-                      course_type = {row.course_type}
-                    </span>
-                  </td>
-                  <td className="px-5 py-4">
-                    {row.is_active ? (
-                      <span className="rounded-full bg-green-100 px-3 py-1 text-xs font-semibold text-green-700">啟用中</span>
-                    ) : (
-                      <span className="rounded-full bg-gray-200 px-3 py-1 text-xs font-semibold text-gray-500">已停用</span>
-                    )}
-                  </td>
-                  <td className="px-5 py-4 text-right">
-                    <div className="flex justify-end gap-2">
-                      <button
-                        onClick={() => toggleActive(row)}
-                        disabled={saving === row.course_type}
-                        className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium hover:bg-gray-50 disabled:opacity-50"
-                      >
-                        {saving === row.course_type ? '…' : row.is_active ? '停用' : '啟用'}
-                      </button>
-                      <button
-                        onClick={() => handleDelete(row)}
-                        disabled={saving === row.course_type}
-                        className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
-                      >
-                        刪除
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+            )}
+            {rows.map((row) => (
+              <tr key={row.course_type} className={`transition hover:bg-gray-50 ${!row.is_active ? 'opacity-50' : ''}`}>
+                <td className="px-5 py-4 font-semibold text-gray-800">{row.label}</td>
+                <td className="px-5 py-4 text-gray-600">{row.max_students} 人</td>
+                <td className="px-5 py-4">
+                  <span className="rounded bg-gray-100 px-2 py-0.5 font-mono text-xs text-gray-500">
+                    course_type = {row.course_type}
+                  </span>
+                </td>
+                <td className="px-5 py-4">
+                  {row.is_active ? (
+                    <span className="rounded-full bg-green-100 px-3 py-1 text-xs font-semibold text-green-700">啟用中</span>
+                  ) : (
+                    <span className="rounded-full bg-gray-200 px-3 py-1 text-xs font-semibold text-gray-500">已停用</span>
+                  )}
+                </td>
+                <td className="px-5 py-4 text-right">
+                  <div className="flex justify-end gap-2">
+                    <button
+                      onClick={() => toggleActive(row)}
+                      disabled={saving === row.course_type}
+                      className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium hover:bg-gray-50 disabled:opacity-50"
+                    >
+                      {saving === row.course_type ? '…' : row.is_active ? '停用' : '啟用'}
+                    </button>
+                    <button
+                      onClick={() => handleDelete(row)}
+                      disabled={saving === row.course_type}
+                      className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
+                    >
+                      刪除
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
 
       <div className="mt-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-700">
-        提示：已有報名記錄的課程需求無法刪除，請改為「停用」。停用後前台及報名流程中將不再顯示該規格。
+        提示：已有報名記錄的課程需求無法刪除，請改為「停用」。停用後 LIFF 報名流程不再顯示該規格。
       </div>
     </div>
   );

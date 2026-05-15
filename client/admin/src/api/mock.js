@@ -82,6 +82,12 @@ const SETTINGS = {
   multi_confirm_minutes:   60,
 };
 
+const COURSE_TYPES = [
+  { course_type: 1, label: '一對一', max_students: 1, is_active: true, sort_order: 1 },
+  { course_type: 2, label: '一對二', max_students: 2, is_active: true, sort_order: 2 },
+  { course_type: 3, label: '一對三', max_students: 3, is_active: true, sort_order: 3 },
+];
+
 const COURSE_INTROS = {
   1: { title: '1 對 1 個別班', body: '完全客製化的訓練內容，最高效率提升個人技術。', image_url: '' },
   2: { title: '1 對 2 雙人班', body: '與好友或家人共同上課，互相學習，CP 值高。',     image_url: '' },
@@ -353,6 +359,30 @@ export const mockDb = {
 
   settings() { return { ...SETTINGS }; },
   updateSettings(patch) { Object.assign(SETTINGS, patch); return { ...SETTINGS }; },
+
+  courseTypes() { return COURSE_TYPES.map((t) => ({ ...t })); },
+  createCourseType({ course_type, label, max_students }) {
+    const ct = parseInt(course_type, 10);
+    if (COURSE_TYPES.some((t) => t.course_type === ct)) {
+      const e = new Error('exists'); e.response = { data: { error: `課程需求 ${ct} 已存在` } }; throw e;
+    }
+    const row = { course_type: ct, label, max_students: parseInt(max_students, 10), is_active: true, sort_order: COURSE_TYPES.length + 1 };
+    COURSE_TYPES.push(row);
+    return { ...row };
+  },
+  updateCourseType(type, patch) {
+    const ct = parseInt(type, 10);
+    const row = COURSE_TYPES.find((t) => t.course_type === ct);
+    if (!row) return null;
+    Object.assign(row, patch);
+    return { ...row };
+  },
+  deleteCourseType(type) {
+    const ct = parseInt(type, 10);
+    const i = COURSE_TYPES.findIndex((t) => t.course_type === ct);
+    if (i >= 0) COURSE_TYPES.splice(i, 1);
+    return { ok: true };
+  },
 
   courseIntros() { return JSON.parse(JSON.stringify(COURSE_INTROS)); },
   updateCourseIntro(courseType, patch) {

@@ -110,6 +110,25 @@ router.get('/mine', requireParent, async (req, res) => {
   }
 });
 
+/**
+ * GET /api/courses/types — 公開：LIFF 報名頁的組別卡片只顯示 is_active=true
+ * 表 course_type_configs 由後台「課程需求管理」維護（F-A07）。
+ */
+router.get('/types', async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT course_type, label, max_students, is_active, sort_order
+         FROM course_type_configs
+        WHERE is_active = TRUE
+        ORDER BY sort_order, course_type`
+    );
+    res.json(r.rows);
+  } catch (e) {
+    console.error('[courses/types]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.all('*', (req, res) => {
   res.status(501).json({ error: 'Not implemented', module: 'courses', path: req.path });
 });
