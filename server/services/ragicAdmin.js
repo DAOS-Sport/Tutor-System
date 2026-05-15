@@ -217,17 +217,19 @@ async function syncVenuesFromRagic() {
       const acctNumber = (r['帳號'] || r['1001017'] || '').toString();
       seenCodes.add(code);
 
+      // Task #54：尊重 *_overridden_at — 後台手動編輯過的欄位不被自動 sync 蓋回；
+      // is_active 同理（後台手動翻轉 active 後 sync 不再覆蓋）。
       await pool.query(
         `INSERT INTO admin_venues (id, code, name, address, line_token, bank_institution_name, bank_branch_name, account_holder, account_number, is_active, last_synced_at)
          VALUES ($1, $1, $2, $3, '', $4, $5, $6, $7, TRUE, NOW())
          ON CONFLICT (id) DO UPDATE SET
-           name = EXCLUDED.name,
-           address = COALESCE(NULLIF(admin_venues.address, ''), EXCLUDED.address),
-           bank_institution_name = COALESCE(NULLIF(admin_venues.bank_institution_name, ''), EXCLUDED.bank_institution_name),
-           bank_branch_name = COALESCE(NULLIF(admin_venues.bank_branch_name, ''), EXCLUDED.bank_branch_name),
-           account_holder = COALESCE(NULLIF(admin_venues.account_holder, ''), EXCLUDED.account_holder),
-           account_number = COALESCE(NULLIF(admin_venues.account_number, ''), EXCLUDED.account_number),
-           is_active = TRUE,
+           name = CASE WHEN admin_venues.name_overridden_at IS NULL THEN EXCLUDED.name ELSE admin_venues.name END,
+           address = CASE WHEN admin_venues.address_overridden_at IS NULL THEN EXCLUDED.address ELSE admin_venues.address END,
+           bank_institution_name = CASE WHEN admin_venues.bank_institution_name_overridden_at IS NULL THEN EXCLUDED.bank_institution_name ELSE admin_venues.bank_institution_name END,
+           bank_branch_name = CASE WHEN admin_venues.bank_branch_name_overridden_at IS NULL THEN EXCLUDED.bank_branch_name ELSE admin_venues.bank_branch_name END,
+           account_holder = CASE WHEN admin_venues.account_holder_overridden_at IS NULL THEN EXCLUDED.account_holder ELSE admin_venues.account_holder END,
+           account_number = CASE WHEN admin_venues.account_number_overridden_at IS NULL THEN EXCLUDED.account_number ELSE admin_venues.account_number END,
+           is_active = CASE WHEN admin_venues.is_active_overridden_at IS NULL THEN TRUE ELSE admin_venues.is_active END,
            last_synced_at = NOW()`,
         [code, name, address, bankInst, bankBranch, acctHolder, acctNumber]
       );
@@ -246,14 +248,18 @@ async function syncVenuesFromRagic() {
     }
     if (seenCodes.size > 0) {
       const codes = Array.from(seenCodes);
+      // Task #54：is_active_overridden_at 不為 null 的場館代表後台手動標 active，
+      // 不被自動 sync 軟刪除。venues 表跟著 admin_venues 走。
       await pool.query(
-        `UPDATE venues SET is_active = FALSE, updated_at = NOW()
-         WHERE id <> ALL($1::text[]) AND is_active = TRUE`,
+        `UPDATE admin_venues SET is_active = FALSE, updated_at = NOW()
+         WHERE id <> ALL($1::text[]) AND is_active = TRUE
+           AND is_active_overridden_at IS NULL`,
         [codes]
       );
       await pool.query(
-        `UPDATE admin_venues SET is_active = FALSE, updated_at = NOW()
-         WHERE id <> ALL($1::text[]) AND is_active = TRUE`,
+        `UPDATE venues SET is_active = FALSE, updated_at = NOW()
+         WHERE id <> ALL($1::text[]) AND is_active = TRUE
+           AND id IN (SELECT id FROM admin_venues WHERE is_active_overridden_at IS NULL)`,
         [codes]
       );
     }
@@ -393,12 +399,20 @@ async function applyVenueSync(selections = {}) {
       if (!rv) continue;
       const cur = dbMap.get(code);
       if (cur) {
-        // 重新啟用：admin_venues + LIFF venues 同步 active=TRUE，並用 Ragic 最新 name/address 刷新
+        // 重新啟用：admin_venues + LIFF venues 同步 active=TRUE，並把所有同步欄位
+        // 從 Ragic 最新值刷新（仍尊重 *_overridden_at 個別欄位覆寫）。
         await client.query(
-          `UPDATE admin_venues SET is_active = TRUE, is_active_overridden_at = NULL,
-                                   last_synced_at = NOW(), updated_at = NOW()
+          `UPDATE admin_venues SET
+             is_active = TRUE, is_active_overridden_at = NULL,
+             name = CASE WHEN name_overridden_at IS NULL THEN $2 ELSE name END,
+             address = CASE WHEN address_overridden_at IS NULL THEN $3 ELSE address END,
+             bank_institution_name = CASE WHEN bank_institution_name_overridden_at IS NULL THEN $4 ELSE bank_institution_name END,
+             bank_branch_name = CASE WHEN bank_branch_name_overridden_at IS NULL THEN $5 ELSE bank_branch_name END,
+             account_holder = CASE WHEN account_holder_overridden_at IS NULL THEN $6 ELSE account_holder END,
+             account_number = CASE WHEN account_number_overridden_at IS NULL THEN $7 ELSE account_number END,
+             last_synced_at = NOW(), updated_at = NOW()
              WHERE id = $1`,
-          [code]
+          [code, rv.name, rv.address, rv.bank_institution_name, rv.bank_branch_name, rv.account_holder, rv.account_number]
         );
         await client.query(
           `INSERT INTO venues (id, name, full_address, is_active)
@@ -491,10 +505,6 @@ async function applyVenueSync(selections = {}) {
 
   return { added: addedCount, updated: updatedCount, removed: removedCount };
 }
-
-function kickoffSyncStaffAsync()   { _kickoff('staff',   syncStaffFromRagic); }
-function kickoffSyncCoachesAsync() { _kickoff('coaches', syncCoachesFromRagic); }
-function kickoffSyncVenuesAsync()  { _kickoff('venues',  syncVenuesFromRagic); }
 
 module.exports = {
   syncStaffFromRagic,
