@@ -374,13 +374,22 @@ export const mockDb = {
     const ct = parseInt(type, 10);
     const row = COURSE_TYPES.find((t) => t.course_type === ct);
     if (!row) return null;
+    const oldLabel = row.label;
     Object.assign(row, patch);
+    // Task #67：label 變更時同步未被覆寫的介紹 title
+    if (patch && patch.label !== undefined && patch.label !== oldLabel) {
+      const k = String(ct);
+      const intro = COURSE_INTROS[k];
+      if (intro && !intro.title_overridden) intro.title = row.label;
+    }
     return { ...row };
   },
   deleteCourseType(type) {
     const ct = parseInt(type, 10);
     const i = COURSE_TYPES.findIndex((t) => t.course_type === ct);
     if (i >= 0) COURSE_TYPES.splice(i, 1);
+    // Task #67：FK CASCADE 模擬 — 刪掉對應介紹
+    delete COURSE_INTROS[String(ct)];
     return { ok: true };
   },
 
