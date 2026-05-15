@@ -274,6 +274,13 @@ DO $$ BEGIN
   ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS coach_id UUID REFERENCES coaches(id) ON DELETE SET NULL;
   ALTER TABLE course_periods    ADD COLUMN IF NOT EXISTS admin_enrollment_id TEXT;
   ALTER TABLE course_sessions   ADD COLUMN IF NOT EXISTS coach_id UUID REFERENCES coaches(id) ON DELETE RESTRICT;
+  -- Task #59：transfer_coach 結構化欄位（before/after，名稱保留作可讀紀錄；UUID 為查詢索引）
+  ALTER TABLE admin_enrollment_audit_logs ADD COLUMN IF NOT EXISTS before_coach_id UUID;
+  ALTER TABLE admin_enrollment_audit_logs ADD COLUMN IF NOT EXISTS after_coach_id  UUID;
+  ALTER TABLE admin_enrollment_audit_logs ADD COLUMN IF NOT EXISTS before_coach    TEXT;
+  ALTER TABLE admin_enrollment_audit_logs ADD COLUMN IF NOT EXISTS after_coach     TEXT;
+  ALTER TABLE admin_enrollment_audit_logs ADD COLUMN IF NOT EXISTS before_venue_id VARCHAR(10);
+  ALTER TABLE admin_enrollment_audit_logs ADD COLUMN IF NOT EXISTS after_venue_id  VARCHAR(10);
   ALTER TABLE session_records ADD COLUMN IF NOT EXISTS summary TEXT NOT NULL DEFAULT '';
   ALTER TABLE session_records ADD COLUMN IF NOT EXISTS highlights TEXT NOT NULL DEFAULT '';
   ALTER TABLE session_records ADD COLUMN IF NOT EXISTS improvements TEXT NOT NULL DEFAULT '';

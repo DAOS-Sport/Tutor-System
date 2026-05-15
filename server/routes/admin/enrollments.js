@@ -282,9 +282,14 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin', 'manager'), asy
       if (coachChanged) reasonParts.push(`教練 ${oldCoachName} → ${coachName}`);
       if (reassignedSessions > 0) reasonParts.push(`重新指派 ${reassignedSessions} 堂未來課程`);
       await client.query(
-        `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user, reason)
-         VALUES ($1, $2, $3, $4)`,
-        [id, 'transfer_coach', by, reasonParts.join('；')]
+        `INSERT INTO admin_enrollment_audit_logs
+           (enrollment_id, action, by_user, reason,
+            before_coach_id, after_coach_id, before_coach, after_coach,
+            before_venue_id, after_venue_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [id, 'transfer_coach', by, reasonParts.join('；'),
+         row.coach_id || null, coachId || null, oldCoachName || null, coachName || null,
+         oldVenueId || null, venueId || null]
       );
     } else {
       await client.query(

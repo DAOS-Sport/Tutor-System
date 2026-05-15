@@ -73,24 +73,23 @@ export default function EditEnrollmentModal({ enrollment, onClose, onSaved }) {
     return () => { alive = false; };
   }, []);
 
-  // 載入該場館的教練清單；換場館時 reset 教練選擇
+  // 載入該場館的教練清單
   useEffect(() => {
     if (!venueId) { setCoaches([]); return; }
     let alive = true;
     setCoachesLoading(true);
     coachesApi.list({ venueId, status: 'active' })
-      .then((d) => {
-        if (!alive) return;
-        const list = d || [];
-        setCoaches(list);
-        // 若目前 coachId 不在新場館的教練清單中 → reset；首次載入時若原 enrollment.coach_id 在內則保留
-        if (coachId && !list.some((c) => c.id === coachId)) setCoachId('');
-      })
+      .then((d) => alive && setCoaches(d || []))
       .catch(() => alive && setCoaches([]))
       .finally(() => alive && setCoachesLoading(false));
     return () => { alive = false; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [venueId]);
+
+  // 換場館時無條件 reset 教練選擇（即使新場館也含此教練），確保管理員自覺重選
+  function handleVenueChange(nextVenueId) {
+    if (nextVenueId !== venueId) setCoachId('');
+    setVenueId(nextVenueId);
+  }
 
   const venueName = useMemo(
     () => (venues.find((v) => v.id === venueId)?.name) || venueId,
@@ -194,7 +193,7 @@ export default function EditEnrollmentModal({ enrollment, onClose, onSaved }) {
           </Field>
 
           <Field label="報名場館 *" hint="變更場館後教練選項會重新載入">
-            <Select value={venueId} onChange={setVenueId}>
+            <Select value={venueId} onChange={handleVenueChange}>
               <option value="">請選擇場館</option>
               {venues.map((v) => (
                 <option key={v.id} value={v.id}>{v.name}</option>
