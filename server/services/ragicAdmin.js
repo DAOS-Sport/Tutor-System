@@ -399,11 +399,14 @@ async function applyVenueSync(selections = {}) {
       if (!rv) continue;
       const cur = dbMap.get(code);
       if (cur) {
+        // 後台手動覆寫過 is_active（is_active_overridden_at != null）→ 跳過重新啟用，
+        // 與 removed 路徑同樣尊重覆寫保護，避免 sync 蓋掉操作者明確意圖。
+        if (cur.is_active_overridden_at != null) continue;
         // 重新啟用：admin_venues + LIFF venues 同步 active=TRUE，並把所有同步欄位
         // 從 Ragic 最新值刷新（仍尊重 *_overridden_at 個別欄位覆寫）。
         await client.query(
           `UPDATE admin_venues SET
-             is_active = TRUE, is_active_overridden_at = NULL,
+             is_active = TRUE,
              name = CASE WHEN name_overridden_at IS NULL THEN $2 ELSE name END,
              address = CASE WHEN address_overridden_at IS NULL THEN $3 ELSE address END,
              bank_institution_name = CASE WHEN bank_institution_name_overridden_at IS NULL THEN $4 ELSE bank_institution_name END,
