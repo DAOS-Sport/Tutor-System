@@ -284,6 +284,17 @@ async function ensureSchema() {
   await pool.query(`ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS extra_parent_phones TEXT[] NOT NULL DEFAULT '{}'`);
   // 後台備注欄
   await pool.query(`ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS notes TEXT`);
+
+  // Task #53：admin_users 增加 is_active + 覆寫旗標（停用 admin login）
+  await pool.query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE`);
+  await pool.query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS active_overridden_at TIMESTAMPTZ`);
+  // Task #53：admin_staff 增加覆寫旗標（後台勾啟用後 Ragic 不再覆蓋）
+  await pool.query(`ALTER TABLE admin_staff ADD COLUMN IF NOT EXISTS active_overridden_at TIMESTAMPTZ`);
+
+  // Task #53：載入效能 — 列表常依 active / venue 過濾
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_admin_staff_active ON admin_staff(active)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_admin_staff_venue ON admin_staff(venue_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_admin_users_active ON admin_users(is_active)`);
 }
 
 async function seedIfEmpty() {

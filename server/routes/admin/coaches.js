@@ -1,20 +1,16 @@
 /**
- * 教練資料管理 (F-C-Admin) — Task #32
- *  GET    /api/admin/coaches          → 全部教練（先 best-effort sync H01）
- *                                        含 venue_ids、line 綁定狀態、簡介審核狀態
- *  GET    /api/admin/coaches/:id      → 單一教練詳細（含 bio_media 與可教場館）
- *  PATCH  /api/admin/coaches/:id      → 更新 is_senior / pricing_multiplier(1.0–1.5) /
- *                                        specialties / bio_rich_text / email / is_active /
- *                                        venue_ids（M:N, 全量替換）
- *
- * 注意：H01 沒有「教練可教場館」欄位 → coach_venues 由後台手動維護。
- * 系統內部欄位（is_senior / multiplier / bio / specialties / intro_review_status / line_uid）
- * 在 Ragic 同步時不會被覆寫。
+ * 教練資料管理 (F-C-Admin) — Task #32 + Task #53
+ *  GET    /api/admin/coaches            → 純讀 DB（fire-and-forget Ragic 同步）
+ *                                         支援 ?status=active|inactive|all
+ *                                                ?venueId=、?name=、?phone=、?senior=yes|no
+ *  POST   /api/admin/coaches/sync       → 立即同步 H01（同步等待）
+ *  GET    /api/admin/coaches/:id        → 單一教練詳細
+ *  PATCH  /api/admin/coaches/:id        → 更新（翻轉 is_active 會寫 active_overridden_at）
  */
 const express = require('express');
 const { pool } = require('../../models/db');
 const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
-const { syncCoachesFromRagic } = require('../../services/ragicAdmin');
+const { syncCoachesFromRagic, kickoffSyncCoachesAsync } = require('../../services/ragicAdmin');
 
 const router = express.Router();
 
@@ -40,10 +36,14 @@ function rowToCoach(r, venueIds = []) {
   };
 }
 
-/** 一次撈 coach + 對應 venue_ids（避免 N+1）。回傳 [{...coach, venue_ids}] */
-async function listCoachesWithVenues() {
+async function listCoachesWithVenues(filterSql, filterParams) {
   const [coachesRes, venuesRes] = await Promise.all([
-    pool.query(`SELECT * FROM coaches ORDER BY is_active DESC, name`),
+    pool.query(
+      `SELECT c.* FROM coaches c
+        ${filterSql.where ? 'WHERE ' + filterSql.where : ''}
+        ORDER BY c.is_active DESC, c.name`,
+      filterParams
+    ),
     pool.query(`SELECT coach_id, venue_id FROM coach_venues`),
   ]);
   const venuesByCoach = new Map();
@@ -51,17 +51,46 @@ async function listCoachesWithVenues() {
     if (!venuesByCoach.has(row.coach_id)) venuesByCoach.set(row.coach_id, []);
     venuesByCoach.get(row.coach_id).push(row.venue_id);
   }
-  return coachesRes.rows.map((r) => rowToCoach(r, (venuesByCoach.get(r.id) || []).sort()));
+  let coaches = coachesRes.rows.map((r) => rowToCoach(r, (venuesByCoach.get(r.id) || []).sort()));
+  // venueId 過濾必須等取到 M:N 關聯後才能套用
+  if (filterSql.venueId) {
+    coaches = coaches.filter((c) => c.venue_ids.includes(filterSql.venueId));
+  }
+  return coaches;
 }
 
 router.get('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
   try {
-    await syncCoachesFromRagic(); // best-effort
-    const coaches = await listCoachesWithVenues();
+    kickoffSyncCoachesAsync();
+    const { status, venueId, name, phone, senior } = req.query;
+    const where = [];
+    const params = [];
+    if (status === 'active')   where.push(`c.is_active = TRUE`);
+    else if (status === 'inactive') where.push(`c.is_active = FALSE`);
+    if (name)  { params.push(`%${name}%`);  where.push(`c.name  ILIKE $${params.length}`); }
+    if (phone) { params.push(`%${phone}%`); where.push(`c.phone ILIKE $${params.length}`); }
+    if (senior === 'yes') where.push(`c.is_senior = TRUE`);
+    else if (senior === 'no') where.push(`(c.is_senior IS NULL OR c.is_senior = FALSE)`);
+
+    const coaches = await listCoachesWithVenues(
+      { where: where.join(' AND '), venueId: venueId || '' },
+      params
+    );
     res.json(coaches);
   } catch (err) {
     console.error('[admin/coaches]', err);
     res.status(500).json({ error: 'list coaches failed' });
+  }
+});
+
+router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+  try {
+    const result = await syncCoachesFromRagic();
+    if (result && result.error) return res.status(502).json(result);
+    res.json(result);
+  } catch (err) {
+    console.error('[admin/coaches/sync]', err);
+    res.status(500).json({ error: 'sync failed' });
   }
 });
 
@@ -96,7 +125,6 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
       return res.status(404).json({ error: 'coach not found' });
     }
 
-    // 修課係數驗證
     if (patch.pricing_multiplier != null) {
       const m = Number(patch.pricing_multiplier);
       if (Number.isNaN(m) || m < MULTIPLIER_MIN || m > MULTIPLIER_MAX) {
@@ -106,7 +134,6 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
       }
     }
 
-    // specialties: 接受 array 或 null（轉空陣列）
     let specialties = cur.rows[0].specialties || [];
     if (patch.specialties !== undefined) {
       if (!Array.isArray(patch.specialties)) {
@@ -126,6 +153,7 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
         : (cur.rows[0].bio_rich_text || ''),
       is_active: patch.is_active != null ? !!patch.is_active : !!cur.rows[0].is_active,
     };
+    const activeChanged = patch.is_active != null && (!!patch.is_active) !== !!cur.rows[0].is_active;
 
     await client.query('BEGIN');
     await client.query(
@@ -136,16 +164,15 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
          specialties = $5,
          bio_rich_text = $6,
          is_active = $7,
+         active_overridden_at = CASE WHEN $8::boolean THEN NOW() ELSE active_overridden_at END,
          updated_at = NOW()
        WHERE id = $1`,
       [id, merged.email, merged.is_senior, merged.pricing_multiplier, specialties,
-       merged.bio_rich_text, merged.is_active]
+       merged.bio_rich_text, merged.is_active, activeChanged]
     );
 
-    // 可教場館 M:N 全量替換（只有 patch 有給 venue_ids 才動）
     if (Array.isArray(patch.venue_ids)) {
       const venueIds = patch.venue_ids.map((v) => String(v).trim()).filter(Boolean);
-      // 驗證所有 venue 存在且為履約中（已軟下架的 stale 場館不可指派）
       if (venueIds.length > 0) {
         const vr = await client.query(
           `SELECT id FROM venues WHERE id = ANY($1::varchar[]) AND is_active = TRUE`,
@@ -166,7 +193,6 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
     }
     await client.query('COMMIT');
 
-    // 回傳完整最新狀態
     const [after, vAfter] = await Promise.all([
       pool.query(`SELECT * FROM coaches WHERE id = $1`, [id]),
       pool.query(`SELECT venue_id FROM coach_venues WHERE coach_id = $1 ORDER BY venue_id`, [id]),

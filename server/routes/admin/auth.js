@@ -20,7 +20,7 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ error: '請提供帳號密碼' });
     }
     const r = await pool.query(
-      `SELECT id, username, password_hash, name, role, venue_id
+      `SELECT id, username, password_hash, name, role, venue_id, is_active
          FROM admin_users
         WHERE username = $1`,
       [String(username).trim()]
@@ -29,6 +29,10 @@ router.post('/login', async (req, res) => {
     if (!u) return res.json(null);
     const ok = await bcrypt.compare(String(password), u.password_hash);
     if (!ok) return res.json(null);
+    // Task #53：H01 離職同步會把 is_active 設 false → 拒絕登入（密碼正確但禁用）
+    if (u.is_active === false) {
+      return res.status(403).json({ error: '此帳號已停用，請聯絡系統管理員' });
+    }
 
     const token = signToken({
       sub: u.id,

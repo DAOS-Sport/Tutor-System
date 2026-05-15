@@ -3,18 +3,15 @@ import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import DataTable from '../components/DataTable';
 import StatusBadge from '../components/StatusBadge';
+import FilterBar from '../components/FilterBar';
+import StaffEditModal from './StaffEditModal';
 import { useToast } from '../context/ToastContext';
 import { staffApi } from '../api/staff';
 import { venuesApi } from '../api/venues';
 import { roleLabel } from '../utils/format';
 
+const EMPTY_FILTERS = { status: 'all', venueId: '', name: '', role: '', phone: '', senior: '' };
 const ROLE_TONE = { admin: 'primary', manager: 'teal', staff: 'gold', coach: 'green' };
-const ROLE_OPTIONS = [
-  { value: 'admin',   label: '系統管理員' },
-  { value: 'manager', label: '主管' },
-  { value: 'staff',   label: '行政櫃檯' },
-  { value: 'coach',   label: '教練' },
-];
 const MULTIPLIER_MIN = 1.00;
 const MULTIPLIER_MAX = 1.50;
 
@@ -24,12 +21,39 @@ export default function StaffPage() {
   const [venues, setVenues] = useState([]);
   const [editing, setEditing] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [filters, setFilters] = useState(EMPTY_FILTERS);
+  const [syncing, setSyncing] = useState(false);
 
+  // 場館載入一次（用作 combo 選項 + 顯示對照）
+  useEffect(() => { venuesApi.list().then(setVenues).catch(() => setVenues([])); }, []);
+
+  // 過濾條件變動時重打 API（伺服器端過濾，避免 client 端二次處理）
   useEffect(() => {
-    Promise.all([staffApi.list(), venuesApi.list()]).then(([s, v]) => {
-      setStaff(s); setVenues(v);
-    });
-  }, []);
+    let cancel = false;
+    // 把 venueId 從 combo 名稱反查回 id（允許使用者直接輸入名稱）
+    const apiFilters = { ...filters };
+    if (apiFilters.venueId && venues.length) {
+      const match = venues.find((v) => v.id === apiFilters.venueId || v.name === apiFilters.venueId);
+      apiFilters.venueId = match ? match.id : apiFilters.venueId;
+    }
+    staffApi.list(apiFilters).then((s) => { if (!cancel) setStaff(s); });
+    return () => { cancel = true; };
+  }, [filters, venues]);
+
+  async function syncRagic() {
+    setSyncing(true);
+    try {
+      const r = await staffApi.syncRagic();
+      if (r.skipped) toast.info('未設定 Ragic credentials，略過');
+      else toast.success(`已同步 ${r.synced || 0} 位員工`);
+      const fresh = await staffApi.list(filters);
+      setStaff(fresh);
+    } catch {
+      toast.error('Ragic 同步失敗');
+    } finally {
+      setSyncing(false);
+    }
+  }
 
   const venueMap = useMemo(() => Object.fromEntries(venues.map((v) => [v.id, v.name])), [venues]);
   const [togglingId, setTogglingId] = useState(null);
@@ -152,99 +176,67 @@ export default function StaffPage() {
     },
   ];
 
+  const filterFields = [
+    { key: 'status', label: '在職狀態', type: 'select', options: [
+        { value: 'all',      label: '全部' },
+        { value: 'active',   label: '在職' },
+        { value: 'inactive', label: '離職' },
+      ] },
+    { key: 'venueId', label: '所屬場館', type: 'combo',
+      options: venues.map((v) => ({ value: v.id, label: `${v.id} ${v.name}` })),
+      placeholder: '可輸入或選擇' },
+    { key: 'name',  label: '姓名', type: 'combo',
+      options: (staff || []).map((s) => ({ value: s.name, label: s.name })),
+      placeholder: '可輸入或選擇' },
+    { key: 'role',  label: '角色', type: 'select', options: [
+        { value: '',        label: '全部' },
+        { value: 'admin',   label: '系統管理員' },
+        { value: 'manager', label: '主管' },
+        { value: 'staff',   label: '行政櫃檯' },
+        { value: 'coach',   label: '教練' },
+      ] },
+    { key: 'phone', label: '電話', type: 'input', placeholder: '末 4 碼或全號' },
+    { key: 'senior', label: '資深', type: 'radio', options: [
+        { value: '',    label: '不限' },
+        { value: 'yes', label: '是' },
+        { value: 'no',  label: '否' },
+      ] },
+  ];
+
   return (
     <div>
-      <PageHeader title="員工帳號管理" subtitle="F-A02 · 指派角色 / 場館；教練可調整資深旗標與修課係數（1.00 – 1.50）" />
+      <PageHeader
+        title="員工帳號管理"
+        subtitle="F-A02 · 指派角色 / 場館；教練可調整資深旗標與修課係數（1.00 – 1.50）"
+        actions={(
+          <button
+            type="button"
+            onClick={syncRagic}
+            disabled={syncing}
+            className="rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary disabled:opacity-50"
+          >
+            {syncing ? '同步中…' : '立即同步 Ragic'}
+          </button>
+        )}
+      />
+      <FilterBar
+        fields={filterFields}
+        values={filters}
+        onChange={setFilters}
+        onReset={() => setFilters(EMPTY_FILTERS)}
+      />
       <DataTable columns={columns} rows={staff} rowKey={(r) => r.id} />
 
-      {editing && (
-        <div
-          className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-4"
-          onClick={(e) => e.target === e.currentTarget && setEditing(null)}
-          role="dialog"
-          aria-modal="true"
-          aria-label="編輯員工"
-        >
-          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl">
-            <h3 className="mb-4 text-lg font-bold text-brand-primary">編輯員工 — {editing.name}</h3>
-            <div className="space-y-4">
-              <div>
-                <label className="mb-1 block text-sm font-medium text-gray-700">角色</label>
-                <select
-                  value={editing.role}
-                  onChange={(e) => setEditing({ ...editing, role: e.target.value })}
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2"
-                >
-                  {ROLE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                </select>
-                <p className="mt-1 text-xs text-gray-500">變更角色會同步調整其登入後可見的選單與權限。</p>
-              </div>
-              <div>
-                <label className="mb-1 block text-sm font-medium text-gray-700">所屬場館</label>
-                <select
-                  value={editing.venue_id || ''}
-                  onChange={(e) => setEditing({ ...editing, venue_id: e.target.value })}
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2"
-                >
-                  <option value="">— 不指定 —</option>
-                  {venues.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
-                </select>
-              </div>
-              {editing.role === 'coach' && (
-                <>
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={!!editing.is_senior}
-                      onChange={(e) => setEditing({ ...editing, is_senior: e.target.checked })}
-                    />
-                    <span>資深教練（可建立學習歷程、會顯示金色徽章）</span>
-                  </label>
-                  <div>
-                    <label className="mb-1 block text-sm font-medium text-gray-700">
-                      修課係數（100% – 150%）
-                    </label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      min={MULTIPLIER_MIN}
-                      max={MULTIPLIER_MAX}
-                      value={editing.multiplier}
-                      onChange={(e) => setEditing({ ...editing, multiplier: e.target.value })}
-                      className="w-full rounded-lg border border-gray-300 px-3 py-2"
-                    />
-                    <p className="mt-1 text-xs text-gray-500">資深教練 1.30 ~ 1.50；一般 1.00 ~ 1.20。</p>
-                  </div>
-                </>
-              )}
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={!!editing.active}
-                  onChange={(e) => setEditing({ ...editing, active: e.target.checked })}
-                />
-                <span>啟用此帳號</span>
-              </label>
-            </div>
-            <div className="mt-5 flex justify-end gap-3">
-              <button
-                onClick={() => setEditing(null)}
-                className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-                disabled={busy}
-              >
-                取消
-              </button>
-              <button
-                onClick={saveEdit}
-                disabled={busy}
-                className="rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary disabled:opacity-50"
-              >
-                {busy ? '儲存中…' : '儲存'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <StaffEditModal
+        editing={editing}
+        setEditing={setEditing}
+        venues={venues}
+        busy={busy}
+        onSave={saveEdit}
+        multiplierMin={MULTIPLIER_MIN}
+        multiplierMax={MULTIPLIER_MAX}
+      />
     </div>
   );
 }
+

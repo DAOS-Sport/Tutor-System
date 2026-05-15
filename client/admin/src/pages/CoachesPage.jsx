@@ -3,9 +3,12 @@ import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import DataTable from '../components/DataTable';
 import StatusBadge from '../components/StatusBadge';
+import FilterBar from '../components/FilterBar';
 import { useToast } from '../context/ToastContext';
 import { coachesApi } from '../api/coaches';
 import { venuesApi } from '../api/venues';
+
+const EMPTY_FILTERS = { status: 'all', venueId: '', name: '', phone: '', senior: '' };
 
 const MULTIPLIER_MIN = 1.00;
 const MULTIPLIER_MAX = 1.50;
@@ -23,20 +26,30 @@ export default function CoachesPage() {
   const [venues, setVenues] = useState([]);
   const [editing, setEditing] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [filters, setFilters] = useState(EMPTY_FILTERS);
 
   useEffect(() => {
-    Promise.all([coachesApi.list(), venuesApi.list()])
-      .then(([c, v]) => {
-        setCoaches(c);
-        setVenues(v);
-      })
+    venuesApi.list().then(setVenues).catch(() => setVenues([]));
+  }, []);
+
+  useEffect(() => {
+    let cancel = false;
+    const apiFilters = { ...filters };
+    if (apiFilters.venueId && venues.length) {
+      const match = venues.find((v) => v.id === apiFilters.venueId || v.name === apiFilters.venueId);
+      apiFilters.venueId = match ? match.id : apiFilters.venueId;
+    }
+    coachesApi.list(apiFilters)
+      .then((c) => { if (!cancel) setCoaches(c); })
       .catch((err) => {
+        if (cancel) return;
         console.error('[CoachesPage] load failed:', err);
         toast.error('載入教練資料失敗，請重新整理');
         setCoaches([]);
       });
+    return () => { cancel = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [filters, venues]);
 
   const venueMap = useMemo(
     () => Object.fromEntries(venues.map((v) => [v.id, v.name])),
@@ -48,11 +61,14 @@ export default function CoachesPage() {
   async function syncFromRagic() {
     setBusy(true);
     try {
-      const fresh = await coachesApi.list();
+      const r = await coachesApi.syncRagic();
+      if (r.skipped) toast.info('未設定 Ragic credentials，略過');
+      const fresh = await coachesApi.list(filters);
       setCoaches(fresh);
-      const total = fresh.length;
-      const linked = fresh.filter((c) => c.line_bound).length;
-      toast.success(`已同步 ${total} 位教練（其中 ${linked} 位完成 LINE 綁定）`);
+      if (!r.skipped) {
+        const linked = fresh.filter((c) => c.line_bound).length;
+        toast.success(`已同步 ${fresh.length} 位教練（其中 ${linked} 位完成 LINE 綁定）`);
+      }
     } catch (err) {
       console.error('[CoachesPage] sync failed:', err);
       toast.error('同步失敗，請稍後再試');
@@ -171,6 +187,30 @@ export default function CoachesPage() {
             {busy ? '同步中…' : '立即同步 Ragic'}
           </button>
         )}
+      />
+      <FilterBar
+        fields={[
+          { key: 'status', label: '在職狀態', type: 'select', options: [
+              { value: 'all',      label: '全部' },
+              { value: 'active',   label: '在職' },
+              { value: 'inactive', label: '離職' },
+            ] },
+          { key: 'venueId', label: '可教場館', type: 'combo',
+            options: venues.map((v) => ({ value: v.id, label: `${v.id} ${v.name}` })),
+            placeholder: '可輸入或選擇' },
+          { key: 'name', label: '姓名', type: 'combo',
+            options: (coaches || []).map((c) => ({ value: c.name, label: c.name })),
+            placeholder: '可輸入或選擇' },
+          { key: 'phone', label: '電話', type: 'input', placeholder: '末 4 碼或全號' },
+          { key: 'senior', label: '資深', type: 'radio', options: [
+              { value: '',    label: '不限' },
+              { value: 'yes', label: '是' },
+              { value: 'no',  label: '否' },
+            ] },
+        ]}
+        values={filters}
+        onChange={setFilters}
+        onReset={() => setFilters(EMPTY_FILTERS)}
       />
       <DataTable columns={columns} rows={coaches} rowKey={(r) => r.id} />
 

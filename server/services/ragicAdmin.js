@@ -2,17 +2,20 @@
  * Ragic 同步：後台員工 / 教練 / 場館（best-effort）
  *
  * 對照來源：docs/ragic_api.md
- *  - H01 員工 (在職 + 應徵職務含「教練」) → coaches              (Task #32 新增)
- *  - H01 員工 (全部在職)                  → admin_staff           (角色指派用，原本就有)
- *  - H05 場館 (履約中、非內勤單位)        → admin_venues + venues  (兩側鏡寫保持一致)
+ *  - H01 員工 (在職 + 應徵職務含「教練」) → coaches
+ *  - H01 員工 (全部，含離職)              → admin_staff（角色指派用）
+ *  - H05 場館 (履約中、非內勤單位)        → admin_venues + venues
  *
  * 規則：
- * - 沒設定 RAGIC_API_KEY / RAGIC_BASE_URL → 直接 noop（dev 環境正常）
- * - Ragic 失敗一律 swallow + warn，不阻擋使用者操作（後台仍能讀寫 PostgreSQL）
- * - 只做「讀取 Ragic → upsert 進系統 DB」，後台手動修改的欄位（role / multiplier /
- *   is_senior / specialties / bio_rich_text / line_token / 銀行帳戶 …）一律以系統 DB
- *   為準，不會被 Ragic 蓋掉
- * - 在 Ragic 找不到的列：標 is_active = FALSE（不 hard delete，避免影響歷史 FK）
+ * - 沒設定 RAGIC_API_KEY / RAGIC_BASE_URL → noop（dev 環境正常）
+ * - Ragic 失敗一律 swallow + warn，不阻擋使用者操作
+ * - 系統內部欄位（role / multiplier / is_senior / specialties / bio_rich_text /
+ *   line_token / 銀行帳戶）不被 Ragic 覆蓋
+ * - is_active：H01「離職」→ active=false，並停用對應 admin_users login；
+ *   後台手動翻轉 active 後會記錄 `active_overridden_at`，下一輪同步不再覆蓋。
+ *
+ * 對外另暴露 `kickoffSync*Async()` —— fire-and-forget + 10 分鐘節流，
+ * 用於 GET 列表時觸發背景刷新（不阻塞回應）。實際排程由 server/cron 跑。
  */
 const { pool } = require('../models/db');
 const ragic = require('./ragic');
@@ -21,7 +24,6 @@ function ragicEnabled() {
   return !!process.env.RAGIC_API_KEY && !!process.env.RAGIC_BASE_URL;
 }
 
-// Startup self-check（避免日後再次靜默失敗）：載入時印一次 enabled 狀態 + 缺哪個 env
 (function logRagicStatus() {
   const hasKey = !!process.env.RAGIC_API_KEY;
   const hasBase = !!process.env.RAGIC_BASE_URL;
@@ -37,19 +39,24 @@ function ragicEnabled() {
 })();
 
 /**
- * 員工 Ragic 同步：把 H01 在職員工 upsert 到 admin_staff。
- * - 用 Ragic 工號（3000935）對到 admin_staff.ragic_record_id（同時當主鍵 id 的 fallback）
- * - 第一次匯入時，預設 role 給 'coach'；若該員工含「行政櫃檯」字樣→ 'staff'
- * - 已存在的列只更新 name / phone / venue_id（其他系統內部欄位保留）
+ * 員工 Ragic 同步：H01 全員工 → admin_staff。
+ * - active = (在職狀態==='在職')
+ * - 若該列在 admin_staff 已有 active_overridden_at（後台手動勾過啟用 / 停用），
+ *   則本次同步「不覆蓋 active」；name / phone / role 仍會更新
+ * - active 變更為 false 時，連動把 admin_users (依 name 比對) is_active 設 false，
+ *   讓該帳號無法登入；同樣尊重 admin_users.active_overridden_at
  */
 async function syncStaffFromRagic() {
   if (!ragicEnabled()) return { synced: 0, skipped: true };
   try {
     const records = await ragic.getAllStaff();
     let synced = 0;
+    let deactivatedLogins = 0;
+    const seenIds = new Set();
     for (const r of records) {
       const ragicId = r['員工編號'] || r['工號'] || r['3000935'];
       if (!ragicId) continue;
+      seenIds.add(String(ragicId));
       const name = r['姓名'] || r['3000933'] || '';
       const phone = r['手機'] || r['手機（公司）'] || r['3001424'] || r['手機（個人）'] || r['3000941'] || '';
       const role = r['應徵職務'];
@@ -57,20 +64,58 @@ async function syncStaffFromRagic() {
       const isCoach = roleStr.includes('教練') || (r['職稱'] || '').includes('教練');
       const roleVal = isCoach ? 'coach' : 'staff';
       const isActive = (r['在職狀態'] || r['3000945']) === '在職';
+
+      // 先讀目前覆寫狀態（避免覆蓋管理員手動設定）
+      const cur = await pool.query(
+        `SELECT active, active_overridden_at FROM admin_staff WHERE id = $1`,
+        [String(ragicId)]
+      );
+      const overridden = cur.rowCount && cur.rows[0].active_overridden_at != null;
+
       await pool.query(
         `INSERT INTO admin_staff (id, name, role, phone, is_senior, multiplier, active, ragic_record_id, last_synced_at)
          VALUES ($1, $2, $3, $4, FALSE, 1.00, $5, $1, NOW())
          ON CONFLICT (id) DO UPDATE SET
            name = EXCLUDED.name,
            phone = EXCLUDED.phone,
-           active = EXCLUDED.active,
+           active = CASE
+             WHEN admin_staff.active_overridden_at IS NULL THEN EXCLUDED.active
+             ELSE admin_staff.active
+           END,
            ragic_record_id = EXCLUDED.ragic_record_id,
            last_synced_at = NOW()`,
         [String(ragicId), name, roleVal, phone, isActive]
       );
+
+      // 連動 admin login：當「Ragic 離職 + 後台未覆寫 active」時，停用對應 admin_users
+      if (!isActive && !overridden && name) {
+        const upd = await pool.query(
+          `UPDATE admin_users SET is_active = FALSE
+            WHERE name = $1
+              AND is_active = TRUE
+              AND (active_overridden_at IS NULL)
+            RETURNING id`,
+          [name]
+        );
+        deactivatedLogins += upd.rowCount;
+      }
       synced += 1;
     }
-    return { synced, skipped: false };
+
+    // 不在 H01 名單中的 admin_staff → 也標 active=false（尊重 override）
+    if (seenIds.size > 0) {
+      await pool.query(
+        `UPDATE admin_staff SET active = FALSE, last_synced_at = NOW()
+          WHERE id <> ALL($1::text[])
+            AND active = TRUE
+            AND active_overridden_at IS NULL`,
+        [Array.from(seenIds)]
+      );
+    }
+    if (deactivatedLogins > 0) {
+      console.log(`[Ragic sync] staff synced=${synced} login_deactivated=${deactivatedLogins}`);
+    }
+    return { synced, deactivatedLogins, skipped: false };
   } catch (err) {
     console.warn('[Ragic sync] staff failed:', err.message);
     return { synced: 0, error: err.message };
@@ -78,33 +123,18 @@ async function syncStaffFromRagic() {
 }
 
 /**
- * 教練 Ragic 同步（Task #32）：H01 (在職 + 應徵職務含「教練」) → coaches。
- * - key = ragic_employee_id（即 H01 工號 3000935）
- * - 第一次匯入：填 name / phone / email / line_uid（若 Ragic 有設）；
- *   is_senior=false / multiplier=1.00 / intro=draft
- * - 後續同步：name/phone/email/is_active 強制覆寫；line_uid 用 COALESCE 不覆蓋已綁定值
- *   （避免 Ragic 端打字錯誤把現有綁定洗掉）；
- *   系統內部欄位（is_senior / pricing_multiplier / bio_rich_text / specialties / intro_review_status）
- *   一律以後台手動編輯為準，不被覆寫
- * - 不在 Ragic 在職教練名單中的現有 coaches → is_active = FALSE（軟刪除）
- *
- * 注意：H01 沒有「教練可教場館」欄位，coach_venues (M:N) 只能由後台手動勾。
- *
- * LINE userid 欄位（Task #34）：
- *   - 由管理員在 Ragic H01 手動維護「LINE userid」欄
- *   - 實際欄位 ID 由 user 自行命名；以下用多重 fallback 鍵名 + 啟發式比對 + env 覆寫支援
- *     env: RAGIC_FIELD_H01_LINE_UID（可填中文鍵名或 Ragic 數字 Field ID）
+ * 教練 Ragic 同步（H01 在職 + 應徵職務含「教練」→ coaches）
+ * - 系統內部欄位（is_senior / pricing_multiplier / specialties / bio / intro_review_status）不覆寫
+ * - is_active：尊重 active_overridden_at（後台手動勾啟用 → 下一輪不被覆蓋）
  */
 function extractLineUid(r) {
   const explicit = process.env.RAGIC_FIELD_H01_LINE_UID;
   if (explicit && r[explicit]) return String(r[explicit]).trim();
-  // 常見鍵名 fallback
   const candidates = ['LINE userid', 'LINE userId', 'LINE UID', 'LINE uid',
                       'LINE_USER_ID', 'lineUid', 'line_uid', 'Line userid'];
   for (const k of candidates) {
     if (r[k]) return String(r[k]).trim();
   }
-  // 啟發式：scan keys 找包含 line + (user|uid) 的欄位
   for (const k of Object.keys(r)) {
     if (/line/i.test(k) && /(user.?id|uid)/i.test(k) && r[k]) {
       return String(r[k]).trim();
@@ -130,8 +160,7 @@ async function syncCoachesFromRagic() {
       if (!name || !phone) continue;
       seenIds.add(String(ragicId));
       if (lineUid) linked += 1;
-      // upsert：第一次插入填全部，後續更新 name/phone/email/is_active；
-      // line_uid 用 COALESCE(NULLIF(...,''), coaches.line_uid) — 已綁的值不會被空字串/換值洗掉
+      // is_active 尊重覆寫旗標
       await pool.query(
         `INSERT INTO coaches (ragic_employee_id, name, phone, email, line_uid, is_active)
          VALUES ($1, $2, $3, $4, NULLIF($5, ''), TRUE)
@@ -140,19 +169,23 @@ async function syncCoachesFromRagic() {
            phone = EXCLUDED.phone,
            email = COALESCE(NULLIF(EXCLUDED.email, ''), coaches.email),
            line_uid = COALESCE(coaches.line_uid, NULLIF($5, '')),
-           is_active = TRUE,
+           is_active = CASE
+             WHEN coaches.active_overridden_at IS NULL THEN TRUE
+             ELSE coaches.is_active
+           END,
            updated_at = NOW()`,
         [String(ragicId), name, phone, email, lineUid]
       );
       synced += 1;
     }
-    // 不在 Ragic 在職教練名單中的 → 標 is_active = FALSE
+    // 不在 Ragic 在職教練名單 → 標 is_active = FALSE（尊重 override）
     if (seenIds.size > 0) {
       await pool.query(
         `UPDATE coaches SET is_active = FALSE, updated_at = NOW()
          WHERE ragic_employee_id IS NOT NULL
            AND ragic_employee_id <> ALL($1::text[])
-           AND is_active = TRUE`,
+           AND is_active = TRUE
+           AND active_overridden_at IS NULL`,
         [Array.from(seenIds)]
       );
     }
@@ -165,10 +198,7 @@ async function syncCoachesFromRagic() {
 }
 
 /**
- * 場館 Ragic 同步：H05 → admin_venues + venues（LIFF 用同一份 id 對齊）。
- * - 用「場館代號」當主鍵；Ragic 沒給則 fallback 到場館名稱第一個字母
- * - 銀行帳戶等資訊以「Ragic 為主，本地未設定 → 用 Ragic 值；本地已有 → 不覆寫」
- * - 不在 Ragic 履約中名單的場館 → admin_venues / venues 雙邊都標 is_active=false（軟下架）
+ * 場館 Ragic 同步（H05 → admin_venues + venues）
  */
 async function syncVenuesFromRagic() {
   if (!ragicEnabled()) return { synced: 0, skipped: true };
@@ -177,8 +207,6 @@ async function syncVenuesFromRagic() {
     const seenCodes = new Set();
     let synced = 0;
     for (const r of records) {
-      // H05 實際欄位：部門編號 / 部門名稱 / 完整地址 / 總機構名稱 / 分支機構名稱 / 戶名 / 帳號
-      // (舊欄位名 場館代號 / 場館名稱 / 場館地址 為 fallback，避免 Ragic UI 改名後同步失效)
       const code = (r['部門編號'] || r['場館代號'] || r['館別代碼'] || r['1000253'] || '').toString().trim();
       if (!code) continue;
       const name = r['部門名稱'] || r['場館名稱'] || r['館別名稱'] || r['1000254'] || code;
@@ -189,8 +217,6 @@ async function syncVenuesFromRagic() {
       const acctNumber = (r['帳號'] || r['1001017'] || '').toString();
       seenCodes.add(code);
 
-      // admin_venues（後台 F-A03 + 機敏資料）
-      // 銀行 4 欄：本地未填則用 Ragic 值，本地已填則保留（後台手動修改優先）
       await pool.query(
         `INSERT INTO admin_venues (id, code, name, address, line_token, bank_institution_name, bank_branch_name, account_holder, account_number, is_active, last_synced_at)
          VALUES ($1, $1, $2, $3, '', $4, $5, $6, $7, TRUE, NOW())
@@ -206,8 +232,6 @@ async function syncVenuesFromRagic() {
         [code, name, address, bankInst, bankBranch, acctHolder, acctNumber]
       );
 
-      // venues（LIFF 業務面：教練選課、報名、coach_venues FK 都吃這張）
-      // 與 admin_venues 同 id 對齊；FK 也跟著生效。
       await pool.query(
         `INSERT INTO venues (id, name, full_address, is_active)
          VALUES ($1, $2, $3, TRUE)
@@ -220,7 +244,6 @@ async function syncVenuesFromRagic() {
       );
       synced += 1;
     }
-    // 不在 Ragic 履約中名單的 → admin_venues / venues 兩表一致軟下架
     if (seenCodes.size > 0) {
       const codes = Array.from(seenCodes);
       await pool.query(
@@ -242,9 +265,39 @@ async function syncVenuesFromRagic() {
   }
 }
 
+// ─────────────────────────────────────────────────────────────
+// Fire-and-forget kickoff helpers（10 分鐘節流）
+// 解決：以前 GET 列表 await sync*FromRagic() 阻塞 1–3 秒的問題。
+// 現在改為背景刷新，下一次 GET 就能拿到新資料。
+// ─────────────────────────────────────────────────────────────
+const KICKOFF_THROTTLE_MS = 10 * 60 * 1000;
+const _lastKickoff = new Map(); // key -> timestamp
+let _runningJobs = new Set();    // key -> bool（同時只跑一個）
+
+function _kickoff(key, fn) {
+  if (!ragicEnabled()) return;
+  if (_runningJobs.has(key)) return;
+  const last = _lastKickoff.get(key) || 0;
+  if (Date.now() - last < KICKOFF_THROTTLE_MS) return;
+  _lastKickoff.set(key, Date.now());
+  _runningJobs.add(key);
+  setImmediate(() => {
+    fn()
+      .catch((e) => console.warn(`[Ragic kickoff/${key}] failed:`, e.message))
+      .finally(() => _runningJobs.delete(key));
+  });
+}
+
+function kickoffSyncStaffAsync()   { _kickoff('staff',   syncStaffFromRagic); }
+function kickoffSyncCoachesAsync() { _kickoff('coaches', syncCoachesFromRagic); }
+function kickoffSyncVenuesAsync()  { _kickoff('venues',  syncVenuesFromRagic); }
+
 module.exports = {
   syncStaffFromRagic,
   syncCoachesFromRagic,
   syncVenuesFromRagic,
+  kickoffSyncStaffAsync,
+  kickoffSyncCoachesAsync,
+  kickoffSyncVenuesAsync,
   ragicEnabled,
 };

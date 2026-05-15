@@ -10,7 +10,7 @@
 const express = require('express');
 const { pool } = require('../../models/db');
 const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
-const { syncVenuesFromRagic } = require('../../services/ragicAdmin');
+const { syncVenuesFromRagic, kickoffSyncVenuesAsync } = require('../../services/ragicAdmin');
 
 const router = express.Router();
 
@@ -46,13 +46,26 @@ function rowToVenuePublic(r) {
 
 router.get('/', requireAdminAuth, async (req, res) => {
   try {
-    await syncVenuesFromRagic();
+    // Task #53：fire-and-forget（不阻塞回應；10 分鐘節流；cron 每 10 分鐘一次）
+    kickoffSyncVenuesAsync();
     const r = await pool.query(`SELECT * FROM admin_venues ORDER BY id`);
     const isAdmin = req.adminUser?.role === 'admin';
     res.json(r.rows.map(isAdmin ? rowToVenueFull : rowToVenuePublic));
   } catch (err) {
     console.error('[admin/venues]', err);
     res.status(500).json({ error: 'list venues failed' });
+  }
+});
+
+// Task #53：admin 立即同步 H05（同步等待結果）
+router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+  try {
+    const result = await syncVenuesFromRagic();
+    if (result && result.error) return res.status(502).json(result);
+    res.json(result);
+  } catch (err) {
+    console.error('[admin/venues/sync]', err);
+    res.status(500).json({ error: 'sync failed' });
   }
 });
 

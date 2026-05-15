@@ -294,7 +294,19 @@ export const mockDb = {
     return u ? { id: u.id, username: u.username, name: u.name, role: u.role, venue_id: u.venue_id, token: `mock-${u.id}-${Date.now()}` } : null;
   },
 
-  staff() { return STAFF.map((s) => ({ ...s })); },
+  staff(filters = {}) {
+    let arr = STAFF.map((s) => ({ ...s }));
+    const { status, venueId, role, name, phone, senior } = filters;
+    if (status === 'active')   arr = arr.filter((s) => s.active);
+    else if (status === 'inactive') arr = arr.filter((s) => !s.active);
+    if (venueId) arr = arr.filter((s) => s.venue_id === venueId);
+    if (role)    arr = arr.filter((s) => s.role === role);
+    if (name)    arr = arr.filter((s) => (s.name || '').includes(name));
+    if (phone)   arr = arr.filter((s) => (s.phone || '').includes(phone));
+    if (senior === 'yes') arr = arr.filter((s) => s.is_senior);
+    else if (senior === 'no') arr = arr.filter((s) => !s.is_senior);
+    return arr;
+  },
   updateStaff(id, patch) {
     const s = STAFF.find((x) => x.id === id);
     if (!s) return null;
@@ -311,7 +323,18 @@ export const mockDb = {
   },
 
   // ── Task #32 教練資料 (F-C-Admin) ─────────────────────────────────────
-  coaches() { return COACHES_ADMIN.map((c) => ({ ...c, specialties: [...(c.specialties || [])], venue_ids: [...(c.venue_ids || [])] })); },
+  coaches(filters = {}) {
+    let arr = COACHES_ADMIN.map((c) => ({ ...c, specialties: [...(c.specialties || [])], venue_ids: [...(c.venue_ids || [])] }));
+    const { status, venueId, name, phone, senior } = filters;
+    if (status === 'active')   arr = arr.filter((c) => c.is_active);
+    else if (status === 'inactive') arr = arr.filter((c) => !c.is_active);
+    if (venueId) arr = arr.filter((c) => (c.venue_ids || []).includes(venueId));
+    if (name)    arr = arr.filter((c) => (c.name || '').includes(name));
+    if (phone)   arr = arr.filter((c) => (c.phone || '').includes(phone));
+    if (senior === 'yes') arr = arr.filter((c) => c.is_senior);
+    else if (senior === 'no') arr = arr.filter((c) => !c.is_senior);
+    return arr;
+  },
   coachDetail(id) {
     const c = COACHES_ADMIN.find((x) => x.id === id);
     if (!c) return null;

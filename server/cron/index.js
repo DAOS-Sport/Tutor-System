@@ -7,6 +7,7 @@ const { pool } = require('../models/db');
 const line = require('../services/line');
 const chatRooms = require('../services/chatRooms');
 const evaluations = require('../services/evaluations');
+const ragicAdmin = require('../services/ragicAdmin');
 
 // 對家長推播的 LIFF base URL；新版用 LIFF_URL_PARENT，舊版 LIFF_URL 為 fallback
 const LIFF_URL = process.env.LIFF_URL_PARENT || process.env.LIFF_URL || 'https://liff.line.me/-';
@@ -310,6 +311,24 @@ function initCronJobs() {
       }
     } catch (e) {
       console.warn('[Cron/eval-threshold] failed:', e.message);
+    }
+  });
+
+  // ── 每 10 分鐘：Ragic H01 / H05 同步（Task #53 — 從 GET 移走的阻塞 sync）──
+  // 後台任何 GET 列表只純讀 DB；資料新鮮度由本 cron 維護，外加 GET 時 fire-and-forget
+  // (kickoffSync*Async)，下一次 GET 就能拿到最新。
+  cron.schedule('*/10 * * * *', async () => {
+    if (!ragicAdmin.ragicEnabled()) return;
+    try {
+      const [s, c, v] = await Promise.allSettled([
+        ragicAdmin.syncStaffFromRagic(),
+        ragicAdmin.syncCoachesFromRagic(),
+        ragicAdmin.syncVenuesFromRagic(),
+      ]);
+      const tag = (r) => (r.status === 'fulfilled' ? `ok(${r.value.synced ?? 0})` : `err(${r.reason?.message || 'x'})`);
+      console.log(`[Cron/Ragic] staff=${tag(s)} coaches=${tag(c)} venues=${tag(v)}`);
+    } catch (e) {
+      console.warn('[Cron/Ragic] failed:', e.message);
     }
   });
 
