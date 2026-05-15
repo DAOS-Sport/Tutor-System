@@ -191,6 +191,12 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin', 'manager'), asy
     if (!parentPhone) { await client.query('ROLLBACK'); return res.status(400).json({ error: '家長手機必填' }); }
     if (!students || students.length === 0) { await client.query('ROLLBACK'); return res.status(400).json({ error: '學員名稱必填' }); }
     if (!coachName) { await client.query('ROLLBACK'); return res.status(400).json({ error: '教練必填' }); }
+    // 一致性硬規則：venue_id 變更時必須在同一 request 顯式帶 coach_id
+    // （避免直接打 API 只改場館卻沿用舊教練 → venue/coach 不匹配）
+    if (venueId !== row.venue_id && (body.coach_id === undefined || !body.coach_id)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: '變更場館時必須同時指定該場館的教練（coach_id）' });
+    }
 
     await client.query(
       `UPDATE admin_enrollments SET
