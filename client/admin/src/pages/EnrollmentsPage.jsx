@@ -73,7 +73,7 @@ export default function EnrollmentsPage() {
         subtitle={`F-R02 · 共 ${list?.length ?? '—'} 筆${isStaff ? '（限本場館）' : ''}`}
         actions={
           <ExportMenu
-            disabled={!list}
+            disabled={!list || list.length === 0}
             onExportCsv={() => {
               if (!list || list.length === 0) { toast.error('沒有可匯出的資料'); return; }
               exportEnrollmentsCsv({ filenamePrefix: 'enrollments', enrollments: list, venueName: (id) => venueMap[id] || id });
