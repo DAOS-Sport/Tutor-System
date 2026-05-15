@@ -2,22 +2,11 @@
 -- 與 client/admin/src/api/mock.js 對應；獨立於 v2 schema 以便先行落地。
 -- Run: psql $DATABASE_URL -f db/migrations/002_admin_tables.sql
 
-CREATE TABLE IF NOT EXISTS admin_users (
-  id TEXT PRIMARY KEY,
-  username TEXT UNIQUE NOT NULL,
-  password_hash TEXT NOT NULL,
-  name TEXT NOT NULL,
-  role TEXT NOT NULL CHECK (role IN ('admin','manager','staff')),
-  venue_id TEXT,
-  line_uid VARCHAR(100) UNIQUE,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- 已存在環境的安全升級（向前相容）：補 line_uid 欄位 → 主管收關鍵字警示 Flex
-DO $$ BEGIN
-  ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS line_uid VARCHAR(100) UNIQUE;
-EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+-- Task #51 5A-6：admin_users CREATE TABLE 已移除。
+-- admin_users 在 step 1 已 1-shot 遷入 employees 表（roles[] 取代 role；email 取代 username；
+-- password_hash + line_uid 一併搬走），routes/services/cron/middlewares/bootstrap 全改 employees。
+-- 此處留空保留歷史脈絡；任何想 fresh provision 的環境，admin/manager/staff 帳號由
+-- server/bootstrap/admin.js 的 seedIfEmpty() 直接 INSERT INTO employees。
 
 CREATE TABLE IF NOT EXISTS admin_venues (
   id TEXT PRIMARY KEY,
@@ -35,20 +24,9 @@ CREATE TABLE IF NOT EXISTS admin_venues (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS admin_staff (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  role TEXT NOT NULL CHECK (role IN ('admin','manager','staff','coach')),
-  venue_id TEXT,
-  phone TEXT,
-  is_senior BOOLEAN NOT NULL DEFAULT FALSE,
-  multiplier NUMERIC(5,2) NOT NULL DEFAULT 1.00,
-  active BOOLEAN NOT NULL DEFAULT TRUE,
-  ragic_record_id TEXT,
-  last_synced_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
+-- Task #51 5A-6：admin_staff CREATE TABLE 已移除。
+-- 教練於 step 1 一次性遷入 employees with roles=['coach']；非教練（manager/counter）
+-- 由 employees admin seed + Ragic sync 維護，不再需要 admin_staff legacy 表。
 
 CREATE TABLE IF NOT EXISTS admin_settings (
   key TEXT PRIMARY KEY,
