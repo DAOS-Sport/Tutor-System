@@ -3,23 +3,23 @@ import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
 import { courseIntrosApi } from '../api/courseIntros';
-import { courseTypeLabel } from '../utils/format';
 
-function IntroCard({ courseType, intro, onSave }) {
+function IntroCard({ row, onSave }) {
   const toast = useToast();
-  const [draft, setDraft] = useState({ ...intro });
+  const [draft, setDraft] = useState({ title: row.title, body: row.body, image_url: row.image_url });
   const [busy, setBusy] = useState(false);
-  const dirty = ['title', 'body', 'image_url'].some((k) => (draft[k] || '') !== (intro[k] || ''));
+  const dirty = ['title', 'body', 'image_url'].some((k) => (draft[k] || '') !== (row[k] || ''));
 
   async function save() {
-    if (!draft.title?.trim() || !draft.body?.trim()) {
-      toast.error('標題與內文不可為空');
+    if (!draft.title?.trim()) {
+      toast.error('標題不可為空');
       return;
     }
     setBusy(true);
     try {
-      await onSave(courseType, draft);
-      toast.success(`已儲存「${courseTypeLabel(courseType)}」介紹`);
+      const updated = await onSave(row.course_type, draft);
+      setDraft({ title: updated.title, body: updated.body, image_url: updated.image_url });
+      toast.success(`已儲存「${row.label}」介紹`);
     } catch {
       toast.error('儲存失敗');
     } finally {
@@ -28,10 +28,23 @@ function IntroCard({ courseType, intro, onSave }) {
   }
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+    <div className={`rounded-xl border bg-white p-6 shadow-sm ${row.is_active ? 'border-gray-200' : 'border-gray-300 bg-gray-50'}`}>
       <div className="mb-4 flex items-center justify-between">
-        <div className="text-base font-bold text-brand-primary">
-          {courseTypeLabel(courseType)} <span className="text-xs font-normal text-gray-400">type = {courseType}</span>
+        <div className="flex items-center gap-2">
+          <div className={`text-base font-bold ${row.is_active ? 'text-brand-primary' : 'text-gray-500'}`}>
+            {row.label}
+          </div>
+          <span className="rounded bg-gray-100 px-2 py-0.5 font-mono text-xs text-gray-500">
+            type = {row.course_type}
+          </span>
+          {!row.is_active && (
+            <span className="rounded-full bg-gray-200 px-2 py-0.5 text-xs font-semibold text-gray-600">已停用</span>
+          )}
+          {row.title_overridden && (
+            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700" title="標題已被覆寫，名稱變更不會自動同步">
+              標題已自訂
+            </span>
+          )}
         </div>
         <button
           onClick={save}
@@ -41,6 +54,11 @@ function IntroCard({ courseType, intro, onSave }) {
           {busy ? '儲存中…' : '儲存'}
         </button>
       </div>
+      {!row.is_active && (
+        <div className="mb-3 rounded bg-amber-50 px-3 py-2 text-xs text-amber-700">
+          此課程需求已停用，家長 LIFF 不會看到此介紹；仍可在此編輯內容。
+        </div>
+      )}
       <div className="space-y-4">
         <div>
           <label className="mb-1 block text-sm font-medium text-gray-700">標題</label>
@@ -50,6 +68,9 @@ function IntroCard({ courseType, intro, onSave }) {
             onChange={(e) => setDraft({ ...draft, title: e.target.value })}
             className="w-full rounded-lg border border-gray-300 px-3 py-2"
           />
+          <p className="mt-1 text-xs text-gray-500">
+            預設與「課程需求名稱」相同；改成其他文字後，後台改名不會自動覆蓋此標題。
+          </p>
         </div>
         <div>
           <label className="mb-1 block text-sm font-medium text-gray-700">內文</label>
@@ -76,25 +97,43 @@ function IntroCard({ courseType, intro, onSave }) {
 }
 
 export default function CourseIntrosPage() {
-  const [intros, setIntros] = useState(null);
+  const [rows, setRows] = useState(null);
 
-  useEffect(() => { courseIntrosApi.list().then(setIntros); }, []);
+  async function load() {
+    const data = await courseIntrosApi.list();
+    setRows(Array.isArray(data) ? data : []);
+  }
+  useEffect(() => { load(); }, []);
 
   async function onSave(type, patch) {
     const res = await courseIntrosApi.update(type, patch);
-    setIntros((m) => ({ ...m, [type]: res }));
+    setRows((list) => list.map((r) =>
+      r.course_type === type
+        ? { ...r, title: res.title, body: res.body, image_url: res.image_url, title_overridden: res.title_overridden }
+        : r
+    ));
+    return res;
   }
 
-  if (!intros) return <LoadingSpinner fullPage />;
+  if (!rows) return <LoadingSpinner fullPage />;
 
   return (
     <div>
-      <PageHeader title="課程介紹維護" subtitle="F-A04 · LIFF 首頁三個組別卡片內容由此維護" />
-      <div className="space-y-5">
-        {[1, 2, 3].map((t) => (
-          <IntroCard key={t} courseType={t} intro={intros[t]} onSave={onSave} />
-        ))}
-      </div>
+      <PageHeader
+        title="課程介紹維護"
+        subtitle="F-A04 · 介紹隨「課程需求」自動增減；停用後家長 LIFF 不顯示，但仍可編輯。"
+      />
+      {rows.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-gray-300 bg-white p-12 text-center text-gray-400">
+          尚無課程需求；請先到「課程需求管理」新增。
+        </div>
+      ) : (
+        <div className="space-y-5">
+          {rows.map((r) => (
+            <IntroCard key={r.course_type} row={r} onSave={onSave} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

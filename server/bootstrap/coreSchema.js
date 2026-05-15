@@ -167,6 +167,11 @@ CREATE INDEX IF NOT EXISTS idx_coaches_active ON coaches(is_active);
 DO $$ BEGIN ALTER TABLE coach_availability_slots ADD COLUMN IF NOT EXISTS notes TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE coach_availability_slots ADD COLUMN IF NOT EXISTS booked_session_id UUID; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
+-- Task #67：admin_course_intros 增 title_overridden 旗標（true 表示 admin 改過 title，label 同步時不再覆蓋）
+DO $$ BEGIN
+  ALTER TABLE admin_course_intros ADD COLUMN IF NOT EXISTS title_overridden BOOLEAN NOT NULL DEFAULT FALSE;
+EXCEPTION WHEN undefined_table THEN NULL; END $$;
+
 CREATE TABLE IF NOT EXISTS checkin_records (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   course_session_id UUID NOT NULL REFERENCES course_sessions(id) ON DELETE CASCADE,
@@ -898,6 +903,26 @@ async function ensureChatRoomsForActivePeriods() {
   `);
 }
 
+// Task #67：等 course_type_configs 已存在所有 intros 對應的 course_type 後，加上 FK 與 cascade
+async function ensureCourseIntroFK() {
+  // 補齊缺失的 course_type_configs（避免 FK 失敗：例如歷史 intro 4 但沒對應 config）
+  await pool.query(`
+    INSERT INTO course_type_configs (course_type, label, max_students, sort_order)
+    SELECT i.course_type, COALESCE(NULLIF(i.title, ''), '一對' || i.course_type), i.course_type, i.course_type
+      FROM admin_course_intros i
+      LEFT JOIN course_type_configs c ON c.course_type = i.course_type
+     WHERE c.course_type IS NULL
+    ON CONFLICT (course_type) DO NOTHING
+  `);
+  await pool.query(`
+    DO $$ BEGIN
+      ALTER TABLE admin_course_intros
+        ADD CONSTRAINT fk_admin_course_intros_course_type
+        FOREIGN KEY (course_type) REFERENCES course_type_configs(course_type) ON DELETE CASCADE;
+    EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+  `);
+}
+
 async function bootstrap() {
   try {
     await ensureSchema();
@@ -906,6 +931,7 @@ async function bootstrap() {
     await seedKeywords();
     await seedTagsAndThresholds();
     await seedCourseTypeConfigs();
+    await ensureCourseIntroFK();
     await ensureChatRoomsForActivePeriods();
     console.log('[core bootstrap] ready');
   } catch (err) {

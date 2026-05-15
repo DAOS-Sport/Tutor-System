@@ -89,9 +89,9 @@ const COURSE_TYPES = [
 ];
 
 const COURSE_INTROS = {
-  1: { title: '1 對 1 個別班', body: '完全客製化的訓練內容，最高效率提升個人技術。', image_url: '' },
-  2: { title: '1 對 2 雙人班', body: '與好友或家人共同上課，互相學習，CP 值高。',     image_url: '' },
-  3: { title: '1 對 3 三人班', body: '小團體互動性最強，適合朋友揪團、節省花費。',   image_url: '' },
+  1: { title: '1 對 1 個別班', body: '完全客製化的訓練內容，最高效率提升個人技術。', image_url: '', title_overridden: true },
+  2: { title: '1 對 2 雙人班', body: '與好友或家人共同上課，互相學習，CP 值高。',     image_url: '', title_overridden: true },
+  3: { title: '1 對 3 三人班', body: '小團體互動性最強，適合朋友揪團、節省花費。',   image_url: '', title_overridden: true },
 };
 
 // 報名 + 對帳 mock — 24 筆，混 pending/confirmed/active/cancelled/refunded
@@ -384,12 +384,41 @@ export const mockDb = {
     return { ok: true };
   },
 
-  courseIntros() { return JSON.parse(JSON.stringify(COURSE_INTROS)); },
+  courseIntros() {
+    return COURSE_TYPES
+      .slice()
+      .sort((a, b) => a.sort_order - b.sort_order || a.course_type - b.course_type)
+      .map((c) => {
+        const i = COURSE_INTROS[String(c.course_type)] || { title: c.label, body: '', image_url: '', title_overridden: false };
+        return {
+          course_type: c.course_type,
+          label: c.label,
+          is_active: c.is_active,
+          sort_order: c.sort_order,
+          title: i.title || c.label,
+          body: i.body || '',
+          image_url: i.image_url || '',
+          title_overridden: !!i.title_overridden,
+        };
+      });
+  },
   updateCourseIntro(courseType, patch) {
     const k = String(courseType);
-    if (!COURSE_INTROS[k]) return null;
-    COURSE_INTROS[k] = { ...COURSE_INTROS[k], ...patch };
-    return { ...COURSE_INTROS[k] };
+    const cfg = COURSE_TYPES.find((c) => c.course_type === parseInt(k, 10));
+    const label = cfg ? cfg.label : '';
+    const cur = COURSE_INTROS[k] || { title: label, body: '', image_url: '', title_overridden: false };
+    const next = { ...cur, ...patch };
+    if (patch && patch.title !== undefined) {
+      next.title_overridden = patch.title !== label;
+    }
+    COURSE_INTROS[k] = next;
+    return {
+      course_type: parseInt(k, 10),
+      title: next.title,
+      body: next.body || '',
+      image_url: next.image_url || '',
+      title_overridden: !!next.title_overridden,
+    };
   },
 
   enrollments({ status, search, venueId } = {}) {

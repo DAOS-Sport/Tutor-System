@@ -1,9 +1,9 @@
 /**
  * 課程需求管理（師生比規格）
  *  GET    /api/admin/course-types         → 全部設定（含停用）
- *  POST   /api/admin/course-types         → 新增課程需求
- *  PATCH  /api/admin/course-types/:type   → 更新 label / is_active
- *  DELETE /api/admin/course-types/:type   → 刪除（只允許無報名記錄的類型）
+ *  POST   /api/admin/course-types         → 新增課程需求（同步建一筆預設課程介紹）
+ *  PATCH  /api/admin/course-types/:type   → 更新 label / is_active（label 同步未被覆寫的介紹 title）
+ *  DELETE /api/admin/course-types/:type   → 刪除（cascade 刪對應介紹；只允許無報名記錄）
  */
 const express = require('express');
 const { pool } = require('../../models/db');
@@ -26,6 +26,7 @@ router.get('/', requireAdminAuth, AM, async (req, res) => {
 });
 
 router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+  const client = await pool.connect();
   try {
     const { course_type, label, max_students } = req.body || {};
     if (course_type == null || label == null || max_students == null) {
@@ -39,55 +40,89 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
     if (lb.length > 50) return res.status(400).json({ error: 'label 長度不可超過 50' });
     if (isNaN(ms) || ms < 1 || ms > 10) return res.status(400).json({ error: 'max_students 必須為 1–10' });
 
-    const maxOrder = await pool.query(`SELECT COALESCE(MAX(sort_order),0) AS m FROM course_type_configs`);
+    await client.query('BEGIN');
+    const maxOrder = await client.query(`SELECT COALESCE(MAX(sort_order),0) AS m FROM course_type_configs`);
     const nextOrder = maxOrder.rows[0].m + 1;
 
-    const r = await pool.query(
+    const r = await client.query(
       `INSERT INTO course_type_configs (course_type, label, max_students, sort_order)
        VALUES ($1,$2,$3,$4)
        ON CONFLICT (course_type) DO NOTHING
        RETURNING *`,
       [ct, lb, ms, nextOrder]
     );
-    if (!r.rowCount) return res.status(409).json({ error: `課程需求 ${ct} 已存在` });
+    if (!r.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: `課程需求 ${ct} 已存在` });
+    }
+    // Task #67：同步建一筆預設介紹，title 取 label，body / image 留空
+    await client.query(
+      `INSERT INTO admin_course_intros (course_type, title, body, image_url, title_overridden)
+       VALUES ($1, $2, '', '', FALSE)
+       ON CONFLICT (course_type) DO NOTHING`,
+      [ct, lb]
+    );
+    await client.query('COMMIT');
     res.status(201).json(r.rows[0]);
   } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('[admin/course-types POST]', err);
     res.status(500).json({ error: 'create failed' });
+  } finally {
+    client.release();
   }
 });
 
 router.patch('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+  const client = await pool.connect();
   try {
     const ct = parseInt(req.params.type, 10);
     if (isNaN(ct)) return res.status(400).json({ error: 'invalid type' });
-    const cur = await pool.query(`SELECT * FROM course_type_configs WHERE course_type=$1`, [ct]);
-    if (!cur.rowCount) return res.status(404).json({ error: '找不到此課程需求' });
+
+    await client.query('BEGIN');
+    const cur = await client.query(`SELECT * FROM course_type_configs WHERE course_type=$1`, [ct]);
+    if (!cur.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: '找不到此課程需求' });
+    }
 
     const p = req.body || {};
     let label = cur.rows[0].label;
     if (p.label !== undefined) {
       const lb = String(p.label).trim();
-      if (!lb) return res.status(400).json({ error: 'label 不可為空' });
-      if (lb.length > 50) return res.status(400).json({ error: 'label 長度不可超過 50' });
+      if (!lb) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'label 不可為空' }); }
+      if (lb.length > 50) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'label 長度不可超過 50' }); }
       label = lb;
     }
     let max_students = cur.rows[0].max_students;
     if (p.max_students !== undefined) {
       const ms = parseInt(p.max_students, 10);
-      if (isNaN(ms) || ms < 1 || ms > 10) return res.status(400).json({ error: 'max_students 必須為 1–10' });
+      if (isNaN(ms) || ms < 1 || ms > 10) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'max_students 必須為 1–10' }); }
       max_students = ms;
     }
     const is_active = p.is_active !== undefined ? Boolean(p.is_active) : cur.rows[0].is_active;
 
-    const r = await pool.query(
+    const r = await client.query(
       `UPDATE course_type_configs SET label=$2, max_students=$3, is_active=$4 WHERE course_type=$1 RETURNING *`,
       [ct, label, max_students, is_active]
     );
+    // Task #67：label 變更時，若對應介紹的 title 未被 admin 覆寫過，同步更新 title
+    if (label !== cur.rows[0].label) {
+      await client.query(
+        `UPDATE admin_course_intros
+            SET title = $2, updated_at = NOW()
+          WHERE course_type = $1 AND title_overridden = FALSE`,
+        [ct, label]
+      );
+    }
+    await client.query('COMMIT');
     res.json(r.rows[0]);
   } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('[admin/course-types PATCH]', err);
     res.status(500).json({ error: 'update failed' });
+  } finally {
+    client.release();
   }
 });
 
@@ -101,6 +136,7 @@ router.delete('/:type', requireAdminAuth, requireAdminRole('admin'), async (req,
     if (parseInt(used.rows[0].n, 10) > 0) {
       return res.status(409).json({ error: '此課程需求已有報名記錄，無法刪除；請改為停用' });
     }
+    // FK ON DELETE CASCADE → admin_course_intros 對應記錄會一起刪除
     await pool.query(`DELETE FROM course_type_configs WHERE course_type=$1`, [ct]);
     res.json({ ok: true });
   } catch (err) {
