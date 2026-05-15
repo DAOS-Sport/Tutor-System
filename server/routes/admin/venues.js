@@ -11,7 +11,7 @@ const express = require('express');
 const { pool } = require('../../models/db');
 const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
 const {
-  syncVenuesFromRagic, kickoffSyncVenuesAsync,
+  syncVenuesFromRagic,
   diffVenuesFromRagic, applyVenueSync, VENUE_SYNC_FIELDS, ragicEnabled,
 } = require('../../services/ragicAdmin');
 
@@ -49,8 +49,9 @@ function rowToVenuePublic(r) {
 
 router.get('/', requireAdminAuth, async (req, res) => {
   try {
-    // Task #53：fire-and-forget（不阻塞回應；10 分鐘節流；cron 每 10 分鐘一次）
-    kickoffSyncVenuesAsync();
+    // Task #54：場館同步改走「立即同步 Ragic」按鈕的兩階段 dry-run + confirm 流程；
+    // 列表載入不再 auto-kickoff 寫入，避免在使用者確認前就動到 DB（覆寫保護仍會被
+    // legacy syncVenuesFromRagic 尊重，但同步時機仍應由人工觸發）。
     const r = await pool.query(`SELECT * FROM admin_venues ORDER BY id`);
     const isAdmin = req.adminUser?.role === 'admin';
     res.json(r.rows.map(isAdmin ? rowToVenueFull : rowToVenuePublic));
