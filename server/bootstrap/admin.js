@@ -291,6 +291,13 @@ async function ensureSchema() {
   // Task #53：admin_staff 增加覆寫旗標（後台勾啟用後 Ragic 不再覆蓋）
   await pool.query(`ALTER TABLE admin_staff ADD COLUMN IF NOT EXISTS active_overridden_at TIMESTAMPTZ`);
 
+  // Task #54：admin_venues 增加欄位級覆寫旗標 — 後台手動編輯過的欄位，
+  // Ragic 同步（POST /venues/sync-ragic）第二階段寫入時會跳過。
+  // line_token 不在 Ragic 範圍，免追蹤。
+  for (const f of ['name','address','bank_institution_name','bank_branch_name','account_holder','account_number','is_active']) {
+    await pool.query(`ALTER TABLE admin_venues ADD COLUMN IF NOT EXISTS ${f}_overridden_at TIMESTAMPTZ`);
+  }
+
   // Task #53：載入效能 — 列表常依 active / venue 過濾
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_admin_staff_active ON admin_staff(active)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_admin_staff_venue ON admin_staff(venue_id)`);

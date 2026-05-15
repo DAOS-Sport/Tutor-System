@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
+import VenueSyncDiffModal from '../components/VenueSyncDiffModal';
 import { useToast } from '../context/ToastContext';
 import { venuesApi } from '../api/venues';
 
@@ -69,7 +70,10 @@ function VenueCard({ venue, onSave }) {
 }
 
 export default function VenuesPage() {
+  const toast = useToast();
   const [venues, setVenues] = useState(null);
+  const [syncing, setSyncing] = useState(false);
+  const [diff, setDiff] = useState(null);
 
   useEffect(() => { venuesApi.list().then(setVenues); }, []);
 
@@ -78,14 +82,61 @@ export default function VenuesPage() {
     setVenues((arr) => arr.map((v) => (v.id === res.id ? res : v)));
   }
 
+  async function onSyncClick() {
+    setSyncing(true);
+    try {
+      const result = await venuesApi.syncDryRun();
+      if (result?.skipped) {
+        toast.warning(result.reason || 'Ragic 未設定，無法同步');
+        return;
+      }
+      setDiff(result);
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Ragic 同步失敗，請稍後再試');
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  async function onConfirmSync(selections) {
+    try {
+      const r = await venuesApi.syncConfirm(selections);
+      toast.success(`已新增 ${r.added} / 更動 ${r.updated} / 移除 ${r.removed} 筆`);
+      setDiff(null);
+      const fresh = await venuesApi.list();
+      setVenues(fresh);
+    } catch (err) {
+      toast.error(err?.response?.data?.error || '套用失敗');
+    }
+  }
+
   if (!venues) return <LoadingSpinner fullPage />;
 
   return (
     <div>
-      <PageHeader title="場館設定" subtitle="F-A03 · 每館自帶 LINE Token、收款銀行帳戶與基本資料" />
+      <PageHeader
+        title="場館設定"
+        subtitle="F-A03 · 每館自帶 LINE Token、收款銀行帳戶與基本資料"
+        actions={
+          <button
+            onClick={onSyncClick}
+            disabled={syncing}
+            className="rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary disabled:opacity-50"
+          >
+            {syncing ? '檢查中…' : '立即同步 Ragic'}
+          </button>
+        }
+      />
       <div className="space-y-5">
         {venues.map((v) => <VenueCard key={v.id} venue={v} onSave={onSave} />)}
       </div>
+      {diff && (
+        <VenueSyncDiffModal
+          diff={diff}
+          onCancel={() => setDiff(null)}
+          onConfirm={onConfirmSync}
+        />
+      )}
     </div>
   );
 }

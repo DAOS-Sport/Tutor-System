@@ -292,10 +292,217 @@ function kickoffSyncStaffAsync()   { _kickoff('staff',   syncStaffFromRagic); }
 function kickoffSyncCoachesAsync() { _kickoff('coaches', syncCoachesFromRagic); }
 function kickoffSyncVenuesAsync()  { _kickoff('venues',  syncVenuesFromRagic); }
 
+// ─────────────────────────────────────────────────────────────
+// Task #54：兩階段場館同步（dry-run diff + 使用者確認後再寫入）
+// ─────────────────────────────────────────────────────────────
+const VENUE_SYNC_FIELDS = [
+  'name', 'address',
+  'bank_institution_name', 'bank_branch_name',
+  'account_holder', 'account_number',
+];
+
+function _mapRagicVenue(r) {
+  const code = (r['部門編號'] || r['場館代號'] || r['館別代碼'] || r['1000253'] || '').toString().trim();
+  if (!code) return null;
+  return {
+    code,
+    name:                  r['部門名稱'] || r['場館名稱'] || r['館別名稱'] || r['1000254'] || code,
+    address:               r['完整地址'] || r['場館地址'] || r['地址'] || r['1000271'] || '',
+    bank_institution_name: r['總機構名稱'] || r['1001013'] || '',
+    bank_branch_name:      r['分支機構名稱'] || r['1001015'] || '',
+    account_holder:        r['戶名'] || r['1001016'] || '',
+    account_number:        (r['帳號'] || r['1001017'] || '').toString(),
+  };
+}
+
+/**
+ * dry-run：撈 H05 + 比對 admin_venues，回傳 {added, updated, removed}。
+ * - added：Ragic 有但 DB 沒有（或 DB is_active=false）→ 第二階段會 INSERT / 重新啟用
+ * - updated：兩邊都有，但有任一同步欄位值不同 → changes 內標 overridden 旗標
+ * - removed：DB 有 active 場館但 Ragic 沒有 → 第二階段軟刪除
+ */
+async function diffVenuesFromRagic() {
+  if (!ragicEnabled()) {
+    return { skipped: true, reason: 'Ragic 未設定 (RAGIC_API_KEY / RAGIC_BASE_URL)', added: [], updated: [], removed: [] };
+  }
+  const records = await ragic.getActiveVenues();
+  const ragicMap = new Map();
+  for (const r of records) {
+    const v = _mapRagicVenue(r);
+    if (v) ragicMap.set(v.code, v);
+  }
+  const dbRows = (await pool.query(`SELECT * FROM admin_venues`)).rows;
+  const dbMap = new Map(dbRows.map(r => [r.id, r]));
+
+  const added = [], updated = [], removed = [];
+  for (const [code, rv] of ragicMap) {
+    const cur = dbMap.get(code);
+    if (!cur || cur.is_active === false) {
+      added.push({ code, ...rv, reactivate: !!cur });
+      continue;
+    }
+    const changes = {};
+    for (const f of VENUE_SYNC_FIELDS) {
+      const from = cur[f] || '';
+      const to = rv[f] || '';
+      if (from !== to) {
+        changes[f] = { from, to, overridden: cur[`${f}_overridden_at`] != null };
+      }
+    }
+    if (Object.keys(changes).length > 0) {
+      updated.push({ code, name: cur.name, changes });
+    }
+  }
+  for (const r of dbRows) {
+    if (r.is_active && !ragicMap.has(r.id)) {
+      removed.push({ code: r.id, name: r.name, overridden: r.is_active_overridden_at != null });
+    }
+  }
+  return { skipped: false, added, updated, removed };
+}
+
+/**
+ * 第二階段：依 selections 套用 diff。
+ * selections = { added:[code], updated:[code], removed:[code] }
+ * - 跳過 *_overridden_at != null 的欄位（updated）/ 整列（is_active_overridden_at；removed）
+ */
+async function applyVenueSync(selections = {}) {
+  const want = {
+    added: new Set(selections.added || []),
+    updated: new Set(selections.updated || []),
+    removed: new Set(selections.removed || []),
+  };
+  const records = await ragic.getActiveVenues();
+  const ragicMap = new Map();
+  for (const r of records) {
+    const v = _mapRagicVenue(r);
+    if (v) ragicMap.set(v.code, v);
+  }
+
+  // Atomic：所有 add / update / remove + 跨表 mirror 寫入包在同一筆 transaction，
+  // 避免中途失敗導致 admin_venues vs venues 兩表分歧或部分套用。
+  const client = await pool.connect();
+  let addedCount = 0, updatedCount = 0, removedCount = 0;
+  try {
+    await client.query('BEGIN');
+    const dbRows = (await client.query(`SELECT * FROM admin_venues`)).rows;
+    const dbMap = new Map(dbRows.map(r => [r.id, r]));
+
+    for (const code of want.added) {
+      const rv = ragicMap.get(code);
+      if (!rv) continue;
+      const cur = dbMap.get(code);
+      if (cur) {
+        // 重新啟用：admin_venues + LIFF venues 同步 active=TRUE，並用 Ragic 最新 name/address 刷新
+        await client.query(
+          `UPDATE admin_venues SET is_active = TRUE, is_active_overridden_at = NULL,
+                                   last_synced_at = NOW(), updated_at = NOW()
+             WHERE id = $1`,
+          [code]
+        );
+        await client.query(
+          `INSERT INTO venues (id, name, full_address, is_active)
+           VALUES ($1,$2,$3,TRUE)
+           ON CONFLICT (id) DO UPDATE SET
+             name = EXCLUDED.name,
+             full_address = COALESCE(NULLIF(venues.full_address, ''), EXCLUDED.full_address),
+             is_active = TRUE, updated_at = NOW()`,
+          [code, rv.name, rv.address]
+        );
+      } else {
+        await client.query(
+          `INSERT INTO admin_venues (id, code, name, address, line_token,
+              bank_institution_name, bank_branch_name, account_holder, account_number,
+              is_active, last_synced_at)
+           VALUES ($1,$1,$2,$3,'',$4,$5,$6,$7,TRUE,NOW())`,
+          [code, rv.name, rv.address, rv.bank_institution_name, rv.bank_branch_name, rv.account_holder, rv.account_number]
+        );
+        await client.query(
+          `INSERT INTO venues (id, name, full_address, is_active)
+           VALUES ($1,$2,$3,TRUE)
+           ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name,
+             full_address = COALESCE(NULLIF(venues.full_address, ''), EXCLUDED.full_address),
+             is_active = TRUE, updated_at = NOW()`,
+          [code, rv.name, rv.address]
+        );
+      }
+      addedCount += 1;
+    }
+
+    for (const code of want.updated) {
+      const rv = ragicMap.get(code);
+      const cur = dbMap.get(code);
+      if (!rv || !cur) continue;
+      const sets = [];
+      const vals = [code];
+      let i = 2;
+      let touchesNameOrAddr = false;
+      for (const f of VENUE_SYNC_FIELDS) {
+        const from = cur[f] || '';
+        const to = rv[f] || '';
+        if (from === to) continue;
+        if (cur[`${f}_overridden_at`] != null) continue; // 跳過手動覆寫
+        sets.push(`${f} = $${i}`);
+        vals.push(to);
+        i += 1;
+        if (f === 'name' || f === 'address') touchesNameOrAddr = true;
+      }
+      if (sets.length === 0) continue;
+      sets.push(`last_synced_at = NOW()`, `updated_at = NOW()`);
+      await client.query(
+        `UPDATE admin_venues SET ${sets.join(', ')} WHERE id = $1`,
+        vals
+      );
+      if (touchesNameOrAddr) {
+        await client.query(
+          `UPDATE venues SET name = $2,
+             full_address = COALESCE(NULLIF($3, ''), full_address),
+             updated_at = NOW()
+             WHERE id = $1`,
+          [code, rv.name, rv.address]
+        );
+      }
+      updatedCount += 1;
+    }
+
+    for (const code of want.removed) {
+      const cur = dbMap.get(code);
+      if (!cur || !cur.is_active) continue;
+      if (cur.is_active_overridden_at != null) continue; // 後台已手動標 active → 不被 sync 軟刪除
+      await client.query(
+        `UPDATE admin_venues SET is_active = FALSE, last_synced_at = NOW(), updated_at = NOW()
+           WHERE id = $1`,
+        [code]
+      );
+      await client.query(
+        `UPDATE venues SET is_active = FALSE, updated_at = NOW() WHERE id = $1`,
+        [code]
+      );
+      removedCount += 1;
+    }
+
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  return { added: addedCount, updated: updatedCount, removed: removedCount };
+}
+
+function kickoffSyncStaffAsync()   { _kickoff('staff',   syncStaffFromRagic); }
+function kickoffSyncCoachesAsync() { _kickoff('coaches', syncCoachesFromRagic); }
+function kickoffSyncVenuesAsync()  { _kickoff('venues',  syncVenuesFromRagic); }
+
 module.exports = {
   syncStaffFromRagic,
   syncCoachesFromRagic,
   syncVenuesFromRagic,
+  diffVenuesFromRagic,
+  applyVenueSync,
+  VENUE_SYNC_FIELDS,
   kickoffSyncStaffAsync,
   kickoffSyncCoachesAsync,
   kickoffSyncVenuesAsync,

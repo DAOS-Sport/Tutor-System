@@ -10,7 +10,10 @@
 const express = require('express');
 const { pool } = require('../../models/db');
 const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
-const { syncVenuesFromRagic, kickoffSyncVenuesAsync } = require('../../services/ragicAdmin');
+const {
+  syncVenuesFromRagic, kickoffSyncVenuesAsync,
+  diffVenuesFromRagic, applyVenueSync, VENUE_SYNC_FIELDS, ragicEnabled,
+} = require('../../services/ragicAdmin');
 
 const router = express.Router();
 
@@ -57,7 +60,7 @@ router.get('/', requireAdminAuth, async (req, res) => {
   }
 });
 
-// Task #53：admin 立即同步 H05（同步等待結果）
+// Task #53：admin 立即同步 H05（同步等待結果，無 diff confirm；保留供 cron / 相容）
 router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
   try {
     const result = await syncVenuesFromRagic();
@@ -69,16 +72,48 @@ router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, re
   }
 });
 
+// Task #54：兩階段同步 — 預設 dry-run；body.confirm=true 時依 selections 寫入。
+router.post('/sync-ragic', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+  try {
+    if (!ragicEnabled()) {
+      return res.status(502).json({ error: 'Ragic 未設定 (RAGIC_API_KEY / RAGIC_BASE_URL)' });
+    }
+    const body = req.body || {};
+    if (body.confirm === true) {
+      const selections = body.selections || {};
+      const applied = await applyVenueSync(selections);
+      return res.json({ confirmed: true, ...applied });
+    }
+    const diff = await diffVenuesFromRagic();
+    return res.json(diff);
+  } catch (err) {
+    console.error('[admin/venues/sync-ragic]', err);
+    res.status(502).json({ error: err.message || 'Ragic 同步失敗' });
+  }
+});
+
 router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
   try {
     const { id } = req.params;
     const patch = req.body || {};
-    const cur = await pool.query(`SELECT * FROM admin_venues WHERE id = $1`, [id]);
-    if (!cur.rowCount) return res.status(404).json({ error: 'venue not found' });
+    const curR = await pool.query(`SELECT * FROM admin_venues WHERE id = $1`, [id]);
+    if (!curR.rowCount) return res.status(404).json({ error: 'venue not found' });
+    const cur = curR.rows[0];
 
     const fields = ['name', 'address', 'line_token', 'bank_institution_name',
                     'bank_branch_name', 'account_holder', 'account_number'];
-    const values = fields.map((f) => patch[f] !== undefined ? patch[f] : cur.rows[0][f]);
+    const values = fields.map((f) => patch[f] !== undefined ? patch[f] : cur[f]);
+
+    // Task #54：標記覆寫旗標 — 對 Ragic 同步範圍內、且本次值與 DB 不同的欄位，
+    // 紀錄手動覆寫時間，下次 sync confirm 寫入時會跳過。
+    const overrideSets = [];
+    for (const f of VENUE_SYNC_FIELDS) {
+      if (patch[f] === undefined) continue;
+      const newVal = patch[f] || '';
+      const oldVal = cur[f] || '';
+      if (newVal !== oldVal) overrideSets.push(`${f}_overridden_at = NOW()`);
+    }
+    const extra = overrideSets.length ? `, ${overrideSets.join(', ')}` : '';
 
     const r = await pool.query(
       `UPDATE admin_venues SET
@@ -89,7 +124,7 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
          bank_branch_name = $6,
          account_holder = $7,
          account_number = $8,
-         updated_at = NOW()
+         updated_at = NOW()${extra}
        WHERE id = $1 RETURNING *`,
       [id, ...values]
     );
