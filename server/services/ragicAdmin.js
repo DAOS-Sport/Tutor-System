@@ -110,7 +110,7 @@ async function _syncStaffImpl() {
       const diff = {};
       if ((cur.name || '') !== name) diff.name = { from: cur.name || '', to: name };
       if ((cur.phone || '') !== phone) diff.phone = { from: cur.phone || '', to: phone };
-      if ((cur.role || '') !== roleVal) diff.role = { from: cur.role, to: roleVal };
+      // role 為系統內部欄位（admin 可改 staff/coach/manager）— 不從 Ragic 同步
       if (cur.active_overridden_at == null && cur.active !== isActive) {
         diff.active = { from: cur.active, to: isActive };
       }
