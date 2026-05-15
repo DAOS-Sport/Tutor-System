@@ -478,6 +478,25 @@ export const mockDb = {
       .map((s) => ({ ...s }));
   },
 
+  // Task #60：mock 即時報到列表（依日期 + 場館過濾，最新在最上方）
+  checkins({ venueId, date } = {}) {
+    const today = new Date().toISOString().slice(0, 10);
+    const day = date || today;
+    const base = SESSIONS.filter((s) => s.date === day && (!venueId || s.venue_id === venueId));
+    const now = Date.now();
+    return base.map((s, i) => ({
+      checkin_id: `mock-${s.id}-${i}`,
+      at: new Date(now - i * 5 * 60 * 1000).toISOString(),
+      session_id: s.id,
+      period_id: s.id,
+      venue_id: s.venue_id,
+      venue_name: s.venue_name || s.venue_id,
+      course_type: s.course_type || 1,
+      coach: s.coach || '',
+      student: (s.students && s.students[0]) || '示範學員',
+    }));
+  },
+
   verifyCheckin({ phone, periodId }) {
     const e = ENROLLMENTS.find((x) =>
       (!periodId || x.id === periodId) &&

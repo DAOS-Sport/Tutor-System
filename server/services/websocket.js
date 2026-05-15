@@ -27,6 +27,8 @@ const { canAccess } = require('./chatRooms');
 const { getSecret } = require('../middlewares/parentAuth');
 
 const rooms = new Map(); // roomId → Set<ws>
+// Task #60：後台事件總線（簽到等即時推播給所有已登入後台 client）
+const adminClients = new Set();
 
 function _join(roomId, ws) {
   if (!rooms.has(roomId)) rooms.set(roomId, new Set());
@@ -60,7 +62,43 @@ function _broadcast(roomId, payload, exclude = null) {
 }
 
 function initWebSocket(server) {
-  const wss = new WebSocket.Server({ server, path: '/ws' });
+  // 兩個 path 共用同一個 http server → 用 noServer + 手動 upgrade 路由（避免雙重 upgrade listener 衝突）
+  const wss = new WebSocket.Server({ noServer: true });
+  // Task #60：後台事件總線（簽到 list 即時推播）。獨立 path 避開既有 chat-room 授權邏輯。
+  const wssAdmin = new WebSocket.Server({ noServer: true });
+  server.on('upgrade', (req, socket, head) => {
+    let pathname;
+    try { pathname = new URL(req.url, 'http://localhost').pathname; } catch { socket.destroy(); return; }
+    if (pathname === '/ws/admin') {
+      wssAdmin.handleUpgrade(req, socket, head, (ws) => wssAdmin.emit('connection', ws, req));
+    } else if (pathname === '/ws') {
+      wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+    } else {
+      socket.destroy();
+    }
+  });
+  wssAdmin.on('connection', (ws, req) => {
+    let payload;
+    try {
+      const url = new URL(req.url, 'http://localhost');
+      const token = url.searchParams.get('token');
+      if (!token) return ws.close(4400, 'Missing token');
+      payload = jwt.verify(token, getSecret());
+      if (!payload?.role || !['admin','manager','staff'].includes(payload.role)) {
+        return ws.close(4003, 'Unsupported token');
+      }
+    } catch {
+      return ws.close(4001, 'Invalid token');
+    }
+    ws.adminRole = payload.role;
+    ws.adminVenueId = payload.venue_id || null;
+    adminClients.add(ws);
+    ws.on('close', () => adminClients.delete(ws));
+    ws.on('error', () => { try { ws.close(); } catch { /* ignore */ } });
+    ws.on('message', (raw) => {
+      try { const m = JSON.parse(String(raw)); if (m?.type === 'ping') ws.send(JSON.stringify({ type: 'pong', t: Date.now() })); } catch { /* ignore */ }
+    });
+  });
 
   wss.on('connection', async (ws, req) => {
     let token, roomId, payload;
@@ -130,4 +168,19 @@ function broadcastRead(roomId, payload) {
   _broadcast(roomId, { type: 'read', data: payload });
 }
 
-module.exports = { initWebSocket, broadcastMessage, broadcastRead };
+// Task #60：對所有後台 WS client 廣播事件；可帶 venueId 做 server 端過濾
+// （staff 與 manager 只收到自己場館；admin 全收）
+function broadcastAdminEvent(eventType, payload) {
+  const data = JSON.stringify({ type: eventType, data: payload });
+  for (const c of adminClients) {
+    if (c.readyState !== WebSocket.OPEN) { adminClients.delete(c); continue; }
+    // 嚴格 least-privilege：admin 全收；非 admin 必須有 venue_id 且與 payload.venue_id 相符；
+    // 任一邊缺 venue_id 一律 drop（避免 staff/manager 帳號設定異常時看到跨場館資料）
+    if (c.adminRole !== 'admin') {
+      if (!payload?.venue_id || !c.adminVenueId || c.adminVenueId !== payload.venue_id) continue;
+    }
+    try { c.send(data); } catch { /* ignore */ }
+  }
+}
+
+module.exports = { initWebSocket, broadcastMessage, broadcastRead, broadcastAdminEvent };

@@ -243,11 +243,38 @@ router.post('/checkin', requireAdminAuth, async (req, res) => {
     const reward = await referrals.issueRewardForEnrollment(enrollmentId, {
       line, BRAND_LIFF_URL: (process.env.LIFF_URL_PARENT || process.env.LIFF_URL || '/liff/'),
     });
+
+    // Task #60：廣播即時報到事件（venue_id 帶入做 server 端過濾）
+    try {
+      const er = e.rows[0];
+      const detail = await pool.query(
+        `SELECT ae.coach, ae.course_type, COALESCE(array_to_string(ae.students,'、'),'') AS students,
+                v.name AS venue_name
+           FROM admin_enrollments ae LEFT JOIN admin_venues v ON v.id = ae.venue_id
+          WHERE ae.id = $1`, [enrollmentId]
+      );
+      const d = detail.rows[0] || {};
+      const { broadcastAdminEvent } = require('../../services/websocket');
+      broadcastAdminEvent('checkin:created', {
+        checkin_id: `${enrollmentId}:${Date.now()}`,
+        at: new Date().toISOString(),
+        period_id: enrollmentId,
+        venue_id: er.venue_id,
+        venue_name: d.venue_name || er.venue_id,
+        course_type: Number(d.course_type) || null,
+        coach: d.coach || '',
+        student: d.students || '',
+      });
+    } catch (e2) { console.warn('[admin/sessions/checkin] broadcast skipped:', e2?.message); }
+
     res.json({ ok: true, reward });
   } catch (err) {
     console.error('[admin/sessions/checkin]', err);
     res.status(500).json({ error: 'checkin failed' });
   }
 });
+
+// Task #60：列表端點已搬到 routes/admin/checkins.js（mount 為 /api/admin/checkins）
+/* eslint-disable */
 
 module.exports = router;

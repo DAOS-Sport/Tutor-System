@@ -1,96 +1,244 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import StatusBadge from '../components/StatusBadge';
 import { useToast } from '../context/ToastContext';
+import { useAuth } from '../context/AuthContext';
 import { sessionsApi } from '../api/sessions';
+import { checkinsApi } from '../api/checkins';
+import { venuesApi } from '../api/venues';
 import {
   formatTWD, courseTypeLabel,
   paymentStatusLabel, paymentStatusTone,
   isValidTWPhone,
 } from '../utils/format';
 
+// 取今天 YYYY-MM-DD（local time）
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+function fmtTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
 export default function CheckinPage() {
   const toast = useToast();
+  const { role, user } = useAuth();
+  const isStaff = role === 'staff';
+
+  // 篩選器
+  const [date, setDate] = useState(todayStr());
+  const [venueId, setVenueId] = useState(isStaff ? (user?.venue_id || '') : '');
+  const [venues, setVenues] = useState([]);
+
+  // 列表
+  const [list, setList] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  // 右上角查詢
   const [phone, setPhone] = useState('');
   const [periodId, setPeriodId] = useState('');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
 
+  const wsRef = useRef(null);
+  const pollRef = useRef(null);
+
+  // 載入場館清單（staff 不需要切換，鎖在自己場館）
+  useEffect(() => {
+    if (isStaff) return;
+    let alive = true;
+    venuesApi.list().then((d) => alive && setVenues(d || [])).catch(() => {});
+    return () => { alive = false; };
+  }, [isStaff]);
+
+  // 拉清單
+  async function reload() {
+    setLoading(true);
+    try {
+      const r = await checkinsApi.list({ venueId: venueId || undefined, date });
+      setList(Array.isArray(r) ? r : []);
+    } catch {
+      setList([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => { reload(); /* eslint-disable-next-line */ }, [venueId, date]);
+
+  // WebSocket 即時推播；無 WS 時 fallback 30 秒輪詢
+  useEffect(() => {
+    if (date !== todayStr()) {
+      // 看歷史日期不開 WS
+      if (wsRef.current) { try { wsRef.current.close(); } catch{} wsRef.current = null; }
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      return;
+    }
+    let raw;
+    try { raw = JSON.parse(localStorage.getItem('daos.admin.user') || 'null'); } catch {}
+    const token = raw?.token;
+    if (!token) return;
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    let ws;
+    try { ws = new WebSocket(`${proto}//${location.host}/ws/admin?token=${encodeURIComponent(token)}`); } catch { ws = null; }
+    let opened = false;
+    if (ws) {
+      ws.onopen = () => { opened = true; };
+      ws.onmessage = (ev) => {
+        try {
+          const m = JSON.parse(ev.data);
+          if (m?.type === 'checkin:created') {
+            const d = m.data || {};
+            // venue 篩選（client 端再保險一次）
+            if (venueId && d.venue_id !== venueId) return;
+            setList((prev) => {
+              if (prev.some((x) => x.checkin_id === d.checkin_id)) return prev;
+              return [d, ...prev];
+            });
+            toast.success(`新報到：${d.student}`);
+          }
+        } catch {}
+      };
+      ws.onerror = () => {};
+      wsRef.current = ws;
+    }
+    // 30 秒 fallback 輪詢（即使有 WS 也保險，重整漏播時可補上）
+    pollRef.current = setInterval(reload, 30000);
+    // 若 1.5s 後 WS 還沒 open，視為失敗，僅靠輪詢
+    const t = setTimeout(() => { if (!opened) { try { ws && ws.close(); } catch{} } }, 1500);
+    return () => {
+      clearTimeout(t);
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      if (wsRef.current) { try { wsRef.current.close(); } catch{} wsRef.current = null; }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [date, venueId]);
+
   async function onLookup(e) {
     e?.preventDefault();
-    if (!phone && !periodId) {
-      toast.warning('請輸入家長手機或報名編號');
-      return;
-    }
-    if (phone && !isValidTWPhone(phone)) {
-      toast.error('手機格式不正確（09 + 8 碼）');
-      return;
-    }
+    if (!phone && !periodId) { toast.warning('請輸入家長手機或報名編號'); return; }
+    if (phone && !isValidTWPhone(phone)) { toast.error('手機格式不正確（09 + 8 碼）'); return; }
     setBusy(true);
     try {
       const r = await sessionsApi.verifyCheckin({ phone, periodId });
       setResult(r);
       if (!r.found) toast.error('查無此家長 / 報名');
-    } finally {
-      setBusy(false);
-    }
+    } finally { setBusy(false); }
   }
+  function clearLookup() { setResult(null); setPhone(''); setPeriodId(''); }
 
-  function reset() {
-    setResult(null); setPhone(''); setPeriodId('');
-  }
+  const isToday = date === todayStr();
 
   return (
     <div>
-      <PageHeader title="簽到驗證" subtitle="F-R03 · 櫃檯收到家長 / 學員時，輸入家長手機或報名編號核對" />
+      <PageHeader title="簽到驗證" subtitle="F-R03 · 即時報到名單為主視覺；右上角保留家長手機 / 報名編號核對" />
 
-      <form
-        onSubmit={onLookup}
-        className="mb-6 grid grid-cols-1 gap-4 rounded-xl border border-gray-200 bg-white p-6 shadow-sm md:grid-cols-3"
-      >
-        <div>
-          <label className="mb-1 block text-sm font-medium text-gray-700">家長手機</label>
-          <input
-            type="tel"
-            placeholder="09xxxxxxxx"
-            value={phone}
-            onChange={(e) => setPhone(e.target.value.trim())}
-            className="w-full rounded-lg border border-gray-300 px-3 py-2"
-          />
-        </div>
-        <div>
-          <label className="mb-1 block text-sm font-medium text-gray-700">報名編號（擇一）</label>
-          <input
-            type="text"
-            placeholder="CP1001"
-            value={periodId}
-            onChange={(e) => setPeriodId(e.target.value.trim())}
-            className="w-full rounded-lg border border-gray-300 px-3 py-2"
-          />
-        </div>
-        <div className="flex items-end gap-2">
+      {/* 篩選列 + 右上角查詢區 */}
+      <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-600">場館</label>
+            <select
+              value={venueId}
+              onChange={(e) => setVenueId(e.target.value)}
+              disabled={isStaff}
+              className="rounded-lg border border-gray-300 px-3 py-2 text-sm disabled:bg-gray-100"
+            >
+              {!isStaff && <option value="">全部場館</option>}
+              {(isStaff ? venues.filter((v) => v.id === venueId) : venues).map((v) => (
+                <option key={v.id} value={v.id}>{v.name}</option>
+              ))}
+              {isStaff && !venues.length && <option value={venueId}>{user?.venue_id || '本場館'}</option>}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-600">日期</label>
+            <input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className="rounded-lg border border-gray-300 px-3 py-2 text-sm"
+            />
+          </div>
           <button
-            type="submit"
-            disabled={busy}
-            className="rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary disabled:opacity-50"
+            onClick={reload}
+            className="rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100"
           >
-            {busy ? '查詢中…' : '查詢'}
+            重新整理
           </button>
-          <button
-            type="button"
-            onClick={reset}
-            className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-          >
-            清除
-          </button>
+          {isToday && (
+            <span className="text-xs text-emerald-600">● 即時更新中</span>
+          )}
         </div>
-      </form>
 
-      {busy && <LoadingSpinner />}
+        <form onSubmit={onLookup} className="flex flex-wrap items-end gap-2 rounded-lg border border-gray-200 bg-gray-50 p-2">
+          <div>
+            <label className="mb-0.5 block text-[11px] font-medium text-gray-600">家長手機</label>
+            <input
+              type="tel" placeholder="09xxxxxxxx" value={phone}
+              onChange={(e) => setPhone(e.target.value.trim())}
+              className="w-32 rounded-md border border-gray-300 px-2 py-1.5 text-sm"
+            />
+          </div>
+          <div>
+            <label className="mb-0.5 block text-[11px] font-medium text-gray-600">報名編號</label>
+            <input
+              type="text" placeholder="CP1001" value={periodId}
+              onChange={(e) => setPeriodId(e.target.value.trim())}
+              className="w-28 rounded-md border border-gray-300 px-2 py-1.5 text-sm"
+            />
+          </div>
+          <button
+            type="submit" disabled={busy}
+            className="rounded-md bg-brand-teal px-3 py-1.5 text-sm font-bold text-white hover:bg-brand-primary disabled:opacity-50"
+          >
+            {busy ? '查詢中…' : '核對'}
+          </button>
+          {(result || phone || periodId) && (
+            <button
+              type="button" onClick={clearLookup}
+              className="rounded-md border border-gray-300 px-2 py-1.5 text-xs text-gray-600 hover:bg-white"
+            >清除</button>
+          )}
+        </form>
+      </div>
 
+      {/* 主列表：今日報到（最新在最上方） */}
+      <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
+        <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
+          <h3 className="text-base font-bold text-brand-primary">
+            {isToday ? '今日已報到' : `${date} 已報到`}
+          </h3>
+          <span className="text-sm text-gray-500">共 {list.length} 筆</span>
+        </div>
+        {loading ? (
+          <div className="py-10"><LoadingSpinner /></div>
+        ) : list.length === 0 ? (
+          <div className="py-12 text-center text-sm text-gray-400">尚無報到紀錄</div>
+        ) : (
+          <ul className="divide-y divide-gray-100">
+            {list.map((r) => (
+              <li key={r.checkin_id} className="grid grid-cols-12 items-center gap-2 px-4 py-3 text-sm">
+                <span className="col-span-2 font-mono text-brand-primary">{fmtTime(r.at)}</span>
+                <span className="col-span-3 truncate"><b>{r.student || '—'}</b></span>
+                <span className="col-span-3 truncate text-gray-600">
+                  {r.course_type ? courseTypeLabel(r.course_type) : '—'}
+                  {r.coach ? <span className="ml-1 text-gray-400">· {r.coach}</span> : null}
+                </span>
+                <span className="col-span-3 truncate text-gray-500">{r.venue_name || r.venue_id}</span>
+                <span className="col-span-1 text-right text-xs text-gray-400">#{String(r.period_id || '').slice(-6)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* 查詢結果（右上角查詢） */}
       {result && result.found && (
-        <div className="rounded-xl border-2 border-brand-green bg-white p-6 shadow-sm">
+        <div className="mt-6 rounded-xl border-2 border-brand-green bg-white p-6 shadow-sm">
           <div className="mb-4 flex items-center justify-between">
             <h3 className="text-lg font-bold text-brand-primary">驗證成功 ✓</h3>
             <StatusBadge tone={paymentStatusTone(result.enrollment.status)}>
@@ -120,7 +268,7 @@ export default function CheckinPage() {
       )}
 
       {result && !result.found && (
-        <div className="rounded-xl border-2 border-brand-error bg-brand-error-soft p-6 text-center text-brand-error-strong">
+        <div className="mt-6 rounded-xl border-2 border-brand-error bg-brand-error-soft p-6 text-center text-brand-error-strong">
           查無對應的報名資料，請確認家長手機或編號是否正確。
         </div>
       )}

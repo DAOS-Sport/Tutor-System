@@ -24,6 +24,7 @@ router.use('/settings',      require('./admin/settings'));
 router.use('/course-intros', require('./admin/courseIntros'));
 router.use('/enrollments',   require('./admin/enrollments'));
 router.use('/sessions',      require('./admin/sessions'));
+router.use('/checkins',      require('./admin/checkins'));   // Task #60
 router.use('/chat',          require('./admin/chat'));
 router.use('/periods',       require('./admin/periods'));
 router.use('/learn',         require('./admin/learn'));   // F-A08 / F-M09 / F-A09 / F-C06
