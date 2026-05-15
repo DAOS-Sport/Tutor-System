@@ -61,8 +61,11 @@ router.get('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =>
 });
 
 router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
-  if (!ragicAdmin.ragicEnabled()) {
-    return res.status(400).json({ error: 'Ragic 未設定（缺 RAGIC_API_KEY / RAGIC_BASE_URL）' });
+  // 用與 GET 相同的判定（必須 6 個 RAGIC_* env 全到位）作為單一真相來源
+  const env = ragicAdmin.getRagicEnvFlags();
+  const missing = Object.entries(env).filter(([, v]) => !v).map(([k]) => k);
+  if (missing.length > 0) {
+    return res.status(400).json({ error: 'Ragic 未完整設定', missing_env: missing });
   }
   const form = String(req.query.form || (req.body && req.body.form) || (req.body && req.body.job) || 'all');
   const jobs = form === 'all' ? ALL_JOBS : [form];
