@@ -35,9 +35,13 @@ export default function SessionsPage() {
   async function load() {
     setList(null);
     const effectiveVenues = isStaff && user?.venue_id ? [user.venue_id] : venueIds;
-    // 條列模式預設用 /today（保留 task spec「條列為預設」的當日視角）；
-    // 切到週課表或調整日期範圍後改用 /sessions range API。
-    const useToday = view === 'list' && preset === 'this_week' && range.from === rangeForPreset('this_week').from;
+    // 條列模式預設用 /today（task spec「條列為預設」的當日視角）；
+    // 但若使用者已選 0 或 1 個場館以外的多選條件、或調整了日期範圍，
+    // 改走 /sessions range API 才能正確支援多場館過濾。
+    const useToday = view === 'list'
+      && preset === 'this_week'
+      && range.from === rangeForPreset('this_week').from
+      && effectiveVenues.length <= 1;
     const [data, vs] = await Promise.all([
       useToday
         ? sessionsApi.today(effectiveVenues[0])
