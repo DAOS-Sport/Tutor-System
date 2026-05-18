@@ -36,19 +36,27 @@ http.interceptors.request.use((config) => {
 // Task #68：背景輪詢（如 Sidebar 的 ragic-staging/count）使用 config.skipAuthRedirect = true
 // 即可在 401 時只丟 reject、不強制 window.location.href 跳轉，避免使用者
 // 在頁面上正常操作時被「無預警踢回登入」。互動式請求（login/表單）仍走預設行為。
+let _redirectingOn401 = false; // 模組級 dedupe，避免短時間多支互動 API 同時 401 觸發 N 次 redirect
 http.interceptors.response.use(
   (res) => res,
   (err) => {
     if (err?.response?.status === 401) {
       const skip = err?.config?.skipAuthRedirect === true;
       try {
-        if (!skip) {
+        if (!skip && !_redirectingOn401) {
+          _redirectingOn401 = true;
           localStorage.removeItem(TOKEN_KEY);
           if (
             typeof window !== 'undefined' &&
             !window.location.pathname.endsWith('/login')
           ) {
+            // 在 LoginPage 顯示一次「請重新登入」toast（透過 sessionStorage 跨頁傳遞，
+            // LoginPage 掛載時讀取並 pop 掉），避免使用者覺得「無預警被踢回」。
+            try { sessionStorage.setItem('daos.admin.flashLogout', '1'); } catch { /* noop */ }
             window.location.href = '/admin/login';
+          } else {
+            // 已在 login 頁，flag 解除讓下次 401 仍可正常處理
+            _redirectingOn401 = false;
           }
         }
       } catch { /* noop */ }

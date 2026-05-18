@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { authApi } from '../api/auth';
 import { USE_MOCK } from '../api/client';
@@ -12,6 +12,21 @@ export default function LoginPage() {
   const loc = useLocation();
   const [form, setForm] = useState({ username: '', password: '' });
   const [busy, setBusy] = useState(false);
+
+  // Task #68：interceptor 因 401 把使用者踢回登入時會 set 此 flag → 顯示一次明確提示
+  // useRef sentinel 防 React.StrictMode dev 環境 effect 重複執行造成 toast 顯兩次
+  const flashShown = useRef(false);
+  useEffect(() => {
+    if (flashShown.current) return;
+    flashShown.current = true;
+    try {
+      if (sessionStorage.getItem('daos.admin.flashLogout') === '1') {
+        sessionStorage.removeItem('daos.admin.flashLogout');
+        toast.warning('登入逾期或權限變更，請重新登入');
+      }
+    } catch { /* noop */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (isAuthed) {
     return <Navigate to={loc.state?.from || '/dashboard'} replace />;

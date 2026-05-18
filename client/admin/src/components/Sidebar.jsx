@@ -113,7 +113,15 @@ export default function Sidebar() {
     }
     refresh();
     timer = setInterval(refresh, 60_000);
-    const onFocus = () => { if (!stopped) refresh(); };
+    // Task #68：onFocus 加 throttle，避免快速切 tab 時連發多次請求
+    let lastFocusRefresh = 0;
+    const onFocus = () => {
+      if (stopped) return;
+      const now = Date.now();
+      if (now - lastFocusRefresh < 5_000) return;
+      lastFocusRefresh = now;
+      refresh();
+    };
     window.addEventListener('focus', onFocus);
     return () => {
       cancelled = true;
