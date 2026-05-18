@@ -27,7 +27,12 @@ export default function LoginPage() {
     try {
       const res = await authApi.login(form);
       if (!res) {
-        toast.error('帳號或密碼錯誤');
+        // Task #68：production 下若使用者仍嘗試 admin/admin，提示初始密碼來源
+        if (!USE_MOCK) {
+          toast.error('帳號或密碼錯誤（初始密碼由部署時的 ADMIN_BOOTSTRAP_PASSWORD 決定，非 admin）');
+        } else {
+          toast.error('帳號或密碼錯誤');
+        }
         return;
       }
       setUser(res);
@@ -93,7 +98,10 @@ export default function LoginPage() {
           </div>
         ) : (
           <div className="mt-6 rounded-lg bg-gray-50 p-3 text-xs text-gray-500">
-            如忘記密碼，請聯絡系統管理員重設。
+            <div>如忘記密碼，請聯絡系統管理員重設。</div>
+            <div className="mt-1 text-[11px] text-gray-400">
+              首次部署的初始密碼由 <code>ADMIN_BOOTSTRAP_PASSWORD</code> 決定（非 <code>admin</code>）。
+            </div>
           </div>
         )}
       </div>

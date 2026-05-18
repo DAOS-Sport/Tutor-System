@@ -6,7 +6,8 @@ export const ragicStagingApi = {
     return r.data;
   },
   async count() {
-    const r = await http.get('/ragic-staging/count');
+    // Task #68：背景輪詢用，401 不要觸發全域登出/跳轉，靜默忽略即可
+    const r = await http.get('/ragic-staging/count', { skipAuthRedirect: true });
     return r.data;
   },
   async approve(id) {

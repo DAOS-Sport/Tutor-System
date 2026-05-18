@@ -87,18 +87,40 @@ export default function Sidebar() {
 
   useEffect(() => {
     if (role !== 'admin') return undefined;
+    // Task #68：登入頁不要打 badge polling（避免登入前/後競態 + 無謂 401）
+    if (typeof window !== 'undefined' && window.location.pathname.endsWith('/login')) {
+      return undefined;
+    }
     let cancelled = false;
+    let failures = 0;
+    let timer = null;
+    let stopped = false;
     async function refresh() {
+      if (stopped) return;
       try {
         const r = await ragicStagingApi.count();
-        if (!cancelled) setBadges((b) => ({ ...b, ragicStaging: r?.pending || 0 }));
-      } catch { /* silent — badge 失敗不阻斷 sidebar */ }
+        if (cancelled) return;
+        failures = 0;
+        setBadges((b) => ({ ...b, ragicStaging: r?.pending || 0 }));
+      } catch {
+        // Task #68：失敗 3 次後停止輪詢，避免在後端壞掉時持續刷錯誤
+        failures += 1;
+        if (failures >= 3) {
+          stopped = true;
+          if (timer) clearInterval(timer);
+        }
+      }
     }
     refresh();
-    const t = setInterval(refresh, 60_000);
-    const onFocus = () => refresh();
+    timer = setInterval(refresh, 60_000);
+    const onFocus = () => { if (!stopped) refresh(); };
     window.addEventListener('focus', onFocus);
-    return () => { cancelled = true; clearInterval(t); window.removeEventListener('focus', onFocus); };
+    return () => {
+      cancelled = true;
+      stopped = true;
+      if (timer) clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+    };
   }, [role]);
 
   return (

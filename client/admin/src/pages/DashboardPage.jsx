@@ -26,17 +26,27 @@ export default function DashboardPage() {
     let alive = true;
     (async () => {
       const venueId = isStaff ? user?.venue_id : undefined;
-      const [pending, all, sessions] = await Promise.all([
+      // Task #68：改 allSettled，單支 API 失敗（如 Neon DB 連線暫斷）不會讓整頁白屏；
+      // 失敗的格子改顯示 '—'。
+      const [pendingR, allR, sessionsR] = await Promise.allSettled([
         enrollmentsApi.list({ status: 'pending_payment', venueId }),
         enrollmentsApi.list({ venueId }),
         sessionsApi.today(venueId),
       ]);
       if (!alive) return;
+      const pending = pendingR.status === 'fulfilled' ? pendingR.value : null;
+      const all = allR.status === 'fulfilled' ? allR.value : null;
+      const sessions = sessionsR.status === 'fulfilled' ? sessionsR.value : null;
       setStats({
-        pending: pending.length,
-        active: all.filter((e) => e.status === 'active' || e.status === 'confirmed').length,
-        sessionsToday: sessions.length,
-        sessionsCheckedIn: sessions.filter((s) => s.checkin_status === 'checked_in').length,
+        pending: pending ? pending.length : '—',
+        active: all
+          ? all.filter((e) => e.status === 'active' || e.status === 'confirmed').length
+          : '—',
+        sessionsToday: sessions ? sessions.length : '—',
+        sessionsCheckedIn: sessions
+          ? sessions.filter((s) => s.checkin_status === 'checked_in').length
+          : '—',
+        hasError: !pending || !all || !sessions,
       });
     })();
     return () => { alive = false; };
@@ -51,12 +61,19 @@ export default function DashboardPage() {
       {!stats ? (
         <LoadingSpinner />
       ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <StatCard label="待對帳報名" value={stats.pending} hint="點擊前往對帳" to="/reconcile" />
-          <StatCard label="進行中課程" value={stats.active} hint="confirmed + active" to="/enrollments" />
-          <StatCard label="今日課程" value={stats.sessionsToday} hint="所有時段" to="/sessions" />
-          <StatCard label="已簽到" value={stats.sessionsCheckedIn} hint="於今日課程中" to="/sessions" />
-        </div>
+        <>
+          {stats.hasError && (
+            <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-800">
+              部分統計暫時無法載入（顯示為「—」），請稍後再重新整理。
+            </div>
+          )}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <StatCard label="待對帳報名" value={stats.pending} hint="點擊前往對帳" to="/reconcile" />
+            <StatCard label="進行中課程" value={stats.active} hint="confirmed + active" to="/enrollments" />
+            <StatCard label="今日課程" value={stats.sessionsToday} hint="所有時段" to="/sessions" />
+            <StatCard label="已簽到" value={stats.sessionsCheckedIn} hint="於今日課程中" to="/sessions" />
+          </div>
+        </>
       )}
 
       <div className="mt-8 rounded-xl border border-dashed border-gray-300 bg-white p-5 text-sm text-gray-600">

@@ -45,6 +45,8 @@
 - Target：`autoscale`（單一服務）
 - Build：依序 `npm install` server、admin、liff，並把兩個前端 build 到 `server/public/{admin,liff}`。前端 LIFF ID 用 Replit secret 直接命名為 `VITE_LIFF_ID_PARENT` / `VITE_LIFF_ID_COACH`（Vite 會自動撿 `VITE_*` 寫進 bundle，不用改 `.replit`）；舊的 `LIFF_ID` 仍透過 `.replit` 的 `VITE_LIFF_ID="$LIFF_ID"` 當 fallback。前端 `main.jsx` 用 `import.meta.env.VITE_LIFF_ID_*` 依路徑初始化對應的 LIFF SDK。
 - Run：`cd server && npm start`（`node index.js`）
+- **後台初始登入密碼**：production 必須在 Replit Secrets 設 `ADMIN_BOOTSTRAP_PASSWORD`（≥ 8 chars），bootstrap 會把它套用到 `admin / manager / staff` 三個 seed 帳號。若未設，admin_users seed 整段跳過 → 沒有任何帳號可登入（請手動建第一個）。**production 下不會 seed `admin/admin` 弱密碼**。dev 環境永遠用「帳號 = 密碼」。
+- Task #68 修正：admin 前端 axios 401 攔截器加上 `skipAuthRedirect` opt-out，Sidebar 的 ragic-staging badge 輪詢（每 60 秒 + onFocus）改用此 flag，且失敗 3 次後自動停止；Dashboard 的多支 API 改 `Promise.allSettled`，單支失敗只顯示 `—` 不再讓整頁白屏。避免「使用者操作中被靜默踢回登入」。
 - 由 Express 同時提供：
   - `/api/*` → 後端 API
   - `/admin/*` → 後台 SPA（含 React Router fallback）

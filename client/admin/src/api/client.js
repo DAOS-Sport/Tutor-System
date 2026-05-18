@@ -32,14 +32,24 @@ http.interceptors.request.use((config) => {
 });
 
 // 401（token 失效）→ 清掉本地 user 並導回登入
+//
+// Task #68：背景輪詢（如 Sidebar 的 ragic-staging/count）使用 config.skipAuthRedirect = true
+// 即可在 401 時只丟 reject、不強制 window.location.href 跳轉，避免使用者
+// 在頁面上正常操作時被「無預警踢回登入」。互動式請求（login/表單）仍走預設行為。
 http.interceptors.response.use(
   (res) => res,
   (err) => {
     if (err?.response?.status === 401) {
+      const skip = err?.config?.skipAuthRedirect === true;
       try {
-        localStorage.removeItem(TOKEN_KEY);
-        if (typeof window !== 'undefined' && !window.location.pathname.endsWith('/login')) {
-          window.location.href = '/admin/login';
+        if (!skip) {
+          localStorage.removeItem(TOKEN_KEY);
+          if (
+            typeof window !== 'undefined' &&
+            !window.location.pathname.endsWith('/login')
+          ) {
+            window.location.href = '/admin/login';
+          }
         }
       } catch { /* noop */ }
     }
