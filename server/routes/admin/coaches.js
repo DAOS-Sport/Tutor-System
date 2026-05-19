@@ -64,11 +64,21 @@ async function listCoachesWithVenues(whereClause, filterParams) {
 router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
   try {
     kickoffSyncCoachesAsync();
-    const { status, venueId, name, phone, senior } = req.query;
+    const { status, venueId, name, phone, senior, includeOrphans } = req.query;
     const where = [];
     const params = [];
-    if (status === 'active')   where.push(`c.is_active = TRUE`);
-    else if (status === 'inactive') where.push(`c.is_active = FALSE`);
+    // Task #81：F-C-Admin 從「員工管理」延伸 — 預設只顯示有對應 admin_staff 的教練
+    // （單一事實來源）。如需查找孤立的 ragic-only 教練資料可加 ?includeOrphans=true。
+    if (includeOrphans !== 'true' && includeOrphans !== '1') {
+      where.push(`s.id IS NOT NULL`);
+    }
+    // active 篩選同步檢查 admin_staff.active，避免員工已停用但 coaches.is_active 還沒同步到的時間差
+    if (status === 'active') {
+      where.push(`c.is_active = TRUE`);
+      where.push(`(s.id IS NULL OR s.active = TRUE)`);
+    } else if (status === 'inactive') {
+      where.push(`(c.is_active = FALSE OR (s.id IS NOT NULL AND s.active = FALSE))`);
+    }
     if (name)  { params.push(`%${name}%`);  where.push(`c.name  ILIKE $${params.length}`); }
     if (phone) { params.push(`%${phone}%`); where.push(`c.phone ILIKE $${params.length}`); }
     if (senior === 'yes') where.push(`c.is_senior = TRUE`);

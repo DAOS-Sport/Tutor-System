@@ -117,21 +117,22 @@ async function ensureCoachRow(client, staffRow, opts = {}) {
   if (!phone) return; // 沒手機無法建 LIFF coach 帳號，等之後補 phone 再建
   const multiplier = Number(opts.multiplier ?? staffRow.multiplier ?? 1);
   const isSenior = !!(opts.is_senior ?? staffRow.is_senior);
+  const isActive = opts.is_active != null ? !!opts.is_active : (staffRow.active != null ? !!staffRow.active : true);
   const inserted = await client.query(
     `INSERT INTO coaches
        (ragic_employee_id, name, phone, email, is_senior, pricing_multiplier,
-        specialties, bio_rich_text, is_active, intro_review_status)
-     VALUES ($1, $2, $3, '', $4, $5, ARRAY[]::text[], '', TRUE, 'draft')
+        specialties, bio_rich_text, is_active, intro_review_status, active_overridden_at)
+     VALUES ($1, $2, $3, '', $4, $5, ARRAY[]::text[], '', $6, 'draft', NOW())
      ON CONFLICT (ragic_employee_id) DO UPDATE SET
        name = EXCLUDED.name,
        phone = EXCLUDED.phone,
        is_senior = EXCLUDED.is_senior,
        pricing_multiplier = EXCLUDED.pricing_multiplier,
-       is_active = TRUE,
+       is_active = EXCLUDED.is_active,
        active_overridden_at = NOW(),
        updated_at = NOW()
      RETURNING id`,
-    [staffRow.id, staffRow.name || staffRow.id, phone, isSenior, multiplier]
+    [staffRow.id, staffRow.name || staffRow.id, phone, isSenior, multiplier, isActive]
   );
   const coachId = inserted.rows[0]?.id;
   if (coachId && staffRow.venue_id) {
@@ -210,8 +211,24 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
 
     const dup = await client.query(`SELECT id FROM admin_staff WHERE id = $1`, [id]);
     if (dup.rowCount) return res.status(409).json({ error: `員工編號 ${id} 已存在` });
-    const dupU = await client.query(`SELECT id FROM admin_users WHERE username = $1`, [id]);
-    if (dupU.rowCount) return res.status(409).json({ error: `登入帳號 ${id} 已存在` });
+
+    // username 策略：優先 phone，被佔走則 fallback 員工編號，再被佔走則 加 _01 _02 數字後綴
+    async function resolveUsername() {
+      const candidates = [];
+      if (phone) candidates.push(phone);
+      candidates.push(id);
+      for (const cand of candidates) {
+        const exists = await client.query(`SELECT 1 FROM admin_users WHERE username = $1`, [cand]);
+        if (!exists.rowCount) return cand;
+      }
+      for (let i = 1; i < 100; i++) {
+        const cand = `${id}_${String(i).padStart(2, '0')}`;
+        const exists = await client.query(`SELECT 1 FROM admin_users WHERE username = $1`, [cand]);
+        if (!exists.rowCount) return cand;
+      }
+      throw Object.assign(new Error('無法產生唯一的登入帳號'), { statusCode: 409 });
+    }
+    const username = await resolveUsername();
 
     // 預設密碼 = 員工編號（首次登入後請改密碼，由 Task #82 處理 UI）
     const pwdHash = await bcrypt.hash(id, 10);
@@ -227,17 +244,19 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
     await client.query(
       `INSERT INTO admin_users (id, username, password_hash, name, role, venue_id, is_active, staff_id)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [userId, id, pwdHash, name, loginRole, venue_id, active, id]
+      [userId, username, pwdHash, name, loginRole, venue_id, active, id]
     );
     if (role === 'coach') {
-      await ensureCoachRow(client, { id, name, phone, venue_id, multiplier, is_senior }, { multiplier, is_senior });
+      // 把 create 表單的 active 傳進去，避免新建一個 active=false 的教練卻在 coaches 表是 TRUE
+      await ensureCoachRow(client, { id, name, phone, venue_id, active }, { multiplier, is_senior, is_active: active });
     }
     await client.query('COMMIT');
 
     const after = await pool.query(`${STAFF_SELECT} WHERE s.id = $1`, [id]);
     res.status(201).json({
       ...rowToStaff(after.rows[0]),
-      default_password_hint: id, // 提供前端顯示 default password 提示（值 = 員工編號）
+      default_password_hint: id,    // 預設密碼（= 員工編號）
+      login_username: username,     // 實際使用的登入帳號（可能 = phone or id or id_NN）
     });
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch { /* noop */ }
@@ -319,8 +338,8 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
 
     // 連動 coaches：role 變成 coach → 確保有 coach row；role 從 coach 轉為其它 → 軟下架
     if (merged.role === 'coach') {
-      await ensureCoachRow(client, r.rows[0]);
-      // 同步 coaches 基本欄位
+      await ensureCoachRow(client, r.rows[0], { is_active: merged.active });
+      // 同步 coaches 基本欄位 + active_overridden_at（避免後台啟停被 Ragic 覆寫）
       await client.query(
         `UPDATE coaches
             SET name = $2,
@@ -328,9 +347,10 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
                 is_senior = $4,
                 pricing_multiplier = $5,
                 is_active = $6,
+                active_overridden_at = CASE WHEN $7::boolean THEN NOW() ELSE active_overridden_at END,
                 updated_at = NOW()
           WHERE ragic_employee_id = $1`,
-        [id, merged.name, merged.phone, merged.is_senior, merged.multiplier, merged.active]
+        [id, merged.name, merged.phone, merged.is_senior, merged.multiplier, merged.active, activeChanged]
       );
     } else if (roleChanged && cur.rows[0].role === 'coach') {
       await client.query(

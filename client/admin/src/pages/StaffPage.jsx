@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import DataTable from '../components/DataTable';
@@ -130,7 +131,11 @@ export default function StaffPage() {
         };
         const res = await staffApi.create(body);
         toast.success(`已建立 ${res.name}（${res.id}）`);
-        setCreatedHint({ id: res.id, name: res.name, password: res.default_password_hint || res.id });
+        setCreatedHint({
+          id: res.id, name: res.name,
+          username: res.login_username || res.id,
+          password: res.default_password_hint || res.id,
+        });
         const fresh = await staffApi.list(normalizeFilters(filters));
         setStaff(fresh);
         setEditing(null);
@@ -186,7 +191,14 @@ export default function StaffPage() {
         : <span className="text-gray-300 text-xs">無</span> },
     { key: 'has_coach_profile', label: '教練資料', className: 'text-center',
       render: (r) => r.has_coach_profile
-        ? <StatusBadge tone={r.coach_active ? 'green' : 'gray'}>{r.coach_active ? '上架中' : '已下架'}</StatusBadge>
+        ? (
+            <Link to={`/coaches?name=${encodeURIComponent(r.name)}`}
+              className="inline-block hover:opacity-80" title="到 F-C-Admin 編輯介紹/專長">
+              <StatusBadge tone={r.coach_active ? 'green' : 'gray'}>
+                {r.coach_active ? '上架中 →' : '已下架 →'}
+              </StatusBadge>
+            </Link>
+          )
         : <span className="text-gray-300 text-xs">無</span> },
     { key: 'active', label: '狀態',
       render: (r) => {
@@ -268,7 +280,7 @@ export default function StaffPage() {
             <div className="my-3 rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm">
               <div className="font-medium text-amber-900">預設登入資訊</div>
               <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-amber-900">
-                <span>帳號</span><span className="font-mono">{createdHint.id}</span>
+                <span>帳號</span><span className="font-mono">{createdHint.username}</span>
                 <span>密碼</span><span className="font-mono">{createdHint.password}</span>
               </div>
               <p className="mt-2 text-xs text-amber-800">請通知該員工首次登入後立即修改密碼。</p>
