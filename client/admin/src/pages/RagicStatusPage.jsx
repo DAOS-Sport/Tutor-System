@@ -5,6 +5,11 @@ import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import { ragicStatusApi } from '../api/ragicStatus';
 
+// Task #70 邊緣案例處理準則：
+// skipAuthRedirect=true 讓 axios interceptor 不跳轉，改由頁面自己決定：
+//   - HTTP 401 → 確認是 token 失效 → 呼叫 logout()，AuthContext 清狀態，RequireAuth 導回 /login
+//   - HTTP 500 / timeout / 其他 → toast + 重試按鈕，不觸碰 session
+
 function fmtDate(ts) {
   if (!ts) return '—';
   try {
@@ -91,7 +96,7 @@ function LoadError({ onRetry }) {
 
 export default function RagicStatusPage() {
   const toast = useToast();
-  const { isAdmin } = useAuth();
+  const { isAdmin, logout } = useAuth();
   const [data, setData] = useState(null);
   const [loadError, setLoadError] = useState(false);
   const [busy, setBusy] = useState(null); // 'all' | 'staff' | 'coaches' | 'venues' | null
@@ -102,7 +107,14 @@ export default function RagicStatusPage() {
     try {
       setData(await ragicStatusApi.get());
     } catch (e) {
-      // Task #70：skipAuthRedirect=true，錯誤在此處理，不踢使用者出登入頁
+      // Task #70：skipAuthRedirect=true — 由頁面自己決定如何處理
+      if (e?.response?.status === 401) {
+        // 真正的 token 失效（過期 / 被撤銷） → 主動登出，讓 RequireAuth 導回 /login
+        toast.error('登入逾期，請重新登入');
+        logout();
+        return;
+      }
+      // 500 / timeout / 網路異常 → 顯示錯誤態 + 重試，不影響 session
       const msg = e?.response?.data?.error || e?.message || '載入失敗';
       toast.error(`Ragic 連線狀態：${msg}`);
       setLoadError(true);

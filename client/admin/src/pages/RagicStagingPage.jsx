@@ -2,7 +2,13 @@ import React, { useEffect, useMemo, useState } from 'react';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
+import { useAuth } from '../context/AuthContext';
 import { ragicStagingApi } from '../api/ragicStaging';
+
+// Task #70 邊緣案例處理準則：
+// skipAuthRedirect=true 讓 axios interceptor 不跳轉，改由頁面自己決定：
+//   - HTTP 401 → token 失效 → 呼叫 logout()，AuthContext 清狀態，RequireAuth 導回 /login
+//   - HTTP 500 / timeout / 其他 → toast + 重試按鈕，不觸碰 session
 
 const STATUS_LABEL = {
   pending:       { text: '待審核', cls: 'bg-amber-100 text-amber-800' },
@@ -126,6 +132,7 @@ function LoadError({ onRetry }) {
 
 export default function RagicStagingPage() {
   const toast = useToast();
+  const { logout } = useAuth();
   const [items, setItems] = useState(null);
   const [loadError, setLoadError] = useState(false);
   const [filterStatus, setFilterStatus] = useState('pending');
@@ -138,11 +145,18 @@ export default function RagicStagingPage() {
     setItems(null);
     setLoadError(false);
     try {
-      // Task #70：skipAuthRedirect=true 已在 ragicStagingApi.list() 內設定
       const r = await ragicStagingApi.list({ status: filterStatus, form: filterForm || undefined, search: search || undefined });
       setItems(r.items || []);
       setSelected(new Set());
     } catch (e) {
+      // Task #70：skipAuthRedirect=true — 由頁面自己決定如何處理
+      if (e?.response?.status === 401) {
+        // 真正的 token 失效（過期 / 被撤銷） → 主動登出，讓 RequireAuth 導回 /login
+        toast.error('登入逾期，請重新登入');
+        logout();
+        return;
+      }
+      // 500 / timeout / 網路異常 → 顯示錯誤態 + 重試，不影響 session
       const msg = e?.response?.data?.error || e?.message || '載入失敗';
       toast.error(`Ragic 待審核：${msg}`);
       setLoadError(true);
