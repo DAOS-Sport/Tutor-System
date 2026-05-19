@@ -47,7 +47,8 @@
 - Run：`cd server && npm start`（`node index.js`）
 - **後台初始登入密碼**：production 必須在 Replit Secrets 設 `ADMIN_BOOTSTRAP_PASSWORD`（≥ 8 chars），bootstrap 會把它套用到 `admin / manager / staff` 三個 seed 帳號。若未設，admin_users seed 整段跳過 → 沒有任何帳號可登入（請手動建第一個）。**production 下不會 seed `admin/admin` 弱密碼**。dev 環境永遠用「帳號 = 密碼」。
 - Task #68 修正：admin 前端 axios 401 攔截器加上 `skipAuthRedirect` opt-out，Sidebar 的 ragic-staging badge 輪詢（每 60 秒 + onFocus）改用此 flag，且失敗 3 次後自動停止；Dashboard 的多支 API 改 `Promise.allSettled`，單支失敗只顯示 `—` 不再讓整頁白屏。避免「使用者操作中被靜默踢回登入」。
-- Task #70 修正：`RagicStatusPage`（GET/POST ragic-status）與 `RagicStagingPage`（GET/POST ragic-staging 全 5 支）的 API 呼叫全面加上 `skipAuthRedirect: true`。遇到 401/500/timeout 只顯示 toast + 頁面級「重新載入」按鈕，不清除 session 也不跳轉登入。client.js 補判斷準則註解：互動寫入動作不加 flag；背景輪詢與 Ragic 狀態頁 API 全加。
+- Task #70 修正：`RagicStatusPage`（GET/POST ragic-status）與 `RagicStagingPage`（GET/POST ragic-staging 全 5 支）的 API 呼叫全面加上 `skipAuthRedirect: true`。遇到 401/500/timeout 只顯示 toast + 頁面級「重新載入」按鈕，不清除 session 也不跳轉登入。client.js 補判斷準則註解：互動寫入動作不加 flag；背景輪詢與 Ragic 狀態頁 API 全加。401 特例：Ragic 兩頁的 load() 捕 401 時主動呼叫 logout() 再 return，讓 RequireAuth 觸發 /login 導頁（token 真正過期才清 session；500/timeout 只顯示重試按鈕）。
+- Task #71 同步紀錄（2026-05-19）：GitHub remote `subrepl-4yilphiu` 的 main（commit `d6ab671` "Add staff coach role history badges"）已是本機 HEAD（`df1bb98` Task #70 修正）的祖先 commit，本機反而領先 GitHub；git reset 不適用，改執行後段作業：`npm install`（server/admin/liff 三處）+ `VITE_USE_MOCK=false` 重 build 兩套前端（admin 725KB / liff 506KB，mockDb=0）+ workflow 重啟 + 冒煙驗證（health 200、admin login 200、bootstrap ready、Ragic sync enabled）全部通過。若需反向推回 GitHub 可執行 `git push subrepl-4yilphiu main`。
 - 由 Express 同時提供：
   - `/api/*` → 後端 API
   - `/admin/*` → 後台 SPA（含 React Router fallback）
