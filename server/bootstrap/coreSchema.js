@@ -695,15 +695,12 @@ async function seedVenuesCoachesParents() {
     );
   }
   for (const c of COACHES) {
-    // Task #51: INSERT into employees directly (coaches is now a VIEW)
     await pool.query(
-      `INSERT INTO employees (ragic_employee_id, name, phone, is_senior, pricing_multiplier, bio_rich_text, is_active, intro_review_status, roles)
-       VALUES ($1,$2,$3,$4,$5,$6,TRUE,'published',ARRAY['coach']::TEXT[])
-       ON CONFLICT DO NOTHING`,
+      `INSERT INTO coaches (ragic_employee_id, name, phone, is_senior, pricing_multiplier, bio_rich_text, is_active, intro_review_status)
+       VALUES ($1,$2,$3,$4,$5,$6,TRUE,'published') ON CONFLICT (ragic_employee_id) DO NOTHING`,
       [c.ragic_id, c.name, c.phone, c.is_senior, c.multiplier, c.bio]
     );
     const r = await pool.query('SELECT id FROM coaches WHERE ragic_employee_id = $1', [c.ragic_id]);
-    if (!r.rows[0]) continue;
     const coachUuid = r.rows[0].id;
     for (const vid of c.venues) {
       await pool.query(
