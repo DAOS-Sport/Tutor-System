@@ -12,6 +12,7 @@ const bcrypt = require('bcryptjs');
 const { pool } = require('../models/db');
 
 const MIGRATION_FILE = path.join(__dirname, '..', '..', 'db', 'migrations', '002_admin_tables.sql');
+const MIGRATION_008 = path.join(__dirname, '..', '..', 'db', 'migrations', '008_employee_unification.sql');
 
 function relDays(days, hh = 9, mm = 0) {
   const d = new Date();
@@ -270,6 +271,13 @@ const DEFAULT_CANCELLED_SESSIONS = [
 async function ensureSchema() {
   const sql = fs.readFileSync(MIGRATION_FILE, 'utf8');
   await pool.query(sql);
+  // Task #51：employees 合併 migration（idempotent）
+  try {
+    const sql008 = fs.readFileSync(MIGRATION_008, 'utf8');
+    await pool.query(sql008);
+  } catch (err) {
+    console.warn('[admin bootstrap] migration 008 warn:', err.message);
+  }
   // Task #32 補強：admin_venues 加 is_active，與 LIFF venues.is_active 對齊，
   // 讓 syncVenuesFromRagic 能對兩表一致軟下架。
   await pool.query(
