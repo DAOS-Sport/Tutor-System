@@ -35,7 +35,7 @@ function Switch({ checked, disabled, onChange, ariaLabel }) {
       aria-checked={checked}
       aria-label={ariaLabel}
       disabled={disabled}
-      onClick={(e) => { e.stopPropagation(); onChange(!checked); }}
+      onClick={(e) => { e.preventDefault(); e.stopPropagation(); onChange(!checked); }}
       className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition
         ${checked ? 'bg-brand-teal' : 'bg-gray-300'}
         ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
@@ -88,12 +88,17 @@ function VenueCard({ venue, onSave, onToggleActive }) {
   return (
     <div className={`rounded-xl border bg-white shadow-sm transition
       ${isActive ? 'border-gray-200' : 'border-gray-300 bg-gray-50'}`}>
-      {/* Header — 永遠顯示，點擊可展開/折疊 */}
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between gap-3 rounded-xl px-5 py-4 text-left hover:bg-gray-50"
+      {/* Header — 整列點擊可展開/折疊（Switch 自己 stopPropagation 不會觸發折疊）
+          用 div + role=button 避免「button-in-button」非法巢狀互動標記 */}
+      <div
+        role="button"
+        tabIndex={0}
         aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen((v) => !v); }
+        }}
+        className="flex w-full cursor-pointer items-center justify-between gap-3 rounded-xl px-5 py-4 text-left hover:bg-gray-50"
       >
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
@@ -107,7 +112,7 @@ function VenueCard({ venue, onSave, onToggleActive }) {
           </div>
           <div className="mt-0.5 text-xs text-gray-500">場館代碼 {venue.id}</div>
         </div>
-        <div className="flex items-center gap-3" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-3">
           <Switch
             checked={isActive}
             disabled={toggling}
@@ -116,7 +121,7 @@ function VenueCard({ venue, onSave, onToggleActive }) {
           />
           <ChevronIcon open={open} />
         </div>
-      </button>
+      </div>
 
       {/* Body — 折疊內容 */}
       {open && (

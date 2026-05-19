@@ -100,7 +100,11 @@ router.post('/sync-ragic', requireAdminAuth, requireAdminRole('admin'), async (r
 // 已售出 (admin_enrollments) 的課程一律不取消；只阻擋未來的新報名 (server/routes/enrollments.js)。
 router.patch('/:id/active', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
   const { id } = req.params;
-  const isActive = !!(req.body && req.body.is_active);
+  // 強制要求 is_active 為明確 boolean — 避免 payload 漏欄位被當成「停用」誤觸發
+  if (!req.body || typeof req.body.is_active !== 'boolean') {
+    return res.status(400).json({ error: 'is_active (boolean) required' });
+  }
+  const isActive = req.body.is_active;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
