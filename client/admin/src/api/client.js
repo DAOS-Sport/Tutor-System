@@ -36,6 +36,12 @@ http.interceptors.request.use((config) => {
 // Task #68：背景輪詢（如 Sidebar 的 ragic-staging/count）使用 config.skipAuthRedirect = true
 // 即可在 401 時只丟 reject、不強制 window.location.href 跳轉，避免使用者
 // 在頁面上正常操作時被「無預警踢回登入」。互動式請求（login/表單）仍走預設行為。
+//
+// Task #70：RagicStatusPage / RagicStagingPage 的所有 API 呼叫也使用此 flag，
+// 讓 401/500 timeout 只在頁面顯示 toast + 重試按鈕，不清除 session。
+// 判斷準則：
+//   - 頁面互動動作（寫表單、登入）→ 不加 flag，走預設全域踢出
+//   - 背景輪詢 / Ragic 狀態頁 API → 加 skipAuthRedirect: true
 let _redirectingOn401 = false; // 模組級 dedupe，避免短時間多支互動 API 同時 401 觸發 N 次 redirect
 http.interceptors.response.use(
   (res) => res,

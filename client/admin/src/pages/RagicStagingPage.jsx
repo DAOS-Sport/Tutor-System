@@ -107,9 +107,27 @@ function StagingCard({ row, busy, onApprove, onReject, selected, onToggle }) {
   );
 }
 
+// Task #70：載入失敗時顯示此元件，而非無限 spinner 或白屏
+function LoadError({ onRetry }) {
+  return (
+    <div className="rounded-lg border border-dashed border-red-200 bg-red-50 p-8 text-center">
+      <div className="text-sm font-bold text-red-700">無法取得待審核列表</div>
+      <div className="mt-1 text-xs text-red-500">後端暫時無法回應，請稍後重試。</div>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="mt-4 rounded bg-brand-primary px-4 py-1.5 text-xs font-bold text-white hover:bg-brand-teal"
+      >
+        重新載入
+      </button>
+    </div>
+  );
+}
+
 export default function RagicStagingPage() {
   const toast = useToast();
   const [items, setItems] = useState(null);
+  const [loadError, setLoadError] = useState(false);
   const [filterStatus, setFilterStatus] = useState('pending');
   const [filterForm, setFilterForm] = useState('');
   const [search, setSearch] = useState('');
@@ -118,13 +136,16 @@ export default function RagicStagingPage() {
 
   async function load() {
     setItems(null);
+    setLoadError(false);
     try {
+      // Task #70：skipAuthRedirect=true 已在 ragicStagingApi.list() 內設定
       const r = await ragicStagingApi.list({ status: filterStatus, form: filterForm || undefined, search: search || undefined });
       setItems(r.items || []);
       setSelected(new Set());
     } catch (e) {
-      toast.error(e?.response?.data?.error || '載入失敗');
-      setItems([]);
+      const msg = e?.response?.data?.error || e?.message || '載入失敗';
+      toast.error(`Ragic 待審核：${msg}`);
+      setLoadError(true);
     }
   }
   useEffect(() => { load(); }, [filterStatus, filterForm]); // eslint-disable-line
@@ -229,8 +250,10 @@ export default function RagicStagingPage() {
         ) : null}
       </div>
 
-      {items === null ? (
+      {items === null && !loadError ? (
         <LoadingSpinner />
+      ) : loadError ? (
+        <LoadError onRetry={load} />
       ) : items.length === 0 ? (
         <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 p-8 text-center text-sm text-gray-500">
           目前沒有資料。

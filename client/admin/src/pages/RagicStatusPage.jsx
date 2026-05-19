@@ -72,18 +72,40 @@ function FormCard({ job, info, onSync, syncing, isAdmin, enabled }) {
   );
 }
 
+// Task #70：載入失敗時顯示此元件，而非無限 spinner 或白屏
+function LoadError({ onRetry }) {
+  return (
+    <div className="rounded-lg border border-dashed border-red-200 bg-red-50 p-8 text-center">
+      <div className="text-sm font-bold text-red-700">無法取得 Ragic 連線狀態</div>
+      <div className="mt-1 text-xs text-red-500">後端暫時無法回應，請稍後重試。</div>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="mt-4 rounded bg-brand-primary px-4 py-1.5 text-xs font-bold text-white hover:bg-brand-teal"
+      >
+        重新載入
+      </button>
+    </div>
+  );
+}
+
 export default function RagicStatusPage() {
   const toast = useToast();
   const { isAdmin } = useAuth();
   const [data, setData] = useState(null);
+  const [loadError, setLoadError] = useState(false);
   const [busy, setBusy] = useState(null); // 'all' | 'staff' | 'coaches' | 'venues' | null
 
   async function load() {
+    setLoadError(false);
+    setData(null);
     try {
       setData(await ragicStatusApi.get());
     } catch (e) {
-      toast.error(e?.response?.data?.error || '載入失敗');
-      setData({ enabled: false, env: {}, missing_env: [], forms: {} });
+      // Task #70：skipAuthRedirect=true，錯誤在此處理，不踢使用者出登入頁
+      const msg = e?.response?.data?.error || e?.message || '載入失敗';
+      toast.error(`Ragic 連線狀態：${msg}`);
+      setLoadError(true);
     }
   }
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -106,7 +128,16 @@ export default function RagicStatusPage() {
     }
   }
 
-  if (!data) return <LoadingSpinner />;
+  if (!data && !loadError) return <LoadingSpinner />;
+
+  if (loadError) {
+    return (
+      <div>
+        <PageHeader title="Ragic 連線狀態" description="檢視 H01 / H05 同步是否正常運作。" />
+        <LoadError onRetry={load} />
+      </div>
+    );
+  }
 
   const env = data.env || {};
   const missing = data.missing_env || [];
