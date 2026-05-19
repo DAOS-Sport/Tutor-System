@@ -8,25 +8,85 @@ const ROLE_OPTIONS = [
 ];
 
 /**
- * StaffPage 編輯彈窗 — 抽出來讓 StaffPage ≤ 250 行
+ * StaffPage 編輯彈窗 — 同時支援「編輯」與「新建」兩種模式
+ *   editing.isNew = true → 啟用 id / name / phone 輸入欄，並提示預設密碼
  */
 export default function StaffEditModal({ editing, setEditing, venues, busy, onSave, multiplierMin, multiplierMax }) {
   if (!editing) return null;
+  const isNew = !!editing.isNew;
   return (
     <div
       className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-4"
       onClick={(e) => e.target === e.currentTarget && setEditing(null)}
       role="dialog"
       aria-modal="true"
-      aria-label="編輯員工"
+      aria-label={isNew ? '新建員工' : '編輯員工'}
     >
-      <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl">
-        <h3 className="mb-4 text-lg font-bold text-brand-primary">編輯員工 — {editing.name}</h3>
+      <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl max-h-[90vh] overflow-y-auto">
+        <h3 className="mb-4 text-lg font-bold text-brand-primary">
+          {isNew ? '新建員工' : `編輯員工 — ${editing.name}`}
+        </h3>
         <div className="space-y-4">
+          {isNew && (
+            <>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">員工編號 *</label>
+                <input
+                  value={editing.id || ''}
+                  onChange={(e) => setEditing({ ...editing, id: e.target.value.toUpperCase() })}
+                  placeholder="如 C005 / M002 / S003"
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 font-mono"
+                />
+                <p className="mt-1 text-xs text-gray-500">
+                  建議命名：教練 C***、主管 M***、行政 S***、系統管理員 U***；2–10 碼英數，首字母為英文。
+                  <span className="ml-1 font-medium text-amber-700">建立後預設密碼 = 員工編號（首次登入後請改密碼）。</span>
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-gray-700">姓名 *</label>
+                  <input
+                    value={editing.name || ''}
+                    onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-gray-700">手機</label>
+                  <input
+                    value={editing.phone || ''}
+                    onChange={(e) => setEditing({ ...editing, phone: e.target.value })}
+                    placeholder="0912345678"
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2"
+                  />
+                </div>
+              </div>
+            </>
+          )}
+          {!isNew && (
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">姓名</label>
+                <input
+                  value={editing.name || ''}
+                  onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">手機</label>
+                <input
+                  value={editing.phone || ''}
+                  onChange={(e) => setEditing({ ...editing, phone: e.target.value })}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2"
+                />
+              </div>
+            </div>
+          )}
           <div>
             <label className="mb-1 block text-sm font-medium text-gray-700">角色</label>
             <select
-              value={editing.role}
+              value={editing.role || 'staff'}
               onChange={(e) => setEditing({ ...editing, role: e.target.value })}
               className="w-full rounded-lg border border-gray-300 px-3 py-2"
             >
@@ -72,7 +132,7 @@ export default function StaffEditModal({ editing, setEditing, venues, busy, onSa
               </div>
             </>
           )}
-          {editing.role !== 'coach' && (
+          {!isNew && editing.role !== 'coach' && (
             <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
               <label className="flex items-center gap-2 text-sm font-medium text-gray-800">
                 <input
@@ -93,7 +153,7 @@ export default function StaffEditModal({ editing, setEditing, venues, busy, onSa
               checked={!!editing.active}
               onChange={(e) => setEditing({ ...editing, active: e.target.checked })}
             />
-            <span>啟用此帳號（取消勾選會立即停用其後台 login）</span>
+            <span>啟用此帳號（取消勾選會立即停用其後台 login 與 LIFF 身分）</span>
           </label>
         </div>
         <div className="mt-5 flex justify-end gap-3">
@@ -109,7 +169,7 @@ export default function StaffEditModal({ editing, setEditing, venues, busy, onSa
             disabled={busy}
             className="rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary disabled:opacity-50"
           >
-            {busy ? '儲存中…' : '儲存'}
+            {busy ? '儲存中…' : (isNew ? '建立' : '儲存')}
           </button>
         </div>
       </div>

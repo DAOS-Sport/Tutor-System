@@ -288,6 +288,21 @@ async function ensureSchema() {
   // Task #53：admin_users 增加 is_active + 覆寫旗標（停用 admin login）
   await pool.query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE`);
   await pool.query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS active_overridden_at TIMESTAMPTZ`);
+  // Task #81：admin_users 加 staff_id 連回 admin_staff（單一事實來源）
+  // 之前舊資料以 name 對應，這裡 backfill；新建員工會直接帶 staff_id。
+  await pool.query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS staff_id TEXT`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_admin_users_staff_id ON admin_users(staff_id)`);
+  // 安全 backfill：只在「staff 那邊有唯一同名」且「user 這邊也只有一筆同名」時才連動，
+  // 避免把同名員工 / 同名帳號互相錯接（Task #81 code review fix）。
+  await pool.query(`
+    UPDATE admin_users u
+       SET staff_id = s.id
+      FROM admin_staff s
+     WHERE u.staff_id IS NULL
+       AND u.name = s.name
+       AND (SELECT COUNT(*) FROM admin_staff  s2 WHERE s2.name = u.name) = 1
+       AND (SELECT COUNT(*) FROM admin_users  u2 WHERE u2.name = u.name) = 1
+  `);
   // Task #53：admin_staff 增加覆寫旗標（後台勾啟用後 Ragic 不再覆蓋）
   await pool.query(`ALTER TABLE admin_staff ADD COLUMN IF NOT EXISTS active_overridden_at TIMESTAMPTZ`);
 

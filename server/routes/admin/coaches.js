@@ -33,13 +33,20 @@ function rowToCoach(r, venueIds = []) {
     is_active: !!r.is_active,
     intro_review_status: r.intro_review_status || 'draft',
     venue_ids: venueIds,
+    // Task #81：標示是否有對應的 admin_staff（員工管理單一事實來源）
+    has_staff_link: r.staff_id != null,
+    staff_active: r.staff_active != null ? !!r.staff_active : false,
   };
 }
 
 async function listCoachesWithVenues(whereClause, filterParams) {
   const [coachesRes, venuesRes] = await Promise.all([
     pool.query(
-      `SELECT c.* FROM coaches c
+      `SELECT c.*,
+              s.id AS staff_id,
+              s.active AS staff_active
+         FROM coaches c
+         LEFT JOIN admin_staff s ON s.id = c.ragic_employee_id
         ${whereClause ? 'WHERE ' + whereClause : ''}
         ORDER BY c.is_active DESC, c.name`,
       filterParams

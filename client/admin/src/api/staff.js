@@ -13,6 +13,8 @@ function qs(params) {
 export const staffApi = {
   list: (params = {}) =>
     callApi(`/staff${qs(params)}`, {}, () => mockDb.staff(params)),
+  create: (body) =>
+    callApi(`/staff`, { method: 'post', data: body }, () => mockDb.createStaff?.(body) || { ...body, default_password_hint: body.id }),
   update: (id, patch) =>
     callApi(`/staff/${id}`, { method: 'patch', data: patch }, () => mockDb.updateStaff(id, patch)),
   syncRagic: () =>

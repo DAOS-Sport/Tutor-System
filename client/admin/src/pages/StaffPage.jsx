@@ -19,7 +19,6 @@ function roleBadges(row) {
   const badges = [{ role: row.role, active: true }];
   const knownRoles = Array.isArray(row.known_roles) ? row.known_roles : [];
   const coachActive = row.coach_profile_status === 'active' || row.coach_active;
-
   for (const role of knownRoles) {
     if (role && !badges.some((b) => b.role === role)) {
       badges.push({ role, active: role === 'coach' && row.has_coach_profile ? coachActive : false });
@@ -28,7 +27,6 @@ function roleBadges(row) {
   if (row.has_coach_profile && row.role !== 'coach' && !badges.some((b) => b.role === 'coach')) {
     badges.push({ role: 'coach', active: coachActive });
   }
-
   return badges.map(({ role, active }) => (
     <StatusBadge
       key={role}
@@ -48,11 +46,10 @@ export default function StaffPage() {
   const [busy, setBusy] = useState(false);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [syncing, setSyncing] = useState(false);
+  const [createdHint, setCreatedHint] = useState(null);
 
-  // 場館載入一次（用作 combo 選項 + 顯示對照）
   useEffect(() => { venuesApi.list().then(setVenues).catch(() => setVenues([])); }, []);
 
-  // 把 combo 內的 venue 名稱統一反查回 id；給 useEffect 與 syncRagic 共用
   function normalizeFilters(f) {
     const out = { ...f };
     if (out.venueId && venues.length) {
@@ -62,7 +59,6 @@ export default function StaffPage() {
     return out;
   }
 
-  // 過濾條件變動時重打 API（伺服器端過濾，避免 client 端二次處理）
   useEffect(() => {
     let cancel = false;
     staffApi.list(normalizeFilters(filters)).then((s) => { if (!cancel) setStaff(s); });
@@ -92,7 +88,6 @@ export default function StaffPage() {
   async function toggleActive(row) {
     if (togglingId === row.id) return;
     const next = !row.active;
-    // 樂觀更新：先翻轉 UI，失敗時還原
     setStaff((arr) => arr.map((x) => (x.id === row.id ? { ...x, active: next } : x)));
     setTogglingId(row.id);
     try {
@@ -109,173 +104,184 @@ export default function StaffPage() {
 
   async function saveEdit() {
     if (!editing) return;
-    // 教練修課係數依規格 100% – 150%（1.00–1.50）
-    let mult = Number(editing.multiplier);
     if (editing.role === 'coach') {
-      if (Number.isNaN(mult)) {
-        toast.error('修課係數必須為數字');
-        return;
-      }
-      if (mult < MULTIPLIER_MIN || mult > MULTIPLIER_MAX) {
+      const mult = Number(editing.multiplier);
+      if (Number.isNaN(mult) || mult < MULTIPLIER_MIN || mult > MULTIPLIER_MAX) {
         toast.error(`修課係數需介於 ${MULTIPLIER_MIN.toFixed(2)} – ${MULTIPLIER_MAX.toFixed(2)}（100% – 150%）`);
         return;
       }
     }
     setBusy(true);
     try {
-      const patch = {
-        role: editing.role,
-        is_senior: editing.role === 'coach' ? !!editing.is_senior : false,
-        multiplier: editing.role === 'coach' ? mult : 1,
-        active: !!editing.active,
-        venue_id: editing.venue_id || null,
-      };
-      if (editing.role !== 'coach') {
-        patch.coach_active = !!editing.coach_active;
+      if (editing.isNew) {
+        if (!/^[A-Z][0-9A-Z]{1,9}$/.test(String(editing.id || ''))) {
+          toast.error('員工編號格式：英文字母開頭、2–10 碼英數');
+          setBusy(false);
+          return;
+        }
+        if (!editing.name?.trim()) { toast.error('姓名必填'); setBusy(false); return; }
+        const body = {
+          id: editing.id, name: editing.name.trim(), role: editing.role,
+          venue_id: editing.venue_id || null,
+          phone: editing.phone || '',
+          is_senior: editing.role === 'coach' ? !!editing.is_senior : false,
+          multiplier: editing.role === 'coach' ? Number(editing.multiplier) : 1,
+          active: editing.active !== false,
+        };
+        const res = await staffApi.create(body);
+        toast.success(`已建立 ${res.name}（${res.id}）`);
+        setCreatedHint({ id: res.id, name: res.name, password: res.default_password_hint || res.id });
+        const fresh = await staffApi.list(normalizeFilters(filters));
+        setStaff(fresh);
+        setEditing(null);
+      } else {
+        const patch = {
+          name: editing.name,
+          phone: editing.phone,
+          role: editing.role,
+          is_senior: editing.role === 'coach' ? !!editing.is_senior : false,
+          multiplier: editing.role === 'coach' ? Number(editing.multiplier) : 1,
+          active: !!editing.active,
+          venue_id: editing.venue_id || null,
+        };
+        if (editing.role !== 'coach') patch.coach_active = !!editing.coach_active;
+        const res = await staffApi.update(editing.id, patch);
+        setStaff((arr) => arr.map((x) => (x.id === res.id ? res : x)));
+        toast.success(`已更新 ${res.name}`);
+        setEditing(null);
       }
-      const res = await staffApi.update(editing.id, patch);
-      setStaff((arr) => arr.map((x) => (x.id === res.id ? res : x)));
-      toast.success(`已更新 ${res.name}`);
-      setEditing(null);
-    } catch {
-      toast.error('更新失敗');
+    } catch (err) {
+      const msg = err?.response?.data?.error || (editing.isNew ? '建立失敗' : '更新失敗');
+      toast.error(msg);
     } finally {
       setBusy(false);
     }
   }
 
+  function startCreate() {
+    setEditing({
+      isNew: true, id: '', name: '', phone: '', role: 'staff', venue_id: '',
+      is_senior: false, multiplier: 1, active: true,
+    });
+  }
+
   const columns = [
+    { key: 'id', label: '編號', render: (r) => <span className="font-mono text-xs text-gray-500">{r.id}</span> },
     { key: 'name', label: '姓名', render: (r) => <span className="font-medium">{r.name}</span> },
-    {
-      key: 'role', label: '角色',
-      render: (r) => (
-        <div className="flex flex-wrap items-center gap-1.5">
-          {roleBadges(r)}
-        </div>
-      ),
-    },
+    { key: 'role', label: '角色',
+      render: (r) => <div className="flex flex-wrap items-center gap-1.5">{roleBadges(r)}</div> },
     { key: 'venue_id', label: '場館', render: (r) => venueMap[r.venue_id] || '—' },
-    { key: 'phone', label: '聯絡電話' },
-    {
-      key: 'is_senior', label: '資深', className: 'text-center',
+    { key: 'phone', label: '電話' },
+    { key: 'is_senior', label: '資深', className: 'text-center',
       render: (r) => r.role === 'coach'
         ? (r.is_senior ? <StatusBadge tone="gold">資深</StatusBadge> : <span className="text-gray-400">—</span>)
-        : <span className="text-gray-300">N/A</span>,
-    },
-    {
-      key: 'multiplier', label: '修課係數', className: 'text-right',
-      render: (r) => r.role === 'coach' ? <span className="font-mono">{Number(r.multiplier).toFixed(2)}</span> : <span className="text-gray-300">—</span>,
-    },
-    {
-      key: 'active', label: '狀態',
+        : <span className="text-gray-300">N/A</span> },
+    { key: 'multiplier', label: '修課係數', className: 'text-right',
+      render: (r) => r.role === 'coach' ? <span className="font-mono">{Number(r.multiplier).toFixed(2)}</span> : <span className="text-gray-300">—</span> },
+    { key: 'has_login_account', label: '登入帳號', className: 'text-center',
+      render: (r) => r.has_login_account
+        ? <StatusBadge tone={r.login_active ? 'green' : 'gray'} title={r.login_username || ''}>
+            {r.login_active ? '可登入' : '已停用'}
+          </StatusBadge>
+        : <span className="text-gray-300 text-xs">無</span> },
+    { key: 'has_coach_profile', label: '教練資料', className: 'text-center',
+      render: (r) => r.has_coach_profile
+        ? <StatusBadge tone={r.coach_active ? 'green' : 'gray'}>{r.coach_active ? '上架中' : '已下架'}</StatusBadge>
+        : <span className="text-gray-300 text-xs">無</span> },
+    { key: 'active', label: '狀態',
       render: (r) => {
-        const busy = togglingId === r.id;
+        const busyRow = togglingId === r.id;
         const on = !!r.active;
         return (
           <div className="inline-flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => toggleActive(r)}
-              disabled={busy}
-              role="switch"
-              aria-checked={on}
-              aria-busy={busy}
+            <button type="button" onClick={() => toggleActive(r)} disabled={busyRow}
+              role="switch" aria-checked={on} aria-busy={busyRow}
               aria-label={`${on ? '停用' : '啟用'} ${r.name}`}
               title={on ? '點擊停用' : '點擊啟用'}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors disabled:cursor-wait ${
-                on ? 'bg-brand-green' : 'bg-gray-300'
-              }`}
-            >
-              <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
-                  on ? 'translate-x-6' : 'translate-x-1'
-                }`}
-              />
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors disabled:cursor-wait ${on ? 'bg-brand-green' : 'bg-gray-300'}`}>
+              <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${on ? 'translate-x-6' : 'translate-x-1'}`} />
             </button>
-            {busy && (
-              <span
-                aria-hidden
-                className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-gray-300 border-t-brand-primary"
-              />
-            )}
+            {busyRow && <span aria-hidden className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-gray-300 border-t-brand-primary" />}
           </div>
         );
       },
     },
-    {
-      key: 'actions', label: '操作', className: 'text-right',
+    { key: 'actions', label: '操作', className: 'text-right',
       render: (r) => (
-        <button
-          className="text-xs font-medium text-brand-teal hover:underline"
-          onClick={() => setEditing({ ...r })}
-        >
+        <button className="text-xs font-medium text-brand-teal hover:underline" onClick={() => setEditing({ ...r })}>
           編輯
         </button>
-      ),
-    },
+      ) },
   ];
 
   const filterFields = [
     { key: 'status', label: '在職狀態', type: 'select', options: [
-        { value: 'all',      label: '全部' },
-        { value: 'active',   label: '在職' },
-        { value: 'inactive', label: '離職' },
-      ] },
+        { value: 'all', label: '全部' }, { value: 'active', label: '在職' }, { value: 'inactive', label: '離職' }] },
     { key: 'venueId', label: '所屬場館', type: 'combo',
-      options: venues.map((v) => ({ value: v.id, label: `${v.id} ${v.name}` })),
-      placeholder: '可輸入或選擇' },
-    { key: 'name',  label: '姓名', type: 'combo',
-      options: (staff || []).map((s) => ({ value: s.name, label: s.name })),
-      placeholder: '可輸入或選擇' },
-    { key: 'role',  label: '角色', type: 'select', options: [
-        { value: '',        label: '全部' },
-        { value: 'admin',   label: '系統管理員' },
-        { value: 'manager', label: '主管' },
-        { value: 'staff',   label: '行政櫃檯' },
-        { value: 'coach',   label: '教練' },
-      ] },
+      options: venues.map((v) => ({ value: v.id, label: `${v.id} ${v.name}` })), placeholder: '可輸入或選擇' },
+    { key: 'name', label: '姓名', type: 'combo',
+      options: (staff || []).map((s) => ({ value: s.name, label: s.name })), placeholder: '可輸入或選擇' },
+    { key: 'role', label: '角色', type: 'select', options: [
+        { value: '', label: '全部' }, { value: 'admin', label: '系統管理員' },
+        { value: 'manager', label: '主管' }, { value: 'staff', label: '行政櫃檯' }, { value: 'coach', label: '教練' }] },
     { key: 'phone', label: '電話', type: 'input', placeholder: '末 4 碼或全號' },
     { key: 'senior', label: '資深', type: 'radio', options: [
-        { value: '',    label: '不限' },
-        { value: 'yes', label: '是' },
-        { value: 'no',  label: '否' },
-      ] },
+        { value: '', label: '不限' }, { value: 'yes', label: '是' }, { value: 'no', label: '否' }] },
   ];
 
   return (
     <div>
       <PageHeader
         title="員工帳號管理"
-        subtitle="F-A02 · 啟用身分用原角色色；暫停保留身分用灰底白字"
+        subtitle="F-A02 · 員工 / 登入帳號 / 教練資料三表單一事實來源；新建後自動建立登入帳號"
         actions={(
-          <button
-            type="button"
-            onClick={syncRagic}
-            disabled={syncing}
-            className="rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary disabled:opacity-50"
-          >
-            {syncing ? '同步中…' : '立即同步 Ragic'}
-          </button>
+          <div className="flex gap-2">
+            <button type="button" onClick={startCreate}
+              className="rounded-lg bg-brand-primary px-4 py-2 text-sm font-bold text-white hover:bg-brand-teal">
+              ＋ 新建員工
+            </button>
+            <button type="button" onClick={syncRagic} disabled={syncing}
+              className="rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary disabled:opacity-50">
+              {syncing ? '同步中…' : '立即同步 Ragic'}
+            </button>
+          </div>
         )}
       />
-      <FilterBar
-        fields={filterFields}
-        values={filters}
-        onChange={setFilters}
-        onReset={() => setFilters(EMPTY_FILTERS)}
-      />
+      <FilterBar fields={filterFields} values={filters} onChange={setFilters} onReset={() => setFilters(EMPTY_FILTERS)} />
       <DataTable columns={columns} rows={staff} rowKey={(r) => r.id} />
 
       <StaffEditModal
-        editing={editing}
-        setEditing={setEditing}
-        venues={venues}
-        busy={busy}
-        onSave={saveEdit}
-        multiplierMin={MULTIPLIER_MIN}
-        multiplierMax={MULTIPLIER_MAX}
+        editing={editing} setEditing={setEditing} venues={venues} busy={busy} onSave={saveEdit}
+        multiplierMin={MULTIPLIER_MIN} multiplierMax={MULTIPLIER_MAX}
       />
+
+      {createdHint && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+          onClick={(e) => e.target === e.currentTarget && setCreatedHint(null)}
+          role="dialog" aria-modal="true">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
+            <h3 className="mb-3 text-lg font-bold text-brand-green">✓ 員工已建立</h3>
+            <p className="mb-2 text-sm text-gray-700">
+              已為 <span className="font-bold">{createdHint.name}</span>（編號 <span className="font-mono">{createdHint.id}</span>）
+              建立後台登入帳號與教練資料（若為教練）。
+            </p>
+            <div className="my-3 rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm">
+              <div className="font-medium text-amber-900">預設登入資訊</div>
+              <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-amber-900">
+                <span>帳號</span><span className="font-mono">{createdHint.id}</span>
+                <span>密碼</span><span className="font-mono">{createdHint.password}</span>
+              </div>
+              <p className="mt-2 text-xs text-amber-800">請通知該員工首次登入後立即修改密碼。</p>
+            </div>
+            <div className="flex justify-end">
+              <button onClick={() => setCreatedHint(null)}
+                className="rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary">
+                知道了
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
-
