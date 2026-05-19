@@ -44,7 +44,7 @@ function MessageItem({ m }) {
 }
 
 export default function ChatLogsPage() {
-  const { toast } = useToast();
+  const toast = useToast();
   const [search, setSearch] = useState('');
   const [rooms, setRooms] = useState(null);
   const [selected, setSelected] = useState(null);
@@ -55,7 +55,7 @@ export default function ChatLogsPage() {
     setRooms(null);
     adminChatApi.listRooms({ search: search.trim() || undefined })
       .then((r) => setRooms(Array.isArray(r) ? r : []))
-      .catch((e) => { setRooms([]); toast(e?.response?.data?.error || e.message, 'error'); });
+      .catch((e) => { setRooms([]); toast.error(e?.response?.data?.error || e.message); });
   }
 
   useEffect(reload, []); // eslint-disable-line
@@ -70,7 +70,7 @@ export default function ChatLogsPage() {
         const list = Array.isArray(res) ? res : (res?.messages || []);
         setMessages(list);
       })
-      .catch((e) => toast(e?.response?.data?.error || e.message, 'error'))
+      .catch((e) => toast.error(e?.response?.data?.error || e.message))
       .finally(() => setLoadingMsg(false));
   }
 
@@ -86,7 +86,7 @@ export default function ChatLogsPage() {
     const a = document.createElement('a');
     a.href = url; a.download = `chat-${selected.id}.json`;
     a.click(); URL.revokeObjectURL(url);
-    toast('已匯出對話紀錄', 'success');
+    toast.success('已匯出對話紀錄');
   }
 
   const columns = useMemo(() => [

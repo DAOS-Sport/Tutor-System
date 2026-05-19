@@ -14,7 +14,7 @@ const CATEGORY_TONE = {
 const EMPTY_FORM = { keyword: '', category: '其他', is_active: true };
 
 export default function KeywordsPage() {
-  const { toast } = useToast();
+  const toast = useToast();
   const [list, setList] = useState(null);
   const [form, setForm] = useState(EMPTY_FORM);
   const [editId, setEditId] = useState(null);
@@ -24,7 +24,7 @@ export default function KeywordsPage() {
     setList(null);
     adminKeywordsApi.list()
       .then((r) => setList(Array.isArray(r) ? r : []))
-      .catch((e) => { setList([]); toast(e?.response?.data?.error || e.message, 'error'); });
+      .catch((e) => { setList([]); toast.error(e?.response?.data?.error || e.message); });
   }
   useEffect(reload, []); // eslint-disable-line
 
@@ -36,19 +36,19 @@ export default function KeywordsPage() {
 
   async function handleSubmit(e) {
     e.preventDefault();
-    if (!form.keyword.trim()) { toast('請輸入關鍵字', 'error'); return; }
+    if (!form.keyword.trim()) { toast.error('請輸入關鍵字'); return; }
     setBusy(true);
     try {
       if (editId) {
         await adminKeywordsApi.update(editId, form);
-        toast('已更新關鍵字', 'success');
+        toast.success('已更新關鍵字');
       } else {
         await adminKeywordsApi.create(form);
-        toast('已新增關鍵字', 'success');
+        toast.success('已新增關鍵字');
       }
       reset(); reload();
     } catch (e2) {
-      toast(e2?.response?.data?.error || '儲存失敗', 'error');
+      toast.error(e2?.response?.data?.error || '儲存失敗');
     } finally { setBusy(false); }
   }
 
@@ -56,16 +56,16 @@ export default function KeywordsPage() {
     try {
       await adminKeywordsApi.update(k.id, { is_active: !k.is_active });
       reload();
-    } catch (e) { toast(e?.response?.data?.error || '更新失敗', 'error'); }
+    } catch (e) { toast.error(e?.response?.data?.error || '更新失敗'); }
   }
 
   async function handleDelete(k) {
     if (!confirm(`確定要刪除「${k.keyword}」？`)) return;
     try {
       await adminKeywordsApi.remove(k.id);
-      toast('已刪除', 'success');
+      toast.success('已刪除');
       reload();
-    } catch (e) { toast(e?.response?.data?.error || '刪除失敗', 'error'); }
+    } catch (e) { toast.error(e?.response?.data?.error || '刪除失敗'); }
   }
 
   const columns = [

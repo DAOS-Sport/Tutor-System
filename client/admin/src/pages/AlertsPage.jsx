@@ -23,7 +23,7 @@ function fmt(iso) {
 }
 
 export default function AlertsPage() {
-  const { toast } = useToast();
+  const toast = useToast();
   const [filter, setFilter] = useState('pending');
   const [list, setList] = useState(null);
 
@@ -32,7 +32,7 @@ export default function AlertsPage() {
     const params = f === 'all' ? {} : { status: f };
     adminAlertsApi.list(params)
       .then((r) => setList(Array.isArray(r) ? r : []))
-      .catch((e) => { setList([]); toast(e?.response?.data?.error || e.message, 'error'); });
+      .catch((e) => { setList([]); toast.error(e?.response?.data?.error || e.message); });
   }
 
   useEffect(() => { reload(filter); }, [filter]); // eslint-disable-line
@@ -46,10 +46,10 @@ export default function AlertsPage() {
         status: editing.status,
         review_note: editing.note?.trim() || undefined,
       });
-      toast(`已更新為「${STATUS_LABEL[editing.status]}」`, 'success');
+      toast.success(`已更新為「${STATUS_LABEL[editing.status]}」`);
       setEditing(null);
       reload();
-    } catch (e) { toast(e?.response?.data?.error || '更新失敗', 'error'); }
+    } catch (e) { toast.error(e?.response?.data?.error || '更新失敗'); }
   }
 
   const columns = [
