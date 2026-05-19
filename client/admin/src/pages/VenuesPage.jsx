@@ -106,7 +106,9 @@ function VenueCard({ venue, onSave, onToggleActive }) {
               {venue.name}
             </span>
             <span className="text-xs font-normal text-gray-400">({venue.code})</span>
-            {!isActive && (
+            {isActive ? (
+              <StatusBadge tone="green">啟用中</StatusBadge>
+            ) : (
               <StatusBadge tone="gray" className="bg-gray-200 text-gray-600">停用中</StatusBadge>
             )}
           </div>
