@@ -88,10 +88,12 @@ CREATE TABLE IF NOT EXISTS course_type_configs (
   course_type  INTEGER PRIMARY KEY,
   label        VARCHAR(50) NOT NULL,
   max_students INTEGER NOT NULL,
+  base_price   DECIMAL(10,2) NOT NULL DEFAULT 0,
   is_active    BOOLEAN NOT NULL DEFAULT TRUE,
   sort_order   INTEGER NOT NULL DEFAULT 0,
   created_at   TIMESTAMPTZ DEFAULT NOW()
 );
+DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS base_price DECIMAL(10,2) NOT NULL DEFAULT 0; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
 CREATE TABLE IF NOT EXISTS course_periods (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -844,15 +846,17 @@ const DEFAULT_THRESHOLDS = [
 
 async function seedCourseTypeConfigs() {
   const defaults = [
-    { course_type: 1, label: '一對一', max_students: 1, sort_order: 1 },
-    { course_type: 2, label: '一對二', max_students: 2, sort_order: 2 },
-    { course_type: 3, label: '一對三', max_students: 3, sort_order: 3 },
+    { course_type: 1, label: '一對一', max_students: 1, sort_order: 1, base_price: 9000 },
+    { course_type: 2, label: '一對二', max_students: 2, sort_order: 2, base_price: 6000 },
+    { course_type: 3, label: '一對三', max_students: 3, sort_order: 3, base_price: 4500 },
   ];
   for (const d of defaults) {
     await pool.query(
-      `INSERT INTO course_type_configs (course_type, label, max_students, sort_order)
-       VALUES ($1,$2,$3,$4) ON CONFLICT (course_type) DO NOTHING`,
-      [d.course_type, d.label, d.max_students, d.sort_order]
+      `INSERT INTO course_type_configs (course_type, label, max_students, sort_order, base_price)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (course_type) DO UPDATE SET base_price = EXCLUDED.base_price
+       WHERE course_type_configs.base_price = 0`,
+      [d.course_type, d.label, d.max_students, d.sort_order, d.base_price]
     );
   }
 }

@@ -129,6 +129,30 @@ router.get('/types', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/courses/base-price?courseType=1|2|3
+ * LIFF 報名頁取得各組別底價，回傳 { course_type, original_price }。
+ */
+router.get('/base-price', async (req, res) => {
+  const ct = Number(req.query.courseType);
+  if (!Number.isInteger(ct) || ct <= 0) {
+    return res.status(400).json({ error: 'courseType is required (positive integer)' });
+  }
+  try {
+    const r = await pool.query(
+      `SELECT course_type, base_price FROM course_type_configs WHERE course_type = $1`,
+      [ct]
+    );
+    if (r.rows.length === 0) {
+      return res.status(400).json({ error: `Unknown courseType: ${ct}` });
+    }
+    res.json({ course_type: r.rows[0].course_type, original_price: Number(r.rows[0].base_price) });
+  } catch (e) {
+    console.error('[courses/base-price]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.all('*', (req, res) => {
   res.status(501).json({ error: 'Not implemented', module: 'courses', path: req.path });
 });
