@@ -19,4 +19,7 @@ export const staffApi = {
     callApi(`/staff/${id}`, { method: 'patch', data: patch }, () => mockDb.updateStaff(id, patch)),
   syncRagic: () =>
     callApi('/staff/sync', { method: 'post', data: {} }, () => ({ synced: 0, skipped: true })),
+  resetPassword: (id) =>
+    callApi(`/staff/${id}/reset-password`, { method: 'post', data: {} },
+      () => ({ ok: true, staff_id: id, staff_name: id, notified: false, notify_error: 'mock' })),
 };

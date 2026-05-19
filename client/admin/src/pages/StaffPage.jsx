@@ -6,7 +6,9 @@ import DataTable from '../components/DataTable';
 import StatusBadge from '../components/StatusBadge';
 import FilterBar from '../components/FilterBar';
 import StaffEditModal from './StaffEditModal';
+import ConfirmDialog from '../components/ConfirmDialog';
 import { useToast } from '../context/ToastContext';
+import { useAuth } from '../context/AuthContext';
 import { staffApi } from '../api/staff';
 import { venuesApi } from '../api/venues';
 import { roleLabel } from '../utils/format';
@@ -41,6 +43,7 @@ function roleBadges(row) {
 
 export default function StaffPage() {
   const toast = useToast();
+  const { isAdmin } = useAuth();
   const [staff, setStaff] = useState(null);
   const [venues, setVenues] = useState([]);
   const [editing, setEditing] = useState(null);
@@ -48,6 +51,27 @@ export default function StaffPage() {
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [syncing, setSyncing] = useState(false);
   const [createdHint, setCreatedHint] = useState(null);
+  const [resetting, setResetting] = useState(null); // staff row pending reset confirm
+  const [resetBusy, setResetBusy] = useState(false);
+
+  async function confirmReset() {
+    if (!resetting) return;
+    setResetBusy(true);
+    try {
+      const r = await staffApi.resetPassword(resetting.id);
+      if (r.notified) {
+        toast.success(`已重設 ${r.staff_name || resetting.name} 的密碼，並已透過 LINE 通知`);
+      } else {
+        toast.success(`已重設 ${r.staff_name || resetting.name} 的密碼為員工編號（未發送 LINE 通知，請另行告知）`);
+      }
+      setResetting(null);
+    } catch (err) {
+      const msg = err?.response?.data?.error || '重設密碼失敗';
+      toast.error(msg);
+    } finally {
+      setResetBusy(false);
+    }
+  }
 
   useEffect(() => { venuesApi.list().then(setVenues).catch(() => setVenues([])); }, []);
 
@@ -224,6 +248,19 @@ export default function StaffPage() {
         );
       },
     },
+    { key: 'password', label: '密碼', className: 'text-center',
+      render: (r) => (
+        <div className="inline-flex items-center gap-2">
+          <span className="font-mono text-gray-400 tracking-widest" title="密碼永不顯示明文">•••••••</span>
+          {isAdmin && r.has_login_account && (
+            <button type="button" onClick={() => setResetting(r)}
+              className="text-xs font-medium text-brand-amber hover:underline"
+              title={`重設 ${r.name} 的密碼為員工編號`}>
+              重設
+            </button>
+          )}
+        </div>
+      ) },
     { key: 'actions', label: '操作', className: 'text-right',
       render: (r) => (
         <button className="text-xs font-medium text-brand-teal hover:underline" onClick={() => setEditing({ ...r })}>
@@ -272,6 +309,30 @@ export default function StaffPage() {
         editing={editing} setEditing={setEditing} venues={venues} busy={busy} onSave={saveEdit}
         multiplierMin={MULTIPLIER_MIN} multiplierMax={MULTIPLIER_MAX}
       />
+
+      <ConfirmDialog
+        open={!!resetting}
+        title="重設員工密碼"
+        confirmLabel="確認重設"
+        tone="primary"
+        busy={resetBusy}
+        onCancel={() => !resetBusy && setResetting(null)}
+        onConfirm={confirmReset}
+      >
+        {resetting && (
+          <div className="space-y-2">
+            <p>
+              將把 <span className="font-bold">{resetting.name}</span>
+              （編號 <span className="font-mono">{resetting.id}</span>）的後台登入密碼
+              重設為員工編號 <span className="font-mono font-bold">{resetting.id}</span>。
+            </p>
+            <p className="text-xs text-gray-500">
+              系統會嘗試以 LINE 通知該員工（若未綁定 LINE 則略過，請改用其他方式告知）。
+              請提醒對方登入後立即修改密碼。
+            </p>
+          </div>
+        )}
+      </ConfirmDialog>
 
       {createdHint && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"

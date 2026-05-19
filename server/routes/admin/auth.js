@@ -9,7 +9,7 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const { pool } = require('../../models/db');
-const { signToken } = require('../../middlewares/adminAuth');
+const { signToken, requireAdminAuth } = require('../../middlewares/adminAuth');
 
 const router = express.Router();
 
@@ -74,6 +74,40 @@ router.post('/login', async (req, res) => {
   } catch (err) {
     console.error('[admin/auth/login]', err);
     res.status(500).json({ error: 'login failed' });
+  }
+});
+
+// Task #82：自己改密碼（三角色皆可），不做強度檢查只防呆長度 ≥ 4
+router.post('/change-password', requireAdminAuth, async (req, res) => {
+  try {
+    const { oldPassword, newPassword } = req.body || {};
+    if (!oldPassword || !newPassword) {
+      return res.status(400).json({ error: '請輸入舊密碼與新密碼' });
+    }
+    if (String(newPassword).length < 4) {
+      return res.status(400).json({ error: '新密碼長度需至少 4 個字元' });
+    }
+    if (String(oldPassword) === String(newPassword)) {
+      return res.status(400).json({ error: '新密碼不可與舊密碼相同' });
+    }
+    const userId = req.adminUser.sub;
+    const r = await pool.query(
+      `SELECT id, password_hash FROM admin_users WHERE id = $1`,
+      [userId]
+    );
+    const u = r.rows[0];
+    if (!u) return res.status(404).json({ error: '找不到帳號' });
+    const ok = await bcrypt.compare(String(oldPassword), u.password_hash);
+    if (!ok) return res.status(400).json({ error: '舊密碼不正確' });
+    const newHash = await bcrypt.hash(String(newPassword), 10);
+    await pool.query(
+      `UPDATE admin_users SET password_hash = $2, updated_at = NOW() WHERE id = $1`,
+      [u.id, newHash]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[admin/auth/change-password]', err);
+    res.status(500).json({ error: '修改密碼失敗' });
   }
 });
 

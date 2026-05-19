@@ -1,9 +1,10 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { roleLabel } from '../utils/format';
 import StatusBadge from './StatusBadge';
+import ChangePasswordModal from './ChangePasswordModal';
 
 const ROLE_TONE = { admin: 'primary', manager: 'teal', staff: 'gold' };
 
@@ -11,6 +12,7 @@ export default function Header() {
   const { user, logout } = useAuth();
   const toast = useToast();
   const nav = useNavigate();
+  const [openPwd, setOpenPwd] = useState(false);
 
   const onLogout = () => {
     logout();
@@ -30,6 +32,16 @@ export default function Header() {
             </StatusBadge>
           </>
         )}
+        {user && (
+          <button
+            type="button"
+            onClick={() => setOpenPwd(true)}
+            className="rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100"
+            title="修改自己的後台登入密碼"
+          >
+            個人設定
+          </button>
+        )}
         <button
           type="button"
           onClick={onLogout}
@@ -38,6 +50,7 @@ export default function Header() {
           登出
         </button>
       </div>
+      <ChangePasswordModal open={openPwd} onClose={() => setOpenPwd(false)} />
     </header>
   );
 }

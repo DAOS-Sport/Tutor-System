@@ -14,6 +14,7 @@ const bcrypt = require('bcryptjs');
 const { pool } = require('../../models/db');
 const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
 const { syncStaffFromRagic, kickoffSyncStaffAsync } = require('../../services/ragicAdmin');
+const lineService = require('../../services/line');
 
 const router = express.Router();
 
@@ -382,6 +383,71 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
     res.status(err.statusCode || 500).json({ error: err.statusCode ? err.message : 'update staff failed' });
   } finally {
     client.release();
+  }
+});
+
+// Task #82：admin 重設員工密碼為員工編號 + 推 LINE 通知
+router.post('/:id/reset-password', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const staffRes = await pool.query(
+      `SELECT s.id, s.name, s.venue_id, c.line_uid AS coach_line_uid
+         FROM admin_staff s
+         LEFT JOIN coaches c ON c.ragic_employee_id = s.id
+        WHERE s.id = $1`,
+      [id]
+    );
+    const staff = staffRes.rows[0];
+    if (!staff) return res.status(404).json({ error: '找不到該員工' });
+
+    const userRes = await pool.query(
+      `SELECT id FROM admin_users WHERE staff_id = $1`,
+      [id]
+    );
+    const adminUser = userRes.rows[0];
+    if (!adminUser) {
+      return res.status(404).json({ error: '該員工尚無後台登入帳號' });
+    }
+
+    const newHash = await bcrypt.hash(String(id), 10);
+    await pool.query(
+      `UPDATE admin_users SET password_hash = $2, updated_at = NOW() WHERE id = $1`,
+      [adminUser.id, newHash]
+    );
+
+    // 推 LINE 通知（best-effort）：透過 coaches.line_uid 撈該員工的 LINE UID
+    let notified = false;
+    let notifyError = null;
+    const lineUid = staff.coach_line_uid;
+    if (lineUid && staff.venue_id) {
+      try {
+        const base = (process.env.ADMIN_URL || '').replace(/\/$/, '');
+        const loginUrl = base ? `${base}/admin/login` : undefined;
+        const messages = lineService.templates.adminPasswordReset({
+          employeeName: staff.name,
+          employeeId: staff.id,
+          loginUrl,
+        });
+        await lineService.pushMessage(lineUid, messages, staff.venue_id);
+        notified = true;
+      } catch (err) {
+        notifyError = err.message || String(err);
+        console.warn('[admin/staff/reset-password] LINE 推送失敗', staff.id, notifyError);
+      }
+    } else {
+      console.warn('[admin/staff/reset-password] 該員工未綁定 LINE 或無場館，略過通知', staff.id);
+    }
+
+    res.json({
+      ok: true,
+      staff_id: staff.id,
+      staff_name: staff.name,
+      notified,
+      notify_error: notifyError,
+    });
+  } catch (err) {
+    console.error('[admin/staff/:id/reset-password]', err);
+    res.status(500).json({ error: '重設密碼失敗' });
   }
 });
 
