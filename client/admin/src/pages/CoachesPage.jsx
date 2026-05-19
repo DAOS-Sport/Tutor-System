@@ -124,8 +124,8 @@ export default function CoachesPage() {
       setCoaches((arr) => arr.map((x) => (x.id === res.id ? res : x)));
       toast.success(`已更新 ${res.name}`);
       setEditing(null);
-    } catch {
-      toast.error('更新失敗');
+    } catch (err) {
+      toast.error(err?.response?.data?.error || '更新失敗');
     } finally {
       setBusy(false);
     }
@@ -298,20 +298,27 @@ export default function CoachesPage() {
                   {venues.length === 0 && (
                     <span className="text-xs text-gray-400">沒有可指派的場館</span>
                   )}
-                  {venues.map((v) => {
-                    const selected = (editing.venue_ids || []).includes(v.id);
-                    return (
-                      <button key={v.id} type="button"
-                        onClick={() => toggleVenue(v.id)}
-                        className={`rounded-full border px-3 py-1 text-sm transition ${
-                          selected
-                            ? 'border-brand-teal bg-brand-teal text-white'
-                            : 'border-gray-300 bg-white text-gray-700 hover:border-brand-teal'
-                        }`}>
-                        {v.name}
-                      </button>
-                    );
-                  })}
+                  {/* Task #84：過濾停用場館；但若教練已綁定該停用場館，仍保留 chip 供「取消勾選」 */}
+                  {venues
+                    .filter((v) => v.is_active !== false || (editing.venue_ids || []).includes(v.id))
+                    .map((v) => {
+                      const selected = (editing.venue_ids || []).includes(v.id);
+                      const inactive = v.is_active === false;
+                      return (
+                        <button key={v.id} type="button"
+                          onClick={() => toggleVenue(v.id)}
+                          title={inactive ? '此場館已停用，僅供取消綁定' : ''}
+                          className={`rounded-full border px-3 py-1 text-sm transition ${
+                            selected
+                              ? (inactive
+                                  ? 'border-gray-400 bg-gray-400 text-white'
+                                  : 'border-brand-teal bg-brand-teal text-white')
+                              : 'border-gray-300 bg-white text-gray-700 hover:border-brand-teal'
+                          }`}>
+                          {v.name}{inactive ? '（已停用）' : ''}
+                        </button>
+                      );
+                    })}
                 </div>
                 <p className="mt-1 text-xs text-gray-500">
                   Ragic H01 沒有「教練可教場館」欄位，請手動勾選

@@ -78,10 +78,23 @@ router.post('/', async (req, res) => {
     const coachName = cr.rows[0].name;
     // 場館必須存在
     const venueId = p.venue && p.venue.id ? String(p.venue.id) : '';
-    const vr = await client.query(`SELECT id FROM venues WHERE id = $1`, [venueId]);
+    // Task #84：FOR SHARE 鎖此 venue row，避免「停用 commit 與 enrollment INSERT」
+    // 並發時讓一筆新報名漏進來。
+    const vr = await client.query(
+      `SELECT id, is_active FROM venues WHERE id = $1 FOR SHARE`,
+      [venueId]
+    );
     if (!vr.rowCount) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'venue not found' });
+    }
+    // Task #84：場館停用後拒絕新報名（已售出課程不受影響）
+    if (vr.rows[0].is_active === false) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: '該場館已停用，目前無法接受新報名，請選擇其他場館',
+        code: 'VENUE_INACTIVE',
+      });
     }
     const original = Math.round(basePrice * multiplier);
     const couponCode = p.promotion && p.promotion.coupon_code ? String(p.promotion.coupon_code).trim() : null;

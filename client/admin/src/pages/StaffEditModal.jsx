@@ -102,7 +102,14 @@ export default function StaffEditModal({ editing, setEditing, venues, busy, onSa
               className="w-full rounded-lg border border-gray-300 px-3 py-2"
             >
               <option value="">— 不指定 —</option>
-              {venues.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+              {/* Task #84：過濾停用場館；但若該員工目前所屬館已被停用，仍保留以免下拉「莫名消失」 */}
+              {venues
+                .filter((v) => v.is_active !== false || v.id === editing.venue_id)
+                .map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.name}{v.is_active === false ? '（已停用）' : ''}
+                  </option>
+                ))}
             </select>
           </div>
           {editing.role === 'coach' && (

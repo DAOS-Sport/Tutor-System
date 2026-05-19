@@ -190,13 +190,29 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
     if (Array.isArray(patch.venue_ids)) {
       const venueIds = patch.venue_ids.map((v) => String(v).trim()).filter(Boolean);
       if (venueIds.length > 0) {
+        // Task #84：允許「教練先前已綁定但場館已停用」之 venue_id 保留，
+        // 只阻擋「本次想新增的 disabled venue_id」。讓 admin 能在不解綁停用館的
+        // 情況下儲存其他欄位（否則任何 PATCH 都會被 400 卡死）。
+        const cur = await client.query(
+          `SELECT venue_id FROM coach_venues WHERE coach_id = $1`,
+          [id]
+        );
+        const existing = new Set(cur.rows.map((r) => r.venue_id));
         const vr = await client.query(
-          `SELECT id FROM venues WHERE id = ANY($1::varchar[]) AND is_active = TRUE`,
+          `SELECT id, is_active FROM venues WHERE id = ANY($1::varchar[])`,
           [venueIds]
         );
-        if (vr.rows.length !== venueIds.length) {
+        const known = new Map(vr.rows.map((r) => [r.id, r.is_active]));
+        const invalid = venueIds.filter((vid) => {
+          if (!known.has(vid)) return true;                  // 不存在
+          if (known.get(vid) === false && !existing.has(vid)) return true; // 新增的停用館
+          return false;
+        });
+        if (invalid.length) {
           await client.query('ROLLBACK');
-          return res.status(400).json({ error: '部分場館代碼不存在或已下架' });
+          return res.status(400).json({
+            error: `下列場館代碼不存在或已停用且非原本綁定：${invalid.join(', ')}`,
+          });
         }
       }
       await client.query(`DELETE FROM coach_venues WHERE coach_id = $1`, [id]);

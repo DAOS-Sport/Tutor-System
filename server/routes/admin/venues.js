@@ -28,6 +28,8 @@ function rowToVenueFull(r) {
     bank_branch_name: r.bank_branch_name || '',
     account_holder: r.account_holder || '',
     account_number: r.account_number || '',
+    is_active: r.is_active !== false,
+    is_active_overridden_at: r.is_active_overridden_at || null,
   };
 }
 
@@ -44,6 +46,7 @@ function rowToVenuePublic(r) {
     bank_branch_name: '',
     account_holder: '',
     account_number: '',
+    is_active: r.is_active !== false,
   };
 }
 
@@ -90,6 +93,45 @@ router.post('/sync-ragic', requireAdminAuth, requireAdminRole('admin'), async (r
   } catch (err) {
     console.error('[admin/venues/sync-ragic]', err);
     res.status(502).json({ error: err.message || 'Ragic 同步失敗' });
+  }
+});
+
+// Task #84：場館啟用 / 停用 — 同步寫 admin_venues + venues，並標記 is_active_overridden_at
+// 已售出 (admin_enrollments) 的課程一律不取消；只阻擋未來的新報名 (server/routes/enrollments.js)。
+router.patch('/:id/active', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+  const { id } = req.params;
+  const isActive = !!(req.body && req.body.is_active);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const cur = await client.query(`SELECT * FROM admin_venues WHERE id = $1 FOR UPDATE`, [id]);
+    if (!cur.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'venue not found' });
+    }
+    const r = await client.query(
+      `UPDATE admin_venues
+          SET is_active = $2,
+              is_active_overridden_at = NOW(),
+              updated_at = NOW()
+        WHERE id = $1 RETURNING *`,
+      [id, isActive]
+    );
+    // 同步 LIFF 用的 venues 表（若該 row 不存在則 INSERT，避免日後 LIFF 看不到）
+    await client.query(
+      `INSERT INTO venues (id, name, full_address, is_active)
+         VALUES ($1, $2, $3, $4)
+       ON CONFLICT (id) DO UPDATE SET is_active = EXCLUDED.is_active, updated_at = NOW()`,
+      [id, r.rows[0].name, r.rows[0].address || '', isActive]
+    );
+    await client.query('COMMIT');
+    res.json(rowToVenueFull(r.rows[0]));
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('[admin/venues/:id/active]', err);
+    res.status(500).json({ error: 'toggle active failed' });
+  } finally {
+    client.release();
   }
 });
 
