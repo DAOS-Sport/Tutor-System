@@ -251,12 +251,12 @@ export default function StaffPage() {
     { key: 'password', label: '密碼', className: 'text-center',
       render: (r) => (
         <div className="inline-flex items-center gap-2">
-          <span className="font-mono text-gray-400 tracking-widest" title="密碼永不顯示明文">•••••••</span>
+          <span className="font-mono text-gray-400 tracking-widest" title="密碼永不顯示明文">••••••••</span>
           {isAdmin && r.has_login_account && (
             <button type="button" onClick={() => setResetting(r)}
               className="text-xs font-medium text-brand-amber hover:underline"
               title={`重設 ${r.name} 的密碼為員工編號`}>
-              重設
+              重設密碼
             </button>
           )}
         </div>

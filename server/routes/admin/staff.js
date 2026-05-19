@@ -401,7 +401,7 @@ router.post('/:id/reset-password', requireAdminAuth, requireAdminRole('admin'), 
     if (!staff) return res.status(404).json({ error: '找不到該員工' });
 
     const userRes = await pool.query(
-      `SELECT id FROM admin_users WHERE staff_id = $1`,
+      `SELECT id, line_uid FROM admin_users WHERE staff_id = $1`,
       [id]
     );
     const adminUser = userRes.rows[0];
@@ -415,10 +415,11 @@ router.post('/:id/reset-password', requireAdminAuth, requireAdminRole('admin'), 
       [adminUser.id, newHash]
     );
 
-    // 推 LINE 通知（best-effort）：透過 coaches.line_uid 撈該員工的 LINE UID
+    // 推 LINE 通知（best-effort）：優先用 admin_users.line_uid（後台帳號自身綁定的 LINE），
+    // 若未綁定且該員工同時是教練，fallback 撈 coaches.line_uid
     let notified = false;
     let notifyError = null;
-    const lineUid = staff.coach_line_uid;
+    const lineUid = adminUser.line_uid || staff.coach_line_uid;
     if (lineUid && staff.venue_id) {
       try {
         const base = (process.env.ADMIN_URL || '').replace(/\/$/, '');
