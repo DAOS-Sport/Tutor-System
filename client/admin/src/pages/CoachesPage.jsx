@@ -200,7 +200,7 @@ export default function CoachesPage() {
               { value: 'inactive', label: '離職' },
             ] },
           { key: 'venueId', label: '可教場館', type: 'combo',
-            options: venues.map((v) => ({ value: v.id, label: `${v.id} ${v.name}` })),
+            options: venues.filter((v) => v.is_active !== false).map((v) => ({ value: v.id, label: `${v.id} ${v.name}` })),
             placeholder: '可輸入或選擇' },
           { key: 'name', label: '姓名', type: 'combo',
             options: (coaches || []).map((c) => ({ value: c.name, label: c.name })),
