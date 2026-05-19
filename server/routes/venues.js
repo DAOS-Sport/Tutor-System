@@ -20,19 +20,18 @@ function toApi(row) {
     id: row.id,
     code: row.id,
     name: row.name,
-    full_name: row.full_name || null,
-    address: row.full_address || null,
-    bank_institution_name: row.bank_institution_name || null,
-    bank_branch_name: row.bank_branch_name || null,
-    account_holder: row.account_holder || null,
-    account_number: row.account_number || null,
+    address: row.full_address || '',
+    bank_institution_name: row.bank_institution_name || '',
+    bank_branch_name: row.bank_branch_name || '',
+    account_holder: row.account_holder || '',
+    account_number: row.account_number || '',
   };
 }
 
 router.get('/', async (_req, res) => {
   try {
     const r = await pool.query(
-      `SELECT id, name, full_name, full_address,
+      `SELECT id, name, full_address,
               bank_institution_name, bank_branch_name, account_holder, account_number
          FROM venues
         WHERE is_active = TRUE
@@ -48,7 +47,7 @@ router.get('/', async (_req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const r = await pool.query(
-      `SELECT id, name, full_name, full_address,
+      `SELECT id, name, full_address,
               bank_institution_name, bank_branch_name, account_holder, account_number
          FROM venues
         WHERE id = $1`,
