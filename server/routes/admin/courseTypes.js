@@ -15,7 +15,7 @@ const AM = requireAdminRole('admin', 'manager');
 router.get('/', requireAdminAuth, AM, async (req, res) => {
   try {
     const r = await pool.query(
-      `SELECT course_type, label, max_students, is_active, sort_order
+      `SELECT course_type, label, max_students, base_price, is_active, sort_order
        FROM course_type_configs ORDER BY sort_order, course_type`
     );
     res.json(r.rows);
@@ -101,10 +101,19 @@ router.patch('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, 
       max_students = ms;
     }
     const is_active = p.is_active !== undefined ? Boolean(p.is_active) : cur.rows[0].is_active;
+    let base_price = cur.rows[0].base_price;
+    if (p.base_price !== undefined) {
+      const bp = Number(p.base_price);
+      if (!Number.isFinite(bp) || bp < 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'base_price 必須為非負數' });
+      }
+      base_price = bp;
+    }
 
     const r = await client.query(
-      `UPDATE course_type_configs SET label=$2, max_students=$3, is_active=$4 WHERE course_type=$1 RETURNING *`,
-      [ct, label, max_students, is_active]
+      `UPDATE course_type_configs SET label=$2, max_students=$3, is_active=$4, base_price=$5 WHERE course_type=$1 RETURNING *`,
+      [ct, label, max_students, is_active, base_price]
     );
     // Task #67：label 變更時，若對應介紹的 title 未被 admin 覆寫過，同步更新 title
     if (label !== cur.rows[0].label) {
