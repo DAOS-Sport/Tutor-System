@@ -18,8 +18,9 @@ function fmtDate(ts) {
   } catch { return String(ts); }
 }
 
-function statusBadge(s) {
+function statusBadge(s, inProgress) {
   const base = 'inline-block rounded px-2 py-0.5 text-xs font-bold';
+  if (inProgress)      return <span className={`${base} bg-brand-teal/15 text-brand-teal`}>同步中…</span>;
   if (s === 'ok')      return <span className={`${base} bg-brand-green/15 text-brand-green`}>成功</span>;
   if (s === 'error')   return <span className={`${base} bg-red-100 text-red-700`}>失敗</span>;
   if (s === 'skipped') return <span className={`${base} bg-gray-200 text-gray-600`}>未執行</span>;
@@ -27,6 +28,7 @@ function statusBadge(s) {
 }
 
 function FormCard({ job, info, onSync, syncing, isAdmin, enabled }) {
+  const inProgress = !!info.in_progress || syncing;
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
       <div className="flex items-center justify-between">
@@ -34,7 +36,7 @@ function FormCard({ job, info, onSync, syncing, isAdmin, enabled }) {
           <div className="text-sm font-bold text-gray-800">{info.label}</div>
           <div className="mt-0.5 text-xs text-gray-500">form_code: {info.form_code}</div>
         </div>
-        {statusBadge(info.last_status)}
+        {statusBadge(info.last_status, inProgress)}
       </div>
       <dl className="mt-3 space-y-1.5 text-xs">
         <div className="flex justify-between">
@@ -99,44 +101,51 @@ export default function RagicStatusPage() {
   const { isAdmin, logout } = useAuth();
   const [data, setData] = useState(null);
   const [loadError, setLoadError] = useState(false);
-  const [busy, setBusy] = useState(null); // 'all' | 'staff' | 'coaches' | 'venues' | null
 
-  async function load() {
-    setLoadError(false);
-    setData(null);
+  // Task #83：POST /sync 改 202 fire-and-forget，後端執行狀態由 GET status 的
+  // forms[].in_progress 決定。前端不再用 local `busy` state 推導 spinner。
+  async function load({ silent = false } = {}) {
+    if (!silent) {
+      setLoadError(false);
+      setData(null);
+    }
     try {
-      setData(await ragicStatusApi.get());
+      const next = await ragicStatusApi.get();
+      setData(next);
+      setLoadError(false);
     } catch (e) {
-      // Task #70：skipAuthRedirect=true — 由頁面自己決定如何處理
       if (e?.response?.status === 401) {
-        // 真正的 token 失效（過期 / 被撤銷） → 主動登出，讓 RequireAuth 導回 /login
         toast.error('登入逾期，請重新登入');
         logout();
         return;
       }
-      // 500 / timeout / 網路異常 → 顯示錯誤態 + 重試，不影響 session
-      const msg = e?.response?.data?.error || e?.message || '載入失敗';
-      toast.error(`Ragic 連線狀態：${msg}`);
-      setLoadError(true);
+      if (!silent) {
+        const msg = e?.response?.data?.error || e?.message || '載入失敗';
+        toast.error(`Ragic 連線狀態：${msg}`);
+        setLoadError(true);
+      }
+      // silent polling 失敗：保留舊資料，不打擾使用者
     }
   }
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Task #83：5 秒輪詢 — 任何一個 job in_progress 時持續刷新，
+  // 完成後也再多 poll 一輪確保拿到 last_run_at / last_status 更新。
+  const anyInProgress = !!data && Object.values(data.forms || {}).some((f) => f.in_progress);
+  useEffect(() => {
+    if (!data) return undefined;
+    const id = setInterval(() => { load({ silent: true }); }, 5000);
+    return () => clearInterval(id);
+  }, [data == null, anyInProgress]); // eslint-disable-line react-hooks/exhaustive-deps
+
   async function runSync(job) {
-    setBusy(job);
     try {
-      const r = await ragicStatusApi.sync(job);
-      setData((prev) => ({ ...(prev || {}), forms: r.forms, now: new Date().toISOString() }));
-      const lines = Object.entries(r.results).map(([k, v]) => {
-        if (v.skipped) return `${k}: 略過`;
-        if (v.error)   return `${k}: 失敗 (${v.error})`;
-        return `${k}: ${v.synced ?? 0} 筆`;
-      });
-      toast.success(`同步完成 — ${lines.join('；')}`);
+      await ragicStatusApi.sync(job);
+      toast.info(job === 'all' ? '已排入背景同步全部，狀態會自動更新…' : `已排入背景同步 ${job}…`);
+      // 立刻 fetch 一次拿到 in_progress=true，後續由 5 秒 polling 接手
+      load({ silent: true });
     } catch (e) {
-      toast.error(e?.response?.data?.error || '同步失敗');
-    } finally {
-      setBusy(null);
+      toast.error(e?.response?.data?.error || e?.message || '同步觸發失敗');
     }
   }
 
@@ -163,11 +172,11 @@ export default function RagicStatusPage() {
         actions={isAdmin ? (
           <button
             type="button"
-            disabled={busy != null || !data.enabled}
+            disabled={anyInProgress || !data.enabled}
             onClick={() => runSync('all')}
             className="rounded bg-brand-primary px-4 py-2 text-sm font-bold text-white shadow-sm transition hover:bg-brand-teal disabled:opacity-50"
           >
-            {busy === 'all' ? '全部同步中…' : '立即同步全部'}
+            {anyInProgress ? '同步中…' : '立即同步全部'}
           </button>
         ) : null}
       />
@@ -206,7 +215,7 @@ export default function RagicStatusPage() {
             job={job}
             info={info}
             onSync={runSync}
-            syncing={busy === job || busy === 'all'}
+            syncing={!!info.in_progress}
             isAdmin={isAdmin}
             enabled={!!data.enabled}
           />

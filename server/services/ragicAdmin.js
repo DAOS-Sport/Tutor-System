@@ -546,11 +546,27 @@ async function _runWithLog(jobName, triggeredBy = 'cron') {
   return result;
 }
 
-async function syncStaffFromRagic(triggeredBy = 'cron')    { return _runWithLog('staff',    triggeredBy); }
-async function syncCoachesFromRagic(triggeredBy = 'cron')  { return _runWithLog('coaches',  triggeredBy); }
-async function syncVenuesFromRagic(triggeredBy = 'cron')   { return _runWithLog('venues',   triggeredBy); }
-async function pingParentsFromRagic(triggeredBy = 'cron')  { return _runWithLog('parents',  triggeredBy); }
-async function pingStudentsFromRagic(triggeredBy = 'cron') { return _runWithLog('students', triggeredBy); }
+// Task #83：in-memory single-flight mutex（同一個 job 同時只跑一個 Promise）
+// 解決：cron + 手動「立即同步全部」雙擊 → Ragic 同一筆查詢被打多次造成更慢、更易 timeout。
+// 後到者直接 reuse 進行中的 Promise，等同一份結果。
+const _inflight = new Map(); // jobName -> Promise
+function _singleflight(jobName, triggeredBy) {
+  const existing = _inflight.get(jobName);
+  if (existing) return existing;
+  const p = _runWithLog(jobName, triggeredBy).finally(() => {
+    if (_inflight.get(jobName) === p) _inflight.delete(jobName);
+  });
+  _inflight.set(jobName, p);
+  return p;
+}
+function isJobRunning(jobName) { return _inflight.has(jobName); }
+function getRunningJobs() { return Array.from(_inflight.keys()); }
+
+async function syncStaffFromRagic(triggeredBy = 'cron')    { return _singleflight('staff',    triggeredBy); }
+async function syncCoachesFromRagic(triggeredBy = 'cron')  { return _singleflight('coaches',  triggeredBy); }
+async function syncVenuesFromRagic(triggeredBy = 'cron')   { return _singleflight('venues',   triggeredBy); }
+async function pingParentsFromRagic(triggeredBy = 'cron')  { return _singleflight('parents',  triggeredBy); }
+async function pingStudentsFromRagic(triggeredBy = 'cron') { return _singleflight('students', triggeredBy); }
 function getRagicJobNames() { return Object.keys(FORM_META); }
 
 function getRagicEnvFlags() {
@@ -585,6 +601,7 @@ async function getSyncStatusSnapshot() {
     out[job] = {
       form_code: meta.code,
       label: meta.label,
+      in_progress:           isJobRunning(job),
       last_run_at:           latest.rows[0]?.created_at      || null,
       last_status:           latest.rows[0]?.status          || null,
       last_triggered_by:     latest.rows[0]?.triggered_by    || null,
@@ -829,6 +846,9 @@ module.exports = {
   pingParentsFromRagic,
   pingStudentsFromRagic,
   getRagicJobNames,
+  // Task #83 single-flight helpers
+  isJobRunning,
+  getRunningJobs,
   // Task #66 staging
   applyStagedChange,
   rejectStagedChange,

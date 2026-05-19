@@ -13,9 +13,11 @@ const axios = require('axios');
 
 // Ragic 認證：必須用 `APIKey=` query 參數（Basic / Bearer header 都會被當 guest 拒絕，回 code:106）
 // URL append：很多 RAGIC_FORM_* env 已帶 ?PAGEID=ruv，要用 & 而非第二個 ?，否則 ?api 會被吃進前一個 value
+// Task #83：timeout 改成可由 env 覆蓋，預設 30s（H01 教練含子表 / H05 場館 expand 較慢）
+const RAGIC_TIMEOUT_MS = Number(process.env.RAGIC_TIMEOUT_MS) || 30000;
 const client = axios.create({
   baseURL: process.env.RAGIC_BASE_URL,
-  timeout: 10000,
+  timeout: RAGIC_TIMEOUT_MS,
 });
 
 function _withApi(formPath) {
@@ -23,15 +25,54 @@ function _withApi(formPath) {
   return `${formPath}${sep}api`;
 }
 
+// Task #83：把 axios timeout / 超時類錯誤正規化成中文友善文案，
+// 讓 admin UI 直顯「Ragic 慢回應，請稍後再試」而非 raw `timeout of 10000ms exceeded`。
+function _normalizeRagicError(err) {
+  const isTimeout =
+    err?.code === 'ECONNABORTED' ||
+    err?.code === 'ETIMEDOUT' ||
+    /timeout/i.test(err?.message || '');
+  if (isTimeout) {
+    const e = new Error('Ragic 慢回應，請稍後再試');
+    e.code = 'RAGIC_TIMEOUT';
+    e.cause = err;
+    return e;
+  }
+  return err;
+}
+
 async function query(formPath, params = {}) {
-  const res = await client.get(_withApi(formPath), {
-    params: { ...params, APIKey: process.env.RAGIC_API_KEY },
-  });
+  let res;
+  try {
+    res = await client.get(_withApi(formPath), {
+      params: { ...params, APIKey: process.env.RAGIC_API_KEY },
+    });
+  } catch (err) {
+    throw _normalizeRagicError(err);
+  }
   // Ragic 錯誤回應仍是 200 + JSON：{ status:'ERROR', msg, code }；要顯式拋出，避免被當成資料 swallow
   if (res.data && typeof res.data === 'object' && res.data.status === 'ERROR') {
     throw new Error(`Ragic ${res.data.code}: ${res.data.msg}`);
   }
   return res.data;
+}
+
+// Task #83：H01 教練 / H05 場館分頁拉取（Ragic 支援 ?limit=N&offset=N）
+// 避免單次回應 payload 過大導致 timeout。回傳合併後的 records map（同 query() 形狀）。
+const RAGIC_PAGE_SIZE = Number(process.env.RAGIC_PAGE_SIZE) || 200;
+const RAGIC_MAX_PAGES = Number(process.env.RAGIC_MAX_PAGES) || 50; // 上限 10000 筆，足夠 H01/H05
+async function queryAllPaged(formPath, params = {}) {
+  const merged = {};
+  for (let page = 0; page < RAGIC_MAX_PAGES; page++) {
+    const offset = page * RAGIC_PAGE_SIZE;
+    const pageData = await query(formPath, { ...params, limit: RAGIC_PAGE_SIZE, offset });
+    if (!pageData || typeof pageData !== 'object') break;
+    const keys = Object.keys(pageData);
+    if (keys.length === 0) break;
+    Object.assign(merged, pageData);
+    if (keys.length < RAGIC_PAGE_SIZE) break; // 最後一頁
+  }
+  return merged;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -71,31 +112,31 @@ function _roleStr(r) {
   return v || '';
 }
 
-// H01：在職教練（5 分鐘快取）
+// H01：在職教練（5 分鐘快取，分頁拉取）
 async function getActiveCoaches() {
   return cached('h01:coaches', async () => {
-    const data = await query(process.env.RAGIC_FORM_H01, { '在職狀態': '在職' });
+    const data = await queryAllPaged(process.env.RAGIC_FORM_H01, { '在職狀態': '在職' });
     return Object.values(data).filter(r => _roleStr(r).includes('教練'));
   });
 }
 
-// H01：行政櫃檯（5 分鐘快取）
+// H01：行政櫃檯（5 分鐘快取，分頁拉取）
 async function getCounterStaff() {
   return cached('h01:counter', async () => {
-    const data = await query(process.env.RAGIC_FORM_H01, { '在職狀態': '在職' });
+    const data = await queryAllPaged(process.env.RAGIC_FORM_H01, { '在職狀態': '在職' });
     return Object.values(data).filter(r => _roleStr(r).includes('行政櫃台') || _roleStr(r).includes('行政櫃檯'));
   });
 }
 
-// H01：全員工（角色指派用，5 分鐘快取）
+// H01：全員工（角色指派用，5 分鐘快取，分頁拉取）
 async function getAllStaff() {
-  return cached('h01:all', async () => Object.values(await query(process.env.RAGIC_FORM_H01)));
+  return cached('h01:all', async () => Object.values(await queryAllPaged(process.env.RAGIC_FORM_H01)));
 }
 
-// H05：場館清單（履約中，非內勤；5 分鐘快取）
+// H05：場館清單（履約中，非內勤；5 分鐘快取，分頁拉取）
 async function getActiveVenues() {
   return cached('h05:venues', async () => {
-    const data = await query(process.env.RAGIC_FORM_H05, { '履約狀態': '履約中' });
+    const data = await queryAllPaged(process.env.RAGIC_FORM_H05, { '履約狀態': '履約中' });
     return Object.values(data).filter(r => r['營運性質'] !== '內勤單位');
   });
 }

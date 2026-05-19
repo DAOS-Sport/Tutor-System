@@ -74,16 +74,25 @@ router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, re
       return res.status(400).json({ error: `未知 form：${j}（可用：${ALL_JOBS.join('|')}|all）` });
     }
   }
-  const results = {};
+  // Task #83：fire-and-forget — 立刻回 202，背景跑同步並寫入 ragic_sync_log。
+  // 前端改用 5 秒 polling /api/admin/ragic-status 看 forms[].in_progress + last_*
+  // 推導 UI 狀態（spinner / 完成 / 錯誤），不再阻塞 HTTP request。
+  // single-flight mutex（services/ragicAdmin.js _singleflight）會自動把
+  // 重複觸發合併成同一個 Promise，避免 cron + 手動雙擊打爆 Ragic。
   for (const j of jobs) {
-    try {
-      results[j] = await JOB_RUNNERS[j]('manual');
-    } catch (err) {
-      results[j] = { synced: 0, error: err.message };
-    }
+    const runner = JOB_RUNNERS[j];
+    setImmediate(() => {
+      runner('manual').catch((err) => {
+        console.warn(`[ragic-status/sync] ${j} background failed:`, err.message);
+      });
+    });
   }
-  const forms = await ragicAdmin.getSyncStatusSnapshot();
-  res.json({ ok: true, results, forms });
+  res.status(202).json({
+    ok: true,
+    accepted: true,
+    queued_jobs: jobs,
+    message: '已排入背景同步，請稍候自動更新狀態。',
+  });
 });
 
 module.exports = router;
