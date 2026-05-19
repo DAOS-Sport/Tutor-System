@@ -72,6 +72,21 @@ export default function StaffEditModal({ editing, setEditing, venues, busy, onSa
               </div>
             </>
           )}
+          {editing.role !== 'coach' && (
+            <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+              <label className="flex items-center gap-2 text-sm font-medium text-gray-800">
+                <input
+                  type="checkbox"
+                  checked={!!editing.coach_active}
+                  onChange={(e) => setEditing({ ...editing, coach_active: e.target.checked })}
+                />
+                <span>啟用教練 LIFF 身分</span>
+              </label>
+              <p className="mt-1 text-xs text-gray-500">
+                勾選後啟用「教練」身分；取消勾選只暫停 LIFF 教練權限，角色欄仍保留灰色「教練」。
+              </p>
+            </div>
+          )}
           <label className="flex items-center gap-2 text-sm">
             <input
               type="checkbox"

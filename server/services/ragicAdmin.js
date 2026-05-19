@@ -97,8 +97,10 @@ async function _syncStaffImpl() {
       const phone = r['手機'] || r['手機（公司）'] || r['3001424'] || r['手機（個人）'] || r['3000941'] || '';
       const role = r['應徵職務'];
       const roleStr = Array.isArray(role) ? role.join(',') : (role || '');
-      const isCoach = roleStr.includes('教練') || (r['職稱'] || '').includes('教練');
-      const roleVal = isCoach ? 'coach' : 'staff';
+      const roleText = `${roleStr},${r['職稱'] || ''}`;
+      const isCoach = roleText.includes('教練');
+      const isCounter = /櫃檯|行政|counter|front\s*desk/i.test(roleText);
+      const roleVal = isCounter ? 'staff' : (isCoach ? 'coach' : 'staff');
       const isActive = (r['在職狀態'] || r['3000945']) === '在職';
       const payload = { id, name, phone, role: roleVal, is_active: isActive };
 

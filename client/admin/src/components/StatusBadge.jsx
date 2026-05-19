@@ -9,12 +9,13 @@ const TONE_CLS = {
   error:   'bg-brand-error text-white',
   errorSoft: 'bg-brand-error-soft text-brand-error-strong',
   gray:    'bg-gray-200 text-gray-700',
+  disabledRole: 'bg-gray-400 text-white',
 };
 
-export default function StatusBadge({ tone = 'gray', children, className = '' }) {
+export default function StatusBadge({ tone = 'gray', children, className = '', title }) {
   const cls = TONE_CLS[tone] || TONE_CLS.gray;
   return (
-    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${cls} ${className}`}>
+    <span title={title} className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${cls} ${className}`}>
       {children}
     </span>
   );

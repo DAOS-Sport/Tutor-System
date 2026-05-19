@@ -24,6 +24,8 @@ const COACHES = [
     bio: '熱情活潑、耐心十足，新進教練。', tags: [], avatar: null },
   { id: 'C004', name: '黃詩涵', phone: '0911000004', venues: ['C', 'X'], is_senior: false, multiplier: 1.1,
     bio: '具備 5 年場館團體班經驗，授課風格輕鬆。', tags: [], avatar: null },
+  { id: 'S001', name: '小林櫃檯', phone: '0933000001', venues: ['B'], is_senior: false, multiplier: 1.0,
+    bio: '兼任行政櫃檯與基礎課程教練，熟悉現場接待與初階訓練流程。', tags: ['兼任櫃檯'], avatar: null },
 ];
 
 const BASE_PRICES = { 1: 9000, 2: 6000, 3: 4500 };
@@ -127,7 +129,7 @@ const COACH_MEDIA = {
     { id: 'M002', media_type: 'image', storage_url: 'https://picsum.photos/seed/c001b/600/400', alt_text: '比賽合照',   sort_order: 1 },
     { id: 'M003', media_type: 'image', storage_url: 'https://picsum.photos/seed/c001c/600/400', alt_text: '證書照片',   sort_order: 2 },
   ],
-  C002: [], C003: [], C004: [],
+  C002: [], C003: [], C004: [], S001: [],
 };
 
 function _slotsByCoach(coachId, fromISO, toISO) {

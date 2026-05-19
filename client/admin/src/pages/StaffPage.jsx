@@ -15,6 +15,31 @@ const ROLE_TONE = { admin: 'primary', manager: 'teal', staff: 'gold', coach: 'gr
 const MULTIPLIER_MIN = 1.00;
 const MULTIPLIER_MAX = 1.50;
 
+function roleBadges(row) {
+  const badges = [{ role: row.role, active: true }];
+  const knownRoles = Array.isArray(row.known_roles) ? row.known_roles : [];
+  const coachActive = row.coach_profile_status === 'active' || row.coach_active;
+
+  for (const role of knownRoles) {
+    if (role && !badges.some((b) => b.role === role)) {
+      badges.push({ role, active: role === 'coach' && row.has_coach_profile ? coachActive : false });
+    }
+  }
+  if (row.has_coach_profile && row.role !== 'coach' && !badges.some((b) => b.role === 'coach')) {
+    badges.push({ role: 'coach', active: coachActive });
+  }
+
+  return badges.map(({ role, active }) => (
+    <StatusBadge
+      key={role}
+      tone={active ? (ROLE_TONE[role] || 'gray') : 'disabledRole'}
+      title={active ? undefined : `${roleLabel(role)}身分暫停保留`}
+    >
+      {roleLabel(role)}
+    </StatusBadge>
+  ));
+}
+
 export default function StaffPage() {
   const toast = useToast();
   const [staff, setStaff] = useState(null);
@@ -105,6 +130,9 @@ export default function StaffPage() {
         active: !!editing.active,
         venue_id: editing.venue_id || null,
       };
+      if (editing.role !== 'coach') {
+        patch.coach_active = !!editing.coach_active;
+      }
       const res = await staffApi.update(editing.id, patch);
       setStaff((arr) => arr.map((x) => (x.id === res.id ? res : x)));
       toast.success(`已更新 ${res.name}`);
@@ -118,7 +146,14 @@ export default function StaffPage() {
 
   const columns = [
     { key: 'name', label: '姓名', render: (r) => <span className="font-medium">{r.name}</span> },
-    { key: 'role', label: '角色', render: (r) => <StatusBadge tone={ROLE_TONE[r.role] || 'gray'}>{roleLabel(r.role)}</StatusBadge> },
+    {
+      key: 'role', label: '角色',
+      render: (r) => (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {roleBadges(r)}
+        </div>
+      ),
+    },
     { key: 'venue_id', label: '場館', render: (r) => venueMap[r.venue_id] || '—' },
     { key: 'phone', label: '聯絡電話' },
     {
@@ -211,7 +246,7 @@ export default function StaffPage() {
     <div>
       <PageHeader
         title="員工帳號管理"
-        subtitle="F-A02 · 指派角色 / 場館；教練可調整資深旗標與修課係數（1.00 – 1.50）"
+        subtitle="F-A02 · 啟用身分用原角色色；暫停保留身分用灰底白字"
         actions={(
           <button
             type="button"

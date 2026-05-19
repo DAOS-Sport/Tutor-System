@@ -70,7 +70,64 @@ const COACHES_ADMIN = [
     bio_rich_text: '具備 5 年場館團體班經驗。',
     is_active: true, intro_review_status: 'draft',
     venue_ids: ['C'] },
+  { id: 'c-s001', ragic_employee_id: 'S001', name: '小林櫃檯', phone: '0933000001',
+    email: '', line_uid: '', line_bound: false,
+    is_senior: false, pricing_multiplier: 1.00,
+    specialties: ['現場接待', '基礎技巧'],
+    bio_rich_text: '兼任行政櫃檯與基礎課程教練。',
+    is_active: true, intro_review_status: 'draft',
+    venue_ids: ['B'] },
 ];
+
+function withCoachProfile(row) {
+  const coach = COACHES_ADMIN.find((c) => c.ragic_employee_id === row.id);
+  const hasCoachProfile = !!coach;
+  const coachProfileStatus = !hasCoachProfile ? 'none' : (coach.is_active ? 'active' : 'inactive');
+  return {
+    ...row,
+    has_coach_profile: hasCoachProfile,
+    is_coach_profile: hasCoachProfile && row.role !== 'coach',
+    coach_profile_status: coachProfileStatus,
+    known_roles: Array.from(new Set([row.role, ...(hasCoachProfile ? ['coach'] : [])])),
+    coach_id: coach?.id || null,
+    coach_active: coach ? !!coach.is_active : false,
+  };
+}
+
+function setMockCoachProfile(row, active) {
+  if (row.role === 'coach') return;
+  let coach = COACHES_ADMIN.find((c) => c.ragic_employee_id === row.id);
+  if (active) {
+    if (!coach) {
+      coach = {
+        id: `c-${String(row.id).toLowerCase()}`,
+        ragic_employee_id: row.id,
+        name: row.name,
+        phone: row.phone,
+        email: '',
+        line_uid: '',
+        line_bound: false,
+        is_senior: false,
+        pricing_multiplier: 1.00,
+        specialties: ['兼任櫃檯'],
+        bio_rich_text: `${row.name} 兼任行政櫃檯與基礎課程教練。`,
+        is_active: true,
+        intro_review_status: 'draft',
+        venue_ids: row.venue_id ? [row.venue_id] : [],
+      };
+      COACHES_ADMIN.push(coach);
+    } else {
+      coach.name = row.name;
+      coach.phone = row.phone;
+      coach.is_active = true;
+      if (row.venue_id && !(coach.venue_ids || []).includes(row.venue_id)) {
+        coach.venue_ids = [...(coach.venue_ids || []), row.venue_id];
+      }
+    }
+  } else if (coach) {
+    coach.is_active = false;
+  }
+}
 
 const SETTINGS = {
   sessions_per_period:    6,
@@ -301,7 +358,7 @@ export const mockDb = {
   },
 
   staff(filters = {}) {
-    let arr = STAFF.map((s) => ({ ...s }));
+    let arr = STAFF.map((s) => withCoachProfile(s));
     const { status, venueId, role, name, phone, senior } = filters;
     if (status === 'active')   arr = arr.filter((s) => s.active);
     else if (status === 'inactive') arr = arr.filter((s) => !s.active);
@@ -316,8 +373,10 @@ export const mockDb = {
   updateStaff(id, patch) {
     const s = STAFF.find((x) => x.id === id);
     if (!s) return null;
-    Object.assign(s, patch);
-    return { ...s };
+    const { coach_active, ...staffPatch } = patch || {};
+    Object.assign(s, staffPatch);
+    if (coach_active !== undefined) setMockCoachProfile(s, !!coach_active);
+    return withCoachProfile(s);
   },
 
   venues() { return VENUES.map((v) => ({ ...v })); },
