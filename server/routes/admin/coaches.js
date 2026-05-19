@@ -70,7 +70,9 @@ router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager'), async (r
     // Task #81：F-C-Admin 從「員工管理」延伸 — 預設只顯示有對應 admin_staff 的教練
     // （單一事實來源）。如需查找孤立的 ragic-only 教練資料可加 ?includeOrphans=true。
     if (includeOrphans !== 'true' && includeOrphans !== '1') {
+      // 與「員工管理」role=coach 列表一致；要看 ragic-only 孤兒或 dual-role staff 才走 includeOrphans
       where.push(`s.id IS NOT NULL`);
+      where.push(`s.role = 'coach'`);
     }
     // active 篩選同步檢查 admin_staff.active，避免員工已停用但 coaches.is_active 還沒同步到的時間差
     if (status === 'active') {

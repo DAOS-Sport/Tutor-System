@@ -121,6 +121,12 @@ export default function StaffPage() {
           return;
         }
         if (!editing.name?.trim()) { toast.error('姓名必填'); setBusy(false); return; }
+        // 建立前確認 — 明示預設密碼規則
+        const confirmMsg = `將建立員工 ${editing.name.trim()}（${editing.id}）：\n` +
+          `• 角色：${roleLabel(editing.role)}\n` +
+          `• 後台登入帳號：${editing.phone || editing.id}\n` +
+          `• 預設登入密碼 = 員工編號（${editing.id}），請通知該員工首次登入後立即修改\n\n確認建立？`;
+        if (!window.confirm(confirmMsg)) { setBusy(false); return; }
         const body = {
           id: editing.id, name: editing.name.trim(), role: editing.role,
           venue_id: editing.venue_id || null,
