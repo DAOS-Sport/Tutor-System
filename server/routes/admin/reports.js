@@ -13,7 +13,7 @@ const { pool } = require('../../models/db');
 const { requireAdminAuth, requireAdminRole, getScopedVenueIds } = require('../../middlewares/adminAuth');
 
 const router = express.Router();
-router.use(requireAdminAuth, requireAdminRole('admin', 'manager'));
+router.use(requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'));
 
 function parseRange(q) {
   const to = q.to || new Date().toISOString().slice(0, 10);

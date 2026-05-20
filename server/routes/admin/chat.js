@@ -39,7 +39,7 @@ function scopedVenueIdsForChat(req) {
   return scope;
 }
 
-router.get('/rooms', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
+router.get('/rooms', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
   try {
     const list = await chatRooms.listRoomsForAdmin({
       venueIds: scopedVenueIdsForChat(req),
@@ -52,7 +52,7 @@ router.get('/rooms', requireAdminAuth, requireAdminRole('admin', 'manager'), asy
   }
 });
 
-router.get('/rooms/:id/messages', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
+router.get('/rooms/:id/messages', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
   try {
     const meta = await chatRooms.getRoomMeta(req.params.id);
     if (!meta) return res.status(404).json({ error: 'not found' });
@@ -155,7 +155,7 @@ router.delete('/keywords/:id', requireAdminAuth, requireAdminRole('admin'), asyn
 });
 
 // ── 警示清單（僅 admin / manager 可見；staff 不應看到關鍵字命中） ──
-router.get('/alerts', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
+router.get('/alerts', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
   try {
     const status = req.query.status;
     const args = [];
@@ -194,7 +194,7 @@ router.get('/alerts', requireAdminAuth, requireAdminRole('admin', 'manager'), as
   }
 });
 
-router.patch('/alerts/:id', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
+router.patch('/alerts/:id', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
   try {
     const status = String(req.body?.status || '').trim();
     if (!['pending', 'reviewed', 'no_issue', 'resolved'].includes(status)) {
