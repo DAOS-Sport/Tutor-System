@@ -19,9 +19,9 @@ const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminA
 
 const router = express.Router();
 
+// Task #91：coaches 同步已合併進 staff（H01 員工 API）；不再對外暴露 coaches 子任務
 const JOB_RUNNERS = {
   staff:    ragicAdmin.syncStaffFromRagic,
-  coaches:  ragicAdmin.syncCoachesFromRagic,
   venues:   ragicAdmin.syncVenuesFromRagic,
   parents:  ragicAdmin.pingParentsFromRagic,
   students: ragicAdmin.pingStudentsFromRagic,

@@ -320,13 +320,14 @@ function initCronJobs() {
   cron.schedule('*/10 * * * *', async () => {
     if (!ragicAdmin.ragicEnabled()) return;
     try {
-      const [s, c, v] = await Promise.allSettled([
+      // Task #91：教練資料已合併進員工帳號（H01 員工 API 就涵蓋姓名 / 手機 / 在職），
+      // 不再單獨同步 coaches；教練特有欄位（簡介 / 專長 / 介紹圖）由後台手動編輯。
+      const [s, v] = await Promise.allSettled([
         ragicAdmin.syncStaffFromRagic(),
-        ragicAdmin.syncCoachesFromRagic(),
         ragicAdmin.syncVenuesFromRagic(),
       ]);
       const tag = (r) => (r.status === 'fulfilled' ? `ok(${r.value.synced ?? 0})` : `err(${r.reason?.message || 'x'})`);
-      console.log(`[Cron/Ragic] staff=${tag(s)} coaches=${tag(c)} venues=${tag(v)}`);
+      console.log(`[Cron/Ragic] staff=${tag(s)} venues=${tag(v)}`);
     } catch (e) {
       console.warn('[Cron/Ragic] failed:', e.message);
     }

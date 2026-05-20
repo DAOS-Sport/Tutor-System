@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import DataTable from '../components/DataTable';
@@ -188,6 +187,17 @@ export default function StaffPage() {
           venue_id: venueIds[0] || null,
         };
         if (editing.role !== 'coach') patch.coach_active = !!editing.coach_active;
+        // Task #91：若編輯彈窗動過 coach_profile，連同 bio / specialties / email 一起送
+        if (editing.coach_profile && (editing.role === 'coach' || editing.coach_active || editing.has_coach_profile)) {
+          patch.coach_profile = {
+            bio_rich_text: editing.coach_profile.bio_rich_text ?? '',
+            specialties: Array.isArray(editing.coach_profile.specialties) ? editing.coach_profile.specialties : [],
+            email: editing.coach_profile.email ?? '',
+          };
+          if (editing.coach_profile.intro_review_status) {
+            patch.coach_profile.intro_review_status = editing.coach_profile.intro_review_status;
+          }
+        }
         const res = await staffApi.update(editing.id, patch);
         setStaff((arr) => arr.map((x) => (x.id === res.id ? res : x)));
         toast.success(`已更新 ${res.name}`);
@@ -198,6 +208,17 @@ export default function StaffPage() {
       toast.error(msg);
     } finally {
       setBusy(false);
+    }
+  }
+
+  // Task #91：打開編輯時拉完整 staff detail（包含 coach_profile + bio_media）
+  async function openEditor(row) {
+    setEditing({ ...row });
+    try {
+      const detail = await staffApi.get(row.id);
+      if (detail) setEditing((cur) => (cur && cur.id === row.id ? { ...cur, ...detail } : cur));
+    } catch {
+      // 列表已有 row 基本資料；detail 失敗仍可儲存（不阻擋）
     }
   }
 
@@ -245,12 +266,12 @@ export default function StaffPage() {
     { key: 'has_coach_profile', label: '教練資料', className: 'text-center',
       render: (r) => r.has_coach_profile
         ? (
-            <Link to={`/coaches?name=${encodeURIComponent(r.name)}`}
-              className="inline-block hover:opacity-80" title="到 F-C-Admin 編輯介紹/專長">
+            <button type="button" onClick={() => openEditor(r)}
+              className="inline-block hover:opacity-80" title="於員工編輯彈窗中設定教練欄位">
               <StatusBadge tone={r.coach_active ? 'green' : 'gray'}>
                 {r.coach_active ? '上架中 →' : '已下架 →'}
               </StatusBadge>
-            </Link>
+            </button>
           )
         : <span className="text-gray-300 text-xs">無</span> },
     { key: 'active', label: '狀態',
@@ -286,7 +307,7 @@ export default function StaffPage() {
       ) },
     { key: 'actions', label: '操作', className: 'text-right',
       render: (r) => (
-        <button className="text-xs font-medium text-brand-teal hover:underline" onClick={() => setEditing({ ...r })}>
+        <button className="text-xs font-medium text-brand-teal hover:underline" onClick={() => openEditor(r)}>
           編輯
         </button>
       ) },

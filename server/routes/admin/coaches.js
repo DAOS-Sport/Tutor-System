@@ -1,242 +1,32 @@
 /**
- * 教練資料管理 (F-C-Admin) — Task #32 + Task #53
- *  GET    /api/admin/coaches            → 純讀 DB（fire-and-forget Ragic 同步）
- *                                         支援 ?status=active|inactive|all
- *                                                ?venueId=、?name=、?phone=、?senior=yes|no
- *  POST   /api/admin/coaches/sync       → 立即同步 H01（同步等待）
- *  GET    /api/admin/coaches/:id        → 單一教練詳細
- *  PATCH  /api/admin/coaches/:id        → 更新（翻轉 is_active 會寫 active_overridden_at）
+ * F-C-Admin 教練資料 (DEPRECATED, Task #91)
+ * ────────────────────────────────────────────────────────────────
+ * 教練資料已合併進「員工帳號管理 (F-A02)」單一事實來源。
+ * 所有 endpoint 一律回 410 Gone + 友善訊息，指向新的 staff API：
+ *   - 教練清單 / 編輯：用 `/api/admin/staff?role=coach`、`/api/admin/staff/:id`、PATCH /api/admin/staff/:id
+ *   - 教練 lookup（給報名 / 排課用）：`/api/admin/staff/coaches?venueId=&status=active`
+ *   - 教練介紹送審：`/api/admin/learn/intros`（F-C06 保留）
+ *
+ * 保留路由的目的：明確告訴尚未更新的 client（含舊瀏覽器快取）此功能已搬家，
+ * 而非 404 讓使用者誤以為是 bug。
  */
 const express = require('express');
-const { pool } = require('../../models/db');
-const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
-const { syncCoachesFromRagic, kickoffSyncCoachesAsync } = require('../../services/ragicAdmin');
-
 const router = express.Router();
 
-const MULTIPLIER_MIN = 1.00;
-const MULTIPLIER_MAX = 1.50;
+const GONE_MESSAGE = {
+  error: 'F-C-Admin 教練資料已合併進「員工帳號管理 (F-A02)」',
+  code: 'ENDPOINT_GONE',
+  migrated_to: {
+    list_or_filter: 'GET /api/admin/staff?role=coach',
+    detail: 'GET /api/admin/staff/:id',
+    update: 'PATCH /api/admin/staff/:id  (body 可帶 coach_profile)',
+    lookup_by_venue: 'GET /api/admin/staff/coaches?venueId=&status=active',
+    intros_review: 'GET /api/admin/learn/intros',
+  },
+};
 
-function rowToCoach(r, venueIds = []) {
-  return {
-    id: r.id,
-    ragic_employee_id: r.ragic_employee_id,
-    name: r.name,
-    phone: r.phone,
-    email: r.email || '',
-    line_uid: r.line_uid || '',
-    line_bound: !!r.line_uid,
-    is_senior: !!r.is_senior,
-    pricing_multiplier: Number(r.pricing_multiplier),
-    specialties: Array.isArray(r.specialties) ? r.specialties : [],
-    bio_rich_text: r.bio_rich_text || '',
-    is_active: !!r.is_active,
-    intro_review_status: r.intro_review_status || 'draft',
-    venue_ids: venueIds,
-    // Task #81：標示是否有對應的 admin_staff（員工管理單一事實來源）
-    has_staff_link: r.staff_id != null,
-    staff_active: r.staff_active != null ? !!r.staff_active : false,
-  };
-}
-
-async function listCoachesWithVenues(whereClause, filterParams) {
-  const [coachesRes, venuesRes] = await Promise.all([
-    pool.query(
-      `SELECT c.*,
-              s.id AS staff_id,
-              s.active AS staff_active
-         FROM coaches c
-         LEFT JOIN admin_staff s ON s.id = c.ragic_employee_id
-        ${whereClause ? 'WHERE ' + whereClause : ''}
-        ORDER BY c.is_active DESC, c.name`,
-      filterParams
-    ),
-    pool.query(`SELECT coach_id, venue_id FROM coach_venues`),
-  ]);
-  const venuesByCoach = new Map();
-  for (const row of venuesRes.rows) {
-    if (!venuesByCoach.has(row.coach_id)) venuesByCoach.set(row.coach_id, []);
-    venuesByCoach.get(row.coach_id).push(row.venue_id);
-  }
-  return coachesRes.rows.map((r) => rowToCoach(r, (venuesByCoach.get(r.id) || []).sort()));
-}
-
-router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
-  try {
-    kickoffSyncCoachesAsync();
-    const { status, venueId, name, phone, senior, includeOrphans } = req.query;
-    const where = [];
-    const params = [];
-    // Task #81：F-C-Admin 從「員工管理」延伸 — 預設只顯示有對應 admin_staff 的教練
-    // （單一事實來源）。如需查找孤立的 ragic-only 教練資料可加 ?includeOrphans=true。
-    if (includeOrphans !== 'true' && includeOrphans !== '1') {
-      // 與「員工管理」role=coach 列表一致；要看 ragic-only 孤兒或 dual-role staff 才走 includeOrphans
-      where.push(`s.id IS NOT NULL`);
-      where.push(`s.role = 'coach'`);
-    }
-    // active 篩選同步檢查 admin_staff.active，避免員工已停用但 coaches.is_active 還沒同步到的時間差
-    if (status === 'active') {
-      where.push(`c.is_active = TRUE`);
-      where.push(`(s.id IS NULL OR s.active = TRUE)`);
-    } else if (status === 'inactive') {
-      where.push(`(c.is_active = FALSE OR (s.id IS NOT NULL AND s.active = FALSE))`);
-    }
-    if (name)  { params.push(`%${name}%`);  where.push(`c.name  ILIKE $${params.length}`); }
-    if (phone) { params.push(`%${phone}%`); where.push(`c.phone ILIKE $${params.length}`); }
-    if (senior === 'yes') where.push(`c.is_senior = TRUE`);
-    else if (senior === 'no') where.push(`(c.is_senior IS NULL OR c.is_senior = FALSE)`);
-    // venueId 改 SQL 端 JOIN coach_venues，避免拉全表後再 in-memory 過濾
-    if (venueId) {
-      params.push(venueId);
-      where.push(`EXISTS (SELECT 1 FROM coach_venues cv WHERE cv.coach_id = c.id AND cv.venue_id = $${params.length})`);
-    }
-
-    const coaches = await listCoachesWithVenues(where.join(' AND '), params);
-    res.json(coaches);
-  } catch (err) {
-    console.error('[admin/coaches]', err);
-    res.status(500).json({ error: 'list coaches failed' });
-  }
-});
-
-router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
-  try {
-    const result = await syncCoachesFromRagic('manual');
-    if (result && result.error) return res.status(502).json(result);
-    res.json(result);
-  } catch (err) {
-    console.error('[admin/coaches/sync]', err);
-    res.status(500).json({ error: 'sync failed' });
-  }
-});
-
-router.get('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
-  try {
-    const { id } = req.params;
-    const cur = await pool.query(`SELECT * FROM coaches WHERE id = $1`, [id]);
-    if (!cur.rowCount) return res.status(404).json({ error: 'coach not found' });
-    const [venuesRes, mediaRes] = await Promise.all([
-      pool.query(`SELECT venue_id FROM coach_venues WHERE coach_id = $1 ORDER BY venue_id`, [id]),
-      pool.query(
-        `SELECT id, media_type, storage_url, alt_text, sort_order
-           FROM coach_bio_media WHERE coach_id = $1 ORDER BY sort_order, id`,
-        [id]
-      ),
-    ]);
-    const coach = rowToCoach(cur.rows[0], venuesRes.rows.map((r) => r.venue_id));
-    res.json({ ...coach, bio_media: mediaRes.rows });
-  } catch (err) {
-    console.error('[admin/coaches/:id GET]', err);
-    res.status(500).json({ error: 'get coach failed' });
-  }
-});
-
-router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
-  const client = await pool.connect();
-  try {
-    const { id } = req.params;
-    const patch = req.body || {};
-    const cur = await client.query(`SELECT * FROM coaches WHERE id = $1`, [id]);
-    if (!cur.rowCount) {
-      return res.status(404).json({ error: 'coach not found' });
-    }
-
-    if (patch.pricing_multiplier != null) {
-      const m = Number(patch.pricing_multiplier);
-      if (Number.isNaN(m) || m < MULTIPLIER_MIN || m > MULTIPLIER_MAX) {
-        return res.status(400).json({
-          error: `修課係數需在 ${MULTIPLIER_MIN.toFixed(2)}–${MULTIPLIER_MAX.toFixed(2)} 之間`,
-        });
-      }
-    }
-
-    let specialties = cur.rows[0].specialties || [];
-    if (patch.specialties !== undefined) {
-      if (!Array.isArray(patch.specialties)) {
-        return res.status(400).json({ error: 'specialties 必須為陣列' });
-      }
-      specialties = patch.specialties.map((s) => String(s).trim()).filter(Boolean);
-    }
-
-    const merged = {
-      email: patch.email !== undefined ? String(patch.email || '') : (cur.rows[0].email || ''),
-      is_senior: patch.is_senior != null ? !!patch.is_senior : !!cur.rows[0].is_senior,
-      pricing_multiplier: patch.pricing_multiplier != null
-        ? Number(patch.pricing_multiplier)
-        : Number(cur.rows[0].pricing_multiplier),
-      bio_rich_text: patch.bio_rich_text !== undefined
-        ? String(patch.bio_rich_text || '')
-        : (cur.rows[0].bio_rich_text || ''),
-      is_active: patch.is_active != null ? !!patch.is_active : !!cur.rows[0].is_active,
-    };
-    const activeChanged = patch.is_active != null && (!!patch.is_active) !== !!cur.rows[0].is_active;
-
-    await client.query('BEGIN');
-    await client.query(
-      `UPDATE coaches SET
-         email = $2,
-         is_senior = $3,
-         pricing_multiplier = $4,
-         specialties = $5,
-         bio_rich_text = $6,
-         is_active = $7,
-         active_overridden_at = CASE WHEN $8::boolean THEN NOW() ELSE active_overridden_at END,
-         updated_at = NOW()
-       WHERE id = $1`,
-      [id, merged.email, merged.is_senior, merged.pricing_multiplier, specialties,
-       merged.bio_rich_text, merged.is_active, activeChanged]
-    );
-
-    if (Array.isArray(patch.venue_ids)) {
-      const venueIds = patch.venue_ids.map((v) => String(v).trim()).filter(Boolean);
-      if (venueIds.length > 0) {
-        // Task #84：允許「教練先前已綁定但場館已停用」之 venue_id 保留，
-        // 只阻擋「本次想新增的 disabled venue_id」。讓 admin 能在不解綁停用館的
-        // 情況下儲存其他欄位（否則任何 PATCH 都會被 400 卡死）。
-        const cur = await client.query(
-          `SELECT venue_id FROM coach_venues WHERE coach_id = $1`,
-          [id]
-        );
-        const existing = new Set(cur.rows.map((r) => r.venue_id));
-        const vr = await client.query(
-          `SELECT id, is_active FROM venues WHERE id = ANY($1::varchar[])`,
-          [venueIds]
-        );
-        const known = new Map(vr.rows.map((r) => [r.id, r.is_active]));
-        const invalid = venueIds.filter((vid) => {
-          if (!known.has(vid)) return true;                  // 不存在
-          if (known.get(vid) === false && !existing.has(vid)) return true; // 新增的停用館
-          return false;
-        });
-        if (invalid.length) {
-          await client.query('ROLLBACK');
-          return res.status(400).json({
-            error: `下列場館代碼不存在或已停用且非原本綁定：${invalid.join(', ')}`,
-          });
-        }
-      }
-      await client.query(`DELETE FROM coach_venues WHERE coach_id = $1`, [id]);
-      for (const vid of venueIds) {
-        await client.query(
-          `INSERT INTO coach_venues (coach_id, venue_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-          [id, vid]
-        );
-      }
-    }
-    await client.query('COMMIT');
-
-    const [after, vAfter] = await Promise.all([
-      pool.query(`SELECT * FROM coaches WHERE id = $1`, [id]),
-      pool.query(`SELECT venue_id FROM coach_venues WHERE coach_id = $1 ORDER BY venue_id`, [id]),
-    ]);
-    res.json(rowToCoach(after.rows[0], vAfter.rows.map((r) => r.venue_id)));
-  } catch (err) {
-    try { await client.query('ROLLBACK'); } catch { /* noop */ }
-    console.error('[admin/coaches/:id PATCH]', err);
-    res.status(500).json({ error: 'update coach failed' });
-  } finally {
-    client.release();
-  }
+router.all('*', (req, res) => {
+  res.status(410).json(GONE_MESSAGE);
 });
 
 module.exports = router;

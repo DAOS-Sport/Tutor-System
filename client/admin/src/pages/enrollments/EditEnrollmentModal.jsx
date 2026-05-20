@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { enrollmentsApi } from '../../api/enrollments';
 import { venuesApi } from '../../api/venues';
-import { coachesApi } from '../../api/coaches';
+import { staffApi } from '../../api/staff';
 import { useToast } from '../../context/ToastContext';
 
 const COURSE_TYPES = [
@@ -78,7 +78,7 @@ export default function EditEnrollmentModal({ enrollment, onClose, onSaved }) {
     if (!venueId) { setCoaches([]); return; }
     let alive = true;
     setCoachesLoading(true);
-    coachesApi.list({ venueId, status: 'active' })
+    staffApi.coachesByVenue(venueId, 'active')
       .then((d) => alive && setCoaches(d || []))
       .catch(() => alive && setCoaches([]))
       .finally(() => alive && setCoachesLoading(false));

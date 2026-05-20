@@ -1,12 +1,18 @@
 /**
- * 員工帳號管理 (F-A02) — Task #53 + Task #81
+ * 員工帳號管理 (F-A02) — Task #53 + Task #81 + Task #91
  *  GET    /api/admin/staff              → 全部員工（JOIN admin_users + coaches，單一事實來源）
  *                                         支援 ?status=active|inactive|all
  *                                                ?venueId / ?role / ?name / ?phone / ?senior=yes|no
+ *  GET    /api/admin/staff/coaches      → Task #91：給 EditEnrollmentModal 等內部 lookup 用
+ *                                         回 [{ id: coachUUID, ragic_employee_id, name, venue_ids }]
+ *                                         支援 ?venueId=&status=active|inactive|all
+ *  GET    /api/admin/staff/:id          → 單筆詳細（含 coach_profile + bio_media，給編輯彈窗載入）
  *  POST   /api/admin/staff              → 新建員工（admin_staff + admin_users + 可選 coaches，transaction）
  *                                         預設密碼 = 員工編號 (id)
  *  POST   /api/admin/staff/sync         → 立即同步 Ragic H01
  *  PATCH  /api/admin/staff/:id          → 更新角色/場館/姓名/手機/資深/修課係數/啟用
+ *                                         + 可選 coach_profile { bio_rich_text, specialties, email,
+ *                                                                intro_review_status, is_active(=coach_active) }
  *                                         同步連動 admin_users + coaches（transaction）
  */
 const express = require('express');
@@ -19,6 +25,8 @@ const lineService = require('../../services/line');
 const router = express.Router();
 
 const VALID_ROLES = ['admin', 'manager', 'staff', 'coach'];
+const MULTIPLIER_MIN = 1.00;
+const MULTIPLIER_MAX = 1.50;
 
 function rowToStaff(r) {
   const hasCoachProfile = !!r.coach_id;
@@ -43,6 +51,17 @@ function rowToStaff(r) {
     known_roles: knownRoles,
     coach_id: r.coach_id || null,
     coach_active: hasCoachProfile ? !!r.coach_active : false,
+    // Task #91：合併教練設定後，列表也回傳教練欄位摘要供前端表格／搜尋使用
+    coach_profile: hasCoachProfile ? {
+      coach_id: r.coach_id,
+      is_active: !!r.coach_active,
+      bio_rich_text: r.coach_bio || '',
+      specialties: Array.isArray(r.coach_specialties) ? r.coach_specialties : [],
+      email: r.coach_email || '',
+      intro_review_status: r.coach_intro_status || 'draft',
+      intro_review_note: r.coach_intro_note || '',
+      line_bound: !!r.coach_line_uid,
+    } : null,
     // Task #81：登入帳號連動狀態
     has_login_account: !!r.login_user_id,
     login_username: r.login_username || null,
@@ -54,6 +73,12 @@ const STAFF_SELECT = `
   SELECT s.*,
          c.id AS coach_id,
          c.is_active AS coach_active,
+         c.bio_rich_text AS coach_bio,
+         c.specialties AS coach_specialties,
+         c.email AS coach_email,
+         c.intro_review_status AS coach_intro_status,
+         c.intro_review_note AS coach_intro_note,
+         c.line_uid AS coach_line_uid,
          u.id AS login_user_id,
          u.username AS login_username,
          u.is_active AS login_is_active,
@@ -84,8 +109,6 @@ async function syncStaffVenues(client, staffId, venueIds) {
 async function syncCoachVenues(client, coachId, venueIds) {
   const list = Array.from(new Set((venueIds || []).filter(Boolean).map(String)));
   if (!coachId) return;
-  // 只插入確實 active 的場館；不刪原有資料時，需避免「移除一個場館後 coach_venues 還留著」
-  // 策略：先 DELETE 該 coach 全部，再依目前 list 寫回（保持單一事實 = staff 多場館）
   await client.query(`DELETE FROM coach_venues WHERE coach_id = $1`, [coachId]);
   if (!list.length) return;
   const r = await client.query(
@@ -107,6 +130,43 @@ function pickVenueIds(body, fallbackVenueId) {
   if (body?.venue_id) return [String(body.venue_id).trim()];
   if (fallbackVenueId) return [String(fallbackVenueId).trim()];
   return [];
+}
+
+/**
+ * Task #91：套用 coach_profile 欄位（admin 在員工編輯彈窗中填入）。
+ * - bio_rich_text / specialties / email：直接覆寫 coaches
+ * - intro_review_status：admin 改回 'draft' 可重置流程（一般審核走 /admin/learn/intros/*）
+ * 注意：此函式只更新 coach 內容欄位，不處理 is_active／場館（由上層處理）。
+ */
+async function applyCoachProfilePatch(client, staffId, profile) {
+  if (!profile || typeof profile !== 'object') return;
+  const sets = [];
+  const vals = [staffId];
+  function add(col, val) {
+    vals.push(val);
+    sets.push(`${col} = $${vals.length}`);
+  }
+  if (profile.bio_rich_text !== undefined) add('bio_rich_text', String(profile.bio_rich_text || ''));
+  if (profile.email !== undefined) add('email', String(profile.email || ''));
+  if (Array.isArray(profile.specialties)) {
+    const arr = profile.specialties.map((s) => String(s).trim()).filter(Boolean);
+    add('specialties', arr);
+  }
+  if (profile.intro_review_status !== undefined) {
+    const valid = ['draft', 'pending_review', 'published', 'rejected'];
+    if (!valid.includes(profile.intro_review_status)) {
+      const e = new Error(`intro_review_status 不合法：${profile.intro_review_status}`);
+      e.statusCode = 400;
+      throw e;
+    }
+    add('intro_review_status', profile.intro_review_status);
+  }
+  if (!sets.length) return;
+  sets.push(`updated_at = NOW()`);
+  await client.query(
+    `UPDATE coaches SET ${sets.join(', ')} WHERE ragic_employee_id = $1`,
+    vals
+  );
 }
 
 async function setCoachProfileActive(client, staffRow, active) {
@@ -158,7 +218,7 @@ async function setCoachProfileActive(client, staffRow, active) {
   }
 }
 
-// 新建 / 更新 role=coach 員工時，確保 coaches 表也有對應 row
+// 新建 / 更新 role=coach 員工時，確保 coaches 表也有對應 row（Task #91：可一併寫入 coach_profile）
 async function ensureCoachRow(client, staffRow, opts = {}) {
   const phone = String(staffRow.phone || '').trim();
   if (!phone) return; // 沒手機無法建 LIFF coach 帳號，等之後補 phone 再建
@@ -189,6 +249,11 @@ async function ensureCoachRow(client, staffRow, opts = {}) {
   if (coachId && venueIds.length) {
     await syncCoachVenues(client, coachId, venueIds);
   }
+  // Task #91：若同一次請求帶了 coach_profile，於同交易內套用
+  if (opts.coach_profile) {
+    await applyCoachProfilePatch(client, staffRow.id, opts.coach_profile);
+  }
+  return coachId;
 }
 
 router.get('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
@@ -234,6 +299,84 @@ router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, re
   }
 });
 
+/**
+ * Task #91：教練清單 lookup（給 EditEnrollmentModal 等需要 coaches.id UUID 的內部用途）。
+ * 取代 GET /api/admin/coaches?venueId=...&status=active（後者已 410）。
+ * 回 { id (coach UUID), ragic_employee_id, name, phone, is_senior, pricing_multiplier, venue_ids[], is_active }
+ */
+router.get('/coaches',
+  requireAdminAuth,
+  requireAdminRole('admin', 'manager', 'staff'),
+  async (req, res) => {
+    try {
+      const { venueId, status = 'active' } = req.query;
+      const where = [`s.role = 'coach'`, `c.id IS NOT NULL`];
+      const params = [];
+      if (status === 'active') {
+        where.push(`s.active = TRUE`);
+        where.push(`c.is_active = TRUE`);
+      } else if (status === 'inactive') {
+        where.push(`(s.active = FALSE OR c.is_active = FALSE)`);
+      }
+      if (venueId) {
+        params.push(venueId);
+        where.push(`EXISTS (SELECT 1 FROM coach_venues cv WHERE cv.coach_id = c.id AND cv.venue_id = $${params.length})`);
+      }
+      const sql = `
+        SELECT c.id, c.ragic_employee_id, c.name, c.phone,
+               c.is_senior, c.pricing_multiplier, c.is_active,
+               COALESCE(
+                 (SELECT array_agg(cv.venue_id ORDER BY cv.venue_id)
+                    FROM coach_venues cv WHERE cv.coach_id = c.id),
+                 ARRAY[]::text[]
+               ) AS venue_ids
+          FROM admin_staff s
+          JOIN coaches c ON c.ragic_employee_id = s.id
+         WHERE ${where.join(' AND ')}
+         ORDER BY c.name`;
+      const r = await pool.query(sql, params);
+      res.json(r.rows.map((row) => ({
+        id: row.id,
+        ragic_employee_id: row.ragic_employee_id,
+        name: row.name,
+        phone: row.phone,
+        is_senior: !!row.is_senior,
+        pricing_multiplier: Number(row.pricing_multiplier),
+        multiplier: Number(row.pricing_multiplier),
+        is_active: !!row.is_active,
+        venue_ids: row.venue_ids || [],
+      })));
+    } catch (err) {
+      console.error('[admin/staff/coaches]', err);
+      res.status(500).json({ error: 'list coach lookup failed' });
+    }
+  }
+);
+
+/**
+ * Task #91：單筆員工詳細（給編輯彈窗 prefetch 完整 coach_profile + bio_media）
+ */
+router.get('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+  try {
+    const r = await pool.query(`${STAFF_SELECT} WHERE s.id = $1`, [req.params.id]);
+    if (!r.rowCount) return res.status(404).json({ error: 'staff not found' });
+    const staff = rowToStaff(r.rows[0]);
+    let bio_media = [];
+    if (staff.coach_id) {
+      const m = await pool.query(
+        `SELECT id, media_type, storage_url, alt_text, sort_order
+           FROM coach_bio_media WHERE coach_id = $1 ORDER BY sort_order, id`,
+        [staff.coach_id]
+      );
+      bio_media = m.rows;
+    }
+    res.json({ ...staff, bio_media });
+  } catch (err) {
+    console.error('[admin/staff/:id GET]', err);
+    res.status(500).json({ error: 'get staff failed' });
+  }
+});
+
 // Task #81：新建員工（admin_staff + admin_users + 可選 coaches，一個 transaction）
 router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
   const client = await pool.connect();
@@ -248,6 +391,7 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
     const is_senior = role === 'coach' ? !!body.is_senior : false;
     const multiplier = role === 'coach' ? Number(body.multiplier ?? 1) : 1;
     const active = body.active !== false;
+    const coachProfile = body.coach_profile || null;
 
     if (!/^[A-Z][0-9A-Z]{1,9}$/.test(id)) {
       return res.status(400).json({ error: '員工編號格式：英文字母開頭，共 2–10 碼' });
@@ -256,15 +400,14 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
     if (!VALID_ROLES.includes(role)) return res.status(400).json({ error: '角色不合法' });
     if (role === 'coach') {
       if (!phone) return res.status(400).json({ error: '教練必須提供手機' });
-      if (Number.isNaN(multiplier) || multiplier < 1.0 || multiplier > 1.5) {
-        return res.status(400).json({ error: '修課係數需在 1.00–1.50 之間' });
+      if (Number.isNaN(multiplier) || multiplier < MULTIPLIER_MIN || multiplier > MULTIPLIER_MAX) {
+        return res.status(400).json({ error: `修課係數需在 ${MULTIPLIER_MIN.toFixed(2)}–${MULTIPLIER_MAX.toFixed(2)} 之間` });
       }
     }
 
     const dup = await client.query(`SELECT id FROM admin_staff WHERE id = $1`, [id]);
     if (dup.rowCount) return res.status(409).json({ error: `員工編號 ${id} 已存在` });
 
-    // username 策略：優先 phone，被佔走則 fallback 員工編號，再被佔走則 加 _01 _02 數字後綴
     async function resolveUsername() {
       const candidates = [];
       if (phone) candidates.push(phone);
@@ -282,10 +425,9 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
     }
     const username = await resolveUsername();
 
-    // 預設密碼 = 員工編號（首次登入後請改密碼，由 Task #82 處理 UI）
     const pwdHash = await bcrypt.hash(id, 10);
     const userId = `U_${id}`;
-    const loginRole = role === 'coach' ? 'staff' : role; // admin_users.role CHECK 不含 coach，退到 staff
+    const loginRole = role === 'coach' ? 'staff' : role;
 
     await client.query('BEGIN');
     await client.query(
@@ -300,16 +442,17 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
     );
     await syncStaffVenues(client, id, venue_ids);
     if (role === 'coach') {
-      // 把 create 表單的 active 傳進去，避免新建一個 active=false 的教練卻在 coaches 表是 TRUE
-      await ensureCoachRow(client, { id, name, phone, venue_id, venue_ids, active }, { multiplier, is_senior, is_active: active });
+      await ensureCoachRow(client,
+        { id, name, phone, venue_id, venue_ids, active },
+        { multiplier, is_senior, is_active: active, coach_profile: coachProfile });
     }
     await client.query('COMMIT');
 
     const after = await pool.query(`${STAFF_SELECT} WHERE s.id = $1`, [id]);
     res.status(201).json({
       ...rowToStaff(after.rows[0]),
-      default_password_hint: id,    // 預設密碼（= 員工編號）
-      login_username: username,     // 實際使用的登入帳號（可能 = phone or id or id_NN）
+      default_password_hint: id,
+      login_username: username,
     });
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch { /* noop */ }
@@ -333,12 +476,11 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
     }
     if (patch.role === 'coach' && patch.multiplier != null) {
       const m = Number(patch.multiplier);
-      if (Number.isNaN(m) || m < 1.0 || m > 1.5) {
-        return res.status(400).json({ error: '修課係數需在 1.00–1.50 之間' });
+      if (Number.isNaN(m) || m < MULTIPLIER_MIN || m > MULTIPLIER_MAX) {
+        return res.status(400).json({ error: `修課係數需在 ${MULTIPLIER_MIN.toFixed(2)}–${MULTIPLIER_MAX.toFixed(2)} 之間` });
       }
     }
 
-    // Task #90：先撈現有 venue_ids（若 patch 沒帶就維持現狀）
     const existingVenuesQ = await client.query(
       `SELECT array_agg(venue_id ORDER BY venue_id) AS ids FROM admin_staff_venues WHERE staff_id = $1`,
       [id]
@@ -360,13 +502,13 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
       active: patch.active != null ? !!patch.active : !!cur.rows[0].active,
     };
     if (!merged.name) return res.status(400).json({ error: '姓名必填' });
-    // role=coach 必須要有 phone，否則 ensureCoachRow 會 noop 而留下 inconsistent state
     if (merged.role === 'coach' && !merged.phone) {
       return res.status(400).json({ error: '教練角色必須有手機（用於建立教練 LIFF 紀錄）' });
     }
 
     const activeChanged = patch.active != null && (!!patch.active) !== !!cur.rows[0].active;
     const roleChanged = patch.role != null && patch.role !== cur.rows[0].role;
+    const coachProfilePatch = patch.coach_profile || null;
 
     await client.query('BEGIN');
     const r = await client.query(
@@ -386,8 +528,6 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
        merged.is_senior, merged.multiplier, merged.active, activeChanged]
     );
 
-    // 連動 admin_users — 只用 staff_id 對應，避免名字相同的不同人被連動寫入（auth 安全）
-    // 舊資料由 bootstrap 的「唯一同名」backfill 連起來；沒連起來的 orphan 帳號不會被本 PATCH 影響
     const loginRole = merged.role === 'coach' ? 'staff' : merged.role;
     await client.query(
       `UPDATE admin_users
@@ -401,15 +541,14 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
       [id, merged.name, loginRole, merged.venue_id, merged.active, activeChanged]
     );
 
-    // Task #90：同步 admin_staff_venues
     if (venueIdsTouched) {
       await syncStaffVenues(client, id, newVenueIds);
     }
 
-    // 連動 coaches：role 變成 coach → 確保有 coach row；role 從 coach 轉為其它 → 軟下架
     if (merged.role === 'coach') {
-      await ensureCoachRow(client, { ...r.rows[0], venue_ids: newVenueIds }, { is_active: merged.active });
-      // 同步 coaches 基本欄位 + active_overridden_at（避免後台啟停被 Ragic 覆寫）
+      await ensureCoachRow(client,
+        { ...r.rows[0], venue_ids: newVenueIds },
+        { is_active: merged.active, coach_profile: coachProfilePatch });
       await client.query(
         `UPDATE coaches
             SET name = $2,
@@ -430,7 +569,6 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
         [id]
       );
     } else if (activeChanged) {
-      // role 沒變，只翻 active：同步 coaches.is_active（若該 staff 有對應 coach 紀錄）
       await client.query(
         `UPDATE coaches
             SET is_active = $2, active_overridden_at = NOW(), updated_at = NOW()
@@ -439,8 +577,16 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
       );
     }
 
+    // Task #91：非 coach 角色也可由 coach_profile.is_active 翻轉 coach 身分（兼任）
     if (patch.coach_active !== undefined && merged.role !== 'coach') {
       await setCoachProfileActive(client, r.rows[0], patch.coach_active);
+      // 啟用後若還帶了 coach_profile 內容，套用 bio / specialties 等
+      if (patch.coach_active && coachProfilePatch) {
+        await applyCoachProfilePatch(client, id, coachProfilePatch);
+      }
+    } else if (merged.role !== 'coach' && coachProfilePatch) {
+      // 已有 coach 兼任身分 → 直接套 bio/specialties（不翻 is_active）
+      await applyCoachProfilePatch(client, id, coachProfilePatch);
     }
     await client.query('COMMIT');
 
@@ -484,8 +630,6 @@ router.post('/:id/reset-password', requireAdminAuth, requireAdminRole('admin'), 
       [adminUser.id, newHash]
     );
 
-    // 推 LINE 通知（best-effort）：優先用 admin_users.line_uid（後台帳號自身綁定的 LINE），
-    // 若未綁定且該員工同時是教練，fallback 撈 coaches.line_uid
     let notified = false;
     let notifyError = null;
     const lineUid = adminUser.line_uid || staff.coach_line_uid;

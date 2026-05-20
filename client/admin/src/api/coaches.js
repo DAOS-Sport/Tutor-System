@@ -1,22 +1,16 @@
-import { callApi } from './client';
-import { mockDb } from './mock';
-
-function qs(params) {
-  const q = new URLSearchParams();
-  Object.entries(params || {}).forEach(([k, v]) => {
-    if (v !== '' && v != null) q.set(k, v);
-  });
-  const s = q.toString();
-  return s ? `?${s}` : '';
-}
+/**
+ * Task #91：F-C-Admin 教練資料已合併進員工帳號管理。
+ * 此檔保留 thin shim，讓尚未升級的呼叫端能透過 staffApi 拿到等效資料；
+ * 後端 /api/admin/coaches/* 已一律回 410 Gone。
+ * 新功能請改用 staffApi（list/get/coachesByVenue/update）。
+ */
+import { staffApi } from './staff';
 
 export const coachesApi = {
   list: (params = {}) =>
-    callApi(`/coaches${qs(params)}`, {}, () => mockDb.coaches(params)),
-  get:  (id) => callApi(`/coaches/${id}`, {}, () => mockDb.coachDetail(id)),
-  update: (id, patch) =>
-    callApi(`/coaches/${id}`, { method: 'patch', data: patch },
-      () => mockDb.updateCoach(id, patch)),
-  syncRagic: () =>
-    callApi('/coaches/sync', { method: 'post', data: {} }, () => ({ synced: 0, skipped: true })),
+    staffApi.coachesByVenue(params.venueId, params.status || 'active'),
+  get: (id) => staffApi.get(id),
+  // 不再支援直接 update coaches；前端應呼叫 staffApi.update + coach_profile 區塊
+  update: () => Promise.reject(new Error('coachesApi.update 已下架，請改用 staffApi.update + coach_profile')),
+  syncRagic: () => Promise.resolve({ synced: 0, skipped: true, deprecated: true }),
 };
