@@ -46,6 +46,18 @@ let _redirectingOn401 = false; // 模組級 dedupe，避免短時間多支互動
 http.interceptors.response.use(
   (res) => res,
   (err) => {
+    // Task #88：把後端兜底 404「admin endpoint not found」改寫成可定位的友善訊息。
+    // 6 個後台頁的 catch 都是 `toast.error(e.response.data.error || e.message)`，
+    // 改寫 response.data.error 即可全頁面套用，不需要逐頁改。
+    // 最常見成因 = 使用者瀏覽器卡在舊版 SPA bundle，所以提示「請重新整理頁面」。
+    if (err?.response?.status === 404 && err?.response?.data?.error === 'admin endpoint not found') {
+      const path = err?.response?.data?.path || err?.config?.url || '(unknown)';
+      try {
+        err.response.data.error = `找不到 API：${path}（請重新整理頁面以取得最新版本）`;
+        // eslint-disable-next-line no-console
+        console.warn('[admin api 404]', err?.config?.method?.toUpperCase(), path, '— 建議使用者重新整理');
+      } catch { /* noop */ }
+    }
     if (err?.response?.status === 401) {
       const skip = err?.config?.skipAuthRedirect === true;
       try {
