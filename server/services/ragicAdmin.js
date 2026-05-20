@@ -149,6 +149,18 @@ async function _syncStaffImpl() {
       if (cur.active_overridden_at == null && cur.active !== isActive) {
         diff.active = { from: cur.active, to: isActive };
       }
+      // Task #90：venue_ids 差異偵測（純場館異動也要 stage）
+      const curVenuesRes = await pool.query(
+        `SELECT venue_id FROM admin_staff_venues WHERE staff_id = $1 ORDER BY venue_id`,
+        [id]
+      );
+      const curVenues = curVenuesRes.rows.map(x => x.venue_id);
+      const newVenues = [...venueIds].sort();
+      const curVenuesSorted = [...curVenues].sort();
+      if (newVenues.length > 0 && (newVenues.length !== curVenuesSorted.length
+          || newVenues.some((v, i) => v !== curVenuesSorted[i]))) {
+        diff.venue_ids = { from: curVenuesSorted, to: newVenues };
+      }
       if (Object.keys(diff).length > 0) {
         if (await _stageIfNotRejected('H01_STAFF', 'staff', id, 'update', payload, diff)) staged++;
       } else {

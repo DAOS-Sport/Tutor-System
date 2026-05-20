@@ -109,7 +109,9 @@ router.get('/discounts', async (req, res) => {
     const args = [from, to];
     if (venueIds) {
       args.push(venueIds);
-      conds.push(`(cp.venue_id = ANY($${args.length}::text[]) OR cp.venue_id IS NULL)`);
+      // Task #90：scoped users（manager/staff）只能看歸屬於自己場館的折抵；
+      // venue 未知（cp.venue_id IS NULL）→ 視為跨範圍資料，僅 admin 看得到。
+      conds.push(`cp.venue_id = ANY($${args.length}::text[])`);
     }
     const r = await pool.query(
       `SELECT p.id, p.name, p.coupon_code, p.type,
