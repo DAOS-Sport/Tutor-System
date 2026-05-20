@@ -582,9 +582,11 @@ async function _pingZ02Impl() {
   }
 }
 
+// Task #91：F-C-Admin 已合併至員工帳號管理；coaches 不再列為獨立 sync job。
+// staff sync 已會順帶 upsert coaches 1:1 行（透過 ragic_employee_id 對應），
+// 因此 FORM_META 移除 coaches 入口，避免後台「Ragic 狀態」頁顯示一張無法觸發的卡片。
 const FORM_META = {
-  staff:    { code: 'H01_STAFF',    label: 'H01 員工 (admin_staff)',  impl: _syncStaffImpl,   env: 'RAGIC_FORM_H01' },
-  coaches:  { code: 'H01_COACHES',  label: 'H01 教練 (coaches)',      impl: _syncCoachesImpl, env: 'RAGIC_FORM_H01' },
+  staff:    { code: 'H01_STAFF',    label: 'H01 員工 + 教練 (admin_staff + coaches)', impl: _syncStaffImpl, env: 'RAGIC_FORM_H01' },
   venues:   { code: 'H05_VENUES',   label: 'H05 場館 (venues)',       impl: _syncVenuesImpl,  env: 'RAGIC_FORM_H05' },
   parents:  { code: 'Z01_PARENTS',  label: 'Z01 家長 (按請求查詢)',   impl: _pingZ01Impl,     env: 'RAGIC_FORM_Z01' },
   students: { code: 'Z02_STUDENTS', label: 'Z02 學員 (按請求查詢)',   impl: _pingZ02Impl,     env: 'RAGIC_FORM_Z02' },

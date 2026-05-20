@@ -209,6 +209,10 @@ export default function StaffPage() {
             patch.coach_profile.intro_review_status = editing.coach_profile.intro_review_status;
           }
         }
+        // Task #91 fix：介紹圖順序 / 刪除一起送回（後端在同一交易內持久化）
+        if (editing.bio_media_dirty && Array.isArray(editing.bio_media)) {
+          patch.bio_media = editing.bio_media.map((m, i) => ({ id: m.id, sort_order: i }));
+        }
         const res = await staffApi.update(editing.id, patch);
         setStaff((arr) => arr.map((x) => (x.id === res.id ? res : x)));
         toast.success(`已更新 ${res.name}`);

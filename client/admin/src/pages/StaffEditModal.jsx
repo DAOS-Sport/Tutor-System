@@ -52,8 +52,8 @@ const INTRO_STATUS_LABEL = {
   rejected: { tone: 'bg-rose-100 text-rose-800', text: '已退回' },
 };
 
-/** Task #91：教練設定區塊 — 簡介 / 專長 / 待審狀態 / 介紹圖（read-only 摘要） */
-function CoachProfileSection({ editing, setEditing, multiplierMin, multiplierMax }) {
+/** Task #91：教練設定區塊 — 簡介 / 專長 / 待審狀態 / 介紹圖排序 + 刪除 + 上下架 */
+function CoachProfileSection({ editing, setEditing, multiplierMin, multiplierMax, showActiveToggle }) {
   const profile = editing.coach_profile || {};
   const specialties = Array.isArray(profile.specialties) ? profile.specialties : [];
   const introStatus = profile.intro_review_status || 'draft';
@@ -62,6 +62,23 @@ function CoachProfileSection({ editing, setEditing, multiplierMin, multiplierMax
 
   function patchProfile(p) {
     setEditing({ ...editing, coach_profile: { ...profile, ...p } });
+  }
+  function setBioMedia(next) {
+    // 把每筆的 sort_order 重編為陣列順序，送回後端時直接用 ids[] 排序即可
+    const reindexed = next.map((m, i) => ({ ...m, sort_order: i }));
+    setEditing({ ...editing, bio_media: reindexed, bio_media_dirty: true });
+  }
+  function moveMedia(idx, dir) {
+    const next = [...bioMedia];
+    const target = idx + dir;
+    if (target < 0 || target >= next.length) return;
+    [next[idx], next[target]] = [next[target], next[idx]];
+    setBioMedia(next);
+  }
+  function removeMedia(idx) {
+    if (!window.confirm('確定刪除這張介紹圖？此操作無法復原。')) return;
+    const next = bioMedia.filter((_, i) => i !== idx);
+    setBioMedia(next);
   }
 
   return (
@@ -111,22 +128,49 @@ function CoachProfileSection({ editing, setEditing, multiplierMin, multiplierMax
         <p className="mt-1 text-xs text-gray-500">範例：羽球、體適能、青少年。</p>
       </div>
 
+      {showActiveToggle && (
+        <label className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm">
+          <input type="checkbox"
+                 checked={editing.coach_active !== false}
+                 onChange={(e) => setEditing({ ...editing, coach_active: e.target.checked })} />
+          <span>教練上架（取消勾選會立即從家長端教練清單下架，但歷史排課 FK 保留）</span>
+        </label>
+      )}
+
       <div className="rounded-lg border border-gray-200 bg-white p-3">
         <div className="flex items-center justify-between">
-          <span className="text-xs font-medium text-gray-700">介紹圖 / 影片</span>
-          <span className="text-[11px] text-gray-500">共 {bioMedia.length} 筆</span>
+          <span className="text-xs font-medium text-gray-700">介紹圖 / 影片排序</span>
+          <span className="text-[11px] text-gray-500">共 {bioMedia.length} 筆（拖移序號可改順序）</span>
         </div>
-        <p className="mt-1 text-[11px] text-gray-500">介紹圖的上傳與排序在「教練 LIFF / 個人頁」操作；此處僅顯示當前數量。</p>
+        <p className="mt-1 text-[11px] text-gray-500">教練可在 LIFF 個人頁上傳介紹圖；此處可調整顯示順序或刪除。</p>
+        {bioMedia.length === 0 && (
+          <p className="mt-2 text-xs text-gray-400">尚無介紹圖。</p>
+        )}
         {bioMedia.length > 0 && (
-          <div className="mt-2 grid grid-cols-4 gap-2">
-            {bioMedia.slice(0, 4).map((m) => (
-              <div key={m.id} className="aspect-square overflow-hidden rounded bg-gray-100 text-center text-[10px] text-gray-500">
-                {m.media_type === 'image' && m.storage_url
-                  ? <img src={m.storage_url} alt={m.alt_text || ''} className="h-full w-full object-cover" />
-                  : <div className="flex h-full items-center justify-center">#{m.sort_order}</div>}
-              </div>
+          <ul className="mt-2 space-y-1.5">
+            {bioMedia.map((m, idx) => (
+              <li key={m.id} className="flex items-center gap-2 rounded border border-gray-200 bg-gray-50 p-1.5">
+                <span className="inline-flex h-6 w-6 items-center justify-center rounded bg-brand-teal/15 text-[11px] font-bold text-brand-primary">{idx + 1}</span>
+                <div className="h-10 w-10 flex-shrink-0 overflow-hidden rounded bg-white">
+                  {m.media_type === 'image' && m.storage_url
+                    ? <img src={m.storage_url} alt={m.alt_text || ''} className="h-full w-full object-cover" />
+                    : <div className="flex h-full items-center justify-center text-[10px] text-gray-500">影片</div>}
+                </div>
+                <span className="flex-1 truncate text-[11px] text-gray-600">{m.alt_text || m.storage_url}</span>
+                <div className="flex gap-1">
+                  <button type="button" disabled={idx === 0}
+                          onClick={() => moveMedia(idx, -1)}
+                          className="rounded border border-gray-300 px-1.5 py-0.5 text-[11px] hover:bg-white disabled:opacity-40">↑</button>
+                  <button type="button" disabled={idx === bioMedia.length - 1}
+                          onClick={() => moveMedia(idx, +1)}
+                          className="rounded border border-gray-300 px-1.5 py-0.5 text-[11px] hover:bg-white disabled:opacity-40">↓</button>
+                  <button type="button"
+                          onClick={() => removeMedia(idx)}
+                          className="rounded border border-rose-300 px-1.5 py-0.5 text-[11px] text-rose-700 hover:bg-rose-50">刪</button>
+                </div>
+              </li>
             ))}
-          </div>
+          </ul>
         )}
       </div>
 
@@ -284,6 +328,7 @@ export default function StaffEditModal({ editing, setEditing, venues, busy, onSa
             <CoachProfileSection
               editing={editing} setEditing={setEditing}
               multiplierMin={multiplierMin} multiplierMax={multiplierMax}
+              showActiveToggle={!isNew}
             />
           )}
           {!isNew && editing.role !== 'coach' && (
@@ -305,6 +350,7 @@ export default function StaffEditModal({ editing, setEditing, venues, busy, onSa
                 <CoachProfileSection
                   editing={editing} setEditing={setEditing}
                   multiplierMin={multiplierMin} multiplierMax={multiplierMax}
+                  showActiveToggle={false}
                 />
               )}
             </div>

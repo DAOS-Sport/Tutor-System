@@ -618,6 +618,34 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
         );
       }
     }
+    // Task #91 fix：介紹圖排序與刪除 — 後台改的順序 / 刪除一起在同一交易內持久化。
+    // payload.bio_media: [{ id, sort_order }]，未出現在陣列中的 id 視為刪除。
+    if (Array.isArray(patch.bio_media)) {
+      const coachRow = await client.query(
+        `SELECT id FROM coaches WHERE ragic_employee_id = $1`, [id]
+      );
+      const coachId = coachRow.rows[0]?.id;
+      if (coachId) {
+        const keepIds = patch.bio_media.map((m) => m.id).filter(Boolean);
+        if (keepIds.length === 0) {
+          await client.query(`DELETE FROM coach_bio_media WHERE coach_id = $1`, [coachId]);
+        } else {
+          await client.query(
+            `DELETE FROM coach_bio_media WHERE coach_id = $1 AND id <> ALL($2::uuid[])`,
+            [coachId, keepIds]
+          );
+          for (let i = 0; i < patch.bio_media.length; i++) {
+            const m = patch.bio_media[i];
+            if (!m?.id) continue;
+            await client.query(
+              `UPDATE coach_bio_media SET sort_order = $1
+                 WHERE id = $2 AND coach_id = $3`,
+              [i, m.id, coachId]
+            );
+          }
+        }
+      }
+    }
     await client.query('COMMIT');
 
     const after = await pool.query(`${STAFF_SELECT} WHERE s.id = $1`, [r.rows[0].id]);
