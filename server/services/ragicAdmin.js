@@ -77,6 +77,37 @@ async function _markPendingResolved(entityType, entityId) {
  * - 偵測 name / phone / role / active 任一不同 → stage（active 在 overridden 時忽略）
  * - 不在 Ragic 但 active 中 + 未 override → stage 'deactivate'
  */
+/**
+ * Task #90：從 Ragic H01 record 抽出該員工的所屬場館清單（去重、保序）。
+ * 支援多種欄位來源：
+ *   - env RAGIC_FIELD_H01_VENUE_PRIMARY / RAGIC_FIELD_H01_VENUE_SUPPORT（可逗號分隔多 field id）
+ *   - 中文欄位名：主場館 / 主要場館 / 支援場館 / 服務場館 / 場館 / 部門
+ * 值若包含逗號或頓號，會自動拆成多筆；空字串忽略。
+ */
+function _extractStaffVenueIds(r) {
+  const ids = [];
+  const seen = new Set();
+  const push = (v) => {
+    if (v === null || v === undefined) return;
+    const arr = Array.isArray(v) ? v : String(v).split(/[,，、\s]+/);
+    for (const raw of arr) {
+      const s = String(raw || '').trim();
+      if (!s || seen.has(s)) continue;
+      seen.add(s);
+      ids.push(s);
+    }
+  };
+  const envKeys = [
+    process.env.RAGIC_FIELD_H01_VENUE_PRIMARY,
+    process.env.RAGIC_FIELD_H01_VENUE_SUPPORT,
+  ].filter(Boolean).flatMap(k => k.split(','));
+  for (const k of envKeys) push(r[k.trim()]);
+  for (const k of ['主場館', '主要場館', '支援場館', '服務場館', '場館', '館別', '部門']) {
+    push(r[k]);
+  }
+  return ids;
+}
+
 async function _syncStaffImpl() {
   if (!ragicEnabled()) return { synced: 0, skipped: true };
   try {
@@ -102,7 +133,9 @@ async function _syncStaffImpl() {
       const isCounter = /櫃檯|行政|counter|front\s*desk/i.test(roleText);
       const roleVal = isCounter ? 'staff' : (isCoach ? 'coach' : 'staff');
       const isActive = (r['在職狀態'] || r['3000945']) === '在職';
-      const payload = { id, name, phone, role: roleVal, is_active: isActive };
+      // Task #90：解析 Ragic H01 多場館欄位（主場館 + 支援場館），合併為陣列
+      const venueIds = _extractStaffVenueIds(r);
+      const payload = { id, name, phone, role: roleVal, is_active: isActive, venue_ids: venueIds };
 
       const cur = dbMap.get(id);
       if (!cur) {
@@ -314,6 +347,33 @@ async function _applyStaffChange(row, client) {
          WHERE name = $1 AND is_active = TRUE AND active_overridden_at IS NULL`,
       [p.name]
     );
+  }
+  // Task #90：同步 admin_staff_venues（多場館），並把第一筆寫回 admin_staff.venue_id 作 fallback
+  if (Array.isArray(p.venue_ids) && p.venue_ids.length > 0) {
+    const venueIds = [...new Set(p.venue_ids.map(String).map(s => s.trim()).filter(Boolean))];
+    if (venueIds.length > 0) {
+      // 僅針對 Ragic 上實際存在的 admin_venues 落地，避免 FK violation
+      const vr = await client.query(
+        `SELECT id FROM admin_venues WHERE id = ANY($1::text[])`,
+        [venueIds]
+      );
+      const validIds = vr.rows.map(x => x.id);
+      if (validIds.length > 0) {
+        await client.query(`DELETE FROM admin_staff_venues WHERE staff_id = $1`, [row.entity_id]);
+        for (const vid of validIds) {
+          await client.query(
+            `INSERT INTO admin_staff_venues (staff_id, venue_id) VALUES ($1, $2)
+             ON CONFLICT DO NOTHING`,
+            [row.entity_id, vid]
+          );
+        }
+        // 保留 admin_staff.venue_id 為第一筆 fallback（向下相容舊讀取路徑）
+        await client.query(
+          `UPDATE admin_staff SET venue_id = $2 WHERE id = $1`,
+          [row.entity_id, validIds[0]]
+        );
+      }
+    }
   }
 }
 

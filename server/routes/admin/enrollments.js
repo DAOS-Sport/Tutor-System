@@ -167,6 +167,11 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin', 'manager'), asy
 
     if (body.venue_id !== undefined) {
       venueId = String(body.venue_id).trim();
+      // Task #90：變更場館時，目標場館必須在自己所屬範圍內（manager 不能把報名搬到別館）
+      if (!isVenueInScope(req, venueId)) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({ error: '目標場館不在您的場館範圍內' });
+      }
       const vr = await client.query(`SELECT id, name FROM admin_venues WHERE id = $1`, [venueId]);
       if (!vr.rowCount) {
         await client.query('ROLLBACK');
