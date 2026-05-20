@@ -126,6 +126,10 @@ async function _syncStaffImpl() {
       seenIds.add(id);
       const name = r['姓名'] || r['3000933'] || '';
       const phone = r['手機'] || r['手機（公司）'] || r['3001424'] || r['手機（個人）'] || r['3000941'] || '';
+      // Task #91 後續：Ragic H01 公司 E-mail（field 3000940）也納入 staff sync，
+      // 套用時若該員工有對應的 coaches 列，會把 email 寫入 coaches.email
+      // （保留後台手動編輯：只在現值為空時覆寫）。
+      const email = r['E-mail'] || r['Email'] || r['email'] || r['信箱'] || r['3000940'] || '';
       const role = r['應徵職務'];
       const roleStr = Array.isArray(role) ? role.join(',') : (role || '');
       const roleText = `${roleStr},${r['職稱'] || ''}`;
@@ -135,7 +139,13 @@ async function _syncStaffImpl() {
       const isActive = (r['在職狀態'] || r['3000945']) === '在職';
       // Task #90：解析 Ragic H01 多場館欄位（主場館 + 支援場館），合併為陣列
       const venueIds = _extractStaffVenueIds(r);
-      const payload = { id, name, phone, role: roleVal, is_active: isActive, venue_ids: venueIds };
+      const payload = { id, name, phone, email, role: roleVal, is_active: isActive, venue_ids: venueIds };
+
+      // 查目前 coaches.email 作為 diff 比對基準（admin_staff 本身沒有 email 欄位）
+      const coachEmailRes = await pool.query(
+        `SELECT email FROM coaches WHERE ragic_employee_id = $1`, [id]
+      );
+      const curCoachEmail = coachEmailRes.rows[0]?.email || '';
 
       const cur = dbMap.get(id);
       if (!cur) {
@@ -146,6 +156,10 @@ async function _syncStaffImpl() {
       if ((cur.name || '') !== name) diff.name = { from: cur.name || '', to: name };
       if ((cur.phone || '') !== phone) diff.phone = { from: cur.phone || '', to: phone };
       // role 為系統內部欄位（admin 可改 staff/coach/manager）— 不從 Ragic 同步
+      // email：Ragic 有值且與目前 coaches.email 不同才視為 diff（呈現給 admin 確認；apply 時只在 DB 空值時覆寫）
+      if (email && curCoachEmail !== email) {
+        diff.email = { from: curCoachEmail, to: email };
+      }
       if (cur.active_overridden_at == null && cur.active !== isActive) {
         diff.active = { from: cur.active, to: isActive };
       }
@@ -358,6 +372,17 @@ async function _applyStaffChange(row, client) {
       `UPDATE admin_users SET is_active = FALSE
          WHERE name = $1 AND is_active = TRUE AND active_overridden_at IS NULL`,
       [p.name]
+    );
+  }
+  // Task #91 後續：Ragic 同步的 email 寫入 coaches.email（若 coach row 已存在）。
+  // 保留後台手動編輯優先：只在現值為空時才覆寫，避免蓋掉 admin 在彈窗改過的私人信箱。
+  if (p.email) {
+    await client.query(
+      `UPDATE coaches
+          SET email = $2, updated_at = NOW()
+        WHERE ragic_employee_id = $1
+          AND (email IS NULL OR email = '')`,
+      [row.entity_id, String(p.email).trim()]
     );
   }
   // Task #90：同步 admin_staff_venues（多場館），並把第一筆寫回 admin_staff.venue_id 作 fallback

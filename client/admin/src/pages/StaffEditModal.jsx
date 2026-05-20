@@ -64,7 +64,6 @@ function CoachProfileSection({ editing, setEditing, multiplierMin, multiplierMax
     setEditing({ ...editing, coach_profile: { ...profile, ...p } });
   }
   function setBioMedia(next) {
-    // 把每筆的 sort_order 重編為陣列順序，送回後端時直接用 ids[] 排序即可
     const reindexed = next.map((m, i) => ({ ...m, sort_order: i }));
     setEditing({ ...editing, bio_media: reindexed, bio_media_dirty: true });
   }
@@ -111,7 +110,8 @@ function CoachProfileSection({ editing, setEditing, multiplierMin, multiplierMax
         <input type="email" value={profile.email || ''}
                onChange={(e) => patchProfile({ email: e.target.value })}
                className="w-full rounded-lg border border-gray-300 px-3 py-2"
-               placeholder="可留空" />
+               placeholder="可留空（Ragic H01 同步會自動補上）" />
+        <p className="mt-1 text-[11px] text-gray-500">手動編輯後不會被 Ragic 覆寫；清空後下次同步會重新從 Ragic 帶入。</p>
       </div>
 
       <div>
@@ -225,10 +225,15 @@ function SpecialtyChipsField({ value, onChange }) {
 /**
  * StaffPage 編輯彈窗 — 同時支援「編輯」與「新建」兩種模式
  *   editing.isNew = true → 啟用 id / name / phone 輸入欄，並提示預設密碼
+ *
+ * Task #91 後續：採雙欄佈局 — 左欄基本資料，右欄教練設定。
+ *                取消 / 儲存 按鈕固定在 header 右上，啟用此帳號 在底部 sticky bar。
  */
 export default function StaffEditModal({ editing, setEditing, venues, busy, onSave, multiplierMin, multiplierMax }) {
   if (!editing) return null;
   const isNew = !!editing.isNew;
+  const showCoachPane = editing.role === 'coach' || editing.coach_active || editing.has_coach_profile;
+
   return (
     <div
       className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-4"
@@ -237,29 +242,53 @@ export default function StaffEditModal({ editing, setEditing, venues, busy, onSa
       aria-modal="true"
       aria-label={isNew ? '新建員工' : '編輯員工'}
     >
-      <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl max-h-[90vh] overflow-y-auto">
-        <h3 className="mb-4 text-lg font-bold text-brand-primary">
-          {isNew ? '新建員工' : `編輯員工 — ${editing.name}`}
-        </h3>
-        <div className="space-y-4">
-          {isNew && (
-            <>
-              <div>
-                <label className="mb-1 block text-sm font-medium text-gray-700">員工編號 *</label>
-                <input
-                  value={editing.id || ''}
-                  onChange={(e) => setEditing({ ...editing, id: e.target.value.toUpperCase() })}
-                  placeholder="如 C005 / M002 / S003"
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2 font-mono"
-                />
-                <p className="mt-1 text-xs text-gray-500">
-                  建議命名：教練 C***、主管 M***、行政 S***、系統管理員 U***；2–10 碼英數，首字母為英文。
-                  <span className="ml-1 font-medium text-amber-700">建立後預設密碼 = 員工編號（首次登入後請改密碼）。</span>
-                </p>
-              </div>
+      <div className="w-full max-w-4xl rounded-2xl bg-white shadow-xl max-h-[92vh] overflow-hidden flex flex-col">
+        {/* Header — 標題 + 取消/儲存 */}
+        <div className="flex items-center justify-between gap-3 border-b border-gray-200 bg-white px-6 py-4">
+          <h3 className="text-lg font-bold text-brand-primary">
+            {isNew ? '新建員工' : `編輯員工 — ${editing.name}`}
+          </h3>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setEditing(null)}
+              className="rounded-lg border border-gray-300 px-4 py-1.5 text-sm text-gray-700 hover:bg-gray-100"
+              disabled={busy}
+            >
+              取消
+            </button>
+            <button
+              onClick={onSave}
+              disabled={busy}
+              className="rounded-lg bg-brand-teal px-4 py-1.5 text-sm font-bold text-white hover:bg-brand-primary disabled:opacity-50"
+            >
+              {busy ? '儲存中…' : (isNew ? '建立' : '儲存')}
+            </button>
+          </div>
+        </div>
+
+        {/* Body — 雙欄 grid */}
+        <div className="flex-1 overflow-y-auto px-6 py-5">
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+            {/* 左欄：基本資料 */}
+            <div className="space-y-4">
+              {isNew && (
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-gray-700">員工編號 *</label>
+                  <input
+                    value={editing.id || ''}
+                    onChange={(e) => setEditing({ ...editing, id: e.target.value.toUpperCase() })}
+                    placeholder="如 C005 / M002 / S003"
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 font-mono"
+                  />
+                  <p className="mt-1 text-xs text-gray-500">
+                    建議命名：教練 C***、主管 M***、行政 S***、系統管理員 U***；2–10 碼英數，首字母為英文。
+                    <span className="ml-1 font-medium text-amber-700">建立後預設密碼 = 員工編號（首次登入後請改密碼）。</span>
+                  </p>
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="mb-1 block text-sm font-medium text-gray-700">姓名 *</label>
+                  <label className="mb-1 block text-sm font-medium text-gray-700">姓名{isNew ? ' *' : ''}</label>
                   <input
                     value={editing.name || ''}
                     onChange={(e) => setEditing({ ...editing, name: e.target.value })}
@@ -276,85 +305,69 @@ export default function StaffEditModal({ editing, setEditing, venues, busy, onSa
                   />
                 </div>
               </div>
-            </>
-          )}
-          {!isNew && (
-            <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="mb-1 block text-sm font-medium text-gray-700">姓名</label>
-                <input
-                  value={editing.name || ''}
-                  onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+                <label className="mb-1 block text-sm font-medium text-gray-700">角色</label>
+                <select
+                  value={editing.role || 'staff'}
+                  onChange={(e) => setEditing({ ...editing, role: e.target.value })}
                   className="w-full rounded-lg border border-gray-300 px-3 py-2"
-                />
+                >
+                  {ROLE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+                <p className="mt-1 text-xs text-gray-500">變更角色會同步調整其登入後可見的選單與權限。</p>
               </div>
               <div>
-                <label className="mb-1 block text-sm font-medium text-gray-700">手機</label>
-                <input
-                  value={editing.phone || ''}
-                  onChange={(e) => setEditing({ ...editing, phone: e.target.value })}
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2"
+                <label className="mb-1 block text-sm font-medium text-gray-700">所屬場館（可複選）</label>
+                <VenueChipsField
+                  value={Array.isArray(editing.venue_ids) ? editing.venue_ids : (editing.venue_id ? [editing.venue_id] : [])}
+                  venues={venues}
+                  onChange={(ids) => setEditing({ ...editing, venue_ids: ids, venue_id: ids[0] || null })}
                 />
-              </div>
-            </div>
-          )}
-          <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">角色</label>
-            <select
-              value={editing.role || 'staff'}
-              onChange={(e) => setEditing({ ...editing, role: e.target.value })}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2"
-            >
-              {ROLE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </select>
-            <p className="mt-1 text-xs text-gray-500">變更角色會同步調整其登入後可見的選單與權限。</p>
-          </div>
-          <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">所屬場館（可複選）</label>
-            {/* Task #90：多場館 chip 勾選；空陣列代表「不指定」（系統管理員 / 跨館） */}
-            <VenueChipsField
-              value={Array.isArray(editing.venue_ids) ? editing.venue_ids : (editing.venue_id ? [editing.venue_id] : [])}
-              venues={venues}
-              onChange={(ids) => setEditing({ ...editing, venue_ids: ids, venue_id: ids[0] || null })}
-            />
-            <p className="mt-1 text-xs text-gray-500">
-              {editing.role === 'admin'
-                ? '系統管理員可不指定場館（看全部）。'
-                : '主管 / 行政 / 教練：勾選的場館清單就是其權限可見範圍。'}
-            </p>
-          </div>
-          {/* Task #91：教練設定 — 角色 = 教練 或 兼任教練 LIFF 身分皆顯示 */}
-          {editing.role === 'coach' && (
-            <CoachProfileSection
-              editing={editing} setEditing={setEditing}
-              multiplierMin={multiplierMin} multiplierMax={multiplierMax}
-              showActiveToggle={!isNew}
-            />
-          )}
-          {!isNew && editing.role !== 'coach' && (
-            <div className="space-y-3">
-              <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
-                <label className="flex items-center gap-2 text-sm font-medium text-gray-800">
-                  <input
-                    type="checkbox"
-                    checked={!!editing.coach_active}
-                    onChange={(e) => setEditing({ ...editing, coach_active: e.target.checked })}
-                  />
-                  <span>啟用教練 LIFF 身分（兼任教練）</span>
-                </label>
                 <p className="mt-1 text-xs text-gray-500">
-                  勾選後啟用「教練」身分，可在 LIFF 教練端登入並接課；取消勾選只暫停 LIFF 教練權限，coaches 列保留（避免清掉歷史排課 FK）。
+                  {editing.role === 'admin'
+                    ? '系統管理員可不指定場館（看全部）。'
+                    : '主管 / 行政 / 教練：勾選的場館清單就是其權限可見範圍。'}
                 </p>
               </div>
-              {(editing.coach_active || editing.has_coach_profile) && (
+              {!isNew && editing.role !== 'coach' && (
+                <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                  <label className="flex items-center gap-2 text-sm font-medium text-gray-800">
+                    <input
+                      type="checkbox"
+                      checked={!!editing.coach_active}
+                      onChange={(e) => setEditing({ ...editing, coach_active: e.target.checked })}
+                    />
+                    <span>啟用教練 LIFF 身分（兼任教練）</span>
+                  </label>
+                  <p className="mt-1 text-xs text-gray-500">
+                    勾選後啟用「教練」身分，可在 LIFF 教練端登入並接課；取消勾選只暫停 LIFF 教練權限，coaches 列保留（避免清掉歷史排課 FK）。
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* 右欄：教練設定 */}
+            <div className="space-y-4">
+              {showCoachPane ? (
                 <CoachProfileSection
                   editing={editing} setEditing={setEditing}
                   multiplierMin={multiplierMin} multiplierMax={multiplierMax}
-                  showActiveToggle={false}
+                  showActiveToggle={!isNew && editing.role === 'coach'}
                 />
+              ) : (
+                <div className="flex h-full min-h-[260px] flex-col items-center justify-center rounded-xl border border-dashed border-gray-300 bg-gray-50 p-6 text-center">
+                  <p className="text-sm font-medium text-gray-500">教練設定</p>
+                  <p className="mt-2 text-xs text-gray-400 leading-relaxed">
+                    角色選擇「教練」<br/>或勾選「啟用教練 LIFF 身分」<br/>後此處會出現教練專屬欄位<br/>（簡介、修課係數、Email、介紹圖等）。
+                  </p>
+                </div>
               )}
             </div>
-          )}
+          </div>
+        </div>
+
+        {/* Footer — 啟用此帳號（橫跨整列） */}
+        <div className="border-t border-gray-200 bg-gray-50 px-6 py-3">
           <label className="flex items-center gap-2 text-sm">
             <input
               type="checkbox"
@@ -363,22 +376,6 @@ export default function StaffEditModal({ editing, setEditing, venues, busy, onSa
             />
             <span>啟用此帳號（取消勾選會立即停用其後台 login 與 LIFF 身分）</span>
           </label>
-        </div>
-        <div className="mt-5 flex justify-end gap-3">
-          <button
-            onClick={() => setEditing(null)}
-            className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-            disabled={busy}
-          >
-            取消
-          </button>
-          <button
-            onClick={onSave}
-            disabled={busy}
-            className="rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary disabled:opacity-50"
-          >
-            {busy ? '儲存中…' : (isNew ? '建立' : '儲存')}
-          </button>
         </div>
       </div>
     </div>
