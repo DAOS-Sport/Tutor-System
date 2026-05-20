@@ -55,7 +55,13 @@ http.interceptors.response.use(
       try {
         err.response.data.error = `找不到 API：${path}（請重新整理頁面以取得最新版本）`;
         // eslint-disable-next-line no-console
-        console.warn('[admin api 404]', err?.config?.method?.toUpperCase(), path, '— 建議使用者重新整理');
+        console.warn(
+          '[admin api 404]',
+          err?.config?.method?.toUpperCase(),
+          path,
+          '— 建議使用者重新整理。詳細資訊：',
+          { status: err?.response?.status, data: err?.response?.data, baseURL: err?.config?.baseURL, stack: err?.stack },
+        );
       } catch { /* noop */ }
     }
     if (err?.response?.status === 401) {

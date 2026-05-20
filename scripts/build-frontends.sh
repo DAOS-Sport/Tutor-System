@@ -29,4 +29,16 @@ cd "$ROOT/client/liff"
 npm install --no-audit --no-fund
 VITE_USE_MOCK=false VITE_LIFF_ID="${LIFF_ID:-}" npm run build
 
+# 4. 可選：build 完成後串接後台煙霧（需另一個 process 已起 server）
+# SKIP_SMOKE=1 可關閉；SMOKE_BASE 預設 http://localhost:3000
+if [[ "${SKIP_SMOKE:-0}" != "1" ]]; then
+  SMOKE_BASE="${SMOKE_BASE:-http://localhost:3000}"
+  echo "[build] (4/4) running admin smoke against $SMOKE_BASE (set SKIP_SMOKE=1 to skip)"
+  if curl -sf -o /dev/null --max-time 3 "$SMOKE_BASE/health"; then
+    bash "$ROOT/scripts/smoke-admin.sh" "$SMOKE_BASE"
+  else
+    echo "[build] smoke skipped: $SMOKE_BASE/health not reachable (likely deploy-time, no server yet)"
+  fi
+fi
+
 echo "[build] done"
