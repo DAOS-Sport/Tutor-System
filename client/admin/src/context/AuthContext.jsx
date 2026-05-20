@@ -32,16 +32,23 @@ export function AuthProvider({ children }) {
   }, []);
 
   const value = useMemo(
-    () => ({
-      user,
-      isAuthed: !!user,
-      role: user?.role || null,
-      isAdmin: user?.role === 'admin',
-      isManager: user?.role === 'manager',
-      isStaff: user?.role === 'staff',
-      setUser,
-      logout,
-    }),
+    () => {
+      // Task #90：venue_ids 為主，venue_id 是 read-only 第一筆 fallback
+      const venueIds = Array.isArray(user?.venue_ids)
+        ? user.venue_ids
+        : (user?.venue_id ? [user.venue_id] : []);
+      return {
+        user,
+        isAuthed: !!user,
+        role: user?.role || null,
+        isAdmin: user?.role === 'admin',
+        isManager: user?.role === 'manager',
+        isStaff: user?.role === 'staff',
+        venueIds,
+        setUser,
+        logout,
+      };
+    },
     [user]
   );
 

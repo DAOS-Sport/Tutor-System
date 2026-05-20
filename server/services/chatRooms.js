@@ -153,10 +153,17 @@ async function listRoomsForCoach(coachId) {
   return _hydrate(r.rows, { type: 'coach', id: coachId });
 }
 
-async function listRoomsForAdmin({ search, venueId } = {}) {
+async function listRoomsForAdmin({ search, venueId, venueIds } = {}) {
   const args = [];
   const where = [];
-  if (venueId) { args.push(venueId); where.push(`cp.venue_id = $${args.length}`); }
+  // Task #90：venueIds 陣列優先；舊呼叫端 venueId 仍相容
+  if (Array.isArray(venueIds) && venueIds.length) {
+    args.push(venueIds);
+    where.push(`cp.venue_id = ANY($${args.length}::text[])`);
+  } else if (venueId) {
+    args.push(venueId);
+    where.push(`cp.venue_id = $${args.length}`);
+  }
   if (search) {
     args.push(`%${String(search).toLowerCase()}%`);
     const i = args.length;

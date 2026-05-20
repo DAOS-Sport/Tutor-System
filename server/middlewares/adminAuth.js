@@ -51,12 +51,50 @@ function requireAdminAuth(req, res, next) {
     if (!['admin', 'manager', 'staff'].includes(payload.role)) {
       return res.status(403).json({ error: 'Not an admin/manager/staff token' });
     }
+    // Task #90：venue_ids 為主，venue_id 維持作為「主場館 / 第一筆」的向後相容欄位
+    if (!Array.isArray(payload.venue_ids)) {
+      payload.venue_ids = payload.venue_id ? [payload.venue_id] : [];
+    }
+    if (!payload.venue_id && payload.venue_ids.length) {
+      payload.venue_id = payload.venue_ids[0];
+    }
     req.adminUser = payload;
     next();
   } catch (err) {
     return res.status(401).json({ error: 'Invalid or expired token' });
   }
 }
+
+/**
+ * Task #90：抓「目前 admin user 可見的場館清單」。
+ *   - admin            → null（不過濾，全部場館可見）
+ *   - manager / staff  → venue_ids 陣列；若無任何場館 → ['__no_venue__']（fail closed）
+ * 呼叫端應用法：
+ *   const scope = getScopedVenueIds(req);
+ *   if (scope) { args.push(scope); sql += ` AND xxx.venue_id = ANY($n::text[])`; }
+ */
+function getScopedVenueIds(req) {
+  const u = req.adminUser;
+  if (!u) return ['__no_venue__'];
+  if (u.role === 'admin') return null;
+  const ids = Array.isArray(u.venue_ids) ? u.venue_ids.filter(Boolean) : [];
+  return ids.length ? ids : ['__no_venue__'];
+}
+
+/**
+ * Task #90：判斷某筆資料的 venue_id 是否在目前 admin user 的可見範圍內。
+ *   - admin → 永遠允許
+ *   - manager / staff → 必須落在 venue_ids 內，否則 false
+ *   - venueId 為 null / 空 → 視為「未綁定場館」，僅 admin 可操作
+ */
+function isVenueInScope(req, venueId) {
+  const scope = getScopedVenueIds(req);
+  if (scope === null) return true;
+  if (!venueId) return false;
+  return scope.includes(String(venueId));
+}
+
+module.exports.isVenueInScope = isVenueInScope;
 
 function requireAdminRole(...roles) {
   return (req, res, next) => {
@@ -76,4 +114,4 @@ function assertSecretConfigured() {
   }
 }
 
-module.exports = { signToken, verifyToken, requireAdminAuth, requireAdminRole, assertSecretConfigured, getSecret };
+module.exports = { signToken, verifyToken, requireAdminAuth, requireAdminRole, assertSecretConfigured, getSecret, getScopedVenueIds };

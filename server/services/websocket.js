@@ -91,7 +91,11 @@ function initWebSocket(server) {
       return ws.close(4001, 'Invalid token');
     }
     ws.adminRole = payload.role;
-    ws.adminVenueId = payload.venue_id || null;
+    // Task #90：支援多場館員工 — 收 venue_ids 陣列；舊 token 退回 [venue_id]
+    ws.adminVenueIds = Array.isArray(payload.venue_ids) && payload.venue_ids.length
+      ? payload.venue_ids
+      : (payload.venue_id ? [payload.venue_id] : []);
+    ws.adminVenueId = ws.adminVenueIds[0] || null;
     adminClients.add(ws);
     ws.on('close', () => adminClients.delete(ws));
     ws.on('error', () => { try { ws.close(); } catch { /* ignore */ } });
@@ -177,7 +181,9 @@ function broadcastAdminEvent(eventType, payload) {
     // 嚴格 least-privilege：admin 全收；非 admin 必須有 venue_id 且與 payload.venue_id 相符；
     // 任一邊缺 venue_id 一律 drop（避免 staff/manager 帳號設定異常時看到跨場館資料）
     if (c.adminRole !== 'admin') {
-      if (!payload?.venue_id || !c.adminVenueId || c.adminVenueId !== payload.venue_id) continue;
+      // Task #90：event venue_id 須在 client 所屬 venue_ids 內；任一邊缺值一律 drop
+      const ids = c.adminVenueIds && c.adminVenueIds.length ? c.adminVenueIds : (c.adminVenueId ? [c.adminVenueId] : []);
+      if (!payload?.venue_id || !ids.length || !ids.includes(payload.venue_id)) continue;
     }
     try { c.send(data); } catch { /* ignore */ }
   }

@@ -22,10 +22,17 @@ async function listMine(parentId) {
   return r.rows;
 }
 
-async function listForAdmin({ status, venueId } = {}) {
+async function listForAdmin({ status, venueId, venueIds } = {}) {
   const conds = []; const args = [];
   if (status) { args.push(status); conds.push(`t.status = $${args.length}`); }
-  if (venueId) { args.push(venueId); conds.push(`cp.venue_id = $${args.length}`); }
+  // Task #90：venueIds 陣列優先；舊呼叫端 venueId 仍相容
+  if (Array.isArray(venueIds) && venueIds.length) {
+    args.push(venueIds);
+    conds.push(`cp.venue_id = ANY($${args.length}::text[])`);
+  } else if (venueId) {
+    args.push(venueId);
+    conds.push(`cp.venue_id = $${args.length}`);
+  }
   const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
   const r = await pool.query(
     `SELECT t.*, cp.coach_id, cp.venue_id, cp.course_type,

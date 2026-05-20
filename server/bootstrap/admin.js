@@ -318,6 +318,27 @@ async function ensureSchema() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_admin_staff_venue ON admin_staff(venue_id)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_admin_users_active ON admin_users(is_active)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_admin_users_active_venue ON admin_users(is_active, venue_id)`);
+
+  // Task #90：admin_staff_venues 中間表（一員工 ↔ 多場館），idempotent
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS admin_staff_venues (
+      staff_id TEXT NOT NULL REFERENCES admin_staff(id) ON DELETE CASCADE,
+      venue_id TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (staff_id, venue_id)
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_admin_staff_venues_venue ON admin_staff_venues(venue_id)`);
+  // 一次性 backfill：把 admin_staff.venue_id 既有單筆值帶進中間表（idempotent）
+  await pool.query(`
+    INSERT INTO admin_staff_venues (staff_id, venue_id)
+    SELECT s.id, s.venue_id
+      FROM admin_staff s
+     WHERE s.venue_id IS NOT NULL AND s.venue_id <> ''
+       AND NOT EXISTS (
+         SELECT 1 FROM admin_staff_venues sv
+          WHERE sv.staff_id = s.id AND sv.venue_id = s.venue_id
+       )
+  `);
 }
 
 async function seedIfEmpty() {

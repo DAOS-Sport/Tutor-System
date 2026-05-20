@@ -7,7 +7,7 @@
  */
 const express = require('express');
 const { pool } = require('../../models/db');
-const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
+const { requireAdminAuth, requireAdminRole, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
 
 const router = express.Router();
 
@@ -60,9 +60,18 @@ router.get('/', requireAdminAuth, async (req, res) => {
     const days = Math.round((toD - fromD) / 86400000) + 1;
     if (days > 92) return res.status(400).json({ error: 'range max 92 days' });
 
+    // Task #90：staff / manager 鎖在自己所屬全部場館；admin 可帶 venueIds 自由查
     let venueIds;
-    if (req.adminUser.role === 'staff') {
-      venueIds = [req.adminUser.venue_id || '__no_venue__'];
+    const scope = getScopedVenueIds(req);
+    if (scope) {
+      venueIds = scope;
+      if (req.query.venueIds && req.adminUser.role !== 'staff') {
+        // manager 可在自己場館範圍內再縮小
+        const want = String(req.query.venueIds).split(',').map((s) => s.trim()).filter(Boolean);
+        const allowed = new Set(scope);
+        const filtered = want.filter((v) => allowed.has(v));
+        if (filtered.length) venueIds = filtered;
+      }
     } else if (req.query.venueIds) {
       const raw = String(req.query.venueIds);
       venueIds = raw.split(',').map((s) => s.trim()).filter(Boolean);
@@ -85,14 +94,19 @@ router.get('/', requireAdminAuth, async (req, res) => {
 
 router.get('/today', requireAdminAuth, async (req, res) => {
   try {
-    // staff 強制只看自己的場館；admin / manager 可帶 venueId 跨館篩選
-    const venueId = req.adminUser.role === 'staff'
-      ? (req.adminUser.venue_id || '__no_venue__')
-      : req.query.venueId;
-    const sql = venueId
-      ? `SELECT * FROM admin_today_sessions WHERE venue_id = $1 ORDER BY start_time`
-      : `SELECT * FROM admin_today_sessions ORDER BY start_time`;
-    const r = venueId ? await pool.query(sql, [venueId]) : await pool.query(sql);
+    // Task #90：staff/manager 鎖在自己所屬場館集合；admin 可選 venueId 縮小
+    const scope = getScopedVenueIds(req);
+    let sql = `SELECT * FROM admin_today_sessions`;
+    const args = [];
+    if (scope) {
+      args.push(scope);
+      sql += ` WHERE venue_id = ANY($${args.length}::text[])`;
+    } else if (req.query.venueId) {
+      args.push(req.query.venueId);
+      sql += ` WHERE venue_id = $${args.length}`;
+    }
+    sql += ` ORDER BY start_time`;
+    const r = await pool.query(sql, args);
     res.json(r.rows.map(rowToSession));
   } catch (err) {
     console.error('[admin/sessions/today]', err);
@@ -109,10 +123,11 @@ router.get('/verify-checkin', requireAdminAuth, async (req, res) => {
     const args = [];
     if (periodId) { args.push(periodId); where.push(`id = $${args.length}`); }
     if (phone) { args.push(phone); where.push(`parent_phone = $${args.length}`); }
-    // staff 角色：限定本場館；查到別館一律回 found:false（避免推測其他場館報名是否存在）
-    if (req.adminUser.role === 'staff') {
-      args.push(req.adminUser.venue_id || '__no_venue__');
-      where.push(`venue_id = $${args.length}`);
+    // Task #90：staff 限定自己所屬全部場館；查到別館回 found:false
+    const scope = getScopedVenueIds(req);
+    if (scope) {
+      args.push(scope);
+      where.push(`venue_id = ANY($${args.length}::text[])`);
     }
     const r = await pool.query(
       `SELECT * FROM admin_enrollments WHERE ${where.join(' AND ')} ORDER BY submitted_at DESC LIMIT 1`,
@@ -155,7 +170,15 @@ router.get('/verify-checkin', requireAdminAuth, async (req, res) => {
 
 router.get('/cancelled', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
   try {
-    const r = await pool.query(`SELECT * FROM admin_cancelled_sessions ORDER BY date DESC, start_time`);
+    const scope = getScopedVenueIds(req);
+    const args = [];
+    let sql = `SELECT * FROM admin_cancelled_sessions`;
+    if (scope) {
+      args.push(scope);
+      sql += ` WHERE venue_id = ANY($1::text[])`;
+    }
+    sql += ` ORDER BY date DESC, start_time`;
+    const r = await pool.query(sql, args);
     res.json(r.rows.map(rowToCancelled));
   } catch (err) {
     console.error('[admin/sessions/cancelled]', err);
@@ -172,6 +195,10 @@ router.post('/:id/revive', requireAdminAuth, requireAdminRole('admin', 'manager'
     if (!cur.rowCount) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'cancelled session not found' });
+    }
+    if (!isVenueInScope(req, cur.rows[0].venue_id)) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: '此時段不在您的場館範圍內' });
     }
     await client.query(`UPDATE admin_cancelled_sessions SET refunded = TRUE WHERE id = $1`, [id]);
 
@@ -219,7 +246,9 @@ router.post('/checkin', requireAdminAuth, async (req, res) => {
       [enrollmentId]
     );
     if (!e.rowCount) return res.status(404).json({ error: 'enrollment not found' });
-    if (req.adminUser.role === 'staff' && e.rows[0].venue_id !== req.adminUser.venue_id) {
+    // Task #90：簽到場館須在當前 admin 所屬場館清單內
+    const scope = getScopedVenueIds(req);
+    if (scope && !scope.includes(e.rows[0].venue_id)) {
       return res.status(403).json({ error: '無權跨場館簽到' });
     }
     await pool.query(

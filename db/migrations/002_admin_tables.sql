@@ -50,6 +50,17 @@ CREATE TABLE IF NOT EXISTS admin_staff (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Task #90：員工 ↔ 多場館（沿用 coach_venues 模式）
+-- 舊 admin_staff.venue_id / admin_users.venue_id 暫時保留作 read-only fallback，
+-- bootstrap 會把既有單筆 venue_id 一次性 backfill 到此中間表。
+CREATE TABLE IF NOT EXISTS admin_staff_venues (
+  staff_id TEXT NOT NULL REFERENCES admin_staff(id) ON DELETE CASCADE,
+  venue_id TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY (staff_id, venue_id)
+);
+CREATE INDEX IF NOT EXISTS idx_admin_staff_venues_venue ON admin_staff_venues(venue_id);
+
 CREATE TABLE IF NOT EXISTS admin_settings (
   key TEXT PRIMARY KEY,
   value NUMERIC NOT NULL,

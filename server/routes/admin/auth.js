@@ -39,9 +39,16 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ error: '請提供帳號密碼' });
     }
     const r = await pool.query(
-      `SELECT id, username, password_hash, name, role, venue_id, is_active
-         FROM admin_users
-        WHERE username = $1`,
+      `SELECT u.id, u.username, u.password_hash, u.name, u.role, u.venue_id, u.is_active,
+              u.staff_id,
+              COALESCE(
+                (SELECT array_agg(sv.venue_id ORDER BY sv.venue_id)
+                   FROM admin_staff_venues sv WHERE sv.staff_id = u.staff_id),
+                CASE WHEN u.venue_id IS NOT NULL AND u.venue_id <> ''
+                     THEN ARRAY[u.venue_id]::text[] ELSE ARRAY[]::text[] END
+              ) AS venue_ids
+         FROM admin_users u
+        WHERE u.username = $1`,
       [String(username).trim()]
     );
     const u = r.rows[0];
@@ -53,12 +60,16 @@ router.post('/login', async (req, res) => {
       return res.status(403).json({ error: '此帳號已停用，請聯絡系統管理員' });
     }
 
+    const venueIds = Array.isArray(u.venue_ids) ? u.venue_ids.filter(Boolean) : [];
+    const primaryVenue = u.venue_id || venueIds[0] || null;
+
     const token = signToken({
       sub: u.id,
       username: u.username,
       name: u.name,
       role: u.role,
-      venue_id: u.venue_id,
+      venue_id: primaryVenue,       // Task #90：相容欄位（= venue_ids[0]）
+      venue_ids: venueIds,          // Task #90：多場館
     });
 
     await pool.query(`UPDATE admin_users SET updated_at = NOW() WHERE id = $1`, [u.id]);
@@ -68,7 +79,8 @@ router.post('/login', async (req, res) => {
       username: u.username,
       name: u.name,
       role: u.role,
-      venue_id: u.venue_id,
+      venue_id: primaryVenue,
+      venue_ids: venueIds,
       token,
     });
   } catch (err) {

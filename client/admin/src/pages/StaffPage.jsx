@@ -151,9 +151,13 @@ export default function StaffPage() {
           `• 後台登入帳號：${editing.phone || editing.id}\n` +
           `• 預設登入密碼 = 員工編號（${editing.id}），請通知該員工首次登入後立即修改\n\n確認建立？`;
         if (!window.confirm(confirmMsg)) { setBusy(false); return; }
+        const venueIds = Array.isArray(editing.venue_ids)
+          ? editing.venue_ids
+          : (editing.venue_id ? [editing.venue_id] : []);
         const body = {
           id: editing.id, name: editing.name.trim(), role: editing.role,
-          venue_id: editing.venue_id || null,
+          venue_ids: venueIds,
+          venue_id: venueIds[0] || null,
           phone: editing.phone || '',
           is_senior: editing.role === 'coach' ? !!editing.is_senior : false,
           multiplier: editing.role === 'coach' ? Number(editing.multiplier) : 1,
@@ -170,6 +174,9 @@ export default function StaffPage() {
         setStaff(fresh);
         setEditing(null);
       } else {
+        const venueIds = Array.isArray(editing.venue_ids)
+          ? editing.venue_ids
+          : (editing.venue_id ? [editing.venue_id] : []);
         const patch = {
           name: editing.name,
           phone: editing.phone,
@@ -177,7 +184,8 @@ export default function StaffPage() {
           is_senior: editing.role === 'coach' ? !!editing.is_senior : false,
           multiplier: editing.role === 'coach' ? Number(editing.multiplier) : 1,
           active: !!editing.active,
-          venue_id: editing.venue_id || null,
+          venue_ids: venueIds,
+          venue_id: venueIds[0] || null,
         };
         if (editing.role !== 'coach') patch.coach_active = !!editing.coach_active;
         const res = await staffApi.update(editing.id, patch);
@@ -195,7 +203,7 @@ export default function StaffPage() {
 
   function startCreate() {
     setEditing({
-      isNew: true, id: '', name: '', phone: '', role: 'staff', venue_id: '',
+      isNew: true, id: '', name: '', phone: '', role: 'staff', venue_id: '', venue_ids: [],
       is_senior: false, multiplier: 1, active: true,
     });
   }
@@ -205,7 +213,22 @@ export default function StaffPage() {
     { key: 'name', label: '姓名', render: (r) => <span className="font-medium">{r.name}</span> },
     { key: 'role', label: '角色',
       render: (r) => <div className="flex flex-wrap items-center gap-1.5">{roleBadges(r)}</div> },
-    { key: 'venue_id', label: '場館', render: (r) => venueMap[r.venue_id] || '—' },
+    { key: 'venue_ids', label: '場館', render: (r) => {
+        // Task #90：多場館 chip 顯示
+        const ids = Array.isArray(r.venue_ids) && r.venue_ids.length
+          ? r.venue_ids
+          : (r.venue_id ? [r.venue_id] : []);
+        if (!ids.length) return <span className="text-gray-300">—</span>;
+        return (
+          <div className="flex flex-wrap gap-1">
+            {ids.map((vid) => (
+              <span key={vid} className="rounded-full bg-brand-teal/10 px-2 py-0.5 text-xs font-medium text-brand-primary">
+                {venueMap[vid] || vid}
+              </span>
+            ))}
+          </div>
+        );
+      } },
     { key: 'phone', label: '電話' },
     { key: 'is_senior', label: '資深', className: 'text-center',
       render: (r) => r.role === 'coach'

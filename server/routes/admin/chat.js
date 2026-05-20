@@ -14,7 +14,7 @@
  */
 const express = require('express');
 const { pool } = require('../../models/db');
-const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
+const { requireAdminAuth, requireAdminRole, getScopedVenueIds } = require('../../middlewares/adminAuth');
 const chatRooms = require('../../services/chatRooms');
 const { invalidateCache } = require('../../services/keywordScanner');
 
@@ -22,19 +22,27 @@ const router = express.Router();
 
 // ── 聊天室監察 ─────────────────────────────
 // 場館邊界 (broken-access-control 防護)：
-//   admin   → 可看全部，可用 ?venueId= 過濾
-//   manager → 只能看自己場館；忽略 query.venueId
-//   staff   → 只能看自己場館；忽略 query.venueId
-//   無 venue_id 的 manager/staff → fail closed（不可越權看全部）
-function scopedVenueId(req) {
-  if (req.adminUser.role === 'admin') return req.query.venueId;
-  return req.adminUser.venue_id || '__no_venue__';
+//   admin   → 可看全部，可用 ?venueId= / ?venueIds= 過濾
+//   manager → 只能看自己所屬場館清單；忽略不在清單內的 query.venueId
+//   staff   → 同 manager
+//   無 venue_ids 的 manager/staff → fail closed（'__no_venue__' 不會匹配）
+function scopedVenueIdsForChat(req) {
+  const scope = getScopedVenueIds(req);
+  if (!scope) {
+    // admin
+    if (req.query.venueId) return [String(req.query.venueId)];
+    return null;
+  }
+  if (req.query.venueId && scope.includes(String(req.query.venueId))) {
+    return [String(req.query.venueId)];
+  }
+  return scope;
 }
 
 router.get('/rooms', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
   try {
     const list = await chatRooms.listRoomsForAdmin({
-      venueId: scopedVenueId(req),
+      venueIds: scopedVenueIdsForChat(req),
       search: req.query.search,
     });
     res.json(list);
@@ -48,8 +56,9 @@ router.get('/rooms/:id/messages', requireAdminAuth, requireAdminRole('admin', 'm
   try {
     const meta = await chatRooms.getRoomMeta(req.params.id);
     if (!meta) return res.status(404).json({ error: 'not found' });
-    // manager 只能看自己場館的聊天室（避免 IDOR：拿到任意 roomId 跨館讀）
-    if (req.adminUser.role === 'manager' && meta.venue?.id !== req.adminUser.venue_id) {
+    // Task #90：manager 只能看自己所屬場館清單內的聊天室
+    const scope = getScopedVenueIds(req);
+    if (scope && !scope.includes(meta.venue?.id)) {
       return res.status(403).json({ error: 'forbidden' });
     }
     const limit = Math.min(Number(req.query.limit) || 200, 500);
@@ -152,10 +161,11 @@ router.get('/alerts', requireAdminAuth, requireAdminRole('admin', 'manager'), as
     const args = [];
     const wh = [];
     if (status) { args.push(status); wh.push(`a.status = $${args.length}`); }
-    // manager 限定自己場館；無 venue_id 即 fail closed（與 scopedVenueId 一致）
-    if (req.adminUser.role === 'manager') {
-      args.push(req.adminUser.venue_id || '__no_venue__');
-      wh.push(`cp.venue_id = $${args.length}`);
+    // Task #90：manager 限定自己所屬全部場館；無 venue_ids 即 fail closed
+    const scope = getScopedVenueIds(req);
+    if (scope) {
+      args.push(scope);
+      wh.push(`cp.venue_id = ANY($${args.length}::text[])`);
     }
     const where = wh.length ? `WHERE ${wh.join(' AND ')}` : '';
     const r = await pool.query(`
@@ -190,16 +200,16 @@ router.patch('/alerts/:id', requireAdminAuth, requireAdminRole('admin', 'manager
     if (!['pending', 'reviewed', 'no_issue', 'resolved'].includes(status)) {
       return res.status(400).json({ error: 'invalid status' });
     }
-    // manager 只能改自己場館的警示（避免跨館 IDOR）；無 venue_id fail closed
-    if (req.adminUser.role === 'manager') {
-      if (!req.adminUser.venue_id) return res.status(403).json({ error: 'forbidden' });
+    // Task #90：manager 只能改自己所屬場館清單內的警示；無 venue_ids fail closed
+    const scope = getScopedVenueIds(req);
+    if (scope) {
       const own = await pool.query(`
         SELECT cp.venue_id FROM keyword_alerts a
           JOIN chat_rooms cr     ON cr.id = a.chat_room_id
           JOIN course_periods cp ON cp.id = cr.course_period_id
          WHERE a.id = $1`, [req.params.id]);
       if (!own.rowCount) return res.status(404).json({ error: 'not found' });
-      if (own.rows[0].venue_id !== req.adminUser.venue_id) {
+      if (!scope.includes(own.rows[0].venue_id)) {
         return res.status(403).json({ error: 'forbidden' });
       }
     }

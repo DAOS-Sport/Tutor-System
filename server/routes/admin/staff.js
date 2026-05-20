@@ -25,11 +25,14 @@ function rowToStaff(r) {
   const isDualRoleCoach = hasCoachProfile && r.role !== 'coach';
   const coachProfileStatus = !hasCoachProfile ? 'none' : (r.coach_active ? 'active' : 'inactive');
   const knownRoles = Array.from(new Set([r.role, ...(hasCoachProfile ? ['coach'] : [])]));
+  // Task #90：venue_ids 是真實多場館清單；venue_id 維持作為「第一筆」相容
+  const venueIds = Array.isArray(r.venue_ids) ? r.venue_ids.filter(Boolean) : [];
   return {
     id: r.id,
     name: r.name,
     role: r.role,
-    venue_id: r.venue_id,
+    venue_id: r.venue_id || venueIds[0] || null,
+    venue_ids: venueIds,
     phone: r.phone,
     is_senior: !!r.is_senior,
     multiplier: Number(r.multiplier),
@@ -53,11 +56,58 @@ const STAFF_SELECT = `
          c.is_active AS coach_active,
          u.id AS login_user_id,
          u.username AS login_username,
-         u.is_active AS login_is_active
+         u.is_active AS login_is_active,
+         COALESCE(
+           (SELECT array_agg(sv.venue_id ORDER BY sv.venue_id)
+              FROM admin_staff_venues sv WHERE sv.staff_id = s.id),
+           CASE WHEN s.venue_id IS NOT NULL AND s.venue_id <> ''
+                THEN ARRAY[s.venue_id]::text[] ELSE ARRAY[]::text[] END
+         ) AS venue_ids
     FROM admin_staff s
     LEFT JOIN coaches c ON c.ragic_employee_id = s.id
     LEFT JOIN admin_users u ON (u.staff_id = s.id OR (u.staff_id IS NULL AND u.name = s.name))
 `;
+
+/** Task #90：把 admin_staff_venues 與 coach_venues 同步成 venueIds 清單（idempotent）。 */
+async function syncStaffVenues(client, staffId, venueIds) {
+  const list = Array.from(new Set((venueIds || []).filter(Boolean).map(String)));
+  await client.query(`DELETE FROM admin_staff_venues WHERE staff_id = $1`, [staffId]);
+  for (const vid of list) {
+    await client.query(
+      `INSERT INTO admin_staff_venues (staff_id, venue_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      [staffId, vid]
+    );
+  }
+  return list;
+}
+
+async function syncCoachVenues(client, coachId, venueIds) {
+  const list = Array.from(new Set((venueIds || []).filter(Boolean).map(String)));
+  if (!coachId) return;
+  // 只插入確實 active 的場館；不刪原有資料時，需避免「移除一個場館後 coach_venues 還留著」
+  // 策略：先 DELETE 該 coach 全部，再依目前 list 寫回（保持單一事實 = staff 多場館）
+  await client.query(`DELETE FROM coach_venues WHERE coach_id = $1`, [coachId]);
+  if (!list.length) return;
+  const r = await client.query(
+    `SELECT id FROM venues WHERE id = ANY($1::text[]) AND is_active = TRUE`,
+    [list]
+  );
+  for (const row of r.rows) {
+    await client.query(
+      `INSERT INTO coach_venues (coach_id, venue_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      [coachId, row.id]
+    );
+  }
+}
+
+function pickVenueIds(body, fallbackVenueId) {
+  if (Array.isArray(body?.venue_ids)) {
+    return Array.from(new Set(body.venue_ids.filter(Boolean).map((s) => String(s).trim())));
+  }
+  if (body?.venue_id) return [String(body.venue_id).trim()];
+  if (fallbackVenueId) return [String(fallbackVenueId).trim()];
+  return [];
+}
 
 async function setCoachProfileActive(client, staffRow, active) {
   if (staffRow.role === 'coach') return;
@@ -99,16 +149,12 @@ async function setCoachProfileActive(client, staffRow, active) {
   );
 
   const coachId = inserted.rows[0]?.id;
-  if (coachId && staffRow.venue_id) {
-    const venue = await client.query(`SELECT id FROM venues WHERE id = $1 AND is_active = TRUE`, [staffRow.venue_id]);
-    if (venue.rowCount) {
-      await client.query(
-        `INSERT INTO coach_venues (coach_id, venue_id)
-         VALUES ($1, $2)
-         ON CONFLICT DO NOTHING`,
-        [coachId, staffRow.venue_id]
-      );
-    }
+  // Task #90：把 staff 的多場館展開寫入 coach_venues
+  const venueIds = Array.isArray(staffRow.venue_ids) && staffRow.venue_ids.length
+    ? staffRow.venue_ids
+    : (staffRow.venue_id ? [staffRow.venue_id] : []);
+  if (coachId && venueIds.length) {
+    await syncCoachVenues(client, coachId, venueIds);
   }
 }
 
@@ -136,14 +182,12 @@ async function ensureCoachRow(client, staffRow, opts = {}) {
     [staffRow.id, staffRow.name || staffRow.id, phone, isSenior, multiplier, isActive]
   );
   const coachId = inserted.rows[0]?.id;
-  if (coachId && staffRow.venue_id) {
-    const venue = await client.query(`SELECT id FROM venues WHERE id = $1 AND is_active = TRUE`, [staffRow.venue_id]);
-    if (venue.rowCount) {
-      await client.query(
-        `INSERT INTO coach_venues (coach_id, venue_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-        [coachId, staffRow.venue_id]
-      );
-    }
+  // Task #90：把 staff 的多場館展開寫入 coach_venues（取代單筆 INSERT）
+  const venueIds = Array.isArray(staffRow.venue_ids) && staffRow.venue_ids.length
+    ? staffRow.venue_ids
+    : (staffRow.venue_id ? [staffRow.venue_id] : []);
+  if (coachId && venueIds.length) {
+    await syncCoachVenues(client, coachId, venueIds);
   }
 }
 
@@ -157,7 +201,13 @@ router.get('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =>
     const params = [];
     if (status === 'active') where.push(`s.active = TRUE`);
     else if (status === 'inactive') where.push(`s.active = FALSE`);
-    if (venueId) { params.push(venueId); where.push(`s.venue_id = $${params.length}`); }
+    // Task #90：場館篩選 = 「該員工的所屬場館清單 包含 venueId」
+    if (venueId) {
+      params.push(venueId);
+      where.push(`(s.venue_id = $${params.length} OR EXISTS (
+                     SELECT 1 FROM admin_staff_venues sv
+                      WHERE sv.staff_id = s.id AND sv.venue_id = $${params.length}))`);
+    }
     if (role)    { params.push(role);    where.push(`s.role     = $${params.length}`); }
     if (name)    { params.push(`%${name}%`);  where.push(`s.name  ILIKE $${params.length}`); }
     if (phone)   { params.push(`%${phone}%`); where.push(`s.phone ILIKE $${params.length}`); }
@@ -192,7 +242,8 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
     const id = String(body.id || '').trim().toUpperCase();
     const name = String(body.name || '').trim();
     const role = String(body.role || '').trim();
-    const venue_id = body.venue_id ? String(body.venue_id).trim() : null;
+    const venue_ids = pickVenueIds(body);
+    const venue_id = venue_ids[0] || null;  // 相容：admin_staff.venue_id 留第一筆
     const phone = String(body.phone || '').trim();
     const is_senior = role === 'coach' ? !!body.is_senior : false;
     const multiplier = role === 'coach' ? Number(body.multiplier ?? 1) : 1;
@@ -247,9 +298,10 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
       [userId, username, pwdHash, name, loginRole, venue_id, active, id]
     );
+    await syncStaffVenues(client, id, venue_ids);
     if (role === 'coach') {
       // 把 create 表單的 active 傳進去，避免新建一個 active=false 的教練卻在 coaches 表是 TRUE
-      await ensureCoachRow(client, { id, name, phone, venue_id, active }, { multiplier, is_senior, is_active: active });
+      await ensureCoachRow(client, { id, name, phone, venue_id, venue_ids, active }, { multiplier, is_senior, is_active: active });
     }
     await client.query('COMMIT');
 
@@ -286,11 +338,23 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
       }
     }
 
+    // Task #90：先撈現有 venue_ids（若 patch 沒帶就維持現狀）
+    const existingVenuesQ = await client.query(
+      `SELECT array_agg(venue_id ORDER BY venue_id) AS ids FROM admin_staff_venues WHERE staff_id = $1`,
+      [id]
+    );
+    const existingVenueIds = (existingVenuesQ.rows[0]?.ids || []).filter(Boolean);
+    const venueIdsTouched = Array.isArray(patch.venue_ids) || patch.venue_id !== undefined;
+    const newVenueIds = venueIdsTouched
+      ? pickVenueIds(patch)
+      : (existingVenueIds.length ? existingVenueIds : (cur.rows[0].venue_id ? [cur.rows[0].venue_id] : []));
+
     const merged = {
       name: patch.name !== undefined ? String(patch.name).trim() : cur.rows[0].name,
       phone: patch.phone !== undefined ? String(patch.phone || '').trim() : cur.rows[0].phone,
       role: patch.role ?? cur.rows[0].role,
-      venue_id: patch.venue_id !== undefined ? patch.venue_id : cur.rows[0].venue_id,
+      venue_id: newVenueIds[0] || null,
+      venue_ids: newVenueIds,
       is_senior: patch.is_senior != null ? !!patch.is_senior : !!cur.rows[0].is_senior,
       multiplier: patch.multiplier != null ? Number(patch.multiplier) : Number(cur.rows[0].multiplier),
       active: patch.active != null ? !!patch.active : !!cur.rows[0].active,
@@ -337,9 +401,14 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
       [id, merged.name, loginRole, merged.venue_id, merged.active, activeChanged]
     );
 
+    // Task #90：同步 admin_staff_venues
+    if (venueIdsTouched) {
+      await syncStaffVenues(client, id, newVenueIds);
+    }
+
     // 連動 coaches：role 變成 coach → 確保有 coach row；role 從 coach 轉為其它 → 軟下架
     if (merged.role === 'coach') {
-      await ensureCoachRow(client, r.rows[0], { is_active: merged.active });
+      await ensureCoachRow(client, { ...r.rows[0], venue_ids: newVenueIds }, { is_active: merged.active });
       // 同步 coaches 基本欄位 + active_overridden_at（避免後台啟停被 Ragic 覆寫）
       await client.query(
         `UPDATE coaches

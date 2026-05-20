@@ -10,7 +10,7 @@
  */
 const express = require('express');
 const { pool } = require('../../models/db');
-const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
+const { requireAdminAuth, requireAdminRole, getScopedVenueIds } = require('../../middlewares/adminAuth');
 const chatRooms = require('../../services/chatRooms');
 
 const router = express.Router();
@@ -21,7 +21,9 @@ router.post('/:id/activate', requireAdminAuth, requireAdminRole('admin', 'manage
       `SELECT id, venue_id, status FROM course_periods WHERE id = $1`, [req.params.id]
     );
     if (!owns.rowCount) return res.status(404).json({ error: 'period not found' });
-    if (req.adminUser.role === 'manager' && owns.rows[0].venue_id !== req.adminUser.venue_id) {
+    // Task #90：manager 須在自己所屬場館清單內
+    const scope = getScopedVenueIds(req);
+    if (scope && !scope.includes(owns.rows[0].venue_id)) {
       return res.status(403).json({ error: 'forbidden' });
     }
     const out = await chatRooms.transitionPeriodToActive(req.params.id);

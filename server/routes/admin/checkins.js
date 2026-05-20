@@ -7,7 +7,7 @@
  */
 const express = require('express');
 const { pool } = require('../../models/db');
-const { requireAdminAuth } = require('../../middlewares/adminAuth');
+const { requireAdminAuth, getScopedVenueIds } = require('../../middlewares/adminAuth');
 
 const router = express.Router();
 
@@ -22,13 +22,21 @@ router.get('/', requireAdminAuth, async (req, res) => {
   try {
     const date = String(req.query.date || '').trim() || todayInTaipei();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'date format YYYY-MM-DD required' });
-    const venueId = req.adminUser.role === 'staff'
-      ? (req.adminUser.venue_id || '__no_venue__')
-      : (req.query.venueId ? String(req.query.venueId).trim() : null);
+    // Task #90：staff/manager 鎖自己所屬全部場館；admin 可帶 venueId 縮小
+    const scope = getScopedVenueIds(req);
+    let venueIds = null;
+    if (scope) {
+      venueIds = scope;
+      if (req.query.venueId && scope.includes(String(req.query.venueId))) {
+        venueIds = [String(req.query.venueId).trim()];
+      }
+    } else if (req.query.venueId) {
+      venueIds = [String(req.query.venueId).trim()];
+    }
 
     const args = [date];
     let venueWhere = '';
-    if (venueId) { args.push(venueId); venueWhere = ` AND cp.venue_id = $${args.length}`; }
+    if (venueIds) { args.push(venueIds); venueWhere = ` AND cp.venue_id = ANY($${args.length}::text[])`; }
     const recSql = `
       SELECT cr.id            AS checkin_id,
              cr.checked_in_at AS at,
@@ -52,7 +60,7 @@ router.get('/', requireAdminAuth, async (req, res) => {
 
     const args2 = [date];
     let venueWhere2 = '';
-    if (venueId) { args2.push(venueId); venueWhere2 = ` AND ae.venue_id = $${args2.length}`; }
+    if (venueIds) { args2.push(venueIds); venueWhere2 = ` AND ae.venue_id = ANY($${args2.length}::text[])`; }
     const expSql = `
       SELECT ae.id || ':' || extract(epoch from ae.experience_checked_in_at)::bigint AS checkin_id,
              ae.experience_checked_in_at AS at,

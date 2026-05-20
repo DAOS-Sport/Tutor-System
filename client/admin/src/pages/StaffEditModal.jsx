@@ -1,5 +1,43 @@
 import React from 'react';
 
+/** Task #90：場館多選 chip — 已停用場館仍顯示但加註，避免下拉「莫名消失」。 */
+function VenueChipsField({ value, venues, onChange }) {
+  const selected = new Set(value || []);
+  const visible = venues.filter((v) => v.is_active !== false || selected.has(v.id));
+  function toggle(id) {
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    onChange(Array.from(next));
+  }
+  if (!visible.length) {
+    return <p className="rounded-lg border border-dashed border-gray-300 px-3 py-2 text-xs text-gray-400">尚未設定任何場館</p>;
+  }
+  return (
+    <div className="flex flex-wrap gap-2">
+      {visible.map((v) => {
+        const on = selected.has(v.id);
+        const inactive = v.is_active === false;
+        return (
+          <button
+            type="button"
+            key={v.id}
+            onClick={() => toggle(v.id)}
+            className={
+              'rounded-full border px-3 py-1 text-xs font-medium transition ' +
+              (on
+                ? 'border-brand-teal bg-brand-teal text-white'
+                : 'border-gray-300 bg-white text-gray-700 hover:border-brand-teal')
+            }
+            title={inactive ? '此場館已停用' : v.name}
+          >
+            {on ? '✓ ' : ''}{v.name}{inactive ? '（停用）' : ''}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 const ROLE_OPTIONS = [
   { value: 'admin',   label: '系統管理員' },
   { value: 'manager', label: '主管' },
@@ -95,22 +133,18 @@ export default function StaffEditModal({ editing, setEditing, venues, busy, onSa
             <p className="mt-1 text-xs text-gray-500">變更角色會同步調整其登入後可見的選單與權限。</p>
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">所屬場館</label>
-            <select
-              value={editing.venue_id || ''}
-              onChange={(e) => setEditing({ ...editing, venue_id: e.target.value })}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2"
-            >
-              <option value="">— 不指定 —</option>
-              {/* Task #84：過濾停用場館；但若該員工目前所屬館已被停用，仍保留以免下拉「莫名消失」 */}
-              {venues
-                .filter((v) => v.is_active !== false || v.id === editing.venue_id)
-                .map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.name}{v.is_active === false ? '（已停用）' : ''}
-                  </option>
-                ))}
-            </select>
+            <label className="mb-1 block text-sm font-medium text-gray-700">所屬場館（可複選）</label>
+            {/* Task #90：多場館 chip 勾選；空陣列代表「不指定」（系統管理員 / 跨館） */}
+            <VenueChipsField
+              value={Array.isArray(editing.venue_ids) ? editing.venue_ids : (editing.venue_id ? [editing.venue_id] : [])}
+              venues={venues}
+              onChange={(ids) => setEditing({ ...editing, venue_ids: ids, venue_id: ids[0] || null })}
+            />
+            <p className="mt-1 text-xs text-gray-500">
+              {editing.role === 'admin'
+                ? '系統管理員可不指定場館（看全部）。'
+                : '主管 / 行政 / 教練：勾選的場館清單就是其權限可見範圍。'}
+            </p>
           </div>
           {editing.role === 'coach' && (
             <>

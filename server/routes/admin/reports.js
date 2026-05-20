@@ -10,7 +10,7 @@
  */
 const express = require('express');
 const { pool } = require('../../models/db');
-const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
+const { requireAdminAuth, requireAdminRole, getScopedVenueIds } = require('../../middlewares/adminAuth');
 
 const router = express.Router();
 router.use(requireAdminAuth, requireAdminRole('admin', 'manager'));
@@ -24,9 +24,22 @@ function parseRange(q) {
   return { from, to };
 }
 
+/**
+ * Task #90：回傳 { venueIds: string[] | null }
+ *  - null → admin 未指定 venueId（不過濾）
+ *  - 陣列 → 套 WHERE xxx.venue_id = ANY($n::text[])
+ *  manager/staff 鎖自己所屬全部場館；admin 可在 query.venueId 縮小成單筆。
+ */
 function venueScope(req) {
-  if (req.adminUser.role === 'staff') return req.adminUser.venue_id || '__no__';
-  return req.query.venueId || null;
+  const scope = getScopedVenueIds(req);
+  if (!scope) {
+    if (req.query.venueId) return [String(req.query.venueId)];
+    return null;
+  }
+  if (req.query.venueId && scope.includes(String(req.query.venueId))) {
+    return [String(req.query.venueId)];
+  }
+  return scope;
 }
 
 // 給報表頁的篩選下拉用：manager 可呼叫的輕量教練清單（admin staff 端點需 admin role）
@@ -42,10 +55,10 @@ router.get('/coach-options', async (req, res) => {
 router.get('/revenue', async (req, res) => {
   try {
     const { from, to } = parseRange(req.query);
-    const venueId = venueScope(req);
+    const venueIds = venueScope(req);
     const conds = [`cp.created_at::date BETWEEN $1 AND $2`];
     const args = [from, to];
-    if (venueId) { args.push(venueId); conds.push(`cp.venue_id = $${args.length}`); }
+    if (venueIds) { args.push(venueIds); conds.push(`cp.venue_id = ANY($${args.length}::text[])`); }
     if (req.query.coachId) { args.push(req.query.coachId); conds.push(`cp.coach_id = $${args.length}`); }
     if (req.query.courseType) { args.push(Number(req.query.courseType)); conds.push(`cp.course_type = $${args.length}`); }
     const r = await pool.query(
@@ -67,10 +80,10 @@ router.get('/revenue', async (req, res) => {
 router.get('/sessions', async (req, res) => {
   try {
     const { from, to } = parseRange(req.query);
-    const venueId = venueScope(req);
+    const venueIds = venueScope(req);
     const conds = [`cp.created_at::date <= $2`];
     const args = [from, to];
-    if (venueId) { args.push(venueId); conds.push(`cp.venue_id = $${args.length}`); }
+    if (venueIds) { args.push(venueIds); conds.push(`cp.venue_id = ANY($${args.length}::text[])`); }
     if (req.query.coachId) { args.push(req.query.coachId); conds.push(`cp.coach_id = $${args.length}`); }
     const r = await pool.query(
       `SELECT cp.venue_id, cp.coach_id, co.name AS coach_name,
@@ -91,12 +104,12 @@ router.get('/sessions', async (req, res) => {
 router.get('/discounts', async (req, res) => {
   try {
     const { from, to } = parseRange(req.query);
-    const venueId = venueScope(req);
+    const venueIds = venueScope(req);
     const conds = [`pu.created_at::date BETWEEN $1 AND $2`];
     const args = [from, to];
-    if (venueId) {
-      args.push(venueId);
-      conds.push(`(cp.venue_id = $${args.length} OR cp.venue_id IS NULL)`);
+    if (venueIds) {
+      args.push(venueIds);
+      conds.push(`(cp.venue_id = ANY($${args.length}::text[]) OR cp.venue_id IS NULL)`);
     }
     const r = await pool.query(
       `SELECT p.id, p.name, p.coupon_code, p.type,
@@ -119,15 +132,15 @@ router.get('/discounts', async (req, res) => {
 router.get('/mgm-conversion', async (req, res) => {
   try {
     const { from, to } = parseRange(req.query);
-    const venueId = venueScope(req);
+    const venueIds = venueScope(req);
     const args = [from, to];
     const conds = [];
     if (req.query.coachId) { args.push(req.query.coachId); conds.push(`rr.coach_id = $${args.length}`); }
-    if (venueId) {
-      args.push(venueId);
+    if (venueIds) {
+      args.push(venueIds);
       // venue 由 referee enrollment 對應 admin_enrollments.venue_id 推得
       conds.push(`EXISTS (SELECT 1 FROM admin_enrollments ae
-                            WHERE ae.id = rr.experience_enrollment_id AND ae.venue_id = $${args.length})`);
+                            WHERE ae.id = rr.experience_enrollment_id AND ae.venue_id = ANY($${args.length}::text[]))`);
     }
     const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
     const r = await pool.query(
@@ -159,10 +172,10 @@ router.get('/mgm-conversion', async (req, res) => {
 router.get('/learning-completion', async (req, res) => {
   try {
     const { from, to } = parseRange(req.query);
-    const venueId = venueScope(req);
+    const venueIds = venueScope(req);
     const conds = [`cp.created_at::date BETWEEN $1 AND $2`, `co.is_senior = TRUE`];
     const args = [from, to];
-    if (venueId) { args.push(venueId); conds.push(`cp.venue_id = $${args.length}`); }
+    if (venueIds) { args.push(venueIds); conds.push(`cp.venue_id = ANY($${args.length}::text[])`); }
     if (req.query.coachId) { args.push(req.query.coachId); conds.push(`cp.coach_id = $${args.length}`); }
     const r = await pool.query(
       `SELECT cp.coach_id, co.name AS coach_name,

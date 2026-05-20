@@ -12,7 +12,7 @@
  */
 const express = require('express');
 const { pool } = require('../../models/db');
-const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
+const { requireAdminAuth, requireAdminRole, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
 
 const router = express.Router();
 
@@ -76,15 +76,23 @@ async function readEnrollment(id) {
 router.get('/', requireAdminAuth, async (req, res) => {
   try {
     const { status, search } = req.query;
-    // 場館範圍：staff 角色強制鎖在自己的 venue（忽略 client 端傳來的 venueId）；
-    // admin / manager 才能用 venueId query 跨館篩選。
-    const venueId = req.adminUser.role === 'staff'
-      ? (req.adminUser.venue_id || '__no_venue__')
-      : req.query.venueId;
+    // Task #90：場館範圍 — staff/manager 鎖在自己所屬全部場館；admin 可帶 venueId 自由查
+    const scope = getScopedVenueIds(req);
     const where = [];
     const args = [];
     if (status) { args.push(status); where.push(`status = $${args.length}`); }
-    if (venueId) { args.push(venueId); where.push(`venue_id = $${args.length}`); }
+    if (scope) {
+      args.push(scope);
+      where.push(`venue_id = ANY($${args.length}::text[])`);
+      // manager 可在自己場館範圍內再用 venueId 縮小
+      if (req.query.venueId && scope.includes(String(req.query.venueId))) {
+        args.push(String(req.query.venueId));
+        where.push(`venue_id = $${args.length}`);
+      }
+    } else if (req.query.venueId) {
+      args.push(req.query.venueId);
+      where.push(`venue_id = $${args.length}`);
+    }
     if (search) {
       args.push(`%${search.toLowerCase()}%`);
       const idx = args.length;
@@ -129,6 +137,10 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin', 'manager'), asy
     }
 
     const row = cur.rows[0];
+    if (!isVenueInScope(req, row.venue_id)) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: '此報名不在您的場館範圍內' });
+    }
     if (['cancelled', 'refunded'].includes(row.status)) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: `狀態 ${row.status} 的報名不可再編輯` });
@@ -361,6 +373,10 @@ router.post('/:id/reconcile', requireAdminAuth, requireAdminRole('admin', 'manag
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'enrollment not found' });
     }
+    if (!isVenueInScope(req, cur.rows[0].venue_id)) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: '此報名不在您的場館範圍內' });
+    }
     if (cur.rows[0].status !== 'pending_payment') {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: '此筆狀態非待對帳' });
@@ -467,6 +483,9 @@ router.get('/:id/refund-preview', requireAdminAuth, requireAdminRole('admin', 'm
   try {
     const preview = await computeRefundPreview(req.params.id);
     if (!preview) return res.status(404).json({ error: 'enrollment not found' });
+    if (!isVenueInScope(req, preview.enrollment.venue_id)) {
+      return res.status(403).json({ error: '此報名不在您的場館範圍內' });
+    }
     res.json(preview);
   } catch (err) {
     console.error('[admin/enrollments/:id/refund-preview]', err);
@@ -490,6 +509,10 @@ router.post('/:id/refund', requireAdminAuth, requireAdminRole('admin', 'manager'
     if (!preview) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'enrollment not found' });
+    }
+    if (!isVenueInScope(req, preview.enrollment.venue_id)) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: '此報名不在您的場館範圍內' });
     }
 
     await client.query(
