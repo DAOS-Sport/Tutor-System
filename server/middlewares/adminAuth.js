@@ -94,8 +94,6 @@ function isVenueInScope(req, venueId) {
   return scope.includes(String(venueId));
 }
 
-module.exports.isVenueInScope = isVenueInScope;
-
 function requireAdminRole(...roles) {
   return (req, res, next) => {
     if (!req.adminUser) return res.status(401).json({ error: 'Unauthenticated' });
@@ -114,4 +112,4 @@ function assertSecretConfigured() {
   }
 }
 
-module.exports = { signToken, verifyToken, requireAdminAuth, requireAdminRole, assertSecretConfigured, getSecret, getScopedVenueIds };
+module.exports = { signToken, verifyToken, requireAdminAuth, requireAdminRole, assertSecretConfigured, getSecret, getScopedVenueIds, isVenueInScope };
