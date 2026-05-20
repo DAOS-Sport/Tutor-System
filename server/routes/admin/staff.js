@@ -169,7 +169,7 @@ async function applyCoachProfilePatch(client, staffId, profile) {
   );
 }
 
-async function setCoachProfileActive(client, staffRow, active) {
+async function setCoachProfileActive(client, staffRow, active, opts = {}) {
   if (staffRow.role === 'coach') return;
   const desiredActive = !!active;
 
@@ -192,20 +192,29 @@ async function setCoachProfileActive(client, staffRow, active) {
     throw err;
   }
 
+  // Task #91 fix：dual-role 教練啟用時 honor staff 的 is_senior / multiplier，
+  // 否則第一次啟用會被強制歸 0 / 1.00，編輯彈窗改的係數 / 資深旗會被吃掉。
+  const isSenior = opts.is_senior != null ? !!opts.is_senior : !!staffRow.is_senior;
+  const multiplier = opts.multiplier != null
+    ? Number(opts.multiplier)
+    : Number(staffRow.multiplier || 1);
+
   const bio = `${staffRow.name || staffRow.id} 兼任行政櫃檯與基礎課程教練。`;
   const inserted = await client.query(
     `INSERT INTO coaches
        (ragic_employee_id, name, phone, email, is_senior, pricing_multiplier,
         specialties, bio_rich_text, is_active, intro_review_status, active_overridden_at)
-     VALUES ($1, $2, $3, '', FALSE, 1.00, ARRAY['兼任櫃檯']::text[], $4, TRUE, 'draft', NOW())
+     VALUES ($1, $2, $3, '', $4, $5, ARRAY['兼任櫃檯']::text[], $6, TRUE, 'draft', NOW())
      ON CONFLICT (ragic_employee_id) DO UPDATE SET
        name = EXCLUDED.name,
        phone = EXCLUDED.phone,
+       is_senior = EXCLUDED.is_senior,
+       pricing_multiplier = EXCLUDED.pricing_multiplier,
        is_active = TRUE,
        active_overridden_at = NOW(),
        updated_at = NOW()
      RETURNING id`,
-    [staffRow.id, staffRow.name || staffRow.id, phone, bio]
+    [staffRow.id, staffRow.name || staffRow.id, phone, isSenior, multiplier, bio]
   );
 
   const coachId = inserted.rows[0]?.id;
@@ -310,7 +319,9 @@ router.get('/coaches',
   async (req, res) => {
     try {
       const { venueId, status = 'active' } = req.query;
-      const where = [`s.role = 'coach'`, `c.id IS NOT NULL`];
+      // Task #91 fix：包含 dual-role 兼任教練（s.role != 'coach' 但 c.id 存在且 c.is_active=TRUE）。
+      // 否則「行政櫃檯啟用教練 LIFF 身分」之後，報名 / 排課的教練下拉看不到他。
+      const where = [`c.id IS NOT NULL`, `(s.role = 'coach' OR c.is_active = TRUE)`];
       const params = [];
       if (status === 'active') {
         where.push(`s.active = TRUE`);
@@ -579,7 +590,10 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
 
     // Task #91：非 coach 角色也可由 coach_profile.is_active 翻轉 coach 身分（兼任）
     if (patch.coach_active !== undefined && merged.role !== 'coach') {
-      await setCoachProfileActive(client, r.rows[0], patch.coach_active);
+      await setCoachProfileActive(client, r.rows[0], patch.coach_active, {
+        is_senior: merged.is_senior,
+        multiplier: merged.multiplier,
+      });
       // 啟用後若還帶了 coach_profile 內容，套用 bio / specialties 等
       if (patch.coach_active && coachProfilePatch) {
         await applyCoachProfilePatch(client, id, coachProfilePatch);
@@ -587,6 +601,22 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
     } else if (merged.role !== 'coach' && coachProfilePatch) {
       // 已有 coach 兼任身分 → 直接套 bio/specialties（不翻 is_active）
       await applyCoachProfilePatch(client, id, coachProfilePatch);
+    }
+    // Task #91 fix：dual-role 教練（role!='coach' 但 coach row 已存在且啟用）也要同步
+    //                is_senior / multiplier 到 coaches，否則 admin 在彈窗改了不會生效。
+    if (merged.role !== 'coach' && patch.coach_active === undefined) {
+      const cExist = await client.query(
+        `SELECT id, is_active FROM coaches WHERE ragic_employee_id = $1`, [id]
+      );
+      if (cExist.rowCount && cExist.rows[0].is_active &&
+          (patch.is_senior !== undefined || patch.multiplier !== undefined)) {
+        await client.query(
+          `UPDATE coaches
+              SET is_senior = $2, pricing_multiplier = $3, updated_at = NOW()
+            WHERE ragic_employee_id = $1`,
+          [id, merged.is_senior, merged.multiplier]
+        );
+      }
     }
     await client.query('COMMIT');
 

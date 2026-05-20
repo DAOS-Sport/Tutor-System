@@ -159,9 +159,17 @@ export default function StaffPage() {
           venue_id: venueIds[0] || null,
           phone: editing.phone || '',
           is_senior: editing.role === 'coach' ? !!editing.is_senior : false,
-          multiplier: editing.role === 'coach' ? Number(editing.multiplier) : 1,
+          multiplier: editing.role === 'coach' ? Number(editing.multiplier || 1) : 1,
           active: editing.active !== false,
         };
+        // Task #91：新建教練時若彈窗已填 coach_profile，連同 bio / specialties / email 一起送
+        if (editing.role === 'coach' && editing.coach_profile) {
+          body.coach_profile = {
+            bio_rich_text: editing.coach_profile.bio_rich_text ?? '',
+            specialties: Array.isArray(editing.coach_profile.specialties) ? editing.coach_profile.specialties : [],
+            email: editing.coach_profile.email ?? '',
+          };
+        }
         const res = await staffApi.create(body);
         toast.success(`已建立 ${res.name}（${res.id}）`);
         setCreatedHint({
@@ -176,19 +184,22 @@ export default function StaffPage() {
         const venueIds = Array.isArray(editing.venue_ids)
           ? editing.venue_ids
           : (editing.venue_id ? [editing.venue_id] : []);
+        // Task #91：dual-role 教練（角色非 coach 但勾選 coach_active）也應同步傳 is_senior / multiplier，
+        // 否則 backend 會把這些欄位歸 0 / 1，造成「兼任教練改了係數但其實沒存進去」。
+        const coachIdentityOn = editing.role === 'coach' || editing.coach_active || editing.has_coach_profile;
         const patch = {
           name: editing.name,
           phone: editing.phone,
           role: editing.role,
-          is_senior: editing.role === 'coach' ? !!editing.is_senior : false,
-          multiplier: editing.role === 'coach' ? Number(editing.multiplier) : 1,
+          is_senior: coachIdentityOn ? !!editing.is_senior : false,
+          multiplier: coachIdentityOn ? Number(editing.multiplier || 1) : 1,
           active: !!editing.active,
           venue_ids: venueIds,
           venue_id: venueIds[0] || null,
         };
         if (editing.role !== 'coach') patch.coach_active = !!editing.coach_active;
         // Task #91：若編輯彈窗動過 coach_profile，連同 bio / specialties / email 一起送
-        if (editing.coach_profile && (editing.role === 'coach' || editing.coach_active || editing.has_coach_profile)) {
+        if (editing.coach_profile && coachIdentityOn) {
           patch.coach_profile = {
             bio_rich_text: editing.coach_profile.bio_rich_text ?? '',
             specialties: Array.isArray(editing.coach_profile.specialties) ? editing.coach_profile.specialties : [],
