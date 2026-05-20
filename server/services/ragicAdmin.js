@@ -108,6 +108,14 @@ function _extractStaffVenueIds(r) {
   return ids;
 }
 
+// Task #92：normalize 員工編號比對 key。
+// admin 手建員工可能輸入 'c001' / ' C001 '，Ragic 回 'C001'，
+// 用原值比對會比不到 → 整筆被當 'new' 重新 stage，員工就會出現「已建檔卻又進待審核」。
+// 一律 trim + toUpperCase 做比對 key；DB 上的 PK 仍以實際儲存值為準。
+function _normalizeStaffId(v) {
+  return String(v == null ? '' : v).trim().toUpperCase();
+}
+
 async function _syncStaffImpl() {
   if (!ragicEnabled()) return { synced: 0, skipped: true };
   try {
@@ -115,15 +123,18 @@ async function _syncStaffImpl() {
     const dbRows = (await pool.query(
       `SELECT id, name, phone, role, active, active_overridden_at FROM admin_staff`
     )).rows;
-    const dbMap = new Map(dbRows.map(r => [r.id, r]));
-    const seenIds = new Set();
+    // key 用 normalize 過的值，value 保留 DB 原始 row（含 PK 原始大小寫）
+    const dbMap = new Map(dbRows.map(r => [_normalizeStaffId(r.id), r]));
+    const seenKeys = new Set();
     let staged = 0;
 
     for (const r of records) {
       const ragicId = r['員工編號'] || r['工號'] || r['3000935'];
       if (!ragicId) continue;
-      const id = String(ragicId);
-      seenIds.add(id);
+      const rawId = String(ragicId).trim();
+      const id = _normalizeStaffId(rawId);
+      if (!id) continue;
+      seenKeys.add(id);
       const name = r['姓名'] || r['3000933'] || '';
       const phone = r['手機'] || r['手機（公司）'] || r['3001424'] || r['手機（個人）'] || r['3000941'] || '';
       // Task #91 後續：Ragic H01 公司 E-mail（field 3000940）也納入 staff sync，
@@ -139,17 +150,20 @@ async function _syncStaffImpl() {
       const isActive = (r['在職狀態'] || r['3000945']) === '在職';
       // Task #90：解析 Ragic H01 多場館欄位（主場館 + 支援場館），合併為陣列
       const venueIds = _extractStaffVenueIds(r);
-      const payload = { id, name, phone, email, role: roleVal, is_active: isActive, venue_ids: venueIds };
+      const cur = dbMap.get(id);
+      // 套用至正式表時 entity_id 必須對到實際 DB PK（保留原始大小寫），
+      // 新增則以 normalized 形式落地，避免日後再被當成新人。
+      const entityId = cur ? cur.id : id;
+      const payload = { id: entityId, name, phone, email, role: roleVal, is_active: isActive, venue_ids: venueIds };
 
       // 查目前 coaches.email 作為 diff 比對基準（admin_staff 本身沒有 email 欄位）
       const coachEmailRes = await pool.query(
-        `SELECT email FROM coaches WHERE ragic_employee_id = $1`, [id]
+        `SELECT email FROM coaches WHERE ragic_employee_id = $1`, [entityId]
       );
       const curCoachEmail = coachEmailRes.rows[0]?.email || '';
 
-      const cur = dbMap.get(id);
       if (!cur) {
-        if (await _stageIfNotRejected('H01_STAFF', 'staff', id, 'new', payload, null)) staged++;
+        if (await _stageIfNotRejected('H01_STAFF', 'staff', entityId, 'new', payload, null)) staged++;
         continue;
       }
       const diff = {};
@@ -166,7 +180,7 @@ async function _syncStaffImpl() {
       // Task #90：venue_ids 差異偵測（純場館異動也要 stage）
       const curVenuesRes = await pool.query(
         `SELECT venue_id FROM admin_staff_venues WHERE staff_id = $1 ORDER BY venue_id`,
-        [id]
+        [entityId]
       );
       const curVenues = curVenuesRes.rows.map(x => x.venue_id);
       const newVenues = [...venueIds].sort();
@@ -176,15 +190,15 @@ async function _syncStaffImpl() {
         diff.venue_ids = { from: curVenuesSorted, to: newVenues };
       }
       if (Object.keys(diff).length > 0) {
-        if (await _stageIfNotRejected('H01_STAFF', 'staff', id, 'update', payload, diff)) staged++;
+        if (await _stageIfNotRejected('H01_STAFF', 'staff', entityId, 'update', payload, diff)) staged++;
       } else {
-        await _markPendingResolved('staff', id);
+        await _markPendingResolved('staff', entityId);
       }
     }
 
     // Ragic 名單外 + 仍 active + 未 override → deactivate stage
     for (const r of dbRows) {
-      if (!r.active || r.active_overridden_at != null || seenIds.has(r.id)) continue;
+      if (!r.active || r.active_overridden_at != null || seenKeys.has(_normalizeStaffId(r.id))) continue;
       const payload = { id: r.id, name: r.name, is_active: false };
       const diff = { active: { from: true, to: false } };
       if (await _stageIfNotRejected('H01_STAFF', 'staff', r.id, 'deactivate', payload, diff)) staged++;
@@ -196,11 +210,6 @@ async function _syncStaffImpl() {
   }
 }
 
-/**
- * 教練 Ragic 同步（H01 在職 + 應徵職務含「教練」→ coaches）
- * - 系統內部欄位（is_senior / pricing_multiplier / specialties / bio / intro_review_status）不覆寫
- * - is_active：尊重 active_overridden_at（後台手動勾啟用 → 下一輪不被覆蓋）
- */
 function extractLineUid(r) {
   const explicit = process.env.RAGIC_FIELD_H01_LINE_UID;
   if (explicit && r[explicit]) return String(r[explicit]).trim();
@@ -217,66 +226,10 @@ function extractLineUid(r) {
   return '';
 }
 
-async function _syncCoachesImpl() {
-  if (!ragicEnabled()) return { synced: 0, skipped: true };
-  try {
-    const records = await ragic.getActiveCoaches();
-    const dbRows = (await pool.query(
-      `SELECT ragic_employee_id, name, phone, email, line_uid, is_active, active_overridden_at
-         FROM coaches WHERE ragic_employee_id IS NOT NULL`
-    )).rows;
-    const dbMap = new Map(dbRows.map(r => [r.ragic_employee_id, r]));
-    const seenIds = new Set();
-    let staged = 0;
-
-    for (const r of records) {
-      const ragicId = r['員工編號'] || r['工號'] || r['3000935'];
-      if (!ragicId) continue;
-      const name = r['姓名'] || r['3000933'] || '';
-      const phone = r['手機'] || r['手機（公司）'] || r['3001424'] || r['手機（個人）'] || r['3000941'] || '';
-      const email = r['E-mail'] || r['Email'] || r['email'] || r['信箱'] || '';
-      const lineUid = extractLineUid(r);
-      if (!name || !phone) continue;
-      const id = String(ragicId);
-      seenIds.add(id);
-      const payload = { ragic_employee_id: id, name, phone, email, line_uid: lineUid, is_active: true };
-
-      const cur = dbMap.get(id);
-      if (!cur) {
-        if (await _stageIfNotRejected('H01_COACHES', 'coach', id, 'new', payload, null)) staged++;
-        continue;
-      }
-      const diff = {};
-      if ((cur.name || '') !== name) diff.name = { from: cur.name || '', to: name };
-      if ((cur.phone || '') !== phone) diff.phone = { from: cur.phone || '', to: phone };
-      // email 規則：Ragic 有值且與 DB 不同才視為 diff（DB 已有值不強制覆寫，但會顯示給 admin 確認）
-      if (email && (cur.email || '') !== email) diff.email = { from: cur.email || '', to: email };
-      // line_uid 規則：DB 沒值 + Ragic 有值才 diff（避免覆蓋已綁定的 line_uid）
-      if (lineUid && !cur.line_uid) diff.line_uid = { from: '', to: lineUid };
-      // is_active：only stage if currently inactive and not overridden
-      if (cur.active_overridden_at == null && !cur.is_active) {
-        diff.is_active = { from: false, to: true };
-      }
-      if (Object.keys(diff).length > 0) {
-        if (await _stageIfNotRejected('H01_COACHES', 'coach', id, 'update', payload, diff)) staged++;
-      } else {
-        await _markPendingResolved('coach', id);
-      }
-    }
-
-    // 不在 Ragic 在職清單 + 仍 active + 未 override → deactivate stage
-    for (const r of dbRows) {
-      if (!r.is_active || r.active_overridden_at != null || seenIds.has(r.ragic_employee_id)) continue;
-      const payload = { ragic_employee_id: r.ragic_employee_id, name: r.name, is_active: false };
-      const diff = { is_active: { from: true, to: false } };
-      if (await _stageIfNotRejected('H01_COACHES', 'coach', r.ragic_employee_id, 'deactivate', payload, diff)) staged++;
-    }
-    return { synced: staged, staged, skipped: false };
-  } catch (err) {
-    console.warn('[Ragic sync] coaches failed:', err.message);
-    return { synced: 0, error: err.message };
-  }
-}
+// Task #94：F-C-Admin 已併入員工帳號管理（Task #91），coaches 獨立 sync 已下架。
+// _syncCoachesImpl / syncCoachesFromRagic / kickoffSyncCoachesAsync 三個入口一併移除，
+// 避免外部誤呼叫後落到 _runWithLog('coaches') → 'unknown ragic sync job: coaches'。
+// 教練 1:1 行的 upsert 由 staff 流程透過 ensureCoachRow 自動處理。
 
 /**
  * 場館 Ragic 同步（H05 vs admin_venues，差異寫進 staging）。
@@ -576,9 +529,8 @@ function _kickoff(key, fn) {
   });
 }
 
-function kickoffSyncStaffAsync()   { _kickoff('staff',   syncStaffFromRagic); }
-function kickoffSyncCoachesAsync() { _kickoff('coaches', syncCoachesFromRagic); }
-function kickoffSyncVenuesAsync()  { _kickoff('venues',  syncVenuesFromRagic); }
+function kickoffSyncStaffAsync()  { _kickoff('staff',  syncStaffFromRagic); }
+function kickoffSyncVenuesAsync() { _kickoff('venues', syncVenuesFromRagic); }
 
 // ─────────────────────────────────────────────────────────────
 // Task #65：同步紀錄 + 健康檢查 helpers
@@ -610,11 +562,14 @@ async function _pingZ02Impl() {
 // Task #91：F-C-Admin 已合併至員工帳號管理；coaches 不再列為獨立 sync job。
 // staff sync 已會順帶 upsert coaches 1:1 行（透過 ragic_employee_id 對應），
 // 因此 FORM_META 移除 coaches 入口，避免後台「Ragic 狀態」頁顯示一張無法觸發的卡片。
+// Task #94：kind 區分「bulk sync 全表同步」與「healthcheck 連線 ping」。
+// 前者真的會把 Ragic 差異寫進 staging 區；後者只發一筆 where=eq 驗證端點可用，
+// last_count 通常 0—1，並非「同步多少筆資料」。前端依此切換 UI 文案。
 const FORM_META = {
-  staff:    { code: 'H01_STAFF',    label: 'H01 員工 + 教練 (admin_staff + coaches)', impl: _syncStaffImpl, env: 'RAGIC_FORM_H01' },
-  venues:   { code: 'H05_VENUES',   label: 'H05 場館 (venues)',       impl: _syncVenuesImpl,  env: 'RAGIC_FORM_H05' },
-  parents:  { code: 'Z01_PARENTS',  label: 'Z01 家長 (按請求查詢)',   impl: _pingZ01Impl,     env: 'RAGIC_FORM_Z01' },
-  students: { code: 'Z02_STUDENTS', label: 'Z02 學員 (按請求查詢)',   impl: _pingZ02Impl,     env: 'RAGIC_FORM_Z02' },
+  staff:    { code: 'H01_STAFF',    label: 'H01 員工 + 教練 (admin_staff + coaches)', kind: 'sync',        impl: _syncStaffImpl,  env: 'RAGIC_FORM_H01' },
+  venues:   { code: 'H05_VENUES',   label: 'H05 場館 (venues)',                       kind: 'sync',        impl: _syncVenuesImpl, env: 'RAGIC_FORM_H05' },
+  parents:  { code: 'Z01_PARENTS',  label: 'Z01 家長 (按請求查詢)',                   kind: 'healthcheck', impl: _pingZ01Impl,    env: 'RAGIC_FORM_Z01' },
+  students: { code: 'Z02_STUDENTS', label: 'Z02 學員 (按請求查詢)',                   kind: 'healthcheck', impl: _pingZ02Impl,    env: 'RAGIC_FORM_Z02' },
 };
 
 async function _logSyncResult(jobName, formCode, result, durationMs, triggeredBy) {
@@ -662,7 +617,6 @@ function isJobRunning(jobName) { return _inflight.has(jobName); }
 function getRunningJobs() { return Array.from(_inflight.keys()); }
 
 async function syncStaffFromRagic(triggeredBy = 'cron')    { return _singleflight('staff',    triggeredBy); }
-async function syncCoachesFromRagic(triggeredBy = 'cron')  { return _singleflight('coaches',  triggeredBy); }
 async function syncVenuesFromRagic(triggeredBy = 'cron')   { return _singleflight('venues',   triggeredBy); }
 async function pingParentsFromRagic(triggeredBy = 'cron')  { return _singleflight('parents',  triggeredBy); }
 async function pingStudentsFromRagic(triggeredBy = 'cron') { return _singleflight('students', triggeredBy); }
@@ -700,6 +654,7 @@ async function getSyncStatusSnapshot() {
     out[job] = {
       form_code: meta.code,
       label: meta.label,
+      kind: meta.kind || 'sync',
       in_progress:           isJobRunning(job),
       last_run_at:           latest.rows[0]?.created_at      || null,
       last_status:           latest.rows[0]?.status          || null,
@@ -931,13 +886,11 @@ async function applyVenueSync(selections = {}) {
 
 module.exports = {
   syncStaffFromRagic,
-  syncCoachesFromRagic,
   syncVenuesFromRagic,
   diffVenuesFromRagic,
   applyVenueSync,
   VENUE_SYNC_FIELDS,
   kickoffSyncStaffAsync,
-  kickoffSyncCoachesAsync,
   kickoffSyncVenuesAsync,
   ragicEnabled,
   getRagicEnvFlags,

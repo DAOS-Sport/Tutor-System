@@ -29,11 +29,22 @@ function statusBadge(s, inProgress) {
 
 function FormCard({ job, info, onSync, syncing, isAdmin, enabled }) {
   const inProgress = !!info.in_progress || syncing;
+  // Task #94：kind 區分「全表 bulk sync」與「連線 ping (healthcheck)」。
+  // 後者不會真的把 Ragic 全表寫進 staging—只是發一筆 where=eq 驗證端點，
+  // 文案 / 按鈕 / 統計欄都要改才不會誤導 admin。
+  const isPing = info.kind === 'healthcheck';
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
       <div className="flex items-center justify-between">
         <div>
-          <div className="text-sm font-bold text-gray-800">{info.label}</div>
+          <div className="flex items-center gap-1.5">
+            <div className="text-sm font-bold text-gray-800">{info.label}</div>
+            {isPing ? (
+              <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">健康檢查</span>
+            ) : (
+              <span className="rounded bg-brand-teal/15 px-1.5 py-0.5 text-[10px] font-bold text-brand-teal">全表同步</span>
+            )}
+          </div>
           <div className="mt-0.5 text-xs text-gray-500">form_code: {info.form_code}</div>
         </div>
         {statusBadge(info.last_status, inProgress)}
@@ -51,8 +62,11 @@ function FormCard({ job, info, onSync, syncing, isAdmin, enabled }) {
           <dd className="text-gray-800">{fmtDate(info.last_success_at)}</dd>
         </div>
         <div className="flex justify-between">
-          <dt className="text-gray-500">最後成功筆數</dt>
-          <dd className="text-gray-800">{info.last_count ?? '—'}</dd>
+          <dt className="text-gray-500">{isPing ? '上次回應筆數' : '最後成功筆數'}</dt>
+          <dd className="text-gray-800">
+            {info.last_count ?? '—'}
+            {isPing ? <span className="ml-1 text-[10px] text-gray-400">(ping 通常 0)</span> : null}
+          </dd>
         </div>
         <div className="flex justify-between">
           <dt className="text-gray-500">耗時</dt>
@@ -69,10 +83,12 @@ function FormCard({ job, info, onSync, syncing, isAdmin, enabled }) {
           type="button"
           disabled={syncing || !enabled}
           onClick={() => onSync(job)}
-          title={!enabled ? 'Ragic 未設定，無法同步' : ''}
+          title={!enabled ? 'Ragic 未設定，無法觸發' : ''}
           className="mt-3 w-full rounded bg-brand-teal px-3 py-1.5 text-xs font-bold text-white transition hover:bg-brand-primary disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {syncing ? '同步中…' : '單獨同步此表'}
+          {syncing
+            ? (isPing ? '檢查中…' : '同步中…')
+            : (isPing ? '發送連線 Ping' : '單獨同步此表')}
         </button>
       ) : null}
     </div>
@@ -226,8 +242,8 @@ export default function RagicStatusPage() {
         <div className="font-bold text-gray-700">說明</div>
         <ul className="mt-1 list-disc space-y-1 pl-4">
           <li>「最後一次成功」是最近一筆 status=ok 的紀錄；「最後一次執行」可能是失敗或略過。</li>
-          <li>H01 員工 / 教練 與 H05 場館為定期 bulk sync；Z01 家長 / Z02 學員為「按請求查詢」，本頁的同步動作會發一次健康檢查 ping 驗證端點可用。</li>
-          <li>每次同步會寫一筆 <span className="font-mono">ragic_sync_log</span>，可由 SQL 查詢歷史趨勢。</li>
+          <li>H01 員工（含教練 1:1 同步）與 H05 場館為定期 <span className="font-bold">全表同步</span>（差異會進待審核區）；Z01 家長 / Z02 學員為「按請求查詢」，本頁僅提供<span className="font-bold">健康檢查 Ping</span> 驗證端點可用，不會抓全表。</li>
+          <li>每次執行會寫一筆 <span className="font-mono">ragic_sync_log</span>，可由 SQL 查詢歷史趨勢。</li>
         </ul>
       </div>
     </div>

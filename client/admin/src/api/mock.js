@@ -40,7 +40,7 @@ const STAFF = [
 ];
 
 // Task #32 — 教練資料 mock（USE_MOCK 模式或後端 501 fallback）
-// 真實環境會由 syncCoachesFromRagic 填入 coaches 表
+// 真實環境會由 syncStaffFromRagic 在 staff approve 階段透過 ensureCoachRow 同步寫入 coaches
 const COACHES_ADMIN = [
   { id: 'c-001', ragic_employee_id: 'C001', name: '王志強', phone: '0911000001',
     email: '', line_uid: 'U_c001', line_bound: true,

@@ -140,6 +140,9 @@ export default function RagicStagingPage() {
   const [search, setSearch] = useState('');
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState(new Set());
+  // Task #93：批次通過後若有 row 失敗，把錯誤訊息留在頁面上方紅色 banner，
+  // 而不是只丟一個 warning toast 就消失——使用者過去誤判成「全部成功」就是這個 UI 缺口。
+  const [bulkFailures, setBulkFailures] = useState(null); // { failed: [{id,error}], total }
 
   async function load() {
     setItems(null);
@@ -189,12 +192,22 @@ export default function RagicStagingPage() {
     if (!ids.length) { toast.warning('請先勾選'); return; }
     if (!window.confirm(`一次通過 ${ids.length} 筆？`)) return;
     setBusy(true);
+    setBulkFailures(null);
     try {
       const r = await ragicStagingApi.bulkApprove(ids);
-      const okN = (r.approved || []).length;
-      const failN = (r.failed || []).length;
-      if (failN === 0) toast.success(`已通過 ${okN} 筆`);
-      else toast.warning(`已通過 ${okN} 筆，失敗 ${failN} 筆`);
+      const ok = r.approved || [];
+      const failed = r.failed || [];
+      const total = ids.length;
+      // Task #93：依結果決定 toast 嚴重度——全失敗一定要 error（先前是 warning 容易誤判）。
+      if (failed.length === 0) {
+        toast.success(`已通過 ${ok.length} 筆`);
+      } else if (ok.length === 0) {
+        toast.error(`全部 ${total} 筆都失敗，請查看下方錯誤明細`);
+        setBulkFailures({ failed, total });
+      } else {
+        toast.warning(`已通過 ${ok.length} 筆，失敗 ${failed.length} 筆，請查看下方錯誤明細`);
+        setBulkFailures({ failed, total });
+      }
       load();
     } catch (e) { toast.error(e?.response?.data?.error || '批次通過失敗'); }
     finally { setBusy(false); }
@@ -229,6 +242,28 @@ export default function RagicStagingPage() {
           ) : null
         }
       />
+
+      {bulkFailures ? (
+        <div className="mb-4 rounded-lg border border-red-300 bg-red-50 p-3 text-xs">
+          <div className="flex items-center justify-between">
+            <div className="font-bold text-red-700">
+              批次通過結果：{bulkFailures.total - bulkFailures.failed.length} 成功 / {bulkFailures.failed.length} 失敗
+            </div>
+            <button onClick={() => setBulkFailures(null)} className="text-red-600 hover:underline">關閉</button>
+          </div>
+          <ul className="mt-2 max-h-48 space-y-1 overflow-auto">
+            {bulkFailures.failed.slice(0, 20).map((f) => (
+              <li key={f.id} className="flex gap-2">
+                <span className="font-mono text-red-600">{String(f.id).slice(0, 8)}…</span>
+                <span className="text-red-700">{f.error}</span>
+              </li>
+            ))}
+            {bulkFailures.failed.length > 20 ? (
+              <li className="text-red-500">（其餘 {bulkFailures.failed.length - 20} 筆未顯示，請過濾後再次嘗試）</li>
+            ) : null}
+          </ul>
+        </div>
+      ) : null}
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
         {['pending', 'approved', 'rejected', 'auto_resolved', 'all'].map(s => (

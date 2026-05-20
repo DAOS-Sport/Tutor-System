@@ -48,6 +48,10 @@
 - **後台初始登入密碼**：production 必須在 Replit Secrets 設 `ADMIN_BOOTSTRAP_PASSWORD`（≥ 8 chars），bootstrap 會把它套用到 `admin / manager / staff` 三個 seed 帳號。若未設，admin_users seed 整段跳過 → 沒有任何帳號可登入（請手動建第一個）。**production 下不會 seed `admin/admin` 弱密碼**。dev 環境永遠用「帳號 = 密碼」。
 - Task #68 修正：admin 前端 axios 401 攔截器加上 `skipAuthRedirect` opt-out，Sidebar 的 ragic-staging badge 輪詢（每 60 秒 + onFocus）改用此 flag，且失敗 3 次後自動停止；Dashboard 的多支 API 改 `Promise.allSettled`，單支失敗只顯示 `—` 不再讓整頁白屏。避免「使用者操作中被靜默踢回登入」。
 - Task #70 修正：`RagicStatusPage`（GET/POST ragic-status）與 `RagicStagingPage`（GET/POST ragic-staging 全 5 支）的 API 呼叫全面加上 `skipAuthRedirect: true`。遇到 401/500/timeout 只顯示 toast + 頁面級「重新載入」按鈕，不清除 session 也不跳轉登入。client.js 補判斷準則註解：互動寫入動作不加 flag；背景輪詢與 Ragic 狀態頁 API 全加。
+- Task #91 後續修正（#92 / #93 / #94，員工 ↔ 教練合併三個 Ragic 同步 follow-up）：
+  - **#92**：`_syncStaffImpl` 加入 `_normalizeStaffId`（trim + toUpperCase），`dbMap` / `seenKeys` 改用 normalized key 比對；matched row 用 DB PK `cur.id` 當 entity_id，新增則用 normalized id 落地。修正「admin 手建 c001、Ragic 回 C001 → 被誤判為新人重新進待審核」的 bug。
+  - **#93**：`RagicStagingPage` 批次通過時若 `okN===0` 改丟 `toast.error`（先前用 warning 易被忽略），同時把 `failed[].error` 列表存到 state，render 紅色 banner 顯示前 20 筆 ID + 失敗原因，使用者可一眼看到「哪些通過失敗、為什麼」。
+  - **#94**：`ragicAdmin.js` 的 `FORM_META` 每筆加 `kind: 'sync'|'healthcheck'`，`getSyncStatusSnapshot` 帶出 `kind`；前端 `RagicStatusPage` 依此顯示「全表同步 / 健康檢查」徽章，按鈕文案改為「單獨同步此表 / 發送連線 Ping」，「最後成功筆數」對 ping job 改為「上次回應筆數 (ping 通常 0)」。同步移除 Task #91 後遺留的死碼：`_syncCoachesImpl` / `syncCoachesFromRagic` / `kickoffSyncCoachesAsync` 三個入口與 exports 全部刪除（避免外部誤呼叫落到 `_runWithLog('coaches')` 拋 "unknown ragic sync job"）。
 - 由 Express 同時提供：
   - `/api/*` → 後端 API
   - `/admin/*` → 後台 SPA（含 React Router fallback）
