@@ -17,31 +17,80 @@ const axios = require('axios');
 
 const VERIFY_URL = 'https://api.line.me/oauth2/v2.1/verify';
 
+function _tokenFingerprint(idToken) {
+  // 安全 log：只記長度 + 前 12 碼（id_token 是長 JWT，前 12 碼為 header b64
+  // 一部分，不足以拿來重放）
+  if (!idToken) return 'none';
+  const s = String(idToken);
+  return `len=${s.length} head=${s.slice(0, 12)}…`;
+}
+
+function _channelIdTail() {
+  const cid = process.env.LINE_LOGIN_CHANNEL_ID;
+  if (!cid) return 'unconfigured';
+  return `***${String(cid).slice(-4)}`;
+}
+
 async function verifyLineIdToken(idToken) {
   const channelId = process.env.LINE_LOGIN_CHANNEL_ID;
-  if (!channelId) throw new Error('LINE_LOGIN_CHANNEL_ID not configured');
-  if (!idToken) throw new Error('id_token is required');
+  if (!channelId) {
+    console.warn('[lineAuth] verify aborted: LINE_LOGIN_CHANNEL_ID not configured');
+    throw new Error('LINE_LOGIN_CHANNEL_ID not configured');
+  }
+  if (!idToken) {
+    console.warn(`[lineAuth] verify aborted: id_token missing (channelId=${_channelIdTail()})`);
+    throw new Error('id_token is required');
+  }
 
   const params = new URLSearchParams();
   params.append('id_token', idToken);
   params.append('client_id', channelId);
 
-  const res = await axios.post(VERIFY_URL, params, {
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    timeout: 5000,
-    validateStatus: () => true,
-  });
+  let res;
+  try {
+    res = await axios.post(VERIFY_URL, params, {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      timeout: 5000,
+      validateStatus: () => true,
+    });
+  } catch (err) {
+    console.warn(
+      `[lineAuth] verify network-error channelId=${_channelIdTail()} ` +
+      `token=${_tokenFingerprint(idToken)} err=${err.message}`
+    );
+    throw new Error(`LINE verify network error: ${err.message}`);
+  }
 
   if (res.status !== 200) {
-    const detail = res.data?.error_description || res.data?.error || `HTTP ${res.status}`;
+    const errCode = res.data?.error || `http_${res.status}`;
+    const errDesc = res.data?.error_description || '';
+    console.warn(
+      `[lineAuth] verify FAIL channelId=${_channelIdTail()} ` +
+      `token=${_tokenFingerprint(idToken)} ` +
+      `http=${res.status} error=${errCode} desc=${errDesc}`
+    );
+    const detail = errDesc || errCode;
     throw new Error(`LINE id_token 驗證失敗: ${detail}`);
   }
   const payload = res.data || {};
   // 雙重檢查：audience 必須等於我們的 channel id
   if (payload.aud && String(payload.aud) !== String(channelId)) {
+    console.warn(
+      `[lineAuth] verify FAIL audience-mismatch channelId=${_channelIdTail()} ` +
+      `payload.aud_tail=***${String(payload.aud).slice(-4)}`
+    );
     throw new Error('LINE id_token audience mismatch');
   }
-  if (!payload.sub) throw new Error('LINE id_token 缺少 sub');
+  if (!payload.sub) {
+    console.warn(`[lineAuth] verify FAIL no-sub channelId=${_channelIdTail()}`);
+    throw new Error('LINE id_token 缺少 sub');
+  }
+  console.log(
+    `[lineAuth] verify OK channelId=${_channelIdTail()} ` +
+    `aud_match=${String(payload.aud) === String(channelId)} ` +
+    `sub_tail=***${String(payload.sub).slice(-4)} ` +
+    `exp=${payload.exp || 'n/a'}`
+  );
   return payload; // { sub, aud, iss, exp, ... }
 }
 

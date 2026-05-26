@@ -16,6 +16,36 @@ const { verifyLineIdToken } = require('../services/lineAuth');
 
 const router = express.Router();
 
+/**
+ * GET /api/auth/line-config-debug — 非敏感的 LINE 設定健檢
+ * 只回布林與末 4 碼，不外露 channel id / secret / liff id 全值。
+ * production 預設 404，需 DEBUG_LINE_AUTH=1 才開放。
+ */
+router.get('/line-config-debug', (req, res) => {
+  const isProd = process.env.NODE_ENV === 'production';
+  const debugOn = process.env.DEBUG_LINE_AUTH === '1';
+  if (isProd && !debugOn) {
+    return res.status(404).json({ error: 'not found' });
+  }
+  const cid = process.env.LINE_LOGIN_CHANNEL_ID || '';
+  const parentLiff = process.env.VITE_LIFF_ID_PARENT || process.env.LIFF_ID_PARENT || '';
+  const coachLiff = process.env.VITE_LIFF_ID_COACH || process.env.LIFF_ID_COACH || '';
+  res.json({
+    line_login_channel_id_configured: Boolean(cid),
+    line_login_channel_id_tail: cid ? `***${cid.slice(-4)}` : null,
+    line_login_channel_secret_configured: Boolean(process.env.LINE_LOGIN_CHANNEL_SECRET),
+    node_env: process.env.NODE_ENV || 'development',
+    require_line_id_token: process.env.REQUIRE_LINE_ID_TOKEN === '1'
+      || process.env.NODE_ENV === 'production',
+    liff_parent_configured: Boolean(parentLiff),
+    liff_parent_tail: parentLiff ? `***${parentLiff.slice(-4)}` : null,
+    liff_coach_configured: Boolean(coachLiff),
+    liff_coach_tail: coachLiff ? `***${coachLiff.slice(-4)}` : null,
+    ragic_base_url_configured: Boolean(process.env.RAGIC_BASE_URL),
+    ragic_api_key_configured: Boolean(process.env.RAGIC_API_KEY),
+  });
+});
+
 // per-IP 速率限制（與 coach by-phone 同樣 5 / 5min → 429），抑制電話號碼暴搜
 const _attempts = new Map();
 const WINDOW_MS = 5 * 60 * 1000;

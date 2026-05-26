@@ -27,7 +27,11 @@ echo "[build] (3/3) cleaning liff assets + building"
 rm -rf "$ROOT/server/public/liff/assets" 2>/dev/null || true
 cd "$ROOT/client/liff"
 npm install --no-audit --no-fund
-VITE_USE_MOCK=false VITE_LIFF_ID="${LIFF_ID:-}" npm run build
+VITE_USE_MOCK=false \
+  VITE_LIFF_ID_PARENT="${VITE_LIFF_ID_PARENT:-}" \
+  VITE_LIFF_ID_COACH="${VITE_LIFF_ID_COACH:-}" \
+  VITE_LIFF_ID="${LIFF_ID:-}" \
+  npm run build
 
 # 4. 可選：build 完成後串接後台煙霧（需另一個 process 已起 server）
 # SKIP_SMOKE=1 可關閉；SMOKE_BASE 預設 http://localhost:3000

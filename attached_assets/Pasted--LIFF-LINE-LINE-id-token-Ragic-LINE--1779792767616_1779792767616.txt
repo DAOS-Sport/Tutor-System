@@ -1,0 +1,82 @@
+目前家長端與教練端 LIFF 全部顯示「LINE 驗證失敗」，請只做 LINE id_token 診斷與最小修補，不要改 Ragic/註冊/課程功能。
+
+目標：
+找出 LINE 驗證失敗的真正原因，並修正部署 build 可能吃舊 LIFF_ID 的問題。
+
+請完成：
+
+A. 檢查並修正 .replit deployment build
+目前 build 可能只傳 VITE_LIFF_ID="$LIFF_ID"。
+請改成明確傳入：
+- VITE_LIFF_ID_PARENT="$VITE_LIFF_ID_PARENT"
+- VITE_LIFF_ID_COACH="$VITE_LIFF_ID_COACH"
+- VITE_USE_MOCK=false
+
+也就是 liff build 時不能只依賴舊 LIFF_ID。
+保留 VITE_LIFF_ID fallback 可以，但正式 build 必須優先使用 parent/coach 兩個 LIFF ID。
+
+B. 加強 server/services/lineAuth.js 診斷，但不要洩漏 token
+在 verifyLineIdToken(idToken) 裡：
+1. 不要 log 完整 id_token。
+2. 可以安全 log：
+   - configured LINE_LOGIN_CHANNEL_ID
+   - id_token 是否存在
+   - id_token 前 12 碼 hash 或長度
+   - LINE verify HTTP status
+   - LINE verify error / error_description
+   - 若 LINE verify 成功，log payload.aud 是否等於 channelId
+3. 若失敗，錯誤訊息請保留 LINE 回傳原因，例如：
+   - invalid id_token
+   - invalid client_id
+   - expired token
+   - audience mismatch
+4. API response 可以回 code LINE_VERIFY_FAILED，message 給中文；但 server log 必須能看到實際 detail。
+
+C. 加一個安全診斷 endpoint
+新增 GET /api/auth/line-config-debug
+回傳非敏感資訊：
+{
+  line_login_channel_id_configured: true/false,
+  line_login_channel_id_tail: "後4碼",
+  node_env,
+  require_line_id_token,
+  liff_parent_configured: true/false,
+  liff_coach_configured: true/false
+}
+注意：
+- 不要回傳 secret。
+- 不要回傳完整 channel secret / token。
+- 如果覺得公開 endpoint 有風險，可以只在 NODE_ENV !== production 或 DEBUG_LINE_AUTH=1 時可用；production 未開 DEBUG_LINE_AUTH 時回 404。
+
+D. 前端 LoginPage 診斷改善
+在 LINE 驗證失敗畫面中，加入「診斷資訊」但不要顯示 token：
+- 是否在 LIFF Client 中：liff.isInClient()
+- 是否已登入：liff.isLoggedIn()
+- 是否取得 idToken：Boolean(liff.getIDToken())
+- 目前路徑 pathname
+- 使用的是 parent 還是 coach context
+這些資訊可以放在小字區塊，方便我截圖判斷。
+
+E. 驗證
+請執行：
+1. cd server && node -c services/lineAuth.js
+2. cd server && node -c routes/auth.js
+3. cd client/liff && npm run build
+4. 重新部署 / 重啟 server
+5. 呼叫：
+   - GET /health
+   - GET /api/auth/line-config-debug
+6. 回報：
+   - .replit build 是否已改成 VITE_LIFF_ID_PARENT / COACH
+   - line-config-debug 回傳內容
+   - server log 中 LINE verify 失敗的實際原因
+   - 前端診斷畫面顯示 isInClient / isLoggedIn / hasIdToken 是什麼
+
+F. 請同時人工確認 LINE Developers Console
+請在回報中列出需要我人工確認的項目：
+1. 家長 LIFF App ID 是否為 2009958451-NmGZ4135
+2. 教練 LIFF App ID 是否為 2009958451-Xz4tru4a
+3. 兩個 LIFF 是否掛在 Channel ID 2009958451
+4. 兩個 LIFF scope 是否都有 profile + openid
+5. Endpoint URL 是否都是 https://daos-tutoring-courses.replit.app/liff/
+6. 實機開啟是否使用 https://liff.line.me/<LIFF_ID>，不是直接開 Replit /liff URL

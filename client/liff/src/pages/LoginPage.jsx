@@ -91,6 +91,31 @@ export default function LoginPage() {
 
   const autoRanRef = useRef(false);
 
+  // 診斷資訊（不含 token），失敗畫面顯示供截圖判斷
+  const diag = (() => {
+    let isInClient = false, isLoggedIn = false, hasIdToken = false;
+    try { isInClient = !!(liff?.isInClient && liff.isInClient()); } catch {}
+    try { isLoggedIn = !!(liff?.isLoggedIn && liff.isLoggedIn()); } catch {}
+    try { hasIdToken = !!(liff?.getIDToken && liff.getIDToken()); } catch {}
+    return {
+      isInClient,
+      isLoggedIn,
+      hasIdToken,
+      pathname: typeof window !== 'undefined' ? window.location.pathname : '',
+      context: coachContext ? 'coach' : 'parent',
+    };
+  })();
+  const DiagBlock = () => (
+    <div className="mt-4 rounded-md border border-gray-200 bg-gray-50 p-3 text-left text-[11px] leading-5 text-gray-600">
+      <div className="mb-1 font-medium text-gray-700">診斷資訊（請截圖）</div>
+      <div>context: {diag.context}</div>
+      <div>pathname: {diag.pathname}</div>
+      <div>liff.isInClient: {String(diag.isInClient)}</div>
+      <div>liff.isLoggedIn: {String(diag.isLoggedIn)}</div>
+      <div>hasIdToken: {String(diag.hasIdToken)}</div>
+    </div>
+  );
+
   // ── effect: 自動執行對應流程 ──
   useEffect(() => {
     if (autoRanRef.current) return;
@@ -242,8 +267,11 @@ export default function LoginPage() {
               className="mt-4 w-full rounded-lg bg-brand-primary py-2 text-sm font-bold text-white active:bg-brand-teal">
               重新嘗試
             </button>
+            <DiagBlock />
           </div>
         )}
+
+        {coachState === 'unbound' && <DiagBlock />}
       </div>
     );
   }
@@ -274,6 +302,7 @@ export default function LoginPage() {
             className="mt-4 w-full rounded-lg bg-brand-primary py-2 text-sm font-bold text-white active:bg-brand-teal">
             重新嘗試
           </button>
+          <DiagBlock />
         </div>
       )}
 
