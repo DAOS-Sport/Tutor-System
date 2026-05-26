@@ -150,17 +150,24 @@ async function _syncStaffImpl() {
       const isActive = (r['在職狀態'] || r['3000945']) === '在職';
       // Task #90：解析 Ragic H01 多場館欄位（主場館 + 支援場館），合併為陣列
       const venueIds = _extractStaffVenueIds(r);
+      // H01「個人LINE ID」(Field 1003633)；apply 時只在 coaches.line_uid 為空才補
+      const lineUid = extractLineUid(r);
       const cur = dbMap.get(id);
       // 套用至正式表時 entity_id 必須對到實際 DB PK（保留原始大小寫），
       // 新增則以 normalized 形式落地，避免日後再被當成新人。
       const entityId = cur ? cur.id : id;
-      const payload = { id: entityId, name, phone, email, role: roleVal, is_active: isActive, venue_ids: venueIds };
+      const payload = {
+        id: entityId, name, phone, email, role: roleVal,
+        is_active: isActive, venue_ids: venueIds,
+        line_uid: lineUid,
+      };
 
-      // 查目前 coaches.email 作為 diff 比對基準（admin_staff 本身沒有 email 欄位）
-      const coachEmailRes = await pool.query(
-        `SELECT email FROM coaches WHERE ragic_employee_id = $1`, [entityId]
+      // 查目前 coaches.email / line_uid 作為 diff 比對基準（admin_staff 本身沒有這兩個欄位）
+      const coachRowRes = await pool.query(
+        `SELECT email, line_uid FROM coaches WHERE ragic_employee_id = $1`, [entityId]
       );
-      const curCoachEmail = coachEmailRes.rows[0]?.email || '';
+      const curCoachEmail = coachRowRes.rows[0]?.email || '';
+      const curCoachLineUid = coachRowRes.rows[0]?.line_uid || '';
 
       if (!cur) {
         if (await _stageIfNotRejected('H01_STAFF', 'staff', entityId, 'new', payload, null)) staged++;
@@ -173,6 +180,11 @@ async function _syncStaffImpl() {
       // email：Ragic 有值且與目前 coaches.email 不同才視為 diff（呈現給 admin 確認；apply 時只在 DB 空值時覆寫）
       if (email && curCoachEmail !== email) {
         diff.email = { from: curCoachEmail, to: email };
+      }
+      // line_uid：只在「DB 為空 + Ragic 有值」才 diff，避免覆寫已綁定的教練 LINE
+      // （apply 路徑使用 COALESCE 雙重保險；這裡同樣不顯示「Ragic 空 → 蓋掉」的 diff）
+      if (lineUid && !curCoachLineUid) {
+        diff.line_uid = { from: '', to: lineUid };
       }
       if (cur.active_overridden_at == null && cur.active !== isActive) {
         diff.active = { from: cur.active, to: isActive };
@@ -210,14 +222,27 @@ async function _syncStaffImpl() {
   }
 }
 
+/**
+ * 從 H01 員工列抽出「個人LINE ID」(LINE UID, sub)。
+ * 優先順序：
+ *   1. env RAGIC_FIELD_H01_LINE_UID 指定的 Field ID
+ *   2. 預設 Field ID 1003633（H01 個人LINE ID 欄位）
+ *   3. 中文 / 英文 fallback key（避免 Ragic 欄位更名）
+ *   4. 模糊比對：key 含 "line" + ("userid"|"uid")
+ * 任一拿到非空字串即回傳；都拿不到回 ''。
+ */
+const H01_LINE_UID_DEFAULT_FIELD = process.env.RAGIC_FIELD_H01_LINE_UID || '1003633';
 function extractLineUid(r) {
-  const explicit = process.env.RAGIC_FIELD_H01_LINE_UID;
-  if (explicit && r[explicit]) return String(r[explicit]).trim();
-  const candidates = ['LINE userid', 'LINE userId', 'LINE UID', 'LINE uid',
-                      'LINE_USER_ID', 'lineUid', 'line_uid', 'Line userid'];
+  if (!r) return '';
+  // 1 + 2：Field ID（env 覆寫優先，預設 1003633）
+  if (r[H01_LINE_UID_DEFAULT_FIELD]) return String(r[H01_LINE_UID_DEFAULT_FIELD]).trim();
+  // 3：中文 / 英文欄位名 fallback
+  const candidates = ['個人LINE ID', '個人 LINE ID', 'LINE userid', 'LINE userId',
+                      'LINE UID', 'LINE uid', 'LINE_USER_ID', 'lineUid', 'line_uid', 'Line userid'];
   for (const k of candidates) {
     if (r[k]) return String(r[k]).trim();
   }
+  // 4：寬鬆模糊比對
   for (const k of Object.keys(r)) {
     if (/line/i.test(k) && /(user.?id|uid)/i.test(k) && r[k]) {
       return String(r[k]).trim();
@@ -336,6 +361,18 @@ async function _applyStaffChange(row, client) {
         WHERE ragic_employee_id = $1
           AND (email IS NULL OR email = '')`,
       [row.entity_id, String(p.email).trim()]
+    );
+  }
+  // 個人LINE ID (H01 1003633) → coaches.line_uid：
+  //   只在「Ragic 有值 + DB 現值為空」才補；不會覆蓋已綁定的教練 LINE。
+  //   COALESCE 雙重保險：即使 race condition 下 DB 在 SELECT 後被改了也不會被蓋掉。
+  if (p.line_uid) {
+    await client.query(
+      `UPDATE coaches
+          SET line_uid = COALESCE(line_uid, NULLIF($2, '')),
+              updated_at = NOW()
+        WHERE ragic_employee_id = $1`,
+      [row.entity_id, String(p.line_uid).trim()]
     );
   }
   // Task #90：同步 admin_staff_venues（多場館），並把第一筆寫回 admin_staff.venue_id 作 fallback

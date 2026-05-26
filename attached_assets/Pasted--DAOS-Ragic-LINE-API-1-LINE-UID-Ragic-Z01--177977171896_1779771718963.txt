@@ -1,0 +1,74 @@
+你現在要修改 DAOS 家教課程系統。請先只完成「後端 Ragic 與 LINE 登入 API 基礎」，不要重構前端頁面。
+
+背景需求：
+1. 家長 LINE UID 要寫入 Ragic Z01 欄位：
+   - 欄位名稱：家教系統uid
+   - Field ID：1006846
+2. 教練 LINE UID 來源是 Ragic H01 欄位：
+   - 欄位名稱：個人LINE ID
+   - Field ID：1003633
+3. 家長登入新流程未來會是：
+   - LIFF 驗證 LINE id_token 取得 lineUid
+   - 先用 Z01 家教系統uid 查詢
+   - 找到則登入
+   - 找不到則用手機查 Z01
+   - 手機存在且 UID 空白則回填 UID 並登入
+   - 手機存在但 UID 不同則拒絕
+   - 手機不存在則後續註冊建立 Z01 + 子表格學員
+4. 教練登入未來會是：
+   - 只能用 LINE UID 登入
+   - 不允許手機首次綁定
+   - line_uid 應由 H01 個人LINE ID 同步到本地 coaches.line_uid
+
+本次請完成：
+A. 修改 server/services/ragic.js
+- 新增 Z01 LINE UID 欄位常數，預設 Field ID 1006846，並允許用 env RAGIC_FIELD_Z01_LINE_UID 覆寫。
+- 新增 H01 LINE UID 欄位常數，預設 Field ID 1003633，並允許用 env RAGIC_FIELD_H01_LINE_UID 覆寫。
+- 新增 getParentByLineUid(lineUid)，使用 where=<Z01_LINE_UID_FIELD>,eq,<lineUid> 查 Z01。
+- 新增 bindParentLineUidToRagic({ ragicRecordId, lineUid })，將 Z01 的 1006846 回填。
+- 檢查既有 getParentByPhone(phone) 是否仍用 Field ID 1001100 精確查詢。
+- 匯出上述新方法與欄位常數。
+- 不要把 API key 寫死。
+
+B. 修改 server/services/ragicAdmin.js
+- extractLineUid(r) 目前用 env RAGIC_FIELD_H01_LINE_UID 和文字 fallback，請確認預設會讀 H01 Field ID 1003633。
+- 在 H01 staff/coaches 同步流程中，讓 payload 帶入 line_uid。
+- ensure / apply 到 coaches 時，不要用空值覆蓋既有 coaches.line_uid；Ragic 有值時才補入。
+- 若目前已有等價邏輯，請整理成清楚且可維護的實作。
+
+C. 修改 server/routes/auth.js
+- 新增 POST /api/auth/parent-line-login
+  Request body: { id_token }
+  流程：
+  1. 用 verifyLineIdToken(id_token) 驗證 LINE，取得 lineUid。
+  2. 用 ragic.getParentByLineUid(lineUid) 查 Z01。
+  3. 若找到，將資料同步 / upsert 到本地 parents + students（若目前子表格解析還不完整，先至少同步 parent 主檔，並在 TODO 註明學生子表格下一段處理）。
+  4. 回傳 { status: "logged_in", parent, token }。
+  5. 若找不到，檢查本地 parents 是否已有此 line_uid；若有則照本地登入回傳。
+  6. 都找不到，回傳 { status: "need_phone_binding", line_uid: lineUid }。
+- 新增 POST /api/auth/parent-bind-phone
+  Request body: { id_token, phone }
+  流程：
+  1. 驗證 LINE id_token 取得 lineUid。
+  2. 檢查本地 parents 是否已有同 line_uid 但不同 phone，若有，回 409 code LINE_ALREADY_BOUND_TO_OTHER_PHONE。
+  3. 用 ragic.getParentByPhone(phone) 查 Z01。
+  4. 若找不到，回傳 { status: "need_registration", line_uid: lineUid, phone }。
+  5. 若找到且 1006846 有值且不等於 lineUid，回 409 code PHONE_ALREADY_BOUND_TO_OTHER_LINE。
+  6. 若找到且 1006846 空白，呼叫 bindParentLineUidToRagic 寫回 Ragic。
+  7. 同步 / upsert 本地 parent，簽發 parent JWT，回傳 { status: "bound_and_logged_in", parent, token }。
+- 保留現有 /api/auth/parent-login，不要刪，避免舊前端壞掉。
+- 錯誤訊息請用中文，且 code 要清楚。
+
+D. 補 .env.example
+- RAGIC_FIELD_Z01_LINE_UID=1006846
+- RAGIC_FIELD_H01_LINE_UID=1003633
+
+E. 驗證
+請你必須執行並回報：
+1. npm 或 node 語法檢查，例如至少執行：
+   - cd server && node -c services/ragic.js
+   - cd server && node -c services/ragicAdmin.js
+   - cd server && node -c routes/auth.js
+2. 若專案有測試或可啟動，請至少確認 server 端沒有語法錯誤。
+3. 回報修改檔案清單、API 清單、驗證指令與結果。
+4. 若無法完整驗證 Ragic API，請明確說明原因，並列出需要在 Replit Secrets 設定的 key。

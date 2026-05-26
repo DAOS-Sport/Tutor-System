@@ -147,6 +147,15 @@ async function getActiveVenues() {
 // 新增 / 異動欄位時，請同步本表 + docs/ragic_api.md。
 // =====================================================================
 
+// ─────────────────────────────────────────────────────────────
+// LINE UID 欄位 Field ID
+//   Z01 家教系統uid  → 預設 1006846，env RAGIC_FIELD_Z01_LINE_UID 可覆寫
+//   H01 個人LINE ID  → 預設 1003633，env RAGIC_FIELD_H01_LINE_UID 可覆寫
+// 用 env 覆寫是為了「Ragic 換欄位 ID 時不用改 code、不用重 deploy」。
+// ─────────────────────────────────────────────────────────────
+const Z01_LINE_UID_FIELD = process.env.RAGIC_FIELD_Z01_LINE_UID || '1006846';
+const H01_LINE_UID_FIELD = process.env.RAGIC_FIELD_H01_LINE_UID || '1003633';
+
 // Z01 家長主檔
 const Z01_FIELDS = {
   '家長姓名':       '1001101',
@@ -161,6 +170,8 @@ const Z01_FIELDS = {
   '住家電話':       '1001122',
   'LINE ID':        '1001123',
   '住家地址':       '1001124',
+  // 家長 LINE 登入綁定：LIFF 取得的 LINE userId (sub)
+  '家教系統uid':    Z01_LINE_UID_FIELD,
 };
 
 // Z02 學員主檔（含家長關聯欄位）
@@ -195,6 +206,7 @@ const FIELD = {
     HOME_PHONE:     Z01_FIELDS['住家電話'],
     HOME_ADDRESS:   Z01_FIELDS['住家地址'],
     LINE_ID:        Z01_FIELDS['LINE ID'],
+    LINE_UID:       Z01_LINE_UID_FIELD,
   },
   Z02: {
     STUDENT_CODE:   Z02_FIELDS['學員編號'],
@@ -233,11 +245,41 @@ function toFieldIdPayload(data, nameToFid, formLabel) {
   return out;
 }
 
-// Z01：依手機查詢家長（用 Ragic 的 where 語法做精確過濾）
+// Z01：依手機查詢家長（用 Ragic 的 where 語法做精確過濾，Field ID 1001100）
 async function getParentByPhone(phone) {
   const data = await query(process.env.RAGIC_FORM_Z01, { where: `${FIELD.Z01.PHONE},eq,${phone}` });
   const records = Object.values(data);
   return records[0] || null;
+}
+
+/**
+ * Z01：依家教系統uid（LINE 登入綁定 UID）查詢家長
+ * - LIFF 端拿到 id_token → verify 後得到 lineUid (sub) → 用此查 Z01
+ * - 找不到回 null，由 caller 決定接下來走「手機綁定」或「需註冊」流程
+ */
+async function getParentByLineUid(lineUid) {
+  if (!lineUid) return null;
+  const data = await query(process.env.RAGIC_FORM_Z01, {
+    where: `${Z01_LINE_UID_FIELD},eq,${lineUid}`,
+  });
+  const records = Object.values(data);
+  return records[0] || null;
+}
+
+/**
+ * Z01：把 LINE UID 回填到既有家長記錄（用 Field ID 1006846 寫入）
+ * - ragicRecordId：Z01 該筆 record 的 _ragicId（必填，沒有就無法 PATCH 既有列）
+ * - lineUid：LIFF 驗證後得到的 sub
+ * - 不會建立新筆；找不到 ragicRecordId 時 caller 應改用 upsertParent
+ */
+async function bindParentLineUidToRagic({ ragicRecordId, lineUid }) {
+  if (!ragicRecordId) throw new Error('ragicRecordId 必填');
+  if (!lineUid) throw new Error('lineUid 必填');
+  const payload = { [Z01_LINE_UID_FIELD]: lineUid };
+  const url = _withApi(`${process.env.RAGIC_FORM_Z01}/${ragicRecordId}`);
+  await client.post(url, payload, { params: { APIKey: process.env.RAGIC_API_KEY } });
+  _cacheInvalidate('z01:');
+  return { ok: true };
 }
 
 // Z01：回寫家長資料（key 可用中文欄位名或 Field ID，內部統一翻譯成 Field ID）
@@ -279,12 +321,16 @@ module.exports = {
   FIELD,
   Z01_FIELDS,
   Z02_FIELDS,
+  Z01_LINE_UID_FIELD,
+  H01_LINE_UID_FIELD,
   toFieldIdPayload,
   getActiveCoaches,
   getCounterStaff,
   getAllStaff,
   getActiveVenues,
   getParentByPhone,
+  getParentByLineUid,
+  bindParentLineUidToRagic,
   upsertParent,
   getStudentByIdNumber,
   upsertStudent,
