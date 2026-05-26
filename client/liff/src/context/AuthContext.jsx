@@ -8,6 +8,7 @@ import React, { createContext, useContext, useEffect, useMemo, useState } from '
  */
 const AuthContext = createContext(null);
 const STORAGE_KEY = 'daos.user';
+const DAOS_MANUAL_LOGOUT_KEY = 'daos.manualLogout';
 
 function load() {
   try {
@@ -25,7 +26,11 @@ function save(u) {
 export function AuthProvider({ children }) {
   const [user, setUserState] = useState(() => load());
 
-  const setUser = (u) => { setUserState(u); save(u); };
+  const setUser = (u) => {
+    if (u) localStorage.removeItem(DAOS_MANUAL_LOGOUT_KEY);
+    setUserState(u);
+    save(u);
+  };
   // 統一去敏：line_uid 是身分綁定中介，前端只需要 token + 身分資料；
   // 不應落地到 localStorage，避免在客戶端被讀取或誤用為登入憑證。
   const _stripSensitive = (obj) => {
@@ -36,7 +41,10 @@ export function AuthProvider({ children }) {
   // coach 物件的 token 拉到頂層 (供 axios interceptor 直接讀)，data 仍保留全欄位（去敏後）
   const setParent = (p) => setUser(p ? { role: 'parent', data: _stripSensitive(p), token: p?.token || null } : null);
   const setCoach  = (c) => setUser(c ? { role: 'coach',  data: _stripSensitive(c), token: c?.token || null } : null);
-  const logout    = () => setUser(null);
+  const logout    = () => {
+    localStorage.setItem(DAOS_MANUAL_LOGOUT_KEY, '1');
+    setUser(null);
+  };
 
   useEffect(() => {
     function onStorage(e) {

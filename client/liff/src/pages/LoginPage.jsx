@@ -7,7 +7,29 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { isValidTWPhone } from '../utils/format';
 import LoadingSpinner from '../components/LoadingSpinner';
+
+const MANUAL_LOGOUT_KEY = 'daos.manualLogout';
 import { USE_MOCK } from '../api/client';
+
+function wasManualLoggedOut() {
+  try {
+    return localStorage.getItem(MANUAL_LOGOUT_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function clearManualLogout() {
+  try { localStorage.removeItem(MANUAL_LOGOUT_KEY); } catch {}
+}
+
+function isInLineClient() {
+  try {
+    return !!liff?.isInClient?.();
+  } catch {
+    return false;
+  }
+}
 
 function forceLiffLogin() {
   try {
@@ -131,6 +153,12 @@ export default function LoginPage() {
     if (autoRanRef.current) return;
     autoRanRef.current = true;
 
+    // manual logout guard: do not auto-login immediately after user explicitly logs out.
+    if (!isCoachContext && wasManualLoggedOut()) {
+      setBusy(false);
+      return;
+    }
+
     if (coachContext) {
       setBusy(true);
       tryCoachAutoLogin().then((res) => {
@@ -199,6 +227,7 @@ export default function LoginPage() {
   // ── 家長：送出手機綁定 ──
   async function handleBindPhone(e) {
     e.preventDefault();
+    clearManualLogout();
     if (!isValidTWPhone(phone)) {
       toast.error('請輸入正確的台灣手機號碼（09xxxxxxxx）');
       return;
