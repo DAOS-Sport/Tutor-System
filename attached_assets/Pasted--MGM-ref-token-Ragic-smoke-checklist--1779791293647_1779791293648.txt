@@ -1,0 +1,100 @@
+請接續前四輪修改。這次完成「MGM ref_token 補齊、文件整理、受控 Ragic 驗證工具與最終 smoke checklist」。除非驗證失敗需要修補，不要大幅重構既有登入流程。
+
+重要安全限制：
+- 不要直接對真 Ragic 寫入測試資料。
+- 若要設計真寫入測試，必須預設 dry-run，只在 ENABLE_RAGIC_WRITE_SMOKE=1 且有 TEST_PHONE / TEST_LINE_UID 等明確 env 時才可寫入。
+- 不要把任何 Ragic API key、LINE secret、JWT secret 寫進 repo 或 log。
+
+背景：
+目前已完成：
+- 家長 LINE-first 前端流程
+- parent-line-login / parent-bind-phone / parent-register-line
+- Z01 子表格學生同步
+- 教練 LINE-only 登入
+- H01 個人LINE ID / 1003633 同步
+
+本次請完成：
+
+A. 補齊 MGM ref_token 串接
+1. 檢查 client/liff/src/pages/RegisterPage.jsx：
+   - ref_token UI 與推薦 banner 已保留。
+   - parentRegisterLine 呼叫時，若 URL 有 ref 參數，必須把 ref_token 一併送到後端。
+2. 修改 server/routes/auth.js 的 POST /api/auth/parent-register-line：
+   - 接收 ref_token。
+   - 成功建立 parent / students 後，沿用既有 referrals.bindReferee 或目前 parents.js 註冊流程的 MGM 綁定邏輯。
+   - MGM 綁定失敗不得 rollback 註冊，但要回傳 ref_bound / ref_error，與既有 parents.js 行為相容。
+3. 前端成功註冊後：
+   - 若 ref_bound 成功且 refInfo.coach 存在，保留目前 PENDING_COUPON_KEY/TRIAL50 行為。
+   - 不要破壞既有推薦流程。
+
+B. 建立受控 Ragic 驗證腳本
+請新增 scripts 或 server/scripts 中合適檔案，例如：
+- server/scripts/ragic-auth-smoke.js
+
+腳本需求：
+1. 預設只做 read-only 檢查：
+   - 檢查必要 env 是否存在：RAGIC_API_KEY、RAGIC_BASE_URL、RAGIC_FORM_Z01、RAGIC_FORM_H01、LINE_LOGIN_CHANNEL_ID。
+   - 呼叫 ragic.getParentByLineUid('__smoke_no_such_uid__')，預期 null。
+   - 呼叫 ragic.getParentByPhone('0999999999')，若查無則正常；若查到也只回報，不可修改。
+   - 若可以，檢查 H01 LINE UID field 設定值是否為 1003633 或 env 覆寫值。
+2. 寫入測試必須被 env 保護：
+   - 只有 ENABLE_RAGIC_WRITE_SMOKE=1 時才可執行。
+   - 必須要求 TEST_PHONE、TEST_PARENT_NAME、TEST_LINE_UID。
+   - 寫入前先再次提示 console log：即將寫入 Ragic Z01。
+   - 仍不要硬編真實個資。
+3. package.json 加 script：
+   - "smoke:ragic-auth": "node scripts/ragic-auth-smoke.js"
+   如果放在 server/scripts，請路徑對應正確。
+4. 腳本應可被 Replit 執行並清楚回報 PASS / FAIL。
+
+C. 文件整理
+請更新：
+1. docs/line_setup.md
+   - 家長 LINE-first 流程：
+     LINE id_token → Z01 家教系統uid 查詢 → 手機綁定 → 註冊。
+   - 教練 LINE-only 流程：
+     H01 個人LINE ID 預先綁定，未綁定提示「尚未完成綁定，請截圖傳送結果至 400 官方帳號」。
+2. docs/ragic_api.md
+   - Z01 家教系統uid / 1006846。
+   - H01 個人LINE ID / 1003633。
+   - Z01 子表格 payload dotted key 寫法，例如 1001119_0_1001115。
+   - 說明本系統註冊寫 Z01 主表 + 子表格，Z02 由 Ragic 子表格產生新表。
+3. .env.example
+   - 確認含 RAGIC_FIELD_Z01_LINE_UID=1006846
+   - 確認含 RAGIC_FIELD_H01_LINE_UID=1003633
+   - 若有 VITE_LIFF_ID_PARENT / VITE_LIFF_ID_COACH / LIFF_URL_PARENT / LIFF_URL_COACH 範例缺漏，補上。
+4. replit.md
+   - 如果已過長，請只更新登入流程重點，不要貼大段歷史。
+   - 建議加入「LINE 登入改造 Phase 1-5 完成摘要」。
+
+D. 最終整體驗證
+請執行並回報：
+1. cd server && node -c services/ragic.js
+2. cd server && node -c services/ragicAdmin.js
+3. cd server && node -c routes/auth.js
+4. cd server && node -c routes/coaches.js
+5. cd client/liff && npm run build
+6. cd client/admin && npm run build
+7. 啟動 server 後確認 /health 200
+8. curl smoke：
+   - POST /api/auth/parent-line-login 缺 id_token → 400/401
+   - POST /api/auth/parent-bind-phone 缺 id_token → 400/401
+   - POST /api/auth/parent-register-line 缺 id_token → 400/401
+   - GET /api/coaches/by-line-uid 缺 id_token → 401
+9. 執行 read-only Ragic smoke：
+   - cd server && npm run smoke:ragic-auth
+   若因 Replit 環境讀不到 Secrets，請明確回報缺哪些 env。
+10. 主動 code review / 自我檢查：
+   - parentRegisterLine 是否保留 MGM ref_token
+   - 是否有 line_uid 出現在 URL query 或 localStorage
+   - 是否有真 Ragic 寫入測試未受 env 保護
+   - 教練 by-phone production 是否仍禁止首次綁定
+   - Ragic 空 line_uid 是否會覆蓋本地 line_uid
+
+E. 回報格式
+請用以下格式回報：
+- 修改檔案清單
+- API / 前端流程變更
+- Ragic smoke 腳本位置與用法
+- 驗證指令與結果
+- 是否有任何失敗、未覆蓋或需人工確認項目

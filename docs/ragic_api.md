@@ -432,14 +432,31 @@ GET https://ap7.ragic.com/xinsheng/general-information/11?api&def=1
 
 ---
 
-## Z01 LINE 登入 / 註冊 對應（DAOS 後端使用）
+## Z01 / H01 LINE 登入 / 註冊 對應（DAOS 後端使用）
 
-| 用途 | Ragic 欄位 | Field ID | 本地對應 |
-|---|---|---|---|
-| 家教系統 LINE UID（登入綁定） | Z01.家教系統uid | `1006846` | `parents.line_uid` |
-| 教練 LINE UID | H01.個人LINE ID | `1003633` | `coaches.line_uid` |
+| 用途 | Ragic 欄位 | Field ID | 本地對應 | 寫入時機 |
+|---|---|---|---|---|
+| 家教系統 LINE UID（家長登入綁定） | Z01.家教系統uid | `1006846` | `parents.line_uid` | parent-bind-phone（命中時 PATCH）/ parent-register-line（POST） |
+| 教練 LINE UID（教練 LINE-only 登入） | H01.個人LINE ID | `1003633` | `coaches.line_uid` | 由管理員預先在 Ragic 填入（**本系統不寫**） |
 
 兩個 Field ID 都可由 env `RAGIC_FIELD_Z01_LINE_UID` / `RAGIC_FIELD_H01_LINE_UID` 覆寫。
+
+### Ragic 子表格 dotted-key payload 寫法
+Ragic 主表 + 子表格在一次 POST 內建立時，子表格欄位 key 使用 `{subtableStid}_{rowIndex}_{fieldId}` dotted 寫法。
+
+範例：Z01 註冊一位家長帶 2 位學員（學員子表格 stid = `1001119`，學員姓名 fieldId = `1001115`）：
+```json
+{
+  "1006846": "U_xxxxx",              // 家教系統uid (Z01 主表)
+  "1001012": "王小明",                // 家長姓名 (Z01 主表)
+  "1001119_0_1001115": "王大寶",      // 子表格第 0 列 學員姓名
+  "1001119_0_1001116": "2015/03/01",
+  "1001119_1_1001115": "王二寶",      // 子表格第 1 列 學員姓名
+  "1001119_1_1001116": "2017/08/12"
+}
+```
+
+註冊流程：本系統 `POST` 寫入 **Z01 主表 + Z01 子表格**；Ragic 收到後會自動把子表格每一列**複製到 Z02（學員資料管理）** 並產生 Z02 record（透過 Ragic 內建的「子表格產生新表」流程），本系統無需直接 POST Z02。
 
 ### Z01 子表格「學員」（stid `1001119`）—— 本系統寫入欄位
 

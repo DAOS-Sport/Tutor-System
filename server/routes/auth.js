@@ -548,10 +548,32 @@ router.post('/parent-register-line', async (req, res) => {
 
     const issued = _issue(local);
     const students = await loadStudents(local.id);
+
+    // ── MGM ref_token 綁定（失敗不阻擋註冊；與 parents.js 行為相容）──
+    let refBound = false;
+    let refError = null;
+    const refTokenRaw = req.body?.ref_token;
+    if (refTokenRaw) {
+      try {
+        const referrals = require('../services/referrals');
+        await referrals.bindReferee({
+          token: String(refTokenRaw).trim(),
+          refereeParentId: local.id,
+          refereePhone: local.phone,
+        });
+        refBound = true;
+      } catch (e) {
+        refError = e.code || 'REF_FAILED';
+        console.warn('[auth/parent-register-line] bindReferee failed:', refError);
+      }
+    }
+
     return res.json({
       status: 'registered_and_logged_in',
       parent: { ...issued, students },
       token: issued.token,
+      ref_bound: refBound,
+      ref_error: refError,
     });
   } catch (err) {
     console.error('[auth/parent-register-line]', err);

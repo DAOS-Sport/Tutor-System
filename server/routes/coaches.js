@@ -125,7 +125,9 @@ router.get('/by-phone', byPhoneRateLimit, async (req, res) => {
         code: 'LINE_ID_TOKEN_REQUIRED',
       });
     } else {
-      console.warn(`[coachAuth] phone-only fallback (dev): ip=${ip} phone=${phone}`);
+      // 避免 PII 落 production log：phone 只記前 4 碼
+      const maskedPhone = phone ? `${String(phone).slice(0, 4)}****` : 'n/a';
+      console.warn(`[coachAuth] phone-only fallback (dev): ip=${ip} phone=${maskedPhone}`);
     }
 
     // ── production / REQUIRE_LINE_ID_TOKEN=1：禁止 by-phone 首次綁定 ──
@@ -138,7 +140,9 @@ router.get('/by-phone', byPhoneRateLimit, async (req, res) => {
         });
       }
       if (verifiedLineUid && String(coach.line_uid) !== String(verifiedLineUid)) {
-        logFailedLogin(ip, phone, `line_uid-mismatch: stored=${coach.line_uid} vs verified=${verifiedLineUid}`);
+        // 不可在 log 寫完整 line_uid（PII）→ 只記末 4 碼
+        const mask = (v) => (v ? `***${String(v).slice(-4)}` : 'null');
+        logFailedLogin(ip, phone, `line_uid-mismatch: stored=${mask(coach.line_uid)} vs verified=${mask(verifiedLineUid)}`);
         return res.status(403).json({
           error: '此手機綁定的 LINE 帳號與目前登入的 LINE 不符，請聯繫管理員',
           code: 'COACH_LINE_MISMATCH',

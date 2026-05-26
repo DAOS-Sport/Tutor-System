@@ -259,6 +259,23 @@ Mock：LIFF mockDb 新增 `previewPromotion`，含 WELCOME10 折價券測試代�
 
 煙霧：admin login → 建立 → submit → approve → /api/promotions/active 與 /api/promotions（LIFF 公開）皆出現該活動；preview 自動套用 11700 → 11115（折抵 585）；coupon=WELCOME10 → 折抵 500；coupon=NOPE 回 COUPON_INVALID 400。
 
+## LINE 登入改造 Phase 1-5 完成摘要
+
+家長 **LINE-first**（自動 id_token → Ragic Z01 查詢 → 缺手機就綁手機 → 缺資料就註冊）：
+- `POST /api/auth/parent-line-login` → `logged_in` / `need_phone_binding`
+- `POST /api/auth/parent-bind-phone` → `bound_and_logged_in` / `need_registration`
+- `POST /api/auth/parent-register-line` → `registered_and_logged_in`（寫 Z01 主表 + 子表格學生；子表格 dotted key `1001119_0_1001115`；Z02 由 Ragic 自動產生）
+  - 同 endpoint 接 `ref_token` → 註冊成功後 `referrals.bindReferee` best-effort，失敗回 `ref_error`、不 rollback；前端依 `ref_bound` 才寫 `PENDING_COUPON_KEY/TRIAL50`
+- AuthContext `setParent/setCoach` 中央去敏 `line_uid` / `lineUid`，不落地 localStorage
+- production 必須設 `REQUIRE_LINE_ID_TOKEN=1`、`RAGIC_FIELD_Z01_LINE_UID=1006846`
+
+教練 **LINE-only**（不接受手動輸入手機首次綁定）：
+- `GET /api/coaches/by-line-uid?id_token=…` → 用 Ragic H01「個人LINE ID」(`1003633`) 查 coach
+- 404 `LINE_UID_NOT_BOUND` → 前端顯示「尚未完成綁定，請截圖傳送結果至 400 官方帳號」
+- `by-phone` production 已禁止首次綁定（dev fallback 保留）
+
+受控驗證腳本：`cd server && npm run smoke:ragic-auth`（read-only by default；寫入須 `ENABLE_RAGIC_WRITE_SMOKE=1` + `TEST_PHONE` / `TEST_PARENT_NAME` / `TEST_LINE_UID`）。
+
 ## Phase 6 (下)：MGM 推薦連結 + 推薦統計 (任務 #18 已完成)
 DB：新增 `referral_records`（migration 007 + coreSchema bootstrap，皆 idempotent）。token UNIQUE、`UNIQUE(referee_phone, coach_id) WHERE referee_phone IS NOT NULL` partial index 防同手機重複推薦同教練；status 流轉 `pending → registered → trial_paid → checked_in → reward_issued`。同步補 `parents.email/gender`、`students.id_number/gender`、seed `TRIAL50` 體驗課 5 折 promo。
 

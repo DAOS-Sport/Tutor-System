@@ -79,24 +79,28 @@ export default function RegisterPage() {
     try {
       const idToken = tryGetLineIdToken();
 
-      // LINE-first 註冊：有 id_token → 走 parent-register-line
+      // LINE-first 註冊：有 id_token → 走 parent-register-line（同步串入 ref_token）
       if (idToken) {
         const r = await authApi.parentRegisterLine({
           idToken,
           parent: cleanParent,
           students: cleanStudents,
+          refToken: refToken || undefined,
         });
         if (r?.status === 'registered_and_logged_in' && r.parent) {
           const merged = { ...r.parent, token: r.token || r.parent.token || null };
           setParent(merged);
-          // MGM：保留 ref_token UI；註冊端點本輪未串入 ref_token，
-          // 但若已有推薦資訊，仍寫入 pendingCoupon 讓後續報名套用
-          if (refInfo && refInfo.coach) {
+          // MGM：ref_bound=true 且 refInfo.coach 存在 → 寫 pendingCoupon
+          // 報名頁會偵測並自動套用 TRIAL50 (5 折)
+          if (refInfo && refInfo.coach && r.ref_bound) {
             try {
               localStorage.setItem(PENDING_COUPON_KEY,
                 JSON.stringify({ coupon: 'TRIAL50', coachId: refInfo.coach.id }));
             } catch { /* noop */ }
             toast.success(`註冊完成！請選擇組別與場館後即可享 ${refInfo.coach.name} 教練體驗課 5 折`);
+          } else if (refInfo && refInfo.coach && r.ref_error) {
+            // 推薦綁定失敗不阻擋註冊，但要告知使用者
+            toast.warning('註冊完成，但推薦連結綁定失敗，請聯絡客服');
           } else {
             toast.success('註冊完成！歡迎加入夢想體育學院');
           }

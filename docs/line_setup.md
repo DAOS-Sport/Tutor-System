@@ -1,5 +1,34 @@
 # LINE 整合設定指南
 
+## 登入流程總覽（LINE-first / LINE-only）
+
+### 家長 LIFF（LINE-first）
+LIFF 一開即拿 `id_token`，無手動輸入登入：
+1. `LINE id_token` → `POST /api/auth/parent-line-login`
+   - 後端 verify id_token (LINE_LOGIN_CHANNEL_ID 當 aud) → 拿 `line_uid`
+   - 查 Ragic Z01「家教系統uid」(`1006846`) → 找到家長 → 簽 JWT → `logged_in`
+   - 找不到 → 回 `need_phone_binding`，前端顯示手機綁定畫面
+2. 手機綁定 → `POST /api/auth/parent-bind-phone { id_token, phone }`
+   - Ragic Z01 用手機查 → 命中：寫回 Z01.家教系統uid + 本地 parents.line_uid，回 `bound_and_logged_in`
+   - 沒命中：回 `need_registration`，前端導 `/register?phone=…`
+3. 註冊 → `POST /api/auth/parent-register-line { id_token, parent, students, ref_token? }`
+   - 寫 Z01 主表 + 子表格學生 → 本地 upsert → 回 `registered_and_logged_in`
+   - `ref_token` (MGM 推薦) 與註冊同 endpoint 串入；失敗只記 `ref_error`，不 rollback 註冊
+
+### 教練 LIFF（LINE-only）
+僅憑 `id_token` 自動登入，**不接受手動輸入手機首次綁定**：
+1. `LINE id_token` → `GET /api/coaches/by-line-uid?id_token=…`
+2. 後端 verify id_token → 拿 `line_uid`
+3. 查 Ragic H01「個人LINE ID」(`1003633`) 對應 coach → 簽 JWT 回傳
+4. 沒命中：回 404 `LINE_UID_NOT_BOUND`，前端顯示
+   > 尚未完成綁定，請截圖傳送結果至 400 官方帳號
+5. 由管理員在 Ragic H01 補綁 LINE UID 後再登入
+
+> production 必須 `REQUIRE_LINE_ID_TOKEN=1`：教練 `by-phone` endpoint 不再接受首次綁定（dev 才接受）。
+
+---
+
+
 ## 需要建立的 LINE 元件
 
 ### 1. LINE Login Channel（家長 + 教練共用 1 個）
