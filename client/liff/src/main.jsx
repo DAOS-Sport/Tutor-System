@@ -8,10 +8,31 @@ import './index.css';
 const LIFF_ID_PARENT = import.meta.env.VITE_LIFF_ID_PARENT || import.meta.env.VITE_LIFF_ID;
 const LIFF_ID_COACH = import.meta.env.VITE_LIFF_ID_COACH || import.meta.env.VITE_LIFF_ID;
 
-function pickLiffId() {
+function isCoachLiffId(id) {
+  return !!id && !!LIFF_ID_COACH && String(id) === String(LIFF_ID_COACH);
+}
+
+function isCoachPath() {
   const path = window.location.pathname || '';
-  const isCoach = path.startsWith('/liff/coach') || path.startsWith('/coach');
-  return isCoach ? LIFF_ID_COACH : LIFF_ID_PARENT;
+  return path.startsWith('/liff/coach') || path.startsWith('/coach');
+}
+
+function pickLiffId() {
+  return isCoachPath() ? LIFF_ID_COACH : LIFF_ID_PARENT;
+}
+
+function normalizeCoachLanding() {
+  const liffId = pickLiffId();
+  try {
+    const currentLiffId = liff?.id || liffId;
+    if (isCoachLiffId(currentLiffId) && !isCoachPath()) {
+      window.history.replaceState(null, '', '/liff/coach' + window.location.search);
+    }
+  } catch {
+    if (isCoachLiffId(liffId) && !isCoachPath()) {
+      window.history.replaceState(null, '', '/liff/coach' + window.location.search);
+    }
+  }
 }
 
 function mount() {
@@ -33,6 +54,7 @@ async function initLiff() {
 
   try {
     await liff.init({ liffId });
+    normalizeCoachLanding();
     if (!liff.isLoggedIn()) {
       liff.login({ redirectUri: window.location.href });
       return;
@@ -41,6 +63,7 @@ async function initLiff() {
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('[liff] init 失敗，退回到無 LIFF 模式：', err);
+    normalizeCoachLanding();
     mount();
   }
 }
