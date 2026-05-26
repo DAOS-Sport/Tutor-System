@@ -9,6 +9,16 @@ import { isValidTWPhone } from '../utils/format';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { USE_MOCK } from '../api/client';
 
+function forceLiffLogin() {
+  try {
+    if (liff?.isInClient?.() && !liff?.isLoggedIn?.() && typeof liff.login === 'function') {
+      liff.login({ redirectUri: window.location.href });
+      return true;
+    }
+  } catch { /* noop */ }
+  return false;
+}
+
 function tryGetLineIdToken() {
   try {
     if (typeof liff?.getIDToken === 'function' && liff.isLoggedIn?.()) {
