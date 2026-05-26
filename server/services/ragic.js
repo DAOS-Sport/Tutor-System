@@ -174,6 +174,24 @@ const Z01_FIELDS = {
   '家教系統uid':    Z01_LINE_UID_FIELD,
 };
 
+// ─────────────────────────────────────────────────────────────
+// Z01 子表格「學員」（stid 1001119）
+//   Ragic 同份家長 (Z01) 可掛多位學員，subtable parent field id = 1001119
+//   寫入子表格時 Ragic 接受兩種 key 形式：
+//     1) 巢狀 object：{ "1001119": { "0": {1001115:"張小明", 1001116:"2015/03/12", ...}, "1": {...} } }
+//     2) 扁平 dotted：{ "1001119_0_1001115":"張小明", "1001119_0_1001116":"2015/03/12", ... }
+//   兩者都會被 Ragic 接受；本服務一律走「扁平 dotted」(較不易踩到 JSON shape 差異)。
+// ─────────────────────────────────────────────────────────────
+const Z01_STUDENTS_SUBTABLE_ID = '1001119';
+const Z01_STUDENT_FIELDS = {
+  '學員姓名':       '1001115',
+  '出生年月日':     '1001116',
+  '學(性別)':       '1001117',
+  '身分證字號':     '1001118',
+  '血型':           '1001880',
+  '學員編號':       '1001132',
+};
+
 // Z02 學員主檔（含家長關聯欄位）
 const Z02_FIELDS = {
   '學員編號':       '1001132',
@@ -207,6 +225,15 @@ const FIELD = {
     HOME_ADDRESS:   Z01_FIELDS['住家地址'],
     LINE_ID:        Z01_FIELDS['LINE ID'],
     LINE_UID:       Z01_LINE_UID_FIELD,
+    STUDENTS_SUBTABLE: Z01_STUDENTS_SUBTABLE_ID,
+  },
+  Z01_STUDENT: {
+    NAME:         Z01_STUDENT_FIELDS['學員姓名'],
+    BIRTH_DATE:   Z01_STUDENT_FIELDS['出生年月日'],
+    GENDER:       Z01_STUDENT_FIELDS['學(性別)'],
+    ID_NUMBER:    Z01_STUDENT_FIELDS['身分證字號'],
+    BLOOD_TYPE:   Z01_STUDENT_FIELDS['血型'],
+    STUDENT_CODE: Z01_STUDENT_FIELDS['學員編號'],
   },
   Z02: {
     STUDENT_CODE:   Z02_FIELDS['學員編號'],
@@ -296,6 +323,133 @@ async function upsertParent(parentData, ragicRecordId = null) {
   }
 }
 
+/**
+ * 將 Z01 record 主表轉成本地 parent 欄位形狀。
+ * Ragic 回傳 key 同時包含中文欄位名（如「家長姓名」）與 Field ID 字串（"1001101"），
+ * 兩者都當 fallback 嘗試一次。
+ */
+function mapZ01Parent(record) {
+  if (!record) return null;
+  const get = (...keys) => {
+    for (const k of keys) {
+      if (record[k] != null && String(record[k]).trim() !== '') return String(record[k]).trim();
+    }
+    return '';
+  };
+  return {
+    ragic_record_id: record._ragicId || record['_ragicId'] || null,
+    name:             get(FIELD.Z01.PARENT_NAME, '家長姓名'),
+    phone:            get(FIELD.Z01.PHONE, '(報)行動電話'),
+    gender:           get(FIELD.Z01.GENDER, '(報)性別'),
+    email:            get(FIELD.Z01.EMAIL, '(報)Email'),
+    primary_venue_id: get(FIELD.Z01.VENUE, '館別'),
+    line_uid:         get(FIELD.Z01.LINE_UID, '家教系統uid'),
+  };
+}
+
+/**
+ * 解析 Z01 record 中的子表格學員清單。
+ * Ragic 對子表格的回傳形狀並非穩定一致，至少觀察到三種：
+ *   (a) record[<subtable_id>] 是 object：{ "<rowKey>": { fid: value, ... } }
+ *   (b) record[<subtable_id>] 是 array：[ { fid: value }, ... ]
+ *   (c) 直接把子表格欄位放到第一層 record 上（單列子表格時）
+ * 任一狀況都要能解出來；解不出來時回 []，由 caller 決定容錯。
+ */
+function parseZ01Students(record) {
+  if (!record) return [];
+  const SF = FIELD.Z01_STUDENT;
+  const sub = record[Z01_STUDENTS_SUBTABLE_ID] || record['1001119'];
+  let rows = [];
+  if (sub && typeof sub === 'object') {
+    rows = Array.isArray(sub) ? sub : Object.values(sub);
+  } else if (record[SF.NAME] || record['學員姓名']) {
+    // 第一層 fallback（單列子表格被 flatten 的情形）
+    rows = [record];
+  }
+  const out = [];
+  for (const r of rows) {
+    if (!r || typeof r !== 'object') continue;
+    const get = (...keys) => {
+      for (const k of keys) {
+        if (r[k] != null && String(r[k]).trim() !== '') return String(r[k]).trim();
+      }
+      return '';
+    };
+    const student = {
+      name:         get(SF.NAME, '學員姓名'),
+      birth_date:   get(SF.BIRTH_DATE, '出生年月日') || null,
+      gender:       get(SF.GENDER, '學(性別)') || null,
+      id_number:    (get(SF.ID_NUMBER, '身分證字號') || '').toUpperCase() || null,
+      blood_type:   get(SF.BLOOD_TYPE, '血型') || null,
+      student_code: get(SF.STUDENT_CODE, '學員編號') || null,
+    };
+    if (!student.name) continue; // 過濾空列
+    out.push(student);
+  }
+  return out;
+}
+
+/**
+ * 在 Z01 建立新家長 + 一次寫入子表格學員。
+ *
+ * 子表格寫法：採 Ragic 文件範例的「扁平 dotted key」格式
+ *   <subtable_id>_<rowIndex>_<field_id> = value
+ * 例：{
+ *   "1001101": "張媽媽",          // 主表 家長姓名
+ *   "1001100": "0912345678",      // 主表 行動電話
+ *   "1006846": "Uxxxx",           // 主表 家教系統uid
+ *   "1001119_0_1001115": "張小明",// 子表格 row#0 學員姓名
+ *   "1001119_0_1001116": "2015/03/12",
+ *   "1001119_1_1001115": "張小美",
+ * }
+ *
+ * 註：Ragic 不同帳號 / Form 對「新建後回傳 record id 的 JSON 結構」並不一致，
+ *     文件記載的回傳常見三種：res.data.ragicId、res.data._ragicId、或新 row map 中
+ *     第一個 key（即 row 流水號）。三種都試一輪，仍取不到時回 null，並把 raw
+ *     response 一併回傳給 caller 做 fallback / 補救。
+ */
+async function createParentWithStudentsInRagic({ parent, students = [], lineUid }) {
+  if (!parent || !parent.phone) throw new Error('parent.phone 必填');
+  if (!lineUid) throw new Error('lineUid 必填');
+
+  const payload = {
+    [FIELD.Z01.PARENT_NAME]: parent.name || '',
+    [FIELD.Z01.PHONE]:       parent.phone,
+    [FIELD.Z01.LINE_UID]:    lineUid,
+  };
+  if (parent.gender)           payload[FIELD.Z01.GENDER] = parent.gender;
+  if (parent.email)            payload[FIELD.Z01.EMAIL]  = parent.email;
+  if (parent.primary_venue_id) payload[FIELD.Z01.VENUE]  = parent.primary_venue_id;
+
+  students.forEach((s, idx) => {
+    if (!s || !s.name) return;
+    const prefix = `${Z01_STUDENTS_SUBTABLE_ID}_${idx}_`;
+    payload[`${prefix}${FIELD.Z01_STUDENT.NAME}`] = s.name;
+    if (s.birth_date) payload[`${prefix}${FIELD.Z01_STUDENT.BIRTH_DATE}`] = s.birth_date;
+    if (s.gender)     payload[`${prefix}${FIELD.Z01_STUDENT.GENDER}`]     = s.gender;
+    if (s.id_number)  payload[`${prefix}${FIELD.Z01_STUDENT.ID_NUMBER}`]  = String(s.id_number).toUpperCase();
+    if (s.blood_type) payload[`${prefix}${FIELD.Z01_STUDENT.BLOOD_TYPE}`] = s.blood_type;
+  });
+
+  const res = await client.post(_withApi(process.env.RAGIC_FORM_Z01), payload, {
+    params: { APIKey: process.env.RAGIC_API_KEY },
+  });
+  _cacheInvalidate('z01:');
+
+  const data = res.data || {};
+  if (data.status === 'ERROR') {
+    throw new Error(`Ragic ${data.code}: ${data.msg}`);
+  }
+
+  // 嘗試從常見三種位置抽 record id
+  let ragicRecordId = data.ragicId || data._ragicId || null;
+  if (!ragicRecordId && data.data && typeof data.data === 'object') {
+    const firstKey = Object.keys(data.data)[0];
+    ragicRecordId = firstKey || null;
+  }
+  return { ragicRecordId, raw: data };
+}
+
 // Z02：依身分證字號查詢學員（必須用 where=<fid>,eq,... 才能精確過濾）
 async function getStudentByIdNumber(idNumber) {
   const data = await query(process.env.RAGIC_FORM_Z02, { where: `${FIELD.Z02.ID_NUMBER},eq,${idNumber}` });
@@ -320,6 +474,8 @@ async function upsertStudent(studentData, ragicRecordId = null) {
 module.exports = {
   FIELD,
   Z01_FIELDS,
+  Z01_STUDENT_FIELDS,
+  Z01_STUDENTS_SUBTABLE_ID,
   Z02_FIELDS,
   Z01_LINE_UID_FIELD,
   H01_LINE_UID_FIELD,
@@ -332,6 +488,9 @@ module.exports = {
   getParentByLineUid,
   bindParentLineUidToRagic,
   upsertParent,
+  mapZ01Parent,
+  parseZ01Students,
+  createParentWithStudentsInRagic,
   getStudentByIdNumber,
   upsertStudent,
 };

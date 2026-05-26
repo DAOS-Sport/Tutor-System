@@ -1,0 +1,102 @@
+請接續上一輪修改，這次只完成「Z01 子表格學員同步 + 家長 LINE 註冊 API」。不要重構 LIFF 前端，不要處理教練前端。
+
+上一輪已完成：
+- Z01 家教系統uid Field ID 1006846
+- H01 個人LINE ID Field ID 1003633
+- POST /api/auth/parent-line-login
+- POST /api/auth/parent-bind-phone
+
+本次目標：
+家長 LINE 登入後，如果手機在 Z01 查得到，要把 Z01 主表與 Z01 子表格中的所有學員同步到本地 parents/students。
+如果手機查不到，要提供一個 LINE 註冊 API，將家長資料 + 多位學員寫入 Ragic Z01 主表與 Z01 子表格，再同步到本地 DB 並登入。
+
+請完成：
+
+A. 修改 server/services/ragic.js
+1. 補齊 Z01 子表格欄位常數：
+   - 子表格 key：1001119
+   - 學員姓名：1001115
+   - 出生年月日：1001116
+   - (學)性別：1001117
+   - 身分證字號：1001118
+   - 血型：1001880
+   - 學員編號：1001132
+2. 新增 parseZ01Students(record)
+   - 從 Ragic Z01 record 解析子表格學員清單。
+   - 請支援 Ragic 常見回傳格式：record[1001119] 是 object / array，或中文欄位 fallback。
+   - 回傳格式至少包含：name, birth_date, gender, id_number, blood_type, student_code。
+   - 空白學員列要過濾。
+3. 新增 mapZ01Parent(record)
+   - 將 Z01 record 轉為本地 parent 欄位：
+     name, phone, gender, email, primary_venue_id, ragic_record_id, line_uid。
+4. 新增 createParentWithStudentsInRagic({ parent, students, lineUid })
+   - 寫入 Z01 主表，包含 1006846 家教系統uid。
+   - 同時寫入 Z01 子表格學員資料。
+   - payload 請使用 Field ID，不要用中文欄位名。
+   - 寫入成功後回傳 Ragic record id 或可供後續追蹤的結果。
+   - 若 Ragic API 回傳格式無法穩定取得 record id，請在程式註解與回報中說明。
+5. 匯出上述方法。
+6. 不要移除既有 getParentByPhone / getParentByLineUid / bindParentLineUidToRagic。
+
+B. 修改 server/routes/auth.js
+1. 將 parent-line-login 與 parent-bind-phone 裡「同步 parent」的 TODO 補完整：
+   - 用 ragic.mapZ01Parent(record)
+   - 用 ragic.parseZ01Students(record)
+   - upsert 到本地 parents
+   - upsert / 同步該 parent 底下所有 students
+2. 本地 parents upsert 規則：
+   - 以 phone 為主要唯一鍵
+   - line_uid 必須符合安全規則：空值可補；已有不同 UID 不可覆蓋
+   - ragic_record_id 要保存
+3. 本地 students upsert 規則：
+   - 優先以 id_number 對應
+   - 若 id_number 空白，使用同 parent_id + name + birth_date 作保守匹配
+   - 不要刪除本地已有但這次 Ragic 沒回傳的學生，避免 Ragic 子表格格式解析不完整時誤刪
+4. 新增 POST /api/auth/parent-register-line
+   Request body:
+   {
+     id_token,
+     parent: { name, phone, gender, email, primary_venue_id },
+     students: [{ name, id_number, birth_date, gender, blood_type }]
+   }
+   流程：
+   - 驗證 LINE id_token 取得 lineUid
+   - 檢查本地是否已有相同 line_uid 綁定其他 phone，有則 409 LINE_ALREADY_BOUND_TO_OTHER_PHONE
+   - 用 Ragic getParentByLineUid(lineUid) 查，若已存在，回 409 LINE_ALREADY_REGISTERED
+   - 用 Ragic getParentByPhone(phone) 查，若已存在，回 409 PHONE_EXISTS_USE_BINDING
+   - 呼叫 createParentWithStudentsInRagic 建立 Z01 主表 + 子表格
+   - 建立 / upsert 本地 parents + students
+   - 簽發 parent JWT
+   - 回傳 { status: "registered_and_logged_in", parent, token }
+5. 保留舊的 /api/auth/parent-login，不要刪。
+
+C. 資料格式與驗證
+1. 台灣手機格式仍用 09xxxxxxxx。
+2. 學員至少一位。
+3. 學員姓名必填。
+4. 身分證字號若有填，轉大寫；格式若目前專案已有 isValidTWId 或 regex 可沿用。
+5. 錯誤訊息請用中文，並附清楚 code。
+
+D. 補文件
+1. docs/ragic_api.md 補上：
+   - Z01 家教系統uid / 1006846 對應 parents.line_uid
+   - Z01 子表格寫入本系統使用的欄位
+2. .env.example 若上一輪已補，不要重複；若沒有，補：
+   - RAGIC_FIELD_Z01_LINE_UID=1006846
+   - RAGIC_FIELD_H01_LINE_UID=1003633
+
+E. 驗證與回報，這次一定要做
+請執行並回報：
+1. cd server && node -c services/ragic.js
+2. cd server && node -c routes/auth.js
+3. 若 server 可啟動，確認 /health 200
+4. 用 curl 或等價方式做 smoke：
+   - parent-register-line 缺 id_token 應回 400 或 401
+   - parent-register-line 假 id_token 應回 401 LINE_VERIFY_FAILED 或等價錯誤
+   - parent-bind-phone 假 id_token 應回 401
+5. 回報：
+   - 修改檔案清單
+   - 新增/修改 API
+   - Ragic 子表格 payload 寫法
+   - 驗證指令與結果
+   - 尚無法真實驗證 Ragic 寫入的原因與需要哪些 Replit Secrets

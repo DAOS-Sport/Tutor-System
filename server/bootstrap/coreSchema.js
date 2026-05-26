@@ -561,9 +561,15 @@ CREATE INDEX IF NOT EXISTS idx_promo_audit_promo ON promotion_audit_logs(promoti
 DO $$ BEGIN
   ALTER TABLE parents  ADD COLUMN IF NOT EXISTS email   VARCHAR(255);
   ALTER TABLE parents  ADD COLUMN IF NOT EXISTS gender  VARCHAR(20);
+  ALTER TABLE parents  ADD COLUMN IF NOT EXISTS ragic_record_id VARCHAR(50);
   ALTER TABLE students ADD COLUMN IF NOT EXISTS id_number VARCHAR(20);
   ALTER TABLE students ADD COLUMN IF NOT EXISTS gender    VARCHAR(20);
+  ALTER TABLE students ADD COLUMN IF NOT EXISTS blood_type VARCHAR(5);
+  ALTER TABLE students ADD COLUMN IF NOT EXISTS student_code VARCHAR(50);
+  ALTER TABLE students ADD COLUMN IF NOT EXISTS ragic_record_id VARCHAR(50);
 EXCEPTION WHEN undefined_table THEN NULL; END $$;
+CREATE INDEX IF NOT EXISTS idx_parents_ragic_record_id ON parents(ragic_record_id) WHERE ragic_record_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_students_id_number ON students(id_number) WHERE id_number IS NOT NULL;
 
 -- MGM 獎勵券需綁定持有者：eligible_parent_id NULL = 公開券；否則僅該家長可用
 DO $$ BEGIN

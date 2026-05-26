@@ -429,3 +429,46 @@ GET https://ap7.ragic.com/xinsheng/general-information/11?api&def=1
 | 報名日 | `1004219` | D | `yyyy/MM/dd HH:mm`，預設 `$DATETIME` |
 | 報名單號 | `1004095` | D | 自動編號 `AFS-...`，連結 `/after-school-class/5` |
 | 退費單號 | `1004177` | D |  |
+
+---
+
+## Z01 LINE 登入 / 註冊 對應（DAOS 後端使用）
+
+| 用途 | Ragic 欄位 | Field ID | 本地對應 |
+|---|---|---|---|
+| 家教系統 LINE UID（登入綁定） | Z01.家教系統uid | `1006846` | `parents.line_uid` |
+| 教練 LINE UID | H01.個人LINE ID | `1003633` | `coaches.line_uid` |
+
+兩個 Field ID 都可由 env `RAGIC_FIELD_Z01_LINE_UID` / `RAGIC_FIELD_H01_LINE_UID` 覆寫。
+
+### Z01 子表格「學員」（stid `1001119`）—— 本系統寫入欄位
+
+| 中文欄位 | Field ID | 本地對應 |
+|---|---|---|
+| 學員姓名 | `1001115` | `students.name` |
+| 出生年月日 | `1001116` | `students.birth_date` |
+| 學(性別) | `1001117` | `students.gender` |
+| 身分證字號 | `1001118` | `students.id_number` |
+| 血型 | `1001880` | `students.blood_type` |
+| 學員編號 | `1001132` | `students.student_code`（Ragic 自動編號回拋） |
+
+### 註冊寫入 payload 範例（POST `RAGIC_FORM_Z01`）
+
+採「扁平 dotted key」格式 `<subtable_id>_<rowIndex>_<field_id>`：
+
+```json
+{
+  "1001101": "張媽媽",
+  "1001100": "0912345678",
+  "1006846": "Uxxxxxxxxxxxxxxx",
+  "1001119_0_1001115": "張小明",
+  "1001119_0_1001116": "2015/03/12",
+  "1001119_0_1001117": "男",
+  "1001119_1_1001115": "張小美",
+  "1001119_1_1001116": "2017/08/05"
+}
+```
+
+> 子表格也接受巢狀 object 形式 `{ "1001119": { "0": {...}, "1": {...} } }`，本服務統一使用扁平 dotted key 避免不同 Ragic Form 設定下 JSON shape 差異。
+
+> Ragic 回傳的 record id 鍵名因帳號 / Form 不同會落在 `data.ragicId`、`data._ragicId` 或 `data.data[<rowKey>]`；服務層三種都試一輪，仍取不到時回 `null` 並把 raw 回傳給 caller。
