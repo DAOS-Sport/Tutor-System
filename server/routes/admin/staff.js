@@ -485,10 +485,35 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
     if (patch.role && !VALID_ROLES.includes(patch.role)) {
       return res.status(400).json({ error: '角色不合法' });
     }
-    if (patch.role === 'coach' && patch.multiplier != null) {
-      const m = Number(patch.multiplier);
-      if (Number.isNaN(m) || m < MULTIPLIER_MIN || m > MULTIPLIER_MAX) {
-        return res.status(400).json({ error: `修課係數需在 ${MULTIPLIER_MIN.toFixed(2)}–${MULTIPLIER_MAX.toFixed(2)} 之間` });
+    // Multiplier 範圍校驗：只要這次請求會讓 coach.pricing_multiplier 生效就檢查。
+    // 觸發條件（涵蓋所有教練生效路徑，含序列攻擊：先存壞值 → 再啟用 coach_active）：
+    //   1) patch.role === 'coach'
+    //   2) patch.coach_active === true（啟用 dual-role）
+    //   3) 存在 coach row（不論 is_active；可能稍後被啟用）且 patch 帶 multiplier
+    //   4) patch.coach_active === true 且本次未帶 multiplier → 校驗 effective multiplier
+    //      （= patch.multiplier ?? admin_staff.multiplier 現值）以避免「先 PATCH 壞值
+    //      不被擋（因 coach 仍 inactive）→ 再 PATCH coach_active 啟用，繞過邏輯」
+    {
+      const existingCoach = await client.query(
+        `SELECT id, is_active FROM coaches WHERE ragic_employee_id = $1 LIMIT 1`, [id]
+      );
+      const hasCoachRow = existingCoach.rowCount > 0;
+      const willTakeEffect =
+        patch.role === 'coach' ||
+        patch.coach_active === true ||
+        (hasCoachRow && patch.multiplier != null) ||
+        (cur.rows[0].role === 'coach' && patch.multiplier != null);
+
+      if (willTakeEffect) {
+        const effective = patch.multiplier != null
+          ? Number(patch.multiplier)
+          : Number(cur.rows[0].multiplier ?? 1);
+        if (Number.isNaN(effective) || effective < MULTIPLIER_MIN || effective > MULTIPLIER_MAX) {
+          return res.status(400).json({
+            error: `修課係數需在 ${MULTIPLIER_MIN.toFixed(2)}–${MULTIPLIER_MAX.toFixed(2)} 之間`,
+            code: 'MULTIPLIER_OUT_OF_RANGE',
+          });
+        }
       }
     }
 

@@ -105,3 +105,38 @@ https://developers.line.biz/flex-simulator/
   → 回傳 JWT Token
   → 前端儲存 JWT，後續 API 呼叫帶 Authorization header
 ```
+
+## 教練端登入（LINE-only，不可手機首次綁定）
+
+教練端與家長端不同：教練端**只能**透過事先綁定的 LINE 帳號登入。
+
+### 綁定來源（二擇一，由管理員操作）
+1. **Ragic H01「個人LINE ID」欄位**（Field ID `1003633`）
+   - 由 HR / 員工自助填寫 LINE userId
+   - 每輪同步會把該值帶入 `coaches.line_uid`（透過 ragic_staging_changes 經管理員核准後 apply）
+   - 寫入規則：本地空 → 補；本地已有 → 不被空值覆蓋；本地與 Ragic 不同 → 保留本地 + console.warn
+2. **後台員工管理頁手動編輯**
+   - 管理員可直接在後台 staff 編輯彈窗填入 LINE userId
+
+### 登入流程
+- 教練在 LINE App 內開啟 `https://liff.line.me/<LIFF_ID_COACH>/coach`
+- 前端 LIFF：`liff.getProfile().userId` + `liff.getIDToken()`
+- 後端：`GET /api/coaches/by-line-uid?lineUid=Uxxx` + header `X-Line-Id-Token: <id_token>`
+- 驗證通過 → 回 coach + JWT；找不到 → 403/404 `COACH_LINE_NOT_BOUND`
+
+### production / `REQUIRE_LINE_ID_TOKEN=1` 規則
+- **不可** 透過 `/api/coaches/by-phone` 做首次綁定（即便驗證了 id_token 也不寫入空的 `line_uid`）
+- by-phone 端點維持比對用：
+  - 手機找到 + `line_uid` 為空 → 403 `COACH_LINE_NOT_BOUND`
+  - `line_uid` 與 verified sub 不符 → 403 `COACH_LINE_MISMATCH`
+
+### LIFF 未綁定提示文字（前端固定文案）
+```
+尚未完成綁定
+請截圖傳送結果至 400 官方帳號
+```
+畫面同時顯示「LINE 身分已驗證，僅尚未對應到教練資料」副標，引導教練聯絡管理員協助綁定。
+
+### 開發環境（`NODE_ENV !== 'production'` 且 `REQUIRE_LINE_ID_TOKEN !== '1'`）
+- 保留 `by-phone` 的 phone-only fallback（無 id_token 也能登入），每次登入會 `console.warn`
+- 方便本地測試教練流程；正式環境**不會**走到這條路徑

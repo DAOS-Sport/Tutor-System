@@ -363,16 +363,81 @@ async function _applyStaffChange(row, client) {
       [row.entity_id, String(p.email).trim()]
     );
   }
-  // 個人LINE ID (H01 1003633) → coaches.line_uid：
-  //   只在「Ragic 有值 + DB 現值為空」才補；不會覆蓋已綁定的教練 LINE。
-  //   COALESCE 雙重保險：即使 race condition 下 DB 在 SELECT 後被改了也不會被蓋掉。
-  if (p.line_uid) {
+  // ── 教練 1:1 維護：staff↔coach invariant ──
+  // 當這次 apply 後的 staff 是教練（role=coach 或 DB 已有 coach 兼任 row），
+  // 必須確保 coaches 表存在對應 row，否則 LIFF /api/coaches/by-line-uid 找不到、
+  // 教練永遠無法登入。此處做 idempotent UPSERT (ragic_employee_id 為 key)。
+  //
+  // line_uid 寫入規則（防誤蓋本地已綁定值）：
+  //   1) Ragic 有值 + 本地空 → 寫入
+  //   2) 本地已有值 → 不被空值覆蓋 (COALESCE)
+  //   3) Ragic 與本地不同 → 保留本地，console.warn（人工確認後可用 staging 強制覆蓋）
+  const existingCoach = await client.query(
+    `SELECT id, line_uid, is_active FROM coaches WHERE ragic_employee_id = $1`,
+    [row.entity_id]
+  );
+  const isCoachRole = String(p.role || '') === 'coach';
+  const hasCoachProfile = existingCoach.rowCount > 0;
+  const incomingLineUid = p.line_uid ? String(p.line_uid).trim() : '';
+
+  if (hasCoachProfile && incomingLineUid && existingCoach.rows[0].line_uid
+      && existingCoach.rows[0].line_uid !== incomingLineUid) {
+    console.warn(
+      `[ragicAdmin] line_uid mismatch for coach=${row.entity_id}: `
+      + `local=${existingCoach.rows[0].line_uid} ragic=${incomingLineUid} → 保留本地值`
+    );
+  }
+
+  if (isCoachRole && (p.phone || '').trim()) {
+    // 新教練：建 coaches row + 同步 venues + 寫入 line_uid（若有）
+    const inserted = await client.query(
+      `INSERT INTO coaches
+         (ragic_employee_id, name, phone, email, line_uid,
+          is_senior, pricing_multiplier, specialties, bio_rich_text,
+          is_active, intro_review_status, active_overridden_at)
+       VALUES ($1, $2, $3, $4, NULLIF($5, ''),
+               FALSE, 1.00, ARRAY[]::text[], '',
+               $6, 'draft', NOW())
+       ON CONFLICT (ragic_employee_id) DO UPDATE SET
+         name = EXCLUDED.name,
+         phone = EXCLUDED.phone,
+         email = COALESCE(NULLIF(EXCLUDED.email, ''), coaches.email),
+         line_uid = COALESCE(coaches.line_uid, NULLIF($5, '')),
+         is_active = CASE WHEN coaches.active_overridden_at IS NULL
+                          THEN EXCLUDED.is_active ELSE coaches.is_active END,
+         updated_at = NOW()
+       RETURNING id`,
+      [row.entity_id, p.name || '', String(p.phone || '').trim(),
+       String(p.email || '').trim(), incomingLineUid, !!p.is_active]
+    );
+    const coachId = inserted.rows[0]?.id;
+    if (coachId && Array.isArray(p.venue_ids) && p.venue_ids.length > 0) {
+      const venueIds = [...new Set(p.venue_ids.map(String).map(s => s.trim()).filter(Boolean))];
+      if (venueIds.length > 0) {
+        const vr = await client.query(
+          `SELECT id FROM venues WHERE id = ANY($1::text[])`, [venueIds]
+        );
+        const validIds = vr.rows.map(x => x.id);
+        if (validIds.length > 0) {
+          await client.query(`DELETE FROM coach_venues WHERE coach_id = $1`, [coachId]);
+          for (const vid of validIds) {
+            await client.query(
+              `INSERT INTO coach_venues (coach_id, venue_id) VALUES ($1, $2)
+               ON CONFLICT DO NOTHING`,
+              [coachId, vid]
+            );
+          }
+        }
+      }
+    }
+  } else if (hasCoachProfile && incomingLineUid) {
+    // dual-role 兼任教練 或 既有 coach row：只補 line_uid（不覆蓋）
     await client.query(
       `UPDATE coaches
           SET line_uid = COALESCE(line_uid, NULLIF($2, '')),
               updated_at = NOW()
         WHERE ragic_employee_id = $1`,
-      [row.entity_id, String(p.line_uid).trim()]
+      [row.entity_id, incomingLineUid]
     );
   }
   // Task #90：同步 admin_staff_venues（多場館），並把第一筆寫回 admin_staff.venue_id 作 fallback

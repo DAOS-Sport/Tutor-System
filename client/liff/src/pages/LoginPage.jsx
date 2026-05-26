@@ -22,10 +22,12 @@ function tryGetLineIdToken() {
 }
 
 /**
- * 教練端 LIFF 自動登入（Task #34）：在 LINE App 內進入 /coach* path 時自動嘗試
- *   liff.getProfile().userId + id_token → /api/coaches/by-line-uid → 成功直接進 /coach
- *   失敗（404 未綁定 / 401 / 其他）→ 留在登入頁讓 user 改用手機表單完成首次綁定
- * 回傳 'success' / 'unbound' / 'unavailable'
+ * 教練端 LIFF 自動登入：在 LINE App 內進入 /coach* path 時自動嘗試
+ *   liff.getProfile().userId + id_token → /api/coaches/by-line-uid
+ *   成功 → 進 /coach
+ *   404 COACH_LINE_NOT_BOUND → 顯示未綁定畫面（不再要求手機首次綁定）
+ *   其他 → 顯示「請稍後再試」
+ * 回傳 { status: 'success', coach } | 'unbound' | 'unavailable'
  */
 async function tryCoachAutoLogin() {
   try {
@@ -39,9 +41,17 @@ async function tryCoachAutoLogin() {
     return { status: 'success', coach };
   } catch (err) {
     const code = err?.response?.status;
-    if (code === 404) return 'unbound';
+    const ec = err?.response?.data?.code;
+    if (code === 404 || ec === 'COACH_LINE_NOT_BOUND') return 'unbound';
     return 'unavailable';
   }
+}
+
+function isCoachLiffContext(fromPath) {
+  const referrer = (typeof document !== 'undefined' && document.referrer) || '';
+  return /\/coach(\b|\/|$)/.test(fromPath)
+    || /\/coach(\b|\/|$)/.test(window.location.pathname)
+    || /\/coach(\b|\/|$)/.test(referrer);
 }
 
 /**
@@ -58,19 +68,16 @@ export default function LoginPage() {
   const toast = useToast();
   const [phone, setPhone] = useState('');
   const [busy, setBusy] = useState(false);
+  const fromPath = location.state?.from?.pathname || '';
+  const coachContext = isCoachLiffContext(fromPath);
+  // 教練 context state：null=非教練 / 'checking' / 'unbound' / 'error'
+  const [coachState, setCoachState] = useState(coachContext ? 'checking' : null);
   const autoRanRef = useRef(false);
 
-  // 自動登入：偵測 referrer/path 是否為教練端 LIFF（COACH LIFF 的 endpoint URL 會帶 /coach 之類前綴），
-  // 或當前要去的 from path 包含 /coach
   useEffect(() => {
     if (autoRanRef.current) return;
     autoRanRef.current = true;
-    const fromPath = location.state?.from?.pathname || '';
-    const referrer = (typeof document !== 'undefined' && document.referrer) || '';
-    const isCoachContext = /\/coach(\b|\/|$)/.test(fromPath)
-      || /\/coach(\b|\/|$)/.test(window.location.pathname)
-      || /\/coach(\b|\/|$)/.test(referrer);
-    if (!isCoachContext) return;
+    if (!coachContext) return;
     setBusy(true);
     tryCoachAutoLogin().then((res) => {
       if (res && typeof res === 'object' && res.status === 'success') {
@@ -79,9 +86,8 @@ export default function LoginPage() {
         navigate('/coach', { replace: true });
         return;
       }
-      if (res === 'unbound') {
-        toast.info('此 LINE 帳號尚未綁定教練，請輸入手機完成首次綁定');
-      }
+      if (res === 'unbound') setCoachState('unbound');
+      else setCoachState('error');
     }).finally(() => setBusy(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -140,6 +146,62 @@ export default function LoginPage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  // ── 教練 context 專屬畫面：未綁定 / 錯誤 / 自動登入中 ──
+  if (coachContext && coachState && coachState !== 'success') {
+    return (
+      <div className="flex min-h-[100dvh] flex-col items-center justify-center px-6 py-10">
+        <div className="mb-6 text-center">
+          <div className="mx-auto mb-3 flex h-16 w-16 items-center justify-center rounded-2xl bg-brand-primary text-2xl font-bold text-white">
+            DAOS
+          </div>
+          <h1 className="text-xl font-bold text-brand-primary">夢想體育學院</h1>
+          <p className="mt-1 text-sm text-gray-500">教練端</p>
+        </div>
+
+        {coachState === 'checking' && (
+          <div className="w-full max-w-[320px] text-center">
+            <LoadingSpinner label="正在以 LINE 帳號登入…" />
+          </div>
+        )}
+
+        {coachState === 'unbound' && (
+          <div className="w-full max-w-[340px] rounded-xl border border-amber-200 bg-amber-50 p-5 text-center">
+            <div className="mb-2 text-base font-bold text-amber-900">
+              尚未完成綁定
+            </div>
+            <p className="text-sm leading-6 text-amber-800">
+              您的 LINE 帳號尚未綁定為教練。
+              <br />
+              請截圖傳送結果至 <span className="font-bold">400 官方帳號</span>，
+              <br />
+              由管理員協助完成綁定後即可登入。
+            </p>
+            <p className="mt-3 text-xs text-amber-700">
+              （LINE 身分已驗證，僅尚未對應到教練資料）
+            </p>
+          </div>
+        )}
+
+        {coachState === 'error' && (
+          <div className="w-full max-w-[340px] rounded-xl border border-gray-200 bg-gray-50 p-5 text-center">
+            <p className="text-sm leading-6 text-gray-700">
+              無法自動登入，請稍後再試。
+              <br />
+              若問題持續，請截圖傳送結果至 <span className="font-bold">400 官方帳號</span>。
+            </p>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="mt-4 w-full rounded-lg bg-brand-primary py-2 text-sm font-bold text-white active:bg-brand-teal"
+            >
+              重新嘗試
+            </button>
+          </div>
+        )}
+      </div>
+    );
   }
 
   return (

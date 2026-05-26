@@ -1,0 +1,87 @@
+請接續前兩輪修改。這次只完成「教練 LINE-only 登入 + H01 個人LINE ID 同步修正 + 教練未綁定提示」。不要重構家長前端流程。
+
+背景：
+1. 教練端不能再使用手機首次綁定。
+2. 教練 LINE UID 來源是 Ragic H01：
+   - 欄位名稱：個人LINE ID
+   - Field ID：1003633
+   - env fallback：RAGIC_FIELD_H01_LINE_UID，預設 1003633
+3. 教練若尚未在 H01 / 後台完成綁定，LIFF 要顯示：
+   「尚未完成綁定，請截圖傳送結果至 400 官方帳號」
+4. 教練登入只能由 Ragic / 後台預先綁定後才能登入。
+5. 上輪 architect code review 提到兩個遺留 finding：
+   - ragicAdmin._applyStaffChange 沒同步寫 coaches 表
+   - multiplier 範圍校驗只在 role === 'coach' 時做，dual-role coach 可能漏掉
+   這兩點與本次教練登入/教練資料一致性有關，請一併修。
+
+本次請完成：
+
+A. 修正 server/services/ragicAdmin.js
+1. extractLineUid(r)
+   - 預設讀取 Field ID 1003633。
+   - env RAGIC_FIELD_H01_LINE_UID 有設定時優先使用。
+   - 仍保留中文欄位 fallback，例如「個人LINE ID」。
+2. H01 staff sync payload 必須帶 line_uid。
+3. _applyStaffChange(row, client)
+   - 當 payload 代表教練或具教練身份時，必須 ensure / upsert coaches 表。
+   - coaches.line_uid 寫入規則：
+     - Ragic 有 line_uid 且本地空白：寫入。
+     - 本地已有 line_uid：不要用空值覆蓋。
+     - 若 Ragic 有不同 line_uid，不要靜默覆蓋，請 stage diff 或至少保留本地值並記錄 warning。
+   - coaches.phone / name / email 也要保持與 staff apply 後一致，但不要破壞現有 admin 手動欄位。
+4. 修正 multiplier 校驗：
+   - 只要員工有 coach profile、role 是 coach、或請求要啟用 coach profile，都必須套用 1.00 到 1.50 範圍檢查。
+   - 不要只在 role === 'coach' 時檢查。
+5. 不要刪除既有 Ragic staging 流程。
+
+B. 修改 server/routes/coaches.js
+1. 保留 GET /api/coaches/by-line-uid 作為正式教練登入。
+2. 調整 GET /api/coaches/by-phone：
+   - production 或 REQUIRE_LINE_ID_TOKEN=1 時，不得進行手機首次綁定。
+   - 若手機存在但 line_uid 空白，回 403，code COACH_LINE_NOT_BOUND，message 使用：
+     「尚未完成綁定，請截圖傳送結果至 400 官方帳號」
+   - 若 line_uid 已存在但與 id_token sub 不同，回 403 COACH_LINE_MISMATCH。
+   - 開發環境可保留 phone-only fallback，但請明確只在 NODE_ENV !== production 且 REQUIRE_LINE_ID_TOKEN !== 1 時允許，並保留 warning。
+3. by-line-uid 找不到時也回 404 code COACH_LINE_NOT_BOUND，message 同上。
+4. 回傳錯誤 code 要清楚，供前端顯示。
+
+C. 修改 client/liff/src/pages/LoginPage.jsx
+1. 教練 context 下：
+   - 自動嘗試 LINE by-line-uid 登入。
+   - 成功：進 /coach。
+   - 404 / COACH_LINE_NOT_BOUND：顯示明確未綁定畫面，不要再要求手機完成首次綁定。
+   - 畫面文字必須包含：
+     「尚未完成綁定」
+     「請截圖傳送結果至 400 官方帳號」
+   - 畫面上可顯示簡短狀態資訊，例如 LINE 已驗證但尚未綁定。
+2. 教練 context 下不要顯示「輸入手機完成首次綁定」這類文字。
+3. 家長 context 暫時維持既有手機登入/註冊流程，不要重構。
+4. 若目前 LoginPage 家長/教練混在一起，請只做最小調整：教練 path 走 LINE-only 未綁定提示；非教練 path 保持原狀。
+
+D. 文件更新
+1. docs/line_setup.md 補充：
+   - 教練端只能用 H01 個人LINE ID 預先綁定登入。
+   - 未綁定提示文字。
+2. docs/ragic_api.md 確認 H01 個人LINE ID / 1003633 對應 coaches.line_uid。
+3. 若 replit.md 有登入流程描述，更新教練端不再手機首次綁定。
+
+E. 驗證與回報，必須執行
+請執行並回報：
+1. cd server && node -c services/ragicAdmin.js
+2. cd server && node -c routes/coaches.js
+3. cd client/liff && npm run build
+4. 若 server 可啟動，確認 /health 200。
+5. curl smoke：
+   - /api/coaches/by-line-uid 缺 id_token 應回 401
+   - /api/coaches/by-line-uid 假 id_token 應回 401
+   - /api/coaches/by-phone 在 REQUIRE_LINE_ID_TOKEN=1 或 production 邏輯下，不可對空 line_uid 做首次綁定
+6. 請主動跑 code review 或自我檢查，特別檢查：
+   - 是否仍有 production 手機首次綁定漏洞
+   - 是否會用空 line_uid 覆蓋本地 coaches.line_uid
+   - dual-role coach multiplier 是否會漏檢
+7. 回報：
+   - 修改檔案清單
+   - 新增/修改 API 行為
+   - 教練未綁定前端畫面描述
+   - 驗證指令與結果
+   - 未驗證項目與原因
