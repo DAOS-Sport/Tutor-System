@@ -1,13 +1,40 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useFieldArray, useForm } from 'react-hook-form';
+import liff from '@line/liff';
 import { parentsApi } from '../api/parents';
+import { authApi } from '../api/auth';
 import { referralsApi } from '../api/referrals';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { isValidTWPhone, isValidTWId } from '../utils/format';
+import { USE_MOCK } from '../api/client';
 
 const PENDING_COUPON_KEY = 'daos.pendingCoupon';
+const IS_PROD = import.meta.env.PROD;
+
+function tryGetLineIdToken() {
+  try {
+    if (typeof liff?.getIDToken === 'function' && liff.isLoggedIn?.()) {
+      return liff.getIDToken() || null;
+    }
+  } catch { /* swallow */ }
+  return null;
+}
+
+function registerErrorMessage(err) {
+  const code = err?.response?.data?.code;
+  const status = err?.response?.status;
+  if (code === 'LINE_ALREADY_BOUND_TO_OTHER_PHONE') return '此 LINE 已綁定其他手機，請聯絡管理員。';
+  if (code === 'LINE_ALREADY_REGISTERED') return '此 LINE 已註冊過，請直接從 LINE 開啟連結登入。';
+  if (code === 'PHONE_EXISTS_USE_BINDING') return '此手機已存在於系統，請改回登入頁以手機綁定。';
+  if (code === 'LINE_VERIFY_FAILED' || code === 'LINE_ID_TOKEN_REQUIRED') return 'LINE 驗證失敗：請重新由 LINE 開啟。';
+  if (code === 'RAGIC_UNAVAILABLE' || code === 'RAGIC_WRITE_FAILED') return '資料同步暫時失敗，請稍後再試。';
+  if (code === 'PHONE_FORMAT_INVALID') return '手機格式錯誤（需 09xxxxxxxx）。';
+  if (code === 'ID_NUMBER_INVALID') return '學員身分證字號格式錯誤。';
+  if (code === 'RATE_LIMITED' || status === 429) return '嘗試次數過多，請稍後再試。';
+  return '註冊失敗，請稍後再試。';
+}
 
 export default function RegisterPage() {
   const [params] = useSearchParams();
@@ -18,7 +45,7 @@ export default function RegisterPage() {
   const toast = useToast();
   const [refInfo, setRefInfo] = useState(null);
 
-  // 讀取推薦連結資訊（推薦人 / 教練）
+  // 讀取推薦連結資訊（推薦人 / 教練）— MGM ref_token UI 保留
   useEffect(() => {
     if (!refToken) return;
     let alive = true;
@@ -38,25 +65,74 @@ export default function RegisterPage() {
   const { fields, append, remove } = useFieldArray({ control, name: 'students' });
 
   async function onSubmit(data) {
+    const cleanParent = {
+      name: data.name,
+      phone: data.phone.trim(),
+      gender: data.gender,
+      email: data.email,
+    };
+    const cleanStudents = data.students.map((s) => ({
+      ...s,
+      id_number: (s.id_number || '').toUpperCase(),
+    }));
+
     try {
-      const created = await parentsApi.create({
-        ...data,
-        phone: data.phone.trim(),
-        ref_token: refToken || undefined,
-        students: data.students.map((s) => ({ ...s, id_number: s.id_number.toUpperCase() })),
-      });
-      setParent(created);
-      // MGM：成功綁定推薦 → 寫入 pendingCoupon，導回首頁讓家長挑組別 → 系統會在對應教練的報名頁自動套用
-      if (refInfo && refInfo.coach && created?.ref_bound) {
-        try { localStorage.setItem(PENDING_COUPON_KEY, JSON.stringify({ coupon: 'TRIAL50', coachId: refInfo.coach.id })); } catch { /* noop */ }
-        toast.success(`註冊完成！請選擇組別與場館後即可享 ${refInfo.coach.name} 教練體驗課 5 折`);
-        navigate('/', { replace: true });
+      const idToken = tryGetLineIdToken();
+
+      // LINE-first 註冊：有 id_token → 走 parent-register-line
+      if (idToken) {
+        const r = await authApi.parentRegisterLine({
+          idToken,
+          parent: cleanParent,
+          students: cleanStudents,
+        });
+        if (r?.status === 'registered_and_logged_in' && r.parent) {
+          const merged = { ...r.parent, token: r.token || r.parent.token || null };
+          setParent(merged);
+          // MGM：保留 ref_token UI；註冊端點本輪未串入 ref_token，
+          // 但若已有推薦資訊，仍寫入 pendingCoupon 讓後續報名套用
+          if (refInfo && refInfo.coach) {
+            try {
+              localStorage.setItem(PENDING_COUPON_KEY,
+                JSON.stringify({ coupon: 'TRIAL50', coachId: refInfo.coach.id }));
+            } catch { /* noop */ }
+            toast.success(`註冊完成！請選擇組別與場館後即可享 ${refInfo.coach.name} 教練體驗課 5 折`);
+          } else {
+            toast.success('註冊完成！歡迎加入夢想體育學院');
+          }
+          navigate('/', { replace: true });
+          return;
+        }
+        toast.error('註冊失敗，請稍後再試。');
         return;
       }
-      toast.success('註冊完成！歡迎加入夢想體育學院');
+
+      // 無 id_token：
+      //  - production 正式 LIFF：禁止 fallback，要求重新由 LINE 開啟
+      //  - dev / mock：保留舊 parentsApi.create fallback，方便本地測試
+      if (IS_PROD && !USE_MOCK) {
+        toast.error('LINE 驗證失敗：請重新由 LINE 開啟註冊頁。');
+        return;
+      }
+      const created = await parentsApi.create({
+        ...cleanParent,
+        ref_token: refToken || undefined,
+        students: cleanStudents,
+      });
+      const parent = { ...created, token: created?.token || null };
+      setParent(parent);
+      if (refInfo && refInfo.coach && created?.ref_bound) {
+        try {
+          localStorage.setItem(PENDING_COUPON_KEY,
+            JSON.stringify({ coupon: 'TRIAL50', coachId: refInfo.coach.id }));
+        } catch { /* noop */ }
+        toast.success(`註冊完成！請選擇組別與場館後即可享 ${refInfo.coach.name} 教練體驗課 5 折`);
+      } else {
+        toast.success('註冊完成！歡迎加入夢想體育學院');
+      }
       navigate('/', { replace: true });
     } catch (err) {
-      toast.error('註冊失敗，請稍後再試');
+      toast.error(registerErrorMessage(err));
     }
   }
 

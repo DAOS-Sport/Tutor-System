@@ -26,9 +26,16 @@ export function AuthProvider({ children }) {
   const [user, setUserState] = useState(() => load());
 
   const setUser = (u) => { setUserState(u); save(u); };
-  // coach 物件的 token 拉到頂層 (供 axios interceptor 直接讀)，data 仍保留全欄位
-  const setParent = (p) => setUser(p ? { role: 'parent', data: p, token: p?.token || null } : null);
-  const setCoach  = (c) => setUser(c ? { role: 'coach',  data: c, token: c?.token || null } : null);
+  // 統一去敏：line_uid 是身分綁定中介，前端只需要 token + 身分資料；
+  // 不應落地到 localStorage，避免在客戶端被讀取或誤用為登入憑證。
+  const _stripSensitive = (obj) => {
+    if (!obj || typeof obj !== 'object') return obj;
+    const { line_uid, lineUid, ...rest } = obj;
+    return rest;
+  };
+  // coach 物件的 token 拉到頂層 (供 axios interceptor 直接讀)，data 仍保留全欄位（去敏後）
+  const setParent = (p) => setUser(p ? { role: 'parent', data: _stripSensitive(p), token: p?.token || null } : null);
+  const setCoach  = (c) => setUser(c ? { role: 'coach',  data: _stripSensitive(c), token: c?.token || null } : null);
   const logout    = () => setUser(null);
 
   useEffect(() => {

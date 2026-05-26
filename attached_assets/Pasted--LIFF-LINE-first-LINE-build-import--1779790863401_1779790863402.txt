@@ -1,0 +1,106 @@
+請接續前三輪修改。這次只完成「家長 LIFF 前端 LINE-first 登入 / 手機綁定 / LINE 註冊流程」。不要再改教練登入邏輯，除非 build 需要修補前一輪造成的 import 問題。
+
+已存在後端 API：
+- POST /api/auth/parent-line-login { id_token }
+  回傳可能包含：
+  - { status: "logged_in", parent, token }
+  - { status: "need_phone_binding", line_uid }
+- POST /api/auth/parent-bind-phone { id_token, phone }
+  回傳可能包含：
+  - { status: "bound_and_logged_in", parent, token }
+  - { status: "need_registration", line_uid, phone }
+  - 409 LINE_ALREADY_BOUND_TO_OTHER_PHONE
+  - 409 PHONE_ALREADY_BOUND_TO_OTHER_LINE
+- POST /api/auth/parent-register-line { id_token, parent, students }
+  回傳：
+  - { status: "registered_and_logged_in", parent, token }
+  - 409 LINE_ALREADY_REGISTERED
+  - 409 PHONE_EXISTS_USE_BINDING
+  - 其他驗證錯誤
+
+本次需求：
+家長端不應一開始就輸入手機登入，而是：
+1. 家長打開 LIFF。
+2. 前端取得 liff.getIDToken()。
+3. 呼叫 /api/auth/parent-line-login。
+4. 若 logged_in：直接 setParent 並進首頁。
+5. 若 need_phone_binding：顯示手機綁定畫面。
+6. 手機綁定成功：登入首頁。
+7. 手機查無資料 need_registration：進入註冊畫面，手機預填。
+8. 註冊送出時呼叫 parent-register-line，寫入 Ragic Z01 主表 + 子表格，成功後登入首頁。
+9. 若 LINE 已綁其他手機或手機已綁其他 LINE，要顯示中文錯誤，不可繼續。
+
+請完成：
+
+A. 修改 client/liff/src/api/auth.js 或新增合適 API module
+新增前端 API 方法：
+- parentLineLogin(idToken)
+- parentBindPhone({ idToken, phone })
+- parentRegisterLine({ idToken, parent, students })
+
+要求：
+- 使用既有 callApi/http 模式。
+- mock 模式下要保留可開發，不要讓本地 dev 完全壞掉。
+- 不要把 line_uid 存在 URL query 或 localStorage，登入只存 JWT 與 parent data。
+
+B. 修改 client/liff/src/pages/LoginPage.jsx
+1. 判斷是否為教練 context：
+   - 教練 context 保持上一輪 LINE-only 流程，不要破壞。
+2. 非教練 context = 家長流程：
+   - 頁面載入後自動取得 idToken 並呼叫 parentLineLogin。
+   - 若沒有 LIFF / idToken，dev/mock 模式可保留舊手機登入 fallback，但 production 文案不要主打手機登入。
+   - logged_in：setParent，toast 歡迎，navigate('/')。
+   - need_phone_binding：顯示手機綁定表單。
+   - 綁定送出呼叫 parentBindPhone。
+   - bound_and_logged_in：setParent，進首頁。
+   - need_registration：navigate('/register?phone=...')，並讓 RegisterPage 用 LINE 註冊 API。
+3. 錯誤提示：
+   - LINE_ALREADY_BOUND_TO_OTHER_PHONE：此 LINE 已綁定其他手機，請聯絡管理員。
+   - PHONE_ALREADY_BOUND_TO_OTHER_LINE：此手機已綁定其他 LINE，請聯絡管理員。
+   - LINE 驗證失敗：請重新開啟 LIFF 或稍後再試。
+   - Ragic 查詢失敗：資料查詢暫時失敗，請稍後再試。
+4. 家長畫面文案要符合新流程：
+   - 不要再寫「系統會自動判斷家長 / 教練身分」。
+   - 家長流程應顯示「LINE 驗證中」、「請輸入手機完成資料綁定」等明確文案。
+
+C. 修改 client/liff/src/pages/RegisterPage.jsx
+1. 註冊頁應支援從 LoginPage 的 need_registration 進來。
+2. 送出時：
+   - 取得 LINE id_token。
+   - 呼叫 parentRegisterLine({ idToken, parent, students })。
+   - 成功後 setParent，navigate('/')。
+3. 若無 id_token：
+   - production/正式 LIFF 下顯示錯誤：請重新由 LINE 開啟。
+   - dev/mock 可保留舊 parentsApi.create fallback。
+4. 手機欄位可由 query phone 預填。
+5. 不要把 line_uid 放進 query string。
+6. 原本 MGM ref_token 流程要保留；若這次無法完整串入 parent-register-line，至少不要破壞既有 ref_token UI，並在回報中說明是否已保留。
+
+D. 確認 AuthContext 儲存格式
+- setParent 接收到的資料必須包含 token。
+- 如果後端回傳 { parent, token }，前端要合併成 { ...parent, token } 再 setParent。
+- 避免 setParent({ status, parent, token }) 造成其他頁面讀不到 parent.id/name/phone。
+
+E. 驗證與回報，必須執行
+請執行：
+1. cd client/liff && npm run build
+2. cd server && node -c routes/auth.js
+3. 若 server 可啟動，確認 /health 200
+4. 若能用瀏覽器或 preview，至少人工確認：
+   - 家長 /login 不再顯示「自動判斷家長 / 教練身分」
+   - 教練未綁定畫面仍存在
+   - RegisterPage build 正常
+5. curl smoke：
+   - parent-line-login 缺 id_token → 400/401
+   - parent-bind-phone 缺 id_token → 400/401
+   - parent-register-line 缺 id_token → 400/401
+6. 主動做 code review / 自我檢查：
+   - 是否把 line_uid 放進 URL 或 localStorage
+   - setParent 資料 shape 是否正確
+   - 家長流程是否仍誤試教練 by-phone
+   - 教練流程是否被破壞
+7. 回報：
+   - 修改檔案清單
+   - 前端流程狀態圖或文字流程
+   - 驗證指令與結果
+   - 尚未涵蓋項目
