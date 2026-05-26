@@ -233,23 +233,36 @@ async function _syncStaffImpl() {
  */
 const H01_LINE_UID_DEFAULT_FIELD = process.env.RAGIC_FIELD_H01_LINE_UID || '1003633';
 function extractLineUid(r) {
-  if (!r) return '';
-  // 1 + 2：Field ID（env 覆寫優先，預設 1003633）
-  if (r[H01_LINE_UID_DEFAULT_FIELD]) return String(r[H01_LINE_UID_DEFAULT_FIELD]).trim();
-  // 3：中文 / 英文欄位名 fallback
-  const candidates = ['個人LINE ID', '個人 LINE ID', 'LINE userid', 'LINE userId',
-                      'LINE UID', 'LINE uid', 'LINE_USER_ID', 'lineUid', 'line_uid', 'Line userid'];
+  const explicit = process.env.RAGIC_FIELD_H01_LINE_UID;
+  const candidates = [
+    explicit,
+    '1003633',
+    '個人LINE ID',
+    'LINE userid',
+    'LINE userId',
+    'LINE UID',
+    'LINE uid',
+    'LINE_USER_ID',
+    'lineUid',
+    'line_uid',
+    'Line userid',
+  ].filter(Boolean);
+
   for (const k of candidates) {
     if (r[k]) return String(r[k]).trim();
   }
-  // 4：寬鬆模糊比對
+
+  // 最後才做模糊搜尋，且排除「Line是否綁定完成」「400Line訊息」這種狀態/訊息欄位。
   for (const k of Object.keys(r)) {
-    if (/line/i.test(k) && /(user.?id|uid)/i.test(k) && r[k]) {
+    if (!/line/i.test(k) && !k.includes('LINE') && !k.includes('Line')) continue;
+    if (/是否|完成|訊息|message|status/i.test(k)) continue;
+    if (/(user.?id|uid|個人LINE ID)/i.test(k) && r[k]) {
       return String(r[k]).trim();
     }
   }
   return '';
 }
+
 
 // Task #94：F-C-Admin 已併入員工帳號管理（Task #91），coaches 獨立 sync 已下架。
 // _syncCoachesImpl / syncCoachesFromRagic / kickoffSyncCoachesAsync 三個入口一併移除，

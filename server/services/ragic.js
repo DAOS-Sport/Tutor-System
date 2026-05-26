@@ -356,58 +356,52 @@ function mapZ01Parent(record) {
  * 任一狀況都要能解出來；解不出來時回 []，由 caller 決定容錯。
  */
 function parseZ01Students(record) {
-  if (!record) return [];
-  const SF = FIELD.Z01_STUDENT;
-  const sub = record[Z01_STUDENTS_SUBTABLE_ID] || record['1001119'];
-  let rows = [];
-  if (sub && typeof sub === 'object') {
-    rows = Array.isArray(sub) ? sub : Object.values(sub);
-  } else if (record[SF.NAME] || record['學員姓名']) {
-    // 第一層 fallback（單列子表格被 flatten 的情形）
-    rows = [record];
-  }
-  const out = [];
-  for (const r of rows) {
-    if (!r || typeof r !== 'object') continue;
-    const get = (...keys) => {
-      for (const k of keys) {
-        if (r[k] != null && String(r[k]).trim() !== '') return String(r[k]).trim();
+  if (!record || typeof record !== 'object') return [];
+
+  const subtable =
+    record._subtable_1001119 ||
+    record['1001119'] ||
+    record['學員資料'] ||
+    record['項次'] ||
+    null;
+
+  const rows = Array.isArray(subtable)
+    ? subtable
+    : (subtable && typeof subtable === 'object' ? Object.values(subtable) : []);
+
+  const pick = (row, keys) => {
+    for (const key of keys) {
+      const value = row?.[key];
+      if (value !== undefined && value !== null && String(value).trim() !== '') {
+        return String(value).trim();
       }
-      return '';
+    }
+    return '';
+  };
+
+  const normalizeDate = (value) => {
+    const s = String(value || '').trim();
+    if (!s) return '';
+    // Ragic 實際回傳常見 yyyy/MM/dd；DB date 可吃 yyyy-MM-dd。
+    const m = s.match(/^(\\d{4})[\\/-](\\d{1,2})[\\/-](\\d{1,2})/);
+    if (!m) return s;
+    return `${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`;
+  };
+
+  return rows.map((row) => {
+    const name = pick(row, ['1001115', '學員姓名']);
+    return {
+      name,
+      birth_date: normalizeDate(pick(row, ['1001116', '出生年月日'])),
+      gender: pick(row, ['1001117', '(學)性別', '學(性別)']),
+      id_number: pick(row, ['1001118', '身分證字號']).toUpperCase(),
+      blood_type: pick(row, ['1001880', '血型']),
+      student_code: pick(row, ['1001132', '學員編號']),
+      ragic_record_id: pick(row, ['_ragicId', 'ragicId']),
     };
-    const student = {
-      name:         get(SF.NAME, '學員姓名'),
-      birth_date:   get(SF.BIRTH_DATE, '出生年月日') || null,
-      gender:       get(SF.GENDER, '學(性別)') || null,
-      id_number:    (get(SF.ID_NUMBER, '身分證字號') || '').toUpperCase() || null,
-      blood_type:   get(SF.BLOOD_TYPE, '血型') || null,
-      student_code: get(SF.STUDENT_CODE, '學員編號') || null,
-    };
-    if (!student.name) continue; // 過濾空列
-    out.push(student);
-  }
-  return out;
+  }).filter((s) => s.name);
 }
 
-/**
- * 在 Z01 建立新家長 + 一次寫入子表格學員。
- *
- * 子表格寫法：採 Ragic 文件範例的「扁平 dotted key」格式
- *   <subtable_id>_<rowIndex>_<field_id> = value
- * 例：{
- *   "1001101": "張媽媽",          // 主表 家長姓名
- *   "1001100": "0912345678",      // 主表 行動電話
- *   "1006846": "Uxxxx",           // 主表 家教系統uid
- *   "1001119_0_1001115": "張小明",// 子表格 row#0 學員姓名
- *   "1001119_0_1001116": "2015/03/12",
- *   "1001119_1_1001115": "張小美",
- * }
- *
- * 註：Ragic 不同帳號 / Form 對「新建後回傳 record id 的 JSON 結構」並不一致，
- *     文件記載的回傳常見三種：res.data.ragicId、res.data._ragicId、或新 row map 中
- *     第一個 key（即 row 流水號）。三種都試一輪，仍取不到時回 null，並把 raw
- *     response 一併回傳給 caller 做 fallback / 補救。
- */
 async function createParentWithStudentsInRagic({ parent, students = [], lineUid }) {
   if (!parent || !parent.phone) throw new Error('parent.phone 必填');
   if (!lineUid) throw new Error('lineUid 必填');
