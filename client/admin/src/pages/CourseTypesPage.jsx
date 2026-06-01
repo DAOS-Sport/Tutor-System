@@ -14,9 +14,9 @@ export default function CourseTypesPage() {
   const [rows, setRows] = useState(null);
   const [saving, setSaving] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
-  const [form, setForm] = useState({ course_type: '', label: '', max_students: '' });
+  const [form, setForm] = useState({ course_type: '', label: '', min_students: '', max_students: '' });
   const [addErr, setAddErr] = useState('');
-  const [editing, setEditing] = useState(null); // { course_type, label, max_students }
+  const [editing, setEditing] = useState(null); // { course_type, label, min_students, max_students }
   const [editErr, setEditErr] = useState('');
 
   async function load() {
@@ -47,13 +47,16 @@ export default function CourseTypesPage() {
     setAddErr('');
     const ct = parseInt(form.course_type, 10);
     const ms = parseInt(form.max_students, 10);
+    const mn = form.min_students === '' ? 1 : parseInt(form.min_students, 10);
     if (isNaN(ct) || ct < 1) return setAddErr('課程編號必須為正整數');
     if (!form.label.trim()) return setAddErr('請填寫名稱');
-    if (isNaN(ms) || ms < 1 || ms > 10) return setAddErr('學生人數需為 1–10 之間');
+    if (isNaN(ms) || ms < 1 || ms > 10) return setAddErr('最多學生人數需為 1–10 之間');
+    if (isNaN(mn) || mn < 1 || mn > 10) return setAddErr('最少學生人數需為 1–10 之間');
+    if (mn > ms) return setAddErr('最少學生人數不可大於最多學生人數');
     try {
-      await courseTypesApi.create({ course_type: ct, label: form.label.trim(), max_students: ms });
+      await courseTypesApi.create({ course_type: ct, label: form.label.trim(), min_students: mn, max_students: ms });
       setShowAdd(false);
-      setForm({ course_type: '', label: '', max_students: '' });
+      setForm({ course_type: '', label: '', min_students: '', max_students: '' });
       toast.success(`已新增「${form.label.trim()}」`);
       await load();
     } catch (e) {
@@ -62,7 +65,12 @@ export default function CourseTypesPage() {
   }
 
   function startEdit(row) {
-    setEditing({ course_type: row.course_type, label: row.label, max_students: String(row.max_students) });
+    setEditing({
+      course_type: row.course_type,
+      label: row.label,
+      min_students: String(row.min_students ?? 1),
+      max_students: String(row.max_students),
+    });
     setEditErr('');
   }
 
@@ -71,12 +79,15 @@ export default function CourseTypesPage() {
     setEditErr('');
     const lb = (editing.label || '').trim();
     const ms = parseInt(editing.max_students, 10);
+    const mn = editing.min_students === '' ? 1 : parseInt(editing.min_students, 10);
     if (!lb) return setEditErr('請填寫名稱');
     if (lb.length > 50) return setEditErr('名稱長度不可超過 50');
-    if (isNaN(ms) || ms < 1 || ms > 10) return setEditErr('學生人數需為 1–10 之間');
+    if (isNaN(ms) || ms < 1 || ms > 10) return setEditErr('最多學生人數需為 1–10 之間');
+    if (isNaN(mn) || mn < 1 || mn > 10) return setEditErr('最少學生人數需為 1–10 之間');
+    if (mn > ms) return setEditErr('最少學生人數不可大於最多學生人數');
     setSaving(editing.course_type);
     try {
-      await courseTypesApi.update(editing.course_type, { label: lb, max_students: ms });
+      await courseTypesApi.update(editing.course_type, { label: lb, min_students: mn, max_students: ms });
       toast.success('已更新');
       setEditing(null);
       await load();
@@ -117,7 +128,7 @@ export default function CourseTypesPage() {
       {showAdd && (
         <div className="mb-6 rounded-xl border border-blue-200 bg-blue-50 p-5">
           <div className="mb-3 font-semibold text-blue-800">新增課程需求</div>
-          <form onSubmit={handleAdd} className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <form onSubmit={handleAdd} className="grid grid-cols-1 gap-3 sm:grid-cols-4">
             <div>
               <label className="mb-1 block text-xs font-medium text-gray-600">課程編號（正整數）</label>
               <input
@@ -149,6 +160,16 @@ export default function CourseTypesPage() {
               />
             </div>
             <div>
+              <label className="mb-1 block text-xs font-medium text-gray-600">最少學生人數（1–10）</label>
+              <input
+                type="number" min="1" max="10"
+                value={form.min_students}
+                onChange={(e) => setForm((f) => ({ ...f, min_students: e.target.value }))}
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
+                placeholder="例：2（揪團最低成團）"
+              />
+            </div>
+            <div>
               <label className="mb-1 block text-xs font-medium text-gray-600">最多學生人數（1–10）</label>
               <input
                 type="number" min="1" max="10"
@@ -166,7 +187,7 @@ export default function CourseTypesPage() {
               </button>
               <button
                 type="button"
-                onClick={() => { setShowAdd(false); setForm({ course_type: '', label: '', max_students: '' }); setAddErr(''); }}
+                onClick={() => { setShowAdd(false); setForm({ course_type: '', label: '', min_students: '', max_students: '' }); setAddErr(''); }}
                 className="rounded-lg border border-gray-300 px-5 py-2 text-sm hover:bg-gray-50"
               >
                 取消
@@ -181,6 +202,7 @@ export default function CourseTypesPage() {
           <thead className="bg-gray-50">
             <tr>
               <th className="px-5 py-3 text-left font-semibold text-gray-600">課程需求</th>
+              <th className="px-5 py-3 text-left font-semibold text-gray-600">最少學生</th>
               <th className="px-5 py-3 text-left font-semibold text-gray-600">最多學生</th>
               <th className="px-5 py-3 text-left font-semibold text-gray-600">系統代碼</th>
               <th className="px-5 py-3 text-left font-semibold text-gray-600">狀態</th>
@@ -190,7 +212,7 @@ export default function CourseTypesPage() {
           <tbody className="divide-y divide-gray-100">
             {rows.length === 0 && (
               <tr>
-                <td colSpan={5} className="py-12 text-center text-gray-400">尚無課程需求設定</td>
+                <td colSpan={6} className="py-12 text-center text-gray-400">尚無課程需求設定</td>
               </tr>
             )}
             {rows.map((row) => (
@@ -204,6 +226,16 @@ export default function CourseTypesPage() {
                       className="w-32 rounded border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
                     />
                   ) : row.label}
+                </td>
+                <td className="px-5 py-4 text-gray-600">
+                  {editing?.course_type === row.course_type ? (
+                    <input
+                      type="number" min="1" max="10"
+                      value={editing.min_students}
+                      onChange={(e) => setEditing((s) => ({ ...s, min_students: e.target.value }))}
+                      className="w-20 rounded border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
+                    />
+                  ) : `${row.min_students ?? 1} 人`}
                 </td>
                 <td className="px-5 py-4 text-gray-600">
                   {editing?.course_type === row.course_type ? (

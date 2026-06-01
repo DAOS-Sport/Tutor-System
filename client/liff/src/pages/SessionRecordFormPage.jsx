@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { learnApi } from '../api/learn';
+import { sessionsApi } from '../api/sessions';
 
 const FIELDS = [
   { key: 'summary',      label: '上課摘要',  cat: '上課摘要' },
@@ -13,6 +14,7 @@ const FIELDS = [
 ];
 
 const EMPTY = { summary: '', highlights: '', improvements: '', homework: '', media: [], tags: [], status: 'draft' };
+const BLANK_STUDENT = () => ({ summary: '', highlights: '', improvements: '', homework: '' });
 
 export default function SessionRecordFormPage() {
   const { sessionId } = useParams();
@@ -26,20 +28,35 @@ export default function SessionRecordFormPage() {
   const [loaded, setLoaded] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [newPersonal, setNewPersonal] = useState('');
+  // U8：整班 / 個別填寫
+  const [students, setStudents] = useState([]);
+  const [mode, setMode] = useState('class'); // 'class' | 'individual'
+  const [perStudent, setPerStudent] = useState({});
+  const [activeStudent, setActiveStudent] = useState('');
 
   useEffect(() => {
     if (!coach?.id || !sessionId) return;
     let alive = true;
-    Promise.all([learnApi.getRecord(sessionId), learnApi.tags()])
-      .then(([rec, t]) => {
+    Promise.all([learnApi.getRecord(sessionId), learnApi.tags(), sessionsApi.detail(sessionId).catch(() => null)])
+      .then(([rec, t, sess]) => {
         if (!alive) return;
         setForm({ ...EMPTY, ...(rec || {}), media: rec?.media || [], tags: rec?.tags || [] });
         setTags(t || { system: [], personal: [] });
+        const names = (sess?.student_names || []).filter(Boolean);
+        setStudents(names);
+        if (names.length > 1) {
+          const seed = {};
+          names.forEach((n) => { seed[n] = BLANK_STUDENT(); });
+          setPerStudent(seed);
+          setActiveStudent(names[0]);
+        }
       })
       .catch((e) => alive && toast.error(e?.response?.data?.error || '載入失敗'))
       .finally(() => alive && setLoaded(true));
     return () => { alive = false; };
   }, [coach?.id, sessionId]); // eslint-disable-line
+
+  const isGroup = students.length > 1;
 
   const tagsForActive = useMemo(() => {
     const f = FIELDS.find((x) => x.key === activeField);
@@ -77,20 +94,53 @@ export default function SessionRecordFormPage() {
     } catch (e) { toast.error(e?.response?.data?.error || '刪除失敗'); }
   }
 
-  function setField(k, v) { setForm((f) => ({ ...f, [k]: v })); }
+  // ── 欄位讀寫（依模式路由到 form 或 perStudent[activeStudent]） ──
+  function getFieldVal(k) {
+    if (mode === 'individual') return perStudent[activeStudent]?.[k] || '';
+    return form[k] || '';
+  }
+  function setFieldVal(k, v) {
+    if (mode === 'individual') {
+      setPerStudent((p) => ({ ...p, [activeStudent]: { ...(p[activeStudent] || BLANK_STUDENT()), [k]: v } }));
+    } else {
+      setForm((f) => ({ ...f, [k]: v }));
+    }
+  }
 
   function applyTag(t) {
-    const cur = form[activeField] || '';
+    const cur = getFieldVal(activeField);
     const next = cur ? `${cur}\n${t.text_template}` : t.text_template;
-    setField(activeField, next);
+    setFieldVal(activeField, next);
     if (!form.tags.includes(t.label)) setForm((f) => ({ ...f, tags: [...f.tags, t.label] }));
+  }
+
+  // 把目前學員四欄內容一次套用到全班其他學員
+  function applyToAll() {
+    const src = perStudent[activeStudent];
+    if (!src) return;
+    setPerStudent((p) => {
+      const next = { ...p };
+      students.forEach((n) => { next[n] = { ...src }; });
+      return next;
+    });
+    toast.success('已套用到全班');
   }
 
   async function copyPrev() {
     try {
       const prev = await learnApi.copyPrev(sessionId);
       if (!prev) { toast.info('找不到前一堂的紀錄'); return; }
-      setForm((f) => ({ ...f, summary: prev.summary, highlights: prev.highlights, improvements: prev.improvements, homework: prev.homework }));
+      if (mode === 'individual') {
+        setPerStudent((p) => ({
+          ...p,
+          [activeStudent]: {
+            summary: prev.summary, highlights: prev.highlights,
+            improvements: prev.improvements, homework: prev.homework,
+          },
+        }));
+      } else {
+        setForm((f) => ({ ...f, summary: prev.summary, highlights: prev.highlights, improvements: prev.improvements, homework: prev.homework }));
+      }
       toast.success('已套用前一堂內容，可繼續編輯');
     } catch (e) { toast.error(e?.response?.data?.error || '載入失敗'); }
   }
@@ -110,10 +160,26 @@ export default function SessionRecordFormPage() {
     setForm((f) => ({ ...f, media: f.media.filter((_, idx) => idx !== i) }));
   }
 
+  // 個別模式：把各學員內容合併成單一紀錄（以【學員名】分段）
+  function composeFromStudents() {
+    const out = { summary: '', highlights: '', improvements: '', homework: '' };
+    for (const k of Object.keys(out)) {
+      out[k] = students
+        .map((n) => ({ n, v: (perStudent[n]?.[k] || '').trim() }))
+        .filter((x) => x.v)
+        .map((x) => `【${x.n}】\n${x.v}`)
+        .join('\n\n');
+    }
+    return out;
+  }
+
   async function save(submit = false) {
     setBusy(true);
     try {
-      await learnApi.saveRecord(sessionId, form);
+      const payload = mode === 'individual'
+        ? { ...form, ...composeFromStudents() }
+        : form;
+      await learnApi.saveRecord(sessionId, payload);
       if (submit) { await learnApi.submitRecord(sessionId); toast.success('已送出，家長即可查看'); }
       else toast.success('已儲存草稿');
       navigate(-1);
@@ -145,14 +211,49 @@ export default function SessionRecordFormPage() {
         </div>
       )}
 
+      {isGroup && (
+        <section className="mb-3 rounded-xl border border-brand-primary/15 bg-white p-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs font-bold text-brand-primary">填寫方式</h3>
+            <div className="flex rounded-full bg-gray-100 p-0.5 text-xs font-bold">
+              <button type="button" onClick={() => setMode('class')}
+                className={`rounded-full px-3 py-1 ${mode === 'class' ? 'bg-brand-primary text-white' : 'text-gray-500'}`}>整班一起填</button>
+              <button type="button" onClick={() => setMode('individual')}
+                className={`rounded-full px-3 py-1 ${mode === 'individual' ? 'bg-brand-primary text-white' : 'text-gray-500'}`}>個別學員填</button>
+            </div>
+          </div>
+          {mode === 'individual' && (
+            <>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {students.map((n) => (
+                  <button key={n} type="button" onClick={() => setActiveStudent(n)}
+                    className={`rounded-full px-3 py-1 text-xs font-bold ${activeStudent === n ? 'bg-brand-teal text-white' : 'bg-brand-teal/10 text-brand-teal'}`}>
+                    {n}
+                  </button>
+                ))}
+              </div>
+              <button type="button" onClick={applyToAll}
+                className="mt-2 w-full rounded-lg border border-brand-gold py-1.5 text-xs font-bold text-brand-gold active:bg-brand-gold/10">
+                把「{activeStudent}」的內容套用到全班
+              </button>
+            </>
+          )}
+          {mode === 'class' && (
+            <p className="mt-1 text-[11px] text-gray-400">同一份內容套用到全班 {students.length} 位學員。</p>
+          )}
+        </section>
+      )}
+
       <div className="space-y-3">
         {FIELDS.map((f) => (
           <div key={f.key}>
-            <label className="text-xs font-bold text-brand-primary">{f.label}</label>
+            <label className="text-xs font-bold text-brand-primary">
+              {f.label}{mode === 'individual' && <span className="ml-1 text-brand-teal">· {activeStudent}</span>}
+            </label>
             <textarea
-              value={form[f.key] || ''}
+              value={getFieldVal(f.key)}
               onFocus={() => setActiveField(f.key)}
-              onChange={(e) => setField(f.key, e.target.value)}
+              onChange={(e) => setFieldVal(f.key, e.target.value)}
               placeholder={`點上方標籤可自動帶入「${f.cat}」文案`}
               rows={3}
               maxLength={4000}

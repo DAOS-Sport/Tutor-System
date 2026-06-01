@@ -34,6 +34,7 @@ router.use('/transfers',     require('./admin/transfers'));  // F-M04
 router.use('/reports',       require('./admin/reports'));    // F-M01
 router.use('/uploads',       require('./admin/uploads'));    // Task #39 發票上傳
 router.use('/course-types',  require('./admin/courseTypes')); // 課程需求管理
+router.use('/group-orders',  require('./admin/groupOrders')); // U6 團購審核
 router.use('/ragic-status',  require('./admin/ragicStatus')); // Task #65 Ragic 健康檢查
 router.use('/ragic-staging', require('./admin/ragicStaging')); // Task #66 Ragic 待審核區
 

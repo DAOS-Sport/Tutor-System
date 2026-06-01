@@ -75,7 +75,7 @@ router.get('/mine', requireParent, async (req, res) => {
               original_price, final_price, transfer_last_5, status, submitted_at,
               total_sessions, used_sessions, refund_amount,
               invoice_number, invoice_image_url, invoice_url, invoice_issued_at,
-              extra_parent_phones, notes
+              extra_parent_phones, notes, group_order_id, is_group_shared
          FROM admin_enrollments
         WHERE parent_phone = $1 OR $1 = ANY(extra_parent_phones)
         ORDER BY submitted_at DESC`,
@@ -103,6 +103,8 @@ router.get('/mine', requireParent, async (req, res) => {
       invoice_issued_at: row.invoice_issued_at || null,
       extra_parent_phones: row.extra_parent_phones || [],
       notes: row.notes || null,
+      group_order_id: row.group_order_id || null,
+      is_group_shared: !!row.is_group_shared,
     })));
   } catch (e) {
     console.error('[courses/mine]', e);

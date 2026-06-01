@@ -29,6 +29,7 @@ import TransfersReviewPage from './pages/TransfersReviewPage';
 import ReportsPage from './pages/ReportsPage';
 import SopPage from './pages/SopPage';
 import CourseTypesPage from './pages/CourseTypesPage';
+import GroupOrdersPage from './pages/GroupOrdersPage';
 import RagicStatusPage from './pages/RagicStatusPage';
 import RagicStagingPage from './pages/RagicStagingPage';
 
@@ -52,6 +53,7 @@ export default function App() {
         <Route path="/venues"        element={<RequireAuth roles={['admin']}><VenuesPage /></RequireAuth>} />
         <Route path="/course-intros" element={<RequireAuth roles={['admin', 'manager']}><CourseIntrosPage /></RequireAuth>} />
         <Route path="/course-types"  element={<RequireAuth roles={['admin']}><CourseTypesPage /></RequireAuth>} />
+        <Route path="/group-orders"  element={<RequireAuth roles={['admin', 'manager', 'staff']}><GroupOrdersPage /></RequireAuth>} />
         <Route path="/ragic-status"  element={<RequireAuth roles={['admin']}><RagicStatusPage /></RequireAuth>} />
         <Route path="/ragic-staging" element={<RequireAuth roles={['admin']}><RagicStagingPage /></RequireAuth>} />
 

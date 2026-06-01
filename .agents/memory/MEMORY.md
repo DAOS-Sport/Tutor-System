@@ -1,0 +1,2 @@
+- [Enrollment subsystems](enrollment-subsystems.md) — admin_enrollments (reconciliation) and course_periods/course_sessions (booking + session records) are SEPARATE; group-buy approve creates admin_enrollments only.
+- [Group-buy state transitions](group-buy-state.md) — status changes (cancel/reject/approve) must be atomic conditional UPDATEs guarding status, not read-then-write, to survive concurrent review.

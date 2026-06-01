@@ -94,6 +94,50 @@ CREATE TABLE IF NOT EXISTS course_type_configs (
   created_at   TIMESTAMPTZ DEFAULT NOW()
 );
 DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS base_price DECIMAL(10,2) NOT NULL DEFAULT 0; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+-- U5：團購人數下限（min_students <= max_students；預設 1，既有資料安全升級）
+DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS min_students INTEGER NOT NULL DEFAULT 1; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+
+-- ─────────────────────────────────────────────────────────────
+-- U5：團購（group buy）資料模型
+--   group_orders        — 一張團購單（團主發起、含人數上下限快照、join_token）
+--   group_order_members — 加入該團的家長 + 各自學生名單 + 匯款證明
+-- status 流程：forming（揪團中）→ submitted（團主送審）→ approved / rejected；可 cancelled。
+-- ─────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS group_orders (
+  id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  leader_parent_id UUID NOT NULL REFERENCES parents(id) ON DELETE CASCADE,
+  venue_id         VARCHAR(10) NOT NULL REFERENCES venues(id) ON DELETE RESTRICT,
+  course_type      INTEGER NOT NULL REFERENCES course_type_configs(course_type) ON DELETE RESTRICT,
+  coach_id         UUID REFERENCES coaches(id) ON DELETE SET NULL,
+  status           VARCHAR(20) NOT NULL DEFAULT 'forming',
+  join_token       VARCHAR(64) NOT NULL UNIQUE,
+  min_students     INTEGER NOT NULL DEFAULT 1,
+  max_students     INTEGER NOT NULL DEFAULT 1,
+  note             TEXT,
+  submitted_at     TIMESTAMPTZ,
+  reviewed_by      VARCHAR(50),
+  reviewed_at      TIMESTAMPTZ,
+  reject_reason    TEXT,
+  created_at       TIMESTAMPTZ DEFAULT NOW(),
+  updated_at       TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_group_orders_token  ON group_orders(join_token);
+CREATE INDEX IF NOT EXISTS idx_group_orders_status ON group_orders(status);
+CREATE INDEX IF NOT EXISTS idx_group_orders_leader ON group_orders(leader_parent_id);
+
+CREATE TABLE IF NOT EXISTS group_order_members (
+  id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  group_order_id    UUID NOT NULL REFERENCES group_orders(id) ON DELETE CASCADE,
+  parent_id         UUID NOT NULL REFERENCES parents(id) ON DELETE CASCADE,
+  student_names     TEXT[] NOT NULL DEFAULT '{}',
+  payment_proof_url TEXT,
+  is_leader         BOOLEAN NOT NULL DEFAULT FALSE,
+  status            VARCHAR(20) NOT NULL DEFAULT 'joined',
+  joined_at         TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(group_order_id, parent_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_members_order  ON group_order_members(group_order_id);
+CREATE INDEX IF NOT EXISTS idx_group_members_parent ON group_order_members(parent_id);
 
 CREATE TABLE IF NOT EXISTS course_periods (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -283,6 +327,9 @@ DO $$ BEGIN
   ALTER TABLE course_sessions   ADD COLUMN IF NOT EXISTS coach_id UUID REFERENCES coaches(id) ON DELETE RESTRICT;
   -- U3：家長端報名「匯款／轉帳證明」上傳網址（必填，pending_payment 對帳時供櫃檯檢視）。
   ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS payment_proof_url TEXT;
+  -- U6：團購核准後產生的報名，回連 group_orders.id 並標記為共享班（前端可顯示「團購」徽章）。
+  ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS group_order_id UUID;
+  ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS is_group_shared BOOLEAN NOT NULL DEFAULT FALSE;
   -- Task #59：transfer_coach 結構化欄位（before/after，名稱保留作可讀紀錄；UUID 為查詢索引）
   ALTER TABLE admin_enrollment_audit_logs ADD COLUMN IF NOT EXISTS before_coach_id UUID;
   ALTER TABLE admin_enrollment_audit_logs ADD COLUMN IF NOT EXISTS after_coach_id  UUID;

@@ -28,6 +28,9 @@ import EvaluationFormPage from './pages/EvaluationFormPage';
 import ReferralPage from './pages/ReferralPage';
 import TransferRequestPage from './pages/TransferRequestPage';
 import MyLessonsPage from './pages/MyLessonsPage';
+import GroupCreatePage from './pages/GroupCreatePage';
+import GroupJoinPage from './pages/GroupJoinPage';
+import GroupStatusPage from './pages/GroupStatusPage';
 
 function RequireAuth() {
   const { isAuthed } = useAuth();
@@ -82,6 +85,16 @@ export default function App() {
               </Route>
               <Route element={<AppLayout title="報名完成" />}>
                 <Route path="/enroll-success" element={<EnrollmentSuccessPage />} />
+              </Route>
+              {/* U7 團購 */}
+              <Route element={<AppLayout showBackButton title="發起團購" />}>
+                <Route path="/group/new" element={<GroupCreatePage />} />
+              </Route>
+              <Route element={<AppLayout showBackButton title="加入團購" />}>
+                <Route path="/group/join/:token" element={<GroupJoinPage />} />
+              </Route>
+              <Route element={<AppLayout showBackButton title="團購狀態" />}>
+                <Route path="/group/:id" element={<GroupStatusPage />} />
               </Route>
               {/* 學習歷程 / 期末評鑑 (Phase 5) */}
               <Route path="/history/:periodId" element={<LearningHistoryPage />} />

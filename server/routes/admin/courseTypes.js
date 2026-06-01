@@ -15,7 +15,7 @@ const AM = requireAdminRole('admin', 'manager');
 router.get('/', requireAdminAuth, AM, async (req, res) => {
   try {
     const r = await pool.query(
-      `SELECT course_type, label, max_students, base_price, is_active, sort_order
+      `SELECT course_type, label, min_students, max_students, base_price, is_active, sort_order
        FROM course_type_configs ORDER BY sort_order, course_type`
     );
     res.json(r.rows);
@@ -28,28 +28,32 @@ router.get('/', requireAdminAuth, AM, async (req, res) => {
 router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
   const client = await pool.connect();
   try {
-    const { course_type, label, max_students } = req.body || {};
+    const { course_type, label, max_students, min_students } = req.body || {};
     if (course_type == null || label == null || max_students == null) {
       return res.status(400).json({ error: '缺少必填欄位：course_type / label / max_students' });
     }
     const ct = parseInt(course_type, 10);
     const ms = parseInt(max_students, 10);
+    // min_students 選填，預設 1
+    const mn = min_students == null || min_students === '' ? 1 : parseInt(min_students, 10);
     const lb = String(label).trim();
     if (isNaN(ct) || ct < 1) return res.status(400).json({ error: 'course_type 必須為正整數' });
     if (!lb) return res.status(400).json({ error: 'label 不可為空' });
     if (lb.length > 50) return res.status(400).json({ error: 'label 長度不可超過 50' });
     if (isNaN(ms) || ms < 1 || ms > 10) return res.status(400).json({ error: 'max_students 必須為 1–10' });
+    if (isNaN(mn) || mn < 1 || mn > 10) return res.status(400).json({ error: 'min_students 必須為 1–10' });
+    if (mn > ms) return res.status(400).json({ error: 'min_students 不可大於 max_students' });
 
     await client.query('BEGIN');
     const maxOrder = await client.query(`SELECT COALESCE(MAX(sort_order),0) AS m FROM course_type_configs`);
     const nextOrder = maxOrder.rows[0].m + 1;
 
     const r = await client.query(
-      `INSERT INTO course_type_configs (course_type, label, max_students, sort_order)
-       VALUES ($1,$2,$3,$4)
+      `INSERT INTO course_type_configs (course_type, label, min_students, max_students, sort_order)
+       VALUES ($1,$2,$3,$4,$5)
        ON CONFLICT (course_type) DO NOTHING
        RETURNING *`,
-      [ct, lb, ms, nextOrder]
+      [ct, lb, mn, ms, nextOrder]
     );
     if (!r.rowCount) {
       await client.query('ROLLBACK');
@@ -100,6 +104,16 @@ router.patch('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, 
       if (isNaN(ms) || ms < 1 || ms > 10) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'max_students 必須為 1–10' }); }
       max_students = ms;
     }
+    let min_students = cur.rows[0].min_students;
+    if (p.min_students !== undefined) {
+      const mn = parseInt(p.min_students, 10);
+      if (isNaN(mn) || mn < 1 || mn > 10) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'min_students 必須為 1–10' }); }
+      min_students = mn;
+    }
+    if (min_students > max_students) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'min_students 不可大於 max_students' });
+    }
     const is_active = p.is_active !== undefined ? Boolean(p.is_active) : cur.rows[0].is_active;
     let base_price = cur.rows[0].base_price;
     if (p.base_price !== undefined) {
@@ -112,8 +126,8 @@ router.patch('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, 
     }
 
     const r = await client.query(
-      `UPDATE course_type_configs SET label=$2, max_students=$3, is_active=$4, base_price=$5 WHERE course_type=$1 RETURNING *`,
-      [ct, label, max_students, is_active, base_price]
+      `UPDATE course_type_configs SET label=$2, max_students=$3, is_active=$4, base_price=$5, min_students=$6 WHERE course_type=$1 RETURNING *`,
+      [ct, label, max_students, is_active, base_price, min_students]
     );
     // Task #67：label 變更時，若對應介紹的 title 未被 admin 覆寫過，同步更新 title
     if (label !== cur.rows[0].label) {

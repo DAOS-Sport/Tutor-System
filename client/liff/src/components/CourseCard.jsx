@@ -55,6 +55,11 @@ export default function CourseCard({ variant = 'period', period, type, onClick, 
                 資深教練
               </span>
             )}
+            {period.is_group_shared && (
+              <span className="rounded-md bg-brand-teal/15 px-2 py-0.5 text-xs font-medium text-brand-teal">
+                團購共享
+              </span>
+            )}
           </div>
           <h3 className="mt-1 truncate text-base font-bold text-gray-900">
             {period.coach?.name} · {period.venue?.name}
