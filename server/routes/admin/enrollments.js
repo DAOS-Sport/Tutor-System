@@ -347,7 +347,8 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin', 'manager'), asy
   }
 });
 
-router.post('/:id/reconcile', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
+// 對帳改由「行政櫃檯(staff)」處理（原僅 admin/manager）。退費(F-R04) 不在此調整範圍。
+router.post('/:id/reconcile', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');

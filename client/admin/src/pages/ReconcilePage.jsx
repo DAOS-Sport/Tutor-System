@@ -161,7 +161,8 @@ function InvoiceModal({ enrollment, canReconcile, onCancel, onDone }) {
 export default function ReconcilePage() {
   const toast = useToast();
   const { user, isStaff } = useAuth();
-  const canReconcile = !isStaff;
+  // 對帳改由行政櫃檯處理：staff 亦可對帳（後端 reconcile 已開放 staff）。
+  const canReconcile = true;
   const [list, setList] = useState(null);
   const [venues, setVenues] = useState([]);
   const [confirming, setConfirming] = useState(null);
@@ -204,7 +205,7 @@ export default function ReconcilePage() {
     <div>
       <PageHeader
         title="待對帳清單"
-        subtitle={`F-M02 · 共 ${list.length} 筆等待對帳${isStaff ? '（限本場館，唯讀）' : ''}`}
+        subtitle={`F-M02 · 共 ${list.length} 筆等待對帳${isStaff ? '（限本場館）' : ''}`}
         actions={
           <ExportMenu
             disabled={!list || list.length === 0}

@@ -1,0 +1,175 @@
+ DAOS 家教系統 — 接手開發規格書（交付 Replit）
+  
+  0. 背景與最高原則
+  
+  這是一套正式上線中的家教系統（Express 後端 + 兩個 React 前端：client/admin 後台、client/liff 家長/教練端；外接 Ragic 與 LINE）。
+  
+  開發鐵則（務必遵守）：
+  1. 模組化、可隨時倒回：一次只做一個單元（U#），每個單元用獨立小 commit，出錯能單獨 revert。
+  2. 做完一個就停下，交付人工測試，通過才做下一個。不要一次全做完。
+  3. 不要去動「原開發者已完成且正常」的程式碼（見「桶 A」）。那些只做驗證，不修改；若真的發現故障再回報徵詢，不要擅自重構。
+  4. 前端是打包式：改了 client/admin 或 client/liff 的原始碼後，必須重新 build（.replit 的 build 指令會做），否則網站載入的是舊 bundle，看不到變更。後端改動即時生效。
+
+  ---
+  1. 已驗證現況（請勿重做）
+  
+  已用 admin/manager/staff 三帳號實測線上 API，以下後端皆正常：
+  
+  ┌──────────┬──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┬─────────────────────────────────────────┐
+  │   區段   │                                                       現況                                                       │                處理方式                 │
+  ├──────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────┤
+  │          │ 教練 LINE 登入（GET                                                                                              │                                         │
+  │ A 登入   │ /api/coaches/by-line-uid）、家長三段式（/api/auth/parent-line-login→parent-bind-phone→parent-register-line）+    │ 只驗證，不改碼                          │
+  │          │ uid 寫回 Ragic + 註冊後自動登入 皆已實作                                                                         │                                         │
+  ├──────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────┤
+  │ C Ragic  │ /api/admin/ragic-status、/api/admin/ragic-staging 回 200，cron 每 10 分鐘同步 ok                                 │ 只驗證，不改碼                          │
+  ├──────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────┤
+  │          │                                                                                                                  │ 後端正常。使用者看到「找不到            │
+  │ D        │ 聊天監察(F-M03)/標籤庫(F-A08)/教練考核(F-M09)/考核門檻(F-A09)/教練介紹送審(F-C06)/關鍵字(F-A07) 後端在           │ API…請重新整理」＝瀏覽器卡舊版前端      │
+  │ 頁籤錯誤 │ admin/manager 全回 200；側欄已對 staff 隱藏這些頁                                                                │ bundle，重新 build/發布 +               │
+  │          │                                                                                                                  │ 硬重整即解。不要改後端路由。            │
+  ├──────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────┤
+  │ 備註b    │ 後台 /api/admin/learn/tags、教練端 /api/learn/tags 後端正常                                                      │ 只驗證                                  │
+  │ 標籤     │                                                                                                                  │                                         │
+  └──────────┴──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┴─────────────────────────────────────────┘
+
+  ▎ 重點：D 段的「找不到 API：/admin/learn/coach-eval（請重新整理頁面以取得最新版本）」是前端 client/admin/src/api/client.js 對 404 的友善包裝；實測這些路由都存在且回 
+  ▎ 200，根因是舊 bundle。修法＝重新 build + 發布，不是改後端。
+  
+  ---
+  2. 要做的工作（桶 B，依序，每個 U 做完即停下測試）
+  
+  ✅ U1 — 對帳改由行政櫃檯(staff)〔原始碼已改好，待 build/發布驗收〕
+
+  需求：原本對帳(F-M02)限主管，改為「行政櫃檯(staff)」也能對帳。
+  已改檔案：
+  - server/routes/admin/enrollments.js → reconcile 端點角色由 requireAdminRole('admin','manager') 改為 ('admin','manager','staff')。
+  - client/admin/src/App.jsx → /reconcile 路由 RequireAuth roles 加 'staff'。
+  - client/admin/src/components/Sidebar.jsx → 「(F-M02) 待對帳清單」roles 加 'staff'。
+  - client/admin/src/pages/ReconcilePage.jsx → canReconcile 改為 true（staff 不再唯讀），副標移除「唯讀」。
+  - 發票上傳 POST /api/admin/uploads/invoice 本來就只需登入，staff 可用。退費(F-R04) 不動。
+
+  驗收：重新 build/發布後，以 staff/staff 登入 → 左側出現「(F-M02) 待對帳清單」→ 可填發票號碼 + 上傳發票圖 + 送出對帳成功；manager/admin 照常；退費頁 staff 仍看不到。
+  
+  ---
+  U2 — 中途換教練加櫃檯(staff)權限 + 驗證歸屬
+
+  需求：目前只有主管/系統管理員能在「(F-R02) 所有報名」點編號改教練；加上櫃檯(staff)。並確認換教練後的歷史歸屬語意。
+
+  歸屬語意（主管已澄清，＝目前系統行為，勿改邏輯）：
+
+  ▎ A 教練上了 3 堂、把剩下 3 堂轉給 B 教練後 → A 只看得到自己上過的 3 堂；B 看得到轉來的 3 堂並標示「原教練 A」；A 不再看到轉走的那 3 堂。
+  
+  改法：
+  - server/routes/admin/enrollments.js（PATCH 編輯報名/換教練，約 line 127）：角色 requireAdminRole('admin','manager') → 加 'staff'。
+  - 前端 client/admin/src/pages/EnrollmentsPage.jsx 與 client/admin/src/pages/enrollments/EditEnrollmentModal.jsx：把「編輯/換教練」入口對 staff 開放（移除限定 admin/manager
+  的條件）。
+  - 改派邏輯不要動：現行只改派 scheduled_at > NOW() 的未來課堂、歷史課堂保留原教練（enrollments.js 約 line 242–313），已符合需求。
+  - 驗證：確認「新教練端」介面看得到轉入課堂且有顯示「原授課教練」。若沒有顯示原教練名，只補一個唯讀顯示欄位（讀 session 既有的 coach 名稱），不要改動改派/資料寫入邏輯。
+  
+  驗收：staff 能在 F-R02 改教練；A→B 換教練後，A 端只見已上 3 堂、B 端見轉入 3 堂並標示原教練 A。
+  
+  ---
+  U3 — 家長端「匯款／轉帳證明」上傳（必填）
+
+  需求：報名介面補上「匯款、轉帳證明上傳」，設為必填。
+
+  改法： 
+  - 後端新增家長/LIFF 可用的上傳端點（複用 server/services/objectStorage.js 的 saveBuffer；現有 server/routes/admin/uploads.js 是 admin-only，請另開一支家長端版本，例如 POST 
+  /api/uploads/payment-proof，限 JPG/PNG ≤5MB）。
+  - 前端 client/liff/src/components/enroll/BankTransferBlock.jsx：在現有「轉帳末 5 碼」旁加「上傳證明」欄，設必填。
+  - 送單驗證兩端都要做：client/liff/src/pages/EnrollmentPage.jsx 提交前擋、server/routes/enrollments.js 後端再驗一次（沒有證明 URL 就拒收）。
+  - 資料：admin_enrollments 用 ADD COLUMN IF NOT EXISTS payment_proof_url TEXT（在 server/bootstrap/coreSchema.js 加 idempotent
+  ALTER，不可破壞既有資料）；後台對帳頁顯示家長上傳的證明圖。
+  
+  驗收：LIFF 報名沒上傳證明會被擋；上傳後對帳頁看得到該圖。
+
+  ---
+  U4 — 封口危險端點（資安，可獨立先上）
+
+  需求：目前「1 對多」報名時，一位家長輸入其他家長電話就能帶出對方所有學生資訊，很危險，要封掉（之後改走 U5–U8 的團購）。
+
+  改法：
+  - 移除/鎖定 server/routes/parents.js 的公開 GET /by-phone（目前註解寫「公開即可」，可用電話查他人學員）。改為需登入且只能查自己，或直接停用。
+  - 下架前端 client/liff/src/components/enroll/PartnerLookup.jsx 與 client/liff/src/pages/EnrollmentPage.jsx（約 line 111–137）「輸入他人電話帶出學員」的流程。
+  
+  驗收：舊 by-phone 公開查詢失效（401/403/404）；報名頁不再能用他人電話帶出別人的學生。
+  
+  ---
+  U5 — 團購資料模型 + 後台上下限設定
+  
+  需求：團購需要每個課程品相（1對1/1對2/1對3…）的人數下限與上限，且後台可設定。
+  
+  改法（全在 server/bootstrap/coreSchema.js 用 CREATE TABLE IF NOT EXISTS / ADD COLUMN IF NOT EXISTS，idempotent）：
+  - 新表 group_orders：id、leader_parent_id、venue_id、course_type、coach_id、status（forming|submitted|approved|rejected|cancelled）、join_token（唯一）、min_students、max_s
+  tudents、submitted_at、reviewed_by、created_at…
+  - 新表 group_order_members：id、group_order_id、parent_id、student_names（text[]）、payment_proof_url（串 U3）、joined_at、status…（一位家長＝一筆 member，各自填自己的學生 
+  + 各自上傳證明）。
+  - course_type_configs（已有 max_students，約 coreSchema.js:87-95）→ ADD COLUMN IF NOT EXISTS min_students INTEGER。
+  - 後台「課程需求管理」頁（client/admin/src/pages/CourseTypesPage.jsx + server/routes/admin/courseTypes.js）加上每品相人數下限/上限的設定欄位。
+
+  驗收：後台可設定/儲存每個課程品相的人數上下限；新表建立成功且不影響既有報名。
+
+  ---
+  U6 — 團購流程後端 API（參考 Uber Eats 團購）
+
+  需求流程：
+  1. 家長報名 1對2（含）以上 → 可發起團購、成為團主、產生團購單號 + 分享連結。
+  2. 其他家長點連結 → LINE 登入後自動加入該團購，填自己的學生 + 上傳自己的匯款證明。
+  3. 整筆訂單自動計算現有學生數，依品相上下限判斷；滿足下限且未超上限才能送單。
+  4. 團主送出 → 狀態 submitted。
+  5. 櫃檯(staff) 後台審核通過 → 為每位成員建立報名（admin_enrollments），所有家長都看得到該筆報名並共享。
+
+  改法：
+  - 新增 server/routes/groupOrders.js（掛在 /api/group-orders）：建立團購、用 join_token 加入、查詢狀態、團主送單；送單前驗證人數落在 [min_students, max_students]。
+  - 新增 server/routes/admin/groupOrders.js（掛進 server/routes/admin.js，角色含 staff）：列出待審團購、審核通過/退回；通過時為每個 member 建立 admin_enrollments 並標記共享。
+  - 全部是新增檔案，不要改既有報名路由；可先用 curl 驗 API。
+
+  驗收（API 層）：能建立團購拿到 join_token；他人帶 token 加入；未達下限不能送單；達標可送單；櫃檯審核通過後產生報名資料。
+
+  ---
+  U7 — 團購前端（LIFF + 後台審核）+ 共享可見
+
+  改法： 
+  - LIFF 新增三頁：團主發起頁、加入頁（/group/:token，點連結自動進入）、團購狀態頁（即時顯示「目前人數 / 上下限」與各成員狀態）。
+  - 後台新增團購審核頁 + 側欄項目（staff 可見可審）。
+  - 審核通過後，各家長在「我的課程（my-courses）」都看得到這筆共享報名。
+  - 舊報名頁不要動，只新增頁面與路由項。
+  
+  驗收（端到端）：團主發起 → 分享連結 → 其他家長點連結加入並各自上傳證明 → 達上下限才可送單 → 櫃檯審核通過 → 全體家長共享可見。
+  
+  ---
+  U8 — PII 去敏 + 教練「整班/個別」填記錄
+  
+  需求： 
+  - 去敏（主管指定）：姓名中間字遮罩（例：莊柏彥 →
+  莊X彥；兩字名遮末字）；身分證字號等重要資訊全遮。套用於團購中看到別家長/別學生的所有地方（加入頁、狀態頁等）。回傳他人資料時請在後端遮罩，避免原始值流到前端。
+  - 教練填授課記錄：可「個別學員」或「整班」填寫，降低教練填寫摩擦。
+  
+  改法：
+  - 新增遮罩工具函式（前端 util + 後端 util），在跨家庭顯示處套用。
+  - 教練記錄：既有標籤功能在 server/routes/learn.js（PUT /records/by-session/:sessionId 支援 tags[]）、server/services/learning.js（寫
+  session_record_tags）。團購班補上「批次套用整班」的填寫模式（前端可勾選整班一次套用標籤/記錄）。
+
+  驗收：團購中他家長/他學生顯示為遮罩（莊X彥、身分證遮罩）；教練可整班一次填或個別填寫。
+  
+  ---
+  3. 桶 A — 只驗證、不改碼
+
+  請逐項驗證、不要修改程式碼；若發現是真的故障（非 bundle 快取）再回報：
+  1. D 段：重新 build/發布 + 硬重整後，以 admin/manager 進入聊天監察、標籤庫、考核、考核門檻、介紹送審、關鍵字，皆應正常載入。staff
+  本來就看不到這些（主管確認櫃檯無需得知），保持隱藏。
+  2. A 登入：教練 LINE 登入、家長「有資料(綁定 uid)→自動登入」與「無資料→註冊→自動登入」兩條路徑跑通；可用 cd server && npm run smoke:ragic-auth 做受控驗證。
+  3. C Ragic：連續/多次呼叫 /api/admin/ragic-status、/api/admin/ragic-staging 觀察穩定。
+  4. 備註b 標籤：以教練 LINE 帳號開「填授課記錄」頁，確認標籤正常載入。
+
+  ---
+  4. 重要提醒給 Replit
+
+  - 每完成一個 U 就停下來讓人工測試，不要連續做完。
+  - 改前端後一定要重新 build（.replit build 指令會打包 admin 與 liff 到 server/public/{admin,liff}），否則看不到變更——U1 看不到 F-M02 就是這個原因。
+  - 所有 DB 變更一律 idempotent（IF NOT EXISTS），不可破壞正式資料。
+  - 桶 A 的程式碼不要改。
+
+  ---
+  要不要我把這份規格也寫成一個檔案放進 repo（例如 docs/handover_plan.md），這樣你在 Replit 裡直接開檔給 Agent 看更方便？需要的話我就建立。
