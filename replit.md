@@ -60,6 +60,15 @@
   - `/health` → 健康檢查
 - WebSocket 透過同一個 HTTP server 啟動（`initWebSocket(server)`）。
 
+## Demo 帳密登入（手機功能測試用，繞過 LINE）
+- 目的：讓使用者在手機上用帳密直接測試家長／教練端功能，不需走 LINE Login。
+- 開關：env flag `ALLOW_DEMO_LOGIN=1` 才啟用 `POST /api/auth/demo-login`；未設則回 404。**Demo 結束務必刪除此 flag**（含 production），避免變成後門。
+- 帳密（硬寫在 `server/routes/auth.js` 的 `DEMO_ACCOUNTS`）：
+  - 教練端 `coach` / `coach` → 簽 coach token，登入 Ragic「(測試帳號)教練」。**fail-closed**：DB 無「測試帳號」教練則回 404，不退回任一真實教練（避免冒用）。
+  - 家長端 `custom` / `custom` → 簽 parent token，登入 phone `0912345678`（Ragic「(測試帳號)家長」+ 測試學員）。
+- 入口：以一般瀏覽器開 `https://daos-tutoring-courses.replit.app/liff/demo`。`client/liff/src/main.jsx#isDemoPath` 會在 `/liff/demo` 略過 `liff.init`/`liff.login`，否則 production 未登入 LINE 會被導去 OAuth。
+- 登入成功依 `role` 導頁（coach→`/coach`、parent→`/`）；token 走既有 AuthContext，line_uid 一律去敏不落地。
+
 ## 自訂 Secondary Skills
 以下 7 個 skill 安裝在 `.local/secondary_skills/`，需要時用 `skillSearch` 找出來再讀。
 

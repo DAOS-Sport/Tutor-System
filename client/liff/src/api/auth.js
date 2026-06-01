@@ -53,4 +53,12 @@ export const authApi = {
         ref_error: null,
       })
     ),
+
+  // ── Demo 登入（手機功能測試，繞過 LINE）──────────────────────
+  // POST /api/auth/demo-login { username, password }
+  //   → { role:'coach'|'parent', ...payload, token }
+  demoLogin: ({ username, password }) =>
+    callApi('/auth/demo-login', { method: 'post', data: { username, password } },
+      () => ({ role: 'parent', id: 'mock-parent-demo', name: '示範家長', phone: '0912345678', students: [], token: 'mock.jwt.token' })
+    ),
 };

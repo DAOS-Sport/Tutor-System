@@ -5,6 +5,7 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import { ToastProvider } from './context/ToastContext';
 
 import LoginPage from './pages/LoginPage';
+import DemoLoginPage from './pages/DemoLoginPage';
 import RegisterPage from './pages/RegisterPage';
 import HomePage from './pages/HomePage';
 import VenueSelectPage from './pages/VenueSelectPage';
@@ -60,6 +61,7 @@ export default function App() {
         <Routes>
           <Route element={<AppLayout />}>
             <Route path="/login" element={<LoginPage />} />
+            <Route path="/demo" element={<DemoLoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
           </Route>
 

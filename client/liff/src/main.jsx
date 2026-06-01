@@ -17,6 +17,13 @@ function isCoachPath() {
   return path.startsWith('/liff/coach') || path.startsWith('/coach');
 }
 
+// Demo 功能測試頁：以一般瀏覽器（非 LINE）開啟，需略過 liff.init / liff.login，
+// 否則 production 下未登入 LINE 會被導去 LINE OAuth，無法用帳密測試。
+function isDemoPath() {
+  const path = window.location.pathname || '';
+  return path === '/liff/demo' || path === '/demo';
+}
+
 function pickLiffId() {
   return isCoachPath() ? LIFF_ID_COACH : LIFF_ID_PARENT;
 }
@@ -44,6 +51,11 @@ function mount() {
 }
 
 async function initLiff() {
+  if (isDemoPath()) {
+    // 直接掛載，不初始化 LIFF、不導 LINE 登入。
+    mount();
+    return;
+  }
   const liffId = pickLiffId();
   if (!liffId) {
     // eslint-disable-next-line no-console

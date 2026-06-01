@@ -11,10 +11,84 @@
 const express = require('express');
 const { pool } = require('../models/db');
 const { signParentToken } = require('../middlewares/parentAuth');
+const { signCoachToken } = require('../middlewares/coachAuth');
 const ragic = require('../services/ragic');
 const { verifyLineIdToken } = require('../services/lineAuth');
 
 const router = express.Router();
+
+// ─────────────────────────────────────────────────────────────
+// Demo 登入（手機功能測試用，繞過 LINE）
+//   POST /api/auth/demo-login  { username, password }
+//     → { role:'coach',  ...coach,  token }
+//     | { role:'parent', id, name, phone, students, token }
+//   僅在 ALLOW_DEMO_LOGIN=1 時開放（未設則回 404，避免成為永久後門）。
+//   對應到 Ragic 測試帳號：教練「(測試帳號)教練」、家長 0912345678「(測試帳號)家長」。
+//   demo 完請移除此 secret。
+// ─────────────────────────────────────────────────────────────
+const DEMO_ACCOUNTS = {
+  coach:  { password: 'coach',  role: 'coach' },
+  custom: { password: 'custom', role: 'parent', phone: '0912345678' },
+};
+
+router.post('/demo-login', async (req, res) => {
+  if (process.env.ALLOW_DEMO_LOGIN !== '1') {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  try {
+    const username = String(req.body?.username || '').trim().toLowerCase();
+    const password = String(req.body?.password || '');
+    const acct = DEMO_ACCOUNTS[username];
+    if (!acct || password !== acct.password) {
+      return res.status(401).json({ error: '帳號或密碼錯誤', code: 'DEMO_LOGIN_INVALID' });
+    }
+
+    if (acct.role === 'coach') {
+      // 僅允許 Ragic 測試帳號教練（名稱含「測試帳號」）。fail-closed：找不到就回 404，
+      // 不退回任一真實教練，避免冒用真實教練身分/越權存取其資源。
+      const r = await pool.query(
+        `SELECT c.*, COALESCE(
+           (SELECT json_agg(cv.venue_id) FROM coach_venues cv WHERE cv.coach_id = c.id),
+           '[]'::json
+         ) AS venue_ids
+         FROM coaches c
+         WHERE c.is_active = TRUE AND c.name LIKE '%測試帳號%'
+         ORDER BY c.ragic_employee_id ASC
+         LIMIT 1`
+      );
+      if (!r.rowCount) {
+        return res.status(404).json({ error: 'Demo 教練帳號不存在（需 Ragic 測試帳號教練）', code: 'DEMO_COACH_MISSING' });
+      }
+      const coach = r.rows[0];
+      coach.multiplier = Number(coach.pricing_multiplier);
+      const token = signCoachToken({ coachId: coach.id, phone: coach.phone, lineUid: coach.line_uid || null });
+      const { line_uid, ...safe } = coach;
+      return res.json({ role: 'coach', ...safe, token });
+    }
+
+    // parent
+    const r = await pool.query(
+      `SELECT id, name, phone, line_uid, primary_venue_id FROM parents WHERE phone = $1`,
+      [acct.phone]
+    );
+    if (!r.rowCount) {
+      return res.status(500).json({ error: 'Demo 家長資料尚未建立', code: 'DEMO_PARENT_MISSING' });
+    }
+    const p = r.rows[0];
+    const token = signParentToken({ parentId: p.id, phone: p.phone, lineUid: p.line_uid });
+    const students = await loadStudents(p.id);
+    return res.json({
+      role: 'parent',
+      id: p.id, name: p.name, phone: p.phone,
+      primary_venue_id: p.primary_venue_id,
+      students,
+      token,
+    });
+  } catch (err) {
+    console.error('[auth/demo-login]', err);
+    res.status(500).json({ error: 'Demo 登入失敗', code: 'DEMO_LOGIN_FAILED' });
+  }
+});
 
 /**
  * GET /api/auth/line-config-debug — 非敏感的 LINE 設定健檢
