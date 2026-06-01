@@ -267,7 +267,11 @@ async function _verifyLineUid(req, res) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 既有：手機單因素登入（保留以免舊前端壞）
+// 手機單因素登入
+//   U4 資安：phone-only 等於「用任意電話撈出該家長學員 + 取得登入 token」，屬越權／
+//   帳號接管風險。production（或 REQUIRE_LINE_ID_TOKEN=1）下強制要求 LINE id_token 驗證，
+//   且只回「該 LINE 帳號本人」綁定的家長（依 line_uid 比對），phone 僅作交叉確認、不得用來枚舉他人。
+//   dev 環境保留 phone-only 後援，方便本地測試。
 // ─────────────────────────────────────────────────────────────
 router.post('/parent-login', async (req, res) => {
   try {
@@ -276,14 +280,36 @@ router.post('/parent-login', async (req, res) => {
       console.warn('[auth/parent-login] rate-limited ip=', ip);
       return res.status(429).json({ error: '嘗試次數過多，請稍後再試' });
     }
+
+    const requireLine = process.env.NODE_ENV === 'production'
+      || process.env.REQUIRE_LINE_ID_TOKEN === '1';
     const phone = String(req.body?.phone || '').trim();
-    if (!phone) return res.status(400).json({ error: '手機必填' });
-    const r = await pool.query(
-      `SELECT id, name, phone, line_uid, primary_venue_id FROM parents WHERE phone = $1`,
-      [phone]
-    );
-    if (!r.rowCount) return res.json(null);
-    const p = r.rows[0];
+
+    let p;
+    if (requireLine) {
+      // 強制 LINE 驗證：以驗證後的 line_uid 查本人，phone 只做交叉確認。
+      const lineUid = await _verifyLineUid(req, res);
+      if (!lineUid) return; // _verifyLineUid 已寫入 4xx 回應
+      const r = await pool.query(
+        `SELECT id, name, phone, line_uid, primary_venue_id FROM parents WHERE line_uid = $1`,
+        [lineUid]
+      );
+      if (!r.rowCount) return res.json(null);
+      p = r.rows[0];
+      if (phone && p.phone && phone !== p.phone) {
+        return res.status(403).json({ error: '手機與此 LINE 帳號不符', code: 'PHONE_MISMATCH' });
+      }
+    } else {
+      // dev 後援：phone-only。
+      if (!phone) return res.status(400).json({ error: '手機必填' });
+      const r = await pool.query(
+        `SELECT id, name, phone, line_uid, primary_venue_id FROM parents WHERE phone = $1`,
+        [phone]
+      );
+      if (!r.rowCount) return res.json(null);
+      p = r.rows[0];
+    }
+
     const token = signParentToken({ parentId: p.id, phone: p.phone, lineUid: p.line_uid });
     const s = await loadStudents(p.id);
     res.json({
