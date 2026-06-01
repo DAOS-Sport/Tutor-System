@@ -15,6 +15,7 @@ const express = require('express');
 const { pool } = require('../models/db');
 const promotions = require('../services/promotions');
 const referrals = require('../services/referrals');
+const { objectExists } = require('../services/objectStorage');
 const { requireParent } = require('../middlewares/parentAuth');
 
 const router = express.Router();
@@ -34,6 +35,16 @@ router.post('/', async (req, res) => {
   if (!p.coach || !p.venue || !p.course_type
       || !Array.isArray(p.students) || !p.students.length) {
     return res.status(400).json({ error: '報名資料不完整' });
+  }
+
+  // U3：匯款／轉帳證明必填。只接受本服務 /uploads/payment-proof 端點產生的相對路徑：
+  //  1. 嚴格比對 local driver 產生的檔名格式（YYYY-MM/24-hex.ext），擋掉偽造／外部 URL；
+  //  2. 再確認檔案真的落地存在，擋掉「合法格式但不存在」的捏造路徑。
+  //  （格式與 services/objectStorage.js LocalDiskDriver 綁定；若日後換非 local driver 需同步調整。）
+  const paymentProofUrl = typeof p.payment_proof_url === 'string' ? p.payment_proof_url.trim() : '';
+  const PROOF_URL_RE = /^\/uploads\/\d{4}-\d{2}\/[a-f0-9]{24}\.(jpg|jpeg|png)$/;
+  if (!PROOF_URL_RE.test(paymentProofUrl) || !objectExists(paymentProofUrl)) {
+    return res.status(400).json({ error: '請上傳匯款／轉帳證明', code: 'PAYMENT_PROOF_REQUIRED' });
   }
 
   const client = await pool.connect();
@@ -142,12 +153,13 @@ router.post('/', async (req, res) => {
     await client.query(
       `INSERT INTO admin_enrollments
          (id, parent_name, parent_phone, students, coach, venue_id, course_type,
-          original_price, final_price, transfer_last_5, status, submitted_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending_payment',$11)`,
+          original_price, final_price, transfer_last_5, payment_proof_url, status, submitted_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending_payment',$12)`,
       [
         enrollmentId, parentRow.name, parentRow.phone, studentNames,
         coachName, venueId, Number(p.course_type),
         preview.originalPrice, preview.finalPrice, p.transfer_last_5 || null,
+        paymentProofUrl,
         submittedAt,
       ]
     );
@@ -194,6 +206,7 @@ router.post('/', async (req, res) => {
       final_price: preview.finalPrice,
       payment_status: 'pending_payment',
       transfer_last_5: p.transfer_last_5 || null,
+      payment_proof_url: paymentProofUrl,
       promotion: preview.promotion ? {
         id: preview.promotion.id,
         name: preview.promotion.name,

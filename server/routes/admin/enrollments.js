@@ -59,6 +59,7 @@ async function readEnrollment(id) {
     refund_amount: row.refund_amount != null ? Number(row.refund_amount) : undefined,
     invoice_number: row.invoice_number || null,
     invoice_image_url: row.invoice_image_url || null,
+    payment_proof_url: row.payment_proof_url || null,
     invoice_url: row.invoice_url || null,
     invoice_issued_at: tsToString(row.invoice_issued_at),
     extra_parent_phones: row.extra_parent_phones || [],

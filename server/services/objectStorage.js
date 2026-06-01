@@ -122,10 +122,23 @@ async function saveBuffer({ buffer, originalName = 'file.bin', mimeType = 'appli
   };
 }
 
+// 驗證一個對外 URL 是否真的指向本服務已落地的檔案（防止偽造 /uploads 路徑）。
+// 非 local driver 無法同步檢查檔案存在，回 true 交由上層信任（best-effort）。
+function objectExists(url) {
+  if (driver.name !== 'local') return true;
+  if (typeof url !== 'string' || !url.startsWith('/uploads/')) return false;
+  const rel = url.replace(/^\/uploads\//, '');
+  if (!rel || rel.includes('..')) return false;
+  const full = path.join(LOCAL_ROOT, rel);
+  if (full !== LOCAL_ROOT && !full.startsWith(LOCAL_ROOT + path.sep)) return false;
+  try { return fs.existsSync(full); } catch { return false; }
+}
+
 module.exports = {
   saveBuffer,
   isAllowed,
   inferMessageType,
+  objectExists,
   UPLOAD_ROOT: LOCAL_ROOT,
   ALLOWED_MAX_BYTES,
   driverName: driver.name,

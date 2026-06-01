@@ -76,6 +76,20 @@ function InvoiceModal({ enrollment, canReconcile, onCancel, onDone }) {
           {enrollment.id} ／ {enrollment.parent_name} ／ 應收 {formatTWD(enrollment.final_price)}，末 5 碼 <b>{enrollment.transfer_last_5}</b>
         </p>
 
+        {enrollment.payment_proof_url && (
+          <div className="mb-4 rounded-lg border border-gray-200 bg-gray-50 p-3">
+            <div className="mb-2 text-xs font-semibold text-gray-600">家長上傳的匯款／轉帳證明</div>
+            <a href={enrollment.payment_proof_url} target="_blank" rel="noreferrer">
+              <img
+                src={enrollment.payment_proof_url}
+                alt="匯款證明"
+                className="max-h-48 rounded-lg border border-gray-200 object-contain"
+              />
+            </a>
+            <div className="mt-1 text-[11px] text-gray-400">點圖可放大檢視</div>
+          </div>
+        )}
+
         <div className="space-y-4">
           <div>
             <label className="mb-1 block text-sm font-semibold text-gray-700">

@@ -34,6 +34,8 @@ export default function EnrollmentPage() {
   const [partnerLookingUp, setPartnerLookingUp] = useState(false);
   const [selectedPartnerStudents, setSelectedPartnerStudents] = useState([]);
   const [last5, setLast5] = useState('');
+  const [proofUrl, setProofUrl] = useState('');
+  const [proofUploading, setProofUploading] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [couponInput, setCouponInput] = useState('');
@@ -104,6 +106,8 @@ export default function EnrollmentPage() {
     totalSelected === requiredStudentCount &&
     selectionResolved &&
     isValidLast5(last5) &&
+    !!proofUrl &&
+    !proofUploading &&
     !submitting &&
     !pricing.previewLoading &&
     !pricing.previewError;
@@ -166,6 +170,30 @@ export default function EnrollmentPage() {
     }
   }
 
+  async function handleSelectProof(file) {
+    if (!file) { setProofUrl(''); return false; }
+    if (!['image/jpeg', 'image/png'].includes(file.type)) {
+      toast.error('只接受 JPG / PNG 圖片');
+      return false;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error('圖片大小不得超過 5MB');
+      return false;
+    }
+    setProofUploading(true);
+    try {
+      const { url } = await enrollmentsApi.uploadPaymentProof(file);
+      setProofUrl(url || '');
+      return !!url;
+    } catch {
+      toast.error('證明上傳失敗，請重試');
+      setProofUrl('');
+      return false;
+    } finally {
+      setProofUploading(false);
+    }
+  }
+
   async function handleConfirmSubmit() {
     setSubmitting(true);
     try {
@@ -180,6 +208,7 @@ export default function EnrollmentPage() {
         original_price: pricing.afterMultiplier,
         final_price: pricing.final,
         transfer_last_5: last5,
+        payment_proof_url: proofUrl,
         promotion: pricing.promo
           ? { id: pricing.promo.id, discount: pricing.discount, coupon_code: pricing.promo.coupon_code || null }
           : null,
@@ -264,6 +293,9 @@ export default function EnrollmentPage() {
         last5={last5}
         setLast5={setLast5}
         onCopyAccount={handleCopyAccount}
+        proofUrl={proofUrl}
+        proofUploading={proofUploading}
+        onSelectProof={handleSelectProof}
       />
 
       <button
