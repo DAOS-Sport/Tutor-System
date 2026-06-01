@@ -1,12 +1,10 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { parentsApi } from '../api/parents';
 import { enrollmentsApi } from '../api/enrollments';
 import LoadingSpinner from '../components/LoadingSpinner';
 import ConfirmModal from '../components/ConfirmModal';
 import CourseTypeSelector from '../components/enroll/CourseTypeSelector';
 import SelfStudentSelector from '../components/enroll/SelfStudentSelector';
-import PartnerLookup from '../components/enroll/PartnerLookup';
 import PriceBreakdown from '../components/enroll/PriceBreakdown';
 import BankTransferBlock from '../components/enroll/BankTransferBlock';
 import EnrollmentSummary from '../components/enroll/EnrollmentSummary';
@@ -15,7 +13,7 @@ import useEnrollmentBoot from '../hooks/useEnrollmentBoot';
 import useEnrollmentPricing from '../hooks/useEnrollmentPricing';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
-import { isValidTWPhone, isValidLast5 } from '../utils/format';
+import { isValidLast5 } from '../utils/format';
 
 export default function EnrollmentPage() {
   const [params] = useSearchParams();
@@ -29,10 +27,6 @@ export default function EnrollmentPage() {
 
   const [courseType, setCourseType] = useState(initialCourseType);
   const [selectedSelfStudents, setSelectedSelfStudents] = useState([]);
-  const [partnerPhone, setPartnerPhone] = useState('');
-  const [partnerLookup, setPartnerLookup] = useState(null);
-  const [partnerLookingUp, setPartnerLookingUp] = useState(false);
-  const [selectedPartnerStudents, setSelectedPartnerStudents] = useState([]);
   const [last5, setLast5] = useState('');
   const [proofUrl, setProofUrl] = useState('');
   const [proofUploading, setProofUploading] = useState(false);
@@ -62,9 +56,6 @@ export default function EnrollmentPage() {
   // 切換組別時重置學員選擇
   useEffect(() => {
     setSelectedSelfStudents([]);
-    setSelectedPartnerStudents([]);
-    setPartnerLookup(null);
-    setPartnerPhone('');
   }, [courseType]);
 
   const pricing = useEnrollmentPricing(bootData, {
@@ -81,27 +72,19 @@ export default function EnrollmentPage() {
 
   const { coach, venue } = bootData;
   const requiredStudentCount = courseType;
-  const totalSelected = selectedSelfStudents.length + selectedPartnerStudents.length;
+  const totalSelected = selectedSelfStudents.length;
 
-  const allSelectedStudents = [
-    ...selectedSelfStudents
-      .map((sid) => {
-        const s = parent.students.find((x) => x.id === sid);
-        return s ? { ...s, _ownerName: parent.name } : null;
-      })
-      .filter(Boolean),
-    ...selectedPartnerStudents
-      .map((sid) => {
-        const s = partnerLookup?.students?.find((x) => x.id === sid);
-        return s ? { ...s, _ownerName: partnerLookup.name } : null;
-      })
-      .filter(Boolean),
-  ];
+  // U4：移除「帶出他人學員」流程後，報名只能選自己名下的學員（同組改走 U5–U8 團購）。
+  const allSelectedStudents = selectedSelfStudents
+    .map((sid) => {
+      const s = parent.students.find((x) => x.id === sid);
+      return s ? { ...s, _ownerName: parent.name } : null;
+    })
+    .filter(Boolean);
   // 防 stale ID：所有勾選 ID 都要解析得到，否則送出鈕不亮
-  const selectionResolved =
-    allSelectedStudents.length === selectedSelfStudents.length + selectedPartnerStudents.length;
+  const selectionResolved = allSelectedStudents.length === selectedSelfStudents.length;
 
-  // 1v1 必為 1 位、1v2/1v3 只要湊滿總人數即可（自身學員多就不需要 partner，partner 純粹是補位用）
+  // 須湊滿該組別人數（1v1=1、1v2=2、1v3=3），且只能用自己名下的學員。
   const canSubmit =
     totalSelected === requiredStudentCount &&
     selectionResolved &&
@@ -112,48 +95,10 @@ export default function EnrollmentPage() {
     !pricing.previewLoading &&
     !pricing.previewError;
 
-  async function handleLookupPartner() {
-    if (!isValidTWPhone(partnerPhone)) {
-      toast.error('請輸入正確手機號碼');
-      return;
-    }
-    if (partnerPhone === parent.phone) {
-      toast.warning('無法將自己加為同組家長');
-      return;
-    }
-    // 切換 partner 時先清空舊選擇，避免 stale ID 流入提交 payload
-    setSelectedPartnerStudents([]);
-    setPartnerLookup(null);
-    setPartnerLookingUp(true);
-    try {
-      const found = await parentsApi.findByPhone(partnerPhone.trim());
-      if (!found || !found.students?.length) {
-        toast.error('找不到此家長或該家長底下沒有學員');
-      } else {
-        setPartnerLookup(found);
-        toast.success(`已找到 ${found.name}（${found.students.length} 位學員）`);
-      }
-    } catch {
-      toast.error('查詢失敗');
-    } finally {
-      setPartnerLookingUp(false);
-    }
-  }
-
   function toggleSelf(sid) {
     setSelectedSelfStudents((prev) => {
       if (prev.includes(sid)) return prev.filter((x) => x !== sid);
-      if (prev.length + selectedPartnerStudents.length >= requiredStudentCount) {
-        toast.warning(`此組別最多選 ${requiredStudentCount} 位學員`);
-        return prev;
-      }
-      return [...prev, sid];
-    });
-  }
-  function togglePartner(sid) {
-    setSelectedPartnerStudents((prev) => {
-      if (prev.includes(sid)) return prev.filter((x) => x !== sid);
-      if (prev.length + selectedSelfStudents.length >= requiredStudentCount) {
+      if (prev.length >= requiredStudentCount) {
         toast.warning(`此組別最多選 ${requiredStudentCount} 位學員`);
         return prev;
       }
@@ -246,18 +191,6 @@ export default function EnrollmentPage() {
         selectedSelfStudents={selectedSelfStudents}
         onToggle={toggleSelf}
       />
-
-      {courseType > 1 && (
-        <PartnerLookup
-          partnerPhone={partnerPhone}
-          setPartnerPhone={setPartnerPhone}
-          partnerLookingUp={partnerLookingUp}
-          partnerLookup={partnerLookup}
-          selectedPartnerStudents={selectedPartnerStudents}
-          onLookup={handleLookupPartner}
-          onTogglePartner={togglePartner}
-        />
-      )}
 
       <PriceBreakdown pricing={pricing} multiplier={coach.multiplier} />
 

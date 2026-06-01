@@ -1,7 +1,9 @@
 /**
- * /api/parents — 家長 + 學員建立 / 查詢
+ * /api/parents — 家長 + 學員建立
  *  POST /                       LIFF 註冊頁；可附 ref_token 綁定 MGM 推薦
- *  GET  /by-phone?phone=xxxx    EnrollmentPage 同組家長查詢（公開即可——電話本身已是 token）
+ *
+ *  （U4 資安：移除舊的公開 GET /by-phone —— 該端點可用他人電話帶出對方所有學員，屬越權查詢；
+ *   同組報名改走 U5–U8 團購流程。任何 /by-phone 請求會落到下方 catch-all 回 404。）
  *
  *  回傳 shape 與 mock createParent 對齊（id/name/phone/email/students），
  *  另外帶 token（自動登入）+ ref_bound 旗標讓前端知道是否成功套用推薦。
@@ -15,24 +17,6 @@ const router = express.Router();
 
 const TW_PHONE = /^09\d{8}$/;
 const TW_ID = /^[A-Z][12]\d{8}$/;
-
-router.get('/by-phone', async (req, res) => {
-  try {
-    const phone = String(req.query.phone || '').trim();
-    if (!TW_PHONE.test(phone)) return res.json(null);
-    const r = await pool.query(
-      `SELECT id, name, phone, primary_venue_id FROM parents WHERE phone = $1`,
-      [phone]
-    );
-    if (!r.rowCount) return res.json(null);
-    const p = r.rows[0];
-    const s = await pool.query(`SELECT id, name, birth_date FROM students WHERE parent_id = $1`, [p.id]);
-    res.json({ id: p.id, name: p.name, phone: p.phone, primary_venue_id: p.primary_venue_id, students: s.rows });
-  } catch (err) {
-    console.error('[parents.by-phone]', err);
-    res.status(500).json({ error: 'lookup failed' });
-  }
-});
 
 router.post('/', async (req, res) => {
   const b = req.body || {};
