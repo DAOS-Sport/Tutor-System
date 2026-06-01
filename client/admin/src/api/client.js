@@ -28,6 +28,12 @@ http.interceptors.request.use((config) => {
     config.headers = config.headers || {};
     config.headers.Authorization = `Bearer ${token}`;
   }
+  // 上傳檔案（FormData）：移除實例預設的 application/json，否則 axios 不會自動補上
+  // multipart/form-data 的 boundary，後端 multer 收不到檔案而退「請選擇檔案」（發票上傳）。
+  if (typeof FormData !== 'undefined' && config.data instanceof FormData && config.headers) {
+    if (typeof config.headers.delete === 'function') config.headers.delete('Content-Type');
+    else delete config.headers['Content-Type'];
+  }
   return config;
 });
 

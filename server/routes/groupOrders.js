@@ -20,12 +20,18 @@ const { pool } = require('../models/db');
 const { objectExists } = require('../services/objectStorage');
 const { requireParent } = require('../middlewares/parentAuth');
 const { maskName, maskNames } = require('../utils/piiMask');
+const line = require('../services/line');
 
 const router = express.Router();
 router.use(requireParent);
 
 // 與 enrollments.js 共用的匯款證明路徑格式（local driver 產生）
 const PROOF_URL_RE = /^\/uploads\/\d{4}-\d{2}\/[a-f0-9]{24}\.(jpg|jpeg|png)$/;
+
+// 團購容量：與課程組別（1V2/1V3）脫鉤。價格仍依 course_type 計（核准時 per-student × 人數），
+// 但揪團人數一律下限 1、上限 6，讓家長自由分享、最多湊到 6 人。
+const GROUP_MIN_STUDENTS = 1;
+const GROUP_MAX_STUDENTS = 6;
 
 function validProof(url) {
   const u = typeof url === 'string' ? url.trim() : '';
@@ -127,7 +133,9 @@ router.post('/', async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: '此課程需求不可用' });
     }
-    const { min_students, max_students } = cfg.rows[0];
+    // course_type 僅用於定價；團購容量固定 1–6（不沿用課程組別的 min/max）
+    const min_students = GROUP_MIN_STUDENTS;
+    const max_students = GROUP_MAX_STUDENTS;
 
     const vr = await client.query(`SELECT id, is_active FROM venues WHERE id = $1`, [venueId]);
     if (!vr.rowCount || vr.rows[0].is_active === false) {
@@ -297,6 +305,24 @@ router.post('/by-token/:token/join', async (req, res) => {
 
     const loaded = await loadOrderWithMembers(pool, order.id);
     res.status(201).json(shapeOrder(loaded.order, loaded.members, req.parent.id));
+
+    // best-effort：LINE 推播通知團主「有人加入，可前往送審」（不阻塞回應；失敗只記 log）
+    if (order.leader_parent_id && order.leader_parent_id !== req.parent.id) {
+      try {
+        const ld = await pool.query(`SELECT line_uid FROM parents WHERE id = $1`, [order.leader_parent_id]);
+        const leaderUid = ld.rows[0]?.line_uid;
+        if (leaderUid) {
+          const total = totalStudents(loaded.members);
+          const me = loaded.members.find((m) => m.parent_id === req.parent.id);
+          const liffUrl = (process.env.LIFF_URL_PARENT || process.env.LIFF_URL || 'https://liff.line.me/-') + `/group/${order.id}`;
+          line.pushMessage(leaderUid, line.templates.groupMemberJoined({
+            memberName: maskName(me?.parent_name || ''),
+            total, min: order.min_students, max: order.max_students,
+            reachedMin: total >= order.min_students, liffUrl,
+          }), order.venue_id).catch((e) => console.warn('[group join push]', e.message));
+        }
+      } catch (e) { console.warn('[group join push prep]', e.message); }
+    }
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('[group-orders join]', err);

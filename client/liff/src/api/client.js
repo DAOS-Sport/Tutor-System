@@ -23,6 +23,13 @@ http.interceptors.request.use((config) => {
       }
     }
   } catch { /* localStorage 不可用時略過 */ }
+  // 上傳檔案（FormData）：移除實例預設的 application/json，
+  // 否則 axios 不會自動補上 multipart/form-data 的 boundary，後端 multer 收不到檔案
+  // （症狀：上傳匯款證明 / 發票 / 授課媒體時被退「請選擇檔案」）。
+  if (typeof FormData !== 'undefined' && config.data instanceof FormData && config.headers) {
+    if (typeof config.headers.delete === 'function') config.headers.delete('Content-Type');
+    else delete config.headers['Content-Type'];
+  }
   return config;
 });
 

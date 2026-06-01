@@ -33,6 +33,15 @@ export default function GroupStatusPage() {
 
   useEffect(() => load(), [load]);
 
+  // 揪團中自動輪詢，讓團主在頁面上即時看到新加入的成員/學生（不必手動重整）
+  useEffect(() => {
+    if (order?.status !== 'forming') return undefined;
+    const t = setInterval(() => {
+      groupOrdersApi.get(id).then((d) => d && setOrder(d)).catch(() => {});
+    }, 6000);
+    return () => clearInterval(t);
+  }, [order?.status, id]);
+
   if (order === undefined) return <LoadingSpinner fullPage label="載入團購狀態…" />;
   if (order === null) {
     return (
@@ -110,7 +119,11 @@ export default function GroupStatusPage() {
       )}
 
       <div className="rounded-xl border border-gray-200 bg-white p-3">
-        <h3 className="mb-2 text-xs font-bold text-gray-600">成員（{order.member_count} 個家庭）</h3>
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="text-xs font-bold text-gray-600">成員（{order.member_count} 個家庭）</h3>
+          <button type="button" onClick={() => load()}
+            className="text-xs font-bold text-brand-teal active:opacity-60">↻ 重新整理</button>
+        </div>
         <div className="space-y-2">
           {(order.members || []).map((m) => (
             <div key={m.id} className="flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2">

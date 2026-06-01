@@ -248,6 +248,30 @@ function sessionRecordPublished({ coachName, sessionDate, liffUrl }) {
   }];
 }
 
+// 團購：有新成員加入 → 通知團主前往查看並送審
+function groupMemberJoined({ memberName, total, min, max, reachedMin, liffUrl }) {
+  return [{
+    type: 'flex', altText: '有新成員加入您的團購',
+    contents: {
+      type: 'bubble',
+      header: flexHeader('👨‍👩‍👧 團購有新成員加入', BRAND.teal),
+      body: {
+        type: 'box', layout: 'vertical', spacing: 'sm',
+        contents: [
+          { type: 'text', text: `${memberName || '一位家長'} 已加入您發起的團購。`, size: 'sm', wrap: true },
+          { type: 'text', text: `目前共 ${total} 人（開團需 ${min}–${max} 人）`, size: 'xs', color: '#888888', wrap: true },
+          { type: 'text', text: reachedMin ? '已達開團人數，可送出審核！' : '達到下限後即可送出審核。',
+            size: 'xs', color: reachedMin ? BRAND.green : '#888888', wrap: true },
+        ],
+      },
+      footer: {
+        type: 'box', layout: 'vertical',
+        contents: [flexButton('查看團購並送審 →', liffUrl, BRAND.teal)],
+      },
+    },
+  }];
+}
+
 // 期末評鑑邀請
 function evaluationInvite({ coachName, liffUrl }) {
   return [{
@@ -525,6 +549,7 @@ module.exports = {
     expiryReminder,
     coursePlanPublished,
     sessionRecordPublished,
+    groupMemberJoined,
     evaluationInvite,
     keywordAlert,
     mgmRewardIssued,

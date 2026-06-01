@@ -184,21 +184,19 @@ export default function EnrollmentPage() {
 
       <CourseTypeSelector courseType={courseType} onChange={setCourseType} />
 
-      {courseType > 1 && (
-        <div className="mt-2 rounded-xl border border-brand-teal/30 bg-brand-teal/5 p-3">
-          <p className="text-xs text-gray-600">
-            人數不夠湊滿 <span className="font-bold text-brand-primary">{courseTypeLabel(courseType)}</span>？
-            可改用「團購」邀請其他家長一起報名。
-          </p>
-          <button
-            type="button"
-            onClick={() => navigate(`/group/new?venue=${venue.id}&coach=${coach.id}&courseType=${courseType}`)}
-            className="mt-2 w-full rounded-lg border border-brand-teal py-2 text-sm font-bold text-brand-teal active:bg-brand-teal/10"
-          >
-            發起團購
-          </button>
-        </div>
-      )}
+      <div className="mt-2 rounded-xl border border-brand-teal/30 bg-brand-teal/5 p-3">
+        <p className="text-xs text-gray-600">
+          想找其他家長一起上課？可改用「團購」分享邀請連結，最多揪到 <span className="font-bold text-brand-primary">6 人</span>，
+          價格依組別計、人數越多越好揪。
+        </p>
+        <button
+          type="button"
+          onClick={() => navigate(`/group/new?venue=${venue.id}&coach=${coach.id}&courseType=${courseType}`)}
+          className="mt-2 w-full rounded-lg border border-brand-teal py-2 text-sm font-bold text-brand-teal active:bg-brand-teal/10"
+        >
+          發起團購
+        </button>
+      </div>
 
       <SelfStudentSelector
         parent={parent}
