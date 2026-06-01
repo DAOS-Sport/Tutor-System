@@ -10,6 +10,21 @@
 
 ---
 
+## Claude 驗收結果（2026-06-01，未寫入正式資料）
+
+驗收方式：DB schema 實查（唯讀）＋ 程式碼對照規格逐項審查 ＋ 已上線 bundle 內容比對 ＋ live 端點權限/錯誤碼探測。
+**未做**：對正式 DB 跑寫入型端到端（鐵則「不可破壞正式資料」）；以下標 🟡 者需真人在 LINE/LIFF 內點測一輪。
+
+- ✅ **U5 資料模型**：`group_orders`、`group_order_members` 兩表 + 欄位齊全；`course_type_configs.min_students`、`admin_enrollments.group_order_id / is_group_shared / payment_proof_url` 皆存在。後台 `courseTypes.js` 驗證 `1 ≤ min ≤ max ≤ 10` 且 `min ≤ max`（POST 第 43–45 行、PATCH 第 104–115 行）。
+- ✅ **U6 後端 API**：路由已掛載（`/api/group-orders` 401、`/api/admin/group-orders` 401）；錯誤碼 `PAYMENT_PROOF_REQUIRED / ALREADY_MEMBER / OVER_CAPACITY / BELOW_MIN / NOT_FORMING / NOT_SUBMITTED` 與規格一致；並發加入/送審以 `SELECT … FOR UPDATE` 保護；取消/退回用原子條件 UPDATE（符合 [[group-buy-state]] 規則）。
+- ✅ **U7 前端已上線**：LIFF 與 admin 的 bundle 於 06-01 07:42 重 build，`index.html` 指向之新 bundle 內含團購字串；admin 側欄/路由「團購審核」對 admin/manager/staff 開放（App.jsx:56、Sidebar.jsx:34）；三頁 source（Create/Join/Status）齊備。
+- ✅ **U7 共享可見（整合鏈已驗）**：approve 為每位成員建 `admin_enrollments(is_group_shared=TRUE, group_order_id)`；`GET /courses/mine` 以 `parent_phone` 過濾並回傳 `is_group_shared`；`CourseCard` 據此顯示「團購共享」徽章。**跨子系統縫隙無問題。**
+- ✅ **U8 PII 去敏（後端遮罩）**：`utils/piiMask.js` 規則正確（莊柏彥→莊X彥、兩字遮末字）；家長端只在 `is_self` 時回傳原始 `parent_id`/姓名/學生名/join_token，他人一律遮罩或 null。
+- ✅ **U8 教練整班/個別填**：`SessionRecordFormPage.jsx` 具「整班一起填 / 個別學員填」切換、「套用到全班」、個別模式送出時合併為單一紀錄（以【學員名】分段）。
+- 🟡 **需真人點測**：LIFF 在 LINE 內登入後跑完整端到端（發起→分享連結→他人加入→達上下限送審→櫃檯核准→各家長我的課程可見徽章）；admin 以 staff 帳號實際核准/退回一筆。建議用測試家長帳號跑一輪後刪除測試團購單，勿用正式資料。
+
+---
+
 ## U5 — 團購資料模型 + 後台人數上下限
 - [ ] 重啟後 DB 已建 `group_orders`、`group_order_members`；`course_type_configs.min_students`、`admin_enrollments.group_order_id / is_group_shared` 已存在。
 - [ ] 後台「課程需求管理」(`/course-types`)：每品相可設定/儲存人數**下限/上限**，驗證 `1 ≤ min ≤ max ≤ 10`。

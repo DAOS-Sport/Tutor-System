@@ -15,6 +15,7 @@ router.get('/coach/:coachId/today', requireCoach, requireCoachOwner('coachId'), 
       `SELECT cs.id, cs.scheduled_at, cs.duration_minutes, cs.status,
               cp.id AS course_period_id, cp.course_type,
               v.id AS venue_id, v.name AS venue_name,
+              rc.name AS original_coach_name,
               COALESCE(
                 (SELECT json_agg(s.name ORDER BY s.name)
                  FROM course_period_enrollments cpe
@@ -26,7 +27,8 @@ router.get('/coach/:coachId/today', requireCoach, requireCoachOwner('coachId'), 
        FROM course_sessions cs
        JOIN course_periods cp ON cs.course_period_id = cp.id
        JOIN venues v ON v.id = cp.venue_id
-       WHERE cp.coach_id = $1
+       LEFT JOIN coaches rc ON rc.id = cs.reassigned_from_coach_id
+       WHERE COALESCE(cs.coach_id, cp.coach_id) = $1
          AND cs.scheduled_at::date = CURRENT_DATE
          AND cs.status IN ('confirmed', 'completed')
        ORDER BY cs.scheduled_at`,
@@ -47,6 +49,7 @@ router.get('/coach/:coachId/week', requireCoach, requireCoachOwner('coachId'), a
     const r = await pool.query(
       `SELECT cs.id, cs.scheduled_at, cs.duration_minutes, cs.status,
               cp.id AS course_period_id, cp.course_type, cp.venue_id,
+              rc.name AS original_coach_name,
               COALESCE(
                 (SELECT json_agg(s.name ORDER BY s.name)
                  FROM course_period_enrollments cpe
@@ -56,7 +59,8 @@ router.get('/coach/:coachId/week', requireCoach, requireCoachOwner('coachId'), a
               ) AS student_names
        FROM course_sessions cs
        JOIN course_periods cp ON cs.course_period_id = cp.id
-       WHERE cp.coach_id = $1
+       LEFT JOIN coaches rc ON rc.id = cs.reassigned_from_coach_id
+       WHERE COALESCE(cs.coach_id, cp.coach_id) = $1
          AND cs.scheduled_at >= $2 AND cs.scheduled_at < $3
          AND cs.status IN ('confirmed', 'completed', 'pending_group_confirm')
        ORDER BY cs.scheduled_at`,
@@ -74,12 +78,13 @@ router.get('/:id', requireCoach, async (req, res) => {
     // 同時驗證所屬教練 — 若不是本人課程一律 403
     const own = await pool.query(
       `SELECT 1 FROM course_sessions cs JOIN course_periods cp ON cs.course_period_id = cp.id
-       WHERE cs.id = $1 AND cp.coach_id = $2`,
+       WHERE cs.id = $1 AND COALESCE(cs.coach_id, cp.coach_id) = $2`,
       [req.params.id, req.coach.id]
     );
     if (own.rows.length === 0) return res.status(403).json({ error: 'Forbidden' });
     const r = await pool.query(
       `SELECT cs.*, cp.course_type, cp.venue_id, v.name AS venue_name,
+              rc.name AS original_coach_name,
               COALESCE(
                 (SELECT json_agg(s.name ORDER BY s.name)
                  FROM course_period_enrollments cpe
@@ -90,6 +95,7 @@ router.get('/:id', requireCoach, async (req, res) => {
        FROM course_sessions cs
        JOIN course_periods cp ON cs.course_period_id = cp.id
        JOIN venues v ON v.id = cp.venue_id
+       LEFT JOIN coaches rc ON rc.id = cs.reassigned_from_coach_id
        WHERE cs.id = $1`,
       [req.params.id]
     );

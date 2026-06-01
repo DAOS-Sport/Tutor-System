@@ -13,8 +13,10 @@ const axios = require('axios');
 
 // Ragic 認證：必須用 `APIKey=` query 參數（Basic / Bearer header 都會被當 guest 拒絕，回 code:106）
 // URL append：很多 RAGIC_FORM_* env 已帶 ?PAGEID=ruv，要用 & 而非第二個 ?，否則 ?api 會被吃進前一個 value
-// Task #83：timeout 改成可由 env 覆蓋，預設 30s（H01 教練含子表 / H05 場館 expand 較慢）
-const RAGIC_TIMEOUT_MS = Number(process.env.RAGIC_TIMEOUT_MS) || 30000;
+// Task #83：timeout 改成可由 env 覆蓋（H01 教練含子表 / H05 場館 expand 較慢）。
+// 預設 60s：實測 H01_STAFF 同步偶發 ~35s 尖峰會超過舊預設 30s 而逾時失敗（約 25% 失敗率），
+// 提高至 60s 給足餘裕；仍可由 RAGIC_TIMEOUT_MS 覆寫。
+const RAGIC_TIMEOUT_MS = Number(process.env.RAGIC_TIMEOUT_MS) || 60000;
 const client = axios.create({
   baseURL: process.env.RAGIC_BASE_URL,
   timeout: RAGIC_TIMEOUT_MS,

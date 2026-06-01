@@ -28,7 +28,7 @@ async function _periodOwnedBy(periodId, coachId) {
 
 async function _sessionPeriodAndCoach(sessionId) {
   const r = await pool.query(
-    `SELECT cs.id, cs.course_period_id, cp.coach_id, cs.scheduled_at
+    `SELECT cs.id, cs.course_period_id, COALESCE(cs.coach_id, cp.coach_id) AS coach_id, cs.scheduled_at
        FROM course_sessions cs JOIN course_periods cp ON cp.id = cs.course_period_id
       WHERE cs.id = $1`,
     [sessionId]

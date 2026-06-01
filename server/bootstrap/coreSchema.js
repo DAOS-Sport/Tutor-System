@@ -325,6 +325,14 @@ DO $$ BEGIN
   ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS coach_id UUID REFERENCES coaches(id) ON DELETE SET NULL;
   ALTER TABLE course_periods    ADD COLUMN IF NOT EXISTS admin_enrollment_id TEXT;
   ALTER TABLE course_sessions   ADD COLUMN IF NOT EXISTS coach_id UUID REFERENCES coaches(id) ON DELETE RESTRICT;
+  -- F2：換教練歸屬。reassigned_from_coach_id 記錄「轉走前的原授課教練」，
+  -- 讓新教練端可顯示「原授課教練 X」。COALESCE 保留首次原教練（多次轉派仍指向最初）。
+  ALTER TABLE course_sessions   ADD COLUMN IF NOT EXISTS reassigned_from_coach_id UUID REFERENCES coaches(id) ON DELETE SET NULL;
+  -- F2 backfill：早期 session 建立時未寫 coach_id（NULL），以所屬 period 的教練補齊，
+  -- 讓「改讀 per-session coach_id」的查詢對既有資料一致生效（idempotent，只補 NULL）。
+  UPDATE course_sessions cs SET coach_id = cp.coach_id
+    FROM course_periods cp
+   WHERE cs.course_period_id = cp.id AND cs.coach_id IS NULL AND cp.coach_id IS NOT NULL;
   -- U3：家長端報名「匯款／轉帳證明」上傳網址（必填，pending_payment 對帳時供櫃檯檢視）。
   ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS payment_proof_url TEXT;
   -- U6：團購核准後產生的報名，回連 group_orders.id 並標記為共享班（前端可顯示「團購」徽章）。

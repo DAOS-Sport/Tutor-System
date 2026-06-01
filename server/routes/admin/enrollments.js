@@ -300,13 +300,17 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin', 'manager', 'sta
              WHERE id = ANY($1::uuid[])`,
           [periodIds, coachId, venueId]
         );
-        // 2) 只覆寫未來尚未上課的 sessions 之 coach_id（已上課保留原值）
+        // 2) 只覆寫未來尚未上課的 sessions 之 coach_id（已上課保留原值）。
+        //    F2：同時把「轉走前的原教練」存進 reassigned_from_coach_id（RHS coach_id 為更新前舊值），
+        //    COALESCE 確保多次轉派仍保留最初的原教練，供新教練端顯示「原授課教練」。
         const upd = await client.query(
           `UPDATE course_sessions
-              SET coach_id = $2, updated_at = NOW()
+              SET reassigned_from_coach_id = COALESCE(reassigned_from_coach_id, coach_id),
+                  coach_id = $2, updated_at = NOW()
             WHERE course_period_id = ANY($1::uuid[])
               AND scheduled_at > NOW()
-              AND status IN ('confirmed','pending_group_confirm')`,
+              AND status IN ('confirmed','pending_group_confirm')
+              AND coach_id IS DISTINCT FROM $2`,
           [periodIds, coachId]
         );
         reassignedSessions = upd.rowCount || 0;

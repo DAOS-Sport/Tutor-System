@@ -91,8 +91,9 @@ async function bookSlot1v1(slotId, coursePeriodId, client) {
   const db = client || pool;
   // 建立課程時段
   const sessionRes = await db.query(
-    `INSERT INTO course_sessions (course_period_id, availability_slot_id, scheduled_at, duration_minutes, status)
-     SELECT $1, cas.id, cas.start_at, cas.duration_minutes, 'confirmed'
+    `INSERT INTO course_sessions (course_period_id, availability_slot_id, scheduled_at, duration_minutes, status, coach_id)
+     SELECT $1, cas.id, cas.start_at, cas.duration_minutes, 'confirmed',
+            (SELECT coach_id FROM course_periods WHERE id = $1)
      FROM coach_availability_slots cas WHERE cas.id = $2 AND cas.status = 'available'
      RETURNING *`,
     [coursePeriodId, slotId]
@@ -118,8 +119,9 @@ async function bookSlot1vN(slotId, coursePeriodId, initiatorParentId, groupParen
   const sessionRes = await db.query(
     `INSERT INTO course_sessions
        (course_period_id, availability_slot_id, scheduled_at, duration_minutes, status,
-        initiated_by_parent_id, group_confirm_status, group_confirm_deadline)
-     SELECT $1, cas.id, cas.start_at, cas.duration_minutes, 'pending_group_confirm', $2, $3, $4
+        initiated_by_parent_id, group_confirm_status, group_confirm_deadline, coach_id)
+     SELECT $1, cas.id, cas.start_at, cas.duration_minutes, 'pending_group_confirm', $2, $3, $4,
+            (SELECT coach_id FROM course_periods WHERE id = $1)
      FROM coach_availability_slots cas WHERE cas.id = $5 AND cas.status = 'available'
      RETURNING *`,
     [coursePeriodId, initiatorParentId, JSON.stringify(groupStatus), confirmDeadline.toISOString(), slotId]

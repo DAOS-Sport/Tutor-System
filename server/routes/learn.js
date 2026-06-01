@@ -72,7 +72,7 @@ router.post('/plans/:periodId/publish', requireCoach, async (req, res) => {
 router.get('/records/by-session/:sessionId', requireCoach, async (req, res) => {
   try {
     const sess = await pool.query(
-      `SELECT cp.coach_id FROM course_sessions cs JOIN course_periods cp ON cp.id = cs.course_period_id WHERE cs.id = $1`,
+      `SELECT COALESCE(cs.coach_id, cp.coach_id) AS coach_id FROM course_sessions cs JOIN course_periods cp ON cp.id = cs.course_period_id WHERE cs.id = $1`,
       [req.params.sessionId]
     );
     if (!sess.rowCount) return res.status(404).json({ error: 'session not found' });
@@ -195,7 +195,7 @@ async function notifyRecordSubmitted(sessionId) {
                     JOIN parents pa ON pa.id = s.parent_id
                    WHERE e.course_period_id = cp.id AND e.status = 'active' AND pa.line_uid IS NOT NULL) AS uids
        FROM course_sessions cs JOIN course_periods cp ON cp.id = cs.course_period_id
-       JOIN coaches co ON co.id = cp.coach_id WHERE cs.id = $1`,
+       LEFT JOIN coaches co ON co.id = COALESCE(cs.coach_id, cp.coach_id) WHERE cs.id = $1`,
     [sessionId]
   );
   if (!r.rowCount) return;

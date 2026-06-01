@@ -67,6 +67,11 @@ export default function CoachTodayPage() {
                   </span>
                 </div>
                 <div className="mt-1 text-xs text-gray-500">{s.venue_name || s.venue_id}</div>
+                {s.original_coach_name && (
+                  <div className="mt-1 inline-block rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700">
+                    原授課教練：{s.original_coach_name}
+                  </div>
+                )}
                 <div className="mt-1 text-sm text-gray-800">
                   學員：{(s.student_names || []).join('、') || '—'}
                 </div>
