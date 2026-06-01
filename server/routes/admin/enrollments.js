@@ -124,7 +124,7 @@ router.get('/', requireAdminAuth, async (req, res) => {
  *             extra_parent_phones[], notes
  * 不可在 cancelled / refunded 狀態下修改（業務資料已結案）。
  */
-router.patch('/:id', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
+router.patch('/:id', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');

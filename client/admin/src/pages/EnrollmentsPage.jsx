@@ -35,7 +35,7 @@ export default function EnrollmentsPage() {
   const [detail, setDetail] = useState(null);
   const [editing, setEditing] = useState(null);
 
-  const canEdit = isAdmin || isManager;
+  const canEdit = isAdmin || isManager || isStaff;
 
   useEffect(() => { venuesApi.list().then(setVenues); }, []);
 
