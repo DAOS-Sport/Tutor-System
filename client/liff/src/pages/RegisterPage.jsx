@@ -7,6 +7,7 @@ import { authApi } from '../api/auth';
 import { referralsApi } from '../api/referrals';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
+import { takeAfterAuth } from '../utils/afterAuth';
 import { isValidTWPhone, isValidTWId } from '../utils/format';
 import { USE_MOCK } from '../api/client';
 
@@ -104,7 +105,7 @@ export default function RegisterPage() {
           } else {
             toast.success('註冊完成！歡迎加入夢想體育學院');
           }
-          navigate('/', { replace: true });
+          navigate(takeAfterAuth('/'), { replace: true });
           return;
         }
         toast.error('註冊失敗，請稍後再試。');
@@ -134,7 +135,7 @@ export default function RegisterPage() {
       } else {
         toast.success('註冊完成！歡迎加入夢想體育學院');
       }
-      navigate('/', { replace: true });
+      navigate(takeAfterAuth('/'), { replace: true });
     } catch (err) {
       toast.error(registerErrorMessage(err));
     }

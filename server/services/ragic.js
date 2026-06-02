@@ -446,6 +446,37 @@ async function createParentWithStudentsInRagic({ parent, students = [], lineUid 
   return { ragicRecordId, raw: data };
 }
 
+/**
+ * 在「既有家長」的 Z01 record 上補掛新學員到學員子表格（團購加入流程用）。
+ * createParentWithStudentsInRagic 是「建新家長」；本函式則是 POST 到既有 record，
+ * 以扁平 dotted key 從 startIndex 起追加子表格列（startIndex 應為目前子表格列數，
+ * 由 caller 先 query 既有列數算出，避免覆蓋既有列）。
+ * 失敗時拋錯，由 caller 決定容錯（團購加入採 best-effort，不阻擋本地加入）。
+ */
+async function addStudentsToParentInRagic({ ragicRecordId, startIndex = 0, students = [] }) {
+  if (!ragicRecordId) throw new Error('ragicRecordId 必填');
+  const list = (students || []).filter((s) => s && s.name);
+  if (!list.length) return { added: 0 };
+
+  const payload = {};
+  list.forEach((s, i) => {
+    const prefix = `${Z01_STUDENTS_SUBTABLE_ID}_${startIndex + i}_`;
+    payload[`${prefix}${FIELD.Z01_STUDENT.NAME}`] = s.name;
+    if (s.birth_date) payload[`${prefix}${FIELD.Z01_STUDENT.BIRTH_DATE}`] = s.birth_date;
+    if (s.gender)     payload[`${prefix}${FIELD.Z01_STUDENT.GENDER}`]     = s.gender;
+    if (s.id_number)  payload[`${prefix}${FIELD.Z01_STUDENT.ID_NUMBER}`]  = String(s.id_number).toUpperCase();
+    if (s.blood_type) payload[`${prefix}${FIELD.Z01_STUDENT.BLOOD_TYPE}`] = s.blood_type;
+  });
+
+  const res = await client.post(_withApi(`${process.env.RAGIC_FORM_Z01}/${ragicRecordId}`), payload, {
+    params: { APIKey: process.env.RAGIC_API_KEY },
+  });
+  _cacheInvalidate('z01:');
+  const data = res.data || {};
+  if (data.status === 'ERROR') throw new Error(`Ragic ${data.code}: ${data.msg}`);
+  return { added: list.length, raw: data };
+}
+
 // Z02：依身分證字號查詢學員（必須用 where=<fid>,eq,... 才能精確過濾）
 async function getStudentByIdNumber(idNumber) {
   const data = await query(process.env.RAGIC_FORM_Z02, { where: `${FIELD.Z02.ID_NUMBER},eq,${idNumber}` });
@@ -487,6 +518,7 @@ module.exports = {
   mapZ01Parent,
   parseZ01Students,
   createParentWithStudentsInRagic,
+  addStudentsToParentInRagic,
   getStudentByIdNumber,
   upsertStudent,
 };

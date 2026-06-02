@@ -18,15 +18,17 @@ const express = require('express');
 const crypto = require('crypto');
 const { pool } = require('../models/db');
 const { objectExists } = require('../services/objectStorage');
-const { requireParent } = require('../middlewares/parentAuth');
+const { requireParent, optionalParent } = require('../middlewares/parentAuth');
 const { maskName, maskNames } = require('../utils/piiMask');
+const ragic = require('../services/ragic');
 const line = require('../services/line');
 
 const router = express.Router();
-router.use(requireParent);
 
 // 與 enrollments.js 共用的匯款證明路徑格式（local driver 產生）
 const PROOF_URL_RE = /^\/uploads\/\d{4}-\d{2}\/[a-f0-9]{24}\.(jpg|jpeg|png)$/;
+// 台灣手機格式（與 auth.js 一致）
+const TW_PHONE_RE = /^09\d{8}$/;
 
 // 團購容量：與課程組別（1V2/1V3）脫鉤。價格仍依 course_type 計（核准時 per-student × 人數），
 // 但揪團人數一律下限 1、上限 6，讓家長自由分享、最多湊到 6 人。
@@ -42,9 +44,106 @@ function genJoinToken() {
   return crypto.randomBytes(16).toString('hex'); // 32 hex chars
 }
 
-function cleanStudentNames(arr) {
+// 整理前端送來的「新學員」（需建檔者）：name 必填，其餘選填
+function cleanNewStudents(arr) {
   if (!Array.isArray(arr)) return [];
-  return arr.map((s) => String(s || '').trim()).filter(Boolean);
+  return arr
+    .map((s) => ({
+      name: String(s?.name || '').trim(),
+      id_number: s?.id_number ? String(s.id_number).trim().toUpperCase() : null,
+      birth_date: s?.birth_date ? String(s.birth_date).trim() : null,
+      gender: s?.gender ? String(s.gender).trim() : null,
+      blood_type: s?.blood_type ? String(s.blood_type).trim() : null,
+    }))
+    .filter((s) => s.name);
+}
+
+/**
+ * 在交易內把「加入者本次選的學員」解析成綁定後的 { ids, names, createdForRagic }：
+ *  - studentIds：限定為 req.parent 名下既有學員（驗證擁有權，避免綁別人的小孩）
+ *  - newStudents：在本地 students 建檔（綁到 parentId），收集新 id/name；
+ *    回傳 createdForRagic 供交易提交後 best-effort 寫入 Ragic 子表格。
+ * 任一學員姓名都會進 names（供顯示），ids 收集既有 + 新建。
+ */
+async function resolveBoundStudents(client, parentId, studentIds, newStudents) {
+  const ids = [];
+  const names = [];
+  const createdForRagic = [];
+
+  const wantIds = Array.isArray(studentIds)
+    ? [...new Set(studentIds.map((x) => String(x || '').trim()).filter(Boolean))]
+    : [];
+  if (wantIds.length) {
+    const r = await client.query(
+      `SELECT id, name FROM students WHERE parent_id = $1 AND id = ANY($2::uuid[])`,
+      [parentId, wantIds]
+    );
+    if (r.rowCount !== wantIds.length) {
+      const err = new Error('所選學員不存在或不屬於您');
+      err.code = 'STUDENT_NOT_OWNED';
+      throw err;
+    }
+    for (const row of r.rows) { ids.push(row.id); names.push(row.name); }
+  }
+
+  for (const s of newStudents || []) {
+    // 同 parent 下以 id_number 或 name+birth 去重，避免重複建檔
+    let matched = null;
+    if (s.id_number) {
+      const m = await client.query(
+        `SELECT id, name FROM students WHERE parent_id = $1 AND id_number = $2 LIMIT 1`,
+        [parentId, s.id_number]
+      );
+      matched = m.rows[0] || null;
+    }
+    if (!matched) {
+      const m = await client.query(
+        `SELECT id, name FROM students
+          WHERE parent_id = $1 AND name = $2
+            AND ($3::date IS NULL OR birth_date = $3::date)
+          LIMIT 1`,
+        [parentId, s.name, s.birth_date || null]
+      );
+      matched = m.rows[0] || null;
+    }
+    if (matched) {
+      if (!ids.includes(matched.id)) { ids.push(matched.id); names.push(matched.name); }
+      continue;
+    }
+    const ins = await client.query(
+      `INSERT INTO students (parent_id, name, birth_date, gender, id_number, blood_type)
+       VALUES ($1, $2, $3::date, NULLIF($4,''), NULLIF($5,''), NULLIF($6,''))
+       RETURNING id, name`,
+      [parentId, s.name, s.birth_date || null, s.gender || '', s.id_number || '', s.blood_type || '']
+    );
+    ids.push(ins.rows[0].id);
+    names.push(ins.rows[0].name);
+    createdForRagic.push(s);
+  }
+
+  return { ids, names, createdForRagic };
+}
+
+/**
+ * best-effort 把新建學員補寫進該家長的 Ragic Z01 子表格。
+ * 失敗只記 log、不拋錯（本地已建檔，加入動作不該因 Ragic 卡住）。
+ */
+async function syncNewStudentsToRagic(parentId, createdForRagic) {
+  if (!createdForRagic || !createdForRagic.length) return;
+  try {
+    const pr = await pool.query(`SELECT ragic_record_id FROM parents WHERE id = $1`, [parentId]);
+    const ragicRecordId = pr.rows[0]?.ragic_record_id || null;
+    if (!ragicRecordId) {
+      console.warn('[group-orders ragic] parent 無 ragic_record_id，略過子表格回寫', parentId);
+      return;
+    }
+    // startIndex = 目前該家長本地學員數扣掉本次新建數（≈ Ragic 既有子表格列數）
+    const cnt = await pool.query(`SELECT COUNT(*)::int AS n FROM students WHERE parent_id = $1`, [parentId]);
+    const startIndex = Math.max(0, (cnt.rows[0]?.n || 0) - createdForRagic.length);
+    await ragic.addStudentsToParentInRagic({ ragicRecordId, startIndex, students: createdForRagic });
+  } catch (e) {
+    console.warn('[group-orders ragic] addStudentsToParentInRagic failed:', e.message);
+  }
 }
 
 // 將一筆 member row 整形為對外格式；isSelf=false 時遮罩姓名
@@ -105,22 +204,91 @@ function shapeOrder(order, members, viewerParentId, extra = {}) {
   };
 }
 
+// ═══════════════════════════════════════════════════════════
+// 公開（免登入）路由：分享出去的加入連結，點開先唯讀看狀態 + 電話查詢
+// optionalParent：有帶 parent JWT 就解析（用來判斷 already_member / is_self），沒有也放行
+// ═══════════════════════════════════════════════════════════
+
+// ── GET /by-token/:token 預覽要加入的團購（唯讀，他家庭資料遮罩） ──
+router.get('/by-token/:token', optionalParent, async (req, res) => {
+  try {
+    const o = await pool.query(`SELECT * FROM group_orders WHERE join_token = $1`, [req.params.token]);
+    if (!o.rowCount) return res.status(404).json({ error: '邀請碼無效' });
+    const loaded = await loadOrderWithMembers(pool, o.rows[0].id);
+    const viewerId = req.parent?.id || null;
+    const alreadyMember = viewerId ? loaded.members.some((m) => m.parent_id === viewerId) : false;
+    res.json(shapeOrder(loaded.order, loaded.members, viewerId, {
+      already_member: alreadyMember,
+      joinable: loaded.order.status === 'forming' && !alreadyMember,
+    }));
+  } catch (err) {
+    console.error('[group-orders GET /by-token]', err);
+    res.status(500).json({ error: '載入失敗' });
+  }
+});
+
+// ── POST /by-token/:token/lookup-phone 以電話查詢「這支電話名下學生 + 在本團狀態」 ──
+//    用途：加入者輸入家長電話，確認掛在下面的學生與目前團報狀態無誤後再加入。
+//    隱私：學生／家長姓名一律遮罩；查無此電話 → found:false（前端引導註冊）。
+router.post('/by-token/:token/lookup-phone', optionalParent, async (req, res) => {
+  const phone = String(req.body?.phone || '').trim();
+  if (!TW_PHONE_RE.test(phone)) {
+    return res.status(400).json({ error: '手機格式錯誤（需 09xxxxxxxx）', code: 'PHONE_FORMAT_INVALID' });
+  }
+  try {
+    const o = await pool.query(`SELECT * FROM group_orders WHERE join_token = $1`, [req.params.token]);
+    if (!o.rowCount) return res.status(404).json({ error: '邀請碼無效' });
+    const order = o.rows[0];
+
+    const pr = await pool.query(`SELECT id, name FROM parents WHERE phone = $1 LIMIT 1`, [phone]);
+    if (!pr.rowCount) {
+      return res.json({ found: false, order_status: order.status });
+    }
+    const parent = pr.rows[0];
+    const sr = await pool.query(`SELECT name FROM students WHERE parent_id = $1 ORDER BY created_at ASC`, [parent.id]);
+    const mm = await pool.query(
+      `SELECT 1 FROM group_order_members WHERE group_order_id = $1 AND parent_id = $2`,
+      [order.id, parent.id]
+    );
+    res.json({
+      found: true,
+      parent_name: maskName(parent.name),
+      students: maskNames(sr.rows.map((r) => r.name)),
+      student_count: sr.rowCount,
+      already_member: mm.rowCount > 0,
+      is_self: req.parent?.id === parent.id,
+      order_status: order.status,
+      joinable: order.status === 'forming' && mm.rowCount === 0,
+    });
+  } catch (err) {
+    console.error('[group-orders lookup-phone]', err);
+    res.status(500).json({ error: '查詢失敗' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// 以下皆需 parent JWT
+// ═══════════════════════════════════════════════════════════
+router.use(requireParent);
+
 // ── POST / 發起團購 ──────────────────────────────────────────
 router.post('/', async (req, res) => {
   const p = req.body || {};
   const courseType = parseInt(p.course_type, 10);
   const venueId = p.venue_id ? String(p.venue_id).trim() : '';
   const coachId = p.coach_id ? String(p.coach_id).trim() : null;
-  const studentNames = cleanStudentNames(p.student_names);
+  const studentIds = Array.isArray(p.student_ids) ? p.student_ids : [];
+  const newStudents = cleanNewStudents(p.new_students);
   const note = typeof p.note === 'string' ? p.note.trim().slice(0, 500) : null;
   const proof = validProof(p.payment_proof_url);
 
   if (isNaN(courseType) || courseType < 1) return res.status(400).json({ error: 'course_type 無效' });
   if (!venueId) return res.status(400).json({ error: '請選擇場館' });
-  if (!studentNames.length) return res.status(400).json({ error: '請填寫至少一位學生姓名' });
+  if (!studentIds.length && !newStudents.length) return res.status(400).json({ error: '請選擇或填寫至少一位學生' });
   if (!proof) return res.status(400).json({ error: '請上傳匯款／轉帳證明', code: 'PAYMENT_PROOF_REQUIRED' });
 
   const client = await pool.connect();
+  let createdForRagic = [];
   try {
     await client.query('BEGIN');
 
@@ -148,10 +316,22 @@ router.post('/', async (req, res) => {
       if (!cr.rowCount) { await client.query('ROLLBACK'); return res.status(400).json({ error: '教練不存在' }); }
     }
 
-    if (studentNames.length > max_students) {
+    let bound;
+    try {
+      bound = await resolveBoundStudents(client, req.parent.id, studentIds, newStudents);
+    } catch (e) {
+      await client.query('ROLLBACK');
+      return res.status(e.code === 'STUDENT_NOT_OWNED' ? 403 : 400).json({ error: e.message, code: e.code });
+    }
+    if (!bound.names.length) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: '請選擇或填寫至少一位學生' });
+    }
+    if (bound.names.length > max_students) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: `學生人數已超過上限（最多 ${max_students} 人）` });
     }
+    createdForRagic = bound.createdForRagic;
 
     const token = genJoinToken();
     const o = await client.query(
@@ -165,12 +345,13 @@ router.post('/', async (req, res) => {
     const order = o.rows[0];
     await client.query(
       `INSERT INTO group_order_members
-         (group_order_id, parent_id, student_names, payment_proof_url, is_leader, status)
-       VALUES ($1,$2,$3,$4,TRUE,'joined')`,
-      [order.id, req.parent.id, studentNames, proof]
+         (group_order_id, parent_id, student_names, student_ids, payment_proof_url, is_leader, status)
+       VALUES ($1,$2,$3,$4,$5,TRUE,'joined')`,
+      [order.id, req.parent.id, bound.names, bound.ids, proof]
     );
 
     await client.query('COMMIT');
+    await syncNewStudentsToRagic(req.parent.id, createdForRagic); // best-effort，失敗不阻擋
     const loaded = await loadOrderWithMembers(pool, order.id);
     res.status(201).json({
       ...shapeOrder(loaded.order, loaded.members, req.parent.id),
@@ -234,34 +415,17 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// ── GET /by-token/:token 預覽要加入的團購 ───────────────────
-router.get('/by-token/:token', async (req, res) => {
-  try {
-    const o = await pool.query(`SELECT * FROM group_orders WHERE join_token = $1`, [req.params.token]);
-    if (!o.rowCount) return res.status(404).json({ error: '邀請碼無效' });
-    const loaded = await loadOrderWithMembers(pool, o.rows[0].id);
-    const alreadyMember = loaded.members.some((m) => m.parent_id === req.parent.id);
-    res.json({
-      ...shapeOrder(loaded.order, loaded.members, req.parent.id, {
-        already_member: alreadyMember,
-        joinable: loaded.order.status === 'forming' && !alreadyMember,
-      }),
-    });
-  } catch (err) {
-    console.error('[group-orders GET /by-token]', err);
-    res.status(500).json({ error: '載入失敗' });
-  }
-});
-
-// ── POST /by-token/:token/join 加入團購 ─────────────────────
+// ── POST /by-token/:token/join 加入團購（綁定本人學員 + best-effort 回寫 Ragic）──
 router.post('/by-token/:token/join', async (req, res) => {
   const p = req.body || {};
-  const studentNames = cleanStudentNames(p.student_names);
+  const studentIds = Array.isArray(p.student_ids) ? p.student_ids : [];
+  const newStudents = cleanNewStudents(p.new_students);
   const proof = validProof(p.payment_proof_url);
-  if (!studentNames.length) return res.status(400).json({ error: '請填寫至少一位學生姓名' });
+  if (!studentIds.length && !newStudents.length) return res.status(400).json({ error: '請選擇或填寫至少一位學生' });
   if (!proof) return res.status(400).json({ error: '請上傳匯款／轉帳證明', code: 'PAYMENT_PROOF_REQUIRED' });
 
   const client = await pool.connect();
+  let createdForRagic = [];
   try {
     await client.query('BEGIN');
     // 鎖住此團購，避免並發加入超過上限
@@ -281,13 +445,26 @@ router.post('/by-token/:token/join', async (req, res) => {
     );
     if (dup.rowCount) { await client.query('ROLLBACK'); return res.status(409).json({ error: '您已加入此團購', code: 'ALREADY_MEMBER' }); }
 
+    let bound;
+    try {
+      bound = await resolveBoundStudents(client, req.parent.id, studentIds, newStudents);
+    } catch (e) {
+      await client.query('ROLLBACK');
+      return res.status(e.code === 'STUDENT_NOT_OWNED' ? 403 : 400).json({ error: e.message, code: e.code });
+    }
+    if (!bound.names.length) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: '請選擇或填寫至少一位學生' });
+    }
+    createdForRagic = bound.createdForRagic;
+
     const cur = await client.query(
       `SELECT COALESCE(SUM(COALESCE(array_length(student_names,1),0)),0) AS total
          FROM group_order_members WHERE group_order_id = $1`,
       [order.id]
     );
     const curTotal = Number(cur.rows[0].total);
-    if (curTotal + studentNames.length > order.max_students) {
+    if (curTotal + bound.names.length > order.max_students) {
       await client.query('ROLLBACK');
       return res.status(409).json({
         error: `加入後將超過人數上限（最多 ${order.max_students} 人，目前 ${curTotal} 人）`,
@@ -297,11 +474,12 @@ router.post('/by-token/:token/join', async (req, res) => {
 
     await client.query(
       `INSERT INTO group_order_members
-         (group_order_id, parent_id, student_names, payment_proof_url, is_leader, status)
-       VALUES ($1,$2,$3,$4,FALSE,'joined')`,
-      [order.id, req.parent.id, studentNames, proof]
+         (group_order_id, parent_id, student_names, student_ids, payment_proof_url, is_leader, status)
+       VALUES ($1,$2,$3,$4,$5,FALSE,'joined')`,
+      [order.id, req.parent.id, bound.names, bound.ids, proof]
     );
     await client.query('COMMIT');
+    await syncNewStudentsToRagic(req.parent.id, createdForRagic); // best-effort，失敗不阻擋
 
     const loaded = await loadOrderWithMembers(pool, order.id);
     res.status(201).json(shapeOrder(loaded.order, loaded.members, req.parent.id));

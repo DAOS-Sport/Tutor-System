@@ -130,6 +130,8 @@ CREATE TABLE IF NOT EXISTS group_order_members (
   group_order_id    UUID NOT NULL REFERENCES group_orders(id) ON DELETE CASCADE,
   parent_id         UUID NOT NULL REFERENCES parents(id) ON DELETE CASCADE,
   student_names     TEXT[] NOT NULL DEFAULT '{}',
+  -- U7：加入時綁定的正式學員 id（student_names 仍保留供顯示／向後相容）
+  student_ids       UUID[] NOT NULL DEFAULT '{}',
   payment_proof_url TEXT,
   is_leader         BOOLEAN NOT NULL DEFAULT FALSE,
   status            VARCHAR(20) NOT NULL DEFAULT 'joined',
@@ -338,6 +340,8 @@ DO $$ BEGIN
   -- U6：團購核准後產生的報名，回連 group_orders.id 並標記為共享班（前端可顯示「團購」徽章）。
   ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS group_order_id UUID;
   ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS is_group_shared BOOLEAN NOT NULL DEFAULT FALSE;
+  -- U7：團購成員綁定的正式學員 id（既有資料安全升級，預設空陣列）。
+  ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS student_ids UUID[] NOT NULL DEFAULT '{}';
   -- Task #59：transfer_coach 結構化欄位（before/after，名稱保留作可讀紀錄；UUID 為查詢索引）
   ALTER TABLE admin_enrollment_audit_logs ADD COLUMN IF NOT EXISTS before_coach_id UUID;
   ALTER TABLE admin_enrollment_audit_logs ADD COLUMN IF NOT EXISTS after_coach_id  UUID;

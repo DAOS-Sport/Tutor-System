@@ -17,6 +17,11 @@ export const groupOrdersApi = {
   preview: (token) =>
     callApi(`/group-orders/by-token/${token}`, { method: 'get' }, () => null),
 
+  // 以電話查詢「這支電話名下學生 + 在本團狀態」（免登入，供加入前確認）
+  lookupPhone: (token, phone) =>
+    callApi(`/group-orders/by-token/${token}/lookup-phone`, { method: 'post', data: { phone } }, () => ({ found: false })),
+
+  // payload: { student_ids:[uuid], new_students:[{name,id_number,birth_date,gender}], payment_proof_url }
   join: (token, payload) =>
     callApi(`/group-orders/by-token/${token}/join`, { method: 'post', data: payload }, () => {
       throw new Error('團購功能需在真實 API 模式下使用');

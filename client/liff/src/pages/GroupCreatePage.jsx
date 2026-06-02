@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { groupOrdersApi } from '../api/groupOrders';
-import GroupMemberFields from '../components/group/GroupMemberFields';
+import GroupMemberFields, { memberFieldsReady, memberFieldsPayload } from '../components/group/GroupMemberFields';
 import { useToast } from '../context/ToastContext';
 import { courseTypeLabel } from '../utils/format';
 
@@ -18,13 +18,12 @@ export default function GroupCreatePage() {
   const coachId = params.get('coach') || '';
   const courseType = Number(params.get('courseType') || 2);
 
-  const [fields, setFields] = useState({ studentNames: [''], proofUrl: '' });
+  const [fields, setFields] = useState({ studentIds: [], newStudents: [], proofUrl: '' });
   const [uploading, setUploading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [note, setNote] = useState('');
 
-  const cleanNames = fields.studentNames.map((s) => s.trim()).filter(Boolean);
-  const canSubmit = !!venueId && cleanNames.length > 0 && !!fields.proofUrl && !uploading && !submitting;
+  const canSubmit = !!venueId && memberFieldsReady(fields) && !uploading && !submitting;
 
   async function handleCreate() {
     if (!canSubmit) return;
@@ -34,7 +33,7 @@ export default function GroupCreatePage() {
         course_type: courseType,
         venue_id: venueId,
         coach_id: coachId || undefined,
-        student_names: cleanNames,
+        ...memberFieldsPayload(fields),
         payment_proof_url: fields.proofUrl,
         note: note.trim() || undefined,
       });

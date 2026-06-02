@@ -65,6 +65,11 @@ export default function App() {
             <Route path="/register" element={<RegisterPage />} />
           </Route>
 
+          {/* 公開：團購加入連結（免登入先看狀態 / 電話查詢；加入時才要求登入） */}
+          <Route element={<AppLayout showBackButton title="加入團購" />}>
+            <Route path="/group/join/:token" element={<GroupJoinPage />} />
+          </Route>
+
           <Route element={<RequireAuth />}>
             {/* ── 家長分頁 ── */}
             <Route element={<RequireParent />}>
@@ -91,9 +96,6 @@ export default function App() {
               {/* U7 團購 */}
               <Route element={<AppLayout showBackButton title="發起團購" />}>
                 <Route path="/group/new" element={<GroupCreatePage />} />
-              </Route>
-              <Route element={<AppLayout showBackButton title="加入團購" />}>
-                <Route path="/group/join/:token" element={<GroupJoinPage />} />
               </Route>
               <Route element={<AppLayout showBackButton title="團購狀態" />}>
                 <Route path="/group/:id" element={<GroupStatusPage />} />

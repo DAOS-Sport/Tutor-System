@@ -6,6 +6,7 @@ import { coachesApi } from '../api/coaches';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { isValidTWPhone } from '../utils/format';
+import { takeAfterAuth } from '../utils/afterAuth';
 import LoadingSpinner from '../components/LoadingSpinner';
 
 const MANUAL_LOGOUT_KEY = 'daos.manualLogout';
@@ -204,7 +205,7 @@ export default function LoginPage() {
           const parent = { ...r.parent, token: r.token || r.parent.token || null };
           setParent(parent);
           toast.success(`歡迎回來，${parent.name || ''}`);
-          navigate('/', { replace: true });
+          navigate(takeAfterAuth('/'), { replace: true });
           return;
         }
         if (r?.status === 'need_phone_binding') {
@@ -245,7 +246,7 @@ export default function LoginPage() {
         const parent = { ...r.parent, token: r.token || r.parent.token || null };
         setParent(parent);
         toast.success(`歡迎，${parent.name || ''}`);
-        navigate('/', { replace: true });
+        navigate(takeAfterAuth('/'), { replace: true });
         return;
       }
       if (r?.status === 'need_registration') {
