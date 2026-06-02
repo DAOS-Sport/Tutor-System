@@ -44,6 +44,34 @@ function genJoinToken() {
   return crypto.randomBytes(16).toString('hex'); // 32 hex chars
 }
 
+// per-IP in-memory rate limit（與 coachAuth / auth.js 同模式；單機 MVP，正式部署改 Redis）。
+// 用於公開（免登入）端點，抑制以分享出去的 join token 暴搜電話號碼。
+const RL_WINDOW_MS = 5 * 60 * 1000;
+function makeRateLimiter(max, label) {
+  const buckets = new Map(); // ip → { count, windowStart }
+  return function rateLimit(req, res, next) {
+    const ip = (req.headers['x-forwarded-for']?.split(',')[0] || req.ip || 'unknown').trim();
+    const now = Date.now();
+    const rec = buckets.get(ip);
+    if (!rec || now - rec.windowStart > RL_WINDOW_MS) {
+      if (buckets.size > 5000) {
+        for (const [k, v] of buckets) if (now - v.windowStart > RL_WINDOW_MS) buckets.delete(k);
+      }
+      buckets.set(ip, { count: 1, windowStart: now });
+      return next();
+    }
+    rec.count += 1;
+    if (rec.count > max) {
+      console.warn(`[group-orders] rate-limited ${label}: ip=${ip} attempts=${rec.count}`);
+      return res.status(429).json({ error: '查詢次數過多，請 5 分鐘後再試', code: 'RATE_LIMITED' });
+    }
+    next();
+  };
+}
+// lookup-phone 是枚舉風險面 → 較緊（15 / 5min，足夠正常確認流程）；by-token 預覽較鬆（頁面載入/刷新）。
+const lookupRateLimit = makeRateLimiter(15, 'lookup-phone');
+const previewRateLimit = makeRateLimiter(60, 'by-token-preview');
+
 // 整理前端送來的「新學員」（需建檔者）：name 必填，其餘選填
 function cleanNewStudents(arr) {
   if (!Array.isArray(arr)) return [];
@@ -210,7 +238,7 @@ function shapeOrder(order, members, viewerParentId, extra = {}) {
 // ═══════════════════════════════════════════════════════════
 
 // ── GET /by-token/:token 預覽要加入的團購（唯讀，他家庭資料遮罩） ──
-router.get('/by-token/:token', optionalParent, async (req, res) => {
+router.get('/by-token/:token', previewRateLimit, optionalParent, async (req, res) => {
   try {
     const o = await pool.query(`SELECT * FROM group_orders WHERE join_token = $1`, [req.params.token]);
     if (!o.rowCount) return res.status(404).json({ error: '邀請碼無效' });
@@ -230,7 +258,7 @@ router.get('/by-token/:token', optionalParent, async (req, res) => {
 // ── POST /by-token/:token/lookup-phone 以電話查詢「這支電話名下學生 + 在本團狀態」 ──
 //    用途：加入者輸入家長電話，確認掛在下面的學生與目前團報狀態無誤後再加入。
 //    隱私：學生／家長姓名一律遮罩；查無此電話 → found:false（前端引導註冊）。
-router.post('/by-token/:token/lookup-phone', optionalParent, async (req, res) => {
+router.post('/by-token/:token/lookup-phone', lookupRateLimit, optionalParent, async (req, res) => {
   const phone = String(req.body?.phone || '').trim();
   if (!TW_PHONE_RE.test(phone)) {
     return res.status(400).json({ error: '手機格式錯誤（需 09xxxxxxxx）', code: 'PHONE_FORMAT_INVALID' });
