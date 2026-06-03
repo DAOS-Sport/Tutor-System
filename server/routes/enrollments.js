@@ -37,14 +37,16 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: '報名資料不完整' });
   }
 
-  // U3：匯款／轉帳證明必填。只接受本服務 /uploads/payment-proof 端點產生的相對路徑：
-  //  1. 嚴格比對 local driver 產生的檔名格式（YYYY-MM/24-hex.ext），擋掉偽造／外部 URL；
-  //  2. 再確認檔案真的落地存在，擋掉「合法格式但不存在」的捏造路徑。
-  //  （格式與 services/objectStorage.js LocalDiskDriver 綁定；若日後換非 local driver 需同步調整。）
-  const paymentProofUrl = typeof p.payment_proof_url === 'string' ? p.payment_proof_url.trim() : '';
+  // U10：匯款／轉帳證明改為「送出後在報名狀態頁再上傳」，這裡不再必填。
+  //   若前端仍帶（向後相容）才驗格式 + 落地存在；格式與 LocalDiskDriver 綁定。
   const PROOF_URL_RE = /^\/uploads\/\d{4}-\d{2}\/[a-f0-9]{24}\.(jpg|jpeg|png)$/;
-  if (!PROOF_URL_RE.test(paymentProofUrl) || !objectExists(paymentProofUrl)) {
-    return res.status(400).json({ error: '請上傳匯款／轉帳證明', code: 'PAYMENT_PROOF_REQUIRED' });
+  const rawProof = typeof p.payment_proof_url === 'string' ? p.payment_proof_url.trim() : '';
+  let paymentProofUrl = null;
+  if (rawProof) {
+    if (!PROOF_URL_RE.test(rawProof) || !objectExists(rawProof)) {
+      return res.status(400).json({ error: '匯款／轉帳證明格式不正確', code: 'PAYMENT_PROOF_INVALID' });
+    }
+    paymentProofUrl = rawProof;
   }
 
   const client = await pool.connect();
@@ -107,7 +109,18 @@ router.post('/', async (req, res) => {
         code: 'VENUE_INACTIVE',
       });
     }
-    const original = Math.round(basePrice * multiplier);
+    // U10：費用 = 單期單生價(base×倍率) × 學生數 × 期數（server-authoritative，忽略 client 金額）。
+    const unitPrice = Math.round(basePrice * multiplier);
+    const studentCount = Array.isArray(p.students) ? p.students.length : 0;
+    const periodCount = (() => {
+      const n = parseInt(p.period_count, 10);
+      return Number.isInteger(n) ? Math.min(6, Math.max(1, n)) : 1;
+    })();
+    if (studentCount < 1) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: '請選擇至少一位學生' });
+    }
+    const original = unitPrice * studentCount * periodCount;
     const couponCode = p.promotion && p.promotion.coupon_code ? String(p.promotion.coupon_code).trim() : null;
 
     // ── MGM 體驗課 5 折專用驗證：TRIAL50 僅限有對應 referral 的家長 ──
@@ -133,7 +146,7 @@ router.post('/', async (req, res) => {
         originalPrice: original,
         courseType: Number(p.course_type),
         venueId: p.venue.id || null,
-        periodCount: 1,
+        periodCount,
         couponCode,
         parentId: parentRow.id,
       });
@@ -152,15 +165,15 @@ router.post('/', async (req, res) => {
 
     await client.query(
       `INSERT INTO admin_enrollments
-         (id, parent_name, parent_phone, students, coach, venue_id, course_type,
-          original_price, final_price, transfer_last_5, payment_proof_url, status, submitted_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending_payment',$12)`,
+         (id, parent_name, parent_phone, students, coach, coach_id, venue_id, course_type,
+          original_price, final_price, transfer_last_5, payment_proof_url, status, submitted_at, period_count)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending_payment',$13,$14)`,
       [
         enrollmentId, parentRow.name, parentRow.phone, studentNames,
-        coachName, venueId, Number(p.course_type),
+        coachName, coachId, venueId, Number(p.course_type),
         preview.originalPrice, preview.finalPrice, p.transfer_last_5 || null,
         paymentProofUrl,
-        submittedAt,
+        submittedAt, periodCount,
       ]
     );
 

@@ -87,7 +87,6 @@ export default function GroupJoinPage() {
     try {
       const order = await groupOrdersApi.join(token, {
         ...memberFieldsPayload(fields),
-        payment_proof_url: fields.proofUrl,
       });
       toast.success('已加入團購！');
       navigate(`/group/${order.id}`, { replace: true });
@@ -180,6 +179,7 @@ export default function GroupJoinPage() {
                   onChange={setFields}
                   uploading={uploading}
                   setUploading={setUploading}
+                  maxStudents={Math.max(0, (preview.max_students || 0) - (preview.total_students || 0))}
                 />
                 <button
                   type="button"

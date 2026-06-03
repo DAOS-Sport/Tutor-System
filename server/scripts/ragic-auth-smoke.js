@@ -52,9 +52,10 @@ function summary() {
     missing.length ? `missing: ${missing.join(', ')}` : 'all present');
   if (missing.length) return summary();
 
-  // 2) Ragic LINE UID field IDs（環境覆寫或預設值）
-  const z01Field = process.env.RAGIC_FIELD_Z01_LINE_UID || '1006846';
-  const h01Field = process.env.RAGIC_FIELD_H01_LINE_UID || '1003633';
+  // 2) Ragic LINE UID field IDs — 一律取自凍結點 config/ragicSchema.js（env 覆寫或預設值）
+  const { LINE_UID_FIELD } = require('../config/ragicSchema');
+  const z01Field = LINE_UID_FIELD.Z01;
+  const h01Field = LINE_UID_FIELD.H01;
   record('env.z01_line_uid_field', !!z01Field, `Z01 = ${z01Field}`);
   record('env.h01_line_uid_field', !!h01Field, `H01 = ${h01Field} (預設 1003633)`);
 

@@ -141,6 +141,19 @@ CREATE TABLE IF NOT EXISTS group_order_members (
 CREATE INDEX IF NOT EXISTS idx_group_members_order  ON group_order_members(group_order_id);
 CREATE INDEX IF NOT EXISTS idx_group_members_parent ON group_order_members(parent_id);
 
+-- ─────────────────────────────────────────────────────────────
+-- 團報「草稿暫存」：客人端發起團購頁填到一半時，先把未完成資訊存起來，
+--   重整 / 切走 / 換裝置回來都不流失（每位家長保留一筆「進行中」草稿）。
+--   正式建立團購成功後即刪除此草稿。payload 整包存 JSONB（venue/coach/
+--   courseType/已選學員/新增學員/匯款證明/備註），結構鬆綁、容前端演進。
+-- ─────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS group_order_drafts (
+  parent_id   UUID PRIMARY KEY REFERENCES parents(id) ON DELETE CASCADE,
+  payload     JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at  TIMESTAMPTZ DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS course_periods (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   coach_id UUID NOT NULL REFERENCES coaches(id) ON DELETE RESTRICT,
@@ -326,6 +339,10 @@ DO $$ BEGIN
   -- course_sessions 加 coach_id 以支援「換教練只動未來課」的 per-session 指派。
   ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS coach_id UUID REFERENCES coaches(id) ON DELETE SET NULL;
   ALTER TABLE course_periods    ADD COLUMN IF NOT EXISTS admin_enrollment_id TEXT;
+  -- 團報：一團共用一個 course_period。對帳建課時以 group_order_id 做冪等 get-or-create
+  -- （同團多位成員逐筆對帳時不會重複建 period）。一般報名此欄為 NULL。
+  ALTER TABLE course_periods    ADD COLUMN IF NOT EXISTS group_order_id UUID;
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_course_periods_group_order ON course_periods(group_order_id) WHERE group_order_id IS NOT NULL;
   ALTER TABLE course_sessions   ADD COLUMN IF NOT EXISTS coach_id UUID REFERENCES coaches(id) ON DELETE RESTRICT;
   -- F2：換教練歸屬。reassigned_from_coach_id 記錄「轉走前的原授課教練」，
   -- 讓新教練端可顯示「原授課教練 X」。COALESCE 保留首次原教練（多次轉派仍指向最初）。
@@ -342,6 +359,19 @@ DO $$ BEGIN
   ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS is_group_shared BOOLEAN NOT NULL DEFAULT FALSE;
   -- U7：團購成員綁定的正式學員 id（既有資料安全升級，預設空陣列）。
   ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS student_ids UUID[] NOT NULL DEFAULT '{}';
+  -- U9：團報「複數期數」——一張團報訂單可一次購買多期（名單鎖定不變）。
+  --   total_sessions = sessions_per_period × period_count；既有資料預設 1 期，安全升級。
+  ALTER TABLE group_orders      ADD COLUMN IF NOT EXISTS period_count INTEGER NOT NULL DEFAULT 1;
+  ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS period_count INTEGER NOT NULL DEFAULT 1;
+  -- U10：團報金流改流程——證明改「送審後各家自行上傳」，櫃檯「逐家確認帳款」+「核准名單」，
+  --   兩者皆成立才自動建檔。成員層級記證明上傳時間 + 帳款確認狀態；訂單層級記名單核准狀態。
+  ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS proof_uploaded_at   TIMESTAMPTZ;
+  ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS payment_confirmed   BOOLEAN NOT NULL DEFAULT FALSE;
+  ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS payment_confirmed_at TIMESTAMPTZ;
+  ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS payment_confirmed_by VARCHAR(50);
+  ALTER TABLE group_orders        ADD COLUMN IF NOT EXISTS roster_approved     BOOLEAN NOT NULL DEFAULT FALSE;
+  ALTER TABLE group_orders        ADD COLUMN IF NOT EXISTS roster_approved_at  TIMESTAMPTZ;
+  ALTER TABLE group_orders        ADD COLUMN IF NOT EXISTS roster_approved_by  VARCHAR(50);
   -- Task #59：transfer_coach 結構化欄位（before/after，名稱保留作可讀紀錄；UUID 為查詢索引）
   ALTER TABLE admin_enrollment_audit_logs ADD COLUMN IF NOT EXISTS before_coach_id UUID;
   ALTER TABLE admin_enrollment_audit_logs ADD COLUMN IF NOT EXISTS after_coach_id  UUID;

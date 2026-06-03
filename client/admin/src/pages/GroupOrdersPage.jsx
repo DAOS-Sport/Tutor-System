@@ -147,7 +147,10 @@ export default function GroupOrdersPage() {
             ) : (
               <>
                 <div className="mb-3 flex items-center justify-between">
-                  <h2 className="text-lg font-bold text-brand-primary">{courseLabel(detail.course_type)} 團購</h2>
+                  <h2 className="text-lg font-bold text-brand-primary">
+                    {courseLabel(detail.course_type)} 團購
+                    {detail.period_count > 1 && <span className="ml-2 text-sm font-bold text-amber-600">· {detail.period_count} 期</span>}
+                  </h2>
                   <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${STATUS[detail.status]?.cls || 'bg-gray-100 text-gray-500'}`}>
                     {STATUS[detail.status]?.label || detail.status}
                   </span>

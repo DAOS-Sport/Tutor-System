@@ -23,6 +23,81 @@ async function getSettings() {
   return out;
 }
 
+/**
+ * U9 團報橋 — 對帳通過時為團報「立即自動開通」共用 course_period（架構 v7 §9.1 Step 7）。
+ *
+ *  - 僅處理團報（enrollment.group_order_id 有值）；一般報名直接 return（維持原行為）。
+ *  - 一團共用「一個」course_period：以 group_order_id 做冪等 get-or-create
+ *    （course_periods 有 partial unique index uq_course_periods_group_order）。
+ *    同團多位成員逐筆對帳時，第一筆建 period，其餘筆只補各自學員。
+ *  - 把「本成員」綁定的正式學員（group_order_members.student_ids）加入
+ *    course_period_enrollments（UNIQUE(period,student) → ON CONFLICT DO NOTHING）。
+ *  - course_periods.coach_id 為 NOT NULL；團報未指定教練時無法建課 → 記 log 後略過，
+ *    不阻擋對帳（報名仍轉 confirmed，待補教練後可由後台流程補開）。
+ *
+ *  必須在 reconcile 的交易（client）內呼叫，與報名狀態變更同生共死。
+ *  totalSessions 已含期數（perPeriod × period_count），整團共用此堂數池。
+ */
+async function ensureGroupCoursePeriod(client, enrollment, totalSessions) {
+  const groupOrderId = enrollment.group_order_id;
+  if (!groupOrderId) return; // 非團報 → 不在本任務範圍
+
+  if (!enrollment.coach_id) {
+    console.warn('[reconcile/group] 團報報名缺 coach_id，略過自動開通 period:', enrollment.id, 'group:', groupOrderId);
+    return;
+  }
+
+  // 本成員（家長）在這張團報綁定的正式學員 id
+  const pr = await client.query(`SELECT id FROM parents WHERE phone = $1 LIMIT 1`, [enrollment.parent_phone]);
+  const parentId = pr.rows[0]?.id || null;
+  let studentIds = [];
+  if (parentId) {
+    const mr = await client.query(
+      `SELECT student_ids FROM group_order_members WHERE group_order_id = $1 AND parent_id = $2 LIMIT 1`,
+      [groupOrderId, parentId]
+    );
+    studentIds = (mr.rows[0]?.student_ids || []).filter(Boolean);
+  }
+
+  // 共用 period 的金額＝整團所有成員報名費用總和（period 為班級層級，金額僅供參考；
+  // 實際逐筆收款仍在各 admin_enrollments）。在建立前算好，ON CONFLICT 時不影響既有值。
+  const sumRow = await client.query(
+    `SELECT COALESCE(SUM(final_price),0) AS total FROM admin_enrollments WHERE group_order_id = $1`,
+    [groupOrderId]
+  );
+  const groupTotalPrice = Number(sumRow.rows[0]?.total) || (Number(enrollment.final_price) || 0);
+
+  // get-or-create 共用 period（並發對帳同團多筆時，ON CONFLICT 收斂到同一個 period）
+  const ins = await client.query(
+    `INSERT INTO course_periods
+       (coach_id, venue_id, course_type, total_sessions, used_sessions,
+        expires_at, original_price, final_price, status, admin_enrollment_id, group_order_id)
+     VALUES ($1,$2,$3,$4,0,(NOW() + ($5 || ' days')::interval)::date,$6,$6,'active',$7,$8)
+     ON CONFLICT (group_order_id) WHERE group_order_id IS NOT NULL
+     DO NOTHING
+     RETURNING id`,
+    [
+      enrollment.coach_id, enrollment.venue_id, enrollment.course_type, totalSessions,
+      String(365 * (Number(enrollment.period_count) || 1)),
+      groupTotalPrice, enrollment.id, groupOrderId,
+    ]
+  );
+  let periodId = ins.rows[0]?.id;
+  if (!periodId) {
+    const ex = await client.query(`SELECT id FROM course_periods WHERE group_order_id = $1`, [groupOrderId]);
+    periodId = ex.rows[0]?.id || null;
+  }
+  if (!periodId) return; // 理論上不會發生；保險
+
+  for (const sid of studentIds) {
+    await client.query(
+      `INSERT INTO course_period_enrollments (course_period_id, student_id, status)
+       VALUES ($1, $2, 'active') ON CONFLICT (course_period_id, student_id) DO NOTHING`,
+      [periodId, sid]
+    );
+  }
+}
+
 function tsToString(d) {
   if (!d) return null;
   if (typeof d === 'string') return d;
@@ -394,7 +469,10 @@ router.post('/:id/reconcile', requireAdminAuth, requireAdminRole('admin', 'manag
     }
 
     const settings = await getSettings();
-    const total = settings.sessions_per_period || 6;
+    const perPeriod = settings.sessions_per_period || 6;
+    // U9：一張報名可購買多期 → 總堂數 = 每期堂數 × 期數（一般報名 period_count 預設 1，行為不變）。
+    const periodCount = Number(cur.rows[0].period_count) || 1;
+    const total = perPeriod * periodCount;
 
     await client.query(
       `UPDATE admin_enrollments
@@ -414,6 +492,11 @@ router.post('/:id/reconcile', requireAdminAuth, requireAdminRole('admin', 'manag
        VALUES ($1, $2, $3)`,
       [id, `對帳通過（發票 ${invoiceNumber}）`, by]
     );
+
+    // ── U9 團報橋：對帳通過＝v7「立即自動開通」→ 為團報 get-or-create 一個共用 course_period，
+    //    並把本成員的學員加入 course_period_enrollments，教練端課表（讀 course_periods/sessions）才看得到。
+    //    僅針對團報（group_order_id 有值）；一般報名維持原行為（不在本任務範圍）。
+    await ensureGroupCoursePeriod(client, cur.rows[0], total);
 
     await client.query('COMMIT');
 

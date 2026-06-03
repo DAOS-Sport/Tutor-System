@@ -68,6 +68,7 @@ router.get('/', requireAdminAuth, AMS, async (req, res) => {
       course_type: go.course_type,
       coach_id: go.coach_id,
       coach_name: go.coach_name || null,
+      period_count: go.period_count || 1,
       leader_name: go.leader_name,
       leader_phone: go.leader_phone,
       min_students: go.min_students,
@@ -117,6 +118,7 @@ router.get('/:id', requireAdminAuth, AMS, async (req, res) => {
       course_type: order.course_type,
       coach_id: order.coach_id,
       coach_name: order.coach_name || null,
+      period_count: order.period_count || 1,
       leader_name: order.leader_name,
       leader_phone: order.leader_phone,
       min_students: order.min_students,
@@ -170,6 +172,8 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
       if (cr.rowCount) { coachName = cr.rows[0].name; multiplier = Number(cr.rows[0].pricing_multiplier) || 1; }
     }
     const perStudent = Math.round(basePrice * multiplier);
+    // U9：一張團報訂單可購買多期；每位成員費用 = 單期價 × 學生數 × 期數。
+    const periodCount = Number(order.period_count) || 1;
 
     const ms = await client.query(
       `SELECT m.*, p.name AS parent_name, p.phone AS parent_phone
@@ -182,18 +186,18 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
     for (const m of ms.rows) {
       const names = m.student_names || [];
       const count = names.length || 1;
-      const price = perStudent * count;
+      const price = perStudent * count * periodCount;
       const eid = genEnrollmentId();
       await client.query(
         `INSERT INTO admin_enrollments
            (id, parent_name, parent_phone, students, coach, coach_id, venue_id, course_type,
             original_price, final_price, payment_proof_url, status, submitted_at,
-            group_order_id, is_group_shared)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending_payment',NOW(),$12,TRUE)`,
+            group_order_id, is_group_shared, period_count)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending_payment',NOW(),$12,TRUE,$13)`,
         [
           eid, m.parent_name, m.parent_phone, names, coachName, order.coach_id,
           order.venue_id, order.course_type, price, price, m.payment_proof_url,
-          order.id,
+          order.id, periodCount,
         ]
       );
       await client.query(

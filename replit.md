@@ -111,6 +111,36 @@
 受控驗證腳本：`cd server && npm run smoke:ragic-auth`（read-only by default；寫入須 `ENABLE_RAGIC_WRITE_SMOKE=1` + `TEST_PHONE` / `TEST_PARENT_NAME` / `TEST_LINE_UID`）。
 
 ## 變更紀錄
+- 2026-06-02：一般報名重做（U10：期數 + 計價×人數×期數 + 證明事後上傳 + 報名狀態頁）：
+  - **計價**：費用 = 單期單生價(base×教練倍率) × **學生數** × **期數**（先前不隨人數/期數變動的 bug）。前端 `useEnrollmentPricing` 接 `studentCount`/`periodCount` 縮放、`PriceBreakdown` 顯示「單生價 × N 生 × M 期 = 小計」；後端 `enrollments.js` server-authoritative 重算 `unitPrice × studentCount × periodCount`、`promo preview` 用 scaled originalPrice + periodCount、落地 `admin_enrollments.period_count`+`coach_id`。
+  - **版面**：`EnrollmentPage` 新增「購買期數」選擇器（放在組別之後、學員之前）。
+  - **證明改事後上傳**：送出報名**不再需要證明/末5碼**（移除 `BankTransferBlock`、`canSubmit` 不再卡 proof）；後端 `payment_proof_url` 改非必填（帶了才驗格式）。送出後導到**報名狀態頁**。
+  - **報名狀態頁** `EnrollStatusPage`（`/enroll-status/:id`）：顯示應繳金額、轉帳帳號（複製）、上傳匯款證明、狀態徽章（待繳款→已上傳待櫃台確認→已確認）；若屬團報則導去團購狀態頁（可見其他家庭繳費狀態）。`courses.js` 新增 `GET /:id`（單筆狀態，限本人）+ `POST /:id/payment-proof`（事後上傳，限本人/pending）+ `/mine` 回 `payment_proof_url`/`period_count`。`MyCoursesPage` 待對帳卡片改導向報名狀態頁。
+- 2026-06-02：團報金流改流程（U10 里程碑1：家長端；後台里程碑2待做）：
+  - **證明時機**：發起/加入**不再收證明**（`GroupMemberFields` 移除上傳欄、`memberFieldsReady` 不再要 proof、create/join 後端不再擋 `PAYMENT_PROOF_REQUIRED`）。改為**送審後各家於團購狀態頁自行上傳**。
+  - **新端點** `POST /api/group-orders/:id/my-proof`：本團成員上傳/更換自己證明（forming/submitted 可；櫃檯已 `payment_confirmed` 後鎖定）。
+  - **每家應繳金額**：`loadOrderWithMembers` 帶 `base_price`+coach 倍率，`shapeMember` 算 `amount_due = 單期單生價 × 該家學生數 × 期數`；狀態頁逐家顯示金額 + 證明狀態（未上傳/已上傳待確認/帳款已確認）。
+  - **狀態頁**：自己那筆可上傳/更換證明；送審警語與 ConfirmModal 改為「送審後名單鎖定，等候期間各家先轉帳並上傳證明，櫃檯核對後建課」。
+  - **Schema（idempotent）**：`group_order_members` 加 `proof_uploaded_at / payment_confirmed / payment_confirmed_at / payment_confirmed_by`；`group_orders` 加 `roster_approved / roster_approved_at / roster_approved_by`（供里程碑2）。
+  - **里程碑2（待做）**：後台逐家「確認帳款」+「核准名單(需全員上傳)」+ 兩者成立自動建檔（含把先前的 reconcile 建課橋改接到此自動建檔）+ 後台團報標記。**現階段後台仍走舊 approve/reconcile**。
+- 2026-06-02：團報人數上下限修正（依課程組別，非寫死 1–6）：
+  - **Bug**：團購容量先前寫死 `GROUP_MIN/MAX=1/6`，與課程組別脫鉤，違反 U5 原始規格（「每品相人數上下限、後台可設定」）。1對2 應為學生數 1–2、1對3 為 2–3（`course_type_configs`）。
+  - **修正**：`groupOrders.js` 發起時 `min_students/max_students` 改讀 `course_type_configs`；加入/送審沿用 `group_orders` 落地值（自動正確）。常數改名 `DRAFT_MAX_STUDENTS`（僅草稿陣列防呆絕對上限）。
+  - **前端**：`GroupMemberFields` 加 `maxStudents` 上限（達上限擋選 + 顯示「已選 X/max」）；`GroupCreatePage` 傳 `courseType`、`GroupJoinPage` 傳剩餘可加入數，與一般報名「0/N」一致。團主可選滿（不擋，依使用者決策）。
+  - 注意：**修正前建立的舊團報單**仍存著 1–6（顯示「開團需 1–6 人」），需新建一筆才會看到正確區間。
+  - demo：新增第二測試家庭 `custom2`/`custom2`（0922222222，學員 測試-學員A/B）供「他人加入團報」測試。
+- 2026-06-02：團報 U9（複數期數 + 對帳自動開通課程期，含教練端可見）：
+  - **複數期數**：`group_orders` / `admin_enrollments` 新增 `period_count`（idempotent，預設 1，範圍 1–6）。發起頁 `GroupCreatePage` 加「購買期數」選擇器 + 草稿/還原一併帶 period_count；`groupOrders.js` POST 收驗（`normalizePeriodCount`）並落地；`shapeOrder`/`/mine`/admin 列表與詳情皆回傳 period_count；`GroupStatusPage` 與後台 `GroupOrdersPage` 顯示「· N 期」徽章。核准建 `admin_enrollments` 時價格 = 單期價 × 學生數 × **期數**。名單鎖定沿用送審後狀態機（4.5 / 4.7）。
+  - **對帳自動開通課程期（補上架構 v7 §9.1 Step 7「立即自動開通」缺口）**：`admin/enrollments.js` reconcile 交易內新增 `ensureGroupCoursePeriod()` —— **僅針對團報**（`group_order_id` 有值）以 `group_order_id` 做冪等 get-or-create 一個**共用** `course_period`（`status='active'`、`coach_id`/`venue_id`/`course_type` 取自報名、`total_sessions = 每期堂數 × 期數`、`expires_at = 365 × 期數` 天、金額 = 整團費用總和），並把該成員 `group_order_members.student_ids` 加入 `course_period_enrollments`（`ON CONFLICT DO NOTHING`）。一般報名路徑**完全不變**（`period_count` 預設 1，且 `group_order_id` 為 NULL 時直接 return）。教練端課表讀 `course_periods`/`course_sessions`，自此團報核准+對帳後教練看得到、家長進得了「已開通課程期」可選槽。
+  - **已驗證**：對真實 PG 16 在 rolled-back 交易內實跑 partial-index `ON CONFLICT (group_order_id) WHERE group_order_id IS NOT NULL` get-or-create —— ALTER 冪等、第一次建立/第二次不重建、`expires_at`=365×3、`total_sessions`=6×3，零寫入。前端 liff/admin build 通過、後端語法檢查通過。
+  - **未完成/待真人點測**：教練端「選槽建 session」UI 流程（架構 v7 §9.2）本身是否已實作未在本輪驗證；一般報名（非團報）的 admin_enrollments→course_period 橋仍為系統既有缺口（students 僅存姓名、無 UUID），不在本輪範圍。
+- 2026-06-02：前端韌性補強：
+  - **未完成團報橫幅**：新增 `client/liff/src/components/IncompleteGroupOrdersBanner.jsx`，掛在 `HomePage` 頂部。並行載入 `groupOrdersApi.getDraft()`（填到一半的草稿）+ `groupOrdersApi.mine()`（status=forming 揪團中 / submitted 審核中），各自提供「繼續填寫」「查看 / 繼續」入口；無未完成項目時回傳 null 不顯示。避免家長中斷後找不到入口而重複建立團報。
+  - **ErrorBoundary**：`client/liff` 與 `client/admin` 各新增 `components/ErrorBoundary.jsx`，於各自 `main.jsx` 包住根節點，元件樹拋例外時顯示友善錯誤頁而非白屏。
+- 2026-06-02：四項調整：
+  - **(1~2) Ragic 欄位/表單對應集中＋凍結**：新增 `server/config/ragicSchema.js` 作為唯一真實來源（表單路徑 / Field ID / LINE UID 綁定欄位 / H01 角色關鍵字）。`services/ragic.js`、`services/ragicAdmin.js`、`scripts/ragic-auth-smoke.js` 一律改 import，消除先前 `1003633`(H01) / `1006846`(Z01) 重複定義 3 份的漂移風險。角色抓取：櫃台→staff、教練→coach 取自 H01；主管(manager) 仍由後台手動指派。`docs/ragic_api.md` 標註凍結點。
+  - **(3) 團報草稿暫存**：新增資料表 `group_order_drafts`（每位家長一筆 JSONB 草稿，`coreSchema.js` idempotent 建表）；`routes/groupOrders.js` 新增 `GET/PUT/DELETE /api/group-orders/draft`（parent JWT，需排在 `/:id` 之前）；`GroupCreatePage` 進頁面還原 + debounce 自動暫存，建立團購成功後自動清草稿。
+  - **(4) 拔掉一對一(1V1)團報入口**：`EnrollmentPage` 在 `courseType===1` 隱藏「發起團購」區塊；`GroupCreatePage` 與後端 `POST /api/group-orders` 同步擋掉 1V1（防呆，前後端一致）。
 - 2026-05-03：Phase 5 全功能完成 + 後台編輯報名 + 多組家庭綁定（見上方 Phase 5 補強節）。
 - 2026-05-02：完成 LIFF Phase 1（任務 #7）。實作 7 個正式頁面 + 2 個 placeholder、6 個全域元件、雙 Context（Auth/Toast）、7 個 API 模組與 mock dataset、共用 utils；新增 `react-hook-form` 依賴、`postcss.config.js`；修正 `main.jsx` 加上無 LIFF_ID 的 dev fallback。`vite build` 通過（158 modules，401KB / 127KB gzip）。後端 19 個 stub 路由不變，LIFF 全程走 mock 模式以驗證 happy path；後續可由 `VITE_USE_MOCK=false` 切到真實 API，並透過 501 自動 fallback 機制漸進實作後端。
 - 2026-05-02：完成 SurveyJS Creator 評估報告，結論為「**不建議整合**」（授權費 USD $589/dev/年、套件巨大、與 Ragic 雙向同步設計衝突）。完整分析詳見 `docs/eval/surveyjs-creator.md`，含替代方案比較與分階段建議。

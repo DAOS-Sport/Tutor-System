@@ -12,6 +12,7 @@ import VenueSelectPage from './pages/VenueSelectPage';
 import CoachListPage from './pages/CoachListPage';
 import EnrollmentPage from './pages/EnrollmentPage';
 import EnrollmentSuccessPage from './pages/EnrollmentSuccessPage';
+import EnrollStatusPage from './pages/EnrollStatusPage';
 import MyCoursesPage from './pages/MyCoursesPage';
 import ChatListPage from './pages/ChatListPage';
 import ChatRoomPage from './pages/ChatRoomPage';
@@ -92,6 +93,10 @@ export default function App() {
               </Route>
               <Route element={<AppLayout title="報名完成" />}>
                 <Route path="/enroll-success" element={<EnrollmentSuccessPage />} />
+              </Route>
+              {/* U10 報名狀態頁（送出後：繳款 / 上傳證明 / 等待櫃台確認） */}
+              <Route element={<AppLayout showBackButton title="報名狀態" />}>
+                <Route path="/enroll-status/:id" element={<EnrollStatusPage />} />
               </Route>
               {/* U7 團購 */}
               <Route element={<AppLayout showBackButton title="發起團購" />}>

@@ -19,6 +19,8 @@
  */
 const { pool } = require('../models/db');
 const ragic = require('./ragic');
+// Ragic 表單 / 欄位對應唯一來源（凍結點）：H01 LINE UID 候選、場館欄位、角色關鍵字
+const { H01 } = require('../config/ragicSchema');
 
 function ragicEnabled() {
   return !!process.env.RAGIC_API_KEY && !!process.env.RAGIC_BASE_URL;
@@ -97,12 +99,9 @@ function _extractStaffVenueIds(r) {
       ids.push(s);
     }
   };
-  const envKeys = [
-    process.env.RAGIC_FIELD_H01_VENUE_PRIMARY,
-    process.env.RAGIC_FIELD_H01_VENUE_SUPPORT,
-  ].filter(Boolean).flatMap(k => k.split(','));
+  const envKeys = H01.VENUE_FIELD_ENV.flatMap(k => k.split(','));
   for (const k of envKeys) push(r[k.trim()]);
-  for (const k of ['主場館', '主要場館', '支援場館', '服務場館', '場館', '館別', '部門']) {
+  for (const k of H01.VENUE_NAME_KEYS) {
     push(r[k]);
   }
   return ids;
@@ -144,8 +143,8 @@ async function _syncStaffImpl() {
       const role = r['應徵職務'];
       const roleStr = Array.isArray(role) ? role.join(',') : (role || '');
       const roleText = `${roleStr},${r['職稱'] || ''}`;
-      const isCoach = roleText.includes('教練');
-      const isCounter = /櫃檯|行政|counter|front\s*desk/i.test(roleText);
+      const isCoach = roleText.includes(H01.ROLE_MATCH.COACH);
+      const isCounter = H01.ROLE_MATCH.COUNTER.test(roleText);
       const roleVal = isCounter ? 'staff' : (isCoach ? 'coach' : 'staff');
       const isActive = (r['在職狀態'] || r['3000945']) === '在職';
       // Task #90：解析 Ragic H01 多場館欄位（主場館 + 支援場館），合併為陣列
@@ -231,24 +230,9 @@ async function _syncStaffImpl() {
  *   4. 模糊比對：key 含 "line" + ("userid"|"uid")
  * 任一拿到非空字串即回傳；都拿不到回 ''。
  */
-const H01_LINE_UID_DEFAULT_FIELD = process.env.RAGIC_FIELD_H01_LINE_UID || '1003633';
 function extractLineUid(r) {
-  const explicit = process.env.RAGIC_FIELD_H01_LINE_UID;
-  const candidates = [
-    explicit,
-    '1003633',
-    '個人LINE ID',
-    'LINE userid',
-    'LINE userId',
-    'LINE UID',
-    'LINE uid',
-    'LINE_USER_ID',
-    'lineUid',
-    'line_uid',
-    'Line userid',
-  ].filter(Boolean);
-
-  for (const k of candidates) {
+  // 候選 key 來自凍結點 ragicSchema.H01.LINE_UID_CANDIDATES（env 覆寫優先 → 凍結 Field ID → 中英文欄名）
+  for (const k of H01.LINE_UID_CANDIDATES) {
     if (r[k]) return String(r[k]).trim();
   }
 

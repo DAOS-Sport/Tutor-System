@@ -56,6 +56,17 @@
 - [ ] 「整班一起填」：一份內容套用全班。
 - [ ] 「個別學員填」：可逐位學員填寫；「套用到全班」一鍵複製目前學員內容到全班；送出後合併為單份紀錄（以【學員名】分段）。
 
+## U9 — 複數期數 + 對帳自動開通課程期（2026-06-02 新增）
+- [x] DB：`group_orders.period_count`、`admin_enrollments.period_count` idempotent ALTER（rolled-back 交易實測通過）。
+- [ ] 發起頁可選「購買期數」（1–6 期）；草稿暫存/還原會帶期數。
+- [ ] 建立後 `GroupStatusPage`、後台 `GroupOrdersPage` 顯示「· N 期」。
+- [ ] 核准後每位成員 `admin_enrollments.final_price = 單期價 × 學生數 × 期數`、`period_count` 正確。
+- [x] 對帳通過 → 為團報 get-or-create **共用** `course_period(active)`，`total_sessions=6×期數`、`expires_at=365×期數` 天（partial-index `ON CONFLICT` 冪等，PG16 實測通過）。
+- [ ] 同團多位成員逐筆對帳 → 仍只有「一個」course_period；各成員學員都進 `course_period_enrollments`。
+- [ ] 🟡 真人點測：團報核准+對帳後，**教練端課表**該班期已開通可排課/選槽；家長端可進入「已開通課程期」。
+- [ ] 團報無指定教練時對帳 → 報名仍轉 confirmed，period 暫不建（log warning），不報錯。
+- [ ] 回歸：一般報名（非團報）對帳行為不變（total_sessions=6、不建 group period）。
+
 ## 桶 A — 只驗證不改碼（回歸）
 - [ ] D 段後台頁面（聊天監察 / 標籤庫 / 考核 / 門檻 / 介紹送審 / 關鍵字）admin/manager 正常載入；staff 維持隱藏。
 - [ ] 登入：教練 LINE、家長有資料自動登入 / 無資料註冊兩條路徑（`npm run smoke:ragic-auth`）。

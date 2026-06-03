@@ -2,6 +2,10 @@
 
 > 本文件為 DAOS 家教系統與 Ragic 之間的整合手冊，涵蓋認證、表單路徑、欄位對照表（含 Ragic Field ID）。
 > 程式實作位於 `server/services/ragic.js`。
+>
+> **⚠️ 欄位 / 表單對應的「唯一真實來源（凍結點）」是 `server/config/ragicSchema.js`。**
+> 所有表單路徑、Field ID、LINE UID 綁定欄位、角色關鍵字都集中定義在那裡，其餘程式（`ragic.js`、`ragicAdmin.js`、smoke script、auth 路由）一律 import，不再各自重複定義。
+> Ragic 端若異動欄位 ID → ① 改 `ragicSchema.js` ② 同步本文件 ③ 不需動其它程式。
 
 ---
 

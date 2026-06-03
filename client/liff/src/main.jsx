@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import liff from '@line/liff';
 import App from './App';
+import ErrorBoundary from './components/ErrorBoundary';
 import './index.css';
 
 const LIFF_ID_PARENT = import.meta.env.VITE_LIFF_ID_PARENT || import.meta.env.VITE_LIFF_ID;
@@ -44,9 +45,11 @@ function normalizeCoachLanding() {
 
 function mount() {
   ReactDOM.createRoot(document.getElementById('root')).render(
-    <BrowserRouter basename="/liff">
-      <App />
-    </BrowserRouter>
+    <ErrorBoundary>
+      <BrowserRouter basename="/liff">
+        <App />
+      </BrowserRouter>
+    </ErrorBoundary>
   );
 }
 

@@ -1,4 +1,4 @@
-run = "cd server && npm install && npm run dev"
+run = "cd server && npm install && PORT=3999 npm run dev"
 modules = ["nodejs-20", "python-3.11", "postgresql-16"]
 
 [nix]
@@ -11,15 +11,16 @@ build = ["bash", "-c", "cd server && npm install && cd ../client/admin && npm in
 
 [[ports]]
 localPort = 3000
-externalPort = 3000
 
 [[ports]]
 localPort = 3999
 externalPort = 80
 
 [[ports]]
+localPort = 5000
+
+[[ports]]
 localPort = 5099
-externalPort = 3001
 
 [agent]
 expertMode = true
@@ -42,8 +43,8 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "cd server && npm start"
-waitForPort = 3000
+args = "cd server && PORT=3999 npm start"
+waitForPort = 3999
 
 [workflows.workflow.metadata]
 outputType = "console"

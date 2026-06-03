@@ -27,8 +27,10 @@ const router = express.Router();
 //   demo 完請移除此 secret。
 // ─────────────────────────────────────────────────────────────
 const DEMO_ACCOUNTS = {
-  coach:  { password: 'coach',  role: 'coach' },
-  custom: { password: 'custom', role: 'parent', phone: '0912345678' },
+  coach:   { password: 'coach',   role: 'coach' },
+  custom:  { password: 'custom',  role: 'parent', phone: '0912345678' },
+  // 第二測試家庭：供 demo 測「他人加入團報」（團主 custom + 加入者 custom2）。
+  custom2: { password: 'custom2', role: 'parent', phone: '0922222222' },
 };
 
 router.post('/demo-login', async (req, res) => {

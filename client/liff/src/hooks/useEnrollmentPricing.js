@@ -6,23 +6,26 @@ import { promotionsApi } from '../api/promotions';
  * - 不再讀 bootData.promos（改由 promotionsApi.preview 直接取最佳折抵 / 折價券）
  * - 回傳 final / discount / promo 給 PriceBreakdown / EnrollmentSummary 使用
  */
-export default function useEnrollmentPricing(bootData, { courseType, venueId, couponCode, periodCount = 1 } = {}) {
-  const baseStruct = useMemo(() => {
+export default function useEnrollmentPricing(bootData, { courseType, venueId, couponCode, studentCount = 1, periodCount = 1 } = {}) {
+  // 單期單生價（base × 教練倍率），與後端 unitPrice 一致。
+  const unitPrice = useMemo(() => {
     if (!bootData) return null;
-    const base = bootData.basePrice;
-    const afterMultiplier = Math.round(base * (bootData.coach?.multiplier || 1));
-    return { base, afterMultiplier };
+    return Math.round(bootData.basePrice * (bootData.coach?.multiplier || 1));
   }, [bootData]);
+
+  // U10：小計 = 單生價 × 學生數 × 期數
+  const qty = Math.max(1, studentCount) * Math.max(1, periodCount);
+  const subtotal = unitPrice == null ? null : unitPrice * qty;
 
   const [preview, setPreview] = useState({ discount: 0, promo: null, error: null, loading: false });
 
   useEffect(() => {
-    if (!baseStruct || !courseType) return;
+    if (subtotal == null || !courseType) return;
     let alive = true;
     setPreview((s) => ({ ...s, loading: true, error: null }));
     promotionsApi
       .preview({
-        originalPrice: baseStruct.afterMultiplier,
+        originalPrice: subtotal,
         courseType,
         venueId,
         periodCount,
@@ -30,32 +33,30 @@ export default function useEnrollmentPricing(bootData, { courseType, venueId, co
       })
       .then((r) => {
         if (!alive) return;
-        setPreview({
-          discount: r.discountAmount || 0,
-          promo: r.promotion || null,
-          error: null,
-          loading: false,
-        });
+        setPreview({ discount: r.discountAmount || 0, promo: r.promotion || null, error: null, loading: false });
       })
       .catch((e) => {
         if (!alive) return;
         const msg = e?.response?.data?.error || e?.message || '優惠試算失敗';
-        // 折價券錯誤 → 帶到 UI；自動套用失敗則不擋使用者，僅記錄
         setPreview({ discount: 0, promo: null, error: couponCode ? msg : null, loading: false });
       });
     return () => { alive = false; };
-  }, [baseStruct, courseType, venueId, couponCode, periodCount]);
+  }, [subtotal, courseType, venueId, couponCode, periodCount]);
 
   return useMemo(() => {
-    if (!baseStruct) return null;
+    if (unitPrice == null) return null;
     return {
-      base: baseStruct.base,
-      afterMultiplier: baseStruct.afterMultiplier,
+      base: bootData.basePrice,
+      unitPrice,                 // 單期單生價
+      studentCount: Math.max(1, studentCount),
+      periodCount: Math.max(1, periodCount),
+      subtotal,                  // 折扣前小計
+      afterMultiplier: subtotal, // 向後相容（舊欄位 = 折扣前小計）
       discount: preview.discount,
-      final: baseStruct.afterMultiplier - preview.discount,
+      final: subtotal - preview.discount,
       promo: preview.promo,
       previewError: preview.error,
       previewLoading: preview.loading,
     };
-  }, [baseStruct, preview]);
+  }, [bootData, unitPrice, subtotal, studentCount, periodCount, preview]);
 }

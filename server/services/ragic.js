@@ -145,111 +145,22 @@ async function getActiveVenues() {
 
 // =====================================================================
 // Ragic 欄位 ID 表（中文欄位 → Field ID）
-// 完整欄位定義詳見 docs/ragic_api.md。本表為 services 層唯一真實來源，
-// 新增 / 異動欄位時，請同步本表 + docs/ragic_api.md。
+// 唯一真實來源已搬到 server/config/ragicSchema.js（凍結點）。
+// 這裡只 require 回來、保留原本的 local const 名稱，讓本檔其餘程式不動。
+// 新增 / 異動欄位 → 改 ragicSchema.js + docs/ragic_api.md，不要在這裡重複定義。
 // =====================================================================
+const {
+  LINE_UID_FIELD,
+  Z01_FIELDS,
+  Z01_STUDENT_FIELDS,
+  Z01_STUDENTS_SUBTABLE_ID,
+  Z02_FIELDS,
+  FIELD,
+} = require('../config/ragicSchema');
 
-// ─────────────────────────────────────────────────────────────
-// LINE UID 欄位 Field ID
-//   Z01 家教系統uid  → 預設 1006846，env RAGIC_FIELD_Z01_LINE_UID 可覆寫
-//   H01 個人LINE ID  → 預設 1003633，env RAGIC_FIELD_H01_LINE_UID 可覆寫
-// 用 env 覆寫是為了「Ragic 換欄位 ID 時不用改 code、不用重 deploy」。
-// ─────────────────────────────────────────────────────────────
-const Z01_LINE_UID_FIELD = process.env.RAGIC_FIELD_Z01_LINE_UID || '1006846';
-const H01_LINE_UID_FIELD = process.env.RAGIC_FIELD_H01_LINE_UID || '1003633';
-
-// Z01 家長主檔
-const Z01_FIELDS = {
-  '家長姓名':       '1001101',
-  '館別':           '1002174',
-  '系統登入密碼':   '1003715',
-  '(報)行動電話':   '1001100',
-  '(報)身分':       '1002177',
-  '(報)性別':       '1001121',
-  '服務單位':       '1002179',
-  '(報)Email':      '1002820',
-  '(服)員工編號':   '1002180',
-  '住家電話':       '1001122',
-  'LINE ID':        '1001123',
-  '住家地址':       '1001124',
-  // 家長 LINE 登入綁定：LIFF 取得的 LINE userId (sub)
-  '家教系統uid':    Z01_LINE_UID_FIELD,
-};
-
-// ─────────────────────────────────────────────────────────────
-// Z01 子表格「學員」（stid 1001119）
-//   Ragic 同份家長 (Z01) 可掛多位學員，subtable parent field id = 1001119
-//   寫入子表格時 Ragic 接受兩種 key 形式：
-//     1) 巢狀 object：{ "1001119": { "0": {1001115:"張小明", 1001116:"2015/03/12", ...}, "1": {...} } }
-//     2) 扁平 dotted：{ "1001119_0_1001115":"張小明", "1001119_0_1001116":"2015/03/12", ... }
-//   兩者都會被 Ragic 接受；本服務一律走「扁平 dotted」(較不易踩到 JSON shape 差異)。
-// ─────────────────────────────────────────────────────────────
-const Z01_STUDENTS_SUBTABLE_ID = '1001119';
-const Z01_STUDENT_FIELDS = {
-  '學員姓名':       '1001115',
-  '出生年月日':     '1001116',
-  '學(性別)':       '1001117',
-  '身分證字號':     '1001118',
-  '血型':           '1001880',
-  '學員編號':       '1001132',
-};
-
-// Z02 學員主檔（含家長關聯欄位）
-const Z02_FIELDS = {
-  '學員編號':       '1001132',
-  '學員身分':       '1002178',
-  '學員姓名':       '1001115',
-  '學(性別)':       '1001117',
-  '出生年月日':     '1001116',
-  '身分證字號':     '1001118',
-  '血型':           '1001880',
-  '館別':           '1002175',
-  '(報)行動電話':   '1001113',
-  '家長帳號':       '1002830',
-  '家長姓名':       '1001272',
-  '(報)性別':       '1001273',
-  '(報)身分':       '1002181',
-  '服務單位':       '1002182',
-  '(服)員工編號':   '1002183',
-  '(報)Email':      '1002831',
-};
-
-// 程式碼可讀別名（避免散落字串），對應上述 Field ID
-const FIELD = {
-  Z01: {
-    PARENT_NAME:    Z01_FIELDS['家長姓名'],
-    VENUE:          Z01_FIELDS['館別'],
-    PHONE:          Z01_FIELDS['(報)行動電話'],
-    IDENTITY:       Z01_FIELDS['(報)身分'],
-    GENDER:         Z01_FIELDS['(報)性別'],
-    EMAIL:          Z01_FIELDS['(報)Email'],
-    HOME_PHONE:     Z01_FIELDS['住家電話'],
-    HOME_ADDRESS:   Z01_FIELDS['住家地址'],
-    LINE_ID:        Z01_FIELDS['LINE ID'],
-    LINE_UID:       Z01_LINE_UID_FIELD,
-    STUDENTS_SUBTABLE: Z01_STUDENTS_SUBTABLE_ID,
-  },
-  Z01_STUDENT: {
-    NAME:         Z01_STUDENT_FIELDS['學員姓名'],
-    BIRTH_DATE:   Z01_STUDENT_FIELDS['出生年月日'],
-    GENDER:       Z01_STUDENT_FIELDS['學(性別)'],
-    ID_NUMBER:    Z01_STUDENT_FIELDS['身分證字號'],
-    BLOOD_TYPE:   Z01_STUDENT_FIELDS['血型'],
-    STUDENT_CODE: Z01_STUDENT_FIELDS['學員編號'],
-  },
-  Z02: {
-    STUDENT_CODE:   Z02_FIELDS['學員編號'],
-    NAME:           Z02_FIELDS['學員姓名'],
-    GENDER:         Z02_FIELDS['學(性別)'],
-    BIRTH_DATE:     Z02_FIELDS['出生年月日'],
-    ID_NUMBER:      Z02_FIELDS['身分證字號'],
-    BLOOD_TYPE:     Z02_FIELDS['血型'],
-    VENUE:          Z02_FIELDS['館別'],
-    PARENT_PHONE:   Z02_FIELDS['(報)行動電話'],
-    PARENT_NAME:    Z02_FIELDS['家長姓名'],
-    PARENT_EMAIL:   Z02_FIELDS['(報)Email'],
-  },
-};
+// 向後相容別名（本檔多處仍以這兩個名稱引用）
+const Z01_LINE_UID_FIELD = LINE_UID_FIELD.Z01;
+const H01_LINE_UID_FIELD = LINE_UID_FIELD.H01;
 
 /**
  * 把 caller 給的 payload（key 可能是中文欄位名或 Field ID）統一翻譯成 Field ID 為 key。

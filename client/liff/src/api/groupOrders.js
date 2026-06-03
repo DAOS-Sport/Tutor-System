@@ -27,6 +27,22 @@ export const groupOrdersApi = {
       throw new Error('團購功能需在真實 API 模式下使用');
     }),
 
+  // 團報草稿暫存（填到一半不流失）。mock 模式下回傳空草稿 / no-op。
+  getDraft: () =>
+    callApi('/group-orders/draft', { method: 'get' }, () => ({ draft: null })),
+
+  saveDraft: (payload) =>
+    callApi('/group-orders/draft', { method: 'put', data: payload }, () => ({ ok: true })),
+
+  clearDraft: () =>
+    callApi('/group-orders/draft', { method: 'delete' }, () => ({ ok: true })),
+
+  // U10：成員在狀態頁自行上傳自己的轉帳證明（送審前後皆可，櫃檯確認帳款前）
+  uploadMyProof: (id, payment_proof_url) =>
+    callApi(`/group-orders/${id}/my-proof`, { method: 'post', data: { payment_proof_url } }, () => {
+      throw new Error('團購功能需在真實 API 模式下使用');
+    }),
+
   submit: (id) =>
     callApi(`/group-orders/${id}/submit`, { method: 'post' }, () => {
       throw new Error('團購功能需在真實 API 模式下使用');

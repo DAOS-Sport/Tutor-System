@@ -73,11 +73,27 @@ async function tryCoachAutoLogin() {
   }
 }
 
+// 家長 / 教練端 LIFF App ID（由 Vite env 注入；與 main.jsx 同一來源）
+const PARENT_LIFF_ID = import.meta.env.VITE_LIFF_ID_PARENT || import.meta.env.VITE_LIFF_ID;
+const COACH_LIFF_ID = import.meta.env.VITE_LIFF_ID_COACH || import.meta.env.VITE_LIFF_ID;
+// 只有在「教練端設了獨立的 LIFF ID」時，liff.id 才足以區分教練/家長；
+// 兩者共用同一 ID 時不能用 liff.id 判斷（會把家長也判成教練）。
+const HAS_DISTINCT_COACH_LIFF = !!COACH_LIFF_ID && COACH_LIFF_ID !== PARENT_LIFF_ID;
+
+/**
+ * 判斷目前是否為「教練端」登入情境（登入路由分離核心）。
+ * 依可信度排序：
+ *   1) 實際 init 的 LIFF App 就是教練端（liff.id === COACH_LIFF_ID）— 最可信
+ *   2) path 指向 /coach（教練連結的 endpoint path）
+ * 已移除 document.referrer 比對：referrer 不可信（家長頁可能殘留上一個 /coach
+ * referrer，導致家長被誤判成教練、跑去打教練 400 API → 流程錯亂 / 白畫面）。
+ */
 function isCoachLiffContext(fromPath) {
-  const referrer = (typeof document !== 'undefined' && document.referrer) || '';
+  try {
+    if (HAS_DISTINCT_COACH_LIFF && liff?.id && String(liff.id) === String(COACH_LIFF_ID)) return true;
+  } catch { /* liff 尚未 init / 非 LINE 環境，往下用 path 判斷 */ }
   return /\/coach(\b|\/|$)/.test(fromPath)
-    || /\/coach(\b|\/|$)/.test(window.location.pathname)
-    || /\/coach(\b|\/|$)/.test(referrer);
+    || /\/coach(\b|\/|$)/.test(window.location.pathname);
 }
 
 /**
@@ -155,7 +171,7 @@ export default function LoginPage() {
     autoRanRef.current = true;
 
     // manual logout guard: do not auto-login immediately after user explicitly logs out.
-    if (!isCoachContext && wasManualLoggedOut()) {
+    if (!coachContext && wasManualLoggedOut()) {
       setBusy(false);
       return;
     }

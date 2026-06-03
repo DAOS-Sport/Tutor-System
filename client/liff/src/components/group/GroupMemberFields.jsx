@@ -1,20 +1,21 @@
 import React, { useState } from 'react';
-import { enrollmentsApi } from '../../api/enrollments';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 
 /**
- * 團購共用：選擇「自己名下的學生（可多位）」+ 視需要新增學員 + 上傳匯款證明。
- * 受控元件：value = { studentIds: string[], newStudents: NewStudent[], proofUrl: string }
+ * 團購共用：選擇「自己名下的學生（可多位）」+ 視需要新增學員。
+ * 受控元件：value = { studentIds: string[], newStudents: NewStudent[] }
  *   NewStudent = { name, id_number?, birth_date?, gender }
  *
- * 與舊版差異：學員一律「綁定」到家長名下——
+ * U10：匯款證明不在此元件上傳——改為送出後於團購狀態頁各家自行上傳。
+ *
+ * 學員一律「綁定」到家長名下——
  *   - 既有學員：勾選 → 收進 studentIds（已建檔、已在 Ragic）。
  *   - 新學員：填完整資料 → newStudents，後端會建檔到本人名下並 best-effort 回寫 Ragic。
  */
 const emptyNewStudent = () => ({ name: '', id_number: '', birth_date: '', gender: '男' });
 
-export default function GroupMemberFields({ value, onChange, uploading, setUploading }) {
+export default function GroupMemberFields({ value, onChange, maxStudents }) {
   const toast = useToast();
   const { parent } = useAuth();
   const myStudents = (parent?.students || []).filter((s) => s && s.id && s.name);
@@ -23,8 +24,18 @@ export default function GroupMemberFields({ value, onChange, uploading, setUploa
   const newStudents = value.newStudents || [];
   const [showNew, setShowNew] = useState(myStudents.length === 0);
 
+  // 依課程組別限制可選學生數（1對2→2、1對3→3）；未指定則不限。
+  const cap = Number.isFinite(maxStudents) && maxStudents > 0 ? maxStudents : Infinity;
+  const pickedCount = studentIds.length + newStudents.filter((s) => String(s?.name || '').trim()).length;
+  const atCap = pickedCount >= cap;
+
   function togglePick(id) {
-    const next = studentIds.includes(id) ? studentIds.filter((x) => x !== id) : [...studentIds, id];
+    const isOn = studentIds.includes(id);
+    if (!isOn && atCap) {
+      toast.warning?.(`此組別最多選 ${cap} 位學員`);
+      return;
+    }
+    const next = isOn ? studentIds.filter((x) => x !== id) : [...studentIds, id];
     onChange({ ...value, studentIds: next });
   }
   function setNewAt(i, patch) {
@@ -32,6 +43,7 @@ export default function GroupMemberFields({ value, onChange, uploading, setUploa
     onChange({ ...value, newStudents: next });
   }
   function addNew() {
+    if (atCap) { toast.warning?.(`此組別最多選 ${cap} 位學員`); return; }
     onChange({ ...value, newStudents: [...newStudents, emptyNewStudent()] });
     setShowNew(true);
   }
@@ -39,26 +51,13 @@ export default function GroupMemberFields({ value, onChange, uploading, setUploa
     onChange({ ...value, newStudents: newStudents.filter((_, idx) => idx !== i) });
   }
 
-  async function handleProof(file) {
-    if (!file) return;
-    if (!['image/jpeg', 'image/png'].includes(file.type)) return toast.error('只接受 JPG / PNG 圖片');
-    if (file.size > 5 * 1024 * 1024) return toast.error('圖片大小不得超過 5MB');
-    setUploading(true);
-    try {
-      const { url } = await enrollmentsApi.uploadPaymentProof(file);
-      onChange({ ...value, proofUrl: url || '' });
-    } catch {
-      toast.error('證明上傳失敗，請重試');
-      onChange({ ...value, proofUrl: '' });
-    } finally {
-      setUploading(false);
-    }
-  }
-
   return (
     <div className="space-y-3">
       <div className="rounded-xl border border-gray-200 bg-white p-3">
-        <label className="mb-2 block text-xs font-medium text-gray-600">選擇學生（您名下，可多位）</label>
+        <label className="mb-2 block text-xs font-medium text-gray-600">
+          選擇學生（您名下，可多位）
+          {Number.isFinite(cap) && <span className="ml-1 text-brand-teal">已選 {pickedCount}/{cap}</span>}
+        </label>
 
         {myStudents.length > 0 ? (
           <div className="flex flex-wrap gap-2">
@@ -122,28 +121,20 @@ export default function GroupMemberFields({ value, onChange, uploading, setUploa
         )}
       </div>
 
-      <div className="rounded-xl border border-gray-200 bg-white p-3">
-        <label className="mb-2 block text-xs font-medium text-gray-600">匯款／轉帳證明（JPG / PNG，≤5MB）</label>
-        <input
-          type="file"
-          accept="image/jpeg,image/png"
-          onChange={(e) => handleProof(e.target.files?.[0])}
-          className="block w-full text-xs text-gray-600 file:mr-3 file:rounded-lg file:border-0 file:bg-brand-teal file:px-3 file:py-2 file:text-xs file:font-bold file:text-white"
-        />
-        {uploading && <p className="mt-1 text-xs text-gray-400">上傳中…</p>}
-        {value.proofUrl && !uploading && <p className="mt-1 text-xs text-brand-green">已上傳證明 ✓</p>}
-      </div>
+      <p className="px-1 text-[11px] leading-5 text-gray-400">
+        💡 匯款／轉帳證明不在這裡上傳——送出後，請於團購狀態頁完成轉帳並上傳證明。
+      </p>
     </div>
   );
 }
 
 const inputCls = 'w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none';
 
-// 供頁面驗證：至少選/填一位學生，且有匯款證明
+// 供頁面驗證：至少選/填一位學生（U10：證明改送審後上傳，這裡不再要求）
 export function memberFieldsReady(value) {
   const ids = value.studentIds || [];
   const news = (value.newStudents || []).filter((s) => String(s.name || '').trim());
-  return (ids.length + news.length) > 0 && !!value.proofUrl;
+  return (ids.length + news.length) > 0;
 }
 
 // 供頁面組裝送出 payload

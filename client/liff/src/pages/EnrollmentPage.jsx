@@ -6,14 +6,13 @@ import ConfirmModal from '../components/ConfirmModal';
 import CourseTypeSelector from '../components/enroll/CourseTypeSelector';
 import SelfStudentSelector from '../components/enroll/SelfStudentSelector';
 import PriceBreakdown from '../components/enroll/PriceBreakdown';
-import BankTransferBlock from '../components/enroll/BankTransferBlock';
 import EnrollmentSummary from '../components/enroll/EnrollmentSummary';
 import ErrorBlock from '../components/enroll/ErrorBlock';
 import useEnrollmentBoot from '../hooks/useEnrollmentBoot';
 import useEnrollmentPricing from '../hooks/useEnrollmentPricing';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
-import { isValidLast5, courseTypeLabel } from '../utils/format';
+import { courseTypeLabel } from '../utils/format';
 
 export default function EnrollmentPage() {
   const [params] = useSearchParams();
@@ -26,10 +25,8 @@ export default function EnrollmentPage() {
   const coachId = params.get('coach');
 
   const [courseType, setCourseType] = useState(initialCourseType);
+  const [periodCount, setPeriodCount] = useState(1);
   const [selectedSelfStudents, setSelectedSelfStudents] = useState([]);
-  const [last5, setLast5] = useState('');
-  const [proofUrl, setProofUrl] = useState('');
-  const [proofUploading, setProofUploading] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [couponInput, setCouponInput] = useState('');
@@ -62,6 +59,8 @@ export default function EnrollmentPage() {
     courseType,
     venueId,
     couponCode: activeCoupon || undefined,
+    studentCount: selectedSelfStudents.length,
+    periodCount,
   });
 
   if (bootError) return <ErrorBlock message={bootError} onBack={() => navigate('/', { replace: true })} />;
@@ -85,12 +84,10 @@ export default function EnrollmentPage() {
   const selectionResolved = allSelectedStudents.length === selectedSelfStudents.length;
 
   // 須湊滿該組別人數（1v1=1、1v2=2、1v3=3），且只能用自己名下的學員。
+  // U10：證明改送出後在報名狀態頁上傳，這裡不再要求證明 / 末5碼。
   const canSubmit =
     totalSelected === requiredStudentCount &&
     selectionResolved &&
-    isValidLast5(last5) &&
-    !!proofUrl &&
-    !proofUploading &&
     !submitting &&
     !pricing.previewLoading &&
     !pricing.previewError;
@@ -106,39 +103,6 @@ export default function EnrollmentPage() {
     });
   }
 
-  async function handleCopyAccount() {
-    try {
-      await navigator.clipboard.writeText(venue.account_number);
-      toast.success('已複製帳號！');
-    } catch {
-      toast.error('複製失敗，請手動複製');
-    }
-  }
-
-  async function handleSelectProof(file) {
-    if (!file) { setProofUrl(''); return false; }
-    if (!['image/jpeg', 'image/png'].includes(file.type)) {
-      toast.error('只接受 JPG / PNG 圖片');
-      return false;
-    }
-    if (file.size > 5 * 1024 * 1024) {
-      toast.error('圖片大小不得超過 5MB');
-      return false;
-    }
-    setProofUploading(true);
-    try {
-      const { url } = await enrollmentsApi.uploadPaymentProof(file);
-      setProofUrl(url || '');
-      return !!url;
-    } catch {
-      toast.error('證明上傳失敗，請重試');
-      setProofUrl('');
-      return false;
-    } finally {
-      setProofUploading(false);
-    }
-  }
-
   async function handleConfirmSubmit() {
     setSubmitting(true);
     try {
@@ -149,18 +113,18 @@ export default function EnrollmentPage() {
         coach: { id: coach.id, name: coach.name, is_senior: coach.is_senior },
         venue: { id: venue.id, name: venue.name },
         course_type: courseType,
+        period_count: periodCount,
         students: allSelectedStudents.map((s) => ({ id: s.id, name: s.name })),
-        original_price: pricing.afterMultiplier,
+        original_price: pricing.subtotal,
         final_price: pricing.final,
-        transfer_last_5: last5,
-        payment_proof_url: proofUrl,
         promotion: pricing.promo
           ? { id: pricing.promo.id, discount: pricing.discount, coupon_code: pricing.promo.coupon_code || null }
           : null,
       });
       setConfirmOpen(false);
       try { localStorage.removeItem('daos.pendingCoupon'); } catch { /* noop */ }
-      navigate('/enroll-success', { state: { period }, replace: true });
+      // 送出後導到報名狀態頁（待繳款 → 上傳證明 → 等待櫃台確認）
+      navigate(`/enroll-status/${period.id}`, { replace: true });
     } catch {
       toast.error('送出失敗，請稍後再試');
     } finally {
@@ -184,19 +148,39 @@ export default function EnrollmentPage() {
 
       <CourseTypeSelector courseType={courseType} onChange={setCourseType} />
 
-      <div className="mt-2 rounded-xl border border-brand-teal/30 bg-brand-teal/5 p-3">
-        <p className="text-xs text-gray-600">
-          想找其他家長一起上課？可改用「團購」分享邀請連結，最多揪到 <span className="font-bold text-brand-primary">6 人</span>，
-          價格依組別計、人數越多越好揪。
-        </p>
-        <button
-          type="button"
-          onClick={() => navigate(`/group/new?venue=${venue.id}&coach=${coach.id}&courseType=${courseType}`)}
-          className="mt-2 w-full rounded-lg border border-brand-teal py-2 text-sm font-bold text-brand-teal active:bg-brand-teal/10"
-        >
-          發起團購
-        </button>
+      {/* 購買期數（U10：移到前面，費用會隨期數變動） */}
+      <div className="mt-2 rounded-xl border border-gray-200 bg-white p-3">
+        <label className="mb-1 block text-xs font-medium text-gray-600">購買期數</label>
+        <div className="flex flex-wrap gap-2">
+          {[1, 2, 3, 4, 5, 6].map((n) => (
+            <button key={n} type="button" onClick={() => setPeriodCount(n)}
+              className={`min-w-[3rem] rounded-lg border px-3 py-2 text-sm font-bold active:opacity-80 ${
+                periodCount === n ? 'border-brand-primary bg-brand-primary text-white' : 'border-gray-300 bg-white text-gray-600'
+              }`}>
+              {n} 期
+            </button>
+          ))}
+        </div>
+        <p className="mt-1.5 text-[11px] text-gray-500">每期 6 堂；費用 = 單期費 × 學生數 × 期數。</p>
       </div>
+
+      {/* 一對一（1V1, courseType===1）不提供團購：團報是「揪其他家長一起上課」的流程，
+          1V1 不適用，故隱藏發起團購入口，避免邏輯衝突。 */}
+      {courseType !== 1 && (
+        <div className="mt-2 rounded-xl border border-brand-teal/30 bg-brand-teal/5 p-3">
+          <p className="text-xs text-gray-600">
+            想找其他家長一起上課？可改用「團購」分享邀請連結，最多揪到 <span className="font-bold text-brand-primary">6 人</span>，
+            價格依組別計、人數越多越好揪。
+          </p>
+          <button
+            type="button"
+            onClick={() => navigate(`/group/new?venue=${venue.id}&coach=${coach.id}&courseType=${courseType}`)}
+            className="mt-2 w-full rounded-lg border border-brand-teal py-2 text-sm font-bold text-brand-teal active:bg-brand-teal/10"
+          >
+            發起團購
+          </button>
+        </div>
+      )}
 
       <SelfStudentSelector
         parent={parent}
@@ -235,15 +219,9 @@ export default function EnrollmentPage() {
         )}
       </div>
 
-      <BankTransferBlock
-        venue={venue}
-        last5={last5}
-        setLast5={setLast5}
-        onCopyAccount={handleCopyAccount}
-        proofUrl={proofUrl}
-        proofUploading={proofUploading}
-        onSelectProof={handleSelectProof}
-      />
+      <div className="mt-2 rounded-xl border border-brand-gold/30 bg-brand-gold/5 p-3 text-[12px] leading-5 text-gray-600">
+        💡 送出後會進入<strong>報名狀態頁</strong>，那裡會顯示轉帳帳號與應繳金額，請完成轉帳後上傳匯款證明，等待櫃台確認。
+      </div>
 
       <button
         type="button"
@@ -266,9 +244,9 @@ export default function EnrollmentPage() {
           venue={venue}
           coach={coach}
           courseType={courseType}
+          periodCount={periodCount}
           allSelectedStudents={allSelectedStudents}
           pricing={pricing}
-          last5={last5}
         />
       </ConfirmModal>
     </div>

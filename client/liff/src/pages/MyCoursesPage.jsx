@@ -97,7 +97,11 @@ export default function MyCoursesPage() {
       ) : (
         <div className="space-y-3">
           {filtered.map((cp) => (
-            <CourseCard key={cp.id} variant="period" period={cp} onClick={() => navigate(`/history/${cp.id}`)} />
+            <CourseCard key={cp.id} variant="period" period={cp}
+              onClick={() => navigate(
+                // U10：待對帳的報名 → 報名狀態頁（可補上傳證明 / 看櫃台確認狀態）；其餘 → 學習歷程
+                cp.payment_status === 'pending_payment' ? `/enroll-status/${cp.id}` : `/history/${cp.id}`
+              )} />
           ))}
         </div>
       )}

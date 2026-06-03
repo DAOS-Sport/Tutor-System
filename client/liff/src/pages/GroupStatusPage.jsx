@@ -1,10 +1,24 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { groupOrdersApi } from '../api/groupOrders';
+import { enrollmentsApi } from '../api/enrollments';
 import LoadingSpinner from '../components/LoadingSpinner';
 import ConfirmModal from '../components/ConfirmModal';
 import { useToast } from '../context/ToastContext';
 import { courseTypeLabel } from '../utils/format';
+
+const money = (n) => `NT$ ${Number(n || 0).toLocaleString()}`;
+
+// 家長端 LIFF App ID（與 main.jsx / LoginPage 同來源）。分享到 LINE 的加入連結要用
+// LIFF 形式（liff.line.me/<id>/...），在 LINE 內點開才會帶 LIFF session → 自動取 id_token
+// → 跑 LoginPage 的「自動驗證→登入→建檔」流程。無 LIFF ID（dev/瀏覽器）時退回 raw 網址。
+const PARENT_LIFF_ID = import.meta.env.VITE_LIFF_ID_PARENT || import.meta.env.VITE_LIFF_ID;
+function buildJoinUrl(token) {
+  if (!token) return '';
+  return PARENT_LIFF_ID
+    ? `https://liff.line.me/${PARENT_LIFF_ID}/group/join/${token}`
+    : `${window.location.origin}/liff/group/join/${token}`;
+}
 
 const STATUS_META = {
   forming: { label: '揪團中', cls: 'bg-brand-teal/15 text-brand-teal' },
@@ -22,6 +36,7 @@ export default function GroupStatusPage() {
   const [order, setOrder] = useState(undefined); // undefined=loading, null=error
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState(null); // 'submit' | 'cancel' | null
+  const [proofBusy, setProofBusy] = useState(false);
 
   const load = useCallback(() => {
     let alive = true;
@@ -55,7 +70,7 @@ export default function GroupStatusPage() {
 
   const meta = STATUS_META[order.status] || { label: order.status, cls: 'bg-gray-100 text-gray-500' };
   const reachedMin = order.total_students >= order.min_students;
-  const joinUrl = order.is_leader ? `${window.location.origin}/liff/group/join/${order.join_token || ''}` : null;
+  const joinUrl = order.is_leader ? buildJoinUrl(order.join_token) : null;
 
   async function copyInvite() {
     try {
@@ -63,6 +78,25 @@ export default function GroupStatusPage() {
       toast.success('邀請連結已複製，貼到群組分享吧！');
     } catch {
       toast.error('複製失敗，請手動複製');
+    }
+  }
+
+  // U10：成員上傳自己的轉帳證明（先傳檔取得 URL，再記到本團我的那筆 member）
+  async function handleUploadMyProof(file) {
+    if (!file) return;
+    if (!['image/jpeg', 'image/png'].includes(file.type)) return toast.error('只接受 JPG / PNG 圖片');
+    if (file.size > 5 * 1024 * 1024) return toast.error('圖片大小不得超過 5MB');
+    setProofBusy(true);
+    try {
+      const { url } = await enrollmentsApi.uploadPaymentProof(file);
+      if (!url) throw new Error('no url');
+      const updated = await groupOrdersApi.uploadMyProof(id, url);
+      if (updated) setOrder(updated); else load();
+      toast.success('轉帳證明已上傳，待櫃檯確認');
+    } catch (e) {
+      toast.error(e?.response?.data?.error || '上傳失敗，請重試');
+    } finally {
+      setProofBusy(false);
     }
   }
 
@@ -89,7 +123,12 @@ export default function GroupStatusPage() {
     <div className="px-4 py-4 pb-10">
       <div className="mb-4 rounded-xl border border-gray-200 bg-white p-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-base font-bold text-brand-primary">{courseTypeLabel(order.course_type)} 團購</h2>
+          <h2 className="text-base font-bold text-brand-primary">
+            {courseTypeLabel(order.course_type)} 團購
+            {order.period_count > 1 && (
+              <span className="ml-1.5 align-middle text-xs font-bold text-brand-gold">· {order.period_count} 期</span>
+            )}
+          </h2>
           <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${meta.cls}`}>{meta.label}</span>
         </div>
         <p className="mt-2 text-sm text-gray-700">
@@ -108,13 +147,14 @@ export default function GroupStatusPage() {
 
       {order.is_leader && order.status === 'forming' && joinUrl && (
         <div className="mb-4 rounded-xl border border-brand-teal/30 bg-brand-teal/5 p-3">
-          <label className="mb-1 block text-xs font-medium text-gray-600">邀請其他家長加入</label>
+          <label className="mb-1 block text-xs font-medium text-gray-600">邀請其他學員加入</label>
           <div className="flex gap-2">
             <input readOnly value={joinUrl}
               className="flex-1 truncate rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs text-gray-600" />
             <button type="button" onClick={copyInvite}
               className="shrink-0 rounded-lg bg-brand-teal px-3 py-2 text-xs font-bold text-white">複製</button>
           </div>
+          <p className="mt-1.5 text-[11px] text-gray-500">把連結分享給其他家長，請他們登入填寫學生資料一起報名。</p>
         </div>
       )}
 
@@ -125,26 +165,51 @@ export default function GroupStatusPage() {
             className="text-xs font-bold text-brand-teal active:opacity-60">↻ 重新整理</button>
         </div>
         <div className="space-y-2">
-          {(order.members || []).map((m) => (
-            <div key={m.id} className="flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2">
-              <div className="min-w-0">
-                <div className="flex items-center gap-1.5">
-                  <span className="truncate text-sm font-medium text-gray-800">{m.parent_name}</span>
-                  {m.is_leader && <span className="rounded bg-brand-primary/10 px-1.5 py-0.5 text-[10px] font-bold text-brand-primary">團主</span>}
-                  {m.is_self && <span className="rounded bg-brand-teal/10 px-1.5 py-0.5 text-[10px] font-bold text-brand-teal">您</span>}
+          {(order.members || []).map((m) => {
+            const proofState = m.payment_confirmed
+              ? { label: '✓ 帳款已確認', cls: 'text-brand-green' }
+              : (m.has_payment_proof ? { label: '已上傳，待確認', cls: 'text-brand-gold' } : { label: '未上傳證明', cls: 'text-gray-400' });
+            return (
+              <div key={m.id} className="rounded-lg bg-gray-50 px-3 py-2">
+                <div className="flex items-center justify-between">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="truncate text-sm font-medium text-gray-800">{m.parent_name}</span>
+                      {m.is_leader && <span className="rounded bg-brand-primary/10 px-1.5 py-0.5 text-[10px] font-bold text-brand-primary">團主</span>}
+                      {m.is_self && <span className="rounded bg-brand-teal/10 px-1.5 py-0.5 text-[10px] font-bold text-brand-teal">您</span>}
+                    </div>
+                    <p className="mt-0.5 truncate text-xs text-gray-500">學生：{(m.student_names || []).join('、') || '—'}</p>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <div className="text-xs font-bold text-gray-700">{money(m.amount_due)}</div>
+                    <div className={`text-[11px] font-medium ${proofState.cls}`}>{proofState.label}</div>
+                  </div>
                 </div>
-                <p className="mt-0.5 truncate text-xs text-gray-500">學生：{(m.student_names || []).join('、') || '—'}</p>
+
+                {/* 自己這筆：未確認帳款前可上傳 / 更換轉帳證明 */}
+                {m.is_self && !m.payment_confirmed && ['forming', 'submitted'].includes(order.status) && (
+                  <label className="mt-2 flex cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-dashed border-brand-teal/50 bg-white px-3 py-2 text-xs font-bold text-brand-teal active:opacity-70">
+                    📤 {proofBusy ? '上傳中…' : (m.has_payment_proof ? '更換轉帳證明' : '上傳轉帳證明')}
+                    <input type="file" accept="image/jpeg,image/png" className="hidden"
+                      disabled={proofBusy}
+                      onChange={(e) => handleUploadMyProof(e.target.files?.[0])} />
+                  </label>
+                )}
               </div>
-              <span className="shrink-0 text-xs text-gray-400">
-                {m.has_payment_proof ? '已附證明' : '缺證明'}
-              </span>
-            </div>
-          ))}
+            );
+          })}
         </div>
+        <p className="mt-2 text-[11px] leading-5 text-gray-400">
+          應繳金額＝單期費用 × 您的學生數{order.period_count > 1 ? ` × ${order.period_count} 期` : ''}。請先完成轉帳再上傳證明，櫃檯確認後即建立課程。
+        </p>
       </div>
 
       {order.is_leader && order.status === 'forming' && (
         <div className="mt-4 space-y-2">
+          {/* 送審前警語：名單鎖定；證明改送審後各家上傳 */}
+          <div className="rounded-lg border border-brand-gold/40 bg-brand-gold/5 px-3 py-2 text-[12px] leading-5 text-brand-gold">
+            ⚠️ 送審後成員與學生名單將<strong>無法再更改</strong>，也無法再加入新成員。送審後即進入等候審核，<strong>各家請於此頁完成轉帳並上傳證明</strong>，櫃檯核對後建立課程。
+          </div>
           <button
             type="button"
             disabled={!reachedMin || busy}
@@ -166,7 +231,10 @@ export default function GroupStatusPage() {
         onCancel={() => setConfirm(null)}
         onConfirm={() => doAction('submit')}
       >
-        <p className="text-sm text-gray-600">送審後將無法再加入新成員，由櫃檯核准後正式成團並建立報名。</p>
+        <p className="text-sm text-gray-600">
+          送審後名單將<strong>無法更改</strong>、也無法再加入新成員。在等候審核期間，
+          <strong>請各家先完成轉帳並於本頁上傳轉帳證明</strong>；櫃檯核對名單與帳款後即建立課程。確定送審？
+        </p>
       </ConfirmModal>
 
       <ConfirmModal

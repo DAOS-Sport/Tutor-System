@@ -5,6 +5,7 @@
 const express = require('express');
 const { pool } = require('../models/db');
 const { requireParent } = require('../middlewares/parentAuth');
+const { objectExists } = require('../services/objectStorage');
 
 const router = express.Router();
 
@@ -73,7 +74,7 @@ router.get('/mine', requireParent, async (req, res) => {
     const r = await pool.query(
       `SELECT id, parent_name, parent_phone, students, coach, venue_id, course_type,
               original_price, final_price, transfer_last_5, status, submitted_at,
-              total_sessions, used_sessions, refund_amount,
+              total_sessions, used_sessions, refund_amount, payment_proof_url, period_count,
               invoice_number, invoice_image_url, invoice_url, invoice_issued_at,
               extra_parent_phones, notes, group_order_id, is_group_shared
          FROM admin_enrollments
@@ -103,6 +104,8 @@ router.get('/mine', requireParent, async (req, res) => {
       invoice_issued_at: row.invoice_issued_at || null,
       extra_parent_phones: row.extra_parent_phones || [],
       notes: row.notes || null,
+      payment_proof_url: row.payment_proof_url || null,
+      period_count: row.period_count || 1,
       group_order_id: row.group_order_id || null,
       is_group_shared: !!row.is_group_shared,
     })));
@@ -151,6 +154,79 @@ router.get('/base-price', async (req, res) => {
     res.json({ course_type: r.rows[0].course_type, original_price: Number(r.rows[0].base_price) });
   } catch (e) {
     console.error('[courses/base-price]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /:id 單筆報名狀態（限本人）— 報名狀態頁用 ──────────────
+//    含轉帳帳號（venue）、應繳金額、證明狀態，供「送出後等候畫面」顯示。
+router.get('/:id', requireParent, async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT e.id, e.parent_phone, e.extra_parent_phones, e.students, e.coach, e.course_type,
+              e.original_price, e.final_price, e.status, e.payment_proof_url, e.period_count,
+              e.invoice_number, e.invoice_image_url, e.submitted_at, e.group_order_id,
+              v.id AS venue_id, v.name AS venue_name, v.account_holder, v.account_number,
+              v.bank_institution_name, v.bank_branch_name
+         FROM admin_enrollments e
+         LEFT JOIN venues v ON v.id = e.venue_id
+        WHERE e.id = $1`,
+      [req.params.id]
+    );
+    if (!r.rowCount) return res.status(404).json({ error: '找不到此報名' });
+    const row = r.rows[0];
+    const phone = req.parent.phone;
+    const owns = row.parent_phone === phone || (row.extra_parent_phones || []).includes(phone);
+    if (!owns) return res.status(403).json({ error: '無權檢視此報名' });
+    res.json({
+      id: row.id,
+      students: row.students || [],
+      coach: row.coach,
+      course_type: row.course_type,
+      period_count: row.period_count || 1,
+      original_price: Number(row.original_price),
+      final_price: Number(row.final_price),
+      payment_status: row.status,
+      has_payment_proof: !!row.payment_proof_url,
+      submitted_at: row.submitted_at,
+      group_order_id: row.group_order_id || null,
+      venue: {
+        id: row.venue_id, name: row.venue_name,
+        account_holder: row.account_holder, account_number: row.account_number,
+        bank_institution_name: row.bank_institution_name, bank_branch_name: row.bank_branch_name,
+      },
+    });
+  } catch (e) {
+    console.error('[courses/:id]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /:id/payment-proof 事後上傳匯款證明（限本人、限待對帳）──
+router.post('/:id/payment-proof', requireParent, async (req, res) => {
+  const PROOF_URL_RE = /^\/uploads\/\d{4}-\d{2}\/[a-f0-9]{24}\.(jpg|jpeg|png)$/;
+  const url = typeof req.body?.payment_proof_url === 'string' ? req.body.payment_proof_url.trim() : '';
+  if (!PROOF_URL_RE.test(url) || !objectExists(url)) {
+    return res.status(400).json({ error: '請上傳有效的匯款／轉帳證明', code: 'PAYMENT_PROOF_INVALID' });
+  }
+  try {
+    const r = await pool.query(
+      `SELECT parent_phone, extra_parent_phones, status FROM admin_enrollments WHERE id = $1`,
+      [req.params.id]
+    );
+    if (!r.rowCount) return res.status(404).json({ error: '找不到此報名' });
+    const row = r.rows[0];
+    const phone = req.parent.phone;
+    if (!(row.parent_phone === phone || (row.extra_parent_phones || []).includes(phone))) {
+      return res.status(403).json({ error: '無權操作此報名' });
+    }
+    if (row.status !== 'pending_payment') {
+      return res.status(409).json({ error: '此報名狀態無法再上傳證明', code: 'NOT_PENDING' });
+    }
+    await pool.query(`UPDATE admin_enrollments SET payment_proof_url = $2, updated_at = NOW() WHERE id = $1`, [req.params.id, url]);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[courses/:id/payment-proof]', e);
     res.status(500).json({ error: e.message });
   }
 });
