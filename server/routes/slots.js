@@ -160,6 +160,77 @@ router.post('/preview-conflict', requireCoach, ensureBodyOwner, async (req, res)
   res.json({ has_conflict: conflicts.length > 0, conflicts });
 });
 
+// ── 家長端：查詢某課程期可選槽位 ─────────────────────────────────────
+router.get('/period/:coursePeriodId', requireParent, async (req, res) => {
+  const { coursePeriodId } = req.params;
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!UUID_RE.test(coursePeriodId || '')) {
+    return res.status(404).json({ error: '課程期不存在' });
+  }
+
+  const fromDate = req.query.from ? new Date(req.query.from) : new Date();
+  fromDate.setHours(0, 0, 0, 0);
+  const toDate = req.query.to ? new Date(req.query.to) : addDays(fromDate, 30);
+  if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
+    return res.status(400).json({ error: 'from/to 日期格式錯誤' });
+  }
+
+  try {
+    const cpRes = await pool.query(
+      `SELECT cp.id, cp.coach_id, co.name AS coach_name, cp.venue_id, v.name AS venue_name,
+              cp.course_type, cp.status, cp.total_sessions,
+              COUNT(cs.id) FILTER (WHERE cs.status NOT LIKE 'cancelled%')::int AS booked_sessions
+         FROM course_periods cp
+         JOIN coaches co ON co.id = cp.coach_id
+         JOIN venues v ON v.id = cp.venue_id
+         LEFT JOIN course_sessions cs ON cs.course_period_id = cp.id
+        WHERE cp.id = $1
+        GROUP BY cp.id, co.name, v.name`,
+      [coursePeriodId]
+    );
+    if (!cpRes.rowCount) return res.status(404).json({ error: '課程期不存在' });
+    const period = cpRes.rows[0];
+
+    const own = await pool.query(
+      `SELECT 1 FROM course_period_enrollments cpe
+         JOIN students s ON s.id = cpe.student_id
+        WHERE cpe.course_period_id = $1
+          AND s.parent_id = $2
+          AND cpe.status = 'active'
+        LIMIT 1`,
+      [coursePeriodId, req.parent.id]
+    );
+    if (!own.rowCount) return res.status(403).json({ error: '無權檢視此課程期' });
+    if (period.status !== 'active') {
+      return res.json({ period, sessions_left: 0, slots: [] });
+    }
+
+    const slots = await pool.query(
+      `SELECT cas.id, cas.coach_id, cas.venue_id, v.name AS venue_name,
+              cas.start_at, cas.duration_minutes, cas.status
+         FROM coach_availability_slots cas
+         JOIN venues v ON v.id = cas.venue_id
+        WHERE cas.coach_id = $1
+          AND cas.venue_id = $2
+          AND cas.status = 'available'
+          AND cas.start_at >= $3
+          AND cas.start_at < $4
+        ORDER BY cas.start_at
+        LIMIT 120`,
+      [period.coach_id, period.venue_id, fromDate.toISOString(), toDate.toISOString()]
+    );
+
+    res.json({
+      period,
+      sessions_left: Math.max(0, Number(period.total_sessions) - Number(period.booked_sessions || 0)),
+      slots: slots.rows,
+    });
+  } catch (err) {
+    console.error('[slots period]', err);
+    res.status(500).json({ error: '可選時段載入失敗' });
+  }
+});
+
 // ── 家長端：選槽建立 session（架構 v7 §9.2「課程開通後選擇上課時間」）─────────
 //   POST /api/slots/:id/book   body { course_period_id }
 //   :id = coach_availability_slots.id（要預約的可用時段）

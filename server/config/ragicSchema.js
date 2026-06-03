@@ -166,6 +166,7 @@ const FIELD = {
   },
   Z02: {
     STUDENT_CODE:   Z02_FIELDS['學員編號'],
+    STUDENT_STATUS: Z02_FIELDS['學員身分'],
     NAME:           Z02_FIELDS['學員姓名'],
     GENDER:         Z02_FIELDS['學(性別)'],
     BIRTH_DATE:     Z02_FIELDS['出生年月日'],
@@ -173,7 +174,10 @@ const FIELD = {
     BLOOD_TYPE:     Z02_FIELDS['血型'],
     VENUE:          Z02_FIELDS['館別'],
     PARENT_PHONE:   Z02_FIELDS['(報)行動電話'],
+    PARENT_ACCOUNT: Z02_FIELDS['家長帳號'],
     PARENT_NAME:    Z02_FIELDS['家長姓名'],
+    PARENT_GENDER:  Z02_FIELDS['(報)性別'],
+    PARENT_IDENTITY: Z02_FIELDS['(報)身分'],
     PARENT_EMAIL:   Z02_FIELDS['(報)Email'],
   },
   H01,

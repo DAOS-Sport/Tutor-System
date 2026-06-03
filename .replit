@@ -13,6 +13,10 @@ build = ["bash", "-c", "cd server && npm install && cd ../client/admin && npm in
 localPort = 3000
 
 [[ports]]
+localPort = 3998
+externalPort = 3000
+
+[[ports]]
 localPort = 3999
 externalPort = 80
 

@@ -112,7 +112,8 @@ async function resolveBoundStudents(client, parentId, studentIds, newStudents) {
     : [];
   if (wantIds.length) {
     const r = await client.query(
-      `SELECT id, name FROM students WHERE parent_id = $1 AND id = ANY($2::uuid[])`,
+      `SELECT id, name FROM students
+        WHERE parent_id = $1 AND id = ANY($2::uuid[]) AND COALESCE(is_active, TRUE) = TRUE`,
       [parentId, wantIds]
     );
     if (r.rowCount !== wantIds.length) {
@@ -128,7 +129,9 @@ async function resolveBoundStudents(client, parentId, studentIds, newStudents) {
     let matched = null;
     if (s.id_number) {
       const m = await client.query(
-        `SELECT id, name FROM students WHERE parent_id = $1 AND id_number = $2 LIMIT 1`,
+        `SELECT id, name FROM students
+          WHERE parent_id = $1 AND id_number = $2 AND COALESCE(is_active, TRUE) = TRUE
+          LIMIT 1`,
         [parentId, s.id_number]
       );
       matched = m.rows[0] || null;
@@ -138,6 +141,7 @@ async function resolveBoundStudents(client, parentId, studentIds, newStudents) {
         `SELECT id, name FROM students
           WHERE parent_id = $1 AND name = $2
             AND ($3::date IS NULL OR birth_date = $3::date)
+            AND COALESCE(is_active, TRUE) = TRUE
           LIMIT 1`,
         [parentId, s.name, s.birth_date || null]
       );
@@ -197,6 +201,7 @@ function shapeMember(m, isSelf, perStudent, periodCount) {
     student_count: studentCount,
     // U10：每家應繳金額 = 單生價 × 該家學生數 × 期數
     amount_due: perStudent * studentCount * periodCount,
+    transfer_last_5: isSelf ? (m.transfer_last_5 || '') : '',
     has_payment_proof: !!m.payment_proof_url,
     proof_uploaded_at: m.proof_uploaded_at || null,
     payment_confirmed: !!m.payment_confirmed,
@@ -655,7 +660,10 @@ router.post('/by-token/:token/join', async (req, res) => {
 //    限本團成員、限上傳自己那筆；櫃檯已「確認帳款」後不可再改（避免改掉已查核的證明）。
 router.post('/:id/my-proof', async (req, res) => {
   const proof = validProof(req.body?.payment_proof_url);
-  if (!proof) return res.status(400).json({ error: '請上傳有效的匯款／轉帳證明', code: 'PAYMENT_PROOF_REQUIRED' });
+  const last5 = String(req.body?.transfer_last_5 || '').trim();
+  if (last5 && !/^\d{5}$/.test(last5)) {
+    return res.status(400).json({ error: '轉帳末 5 碼需為 5 位數字', code: 'TRANSFER_LAST5_INVALID' });
+  }
   try {
     const o = await pool.query(`SELECT status FROM group_orders WHERE id = $1`, [req.params.id]);
     if (!o.rowCount) return res.status(404).json({ error: '找不到此團購' });
@@ -670,11 +678,16 @@ router.post('/:id/my-proof', async (req, res) => {
     if (m.rows[0].payment_confirmed) {
       return res.status(409).json({ error: '櫃檯已確認您的帳款，如需更換請聯繫櫃檯', code: 'ALREADY_CONFIRMED' });
     }
+    if (!proof && !last5) {
+      return res.status(400).json({ error: '請填寫轉帳末 5 碼或上傳匯款／轉帳證明', code: 'PAYMENT_INFO_REQUIRED' });
+    }
     await pool.query(
       `UPDATE group_order_members
-          SET payment_proof_url = $2, proof_uploaded_at = NOW()
+          SET payment_proof_url = COALESCE($2, payment_proof_url),
+              proof_uploaded_at = CASE WHEN $2 IS NULL THEN proof_uploaded_at ELSE NOW() END,
+              transfer_last_5 = COALESCE($3, transfer_last_5)
         WHERE id = $1`,
-      [m.rows[0].id, proof]
+      [m.rows[0].id, proof || null, last5 || null]
     );
     const loaded = await loadOrderWithMembers(pool, req.params.id);
     res.json(shapeOrder(loaded.order, loaded.members, req.parent.id,

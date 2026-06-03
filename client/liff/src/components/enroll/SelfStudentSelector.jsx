@@ -12,7 +12,7 @@ export default function SelfStudentSelector({
     <Section title={`選擇學員（已選 ${totalSelected}/${requiredStudentCount}）`}>
       <p className="mb-2 text-xs text-gray-500">{parent.name}（您）名下：</p>
       <div className="space-y-2">
-        {parent.students.map((s) => (
+        {(parent.students || []).filter((s) => s?.is_active !== false).map((s) => (
           <StudentRow
             key={s.id}
             student={s}

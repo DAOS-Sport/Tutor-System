@@ -29,8 +29,8 @@ async function getSettings() {
  *  - 僅處理團報（enrollment.group_order_id 有值）；一般報名直接 return（維持原行為）。
  *  - 一團共用「一個」course_period：以 group_order_id 做冪等 get-or-create
  *    （course_periods 有 partial unique index uq_course_periods_group_order）。
- *    同團多位成員逐筆對帳時，第一筆建 period，其餘筆只補各自學員。
- *  - 把「本成員」綁定的正式學員（group_order_members.student_ids）加入
+ *    同團多位成員逐筆對帳時，必須等全體成員付款都 confirmed 才建 period。
+ *  - 把「整團成員」綁定的正式學員（group_order_members.student_ids）加入
  *    course_period_enrollments（UNIQUE(period,student) → ON CONFLICT DO NOTHING）。
  *  - course_periods.coach_id 為 NOT NULL；團報未指定教練時無法建課 → 記 log 後略過，
  *    不阻擋對帳（報名仍轉 confirmed，待補教練後可由後台流程補開）。
@@ -47,25 +47,49 @@ async function ensureGroupCoursePeriod(client, enrollment, totalSessions) {
     return;
   }
 
-  // 本成員（家長）在這張團報綁定的正式學員 id
-  const pr = await client.query(`SELECT id FROM parents WHERE phone = $1 LIMIT 1`, [enrollment.parent_phone]);
-  const parentId = pr.rows[0]?.id || null;
-  let studentIds = [];
-  if (parentId) {
-    const mr = await client.query(
-      `SELECT student_ids FROM group_order_members WHERE group_order_id = $1 AND parent_id = $2 LIMIT 1`,
-      [groupOrderId, parentId]
+  // 團報課程必須等所有成員的付款對帳都完成，才建立共用 course_period。
+  // reconcile 會先把本筆 admin_enrollments.status 更新為 confirmed，再呼叫此函式；
+  // 同一交易內查詢能看到本筆最新狀態，因此可用來當整團開通守門。
+  const groupEnrollments = await client.query(
+    `SELECT id, status, final_price
+       FROM admin_enrollments
+      WHERE group_order_id = $1
+      ORDER BY submitted_at, id`,
+    [groupOrderId]
+  );
+  if (!groupEnrollments.rowCount) return;
+  // 已取消/已退費的成員不算「仍在等」——否則團裡只要有一家退費，整團課程永遠建不起來。
+  // 只看「仍有效」的報名：全部都 confirmed、且至少有一筆 confirmed，才開通。
+  const relevant = groupEnrollments.rows.filter((row) => !['cancelled', 'refunded'].includes(row.status));
+  const confirmed = relevant.filter((row) => row.status === 'confirmed');
+  const waiting = relevant.filter((row) => row.status !== 'confirmed');
+  if (!confirmed.length || waiting.length > 0) {
+    console.warn(
+      '[reconcile/group] 團報尚未全員對帳完成，暫不建立課程:',
+      'group:', groupOrderId,
+      'confirmed:', confirmed.length,
+      'waiting:', waiting.map((row) => `${row.id}:${row.status}`).join(',') || '(無)'
     );
-    studentIds = (mr.rows[0]?.student_ids || []).filter(Boolean);
+    return;
+  }
+
+  const members = await client.query(
+    `SELECT COALESCE(array_agg(DISTINCT sid), '{}') AS student_ids
+       FROM group_order_members gom
+       CROSS JOIN LATERAL unnest(gom.student_ids) AS sid
+      WHERE gom.group_order_id = $1`,
+    [groupOrderId]
+  );
+  const studentIds = (members.rows[0]?.student_ids || []).filter(Boolean);
+  if (!studentIds.length) {
+    console.warn('[reconcile/group] 團報全員已對帳但找不到成員學員，略過自動開通 period:', 'group:', groupOrderId);
+    return;
   }
 
   // 共用 period 的金額＝整團所有成員報名費用總和（period 為班級層級，金額僅供參考；
   // 實際逐筆收款仍在各 admin_enrollments）。在建立前算好，ON CONFLICT 時不影響既有值。
-  const sumRow = await client.query(
-    `SELECT COALESCE(SUM(final_price),0) AS total FROM admin_enrollments WHERE group_order_id = $1`,
-    [groupOrderId]
-  );
-  const groupTotalPrice = Number(sumRow.rows[0]?.total) || (Number(enrollment.final_price) || 0);
+  const groupTotalPrice = confirmed.reduce((sum, row) => sum + (Number(row.final_price) || 0), 0)
+    || (Number(enrollment.final_price) || 0);
 
   // get-or-create 共用 period（並發對帳同團多筆時，ON CONFLICT 收斂到同一個 period）
   const ins = await client.query(
@@ -462,6 +486,17 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin', 'manager', 'sta
       );
       const periodIds = periods.rows.map((r) => r.id);
       if (periodIds.length > 0) {
+        // 既有課堂若沒有 session.coach_id，查詢會以 course_periods.coach_id 代入；
+        // 先把它們固定為原教練，避免中途換教練後過去紀錄整批跑到新教練名下。
+        if (oldCoachUuid) {
+          await client.query(
+            `UPDATE course_sessions
+                SET coach_id = $2, updated_at = NOW()
+              WHERE course_period_id = ANY($1::uuid[])
+                AND coach_id IS NULL`,
+            [periodIds, oldCoachUuid]
+          );
+        }
         // 1) 更新 period 主檔（讓教練 LIFF 的「我的學員 / 今日課程」立即看到）
         await client.query(
           `UPDATE course_periods SET coach_id = $2, venue_id = $3, updated_at = NOW()
@@ -585,6 +620,31 @@ router.post('/:id/reconcile', requireAdminAuth, requireAdminRole('admin', 'manag
        VALUES ($1, $2, $3)`,
       [id, `對帳通過（發票 ${invoiceNumber}）`, by]
     );
+
+    // U10 修補：團報對帳通過 → 回寫該成員 group_order_members.payment_confirmed。
+    //   家長端團報狀態頁（GroupStatusPage 讀 group_order_members.payment_confirmed）原本只認
+    //   payment_proof_url（顯示「已上傳，待確認」），但對帳只動 admin_enrollments.status，
+    //   兩者從未同步 → 成員永遠卡「待確認」。這裡以 (group_order_id, parent_id) 對應成員
+    //   （parent_id 由報名手機反查，與 ensureGroupCoursePeriod 一致），對帳成功時標記為已確認。
+    //   一般報名（group_order_id 為 NULL）不受影響；payment_confirmed=FALSE 守門確保冪等。
+    if (cur.rows[0].group_order_id) {
+      const gconf = await client.query(
+        `UPDATE group_order_members gom
+            SET payment_confirmed = TRUE,
+                payment_confirmed_at = NOW(),
+                payment_confirmed_by = $3
+          FROM parents p
+          WHERE p.id = gom.parent_id
+            AND gom.group_order_id = $1
+            AND p.phone = $2
+            AND gom.payment_confirmed = FALSE`,
+        [cur.rows[0].group_order_id, cur.rows[0].parent_phone, String(by).slice(0, 50)]
+      );
+      if (!gconf.rowCount) {
+        console.warn('[reconcile/group] 對帳通過但未回寫 payment_confirmed（找不到對應成員或已是已確認）:',
+          cur.rows[0].id, 'group:', cur.rows[0].group_order_id);
+      }
+    }
 
     // ── U9 團報橋：對帳通過＝v7「立即自動開通」→ 為團報 get-or-create 一個共用 course_period，
     //    並把本成員的學員加入 course_period_enrollments，教練端課表（讀 course_periods/sessions）才看得到。

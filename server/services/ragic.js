@@ -27,6 +27,11 @@ function _withApi(formPath) {
   return `${formPath}${sep}api`;
 }
 
+function _recordPath(formPath, ragicRecordId) {
+  const [pathOnly, qs] = String(formPath || '').split('?');
+  return `${pathOnly}/${ragicRecordId}${qs ? `?${qs}` : ''}`;
+}
+
 // Task #83：把 axios timeout / 超時類錯誤正規化成中文友善文案，
 // 讓 admin UI 直顯「Ragic 慢回應，請稍後再試」而非 raw `timeout of 10000ms exceeded`。
 function _normalizeRagicError(err) {
@@ -216,10 +221,26 @@ async function bindParentLineUidToRagic({ ragicRecordId, lineUid }) {
   if (!ragicRecordId) throw new Error('ragicRecordId 必填');
   if (!lineUid) throw new Error('lineUid 必填');
   const payload = { [Z01_LINE_UID_FIELD]: lineUid };
-  const url = _withApi(`${process.env.RAGIC_FORM_Z01}/${ragicRecordId}`);
+  const url = _withApi(_recordPath(process.env.RAGIC_FORM_Z01, ragicRecordId));
   await client.post(url, payload, { params: { APIKey: process.env.RAGIC_API_KEY } });
   _cacheInvalidate('z01:');
   return { ok: true };
+}
+
+async function postRagicStrict(formPath, payload) {
+  let res;
+  try {
+    res = await client.post(_withApi(formPath), payload, {
+      params: { APIKey: process.env.RAGIC_API_KEY },
+    });
+  } catch (err) {
+    throw _normalizeRagicError(err);
+  }
+  const data = res.data || {};
+  if (data.status === 'ERROR') {
+    throw new Error(`Ragic ${data.code}: ${data.msg}`);
+  }
+  return data;
 }
 
 // Z01：回寫家長資料（key 可用中文欄位名或 Field ID，內部統一翻譯成 Field ID）
@@ -227,13 +248,23 @@ async function upsertParent(parentData, ragicRecordId = null) {
   try {
     const payload = toFieldIdPayload(parentData, Z01_FIELDS, 'Z01');
     const base = ragicRecordId
-      ? `${process.env.RAGIC_FORM_Z01}/${ragicRecordId}`
+      ? _recordPath(process.env.RAGIC_FORM_Z01, ragicRecordId)
       : process.env.RAGIC_FORM_Z01;
     await client.post(_withApi(base), payload, { params: { APIKey: process.env.RAGIC_API_KEY } });
     _cacheInvalidate('z01:');
   } catch (err) {
     console.error('[Ragic] upsertParent failed:', err.message);
   }
+}
+
+async function upsertParentStrict(parentData, ragicRecordId = null) {
+  const payload = toFieldIdPayload(parentData, Z01_FIELDS, 'Z01');
+  const base = ragicRecordId
+    ? _recordPath(process.env.RAGIC_FORM_Z01, ragicRecordId)
+    : process.env.RAGIC_FORM_Z01;
+  const raw = await postRagicStrict(base, payload);
+  _cacheInvalidate('z01:');
+  return raw;
 }
 
 /**
@@ -256,6 +287,10 @@ function mapZ01Parent(record) {
     gender:           get(FIELD.Z01.GENDER, '(報)性別'),
     email:            get(FIELD.Z01.EMAIL, '(報)Email'),
     primary_venue_id: get(FIELD.Z01.VENUE, '館別'),
+    identity:         get(FIELD.Z01.IDENTITY, '(報)身分'),
+    home_phone:       get(FIELD.Z01.HOME_PHONE, '住家電話'),
+    home_address:     get(FIELD.Z01.HOME_ADDRESS, '住家地址'),
+    line_id:          get(FIELD.Z01.LINE_ID, 'LINE ID'),
     line_uid:         get(FIELD.Z01.LINE_UID, '家教系統uid'),
   };
 }
@@ -279,8 +314,10 @@ function parseZ01Students(record) {
     null;
 
   const rows = Array.isArray(subtable)
-    ? subtable
-    : (subtable && typeof subtable === 'object' ? Object.values(subtable) : []);
+    ? subtable.map((row, index) => ({ row, rowKey: String(index) }))
+    : (subtable && typeof subtable === 'object'
+        ? Object.entries(subtable).map(([rowKey, row]) => ({ row, rowKey }))
+        : []);
 
   const pick = (row, keys) => {
     for (const key of keys) {
@@ -301,9 +338,10 @@ function parseZ01Students(record) {
     return `${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`;
   };
 
-  return rows.map((row) => {
+  return rows.map(({ row, rowKey }) => {
     const name = pick(row, ['1001115', '學員姓名']);
     return {
+      row_key: rowKey,
       name,
       birth_date: normalizeDate(pick(row, ['1001116', '出生年月日'])),
       gender: pick(row, ['1001117', '(學)性別', '學(性別)']),
@@ -379,13 +417,82 @@ async function addStudentsToParentInRagic({ ragicRecordId, startIndex = 0, stude
     if (s.blood_type) payload[`${prefix}${FIELD.Z01_STUDENT.BLOOD_TYPE}`] = s.blood_type;
   });
 
-  const res = await client.post(_withApi(`${process.env.RAGIC_FORM_Z01}/${ragicRecordId}`), payload, {
+  const res = await client.post(_withApi(_recordPath(process.env.RAGIC_FORM_Z01, ragicRecordId)), payload, {
     params: { APIKey: process.env.RAGIC_API_KEY },
   });
   _cacheInvalidate('z01:');
   const data = res.data || {};
   if (data.status === 'ERROR') throw new Error(`Ragic ${data.code}: ${data.msg}`);
   return { added: list.length, raw: data };
+}
+
+async function resolveParentRagicRecord(parent) {
+  if (parent?.ragic_record_id) return parent.ragic_record_id;
+  const phone = String(parent?.phone || '').trim();
+  if (!phone) {
+    const err = new Error('缺少家長手機，無法定位 Ragic Z01');
+    err.code = 'PARENT_PHONE_REQUIRED';
+    throw err;
+  }
+  const record = await getParentByPhone(phone);
+  if (!record?._ragicId) {
+    const err = new Error('找不到家長 Ragic Z01 記錄，無法同步');
+    err.code = 'PARENT_RAGIC_NOT_FOUND';
+    throw err;
+  }
+  return record._ragicId;
+}
+
+function buildZ01StudentPayload(student, rowIndex) {
+  const prefix = `${Z01_STUDENTS_SUBTABLE_ID}_${rowIndex}_`;
+  const payload = {};
+  payload[`${prefix}${FIELD.Z01_STUDENT.NAME}`] = student.name || '';
+  if (student.birth_date) payload[`${prefix}${FIELD.Z01_STUDENT.BIRTH_DATE}`] = student.birth_date;
+  if (student.gender) payload[`${prefix}${FIELD.Z01_STUDENT.GENDER}`] = student.gender;
+  if (student.id_number) payload[`${prefix}${FIELD.Z01_STUDENT.ID_NUMBER}`] = String(student.id_number).toUpperCase();
+  if (student.blood_type) payload[`${prefix}${FIELD.Z01_STUDENT.BLOOD_TYPE}`] = student.blood_type;
+  if (student.student_code) payload[`${prefix}${FIELD.Z01_STUDENT.STUDENT_CODE}`] = student.student_code;
+  return payload;
+}
+
+async function getParentRecordByRagicId(ragicRecordId) {
+  if (!ragicRecordId) return null;
+  const data = await query(_recordPath(process.env.RAGIC_FORM_Z01, ragicRecordId));
+  if (!data || typeof data !== 'object') return null;
+  if (data._ragicId || data[FIELD.Z01.PHONE] || data['家長姓名']) return data;
+  return Object.values(data)[0] || null;
+}
+
+function findZ01StudentRowIndex(z01Record, student) {
+  const rows = parseZ01Students(z01Record);
+  const code = String(student?.student_code || '').trim();
+  const idNumber = String(student?._match_id_number || student?.id_number || '').trim().toUpperCase();
+  const ragicId = String(student?.ragic_record_id || '').trim();
+  const matched = rows.find((row) => (
+    (ragicId && String(row.ragic_record_id || '') === ragicId) ||
+    (code && String(row.student_code || '') === code) ||
+    (idNumber && String(row.id_number || '').toUpperCase() === idNumber)
+  ));
+  if (!matched) return null;
+  return matched.row_key;
+}
+
+async function updateStudentInParentSubtable({ ragicRecordId, student }) {
+  if (!ragicRecordId) throw new Error('ragicRecordId 必填');
+  if (!student?.name) throw new Error('student.name 必填');
+  const z01Record = await getParentRecordByRagicId(ragicRecordId);
+  const rowIndex = findZ01StudentRowIndex(z01Record, student);
+  if (rowIndex == null) {
+    const err = new Error('找不到 Z01 學員子表格列，無法更新');
+    err.code = 'Z01_STUDENT_ROW_NOT_FOUND';
+    throw err;
+  }
+  const raw = await postRagicStrict(
+    _recordPath(process.env.RAGIC_FORM_Z01, ragicRecordId),
+    buildZ01StudentPayload(student, rowIndex)
+  );
+  _cacheInvalidate('z01:');
+  return { rowIndex, raw };
 }
 
 // Z02：依身分證字號查詢學員（必須用 where=<fid>,eq,... 才能精確過濾）
@@ -395,18 +502,91 @@ async function getStudentByIdNumber(idNumber) {
   return records[0] || null;
 }
 
+async function getStudentByCode(studentCode) {
+  if (!studentCode) return null;
+  const data = await query(process.env.RAGIC_FORM_Z02, { where: `${FIELD.Z02.STUDENT_CODE},eq,${studentCode}` });
+  return Object.values(data)[0] || null;
+}
+
 // Z02：回寫學員資料（key 可用中文欄位名或 Field ID，內部統一翻譯成 Field ID）
 async function upsertStudent(studentData, ragicRecordId = null) {
   try {
     const payload = toFieldIdPayload(studentData, Z02_FIELDS, 'Z02');
     const base = ragicRecordId
-      ? `${process.env.RAGIC_FORM_Z02}/${ragicRecordId}`
+      ? _recordPath(process.env.RAGIC_FORM_Z02, ragicRecordId)
       : process.env.RAGIC_FORM_Z02;
     await client.post(_withApi(base), payload, { params: { APIKey: process.env.RAGIC_API_KEY } });
     _cacheInvalidate('z02:');
   } catch (err) {
     console.error('[Ragic] upsertStudent failed:', err.message);
   }
+}
+
+async function upsertStudentStrict(studentData, ragicRecordId = null) {
+  const payload = toFieldIdPayload(studentData, Z02_FIELDS, 'Z02');
+  const base = ragicRecordId
+    ? _recordPath(process.env.RAGIC_FORM_Z02, ragicRecordId)
+    : process.env.RAGIC_FORM_Z02;
+  const raw = await postRagicStrict(base, payload);
+  _cacheInvalidate('z02:');
+  return raw;
+}
+
+function buildZ02StudentPayload({ parent, student, status = '啟用' }) {
+  return {
+    [FIELD.Z02.NAME]: student.name || '',
+    [FIELD.Z02.STUDENT_STATUS]: status,
+    [FIELD.Z02.GENDER]: student.gender || '',
+    [FIELD.Z02.BIRTH_DATE]: student.birth_date || '',
+    [FIELD.Z02.ID_NUMBER]: student.id_number ? String(student.id_number).toUpperCase() : '',
+    [FIELD.Z02.BLOOD_TYPE]: student.blood_type || '',
+    [FIELD.Z02.VENUE]: parent.primary_venue_id || '',
+    [FIELD.Z02.PARENT_PHONE]: parent.phone || '',
+    [FIELD.Z02.PARENT_ACCOUNT]: parent.phone || '',
+    [FIELD.Z02.PARENT_NAME]: parent.name || '',
+    [FIELD.Z02.PARENT_GENDER]: parent.gender || '',
+    [FIELD.Z02.PARENT_IDENTITY]: parent.identity || '',
+    [FIELD.Z02.PARENT_EMAIL]: parent.email || '',
+  };
+}
+
+async function upsertZ02ForParentStudent({ parent, student, status = '啟用' }) {
+  let z02Record = null;
+  if (student.ragic_record_id) {
+    z02Record = { _ragicId: student.ragic_record_id };
+  } else if (student.student_code) {
+    z02Record = await getStudentByCode(student.student_code);
+  } else if (student.id_number) {
+    z02Record = await getStudentByIdNumber(String(student.id_number).toUpperCase());
+  }
+  const payload = buildZ02StudentPayload({ parent, student, status });
+  if (student.student_code) payload[FIELD.Z02.STUDENT_CODE] = student.student_code;
+  const raw = await upsertStudentStrict(payload, z02Record?._ragicId || null);
+  return { ragicRecordId: z02Record?._ragicId || raw.ragicId || raw._ragicId || null, raw };
+}
+
+async function createStudentZ01Z02Strict({ parent, student, startIndex = 0 }) {
+  const ragicRecordId = await resolveParentRagicRecord(parent);
+  const z01Raw = await postRagicStrict(
+    _recordPath(process.env.RAGIC_FORM_Z01, ragicRecordId),
+    buildZ01StudentPayload(student, startIndex)
+  );
+  _cacheInvalidate('z01:');
+  const z02 = await upsertZ02ForParentStudent({ parent, student, status: '啟用' });
+  return { z01: z01Raw, z02, parentRagicRecordId: ragicRecordId };
+}
+
+async function updateStudentZ01Z02Strict({ parent, student, status = '啟用' }) {
+  const ragicRecordId = await resolveParentRagicRecord(parent);
+  const z01 = await updateStudentInParentSubtable({ ragicRecordId, student });
+  const z02 = await upsertZ02ForParentStudent({ parent, student, status });
+  return { z01, z02, parentRagicRecordId: ragicRecordId };
+}
+
+async function deactivateStudentZ02Strict({ parent, student }) {
+  const ragicRecordId = await resolveParentRagicRecord(parent);
+  const z02 = await upsertZ02ForParentStudent({ parent, student, status: '停用' });
+  return { z02, parentRagicRecordId: ragicRecordId };
 }
 
 module.exports = {
@@ -426,10 +606,18 @@ module.exports = {
   getParentByLineUid,
   bindParentLineUidToRagic,
   upsertParent,
+  upsertParentStrict,
   mapZ01Parent,
   parseZ01Students,
   createParentWithStudentsInRagic,
   addStudentsToParentInRagic,
+  resolveParentRagicRecord,
+  updateStudentInParentSubtable,
   getStudentByIdNumber,
+  getStudentByCode,
   upsertStudent,
+  upsertStudentStrict,
+  createStudentZ01Z02Strict,
+  updateStudentZ01Z02Strict,
+  deactivateStudentZ02Strict,
 };

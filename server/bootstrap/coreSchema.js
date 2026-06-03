@@ -132,6 +132,7 @@ CREATE TABLE IF NOT EXISTS group_order_members (
   student_names     TEXT[] NOT NULL DEFAULT '{}',
   -- U7：加入時綁定的正式學員 id（student_names 仍保留供顯示／向後相容）
   student_ids       UUID[] NOT NULL DEFAULT '{}',
+  transfer_last_5   VARCHAR(5),
   payment_proof_url TEXT,
   is_leader         BOOLEAN NOT NULL DEFAULT FALSE,
   status            VARCHAR(20) NOT NULL DEFAULT 'joined',
@@ -375,6 +376,7 @@ DO $$ BEGIN
   -- U10：團報金流改流程——證明改「送審後各家自行上傳」，櫃檯「逐家確認帳款」+「核准名單」，
   --   兩者皆成立才自動建檔。成員層級記證明上傳時間 + 帳款確認狀態；訂單層級記名單核准狀態。
   ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS proof_uploaded_at   TIMESTAMPTZ;
+  ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS transfer_last_5     VARCHAR(5);
   ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS payment_confirmed   BOOLEAN NOT NULL DEFAULT FALSE;
   ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS payment_confirmed_at TIMESTAMPTZ;
   ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS payment_confirmed_by VARCHAR(50);
@@ -661,15 +663,21 @@ CREATE INDEX IF NOT EXISTS idx_promo_audit_promo ON promotion_audit_logs(promoti
 DO $$ BEGIN
   ALTER TABLE parents  ADD COLUMN IF NOT EXISTS email   VARCHAR(255);
   ALTER TABLE parents  ADD COLUMN IF NOT EXISTS gender  VARCHAR(20);
+  ALTER TABLE parents  ADD COLUMN IF NOT EXISTS identity VARCHAR(50);
+  ALTER TABLE parents  ADD COLUMN IF NOT EXISTS home_phone VARCHAR(30);
+  ALTER TABLE parents  ADD COLUMN IF NOT EXISTS home_address TEXT;
+  ALTER TABLE parents  ADD COLUMN IF NOT EXISTS line_id VARCHAR(100);
   ALTER TABLE parents  ADD COLUMN IF NOT EXISTS ragic_record_id VARCHAR(50);
   ALTER TABLE students ADD COLUMN IF NOT EXISTS id_number VARCHAR(20);
   ALTER TABLE students ADD COLUMN IF NOT EXISTS gender    VARCHAR(20);
   ALTER TABLE students ADD COLUMN IF NOT EXISTS blood_type VARCHAR(5);
   ALTER TABLE students ADD COLUMN IF NOT EXISTS student_code VARCHAR(50);
   ALTER TABLE students ADD COLUMN IF NOT EXISTS ragic_record_id VARCHAR(50);
+  ALTER TABLE students ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
 EXCEPTION WHEN undefined_table THEN NULL; END $$;
 CREATE INDEX IF NOT EXISTS idx_parents_ragic_record_id ON parents(ragic_record_id) WHERE ragic_record_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_students_id_number ON students(id_number) WHERE id_number IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_students_parent_active ON students(parent_id, is_active);
 
 -- MGM 獎勵券需綁定持有者：eligible_parent_id NULL = 公開券；否則僅該家長可用
 DO $$ BEGIN

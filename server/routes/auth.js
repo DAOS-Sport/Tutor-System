@@ -146,8 +146,10 @@ const TW_ID_RE = /^[A-Z][12]\d{8}$/;
 
 async function loadStudents(parentId) {
   const r = await pool.query(
-    `SELECT id, name, birth_date, gender, id_number, blood_type, student_code
-       FROM students WHERE parent_id = $1 ORDER BY created_at ASC`,
+    `SELECT id, name, birth_date, gender, id_number, blood_type, student_code, is_active
+       FROM students
+      WHERE parent_id = $1 AND COALESCE(is_active, TRUE) = TRUE
+      ORDER BY created_at ASC`,
     [parentId]
   );
   return r.rows;
@@ -160,6 +162,12 @@ function _issue(parent) {
   return {
     id: parent.id, name: parent.name, phone: parent.phone,
     primary_venue_id: parent.primary_venue_id, line_uid: parent.line_uid,
+    gender: parent.gender || null,
+    email: parent.email || null,
+    identity: parent.identity || null,
+    home_phone: parent.home_phone || null,
+    home_address: parent.home_address || null,
+    line_id: parent.line_id || null,
     token,
   };
 }
@@ -185,19 +193,27 @@ async function upsertLocalParent(client, mapped, lineUid) {
   const venueId = await _resolveVenueId(client, mapped.primary_venue_id);
 
   const up = await client.query(
-    `INSERT INTO parents (phone, name, line_uid, primary_venue_id, gender, email, ragic_record_id)
-     VALUES ($1, $2, NULLIF($3, ''), $4, NULLIF($5, ''), NULLIF($6, ''), NULLIF($7, ''))
+    `INSERT INTO parents
+       (phone, name, line_uid, primary_venue_id, gender, email, ragic_record_id,
+        identity, home_phone, home_address, line_id)
+     VALUES ($1, $2, NULLIF($3, ''), $4, NULLIF($5, ''), NULLIF($6, ''), NULLIF($7, ''),
+             NULLIF($8, ''), NULLIF($9, ''), NULLIF($10, ''), NULLIF($11, ''))
      ON CONFLICT (phone) DO UPDATE SET
        name = EXCLUDED.name,
        line_uid = COALESCE(parents.line_uid, EXCLUDED.line_uid),
        primary_venue_id = COALESCE(parents.primary_venue_id, EXCLUDED.primary_venue_id),
        gender = COALESCE(NULLIF(EXCLUDED.gender,''), parents.gender),
        email  = COALESCE(NULLIF(EXCLUDED.email,''),  parents.email),
+       identity = COALESCE(NULLIF(EXCLUDED.identity,''), parents.identity),
+       home_phone = COALESCE(NULLIF(EXCLUDED.home_phone,''), parents.home_phone),
+       home_address = COALESCE(NULLIF(EXCLUDED.home_address,''), parents.home_address),
+       line_id = COALESCE(NULLIF(EXCLUDED.line_id,''), parents.line_id),
        ragic_record_id = COALESCE(parents.ragic_record_id, EXCLUDED.ragic_record_id),
        updated_at = NOW()
-     RETURNING id, name, phone, line_uid, primary_venue_id`,
+     RETURNING id, name, phone, line_uid, primary_venue_id, gender, email, identity, home_phone, home_address, line_id`,
     [phone, name, lineUid || '', venueId,
-     mapped.gender || '', mapped.email || '', mapped.ragic_record_id || '']
+     mapped.gender || '', mapped.email || '', mapped.ragic_record_id || '',
+     mapped.identity || '', mapped.home_phone || '', mapped.home_address || '', mapped.line_id || '']
   );
   return up.rows[0];
 }

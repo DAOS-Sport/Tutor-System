@@ -38,10 +38,12 @@ export const groupOrdersApi = {
     callApi('/group-orders/draft', { method: 'delete' }, () => ({ ok: true })),
 
   // U10：成員在狀態頁自行上傳自己的轉帳證明（送審前後皆可，櫃檯確認帳款前）
-  uploadMyProof: (id, payment_proof_url) =>
-    callApi(`/group-orders/${id}/my-proof`, { method: 'post', data: { payment_proof_url } }, () => {
+  uploadMyProof: (id, payload) => {
+    const data = typeof payload === 'string' ? { payment_proof_url: payload } : (payload || {});
+    return callApi(`/group-orders/${id}/my-proof`, { method: 'post', data }, () => {
       throw new Error('團購功能需在真實 API 模式下使用');
-    }),
+    });
+  },
 
   submit: (id) =>
     callApi(`/group-orders/${id}/submit`, { method: 'post' }, () => {

@@ -15,7 +15,9 @@ export const coursesApi = {
   get: (id) =>
     callApi(`/courses/${id}`, { method: 'get' }, () => null),
 
-  // U10：事後上傳匯款證明到某筆 pending 報名
-  uploadProof: (id, payment_proof_url) =>
-    callApi(`/courses/${id}/payment-proof`, { method: 'post', data: { payment_proof_url } }, () => ({ ok: true })),
+  // 訂單成立後填寫付款資料到某筆 pending 報名
+  uploadProof: (id, payload) => {
+    const data = typeof payload === 'string' ? { payment_proof_url: payload } : (payload || {});
+    return callApi(`/courses/${id}/payment-proof`, { method: 'post', data }, () => ({ ok: true }));
+  },
 };

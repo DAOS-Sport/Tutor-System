@@ -6,7 +6,7 @@ import { formatTWD, formatTWDate, paymentStatusColor, paymentStatusLabel, course
  *  - variant="catalog"：首頁三組別卡片（display only + CTA）
  *  - variant="period"：「我的課程」用，顯示已開通/待對帳的課程期
  */
-export default function CourseCard({ variant = 'period', period, type, onClick, ctaLabel = '立即報名' }) {
+export default function CourseCard({ variant = 'period', period, type, onClick, ctaLabel = '立即報名', actions = [] }) {
   if (variant === 'catalog') {
     return (
       <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
@@ -36,15 +36,16 @@ export default function CourseCard({ variant = 'period', period, type, onClick, 
   const pct = period.total_sessions
     ? Math.min(100, Math.round((period.used_sessions / period.total_sessions) * 100))
     : 0;
-  const studentNames = (period.students || []).map((s) => s.name).join('、');
+  const studentNames = (period.students || []).map((s) => (typeof s === 'string' ? s : s.name)).filter(Boolean).join('、');
 
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="block w-full rounded-2xl border border-gray-200 bg-white p-4 text-left shadow-sm active:scale-[0.99]"
-    >
-      <div className="mb-2 flex items-start justify-between gap-3">
+    <div className="rounded-2xl border border-gray-200 bg-white p-4 text-left shadow-sm">
+      <button
+        type="button"
+        onClick={onClick}
+        className="block w-full text-left active:opacity-80"
+      >
+        <div className="mb-2 flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <span className="rounded-md bg-brand-primary/10 px-2 py-0.5 text-xs font-medium text-brand-primary">
@@ -69,25 +70,46 @@ export default function CourseCard({ variant = 'period', period, type, onClick, 
         <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-bold ${paymentStatusColor(period.payment_status)}`}>
           {paymentStatusLabel(period.payment_status)}
         </span>
-      </div>
+        </div>
 
-      <div className="mt-2 mb-1 flex items-center justify-between text-xs text-gray-600">
+        <div className="mt-2 mb-1 flex items-center justify-between text-xs text-gray-600">
         <span>
           堂數進度 <span className="font-bold text-brand-primary">{period.used_sessions}/{period.total_sessions}</span>
         </span>
         <span>到期 {formatTWDate(period.expires_at)}</span>
-      </div>
-      <div className="h-2 w-full overflow-hidden rounded-full bg-gray-100">
+        </div>
+        <div className="h-2 w-full overflow-hidden rounded-full bg-gray-100">
         <div
           className="h-full rounded-full bg-brand-green transition-all"
           style={{ width: `${pct}%` }}
         />
-      </div>
+        </div>
 
-      <div className="mt-3 flex items-baseline justify-between border-t border-gray-100 pt-2 text-xs text-gray-500">
+        <div className="mt-3 flex items-baseline justify-between border-t border-gray-100 pt-2 text-xs text-gray-500">
         <span>實付金額</span>
         <span className="text-base font-bold text-brand-primary">{formatTWD(period.final_price)}</span>
-      </div>
-    </button>
+        </div>
+      </button>
+
+      {actions.length > 0 && (
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          {actions.map((action) => (
+            <button
+              key={action.label}
+              type="button"
+              onClick={action.onClick}
+              disabled={action.disabled}
+              className={`rounded-lg px-3 py-2 text-sm font-bold disabled:opacity-50 ${
+                action.primary
+                  ? 'bg-brand-primary text-white active:bg-brand-teal'
+                  : 'border border-brand-teal text-brand-teal active:bg-brand-teal/10'
+              }`}
+            >
+              {action.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

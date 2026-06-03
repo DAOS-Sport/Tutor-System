@@ -72,28 +72,49 @@ router.get('/mine', requireParent, async (req, res) => {
   try {
     const phone = req.parent.phone;
     const r = await pool.query(
-      `SELECT id, parent_name, parent_phone, students, coach, venue_id, course_type,
-              original_price, final_price, transfer_last_5, status, submitted_at,
-              total_sessions, used_sessions, refund_amount, payment_proof_url, period_count,
-              invoice_number, invoice_image_url, invoice_url, invoice_issued_at,
-              extra_parent_phones, notes, group_order_id, is_group_shared
-         FROM admin_enrollments
-        WHERE parent_phone = $1 OR $1 = ANY(extra_parent_phones)
-        ORDER BY submitted_at DESC`,
+	      `SELECT admin_enrollments.id, parent_name, parent_phone, students,
+	              coach, coach_id, venue_id, v.name AS venue_name, course_type,
+	              original_price, final_price, transfer_last_5, status, submitted_at,
+	              total_sessions, used_sessions, refund_amount, payment_proof_url, period_count,
+	              invoice_number, invoice_image_url, invoice_url, invoice_issued_at,
+              extra_parent_phones, notes, group_order_id, is_group_shared,
+              -- 對帳通過後自動開通的正式 course_period：團報走 group_order_id（共用），
+              -- 一般報名走 admin_enrollment_id。供前端導去學習歷程/詳細頁（該頁以 period id 查歸屬）。
+              COALESCE(
+                (SELECT cp.id FROM course_periods cp
+                   WHERE admin_enrollments.group_order_id IS NOT NULL
+                     AND cp.group_order_id = admin_enrollments.group_order_id
+                   ORDER BY cp.created_at LIMIT 1),
+                (SELECT cp.id FROM course_periods cp
+                   WHERE cp.admin_enrollment_id = admin_enrollments.id
+                   ORDER BY cp.created_at LIMIT 1)
+	              ) AS course_period_id
+	         FROM admin_enrollments
+	         LEFT JOIN venues v ON v.id = admin_enrollments.venue_id
+	        WHERE parent_phone = $1 OR $1 = ANY(extra_parent_phones)
+	        ORDER BY submitted_at DESC`,
       [phone]
     );
+    // admin_enrollments.status 為 DB 內部狀態（pending_payment/confirmed/cancelled/refunded），
+    // 前端課程狀態詞彙為 pending_payment/active/completed/refunded（見 utils/format、mock）。
+    // 對帳通過(confirmed)＝課程已開通＝前端「進行中(active)」；未對應到的維持原值。
+    // 此正規化同時修好「進行中」分頁與「課程轉讓」頁（兩者都 filter payment_status==='active'）看不到已繳費課程的問題。
+    const toPaymentStatus = (s) => (s === 'confirmed' ? 'active' : s);
     res.json(r.rows.map((row) => ({
       id: row.id,
       parent_name: row.parent_name,
       parent_phone: row.parent_phone,
       students: row.students || [],
-      coach: row.coach,
-      venue_id: row.venue_id,
+	      coach: { id: row.coach_id || null, name: row.coach },
+	      coach_name: row.coach,
+	      venue_id: row.venue_id,
+	      venue: { id: row.venue_id, name: row.venue_name || row.venue_id },
       course_type: row.course_type,
       original_price: Number(row.original_price),
       final_price: Number(row.final_price),
       transfer_last_5: row.transfer_last_5,
-      payment_status: row.status,
+      payment_status: toPaymentStatus(row.status),
+      course_period_id: row.course_period_id || null,
       submitted_at: row.submitted_at,
       total_sessions: row.total_sessions,
       used_sessions: row.used_sessions,
@@ -164,7 +185,7 @@ router.get('/:id', requireParent, async (req, res) => {
   try {
     const r = await pool.query(
       `SELECT e.id, e.parent_phone, e.extra_parent_phones, e.students, e.coach, e.course_type,
-              e.original_price, e.final_price, e.status, e.payment_proof_url, e.period_count,
+              e.original_price, e.final_price, e.transfer_last_5, e.status, e.payment_proof_url, e.period_count,
               e.invoice_number, e.invoice_image_url, e.submitted_at, e.group_order_id,
               v.id AS venue_id, v.name AS venue_name, v.account_holder, v.account_number,
               v.bank_institution_name, v.bank_branch_name
@@ -186,6 +207,7 @@ router.get('/:id', requireParent, async (req, res) => {
       period_count: row.period_count || 1,
       original_price: Number(row.original_price),
       final_price: Number(row.final_price),
+      transfer_last_5: row.transfer_last_5 || '',
       payment_status: row.status,
       has_payment_proof: !!row.payment_proof_url,
       submitted_at: row.submitted_at,
@@ -202,16 +224,21 @@ router.get('/:id', requireParent, async (req, res) => {
   }
 });
 
-// ── POST /:id/payment-proof 事後上傳匯款證明（限本人、限待對帳）──
+// ── POST /:id/payment-proof 事後填寫付款資料（限本人、限待對帳）──
 router.post('/:id/payment-proof', requireParent, async (req, res) => {
   const PROOF_URL_RE = /^\/uploads\/\d{4}-\d{2}\/[a-f0-9]{24}\.(jpg|jpeg|png)$/;
   const url = typeof req.body?.payment_proof_url === 'string' ? req.body.payment_proof_url.trim() : '';
-  if (!PROOF_URL_RE.test(url) || !objectExists(url)) {
+  const last5 = typeof req.body?.transfer_last_5 === 'string' ? req.body.transfer_last_5.trim() : '';
+  if (last5 && !/^\d{5}$/.test(last5)) {
+    return res.status(400).json({ error: '轉帳末 5 碼需為 5 位數字', code: 'TRANSFER_LAST5_INVALID' });
+  }
+  if (url && (!PROOF_URL_RE.test(url) || !objectExists(url))) {
     return res.status(400).json({ error: '請上傳有效的匯款／轉帳證明', code: 'PAYMENT_PROOF_INVALID' });
   }
   try {
     const r = await pool.query(
-      `SELECT parent_phone, extra_parent_phones, status FROM admin_enrollments WHERE id = $1`,
+      `SELECT parent_phone, extra_parent_phones, status, payment_proof_url, transfer_last_5
+         FROM admin_enrollments WHERE id = $1`,
       [req.params.id]
     );
     if (!r.rowCount) return res.status(404).json({ error: '找不到此報名' });
@@ -223,7 +250,17 @@ router.post('/:id/payment-proof', requireParent, async (req, res) => {
     if (row.status !== 'pending_payment') {
       return res.status(409).json({ error: '此報名狀態無法再上傳證明', code: 'NOT_PENDING' });
     }
-    await pool.query(`UPDATE admin_enrollments SET payment_proof_url = $2, updated_at = NOW() WHERE id = $1`, [req.params.id, url]);
+    if (!url && !row.payment_proof_url && !last5) {
+      return res.status(400).json({ error: '請填寫轉帳末 5 碼或上傳匯款／轉帳證明', code: 'PAYMENT_INFO_REQUIRED' });
+    }
+    await pool.query(
+      `UPDATE admin_enrollments
+          SET payment_proof_url = COALESCE($2, payment_proof_url),
+              transfer_last_5 = COALESCE($3, transfer_last_5),
+              updated_at = NOW()
+        WHERE id = $1`,
+      [req.params.id, url || null, last5 || null]
+    );
     res.json({ ok: true });
   } catch (e) {
     console.error('[courses/:id/payment-proof]', e);

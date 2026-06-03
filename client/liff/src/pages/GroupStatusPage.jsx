@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import liff from '@line/liff';
 import { groupOrdersApi } from '../api/groupOrders';
 import { enrollmentsApi } from '../api/enrollments';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -20,6 +21,15 @@ function buildJoinUrl(token) {
     : `${window.location.origin}/liff/group/join/${token}`;
 }
 
+// 非 LINE App 內（瀏覽器 / 預覽）為 true。此時顯示「測試用直連」網址（同網域 /liff/...，
+// 不走 liff.line.me），讓開發者能用 demo 帳號在瀏覽器自測加入流程，不必拼 token。
+function notInLineClient() {
+  try { return !liff.isInClient(); } catch { return true; }
+}
+function buildTestJoinUrl(token) {
+  return token ? `${window.location.origin}/liff/group/join/${token}` : '';
+}
+
 const STATUS_META = {
   forming: { label: '揪團中', cls: 'bg-brand-teal/15 text-brand-teal' },
   submitted: { label: '審核中', cls: 'bg-brand-gold/15 text-brand-gold' },
@@ -37,6 +47,7 @@ export default function GroupStatusPage() {
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState(null); // 'submit' | 'cancel' | null
   const [proofBusy, setProofBusy] = useState(false);
+  const [transferLast5, setTransferLast5] = useState('');
 
   const load = useCallback(() => {
     let alive = true;
@@ -47,6 +58,10 @@ export default function GroupStatusPage() {
   }, [id]);
 
   useEffect(() => load(), [load]);
+  useEffect(() => {
+    const self = (order?.members || []).find((m) => m.is_self);
+    if (self) setTransferLast5(self.transfer_last_5 || '');
+  }, [order?.id, order?.members]);
 
   // 揪團中自動輪詢，讓團主在頁面上即時看到新加入的成員/學生（不必手動重整）
   useEffect(() => {
@@ -71,6 +86,8 @@ export default function GroupStatusPage() {
   const meta = STATUS_META[order.status] || { label: order.status, cls: 'bg-gray-100 text-gray-500' };
   const reachedMin = order.total_students >= order.min_students;
   const joinUrl = order.is_leader ? buildJoinUrl(order.join_token) : null;
+  // 測試用直連（僅非 LINE 瀏覽器顯示）：用 demo 帳號在瀏覽器自測加入用
+  const testJoinUrl = order.is_leader && notInLineClient() ? buildTestJoinUrl(order.join_token) : null;
 
   async function copyInvite() {
     try {
@@ -81,20 +98,38 @@ export default function GroupStatusPage() {
     }
   }
 
+  async function copyTestInvite() {
+    try {
+      await navigator.clipboard.writeText(testJoinUrl);
+      toast.success('測試直連已複製（請在另一個瀏覽器以 demo 帳號開啟）');
+    } catch {
+      toast.error('複製失敗，請手動複製');
+    }
+  }
+
   // U10：成員上傳自己的轉帳證明（先傳檔取得 URL，再記到本團我的那筆 member）
   async function handleUploadMyProof(file) {
-    if (!file) return;
-    if (!['image/jpeg', 'image/png'].includes(file.type)) return toast.error('只接受 JPG / PNG 圖片');
-    if (file.size > 5 * 1024 * 1024) return toast.error('圖片大小不得超過 5MB');
+    if (!/^\d{5}$/.test(transferLast5.trim())) return toast.error('請先填寫 5 位數字的轉帳末碼');
+    const self = (order?.members || []).find((m) => m.is_self);
+    if (!file && !self?.has_payment_proof) return toast.error('請選擇匯款／轉帳證明');
+    if (file && !['image/jpeg', 'image/png'].includes(file.type)) return toast.error('只接受 JPG / PNG 圖片');
+    if (file && file.size > 5 * 1024 * 1024) return toast.error('圖片大小不得超過 5MB');
     setProofBusy(true);
     try {
-      const { url } = await enrollmentsApi.uploadPaymentProof(file);
-      if (!url) throw new Error('no url');
-      const updated = await groupOrdersApi.uploadMyProof(id, url);
+      let url = null;
+      if (file) {
+        const uploaded = await enrollmentsApi.uploadPaymentProof(file);
+        url = uploaded?.url || null;
+        if (!url) throw new Error('no url');
+      }
+      const updated = await groupOrdersApi.uploadMyProof(id, {
+        transfer_last_5: transferLast5.trim(),
+        payment_proof_url: url || undefined,
+      });
       if (updated) setOrder(updated); else load();
-      toast.success('轉帳證明已上傳，待櫃檯確認');
+      toast.success('付款資料已送出，待櫃檯確認');
     } catch (e) {
-      toast.error(e?.response?.data?.error || '上傳失敗，請重試');
+      toast.error(e?.response?.data?.error || '送出失敗，請重試');
     } finally {
       setProofBusy(false);
     }
@@ -155,6 +190,17 @@ export default function GroupStatusPage() {
               className="shrink-0 rounded-lg bg-brand-teal px-3 py-2 text-xs font-bold text-white">複製</button>
           </div>
           <p className="mt-1.5 text-[11px] text-gray-500">把連結分享給其他家長，請他們登入填寫學生資料一起報名。</p>
+          {testJoinUrl && (
+            <div className="mt-2 border-t border-dashed border-brand-teal/30 pt-2">
+              <label className="mb-1 block text-[11px] font-medium text-amber-700">🧪 測試用直連（瀏覽器自測，請在另一個瀏覽器以 demo 帳號開啟）</label>
+              <div className="flex gap-2">
+                <input readOnly value={testJoinUrl}
+                  className="flex-1 truncate rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-gray-600" />
+                <button type="button" onClick={copyTestInvite}
+                  className="shrink-0 rounded-lg bg-amber-500 px-3 py-2 text-xs font-bold text-white">複製</button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -188,12 +234,30 @@ export default function GroupStatusPage() {
 
                 {/* 自己這筆：未確認帳款前可上傳 / 更換轉帳證明 */}
                 {m.is_self && !m.payment_confirmed && ['forming', 'submitted'].includes(order.status) && (
-                  <label className="mt-2 flex cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-dashed border-brand-teal/50 bg-white px-3 py-2 text-xs font-bold text-brand-teal active:opacity-70">
-                    📤 {proofBusy ? '上傳中…' : (m.has_payment_proof ? '更換轉帳證明' : '上傳轉帳證明')}
-                    <input type="file" accept="image/jpeg,image/png" className="hidden"
+                  <div className="mt-2 space-y-2">
+                    <input
+                      type="tel"
+                      inputMode="numeric"
+                      maxLength={5}
+                      value={transferLast5}
                       disabled={proofBusy}
-                      onChange={(e) => handleUploadMyProof(e.target.files?.[0])} />
-                  </label>
+                      onChange={(e) => setTransferLast5(e.target.value.replace(/\D/g, '').slice(0, 5))}
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-mono focus:border-brand-teal focus:outline-none"
+                      placeholder="轉帳末 5 碼"
+                    />
+                    <label className="flex cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-dashed border-brand-teal/50 bg-white px-3 py-2 text-xs font-bold text-brand-teal active:opacity-70">
+                      📤 {proofBusy ? '上傳中…' : (m.has_payment_proof ? '更換轉帳證明' : '上傳轉帳證明')}
+                      <input type="file" accept="image/jpeg,image/png" className="hidden"
+                        disabled={proofBusy}
+                        onChange={(e) => handleUploadMyProof(e.target.files?.[0])} />
+                    </label>
+                    {m.has_payment_proof && (
+                      <button type="button" disabled={proofBusy} onClick={() => handleUploadMyProof(null)}
+                        className="w-full rounded-lg border border-brand-teal bg-white px-3 py-2 text-xs font-bold text-brand-teal disabled:opacity-60">
+                        {proofBusy ? '儲存中…' : '只儲存末 5 碼'}
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             );

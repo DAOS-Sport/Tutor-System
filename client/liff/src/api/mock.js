@@ -52,6 +52,16 @@ const PARENTS = {
       { id: 'S0020', name: '陳小米', id_number: 'A287777111', birth_date: '2016-02-20', gender: '女' }] },
 };
 
+function currentMockParent() {
+  try {
+    const raw = localStorage.getItem('daos.user');
+    const u = raw ? JSON.parse(raw) : null;
+    const phone = u?.data?.phone;
+    if (phone && PARENTS[phone]) return PARENTS[phone];
+  } catch { /* noop */ }
+  return PARENTS['0912345678'];
+}
+
 const COURSE_PERIODS = [
   { id: 'CP0001', parent_id: 'P0001', coach: { id: 'C001', name: '王志強', is_senior: true },
     venue: { id: 'B', name: '夢想體育學院 板橋館' }, course_type: 1,
@@ -211,6 +221,53 @@ export const mockDb = {
     PARENTS[parent.phone] = parent;
     return JSON.parse(JSON.stringify(parent));
   },
+  me: () => JSON.parse(JSON.stringify(currentMockParent())),
+  updateMe: (data) => {
+    const p = currentMockParent();
+    Object.assign(p, {
+      name: data.name ?? p.name,
+      gender: data.gender ?? p.gender,
+      email: data.email ?? p.email,
+      primary_venue_id: data.primary_venue_id ?? p.primary_venue_id,
+      identity: data.identity ?? p.identity ?? '',
+      home_phone: data.home_phone ?? p.home_phone ?? '',
+      line_id: data.line_id ?? p.line_id ?? '',
+      home_address: data.home_address ?? p.home_address ?? '',
+    });
+    return JSON.parse(JSON.stringify(p));
+  },
+  createStudent: (data) => {
+    const p = currentMockParent();
+    const student = {
+      id: `S${p.id}-${Date.now()}`,
+      name: data.name,
+      id_number: String(data.id_number || '').toUpperCase(),
+      birth_date: data.birth_date,
+      gender: data.gender || '',
+      blood_type: data.blood_type || '',
+      is_active: true,
+    };
+    p.students = [...(p.students || []), student];
+    return JSON.parse(JSON.stringify(student));
+  },
+  updateStudent: (id, data) => {
+    const p = currentMockParent();
+    const idx = (p.students || []).findIndex((s) => s.id === id);
+    if (idx >= 0) {
+      p.students[idx] = {
+        ...p.students[idx],
+        ...data,
+        id_number: String(data.id_number || p.students[idx].id_number || '').toUpperCase(),
+      };
+      return JSON.parse(JSON.stringify(p.students[idx]));
+    }
+    return null;
+  },
+  deleteStudent: (id) => {
+    const p = currentMockParent();
+    p.students = (p.students || []).filter((s) => s.id !== id);
+    return { ok: true };
+  },
   myCourses: (parentId) =>
     COURSE_PERIODS.filter((cp) => cp.parent_id === parentId).map((cp) => JSON.parse(JSON.stringify(cp))),
   createEnrollment: (payload) => {
@@ -236,6 +293,42 @@ export const mockDb = {
   },
 
   coachSlots: (coachId, from, to) => _slotsByCoach(coachId, from, to),
+
+  availableSlotsForPeriod: (coursePeriodId, from, to) => {
+    const period = COURSE_PERIODS.find((cp) => cp.id === coursePeriodId);
+    if (!period) return { period: null, sessions_left: 0, slots: [] };
+    const slots = _slotsByCoach(period.coach.id, from, to)
+      .filter((s) => s.venue_id === period.venue.id && s.status === 'available');
+    return {
+      period: {
+        id: period.id,
+        coach_id: period.coach.id,
+        coach_name: period.coach.name,
+        venue_id: period.venue.id,
+        venue_name: period.venue.name,
+        course_type: period.course_type,
+        status: period.payment_status === 'active' ? 'active' : period.payment_status,
+        total_sessions: period.total_sessions,
+        booked_sessions: Math.max(0, period.used_sessions || 0),
+      },
+      sessions_left: Math.max(0, (period.total_sessions || 0) - (period.used_sessions || 0)),
+      slots,
+    };
+  },
+
+  bookSlot: (slotId, coursePeriodId) => {
+    const slot = COACH_SLOTS.find((s) => s.id === slotId);
+    const period = COURSE_PERIODS.find((cp) => cp.id === coursePeriodId);
+    if (!slot || slot.status !== 'available' || !period) throw new Error('此時段無法預約');
+    const sessionId = `SE${slot.id}`;
+    slot.status = 'booked';
+    slot.booked_session_id = sessionId;
+    slot.session_id = sessionId;
+    slot.course_period_id = coursePeriodId;
+    slot.course_type = period.course_type;
+    slot.student_names = (period.students || []).map((s) => s.name);
+    return { session: { id: sessionId, status: 'confirmed', course_period_id: coursePeriodId, scheduled_at: slot.start_at } };
+  },
 
   coachTodaySessions: (coachId) => {
     const today = new Date(); today.setHours(0,0,0,0);

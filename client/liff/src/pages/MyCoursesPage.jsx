@@ -99,9 +99,19 @@ export default function MyCoursesPage() {
           {filtered.map((cp) => (
             <CourseCard key={cp.id} variant="period" period={cp}
               onClick={() => navigate(
-                // U10：待對帳的報名 → 報名狀態頁（可補上傳證明 / 看櫃台確認狀態）；其餘 → 學習歷程
-                cp.payment_status === 'pending_payment' ? `/enroll-status/${cp.id}` : `/history/${cp.id}`
-              )} />
+                // U10：待對帳的報名 → 報名狀態頁（可補上傳證明 / 看櫃台確認狀態）。
+                // 已開通 → 學習歷程頁，需帶「course_period id」(後端以 period 查歸屬)；
+                // admin_enrollment id 與 period id 不同，必須用後端回傳的 course_period_id。
+                // 萬一尚未開通(無 period)則退回報名狀態頁，避免帶錯 id 導致 403。
+                cp.payment_status === 'pending_payment'
+                  ? `/enroll-status/${cp.id}`
+                  : (cp.course_period_id ? `/history/${cp.course_period_id}` : `/enroll-status/${cp.id}`)
+              )}
+              actions={cp.payment_status === 'active' && cp.course_period_id ? [
+                { label: '選時間', primary: true, onClick: () => navigate(`/book-slot/${cp.course_period_id}`) },
+                { label: '學習歷程', onClick: () => navigate(`/history/${cp.course_period_id}`) },
+              ] : []}
+            />
           ))}
         </div>
       )}

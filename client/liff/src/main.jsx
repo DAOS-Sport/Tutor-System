@@ -29,6 +29,19 @@ function pickLiffId() {
   return isCoachPath() ? LIFF_ID_COACH : LIFF_ID_PARENT;
 }
 
+// 是否已有本地登入 session（含 demo 登入）。AuthContext 以 'daos.user' 存
+// { role, data, token }；有 token 即視為已登入。
+function hasLocalSession() {
+  try {
+    const raw = localStorage.getItem('daos.user');
+    if (!raw) return false;
+    const u = JSON.parse(raw);
+    return !!(u && u.token);
+  } catch {
+    return false;
+  }
+}
+
 function normalizeCoachLanding() {
   const liffId = pickLiffId();
   try {
@@ -71,6 +84,15 @@ async function initLiff() {
     await liff.init({ liffId });
     normalizeCoachLanding();
     if (!liff.isLoggedIn()) {
+      // 測試/瀏覽器例外：非 LINE App 內（!isInClient）且已有本地 session（含 demo 登入）時，
+      // 不強制跳 LINE，直接用既有 session 掛載——讓單人能在瀏覽器自測團購加入等流程。
+      // LINE App 內行為完全不變（仍強制 LINE 登入）；後端登入仍驗 id_token，安全不受影響。
+      let inClient = true;
+      try { inClient = !!liff.isInClient(); } catch { inClient = false; }
+      if (!inClient && hasLocalSession()) {
+        mount();
+        return;
+      }
       liff.login({ redirectUri: window.location.href });
       return;
     }

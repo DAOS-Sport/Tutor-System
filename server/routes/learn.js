@@ -139,6 +139,11 @@ router.delete('/personal-tags/:id', requireCoach, async (req, res) => {
 // ── 家長端：學習歷程 ────────────────────────
 router.get('/history/:periodId', requireParent, async (req, res) => {
   try {
+    // 防呆：course_period_id 為 UUID 欄位。若傳進非 UUID（例如舊前端誤帶 admin_enrollment id
+    // 'EMPXS...'），直接回 404，避免 Postgres 22P02 型別錯誤被當成 500「載入失敗」。
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.periodId || '')) {
+      return res.status(404).json({ error: '查無此課程' });
+    }
     const guard = await pool.query(
       `SELECT 1 FROM course_period_enrollments e
        JOIN students s ON s.id = e.student_id

@@ -34,9 +34,12 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: '報名資料不完整' });
   }
 
-  // U10：匯款／轉帳證明改為「送出後在報名狀態頁再上傳」，這裡不再必填。
-  //   若前端仍帶（向後相容）才驗格式 + 落地存在；格式與 LocalDiskDriver 綁定。
+  // 匯款／轉帳證明在訂單成立後於狀態頁補填；若前端帶值則驗格式後落地。
   const PROOF_URL_RE = /^\/uploads\/\d{4}-\d{2}\/[a-f0-9]{24}\.(jpg|jpeg|png)$/;
+  const last5 = String(p.transfer_last_5 || '').trim();
+  if (last5 && !/^\d{5}$/.test(last5)) {
+    return res.status(400).json({ error: '轉帳末 5 碼格式錯誤', code: 'TRANSFER_LAST5_INVALID' });
+  }
   const rawProof = typeof p.payment_proof_url === 'string' ? p.payment_proof_url.trim() : '';
   let paymentProofUrl = null;
   if (rawProof) {
@@ -128,6 +131,22 @@ router.post('/', async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: '請選擇至少一位學生' });
     }
+    const submittedStudentIds = p.students
+      .map((s) => String(s?.id || '').trim())
+      .filter(Boolean);
+    if (submittedStudentIds.length !== studentCount) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: '學員資料不完整' });
+    }
+    const studentRows = await client.query(
+      `SELECT id, name FROM students
+        WHERE parent_id = $1 AND id = ANY($2::uuid[]) AND COALESCE(is_active, TRUE) = TRUE`,
+      [parentRow.id, submittedStudentIds]
+    );
+    if (studentRows.rowCount !== studentCount) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: '所選學員不存在、已停用或不屬於您', code: 'STUDENT_NOT_AVAILABLE' });
+    }
     const original = unitPrice * studentCount * periodCount;
     const couponCode = p.promotion && p.promotion.coupon_code ? String(p.promotion.coupon_code).trim() : null;
 
@@ -168,7 +187,7 @@ router.post('/', async (req, res) => {
 
     const parentUuid = parentRow.id;
     const enrollmentId = genEnrollmentId();
-    const studentNames = p.students.map((s) => s.name);
+    const studentNames = submittedStudentIds.map((id) => studentRows.rows.find((s) => s.id === id)?.name).filter(Boolean);
     const submittedAt = new Date();
 
     await client.query(
@@ -179,7 +198,7 @@ router.post('/', async (req, res) => {
       [
         enrollmentId, parentRow.name, parentRow.phone, studentNames,
         coachName, coachId, venueId, Number(p.course_type),
-        preview.originalPrice, preview.finalPrice, p.transfer_last_5 || null,
+        preview.originalPrice, preview.finalPrice, last5 || null,
         paymentProofUrl,
         submittedAt, periodCount,
       ]
@@ -226,7 +245,7 @@ router.post('/', async (req, res) => {
       original_price: preview.originalPrice,
       final_price: preview.finalPrice,
       payment_status: 'pending_payment',
-      transfer_last_5: p.transfer_last_5 || null,
+      transfer_last_5: last5 || null,
       payment_proof_url: paymentProofUrl,
       promotion: preview.promotion ? {
         id: preview.promotion.id,

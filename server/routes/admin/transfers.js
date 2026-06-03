@@ -11,7 +11,7 @@ const { requireAdminAuth, requireAdminRole, getScopedVenueIds, isVenueInScope } 
 async function assertTransferInScope(req, transferId) {
   const r = await pool.query(
     `SELECT cp.venue_id
-       FROM course_period_transfers tr
+       FROM transfer_records tr
        JOIN course_periods cp ON cp.id = tr.course_period_id
       WHERE tr.id = $1`,
     [transferId]

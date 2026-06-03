@@ -33,6 +33,7 @@ import MyLessonsPage from './pages/MyLessonsPage';
 import GroupCreatePage from './pages/GroupCreatePage';
 import GroupJoinPage from './pages/GroupJoinPage';
 import GroupStatusPage from './pages/GroupStatusPage';
+import SlotBookingPage from './pages/SlotBookingPage';
 
 function RequireAuth() {
   const { isAuthed } = useAuth();
@@ -107,6 +108,9 @@ export default function App() {
               </Route>
               {/* 學習歷程 / 期末評鑑 (Phase 5) */}
               <Route path="/history/:periodId" element={<LearningHistoryPage />} />
+              <Route element={<AppLayout showBackButton title="選擇上課時間" />}>
+                <Route path="/book-slot/:periodId" element={<SlotBookingPage />} />
+              </Route>
               <Route path="/evaluation/:id" element={<EvaluationFormPage />} />
               {/* MGM 推薦連結 (Phase 6 下) */}
               <Route element={<AppLayout showBackButton title="邀請好友" />}>

@@ -18,7 +18,7 @@ const emptyNewStudent = () => ({ name: '', id_number: '', birth_date: '', gender
 export default function GroupMemberFields({ value, onChange, maxStudents }) {
   const toast = useToast();
   const { parent } = useAuth();
-  const myStudents = (parent?.students || []).filter((s) => s && s.id && s.name);
+  const myStudents = (parent?.students || []).filter((s) => s && s.id && s.name && s.is_active !== false);
 
   const studentIds = value.studentIds || [];
   const newStudents = value.newStudents || [];

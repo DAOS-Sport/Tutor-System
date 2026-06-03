@@ -25,4 +25,12 @@ export const slotsApi = {
   previewConflict: (payload) =>
     callApi('/slots/preview-conflict', { method: 'post', data: payload }, () =>
       mockDb.previewConflict(payload)),
+
+  availableForPeriod: (coursePeriodId, { from, to } = {}) =>
+    callApi(`/slots/period/${coursePeriodId}`, { method: 'get', params: { from, to } }, () =>
+      mockDb.availableSlotsForPeriod(coursePeriodId, from, to)),
+
+  book: (slotId, coursePeriodId) =>
+    callApi(`/slots/${slotId}/book`, { method: 'post', data: { course_period_id: coursePeriodId } }, () =>
+      mockDb.bookSlot(slotId, coursePeriodId)),
 };

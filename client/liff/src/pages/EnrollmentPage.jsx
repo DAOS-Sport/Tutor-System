@@ -12,7 +12,6 @@ import useEnrollmentBoot from '../hooks/useEnrollmentBoot';
 import useEnrollmentPricing from '../hooks/useEnrollmentPricing';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
-import { courseTypeLabel } from '../utils/format';
 
 export default function EnrollmentPage() {
   const [params] = useSearchParams();
@@ -84,7 +83,7 @@ export default function EnrollmentPage() {
   const selectionResolved = allSelectedStudents.length === selectedSelfStudents.length;
 
   // 須湊滿該組別人數（1v1=1、1v2=2、1v3=3），且只能用自己名下的學員。
-  // U10：證明改送出後在報名狀態頁上傳，這裡不再要求證明 / 末5碼。
+  // 付款資料在訂單成立後才填，讓一般報名與團報到尾端才分岔。
   const canSubmit =
     totalSelected === requiredStudentCount &&
     selectionResolved &&
@@ -220,7 +219,7 @@ export default function EnrollmentPage() {
       </div>
 
       <div className="mt-2 rounded-xl border border-brand-gold/30 bg-brand-gold/5 p-3 text-[12px] leading-5 text-gray-600">
-        💡 送出後會進入<strong>報名狀態頁</strong>，那裡會顯示轉帳帳號與應繳金額，請完成轉帳後上傳匯款證明，等待櫃台確認。
+        送出後會進入報名狀態頁，那裡會顯示轉帳帳號與應繳金額，請完成轉帳後填寫末 5 碼並上傳匯款證明，等待櫃檯確認。
       </div>
 
       <button

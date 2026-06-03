@@ -206,23 +206,60 @@ async function copyPrev(sessionId, coachId) {
 
 // ── 標籤庫 ────────────────────────────────────
 async function listTags(coachId) {
-  const sys = await pool.query(
-    `SELECT t.id, t.label, t.text_template, t.category_id, c.name AS category_name
-       FROM tag_library t JOIN tag_categories c ON c.id = t.category_id
-      WHERE t.is_active = TRUE
-      ORDER BY c.sort_order, c.name, t.sort_order, t.label`
-  );
-  let personal = { rows: [] };
-  if (coachId) {
-    personal = await pool.query(
-      `SELECT p.id, p.label, p.text_template, p.category_id, c.name AS category_name
-         FROM coach_personal_tags p
-         LEFT JOIN tag_categories c ON c.id = p.category_id
-        WHERE p.coach_id = $1 ORDER BY p.created_at DESC`,
-      [coachId]
+  try {
+    const sys = await pool.query(
+      `SELECT t.id, t.label, t.text_template, t.category_id, c.name AS category_name
+         FROM tag_library t JOIN tag_categories c ON c.id = t.category_id
+        WHERE t.is_active = TRUE
+        ORDER BY c.sort_order, c.name, t.sort_order, t.label`
     );
+    let personal = { rows: [] };
+    if (coachId) {
+      personal = await pool.query(
+        `SELECT p.id, p.label, p.text_template, p.category_id, c.name AS category_name
+           FROM coach_personal_tags p
+           LEFT JOIN tag_categories c ON c.id = p.category_id
+          WHERE p.coach_id = $1 ORDER BY p.created_at DESC`,
+        [coachId]
+      );
+    }
+    return { system: sys.rows, personal: personal.rows };
+  } catch (err) {
+    if (!['42P01', '42703'].includes(err.code)) throw err;
+
+    // 舊部署曾把「標籤庫」與「課堂紀錄使用過的標籤」放在同一張 session_record_tags。
+    // 若資料庫尚未完成新 schema migration，回退到舊欄位，避免教練端顯示 API 錯誤。
+    try {
+      const sys = await pool.query(
+        `SELECT id, tag_text AS label,
+                COALESCE(auto_generated_template, tag_text) AS text_template,
+                NULL::uuid AS category_id,
+                tag_category AS category_name
+           FROM session_record_tags
+          WHERE COALESCE(is_system_default, FALSE) = TRUE
+          ORDER BY tag_category, sort_order, tag_text`
+      );
+      let personal = { rows: [] };
+      if (coachId) {
+        personal = await pool.query(
+          `SELECT id, tag_text AS label,
+                  COALESCE(auto_generated_template, tag_text) AS text_template,
+                  NULL::uuid AS category_id,
+                  tag_category AS category_name
+             FROM session_record_tags
+            WHERE coach_id = $1
+              AND COALESCE(is_system_default, FALSE) = FALSE
+            ORDER BY created_at DESC`,
+          [coachId]
+        );
+      }
+      return { system: sys.rows, personal: personal.rows };
+    } catch (fallbackErr) {
+      if (!['42P01', '42703'].includes(fallbackErr.code)) throw fallbackErr;
+      console.warn('[learning/listTags] tag schema unavailable:', fallbackErr.message);
+      return { system: [], personal: [] };
+    }
   }
-  return { system: sys.rows, personal: personal.rows };
 }
 
 async function addPersonalTag(coachId, { label, text_template, category_id }) {
@@ -282,7 +319,7 @@ async function coachOwnsSession(sessionId, coachId) {
     `SELECT 1
        FROM course_sessions cs
        JOIN course_periods cp ON cp.id = cs.course_period_id
-      WHERE cs.id = $1 AND cp.coach_id = $2`,
+      WHERE cs.id = $1 AND COALESCE(cs.coach_id, cp.coach_id) = $2`,
     [sessionId, coachId]
   );
   return r.rows.length > 0;

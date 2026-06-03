@@ -26,6 +26,7 @@ export default function EnrollStatusPage() {
 
   const [enr, setEnr] = useState(undefined); // undefined=loading, null=error
   const [proofBusy, setProofBusy] = useState(false);
+  const [transferLast5, setTransferLast5] = useState('');
 
   const load = useCallback(() => {
     let alive = true;
@@ -36,6 +37,9 @@ export default function EnrollStatusPage() {
   }, [id]);
 
   useEffect(() => load(), [load]);
+  useEffect(() => {
+    if (enr && enr.transfer_last_5 != null) setTransferLast5(enr.transfer_last_5 || '');
+  }, [enr?.id, enr?.transfer_last_5]);
 
   if (enr === undefined) return <LoadingSpinner fullPage label="載入報名狀態…" />;
   if (enr === null) {
@@ -62,18 +66,26 @@ export default function EnrollStatusPage() {
   }
 
   async function handleUpload(file) {
-    if (!file) return;
-    if (!['image/jpeg', 'image/png'].includes(file.type)) return toast.error('只接受 JPG / PNG 圖片');
-    if (file.size > 5 * 1024 * 1024) return toast.error('圖片大小不得超過 5MB');
+    if (!/^\d{5}$/.test(transferLast5.trim())) return toast.error('請先填寫 5 位數字的轉帳末碼');
+    if (!file && !enr.has_payment_proof) return toast.error('請選擇匯款／轉帳證明');
+    if (file && !['image/jpeg', 'image/png'].includes(file.type)) return toast.error('只接受 JPG / PNG 圖片');
+    if (file && file.size > 5 * 1024 * 1024) return toast.error('圖片大小不得超過 5MB');
     setProofBusy(true);
     try {
-      const { url } = await enrollmentsApi.uploadPaymentProof(file);
-      if (!url) throw new Error('no url');
-      await coursesApi.uploadProof(id, url);
-      toast.success('匯款證明已上傳，待櫃台確認');
+      let url = null;
+      if (file) {
+        const uploaded = await enrollmentsApi.uploadPaymentProof(file);
+        url = uploaded?.url || null;
+        if (!url) throw new Error('no url');
+      }
+      await coursesApi.uploadProof(id, {
+        transfer_last_5: transferLast5.trim(),
+        payment_proof_url: url || undefined,
+      });
+      toast.success('付款資料已送出，待櫃台確認');
       load();
     } catch (e) {
-      toast.error(e?.response?.data?.error || '上傳失敗，請重試');
+      toast.error(e?.response?.data?.error || '送出失敗，請重試');
     } finally {
       setProofBusy(false);
     }
@@ -123,10 +135,22 @@ export default function EnrollStatusPage() {
       {/* 匯款證明 */}
       <div className="rounded-xl border border-gray-200 bg-white p-3">
         <h3 className="mb-1 text-xs font-bold text-gray-600">匯款／轉帳證明</h3>
+        <label className="mt-2 block text-xs font-medium text-gray-600" htmlFor="transfer-last5">轉帳末 5 碼</label>
+        <input
+          id="transfer-last5"
+          type="tel"
+          inputMode="numeric"
+          maxLength={5}
+          value={transferLast5}
+          disabled={!canUpload || proofBusy}
+          onChange={(e) => setTransferLast5(e.target.value.replace(/\D/g, '').slice(0, 5))}
+          className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-mono focus:border-brand-teal focus:outline-none disabled:bg-gray-50"
+          placeholder="5 位數字"
+        />
         {enr.has_payment_proof ? (
-          <p className="text-sm font-medium text-brand-gold">✓ 已上傳，等待櫃台確認帳款</p>
+          <p className="mt-2 text-sm font-medium text-brand-gold">✓ 已上傳，等待櫃台確認帳款</p>
         ) : (
-          <p className="text-sm text-gray-500">尚未上傳。請先完成轉帳，再上傳證明。</p>
+          <p className="mt-2 text-sm text-gray-500">尚未上傳。請先完成轉帳，再填末 5 碼並上傳證明。</p>
         )}
         {canUpload && (
           <label className="mt-2 flex cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-dashed border-brand-teal/50 px-3 py-3 text-sm font-bold text-brand-teal active:opacity-70">
@@ -134,6 +158,12 @@ export default function EnrollStatusPage() {
             <input type="file" accept="image/jpeg,image/png" className="hidden" disabled={proofBusy}
               onChange={(e) => handleUpload(e.target.files?.[0])} />
           </label>
+        )}
+        {canUpload && enr.has_payment_proof && (
+          <button type="button" disabled={proofBusy} onClick={() => handleUpload(null)}
+            className="mt-2 w-full rounded-lg border border-brand-teal py-2 text-sm font-bold text-brand-teal disabled:opacity-60">
+            {proofBusy ? '儲存中…' : '只儲存末 5 碼'}
+          </button>
         )}
       </div>
 
