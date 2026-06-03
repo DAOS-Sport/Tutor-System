@@ -202,7 +202,7 @@ router.get('/:id', requireParent, async (req, res) => {
       `SELECT e.id, e.parent_phone, e.extra_parent_phones, e.students, e.coach, e.course_type,
               e.original_price, e.final_price, e.transfer_last_5, e.status, e.payment_proof_url, e.period_count,
               e.invoice_number, e.invoice_image_url, e.submitted_at, e.group_order_id,
-              e.total_sessions, e.used_sessions, e.is_group_shared, e.expires_at,
+              e.total_sessions, e.used_sessions, e.is_group_shared,
               -- 與 /mine 相同：團報走 group_order_id（共用）、一般報名走 admin_enrollment_id。
               COALESCE(
                 (SELECT cp.id FROM course_periods cp
@@ -213,6 +213,16 @@ router.get('/:id', requireParent, async (req, res) => {
                    WHERE cp.admin_enrollment_id = e.id
                    ORDER BY cp.created_at LIMIT 1)
               ) AS course_period_id,
+              -- 到期日來自正式 course_period（admin_enrollments 無此欄）。
+              COALESCE(
+                (SELECT cp.expires_at FROM course_periods cp
+                   WHERE e.group_order_id IS NOT NULL
+                     AND cp.group_order_id = e.group_order_id
+                   ORDER BY cp.created_at LIMIT 1),
+                (SELECT cp.expires_at FROM course_periods cp
+                   WHERE cp.admin_enrollment_id = e.id
+                   ORDER BY cp.created_at LIMIT 1)
+              ) AS expires_at,
               v.id AS venue_id, v.name AS venue_name, v.account_holder, v.account_number,
               v.bank_institution_name, v.bank_branch_name
          FROM admin_enrollments e
