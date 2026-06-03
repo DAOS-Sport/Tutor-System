@@ -57,11 +57,14 @@ export default function GroupOrdersPage() {
     setBusy(true);
     try {
       const r = await groupOrdersApi.approve(detail.id);
-      toast.success(`已核准，建立 ${r.count ?? ''} 筆報名`);
+      toast.success(`已核准，送待對帳清單 ${r.count ?? ''} 筆`);
       closeDetail();
       load();
     } catch (e) {
-      toast.error(e?.response?.data?.error || '核准失敗');
+      const data = e?.response?.data;
+      const missing = Array.isArray(data?.missing_members) ? data.missing_members : [];
+      const suffix = missing.length ? `：${missing.map((m) => m.parent_name || m.parent_phone).join('、')}` : '';
+      toast.error((data?.error || '核准失敗') + suffix, 5000);
     } finally { setBusy(false); }
   }
 
@@ -81,7 +84,7 @@ export default function GroupOrdersPage() {
 
   return (
     <div>
-      <PageHeader title="團購審核" subtitle="家長發起的團購送審後在此核准／退回；核准後自動為每個家庭建立報名。" />
+      <PageHeader title="團購審核" subtitle="家長發起的團購送審後在此核准／退回；核准後送待對帳清單，發票與開通在待對帳流程處理。" />
 
       <div className="mb-4 flex gap-2">
         {[['submitted', '待審核'], ['approved', '已核准'], ['rejected', '已退回'], ['', '全部']].map(([k, label]) => (
@@ -174,6 +177,12 @@ export default function GroupOrdersPage() {
                         <div className="text-xs text-gray-400">{m.parent_phone}</div>
                       </div>
                       <div className="mt-1 text-xs text-gray-500">學生：{(m.student_names || []).join('、') || '—'}</div>
+                      <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+                        <span className="text-gray-500">末 5 碼：<span className="font-mono font-bold text-gray-700">{m.transfer_last_5 || '—'}</span></span>
+                        <span className={m.payment_confirmed ? 'font-bold text-green-600' : 'font-bold text-amber-600'}>
+                          {m.payment_confirmed ? '帳款已確認' : '待確認'}
+                        </span>
+                      </div>
                       {m.payment_proof_url ? (
                         <a href={m.payment_proof_url} target="_blank" rel="noreferrer"
                           className="mt-1 inline-block text-xs font-bold text-brand-teal underline">查看匯款證明</a>
@@ -189,7 +198,7 @@ export default function GroupOrdersPage() {
                     {!rejecting ? (
                       <div className="flex gap-2">
                         <button type="button" disabled={busy} onClick={handleApprove}
-                          className="flex-1 rounded-lg bg-brand-green py-2.5 text-sm font-bold text-white disabled:opacity-50">核准成團</button>
+                          className="flex-1 rounded-lg bg-brand-green py-2.5 text-sm font-bold text-white disabled:opacity-50">核准後送待對帳</button>
                         <button type="button" disabled={busy} onClick={() => setRejecting(true)}
                           className="flex-1 rounded-lg border border-red-300 py-2.5 text-sm font-bold text-red-500">退回</button>
                       </div>

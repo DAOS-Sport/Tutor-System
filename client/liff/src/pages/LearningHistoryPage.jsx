@@ -86,6 +86,7 @@ export default function LearningHistoryPage() {
               <Field title="表現亮點" body={r.highlights} />
               <Field title="待加強" body={r.improvements} />
               <Field title="回家練習" body={r.homework} />
+              <Field title="備註" body={r.notes} />
               {r.tags?.length > 0 && (
                 <p className="mt-2 flex flex-wrap gap-1 text-[11px]">
                   {r.tags.map((t) => (

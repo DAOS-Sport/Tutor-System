@@ -33,6 +33,15 @@ const TW_PHONE_RE = /^09\d{8}$/;
 // 團購人數上下限改依「課程組別」(course_type_configs.min/max_students)，於發起時讀取落地。
 // 此常數僅作為「草稿暫存陣列」的防呆絕對上限（避免存進過大內容）；非業務上限。
 const DRAFT_MAX_STUDENTS = 6;
+// 團報人數的全域硬性夾擠：無論 course_type_configs 設定為何，min 至少 2、max 至多 6。
+// 發起時將 config 值正規化後落地到 group_orders，使加入/送審檢查（讀 order.min/max）自動正確。
+const GROUP_MIN_FLOOR = 2;
+const GROUP_MAX_CEIL = 6;
+function effectiveBounds(cfgMin, cfgMax) {
+  const max = Math.min(GROUP_MAX_CEIL, Math.max(1, Number(cfgMax) || 1));
+  const min = Math.min(max, Math.max(GROUP_MIN_FLOOR, Number(cfgMin) || 1));
+  return { min_students: min, max_students: max };
+}
 // U9：複數期數——一張團報訂單可一次購買 1–6 期（名單鎖定不變）。
 const PERIOD_COUNT_MIN = 1;
 const PERIOD_COUNT_MAX = 6;
@@ -210,14 +219,17 @@ function shapeMember(m, isSelf, perStudent, periodCount) {
   };
 }
 
-// 讀單一團購 + 成員（join parents 取姓名）；附 base_price + coach 倍率供金額計算。
+// 讀單一團購 + 成員（join parents 取姓名）；附 base_price + coach 倍率、場館匯款資料供金額/付款顯示。
 // 回 { order, members(raw) } 或 null
 async function loadOrderWithMembers(client, orderId) {
   const o = await client.query(
-    `SELECT go.*, ctc.base_price, COALESCE(co.pricing_multiplier, 1) AS multiplier
+    `SELECT go.*, ctc.base_price, COALESCE(co.pricing_multiplier, 1) AS multiplier,
+            v.name AS venue_name, v.account_holder, v.account_number,
+            v.bank_institution_name, v.bank_branch_name
        FROM group_orders go
        LEFT JOIN course_type_configs ctc ON ctc.course_type = go.course_type
        LEFT JOIN coaches co ON co.id = go.coach_id
+       LEFT JOIN venues v ON v.id = go.venue_id
       WHERE go.id = $1`,
     [orderId]
   );
@@ -251,6 +263,14 @@ function shapeOrder(order, members, viewerParentId, extra = {}) {
     id: order.id,
     status: order.status,
     venue_id: order.venue_id,
+    venue: {
+      id: order.venue_id,
+      name: order.venue_name || order.venue_id,
+      account_holder: order.account_holder || '',
+      account_number: order.account_number || '',
+      bank_institution_name: order.bank_institution_name || '',
+      bank_branch_name: order.bank_branch_name || '',
+    },
     course_type: order.course_type,
     coach_id: order.coach_id,
     period_count: periodCount,
@@ -441,10 +461,9 @@ router.post('/', async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: '此課程需求不可用' });
     }
-    // 團購人數上下限＝該課程組別（course_type_configs）的設定值（後台可改）。
-    //   例：1對2 → 1~2、1對3 → 2~3。計數一律以「學生數」為準（一個家庭可帶多位）。
-    const min_students = Number(cfg.rows[0].min_students) || 1;
-    const max_students = Number(cfg.rows[0].max_students) || 1;
+    // 團購人數上下限＝該課程組別（course_type_configs）的設定值（後台可改），再經全域夾擠：
+    //   min 至少 GROUP_MIN_FLOOR(2)、max 至多 GROUP_MAX_CEIL(6)。計數一律以「學生數」為準（一個家庭可帶多位）。
+    const { min_students, max_students } = effectiveBounds(cfg.rows[0].min_students, cfg.rows[0].max_students);
 
     const vr = await client.query(`SELECT id, is_active FROM venues WHERE id = $1`, [venueId]);
     if (!vr.rowCount || vr.rows[0].is_active === false) {
@@ -656,7 +675,7 @@ router.post('/by-token/:token/join', async (req, res) => {
 });
 
 // ── POST /:id/my-proof 成員上傳/更新自己的轉帳證明（U10） ──────
-//    團報流程：發起/加入時不收證明，改在這裡（揪團中或審核中）由各家自行上傳。
+//    團報流程：發起/加入時不收證明，團主送審後（審核中）才由各家自行上傳。
 //    限本團成員、限上傳自己那筆；櫃檯已「確認帳款」後不可再改（避免改掉已查核的證明）。
 router.post('/:id/my-proof', async (req, res) => {
   const proof = validProof(req.body?.payment_proof_url);
@@ -667,8 +686,8 @@ router.post('/:id/my-proof', async (req, res) => {
   try {
     const o = await pool.query(`SELECT status FROM group_orders WHERE id = $1`, [req.params.id]);
     if (!o.rowCount) return res.status(404).json({ error: '找不到此團購' });
-    if (!['forming', 'submitted'].includes(o.rows[0].status)) {
-      return res.status(409).json({ error: '此團購狀態無法再上傳證明', code: 'NOT_UPLOADABLE' });
+    if (o.rows[0].status !== 'submitted') {
+      return res.status(409).json({ error: '送審後才可上傳付款資料', code: 'NOT_UPLOADABLE' });
     }
     const m = await pool.query(
       `SELECT id, payment_confirmed FROM group_order_members WHERE group_order_id = $1 AND parent_id = $2`,

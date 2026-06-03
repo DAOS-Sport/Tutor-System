@@ -59,7 +59,7 @@ http.interceptors.response.use(
     if (err?.response?.status === 404 && err?.response?.data?.error === 'admin endpoint not found') {
       const path = err?.response?.data?.path || err?.config?.url || '(unknown)';
       try {
-        err.response.data.error = `找不到 API：${path}（請重新整理頁面以取得最新版本）`;
+        err.response.data.error = `頁面版本可能過舊，請重新整理後再試（${path}）`;
         // eslint-disable-next-line no-console
         console.warn(
           '[admin api 404]',

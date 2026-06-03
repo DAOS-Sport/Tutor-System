@@ -11,10 +11,11 @@ const FIELDS = [
   { key: 'highlights',   label: '表現亮點',  cat: '表現亮點' },
   { key: 'improvements', label: '待加強',    cat: '需加強' },
   { key: 'homework',     label: '回家練習',  cat: '回家練習' },
+  { key: 'notes',        label: '備註',      cat: '備註' },
 ];
 
-const EMPTY = { summary: '', highlights: '', improvements: '', homework: '', media: [], tags: [], status: 'draft' };
-const BLANK_STUDENT = () => ({ summary: '', highlights: '', improvements: '', homework: '' });
+const EMPTY = { summary: '', highlights: '', improvements: '', homework: '', notes: '', media: [], tags: [], status: 'draft' };
+const BLANK_STUDENT = () => ({ summary: '', highlights: '', improvements: '', homework: '', notes: '' });
 
 export default function SessionRecordFormPage() {
   const { sessionId } = useParams();
@@ -135,11 +136,11 @@ export default function SessionRecordFormPage() {
           ...p,
           [activeStudent]: {
             summary: prev.summary, highlights: prev.highlights,
-            improvements: prev.improvements, homework: prev.homework,
+            improvements: prev.improvements, homework: prev.homework, notes: prev.notes,
           },
         }));
       } else {
-        setForm((f) => ({ ...f, summary: prev.summary, highlights: prev.highlights, improvements: prev.improvements, homework: prev.homework }));
+        setForm((f) => ({ ...f, summary: prev.summary, highlights: prev.highlights, improvements: prev.improvements, homework: prev.homework, notes: prev.notes }));
       }
       toast.success('已套用前一堂內容，可繼續編輯');
     } catch (e) { toast.error(e?.response?.data?.error || '載入失敗'); }
@@ -162,7 +163,7 @@ export default function SessionRecordFormPage() {
 
   // 個別模式：把各學員內容合併成單一紀錄（以【學員名】分段）
   function composeFromStudents() {
-    const out = { summary: '', highlights: '', improvements: '', homework: '' };
+    const out = { summary: '', highlights: '', improvements: '', homework: '', notes: '' };
     for (const k of Object.keys(out)) {
       out[k] = students
         .map((n) => ({ n, v: (perStudent[n]?.[k] || '').trim() }))

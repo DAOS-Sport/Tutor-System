@@ -394,6 +394,7 @@ DO $$ BEGIN
   ALTER TABLE session_records ADD COLUMN IF NOT EXISTS highlights TEXT NOT NULL DEFAULT '';
   ALTER TABLE session_records ADD COLUMN IF NOT EXISTS improvements TEXT NOT NULL DEFAULT '';
   ALTER TABLE session_records ADD COLUMN IF NOT EXISTS homework TEXT NOT NULL DEFAULT '';
+  ALTER TABLE session_records ADD COLUMN IF NOT EXISTS notes TEXT NOT NULL DEFAULT '';
   ALTER TABLE session_records ADD COLUMN IF NOT EXISTS media JSONB NOT NULL DEFAULT '[]'::jsonb;
   ALTER TABLE session_records ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMPTZ;
   BEGIN
@@ -465,6 +466,7 @@ CREATE TABLE IF NOT EXISTS session_records (
   highlights TEXT NOT NULL DEFAULT '',      -- 表現亮點
   improvements TEXT NOT NULL DEFAULT '',    -- 待加強
   homework TEXT NOT NULL DEFAULT '',        -- 回家練習
+  notes TEXT NOT NULL DEFAULT '',           -- 備註（給家長的提醒）
   status VARCHAR(10) NOT NULL DEFAULT 'draft', -- draft | submitted
   media JSONB NOT NULL DEFAULT '[]'::jsonb, -- [{ url, mime, name, size }]
   submitted_at TIMESTAMPTZ,
@@ -920,7 +922,7 @@ async function seedSlotsAndSessions() {
   console.log('[core bootstrap] seeded coaches + venues + parents + 8 demo slots for C001');
 }
 
-// Phase 5 — 預設標籤庫（F-A08；4 大類 × 4 標籤）
+// Phase 5 — 預設標籤庫（F-A08；5 大類，含「備註」快速提醒，降低教練填寫摩擦）
 const DEFAULT_TAG_CATEGORIES = [
   { name: '表現亮點',
     tags: [
@@ -950,6 +952,13 @@ const DEFAULT_TAG_CATEGORIES = [
       { label: '發球練習', text: '本堂安排發球練習，含上手 / 下手與站位調整。' },
       { label: '對打模擬', text: '後段進行對打模擬，鍛鍊比賽情境應變能力。' },
     ]},
+  { name: '備註',
+    tags: [
+      { label: '請帶水壺', text: '提醒：下堂課請自備水壺與毛巾。' },
+      { label: '請假補課', text: '本堂如需請假，請提前於 LINE 告知以利安排補課。' },
+      { label: '攜帶裝備', text: '下堂課請記得攜帶個人球拍與運動鞋。' },
+      { label: '家長配合', text: '請家長協助孩子於課後完成回家練習，效果更佳。' },
+    ]},
 ];
 
 const DEFAULT_THRESHOLDS = [
@@ -973,6 +982,19 @@ async function seedCourseTypeConfigs() {
       [d.course_type, d.label, d.max_students, d.sort_order, d.base_price]
     );
   }
+}
+
+// 團報人數全域夾擠：course_type>=2 的 min 至少 2、所有組別 max 至多 6。
+// 每次開機都跑（冪等）；不動 1對1（course_type=1）列。對應 groupOrders.js effectiveBounds()。
+async function normalizeCourseTypeBounds() {
+  await pool.query(
+    `UPDATE course_type_configs SET min_students = GREATEST(min_students, 2)
+      WHERE course_type >= 2 AND min_students < 2`
+  );
+  await pool.query(
+    `UPDATE course_type_configs SET max_students = LEAST(max_students, 6)
+      WHERE max_students > 6`
+  );
 }
 
 async function seedTagsAndThresholds() {
@@ -1049,6 +1071,7 @@ async function bootstrap() {
     await seedKeywords();
     await seedTagsAndThresholds();
     await seedCourseTypeConfigs();
+    await normalizeCourseTypeBounds();
     await ensureCourseIntroFK();
     await ensureChatRoomsForActivePeriods();
     console.log('[core bootstrap] ready');

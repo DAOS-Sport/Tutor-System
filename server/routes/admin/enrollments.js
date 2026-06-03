@@ -256,6 +256,9 @@ async function readEnrollment(id) {
     invoice_issued_at: tsToString(row.invoice_issued_at),
     extra_parent_phones: row.extra_parent_phones || [],
     notes: row.notes || null,
+    group_order_id: row.group_order_id || null,
+    is_group_shared: !!row.is_group_shared,
+    period_count: Number(row.period_count) || 1,
     audit_logs: a.rows.map((x) => ({
       at: tsToString(x.at),
       action: x.action,

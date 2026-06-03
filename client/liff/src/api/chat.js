@@ -22,6 +22,17 @@ export function getRoom(roomId) {
   return callApi(`/chat/rooms/${roomId}`, {}, () => mockDb.chatRoom(roomId));
 }
 
+export function getRoomForPeriod(coursePeriodId) {
+  return callApi(
+    `/chat/period/${coursePeriodId}/room`,
+    {},
+    () => {
+      const room = mockDb.chatRooms(_viewer()).find((r) => r.course_period_id === coursePeriodId);
+      return { room_id: room?.id || 'CR001' };
+    }
+  );
+}
+
 export function listMessages(roomId, { before, limit } = {}) {
   return callApi(
     `/chat/rooms/${roomId}/messages`,

@@ -100,6 +100,20 @@ router.get('/mine', requireParent, async (req, res) => {
     // 對帳通過(confirmed)＝課程已開通＝前端「進行中(active)」；未對應到的維持原值。
     // 此正規化同時修好「進行中」分頁與「課程轉讓」頁（兩者都 filter payment_status==='active'）看不到已繳費課程的問題。
     const toPaymentStatus = (s) => (s === 'confirmed' ? 'active' : s);
+    // lifecycle：前端 My-Courses 分頁用的課程生命週期狀態（與 payment_status 並存，不取代）。
+    //   completed     — 已開通且堂數用畢（total>0 且 used>=total）
+    //   active        — 已對帳開通（confirmed/active）但尚未上完
+    //   closed        — 已取消/退費（cancelled/refunded）
+    //   pending_payment — 其餘（待對帳）原值透傳
+    const toLifecycle = (row) => {
+      const total = Number(row.total_sessions) || 0;
+      const used = Number(row.used_sessions) || 0;
+      const s = row.status;
+      if (s === 'cancelled' || s === 'refunded') return 'closed';
+      if ((s === 'confirmed' || s === 'active') && total > 0 && used >= total) return 'completed';
+      if (s === 'confirmed' || s === 'active') return 'active';
+      return 'pending_payment';
+    };
     res.json(r.rows.map((row) => ({
       id: row.id,
       parent_name: row.parent_name,
@@ -114,6 +128,7 @@ router.get('/mine', requireParent, async (req, res) => {
       final_price: Number(row.final_price),
       transfer_last_5: row.transfer_last_5,
       payment_status: toPaymentStatus(row.status),
+      lifecycle: toLifecycle(row),
       course_period_id: row.course_period_id || null,
       submitted_at: row.submitted_at,
       total_sessions: row.total_sessions,
@@ -187,6 +202,17 @@ router.get('/:id', requireParent, async (req, res) => {
       `SELECT e.id, e.parent_phone, e.extra_parent_phones, e.students, e.coach, e.course_type,
               e.original_price, e.final_price, e.transfer_last_5, e.status, e.payment_proof_url, e.period_count,
               e.invoice_number, e.invoice_image_url, e.submitted_at, e.group_order_id,
+              e.total_sessions, e.used_sessions, e.is_group_shared, e.expires_at,
+              -- 與 /mine 相同：團報走 group_order_id（共用）、一般報名走 admin_enrollment_id。
+              COALESCE(
+                (SELECT cp.id FROM course_periods cp
+                   WHERE e.group_order_id IS NOT NULL
+                     AND cp.group_order_id = e.group_order_id
+                   ORDER BY cp.created_at LIMIT 1),
+                (SELECT cp.id FROM course_periods cp
+                   WHERE cp.admin_enrollment_id = e.id
+                   ORDER BY cp.created_at LIMIT 1)
+              ) AS course_period_id,
               v.id AS venue_id, v.name AS venue_name, v.account_holder, v.account_number,
               v.bank_institution_name, v.bank_branch_name
          FROM admin_enrollments e
@@ -199,6 +225,16 @@ router.get('/:id', requireParent, async (req, res) => {
     const phone = req.parent.phone;
     const owns = row.parent_phone === phone || (row.extra_parent_phones || []).includes(phone);
     if (!owns) return res.status(403).json({ error: '無權檢視此報名' });
+    // lifecycle：與 /mine 一致的課程生命週期狀態（completed/active/closed/pending_payment）。
+    const lifecycle = (() => {
+      const total = Number(row.total_sessions) || 0;
+      const used = Number(row.used_sessions) || 0;
+      const s = row.status;
+      if (s === 'cancelled' || s === 'refunded') return 'closed';
+      if ((s === 'confirmed' || s === 'active') && total > 0 && used >= total) return 'completed';
+      if (s === 'confirmed' || s === 'active') return 'active';
+      return 'pending_payment';
+    })();
     res.json({
       id: row.id,
       students: row.students || [],
@@ -209,6 +245,12 @@ router.get('/:id', requireParent, async (req, res) => {
       final_price: Number(row.final_price),
       transfer_last_5: row.transfer_last_5 || '',
       payment_status: row.status,
+      lifecycle,
+      course_period_id: row.course_period_id || null,
+      total_sessions: row.total_sessions,
+      used_sessions: row.used_sessions,
+      is_group_shared: !!row.is_group_shared,
+      expires_at: row.expires_at || null,
       has_payment_proof: !!row.payment_proof_url,
       submitted_at: row.submitted_at,
       group_order_id: row.group_order_id || null,

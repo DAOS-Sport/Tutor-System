@@ -43,6 +43,41 @@ router.get('/rooms', requireLiffUser, async (req, res) => {
   }
 });
 
+router.get('/period/:coursePeriodId/room', requireLiffUser, async (req, res) => {
+  try {
+    const periodId = req.params.coursePeriodId;
+    const pr = await pool.query(
+      `SELECT id, coach_id, status FROM course_periods WHERE id = $1`,
+      [periodId]
+    );
+    if (!pr.rowCount) return res.status(404).json({ error: '課程期不存在' });
+    const period = pr.rows[0];
+
+    let allowed = false;
+    if (req.liffUser.type === 'coach') {
+      allowed = period.coach_id === req.liffUser.id;
+    } else if (req.liffUser.type === 'parent') {
+      const own = await pool.query(
+        `SELECT 1 FROM course_period_enrollments e
+          JOIN students s ON s.id = e.student_id
+         WHERE e.course_period_id = $1
+           AND e.status = 'active'
+           AND s.parent_id = $2`,
+        [periodId, req.liffUser.id]
+      );
+      allowed = own.rowCount > 0;
+    }
+    if (!allowed) return res.status(403).json({ error: '無權限存取此課程聊天室' });
+    if (period.status !== 'active') return res.status(409).json({ error: '課程尚未開通聊天室' });
+
+    const room = await chatRooms.ensureRoomForPeriod(periodId);
+    res.json({ room_id: room.id });
+  } catch (err) {
+    console.error('[chat/period/:coursePeriodId/room]', err);
+    res.status(500).json({ error: 'get period room failed' });
+  }
+});
+
 router.get('/rooms/:id', requireLiffUser, authzRoom, async (req, res) => {
   try {
     const meta = await chatRooms.getRoomMeta(req.params.id);

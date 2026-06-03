@@ -137,7 +137,9 @@ router.get('/:id', requireAdminAuth, AMS, async (req, res) => {
         is_leader: m.is_leader,
         student_names: m.student_names || [],
         student_count: (m.student_names || []).length,
+        transfer_last_5: m.transfer_last_5 || null,
         payment_proof_url: m.payment_proof_url || null,
+        payment_confirmed: !!m.payment_confirmed,
         status: m.status,
         joined_at: m.joined_at,
       })),
@@ -182,6 +184,24 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
       [order.id]
     );
 
+    const missingProofs = ms.rows
+      .filter((m) => !m.payment_proof_url)
+      .map((m) => ({
+        member_id: m.id,
+        parent_id: m.parent_id,
+        parent_name: m.parent_name,
+        parent_phone: m.parent_phone,
+        student_names: m.student_names || [],
+      }));
+    if (missingProofs.length > 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: '仍有家庭尚未上傳匯款證明，請補齊後再核准成團',
+        code: 'MISSING_PAYMENT_PROOF',
+        missing_members: missingProofs,
+      });
+    }
+
     const createdIds = [];
     for (const m of ms.rows) {
       const names = m.student_names || [];
@@ -191,12 +211,12 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
       await client.query(
         `INSERT INTO admin_enrollments
            (id, parent_name, parent_phone, students, coach, coach_id, venue_id, course_type,
-            original_price, final_price, payment_proof_url, status, submitted_at,
+            original_price, final_price, transfer_last_5, payment_proof_url, status, submitted_at,
             group_order_id, is_group_shared, period_count)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending_payment',NOW(),$12,TRUE,$13)`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending_payment',NOW(),$13,TRUE,$14)`,
         [
           eid, m.parent_name, m.parent_phone, names, coachName, order.coach_id,
-          order.venue_id, order.course_type, price, price, m.payment_proof_url,
+          order.venue_id, order.course_type, price, price, m.transfer_last_5 || null, m.payment_proof_url,
           order.id, periodCount,
         ]
       );

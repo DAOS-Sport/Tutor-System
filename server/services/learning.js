@@ -17,7 +17,7 @@
  */
 const { pool } = require('../models/db');
 
-const RECORD_FIELDS = ['summary', 'highlights', 'improvements', 'homework'];
+const RECORD_FIELDS = ['summary', 'highlights', 'improvements', 'homework', 'notes'];
 const PLAN_FIELDS = ['goals', 'expected_outcomes', 'learning_plan', 'initial_assessment', 'notes'];
 
 async function _periodOwnedBy(periodId, coachId) {
@@ -128,17 +128,18 @@ async function upsertRecord(sessionId, coachId, fields) {
     );
   }
   const r = await pool.query(
-    `INSERT INTO session_records (course_session_id, course_period_id, coach_id, summary, highlights, improvements, homework, media)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
+    `INSERT INTO session_records (course_session_id, course_period_id, coach_id, summary, highlights, improvements, homework, notes, media)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
      ON CONFLICT (course_session_id) DO UPDATE
        SET summary = EXCLUDED.summary,
            highlights = EXCLUDED.highlights,
            improvements = EXCLUDED.improvements,
            homework = EXCLUDED.homework,
+           notes = EXCLUDED.notes,
            media = EXCLUDED.media,
            updated_at = NOW()
      RETURNING *`,
-    [sessionId, sess.course_period_id, coachId, v.summary, v.highlights, v.improvements, v.homework, JSON.stringify(media)]
+    [sessionId, sess.course_period_id, coachId, v.summary, v.highlights, v.improvements, v.homework, v.notes, JSON.stringify(media)]
   );
   const rec = r.rows[0];
   if (Array.isArray(fields?.tags)) {
@@ -192,7 +193,7 @@ async function copyPrev(sessionId, coachId) {
     const e = new Error('Forbidden'); e.status = 403; throw e;
   }
   const r = await pool.query(
-    `SELECT sr.summary, sr.highlights, sr.improvements, sr.homework
+    `SELECT sr.summary, sr.highlights, sr.improvements, sr.homework, sr.notes
        FROM session_records sr
        JOIN course_sessions cs ON cs.id = sr.course_session_id
       WHERE sr.course_period_id = $1

@@ -14,6 +14,7 @@ DO $$ BEGIN
   ALTER TABLE session_records ADD COLUMN IF NOT EXISTS highlights TEXT NOT NULL DEFAULT '';
   ALTER TABLE session_records ADD COLUMN IF NOT EXISTS improvements TEXT NOT NULL DEFAULT '';
   ALTER TABLE session_records ADD COLUMN IF NOT EXISTS homework TEXT NOT NULL DEFAULT '';
+  ALTER TABLE session_records ADD COLUMN IF NOT EXISTS notes TEXT NOT NULL DEFAULT '';
   ALTER TABLE session_records ADD COLUMN IF NOT EXISTS media JSONB NOT NULL DEFAULT '[]'::jsonb;
   ALTER TABLE session_records ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMPTZ;
   -- 舊欄位保留（回填遷移由業務面負責），status 改為 VARCHAR 以支援新值。
@@ -144,6 +145,7 @@ CREATE TABLE IF NOT EXISTS session_records (
   highlights TEXT NOT NULL DEFAULT '',
   improvements TEXT NOT NULL DEFAULT '',
   homework TEXT NOT NULL DEFAULT '',
+  notes TEXT NOT NULL DEFAULT '',
   status VARCHAR(10) NOT NULL DEFAULT 'draft',
   media JSONB NOT NULL DEFAULT '[]'::jsonb,
   submitted_at TIMESTAMPTZ,
@@ -240,7 +242,7 @@ EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
 -- ── 預設種子（idempotent；給「只跑 SQL migration、不跑 bootstrap」的部署環境）──
 INSERT INTO tag_categories (name) VALUES
-  ('表現亮點'),('需加強'),('回家練習'),('上課摘要')
+  ('表現亮點'),('需加強'),('回家練習'),('上課摘要'),('備註')
 ON CONFLICT (name) DO NOTHING;
 
 INSERT INTO tag_library (category_id, label, text_template)
@@ -260,7 +262,9 @@ SELECT c.id, v.label, v.text_template FROM (VALUES
   ('上課摘要','基本動作','本堂以基本動作（握拍 / 站姿 / 揮拍軌跡）為主。'),
   ('上課摘要','正反手對抽','本堂進行正反手對抽訓練，含定點與移位變化。'),
   ('上課摘要','發球練習','本堂安排發球練習，含上手 / 下手與站位調整。'),
-  ('上課摘要','對打模擬','後段進行對打模擬，鍛鍊比賽情境應變能力。')
+  ('上課摘要','對打模擬','後段進行對打模擬，鍛鍊比賽情境應變能力。'),
+  ('備註','請帶水壺','提醒：下堂課請自備水壺與毛巾。'),
+  ('備註','請假補課','本堂如需請假，請提前於 LINE 告知以利安排補課。')
 ) AS v(cat_name, label, text_template)
 JOIN tag_categories c ON c.name = v.cat_name
 ON CONFLICT (category_id, label) DO NOTHING;

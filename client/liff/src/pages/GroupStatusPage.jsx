@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import liff from '@line/liff';
 import { groupOrdersApi } from '../api/groupOrders';
@@ -48,6 +48,9 @@ export default function GroupStatusPage() {
   const [confirm, setConfirm] = useState(null); // 'submit' | 'cancel' | null
   const [proofBusy, setProofBusy] = useState(false);
   const [transferLast5, setTransferLast5] = useState('');
+  const [proofFile, setProofFile] = useState(null);
+  const [editingPayment, setEditingPayment] = useState(false);
+  const proofInputRef = useRef(null);
 
   const load = useCallback(() => {
     let alive = true;
@@ -60,7 +63,11 @@ export default function GroupStatusPage() {
   useEffect(() => load(), [load]);
   useEffect(() => {
     const self = (order?.members || []).find((m) => m.is_self);
-    if (self) setTransferLast5(self.transfer_last_5 || '');
+    if (self) {
+      setTransferLast5(self.transfer_last_5 || '');
+      setProofFile(null);
+      setEditingPayment(false);
+    }
   }, [order?.id, order?.members]);
 
   // 揪團中自動輪詢，讓團主在頁面上即時看到新加入的成員/學生（不必手動重整）
@@ -85,6 +92,8 @@ export default function GroupStatusPage() {
 
   const meta = STATUS_META[order.status] || { label: order.status, cls: 'bg-gray-100 text-gray-500' };
   const reachedMin = order.total_students >= order.min_students;
+  const allPaymentConfirmed = (order.members || []).length > 0 && (order.members || []).every((m) => m.payment_confirmed);
+  const v = order.venue || {};
   const joinUrl = order.is_leader ? buildJoinUrl(order.join_token) : null;
   // 測試用直連（僅非 LINE 瀏覽器顯示）：用 demo 帳號在瀏覽器自測加入用
   const testJoinUrl = order.is_leader && notInLineClient() ? buildTestJoinUrl(order.join_token) : null;
@@ -107,18 +116,46 @@ export default function GroupStatusPage() {
     }
   }
 
+  async function copyOrderId() {
+    try {
+      await navigator.clipboard.writeText(order.id);
+      toast.success('團購單號已複製');
+    } catch {
+      toast.error('複製失敗，請手動複製');
+    }
+  }
+
+  async function copyAccount() {
+    try {
+      await navigator.clipboard.writeText(v.account_number || '');
+      toast.success('已複製帳號！');
+    } catch {
+      toast.error('複製失敗，請手動複製');
+    }
+  }
+
   // U10：成員上傳自己的轉帳證明（先傳檔取得 URL，再記到本團我的那筆 member）
-  async function handleUploadMyProof(file) {
+  function selectProofFile(file) {
+    if (!file) return;
+    if (!['image/jpeg', 'image/png'].includes(file.type)) {
+      toast.error('只接受 JPG / PNG 圖片');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error('圖片大小不得超過 5MB');
+      return;
+    }
+    setProofFile(file);
+  }
+
+  async function handleConfirmPayment(m) {
     if (!/^\d{5}$/.test(transferLast5.trim())) return toast.error('請先填寫 5 位數字的轉帳末碼');
-    const self = (order?.members || []).find((m) => m.is_self);
-    if (!file && !self?.has_payment_proof) return toast.error('請選擇匯款／轉帳證明');
-    if (file && !['image/jpeg', 'image/png'].includes(file.type)) return toast.error('只接受 JPG / PNG 圖片');
-    if (file && file.size > 5 * 1024 * 1024) return toast.error('圖片大小不得超過 5MB');
+    if (!proofFile && !m?.has_payment_proof) return toast.error('請選擇匯款／轉帳證明');
     setProofBusy(true);
     try {
       let url = null;
-      if (file) {
-        const uploaded = await enrollmentsApi.uploadPaymentProof(file);
+      if (proofFile) {
+        const uploaded = await enrollmentsApi.uploadPaymentProof(proofFile);
         url = uploaded?.url || null;
         if (!url) throw new Error('no url');
       }
@@ -127,6 +164,8 @@ export default function GroupStatusPage() {
         payment_proof_url: url || undefined,
       });
       if (updated) setOrder(updated); else load();
+      setProofFile(null);
+      setEditingPayment(false);
       toast.success('付款資料已送出，待櫃檯確認');
     } catch (e) {
       toast.error(e?.response?.data?.error || '送出失敗，請重試');
@@ -170,6 +209,16 @@ export default function GroupStatusPage() {
           目前 <span className="font-bold text-brand-primary">{order.total_students}</span> 人
           <span className="text-gray-400">（開團需 {order.min_students}–{order.max_students} 人）</span>
         </p>
+        <div className="mt-2 flex items-center gap-2 rounded-lg bg-gray-50 px-3 py-2">
+          <div className="min-w-0 flex-1">
+            <div className="text-[11px] text-gray-500">團購單號</div>
+            <div className="truncate font-mono text-xs font-bold text-brand-primary">{order.id}</div>
+          </div>
+          <button type="button" onClick={copyOrderId}
+            className="shrink-0 rounded-lg border border-brand-teal px-3 py-1.5 text-xs font-bold text-brand-teal">
+            複製
+          </button>
+        </div>
         <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-gray-100">
           <div className={`h-full rounded-full transition-all ${reachedMin ? 'bg-brand-green' : 'bg-brand-gold'}`}
             style={{ width: `${Math.min(100, Math.round((order.total_students / order.max_students) * 100))}%` }} />
@@ -204,6 +253,30 @@ export default function GroupStatusPage() {
         </div>
       )}
 
+      {!allPaymentConfirmed && (
+        <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3">
+          <h3 className="mb-2 text-xs font-bold text-gray-600">轉帳資訊</h3>
+          <div className="space-y-1 text-sm text-gray-700">
+            <div>戶名：{v.account_holder || '—'}</div>
+            <div>銀行：{[v.bank_institution_name, v.bank_branch_name].filter(Boolean).join(' ') || '—'}</div>
+          </div>
+          <div className="mt-2 flex items-center gap-2 rounded-lg bg-brand-primary/5 p-3">
+            <div className="min-w-0 flex-1">
+              <div className="text-[11px] text-gray-500">帳號</div>
+              <div className="truncate font-mono text-base font-bold text-brand-primary">{v.account_number || '—'}</div>
+            </div>
+            <button
+              type="button"
+              onClick={copyAccount}
+              disabled={!v.account_number}
+              className="shrink-0 rounded-lg bg-brand-teal px-3 py-2 text-xs font-bold text-white active:bg-brand-primary disabled:bg-gray-300"
+            >
+              一鍵複製
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="rounded-xl border border-gray-200 bg-white p-3">
         <div className="mb-2 flex items-center justify-between">
           <h3 className="text-xs font-bold text-gray-600">成員（{order.member_count} 個家庭）</h3>
@@ -215,6 +288,7 @@ export default function GroupStatusPage() {
             const proofState = m.payment_confirmed
               ? { label: '✓ 帳款已確認', cls: 'text-brand-green' }
               : (m.has_payment_proof ? { label: '已上傳，待確認', cls: 'text-brand-gold' } : { label: '未上傳證明', cls: 'text-gray-400' });
+            const paymentLocked = m.is_self && (m.has_payment_proof || !!m.transfer_last_5) && !editingPayment;
             return (
               <div key={m.id} className="rounded-lg bg-gray-50 px-3 py-2">
                 <div className="flex items-center justify-between">
@@ -232,30 +306,59 @@ export default function GroupStatusPage() {
                   </div>
                 </div>
 
-                {/* 自己這筆：未確認帳款前可上傳 / 更換轉帳證明 */}
-                {m.is_self && !m.payment_confirmed && ['forming', 'submitted'].includes(order.status) && (
+                {/* 自己這筆：送審後、櫃檯確認前，可填付款資料 */}
+                {m.is_self && !m.payment_confirmed && order.status === 'forming' && (
+                  <div className="mt-2 rounded-lg bg-brand-gold/10 px-3 py-2 text-[11px] leading-5 text-brand-gold">
+                    送審後會開放填寫轉帳末 5 碼與上傳證明。
+                  </div>
+                )}
+                {m.is_self && !m.payment_confirmed && order.status === 'submitted' && (
                   <div className="mt-2 space-y-2">
                     <input
                       type="tel"
                       inputMode="numeric"
                       maxLength={5}
                       value={transferLast5}
-                      disabled={proofBusy}
+                      disabled={proofBusy || paymentLocked}
                       onChange={(e) => setTransferLast5(e.target.value.replace(/\D/g, '').slice(0, 5))}
                       className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-mono focus:border-brand-teal focus:outline-none"
                       placeholder="轉帳末 5 碼"
                     />
-                    <label className="flex cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-dashed border-brand-teal/50 bg-white px-3 py-2 text-xs font-bold text-brand-teal active:opacity-70">
-                      📤 {proofBusy ? '上傳中…' : (m.has_payment_proof ? '更換轉帳證明' : '上傳轉帳證明')}
-                      <input type="file" accept="image/jpeg,image/png" className="hidden"
-                        disabled={proofBusy}
-                        onChange={(e) => handleUploadMyProof(e.target.files?.[0])} />
-                    </label>
-                    {m.has_payment_proof && (
-                      <button type="button" disabled={proofBusy} onClick={() => handleUploadMyProof(null)}
-                        className="w-full rounded-lg border border-brand-teal bg-white px-3 py-2 text-xs font-bold text-brand-teal disabled:opacity-60">
-                        {proofBusy ? '儲存中…' : '只儲存末 5 碼'}
+                    {paymentLocked ? (
+                      <button
+                        type="button"
+                        onClick={() => setEditingPayment(true)}
+                        className="w-full rounded-lg border border-brand-teal bg-white px-3 py-2 text-xs font-bold text-brand-teal"
+                      >
+                        編輯付款資料
                       </button>
+                    ) : (
+                      <>
+                        <input
+                          ref={proofInputRef}
+                          type="file"
+                          accept="image/jpeg,image/png"
+                          className="hidden"
+                          disabled={proofBusy}
+                          onChange={(e) => selectProofFile(e.target.files?.[0])}
+                        />
+                        <button
+                          type="button"
+                          disabled={proofBusy}
+                          onClick={() => proofInputRef.current?.click()}
+                          className="w-full rounded-lg border border-dashed border-brand-teal/50 bg-white px-3 py-2 text-xs font-bold text-brand-teal disabled:opacity-50"
+                        >
+                          {proofFile ? `已選：${proofFile.name}` : (m.has_payment_proof ? '更換轉帳證明' : '選擇轉帳證明')}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={proofBusy || !/^\d{5}$/.test(transferLast5.trim()) || (!proofFile && !m.has_payment_proof)}
+                          onClick={() => handleConfirmPayment(m)}
+                          className="w-full rounded-lg bg-brand-primary px-3 py-2 text-xs font-bold text-white disabled:bg-gray-300"
+                        >
+                          {proofBusy ? '送出中…' : '確認無誤，送出付款資料'}
+                        </button>
+                      </>
                     )}
                   </div>
                 )}

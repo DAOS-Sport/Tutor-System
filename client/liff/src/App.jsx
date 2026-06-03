@@ -14,6 +14,7 @@ import EnrollmentPage from './pages/EnrollmentPage';
 import EnrollmentSuccessPage from './pages/EnrollmentSuccessPage';
 import EnrollStatusPage from './pages/EnrollStatusPage';
 import MyCoursesPage from './pages/MyCoursesPage';
+import CourseDetailPage from './pages/CourseDetailPage';
 import ChatListPage from './pages/ChatListPage';
 import ChatRoomPage from './pages/ChatRoomPage';
 import ProfilePage from './pages/ProfilePage';
@@ -105,6 +106,9 @@ export default function App() {
               </Route>
               <Route element={<AppLayout showBackButton title="團購狀態" />}>
                 <Route path="/group/:id" element={<GroupStatusPage />} />
+              </Route>
+              <Route element={<AppLayout showBackButton title="課程詳情" />}>
+                <Route path="/course/:id" element={<CourseDetailPage />} />
               </Route>
               {/* 學習歷程 / 期末評鑑 (Phase 5) */}
               <Route path="/history/:periodId" element={<LearningHistoryPage />} />

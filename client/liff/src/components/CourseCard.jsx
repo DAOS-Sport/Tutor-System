@@ -37,6 +37,9 @@ export default function CourseCard({ variant = 'period', period, type, onClick, 
     ? Math.min(100, Math.round((period.used_sessions / period.total_sessions) * 100))
     : 0;
   const studentNames = (period.students || []).map((s) => (typeof s === 'string' ? s : s.name)).filter(Boolean).join('、');
+  // 已結束（completed）以 lifecycle 判定並顯示灰色「已結束」徽章；
+  // 其餘維持原本以 payment_status 顯示狀態（待對帳／進行中…）。
+  const badgeStatus = period.lifecycle === 'completed' ? 'completed' : period.payment_status;
 
   return (
     <div className="rounded-2xl border border-gray-200 bg-white p-4 text-left shadow-sm">
@@ -67,8 +70,8 @@ export default function CourseCard({ variant = 'period', period, type, onClick, 
           </h3>
           <p className="mt-0.5 truncate text-xs text-gray-500">學員：{studentNames || '—'}</p>
         </div>
-        <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-bold ${paymentStatusColor(period.payment_status)}`}>
-          {paymentStatusLabel(period.payment_status)}
+        <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-bold ${paymentStatusColor(badgeStatus)}`}>
+          {paymentStatusLabel(badgeStatus)}
         </span>
         </div>
 
@@ -92,7 +95,7 @@ export default function CourseCard({ variant = 'period', period, type, onClick, 
       </button>
 
       {actions.length > 0 && (
-        <div className="mt-3 grid grid-cols-2 gap-2">
+        <div className={`mt-3 grid gap-2 ${actions.length === 1 ? 'grid-cols-1' : 'grid-cols-2'}`}>
           {actions.map((action) => (
             <button
               key={action.label}

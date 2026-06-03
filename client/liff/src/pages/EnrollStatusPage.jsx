@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { coursesApi } from '../api/courses';
 import { enrollmentsApi } from '../api/enrollments';
@@ -27,6 +27,9 @@ export default function EnrollStatusPage() {
   const [enr, setEnr] = useState(undefined); // undefined=loading, null=error
   const [proofBusy, setProofBusy] = useState(false);
   const [transferLast5, setTransferLast5] = useState('');
+  const [proofFile, setProofFile] = useState(null);
+  const [editingPayment, setEditingPayment] = useState(false);
+  const proofInputRef = useRef(null);
 
   const load = useCallback(() => {
     let alive = true;
@@ -38,8 +41,12 @@ export default function EnrollStatusPage() {
 
   useEffect(() => load(), [load]);
   useEffect(() => {
-    if (enr && enr.transfer_last_5 != null) setTransferLast5(enr.transfer_last_5 || '');
-  }, [enr?.id, enr?.transfer_last_5]);
+    if (enr) {
+      setTransferLast5(enr.transfer_last_5 || '');
+      setProofFile(null);
+      setEditingPayment(false);
+    }
+  }, [enr?.id, enr?.transfer_last_5, enr?.has_payment_proof]);
 
   if (enr === undefined) return <LoadingSpinner fullPage label="載入報名狀態…" />;
   if (enr === null) {
@@ -55,6 +62,7 @@ export default function EnrollStatusPage() {
   const meta = STATUS_META[enr.payment_status] || { label: enr.payment_status, cls: 'bg-gray-100 text-gray-500' };
   const v = enr.venue || {};
   const canUpload = enr.payment_status === 'pending_payment';
+  const paymentLocked = canUpload && (enr.has_payment_proof || !!enr.transfer_last_5) && !editingPayment;
 
   async function copyAccount() {
     try {
@@ -65,16 +73,27 @@ export default function EnrollStatusPage() {
     }
   }
 
-  async function handleUpload(file) {
+  function selectProofFile(file) {
+    if (!file) return;
+    if (!['image/jpeg', 'image/png'].includes(file.type)) {
+      toast.error('只接受 JPG / PNG 圖片');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error('圖片大小不得超過 5MB');
+      return;
+    }
+    setProofFile(file);
+  }
+
+  async function handleConfirmPayment() {
     if (!/^\d{5}$/.test(transferLast5.trim())) return toast.error('請先填寫 5 位數字的轉帳末碼');
-    if (!file && !enr.has_payment_proof) return toast.error('請選擇匯款／轉帳證明');
-    if (file && !['image/jpeg', 'image/png'].includes(file.type)) return toast.error('只接受 JPG / PNG 圖片');
-    if (file && file.size > 5 * 1024 * 1024) return toast.error('圖片大小不得超過 5MB');
+    if (!proofFile && !enr.has_payment_proof) return toast.error('請選擇匯款／轉帳證明');
     setProofBusy(true);
     try {
       let url = null;
-      if (file) {
-        const uploaded = await enrollmentsApi.uploadPaymentProof(file);
+      if (proofFile) {
+        const uploaded = await enrollmentsApi.uploadPaymentProof(proofFile);
         url = uploaded?.url || null;
         if (!url) throw new Error('no url');
       }
@@ -83,6 +102,8 @@ export default function EnrollStatusPage() {
         payment_proof_url: url || undefined,
       });
       toast.success('付款資料已送出，待櫃台確認');
+      setProofFile(null);
+      setEditingPayment(false);
       load();
     } catch (e) {
       toast.error(e?.response?.data?.error || '送出失敗，請重試');
@@ -142,7 +163,7 @@ export default function EnrollStatusPage() {
           inputMode="numeric"
           maxLength={5}
           value={transferLast5}
-          disabled={!canUpload || proofBusy}
+          disabled={!canUpload || proofBusy || paymentLocked}
           onChange={(e) => setTransferLast5(e.target.value.replace(/\D/g, '').slice(0, 5))}
           className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-mono focus:border-brand-teal focus:outline-none disabled:bg-gray-50"
           placeholder="5 位數字"
@@ -152,18 +173,42 @@ export default function EnrollStatusPage() {
         ) : (
           <p className="mt-2 text-sm text-gray-500">尚未上傳。請先完成轉帳，再填末 5 碼並上傳證明。</p>
         )}
-        {canUpload && (
-          <label className="mt-2 flex cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-dashed border-brand-teal/50 px-3 py-3 text-sm font-bold text-brand-teal active:opacity-70">
-            📤 {proofBusy ? '上傳中…' : (enr.has_payment_proof ? '更換匯款證明' : '上傳匯款證明')}
-            <input type="file" accept="image/jpeg,image/png" className="hidden" disabled={proofBusy}
-              onChange={(e) => handleUpload(e.target.files?.[0])} />
-          </label>
-        )}
-        {canUpload && enr.has_payment_proof && (
-          <button type="button" disabled={proofBusy} onClick={() => handleUpload(null)}
-            className="mt-2 w-full rounded-lg border border-brand-teal py-2 text-sm font-bold text-brand-teal disabled:opacity-60">
-            {proofBusy ? '儲存中…' : '只儲存末 5 碼'}
+        {canUpload && paymentLocked && (
+          <button
+            type="button"
+            onClick={() => setEditingPayment(true)}
+            className="mt-2 w-full rounded-lg border border-brand-teal py-2 text-sm font-bold text-brand-teal"
+          >
+            編輯付款資料
           </button>
+        )}
+        {canUpload && !paymentLocked && (
+          <>
+            <input
+              ref={proofInputRef}
+              type="file"
+              accept="image/jpeg,image/png"
+              className="hidden"
+              disabled={proofBusy}
+              onChange={(e) => selectProofFile(e.target.files?.[0])}
+            />
+            <button
+              type="button"
+              disabled={proofBusy}
+              onClick={() => proofInputRef.current?.click()}
+              className="mt-2 w-full rounded-lg border border-dashed border-brand-teal/50 px-3 py-3 text-sm font-bold text-brand-teal disabled:opacity-50"
+            >
+              {proofFile ? `已選：${proofFile.name}` : (enr.has_payment_proof ? '更換匯款證明' : '選擇匯款證明')}
+            </button>
+            <button
+              type="button"
+              disabled={proofBusy || !/^\d{5}$/.test(transferLast5.trim()) || (!proofFile && !enr.has_payment_proof)}
+              onClick={handleConfirmPayment}
+              className="mt-2 w-full rounded-lg bg-brand-primary py-2.5 text-sm font-bold text-white disabled:bg-gray-300"
+            >
+              {proofBusy ? '送出中…' : '確認無誤，送出付款資料'}
+            </button>
+          </>
         )}
       </div>
 
