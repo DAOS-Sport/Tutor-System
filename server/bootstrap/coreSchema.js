@@ -346,12 +346,12 @@ DO $$ BEGIN
   -- U11 一般報名橋：一般報名以 admin_enrollment_id 冪等 get-or-create 一個 course_period。
   -- 容錯建立：若正式環境已有重複 admin_enrollment_id 的歷史資料，索引建不起來也不中斷啟動
   --（橋本身用 check-then-insert，不硬依賴此索引；索引只是額外的唯一性兜底）。
-  DO $$ BEGIN
+  BEGIN
     CREATE UNIQUE INDEX IF NOT EXISTS uq_course_periods_admin_enrollment
       ON course_periods(admin_enrollment_id) WHERE admin_enrollment_id IS NOT NULL;
   EXCEPTION WHEN OTHERS THEN
     RAISE WARNING 'uq_course_periods_admin_enrollment 建立失敗（可能有重複 admin_enrollment_id），略過: %', SQLERRM;
-  END $$;
+  END;
   ALTER TABLE course_sessions   ADD COLUMN IF NOT EXISTS coach_id UUID REFERENCES coaches(id) ON DELETE RESTRICT;
   -- F2：換教練歸屬。reassigned_from_coach_id 記錄「轉走前的原授課教練」，
   -- 讓新教練端可顯示「原授課教練 X」。COALESCE 保留首次原教練（多次轉派仍指向最初）。
