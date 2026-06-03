@@ -14,3 +14,10 @@ export function takeAfterAuth(fallback = '/') {
   } catch { /* noop */ }
   return fallback;
 }
+
+// 主動清除（不取值）。用於「不會走 takeAfterAuth 導向」的分支：
+// 登出、登入失敗、手動登出守衛早退——避免殘留的舊團 join 路徑在
+// 下次成功自動登入時被 takeAfterAuth 取用，把使用者帶去別人的舊團。
+export function clearAfterAuth() {
+  try { localStorage.removeItem(KEY); } catch { /* noop */ }
+}

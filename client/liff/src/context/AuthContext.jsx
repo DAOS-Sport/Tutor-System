@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { clearAfterAuth } from '../utils/afterAuth';
 
 /**
  * 同時支援家長 / 教練兩種角色：
@@ -43,6 +44,9 @@ export function AuthProvider({ children }) {
   const setCoach  = (c) => setUser(c ? { role: 'coach',  data: _stripSensitive(c), token: c?.token || null } : null);
   const logout    = () => {
     localStorage.setItem(DAOS_MANUAL_LOGOUT_KEY, '1');
+    // 清除殘留的登入後回跳路徑（可能是上一個團購 join 連結），
+    // 避免下次自動登入被帶回舊團（會看起來像「加入別人的團」）。
+    clearAfterAuth();
     setUser(null);
   };
 

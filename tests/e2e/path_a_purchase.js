@@ -24,8 +24,9 @@ const { call, assert, step, loginAdmin } = require('./_lib');
       process.env.ADMIN_USERNAME || 'manager',
       process.env.ADMIN_PASSWORD || 'manager',
     );
+    // Task #39：reconcile 現要求發票號碼（^[A-Z]{2}\d{8}$）+ 發票圖片必填
     const r = await call('POST', `/api/admin/enrollments/${id}/reconcile`, {
-      token, body: { by: 'e2e' },
+      token, body: { by: 'e2e', invoice_number: 'AB12345678', invoice_image_url: '/uploads/e2e-invoice.png' },
     });
     assert(r.status === 200, `reconcile 200，實際 ${r.status}`);
     assert(r.data?.status === 'confirmed', `status=confirmed，實際 ${r.data?.status}`);
@@ -34,7 +35,8 @@ const { call, assert, step, loginAdmin } = require('./_lib');
     const audit = await pg.query(
       `SELECT action FROM admin_enrollment_audit_logs WHERE enrollment_id=$1 ORDER BY id DESC LIMIT 1`, [id],
     );
-    assert(audit.rows[0]?.action === '對帳通過', `audit log = '對帳通過'`);
+    // audit action 現為「對帳通過（發票 AB12345678）」→ 用前綴比對
+    assert(audit.rows[0]?.action?.startsWith('對帳通過'), `audit log 以 '對帳通過' 開頭，實際 '${audit.rows[0]?.action}'`);
   } finally {
     await pg.query(`DELETE FROM admin_enrollment_audit_logs WHERE enrollment_id=$1`, [id]);
     await pg.query(`DELETE FROM admin_enrollments WHERE id=$1`, [id]);

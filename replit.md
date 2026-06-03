@@ -111,6 +111,16 @@
 受控驗證腳本：`cd server && npm run smoke:ragic-auth`（read-only by default；寫入須 `ENABLE_RAGIC_WRITE_SMOKE=1` + `TEST_PHONE` / `TEST_PARENT_NAME` / `TEST_LINE_UID`）。
 
 ## 變更紀錄
+- 2026-06-03：U11 批次修補（workflow 調查+對抗驗證後逐項實作）：
+  - **#1 分享連結加入跑到別人的團（critical）**：根因為 `afterAuth`（localStorage `daos.afterAuth`）殘留舊團 join 路徑——登出、手動登出守衛早退、登入失敗分支都沒清，下次自動登入被 `takeAfterAuth` 取用→導向舊團（「人數/名字算錯」其實是進錯團，後端計數正確）。修法：`afterAuth.js` 新增 `clearAfterAuth()`；`AuthContext.logout()`、`LoginPage` 手動登出守衛 + 兩個 error 分支都呼叫清除。純前端，已重 build LIFF。**未改** `location.state.from`（LIFF redirect 會遺失）與後端計數（無關）。
+  - **#2 正式環境 F-M02 等清單看不到**：非舊 bundle、非角色 gating，而是 manager/staff 帳號**無場館(venue scope)** → fail-closed 全空（影響 F-M02/今日課程/簽到/團購審核等 8 個 scoped 路由）。預覽 seed 帳號有場館 'B' 故正常；正式真實帳號沒有。**資料修復**（非改碼）：見 `scripts/fix_staff_venue_scope.sql`，於 Production DB 診斷後補 `admin_staff_venues`（有 staff_id）或 `admin_users.venue_id`（無 staff_id），補後重新登入。
+  - **#3 一般報名計價硬編碼**：`enrollments.js` 刪除寫死的 `BASE_PRICES`，改在交易內讀 `course_type_configs.base_price`（`Number()` 轉型、不加 is_active 過濾以與 courses.js/groupOrders.js 一致、fail-closed 回 400 `PRICE_NOT_CONFIGURED`），與報名頁試算/團報同源。
+  - **#4 一般報名對帳沒建課期**：`admin/enrollments.js` 新增 `ensureSoloCoursePeriod()`（與 `ensureGroupCoursePeriod` 以 `group_order_id` 守門互斥），reconcile 交易內呼叫：教練(coach_id 空時以名+venue 反查)、家長(phone)、學員(parent_id+name get-or-create) 解析後冪等建 `course_period` + 綁 `course_period_enrollments`；缺教練/家長未註冊→warn 不阻擋對帳。`coreSchema.js` 加容錯 partial unique index `uq_course_periods_admin_enrollment`。**只建 period+enrollments，不建 course_sessions**→對帳後聊天室/學習歷程即可見，教練課表/上課紀錄仍需選槽排課（與團報一致）。已對真 PG 跑 rolled-back 交易驗證（教練反查、學員一既有一新建、冪等、零寫入）。
+  - **#5 缺家長端選槽 API**：`routes/slots.js` 新增 `POST /api/slots/:id/book`（requireParent），只新增不動教練端：advisory lock + 歸屬驗證(course_period_enrollments→students.parent_id) + period active/容量/教練場館一致檢查；依同期家庭數分流 `bookSlot1v1`(即時 confirmed)/`bookSlot1vN`(暫鎖待同組確認)。**選槽不動 `used_sessions`**（全系統以 checkin_records 計數，無任何 +1 處，動它會算重）。前端選槽頁為後續單元。
+  - **#6 E2E 落後**：`path_a_purchase.js` reconcile 補發票欄位 + audit 改前綴比對；`_lib.js` 加**檔案 token 快取**（跨 spawnSync 子行程共用、4 分 TTL），`run_all.js` 開跑前清快取——同帳號整輪只登入一次，不再打爆後台登入限流(5次/5分)。純測試層、不動正式碼。path_a 已對 running server 驗證通過。
+  - **#7 死 API client**：移除 `client/liff/src/api/auth.js` 的 `bindLineUid()`（呼叫不存在的 `/auth/bind-line`、零呼叫點）；不補後端（會復活未驗證 parentId 綁定的不安全設計）。已重 build LIFF。
+  - **#8 移除 501 stub 路由**：刪除 `server/index.js` 對 payments/students/refunds/notifications 的掛載 + 4 個 stub 檔（零呼叫者，實際功能都在具名路由）。注意：`notification_logs` 表仍未接線，屬 backlog。
+  - **注意**：後端變更需重啟 server 才在預覽生效（dev nodemon 本環境未自動 reload）；發布(Publish)會自動帶上。前端 #1/#7 已是 `server/public/liff` 靜態檔，預覽即時生效。
 - 2026-06-02：一般報名重做（U10：期數 + 計價×人數×期數 + 證明事後上傳 + 報名狀態頁）：
   - **計價**：費用 = 單期單生價(base×教練倍率) × **學生數** × **期數**（先前不隨人數/期數變動的 bug）。前端 `useEnrollmentPricing` 接 `studentCount`/`periodCount` 縮放、`PriceBreakdown` 顯示「單生價 × N 生 × M 期 = 小計」；後端 `enrollments.js` server-authoritative 重算 `unitPrice × studentCount × periodCount`、`promo preview` 用 scaled originalPrice + periodCount、落地 `admin_enrollments.period_count`+`coach_id`。
   - **版面**：`EnrollmentPage` 新增「購買期數」選擇器（放在組別之後、學員之前）。

@@ -21,9 +21,6 @@ const { requireParent } = require('../middlewares/parentAuth');
 const router = express.Router();
 router.use(requireParent);
 
-// 伺服器端授權的單期基準價（與 LIFF mock BASE_PRICES 對齊；未來可移到 admin_settings）
-const BASE_PRICES = { 1: 9000, 2: 6000, 3: 4500 };
-
 function genEnrollmentId() {
   const ts = Date.now().toString(36).toUpperCase();
   const rand = Math.floor(Math.random() * 1296).toString(36).toUpperCase().padStart(2, '0');
@@ -66,11 +63,22 @@ router.post('/', async (req, res) => {
     const parentRow = pr.rows[0];
 
     // ── 後端重算 (server-authoritative)：完全忽略 client 的 original_price ──
+    // 單期基準價一律讀 course_type_configs（後台可改），與報名頁試算 /api/courses/base-price
+    // 及團報計價同源，避免後台改價後「顯示價 ≠ 入庫價」。DECIMAL 經 pg 回字串，需 Number() 轉型。
+    // 不加 is_active 過濾——與 courses.js / groupOrders.js 讀價路徑一致，不在此單元改變停用語意。
     const courseTypeNum = Number(p.course_type);
-    const basePrice = BASE_PRICES[courseTypeNum];
-    if (!basePrice) {
+    if (!Number.isInteger(courseTypeNum) || courseTypeNum < 1) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'invalid course_type' });
+    }
+    const cfgRes = await client.query(
+      `SELECT base_price FROM course_type_configs WHERE course_type = $1`,
+      [courseTypeNum]
+    );
+    const basePrice = cfgRes.rowCount ? Number(cfgRes.rows[0].base_price) || 0 : 0;
+    if (basePrice <= 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: '此課程組別尚未設定價格，請洽櫃檯', code: 'PRICE_NOT_CONFIGURED' });
     }
     // 教練必須為合法 UUID 並存在於 active coaches；倍率只能來自 DB（fail-closed，無 fallback）。
     const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

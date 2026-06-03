@@ -6,7 +6,7 @@ import { coachesApi } from '../api/coaches';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { isValidTWPhone } from '../utils/format';
-import { takeAfterAuth } from '../utils/afterAuth';
+import { takeAfterAuth, clearAfterAuth } from '../utils/afterAuth';
 import LoadingSpinner from '../components/LoadingSpinner';
 
 const MANUAL_LOGOUT_KEY = 'daos.manualLogout';
@@ -172,6 +172,8 @@ export default function LoginPage() {
 
     // manual logout guard: do not auto-login immediately after user explicitly logs out.
     if (!coachContext && wasManualLoggedOut()) {
+      // 不會走 takeAfterAuth 導向 → 清掉殘留回跳路徑，避免下次自動登入帶去舊團
+      clearAfterAuth();
       setBusy(false);
       return;
     }
@@ -209,6 +211,7 @@ export default function LoginPage() {
         return;
       }
       if (!tk) {
+        clearAfterAuth();
         setParentState('error');
         toast.error('LINE 驗證失敗：請重新開啟 LIFF 或稍後再試。');
         setBusy(false);
@@ -229,9 +232,11 @@ export default function LoginPage() {
           return;
         }
         // 未知 status
+        clearAfterAuth();
         setParentState('error');
         toast.error('登入失敗，請稍後再試。');
       } catch (err) {
+        clearAfterAuth();
         setParentState('error');
         toast.error(parentErrorMessage(err));
       } finally {

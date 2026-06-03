@@ -98,6 +98,99 @@ async function ensureGroupCoursePeriod(client, enrollment, totalSessions) {
   }
 }
 
+/**
+ * U11 一般報名橋 — 對帳通過時為「一般報名」（非團報）自動開通 course_period。
+ *
+ *  - 僅處理一般報名（enrollment.group_order_id 為 NULL）；團報交給 ensureGroupCoursePeriod，
+ *    兩者以 group_order_id 守門互斥，零重複。
+ *  - 補資料模型落差：admin_enrollments.students 只有姓名（TEXT[]），但 course_period_enrollments
+ *    需要 students.id（UUID）→ 以 (parent_id, name) get-or-create 學員（比照 services/transfers.js）。
+ *  - course_periods.coach_id 為 NOT NULL：enrollment.coach_id 為空時以 (coach 名 + venue) 反查；
+ *    仍解不到教練、或家長尚未註冊 → 記 log 後 return，不阻擋對帳（維持既有寬鬆行為）。
+ *  - 冪等：reconcile 已 FOR UPDATE + 狀態守門（同一筆只會對帳一次），故 check-then-insert 足夠；
+ *    另有 partial unique index uq_course_periods_admin_enrollment 兜底。
+ *
+ *  必須在 reconcile 的交易（client）內呼叫。totalSessions 已含期數。
+ *
+ *  範圍說明（非本單元）：只建 course_period + course_period_enrollments，不建 course_sessions。
+ *  因此對帳後「聊天室、學習歷程」立即可見；「教練課表 / 上課紀錄」仍需家長之後選槽排課才出現
+ *  （與團報自動開通行為一致）。
+ */
+async function ensureSoloCoursePeriod(client, enrollment, totalSessions) {
+  if (enrollment.group_order_id) return; // 團報 → 交給 ensureGroupCoursePeriod
+
+  // 解析教練（course_periods.coach_id NOT NULL，需容錯）：優先 coach_id，否則以 (coach 名 + venue) 反查
+  let coachId = enrollment.coach_id || null;
+  if (!coachId && enrollment.coach && enrollment.venue_id) {
+    const cr = await client.query(
+      `SELECT c.id FROM coaches c
+         JOIN coach_venues cv ON cv.coach_id = c.id
+        WHERE c.name = $1 AND cv.venue_id = $2
+        ORDER BY c.id LIMIT 1`,
+      [enrollment.coach, enrollment.venue_id]
+    );
+    if (cr.rowCount) coachId = cr.rows[0].id;
+  }
+  if (!coachId) {
+    console.warn('[reconcile/solo] 一般報名無法解析教練，略過自動開通 period:', enrollment.id);
+    return;
+  }
+
+  // 解析家長（學員需綁到家長，家長端才讀得到自己的課）
+  const pr = await client.query(`SELECT id FROM parents WHERE phone = $1 LIMIT 1`, [enrollment.parent_phone]);
+  const parentId = pr.rows[0]?.id || null;
+  if (!parentId) {
+    console.warn('[reconcile/solo] 一般報名家長尚未註冊，略過自動開通 period:', enrollment.id, 'phone:', enrollment.parent_phone);
+    return;
+  }
+
+  // get-or-create course_period（以 admin_enrollment_id 冪等；一般報名 group_order_id 為 NULL）
+  const exist = await client.query(
+    `SELECT id FROM course_periods WHERE admin_enrollment_id = $1 AND group_order_id IS NULL LIMIT 1`,
+    [enrollment.id]
+  );
+  let periodId = exist.rows[0]?.id || null;
+  if (!periodId) {
+    const ins = await client.query(
+      `INSERT INTO course_periods
+         (coach_id, venue_id, course_type, total_sessions, used_sessions,
+          expires_at, original_price, final_price, status, admin_enrollment_id)
+       VALUES ($1,$2,$3,$4,0,(NOW() + ($5 || ' days')::interval)::date,$6,$7,'active',$8)
+       RETURNING id`,
+      [
+        coachId, enrollment.venue_id, enrollment.course_type, totalSessions,
+        String(365 * (Number(enrollment.period_count) || 1)),
+        Number(enrollment.original_price) || 0, Number(enrollment.final_price) || 0,
+        enrollment.id,
+      ]
+    );
+    periodId = ins.rows[0]?.id || null;
+  }
+  if (!periodId) return;
+
+  // get-or-create 學員（以 parent_id + name）→ 綁進 course_period_enrollments
+  const names = (enrollment.students || []).filter(Boolean);
+  for (const name of names) {
+    const se = await client.query(
+      `SELECT id FROM students WHERE parent_id = $1 AND name = $2 LIMIT 1`,
+      [parentId, name]
+    );
+    let sid = se.rows[0]?.id;
+    if (!sid) {
+      const si = await client.query(
+        `INSERT INTO students (parent_id, name) VALUES ($1, $2) RETURNING id`,
+        [parentId, name]
+      );
+      sid = si.rows[0].id;
+    }
+    await client.query(
+      `INSERT INTO course_period_enrollments (course_period_id, student_id, status)
+       VALUES ($1, $2, 'active') ON CONFLICT (course_period_id, student_id) DO NOTHING`,
+      [periodId, sid]
+    );
+  }
+}
+
 function tsToString(d) {
   if (!d) return null;
   if (typeof d === 'string') return d;
@@ -497,6 +590,9 @@ router.post('/:id/reconcile', requireAdminAuth, requireAdminRole('admin', 'manag
     //    並把本成員的學員加入 course_period_enrollments，教練端課表（讀 course_periods/sessions）才看得到。
     //    僅針對團報（group_order_id 有值）；一般報名維持原行為（不在本任務範圍）。
     await ensureGroupCoursePeriod(client, cur.rows[0], total);
+    // U11 一般報名橋：非團報對帳通過也自動開通 course_period（補回家長/教練/聊天室/學習歷程
+    // 讀正式課期的缺口）。與上方團報橋以 group_order_id 守門互斥，不重複建。
+    await ensureSoloCoursePeriod(client, cur.rows[0], total);
 
     await client.query('COMMIT');
 

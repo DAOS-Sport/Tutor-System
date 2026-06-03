@@ -1,6 +1,12 @@
 // 跑完 8 條 E2E 路徑，回報 pass/fail
 const { spawnSync } = require('child_process');
 const path = require('path');
+const { clearTokenCache } = require('./_lib');
+
+// 整輪開始先清掉舊的 token 快取（避免用到上一輪過期 token）。
+// 之後各子行程經 _lib.loginAdmin 以檔案快取共用 token，同帳號整輪只登入一次，
+// 不會打爆後台登入限流（5 次 / 5 分鐘 / IP）。
+clearTokenCache();
 
 const PATHS = [
   ['A', 'path_a_purchase.js'],
