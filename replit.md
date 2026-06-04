@@ -111,6 +111,10 @@
 受控驗證腳本：`cd server && npm run smoke:ragic-auth`（read-only by default；寫入須 `ENABLE_RAGIC_WRITE_SMOKE=1` + `TEST_PHONE` / `TEST_PARENT_NAME` / `TEST_LINE_UID`）。
 
 ## 變更紀錄
+- 2026-06-04：正式 DB demo 資料改用「啟動時 flag-gated bootstrap」自動套用（`server/bootstrap/demoSeed.js`）。
+  - **原因**：`executeSql({environment:"production"})` 唯讀、使用者也難對正式 DB 跑 psql，所以光交付 SQL 腳本資料進不了正式站（教練名單看不到測試教練即因正式 DB 從未跑過 seed）。但部署後 app 對正式 DB 有讀寫權 → 沿用既有 `bootstrap/admin.js`、`coreSchema.js` 模式，啟動時依環境變數執行同一份已驗證 SQL。
+  - **開關（Replit Secrets）**：`DEMO_SEED=seed`（或 `1`）→ 跑 `demo_seed_prod.sql`；`DEMO_SEED=cleanup` → 跑 `demo_cleanup_prod.sql`；未設則不動作。改值後需 **Publish / 重啟** 才生效。
+  - **流程**：測前設 `DEMO_SEED=seed` + `ALLOW_DEMO_LOGIN=1` → Publish；測後設 `DEMO_SEED=cleanup` → Publish（清資料）→ 再移除 `DEMO_SEED` 與 `ALLOW_DEMO_LOGIN`。bootstrap 以 `pool.query` 一次送出整支 BEGIN…COMMIT，失敗只 console.error 不擋 server 啟動。
 - 2026-06-04：正式 DB demo 測試資料腳本（`server/scripts/demo_seed_prod.sql` + `demo_cleanup_prod.sql`）。
   - **用途**：在正式站用 demo 帳號測「家長報名→後台換教練」與「團購邀請連結加入」兩流程。鐵則：只寫 local 表不回寫 Ragic；資料標 `(測試帳號)`；全 idempotent。
   - **限制**：`executeSql({environment:"production"})` 唯讀，無法直接寫 prod → 交付腳本由使用者跑 `psql "$PROD_DATABASE_URL" -f ...`；腳本內以手機/名稱/`ragic_employee_id` self-resolve id（不照抄 dev UUID，dev/prod 不同 DB）。已對 dev 跑完整循環驗證（cleanup→0→seed→精確數→再 seed 不變）。

@@ -7,6 +7,7 @@ const { initWebSocket } = require('./services/websocket');
 const { initCronJobs } = require('./cron');
 const { bootstrap: bootstrapAdmin } = require('./bootstrap/admin');
 const { bootstrap: bootstrapCore } = require('./bootstrap/coreSchema');
+const { bootstrap: bootstrapDemo } = require('./bootstrap/demoSeed');
 const { assertSecretConfigured } = require('./middlewares/adminAuth');
 
 const app = express();
@@ -114,6 +115,11 @@ const PORT = process.env.PORT || 3000;
     await bootstrapCore();
   } catch (err) {
     console.error('Core schema bootstrap failed (LIFF coach module may error):', err.message);
+  }
+  try {
+    await bootstrapDemo();
+  } catch (err) {
+    console.error('Demo seed bootstrap failed (DEMO_SEED ignored):', err.message);
   }
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`DAOS Server running on port ${PORT}`);
