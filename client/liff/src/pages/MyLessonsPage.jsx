@@ -125,7 +125,7 @@ export default function MyLessonsPage() {
               <h3 className="mb-1.5 text-xs font-bold text-brand-primary">{month.replace('-', ' / ')}</h3>
               <div className="space-y-2">
                 {rows.map((r) => <LessonCard key={r.session_id + r.student_id} r={r}
-                  onOpen={() => r.record_id && navigate(`/history/${r.period_id}`)} />)}
+                  onOpen={() => r.record_status === 'submitted' && navigate(`/history/${r.period_id}`)} />)}
               </div>
             </section>
           ))}
@@ -156,7 +156,7 @@ function LessonCard({ r, onOpen }) {
         學員：{r.student_name}
         {r.checked_in_at && <span className="ml-2">・簽到於 {new Date(r.checked_in_at).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false })}</span>}
       </div>
-      {r.record_id && (
+      {r.record_status === 'submitted' && (
         <div className="mt-1.5 text-[11px] font-medium text-brand-teal">
           📝 教練已上傳上課記錄 · 點擊查看 ›
         </div>

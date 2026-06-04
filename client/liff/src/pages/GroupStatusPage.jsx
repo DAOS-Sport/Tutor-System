@@ -257,6 +257,9 @@ export default function GroupStatusPage() {
               一鍵複製
             </button>
           </div>
+          {!v.account_number && (
+            <p className="mt-2 text-xs text-brand-error">此場館尚未設定轉帳帳號，請聯繫櫃台後再完成轉帳。</p>
+          )}
         </div>
       )}
 
@@ -362,14 +365,10 @@ export default function GroupStatusPage() {
               <div className="rounded-lg border border-brand-gold/40 bg-brand-gold/5 px-3 py-2 text-[12px] leading-5 text-brand-gold">
                 ⚠️ 送審後成員與學生名單將<strong>無法再更改</strong>，也無法再加入新成員。送審後即進入等候審核，<strong>各家請於此頁完成轉帳並上傳證明</strong>，櫃檯核對後建立課程。
               </div>
-              <button
-                type="button"
-                disabled={!reachedMin || busy}
-                onClick={() => setConfirm('submit')}
-                className="w-full rounded-lg bg-brand-primary py-3.5 text-base font-bold text-white active:bg-brand-teal disabled:bg-gray-300"
-              >
-                {reachedMin ? '送審（湊滿開團人數）' : `還差 ${order.min_students - order.total_students} 人才能送審`}
-              </button>
+              {/* 送審鈕已由上方 NextActionBlock 提供（reachedMin 時顯示「送審並鎖定名單」），此處只保留警語避免兩顆重複送審鈕。 */}
+              {!reachedMin && (
+                <p className="px-1 text-[12px] text-gray-500">還差 {order.min_students - order.total_students} 人才能送審。</p>
+              )}
             </>
           )}
           {canCancelGroup && (

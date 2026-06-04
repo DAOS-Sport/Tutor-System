@@ -1,0 +1,69 @@
+【任務】在「正式部署環境」建立一套可重複、可清除的 DEMO 測試資料，讓我能在正式站用 demo
+  帳號完整測「家長報名→後台換教練」與「團購邀請連結加入」兩條流程。資料要對齊我們在 DEV 已驗證過的那套。
+
+  這個 repo 是「夢想體育學院」LIFF 報名系統（client/liff + server，Express + Postgres + Ragic 同步）。注意：正式部署用的是「另一個」DB（非 workspace 的
+  heliumdb），所以 DEV 那邊已 seed 的資料不在這裡，需要你在「正式 DB」重建一次。
+
+  ==================================================
+  A. 安全鐵則（務必遵守）
+  ==================================================
+  - 只用「直接 SQL」寫「本機 local 表」（parents, students, coaches, coach_venues, admin_staff, venues, course_periods, course_sessions,
+  coach_availability_slots, lesson_plans, course_period_enrollments, course_evaluations, group_orders, group_order_members）。這些不回寫 Ragic。
+  - 嚴禁用「會回寫 Ragic 的寫入 API」建測試家長/學生/教練（例如 parent-register-line / Z01、H01 同步）。一律走本機 SQL，避免污染正式 Ragic。
+  - 所有測試資料都用可辨識標記：姓名前綴 `(測試帳號)`、line_uid 用 `DEMOTEST_` 前綴或 '.'，方便事後一鍵清除。
+  - 寫之前先用 `BEGIN; ...; ROLLBACK;` 乾跑驗證 SQL 能執行（欄位/型別/外鍵），確認 OK 再正式 COMMIT。
+  - 全部 idempotent（ON CONFLICT DO NOTHING / WHERE NOT EXISTS），可重複執行不重複建。
+  - 正式站的真實 UUID 與 DEV 不同，所有關聯一律「以手機/名稱查出正式站的 id」再用，不要照抄 DEV 的 UUID。
+
+  ==================================================
+  B. demo 帳號的底層 DB 記錄（demo-login 靠這些查得到，否則登入失敗）
+  ==================================================
+  後端 server/routes/auth.js 的 DEMO_ACCOUNTS 已部署，但它是「查既有記錄」：
+  - coach  → 名稱含「測試帳號」、ragic_employee_id 最小的教練
+  - coach2 → 名稱精準等於「(測試帳號)教練2」
+  - custom → parents.phone = '0912345678'
+  - custom2→ parents.phone = '0922222222'
+  並確認部署環境 ALLOW_DEMO_LOGIN=1（[userenv.shared] 已有；若無請補）。
+
+  請在正式 DB 確保存在（缺則用本機 SQL 建，標 `(測試帳號)`）：
+  1) 家長 `(測試帳號)家長` phone 0912345678（venue B）+ 2 位學生 `測試-學員1`、`測試-學員2`（students.parent_id 指向他）。
+  2) 家長 `(測試帳號)家長2` phone 0922222222（venue B）+ 至少 1 位學生。
+  3) 教練 `(測試帳號)教練`（給個 ragic_employee_id 如 0605065）：coaches + coach_venues(B) + **admin_staff(id=該 ragic_employee_id, role='coach',
+  active=TRUE, ragic_record_id=同 id)**。
+  4) 教練 `(測試帳號)教練2`（ragic_employee_id 如 0605066）：同上，coaches + coach_venues(B) + **admin_staff**。
+
+  ⚠️ 【關鍵雷點】教練在「家長端選教練」走 coaches+coach_venues，但「後台換教練下拉」走 `GET /api/admin/staff/coaches`，其 SQL 是 `admin_staff s JOIN coaches
+  c ON c.ragic_employee_id = s.id`（INNER JOIN，場館過濾走 coach_venues）。**教練若只在 coaches 不在 admin_staff，後台換教練下拉就看不到它** →
+  換教練測不了。所以兩個測試教練都務必同時進 coaches 與 admin_staff。
+
+  ==================================================
+  C. 讓兩條測試流程跑得通的業務資料（以正式站查到的 id 關聯）
+  ==================================================
+  1) 場館 B 轉帳帳號：UPDATE venues SET bank_institution_name/bank_branch_name/account_holder/account_number=（測試值）WHERE id='B' AND (account_number IS
+  NULL OR account_number='')（正式站若已有真實帳號就別覆蓋）。→ 解開繳款頁。
+  2) 換教練可演示：給 `(測試帳號)教練` 建 1 個 active course_period（course_type=1, total_sessions=6, used=0, venue B, admin_enrollment_id 可 NULL）+ 1
+  場「未來」course_session(status='confirmed', scheduled_at=NOW()+3 days, coach_id=該教練)。如此後台把它從教練1改派到教練2時，會「重新指派 N 堂未來課程」。
+  3) 期末評鑑可達：給 `(測試帳號)家長` 一個 completed 的 course_period(used>=total>0)，並在 course_evaluations 插一筆待填邀請(parent_id=該家長,
+  coach_id=真實教練, course_period_id=該 period, submitted_at=NULL)。
+  4) 課程轉讓可測：對家長名下某 active period 建 course_period_enrollments(student_id=該家長學生, status='active')，否則 /courses/mine 的 students_detail
+  會空、轉讓學員下拉無資料。
+  5) coach2 教練端不空：給 `(測試帳號)教練2` 建 course_period + 今日 confirmed session + 數筆 coach_availability_slots(available/blocked/booked) +
+  lesson_plan(published) + course_period_enrollments(掛家長學生)。
+
+  ==================================================
+  D. 團購邀請連結（我要在正式站測這條，請務必備好）
+  ==================================================
+  建立 1 筆 forming 的 group_orders：leader_parent_id=`(測試帳號)家長`、venue_id='B'、course_type=3（一對三）、min/max=2/3、有
+  join_token、status='forming'，並確保 `(測試帳號)家長2` 尚未在 group_order_members 中、且未滿。
+  → 我會用 app 內「複製邀請連結」（liff.line.me/<PARENT_LIFF_ID>/group/join/<token>）在 LINE 開、或直接 https://<正式網域>/liff/group/join/<token>，用
+  custom2 登入加入。
+  請把這個 join_token 與可直接點的加入連結回報給我。
+
+  ==================================================
+  E. 完成後請回報 + 事後清理方式
+  ==================================================
+  - 回報：建立/更新了哪些表幾筆、團購 join_token 與加入連結、demo 帳號可登入確認結果（GET /api/auth/demo-login 各帳號 200）。
+  - 提供「一鍵清除腳本」：依 `(測試帳號)` / `DEMOTEST_` 標記刪除上述測試資料（含
+  group_orders/members、course_*、evaluations、coach_availability_slots、admin_staff/coaches/coach_venues、parents/students），並將 ALLOW_DEMO_LOGIN
+  關閉的步驟，供我測完交付後執行。
+  - 嚴禁清除任何非標記的正式資料。

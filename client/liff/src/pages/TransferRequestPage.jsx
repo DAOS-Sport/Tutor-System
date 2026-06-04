@@ -18,17 +18,17 @@ export default function TransferRequestPage() {
   const [busy, setBusy] = useState(false);
 
   function reload() {
-    coursesApi.myCourses(parent.id).then((d) => setPeriods(Array.isArray(d) ? d.filter((c) => c.payment_status === 'active') : []))
+    coursesApi.myCourses(parent.id).then((d) => setPeriods(Array.isArray(d) ? d.filter((c) => c.payment_status === 'active' && c.course_period_id) : []))
       .catch(() => setPeriods([]));
     transfersApi.mine().then(setMine).catch(() => setMine([]));
   }
   useEffect(reload, []); // eslint-disable-line
 
   const selected = useMemo(
-    () => (periods || []).find((p) => p.id === form.period_id),
+    () => (periods || []).find((p) => p.course_period_id === form.period_id),
     [periods, form.period_id]
   );
-  const students = selected?.students || [];
+  const students = selected?.students_detail || [];
 
   async function submit(e) {
     e.preventDefault();
@@ -57,7 +57,7 @@ export default function TransferRequestPage() {
               onChange={(e) => setForm({ ...form, period_id: e.target.value, from_student_id: '' })}>
               <option value="">請選擇…</option>
               {periods.map((p) => (
-                <option key={p.id} value={p.id}>
+                <option key={p.id} value={p.course_period_id}>
                   {p.coach?.name || p.coach_name} 教練・1對{p.course_type}・剩 {p.total_sessions - p.used_sessions} 堂
                 </option>
               ))}

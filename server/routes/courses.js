@@ -88,12 +88,31 @@ router.get('/mine', requireParent, async (req, res) => {
                 (SELECT cp.id FROM course_periods cp
                    WHERE cp.admin_enrollment_id = admin_enrollments.id
                    ORDER BY cp.created_at LIMIT 1)
-	              ) AS course_period_id
+	              ) AS course_period_id,
+	              -- 課程轉讓頁(F-S08)用：只回傳「本家長名下、且在該 period active 掛載」的學生 {id,name}。
+	              -- 與既有 students(名字字串陣列)並存、不取代，避免衝擊 CourseCard/CourseDetail 等以名字顯示的頁面。
+	              (
+	                SELECT COALESCE(
+	                         jsonb_agg(jsonb_build_object('id', s.id, 'name', s.name) ORDER BY s.name),
+	                         '[]'::jsonb)
+	                  FROM course_period_enrollments cpe
+	                  JOIN students s ON s.id = cpe.student_id
+	                 WHERE cpe.course_period_id = COALESCE(
+	                         (SELECT cp.id FROM course_periods cp
+	                            WHERE admin_enrollments.group_order_id IS NOT NULL
+	                              AND cp.group_order_id = admin_enrollments.group_order_id
+	                            ORDER BY cp.created_at LIMIT 1),
+	                         (SELECT cp.id FROM course_periods cp
+	                            WHERE cp.admin_enrollment_id = admin_enrollments.id
+	                            ORDER BY cp.created_at LIMIT 1))
+	                   AND cpe.status = 'active'
+	                   AND s.parent_id = $2
+	              ) AS students_detail
 	         FROM admin_enrollments
 	         LEFT JOIN venues v ON v.id = admin_enrollments.venue_id
 	        WHERE parent_phone = $1 OR $1 = ANY(extra_parent_phones)
 	        ORDER BY submitted_at DESC`,
-      [phone]
+      [phone, req.parent.id]
     );
     // admin_enrollments.status 為 DB 內部狀態（pending_payment/confirmed/cancelled/refunded），
     // 前端課程狀態詞彙為 pending_payment/active/completed/refunded（見 utils/format、mock）。
@@ -119,6 +138,7 @@ router.get('/mine', requireParent, async (req, res) => {
       parent_name: row.parent_name,
       parent_phone: row.parent_phone,
       students: row.students || [],
+      students_detail: row.students_detail || [],
 	      coach: { id: row.coach_id || null, name: row.coach },
 	      coach_name: row.coach,
 	      venue_id: row.venue_id,

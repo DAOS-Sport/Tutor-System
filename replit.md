@@ -111,6 +111,12 @@
 受控驗證腳本：`cd server && npm run smoke:ragic-auth`（read-only by default；寫入須 `ENABLE_RAGIC_WRITE_SMOKE=1` + `TEST_PHONE` / `TEST_PARENT_NAME` / `TEST_LINE_UID`）。
 
 ## 變更紀錄
+- 2026-06-04：正式 DB demo 測試資料腳本（`server/scripts/demo_seed_prod.sql` + `demo_cleanup_prod.sql`）。
+  - **用途**：在正式站用 demo 帳號測「家長報名→後台換教練」與「團購邀請連結加入」兩流程。鐵則：只寫 local 表不回寫 Ragic；資料標 `(測試帳號)`；全 idempotent。
+  - **限制**：`executeSql({environment:"production"})` 唯讀，無法直接寫 prod → 交付腳本由使用者跑 `psql "$PROD_DATABASE_URL" -f ...`；腳本內以手機/名稱/`ragic_employee_id` self-resolve id（不照抄 dev UUID，dev/prod 不同 DB）。已對 dev 跑完整循環驗證（cleanup→0→seed→精確數→再 seed 不變）。
+  - **seed 內容**：venue B 教練帳號、`(測試帳號)教練`(0605065)/`教練2`(0605066)（coaches+coach_venues+admin_staff role=coach+admin_staff_venues）、`(測試帳號)家長`(0912345678)/`家長2`(0922222222)+學員、venue B 轉帳帳號（僅空白時填）、教練1 active period（未來 confirmed session，供換教練/轉讓）+completed period+待填評鑑、教練2 active period+今日 session+slots+published lesson_plan、團購 forming 一對三(2/3) leader=家長 join_token=`demotestgroup3invite0001`（家長2 不加入，留給邀請連結測試）。
+  - **團購邀請連結**：`https://liff.line.me/<LIFF_ID_PARENT>/group/join/demotestgroup3invite0001`（站內 fallback：`https://daos-tutoring-courses.replit.app/liff/group/join/demotestgroup3invite0001`）。
+  - **測前**：prod Secrets 設 `ALLOW_DEMO_LOGIN=1`（測完務必刪）；測後跑 cleanup 腳本（marker-scoped，venue B 轉帳帳號僅在等於測試值時還原為空）。
 - 2026-06-03：U11 批次修補（workflow 調查+對抗驗證後逐項實作）：
   - **#1 分享連結加入跑到別人的團（critical）**：根因為 `afterAuth`（localStorage `daos.afterAuth`）殘留舊團 join 路徑——登出、手動登出守衛早退、登入失敗分支都沒清，下次自動登入被 `takeAfterAuth` 取用→導向舊團（「人數/名字算錯」其實是進錯團，後端計數正確）。修法：`afterAuth.js` 新增 `clearAfterAuth()`；`AuthContext.logout()`、`LoginPage` 手動登出守衛 + 兩個 error 分支都呼叫清除。純前端，已重 build LIFF。**未改** `location.state.from`（LIFF redirect 會遺失）與後端計數（無關）。
   - **#2 正式環境 F-M02 等清單看不到**：非舊 bundle、非角色 gating，而是 manager/staff 帳號**無場館(venue scope)** → fail-closed 全空（影響 F-M02/今日課程/簽到/團購審核等 8 個 scoped 路由）。預覽 seed 帳號有場館 'B' 故正常；正式真實帳號沒有。**資料修復**（非改碼）：見 `scripts/fix_staff_venue_scope.sql`，於 Production DB 診斷後補 `admin_staff_venues`（有 staff_id）或 `admin_users.venue_id`（無 staff_id），補後重新登入。

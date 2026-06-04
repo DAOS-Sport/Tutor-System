@@ -28,7 +28,6 @@ export default function GroupJoinPage() {
   const [looking, setLooking] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [fields, setFields] = useState({ studentIds: [], newStudents: [], proofUrl: '' });
-  const [uploading, setUploading] = useState(false);
   const [joining, setJoining] = useState(false);
 
   useEffect(() => {
@@ -92,7 +91,7 @@ export default function GroupJoinPage() {
 
   const phoneOk = isValidTWPhone(phone);
   const canLookup = phoneOk && !looking;
-  const canJoin = authedParent && memberFieldsReady(fields) && !uploading && !joining;
+  const canJoin = authedParent && memberFieldsReady(fields) && !joining;
   const phoneMatchesLogin = !authedParent || !parent?.phone || parent.phone === phone.trim();
 
   async function handleJoin() {
@@ -220,8 +219,6 @@ export default function GroupJoinPage() {
                 <GroupMemberFields
                   value={fields}
                   onChange={setFields}
-                  uploading={uploading}
-                  setUploading={setUploading}
                   maxStudents={Math.max(0, (preview.max_students || 0) - (preview.total_students || 0))}
                 />
                 <button

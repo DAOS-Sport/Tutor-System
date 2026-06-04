@@ -35,7 +35,7 @@ export default function ChatListPage() {
     let cancel = false;
     listRooms()
       .then((r) => { if (!cancel) setRooms(Array.isArray(r) ? r : []); })
-      .catch((e) => { if (!cancel) setErr(e?.response?.data?.error || e.message); });
+      .catch((e) => { if (!cancel) { setErr(e?.response?.data?.error || e.message); setRooms([]); } });
     return () => { cancel = true; };
   }, []);
 

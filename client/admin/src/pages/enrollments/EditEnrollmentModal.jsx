@@ -73,17 +73,31 @@ export default function EditEnrollmentModal({ enrollment, onClose, onSaved }) {
     return () => { alive = false; };
   }, []);
 
-  // 載入該場館的教練清單
+  // 載入該場館的教練清單。若原報名教練已停用、不在 active 清單，補一個 disabled 的
+  // 「目前」選項並選中，避免下拉變空、看不出原指派教練（需重新指派）。
   useEffect(() => {
     if (!venueId) { setCoaches([]); return; }
     let alive = true;
     setCoachesLoading(true);
     staffApi.coachesByVenue(venueId, 'active')
-      .then((d) => alive && setCoaches(d || []))
+      .then((d) => {
+        if (!alive) return;
+        const list = d || [];
+        const stillSameVenue = venueId === enrollment.venue_id;
+        if (stillSameVenue && enrollment.coach_id && coachId === enrollment.coach_id
+            && !list.some((c) => c.id === enrollment.coach_id)) {
+          setCoaches([
+            { id: enrollment.coach_id, name: `目前：${enrollment.coach || '原教練'}（已停用，需重新指派）`, _inactive: true },
+            ...list,
+          ]);
+        } else {
+          setCoaches(list);
+        }
+      })
       .catch(() => alive && setCoaches([]))
       .finally(() => alive && setCoachesLoading(false));
     return () => { alive = false; };
-  }, [venueId]);
+  }, [venueId, enrollment.venue_id, enrollment.coach_id, enrollment.coach, coachId]);
 
   // 換場館時無條件 reset 教練選擇（即使新場館也含此教練），確保管理員自覺重選
   function handleVenueChange(nextVenueId) {
@@ -96,8 +110,8 @@ export default function EditEnrollmentModal({ enrollment, onClose, onSaved }) {
     [venues, venueId]
   );
   const newCoachName = useMemo(
-    () => (coaches.find((c) => c.id === coachId)?.name) || '',
-    [coaches, coachId]
+    () => (coaches.find((c) => c.id === coachId && !c._inactive)?.name) || enrollment.coach || '',
+    [coaches, coachId, enrollment.coach]
   );
 
   function validate() {
@@ -207,7 +221,7 @@ export default function EditEnrollmentModal({ enrollment, onClose, onSaved }) {
               <Select value={coachId} onChange={setCoachId} disabled={!venueId || coachesLoading}>
                 <option value="">{venueId ? '請選擇教練' : '—'}</option>
                 {coaches.map((c) => (
-                  <option key={c.id} value={c.id}>
+                  <option key={c.id} value={c.id} disabled={c._inactive}>
                     {c.name}{c.is_senior ? ' ⭐' : ''}
                   </option>
                 ))}

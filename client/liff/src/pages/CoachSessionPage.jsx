@@ -70,10 +70,10 @@ export default function CoachSessionPage() {
       <section className="mt-5 space-y-2">
         <button
           type="button"
-          onClick={() => toast.info('簽到流程將於後續開放')}
-          className="w-full rounded-xl bg-brand-teal py-3 text-sm font-bold text-white active:opacity-90"
+          disabled
+          className="w-full rounded-xl bg-gray-200 py-3 text-sm font-bold text-gray-400 cursor-not-allowed"
         >
-          學員簽到
+          簽到功能開發中
         </button>
         {session.course_period_id && (
           <button

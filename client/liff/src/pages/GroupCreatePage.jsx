@@ -46,7 +46,6 @@ export default function GroupCreatePage() {
   const courseType = Number(params.get('courseType') || 2);
 
   const [fields, setFields] = useState({ studentIds: [], newStudents: [], proofUrl: '' });
-  const [uploading, setUploading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [note, setNote] = useState('');
   const [periodCount, setPeriodCount] = useState(1);
@@ -122,7 +121,7 @@ export default function GroupCreatePage() {
     return () => clearTimeout(t);
   }, [fields, note, courseType, venueId, coachId, periodCount]);
 
-  const canSubmit = !!venueId && memberFieldsReady(fields) && !uploading && !submitting;
+  const canSubmit = !!venueId && memberFieldsReady(fields) && !submitting;
 
   async function handleCreate() {
     if (!canSubmit) return;
@@ -159,8 +158,6 @@ export default function GroupCreatePage() {
       <GroupMemberFields
         value={fields}
         onChange={setFields}
-        uploading={uploading}
-        setUploading={setUploading}
         maxStudents={courseType}
       />
 

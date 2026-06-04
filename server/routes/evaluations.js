@@ -11,6 +11,10 @@ const evaluations = require('../services/evaluations');
 
 const router = express.Router();
 
+// 評鑑 id 為 UUID；前端誤把 enrollment id（如 EMPZMOO7KZ4）帶進來時直接回 404，
+// 避免進到 service 對 course_evaluations.id 做 uuid 比對而觸發 postgres 22P02 假性 500。
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 router.get('/mine', requireParent, async (req, res) => {
   try {
     const list = await evaluations.listForParent(req.parent.id);
@@ -23,6 +27,7 @@ router.get('/mine', requireParent, async (req, res) => {
 
 router.get('/:id', requireParent, async (req, res) => {
   try {
+    if (!UUID_RE.test(String(req.params.id || ''))) return res.status(404).json({ error: 'not found' });
     const row = await evaluations.getMine(req.params.id, req.parent.id);
     if (!row) return res.status(404).json({ error: 'not found' });
     res.json(row);
@@ -34,6 +39,7 @@ router.get('/:id', requireParent, async (req, res) => {
 
 router.post('/:id/submit', requireParent, async (req, res) => {
   try {
+    if (!UUID_RE.test(String(req.params.id || ''))) return res.status(404).json({ error: 'not found' });
     const row = await evaluations.submit(req.params.id, req.parent.id, req.body || {});
     res.json(row);
   } catch (e) {

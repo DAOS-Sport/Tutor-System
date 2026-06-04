@@ -193,6 +193,13 @@ export default function CourseDetailPage() {
         </div>
       )}
 
+      {/* 已開通但正式課程期尚未建立（course_period_id 仍 null）→ 給說明，避免整頁無操作的軟死路 */}
+      {isActiveOrDone && !periodId && (
+        <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 p-4 text-center text-sm text-gray-600">
+          課程開通處理中，學習歷程／約時間等功能稍後開放。如有疑問請聯繫櫃台。
+        </div>
+      )}
+
       <button
         type="button"
         onClick={() => navigate('/my-courses')}
