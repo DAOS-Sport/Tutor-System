@@ -148,6 +148,8 @@ function _rateLimited(ip) {
 const TW_PHONE_RE = /^09\d{8}$/;
 // 台灣身分證字號（保守版）
 const TW_ID_RE = /^[A-Z][12]\d{8}$/;
+// Email（寬鬆但足以擋空白 / 缺 @ / 缺網域）
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // ─────────────────────────────────────────────────────────────
 // helpers
@@ -601,6 +603,13 @@ router.post('/parent-register-line', async (req, res) => {
     if (!TW_PHONE_RE.test(phone)) {
       return res.status(400).json({ error: '手機格式錯誤（需 09xxxxxxxx）', code: 'PHONE_FORMAT_INVALID' });
     }
+    // Ragic Z01 必填欄位：家長 Email + 性別。缺一 Ragic 會回 INVALID 202、整筆寫不進去。
+    // 在打 Ragic 前先 server-side 驗證，回明確錯誤碼，而非難解的 502 RAGIC_WRITE_FAILED。
+    const email  = String(parentIn.email  || '').trim();
+    const gender = String(parentIn.gender || '').trim();
+    if (!email)                return res.status(400).json({ error: 'Email 必填',     code: 'EMAIL_REQUIRED' });
+    if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Email 格式錯誤', code: 'EMAIL_FORMAT_INVALID' });
+    if (!gender)               return res.status(400).json({ error: '家長性別必填',   code: 'GENDER_REQUIRED' });
     if (studentsIn.length === 0) {
       return res.status(400).json({ error: '至少需要一位學員', code: 'INPUT_INVALID' });
     }

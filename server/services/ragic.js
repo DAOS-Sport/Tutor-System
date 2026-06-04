@@ -37,12 +37,37 @@ function _recordPath(formPath, ragicRecordId) {
   return `${_stripQuery(formPath)}/${ragicRecordId}`;
 }
 
+// 補償用：盡力刪除指定表單的多筆 record（失敗只記 log、不拋）。
+// 用於「Z01 家長已建、Z02 學員寫一半失敗」時回滾，讓使用者可乾淨重試。
+async function _bestEffortDelete(formPath, ragicRecordIds = []) {
+  for (const rid of ragicRecordIds) {
+    if (rid == null) continue;
+    try {
+      await client.delete(_withApi(_recordPath(formPath, rid)), {
+        params: { APIKey: process.env.RAGIC_API_KEY },
+      });
+    } catch (err) {
+      console.error('[Ragic] 補償刪除失敗:', _stripQuery(formPath), rid, err.message);
+    }
+  }
+}
+
 // Ragic 寫入成功為 status:'SUCCESS'；'ERROR'(系統錯) / 'INVALID'(欄位驗證失敗，如必填缺漏)
 // 等都代表沒寫進去。先前多處只擋 'ERROR' → 'INVALID' 被當成功靜默吞掉、整筆沒落地。
 function _assertWriteOk(data) {
   const d = data || {};
   if (d.status && d.status !== 'SUCCESS') {
     throw new Error(`Ragic ${d.status} ${d.code || ''}: ${d.msg || ''}`.trim());
+  }
+  // 防「軟失敗靜默吞掉」：Ragic 寫入成功一定回 status:'SUCCESS' 且帶 record id。
+  // 若回 200 卻既無 SUCCESS 狀態也無 record id（例如打到錯表單 / 回了非預期 JSON / 空 body），
+  // 視為寫入失敗並拋錯，避免「看起來成功、實際沒落地」。
+  const hasRecordId =
+    d.ragicId != null ||
+    d._ragicId != null ||
+    (d.data && typeof d.data === 'object' && (d.data._ragicId != null || d.data.ragicId != null));
+  if (d.status !== 'SUCCESS' && !hasRecordId) {
+    throw new Error('Ragic 寫入未確認成功（回應無 SUCCESS 狀態且無 record id），疑似打到錯誤表單或回應異常');
   }
 }
 
@@ -366,6 +391,49 @@ function parseZ01Students(record) {
   }).filter((s) => s.name);
 }
 
+// 男/女 → 生理男/生理女。Ragic Z02「學(性別)」「(報)性別」與 Z01 子表性別均為「選項欄位」，
+// 只接受「生理男/生理女」，送「男/女」會被當無效值而落空。
+function _toPhysGender(g) {
+  const v = String(g || '').trim();
+  if (!v) return '';
+  if (v.startsWith('生理')) return v;
+  if (['男', 'M', 'Male', 'male'].includes(v)) return '生理男';
+  if (['女', 'F', 'Female', 'female'].includes(v)) return '生理女';
+  return v;
+}
+
+// 組 Z02 學員主檔 payload。
+//
+// 為什麼學員要寫 Z02 而非 Z01 子表：
+//   Z01 的「項次/學員」子表（stid 1001119）是「依家長手機(報行動電話)自動連動帶出的 Z02 清單」，
+//   屬 Ragic linked-records，**無法**用 dotted key 直接 POST 寫入（POST 會回 SUCCESS 但靜默丟棄，
+//   兩步法 record-path POST 則回「館別為必填」INVALID）。真正的學員主檔是 Z02，
+//   只要在 Z02 建一筆「(報)行動電話 = 家長手機」的紀錄，Z01 項次子表就會自動帶出該學員。
+//
+// Z02 必填欄位（缺一會 INVALID 202、整筆寫不進去）：學員編號 / (報)身分 / 血型。
+//   - 學員編號：新生無編號 → 以身分證字號頂替（與既有真實紀錄一致）。
+//   - (報)身分：家長身分，預設「一般身分」。
+//   - 血型：未填以「不清楚」placeholder（Ragic 接受的選項值）。
+function _buildZ02RegistrationPayload({ parent, student }) {
+  const idnum = student.id_number ? String(student.id_number).toUpperCase() : '';
+  const birth = student.birth_date ? String(student.birth_date).replace(/-/g, '/') : '';
+  return {
+    [FIELD.Z02.NAME]:            student.name || '',
+    [FIELD.Z02.STUDENT_STATUS]:  '01.一般生',                    // 學員身分（學生類別）
+    [FIELD.Z02.GENDER]:          _toPhysGender(student.gender),  // 學(性別)
+    [FIELD.Z02.BIRTH_DATE]:      birth,
+    [FIELD.Z02.ID_NUMBER]:       idnum,
+    [FIELD.Z02.STUDENT_CODE]:    student.student_code || idnum,  // 學員編號（缺則用身分證）
+    [FIELD.Z02.BLOOD_TYPE]:      student.blood_type || '不清楚', // Z02 必填，缺則「不清楚」
+    [FIELD.Z02.VENUE]:           parent.primary_venue_id || '',
+    [FIELD.Z02.PARENT_PHONE]:    parent.phone || '',             // ★ Z01↔Z02 連結鍵
+    [FIELD.Z02.PARENT_NAME]:     parent.name || '',
+    [FIELD.Z02.PARENT_GENDER]:   _toPhysGender(parent.gender),
+    [FIELD.Z02.PARENT_IDENTITY]: parent.identity || '一般身分',  // (報)身分 必填
+    [FIELD.Z02.PARENT_EMAIL]:    parent.email || '',
+  };
+}
+
 async function createParentWithStudentsInRagic({ parent, students = [], lineUid }) {
   if (!parent || !parent.phone) throw new Error('parent.phone 必填');
   if (!lineUid) throw new Error('lineUid 必填');
@@ -383,16 +451,7 @@ async function createParentWithStudentsInRagic({ parent, students = [], lineUid 
   if (parent.gender) payload[FIELD.Z01.GENDER] = parent.gender;
   if (parent.email)  payload[FIELD.Z01.EMAIL]  = parent.email;
 
-  students.forEach((s, idx) => {
-    if (!s || !s.name) return;
-    const prefix = `${Z01_STUDENTS_SUBTABLE_ID}_${idx}_`;
-    payload[`${prefix}${FIELD.Z01_STUDENT.NAME}`] = s.name;
-    if (s.birth_date) payload[`${prefix}${FIELD.Z01_STUDENT.BIRTH_DATE}`] = s.birth_date;
-    if (s.gender)     payload[`${prefix}${FIELD.Z01_STUDENT.GENDER}`]     = s.gender;
-    if (s.id_number)  payload[`${prefix}${FIELD.Z01_STUDENT.ID_NUMBER}`]  = String(s.id_number).toUpperCase();
-    if (s.blood_type) payload[`${prefix}${FIELD.Z01_STUDENT.BLOOD_TYPE}`] = s.blood_type;
-  });
-
+  // 1) 建 Z01 家長主檔（不再帶 dotted 子表，子表寫不進去，見 _buildZ02RegistrationPayload 註解）
   const res = await client.post(_withApi(process.env.RAGIC_FORM_Z01), payload, {
     params: { APIKey: process.env.RAGIC_API_KEY },
   });
@@ -407,7 +466,27 @@ async function createParentWithStudentsInRagic({ parent, students = [], lineUid 
     const firstKey = Object.keys(data.data)[0];
     ragicRecordId = firstKey || null;
   }
-  return { ragicRecordId, raw: data };
+
+  // 2) 學員逐筆寫 Z02 學員主檔（依家長手機自動連動回 Z01 項次子表）。
+  //    upsertStudentStrict 失敗會 throw → caller 回 502 RAGIC_WRITE_FAILED（fail-visible）。
+  //    補償：Z01 家長已建、但某筆 Z02 失敗 → 回滾刪除剛建的 Z01 家長 + 已寫入的 Z02 學員，
+  //    讓使用者可乾淨重試（否則孤兒 Z01 會帶著 lineUid 卡在 LINE_ALREADY_REGISTERED）。
+  const studentRecordIds = [];
+  try {
+    for (const s of students) {
+      if (!s || !s.name) continue;
+      const z02raw = await upsertStudentStrict(_buildZ02RegistrationPayload({ parent, student: s }));
+      studentRecordIds.push(z02raw?.ragicId || z02raw?._ragicId || null);
+    }
+  } catch (err) {
+    await _bestEffortDelete(process.env.RAGIC_FORM_Z02, studentRecordIds);
+    if (ragicRecordId) await _bestEffortDelete(process.env.RAGIC_FORM_Z01, [ragicRecordId]);
+    _cacheInvalidate('z01:');
+    _cacheInvalidate('z02:');
+    throw err;
+  }
+
+  return { ragicRecordId, studentRecordIds, raw: data };
 }
 
 /**

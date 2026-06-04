@@ -1,3 +1,4 @@
 - [Enrollment subsystems](enrollment-subsystems.md) — admin_enrollments (reconciliation) and course_periods/course_sessions (booking + session records) are SEPARATE; group-buy approve creates admin_enrollments only.
 - [Group-buy state transitions](group-buy-state.md) — status changes (cancel/reject/approve) must be atomic conditional UPDATEs guarding status, not read-then-write, to survive concurrent review.
 - [Demo login bypass](demo-login-bypass.md) — env-flag-gated username/password backdoor for mobile testing; fails closed to test accounts only, and the demo path must skip liff.login() or it bounces to LINE OAuth.
+- [Ragic Z01/Z02 student writes](ragic-z01-z02-students.md) — students must be written to Z02 (linked by parent phone), NOT the Z01 subtable which silently drops dotted-key POSTs; two-phase write needs orphan-parent rollback.

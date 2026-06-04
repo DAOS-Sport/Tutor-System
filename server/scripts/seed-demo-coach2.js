@@ -54,10 +54,23 @@ async function main() {
     );
     const coach2Id = c2.rows[0].id;
 
+    // 2b) admin_staff 鏡像列：後台「轉換教練」改派下拉走 GET /api/admin/staff/coaches，
+    //     其 SQL 為 `admin_staff s JOIN coaches c ON c.ragic_employee_id = s.id`（INNER JOIN）。
+    //     coach2 若沒有對應的 admin_staff 列就被濾掉、下拉看不到 → 補一筆（比照 coach1=0605065）。
+    //     場館歸屬走 coach_venues（步驟 3/3b 已建），不需 admin_staff_venues。
+    await client.query(
+      `INSERT INTO admin_staff
+         (id, name, role, phone, is_senior, multiplier, active, ragic_record_id)
+       VALUES ($1::text, $2::text, 'coach', $3::text, FALSE, $4::numeric, TRUE, $5::text)
+       ON CONFLICT (id) DO NOTHING`,
+      [COACH2.ragic_employee_id, COACH2.name, COACH2.phone,
+       Number(coach1.pricing_multiplier) || 1.0, COACH2.ragic_employee_id]
+    );
+
     // 3) 複製 coach1 的場館歸屬到 coach2（同場館，方便後台同場館改派）
     await client.query(
       `INSERT INTO coach_venues (coach_id, venue_id)
-       SELECT $1, venue_id FROM coach_venues WHERE coach_id = $2
+       SELECT $1::uuid, venue_id FROM coach_venues WHERE coach_id = $2::uuid
        ON CONFLICT DO NOTHING`,
       [coach2Id, coach1.id]
     );
@@ -68,7 +81,7 @@ async function main() {
       for (const vid of EXTRA_VENUE_IDS) {
         await client.query(
           `INSERT INTO coach_venues (coach_id, venue_id)
-           SELECT $1, $2 WHERE EXISTS (SELECT 1 FROM venues WHERE id = $2)
+           SELECT $1::uuid, $2::text WHERE EXISTS (SELECT 1 FROM venues WHERE id = $2::text)
            ON CONFLICT DO NOTHING`,
           [coachId, vid]
         );

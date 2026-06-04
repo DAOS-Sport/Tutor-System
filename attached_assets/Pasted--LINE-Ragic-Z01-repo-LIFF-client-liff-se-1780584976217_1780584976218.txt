@@ -1,0 +1,73 @@
+  【任務】修正:LINE 註冊家長後，家長＋學員資料沒有寫進 Ragic Z01（家教系統家長主檔）
+
+  這個 repo 是「夢想體育學院」LIFF 報名系統（client/liff + server，Node/Express + Postgres + Ragic 同步）。
+  症狀：使用者在「正式 publish 的網址」用 LINE 完成家長註冊後，Ragic Z01
+  裡查不到該家長（連家長基本資料都沒有），學員子表格當然也沒有。dev 預覽環境的寫入流程看起來正常。
+
+  ==================================================
+  A. 已查清楚的事實（請別重查，直接從這裡接手）
+  ==================================================
+  1. 註冊 API：server/routes/auth.js 的 `POST /api/auth/parent-register-line`（約 line 588）。
+     - 它先做衝突檢查（getParentByLineUid / getParentByPhone），再呼叫
+       `ragic.createParentWithStudentsInRagic({ parent:{name,phone,gender,email,primary_venue_id}, students, lineUid })`，
+       成功後才 `_syncWithLock` 寫本地 DB。
+     - 若 Ragic 查詢/寫入丟錯，會回 502 RAGIC_UNAVAILABLE / RAGIC_WRITE_FAILED 並中止註冊。
+  2. Ragic 寫入實作：server/services/ragic.js 的 `createParentWithStudentsInRagic`（約 line 369-411）。
+     - 組 Z01 payload（家長姓名 1001101、電話 1001100、家教系統uid 1006846、身分 1002177、館別 1002174、line對話網址
+  1002390），
+       學員用扁平 dotted key `1001119_<列號>_<欄位ID>` 一起 POST 到 `process.env.RAGIC_FORM_Z01`，params 帶 `APIKey:
+  process.env.RAGIC_API_KEY`。
+     - 學員欄位 ID（姓名 1001115、生日 1001116、性別 1001117、身分證 1001118、血型 1001880）與 docs/ragic_api.md:465-485
+  完全一致；格式也符合 docs:478 規格。→ 程式碼層面看起來是對的。
+  3. 成敗判斷：ragic.js 的 `_assertWriteOk(data)`（line 42-47）**只在 `data.status && data.status !== 'SUCCESS'`
+  時才丟錯**。
+     ⚠️  若 Ragic 回 200 但 body 沒有 `status` 欄位、或打到錯的 form 而回了非預期 JSON，會被當成「成功」而靜默吞掉 →
+  註冊看起來成功、實際沒寫進 Z01。
+  4. 環境變數現況（dev workspace）：RAGIC_API_KEY ✅、RAGIC_BASE_URL ✅、RAGIC_FORM_Z01 ✅、RAGIC_FORM_H05 ✅；RAGIC_ACCOUNT
+  ❌未設、RAGIC_FIELD_Z01_LINE_UID ❌未設（schema 預設 1006846）。
+     ⚠️  `.replit [userenv.shared]` 只帶了 VITE_LIFF_*、RAGIC_BASE_URL、ALLOW_DEMO_LOGIN，**沒有** RAGIC_API_KEY /
+  RAGIC_FORM_Z01 等 secrets。
+
+  ==================================================
+  B. 頭號嫌疑（請優先驗證）
+  ==================================================
+  (1) 【最可能】正式「Deployment」環境缺少 Ragic secrets：
+      請比對 dev 與 Deployment 的環境變數，確認 Deployment 有設且值正確：
+        RAGIC_API_KEY、RAGIC_FORM_Z01、RAGIC_BASE_URL、RAGIC_ACCOUNT（若 RAGIC_FORM_Z01 不是完整 URL 就需要它）。
+      若 Deployment 缺 RAGIC_FORM_Z01 或 RAGIC_API_KEY → POST 會打到錯的 URL / 沒帶金鑰 → 寫入失敗或落空，而
+  `_assertWriteOk` 可能沒擋下來。
+  (2) `_assertWriteOk` 太寬鬆：補強成「沒拿到新 record id 或 status 不是 SUCCESS 就視為失敗並丟錯」，讓軟失敗不再被當成功。
+  (3) 正式 Ragic 表的欄位 ID 與 docs 漂移：用實際 POST 回應驗證。
+
+  ==================================================
+  C. 請你執行（診斷 → 修 → 驗）
+  ==================================================
+  1. 在 `createParentWithStudentsInRagic` 內加「暫時」的詳細 log：印出最終 POST 的 URL、完整 payload（keys + values）、以及
+  Ragic 回應的 **完整 raw JSON / HTTP status**。同樣在 `_assertWriteOk` 印出收到的 data。
+  2. 用「可清除的安全測試」實際打一次正式流程（**務必走 demo 安全路徑，不要污染真資料**）：
+     - 呼叫 `POST /api/auth/parent-register-line`，body 帶 `{ demo:true, parent:{name:"(寫入測試)家長",
+  phone:"09xxxxxxxx"(填一個系統內不存在的號), email, primary_venue_id:"B"}, students:[{name:"(寫入測試)學員", id_number,
+  birth_date:"2016-01-01", gender:"男"}] }`。
+       （ALLOW_DEMO_LOGIN=1 時會用 `DEMOTEST_` 前綴 line_uid，事後可依此前綴清除。）
+     - 看 log 印出的 Ragic 回應：是 SUCCESS 還是 INVALID / 其他？record id 有沒有回來？
+  3. 直接到 Ragic Z01（家教系統家長主檔）查那筆：家長主欄位有沒有寫進去？展開該筆的「學員」子表格有沒有列？Z02（學員資料管理
+  ）有沒有被自動帶出對應學員？
+  4. 依找到的真因修正：
+     - 若是 Deployment 缺 env → 補上正確的 RAGIC_* secrets 到 Deployment，重新部署。
+     - 若是 `_assertWriteOk` 吞錯 → 補強判斷（沒 record id / status 非 SUCCESS → throw，讓註冊明確回 RAGIC_WRITE_FAILED
+  而不是假成功）。
+     - 若是欄位 ID 漂移 → 對照正式表更新 server/config/ragicSchema.js 的 Z01_FIELDS / Z01_STUDENT_FIELDS。
+  5. 驗證：再跑一次 step 2 的安全測試註冊，確認 Z01 出現完整家長＋學員（且 Z02 也帶出學員），然後**移除 step 1 的暫時
+  log**，並把測試用的 DEMOTEST_ 資料清除（Z01/Z02/本地 parents+students）。
+
+  ==================================================
+  D. 限制與注意
+  ==================================================
+  - 嚴禁破壞正式 Ragic 既有資料；所有測試一律走 `demo:true`（DEMOTEST_ 前綴）並於驗證後清除。
+  - 工作區目前有「未 commit」的前端改動（client/liff/src/pages/RegisterPage.jsx
+  新增了必填「館別」下拉、已登入家長點教練分享連結改導去報名頁、SelfStudentSelector 空狀態、EnrollStatusPage
+  複製鈕防呆、MyCoursesPage 空狀態 CTA、GroupStatusPage 轉帳時機、useEnrollmentBoot 缺參數防呆、server/routes/coaches.js 非
+  uuid 回 404）——**請保留這些，不要覆蓋或還原**。
+  - 若需重建前端：`cd client/liff && VITE_USE_MOCK=false VITE_LIFF_ID_PARENT=$VITE_LIFF_ID_PARENT
+  VITE_LIFF_ID_COACH=$VITE_LIFF_ID_COACH VITE_LIFF_ID=$LIFF_ID npm run build`（輸出到 server/public/liff）。
+  - 完成定義：在正式 publish 環境用安全測試帳號註冊後，Ragic Z01 能看到完整家長＋學員資料；暫時 log 已移除；測試資料已清除。

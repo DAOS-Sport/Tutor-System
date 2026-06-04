@@ -6,6 +6,7 @@ import { parentsApi } from '../api/parents';
 import { authApi } from '../api/auth';
 import { referralsApi } from '../api/referrals';
 import { coachesApi } from '../api/coaches';
+import { venuesApi } from '../api/venues';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { takeAfterAuth } from '../utils/afterAuth';
@@ -97,9 +98,17 @@ export default function RegisterPage() {
     return () => { alive = false; };
   }, [authedParent, refToken, refResolved, refInfo, parent, navigate, buildRefEnrollUrl]);
 
+  // 館別（上課場館）清單 — /api/venues 為公開端點，未登入註冊頁也可載入
+  const [venues, setVenues] = useState([]);
+  useEffect(() => {
+    let alive = true;
+    venuesApi.list().then((vs) => { if (alive) setVenues(vs || []); }).catch(() => { /* noop */ });
+    return () => { alive = false; };
+  }, []);
+
   const { register, handleSubmit, control, formState: { errors, isSubmitting } } = useForm({
     defaultValues: {
-      name: '', phone: prefilledPhone, gender: '女', email: '',
+      name: '', phone: prefilledPhone, gender: '女', email: '', primary_venue_id: '',
       students: [{ name: '', id_number: '', birth_date: '', gender: '男' }],
     },
   });
@@ -112,6 +121,7 @@ export default function RegisterPage() {
       phone: data.phone.trim(),
       gender: data.gender,
       email: data.email,
+      primary_venue_id: data.primary_venue_id || null,
     };
     const cleanStudents = data.students.map((s) => ({
       ...s,
@@ -245,6 +255,14 @@ export default function RegisterPage() {
                 required: '請填寫手機',
                 validate: (v) => isValidTWPhone(v) || '手機格式錯誤',
               })} className={inputCls} />
+          </Field>
+          <Field label="館別（上課場館）" error={errors.primary_venue_id?.message}>
+            <select {...register('primary_venue_id', { required: '請選擇館別' })} className={inputCls}>
+              <option value="">請選擇上課場館</option>
+              {venues.map((v) => (
+                <option key={v.id} value={v.id}>{v.name}</option>
+              ))}
+            </select>
           </Field>
           <Field label="性別">
             <select {...register('gender')} className={inputCls}>
