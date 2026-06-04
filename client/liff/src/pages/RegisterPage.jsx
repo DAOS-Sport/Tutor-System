@@ -1,10 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useFieldArray, useForm } from 'react-hook-form';
 import liff from '@line/liff';
 import { parentsApi } from '../api/parents';
 import { authApi } from '../api/auth';
 import { referralsApi } from '../api/referrals';
+import { coachesApi } from '../api/coaches';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { takeAfterAuth } from '../utils/afterAuth';
@@ -43,19 +44,58 @@ export default function RegisterPage() {
   const refToken = params.get('ref') || '';
   const demoMode = params.get('demo') === '1';
   const navigate = useNavigate();
-  const { setParent } = useAuth();
+  const { setParent, parent, isAuthed, role } = useAuth();
   const toast = useToast();
   const [refInfo, setRefInfo] = useState(null);
+  const [refResolved, setRefResolved] = useState(false);
+  const authedParent = isAuthed && role === 'parent';
+
+  // 用推薦的教練解析出有效場館（優先家長慣用場館，否則取教練第一個場館），
+  // 組出帶 coach/venue/courseType 的報名頁 URL；EnrollmentPage 會據 coachId 自動套 TRIAL50。
+  const buildRefEnrollUrl = useCallback(async (coachId, preferVenueId) => {
+    let venueId = preferVenueId || '';
+    try {
+      const cd = await coachesApi.detail(coachId);
+      const vids = cd?.venue_ids || [];
+      if (vids.length && !vids.includes(venueId)) venueId = vids[0];
+    } catch { /* 場館解析失敗就沿用 preferVenueId */ }
+    const q = new URLSearchParams();
+    q.set('coach', coachId);
+    if (venueId) q.set('venue', venueId);
+    q.set('courseType', '1'); // 體驗課＝一對一
+    return `/enroll?${q.toString()}`;
+  }, []);
 
   // 讀取推薦連結資訊（推薦人 / 教練）— MGM ref_token UI 保留
   useEffect(() => {
     if (!refToken) return;
     let alive = true;
     referralsApi.byToken(refToken)
-      .then((d) => alive && setRefInfo(d))
-      .catch(() => alive && toast.warning('推薦連結資訊載入失敗'));
+      .then((d) => { if (alive) setRefInfo(d); })
+      .catch(() => { if (alive) toast.warning('推薦連結資訊載入失敗'); })
+      .finally(() => { if (alive) setRefResolved(true); });
     return () => { alive = false; };
   }, [refToken, toast]);
+
+  // 已登入家長點教練分享連結：不該再被丟去新客戶註冊表。
+  // 等推薦資訊載入完 → 寫 pendingCoupon（享該教練 5 折）→ 直接導去報名頁帶現有學生報名。
+  useEffect(() => {
+    if (!authedParent || !refToken || !refResolved) return;
+    let alive = true;
+    (async () => {
+      const coachId = refInfo?.coach?.id;
+      if (!coachId) { navigate('/', { replace: true }); return; } // 推薦連結失效 → 回首頁
+      if (refInfo.already_bound !== true) {
+        try {
+          localStorage.setItem(PENDING_COUPON_KEY,
+            JSON.stringify({ coupon: 'TRIAL50', coachId }));
+        } catch { /* noop */ }
+      }
+      const url = await buildRefEnrollUrl(coachId, parent?.primary_venue_id);
+      if (alive) navigate(url, { replace: true });
+    })();
+    return () => { alive = false; };
+  }, [authedParent, refToken, refResolved, refInfo, parent, navigate, buildRefEnrollUrl]);
 
   const { register, handleSubmit, control, formState: { errors, isSubmitting } } = useForm({
     defaultValues: {
@@ -124,7 +164,13 @@ export default function RegisterPage() {
           } else {
             toast.success('註冊完成！歡迎加入夢想體育學院');
           }
-          navigate(takeAfterAuth('/'), { replace: true });
+          // 推薦註冊成功 → 直接導去帶該教練的報名頁，pendingCoupon 才套得上 5 折
+          if (refInfo?.coach && r.ref_bound) {
+            const url = await buildRefEnrollUrl(refInfo.coach.id, merged?.primary_venue_id);
+            navigate(url, { replace: true });
+          } else {
+            navigate(takeAfterAuth('/'), { replace: true });
+          }
           return;
         }
         toast.error('註冊失敗，請稍後再試。');
@@ -154,7 +200,12 @@ export default function RegisterPage() {
       } else {
         toast.success('註冊完成！歡迎加入夢想體育學院');
       }
-      navigate(takeAfterAuth('/'), { replace: true });
+      if (refInfo?.coach && created?.ref_bound) {
+        const url = await buildRefEnrollUrl(refInfo.coach.id, parent?.primary_venue_id);
+        navigate(url, { replace: true });
+      } else {
+        navigate(takeAfterAuth('/'), { replace: true });
+      }
     } catch (err) {
       toast.error(registerErrorMessage(err));
     }

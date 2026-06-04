@@ -236,7 +236,7 @@ export default function GroupStatusPage() {
         </div>
       )}
 
-      {!allPaymentConfirmed && (
+      {order.status !== 'forming' && !allPaymentConfirmed && (
         <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3">
           <h3 className="mb-2 text-xs font-bold text-gray-600">轉帳資訊</h3>
           <div className="space-y-1 text-sm text-gray-700">

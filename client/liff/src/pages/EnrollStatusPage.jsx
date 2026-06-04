@@ -66,8 +66,12 @@ export default function EnrollStatusPage() {
   const paymentLocked = canUpload && (enr.has_payment_proof || !!enr.transfer_last_5) && !editingPayment;
 
   async function copyAccount() {
+    if (!v.account_number) {
+      toast.error('此場館尚未設定轉帳帳號，請聯繫櫃台');
+      return;
+    }
     try {
-      await navigator.clipboard.writeText(v.account_number || '');
+      await navigator.clipboard.writeText(v.account_number);
       toast.success('已複製帳號！');
     } catch {
       toast.error('複製失敗，請手動複製');
@@ -165,9 +169,12 @@ export default function EnrollStatusPage() {
             <div className="text-[11px] text-gray-500">帳號</div>
             <div className="font-mono text-base font-bold text-brand-primary">{v.account_number || '—'}</div>
           </div>
-          <button type="button" onClick={copyAccount}
-            className="rounded-lg bg-brand-teal px-3 py-2 text-xs font-bold text-white active:bg-brand-primary">一鍵複製</button>
+          <button type="button" onClick={copyAccount} disabled={!v.account_number}
+            className="rounded-lg bg-brand-teal px-3 py-2 text-xs font-bold text-white active:bg-brand-primary disabled:bg-gray-300">一鍵複製</button>
         </div>
+        {!v.account_number && (
+          <p className="mt-2 text-xs text-brand-error">此場館尚未設定轉帳帳號，請聯繫櫃台後再完成轉帳。</p>
+        )}
       </div>
 
       {/* 匯款證明 */}

@@ -214,13 +214,15 @@ export default function MyCoursesPage() {
           <EmptyState
             emoji="📚"
             title="目前沒有進行中的課程，挑個教練開始上課吧"
+            ctaLabel="去挑教練報名"
+            onCta={() => navigate('/venue')}
           />
         ) : (
           <div className="space-y-3">{activeCourses.map(renderCourseCard)}</div>
         )
       ) : tab === 'purchased' ? (
         purchasedCourses.length === 0 ? (
-          <EmptyState emoji="📚" title="還沒有購買的課程" />
+          <EmptyState emoji="📚" title="還沒有購買的課程" ctaLabel="去挑教練報名" onCta={() => navigate('/venue')} />
         ) : (
           <div className="space-y-3">{purchasedCourses.map(renderCourseCard)}</div>
         )
@@ -262,11 +264,20 @@ function GroupOrderCard({ order, onClick }) {
   );
 }
 
-function EmptyState({ emoji = '📚', title }) {
+function EmptyState({ emoji = '📚', title, ctaLabel, onCta }) {
   return (
     <div className="flex flex-col items-center justify-center rounded-2xl border-2 border-dashed border-gray-200 bg-white px-6 py-12 text-center">
       <div className="mb-3 text-3xl">{emoji}</div>
       <h3 className="text-sm font-bold text-gray-700">{title}</h3>
+      {ctaLabel && onCta && (
+        <button
+          type="button"
+          onClick={onCta}
+          className="mt-4 rounded-lg bg-brand-primary px-5 py-2.5 text-sm font-bold text-white active:bg-brand-teal"
+        >
+          {ctaLabel}
+        </button>
+      )}
     </div>
   );
 }

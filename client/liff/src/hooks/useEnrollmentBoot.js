@@ -10,6 +10,11 @@ export default function useEnrollmentBoot({ coachId, venueId, courseType, onErro
   useEffect(() => {
     let alive = true;
     setBootError(null);
+    // 缺 coach / venue（多半是直接深連結進 /enroll，未經選場館/教練）→ 早返不打 /coaches/null、/venues/null
+    if (!coachId || !venueId) {
+      setBootError('請從首頁重新選擇場館與教練');
+      return () => { alive = false; };
+    }
     Promise.all([
       coachesApi.detail(coachId),
       venuesApi.detail(venueId),

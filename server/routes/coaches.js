@@ -226,6 +226,11 @@ router.get('/by-line-uid', byLineUidRateLimit, async (req, res) => {
 
 router.get('/:id', async (req, res) => {
   try {
+    // 非 uuid（例如前端深連結帶到 /coaches/null）→ 回 404，避免 postgres 拋 uuid 語法錯誤變假性 500
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!UUID_RE.test(String(req.params.id || ''))) {
+      return res.status(404).json({ error: 'not found' });
+    }
     const c = await loadCoach(req.params.id);
     if (!c) return res.status(404).json({ error: 'not found' });
     res.json(c);
