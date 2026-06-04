@@ -109,6 +109,10 @@ export default function DemoLoginPage() {
             className="w-full rounded-lg border border-brand-teal/40 bg-brand-teal/5 py-2 text-sm font-medium text-brand-primary active:bg-brand-teal/10">
             帶入教練 Demo 帳號（coach / coach）
           </button>
+          <button type="button" onClick={() => fill('coach2', 'coach2')} disabled={busy}
+            className="w-full rounded-lg border border-brand-teal/40 bg-brand-teal/5 py-2 text-sm font-medium text-brand-primary active:bg-brand-teal/10">
+            帶入教練2 Demo 帳號（coach2 / coach2）— 測轉換教練
+          </button>
           <button type="button" onClick={() => fill('custom', 'custom')} disabled={busy}
             className="w-full rounded-lg border border-brand-teal/40 bg-brand-teal/5 py-2 text-sm font-medium text-brand-primary active:bg-brand-teal/10">
             帶入家長 Demo 帳號（custom / custom）

@@ -28,6 +28,9 @@ const router = express.Router();
 // ─────────────────────────────────────────────────────────────
 const DEMO_ACCOUNTS = {
   coach:   { password: 'coach',   role: 'coach' },
+  // 第二測試教練：供 demo 測「課程轉換教練（後台改派）」與「教練端寫授課日誌」。
+  // 以名稱精準比對 Ragic/DB 測試帳號「(測試帳號)教練2」（server/scripts/seed-demo-coach2.js 建立）。
+  coach2:  { password: 'coach2',  role: 'coach', coachName: '(測試帳號)教練2' },
   custom:  { password: 'custom',  role: 'parent', phone: '0912345678' },
   // 第二測試家庭：供 demo 測「他人加入團報」（團主 custom + 加入者 custom2）。
   custom2: { password: 'custom2', role: 'parent', phone: '0922222222' },
@@ -46,20 +49,26 @@ router.post('/demo-login', async (req, res) => {
     }
 
     if (acct.role === 'coach') {
-      // 僅允許 Ragic 測試帳號教練（名稱含「測試帳號」）。fail-closed：找不到就回 404，
-      // 不退回任一真實教練，避免冒用真實教練身分/越權存取其資源。
+      // 僅允許測試帳號教練。fail-closed：找不到就回 404，不退回任一真實教練，
+      // 避免冒用真實教練身分/越權存取其資源。
+      //   coach  → 名稱含「測試帳號」者取 ragic_employee_id 最小的一位（第一測試教練）
+      //   coach2 → 以指定名稱精準比對（acct.coachName），避免與 coach 取到同一人
+      const filter = acct.coachName
+        ? { clause: 'c.name = $1', params: [acct.coachName] }
+        : { clause: "c.name LIKE '%測試帳號%'", params: [] };
       const r = await pool.query(
         `SELECT c.*, COALESCE(
            (SELECT json_agg(cv.venue_id) FROM coach_venues cv WHERE cv.coach_id = c.id),
            '[]'::json
          ) AS venue_ids
          FROM coaches c
-         WHERE c.is_active = TRUE AND c.name LIKE '%測試帳號%'
+         WHERE c.is_active = TRUE AND ${filter.clause}
          ORDER BY c.ragic_employee_id ASC
-         LIMIT 1`
+         LIMIT 1`,
+        filter.params
       );
       if (!r.rowCount) {
-        return res.status(404).json({ error: 'Demo 教練帳號不存在（需 Ragic 測試帳號教練）', code: 'DEMO_COACH_MISSING' });
+        return res.status(404).json({ error: 'Demo 教練帳號不存在（需測試帳號教練）', code: 'DEMO_COACH_MISSING' });
       }
       const coach = r.rows[0];
       coach.multiplier = Number(coach.pricing_multiplier);

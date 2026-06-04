@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import liff from '@line/liff';
 import { groupOrdersApi } from '../api/groupOrders';
 import { enrollmentsApi } from '../api/enrollments';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -19,15 +18,6 @@ function buildJoinUrl(token) {
   return PARENT_LIFF_ID
     ? `https://liff.line.me/${PARENT_LIFF_ID}/group/join/${token}`
     : `${window.location.origin}/liff/group/join/${token}`;
-}
-
-// 非 LINE App 內（瀏覽器 / 預覽）為 true。此時顯示「測試用直連」網址（同網域 /liff/...，
-// 不走 liff.line.me），讓開發者能用 demo 帳號在瀏覽器自測加入流程，不必拼 token。
-function notInLineClient() {
-  try { return !liff.isInClient(); } catch { return true; }
-}
-function buildTestJoinUrl(token) {
-  return token ? `${window.location.origin}/liff/group/join/${token}` : '';
 }
 
 const STATUS_META = {
@@ -99,22 +89,11 @@ export default function GroupStatusPage() {
   const v = order.venue || {};
   const joinUrl = order.is_leader ? buildJoinUrl(order.join_token) : null;
   const canCancelGroup = order.is_leader && ['forming', 'submitted'].includes(order.status);
-  // 測試用直連（僅非 LINE 瀏覽器顯示）：用 demo 帳號在瀏覽器自測加入用
-  const testJoinUrl = order.is_leader && notInLineClient() ? buildTestJoinUrl(order.join_token) : null;
 
   async function copyInvite() {
     try {
       await navigator.clipboard.writeText(joinUrl);
       toast.success('邀請連結已複製，貼到群組分享吧！');
-    } catch {
-      toast.error('複製失敗，請手動複製');
-    }
-  }
-
-  async function copyTestInvite() {
-    try {
-      await navigator.clipboard.writeText(testJoinUrl);
-      toast.success('測試直連已複製（請在另一個瀏覽器以 demo 帳號開啟）');
     } catch {
       toast.error('複製失敗，請手動複製');
     }
@@ -240,10 +219,8 @@ export default function GroupStatusPage() {
         selfMember={selfMember}
         selfPaymentReady={selfPaymentReady}
         missingPaymentCount={missingPaymentCount}
-        onCopyInvite={testJoinUrl ? copyTestInvite : copyInvite}
         onGoCourses={() => navigate('/my-courses')}
         onSubmit={() => setConfirm('submit')}
-        inviteLabel={testJoinUrl ? '複製測試加入連結' : '複製邀請連結'}
       />
 
       {order.is_leader && order.status === 'forming' && joinUrl && (
@@ -256,17 +233,6 @@ export default function GroupStatusPage() {
               className="shrink-0 rounded-lg bg-brand-teal px-3 py-2 text-xs font-bold text-white">複製</button>
           </div>
           <p className="mt-1.5 text-[11px] text-gray-500">把連結分享給其他家長，請他們登入填寫學生資料一起報名。</p>
-          {testJoinUrl && (
-            <div className="mt-2 border-t border-dashed border-brand-teal/30 pt-2">
-              <label className="mb-1 block text-[11px] font-medium text-amber-700">🧪 測試用直連（瀏覽器自測，請在另一個瀏覽器以 demo 帳號開啟）</label>
-              <div className="flex gap-2">
-                <input readOnly value={testJoinUrl}
-                  className="flex-1 truncate rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-gray-600" />
-                <button type="button" onClick={copyTestInvite}
-                  className="shrink-0 rounded-lg bg-amber-500 px-3 py-2 text-xs font-bold text-white">複製</button>
-              </div>
-            </div>
-          )}
         </div>
       )}
 
@@ -448,10 +414,8 @@ function NextActionBlock({
   selfMember,
   selfPaymentReady,
   missingPaymentCount,
-  onCopyInvite,
   onGoCourses,
   onSubmit,
-  inviteLabel = '複製邀請連結',
 }) {
   let title = '';
   let body = '';
@@ -463,10 +427,10 @@ function NextActionBlock({
       title = reachedMin ? '人數已達標，可以送審' : '先邀請其他家長加入';
       body = reachedMin
         ? '送審後名單會鎖定，接著各家庭在此頁填付款資料，等待櫃檯核對。'
-        : `目前還差 ${Math.max(0, order.min_students - order.total_students)} 人才能送審。`;
+        : `目前還差 ${Math.max(0, order.min_students - order.total_students)} 人才能送審。請用下方「邀請其他學員加入」連結分享給家長。`;
       primary = reachedMin
         ? { label: '送審並鎖定名單', onClick: onSubmit }
-        : { label: inviteLabel, onClick: onCopyInvite };
+        : null;
     } else {
       title = '等待團主送審';
       body = '您已在團內。人數達標後，團主會送審並鎖定名單。';
