@@ -41,6 +41,7 @@ export default function RegisterPage() {
   const [params] = useSearchParams();
   const prefilledPhone = params.get('phone') || '';
   const refToken = params.get('ref') || '';
+  const demoMode = params.get('demo') === '1';
   const navigate = useNavigate();
   const { setParent } = useAuth();
   const toast = useToast();
@@ -78,6 +79,24 @@ export default function RegisterPage() {
     }));
 
     try {
+      // Demo 新用戶（測試註冊）：繞過 id_token，後端以 DEMOTEST_ 前綴真寫 Ragic Z01。
+      if (demoMode) {
+        const r = await authApi.parentRegisterLine({
+          demo: true,
+          parent: cleanParent,
+          students: cleanStudents,
+          refToken: refToken || undefined,
+        });
+        if (r?.status === 'registered_and_logged_in' && r.parent) {
+          setParent({ ...r.parent, token: r.token || r.parent.token || null });
+          toast.success('🧪 Demo 測試註冊完成！已寫入 Ragic（DEMOTEST 標記），自動登入');
+          navigate(takeAfterAuth('/'), { replace: true });
+          return;
+        }
+        toast.error('Demo 註冊失敗，請稍後再試。');
+        return;
+      }
+
       const idToken = tryGetLineIdToken();
 
       // LINE-first 註冊：有 id_token → 走 parent-register-line（同步串入 ref_token）
@@ -145,6 +164,14 @@ export default function RegisterPage() {
     <div className="px-4 py-4">
       <h2 className="mb-1 text-lg font-bold text-brand-primary">建立家長帳號</h2>
       <p className="mb-3 text-xs text-gray-500">系統會將資料同步寫入 Ragic 家長／學員資料表</p>
+
+      {demoMode && (
+        <div className="mb-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs leading-5 text-amber-800">
+          🧪 <b>Demo 測試註冊</b>（模擬全新未註冊用戶）。送出會<b>真的寫入 Ragic Z01</b>，
+          line_uid 以 <code>DEMOTEST_</code> 標記，方便事後依此前綴清除。
+          請填一個<b>尚未在系統內的手機號</b>，以免撞到既有資料而被導去「手機綁定」。
+        </div>
+      )}
 
       {refInfo && (
         <div className="mb-3 rounded-xl border border-brand-green/40 bg-green-50 p-3 text-xs">

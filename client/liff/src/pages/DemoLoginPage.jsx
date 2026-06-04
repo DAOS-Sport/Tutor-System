@@ -113,6 +113,10 @@ export default function DemoLoginPage() {
             className="w-full rounded-lg border border-brand-teal/40 bg-brand-teal/5 py-2 text-sm font-medium text-brand-primary active:bg-brand-teal/10">
             帶入家長 Demo 帳號（custom / custom）
           </button>
+          <button type="button" onClick={() => navigate('/register?demo=1')} disabled={busy}
+            className="w-full rounded-lg border border-amber-400/60 bg-amber-50 py-2 text-sm font-medium text-amber-800 active:bg-amber-100">
+            🧪 Demo 新用戶 → 測試「引導註冊」流程（會寫入 Ragic）
+          </button>
         </div>
 
         <p className="pt-2 text-center text-xs leading-5 text-gray-400">

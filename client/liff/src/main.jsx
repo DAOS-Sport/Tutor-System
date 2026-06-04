@@ -15,16 +15,23 @@ function isCoachLiffId(id) {
   return HAS_DISTINCT_COACH_LIFF && !!id && String(id) === String(LIFF_ID_COACH);
 }
 
+// 教練端 path：/liff/coach 或 /liff/coach/...（無 basename 時為 /coach）。
+// 用 word-boundary 比對，避免把家長的「選教練」頁 /liff/coaches 誤判成教練端，
+// 否則家長在 /coaches 觸發登入會被 init 成教練 LIFF → 被當教練（議題2 路由 bug）。
+// 與 LoginPage.jsx::isCoachLiffContext 的正則保持一致。
 function isCoachPath() {
   const path = window.location.pathname || '';
-  return path.startsWith('/liff/coach') || path.startsWith('/coach');
+  return /\/coach(\b|\/|$)/.test(path);
 }
 
 // Demo 功能測試頁：以一般瀏覽器（非 LINE）開啟，需略過 liff.init / liff.login，
 // 否則 production 下未登入 LINE 會被導去 LINE OAuth，無法用帳密測試。
 function isDemoPath() {
   const path = window.location.pathname || '';
-  return path === '/liff/demo' || path === '/demo';
+  const search = window.location.search || '';
+  // /liff/demo、/demo，或任何帶 ?demo=1 的路徑（如 Demo 測試註冊的 /register?demo=1）
+  // 都略過 liff.init，讓沒有 LINE 帳號者能在一般瀏覽器測試（含重新整理不被導去 LINE）。
+  return path === '/liff/demo' || path === '/demo' || /[?&]demo=1(?:&|$)/.test(search);
 }
 
 function pickLiffId() {

@@ -615,8 +615,17 @@ router.post('/parent-register-line', async (req, res) => {
       });
     }
 
-    const lineUid = await _verifyLineUid(req, res);
-    if (!lineUid) return;
+    // 測試用「Demo 新用戶」：ALLOW_DEMO_LOGIN=1 且 body 帶 demo:true 時，不驗 id_token，
+    // 改用可辨識的 DEMOTEST_ 前綴 line_uid（仍真寫 Ragic Z01，方便事後依此前綴清除）。
+    // production 未設 ALLOW_DEMO_LOGIN → 一律走正規 id_token 驗證（fail-closed，外部無法利用）。
+    const demoNewUser = process.env.ALLOW_DEMO_LOGIN === '1' && req.body?.demo === true;
+    let lineUid;
+    if (demoNewUser) {
+      lineUid = `DEMOTEST_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    } else {
+      lineUid = await _verifyLineUid(req, res);
+      if (!lineUid) return;
+    }
 
     // 衝突檢查 1：本地 line_uid 已綁不同手機
     const dupLine = await pool.query(`SELECT phone FROM parents WHERE line_uid = $1 LIMIT 1`, [lineUid]);

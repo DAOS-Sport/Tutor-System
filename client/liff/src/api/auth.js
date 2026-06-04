@@ -23,12 +23,13 @@ export const authApi = {
   // POST /api/auth/parent-register-line { id_token, parent, students }
   //   → { status:'registered_and_logged_in', parent, token }
   //   | 409 LINE_ALREADY_REGISTERED / PHONE_EXISTS_USE_BINDING / LINE_ALREADY_BOUND_TO_OTHER_PHONE
-  parentRegisterLine: ({ idToken, parent, students, refToken }) =>
+  parentRegisterLine: ({ idToken, parent, students, refToken, demo }) =>
     callApi('/auth/parent-register-line',
       {
         method: 'post',
         data: {
           id_token: idToken,
+          demo: demo || undefined,
           parent, students,
           ref_token: refToken || undefined,
         },
