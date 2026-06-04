@@ -17,3 +17,4 @@ A username/password backdoor (`POST /api/auth/demo-login`) lets the user test th
 
 ## Data
 - Coach demo → Ragic "(測試帳號)教練"; parent demo → phone `0912345678` = Ragic "(測試帳號)家長" with test students. These are designated test records, not real families — acceptable PII surface. If those accounts ever disappear from the Ragic-synced DB, coach demo 404s and parent demo returns empty students.
+- **Demo parent data must live in the `PARENTS` seed array (`server/bootstrap/coreSchema.js`), not just be hand-inserted into the dev DB.** Production parents/students rows only appear via the startup bootstrap (runs on publish) or Ragic sync; a manual dev-only insert never reaches prod, so demo-login returns `DEMO_PARENT_MISSING` (500) on the published site. The seed is idempotent so adding a family there is safe.

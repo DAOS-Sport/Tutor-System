@@ -792,6 +792,8 @@ const PARENTS = [
   { phone: '0912345678', name: '張媽媽', venue: 'B', students: [{ name: '張小明', birth: '2015-03-12' }, { name: '張小美', birth: '2017-08-05' }] },
   { phone: '0922333444', name: '李爸爸', venue: 'B', students: [{ name: '李小龍', birth: '2014-11-30' }] },
   { phone: '0933555777', name: '陳媽媽', venue: 'C', students: [{ name: '陳小米', birth: '2016-02-20' }] },
+  // Demo 第二測試家庭（custom2 / custom2，供測「他人加入團報」）。idempotent，正式環境發布後 bootstrap 自動建立。
+  { phone: '0922222222', name: '(測試帳號)家長2', venue: 'B', students: [{ name: '測試-學員A', birth: '2016-04-10' }, { name: '測試-學員B', birth: '2018-09-22' }] },
 ];
 
 // 給定要建立的「期課程 + 已預約 session」demo（讓教練今日 / 排課表能看到 booked 槽位）
