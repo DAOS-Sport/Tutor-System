@@ -320,6 +320,59 @@ router.post('/:id/payment-proof', requireParent, async (req, res) => {
   }
 });
 
+// ── POST /:id/cancel 家長取消未完成一般報名（限本人、限待對帳）──
+// 團報單需回團購狀態頁由團主取消，避免單一家庭取消破壞已送審名單。
+router.post('/:id/cancel', requireParent, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query(
+      `SELECT id, parent_phone, extra_parent_phones, status, group_order_id
+         FROM admin_enrollments
+        WHERE id = $1
+        FOR UPDATE`,
+      [req.params.id]
+    );
+    if (!r.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: '找不到此報名' });
+    }
+    const row = r.rows[0];
+    const owns = row.parent_phone === req.parent.phone || (row.extra_parent_phones || []).includes(req.parent.phone);
+    if (!owns) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: '無權取消此報名' });
+    }
+    if (row.group_order_id) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '團報請至團購狀態頁處理取消', code: 'GROUP_ORDER_CANCEL_REQUIRED' });
+    }
+    if (row.status !== 'pending_payment') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '此報名已進入處理流程，無法由家長取消', code: 'NOT_PENDING' });
+    }
+    await client.query(
+      `UPDATE admin_enrollments
+          SET status = 'cancelled', updated_at = NOW()
+        WHERE id = $1`,
+      [row.id]
+    );
+    await client.query(
+      `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user, reason)
+       VALUES ($1, '家長取消未完成報名', 'parent', '家長於 LIFF 取消')`,
+      [row.id]
+    );
+    await client.query('COMMIT');
+    res.json({ ok: true });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('[courses/:id/cancel]', e);
+    res.status(500).json({ error: '取消失敗' });
+  } finally {
+    client.release();
+  }
+});
+
 router.all('*', (req, res) => {
   res.status(501).json({ error: 'Not implemented', module: 'courses', path: req.path });
 });

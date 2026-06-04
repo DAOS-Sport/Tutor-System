@@ -14,6 +14,34 @@ function Field({ title, body }) {
   );
 }
 
+const STUDENT_FIELDS = [
+  { key: 'summary', title: '上課摘要' },
+  { key: 'highlights', title: '表現亮點' },
+  { key: 'improvements', title: '待加強' },
+  { key: 'homework', title: '回家練習' },
+  { key: 'notes', title: '備註' },
+];
+
+function StudentRecords({ data }) {
+  const rows = data?.mode === 'individual' && data.records && typeof data.records === 'object'
+    ? Object.entries(data.records).filter(([, rec]) => rec && Object.values(rec).some(Boolean))
+    : [];
+  if (rows.length === 0) return null;
+  return (
+    <div className="mt-3 border-t border-dashed border-gray-200 pt-3">
+      <div className="text-[11px] font-bold text-brand-primary">個別學員紀錄</div>
+      <div className="mt-2 space-y-2">
+        {rows.map(([name, rec]) => (
+          <div key={name} className="rounded-lg bg-brand-teal/5 px-3 py-2">
+            <div className="text-xs font-bold text-brand-teal">{name}</div>
+            {STUDENT_FIELDS.map((f) => <Field key={f.key} title={f.title} body={rec[f.key]} />)}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function LearningHistoryPage() {
   const { periodId } = useParams();
   const navigate = useNavigate();
@@ -41,7 +69,7 @@ export default function LearningHistoryPage() {
   const { plan, records } = data;
 
   return (
-    <div className="px-4 py-4 print:py-2">
+    <div className="mx-auto max-w-md px-4 py-4 print:max-w-none print:py-2">
       <button onClick={() => navigate(-1)} className="mb-3 text-sm text-brand-teal active:opacity-60 print:hidden">‹ 返回</button>
 
       <header className="mb-3 flex items-center justify-between">
@@ -87,6 +115,7 @@ export default function LearningHistoryPage() {
               <Field title="待加強" body={r.improvements} />
               <Field title="回家練習" body={r.homework} />
               <Field title="備註" body={r.notes} />
+              <StudentRecords data={r.student_records} />
               {r.tags?.length > 0 && (
                 <p className="mt-2 flex flex-wrap gap-1 text-[11px]">
                   {r.tags.map((t) => (

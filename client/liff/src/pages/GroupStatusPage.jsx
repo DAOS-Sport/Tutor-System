@@ -93,8 +93,12 @@ export default function GroupStatusPage() {
   const meta = STATUS_META[order.status] || { label: order.status, cls: 'bg-gray-100 text-gray-500' };
   const reachedMin = order.total_students >= order.min_students;
   const allPaymentConfirmed = (order.members || []).length > 0 && (order.members || []).every((m) => m.payment_confirmed);
+  const selfMember = (order.members || []).find((m) => m.is_self) || null;
+  const selfPaymentReady = !!(selfMember?.has_payment_proof && selfMember?.transfer_last_5);
+  const missingPaymentCount = (order.members || []).filter((m) => !m.payment_confirmed).length;
   const v = order.venue || {};
   const joinUrl = order.is_leader ? buildJoinUrl(order.join_token) : null;
+  const canCancelGroup = order.is_leader && ['forming', 'submitted'].includes(order.status);
   // 測試用直連（僅非 LINE 瀏覽器顯示）：用 demo 帳號在瀏覽器自測加入用
   const testJoinUrl = order.is_leader && notInLineClient() ? buildTestJoinUrl(order.join_token) : null;
 
@@ -228,6 +232,19 @@ export default function GroupStatusPage() {
           <p className="mt-2 rounded-lg bg-brand-error/5 px-2 py-1 text-xs text-brand-error">退回原因：{order.reject_reason}</p>
         )}
       </div>
+
+      <NextActionBlock
+        order={order}
+        reachedMin={reachedMin}
+        allPaymentConfirmed={allPaymentConfirmed}
+        selfMember={selfMember}
+        selfPaymentReady={selfPaymentReady}
+        missingPaymentCount={missingPaymentCount}
+        onCopyInvite={testJoinUrl ? copyTestInvite : copyInvite}
+        onGoCourses={() => navigate('/my-courses')}
+        onSubmit={() => setConfirm('submit')}
+        inviteLabel={testJoinUrl ? '複製測試加入連結' : '複製邀請連結'}
+      />
 
       {order.is_leader && order.status === 'forming' && joinUrl && (
         <div className="mb-4 rounded-xl border border-brand-teal/30 bg-brand-teal/5 p-3">
@@ -371,24 +388,30 @@ export default function GroupStatusPage() {
         </p>
       </div>
 
-      {order.is_leader && order.status === 'forming' && (
+      {(order.is_leader && order.status === 'forming') || canCancelGroup ? (
         <div className="mt-4 space-y-2">
-          {/* 送審前警語：名單鎖定；證明改送審後各家上傳 */}
-          <div className="rounded-lg border border-brand-gold/40 bg-brand-gold/5 px-3 py-2 text-[12px] leading-5 text-brand-gold">
-            ⚠️ 送審後成員與學生名單將<strong>無法再更改</strong>，也無法再加入新成員。送審後即進入等候審核，<strong>各家請於此頁完成轉帳並上傳證明</strong>，櫃檯核對後建立課程。
-          </div>
-          <button
-            type="button"
-            disabled={!reachedMin || busy}
-            onClick={() => setConfirm('submit')}
-            className="w-full rounded-lg bg-brand-primary py-3.5 text-base font-bold text-white active:bg-brand-teal disabled:bg-gray-300"
-          >
-            {reachedMin ? '送審（湊滿開團人數）' : `還差 ${order.min_students - order.total_students} 人才能送審`}
-          </button>
-          <button type="button" disabled={busy} onClick={() => setConfirm('cancel')}
-            className="w-full rounded-lg border border-brand-error/40 py-2.5 text-sm font-bold text-brand-error">取消團購</button>
+          {order.is_leader && order.status === 'forming' && (
+            <>
+              {/* 送審前警語：名單鎖定；證明改送審後各家上傳 */}
+              <div className="rounded-lg border border-brand-gold/40 bg-brand-gold/5 px-3 py-2 text-[12px] leading-5 text-brand-gold">
+                ⚠️ 送審後成員與學生名單將<strong>無法再更改</strong>，也無法再加入新成員。送審後即進入等候審核，<strong>各家請於此頁完成轉帳並上傳證明</strong>，櫃檯核對後建立課程。
+              </div>
+              <button
+                type="button"
+                disabled={!reachedMin || busy}
+                onClick={() => setConfirm('submit')}
+                className="w-full rounded-lg bg-brand-primary py-3.5 text-base font-bold text-white active:bg-brand-teal disabled:bg-gray-300"
+              >
+                {reachedMin ? '送審（湊滿開團人數）' : `還差 ${order.min_students - order.total_students} 人才能送審`}
+              </button>
+            </>
+          )}
+          {canCancelGroup && (
+            <button type="button" disabled={busy} onClick={() => setConfirm('cancel')}
+              className="w-full rounded-lg border border-brand-error/40 py-2.5 text-sm font-bold text-brand-error">取消團購</button>
+          )}
         </div>
-      )}
+      ) : null}
 
       <ConfirmModal
         open={confirm === 'submit'}
@@ -414,6 +437,89 @@ export default function GroupStatusPage() {
       >
         <p className="text-sm text-gray-600">取消後此團購將關閉，已加入的成員都會失效，此動作無法復原。</p>
       </ConfirmModal>
+    </div>
+  );
+}
+
+function NextActionBlock({
+  order,
+  reachedMin,
+  allPaymentConfirmed,
+  selfMember,
+  selfPaymentReady,
+  missingPaymentCount,
+  onCopyInvite,
+  onGoCourses,
+  onSubmit,
+  inviteLabel = '複製邀請連結',
+}) {
+  let title = '';
+  let body = '';
+  let primary = null;
+  let tone = 'teal';
+
+  if (order.status === 'forming') {
+    if (order.is_leader) {
+      title = reachedMin ? '人數已達標，可以送審' : '先邀請其他家長加入';
+      body = reachedMin
+        ? '送審後名單會鎖定，接著各家庭在此頁填付款資料，等待櫃檯核對。'
+        : `目前還差 ${Math.max(0, order.min_students - order.total_students)} 人才能送審。`;
+      primary = reachedMin
+        ? { label: '送審並鎖定名單', onClick: onSubmit }
+        : { label: inviteLabel, onClick: onCopyInvite };
+    } else {
+      title = '等待團主送審';
+      body = '您已在團內。人數達標後，團主會送審並鎖定名單。';
+    }
+  } else if (order.status === 'submitted') {
+    tone = selfPaymentReady ? 'gold' : 'teal';
+    title = selfPaymentReady ? '付款資料已送出' : '請完成付款資料';
+    body = selfPaymentReady
+      ? '接下來等待櫃檯核對名單與帳款。核准後會建立課程並出現在我的課程。'
+      : '請在下方自己的成員卡填轉帳末 5 碼並上傳證明。';
+  } else if (order.status === 'approved') {
+    tone = allPaymentConfirmed ? 'green' : 'gold';
+    title = allPaymentConfirmed ? '課程已建立' : '團購已核准，等待對帳完成';
+    body = allPaymentConfirmed
+      ? '課程已進入我的課程，可前往查看詳情、聊天室與選可用時段。'
+      : `仍有 ${missingPaymentCount} 筆帳款在確認中。完成後課程會出現在我的課程。`;
+    primary = { label: '前往我的課程', onClick: onGoCourses };
+  } else if (order.status === 'rejected') {
+    tone = 'error';
+    title = '團購已退回';
+    body = order.reject_reason ? `退回原因：${order.reject_reason}` : '請依櫃檯說明修正後重新發起。';
+  } else if (order.status === 'cancelled') {
+    tone = 'gray';
+    title = '團購已取消';
+    body = '此團購已關閉，若仍要成團請重新發起。';
+  }
+
+  const toneClass = {
+    teal: 'border-brand-teal/30 bg-brand-teal/5 text-brand-teal',
+    gold: 'border-brand-gold/40 bg-brand-gold/5 text-brand-gold',
+    green: 'border-brand-green/30 bg-brand-green/5 text-brand-green',
+    error: 'border-brand-error/30 bg-brand-error/5 text-brand-error',
+    gray: 'border-gray-200 bg-gray-50 text-gray-600',
+  }[tone] || 'border-gray-200 bg-gray-50 text-gray-600';
+
+  return (
+    <div className={`mb-4 rounded-xl border px-3 py-3 ${toneClass}`}>
+      <div className="text-sm font-bold">{title}</div>
+      <p className="mt-1 text-xs leading-5 text-gray-600">{body}</p>
+      {primary && (
+        <button
+          type="button"
+          onClick={primary.onClick}
+          className="mt-2 w-full rounded-lg bg-brand-primary py-2.5 text-sm font-bold text-white active:bg-brand-teal"
+        >
+          {primary.label}
+        </button>
+      )}
+      {order.status === 'submitted' && selfMember && !selfMember.payment_confirmed && (
+        <div className="mt-2 rounded-lg bg-white/70 px-3 py-2 text-[11px] leading-5 text-gray-600">
+          您這筆：{selfPaymentReady ? '已填付款資料，等待確認。' : '尚未完成付款資料。'}
+        </div>
+      )}
     </div>
   );
 }

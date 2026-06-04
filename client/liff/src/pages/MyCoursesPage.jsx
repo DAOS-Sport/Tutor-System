@@ -24,6 +24,7 @@ const TABS = [
 const GROUP_STATUS_LABEL = {
   forming: '揪團中',
   submitted: '審核中',
+  approved: '已核准・對帳中',
 };
 
 export default function MyCoursesPage() {
@@ -35,6 +36,7 @@ export default function MyCoursesPage() {
   const [tab, setTab] = useState('active');
   const [loadError, setLoadError] = useState(null);
   const [openingRoomId, setOpeningRoomId] = useState(null);
+  const [cancellingId, setCancellingId] = useState(null);
 
   function load() {
     setLoadError(null);
@@ -51,7 +53,7 @@ export default function MyCoursesPage() {
           toast.error('課程資料載入失敗');
         }
         const list = groupRes.status === 'fulfilled' && Array.isArray(groupRes.value) ? groupRes.value : [];
-        setGroupOrders(list.filter((o) => o.status === 'forming' || o.status === 'submitted'));
+        setGroupOrders(list.filter((o) => ['forming', 'submitted', 'approved'].includes(o.status)));
       });
     return () => {
       alive = false;
@@ -76,13 +78,17 @@ export default function MyCoursesPage() {
     () => (courses || []).filter((c) => c.lifecycle === 'pending_payment'),
     [courses],
   );
+  const visibleGroupOrders = useMemo(() => {
+    const representedGroupIds = new Set((courses || []).map((c) => c.group_order_id).filter(Boolean));
+    return groupOrders.filter((o) => !representedGroupIds.has(o.id));
+  }, [groupOrders, courses]);
 
   // 分頁計數：進行中／購買／還未完成（待處理報名 + 進行中團報）。
   const counts = useMemo(() => ({
     active: activeCourses.length,
     purchased: purchasedCourses.length,
-    todo: pendingCourses.length + groupOrders.length,
-  }), [activeCourses, purchasedCourses, pendingCourses, groupOrders]);
+    todo: pendingCourses.length + visibleGroupOrders.length,
+  }), [activeCourses, purchasedCourses, pendingCourses, visibleGroupOrders]);
 
   async function openRoomForCourse(cp) {
     if (!cp.course_period_id || openingRoomId) return;
@@ -114,26 +120,55 @@ export default function MyCoursesPage() {
     navigate(`/enroll-status/${cp.id}`);
   }
 
+  async function cancelPendingCourse(cp) {
+    if (!cp?.id || cancellingId) return;
+    const ok = window.confirm('確定取消這筆未完成報名？取消後若要上課需重新報名。');
+    if (!ok) return;
+    setCancellingId(cp.id);
+    try {
+      await coursesApi.cancelPending(cp.id);
+      toast.success('已取消未完成報名');
+      load();
+    } catch (e) {
+      toast.error(e?.response?.data?.error || '取消失敗');
+    } finally {
+      setCancellingId(null);
+    }
+  }
+
   function renderCourseCard(cp) {
+    const actions = cp.lifecycle === 'active'
+      ? (cp.course_period_id ? [
+        {
+          label: openingRoomId === cp.course_period_id ? '開啟中…' : '約時間',
+          primary: true,
+          disabled: openingRoomId === cp.course_period_id,
+          onClick: () => openRoomForCourse(cp),
+        },
+        { label: '選可用時段', onClick: () => navigate(`/book-slot/${cp.course_period_id}`) },
+      ] : [
+        { label: '課程開通處理中', primary: true, disabled: true, onClick: () => {} },
+      ])
+      : (cp.lifecycle === 'pending_payment' ? [
+        {
+          label: cp.group_order_id ? '查看團購狀態' : '上傳付款資料',
+          primary: true,
+          onClick: () => navigateForCard(cp),
+        },
+        ...(cp.group_order_id ? [] : [{
+          label: cancellingId === cp.id ? '取消中…' : '取消訂單',
+          disabled: cancellingId === cp.id,
+          onClick: () => cancelPendingCourse(cp),
+        }]),
+      ] : []);
+
     return (
       <CourseCard
         key={cp.id}
         variant="period"
         period={cp}
         onClick={() => navigateForCard(cp)}
-        actions={cp.lifecycle === 'active'
-          ? (cp.course_period_id ? [
-            {
-              label: openingRoomId === cp.course_period_id ? '開啟中…' : '約時間',
-              primary: true,
-              disabled: openingRoomId === cp.course_period_id,
-              onClick: () => openRoomForCourse(cp),
-            },
-            { label: '選可用時段', onClick: () => navigate(`/book-slot/${cp.course_period_id}`) },
-          ] : [
-            { label: '等待對帳完成', primary: true, disabled: true, onClick: () => {} },
-          ])
-          : []}
+        actions={actions}
       />
     );
   }
@@ -191,12 +226,12 @@ export default function MyCoursesPage() {
         )
       ) : (
         // tab === 'todo'：待處理報名 + 進行中團報
-        pendingCourses.length === 0 && groupOrders.length === 0 ? (
+        pendingCourses.length === 0 && visibleGroupOrders.length === 0 ? (
           <EmptyState emoji="🎉" title="沒有待處理的項目 🎉" />
         ) : (
           <div className="space-y-3">
             {pendingCourses.map(renderCourseCard)}
-            {groupOrders.map((o) => (
+            {visibleGroupOrders.map((o) => (
               <GroupOrderCard key={`g-${o.id}`} order={o} onClick={() => navigate(`/group/${o.id}`)} />
             ))}
           </div>

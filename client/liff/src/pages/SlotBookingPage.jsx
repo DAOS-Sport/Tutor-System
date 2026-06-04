@@ -91,7 +91,7 @@ export default function SlotBookingPage() {
       {sessionsLeft <= 0 ? (
         <EmptyBlock text="此課程期可預約堂數已用完" />
       ) : grouped.length === 0 ? (
-        <EmptyBlock text="未來 30 天暫無可預約時段" />
+        <EmptyBlock text="目前教練尚未開放可上課時間，請靜候教練更新可上課時間。" />
       ) : (
         <div className="space-y-4">
           {grouped.map(([dateLabel, slots]) => (

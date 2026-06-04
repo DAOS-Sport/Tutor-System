@@ -10,10 +10,13 @@ export const http = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
+const USER_KEY = 'daos.user';
+let redirectingOn401 = false;
+
 // 自動為每筆請求附上目前登入者的 JWT（教練 / 家長皆同；mock 模式不會走到這裡）
 http.interceptors.request.use((config) => {
   try {
-    const raw = localStorage.getItem('daos.user');
+    const raw = localStorage.getItem(USER_KEY);
     if (raw) {
       const u = JSON.parse(raw);
       const tk = u?.token || u?.data?.token;
@@ -32,6 +35,29 @@ http.interceptors.request.use((config) => {
   }
   return config;
 });
+
+http.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    if (err?.response?.status === 401 && !redirectingOn401) {
+      redirectingOn401 = true;
+      try {
+        localStorage.removeItem(USER_KEY);
+        localStorage.removeItem('daos.manualLogout');
+        sessionStorage.setItem('daos.liff.flashLogout', '1');
+      } catch { /* noop */ }
+      if (typeof window !== 'undefined') {
+        const path = window.location.pathname || '';
+        const host = window.location.hostname || '';
+        const isDemoHost = host === 'localhost' || host === '127.0.0.1' || host.endsWith('.replit.dev') || host.endsWith('.repl.co');
+        const demoPath = path.startsWith('/liff') ? '/liff/demo' : '/demo';
+        const loginPath = path.startsWith('/liff') ? '/liff/login' : '/login';
+        window.location.replace(isDemoHost || path.includes('/demo') ? demoPath : loginPath);
+      }
+    }
+    return Promise.reject(err);
+  }
+);
 
 // 模擬網路延遲，讓 LoadingSpinner 真的有機會出現
 function delay(value, ms = 280) {

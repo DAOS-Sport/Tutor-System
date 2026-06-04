@@ -396,6 +396,7 @@ DO $$ BEGIN
   ALTER TABLE session_records ADD COLUMN IF NOT EXISTS homework TEXT NOT NULL DEFAULT '';
   ALTER TABLE session_records ADD COLUMN IF NOT EXISTS notes TEXT NOT NULL DEFAULT '';
   ALTER TABLE session_records ADD COLUMN IF NOT EXISTS media JSONB NOT NULL DEFAULT '[]'::jsonb;
+  ALTER TABLE session_records ADD COLUMN IF NOT EXISTS student_records JSONB NOT NULL DEFAULT '{}'::jsonb;
   ALTER TABLE session_records ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMPTZ;
   BEGIN
     ALTER TABLE session_records ALTER COLUMN status TYPE VARCHAR(10) USING status::text;
@@ -469,6 +470,7 @@ CREATE TABLE IF NOT EXISTS session_records (
   notes TEXT NOT NULL DEFAULT '',           -- 備註（給家長的提醒）
   status VARCHAR(10) NOT NULL DEFAULT 'draft', -- draft | submitted
   media JSONB NOT NULL DEFAULT '[]'::jsonb, -- [{ url, mime, name, size }]
+  student_records JSONB NOT NULL DEFAULT '{}'::jsonb, -- { mode, records: { studentName: fields } }
   submitted_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -954,6 +956,7 @@ const DEFAULT_TAG_CATEGORIES = [
     ]},
   { name: '備註',
     tags: [
+      { label: '備註b', text: '備註：本堂狀況穩定，後續依課程進度持續調整練習內容。' },
       { label: '請帶水壺', text: '提醒：下堂課請自備水壺與毛巾。' },
       { label: '請假補課', text: '本堂如需請假，請提前於 LINE 告知以利安排補課。' },
       { label: '攜帶裝備', text: '下堂課請記得攜帶個人球拍與運動鞋。' },

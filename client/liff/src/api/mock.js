@@ -85,6 +85,40 @@ let _periodSeq = 100;
 let _slotSeq = 1;
 let _mediaSeq = 1;
 
+function normalizeCoursePeriod(cp) {
+  if (!cp) return null;
+  const status = cp.payment_status || cp.status;
+  const total = Number(cp.total_sessions) || 0;
+  const used = Number(cp.used_sessions) || 0;
+  let lifecycle = 'pending_payment';
+  if (status === 'cancelled' || status === 'refunded') lifecycle = 'closed';
+  else if ((status === 'active' || status === 'confirmed') && total > 0 && used >= total) lifecycle = 'completed';
+  else if (status === 'active' || status === 'confirmed' || status === 'completed') lifecycle = status === 'completed' ? 'completed' : 'active';
+
+  return {
+    ...cp,
+    payment_status: status,
+    lifecycle,
+    has_payment_proof: !!cp.payment_proof_url,
+    period_count: cp.period_count || 1,
+  };
+}
+
+function courseDetailShape(cp) {
+  const normalized = normalizeCoursePeriod(cp);
+  if (!normalized) return null;
+  const venueRow = VENUES.find((v) => v.id === (normalized.venue?.id || normalized.venue_id));
+  return {
+    ...normalized,
+    coach: typeof normalized.coach === 'string' ? normalized.coach : normalized.coach?.name,
+    coach_name: typeof normalized.coach === 'string' ? normalized.coach : normalized.coach?.name,
+    venue: {
+      ...(venueRow || {}),
+      ...(normalized.venue || {}),
+    },
+  };
+}
+
 // ── 教練槽位 + 已預約 sessions（給教練端 LIFF 用） ──────────────────
 function makeISO(daysFromToday, hour, minute = 0) {
   const d = new Date();
@@ -269,7 +303,13 @@ export const mockDb = {
     return { ok: true };
   },
   myCourses: (parentId) =>
-    COURSE_PERIODS.filter((cp) => cp.parent_id === parentId).map((cp) => JSON.parse(JSON.stringify(cp))),
+    COURSE_PERIODS
+      .filter((cp) => cp.parent_id === parentId)
+      .map((cp) => JSON.parse(JSON.stringify(normalizeCoursePeriod(cp)))),
+  course: (id) => {
+    const cp = COURSE_PERIODS.find((x) => x.id === id);
+    return cp ? JSON.parse(JSON.stringify(courseDetailShape(cp))) : null;
+  },
   createEnrollment: (payload) => {
     const id = `CP${String(++_periodSeq).padStart(4, '0')}`;
     const period = {
@@ -279,10 +319,25 @@ export const mockDb = {
       expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
       original_price: payload.original_price, final_price: payload.final_price,
       payment_status: 'pending_payment', transfer_last_5: payload.transfer_last_5,
+      payment_proof_url: payload.payment_proof_url || null,
+      period_count: payload.period_count || 1,
       is_experience_course: false,
     };
     COURSE_PERIODS.push(period);
-    return JSON.parse(JSON.stringify(period));
+    return JSON.parse(JSON.stringify(normalizeCoursePeriod(period)));
+  },
+  uploadPaymentProofForCourse: (id, payload = {}) => {
+    const cp = COURSE_PERIODS.find((x) => x.id === id);
+    if (!cp) return null;
+    if (payload.transfer_last_5) cp.transfer_last_5 = payload.transfer_last_5;
+    if (payload.payment_proof_url) cp.payment_proof_url = payload.payment_proof_url;
+    return { ok: true };
+  },
+  cancelPendingCourse: (id) => {
+    const cp = COURSE_PERIODS.find((x) => x.id === id);
+    if (!cp) return null;
+    if (cp.payment_status === 'pending_payment') cp.payment_status = 'cancelled';
+    return { ok: true };
   },
 
   // ── 教練端 ─────────────────────────────────────────────────────────

@@ -54,11 +54,15 @@ export default function EnrollmentPage() {
     setSelectedSelfStudents([]);
   }, [courseType]);
 
+  const requiredStudentCount = courseType;
+  const totalSelected = selectedSelfStudents.length;
+  const pricingStudentCount = Math.max(totalSelected, requiredStudentCount);
+
   const pricing = useEnrollmentPricing(bootData, {
     courseType,
     venueId,
     couponCode: activeCoupon || undefined,
-    studentCount: selectedSelfStudents.length,
+    studentCount: pricingStudentCount,
     periodCount,
   });
 
@@ -69,8 +73,7 @@ export default function EnrollmentPage() {
   }
 
   const { coach, venue } = bootData;
-  const requiredStudentCount = courseType;
-  const totalSelected = selectedSelfStudents.length;
+  const groupMaxStudents = courseType;
 
   // U4：移除「帶出他人學員」流程後，報名只能選自己名下的學員（同組改走 U5–U8 團購）。
   const allSelectedStudents = selectedSelfStudents
@@ -168,7 +171,7 @@ export default function EnrollmentPage() {
       {courseType !== 1 && (
         <div className="mt-2 rounded-xl border border-brand-teal/30 bg-brand-teal/5 p-3">
           <p className="text-xs text-gray-600">
-            想找其他家長一起上課？可改用「團購」分享邀請連結，最多揪到 <span className="font-bold text-brand-primary">6 人</span>，
+            想找其他家長一起上課？可改用「團購」分享邀請連結，最多揪到 <span className="font-bold text-brand-primary">{groupMaxStudents} 人</span>，
             價格依組別計、人數越多越好揪。
           </p>
           <button

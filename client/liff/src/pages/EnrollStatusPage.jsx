@@ -29,6 +29,7 @@ export default function EnrollStatusPage() {
   const [transferLast5, setTransferLast5] = useState('');
   const [proofFile, setProofFile] = useState(null);
   const [editingPayment, setEditingPayment] = useState(false);
+  const [cancelBusy, setCancelBusy] = useState(false);
   const proofInputRef = useRef(null);
 
   const load = useCallback(() => {
@@ -109,6 +110,22 @@ export default function EnrollStatusPage() {
       toast.error(e?.response?.data?.error || '送出失敗，請重試');
     } finally {
       setProofBusy(false);
+    }
+  }
+
+  async function handleCancelEnrollment() {
+    if (cancelBusy) return;
+    const ok = window.confirm('確定取消這筆未完成報名？取消後若要上課需重新報名。');
+    if (!ok) return;
+    setCancelBusy(true);
+    try {
+      await coursesApi.cancelPending(id);
+      toast.success('已取消未完成報名');
+      navigate('/my-courses', { replace: true });
+    } catch (e) {
+      toast.error(e?.response?.data?.error || '取消失敗');
+    } finally {
+      setCancelBusy(false);
     }
   }
 
@@ -214,6 +231,16 @@ export default function EnrollStatusPage() {
 
       <button type="button" onClick={() => navigate('/my-courses')}
         className="mt-4 w-full rounded-lg border border-gray-300 py-2.5 text-sm font-bold text-gray-600">前往我的課程</button>
+      {canUpload && !enr.group_order_id && (
+        <button
+          type="button"
+          disabled={cancelBusy}
+          onClick={handleCancelEnrollment}
+          className="mt-2 w-full rounded-lg border border-brand-error/40 py-2.5 text-sm font-bold text-brand-error disabled:opacity-50"
+        >
+          {cancelBusy ? '取消中…' : '取消這筆未完成報名'}
+        </button>
+      )}
     </div>
   );
 }

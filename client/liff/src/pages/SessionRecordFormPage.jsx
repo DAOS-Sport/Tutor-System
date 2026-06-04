@@ -14,7 +14,10 @@ const FIELDS = [
   { key: 'notes',        label: '備註',      cat: '備註' },
 ];
 
-const EMPTY = { summary: '', highlights: '', improvements: '', homework: '', notes: '', media: [], tags: [], status: 'draft' };
+const EMPTY = {
+  summary: '', highlights: '', improvements: '', homework: '', notes: '',
+  media: [], tags: [], status: 'draft', student_records: { mode: 'class', records: {} },
+};
 const BLANK_STUDENT = () => ({ summary: '', highlights: '', improvements: '', homework: '', notes: '' });
 
 export default function SessionRecordFormPage() {
@@ -41,15 +44,25 @@ export default function SessionRecordFormPage() {
     Promise.all([learnApi.getRecord(sessionId), learnApi.tags(), sessionsApi.detail(sessionId).catch(() => null)])
       .then(([rec, t, sess]) => {
         if (!alive) return;
-        setForm({ ...EMPTY, ...(rec || {}), media: rec?.media || [], tags: rec?.tags || [] });
+        const savedStudentRecords = rec?.student_records && typeof rec.student_records === 'object'
+          ? rec.student_records
+          : { mode: 'class', records: {} };
+        setForm({
+          ...EMPTY,
+          ...(rec || {}),
+          media: rec?.media || [],
+          tags: rec?.tags || [],
+          student_records: savedStudentRecords,
+        });
         setTags(t || { system: [], personal: [] });
         const names = (sess?.student_names || []).filter(Boolean);
         setStudents(names);
         if (names.length > 1) {
           const seed = {};
-          names.forEach((n) => { seed[n] = BLANK_STUDENT(); });
+          names.forEach((n) => { seed[n] = { ...BLANK_STUDENT(), ...(savedStudentRecords.records?.[n] || {}) }; });
           setPerStudent(seed);
           setActiveStudent(names[0]);
+          setMode(savedStudentRecords.mode === 'individual' ? 'individual' : 'class');
         }
       })
       .catch((e) => alive && toast.error(e?.response?.data?.error || '載入失敗'))
@@ -178,8 +191,15 @@ export default function SessionRecordFormPage() {
     setBusy(true);
     try {
       const payload = mode === 'individual'
-        ? { ...form, ...composeFromStudents() }
-        : form;
+        ? {
+          ...form,
+          ...composeFromStudents(),
+          student_records: { mode: 'individual', records: perStudent },
+        }
+        : {
+          ...form,
+          student_records: { mode: 'class', records: {} },
+        };
       await learnApi.saveRecord(sessionId, payload);
       if (submit) { await learnApi.submitRecord(sessionId); toast.success('已送出，家長即可查看'); }
       else toast.success('已儲存草稿');
@@ -193,10 +213,10 @@ export default function SessionRecordFormPage() {
   const submitted = form.status === 'submitted';
 
   return (
-    <div className="px-4 py-4 pb-24">
+    <div className="mx-auto max-w-md px-4 py-3 pb-28">
       <button onClick={() => navigate(-1)} className="mb-3 text-sm text-brand-teal active:opacity-60">‹ 返回</button>
 
-      <header className="mb-3 flex items-center justify-between">
+      <header className="sticky top-0 z-10 -mx-4 mb-3 flex items-center justify-between border-b border-gray-100 bg-white/95 px-4 py-2 backdrop-blur">
         <div>
           <h1 className="text-xl font-bold text-brand-primary">授課記錄</h1>
           <p className="mt-1 text-xs text-gray-500">F-C05 / 點擊標籤即帶入文案</p>
@@ -216,7 +236,7 @@ export default function SessionRecordFormPage() {
         <section className="mb-3 rounded-xl border border-brand-primary/15 bg-white p-3">
           <div className="flex items-center justify-between">
             <h3 className="text-xs font-bold text-brand-primary">填寫方式</h3>
-            <div className="flex rounded-full bg-gray-100 p-0.5 text-xs font-bold">
+            <div className="grid w-40 grid-cols-2 rounded-full bg-gray-100 p-0.5 text-center text-xs font-bold">
               <button type="button" onClick={() => setMode('class')}
                 className={`rounded-full px-3 py-1 ${mode === 'class' ? 'bg-brand-primary text-white' : 'text-gray-500'}`}>整班一起填</button>
               <button type="button" onClick={() => setMode('individual')}
@@ -225,10 +245,10 @@ export default function SessionRecordFormPage() {
           </div>
           {mode === 'individual' && (
             <>
-              <div className="mt-2 flex flex-wrap gap-1.5">
+              <div className="mt-2 flex gap-1.5 overflow-x-auto pb-1">
                 {students.map((n) => (
                   <button key={n} type="button" onClick={() => setActiveStudent(n)}
-                    className={`rounded-full px-3 py-1 text-xs font-bold ${activeStudent === n ? 'bg-brand-teal text-white' : 'bg-brand-teal/10 text-brand-teal'}`}>
+                    className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-bold ${activeStudent === n ? 'bg-brand-teal text-white' : 'bg-brand-teal/10 text-brand-teal'}`}>
                     {n}
                   </button>
                 ))}
@@ -256,9 +276,9 @@ export default function SessionRecordFormPage() {
               onFocus={() => setActiveField(f.key)}
               onChange={(e) => setFieldVal(f.key, e.target.value)}
               placeholder={`點上方標籤可自動帶入「${f.cat}」文案`}
-              rows={3}
+              rows={4}
               maxLength={4000}
-              className={`mt-1 w-full rounded-lg border bg-white p-2 text-sm focus:outline-none ${activeField === f.key ? 'border-brand-teal' : 'border-gray-200'}`}
+              className={`mt-1 min-h-28 w-full resize-y rounded-lg border bg-white p-3 text-base leading-6 focus:outline-none ${activeField === f.key ? 'border-brand-teal' : 'border-gray-200'}`}
             />
           </div>
         ))}
@@ -317,7 +337,7 @@ export default function SessionRecordFormPage() {
         </ul>
       </section>
 
-      <div className="fixed inset-x-0 bottom-0 mx-auto flex max-w-md gap-2 border-t border-gray-200 bg-white px-4 py-3">
+      <div className="fixed inset-x-0 bottom-0 z-20 mx-auto flex max-w-md gap-2 border-t border-gray-200 bg-white px-4 pb-[calc(env(safe-area-inset-bottom)+12px)] pt-3">
         <button disabled={busy} onClick={() => save(false)}
           className="flex-1 rounded-xl border border-brand-teal py-3 text-sm font-bold text-brand-teal disabled:opacity-50">
           儲存草稿

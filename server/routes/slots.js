@@ -179,7 +179,7 @@ router.get('/period/:coursePeriodId', requireParent, async (req, res) => {
     const cpRes = await pool.query(
       `SELECT cp.id, cp.coach_id, co.name AS coach_name, cp.venue_id, v.name AS venue_name,
               cp.course_type, cp.status, cp.total_sessions,
-              COUNT(cs.id) FILTER (WHERE cs.status NOT LIKE 'cancelled%')::int AS booked_sessions
+              COUNT(cs.id) FILTER (WHERE cs.status::text NOT LIKE 'cancelled%')::int AS booked_sessions
          FROM course_periods cp
          JOIN coaches co ON co.id = cp.coach_id
          JOIN venues v ON v.id = cp.venue_id
@@ -298,7 +298,7 @@ router.post('/:id/book', requireParent, async (req, res) => {
     // 容量：已排（未取消）堂數不得超過已購買 total_sessions
     const used = await client.query(
       `SELECT COUNT(*)::int AS n FROM course_sessions
-        WHERE course_period_id = $1 AND status NOT LIKE 'cancelled%'`,
+        WHERE course_period_id = $1 AND status::text NOT LIKE 'cancelled%'`,
       [coursePeriodId]
     );
     if (used.rows[0].n >= cp.total_sessions) {

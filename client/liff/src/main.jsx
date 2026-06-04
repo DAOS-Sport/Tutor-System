@@ -8,9 +8,11 @@ import './index.css';
 
 const LIFF_ID_PARENT = import.meta.env.VITE_LIFF_ID_PARENT || import.meta.env.VITE_LIFF_ID;
 const LIFF_ID_COACH = import.meta.env.VITE_LIFF_ID_COACH || import.meta.env.VITE_LIFF_ID;
+const HAS_DISTINCT_COACH_LIFF =
+  !!LIFF_ID_PARENT && !!LIFF_ID_COACH && String(LIFF_ID_PARENT) !== String(LIFF_ID_COACH);
 
 function isCoachLiffId(id) {
-  return !!id && !!LIFF_ID_COACH && String(id) === String(LIFF_ID_COACH);
+  return HAS_DISTINCT_COACH_LIFF && !!id && String(id) === String(LIFF_ID_COACH);
 }
 
 function isCoachPath() {

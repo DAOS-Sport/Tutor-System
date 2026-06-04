@@ -105,6 +105,40 @@ function _mediaList(input) {
     }));
 }
 
+async function _sessionStudentNames(sessionId) {
+  const r = await pool.query(
+    `SELECT COALESCE(
+       (SELECT json_agg(s.name ORDER BY s.name)
+          FROM course_sessions cs
+          JOIN course_period_enrollments cpe ON cpe.course_period_id = cs.course_period_id
+          JOIN students s ON s.id = cpe.student_id
+         WHERE cs.id = $1 AND cpe.status = 'active'),
+       '[]'::json
+     ) AS names`,
+    [sessionId]
+  );
+  return (r.rows[0]?.names || []).map((n) => String(n || '').trim()).filter(Boolean);
+}
+
+function _studentRecords(input, allowedNames = []) {
+  const allowed = new Set(allowedNames);
+  const source = input && typeof input === 'object' ? input : {};
+  const rawRecords = source.records && typeof source.records === 'object' ? source.records : {};
+  const records = {};
+  for (const [name, fields] of Object.entries(rawRecords).slice(0, 20)) {
+    const safeName = String(name || '').trim().slice(0, 80);
+    if (!safeName || (allowed.size && !allowed.has(safeName))) continue;
+    const row = fields && typeof fields === 'object' ? fields : {};
+    const out = {};
+    for (const k of RECORD_FIELDS) out[k] = String(row[k] || '').slice(0, 4000);
+    records[safeName] = out;
+  }
+  return {
+    mode: source.mode === 'individual' ? 'individual' : 'class',
+    records,
+  };
+}
+
 async function upsertRecord(sessionId, coachId, fields) {
   const sess = await _sessionPeriodAndCoach(sessionId);
   if (!sess) { const e = new Error('Not found'); e.status = 404; throw e; }
@@ -114,6 +148,8 @@ async function upsertRecord(sessionId, coachId, fields) {
   const v = {};
   for (const k of RECORD_FIELDS) v[k] = String(fields?.[k] || '').slice(0, 4000);
   const media = _mediaList(fields?.media);
+  const studentNames = await _sessionStudentNames(sessionId);
+  const studentRecords = _studentRecords(fields?.student_records, studentNames);
   // 已提交的紀錄在覆寫前先快照舊內容，確保「送出後修改保留版本歷史」（F-C05）。
   const prior = await getRecord(sessionId);
   if (prior && prior.status === 'submitted') {
@@ -128,8 +164,8 @@ async function upsertRecord(sessionId, coachId, fields) {
     );
   }
   const r = await pool.query(
-    `INSERT INTO session_records (course_session_id, course_period_id, coach_id, summary, highlights, improvements, homework, notes, media)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
+    `INSERT INTO session_records (course_session_id, course_period_id, coach_id, summary, highlights, improvements, homework, notes, media, student_records)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb)
      ON CONFLICT (course_session_id) DO UPDATE
        SET summary = EXCLUDED.summary,
            highlights = EXCLUDED.highlights,
@@ -137,9 +173,10 @@ async function upsertRecord(sessionId, coachId, fields) {
            homework = EXCLUDED.homework,
            notes = EXCLUDED.notes,
            media = EXCLUDED.media,
+           student_records = EXCLUDED.student_records,
            updated_at = NOW()
      RETURNING *`,
-    [sessionId, sess.course_period_id, coachId, v.summary, v.highlights, v.improvements, v.homework, v.notes, JSON.stringify(media)]
+    [sessionId, sess.course_period_id, coachId, v.summary, v.highlights, v.improvements, v.homework, v.notes, JSON.stringify(media), JSON.stringify(studentRecords)]
   );
   const rec = r.rows[0];
   if (Array.isArray(fields?.tags)) {
