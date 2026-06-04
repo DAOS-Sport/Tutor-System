@@ -22,14 +22,28 @@ const client = axios.create({
   timeout: RAGIC_TIMEOUT_MS,
 });
 
+// Ragic 表單 env 可能被貼成「瀏覽器網址」而帶 ?PAGEID=… 之類 UI 參數：
+// 對讀取(GET)無害(Ragic 忽略未知 param)，但寫入(POST)會被 Ragic 當成欄位 →
+// 報「Field id PAGEID not found」整筆寫入靜默失敗。組 API URL 時一律先去掉 query string。
+function _stripQuery(formPath) {
+  return String(formPath || '').split('?')[0];
+}
+
 function _withApi(formPath) {
-  const sep = formPath.includes('?') ? '&' : '?';
-  return `${formPath}${sep}api`;
+  return `${_stripQuery(formPath)}?api`;
 }
 
 function _recordPath(formPath, ragicRecordId) {
-  const [pathOnly, qs] = String(formPath || '').split('?');
-  return `${pathOnly}/${ragicRecordId}${qs ? `?${qs}` : ''}`;
+  return `${_stripQuery(formPath)}/${ragicRecordId}`;
+}
+
+// Ragic 寫入成功為 status:'SUCCESS'；'ERROR'(系統錯) / 'INVALID'(欄位驗證失敗，如必填缺漏)
+// 等都代表沒寫進去。先前多處只擋 'ERROR' → 'INVALID' 被當成功靜默吞掉、整筆沒落地。
+function _assertWriteOk(data) {
+  const d = data || {};
+  if (d.status && d.status !== 'SUCCESS') {
+    throw new Error(`Ragic ${d.status} ${d.code || ''}: ${d.msg || ''}`.trim());
+  }
 }
 
 // Task #83：把 axios timeout / 超時類錯誤正規化成中文友善文案，
@@ -222,7 +236,8 @@ async function bindParentLineUidToRagic({ ragicRecordId, lineUid }) {
   if (!lineUid) throw new Error('lineUid 必填');
   const payload = { [Z01_LINE_UID_FIELD]: lineUid };
   const url = _withApi(_recordPath(process.env.RAGIC_FORM_Z01, ragicRecordId));
-  await client.post(url, payload, { params: { APIKey: process.env.RAGIC_API_KEY } });
+  const res = await client.post(url, payload, { params: { APIKey: process.env.RAGIC_API_KEY } });
+  _assertWriteOk(res.data);
   _cacheInvalidate('z01:');
   return { ok: true };
 }
@@ -237,9 +252,7 @@ async function postRagicStrict(formPath, payload) {
     throw _normalizeRagicError(err);
   }
   const data = res.data || {};
-  if (data.status === 'ERROR') {
-    throw new Error(`Ragic ${data.code}: ${data.msg}`);
-  }
+  _assertWriteOk(data);
   return data;
 }
 
@@ -358,13 +371,17 @@ async function createParentWithStudentsInRagic({ parent, students = [], lineUid 
   if (!lineUid) throw new Error('lineUid 必填');
 
   const payload = {
-    [FIELD.Z01.PARENT_NAME]: parent.name || '',
-    [FIELD.Z01.PHONE]:       parent.phone,
-    [FIELD.Z01.LINE_UID]:    lineUid,
+    [FIELD.Z01.PARENT_NAME]:   parent.name || '',
+    [FIELD.Z01.PHONE]:         parent.phone,
+    [FIELD.Z01.LINE_UID]:      lineUid,
+    // Ragic Z01 必填欄位（不送會被擋 status:INVALID）：身分 / 館別 / line對話網址。
+    // 場館在報名時才選定，註冊階段先放「待補登」placeholder（Ragic 接受自由文字）。
+    [FIELD.Z01.IDENTITY]:      parent.identity || '一般身分',
+    [FIELD.Z01.VENUE]:         parent.primary_venue_id || '待補登',
+    [FIELD.Z01.LINE_CHAT_URL]: '待補登',
   };
-  if (parent.gender)           payload[FIELD.Z01.GENDER] = parent.gender;
-  if (parent.email)            payload[FIELD.Z01.EMAIL]  = parent.email;
-  if (parent.primary_venue_id) payload[FIELD.Z01.VENUE]  = parent.primary_venue_id;
+  if (parent.gender) payload[FIELD.Z01.GENDER] = parent.gender;
+  if (parent.email)  payload[FIELD.Z01.EMAIL]  = parent.email;
 
   students.forEach((s, idx) => {
     if (!s || !s.name) return;
@@ -382,9 +399,7 @@ async function createParentWithStudentsInRagic({ parent, students = [], lineUid 
   _cacheInvalidate('z01:');
 
   const data = res.data || {};
-  if (data.status === 'ERROR') {
-    throw new Error(`Ragic ${data.code}: ${data.msg}`);
-  }
+  _assertWriteOk(data);
 
   // 嘗試從常見三種位置抽 record id
   let ragicRecordId = data.ragicId || data._ragicId || null;
@@ -422,7 +437,7 @@ async function addStudentsToParentInRagic({ ragicRecordId, startIndex = 0, stude
   });
   _cacheInvalidate('z01:');
   const data = res.data || {};
-  if (data.status === 'ERROR') throw new Error(`Ragic ${data.code}: ${data.msg}`);
+  _assertWriteOk(data);
   return { added: list.length, raw: data };
 }
 

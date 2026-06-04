@@ -60,6 +60,7 @@ const Z01_FIELDS = {
   '(服)員工編號':   '1002180',
   '住家電話':       '1001122',
   'LINE ID':        '1001123',
+  'line對話網址':   '1002390',
   '住家地址':       '1001124',
   // 家長 LINE 登入綁定：LIFF 取得的 LINE userId (sub)
   '家教系統uid':    LINE_UID_FIELD.Z01,
@@ -153,6 +154,7 @@ const FIELD = {
     HOME_PHONE:     Z01_FIELDS['住家電話'],
     HOME_ADDRESS:   Z01_FIELDS['住家地址'],
     LINE_ID:        Z01_FIELDS['LINE ID'],
+    LINE_CHAT_URL:  Z01_FIELDS['line對話網址'],
     LINE_UID:       LINE_UID_FIELD.Z01,
     STUDENTS_SUBTABLE: Z01_STUDENTS_SUBTABLE_ID,
   },

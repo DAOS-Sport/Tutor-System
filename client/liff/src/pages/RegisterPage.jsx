@@ -200,9 +200,9 @@ export default function RegisterPage() {
               <option value="女">女</option><option value="男">男</option><option value="不方便透露">不方便透露</option>
             </select>
           </Field>
-          <Field label="Email（選填）" error={errors.email?.message}>
+          <Field label="Email" error={errors.email?.message}>
             <input type="email"
-              {...register('email', { pattern: { value: /^$|^[^\s@]+@[^\s@]+\.[^\s@]+$/, message: 'Email 格式錯誤' } })}
+              {...register('email', { required: '請填寫 Email', pattern: { value: /^[^\s@]+@[^\s@]+\.[^\s@]+$/, message: 'Email 格式錯誤' } })}
               className={inputCls} />
           </Field>
         </Section>
