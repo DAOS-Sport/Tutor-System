@@ -1,5 +1,5 @@
 import React from 'react';
-import { courseTypeLabel } from '../../utils/format';
+import { courseTypeLabel, formatTWTime } from '../../utils/format';
 
 const STATUS_STYLES = {
   available: { bg: 'bg-emerald-50', border: 'border-emerald-200', text: 'text-emerald-800', label: '可預約' },
@@ -8,18 +8,12 @@ const STATUS_STYLES = {
   blocked:   { bg: 'bg-gray-100', border: 'border-gray-300', text: 'text-gray-500', label: '已封鎖' },
 };
 
-function fmtTime(iso) {
-  const d = new Date(iso);
-  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
-}
-
 /**
  * 單一槽位 chip。點擊觸發 onClick(slot) 由父層決定彈 menu。
  */
 export default function SlotChip({ slot, onClick }) {
   const s = STATUS_STYLES[slot.status] || STATUS_STYLES.available;
   const end = new Date(new Date(slot.start_at).getTime() + (slot.duration_minutes || 60) * 60_000);
-  const endTime = `${String(end.getHours()).padStart(2,'0')}:${String(end.getMinutes()).padStart(2,'0')}`;
   return (
     <button
       type="button"
@@ -28,7 +22,7 @@ export default function SlotChip({ slot, onClick }) {
     >
       <div className="flex items-baseline justify-between gap-2">
         <div className={`text-sm font-bold ${s.text}`}>
-          {fmtTime(slot.start_at)} – {endTime}
+          {formatTWTime(slot.start_at)} – {formatTWTime(end)}
         </div>
         <span className={`rounded-full border ${s.border} px-2 py-0.5 text-[10px] font-medium ${s.text}`}>
           {s.label}

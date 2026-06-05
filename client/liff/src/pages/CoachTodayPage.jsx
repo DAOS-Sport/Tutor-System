@@ -4,12 +4,7 @@ import { sessionsApi } from '../api/sessions';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import LoadingSpinner from '../components/LoadingSpinner';
-import { courseTypeLabel, formatTWDate } from '../utils/format';
-
-function fmtTime(iso) {
-  const d = new Date(iso);
-  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
-}
+import { courseTypeLabel, formatTWDate, formatTWTime } from '../utils/format';
 
 export default function CoachTodayPage() {
   const { coach } = useAuth();
@@ -60,7 +55,7 @@ export default function CoachTodayPage() {
               >
                 <div className="flex items-baseline justify-between">
                   <div className="text-base font-bold text-brand-primary">
-                    {fmtTime(s.scheduled_at)}
+                    {formatTWTime(s.scheduled_at)}
                   </div>
                   <span className="rounded-full bg-brand-teal/10 px-2 py-0.5 text-[10px] text-brand-teal">
                     {courseTypeLabel(s.course_type)}

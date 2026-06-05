@@ -20,11 +20,11 @@ router.get('/lessons', requireParent, async (req, res) => {
     ];
     if (req.query.from) {
       args.push(req.query.from);
-      conds.push(`cs.scheduled_at >= $${args.length}::date`);
+      conds.push(`cs.scheduled_at >= ($${args.length}::date::timestamp AT TIME ZONE 'Asia/Taipei')`);
     }
     if (req.query.to) {
       args.push(req.query.to);
-      conds.push(`cs.scheduled_at < ($${args.length}::date + INTERVAL '1 day')`);
+      conds.push(`cs.scheduled_at < ((($${args.length}::date + INTERVAL '1 day')::timestamp) AT TIME ZONE 'Asia/Taipei')`);
     }
     if (req.query.coachId) {
       args.push(req.query.coachId);
@@ -80,7 +80,7 @@ router.get('/mine', requireParent, async (req, res) => {
               extra_parent_phones, notes, group_order_id, is_group_shared,
               -- 對帳通過後自動開通的正式 course_period：團報走 group_order_id（共用），
               -- 一般報名走 admin_enrollment_id。供前端導去學習歷程/詳細頁（該頁以 period id 查歸屬）。
-              COALESCE(
+	              COALESCE(
                 (SELECT cp.id FROM course_periods cp
                    WHERE admin_enrollments.group_order_id IS NOT NULL
                      AND cp.group_order_id = admin_enrollments.group_order_id
@@ -89,6 +89,15 @@ router.get('/mine', requireParent, async (req, res) => {
                    WHERE cp.admin_enrollment_id = admin_enrollments.id
                    ORDER BY cp.created_at LIMIT 1)
 	              ) AS course_period_id,
+              COALESCE(
+                (SELECT cp.expires_at FROM course_periods cp
+                   WHERE admin_enrollments.group_order_id IS NOT NULL
+                     AND cp.group_order_id = admin_enrollments.group_order_id
+                   ORDER BY cp.created_at LIMIT 1),
+                (SELECT cp.expires_at FROM course_periods cp
+                   WHERE cp.admin_enrollment_id = admin_enrollments.id
+                   ORDER BY cp.created_at LIMIT 1)
+              ) AS expires_at,
 	              -- 課程轉讓頁(F-S08)用：只回傳「本家長名下、且在該 period active 掛載」的學生 {id,name}。
 	              -- 與既有 students(名字字串陣列)並存、不取代，避免衝擊 CourseCard/CourseDetail 等以名字顯示的頁面。
 	              (
@@ -150,6 +159,7 @@ router.get('/mine', requireParent, async (req, res) => {
       payment_status: toPaymentStatus(row.status),
       lifecycle: toLifecycle(row),
       course_period_id: row.course_period_id || null,
+      expires_at: row.expires_at || null,
       submitted_at: row.submitted_at,
       total_sessions: row.total_sessions,
       used_sessions: row.used_sessions,

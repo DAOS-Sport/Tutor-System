@@ -70,6 +70,10 @@ export default function CourseCard({ variant = 'period', period, type, onClick, 
             {period.coach?.name} · {period.venue?.name}
           </h3>
           <p className="mt-0.5 truncate text-xs text-gray-500">學員：{studentNames || '—'}</p>
+          <p className="mt-0.5 truncate font-mono text-[11px] text-gray-400">訂單編號：{period.id || '—'}</p>
+          {period.group_order_id && (
+            <p className="mt-0.5 truncate font-mono text-[11px] text-gray-400">團購單號：{period.group_order_id}</p>
+          )}
         </div>
         <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-bold ${paymentStatusColor(badgeStatus)}`}>
           {paymentStatusLabel(badgeStatus)}

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
 import { lessonsApi } from '../api/lessons';
+import { addDaysToTaipeiYMD, formatTWDate, formatTWMonthKey, formatTWTime, todayTaipeiYMD } from '../utils/format';
 
 const FILTERS = [
   { key: 'all',         label: '全部' },
@@ -37,8 +38,7 @@ export default function MyLessonsPage() {
     const params = {};
     const cfg = RANGES.find((r) => r.key === range);
     if (cfg?.days) {
-      const d = new Date(); d.setDate(d.getDate() - cfg.days);
-      params.from = d.toISOString().slice(0, 10);
+      params.from = addDaysToTaipeiYMD(todayTaipeiYMD(), -cfg.days);
     }
     if (coachId) params.coachId = coachId;
     if (courseType) params.courseType = courseType;
@@ -62,7 +62,7 @@ export default function MyLessonsPage() {
     const list = (data || []).filter((r) => filter === 'all' || classify(r) === filter);
     const m = new Map();
     for (const r of list) {
-      const key = new Date(r.scheduled_at).toISOString().slice(0, 7);
+      const key = formatTWMonthKey(r.scheduled_at);
       if (!m.has(key)) m.set(key, []);
       m.get(key).push(r);
     }
@@ -137,9 +137,8 @@ export default function MyLessonsPage() {
 
 function LessonCard({ r, onOpen }) {
   const cls = classify(r);
-  const date = new Date(r.scheduled_at);
-  const dStr = date.toLocaleDateString('zh-TW', { month: '2-digit', day: '2-digit', weekday: 'short' });
-  const tStr = date.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false });
+  const dStr = formatTWDate(r.scheduled_at);
+  const tStr = formatTWTime(r.scheduled_at);
   return (
     <button type="button" onClick={onOpen}
       className="block w-full rounded-xl border border-gray-200 bg-white p-3 text-left active:bg-gray-50">
@@ -154,7 +153,7 @@ function LessonCard({ r, onOpen }) {
       </div>
       <div className="mt-0.5 text-xs text-gray-500">
         學員：{r.student_name}
-        {r.checked_in_at && <span className="ml-2">・簽到於 {new Date(r.checked_in_at).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false })}</span>}
+        {r.checked_in_at && <span className="ml-2">・簽到於 {formatTWTime(r.checked_in_at)}</span>}
       </div>
       {r.record_status === 'submitted' && (
         <div className="mt-1.5 text-[11px] font-medium text-brand-teal">

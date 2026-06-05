@@ -3,16 +3,15 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { listRooms } from '../api/chat';
 import LoadingSpinner from '../components/LoadingSpinner';
+import { formatTWTime, formatTWYMD, todayTaipeiYMD } from '../utils/format';
 
 const COURSE_LABEL = { 1: '1v1', 2: '1v2', 3: '1v3' };
 
 function timeOf(iso) {
   if (!iso) return '';
-  const d = new Date(iso);
-  const now = new Date();
-  const sameDay = d.toDateString() === now.toDateString();
-  if (sameDay) return d.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false });
-  return `${d.getMonth() + 1}/${d.getDate()}`;
+  if (formatTWYMD(iso) === todayTaipeiYMD()) return formatTWTime(iso);
+  const ymd = formatTWYMD(iso);
+  return ymd ? ymd.slice(5).replace('-', '/') : '';
 }
 
 function lastSnippet(m) {

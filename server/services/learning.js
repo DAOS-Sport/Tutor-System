@@ -320,6 +320,24 @@ async function removePersonalTag(coachId, id) {
 
 // ── 家長端：學習歷程總覽 ──────────────────────────
 async function listLearningHistory(periodId) {
+  const period = await pool.query(
+    `SELECT cp.id, cp.course_type, cp.total_sessions, cp.used_sessions, cp.expires_at,
+            cp.venue_id, v.name AS venue_name,
+            co.id AS coach_id, co.name AS coach_name,
+            COALESCE(
+              (SELECT array_agg(s.name ORDER BY s.name)
+                 FROM course_period_enrollments cpe
+                 JOIN students s ON s.id = cpe.student_id
+                WHERE cpe.course_period_id = cp.id
+                  AND cpe.status IN ('active','transferred_out')),
+              '{}'::text[]
+            ) AS student_names
+       FROM course_periods cp
+       LEFT JOIN coaches co ON co.id = cp.coach_id
+       LEFT JOIN venues v ON v.id = cp.venue_id
+      WHERE cp.id = $1`,
+    [periodId]
+  );
   const plan = await pool.query(
     `SELECT * FROM lesson_plans WHERE course_period_id = $1 AND status = 'published'`,
     [periodId]
@@ -347,6 +365,7 @@ async function listLearningHistory(periodId) {
     }
   }
   return {
+    period: period.rows[0] || null,
     plan: plan.rows[0] || null,
     records: recs.rows.map((r) => ({ ...r, tags: tagMap.get(r.id) || [] })),
   };

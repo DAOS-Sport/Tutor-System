@@ -24,6 +24,30 @@ function startOfWeek(d) {
   return x;
 }
 function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+function todayInTaipei() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Taipei',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+}
+function parseTaipeiDateBoundary(value) {
+  const v = String(value || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return new Date(`${v}T00:00:00+08:00`);
+  return new Date(v);
+}
+function ymdInTaipei(date) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Taipei',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+}
+function weekdayInTaipei(date) {
+  return new Date(`${ymdInTaipei(date)}T12:00:00+08:00`).getUTCDay();
+}
 
 function ensureBodyOwner(req, res, next) {
   const cid = req.body?.coach_id;
@@ -104,15 +128,15 @@ router.post('/batch', requireCoach, ensureBodyOwner, async (req, res) => {
   if (!coach_id || !venue_id || !Array.isArray(weekdays) || !Array.isArray(times) || !from || !to) {
     return res.status(400).json({ error: '需要 coach_id, venue_id, weekdays[], times[], from, to' });
   }
-  const fromDate = new Date(from);
-  const toDate = new Date(to);
+  const fromDate = parseTaipeiDateBoundary(from);
+  const toDate = parseTaipeiDateBoundary(to);
   const slots = [];
-  for (let d = new Date(fromDate); d <= toDate; d.setDate(d.getDate() + 1)) {
-    if (!weekdays.includes(d.getDay())) continue;
+  for (let d = new Date(fromDate); d <= toDate; d.setUTCDate(d.getUTCDate() + 1)) {
+    if (!weekdays.includes(weekdayInTaipei(d))) continue;
+    const ymd = ymdInTaipei(d);
     for (const t of times) {
-      const [hh, mm] = t.split(':').map(Number);
-      const startAt = new Date(d);
-      startAt.setHours(hh, mm || 0, 0, 0);
+      const [hh, mm = 0] = t.split(':').map(Number);
+      const startAt = new Date(`${ymd}T${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00+08:00`);
       slots.push({ coachId: coach_id, venueId: venue_id, startAt: startAt.toISOString(), durationMinutes: duration_minutes });
     }
   }
@@ -168,9 +192,8 @@ router.get('/period/:coursePeriodId', requireParent, async (req, res) => {
     return res.status(404).json({ error: '課程期不存在' });
   }
 
-  const fromDate = req.query.from ? new Date(req.query.from) : new Date();
-  fromDate.setHours(0, 0, 0, 0);
-  const toDate = req.query.to ? new Date(req.query.to) : addDays(fromDate, 30);
+  const fromDate = req.query.from ? parseTaipeiDateBoundary(req.query.from) : parseTaipeiDateBoundary(todayInTaipei());
+  const toDate = req.query.to ? parseTaipeiDateBoundary(req.query.to) : addDays(fromDate, 30);
   if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
     return res.status(400).json({ error: 'from/to 日期格式錯誤' });
   }

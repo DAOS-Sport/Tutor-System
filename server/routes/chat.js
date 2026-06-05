@@ -31,6 +31,55 @@ async function authzRoom(req, res, next) {
   next();
 }
 
+async function withSenderDisplayNames(roomId, rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return rows || [];
+  const coachIds = Array.from(new Set(rows.filter((m) => m.sender_type === 'coach' && m.sender_id).map((m) => m.sender_id)));
+  const parentIds = Array.from(new Set(rows.filter((m) => m.sender_type === 'parent' && m.sender_id).map((m) => m.sender_id)));
+  const coachMap = new Map();
+  const parentMap = new Map();
+
+  if (coachIds.length) {
+    const r = await pool.query(
+      `SELECT id, name FROM coaches WHERE id = ANY($1::uuid[])`,
+      [coachIds]
+    );
+    for (const c of r.rows) coachMap.set(c.id, `${c.name} 教練`);
+  }
+
+  if (parentIds.length) {
+    const r = await pool.query(
+      `SELECT p.id, p.name,
+              COALESCE(sn.student_names, '{}'::text[]) AS student_names
+         FROM parents p
+         LEFT JOIN LATERAL (
+           SELECT array_agg(DISTINCT s.name)::text[] AS student_names
+             FROM students s
+             JOIN course_period_enrollments cpe
+               ON cpe.student_id = s.id
+              AND cpe.status = 'active'
+             JOIN chat_rooms cr
+               ON cr.course_period_id = cpe.course_period_id
+            WHERE cr.id = $2
+              AND s.parent_id = p.id
+         ) sn ON TRUE
+        WHERE p.id = ANY($1::uuid[])`,
+      [parentIds, roomId]
+    );
+    for (const p of r.rows) {
+      const names = Array.isArray(p.student_names) ? p.student_names.filter(Boolean) : [];
+      parentMap.set(p.id, names.length ? `${p.name}（${names.join('、')}）` : p.name);
+    }
+  }
+
+  return rows.map((m) => ({
+    ...m,
+    sender_display_name:
+      m.sender_type === 'coach' ? (coachMap.get(m.sender_id) || '教練') :
+      m.sender_type === 'parent' ? (parentMap.get(m.sender_id) || '家長') :
+      '系統',
+  }));
+}
+
 router.get('/rooms', requireLiffUser, async (req, res) => {
   try {
     const list = req.liffUser.type === 'parent'
@@ -124,7 +173,8 @@ router.get('/rooms/:id/messages', requireLiffUser, authzRoom, async (req, res) =
         else peerReads.add(x.message_id);
       }
     }
-    res.json(r.rows.reverse().map((m) => ({
+    const rows = await withSenderDisplayNames(req.params.id, r.rows);
+    res.json(rows.reverse().map((m) => ({
       ...m,
       read_by_me: myReads.has(m.id),
       read_by_peer: peerReads.has(m.id),
@@ -145,7 +195,7 @@ async function _persistAndBroadcast({ roomId, sender, type, content, media }) {
     [roomId, sender.type, sender.id, type, content || null,
      media?.url || null, media?.filename || null, media?.size || null]
   );
-  const msg = r.rows[0];
+  const [msg] = await withSenderDisplayNames(roomId, r.rows);
   broadcastMessage(roomId, msg);
   // 關鍵字掃描：所有「有 content 字串」的訊息都掃，包含 image/file 附件 caption（spec F-A07）
   if (content) {

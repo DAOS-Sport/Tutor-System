@@ -1,16 +1,16 @@
 import React, { useState } from 'react';
 import { slotsApi } from '../../api/slots';
+import { todayTaipeiYMD } from '../../utils/format';
 
-function todayStr() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+function taipeiInputToIso(date, time) {
+  return new Date(`${date}T${time}:00+08:00`).toISOString();
 }
 
 /**
  * 單筆新增槽位
  */
 export default function AddSlotModal({ coachId, venueIds, onClose, onCreated, onError }) {
-  const [date, setDate] = useState(todayStr());
+  const [date, setDate] = useState(todayTaipeiYMD());
   const [time, setTime] = useState('14:00');
   const [duration, setDuration] = useState(60);
   const [venueId, setVenueId] = useState(venueIds?.[0] || 'B');
@@ -20,7 +20,7 @@ export default function AddSlotModal({ coachId, venueIds, onClose, onCreated, on
 
   async function checkConflict() {
     if (!date || !time) return;
-    const start = new Date(`${date}T${time}:00`).toISOString();
+    const start = taipeiInputToIso(date, time);
     try {
       const r = await slotsApi.previewConflict({ coach_id: coachId, start_at: start, duration_minutes: duration });
       setConflict(r.has_conflict ? r : null);
@@ -30,7 +30,7 @@ export default function AddSlotModal({ coachId, venueIds, onClose, onCreated, on
   async function handleSubmit(e) {
     e.preventDefault();
     if (busy) return;
-    const start = new Date(`${date}T${time}:00`).toISOString();
+    const start = taipeiInputToIso(date, time);
     setBusy(true);
     try {
       const slot = await slotsApi.create({

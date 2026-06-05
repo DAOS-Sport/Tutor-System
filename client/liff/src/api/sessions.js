@@ -11,4 +11,13 @@ export const sessionsApi = {
 
   detail: (id) =>
     callApi(`/sessions/${id}`, { method: 'get' }, () => mockDb.sessionDetail(id)),
+
+  checkin: (sessionId, studentId) =>
+    callApi(`/sessions/${sessionId}/checkins`, { method: 'post', data: { studentId } }, () => ({
+      ok: true,
+      checkin_id: `ck_${Date.now()}`,
+      checked_in_at: new Date().toISOString(),
+      source: 'coach',
+      student: { id: studentId },
+    })),
 };

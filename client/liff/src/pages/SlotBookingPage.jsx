@@ -4,7 +4,7 @@ import { slotsApi } from '../api/slots';
 import ConfirmModal from '../components/ConfirmModal';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
-import { courseTypeLabel, formatTWDate, formatTWDateTime } from '../utils/format';
+import { addDaysToTaipeiYMD, courseTypeLabel, formatTWDate, formatTWDateTime, formatTWTime, todayTaipeiYMD } from '../utils/format';
 
 export default function SlotBookingPage() {
   const { periodId } = useParams();
@@ -18,10 +18,9 @@ export default function SlotBookingPage() {
   function load() {
     setError(null);
     setData(null);
-    const from = new Date();
-    const to = new Date();
-    to.setDate(to.getDate() + 30);
-    slotsApi.availableForPeriod(periodId, { from: from.toISOString(), to: to.toISOString() })
+    const from = todayTaipeiYMD();
+    const to = addDaysToTaipeiYMD(from, 30);
+    slotsApi.availableForPeriod(periodId, { from, to })
       .then((d) => setData(d))
       .catch((e) => {
         const msg = e?.response?.data?.error || '可預約時段載入失敗';
@@ -49,8 +48,12 @@ export default function SlotBookingPage() {
     if (!selected) return;
     setBusy(true);
     try {
-      await slotsApi.book(selected.id, periodId);
-      toast.success('課程時段已預約成功');
+      const r = await slotsApi.book(selected.id, periodId);
+      if (r?.session?.status === 'pending_group_confirm') {
+        toast.success('已送出時段，等待同組家長確認');
+      } else {
+        toast.success('課程時段已預約成功');
+      }
       navigate('/my-courses', { replace: true });
     } catch (e) {
       toast.error(e?.response?.data?.error || '預約失敗，請改選其他時段');
@@ -86,6 +89,11 @@ export default function SlotBookingPage() {
           </span>
         </div>
         <h1 className="mt-2 text-base font-bold text-gray-900">{period.coach_name || '教練'} · {period.venue_name || period.venue_id}</h1>
+        {Number(period.course_type) > 1 && (
+          <p className="mt-1 text-[11px] leading-5 text-gray-500">
+            團班時段送出後，需等待同組家庭確認才會正式成立。
+          </p>
+        )}
       </div>
 
       {sessionsLeft <= 0 ? (
@@ -106,7 +114,7 @@ export default function SlotBookingPage() {
                     className="rounded-lg border border-brand-teal/30 bg-white px-3 py-3 text-left active:bg-brand-teal/5"
                   >
                     <div className="text-sm font-bold text-brand-primary">
-                      {new Date(slot.start_at).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false })}
+                      {formatTWTime(slot.start_at)}
                     </div>
                     <div className="mt-1 text-[11px] text-gray-500">{slot.duration_minutes || 60} 分鐘</div>
                   </button>

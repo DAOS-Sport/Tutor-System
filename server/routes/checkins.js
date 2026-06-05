@@ -50,11 +50,12 @@ router.post('/', requireParent, async (req, res) => {
     }
 
     const ins = await client.query(
-      `INSERT INTO checkin_records (course_session_id, student_id)
-       VALUES ($1, $2)
+      `INSERT INTO checkin_records
+         (course_session_id, student_id, checked_in_source, checked_in_by_parent_id)
+       VALUES ($1, $2, 'parent', $3)
        ON CONFLICT (course_session_id, student_id) DO UPDATE SET checked_in_at = checkin_records.checked_in_at
-       RETURNING id, checked_in_at`,
-      [sessionId, studentId]
+       RETURNING id, checked_in_at, checked_in_source`,
+      [sessionId, studentId, req.parent.id]
     );
     await client.query('COMMIT');
 
@@ -71,10 +72,11 @@ router.post('/', requireParent, async (req, res) => {
         course_type: Number(x.course_type) || null,
         coach: x.coach_name || '',
         student: x.student_name || '',
+        source: row.checked_in_source || 'parent',
       });
     } catch (e) { console.warn('[checkins] broadcast skipped:', e?.message); }
 
-    res.json({ ok: true, checkin_id: row.id, checked_in_at: row.checked_in_at });
+    res.json({ ok: true, checkin_id: row.id, checked_in_at: row.checked_in_at, source: row.checked_in_source || 'parent' });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('[checkins POST]', err);

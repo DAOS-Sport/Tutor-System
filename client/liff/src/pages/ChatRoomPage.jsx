@@ -4,11 +4,10 @@ import { useAuth } from '../context/AuthContext';
 import {
   getRoom, listMessages, sendText, uploadFile, markRead, subscribeRoom,
 } from '../api/chat';
+import { courseTypeLabel, formatTWTime } from '../utils/format';
 
 function fmtTime(iso) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  return d.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false });
+  return formatTWTime(iso);
 }
 
 function fmtSize(bytes) {
@@ -64,6 +63,13 @@ function MediaBubble({ m, mine }) {
       <FileMeta m={m} light={mine} />
     </div>
   );
+}
+
+function senderLabel(m) {
+  if (m.sender_display_name) return m.sender_display_name;
+  if (m.sender_type === 'coach') return '教練';
+  if (m.sender_type === 'parent') return '家長';
+  return '系統';
 }
 
 export default function ChatRoomPage() {
@@ -136,6 +142,15 @@ export default function ChatRoomPage() {
       : `${room.coach?.name || '教練'} 教練`;
   }, [room, role]);
 
+  const roomSubtitle = useMemo(() => {
+    if (!room) return '';
+    return [
+      room.course_type ? courseTypeLabel(room.course_type) : '',
+      room.venue?.name || '',
+      role === 'coach' ? '' : (room.student_names || []).join('、'),
+    ].filter(Boolean).join(' · ');
+  }, [room, role]);
+
   async function handleSend(e) {
     e.preventDefault();
     const v = text.trim();
@@ -174,7 +189,7 @@ export default function ChatRoomPage() {
         </button>
         <div className="flex-1 truncate">
           <div className="truncate text-sm font-bold text-brand-primary">{peerName}</div>
-          {room && <div className="truncate text-[11px] text-gray-500">{room.venue?.name}</div>}
+          {room && <div className="truncate text-[11px] text-gray-500">{roomSubtitle}</div>}
         </div>
       </header>
 
@@ -187,6 +202,9 @@ export default function ChatRoomPage() {
               <div className={`max-w-[78%] rounded-2xl px-3 py-2 text-sm shadow-sm ${
                 mine ? 'bg-brand-teal text-white' : 'bg-white text-gray-800'
               }`}>
+                <div className={`mb-1 truncate text-[11px] font-bold ${mine ? 'text-white/80' : 'text-brand-primary'}`}>
+                  {senderLabel(m)}
+                </div>
                 {m.message_type === 'text'
                   ? <span className="whitespace-pre-wrap break-words">{m.content}</span>
                   : <MediaBubble m={m} mine={mine} />}

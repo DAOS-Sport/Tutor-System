@@ -239,9 +239,24 @@ CREATE TABLE IF NOT EXISTS checkin_records (
   course_session_id UUID NOT NULL REFERENCES course_sessions(id) ON DELETE CASCADE,
   student_id UUID NOT NULL REFERENCES students(id) ON DELETE RESTRICT,
   is_auto_linked BOOLEAN NOT NULL DEFAULT FALSE,
+  checked_in_source VARCHAR(20) NOT NULL DEFAULT 'parent',
+  checked_in_by_parent_id UUID REFERENCES parents(id),
+  checked_in_by_coach_id UUID REFERENCES coaches(id),
   checked_in_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE(course_session_id, student_id)
 );
+DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS checked_in_source VARCHAR(20) NOT NULL DEFAULT 'parent'; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS checked_in_by_parent_id UUID REFERENCES parents(id); EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS checked_in_by_coach_id UUID REFERENCES coaches(id); EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_name = 'checkin_records'
+       AND column_name = 'checked_in_by_student_id'
+  ) THEN
+    ALTER TABLE checkin_records ALTER COLUMN checked_in_by_student_id DROP NOT NULL;
+  END IF;
+EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
 -- ─── Phase 4: 聊天室 / 訊息 / 關鍵字警示 ───────────────────────────────
 DO $$ BEGIN CREATE TYPE alert_status AS ENUM ('pending','reviewed','no_issue','resolved'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;

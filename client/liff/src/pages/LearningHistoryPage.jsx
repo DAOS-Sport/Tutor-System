@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { historyApi } from '../api/learn';
-import { formatTWDate } from '../utils/format';
+import { courseTypeLabel, formatTWDate } from '../utils/format';
 
 function Field({ title, body }) {
   if (!body) return null;
@@ -22,16 +22,17 @@ const STUDENT_FIELDS = [
   { key: 'notes', title: '備註' },
 ];
 
-function StudentRecords({ data }) {
+function StudentRecords({ data, selectedStudent }) {
   const rows = data?.mode === 'individual' && data.records && typeof data.records === 'object'
     ? Object.entries(data.records).filter(([, rec]) => rec && Object.values(rec).some(Boolean))
     : [];
-  if (rows.length === 0) return null;
+  const visibleRows = selectedStudent ? rows.filter(([name]) => name === selectedStudent) : rows;
+  if (visibleRows.length === 0) return null;
   return (
     <div className="mt-3 border-t border-dashed border-gray-200 pt-3">
       <div className="text-[11px] font-bold text-brand-primary">個別學員紀錄</div>
       <div className="mt-2 space-y-2">
-        {rows.map(([name, rec]) => (
+        {visibleRows.map(([name, rec]) => (
           <div key={name} className="rounded-lg bg-brand-teal/5 px-3 py-2">
             <div className="text-xs font-bold text-brand-teal">{name}</div>
             {STUDENT_FIELDS.map((f) => <Field key={f.key} title={f.title} body={rec[f.key]} />)}
@@ -47,6 +48,7 @@ export default function LearningHistoryPage() {
   const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
+  const [selectedStudent, setSelectedStudent] = useState('');
 
   useEffect(() => {
     let alive = true;
@@ -66,19 +68,50 @@ export default function LearningHistoryPage() {
   }
   if (!data) return <div className="px-4 py-6"><LoadingSpinner label="載入中…" /></div>;
 
-  const { plan, records } = data;
+  const { period, plan, records } = data;
+  const studentNames = period?.student_names || [];
 
   return (
     <div className="mx-auto max-w-md px-4 py-4 print:max-w-none print:py-2">
       <button onClick={() => navigate(-1)} className="mb-3 text-sm text-brand-teal active:opacity-60 print:hidden">‹ 返回</button>
 
-      <header className="mb-3 flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold text-brand-primary">學習歷程</h1>
-          <p className="mt-1 text-xs text-gray-500">F-S06 / 點右側按鈕可列印或匯出 PDF</p>
+      <header className="mb-3 rounded-2xl border border-brand-primary/15 bg-white p-4 shadow-sm">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-xl font-bold text-brand-primary">學習歷程</h1>
+            {period && (
+              <p className="mt-1 text-xs leading-5 text-gray-500">
+                {period.coach_name || '教練'} · {period.venue_name || period.venue_id || '場館'} · {courseTypeLabel(period.course_type)}
+              </p>
+            )}
+            {studentNames.length > 0 && (
+              <p className="mt-0.5 truncate text-xs text-gray-500">學員：{studentNames.join('、')}</p>
+            )}
+          </div>
+          <button onClick={() => window.print()} className="shrink-0 rounded-full bg-brand-primary/10 px-3 py-1.5 text-xs font-bold text-brand-primary print:hidden">列印</button>
         </div>
-        <button onClick={() => window.print()} className="rounded-full bg-brand-primary/10 px-3 py-1.5 text-xs font-bold text-brand-primary print:hidden">列印</button>
+        {period && (
+          <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-gray-600">
+            <div className="rounded-lg bg-gray-50 px-3 py-2">堂數 {period.used_sessions || 0}/{period.total_sessions || 0}</div>
+            <div className="rounded-lg bg-gray-50 px-3 py-2">到期 {period.expires_at ? formatTWDate(period.expires_at) : '—'}</div>
+          </div>
+        )}
       </header>
+
+      {studentNames.length > 1 && (
+        <div className="mb-3 flex gap-2 overflow-x-auto pb-1 print:hidden">
+          <button type="button" onClick={() => setSelectedStudent('')}
+            className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-bold ${!selectedStudent ? 'border-brand-primary bg-brand-primary text-white' : 'border-gray-200 bg-white text-gray-600'}`}>
+            全部
+          </button>
+          {studentNames.map((name) => (
+            <button key={name} type="button" onClick={() => setSelectedStudent(name)}
+              className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-bold ${selectedStudent === name ? 'border-brand-primary bg-brand-primary text-white' : 'border-gray-200 bg-white text-gray-600'}`}>
+              {name}
+            </button>
+          ))}
+        </div>
+      )}
 
       {plan ? (
         <section className="rounded-2xl border border-brand-primary/15 bg-white p-4 shadow-sm">
@@ -115,7 +148,7 @@ export default function LearningHistoryPage() {
               <Field title="待加強" body={r.improvements} />
               <Field title="回家練習" body={r.homework} />
               <Field title="備註" body={r.notes} />
-              <StudentRecords data={r.student_records} />
+              <StudentRecords data={r.student_records} selectedStudent={selectedStudent} />
               {r.tags?.length > 0 && (
                 <p className="mt-2 flex flex-wrap gap-1 text-[11px]">
                   {r.tags.map((t) => (

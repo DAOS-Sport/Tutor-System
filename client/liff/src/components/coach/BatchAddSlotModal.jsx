@@ -1,19 +1,19 @@
 import React, { useState } from 'react';
 import { slotsApi } from '../../api/slots';
+import { addDaysToTaipeiYMD, todayTaipeiYMD } from '../../utils/format';
 
 const WEEKDAYS = [
   { v: 0, label: '日' }, { v: 1, label: '一' }, { v: 2, label: '二' },
   { v: 3, label: '三' }, { v: 4, label: '四' }, { v: 5, label: '五' }, { v: 6, label: '六' },
 ];
 
-function todayStr() { const d = new Date(); return d.toISOString().slice(0, 10); }
-function plusDaysStr(n) { const d = new Date(); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); }
+function plusDaysStr(n) { return addDaysToTaipeiYMD(todayTaipeiYMD(), n); }
 
 /**
  * 批量新增槽位（範圍 + 星期 + 時段陣列）
  */
 export default function BatchAddSlotModal({ coachId, venueIds, onClose, onDone, onError }) {
-  const [from, setFrom] = useState(todayStr());
+  const [from, setFrom] = useState(todayTaipeiYMD());
   const [to, setTo] = useState(plusDaysStr(13));
   const [weekdays, setWeekdays] = useState([1, 3, 5]);
   const [times, setTimes] = useState(['14:00', '15:00', '16:00']);

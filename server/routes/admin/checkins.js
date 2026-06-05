@@ -40,6 +40,7 @@ router.get('/', requireAdminAuth, async (req, res) => {
     const recSql = `
       SELECT cr.id            AS checkin_id,
              cr.checked_in_at AS at,
+             cr.checked_in_source AS source,
              cs.id            AS session_id,
              cp.venue_id      AS venue_id,
              v.name           AS venue_name,
@@ -64,6 +65,7 @@ router.get('/', requireAdminAuth, async (req, res) => {
     const expSql = `
       SELECT ae.id || ':' || extract(epoch from ae.experience_checked_in_at)::bigint AS checkin_id,
              ae.experience_checked_in_at AS at,
+             'staff'::text               AS source,
              NULL::uuid                  AS session_id,
              ae.venue_id                 AS venue_id,
              v.name                      AS venue_name,
@@ -90,6 +92,7 @@ router.get('/', requireAdminAuth, async (req, res) => {
         course_type: Number(r.course_type) || null,
         coach: r.coach_name || '',
         student: r.student_name || '',
+        source: r.source || null,
       }))
       .sort((a, b) => (a.at < b.at ? 1 : -1));
     res.json(all);

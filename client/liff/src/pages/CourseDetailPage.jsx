@@ -96,6 +96,10 @@ export default function CourseDetailPage() {
               {(course.coach || '—')}{v.name ? ` · ${v.name}` : ''}
             </h1>
             <p className="mt-0.5 truncate text-xs text-gray-500">學員：{studentNames || '—'}</p>
+            <p className="mt-1 truncate font-mono text-[11px] text-gray-400">訂單編號：{course.id}</p>
+            {course.group_order_id && (
+              <p className="mt-0.5 truncate font-mono text-[11px] text-gray-400">團購單號：{course.group_order_id}</p>
+            )}
           </div>
           <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-bold ${meta.cls}`}>
             {meta.label}
@@ -114,7 +118,7 @@ export default function CourseDetailPage() {
         </div>
 
         <div className="mt-3 flex items-baseline justify-between border-t border-gray-100 pt-2 text-xs text-gray-500">
-          <span>實付金額</span>
+          <span>實付金額{course.period_count > 1 ? ` · ${course.period_count} 期` : ''}</span>
           <span className="text-base font-bold text-brand-primary">{formatTWD(course.final_price)}</span>
         </div>
       </div>

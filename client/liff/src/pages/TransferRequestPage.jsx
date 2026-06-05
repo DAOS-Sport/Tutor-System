@@ -5,6 +5,7 @@ import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import { coursesApi } from '../api/courses';
 import { transfersApi } from '../api/transfers';
+import { courseTypeLabel, formatTWDate, formatTWD } from '../utils/format';
 
 export default function TransferRequestPage() {
   const navigate = useNavigate();
@@ -58,11 +59,22 @@ export default function TransferRequestPage() {
               <option value="">請選擇…</option>
               {periods.map((p) => (
                 <option key={p.id} value={p.course_period_id}>
-                  {p.coach?.name || p.coach_name} 教練・1對{p.course_type}・剩 {p.total_sessions - p.used_sessions} 堂
+                  {p.coach?.name || p.coach_name} 教練・{courseTypeLabel(p.course_type)}・訂單 {p.id}
                 </option>
               ))}
             </select>
           </Field>
+          {selected && (
+            <div className="rounded-xl border border-brand-primary/10 bg-brand-primary/5 p-3 text-xs leading-5 text-gray-600">
+              <div className="font-bold text-brand-primary">轉出課程摘要</div>
+              <div className="mt-1 font-mono">訂單編號：{selected.id}</div>
+              {selected.group_order_id && <div className="font-mono">團購單號：{selected.group_order_id}</div>}
+              <div>{selected.coach?.name || selected.coach_name} 教練 · {selected.venue?.name || selected.venue_id}</div>
+              <div>{courseTypeLabel(selected.course_type)} · 剩餘 {Math.max(0, Number(selected.total_sessions || 0) - Number(selected.used_sessions || 0))} 堂</div>
+              <div>到期：{formatTWDate(selected.expires_at)}</div>
+              <div>實付：{formatTWD(selected.final_price)}</div>
+            </div>
+          )}
           {students.length > 0 && (
             <Field label="轉出學員">
               <select required value={form.from_student_id} className="input"
