@@ -63,6 +63,21 @@ export default function GroupJoinPage() {
   }
   if (preview.already_member) return <LoadingSpinner fullPage label="前往團購狀態…" />;
 
+  // 人數已滿 → 顯示「該團已滿」並隱藏所有資訊。上限一律取後端 max_students（勿寫死數字）。
+  const maxStudents = Number(preview.max_students) || 0;
+  const isFull = maxStudents > 0 && Number(preview.total_students || 0) >= maxStudents;
+  if (isFull) {
+    return (
+      <div className="px-4 py-10 text-center">
+        <div className="mb-3 text-3xl">🈵</div>
+        <h3 className="text-sm font-bold text-gray-700">該團已滿</h3>
+        <p className="mt-1 text-xs text-gray-500">此團購人數已達上限，無法再加入。</p>
+        <button type="button" onClick={() => navigate('/', { replace: true })}
+          className="mt-4 rounded-lg bg-brand-primary px-4 py-2 text-sm font-bold text-white">回首頁</button>
+      </div>
+    );
+  }
+
   function goLoginAndJoin() {
     setAfterAuth(`/group/join/${token}`);
     navigate('/login', { state: { from: { pathname: `/group/join/${token}` } } });

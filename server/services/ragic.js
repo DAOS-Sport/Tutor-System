@@ -528,13 +528,34 @@ async function resolveParentRagicRecord(parent) {
     err.code = 'PARENT_PHONE_REQUIRED';
     throw err;
   }
+  // 先用手機查既有家長（“先去打表單的值”）；查不到才在 Ragic 建立 Z01 家長主檔，
+  // 讓「每次編輯都能同步回 Ragic」不因家長尚未入 Ragic（例如後台直建 / demo 帳號）而中斷。
   const record = await getParentByPhone(phone);
-  if (!record?._ragicId) {
-    const err = new Error('找不到家長 Ragic Z01 記錄，無法同步');
-    err.code = 'PARENT_RAGIC_NOT_FOUND';
+  if (record?._ragicId) return record._ragicId;
+  return await createParentRagicRecord(parent);
+}
+
+// 在 Ragic 建立家長 Z01 主檔（補齊 INVALID 必填欄位 placeholder），回傳新 record id。
+async function createParentRagicRecord(parent) {
+  const payload = {
+    [FIELD.Z01.PARENT_NAME]:   parent?.name || '',
+    [FIELD.Z01.PHONE]:         String(parent?.phone || '').trim(),
+    [FIELD.Z01.IDENTITY]:      parent?.identity || '一般身分',
+    [FIELD.Z01.VENUE]:         parent?.primary_venue_id || '待補登',
+    [FIELD.Z01.LINE_CHAT_URL]: '待補登',
+  };
+  if (parent?.gender) payload[FIELD.Z01.GENDER] = parent.gender;
+  if (parent?.email)  payload[FIELD.Z01.EMAIL]  = parent.email;
+  const data = await postRagicStrict(process.env.RAGIC_FORM_Z01, payload);
+  _cacheInvalidate('z01:');
+  const id = data?.ragicId || data?._ragicId
+    || (data?.data && typeof data.data === 'object' && (data.data._ragicId || data.data.ragicId)) || null;
+  if (!id) {
+    const err = new Error('建立家長 Ragic Z01 未取得 record id');
+    err.code = 'PARENT_RAGIC_CREATE_FAILED';
     throw err;
   }
-  return record._ragicId;
+  return String(id);
 }
 
 function buildZ01StudentPayload(student, rowIndex) {
@@ -575,11 +596,11 @@ async function updateStudentInParentSubtable({ ragicRecordId, student }) {
   if (!ragicRecordId) throw new Error('ragicRecordId 必填');
   if (!student?.name) throw new Error('student.name 必填');
   const z01Record = await getParentRecordByRagicId(ragicRecordId);
-  const rowIndex = findZ01StudentRowIndex(z01Record, student);
+  let rowIndex = findZ01StudentRowIndex(z01Record, student);
   if (rowIndex == null) {
-    const err = new Error('找不到 Z01 學員子表格列，無法更新');
-    err.code = 'Z01_STUDENT_ROW_NOT_FOUND';
-    throw err;
+    // 子表格找不到對應列（學員尚未寫進 Z01、或無 id_number/編號 可比對）→ 視為新列附加，
+    // 索引取目前列數（與新增流程 buildZ01StudentPayload(startIndex) 一致），避免整筆編輯被擋掉。
+    rowIndex = (parseZ01Students(z01Record) || []).length;
   }
   const raw = await postRagicStrict(
     _recordPath(process.env.RAGIC_FORM_Z01, ragicRecordId),

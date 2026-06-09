@@ -97,15 +97,6 @@ export default function GroupStatusPage() {
     }
   }
 
-  async function copyOrderId() {
-    try {
-      await navigator.clipboard.writeText(order.id);
-      toast.success('團購單號已複製');
-    } catch {
-      toast.error('複製失敗，請手動複製');
-    }
-  }
-
   async function copyAccount() {
     try {
       await navigator.clipboard.writeText(v.account_number || '');
@@ -189,16 +180,6 @@ export default function GroupStatusPage() {
           目前 <span className="font-bold text-brand-primary">{order.total_students}</span> 人
           <span className="text-gray-400">（開團需 {order.min_students}–{order.max_students} 人）</span>
         </p>
-        <div className="mt-2 flex items-center gap-2 rounded-lg bg-gray-50 px-3 py-2">
-          <div className="min-w-0 flex-1">
-            <div className="text-[11px] text-gray-500">團購單號</div>
-            <div className="truncate font-mono text-xs font-bold text-brand-primary">{order.id}</div>
-          </div>
-          <button type="button" onClick={copyOrderId}
-            className="shrink-0 rounded-lg border border-brand-teal px-3 py-1.5 text-xs font-bold text-brand-teal">
-            複製
-          </button>
-        </div>
         <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-gray-100">
           <div className={`h-full rounded-full transition-all ${reachedMin ? 'bg-brand-green' : 'bg-brand-gold'}`}
             style={{ width: `${Math.min(100, Math.round((order.total_students / order.max_students) * 100))}%` }} />
@@ -208,17 +189,6 @@ export default function GroupStatusPage() {
           <p className="mt-2 rounded-lg bg-brand-error/5 px-2 py-1 text-xs text-brand-error">退回原因：{order.reject_reason}</p>
         )}
       </div>
-
-      <NextActionBlock
-        order={order}
-        reachedMin={reachedMin}
-        allPaymentConfirmed={allPaymentConfirmed}
-        selfMember={selfMember}
-        selfPaymentReady={selfPaymentReady}
-        missingPaymentCount={missingPaymentCount}
-        onGoCourses={() => navigate('/my-courses')}
-        onSubmit={() => setConfirm('submit')}
-      />
 
       {order.is_leader && order.status === 'forming' && joinUrl && (
         <div className="mb-4 rounded-xl border border-brand-teal/30 bg-brand-teal/5 p-3">
@@ -349,6 +319,18 @@ export default function GroupStatusPage() {
         </p>
       </div>
 
+      {/* 下一步行動模組：移到取消團購上方 */}
+      <NextActionBlock
+        order={order}
+        reachedMin={reachedMin}
+        allPaymentConfirmed={allPaymentConfirmed}
+        selfMember={selfMember}
+        selfPaymentReady={selfPaymentReady}
+        missingPaymentCount={missingPaymentCount}
+        onGoCourses={() => navigate('/my-courses')}
+        onSubmit={() => setConfirm('submit')}
+      />
+
       {(order.is_leader && order.status === 'forming') || canCancelGroup ? (
         <div className="mt-4 space-y-2">
           {order.is_leader && order.status === 'forming' && (
@@ -416,7 +398,7 @@ function NextActionBlock({
     if (order.is_leader) {
       title = reachedMin ? '人數已達標，可以送審' : '先邀請其他家長加入';
       body = reachedMin
-        ? '送審後名單鎖定，各家接著在此頁填付款資料待核對。'
+        ? ''
         : `還差 ${Math.max(0, order.min_students - order.total_students)} 人成團，用下方連結邀請家長加入。`;
       primary = reachedMin
         ? { label: '送審並鎖定名單', onClick: onSubmit }
@@ -459,7 +441,7 @@ function NextActionBlock({
   return (
     <div className={`mb-4 rounded-xl border px-3 py-3 ${toneClass}`}>
       <div className="text-sm font-bold">{title}</div>
-      <p className="mt-1 text-xs leading-5 text-gray-600">{body}</p>
+      {body && <p className="mt-1 text-xs leading-5 text-gray-600">{body}</p>}
       {primary && (
         <button
           type="button"
