@@ -82,10 +82,14 @@ BEGIN
   WHERE NOT EXISTS (SELECT 1 FROM coaches WHERE ragic_employee_id = v_coach2_eid);
   SELECT id INTO v_coach2 FROM coaches WHERE ragic_employee_id = v_coach2_eid;
 
-  -- coach_venues（B）
+  -- coach_venues（教練1 給多場館 B+C，驗證「可教場館」完整顯示陣列；教練2 維持單一 B）
   INSERT INTO coach_venues (coach_id, venue_id)
   SELECT v_coach1, v_venue
   WHERE NOT EXISTS (SELECT 1 FROM coach_venues WHERE coach_id = v_coach1 AND venue_id = v_venue);
+  INSERT INTO coach_venues (coach_id, venue_id)
+  SELECT v_coach1, 'C'
+  WHERE EXISTS (SELECT 1 FROM venues WHERE id = 'C')
+    AND NOT EXISTS (SELECT 1 FROM coach_venues WHERE coach_id = v_coach1 AND venue_id = 'C');
   INSERT INTO coach_venues (coach_id, venue_id)
   SELECT v_coach2, v_venue
   WHERE NOT EXISTS (SELECT 1 FROM coach_venues WHERE coach_id = v_coach2 AND venue_id = v_venue);

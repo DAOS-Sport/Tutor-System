@@ -12,6 +12,7 @@ const COURSE_TYPES = [
   { type: 1, title: '1 對 1 個別教學', subtitle: '一位學員專屬教練', description: '完全客製化進度，最高效率提升技術。', basePrice: 9000 },
   { type: 2, title: '1 對 2 雙人班', subtitle: '與好友共學', description: '兩位學員共享教練，互相切磋學習。', basePrice: 6000 },
   { type: 3, title: '1 對 3 小團班', subtitle: '小組同訓', description: '三位學員精緻小班，氣氛輕鬆活潑。', basePrice: 4500 },
+  { type: 4, title: '1 對 4-6 團體班', subtitle: '4~6 人共學', description: '多人團體課，依單人價計費、人數越多越划算。', basePrice: 3000 },
 ];
 
 export default function HomePage() {
@@ -61,8 +62,8 @@ export default function HomePage() {
       <div className="mb-5 grid grid-cols-2 gap-2">
         <button type="button" onClick={() => navigate('/my-lessons')}
           className="rounded-2xl border border-brand-teal/30 bg-white p-3 text-left active:bg-brand-teal/5">
-          <div className="text-sm font-bold text-brand-teal">📋 上課記錄</div>
-          <div className="mt-0.5 text-[11px] text-gray-500">查看出席與教練筆記</div>
+          <div className="text-sm font-bold text-brand-teal">📋 上課記錄/簽到</div>
+          <div className="mt-0.5 text-[11px] text-gray-500">出席、簽到與教練筆記</div>
         </button>
         <button type="button" onClick={() => navigate('/transfer/new')}
           className="rounded-2xl border border-brand-primary/20 bg-white p-3 text-left active:bg-gray-50">

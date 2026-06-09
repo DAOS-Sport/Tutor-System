@@ -22,7 +22,7 @@ export default function CourseCard({ variant = 'period', period, type, onClick, 
           <p className="mb-3 text-sm text-gray-600">{type.description}</p>
           <div className="mb-3 flex items-baseline justify-between">
             <span className="text-xs text-gray-500">每期 6 堂</span>
-            <span className="text-lg font-bold text-brand-primary">起 {formatTWD(type.basePrice)}</span>
+            <span className="text-lg font-bold text-brand-primary">{formatTWD(type.basePrice)}/人</span>
           </div>
           <div className="w-full rounded-lg bg-brand-teal py-2.5 text-center text-sm font-bold text-white">
             {ctaLabel}

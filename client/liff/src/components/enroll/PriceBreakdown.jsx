@@ -2,13 +2,14 @@ import React from 'react';
 import { Section, Row } from './EnrollmentParts';
 import { formatTWD } from '../../utils/format';
 
-export default function PriceBreakdown({ pricing, multiplier }) {
-  const qtyLabel = `${pricing.studentCount} 生${pricing.periodCount > 1 ? ` × ${pricing.periodCount} 期` : ''}`;
+export default function PriceBreakdown({ pricing, multiplier, isSenior }) {
+  const qtyLabel = `${pricing.studentCount} 位${pricing.periodCount > 1 ? ` × ${pricing.periodCount} 期` : ''}`;
+  const pct = Math.round((multiplier || 1) * 100);
   return (
     <Section title="費用明細">
       <Row label="原始費用（單期單生）" value={formatTWD(pricing.base)} />
       <Row
-        label={`套用係數 ${Math.round((multiplier || 1) * 100)}%`}
+        label={`${isSenior ? '資深教練' : '套用係數'} ${pct}%`}
         value={formatTWD(pricing.unitPrice)}
       />
       <Row label={`數量（${qtyLabel}）`} value={`小計 ${formatTWD(pricing.subtotal)}`} />

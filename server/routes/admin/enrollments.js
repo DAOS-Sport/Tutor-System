@@ -47,15 +47,19 @@ async function ensureGroupCoursePeriod(client, enrollment, totalSessions) {
     return;
   }
 
-  // 團報課程必須等所有成員的付款對帳都完成，才建立共用 course_period。
+  // 訂單依期數拆分：團報每期各自一個 course_period。守門與開通都以「同一期」為範圍，
+  // 讓第 1 期在全員第 1 期付清時即開課，與其他期獨立。
+  const periodNumber = Number(enrollment.period_number) || 1;
+
+  // 團報課程必須等「本期」所有成員的付款對帳都完成，才建立該期共用 course_period。
   // reconcile 會先把本筆 admin_enrollments.status 更新為 confirmed，再呼叫此函式；
-  // 同一交易內查詢能看到本筆最新狀態，因此可用來當整團開通守門。
+  // 同一交易內查詢能看到本筆最新狀態，因此可用來當該期開通守門。
   const groupEnrollments = await client.query(
     `SELECT id, status, final_price
        FROM admin_enrollments
-      WHERE group_order_id = $1
+      WHERE group_order_id = $1 AND period_number = $2
       ORDER BY submitted_at, id`,
-    [groupOrderId]
+    [groupOrderId, periodNumber]
   );
   if (!groupEnrollments.rowCount) return;
   // 已取消/已退費的成員不算「仍在等」——否則團裡只要有一家退費，整團課程永遠建不起來。
@@ -91,24 +95,27 @@ async function ensureGroupCoursePeriod(client, enrollment, totalSessions) {
   const groupTotalPrice = confirmed.reduce((sum, row) => sum + (Number(row.final_price) || 0), 0)
     || (Number(enrollment.final_price) || 0);
 
-  // get-or-create 共用 period（並發對帳同團多筆時，ON CONFLICT 收斂到同一個 period）
+  // get-or-create「本期」共用 period（並發對帳同團同期多筆時，ON CONFLICT 收斂到同一個 period）
   const ins = await client.query(
     `INSERT INTO course_periods
        (coach_id, venue_id, course_type, total_sessions, used_sessions,
-        expires_at, original_price, final_price, status, admin_enrollment_id, group_order_id)
-     VALUES ($1,$2,$3,$4,0,(NOW() + ($5 || ' days')::interval)::date,$6,$6,'active',$7,$8)
-     ON CONFLICT (group_order_id) WHERE group_order_id IS NOT NULL
+        expires_at, original_price, final_price, status, admin_enrollment_id, group_order_id, period_number)
+     VALUES ($1,$2,$3,$4,0,(NOW() + ($5 || ' days')::interval)::date,$6,$6,'active',$7,$8,$9)
+     ON CONFLICT (group_order_id, period_number) WHERE group_order_id IS NOT NULL
      DO NOTHING
      RETURNING id`,
     [
       enrollment.coach_id, enrollment.venue_id, enrollment.course_type, totalSessions,
       String(365 * (Number(enrollment.period_count) || 1)),
-      groupTotalPrice, enrollment.id, groupOrderId,
+      groupTotalPrice, enrollment.id, groupOrderId, periodNumber,
     ]
   );
   let periodId = ins.rows[0]?.id;
   if (!periodId) {
-    const ex = await client.query(`SELECT id FROM course_periods WHERE group_order_id = $1`, [groupOrderId]);
+    const ex = await client.query(
+      `SELECT id FROM course_periods WHERE group_order_id = $1 AND period_number = $2`,
+      [groupOrderId, periodNumber]
+    );
     periodId = ex.rows[0]?.id || null;
   }
   if (!periodId) return; // 理論上不會發生；保險

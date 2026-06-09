@@ -15,6 +15,7 @@ export default function CoachProfilePage() {
   const [media, setMedia] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [venueMap, setVenueMap] = useState({}); // venue id → 名稱
+  const [freshVenueIds, setFreshVenueIds] = useState(null); // 掛載時重抓，避免 localStorage 舊快取把多場館收斂成單一值
 
   useEffect(() => {
     if (!coach?.id) return;
@@ -23,6 +24,10 @@ export default function CoachProfilePage() {
     coachesApi.listMedia(coach.id)
       .then((d) => alive && setMedia(d || []))
       .catch(() => alive && setMedia([]));
+    // 重新抓取教練完整 profile（含最新 venue_ids），不只信 AuthContext 的 localStorage 快取
+    coachesApi.detail(coach.id)
+      .then((c) => { if (alive && c && Array.isArray(c.venue_ids)) setFreshVenueIds(c.venue_ids); })
+      .catch(() => { /* 失敗則退回快取的 coach.venue_ids */ });
     // 載入場館 id→名稱對照，讓「可教場館」顯示名稱而非代碼（B → 新北高中）
     venuesApi.list()
       .then((vs) => { if (alive && Array.isArray(vs)) setVenueMap(Object.fromEntries(vs.map((v) => [v.id, v.name]))); })
@@ -30,7 +35,11 @@ export default function CoachProfilePage() {
     return () => { alive = false; };
   }, [coach?.id]);
 
-  const venueLabel = (coach?.venue_ids || []).map((id) => venueMap[id] || id).join(' / ') || '—';
+  // [可教場館診斷] 對照快取 vs 重抓的 venue_ids（與 server log 對照，定位陣列在哪層被收斂成單一值）
+  console.log('[CoachProfile] venue_ids cached =', coach?.venue_ids, ' fresh =', freshVenueIds);
+  // 優先用重抓到的最新陣列；失敗才退回快取，避免舊登入快取顯示不全。
+  const venueIds = freshVenueIds || coach?.venue_ids || [];
+  const venueLabel = venueIds.map((id) => venueMap[id] || id).join(' / ') || '—';
 
   async function handleSaveBio() {
     if (savingBio) return;

@@ -44,11 +44,15 @@ export default function GroupCreatePage() {
   const venueId = params.get('venue') || '';
   const coachId = params.get('coach') || '';
   const courseType = Number(params.get('courseType') || 2);
+  // 由報名頁帶入的已選值（組別已在 courseType；這裡再帶期數與學員）——URL 帶值優先於後端草稿。
+  const carriedPeriod = Number(params.get('period') || 0);
+  const carriedStudentIds = (params.get('students') || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const hasCarried = carriedPeriod > 0 || carriedStudentIds.length > 0;
 
-  const [fields, setFields] = useState({ studentIds: [], newStudents: [], proofUrl: '' });
+  const [fields, setFields] = useState({ studentIds: carriedStudentIds, newStudents: [], proofUrl: '' });
   const [submitting, setSubmitting] = useState(false);
   const [note, setNote] = useState('');
-  const [periodCount, setPeriodCount] = useState(1);
+  const [periodCount, setPeriodCount] = useState(carriedPeriod >= 1 && carriedPeriod <= 6 ? carriedPeriod : 1);
 
   // 草稿自動暫存控制：hydrated 後才開始存；lastSaved 去重，避免重複 PUT。
   const hydratedRef = useRef(false);
@@ -67,9 +71,10 @@ export default function GroupCreatePage() {
     }
   }, [courseType, coachId, venueId, navigate, toast]);
 
-  // 進頁面載入草稿並還原（1V1 不載入，因為會被導走）。
+  // 進頁面載入草稿並還原（1V1 不載入，因為會被導走）。URL 有帶入值時跳過還原（帶值優先）。
   useEffect(() => {
     if (courseType === 1) return;
+    if (hasCarried) { hydratedRef.current = true; return; }
     let alive = true;
     (async () => {
       try {

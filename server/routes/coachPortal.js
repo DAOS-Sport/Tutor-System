@@ -97,6 +97,8 @@ async function loadCoach(coachId) {
   if (!r.rowCount) return null;
   const coach = r.rows[0];
   coach.multiplier = Number(coach.pricing_multiplier);
+  // [可教場館診斷] 印出 DB 端完整 venue_ids 陣列，定位「只顯示新北」是資料/API/前端哪一層
+  console.log('[coach.venue_ids][db]', coachId, JSON.stringify(coach.venue_ids));
   return coach;
 }
 
@@ -105,6 +107,8 @@ async function issueLogin(coach) {
   const token = signCoachToken({ coachId: coach.id, phone: coach.phone, lineUid: coach.line_uid || null });
   const portalToken = await session.issue(coach.id, coach.line_uid);
   const { line_uid, ...safe } = coach;
+  // [可教場館診斷] 印出實際回給前端的 venue_ids
+  console.log('[coach.venue_ids][login-payload]', safe.id, JSON.stringify(safe.venue_ids));
   return { coach: safe, token, portalToken };
 }
 

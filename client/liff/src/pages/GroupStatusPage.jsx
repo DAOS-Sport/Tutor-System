@@ -39,7 +39,6 @@ export default function GroupStatusPage() {
   const [proofBusy, setProofBusy] = useState(false);
   const [transferLast5, setTransferLast5] = useState('');
   const [proofFile, setProofFile] = useState(null);
-  const [editingPayment, setEditingPayment] = useState(false);
   const proofInputRef = useRef(null);
 
   const load = useCallback(() => {
@@ -56,7 +55,6 @@ export default function GroupStatusPage() {
     if (self) {
       setTransferLast5(self.transfer_last_5 || '');
       setProofFile(null);
-      setEditingPayment(false);
     }
   }, [order?.id, order?.members]);
 
@@ -148,7 +146,6 @@ export default function GroupStatusPage() {
       });
       if (updated) setOrder(updated); else load();
       setProofFile(null);
-      setEditingPayment(false);
       toast.success('付款資料已送出，待櫃檯確認');
     } catch (e) {
       toast.error(e?.response?.data?.error || '送出失敗，請重試');
@@ -274,7 +271,8 @@ export default function GroupStatusPage() {
             const proofState = m.payment_confirmed
               ? { label: '✓ 帳款已確認', cls: 'text-brand-green' }
               : (m.has_payment_proof ? { label: '已上傳，待確認', cls: 'text-brand-gold' } : { label: '未上傳證明', cls: 'text-gray-400' });
-            const paymentLocked = m.is_self && (m.has_payment_proof || !!m.transfer_last_5) && !editingPayment;
+            // 末碼＋證明都送出後即唯讀（移除自行重編入口），需更改請聯繫櫃檯。
+            const paymentLocked = m.is_self && m.has_payment_proof && !!m.transfer_last_5;
             return (
               <div key={m.id} className="rounded-lg bg-gray-50 px-3 py-2">
                 <div className="flex items-center justify-between">
@@ -311,13 +309,7 @@ export default function GroupStatusPage() {
                       placeholder="轉帳末 5 碼"
                     />
                     {paymentLocked ? (
-                      <button
-                        type="button"
-                        onClick={() => setEditingPayment(true)}
-                        className="w-full rounded-lg border border-brand-teal bg-white px-3 py-2 text-xs font-bold text-brand-teal"
-                      >
-                        編輯付款資料
-                      </button>
+                      <p className="text-[11px] text-gray-400">已送出，需更改請聯繫櫃檯。</p>
                     ) : (
                       <>
                         <input

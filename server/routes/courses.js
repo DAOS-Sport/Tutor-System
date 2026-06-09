@@ -332,6 +332,10 @@ router.post('/:id/payment-proof', requireParent, async (req, res) => {
     if (row.status !== 'pending_payment') {
       return res.status(409).json({ error: '此報名狀態無法再上傳證明', code: 'NOT_PENDING' });
     }
+    // 末碼＋證明皆已送出 → 鎖定唯讀，家長不可自行重編（需聯繫櫃檯）。
+    if (row.transfer_last_5 && row.payment_proof_url) {
+      return res.status(409).json({ error: '付款資料已送出，如需更改請聯繫櫃檯', code: 'PAYMENT_LOCKED' });
+    }
     if (!url && !row.payment_proof_url && !last5) {
       return res.status(400).json({ error: '請填寫轉帳末 5 碼或上傳匯款／轉帳證明', code: 'PAYMENT_INFO_REQUIRED' });
     }

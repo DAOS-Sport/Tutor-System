@@ -380,7 +380,18 @@ DO $$ BEGIN
   -- 團報：一團共用一個 course_period。對帳建課時以 group_order_id 做冪等 get-or-create
   -- （同團多位成員逐筆對帳時不會重複建 period）。一般報名此欄為 NULL。
   ALTER TABLE course_periods    ADD COLUMN IF NOT EXISTS group_order_id UUID;
-  CREATE UNIQUE INDEX IF NOT EXISTS uq_course_periods_group_order ON course_periods(group_order_id) WHERE group_order_id IS NOT NULL;
+  -- 訂單依期數拆分：course_periods 也記 period_number；團報一團 N 期 → 每期各自一個 period。
+  ALTER TABLE course_periods    ADD COLUMN IF NOT EXISTS period_number INTEGER NOT NULL DEFAULT 1;
+  -- 唯一鍵由單欄 (group_order_id) 改複合 (group_order_id, period_number)：
+  -- 既有同名單欄索引，CREATE IF NOT EXISTS 會直接略過、無法自動升級，故先 DROP 再重建。
+  -- 容錯（失敗只警告不中斷啟動，沿用本檔既有 pattern）：歷史資料一團一期、period_number 預設 1，不會撞重複。
+  BEGIN
+    DROP INDEX IF EXISTS uq_course_periods_group_order;
+    CREATE UNIQUE INDEX uq_course_periods_group_order
+      ON course_periods(group_order_id, period_number) WHERE group_order_id IS NOT NULL;
+  EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'uq_course_periods_group_order 複合索引重建失敗（可能有重複資料），略過: %', SQLERRM;
+  END;
   -- U11 一般報名橋：一般報名以 admin_enrollment_id 冪等 get-or-create 一個 course_period。
   -- 容錯建立：若正式環境已有重複 admin_enrollment_id 的歷史資料，索引建不起來也不中斷啟動
   --（橋本身用 check-then-insert，不硬依賴此索引；索引只是額外的唯一性兜底）。
@@ -410,6 +421,10 @@ DO $$ BEGIN
   --   total_sessions = sessions_per_period × period_count；既有資料預設 1 期，安全升級。
   ALTER TABLE group_orders      ADD COLUMN IF NOT EXISTS period_count INTEGER NOT NULL DEFAULT 1;
   ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS period_count INTEGER NOT NULL DEFAULT 1;
+  -- 訂單依期數拆分：每期一筆 admin_enrollments（period_count=1），period_number 標示第幾期；
+  -- 同次購買的 N 筆共用 enrollment_batch_id 供前端/後台成組顯示。既有資料預設 1/NULL，前向相容。
+  ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS period_number INTEGER NOT NULL DEFAULT 1;
+  ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS enrollment_batch_id UUID;
   -- U10：團報金流改流程——證明改「送審後各家自行上傳」，櫃檯「逐家確認帳款」+「核准名單」，
   --   兩者皆成立才自動建檔。成員層級記證明上傳時間 + 帳款確認狀態；訂單層級記名單核准狀態。
   ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS proof_uploaded_at   TIMESTAMPTZ;
@@ -1013,17 +1028,20 @@ const DEFAULT_THRESHOLDS = [
 
 async function seedCourseTypeConfigs() {
   const defaults = [
-    { course_type: 1, label: '一對一', max_students: 1, sort_order: 1, base_price: 9000 },
-    { course_type: 2, label: '一對二', max_students: 2, sort_order: 2, base_price: 6000 },
-    { course_type: 3, label: '一對三', max_students: 3, sort_order: 3, base_price: 4500 },
+    { course_type: 1, label: '一對一', max_students: 1, min_students: 1, sort_order: 1, base_price: 9000 },
+    { course_type: 2, label: '一對二', max_students: 2, min_students: 1, sort_order: 2, base_price: 6000 },
+    { course_type: 3, label: '一對三', max_students: 3, min_students: 1, sort_order: 3, base_price: 4500 },
+    // 1對4~6：單一級距，可 4–6 人。min_students=4 作為團報下限（normalize 不會降回 2）；
+    // base_price 為每人單價佔位（沿用遞減趨勢），後台「課程需求管理」可調整。
+    { course_type: 4, label: '1對4~6', max_students: 6, min_students: 4, sort_order: 4, base_price: 3000 },
   ];
   for (const d of defaults) {
     await pool.query(
-      `INSERT INTO course_type_configs (course_type, label, max_students, sort_order, base_price)
-       VALUES ($1,$2,$3,$4,$5)
+      `INSERT INTO course_type_configs (course_type, label, max_students, min_students, sort_order, base_price)
+       VALUES ($1,$2,$3,$4,$5,$6)
        ON CONFLICT (course_type) DO UPDATE SET base_price = EXCLUDED.base_price
        WHERE course_type_configs.base_price = 0`,
-      [d.course_type, d.label, d.max_students, d.sort_order, d.base_price]
+      [d.course_type, d.label, d.max_students, d.min_students, d.sort_order, d.base_price]
     );
   }
 }

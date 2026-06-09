@@ -28,7 +28,6 @@ export default function EnrollStatusPage() {
   const [proofBusy, setProofBusy] = useState(false);
   const [transferLast5, setTransferLast5] = useState('');
   const [proofFile, setProofFile] = useState(null);
-  const [editingPayment, setEditingPayment] = useState(false);
   const [cancelBusy, setCancelBusy] = useState(false);
   const proofInputRef = useRef(null);
 
@@ -45,7 +44,6 @@ export default function EnrollStatusPage() {
     if (enr) {
       setTransferLast5(enr.transfer_last_5 || '');
       setProofFile(null);
-      setEditingPayment(false);
     }
   }, [enr?.id, enr?.transfer_last_5, enr?.has_payment_proof]);
 
@@ -63,7 +61,9 @@ export default function EnrollStatusPage() {
   const meta = STATUS_META[enr.payment_status] || { label: enr.payment_status, cls: 'bg-gray-100 text-gray-500' };
   const v = enr.venue || {};
   const canUpload = enr.payment_status === 'pending_payment';
-  const paymentLocked = canUpload && (enr.has_payment_proof || !!enr.transfer_last_5) && !editingPayment;
+  // 末碼＋證明都送出後即唯讀（移除家長自行重編入口）；需更改請聯繫櫃檯。
+  // 用 AND（兩者皆備＝已送出）避免半填狀態被鎖死而無法補齊。
+  const paymentLocked = canUpload && enr.has_payment_proof && !!enr.transfer_last_5;
 
   async function copyAccount() {
     if (!v.account_number) {
@@ -108,7 +108,6 @@ export default function EnrollStatusPage() {
       });
       toast.success('付款資料已送出，待櫃台確認');
       setProofFile(null);
-      setEditingPayment(false);
       load();
     } catch (e) {
       toast.error(e?.response?.data?.error || '送出失敗，請重試');
@@ -197,14 +196,8 @@ export default function EnrollStatusPage() {
         ) : (
           <p className="mt-2 text-sm text-gray-500">尚未上傳。請先完成轉帳，再填末 5 碼並上傳證明。</p>
         )}
-        {canUpload && paymentLocked && (
-          <button
-            type="button"
-            onClick={() => setEditingPayment(true)}
-            className="mt-2 w-full rounded-lg border border-brand-teal py-2 text-sm font-bold text-brand-teal"
-          >
-            編輯付款資料
-          </button>
+        {paymentLocked && (
+          <p className="mt-1 text-[11px] text-gray-400">已送出，需更改請聯繫櫃檯。</p>
         )}
         {canUpload && !paymentLocked && (
           <>

@@ -690,12 +690,17 @@ router.post('/:id/my-proof', async (req, res) => {
       return res.status(409).json({ error: '送審後才可上傳付款資料', code: 'NOT_UPLOADABLE' });
     }
     const m = await pool.query(
-      `SELECT id, payment_confirmed FROM group_order_members WHERE group_order_id = $1 AND parent_id = $2`,
+      `SELECT id, payment_confirmed, transfer_last_5, payment_proof_url
+         FROM group_order_members WHERE group_order_id = $1 AND parent_id = $2`,
       [req.params.id, req.parent.id]
     );
     if (!m.rowCount) return res.status(403).json({ error: '您不是此團購的成員' });
     if (m.rows[0].payment_confirmed) {
       return res.status(409).json({ error: '櫃檯已確認您的帳款，如需更換請聯繫櫃檯', code: 'ALREADY_CONFIRMED' });
+    }
+    // 末碼＋證明皆已送出 → 鎖定唯讀，成員不可自行重編（需聯繫櫃檯）。
+    if (m.rows[0].transfer_last_5 && m.rows[0].payment_proof_url) {
+      return res.status(409).json({ error: '付款資料已送出，如需更改請聯繫櫃檯', code: 'PAYMENT_LOCKED' });
     }
     if (!proof && !last5) {
       return res.status(400).json({ error: '請填寫轉帳末 5 碼或上傳匯款／轉帳證明', code: 'PAYMENT_INFO_REQUIRED' });

@@ -311,20 +311,36 @@ export const mockDb = {
     return cp ? JSON.parse(JSON.stringify(courseDetailShape(cp))) : null;
   },
   createEnrollment: (payload) => {
-    const id = `CP${String(++_periodSeq).padStart(4, '0')}`;
-    const period = {
-      id, parent_id: payload.parent_id, coach: payload.coach, venue: payload.venue,
-      course_type: payload.course_type, students: payload.students,
-      total_sessions: 6, used_sessions: 0,
-      expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
-      original_price: payload.original_price, final_price: payload.final_price,
-      payment_status: 'pending_payment', transfer_last_5: payload.transfer_last_5,
-      payment_proof_url: payload.payment_proof_url || null,
-      period_count: payload.period_count || 1,
-      is_experience_course: false,
-    };
-    COURSE_PERIODS.push(period);
-    return JSON.parse(JSON.stringify(normalizeCoursePeriod(period)));
+    // 訂單依期數拆分：買 N 期 → 建 N 筆，每筆 1 期(6 堂)，與真實 API 回傳形狀一致。
+    const count = Math.min(6, Math.max(1, Number(payload.period_count) || 1));
+    const batchId = `MB${++_periodSeq}`;
+    const perOriginal = Math.round((Number(payload.original_price) || 0) / count);
+    const perFinal = Math.round((Number(payload.final_price) || 0) / count);
+    const created = [];
+    for (let i = 1; i <= count; i += 1) {
+      const id = `CP${String(++_periodSeq).padStart(4, '0')}`;
+      const period = {
+        id, parent_id: payload.parent_id, coach: payload.coach, venue: payload.venue,
+        course_type: payload.course_type, students: payload.students,
+        total_sessions: 6, used_sessions: 0,
+        expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+        original_price: perOriginal, final_price: perFinal,
+        payment_status: 'pending_payment', transfer_last_5: payload.transfer_last_5,
+        payment_proof_url: payload.payment_proof_url || null,
+        period_count: 1, period_number: i, enrollment_batch_id: batchId,
+        is_experience_course: false,
+      };
+      COURSE_PERIODS.push(period);
+      created.push(period);
+    }
+    const first = normalizeCoursePeriod(created[0]);
+    return JSON.parse(JSON.stringify({
+      ...first,
+      first_id: created[0].id,
+      batch_id: batchId,
+      count,
+      enrollment_ids: created.map((c) => c.id),
+    }));
   },
   uploadPaymentProofForCourse: (id, payload = {}) => {
     const cp = COURSE_PERIODS.find((x) => x.id === id);

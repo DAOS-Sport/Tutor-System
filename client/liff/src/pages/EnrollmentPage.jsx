@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { enrollmentsApi } from '../api/enrollments';
+import { courseTypesApi } from '../api/courseTypes';
 import LoadingSpinner from '../components/LoadingSpinner';
 import ConfirmModal from '../components/ConfirmModal';
 import CourseTypeSelector from '../components/enroll/CourseTypeSelector';
-import SelfStudentSelector from '../components/enroll/SelfStudentSelector';
+import StudentMultiSelect from '../components/enroll/StudentMultiSelect';
 import PriceBreakdown from '../components/enroll/PriceBreakdown';
 import EnrollmentSummary from '../components/enroll/EnrollmentSummary';
 import ErrorBlock from '../components/enroll/ErrorBlock';
@@ -30,6 +31,7 @@ export default function EnrollmentPage() {
   const [submitting, setSubmitting] = useState(false);
   const [couponInput, setCouponInput] = useState('');
   const [activeCoupon, setActiveCoupon] = useState('');
+  const [courseTypes, setCourseTypes] = useState(null); // 課程組別清單（含 max/min 學員數）
 
   // MGM：若有 pendingCoupon 對應同一教練，自動套用
   useEffect(() => {
@@ -44,6 +46,15 @@ export default function EnrollmentPage() {
     } catch { /* noop */ }
   }, [coachId]);
 
+  // 載入課程組別清單（給下拉選單顯示 + 推導目前組別的 max/min 學員數，1V4-6 需 4~6 人）
+  useEffect(() => {
+    let alive = true;
+    courseTypesApi.listActive()
+      .then((rows) => { if (alive) setCourseTypes(Array.isArray(rows) && rows.length ? rows : null); })
+      .catch(() => { if (alive) setCourseTypes(null); });
+    return () => { alive = false; };
+  }, []);
+
   const onBootError = useCallback((m) => toast.error(m), [toast]);
   const { bootData, bootError } = useEnrollmentBoot({
     coachId, venueId, courseType, onError: onBootError,
@@ -54,9 +65,12 @@ export default function EnrollmentPage() {
     setSelectedSelfStudents([]);
   }, [courseType]);
 
-  const requiredStudentCount = courseType;
+  // 1V1~1V3：須剛好填滿（min=max=courseType）；1V4-6：4~6 區間。max 取 config，缺則退回預設。
+  const typeCfg = Array.isArray(courseTypes) ? courseTypes.find((t) => t.course_type === courseType) : null;
+  const maxStudents = Number(typeCfg?.max_students) || (courseType === 4 ? 6 : courseType);
+  const minStudents = courseType === 4 ? Math.min(4, maxStudents) : maxStudents;
   const totalSelected = selectedSelfStudents.length;
-  const pricingStudentCount = Math.max(totalSelected, requiredStudentCount);
+  const pricingStudentCount = Math.max(totalSelected, minStudents);
 
   const pricing = useEnrollmentPricing(bootData, {
     courseType,
@@ -73,7 +87,6 @@ export default function EnrollmentPage() {
   }
 
   const { coach, venue } = bootData;
-  const groupMaxStudents = courseType;
 
   // U4：移除「帶出他人學員」流程後，報名只能選自己名下的學員（同組改走 U5–U8 團購）。
   const allSelectedStudents = selectedSelfStudents
@@ -88,7 +101,8 @@ export default function EnrollmentPage() {
   // 須湊滿該組別人數（1v1=1、1v2=2、1v3=3），且只能用自己名下的學員。
   // 付款資料在訂單成立後才填，讓一般報名與團報到尾端才分岔。
   const canSubmit =
-    totalSelected === requiredStudentCount &&
+    totalSelected >= minStudents &&
+    totalSelected <= maxStudents &&
     selectionResolved &&
     !submitting &&
     !pricing.previewLoading &&
@@ -97,8 +111,8 @@ export default function EnrollmentPage() {
   function toggleSelf(sid) {
     setSelectedSelfStudents((prev) => {
       if (prev.includes(sid)) return prev.filter((x) => x !== sid);
-      if (prev.length >= requiredStudentCount) {
-        toast.warning(`此組別最多選 ${requiredStudentCount} 位學員`);
+      if (prev.length >= maxStudents) {
+        toast.warning(`此組別最多選 ${maxStudents} 位學員`);
         return prev;
       }
       return [...prev, sid];
@@ -108,7 +122,7 @@ export default function EnrollmentPage() {
   async function handleConfirmSubmit() {
     setSubmitting(true);
     try {
-      const period = await enrollmentsApi.create({
+      const result = await enrollmentsApi.create({
         parent_id: parent.id,
         parent_name: parent.name,
         parent_phone: parent.phone,
@@ -125,8 +139,12 @@ export default function EnrollmentPage() {
       });
       setConfirmOpen(false);
       try { localStorage.removeItem('daos.pendingCoupon'); } catch { /* noop */ }
-      // 送出後導到報名狀態頁（待繳款 → 上傳證明 → 等待櫃台確認）
-      navigate(`/enroll-status/${period.id}`, { replace: true });
+      // 訂單依期數拆分：買多期會建多筆訂單 → 導到「我的課程」逐筆繳款；單期維持直接進狀態頁。
+      if ((result.count || 1) > 1) {
+        navigate('/my-courses', { replace: true });
+      } else {
+        navigate(`/enroll-status/${result.first_id || result.id}`, { replace: true });
+      }
     } catch {
       toast.error('送出失敗，請稍後再試');
     } finally {
@@ -148,51 +166,32 @@ export default function EnrollmentPage() {
         <p className="mt-0.5 text-xs text-gray-500">{venue.name}</p>
       </div>
 
-      <CourseTypeSelector courseType={courseType} onChange={setCourseType} />
+      <CourseTypeSelector types={courseTypes} courseType={courseType} onChange={setCourseType} />
 
-      {/* 購買期數（U10：移到前面，費用會隨期數變動） */}
+      {/* 購買期數（下拉；費用會隨期數變動） */}
       <div className="mt-2 rounded-xl border border-gray-200 bg-white p-3">
         <label className="mb-1 block text-xs font-medium text-gray-600">購買期數</label>
-        <div className="flex flex-wrap gap-2">
+        <select
+          value={periodCount}
+          onChange={(e) => setPeriodCount(Number(e.target.value))}
+          className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm font-bold text-gray-800 focus:border-brand-teal focus:outline-none"
+        >
           {[1, 2, 3, 4, 5, 6].map((n) => (
-            <button key={n} type="button" onClick={() => setPeriodCount(n)}
-              className={`min-w-[3rem] rounded-lg border px-3 py-2 text-sm font-bold active:opacity-80 ${
-                periodCount === n ? 'border-brand-primary bg-brand-primary text-white' : 'border-gray-300 bg-white text-gray-600'
-              }`}>
-              {n} 期
-            </button>
+            <option key={n} value={n}>{n} 期</option>
           ))}
-        </div>
-        <p className="mt-1.5 text-[11px] text-gray-500">每期 6 堂；費用 = 單期費 × 學生數 × 期數。</p>
+        </select>
+        <p className="mt-1.5 text-[11px] text-gray-500">每期 6 堂；費用 = 單期費 × 學生數 × 期數。每期將各自成立一筆訂單、分開繳款。</p>
       </div>
 
-      {/* 一對一（1V1, courseType===1）不提供團購：團報是「揪其他家長一起上課」的流程，
-          1V1 不適用，故隱藏發起團購入口，避免邏輯衝突。 */}
-      {courseType !== 1 && (
-        <div className="mt-2 rounded-xl border border-brand-teal/30 bg-brand-teal/5 p-3">
-          <p className="text-xs text-gray-600">
-            想找其他家長一起上課？可改用「團購」分享邀請連結，最多揪到 <span className="font-bold text-brand-primary">{groupMaxStudents} 人</span>，
-            價格依組別計、人數越多越好揪。
-          </p>
-          <button
-            type="button"
-            onClick={() => navigate(`/group/new?venue=${venue.id}&coach=${coach.id}&courseType=${courseType}`)}
-            className="mt-2 w-full rounded-lg border border-brand-teal py-2 text-sm font-bold text-brand-teal active:bg-brand-teal/10"
-          >
-            發起團購
-          </button>
-        </div>
-      )}
-
-      <SelfStudentSelector
+      <StudentMultiSelect
         parent={parent}
-        totalSelected={totalSelected}
-        requiredStudentCount={requiredStudentCount}
         selectedSelfStudents={selectedSelfStudents}
+        minStudents={minStudents}
+        maxStudents={maxStudents}
         onToggle={toggleSelf}
       />
 
-      <PriceBreakdown pricing={pricing} multiplier={coach.multiplier} />
+      <PriceBreakdown pricing={pricing} multiplier={coach.multiplier} isSenior={coach.is_senior} />
 
       <div className="mt-2 rounded-xl border border-gray-200 bg-white p-3">
         <label className="mb-1 block text-xs font-medium text-gray-600">折價券代碼（選填）</label>
@@ -233,6 +232,26 @@ export default function EnrollmentPage() {
       >
         送出報名
       </button>
+
+      {/* 發起團購：移到最下面、移除上方行銷文案；帶入已選的組別/期數/學員。1V1 不開團。 */}
+      {courseType !== 1 && (
+        <button
+          type="button"
+          onClick={() => {
+            const q = new URLSearchParams();
+            q.set('venue', venue.id);
+            q.set('coach', coach.id);
+            q.set('courseType', String(courseType));
+            q.set('period', String(periodCount));
+            const ids = allSelectedStudents.map((s) => s.id).filter(Boolean);
+            if (ids.length) q.set('students', ids.join(','));
+            navigate(`/group/new?${q.toString()}`);
+          }}
+          className="mt-3 w-full rounded-lg border border-brand-teal py-2.5 text-sm font-bold text-brand-teal active:bg-brand-teal/10"
+        >
+          發起團購
+        </button>
+      )}
 
       <ConfirmModal
         open={confirmOpen}

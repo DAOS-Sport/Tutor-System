@@ -161,7 +161,7 @@ async function issueRewardForEnrollment(enrollmentId, { line, BRAND_LIFF_URL } =
          (name, description, type, discount_value, applicable_course_types,
           coupon_code, eligible_parent_id, start_date, end_date, max_uses,
           status, created_at, updated_at)
-       VALUES ($1, $2, 'PERCENTAGE', $3, ARRAY[1,2,3]::INTEGER[],
+       VALUES ($1, $2, 'PERCENTAGE', $3, ARRAY[1,2,3,4]::INTEGER[],
                $4, $5, CURRENT_DATE, CURRENT_DATE + INTERVAL '60 days', 1,
                'active', NOW(), NOW())
        RETURNING id`,

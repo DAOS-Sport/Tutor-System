@@ -12,6 +12,7 @@
  * (pending_payment) 等管理後台對帳通過後再 promote 為正式 course_period。
  */
 const express = require('express');
+const { randomUUID } = require('crypto');
 const { pool } = require('../models/db');
 const promotions = require('../services/promotions');
 const referrals = require('../services/referrals');
@@ -186,47 +187,62 @@ router.post('/', async (req, res) => {
     }
 
     const parentUuid = parentRow.id;
-    const enrollmentId = genEnrollmentId();
     const studentNames = submittedStudentIds.map((id) => studentRows.rows.find((s) => s.id === id)?.name).filter(Boolean);
     const submittedAt = new Date();
 
-    await client.query(
-      `INSERT INTO admin_enrollments
-         (id, parent_name, parent_phone, students, coach, coach_id, venue_id, course_type,
-          original_price, final_price, transfer_last_5, payment_proof_url, status, submitted_at, period_count)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending_payment',$13,$14)`,
-      [
-        enrollmentId, parentRow.name, parentRow.phone, studentNames,
-        coachName, coachId, venueId, Number(p.course_type),
-        preview.originalPrice, preview.finalPrice, last5 || null,
-        paymentProofUrl,
-        submittedAt, periodCount,
-      ]
-    );
+    // 訂單依期數拆分：買 N 期 → 建 N 筆 admin_enrollments，每筆 1 期(6 堂)，各自付款/對帳/鎖定。
+    // 折扣門檻仍以整筆購買的 periodCount 計算（見上方 previewBestDiscount，不可改傳 1）。
+    const batchId = randomUUID();
+    const perPeriodOriginal = unitPrice * studentCount; // 單期原價（含所有學員）
+    const totalDiscount = (preview.promotion && preview.discountAmount > 0) ? preview.discountAmount : 0;
+    // 折扣按比例分攤到各期、餘數補最後一筆，使 N 筆 final_price 加總 = preview.finalPrice。
+    const enrollmentIds = [];
+    let discountAllocated = 0;
+    for (let i = 0; i < periodCount; i += 1) {
+      const d = (i < periodCount - 1) ? Math.round(totalDiscount / periodCount) : (totalDiscount - discountAllocated);
+      if (i < periodCount - 1) discountAllocated += d;
+      const finalThis = Math.max(0, perPeriodOriginal - d);
+      const eid = genEnrollmentId();
+      enrollmentIds.push(eid);
+      await client.query(
+        `INSERT INTO admin_enrollments
+           (id, parent_name, parent_phone, students, coach, coach_id, venue_id, course_type,
+            original_price, final_price, transfer_last_5, payment_proof_url, status, submitted_at,
+            period_count, period_number, enrollment_batch_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending_payment',$13,1,$14,$15)`,
+        [
+          eid, parentRow.name, parentRow.phone, studentNames,
+          coachName, coachId, venueId, Number(p.course_type),
+          perPeriodOriginal, finalThis, last5 || null,
+          paymentProofUrl, submittedAt, i + 1, batchId,
+        ]
+      );
+      await client.query(
+        `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user)
+         VALUES ($1, $2, $3)`,
+        [eid, '家長提交報名', parentRow.phone]
+      );
+    }
+    const firstId = enrollmentIds[0];
 
+    // 促銷用量只記一次（掛第一筆 + batch 總額），避免多期被當成多次使用而誤扣 max_uses。
     let usage = null;
-    if (preview.promotion && preview.discountAmount > 0) {
+    if (totalDiscount > 0) {
       usage = await promotions.recordUsage({
         promotionId: preview.promotion.id,
         parentId: parentUuid, // 以 phone 解析自 parents 表，無對應則 null
         coursePeriodId: null, // 對帳通過後再產 course_period
-        adminEnrollmentId: enrollmentId,
+        adminEnrollmentId: firstId,
         originalPrice: preview.originalPrice,
         discountAmount: preview.discountAmount,
         finalPrice: preview.finalPrice,
       }, client);
     }
 
-    await client.query(
-      `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user)
-       VALUES ($1, $2, $3)`,
-      [enrollmentId, '家長提交報名', parentRow.phone]
-    );
-
-    // MGM：若使用 TRIAL50，更新 referral_records 為 trial_paid
+    // MGM：若使用 TRIAL50，更新 referral_records 為 trial_paid（一次推薦＝一次，掛第一筆）
     if (couponCode && couponCode.toUpperCase() === 'TRIAL50') {
       await referrals.markTrialPaid(
-        { refereeParentId: parentRow.id, coachId, enrollmentId },
+        { refereeParentId: parentRow.id, coachId, enrollmentId: firstId },
         client
       );
     }
@@ -234,7 +250,11 @@ router.post('/', async (req, res) => {
     await client.query('COMMIT');
 
     res.status(201).json({
-      id: enrollmentId,
+      id: firstId,        // 相容：維持單一 id（=第一期）供舊呼叫端／單期導頁
+      first_id: firstId,
+      batch_id: batchId,
+      count: periodCount,
+      enrollment_ids: enrollmentIds,
       parent_id: parentRow.id,
       coach: p.coach,
       venue: p.venue,
@@ -242,7 +262,7 @@ router.post('/', async (req, res) => {
       students: p.students,
       total_sessions: 6,
       used_sessions: 0,
-      original_price: preview.originalPrice,
+      original_price: preview.originalPrice, // 費用明細顯示整筆（N 期）總額
       final_price: preview.finalPrice,
       payment_status: 'pending_payment',
       transfer_last_5: last5 || null,
