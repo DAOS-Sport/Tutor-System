@@ -5,8 +5,9 @@
  * 一律在後端把原始值遮罩後才回傳，避免明文 PII 流到前端。
  *
  * 規則（主管指定）：
- *  - 姓名：遮中間字。三字以上 → 首字 + X… + 末字（莊柏彥 → 莊X彥；歐陽宇哲 → 歐XX哲）；
+ *  - 家長姓名：遮中間字。三字以上 → 首字 + X… + 末字（莊柏彥 → 莊X彥；歐陽宇哲 → 歐XX哲）；
  *          兩字名 → 首字 + X（王明 → 王X）；一字或空 → 原樣。
+ *  - 學生姓名（跨家庭顯示）：只露姓氏首字 + 「同學」（張小明 → 張同學；測試一 → 測同學）；空 → 原樣。
  *  - 身分證字號等重要識別碼：全遮（回傳等長星號，空值回空字串）。
  */
 
@@ -17,9 +18,16 @@ function maskName(name) {
   return s[0] + 'X'.repeat(s.length - 2) + s[s.length - 1];
 }
 
+// 學生姓名跨家庭顯示：姓氏第一個字 + 「同學」（保護隱私，且家長一眼看得懂是學生）。
+function maskStudentName(name) {
+  const s = (name == null ? '' : String(name)).trim();
+  if (!s) return s;
+  return s[0] + '同學';
+}
+
 function maskNames(names) {
   if (!Array.isArray(names)) return [];
-  return names.map(maskName);
+  return names.map(maskStudentName);
 }
 
 function maskIdNumber(id) {
@@ -28,4 +36,4 @@ function maskIdNumber(id) {
   return '*'.repeat(s.length);
 }
 
-module.exports = { maskName, maskNames, maskIdNumber };
+module.exports = { maskName, maskStudentName, maskNames, maskIdNumber };

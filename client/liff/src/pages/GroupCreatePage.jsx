@@ -155,9 +155,6 @@ export default function GroupCreatePage() {
     <div className="px-4 py-4 pb-10">
       <div className="mb-4 rounded-xl border border-brand-teal/30 bg-brand-teal/5 p-3">
         <h2 className="text-sm font-bold text-brand-primary">發起 {courseTypeLabel(courseType)} 團購</h2>
-        <p className="mt-1 text-xs text-gray-500">
-          您將成為團主，先選好自己的學生。建立後會取得邀請碼，分享給其他家長一起湊滿開團人數；送審後再各自上傳匯款證明。
-        </p>
       </div>
 
       <GroupMemberFields
@@ -184,9 +181,6 @@ export default function GroupCreatePage() {
             </button>
           ))}
         </div>
-        <p className="mt-1.5 text-[11px] text-gray-500">
-          每期 {6} 堂；一次購買多期可一併開通。<strong>送審後此團報名單將鎖定、不可更換成員</strong>，需更換請另開團報。
-        </p>
       </div>
 
       <div className="mt-3 rounded-xl border border-gray-200 bg-white p-3">

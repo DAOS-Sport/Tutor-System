@@ -85,9 +85,12 @@ export default function App() {
               <Route element={<AppLayout />}>
                 <Route path="/" element={<HomePage />} />
                 <Route path="/my-courses" element={<MyCoursesPage />} />
-                <Route path="/my-lessons" element={<MyLessonsPage />} />
                 <Route path="/chat" element={<ChatListPage />} />
                 <Route path="/profile" element={<ProfilePage />} />
+              </Route>
+              {/* 上課記錄：自首頁進入的子頁，需返回鍵；同時保留底部導覽列（加入 TAB_PATHS） */}
+              <Route element={<AppLayout showBackButton title="上課記錄" />}>
+                <Route path="/my-lessons" element={<MyLessonsPage />} />
               </Route>
               <Route path="/chat/:roomId" element={<ChatRoomPage />} />
               <Route element={<AppLayout showBackButton title="選擇場館" />}>

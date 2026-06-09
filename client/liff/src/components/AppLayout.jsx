@@ -3,7 +3,7 @@ import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import BottomNav from './BottomNav';
 
 const TAB_PATHS = [
-  '/', '/my-courses', '/chat', '/profile',
+  '/', '/my-courses', '/my-lessons', '/chat', '/profile',
   '/coach', '/coach/schedule', '/coach/students', '/coach/chat', '/coach/profile',
 ];
 

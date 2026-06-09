@@ -4,7 +4,7 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
 import { lessonsApi } from '../api/lessons';
 import { checkinsApi } from '../api/checkins';
-import { addDaysToTaipeiYMD, formatTWDate, formatTWMonthKey, formatTWTime, formatTWYMD, todayTaipeiYMD } from '../utils/format';
+import { addDaysToTaipeiYMD, formatTWDate, formatTWMonthKey, formatTWTime, todayTaipeiYMD } from '../utils/format';
 
 const FILTERS = [
   { key: 'all',         label: '全部' },
@@ -25,12 +25,11 @@ function classify(r) {
   return t > Date.now() ? 'upcoming' : 'attended';
 }
 
-// 家長可自助簽到的條件：尚未簽到、課程已確認/完成、且是今天（台北時區）的課。
-// 與後端 POST /api/checkins 的狀態守門一致；今日限制避免家長對未來課程提前簽到。
+// 家長可自助簽到的條件：尚未簽到、且課程已確認/完成（不限上課當天，隨時都能補簽）。
+// 與後端 POST /api/checkins 的狀態守門一致（後端亦不限日期，僅擋未確認/已取消課程）。
 function canParentCheckin(r) {
   return !r.checkin_id
-    && ['confirmed', 'completed'].includes(r.session_status)
-    && formatTWYMD(r.scheduled_at) === todayTaipeiYMD();
+    && ['confirmed', 'completed'].includes(r.session_status);
 }
 
 export default function MyLessonsPage() {
@@ -106,8 +105,6 @@ export default function MyLessonsPage() {
 
   return (
     <div className="px-4 py-4">
-      <h1 className="mb-3 text-base font-bold text-brand-primary">上課記錄</h1>
-
       <div className="mb-2 flex gap-2 overflow-x-auto">
         {RANGES.map((r) => (
           <button key={r.key} type="button" onClick={() => setRange(r.key)}

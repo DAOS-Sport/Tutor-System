@@ -1,10 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { enrollmentsApi } from '../api/enrollments';
-import { courseTypesApi } from '../api/courseTypes';
 import LoadingSpinner from '../components/LoadingSpinner';
 import ConfirmModal from '../components/ConfirmModal';
-import CourseTypeSelector from '../components/enroll/CourseTypeSelector';
 import StudentMultiSelect from '../components/enroll/StudentMultiSelect';
 import PriceBreakdown from '../components/enroll/PriceBreakdown';
 import EnrollmentSummary from '../components/enroll/EnrollmentSummary';
@@ -24,14 +22,14 @@ export default function EnrollmentPage() {
   const initialCourseType = Number(params.get('courseType') || 1);
   const coachId = params.get('coach');
 
-  const [courseType, setCourseType] = useState(initialCourseType);
+  // 組別由顧客在首頁「商品」選好後帶進來（?courseType=N），報名頁不再重複讓人選，避免誤導。
+  const [courseType] = useState(initialCourseType);
   const [periodCount, setPeriodCount] = useState(1);
   const [selectedSelfStudents, setSelectedSelfStudents] = useState([]);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [couponInput, setCouponInput] = useState('');
   const [activeCoupon, setActiveCoupon] = useState('');
-  const [courseTypes, setCourseTypes] = useState(null); // 課程組別清單（含 max/min 學員數）
 
   // MGM：若有 pendingCoupon 對應同一教練，自動套用
   useEffect(() => {
@@ -46,15 +44,6 @@ export default function EnrollmentPage() {
     } catch { /* noop */ }
   }, [coachId]);
 
-  // 載入課程組別清單（給下拉選單顯示 + 推導目前組別的 max/min 學員數，1V4-6 需 4~6 人）
-  useEffect(() => {
-    let alive = true;
-    courseTypesApi.listActive()
-      .then((rows) => { if (alive) setCourseTypes(Array.isArray(rows) && rows.length ? rows : null); })
-      .catch(() => { if (alive) setCourseTypes(null); });
-    return () => { alive = false; };
-  }, []);
-
   const onBootError = useCallback((m) => toast.error(m), [toast]);
   const { bootData, bootError } = useEnrollmentBoot({
     coachId, venueId, courseType, onError: onBootError,
@@ -65,10 +54,9 @@ export default function EnrollmentPage() {
     setSelectedSelfStudents([]);
   }, [courseType]);
 
-  // 1V1~1V3：須剛好填滿（min=max=courseType）；1V4-6：4~6 區間。max 取 config，缺則退回預設。
-  const typeCfg = Array.isArray(courseTypes) ? courseTypes.find((t) => t.course_type === courseType) : null;
-  const maxStudents = Number(typeCfg?.max_students) || (courseType === 4 ? 6 : courseType);
-  const minStudents = courseType === 4 ? Math.min(4, maxStudents) : maxStudents;
+  // 1V1~1V3 須剛好填滿（min=max=courseType）；1對4-6 團體班為 4~6 人區間。
+  const maxStudents = courseType === 4 ? 6 : courseType;
+  const minStudents = courseType === 4 ? 4 : courseType;
   const totalSelected = selectedSelfStudents.length;
   const pricingStudentCount = Math.max(totalSelected, minStudents);
 
@@ -166,8 +154,6 @@ export default function EnrollmentPage() {
         <p className="mt-0.5 text-xs text-gray-500">{venue.name}</p>
       </div>
 
-      <CourseTypeSelector types={courseTypes} courseType={courseType} onChange={setCourseType} />
-
       {/* 購買期數（下拉；費用會隨期數變動） */}
       <div className="mt-2 rounded-xl border border-gray-200 bg-white p-3">
         <label className="mb-1 block text-xs font-medium text-gray-600">購買期數</label>
@@ -180,7 +166,6 @@ export default function EnrollmentPage() {
             <option key={n} value={n}>{n} 期</option>
           ))}
         </select>
-        <p className="mt-1.5 text-[11px] text-gray-500">每期 6 堂；費用 = 單期費 × 學生數 × 期數。每期將各自成立一筆訂單、分開繳款。</p>
       </div>
 
       <StudentMultiSelect
@@ -220,15 +205,11 @@ export default function EnrollmentPage() {
         )}
       </div>
 
-      <div className="mt-2 rounded-xl border border-brand-gold/30 bg-brand-gold/5 p-3 text-[12px] leading-5 text-gray-600">
-        送出後會進入報名狀態頁，那裡會顯示轉帳帳號與應繳金額，請完成轉帳後填寫末 5 碼並上傳匯款證明，等待櫃檯確認。
-      </div>
-
       <button
         type="button"
         disabled={!canSubmit}
         onClick={() => setConfirmOpen(true)}
-        className="mt-2 w-full rounded-lg bg-brand-primary py-3.5 text-base font-bold text-white active:bg-brand-teal disabled:bg-gray-300"
+        className="mt-4 w-full rounded-lg bg-brand-primary py-3.5 text-base font-bold text-white active:bg-brand-teal disabled:bg-gray-300"
       >
         送出報名
       </button>

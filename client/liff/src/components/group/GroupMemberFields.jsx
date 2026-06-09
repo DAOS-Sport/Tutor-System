@@ -120,10 +120,6 @@ export default function GroupMemberFields({ value, onChange, maxStudents }) {
           </div>
         )}
       </div>
-
-      <p className="px-1 text-[11px] leading-5 text-gray-400">
-        💡 匯款／轉帳證明不在這裡上傳——送出後，請於團購狀態頁完成轉帳並上傳證明。
-      </p>
     </div>
   );
 }

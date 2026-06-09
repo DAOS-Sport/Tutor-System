@@ -229,7 +229,7 @@ export default function GroupStatusPage() {
             <button type="button" onClick={copyInvite}
               className="shrink-0 rounded-lg bg-brand-teal px-3 py-2 text-xs font-bold text-white">複製</button>
           </div>
-          <p className="mt-1.5 text-[11px] text-gray-500">把連結分享給其他家長，請他們登入填寫學生資料一起報名。</p>
+          <p className="mt-1.5 text-[11px] text-gray-500">分享給其他家長，用 LINE 登入即可加入。</p>
         </div>
       )}
 
@@ -345,7 +345,7 @@ export default function GroupStatusPage() {
           })}
         </div>
         <p className="mt-2 text-[11px] leading-5 text-gray-400">
-          應繳金額＝單期費用 × 您的學生數{order.period_count > 1 ? ` × ${order.period_count} 期` : ''}。請先完成轉帳再上傳證明，櫃檯確認後即建立課程。
+          應繳＝單期費用 × 學生數{order.period_count > 1 ? ` × ${order.period_count} 期` : ''}；轉帳後上傳證明，櫃檯確認即開課。
         </p>
       </div>
 
@@ -355,7 +355,7 @@ export default function GroupStatusPage() {
             <>
               {/* 送審前警語：名單鎖定；證明改送審後各家上傳 */}
               <div className="rounded-lg border border-brand-gold/40 bg-brand-gold/5 px-3 py-2 text-[12px] leading-5 text-brand-gold">
-                ⚠️ 送審後成員與學生名單將<strong>無法再更改</strong>，也無法再加入新成員。送審後即進入等候審核，<strong>各家請於此頁完成轉帳並上傳證明</strong>，櫃檯核對後建立課程。
+                ⚠️ 送審後名單<strong>鎖定、不能再加人</strong>；接著各家在此頁轉帳並上傳證明。
               </div>
               {/* 送審鈕已由上方 NextActionBlock 提供（reachedMin 時顯示「送審並鎖定名單」），此處只保留警語避免兩顆重複送審鈕。 */}
               {!reachedMin && (
@@ -379,8 +379,7 @@ export default function GroupStatusPage() {
         onConfirm={() => doAction('submit')}
       >
         <p className="text-sm text-gray-600">
-          送審後名單將<strong>無法更改</strong>、也無法再加入新成員。在等候審核期間，
-          <strong>請各家先完成轉帳並於本頁上傳轉帳證明</strong>；櫃檯核對名單與帳款後即建立課程。確定送審？
+          送審後名單<strong>鎖定、不能再加人</strong>；各家接著在本頁轉帳並上傳證明，櫃檯核對後開課。確定送審？
         </p>
       </ConfirmModal>
 
@@ -417,27 +416,27 @@ function NextActionBlock({
     if (order.is_leader) {
       title = reachedMin ? '人數已達標，可以送審' : '先邀請其他家長加入';
       body = reachedMin
-        ? '送審後名單會鎖定，接著各家庭在此頁填付款資料，等待櫃檯核對。'
-        : `目前還差 ${Math.max(0, order.min_students - order.total_students)} 人才能送審。請用下方「邀請其他學員加入」連結分享給家長。`;
+        ? '送審後名單鎖定，各家接著在此頁填付款資料待核對。'
+        : `還差 ${Math.max(0, order.min_students - order.total_students)} 人成團，用下方連結邀請家長加入。`;
       primary = reachedMin
         ? { label: '送審並鎖定名單', onClick: onSubmit }
         : null;
     } else {
       title = '等待團主送審';
-      body = '您已在團內。人數達標後，團主會送審並鎖定名單。';
+      body = '您已在團內，待人數達標後團主送審。';
     }
   } else if (order.status === 'submitted') {
     tone = selfPaymentReady ? 'gold' : 'teal';
     title = selfPaymentReady ? '付款資料已送出' : '請完成付款資料';
     body = selfPaymentReady
-      ? '接下來等待櫃檯核對名單與帳款。核准後會建立課程並出現在我的課程。'
+      ? '等待櫃檯核對，核准後即開課並進入我的課程。'
       : '請在下方自己的成員卡填轉帳末 5 碼並上傳證明。';
   } else if (order.status === 'approved') {
     tone = allPaymentConfirmed ? 'green' : 'gold';
     title = allPaymentConfirmed ? '課程已建立' : '團購已核准，等待對帳完成';
     body = allPaymentConfirmed
-      ? '課程已進入我的課程，可前往查看詳情、聊天室與選可用時段。'
-      : `仍有 ${missingPaymentCount} 筆帳款在確認中。完成後課程會出現在我的課程。`;
+      ? '課程已進入我的課程，可查看詳情與選時段。'
+      : `還有 ${missingPaymentCount} 筆帳款確認中，完成後即開課。`;
     primary = { label: '前往我的課程', onClick: onGoCourses };
   } else if (order.status === 'rejected') {
     tone = 'error';
