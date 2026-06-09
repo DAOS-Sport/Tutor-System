@@ -627,19 +627,25 @@ async function upsertStudentStrict(studentData, ragicRecordId = null) {
 }
 
 function buildZ02StudentPayload({ parent, student, status = '啟用' }) {
+  // Z02 必填欄位（缺一會 INVALID 202、整筆寫不進去），與 _buildZ02RegistrationPayload 對齊：
+  //   - 學員編號：新生無編號 → 以身分證字號頂替（與既有真實紀錄一致）
+  //   - 血型：未填以「不清楚」placeholder（Ragic 接受的選項值）
+  //   - (報)身分：家長身分，預設「一般身分」
+  const idnum = student.id_number ? String(student.id_number).toUpperCase() : '';
   return {
     [FIELD.Z02.NAME]: student.name || '',
     [FIELD.Z02.STUDENT_STATUS]: status,
     [FIELD.Z02.GENDER]: student.gender || '',
     [FIELD.Z02.BIRTH_DATE]: student.birth_date || '',
-    [FIELD.Z02.ID_NUMBER]: student.id_number ? String(student.id_number).toUpperCase() : '',
-    [FIELD.Z02.BLOOD_TYPE]: student.blood_type || '',
+    [FIELD.Z02.ID_NUMBER]: idnum,
+    [FIELD.Z02.STUDENT_CODE]: student.student_code || idnum, // 學員編號 必填，缺則用身分證
+    [FIELD.Z02.BLOOD_TYPE]: student.blood_type || '不清楚',  // Z02 必填
     [FIELD.Z02.VENUE]: parent.primary_venue_id || '',
     [FIELD.Z02.PARENT_PHONE]: parent.phone || '',
     [FIELD.Z02.PARENT_ACCOUNT]: parent.phone || '',
     [FIELD.Z02.PARENT_NAME]: parent.name || '',
     [FIELD.Z02.PARENT_GENDER]: parent.gender || '',
-    [FIELD.Z02.PARENT_IDENTITY]: parent.identity || '',
+    [FIELD.Z02.PARENT_IDENTITY]: parent.identity || '一般身分', // (報)身分 必填
     [FIELD.Z02.PARENT_EMAIL]: parent.email || '',
   };
 }
