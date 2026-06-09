@@ -7,6 +7,7 @@ import { ToastProvider } from './context/ToastContext';
 import LoginPage from './pages/LoginPage';
 import DemoLoginPage from './pages/DemoLoginPage';
 import RegisterPage from './pages/RegisterPage';
+import CoachPortalLoginPage from './pages/CoachPortalLoginPage';
 import HomePage from './pages/HomePage';
 import VenueSelectPage from './pages/VenueSelectPage';
 import CoachListPage from './pages/CoachListPage';
@@ -67,6 +68,9 @@ export default function App() {
             <Route path="/demo" element={<DemoLoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
           </Route>
+
+          {/* 教練端 LINE OAuth 登入（與家長端分離，全屏無 layout） */}
+          <Route path="/coach-portal" element={<CoachPortalLoginPage />} />
 
           {/* 公開：團購加入連結（免登入先看狀態 / 電話查詢；加入時才要求登入） */}
           <Route element={<AppLayout showBackButton title="加入團購" />}>

@@ -66,6 +66,28 @@ CREATE TABLE IF NOT EXISTS coach_bio_media (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 教練端 LINE OAuth 模組（/api/coach-portal）：30天 portal session + OAuth 暫態 state
+CREATE TABLE IF NOT EXISTS coach_portal_sessions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  token VARCHAR(128) NOT NULL UNIQUE,
+  coach_id UUID NOT NULL REFERENCES coaches(id) ON DELETE CASCADE,
+  line_uid VARCHAR(100) NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_coach_portal_sessions_coach_id ON coach_portal_sessions(coach_id);
+CREATE INDEX IF NOT EXISTS idx_coach_portal_sessions_expires_at ON coach_portal_sessions(expires_at);
+
+-- OAuth CSRF state + callback 後一次性 handoff（DB-backed，多實例 / 重啟皆安全）
+CREATE TABLE IF NOT EXISTS coach_oauth_states (
+  token VARCHAR(128) PRIMARY KEY,
+  kind VARCHAR(20) NOT NULL,          -- 'csrf' | 'handoff'
+  data JSONB NOT NULL DEFAULT '{}'::jsonb,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_coach_oauth_states_expires_at ON coach_oauth_states(expires_at);
+
 CREATE TABLE IF NOT EXISTS parents (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   line_uid VARCHAR(100) UNIQUE,
