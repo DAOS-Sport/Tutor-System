@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { coachesApi } from '../api/coaches';
+import { venuesApi } from '../api/venues';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -13,6 +14,7 @@ export default function CoachProfilePage() {
   const [savingBio, setSavingBio] = useState(false);
   const [media, setMedia] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [venueMap, setVenueMap] = useState({}); // venue id → 名稱
 
   useEffect(() => {
     if (!coach?.id) return;
@@ -21,8 +23,14 @@ export default function CoachProfilePage() {
     coachesApi.listMedia(coach.id)
       .then((d) => alive && setMedia(d || []))
       .catch(() => alive && setMedia([]));
+    // 載入場館 id→名稱對照，讓「可教場館」顯示名稱而非代碼（B → 新北高中）
+    venuesApi.list()
+      .then((vs) => { if (alive && Array.isArray(vs)) setVenueMap(Object.fromEntries(vs.map((v) => [v.id, v.name]))); })
+      .catch(() => { /* 失敗則退回顯示代碼 */ });
     return () => { alive = false; };
   }, [coach?.id]);
+
+  const venueLabel = (coach?.venue_ids || []).map((id) => venueMap[id] || id).join(' / ') || '—';
 
   async function handleSaveBio() {
     if (savingBio) return;
@@ -92,7 +100,7 @@ export default function CoachProfilePage() {
           </div>
           <div className="rounded-lg bg-white/15 px-2.5 py-1.5">
             <div className="opacity-80">可教場館</div>
-            <div className="mt-0.5 text-base font-bold">{(coach.venue_ids || []).join(' / ') || '—'}</div>
+            <div className="mt-0.5 text-base font-bold">{venueLabel}</div>
           </div>
         </div>
         {coach.intro_review_status && (

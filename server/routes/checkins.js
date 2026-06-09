@@ -4,6 +4,8 @@
  *    - 寫入 checkin_records（UNIQUE: session+student → 重複時回傳既有 row，不報錯）
  *    - 廣播 admin WS 事件 'checkin:created'
  *    - 需要家長 JWT；驗證 student 屬於 req 的 parent
+ *    - 課程須為 confirmed/completed 才可簽到（與教練端 POST /sessions/:id/checkins 一致；
+ *      pending_group_confirm 等狀態回 409 SESSION_NOT_CHECKINABLE）
  */
 const express = require('express');
 const router = express.Router();
@@ -30,7 +32,8 @@ router.post('/', requireParent, async (req, res) => {
     }
     // 驗證 session 存在 + 取上下文 + 該 student 必須是該 course_period 的 enrollment 名單成員
     const ctx = await client.query(
-      `SELECT cs.id AS session_id, cp.id AS period_id, cp.venue_id, cp.course_type, cp.coach_id,
+      `SELECT cs.id AS session_id, cs.status::text AS session_status,
+              cp.id AS period_id, cp.venue_id, cp.course_type, cp.coach_id,
               c.name AS coach_name, v.name AS venue_name, s.name AS student_name
          FROM course_sessions cs
          JOIN course_periods  cp ON cp.id = cs.course_period_id
@@ -47,6 +50,17 @@ router.post('/', requireParent, async (req, res) => {
     if (!ctx.rowCount) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: '該學員未在此課程名單中' });
+    }
+
+    const sessionStatus = ctx.rows[0].session_status;
+    if (!['confirmed', 'completed'].includes(sessionStatus)) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: sessionStatus === 'pending_group_confirm'
+          ? '此課程仍在等待同組家長確認，暫不可簽到'
+          : '此課程狀態不可簽到',
+        code: 'SESSION_NOT_CHECKINABLE',
+      });
     }
 
     const ins = await client.query(

@@ -107,6 +107,34 @@ function _extractStaffVenueIds(r) {
   return ids;
 }
 
+// H01「部門」回傳的是場館「名稱」（如「新北高中」），但 venues.id / coach_venues 是「代碼」（如「B」）。
+// 直接拿名稱去比對 venues.id 會全數對不到 → 教練場館同步永遠是空的。
+// 這裡建一個「名稱或代碼 → venue id」解析器：
+//   - 同時用 id / name / full_name 比對；
+//   - venues.name 可能帶後綴（如「三重商工 (test)」「三民高中 (tx)」），故額外用「去括號後綴」base name 比對；
+//   - 非場館的部門（如公司名、處室）對不到 → 自動略過，不噴錯。
+async function _buildVenueResolver() {
+  const r = await pool.query(`SELECT id, name, full_name FROM venues`);
+  const map = new Map();
+  const base = (s) => String(s == null ? '' : s).split(' (')[0].trim();
+  const add = (k, id) => { const s = String(k == null ? '' : k).trim(); if (s && !map.has(s)) map.set(s, id); };
+  for (const v of r.rows) {
+    add(v.id, v.id);
+    add(v.name, v.id); add(base(v.name), v.id);
+    if (v.full_name) { add(v.full_name, v.id); add(base(v.full_name), v.id); }
+  }
+  return (rawValues) => {
+    const out = [];
+    for (const raw of (rawValues || [])) {
+      const s = String(raw == null ? '' : raw).trim();
+      if (!s) continue;
+      const id = map.get(s) || map.get(base(s));
+      if (id && !out.includes(id)) out.push(id);
+    }
+    return out;
+  };
+}
+
 // Task #92：normalize 員工編號比對 key。
 // admin 手建員工可能輸入 'c001' / ' C001 '，Ragic 回 'C001'，
 // 用原值比對會比不到 → 整筆被當 'new' 重新 stage，員工就會出現「已建檔卻又進待審核」。
@@ -411,10 +439,9 @@ async function _applyStaffChange(row, client) {
     if (coachId && Array.isArray(p.venue_ids) && p.venue_ids.length > 0) {
       const venueIds = [...new Set(p.venue_ids.map(String).map(s => s.trim()).filter(Boolean))];
       if (venueIds.length > 0) {
-        const vr = await client.query(
-          `SELECT id FROM venues WHERE id = ANY($1::text[])`, [venueIds]
-        );
-        const validIds = vr.rows.map(x => x.id);
+        // 部門可能是「名稱」（新北高中）或「代碼」（B）→ 統一解析成 venue id
+        const resolve = await _buildVenueResolver();
+        const validIds = resolve(venueIds);
         if (validIds.length > 0) {
           await client.query(`DELETE FROM coach_venues WHERE coach_id = $1`, [coachId]);
           for (const vid of validIds) {

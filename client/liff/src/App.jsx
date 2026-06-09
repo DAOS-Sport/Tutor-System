@@ -54,7 +54,9 @@ function RequireParent() {
 function RequireCoach() {
   const { role } = useAuth();
   if (role === 'parent') return <Navigate to="/" replace />;
-  if (role !== 'coach') return <Navigate to="/login" replace />;
+  // 未登入教練 → 導去教練專屬登入頁（web OAuth + 30天 portal token 續登），
+  // 不可導去家長 /login（會觸發舊版 id_token 直登失敗的診斷錯誤、或困在家長 LIFF）。
+  if (role !== 'coach') return <Navigate to="/coach-portal" replace />;
   return <Outlet />;
 }
 

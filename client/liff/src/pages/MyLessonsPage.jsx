@@ -3,7 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
 import { lessonsApi } from '../api/lessons';
-import { addDaysToTaipeiYMD, formatTWDate, formatTWMonthKey, formatTWTime, todayTaipeiYMD } from '../utils/format';
+import { checkinsApi } from '../api/checkins';
+import { addDaysToTaipeiYMD, formatTWDate, formatTWMonthKey, formatTWTime, formatTWYMD, todayTaipeiYMD } from '../utils/format';
 
 const FILTERS = [
   { key: 'all',         label: '全部' },
@@ -24,6 +25,14 @@ function classify(r) {
   return t > Date.now() ? 'upcoming' : 'attended';
 }
 
+// 家長可自助簽到的條件：尚未簽到、課程已確認/完成、且是今天（台北時區）的課。
+// 與後端 POST /api/checkins 的狀態守門一致；今日限制避免家長對未來課程提前簽到。
+function canParentCheckin(r) {
+  return !r.checkin_id
+    && ['confirmed', 'completed'].includes(r.session_status)
+    && formatTWYMD(r.scheduled_at) === todayTaipeiYMD();
+}
+
 export default function MyLessonsPage() {
   const toast = useToast();
   const navigate = useNavigate();
@@ -32,6 +41,26 @@ export default function MyLessonsPage() {
   const [range, setRange] = useState('all');
   const [coachId, setCoachId] = useState('');
   const [courseType, setCourseType] = useState('');
+  const [checkinBusyKey, setCheckinBusyKey] = useState(null);
+
+  async function handleCheckin(r) {
+    const key = r.session_id + r.student_id;
+    if (checkinBusyKey) return;
+    setCheckinBusyKey(key);
+    try {
+      const res = await checkinsApi.create({ sessionId: r.session_id, studentId: r.student_id });
+      setData((prev) => (prev || []).map((row) => (
+        row.session_id === r.session_id && row.student_id === r.student_id
+          ? { ...row, checkin_id: res.checkin_id, checked_in_at: res.checked_in_at }
+          : row
+      )));
+      toast.success(`${r.student_name} 已簽到`);
+    } catch (err) {
+      toast.error(err?.response?.data?.error || '簽到失敗');
+    } finally {
+      setCheckinBusyKey(null);
+    }
+  }
 
   useEffect(() => {
     setData(null);
@@ -125,7 +154,9 @@ export default function MyLessonsPage() {
               <h3 className="mb-1.5 text-xs font-bold text-brand-primary">{month.replace('-', ' / ')}</h3>
               <div className="space-y-2">
                 {rows.map((r) => <LessonCard key={r.session_id + r.student_id} r={r}
-                  onOpen={() => r.record_status === 'submitted' && navigate(`/history/${r.period_id}`)} />)}
+                  onOpen={() => r.record_status === 'submitted' && navigate(`/history/${r.period_id}`)}
+                  onCheckin={() => handleCheckin(r)}
+                  busy={checkinBusyKey === (r.session_id + r.student_id)} />)}
               </div>
             </section>
           ))}
@@ -135,18 +166,23 @@ export default function MyLessonsPage() {
   );
 }
 
-function LessonCard({ r, onOpen }) {
+function LessonCard({ r, onOpen, onCheckin, busy }) {
+  const checkinable = canParentCheckin(r);
   const cls = classify(r);
   const dStr = formatTWDate(r.scheduled_at);
   const tStr = formatTWTime(r.scheduled_at);
+  const clickable = r.record_status === 'submitted';
+  const badge = checkinable
+    ? { text: '可簽到', cls: 'bg-brand-teal/15 text-brand-teal' }
+    : cls === 'attended'
+      ? { text: '已出席', cls: 'bg-green-100 text-green-700' }
+      : { text: '即將上課', cls: 'bg-amber-100 text-amber-700' };
   return (
-    <button type="button" onClick={onOpen}
-      className="block w-full rounded-xl border border-gray-200 bg-white p-3 text-left active:bg-gray-50">
+    <div onClick={clickable ? onOpen : undefined}
+      className={`block w-full rounded-xl border border-gray-200 bg-white p-3 text-left ${clickable ? 'cursor-pointer active:bg-gray-50' : ''}`}>
       <div className="flex items-center justify-between">
         <div className="text-sm font-bold text-brand-primary">{dStr} {tStr}</div>
-        <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
-          cls === 'attended' ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'
-        }`}>{cls === 'attended' ? '已出席' : '即將上課'}</span>
+        <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${badge.cls}`}>{badge.text}</span>
       </div>
       <div className="mt-1 text-xs text-gray-600">
         {r.coach_name} 教練・1對{r.course_type}・{r.venue_id} 館
@@ -160,6 +196,16 @@ function LessonCard({ r, onOpen }) {
           📝 教練已上傳上課記錄 · 點擊查看 ›
         </div>
       )}
-    </button>
+      {checkinable && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={(e) => { e.stopPropagation(); onCheckin(); }}
+          className="mt-2 w-full rounded-lg bg-brand-primary py-2 text-xs font-bold text-white active:opacity-90 disabled:bg-gray-300"
+        >
+          {busy ? '簽到中…' : '我要簽到'}
+        </button>
+      )}
+    </div>
   );
 }

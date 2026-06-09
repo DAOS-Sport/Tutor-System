@@ -20,15 +20,28 @@ function mapError(codeOrErr) {
     ? codeOrErr
     : (codeOrErr?.response?.data?.code || codeOrErr?.code);
   switch (code) {
+    // ── OAuth callback 階段（後端 frontendRedirect 的 error=）──
     case 'not_configured':   return 'LINE 登入尚未設定，請聯絡管理員。';
     case 'line_denied':      return '已取消 LINE 授權，請重新登入。';
+    case 'bad_request':      return '登入請求不完整，請重新點「使用 LINE 登入」。';
+    case 'bad_state':        return '登入逾時或頁面停留過久，請重新登入。';
+    case 'oauth_failed':     return 'LINE 授權失敗，請重新登入。';
+    case 'no_profile':       return '無法取得您的 LINE 資料，請重新登入。';
+    case 'server_error':     return '伺服器忙線，請稍後再試。';
+    // ── 比對 / 綁定階段 ──
     case 'COACH_NOT_FOUND':  return '查無此姓名的教練資料，已通知管理員協助處理。';
     case 'NAME_ALREADY_BOUND': return '此姓名的教練已綁定其他 LINE，請聯絡管理員。';
     case 'LINE_ALREADY_BOUND': return '此 LINE 帳號已綁定其他教練，請聯絡管理員。';
     case 'NAME_AMBIGUOUS':   return '系統有多位同名教練，請聯絡管理員協助綁定。';
+    case 'NAME_REQUIRED':    return '請輸入您的姓名。';
+    case 'BIND_RACE':        return '綁定衝突，請重新登入。';
     case 'HANDOFF_INVALID':
     case 'HANDOFF_EXPIRED':  return '登入連結已失效，請重新登入。';
     case 'RATE_LIMITED':     return '嘗試次數過多，請稍後再試。';
+    // ── token 交換 / session 階段 ──
+    case 'EXCHANGE_FAILED':
+    case 'LINK_FAILED':
+    case 'SESSION_FAILED':   return '登入處理失敗，請重新登入。';
     default:                 return '登入失敗，請重新嘗試。';
   }
 }

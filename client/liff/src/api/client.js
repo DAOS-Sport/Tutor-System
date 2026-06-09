@@ -41,7 +41,11 @@ http.interceptors.response.use(
   (err) => {
     if (err?.response?.status === 401 && !redirectingOn401) {
       redirectingOn401 = true;
+      // 清 session 前先記住「是不是教練」，決定 401 後要把人導去哪。
+      let wasCoach = false;
       try {
+        const raw = localStorage.getItem(USER_KEY);
+        if (raw) { try { wasCoach = JSON.parse(raw)?.role === 'coach'; } catch { /* noop */ } }
         localStorage.removeItem(USER_KEY);
         localStorage.removeItem('daos.manualLogout');
         sessionStorage.setItem('daos.liff.flashLogout', '1');
@@ -49,10 +53,19 @@ http.interceptors.response.use(
       if (typeof window !== 'undefined') {
         const path = window.location.pathname || '';
         const host = window.location.hostname || '';
-        const isDemoHost = host === 'localhost' || host === '127.0.0.1' || host.endsWith('.replit.dev') || host.endsWith('.repl.co');
-        const demoPath = path.startsWith('/liff') ? '/liff/demo' : '/demo';
-        const loginPath = path.startsWith('/liff') ? '/liff/login' : '/login';
-        window.location.replace(isDemoHost || path.includes('/demo') ? demoPath : loginPath);
+        const inLiff = path.startsWith('/liff');
+        // 教練 session 過期：一律回教練登入頁 /coach-portal（會用 30 天 portal token 靜默續登，
+        // 不行才顯示 LINE 登入鈕）。絕不可導去家長 /login 或 demo —— 那會把教練困進家長 LIFF
+        // 流程造成卡死/死迴圈，且無法排查。
+        const isCoachCtx = wasCoach || /\/coach(\b|\/|$)/.test(path);
+        if (isCoachCtx) {
+          window.location.replace(inLiff ? '/liff/coach-portal' : '/coach-portal');
+        } else {
+          const isDemoHost = host === 'localhost' || host === '127.0.0.1' || host.endsWith('.replit.dev') || host.endsWith('.repl.co');
+          const demoPath = inLiff ? '/liff/demo' : '/demo';
+          const loginPath = inLiff ? '/liff/login' : '/login';
+          window.location.replace(isDemoHost || path.includes('/demo') ? demoPath : loginPath);
+        }
       }
     }
     return Promise.reject(err);

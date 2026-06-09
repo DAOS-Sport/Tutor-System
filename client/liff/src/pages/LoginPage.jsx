@@ -179,18 +179,11 @@ export default function LoginPage() {
     }
 
     if (coachContext) {
-      setBusy(true);
-      tryCoachAutoLogin().then((res) => {
-        if (res && typeof res === 'object' && res.status === 'success') {
-          const c = res.coach;
-          setCoach({ ...c, token: c?.token || null });
-          toast.success(`歡迎，${c.name} 教練`);
-          navigate('/coach', { replace: true });
-          return;
-        }
-        if (res === 'unbound') setCoachState('unbound');
-        else setCoachState('error');
-      }).finally(() => setBusy(false));
+      // 教練端統一走 /coach-portal（web OAuth + 30天 portal token 續登）。
+      // 舊版在本頁用 liff id_token 直登 /api/coaches/by-line-uid 已停用：
+      // 它在桌機/外部瀏覽器（isInClient=false）會失敗並顯示「無法自動登入」診斷畫面，
+      // 也可能把教練困在家長登入頁 → 一律改為導去教練專屬登入頁。
+      navigate('/coach-portal', { replace: true });
       return;
     }
 
