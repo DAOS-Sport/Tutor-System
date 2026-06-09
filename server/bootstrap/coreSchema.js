@@ -715,6 +715,8 @@ DO $$ BEGIN
   ALTER TABLE students ADD COLUMN IF NOT EXISTS student_code VARCHAR(50);
   ALTER TABLE students ADD COLUMN IF NOT EXISTS ragic_record_id VARCHAR(50);
   ALTER TABLE students ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+  ALTER TABLE students ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ;
+  ALTER TABLE students ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
 EXCEPTION WHEN undefined_table THEN NULL; END $$;
 CREATE INDEX IF NOT EXISTS idx_parents_ragic_record_id ON parents(ragic_record_id) WHERE ragic_record_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_students_id_number ON students(id_number) WHERE id_number IS NOT NULL;

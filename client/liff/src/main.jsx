@@ -81,6 +81,14 @@ async function initLiff() {
     mount();
     return;
   }
+  // 教練端（/coach、/coach-portal）走自己的 web OAuth（/api/coach-portal），
+  // 完全不依賴 LIFF SDK。若仍跑 liff.init/liff.login，未登入的教練會被強制導去 LINE，
+  // 回來又無 LIFF session → 再次被導去 → 無限跳轉（手機 LINE 內 / 電腦瀏覽器皆會）。
+  // 故教練路徑一律跳過 LIFF，交由 CoachPortalLoginPage 的 OAuth/portal-token 流程處理。
+  if (isCoachPath()) {
+    mount();
+    return;
+  }
   const liffId = pickLiffId();
   if (!liffId) {
     // eslint-disable-next-line no-console
