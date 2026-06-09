@@ -162,11 +162,13 @@ router.post('/me/students', requireParent, async (req, res) => {
     if (dup.rowCount) return res.status(409).json({ error: '此學員已存在', code: 'STUDENT_ID_DUPLICATED' });
 
     const cnt = await pool.query(`SELECT COUNT(*)::int AS n FROM students WHERE parent_id = $1`, [req.parent.id]);
+    console.log('[student-sync] 新增學員 start', { parent: parent.name, phone: parent.phone, student: s.name });
     const sync = await ragic.createStudentZ01Z02Strict({
       parent,
       student: s,
       startIndex: Number(cnt.rows[0]?.n || 0),
     });
+    console.log('[student-sync] 新增學員 Ragic 同步完成', { parentRagicId: sync?.parentRagicRecordId, z02: sync?.z02?.ragicRecordId });
     const ins = await pool.query(
       `INSERT INTO students
          (parent_id, name, id_number, birth_date, gender, blood_type, ragic_record_id, is_active, last_synced_at)
@@ -180,7 +182,7 @@ router.post('/me/students', requireParent, async (req, res) => {
     );
     res.status(201).json(ins.rows[0]);
   } catch (err) {
-    console.error('[parents.createStudent]', err);
+    console.error('[student-sync] 新增學員 失敗', { code: err.code, msg: err.message });
     return ragicError(res, err);
   }
 });
@@ -208,7 +210,9 @@ router.patch('/me/students/:id', requireParent, async (req, res) => {
     );
     if (dup.rowCount) return res.status(409).json({ error: '此身分證字號已存在', code: 'STUDENT_ID_DUPLICATED' });
     const syncStudent = { ...cur.rows[0], ...s };
+    console.log('[student-sync] 編輯學員 start', { parent: parent.name, phone: parent.phone, student: s.name, studentId: req.params.id });
     const sync = await ragic.updateStudentZ01Z02Strict({ parent, student: syncStudent, status: '啟用' });
+    console.log('[student-sync] 編輯學員 Ragic 同步完成', { parentRagicId: sync?.parentRagicRecordId, z02: sync?.z02?.ragicRecordId });
     const up = await pool.query(
       `UPDATE students SET
          name = $3, id_number = $4, birth_date = $5::date, gender = $6, blood_type = $7,
@@ -224,7 +228,7 @@ router.patch('/me/students/:id', requireParent, async (req, res) => {
     );
     res.json(up.rows[0]);
   } catch (err) {
-    console.error('[parents.updateStudent]', err);
+    console.error('[student-sync] 編輯學員 失敗', { code: err.code, msg: err.message });
     return ragicError(res, err);
   }
 });
@@ -240,7 +244,9 @@ router.delete('/me/students/:id', requireParent, async (req, res) => {
       [req.params.id, req.parent.id]
     );
     if (!cur.rowCount) return res.status(404).json({ error: '找不到學員' });
+    console.log('[student-sync] 停用學員 start', { parent: parent.name, phone: parent.phone, student: cur.rows[0].name, studentId: req.params.id });
     const sync = await ragic.deactivateStudentZ02Strict({ parent, student: cur.rows[0] });
+    console.log('[student-sync] 停用學員 Ragic 同步完成', { parentRagicId: sync?.parentRagicRecordId });
     await pool.query(
       `UPDATE students SET is_active = FALSE, ragic_record_id = COALESCE(ragic_record_id, $3),
               last_synced_at = NOW(), updated_at = NOW()
@@ -253,7 +259,7 @@ router.delete('/me/students/:id', requireParent, async (req, res) => {
     );
     res.json({ ok: true });
   } catch (err) {
-    console.error('[parents.deleteStudent]', err);
+    console.error('[student-sync] 停用學員 失敗', { code: err.code, msg: err.message });
     return ragicError(res, err);
   }
 });

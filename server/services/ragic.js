@@ -521,7 +521,10 @@ async function addStudentsToParentInRagic({ ragicRecordId, startIndex = 0, stude
 }
 
 async function resolveParentRagicRecord(parent) {
-  if (parent?.ragic_record_id) return parent.ragic_record_id;
+  if (parent?.ragic_record_id) {
+    console.log('[student-sync] resolveParent: DB 已存 ragic_record_id', { ragicId: parent.ragic_record_id });
+    return parent.ragic_record_id;
+  }
   const phone = String(parent?.phone || '').trim();
   if (!phone) {
     const err = new Error('缺少家長手機，無法定位 Ragic Z01');
@@ -531,7 +534,11 @@ async function resolveParentRagicRecord(parent) {
   // 先用手機查既有家長（“先去打表單的值”）；查不到才在 Ragic 建立 Z01 家長主檔，
   // 讓「每次編輯都能同步回 Ragic」不因家長尚未入 Ragic（例如後台直建 / demo 帳號）而中斷。
   const record = await getParentByPhone(phone);
-  if (record?._ragicId) return record._ragicId;
+  if (record?._ragicId) {
+    console.log('[student-sync] resolveParent: 以手機查到既有 Z01', { phone, ragicId: record._ragicId });
+    return record._ragicId;
+  }
+  console.log('[student-sync] resolveParent: Ragic 查無此家長，將新建 Z01', { phone, name: parent?.name });
   return await createParentRagicRecord(parent);
 }
 
@@ -555,6 +562,7 @@ async function createParentRagicRecord(parent) {
     err.code = 'PARENT_RAGIC_CREATE_FAILED';
     throw err;
   }
+  console.log('[student-sync] 已在 Ragic 新建家長 Z01', { id: String(id), name: parent?.name });
   return String(id);
 }
 
@@ -601,6 +609,9 @@ async function updateStudentInParentSubtable({ ragicRecordId, student }) {
     // 子表格找不到對應列（學員尚未寫進 Z01、或無 id_number/編號 可比對）→ 視為新列附加，
     // 索引取目前列數（與新增流程 buildZ01StudentPayload(startIndex) 一致），避免整筆編輯被擋掉。
     rowIndex = (parseZ01Students(z01Record) || []).length;
+    console.log('[student-sync] Z01 子表格：無對應列 → 附加新列', { ragicRecordId, rowIndex, student: student?.name });
+  } else {
+    console.log('[student-sync] Z01 子表格：比對到既有列 → 更新', { ragicRecordId, rowIndex, student: student?.name });
   }
   const raw = await postRagicStrict(
     _recordPath(process.env.RAGIC_FORM_Z01, ragicRecordId),
