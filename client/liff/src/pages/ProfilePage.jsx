@@ -6,6 +6,33 @@ import { useToast } from '../context/ToastContext';
 
 const emptyStudent = { name: '', id_number: '', birth_date: '', gender: '男', blood_type: '' };
 const inputCls = 'w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-brand-primary';
+// 漏填必填時，輸入框亮紅框
+const errCls = 'border-brand-error bg-brand-error/5 focus:border-brand-error';
+const fieldCls = (hasErr) => `${inputCls} ${hasErr ? errCls : ''}`;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const TW_ID_RE = /^[A-Z][12]\d{8}$/;
+
+// 家長必填欄位（與後端 / Ragic Z01 必填一致）：姓名 / 館別 / 身分 / 性別 / Email
+function validateParent(f) {
+  const e = {};
+  if (!String(f.name || '').trim()) e.name = '必填';
+  if (!String(f.primary_venue_id || '').trim()) e.primary_venue_id = '必填';
+  if (!String(f.identity || '').trim()) e.identity = '必填';
+  if (!String(f.gender || '').trim()) e.gender = '必填';
+  if (!String(f.email || '').trim()) e.email = '必填';
+  else if (!EMAIL_RE.test(f.email.trim())) e.email = 'Email 格式有誤';
+  return e;
+}
+
+// 學員必填欄位：姓名 / 身分證字號 / 出生年月日
+function validateStudent(f) {
+  const e = {};
+  if (!String(f.name || '').trim()) e.name = '必填';
+  if (!String(f.id_number || '').trim()) e.id_number = '必填';
+  else if (!TW_ID_RE.test(f.id_number.trim().toUpperCase())) e.id_number = '身分證格式有誤';
+  if (!String(f.birth_date || '').trim()) e.birth_date = '必填';
+  return e;
+}
 
 function parentFormFrom(parent) {
   return {
@@ -36,6 +63,18 @@ export default function ProfilePage() {
   const [editingId, setEditingId] = useState(null);
   const [busy, setBusy] = useState('');
   const [venues, setVenues] = useState([]);
+  const [parentErrors, setParentErrors] = useState({});
+  const [studentErrors, setStudentErrors] = useState({});
+
+  // 改值時即時清掉該欄的紅框
+  function setParentField(key, value) {
+    setParentForm((p) => ({ ...p, [key]: value }));
+    setParentErrors((e) => (e[key] ? { ...e, [key]: undefined } : e));
+  }
+  function setStudentField(key, value) {
+    setStudentForm((p) => ({ ...p, [key]: value }));
+    setStudentErrors((e) => (e[key] ? { ...e, [key]: undefined } : e));
+  }
 
   useEffect(() => {
     let alive = true;
@@ -66,6 +105,13 @@ export default function ProfilePage() {
 
   async function saveParent(e) {
     e.preventDefault();
+    const errs = validateParent(parentForm);
+    if (Object.keys(errs).length) {
+      setParentErrors(errs);
+      toast.error('請完成標示 ＊ 的必填欄位');
+      return;
+    }
+    setParentErrors({});
     setBusy('parent');
     try {
       const data = await parentsApi.updateMe(parentForm);
@@ -80,6 +126,7 @@ export default function ProfilePage() {
 
   function editStudent(s) {
     setEditingId(s.id);
+    setStudentErrors({});
     setStudentForm({
       name: s.name || '',
       id_number: s.id_number || '',
@@ -92,10 +139,18 @@ export default function ProfilePage() {
   function resetStudentForm() {
     setEditingId(null);
     setStudentForm(emptyStudent);
+    setStudentErrors({});
   }
 
   async function saveStudent(e) {
     e.preventDefault();
+    const errs = validateStudent(studentForm);
+    if (Object.keys(errs).length) {
+      setStudentErrors(errs);
+      toast.error('請完成標示 ＊ 的必填欄位');
+      return;
+    }
+    setStudentErrors({});
     setBusy('student');
     try {
       const saved = editingId
@@ -141,44 +196,45 @@ export default function ProfilePage() {
       </div>
 
       <Section title="編輯資料">
-        <form className="grid gap-3" onSubmit={saveParent}>
-          <Field label="家長姓名">
-            <input className={inputCls} value={parentForm.name} onChange={(e) => setParentForm({ ...parentForm, name: e.target.value })} required />
+        <p className="mb-2 text-[11px] text-gray-400"><span className="text-brand-error">＊</span> 為必填，需與 Ragic 同步</p>
+        <form className="grid gap-3" onSubmit={saveParent} noValidate>
+          <Field label="家長姓名" required error={parentErrors.name}>
+            <input className={fieldCls(parentErrors.name)} value={parentForm.name} onChange={(e) => setParentField('name', e.target.value)} />
           </Field>
           <Field label="手機">
             <input className={`${inputCls} bg-gray-50 text-gray-500`} value={parentForm.phone} readOnly />
           </Field>
-          <Field label="館別">
-            <select className={inputCls} value={parentForm.primary_venue_id || ''} onChange={(e) => setParentForm({ ...parentForm, primary_venue_id: e.target.value })}>
-              <option value="">未指定</option>
+          <Field label="館別" required error={parentErrors.primary_venue_id}>
+            <select className={fieldCls(parentErrors.primary_venue_id)} value={parentForm.primary_venue_id || ''} onChange={(e) => setParentField('primary_venue_id', e.target.value)}>
+              <option value="">請選擇館別</option>
               {venues.map((v) => <option key={v.id} value={v.id}>{v.name || v.id}</option>)}
             </select>
           </Field>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="身分">
-              <input className={inputCls} value={parentForm.identity} onChange={(e) => setParentForm({ ...parentForm, identity: e.target.value })} />
+            <Field label="身分" required error={parentErrors.identity}>
+              <input className={fieldCls(parentErrors.identity)} value={parentForm.identity} onChange={(e) => setParentField('identity', e.target.value)} />
             </Field>
-            <Field label="性別">
-              <select className={inputCls} value={parentForm.gender || ''} onChange={(e) => setParentForm({ ...parentForm, gender: e.target.value })}>
-                <option value="">未指定</option>
+            <Field label="性別" required error={parentErrors.gender}>
+              <select className={fieldCls(parentErrors.gender)} value={parentForm.gender || ''} onChange={(e) => setParentField('gender', e.target.value)}>
+                <option value="">請選擇</option>
                 <option value="男">男</option>
                 <option value="女">女</option>
               </select>
             </Field>
           </div>
-          <Field label="Email">
-            <input type="email" className={inputCls} value={parentForm.email} onChange={(e) => setParentForm({ ...parentForm, email: e.target.value })} />
+          <Field label="Email" required error={parentErrors.email}>
+            <input type="email" className={fieldCls(parentErrors.email)} value={parentForm.email} onChange={(e) => setParentField('email', e.target.value)} />
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="住家電話">
-              <input className={inputCls} value={parentForm.home_phone} onChange={(e) => setParentForm({ ...parentForm, home_phone: e.target.value })} />
+              <input className={inputCls} value={parentForm.home_phone} onChange={(e) => setParentField('home_phone', e.target.value)} />
             </Field>
             <Field label="LINE ID">
-              <input className={inputCls} value={parentForm.line_id} onChange={(e) => setParentForm({ ...parentForm, line_id: e.target.value })} />
+              <input className={inputCls} value={parentForm.line_id} onChange={(e) => setParentField('line_id', e.target.value)} />
             </Field>
           </div>
           <Field label="住家地址">
-            <input className={inputCls} value={parentForm.home_address} onChange={(e) => setParentForm({ ...parentForm, home_address: e.target.value })} />
+            <input className={inputCls} value={parentForm.home_address} onChange={(e) => setParentField('home_address', e.target.value)} />
           </Field>
           <button type="submit" disabled={!!busy} className="rounded-lg bg-brand-primary py-2.5 text-sm font-bold text-white disabled:opacity-60">
             {busy === 'parent' ? '同步中...' : '儲存家長資料'}
@@ -207,26 +263,26 @@ export default function ProfilePage() {
           ))}
         </div>
 
-        <form className="mt-3 grid gap-3 border-t border-gray-100 pt-3" onSubmit={saveStudent}>
+        <form className="mt-3 grid gap-3 border-t border-gray-100 pt-3" onSubmit={saveStudent} noValidate>
           <h4 className="text-xs font-bold text-gray-700">{editingId ? '編輯學員' : '新增學員'}</h4>
-          <Field label="姓名">
-            <input className={inputCls} value={studentForm.name} onChange={(e) => setStudentForm({ ...studentForm, name: e.target.value })} required />
+          <Field label="姓名" required error={studentErrors.name}>
+            <input className={fieldCls(studentErrors.name)} value={studentForm.name} onChange={(e) => setStudentField('name', e.target.value)} />
           </Field>
-          <Field label="身分證字號">
-            <input className={inputCls} value={studentForm.id_number} onChange={(e) => setStudentForm({ ...studentForm, id_number: e.target.value.toUpperCase() })} required />
+          <Field label="身分證字號" required error={studentErrors.id_number}>
+            <input className={fieldCls(studentErrors.id_number)} value={studentForm.id_number} onChange={(e) => setStudentField('id_number', e.target.value.toUpperCase())} />
           </Field>
-          <Field label="出生年月日">
-            <input type="date" className={inputCls} value={studentForm.birth_date} onChange={(e) => setStudentForm({ ...studentForm, birth_date: e.target.value })} required />
+          <Field label="出生年月日" required error={studentErrors.birth_date}>
+            <input type="date" className={fieldCls(studentErrors.birth_date)} value={studentForm.birth_date} onChange={(e) => setStudentField('birth_date', e.target.value)} />
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="性別">
-              <select className={inputCls} value={studentForm.gender} onChange={(e) => setStudentForm({ ...studentForm, gender: e.target.value })}>
+              <select className={inputCls} value={studentForm.gender} onChange={(e) => setStudentField('gender', e.target.value)}>
                 <option value="男">男</option>
                 <option value="女">女</option>
               </select>
             </Field>
             <Field label="血型">
-              <input className={inputCls} value={studentForm.blood_type} onChange={(e) => setStudentForm({ ...studentForm, blood_type: e.target.value })} />
+              <input className={inputCls} value={studentForm.blood_type} onChange={(e) => setStudentField('blood_type', e.target.value)} />
             </Field>
           </div>
           <div className="flex gap-2">
@@ -256,11 +312,14 @@ function Section({ title, children }) {
   );
 }
 
-function Field({ label, children }) {
+function Field({ label, required, error, children }) {
   return (
     <label className="block">
-      <span className="mb-1 block text-xs font-medium text-gray-600">{label}</span>
+      <span className="mb-1 block text-xs font-medium text-gray-600">
+        {label}{required && <span className="ml-0.5 font-bold text-brand-error">＊</span>}
+      </span>
       {children}
+      {error && <span className="mt-1 block text-[11px] font-medium text-brand-error">{error}</span>}
     </label>
   );
 }

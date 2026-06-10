@@ -65,12 +65,13 @@ async function assertVenueExists(venueId) {
   }
 }
 
-function ragicParentPayload(parent) {
+// venueName：已由 venueLabel 把 venues.id 代碼換成 Ragic 認得的場館名稱（必填，缺則整筆 INVALID）。
+function ragicParentPayload(parent, venueName) {
   return {
     [ragic.FIELD.Z01.PARENT_NAME]: parent.name || '',
-    [ragic.FIELD.Z01.VENUE]: parent.primary_venue_id || '',
+    [ragic.FIELD.Z01.VENUE]: venueName || parent.primary_venue_id || '',
     [ragic.FIELD.Z01.PHONE]: parent.phone || '',
-    [ragic.FIELD.Z01.IDENTITY]: parent.identity || '',
+    [ragic.FIELD.Z01.IDENTITY]: parent.identity || '一般身分',
     [ragic.FIELD.Z01.GENDER]: parent.gender || '',
     [ragic.FIELD.Z01.EMAIL]: parent.email || '',
     [ragic.FIELD.Z01.HOME_PHONE]: parent.home_phone || '',
@@ -119,19 +120,33 @@ router.patch('/me', requireParent, async (req, res) => {
     line_id: cleanText(b.line_id, 100) || null,
     home_address: cleanText(b.home_address, 1000) || null,
   };
-  if (!patch.name) return res.status(400).json({ error: '家長姓名必填' });
+  // Ragic Z01 必填欄位（缺一即整筆 INVALID）：姓名 / 館別 / 身分 / 性別 / Email。
+  // 前端已用紅框＊擋一道，後端再驗一次（防直接打 API / 舊頁面），回傳明確缺哪欄。
+  const REQUIRED = [
+    ['name', '家長姓名'], ['primary_venue_id', '館別'], ['identity', '身分'],
+    ['gender', '性別'], ['email', 'Email'],
+  ];
+  for (const [key, label] of REQUIRED) {
+    if (!patch[key]) return res.status(400).json({ error: `「${label}」為必填欄位`, code: 'FIELD_REQUIRED', field: key });
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(patch.email)) {
+    return res.status(400).json({ error: 'Email 格式有誤', code: 'EMAIL_INVALID', field: 'email' });
+  }
 
   try {
     const cur = await loadMe(req.parent.id);
     if (!cur) return res.status(404).json({ error: '找不到家長帳號' });
     await assertVenueExists(patch.primary_venue_id);
     const merged = { ...cur, ...patch };
+    // 館別代碼 → Ragic 認得的場館名稱（這是「館別 為必填」同步失敗的真因）。
+    const venueName = await ragic.venueLabel(merged.primary_venue_id);
     console.log('[parent-sync] 編輯家長 start', {
       parent: cur.name, phone: cur.phone, ragicId: cur.ragic_record_id || null,
+      venueId: merged.primary_venue_id, venueName,
     });
     // 自我修復：本地 ragic_record_id 失效（後台刪除）時會改用手機重查 / 新建，
     // 回傳實際寫入的 record id（可能與本地不同 → 直接覆蓋校正，不再 COALESCE 留舊值）。
-    const ragicRecordId = await ragic.syncParentProfileStrict(merged, ragicParentPayload(merged));
+    const ragicRecordId = await ragic.syncParentProfileStrict(merged, ragicParentPayload(merged, venueName));
     console.log('[parent-sync] 編輯家長 Ragic 同步完成', { ragicId: ragicRecordId });
     const r = await pool.query(
       `UPDATE parents SET

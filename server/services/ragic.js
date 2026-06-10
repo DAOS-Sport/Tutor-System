@@ -10,6 +10,30 @@
  * 中文 → Field ID 對照來源：docs/ragic_api.md
  */
 const axios = require('axios');
+const { pool } = require('../models/db');
+
+// ── 館別代碼 → 名稱（寫回 Ragic 用）────────────────────────────────────────
+// Ragic 的「館別」欄位（Z01 1002174 / Z02 1002175）存的是場館「名稱」（如「新北高中」），
+// 但本地 venues.id 是「代碼」（如「B」）。若把代碼原樣寫進 Ragic，Ragic 不認得 → 視為空值
+// → 整筆 status:INVALID「欄位 館別 為必填」（家長/學員編輯同步失敗的真因）。
+// 故寫回前一律把代碼換成名稱；名稱清單小且少變動 → 記憶體快取 60s，避免每次寫入都打 DB。
+let _venueLabelCache = null;
+let _venueLabelAt = 0;
+async function venueLabel(venueId) {
+  const id = String(venueId || '').trim();
+  if (!id) return '';
+  if (!_venueLabelCache || Date.now() - _venueLabelAt > 60000) {
+    try {
+      const r = await pool.query('SELECT id, name FROM venues');
+      _venueLabelCache = new Map(r.rows.map((row) => [String(row.id), row.name]));
+      _venueLabelAt = Date.now();
+    } catch (err) {
+      console.warn('[Ragic] venueLabel 載入 venues 失敗，暫用原代碼:', err.message);
+      return id;
+    }
+  }
+  return _venueLabelCache.get(id) || id;
+}
 
 // Ragic 認證：必須用 `APIKey=` query 參數（Basic / Bearer header 都會被當 guest 拒絕，回 code:106）
 // URL append：很多 RAGIC_FORM_* env 已帶 ?PAGEID=ruv，要用 & 而非第二個 ?，否則 ?api 會被吃進前一個 value
@@ -414,7 +438,7 @@ function _toPhysGender(g) {
 //   - 學員編號：新生無編號 → 以身分證字號頂替（與既有真實紀錄一致）。
 //   - (報)身分：家長身分，預設「一般身分」。
 //   - 血型：未填以「不清楚」placeholder（Ragic 接受的選項值）。
-function _buildZ02RegistrationPayload({ parent, student }) {
+async function _buildZ02RegistrationPayload({ parent, student }) {
   const idnum = student.id_number ? String(student.id_number).toUpperCase() : '';
   const birth = student.birth_date ? String(student.birth_date).replace(/-/g, '/') : '';
   return {
@@ -425,7 +449,7 @@ function _buildZ02RegistrationPayload({ parent, student }) {
     [FIELD.Z02.ID_NUMBER]:       idnum,
     [FIELD.Z02.STUDENT_CODE]:    student.student_code || idnum,  // 學員編號（缺則用身分證）
     [FIELD.Z02.BLOOD_TYPE]:      student.blood_type || '不清楚', // Z02 必填，缺則「不清楚」
-    [FIELD.Z02.VENUE]:           parent.primary_venue_id || '',
+    [FIELD.Z02.VENUE]:           await venueLabel(parent.primary_venue_id),
     [FIELD.Z02.PARENT_PHONE]:    parent.phone || '',             // ★ Z01↔Z02 連結鍵
     [FIELD.Z02.PARENT_NAME]:     parent.name || '',
     [FIELD.Z02.PARENT_GENDER]:   _toPhysGender(parent.gender),
@@ -444,8 +468,9 @@ async function createParentWithStudentsInRagic({ parent, students = [], lineUid 
     [FIELD.Z01.LINE_UID]:      lineUid,
     // Ragic Z01 必填欄位（不送會被擋 status:INVALID）：身分 / 館別 / line對話網址。
     // 場館在報名時才選定，註冊階段先放「待補登」placeholder（Ragic 接受自由文字）。
+    // 館別需送「名稱」而非代碼（venueLabel 轉換），否則 Ragic 不認得 → 為必填 INVALID。
     [FIELD.Z01.IDENTITY]:      parent.identity || '一般身分',
-    [FIELD.Z01.VENUE]:         parent.primary_venue_id || '待補登',
+    [FIELD.Z01.VENUE]:         (await venueLabel(parent.primary_venue_id)) || '待補登',
     [FIELD.Z01.LINE_CHAT_URL]: '待補登',
   };
   if (parent.gender) payload[FIELD.Z01.GENDER] = parent.gender;
@@ -475,7 +500,7 @@ async function createParentWithStudentsInRagic({ parent, students = [], lineUid 
   try {
     for (const s of students) {
       if (!s || !s.name) continue;
-      const z02raw = await upsertStudentStrict(_buildZ02RegistrationPayload({ parent, student: s }));
+      const z02raw = await upsertStudentStrict(await _buildZ02RegistrationPayload({ parent, student: s }));
       studentRecordIds.push(z02raw?.ragicId || z02raw?._ragicId || null);
     }
   } catch (err) {
@@ -548,7 +573,8 @@ async function createParentRagicRecord(parent) {
     [FIELD.Z01.PARENT_NAME]:   parent?.name || '',
     [FIELD.Z01.PHONE]:         String(parent?.phone || '').trim(),
     [FIELD.Z01.IDENTITY]:      parent?.identity || '一般身分',
-    [FIELD.Z01.VENUE]:         parent?.primary_venue_id || '待補登',
+    // 館別送「名稱」而非代碼（venueLabel 轉換），否則 Ragic「館別 為必填」INVALID。
+    [FIELD.Z01.VENUE]:         (await venueLabel(parent?.primary_venue_id)) || '待補登',
     [FIELD.Z01.LINE_CHAT_URL]: '待補登',
   };
   if (parent?.gender) payload[FIELD.Z01.GENDER] = parent.gender;
@@ -683,7 +709,7 @@ async function upsertStudentStrict(studentData, ragicRecordId = null) {
   return raw;
 }
 
-function buildZ02StudentPayload({ parent, student, status = '啟用' }) {
+async function buildZ02StudentPayload({ parent, student, status = '啟用' }) {
   // Z02 必填欄位（缺一會 INVALID 202、整筆寫不進去），與 _buildZ02RegistrationPayload 對齊：
   //   - 學員編號：新生無編號 → 以身分證字號頂替（與既有真實紀錄一致）
   //   - 血型：未填以「不清楚」placeholder（Ragic 接受的選項值）
@@ -697,7 +723,7 @@ function buildZ02StudentPayload({ parent, student, status = '啟用' }) {
     [FIELD.Z02.ID_NUMBER]: idnum,
     [FIELD.Z02.STUDENT_CODE]: student.student_code || idnum, // 學員編號 必填，缺則用身分證
     [FIELD.Z02.BLOOD_TYPE]: student.blood_type || '不清楚',  // Z02 必填
-    [FIELD.Z02.VENUE]: parent.primary_venue_id || '',
+    [FIELD.Z02.VENUE]: await venueLabel(parent.primary_venue_id),  // 送名稱而非代碼
     [FIELD.Z02.PARENT_PHONE]: parent.phone || '',
     [FIELD.Z02.PARENT_ACCOUNT]: parent.phone || '',
     [FIELD.Z02.PARENT_NAME]: parent.name || '',
@@ -716,28 +742,40 @@ async function upsertZ02ForParentStudent({ parent, student, status = '啟用' })
   } else if (student.id_number) {
     z02Record = await getStudentByIdNumber(String(student.id_number).toUpperCase());
   }
-  const payload = buildZ02StudentPayload({ parent, student, status });
+  const payload = await buildZ02StudentPayload({ parent, student, status });
   if (student.student_code) payload[FIELD.Z02.STUDENT_CODE] = student.student_code;
   const raw = await upsertStudentStrict(payload, z02Record?._ragicId || null);
   return { ragicRecordId: z02Record?._ragicId || raw.ragicId || raw._ragicId || null, raw };
 }
 
+// 註：Z01 的「項次/學員」子表是「依家長手機由 Z02 自動連動帶出」的 linked-records，
+// dotted-key 直寫常被 Ragic 靜默丟棄、或回 INVALID（子表必填欄如 學員編號/學性別/身分證字號）。
+// 真正落地靠 Z02（upsertZ02ForParentStudent）；故子表寫入一律 best-effort（失敗只記 log 不擋），
+// 與註冊流程 createParentWithStudentsInRagic「不再帶 dotted 子表」一致。
 async function createStudentZ01Z02Strict({ parent, student, startIndex = 0 }) {
   const ragicRecordId = await resolveParentRagicRecord(parent);
-  const z01Raw = await postRagicStrict(
-    _recordPath(process.env.RAGIC_FORM_Z01, ragicRecordId),
-    buildZ01StudentPayload(student, startIndex)
-  );
-  _cacheInvalidate('z01:');
+  try {
+    await postRagicStrict(
+      _recordPath(process.env.RAGIC_FORM_Z01, ragicRecordId),
+      buildZ01StudentPayload(student, startIndex)
+    );
+    _cacheInvalidate('z01:');
+  } catch (err) {
+    console.warn('[student-sync] Z01 子表寫入略過（非致命，靠 Z02 連動帶出）:', err.message);
+  }
   const z02 = await upsertZ02ForParentStudent({ parent, student, status: '啟用' });
-  return { z01: z01Raw, z02, parentRagicRecordId: ragicRecordId };
+  return { z01: null, z02, parentRagicRecordId: ragicRecordId };
 }
 
 async function updateStudentZ01Z02Strict({ parent, student, status = '啟用' }) {
   const ragicRecordId = await resolveParentRagicRecord(parent);
-  const z01 = await updateStudentInParentSubtable({ ragicRecordId, student });
+  try {
+    await updateStudentInParentSubtable({ ragicRecordId, student });
+  } catch (err) {
+    console.warn('[student-sync] Z01 子表更新略過（非致命，靠 Z02 連動帶出）:', err.message);
+  }
   const z02 = await upsertZ02ForParentStudent({ parent, student, status });
-  return { z01, z02, parentRagicRecordId: ragicRecordId };
+  return { z01: null, z02, parentRagicRecordId: ragicRecordId };
 }
 
 async function deactivateStudentZ02Strict({ parent, student }) {
@@ -766,6 +804,7 @@ module.exports = {
   upsertParentStrict,
   getParentRecordByRagicId,
   syncParentProfileStrict,
+  venueLabel,
   mapZ01Parent,
   parseZ01Students,
   createParentWithStudentsInRagic,
