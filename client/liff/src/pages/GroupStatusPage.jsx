@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import liff from '@line/liff';
 import { groupOrdersApi } from '../api/groupOrders';
 import { enrollmentsApi } from '../api/enrollments';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -39,7 +40,22 @@ export default function GroupStatusPage() {
   const [proofBusy, setProofBusy] = useState(false);
   const [transferLast5, setTransferLast5] = useState('');
   const [proofFile, setProofFile] = useState(null);
+  const [lineName, setLineName] = useState('');
   const proofInputRef = useRef(null);
+
+  // 取家長的 LINE 顯示名稱，組分享訊息用（在 LINE 內才拿得到；dev/瀏覽器時靜默略過）
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        if (liff?.isLoggedIn?.()) {
+          const p = await liff.getProfile();
+          if (alive && p?.displayName) setLineName(p.displayName);
+        }
+      } catch { /* 非 LINE 環境，退回用報名姓名 */ }
+    })();
+    return () => { alive = false; };
+  }, []);
 
   const load = useCallback(() => {
     let alive = true;
@@ -88,12 +104,37 @@ export default function GroupStatusPage() {
   const joinUrl = order.is_leader ? buildJoinUrl(order.join_token) : null;
   const canCancelGroup = order.is_leader && ['forming', 'submitted'].includes(order.status);
 
-  async function copyInvite() {
+  // 分享訊息：{家長LINE名稱}邀請您一同來參加{教練名稱}的{幾V幾}家教班\n加入連結👉{LIFF連結}
+  function buildInviteMessage() {
+    const inviter = lineName || selfMember?.parent_name || '家長';
+    const coach = order.coach_name || '教練';
+    const fmt = courseTypeLabel(order.course_type);
+    return `${inviter}邀請您一同來參加${coach}的${fmt}家教班\n加入連結👉${joinUrl}`;
+  }
+
+  async function shareInvite() {
+    const message = buildInviteMessage();
+    // 1) 手機原生分享面板（Web Share API）——「按下去自動分享」最貼近的體驗
+    if (navigator.share) {
+      try {
+        await navigator.share({ text: message });
+        return;
+      } catch (err) {
+        if (err?.name === 'AbortError') return; // 使用者自行取消，不視為錯誤
+        // 其餘情況往下退回 LINE / 複製
+      }
+    }
+    // 2) 退回 LINE 分享（in-app 或無 Web Share API 時）
     try {
-      await navigator.clipboard.writeText(joinUrl);
-      toast.success('邀請連結已複製，貼到群組分享吧！');
+      window.open(`https://line.me/R/msg/text/?${encodeURIComponent(message)}`, '_blank');
+      return;
+    } catch { /* 再退回複製 */ }
+    // 3) 最後退回複製整段訊息
+    try {
+      await navigator.clipboard.writeText(message);
+      toast.success('邀請訊息已複製，貼到群組分享吧！');
     } catch {
-      toast.error('複製失敗，請手動複製');
+      toast.error('分享失敗，請手動複製連結');
     }
   }
 
@@ -193,12 +234,10 @@ export default function GroupStatusPage() {
       {order.is_leader && order.status === 'forming' && joinUrl && (
         <div className="mb-4 rounded-xl border border-brand-teal/30 bg-brand-teal/5 p-3">
           <label className="mb-1 block text-xs font-medium text-gray-600">邀請其他學員加入</label>
-          <div className="flex gap-2">
-            <input readOnly value={joinUrl}
-              className="flex-1 truncate rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs text-gray-600" />
-            <button type="button" onClick={copyInvite}
-              className="shrink-0 rounded-lg bg-brand-teal px-3 py-2 text-xs font-bold text-white">複製</button>
-          </div>
+          <button type="button" onClick={shareInvite}
+            className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-brand-teal px-3 py-2.5 text-sm font-bold text-white active:bg-brand-primary">
+            <span aria-hidden>📤</span> 分享邀請
+          </button>
           <p className="mt-1.5 text-[11px] text-gray-500">分享給其他家長，用 LINE 登入即可加入。</p>
         </div>
       )}
@@ -351,6 +390,11 @@ export default function GroupStatusPage() {
           )}
         </div>
       ) : null}
+
+      <button type="button" onClick={() => navigate('/')}
+        className="mt-4 w-full rounded-lg border border-gray-300 py-2.5 text-sm font-bold text-gray-700 active:bg-gray-100">
+        回到首頁
+      </button>
 
       <ConfirmModal
         open={confirm === 'submit'}

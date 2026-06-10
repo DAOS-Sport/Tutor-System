@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { parentsApi } from '../api/parents';
 import { venuesApi } from '../api/venues';
 import { useAuth } from '../context/AuthContext';
@@ -22,9 +21,14 @@ function parentFormFrom(parent) {
   };
 }
 
+// Ragic 同步失敗時，盡量把後端的真實原因顯示出來，方便家長回報 / 排查
+function syncErrMsg(e) {
+  const d = e?.response?.data;
+  return d?.detail || d?.error || 'Ragic 同步失敗，請稍後再試';
+}
+
 export default function ProfilePage() {
-  const { parent, user, setUser, logout } = useAuth();
-  const navigate = useNavigate();
+  const { parent, user, setUser } = useAuth();
   const toast = useToast();
   const [profile, setProfile] = useState(parent);
   const [parentForm, setParentForm] = useState(() => parentFormFrom(parent));
@@ -60,12 +64,6 @@ export default function ProfilePage() {
     if (user) setUser({ ...user, data: nextProfile });
   }
 
-  function handleLogout() {
-    logout();
-    toast.info('已登出');
-    navigate('/login', { replace: true });
-  }
-
   async function saveParent(e) {
     e.preventDefault();
     setBusy('parent');
@@ -73,8 +71,8 @@ export default function ProfilePage() {
       const data = await parentsApi.updateMe(parentForm);
       updateAuth(data);
       toast.success('家長資料已更新');
-    } catch {
-      toast.error('Ragic 同步失敗，請稍後再試');
+    } catch (err) {
+      toast.error(syncErrMsg(err));
     } finally {
       setBusy('');
     }
@@ -109,8 +107,8 @@ export default function ProfilePage() {
       updateAuth({ ...profile, students: nextStudents });
       resetStudentForm();
       toast.success(editingId ? '學員資料已更新' : '學員已新增');
-    } catch {
-      toast.error('Ragic 同步失敗，請稍後再試');
+    } catch (err) {
+      toast.error(syncErrMsg(err));
     } finally {
       setBusy('');
     }
@@ -124,8 +122,8 @@ export default function ProfilePage() {
       updateAuth({ ...profile, students: students.filter((s) => s.id !== id) });
       if (editingId === id) resetStudentForm();
       toast.success('學員已停用');
-    } catch {
-      toast.error('Ragic 同步失敗，請稍後再試');
+    } catch (err) {
+      toast.error(syncErrMsg(err));
     } finally {
       setBusy('');
     }
@@ -242,18 +240,9 @@ export default function ProfilePage() {
         </form>
       </Section>
 
-      <Section title="其他">
-        <button
-          type="button"
-          onClick={handleLogout}
-          className="w-full rounded-lg border border-brand-error/40 py-2.5 text-sm font-medium text-brand-error active:bg-brand-error-soft"
-        >
-          登出
-        </button>
-        <p className="mt-3 text-[11px] text-gray-400">
-          本系統保留師生對話記錄供場館管理使用。
-        </p>
-      </Section>
+      <p className="px-1 pb-2 text-[11px] text-gray-400">
+        本系統保留師生對話記錄供場館管理使用。
+      </p>
     </div>
   );
 }

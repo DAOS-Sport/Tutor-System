@@ -89,6 +89,9 @@ function ragicError(res, err) {
   const status = err.code === 'PARENT_RAGIC_NOT_FOUND' ? 409 : 502;
   return res.status(status).json({
     error: 'Ragic 同步失敗，請稍後再試',
+    // detail：把 Ragic 的真實原因（如 INVALID 必填缺漏 / 慢回應）帶回前端，
+    // 方便家長截圖回報、我們即時定位；非機敏資訊。
+    detail: err.message ? `同步失敗：${err.message}` : undefined,
     code: err.code || 'RAGIC_SYNC_FAILED',
   });
 }
@@ -123,13 +126,18 @@ router.patch('/me', requireParent, async (req, res) => {
     if (!cur) return res.status(404).json({ error: '找不到家長帳號' });
     await assertVenueExists(patch.primary_venue_id);
     const merged = { ...cur, ...patch };
-    const ragicRecordId = await ragic.resolveParentRagicRecord(cur);
-    await ragic.upsertParentStrict(ragicParentPayload(merged), ragicRecordId);
+    console.log('[parent-sync] 編輯家長 start', {
+      parent: cur.name, phone: cur.phone, ragicId: cur.ragic_record_id || null,
+    });
+    // 自我修復：本地 ragic_record_id 失效（後台刪除）時會改用手機重查 / 新建，
+    // 回傳實際寫入的 record id（可能與本地不同 → 直接覆蓋校正，不再 COALESCE 留舊值）。
+    const ragicRecordId = await ragic.syncParentProfileStrict(merged, ragicParentPayload(merged));
+    console.log('[parent-sync] 編輯家長 Ragic 同步完成', { ragicId: ragicRecordId });
     const r = await pool.query(
       `UPDATE parents SET
          name = $2, primary_venue_id = $3, identity = $4, gender = $5, email = $6,
          home_phone = $7, line_id = $8, home_address = $9,
-         ragic_record_id = COALESCE(ragic_record_id, $10),
+         ragic_record_id = $10,
          last_synced_at = NOW(), updated_at = NOW()
        WHERE id = $1
        RETURNING id, name, phone, gender, email, primary_venue_id, identity,
@@ -140,7 +148,7 @@ router.patch('/me', requireParent, async (req, res) => {
     const me = await loadMe(r.rows[0].id);
     res.json(me);
   } catch (err) {
-    console.error('[parents.updateMe]', err);
+    console.error('[parent-sync] 編輯家長 失敗', { code: err.code, msg: err.message });
     return ragicError(res, err);
   }
 });

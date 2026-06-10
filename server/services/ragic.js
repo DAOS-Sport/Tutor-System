@@ -566,6 +566,31 @@ async function createParentRagicRecord(parent) {
   return String(id);
 }
 
+/**
+ * 編輯家長後把完整 Z01 主檔寫回 Ragic，並自我修復「本地 ragic_record_id 已失效」的情況：
+ *  1. 本地存了 record id → 先驗證該筆在 Ragic 仍存在（被後台刪除時會查無）；失效就丟棄。
+ *  2. 沒有有效 id → 用手機查既有 Z01，查不到才新建（resolveParentRagicRecord 內含此邏輯）。
+ *  3. 寫回完整欄位，回傳實際使用的 ragicRecordId（可能與傳入不同 → caller 應回存校正）。
+ * payloadByFieldId：以 Field ID 為 key 的 Z01 欄位（caller 用 ragicParentPayload 組好）。
+ */
+async function syncParentProfileStrict(parent, payloadByFieldId) {
+  let ragicRecordId = parent?.ragic_record_id || null;
+  if (ragicRecordId) {
+    const existing = await getParentRecordByRagicId(ragicRecordId).catch(() => null);
+    if (!existing) {
+      console.warn('[parent-sync] 本地 ragic_record_id 在 Ragic 查無，改以手機重新定位', {
+        staleId: String(ragicRecordId), phone: parent?.phone,
+      });
+      ragicRecordId = null;
+    }
+  }
+  if (!ragicRecordId) {
+    ragicRecordId = await resolveParentRagicRecord({ ...parent, ragic_record_id: null });
+  }
+  await upsertParentStrict(payloadByFieldId, ragicRecordId);
+  return String(ragicRecordId);
+}
+
 function buildZ01StudentPayload(student, rowIndex) {
   const prefix = `${Z01_STUDENTS_SUBTABLE_ID}_${rowIndex}_`;
   const payload = {};
@@ -739,6 +764,8 @@ module.exports = {
   bindParentLineUidToRagic,
   upsertParent,
   upsertParentStrict,
+  getParentRecordByRagicId,
+  syncParentProfileStrict,
   mapZ01Parent,
   parseZ01Students,
   createParentWithStudentsInRagic,

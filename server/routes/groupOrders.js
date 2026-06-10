@@ -224,6 +224,7 @@ function shapeMember(m, isSelf, perStudent, periodCount) {
 async function loadOrderWithMembers(client, orderId) {
   const o = await client.query(
     `SELECT go.*, ctc.base_price, COALESCE(co.pricing_multiplier, 1) AS multiplier,
+            co.name AS coach_name,
             v.name AS venue_name, v.account_holder, v.account_number,
             v.bank_institution_name, v.bank_branch_name
        FROM group_orders go
@@ -273,6 +274,7 @@ function shapeOrder(order, members, viewerParentId, extra = {}) {
     },
     course_type: order.course_type,
     coach_id: order.coach_id,
+    coach_name: order.coach_name || '',
     period_count: periodCount,
     min_students: order.min_students,
     max_students: order.max_students,
