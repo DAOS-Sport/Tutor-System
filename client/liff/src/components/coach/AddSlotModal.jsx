@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { slotsApi } from '../../api/slots';
 import { todayTaipeiYMD } from '../../utils/format';
 
+const DURATION_MINUTES = 60; // 一堂課固定 60 分鐘，不開放教練調整
+
 function taipeiInputToIso(date, time) {
   return new Date(`${date}T${time}:00+08:00`).toISOString();
 }
@@ -9,20 +11,20 @@ function taipeiInputToIso(date, time) {
 /**
  * 單筆新增槽位
  */
-export default function AddSlotModal({ coachId, venueIds, onClose, onCreated, onError }) {
+export default function AddSlotModal({ coachId, venueIds, venueNameMap, onClose, onCreated, onError }) {
   const [date, setDate] = useState(todayTaipeiYMD());
   const [time, setTime] = useState('14:00');
-  const [duration, setDuration] = useState(60);
   const [venueId, setVenueId] = useState(venueIds?.[0] || 'B');
-  const [notes, setNotes] = useState('');
   const [busy, setBusy] = useState(false);
   const [conflict, setConflict] = useState(null);
+
+  const venueName = (v) => (venueNameMap && venueNameMap[v]) || `${v} 館`;
 
   async function checkConflict() {
     if (!date || !time) return;
     const start = taipeiInputToIso(date, time);
     try {
-      const r = await slotsApi.previewConflict({ coach_id: coachId, start_at: start, duration_minutes: duration });
+      const r = await slotsApi.previewConflict({ coach_id: coachId, start_at: start, duration_minutes: DURATION_MINUTES });
       setConflict(r.has_conflict ? r : null);
     } catch { setConflict(null); }
   }
@@ -35,7 +37,7 @@ export default function AddSlotModal({ coachId, venueIds, onClose, onCreated, on
     try {
       const slot = await slotsApi.create({
         coach_id: coachId, venue_id: venueId, start_at: start,
-        duration_minutes: duration, notes: notes || null,
+        duration_minutes: DURATION_MINUTES,
       });
       onCreated && onCreated(slot);
       onClose();
@@ -57,30 +59,25 @@ export default function AddSlotModal({ coachId, venueIds, onClose, onCreated, on
         <form onSubmit={handleSubmit} className="space-y-3 text-sm">
           <Field label="日期">
             <input type="date" required value={date} onChange={(e) => { setDate(e.target.value); setConflict(null); }}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2" />
+              className="block w-full min-w-0 box-border appearance-none rounded-lg border border-gray-300 px-3 py-2" />
           </Field>
           <Field label="開始時間">
             <input type="time" required value={time} onChange={(e) => { setTime(e.target.value); setConflict(null); }}
-              onBlur={checkConflict} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
+              onBlur={checkConflict} className="block w-full min-w-0 box-border appearance-none rounded-lg border border-gray-300 px-3 py-2" />
           </Field>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="時長（分鐘）">
-              <select value={duration} onChange={(e) => setDuration(Number(e.target.value))}
-                className="w-full rounded-lg border border-gray-300 px-3 py-2">
-                {[60, 90, 120].map((m) => <option key={m} value={m}>{m}</option>)}
-              </select>
+            <Field label="時長">
+              <div className="w-full min-w-0 box-border rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-gray-500">
+                60 分鐘
+              </div>
             </Field>
             <Field label="場館">
               <select value={venueId} onChange={(e) => setVenueId(e.target.value)}
-                className="w-full rounded-lg border border-gray-300 px-3 py-2">
-                {venueIds.map((v) => <option key={v} value={v}>{v}</option>)}
+                className="block w-full min-w-0 box-border appearance-none rounded-lg border border-gray-300 px-3 py-2">
+                {venueIds.map((v) => <option key={v} value={v}>{venueName(v)}</option>)}
               </select>
             </Field>
           </div>
-          <Field label="備註（選填）">
-            <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={50}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2" />
-          </Field>
           {conflict && (
             <div className="rounded-lg border border-brand-error/30 bg-brand-error-soft p-2 text-xs text-brand-error">
               ⚠ 偵測到時段衝突，送出將失敗
@@ -98,7 +95,7 @@ export default function AddSlotModal({ coachId, venueIds, onClose, onCreated, on
 
 function Field({ label, children }) {
   return (
-    <label className="block">
+    <label className="block min-w-0">
       <span className="mb-1 block text-xs font-medium text-gray-700">{label}</span>
       {children}
     </label>

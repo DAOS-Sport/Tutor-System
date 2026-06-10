@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs -I {} basename {})",
+      "Bash(grep -nA8 \"venues:\" api/mock.js)",
+      "Bash(grep -nA6 \"^const VENUES\" api/mock.js)",
+      "Bash(VITE_USE_MOCK=false npm run build)"
+    ]
+  }
+}

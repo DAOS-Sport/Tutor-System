@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { slotsApi } from '../api/slots';
+import { venuesApi } from '../api/venues';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -49,6 +50,7 @@ export default function CoachScheduleWeekPage() {
   const [activeSlot, setActiveSlot] = useState(null);
   const [batchResult, setBatchResult] = useState(null);
   const [reload, setReload] = useState(0);
+  const [venueNameMap, setVenueNameMap] = useState({}); // { 場館代碼: 場館名稱 }
 
   function toggleVenue(v) {
     setVenueFilter((prev) => {
@@ -59,6 +61,20 @@ export default function CoachScheduleWeekPage() {
   }
 
   const venueIds = coach?.venue_ids || [];
+  const venueLabel = (v) => venueNameMap[v] || `${v} 館`;
+
+  useEffect(() => {
+    let alive = true;
+    venuesApi.list()
+      .then((list) => {
+        if (!alive) return;
+        const map = {};
+        (list || []).forEach((vn) => { if (vn?.id) map[vn.id] = vn.name || vn.id; });
+        setVenueNameMap(map);
+      })
+      .catch(() => {}); // 取不到名稱時 fallback 顯示「{代碼} 館」
+    return () => { alive = false; };
+  }, []);
 
   const range = useMemo(() => {
     if (view === 'week') return { from: anchor, to: addDays(anchor, 7) };
@@ -126,7 +142,7 @@ export default function CoachScheduleWeekPage() {
         <div className="mt-2 flex flex-wrap gap-1.5">
           <FilterChip active={venueFilter.size === 0} onClick={() => setVenueFilter(new Set())}>全部</FilterChip>
           {venueIds.map((v) => (
-            <FilterChip key={v} active={venueFilter.has(v)} onClick={() => toggleVenue(v)}>{v} 館</FilterChip>
+            <FilterChip key={v} active={venueFilter.has(v)} onClick={() => toggleVenue(v)}>{venueLabel(v)}</FilterChip>
           ))}
         </div>
       </header>
@@ -163,13 +179,13 @@ export default function CoachScheduleWeekPage() {
       </div>
 
       {showAdd && (
-        <AddSlotModal coachId={coach.id} venueIds={venueIds}
+        <AddSlotModal coachId={coach.id} venueIds={venueIds} venueNameMap={venueNameMap}
           onClose={() => setShowAdd(false)}
           onCreated={() => { toast.success('已新增槽位'); refresh(); }}
           onError={(msg) => toast.error(msg)} />
       )}
       {showBatch && (
-        <BatchAddSlotModal coachId={coach.id} venueIds={venueIds}
+        <BatchAddSlotModal coachId={coach.id} venueIds={venueIds} venueNameMap={venueNameMap}
           onClose={() => setShowBatch(false)}
           onDone={(r) => { setBatchResult(r); refresh(); }}
           onError={(msg) => toast.error(msg)} />
