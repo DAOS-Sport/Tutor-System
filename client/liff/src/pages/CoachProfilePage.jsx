@@ -88,41 +88,41 @@ export default function CoachProfilePage() {
       {/* ── MemberCard Banner ── */}
       <div className="mb-4 w-full rounded-[2rem] bg-gradient-to-br from-[#092f63] via-[#075d79] to-[#11a287] p-5 shadow-2xl text-white">
         {/* 頂部：頭像 + 姓名/手機 + 資深徽章 */}
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex items-center gap-4">
-            <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full bg-blue-600/70 shadow-lg">
-              <span className="text-4xl">👤</span>
+        <div className="flex items-start gap-3">
+          <div className="flex flex-1 min-w-0 items-center gap-3">
+            <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-blue-600/70 shadow-lg">
+              <span className="text-3xl">👤</span>
             </div>
-            <div className="min-w-0">
-              <div className="truncate text-[1.6rem] font-black tracking-wide drop-shadow leading-tight">
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-xl font-black tracking-wide drop-shadow leading-tight">
                 {coach.name}
               </div>
               {coach.phone && (
-                <div className="mt-1 text-sm tracking-wider text-white/75">{coach.phone}</div>
+                <div className="mt-0.5 text-xs tracking-wider text-white/75">{coach.phone}</div>
               )}
             </div>
           </div>
-          <div className="shrink-0 rounded-2xl border border-white/15 bg-white/10 px-3 py-2 text-sm font-bold shadow-inner">
-            {coach.is_senior && <span className="mr-1">🏅</span>}
+          <div className="shrink-0 rounded-xl border border-white/15 bg-white/10 px-2.5 py-1.5 text-xs font-bold shadow-inner whitespace-nowrap">
+            {coach.is_senior && <span className="mr-0.5">🏅</span>}
             {coach.is_senior ? '資深' : '一般'} ×{coach.pricing_multiplier || coach.multiplier || 1}
           </div>
         </div>
 
         {/* 授權場館 */}
-        <div className="mt-5 rounded-2xl border border-white/10 bg-white/[0.08] px-5 py-4 shadow-inner">
-          <div className="mb-3 flex items-center gap-2 text-sm font-bold">
+        <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.08] px-4 py-3 shadow-inner">
+          <div className="mb-2.5 flex items-center gap-2 text-xs font-bold">
             <span className="text-cyan-300">🛡</span>
             授權場館
           </div>
           {venueNames.length > 0 ? (
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-2">
               {venueNames.map((name, i) => (
                 <div key={`${name}-${i}`}
-                  className="flex h-14 items-center gap-3 rounded-2xl border border-white/5 bg-black/25 px-4 shadow-xl">
-                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#075086] text-xl shadow-lg">
+                  className="flex min-h-12 items-center gap-2 rounded-xl border border-white/5 bg-black/25 px-3 py-2 shadow-xl">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#075086] text-base shadow-lg">
                     🏫
                   </div>
-                  <span className="truncate text-base font-black tracking-wide drop-shadow">{name}</span>
+                  <span className="text-sm font-bold leading-snug drop-shadow">{name}</span>
                 </div>
               ))}
             </div>
