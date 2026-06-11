@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { coachesApi } from '../api/coaches';
 import { venuesApi } from '../api/venues';
 import { useAuth } from '../context/AuthContext';
@@ -7,8 +6,7 @@ import { useToast } from '../context/ToastContext';
 import LoadingSpinner from '../components/LoadingSpinner';
 
 export default function CoachProfilePage() {
-  const { coach, logout } = useAuth();
-  const navigate = useNavigate();
+  const { coach } = useAuth();
   const toast = useToast();
   const [bio, setBio] = useState('');
   const [savingBio, setSavingBio] = useState(false);
@@ -39,7 +37,7 @@ export default function CoachProfilePage() {
   console.log('[CoachProfile] venue_ids cached =', coach?.venue_ids, ' fresh =', freshVenueIds);
   // 優先用重抓到的最新陣列；失敗才退回快取，避免舊登入快取顯示不全。
   const venueIds = freshVenueIds || coach?.venue_ids || [];
-  const venueLabel = venueIds.map((id) => venueMap[id] || id).join(' / ') || '—';
+  const venueNames = venueIds.map((id) => venueMap[id] || id);
 
   async function handleSaveBio() {
     if (savingBio) return;
@@ -83,43 +81,56 @@ export default function CoachProfilePage() {
     } catch (err) { toast.error(err?.response?.data?.error || '刪除失敗'); }
   }
 
-  function handleLogout() { logout(); toast.info('已登出'); navigate('/login', { replace: true }); }
-
   if (!coach) return null;
 
   return (
     <div className="px-4 py-4">
-      <div className="mb-4 rounded-2xl bg-gradient-to-br from-brand-primary to-brand-teal p-4 text-white shadow-md">
-        <div className="flex items-start justify-between">
-          <div>
-            <div className="text-xs opacity-80">教練帳號</div>
-            <div className="mt-0.5 text-lg font-bold">{coach.name}</div>
-            <div className="mt-0.5 text-xs opacity-90">{coach.phone}</div>
+      <div className="relative mb-4 w-full select-none overflow-hidden rounded-[2.5rem] bg-[#165B7C] p-6 text-white shadow-xl">
+        {/* 液態玻璃高光：左上柔光 + 整面斜向漸層，讓單色卡片更有層次 */}
+        <div className="pointer-events-none absolute -left-10 -top-12 h-44 w-44 rounded-full bg-white/10 blur-2xl" />
+        <div className="pointer-events-none absolute inset-0 rounded-[2.5rem] bg-gradient-to-br from-white/10 via-transparent to-black/15" />
+
+        <div className="relative">
+          <div className="mb-6 flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <h2 className="truncate py-1 text-3xl font-bold tracking-wide">{coach.name}</h2>
+              {coach.phone && <p className="mt-0.5 text-xs tracking-wider text-white/60">{coach.phone}</p>}
+            </div>
+            <div className="flex shrink-0 items-center rounded-xl border border-[#0d435c] bg-[#165B7C] px-3 py-1.5 shadow-inner">
+              {coach.is_senior && <span className="mr-1 text-lg">🏅</span>}
+              <span className="text-sm font-medium tracking-wider">
+                {coach.is_senior ? '資深' : '一般'} ×{coach.pricing_multiplier || coach.multiplier || 1}
+              </span>
+            </div>
           </div>
-          <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-bold ${
-            coach.is_senior ? 'bg-brand-amber text-white' : 'bg-white/20 text-white'
-          }`}>
-            {coach.is_senior ? '🏅 資深' : '一般'}
-          </span>
+
+          <div className="rounded-xl border border-[#0d435c] bg-[#145371] p-4">
+            <p className="mb-2 text-xs tracking-wider text-gray-300">授權場館</p>
+            {venueNames.length > 0 ? (
+              <div className="flex flex-wrap gap-2">
+                {venueNames.map((name, i) => (
+                  <span
+                    key={`${name}-${i}`}
+                    className="break-all rounded-xl border border-white/15 bg-white/10 px-3 py-1.5 text-base font-semibold tracking-wide shadow-inner"
+                  >
+                    {name}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <div className="text-lg text-gray-300">—</div>
+            )}
+          </div>
+
+          {coach.intro_review_status && (
+            <p className="mt-3 text-[11px] tracking-wider text-white/70">
+              介紹狀態：{
+                { draft: '草稿', pending_review: '審核中', published: '已發布', rejected: '未通過' }[coach.intro_review_status]
+                || coach.intro_review_status
+              }
+            </p>
+          )}
         </div>
-        <div className="mt-3 grid grid-cols-2 gap-2 text-[11px]">
-          <div className="rounded-lg bg-white/15 px-2.5 py-1.5">
-            <div className="opacity-80">收費倍率</div>
-            <div className="mt-0.5 text-base font-bold">×{coach.pricing_multiplier || coach.multiplier || 1}</div>
-          </div>
-          <div className="rounded-lg bg-white/15 px-2.5 py-1.5">
-            <div className="opacity-80">可教場館</div>
-            <div className="mt-0.5 text-base font-bold">{venueLabel}</div>
-          </div>
-        </div>
-        {coach.intro_review_status && (
-          <div className="mt-2 text-[11px] opacity-90">
-            介紹狀態：{
-              { draft: '草稿', pending_review: '審核中', published: '已發布', rejected: '未通過' }[coach.intro_review_status]
-              || coach.intro_review_status
-            }
-          </div>
-        )}
       </div>
 
       <Section title="個人介紹（家長端可看）">
@@ -167,13 +178,6 @@ export default function CoachProfilePage() {
         <button onClick={() => setShowAdd(true)}
           className="mt-2 w-full rounded-lg border border-dashed border-brand-primary/40 py-2 text-sm font-medium text-brand-primary">
           ＋ 新增圖片
-        </button>
-      </Section>
-
-      <Section title="其他">
-        <button onClick={handleLogout}
-          className="w-full rounded-lg border border-brand-error/40 py-2.5 text-sm font-medium text-brand-error active:bg-brand-error-soft">
-          登出
         </button>
       </Section>
 

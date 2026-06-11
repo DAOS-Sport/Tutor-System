@@ -4,15 +4,13 @@ import { sessionsApi } from '../api/sessions';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import LoadingSpinner from '../components/LoadingSpinner';
-import { courseTypeLabel, formatTWDate, formatTWTime, formatTWYMD, todayTaipeiYMD } from '../utils/format';
+import { courseTypeLabel, formatTWDate, formatTWTime } from '../utils/format';
 
 export default function CoachTodayPage() {
   const { coach } = useAuth();
   const navigate = useNavigate();
   const toast = useToast();
   const [sessions, setSessions] = useState(null);
-  // 其他（非今日）可代簽課程：讓教練不必只在「上課當天」才能代簽，過去/未來的已確認課程都進得去。
-  const [otherSessions, setOtherSessions] = useState(null);
 
   useEffect(() => {
     if (!coach?.id) return;
@@ -20,18 +18,6 @@ export default function CoachTodayPage() {
     sessionsApi.todayByCoach(coach.id)
       .then((d) => alive && setSessions(d || []))
       .catch(() => { if (alive) { setSessions([]); toast.error('今日課程載入失敗'); } });
-
-    // 取近 7 天～未來 60 天的課程，挑出「已確認/已完成」且非今日者供代簽入口。
-    const from = new Date(Date.now() - 7 * 86400000).toISOString();
-    const to = new Date(Date.now() + 60 * 86400000).toISOString();
-    sessionsApi.weekByCoach(coach.id, { from, to })
-      .then((d) => {
-        if (!alive) return;
-        const today = todayTaipeiYMD();
-        setOtherSessions((d || []).filter((s) =>
-          ['confirmed', 'completed'].includes(s.status) && formatTWYMD(s.scheduled_at) !== today));
-      })
-      .catch(() => alive && setOtherSessions([]));
     return () => { alive = false; };
   }, [coach?.id, toast]);
 
@@ -40,10 +26,18 @@ export default function CoachTodayPage() {
 
   return (
     <div className="px-4 py-4">
-      <section className="mb-5 rounded-2xl bg-gradient-to-br from-brand-primary to-brand-teal p-4 text-white shadow-md">
-        <p className="text-xs opacity-90">{coach.name} 教練</p>
-        <h2 className="mt-1 text-lg font-bold">今日：{todayLabel}</h2>
-        <p className="mt-1 text-xs opacity-80">{coach.is_senior ? '資深教練' : '一般教練'} · 倍率 ×{coach.pricing_multiplier || coach.multiplier || 1}</p>
+      <section className="relative mb-5 overflow-hidden rounded-2xl bg-gradient-to-br from-brand-primary to-brand-teal p-4 text-white shadow-md">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-xs opacity-90">{coach.name} 教練</p>
+            <h2 className="mt-1 text-lg font-bold">今日：{todayLabel}</h2>
+          </div>
+          {coach.is_senior && (
+            <span className="flex shrink-0 items-center gap-1 rounded-xl border border-white/25 bg-white/15 px-2.5 py-1 text-[11px] font-bold tracking-wider shadow-inner backdrop-blur-sm">
+              <span className="text-sm">🏅</span>資深 ×{coach.pricing_multiplier || coach.multiplier || 1}
+            </span>
+          )}
+        </div>
       </section>
 
       <section className="mb-5">
@@ -95,35 +89,6 @@ export default function CoachTodayPage() {
           </div>
         )}
       </section>
-
-      {otherSessions && otherSessions.length > 0 && (
-        <section className="mb-5">
-          <h3 className="mb-2 text-sm font-bold text-brand-primary">其他課程（可代簽）</h3>
-          <div className="space-y-2">
-            {otherSessions.map((s) => (
-              <button
-                key={s.id}
-                type="button"
-                onClick={() => navigate(`/coach/session/${s.id}`)}
-                className="w-full rounded-xl border border-brand-primary/15 bg-white p-3 text-left shadow-sm active:bg-brand-primary/5"
-              >
-                <div className="flex items-baseline justify-between">
-                  <div className="text-sm font-bold text-brand-primary">
-                    {formatTWDate(s.scheduled_at)} {formatTWTime(s.scheduled_at)}
-                  </div>
-                  <span className="rounded-full bg-brand-teal/10 px-2 py-0.5 text-[10px] text-brand-teal">
-                    {courseTypeLabel(s.course_type)}
-                  </span>
-                </div>
-                <div className="mt-1 text-sm text-gray-800">
-                  學員：{(s.student_names || []).join('、') || '—'}
-                </div>
-                <div className="mt-1.5 text-xs text-brand-teal">點選進入代簽 →</div>
-              </button>
-            ))}
-          </div>
-        </section>
-      )}
 
       <section className="grid grid-cols-2 gap-2">
         <button onClick={() => navigate('/coach/schedule')}

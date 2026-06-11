@@ -8,17 +8,10 @@ import { useToast } from '../context/ToastContext';
 import { isValidTWPhone } from '../utils/format';
 import { takeAfterAuth, clearAfterAuth } from '../utils/afterAuth';
 import LoadingSpinner from '../components/LoadingSpinner';
+import ReportIssueButton from '../components/ReportIssueButton';
 
 const MANUAL_LOGOUT_KEY = 'daos.manualLogout';
 import { USE_MOCK } from '../api/client';
-
-function wasManualLoggedOut() {
-  try {
-    return localStorage.getItem(MANUAL_LOGOUT_KEY) === '1';
-  } catch {
-    return false;
-  }
-}
 
 function clearManualLogout() {
   try { localStorage.removeItem(MANUAL_LOGOUT_KEY); } catch {}
@@ -132,11 +125,12 @@ export default function LoginPage() {
   // coach context state
   const [coachState, setCoachState] = useState(coachContext ? 'checking' : null);
 
-  // parent flow state: 'init'|'checking'|'need_phone'|'manual'|'error'
-  const [parentState, setParentState] = useState(coachContext ? null : 'init');
+  // parent flow state: 'checking'|'need_phone'|'manual'|'error'
+  const [parentState, setParentState] = useState(coachContext ? null : 'checking');
   const [idToken, setIdToken] = useState(null);
   const [phone, setPhone] = useState('');
   const [busy, setBusy] = useState(false);
+  const [errCode, setErrCode] = useState('');
 
   const autoRanRef = useRef(false);
 
@@ -170,14 +164,6 @@ export default function LoginPage() {
     if (autoRanRef.current) return;
     autoRanRef.current = true;
 
-    // manual logout guard: do not auto-login immediately after user explicitly logs out.
-    if (!coachContext && wasManualLoggedOut()) {
-      // 不會走 takeAfterAuth 導向 → 清掉殘留回跳路徑，避免下次自動登入帶去舊團
-      clearAfterAuth();
-      setBusy(false);
-      return;
-    }
-
     if (coachContext) {
       // 教練端統一走 /coach-portal（web OAuth + 30天 portal token 續登）。
       // 舊版在本頁用 liff id_token 直登 /api/coaches/by-line-uid 已停用：
@@ -205,6 +191,7 @@ export default function LoginPage() {
       }
       if (!tk) {
         clearAfterAuth();
+        setErrCode('LINE_ID_TOKEN_REQUIRED');
         setParentState('error');
         toast.error('LINE 驗證失敗：請重新開啟 LIFF 或稍後再試。');
         setBusy(false);
@@ -226,10 +213,12 @@ export default function LoginPage() {
         }
         // 未知 status
         clearAfterAuth();
+        setErrCode('UNKNOWN_STATUS');
         setParentState('error');
         toast.error('登入失敗，請稍後再試。');
       } catch (err) {
         clearAfterAuth();
+        setErrCode(err?.response?.data?.code || err?.code || '');
         setParentState('error');
         toast.error(parentErrorMessage(err));
       } finally {
@@ -307,20 +296,36 @@ export default function LoginPage() {
             <p className="mt-3 text-xs text-amber-700">
               （LINE 身分已驗證，僅尚未對應到教練資料）
             </p>
+            <div className="mt-4">
+              <ReportIssueButton
+                audience="coach"
+                errorCode="COACH_LINE_NOT_BOUND"
+                errorMessage="LINE 帳號尚未綁定為教練"
+                context="教練端登入（LIFF 自動登入）"
+                details={{ 畫面: diag.context, 路徑: diag.pathname, LINE內開啟: String(diag.isInClient), 已登入LINE: String(diag.isLoggedIn), 有idToken: String(diag.hasIdToken) }}
+              />
+            </div>
           </div>
         )}
 
         {coachState === 'error' && (
           <div className="w-full max-w-[340px] rounded-xl border border-gray-200 bg-gray-50 p-5 text-center">
             <p className="text-sm leading-6 text-gray-700">
-              無法自動登入，請稍後再試。
-              <br />
-              若問題持續，請截圖傳送結果至 <span className="font-bold">400 官方帳號</span>。
+              無法自動登入，請稍後再試，或透過下方按鈕回報問題。
             </p>
             <button type="button" onClick={() => window.location.reload()}
               className="mt-4 w-full rounded-lg bg-brand-primary py-2 text-sm font-bold text-white active:bg-brand-teal">
               重新嘗試
             </button>
+            <div className="mt-3">
+              <ReportIssueButton
+                audience="coach"
+                errorCode="COACH_AUTO_LOGIN_FAILED"
+                errorMessage="教練端自動登入失敗"
+                context="教練端登入（LIFF 自動登入）"
+                details={{ 畫面: diag.context, 路徑: diag.pathname, LINE內開啟: String(diag.isInClient), 已登入LINE: String(diag.isLoggedIn), 有idToken: String(diag.hasIdToken) }}
+              />
+            </div>
             <DiagBlock />
           </div>
         )}
@@ -356,6 +361,38 @@ export default function LoginPage() {
             className="mt-4 w-full rounded-lg bg-brand-primary py-2 text-sm font-bold text-white active:bg-brand-teal">
             重新嘗試
           </button>
+          <div className="mt-3">
+            <ReportIssueButton
+              audience="parent"
+              errorCode={errCode}
+              errorMessage="家長端登入失敗"
+              context="家長端登入"
+              details={{ 畫面: diag.context, 路徑: diag.pathname, LINE內開啟: String(diag.isInClient), 已登入LINE: String(diag.isLoggedIn), 有idToken: String(diag.hasIdToken) }}
+            />
+          </div>
+          <DiagBlock />
+        </div>
+      )}
+
+      {/* 防呆：任何非預期狀態都不可停在純 LOGO 空白頁 → 給重試 + 問題回報 */}
+      {!['checking', 'error', 'need_phone', 'manual'].includes(parentState) && (
+        <div className="w-full max-w-[340px] rounded-xl border border-gray-200 bg-gray-50 p-5 text-center">
+          <p className="text-sm leading-6 text-gray-700">
+            登入流程未完成，請重新嘗試，或透過下方按鈕回報問題。
+          </p>
+          <button type="button" onClick={() => window.location.reload()}
+            className="mt-4 w-full rounded-lg bg-brand-primary py-2 text-sm font-bold text-white active:bg-brand-teal">
+            重新嘗試
+          </button>
+          <div className="mt-3">
+            <ReportIssueButton
+              audience="parent"
+              errorCode={errCode || 'LOGIN_INCOMPLETE'}
+              errorMessage="家長端登入流程未完成"
+              context="家長端登入"
+              details={{ 畫面: diag.context, 路徑: diag.pathname, LINE內開啟: String(diag.isInClient), 已登入LINE: String(diag.isLoggedIn), 有idToken: String(diag.hasIdToken) }}
+            />
+          </div>
           <DiagBlock />
         </div>
       )}

@@ -13,6 +13,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import LoadingSpinner from '../components/LoadingSpinner';
+import ReportIssueButton from '../components/ReportIssueButton';
 import { coachPortalApi, COACH_LINE_LOGIN_URL, COACH_PORTAL_TOKEN_KEY } from '../api/coachPortal';
 
 function mapError(codeOrErr) {
@@ -59,7 +60,19 @@ export default function CoachPortalLoginPage() {
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [errMsg, setErrMsg] = useState('');
+  const [errCode, setErrCode] = useState('');
   const ranRef = useRef(false);
+
+  // 從各種錯誤物件 / 字串取出後端錯誤碼，供問題回報自動分類
+  function codeOf(codeOrErr) {
+    if (typeof codeOrErr === 'string') return codeOrErr;
+    return codeOrErr?.response?.data?.code || codeOrErr?.code || '';
+  }
+  function showError(codeOrErr) {
+    setErrCode(codeOf(codeOrErr));
+    setErrMsg(mapError(codeOrErr));
+    setState('error');
+  }
 
   // 成功登入後：寫入 AuthContext（JWT）+ 存 30天 portal token → 進 /coach
   function finishLogin(res) {
@@ -83,6 +96,7 @@ export default function CoachPortalLoginPage() {
     (async () => {
       // 4) OAuth 端回報錯誤
       if (errorParam) {
+        setErrCode(errorParam);
         setErrMsg(mapError(errorParam));
         setState(errorParam === 'not_configured' ? 'not_configured' : 'error');
         return;
@@ -94,8 +108,7 @@ export default function CoachPortalLoginPage() {
         try {
           finishLogin(await coachPortalApi.exchange(code));
         } catch (err) {
-          setErrMsg(mapError(err));
-          setState('error');
+          showError(err);
         }
         return;
       }
@@ -146,8 +159,7 @@ export default function CoachPortalLoginPage() {
       toast.success('登入成功');
     } catch (err) {
       // handoff 為一次性，失敗後需重新走 LINE 授權
-      setErrMsg(mapError(err));
-      setState('error');
+      showError(err);
     } finally {
       setBusy(false);
     }
@@ -225,12 +237,30 @@ export default function CoachPortalLoginPage() {
           >
             重新用 LINE 登入
           </button>
+          <div className="mt-3">
+            <ReportIssueButton
+              audience="coach"
+              errorCode={errCode}
+              errorMessage={errMsg}
+              context="教練端 LINE 登入"
+              details={{ 路徑: typeof window !== 'undefined' ? window.location.pathname : '' }}
+            />
+          </div>
         </div>
       )}
 
       {state === 'not_configured' && (
         <div className="w-full max-w-[340px] rounded-xl border border-amber-200 bg-amber-50 p-5 text-center">
           <p className="text-sm leading-6 text-amber-800">{errMsg || 'LINE 登入尚未設定，請聯絡管理員。'}</p>
+          <div className="mt-4">
+            <ReportIssueButton
+              audience="coach"
+              errorCode={errCode || 'not_configured'}
+              errorMessage={errMsg || 'LINE 登入尚未設定'}
+              context="教練端 LINE 登入"
+              details={{ 路徑: typeof window !== 'undefined' ? window.location.pathname : '' }}
+            />
+          </div>
         </div>
       )}
     </div>

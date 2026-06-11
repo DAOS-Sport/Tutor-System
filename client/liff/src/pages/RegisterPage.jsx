@@ -12,6 +12,7 @@ import { useToast } from '../context/ToastContext';
 import { takeAfterAuth } from '../utils/afterAuth';
 import { isValidTWPhone, isValidTWId } from '../utils/format';
 import { USE_MOCK } from '../api/client';
+import ReportIssueButton from '../components/ReportIssueButton';
 
 const PENDING_COUPON_KEY = 'daos.pendingCoupon';
 const IS_PROD = import.meta.env.PROD;
@@ -49,6 +50,9 @@ export default function RegisterPage() {
   const toast = useToast();
   const [refInfo, setRefInfo] = useState(null);
   const [refResolved, setRefResolved] = useState(false);
+  // 註冊失敗 → 顯示「問題回報」按鈕（避免使用者只看到一閃即逝的 toast 而卡住）
+  const [failed, setFailed] = useState(false);
+  const [errCode, setErrCode] = useState('');
   const authedParent = isAuthed && role === 'parent';
 
   // 用推薦的教練解析出有效場館（優先家長慣用場館，否則取教練第一個場館），
@@ -116,6 +120,8 @@ export default function RegisterPage() {
   const { fields, append, remove } = useFieldArray({ control, name: 'students' });
 
   async function onSubmit(data) {
+    setFailed(false);
+    setErrCode('');
     const cleanParent = {
       name: data.name,
       phone: data.phone.trim(),
@@ -143,6 +149,8 @@ export default function RegisterPage() {
           navigate(takeAfterAuth('/'), { replace: true });
           return;
         }
+        setErrCode('DEMO_REGISTER_FAILED');
+        setFailed(true);
         toast.error('Demo 註冊失敗，請稍後再試。');
         return;
       }
@@ -183,6 +191,8 @@ export default function RegisterPage() {
           }
           return;
         }
+        setErrCode('REGISTER_NO_STATUS');
+        setFailed(true);
         toast.error('註冊失敗，請稍後再試。');
         return;
       }
@@ -191,6 +201,8 @@ export default function RegisterPage() {
       //  - production 正式 LIFF：禁止 fallback，要求重新由 LINE 開啟
       //  - dev / mock：保留舊 parentsApi.create fallback，方便本地測試
       if (IS_PROD && !USE_MOCK) {
+        setErrCode('LINE_ID_TOKEN_REQUIRED');
+        setFailed(true);
         toast.error('LINE 驗證失敗：請重新由 LINE 開啟註冊頁。');
         return;
       }
@@ -217,6 +229,8 @@ export default function RegisterPage() {
         navigate(takeAfterAuth('/'), { replace: true });
       }
     } catch (err) {
+      setErrCode(err?.response?.data?.code || err?.code || '');
+      setFailed(true);
       toast.error(registerErrorMessage(err));
     }
   }
@@ -320,6 +334,20 @@ export default function RegisterPage() {
           className="w-full rounded-lg bg-brand-primary py-3 text-base font-bold text-white active:bg-brand-teal disabled:opacity-50">
           {isSubmitting ? '送出中…' : '完成註冊'}
         </button>
+
+        {failed && (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-center">
+            <p className="mb-3 text-sm leading-6 text-rose-800">
+              註冊未完成。請確認資料後重新送出，或透過下方按鈕回報問題。
+            </p>
+            <ReportIssueButton
+              audience="parent"
+              errorCode={errCode}
+              errorMessage="家長註冊失敗"
+              context="家長註冊頁"
+            />
+          </div>
+        )}
       </form>
     </div>
   );
