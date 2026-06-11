@@ -97,11 +97,18 @@ function IntroCard({ row, onSave }) {
 }
 
 export default function CourseIntrosPage() {
+  const toast = useToast();
   const [rows, setRows] = useState(null);
 
   async function load() {
-    const data = await courseIntrosApi.list();
-    setRows(Array.isArray(data) ? data : []);
+    try {
+      const data = await courseIntrosApi.list();
+      setRows(Array.isArray(data) ? data : []);
+    } catch (e) {
+      // 載入失敗時跳出無限轉圈：顯示空清單 + toast 引導重新整理
+      toast.error(e?.response?.data?.error || '載入課程介紹失敗，請重新整理頁面');
+      setRows([]);
+    }
   }
   useEffect(() => { load(); }, []);
 

@@ -1,16 +1,20 @@
 import React from 'react';
 
-/** Task #90：場館多選 chip — 已停用場館仍顯示但加註，避免下拉「莫名消失」。 */
-function VenueChipsField({ value, venues, onChange }) {
+/** Task #90：場館多選 chip — 已停用場館仍顯示但加註，避免下拉「莫名消失」。
+ *  Task #95：disabled 模式（Ragic 來源員工）— 只顯示已選場館，不可點選。 */
+function VenueChipsField({ value, venues, onChange, disabled = false }) {
   const selected = new Set(value || []);
-  const visible = venues.filter((v) => v.is_active !== false || selected.has(v.id));
+  const visible = disabled
+    ? venues.filter((v) => selected.has(v.id))
+    : venues.filter((v) => v.is_active !== false || selected.has(v.id));
   function toggle(id) {
+    if (disabled) return;
     const next = new Set(selected);
     if (next.has(id)) next.delete(id); else next.add(id);
     onChange(Array.from(next));
   }
   if (!visible.length) {
-    return <p className="rounded-lg border border-dashed border-gray-300 px-3 py-2 text-xs text-gray-400">尚未設定任何場館</p>;
+    return <p className="rounded-lg border border-dashed border-gray-300 px-3 py-2 text-xs text-gray-400">{disabled ? '（尚無場館，待 Ragic 部門欄位同步帶入）' : '尚未設定任何場館'}</p>;
   }
   return (
     <div className="flex flex-wrap gap-2">
@@ -22,11 +26,13 @@ function VenueChipsField({ value, venues, onChange }) {
             type="button"
             key={v.id}
             onClick={() => toggle(v.id)}
+            disabled={disabled}
             className={
               'rounded-full border px-3 py-1 text-xs font-medium transition ' +
               (on
                 ? 'border-brand-teal bg-brand-teal text-white'
-                : 'border-gray-300 bg-white text-gray-700 hover:border-brand-teal')
+                : 'border-gray-300 bg-white text-gray-700 hover:border-brand-teal') +
+              (disabled ? ' cursor-not-allowed opacity-70' : '')
             }
             title={inactive ? '此場館已停用' : v.name}
           >
@@ -233,6 +239,9 @@ export default function StaffEditModal({ editing, setEditing, venues, busy, onSa
   if (!editing) return null;
   const isNew = !!editing.isNew;
   const showCoachPane = editing.role === 'coach' || editing.coach_active || editing.has_coach_profile;
+  // Task #95（Ragic 權威政策）：來自 Ragic 的員工，姓名/手機/場館 唯讀 — 修改請洽 HR 至 Ragic 更新，
+  // 系統同步會自動帶回（場館由「部門」欄位自動套用）。後端 PATCH 亦會忽略這些欄位（雙重防護）。
+  const ragicLocked = !isNew && !!editing.ragic_locked;
 
   return (
     <div
@@ -286,13 +295,21 @@ export default function StaffEditModal({ editing, setEditing, venues, busy, onSa
                   </p>
                 </div>
               )}
+              {ragicLocked && (
+                <p className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs leading-relaxed text-sky-800">
+                  此員工來自 <span className="font-bold">Ragic 人事資料（權威來源）</span>：姓名、手機、所屬場館為唯讀，
+                  如需修改請洽 HR 至 Ragic 更新，系統會自動同步帶回（場館依「部門」欄位自動套用）。
+                </p>
+              )}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="mb-1 block text-sm font-medium text-gray-700">姓名{isNew ? ' *' : ''}</label>
                   <input
                     value={editing.name || ''}
                     onChange={(e) => setEditing({ ...editing, name: e.target.value })}
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2"
+                    disabled={ragicLocked}
+                    title={ragicLocked ? '由 Ragic 同步，修改請洽 HR' : undefined}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 disabled:bg-gray-100 disabled:text-gray-500"
                   />
                 </div>
                 <div>
@@ -301,7 +318,9 @@ export default function StaffEditModal({ editing, setEditing, venues, busy, onSa
                     value={editing.phone || ''}
                     onChange={(e) => setEditing({ ...editing, phone: e.target.value })}
                     placeholder="0912345678"
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2"
+                    disabled={ragicLocked}
+                    title={ragicLocked ? '由 Ragic 同步，修改請洽 HR' : undefined}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 disabled:bg-gray-100 disabled:text-gray-500"
                   />
                 </div>
               </div>
@@ -317,16 +336,19 @@ export default function StaffEditModal({ editing, setEditing, venues, busy, onSa
                 <p className="mt-1 text-xs text-gray-500">變更角色會同步調整其登入後可見的選單與權限。</p>
               </div>
               <div>
-                <label className="mb-1 block text-sm font-medium text-gray-700">所屬場館（可複選）</label>
+                <label className="mb-1 block text-sm font-medium text-gray-700">所屬場館{ragicLocked ? '（由 Ragic 部門自動同步）' : '（可複選）'}</label>
                 <VenueChipsField
                   value={Array.isArray(editing.venue_ids) ? editing.venue_ids : (editing.venue_id ? [editing.venue_id] : [])}
                   venues={venues}
+                  disabled={ragicLocked}
                   onChange={(ids) => setEditing({ ...editing, venue_ids: ids, venue_id: ids[0] || null })}
                 />
                 <p className="mt-1 text-xs text-gray-500">
-                  {editing.role === 'admin'
-                    ? '系統管理員可不指定場館（看全部）。'
-                    : '主管 / 行政 / 教練：勾選的場館清單就是其權限可見範圍。'}
+                  {ragicLocked
+                    ? '場館清單依 Ragic「部門」欄位自動套用（即權限可見範圍），調整請洽 HR 修改 Ragic 部門。'
+                    : (editing.role === 'admin'
+                        ? '系統管理員可不指定場館（看全部）。'
+                        : '主管 / 行政 / 教練：勾選的場館清單就是其權限可見範圍。')}
                 </p>
               </div>
               {!isNew && editing.role !== 'coach' && (

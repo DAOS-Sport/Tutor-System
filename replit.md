@@ -52,6 +52,11 @@
   - **#92**：`_syncStaffImpl` 加入 `_normalizeStaffId`（trim + toUpperCase），`dbMap` / `seenKeys` 改用 normalized key 比對；matched row 用 DB PK `cur.id` 當 entity_id，新增則用 normalized id 落地。修正「admin 手建 c001、Ragic 回 C001 → 被誤判為新人重新進待審核」的 bug。
   - **#93**：`RagicStagingPage` 批次通過時若 `okN===0` 改丟 `toast.error`（先前用 warning 易被忽略），同時把 `failed[].error` 列表存到 state，render 紅色 banner 顯示前 20 筆 ID + 失敗原因，使用者可一眼看到「哪些通過失敗、為什麼」。
   - **#94**：`ragicAdmin.js` 的 `FORM_META` 每筆加 `kind: 'sync'|'healthcheck'`，`getSyncStatusSnapshot` 帶出 `kind`；前端 `RagicStatusPage` 依此顯示「全表同步 / 健康檢查」徽章，按鈕文案改為「單獨同步此表 / 發送連線 Ping」，「最後成功筆數」對 ping job 改為「上次回應筆數 (ping 通常 0)」。同步移除 Task #91 後遺留的死碼：`_syncCoachesImpl` / `syncCoachesFromRagic` / `kickoffSyncCoachesAsync` 三個入口與 exports 全部刪除（避免外部誤呼叫落到 `_runWithLog('coaches')` 拋 "unknown ragic sync job"）。
+- Task #95：H01 員工資料改採「**Ragic 唯讀權威**」政策（修「ADMIN 端調整後被同步打回、待審核清不完」）：
+  - 根因 1：admin 改員工 H01 欄位只寫本地 DB → 下一輪同步把 Ragic 舊值 stage 回待審核（rejected 不抑制 → 每輪重現），調整永遠被打回。**政策定案：任何端都不寫 H01、後台也不可改 H01 欄位** — 來自 Ragic 的員工（`admin_staff.ragic_record_id` 非空 → API 回 `ragic_locked:true`）其 姓名/手機/所屬場館 在 StaffEditModal 鎖定唯讀＋顯示「請洽 HR 至 Ragic 修改」提示；後端 PATCH 同步忽略這些欄位（defense-in-depth）。內部欄位（角色/係數/資深/簡介/Email/啟用/介紹圖）照常可編；手建員工（ragic_record_id 空，如 C001/S001/M001 demo）不鎖。教練 LIFF 本來就零 Ragic 寫入（稽核確認：寫入函式只被家長流程 auth/parents/groupOrders 呼叫），只能改自介（本地）。
+  - 根因 2：`_syncStaffImpl` 拿 H01 部門「名稱」直接比 DB venue「代碼」→ 全員每輪 stage venue_ids 假差異、核准後（apply 才轉代碼）下一輪又重生 — 實測 373 筆 pending 中 357 筆為此類，怎麼審都審不完。**修法：場館自動套用** — 部門欄位（多選、含逗號/頓號複合值與「 (後綴)」）經 `_extractStaffVenueIds` 拆分 + `_buildVenueResolver` 清洗成代碼後，與 DB 不同即由 `_applyStaffVenuesDirect` 直接寫入 `admin_staff_venues`/`coach_venues`/`venue_id` fallback（**不經待審核**，教練端授權館別即時生效）；解析為空（公司名/內勤處室）不動 DB。venue_ids 不再進 staging；舊的場館 pending 下一輪自動 auto_resolved。
+  - email 一致性修正：diff 改為只在「DB 空 + Ragic 有值」才 stage（與 apply 的 fill-empty-only 一致），admin 自填信箱不再被每輪 nag。
+  - 曾實作 admin→H01 寫回後依政策移除；技術限制實測紀錄（H01 新建必填 14 欄全 HR 專屬、更新整筆重驗必填、3000937 部門為多選陣列、3001424=顯示名「手機」、3000940=電子郵件信箱）留存於 docs/ragic_api.md「H01 唯讀權威政策」節。
 - 由 Express 同時提供：
   - `/api/*` → 後端 API
   - `/admin/*` → 後台 SPA（含 React Router fallback）

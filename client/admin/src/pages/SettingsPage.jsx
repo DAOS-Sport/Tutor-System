@@ -20,15 +20,33 @@ export default function SettingsPage() {
   // 進入畫面時把 server 回來的 number 轉字串顯示，存檔時再 parse
   const [draft, setDraft] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [loadError, setLoadError] = useState(false);
 
   useEffect(() => {
     settingsApi.get().then((d) => {
       const obj = {};
       for (const f of FIELDS) obj[f.key] = String(d[f.key] ?? '');
       setDraft(obj);
+    }).catch((e) => {
+      // 不能用空白預設值頂替（誤存會洗掉真實參數）→ 顯示錯誤頁 + 重新載入按鈕
+      toast.error(e?.response?.data?.error || '載入系統參數失敗');
+      setLoadError(true);
     });
   }, []);
 
+  if (loadError) {
+    return (
+      <div className="flex min-h-[50vh] flex-col items-center justify-center gap-3">
+        <p className="text-sm text-gray-600">系統參數載入失敗，請檢查網路或稍後再試。</p>
+        <button
+          onClick={() => window.location.reload()}
+          className="rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary"
+        >
+          重新載入
+        </button>
+      </div>
+    );
+  }
   if (!draft) return <LoadingSpinner fullPage />;
 
   function setField(k, v) {

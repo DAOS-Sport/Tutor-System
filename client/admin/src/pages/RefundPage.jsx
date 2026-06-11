@@ -25,12 +25,18 @@ export default function RefundPage() {
   const previewReqRef = useRef(0);
 
   async function load() {
-    const [data, vs] = await Promise.all([
-      enrollmentsApi.list(),
-      venuesApi.list(),
-    ]);
-    setList(data.filter((e) => e.status === 'active' || e.status === 'confirmed' || e.status === 'cancelled'));
-    setVenues(vs);
+    try {
+      const [data, vs] = await Promise.all([
+        enrollmentsApi.list(),
+        venuesApi.list(),
+      ]);
+      setList(data.filter((e) => e.status === 'active' || e.status === 'confirmed' || e.status === 'cancelled'));
+      setVenues(vs);
+    } catch (e) {
+      // 載入失敗時跳出無限轉圈：顯示空清單 + toast 引導重新整理
+      toast.error(e?.response?.data?.error || '載入報名清單失敗，請重新整理頁面');
+      setList([]);
+    }
   }
   useEffect(() => { load(); }, []);
 
@@ -39,10 +45,17 @@ export default function RefundPage() {
     setReason('');
     setPreview(null);
     const reqId = ++previewReqRef.current;
-    const p = await enrollmentsApi.refundPreview(row.id);
-    // 若使用者在 fetch 中又開了另一列、或關閉 modal，丟掉這次回應
-    if (reqId !== previewReqRef.current) return;
-    setPreview(p);
+    try {
+      const p = await enrollmentsApi.refundPreview(row.id);
+      // 若使用者在 fetch 中又開了另一列、或關閉 modal，丟掉這次回應
+      if (reqId !== previewReqRef.current) return;
+      setPreview(p);
+    } catch (e) {
+      if (reqId !== previewReqRef.current) return;
+      // 試算失敗：關閉 modal 並提示，避免卡在「試算中」的破損彈窗
+      toast.error(e?.response?.data?.error || '退款試算失敗，請稍後再試');
+      closeRefund();
+    }
   }
 
   function closeRefund() {
@@ -62,8 +75,8 @@ export default function RefundPage() {
       toast.success(`已完成退課，退款 ${formatTWD(res.refund_amount)}`);
       closeRefund();
       await load();
-    } catch {
-      toast.error('退課失敗');
+    } catch (e) {
+      toast.error(e?.response?.data?.error || '退課失敗，請稍後再試');
     } finally {
       setBusy(false);
     }

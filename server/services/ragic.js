@@ -203,6 +203,14 @@ async function getAllStaff() {
   return cached('h01:all', async () => Object.values(await queryAllPaged(process.env.RAGIC_FORM_H01)));
 }
 
+// 註（Task #95 政策定案）：H01 員工資料一律「Ragic → 系統」單向，本系統**不寫** H01。
+// 曾實作 admin 編輯寫回（syncStaffToRagicStrict），後依政策移除：
+//   1. Ragic 為人事權威資料庫，異動一律請 HR 在 Ragic 操作，系統同步帶回即可。
+//   2. 技術面也不可行性高：實測 H01 新建必填欄位 14 個全為 HR 專屬資料（國籍/直屬主管/
+//      HR專員/系統群組…）；更新時整筆重驗，紀錄缺任一必填（教學項目/400Line訊息…）即 INVALID。
+// 實機驗證過的欄位對應（留供查考）：3000933=姓名、3001424=手機（顯示名「手機」）、
+// 3000940=電子郵件信箱、3000937=部門（**多選**，值為場館名稱陣列）、3000935=員工編號。
+
 // H05：場館清單（履約中，非內勤；5 分鐘快取，分頁拉取）
 async function getActiveVenues() {
   return cached('h05:venues', async () => {

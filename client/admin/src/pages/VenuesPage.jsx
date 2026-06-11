@@ -188,7 +188,13 @@ export default function VenuesPage() {
   const [syncing, setSyncing] = useState(false);
   const [diff, setDiff] = useState(null);
 
-  useEffect(() => { venuesApi.list().then(setVenues); }, []);
+  useEffect(() => {
+    venuesApi.list().then(setVenues).catch((e) => {
+      // 載入失敗時跳出無限轉圈：顯示空清單 + toast 引導重新整理
+      toast.error(e?.response?.data?.error || '載入場館清單失敗，請重新整理頁面');
+      setVenues([]);
+    });
+  }, []);
 
   async function onSave(id, patch) {
     const res = await venuesApi.update(id, patch);

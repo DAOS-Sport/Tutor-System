@@ -42,6 +42,8 @@ function rowToStaff(r) {
     venue_id: r.venue_id || venueIds[0] || null,
     venue_ids: venueIds,
     phone: r.phone,
+    // Task #95：來自 Ragic 的員工，H01 同步欄位（姓名/手機/場館）鎖定為唯讀（修改請洽 HR）
+    ragic_locked: !!r.ragic_record_id,
     is_senior: !!r.is_senior,
     multiplier: Number(r.multiplier),
     active: !!r.active,
@@ -517,19 +519,25 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
       }
     }
 
+    // Task #95（Ragic 權威政策）：來自 Ragic 的員工（ragic_record_id 非空）其 H01 同步欄位
+    // （姓名/手機/場館）一律以 Ragic 為準 — 後端直接忽略這些欄位的修改（前端 UI 已鎖定，
+    // 此處為 defense-in-depth）。異動請 HR 至 Ragic 更新，下一輪同步自動帶回；
+    // 否則本地改了之後，每輪同步都會把 Ragic 舊值當差異 stage 回待審核，永遠調不完。
+    const ragicLocked = !!cur.rows[0].ragic_record_id;
+
     const existingVenuesQ = await client.query(
       `SELECT array_agg(venue_id ORDER BY venue_id) AS ids FROM admin_staff_venues WHERE staff_id = $1`,
       [id]
     );
     const existingVenueIds = (existingVenuesQ.rows[0]?.ids || []).filter(Boolean);
-    const venueIdsTouched = Array.isArray(patch.venue_ids) || patch.venue_id !== undefined;
+    const venueIdsTouched = !ragicLocked && (Array.isArray(patch.venue_ids) || patch.venue_id !== undefined);
     const newVenueIds = venueIdsTouched
       ? pickVenueIds(patch)
       : (existingVenueIds.length ? existingVenueIds : (cur.rows[0].venue_id ? [cur.rows[0].venue_id] : []));
 
     const merged = {
-      name: patch.name !== undefined ? String(patch.name).trim() : cur.rows[0].name,
-      phone: patch.phone !== undefined ? String(patch.phone || '').trim() : cur.rows[0].phone,
+      name: (!ragicLocked && patch.name !== undefined) ? String(patch.name).trim() : cur.rows[0].name,
+      phone: (!ragicLocked && patch.phone !== undefined) ? String(patch.phone || '').trim() : cur.rows[0].phone,
       role: patch.role ?? cur.rows[0].role,
       venue_id: newVenueIds[0] || null,
       venue_ids: newVenueIds,

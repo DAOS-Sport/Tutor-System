@@ -135,6 +135,51 @@ async function _buildVenueResolver() {
   };
 }
 
+/**
+ * Task #95：場館自動套用（Ragic 權威）。
+ * H01「部門/主場館」欄位值經 _extractStaffVenueIds（拆逗號/頓號）+ _buildVenueResolver
+ * （處理「三重商工 (test)」括號後綴、名稱→代碼）清洗後，直接寫入
+ * admin_staff_venues / coach_venues / admin_staff.venue_id（**不經待審核**）——
+ * 場館即權限可見範圍，依 Ragic 即時生效；後台員工編輯彈窗對 Ragic 來源員工已鎖定此欄。
+ * 僅落地實際存在的場館代碼，避免 FK violation；codes 為空時不呼叫（caller 把關）。
+ */
+async function _applyStaffVenuesDirect(staffId, venueCodes) {
+  const codes = [...new Set((venueCodes || []).map((s) => String(s).trim()).filter(Boolean))];
+  if (!codes.length) return false;
+  const vr = await pool.query(`SELECT id FROM admin_venues WHERE id = ANY($1::text[])`, [codes]);
+  const validIds = vr.rows.map((x) => x.id);
+  if (!validIds.length) return false;
+  await pool.query(`DELETE FROM admin_staff_venues WHERE staff_id = $1`, [staffId]);
+  for (const vid of validIds) {
+    await pool.query(
+      `INSERT INTO admin_staff_venues (staff_id, venue_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      [staffId, vid]
+    );
+  }
+  // admin_staff.venue_id 維持「第一筆」fallback（向下相容舊讀取路徑）
+  await pool.query(
+    `UPDATE admin_staff SET venue_id = $2, updated_at = NOW() WHERE id = $1`,
+    [staffId, validIds[0]]
+  );
+  // 教練 1:1 行存在 → coach_venues 一併套用（FK 對 venues，僅取啟用中場館）
+  const c = await pool.query(`SELECT id FROM coaches WHERE ragic_employee_id = $1`, [staffId]);
+  const coachId = c.rows[0]?.id;
+  if (coachId) {
+    const cv = await pool.query(
+      `SELECT id FROM venues WHERE id = ANY($1::text[]) AND is_active = TRUE`,
+      [validIds]
+    );
+    await pool.query(`DELETE FROM coach_venues WHERE coach_id = $1`, [coachId]);
+    for (const row of cv.rows) {
+      await pool.query(
+        `INSERT INTO coach_venues (coach_id, venue_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+        [coachId, row.id]
+      );
+    }
+  }
+  return true;
+}
+
 // Task #92：normalize 員工編號比對 key。
 // admin 手建員工可能輸入 'c001' / ' C001 '，Ragic 回 'C001'，
 // 用原值比對會比不到 → 整筆被當 'new' 重新 stage，員工就會出現「已建檔卻又進待審核」。
@@ -147,6 +192,12 @@ async function _syncStaffImpl() {
   if (!ragicEnabled()) return { synced: 0, skipped: true };
   try {
     const records = await ragic.getAllStaff();
+    // Task #95 fix：H01「部門」存的是場館「名稱」（或公司/處室名），DB 存「代碼」。
+    // 先前 diff 直接拿名稱比代碼 → 永遠不相等 → 全員每輪都 stage venue_ids 假差異，
+    // 且 approve 套用（apply 時才 resolve 成代碼）後下一輪又再生成，待審區清不完。
+    // 改為「比對前」就 resolve 成代碼（與 apply 同一套 resolver）；
+    // 解析不到的值（公司名、內勤處室）一律忽略，不視為場館差異。
+    const resolveVenues = await _buildVenueResolver();
     const dbRows = (await pool.query(
       `SELECT id, name, phone, role, active, active_overridden_at FROM admin_staff`
     )).rows;
@@ -154,6 +205,7 @@ async function _syncStaffImpl() {
     const dbMap = new Map(dbRows.map(r => [_normalizeStaffId(r.id), r]));
     const seenKeys = new Set();
     let staged = 0;
+    let venuesApplied = 0; // Task #95：場館自動套用筆數（不經待審核）
 
     for (const r of records) {
       const ragicId = r['員工編號'] || r['工號'] || r['3000935'];
@@ -176,7 +228,8 @@ async function _syncStaffImpl() {
       const roleVal = isCounter ? 'staff' : (isCoach ? 'coach' : 'staff');
       const isActive = (r['在職狀態'] || r['3000945']) === '在職';
       // Task #90：解析 Ragic H01 多場館欄位（主場館 + 支援場館），合併為陣列
-      const venueIds = _extractStaffVenueIds(r);
+      // Task #95：立即 resolve 成 venue 代碼再比對 / 入 payload（見上方註解）
+      const venueIds = resolveVenues(_extractStaffVenueIds(r));
       // H01「個人LINE ID」(Field 1003633)；apply 時只在 coaches.line_uid 為空才補
       const lineUid = extractLineUid(r);
       const cur = dbMap.get(id);
@@ -204,9 +257,11 @@ async function _syncStaffImpl() {
       if ((cur.name || '') !== name) diff.name = { from: cur.name || '', to: name };
       if ((cur.phone || '') !== phone) diff.phone = { from: cur.phone || '', to: phone };
       // role 為系統內部欄位（admin 可改 staff/coach/manager）— 不從 Ragic 同步
-      // email：Ragic 有值且與目前 coaches.email 不同才視為 diff（呈現給 admin 確認；apply 時只在 DB 空值時覆寫）
-      if (email && curCoachEmail !== email) {
-        diff.email = { from: curCoachEmail, to: email };
+      // email：apply 端只在 DB 空值時補（保留後台手動編輯）→ diff 也只在「DB 空 + Ragic 有值」
+      // 才 stage（Task #95：先前「值不同就 diff」會讓 admin 自填信箱後，同一筆差異每輪重現、
+      // approve 又套不進去（fill-empty-only），待審區永遠清不掉）
+      if (email && !curCoachEmail) {
+        diff.email = { from: '', to: email };
       }
       // line_uid：只在「DB 為空 + Ragic 有值」才 diff，避免覆寫已綁定的教練 LINE
       // （apply 路徑使用 COALESCE 雙重保險；這裡同樣不顯示「Ragic 空 → 蓋掉」的 diff）
@@ -216,7 +271,9 @@ async function _syncStaffImpl() {
       if (cur.active_overridden_at == null && cur.active !== isActive) {
         diff.active = { from: cur.active, to: isActive };
       }
-      // Task #90：venue_ids 差異偵測（純場館異動也要 stage）
+      // Task #95（取代 Task #90 的 venue_ids 差異 stage）：場館改為「自動套用」不經待審核 —
+      // Ragic 部門即權威，清洗後的代碼與 DB 不同就直接寫入授權館別（admin_staff_venues +
+      // coach_venues）。解析為空（部門是公司名/內勤處室）→ 不動 DB，避免清空既有場館。
       const curVenuesRes = await pool.query(
         `SELECT venue_id FROM admin_staff_venues WHERE staff_id = $1 ORDER BY venue_id`,
         [entityId]
@@ -226,7 +283,7 @@ async function _syncStaffImpl() {
       const curVenuesSorted = [...curVenues].sort();
       if (newVenues.length > 0 && (newVenues.length !== curVenuesSorted.length
           || newVenues.some((v, i) => v !== curVenuesSorted[i]))) {
-        diff.venue_ids = { from: curVenuesSorted, to: newVenues };
+        if (await _applyStaffVenuesDirect(entityId, venueIds)) venuesApplied++;
       }
       if (Object.keys(diff).length > 0) {
         if (await _stageIfNotRejected('H01_STAFF', 'staff', entityId, 'update', payload, diff)) staged++;
@@ -242,7 +299,10 @@ async function _syncStaffImpl() {
       const diff = { active: { from: true, to: false } };
       if (await _stageIfNotRejected('H01_STAFF', 'staff', r.id, 'deactivate', payload, diff)) staged++;
     }
-    return { synced: staged, staged, skipped: false };
+    if (venuesApplied > 0) {
+      console.log(`[Ragic sync] staff：場館自動套用 ${venuesApplied} 位（Ragic 部門 → 授權館別）`);
+    }
+    return { synced: staged, staged, venues_applied: venuesApplied, skipped: false };
   } catch (err) {
     console.warn('[Ragic sync] staff failed:', err.message);
     return { synced: 0, error: err.message };
