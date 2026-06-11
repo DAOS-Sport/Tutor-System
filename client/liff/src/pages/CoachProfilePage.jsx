@@ -115,15 +115,12 @@ export default function CoachProfilePage() {
             授權場館
           </div>
           {venueNames.length > 0 ? (
-            <div className="grid grid-cols-2 gap-2">
+            <div className="flex flex-wrap gap-x-4 gap-y-0.5">
               {venueNames.map((name, i) => (
-                <div key={`${name}-${i}`}
-                  className="flex min-h-12 items-center gap-2 rounded-xl border border-white/5 bg-black/25 px-3 py-2 shadow-xl">
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#075086] text-base shadow-lg">
-                    🏫
-                  </div>
-                  <span className="text-sm font-bold leading-snug drop-shadow">{name}</span>
-                </div>
+                <span key={`${name}-${i}`}
+                  className="text-sm font-bold leading-snug drop-shadow text-white/90">
+                  {name}
+                </span>
               ))}
             </div>
           ) : (
