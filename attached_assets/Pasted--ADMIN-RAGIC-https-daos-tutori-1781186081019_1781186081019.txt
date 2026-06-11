@@ -1,0 +1,64 @@
+抱歉 先在好好閱讀原本的架構書 然後 在ADMIN端這邊該連結RAGIC的做修改的資料以及可編輯的都開放可以給予填寫權限的就給予           
+  然後https://daos-tutoring-courses.replit.app/liff/coach/profile這頁的最上方BANNER很不協調給你新的UIUX程式碼 你可以套用進去    
+  記得該是變數的地方要改為變數喔export default function MemberCard() {                                                          
+    return (                                                                                                                    
+      <div className="w-full max-w-[980px] rounded-[44px] bg-gradient-to-br from-[#092f63] via-[#075d79] to-[#11a287] p-10      
+  shadow-2xl text-white">                                                                                                       
+        {/* Top */}                                                                                                             
+        <div className="flex items-start justify-between">                                                                      
+          <div className="flex gap-7 items-center">                                                                             
+            <div className="w-24 h-24 rounded-full bg-blue-600/70 flex items-center justify-center shadow-lg">                  
+              <span className="text-5xl">👤</span>                                                                              
+            </div>                                                                                                              
+                                                                                                                                
+            <div>                                                                                                               
+              <div className="text-[46px] font-black tracking-wide drop-shadow">                                                
+                (測試帳號) ･･･                                                                                                  
+              </div>                                                                                                            
+              <div className="text-[28px] text-white/75 mt-2">                                                                  
+                0900000000                                                                                                      
+              </div>                                                                                                            
+            </div>                                                                                                              
+          </div>                                                                                                                
+                                                                                                                                
+          <div className="px-8 py-4 rounded-2xl bg-white/10 border border-white/15 shadow-inner text-[26px] font-bold">         
+            🏅 資深 X1.00                                                                                                       
+          </div>                                                                                                                
+        </div>                                                                                                                  
+                                                                                                                                
+        {/* Authorized Area */}                                                                                                 
+        <div className="mt-16 rounded-[28px] bg-white/8 border border-white/10 px-9 py-8 shadow-inner">                         
+          <div className="flex items-center gap-3 text-[28px] font-bold mb-8">                                                  
+            <span className="text-cyan-300">🛡</span>                                                                            
+            授權場館                                                                                                            
+          </div>                                                                                                                
+                                                                                                                                
+          <div className="grid grid-cols-2 gap-6">                                                                              
+            <VenueButton name="新北高中" />                                                                                     
+            <VenueButton name="松山國小" />                                                                                     
+          </div>                                                                                                                
+        </div>                                                                                                                  
+                                                                                                                                
+        {/* Bottom */}                                                                                                          
+        <div className="mt-8 pt-7 border-t border-white/10 flex items-center gap-4 text-[25px] text-white/85">                  
+          <span className="text-cyan-300">ⓘ</span>                                                                              
+          <span>介紹狀態：草稿</span>                                                                                           
+        </div>                                                                                                                  
+      </div>                                                                                                                    
+    );                                                                                                                          
+  }                                                                                                                             
+                                                                                                                                
+  function VenueButton({ name }: { name: string }) {                                                                            
+    return (                                                                                                                    
+      <button className="h-[105px] rounded-[28px] bg-black/25 hover:bg-black/35 transition border border-white/5 shadow-xl flex 
+  items-center px-7 gap-7">                                                                                                     
+        <div className="w-20 h-20 rounded-full bg-[#075086] flex items-center justify-center shadow-lg text-4xl">               
+          🏫                                                                                                                    
+        </div>                                                                                                                  
+                                                                                                                                
+        <span className="text-[30px] font-black tracking-wide drop-shadow">                                                     
+          {name}                                                                                                                
+        </span>                                                                                                                 
+      </button>                                                                                                                 
+    );                                                                                                                          
+  } 然後       

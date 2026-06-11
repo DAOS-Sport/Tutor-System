@@ -85,52 +85,62 @@ export default function CoachProfilePage() {
 
   return (
     <div className="px-4 py-4">
-      <div className="relative mb-4 w-full select-none overflow-hidden rounded-[2.5rem] bg-[#165B7C] p-6 text-white shadow-xl">
-        {/* 液態玻璃高光：左上柔光 + 整面斜向漸層，讓單色卡片更有層次 */}
-        <div className="pointer-events-none absolute -left-10 -top-12 h-44 w-44 rounded-full bg-white/10 blur-2xl" />
-        <div className="pointer-events-none absolute inset-0 rounded-[2.5rem] bg-gradient-to-br from-white/10 via-transparent to-black/15" />
-
-        <div className="relative">
-          <div className="mb-6 flex items-start justify-between gap-4">
+      {/* ── MemberCard Banner ── */}
+      <div className="mb-4 w-full rounded-[2rem] bg-gradient-to-br from-[#092f63] via-[#075d79] to-[#11a287] p-5 shadow-2xl text-white">
+        {/* 頂部：頭像 + 姓名/手機 + 資深徽章 */}
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-4">
+            <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full bg-blue-600/70 shadow-lg">
+              <span className="text-4xl">👤</span>
+            </div>
             <div className="min-w-0">
-              <h2 className="truncate py-1 text-3xl font-bold tracking-wide">{coach.name}</h2>
-              {coach.phone && <p className="mt-0.5 text-xs tracking-wider text-white/60">{coach.phone}</p>}
-            </div>
-            <div className="flex shrink-0 items-center rounded-xl border border-[#0d435c] bg-[#165B7C] px-3 py-1.5 shadow-inner">
-              {coach.is_senior && <span className="mr-1 text-lg">🏅</span>}
-              <span className="text-sm font-medium tracking-wider">
-                {coach.is_senior ? '資深' : '一般'} ×{coach.pricing_multiplier || coach.multiplier || 1}
-              </span>
-            </div>
-          </div>
-
-          <div className="rounded-xl border border-[#0d435c] bg-[#145371] p-4">
-            <p className="mb-2 text-xs tracking-wider text-gray-300">授權場館</p>
-            {venueNames.length > 0 ? (
-              <div className="flex flex-wrap gap-2">
-                {venueNames.map((name, i) => (
-                  <span
-                    key={`${name}-${i}`}
-                    className="break-all rounded-xl border border-white/15 bg-white/10 px-3 py-1.5 text-base font-semibold tracking-wide shadow-inner"
-                  >
-                    {name}
-                  </span>
-                ))}
+              <div className="truncate text-[1.6rem] font-black tracking-wide drop-shadow leading-tight">
+                {coach.name}
               </div>
-            ) : (
-              <div className="text-lg text-gray-300">—</div>
-            )}
+              {coach.phone && (
+                <div className="mt-1 text-sm tracking-wider text-white/75">{coach.phone}</div>
+              )}
+            </div>
           </div>
+          <div className="shrink-0 rounded-2xl border border-white/15 bg-white/10 px-3 py-2 text-sm font-bold shadow-inner">
+            {coach.is_senior && <span className="mr-1">🏅</span>}
+            {coach.is_senior ? '資深' : '一般'} ×{coach.pricing_multiplier || coach.multiplier || 1}
+          </div>
+        </div>
 
-          {coach.intro_review_status && (
-            <p className="mt-3 text-[11px] tracking-wider text-white/70">
-              介紹狀態：{
-                { draft: '草稿', pending_review: '審核中', published: '已發布', rejected: '未通過' }[coach.intro_review_status]
-                || coach.intro_review_status
-              }
-            </p>
+        {/* 授權場館 */}
+        <div className="mt-5 rounded-2xl border border-white/10 bg-white/[0.08] px-5 py-4 shadow-inner">
+          <div className="mb-3 flex items-center gap-2 text-sm font-bold">
+            <span className="text-cyan-300">🛡</span>
+            授權場館
+          </div>
+          {venueNames.length > 0 ? (
+            <div className="grid grid-cols-2 gap-3">
+              {venueNames.map((name, i) => (
+                <div key={`${name}-${i}`}
+                  className="flex h-14 items-center gap-3 rounded-2xl border border-white/5 bg-black/25 px-4 shadow-xl">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#075086] text-xl shadow-lg">
+                    🏫
+                  </div>
+                  <span className="truncate text-base font-black tracking-wide drop-shadow">{name}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-sm text-white/60">尚未設定場館</div>
           )}
         </div>
+
+        {/* 介紹狀態 */}
+        {coach.intro_review_status && (
+          <div className="mt-4 flex items-center gap-2 border-t border-white/10 pt-4 text-sm text-white/85">
+            <span className="text-cyan-300">ⓘ</span>
+            <span>介紹狀態：{
+              { draft: '草稿', pending_review: '審核中', published: '已發布', rejected: '未通過' }[coach.intro_review_status]
+              || coach.intro_review_status
+            }</span>
+          </div>
+        )}
       </div>
 
       <Section title="個人介紹（家長端可看）">
