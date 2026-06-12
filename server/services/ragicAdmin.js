@@ -203,6 +203,24 @@ async function _syncStaffImpl() {
     )).rows;
     // key 用 normalize 過的值，value 保留 DB 原始 row（含 PK 原始大小寫）
     const dbMap = new Map(dbRows.map(r => [_normalizeStaffId(r.id), r]));
+    // Perf（修「H01 同步偶發逾時 / 同步失敗」的根因）：原本在每筆員工迴圈裡各打 2 次 DB
+    // （coaches 的 email/line_uid + admin_staff_venues），262 筆 ≈ 500+ 次序列往返 →
+    // 同步要跑 78–116 秒。真正瓶頸不是 Ragic API（一次就撈得完，遠在 1000 筆/次上限內），
+    // 而是這個 N+1。改成「迴圈前一次撈齊」兩張表、用 Map 查；同步降到秒級，
+    // 重開機後那段長時間視窗（最容易撞到逾時 / DB 連線抖動 → 同步失敗）也跟著消失。
+    const coachByEmp = new Map(
+      (await pool.query(
+        `SELECT ragic_employee_id, email, line_uid FROM coaches WHERE ragic_employee_id IS NOT NULL`
+      )).rows.map(c => [c.ragic_employee_id, c])
+    );
+    const venuesByStaff = new Map();
+    for (const vr of (await pool.query(
+      `SELECT staff_id, venue_id FROM admin_staff_venues ORDER BY staff_id, venue_id`
+    )).rows) {
+      const list = venuesByStaff.get(vr.staff_id);
+      if (list) list.push(vr.venue_id);
+      else venuesByStaff.set(vr.staff_id, [vr.venue_id]);
+    }
     const seenKeys = new Set();
     let staged = 0;
     let venuesApplied = 0; // Task #95：場館自動套用筆數（不經待審核）
@@ -243,11 +261,10 @@ async function _syncStaffImpl() {
       };
 
       // 查目前 coaches.email / line_uid 作為 diff 比對基準（admin_staff 本身沒有這兩個欄位）
-      const coachRowRes = await pool.query(
-        `SELECT email, line_uid FROM coaches WHERE ragic_employee_id = $1`, [entityId]
-      );
-      const curCoachEmail = coachRowRes.rows[0]?.email || '';
-      const curCoachLineUid = coachRowRes.rows[0]?.line_uid || '';
+      // ——改用迴圈前一次撈齊的 coachByEmp Map，避免每筆各打一次 DB（見上方 Perf 註解）。
+      const coachRow = coachByEmp.get(entityId);
+      const curCoachEmail = coachRow?.email || '';
+      const curCoachLineUid = coachRow?.line_uid || '';
 
       if (!cur) {
         if (await _stageIfNotRejected('H01_STAFF', 'staff', entityId, 'new', payload, null)) staged++;
@@ -274,11 +291,8 @@ async function _syncStaffImpl() {
       // Task #95（取代 Task #90 的 venue_ids 差異 stage）：場館改為「自動套用」不經待審核 —
       // Ragic 部門即權威，清洗後的代碼與 DB 不同就直接寫入授權館別（admin_staff_venues +
       // coach_venues）。解析為空（部門是公司名/內勤處室）→ 不動 DB，避免清空既有場館。
-      const curVenuesRes = await pool.query(
-        `SELECT venue_id FROM admin_staff_venues WHERE staff_id = $1 ORDER BY venue_id`,
-        [entityId]
-      );
-      const curVenues = curVenuesRes.rows.map(x => x.venue_id);
+      // 同上：改查迴圈前撈齊的 venuesByStaff Map（已依 staff_id, venue_id 排序）。
+      const curVenues = venuesByStaff.get(entityId) || [];
       const newVenues = [...venueIds].sort();
       const curVenuesSorted = [...curVenues].sort();
       if (newVenues.length > 0 && (newVenues.length !== curVenuesSorted.length

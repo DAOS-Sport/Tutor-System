@@ -88,6 +88,31 @@ app.get('/', (req, res) => {
   res.redirect('/admin/');
 });
 
+// ── 統一錯誤處理（必須放在所有 route 之後）──────────────
+// 之前沒有 error handler：express.json() 遇到壞掉的 JSON body 會丟 SyntaxError，
+// 由 Express 內建 handler 回一頁「HTML 堆疊」+ 400（body 沒有 .error 欄位）。
+// 前端 6 個後台頁的 catch 都是 `toast.error(e.response.data.error || e.message)`，
+// 抓不到 .error → 退回 e.message = 神祕的「Request failed with status code 400」
+// （Ragic 連線狀態頁「連不上」的真正成因）。這裡一律改回乾淨 JSON，讓前端顯示
+// 友善中文、並提示重新整理（多半是瀏覽器卡在舊版 bundle 送出異常 body）。
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  const isBodyParse =
+    err.type === 'entity.parse.failed' ||
+    err.type === 'entity.too.large' ||
+    (err instanceof SyntaxError && 'body' in err);
+  if (isBodyParse) {
+    const tooLarge = err.type === 'entity.too.large';
+    return res.status(tooLarge ? 413 : 400).json({
+      error: tooLarge
+        ? '上傳內容過大，請縮小後再試。'
+        : '請求內容格式錯誤（JSON 解析失敗）；多半是頁面版本過舊，請重新整理頁面後再試。',
+    });
+  }
+  console.error('[unhandled]', req.method, req.originalUrl, err.message);
+  res.status(err.status || 500).json({ error: err.message || 'Internal Server Error' });
+});
+
 // ── WebSocket (聊天室) ───────────────────────
 initWebSocket(server);
 

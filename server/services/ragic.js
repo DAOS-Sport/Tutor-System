@@ -108,6 +108,22 @@ function _normalizeRagicError(err) {
     e.cause = err;
     return e;
   }
+  // Ragic / 上游回 HTTP 4xx/5xx 時，axios 的 err.message 只是無資訊量的
+  // 「Request failed with status code 400」——存進 ragic_sync_log.error_message 後，
+  // 後台「Ragic 連線狀態」卡片就只顯示這串神祕代碼，admin 無從判斷原因。
+  // 這裡把真正的 HTTP 狀態 + Ragic 回應內容（msg/code 或前 200 字）萃取成可讀訊息。
+  const status = err?.response?.status;
+  if (status) {
+    const body = err.response.data;
+    let detail = '';
+    if (typeof body === 'string') detail = body.replace(/<[^>]*>/g, ' ').trim().slice(0, 200);
+    else if (body && typeof body === 'object') detail = (body.msg || body.message || JSON.stringify(body)).slice(0, 200);
+    const e = new Error(`Ragic 回應 HTTP ${status}${detail ? `：${detail}` : ''}`);
+    e.code = 'RAGIC_HTTP_ERROR';
+    e.status = status;
+    e.cause = err;
+    return e;
+  }
   return err;
 }
 
