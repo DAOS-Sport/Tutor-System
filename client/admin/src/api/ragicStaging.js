@@ -14,7 +14,8 @@ export const ragicStagingApi = {
     return r.data;
   },
   async approve(id) {
-    const r = await http.post(`/ragic-staging/${id}/approve`, null, { skipAuthRedirect: true });
+    // body 用 {} 而非 null：null 會被 axios 送成字面 "null"，後端 strict JSON 解析會回 400。
+    const r = await http.post(`/ragic-staging/${id}/approve`, {}, { skipAuthRedirect: true });
     return r.data;
   },
   async reject(id, reason) {

@@ -14,7 +14,22 @@ const app = express();
 const server = http.createServer(app);
 
 app.use(cors({ origin: process.env.LIFF_URL_PARENT || process.env.LIFF_URL || '*' }));
-app.use(express.json({ limit: '50mb' }));
+// express.json() 預設 strict：axios 的 `post(url, null)` 會把 body 序列化成字面字串 "null"，
+// strict 模式視為非法 JSON → 400（前端 Ragic「立即同步 / 核准」按鈕送 null body，
+// 每次點擊都在抵達路由前就 400 —— 正是「連不上 Ragic / 同步失敗」的真因）。
+// 這裡包一層：把「空意圖」body（"null" / "undefined" / 空白）當成沒有 body、req.body = {} 放行；
+// 真正壞掉的 JSON（如 `{bad`）仍交給檔尾的統一錯誤處理回友善 400。
+const _jsonParser = express.json({ limit: '50mb' });
+app.use((req, res, next) => _jsonParser(req, res, (err) => {
+  if (err && err.type === 'entity.parse.failed') {
+    const raw = typeof err.body === 'string' ? err.body.trim() : '';
+    if (raw === '' || raw === 'null' || raw === 'undefined') {
+      req.body = {};
+      return next();
+    }
+  }
+  next(err);
+}));
 app.use(express.urlencoded({ extended: true }));
 
 // ── Routes ──────────────────────────────────

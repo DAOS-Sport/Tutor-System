@@ -9,9 +9,11 @@ export const ragicStatusApi = {
     return r.data;
   },
   async sync(form = 'all') {
+    // 注意：body 必須是物件（{}）。傳 null 會被 axios 序列化成字面 "null"，
+    // 後端 express.json() strict 模式視為非法 JSON → 400（同步 / ping 點下去就失敗）。
     const r = await http.post(
       `/ragic-status/sync?form=${encodeURIComponent(form)}`,
-      null,
+      {},
       { skipAuthRedirect: true }
     );
     return r.data;
