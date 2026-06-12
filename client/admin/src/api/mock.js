@@ -351,10 +351,100 @@ const CANCELLED_SESSIONS = [
   { id: 'SX002', date: '2026-04-25', start: '17:00', period_id: 'CP1005', parent_name: '陳媽媽', coach: '黃詩涵', venue_id: 'X', refunded: true },
 ];
 
+// ---- Ragic 連線狀態 mock ----
+// 真實的 ragicStatusApi 直連後端、刻意不吃 mock（這頁只反映線上即時同步狀態），
+// 因此 demo / VITE_USE_MOCK 模式下原本「連開都開不了」。此處補一份假快照，
+// 讓這頁在無後端時也能開，並讓「立即同步」按出「同步中 → 成功」動畫（5 秒輪詢驅動）。
+function _ragicNextCron(now = new Date()) {
+  // 對齊 server/routes/admin/ragicStatus.js 的 '*/10 * * * *'
+  const next = new Date(now.getTime());
+  next.setSeconds(0, 0);
+  const m = next.getMinutes();
+  next.setMinutes(m + (10 - (m % 10)));
+  return next.toISOString();
+}
+const RAGIC_MOCK_ENV = {
+  RAGIC_API_KEY: true, RAGIC_BASE_URL: true,
+  RAGIC_FORM_H01: true, RAGIC_FORM_H05: true,
+  RAGIC_FORM_Z01: true, RAGIC_FORM_Z02: true,
+};
+// 模組級可變狀態：ragicSync() 會就地改它，下一次 ragicStatus() 回傳更新後的深拷貝。
+const RAGIC_MOCK_FORMS = {
+  staff: {
+    form_code: 'H01_STAFF', label: 'H01 員工 + 教練 (admin_staff + coaches)', kind: 'sync',
+    in_progress: false, last_status: 'ok', last_triggered_by: 'cron', last_error: null,
+    last_run_at: new Date(Date.now() - 6 * 60000).toISOString(),
+    last_success_at: new Date(Date.now() - 6 * 60000).toISOString(),
+    last_count: 125, last_duration_ms: 21299,
+  },
+  venues: {
+    form_code: 'H05_VENUES', label: 'H05 場館 (venues)', kind: 'sync',
+    in_progress: false, last_status: 'ok', last_triggered_by: 'cron', last_error: null,
+    last_run_at: new Date(Date.now() - 6 * 60000).toISOString(),
+    last_success_at: new Date(Date.now() - 6 * 60000).toISOString(),
+    last_count: 3, last_duration_ms: 1840,
+  },
+  parents: {
+    form_code: 'Z01_PARENTS', label: 'Z01 家長（連線健康檢查）', kind: 'healthcheck',
+    in_progress: false, last_status: 'ok', last_triggered_by: 'cron', last_error: null,
+    last_run_at: new Date(Date.now() - 6 * 60000).toISOString(),
+    last_success_at: new Date(Date.now() - 6 * 60000).toISOString(),
+    last_count: 0, last_duration_ms: 540,
+  },
+  students: {
+    form_code: 'Z02_STUDENTS', label: 'Z02 學員（連線健康檢查）', kind: 'healthcheck',
+    in_progress: false, last_status: 'ok', last_triggered_by: 'cron', last_error: null,
+    last_run_at: new Date(Date.now() - 6 * 60000).toISOString(),
+    last_success_at: new Date(Date.now() - 6 * 60000).toISOString(),
+    last_count: 0, last_duration_ms: 610,
+  },
+};
+
 export const mockDb = {
   login(username, password) {
     const u = USERS.find((x) => x.username === username && x.password === password);
     return u ? { id: u.id, username: u.username, name: u.name, role: u.role, venue_id: u.venue_id, token: `mock-${u.id}-${Date.now()}` } : null;
+  },
+
+  // GET /ragic-status 的 demo 版（見上方 RAGIC_MOCK_* 說明）
+  ragicStatus() {
+    const env = { ...RAGIC_MOCK_ENV };
+    const missing = Object.entries(env).filter(([, v]) => !v).map(([k]) => k);
+    const now = new Date();
+    return {
+      enabled: missing.length === 0,
+      env,
+      missing_env: missing,
+      cron_schedule: '*/10 * * * *',
+      next_cron_run_at: _ragicNextCron(now),
+      // 深拷貝：避免頁面拿到 module 內部物件而被後續 setTimeout 變更「偷改」既有 render
+      forms: JSON.parse(JSON.stringify(RAGIC_MOCK_FORMS)),
+      now: now.toISOString(),
+    };
+  },
+  // POST /ragic-status/sync?form=... 的 demo 版：先把目標表標成同步中，
+  // 2.5 秒後就地標完成；頁面靠 5 秒輪詢 ragicStatus() 看到「同步中 → 成功」。
+  ragicSync(form = 'all') {
+    const jobs = form === 'all' ? Object.keys(RAGIC_MOCK_FORMS) : [form];
+    for (const j of jobs) {
+      const f = RAGIC_MOCK_FORMS[j];
+      if (!f) continue;
+      f.in_progress = true;
+      f.last_triggered_by = 'manual';
+      setTimeout(() => {
+        const done = new Date();
+        f.in_progress = false;
+        f.last_status = 'ok';
+        f.last_error = null;
+        f.last_run_at = done.toISOString();
+        f.last_success_at = done.toISOString();
+        f.last_duration_ms = f.kind === 'healthcheck' ? 520 : 18000 + (f.last_count || 0) * 20;
+      }, 2500);
+    }
+    return {
+      ok: true, accepted: true, queued_jobs: jobs,
+      message: '（demo）已排入背景同步，狀態會自動更新…',
+    };
   },
 
   staff(filters = {}) {
