@@ -17,10 +17,15 @@ export default function AppLayout({ showBackButton = false, title }) {
   const location = useLocation();
   const navigate = useNavigate();
   const isTabPage = TAB_PATHS.includes(location.pathname);
+  const isCoachProfilePage = location.pathname === '/coach/profile';
 
   return (
     <div className="min-h-screen bg-gray-100">
-      <div className="relative mx-auto flex min-h-screen w-full max-w-[390px] flex-col bg-white shadow-sm">
+      <div
+        className={`relative mx-auto flex min-h-screen w-full max-w-[390px] flex-col bg-white ${
+          isCoachProfilePage ? '' : 'shadow-sm'
+        }`}
+      >
         {(showBackButton || title) && (
           <header className="sticky top-0 z-20 flex h-12 items-center gap-2 border-b border-gray-100 bg-white px-3">
             {showBackButton && (
