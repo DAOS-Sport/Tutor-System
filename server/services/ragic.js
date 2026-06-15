@@ -517,18 +517,42 @@ async function createParentWithStudentsInRagic({ parent, students = [], lineUid 
   }
 
   // 2) 學員逐筆寫 Z02 學員主檔（依家長手機自動連動回 Z01 項次子表）。
-  //    upsertStudentStrict 失敗會 throw → caller 回 502 RAGIC_WRITE_FAILED（fail-visible）。
-  //    補償：Z01 家長已建、但某筆 Z02 失敗 → 回滾刪除剛建的 Z01 家長 + 已寫入的 Z02 學員，
-  //    讓使用者可乾淨重試（否則孤兒 Z01 會帶著 lineUid 卡在 LINE_ALREADY_REGISTERED）。
+  //    身分證字號是 Z02 唯一鍵。若該號已存在：
+  //      · 同一位學員的孤兒紀錄（姓名相符、未綁定別的家長手機）→ 重新連結（更新而非新建）。
+  //      · 被「別的學員」占用 → 丟 STUDENT_ID_NUMBER_EXISTS，caller 回 409 明確訊息。
+  //    補償：Z01 家長已建、但某筆 Z02 失敗 → 回滾刪除剛建的 Z01 家長 + 「本次新建」的 Z02 學員。
+  //    （只刪本次新建，避免誤刪我們只是「更新」的既有他人/孤兒紀錄。）
   const studentRecordIds = [];
+  const createdStudentIds = [];
   try {
     for (const s of students) {
       if (!s || !s.name) continue;
-      const z02raw = await upsertStudentStrict(await _buildZ02RegistrationPayload({ parent, student: s }));
-      studentRecordIds.push(z02raw?.ragicId || z02raw?._ragicId || null);
+      const idnum = s.id_number ? String(s.id_number).toUpperCase() : '';
+      let targetRecordId = null;
+      if (idnum) {
+        const existing = await getStudentByIdNumber(idnum).catch(() => null);
+        if (existing) {
+          const exName  = String(existing[FIELD.Z02.NAME] || '').trim();
+          const exPhone = String(existing[FIELD.Z02.PARENT_PHONE] || '').trim();
+          const sameStudent = !!exName && exName === String(s.name || '').trim();
+          const unboundOrSameParent = !exPhone || exPhone === parent.phone;
+          if (sameStudent && unboundOrSameParent) {
+            targetRecordId = existing._ragicId || existing.ragicId || null;  // 重新連結孤兒
+          } else {
+            const e = new Error(`身分證字號 ${idnum} 已被其他學員使用`);
+            e.code = 'STUDENT_ID_NUMBER_EXISTS';
+            e.idNumber = idnum;
+            throw e;
+          }
+        }
+      }
+      const z02raw = await upsertStudentStrict(await _buildZ02RegistrationPayload({ parent, student: s }), targetRecordId);
+      const newId = z02raw?.ragicId || z02raw?._ragicId || null;
+      studentRecordIds.push(newId);
+      if (!targetRecordId) createdStudentIds.push(newId);
     }
   } catch (err) {
-    await _bestEffortDelete(process.env.RAGIC_FORM_Z02, studentRecordIds);
+    await _bestEffortDelete(process.env.RAGIC_FORM_Z02, createdStudentIds);
     if (ragicRecordId) await _bestEffortDelete(process.env.RAGIC_FORM_Z01, [ragicRecordId]);
     _cacheInvalidate('z01:');
     _cacheInvalidate('z02:');

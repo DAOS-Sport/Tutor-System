@@ -29,14 +29,40 @@ function tryGetLineIdToken() {
 function registerErrorMessage(err) {
   const code = err?.response?.data?.code;
   const status = err?.response?.status;
-  if (code === 'LINE_ALREADY_BOUND_TO_OTHER_PHONE') return '此 LINE 已綁定其他手機，請聯絡管理員。';
-  if (code === 'LINE_ALREADY_REGISTERED') return '此 LINE 已註冊過，請直接從 LINE 開啟連結登入。';
-  if (code === 'PHONE_EXISTS_USE_BINDING') return '此手機已存在於系統，請改回登入頁以手機綁定。';
-  if (code === 'LINE_VERIFY_FAILED' || code === 'LINE_ID_TOKEN_REQUIRED') return 'LINE 驗證失敗：請重新由 LINE 開啟。';
-  if (code === 'RAGIC_UNAVAILABLE' || code === 'RAGIC_WRITE_FAILED') return '資料同步暫時失敗，請稍後再試。';
-  if (code === 'PHONE_FORMAT_INVALID') return '手機格式錯誤（需 09xxxxxxxx）。';
-  if (code === 'ID_NUMBER_INVALID') return '學員身分證字號格式錯誤。';
-  if (code === 'RATE_LIMITED' || status === 429) return '嘗試次數過多，請稍後再試。';
+  // 後端若帶了明確 error 文字（如身分證重複會帶實際號碼），優先沿用
+  const serverMsg = err?.response?.data?.error;
+
+  const MAP = {
+    // —— 必填 / 格式 ——
+    INPUT_INVALID:            '資料不完整，請確認家長姓名、手機與至少一位學員都已填寫。',
+    PHONE_FORMAT_INVALID:     '手機格式錯誤（需 09 開頭共 10 碼）。',
+    EMAIL_REQUIRED:           '請填寫家長 Email（Ragic 必填）。',
+    EMAIL_FORMAT_INVALID:     'Email 格式錯誤，請確認後重填。',
+    GENDER_REQUIRED:          '請選擇家長性別（Ragic 必填）。',
+    ID_NUMBER_INVALID:        '學員身分證字號格式錯誤（如 A123456789）。',
+    // —— 重複 / 衝突 ——
+    STUDENT_ID_NUMBER_EXISTS: '此學員身分證字號已被系統內其他學員使用，請確認是否填錯；若確為本人請聯絡客服。',
+    PHONE_EXISTS_USE_BINDING: '此手機已存在於系統，請回登入頁改用「手機綁定」流程，不需重新註冊。',
+    LINE_ALREADY_REGISTERED:  '此 LINE 帳號已註冊過，請直接從 LINE 開啟連結登入。',
+    LINE_ALREADY_BOUND_TO_OTHER_PHONE: '此 LINE 帳號已綁定其他手機，請改用原手機登入或聯絡客服。',
+    PHONE_ALREADY_BOUND_TO_OTHER_LINE: '此手機已綁定其他 LINE 帳號，請聯絡客服協助處理。',
+    // —— LINE 驗證 ——
+    LINE_VERIFY_FAILED:       'LINE 驗證失敗，請重新由 LINE 開啟註冊頁。',
+    LINE_ID_TOKEN_REQUIRED:   'LINE 驗證已逾時，請重新由 LINE 開啟註冊頁。',
+    // —— 系統 / 同步 ——
+    RAGIC_UNAVAILABLE:        '資料庫（Ragic）暫時無法連線，請稍後再試。',
+    RAGIC_WRITE_FAILED:       '寫入資料庫（Ragic）失敗，請稍後再試；若持續發生請聯絡客服。',
+    LOCAL_UPSERT_FAILED:      '本地建檔失敗，請稍後再試；若持續發生請聯絡客服。',
+    LOGIN_FAILED:             '系統忙線，請稍後再試。',
+    RATE_LIMITED:             '嘗試次數過多，請稍後再試。',
+    // —— 前端自設 ——
+    REGISTER_NO_STATUS:       '註冊未完成（伺服器未回傳成功狀態），請稍後再試。',
+    DEMO_REGISTER_FAILED:     'Demo 測試註冊失敗，請稍後再試。',
+  };
+  if (code && MAP[code]) return MAP[code];
+  if (status === 429) return MAP.RATE_LIMITED;
+  // 後端有給可讀訊息就用它，否則泛用
+  if (serverMsg && typeof serverMsg === 'string') return serverMsg;
   return '註冊失敗，請稍後再試。';
 }
 
@@ -53,6 +79,7 @@ export default function RegisterPage() {
   // 註冊失敗 → 顯示「問題回報」按鈕（避免使用者只看到一閃即逝的 toast 而卡住）
   const [failed, setFailed] = useState(false);
   const [errCode, setErrCode] = useState('');
+  const [errMsg, setErrMsg] = useState('');
   const authedParent = isAuthed && role === 'parent';
 
   // 用推薦的教練解析出有效場館（優先家長慣用場館，否則取教練第一個場館），
@@ -122,6 +149,7 @@ export default function RegisterPage() {
   async function onSubmit(data) {
     setFailed(false);
     setErrCode('');
+    setErrMsg('');
     const cleanParent = {
       name: data.name,
       phone: data.phone.trim(),
@@ -150,6 +178,7 @@ export default function RegisterPage() {
           return;
         }
         setErrCode('DEMO_REGISTER_FAILED');
+        setErrMsg('Demo 測試註冊失敗，請稍後再試。');
         setFailed(true);
         toast.error('Demo 註冊失敗，請稍後再試。');
         return;
@@ -192,6 +221,7 @@ export default function RegisterPage() {
           return;
         }
         setErrCode('REGISTER_NO_STATUS');
+        setErrMsg('註冊未完成（伺服器未回傳成功狀態），請稍後再試。');
         setFailed(true);
         toast.error('註冊失敗，請稍後再試。');
         return;
@@ -202,6 +232,7 @@ export default function RegisterPage() {
       //  - dev / mock：保留舊 parentsApi.create fallback，方便本地測試
       if (IS_PROD && !USE_MOCK) {
         setErrCode('LINE_ID_TOKEN_REQUIRED');
+        setErrMsg('LINE 驗證已逾時，請重新由 LINE 開啟註冊頁。');
         setFailed(true);
         toast.error('LINE 驗證失敗：請重新由 LINE 開啟註冊頁。');
         return;
@@ -230,6 +261,7 @@ export default function RegisterPage() {
       }
     } catch (err) {
       setErrCode(err?.response?.data?.code || err?.code || '');
+      setErrMsg(registerErrorMessage(err));
       setFailed(true);
       toast.error(registerErrorMessage(err));
     }
@@ -337,8 +369,11 @@ export default function RegisterPage() {
 
         {failed && (
           <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-center">
-            <p className="mb-3 text-sm leading-6 text-rose-800">
-              註冊未完成。請確認資料後重新送出，或透過下方按鈕回報問題。
+            <p className="mb-1 text-sm font-bold leading-6 text-rose-800">
+              {errMsg || '註冊未完成，請確認資料後重新送出。'}
+            </p>
+            <p className="mb-3 text-xs leading-5 text-rose-600">
+              請依上方訊息修正後重新送出；若無法解決，請透過下方按鈕回報問題{errCode ? `（錯誤碼：${errCode}）` : ''}。
             </p>
             <ReportIssueButton
               audience="parent"

@@ -715,6 +715,12 @@ router.post('/parent-register-line', async (req, res) => {
         lineUid,
       });
     } catch (err) {
+      if (err.code === 'STUDENT_ID_NUMBER_EXISTS') {
+        return res.status(409).json({
+          error: `學員身分證字號 ${err.idNumber || ''} 已被系統內其他學員使用，請確認是否填錯；若確為本人請聯絡客服協助處理。`,
+          code: 'STUDENT_ID_NUMBER_EXISTS',
+        });
+      }
       console.error('[auth/parent-register-line] createParentWithStudentsInRagic failed:', err.message);
       return res.status(502).json({ error: '寫入 Ragic 失敗，請稍後再試', code: 'RAGIC_WRITE_FAILED' });
     }
