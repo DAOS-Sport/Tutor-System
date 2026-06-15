@@ -2,7 +2,6 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import liff from '@line/liff';
 import { authApi } from '../api/auth';
-import { coachesApi } from '../api/coaches';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { isValidTWPhone } from '../utils/format';
@@ -17,24 +16,6 @@ function clearManualLogout() {
   try { localStorage.removeItem(MANUAL_LOGOUT_KEY); } catch {}
 }
 
-function isInLineClient() {
-  try {
-    return !!liff?.isInClient?.();
-  } catch {
-    return false;
-  }
-}
-
-function forceLiffLogin() {
-  try {
-    if (liff?.isInClient?.() && !liff?.isLoggedIn?.() && typeof liff.login === 'function') {
-      liff.login({ redirectUri: window.location.href });
-      return true;
-    }
-  } catch { /* noop */ }
-  return false;
-}
-
 function tryGetLineIdToken() {
   try {
     if (typeof liff?.getIDToken === 'function' && liff.isLoggedIn?.()) {
@@ -42,28 +23,6 @@ function tryGetLineIdToken() {
     }
   } catch { /* swallow */ }
   return null;
-}
-
-/**
- * 教練端 LIFF 自動登入：在 LINE App 內進入 /coach* path 時自動嘗試
- * 回傳 { status: 'success', coach } | 'unbound' | 'unavailable'
- */
-async function tryCoachAutoLogin() {
-  try {
-    if (!liff?.isInClient?.() || !liff?.isLoggedIn?.()) return 'unavailable';
-    const idToken = liff.getIDToken?.();
-    if (!idToken) return 'unavailable';
-    const profile = await liff.getProfile();
-    const lineUid = profile?.userId;
-    if (!lineUid) return 'unavailable';
-    const coach = await coachesApi.byLineUid(lineUid, idToken);
-    return { status: 'success', coach };
-  } catch (err) {
-    const code = err?.response?.status;
-    const ec = err?.response?.data?.code;
-    if (code === 404 || ec === 'COACH_LINE_NOT_BOUND') return 'unbound';
-    return 'unavailable';
-  }
 }
 
 // 家長 / 教練端 LIFF App ID（由 Vite env 注入；與 main.jsx 同一來源）
@@ -116,14 +75,11 @@ function parentErrorMessage(err) {
 export default function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { setParent, setCoach } = useAuth();
+  const { setParent } = useAuth();
   const toast = useToast();
 
   const fromPath = location.state?.from?.pathname || '';
   const coachContext = isCoachLiffContext(fromPath);
-
-  // coach context state
-  const [coachState, setCoachState] = useState(coachContext ? 'checking' : null);
 
   // parent flow state: 'checking'|'need_phone'|'manual'|'error'
   const [parentState, setParentState] = useState(coachContext ? null : 'checking');
@@ -265,8 +221,9 @@ export default function LoginPage() {
     }
   }
 
-  // ── 教練 context 專屬畫面 ──
-  if (coachContext && coachState && coachState !== 'success') {
+  // ── 教練 context：本頁不再自行登入教練，只負責導去教練專屬登入頁 /coach-portal
+  //    （導向在上面的 effect 內完成）。這裡僅顯示過場 spinner，避免轉址前閃一下空白。──
+  if (coachContext) {
     return (
       <div className="flex min-h-[100dvh] flex-col items-center justify-center px-6 py-10">
         <div className="mb-6 text-center">
@@ -276,61 +233,9 @@ export default function LoginPage() {
           <h1 className="text-xl font-bold text-brand-primary">夢想體育學院</h1>
           <p className="mt-1 text-sm text-gray-500">教練端</p>
         </div>
-
-        {coachState === 'checking' && (
-          <div className="w-full max-w-[320px] text-center">
-            <LoadingSpinner label="正在以 LINE 帳號登入…" />
-          </div>
-        )}
-
-        {coachState === 'unbound' && (
-          <div className="w-full max-w-[340px] rounded-xl border border-amber-200 bg-amber-50 p-5 text-center">
-            <div className="mb-2 text-base font-bold text-amber-900">尚未完成綁定</div>
-            <p className="text-sm leading-6 text-amber-800">
-              您的 LINE 帳號尚未綁定為教練。
-              <br />
-              請截圖傳送結果至 <span className="font-bold">400 官方帳號</span>，
-              <br />
-              由管理員協助完成綁定後即可登入。
-            </p>
-            <p className="mt-3 text-xs text-amber-700">
-              （LINE 身分已驗證，僅尚未對應到教練資料）
-            </p>
-            <div className="mt-4">
-              <ReportIssueButton
-                audience="coach"
-                errorCode="COACH_LINE_NOT_BOUND"
-                errorMessage="LINE 帳號尚未綁定為教練"
-                context="教練端登入（LIFF 自動登入）"
-                details={{ 畫面: diag.context, 路徑: diag.pathname, LINE內開啟: String(diag.isInClient), 已登入LINE: String(diag.isLoggedIn), 有idToken: String(diag.hasIdToken) }}
-              />
-            </div>
-          </div>
-        )}
-
-        {coachState === 'error' && (
-          <div className="w-full max-w-[340px] rounded-xl border border-gray-200 bg-gray-50 p-5 text-center">
-            <p className="text-sm leading-6 text-gray-700">
-              無法自動登入，請稍後再試，或透過下方按鈕回報問題。
-            </p>
-            <button type="button" onClick={() => window.location.reload()}
-              className="mt-4 w-full rounded-lg bg-brand-primary py-2 text-sm font-bold text-white active:bg-brand-teal">
-              重新嘗試
-            </button>
-            <div className="mt-3">
-              <ReportIssueButton
-                audience="coach"
-                errorCode="COACH_AUTO_LOGIN_FAILED"
-                errorMessage="教練端自動登入失敗"
-                context="教練端登入（LIFF 自動登入）"
-                details={{ 畫面: diag.context, 路徑: diag.pathname, LINE內開啟: String(diag.isInClient), 已登入LINE: String(diag.isLoggedIn), 有idToken: String(diag.hasIdToken) }}
-              />
-            </div>
-            <DiagBlock />
-          </div>
-        )}
-
-        {coachState === 'unbound' && <DiagBlock />}
+        <div className="w-full max-w-[320px] text-center">
+          <LoadingSpinner label="正在前往教練登入…" />
+        </div>
       </div>
     );
   }
