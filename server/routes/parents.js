@@ -97,6 +97,13 @@ function ragicError(res, err) {
   });
 }
 
+// 「擇一儲存」：學員已寫進本地 DB、但 Ragic 同步暫緩時，給前端一句可讀提醒。
+// 多半是家長資料（館別／性別／Email）未補齊 → Z02 必填 INVALID；也可能 Ragic 暫時連線失敗。
+function studentSyncDeferredMsg(err) {
+  const reason = err?.message ? `（${err.message}）` : '';
+  return `學員已儲存；雲端同步暫緩${reason}。補齊家長資料（館別／性別／Email）後再次儲存此學員即可完成同步。`;
+}
+
 router.get('/me', requireParent, async (req, res) => {
   try {
     const me = await loadMe(req.parent.id);
@@ -184,26 +191,42 @@ router.post('/me/students', requireParent, async (req, res) => {
     );
     if (dup.rowCount) return res.status(409).json({ error: '此學員已存在', code: 'STUDENT_ID_DUPLICATED' });
 
-    const cnt = await pool.query(`SELECT COUNT(*)::int AS n FROM students WHERE parent_id = $1`, [req.parent.id]);
-    console.log('[student-sync] 新增學員 start', { parent: parent.name, phone: parent.phone, student: s.name });
-    const sync = await ragic.createStudentZ01Z02Strict({
-      parent,
-      student: s,
-      startIndex: Number(cnt.rows[0]?.n || 0),
-    });
-    console.log('[student-sync] 新增學員 Ragic 同步完成', { parentRagicId: sync?.parentRagicRecordId, z02: sync?.z02?.ragicRecordId });
+    // 擇一儲存：學員欄位齊就先寫進本地 DB（last_synced_at = NULL = 尚未同步），
+    // 不被「家長資料未補齊 → Z02 必填 INVALID」整筆擋掉。
+    const startIndex = Number(
+      (await pool.query(`SELECT COUNT(*)::int AS n FROM students WHERE parent_id = $1`, [req.parent.id])).rows[0]?.n || 0
+    );
     const ins = await pool.query(
       `INSERT INTO students
-         (parent_id, name, id_number, birth_date, gender, blood_type, ragic_record_id, is_active, last_synced_at)
-       VALUES ($1, $2, $3, $4::date, $5, $6, $7, TRUE, NOW())
+         (parent_id, name, id_number, birth_date, gender, blood_type, is_active, last_synced_at)
+       VALUES ($1, $2, $3, $4::date, $5, $6, TRUE, NULL)
        RETURNING id, name, id_number, birth_date, gender, blood_type, student_code, ragic_record_id, is_active`,
-      [req.parent.id, s.name, s.id_number, s.birth_date, s.gender, s.blood_type, sync.z02.ragicRecordId]
+      [req.parent.id, s.name, s.id_number, s.birth_date, s.gender, s.blood_type]
     );
-    await pool.query(
-      `UPDATE parents SET ragic_record_id = COALESCE(ragic_record_id, $2), updated_at = NOW() WHERE id = $1`,
-      [req.parent.id, sync.parentRagicRecordId]
-    );
-    res.status(201).json(ins.rows[0]);
+    let row = ins.rows[0];
+
+    // Ragic 同步（best-effort）：成功 → 補 ragic_record_id + last_synced_at；失敗 → 保留本地、回提醒
+    let syncWarning = null;
+    try {
+      console.log('[student-sync] 新增學員 start', { parent: parent.name, phone: parent.phone, student: s.name });
+      const sync = await ragic.createStudentZ01Z02Strict({ parent, student: s, startIndex });
+      const up = await pool.query(
+        `UPDATE students SET ragic_record_id = COALESCE(ragic_record_id, $2), last_synced_at = NOW()
+          WHERE id = $1
+          RETURNING id, name, id_number, birth_date, gender, blood_type, student_code, ragic_record_id, is_active`,
+        [row.id, sync.z02.ragicRecordId]
+      );
+      row = up.rows[0];
+      await pool.query(
+        `UPDATE parents SET ragic_record_id = COALESCE(ragic_record_id, $2), updated_at = NOW() WHERE id = $1`,
+        [req.parent.id, sync.parentRagicRecordId]
+      );
+      console.log('[student-sync] 新增學員 Ragic 同步完成', { z02: sync?.z02?.ragicRecordId });
+    } catch (err) {
+      console.warn('[student-sync] 新增學員 Ragic 同步暫緩（本地已存）', { code: err.code, msg: err.message });
+      syncWarning = studentSyncDeferredMsg(err);
+    }
+    res.status(201).json({ ...row, sync_warning: syncWarning });
   } catch (err) {
     console.error('[student-sync] 新增學員 失敗', { code: err.code, msg: err.message });
     return ragicError(res, err);
@@ -232,24 +255,42 @@ router.patch('/me/students/:id', requireParent, async (req, res) => {
       [s.id_number, req.params.id]
     );
     if (dup.rowCount) return res.status(409).json({ error: '此身分證字號已存在', code: 'STUDENT_ID_DUPLICATED' });
-    const syncStudent = { ...cur.rows[0], ...s };
-    console.log('[student-sync] 編輯學員 start', { parent: parent.name, phone: parent.phone, student: s.name, studentId: req.params.id });
-    const sync = await ragic.updateStudentZ01Z02Strict({ parent, student: syncStudent, status: '啟用' });
-    console.log('[student-sync] 編輯學員 Ragic 同步完成', { parentRagicId: sync?.parentRagicRecordId, z02: sync?.z02?.ragicRecordId });
+
+    // 擇一儲存：先把學員欄位寫進本地 DB（last_synced_at 清成 NULL = 待同步），
+    // 不被「家長資料未補齊 → Z02 必填 INVALID」整筆擋掉。
     const up = await pool.query(
       `UPDATE students SET
          name = $3, id_number = $4, birth_date = $5::date, gender = $6, blood_type = $7,
-         ragic_record_id = COALESCE(ragic_record_id, $8),
-         last_synced_at = NOW(), updated_at = NOW()
+         last_synced_at = NULL, updated_at = NOW()
        WHERE id = $1 AND parent_id = $2
        RETURNING id, name, id_number, birth_date, gender, blood_type, student_code, ragic_record_id, is_active`,
-      [req.params.id, req.parent.id, s.name, s.id_number, s.birth_date, s.gender, s.blood_type, sync.z02.ragicRecordId]
+      [req.params.id, req.parent.id, s.name, s.id_number, s.birth_date, s.gender, s.blood_type]
     );
-    await pool.query(
-      `UPDATE parents SET ragic_record_id = COALESCE(ragic_record_id, $2), updated_at = NOW() WHERE id = $1`,
-      [req.parent.id, sync.parentRagicRecordId]
-    );
-    res.json(up.rows[0]);
+    let row = up.rows[0];
+
+    // Ragic 同步（best-effort）：成功 → 補 ragic_record_id + last_synced_at；失敗 → 保留本地、回提醒
+    let syncWarning = null;
+    const syncStudent = { ...cur.rows[0], ...s };
+    try {
+      console.log('[student-sync] 編輯學員 start', { parent: parent.name, phone: parent.phone, student: s.name, studentId: req.params.id });
+      const sync = await ragic.updateStudentZ01Z02Strict({ parent, student: syncStudent, status: '啟用' });
+      const up2 = await pool.query(
+        `UPDATE students SET ragic_record_id = COALESCE(ragic_record_id, $2), last_synced_at = NOW()
+          WHERE id = $1
+          RETURNING id, name, id_number, birth_date, gender, blood_type, student_code, ragic_record_id, is_active`,
+        [req.params.id, sync.z02.ragicRecordId]
+      );
+      row = up2.rows[0];
+      await pool.query(
+        `UPDATE parents SET ragic_record_id = COALESCE(ragic_record_id, $2), updated_at = NOW() WHERE id = $1`,
+        [req.parent.id, sync.parentRagicRecordId]
+      );
+      console.log('[student-sync] 編輯學員 Ragic 同步完成', { z02: sync?.z02?.ragicRecordId });
+    } catch (err) {
+      console.warn('[student-sync] 編輯學員 Ragic 同步暫緩（本地已存）', { code: err.code, msg: err.message });
+      syncWarning = studentSyncDeferredMsg(err);
+    }
+    res.json({ ...row, sync_warning: syncWarning });
   } catch (err) {
     console.error('[student-sync] 編輯學員 失敗', { code: err.code, msg: err.message });
     return ragicError(res, err);

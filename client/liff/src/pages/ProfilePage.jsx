@@ -156,12 +156,19 @@ export default function ProfilePage() {
       const saved = editingId
         ? await parentsApi.updateStudent(editingId, studentForm)
         : await parentsApi.createStudent(studentForm);
+      // 擇一儲存：學員一定先存進本地 DB；sync_warning 表示雲端同步暫緩（家長資料未補齊），
+      // 仍視為儲存成功並更新清單，只是改顯示警示而非綠色成功。
+      const { sync_warning: syncWarning, ...savedStudent } = saved || {};
       const nextStudents = editingId
-        ? students.map((s) => (s.id === editingId ? saved : s))
-        : [...students, saved];
+        ? students.map((s) => (s.id === editingId ? savedStudent : s))
+        : [...students, savedStudent];
       updateAuth({ ...profile, students: nextStudents });
       resetStudentForm();
-      toast.success(editingId ? '學員資料已更新' : '學員已新增');
+      if (syncWarning) {
+        toast.warning(syncWarning);
+      } else {
+        toast.success(editingId ? '學員資料已更新' : '學員已新增');
+      }
     } catch (err) {
       toast.error(syncErrMsg(err));
     } finally {
