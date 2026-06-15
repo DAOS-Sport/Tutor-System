@@ -94,9 +94,12 @@ CREATE TABLE IF NOT EXISTS parents (
   phone VARCHAR(20) NOT NULL UNIQUE,
   name VARCHAR(100) NOT NULL,
   primary_venue_id VARCHAR(10) REFERENCES venues(id),
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+-- 軟刪除旗標：家長從 Ragic 主庫刪除時設為 FALSE，requireParent 即時拒絕（students FK 為 RESTRICT，無法硬刪）。
+DO $$ BEGIN ALTER TABLE parents ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
 CREATE TABLE IF NOT EXISTS students (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

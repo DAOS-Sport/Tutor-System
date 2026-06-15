@@ -220,6 +220,7 @@ async function upsertLocalParent(client, mapped, lineUid) {
        home_address = COALESCE(NULLIF(EXCLUDED.home_address,''), parents.home_address),
        line_id = COALESCE(NULLIF(EXCLUDED.line_id,''), parents.line_id),
        ragic_record_id = COALESCE(parents.ragic_record_id, EXCLUDED.ragic_record_id),
+       is_active = TRUE,   -- 從 Ragic 重新同步到 → 重新啟用（覆蓋先前的軟刪除）
        updated_at = NOW()
      RETURNING id, name, phone, line_uid, primary_venue_id, gender, email, identity, home_phone, home_address, line_id`,
     [phone, name, lineUid || '', venueId,
@@ -394,7 +395,7 @@ router.post('/parent-login', async (req, res) => {
       const lineUid = await _verifyLineUid(req, res);
       if (!lineUid) return; // _verifyLineUid 已寫入 4xx 回應
       const r = await pool.query(
-        `SELECT id, name, phone, line_uid, primary_venue_id FROM parents WHERE line_uid = $1`,
+        `SELECT id, name, phone, line_uid, primary_venue_id FROM parents WHERE line_uid = $1 AND is_active = TRUE`,
         [lineUid]
       );
       if (!r.rowCount) return res.json(null);
@@ -406,7 +407,7 @@ router.post('/parent-login', async (req, res) => {
       // dev 後援：phone-only。
       if (!phone) return res.status(400).json({ error: '手機必填' });
       const r = await pool.query(
-        `SELECT id, name, phone, line_uid, primary_venue_id FROM parents WHERE phone = $1`,
+        `SELECT id, name, phone, line_uid, primary_venue_id FROM parents WHERE phone = $1 AND is_active = TRUE`,
         [phone]
       );
       if (!r.rowCount) return res.json(null);
@@ -442,9 +443,11 @@ router.post('/parent-line-login', async (req, res) => {
 
     // 1) Ragic Z01 by 家教系統uid
     let ragicRow = null;
+    let ragicReachable = true;   // 區分「Ragic 查無此人(=已刪除)」與「Ragic 連不上」
     try {
       ragicRow = await ragic.getParentByLineUid(lineUid);
     } catch (err) {
+      ragicReachable = false;
       console.warn('[auth/parent-line-login] ragic.getParentByLineUid failed:', err.message);
     }
 
@@ -463,19 +466,34 @@ router.post('/parent-line-login', async (req, res) => {
       }
     }
 
-    // 2) Ragic 沒找到 → 退回本地 line_uid 比對
-    const local = await pool.query(
-      `SELECT id, name, phone, line_uid, primary_venue_id FROM parents WHERE line_uid = $1`,
-      [lineUid]
-    );
-    if (local.rowCount) {
-      const p = local.rows[0];
-      const issued = _issue(p);
-      const students = await loadStudents(p.id);
-      return res.json({ status: 'logged_in', parent: { ...issued, students }, token: issued.token });
+    // 2) 退回本地 line_uid 比對。
+    //    注意：只有在 Ragic「連不上」時才信任本地（容錯）。
+    //    若 Ragic 連得上卻查無此人，代表帳號已從主庫(Ragic)刪除 —— 此時不可用本地舊資料登入，
+    //    否則「在 Ragic 刪了帳號還能登入」。同時清掉本地殘留列，讓既有 session 在 requireParent
+    //    的 DB 檢查下也立即失效。
+    if (!ragicReachable) {
+      const local = await pool.query(
+        `SELECT id, name, phone, line_uid, primary_venue_id FROM parents WHERE line_uid = $1 AND is_active = TRUE`,
+        [lineUid]
+      );
+      if (local.rowCount) {
+        const p = local.rows[0];
+        const issued = _issue(p);
+        const students = await loadStudents(p.id);
+        return res.json({ status: 'logged_in', parent: { ...issued, students }, token: issued.token });
+      }
+    } else {
+      // Ragic 可達且查無此人 → 視為已從主庫刪除，將本地殘留列軟刪除(is_active=FALSE)。
+      // 不用硬 DELETE：students.parent_id 為 ON DELETE RESTRICT，有學員時刪不掉；
+      // 軟刪除可讓既有 session 在 requireParent 的 is_active 檢查下立即失效。
+      try {
+        await pool.query(`UPDATE parents SET is_active = FALSE, updated_at = NOW() WHERE line_uid = $1`, [lineUid]);
+      } catch (err) {
+        console.warn('[auth/parent-line-login] deactivate stale local parent failed:', err.message);
+      }
     }
 
-    // 3) 都找不到
+    // 3) 都找不到（或已從 Ragic 刪除）→ 需重新綁定手機
     return res.json({ status: 'need_phone_binding', line_uid: lineUid });
   } catch (err) {
     console.error('[auth/parent-line-login]', err);

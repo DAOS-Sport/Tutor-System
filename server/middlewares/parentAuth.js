@@ -8,6 +8,7 @@
  * LIFF 會先呼叫 POST /api/auth/parent-login 取得 token，再用 Bearer 呼叫 /api/chat/*。
  */
 const jwt = require('jsonwebtoken');
+const { pool } = require('../models/db');
 
 const TTL = '12h';
 
@@ -22,36 +23,56 @@ function signParentToken({ parentId, phone, lineUid = null }) {
   return jwt.sign(payload, getSecret(), { expiresIn: TTL });
 }
 
-function requireParent(req, res, next) {
+async function requireParent(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Unauthorized' });
+  let p;
   try {
-    const p = jwt.verify(token, getSecret());
-    if (p.type !== 'parent') return res.status(403).json({ error: 'Parent token required' });
-    req.parent = { id: p.parentId, phone: p.phone, lineUid: p.lineUid || null };
-    next();
+    p = jwt.verify(token, getSecret());
   } catch {
-    res.status(401).json({ error: 'Invalid or expired token' });
+    return res.status(401).json({ error: 'Invalid or expired token' });
   }
+  if (p.type !== 'parent') return res.status(403).json({ error: 'Parent token required' });
+
+  // 每次請求都跟資料庫即時比對：帳號被刪除或停用(is_active=FALSE)即失效，前端會收到 401 並登出。
+  try {
+    const r = await pool.query('SELECT 1 FROM parents WHERE id = $1 AND is_active = TRUE', [p.parentId]);
+    if (!r.rowCount) return res.status(401).json({ error: 'Parent account not found', code: 'PARENT_NOT_FOUND' });
+  } catch (err) {
+    console.error('[requireParent] DB check failed:', err.message);
+    return res.status(500).json({ error: 'Auth check failed' });
+  }
+
+  req.parent = { id: p.parentId, phone: p.phone, lineUid: p.lineUid || null };
+  next();
 }
 
 // 同時接受 parent / coach token，於 chat HTTP 路由共用
-function requireLiffUser(req, res, next) {
+async function requireLiffUser(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Unauthorized' });
+  let p;
   try {
-    const p = jwt.verify(token, getSecret());
-    if (p.type === 'parent') {
-      req.liffUser = { type: 'parent', id: p.parentId, phone: p.phone };
-    } else if (p.type === 'coach') {
-      req.liffUser = { type: 'coach', id: p.coachId, phone: p.phone };
-    } else {
-      return res.status(403).json({ error: 'LIFF token required' });
-    }
-    next();
+    p = jwt.verify(token, getSecret());
   } catch {
-    res.status(401).json({ error: 'Invalid or expired token' });
+    return res.status(401).json({ error: 'Invalid or expired token' });
   }
+  if (p.type === 'parent') {
+    // 家長被刪除/停用即失效（與 requireParent 一致）
+    try {
+      const r = await pool.query('SELECT 1 FROM parents WHERE id = $1 AND is_active = TRUE', [p.parentId]);
+      if (!r.rowCount) return res.status(401).json({ error: 'Parent account not found', code: 'PARENT_NOT_FOUND' });
+    } catch (err) {
+      console.error('[requireLiffUser] DB check failed:', err.message);
+      return res.status(500).json({ error: 'Auth check failed' });
+    }
+    req.liffUser = { type: 'parent', id: p.parentId, phone: p.phone };
+  } else if (p.type === 'coach') {
+    req.liffUser = { type: 'coach', id: p.coachId, phone: p.phone };
+  } else {
+    return res.status(403).json({ error: 'LIFF token required' });
+  }
+  next();
 }
 
 // 選用：若有合法 parent JWT 就解析到 req.parent，沒有也放行

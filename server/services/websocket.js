@@ -25,6 +25,7 @@ const WebSocket = require('ws');
 const jwt = require('jsonwebtoken');
 const { canAccess } = require('./chatRooms');
 const { getSecret } = require('../middlewares/parentAuth');
+const { pool } = require('../models/db');
 
 const rooms = new Map(); // roomId → Set<ws>
 // Task #60：後台事件總線（簽到等即時推播給所有已登入後台 client）
@@ -117,7 +118,12 @@ function initWebSocket(server) {
     }
 
     let role, userId, venueId = null;
-    if (payload.type === 'parent') { role = 'parent'; userId = payload.parentId; }
+    if (payload.type === 'parent') {
+      role = 'parent'; userId = payload.parentId;
+      // 家長被刪除/停用即斷線（與 requireParent 一致）
+      const active = await pool.query('SELECT 1 FROM parents WHERE id = $1 AND is_active = TRUE', [userId]).catch(() => null);
+      if (!active || !active.rowCount) return ws.close(4001, 'Parent account not found');
+    }
     else if (payload.type === 'coach') { role = 'coach'; userId = payload.coachId; }
     else if (payload.role && ['admin', 'manager', 'staff'].includes(payload.role)) {
       // admin token 走 routes/admin/auth.js 簽發，payload.role/venue_id 帶角色與場館
