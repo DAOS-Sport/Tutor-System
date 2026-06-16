@@ -51,22 +51,32 @@ function fmtDiscount(p) {
 export default function PromotionsPage() {
   const { role } = useAuth();
   const toast = useToast();
-  const [list, setList] = useState(null);
+  const [allList, setAllList] = useState(null);
   const [filterStatus, setFilterStatus] = useState('');
   const [editing, setEditing] = useState(null);
   const [confirm, setConfirm] = useState(null);
 
+  // 一次抓全部狀態，分頁切換前端過濾，讓每個分頁都能顯示正確筆數
   async function load() {
-    setList(null);
+    setAllList(null);
     try {
-      const data = await promotionsApi.list(filterStatus ? { status: filterStatus } : {});
-      setList(data);
+      const data = await promotionsApi.list({});
+      setAllList(Array.isArray(data) ? data : []);
     } catch {
       toast.error('載入優惠失敗');
-      setList([]);
+      setAllList([]);
     }
   }
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [filterStatus]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+
+  const counts = useMemo(() => {
+    const c = { all: 0, draft: 0, pending_review: 0, active: 0, rejected: 0, archived: 0 };
+    if (Array.isArray(allList)) {
+      c.all = allList.length;
+      for (const p of allList) c[p.status] = (c[p.status] || 0) + 1;
+    }
+    return c;
+  }, [allList]);
 
   const canCreate  = role === 'admin' || role === 'manager';
   const canApprove = role === 'admin';
@@ -89,7 +99,10 @@ export default function PromotionsPage() {
     }
   }
 
-  const filtered = useMemo(() => list || [], [list]);
+  const filtered = useMemo(() => {
+    if (!Array.isArray(allList)) return [];
+    return filterStatus ? allList.filter((p) => p.status === filterStatus) : allList;
+  }, [allList, filterStatus]);
 
   return (
     <div className="space-y-4">
@@ -107,12 +120,12 @@ export default function PromotionsPage() {
         {['', 'draft', 'pending_review', 'active', 'rejected', 'archived'].map((s) => (
           <button key={s || 'all'} onClick={() => setFilterStatus(s)}
             className={`rounded-full px-3 py-1 text-xs ${filterStatus === s ? 'bg-brand-primary text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
-            {s ? STATUS_LABELS[s]?.label : '全部'}
+            {s ? STATUS_LABELS[s]?.label : '全部'}（{Array.isArray(allList) ? (s === '' ? counts.all : counts[s] || 0) : '…'}）
           </button>
         ))}
       </div>
 
-      {list === null ? (
+      {allList === null ? (
         <LoadingSpinner />
       ) : filtered.length === 0 ? (
         <div className="rounded-lg bg-white p-10 text-center text-sm text-gray-400">目前沒有優惠活動。</div>

@@ -168,7 +168,8 @@ router.get('/verify-checkin', requireAdminAuth, async (req, res) => {
   }
 });
 
-router.get('/cancelled', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
+// 櫃台（staff）可唯讀檢視（getScopedVenueIds 會自動鎖其場館）；實際「歸還」仍僅 admin/manager
+router.get('/cancelled', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
   try {
     const scope = getScopedVenueIds(req);
     const args = [];

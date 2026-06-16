@@ -3,6 +3,7 @@ import {
   formatTWDateTime,
   courseTypeLabel,
   paymentStatusLabel,
+  checkinStatusLabel,
   todayISO,
 } from './format';
 
@@ -93,4 +94,29 @@ export function exportEnrollmentsCsv({ filenamePrefix, enrollments, venueName })
 export function exportEnrollmentsXlsx({ filenamePrefix, enrollments, venueName, sheetName = '報名資料' }) {
   const rows = enrollments.map((e) => enrollmentToRow(e, venueName));
   downloadXlsx(`${filenamePrefix}_${todayISO()}.xlsx`, ENROLLMENT_HEADERS, rows, sheetName);
+}
+
+// === 上課紀錄（sessions）共用列定義 =========================================
+export const SESSION_HEADERS = ['日期', '時間', '場館', '教練', '組別', '學員', '簽到狀態'];
+
+export function sessionToRow(s, venueName) {
+  return [
+    s.date,
+    `${s.start} – ${s.end}`,
+    venueName ? venueName(s.venue_id) : s.venue_id,
+    s.coach,
+    courseTypeLabel(s.course_type),
+    (s.students || []).join('、'),
+    checkinStatusLabel(s.checkin_status),
+  ];
+}
+
+export function exportSessionsCsv({ filenamePrefix = 'sessions', sessions, venueName }) {
+  const rows = sessions.map((s) => sessionToRow(s, venueName));
+  downloadCsv(`${filenamePrefix}_${todayISO()}.csv`, rowsToCsv(SESSION_HEADERS, rows));
+}
+
+export function exportSessionsXlsx({ filenamePrefix = 'sessions', sessions, venueName, sheetName = '上課紀錄' }) {
+  const rows = sessions.map((s) => sessionToRow(s, venueName));
+  downloadXlsx(`${filenamePrefix}_${todayISO()}.xlsx`, SESSION_HEADERS, rows, sheetName);
 }

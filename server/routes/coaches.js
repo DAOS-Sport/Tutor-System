@@ -6,14 +6,27 @@
  * - PUT  /api/coaches/:id/bio                    教練自編 bio（須登入且本人）
  * - GET  /api/coaches/:id/media                  介紹媒體列表（公開）
  * - POST /api/coaches/:id/media                  新增介紹媒體（須登入且本人）
+ * - POST /api/coaches/:id/media/upload           上傳圖片並新增介紹媒體（須登入且本人）
  * - PATCH /api/coaches/:id/media/reorder         排序（須登入且本人）
  * - DELETE /api/coaches/:id/media/:mediaId       刪除（須登入且本人）
  */
 const express = require('express');
+const multer = require('multer');
 const router = express.Router();
 const { pool } = require('../models/db');
 const { signCoachToken, requireCoach, requireCoachOwner, byPhoneRateLimit, byLineUidRateLimit, logFailedLogin } = require('../middlewares/coachAuth');
 const { verifyLineIdToken, isLineVerificationRequired } = require('../services/lineAuth');
+const { saveBuffer } = require('../services/objectStorage');
+
+const MEDIA_UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
+const mediaUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MEDIA_UPLOAD_MAX_BYTES },
+  fileFilter(_req, file, cb) {
+    if (['image/jpeg', 'image/png'].includes(file.mimetype)) return cb(null, true);
+    cb(Object.assign(new Error('只接受 JPG / PNG 圖片'), { status: 400 }));
+  },
+});
 
 /**
  * 將 DB 欄位 pricing_multiplier 同時對外曝露為 multiplier，
@@ -279,6 +292,33 @@ router.post('/:id/media', requireCoach, requireCoachOwner('id'), async (req, res
     [req.params.id, media_type, storage_url, alt_text, max.rows[0].m + 1]
   );
   res.status(201).json(r.rows[0]);
+});
+
+// 上傳圖片檔（multipart, field: file）→ 存檔後直接建立 media 列並回傳
+router.post('/:id/media/upload', requireCoach, requireCoachOwner('id'), mediaUpload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: '請選擇圖片' });
+    const alt_text = (req.body?.alt_text || '').slice(0, 200);
+    const saved = await saveBuffer({
+      buffer: req.file.buffer,
+      originalName: req.file.originalname,
+      mimeType: req.file.mimetype,
+    });
+    const max = await pool.query(
+      `SELECT COALESCE(MAX(sort_order), -1) AS m FROM coach_bio_media WHERE coach_id = $1`,
+      [req.params.id]
+    );
+    const r = await pool.query(
+      `INSERT INTO coach_bio_media (coach_id, media_type, storage_url, alt_text, sort_order)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [req.params.id, 'image', saved.url, alt_text, max.rows[0].m + 1]
+    );
+    res.status(201).json(r.rows[0]);
+  } catch (err) {
+    const status = Number(err.status) || 500;
+    console.error('[coaches/media/upload]', err.message);
+    res.status(status).json({ error: err.message || '上傳失敗' });
+  }
 });
 
 router.patch('/:id/media/reorder', requireCoach, requireCoachOwner('id'), async (req, res) => {

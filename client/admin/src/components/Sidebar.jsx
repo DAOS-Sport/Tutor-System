@@ -39,9 +39,9 @@ const NAV_GROUPS = [
   {
     title: '場館營運',
     items: [
-      { to: '/sessions', label: '(F-R01) 今日課程', roles: ['admin', 'manager', 'staff'] },
+      { to: '/sessions', label: '(F-R01) 上課紀錄查詢', roles: ['admin', 'manager', 'staff'] },
       { to: '/checkin',  label: '(F-R03) 簽到驗證', roles: ['admin', 'manager', 'staff'] },
-      { to: '/revive',   label: '(F-M05) 扣課復活', roles: ['admin', 'manager'] },
+      { to: '/revive',   label: '(F-M05) 扣課復活', roles: ['admin', 'manager', 'staff'] },
     ],
   },
   {

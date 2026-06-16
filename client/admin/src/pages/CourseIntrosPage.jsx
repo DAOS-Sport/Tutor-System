@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
@@ -6,9 +6,27 @@ import { courseIntrosApi } from '../api/courseIntros';
 
 function IntroCard({ row, onSave }) {
   const toast = useToast();
+  const fileRef = useRef(null);
   const [draft, setDraft] = useState({ title: row.title, body: row.body, image_url: row.image_url });
   const [busy, setBusy] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const dirty = ['title', 'body', 'image_url'].some((k) => (draft[k] || '') !== (row[k] || ''));
+
+  async function handleFile(file) {
+    if (!file) return;
+    if (!['image/jpeg', 'image/png'].includes(file.type)) { toast.error('只接受 JPG / PNG 圖片'); return; }
+    if (file.size > 5 * 1024 * 1024) { toast.error('圖片大小不得超過 5MB'); return; }
+    setUploading(true);
+    try {
+      const { url } = await courseIntrosApi.uploadImage(file);
+      setDraft((d) => ({ ...d, image_url: url }));
+    } catch (e) {
+      toast.error(e?.response?.data?.error || '圖片上傳失敗');
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = '';
+    }
+  }
 
   async function save() {
     if (!draft.title?.trim()) {
@@ -82,14 +100,43 @@ function IntroCard({ row, onSave }) {
           />
         </div>
         <div>
-          <label className="mb-1 block text-sm font-medium text-gray-700">封面圖片網址（可選）</label>
-          <input
-            type="text"
-            placeholder="https://..."
-            value={draft.image_url || ''}
-            onChange={(e) => setDraft({ ...draft, image_url: e.target.value })}
-            className="w-full rounded-lg border border-gray-300 px-3 py-2"
-          />
+          <label className="mb-1 block text-sm font-medium text-gray-700">
+            封面圖片（可選）
+            <span className="ml-2 font-normal text-gray-400">（JPG / PNG，≤ 5MB）</span>
+          </label>
+          <div
+            className={`relative flex min-h-28 flex-col items-center justify-center rounded-xl border-2 border-dashed p-4 transition ${draft.image_url ? 'border-brand-teal bg-brand-teal/5' : 'cursor-pointer border-gray-300 hover:border-brand-teal'}`}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => { e.preventDefault(); if (!uploading) handleFile(e.dataTransfer.files?.[0]); }}
+            onClick={() => { if (!draft.image_url && !uploading) fileRef.current?.click(); }}
+          >
+            {uploading ? (
+              <div className="text-sm text-gray-400">上傳中…</div>
+            ) : draft.image_url ? (
+              <>
+                <img src={draft.image_url} alt="封面預覽" className="max-h-40 rounded-lg object-contain" />
+                <div className="mt-2 flex gap-3 text-xs">
+                  <button
+                    type="button"
+                    className="text-gray-500 underline hover:text-brand-teal"
+                    onClick={(e) => { e.stopPropagation(); fileRef.current?.click(); }}
+                  >重新選擇</button>
+                  <button
+                    type="button"
+                    className="text-gray-500 underline hover:text-red-500"
+                    onClick={(e) => { e.stopPropagation(); setDraft((d) => ({ ...d, image_url: '' })); }}
+                  >移除圖片</button>
+                </div>
+              </>
+            ) : (
+              <div className="text-center text-sm text-gray-400">
+                <div className="mb-1 text-3xl">🖼️</div>
+                <div>拖放或點此選擇封面圖片</div>
+              </div>
+            )}
+            <input ref={fileRef} type="file" accept="image/jpeg,image/png" className="hidden"
+              onChange={(e) => handleFile(e.target.files?.[0])} />
+          </div>
         </div>
       </div>
     </div>

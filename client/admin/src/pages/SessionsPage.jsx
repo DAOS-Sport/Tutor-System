@@ -4,14 +4,16 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import DataTable from '../components/DataTable';
 import StatusBadge from '../components/StatusBadge';
 import VenueMultiSelect from '../components/VenueMultiSelect';
-import DateRangeSelect, { rangeForPreset } from '../components/DateRangeSelect';
+import { rangeForPreset } from '../components/DateRangeSelect';
 import WeekGridView from '../components/WeekGridView';
 import SessionDetailModal from '../components/SessionDetailModal';
+import ExportMenu from '../components/ExportMenu';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { sessionsApi } from '../api/sessions';
 import { venuesApi } from '../api/venues';
-import { courseTypeLabel, formatTWDate, checkinStatusLabel } from '../utils/format';
+import { courseTypeLabel, checkinStatusLabel } from '../utils/format';
+import { exportSessionsCsv, exportSessionsXlsx } from '../utils/csvExport';
 
 const CHECKIN_TONE = { checked_in: 'green', not_yet: 'gray', absent: 'error' };
 const MAX_VENUES_GRID = 3;
@@ -20,7 +22,6 @@ export default function SessionsPage() {
   const { user, isStaff } = useAuth();
   const toast = useToast();
   const [view, setView] = useState('list'); // 'list' | 'week'
-  const [preset, setPreset] = useState('this_week');
   const [range, setRange] = useState(() => rangeForPreset('this_week'));
   const [venueIds, setVenueIds] = useState(() => (isStaff && user?.venue_id ? [user.venue_id] : []));
   const [list, setList] = useState(null);
@@ -35,17 +36,9 @@ export default function SessionsPage() {
   async function load() {
     setList(null);
     const effectiveVenues = isStaff && user?.venue_id ? [user.venue_id] : venueIds;
-    // 條列模式預設用 /today（task spec「條列為預設」的當日視角）；
-    // 但若使用者已選 0 或 1 個場館以外的多選條件、或調整了日期範圍，
-    // 改走 /sessions range API 才能正確支援多場館過濾。
-    const useToday = view === 'list'
-      && preset === 'this_week'
-      && range.from === rangeForPreset('this_week').from
-      && effectiveVenues.length <= 1;
+    // 一律走 /sessions range API：依起訖日 + 多場館過濾
     const [data, vs] = await Promise.all([
-      useToday
-        ? sessionsApi.today(effectiveVenues[0])
-        : sessionsApi.range({ from: range.from, to: range.to, venueIds: effectiveVenues }),
+      sessionsApi.range({ from: range.from, to: range.to, venueIds: effectiveVenues }),
       venuesApi.list(),
     ]);
     setList(data);
@@ -54,6 +47,25 @@ export default function SessionsPage() {
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [view, range.from, range.to, venueIds.join(','), user, isStaff]);
 
   const venueName = (id) => venues.find((v) => v.id === id)?.name || id;
+
+  function setRangeBound(which, value) {
+    if (!value) return;
+    const next = { ...range, [which]: value };
+    if (next.from && next.to && next.to < next.from) {
+      toast.warning('結束日不得早於開始日');
+      return;
+    }
+    const days = Math.round((new Date(next.to + 'T00:00:00Z') - new Date(next.from + 'T00:00:00Z')) / 86400000) + 1;
+    setRange({ ...next, days });
+  }
+
+  function doExport(kind) {
+    if (!list || list.length === 0) { toast.error('沒有可匯出的資料'); return; }
+    const opts = { filenamePrefix: 'sessions', sessions: list, venueName };
+    if (kind === 'csv') exportSessionsCsv(opts);
+    else exportSessionsXlsx(opts);
+    toast.success(`已匯出 ${list.length} 筆上課紀錄 (${kind.toUpperCase()})`);
+  }
 
   const columns = useMemo(() => [
     { key: 'date', label: '日期', render: (r) => <span className="font-mono">{r.date}</span> },
@@ -92,27 +104,50 @@ export default function SessionsPage() {
   return (
     <div>
       <PageHeader
-        title="今日課程"
-        subtitle={`F-R01 · ${formatTWDate(new Date())}`}
+        title="上課紀錄查詢"
+        subtitle="F-R01 · 依起訖日查詢上課紀錄"
         actions={
-          <div className="inline-flex overflow-hidden rounded-md border border-gray-300 text-sm">
-            {[['list', '條列'], ['week', '週課表']].map(([v, label]) => (
-              <button
-                key={v}
-                type="button"
-                onClick={() => switchView(v)}
-                className={`px-3 py-1.5 ${view === v ? 'bg-brand-primary text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
-              >{label}</button>
-            ))}
+          <div className="flex items-center gap-2">
+            <div className="inline-flex overflow-hidden rounded-md border border-gray-300 text-sm">
+              {[['list', '條列'], ['week', '週課表']].map(([v, label]) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => switchView(v)}
+                  className={`px-3 py-1.5 ${view === v ? 'bg-brand-primary text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+                >{label}</button>
+              ))}
+            </div>
+            <ExportMenu
+              disabled={!list || list.length === 0}
+              onExportCsv={() => doExport('csv')}
+              onExportXlsx={() => doExport('xlsx')}
+            />
           </div>
         }
       />
 
       <div className="mb-4 flex flex-wrap items-end gap-3 rounded-lg border border-gray-200 bg-white p-3 shadow-sm">
-        <DateRangeSelect
-          value={preset}
-          onChange={(next, r) => { setPreset(next); setRange(r); }}
-        />
+        <div>
+          <label className="mb-1 block text-xs font-medium text-gray-600">起訖日</label>
+          <div className="flex items-center gap-1.5">
+            <input
+              type="date"
+              value={range.from}
+              max={range.to}
+              onChange={(e) => setRangeBound('from', e.target.value)}
+              className="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm focus:border-brand-teal focus:outline-none"
+            />
+            <span className="text-gray-400">~</span>
+            <input
+              type="date"
+              value={range.to}
+              min={range.from}
+              onChange={(e) => setRangeBound('to', e.target.value)}
+              className="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm focus:border-brand-teal focus:outline-none"
+            />
+          </div>
+        </div>
         <VenueMultiSelect
           venues={venues}
           value={venueIds}

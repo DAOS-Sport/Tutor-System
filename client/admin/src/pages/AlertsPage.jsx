@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import DataTable from '../components/DataTable';
@@ -25,17 +25,31 @@ function fmt(iso) {
 export default function AlertsPage() {
   const toast = useToast();
   const [filter, setFilter] = useState('pending');
-  const [list, setList] = useState(null);
+  const [allList, setAllList] = useState(null);
 
-  function reload(f = filter) {
-    setList(null);
-    const params = f === 'all' ? {} : { status: f };
-    adminAlertsApi.list(params)
-      .then((r) => setList(Array.isArray(r) ? r : []))
-      .catch((e) => { setList([]); toast.error(e?.response?.data?.error || e.message); });
+  // 一次抓全部狀態，分頁切換前端過濾，讓每個分頁都能顯示正確筆數
+  function reload() {
+    setAllList(null);
+    adminAlertsApi.list({})
+      .then((r) => setAllList(Array.isArray(r) ? r : []))
+      .catch((e) => { setAllList([]); toast.error(e?.response?.data?.error || e.message); });
   }
 
-  useEffect(() => { reload(filter); }, [filter]); // eslint-disable-line
+  useEffect(() => { reload(); }, []); // eslint-disable-line
+
+  const counts = useMemo(() => {
+    const c = { all: 0, pending: 0, reviewed: 0, no_issue: 0, resolved: 0 };
+    if (Array.isArray(allList)) {
+      c.all = allList.length;
+      for (const r of allList) c[r.status] = (c[r.status] || 0) + 1;
+    }
+    return c;
+  }, [allList]);
+
+  const list = useMemo(() => {
+    if (!Array.isArray(allList)) return null;
+    return filter === 'all' ? allList : allList.filter((r) => r.status === filter);
+  }, [allList, filter]);
 
   const [editing, setEditing] = useState(null); // { id, status, note }
 
@@ -102,7 +116,7 @@ export default function AlertsPage() {
             className={`rounded-full px-3 py-1 text-xs font-bold transition ${
               filter === b.v ? 'bg-brand-primary text-white' : 'bg-white text-gray-600 hover:bg-gray-100'
             }`}>
-            {b.label}
+            {b.label}（{Array.isArray(allList) ? (b.v === 'all' ? counts.all : counts[b.v] || 0) : '…'}）
           </button>
         ))}
       </div>

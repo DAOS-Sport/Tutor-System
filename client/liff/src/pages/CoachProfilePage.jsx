@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { coachesApi } from "../api/coaches";
 import { venuesApi } from "../api/venues";
 import { useAuth } from "../context/AuthContext";
@@ -93,9 +93,9 @@ export default function CoachProfilePage() {
     }
   }
 
-  async function handleAddMedia(payload) {
+  async function handleAddMedia({ file, alt_text }) {
     try {
-      const created = await coachesApi.addMedia(coach.id, payload);
+      const created = await coachesApi.uploadMedia(coach.id, file, alt_text);
       setMedia((prev) => [...(prev || []), created]);
       toast.success("已新增圖片");
       setShowAdd(false);
@@ -336,12 +336,32 @@ function Section({ title, children }) {
 }
 
 function AddMediaModal({ onClose, onSubmit }) {
-  const [url, setUrl] = useState("");
+  const toast = useToast();
+  const fileRef = useRef(null);
+  const [file, setFile] = useState(null);
+  const [preview, setPreview] = useState(null);
   const [alt, setAlt] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  function handleFile(f) {
+    if (!f) return;
+    if (!["image/jpeg", "image/png"].includes(f.type)) { toast.error("只接受 JPG / PNG 圖片"); return; }
+    if (f.size > 5 * 1024 * 1024) { toast.error("圖片大小不得超過 5MB"); return; }
+    setFile(f);
+    setPreview(URL.createObjectURL(f));
+  }
+
+  async function submit() {
+    if (!file || busy) return;
+    setBusy(true);
+    await onSubmit({ file, alt_text: alt });
+    setBusy(false);
+  }
+
   return (
     <div
       className="fixed inset-0 z-40 flex items-end bg-black/40"
-      onClick={onClose}
+      onClick={() => !busy && onClose()}
     >
       <div
         className="mx-auto w-full max-w-md rounded-t-2xl bg-white p-4 pb-[calc(1.25rem+env(safe-area-inset-bottom))]"
@@ -352,25 +372,40 @@ function AddMediaModal({ onClose, onSubmit }) {
             新增介紹圖片
           </h3>
           <button
-            onClick={onClose}
+            onClick={() => !busy && onClose()}
             className="-mr-2 flex h-10 items-center px-2 text-sm text-gray-500"
           >
             關閉
           </button>
         </div>
         <div className="space-y-3 text-sm">
-          <label className="block">
+          <div>
             <span className="mb-1 block text-xs font-medium text-gray-700">
-              圖片網址
+              圖片（JPG / PNG，≤ 5MB）
             </span>
-            <input
-              type="url"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://…"
-              className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-base"
-            />
-          </label>
+            <div
+              className={`relative flex min-h-32 flex-col items-center justify-center rounded-xl border-2 border-dashed p-4 transition ${file ? "border-brand-teal bg-brand-teal/5" : "border-gray-300"}`}
+              onClick={() => !file && fileRef.current?.click()}
+            >
+              {preview ? (
+                <>
+                  <img src={preview} alt="預覽" className="max-h-44 rounded-lg object-contain" />
+                  <button
+                    type="button"
+                    className="mt-2 text-xs text-gray-500 underline"
+                    onClick={(e) => { e.stopPropagation(); setFile(null); setPreview(null); }}
+                  >重新選擇</button>
+                </>
+              ) : (
+                <div className="text-center text-sm text-gray-400">
+                  <div className="mb-1 text-3xl">🖼️</div>
+                  <div>點此選擇圖片</div>
+                </div>
+              )}
+              <input ref={fileRef} type="file" accept="image/jpeg,image/png" className="hidden"
+                onChange={(e) => handleFile(e.target.files?.[0])} />
+            </div>
+          </div>
           <label className="block">
             <span className="mb-1 block text-xs font-medium text-gray-700">
               圖片說明（選填）
@@ -383,16 +418,13 @@ function AddMediaModal({ onClose, onSubmit }) {
               className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-base"
             />
           </label>
-          <p className="text-[11px] text-gray-400">
-            正式版將支援直接上傳到 LINE storage / 雲端，目前以 URL 引用為主。
-          </p>
           <button
             type="button"
-            disabled={!url}
-            onClick={() => onSubmit({ storage_url: url, alt_text: alt })}
+            disabled={!file || busy}
+            onClick={submit}
             className="w-full rounded-lg bg-brand-primary py-3 font-bold text-white active:bg-brand-teal disabled:opacity-50"
           >
-            送出
+            {busy ? "上傳中…" : "送出"}
           </button>
         </div>
       </div>

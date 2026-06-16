@@ -66,7 +66,7 @@ export default function App() {
         {/* 場館營運 */}
         <Route path="/sessions" element={<RequireAuth roles={ALL}><SessionsPage /></RequireAuth>} />
         <Route path="/checkin"  element={<RequireAuth roles={ALL}><CheckinPage /></RequireAuth>} />
-        <Route path="/revive"   element={<RequireAuth roles={['admin', 'manager']}><RevivePage /></RequireAuth>} />
+        <Route path="/revive"   element={<RequireAuth roles={['admin', 'manager', 'staff']}><RevivePage /></RequireAuth>} />
 
         {/* 聊天監察（Phase 4） */}
         <Route path="/chat-logs" element={<RequireAuth roles={['admin', 'manager']}><ChatLogsPage /></RequireAuth>} />

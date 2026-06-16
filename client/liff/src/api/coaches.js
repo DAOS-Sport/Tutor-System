@@ -47,6 +47,15 @@ export const coachesApi = {
     callApi(`/coaches/${id}/media`, { method: 'post', data: payload }, () =>
       mockDb.addCoachMedia(id, payload)),
 
+  // 上傳圖片檔並新增介紹媒體（一次往返）
+  uploadMedia: (id, file, alt = '') => {
+    const form = new FormData();
+    form.append('file', file);
+    if (alt) form.append('alt_text', alt);
+    return callApi(`/coaches/${id}/media/upload`, { method: 'post', data: form }, () =>
+      mockDb.addCoachMedia(id, { storage_url: `/uploads/mock-coach-${Date.now()}.jpg`, alt_text: alt }));
+  },
+
   reorderMedia: (id, ids) =>
     callApi(`/coaches/${id}/media/reorder`, { method: 'patch', data: { ids } }, () =>
       mockDb.reorderCoachMedia(id, ids)),

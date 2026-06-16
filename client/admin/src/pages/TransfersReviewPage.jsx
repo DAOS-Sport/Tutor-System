@@ -5,32 +5,42 @@ import { useToast } from '../context/ToastContext';
 import { adminTransfersApi } from '../api/transfers';
 
 const STATUS_TABS = [
+  { key: 'all',            label: '全部',   color: 'bg-gray-100 text-gray-700' },
   { key: 'pending_review', label: '待審核', color: 'bg-amber-100 text-amber-700' },
   { key: 'approved',       label: '已核准', color: 'bg-green-100 text-green-700' },
-  { key: 'rejected',       label: '已拒絕', color: 'bg-red-100 text-red-700' },
+  { key: 'rejected',       label: '已退回', color: 'bg-red-100 text-red-700' },
 ];
 
 export default function TransfersReviewPage() {
   const toast = useToast();
   const [status, setStatus] = useState('pending_review');
-  const [list, setList] = useState(null);
+  const [allList, setAllList] = useState(null);
   const [reviewing, setReviewing] = useState(null); // { row, action }
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
 
+  // 一次抓全部狀態，分頁切換改為前端過濾，讓每個分頁都能顯示正確筆數
   function reload() {
-    setList(null);
-    adminTransfersApi.list({ status })
-      .then(setList)
-      .catch((e) => { setList([]); toast.error(e?.response?.data?.error || '載入失敗'); });
+    setAllList(null);
+    adminTransfersApi.list({})
+      .then(setAllList)
+      .catch((e) => { setAllList([]); toast.error(e?.response?.data?.error || '載入失敗'); });
   }
-  useEffect(reload, [status]); // eslint-disable-line
+  useEffect(reload, []); // eslint-disable-line
 
   const counts = useMemo(() => {
-    const c = { pending_review: 0, approved: 0, rejected: 0 };
-    if (Array.isArray(list)) for (const r of list) c[r.status] = (c[r.status] || 0) + 1;
+    const c = { all: 0, pending_review: 0, approved: 0, rejected: 0 };
+    if (Array.isArray(allList)) {
+      c.all = allList.length;
+      for (const r of allList) c[r.status] = (c[r.status] || 0) + 1;
+    }
     return c;
-  }, [list]);
+  }, [allList]);
+
+  const list = useMemo(() => {
+    if (!Array.isArray(allList)) return null;
+    return status === 'all' ? allList : allList.filter((r) => r.status === status);
+  }, [allList, status]);
 
   async function submitReview() {
     if (!reviewing) return;

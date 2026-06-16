@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import StatusBadge from '../components/StatusBadge';
@@ -15,16 +15,31 @@ const STATUS_LABEL = {
 export default function CoachIntrosReviewPage() {
   const toast = useToast();
   const [filter, setFilter] = useState('pending_review');
-  const [list, setList] = useState(null);
+  const [allList, setAllList] = useState(null);
   const [busyId, setBusyId] = useState(null);
 
+  // 一次抓全部狀態，分頁切換前端過濾，讓每個分頁都能顯示正確筆數
   function reload() {
-    setList(null);
-    adminIntrosApi.list(filter)
-      .then((r) => setList(Array.isArray(r) ? r : []))
-      .catch((e) => { setList([]); toast.error(e?.response?.data?.error || e.message); });
+    setAllList(null);
+    adminIntrosApi.list('all')
+      .then((r) => setAllList(Array.isArray(r) ? r : []))
+      .catch((e) => { setAllList([]); toast.error(e?.response?.data?.error || e.message); });
   }
-  useEffect(reload, [filter]); // eslint-disable-line
+  useEffect(reload, []); // eslint-disable-line
+
+  const counts = useMemo(() => {
+    const c = { all: 0, pending_review: 0, rejected: 0, published: 0, draft: 0 };
+    if (Array.isArray(allList)) {
+      c.all = allList.length;
+      for (const r of allList) c[r.intro_review_status] = (c[r.intro_review_status] || 0) + 1;
+    }
+    return c;
+  }, [allList]);
+
+  const list = useMemo(() => {
+    if (!Array.isArray(allList)) return null;
+    return filter === 'all' ? allList : allList.filter((c) => c.intro_review_status === filter);
+  }, [allList, filter]);
 
   async function approve(c) {
     setBusyId(c.id);
@@ -50,7 +65,7 @@ export default function CoachIntrosReviewPage() {
         {[['pending_review', '待審'], ['rejected', '已退回'], ['published', '已上架'], ['all', '全部']].map(([v, l]) => (
           <button key={v} onClick={() => setFilter(v)}
             className={`rounded-full px-3 py-1 ${filter === v ? 'bg-brand-primary text-white' : 'text-gray-600'}`}>
-            {l}
+            {l}（{Array.isArray(allList) ? (v === 'all' ? counts.all : counts[v] || 0) : '…'}）
           </button>
         ))}
       </div>

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
@@ -13,7 +13,7 @@ const STATUS = {
 
 export default function GroupOrdersPage() {
   const toast = useToast();
-  const [rows, setRows] = useState(null);
+  const [allRows, setAllRows] = useState(null);
   const [statusFilter, setStatusFilter] = useState('submitted');
   const [detail, setDetail] = useState(null);
   const [detailId, setDetailId] = useState(null);
@@ -21,18 +21,33 @@ export default function GroupOrdersPage() {
   const [rejecting, setRejecting] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
 
+  // 一次抓全部狀態，分頁切換前端過濾，讓每個分頁都能顯示正確筆數
   async function load() {
-    setRows(null);
+    setAllRows(null);
     try {
-      const data = await groupOrdersApi.list(statusFilter || undefined);
-      setRows(Array.isArray(data) ? data : []);
+      const data = await groupOrdersApi.list(undefined);
+      setAllRows(Array.isArray(data) ? data : []);
     } catch (e) {
       toast.error(e?.response?.data?.error || '載入失敗');
-      setRows([]);
+      setAllRows([]);
     }
   }
 
-  useEffect(() => { load(); }, [statusFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const counts = useMemo(() => {
+    const c = { all: 0, submitted: 0, approved: 0, rejected: 0 };
+    if (Array.isArray(allRows)) {
+      c.all = allRows.length;
+      for (const r of allRows) c[r.status] = (c[r.status] || 0) + 1;
+    }
+    return c;
+  }, [allRows]);
+
+  const rows = useMemo(() => {
+    if (!Array.isArray(allRows)) return null;
+    return statusFilter === '' ? allRows : allRows.filter((r) => r.status === statusFilter);
+  }, [allRows, statusFilter]);
 
   async function openDetail(id) {
     setDetailId(id);
@@ -90,7 +105,7 @@ export default function GroupOrdersPage() {
         {[['submitted', '待審核'], ['approved', '已核准'], ['rejected', '已退回'], ['', '全部']].map(([k, label]) => (
           <button key={k || 'all'} type="button" onClick={() => setStatusFilter(k)}
             className={`rounded-full px-4 py-1.5 text-sm font-medium ${statusFilter === k ? 'bg-brand-primary text-white' : 'bg-white text-gray-600 border border-gray-200'}`}>
-            {label}
+            {label}（{Array.isArray(allRows) ? (k === '' ? counts.all : counts[k] || 0) : '…'}）
           </button>
         ))}
       </div>

@@ -133,7 +133,7 @@ function LoadError({ onRetry }) {
 export default function RagicStagingPage() {
   const toast = useToast();
   const { logout } = useAuth();
-  const [items, setItems] = useState(null);
+  const [allItems, setAllItems] = useState(null);
   const [loadError, setLoadError] = useState(false);
   const [filterStatus, setFilterStatus] = useState('pending');
   const [filterForm, setFilterForm] = useState('');
@@ -145,11 +145,12 @@ export default function RagicStagingPage() {
   const [bulkFailures, setBulkFailures] = useState(null); // { failed: [{id,error}], total }
 
   async function load() {
-    setItems(null);
+    setAllItems(null);
     setLoadError(false);
     try {
-      const r = await ragicStagingApi.list({ status: filterStatus, form: filterForm || undefined, search: search || undefined });
-      setItems(r.items || []);
+      // 一次抓全部狀態（保留 form/search 伺服器端篩選），分頁切換改前端過濾以顯示各狀態筆數
+      const r = await ragicStagingApi.list({ status: 'all', form: filterForm || undefined, search: search || undefined });
+      setAllItems(r.items || []);
       setSelected(new Set());
     } catch (e) {
       // Task #70：skipAuthRedirect=true — 由頁面自己決定如何處理
@@ -165,7 +166,21 @@ export default function RagicStagingPage() {
       setLoadError(true);
     }
   }
-  useEffect(() => { load(); }, [filterStatus, filterForm]); // eslint-disable-line
+  useEffect(() => { load(); }, [filterForm]); // eslint-disable-line
+
+  const counts = useMemo(() => {
+    const c = { all: 0, pending: 0, approved: 0, rejected: 0, auto_resolved: 0 };
+    if (Array.isArray(allItems)) {
+      c.all = allItems.length;
+      for (const r of allItems) c[r.status] = (c[r.status] || 0) + 1;
+    }
+    return c;
+  }, [allItems]);
+
+  const items = useMemo(() => {
+    if (!Array.isArray(allItems)) return null;
+    return filterStatus === 'all' ? allItems : allItems.filter((r) => r.status === filterStatus);
+  }, [allItems, filterStatus]);
 
   async function approve(id) {
     setBusy(true);
@@ -271,7 +286,7 @@ export default function RagicStagingPage() {
             key={s}
             onClick={() => setFilterStatus(s)}
             className={`rounded px-3 py-1 text-xs font-bold ${filterStatus === s ? 'bg-brand-primary text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
-          >{s === 'all' ? '全部' : (STATUS_LABEL[s]?.text || s)}</button>
+          >{s === 'all' ? '全部' : (STATUS_LABEL[s]?.text || s)}（{Array.isArray(allItems) ? (s === 'all' ? counts.all : counts[s] || 0) : '…'}）</button>
         ))}
         <span className="mx-2 h-5 w-px bg-gray-300" />
         <select
