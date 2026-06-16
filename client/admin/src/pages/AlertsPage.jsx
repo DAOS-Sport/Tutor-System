@@ -109,9 +109,9 @@ export default function AlertsPage() {
       <PageHeader title="關鍵字警示" subtitle="當聊天訊息觸發關鍵字，主管即可在此查閱、判定並結案。" />
 
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        {[{ v: 'pending', label: '待處理' }, { v: 'reviewed', label: '已查閱' },
+        {[{ v: 'all', label: '全部' }, { v: 'pending', label: '待處理' }, { v: 'reviewed', label: '已查閱' },
           { v: 'no_issue', label: '判定無虞' }, { v: 'resolved', label: '已處理' },
-          { v: 'all', label: '全部' }].map((b) => (
+        ].map((b) => (
           <button key={b.v} type="button" onClick={() => setFilter(b.v)}
             className={`rounded-full px-3 py-1 text-xs font-bold transition ${
               filter === b.v ? 'bg-brand-primary text-white' : 'bg-white text-gray-600 hover:bg-gray-100'

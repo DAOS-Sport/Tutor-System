@@ -62,7 +62,7 @@ export default function CoachIntrosReviewPage() {
       <PageHeader title="教練特色專區審核" subtitle="F-C06 / 教練編輯送審 → 主管核可後上架" />
 
       <div className="mt-3 mb-4 inline-flex gap-2 rounded-full border border-gray-200 bg-white p-1 text-xs">
-        {[['pending_review', '待審'], ['rejected', '已退回'], ['published', '已上架'], ['all', '全部']].map(([v, l]) => (
+        {[['all', '全部'], ['pending_review', '待審'], ['rejected', '已退回'], ['published', '已上架']].map(([v, l]) => (
           <button key={v} onClick={() => setFilter(v)}
             className={`rounded-full px-3 py-1 ${filter === v ? 'bg-brand-primary text-white' : 'text-gray-600'}`}>
             {l}（{Array.isArray(allList) ? (v === 'all' ? counts.all : counts[v] || 0) : '…'}）

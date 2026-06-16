@@ -281,7 +281,7 @@ export default function RagicStagingPage() {
       ) : null}
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
-        {['pending', 'approved', 'rejected', 'auto_resolved', 'all'].map(s => (
+        {['all', 'pending', 'approved', 'rejected', 'auto_resolved'].map(s => (
           <button
             key={s}
             onClick={() => setFilterStatus(s)}

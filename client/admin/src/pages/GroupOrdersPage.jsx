@@ -102,7 +102,7 @@ export default function GroupOrdersPage() {
       <PageHeader title="團購審核" subtitle="家長發起的團購送審後在此核准／退回；核准後送待對帳清單，發票與開通在待對帳流程處理。" />
 
       <div className="mb-4 flex gap-2">
-        {[['submitted', '待審核'], ['approved', '已核准'], ['rejected', '已退回'], ['', '全部']].map(([k, label]) => (
+        {[['', '全部'], ['submitted', '待審核'], ['approved', '已核准'], ['rejected', '已退回']].map(([k, label]) => (
           <button key={k || 'all'} type="button" onClick={() => setStatusFilter(k)}
             className={`rounded-full px-4 py-1.5 text-sm font-medium ${statusFilter === k ? 'bg-brand-primary text-white' : 'bg-white text-gray-600 border border-gray-200'}`}>
             {label}（{Array.isArray(allRows) ? (k === '' ? counts.all : counts[k] || 0) : '…'}）
