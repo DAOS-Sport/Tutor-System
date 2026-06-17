@@ -756,4 +756,21 @@ router.post('/:id/reset-password', requireAdminAuth, requireAdminRole('admin'), 
   }
 });
 
+// 檢視密碼（眼睛）：密碼以 bcrypt 雜湊保存無法還原，但若仍為「預設＝員工編號」即可確認並回傳明碼；
+// 員工自行改過後比對失敗 → is_default=false，誠實回報無法顯示。僅 admin 可用。
+router.get('/:id/password-hint', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const u = await pool.query(`SELECT password_hash FROM admin_users WHERE staff_id = $1`, [id]);
+    if (!u.rowCount || !u.rows[0].password_hash) {
+      return res.json({ has_account: false, is_default: false, password: null });
+    }
+    const isDefault = await bcrypt.compare(String(id), u.rows[0].password_hash);
+    res.json({ has_account: true, is_default: isDefault, password: isDefault ? String(id) : null });
+  } catch (err) {
+    console.error('[admin/staff/:id/password-hint]', err);
+    res.status(500).json({ error: '讀取密碼資訊失敗' });
+  }
+});
+
 module.exports = router;

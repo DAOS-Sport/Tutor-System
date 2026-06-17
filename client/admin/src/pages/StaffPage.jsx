@@ -17,6 +17,54 @@ const ROLE_TONE = { admin: 'primary', manager: 'teal', staff: 'gold', coach: 'gr
 const MULTIPLIER_MIN = 1.00;
 const MULTIPLIER_MAX = 1.50;
 
+/**
+ * 密碼欄：眼睛圖示檢視密碼。密碼以 bcrypt 雜湊保存無法直接還原，
+ * 點眼睛時由後端確認「是否仍為預設（員工編號）」：是→顯示明碼；員工已自行改過→提示無法顯示。
+ */
+function PasswordCell({ row, isAdmin, onReset }) {
+  const [shown, setShown] = useState(false);
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  async function toggle() {
+    if (shown) { setShown(false); return; }
+    if (!data && !busy) {
+      setBusy(true);
+      try { setData(await staffApi.passwordHint(row.id)); }
+      catch { setData({ error: true }); }
+      finally { setBusy(false); }
+    }
+    setShown(true);
+  }
+
+  let display = '••••••••';
+  if (shown) {
+    if (busy) display = '…';
+    else if (!data || data.error) display = '讀取失敗';
+    else if (!data.has_account) display = '無登入帳號';
+    else if (data.is_default) display = data.password;
+    else display = '已自行修改，無法顯示';
+  }
+  const revealable = !shown || (data && data.is_default);
+
+  return (
+    <div className="inline-flex items-center gap-2">
+      <span className={`font-mono tracking-widest ${shown && data?.is_default ? 'text-gray-800' : 'text-gray-400'}`}>{display}</span>
+      <button type="button" onClick={toggle} title={shown ? '隱藏密碼' : '檢視密碼'}
+        className="text-gray-400 hover:text-brand-primary" aria-label={shown ? '隱藏密碼' : '檢視密碼'}>
+        {shown && revealable ? '🙈' : '👁'}
+      </button>
+      {isAdmin && (
+        <button type="button" onClick={() => onReset(row)}
+          className="text-xs font-medium text-brand-amber hover:underline"
+          title={`重設 ${row.name} 的密碼為原始密碼（員工編號）`}>
+          重設密碼
+        </button>
+      )}
+    </div>
+  );
+}
+
 function roleBadges(row) {
   const badges = [{ role: row.role, active: true }];
   const knownRoles = Array.isArray(row.known_roles) ? row.known_roles : [];
@@ -308,18 +356,7 @@ export default function StaffPage() {
       },
     },
     { key: 'password', label: '密碼', className: 'text-center',
-      render: (r) => (
-        <div className="inline-flex items-center gap-2">
-          <span className="font-mono text-gray-400 tracking-widest" title="密碼以雜湊保存，無法顯示明文；如需明碼請於「修改密碼」勾選顯示">••••••••</span>
-          {isAdmin && (
-            <button type="button" onClick={() => setResetting(r)}
-              className="text-xs font-medium text-brand-amber hover:underline"
-              title={`重設 ${r.name} 的密碼為原始密碼（員工編號）`}>
-              重設密碼
-            </button>
-          )}
-        </div>
-      ) },
+      render: (r) => <PasswordCell row={r} isAdmin={isAdmin} onReset={setResetting} /> },
     { key: 'actions', label: '操作', className: 'text-right',
       render: (r) => (
         <button className="text-xs font-medium text-brand-teal hover:underline" onClick={() => openEditor(r)}>

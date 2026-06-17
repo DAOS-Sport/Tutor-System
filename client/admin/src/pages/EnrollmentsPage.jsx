@@ -13,7 +13,6 @@ import {
 import { exportEnrollmentsCsv, exportEnrollmentsXlsx } from '../utils/csvExport';
 import { useToast } from '../context/ToastContext';
 import ExportMenu from '../components/ExportMenu';
-import Barcode from '../components/Barcode';
 import EditEnrollmentModal from './enrollments/EditEnrollmentModal';
 
 const STATUS_OPTIONS = [
@@ -148,16 +147,6 @@ export default function EnrollmentsPage() {
             {detail.notes && (
               <div className="mt-3 rounded-xl border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700">
                 <span className="font-bold text-gray-500">備注：</span>{detail.notes}
-              </div>
-            )}
-
-            {detail.carrier && (
-              <div className="mt-4 rounded-xl border border-indigo-200 bg-indigo-50 p-4">
-                <div className="mb-1 text-sm font-bold text-indigo-700">📱 載具（開發票掃描用）</div>
-                <div className="font-mono text-sm font-bold text-indigo-900">{detail.carrier}</div>
-                <div className="mt-2 inline-block rounded-lg bg-white p-2">
-                  <Barcode value={detail.carrier} />
-                </div>
               </div>
             )}
 

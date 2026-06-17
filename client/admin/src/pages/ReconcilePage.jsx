@@ -10,6 +10,7 @@ import { venuesApi } from '../api/venues';
 import { formatTWD, formatTWDateTime, courseTypeLabel } from '../utils/format';
 import { exportEnrollmentsCsv, exportEnrollmentsXlsx } from '../utils/csvExport';
 import ExportMenu from '../components/ExportMenu';
+import Barcode from '../components/Barcode';
 
 const INVOICE_RE = /^[A-Z]{2}\d{8}$/;
 
@@ -87,6 +88,16 @@ function InvoiceModal({ enrollment, canReconcile, onCancel, onDone }) {
               />
             </a>
             <div className="mt-1 text-[11px] text-gray-400">點圖可放大檢視</div>
+          </div>
+        )}
+
+        {enrollment.carrier && (
+          <div className="mb-4 rounded-lg border border-indigo-200 bg-indigo-50 p-3">
+            <div className="mb-1 text-xs font-semibold text-indigo-700">📱 載具（開發票掃描用）</div>
+            <div className="font-mono text-sm font-bold text-indigo-900">{enrollment.carrier}</div>
+            <div className="mt-2 inline-block rounded-lg bg-white p-2">
+              <Barcode value={enrollment.carrier} />
+            </div>
           </div>
         )}
 

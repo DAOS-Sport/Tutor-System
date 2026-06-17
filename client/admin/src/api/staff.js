@@ -40,4 +40,8 @@ export const staffApi = {
   resetPassword: (id) =>
     callApi(`/staff/${id}/reset-password`, { method: 'post', data: {} },
       () => ({ ok: true, staff_id: id, staff_name: id, notified: false, notify_error: 'mock' })),
+  // 檢視密碼：後端確認目前密碼是否仍為預設（員工編號）→ 是則回傳明碼，否則回 is_default=false
+  passwordHint: (id) =>
+    callApi(`/staff/${id}/password-hint`, {},
+      () => ({ has_account: true, is_default: true, password: id })),
 };
