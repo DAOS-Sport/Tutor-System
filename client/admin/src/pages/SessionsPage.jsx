@@ -8,11 +8,12 @@ import { rangeForPreset } from '../components/DateRangeSelect';
 import WeekGridView from '../components/WeekGridView';
 import SessionDetailModal from '../components/SessionDetailModal';
 import ExportMenu from '../components/ExportMenu';
+import ConfirmDialog from '../components/ConfirmDialog';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { sessionsApi } from '../api/sessions';
 import { venuesApi } from '../api/venues';
-import { courseTypeLabel, checkinStatusLabel } from '../utils/format';
+import { courseTypeLabel, checkinStatusLabel, formatTWDateTime } from '../utils/format';
 import { exportSessionsCsv, exportSessionsXlsx } from '../utils/csvExport';
 
 const CHECKIN_TONE = { checked_in: 'green', not_yet: 'gray', absent: 'error' };
@@ -27,6 +28,10 @@ export default function SessionsPage() {
   const [list, setList] = useState(null);
   const [venues, setVenues] = useState([]);
   const [detail, setDetail] = useState(null);
+  // 補簽到：backfilling = 目前要補簽到的時段列；backfillAt = datetime-local 字串
+  const [backfilling, setBackfilling] = useState(null);
+  const [backfillAt, setBackfillAt] = useState('');
+  const [backfillBusy, setBackfillBusy] = useState(false);
 
   // staff 強制鎖場館
   useEffect(() => {
@@ -61,10 +66,35 @@ export default function SessionsPage() {
 
   function doExport(kind) {
     if (!list || list.length === 0) { toast.error('沒有可匯出的資料'); return; }
-    const opts = { filenamePrefix: 'sessions', sessions: list, venueName };
+    // 檔名：家教上課紀錄{起訖日}_{匯出日期}（_匯出日期 由匯出工具自動接上）
+    const opts = { filenamePrefix: `家教上課紀錄${range.from}~${range.to}`, sessions: list, venueName };
     if (kind === 'csv') exportSessionsCsv(opts);
     else exportSessionsXlsx(opts);
     toast.success(`已匯出 ${list.length} 筆上課紀錄 (${kind.toUpperCase()})`);
+  }
+
+  function openBackfill(row) {
+    setBackfilling(row);
+    // 預設帶入該時段的上課日期＋開始時間（datetime-local 格式 YYYY-MM-DDTHH:MM）
+    setBackfillAt(`${row.date}T${(row.start || '00:00').slice(0, 5)}`);
+  }
+  async function doBackfill() {
+    if (!backfilling) return;
+    if (!backfillAt) { toast.warning('請選擇簽到時間'); return; }
+    const d = new Date(backfillAt);
+    if (Number.isNaN(d.getTime())) { toast.error('簽到時間格式有誤'); return; }
+    setBackfillBusy(true);
+    try {
+      // 轉成帶時區的 ISO instant（瀏覽器在地時間 → UTC），後端與顯示一致
+      await sessionsApi.backfillCheckin(backfilling.id, d.toISOString());
+      toast.success('已補簽到');
+      setBackfilling(null);
+      await load();
+    } catch (e) {
+      toast.error(e?.response?.data?.error || '補簽到失敗');
+    } finally {
+      setBackfillBusy(false);
+    }
   }
 
   const columns = useMemo(() => [
@@ -77,6 +107,25 @@ export default function SessionsPage() {
     {
       key: 'checkin_status', label: '簽到', className: 'text-center',
       render: (r) => <StatusBadge tone={CHECKIN_TONE[r.checkin_status] || 'gray'}>{checkinStatusLabel(r.checkin_status)}</StatusBadge>,
+    },
+    {
+      key: 'backfill', label: '補簽到', className: 'text-center',
+      render: (r) => r.backfilled_at
+        ? (
+          <div className="text-[11px] leading-tight text-gray-500">
+            <div className="font-medium text-brand-primary">已補簽</div>
+            <div title="補簽到按下時間">補於 {formatTWDateTime(r.backfilled_at)}</div>
+            {r.checkin_at && <div title="選擇的簽到時間">簽到 {formatTWDateTime(r.checkin_at)}</div>}
+          </div>
+        )
+        : r.checkin_status === 'checked_in'
+          ? <span className="text-xs text-gray-300">—</span>
+          : (
+            <button type="button" onClick={(e) => { e.stopPropagation(); openBackfill(r); }}
+              className="rounded-md bg-brand-amber px-2.5 py-1 text-xs font-bold text-white hover:opacity-90">
+              補簽到
+            </button>
+          ),
     },
   ], [venues]);
 
@@ -190,6 +239,35 @@ export default function SessionsPage() {
       )}
 
       <SessionDetailModal session={detail} venueName={venueName} onClose={() => setDetail(null)} />
+
+      <ConfirmDialog
+        open={!!backfilling}
+        title="櫃台補簽到"
+        confirmLabel="確認補簽到"
+        busy={backfillBusy}
+        confirmDisabled={!backfillAt}
+        onCancel={() => !backfillBusy && setBackfilling(null)}
+        onConfirm={doBackfill}
+      >
+        {backfilling && (
+          <div className="space-y-3">
+            <div className="text-xs text-gray-500">
+              {backfilling.date}・{backfilling.start}–{backfilling.end}・{venueName(backfilling.venue_id)}・{backfilling.coach}
+              <div>學員：{(backfilling.students || []).join('、')}</div>
+            </div>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-gray-600">簽到時間</span>
+              <input
+                type="datetime-local"
+                value={backfillAt}
+                onChange={(e) => setBackfillAt(e.target.value)}
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none"
+              />
+            </label>
+            <p className="text-[11px] text-gray-400">確認後系統會記錄此簽到時間，並記下你按下補簽到的當下時間。</p>
+          </div>
+        )}
+      </ConfirmDialog>
     </div>
   );
 }

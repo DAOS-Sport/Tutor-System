@@ -169,40 +169,49 @@ function LessonCard({ r, onOpen, onCheckin, busy }) {
   const dStr = formatTWDate(r.scheduled_at);
   const tStr = formatTWTime(r.scheduled_at);
   const clickable = r.record_status === 'submitted';
-  const badge = checkinable
-    ? { text: '可簽到', cls: 'bg-brand-teal/15 text-brand-teal' }
-    : cls === 'attended'
-      ? { text: '已出席', cls: 'bg-green-100 text-green-700' }
-      : { text: '即將上課', cls: 'bg-amber-100 text-amber-700' };
+  // 右側方形按鈕狀態：可簽到（藍色可點）/ 已出席（灰色唯讀）/ 即將上課（淺灰唯讀）。
+  // 色系沿用既有 brand-primary 藍；版面改為「左資訊、右方形簽到鈕」。
+  const attended = cls === 'attended' || !!r.checked_in_at;
   return (
     <div onClick={clickable ? onOpen : undefined}
-      className={`block w-full rounded-xl border border-gray-200 bg-white p-3 text-left ${clickable ? 'cursor-pointer active:bg-gray-50' : ''}`}>
-      <div className="flex items-center justify-between">
+      className={`flex w-full items-stretch gap-3 rounded-xl border border-gray-200 bg-white p-3 text-left ${clickable ? 'cursor-pointer active:bg-gray-50' : ''}`}>
+      {/* 左側資訊 */}
+      <div className="min-w-0 flex-1">
         <div className="text-sm font-bold text-brand-primary">{dStr} {tStr}</div>
-        <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${badge.cls}`}>{badge.text}</span>
-      </div>
-      <div className="mt-1 text-xs text-gray-600">
-        {r.coach_name} 教練・1對{r.course_type}・{r.venue_id} 館
-      </div>
-      <div className="mt-0.5 text-xs text-gray-500">
-        學員：{r.student_name}
-        {r.checked_in_at && <span className="ml-2">・簽到於 {formatTWTime(r.checked_in_at)}</span>}
-      </div>
-      {r.record_status === 'submitted' && (
-        <div className="mt-1.5 text-[11px] font-medium text-brand-teal">
-          📝 教練已上傳上課記錄 · 點擊查看 ›
+        <div className="mt-1 text-xs text-gray-600">
+          {r.coach_name} 教練・1對{r.course_type}・{r.venue_id} 館
         </div>
-      )}
-      {checkinable && (
-        <button
-          type="button"
-          disabled={busy}
-          onClick={(e) => { e.stopPropagation(); onCheckin(); }}
-          className="mt-2 w-full rounded-lg bg-brand-primary py-2 text-xs font-bold text-white active:opacity-90 disabled:bg-gray-300"
-        >
-          {busy ? '簽到中…' : '我要簽到'}
-        </button>
-      )}
+        <div className="mt-0.5 text-xs text-gray-500">
+          學員：{r.student_name}
+          {r.checked_in_at && <span className="ml-2">・簽到於 {formatTWTime(r.checked_in_at)}</span>}
+        </div>
+        {r.record_status === 'submitted' && (
+          <div className="mt-1.5 text-[11px] font-medium text-brand-teal">
+            📝 教練已上傳上課記錄 · 點擊查看 ›
+          </div>
+        )}
+      </div>
+      {/* 右側方形簽到鈕 */}
+      <div className="flex items-center">
+        {checkinable ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={(e) => { e.stopPropagation(); onCheckin(); }}
+            className="flex h-[60px] w-[60px] flex-shrink-0 items-center justify-center rounded-lg bg-brand-primary text-xs font-bold text-white active:opacity-90 disabled:bg-gray-300"
+          >
+            {busy ? '簽到中…' : '簽到'}
+          </button>
+        ) : attended ? (
+          <div className="flex h-[60px] w-[60px] flex-shrink-0 items-center justify-center rounded-lg bg-gray-300 text-xs font-bold text-white">
+            已簽到
+          </div>
+        ) : (
+          <div className="flex h-[60px] w-[60px] flex-shrink-0 items-center justify-center rounded-lg bg-gray-100 text-[11px] font-bold text-gray-400">
+            即將上課
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -78,9 +78,10 @@ export default function PromotionsPage() {
     return c;
   }, [allList]);
 
+  // 優惠活動：manager 比照 admin（建立 / 核准上架 / 退回 / 停用皆可）
   const canCreate  = role === 'admin' || role === 'manager';
-  const canApprove = role === 'admin';
-  const canArchive = role === 'admin';
+  const canApprove = role === 'admin' || role === 'manager';
+  const canArchive = role === 'admin' || role === 'manager';
 
   const [actionBusy, setActionBusy] = useState(false);
   async function doAction(p, action, note) {
@@ -185,7 +186,7 @@ export default function PromotionsPage() {
       )}
 
       {editing && (() => {
-        const editableStatuses = role === 'admin' ? ['draft', 'rejected', 'active'] : ['draft', 'rejected'];
+        const editableStatuses = (role === 'admin' || role === 'manager') ? ['draft', 'rejected', 'active'] : ['draft', 'rejected'];
         const ro = !!editing.id && !editableStatuses.includes(editing.status);
         return (
           <PromotionFormModal

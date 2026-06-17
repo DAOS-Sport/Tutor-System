@@ -22,6 +22,8 @@ function rowToSession(r) {
     students: r.students || [],
     course_type: r.course_type,
     checkin_status: r.checkin_status,
+    checkin_at: r.checkin_at || null,
+    backfilled_at: r.backfilled_at || null,
   };
 }
 
@@ -229,6 +231,39 @@ router.post('/:id/revive', requireAdminAuth, requireAdminRole('admin', 'manager'
     res.status(500).json({ error: 'revive failed' });
   } finally {
     client.release();
+  }
+});
+
+/**
+ * F-R01：櫃台補簽到 —— 可自由選擇上課/簽到時間，為某時段補登簽到。
+ *  POST /api/admin/sessions/:id/backfill-checkin   { checkin_at }
+ *  - checkin_at：操作者選擇的「簽到時間」（datetime-local / ISO 字串）
+ *  - backfilled_at = NOW()：補簽到按鈕被按下的當下時間，供管理端查看
+ */
+router.post('/:id/backfill-checkin', requireAdminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const raw = req.body?.checkin_at;
+    const dt = raw ? new Date(raw) : null;
+    if (!dt || isNaN(dt.getTime())) {
+      return res.status(400).json({ error: '請選擇有效的簽到時間' });
+    }
+    const cur = await pool.query(`SELECT venue_id FROM admin_today_sessions WHERE id = $1`, [id]);
+    if (!cur.rowCount) return res.status(404).json({ error: '找不到此時段' });
+    if (!isVenueInScope(req, cur.rows[0].venue_id)) {
+      return res.status(403).json({ error: '此時段不在您的場館範圍內' });
+    }
+    const r = await pool.query(
+      `UPDATE admin_today_sessions
+          SET checkin_status = 'checked_in', checkin_at = $2, backfilled_at = NOW()
+        WHERE id = $1
+        RETURNING *`,
+      [id, dt.toISOString()]
+    );
+    res.json(rowToSession(r.rows[0]));
+  } catch (err) {
+    console.error('[admin/sessions/:id/backfill-checkin]', err);
+    res.status(500).json({ error: 'backfill checkin failed' });
   }
 });
 

@@ -46,19 +46,25 @@ function ragicEnabled() {
 // 由 admin 在「Ragic 待審核」頁面手動 approve / reject 後才真正套用。
 // ─────────────────────────────────────────────────────────────
 
-/** Upsert 一筆 pending staging（同 entity 已有 pending → 更新該 row 而非新增）。
+/** Upsert 一筆 staging：以 UID（entity_type, entity_id）為真相，同一人永遠只有一筆、就地更新。
+ *  不論該筆現況是 approved/auto_resolved/rejected，只要這輪 sync 仍有差異，一律覆寫回 pending
+ *  並清掉上一輪的審核痕跡（reviewed_by/at、reject_reason）。
  *  注意：依 spec，rejected 不抑制 — 下次 Ragic 同步若仍有差異，會重新進待審區。 */
 async function _stageIfNotRejected(formCode, entityType, entityId, changeType, payload, diff) {
   await pool.query(
     `INSERT INTO ragic_staging_changes
        (form_code, entity_type, entity_id, change_type, payload_json, diff_json, fetched_at, status)
      VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, NOW(), 'pending')
-     ON CONFLICT (entity_type, entity_id) WHERE status = 'pending'
+     ON CONFLICT (entity_type, entity_id)
      DO UPDATE SET form_code = EXCLUDED.form_code,
                    change_type = EXCLUDED.change_type,
                    payload_json = EXCLUDED.payload_json,
                    diff_json = EXCLUDED.diff_json,
-                   fetched_at = NOW()`,
+                   fetched_at = NOW(),
+                   status = 'pending',
+                   reviewed_by = NULL,
+                   reviewed_at = NULL,
+                   reject_reason = NULL`,
     [formCode, entityType, entityId, changeType, JSON.stringify(payload), diff ? JSON.stringify(diff) : null]
   );
   return true;
@@ -265,6 +271,11 @@ async function _syncStaffImpl() {
       const coachRow = coachByEmp.get(entityId);
       const curCoachEmail = coachRow?.email || '';
       const curCoachLineUid = coachRow?.line_uid || '';
+      // email / line_uid 只存在於 coaches 表；apply 也只寫得進 coaches 列。
+      // 因此唯有「已有 coaches 列」或「這次會被建成教練（role=coach 且有手機 → apply 會建列）」
+      // 時，套用才寫得進去。純後勤員工（role=staff、無 coaches 列）若硬 stage 這兩欄，
+      // approve 後無處可寫 → 下一輪 sync 又偵測到 coaches 仍為空 → 永遠重 stage、待審區清不掉。
+      const coachFieldsPersistable = !!coachRow || (roleVal === 'coach' && !!phone);
 
       if (!cur) {
         if (await _stageIfNotRejected('H01_STAFF', 'staff', entityId, 'new', payload, null)) staged++;
@@ -277,12 +288,13 @@ async function _syncStaffImpl() {
       // email：apply 端只在 DB 空值時補（保留後台手動編輯）→ diff 也只在「DB 空 + Ragic 有值」
       // 才 stage（Task #95：先前「值不同就 diff」會讓 admin 自填信箱後，同一筆差異每輪重現、
       // approve 又套不進去（fill-empty-only），待審區永遠清不掉）
-      if (email && !curCoachEmail) {
+      if (coachFieldsPersistable && email && !curCoachEmail) {
         diff.email = { from: '', to: email };
       }
       // line_uid：只在「DB 為空 + Ragic 有值」才 diff，避免覆寫已綁定的教練 LINE
-      // （apply 路徑使用 COALESCE 雙重保險；這裡同樣不顯示「Ragic 空 → 蓋掉」的 diff）
-      if (lineUid && !curCoachLineUid) {
+      // （apply 路徑使用 COALESCE 雙重保險；這裡同樣不顯示「Ragic 空 → 蓋掉」的 diff）。
+      // 同上 coachFieldsPersistable 把關：非教練的 line_uid 套用無處可寫，不再 stage。
+      if (coachFieldsPersistable && lineUid && !curCoachLineUid) {
         diff.line_uid = { from: '', to: lineUid };
       }
       if (cur.active_overridden_at == null && cur.active !== isActive) {

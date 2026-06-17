@@ -18,6 +18,10 @@ export const sessionsApi = {
     ),
   verifyCheckin: (q) =>
     callApi('/sessions/verify-checkin', { params: q }, () => mockDb.verifyCheckin(q)),
+  // F-R01 櫃台補簽到：checkin_at = 操作者選擇的簽到時間（ISO 字串）
+  backfillCheckin: (id, checkinAt) =>
+    callApi(`/sessions/${id}/backfill-checkin`, { method: 'post', data: { checkin_at: checkinAt } },
+      () => ({ id, checkin_status: 'checked_in', checkin_at: checkinAt, backfilled_at: new Date().toISOString() })),
   cancelled: () => callApi('/sessions/cancelled', {}, () => mockDb.cancelledSessions()),
   revive: (id) =>
     callApi(`/sessions/${id}/revive`, { method: 'post' }, () => mockDb.reviveSession(id)),

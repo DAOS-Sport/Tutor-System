@@ -232,7 +232,7 @@ router.get('/:id', requireParent, async (req, res) => {
       `SELECT e.id, e.parent_phone, e.extra_parent_phones, e.students, e.coach, e.course_type,
               e.original_price, e.final_price, e.transfer_last_5, e.status, e.payment_proof_url, e.period_count,
               e.invoice_number, e.invoice_image_url, e.submitted_at, e.group_order_id,
-              e.total_sessions, e.used_sessions, e.is_group_shared,
+              e.total_sessions, e.used_sessions, e.is_group_shared, e.carrier,
               -- 與 /mine 相同：團報走 group_order_id（共用）、一般報名走 admin_enrollment_id。
               COALESCE(
                 (SELECT cp.id FROM course_periods cp
@@ -284,6 +284,7 @@ router.get('/:id', requireParent, async (req, res) => {
       original_price: Number(row.original_price),
       final_price: Number(row.final_price),
       transfer_last_5: row.transfer_last_5 || '',
+      carrier: row.carrier || '',
       payment_status: row.status,
       lifecycle,
       course_period_id: row.course_period_id || null,
@@ -311,6 +312,8 @@ router.post('/:id/payment-proof', requireParent, async (req, res) => {
   const PROOF_URL_RE = /^\/uploads\/\d{4}-\d{2}\/[a-f0-9]{24}\.(jpg|jpeg|png)$/;
   const url = typeof req.body?.payment_proof_url === 'string' ? req.body.payment_proof_url.trim() : '';
   const last5 = typeof req.body?.transfer_last_5 === 'string' ? req.body.transfer_last_5.trim() : '';
+  // 載具（選填）：電子發票手機條碼載具，trim + 上限長度，空字串視為未填。
+  const carrier = typeof req.body?.carrier === 'string' ? req.body.carrier.trim().slice(0, 64) : '';
   if (last5 && !/^\d{5}$/.test(last5)) {
     return res.status(400).json({ error: '轉帳末 5 碼需為 5 位數字', code: 'TRANSFER_LAST5_INVALID' });
   }
@@ -336,16 +339,17 @@ router.post('/:id/payment-proof', requireParent, async (req, res) => {
     if (row.transfer_last_5 && row.payment_proof_url) {
       return res.status(409).json({ error: '付款資料已送出，如需更改請聯繫櫃檯', code: 'PAYMENT_LOCKED' });
     }
-    if (!url && !row.payment_proof_url && !last5) {
+    if (!url && !row.payment_proof_url && !last5 && !carrier) {
       return res.status(400).json({ error: '請填寫轉帳末 5 碼或上傳匯款／轉帳證明', code: 'PAYMENT_INFO_REQUIRED' });
     }
     await pool.query(
       `UPDATE admin_enrollments
           SET payment_proof_url = COALESCE($2, payment_proof_url),
               transfer_last_5 = COALESCE($3, transfer_last_5),
+              carrier = COALESCE($4, carrier),
               updated_at = NOW()
         WHERE id = $1`,
-      [req.params.id, url || null, last5 || null]
+      [req.params.id, url || null, last5 || null, carrier || null]
     );
     res.json({ ok: true });
   } catch (e) {

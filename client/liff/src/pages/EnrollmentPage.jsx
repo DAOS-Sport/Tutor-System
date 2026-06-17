@@ -2,10 +2,8 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { enrollmentsApi } from '../api/enrollments';
 import LoadingSpinner from '../components/LoadingSpinner';
-import ConfirmModal from '../components/ConfirmModal';
 import StudentMultiSelect from '../components/enroll/StudentMultiSelect';
 import PriceBreakdown from '../components/enroll/PriceBreakdown';
-import EnrollmentSummary from '../components/enroll/EnrollmentSummary';
 import ErrorBlock from '../components/enroll/ErrorBlock';
 import useEnrollmentBoot from '../hooks/useEnrollmentBoot';
 import useEnrollmentPricing from '../hooks/useEnrollmentPricing';
@@ -26,7 +24,6 @@ export default function EnrollmentPage() {
   const [courseType] = useState(initialCourseType);
   const [periodCount, setPeriodCount] = useState(1);
   const [selectedSelfStudents, setSelectedSelfStudents] = useState([]);
-  const [confirmOpen, setConfirmOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [couponInput, setCouponInput] = useState('');
   const [activeCoupon, setActiveCoupon] = useState('');
@@ -125,7 +122,6 @@ export default function EnrollmentPage() {
           ? { id: pricing.promo.id, discount: pricing.discount, coupon_code: pricing.promo.coupon_code || null }
           : null,
       });
-      setConfirmOpen(false);
       try { localStorage.removeItem('daos.pendingCoupon'); } catch { /* noop */ }
       // 訂單依期數拆分：買多期會建多筆訂單 → 導到「我的課程」逐筆繳款；單期維持直接進狀態頁。
       if ((result.count || 1) > 1) {
@@ -207,11 +203,11 @@ export default function EnrollmentPage() {
 
       <button
         type="button"
-        disabled={!canSubmit}
-        onClick={() => setConfirmOpen(true)}
+        disabled={!canSubmit || submitting}
+        onClick={handleConfirmSubmit}
         className="mt-4 w-full rounded-lg bg-brand-primary py-3.5 text-base font-bold text-white active:bg-brand-teal disabled:bg-gray-300"
       >
-        送出報名
+        {submitting ? '送出中…' : '下一步：填寫轉帳資料'}
       </button>
 
       {/* 發起團購：移到最下面、移除上方行銷文案；帶入已選的組別/期數/學員。1V1 不開團。 */}
@@ -234,23 +230,6 @@ export default function EnrollmentPage() {
         </button>
       )}
 
-      <ConfirmModal
-        open={confirmOpen}
-        title="確認報名資料"
-        confirmLabel="確認送出"
-        busy={submitting}
-        onCancel={() => setConfirmOpen(false)}
-        onConfirm={handleConfirmSubmit}
-      >
-        <EnrollmentSummary
-          venue={venue}
-          coach={coach}
-          courseType={courseType}
-          periodCount={periodCount}
-          allSelectedStudents={allSelectedStudents}
-          pricing={pricing}
-        />
-      </ConfirmModal>
     </div>
   );
 }

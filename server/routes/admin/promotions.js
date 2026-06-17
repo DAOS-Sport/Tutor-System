@@ -210,12 +210,12 @@ async function transition(req, res, fromStatuses, toStatus, action, requiredRole
 }
 
 router.post('/:id/submit',  (req, res) => transition(req, res, ['draft', 'rejected'], 'pending_review', 'submit',  ['admin', 'manager']).catch((e) => { console.error(e); res.status(500).json({ error: 'submit failed' }); }));
-router.post('/:id/approve', (req, res) => transition(req, res, ['pending_review'],  'active',         'approve', ['admin']).catch((e) => { console.error(e); res.status(500).json({ error: 'approve failed' }); }));
+router.post('/:id/approve', (req, res) => transition(req, res, ['pending_review'],  'active',         'approve', ['admin', 'manager']).catch((e) => { console.error(e); res.status(500).json({ error: 'approve failed' }); }));
 router.post('/:id/reject',  (req, res) => {
   const note = (req.body && req.body.note ? String(req.body.note).trim() : '');
   if (!note) return res.status(400).json({ error: '退回時必須填寫退回原因' });
-  return transition(req, res, ['pending_review'], 'rejected', 'reject', ['admin']).catch((e) => { console.error(e); res.status(500).json({ error: 'reject failed' }); });
+  return transition(req, res, ['pending_review'], 'rejected', 'reject', ['admin', 'manager']).catch((e) => { console.error(e); res.status(500).json({ error: 'reject failed' }); });
 });
-router.post('/:id/archive', (req, res) => transition(req, res, ['draft', 'pending_review', 'active', 'rejected'], 'archived', 'archive', ['admin']).catch((e) => { console.error(e); res.status(500).json({ error: 'archive failed' }); }));
+router.post('/:id/archive', (req, res) => transition(req, res, ['draft', 'pending_review', 'active', 'rejected'], 'archived', 'archive', ['admin', 'manager']).catch((e) => { console.error(e); res.status(500).json({ error: 'archive failed' }); }));
 
 module.exports = router;

@@ -10,7 +10,7 @@ import { enrollmentsApi } from '../api/enrollments';
 import { venuesApi } from '../api/venues';
 import {
   formatTWD, courseTypeLabel,
-  paymentStatusLabel, paymentStatusTone,
+  paymentStatusLabel, paymentStatusTone, formatTWDateTime,
 } from '../utils/format';
 
 export default function RefundPage() {
@@ -30,7 +30,8 @@ export default function RefundPage() {
         enrollmentsApi.list(),
         venuesApi.list(),
       ]);
-      setList(data.filter((e) => e.status === 'active' || e.status === 'confirmed' || e.status === 'cancelled'));
+      // 含 refunded：已退費紀錄保留在清單中，供查看「退費時間」（操作欄顯示「已退費」）。
+      setList(data.filter((e) => ['active', 'confirmed', 'cancelled', 'refunded'].includes(e.status)));
       setVenues(vs);
     } catch (e) {
       // 載入失敗時跳出無限轉圈：顯示空清單 + toast 引導重新整理
@@ -94,6 +95,7 @@ export default function RefundPage() {
     { key: 'progress', label: '進度', render: (r) => <span className="font-mono text-sm">{r.used_sessions || 0} / {r.total_sessions || '—'}</span> },
     { key: 'final_price', label: '原應收', className: 'text-right', render: (r) => <span className="font-mono">{formatTWD(r.final_price)}</span> },
     { key: 'status', label: '狀態', render: (r) => <StatusBadge tone={paymentStatusTone(r.status)}>{paymentStatusLabel(r.status)}</StatusBadge> },
+    { key: 'refunded_at', label: '退費時間', render: (r) => r.refunded_at ? <span className="font-mono text-xs">{formatTWDateTime(r.refunded_at)}</span> : <span className="text-gray-300">—</span> },
     {
       key: 'actions', label: '操作', className: 'text-right',
       render: (r) => r.status === 'refunded'

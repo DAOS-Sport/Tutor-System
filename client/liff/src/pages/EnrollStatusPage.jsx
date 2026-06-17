@@ -27,6 +27,7 @@ export default function EnrollStatusPage() {
   const [enr, setEnr] = useState(undefined); // undefined=loading, null=error
   const [proofBusy, setProofBusy] = useState(false);
   const [transferLast5, setTransferLast5] = useState('');
+  const [carrier, setCarrier] = useState('');
   const [proofFile, setProofFile] = useState(null);
   const [cancelBusy, setCancelBusy] = useState(false);
   const proofInputRef = useRef(null);
@@ -43,9 +44,10 @@ export default function EnrollStatusPage() {
   useEffect(() => {
     if (enr) {
       setTransferLast5(enr.transfer_last_5 || '');
+      setCarrier(enr.carrier || '');
       setProofFile(null);
     }
-  }, [enr?.id, enr?.transfer_last_5, enr?.has_payment_proof]);
+  }, [enr?.id, enr?.transfer_last_5, enr?.has_payment_proof, enr?.carrier]);
 
   if (enr === undefined) return <LoadingSpinner fullPage label="載入報名狀態…" />;
   if (enr === null) {
@@ -105,6 +107,7 @@ export default function EnrollStatusPage() {
       await coursesApi.uploadProof(id, {
         transfer_last_5: transferLast5.trim(),
         payment_proof_url: url || undefined,
+        carrier: carrier.trim() || undefined,
       });
       toast.success('付款資料已送出，待櫃台確認');
       setProofFile(null);
@@ -229,8 +232,26 @@ export default function EnrollStatusPage() {
         )}
       </div>
 
-      <button type="button" onClick={() => navigate('/my-courses')}
-        className="mt-4 w-full rounded-lg border border-gray-300 py-2.5 text-sm font-bold text-gray-600">前往我的課程</button>
+      {/* 載具（電子發票，選填）：隨付款資料一起送出，櫃檯開發票時產生條碼掃描。 */}
+      <div className="mt-4 rounded-xl border border-gray-200 bg-white p-3">
+        <h3 className="mb-1 text-xs font-bold text-gray-600">載具（電子發票，選填）</h3>
+        {canUpload && !paymentLocked ? (
+          <>
+            <input
+              type="text"
+              value={carrier}
+              disabled={proofBusy}
+              onChange={(e) => setCarrier(e.target.value.slice(0, 64))}
+              className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-mono focus:border-brand-teal focus:outline-none disabled:bg-gray-50"
+              placeholder="手機條碼載具，例如 /ABC+123"
+            />
+            <p className="mt-1 text-[11px] text-gray-400">將與上方付款資料一起送出；可留空。</p>
+          </>
+        ) : (
+          <p className="mt-1 text-sm text-gray-700">{carrier || '—'}</p>
+        )}
+      </div>
+
       {canUpload && !enr.group_order_id && (
         <button
           type="button"
@@ -238,7 +259,7 @@ export default function EnrollStatusPage() {
           onClick={handleCancelEnrollment}
           className="mt-2 w-full rounded-lg border border-brand-error/40 py-2.5 text-sm font-bold text-brand-error disabled:opacity-50"
         >
-          {cancelBusy ? '取消中…' : '取消這筆未完成報名'}
+          {cancelBusy ? '取消中…' : '取消報名'}
         </button>
       )}
     </div>

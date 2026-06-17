@@ -428,6 +428,13 @@ DO $$ BEGIN
   -- 同次購買的 N 筆共用 enrollment_batch_id 供前端/後台成組顯示。既有資料預設 1/NULL，前向相容。
   ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS period_number INTEGER NOT NULL DEFAULT 1;
   ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS enrollment_batch_id UUID;
+  -- 載具（電子發票手機條碼載具）：報名繳款時填寫，櫃檯開發票時產生橫列式條碼掃描用。
+  ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS carrier TEXT;
+  -- 退費時間：退課退費送出當下時間戳（退費列表顯示用；舊資料為 NULL）。
+  ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMPTZ;
+  -- 櫃台補簽到（F-R01）：checkin_at = 選擇的上課/簽到時間；backfilled_at = 補簽到按鈕被按下的時間（供管理端查看）。
+  ALTER TABLE admin_today_sessions ADD COLUMN IF NOT EXISTS checkin_at TIMESTAMPTZ;
+  ALTER TABLE admin_today_sessions ADD COLUMN IF NOT EXISTS backfilled_at TIMESTAMPTZ;
   -- U10：團報金流改流程——證明改「送審後各家自行上傳」，櫃檯「逐家確認帳款」+「核准名單」，
   --   兩者皆成立才自動建檔。成員層級記證明上傳時間 + 帳款確認狀態；訂單層級記名單核准狀態。
   ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS proof_uploaded_at   TIMESTAMPTZ;
@@ -631,9 +638,22 @@ CREATE TABLE IF NOT EXISTS ragic_staging_changes (
   reviewed_at  TIMESTAMPTZ,
   reject_reason TEXT
 );
--- 同一 entity 同時最多一筆 pending（下次 sync 抓到新差異時直接更新此筆）
-CREATE UNIQUE INDEX IF NOT EXISTS uq_ragic_staging_pending
-  ON ragic_staging_changes(entity_type, entity_id) WHERE status = 'pending';
+-- 每個 UID（entity_type, entity_id）只保留「一筆」staging，就地更新（以 UID 為該用戶資料的真相）。
+-- 舊設計用「WHERE status='pending'」的局部唯一索引 → 只 dedup pending；一旦轉成
+-- approved/auto_resolved/rejected，下次 sync 有差異就「再 INSERT 一筆」→ 同一人累積多筆歷史。
+-- 改為全狀態唯一：先收斂既有重複列（保留 pending 優先、否則最新 fetched_at），再建全唯一索引。
+DELETE FROM ragic_staging_changes a
+ USING (
+   SELECT id, ROW_NUMBER() OVER (
+            PARTITION BY entity_type, entity_id
+            ORDER BY (status = 'pending') DESC, fetched_at DESC
+          ) AS rn
+     FROM ragic_staging_changes
+ ) d
+ WHERE a.id = d.id AND d.rn > 1;
+DROP INDEX IF EXISTS uq_ragic_staging_pending;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_ragic_staging_entity
+  ON ragic_staging_changes(entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS idx_ragic_staging_status ON ragic_staging_changes(status, fetched_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ragic_staging_form ON ragic_staging_changes(form_code, status);
 

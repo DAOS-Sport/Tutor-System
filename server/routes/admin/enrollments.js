@@ -251,11 +251,13 @@ async function readEnrollment(id) {
     original_price: Number(row.original_price),
     final_price: Number(row.final_price),
     transfer_last_5: row.transfer_last_5,
+    carrier: row.carrier || null,
     status: row.status,
     submitted_at: tsToString(row.submitted_at),
     total_sessions: row.total_sessions,
     used_sessions: row.used_sessions,
     refund_amount: row.refund_amount != null ? Number(row.refund_amount) : undefined,
+    refunded_at: tsToString(row.refunded_at),
     invoice_number: row.invoice_number || null,
     invoice_image_url: row.invoice_image_url || null,
     payment_proof_url: row.payment_proof_url || null,
@@ -776,7 +778,7 @@ router.post('/:id/refund', requireAdminAuth, requireAdminRole('admin', 'manager'
     }
 
     await client.query(
-      `UPDATE admin_enrollments SET status = 'refunded', refund_amount = $2, updated_at = NOW() WHERE id = $1`,
+      `UPDATE admin_enrollments SET status = 'refunded', refund_amount = $2, refunded_at = NOW(), updated_at = NOW() WHERE id = $1`,
       [id, preview.refund_amount]
     );
     await client.query(
