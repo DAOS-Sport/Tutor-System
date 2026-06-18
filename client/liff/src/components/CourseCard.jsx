@@ -50,7 +50,7 @@ export default function CourseCard({ variant = 'period', period, type, onClick, 
       <button
         type="button"
         onClick={onClick}
-        className="block w-full text-left active:opacity-80"
+        className={`block w-full text-left ${onClick ? 'active:opacity-80' : 'cursor-default'}`}
       >
         <div className="mb-2 flex items-start justify-between gap-3">
         <div className="min-w-0">

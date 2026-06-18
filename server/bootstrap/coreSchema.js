@@ -1080,6 +1080,16 @@ async function normalizeCourseTypeBounds() {
     `UPDATE course_type_configs SET max_students = LEAST(max_students, 6)
       WHERE max_students > 6`
   );
+  // 4~6 人合併為單一品項「1對4~6」(course_type=4)：停用任何多餘的 type>=5 組別，
+  // 並確保 type 4 上限為 6（涵蓋 4–6 人）。冪等；避免家長端出現 1對5 / 1對6 重複品項。
+  await pool.query(
+    `UPDATE course_type_configs SET is_active = FALSE
+      WHERE course_type >= 5 AND is_active = TRUE`
+  );
+  await pool.query(
+    `UPDATE course_type_configs SET max_students = 6
+      WHERE course_type = 4 AND max_students < 6`
+  );
 }
 
 async function seedTagsAndThresholds() {

@@ -140,7 +140,8 @@ export default function RegisterPage() {
   const { register, handleSubmit, control, formState: { errors, isSubmitting } } = useForm({
     defaultValues: {
       name: '', phone: prefilledPhone, gender: '女', email: '', primary_venue_id: '',
-      students: [{ name: '', id_number: '', birth_date: '', gender: '男' }],
+      home_phone: '', line_id: '', home_address: '',
+      students: [{ name: '', id_number: '', birth_date: '', gender: '男', blood_type: '' }],
     },
   });
 
@@ -156,6 +157,9 @@ export default function RegisterPage() {
       gender: data.gender,
       email: data.email,
       primary_venue_id: data.primary_venue_id || null,
+      home_phone: data.home_phone || null,
+      line_id: data.line_id || null,
+      home_address: data.home_address || null,
     };
     const cleanStudents = data.students.map((s) => ({
       ...s,
@@ -320,12 +324,21 @@ export default function RegisterPage() {
               {...register('email', { required: '請填寫 Email', pattern: { value: /^[^\s@]+@[^\s@]+\.[^\s@]+$/, message: 'Email 格式錯誤' } })}
               className={inputCls} />
           </Field>
+          <Field label="住家電話">
+            <input type="tel" inputMode="numeric" {...register('home_phone')} className={inputCls} />
+          </Field>
+          <Field label="LINE ID">
+            <input type="text" {...register('line_id')} className={inputCls} />
+          </Field>
+          <Field label="住家地址">
+            <input type="text" {...register('home_address')} className={inputCls} />
+          </Field>
         </Section>
 
         <Section title="學員資料"
           extra={
             <button type="button"
-              onClick={() => append({ name: '', id_number: '', birth_date: '', gender: '男' })}
+              onClick={() => append({ name: '', id_number: '', birth_date: '', gender: '男', blood_type: '' })}
               className="rounded-md bg-brand-teal/10 px-3 py-1 text-xs font-medium text-brand-teal active:bg-brand-teal/20">
               + 新增學員
             </button>
@@ -356,6 +369,9 @@ export default function RegisterPage() {
                   <select {...register(`students.${idx}.gender`)} className={inputCls}>
                     <option value="男">男</option><option value="女">女</option><option value="不方便透露">不方便透露</option>
                   </select>
+                </Field>
+                <Field label="血型">
+                  <input {...register(`students.${idx}.blood_type`)} className={inputCls} placeholder="例：O、A、B、AB（可留空）" />
                 </Field>
               </div>
             </div>

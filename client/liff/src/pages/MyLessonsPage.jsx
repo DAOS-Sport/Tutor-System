@@ -88,7 +88,8 @@ export default function MyLessonsPage() {
     }
   }, [enrollments, enrollId]);
 
-  const enrollment = enrollments.find((e) => e.id === enrollId) || null;
+  // 首次渲染時 enrollId 仍為 ''（useEffect 尚未跑），必須退回第一筆，否則存取 enrollment.remain 會整頁 crash。
+  const enrollment = enrollments.find((e) => e.id === enrollId) || enrollments[0] || null;
 
   // 上課明細排序：即將上課（未來）由近到遠在前；已出席（過去）由新到舊在後。
   const sorted = useMemo(() => {

@@ -164,12 +164,14 @@ export default function MyCoursesPage() {
         }]),
       ] : []);
 
+    // 進行中課程：卡片本體不再導向詳細頁（/course/:id），改由下方三個按鈕操作；
+    // 其餘狀態（已結束無按鈕、待處理）保留點卡片進入對應頁面，避免無路可點。
     return (
       <CourseCard
         key={cp.id}
         variant="period"
         period={cp}
-        onClick={() => navigateForCard(cp)}
+        onClick={cp.lifecycle === 'active' ? undefined : () => navigateForCard(cp)}
         actions={actions}
       />
     );
