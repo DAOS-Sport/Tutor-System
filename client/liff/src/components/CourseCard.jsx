@@ -14,12 +14,15 @@ export default function CourseCard({ variant = 'period', period, type, onClick, 
         onClick={onClick}
         className="block w-full overflow-hidden rounded-2xl border border-gray-200 bg-white text-left shadow-sm active:scale-[0.99]"
       >
+        {type.imageUrl && (
+          <img src={type.imageUrl} alt={type.title || ''} className="h-32 w-full object-cover" />
+        )}
         <div className="bg-brand-primary px-4 py-3 text-white">
           <div className="text-base font-bold">{type.title}</div>
-          <div className="text-xs opacity-90">{type.subtitle}</div>
+          {type.subtitle && <div className="text-xs opacity-90">{type.subtitle}</div>}
         </div>
         <div className="p-4">
-          <p className="mb-3 text-sm text-gray-600">{type.description}</p>
+          {type.description && <p className="mb-3 whitespace-pre-line text-sm text-gray-600">{type.description}</p>}
           <div className="mb-3 flex items-baseline justify-between">
             <span className="text-xs text-gray-500">每期 6 堂</span>
             <span className="text-lg font-bold text-brand-primary">{formatTWD(type.basePrice)}/人</span>
@@ -103,17 +106,21 @@ export default function CourseCard({ variant = 'period', period, type, onClick, 
       </button>
 
       {actions.length > 0 && (
-        <div className={`mt-3 grid gap-2 ${actions.length === 1 ? 'grid-cols-1' : 'grid-cols-2'}`}>
+        <div className={`mt-3 grid gap-2 ${
+          actions.length === 1 ? 'grid-cols-1' : actions.length >= 3 ? 'grid-cols-3' : 'grid-cols-2'
+        }`}>
           {actions.map((action) => (
             <button
               key={action.label}
               type="button"
               onClick={action.onClick}
               disabled={action.disabled}
-              className={`rounded-lg px-3 py-2 text-sm font-bold disabled:opacity-50 ${
-                action.primary
-                  ? 'bg-brand-primary text-white active:bg-brand-teal'
-                  : 'border border-brand-teal text-brand-teal active:bg-brand-teal/10'
+              className={`rounded-lg px-2 py-2 text-sm font-bold disabled:opacity-50 ${
+                action.tone === 'accent'
+                  ? 'bg-brand-amber text-black active:opacity-90'
+                  : action.primary
+                    ? 'bg-brand-primary text-white active:bg-brand-teal'
+                    : 'border border-brand-teal text-brand-teal active:bg-brand-teal/10'
               }`}
             >
               {action.label}

@@ -1,18 +1,39 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { promotionsApi } from '../../api/promotions';
+import { courseTypesApi } from '../../api/courseTypes';
+import { venuesApi } from '../../api/venues';
 import { useToast } from '../../context/ToastContext';
-
-const COURSE_TYPES = [1, 2, 3];
-const VENUES = ['B', 'C', 'X']; // 與 coreSchema seed 對齊
 
 function fieldClass(extra = '') {
   return `w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none ${extra}`;
+}
+
+function toISODate(v) {
+  return v ? String(v).slice(0, 10) : '';
+}
+// 兩日期區間是否重疊：aStart <= bEnd && bStart <= aEnd
+function rangesOverlap(aStart, aEnd, bStart, bEnd) {
+  if (!aStart || !aEnd || !bStart || !bEnd) return false;
+  return aStart <= bEnd && bStart <= aEnd;
+}
+// 場館是否重疊：任一方為全館（空陣列）即視為重疊，否則看兩集合是否交集
+function venuesOverlap(a = [], b = []) {
+  if (!a.length || !b.length) return true;
+  const setB = new Set(b.map(String));
+  return a.some((x) => setB.has(String(x)));
 }
 
 export default function PromotionFormModal({ initial, onClose, onSaved, readOnly = false }) {
   const isEdit = !!initial?.id;
   const toast = useToast();
   const [busy, setBusy] = useState(false);
+
+  // 選項來源：課程需求管理（適用組別）/ F-A03 場館設定（適用場館）
+  const [courseTypeOpts, setCourseTypeOpts] = useState(null); // null = 載入中
+  const [venueOpts, setVenueOpts] = useState(null);
+  // 重疊偵測：目前進行中（active）的優惠
+  const [activePromos, setActivePromos] = useState([]);
+
   const [d, setD] = useState({
     name: initial?.name || '',
     description: initial?.description || '',
@@ -24,14 +45,87 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
     applicable_venue_ids: initial?.applicable_venue_ids || [],
     coupon_code: initial?.coupon_code || '',
     generate_coupon_code: false,
-    start_date: initial?.start_date ? String(initial.start_date).slice(0, 10) : new Date().toISOString().slice(0, 10),
-    end_date: initial?.end_date ? String(initial.end_date).slice(0, 10) : '',
+    start_date: initial?.start_date ? toISODate(initial.start_date) : new Date().toISOString().slice(0, 10),
+    end_date: initial?.end_date ? toISODate(initial.end_date) : '',
     max_uses: initial?.max_uses || '',
   });
+
+  useEffect(() => {
+    let alive = true;
+    // (5) 適用組別 ← 課程需求管理；失敗時退回 initial.applicable_course_types 推導出的選項
+    courseTypesApi.list()
+      .then((rows) => {
+        if (!alive) return;
+        const opts = (Array.isArray(rows) ? rows : [])
+          .filter((r) => r.is_active)
+          .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
+          .map((r) => ({ value: r.course_type, label: r.label || `1對${r.course_type}` }));
+        // 保留「已選但現已停用 / 移除」的組別，使其仍可見並可取消勾選（不會被靜默保留）
+        for (const ct of (initial?.applicable_course_types || [])) {
+          if (!opts.some((o) => o.value === ct)) opts.push({ value: ct, label: `1對${ct}（已停用）` });
+        }
+        setCourseTypeOpts(opts);
+      })
+      .catch(() => {
+        if (!alive) return;
+        const fallback = (initial?.applicable_course_types || []).map((ct) => ({ value: ct, label: `1對${ct}` }));
+        setCourseTypeOpts(fallback);
+      });
+    // (6) 適用場館 ← F-A03 場館設定；失敗時退回 initial.applicable_venue_ids
+    venuesApi.list()
+      .then((rows) => {
+        if (!alive) return;
+        const opts = (Array.isArray(rows) ? rows : []).map((v) => ({ value: v.id, label: v.name || `${v.id} 館` }));
+        // 保留「已選但現已移除」的場館，使其仍可見並可取消勾選
+        for (const id of (initial?.applicable_venue_ids || [])) {
+          if (!opts.some((o) => o.value === id)) opts.push({ value: id, label: `${id} 館（已停用）` });
+        }
+        setVenueOpts(opts);
+      })
+      .catch(() => {
+        if (!alive) return;
+        const fallback = (initial?.applicable_venue_ids || []).map((id) => ({ value: id, label: `${id} 館` }));
+        setVenueOpts(fallback);
+      });
+    // (9) 重疊偵測：抓目前進行中的優惠
+    promotionsApi.active()
+      .then((rows) => { if (alive) setActivePromos(Array.isArray(rows) ? rows : []); })
+      .catch(() => { if (alive) setActivePromos([]); });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function toggle(arr, v) {
     return arr.includes(v) ? arr.filter((x) => x !== v) : [...arr, v];
   }
+
+  // (9) 重疊警告：選定場館 + 日期後，檢查是否與既有 active 優惠的場館 / 期間重疊
+  const overlapWarnings = useMemo(() => {
+    if (!d.start_date || !d.end_date) return [];
+    const venueLabel = (id) => {
+      const o = (venueOpts || []).find((x) => String(x.value) === String(id));
+      return o ? o.label : `${id} 館`;
+    };
+    const out = [];
+    for (const p of activePromos) {
+      if (isEdit && p.id === initial.id) continue; // 編輯自己不算重疊
+      const pStart = toISODate(p.start_date);
+      const pEnd = toISODate(p.end_date);
+      if (!rangesOverlap(d.start_date, d.end_date, pStart, pEnd)) continue;
+      const pVenues = Array.isArray(p.applicable_venue_ids) ? p.applicable_venue_ids : [];
+      if (!venuesOverlap(d.applicable_venue_ids, pVenues)) continue;
+      // 找出造成重疊的場館文字（任一方為全館 → 標示為「全館」）
+      let scope;
+      if (!d.applicable_venue_ids.length || !pVenues.length) {
+        scope = '全館';
+      } else {
+        const setP = new Set(pVenues.map(String));
+        scope = d.applicable_venue_ids.filter((x) => setP.has(String(x))).map(venueLabel).join('、');
+      }
+      out.push({ id: p.id, name: p.name, scope, start: pStart, end: pEnd });
+    }
+    return out;
+  }, [activePromos, d.applicable_venue_ids, d.start_date, d.end_date, isEdit, initial, venueOpts]);
 
   async function save() {
     if (readOnly) { toast.error('當前狀態不可編輯'); return; }
@@ -78,6 +172,17 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
           {isEdit ? `${readOnly ? '檢視' : '檢視 / 編輯'}：${initial.name}` : '新增優惠活動'}
           {readOnly && <span className="ml-2 rounded-full bg-gray-200 px-2 py-0.5 text-xs text-gray-600">唯讀</span>}
         </h3>
+
+        {!readOnly && overlapWarnings.length > 0 && (
+          <div className="mb-4 space-y-1 rounded-lg border border-brand-amber bg-amber-50 p-3 text-xs text-amber-800">
+            {overlapWarnings.map((w) => (
+              <div key={w.id}>
+                ⚠️ {w.scope} 於 {w.start}~{w.end} 已有進行中優惠「{w.name}」，請避免重複放利。
+              </div>
+            ))}
+          </div>
+        )}
+
         <fieldset disabled={readOnly} className={readOnly ? 'opacity-90' : ''}>
 
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -117,29 +222,37 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
           <div>
             <label className="mb-1 block text-xs text-gray-500">適用組別（不選 = 全部）</label>
             <div className="flex flex-wrap gap-2">
-              {COURSE_TYPES.map((ct) => (
-                <button key={ct} type="button" onClick={() => setD({ ...d, applicable_course_types: toggle(d.applicable_course_types, ct) })}
-                  className={`rounded-full px-3 py-1 text-xs ${d.applicable_course_types.includes(ct) ? 'bg-brand-teal text-white' : 'bg-gray-100 text-gray-600'}`}>1對{ct}</button>
+              {courseTypeOpts === null ? (
+                <span className="text-xs text-gray-400">載入中…</span>
+              ) : courseTypeOpts.length === 0 ? (
+                <span className="text-xs text-gray-400">（無可用組別）</span>
+              ) : courseTypeOpts.map((ct) => (
+                <button key={ct.value} type="button" onClick={() => setD({ ...d, applicable_course_types: toggle(d.applicable_course_types, ct.value) })}
+                  className={`rounded-full px-3 py-1 text-xs ${d.applicable_course_types.includes(ct.value) ? 'bg-brand-teal text-white' : 'bg-gray-100 text-gray-600'}`}>{ct.label}</button>
               ))}
             </div>
           </div>
           <div>
             <label className="mb-1 block text-xs text-gray-500">適用場館（不選 = 全部）</label>
             <div className="flex flex-wrap gap-2">
-              {VENUES.map((v) => (
-                <button key={v} type="button" onClick={() => setD({ ...d, applicable_venue_ids: toggle(d.applicable_venue_ids, v) })}
-                  className={`rounded-full px-3 py-1 text-xs ${d.applicable_venue_ids.includes(v) ? 'bg-brand-teal text-white' : 'bg-gray-100 text-gray-600'}`}>{v} 館</button>
+              {venueOpts === null ? (
+                <span className="text-xs text-gray-400">載入中…</span>
+              ) : venueOpts.length === 0 ? (
+                <span className="text-xs text-gray-400">（無可用場館）</span>
+              ) : venueOpts.map((v) => (
+                <button key={v.value} type="button" onClick={() => setD({ ...d, applicable_venue_ids: toggle(d.applicable_venue_ids, v.value) })}
+                  className={`rounded-full px-3 py-1 text-xs ${d.applicable_venue_ids.includes(v.value) ? 'bg-brand-teal text-white' : 'bg-gray-100 text-gray-600'}`}>{v.label}</button>
               ))}
             </div>
           </div>
 
           <div>
-            <label className="mb-1 block text-xs text-gray-500">起始日</label>
+            <label className="mb-1 block text-xs text-gray-500">起始日 ＊</label>
             <input type="date" className={fieldClass()} value={d.start_date} onChange={(e) => setD({ ...d, start_date: e.target.value })} />
           </div>
           <div>
-            <label className="mb-1 block text-xs text-gray-500">結束日</label>
-            <input type="date" className={fieldClass()} value={d.end_date} onChange={(e) => setD({ ...d, end_date: e.target.value })} />
+            <label className="mb-1 block text-xs text-gray-500">結束日 <span className="text-brand-error">＊</span></label>
+            <input type="date" className={fieldClass()} value={d.end_date} onChange={(e) => setD({ ...d, end_date: e.target.value })} required />
           </div>
 
           <div>

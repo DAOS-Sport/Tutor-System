@@ -140,9 +140,9 @@ const SETTINGS = {
 };
 
 const COURSE_TYPES = [
-  { course_type: 1, label: '一對一', max_students: 1, is_active: true, sort_order: 1 },
-  { course_type: 2, label: '一對二', max_students: 2, is_active: true, sort_order: 2 },
-  { course_type: 3, label: '一對三', max_students: 3, is_active: true, sort_order: 3 },
+  { course_type: 1, label: '一對一', max_students: 1, is_active: true, sort_order: 1, base_price: 9000 },
+  { course_type: 2, label: '一對二', max_students: 2, is_active: true, sort_order: 2, base_price: 6000 },
+  { course_type: 3, label: '一對三', max_students: 3, is_active: true, sort_order: 3, base_price: 4500 },
 ];
 
 const COURSE_INTROS = {
@@ -553,6 +553,7 @@ export const mockDb = {
           label: c.label,
           is_active: c.is_active,
           sort_order: c.sort_order,
+          base_price: Number(c.base_price || 0),
           title: i.title || c.label,
           body: i.body || '',
           image_url: i.image_url || '',
@@ -570,12 +571,16 @@ export const mockDb = {
       next.title_overridden = patch.title !== label;
     }
     COURSE_INTROS[k] = next;
+    if (patch && patch.base_price !== undefined && cfg) {
+      cfg.base_price = Number(patch.base_price) || 0;
+    }
     return {
       course_type: parseInt(k, 10),
       title: next.title,
       body: next.body || '',
       image_url: next.image_url || '',
       title_overridden: !!next.title_overridden,
+      base_price: cfg ? Number(cfg.base_price || 0) : 0,
     };
   },
 
@@ -781,6 +786,74 @@ export const mockDb = {
   allPromotions: ({ status, q } = {}) => PROMOTIONS
     .filter((p) => (!status || p.status === status) && (!q || p.name.includes(q) || (p.coupon_code || '').includes(q)))
     .map((p) => ({ ...p })),
+  createPromotion(payload = {}) {
+    const now = new Date().toISOString();
+    const row = {
+      id: nid('P'),
+      name: payload.name || '',
+      description: payload.description || '',
+      type: payload.type || 'PERCENTAGE',
+      discount_value: String(payload.discount_value != null ? payload.discount_value : ''),
+      min_threshold_type: payload.min_threshold_type || null,
+      min_threshold_value: payload.min_threshold_value || null,
+      applicable_course_types: payload.applicable_course_types && payload.applicable_course_types.length ? [...payload.applicable_course_types] : null,
+      applicable_venue_ids: payload.applicable_venue_ids && payload.applicable_venue_ids.length ? [...payload.applicable_venue_ids] : null,
+      coupon_code: payload.coupon_code ? String(payload.coupon_code).toUpperCase() : null,
+      start_date: payload.start_date || todayISO(),
+      end_date: payload.end_date || todayISO(),
+      max_uses: payload.max_uses || null,
+      current_uses: 0,
+      status: 'draft', review_note: null,
+      created_by: 'U001', reviewed_by: null, reviewed_at: null, submitted_at: null,
+      created_at: now, updated_at: now,
+    };
+    PROMOTIONS.unshift(row);
+    return { ...row };
+  },
+  updatePromotion(id, patch = {}) {
+    const p = PROMOTIONS.find((x) => x.id === id);
+    if (!p) { const e = new Error('not found'); e.response = { data: { error: '優惠不存在' } }; throw e; }
+    if (!['draft', 'rejected'].includes(p.status)) {
+      const e = new Error('not editable'); e.response = { data: { error: `狀態 ${p.status} 不可編輯，已啟用的優惠請刪除後重建` } }; throw e;
+    }
+    for (const k of ['name', 'description', 'type', 'min_threshold_type', 'min_threshold_value', 'start_date', 'end_date', 'max_uses']) {
+      if (patch[k] !== undefined) p[k] = patch[k];
+    }
+    if (patch.discount_value !== undefined) p.discount_value = String(patch.discount_value);
+    if (patch.applicable_course_types !== undefined) p.applicable_course_types = patch.applicable_course_types && patch.applicable_course_types.length ? [...patch.applicable_course_types] : null;
+    if (patch.applicable_venue_ids !== undefined) p.applicable_venue_ids = patch.applicable_venue_ids && patch.applicable_venue_ids.length ? [...patch.applicable_venue_ids] : null;
+    if (patch.coupon_code !== undefined) p.coupon_code = patch.coupon_code ? String(patch.coupon_code).toUpperCase() : null;
+    p.updated_at = new Date().toISOString();
+    return { ...p };
+  },
+  transitionPromotion(id, toStatus) {
+    const p = PROMOTIONS.find((x) => x.id === id);
+    if (!p) { const e = new Error('not found'); e.response = { data: { error: '優惠不存在' } }; throw e; }
+    // 對齊後端狀態機：上架僅限 draft/rejected；停用不可對已停用者重複執行
+    const allowedFrom = toStatus === 'active'
+      ? ['draft', 'rejected']
+      : toStatus === 'archived'
+        ? ['draft', 'pending_review', 'active', 'rejected']
+        : null;
+    if (allowedFrom && !allowedFrom.includes(p.status)) {
+      const e = new Error('bad transition');
+      e.response = { data: { error: `當前狀態 ${p.status} 無法執行此操作` } };
+      throw e;
+    }
+    p.status = toStatus;
+    p.updated_at = new Date().toISOString();
+    if (toStatus === 'active') { p.reviewed_at = p.updated_at; p.reviewed_by = 'U001'; }
+    return { ...p };
+  },
+  deletePromotion(id) {
+    const i = PROMOTIONS.findIndex((x) => x.id === id);
+    if (i === -1) { const e = new Error('not found'); e.response = { data: { error: '優惠不存在' } }; throw e; }
+    if ((PROMOTIONS[i].current_uses || 0) > 0) {
+      const e = new Error('has usage'); e.response = { data: { error: '此優惠已有使用紀錄，無法刪除，請改用「停用」' } }; throw e;
+    }
+    PROMOTIONS.splice(i, 1);
+    return { ok: true, deleted: id };
+  },
 };
 
 // ── Phase 4 mock 資料：admin 聊天監察 + 關鍵字 + 警示 ─────────────────

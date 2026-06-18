@@ -28,7 +28,7 @@ const SECTIONS = [
           { label: '退課 (F-R04)', url: `${ADM}/refund`, note: '退費試算 → 確認 → 推播', roles: 'admin / manager' },
           { label: '(F-M05) 扣課復活', url: `${ADM}/revive`, note: '已取消時段一鍵復活', roles: 'admin / manager' },
           { label: '課程轉讓審核', url: `${ADM}/transfers`, note: '審核家長提交的轉讓申請', roles: 'admin / manager' },
-          { label: '優惠活動 (F-M07/F-A05)', url: `${ADM}/promotions`, note: '建立 / 送審 / 核准優惠', roles: 'admin / manager' },
+          { label: '優惠活動 (F-M07/F-A05)', url: `${ADM}/promotions`, note: '建立 / 上架 / 停用 / 複製優惠', roles: 'admin / manager' },
           { label: '進行中優惠 (F-R05)', url: `${ADM}/promotions-active`, note: '唯讀清單', roles: '全部' },
           { label: 'MGM 推薦統計 (F-M10)', url: `${ADM}/mgm-stats`, note: '推薦漏斗 + 教練排行', roles: 'admin / manager' },
           { label: '標籤庫管理 (F-A08)', url: `${ADM}/tags`, note: '4大分類 × 系統標籤 CRUD', roles: 'admin / manager' },

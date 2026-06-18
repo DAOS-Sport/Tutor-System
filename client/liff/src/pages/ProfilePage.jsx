@@ -12,12 +12,11 @@ const fieldCls = (hasErr) => `${inputCls} ${hasErr ? errCls : ''}`;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const TW_ID_RE = /^[A-Z][12]\d{8}$/;
 
-// 家長必填欄位（與後端 / Ragic Z01 必填一致）：姓名 / 館別 / 身分 / 性別 / Email
+// 家長必填欄位：姓名 / 館別 / 性別 / Email（身分欄位已移除，後端統一預設「一般身分」）
 function validateParent(f) {
   const e = {};
   if (!String(f.name || '').trim()) e.name = '必填';
   if (!String(f.primary_venue_id || '').trim()) e.primary_venue_id = '必填';
-  if (!String(f.identity || '').trim()) e.identity = '必填';
   if (!String(f.gender || '').trim()) e.gender = '必填';
   if (!String(f.email || '').trim()) e.email = '必填';
   else if (!EMAIL_RE.test(f.email.trim())) e.email = 'Email 格式有誤';
@@ -39,7 +38,8 @@ function parentFormFrom(parent) {
     name: parent?.name || '',
     phone: parent?.phone || '',
     primary_venue_id: parent?.primary_venue_id || '',
-    identity: parent?.identity || '',
+    // 身分欄位已從 UI 移除：沿用既有值，未設定時預設「一般身分」。
+    identity: parent?.identity || '一般身分',
     gender: parent?.gender || '',
     email: parent?.email || '',
     home_phone: parent?.home_phone || '',
@@ -217,18 +217,13 @@ export default function ProfilePage() {
               {venues.map((v) => <option key={v.id} value={v.id}>{v.name || v.id}</option>)}
             </select>
           </Field>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="身分" required error={parentErrors.identity}>
-              <input className={fieldCls(parentErrors.identity)} value={parentForm.identity} onChange={(e) => setParentField('identity', e.target.value)} />
-            </Field>
-            <Field label="性別" required error={parentErrors.gender}>
-              <select className={fieldCls(parentErrors.gender)} value={parentForm.gender || ''} onChange={(e) => setParentField('gender', e.target.value)}>
-                <option value="">請選擇</option>
-                <option value="男">男</option>
-                <option value="女">女</option>
-              </select>
-            </Field>
-          </div>
+          <Field label="性別" required error={parentErrors.gender}>
+            <select className={fieldCls(parentErrors.gender)} value={parentForm.gender || ''} onChange={(e) => setParentField('gender', e.target.value)}>
+              <option value="">請選擇</option>
+              <option value="男">男</option>
+              <option value="女">女</option>
+            </select>
+          </Field>
           <Field label="Email" required error={parentErrors.email}>
             <input type="email" className={fieldCls(parentErrors.email)} value={parentForm.email} onChange={(e) => setParentField('email', e.target.value)} />
           </Field>

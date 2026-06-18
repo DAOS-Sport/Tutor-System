@@ -13,10 +13,15 @@ export const promotionsApi = {
   active:  ()              => callApi('/promotions/active', {}, () => mockDb.activePromotions()),
   list:    (params)        => callApi('/promotions', { params }, () => mockDb.allPromotions(params)),
   detail:  (id)            => req(`/promotions/${id}`),
-  create:  (payload)       => req('/promotions', { method: 'post', data: payload }),
-  update:  (id, payload)   => req(`/promotions/${id}`, { method: 'patch', data: payload }),
+  create:  (payload)       => callApi('/promotions', { method: 'post', data: payload }, () => mockDb.createPromotion(payload)),
+  update:  (id, payload)   => callApi(`/promotions/${id}`, { method: 'patch', data: payload }, () => mockDb.updatePromotion(id, payload)),
+  // 改版：直接上架（draft→active），取代原送審流程
+  activate:(id)            => callApi(`/promotions/${id}/activate`, { method: 'post' }, () => mockDb.transitionPromotion(id, 'active')),
+  archive: (id, note)      => callApi(`/promotions/${id}/archive`, { method: 'post', data: { note } }, () => mockDb.transitionPromotion(id, 'archived')),
+  // 刪除（無使用紀錄才可硬刪；有紀錄請改用停用）
+  remove:  (id)            => callApi(`/promotions/${id}`, { method: 'delete' }, () => mockDb.deletePromotion(id)),
+  // 以下三個為舊送審流程，保留以相容但 UI 已不使用
   submit:  (id)            => req(`/promotions/${id}/submit`,  { method: 'post' }),
   approve: (id)            => req(`/promotions/${id}/approve`, { method: 'post' }),
   reject:  (id, note)      => req(`/promotions/${id}/reject`,  { method: 'post', data: { note } }),
-  archive: (id, note)      => req(`/promotions/${id}/archive`, { method: 'post', data: { note } }),
 };

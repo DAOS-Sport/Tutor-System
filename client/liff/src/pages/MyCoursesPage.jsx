@@ -140,12 +140,14 @@ export default function MyCoursesPage() {
     const actions = cp.lifecycle === 'active'
       ? (cp.course_period_id ? [
         {
-          label: openingRoomId === cp.course_period_id ? '開啟中…' : '約時間',
+          label: openingRoomId === cp.course_period_id ? '開啟中…' : '聯繫教練',
           primary: true,
           disabled: openingRoomId === cp.course_period_id,
           onClick: () => openRoomForCourse(cp),
         },
-        { label: '選可用時段', onClick: () => navigate(`/book-slot/${cp.course_period_id}`) },
+        { label: '預約劃課', onClick: () => navigate(`/book-slot/${cp.course_period_id}`) },
+        // 上課簽到：橘底黑字，導向上課記錄/簽到頁。
+        { label: '上課簽到', tone: 'accent', onClick: () => navigate('/my-lessons') },
       ] : [
         { label: '課程開通處理中', primary: true, disabled: true, onClick: () => {} },
       ])

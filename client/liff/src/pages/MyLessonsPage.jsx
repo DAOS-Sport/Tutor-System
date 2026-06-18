@@ -1,46 +1,41 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import LoadingSpinner from '../components/LoadingSpinner';
+import ConfirmModal from '../components/ConfirmModal';
 import { useToast } from '../context/ToastContext';
 import { lessonsApi } from '../api/lessons';
 import { checkinsApi } from '../api/checkins';
-import { addDaysToTaipeiYMD, formatTWDate, formatTWMonthKey, formatTWTime, todayTaipeiYMD } from '../utils/format';
+import { courseTypeLabel, formatTWDate, formatTWDateTime, formatTWTime } from '../utils/format';
 
-const FILTERS = [
-  { key: 'all',         label: '全部' },
-  { key: 'attended',    label: '已出席' },
-  { key: 'upcoming',    label: '即將上課' },
-];
-
-const RANGES = [
-  { key: 'all', label: '全部時間', days: null },
-  { key: '30',  label: '近 30 天',  days: 30 },
-  { key: '90',  label: '近 90 天',  days: 90 },
-  { key: '365', label: '近一年',    days: 365 },
-];
-
-function classify(r) {
-  if (r.checkin_id) return 'attended';
-  const t = new Date(r.scheduled_at).getTime();
-  return t > Date.now() ? 'upcoming' : 'attended';
+// 家長可自助簽到：尚未簽到、且課程已確認/完成（不限上課當天，隨時可補簽）。
+function canParentCheckin(r) {
+  return !r.checked_in_at && ['confirmed', 'completed'].includes(r.session_status);
 }
 
-// 家長可自助簽到的條件：尚未簽到、且課程已確認/完成（不限上課當天，隨時都能補簽）。
-// 與後端 POST /api/checkins 的狀態守門一致（後端亦不限日期，僅擋未確認/已取消課程）。
-function canParentCheckin(r) {
-  return !r.checkin_id
-    && ['confirmed', 'completed'].includes(r.session_status);
+// 由開始時間 + 時長算出「HH:MM–HH:MM」時段字串。
+function timeRange(r) {
+  const start = new Date(r.scheduled_at);
+  if (Number.isNaN(start.getTime())) return '';
+  const dur = Number(r.duration_minutes) || 60;
+  const end = new Date(start.getTime() + dur * 60000);
+  return `${formatTWTime(start)}–${formatTWTime(end)}`;
 }
 
 export default function MyLessonsPage() {
   const toast = useToast();
   const navigate = useNavigate();
   const [data, setData] = useState(null);
-  const [filter, setFilter] = useState('all');
-  const [range, setRange] = useState('all');
-  const [coachId, setCoachId] = useState('');
-  const [courseType, setCourseType] = useState('');
+  const [enrollId, setEnrollId] = useState('');
+  const [open, setOpen] = useState(false);
   const [checkinBusyKey, setCheckinBusyKey] = useState(null);
+  // 點「簽到」先跳確認視窗：confirmRow 為待確認的那筆，確認後才真正送出。
+  const [confirmRow, setConfirmRow] = useState(null);
+
+  useEffect(() => {
+    lessonsApi.mine({})
+      .then((d) => setData(Array.isArray(d) ? d : []))
+      .catch(() => { setData([]); toast.error('上課記錄載入失敗'); });
+  }, [toast]);
 
   async function handleCheckin(r) {
     const key = r.session_id + r.student_id;
@@ -54,6 +49,7 @@ export default function MyLessonsPage() {
           : row
       )));
       toast.success(`${r.student_name} 已簽到`);
+      setConfirmRow(null);
     } catch (err) {
       toast.error(err?.response?.data?.error || '簽到失敗');
     } finally {
@@ -61,157 +57,237 @@ export default function MyLessonsPage() {
     }
   }
 
+  // 扁平的上課記錄 → 依「課程期 × 學員」彙整成一筆筆「報名（課程包）」。
+  const enrollments = useMemo(() => {
+    const m = new Map();
+    for (const r of data || []) {
+      const key = `${r.period_id}|${r.student_id}`;
+      if (!m.has(key)) {
+        const total = Number(r.total_sessions) || 0;
+        const used = Number(r.used_sessions) || 0;
+        m.set(key, {
+          id: key,
+          coach: r.coach_name,
+          group: courseTypeLabel(r.course_type),
+          pct: Math.round((Number(r.pricing_multiplier) || 1) * 100),
+          student: r.student_name,
+          total,
+          remain: Math.max(0, total - used),
+          records: [],
+        });
+      }
+      m.get(key).records.push(r);
+    }
+    return Array.from(m.values());
+  }, [data]);
+
+  // 預設選第一筆；資料變動後若目前選的不存在則重設。
   useEffect(() => {
-    setData(null);
-    const params = {};
-    const cfg = RANGES.find((r) => r.key === range);
-    if (cfg?.days) {
-      params.from = addDaysToTaipeiYMD(todayTaipeiYMD(), -cfg.days);
+    if (enrollments.length && !enrollments.some((e) => e.id === enrollId)) {
+      setEnrollId(enrollments[0].id);
     }
-    if (coachId) params.coachId = coachId;
-    if (courseType) params.courseType = courseType;
-    lessonsApi.mine(params)
-      .then(setData)
-      .catch(() => { setData([]); toast.error('上課記錄載入失敗'); });
-  }, [toast, range, coachId, courseType]);
+  }, [enrollments, enrollId]);
 
-  // 教練 / 組別 選項由結果動態彙總（避免額外 API）
-  const coachOptions = useMemo(() => {
-    const m = new Map();
-    (data || []).forEach((r) => { if (r.coach_id) m.set(r.coach_id, r.coach_name); });
-    return Array.from(m.entries()).map(([id, name]) => ({ id, name }));
-  }, [data]);
-  const typeOptions = useMemo(() => {
-    const s = new Set(); (data || []).forEach((r) => r.course_type && s.add(r.course_type));
-    return Array.from(s);
-  }, [data]);
+  const enrollment = enrollments.find((e) => e.id === enrollId) || null;
 
-  const grouped = useMemo(() => {
-    const list = (data || []).filter((r) => filter === 'all' || classify(r) === filter);
-    const m = new Map();
-    for (const r of list) {
-      const key = formatTWMonthKey(r.scheduled_at);
-      if (!m.has(key)) m.set(key, []);
-      m.get(key).push(r);
-    }
-    return Array.from(m.entries());
-  }, [data, filter]);
+  // 上課明細排序：即將上課（未來）由近到遠在前；已出席（過去）由新到舊在後。
+  const sorted = useMemo(() => {
+    if (!enrollment) return [];
+    const now = Date.now();
+    return [...enrollment.records].sort((a, b) => {
+      const da = new Date(a.scheduled_at).getTime() - now;
+      const db = new Date(b.scheduled_at).getTime() - now;
+      const fa = da >= 0;
+      const fb = db >= 0;
+      if (fa && fb) return da - db;
+      if (!fa && !fb) return db - da;
+      return fa ? -1 : 1;
+    });
+  }, [enrollment]);
 
-  const counts = useMemo(() => {
-    const c = { all: 0, attended: 0, upcoming: 0 };
-    (data || []).forEach((r) => { c.all += 1; c[classify(r)] += 1; });
-    return c;
-  }, [data]);
+  if (data === null) return <LoadingSpinner label="載入中…" />;
 
   return (
-    <div className="px-4 py-4">
-      <div className="mb-2 flex gap-2 overflow-x-auto">
-        {RANGES.map((r) => (
-          <button key={r.key} type="button" onClick={() => setRange(r.key)}
-            className={`shrink-0 rounded-full border px-3 py-1 text-[11px] ${
-              range === r.key ? 'border-brand-teal bg-brand-teal text-white' : 'border-gray-200 bg-white text-gray-600'
-            }`}>{r.label}</button>
-        ))}
-      </div>
-
-      <div className="mb-3 flex gap-2">
-        <select value={coachId} onChange={(e) => setCoachId(e.target.value)}
-          className="flex-1 rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs">
-          <option value="">全部教練</option>
-          {coachOptions.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
-        <select value={courseType} onChange={(e) => setCourseType(e.target.value)}
-          className="flex-1 rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs">
-          <option value="">全部組別</option>
-          {typeOptions.map((t) => <option key={t} value={t}>1對{t}</option>)}
-        </select>
-      </div>
-
-      <div className="mb-3 flex gap-2">
-        {FILTERS.map((f) => (
-          <button key={f.key} type="button" onClick={() => setFilter(f.key)}
-            className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-medium ${
-              filter === f.key
-                ? 'border-brand-primary bg-brand-primary text-white'
-                : 'border-gray-200 bg-white text-gray-600'
-            }`}>
-            {f.label}（{counts[f.key]}）
-          </button>
-        ))}
-      </div>
-
-      {data === null ? <LoadingSpinner label="載入中…" /> : grouped.length === 0 ? (
-        <div className="rounded-2xl border-2 border-dashed border-gray-200 bg-white p-10 text-center text-sm text-gray-500">
-          沒有符合條件的上課記錄
+    <div className="min-h-[calc(100vh-3rem)] bg-gray-50">
+      {enrollments.length === 0 ? (
+        <div className="px-4 py-4">
+          <div className="rounded-2xl border-2 border-dashed border-gray-200 bg-white p-10 text-center text-sm text-gray-500">
+            沒有符合條件的上課記錄
+          </div>
         </div>
       ) : (
-        <div className="space-y-4">
-          {grouped.map(([month, rows]) => (
-            <section key={month}>
-              <h3 className="mb-1.5 text-xs font-bold text-brand-primary">{month.replace('-', ' / ')}</h3>
-              <div className="space-y-2">
-                {rows.map((r) => <LessonCard key={r.session_id + r.student_id} r={r}
-                  onOpen={() => r.record_status === 'submitted' && navigate(`/history/${r.period_id}`)}
-                  onCheckin={() => handleCheckin(r)}
-                  busy={checkinBusyKey === (r.session_id + r.student_id)} />)}
+        <>
+          {/* 課程包選擇器：下拉切換不同報名，拉開即可看到每包剩餘堂數 */}
+          <div className="bg-white px-4 pb-4 pt-4">
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setOpen((o) => !o)}
+                className="flex w-full items-center gap-3 rounded-2xl border border-gray-200 bg-white px-4 py-3 text-left shadow-sm active:bg-gray-50"
+              >
+                <EnrollmentLines e={enrollment} />
+                <RemainBlock n={enrollment.remain} />
+                <ChevronDownIcon className={`shrink-0 text-gray-400 transition ${open ? 'rotate-180' : ''}`} />
+              </button>
+
+              {open && (
+                // 多筆報名時，一筆與一筆之間留約兩行（11px）的間距，較好辨識差異。
+                <div className="absolute left-0 right-0 top-full z-50 mt-2 flex flex-col gap-5 rounded-2xl border border-gray-100 bg-white p-2 shadow-xl">
+                  {enrollments.map((e) => {
+                    const sel = e.id === enrollId;
+                    return (
+                      <button
+                        key={e.id}
+                        type="button"
+                        onClick={() => { setEnrollId(e.id); setOpen(false); }}
+                        className={`flex w-full items-center gap-2 rounded-xl px-3 py-3 text-left ${sel ? 'bg-gray-50' : 'active:bg-gray-50'}`}
+                      >
+                        <span className="w-5 shrink-0">{sel && <CheckIcon className="text-brand-primary" />}</span>
+                        <EnrollmentLines e={e} compact />
+                        <RemainBlock n={e.remain} />
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* 上課明細 */}
+          <div className="px-4 pb-6 pt-1">
+            <div className="mb-2 px-1 text-xs text-gray-400">上課明細 · 共 {sorted.length} 筆</div>
+            {sorted.length > 0 ? (
+              <div className="space-y-2.5">
+                {sorted.map((r) => (
+                  <RecordCard
+                    key={r.session_id + r.student_id}
+                    r={r}
+                    e={enrollment}
+                    busy={checkinBusyKey === (r.session_id + r.student_id)}
+                    onCheckin={() => setConfirmRow(r)}
+                    onOpen={() => r.record_status === 'submitted' && navigate(`/history/${r.period_id}`)}
+                  />
+                ))}
               </div>
-            </section>
-          ))}
+            ) : (
+              <div className="mt-2 rounded-2xl border border-dashed border-gray-200 bg-white px-6 py-10 text-center text-sm text-gray-400">
+                沒有符合條件的上課記錄
+              </div>
+            )}
+          </div>
+
+          {/* 點擊外部關閉下拉 */}
+          {open && <button aria-label="關閉" onClick={() => setOpen(false)} className="fixed inset-0 z-40 cursor-default" />}
+        </>
+      )}
+
+      <ConfirmModal
+        open={!!confirmRow}
+        title="確認簽到"
+        confirmLabel="確認簽到"
+        busy={!!checkinBusyKey}
+        onCancel={() => { if (!checkinBusyKey) setConfirmRow(null); }}
+        onConfirm={() => confirmRow && handleCheckin(confirmRow)}
+      >
+        {confirmRow && (
+          <>確定要為 <span className="font-bold text-brand-primary">{confirmRow.student_name}</span> 簽到嗎？簽到後將無法取消。</>
+        )}
+      </ConfirmModal>
+    </div>
+  );
+}
+
+// 右側大字剩餘堂數
+function RemainBlock({ n }) {
+  return (
+    <div className="shrink-0 text-right">
+      <div className="text-lg font-bold leading-none tabular-nums text-brand-primary">{n}</div>
+      <div className="mt-0.5 text-xs text-gray-400">剩餘堂</div>
+    </div>
+  );
+}
+
+// 兩行：{教練}_{組別} ({修課係數%}) ／ {學員} · 共 N 堂
+function EnrollmentLines({ e, compact }) {
+  return (
+    <div className="min-w-0 flex-1">
+      <div className="truncate text-sm font-semibold text-brand-primary">
+        {e.coach}_{e.group} <span className="font-medium text-gray-400">({e.pct}%)</span>
+      </div>
+      <div className={`truncate text-xs text-gray-500 ${compact ? 'mt-0.5' : 'mt-1'}`}>
+        {e.student} · 共 {e.total} 堂
+      </div>
+    </div>
+  );
+}
+
+function RecordCard({ r, e, busy, onCheckin, onOpen }) {
+  const past = new Date(r.scheduled_at).getTime() < Date.now();
+  const checkinable = canParentCheckin(r);
+  const clickable = r.record_status === 'submitted';
+  return (
+    <div
+      onClick={clickable ? onOpen : undefined}
+      className={`rounded-2xl border border-gray-100 bg-white p-3.5 shadow-sm ${clickable ? 'cursor-pointer active:bg-gray-50' : ''}`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-sm font-semibold tabular-nums text-gray-900">
+          {formatTWDate(r.scheduled_at).replace(/^\d{4}\//, '')}
         </div>
+        {r.checked_in_at ? (
+          <span className="rounded-full bg-brand-green/15 px-2.5 py-0.5 text-xs font-medium text-brand-green">已出席</span>
+        ) : checkinable ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={(ev) => { ev.stopPropagation(); onCheckin(); }}
+            className="rounded-full bg-brand-primary px-3 py-0.5 text-xs font-bold text-white active:opacity-90 disabled:opacity-50"
+          >
+            {busy ? '簽到中…' : '簽到'}
+          </button>
+        ) : (
+          <span className="rounded-full bg-brand-primary/10 px-2.5 py-0.5 text-xs font-medium text-brand-primary">
+            {past ? '已出席' : '即將上課'}
+          </span>
+        )}
+      </div>
+      <div className="mt-2 flex items-center gap-2 text-sm text-gray-500">
+        <ClockIcon className="shrink-0 text-gray-400" />
+        <span className="tabular-nums">{timeRange(r)}</span>
+        <span className="text-gray-300">·</span>
+        <span>{e.coach}　{e.group}</span>
+      </div>
+      {r.checked_in_at && (
+        <div className="mt-1.5 text-[11px] font-medium text-brand-green">簽到於 {formatTWDateTime(r.checked_in_at)}</div>
+      )}
+      {clickable && (
+        <div className="mt-1.5 text-[11px] font-medium text-brand-teal">📝 教練已上傳記錄 · 點擊查看 ›</div>
       )}
     </div>
   );
 }
 
-function LessonCard({ r, onOpen, onCheckin, busy }) {
-  const checkinable = canParentCheckin(r);
-  const cls = classify(r);
-  const dStr = formatTWDate(r.scheduled_at);
-  const tStr = formatTWTime(r.scheduled_at);
-  const clickable = r.record_status === 'submitted';
-  // 右側方形按鈕狀態：可簽到（藍色可點）/ 已出席（灰色唯讀）/ 即將上課（淺灰唯讀）。
-  // 色系沿用既有 brand-primary 藍；版面改為「左資訊、右方形簽到鈕」。
-  const attended = cls === 'attended' || !!r.checked_in_at;
+function ChevronDownIcon({ className = '' }) {
   return (
-    <div onClick={clickable ? onOpen : undefined}
-      className={`flex w-full items-stretch gap-3 rounded-xl border border-gray-200 bg-white p-3 text-left ${clickable ? 'cursor-pointer active:bg-gray-50' : ''}`}>
-      {/* 左側資訊 */}
-      <div className="min-w-0 flex-1">
-        <div className="text-sm font-bold text-brand-primary">{dStr} {tStr}</div>
-        <div className="mt-1 text-xs text-gray-600">
-          {r.coach_name} 教練・1對{r.course_type}・{r.venue_id} 館
-        </div>
-        <div className="mt-0.5 text-xs text-gray-500">
-          學員：{r.student_name}
-          {r.checked_in_at && <span className="ml-2">・簽到於 {formatTWTime(r.checked_in_at)}</span>}
-        </div>
-        {r.record_status === 'submitted' && (
-          <div className="mt-1.5 text-[11px] font-medium text-brand-teal">
-            📝 教練已上傳上課記錄 · 點擊查看 ›
-          </div>
-        )}
-      </div>
-      {/* 右側方形簽到鈕 */}
-      <div className="flex items-center">
-        {checkinable ? (
-          <button
-            type="button"
-            disabled={busy}
-            onClick={(e) => { e.stopPropagation(); onCheckin(); }}
-            className="flex h-[60px] w-[60px] flex-shrink-0 items-center justify-center rounded-lg bg-brand-primary text-xs font-bold text-white active:opacity-90 disabled:bg-gray-300"
-          >
-            {busy ? '簽到中…' : '簽到'}
-          </button>
-        ) : attended ? (
-          <div className="flex h-[60px] w-[60px] flex-shrink-0 items-center justify-center rounded-lg bg-gray-300 text-xs font-bold text-white">
-            已簽到
-          </div>
-        ) : (
-          <div className="flex h-[60px] w-[60px] flex-shrink-0 items-center justify-center rounded-lg bg-gray-100 text-[11px] font-bold text-gray-400">
-            即將上課
-          </div>
-        )}
-      </div>
-    </div>
+    <svg className={className} width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M6 9l6 6 6-6" />
+    </svg>
+  );
+}
+
+function CheckIcon({ className = '' }) {
+  return (
+    <svg className={className} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20 6L9 17l-5-5" />
+    </svg>
+  );
+}
+
+function ClockIcon({ className = '' }) {
+  return (
+    <svg className={className} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
   );
 }

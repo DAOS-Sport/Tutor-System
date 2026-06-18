@@ -1,25 +1,29 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import CourseCard from '../components/CourseCard';
 import IncompleteGroupOrdersBanner from '../components/IncompleteGroupOrdersBanner';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { promotionsApi } from '../api/promotions';
+import { courseTypesApi } from '../api/courseTypes';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { formatTWDate } from '../utils/format';
 
+// 組別卡片的文案（title/subtitle/description）；單人價格改由後台「課程介紹維護」設定，於下方動態帶入。
 const COURSE_TYPES = [
   { type: 1, title: '1 對 1 個別教學', subtitle: '一位學員專屬教練', description: '完全客製化進度，最高效率提升技術。', basePrice: 9000 },
   { type: 2, title: '1 對 2 雙人班', subtitle: '與好友共學', description: '兩位學員共享教練，互相切磋學習。', basePrice: 6000 },
   { type: 3, title: '1 對 3 小團班', subtitle: '小組同訓', description: '三位學員精緻小班，氣氛輕鬆活潑。', basePrice: 4500 },
   { type: 4, title: '1 對 4-6 團體班', subtitle: '4~6 人共學', description: '多人團體課，依單人價計費、人數越多越划算。', basePrice: 3000 },
 ];
+const TYPE_META = Object.fromEntries(COURSE_TYPES.map((t) => [t.type, t]));
 
 export default function HomePage() {
   const navigate = useNavigate();
   const { parent } = useAuth();
   const toast = useToast();
   const [promos, setPromos] = useState(null);
+  const [types, setTypes] = useState(null);
 
   useEffect(() => {
     let alive = true;
@@ -32,10 +36,37 @@ export default function HomePage() {
         setPromos([]);
         toast.error('優惠資訊載入失敗');
       });
+    // 組別與單人價格（由後台維護）；載入失敗時沿用本地預設，不阻擋首頁
+    courseTypesApi
+      .listActive()
+      .then((d) => alive && setTypes(Array.isArray(d) ? d : null))
+      .catch(() => alive && setTypes(null));
     return () => {
       alive = false;
     };
   }, [toast]);
+
+  // 組別卡片：完全以後台「課程介紹維護」(/admin/course-intros) 為單一真實來源——
+  // 啟用中的組別、標題、內文、封面圖、單人價格皆取自後台，與管理端即時對上。
+  // 僅在 API 尚未載入 / 失敗時，才退回本地預設文案，確保首頁永遠有內容。
+  const courseCards = useMemo(() => {
+    if (!Array.isArray(types) || types.length === 0) return COURSE_TYPES;
+    return types
+      .slice()
+      .sort((a, b) => (a.sort_order - b.sort_order) || (a.course_type - b.course_type))
+      .map((t) => {
+        const meta = TYPE_META[t.course_type] || {};
+        const body = String(t.body || '').trim();
+        return {
+          type: t.course_type,
+          title: t.title || meta.title || t.label,
+          subtitle: Number(t.max_students) > 1 ? `每組最多 ${t.max_students} 人` : (meta.subtitle || ''),
+          description: body || meta.description || '',
+          basePrice: Number(t.base_price ?? meta.basePrice ?? 0),
+          imageUrl: t.image_url || '',
+        };
+      });
+  }, [types]);
 
   return (
     <div className="px-4 py-4">
@@ -47,31 +78,7 @@ export default function HomePage() {
 
       <IncompleteGroupOrdersBanner />
 
-      <button
-        type="button"
-        onClick={() => navigate('/referral')}
-        className="mb-3 flex w-full items-center justify-between rounded-2xl border border-brand-green/30 bg-gradient-to-r from-brand-green/10 to-brand-amber/10 p-3 text-left active:opacity-80"
-      >
-        <div>
-          <div className="text-sm font-bold text-brand-green">🎁 邀請好友拿正期 9 折券</div>
-          <div className="mt-0.5 text-[11px] text-gray-600">朋友透過你的連結報名體驗課享 5 折</div>
-        </div>
-        <span className="text-brand-green">›</span>
-      </button>
-
-      <div className="mb-5 grid grid-cols-2 gap-2">
-        <button type="button" onClick={() => navigate('/my-lessons')}
-          className="rounded-2xl border border-brand-teal/30 bg-white p-3 text-left active:bg-brand-teal/5">
-          <div className="text-sm font-bold text-brand-teal">📋 上課記錄/簽到</div>
-          <div className="mt-0.5 text-[11px] text-gray-500">出席、簽到與教練筆記</div>
-        </button>
-        <button type="button" onClick={() => navigate('/transfer/new')}
-          className="rounded-2xl border border-brand-primary/20 bg-white p-3 text-left active:bg-gray-50">
-          <div className="text-sm font-bold text-brand-primary">🔁 課程轉讓</div>
-          <div className="mt-0.5 text-[11px] text-gray-500">將剩餘堂數轉給其他學員</div>
-        </button>
-      </div>
-
+      {/* 進行中優惠（取代原好友推薦 mgm 區塊；好友 mgm 功能已關閉） */}
       {promos === null ? (
         <LoadingSpinner label="載入優惠中…" />
       ) : (
@@ -96,10 +103,23 @@ export default function HomePage() {
         )
       )}
 
+      {/* 上課記錄/簽到：整列橫幅、橘底黑字（已移除「課程轉讓」入口） */}
+      <button
+        type="button"
+        onClick={() => navigate('/my-lessons')}
+        className="mb-5 flex w-full items-center justify-between rounded-2xl bg-brand-amber p-4 text-left text-black active:opacity-90"
+      >
+        <div>
+          <div className="text-sm font-bold">📋 上課記錄/簽到</div>
+          <div className="mt-0.5 text-[11px] text-black/70">出席、簽到與教練筆記</div>
+        </div>
+        <span aria-hidden="true">›</span>
+      </button>
+
       <section>
         <h3 className="mb-3 text-sm font-bold text-brand-primary">課程組別</h3>
         <div className="space-y-3">
-          {COURSE_TYPES.map((t) => (
+          {courseCards.map((t) => (
             <CourseCard
               key={t.type}
               variant="catalog"

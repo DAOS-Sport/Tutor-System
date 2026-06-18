@@ -7,10 +7,11 @@ import { courseIntrosApi } from '../api/courseIntros';
 function IntroCard({ row, onSave }) {
   const toast = useToast();
   const fileRef = useRef(null);
-  const [draft, setDraft] = useState({ title: row.title, body: row.body, image_url: row.image_url });
+  const [draft, setDraft] = useState({ title: row.title, body: row.body, image_url: row.image_url, base_price: row.base_price ?? 0 });
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const dirty = ['title', 'body', 'image_url'].some((k) => (draft[k] || '') !== (row[k] || ''));
+  const dirty = ['title', 'body', 'image_url'].some((k) => (draft[k] || '') !== (row[k] || ''))
+    || Number(draft.base_price || 0) !== Number(row.base_price || 0);
 
   async function handleFile(file) {
     if (!file) return;
@@ -33,10 +34,15 @@ function IntroCard({ row, onSave }) {
       toast.error('標題不可為空');
       return;
     }
+    const price = Number(draft.base_price);
+    if (!Number.isFinite(price) || price < 0) {
+      toast.error('價格必須為非負數');
+      return;
+    }
     setBusy(true);
     try {
-      const updated = await onSave(row.course_type, draft);
-      setDraft({ title: updated.title, body: updated.body, image_url: updated.image_url });
+      const updated = await onSave(row.course_type, { ...draft, base_price: price });
+      setDraft({ title: updated.title, body: updated.body, image_url: updated.image_url, base_price: updated.base_price ?? price });
       toast.success(`已儲存「${row.label}」介紹`);
     } catch {
       toast.error('儲存失敗');
@@ -88,6 +94,23 @@ function IntroCard({ row, onSave }) {
           />
           <p className="mt-1 text-xs text-gray-500">
             預設與「課程需求名稱」相同；改成其他文字後，後台改名不會自動覆蓋此標題。
+          </p>
+        </div>
+        <div>
+          <label className="mb-1 block text-sm font-medium text-gray-700">每期價格（每人）</label>
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-gray-500">NT$</span>
+            <input
+              type="number"
+              min="0"
+              step="100"
+              value={draft.base_price ?? 0}
+              onChange={(e) => setDraft({ ...draft, base_price: e.target.value })}
+              className="w-40 rounded-lg border border-gray-300 px-3 py-2"
+            />
+          </div>
+          <p className="mt-1 text-xs text-gray-500">
+            自定義各組別底價；家長端首頁與報名頁的單人價格會同步更新（教練係數仍另計）。
           </p>
         </div>
         <div>
@@ -163,7 +186,8 @@ export default function CourseIntrosPage() {
     const res = await courseIntrosApi.update(type, patch);
     setRows((list) => list.map((r) =>
       r.course_type === type
-        ? { ...r, title: res.title, body: res.body, image_url: res.image_url, title_overridden: res.title_overridden }
+        ? { ...r, title: res.title, body: res.body, image_url: res.image_url, title_overridden: res.title_overridden,
+            base_price: res.base_price ?? r.base_price }
         : r
     ));
     return res;

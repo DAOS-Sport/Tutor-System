@@ -36,11 +36,15 @@ function ConfirmWithNote({ open, title, requireNote, busy, onCancel, onConfirm, 
 
 const STATUS_LABELS = {
   draft: { label: '草稿', tone: 'gray' },
+  // pending_review / rejected 仍保留標籤以相容歷史資料，但新流程不再產生這些狀態
   pending_review: { label: '待審核', tone: 'amber' },
   active: { label: '啟用中', tone: 'green' },
   rejected: { label: '已退回', tone: 'errorSoft' },
   archived: { label: '已停用', tone: 'gray' },
 };
+
+// 改版後的篩選分頁：全部 / 草稿 / 啟用中 / 已停用
+const FILTER_STATUSES = ['', 'draft', 'active', 'archived'];
 
 function fmtDiscount(p) {
   return p.type === 'PERCENTAGE'
@@ -70,7 +74,7 @@ export default function PromotionsPage() {
   useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
 
   const counts = useMemo(() => {
-    const c = { all: 0, draft: 0, pending_review: 0, active: 0, rejected: 0, archived: 0 };
+    const c = { all: 0, draft: 0, active: 0, archived: 0 };
     if (Array.isArray(allList)) {
       c.all = allList.length;
       for (const p of allList) c[p.status] = (c[p.status] || 0) + 1;
@@ -78,10 +82,8 @@ export default function PromotionsPage() {
     return c;
   }, [allList]);
 
-  // 優惠活動：manager 比照 admin（建立 / 核准上架 / 退回 / 停用皆可）
-  const canCreate  = role === 'admin' || role === 'manager';
-  const canApprove = role === 'admin' || role === 'manager';
-  const canArchive = role === 'admin' || role === 'manager';
+  // 優惠活動：manager 比照 admin（建立 / 上架 / 停用 / 刪除 / 複製皆可）
+  const canManage = role === 'admin' || role === 'manager';
 
   const [actionBusy, setActionBusy] = useState(false);
   async function doAction(p, action, note) {
@@ -90,7 +92,7 @@ export default function PromotionsPage() {
     try {
       const fn = promotionsApi[action];
       await fn(p.id, note);
-      toast.success(`已${{ submit: '送審', approve: '核准', reject: '退回', archive: '停用' }[action] || '更新'}`);
+      toast.success(`已${{ activate: '上架', archive: '停用', remove: '刪除' }[action] || '更新'}`);
       load();
     } catch (e) {
       toast.error(e?.response?.data?.error || '操作失敗');
@@ -98,6 +100,25 @@ export default function PromotionsPage() {
       setActionBusy(false);
       setConfirm(null);
     }
+  }
+
+  // 複製：以既有優惠欄位預填，但開成「新草稿」（清 id / 重設狀態 / 名稱加（複製）/ 清折價券代碼）
+  function doCopy(p) {
+    setEditing({
+      name: `${p.name}（複製）`,
+      description: p.description || '',
+      type: p.type,
+      discount_value: p.discount_value,
+      min_threshold_type: p.min_threshold_type || '',
+      min_threshold_value: p.min_threshold_value || '',
+      applicable_course_types: Array.isArray(p.applicable_course_types) ? [...p.applicable_course_types] : [],
+      applicable_venue_ids: Array.isArray(p.applicable_venue_ids) ? [...p.applicable_venue_ids] : [],
+      coupon_code: '', // 折價券代碼為 UNIQUE，複製時必須清空
+      start_date: p.start_date,
+      end_date: p.end_date,
+      max_uses: p.max_uses || '',
+      // 不帶 id / status → 走新增（draft）路徑
+    });
   }
 
   const filtered = useMemo(() => {
@@ -109,7 +130,7 @@ export default function PromotionsPage() {
     <div className="space-y-4">
       <PageHeader
         title="優惠活動 (F-M07 / F-A05)"
-        actions={canCreate && (
+        actions={canManage && (
           <button onClick={() => setEditing({})} className="rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary">
             + 新增優惠
           </button>
@@ -118,7 +139,7 @@ export default function PromotionsPage() {
 
       <div className="flex flex-wrap items-center gap-2 rounded-lg bg-white p-3 shadow-sm">
         <span className="text-xs font-medium text-gray-500">狀態：</span>
-        {['', 'draft', 'pending_review', 'active', 'rejected', 'archived'].map((s) => (
+        {FILTER_STATUSES.map((s) => (
           <button key={s || 'all'} onClick={() => setFilterStatus(s)}
             className={`rounded-full px-3 py-1 text-xs ${filterStatus === s ? 'bg-brand-primary text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
             {s ? STATUS_LABELS[s]?.label : '全部'}（{Array.isArray(allList) ? (s === '' ? counts.all : counts[s] || 0) : '…'}）
@@ -159,21 +180,21 @@ export default function PromotionsPage() {
                     <td className="px-3 py-2">
                       <div className="flex flex-wrap justify-end gap-1.5">
                         <button onClick={() => setEditing(p)} className="rounded bg-gray-100 px-2 py-1 text-xs hover:bg-gray-200">檢視</button>
-                        {canCreate && ['draft', 'rejected'].includes(p.status) && (
-                          <button onClick={() => setConfirm({ p, action: 'submit', label: '送審' })}
-                            className="rounded bg-brand-amber px-2 py-1 text-xs text-white hover:opacity-90">送審</button>
+                        {canManage && ['draft', 'rejected'].includes(p.status) && (
+                          <button onClick={() => setConfirm({ p, action: 'activate', label: '上架' })}
+                            className="rounded bg-brand-green px-2 py-1 text-xs text-white hover:opacity-90">上架</button>
                         )}
-                        {canApprove && p.status === 'pending_review' && (
-                          <>
-                            <button onClick={() => setConfirm({ p, action: 'approve', label: '核准啟用' })}
-                              className="rounded bg-brand-green px-2 py-1 text-xs text-white hover:opacity-90">核准</button>
-                            <button onClick={() => setConfirm({ p, action: 'reject', label: '退回', requireNote: true })}
-                              className="rounded bg-brand-error px-2 py-1 text-xs text-white hover:opacity-90">退回</button>
-                          </>
-                        )}
-                        {canArchive && p.status !== 'archived' && (
+                        {canManage && p.status !== 'archived' && (
                           <button onClick={() => setConfirm({ p, action: 'archive', label: '停用' })}
                             className="rounded bg-gray-200 px-2 py-1 text-xs text-gray-700 hover:bg-gray-300">停用</button>
+                        )}
+                        {canManage && (
+                          <button onClick={() => doCopy(p)}
+                            className="rounded bg-brand-teal px-2 py-1 text-xs text-white hover:opacity-90">複製</button>
+                        )}
+                        {canManage && (
+                          <button onClick={() => setConfirm({ p, action: 'remove', label: '刪除' })}
+                            className="rounded bg-brand-error px-2 py-1 text-xs text-white hover:opacity-90">刪除</button>
                         )}
                       </div>
                     </td>
@@ -186,7 +207,8 @@ export default function PromotionsPage() {
       )}
 
       {editing && (() => {
-        const editableStatuses = (role === 'admin' || role === 'manager') ? ['draft', 'rejected', 'active'] : ['draft', 'rejected'];
+        // 改版：只有 draft 可編輯；active 已上架 / archived 已停用皆為唯讀（active 請刪除後重建）
+        const editableStatuses = ['draft', 'rejected'];
         const ro = !!editing.id && !editableStatuses.includes(editing.status);
         return (
           <PromotionFormModal

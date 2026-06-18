@@ -37,11 +37,13 @@ router.get('/lessons', requireParent, async (req, res) => {
     const r = await pool.query(
       `SELECT cs.id AS session_id,
               cs.scheduled_at,
+              cs.duration_minutes,
               cs.status AS session_status,
               cp.id AS period_id,
               cp.course_type,
               cp.venue_id,
-              co.id AS coach_id, co.name AS coach_name,
+              cp.total_sessions, cp.used_sessions,
+              co.id AS coach_id, co.name AS coach_name, co.pricing_multiplier,
               s.id AS student_id, s.name AS student_name,
               cr.id AS checkin_id, cr.checked_in_at,
               sr.id AS record_id, sr.status AS record_status
@@ -187,11 +189,18 @@ router.get('/mine', requireParent, async (req, res) => {
  */
 router.get('/types', async (req, res) => {
   try {
+    // 與後台「課程介紹維護」(/admin/course-intros) 同源：JOIN admin_course_intros，
+    // 讓家長首頁組別卡片的標題 / 內文 / 封面圖 / 價格完全由後台維護、即時對上。
     const r = await pool.query(
-      `SELECT course_type, label, max_students, is_active, sort_order
-         FROM course_type_configs
-        WHERE is_active = TRUE
-        ORDER BY sort_order, course_type`
+      `SELECT c.course_type, c.label, c.max_students, c.is_active, c.sort_order,
+              COALESCE(c.base_price, 0)::float8 AS base_price,
+              COALESCE(i.title, c.label)        AS title,
+              COALESCE(i.body, '')              AS body,
+              COALESCE(i.image_url, '')         AS image_url
+         FROM course_type_configs c
+         LEFT JOIN admin_course_intros i ON i.course_type = c.course_type
+        WHERE c.is_active = TRUE
+        ORDER BY c.sort_order, c.course_type`
     );
     res.json(r.rows);
   } catch (e) {

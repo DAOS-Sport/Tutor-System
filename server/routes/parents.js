@@ -120,7 +120,8 @@ router.patch('/me', requireParent, async (req, res) => {
   const patch = {
     name: cleanText(b.name, 100),
     primary_venue_id: cleanText(b.primary_venue_id, 10) || null,
-    identity: cleanText(b.identity, 50) || null,
+    // 身分欄位已從家長端 UI 移除，未帶入時一律預設「一般身分」（與 Ragic Z01 預設一致）。
+    identity: cleanText(b.identity, 50) || '一般身分',
     gender: cleanText(b.gender, 20) || null,
     email: cleanText(b.email, 255) || null,
     home_phone: cleanText(b.home_phone, 30) || null,
@@ -129,8 +130,9 @@ router.patch('/me', requireParent, async (req, res) => {
   };
   // Ragic Z01 必填欄位（缺一即整筆 INVALID）：姓名 / 館別 / 身分 / 性別 / Email。
   // 前端已用紅框＊擋一道，後端再驗一次（防直接打 API / 舊頁面），回傳明確缺哪欄。
+  // 身分不再由前端送出（已固定為「一般身分」預設），故不列入必填檢核。
   const REQUIRED = [
-    ['name', '家長姓名'], ['primary_venue_id', '館別'], ['identity', '身分'],
+    ['name', '家長姓名'], ['primary_venue_id', '館別'],
     ['gender', '性別'], ['email', 'Email'],
   ];
   for (const [key, label] of REQUIRED) {

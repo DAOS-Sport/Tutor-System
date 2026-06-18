@@ -1,14 +1,18 @@
 /**
- * 後台優惠活動管理 (F-M07 主管 CRUD + 送審 / F-A05 管理員核准 / F-R05 active 列表)
+ * 後台優惠活動管理 (F-M07 主管 CRUD / F-A05 管理員 / F-R05 active 列表)
+ *
+ * 改版：移除送審流程，草稿 → 啟用中 → 已停用（直接上架，無審核者）。
  *
  *   GET    /api/admin/promotions                 list (?status=&q=)
  *   POST   /api/admin/promotions                 create draft (manager/admin)
  *   GET    /api/admin/promotions/:id             detail + audit logs + usage count
- *   PATCH  /api/admin/promotions/:id             edit (僅 draft/rejected 可改；admin 可改 active)
- *   POST   /api/admin/promotions/:id/submit      manager 送審 → pending_review
- *   POST   /api/admin/promotions/:id/approve     admin 核准 → active
- *   POST   /api/admin/promotions/:id/reject      admin 拒絕（含 note）
+ *   PATCH  /api/admin/promotions/:id             edit (僅 draft 可改；active/archived 唯讀)
+ *   DELETE /api/admin/promotions/:id             刪除（無使用紀錄才可硬刪；否則請改用停用）
+ *   POST   /api/admin/promotions/:id/activate    上架 / 啟用 → active (draft→active)
  *   POST   /api/admin/promotions/:id/archive     停用 → archived
+ *   POST   /api/admin/promotions/:id/submit      （保留但 UI 已不使用）送審 → pending_review
+ *   POST   /api/admin/promotions/:id/approve     （保留但 UI 已不使用）核准 → active
+ *   POST   /api/admin/promotions/:id/reject      （保留但 UI 已不使用）拒絕（含 note）
  *   GET    /api/admin/promotions/active          R05 唯讀
  */
 const express = require('express');
@@ -142,14 +146,10 @@ router.patch('/:id', requireAdminRole('admin', 'manager'), async (req, res) => {
     const cur = await pool.query(`SELECT * FROM promotions WHERE id = $1`, [req.params.id]);
     if (!cur.rowCount) return res.status(404).json({ error: 'not found' });
     const old = cur.rows[0];
-    const role = req.adminUser.role;
-    // manager 只能改 draft / rejected；admin 額外允許改 active（用於微調 description / max_uses）
-    // 任何角色都不得直接改 pending_review（請先 reject）或 archived
-    const editable = role === 'admin'
-      ? ['draft', 'rejected', 'active']
-      : ['draft', 'rejected'];
+    // 改版：只有 draft 可編輯。active 已上架不可編輯（請刪除後重建）；archived 唯讀。
+    const editable = ['draft', 'rejected'];
     if (!editable.includes(old.status)) {
-      return res.status(400).json({ error: `狀態 ${old.status} 不可編輯` });
+      return res.status(400).json({ error: `狀態 ${old.status} 不可編輯，已啟用的優惠請刪除後重建` });
     }
     const p = { ...old, ...req.body };
     const errs = validatePayload(p);
@@ -181,6 +181,32 @@ router.patch('/:id', requireAdminRole('admin', 'manager'), async (req, res) => {
   }
 });
 
+// 刪除：無 promotion_usages 才可硬刪；有使用紀錄則回 409，請改用「停用」。
+// （FK promotion_usages.promotion_id 為 ON DELETE RESTRICT，已使用者本就無法硬刪。）
+router.delete('/:id', requireAdminRole('admin', 'manager'), async (req, res) => {
+  try {
+    const cur = await pool.query(`SELECT id FROM promotions WHERE id = $1`, [req.params.id]);
+    if (!cur.rowCount) return res.status(404).json({ error: 'not found' });
+    const used = await pool.query(
+      `SELECT COUNT(*)::int AS used FROM promotion_usages WHERE promotion_id = $1`,
+      [req.params.id]
+    );
+    if (used.rows[0].used > 0) {
+      return res.status(409).json({ error: '此優惠已有使用紀錄，無法刪除，請改用「停用」' });
+    }
+    // 先清掉稽核紀錄再刪本體（audit_logs 對 promotion 通常為 CASCADE，但保險起見手動處理）
+    await pool.query(`DELETE FROM promotion_audit_logs WHERE promotion_id = $1`, [req.params.id]);
+    await pool.query(`DELETE FROM promotions WHERE id = $1`, [req.params.id]);
+    res.json({ ok: true, deleted: req.params.id });
+  } catch (err) {
+    if (err.code === '23503') {
+      return res.status(409).json({ error: '此優惠已有使用紀錄，無法刪除，請改用「停用」' });
+    }
+    console.error('[admin promotion delete]', err);
+    res.status(500).json({ error: 'delete failed' });
+  }
+});
+
 async function transition(req, res, fromStatuses, toStatus, action, requiredRoles) {
   const role = req.adminUser.role;
   if (!requiredRoles.includes(role)) return res.status(403).json({ error: '權限不足' });
@@ -209,6 +235,8 @@ async function transition(req, res, fromStatuses, toStatus, action, requiredRole
   res.json(r.rows[0]);
 }
 
+// 改版：直接上架（draft→active）。set reviewed_at/reviewed_by（由 transition 內 toStatus==='active' 自動處理）。
+router.post('/:id/activate', (req, res) => transition(req, res, ['draft', 'rejected'], 'active', 'activate', ['admin', 'manager']).catch((e) => { console.error(e); res.status(500).json({ error: 'activate failed' }); }));
 router.post('/:id/submit',  (req, res) => transition(req, res, ['draft', 'rejected'], 'pending_review', 'submit',  ['admin', 'manager']).catch((e) => { console.error(e); res.status(500).json({ error: 'submit failed' }); }));
 router.post('/:id/approve', (req, res) => transition(req, res, ['pending_review'],  'active',         'approve', ['admin', 'manager']).catch((e) => { console.error(e); res.status(500).json({ error: 'approve failed' }); }));
 router.post('/:id/reject',  (req, res) => {
