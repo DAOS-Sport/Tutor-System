@@ -5,21 +5,13 @@ import ConfirmModal from '../components/ConfirmModal';
 import { useToast } from '../context/ToastContext';
 import { lessonsApi } from '../api/lessons';
 import { checkinsApi } from '../api/checkins';
-import { courseTypeLabel, formatTWDate, formatTWDateTime, formatTWTime } from '../utils/format';
+import { courseTypeLabel, formatTWDate, formatTWTime } from '../utils/format';
 
 // 家長可自助簽到：尚未簽到、且課程已確認/完成（不限上課當天，隨時可補簽）。
 function canParentCheckin(r) {
   return !r.checked_in_at && ['confirmed', 'completed'].includes(r.session_status);
 }
 
-// 由開始時間 + 時長算出「HH:MM–HH:MM」時段字串。
-function timeRange(r) {
-  const start = new Date(r.scheduled_at);
-  if (Number.isNaN(start.getTime())) return '';
-  const dur = Number(r.duration_minutes) || 60;
-  const end = new Date(start.getTime() + dur * 60000);
-  return `${formatTWTime(start)}–${formatTWTime(end)}`;
-}
 
 export default function MyLessonsPage() {
   const toast = useToast();
@@ -226,44 +218,58 @@ function RecordCard({ r, e, busy, onCheckin, onOpen }) {
   const past = new Date(r.scheduled_at).getTime() < Date.now();
   const checkinable = canParentCheckin(r);
   const clickable = r.record_status === 'submitted';
+
+  const dateStr = formatTWDate(r.scheduled_at);
+  const timeStr = formatTWTime(r.scheduled_at);
+
+  const coachParts = [
+    `${r.coach_name || e.coach} 教練`,
+    e.group,
+    r.venue_name,
+  ].filter(Boolean);
+  const coachLine = coachParts.join('，');
+
+  const checkinDateStr = r.checked_in_at ? r.checked_in_at.toString().slice(0, 10) : null;
+
   return (
     <div
       onClick={clickable ? onOpen : undefined}
-      className={`rounded-2xl border border-gray-100 bg-white p-3.5 shadow-sm ${clickable ? 'cursor-pointer active:bg-gray-50' : ''}`}
+      className={`rounded-2xl border border-gray-100 bg-white p-4 shadow-sm ${clickable ? 'cursor-pointer active:bg-gray-50' : ''}`}
     >
-      <div className="flex items-center justify-between gap-2">
-        <div className="text-sm font-semibold tabular-nums text-gray-900">
-          {formatTWDate(r.scheduled_at).replace(/^\d{4}\//, '')}
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-bold tabular-nums text-gray-900">
+            {dateStr}{timeStr}
+          </div>
+          <div className="mt-1 text-sm text-gray-700">{coachLine}</div>
+          <div className="mt-0.5 text-sm text-gray-500">學員：{r.student_name || e.student}</div>
+          {checkinDateStr && (
+            <div className="mt-0.5 text-xs text-gray-400">簽到時間：{checkinDateStr}</div>
+          )}
+          {clickable && (
+            <div className="mt-2 text-xs font-medium text-brand-teal">📝 教練已上傳上課紀錄，點擊查看 ›</div>
+          )}
         </div>
-        {r.checked_in_at ? (
-          <span className="rounded-full bg-brand-green/15 px-2.5 py-0.5 text-xs font-medium text-brand-green">已出席</span>
-        ) : checkinable ? (
-          <button
-            type="button"
-            disabled={busy}
-            onClick={(ev) => { ev.stopPropagation(); onCheckin(); }}
-            className="rounded-full bg-brand-primary px-3 py-0.5 text-xs font-bold text-white active:opacity-90 disabled:opacity-50"
-          >
-            {busy ? '簽到中…' : '簽到'}
-          </button>
-        ) : (
-          <span className="rounded-full bg-brand-primary/10 px-2.5 py-0.5 text-xs font-medium text-brand-primary">
-            {past ? '已出席' : '即將上課'}
-          </span>
-        )}
+
+        <div className="shrink-0 pt-0.5">
+          {r.checked_in_at ? (
+            <span className="rounded-full bg-brand-green/15 px-2.5 py-1 text-xs font-medium text-brand-green">已出席</span>
+          ) : checkinable ? (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={(ev) => { ev.stopPropagation(); onCheckin(); }}
+              className="rounded-lg bg-brand-primary px-4 py-1.5 text-sm font-bold text-white active:opacity-90 disabled:opacity-50"
+            >
+              {busy ? '簽到中…' : '簽到'}
+            </button>
+          ) : (
+            <span className="rounded-full bg-brand-primary/10 px-2.5 py-1 text-xs font-medium text-brand-primary">
+              {past ? '已出席' : '即將上課'}
+            </span>
+          )}
+        </div>
       </div>
-      <div className="mt-2 flex items-center gap-2 text-sm text-gray-500">
-        <ClockIcon className="shrink-0 text-gray-400" />
-        <span className="tabular-nums">{timeRange(r)}</span>
-        <span className="text-gray-300">·</span>
-        <span>{e.coach}　{e.group}</span>
-      </div>
-      {r.checked_in_at && (
-        <div className="mt-1.5 text-[11px] font-medium text-brand-green">簽到於 {formatTWDateTime(r.checked_in_at)}</div>
-      )}
-      {clickable && (
-        <div className="mt-1.5 text-[11px] font-medium text-brand-teal">📝 教練已上傳記錄 · 點擊查看 ›</div>
-      )}
     </div>
   );
 }
@@ -284,11 +290,3 @@ function CheckIcon({ className = '' }) {
   );
 }
 
-function ClockIcon({ className = '' }) {
-  return (
-    <svg className={className} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 7v5l3 2" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
