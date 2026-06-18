@@ -253,18 +253,18 @@ function RecordCard({ r, e, busy, onCheckin, onOpen }) {
 
         <div className="shrink-0 pt-0.5">
           {r.checked_in_at ? (
-            <span className="rounded-full bg-brand-green/15 px-2.5 py-1 text-xs font-medium text-brand-green">已出席</span>
+            <span className="rounded-xl bg-brand-green/15 px-4 py-2 text-sm font-medium text-brand-green">已出席</span>
           ) : checkinable ? (
             <button
               type="button"
               disabled={busy}
               onClick={(ev) => { ev.stopPropagation(); onCheckin(); }}
-              className="rounded-lg bg-brand-primary px-4 py-1.5 text-sm font-bold text-white active:opacity-90 disabled:opacity-50"
+              className="rounded-xl bg-brand-primary px-5 py-2 text-base font-bold text-white active:opacity-90 disabled:opacity-50"
             >
               {busy ? '簽到中…' : '簽到'}
             </button>
           ) : (
-            <span className="rounded-full bg-brand-primary/10 px-2.5 py-1 text-xs font-medium text-brand-primary">
+            <span className="rounded-xl bg-brand-primary/10 px-4 py-2 text-sm font-medium text-brand-primary">
               {past ? '已出席' : '即將上課'}
             </span>
           )}
