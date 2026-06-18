@@ -71,37 +71,41 @@ function InvoiceModal({ enrollment, canReconcile, onCancel, onDone }) {
       onClick={(e) => e.target === e.currentTarget && !busy && onCancel()}
       role="dialog" aria-modal="true" aria-label="對帳通過 — 輸入發票資訊"
     >
-      <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl">
-        <h3 className="mb-1 text-lg font-bold text-brand-primary">對帳通過 — 輸入發票資訊</h3>
-        <p className="mb-4 text-xs text-gray-500">
-          {enrollment.id} ／ {enrollment.parent_name} ／ 應收 {formatTWD(enrollment.final_price)}，末 5 碼 <b>{enrollment.transfer_last_5}</b>
-        </p>
+      <div className="flex w-full max-w-lg flex-col rounded-2xl bg-white shadow-xl" style={{ maxHeight: '90dvh' }}>
+        {/* ── 固定 Header ── */}
+        <div className="shrink-0 border-b border-gray-100 px-6 pt-5 pb-4">
+          <h3 className="text-lg font-bold text-brand-primary">對帳通過 — 輸入發票資訊</h3>
+          <p className="mt-0.5 text-xs text-gray-500">
+            {enrollment.id} ／ {enrollment.parent_name} ／ 應收 {formatTWD(enrollment.final_price)}，末 5 碼 <b>{enrollment.transfer_last_5}</b>
+          </p>
+        </div>
 
-        {enrollment.payment_proof_url && (
-          <div className="mb-4 rounded-lg border border-gray-200 bg-gray-50 p-3">
-            <div className="mb-2 text-xs font-semibold text-gray-600">家長上傳的匯款／轉帳證明</div>
-            <a href={enrollment.payment_proof_url} target="_blank" rel="noreferrer">
-              <img
-                src={enrollment.payment_proof_url}
-                alt="匯款證明"
-                className="max-h-48 rounded-lg border border-gray-200 object-contain"
-              />
-            </a>
-            <div className="mt-1 text-[11px] text-gray-400">點圖可放大檢視</div>
-          </div>
-        )}
-
-        {enrollment.carrier && (
-          <div className="mb-4 rounded-lg border border-indigo-200 bg-indigo-50 p-3">
-            <div className="mb-1 text-xs font-semibold text-indigo-700">📱 載具（開發票掃描用）</div>
-            <div className="font-mono text-sm font-bold text-indigo-900">{enrollment.carrier}</div>
-            <div className="mt-2 inline-block rounded-lg bg-white p-2">
-              <Barcode value={enrollment.carrier} />
+        {/* ── 可捲動 Body ── */}
+        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+          {enrollment.payment_proof_url && (
+            <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+              <div className="mb-2 text-xs font-semibold text-gray-600">家長上傳的匯款／轉帳證明</div>
+              <a href={enrollment.payment_proof_url} target="_blank" rel="noreferrer">
+                <img
+                  src={enrollment.payment_proof_url}
+                  alt="匯款證明"
+                  className="max-h-40 rounded-lg border border-gray-200 object-contain"
+                />
+              </a>
+              <div className="mt-1 text-[11px] text-gray-400">點圖可放大檢視</div>
             </div>
-          </div>
-        )}
+          )}
 
-        <div className="space-y-4">
+          {enrollment.carrier && (
+            <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3">
+              <div className="mb-1 text-xs font-semibold text-indigo-700">📱 載具（開發票掃描用）</div>
+              <div className="font-mono text-sm font-bold text-indigo-900">{enrollment.carrier}</div>
+              <div className="mt-2 inline-block rounded-lg bg-white p-2">
+                <Barcode value={enrollment.carrier} />
+              </div>
+            </div>
+          )}
+
           <div>
             <label className="mb-1 block text-sm font-semibold text-gray-700">
               發票號碼 <span className="text-red-500">*</span>
@@ -124,14 +128,14 @@ function InvoiceModal({ enrollment, canReconcile, onCancel, onDone }) {
               <span className="ml-2 font-normal text-gray-400">（JPG / PNG，≤ 5MB）</span>
             </label>
             <div
-              className={`relative flex min-h-28 flex-col items-center justify-center rounded-xl border-2 border-dashed p-4 transition ${imageFile ? 'border-brand-teal bg-brand-teal/5' : 'cursor-pointer border-gray-300 hover:border-brand-teal'}`}
+              className={`relative flex min-h-24 flex-col items-center justify-center rounded-xl border-2 border-dashed p-4 transition ${imageFile ? 'border-brand-teal bg-brand-teal/5' : 'cursor-pointer border-gray-300 hover:border-brand-teal'}`}
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => { e.preventDefault(); handleFile(e.dataTransfer.files?.[0]); }}
               onClick={() => !imageFile && fileRef.current?.click()}
             >
               {imagePreview ? (
                 <>
-                  <img src={imagePreview} alt="發票預覽" className="max-h-40 rounded-lg object-contain" />
+                  <img src={imagePreview} alt="發票預覽" className="max-h-36 rounded-lg object-contain" />
                   <button
                     type="button"
                     className="mt-2 text-xs text-gray-500 underline hover:text-red-500"
@@ -168,7 +172,8 @@ function InvoiceModal({ enrollment, canReconcile, onCancel, onDone }) {
           </div>
         </div>
 
-        <div className="mt-5 flex justify-end gap-3">
+        {/* ── 固定 Footer ── */}
+        <div className="shrink-0 flex justify-end gap-3 border-t border-gray-100 px-6 py-4">
           <button type="button" disabled={busy}
             className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50"
             onClick={onCancel}>取消</button>
