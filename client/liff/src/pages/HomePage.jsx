@@ -106,7 +106,7 @@ export default function HomePage() {
       {/* 上課記錄/簽到：整列橫幅、橘底黑字（已移除「課程轉讓」入口） */}
       <button
         type="button"
-        onClick={() => navigate('/my-lessons')}
+        onClick={() => navigate('/my-courses')}
         className="mb-5 flex w-full items-center justify-between rounded-2xl bg-brand-amber p-4 text-left text-black active:opacity-90"
       >
         <div>

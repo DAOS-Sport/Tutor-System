@@ -79,50 +79,52 @@ router.get('/mine', requireParent, async (req, res) => {
               `SELECT admin_enrollments.id, parent_name, parent_phone, students,
                       coach, coach_id, venue_id, v.name AS venue_name, course_type,
                       original_price, final_price, transfer_last_5, status, submitted_at,
-                      total_sessions, used_sessions, refund_amount, payment_proof_url, period_count,
+                      admin_enrollments.total_sessions, admin_enrollments.used_sessions, refund_amount, payment_proof_url, period_count,
                       invoice_number, invoice_image_url, invoice_url, invoice_issued_at,
-              extra_parent_phones, notes, group_order_id, is_group_shared,
-              -- 對帳通過後自動開通的正式 course_period：團報走 group_order_id（共用），
-              -- 一般報名走 admin_enrollment_id。供前端導去學習歷程/詳細頁（該頁以 period id 查歸屬）。
-                      COALESCE(
-                (SELECT cp.id FROM course_periods cp
-                   WHERE admin_enrollments.group_order_id IS NOT NULL
-                     AND cp.group_order_id = admin_enrollments.group_order_id
-                   ORDER BY cp.created_at LIMIT 1),
-                (SELECT cp.id FROM course_periods cp
-                   WHERE cp.admin_enrollment_id = admin_enrollments.id
-                   ORDER BY cp.created_at LIMIT 1)
-                      ) AS course_period_id,
-              COALESCE(
-                (SELECT cp.expires_at FROM course_periods cp
-                   WHERE admin_enrollments.group_order_id IS NOT NULL
-                     AND cp.group_order_id = admin_enrollments.group_order_id
-                   ORDER BY cp.created_at LIMIT 1),
-                (SELECT cp.expires_at FROM course_periods cp
-                   WHERE cp.admin_enrollment_id = admin_enrollments.id
-                   ORDER BY cp.created_at LIMIT 1)
-              ) AS expires_at,
-                      -- 課程轉讓頁(F-S08)用：只回傳「本家長名下、且在該 period active 掛載」的學生 {id,name}。
-                      -- 與既有 students(名字字串陣列)並存、不取代，避免衝擊 CourseCard/CourseDetail 等以名字顯示的頁面。
+                      extra_parent_phones, notes, group_order_id, is_group_shared,
+                      -- 已開通正式 course_period（團報走 group_order_id 共用、一般走 admin_enrollment_id），
+                      -- 以 LATERAL 一次解析，供 期id / 到期 / 總堂數 / 教練修課係數 / 資深旗標 共用。
+                      -- 係數/資深取自 course_period 的教練 FK（admin_enrollments.coach_id 多為空，不可靠）。
+                      cper.id            AS course_period_id,
+                      cper.expires_at,
+                      cper.total_sessions AS period_total_sessions,
+                      cper.pricing_multiplier,
+                      cper.is_senior,
+                      -- 課程轉讓頁(F-S08)用：本家長名下、在該 period active 掛載的學生 {id,name}。
                       (
                         SELECT COALESCE(
                                  jsonb_agg(jsonb_build_object('id', s.id, 'name', s.name) ORDER BY s.name),
                                  '[]'::jsonb)
                           FROM course_period_enrollments cpe
                           JOIN students s ON s.id = cpe.student_id
-                         WHERE cpe.course_period_id = COALESCE(
-                                 (SELECT cp.id FROM course_periods cp
-                                    WHERE admin_enrollments.group_order_id IS NOT NULL
-                                      AND cp.group_order_id = admin_enrollments.group_order_id
-                                    ORDER BY cp.created_at LIMIT 1),
-                                 (SELECT cp.id FROM course_periods cp
-                                    WHERE cp.admin_enrollment_id = admin_enrollments.id
-                                    ORDER BY cp.created_at LIMIT 1))
+                         WHERE cpe.course_period_id = cper.id
                            AND cpe.status = 'active'
                            AND s.parent_id = $2
-                      ) AS students_detail
+                      ) AS students_detail,
+                      -- 已出席堂數＝該 period 下、本家長學生的 checkin_records 計數；剩餘(未上課)＝總−已出席。
+                      (
+                        SELECT COUNT(cr.id)::int
+                          FROM course_sessions cs2
+                          JOIN checkin_records cr ON cr.course_session_id = cs2.id
+                          JOIN students st ON st.id = cr.student_id
+                         WHERE cs2.course_period_id = cper.id
+                           AND st.parent_id = $2
+                      ) AS attended_sessions
                  FROM admin_enrollments
                  LEFT JOIN venues v ON v.id = admin_enrollments.venue_id
+                 LEFT JOIN LATERAL (
+                   SELECT cp.id, cp.total_sessions, cp.expires_at, co.pricing_multiplier, co.is_senior
+                     FROM course_periods cp
+                     LEFT JOIN coaches co ON co.id = cp.coach_id
+                    WHERE cp.id = COALESCE(
+                            (SELECT cp2.id FROM course_periods cp2
+                               WHERE admin_enrollments.group_order_id IS NOT NULL
+                                 AND cp2.group_order_id = admin_enrollments.group_order_id
+                               ORDER BY cp2.created_at LIMIT 1),
+                            (SELECT cp2.id FROM course_periods cp2
+                               WHERE cp2.admin_enrollment_id = admin_enrollments.id
+                               ORDER BY cp2.created_at LIMIT 1))
+                 ) cper ON true
                 WHERE parent_phone = $1 OR $1 = ANY(extra_parent_phones)
                 ORDER BY submitted_at DESC`,
       [phone, req.parent.id]
@@ -137,22 +139,26 @@ router.get('/mine', requireParent, async (req, res) => {
     //   active        — 已對帳開通（confirmed/active）但尚未上完
     //   closed        — 已取消/退費（cancelled/refunded）
     //   pending_payment — 其餘（待對帳）原值透傳
-    const toLifecycle = (row) => {
-      const total = Number(row.total_sessions) || 0;
-      const used = Number(row.used_sessions) || 0;
+    const toLifecycle = (row, total, used) => {
       const s = row.status;
       if (s === 'cancelled' || s === 'refunded') return 'closed';
       if ((s === 'confirmed' || s === 'active') && total > 0 && used >= total) return 'completed';
       if (s === 'confirmed' || s === 'active') return 'active';
       return 'pending_payment';
     };
-    res.json(r.rows.map((row) => ({
+    res.json(r.rows.map((row) => {
+      // 堂數真相：總取自 course_period（避免 admin_enrollments 對帳前 NULL）；
+      // 已用＝已出席(checkin_records 計數)；剩餘(未上課)＝總−已出席，不為負。
+      const total = Number(row.period_total_sessions) || Number(row.total_sessions) || 0;
+      const used = Number(row.attended_sessions) || 0;
+      const remaining = Math.max(0, total - used);
+      return {
       id: row.id,
       parent_name: row.parent_name,
       parent_phone: row.parent_phone,
       students: row.students || [],
       students_detail: row.students_detail || [],
-              coach: { id: row.coach_id || null, name: row.coach },
+              coach: { id: row.coach_id || null, name: row.coach, is_senior: !!row.is_senior },
               coach_name: row.coach,
               venue_id: row.venue_id,
               venue: { id: row.venue_id, name: row.venue_name || row.venue_id },
@@ -161,12 +167,14 @@ router.get('/mine', requireParent, async (req, res) => {
       final_price: Number(row.final_price),
       transfer_last_5: row.transfer_last_5,
       payment_status: toPaymentStatus(row.status),
-      lifecycle: toLifecycle(row),
+      lifecycle: toLifecycle(row, total, used),
       course_period_id: row.course_period_id || null,
       expires_at: row.expires_at || null,
       submitted_at: row.submitted_at,
-      total_sessions: row.total_sessions,
-      used_sessions: row.used_sessions,
+      total_sessions: total,
+      used_sessions: used,
+      remaining_sessions: remaining,
+      pricing_multiplier: Number(row.pricing_multiplier) || 1,
       refund_amount: row.refund_amount != null ? Number(row.refund_amount) : null,
       invoice_number: row.invoice_number || null,
       invoice_image_url: row.invoice_image_url || null,
@@ -178,7 +186,8 @@ router.get('/mine', requireParent, async (req, res) => {
       period_count: row.period_count || 1,
       group_order_id: row.group_order_id || null,
       is_group_shared: !!row.is_group_shared,
-    })));
+      };
+    }));
   } catch (e) {
     console.error('[courses/mine]', e);
     res.status(500).json({ error: e.message });
@@ -264,22 +273,56 @@ router.get('/:id', requireParent, async (req, res) => {
                    WHERE cp.admin_enrollment_id = e.id
                    ORDER BY cp.created_at LIMIT 1)
               ) AS expires_at,
+              -- 係數/資深取自 course_period 的教練 FK（e.coach_id 多為空，不可靠）。
+              (SELECT co.pricing_multiplier FROM course_periods cp JOIN coaches co ON co.id = cp.coach_id
+                WHERE cp.id = COALESCE(
+                        (SELECT cp2.id FROM course_periods cp2 WHERE e.group_order_id IS NOT NULL AND cp2.group_order_id = e.group_order_id ORDER BY cp2.created_at LIMIT 1),
+                        (SELECT cp2.id FROM course_periods cp2 WHERE cp2.admin_enrollment_id = e.id ORDER BY cp2.created_at LIMIT 1))) AS pricing_multiplier,
+              (SELECT co.is_senior FROM course_periods cp JOIN coaches co ON co.id = cp.coach_id
+                WHERE cp.id = COALESCE(
+                        (SELECT cp2.id FROM course_periods cp2 WHERE e.group_order_id IS NOT NULL AND cp2.group_order_id = e.group_order_id ORDER BY cp2.created_at LIMIT 1),
+                        (SELECT cp2.id FROM course_periods cp2 WHERE cp2.admin_enrollment_id = e.id ORDER BY cp2.created_at LIMIT 1))) AS is_senior,
+              -- 已出席堂數（本家長學生於該 period 的 checkin_records 計數）與總堂數（取自 course_period）。
+              (
+                SELECT COUNT(cr.id)::int
+                  FROM course_sessions cs2
+                  JOIN checkin_records cr ON cr.course_session_id = cs2.id
+                  JOIN students st ON st.id = cr.student_id
+                 WHERE cs2.course_period_id = COALESCE(
+                         (SELECT cp.id FROM course_periods cp
+                            WHERE e.group_order_id IS NOT NULL AND cp.group_order_id = e.group_order_id
+                            ORDER BY cp.created_at LIMIT 1),
+                         (SELECT cp.id FROM course_periods cp
+                            WHERE cp.admin_enrollment_id = e.id ORDER BY cp.created_at LIMIT 1))
+                   AND st.parent_id = $2
+              ) AS attended_sessions,
+              (
+                SELECT cp.total_sessions FROM course_periods cp
+                 WHERE cp.id = COALESCE(
+                         (SELECT cp2.id FROM course_periods cp2
+                            WHERE e.group_order_id IS NOT NULL AND cp2.group_order_id = e.group_order_id
+                            ORDER BY cp2.created_at LIMIT 1),
+                         (SELECT cp2.id FROM course_periods cp2
+                            WHERE cp2.admin_enrollment_id = e.id ORDER BY cp2.created_at LIMIT 1))
+              ) AS period_total_sessions,
               v.id AS venue_id, v.name AS venue_name, v.account_holder, v.account_number,
               v.bank_institution_name, v.bank_branch_name
          FROM admin_enrollments e
          LEFT JOIN venues v ON v.id = e.venue_id
         WHERE e.id = $1`,
-      [req.params.id]
+      [req.params.id, req.parent.id]
     );
     if (!r.rowCount) return res.status(404).json({ error: '找不到此報名' });
     const row = r.rows[0];
     const phone = req.parent.phone;
     const owns = row.parent_phone === phone || (row.extra_parent_phones || []).includes(phone);
     if (!owns) return res.status(403).json({ error: '無權檢視此報名' });
+    // 堂數真相：總取自 course_period、已用＝已出席(checkin)；剩餘＝總−已出席。
+    const total = Number(row.period_total_sessions) || Number(row.total_sessions) || 0;
+    const used = Number(row.attended_sessions) || 0;
+    const remaining = Math.max(0, total - used);
     // lifecycle：與 /mine 一致的課程生命週期狀態（completed/active/closed/pending_payment）。
     const lifecycle = (() => {
-      const total = Number(row.total_sessions) || 0;
-      const used = Number(row.used_sessions) || 0;
       const s = row.status;
       if (s === 'cancelled' || s === 'refunded') return 'closed';
       if ((s === 'confirmed' || s === 'active') && total > 0 && used >= total) return 'completed';
@@ -299,8 +342,10 @@ router.get('/:id', requireParent, async (req, res) => {
       payment_status: row.status,
       lifecycle,
       course_period_id: row.course_period_id || null,
-      total_sessions: row.total_sessions,
-      used_sessions: row.used_sessions,
+      total_sessions: total,
+      used_sessions: used,
+      remaining_sessions: remaining,
+      pricing_multiplier: Number(row.pricing_multiplier) || 1,
       is_group_shared: !!row.is_group_shared,
       expires_at: row.expires_at || null,
       has_payment_proof: !!row.payment_proof_url,

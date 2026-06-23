@@ -1,8 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import LoadingSpinner from '../components/LoadingSpinner';
 import ConfirmModal from '../components/ConfirmModal';
+import SlotPicker from '../components/SlotPicker';
+import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
+import { coursesApi } from '../api/courses';
 import { lessonsApi } from '../api/lessons';
 import { checkinsApi } from '../api/checkins';
 import { courseTypeLabel, formatTWDate, formatTWTime } from '../utils/format';
@@ -12,22 +15,34 @@ function canParentCheckin(r) {
   return !r.checked_in_at && ['confirmed', 'completed'].includes(r.session_status);
 }
 
-
 export default function MyLessonsPage() {
   const toast = useToast();
   const navigate = useNavigate();
-  const [data, setData] = useState(null);
+  const { parent } = useAuth();
+  const [searchParams] = useSearchParams();
+  const periodParam = searchParams.get('period') || '';
+
+  const [courses, setCourses] = useState(null); // /api/courses/mine（含 0 預約的進行中課程）
+  const [lessons, setLessons] = useState(null); // /api/courses/lessons（已預約 session）
   const [enrollId, setEnrollId] = useState('');
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(false);              // 課程包下拉
+  const [expandedKey, setExpandedKey] = useState(null); // 內嵌預約：展開中的佔位 key
   const [checkinBusyKey, setCheckinBusyKey] = useState(null);
-  // 點「簽到」先跳確認視窗：confirmRow 為待確認的那筆，確認後才真正送出。
   const [confirmRow, setConfirmRow] = useState(null);
 
+  function load() {
+    return Promise.allSettled([coursesApi.myCourses(parent.id), lessonsApi.mine({})])
+      .then(([cRes, lRes]) => {
+        setCourses(cRes.status === 'fulfilled' && Array.isArray(cRes.value) ? cRes.value : []);
+        setLessons(lRes.status === 'fulfilled' && Array.isArray(lRes.value) ? lRes.value : []);
+        if (cRes.status !== 'fulfilled' && lRes.status !== 'fulfilled') toast.error('上課記錄載入失敗');
+      });
+  }
+
   useEffect(() => {
-    lessonsApi.mine({})
-      .then((d) => setData(Array.isArray(d) ? d : []))
-      .catch(() => { setData([]); toast.error('上課記錄載入失敗'); });
-  }, [toast]);
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parent.id]);
 
   async function handleCheckin(r) {
     const key = r.session_id + r.student_id;
@@ -35,7 +50,7 @@ export default function MyLessonsPage() {
     setCheckinBusyKey(key);
     try {
       const res = await checkinsApi.create({ sessionId: r.session_id, studentId: r.student_id });
-      setData((prev) => (prev || []).map((row) => (
+      setLessons((prev) => (prev || []).map((row) => (
         row.session_id === r.session_id && row.student_id === r.student_id
           ? { ...row, checkin_id: res.checkin_id, checked_in_at: res.checked_in_at }
           : row
@@ -49,42 +64,73 @@ export default function MyLessonsPage() {
     }
   }
 
-  // 扁平的上課記錄 → 依「課程期 × 學員」彙整成一筆筆「報名（課程包）」。
+  // 以「課程期 × 學員」彙整成「報名（課程包）」：
+  //  - 來源 1（/mine）：本家長進行中/已完成、且已開通(course_period_id)的課程 → 帶 total/教練/係數/學員，
+  //    確保「0 預約」的課程也會出現（六堂全為待預約）。
+  //  - 來源 2（/lessons）：已預約 session → 掛進對應報名的 records；未對到的自建（保底）。
   const enrollments = useMemo(() => {
+    if (courses === null && lessons === null) return [];
     const m = new Map();
-    for (const r of data || []) {
-      const key = `${r.period_id}|${r.student_id}`;
-      if (!m.has(key)) {
-        const total = Number(r.total_sessions) || 0;
-        const used = Number(r.used_sessions) || 0;
+    for (const c of courses || []) {
+      if (!c.course_period_id || c.lifecycle === 'closed') continue;
+      const students = (c.students_detail && c.students_detail.length)
+        ? c.students_detail
+        : (c.students || []).map((s) => (typeof s === 'string' ? { id: null, name: s } : s));
+      for (const st of students) {
+        if (!st || !st.id) continue; // 無 student id 無法對應 session / 簽到
+        const key = `${c.course_period_id}|${st.id}`;
+        if (m.has(key)) continue;
         m.set(key, {
           id: key,
+          periodId: c.course_period_id,
+          coach: c.coach?.name || c.coach_name,
+          group: courseTypeLabel(c.course_type),
+          pct: Math.round((Number(c.pricing_multiplier) || 1) * 100),
+          venue: c.venue?.name || '',
+          student: st.name,
+          studentId: st.id,
+          total: Number(c.total_sessions) || 0,
+          records: [],
+        });
+      }
+    }
+    for (const r of lessons || []) {
+      const key = `${r.period_id}|${r.student_id}`;
+      if (!m.has(key)) {
+        m.set(key, {
+          id: key,
+          periodId: r.period_id,
           coach: r.coach_name,
           group: courseTypeLabel(r.course_type),
           pct: Math.round((Number(r.pricing_multiplier) || 1) * 100),
+          venue: r.venue_name || '',
           student: r.student_name,
-          total,
-          remain: Math.max(0, total - used),
+          studentId: r.student_id,
+          total: Number(r.total_sessions) || 0,
           records: [],
         });
       }
       m.get(key).records.push(r);
     }
-    return Array.from(m.values());
-  }, [data]);
-
-  // 預設選第一筆；資料變動後若目前選的不存在則重設。
-  useEffect(() => {
-    if (enrollments.length && !enrollments.some((e) => e.id === enrollId)) {
-      setEnrollId(enrollments[0].id);
+    // 剩餘(未上課) = 總 − 已出席（已簽到的 records 數）。
+    for (const e of m.values()) {
+      e.remain = Math.max(0, e.total - e.records.filter((r) => r.checked_in_at).length);
     }
-  }, [enrollments, enrollId]);
+    return Array.from(m.values());
+  }, [courses, lessons]);
 
-  // 首次渲染時 enrollId 仍為 ''（useEffect 尚未跑），必須退回第一筆，否則存取 enrollment.remain 會整頁 crash。
+  // 預選：優先 ?period=，否則第一筆；資料變動後若目前選的不存在則重設。
+  useEffect(() => {
+    if (!enrollments.length) return;
+    if (enrollments.some((e) => e.id === enrollId)) return;
+    const byParam = periodParam && enrollments.find((e) => e.periodId === periodParam);
+    setEnrollId(byParam ? byParam.id : enrollments[0].id);
+  }, [enrollments, enrollId, periodParam]);
+
   const enrollment = enrollments.find((e) => e.id === enrollId) || enrollments[0] || null;
 
   // 上課明細排序：即將上課（未來）由近到遠在前；已出席（過去）由新到舊在後。
-  const sorted = useMemo(() => {
+  const sortedRecords = useMemo(() => {
     if (!enrollment) return [];
     const now = Date.now();
     return [...enrollment.records].sort((a, b) => {
@@ -98,7 +144,18 @@ export default function MyLessonsPage() {
     });
   }, [enrollment]);
 
-  if (data === null) return <LoadingSpinner label="載入中…" />;
+  // 六堂 = 已預約 records + 補足到 total 的「未預約」佔位。
+  const items = useMemo(() => {
+    const recs = sortedRecords.map((r) => ({ type: 'record', key: r.session_id + r.student_id, r }));
+    const placeholderCount = Math.max(0, (enrollment?.total || 0) - sortedRecords.length);
+    const phs = Array.from({ length: placeholderCount }, (_, i) => ({ type: 'placeholder', key: `ph-${i}` }));
+    return [...recs, ...phs];
+  }, [sortedRecords, enrollment]);
+
+  // 切換報名時收合內嵌預約。
+  useEffect(() => { setExpandedKey(null); }, [enrollId]);
+
+  if (courses === null && lessons === null) return <LoadingSpinner label="載入中…" />;
 
   return (
     <div className="min-h-[calc(100vh-3rem)] bg-gray-50">
@@ -110,7 +167,7 @@ export default function MyLessonsPage() {
         </div>
       ) : (
         <>
-          {/* 課程包選擇器：下拉切換不同報名，拉開即可看到每包剩餘堂數 */}
+          {/* 課程包選擇器 */}
           <div className="bg-white px-4 pb-4 pt-4">
             <div className="relative">
               <button
@@ -119,12 +176,11 @@ export default function MyLessonsPage() {
                 className="flex w-full items-center gap-3 rounded-2xl border border-gray-200 bg-white px-4 py-3 text-left shadow-sm active:bg-gray-50"
               >
                 <EnrollmentLines e={enrollment} />
-                <RemainBlock n={enrollment.remain} />
+                <RemainBlock n={enrollment.remain} total={enrollment.total} />
                 <ChevronDownIcon className={`shrink-0 text-gray-400 transition ${open ? 'rotate-180' : ''}`} />
               </button>
 
               {open && (
-                // 多筆報名時，一筆與一筆之間留約兩行（11px）的間距，較好辨識差異。
                 <div className="absolute left-0 right-0 top-full z-50 mt-2 flex flex-col gap-5 rounded-2xl border border-gray-100 bg-white p-2 shadow-xl">
                   {enrollments.map((e) => {
                     const sel = e.id === enrollId;
@@ -137,7 +193,7 @@ export default function MyLessonsPage() {
                       >
                         <span className="w-5 shrink-0">{sel && <CheckIcon className="text-brand-primary" />}</span>
                         <EnrollmentLines e={e} compact />
-                        <RemainBlock n={e.remain} />
+                        <RemainBlock n={e.remain} total={e.total} />
                       </button>
                     );
                   })}
@@ -146,30 +202,40 @@ export default function MyLessonsPage() {
             </div>
           </div>
 
-          {/* 上課明細 */}
-          <div className="px-4 pb-6 pt-1">
-            <div className="mb-2 px-1 text-xs text-gray-400">上課明細 · 共 {sorted.length} 筆</div>
-            {sorted.length > 0 ? (
-              <div className="space-y-2.5">
-                {sorted.map((r) => (
+          {/* 上課明細（六堂） */}
+          <div className="relative px-4 pb-6 pt-1">
+            <div className="mb-2 px-1 text-xs text-gray-400">上課明細 · 共 {items.length} 筆</div>
+            <div className="space-y-2.5">
+              {items.map((it) => (
+                it.type === 'record' ? (
                   <RecordCard
-                    key={r.session_id + r.student_id}
-                    r={r}
+                    key={it.key}
+                    r={it.r}
                     e={enrollment}
-                    busy={checkinBusyKey === (r.session_id + r.student_id)}
-                    onCheckin={() => setConfirmRow(r)}
-                    onOpen={() => r.record_status === 'submitted' && navigate(`/history/${r.period_id}`)}
+                    busy={checkinBusyKey === it.key}
+                    onCheckin={() => setConfirmRow(it.r)}
+                    onOpen={() => it.r.record_status === 'submitted' && navigate(`/history/${it.r.period_id}`)}
                   />
-                ))}
-              </div>
-            ) : (
-              <div className="mt-2 rounded-2xl border border-dashed border-gray-200 bg-white px-6 py-10 text-center text-sm text-gray-400">
-                沒有符合條件的上課記錄
-              </div>
+                ) : (
+                  <PlaceholderCard
+                    key={it.key}
+                    e={enrollment}
+                    expanded={expandedKey === it.key}
+                    raise={!!expandedKey}
+                    onToggle={() => setExpandedKey((k) => (k === it.key ? null : it.key))}
+                    onBooked={() => { setExpandedKey(null); load(); }}
+                  />
+                )
+              ))}
+            </div>
+
+            {/* 點擊外部 / 其他區域 收合內嵌預約 */}
+            {expandedKey && (
+              <button aria-label="收合" onClick={() => setExpandedKey(null)} className="fixed inset-0 z-30 cursor-default" />
             )}
           </div>
 
-          {/* 點擊外部關閉下拉 */}
+          {/* 課程包下拉的點擊外部關閉 */}
           {open && <button aria-label="關閉" onClick={() => setOpen(false)} className="fixed inset-0 z-40 cursor-default" />}
         </>
       )}
@@ -190,12 +256,14 @@ export default function MyLessonsPage() {
   );
 }
 
-// 右側大字剩餘堂數
-function RemainBlock({ n }) {
+// 右側大字：未上課堂數（剩） + 總堂數。
+function RemainBlock({ n, total }) {
   return (
     <div className="shrink-0 text-right">
-      <div className="text-lg font-bold leading-none tabular-nums text-brand-primary">{n}</div>
-      <div className="mt-0.5 text-xs text-gray-400">剩餘堂</div>
+      <div className="text-lg font-bold leading-none tabular-nums text-brand-primary">
+        {n}<span className="text-sm font-medium text-gray-400">/{total}</span>
+      </div>
+      <div className="mt-0.5 text-xs text-gray-400">未上課/總</div>
     </div>
   );
 }
@@ -214,22 +282,48 @@ function EnrollmentLines({ e, compact }) {
   );
 }
 
+// 統一狀態正方形按鈕（等寬等高），右側對齊。
+function StatusSquare({ label, tone, disabled, onClick }) {
+  const toneCls = {
+    book:     'bg-brand-primary/10 text-brand-primary active:bg-brand-primary/20',
+    checkin:  'bg-brand-primary text-white active:opacity-90',
+    attended: 'bg-brand-green/15 text-brand-green',
+    pending:  'bg-gray-100 text-gray-400',
+  }[tone] || 'bg-gray-100 text-gray-500';
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick ? (ev) => { ev.stopPropagation(); onClick(); } : undefined}
+      style={{ width: 68, height: 68 }}
+      className={`flex shrink-0 flex-col items-center justify-center rounded-xl text-sm font-bold leading-tight disabled:cursor-default ${toneCls}`}
+    >
+      {label.map((t) => <span key={t}>{t}</span>)}
+    </button>
+  );
+}
+
 function RecordCard({ r, e, busy, onCheckin, onOpen }) {
-  const past = new Date(r.scheduled_at).getTime() < Date.now();
   const checkinable = canParentCheckin(r);
   const clickable = r.record_status === 'submitted';
 
   const dateStr = formatTWDate(r.scheduled_at);
   const timeStr = formatTWTime(r.scheduled_at);
 
-  const coachParts = [
-    `${r.coach_name || e.coach} 教練`,
-    e.group,
-    r.venue_name,
-  ].filter(Boolean);
-  const coachLine = coachParts.join('，');
-
+  const coachParts = [`${r.coach_name || e.coach} 教練`, e.group, r.venue_name || e.venue].filter(Boolean);
+  const coachLine = coachParts.join('・');
   const checkinDateStr = r.checked_in_at ? r.checked_in_at.toString().slice(0, 10) : null;
+
+  let btn;
+  if (r.checked_in_at) {
+    btn = <StatusSquare label={['已出席']} tone="attended" disabled />;
+  } else if (checkinable) {
+    btn = <StatusSquare label={busy ? ['簽到中'] : ['簽到']} tone="checkin" disabled={busy} onClick={onCheckin} />;
+  } else if (r.session_status === 'pending_group_confirm') {
+    btn = <StatusSquare label={['待確認']} tone="pending" disabled />;
+  } else {
+    btn = <StatusSquare label={['即將', '上課']} tone="pending" disabled />;
+  }
 
   return (
     <div
@@ -238,9 +332,7 @@ function RecordCard({ r, e, busy, onCheckin, onOpen }) {
     >
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-bold tabular-nums text-gray-900">
-            {dateStr}{timeStr}
-          </div>
+          <div className="text-sm font-bold tabular-nums text-gray-900">{dateStr}{timeStr}</div>
           <div className="mt-1 text-sm text-gray-700">{coachLine}</div>
           <div className="mt-0.5 text-sm text-gray-500">學員：{r.student_name || e.student}</div>
           {checkinDateStr && (
@@ -250,26 +342,36 @@ function RecordCard({ r, e, busy, onCheckin, onOpen }) {
             <div className="mt-2 text-xs font-medium text-brand-teal">📝 教練已上傳上課紀錄，點擊查看 ›</div>
           )}
         </div>
-
-        <div className="shrink-0 pt-0.5">
-          {r.checked_in_at ? (
-            <span className="rounded-xl bg-brand-green/15 px-4 py-2 text-sm font-medium text-brand-green">已出席</span>
-          ) : checkinable ? (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={(ev) => { ev.stopPropagation(); onCheckin(); }}
-              className="rounded-xl bg-brand-primary px-5 py-2 text-base font-bold text-white active:opacity-90 disabled:opacity-50"
-            >
-              {busy ? '簽到中…' : '簽到'}
-            </button>
-          ) : (
-            <span className="rounded-xl bg-brand-primary/10 px-4 py-2 text-sm font-medium text-brand-primary">
-              {past ? '已出席' : '即將上課'}
-            </span>
-          )}
-        </div>
+        <div className="shrink-0">{btn}</div>
       </div>
+    </div>
+  );
+}
+
+// 未預約佔位卡：點卡片或「預約上課」展開內嵌時段選擇器（單選）。
+function PlaceholderCard({ e, expanded, raise, onToggle, onBooked }) {
+  const coachLine = [`${e.coach} 教練`, e.group, e.venue].filter(Boolean).join('・');
+  return (
+    <div
+      onClick={() => { if (!expanded) onToggle(); }}
+      className={`overflow-hidden rounded-2xl border bg-white shadow-sm transition ${
+        expanded ? 'relative z-40 border-brand-primary/60 ring-2 ring-brand-primary/40' : `border-gray-100 ${raise ? '' : ''} cursor-pointer active:bg-gray-50`
+      } ${raise && !expanded ? 'relative z-40' : ''}`}
+    >
+      <div className="flex items-start gap-3 p-4">
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-bold text-gray-400">尚未預約時間</div>
+          <div className="mt-1 text-sm text-gray-700">{coachLine}</div>
+          <div className="mt-0.5 text-sm text-gray-500">學員：{e.student}</div>
+        </div>
+        <StatusSquare label={['預約', '上課']} tone="book" onClick={onToggle} />
+      </div>
+
+      {expanded && (
+        <div className="border-t border-gray-100 bg-gray-50/80" onClick={(ev) => ev.stopPropagation()}>
+          <SlotPicker periodId={e.periodId} embedded onBooked={onBooked} />
+        </div>
+      )}
     </div>
   );
 }
@@ -289,4 +391,3 @@ function CheckIcon({ className = '' }) {
     </svg>
   );
 }
-

@@ -89,8 +89,8 @@ export function isValidTWId(id) {
 }
 
 export function courseTypeLabel(type) {
-  // 顧客端統一顯示 1V1 / 1V2 / 1V3 / 1V4（DB seed label「一對一…」維持給後台用；type 4 容量仍為 4~6 人）。
-  return ({ 1: '1V1', 2: '1V2', 3: '1V3', 4: '1V4' }[type] || `1V${type}`);
+  // 顧客端統一顯示 1對1 / 1對2 / 1對3 / 1對4（DB seed label「一對一…」維持給後台用；type 4 容量仍為 4~6 人）。
+  return ({ 1: '1對1', 2: '1對2', 3: '1對3', 4: '1對4' }[type] || `1對${type}`);
 }
 
 export function paymentStatusLabel(status) {

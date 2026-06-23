@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>新系統資料口徑比對表（訂單 / 家長 / 教練）</title>
+<style>
+  :root{
+    --bg:#0f172a; --card:#ffffff; --ink:#0f172a; --muted:#64748b;
+    --line:#e2e8f0; --head:#1e293b; --accent:#2563eb; --accent2:#0891b2;
+    --nn:#dc2626; --pk:#7c3aed; --uniq:#0891b2; --fk:#2563eb; --auto:#64748b; --def:#059669;
+    --fill:#fffbeb; --fillbd:#f59e0b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:"Segoe UI","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+       background:#f1f5f9;color:var(--ink);line-height:1.5;}
+  header{background:linear-gradient(120deg,#0f172a,#1e3a8a);color:#fff;padding:28px 24px;}
+  header h1{margin:0 0 6px;font-size:22px;letter-spacing:.5px}
+  header p{margin:2px 0;color:#cbd5e1;font-size:13px}
+  .wrap{max-width:1280px;margin:0 auto;padding:20px 16px 80px}
+  .toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:16px 0 8px}
+  .btn{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:8px 14px;font-size:13px;cursor:pointer}
+  .btn.ghost{background:#fff;color:var(--accent);border:1px solid var(--accent)}
+  .note{background:#fff7ed;border:1px solid #fed7aa;border-left:4px solid #f59e0b;
+        border-radius:8px;padding:12px 14px;font-size:13px;color:#7c2d12;margin:14px 0}
+  .note b{color:#9a3412}
+  .legend{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 4px;font-size:12px;color:var(--muted)}
+  .badge{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:999px;
+         border:1px solid currentColor;white-space:nowrap;line-height:1.6}
+  .b-pk{color:var(--pk)} .b-uniq{color:var(--uniq)} .b-nn{color:var(--nn)}
+  .b-fk{color:var(--fk)} .b-auto{color:var(--auto)} .b-def{color:var(--def)}
+  section{background:var(--card);border:1px solid var(--line);border-radius:14px;
+          margin:22px 0;overflow:hidden;box-shadow:0 1px 3px rgba(15,23,42,.06)}
+  .sec-head{padding:16px 18px;border-bottom:1px solid var(--line);
+            display:flex;flex-wrap:wrap;gap:8px;align-items:baseline;justify-content:space-between}
+  .sec-head h2{margin:0;font-size:17px}
+  .sec-head .tbl{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;
+                 color:#fff;background:var(--head);padding:2px 8px;border-radius:6px}
+  .sec-head .src{font-size:11.5px;color:var(--muted);font-family:ui-monospace,monospace}
+  .sub{padding:6px 18px;font-size:12.5px;color:var(--muted);background:#f8fafc;border-bottom:1px solid var(--line)}
+  table{border-collapse:collapse;width:100%;font-size:13px}
+  thead th{position:sticky;top:0;background:#f1f5f9;text-align:left;padding:9px 10px;
+           border-bottom:2px solid var(--line);font-size:12px;color:#334155;white-space:nowrap}
+  tbody td{padding:8px 10px;border-bottom:1px solid #eef2f7;vertical-align:top}
+  tbody tr:nth-child(even){background:#fcfdff}
+  .col-num{color:var(--muted);width:30px;text-align:right}
+  .fname{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:600;color:#0f172a;white-space:nowrap}
+  .ftype{font-family:ui-monospace,monospace;color:#0369a1;white-space:nowrap;font-size:12px}
+  .keys{white-space:nowrap}
+  .desc{color:#475569;font-size:12.5px;max-width:340px}
+  .req{color:var(--nn);font-weight:700}
+  .opt{color:#94a3b8}
+  .def{font-family:ui-monospace,monospace;font-size:12px;color:var(--def)}
+  .fill{background:var(--fill);border-left:2px dashed var(--fillbd);min-width:160px}
+  .fill[contenteditable]{outline:none}
+  .fill:empty::before{content:"點此輸入舊系統欄位 / 對應…";color:#cbd5e1;font-size:11.5px}
+  .enum{display:flex;flex-wrap:wrap;gap:6px;padding:12px 18px;font-size:12.5px;align-items:center;background:#f8fafc}
+  .enum .k{font-family:ui-monospace,monospace;background:#e0f2fe;color:#075985;padding:1px 7px;border-radius:6px}
+  .ct{margin:0;width:auto}
+  .ct td,.ct th{padding:6px 12px}
+  footer{color:var(--muted);font-size:12px;text-align:center;padding:24px;max-width:1280px;margin:0 auto}
+  @media print{
+    body{background:#fff}
+    .toolbar,.btn{display:none}
+    section{break-inside:avoid;box-shadow:none}
+    thead th{position:static}
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>新系統資料口徑比對表</h1>
+  <p>三個建檔結構：① 整筆訂單創建 ② 家長資料 ③ 教練資料 — 供與舊系統資料逐欄比對</p>
+  <p>資料來源：本專案實際 PostgreSQL schema（啟動建表 / migration），每欄標註原始碼行號可核對</p>
+</header>
+
+<div class="wrap">
+
+  <div class="note">
+    <b>⚠️ 防幻覺聲明：</b>本表所有欄位皆<b>逐字取自下列原始碼檔案</b>，未在程式碼中出現的欄位一律不列出，也未杜撰任何約束。可對照 <code>檔案:行號</code> 自行驗證。
+    <br>來源檔案：
+    <code>db/migrations/002_admin_tables.sql</code>、
+    <code>server/bootstrap/admin.js</code>、
+    <code>server/bootstrap/coreSchema.js</code>、
+    <code>db/migrations/008_parent_profile_maintenance.sql</code>。
+  </div>
+
+  <div class="toolbar">
+    <button class="btn" onclick="window.print()">🖨 列印 / 存成 PDF</button>
+    <span class="legend">
+      <span class="badge b-pk">PK 主鍵</span>
+      <span class="badge b-uniq">UNIQUE 唯一</span>
+      <span class="badge b-nn">NN 必填</span>
+      <span class="badge b-fk">FK 外鍵</span>
+      <span class="badge b-auto">AUTO 系統產生·匯入勿供</span>
+      <span class="badge b-def">DEFAULT 預設</span>
+    </span>
+  </div>
+  <div class="legend">最右欄「舊系統對應」可<b>直接點擊輸入</b>（瀏覽器內編輯，列印或截圖保存；重新整理不留存）。</div>
+
+  <!-- ===================== 1. 訂單 ===================== -->
+  <section>
+    <div class="sec-head">
+      <div>
+        <h2>① 整筆訂單的創建</h2>
+      </div>
+      <div style="text-align:right">
+        <div class="tbl">admin_enrollments</div>
+        <div class="src">002_admin_tables.sql:78–96 · admin.js:279–286 · coreSchema.js:381,417–434</div>
+      </div>
+    </div>
+    <div class="sub">後台「簡化表」口徑：<b>教練/學員存「名字文字」、館別存「代碼」、家長以電話對應</b>，不需 UUID 即可建一筆訂單。<code>id</code> 為自訂文字（非自動）。</div>
+    <table>
+      <thead><tr>
+        <th class="col-num">#</th><th>欄位</th><th>型別</th><th>必填</th><th>預設</th><th>鍵 / 約束</th><th>說明（取自程式碼註解）</th><th>舊系統對應</th>
+      </tr></thead>
+      <tbody>
+        <tr><td class="col-num">1</td><td class="fname">id</td><td class="ftype">TEXT</td><td class="req">✓</td><td>—</td><td class="keys"><span class="badge b-pk">PK</span></td><td class="desc">訂單編號，自訂文字（現有為 CP####），<b>非自動產生</b>，匯入需自帶</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">2</td><td class="fname">parent_name</td><td class="ftype">TEXT</td><td class="req">✓</td><td>—</td><td></td><td class="desc">家長姓名（文字）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">3</td><td class="fname">parent_phone</td><td class="ftype">TEXT</td><td class="req">✓</td><td>—</td><td></td><td class="desc">家長手機；訂單↔家長的對應鍵</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">4</td><td class="fname">students</td><td class="ftype">TEXT[]</td><td class="req">✓</td><td>—</td><td></td><td class="desc">學員姓名陣列（一訂單可多學員）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">5</td><td class="fname">coach</td><td class="ftype">TEXT</td><td class="req">✓</td><td>—</td><td></td><td class="desc">授課教練姓名（文字，非 FK）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">6</td><td class="fname">venue_id</td><td class="ftype">TEXT</td><td class="req">✓</td><td>—</td><td></td><td class="desc">館別代碼（B / C / X…）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">7</td><td class="fname">course_type</td><td class="ftype">INT</td><td class="req">✓</td><td>—</td><td></td><td class="desc">課程組別 1–4（見下方對照；無 1對5/1對6）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">8</td><td class="fname">original_price</td><td class="ftype">NUMERIC(10,2)</td><td class="req">✓</td><td>—</td><td></td><td class="desc">原價（整筆訂單總額）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">9</td><td class="fname">final_price</td><td class="ftype">NUMERIC(10,2)</td><td class="req">✓</td><td>—</td><td></td><td class="desc">折後實收</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">10</td><td class="fname">transfer_last_5</td><td class="ftype">TEXT</td><td class="opt">—</td><td>—</td><td></td><td class="desc">匯款帳號末 5 碼</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">11</td><td class="fname">status</td><td class="ftype">TEXT</td><td class="req">✓</td><td>—</td><td></td><td class="desc">訂單狀態（DB 無 CHECK；見下方值列表）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">12</td><td class="fname">submitted_at</td><td class="ftype">TIMESTAMPTZ</td><td class="req">✓</td><td>—</td><td></td><td class="desc">家長送出報名時間</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">13</td><td class="fname">total_sessions</td><td class="ftype">INT</td><td class="opt">—</td><td>—</td><td></td><td class="desc">總堂數（制度預設 6）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">14</td><td class="fname">used_sessions</td><td class="ftype">INT</td><td class="opt">—</td><td>—</td><td></td><td class="desc">已使用堂數</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">15</td><td class="fname">refund_amount</td><td class="ftype">NUMERIC(10,2)</td><td class="opt">—</td><td>—</td><td></td><td class="desc">退款金額（退費時填）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">16</td><td class="fname">created_at</td><td class="ftype">TIMESTAMPTZ</td><td class="opt">—</td><td class="def">NOW()</td><td class="keys"><span class="badge b-auto">AUTO</span></td><td class="desc">建立時間（系統產生，匯入勿供）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">17</td><td class="fname">updated_at</td><td class="ftype">TIMESTAMPTZ</td><td class="opt">—</td><td class="def">NOW()</td><td class="keys"><span class="badge b-auto">AUTO</span></td><td class="desc">更新時間（系統產生）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">18</td><td class="fname">invoice_number</td><td class="ftype">VARCHAR(20)</td><td class="opt">—</td><td>—</td><td></td><td class="desc">發票號碼（Task #39：對帳時記錄發票資訊）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">19</td><td class="fname">invoice_image_url</td><td class="ftype">TEXT</td><td class="opt">—</td><td>—</td><td></td><td class="desc">發票圖檔網址</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">20</td><td class="fname">invoice_url</td><td class="ftype">TEXT</td><td class="opt">—</td><td>—</td><td></td><td class="desc">發票連結</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">21</td><td class="fname">invoice_issued_at</td><td class="ftype">TIMESTAMPTZ</td><td class="opt">—</td><td>—</td><td></td><td class="desc">發票開立時間</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">22</td><td class="fname">extra_parent_phones</td><td class="ftype">TEXT[]</td><td class="opt">—</td><td class="def">'{}'</td><td></td><td class="desc">多組家庭：額外家長手機（供 LIFF 課程查詢 OR 條件）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">23</td><td class="fname">notes</td><td class="ftype">TEXT</td><td class="opt">—</td><td>—</td><td></td><td class="desc">後台備註欄</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">24</td><td class="fname">coach_id</td><td class="ftype">UUID</td><td class="opt">—</td><td>—</td><td class="keys"><span class="badge b-fk">FK→coaches</span></td><td class="desc">Task #59：軟 FK 連 coaches（可空，名字仍存於 coach 欄）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">25</td><td class="fname">payment_proof_url</td><td class="ftype">TEXT</td><td class="opt">—</td><td>—</td><td></td><td class="desc">U3：匯款／轉帳證明上傳網址（程式層於 pending_payment 要求，DB 可空）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">26</td><td class="fname">group_order_id</td><td class="ftype">UUID</td><td class="opt">—</td><td>—</td><td></td><td class="desc">U6：團購核准後產生的報名，回連 group_orders.id</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">27</td><td class="fname">is_group_shared</td><td class="ftype">BOOLEAN</td><td class="req">✓</td><td class="def">FALSE</td><td></td><td class="desc">U6：是否團購共享班（前端顯示「團購」徽章）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">28</td><td class="fname">period_count</td><td class="ftype">INTEGER</td><td class="req">✓</td><td class="def">1</td><td></td><td class="desc">U9：一次購買幾期</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">29</td><td class="fname">period_number</td><td class="ftype">INTEGER</td><td class="req">✓</td><td class="def">1</td><td></td><td class="desc">這筆是第幾期（多期會拆成多筆）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">30</td><td class="fname">enrollment_batch_id</td><td class="ftype">UUID</td><td class="opt">—</td><td>—</td><td></td><td class="desc">同次購買的多筆共用此批次 id（成組顯示）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">31</td><td class="fname">carrier</td><td class="ftype">TEXT</td><td class="opt">—</td><td>—</td><td></td><td class="desc">電子發票手機條碼載具</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">32</td><td class="fname">refunded_at</td><td class="ftype">TIMESTAMPTZ</td><td class="opt">—</td><td>—</td><td></td><td class="desc">退費送出時間（舊資料為 NULL）</td><td class="fill" contenteditable></td></tr>
+      </tbody>
+    </table>
+    <div class="enum">
+      <b>course_type 對照</b>（來源 coreSchema.js:1052–1060 course_type_configs seed）：
+      <table class="ct"><tbody>
+        <tr><td><span class="k">1</span></td><td>一對一</td><td>人數 1</td><td>每人單價 9000</td></tr>
+        <tr><td><span class="k">2</span></td><td>一對二</td><td>人數 2</td><td>每人單價 6000</td></tr>
+        <tr><td><span class="k">3</span></td><td>一對三</td><td>人數 3</td><td>每人單價 4500</td></tr>
+        <tr><td><span class="k">4</span></td><td>1對4~6</td><td>人數 4–6（min 4, max 6）</td><td>每人單價 3000</td></tr>
+      </tbody></table>
+    </div>
+    <div class="enum">
+      <b>status 實際出現值</b>（DB 為自由 TEXT、無 CHECK；以下取自 admin.js seed 與程式流程）：
+      <span class="k">pending_payment</span> 待對帳 ›
+      <span class="k">confirmed</span> 已對帳未開課 ›
+      <span class="k">active</span> 進行中 ›
+      <span class="k">cancelled</span> 取消 /
+      <span class="k">refunded</span> 退費
+    </div>
+  </section>
+
+  <!-- 訂單軌跡（companion） -->
+  <section>
+    <div class="sec-head">
+      <div><h2>①-附 訂單軌跡（建立訂單時一併寫入）</h2></div>
+      <div style="text-align:right">
+        <div class="tbl">admin_enrollment_audit_logs</div>
+        <div class="src">002_admin_tables.sql:100–108 · coreSchema.js:449–454</div>
+      </div>
+    </div>
+    <div class="sub">一筆訂單 → 多筆軌跡（送出 / 對帳 / 取消 / 退費 / 換教練各一筆）。</div>
+    <table>
+      <thead><tr><th class="col-num">#</th><th>欄位</th><th>型別</th><th>必填</th><th>預設</th><th>鍵 / 約束</th><th>說明</th><th>舊系統對應</th></tr></thead>
+      <tbody>
+        <tr><td class="col-num">1</td><td class="fname">id</td><td class="ftype">BIGSERIAL</td><td class="opt">—</td><td class="def">auto</td><td class="keys"><span class="badge b-pk">PK</span> <span class="badge b-auto">AUTO</span></td><td class="desc">流水號（系統產生）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">2</td><td class="fname">enrollment_id</td><td class="ftype">TEXT</td><td class="req">✓</td><td>—</td><td class="keys"><span class="badge b-fk">FK→admin_enrollments</span></td><td class="desc">所屬訂單（ON DELETE CASCADE）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">3</td><td class="fname">at</td><td class="ftype">TIMESTAMPTZ</td><td class="req">✓</td><td class="def">NOW()</td><td></td><td class="desc">事件時間</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">4</td><td class="fname">action</td><td class="ftype">TEXT</td><td class="req">✓</td><td>—</td><td></td><td class="desc">動作（如「家長送出報名」「對帳通過」「主管取消」「退課」）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">5</td><td class="fname">by_user</td><td class="ftype">TEXT</td><td class="req">✓</td><td>—</td><td></td><td class="desc">操作者（文字）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">6</td><td class="fname">reason</td><td class="ftype">TEXT</td><td class="opt">—</td><td>—</td><td></td><td class="desc">原因（退費 / 取消填）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">7</td><td class="fname">refund_amount</td><td class="ftype">NUMERIC(10,2)</td><td class="opt">—</td><td>—</td><td></td><td class="desc">該動作退款金額</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">8</td><td class="fname">before_coach_id</td><td class="ftype">UUID</td><td class="opt">—</td><td>—</td><td></td><td class="desc">Task #59：換教練前教練 id</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">9</td><td class="fname">after_coach_id</td><td class="ftype">UUID</td><td class="opt">—</td><td>—</td><td></td><td class="desc">換教練後教練 id</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">10</td><td class="fname">before_coach</td><td class="ftype">TEXT</td><td class="opt">—</td><td>—</td><td></td><td class="desc">換教練前教練名（可讀紀錄）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">11</td><td class="fname">after_coach</td><td class="ftype">TEXT</td><td class="opt">—</td><td>—</td><td></td><td class="desc">換教練後教練名</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">12</td><td class="fname">before_venue_id</td><td class="ftype">VARCHAR(10)</td><td class="opt">—</td><td>—</td><td></td><td class="desc">異動前館別代碼</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">13</td><td class="fname">after_venue_id</td><td class="ftype">VARCHAR(10)</td><td class="opt">—</td><td>—</td><td></td><td class="desc">異動後館別代碼</td><td class="fill" contenteditable></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ===================== 2. 家長 ===================== -->
+  <section>
+    <div class="sec-head">
+      <div><h2>② 建立家長資料</h2></div>
+      <div style="text-align:right">
+        <div class="tbl">parents</div>
+        <div class="src">coreSchema.js:91–100,743–749 · migration 008</div>
+      </div>
+    </div>
+    <div class="sub">核心命名空間（UUID）。<code>phone</code> 為唯一識別鍵。<code>email</code>~<code>line_id</code> 為 LIFF 註冊頁可選欄位。</div>
+    <table>
+      <thead><tr><th class="col-num">#</th><th>欄位</th><th>型別</th><th>必填</th><th>預設</th><th>鍵 / 約束</th><th>說明</th><th>舊系統對應</th></tr></thead>
+      <tbody>
+        <tr><td class="col-num">1</td><td class="fname">id</td><td class="ftype">UUID</td><td class="opt">—</td><td class="def">gen_random_uuid()</td><td class="keys"><span class="badge b-pk">PK</span> <span class="badge b-auto">AUTO</span></td><td class="desc">系統 UUID（匯入勿供）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">2</td><td class="fname">line_uid</td><td class="ftype">VARCHAR(100)</td><td class="opt">—</td><td>—</td><td class="keys"><span class="badge b-uniq">UNIQUE</span></td><td class="desc">LINE userId（綁定登入）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">3</td><td class="fname">phone</td><td class="ftype">VARCHAR(20)</td><td class="req">✓</td><td>—</td><td class="keys"><span class="badge b-uniq">UNIQUE</span></td><td class="desc">家長手機，<b>唯一識別鍵</b>（重複會撞 UNIQUE）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">4</td><td class="fname">name</td><td class="ftype">VARCHAR(100)</td><td class="req">✓</td><td>—</td><td></td><td class="desc">家長姓名</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">5</td><td class="fname">primary_venue_id</td><td class="ftype">VARCHAR(10)</td><td class="opt">—</td><td>—</td><td class="keys"><span class="badge b-fk">FK→venues</span></td><td class="desc">主要館別（代碼）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">6</td><td class="fname">is_active</td><td class="ftype">BOOLEAN</td><td class="req">✓</td><td class="def">TRUE</td><td></td><td class="desc">軟刪除旗標（從 Ragic 主庫刪除時設 FALSE）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">7</td><td class="fname">created_at</td><td class="ftype">TIMESTAMPTZ</td><td class="opt">—</td><td class="def">NOW()</td><td class="keys"><span class="badge b-auto">AUTO</span></td><td class="desc">建立時間</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">8</td><td class="fname">updated_at</td><td class="ftype">TIMESTAMPTZ</td><td class="opt">—</td><td class="def">NOW()</td><td class="keys"><span class="badge b-auto">AUTO</span></td><td class="desc">更新時間</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">9</td><td class="fname">email</td><td class="ftype">VARCHAR(255)</td><td class="opt">—</td><td>—</td><td></td><td class="desc">電子郵件（LIFF 註冊頁可選）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">10</td><td class="fname">gender</td><td class="ftype">VARCHAR(20)</td><td class="opt">—</td><td>—</td><td></td><td class="desc">性別（DB 自由文字）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">11</td><td class="fname">identity</td><td class="ftype">VARCHAR(50)</td><td class="opt">—</td><td>—</td><td></td><td class="desc">身分 / 身分證（profile maintenance）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">12</td><td class="fname">home_phone</td><td class="ftype">VARCHAR(30)</td><td class="opt">—</td><td>—</td><td></td><td class="desc">市話</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">13</td><td class="fname">home_address</td><td class="ftype">TEXT</td><td class="opt">—</td><td>—</td><td></td><td class="desc">住址</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">14</td><td class="fname">line_id</td><td class="ftype">VARCHAR(100)</td><td class="opt">—</td><td>—</td><td></td><td class="desc">LINE ID（顯示用，非 userId）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">15</td><td class="fname">ragic_record_id</td><td class="ftype">VARCHAR(50)</td><td class="opt">—</td><td>—</td><td></td><td class="desc">Ragic 對應 record id（同步用）</td><td class="fill" contenteditable></td></tr>
+      </tbody>
+    </table>
+    <div class="sub">註：學員（students）為獨立表、以 <code>parent_id</code> 關聯家長，本表未列；如需學員欄位再單獨產出。</div>
+  </section>
+
+  <!-- ===================== 3. 教練 ===================== -->
+  <section>
+    <div class="sec-head">
+      <div><h2>③ 教練資料</h2></div>
+      <div style="text-align:right">
+        <div class="tbl">coaches</div>
+        <div class="src">coreSchema.js:36–51,247–251,662–675</div>
+      </div>
+    </div>
+    <div class="sub">核心命名空間（UUID）。<code>ragic_employee_id</code> 為唯一識別鍵（員工編號）。教練可教多館，見下方 coach_venues。</div>
+    <table>
+      <thead><tr><th class="col-num">#</th><th>欄位</th><th>型別</th><th>必填</th><th>預設</th><th>鍵 / 約束</th><th>說明</th><th>舊系統對應</th></tr></thead>
+      <tbody>
+        <tr><td class="col-num">1</td><td class="fname">id</td><td class="ftype">UUID</td><td class="opt">—</td><td class="def">gen_random_uuid()</td><td class="keys"><span class="badge b-pk">PK</span> <span class="badge b-auto">AUTO</span></td><td class="desc">系統 UUID（匯入勿供）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">2</td><td class="fname">ragic_employee_id</td><td class="ftype">VARCHAR(50)</td><td class="req">✓</td><td>—</td><td class="keys"><span class="badge b-uniq">UNIQUE</span></td><td class="desc">Ragic 員工編號，<b>唯一識別鍵</b></td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">3</td><td class="fname">name</td><td class="ftype">VARCHAR(100)</td><td class="req">✓</td><td>—</td><td></td><td class="desc">教練姓名</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">4</td><td class="fname">phone</td><td class="ftype">VARCHAR(20)</td><td class="req">✓</td><td>—</td><td class="keys"><span class="badge b-uniq">UNIQUE</span></td><td class="desc">教練手機（唯一）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">5</td><td class="fname">line_uid</td><td class="ftype">VARCHAR(100)</td><td class="opt">—</td><td>—</td><td class="keys"><span class="badge b-uniq">UNIQUE</span></td><td class="desc">LINE userId（綁定登入）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">6</td><td class="fname">email</td><td class="ftype">VARCHAR(255)</td><td class="opt">—</td><td>—</td><td></td><td class="desc">電子郵件</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">7</td><td class="fname">specialties</td><td class="ftype">TEXT[]</td><td class="opt">—</td><td>—</td><td></td><td class="desc">專長（文字陣列）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">8</td><td class="fname">is_senior</td><td class="ftype">BOOLEAN</td><td class="req">✓</td><td class="def">FALSE</td><td></td><td class="desc">是否資深教練</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">9</td><td class="fname">pricing_multiplier</td><td class="ftype">DECIMAL(5,2)</td><td class="req">✓</td><td class="def">1.00</td><td></td><td class="desc">定價倍率</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">10</td><td class="fname">bio_rich_text</td><td class="ftype">TEXT</td><td class="opt">—</td><td>—</td><td></td><td class="desc">教練介紹（rich text）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">11</td><td class="fname">is_active</td><td class="ftype">BOOLEAN</td><td class="req">✓</td><td class="def">TRUE</td><td></td><td class="desc">是否在職啟用</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">12</td><td class="fname">intro_review_status</td><td class="ftype">VARCHAR(20)</td><td class="req">✓</td><td class="def">'draft'</td><td></td><td class="desc">介紹送審狀態（值：draft / pending_review / approved / rejected；legacy submitted 已遷為 pending_review）</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">13</td><td class="fname">active_overridden_at</td><td class="ftype">TIMESTAMPTZ</td><td class="opt">—</td><td>—</td><td></td><td class="desc">Task #53：手動覆寫旗標 — 後台勾啟用後 Ragic 同步不再覆蓋 is_active</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">14</td><td class="fname">intro_review_note</td><td class="ftype">TEXT</td><td class="opt">—</td><td>—</td><td></td><td class="desc">F-C06：審核備註</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">15</td><td class="fname">intro_submitted_at</td><td class="ftype">TIMESTAMPTZ</td><td class="opt">—</td><td>—</td><td></td><td class="desc">介紹送審時間</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">16</td><td class="fname">intro_reviewed_at</td><td class="ftype">TIMESTAMPTZ</td><td class="opt">—</td><td>—</td><td></td><td class="desc">介紹審核時間</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">17</td><td class="fname">intro_reviewed_by</td><td class="ftype">TEXT</td><td class="opt">—</td><td>—</td><td class="keys"><span class="badge b-fk">FK→admin_users</span></td><td class="desc">審核者</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">18</td><td class="fname">created_at</td><td class="ftype">TIMESTAMPTZ</td><td class="opt">—</td><td class="def">NOW()</td><td class="keys"><span class="badge b-auto">AUTO</span></td><td class="desc">建立時間</td><td class="fill" contenteditable></td></tr>
+        <tr><td class="col-num">19</td><td class="fname">updated_at</td><td class="ftype">TIMESTAMPTZ</td><td class="opt">—</td><td class="def">NOW()</td><td class="keys"><span class="badge b-auto">AUTO</span></td><td class="desc">更新時間</td><td class="fill" contenteditable></td></tr>
+      </tbody>
+    </table>
+    <div class="enum">
+      <b>教練 ↔ 館別</b>（多對多，coreSchema.js:53–57）：
+      <span class="k">coach_venues</span> = (coach_id UUID FK, venue_id VARCHAR(10) FK)，複合主鍵；一位教練可對多個館別。
+    </div>
+    <div class="sub">提醒：教練在後台另有一份 <code>admin_staff</code>（TEXT id、role='coach'，admin 命名空間）。若舊系統教練資料要進後台管理，需一併考慮；如需該表欄位再單獨產出。</div>
+  </section>
+
+  <footer>
+    本檔由現行程式碼 schema 逐欄擷取，無杜撰欄位。如需「學員 students / 後台員工 admin_staff / 場館 venues / 團報 group_orders」等其餘結構的同款比對表，再告訴我即可。
+  </footer>
+</div>
+</body>
+</html>
