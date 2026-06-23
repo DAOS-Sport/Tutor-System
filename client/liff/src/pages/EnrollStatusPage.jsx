@@ -44,7 +44,8 @@ export default function EnrollStatusPage() {
   useEffect(() => {
     if (enr) {
       setTransferLast5(enr.transfer_last_5 || '');
-      setCarrier(enr.carrier || '');
+      // 載具：優先用報名已存值，否則帶入瀏覽器快取（上次填過的載具），免重複輸入。
+      setCarrier(enr.carrier || localStorage.getItem('daos_invoice_carrier') || '');
       setProofFile(null);
     }
   }, [enr?.id, enr?.transfer_last_5, enr?.has_payment_proof, enr?.carrier]);
@@ -109,6 +110,8 @@ export default function EnrollStatusPage() {
         payment_proof_url: url || undefined,
         carrier: carrier.trim() || undefined,
       });
+      // 載具快取：記住本次填寫，下次報名/付款自動帶入（純前端 localStorage）。
+      if (carrier.trim()) localStorage.setItem('daos_invoice_carrier', carrier.trim());
       toast.success('付款資料已送出，待櫃台確認');
       setProofFile(null);
       load();

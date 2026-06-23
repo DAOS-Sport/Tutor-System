@@ -203,47 +203,21 @@ export default function ProfilePage() {
         {profile.email && <div className="text-xs opacity-90">{profile.email}</div>}
       </div>
 
-      <Section title="編輯資料">
-        <p className="mb-2 text-[11px] text-gray-400"><span className="text-brand-error">＊</span> 為必填，需與 Ragic 同步</p>
-        <form className="grid gap-3" onSubmit={saveParent} noValidate>
-          <Field label="家長姓名" required error={parentErrors.name}>
-            <input className={fieldCls(parentErrors.name)} value={parentForm.name} onChange={(e) => setParentField('name', e.target.value)} />
-          </Field>
-          <Field label="手機">
-            <input className={`${inputCls} bg-gray-50 text-gray-500`} value={parentForm.phone} readOnly />
-          </Field>
-          <Field label="館別" required error={parentErrors.primary_venue_id}>
-            <select className={fieldCls(parentErrors.primary_venue_id)} value={parentForm.primary_venue_id || ''} onChange={(e) => setParentField('primary_venue_id', e.target.value)}>
-              <option value="">請選擇館別</option>
-              {venues.map((v) => <option key={v.id} value={v.id}>{v.name || v.id}</option>)}
-            </select>
-          </Field>
-          <Field label="性別" required error={parentErrors.gender}>
-            <select className={fieldCls(parentErrors.gender)} value={parentForm.gender || ''} onChange={(e) => setParentField('gender', e.target.value)}>
-              <option value="">請選擇</option>
-              <option value="生理男">生理男</option>
-              <option value="生理女">生理女</option>
-              <option value="不方便透漏">不方便透漏</option>
-            </select>
-          </Field>
-          <Field label="Email" required error={parentErrors.email}>
-            <input type="email" className={fieldCls(parentErrors.email)} value={parentForm.email} onChange={(e) => setParentField('email', e.target.value)} />
-          </Field>
+      <Section title="家長資料">
+        {/* 註冊完成後，家長資料鎖定為唯讀；如需修改請洽櫃台 / 客服。 */}
+        <p className="mb-2 text-[11px] text-gray-400">家長資料於註冊後鎖定為唯讀，如需修改請洽櫃台 / 客服。</p>
+        <div className="grid gap-3">
+          <ReadonlyField label="家長姓名" value={parentForm.name} />
+          <ReadonlyField label="手機" value={parentForm.phone} />
+          <ReadonlyField label="館別" value={venues.find((v) => v.id === parentForm.primary_venue_id)?.name || parentForm.primary_venue_id} />
+          <ReadonlyField label="性別" value={parentForm.gender} />
+          <ReadonlyField label="Email" value={parentForm.email} />
           <div className="grid grid-cols-2 gap-3">
-            <Field label="住家電話">
-              <input className={inputCls} value={parentForm.home_phone} onChange={(e) => setParentField('home_phone', e.target.value)} />
-            </Field>
-            <Field label="LINE ID">
-              <input className={inputCls} value={parentForm.line_id} onChange={(e) => setParentField('line_id', e.target.value)} />
-            </Field>
+            <ReadonlyField label="住家電話" value={parentForm.home_phone} />
+            <ReadonlyField label="LINE ID" value={parentForm.line_id} />
           </div>
-          <Field label="住家地址">
-            <input className={inputCls} value={parentForm.home_address} onChange={(e) => setParentField('home_address', e.target.value)} />
-          </Field>
-          <button type="submit" disabled={!!busy} className="rounded-lg bg-brand-primary py-2.5 text-sm font-bold text-white disabled:opacity-60">
-            {busy === 'parent' ? '同步中...' : '儲存家長資料'}
-          </button>
-        </form>
+          <ReadonlyField label="住家地址" value={parentForm.home_address} />
+        </div>
       </Section>
 
       <Section title={`學員清單（${students.length}）`}>
@@ -313,6 +287,16 @@ function Section({ title, children }) {
     <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3">
       <h3 className="mb-2 text-xs font-bold text-brand-primary">{title}</h3>
       {children}
+    </div>
+  );
+}
+
+// 唯讀欄位：標籤 + 灰底唯讀值（家長資料註冊後鎖定使用）。
+function ReadonlyField({ label, value }) {
+  return (
+    <div className="block">
+      <span className="mb-1 block text-xs font-medium text-gray-600">{label}</span>
+      <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">{value || '—'}</div>
     </div>
   );
 }
