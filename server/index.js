@@ -138,8 +138,8 @@ const PORT = process.env.PORT || 3000;
 
 // 啟動順序：
 // 1) production 必須有 JWT_SECRET（assertSecretConfigured 會 throw 讓 process exit）
-// 2) bootstrap admin_* 表（idempotent，production 缺 ADMIN_BOOTSTRAP_PASSWORD 時會跳過 user seed）
-// 3) listen
+// 2) 立即 listen——讓 port 先綁好，autoscale health probe 可立刻通過
+// 3) bootstrap admin_* 表、core schema、demo seed（非同步，不阻塞 health check）
 (async () => {
   try {
     assertSecretConfigured();
@@ -147,6 +147,11 @@ const PORT = process.env.PORT || 3000;
     console.error(err.message);
     process.exit(1);
   }
+  // 先 listen，health probe (GET /) 可立刻回 302→200，不會 timeout
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`DAOS Server running on port ${PORT}`);
+  });
+  // bootstrap 在背景執行；失敗只影響對應功能，不阻擋已監聽的 port
   try {
     await bootstrapAdmin();
   } catch (err) {
@@ -162,7 +167,4 @@ const PORT = process.env.PORT || 3000;
   } catch (err) {
     console.error('Demo seed bootstrap failed (DEMO_SEED ignored):', err.message);
   }
-  server.listen(PORT, '0.0.0.0', () => {
-    console.log(`DAOS Server running on port ${PORT}`);
-  });
 })();
