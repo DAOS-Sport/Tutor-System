@@ -447,6 +447,8 @@ function _toPhysGender(g) {
   if (v.startsWith('生理')) return v;
   if (['男', 'M', 'Male', 'male'].includes(v)) return '生理男';
   if (['女', 'F', 'Female', 'female'].includes(v)) return '生理女';
+  // 不願透露：統一為 Ragic 選項值「不方便透漏」（注意是「漏」非「露」）。
+  if (v.includes('不方便') || v.includes('不便') || v.includes('不願') || v.includes('不透')) return '不方便透漏';
   return v;
 }
 
@@ -497,7 +499,7 @@ async function createParentWithStudentsInRagic({ parent, students = [], lineUid 
     [FIELD.Z01.VENUE]:         (await venueLabel(parent.primary_venue_id)) || '待補登',
     [FIELD.Z01.LINE_CHAT_URL]: '待補登',
   };
-  if (parent.gender) payload[FIELD.Z01.GENDER] = parent.gender;
+  if (parent.gender) payload[FIELD.Z01.GENDER] = _toPhysGender(parent.gender);
   if (parent.email)  payload[FIELD.Z01.EMAIL]  = parent.email;
 
   // 1) 建 Z01 家長主檔（不再帶 dotted 子表，子表寫不進去，見 _buildZ02RegistrationPayload 註解）
@@ -579,7 +581,7 @@ async function addStudentsToParentInRagic({ ragicRecordId, startIndex = 0, stude
     const prefix = `${Z01_STUDENTS_SUBTABLE_ID}_${startIndex + i}_`;
     payload[`${prefix}${FIELD.Z01_STUDENT.NAME}`] = s.name;
     if (s.birth_date) payload[`${prefix}${FIELD.Z01_STUDENT.BIRTH_DATE}`] = s.birth_date;
-    if (s.gender)     payload[`${prefix}${FIELD.Z01_STUDENT.GENDER}`]     = s.gender;
+    if (s.gender)     payload[`${prefix}${FIELD.Z01_STUDENT.GENDER}`]     = _toPhysGender(s.gender);
     if (s.id_number)  payload[`${prefix}${FIELD.Z01_STUDENT.ID_NUMBER}`]  = String(s.id_number).toUpperCase();
     if (s.blood_type) payload[`${prefix}${FIELD.Z01_STUDENT.BLOOD_TYPE}`] = s.blood_type;
   });
@@ -625,7 +627,7 @@ async function createParentRagicRecord(parent) {
     [FIELD.Z01.VENUE]:         (await venueLabel(parent?.primary_venue_id)) || '待補登',
     [FIELD.Z01.LINE_CHAT_URL]: '待補登',
   };
-  if (parent?.gender) payload[FIELD.Z01.GENDER] = parent.gender;
+  if (parent?.gender) payload[FIELD.Z01.GENDER] = _toPhysGender(parent.gender);
   if (parent?.email)  payload[FIELD.Z01.EMAIL]  = parent.email;
   const data = await postRagicStrict(process.env.RAGIC_FORM_Z01, payload);
   _cacheInvalidate('z01:');
@@ -670,7 +672,7 @@ function buildZ01StudentPayload(student, rowIndex) {
   const payload = {};
   payload[`${prefix}${FIELD.Z01_STUDENT.NAME}`] = student.name || '';
   if (student.birth_date) payload[`${prefix}${FIELD.Z01_STUDENT.BIRTH_DATE}`] = student.birth_date;
-  if (student.gender) payload[`${prefix}${FIELD.Z01_STUDENT.GENDER}`] = student.gender;
+  if (student.gender) payload[`${prefix}${FIELD.Z01_STUDENT.GENDER}`] = _toPhysGender(student.gender);
   if (student.id_number) payload[`${prefix}${FIELD.Z01_STUDENT.ID_NUMBER}`] = String(student.id_number).toUpperCase();
   if (student.blood_type) payload[`${prefix}${FIELD.Z01_STUDENT.BLOOD_TYPE}`] = student.blood_type;
   if (student.student_code) payload[`${prefix}${FIELD.Z01_STUDENT.STUDENT_CODE}`] = student.student_code;
@@ -766,7 +768,7 @@ async function buildZ02StudentPayload({ parent, student, status = '啟用' }) {
   return {
     [FIELD.Z02.NAME]: student.name || '',
     [FIELD.Z02.STUDENT_STATUS]: status,
-    [FIELD.Z02.GENDER]: student.gender || '',
+    [FIELD.Z02.GENDER]: _toPhysGender(student.gender),
     [FIELD.Z02.BIRTH_DATE]: student.birth_date || '',
     [FIELD.Z02.ID_NUMBER]: idnum,
     [FIELD.Z02.STUDENT_CODE]: student.student_code || idnum, // 學員編號 必填，缺則用身分證
@@ -775,7 +777,7 @@ async function buildZ02StudentPayload({ parent, student, status = '啟用' }) {
     [FIELD.Z02.PARENT_PHONE]: parent.phone || '',
     [FIELD.Z02.PARENT_ACCOUNT]: parent.phone || '',
     [FIELD.Z02.PARENT_NAME]: parent.name || '',
-    [FIELD.Z02.PARENT_GENDER]: parent.gender || '',
+    [FIELD.Z02.PARENT_GENDER]: _toPhysGender(parent.gender),
     [FIELD.Z02.PARENT_IDENTITY]: parent.identity || '一般身分', // (報)身分 必填
     [FIELD.Z02.PARENT_EMAIL]: parent.email || '',
   };
@@ -833,6 +835,7 @@ async function deactivateStudentZ02Strict({ parent, student }) {
 }
 
 module.exports = {
+  normalizeGender: _toPhysGender,
   FIELD,
   Z01_FIELDS,
   Z01_STUDENT_FIELDS,

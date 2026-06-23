@@ -13,7 +13,7 @@ import { useToast } from '../../context/ToastContext';
  *   - 既有學員：勾選 → 收進 studentIds（已建檔、已在 Ragic）。
  *   - 新學員：填完整資料 → newStudents，後端會建檔到本人名下並 best-effort 回寫 Ragic。
  */
-const emptyNewStudent = () => ({ name: '', id_number: '', birth_date: '', gender: '男' });
+const emptyNewStudent = () => ({ name: '', id_number: '', birth_date: '', gender: '生理男' });
 
 export default function GroupMemberFields({ value, onChange, maxStudents }) {
   const toast = useToast();
@@ -108,7 +108,7 @@ export default function GroupMemberFields({ value, onChange, maxStudents }) {
                       className={`${inputCls} flex-1`} />
                     <select value={s.gender} onChange={(e) => setNewAt(i, { gender: e.target.value })}
                       className={`${inputCls} w-24`}>
-                      <option value="男">男</option><option value="女">女</option>
+                      <option value="生理男">生理男</option><option value="生理女">生理女</option><option value="不方便透漏">不方便透漏</option>
                     </select>
                   </div>
                 </div>

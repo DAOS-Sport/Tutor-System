@@ -139,9 +139,9 @@ export default function RegisterPage() {
 
   const { register, handleSubmit, control, formState: { errors, isSubmitting } } = useForm({
     defaultValues: {
-      name: '', phone: prefilledPhone, gender: '女', email: '', primary_venue_id: '',
+      name: '', phone: prefilledPhone, gender: '生理女', email: '', primary_venue_id: '',
       home_phone: '', line_id: '', home_address: '',
-      students: [{ name: '', id_number: '', birth_date: '', gender: '男', blood_type: '' }],
+      students: [{ name: '', id_number: '', birth_date: '', gender: '生理男', blood_type: '' }],
     },
   });
 
@@ -316,7 +316,7 @@ export default function RegisterPage() {
           </Field>
           <Field label="性別">
             <select {...register('gender')} className={inputCls}>
-              <option value="女">女</option><option value="男">男</option><option value="不方便透露">不方便透露</option>
+              <option value="生理女">生理女</option><option value="生理男">生理男</option><option value="不方便透漏">不方便透漏</option>
             </select>
           </Field>
           <Field label="Email" error={errors.email?.message}>
@@ -338,7 +338,7 @@ export default function RegisterPage() {
         <Section title="學員資料"
           extra={
             <button type="button"
-              onClick={() => append({ name: '', id_number: '', birth_date: '', gender: '男', blood_type: '' })}
+              onClick={() => append({ name: '', id_number: '', birth_date: '', gender: '生理男', blood_type: '' })}
               className="rounded-md bg-brand-teal/10 px-3 py-1 text-xs font-medium text-brand-teal active:bg-brand-teal/20">
               + 新增學員
             </button>
@@ -367,7 +367,7 @@ export default function RegisterPage() {
                 </Field>
                 <Field label="性別">
                   <select {...register(`students.${idx}.gender`)} className={inputCls}>
-                    <option value="男">男</option><option value="女">女</option><option value="不方便透露">不方便透露</option>
+                    <option value="生理男">生理男</option><option value="生理女">生理女</option><option value="不方便透漏">不方便透漏</option>
                   </select>
                 </Field>
                 <Field label="血型">

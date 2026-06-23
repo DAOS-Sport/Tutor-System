@@ -88,6 +88,18 @@ export function isValidTWId(id) {
   return /^[A-Z][12]\d{8}$/.test(String(id || '').trim().toUpperCase());
 }
 
+// 性別正規化：統一為 Ragic/DB 選項值「生理男 / 生理女 / 不方便透漏」。
+// 用於：表單送出前、以及讀取既有資料（舊值可能是 男/女）填回下拉時。
+export function normalizeGender(g) {
+  const v = String(g || '').trim();
+  if (!v) return '';
+  if (v.startsWith('生理')) return v;
+  if (['男', 'M', 'male', 'Male'].includes(v)) return '生理男';
+  if (['女', 'F', 'female', 'Female'].includes(v)) return '生理女';
+  if (v.includes('不方便') || v.includes('不便') || v.includes('不願') || v.includes('不透')) return '不方便透漏';
+  return v;
+}
+
 export function courseTypeLabel(type) {
   // 顧客端統一顯示 1對1 / 1對2 / 1對3 / 1對4（DB seed label「一對一…」維持給後台用；type 4 容量仍為 4~6 人）。
   return ({ 1: '1對1', 2: '1對2', 3: '1對3', 4: '1對4' }[type] || `1對${type}`);

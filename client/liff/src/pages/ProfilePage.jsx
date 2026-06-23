@@ -3,8 +3,9 @@ import { parentsApi } from '../api/parents';
 import { venuesApi } from '../api/venues';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
+import { normalizeGender } from '../utils/format';
 
-const emptyStudent = { name: '', id_number: '', birth_date: '', gender: '男', blood_type: '' };
+const emptyStudent = { name: '', id_number: '', birth_date: '', gender: '生理男', blood_type: '' };
 const inputCls = 'w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-brand-primary';
 // 漏填必填時，輸入框亮紅框
 const errCls = 'border-brand-error bg-brand-error/5 focus:border-brand-error';
@@ -40,7 +41,7 @@ function parentFormFrom(parent) {
     primary_venue_id: parent?.primary_venue_id || '',
     // 身分欄位已從 UI 移除：沿用既有值，未設定時預設「一般身分」。
     identity: parent?.identity || '一般身分',
-    gender: parent?.gender || '',
+    gender: normalizeGender(parent?.gender),
     email: parent?.email || '',
     home_phone: parent?.home_phone || '',
     line_id: parent?.line_id || '',
@@ -131,7 +132,7 @@ export default function ProfilePage() {
       name: s.name || '',
       id_number: s.id_number || '',
       birth_date: String(s.birth_date || '').slice(0, 10),
-      gender: s.gender || '男',
+      gender: normalizeGender(s.gender) || '生理男',
       blood_type: s.blood_type || '',
     });
   }
@@ -220,8 +221,9 @@ export default function ProfilePage() {
           <Field label="性別" required error={parentErrors.gender}>
             <select className={fieldCls(parentErrors.gender)} value={parentForm.gender || ''} onChange={(e) => setParentField('gender', e.target.value)}>
               <option value="">請選擇</option>
-              <option value="男">男</option>
-              <option value="女">女</option>
+              <option value="生理男">生理男</option>
+              <option value="生理女">生理女</option>
+              <option value="不方便透漏">不方便透漏</option>
             </select>
           </Field>
           <Field label="Email" required error={parentErrors.email}>
@@ -252,7 +254,7 @@ export default function ProfilePage() {
                 <div>
                   <div className="text-sm font-bold text-gray-900">{s.name}</div>
                   <div className="text-xs text-gray-500">{s.id_number}</div>
-                  <div className="mt-0.5 text-xs text-gray-500">{String(s.birth_date || '').slice(0, 10)}・{s.gender || '未指定'}{s.blood_type ? `・${s.blood_type}` : ''}</div>
+                  <div className="mt-0.5 text-xs text-gray-500">{String(s.birth_date || '').slice(0, 10)}・{normalizeGender(s.gender) || '未指定'}{s.blood_type ? `・${s.blood_type}` : ''}</div>
                 </div>
                 <div className="flex shrink-0 gap-2">
                   <button type="button" onClick={() => editStudent(s)} className="rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-700">編輯</button>
@@ -279,8 +281,9 @@ export default function ProfilePage() {
           <div className="grid grid-cols-2 gap-3">
             <Field label="性別">
               <select className={inputCls} value={studentForm.gender} onChange={(e) => setStudentField('gender', e.target.value)}>
-                <option value="男">男</option>
-                <option value="女">女</option>
+                <option value="生理男">生理男</option>
+                <option value="生理女">生理女</option>
+                <option value="不方便透漏">不方便透漏</option>
               </select>
             </Field>
             <Field label="血型">

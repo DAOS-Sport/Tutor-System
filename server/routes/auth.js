@@ -224,7 +224,7 @@ async function upsertLocalParent(client, mapped, lineUid) {
        updated_at = NOW()
      RETURNING id, name, phone, line_uid, primary_venue_id, gender, email, identity, home_phone, home_address, line_id`,
     [phone, name, lineUid || '', venueId,
-     mapped.gender || '', mapped.email || '', mapped.ragic_record_id || '',
+     ragic.normalizeGender(mapped.gender), mapped.email || '', mapped.ragic_record_id || '',
      mapped.identity || '', mapped.home_phone || '', mapped.home_address || '', mapped.line_id || '']
   );
   return up.rows[0];
@@ -271,14 +271,14 @@ async function upsertLocalStudents(client, parentId, students) {
            blood_type = COALESCE(NULLIF($6,''), blood_type),
            student_code = COALESCE(NULLIF($7,''), student_code)
          WHERE id = $1`,
-        [matched.id, s.name, s.birth_date || null, s.gender || '',
+        [matched.id, s.name, s.birth_date || null, ragic.normalizeGender(s.gender),
          idNum || '', s.blood_type || '', s.student_code || '']
       );
     } else {
       await client.query(
         `INSERT INTO students (parent_id, name, birth_date, gender, id_number, blood_type, student_code)
          VALUES ($1, $2, $3::date, NULLIF($4,''), NULLIF($5,''), NULLIF($6,''), NULLIF($7,''))`,
-        [parentId, s.name, s.birth_date || null, s.gender || '',
+        [parentId, s.name, s.birth_date || null, ragic.normalizeGender(s.gender),
          idNum || '', s.blood_type || '', s.student_code || '']
       );
     }
