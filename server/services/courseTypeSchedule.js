@@ -1,0 +1,49 @@
+/**
+ * 課程需求（course_type_configs）排程生效：
+ *   把 scheduled_effective_date <= 今天 且有 pending_changes 的列，
+ *   套用成正式資料、清掉排程、更新 effective_date / updated_at。
+ *
+ * 由兩處呼叫、皆 idempotent：
+ *   1) GET /api/admin/course-types 讀取時（保險：即使 cron 沒跑也會在下次讀取生效）
+ *   2) 每日 cron（server/cron/index.js）
+ */
+const { pool } = require('../models/db');
+
+// 可被排程套用的白名單欄位（避免 pending_changes JSON 被塞入非預期欄位）。
+const EDITABLE = ['label', 'min_students', 'max_students', 'is_active', 'base_price', 'data_group'];
+
+async function applyDueScheduledCourseTypeChanges(db = pool) {
+  const due = await db.query(
+    `SELECT course_type, pending_changes
+       FROM course_type_configs
+      WHERE pending_changes IS NOT NULL
+        AND scheduled_effective_date IS NOT NULL
+        AND scheduled_effective_date <= CURRENT_DATE`
+  );
+  let applied = 0;
+  for (const row of due.rows) {
+    const pc = row.pending_changes || {};
+    const sets = [];
+    const vals = [row.course_type];
+    for (const k of EDITABLE) {
+      if (pc[k] !== undefined) { vals.push(pc[k]); sets.push(`${k} = $${vals.length}`); }
+    }
+    // 即使 pending 沒有任何白名單欄位，也要把排程清掉、effective_date 推進，避免卡住。
+    sets.push('effective_date = scheduled_effective_date');
+    sets.push('scheduled_effective_date = NULL');
+    sets.push('pending_changes = NULL');
+    sets.push('updated_at = NOW()');
+    await db.query(`UPDATE course_type_configs SET ${sets.join(', ')} WHERE course_type = $1`, vals);
+    // label 變更 → 同步未被覆寫的課程介紹 title（與 PATCH 立即生效行為一致）。
+    if (pc.label !== undefined) {
+      await db.query(
+        `UPDATE admin_course_intros SET title=$2, updated_at=NOW() WHERE course_type=$1 AND title_overridden=FALSE`,
+        [row.course_type, pc.label]
+      );
+    }
+    applied += 1;
+  }
+  return applied;
+}
+
+module.exports = { applyDueScheduledCourseTypeChanges, EDITABLE };

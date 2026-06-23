@@ -62,23 +62,10 @@ router.patch('/:type', requireAdminAuth, AM, async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'image_url 長度不可超過 500' });
     }
-    // 自定義價格：寫回 course_type_configs.base_price（單一真實來源，家長端報名/首頁同步取用）
-    let base_price;
-    if (p.base_price !== undefined) {
-      const bp = Number(p.base_price);
-      if (!Number.isFinite(bp) || bp < 0) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: '價格必須為非負數' });
-      }
-      const bpRes = await client.query(
-        `UPDATE course_type_configs SET base_price = $2 WHERE course_type = $1 RETURNING base_price`,
-        [ct, bp]
-      );
-      base_price = Number(bpRes.rows[0].base_price);
-    } else {
-      const bpRes = await client.query(`SELECT base_price FROM course_type_configs WHERE course_type = $1`, [ct]);
-      base_price = Number(bpRes.rows[0]?.base_price || 0);
-    }
+    // 價格唯一來源已收斂到「課程需求管理 (F-A07)」：本頁(課程介紹)不再寫入 base_price，
+    // 即使前端送來也忽略，只讀回現值顯示，避免價格資料分散。
+    const bpRes = await client.query(`SELECT base_price FROM course_type_configs WHERE course_type = $1`, [ct]);
+    const base_price = Number(bpRes.rows[0]?.base_price || 0);
 
     // 原子化：INSERT 預設列；若已存在則套用 patch（COALESCE 保留未提供欄位）
     const newTitleArg = p.title !== undefined ? String(p.title) : null;

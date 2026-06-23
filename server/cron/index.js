@@ -8,6 +8,7 @@ const line = require('../services/line');
 const chatRooms = require('../services/chatRooms');
 const evaluations = require('../services/evaluations');
 const ragicAdmin = require('../services/ragicAdmin');
+const { applyDueScheduledCourseTypeChanges } = require('../services/courseTypeSchedule');
 
 // 對家長推播的 LIFF base URL；新版用 LIFF_URL_PARENT，舊版 LIFF_URL 為 fallback
 const LIFF_URL = process.env.LIFF_URL_PARENT || process.env.LIFF_URL || 'https://liff.line.me/-';
@@ -330,6 +331,18 @@ function initCronJobs() {
       console.log(`[Cron/Ragic] staff=${tag(s)} venues=${tag(v)}`);
     } catch (e) {
       console.warn('[Cron/Ragic] failed:', e.message);
+    }
+  });
+
+  // ── 每日 01:10：套用「課程需求 (F-A07)」到期排程 ──
+  //   scheduled_effective_date <= 今天 且有 pending_changes 的列 → 套用成正式資料。
+  //   與 GET 讀取時的保險套用雙保險；皆 idempotent。
+  cron.schedule('10 1 * * *', async () => {
+    try {
+      const n = await applyDueScheduledCourseTypeChanges(pool);
+      if (n) console.log(`[Cron/CourseType] 套用到期排程 ${n} 筆`);
+    } catch (e) {
+      console.warn('[Cron/CourseType] apply-due failed:', e.message);
     }
   });
 

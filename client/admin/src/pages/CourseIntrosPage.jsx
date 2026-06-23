@@ -10,8 +10,8 @@ function IntroCard({ row, onSave }) {
   const [draft, setDraft] = useState({ title: row.title, body: row.body, image_url: row.image_url, base_price: row.base_price ?? 0 });
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const dirty = ['title', 'body', 'image_url'].some((k) => (draft[k] || '') !== (row[k] || ''))
-    || Number(draft.base_price || 0) !== Number(row.base_price || 0);
+  // 價格已改唯讀（來源＝課程需求管理），不列入 dirty 判斷。
+  const dirty = ['title', 'body', 'image_url'].some((k) => (draft[k] || '') !== (row[k] || ''));
 
   async function handleFile(file) {
     if (!file) return;
@@ -34,15 +34,11 @@ function IntroCard({ row, onSave }) {
       toast.error('標題不可為空');
       return;
     }
-    const price = Number(draft.base_price);
-    if (!Number.isFinite(price) || price < 0) {
-      toast.error('價格必須為非負數');
-      return;
-    }
     setBusy(true);
     try {
-      const updated = await onSave(row.course_type, { ...draft, base_price: price });
-      setDraft({ title: updated.title, body: updated.body, image_url: updated.image_url, base_price: updated.base_price ?? price });
+      // 不送 base_price：價格唯一來源為課程需求管理，本頁不得覆蓋。
+      const updated = await onSave(row.course_type, { title: draft.title, body: draft.body, image_url: draft.image_url });
+      setDraft((d) => ({ ...d, title: updated.title, body: updated.body, image_url: updated.image_url, base_price: updated.base_price ?? d.base_price }));
       toast.success(`已儲存「${row.label}」介紹`);
     } catch {
       toast.error('儲存失敗');
@@ -102,15 +98,15 @@ function IntroCard({ row, onSave }) {
             <span className="text-sm font-medium text-gray-500">NT$</span>
             <input
               type="number"
-              min="0"
-              step="100"
               value={draft.base_price ?? 0}
-              onChange={(e) => setDraft({ ...draft, base_price: e.target.value })}
-              className="w-40 rounded-lg border border-gray-300 px-3 py-2"
+              readOnly
+              disabled
+              title="價格唯讀，請至課程需求管理調整"
+              className="w-40 cursor-not-allowed rounded-lg border border-gray-200 bg-gray-100 px-3 py-2 text-gray-500"
             />
           </div>
-          <p className="mt-1 text-xs text-gray-500">
-            自定義各組別底價；家長端首頁與報名頁的單人價格會同步更新（教練係數仍另計）。
+          <p className="mt-1 text-xs text-amber-600">
+            價格來源：課程需求管理。若需修改價格，請至「課程需求管理」調整。
           </p>
         </div>
         <div>

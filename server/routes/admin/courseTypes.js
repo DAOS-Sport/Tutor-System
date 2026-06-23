@@ -8,15 +8,22 @@
 const express = require('express');
 const { pool } = require('../../models/db');
 const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
+const { applyDueScheduledCourseTypeChanges } = require('../../services/courseTypeSchedule');
 
 const router = express.Router();
 const AM = requireAdminRole('admin', 'manager');
 
 router.get('/', requireAdminAuth, AM, async (req, res) => {
   try {
+    // 讀取前先套用「已到期」排程（保險：即使每日 cron 沒跑，下次讀取也會生效）。
+    try { await applyDueScheduledCourseTypeChanges(pool); } catch (e) { console.warn('[course-types apply-due]', e.message); }
     const r = await pool.query(
-      `SELECT course_type, label, min_students, max_students, base_price, is_active, sort_order
-       FROM course_type_configs ORDER BY sort_order, course_type`
+      `SELECT course_type, label, min_students, max_students,
+              base_price::float8 AS base_price, is_active, sort_order,
+              created_at, updated_at, data_group, effective_date,
+              scheduled_effective_date, pending_changes,
+              CURRENT_DATE AS current_date
+         FROM course_type_configs ORDER BY sort_order, course_type`
     );
     res.json(r.rows);
   } catch (err) {
@@ -28,7 +35,7 @@ router.get('/', requireAdminAuth, AM, async (req, res) => {
 router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
   const client = await pool.connect();
   try {
-    const { course_type, label, max_students, min_students } = req.body || {};
+    const { course_type, label, max_students, min_students, base_price, data_group } = req.body || {};
     if (course_type == null || label == null || max_students == null) {
       return res.status(400).json({ error: '缺少必填欄位：course_type / label / max_students' });
     }
@@ -43,17 +50,20 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
     if (isNaN(ms) || ms < 1 || ms > 10) return res.status(400).json({ error: 'max_students 必須為 1–10' });
     if (isNaN(mn) || mn < 1 || mn > 10) return res.status(400).json({ error: 'min_students 必須為 1–10' });
     if (mn > ms) return res.status(400).json({ error: 'min_students 不可大於 max_students' });
+    const bp = base_price == null || base_price === '' ? 0 : Number(base_price);
+    if (!Number.isFinite(bp) || bp < 0) return res.status(400).json({ error: '每期價格必須為非負數' });
+    const dg = data_group == null ? null : (String(data_group).trim() || null);
 
     await client.query('BEGIN');
     const maxOrder = await client.query(`SELECT COALESCE(MAX(sort_order),0) AS m FROM course_type_configs`);
     const nextOrder = maxOrder.rows[0].m + 1;
 
     const r = await client.query(
-      `INSERT INTO course_type_configs (course_type, label, min_students, max_students, sort_order)
-       VALUES ($1,$2,$3,$4,$5)
+      `INSERT INTO course_type_configs (course_type, label, min_students, max_students, sort_order, base_price, data_group, effective_date, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,CURRENT_DATE,NOW())
        ON CONFLICT (course_type) DO NOTHING
        RETURNING *`,
-      [ct, lb, mn, ms, nextOrder]
+      [ct, lb, mn, ms, nextOrder, bp, dg]
     );
     if (!r.rowCount) {
       await client.query('ROLLBACK');
@@ -89,22 +99,34 @@ router.patch('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, 
       await client.query('ROLLBACK');
       return res.status(404).json({ error: '找不到此課程需求' });
     }
-
+    const row = cur.rows[0];
     const p = req.body || {};
-    let label = cur.rows[0].label;
+
+    // 取消排程：清掉 pending_changes / scheduled_effective_date（正式資料不動）。
+    if (p.clear_schedule === true) {
+      const r = await client.query(
+        `UPDATE course_type_configs SET pending_changes=NULL, scheduled_effective_date=NULL, updated_at=NOW() WHERE course_type=$1 RETURNING *`,
+        [ct]
+      );
+      await client.query('COMMIT');
+      return res.json(r.rows[0]);
+    }
+
+    // 合併出「下一版值」（未提供者沿用現值），逐欄驗證。
+    let label = row.label;
     if (p.label !== undefined) {
       const lb = String(p.label).trim();
-      if (!lb) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'label 不可為空' }); }
-      if (lb.length > 50) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'label 長度不可超過 50' }); }
+      if (!lb) { await client.query('ROLLBACK'); return res.status(400).json({ error: '標題不可為空' }); }
+      if (lb.length > 50) { await client.query('ROLLBACK'); return res.status(400).json({ error: '標題長度不可超過 50' }); }
       label = lb;
     }
-    let max_students = cur.rows[0].max_students;
+    let max_students = row.max_students;
     if (p.max_students !== undefined) {
       const ms = parseInt(p.max_students, 10);
       if (isNaN(ms) || ms < 1 || ms > 10) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'max_students 必須為 1–10' }); }
       max_students = ms;
     }
-    let min_students = cur.rows[0].min_students;
+    let min_students = row.min_students;
     if (p.min_students !== undefined) {
       const mn = parseInt(p.min_students, 10);
       if (isNaN(mn) || mn < 1 || mn > 10) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'min_students 必須為 1–10' }); }
@@ -112,34 +134,64 @@ router.patch('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, 
     }
     if (min_students > max_students) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'min_students 不可大於 max_students' });
+      return res.status(400).json({ error: '最少學生不可大於最多學生' });
     }
-    const is_active = p.is_active !== undefined ? Boolean(p.is_active) : cur.rows[0].is_active;
-    let base_price = cur.rows[0].base_price;
+    const is_active = p.is_active !== undefined ? Boolean(p.is_active) : row.is_active;
+    let base_price = Number(row.base_price);
     if (p.base_price !== undefined) {
       const bp = Number(p.base_price);
-      if (!Number.isFinite(bp) || bp < 0) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: 'base_price 必須為非負數' });
-      }
+      if (!Number.isFinite(bp) || bp < 0) { await client.query('ROLLBACK'); return res.status(400).json({ error: '每期價格不可小於 0' }); }
       base_price = bp;
     }
+    let data_group = row.data_group;
+    if (p.data_group !== undefined) {
+      const dg = p.data_group === null ? null : String(p.data_group).trim();
+      if (dg && dg.length > 100) { await client.query('ROLLBACK'); return res.status(400).json({ error: '資料管理群組長度不可超過 100' }); }
+      data_group = dg || null;
+    }
 
-    const r = await client.query(
-      `UPDATE course_type_configs SET label=$2, max_students=$3, is_active=$4, base_price=$5, min_students=$6 WHERE course_type=$1 RETURNING *`,
-      [ct, label, max_students, is_active, base_price, min_students]
-    );
-    // Task #67：label 變更時，若對應介紹的 title 未被 admin 覆寫過，同步更新 title
-    if (label !== cur.rows[0].label) {
-      await client.query(
-        `UPDATE admin_course_intros
-            SET title = $2, updated_at = NOW()
-          WHERE course_type = $1 AND title_overridden = FALSE`,
-        [ct, label]
+    const next = { label, min_students, max_students, is_active, base_price, data_group };
+
+    // 判斷生效方式：給未來日期的 scheduled_effective_date → 排程；否則（含等於今天）立即。
+    let scheduledDate = null;
+    if (p.scheduled_effective_date) {
+      const d = String(p.scheduled_effective_date).slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) { await client.query('ROLLBACK'); return res.status(400).json({ error: '生效日格式需為 YYYY-MM-DD' }); }
+      const cmp = await client.query(`SELECT $1::date < CURRENT_DATE AS past, $1::date = CURRENT_DATE AS today`, [d]);
+      if (cmp.rows[0].past) { await client.query('ROLLBACK'); return res.status(400).json({ error: '排程生效日不可早於今天' }); }
+      if (!cmp.rows[0].today) scheduledDate = d; // 等於今天 → 視為立即生效
+    }
+
+    let result;
+    if (scheduledDate) {
+      // 排程：存 pending_changes，正式資料不動，待生效日由 cron / 讀取時套用。
+      const r = await client.query(
+        `UPDATE course_type_configs
+            SET pending_changes = $2::jsonb, scheduled_effective_date = $3::date, updated_at = NOW()
+          WHERE course_type = $1 RETURNING *`,
+        [ct, JSON.stringify(next), scheduledDate]
       );
+      result = r.rows[0];
+    } else {
+      // 立即：套用到正式資料、清掉任何既有排程。
+      const r = await client.query(
+        `UPDATE course_type_configs
+            SET label=$2, max_students=$3, is_active=$4, base_price=$5, min_students=$6, data_group=$7,
+                effective_date=CURRENT_DATE, scheduled_effective_date=NULL, pending_changes=NULL, updated_at=NOW()
+          WHERE course_type=$1 RETURNING *`,
+        [ct, label, max_students, is_active, base_price, min_students, data_group]
+      );
+      result = r.rows[0];
+      // label 變更 → 同步未被覆寫的介紹 title
+      if (label !== row.label) {
+        await client.query(
+          `UPDATE admin_course_intros SET title=$2, updated_at=NOW() WHERE course_type=$1 AND title_overridden=FALSE`,
+          [ct, label]
+        );
+      }
     }
     await client.query('COMMIT');
-    res.json(r.rows[0]);
+    res.json(result);
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('[admin/course-types PATCH]', err);

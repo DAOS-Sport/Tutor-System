@@ -121,6 +121,21 @@ CREATE TABLE IF NOT EXISTS course_type_configs (
 DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS base_price DECIMAL(10,2) NOT NULL DEFAULT 0; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 -- U5：團購人數下限（min_students <= max_students；預設 1，既有資料安全升級）
 DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS min_students INTEGER NOT NULL DEFAULT 1; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+-- F-A07 價格主資料源 + 資料日軌 + 排程生效：
+--   base_price 為「每期價格（每人）」唯一來源（沿用既有欄位，不另建 price_per_period）。
+--   updated_at：每次修改自動更新；data_group：資料管理群組；
+--   effective_date：目前正式版本生效日；scheduled_effective_date + pending_changes(JSONB)：排程版本。
+DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW(); EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS data_group VARCHAR(100); EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS effective_date DATE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS scheduled_effective_date DATE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS pending_changes JSONB; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+-- 既有資料補預設：updated_at / effective_date 沿用 created_at；一對一(course_type=1)底價若為 0 補 9000（其餘品相不亂猜，維持現值）。
+DO $$ BEGIN
+  UPDATE course_type_configs SET updated_at = COALESCE(updated_at, created_at, NOW()) WHERE updated_at IS NULL;
+  UPDATE course_type_configs SET effective_date = COALESCE(effective_date, created_at::date, CURRENT_DATE) WHERE effective_date IS NULL;
+  UPDATE course_type_configs SET base_price = 9000 WHERE course_type = 1 AND (base_price IS NULL OR base_price = 0);
+EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
 -- ─────────────────────────────────────────────────────────────
 -- U5：團購（group buy）資料模型
