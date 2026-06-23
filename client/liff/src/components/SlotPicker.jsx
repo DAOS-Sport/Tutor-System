@@ -183,7 +183,7 @@ export default function SlotPicker({ periodId, onBooked, embedded = false }) {
           <EmptyBlock text="這天教練尚未開放時段，請改選其他日期。" />
         ) : (
           bandGroups.map(({ band, slots }) => (
-            <Band key={band.key} band={band} slots={slots} isSel={(id) => selectedId === id} onToggle={pick} />
+            <Band key={band.key} band={band} slots={slots} compact={embedded} isSel={(id) => selectedId === id} onToggle={pick} />
           ))
         )}
       </div>
@@ -273,18 +273,21 @@ function DayChip({ d, active, count, onClick }) {
   );
 }
 
-function Band({ band, slots, isSel, onToggle }) {
+function Band({ band, slots, compact, isSel, onToggle }) {
   const t = TONE[band.tone];
+  // compact（內嵌於上課記錄頁）：移除「早上/下午/晚上 + 可預約 N」標頭與左側色條，去除贅字、畫面更乾淨。
   return (
-    <section className={`border-l-4 ${t.rail} pl-3`}>
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <div className={`grid h-8 w-8 place-items-center rounded-full text-base ${t.iconBg}`}>{band.emoji}</div>
-          <div className="text-sm font-semibold text-gray-900">{band.label}</div>
+    <section className={compact ? '' : `border-l-4 ${t.rail} pl-3`}>
+      {!compact && (
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className={`grid h-8 w-8 place-items-center rounded-full text-base ${t.iconBg}`}>{band.emoji}</div>
+            <div className="text-sm font-semibold text-gray-900">{band.label}</div>
+          </div>
+          <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${t.chipBg} ${t.chipText}`}>可預約 {slots.length}</span>
         </div>
-        <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${t.chipBg} ${t.chipText}`}>可預約 {slots.length}</span>
-      </div>
-      <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
+      )}
+      <div className={`${compact ? '' : 'mt-3'} flex gap-2 overflow-x-auto pb-1`}>
         {slots.map((s) => (
           <Slot key={s.id} slot={s} tone={band.tone} selected={isSel(s.id)} onClick={() => onToggle(s.id)} />
         ))}
