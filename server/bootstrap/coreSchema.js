@@ -130,6 +130,27 @@ DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS data_group 
 DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS effective_date DATE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS scheduled_effective_date DATE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS pending_changes JSONB; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+-- F-A07 排程生效支援「日期＋時間」：scheduled_effective_date 由 DATE 升級為 TIMESTAMPTZ。
+-- 僅在仍為 date 時轉換（既有日期值以台北時區午夜為準），避免每次開機重寫整表。
+DO $$ BEGIN
+  IF (SELECT data_type FROM information_schema.columns
+        WHERE table_name = 'course_type_configs' AND column_name = 'scheduled_effective_date') = 'date' THEN
+    ALTER TABLE course_type_configs
+      ALTER COLUMN scheduled_effective_date TYPE TIMESTAMPTZ
+      USING (scheduled_effective_date::timestamp AT TIME ZONE 'Asia/Taipei');
+  END IF;
+EXCEPTION WHEN undefined_table THEN NULL; END $$;
+-- F-A07「拿掉所有驗證」：放寬 label / data_group 長度上限（改 TEXT），讓後台可填任意長度，不再因欄位長度報錯。
+DO $$ BEGIN
+  IF (SELECT data_type FROM information_schema.columns
+        WHERE table_name = 'course_type_configs' AND column_name = 'label') <> 'text' THEN
+    ALTER TABLE course_type_configs ALTER COLUMN label TYPE TEXT;
+  END IF;
+  IF (SELECT data_type FROM information_schema.columns
+        WHERE table_name = 'course_type_configs' AND column_name = 'data_group') NOT IN ('text') THEN
+    ALTER TABLE course_type_configs ALTER COLUMN data_group TYPE TEXT;
+  END IF;
+EXCEPTION WHEN undefined_table THEN NULL; WHEN undefined_column THEN NULL; END $$;
 -- 既有資料補預設：updated_at / effective_date 沿用 created_at；一對一(course_type=1)底價若為 0 補 9000（其餘品相不亂猜，維持現值）。
 DO $$ BEGIN
   UPDATE course_type_configs SET updated_at = COALESCE(updated_at, created_at, NOW()) WHERE updated_at IS NULL;
@@ -1084,28 +1105,9 @@ async function seedCourseTypeConfigs() {
   }
 }
 
-// 團報人數全域夾擠：course_type>=2 的 min 至少 2、所有組別 max 至多 6。
-// 每次開機都跑（冪等）；不動 1對1（course_type=1）列。對應 groupOrders.js effectiveBounds()。
-async function normalizeCourseTypeBounds() {
-  await pool.query(
-    `UPDATE course_type_configs SET min_students = GREATEST(min_students, 2)
-      WHERE course_type >= 2 AND min_students < 2`
-  );
-  await pool.query(
-    `UPDATE course_type_configs SET max_students = LEAST(max_students, 6)
-      WHERE max_students > 6`
-  );
-  // 4~6 人合併為單一品項「1對4~6」(course_type=4)：停用任何多餘的 type>=5 組別，
-  // 並確保 type 4 上限為 6（涵蓋 4–6 人）。冪等；避免家長端出現 1對5 / 1對6 重複品項。
-  await pool.query(
-    `UPDATE course_type_configs SET is_active = FALSE
-      WHERE course_type >= 5 AND is_active = TRUE`
-  );
-  await pool.query(
-    `UPDATE course_type_configs SET max_students = 6
-      WHERE course_type = 4 AND max_students < 6`
-  );
-}
+// 註：原本的「團報人數全域夾擠」(normalizeCourseTypeBounds) 已依需求移除——
+// course_type_configs 的 min/max/啟用狀態完全以後台「課程需求管理」為準，開機不再夾擠覆寫。
+// 對應 groupOrders.js effectiveBounds() 也已放寬為僅結構性防呆。
 
 async function seedTagsAndThresholds() {
   for (const cat of DEFAULT_TAG_CATEGORIES) {
@@ -1181,7 +1183,6 @@ async function bootstrap() {
     await seedKeywords();
     await seedTagsAndThresholds();
     await seedCourseTypeConfigs();
-    await normalizeCourseTypeBounds();
     await ensureCourseIntroFK();
     await ensureChatRoomsForActivePeriods();
     console.log('[core bootstrap] ready');

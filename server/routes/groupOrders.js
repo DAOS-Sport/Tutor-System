@@ -32,14 +32,13 @@ const TW_PHONE_RE = /^09\d{8}$/;
 
 // 團購人數上下限改依「課程組別」(course_type_configs.min/max_students)，於發起時讀取落地。
 // 此常數僅作為「草稿暫存陣列」的防呆絕對上限（避免存進過大內容）；非業務上限。
-const DRAFT_MAX_STUDENTS = 6;
-// 團報人數的全域硬性夾擠：無論 course_type_configs 設定為何，min 至少 2、max 至多 6。
-// 發起時將 config 值正規化後落地到 group_orders，使加入/送審檢查（讀 order.min/max）自動正確。
-const GROUP_MIN_FLOOR = 2;
-const GROUP_MAX_CEIL = 6;
+// 草稿暫存陣列的防呆絕對上限（避免存進過大內容）；非業務上限，放寬到 20 以容納較大的團報設定。
+const DRAFT_MAX_STUDENTS = 20;
+// 團報人數上下限「以課程組別設定（course_type_configs.min/max）為唯一來源」：
+// 不再做全域 [2,6] 硬性夾擠，後台設多少就是多少（資料一致性）。僅保留結構性防呆：>=1 且 min<=max。
 function effectiveBounds(cfgMin, cfgMax) {
-  const max = Math.min(GROUP_MAX_CEIL, Math.max(1, Number(cfgMax) || 1));
-  const min = Math.min(max, Math.max(GROUP_MIN_FLOOR, Number(cfgMin) || 1));
+  const max = Math.max(1, Number(cfgMax) || 1);
+  const min = Math.min(max, Math.max(1, Number(cfgMin) || 1));
   return { min_students: min, max_students: max };
 }
 // U9：複數期數——一張團報訂單可一次購買 1–6 期（名單鎖定不變）。

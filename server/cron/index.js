@@ -334,10 +334,10 @@ function initCronJobs() {
     }
   });
 
-  // ── 每日 01:10：套用「課程需求 (F-A07)」到期排程 ──
-  //   scheduled_effective_date <= 今天 且有 pending_changes 的列 → 套用成正式資料。
-  //   與 GET 讀取時的保險套用雙保險；皆 idempotent。
-  cron.schedule('10 1 * * *', async () => {
+  // ── 每 5 分鐘：套用「課程需求 (F-A07)」到期排程 ──
+  //   scheduled_effective_date <= 現在（含日期＋時間）且有 pending_changes 的列 → 套用成正式資料。
+  //   改為每 5 分鐘（原每日 01:10），使排定的「時間」一到即生效；與 GET 讀取時保險套用雙保險，皆 idempotent。
+  cron.schedule('*/5 * * * *', async () => {
     try {
       const n = await applyDueScheduledCourseTypeChanges(pool);
       if (n) console.log(`[Cron/CourseType] 套用到期排程 ${n} 筆`);

@@ -181,7 +181,7 @@ export default function MyLessonsPage() {
               </button>
 
               {open && (
-                <div className="absolute left-0 right-0 top-full z-50 mt-2 flex flex-col gap-5 rounded-2xl border border-gray-100 bg-white p-2 shadow-xl">
+                <div className="absolute left-0 right-0 top-full z-50 mt-2 flex max-h-[60vh] flex-col gap-1.5 overflow-y-auto rounded-2xl border border-gray-100 bg-white p-2 shadow-xl">
                   {enrollments.map((e) => {
                     const sel = e.id === enrollId;
                     return (
@@ -221,7 +221,6 @@ export default function MyLessonsPage() {
                     key={it.key}
                     e={enrollment}
                     expanded={expandedKey === it.key}
-                    raise={!!expandedKey}
                     onToggle={() => setExpandedKey((k) => (k === it.key ? null : it.key))}
                     onBooked={() => { setExpandedKey(null); load(); }}
                   />
@@ -229,9 +228,9 @@ export default function MyLessonsPage() {
               ))}
             </div>
 
-            {/* 點擊外部 / 其他區域 收合內嵌預約 */}
+            {/* 點擊外部 / 其他區域 收合內嵌預約（z-10：在內容卡之上、但在固定底部導覽列 z-30 之下） */}
             {expandedKey && (
-              <button aria-label="收合" onClick={() => setExpandedKey(null)} className="fixed inset-0 z-30 cursor-default" />
+              <button aria-label="收合" onClick={() => setExpandedKey(null)} className="fixed inset-0 z-10 cursor-default" />
             )}
           </div>
 
@@ -349,14 +348,16 @@ function RecordCard({ r, e, busy, onCheckin, onOpen }) {
 }
 
 // 未預約佔位卡：點卡片或「預約上課」展開內嵌時段選擇器（單選）。
-function PlaceholderCard({ e, expanded, raise, onToggle, onBooked }) {
+// 展開時 z-[15]：浮在收合背板（z-10）之上、但仍低於 sticky 標頭（z-20）與固定底部導覽列（z-30），
+// 避免卡片蓋過底部導覽列（破版）。未展開的卡片不抬升，維持一般文件流。
+function PlaceholderCard({ e, expanded, onToggle, onBooked }) {
   const coachLine = [`${e.coach} 教練`, e.group, e.venue].filter(Boolean).join('・');
   return (
     <div
       onClick={() => { if (!expanded) onToggle(); }}
       className={`overflow-hidden rounded-2xl border bg-white shadow-sm transition ${
-        expanded ? 'relative z-40 border-brand-primary/60 ring-2 ring-brand-primary/40' : `border-gray-100 ${raise ? '' : ''} cursor-pointer active:bg-gray-50`
-      } ${raise && !expanded ? 'relative z-40' : ''}`}
+        expanded ? 'relative z-[15] border-brand-primary/60 ring-2 ring-brand-primary/40' : 'border-gray-100 cursor-pointer active:bg-gray-50'
+      }`}
     >
       <div className="flex items-start gap-3 p-4">
         <div className="min-w-0 flex-1">

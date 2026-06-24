@@ -1,11 +1,13 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 
 const PARENT_TABS = [
   { to: '/',           label: '首頁',     end: true,  icon: HomeIcon },
   { to: '/my-courses', label: '我的課程', end: false, icon: BookIcon },
-  { to: '/chat',       label: '聊天',     end: false, icon: ChatIcon },
+  // 聊天功能尚未上線：先反灰、不可點進，標示「敬請期待」。
+  { to: '/chat',       label: '聊天',     end: false, icon: ChatIcon, comingSoon: true },
   { to: '/profile',    label: '個人',     end: false, icon: UserIcon },
 ];
 
@@ -21,30 +23,45 @@ const COL_MAP = { 3: 'grid-cols-3', 4: 'grid-cols-4', 5: 'grid-cols-5' };
 
 export default function BottomNav() {
   const { role } = useAuth();
+  const toast = useToast();
   const tabs = role === 'coach' ? COACH_TABS : PARENT_TABS;
   const cols = COL_MAP[tabs.length] || 'grid-cols-4';
 
   return (
     <nav className="fixed inset-x-0 bottom-0 z-30 mx-auto w-full max-w-[390px] border-t border-gray-200 bg-white">
       <ul className={`grid ${cols}`}>
-        {tabs.map(({ to, label, end, icon: Icon }) => (
+        {tabs.map(({ to, label, end, icon: Icon, comingSoon }) => (
           <li key={to}>
-            <NavLink
-              to={to}
-              end={end}
-              className={({ isActive }) =>
-                `flex flex-col items-center justify-center gap-1 py-2.5 text-xs ${
-                  isActive ? 'text-brand-teal' : 'text-gray-500'
-                }`
-              }
-            >
-              {({ isActive }) => (
-                <>
-                  <Icon active={isActive} />
-                  <span className="font-medium">{label}</span>
-                </>
-              )}
-            </NavLink>
+            {comingSoon ? (
+              // 未上線：反灰、不可導頁，點擊提示「敬請期待」，並在右上角標示。
+              <button
+                type="button"
+                aria-disabled="true"
+                onClick={() => toast.info('聊天功能即將上線，敬請期待 🙌')}
+                className="relative flex w-full flex-col items-center justify-center gap-1 py-2.5 text-xs text-gray-300"
+              >
+                <Icon active={false} />
+                <span className="font-medium">{label}</span>
+                <span className="pointer-events-none absolute right-1 top-1 rounded-full bg-brand-amber/15 px-1 text-[8px] font-bold leading-[1.5] text-brand-amber">敬請期待</span>
+              </button>
+            ) : (
+              <NavLink
+                to={to}
+                end={end}
+                className={({ isActive }) =>
+                  `flex flex-col items-center justify-center gap-1 py-2.5 text-xs ${
+                    isActive ? 'text-brand-teal' : 'text-gray-500'
+                  }`
+                }
+              >
+                {({ isActive }) => (
+                  <>
+                    <Icon active={isActive} />
+                    <span className="font-medium">{label}</span>
+                  </>
+                )}
+              </NavLink>
+            )}
           </li>
         ))}
       </ul>

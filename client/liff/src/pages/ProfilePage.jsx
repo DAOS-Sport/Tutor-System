@@ -66,6 +66,10 @@ export default function ProfilePage() {
   const [venues, setVenues] = useState([]);
   const [parentErrors, setParentErrors] = useState({});
   const [studentErrors, setStudentErrors] = useState({});
+  // 編輯資料：橫條式折疊。先點「編輯資料」展開兩個子橫條，再各自點擊往下展開內容。
+  const [editOpen, setEditOpen] = useState(false);
+  const [parentOpen, setParentOpen] = useState(false);
+  const [studentOpen, setStudentOpen] = useState(false);
 
   // 改值時即時清掉該欄的紅框
   function setParentField(key, value) {
@@ -203,77 +207,83 @@ export default function ProfilePage() {
         {profile.email && <div className="text-xs opacity-90">{profile.email}</div>}
       </div>
 
-      <Section title="家長資料">
-        {/* 註冊完成後，家長資料鎖定為唯讀；如需修改請洽櫃台 / 客服。 */}
-        <p className="mb-2 text-[11px] text-gray-400">家長資料於註冊後鎖定為唯讀，如需修改請洽櫃台 / 客服。</p>
-        <div className="grid gap-3">
-          <ReadonlyField label="家長姓名" value={parentForm.name} />
-          <ReadonlyField label="手機" value={parentForm.phone} />
-          <ReadonlyField label="館別" value={venues.find((v) => v.id === parentForm.primary_venue_id)?.name || parentForm.primary_venue_id} />
-          <ReadonlyField label="性別" value={parentForm.gender} />
-          <ReadonlyField label="Email" value={parentForm.email} />
-          <div className="grid grid-cols-2 gap-3">
-            <ReadonlyField label="住家電話" value={parentForm.home_phone} />
-            <ReadonlyField label="LINE ID" value={parentForm.line_id} />
-          </div>
-          <ReadonlyField label="住家地址" value={parentForm.home_address} />
-        </div>
-      </Section>
-
-      <Section title={`學員清單（${students.length}）`}>
-        <div className="space-y-2">
-          {students.map((s) => (
-            <div key={s.id} className="rounded-lg border border-gray-100 p-3">
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <div className="text-sm font-bold text-gray-900">{s.name}</div>
-                  <div className="text-xs text-gray-500">{s.id_number}</div>
-                  <div className="mt-0.5 text-xs text-gray-500">{String(s.birth_date || '').slice(0, 10)}・{normalizeGender(s.gender) || '未指定'}{s.blood_type ? `・${s.blood_type}` : ''}</div>
+      {/* 編輯資料：橫條 → 點擊展開「家長資料 / 學員資料」兩個子橫條 → 各自再點擊往下展開內容 */}
+      <div className="mb-4">
+        <Collapsible title="編輯資料" open={editOpen} onToggle={() => setEditOpen((o) => !o)} accent>
+          <div className="space-y-2.5">
+            <Collapsible title="家長資料" open={parentOpen} onToggle={() => setParentOpen((o) => !o)} nested>
+              <p className="mb-2 text-[11px] text-gray-400">家長資料於註冊後鎖定為唯讀，如需修改請洽櫃台 / 客服。</p>
+              <div className="grid gap-3">
+                <ReadonlyField label="家長姓名" value={parentForm.name} />
+                <ReadonlyField label="手機" value={parentForm.phone} />
+                <ReadonlyField label="館別" value={venues.find((v) => v.id === parentForm.primary_venue_id)?.name || parentForm.primary_venue_id} />
+                <ReadonlyField label="性別" value={parentForm.gender} />
+                <ReadonlyField label="Email" value={parentForm.email} />
+                <div className="grid grid-cols-2 gap-3">
+                  <ReadonlyField label="住家電話" value={parentForm.home_phone} />
+                  <ReadonlyField label="LINE ID" value={parentForm.line_id} />
                 </div>
-                <div className="flex shrink-0 gap-2">
-                  <button type="button" onClick={() => editStudent(s)} className="rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-700">編輯</button>
-                  <button type="button" disabled={busy === `delete:${s.id}`} onClick={() => deactivateStudent(s.id)} className="rounded-md border border-brand-error/40 px-2.5 py-1.5 text-xs font-medium text-brand-error disabled:opacity-60">
-                    {busy === `delete:${s.id}` ? '同步中' : '停用'}
-                  </button>
-                </div>
+                <ReadonlyField label="住家地址" value={parentForm.home_address} />
               </div>
-            </div>
-          ))}
-        </div>
+            </Collapsible>
 
-        <form className="mt-3 grid gap-3 border-t border-gray-100 pt-3" onSubmit={saveStudent} noValidate>
-          <h4 className="text-xs font-bold text-gray-700">{editingId ? '編輯學員' : '新增學員'}</h4>
-          <Field label="姓名" required error={studentErrors.name}>
-            <input className={fieldCls(studentErrors.name)} value={studentForm.name} onChange={(e) => setStudentField('name', e.target.value)} />
-          </Field>
-          <Field label="身分證字號" required error={studentErrors.id_number}>
-            <input className={fieldCls(studentErrors.id_number)} value={studentForm.id_number} onChange={(e) => setStudentField('id_number', e.target.value.toUpperCase())} />
-          </Field>
-          <Field label="出生年月日" required error={studentErrors.birth_date}>
-            <input type="date" className={fieldCls(studentErrors.birth_date)} value={studentForm.birth_date} onChange={(e) => setStudentField('birth_date', e.target.value)} />
-          </Field>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="性別">
-              <select className={inputCls} value={studentForm.gender} onChange={(e) => setStudentField('gender', e.target.value)}>
-                <option value="生理男">生理男</option>
-                <option value="生理女">生理女</option>
-                <option value="不方便透漏">不方便透漏</option>
-              </select>
-            </Field>
-            <Field label="血型">
-              <input className={inputCls} value={studentForm.blood_type} onChange={(e) => setStudentField('blood_type', e.target.value)} />
-            </Field>
+            <Collapsible title="學員資料" subtitle={`共 ${students.length} 位`} open={studentOpen} onToggle={() => setStudentOpen((o) => !o)} nested>
+              <div className="space-y-2">
+                {students.map((s) => (
+                  <div key={s.id} className="rounded-lg border border-gray-100 p-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <div className="text-sm font-bold text-gray-900">{s.name}</div>
+                        <div className="text-xs text-gray-500">{s.id_number}</div>
+                        <div className="mt-0.5 text-xs text-gray-500">{String(s.birth_date || '').slice(0, 10)}・{normalizeGender(s.gender) || '未指定'}{s.blood_type ? `・${s.blood_type}` : ''}</div>
+                      </div>
+                      <div className="flex shrink-0 gap-2">
+                        <button type="button" onClick={() => editStudent(s)} className="rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-700">編輯</button>
+                        <button type="button" disabled={busy === `delete:${s.id}`} onClick={() => deactivateStudent(s.id)} className="rounded-md border border-brand-error/40 px-2.5 py-1.5 text-xs font-medium text-brand-error disabled:opacity-60">
+                          {busy === `delete:${s.id}` ? '同步中' : '停用'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <form className="mt-3 grid gap-3 border-t border-gray-100 pt-3" onSubmit={saveStudent} noValidate>
+                <h4 className="text-xs font-bold text-gray-700">{editingId ? '編輯學員' : '新增學員'}</h4>
+                <Field label="姓名" required error={studentErrors.name}>
+                  <input className={fieldCls(studentErrors.name)} value={studentForm.name} onChange={(e) => setStudentField('name', e.target.value)} />
+                </Field>
+                <Field label="身分證字號" required error={studentErrors.id_number}>
+                  <input className={fieldCls(studentErrors.id_number)} value={studentForm.id_number} onChange={(e) => setStudentField('id_number', e.target.value.toUpperCase())} />
+                </Field>
+                <Field label="出生年月日" required error={studentErrors.birth_date}>
+                  <input type="date" className={fieldCls(studentErrors.birth_date)} value={studentForm.birth_date} onChange={(e) => setStudentField('birth_date', e.target.value)} />
+                </Field>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="性別">
+                    <select className={inputCls} value={studentForm.gender} onChange={(e) => setStudentField('gender', e.target.value)}>
+                      <option value="生理男">生理男</option>
+                      <option value="生理女">生理女</option>
+                      <option value="不方便透漏">不方便透漏</option>
+                    </select>
+                  </Field>
+                  <Field label="血型">
+                    <input className={inputCls} value={studentForm.blood_type} onChange={(e) => setStudentField('blood_type', e.target.value)} />
+                  </Field>
+                </div>
+                <div className="flex gap-2">
+                  <button type="submit" disabled={!!busy} className="flex-1 rounded-lg bg-brand-primary py-2.5 text-sm font-bold text-white disabled:opacity-60">
+                    {busy === 'student' ? '同步中...' : (editingId ? '儲存學員' : '新增學員')}
+                  </button>
+                  {editingId && (
+                    <button type="button" onClick={resetStudentForm} className="rounded-lg border border-gray-200 px-4 py-2.5 text-sm font-medium text-gray-700">取消</button>
+                  )}
+                </div>
+              </form>
+            </Collapsible>
           </div>
-          <div className="flex gap-2">
-            <button type="submit" disabled={!!busy} className="flex-1 rounded-lg bg-brand-primary py-2.5 text-sm font-bold text-white disabled:opacity-60">
-              {busy === 'student' ? '同步中...' : (editingId ? '儲存學員' : '新增學員')}
-            </button>
-            {editingId && (
-              <button type="button" onClick={resetStudentForm} className="rounded-lg border border-gray-200 px-4 py-2.5 text-sm font-medium text-gray-700">取消</button>
-            )}
-          </div>
-        </form>
-      </Section>
+        </Collapsible>
+      </div>
 
       <p className="px-1 pb-2 text-[11px] text-gray-400">
         本系統保留師生對話記錄供場館管理使用。
@@ -282,12 +292,32 @@ export default function ProfilePage() {
   );
 }
 
-function Section({ title, children }) {
+// 橫條式折疊：點標題列展開／收合內容。accent＝最外層（左側主色條、字較大）；nested＝子層（較精簡）。
+function Collapsible({ title, subtitle, open, onToggle, accent, nested, children }) {
   return (
-    <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3">
-      <h3 className="mb-2 text-xs font-bold text-brand-primary">{title}</h3>
-      {children}
+    <div className={`overflow-hidden rounded-xl border bg-white ${open ? 'border-brand-primary/30' : 'border-gray-200'}`}>
+      <button
+        type="button"
+        onClick={onToggle}
+        className={`flex w-full items-center justify-between gap-2 px-4 text-left active:bg-gray-50 ${nested ? 'py-2.5' : 'py-3.5'}`}
+      >
+        <span className="flex min-w-0 items-center gap-2">
+          {accent && <span className="h-4 w-1 shrink-0 rounded-full bg-brand-primary" />}
+          <span className={`truncate font-bold text-brand-primary ${nested ? 'text-sm' : 'text-base'}`}>{title}</span>
+          {subtitle && <span className="shrink-0 text-xs font-normal text-gray-400">{subtitle}</span>}
+        </span>
+        <ChevronIcon className={`shrink-0 text-gray-400 transition ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && <div className="border-t border-gray-100 px-3 py-3">{children}</div>}
     </div>
+  );
+}
+
+function ChevronIcon({ className = '' }) {
+  return (
+    <svg className={className} width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M6 9l6 6 6-6" />
+    </svg>
   );
 }
 

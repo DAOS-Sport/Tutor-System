@@ -1,11 +1,11 @@
 /**
  * 課程需求（course_type_configs）排程生效：
- *   把 scheduled_effective_date <= 今天 且有 pending_changes 的列，
+ *   把 scheduled_effective_date <= 現在（含日期＋時間）且有 pending_changes 的列，
  *   套用成正式資料、清掉排程、更新 effective_date / updated_at。
  *
  * 由兩處呼叫、皆 idempotent：
  *   1) GET /api/admin/course-types 讀取時（保險：即使 cron 沒跑也會在下次讀取生效）
- *   2) 每日 cron（server/cron/index.js）
+ *   2) cron（server/cron/index.js）每 5 分鐘跑一次，使排定的「時間」一到即套用
  */
 const { pool } = require('../models/db');
 
@@ -18,7 +18,7 @@ async function applyDueScheduledCourseTypeChanges(db = pool) {
        FROM course_type_configs
       WHERE pending_changes IS NOT NULL
         AND scheduled_effective_date IS NOT NULL
-        AND scheduled_effective_date <= CURRENT_DATE`
+        AND scheduled_effective_date <= NOW()`
   );
   let applied = 0;
   for (const row of due.rows) {
@@ -29,7 +29,8 @@ async function applyDueScheduledCourseTypeChanges(db = pool) {
       if (pc[k] !== undefined) { vals.push(pc[k]); sets.push(`${k} = $${vals.length}`); }
     }
     // 即使 pending 沒有任何白名單欄位，也要把排程清掉、effective_date 推進，避免卡住。
-    sets.push('effective_date = scheduled_effective_date');
+    // scheduled_effective_date 現為 timestamptz，effective_date 仍是 date → 取台北日期。
+    sets.push("effective_date = (scheduled_effective_date AT TIME ZONE 'Asia/Taipei')::date");
     sets.push('scheduled_effective_date = NULL');
     sets.push('pending_changes = NULL');
     sets.push('updated_at = NOW()');

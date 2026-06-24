@@ -36,22 +36,19 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
   const client = await pool.connect();
   try {
     const { course_type, label, max_students, min_students, base_price, data_group } = req.body || {};
-    if (course_type == null || label == null || max_students == null) {
-      return res.status(400).json({ error: '缺少必填欄位：course_type / label / max_students' });
-    }
+    // 依需求「拿掉所有驗證」：除主鍵 course_type 仍需可解析為整數外，其餘欄位不檢查範圍/長度/大小關係，
+    // 僅做型別解析與安全預設（避免 NaN/NULL 寫入 NOT NULL 欄位）。
     const ct = parseInt(course_type, 10);
-    const ms = parseInt(max_students, 10);
-    // min_students 選填，預設 1
-    const mn = min_students == null || min_students === '' ? 1 : parseInt(min_students, 10);
-    const lb = String(label).trim();
-    if (isNaN(ct) || ct < 1) return res.status(400).json({ error: 'course_type 必須為正整數' });
-    if (!lb) return res.status(400).json({ error: 'label 不可為空' });
-    if (lb.length > 50) return res.status(400).json({ error: 'label 長度不可超過 50' });
-    if (isNaN(ms) || ms < 1 || ms > 10) return res.status(400).json({ error: 'max_students 必須為 1–10' });
-    if (isNaN(mn) || mn < 1 || mn > 10) return res.status(400).json({ error: 'min_students 必須為 1–10' });
-    if (mn > ms) return res.status(400).json({ error: 'min_students 不可大於 max_students' });
-    const bp = base_price == null || base_price === '' ? 0 : Number(base_price);
-    if (!Number.isFinite(bp) || bp < 0) return res.status(400).json({ error: '每期價格必須為非負數' });
+    if (isNaN(ct)) return res.status(400).json({ error: 'course_type 必須為整數' });
+    const lb = label == null ? '' : String(label).trim();
+    // max_students NOT NULL：未填則沿用前台「最多＝編號」習慣預設為 ct；可為任意整數。
+    const msParsed = parseInt(max_students, 10);
+    const ms = isNaN(msParsed) ? ct : msParsed;
+    // min_students 未填預設 1；可為任意整數。
+    const mnParsed = parseInt(min_students, 10);
+    const mn = isNaN(mnParsed) ? 1 : mnParsed;
+    const bpParsed = Number(base_price);
+    const bp = Number.isFinite(bpParsed) ? bpParsed : 0;
     const dg = data_group == null ? null : (String(data_group).trim() || null);
 
     await client.query('BEGIN');
@@ -112,64 +109,53 @@ router.patch('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, 
       return res.json(r.rows[0]);
     }
 
-    // 合併出「下一版值」（未提供者沿用現值），逐欄驗證。
-    let label = row.label;
-    if (p.label !== undefined) {
-      const lb = String(p.label).trim();
-      if (!lb) { await client.query('ROLLBACK'); return res.status(400).json({ error: '標題不可為空' }); }
-      if (lb.length > 50) { await client.query('ROLLBACK'); return res.status(400).json({ error: '標題長度不可超過 50' }); }
-      label = lb;
-    }
+    // 合併出「下一版值」（未提供者沿用現值）。依需求「拿掉所有驗證」：不再檢查長度/範圍/大小關係，
+    // 僅保留型別解析——數字無法解析時沿用現值，避免寫入 NaN/NULL 破壞 NOT NULL 欄位。
+    let label = p.label !== undefined ? String(p.label).trim() : row.label;
     let max_students = row.max_students;
     if (p.max_students !== undefined) {
       const ms = parseInt(p.max_students, 10);
-      if (isNaN(ms) || ms < 1 || ms > 10) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'max_students 必須為 1–10' }); }
-      max_students = ms;
+      if (!isNaN(ms)) max_students = ms;
     }
     let min_students = row.min_students;
     if (p.min_students !== undefined) {
       const mn = parseInt(p.min_students, 10);
-      if (isNaN(mn) || mn < 1 || mn > 10) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'min_students 必須為 1–10' }); }
-      min_students = mn;
-    }
-    if (min_students > max_students) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: '最少學生不可大於最多學生' });
+      if (!isNaN(mn)) min_students = mn;
     }
     const is_active = p.is_active !== undefined ? Boolean(p.is_active) : row.is_active;
     let base_price = Number(row.base_price);
     if (p.base_price !== undefined) {
       const bp = Number(p.base_price);
-      if (!Number.isFinite(bp) || bp < 0) { await client.query('ROLLBACK'); return res.status(400).json({ error: '每期價格不可小於 0' }); }
-      base_price = bp;
+      if (Number.isFinite(bp)) base_price = bp;
     }
     let data_group = row.data_group;
     if (p.data_group !== undefined) {
-      const dg = p.data_group === null ? null : String(p.data_group).trim();
-      if (dg && dg.length > 100) { await client.query('ROLLBACK'); return res.status(400).json({ error: '資料管理群組長度不可超過 100' }); }
-      data_group = dg || null;
+      data_group = p.data_group === null ? null : (String(p.data_group).trim() || null);
     }
 
     const next = { label, min_students, max_students, is_active, base_price, data_group };
 
-    // 判斷生效方式：給未來日期的 scheduled_effective_date → 排程；否則（含等於今天）立即。
-    let scheduledDate = null;
+    // 生效方式（不限制日期/時間）：scheduled_effective_date 接受 datetime-local（YYYY-MM-DDTHH:MM）
+    // 或純日期（自動補 00:00），一律以台北固定時區 +08:00 解讀（台灣全年無日光節約）。
+    // > 現在 → 排程；否則（過去／現在／無法解析）→ 立即生效。用 JS 解析（不在交易內查詢），
+    // 避免無效字串讓資料庫交易進入中止狀態而拖垮後續 UPDATE。
+    let scheduledAt = null;
     if (p.scheduled_effective_date) {
-      const d = String(p.scheduled_effective_date).slice(0, 10);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) { await client.query('ROLLBACK'); return res.status(400).json({ error: '生效日格式需為 YYYY-MM-DD' }); }
-      const cmp = await client.query(`SELECT $1::date < CURRENT_DATE AS past, $1::date = CURRENT_DATE AS today`, [d]);
-      if (cmp.rows[0].past) { await client.query('ROLLBACK'); return res.status(400).json({ error: '排程生效日不可早於今天' }); }
-      if (!cmp.rows[0].today) scheduledDate = d; // 等於今天 → 視為立即生效
+      const raw = String(p.scheduled_effective_date).trim();
+      const local = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? `${raw}T00:00` : raw;
+      const iso = local.length === 16 ? `${local}:00+08:00` : `${local}+08:00`;
+      const dt = new Date(iso);
+      if (!isNaN(dt.getTime()) && dt.getTime() > Date.now()) scheduledAt = dt;
     }
 
     let result;
-    if (scheduledDate) {
-      // 排程：存 pending_changes，正式資料不動，待生效日由 cron / 讀取時套用。
+    if (scheduledAt) {
+      // 排程：存 pending_changes，正式資料不動，待生效時間由 cron / 讀取時套用。
       const r = await client.query(
         `UPDATE course_type_configs
-            SET pending_changes = $2::jsonb, scheduled_effective_date = $3::date, updated_at = NOW()
+            SET pending_changes = $2::jsonb, scheduled_effective_date = $3::timestamptz, updated_at = NOW()
           WHERE course_type = $1 RETURNING *`,
-        [ct, JSON.stringify(next), scheduledDate]
+        [ct, JSON.stringify(next), scheduledAt]
       );
       result = r.rows[0];
     } else {
