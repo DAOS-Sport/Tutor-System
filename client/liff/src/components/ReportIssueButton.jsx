@@ -27,7 +27,7 @@ export function classifyError(code) {
   const c = String(code || '');
   if (!c) return '登入 / 系統問題';
   if (/ID_TOKEN|LINE_VERIFY|line_denied|oauth_failed|no_profile|bad_state|bad_request/i.test(c)) return 'LINE 驗證 / 授權問題';
-  if (/RAGIC/i.test(c)) return '資料同步問題（Ragic）';
+  if (/RAGIC|SYNC/i.test(c)) return '資料同步問題';
   if (/ALREADY_BOUND|AMBIGUOUS|NOT_FOUND|BIND_RACE|MISMATCH|REGISTERED|PHONE_EXISTS/i.test(c)) return '帳號綁定 / 比對問題';
   if (/RATE_LIMITED|429/i.test(c)) return '操作過於頻繁';
   if (/not_configured/i.test(c)) return '系統設定問題';

@@ -19,10 +19,20 @@ const router = express.Router();
 const TW_PHONE = /^09\d{8}$/;
 const TW_ID = /^[A-Z][12]\d{8}$/;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const BLOOD_TYPES = new Set(['A', 'B', 'O', 'AB', '不清楚']);
 
 function cleanText(v, max = 255) {
   const s = String(v ?? '').trim();
   return s ? s.slice(0, max) : '';
+}
+
+function cleanBloodType(v) {
+  const raw = cleanText(v, 10);
+  if (!raw) return '不清楚';
+  const upper = raw.toUpperCase();
+  if (BLOOD_TYPES.has(upper)) return upper;
+  if (BLOOD_TYPES.has(raw)) return raw;
+  return '不清楚';
 }
 
 function cleanStudentInput(body) {
@@ -33,7 +43,7 @@ function cleanStudentInput(body) {
     id_number: idNumber,
     birth_date: cleanText(body?.birth_date, 20) || null,
     gender: cleanText(body?.gender, 20) || null,
-    blood_type: cleanText(body?.blood_type, 5) || null,
+    blood_type: cleanBloodType(body?.blood_type),
   };
 }
 
@@ -85,14 +95,14 @@ function ragicError(res, err) {
     return res.status(400).json({ error: err.message, code: err.code });
   }
   if (err.code === 'STUDENT_ID_DUPLICATED') {
-    return res.status(409).json({ error: '此身分證字號已存在', code: err.code });
+    return res.status(409).json({ error: '此身分證字號已有學員資料，請確認後再試；若需協助請聯絡客服。', code: err.code });
+  }
+  if (err.code === '23505') {
+    return res.status(409).json({ error: '資料已存在，請確認後再試；若需協助請聯絡客服。', code: 'DUPLICATED_VALUE' });
   }
   const status = err.code === 'PARENT_RAGIC_NOT_FOUND' ? 409 : 502;
   return res.status(status).json({
-    error: 'Ragic 同步失敗，請稍後再試',
-    // detail：把 Ragic 的真實原因（如 INVALID 必填缺漏 / 慢回應）帶回前端，
-    // 方便家長截圖回報、我們即時定位；非機敏資訊。
-    detail: err.message ? `同步失敗：${err.message}` : undefined,
+    error: '資料暫時無法完成同步，請稍後再試。',
     code: err.code || 'RAGIC_SYNC_FAILED',
   });
 }
@@ -100,8 +110,7 @@ function ragicError(res, err) {
 // 「擇一儲存」：學員已寫進本地 DB、但 Ragic 同步暫緩時，給前端一句可讀提醒。
 // 多半是家長資料（館別／性別／Email）未補齊 → Z02 必填 INVALID；也可能 Ragic 暫時連線失敗。
 function studentSyncDeferredMsg(err) {
-  const reason = err?.message ? `（${err.message}）` : '';
-  return `學員已儲存；雲端同步暫緩${reason}。補齊家長資料（館別／性別／Email）後再次儲存此學員即可完成同步。`;
+  return '學員已儲存；系統同步稍後會再處理。';
 }
 
 router.get('/me', requireParent, async (req, res) => {
@@ -186,12 +195,50 @@ router.post('/me/students', requireParent, async (req, res) => {
     const parent = await loadMe(req.parent.id);
     if (!parent) return res.status(404).json({ error: '找不到家長帳號' });
     const dup = await pool.query(
-      `SELECT id FROM students
+      `SELECT id, parent_id, is_active FROM students
         WHERE id_number = $1
         LIMIT 1`,
       [s.id_number]
     );
-    if (dup.rowCount) return res.status(409).json({ error: '此學員已存在', code: 'STUDENT_ID_DUPLICATED' });
+    if (dup.rowCount) {
+      const existing = dup.rows[0];
+      if (String(existing.parent_id) !== String(req.parent.id)) {
+        return res.status(409).json({
+          error: '此身分證字號已有學員資料，請確認後再試；若需協助請聯絡客服。',
+          code: 'STUDENT_ID_DUPLICATED',
+        });
+      }
+
+      const up = await pool.query(
+        `UPDATE students SET
+           name = $3, id_number = $4, birth_date = $5::date, gender = $6, blood_type = $7,
+           is_active = TRUE, last_synced_at = NULL, updated_at = NOW()
+         WHERE id = $1 AND parent_id = $2
+         RETURNING id, name, id_number, birth_date, gender, blood_type, student_code, ragic_record_id, is_active`,
+        [existing.id, req.parent.id, s.name, s.id_number, s.birth_date, s.gender, s.blood_type]
+      );
+      let row = up.rows[0];
+      let syncWarning = null;
+      try {
+        console.log('[student-sync] 新增學員比對到既有資料，改為更新', { parent: parent.name, phone: parent.phone, student: s.name });
+        const sync = await ragic.updateStudentZ01Z02Strict({ parent, student: { ...row, ...s }, status: '啟用' });
+        const up2 = await pool.query(
+          `UPDATE students SET ragic_record_id = COALESCE(ragic_record_id, $2), last_synced_at = NOW()
+            WHERE id = $1
+            RETURNING id, name, id_number, birth_date, gender, blood_type, student_code, ragic_record_id, is_active`,
+          [row.id, sync.z02.ragicRecordId]
+        );
+        row = up2.rows[0];
+        await pool.query(
+          `UPDATE parents SET ragic_record_id = COALESCE(ragic_record_id, $2), updated_at = NOW() WHERE id = $1`,
+          [req.parent.id, sync.parentRagicRecordId]
+        );
+      } catch (err) {
+        console.warn('[student-sync] 既有學員更新 Ragic 同步暫緩（本地已存）', { code: err.code, msg: err.message });
+        syncWarning = studentSyncDeferredMsg(err);
+      }
+      return res.json({ ...row, sync_warning: syncWarning, merged_existing: true });
+    }
 
     // 擇一儲存：學員欄位齊就先寫進本地 DB（last_synced_at = NULL = 尚未同步），
     // 不被「家長資料未補齊 → Z02 必填 INVALID」整筆擋掉。
@@ -256,7 +303,12 @@ router.patch('/me/students/:id', requireParent, async (req, res) => {
         LIMIT 1`,
       [s.id_number, req.params.id]
     );
-    if (dup.rowCount) return res.status(409).json({ error: '此身分證字號已存在', code: 'STUDENT_ID_DUPLICATED' });
+    if (dup.rowCount) {
+      return res.status(409).json({
+        error: '此身分證字號已有學員資料，請確認後再試；若需協助請聯絡客服。',
+        code: 'STUDENT_ID_DUPLICATED',
+      });
+    }
 
     // 擇一儲存：先把學員欄位寫進本地 DB（last_synced_at 清成 NULL = 待同步），
     // 不被「家長資料未補齊 → Z02 必填 INVALID」整筆擋掉。

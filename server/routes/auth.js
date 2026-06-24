@@ -544,7 +544,7 @@ router.post('/parent-bind-phone', async (req, res) => {
       ragicRow = await ragic.getParentByPhone(phone);
     } catch (err) {
       console.warn('[auth/parent-bind-phone] ragic.getParentByPhone failed:', err.message);
-      return res.status(502).json({ error: 'Ragic 暫時無法連線，請稍後再試', code: 'RAGIC_UNAVAILABLE' });
+      return res.status(502).json({ error: '資料同步服務暫時無法連線，請稍後再試', code: 'RAGIC_UNAVAILABLE' });
     }
 
     // 3) Ragic 也找不到 → 引導去註冊
@@ -683,7 +683,7 @@ router.post('/parent-register-line', async (req, res) => {
       }
     } catch (err) {
       console.warn('[auth/parent-register-line] ragic.getParentByLineUid failed:', err.message);
-      return res.status(502).json({ error: 'Ragic 暫時無法連線，請稍後再試', code: 'RAGIC_UNAVAILABLE' });
+      return res.status(502).json({ error: '資料同步服務暫時無法連線，請稍後再試', code: 'RAGIC_UNAVAILABLE' });
     }
 
     // 衝突檢查 3：Ragic 已有此 phone
@@ -692,7 +692,7 @@ router.post('/parent-register-line', async (req, res) => {
       existsByPhone = await ragic.getParentByPhone(phone);
     } catch (err) {
       console.warn('[auth/parent-register-line] ragic.getParentByPhone failed:', err.message);
-      return res.status(502).json({ error: 'Ragic 暫時無法連線，請稍後再試', code: 'RAGIC_UNAVAILABLE' });
+      return res.status(502).json({ error: '資料同步服務暫時無法連線，請稍後再試', code: 'RAGIC_UNAVAILABLE' });
     }
     if (existsByPhone) {
       return res.status(409).json({
@@ -722,7 +722,7 @@ router.post('/parent-register-line', async (req, res) => {
         });
       }
       console.error('[auth/parent-register-line] createParentWithStudentsInRagic failed:', err.message);
-      return res.status(502).json({ error: '寫入 Ragic 失敗，請稍後再試', code: 'RAGIC_WRITE_FAILED' });
+      return res.status(502).json({ error: '資料暫時無法完成同步，請稍後再試', code: 'RAGIC_WRITE_FAILED' });
     }
 
     // 同步 / 建立本地 parents + students

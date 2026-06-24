@@ -14,7 +14,9 @@ const COURSE_TYPES = [
   { type: 1, title: '1 對 1 個別教學', subtitle: '一位學員專屬教練', description: '完全客製化進度，最高效率提升技術。', basePrice: 9000 },
   { type: 2, title: '1 對 2 雙人班', subtitle: '與好友共學', description: '兩位學員共享教練，互相切磋學習。', basePrice: 6000 },
   { type: 3, title: '1 對 3 小團班', subtitle: '小組同訓', description: '三位學員精緻小班，氣氛輕鬆活潑。', basePrice: 4500 },
-  { type: 4, title: '1 對 4-6 團體班', subtitle: '4~6 人共學', description: '多人團體課，依單人價計費、人數越多越划算。', basePrice: 3000 },
+  { type: 4, title: '1 對 4 團體班', subtitle: '4 人共學', description: '多人團體課，依單人價計費、人數越多越划算。', basePrice: 3000 },
+  { type: 5, title: '1 對 5 團體班', subtitle: '5 人共學', description: '多人團體課，依單人價計費、人數越多越划算。', basePrice: 3000 },
+  { type: 6, title: '1 對 6 團體班', subtitle: '6 人共學', description: '多人團體課，依單人價計費、人數越多越划算。', basePrice: 3000 },
 ];
 const TYPE_META = Object.fromEntries(COURSE_TYPES.map((t) => [t.type, t]));
 

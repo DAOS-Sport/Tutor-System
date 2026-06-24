@@ -140,15 +140,21 @@ const SETTINGS = {
 };
 
 const COURSE_TYPES = [
-  { course_type: 1, label: '一對一', max_students: 1, is_active: true, sort_order: 1, base_price: 9000 },
-  { course_type: 2, label: '一對二', max_students: 2, is_active: true, sort_order: 2, base_price: 6000 },
-  { course_type: 3, label: '一對三', max_students: 3, is_active: true, sort_order: 3, base_price: 4500 },
+  { course_type: 1, label: '一對一', max_students: 1, min_students: 1, is_active: true, sort_order: 1, base_price: 9000 },
+  { course_type: 2, label: '一對二', max_students: 2, min_students: 1, is_active: true, sort_order: 2, base_price: 6000 },
+  { course_type: 3, label: '一對三', max_students: 3, min_students: 1, is_active: true, sort_order: 3, base_price: 4500 },
+  { course_type: 4, label: '1對4', max_students: 4, min_students: 1, is_active: true, sort_order: 4, base_price: 3000 },
+  { course_type: 5, label: '1對5', max_students: 5, min_students: 1, is_active: true, sort_order: 5, base_price: 3000 },
+  { course_type: 6, label: '1對6', max_students: 6, min_students: 1, is_active: true, sort_order: 6, base_price: 3000 },
 ];
 
 const COURSE_INTROS = {
   1: { title: '1 對 1 個別班', body: '完全客製化的訓練內容，最高效率提升個人技術。', image_url: '', title_overridden: true },
   2: { title: '1 對 2 雙人班', body: '與好友或家人共同上課，互相學習，CP 值高。',     image_url: '', title_overridden: true },
   3: { title: '1 對 3 三人班', body: '小團體互動性最強，適合朋友揪團、節省花費。',   image_url: '', title_overridden: true },
+  4: { title: '1對4', body: '', image_url: '', title_overridden: false },
+  5: { title: '1對5', body: '', image_url: '', title_overridden: false },
+  6: { title: '1對6', body: '', image_url: '', title_overridden: false },
 };
 
 // 報名 + 對帳 mock — 24 筆，混 pending/confirmed/active/cancelled/refunded

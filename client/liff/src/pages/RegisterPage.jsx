@@ -16,6 +16,7 @@ import ReportIssueButton from '../components/ReportIssueButton';
 
 const PENDING_COUPON_KEY = 'daos.pendingCoupon';
 const IS_PROD = import.meta.env.PROD;
+const BLOOD_TYPE_OPTIONS = ['A', 'B', 'O', 'AB', '不清楚'];
 
 function tryGetLineIdToken() {
   try {
@@ -36,9 +37,9 @@ function registerErrorMessage(err) {
     // —— 必填 / 格式 ——
     INPUT_INVALID:            '資料不完整，請確認家長姓名、手機與至少一位學員都已填寫。',
     PHONE_FORMAT_INVALID:     '手機格式錯誤（需 09 開頭共 10 碼）。',
-    EMAIL_REQUIRED:           '請填寫家長 Email（Ragic 必填）。',
+    EMAIL_REQUIRED:           '請填寫家長 Email。',
     EMAIL_FORMAT_INVALID:     'Email 格式錯誤，請確認後重填。',
-    GENDER_REQUIRED:          '請選擇家長性別（Ragic 必填）。',
+    GENDER_REQUIRED:          '請選擇家長性別。',
     ID_NUMBER_INVALID:        '學員身分證字號格式錯誤（如 A123456789）。',
     // —— 重複 / 衝突 ——
     STUDENT_ID_NUMBER_EXISTS: '此學員身分證字號已被系統內其他學員使用，請確認是否填錯；若確為本人請聯絡客服。',
@@ -50,9 +51,9 @@ function registerErrorMessage(err) {
     LINE_VERIFY_FAILED:       'LINE 驗證失敗，請重新由 LINE 開啟註冊頁。',
     LINE_ID_TOKEN_REQUIRED:   'LINE 驗證已逾時，請重新由 LINE 開啟註冊頁。',
     // —— 系統 / 同步 ——
-    RAGIC_UNAVAILABLE:        '資料庫（Ragic）暫時無法連線，請稍後再試。',
-    RAGIC_WRITE_FAILED:       '寫入資料庫（Ragic）失敗，請稍後再試；若持續發生請聯絡客服。',
-    LOCAL_UPSERT_FAILED:      '本地建檔失敗，請稍後再試；若持續發生請聯絡客服。',
+    RAGIC_UNAVAILABLE:        '資料同步服務暫時無法連線，請稍後再試。',
+    RAGIC_WRITE_FAILED:       '資料暫時無法完成同步，請稍後再試；若持續發生請聯絡客服。',
+    LOCAL_UPSERT_FAILED:      '資料建檔失敗，請稍後再試；若持續發生請聯絡客服。',
     LOGIN_FAILED:             '系統忙線，請稍後再試。',
     RATE_LIMITED:             '嘗試次數過多，請稍後再試。',
     // —— 前端自設 ——
@@ -64,6 +65,12 @@ function registerErrorMessage(err) {
   // 後端有給可讀訊息就用它，否則泛用
   if (serverMsg && typeof serverMsg === 'string') return serverMsg;
   return '註冊失敗，請稍後再試。';
+}
+
+function publicErrorCode(code) {
+  const c = String(code || '');
+  if (/RAGIC|LOCAL_UPSERT/i.test(c)) return 'SYNC_FAILED';
+  return c;
 }
 
 export default function RegisterPage() {
@@ -141,7 +148,7 @@ export default function RegisterPage() {
     defaultValues: {
       name: '', phone: prefilledPhone, gender: '生理女', email: '', primary_venue_id: '',
       home_phone: '', line_id: '', home_address: '',
-      students: [{ name: '', id_number: '', birth_date: '', gender: '生理男', blood_type: '' }],
+      students: [{ name: '', id_number: '', birth_date: '', gender: '生理男', blood_type: '不清楚' }],
     },
   });
 
@@ -167,7 +174,7 @@ export default function RegisterPage() {
     }));
 
     try {
-      // Demo 新用戶（測試註冊）：繞過 id_token，後端以 DEMOTEST_ 前綴真寫 Ragic Z01。
+      // Demo 新用戶（測試註冊）：繞過 id_token，後端以 DEMOTEST_ 前綴建測試資料。
       if (demoMode) {
         const r = await authApi.parentRegisterLine({
           demo: true,
@@ -177,7 +184,7 @@ export default function RegisterPage() {
         });
         if (r?.status === 'registered_and_logged_in' && r.parent) {
           setParent({ ...r.parent, token: r.token || r.parent.token || null });
-          toast.success('🧪 Demo 測試註冊完成！已寫入 Ragic（DEMOTEST 標記），自動登入');
+          toast.success('Demo 測試註冊完成！已建立測試資料，自動登入');
           navigate(takeAfterAuth('/'), { replace: true });
           return;
         }
@@ -264,7 +271,7 @@ export default function RegisterPage() {
         navigate(takeAfterAuth('/'), { replace: true });
       }
     } catch (err) {
-      setErrCode(err?.response?.data?.code || err?.code || '');
+      setErrCode(publicErrorCode(err?.response?.data?.code || err?.code || ''));
       setErrMsg(registerErrorMessage(err));
       setFailed(true);
       toast.error(registerErrorMessage(err));
@@ -274,11 +281,11 @@ export default function RegisterPage() {
   return (
     <div className="px-4 py-4">
       <h2 className="mb-1 text-lg font-bold text-brand-primary">建立家長帳號</h2>
-      <p className="mb-3 text-xs text-gray-500">系統會將資料同步寫入 Ragic 家長／學員資料表</p>
+      <p className="mb-3 text-xs text-gray-500">系統會建立家長與學員資料，供後續報名與上課使用</p>
 
       {demoMode && (
         <div className="mb-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs leading-5 text-amber-800">
-          🧪 <b>Demo 測試註冊</b>（模擬全新未註冊用戶）。送出會<b>真的寫入 Ragic Z01</b>，
+          🧪 <b>Demo 測試註冊</b>（模擬全新未註冊用戶）。送出會<b>真的建立測試資料</b>，
           line_uid 以 <code>DEMOTEST_</code> 標記，方便事後依此前綴清除。
           請填一個<b>尚未在系統內的手機號</b>，以免撞到既有資料而被導去「手機綁定」。
         </div>
@@ -338,7 +345,7 @@ export default function RegisterPage() {
         <Section title="學員資料"
           extra={
             <button type="button"
-              onClick={() => append({ name: '', id_number: '', birth_date: '', gender: '生理男', blood_type: '' })}
+              onClick={() => append({ name: '', id_number: '', birth_date: '', gender: '生理男', blood_type: '不清楚' })}
               className="rounded-md bg-brand-teal/10 px-3 py-1 text-xs font-medium text-brand-teal active:bg-brand-teal/20">
               + 新增學員
             </button>
@@ -371,7 +378,11 @@ export default function RegisterPage() {
                   </select>
                 </Field>
                 <Field label="血型">
-                  <input {...register(`students.${idx}.blood_type`)} className={inputCls} placeholder="例：O、A、B、AB（可留空）" />
+                  <select {...register(`students.${idx}.blood_type`)} className={inputCls}>
+                    {BLOOD_TYPE_OPTIONS.map((type) => (
+                      <option key={type} value={type}>{type}</option>
+                    ))}
+                  </select>
                 </Field>
               </div>
             </div>

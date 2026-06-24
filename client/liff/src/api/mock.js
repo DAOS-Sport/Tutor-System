@@ -28,7 +28,7 @@ const COACHES = [
     bio: '兼任行政櫃檯與基礎課程教練，熟悉現場接待與初階訓練流程。', tags: ['兼任櫃檯'], avatar: null },
 ];
 
-const BASE_PRICES = { 1: 9000, 2: 6000, 3: 4500 };
+const BASE_PRICES = { 1: 9000, 2: 6000, 3: 4500, 4: 3000, 5: 3000, 6: 3000 };
 
 const PROMOTIONS = [
   { id: 'P_NEW2026', title: '新春開課優惠 95 折', description: '4 月底前報名任一組別，自動享 95 折',
@@ -249,7 +249,7 @@ export const mockDb = {
       email: data.email || '', primary_venue_id: data.primary_venue_id || null,
       students: (data.students || []).map((s, i) => ({
         id: `S${id}-${i + 1}`, name: s.name, id_number: s.id_number,
-        birth_date: s.birth_date, gender: s.gender || '',
+        birth_date: s.birth_date, gender: s.gender || '', blood_type: s.blood_type || '不清楚',
       })),
     };
     PARENTS[parent.phone] = parent;

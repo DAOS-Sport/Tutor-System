@@ -5,7 +5,8 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { normalizeGender } from '../utils/format';
 
-const emptyStudent = { name: '', id_number: '', birth_date: '', gender: '生理男', blood_type: '' };
+const BLOOD_TYPE_OPTIONS = ['A', 'B', 'O', 'AB', '不清楚'];
+const emptyStudent = { name: '', id_number: '', birth_date: '', gender: '生理男', blood_type: '不清楚' };
 const inputCls = 'w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-brand-primary';
 // 漏填必填時，輸入框亮紅框
 const errCls = 'border-brand-error bg-brand-error/5 focus:border-brand-error';
@@ -49,10 +50,24 @@ function parentFormFrom(parent) {
   };
 }
 
-// Ragic 同步失敗時，盡量把後端的真實原因顯示出來，方便家長回報 / 排查
 function syncErrMsg(e) {
-  const d = e?.response?.data;
-  return d?.detail || d?.error || 'Ragic 同步失敗，請稍後再試';
+  const code = e?.response?.data?.code;
+  const status = e?.response?.status;
+  const MAP = {
+    FIELD_REQUIRED: '請完成標示 ＊ 的必填欄位',
+    EMAIL_INVALID: 'Email 格式有誤',
+    VENUE_NOT_FOUND: '館別不存在，請重新選擇',
+    STUDENT_ID_DUPLICATED: '此身分證字號已有學員資料，請確認後再試；若需協助請聯絡客服。',
+  };
+  if (code && MAP[code]) return MAP[code];
+  if (status === 400) return e?.response?.data?.error || '資料格式有誤，請確認後再試';
+  if (status === 409) return '資料已存在，請確認後再試；若需協助請聯絡客服。';
+  return '資料暫時無法儲存，請稍後再試。';
+}
+
+function normalizeBloodType(v) {
+  const value = String(v || '').trim().toUpperCase();
+  return BLOOD_TYPE_OPTIONS.includes(value) ? value : '不清楚';
 }
 
 export default function ProfilePage() {
@@ -137,7 +152,7 @@ export default function ProfilePage() {
       id_number: s.id_number || '',
       birth_date: String(s.birth_date || '').slice(0, 10),
       gender: normalizeGender(s.gender) || '生理男',
-      blood_type: s.blood_type || '',
+      blood_type: normalizeBloodType(s.blood_type),
     });
   }
 
@@ -163,16 +178,19 @@ export default function ProfilePage() {
         : await parentsApi.createStudent(studentForm);
       // 擇一儲存：學員一定先存進本地 DB；sync_warning 表示雲端同步暫緩（家長資料未補齊），
       // 仍視為儲存成功並更新清單，只是改顯示警示而非綠色成功。
-      const { sync_warning: syncWarning, ...savedStudent } = saved || {};
+      const { sync_warning: syncWarning, merged_existing: mergedExisting, ...savedStudent } = saved || {};
+      const hasExisting = students.some((s) => s.id === savedStudent.id);
       const nextStudents = editingId
         ? students.map((s) => (s.id === editingId ? savedStudent : s))
-        : [...students, savedStudent];
+        : hasExisting
+          ? students.map((s) => (s.id === savedStudent.id ? savedStudent : s))
+          : [...students, savedStudent];
       updateAuth({ ...profile, students: nextStudents });
       resetStudentForm();
       if (syncWarning) {
         toast.warning(syncWarning);
       } else {
-        toast.success(editingId ? '學員資料已更新' : '學員已新增');
+        toast.success(editingId || mergedExisting ? '學員資料已更新' : '學員已新增');
       }
     } catch (err) {
       toast.error(syncErrMsg(err));
@@ -268,7 +286,11 @@ export default function ProfilePage() {
                     </select>
                   </Field>
                   <Field label="血型">
-                    <input className={inputCls} value={studentForm.blood_type} onChange={(e) => setStudentField('blood_type', e.target.value)} />
+                    <select className={inputCls} value={studentForm.blood_type} onChange={(e) => setStudentField('blood_type', e.target.value)}>
+                      {BLOOD_TYPE_OPTIONS.map((type) => (
+                        <option key={type} value={type}>{type}</option>
+                      ))}
+                    </select>
                   </Field>
                 </div>
                 <div className="flex gap-2">

@@ -51,9 +51,9 @@ export default function EnrollmentPage() {
     setSelectedSelfStudents([]);
   }, [courseType]);
 
-  // 1V1~1V3 須剛好填滿（min=max=courseType）；1對4-6 團體班為 4~6 人區間。
-  const maxStudents = courseType === 4 ? 6 : courseType;
-  const minStudents = courseType === 4 ? 4 : courseType;
+  // 1對N 須剛好湊滿 N 位（min=max=courseType）；同組多家庭請改走團購（GroupCreate）。
+  const maxStudents = courseType;
+  const minStudents = courseType;
   const totalSelected = selectedSelfStudents.length;
   const pricingStudentCount = Math.max(totalSelected, minStudents);
 

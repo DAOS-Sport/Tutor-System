@@ -157,11 +157,13 @@ async function issueRewardForEnrollment(enrollmentId, { line, BRAND_LIFF_URL } =
     // 3. 建立綁 referrer parent_id 的 9 折 promotion（coupon_code 採每筆唯一）
     const code = `MGM${Date.now().toString(36).toUpperCase().slice(-6)}${Math.floor(Math.random()*36).toString(36).toUpperCase()}`;
     const promoIns = await client.query(
+      // applicable_course_types = NULL ＝ 全組別（含 1對4/1對5/1對6 及日後新增品相），
+      // 推薦獎勵券對任何組別皆可折抵，不再寫死 [1,2,3,4] 而漏掉新品相。
       `INSERT INTO promotions
          (name, description, type, discount_value, applicable_course_types,
           coupon_code, eligible_parent_id, start_date, end_date, max_uses,
           status, created_at, updated_at)
-       VALUES ($1, $2, 'PERCENTAGE', $3, ARRAY[1,2,3,4]::INTEGER[],
+       VALUES ($1, $2, 'PERCENTAGE', $3, NULL,
                $4, $5, CURRENT_DATE, CURRENT_DATE + INTERVAL '60 days', 1,
                'active', NOW(), NOW())
        RETURNING id`,

@@ -1086,13 +1086,15 @@ const DEFAULT_THRESHOLDS = [
 ];
 
 async function seedCourseTypeConfigs() {
+  // 商品品相＝乾淨的 1對1 ～ 1對6 系列（每張卡片＝一個師生比級距，max_students=編號、min_students=1）。
+  // base_price 為每人每期單價佔位（沿用遞減趨勢），實際價格由後台「課程需求管理」(F-A07) 維護。
   const defaults = [
     { course_type: 1, label: '一對一', max_students: 1, min_students: 1, sort_order: 1, base_price: 9000 },
     { course_type: 2, label: '一對二', max_students: 2, min_students: 1, sort_order: 2, base_price: 6000 },
     { course_type: 3, label: '一對三', max_students: 3, min_students: 1, sort_order: 3, base_price: 4500 },
-    // 1對4~6：單一級距，可 4–6 人。min_students=4 作為團報下限（normalize 不會降回 2）；
-    // base_price 為每人單價佔位（沿用遞減趨勢），後台「課程需求管理」可調整。
-    { course_type: 4, label: '1對4~6', max_students: 6, min_students: 4, sort_order: 4, base_price: 3000 },
+    { course_type: 4, label: '1對4',   max_students: 4, min_students: 1, sort_order: 4, base_price: 3000 },
+    { course_type: 5, label: '1對5',   max_students: 5, min_students: 1, sort_order: 5, base_price: 3000 },
+    { course_type: 6, label: '1對6',   max_students: 6, min_students: 1, sort_order: 6, base_price: 3000 },
   ];
   for (const d of defaults) {
     await pool.query(
@@ -1103,6 +1105,28 @@ async function seedCourseTypeConfigs() {
       [d.course_type, d.label, d.max_students, d.min_students, d.sort_order, d.base_price]
     );
   }
+  // 既有環境一次性升級：把舊的「1對4~6」團體班(min4/max6)拆成乾淨的「1對4」(min1/max4)。
+  // 僅在仍為舊 seed 設定時才動，避免覆蓋後台已自訂的 label／人數。
+  await pool.query(
+    `UPDATE course_type_configs
+        SET label = '1對4', max_students = 4, min_students = 1, updated_at = NOW()
+      WHERE course_type = 4 AND label = '1對4~6'`
+  );
+  // 課程介紹（家長端商品品項來源）：為 4／5／6 補一筆預設介紹（title 取 config label、body／圖留白，
+  // 由後台「課程介紹維護」逐步填入）；已存在則不覆蓋，尊重後台自訂。
+  await pool.query(
+    `INSERT INTO admin_course_intros (course_type, title, body, image_url, title_overridden)
+     SELECT c.course_type, c.label, '', '', FALSE
+       FROM course_type_configs c
+      WHERE c.course_type IN (4, 5, 6)
+     ON CONFLICT (course_type) DO NOTHING`
+  );
+  // 既有「1對4~6」介紹標題、且未被後台覆寫者，一併更新為「1對4」。
+  await pool.query(
+    `UPDATE admin_course_intros
+        SET title = '1對4', updated_at = NOW()
+      WHERE course_type = 4 AND title = '1對4~6' AND title_overridden = FALSE`
+  );
 }
 
 // 註：原本的「團報人數全域夾擠」(normalizeCourseTypeBounds) 已依需求移除——

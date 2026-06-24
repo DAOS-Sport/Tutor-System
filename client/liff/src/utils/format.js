@@ -101,8 +101,8 @@ export function normalizeGender(g) {
 }
 
 export function courseTypeLabel(type) {
-  // 顧客端統一顯示 1對1 / 1對2 / 1對3 / 1對4（DB seed label「一對一…」維持給後台用；type 4 容量仍為 4~6 人）。
-  return ({ 1: '1對1', 2: '1對2', 3: '1對3', 4: '1對4' }[type] || `1對${type}`);
+  // 顧客端統一顯示 1對N（DB seed label「一對一…」維持給後台用）；未知 type 也以 1對N 呈現。
+  return ({ 1: '1對1', 2: '1對2', 3: '1對3', 4: '1對4', 5: '1對5', 6: '1對6' }[type] || `1對${type}`);
 }
 
 export function paymentStatusLabel(status) {

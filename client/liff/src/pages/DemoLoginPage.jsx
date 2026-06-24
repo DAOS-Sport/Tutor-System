@@ -119,7 +119,7 @@ export default function DemoLoginPage() {
           </button>
           <button type="button" onClick={() => navigate('/register?demo=1')} disabled={busy}
             className="w-full rounded-lg border border-amber-400/60 bg-amber-50 py-2 text-sm font-medium text-amber-800 active:bg-amber-100">
-            🧪 Demo 新用戶 → 測試「引導註冊」流程（會寫入 Ragic）
+            Demo 新用戶：測試「引導註冊」流程（會建立測試資料）
           </button>
         </div>
 

@@ -5,7 +5,7 @@ import { Section, StudentRow } from './EnrollmentParts';
 /**
  * 報名「選擇學員」——可展開的下拉勾選清單（複選）。
  * 收合時顯示已選人數/姓名摘要；展開後沿用既有 StudentRow 勾選卡片。
- * 人數規則由 min/max 控制：1V1~1V3 須剛好填滿（min=max）；1V4-6 為 4~6 區間。
+ * 人數規則由 min/max 控制：1對N 須剛好填滿 N 位（min=max=courseType）。
  */
 export default function StudentMultiSelect({
   parent,
