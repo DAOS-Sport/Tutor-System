@@ -759,15 +759,17 @@ async function upsertStudentStrict(studentData, ragicRecordId = null) {
   return raw;
 }
 
-async function buildZ02StudentPayload({ parent, student, status = '啟用' }) {
+async function buildZ02StudentPayload({ parent, student, setIdentity = false }) {
   // Z02 必填欄位（缺一會 INVALID 202、整筆寫不進去），與 _buildZ02RegistrationPayload 對齊：
   //   - 學員編號：新生無編號 → 以身分證字號頂替（與既有真實紀錄一致）
   //   - 血型：未填以「不清楚」placeholder（Ragic 接受的選項值）
   //   - (報)身分：家長身分，預設「一般身分」
   const idnum = student.id_number ? String(student.id_number).toUpperCase() : '';
-  return {
+  const payload = {
     [FIELD.Z02.NAME]: student.name || '',
-    [FIELD.Z02.STUDENT_STATUS]: status,
+    // 「學員身分」(1002178) 是身分「類別」欄（01.一般生…），不是啟用/停用狀態欄。
+    //   只在「首次建立 Z02」時設一次（setIdentity=true）；既有紀錄一律不寫此欄，
+    //   避免家長端編輯/同步把 Ragic 端的身分類別覆蓋掉（過去 bug：寫入「啟用/停用」）。
     [FIELD.Z02.GENDER]: _toPhysGender(student.gender),
     [FIELD.Z02.BIRTH_DATE]: student.birth_date || '',
     [FIELD.Z02.ID_NUMBER]: idnum,
@@ -781,9 +783,11 @@ async function buildZ02StudentPayload({ parent, student, status = '啟用' }) {
     [FIELD.Z02.PARENT_IDENTITY]: parent.identity || '一般身分', // (報)身分 必填
     [FIELD.Z02.PARENT_EMAIL]: parent.email || '',
   };
+  if (setIdentity) payload[FIELD.Z02.STUDENT_STATUS] = '01.一般生';
+  return payload;
 }
 
-async function upsertZ02ForParentStudent({ parent, student, status = '啟用' }) {
+async function upsertZ02ForParentStudent({ parent, student }) {
   let z02Record = null;
   if (student.ragic_record_id) {
     z02Record = { _ragicId: student.ragic_record_id };
@@ -792,7 +796,10 @@ async function upsertZ02ForParentStudent({ parent, student, status = '啟用' })
   } else if (student.id_number) {
     z02Record = await getStudentByIdNumber(String(student.id_number).toUpperCase());
   }
-  const payload = await buildZ02StudentPayload({ parent, student, status });
+  // 只有 Ragic 端尚無此學員時才算「首次建立」→ 設一次身分類別「01.一般生」；
+  //   既有紀錄一律不碰「學員身分」欄（避免覆蓋身分類別）。
+  const setIdentity = !z02Record;
+  const payload = await buildZ02StudentPayload({ parent, student, setIdentity });
   if (student.student_code) payload[FIELD.Z02.STUDENT_CODE] = student.student_code;
   const raw = await upsertStudentStrict(payload, z02Record?._ragicId || null);
   return { ragicRecordId: z02Record?._ragicId || raw.ragicId || raw._ragicId || null, raw };
@@ -813,24 +820,27 @@ async function createStudentZ01Z02Strict({ parent, student, startIndex = 0 }) {
   } catch (err) {
     console.warn('[student-sync] Z01 子表寫入略過（非致命，靠 Z02 連動帶出）:', err.message);
   }
-  const z02 = await upsertZ02ForParentStudent({ parent, student, status: '啟用' });
+  const z02 = await upsertZ02ForParentStudent({ parent, student });
   return { z01: null, z02, parentRagicRecordId: ragicRecordId };
 }
 
-async function updateStudentZ01Z02Strict({ parent, student, status = '啟用' }) {
+async function updateStudentZ01Z02Strict({ parent, student }) {
   const ragicRecordId = await resolveParentRagicRecord(parent);
   try {
     await updateStudentInParentSubtable({ ragicRecordId, student });
   } catch (err) {
     console.warn('[student-sync] Z01 子表更新略過（非致命，靠 Z02 連動帶出）:', err.message);
   }
-  const z02 = await upsertZ02ForParentStudent({ parent, student, status });
+  const z02 = await upsertZ02ForParentStudent({ parent, student });
   return { z01: null, z02, parentRagicRecordId: ragicRecordId };
 }
 
+// DEPRECATED：家長端已不再提供「停用」；移除/轉出一律由櫃台在 Ragic 端處理。
+// 保留簽名以防舊呼叫端；現已不再寫入「學員身分」狀態欄（upsertZ02ForParentStudent
+// 對既有紀錄不碰該欄），故即使被呼叫也不會再覆蓋身分類別。
 async function deactivateStudentZ02Strict({ parent, student }) {
   const ragicRecordId = await resolveParentRagicRecord(parent);
-  const z02 = await upsertZ02ForParentStudent({ parent, student, status: '停用' });
+  const z02 = await upsertZ02ForParentStudent({ parent, student });
   return { z02, parentRagicRecordId: ragicRecordId };
 }
 

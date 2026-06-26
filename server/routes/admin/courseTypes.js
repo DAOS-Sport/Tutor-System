@@ -13,6 +13,48 @@ const { applyDueScheduledCourseTypeChanges } = require('../../services/courseTyp
 const router = express.Router();
 const AM = requireAdminRole('admin', 'manager');
 
+const EDITABLE_FIELDS = ['label', 'min_students', 'max_students', 'is_active', 'base_price', 'data_group'];
+const pad2 = (n) => String(n).padStart(2, '0');
+
+// datetime-local（YYYY-MM-DDTHH:MM）或純日期 → 以台北固定時區 +08:00 解讀的 Date（無法解析回 null）。
+function parseTaipei(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  const local = /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T00:00` : s;
+  const iso = local.length === 16 ? `${local}:00+08:00` : `${local}+08:00`;
+  const dt = new Date(iso);
+  return isNaN(dt.getTime()) ? null : dt;
+}
+// Date → 台北「YYYY/MM/DD HH:MM」字串（不依賴 Intl）。
+function taipeiStr(d) {
+  if (!d) return '';
+  const t = new Date(d.getTime() + 8 * 3600 * 1000);
+  return `${t.getUTCFullYear()}/${pad2(t.getUTCMonth() + 1)}/${pad2(t.getUTCDate())} ${pad2(t.getUTCHours())}:${pad2(t.getUTCMinutes())}`;
+}
+// 只記實際變動的白名單欄位 → { field: { before, after } }；無變動回 null。
+// 數值欄位（如 base_price：PG DECIMAL 回 "9000.00" 字串 vs 數字 9000）以數值比較，避免假變動。
+function diffChanges(before, after, fields) {
+  const out = {};
+  for (const k of fields) {
+    const b = before?.[k];
+    const a = after?.[k];
+    const bn = Number(b);
+    const an = Number(a);
+    const numeric = b !== null && b !== '' && a !== null && a !== '' && Number.isFinite(bn) && Number.isFinite(an);
+    const same = numeric ? bn === an : String(b ?? '') === String(a ?? '');
+    if (!same) out[k] = { before: b ?? null, after: a ?? null };
+  }
+  return Object.keys(out).length ? out : null;
+}
+async function writeCtAudit(db, courseType, action, byUser, changes, note) {
+  await db.query(
+    `INSERT INTO course_type_config_audit_logs (course_type, action, by_user, changes, note)
+     VALUES ($1, $2, $3, $4::jsonb, $5)`,
+    [courseType, action, byUser || 'unknown', changes ? JSON.stringify(changes) : null, note || null]
+  );
+}
+const auditUser = (req) => req.adminUser?.name || req.adminUser?.username || 'unknown';
+
 router.get('/', requireAdminAuth, AM, async (req, res) => {
   try {
     // 讀取前先套用「已到期」排程（保險：即使每日 cron 沒跑，下次讀取也會生效）。
@@ -20,8 +62,8 @@ router.get('/', requireAdminAuth, AM, async (req, res) => {
     const r = await pool.query(
       `SELECT course_type, label, min_students, max_students,
               base_price::float8 AS base_price, is_active, sort_order,
-              created_at, updated_at, data_group, effective_date,
-              scheduled_effective_date, pending_changes,
+              created_at, updated_at, data_group, effective_date, effective_until,
+              scheduled_effective_date, scheduled_effective_until, pending_changes,
               CURRENT_DATE AS current_date
          FROM course_type_configs ORDER BY sort_order, course_type`
     );
@@ -73,6 +115,13 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
        ON CONFLICT (course_type) DO NOTHING`,
       [ct, lb]
     );
+    await writeCtAudit(client, ct, '新增', auditUser(req), {
+      label: { before: null, after: lb },
+      base_price: { before: null, after: bp },
+      min_students: { before: null, after: mn },
+      max_students: { before: null, after: ms },
+      data_group: { before: null, after: dg },
+    }, null);
     await client.query('COMMIT');
     res.status(201).json(r.rows[0]);
   } catch (err) {
@@ -98,13 +147,16 @@ router.patch('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, 
     }
     const row = cur.rows[0];
     const p = req.body || {};
+    const by = auditUser(req);
 
-    // 取消排程：清掉 pending_changes / scheduled_effective_date（正式資料不動）。
+    // 取消排程：清掉 pending_changes / scheduled_effective_date / scheduled_effective_until（正式資料不動）。
     if (p.clear_schedule === true) {
       const r = await client.query(
-        `UPDATE course_type_configs SET pending_changes=NULL, scheduled_effective_date=NULL, updated_at=NOW() WHERE course_type=$1 RETURNING *`,
+        `UPDATE course_type_configs SET pending_changes=NULL, scheduled_effective_date=NULL,
+                scheduled_effective_until=NULL, updated_at=NOW() WHERE course_type=$1 RETURNING *`,
         [ct]
       );
+      await writeCtAudit(client, ct, '取消排程', by, null, '取消既有排程');
       await client.query('COMMIT');
       return res.json(r.rows[0]);
     }
@@ -135,35 +187,41 @@ router.patch('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, 
 
     const next = { label, min_students, max_students, is_active, base_price, data_group };
 
-    // 生效方式（不限制日期/時間）：scheduled_effective_date 接受 datetime-local（YYYY-MM-DDTHH:MM）
-    // 或純日期（自動補 00:00），一律以台北固定時區 +08:00 解讀（台灣全年無日光節約）。
-    // > 現在 → 排程；否則（過去／現在／無法解析）→ 立即生效。用 JS 解析（不在交易內查詢），
-    // 避免無效字串讓資料庫交易進入中止狀態而拖垮後續 UPDATE。
-    let scheduledAt = null;
-    if (p.scheduled_effective_date) {
-      const raw = String(p.scheduled_effective_date).trim();
-      const local = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? `${raw}T00:00` : raw;
-      const iso = local.length === 16 ? `${local}:00+08:00` : `${local}+08:00`;
-      const dt = new Date(iso);
-      if (!isNaN(dt.getTime()) && dt.getTime() > Date.now()) scheduledAt = dt;
-    }
+    // 生效方式：scheduled_effective_date 接受 datetime-local（YYYY-MM-DDTHH:MM）或純日期，
+    // 以台北固定時區 +08:00 解讀。> 現在 → 排程；否則（過去／現在／無法解析）→ 立即生效。
+    const startAt = parseTaipei(p.scheduled_effective_date);
+    const scheduledAt = (startAt && startAt.getTime() > Date.now()) ? startAt : null;
 
     let result;
     if (scheduledAt) {
-      // 排程：存 pending_changes，正式資料不動，待生效時間由 cron / 讀取時套用。
+      // 排程生效「起訖日」必填：必須同時填生效迄日，且迄 > 起。
+      const untilAt = parseTaipei(p.scheduled_effective_until);
+      if (!p.scheduled_effective_until || !untilAt) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: '排程生效需同時填寫「生效起日」與「生效迄日」', code: 'SCHEDULE_RANGE_REQUIRED' });
+      }
+      if (untilAt.getTime() <= scheduledAt.getTime()) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: '「生效迄日」需晚於「生效起日」', code: 'SCHEDULE_RANGE_INVALID' });
+      }
+      // 排程：存 pending_changes + 起訖，正式資料不動，待生效時間由 cron / 讀取時套用。
       const r = await client.query(
         `UPDATE course_type_configs
-            SET pending_changes = $2::jsonb, scheduled_effective_date = $3::timestamptz, updated_at = NOW()
+            SET pending_changes = $2::jsonb, scheduled_effective_date = $3::timestamptz,
+                scheduled_effective_until = $4::timestamptz, updated_at = NOW()
           WHERE course_type = $1 RETURNING *`,
-        [ct, JSON.stringify(next), scheduledAt]
+        [ct, JSON.stringify(next), scheduledAt, untilAt]
       );
       result = r.rows[0];
+      await writeCtAudit(client, ct, '編輯(排程)', by, diffChanges(row, next, EDITABLE_FIELDS),
+        `排程生效 ${taipeiStr(scheduledAt)} ～ ${taipeiStr(untilAt)}`);
     } else {
-      // 立即：套用到正式資料、清掉任何既有排程。
+      // 立即：套用到正式資料、清掉任何既有排程（含迄日）。effective_until 不在立即流程變動。
       const r = await client.query(
         `UPDATE course_type_configs
             SET label=$2, max_students=$3, is_active=$4, base_price=$5, min_students=$6, data_group=$7,
-                effective_date=CURRENT_DATE, scheduled_effective_date=NULL, pending_changes=NULL, updated_at=NOW()
+                effective_date=CURRENT_DATE, scheduled_effective_date=NULL, scheduled_effective_until=NULL,
+                pending_changes=NULL, updated_at=NOW()
           WHERE course_type=$1 RETURNING *`,
         [ct, label, max_students, is_active, base_price, min_students, data_group]
       );
@@ -175,6 +233,7 @@ router.patch('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, 
           [ct, label]
         );
       }
+      await writeCtAudit(client, ct, '編輯(立即)', by, diffChanges(row, next, EDITABLE_FIELDS), null);
     }
     await client.query('COMMIT');
     res.json(result);
@@ -203,6 +262,26 @@ router.delete('/:type', requireAdminAuth, requireAdminRole('admin'), async (req,
   } catch (err) {
     console.error('[admin/course-types DELETE]', err);
     res.status(500).json({ error: 'delete failed' });
+  }
+});
+
+// 編輯軌跡：某品項的變更歷史（時間 DESC）。
+router.get('/:type/audit-logs', requireAdminAuth, AM, async (req, res) => {
+  try {
+    const ct = parseInt(req.params.type, 10);
+    if (isNaN(ct)) return res.status(400).json({ error: 'invalid type' });
+    const r = await pool.query(
+      `SELECT id, at, action, by_user, changes, note
+         FROM course_type_config_audit_logs
+        WHERE course_type = $1
+        ORDER BY at DESC, id DESC
+        LIMIT 200`,
+      [ct]
+    );
+    res.json(r.rows);
+  } catch (err) {
+    console.error('[admin/course-types audit-logs]', err);
+    res.status(500).json({ error: 'load failed' });
   }
 });
 

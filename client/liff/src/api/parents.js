@@ -12,6 +12,8 @@ export const parentsApi = {
     callApi('/parents/me/students', { method: 'post', data }, () => mockDb.createStudent(data)),
   updateStudent: (id, data) =>
     callApi(`/parents/me/students/${id}`, { method: 'patch', data }, () => mockDb.updateStudent(id, data)),
-  deleteStudent: (id) =>
-    callApi(`/parents/me/students/${id}`, { method: 'delete' }, () => mockDb.deleteStudent(id)),
+  // 家長端不提供停用/刪除（移除/轉出請洽櫃台，由 Ragic 端處理）。
+  // 開啟 webApp / 進個資頁時主動向 Ragic 同步（後端節流；失敗保留既有鏡像）。
+  sync: () =>
+    callApi('/parents/me/sync', { method: 'post' }, () => mockDb.me()),
 };

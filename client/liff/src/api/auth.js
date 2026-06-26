@@ -14,8 +14,11 @@ export const authApi = {
   //   → { status:'bound_and_logged_in', parent, token }
   //   | { status:'need_registration', line_uid, phone }
   //   | 409 LINE_ALREADY_BOUND_TO_OTHER_PHONE / PHONE_ALREADY_BOUND_TO_OTHER_LINE
-  parentBindPhone: ({ idToken, phone }) =>
-    callApi('/auth/parent-bind-phone', { method: 'post', data: { id_token: idToken, phone } },
+  //   | { status:'need_claim_verification', line_uid, phone }（此門號已有家庭資料 → 需驗證認領）
+  //   claim?: { student_name, id_number } — 認領既有家庭時附上學員姓名 + 身分證字號
+  parentBindPhone: ({ idToken, phone, claim }) =>
+    callApi('/auth/parent-bind-phone',
+      { method: 'post', data: { id_token: idToken, phone, claim: claim || undefined } },
       // mock：直接讓使用者進到註冊流程
       () => ({ status: 'need_registration', line_uid: 'U_dev_mock', phone })
     ),

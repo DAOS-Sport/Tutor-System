@@ -5,6 +5,7 @@ import IncompleteGroupOrdersBanner from '../components/IncompleteGroupOrdersBann
 import LoadingSpinner from '../components/LoadingSpinner';
 import { promotionsApi } from '../api/promotions';
 import { courseTypesApi } from '../api/courseTypes';
+import { parentsApi } from '../api/parents';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { formatTWDate } from '../utils/format';
@@ -47,6 +48,13 @@ export default function HomePage() {
       alive = false;
     };
   }, [toast]);
+
+  // 進首頁即主動向 Ragic 同步名單（fire-and-forget；後端節流 5 分、失敗保留鏡像，
+  // 故重複呼叫無害）。實際畫面更新在個資頁，這裡只負責「開 webApp 就先同步」。
+  useEffect(() => {
+    if (parent) parentsApi.sync?.().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // 組別卡片：完全以後台「課程介紹維護」(/admin/course-intros) 為單一真實來源——
   // 啟用中的組別、標題、內文、封面圖、單人價格皆取自後台，與管理端即時對上。

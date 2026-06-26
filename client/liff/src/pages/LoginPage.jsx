@@ -60,6 +60,7 @@ function parentErrorMessage(err) {
   if (code === 'RAGIC_UNAVAILABLE') return '資料查詢暫時失敗，請稍後再試。';
   if (code === 'RATE_LIMITED' || status === 429) return '嘗試次數過多，請稍後再試。';
   if (code === 'PHONE_FORMAT_INVALID') return '手機格式錯誤（需 09xxxxxxxx）。';
+  if (code === 'CLAIM_VERIFICATION_FAILED') return '學員姓名或身分證字號與資料不符，無法認領。請確認後再試，或洽櫃台 / LINE 客服。';
   return '發生錯誤，請稍後再試。';
 }
 
@@ -85,6 +86,8 @@ export default function LoginPage() {
   const [parentState, setParentState] = useState(coachContext ? null : 'checking');
   const [idToken, setIdToken] = useState(null);
   const [phone, setPhone] = useState('');
+  const [claimName, setClaimName] = useState('');
+  const [claimId, setClaimId] = useState('');
   const [busy, setBusy] = useState(false);
   const [errCode, setErrCode] = useState('');
 
@@ -213,6 +216,48 @@ export default function LoginPage() {
         navigate(`/register?phone=${encodeURIComponent(r.phone || trimmed)}`, { replace: true });
         return;
       }
+      if (r?.status === 'need_claim_verification') {
+        // 此手機已有家庭資料 → 需驗證「學員姓名 + 身分證」才可認領綁定（資安）。
+        setParentState('need_claim');
+        toast.info('此手機已有家庭資料，請驗證學員身分以完成綁定');
+        return;
+      }
+      toast.error('綁定失敗，請稍後再試。');
+    } catch (err) {
+      toast.error(parentErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ── 家長：認領驗證（電話 + 學員姓名 + 身分證字號 一致才綁定）──
+  async function handleClaim(e) {
+    e.preventDefault();
+    const name = claimName.trim();
+    const id = claimId.trim().toUpperCase();
+    if (!name || !id) { toast.error('請填寫學員姓名與身分證字號'); return; }
+    setBusy(true);
+    try {
+      const tk = idToken || tryGetLineIdToken();
+      if (!tk && !USE_MOCK) { toast.error('LINE 驗證失敗：請重新開啟 LIFF 或稍後再試。'); return; }
+      const r = await authApi.parentBindPhone({
+        idToken: tk, phone: phone.trim(), claim: { student_name: name, id_number: id },
+      });
+      if (r?.status === 'bound_and_logged_in' && r.parent) {
+        const parent = { ...r.parent, token: r.token || r.parent.token || null };
+        setParent(parent);
+        toast.success(`歡迎，${parent.name || ''}`);
+        navigate(takeAfterAuth('/'), { replace: true });
+        return;
+      }
+      if (r?.status === 'need_claim_verification') {
+        toast.error('學員姓名或身分證字號與資料不符，請確認後再試。');
+        return;
+      }
+      if (r?.status === 'need_registration') {
+        navigate(`/register?phone=${encodeURIComponent(r.phone || phone.trim())}`, { replace: true });
+        return;
+      }
       toast.error('綁定失敗，請稍後再試。');
     } catch (err) {
       toast.error(parentErrorMessage(err));
@@ -280,7 +325,7 @@ export default function LoginPage() {
       )}
 
       {/* 防呆：任何非預期狀態都不可停在純 LOGO 空白頁 → 給重試 + 問題回報 */}
-      {!['checking', 'error', 'need_phone', 'manual'].includes(parentState) && (
+      {!['checking', 'error', 'need_phone', 'manual', 'need_claim'].includes(parentState) && (
         <div className="w-full max-w-[340px] rounded-xl border border-gray-200 bg-gray-50 p-5 text-center">
           <p className="text-sm leading-6 text-gray-700">
             登入流程未完成，請重新嘗試，或透過下方按鈕回報問題。
@@ -341,6 +386,40 @@ export default function LoginPage() {
               <br />家長：0912345678
             </div>
           )}
+        </form>
+      )}
+
+      {parentState === 'need_claim' && (
+        <form onSubmit={handleClaim} className="w-full max-w-[320px] space-y-4">
+          <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs leading-5 text-amber-800">
+            為保護個資，此手機已有家庭資料。請輸入「其中一位學員的姓名與身分證字號」以確認您是本人。
+            若資料有誤，請洽櫃台或透過 LINE 官方帳號聯繫。
+          </div>
+          <div>
+            <label htmlFor="claimName" className="mb-1 block text-sm font-medium text-gray-700">學員姓名</label>
+            <input
+              id="claimName" type="text" value={claimName}
+              onChange={(e) => setClaimName(e.target.value)}
+              className="w-full rounded-lg border border-gray-300 px-4 py-3 text-base focus:border-brand-teal focus:outline-none focus:ring-2 focus:ring-brand-teal/30"
+              disabled={busy}
+            />
+          </div>
+          <div>
+            <label htmlFor="claimId" className="mb-1 block text-sm font-medium text-gray-700">學員身分證字號</label>
+            <input
+              id="claimId" type="text" placeholder="A123456789" value={claimId}
+              onChange={(e) => setClaimId(e.target.value.toUpperCase().slice(0, 10))}
+              className="w-full rounded-lg border border-gray-300 px-4 py-3 text-base uppercase focus:border-brand-teal focus:outline-none focus:ring-2 focus:ring-brand-teal/30"
+              disabled={busy}
+            />
+          </div>
+          <button
+            type="submit" disabled={busy}
+            className="w-full rounded-lg bg-brand-primary py-3 text-base font-bold text-white active:bg-brand-teal disabled:opacity-50"
+          >
+            {busy ? '驗證中…' : '驗證並完成綁定'}
+          </button>
+          {busy && <LoadingSpinner label="驗證學員身分中…" />}
         </form>
       )}
     </div>

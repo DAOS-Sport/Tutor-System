@@ -19,6 +19,13 @@ const fmtDateTime = (v) => {
   if (Number.isNaN(d.getTime())) return '—';
   return `${d.getFullYear()}/${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 };
+// 含「秒」的完整時間戳（資料建立 / 最後更新日期、編輯軌跡用）。
+const fmtDateTimeSec = (v) => {
+  if (!v) return '—';
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return '—';
+  return `${d.getFullYear()}/${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+};
 // timestamptz → <input type="datetime-local"> 需要的本地值（YYYY-MM-DDTHH:MM）。
 const toLocalInput = (v) => {
   if (!v) return '';
@@ -86,7 +93,7 @@ export default function CourseTypesPage() {
     }
   }
 
-  function startEdit(row) {
+  async function startEdit(row) {
     setEditing({
       course_type: row.course_type,
       label: row.label,
@@ -95,18 +102,28 @@ export default function CourseTypesPage() {
       max_students: String(row.max_students),
       is_active: !!row.is_active,
       data_group: row.data_group || '',
-      // 生效方式 + 排程時間（datetime-local 值；若已有排程則預填，方便修改）
+      // 生效方式 + 排程起訖（datetime-local 值；若已有排程則預填，方便修改）
       mode: 'immediate',
       scheduled_effective_date: toLocalInput(row.scheduled_effective_date),
+      scheduled_effective_until: toLocalInput(row.scheduled_effective_until),
       // 唯讀 metadata（日軌）
       created_at: row.created_at,
       updated_at: row.updated_at,
       effective_date: row.effective_date,
+      effective_until: row.effective_until,
       cur_scheduled: row.scheduled_effective_date,
+      cur_scheduled_until: row.scheduled_effective_until,
       pending: row.pending_changes || null,
+      // 編輯軌跡（非同步載入）
+      audit: null,
+      auditOpen: false,
       _live: { label: row.label, base_price: row.base_price, min_students: row.min_students, max_students: row.max_students, is_active: row.is_active, data_group: row.data_group },
     });
     setEditErr('');
+    try {
+      const logs = await courseTypesApi.auditLogs(row.course_type);
+      setEditing((s) => (s && s.course_type === row.course_type ? { ...s, audit: Array.isArray(logs) ? logs : [] } : s));
+    } catch { /* 軌跡載入失敗不擋編輯 */ }
   }
 
   async function handleSaveEdit(e) {
@@ -122,15 +139,24 @@ export default function CourseTypesPage() {
       is_active: editing.is_active,
       data_group: editing.data_group.trim() || null,
     };
-    // 排程：選了「排程生效」且有填時間才送 scheduled_effective_date（datetime-local，台北時區）。
-    // 未來時間 → 排程；過去/現在 → 後端視為立即生效。
-    const dt = editing.scheduled_effective_date;
-    const isFuture = editing.mode === 'scheduled' && !!dt && new Date(dt).getTime() > Date.now();
-    if (editing.mode === 'scheduled' && dt) patch.scheduled_effective_date = dt;
+    // 排程：選「排程生效」必選生效起日；起日在未來＝排程，此時「生效迄日」必填且需晚於起日。
+    // 起日在過去/現在 → 後端視為立即生效（不需迄日）。
+    const start = editing.scheduled_effective_date;
+    const isFuture = editing.mode === 'scheduled' && !!start && new Date(start).getTime() > Date.now();
+    if (editing.mode === 'scheduled') {
+      if (!start) { setEditErr('排程生效請選擇「生效起日」'); return; }
+      patch.scheduled_effective_date = start;
+      if (isFuture) {
+        const until = editing.scheduled_effective_until;
+        if (!until) { setEditErr('排程生效需同時填寫「生效起日」與「生效迄日」'); return; }
+        if (new Date(until).getTime() <= new Date(start).getTime()) { setEditErr('「生效迄日」需晚於「生效起日」'); return; }
+        patch.scheduled_effective_until = until;
+      }
+    }
     setSaving(editing.course_type);
     try {
       await courseTypesApi.update(editing.course_type, patch);
-      toast.success(isFuture ? `已排程於 ${fmtDateTime(dt)} 生效` : '已更新（立即生效）');
+      toast.success(isFuture ? `已排程於 ${fmtDateTime(start)} 生效` : '已更新（立即生效）');
       setEditing(null);
       await load();
     } catch (err) {
@@ -244,21 +270,72 @@ export default function CourseTypesPage() {
               <input type="radio" className="accent-brand-primary" checked={editing.mode === 'scheduled'} onChange={() => setEditing((s) => ({ ...s, mode: 'scheduled' }))} /> 排程生效
             </label>
             {editing.mode === 'scheduled' && (
-              <input type="datetime-local" value={editing.scheduled_effective_date} onChange={(e) => setEditing((s) => ({ ...s, scheduled_effective_date: e.target.value }))}
-                className="rounded-lg border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary" />
+              <div className="flex flex-wrap items-center gap-2">
+                <input type="datetime-local" value={editing.scheduled_effective_date} onChange={(e) => setEditing((s) => ({ ...s, scheduled_effective_date: e.target.value }))}
+                  className="rounded-lg border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary" />
+                <span className="text-xs text-gray-400">～</span>
+                <input type="datetime-local" value={editing.scheduled_effective_until} onChange={(e) => setEditing((s) => ({ ...s, scheduled_effective_until: e.target.value }))}
+                  className="rounded-lg border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary" />
+                <span className="text-[11px] text-gray-400">生效迄日（未來排程必填）</span>
+              </div>
             )}
           </div>
-          <p className="mt-1.5 text-xs text-gray-400">排程生效：選未來「日期＋時間」，到時間前正式資料不變，時間一到由系統自動套用（每 5 分鐘檢查一次）。選過去／現在的時間＝立即生效。</p>
+          <p className="mt-1.5 text-xs text-gray-400">排程生效：選未來「生效起日＋迄日」（兩者必填），到生效起日前正式資料不變，時間一到由系統自動套用（每 5 分鐘檢查一次）。選過去／現在的起日＝立即生效。</p>
         </div>
 
         {/* 資料管理資訊（日軌） */}
         <div className="col-span-full grid grid-cols-2 gap-x-4 gap-y-1 rounded-lg border border-gray-100 bg-gray-50 p-3 text-xs text-gray-600 sm:grid-cols-3">
-          <div>資料建立日期：<span className="font-medium text-gray-800">{fmtDate(editing.created_at)}</span></div>
-          <div>最後更新日期：<span className="font-medium text-gray-800">{fmtDate(editing.updated_at)}</span></div>
+          <div>狀態：{(() => {
+            const now = Date.now();
+            let t = '生效中', c = 'bg-green-100 text-green-700';
+            if (editing.pending && editing.cur_scheduled && new Date(editing.cur_scheduled).getTime() > now) { t = '待生效'; c = 'bg-amber-100 text-amber-700'; }
+            else if (editing.effective_until && new Date(`${String(editing.effective_until).slice(0, 10)}T23:59:59`).getTime() < now) { t = '已過期'; c = 'bg-gray-200 text-gray-500'; }
+            return <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${c}`}>{t}</span>;
+          })()}</div>
           <div>今天日期：<span className="font-medium text-gray-800">{today}</span></div>
-          <div>目前生效日：<span className="font-medium text-gray-800">{fmtDate(editing.effective_date)}</span></div>
-          <div>排程生效時間：<span className="font-medium text-gray-800">{editing.cur_scheduled ? fmtDateTime(editing.cur_scheduled) : '無排程'}</span></div>
           <div>資料管理群組：<span className="font-medium text-gray-800">{editing._live.data_group || '—'}</span></div>
+          <div>資料建立日期：<span className="font-medium text-gray-800">{fmtDateTimeSec(editing.created_at)}</span></div>
+          <div>最後更新日期：<span className="font-medium text-gray-800">{fmtDateTimeSec(editing.updated_at)}</span></div>
+          <div />
+          <div>目前生效起日：<span className="font-medium text-gray-800">{fmtDate(editing.effective_date)}</span></div>
+          <div>目前生效迄日：<span className="font-medium text-gray-800">{editing.effective_until ? fmtDate(editing.effective_until) : '—'}</span></div>
+          <div />
+          <div>排程生效起：<span className="font-medium text-gray-800">{editing.cur_scheduled ? fmtDateTime(editing.cur_scheduled) : '無排程'}</span></div>
+          <div>排程生效迄：<span className="font-medium text-gray-800">{editing.cur_scheduled_until ? fmtDateTime(editing.cur_scheduled_until) : '—'}</span></div>
+          <div />
+        </div>
+
+        {/* 執行編輯軌跡 */}
+        <div className="col-span-full rounded-lg border border-gray-100">
+          <button type="button" onClick={() => setEditing((s) => ({ ...s, auditOpen: !s.auditOpen }))}
+            className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold text-brand-primary">
+            <span>執行編輯軌跡{editing.audit ? `（${editing.audit.length}）` : ''}</span>
+            <span className="text-gray-400">{editing.auditOpen ? '▲' : '▼'}</span>
+          </button>
+          {editing.auditOpen && (
+            <div className="max-h-56 overflow-y-auto border-t border-gray-100 px-3 py-2 text-xs">
+              {!editing.audit && <div className="text-gray-400">載入中…</div>}
+              {editing.audit && editing.audit.length === 0 && <div className="text-gray-400">尚無編輯紀錄</div>}
+              {editing.audit && editing.audit.map((lg) => (
+                <div key={lg.id} className="border-b border-gray-50 py-1.5 last:border-0">
+                  <div className="flex items-center justify-between text-gray-500">
+                    <span className="font-medium text-gray-700">{lg.action}</span>
+                    <span>{fmtDateTimeSec(lg.at)}</span>
+                  </div>
+                  <div className="text-gray-400">操作人：{lg.by_user || '—'}{lg.note ? `・${lg.note}` : ''}</div>
+                  {lg.changes && (
+                    <div className="mt-0.5 text-gray-600">
+                      {Object.entries(lg.changes).map(([k, v]) => (
+                        <span key={k} className="mr-2 inline-block">
+                          {FIELD_LABELS[k] || k}：{(v && v.before !== undefined && v.before !== null) ? `${showVal(k, v.before)} → ` : ''}{showVal(k, v && v.after)}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {editErr && <p className="col-span-full text-sm text-red-600">{editErr}</p>}

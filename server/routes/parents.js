@@ -13,8 +13,12 @@ const { pool } = require('../models/db');
 const { signParentToken, requireParent } = require('../middlewares/parentAuth');
 const referrals = require('../services/referrals');
 const ragic = require('../services/ragic');
+const parentSync = require('../services/parentSync');
 
 const router = express.Router();
+
+// 開場同步節流：近 N 分鐘內已成功同步過 → 直接回 DB 鏡像，不再打 Ragic（預設 5 分）。
+const SYNC_THROTTLE_MS = Number(process.env.PARENT_SYNC_THROTTLE_MS) || 5 * 60 * 1000;
 
 const TW_PHONE = /^09\d{8}$/;
 const TW_ID = /^[A-Z][12]\d{8}$/;
@@ -124,6 +128,62 @@ router.get('/me', requireParent, async (req, res) => {
   }
 });
 
+// 開場/進個資頁 → 主動向 Ragic 拉名單（Ragic 為名單權威，本地為鏡像）。
+//   - 節流：last_synced_at 在 SYNC_THROTTLE_MS 內 → 直接回 DB，不打 Ragic。
+//   - 刷新：reactivate=false（不復活被移除的孤兒）+ id-stable upsert + 權威移除軟拆除。
+//   - 讀取可靠性：Ragic 失敗/逾時 → 保留既有鏡像、回 sync_status='stale'，絕不清空、絕不回空名單。
+//   活動紀錄（課程/堂數/簽到）一律讀本地，與本同步無關。
+router.post('/me/sync', requireParent, async (req, res) => {
+  try {
+    const meRow = await pool.query(
+      `SELECT id, phone, line_uid, last_synced_at FROM parents WHERE id = $1`,
+      [req.parent.id]
+    );
+    if (!meRow.rowCount) return res.status(404).json({ error: '找不到家長帳號' });
+    const p = meRow.rows[0];
+
+    const last = p.last_synced_at ? new Date(p.last_synced_at).getTime() : 0;
+    const fresh = last > 0 && (Date.now() - last) < SYNC_THROTTLE_MS;
+
+    let syncStatus = fresh ? 'fresh' : 'synced';
+    if (!fresh && p.line_uid) {
+      let ragicRow = null;
+      try {
+        ragicRow = await ragic.getParentByLineUid(p.line_uid);
+        if (!ragicRow && p.phone) ragicRow = await ragic.getParentByPhone(p.phone);
+      } catch (err) {
+        // Ragic 查詢失敗：保留既有鏡像，回 stale（不可清空 / 不可回空名單）。
+        console.warn('[parents/me/sync] Ragic 查詢失敗，保留既有鏡像：', err.message);
+        const me = await loadMe(req.parent.id);
+        return res.json({ ...me, sync_status: 'stale', synced_at: p.last_synced_at });
+      }
+      if (ragicRow) {
+        try {
+          await parentSync.syncFromRagicRecord(ragicRow, p.line_uid, { reactivate: false });
+        } catch (err) {
+          console.warn('[parents/me/sync] 本地 upsert 失敗，保留既有鏡像：', err.message);
+          syncStatus = 'stale';
+        }
+      } else {
+        // Ragic 可達但查無此人：不在背景同步硬刪整個家長（避免一次抖動誤殺），保留鏡像。
+        syncStatus = 'not_found_in_ragic';
+      }
+    }
+
+    const me = await loadMe(req.parent.id);
+    if (!me) return res.status(404).json({ error: '找不到家長帳號' });
+    res.json({ ...me, sync_status: syncStatus });
+  } catch (err) {
+    console.error('[parents/me/sync]', err);
+    // 同步出錯也盡量回 DB 鏡像，不讓前端拿不到資料。
+    try {
+      const me = await loadMe(req.parent.id);
+      if (me) return res.json({ ...me, sync_status: 'error' });
+    } catch { /* noop */ }
+    res.status(500).json({ error: 'sync failed' });
+  }
+});
+
 router.patch('/me', requireParent, async (req, res) => {
   const b = req.body || {};
   const patch = {
@@ -221,7 +281,7 @@ router.post('/me/students', requireParent, async (req, res) => {
       let syncWarning = null;
       try {
         console.log('[student-sync] 新增學員比對到既有資料，改為更新', { parent: parent.name, phone: parent.phone, student: s.name });
-        const sync = await ragic.updateStudentZ01Z02Strict({ parent, student: { ...row, ...s }, status: '啟用' });
+        const sync = await ragic.updateStudentZ01Z02Strict({ parent, student: { ...row, ...s } });
         const up2 = await pool.query(
           `UPDATE students SET ragic_record_id = COALESCE(ragic_record_id, $2), last_synced_at = NOW()
             WHERE id = $1
@@ -327,7 +387,7 @@ router.patch('/me/students/:id', requireParent, async (req, res) => {
     const syncStudent = { ...cur.rows[0], ...s };
     try {
       console.log('[student-sync] 編輯學員 start', { parent: parent.name, phone: parent.phone, student: s.name, studentId: req.params.id });
-      const sync = await ragic.updateStudentZ01Z02Strict({ parent, student: syncStudent, status: '啟用' });
+      const sync = await ragic.updateStudentZ01Z02Strict({ parent, student: syncStudent });
       const up2 = await pool.query(
         `UPDATE students SET ragic_record_id = COALESCE(ragic_record_id, $2), last_synced_at = NOW()
           WHERE id = $1
@@ -351,35 +411,16 @@ router.patch('/me/students/:id', requireParent, async (req, res) => {
   }
 });
 
-router.delete('/me/students/:id', requireParent, async (req, res) => {
-  try {
-    const parent = await loadMe(req.parent.id);
-    if (!parent) return res.status(404).json({ error: '找不到家長帳號' });
-    const cur = await pool.query(
-      `SELECT id, name, id_number, birth_date, gender, blood_type, student_code, ragic_record_id
-         FROM students
-        WHERE id = $1 AND parent_id = $2 AND COALESCE(is_active, TRUE) = TRUE`,
-      [req.params.id, req.parent.id]
-    );
-    if (!cur.rowCount) return res.status(404).json({ error: '找不到學員' });
-    console.log('[student-sync] 停用學員 start', { parent: parent.name, phone: parent.phone, student: cur.rows[0].name, studentId: req.params.id });
-    const sync = await ragic.deactivateStudentZ02Strict({ parent, student: cur.rows[0] });
-    console.log('[student-sync] 停用學員 Ragic 同步完成', { parentRagicId: sync?.parentRagicRecordId });
-    await pool.query(
-      `UPDATE students SET is_active = FALSE, ragic_record_id = COALESCE(ragic_record_id, $3),
-              last_synced_at = NOW(), updated_at = NOW()
-        WHERE id = $1 AND parent_id = $2`,
-      [req.params.id, req.parent.id, sync.z02.ragicRecordId]
-    );
-    await pool.query(
-      `UPDATE parents SET ragic_record_id = COALESCE(ragic_record_id, $2), updated_at = NOW() WHERE id = $1`,
-      [req.parent.id, sync.parentRagicRecordId]
-    );
-    res.json({ ok: true });
-  } catch (err) {
-    console.error('[student-sync] 停用學員 失敗', { code: err.code, msg: err.message });
-    return ragicError(res, err);
-  }
+// 家長端「停用/刪除學員」已移除。
+//   原因：(1) 會把「停用」寫進 Ragic Z02「學員身分」欄覆蓋身分類別（已修）；
+//        (2) 直接停用/刪除會破壞與已報名課程的連結、製造孤兒資料。
+//   政策：任何移除/轉出/寄掛異動一律由櫃台在 Ragic 端處理。
+//   保留路徑並回 405 + 明確引導（前端按鈕已移除；此為直接打 API / 舊頁面的後端守門）。
+router.delete('/me/students/:id', requireParent, (req, res) => {
+  res.status(405).json({
+    error: '學員資料異動（停用 / 移除 / 轉出）請洽櫃臺，或透過 LINE 官方帳號聯繫。',
+    code: 'STUDENT_REMOVAL_VIA_COUNTER',
+  });
 });
 
 router.post('/', async (req, res) => {

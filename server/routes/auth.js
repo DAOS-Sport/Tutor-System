@@ -14,6 +14,9 @@ const { signParentToken } = require('../middlewares/parentAuth');
 const { signCoachToken } = require('../middlewares/coachAuth');
 const ragic = require('../services/ragic');
 const { verifyLineIdToken } = require('../services/lineAuth');
+// 家長/學員 ↔ Ragic 同步語意集中於此（登入/綁定/註冊/刷新共用，避免漂移）。
+const parentSync = require('../services/parentSync');
+const { syncFromRagicRecord, _syncWithLock, BindConflictError } = parentSync;
 
 const router = express.Router();
 
@@ -183,172 +186,8 @@ function _issue(parent) {
   };
 }
 
-async function _resolveVenueId(client, code) {
-  if (!code) return null;
-  const v = await client.query(`SELECT id FROM venues WHERE id = $1`, [code]);
-  return v.rowCount ? code : null;
-}
-
-/**
- * Upsert parents（以 phone 為唯一鍵）
- * 安全規則：line_uid 已有不同值時，絕不覆蓋（COALESCE 保護）。
- * - 同 line_uid 視為 same identity，允許覆蓋；不同 line_uid 視為衝突，
- *   行為上以 INSERT-or-UPDATE phone-key 為基礎，line_uid 永遠用 COALESCE
- *   保留既有非空值。
- */
-async function upsertLocalParent(client, mapped, lineUid) {
-  const name  = mapped.name  || '未命名家長';
-  const phone = mapped.phone || '';
-  if (!phone) throw new Error('缺少手機，無法 upsert parent');
-
-  const venueId = await _resolveVenueId(client, mapped.primary_venue_id);
-
-  const up = await client.query(
-    `INSERT INTO parents
-       (phone, name, line_uid, primary_venue_id, gender, email, ragic_record_id,
-        identity, home_phone, home_address, line_id)
-     VALUES ($1, $2, NULLIF($3, ''), $4, NULLIF($5, ''), NULLIF($6, ''), NULLIF($7, ''),
-             NULLIF($8, ''), NULLIF($9, ''), NULLIF($10, ''), NULLIF($11, ''))
-     ON CONFLICT (phone) DO UPDATE SET
-       name = EXCLUDED.name,
-       line_uid = COALESCE(parents.line_uid, EXCLUDED.line_uid),
-       primary_venue_id = COALESCE(parents.primary_venue_id, EXCLUDED.primary_venue_id),
-       gender = COALESCE(NULLIF(EXCLUDED.gender,''), parents.gender),
-       email  = COALESCE(NULLIF(EXCLUDED.email,''),  parents.email),
-       identity = COALESCE(NULLIF(EXCLUDED.identity,''), parents.identity),
-       home_phone = COALESCE(NULLIF(EXCLUDED.home_phone,''), parents.home_phone),
-       home_address = COALESCE(NULLIF(EXCLUDED.home_address,''), parents.home_address),
-       line_id = COALESCE(NULLIF(EXCLUDED.line_id,''), parents.line_id),
-       ragic_record_id = COALESCE(parents.ragic_record_id, EXCLUDED.ragic_record_id),
-       is_active = TRUE,   -- 從 Ragic 重新同步到 → 重新啟用（覆蓋先前的軟刪除）
-       updated_at = NOW()
-     RETURNING id, name, phone, line_uid, primary_venue_id, gender, email, identity, home_phone, home_address, line_id`,
-    [phone, name, lineUid || '', venueId,
-     ragic.normalizeGender(mapped.gender), mapped.email || '', mapped.ragic_record_id || '',
-     mapped.identity || '', mapped.home_phone || '', mapped.home_address || '', mapped.line_id || '']
-  );
-  return up.rows[0];
-}
-
-/**
- * Upsert students：絕不刪除本地已有但本次 Ragic 未回傳的列。
- * 匹配規則：
- *   1) 優先 id_number（若雙方都有）
- *   2) 退而求其次：同 parent_id + name + birth_date
- *   3) 都沒匹配到 → INSERT 新列
- */
-async function upsertLocalStudents(client, parentId, students) {
-  for (const s of students || []) {
-    if (!s || !s.name) continue;
-    const idNum = s.id_number ? String(s.id_number).toUpperCase().trim() : null;
-    let matched = null;
-
-    if (idNum) {
-      const r = await client.query(
-        `SELECT id FROM students WHERE parent_id = $1 AND id_number = $2 LIMIT 1`,
-        [parentId, idNum]
-      );
-      matched = r.rows[0] || null;
-    }
-    if (!matched) {
-      const r = await client.query(
-        `SELECT id FROM students
-          WHERE parent_id = $1 AND name = $2
-            AND ($3::date IS NULL OR birth_date = $3::date)
-          LIMIT 1`,
-        [parentId, s.name, s.birth_date || null]
-      );
-      matched = r.rows[0] || null;
-    }
-
-    if (matched) {
-      await client.query(
-        `UPDATE students SET
-           name = $2,
-           birth_date = COALESCE($3::date, birth_date),
-           gender = COALESCE(NULLIF($4,''), gender),
-           id_number = COALESCE(id_number, NULLIF($5,'')),
-           blood_type = COALESCE(NULLIF($6,''), blood_type),
-           student_code = COALESCE(NULLIF($7,''), student_code)
-         WHERE id = $1`,
-        [matched.id, s.name, s.birth_date || null, ragic.normalizeGender(s.gender),
-         idNum || '', s.blood_type || '', s.student_code || '']
-      );
-    } else {
-      await client.query(
-        `INSERT INTO students (parent_id, name, birth_date, gender, id_number, blood_type, student_code)
-         VALUES ($1, $2, $3::date, NULLIF($4,''), NULLIF($5,''), NULLIF($6,''), NULLIF($7,''))`,
-        [parentId, s.name, s.birth_date || null, ragic.normalizeGender(s.gender),
-         idNum || '', s.blood_type || '', s.student_code || '']
-      );
-    }
-  }
-}
-
-/**
- * 從 Ragic Z01 record 同步 parent + students 到本地（單一交易）。
- *
- * 同一個 phone 上 advisory lock，避免兩支並發請求（不同 LINE UID）同時通過
- * 「conflict check 在 txn 外、upsert 在 txn 內」之間的縫，導致 loser 拿到
- * winner 的 line_uid（COALESCE 保留先到者）卻簽出 JWT。
- *
- * 流程：lock → 重做 line/phone 衝突檢查 → upsert → 斷言 local.line_uid===lineUid
- */
-async function syncFromRagicRecord(z01Row, lineUid) {
-  const mapped = ragic.mapZ01Parent(z01Row);
-  const students = ragic.parseZ01Students(z01Row);
-  return _syncWithLock({ mapped, students, lineUid });
-}
-
-class BindConflictError extends Error {
-  constructor(code, message, http = 409) {
-    super(message);
-    this.code = code;
-    this.http = http;
-  }
-}
-
-async function _syncWithLock({ mapped, students, lineUid }) {
-  const phone = mapped.phone;
-  if (!phone) throw new Error('缺少手機');
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    // advisory lock：以 phone 為 key，序列化同手機上的所有 bind/register
-    await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`parent_bind:${phone}`]);
-
-    // txn 內重做衝突檢查（防 race）
-    const dupLine = await client.query(
-      `SELECT phone FROM parents WHERE line_uid = $1 LIMIT 1`, [lineUid]);
-    if (dupLine.rowCount && dupLine.rows[0].phone !== phone) {
-      throw new BindConflictError('LINE_ALREADY_BOUND_TO_OTHER_PHONE',
-        '此 LINE 帳號已綁定其他手機，請改用原手機登入或聯絡客服');
-    }
-    const dupPhone = await client.query(
-      `SELECT line_uid FROM parents WHERE phone = $1 LIMIT 1`, [phone]);
-    if (dupPhone.rowCount && dupPhone.rows[0].line_uid && dupPhone.rows[0].line_uid !== lineUid) {
-      throw new BindConflictError('PHONE_ALREADY_BOUND_TO_OTHER_LINE',
-        '此手機已綁定其他 LINE 帳號，請聯絡客服處理');
-    }
-
-    const local = await upsertLocalParent(client, mapped, lineUid);
-
-    // post-upsert guard：upsert 後若 line_uid 對不上 caller 認證的 lineUid → 拒簽 token
-    if (local.line_uid && local.line_uid !== lineUid) {
-      throw new BindConflictError('PHONE_ALREADY_BOUND_TO_OTHER_LINE',
-        '此手機已綁定其他 LINE 帳號，請聯絡客服處理');
-    }
-
-    await upsertLocalStudents(client, local.id, students || []);
-    await client.query('COMMIT');
-    return local;
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw err;
-  } finally {
-    client.release();
-  }
-}
+// _resolveVenueId / upsertLocalParent / upsertLocalStudents / syncFromRagicRecord /
+// _syncWithLock / BindConflictError 已抽至 services/parentSync.js（見檔頭 require）。
 
 async function _verifyLineUid(req, res) {
   const idToken = String(req.body?.id_token || '').trim();
@@ -560,6 +399,29 @@ router.post('/parent-bind-phone', async (req, res) => {
         error: '此手機已綁定其他 LINE 帳號，請聯絡客服處理',
         code: 'PHONE_ALREADY_BOUND_TO_OTHER_LINE',
       });
+    }
+
+    // 4b) 認領驗證（資安）：此門號在 Ragic 已有家庭資料、且尚未綁定任何 LINE（line_uid 空）時，
+    //     不可只憑「知道門號」就綁定並繼承其學員與身分證等 PII（門號可能被回收）。
+    //     要求「學員姓名 + 身分證字號」與該家庭某位學員一致（= 電話 + 姓名 + 身分證 三者一致）才放行。
+    //     全新門號 / 無學員者 → 視為單純綁定，免驗證。在寫回 line_uid 到 Ragic「之前」就攔。
+    if (!mapped.line_uid) {
+      const ragicStudents = ragic.parseZ01Students(ragicRow);
+      if (ragicStudents.length > 0) {
+        const claim = req.body?.claim || null;
+        if (!claim || !claim.student_name || !claim.id_number) {
+          parentSync.auditClaim({ phone, lineUid, result: 'need_verification' });
+          return res.json({ status: 'need_claim_verification', line_uid: lineUid, phone });
+        }
+        if (!parentSync.matchStudentClaim(ragicStudents, claim)) {
+          parentSync.auditClaim({ phone, lineUid, result: 'failed' });
+          return res.status(409).json({
+            error: '學員姓名或身分證字號與資料不符，無法認領。請確認後再試，或洽櫃臺 / LINE 客服協助。',
+            code: 'CLAIM_VERIFICATION_FAILED',
+          });
+        }
+        parentSync.auditClaim({ phone, lineUid, result: 'passed' });
+      }
     }
 
     // 5) Ragic 1006846 空白 → 寫回 Ragic（best-effort）

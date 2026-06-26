@@ -98,14 +98,21 @@ export default function ProfilePage() {
 
   useEffect(() => {
     let alive = true;
-    parentsApi.me()
-      .then((data) => {
+    (async () => {
+      try {
+        // 開場主動向 Ragic 同步名單（後端節流 + 失敗保留鏡像）；完全失敗則退回讀 DB。
+        // 一律以 DB 回傳的最新資料映射到 UI（不靠 localStorage 當資料庫）。
+        let data;
+        try { data = await parentsApi.sync(); }
+        catch { data = await parentsApi.me(); }
         if (!alive) return;
         setProfile(data);
         setParentForm(parentFormFrom(data));
         if (user) setUser({ ...user, data });
-      })
-      .catch(() => alive && toast.error('個人資料載入失敗'));
+      } catch {
+        if (alive) toast.error('個人資料載入失敗');
+      }
+    })();
     venuesApi.list?.()
       .then((data) => alive && setVenues(Array.isArray(data) ? data : []))
       .catch(() => {});
@@ -199,20 +206,8 @@ export default function ProfilePage() {
     }
   }
 
-  async function deactivateStudent(id) {
-    if (!window.confirm('確定停用這位學員？')) return;
-    setBusy(`delete:${id}`);
-    try {
-      await parentsApi.deleteStudent(id);
-      updateAuth({ ...profile, students: students.filter((s) => s.id !== id) });
-      if (editingId === id) resetStudentForm();
-      toast.success('學員已停用');
-    } catch (err) {
-      toast.error(syncErrMsg(err));
-    } finally {
-      setBusy('');
-    }
-  }
+  // 家長端不再提供「停用/刪除學員」：移除/轉出/寄掛異動一律由櫃台在 Ragic 端處理
+  // （避免覆蓋 Ragic 身分欄、避免破壞已報名課程連結造成孤兒資料）。
 
   if (!profile) return null;
 
@@ -246,6 +241,9 @@ export default function ProfilePage() {
             </Collapsible>
 
             <Collapsible title="學員資料" subtitle={`共 ${students.length} 位`} open={studentOpen} onToggle={() => setStudentOpen((o) => !o)} nested>
+              <p className="mb-2 text-[11px] leading-5 text-gray-400">
+                可新增或編輯學員資料。若需停用、移除或轉出學員（含暫時寄掛的小孩），請洽櫃台，或透過 LINE 官方帳號聯繫。
+              </p>
               <div className="space-y-2">
                 {students.map((s) => (
                   <div key={s.id} className="rounded-lg border border-gray-100 p-3">
@@ -257,9 +255,6 @@ export default function ProfilePage() {
                       </div>
                       <div className="flex shrink-0 gap-2">
                         <button type="button" onClick={() => editStudent(s)} className="rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-700">編輯</button>
-                        <button type="button" disabled={busy === `delete:${s.id}`} onClick={() => deactivateStudent(s.id)} className="rounded-md border border-brand-error/40 px-2.5 py-1.5 text-xs font-medium text-brand-error disabled:opacity-60">
-                          {busy === `delete:${s.id}` ? '同步中' : '停用'}
-                        </button>
                       </div>
                     </div>
                   </div>

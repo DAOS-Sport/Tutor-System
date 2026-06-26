@@ -130,6 +130,10 @@ DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS data_group 
 DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS effective_date DATE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS scheduled_effective_date DATE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS pending_changes JSONB; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+-- F-A07 排程「起訖日」：scheduled_effective_date=排程生效起日（既有）、scheduled_effective_until=排程生效迄日；
+--   effective_date=目前生效起日(=使用期限起 starts_at，既有)、effective_until=目前生效版本迄日。
+DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS scheduled_effective_until TIMESTAMPTZ; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS effective_until DATE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 -- F-A07 排程生效支援「日期＋時間」：scheduled_effective_date 由 DATE 升級為 TIMESTAMPTZ。
 -- 僅在仍為 date 時轉換（既有日期值以台北時區午夜為準），避免每次開機重寫整表。
 DO $$ BEGIN
@@ -157,6 +161,18 @@ DO $$ BEGIN
   UPDATE course_type_configs SET effective_date = COALESCE(effective_date, created_at::date, CURRENT_DATE) WHERE effective_date IS NULL;
   UPDATE course_type_configs SET base_price = 9000 WHERE course_type = 1 AND (base_price IS NULL OR base_price = 0);
 EXCEPTION WHEN undefined_table THEN NULL; END $$;
+
+-- F-A07 編輯軌跡：每次 新增 / 編輯(立即) / 編輯(排程) / 取消排程 / 排程套用 各寫一筆（append-only）。
+CREATE TABLE IF NOT EXISTS course_type_config_audit_logs (
+  id          BIGSERIAL PRIMARY KEY,
+  course_type INTEGER NOT NULL REFERENCES course_type_configs(course_type) ON DELETE CASCADE,
+  at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  action      TEXT NOT NULL,          -- 新增 / 編輯(立即) / 編輯(排程) / 取消排程 / 排程套用
+  by_user     TEXT,                   -- 操作者（取自 req.adminUser；排程套用 = 'system'）
+  changes     JSONB,                  -- { field: { before, after } }；僅記實際變動欄位，含排程起訖
+  note        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ctc_audit_type ON course_type_config_audit_logs(course_type, at DESC);
 
 -- ─────────────────────────────────────────────────────────────
 -- U5：團購（group buy）資料模型
@@ -783,6 +799,8 @@ DO $$ BEGIN
   ALTER TABLE parents  ADD COLUMN IF NOT EXISTS home_address TEXT;
   ALTER TABLE parents  ADD COLUMN IF NOT EXISTS line_id VARCHAR(100);
   ALTER TABLE parents  ADD COLUMN IF NOT EXISTS ragic_record_id VARCHAR(50);
+  -- 最後一次成功從 Ragic 同步的時間：供「開場同步」節流，並修掉 parents.js 早先引用未建欄位的潛在 bug。
+  ALTER TABLE parents  ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ;
   ALTER TABLE students ADD COLUMN IF NOT EXISTS id_number VARCHAR(20);
   ALTER TABLE students ADD COLUMN IF NOT EXISTS gender    VARCHAR(20);
   ALTER TABLE students ADD COLUMN IF NOT EXISTS blood_type VARCHAR(5);
