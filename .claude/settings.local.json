@@ -5,7 +5,8 @@
       "Bash(grep -nA8 \"venues:\" api/mock.js)",
       "Bash(grep -nA6 \"^const VENUES\" api/mock.js)",
       "Bash(VITE_USE_MOCK=false npm run build)",
-      "Bash(awk '/CREATE TABLE IF NOT EXISTS admin_course_intros/,/\\\\\\);/' server/bootstrap/coreSchema.js)"
+      "Bash(awk '/CREATE TABLE IF NOT EXISTS admin_course_intros/,/\\\\\\);/' server/bootstrap/coreSchema.js)",
+      "Bash(npx vite *)"
     ]
   }
 }

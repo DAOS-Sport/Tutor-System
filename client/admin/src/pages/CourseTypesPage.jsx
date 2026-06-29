@@ -36,6 +36,75 @@ const toLocalInput = (v) => {
 const FIELD_LABELS = { label: '名稱', base_price: '每期價格', min_students: '最少學生', max_students: '最多學生', is_active: '狀態', data_group: '資料管理群組' };
 const showVal = (k, v) => (k === 'base_price' ? fmtMoney(v) : k === 'is_active' ? (v ? '啟用中' : '已停用') : (v ?? '—'));
 
+// Ragic 風格編輯卡片的樣式（全部 scope 在 .ragic-edit 下，避免與全站 class 撞名）。
+const RAGIC_CSS = `
+.ragic-edit{font-size:13.5px;color:#23303f;line-height:1.5}
+.ragic-edit .card{background:#fff;border:1px solid #d0d7df;border-radius:4px;box-shadow:0 2px 10px rgba(30,60,110,.08);overflow:hidden}
+.ragic-edit .hdr{background:#2a60ab;color:#fff;display:flex;align-items:center;justify-content:space-between;padding:11px 16px}
+.ragic-edit .hdr .ttl{display:flex;align-items:center;gap:9px;font-size:15px;font-weight:700}
+.ragic-edit .hdr .ttl::before{content:"";width:4px;height:17px;background:#ffd43b;border-radius:2px}
+.ragic-edit .hdr .code{font-size:12px;font-weight:400;opacity:.85}
+.ragic-edit .hdr .x{cursor:pointer;opacity:.85;font-size:13px;background:none;border:none;color:#fff;font-family:inherit}
+.ragic-edit .hdr .x:hover{opacity:1}
+.ragic-edit .tabs{display:flex;gap:3px;padding:8px 12px 0;background:#f4f6f9;border-bottom:1px solid #c9d4e0;flex-wrap:wrap}
+.ragic-edit .tab{padding:7px 15px;font-size:13px;font-weight:600;color:#5e6b7a;background:#dde4ec;border:1px solid #c9d4e0;border-bottom:none;border-radius:5px 5px 0 0;cursor:pointer;position:relative;top:1px}
+.ragic-edit .tab.t-em{background:#f3b27a;color:#5a3208}
+.ragic-edit .tab.active{background:#fff;color:#2a60ab;box-shadow:0 -1px 0 #2a60ab inset}
+.ragic-edit .panel{padding:16px}
+.ragic-edit .grid{display:grid;grid-template-columns:max-content 1fr max-content 1fr;border-top:1px solid #c9d4e0;border-left:1px solid #c9d4e0}
+.ragic-edit .lbl,.ragic-edit .cell{border-right:1px solid #c9d4e0;border-bottom:1px solid #c9d4e0;min-height:34px}
+.ragic-edit .lbl{background:#e9eef4;color:#1f3a5f;font-weight:600;display:flex;align-items:center;padding:6px 11px;white-space:nowrap;font-size:12.5px}
+.ragic-edit .lbl .req{color:#d32f2f;margin-right:3px}
+.ragic-edit .cell{background:#fff;display:flex;align-items:center;padding:6px 11px;gap:6px;min-width:0}
+.ragic-edit .cell.editable{cursor:pointer}
+.ragic-edit .cell.editable:hover{background:#f1f8ff}
+.ragic-edit .ehint{margin-left:auto;font-size:11px;opacity:0}
+.ragic-edit .cell.editable:hover .ehint{opacity:.4}
+.ragic-edit .cell.readonly{background:#fafbfc;color:#46545f;cursor:default}
+.ragic-edit .cell.is-dim{opacity:.45;pointer-events:none}
+.ragic-edit .cell-tx{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ragic-edit .muted{color:#9aa3ad}
+.ragic-edit .cal{font-size:11px;opacity:.45;margin-left:auto}
+.ragic-edit .ed{width:100%;min-width:60px;border:1px solid #7ba7d9;background:#fff;padding:4px 6px;font:inherit;color:#23303f;outline:none;border-radius:2px}
+.ragic-edit .ed:focus{border-color:#2a60ab;box-shadow:0 0 0 2px rgba(42,96,171,.15)}
+.ragic-edit .pill{display:inline-block;padding:2px 11px;border-radius:11px;font-size:12px;font-weight:700;line-height:1.6}
+.ragic-edit .pill.ok{background:#7cc47f;color:#163a17}
+.ragic-edit .pill.warn{background:#f6b45a;color:#5a3a08}
+.ragic-edit .pill.done{background:#d4dae0;color:#48535d}
+.ragic-edit .pill.off{background:#e6b0aa;color:#5a1d17}
+.ragic-edit .effbox{border:1px solid #c9d4e0;background:#f7f9fc;padding:12px 13px;margin-top:13px;border-radius:4px}
+.ragic-edit .effbox .rrow{display:flex;gap:22px;align-items:center;font-weight:600;flex-wrap:wrap}
+.ragic-edit .effbox label{cursor:pointer;display:flex;gap:6px;align-items:center}
+.ragic-edit .effbox .hint{margin-top:8px;font-size:12px;color:#7a8593;line-height:1.6}
+.ragic-edit .sched-banner{border:1px solid rgba(42,96,171,.3);background:rgba(42,96,171,.05);border-radius:4px;padding:11px 13px;margin-bottom:13px}
+.ragic-edit .sched-banner h4{margin:0 0 8px;font-size:13px;color:#2a60ab}
+.ragic-edit .sched-banner table{width:100%;border-collapse:collapse;font-size:12px}
+.ragic-edit .sched-banner th{text-align:left;font-weight:500;color:#7a8593;padding:2px 4px}
+.ragic-edit .sched-banner td{padding:3px 4px;border-top:1px solid #eef1f4}
+.ragic-edit .sched-banner .nv{font-weight:700;color:#2a60ab}
+.ragic-edit .lnk-btn{margin-top:8px;background:#fff;border:1px solid #f0b9b3;color:#c0392b;border-radius:5px;padding:5px 11px;font-size:12px;font-weight:600;cursor:pointer}
+.ragic-edit .lnk-btn:hover:not(:disabled){background:#fdecea}
+.ragic-edit .lnk-btn:disabled{opacity:.5;cursor:default}
+.ragic-edit .trail-hd{background:#f0f4f9;color:#1f3a5f;padding:8px 13px;font-weight:700;font-size:13px;border:1px solid #c9d4e0;border-bottom:none;border-radius:3px 3px 0 0}
+.ragic-edit .trail{border:1px solid #c9d4e0;max-height:240px;overflow-y:auto}
+.ragic-edit .trail .row{display:flex;justify-content:space-between;align-items:flex-start;padding:9px 13px;border-bottom:1px solid #eef1f4;gap:12px}
+.ragic-edit .trail .row:last-child{border-bottom:none}
+.ragic-edit .trail .op{font-weight:600;color:#2f3d4c}
+.ragic-edit .trail .who{font-size:12px;color:#8a95a2;margin-top:2px}
+.ragic-edit .trail .chg{font-size:12px;color:#5a6675;margin-top:3px}
+.ragic-edit .trail .ts{font-size:12px;color:#8a95a2;white-space:nowrap}
+.ragic-edit .trail .empty{padding:13px;text-align:center;color:#9aa3ad;font-size:12.5px}
+.ragic-edit .acts{display:flex;gap:10px;padding:16px;background:#f7f9fc;border-top:1px solid #c9d4e0}
+.ragic-edit .btn{padding:9px 22px;border-radius:5px;font-size:13.5px;font-weight:700;cursor:pointer;border:1px solid transparent;font-family:inherit}
+.ragic-edit .btn:disabled{opacity:.5;cursor:default}
+.ragic-edit .btn-primary{background:#2a60ab;color:#fff}
+.ragic-edit .btn-primary:hover:not(:disabled){background:#1f4d8c}
+.ragic-edit .btn-ghost{background:#fff;color:#4a5663;border-color:#cdd5de}
+.ragic-edit .btn-ghost:hover{background:#eef1f4}
+.ragic-edit .err{color:#d32f2f;font-size:13px;padding:0 16px 4px}
+@media (max-width:720px){.ragic-edit .grid{grid-template-columns:minmax(96px,max-content) 1fr}.ragic-edit .lbl{white-space:normal;line-height:1.35}}
+`;
+
 export default function CourseTypesPage() {
   const toast = useToast();
   const [rows, setRows] = useState(null);
@@ -45,6 +114,10 @@ export default function CourseTypesPage() {
   const [addErr, setAddErr] = useState('');
   const [editing, setEditing] = useState(null); // 整列 + 表單狀態
   const [editErr, setEditErr] = useState('');
+  const [activeTab, setActiveTab] = useState('basic'); // Ragic 卡片分頁：basic / eff / sys
+  const [editCell, setEditCell] = useState(null);      // 目前「格子編輯」中的欄位 key（null＝無）
+  const escRef = React.useRef(false);                  // 標記 Esc 取消，讓接著觸發的 blur 還原
+  const cellOrigRef = React.useRef('');                // 進入格子編輯時的原值（Esc 還原用）
 
   const today = (rows && rows[0]?.current_date) ? fmtDate(rows[0].current_date) : fmtDate(new Date().toISOString());
 
@@ -120,10 +193,15 @@ export default function CourseTypesPage() {
       _live: { label: row.label, base_price: row.base_price, min_students: row.min_students, max_students: row.max_students, is_active: row.is_active, data_group: row.data_group },
     });
     setEditErr('');
+    setActiveTab('basic');
+    setEditCell(null);
     try {
       const logs = await courseTypesApi.auditLogs(row.course_type);
       setEditing((s) => (s && s.course_type === row.course_type ? { ...s, audit: Array.isArray(logs) ? logs : [] } : s));
-    } catch { /* 軌跡載入失敗不擋編輯 */ }
+    } catch {
+      // 軌跡載入失敗不擋編輯；落定 audit=[] 讓「執行編輯軌跡」顯示「尚無編輯紀錄」而非永遠「載入中…」。
+      setEditing((s) => (s && s.course_type === row.course_type ? { ...s, audit: [] } : s));
+    }
   }
 
   async function handleSaveEdit(e) {
@@ -193,162 +271,211 @@ export default function CourseTypesPage() {
 
   const inputCls = 'w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary';
 
-  function closeEdit() { setEditing(null); setEditErr(''); }
+  function closeEdit() { setEditing(null); setEditErr(''); setActiveTab('basic'); setEditCell(null); }
 
-  // 行內編輯面板（主色調）。以函式呼叫方式 inline 進 render（非 <Component/>），避免每次輸入時整塊重新掛載而失焦。
-  const renderEditPanel = () => (
-    <div className="rounded-xl border border-brand-primary/25 bg-white p-5 shadow-sm">
-      <div className="mb-4 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span className="h-4 w-1 rounded-full bg-brand-primary" />
-          <div className="font-semibold text-brand-primary">
-            編輯課程需求：{editing._live.label}
-            <span className="ml-1 text-xs font-normal text-gray-400">（系統代碼 {editing.course_type}）</span>
-          </div>
-        </div>
-        <button type="button" onClick={closeEdit} className="rounded-md px-2 py-1 text-sm text-gray-400 hover:bg-gray-100 hover:text-gray-700">關閉 ✕</button>
+  // 「格子編輯」共用鍵盤行為：Enter 提交、Esc 取消（取消時設旗標，讓接著的 blur 不提交）。
+  const cellKeyDown = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); }
+    else if (e.key === 'Escape') { e.preventDefault(); escRef.current = true; e.target.blur(); }
+  };
+  // 產生一個「點擊即編輯」的格子（顯示 ↔ 非受控 input）。每次按鍵即時 mirror 進 editing，
+  // 因此儲存/取消讀到的永遠是最新值（不依賴「按鈕一定先觸發 input blur」這種跨瀏覽器不一致行為）。
+  // Esc 以進入編輯時的原值還原。type: text|number|select|datetime；dim＝唯讀灰階；cal＝日曆 icon。
+  const ecell = ({ field, type = 'text', display, editValue, options, apply, placeholder, dim, cal }) => {
+    const isEd = editCell === field && !dim;
+    // 失焦：Esc 還原原值，否則保留已即時寫入的值；兩種情形都結束格子編輯。
+    const onBlur = () => {
+      if (escRef.current) { escRef.current = false; apply(cellOrigRef.current); }
+      setEditCell(null);
+    };
+    let inner;
+    if (isEd && type === 'select') {
+      inner = (
+        <select className="ed" autoFocus defaultValue={editValue}
+          onChange={(e) => { apply(e.target.value); setEditCell(null); }}
+          onBlur={() => setEditCell(null)} onKeyDown={cellKeyDown}>
+          {options.map((o) => <option key={o} value={o}>{o}</option>)}
+        </select>
+      );
+    } else if (isEd) {
+      inner = (
+        <input className="ed" autoFocus
+          type={type === 'number' ? 'number' : type === 'datetime' ? 'datetime-local' : 'text'}
+          defaultValue={editValue} onChange={(e) => apply(e.target.value)}
+          onBlur={onBlur} onKeyDown={cellKeyDown} />
+      );
+    } else if (display !== '' && display != null) {
+      inner = <><span className="cell-tx">{display}</span>{cal && <span className="cal">📅</span>}<span className="ehint">✎</span></>;
+    } else {
+      inner = <><span className="muted">{placeholder || '—'}</span>{cal && <span className="cal">📅</span>}<span className="ehint">✎</span></>;
+    }
+    return (
+      <div className={`cell editable${dim ? ' is-dim' : ''}`}
+        onClick={() => { if (!dim && editCell !== field) { escRef.current = false; cellOrigRef.current = editValue ?? ''; setEditCell(field); } }}>
+        {inner}
       </div>
+    );
+  };
 
-      {/* 待生效排程 banner：目前值 vs 即將生效值 */}
-      {editing.pending && editing.cur_scheduled && (
-        <div className="mb-4 rounded-lg border border-brand-primary/30 bg-brand-primary/5 p-3 text-sm">
-          <div className="mb-2 font-semibold text-brand-primary">已排程：{fmtDateTime(editing.cur_scheduled)} 生效</div>
-          <table className="w-full text-xs">
-            <thead><tr className="text-gray-500"><th className="text-left font-medium">欄位</th><th className="text-left font-medium">目前值</th><th className="text-left font-medium">即將生效值</th></tr></thead>
-            <tbody>
-              {Object.keys(editing.pending).filter((k) => FIELD_LABELS[k] && String(editing.pending[k]) !== String(editing._live[k])).map((k) => (
-                <tr key={k} className="border-t border-gray-100">
-                  <td className="py-1 text-gray-600">{FIELD_LABELS[k]}</td>
-                  <td className="py-1">{showVal(k, editing._live[k])}</td>
-                  <td className="py-1 font-semibold text-brand-primary">{showVal(k, editing.pending[k])}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <button type="button" onClick={cancelSchedule} disabled={saving === editing.course_type}
-            className="mt-2 rounded-lg border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50">取消排程</button>
-        </div>
-      )}
+  // 行內編輯面板（Ragic 風格分頁卡片）。以函式呼叫方式 inline 進 render（非 <Component/>），避免重新掛載失焦。
+  const renderEditPanel = () => {
+    const now = Date.now();
+    // 系統資訊頁的生命週期狀態 pill（待生效／生效中／已過期）
+    let lifeTxt = '生效中', lifeCls = 'ok';
+    if (editing.pending && editing.cur_scheduled && new Date(editing.cur_scheduled).getTime() > now) { lifeTxt = '待生效'; lifeCls = 'warn'; }
+    else if (editing.effective_until && new Date(`${String(editing.effective_until).slice(0, 10)}T23:59:59`).getTime() < now) { lifeTxt = '已過期'; lifeCls = 'done'; }
+    const isSched = editing.mode === 'scheduled';
+    const uid = `ct-${String(editing.course_type).padStart(4, '0')}`;
+    const fmtLocal = (v) => (v ? String(v).replace(/-/g, '/').replace('T', ' ') : '');
 
-      <form onSubmit={handleSaveEdit} className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <div>
-          <label className="mb-1 block text-xs font-semibold text-brand-primary">名稱</label>
-          <input type="text" value={editing.label} onChange={(e) => setEditing((s) => ({ ...s, label: e.target.value }))} className={inputCls} />
-        </div>
-        <div>
-          <label className="mb-1 block text-xs font-semibold text-brand-primary">每期價格（每人，NT$）</label>
-          <input type="number" step="100" value={editing.base_price} onChange={(e) => setEditing((s) => ({ ...s, base_price: e.target.value }))} className={inputCls} />
-        </div>
-        <div>
-          <label className="mb-1 block text-xs font-semibold text-brand-primary">狀態</label>
-          <select value={editing.is_active ? '1' : '0'} onChange={(e) => setEditing((s) => ({ ...s, is_active: e.target.value === '1' }))} className={inputCls}>
-            <option value="1">啟用中</option>
-            <option value="0">已停用</option>
-          </select>
-        </div>
-        <div>
-          <label className="mb-1 block text-xs font-semibold text-brand-primary">最少學生</label>
-          <input type="number" value={editing.min_students} onChange={(e) => setEditing((s) => ({ ...s, min_students: e.target.value }))} className={inputCls} />
-        </div>
-        <div>
-          <label className="mb-1 block text-xs font-semibold text-brand-primary">最多學生</label>
-          <input type="number" value={editing.max_students} onChange={(e) => setEditing((s) => ({ ...s, max_students: e.target.value }))} className={inputCls} />
-        </div>
-        <div>
-          <label className="mb-1 block text-xs font-semibold text-brand-primary">資料管理群組</label>
-          <input type="text" value={editing.data_group} onChange={(e) => setEditing((s) => ({ ...s, data_group: e.target.value }))} className={inputCls} placeholder="例：新北高中【櫃台】" />
-        </div>
-
-        {/* 生效方式 */}
-        <div className="col-span-full rounded-lg border border-brand-primary/15 bg-brand-primary/5 p-3">
-          <div className="mb-2 text-xs font-semibold text-brand-primary">生效方式</div>
-          <div className="flex flex-wrap items-center gap-4 text-sm">
-            <label className="flex items-center gap-1.5">
-              <input type="radio" className="accent-brand-primary" checked={editing.mode === 'immediate'} onChange={() => setEditing((s) => ({ ...s, mode: 'immediate' }))} /> 立即生效
-            </label>
-            <label className="flex items-center gap-1.5">
-              <input type="radio" className="accent-brand-primary" checked={editing.mode === 'scheduled'} onChange={() => setEditing((s) => ({ ...s, mode: 'scheduled' }))} /> 排程生效
-            </label>
-            {editing.mode === 'scheduled' && (
-              <div className="flex flex-wrap items-center gap-2">
-                <input type="datetime-local" value={editing.scheduled_effective_date} onChange={(e) => setEditing((s) => ({ ...s, scheduled_effective_date: e.target.value }))}
-                  className="rounded-lg border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary" />
-                <span className="text-xs text-gray-400">～</span>
-                <input type="datetime-local" value={editing.scheduled_effective_until} onChange={(e) => setEditing((s) => ({ ...s, scheduled_effective_until: e.target.value }))}
-                  className="rounded-lg border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary" />
-                <span className="text-[11px] text-gray-400">生效迄日（未來排程必填）</span>
-              </div>
-            )}
+    return (
+      <div className="ragic-edit">
+        <style>{RAGIC_CSS}</style>
+        <div className="card">
+          {/* header */}
+          <div className="hdr">
+            <div className="ttl">編輯課程需求：{editing._live.label}
+              <span className="code">（系統代碼 {editing.course_type}）</span>
+            </div>
+            <button type="button" className="x" onClick={closeEdit}>關閉 ✕</button>
           </div>
-          <p className="mt-1.5 text-xs text-gray-400">排程生效：選未來「生效起日＋迄日」（兩者必填），到生效起日前正式資料不變，時間一到由系統自動套用（每 5 分鐘檢查一次）。選過去／現在的起日＝立即生效。</p>
-        </div>
 
-        {/* 資料管理資訊（日軌） */}
-        <div className="col-span-full grid grid-cols-2 gap-x-4 gap-y-1 rounded-lg border border-gray-100 bg-gray-50 p-3 text-xs text-gray-600 sm:grid-cols-3">
-          <div>狀態：{(() => {
-            const now = Date.now();
-            let t = '生效中', c = 'bg-green-100 text-green-700';
-            if (editing.pending && editing.cur_scheduled && new Date(editing.cur_scheduled).getTime() > now) { t = '待生效'; c = 'bg-amber-100 text-amber-700'; }
-            else if (editing.effective_until && new Date(`${String(editing.effective_until).slice(0, 10)}T23:59:59`).getTime() < now) { t = '已過期'; c = 'bg-gray-200 text-gray-500'; }
-            return <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${c}`}>{t}</span>;
-          })()}</div>
-          <div>今天日期：<span className="font-medium text-gray-800">{today}</span></div>
-          <div>資料管理群組：<span className="font-medium text-gray-800">{editing._live.data_group || '—'}</span></div>
-          <div>資料建立日期：<span className="font-medium text-gray-800">{fmtDateTimeSec(editing.created_at)}</span></div>
-          <div>最後更新日期：<span className="font-medium text-gray-800">{fmtDateTimeSec(editing.updated_at)}</span></div>
-          <div />
-          <div>目前生效起日：<span className="font-medium text-gray-800">{fmtDate(editing.effective_date)}</span></div>
-          <div>目前生效迄日：<span className="font-medium text-gray-800">{editing.effective_until ? fmtDate(editing.effective_until) : '—'}</span></div>
-          <div />
-          <div>排程生效起：<span className="font-medium text-gray-800">{editing.cur_scheduled ? fmtDateTime(editing.cur_scheduled) : '無排程'}</span></div>
-          <div>排程生效迄：<span className="font-medium text-gray-800">{editing.cur_scheduled_until ? fmtDateTime(editing.cur_scheduled_until) : '—'}</span></div>
-          <div />
-        </div>
+          {/* tabs */}
+          <div className="tabs">
+            <div className={`tab${activeTab === 'basic' ? ' active' : ''}`} onClick={() => { setEditCell(null); setActiveTab('basic'); }}>基本資料</div>
+            <div className={`tab${activeTab === 'eff' ? ' active' : ''}`} onClick={() => { setEditCell(null); setActiveTab('eff'); }}>生效設定</div>
+            <div className={`tab t-em${activeTab === 'sys' ? ' active' : ''}`} onClick={() => { setEditCell(null); setActiveTab('sys'); }}>系統資訊（資訊人員專用）</div>
+          </div>
 
-        {/* 執行編輯軌跡 */}
-        <div className="col-span-full rounded-lg border border-gray-100">
-          <button type="button" onClick={() => setEditing((s) => ({ ...s, auditOpen: !s.auditOpen }))}
-            className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold text-brand-primary">
-            <span>執行編輯軌跡{editing.audit ? `（${editing.audit.length}）` : ''}</span>
-            <span className="text-gray-400">{editing.auditOpen ? '▲' : '▼'}</span>
-          </button>
-          {editing.auditOpen && (
-            <div className="max-h-56 overflow-y-auto border-t border-gray-100 px-3 py-2 text-xs">
-              {!editing.audit && <div className="text-gray-400">載入中…</div>}
-              {editing.audit && editing.audit.length === 0 && <div className="text-gray-400">尚無編輯紀錄</div>}
-              {editing.audit && editing.audit.map((lg) => (
-                <div key={lg.id} className="border-b border-gray-50 py-1.5 last:border-0">
-                  <div className="flex items-center justify-between text-gray-500">
-                    <span className="font-medium text-gray-700">{lg.action}</span>
-                    <span>{fmtDateTimeSec(lg.at)}</span>
-                  </div>
-                  <div className="text-gray-400">操作人：{lg.by_user || '—'}{lg.note ? `・${lg.note}` : ''}</div>
-                  {lg.changes && (
-                    <div className="mt-0.5 text-gray-600">
-                      {Object.entries(lg.changes).map(([k, v]) => (
-                        <span key={k} className="mr-2 inline-block">
-                          {FIELD_LABELS[k] || k}：{(v && v.before !== undefined && v.before !== null) ? `${showVal(k, v.before)} → ` : ''}{showVal(k, v && v.after)}
-                        </span>
+          {/* 基本資料 */}
+          {activeTab === 'basic' && (
+            <div className="panel">
+              <div className="grid">
+                <div className="lbl"><span className="req">＊</span>名稱</div>
+                {ecell({ field: 'label', type: 'text', display: editing.label, editValue: editing.label, apply: (v) => setEditing((s) => ({ ...s, label: v })) })}
+                <div className="lbl"><span className="req">＊</span>每期價格（每人，NT$）</div>
+                {ecell({ field: 'base_price', type: 'number', display: editing.base_price, editValue: editing.base_price, apply: (v) => setEditing((s) => ({ ...s, base_price: v })) })}
+
+                <div className="lbl"><span className="req">＊</span>狀態</div>
+                {ecell({ field: 'is_active', type: 'select', options: ['啟用中', '已停用'], display: editing.is_active ? '啟用中' : '已停用', editValue: editing.is_active ? '啟用中' : '已停用', apply: (v) => setEditing((s) => ({ ...s, is_active: v === '啟用中' })) })}
+                <div className="lbl">資料管理群組</div>
+                {ecell({ field: 'data_group', type: 'text', display: editing.data_group, editValue: editing.data_group, placeholder: '例：新北高中【櫃台】', apply: (v) => setEditing((s) => ({ ...s, data_group: v })) })}
+
+                <div className="lbl"><span className="req">＊</span>最少學生</div>
+                {ecell({ field: 'min_students', type: 'number', display: editing.min_students, editValue: editing.min_students, apply: (v) => setEditing((s) => ({ ...s, min_students: v })) })}
+                <div className="lbl"><span className="req">＊</span>最多學生</div>
+                {ecell({ field: 'max_students', type: 'number', display: editing.max_students, editValue: editing.max_students, apply: (v) => setEditing((s) => ({ ...s, max_students: v })) })}
+              </div>
+            </div>
+          )}
+
+          {/* 生效設定 */}
+          {activeTab === 'eff' && (
+            <div className="panel">
+              {/* 待生效排程：目前值 vs 即將生效值 */}
+              {editing.pending && editing.cur_scheduled && (
+                <div className="sched-banner">
+                  <h4>已排程：{fmtDateTime(editing.cur_scheduled)} 生效</h4>
+                  <table>
+                    <thead><tr><th>欄位</th><th>目前值</th><th>即將生效值</th></tr></thead>
+                    <tbody>
+                      {Object.keys(editing.pending).filter((k) => FIELD_LABELS[k] && String(editing.pending[k]) !== String(editing._live[k])).map((k) => (
+                        <tr key={k}>
+                          <td>{FIELD_LABELS[k]}</td>
+                          <td>{showVal(k, editing._live[k])}</td>
+                          <td className="nv">{showVal(k, editing.pending[k])}</td>
+                        </tr>
                       ))}
-                    </div>
-                  )}
+                    </tbody>
+                  </table>
+                  <button type="button" className="lnk-btn" onClick={cancelSchedule} disabled={saving === editing.course_type}>取消排程</button>
+                </div>
+              )}
+
+              <div className="grid">
+                <div className="lbl">目前生效起日</div>
+                <div className="cell readonly"><span className="cell-tx">{fmtDate(editing.effective_date)}</span></div>
+                <div className="lbl">目前生效迄日</div>
+                <div className="cell readonly"><span className="cell-tx">{editing.effective_until ? fmtDate(editing.effective_until) : '—'}</span></div>
+
+                <div className="lbl">排程生效起</div>
+                {ecell({ field: 'scheduled_effective_date', type: 'datetime', dim: !isSched, cal: true, display: fmtLocal(editing.scheduled_effective_date), editValue: editing.scheduled_effective_date, apply: (v) => setEditing((s) => ({ ...s, scheduled_effective_date: v })) })}
+                <div className="lbl">排程生效迄</div>
+                {ecell({ field: 'scheduled_effective_until', type: 'datetime', dim: !isSched, cal: true, display: fmtLocal(editing.scheduled_effective_until), editValue: editing.scheduled_effective_until, apply: (v) => setEditing((s) => ({ ...s, scheduled_effective_until: v })) })}
+              </div>
+
+              <div className="effbox">
+                <div className="rrow">生效方式：
+                  <label><input type="radio" name={`eff-${editing.course_type}`} checked={editing.mode === 'immediate'} onChange={() => setEditing((s) => ({ ...s, mode: 'immediate' }))} /> 立即生效</label>
+                  <label><input type="radio" name={`eff-${editing.course_type}`} checked={editing.mode === 'scheduled'} onChange={() => setEditing((s) => ({ ...s, mode: 'scheduled' }))} /> 排程生效</label>
+                </div>
+                <div className="hint">排程生效：選未來「生效起日＋迄日」（兩者必填），到生效起日前正式資料不變，時間一到由系統自動套用（每 5 分鐘檢查一次）。選過去／現在的起日＝立即生效。</div>
+              </div>
+            </div>
+          )}
+
+          {/* 系統資訊（唯讀） */}
+          {activeTab === 'sys' && (
+            <div className="panel">
+              <div className="grid">
+                <div className="lbl">狀態</div>
+                <div className="cell readonly"><span className={`pill ${lifeCls}`}>{lifeTxt}</span></div>
+                <div className="lbl">資料管理群組</div>
+                <div className="cell readonly">{editing._live.data_group ? <span className="cell-tx">{editing._live.data_group}</span> : <span className="muted">—</span>}</div>
+
+                <div className="lbl">資料建立日期</div>
+                <div className="cell readonly"><span className="cell-tx">{fmtDateTimeSec(editing.created_at)}</span></div>
+                <div className="lbl">最後更新日期</div>
+                <div className="cell readonly"><span className="cell-tx">{fmtDateTimeSec(editing.updated_at)}</span></div>
+
+                <div className="lbl">今天日期</div>
+                <div className="cell readonly"><span className="cell-tx">{today}</span></div>
+                <div className="lbl">唯一值</div>
+                <div className="cell readonly"><span className="cell-tx">{uid}</span></div>
+              </div>
+            </div>
+          )}
+
+          {/* 執行編輯軌跡（唯讀） */}
+          <div style={{ padding: '0 16px 16px' }}>
+            <div className="trail-hd">執行編輯軌跡{editing.audit ? `（${editing.audit.length}）` : ''}</div>
+            <div className="trail">
+              {!editing.audit && <div className="empty">載入中…</div>}
+              {editing.audit && editing.audit.length === 0 && <div className="empty">尚無編輯紀錄</div>}
+              {editing.audit && editing.audit.map((lg) => (
+                <div key={lg.id} className="row">
+                  <div>
+                    <div className="op">{lg.action}</div>
+                    <div className="who">操作人：{lg.by_user || '—'}{lg.note ? `・${lg.note}` : ''}</div>
+                    {lg.changes && (
+                      <div className="chg">
+                        {Object.entries(lg.changes).map(([k, v]) => (
+                          <span key={k} style={{ marginRight: 8, display: 'inline-block' }}>
+                            {FIELD_LABELS[k] || k}：{(v && v.before !== undefined && v.before !== null) ? `${showVal(k, v.before)} → ` : ''}{showVal(k, v && v.after)}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div className="ts">{fmtDateTimeSec(lg.at)}</div>
                 </div>
               ))}
             </div>
-          )}
-        </div>
+          </div>
 
-        {editErr && <p className="col-span-full text-sm text-red-600">{editErr}</p>}
-        <div className="col-span-full flex gap-2 pt-1">
-          <button type="submit" disabled={saving === editing.course_type}
-            className="rounded-lg bg-brand-primary px-5 py-2 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:opacity-50">
-            {saving === editing.course_type ? '儲存中…' : (editing.mode === 'scheduled' ? '排程儲存' : '立即儲存')}
-          </button>
-          <button type="button" onClick={closeEdit} className="rounded-lg border border-gray-300 px-5 py-2 text-sm hover:bg-gray-50">取消</button>
+          {editErr && <div className="err">{editErr}</div>}
+
+          {/* footer */}
+          <div className="acts">
+            <button type="button" className="btn btn-primary" disabled={saving === editing.course_type} onClick={handleSaveEdit}>
+              {saving === editing.course_type ? '儲存中…' : (isSched ? '排程儲存' : '立即儲存')}
+            </button>
+            <button type="button" className="btn btn-ghost" onClick={closeEdit}>取消</button>
+          </div>
         </div>
-      </form>
-    </div>
-  );
+      </div>
+    );
+  };
 
   return (
     <div>
