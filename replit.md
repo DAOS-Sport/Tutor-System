@@ -74,6 +74,32 @@
 - 入口：以一般瀏覽器開 `https://daos-tutoring-courses.replit.app/liff/demo`。`client/liff/src/main.jsx#isDemoPath` 會在 `/liff/demo` 略過 `liff.init`/`liff.login`，否則 production 未登入 LINE 會被導去 OAuth。
 - 登入成功依 `role` 導頁（coach→`/coach`、parent→`/`）；token 走既有 AuthContext，line_uid 一律去敏不落地。
 
+## Codebase Memory MCP（Agent 上手工具）
+
+**codebase-memory-mcp v0.8.1** 已安裝。每個 Agent 啟動後，可用圖查詢取代逐檔 grep/read，速度快 10×、token 少 120×。
+
+### 索引狀態
+- Binary：`.local/bin/codebase-memory-mcp`（Linux amd64 portable 靜態 binary）
+- 最後索引：2026-06-30，共 **17,610 nodes、47,304 edges**
+- 涵蓋：`server/`（routes/services/middlewares）、`client/liff/src/`、`client/admin/src/`、`docs/`
+
+### Container 重建後重新安裝（存在 `~/.cache/`，重建後消失）
+```bash
+.local/bin/codebase-memory-mcp install -y
+.local/bin/codebase-memory-mcp cli index_repository '{"repo_path":"/home/runner/workspace"}'
+```
+
+### Agent 常用工具
+```
+search_graph(project="home-runner-workspace", name_pattern="函式名或路由名")
+trace_path(...)      # 追呼叫鏈
+get_code_snippet(...)  # 取函式原始碼
+get_architecture(...)  # 整體架構摘要
+```
+優先用 MCP 工具；搜尋字串字面值、非程式碼設定檔時才用 grep。
+
+---
+
 ## 自訂 Secondary Skills
 以下 7 個 skill 安裝在 `.local/secondary_skills/`，需要時用 `skillSearch` 找出來再讀。
 

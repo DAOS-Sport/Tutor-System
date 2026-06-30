@@ -4,3 +4,4 @@
 - [Prod DB read-only](prod-db-readonly.md) — executeSql/database skill against production can only READ; deliver idempotent scripts validated on dev for prod writes, never copy dev UUIDs.
 - [Teardown FK order](teardown-fk-order.md) — deleting test parents/coaches/students hits RESTRICT/NO-ACTION FKs (circular session↔slot, transfer_records, checkin.student_id, session.coach_id/initiated_by_parent_id); enumerate via pg_constraint, NULL cross-refs first.
 - [Ragic Z01/Z02 student writes](ragic-z01-z02-students.md) — students must be written to Z02 (linked by parent phone), NOT the Z01 subtable which silently drops dotted-key POSTs; two-phase write needs orphan-parent rollback.
+- [Codebase Memory MCP](codebase-memory-mcp.md) — graph-search tool installed at .local/bin/; prefer over grep/read; rebuild index if cache lost after container reset.
