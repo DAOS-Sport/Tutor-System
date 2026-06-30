@@ -11,6 +11,7 @@ import VenuesPage from './pages/VenuesPage';
 import CourseIntrosPage from './pages/CourseIntrosPage';
 import ReconcilePage from './pages/ReconcilePage';
 import EnrollmentsPage from './pages/EnrollmentsPage';
+import ManualEnrollPage from './pages/ManualEnrollPage';
 import RefundPage from './pages/RefundPage';
 import SessionsPage from './pages/SessionsPage';
 import CheckinPage from './pages/CheckinPage';
@@ -64,6 +65,7 @@ export default function App() {
         <Route path="/customer-students" element={<RequireAuth roles={ALL}><CustomerStudentsPage /></RequireAuth>} />
 
         {/* 報名與對帳 */}
+        <Route path="/manual-enroll" element={<RequireAuth roles={ALL}><ManualEnrollPage /></RequireAuth>} />
         <Route path="/reconcile"   element={<RequireAuth roles={['admin', 'manager', 'staff']}><ReconcilePage /></RequireAuth>} />
         <Route path="/enrollments" element={<RequireAuth roles={ALL}><EnrollmentsPage /></RequireAuth>} />
         <Route path="/refund"      element={<RequireAuth roles={['admin', 'manager']}><RefundPage /></RequireAuth>} />

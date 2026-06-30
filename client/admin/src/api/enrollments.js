@@ -5,6 +5,14 @@ export const enrollmentsApi = {
   list: (filters = {}) =>
     callApi('/enrollments', { params: filters }, () => mockDb.enrollments(filters)),
 
+  // 櫃檯手動建檔：建立 pending_payment 報名（總堂數 > 6 後端自動拆期）。
+  create: (payload) =>
+    callApi('/enrollments', { method: 'post', data: payload }, () => ({
+      id: `E-MOCK-${Date.now().toString(36).toUpperCase()}`,
+      status: 'pending_payment',
+      count: Math.max(1, Math.ceil((Number(payload?.total_sessions) || 6) / 6)),
+    })),
+
   update: (id, payload) =>
     callApi(`/enrollments/${id}`, { method: 'patch', data: payload }, () => mockDb.updateEnrollment(id, payload)),
 

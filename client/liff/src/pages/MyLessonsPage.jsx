@@ -158,7 +158,7 @@ export default function MyLessonsPage() {
   if (courses === null && lessons === null) return <LoadingSpinner label="載入中…" />;
 
   return (
-    <div className="min-h-[calc(100vh-3rem)] bg-gray-50">
+    <div className="min-h-[calc(100dvh-3rem)] bg-gray-50">
       {enrollments.length === 0 ? (
         <div className="px-4 py-4">
           <div className="rounded-2xl border-2 border-dashed border-gray-200 bg-white p-10 text-center text-sm text-gray-500">

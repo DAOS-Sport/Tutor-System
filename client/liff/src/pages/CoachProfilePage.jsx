@@ -7,7 +7,7 @@ import LoadingSpinner from "../components/LoadingSpinner";
 
 /**
  * 版面調整重點（邏輯零變動）：
- * 1. 外層 max-w-md + pb-[calc(6rem+safe-area)]：內容不被底部導覽壓住，桌機開也不會攤平
+ * 1. 外層 max-w-md + pb-6：桌機開也不會攤平（底部導覽已改 in-flow，內容不再被覆蓋，免大留白）
  * 2. Section 標題移出卡片：消掉箱中箱，整頁變輕；區塊間距統一 mb-5
  * 3. 所有輸入（textarea / modal input）改 16px：iOS 聚焦不再自動縮放跳動
  * 4. 觸控目標：送出鈕、↑↓刪、新增圖片全部 ≥40px 高
@@ -134,7 +134,7 @@ export default function CoachProfilePage() {
   if (!coach) return null;
 
   return (
-    <div className="mx-auto w-full max-w-md px-4 pt-4 pb-[calc(6rem+env(safe-area-inset-bottom))]">
+    <div className="mx-auto w-full max-w-md px-4 pt-4 pb-6">
       <CoachBanner
         coach={coach}
         coachInitial={coachInitial}

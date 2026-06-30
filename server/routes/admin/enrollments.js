@@ -11,10 +11,21 @@
  *     total_sessions, used_sessions, audit_logs[] }
  */
 const express = require('express');
+const { randomUUID } = require('crypto');
 const { pool } = require('../../models/db');
 const { requireAdminAuth, requireAdminRole, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
 
 const router = express.Router();
+
+// 一期固定 6 堂；手動建檔總堂數 > 6 → 依 ceil(N/6) 拆成多張訂單（每張一期）。
+const SESSIONS_PER_PERIOD = 6;
+
+// 與 routes/enrollments.js 同款報名單號（E + 時戳 + 亂數），各期一筆。
+function genEnrollmentId() {
+  const ts = Date.now().toString(36).toUpperCase();
+  const rand = Math.floor(Math.random() * 1296).toString(36).toUpperCase().padStart(2, '0');
+  return `E${ts}${rand}`;
+}
 
 async function getSettings() {
   const r = await pool.query(`SELECT key, value FROM admin_settings`);
@@ -277,6 +288,155 @@ async function readEnrollment(id) {
     })),
   };
 }
+
+/**
+ * POST /api/admin/enrollments  — 櫃檯手動建檔（建立報名）
+ *
+ *  「報名與對帳 → 手動建檔」頁呼叫。家長/學員已先在 Z01/Z02 搜尋連結（或新建），
+ *  此處只收已解析好的 parent_name/phone + students[] 名單。
+ *
+ *  與家長端 routes/enrollments.js 的差異：
+ *    - 身份由 admin 指定（非 JWT 家長），需 admin/manager/staff，且 venue 須在可見範圍。
+ *    - 金額以櫃檯輸入為準（不重算優惠）。
+ *    - 嚴格拆期：1 期 = 6 堂；total_sessions > 6 → ceil(N/6) 拆成多筆 admin_enrollments
+ *      （每筆 period_count=1、共用 enrollment_batch_id），原價/實收/折讓依堂數比例分攤。
+ *    - 狀態一律 pending_payment（待對帳）→ 自動出現在「所有報名」與「待對帳/匯款查詢」；
+ *      正式 course_period 由既有對帳流程 (reconcile) 產生。
+ *    - 本路由「不寫 Ragic」。報名回寫 Ragic Z01/Z02 連結表 + webhook 雙向同步為 Phase 3/4，
+ *      屆時於 COMMIT 後依 external_order_no/ragic_record_id 接上（見 011 migration 橋接欄）。
+ */
+router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+  const b = req.body || {};
+
+  const parentName  = String(b.parent_name || '').trim();
+  const parentPhone = String(b.parent_phone || '').trim();
+  const venueId     = String(b.venue_id || '').trim();
+  const coachName   = String(b.coach || '').trim();
+  const courseType  = Number(b.course_type);
+  const students    = Array.isArray(b.students)
+    ? b.students.map((s) => String(s || '').trim()).filter(Boolean) : [];
+  const totalSessions = Number.parseInt(b.total_sessions, 10);
+
+  if (!parentName || !parentPhone) return res.status(400).json({ error: '請填寫家長姓名與電話', code: 'PARENT_REQUIRED' });
+  if (!venueId) return res.status(400).json({ error: '請選擇館別', code: 'VENUE_REQUIRED' });
+  if (!coachName) return res.status(400).json({ error: '請填寫授課教練', code: 'COACH_REQUIRED' });
+  if (!Number.isInteger(courseType) || courseType < 1) return res.status(400).json({ error: '請選擇課程組別', code: 'COURSE_TYPE_INVALID' });
+  if (!students.length) return res.status(400).json({ error: '請填寫至少一位學員', code: 'STUDENT_REQUIRED' });
+  if (!Number.isInteger(totalSessions) || totalSessions < 1) return res.status(400).json({ error: '請填寫有效的總堂數', code: 'SESSIONS_INVALID' });
+
+  // 場館權限（manager/staff 只能建自己館；admin 全部）。
+  if (!isVenueInScope(req, venueId)) return res.status(403).json({ error: '無此館別的建檔權限', code: 'VENUE_OUT_OF_SCOPE' });
+
+  // 付款：轉帳須有末 5 碼格式；現金可空。
+  const paymentMethod = String(b.payment_method || '').trim() || null;
+  const last5 = String(b.transfer_last_5 || '').trim();
+  if (last5 && !/^\d{5}$/.test(last5)) return res.status(400).json({ error: '轉帳末 5 碼格式錯誤', code: 'TRANSFER_LAST5_INVALID' });
+
+  // 金額（櫃檯輸入為準，整筆 N 堂的原價 / 實收 / 折讓）。
+  const originalPrice  = Number(b.original_price);
+  const finalPrice     = Number(b.final_price);
+  const allowanceTotal = b.allowance_amount != null && b.allowance_amount !== '' ? Number(b.allowance_amount) : 0;
+  if (!Number.isFinite(originalPrice) || originalPrice < 0
+      || !Number.isFinite(finalPrice) || finalPrice < 0
+      || !Number.isFinite(allowanceTotal) || allowanceTotal < 0) {
+    return res.status(400).json({ error: '金額格式不正確', code: 'PRICE_INVALID' });
+  }
+
+  // 選填的報名表外觀欄位（同一筆購買，落在每張拆分訂單上）。NaN 一律降為 NULL（避免寫壞數值欄）。
+  const unitPriceRaw = b.unit_price != null && b.unit_price !== '' ? Number(b.unit_price) : null;
+  const unitPrice = Number.isFinite(unitPriceRaw) ? unitPriceRaw : null;
+  const payer      = String(b.payer || '').trim() || null;       // 收款人
+  const className  = String(b.class_name || '').trim() || null;  // 班級名稱
+  const taxId      = String(b.tax_id || '').trim() || null;      // 統一編號
+  const levelNote  = String(b.level_note || '').trim() || null;  // 程度說明
+  const workType   = String(b.work_type || '').trim() || null;   // 作業型態
+  const carrier    = String(b.carrier || '').trim() || null;     // 載具
+  const fullSessionsRaw = b.full_sessions != null && b.full_sessions !== '' ? Number.parseInt(b.full_sessions, 10) : null;
+  const fullSessions = Number.isInteger(fullSessionsRaw) ? fullSessionsRaw : null;
+  const submittedAt = b.submitted_at ? new Date(b.submitted_at) : new Date();
+  if (Number.isNaN(submittedAt.getTime())) return res.status(400).json({ error: '報名日期格式不正確', code: 'SUBMITTED_AT_INVALID' });
+  const byUser = req.adminUser?.name || req.adminUser?.username || req.adminUser?.sub || 'admin';
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 場館須存在；停用館仍允許（補登歷史 / 舊資料匯入）。
+    const vr = await client.query(`SELECT id FROM venues WHERE id = $1`, [venueId]);
+    if (!vr.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: '館別不存在', code: 'VENUE_NOT_FOUND' });
+    }
+    // 教練：可帶 coach_id（active coaches）取代自由文字；否則僅存名稱（對帳時再反查）。
+    let coachId = null;
+    const rawCoachId = b.coach_id ? String(b.coach_id).trim() : '';
+    if (rawCoachId) {
+      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!UUID_RE.test(rawCoachId)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'coach_id 格式不正確', code: 'COACH_ID_INVALID' });
+      }
+      const cr = await client.query(`SELECT id FROM coaches WHERE id = $1`, [rawCoachId]);
+      if (cr.rowCount) coachId = rawCoachId;
+    }
+
+    // 嚴格拆期：N 堂 → ceil(N/6) 筆，最後一筆放餘數堂；原價/實收/折讓按堂數比例分攤、餘額補最後一筆。
+    const numPeriods = Math.ceil(totalSessions / SESSIONS_PER_PERIOD);
+    const batchId = randomUUID();
+    const enrollmentIds = [];
+    let origAlloc = 0, finalAlloc = 0, allowAlloc = 0;
+
+    for (let i = 0; i < numPeriods; i += 1) {
+      const isLast = i === numPeriods - 1;
+      const periodSessions = isLast ? (totalSessions - SESSIONS_PER_PERIOD * (numPeriods - 1)) : SESSIONS_PER_PERIOD;
+      const po = isLast ? (originalPrice - origAlloc)  : Math.round(originalPrice * periodSessions / totalSessions);
+      const pf = isLast ? (finalPrice - finalAlloc)    : Math.round(finalPrice * periodSessions / totalSessions);
+      const pa = isLast ? (allowanceTotal - allowAlloc) : Math.round(allowanceTotal * periodSessions / totalSessions);
+      if (!isLast) { origAlloc += po; finalAlloc += pf; allowAlloc += pa; }
+
+      const eid = genEnrollmentId();
+      enrollmentIds.push(eid);
+      await client.query(
+        `INSERT INTO admin_enrollments
+           (id, parent_name, parent_phone, students, coach, coach_id, venue_id, course_type,
+            original_price, final_price, transfer_last_5, status, submitted_at,
+            total_sessions, used_sessions, period_count, period_number, enrollment_batch_id,
+            payment_method, payer, class_name, allowance_amount, tax_id, level_note,
+            unit_price, work_type, full_sessions, carrier, sync_source)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending_payment',$12,
+                 $13,0,1,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,'replit')`,
+        [
+          eid, parentName, parentPhone, students, coachName, coachId, venueId, courseType,
+          po, pf, last5 || null, submittedAt,
+          periodSessions, i + 1, batchId,
+          paymentMethod, payer, className, pa, taxId, levelNote,
+          unitPrice, workType, fullSessions, carrier,
+        ]
+      );
+      await client.query(
+        `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user)
+         VALUES ($1, $2, $3)`,
+        [eid, numPeriods > 1 ? `櫃檯手動建檔（第 ${i + 1}/${numPeriods} 期）` : '櫃檯手動建檔', byUser]
+      );
+    }
+
+    await client.query('COMMIT');
+    res.status(201).json({
+      id: enrollmentIds[0],
+      first_id: enrollmentIds[0],
+      batch_id: batchId,
+      count: numPeriods,
+      enrollment_ids: enrollmentIds,
+      status: 'pending_payment',
+    });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('[admin/enrollments create]', err);
+    res.status(500).json({ error: '手動建檔失敗', code: 'CREATE_FAILED' });
+  } finally {
+    client.release();
+  }
+});
 
 router.get('/', requireAdminAuth, async (req, res) => {
   try {

@@ -36,6 +36,7 @@ const NAV_GROUPS = [
   {
     title: '報名與對帳',
     items: [
+      { to: '/manual-enroll', label: '手動建檔',          roles: ['admin', 'manager', 'staff'] },
       { to: '/reconcile',   label: '(F-M02) 待對帳清單', roles: ['admin', 'manager', 'staff'] },
       { to: '/enrollments', label: '(F-R02) 所有報名',   roles: ['admin', 'manager', 'staff'] },
       { to: '/group-orders', label: '團購審核',          roles: ['admin', 'manager', 'staff'] },

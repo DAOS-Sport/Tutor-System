@@ -484,6 +484,25 @@ DO $$ BEGIN
   ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS carrier TEXT;
   -- 退費時間：退課退費送出當下時間戳（退費列表顯示用；舊資料為 NULL）。
   ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMPTZ;
+  -- 011 櫃檯手動建檔：Ragic 報名表外觀欄位（手動建檔表單寫入）+ Ragic 回寫/webhook 橋接欄。
+  --   橋接欄 (ragic_record_id/external_order_no/last_pushed_at/ragic_content_hash) 於 Phase 3/4
+  --   接 Ragic 回寫與雙向同步時才填；Phase 0 僅 sync_source 預設 'replit'（webhook 防迴圈用）。
+  ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS payer            TEXT;          -- 收款人
+  ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS class_name       TEXT;          -- 班級名稱
+  ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS payment_method   TEXT;          -- 付款方式：現金 / 轉帳
+  ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS allowance_amount NUMERIC(10,2); -- 折讓金額
+  ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS tax_id           VARCHAR(20);   -- 統一編號
+  ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS level_note       TEXT;          -- 程度說明
+  ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS unit_price       NUMERIC(10,2); -- 實際單價
+  ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS work_type        TEXT;          -- 作業型態
+  ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS full_sessions    INTEGER;       -- 完整堂數
+  ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS ragic_record_id    VARCHAR(50);
+  ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS external_order_no  TEXT;        -- Ragic 報名單號，idempotency key
+  ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS sync_source        TEXT NOT NULL DEFAULT 'replit';
+  ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS last_pushed_at     TIMESTAMPTZ;
+  ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS ragic_content_hash TEXT;
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_admin_enrollments_external_order_no
+    ON admin_enrollments(external_order_no) WHERE external_order_no IS NOT NULL;
   -- 櫃台補簽到（F-R01）：checkin_at = 選擇的上課/簽到時間；backfilled_at = 補簽到按鈕被按下的時間（供管理端查看）。
   ALTER TABLE admin_today_sessions ADD COLUMN IF NOT EXISTS checkin_at TIMESTAMPTZ;
   ALTER TABLE admin_today_sessions ADD COLUMN IF NOT EXISTS backfilled_at TIMESTAMPTZ;

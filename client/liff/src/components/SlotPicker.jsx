@@ -159,7 +159,7 @@ export default function SlotPicker({ periodId, onBooked, embedded = false }) {
   }
 
   return (
-    <div className={embedded ? '' : 'flex min-h-[calc(100vh-3rem)] flex-col'}>
+    <div className={embedded ? '' : 'flex min-h-[calc(100dvh-3rem)] flex-col'}>
       {!embedded && infoCard}
 
       {embedded && isGroup && (
@@ -167,7 +167,7 @@ export default function SlotPicker({ periodId, onBooked, embedded = false }) {
       )}
 
       {/* 日期列 */}
-      <div className={embedded ? 'px-3 pt-2' : 'sticky top-12 z-10 mt-4 border-b border-gray-100 bg-white px-4 py-3'}>
+      <div className={embedded ? 'px-3 pt-2' : 'sticky top-0 z-10 mt-4 border-b border-gray-100 bg-white px-4 py-3'}>
         <div className="flex gap-2 overflow-x-auto">
           {days.map((d) => (
             <DayChip key={d.date} d={d} active={d.date === activeDate}
