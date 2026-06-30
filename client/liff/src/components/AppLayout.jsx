@@ -20,14 +20,17 @@ export default function AppLayout({ showBackButton = false, title }) {
   const isCoachProfilePage = location.pathname === '/coach/profile';
 
   return (
-    <div className="min-h-screen bg-gray-100">
+    // 固定 App 殼：外層佔滿視窗高、置中 390 容器；內層為「動態視窗高(dvh)」的 flex 直欄，
+    // 只有 <main> 會捲動 → header / BottomNav 釘住不隨內容跑（修 UX 跑位問題）。
+    // 用 h-dvh（Tailwind 3.4 內建）避開行動裝置網址列收合造成的高度跳動。
+    <div className="flex min-h-dvh justify-center bg-gray-100">
       <div
-        className={`relative mx-auto flex min-h-screen w-full max-w-[390px] flex-col bg-white ${
+        className={`relative flex h-dvh w-full max-w-[390px] flex-col overflow-hidden bg-white ${
           isCoachProfilePage ? '' : 'shadow-sm'
         }`}
       >
         {(showBackButton || title) && (
-          <header className="sticky top-0 z-20 flex h-12 items-center gap-2 border-b border-gray-100 bg-white px-3">
+          <header className="flex h-12 shrink-0 items-center gap-2 border-b border-gray-100 bg-white px-3">
             {showBackButton && (
               <button
                 type="button"
@@ -44,7 +47,7 @@ export default function AppLayout({ showBackButton = false, title }) {
           </header>
         )}
 
-        <main className={`flex-1 ${isTabPage ? 'pb-20' : 'pb-6'}`}>
+        <main className="flex-1 overflow-y-auto overscroll-contain">
           <Outlet />
         </main>
 

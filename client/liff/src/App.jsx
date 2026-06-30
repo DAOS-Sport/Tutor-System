@@ -46,9 +46,12 @@ function RequireAuth() {
 
 function RequireParent() {
   const { role } = useAuth();
-  if (role === 'coach') return <Navigate to="/coach" replace />;
-  if (role !== 'parent') return <Navigate to="/login" replace />;
-  return <Outlet />;
+  if (role === 'parent') return <Outlet />;
+  // 教練（或殘留的 coach session）走「家長 link」進來 → 不要踢去教練畫面，
+  // 而是導去 /login 以同一個 LINE 帳號建立家長 session（家長情境會自動跑
+  // parentLineLogin：有家長資料→直接登入；沒有→手機綁定/註冊）。這樣教練也能
+  // 用家長端 link 當客戶使用，而不是被困在教練 App。
+  return <Navigate to="/login" replace />;
 }
 
 function RequireCoach() {

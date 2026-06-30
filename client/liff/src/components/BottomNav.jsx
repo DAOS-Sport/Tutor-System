@@ -28,7 +28,7 @@ export default function BottomNav() {
   const cols = COL_MAP[tabs.length] || 'grid-cols-4';
 
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-30 mx-auto w-full max-w-[390px] border-t border-gray-200 bg-white">
+    <nav className="shrink-0 border-t border-gray-200 bg-white pb-[env(safe-area-inset-bottom)]">
       <ul className={`grid ${cols}`}>
         {tabs.map(({ to, label, end, icon: Icon, comingSoon }) => (
           <li key={to}>
@@ -38,7 +38,7 @@ export default function BottomNav() {
                 type="button"
                 aria-disabled="true"
                 onClick={() => toast.info('聊天功能即將上線，敬請期待 🙌')}
-                className="relative flex w-full flex-col items-center justify-center gap-1 py-2.5 text-xs text-gray-300"
+                className="relative flex w-full flex-col items-center justify-center gap-1 py-3 text-xs text-gray-300"
               >
                 <Icon active={false} />
                 <span className="font-medium">{label}</span>
@@ -49,7 +49,7 @@ export default function BottomNav() {
                 to={to}
                 end={end}
                 className={({ isActive }) =>
-                  `flex flex-col items-center justify-center gap-1 py-2.5 text-xs ${
+                  `flex flex-col items-center justify-center gap-1 py-3 text-xs ${
                     isActive ? 'text-brand-teal' : 'text-gray-500'
                   }`
                 }

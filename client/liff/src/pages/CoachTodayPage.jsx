@@ -30,7 +30,7 @@ export default function CoachTodayPage() {
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-xs opacity-90">{coach.name} 教練</p>
-            <h2 className="mt-1 text-lg font-bold">今日：{todayLabel}</h2>
+            <h2 className="mt-1 text-lg font-bold">{todayLabel}</h2>
           </div>
           {coach.is_senior && (
             <span className="flex shrink-0 items-center gap-1 rounded-xl border border-white/25 bg-white/15 px-2.5 py-1 text-[11px] font-bold tracking-wider shadow-inner backdrop-blur-sm">
