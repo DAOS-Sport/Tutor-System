@@ -16,3 +16,4 @@ server/uploads/
 # 1.3GB C/C++ source tree + machine-specific MCP config; keep out of the published Replit app
 /codebase-memory-mcp/
 .mcp.json
+.cbmignore

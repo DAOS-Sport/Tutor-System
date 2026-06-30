@@ -79,20 +79,21 @@
 **codebase-memory-mcp v0.8.1** 已安裝。每個 Agent 啟動後，可用圖查詢取代逐檔 grep/read，速度快 10×、token 少 120×。
 
 ### 索引狀態
-- Binary：`.local/bin/codebase-memory-mcp`（Linux amd64 portable 靜態 binary）
-- 最後索引：2026-06-30，共 **17,610 nodes、47,304 edges**
-- 涵蓋：`server/`（routes/services/middlewares）、`client/liff/src/`、`client/admin/src/`、`docs/`
+- Binary：`.local/bin/codebase-memory-mcp`（Linux amd64 portable，已 commit 進 repo）
+- 索引約 **~3,800 nodes、~8,500 edges**（只含 server/ + client/ 程式碼，排除 node_modules/build 產物）
+- **自動重新索引**：每次 git commit（含 Agent checkpoint）觸發 `.git/hooks/post-commit` 在背景增量更新
 
-### Container 重建後重新安裝（存在 `~/.cache/`，重建後消失）
+### Container 重建後重新安裝（`~/.cache/` 與 `.git/hooks/` 不進 git，重建後消失）
 ```bash
 .local/bin/codebase-memory-mcp install -y
+python3 scripts/install-cbm-hook.py
 .local/bin/codebase-memory-mcp cli index_repository '{"repo_path":"/home/runner/workspace"}'
 ```
 
 ### Agent 常用工具
 ```
 search_graph(project="home-runner-workspace", name_pattern="函式名或路由名")
-trace_path(...)      # 追呼叫鏈
+trace_path(...)        # 追呼叫鏈
 get_code_snippet(...)  # 取函式原始碼
 get_architecture(...)  # 整體架構摘要
 ```

@@ -37,6 +37,8 @@ router.use('/course-types',  require('./admin/courseTypes')); // 課程需求管
 router.use('/group-orders',  require('./admin/groupOrders')); // U6 團購審核
 router.use('/ragic-status',  require('./admin/ragicStatus')); // Task #65 Ragic 健康檢查
 router.use('/ragic-staging', require('./admin/ragicStaging')); // Task #66 Ragic 待審核區
+router.use('/customer-parents',  require('./admin/customerParents'));  // 客戶資料管理 Z01 家長&學員關係
+router.use('/customer-students', require('./admin/customerStudents')); // 客戶資料管理 Z02 學員資料（含購買紀錄）
 
 // 兜底：呼叫到沒實作的路徑時，明確回 404 而不是被前面的 401 吞掉
 router.all('*', (req, res) => {

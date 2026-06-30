@@ -8,5 +8,9 @@
       "Bash(awk '/CREATE TABLE IF NOT EXISTS admin_course_intros/,/\\\\\\);/' server/bootstrap/coreSchema.js)",
       "Bash(npx vite *)"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "codebase-memory-mcp"
+  ],
+  "enableAllProjectMcpServers": true
 }

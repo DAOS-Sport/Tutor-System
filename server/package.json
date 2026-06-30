@@ -6,8 +6,8 @@
   "scripts": {
     "dev": "nodemon index.js",
     "start": "node index.js",
-    "db:migrate": "node db/migrate.js",
-    "db:seed": "node db/seed.js",
+    "db:migrate": "NODE_PATH=./node_modules node ../db/migrate.js",
+    "db:seed": "NODE_PATH=./node_modules node ../db/seed.js",
     "smoke:ragic-auth": "node scripts/ragic-auth-smoke.js"
   },
   "dependencies": {

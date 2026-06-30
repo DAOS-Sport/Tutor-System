@@ -1,7 +1,7 @@
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
-require('dotenv').config();
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
 async function seed() {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });

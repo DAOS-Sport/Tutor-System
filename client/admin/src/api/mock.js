@@ -406,7 +406,128 @@ const RAGIC_MOCK_FORMS = {
   },
 };
 
+// ── 客戶資料管理 mock（Z01 家長&學員關係 / Z02 學員資料含購買紀錄）──────────────
+const CUSTOMER_PARENTS = [
+  { id: 'p-uuid-001', line_uid: 'U11223344556677889900abcdef', phone: '0919488314', name: 'Mandy',
+    gender: '生理女', email: 'mandy@example.com', primary_venue_id: 'B', identity: '一般身份',
+    home_phone: '02-29887766', home_address: '新北市板橋區文化路一段188號', line_id: 'mandy_line',
+    ragic_record_id: 'ragic-node-101', is_active: true, last_synced_at: '2026-06-30 19:12', family_id: 'fam-uuid-101' },
+  { id: 'p-uuid-002', line_uid: 'U99887766554433221100fedcba', phone: '0935141499', name: '戴凱莉',
+    gender: '生理女', email: 'kelly.tai@example.com', primary_venue_id: 'C', identity: '一般身份',
+    home_phone: '02-27654321', home_address: '台北市信義區忠孝東路五段100號', line_id: 'kelly_line_99',
+    ragic_record_id: 'ragic-node-102', is_active: true, last_synced_at: '2026-06-28 14:30', family_id: 'fam-uuid-102' },
+  { id: 'p-uuid-003', line_uid: null, phone: '0919136455', name: '蕭宇成',
+    gender: '生理男', email: 'yc.hsiao@example.com', primary_venue_id: 'X', identity: '教練/員工',
+    home_phone: '03-5778899', home_address: '新竹市東區光復路二段101號', line_id: 'yucheng_s',
+    ragic_record_id: 'ragic-node-103', is_active: true, last_synced_at: '2026-06-29 09:15', family_id: 'fam-uuid-103' },
+  { id: 'p-uuid-004', line_uid: null, phone: '0900000000', name: '行政櫃檯(測試)',
+    gender: '生理男', email: 'counter.test@example.com', primary_venue_id: 'B', identity: '行政櫃檯',
+    home_phone: '02-25001122', home_address: '新北市板橋區文化路一段200號', line_id: '',
+    ragic_record_id: 'ragic-node-104', is_active: false, last_synced_at: '2026-06-25 18:22', family_id: 'fam-uuid-104' },
+];
+const CUSTOMER_STUDENTS = [
+  { id: 's-uuid-201', parent_id: 'p-uuid-001', name: '張景祥', id_number: 'A133677361', gender: '生理男',
+    birth_date: '2019-04-04', blood_type: '不清楚', student_code: 'STD-133677', ragic_record_id: 'ragic-stud-201',
+    is_active: true, last_synced_at: '2026-06-30 19:12' },
+  { id: 's-uuid-202', parent_id: 'p-uuid-002', name: '林小寶', id_number: 'A123456789', gender: '生理男',
+    birth_date: '2018-05-12', blood_type: 'O', student_code: 'STD-112001', ragic_record_id: 'ragic-stud-202',
+    is_active: true, last_synced_at: '2026-06-28 14:30' },
+  { id: 's-uuid-203', parent_id: 'p-uuid-001', name: '張景惠', id_number: 'A233677362', gender: '生理女',
+    birth_date: '2021-09-01', blood_type: 'A', student_code: 'STD-133678', ragic_record_id: 'ragic-stud-203',
+    is_active: true, last_synced_at: '2026-06-30 19:12' },
+];
+const CUSTOMER_PURCHASES = {
+  's-uuid-201': [
+    { id: 'pur-1', category: '常態團體班', course_type: 1, status: '已報名', sessions: '0/6', price: '4800', date: '2026-06-10', period_number: 1, expires_at: '2026-09-10' },
+    { id: 'pur-2', category: '課後班', course_type: 2, status: '進行中', sessions: '2/12', price: '9600', date: '2026-06-12', period_number: 1, expires_at: '2026-12-12' },
+  ],
+  's-uuid-202': [
+    { id: 'pur-3', category: '常態團體班', course_type: 1, status: '已完成', sessions: '6/6', price: '4800', date: '2026-05-01', period_number: 2, expires_at: '2026-08-01' },
+  ],
+};
+
 export const mockDb = {
+  // ── 客戶資料管理 ───────────────────────────────────────────
+  customerParents(filters = {}) {
+    const { status = 'all', venueId = '', name = '', phone = '', identity = '' } = filters;
+    return CUSTOMER_PARENTS.filter((p) => {
+      if (status === 'active' && !p.is_active) return false;
+      if (status === 'inactive' && p.is_active) return false;
+      if (venueId && p.primary_venue_id !== venueId) return false;
+      if (identity && p.identity !== identity) return false;
+      if (name && !(p.name || '').includes(name)) return false;
+      if (phone && !(p.phone || '').includes(phone)) return false;
+      return true;
+    }).map((p) => ({
+      ...p, line_bound: !!p.line_uid,
+      student_count: CUSTOMER_STUDENTS.filter((s) => s.parent_id === p.id).length,
+    }));
+  },
+  customerParentDetail(id) {
+    const p = CUSTOMER_PARENTS.find((x) => x.id === id);
+    if (!p) return null;
+    return { ...p, line_bound: !!p.line_uid, students: CUSTOMER_STUDENTS.filter((s) => s.parent_id === id) };
+  },
+  createCustomerParent(body = {}) {
+    const id = `p-uuid-${Date.now()}`;
+    const p = {
+      id, line_uid: null, phone: body.phone || '', name: body.name || '新家長',
+      gender: body.gender || '', email: body.email || '', primary_venue_id: body.primary_venue_id || '',
+      identity: body.identity || '一般身份', home_phone: body.home_phone || '', home_address: body.home_address || '',
+      line_id: body.line_id || '', ragic_record_id: null, is_active: true, last_synced_at: null,
+      family_id: `fam-uuid-${Date.now()}`,
+    };
+    CUSTOMER_PARENTS.unshift(p);
+    return { ...p, line_bound: false, student_count: 0 };
+  },
+  updateCustomerParent(id, patch = {}) {
+    const p = CUSTOMER_PARENTS.find((x) => x.id === id);
+    if (!p) return null;
+    const { students, ...fields } = patch;
+    Object.assign(p, fields, { last_synced_at: '剛剛 (已本地編輯)' });
+    if (Array.isArray(students)) {
+      for (const s of students) {
+        const hit = CUSTOMER_STUDENTS.find((x) => x.id === s.id);
+        if (hit) Object.assign(hit, s);
+        else if ((s.name || '').trim()) {
+          CUSTOMER_STUDENTS.push({
+            ...s, id: s.id || `s-uuid-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+            parent_id: id, ragic_record_id: null, is_active: s.is_active !== false, last_synced_at: null,
+          });
+        }
+      }
+    }
+    return this.customerParentDetail(id);
+  },
+  customerStudents(filters = {}) {
+    const { name = '', gender = '', code = '', parentId = '' } = filters;
+    return CUSTOMER_STUDENTS.filter((s) => {
+      if (parentId && s.parent_id !== parentId) return false;
+      if (gender && s.gender !== gender) return false;
+      if (name && !(s.name || '').includes(name)) return false;
+      if (code && !((s.student_code || '').includes(code) || (s.id_number || '').includes(code))) return false;
+      return true;
+    }).map((s) => this._withParent(s));
+  },
+  customerStudentDetail(id) {
+    const s = CUSTOMER_STUDENTS.find((x) => x.id === id);
+    if (!s) return null;
+    return { ...this._withParent(s), purchases: CUSTOMER_PURCHASES[id] || [] };
+  },
+  updateCustomerStudent(id, patch = {}) {
+    const s = CUSTOMER_STUDENTS.find((x) => x.id === id);
+    if (!s) return null;
+    Object.assign(s, patch, { last_synced_at: '剛剛 (已本地編輯)' });
+    return this._withParent(s);
+  },
+  _withParent(s) {
+    const p = CUSTOMER_PARENTS.find((x) => x.id === s.parent_id) || {};
+    return {
+      ...s, parent_name: p.name || '', parent_phone: p.phone || '', parent_gender: p.gender || '',
+      parent_identity: p.identity || '', parent_email: p.email || '', parent_venue_id: p.primary_venue_id || '',
+    };
+  },
+
   login(username, password) {
     const u = USERS.find((x) => x.username === username && x.password === password);
     return u ? { id: u.id, username: u.username, name: u.name, role: u.role, venue_id: u.venue_id, token: `mock-${u.id}-${Date.now()}` } : null;
