@@ -771,6 +771,121 @@ async function _pingZ02Impl() {
   }
 }
 
+// 每日備份同步：把本地 parents/students 中「尚未同步到 Ragic」的列（新建於後台手動建檔、
+// 或 best-effort 即時同步失敗殘留的 last_synced_at IS NULL）補寫回 Ragic Z01/Z02，
+// 讓 Ragic 成為本地資料的存續備份，同時修補既有的已知缺口：
+//   1) server/routes/admin/customerParents.js 的 POST / 、PATCH /:id 目前只寫本地鏡像，
+//      從未同步 Ragic（見該檔案內 TODO(Option A 寫回 Ragic)）。
+//   2) server/routes/parents.js 的學員新增/編輯採「本地優先」+ best-effort 即時同步，
+//      即時同步失敗時 last_synced_at 留 NULL，但先前沒有任何機制回頭重試。
+// 批次上限：避免單輪跑太久／一次打爆 Ragic；跑不完的下一輪（隔天）會繼續處理。
+const BACKUP_BATCH_LIMIT = 200;
+
+async function _backupParentToRagic(row) {
+  const venueName = await ragic.venueLabel(row.primary_venue_id);
+  const payload = {
+    [ragic.FIELD.Z01.PARENT_NAME]: row.name || '',
+    [ragic.FIELD.Z01.VENUE]: venueName || row.primary_venue_id || '',
+    [ragic.FIELD.Z01.PHONE]: row.phone || '',
+    [ragic.FIELD.Z01.IDENTITY]: row.identity || '一般身分',
+    [ragic.FIELD.Z01.GENDER]: ragic.normalizeGender(row.gender),
+    [ragic.FIELD.Z01.EMAIL]: row.email || '',
+    [ragic.FIELD.Z01.HOME_PHONE]: row.home_phone || '',
+    [ragic.FIELD.Z01.LINE_ID]: row.line_id || '',
+    [ragic.FIELD.Z01.HOME_ADDRESS]: row.home_address || '',
+  };
+  const ragicRecordId = await ragic.syncParentProfileStrict(row, payload);
+  await pool.query(
+    `UPDATE parents SET ragic_record_id = $2, last_synced_at = NOW() WHERE id = $1`,
+    [row.id, ragicRecordId]
+  );
+  return ragicRecordId;
+}
+
+async function _backupStudentToRagic(row) {
+  const parent = {
+    id: row.parent_id, name: row.p_name, phone: row.p_phone, gender: row.p_gender,
+    email: row.p_email, identity: row.p_identity, primary_venue_id: row.p_venue,
+    ragic_record_id: row.p_ragic_record_id,
+  };
+  const student = {
+    name: row.name, id_number: row.id_number, birth_date: row.birth_date,
+    gender: row.gender, blood_type: row.blood_type, student_code: row.student_code,
+  };
+  let sync;
+  if (row.ragic_record_id) {
+    sync = await ragic.updateStudentZ01Z02Strict({ parent, student });
+  } else {
+    const startIndex = Number(
+      (await pool.query(`SELECT COUNT(*)::int AS n FROM students WHERE parent_id = $1`, [row.parent_id])).rows[0]?.n || 0
+    );
+    sync = await ragic.createStudentZ01Z02Strict({ parent, student, startIndex });
+  }
+  const z02Id = sync?.z02?.ragicRecordId || null;
+  await pool.query(
+    `UPDATE students SET ragic_record_id = COALESCE($2, ragic_record_id), last_synced_at = NOW() WHERE id = $1`,
+    [row.id, z02Id]
+  );
+  if (sync?.parentRagicRecordId) {
+    await pool.query(
+      `UPDATE parents SET ragic_record_id = COALESCE(ragic_record_id, $2) WHERE id = $1`,
+      [row.parent_id, sync.parentRagicRecordId]
+    );
+  }
+}
+
+async function _backupParentsStudentsImpl() {
+  if (!ragicEnabled()) return { synced: 0, skipped: true };
+  let synced = 0;
+  const errors = [];
+
+  const pendingParents = await pool.query(
+    `SELECT id, name, phone, gender, email, identity, primary_venue_id,
+            home_phone, line_id, home_address, ragic_record_id
+       FROM parents
+      WHERE is_active = TRUE AND (ragic_record_id IS NULL OR last_synced_at IS NULL)
+      ORDER BY updated_at ASC LIMIT $1`,
+    [BACKUP_BATCH_LIMIT]
+  );
+  for (const row of pendingParents.rows) {
+    try {
+      await _backupParentToRagic(row);
+      synced++;
+    } catch (err) {
+      errors.push(err.message);
+      console.warn('[ragic-backup] parent sync failed (id=%s):', row.id, err.message);
+    }
+  }
+
+  const pendingStudents = await pool.query(
+    `SELECT s.id, s.parent_id, s.name, s.id_number, s.birth_date, s.gender, s.blood_type,
+            s.student_code, s.ragic_record_id,
+            p.name AS p_name, p.phone AS p_phone, p.gender AS p_gender, p.email AS p_email,
+            p.identity AS p_identity, p.primary_venue_id AS p_venue, p.ragic_record_id AS p_ragic_record_id
+       FROM students s
+       JOIN parents p ON p.id = s.parent_id
+      WHERE s.is_active = TRUE AND p.is_active = TRUE
+        AND (s.ragic_record_id IS NULL OR s.last_synced_at IS NULL)
+      ORDER BY s.updated_at ASC LIMIT $1`,
+    [BACKUP_BATCH_LIMIT]
+  );
+  for (const row of pendingStudents.rows) {
+    try {
+      await _backupStudentToRagic(row);
+      synced++;
+    } catch (err) {
+      errors.push(err.message);
+      console.warn('[ragic-backup] student sync failed (id=%s):', row.id, err.message);
+    }
+  }
+
+  return errors.length
+    ? { synced, error: `${errors.length} 筆同步失敗（詳見伺服器 log）：${errors[0]}` }
+    : { synced };
+}
+
+async function backupParentsStudentsToRagic(triggeredBy = 'cron') { return _singleflight('backup', triggeredBy); }
+
 // Task #91：F-C-Admin 已合併至員工帳號管理；coaches 不再列為獨立 sync job。
 // staff sync 已會順帶 upsert coaches 1:1 行（透過 ragic_employee_id 對應），
 // 因此 FORM_META 移除 coaches 入口，避免後台「Ragic 狀態」頁顯示一張無法觸發的卡片。
@@ -782,6 +897,7 @@ const FORM_META = {
   venues:   { code: 'H05_VENUES',   label: 'H05 場館 (venues)',                       kind: 'sync',        impl: _syncVenuesImpl, env: 'RAGIC_FORM_H05' },
   parents:  { code: 'Z01_PARENTS',  label: 'Z01 家長 (按請求查詢)',                   kind: 'healthcheck', impl: _pingZ01Impl,    env: 'RAGIC_FORM_Z01' },
   students: { code: 'Z02_STUDENTS', label: 'Z02 學員 (按請求查詢)',                   kind: 'healthcheck', impl: _pingZ02Impl,    env: 'RAGIC_FORM_Z02' },
+  backup:   { code: 'Z01_Z02_BACKUP', label: 'Z01/Z02 本地→Ragic 每日備份同步',       kind: 'sync',        impl: _backupParentsStudentsImpl, env: 'RAGIC_FORM_Z01' },
 };
 
 async function _logSyncResult(jobName, formCode, result, durationMs, triggeredBy) {
@@ -1109,6 +1225,7 @@ module.exports = {
   getSyncStatusSnapshot,
   pingParentsFromRagic,
   pingStudentsFromRagic,
+  backupParentsStudentsToRagic,
   getRagicJobNames,
   // Task #83 single-flight helpers
   isJobRunning,

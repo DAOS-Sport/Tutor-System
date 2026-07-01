@@ -346,6 +346,20 @@ function initCronJobs() {
     }
   });
 
+  // ── 每日凌晨 02:00（台北）：本地 parents/students → Ragic Z01/Z02 備份同步 ──
+  // 補「櫃檯手動建檔（admin/customerParents.js）從不寫回 Ragic」與「家長端學員
+  // best-effort 即時同步失敗後從未重試」兩個既有缺口；ragicAdmin.js 的
+  // _backupParentsStudentsImpl 每輪處理 last_synced_at IS NULL 的待同步列。
+  cron.schedule('0 2 * * *', async () => {
+    if (!ragicAdmin.ragicEnabled()) return;
+    try {
+      const r = await ragicAdmin.backupParentsStudentsToRagic('cron');
+      console.log(`[Cron/RagicBackup] synced=${r?.synced ?? 0}${r?.error ? ` error=${r.error}` : ''}`);
+    } catch (e) {
+      console.warn('[Cron/RagicBackup] failed:', e.message);
+    }
+  }, { timezone: 'Asia/Taipei' });
+
   console.log('[Cron] All cron jobs initialized');
 }
 

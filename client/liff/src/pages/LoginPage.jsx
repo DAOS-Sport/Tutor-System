@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import liff from '@line/liff';
+import logoFull from '../assets/logo-full.jpg';
 import { authApi } from '../api/auth';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
@@ -272,10 +273,7 @@ export default function LoginPage() {
     return (
       <div className="flex min-h-[100dvh] flex-col items-center justify-center px-6 py-10">
         <div className="mb-6 text-center">
-          <div className="mx-auto mb-3 flex h-16 w-16 items-center justify-center rounded-2xl bg-brand-primary text-2xl font-bold text-white">
-            DAOS
-          </div>
-          <h1 className="text-xl font-bold text-brand-primary">夢想體育學院</h1>
+          <img src={logoFull} alt="夢想體育學院 DAOS" className="mx-auto mb-3 h-12 w-auto" />
           <p className="mt-1 text-sm text-gray-500">教練端</p>
         </div>
         <div className="w-full max-w-[320px] text-center">
@@ -289,10 +287,7 @@ export default function LoginPage() {
   return (
     <div className="flex min-h-[100dvh] flex-col items-center justify-center px-6 py-10">
       <div className="mb-8 text-center">
-        <div className="mx-auto mb-3 flex h-16 w-16 items-center justify-center rounded-2xl bg-brand-primary text-2xl font-bold text-white">
-          DAOS
-        </div>
-        <h1 className="text-xl font-bold text-brand-primary">夢想體育學院</h1>
+        <img src={logoFull} alt="夢想體育學院 DAOS" className="mx-auto mb-3 h-12 w-auto" />
         <p className="mt-1 text-sm text-gray-500">家教課程系統</p>
       </div>
 

@@ -25,6 +25,7 @@ const JOB_RUNNERS = {
   venues:   ragicAdmin.syncVenuesFromRagic,
   parents:  ragicAdmin.pingParentsFromRagic,
   students: ragicAdmin.pingStudentsFromRagic,
+  backup:   ragicAdmin.backupParentsStudentsToRagic,
 };
 const ALL_JOBS = Object.keys(JOB_RUNNERS);
 

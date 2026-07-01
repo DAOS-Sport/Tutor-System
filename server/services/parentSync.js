@@ -25,10 +25,16 @@ class BindConflictError extends Error {
   }
 }
 
+// Ragic Z01「館別」欄位存的是場館「名稱」（如「新北高中」），本地 venues.id 是「代碼」（如「B」）。
+// 先試 by-id（呼叫端萬一已傳代碼時的保險），查無再退而 by-name 對應真正的代碼；
+// 兩者都查無（名稱在本地不存在／已改名）才回 NULL。修正前這裡永遠傳 Ragic 名稱去比對
+// venues.id，永遠查無 → 每次從 Ragic 同步下來的家長 primary_venue_id 都被靜默清空。
 async function _resolveVenueId(client, code) {
   if (!code) return null;
-  const v = await client.query(`SELECT id FROM venues WHERE id = $1`, [code]);
-  return v.rowCount ? code : null;
+  const byId = await client.query(`SELECT id FROM venues WHERE id = $1`, [code]);
+  if (byId.rowCount) return code;
+  const byName = await client.query(`SELECT id FROM venues WHERE name = $1`, [code]);
+  return byName.rowCount ? byName.rows[0].id : null;
 }
 
 /**

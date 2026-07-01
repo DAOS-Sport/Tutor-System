@@ -6,13 +6,9 @@ import { enrollmentsApi } from '../api/enrollments';
 import { venuesApi } from '../api/venues';
 import { staffApi } from '../api/staff';
 import { customerParentsApi } from '../api/customers';
+import { courseTypesApi } from '../api/courseTypes';
 
 const SESSIONS_PER_PERIOD = 6; // 一期固定 6 堂；總堂數 > 6 後端自動拆單。
-const COURSE_TYPES = [
-  { value: 1, label: '1 對 1 個別班' },
-  { value: 2, label: '1 對 2 雙人班' },
-  { value: 3, label: '1 對 3 三人班' },
-];
 const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
 
 // ── 內嵌 SVG 圖示（Lucide 風格 stroke，免外部依賴） ──────────────────────
@@ -120,7 +116,7 @@ function SearchCombobox({ onSearch, onPick, renderOption, footer }) {
 }
 
 const FRESH = {
-  courseType: 1, totalSessions: 6, className: '', levelNote: '', submittedAt: '',
+  courseType: '', totalSessions: 6, className: '', levelNote: '', submittedAt: '',
   basePrice: '', allowance: '', actual: '', paymentMethod: '轉帳', paymentDetail: '',
   payer: '', taxId: '', carrier: '', workType: '',
 };
@@ -145,6 +141,11 @@ export default function ManualEnrollPage() {
   const [coachId, setCoachId] = useState('');
   const [coachesLoading, setCoachesLoading] = useState(false);
 
+  // 課程需求（課程需求管理 /admin/course-types = course_type_configs，每期價格唯一來源）
+  const [courseTypes, setCourseTypes] = useState([]);
+  const [courseTypesLoading, setCourseTypesLoading] = useState(true);
+  const activeCourseTypes = useMemo(() => courseTypes.filter((c) => c.is_active), [courseTypes]);
+
   const [f, setF] = useState(FRESH);
   const upd = (k) => (v) => setF((p) => ({ ...p, [k]: v }));
 
@@ -152,6 +153,12 @@ export default function ManualEnrollPage() {
   const [filed, setFiled] = useState([]);
 
   useEffect(() => { venuesApi.list().then((v) => setVenues(v || [])).catch(() => {}); }, []);
+  useEffect(() => {
+    courseTypesApi.list()
+      .then((d) => setCourseTypes(Array.isArray(d) ? d : []))
+      .catch(() => setCourseTypes([]))
+      .finally(() => setCourseTypesLoading(false));
+  }, []);
   useEffect(() => {
     if (isStaff && user?.venue_id) { setVenueId(user.venue_id); return; }
     if (parent?.primary_venue_id) setVenueId(parent.primary_venue_id);
@@ -182,6 +189,16 @@ export default function ManualEnrollPage() {
   function onBase(v) { setF((p) => ({ ...p, basePrice: v, actual: String(Math.max(0, num(v) - num(p.allowance))) })); }
   function onAllowance(v) { setF((p) => ({ ...p, allowance: v, actual: String(Math.max(0, num(p.basePrice) - num(v))) })); }
   function onActual(v) { setF((p) => ({ ...p, actual: v, allowance: String(Math.max(0, num(p.basePrice) - num(v))) })); }
+  // 選組別 → 自動帶出「課程需求管理」設定的每期價格（原價），折讓沿用現有值重算實收；
+  // 帶完仍可手動覆蓋，跟原價欄位的既有編輯行為一致。
+  function onCourseType(v) {
+    const cfg = activeCourseTypes.find((c) => String(c.course_type) === String(v));
+    setF((p) => ({
+      ...p,
+      courseType: v,
+      ...(cfg ? { basePrice: String(cfg.base_price ?? ''), actual: String(Math.max(0, num(cfg.base_price) - num(p.allowance))) } : {}),
+    }));
+  }
   function preset(p) {
     const b = num(f.basePrice);
     if (b <= 0) { toast.error('請先輸入原始費用（原價）'); return; }
@@ -224,6 +241,7 @@ export default function ManualEnrollPage() {
     if (!studentNames.length) { toast.error('請選擇或填寫至少一位學員'); return; }
     if (!venueId) { toast.error('請選擇報名館別'); return; }
     if (!coachId && !coachName) { toast.error('請選擇授課教練'); return; }
+    if (!f.courseType) { toast.error('請選擇組別型態（需先於「課程需求管理」建立）'); return; }
     if (lessons < 1) { toast.error('請填寫有效的總堂數'); return; }
     if (num(f.basePrice) < 0 || num(f.actual) < 0) { toast.error('金額不正確'); return; }
     const last5 = f.paymentMethod === '轉帳' && /^\d{5}$/.test(f.paymentDetail.trim()) ? f.paymentDetail.trim() : '';
@@ -232,7 +250,8 @@ export default function ManualEnrollPage() {
     setBusy(true);
     const snap = {
       parentName: parent.name, parentPhone: parent.phone, students: [...studentNames],
-      venue: venueName(venueId), coach: coachName || '（待指派）', groupType: COURSE_TYPES.find((t) => t.value === Number(f.courseType))?.label,
+      venue: venueName(venueId), coach: coachName || '（待指派）',
+      groupType: courseTypes.find((t) => String(t.course_type) === String(f.courseType))?.label,
       className: f.className.trim() || '—', lessons, basePrice: num(f.basePrice), discount: num(f.allowance),
       actual: num(f.actual), unit: unitPrice, paymentMethod: f.paymentMethod, paymentDetail: f.paymentDetail.trim() || '—',
     };
@@ -375,7 +394,22 @@ export default function ManualEnrollPage() {
                       {coaches.map((c) => <option key={c.id} value={c.id}>{c.name}{c.is_senior ? ' ⭐' : ''}</option>)}
                     </Sel>
                   </div>
-                  <div><Label>組別型態</Label><Sel value={f.courseType} onChange={upd('courseType')}>{COURSE_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}</Sel></div>
+                  <div>
+                    <Label>組別型態 *</Label>
+                    <Sel value={f.courseType} onChange={onCourseType} disabled={courseTypesLoading || activeCourseTypes.length === 0}>
+                      <option value="">{courseTypesLoading ? '載入中…' : (activeCourseTypes.length === 0 ? '尚無可用課程需求' : '請選擇組別')}</option>
+                      {activeCourseTypes.map((t) => (
+                        <option key={t.course_type} value={t.course_type}>{t.label}・NT$ {Number(t.base_price || 0).toLocaleString('en-US')}</option>
+                      ))}
+                    </Sel>
+                    {!courseTypesLoading && activeCourseTypes.length === 0 && (
+                      <p className="mt-1.5 text-[11px] font-semibold text-amber-600">
+                        尚未有任何啟用中的課程需求，請先至
+                        <Link to="/course-types" className="mx-1 underline hover:text-amber-700">課程需求管理</Link>
+                        建立品項後才能建檔。
+                      </p>
+                    )}
+                  </div>
                   <div><Label>班級名稱</Label><Inp value={f.className} onChange={upd('className')} placeholder="輸入特定班級編號" /></div>
                   <div><Label>購買總堂數 *</Label><Inp type="number" value={f.totalSessions} onChange={upd('totalSessions')} className="font-extrabold" /></div>
                   <div><Label>報名指定時間</Label><Inp type="datetime-local" value={f.submittedAt} onChange={upd('submittedAt')} /></div>

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useFieldArray, useForm } from 'react-hook-form';
 import liff from '@line/liff';
+import logoMark from '../assets/logo-mark.jpg';
 import { parentsApi } from '../api/parents';
 import { authApi } from '../api/auth';
 import { referralsApi } from '../api/referrals';
@@ -17,6 +18,7 @@ import ReportIssueButton from '../components/ReportIssueButton';
 const PENDING_COUPON_KEY = 'daos.pendingCoupon';
 const IS_PROD = import.meta.env.PROD;
 const BLOOD_TYPE_OPTIONS = ['A', 'B', 'O', 'AB', '不清楚'];
+const STEP1_FIELDS = ['name', 'phone', 'email'];
 
 function tryGetLineIdToken() {
   try {
@@ -43,7 +45,6 @@ function registerErrorMessage(err) {
     ID_NUMBER_INVALID:        '學員身分證字號格式錯誤（如 A123456789）。',
     // —— 重複 / 衝突 ——
     STUDENT_ID_NUMBER_EXISTS: '此學員身分證字號已被系統內其他學員使用，請確認是否填錯；若確為本人請聯絡客服。',
-    PHONE_EXISTS_USE_BINDING: '此手機已存在於系統，請回登入頁改用「手機綁定」流程，不需重新註冊。',
     LINE_ALREADY_REGISTERED:  '此 LINE 帳號已註冊過，請直接從 LINE 開啟連結登入。',
     LINE_ALREADY_BOUND_TO_OTHER_PHONE: '此 LINE 帳號已綁定其他手機，請改用原手機登入或聯絡客服。',
     PHONE_ALREADY_BOUND_TO_OTHER_LINE: '此手機已綁定其他 LINE 帳號，請聯絡客服協助處理。',
@@ -87,6 +88,10 @@ export default function RegisterPage() {
   const [failed, setFailed] = useState(false);
   const [errCode, setErrCode] = useState('');
   const [errMsg, setErrMsg] = useState('');
+  // 手機已存在於 Ragic（非本人 LINE）→ 顯示專屬引導彈窗，而非泛用錯誤卡片
+  const [phoneConflict, setPhoneConflict] = useState(false);
+  const [step, setStep] = useState(1);
+  const [showOptional, setShowOptional] = useState(false);
   const authedParent = isAuthed && role === 'parent';
 
   // 用推薦的教練解析出有效場館（優先家長慣用場館，否則取教練第一個場館），
@@ -144,7 +149,7 @@ export default function RegisterPage() {
     return () => { alive = false; };
   }, []);
 
-  const { register, handleSubmit, control, formState: { errors, isSubmitting } } = useForm({
+  const { register, handleSubmit, control, setValue, getValues, trigger, formState: { errors, isSubmitting } } = useForm({
     defaultValues: {
       name: '', phone: prefilledPhone, gender: '生理女', email: '', primary_venue_id: '',
       home_phone: '', line_id: '', home_address: '',
@@ -154,8 +159,30 @@ export default function RegisterPage() {
 
   const { fields, append, remove } = useFieldArray({ control, name: 'students' });
 
+  // 帶入 LINE 顯示名稱作為姓名欄位建議值（僅在使用者尚未自行填寫時才帶入，且可再編輯）
+  useEffect(() => {
+    (async () => {
+      try {
+        if (liff?.isLoggedIn?.()) {
+          const p = await liff.getProfile();
+          if (p?.displayName && !getValues('name')) {
+            setValue('name', p.displayName, { shouldValidate: false });
+          }
+        }
+      } catch { /* 非 LINE 環境，略過 */ }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function goToStep2() {
+    const ok = await trigger(STEP1_FIELDS);
+    if (ok) setStep(2);
+  }
+  function goToStep1() { setStep(1); }
+
   async function onSubmit(data) {
     setFailed(false);
+    setPhoneConflict(false);
     setErrCode('');
     setErrMsg('');
     const cleanParent = {
@@ -271,7 +298,15 @@ export default function RegisterPage() {
         navigate(takeAfterAuth('/'), { replace: true });
       }
     } catch (err) {
-      setErrCode(publicErrorCode(err?.response?.data?.code || err?.code || ''));
+      const code = publicErrorCode(err?.response?.data?.code || err?.code || '');
+      // 手機已存在於系統（Ragic）：這不是「使用者填錯」，是身分核對議題 → 專屬引導彈窗，
+      // 不提供自助認領表單；請使用者透過本館 LINE 官方帳號請客服協助核對身分（見彈窗文案）。
+      if (code === 'PHONE_EXISTS_USE_BINDING') {
+        setPhoneConflict(true);
+        setErrCode(code);
+        return;
+      }
+      setErrCode(code);
       setErrMsg(registerErrorMessage(err));
       setFailed(true);
       toast.error(registerErrorMessage(err));
@@ -279,162 +314,333 @@ export default function RegisterPage() {
   }
 
   return (
-    <div className="px-4 py-4">
-      <h2 className="mb-1 text-lg font-bold text-brand-primary">建立家長帳號</h2>
-      <p className="mb-3 text-xs text-gray-500">系統會建立家長與學員資料，供後續報名與上課使用</p>
-
-      {demoMode && (
-        <div className="mb-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs leading-5 text-amber-800">
-          🧪 <b>Demo 測試註冊</b>（模擬全新未註冊用戶）。送出會<b>真的建立測試資料</b>，
-          line_uid 以 <code>DEMOTEST_</code> 標記，方便事後依此前綴清除。
-          請填一個<b>尚未在系統內的手機號</b>，以免撞到既有資料而被導去「手機綁定」。
+    <div className="flex min-h-[100dvh] flex-col bg-slate-50">
+      {/* ── Hero ── */}
+      <div className="relative shrink-0 overflow-hidden bg-gradient-to-br from-brand-primary via-[#1a3d7c] to-slate-900 px-6 pb-6 pt-7 text-white">
+        <div className="pointer-events-none absolute -bottom-8 -right-8 h-32 w-32 rounded-full bg-white/5 blur-2xl" />
+        <div className="pointer-events-none absolute -left-8 -top-8 h-32 w-32 rounded-full bg-brand-teal/20 blur-2xl" />
+        <div className="relative z-10 flex items-center gap-2.5">
+          <img src={logoMark} alt="夢想體育學院 DAOS" className="h-9 w-9 rounded-xl shadow-md" />
+          <h1 className="text-lg font-black tracking-wide">建立家長與學員帳號</h1>
         </div>
-      )}
+      </div>
 
-      {refInfo && (
-        <div className="mb-3 rounded-xl border border-brand-green/40 bg-green-50 p-3 text-xs">
-          <div className="font-bold text-brand-green">🎁 推薦連結已啟用</div>
-          <div className="mt-0.5 text-gray-600">
-            來自 <b>{refInfo.referrer?.name}</b> 推薦 <b>{refInfo.coach?.name}</b> 教練
+      {/* ── 步驟指示器 ── */}
+      <div className="flex shrink-0 items-center justify-between border-b border-gray-100 bg-white px-6 py-3.5">
+        <StepDot n={1} label="家長資料" active={step === 1} done={step > 1} />
+        <div className={`mx-3 h-0.5 flex-1 rounded transition-colors ${step > 1 ? 'bg-brand-primary' : 'bg-gray-200'}`} />
+        <StepDot n={2} label="學員資料" active={step === 2} done={false} />
+      </div>
+
+      <div className="mx-auto w-full max-w-[420px] flex-1 px-5 py-5">
+        {demoMode && (
+          <div className="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs leading-5 text-amber-800">
+            🧪 <b>Demo 測試註冊</b>（模擬全新未註冊用戶）。送出會<b>真的建立測試資料</b>，
+            line_uid 以 <code>DEMOTEST_</code> 標記，方便事後依此前綴清除。
+            請填一個<b>尚未在系統內的手機號</b>，以免撞到既有資料而被導去「手機綁定」。
           </div>
-          <div className="mt-0.5 text-gray-600">完成註冊後，體驗課將自動套用 <b>5 折優惠</b>。</div>
-        </div>
-      )}
+        )}
 
-      <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-        <Section title="家長資料">
-          <Field label="姓名" error={errors.name?.message}>
-            <input type="text" {...register('name', { required: '請填寫家長姓名' })} className={inputCls} />
-          </Field>
-          <Field label="手機號碼" error={errors.phone?.message}>
-            <input type="tel" inputMode="numeric"
-              {...register('phone', {
-                required: '請填寫手機',
-                validate: (v) => isValidTWPhone(v) || '手機格式錯誤',
-              })} className={inputCls} />
-          </Field>
-          <Field label="館別（上課場館）" error={errors.primary_venue_id?.message}>
-            <select {...register('primary_venue_id', { required: '請選擇館別' })} className={inputCls}>
-              <option value="">請選擇上課場館</option>
-              {venues.map((v) => (
-                <option key={v.id} value={v.id}>{v.name}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="性別">
-            <select {...register('gender')} className={inputCls}>
-              <option value="生理女">生理女</option><option value="生理男">生理男</option><option value="不方便透漏">不方便透漏</option>
-            </select>
-          </Field>
-          <Field label="Email" error={errors.email?.message}>
-            <input type="email"
-              {...register('email', { required: '請填寫 Email', pattern: { value: /^[^\s@]+@[^\s@]+\.[^\s@]+$/, message: 'Email 格式錯誤' } })}
-              className={inputCls} />
-          </Field>
-          <Field label="住家電話">
-            <input type="tel" inputMode="numeric" {...register('home_phone')} className={inputCls} />
-          </Field>
-          <Field label="LINE ID">
-            <input type="text" {...register('line_id')} className={inputCls} />
-          </Field>
-          <Field label="住家地址">
-            <input type="text" {...register('home_address')} className={inputCls} />
-          </Field>
-        </Section>
+        {refInfo && (
+          <div className="mb-4 rounded-xl border border-brand-green/40 bg-green-50 p-3 text-xs">
+            <div className="font-bold text-brand-green">🎁 推薦連結已啟用</div>
+            <div className="mt-0.5 text-gray-600">
+              來自 <b>{refInfo.referrer?.name}</b> 推薦 <b>{refInfo.coach?.name}</b> 教練
+            </div>
+            <div className="mt-0.5 text-gray-600">完成註冊後，體驗課將自動套用 <b>5 折優惠</b>。</div>
+          </div>
+        )}
 
-        <Section title="學員資料"
-          extra={
-            <button type="button"
-              onClick={() => append({ name: '', id_number: '', birth_date: '', gender: '生理男', blood_type: '不清楚' })}
-              className="rounded-md bg-brand-teal/10 px-3 py-1 text-xs font-medium text-brand-teal active:bg-brand-teal/20">
-              + 新增學員
-            </button>
-          }
-        >
-          {fields.map((f, idx) => (
-            <div key={f.id} className="rounded-lg border border-gray-200 p-3">
-              <div className="mb-2 flex items-center justify-between">
-                <h4 className="text-sm font-bold text-gray-700">學員 {idx + 1}</h4>
-                {fields.length > 1 && (
-                  <button type="button" onClick={() => remove(idx)} className="text-xs text-brand-error active:text-brand-error-strong">移除</button>
-                )}
+        <form onSubmit={handleSubmit(onSubmit)}>
+          {/* ========== STEP 1：家長資料 ========== */}
+          {step === 1 && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="flex items-center gap-1.5 text-sm font-bold text-brand-primary">
+                  <span className="inline-block h-4 w-1.5 rounded-full bg-brand-teal" /> 家長基本資料
+                </h2>
+                <span className="text-[10px] font-medium text-brand-error">＊ 為必填欄位</span>
               </div>
-              <div className="space-y-3">
-                <Field label="姓名" error={errors.students?.[idx]?.name?.message}>
-                  <input {...register(`students.${idx}.name`, { required: '請填寫學員姓名' })} className={inputCls} />
-                </Field>
-                <Field label="身分證字號" error={errors.students?.[idx]?.id_number?.message}>
-                  <input {...register(`students.${idx}.id_number`, {
-                    required: '請填寫身分證字號',
-                    validate: (v) => isValidTWId(v) || '身分證格式錯誤（如 A123456789）',
-                  })} className={`${inputCls} uppercase`} />
-                </Field>
-                <Field label="出生年月日" error={errors.students?.[idx]?.birth_date?.message}>
-                  <input type="date" {...register(`students.${idx}.birth_date`, { required: '請選擇出生年月日' })} className={inputCls} />
-                </Field>
-                <Field label="性別">
-                  <select {...register(`students.${idx}.gender`)} className={inputCls}>
-                    <option value="生理男">生理男</option><option value="生理女">生理女</option><option value="不方便透漏">不方便透漏</option>
-                  </select>
-                </Field>
-                <Field label="血型">
-                  <select {...register(`students.${idx}.blood_type`)} className={inputCls}>
-                    {BLOOD_TYPE_OPTIONS.map((type) => (
-                      <option key={type} value={type}>{type}</option>
+
+              <IconField label="家長姓名" required icon={<IconUser />} error={errors.name?.message}>
+                <input type="text" placeholder="請輸入真實姓名"
+                  {...register('name', { required: '請填寫家長姓名' })}
+                  className={fieldCls(!!errors.name, true)} />
+              </IconField>
+
+              <IconField label="手機號碼" required icon={<IconPhone />} error={errors.phone?.message}
+                hint="舊生請填寫原登記手機，以便自動核對身分">
+                <input type="tel" inputMode="numeric" placeholder="09xxxxxxxx"
+                  {...register('phone', {
+                    required: '請填寫手機',
+                    validate: (v) => isValidTWPhone(v) || '手機格式錯誤',
+                  })} className={fieldCls(!!errors.phone, true)} />
+              </IconField>
+
+              <IconField label="家長 Email" required icon={<IconMail />} error={errors.email?.message}>
+                <input type="email" placeholder="you@example.com"
+                  {...register('email', { required: '請填寫 Email', pattern: { value: /^[^\s@]+@[^\s@]+\.[^\s@]+$/, message: 'Email 格式錯誤' } })}
+                  className={fieldCls(!!errors.email, true)} />
+              </IconField>
+
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="館別（上課場館）" optional>
+                  <select {...register('primary_venue_id')} className={fieldCls(false)}>
+                    <option value="">尚未決定</option>
+                    {venues.map((v) => (
+                      <option key={v.id} value={v.id}>{v.name}</option>
                     ))}
                   </select>
                 </Field>
+                <Field label="性別" required>
+                  <select {...register('gender')} className={fieldCls(false)}>
+                    <option value="生理女">生理女</option><option value="生理男">生理男</option><option value="不方便透漏">不方便透漏</option>
+                  </select>
+                </Field>
+              </div>
+
+              <div className="pt-1">
+                <button type="button" onClick={() => setShowOptional((v) => !v)}
+                  className="flex items-center gap-1.5 text-xs font-bold text-brand-teal">
+                  <span>{showOptional ? '收合選填資訊' : '展開選填資訊（住家電話／LINE ID／住家地址）'}</span>
+                  <IconChevronDown className={`h-3 w-3 transition-transform ${showOptional ? 'rotate-180' : ''}`} />
+                </button>
+                {showOptional && (
+                  <div className="mt-3 space-y-3 border-t border-dashed border-gray-200 pt-3">
+                    <Field label="住家電話" optional>
+                      <input type="tel" inputMode="numeric" {...register('home_phone')} className={fieldCls(false)} />
+                    </Field>
+                    <Field label="LINE ID" optional>
+                      <input type="text" {...register('line_id')} className={fieldCls(false)} />
+                    </Field>
+                    <Field label="住家地址" optional>
+                      <input type="text" {...register('home_address')} className={fieldCls(false)} />
+                    </Field>
+                  </div>
+                )}
+              </div>
+
+              <button type="button" onClick={goToStep2}
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-brand-primary py-3.5 text-sm font-bold text-white shadow-lg shadow-brand-primary/25 transition active:scale-[0.99] active:bg-brand-teal">
+                <span>填寫學員(學生)資料</span>
+                <IconArrowRight className="h-4 w-4" />
+              </button>
+            </div>
+          )}
+
+          {/* ========== STEP 2：學員資料 ========== */}
+          {step === 2 && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="flex items-center gap-1.5 text-sm font-bold text-brand-primary">
+                  <span className="inline-block h-4 w-1.5 rounded-full bg-brand-green" /> 學員(學生)資料
+                </h2>
+                <button type="button"
+                  onClick={() => append({ name: '', id_number: '', birth_date: '', gender: '生理男', blood_type: '不清楚' })}
+                  className="flex items-center gap-1 rounded-full bg-brand-green/10 px-3 py-1.5 text-xs font-bold text-brand-green active:bg-brand-green/20">
+                  <IconPlus className="h-3 w-3" /> 新增學員
+                </button>
+              </div>
+              <p className="text-[11px] leading-4 text-gray-400">
+                身分證字號將用於銜接您先前的上課資料，請務必正確填寫
+              </p>
+
+              <div className="space-y-3">
+                {fields.map((f, idx) => (
+                  <div key={f.id} className="rounded-2xl border border-gray-200 bg-white p-3.5 shadow-sm">
+                    <div className="mb-3 flex items-center justify-between">
+                      <span className="flex items-center gap-1.5 rounded-lg bg-gray-100 px-2.5 py-1 text-xs font-black text-gray-500">
+                        學員 {idx + 1}
+                      </span>
+                      {fields.length > 1 && (
+                        <button type="button" onClick={() => remove(idx)}
+                          className="flex h-7 w-7 items-center justify-center rounded-lg text-gray-400 transition active:bg-brand-error-soft active:text-brand-error">
+                          <IconTrash className="h-4 w-4" />
+                        </button>
+                      )}
+                    </div>
+                    <div className="space-y-3">
+                      <Field label="學員姓名" required error={errors.students?.[idx]?.name?.message}>
+                        <input placeholder="請填入學生真實姓名"
+                          {...register(`students.${idx}.name`, { required: '請填寫學員姓名' })}
+                          className={fieldCls(!!errors.students?.[idx]?.name)} />
+                      </Field>
+                      <Field label="身分證字號" required error={errors.students?.[idx]?.id_number?.message}>
+                        <input placeholder="A123456789"
+                          {...register(`students.${idx}.id_number`, {
+                            required: '請填寫身分證字號',
+                            validate: (v) => isValidTWId(v) || '身分證格式錯誤（如 A123456789）',
+                          })} className={`${fieldCls(!!errors.students?.[idx]?.id_number)} uppercase`} />
+                      </Field>
+                      <div className="grid grid-cols-2 gap-2">
+                        <Field label="出生年月日" optional>
+                          <input type="date" {...register(`students.${idx}.birth_date`)} className={fieldCls(false)} />
+                        </Field>
+                        <Field label="性別" optional>
+                          <select {...register(`students.${idx}.gender`)} className={fieldCls(false)}>
+                            <option value="生理男">生理男</option><option value="生理女">生理女</option><option value="不方便透漏">不方便透漏</option>
+                          </select>
+                        </Field>
+                      </div>
+                      <Field label="血型" optional>
+                        <select {...register(`students.${idx}.blood_type`)} className={fieldCls(false)}>
+                          {BLOOD_TYPE_OPTIONS.map((type) => (
+                            <option key={type} value={type}>{type}</option>
+                          ))}
+                        </select>
+                      </Field>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="space-y-2 pt-2">
+                <button type="submit" disabled={isSubmitting}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 py-3.5 text-sm font-bold text-white shadow-lg transition active:scale-[0.99] active:bg-slate-800 disabled:opacity-50">
+                  <IconCheck className="h-4 w-4" />
+                  <span>{isSubmitting ? '送出中…' : '確認並送出註冊'}</span>
+                </button>
+                <button type="button" onClick={goToStep1}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-gray-200 bg-white py-3 text-sm font-bold text-gray-500 transition active:bg-gray-50">
+                  <IconChevronLeft className="h-4 w-4" />
+                  <span>回上一步修正</span>
+                </button>
               </div>
             </div>
-          ))}
-        </Section>
+          )}
 
-        <button type="submit" disabled={isSubmitting}
-          className="w-full rounded-lg bg-brand-primary py-3 text-base font-bold text-white active:bg-brand-teal disabled:opacity-50">
-          {isSubmitting ? '送出中…' : '完成註冊'}
-        </button>
-
-        {failed && (
-          <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-center">
-            <p className="mb-1 text-sm font-bold leading-6 text-rose-800">
-              {errMsg || '註冊未完成，請確認資料後重新送出。'}
-            </p>
-            <p className="mb-3 text-xs leading-5 text-rose-600">
-              請依上方訊息修正後重新送出；若無法解決，請透過下方按鈕回報問題{errCode ? `（錯誤碼：${errCode}）` : ''}。
-            </p>
-            <ReportIssueButton
-              audience="parent"
-              errorCode={errCode}
-              errorMessage="家長註冊失敗"
-              context="家長註冊頁"
-            />
-          </div>
-        )}
-      </form>
-    </div>
-  );
-}
-
-const inputCls = 'w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:border-brand-teal focus:outline-none focus:ring-2 focus:ring-brand-teal/30';
-
-function Section({ title, children, extra }) {
-  return (
-    <div className="rounded-xl border border-gray-200 bg-white p-3">
-      <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-sm font-bold text-brand-primary">{title}</h3>
-        {extra}
+          {failed && (
+            <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-4 text-center">
+              <p className="mb-1 text-sm font-bold leading-6 text-rose-800">
+                {errMsg || '註冊未完成，請確認資料後重新送出。'}
+              </p>
+              <p className="mb-3 text-xs leading-5 text-rose-600">
+                請依上方訊息修正後重新送出；若無法解決，請透過下方按鈕回報問題{errCode ? `（錯誤碼：${errCode}）` : ''}。
+              </p>
+              <ReportIssueButton
+                audience="parent"
+                errorCode={errCode}
+                errorMessage="家長註冊失敗"
+                context="家長註冊頁"
+              />
+            </div>
+          )}
+        </form>
       </div>
-      <div className="space-y-3">{children}</div>
+
+      <div className="flex shrink-0 items-center justify-center gap-1.5 border-t border-gray-100 bg-white py-3 text-[10px] text-gray-400">
+        <IconShield className="h-3 w-3 text-brand-green" />
+        <span>您的資料已受妥善保管，並遵守個人資料保護法</span>
+      </div>
+
+      {/* ── 手機衝突引導彈窗 ── */}
+      {phoneConflict && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-sm overflow-hidden rounded-3xl bg-white shadow-2xl">
+            <div className="relative bg-gradient-to-br from-amber-400 to-amber-600 p-6 text-center text-white">
+              <div className="pointer-events-none absolute -bottom-6 -right-6 h-20 w-20 rounded-full bg-white/10 blur-lg" />
+              <div className="relative z-10 mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-white/20">
+                <IconInfo className="h-7 w-7" />
+              </div>
+              <h3 className="relative z-10 text-base font-black">此手機號碼在系統中已有資料</h3>
+            </div>
+            <div className="p-5">
+              <p className="text-xs leading-6 text-gray-600">
+                為了保護個人資料，我們無法自動核對身分。請截圖此畫面，回到<b className="text-gray-800">本館 LINE 官方帳號</b>洽詢客服協助核對並綁定；
+                若這支手機其實是您本人先前使用過的舊帳號，也可以直接返回登入頁，用目前這個 LINE 帳號重新登入一次。
+              </p>
+            </div>
+            <div className="space-y-2 border-t border-gray-100 bg-gray-50 p-5">
+              <button type="button" onClick={() => navigate('/login')}
+                className="w-full rounded-xl bg-brand-primary py-3 text-sm font-bold text-white shadow-lg shadow-brand-primary/20 transition active:scale-[0.99]">
+                返回登入頁
+              </button>
+              <button type="button" onClick={() => setPhoneConflict(false)}
+                className="w-full rounded-xl border border-gray-200 bg-white py-2.5 text-xs font-bold text-gray-500 transition active:bg-gray-100">
+                關閉，我再確認一次資料
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function Field({ label, error, children }) {
+const inputCls = 'w-full rounded-xl border border-gray-200 bg-white px-3.5 py-2.5 text-sm outline-none transition focus:border-brand-teal focus:ring-4 focus:ring-brand-teal/10';
+const inputWithIconCls = 'w-full rounded-xl border border-gray-200 bg-white py-2.5 pl-9 pr-3.5 text-sm outline-none transition focus:border-brand-teal focus:ring-4 focus:ring-brand-teal/10';
+const errInputCls = 'border-brand-error bg-brand-error-soft focus:border-brand-error focus:ring-brand-error/10';
+function fieldCls(hasErr, withIcon) {
+  return `${withIcon ? inputWithIconCls : inputCls} ${hasErr ? errInputCls : ''}`;
+}
+
+function StepDot({ n, label, active, done }) {
+  return (
+    <div className="flex items-center gap-2">
+      <div className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold transition-colors ${
+        active || done ? 'bg-brand-primary text-white shadow-md shadow-brand-primary/20' : 'bg-gray-200 text-gray-500'
+      }`}>
+        {n}
+      </div>
+      <span className={`text-xs transition-colors ${active ? 'font-bold text-gray-800' : 'font-medium text-gray-400'}`}>
+        {label}
+      </span>
+    </div>
+  );
+}
+
+function Field({ label, error, required, optional, hint, children }) {
   return (
     <label className="block">
-      <span className="mb-1 block text-xs font-medium text-gray-600">{label}</span>
+      <span className="mb-1.5 flex items-baseline gap-1 text-xs font-bold text-gray-600">
+        {label}
+        {required && <span className="text-brand-error">＊</span>}
+        {optional && <span className="font-normal text-gray-300">（選填）</span>}
+      </span>
       {children}
-      {error && <span className="mt-1 block text-xs text-brand-error">{error}</span>}
+      {hint && !error && <span className="mt-1 block text-[11px] leading-4 text-gray-400">{hint}</span>}
+      {error && <span className="mt-1 block text-[11px] font-medium text-brand-error">{error}</span>}
     </label>
   );
 }
+
+// 帶左側圖示的欄位（家長資料主要三欄：姓名／手機／Email）
+function IconField({ label, error, required, hint, icon, children }) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 flex items-baseline gap-1 text-xs font-bold text-gray-600">
+        {label}
+        {required && <span className="text-brand-error">＊</span>}
+      </span>
+      <div className="relative">
+        <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400">
+          {icon}
+        </span>
+        {children}
+      </div>
+      {hint && !error && <span className="mt-1 block text-[11px] leading-4 text-gray-400">{hint}</span>}
+      {error && <span className="mt-1 block text-[11px] font-medium text-brand-error">{error}</span>}
+    </label>
+  );
+}
+
+// ── 內嵌 SVG 圖示（Feather 風格 stroke，免外部圖示庫依賴）──────────────────
+function IconBase({ d, className = 'h-4 w-4', extra }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      {Array.isArray(d) ? d.map((p, i) => <path key={i} d={p} />) : <path d={d} />}
+      {extra}
+    </svg>
+  );
+}
+function IconUser(props) { return <IconBase {...props} d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" extra={<circle cx="12" cy="7" r="4" />} />; }
+function IconPhone(props) { return <IconBase {...props} d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92z" />; }
+function IconMail(props) { return <IconBase {...props} d={['M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z', 'm22 6-10 7L2 6']} />; }
+function IconChevronDown(props) { return <IconBase {...props} d="m6 9 6 6 6-6" />; }
+function IconChevronLeft(props) { return <IconBase {...props} d="m15 18-6-6 6-6" />; }
+function IconArrowRight(props) { return <IconBase {...props} d={['M5 12h14', 'm12 5 7 7-7 7']} />; }
+function IconPlus(props) { return <IconBase {...props} d="M12 5v14M5 12h14" />; }
+function IconTrash(props) { return <IconBase {...props} d={['M3 6h18', 'M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2']} />; }
+function IconCheck(props) { return <IconBase {...props} d="M20 6 9 17l-5-5" />; }
+function IconShield(props) { return <IconBase {...props} d={['M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z', 'm9 12 2 2 4-4']} />; }
+function IconInfo(props) { return <IconBase {...props} d={['M12 16v-4', 'M12 8h.01']} extra={<circle cx="12" cy="12" r="10" />} />; }
