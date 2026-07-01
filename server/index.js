@@ -13,6 +13,24 @@ const { assertSecretConfigured } = require('./middlewares/adminAuth');
 const app = express();
 const server = http.createServer(app);
 
+// build 版本：優先讀 build 腳本產生的 build-info.json，退而求其次讀 git，最後 unknown。
+// 讓 /health 能回報「線上伺服器到底是哪一版」，配合前端 DiagBlock 一起確認有沒有部署到最新。
+const BUILD_INFO = (() => {
+  try { return require('./build-info.json'); } catch { /* 尚未 build */ }
+  try {
+    const sha = require('child_process')
+      .execSync('git rev-parse --short HEAD', { cwd: __dirname, stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString().trim();
+    return { sha: sha || 'unknown', time: null };
+  } catch { return { sha: 'unknown', time: null }; }
+})();
+
+// SPA 的 index.html 一律不快取（JS/CSS 是 content-hash 檔，可長快取；只有 index.html
+// 被 LINE 內建瀏覽器 / CDN 快取住，就會一直載到舊的 asset 參照 → 舊碼殘留）。
+function noStoreHtml(res, filePath) {
+  if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-store');
+}
+
 app.use(cors({ origin: process.env.LIFF_URL_PARENT || process.env.LIFF_URL || '*' }));
 // express.json() 預設 strict：axios 的 `post(url, null)` 會把 body 序列化成字面字串 "null"，
 // strict 模式視為非法 JSON → 400（前端 Ragic「立即同步 / 核准」按鈕送 null body，
@@ -54,7 +72,7 @@ app.use('/api/evaluations',   require('./routes/evaluations'));  // 期末評鑑
 app.use('/api/admin',         require('./routes/admin'));
 
 // Health check
-app.get('/health', (req, res) => res.json({ status: 'ok', ts: new Date().toISOString() }));
+app.get('/health', (req, res) => res.json({ status: 'ok', ts: new Date().toISOString(), build: BUILD_INFO }));
 
 // MGM 短連結：/r/:token → /liff/register?ref=<token>
 app.get('/r/:token', (req, res) => {
@@ -65,8 +83,8 @@ app.get('/r/:token', (req, res) => {
 // ── Static frontends ────────────────────────
 // Vite 會把 admin / liff 兩個前端 build 到 server/public/{admin,liff}
 const PUBLIC_DIR = path.join(__dirname, 'public');
-app.use('/admin', express.static(path.join(PUBLIC_DIR, 'admin')));
-app.use('/liff', express.static(path.join(PUBLIC_DIR, 'liff')));
+app.use('/admin', express.static(path.join(PUBLIC_DIR, 'admin'), { setHeaders: noStoreHtml }));
+app.use('/liff', express.static(path.join(PUBLIC_DIR, 'liff'), { setHeaders: noStoreHtml }));
 
 // 聊天室媒體上傳（Phase 4）：本機 server/uploads 直接以 /uploads 對外
 // 安全：強制 X-Content-Type-Options + 對非媒體型一律以 attachment 下載，避免同源 XSS / iframe sandbox 逃逸
@@ -86,9 +104,11 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
 
 // SPA fallback：將子路徑導回對應前端的 index.html，讓 React Router 接手
 app.get('/admin/*', (req, res, next) => {
+  res.set('Cache-Control', 'no-store');
   res.sendFile(path.join(PUBLIC_DIR, 'admin', 'index.html'), (err) => err && next(err));
 });
 app.get('/liff/*', (req, res, next) => {
+  res.set('Cache-Control', 'no-store');
   res.sendFile(path.join(PUBLIC_DIR, 'liff', 'index.html'), (err) => err && next(err));
 });
 

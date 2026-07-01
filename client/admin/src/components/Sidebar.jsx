@@ -184,6 +184,10 @@ export default function Sidebar() {
       </nav>
       <div className="border-t border-white/10 px-4 py-3 text-[11px] text-white/50">
         v1.0 Phase 6
+        <div className="mt-0.5 text-white/40">
+          build {import.meta.env.VITE_BUILD_SHA || 'dev'}
+          {import.meta.env.VITE_BUILD_TIME ? ` @ ${import.meta.env.VITE_BUILD_TIME}` : ''}
+        </div>
       </div>
     </aside>
   );

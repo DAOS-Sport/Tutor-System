@@ -997,6 +997,9 @@ async function _pullParentsStudentsImpl() {
       const mapped = ragic.mapZ01Parent(z01Row);
       if (!mapped.phone) continue; // 沒電話無法比對，且 upsertLocalParent 本身也會拒絕
       const ragicRecordId = mapped.ragic_record_id ? String(mapped.ragic_record_id) : String(z01Row._ragicId || '');
+      // 孤兒姓名＝「拿電話號碼頂替姓名」(純數字 Tier-1，或 8–11 碼且數字過半的電話字串 Tier-1b)
+      // → 只進 Z03 清洗，不進 parents / 不成為 Z01/Z02 登入來源。兩條都不中才算非孤兒
+      // （含短姓名、英文名如 "Mandy"），照常同步。判定規則見 isPlaceholderParentName。
       const isBadName = isPlaceholderParentName(mapped.name);
       // 已綁定 line_uid = 已經有真人透過即時登入流程建過帳號；即使姓名仍壞，也不能把這筆
       // 從 parents/students 同步排除，否則會讓真實使用者的活動資料被冷落（見計畫「不動任何
@@ -1103,6 +1106,7 @@ async function resolveZ03Record(id, fixedName, adminUsername) {
   if (!name) throw new Error('請輸入正確姓名');
   const row = (await pool.query(`SELECT * FROM ragic_z03_records WHERE id = $1`, [id])).rows[0];
   if (!row) throw new Error('找不到這筆 Z03 記錄');
+  // 修正後的姓名不能還是純數字（電話號碼），否則下一輪 pull 會依同一條線又把它分流回 Z03。
   if (isPlaceholderParentName(name)) throw new Error('這個姓名看起來仍是電話號碼，請確認後再送出');
 
   await ragic.upsertParentStrict({ [ragic.FIELD.Z01.PARENT_NAME]: name }, row.z01_ragic_record_id);
@@ -1129,6 +1133,22 @@ async function dismissZ03Record(id, adminUsername) {
   return updated;
 }
 
+// 家長「即時綁定當下」把佔位電話姓名改成真實姓名（同時回寫 Ragic Z01 + 綁 UID）時呼叫：
+// 讓對應的 Z03 追蹤列與 ragic_z01_quarantine 追蹤列立即畢業，不必等下一輪 01:00 pull 的
+// _resolveZ03IfPending 自然收尾。best-effort 用途：caller 應 .catch 吞掉錯誤——Ragic/本地
+// 寫入才是綁定主流程，這裡的追蹤表收尾失敗不該擋使用者登入。
+async function markPlaceholderNameResolved(ragicRecordId, fixedName) {
+  if (!ragicRecordId) return;
+  const id = String(ragicRecordId);
+  const name = String(fixedName || '').trim();
+  await _resolveZ03IfPending(pool, id, name);
+  await pool.query(
+    `UPDATE ragic_z01_quarantine SET resolved_at = NOW(), resolved_name = $2
+       WHERE z01_ragic_record_id = $1 AND resolved_at IS NULL`,
+    [id, name]
+  );
+}
+
 // ─────────────────────────────────────────────────────────────
 // Z01 家長姓名資料品質偵測（Z01↔Z03 機制的可先做部分）
 //
@@ -1140,12 +1160,19 @@ async function dismissZ03Record(id, adminUsername) {
 // 且已內建「治癒後標記解決」的掛勾點（見 server/routes/parents.js `PATCH /me`）。
 // ─────────────────────────────────────────────────────────────
 
-// Tier 1：去除常見電話格式符號後整串是純數字 → 幾乎可以肯定是「拿電話號碼頂替姓名」
-// 的佔位資料（已知真實案例：「0926332176」），誤判機率極低，可以直接拿來觸發追蹤。
+// 佔位電話姓名偵測（＝「拿電話號碼頂替姓名」的孤兒資料，觸發進 Z03 清洗、且不可當畢業姓名）。
+// 兩條規則（皆先去除常見電話格式符號 空白/-/()/．後再判斷）：
+//   Tier 1：整串是純數字（任何長度）→ 幾乎可以肯定是佔位電話（已知真實案例：「0926332176」）。
+//   Tier 1b：去符號後長度落在電話號碼區間（8–11 碼）且「數字佔過半」→ 視同佔位電話
+//            （涵蓋電話字串誤黏一兩個字、或夾雜非標準分隔字元的情形，如「0926332176王」）。
+//            真實中文/英文姓名極少同時「8–11 字長」又「過半是數字」，誤判率仍低。
+// 兩條都不中 → 視為正常姓名（含短姓名、英文名如「Mandy」），照常同步、可當畢業姓名。
 function isPlaceholderParentName(name) {
   const stripped = String(name || '').trim().replace(/[\s\-()（）.]/g, '');
   if (!stripped) return false; // 空姓名是另一個問題（Z01 姓名為必填），不併入這條規則判斷
-  return /^\d+$/.test(stripped);
+  if (/^\d+$/.test(stripped)) return true;               // Tier 1：純數字
+  const digitCount = (stripped.match(/\d/g) || []).length; // Tier 1b：電話長度 + 數字過半
+  return stripped.length >= 8 && stripped.length <= 11 && digitCount * 2 > stripped.length;
 }
 
 // Tier 2：完全不含中文字——範圍更寬，但這個系統從沒驗證過姓名格式，不能排除真的有
@@ -1597,6 +1624,7 @@ module.exports = {
   listZ03Records,
   resolveZ03Record,
   dismissZ03Record,
+  markPlaceholderNameResolved,
   // Task #66 staging
   applyStagedChange,
   rejectStagedChange,

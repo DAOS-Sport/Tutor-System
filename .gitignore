@@ -12,6 +12,9 @@ coverage/
 # runtime upload artifacts (driver: local)
 server/uploads/
 
+# build 版本戳記（由 scripts/build-frontends.sh 產生，不進版控避免過時）
+server/build-info.json
+
 # codebase-memory-mcp — knowledge-graph MCP tool (dev-only, not part of the app)
 # 1.3GB C/C++ source tree + machine-specific MCP config; keep out of the published Replit app
 /codebase-memory-mcp/

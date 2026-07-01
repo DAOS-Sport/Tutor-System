@@ -180,7 +180,7 @@ export default function RagicZ03Page() {
     <div>
       <PageHeader
         title="Z03 舊系統資料整理"
-        description="舊系統匯入批次裡「家長姓名」欄位其實是電話號碼的記錄，會停在這裡（不會進入正式客戶資料），確認正確姓名後寫回 Ragic 即可歸戶。"
+        description="舊系統匯入批次裡「家長姓名」欄位其實是電話號碼（純數字）的記錄，會停在這裡（不會進入正式客戶資料 / 登入來源），確認正確姓名後寫回 Ragic 即可歸戶。"
       />
 
       <div className="mb-4 flex flex-wrap items-center gap-2">

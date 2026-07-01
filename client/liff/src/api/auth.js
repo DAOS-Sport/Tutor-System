@@ -15,7 +15,8 @@ export const authApi = {
   //   | { status:'need_registration', line_uid, phone }
   //   | 409 LINE_ALREADY_BOUND_TO_OTHER_PHONE / PHONE_ALREADY_BOUND_TO_OTHER_LINE
   //   | { status:'need_claim_verification', line_uid, phone }（此門號已有家庭資料 → 需驗證認領）
-  //   claim?: { student_name, id_number } — 認領既有家庭時附上學員姓名 + 身分證字號
+  //   claim?: { student_name, id_number, parent_name? } — 認領既有家庭時附上學員姓名 + 身分證字號；
+  //           parent_name 為家長本人真實姓名，後端只在既有姓名是「電話佔位」時才據以清洗回寫 Ragic Z01。
   parentBindPhone: ({ idToken, phone, claim }) =>
     callApi('/auth/parent-bind-phone',
       { method: 'post', data: { id_token: idToken, phone, claim: claim || undefined } },

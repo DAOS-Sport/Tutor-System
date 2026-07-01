@@ -17,6 +17,9 @@ const { verifyLineIdToken } = require('../services/lineAuth');
 // 家長/學員 ↔ Ragic 同步語意集中於此（登入/綁定/註冊/刷新共用，避免漂移）。
 const parentSync = require('../services/parentSync');
 const { syncFromRagicRecord, _syncWithLock, BindConflictError } = parentSync;
+// 佔位姓名偵測 + Z03/quarantine 追蹤列即時畢業（綁定當下清洗佔位電話姓名用）。
+// ragicAdmin 不 require auth.js，無循環相依。
+const ragicAdmin = require('../services/ragicAdmin');
 
 const router = express.Router();
 
@@ -455,21 +458,47 @@ router.post('/parent-bind-phone', async (req, res) => {
       }
     }
 
-    // 5) Ragic 1006846 空白 → 寫回 Ragic（best-effort）
-    if (!mapped.line_uid && mapped.ragic_record_id) {
+    // 5) 回寫 Ragic：一律用「電話查到的既有 Z01 record」直接 UPDATE，永不新建（避免同號重複列）。
+    //    · 佔位電話姓名（Tier-1/1b）且本人已提供真實姓名 → 一次 partial PATCH 同時清洗姓名 + 綁 UID。
+    //    · 否則（姓名已正常或未提供真名）→ 僅在 line_uid 空白時綁 UID（維持原行為）。
+    //    只在「現有姓名是佔位電話」時才覆蓋姓名——認領雖已通過，仍不容許用自助表單改掉一個已正常的姓名。
+    //    以 Ragic 為權威：姓名回寫成功才把清洗後姓名帶進本地同步，避免「Ragic 寫失敗、本地卻先改名」的漂移。
+    //    best-effort：回寫失敗只 warn 不擋登入（同原 bindParentLineUidToRagic 慣例）。
+    const parentNameIn = String(req.body?.claim?.parent_name || req.body?.parent_name || '').trim();
+    const wantNameFix = !mapped.name || ragicAdmin.isPlaceholderParentName(mapped.name);
+    const cleanedName = (parentNameIn && !ragicAdmin.isPlaceholderParentName(parentNameIn)) ? parentNameIn : '';
+    const nameToWrite = wantNameFix && cleanedName ? cleanedName : '';
+    let ragicNameWritten = false;
+    if (mapped.ragic_record_id && (nameToWrite || !mapped.line_uid)) {
       try {
-        await ragic.bindParentLineUidToRagic({ ragicRecordId: mapped.ragic_record_id, lineUid });
+        if (nameToWrite) {
+          await ragic.upsertParentStrict({
+            [ragic.FIELD.Z01.PARENT_NAME]: nameToWrite,
+            [ragic.FIELD.Z01.LINE_UID]:    lineUid,
+          }, mapped.ragic_record_id);
+          ragicNameWritten = true;
+        } else {
+          await ragic.bindParentLineUidToRagic({ ragicRecordId: mapped.ragic_record_id, lineUid });
+        }
       } catch (err) {
-        console.warn('[auth/parent-bind-phone] bindParentLineUidToRagic failed:', err.message);
+        console.warn('[auth/parent-bind-phone] Ragic 回寫（姓名/UID）失敗:', err.message);
       }
     }
 
-    // 6) 同步 parent + students 到本地（含 advisory lock + post-upsert guard）
+    // 6) 同步 parent + students 到本地（含 advisory lock + post-upsert guard）。
+    //    姓名已成功回寫 Ragic 時，用清洗後姓名蓋掉 ragicRow 帶下來的佔位姓名再落地本地。
     try {
-      const local = await syncFromRagicRecord(ragicRow, lineUid);
+      const students = ragic.parseZ01Students(ragicRow);
+      const mappedForLocal = ragicNameWritten ? { ...mapped, name: nameToWrite } : mapped;
+      const local = await _syncWithLock({ mapped: mappedForLocal, students, lineUid });
+      // 姓名已清洗 → 讓對應 Z03 / quarantine 追蹤列立即畢業（best-effort，不擋登入）。
+      if (ragicNameWritten) {
+        ragicAdmin.markPlaceholderNameResolved(mapped.ragic_record_id, nameToWrite)
+          .catch((err) => console.warn('[auth/parent-bind-phone] Z03 即時畢業標記失敗:', err.message));
+      }
       const issued = _issue(local);
-      const students = await loadStudents(local.id);
-      return res.json({ status: 'bound_and_logged_in', parent: { ...issued, students }, token: issued.token });
+      const students2 = await loadStudents(local.id);
+      return res.json({ status: 'bound_and_logged_in', parent: { ...issued, students: students2 }, token: issued.token });
     } catch (err) {
       if (err instanceof BindConflictError) {
         return res.status(err.http).json({ error: err.message, code: err.code });
@@ -580,7 +609,11 @@ router.post('/parent-register-line', async (req, res) => {
       return res.status(r.status).json({ error: r.error, code: r.code });
     }
 
-    // 衝突檢查 3：Ragic 已有此 phone
+    // 衝突檢查 3：Ragic 已有此 phone。
+    // ★ 資安：註冊路徑「沒有」認領驗證（學員姓名+身分證比對），因此電話已存在時一律擋 409、
+    //   逼回「以手機綁定」流程處理——那裡才會對既有家庭做認領驗證後才綁定/更新。此處若改成
+    //   found→update，等於讓任何知道電話的人繞過認領驗證覆寫既有家庭姓名並繼承其學員 PII。
+    //   「找到就更新既有 Ragic 值、不重複建立」的需求由通過認領的 bind-phone 路徑負責，不在這裡。
     let existsByPhone = null;
     try {
       existsByPhone = await ragic.getParentByPhone(phone);

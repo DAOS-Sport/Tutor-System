@@ -10,6 +10,13 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo "[build] root=$ROOT"
 
+# 版本戳記：讓「線上到底跑哪一版」一眼可驗（DiagBlock / admin 角落 / /health 都讀這個）。
+# 用 VITE_ 前綴讓 Vite 自動曝光到 import.meta.env；同時寫一份給後端 /health 讀。
+export VITE_BUILD_SHA="${VITE_BUILD_SHA:-$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
+export VITE_BUILD_TIME="${VITE_BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%MZ)}"
+echo "[build] version: $VITE_BUILD_SHA @ $VITE_BUILD_TIME"
+printf '{"sha":"%s","time":"%s"}\n' "$VITE_BUILD_SHA" "$VITE_BUILD_TIME" > "$ROOT/server/build-info.json"
+
 # 1. server 端依賴
 echo "[build] (1/3) installing server deps"
 cd "$ROOT/server" && npm install --no-audit --no-fund

@@ -1,4 +1,5 @@
 import axios from 'axios';
+import liff from '@line/liff';
 
 // 預設啟用 mock；要切真實 API 在 build / dev 時加 VITE_USE_MOCK=false
 export const USE_MOCK = import.meta.env.VITE_USE_MOCK !== 'false';
@@ -12,6 +13,37 @@ export const http = axios.create({
 
 const USER_KEY = 'daos.user';
 let redirectingOn401 = false;
+let reauthPromise = null; // single-flight：多個並發 401 共用同一次靜默重驗
+
+// 靜默重新驗證（家長）：用目前 LINE session 的 id_token 換一顆新的 app JWT，寫回 localStorage。
+// 目的：token 過期造成的 401 不要把人登出，先在背景換新的、讓原請求重試，使用者無感。
+// 重點：
+//  - 用原生 axios（不走 http 實例）呼叫後端，避免再次觸發本回應攔截器造成無限遞迴。
+//  - 回傳的 parent 去敏後才落地（line_uid 不寫進 localStorage，與 AuthContext._stripSensitive 一致）。
+//  - 只有後端回 status:'logged_in' 且拿到 token 才算成功；need_phone_binding 等狀態視為失敗（需走登入頁）。
+function silentReauthParent() {
+  if (reauthPromise) return reauthPromise;
+  reauthPromise = (async () => {
+    let idToken = null;
+    try { if (liff && liff.isLoggedIn && liff.isLoggedIn()) idToken = liff.getIDToken(); } catch { /* 非 LINE 環境 */ }
+    if (!idToken) return false;
+    let data;
+    try {
+      const res = await axios.post('/api/auth/parent-line-login', { id_token: idToken },
+        { headers: { 'Content-Type': 'application/json' }, timeout: 10000 });
+      data = res?.data;
+    } catch { return false; }
+    const token = data?.token || data?.parent?.token;
+    if (data?.status !== 'logged_in' || !token) return false;
+    try {
+      const p = data.parent || {};
+      const { line_uid, lineUid, token: _t, ...safe } = p;
+      localStorage.setItem(USER_KEY, JSON.stringify({ role: 'parent', data: safe, token }));
+    } catch { return false; }
+    return true;
+  })().finally(() => { reauthPromise = null; });
+  return reauthPromise;
+}
 
 // 自動為每筆請求附上目前登入者的 JWT（教練 / 家長皆同；mock 模式不會走到這裡）
 http.interceptors.request.use((config) => {
@@ -38,17 +70,40 @@ http.interceptors.request.use((config) => {
 
 http.interceptors.response.use(
   (res) => res,
-  (err) => {
-    if (err?.response?.status === 401 && !redirectingOn401) {
+  async (err) => {
+    if (err?.response?.status !== 401) return Promise.reject(err);
+    const config = err.config || {};
+
+    // 先記住「是不是教練」，決定後續行為與導向。
+    let wasCoach = false;
+    try {
+      const raw = localStorage.getItem(USER_KEY);
+      if (raw) { try { wasCoach = JSON.parse(raw)?.role === 'coach'; } catch { /* noop */ } }
+    } catch { /* noop */ }
+
+    // ── 家長：先「靜默重新驗證 + 重試原請求」，不自動登出（尊重使用者需求）──
+    // 只重試一次（config._retriedAfterReauth 守衛），避免新 token 仍 401 造成無限重試。
+    if (!wasCoach && !config._retriedAfterReauth) {
+      let ok = false;
+      try { ok = await silentReauthParent(); } catch { ok = false; }
+      if (ok) {
+        config._retriedAfterReauth = true;
+        return http.request(config); // request 攔截器會自動帶上剛換到的新 token
+      }
+    }
+
+    // ── 走到這裡代表：重驗失敗 / 是教練 / 已重試過一次 → 失敗才提示 + 導去登入 ──
+    if (!redirectingOn401) {
       redirectingOn401 = true;
-      // 清 session 前先記住「是不是教練」，決定 401 後要把人導去哪。
-      let wasCoach = false;
       try {
-        const raw = localStorage.getItem(USER_KEY);
-        if (raw) { try { wasCoach = JSON.parse(raw)?.role === 'coach'; } catch { /* noop */ } }
-        localStorage.removeItem(USER_KEY);
-        localStorage.removeItem('daos.manualLogout');
-        sessionStorage.setItem('daos.liff.flashLogout', '1');
+        sessionStorage.setItem('daos.liff.flashLogout', '1'); // 登入頁會讀這個顯示「階段過期，請重新登入」
+        // 教練維持原行為：清 session，回教練登入頁（portal token 會靜默續登）。
+        // 家長：**不主動清 session**（不自動登出人），交給登入頁重新 LINE 驗證；
+        //       若重新驗證成功會覆蓋 session，失敗才會停在登入頁顯示可讀錯誤。
+        if (wasCoach) {
+          localStorage.removeItem(USER_KEY);
+          localStorage.removeItem('daos.manualLogout');
+        }
       } catch { /* noop */ }
       if (typeof window !== 'undefined') {
         const path = window.location.pathname || '';

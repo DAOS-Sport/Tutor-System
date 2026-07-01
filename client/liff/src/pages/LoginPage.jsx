@@ -13,6 +13,14 @@ import ReportIssueButton from '../components/ReportIssueButton';
 const MANUAL_LOGOUT_KEY = 'daos.manualLogout';
 import { USE_MOCK } from '../api/client';
 
+// 只刷一次 LINE token 的旗標（避免過期 token → 刷新 → 又過期的無限跳轉）
+const TOKEN_REFRESH_KEY = 'daos.liff.tokenRefreshed';
+// build 版本戳記：診斷區顯示，用來一眼確認線上跑的是不是最新部署
+const BUILD_SHA = import.meta.env.VITE_BUILD_SHA || 'dev';
+const BUILD_TIME = import.meta.env.VITE_BUILD_TIME || '';
+// 屬「id_token 本身有問題（過期/驗證失敗/缺）」的錯誤碼——可用 liff.login 重新取 token 自救
+const TOKEN_ERR_CODES = ['LINE_TOKEN_EXPIRED', 'LINE_VERIFY_FAILED', 'LINE_ID_TOKEN_REQUIRED'];
+
 function clearManualLogout() {
   try { localStorage.removeItem(MANUAL_LOGOUT_KEY); } catch {}
 }
@@ -24,6 +32,20 @@ function tryGetLineIdToken() {
     }
   } catch { /* swallow */ }
   return null;
+}
+
+// 快取的 id_token 過期/驗證失敗 → 用 liff.login 取一顆新的（只刷一次，避免無限跳轉）。
+// 尊重「不要自動登出人」：只做 login（刷新），絕不呼叫 liff.logout。
+// 只在「確實還在 LINE session 內」才刷新，避免 dev/mock/外部瀏覽器誤觸發轉址。
+// 回傳 true 表示已啟動轉址（呼叫端應直接 return）。
+function tryRefreshLineToken() {
+  try {
+    if (typeof window !== 'undefined' && sessionStorage.getItem(TOKEN_REFRESH_KEY)) return false;
+    if (!(liff && typeof liff.login === 'function' && liff.isLoggedIn && liff.isLoggedIn())) return false;
+    sessionStorage.setItem(TOKEN_REFRESH_KEY, '1');
+    liff.login({ redirectUri: window.location.href });
+    return true;
+  } catch { return false; }
 }
 
 // 家長 / 教練端 LIFF App ID（由 Vite env 注入；與 main.jsx 同一來源）
@@ -115,6 +137,8 @@ export default function LoginPage() {
   const [phone, setPhone] = useState('');
   const [claimName, setClaimName] = useState('');
   const [claimId, setClaimId] = useState('');
+  // 家長本人真實姓名：舊生綁定時一併補上，後端只在既有姓名是「電話佔位」時據以清洗回寫 Ragic。
+  const [claimParentName, setClaimParentName] = useState('');
   const [busy, setBusy] = useState(false);
   const [errCode, setErrCode] = useState('');
   // 'error' 狀態要顯示的實際文案（依 errCode 對應的具體原因，不再固定顯示同一句話）
@@ -144,6 +168,8 @@ export default function LoginPage() {
       <div>liff.isInClient: {String(diag.isInClient)}</div>
       <div>liff.isLoggedIn: {String(diag.isLoggedIn)}</div>
       <div>hasIdToken: {String(diag.hasIdToken)}</div>
+      <div>errCode: {errCode || '—'}</div>
+      <div>build: {BUILD_SHA}{BUILD_TIME ? ` @ ${BUILD_TIME}` : ''}</div>
     </div>
   );
 
@@ -151,6 +177,15 @@ export default function LoginPage() {
   useEffect(() => {
     if (autoRanRef.current) return;
     autoRanRef.current = true;
+
+    // 若是被 401 攔截器導回登入頁（session 過期、靜默重驗也失敗）→ 顯示一次可讀提示。
+    // 這就是「失敗才提示」：平常靜默重驗成功不會走到這裡。
+    try {
+      if (sessionStorage.getItem('daos.liff.flashLogout')) {
+        sessionStorage.removeItem('daos.liff.flashLogout');
+        toast.info('登入階段已過期，請重新登入');
+      }
+    } catch { /* noop */ }
 
     if (coachContext) {
       // 教練端統一走 /coach-portal（web OAuth + 30天 portal token 續登）。
@@ -178,6 +213,9 @@ export default function LoginPage() {
         return;
       }
       if (!tk) {
+        // 有 LINE session 卻取不到 id_token（多半是快取過期）→ 先自動刷新一次，
+        // 成功會轉址離開本頁；失敗（或非 LINE 環境）才落到錯誤畫面。
+        if (tryRefreshLineToken()) return;
         clearAfterAuth();
         setErrCode('LINE_ID_TOKEN_REQUIRED');
         setErrMsg('LINE 驗證失敗：請重新開啟 LIFF 或稍後再試。');
@@ -208,8 +246,11 @@ export default function LoginPage() {
         setParentState('error');
         toast.error('登入失敗，請稍後再試。');
       } catch (err) {
-        clearAfterAuth();
         const code = err?.response?.data?.code || err?.code || (!err?.response ? 'NETWORK_ERROR' : 'LOGIN_FAILED');
+        // id_token 過期/驗證失敗且仍在 LINE session 中 → 自動用 liff.login 換新 token（只一次），
+        // 打破「過期 token → 錯誤 → reload → 又是同一顆過期 token」的死路。成功會轉址離開。
+        if (TOKEN_ERR_CODES.includes(code) && tryRefreshLineToken()) return;
+        clearAfterAuth();
         setErrCode(code);
         setErrMsg(parentErrorMessage(err));
         setParentState('error');
@@ -269,13 +310,16 @@ export default function LoginPage() {
     e.preventDefault();
     const name = claimName.trim();
     const id = claimId.trim().toUpperCase();
+    const parentName = claimParentName.trim();
     if (!name || !id) { toast.error('請填寫學員姓名與身分證字號'); return; }
+    if (!parentName) { toast.error('請填寫您（家長本人）的姓名'); return; }
     setBusy(true);
     try {
       const tk = idToken || tryGetLineIdToken();
       if (!tk && !USE_MOCK) { toast.error('LINE 驗證失敗：請重新開啟 LIFF 或稍後再試。'); return; }
       const r = await authApi.parentBindPhone({
-        idToken: tk, phone: phone.trim(), claim: { student_name: name, id_number: id },
+        idToken: tk, phone: phone.trim(),
+        claim: { student_name: name, id_number: id, parent_name: parentName },
       });
       if (r?.status === 'bound_and_logged_in' && r.parent) {
         const parent = { ...r.parent, token: r.token || r.parent.token || null };
@@ -354,7 +398,7 @@ export default function LoginPage() {
               errorCode={errCode}
               errorMessage="家長端登入失敗"
               context="家長端登入"
-              details={{ 畫面: diag.context, 路徑: diag.pathname, LINE內開啟: String(diag.isInClient), 已登入LINE: String(diag.isLoggedIn), 有idToken: String(diag.hasIdToken) }}
+              details={{ 畫面: diag.context, 路徑: diag.pathname, LINE內開啟: String(diag.isInClient), 已登入LINE: String(diag.isLoggedIn), 有idToken: String(diag.hasIdToken), 版本: `${BUILD_SHA}${BUILD_TIME ? ' @ ' + BUILD_TIME : ''}` }}
             />
           </div>
           <DiagBlock />
@@ -399,7 +443,7 @@ export default function LoginPage() {
               errorCode={errCode || 'LOGIN_INCOMPLETE'}
               errorMessage="家長端登入流程未完成"
               context="家長端登入"
-              details={{ 畫面: diag.context, 路徑: diag.pathname, LINE內開啟: String(diag.isInClient), 已登入LINE: String(diag.isLoggedIn), 有idToken: String(diag.hasIdToken) }}
+              details={{ 畫面: diag.context, 路徑: diag.pathname, LINE內開啟: String(diag.isInClient), 已登入LINE: String(diag.isLoggedIn), 有idToken: String(diag.hasIdToken), 版本: `${BUILD_SHA}${BUILD_TIME ? ' @ ' + BUILD_TIME : ''}` }}
             />
           </div>
           <DiagBlock />
@@ -453,6 +497,15 @@ export default function LoginPage() {
           <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs leading-5 text-amber-800">
             為保護個資，此手機已有家庭資料。請輸入「其中一位學員的姓名與身分證字號」以確認您是本人。
             若資料有誤，請洽櫃台或透過 LINE 官方帳號聯繫。
+          </div>
+          <div>
+            <label htmlFor="claimParentName" className="mb-1 block text-sm font-medium text-gray-700">您的姓名（家長本人）</label>
+            <input
+              id="claimParentName" type="text" placeholder="請輸入家長本人真實姓名" value={claimParentName}
+              onChange={(e) => setClaimParentName(e.target.value)}
+              className="w-full rounded-lg border border-gray-300 px-4 py-3 text-base focus:border-brand-teal focus:outline-none focus:ring-2 focus:ring-brand-teal/30"
+              disabled={busy}
+            />
           </div>
           <div>
             <label htmlFor="claimName" className="mb-1 block text-sm font-medium text-gray-700">學員姓名</label>

@@ -7,7 +7,10 @@ channel = "stable-24_05"
 [deployment]
 run = ["bash", "-c", "cd server && npm start"]
 deploymentTarget = "autoscale"
-build = ["bash", "-c", "cd server && npm install && cd ../client/admin && npm install && VITE_USE_MOCK=false npm run build && cd ../liff && npm install && VITE_USE_MOCK=false VITE_LIFF_ID_PARENT=\"$VITE_LIFF_ID_PARENT\" VITE_LIFF_ID_COACH=\"$VITE_LIFF_ID_COACH\" VITE_LIFF_ID=\"$LIFF_ID\" npm run build"]
+# 部署 build 一律走唯一的 build 腳本（含版本戳記 + 清 stale assets + build-info.json），
+# 消除先前「inline 指令 vs scripts/build-frontends.sh」兩套 build 漂移導致舊碼上線的風險。
+# LIFF ID 由 [userenv.shared] 提供；SKIP_SMOKE=1 因部署階段還沒起 server。
+build = ["bash", "-c", "SKIP_SMOKE=1 VITE_LIFF_ID=\"$LIFF_ID\" bash scripts/build-frontends.sh"]
 
 [[ports]]
 localPort = 3000
@@ -24,6 +27,10 @@ externalPort = 3000
 [[ports]]
 localPort = 3999
 externalPort = 80
+
+[[ports]]
+localPort = 4321
+externalPort = 4200
 
 [[ports]]
 localPort = 5000
