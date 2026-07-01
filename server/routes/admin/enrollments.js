@@ -242,7 +242,13 @@ function tsToString(d) {
 }
 
 async function readEnrollment(id) {
-  const e = await pool.query(`SELECT * FROM admin_enrollments WHERE id = $1`, [id]);
+  const e = await pool.query(
+    `SELECT ae.*, au.name AS created_by_name
+       FROM admin_enrollments ae
+       LEFT JOIN admin_users au ON au.id = ae.created_by
+      WHERE ae.id = $1`,
+    [id]
+  );
   if (!e.rowCount) return null;
   const a = await pool.query(
     `SELECT at, action, by_user, reason, refund_amount FROM admin_enrollment_audit_logs
@@ -279,6 +285,8 @@ async function readEnrollment(id) {
     group_order_id: row.group_order_id || null,
     is_group_shared: !!row.is_group_shared,
     period_count: Number(row.period_count) || 1,
+    created_by: row.created_by || null,
+    created_by_name: row.created_by_name || null,
     audit_logs: a.rows.map((x) => ({
       at: tsToString(x.at),
       action: x.action,
@@ -356,6 +364,8 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
   const submittedAt = b.submitted_at ? new Date(b.submitted_at) : new Date();
   if (Number.isNaN(submittedAt.getTime())) return res.status(400).json({ error: '報名日期格式不正確', code: 'SUBMITTED_AT_INVALID' });
   const byUser = req.adminUser?.name || req.adminUser?.username || req.adminUser?.sub || 'admin';
+  // C-6：資料建立人一律從登入 token 決定（FK 到 admin_users.id），不接受前端傳值。
+  const createdBy = req.adminUser?.sub || null;
 
   const client = await pool.connect();
   try {
@@ -402,15 +412,15 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
             original_price, final_price, transfer_last_5, status, submitted_at,
             total_sessions, used_sessions, period_count, period_number, enrollment_batch_id,
             payment_method, payer, class_name, allowance_amount, tax_id, level_note,
-            unit_price, work_type, full_sessions, carrier, sync_source)
+            unit_price, work_type, full_sessions, carrier, sync_source, created_by)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending_payment',$12,
-                 $13,0,1,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,'replit')`,
+                 $13,0,1,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,'replit',$26)`,
         [
           eid, parentName, parentPhone, students, coachName, coachId, venueId, courseType,
           po, pf, last5 || null, submittedAt,
           periodSessions, i + 1, batchId,
           paymentMethod, payer, className, pa, taxId, levelNote,
-          unitPrice, workType, fullSessions, carrier,
+          unitPrice, workType, fullSessions, carrier, createdBy,
         ]
       );
       await client.query(

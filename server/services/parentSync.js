@@ -29,12 +29,28 @@ class BindConflictError extends Error {
 // 先試 by-id（呼叫端萬一已傳代碼時的保險），查無再退而 by-name 對應真正的代碼；
 // 兩者都查無（名稱在本地不存在／已改名）才回 NULL。修正前這裡永遠傳 Ragic 名稱去比對
 // venues.id，永遠查無 → 每次從 Ragic 同步下來的家長 primary_venue_id 都被靜默清空。
-async function _resolveVenueId(client, code) {
+//
+// venuesMap（選用）：批次呼叫端（如排程整批同步）可預先撈好 { byId:Set, byName:Map(name->id) }
+// 傳入，省掉每筆家長都要查兩次 venues 表；不傳就照舊查 DB（既有單筆呼叫端行為不變）。
+async function _resolveVenueId(client, code, venuesMap = null) {
   if (!code) return null;
+  if (venuesMap) {
+    if (venuesMap.byId.has(code)) return code;
+    return venuesMap.byName.get(code) || null;
+  }
   const byId = await client.query(`SELECT id FROM venues WHERE id = $1`, [code]);
   if (byId.rowCount) return code;
   const byName = await client.query(`SELECT id FROM venues WHERE name = $1`, [code]);
   return byName.rowCount ? byName.rows[0].id : null;
+}
+
+/** 供批次呼叫端一次撈好場館對照表，餵給 upsertLocalParent 的 venuesMap 選項。 */
+async function loadVenuesMap(client) {
+  const r = await client.query(`SELECT id, name FROM venues`);
+  return {
+    byId: new Set(r.rows.map((row) => row.id)),
+    byName: new Map(r.rows.map((row) => [row.name, row.id])),
+  };
 }
 
 /**
@@ -42,13 +58,14 @@ async function _resolveVenueId(client, code) {
  *  - line_uid 已有不同值時，絕不覆蓋（COALESCE 保護）。
  *  - reactivate=true（刻意登入/綁定）才允許把軟刪除的家長重新啟用；
  *    reactivate=false（背景刷新）則保留既有 is_active，不讓被移除的孤兒因同步復活。
+ *  - venuesMap：見 _resolveVenueId 說明，批次同步用。
  */
-async function upsertLocalParent(client, mapped, lineUid, { reactivate = true } = {}) {
+async function upsertLocalParent(client, mapped, lineUid, { reactivate = true, venuesMap = null } = {}) {
   const name  = mapped.name  || '未命名家長';
   const phone = mapped.phone || '';
   if (!phone) throw new Error('缺少手機，無法 upsert parent');
 
-  const venueId = await _resolveVenueId(client, mapped.primary_venue_id);
+  const venueId = await _resolveVenueId(client, mapped.primary_venue_id, venuesMap);
 
   const up = await client.query(
     `INSERT INTO parents
@@ -91,37 +108,63 @@ async function upsertLocalParent(client, mapped, lineUid, { reactivate = true } 
  *  - authoritative=true（同步來源為 Ragic 權威清單）時，對「先前已同步過(ragic_record_id 非空)、
  *    有 id_number、但不在本次權威清單」的本地學員做軟拆除（is_active=FALSE，隱藏不外露）。
  *    僅在取得非空權威 id 集合時執行，避免 Ragic 解析回空時誤殺整批。
+ *  - existingStudents（選用）：批次呼叫端可預先撈好「這位家長目前的學員列」陣列
+ *    （至少含 id/id_number/ragic_record_id/name/birth_date）傳入，三層比對改成在記憶體裡
+ *    做，省掉每位學員 3 次序列 SELECT；不傳就照舊逐筆查 DB（既有單筆呼叫端行為不變）。
  */
-async function upsertLocalStudents(client, parentId, students, { authoritative = false } = {}) {
+async function upsertLocalStudents(client, parentId, students, { authoritative = false, existingStudents = null } = {}) {
   for (const s of students || []) {
     if (!s || !s.name) continue;
     const idNum  = s.id_number ? String(s.id_number).toUpperCase().trim() : null;
     const ragicId = s.ragic_record_id ? String(s.ragic_record_id).trim() : null;
     let matched = null;
 
-    if (idNum) {
-      const r = await client.query(
-        `SELECT id FROM students WHERE parent_id = $1 AND id_number = $2 LIMIT 1`,
-        [parentId, idNum]
-      );
-      matched = r.rows[0] || null;
-    }
-    if (!matched && ragicId) {
-      const r = await client.query(
-        `SELECT id FROM students WHERE parent_id = $1 AND ragic_record_id = $2 LIMIT 1`,
-        [parentId, ragicId]
-      );
-      matched = r.rows[0] || null;
-    }
-    if (!matched) {
-      const r = await client.query(
-        `SELECT id FROM students
-          WHERE parent_id = $1 AND name = $2
-            AND ($3::date IS NULL OR birth_date = $3::date)
-          LIMIT 1`,
-        [parentId, s.name, s.birth_date || null]
-      );
-      matched = r.rows[0] || null;
+    if (existingStudents) {
+      if (idNum) {
+        matched = existingStudents.find((r) => r.id_number && String(r.id_number).toUpperCase() === idNum) || null;
+      }
+      if (!matched && ragicId) {
+        matched = existingStudents.find((r) => r.ragic_record_id && String(r.ragic_record_id) === ragicId) || null;
+      }
+      if (!matched) {
+        // r.birth_date 來自 pg 對 DATE 欄位的預設解析（Date 物件或可解析字串皆有可能），
+        // 一律經 new Date().toISOString() 正規化再比對，不可直接 String() 轉換
+        // （String(dateObj) 會是 "Wed Jul 01 2026..." 這種人類可讀格式，永遠比不出結果）。
+        const sBirth = s.birth_date ? new Date(s.birth_date).toISOString().slice(0, 10) : null;
+        matched = existingStudents.find((r) => {
+          if (r.name !== s.name) return false;
+          // 比照原 SQL 的 ($3::date IS NULL OR birth_date = $3::date)：
+          // 沒帶入生日 → 純比姓名；有帶入但本地是 NULL → 不算相等，不視為同一人。
+          if (!sBirth) return true;
+          if (!r.birth_date) return false;
+          return new Date(r.birth_date).toISOString().slice(0, 10) === sBirth;
+        }) || null;
+      }
+    } else {
+      if (idNum) {
+        const r = await client.query(
+          `SELECT id FROM students WHERE parent_id = $1 AND id_number = $2 LIMIT 1`,
+          [parentId, idNum]
+        );
+        matched = r.rows[0] || null;
+      }
+      if (!matched && ragicId) {
+        const r = await client.query(
+          `SELECT id FROM students WHERE parent_id = $1 AND ragic_record_id = $2 LIMIT 1`,
+          [parentId, ragicId]
+        );
+        matched = r.rows[0] || null;
+      }
+      if (!matched) {
+        const r = await client.query(
+          `SELECT id FROM students
+            WHERE parent_id = $1 AND name = $2
+              AND ($3::date IS NULL OR birth_date = $3::date)
+            LIMIT 1`,
+          [parentId, s.name, s.birth_date || null]
+        );
+        matched = r.rows[0] || null;
+      }
     }
 
     if (matched) {
@@ -233,13 +276,26 @@ async function syncFromRagicRecord(z01Row, lineUid, { reactivate = true } = {}) 
  * 兩者皆需提供、且與某一位學員的 (姓名, 身分證) 完全一致才回 true。
  */
 function matchStudentClaim(ragicStudents, claim) {
+  return classifyStudentClaim(ragicStudents, claim) === 'matched';
+}
+
+/**
+ * 認領驗證分類版：區分「真的比對不符」與「Ragic 該學員本來就沒存身分證字號、
+ * 家長不可能比對得過」兩種狀況，讓 caller 能回不同的錯誤碼與文案
+ * （後者是資料缺口，不是使用者打錯，不該顯示「請確認後再試」）。
+ *   'matched'        姓名 + 身分證字號都對上
+ *   'no_id_on_file'  姓名對上，但該筆 Ragic 學員身分證字號欄位是空的（無從比對）
+ *   'mismatch'       姓名對不上任何學員，或身分證字號對不上（Ragic 有值但不同）
+ */
+function classifyStudentClaim(ragicStudents, claim) {
   const name = String(claim?.student_name || claim?.name || '').trim();
   const id   = String(claim?.id_number || '').trim().toUpperCase();
-  if (!name || !id) return false;
-  return (ragicStudents || []).some((s) =>
-    String(s.name || '').trim() === name &&
-    String(s.id_number || '').trim().toUpperCase() === id
-  );
+  if (!name || !id) return 'mismatch';
+  const byName = (ragicStudents || []).find((s) => String(s.name || '').trim() === name);
+  if (!byName) return 'mismatch';
+  const ragicId = String(byName.id_number || '').trim().toUpperCase();
+  if (!ragicId) return 'no_id_on_file';
+  return ragicId === id ? 'matched' : 'mismatch';
 }
 
 /** 認領稽核：寫進伺服器日誌；門號雜湊、line_uid 遮罩，嚴禁落地完整 PII。 */
@@ -251,12 +307,47 @@ function auditClaim({ phone, lineUid, result, reason }) {
   console.log('[claim-audit]', JSON.stringify({ phoneHash, uidTail, result, reason: reason || null }));
 }
 
+/**
+ * 供批次呼叫端（整批 Ragic→本地同步）一次撈好「電話 → 該家長目前學員列」的對照表，
+ * 餵給 upsertLocalStudents 的 existingStudents 選項，避免逐位家長各查一次。
+ */
+async function loadStudentsByParentPhone(client) {
+  // 不篩 is_active：既有逐筆比對的 3 道 SQL 查詢本來就沒過濾軟刪除列
+  // （比對到才由後續 UPDATE 的 is_active=TRUE 復活），這裡要維持同樣語意，
+  // 否則已軟刪除的學員會在批次同步時比對不到、被誤判成新學員重複建立。
+  const r = await client.query(
+    `SELECT p.phone, s.id, s.id_number, s.ragic_record_id, s.name, s.birth_date
+       FROM students s
+       JOIN parents p ON p.id = s.parent_id`
+  );
+  const map = new Map();
+  for (const row of r.rows) {
+    const list = map.get(row.phone);
+    if (list) list.push(row); else map.set(row.phone, [row]);
+  }
+  return map;
+}
+
+/**
+ * 供批次呼叫端一次撈好「已綁定 line_uid 的手機」集合——用來判斷某支手機
+ * 是否已經有真人透過即時登入流程建過帳號（見 ragicAdmin.js _pullParentsStudentsImpl
+ * 的 Z03 分流規則：已綁定的人即使姓名是佔位資料也不能被排除在 parents 同步之外）。
+ */
+async function loadBoundPhones(client) {
+  const r = await client.query(`SELECT phone FROM parents WHERE line_uid IS NOT NULL`);
+  return new Set(r.rows.map((row) => row.phone));
+}
+
 module.exports = {
   BindConflictError,
   upsertLocalParent,
   upsertLocalStudents,
+  loadVenuesMap,
+  loadStudentsByParentPhone,
+  loadBoundPhones,
   _syncWithLock,
   syncFromRagicRecord,
   matchStudentClaim,
+  classifyStudentClaim,
   auditClaim,
 };

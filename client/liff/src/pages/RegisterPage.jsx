@@ -34,6 +34,8 @@ function registerErrorMessage(err) {
   const status = err?.response?.status;
   // 後端若帶了明確 error 文字（如身分證重複會帶實際號碼），優先沿用
   const serverMsg = err?.response?.data?.error;
+  // 完全沒有 response：請求根本沒送達（離線 / DNS / CORS / 逾時無回應），跟「伺服器回了 4xx/5xx」不同狀況。
+  if (!err?.response) return '網路連線異常，請檢查網路連線後再試一次。';
 
   const MAP = {
     // —— 必填 / 格式 ——
@@ -49,9 +51,13 @@ function registerErrorMessage(err) {
     LINE_ALREADY_BOUND_TO_OTHER_PHONE: '此 LINE 帳號已綁定其他手機，請改用原手機登入或聯絡客服。',
     PHONE_ALREADY_BOUND_TO_OTHER_LINE: '此手機已綁定其他 LINE 帳號，請聯絡客服協助處理。',
     // —— LINE 驗證 ——
+    LINE_TOKEN_EXPIRED:        'LINE 登入已逾時，請重新由 LINE 開啟註冊頁。',
+    LINE_CHANNEL_MISCONFIGURED:'系統設定異常，請聯繫客服協助處理（非您的操作問題）。',
+    LINE_VERIFY_NETWORK_ERROR: '暫時無法連上 LINE 驗證服務，請稍後再試。',
     LINE_VERIFY_FAILED:       'LINE 驗證失敗，請重新由 LINE 開啟註冊頁。',
     LINE_ID_TOKEN_REQUIRED:   'LINE 驗證已逾時，請重新由 LINE 開啟註冊頁。',
     // —— 系統 / 同步 ——
+    RAGIC_TIMEOUT:            'Ragic 回應較慢，請稍候片刻再試一次。',
     RAGIC_UNAVAILABLE:        '資料同步服務暫時無法連線，請稍後再試。',
     RAGIC_WRITE_FAILED:       '資料暫時無法完成同步，請稍後再試；若持續發生請聯絡客服。',
     LOCAL_UPSERT_FAILED:      '資料建檔失敗，請稍後再試；若持續發生請聯絡客服。',

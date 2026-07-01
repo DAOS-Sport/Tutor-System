@@ -64,8 +64,13 @@ API Key、帳號、表單路徑都透過環境變數注入，**請勿** 將明�
 |---|---|---|
 | H01 員工 / 教練 | Ragic → 系統（唯讀，**Ragic 為人事權威**）| 姓名/手機/Email/在職 經 staging 待審核；**場館（部門）自動套用不經待審核**（Task #95，見下）。任何端（admin / 教練 LIFF）都不寫 H01，異動一律請 HR 在 Ragic 操作 |
 | H05 場館清單 | Ragic → 系統（唯讀）| 每次進入系統即時 API 查詢 |
-| Z01 家長資料 | Ragic ↔ 系統（雙向）| 即時雙向同步 |
-| Z02 學員資料 | Ragic ↔ 系統（雙向）| 即時雙向同步 |
+| Z01 家長資料 | Ragic ↔ 系統（雙向）| 登入/註冊/`/me/sync` 即時單筆查詢與回寫；另有排程補面（見下）|
+| Z02 學員資料 | Ragic ↔ 系統（雙向）| 同上，Z02 隨 Z01 子表格一併帶出/寫入 |
+
+> **排程補面**（避免只看上表誤以為「即時」= 沒有排程）：
+> - **每日 01:00（台北）Ragic → 本地全量拉取**：`cron/index.js` 呼叫 `ragicAdmin.pullParentsStudentsFromRagic()`（`ragic.getAllParents()` 全量分頁拉 Z01，逐筆走既有 `parentSync.syncFromRagicRecord` upsert）。補「客戶從未重新登入、但 Ragic/HR 端已異動」永遠不會回流本地的缺口。`reactivate:false`，不會復活本地已軟刪的家長。
+> - **每日 02:00（台北）本地 → Ragic 備份回寫**：`ragicAdmin.backupParentsStudentsToRagic()`，只處理本地 `last_synced_at IS NULL`（從未同步成功）的待補列，跟上面 01:00 方向相反，互不重疊。
+> - 兩者皆可在後台「Ragic 連線狀態」頁個別手動開關（`POST /api/admin/ragic-status/toggle`），關閉後 cron 與手動「立即同步」都會被擋下。
 
 ### H01 唯讀權威政策（Task #95 定案）
 

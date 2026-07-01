@@ -51,17 +51,43 @@ function isCoachLiffContext(fromPath) {
 
 /**
  * 家長端 LINE 錯誤碼 → 中文文案
+ *
+ * 涵蓋分類（新成員登入/綁定最常遇到的狀況）：
+ *   1. LINE 身分驗證：token 逾時 / 系統設定錯誤 / 連不上 LINE 驗證服務
+ *   2. 網路：完全連不上我方伺服器（err.response 不存在，區別於「伺服器回了錯誤」）
+ *   3. Ragic 連線：逾時（可重試）vs 其他無法連線
+ *   4. 資料衝突：LINE / 手機互相綁定衝突
+ *   5. 認領驗證：資料不符 vs 系統資料本身缺身分證字號（不是使用者打錯）
+ *   6. 頻率限制
+ * 找不到對應 code 時，優先採用後端已給的可讀訊息（err.response.data.error），
+ * 只有連後端訊息都沒有時才顯示最後一句泛用文案。
  */
 function parentErrorMessage(err) {
   const code = err?.response?.data?.code;
   const status = err?.response?.status;
-  if (code === 'LINE_ALREADY_BOUND_TO_OTHER_PHONE') return '此 LINE 已綁定其他手機，請聯絡管理員。';
-  if (code === 'PHONE_ALREADY_BOUND_TO_OTHER_LINE') return '此手機已綁定其他 LINE，請聯絡管理員。';
-  if (code === 'LINE_VERIFY_FAILED' || code === 'LINE_ID_TOKEN_REQUIRED') return 'LINE 驗證失敗：請重新開啟 LIFF 或稍後再試。';
-  if (code === 'RAGIC_UNAVAILABLE') return '資料查詢暫時失敗，請稍後再試。';
-  if (code === 'RATE_LIMITED' || status === 429) return '嘗試次數過多，請稍後再試。';
-  if (code === 'PHONE_FORMAT_INVALID') return '手機格式錯誤（需 09xxxxxxxx）。';
-  if (code === 'CLAIM_VERIFICATION_FAILED') return '學員姓名或身分證字號與資料不符，無法認領。請確認後再試，或洽櫃台 / LINE 客服。';
+  const serverMsg = err?.response?.data?.error;
+  // 完全沒有 response：請求根本沒送達（離線 / DNS / CORS / 逾時無回應），
+  // 跟「伺服器回了 4xx/5xx」是不同狀況，不能用同一句話帶過。
+  if (!err?.response) return '網路連線異常，請檢查網路連線後再試一次。';
+
+  const MAP = {
+    LINE_ALREADY_BOUND_TO_OTHER_PHONE: '此 LINE 已綁定其他手機，請聯絡管理員。',
+    PHONE_ALREADY_BOUND_TO_OTHER_LINE: '此手機已綁定其他 LINE，請聯絡管理員。',
+    LINE_TOKEN_EXPIRED:        'LINE 登入已逾時，請重新從 LINE 開啟此頁面。',
+    LINE_CHANNEL_MISCONFIGURED:'系統設定異常，請聯繫客服協助處理（非您的操作問題）。',
+    LINE_VERIFY_NETWORK_ERROR: '暫時無法連上 LINE 驗證服務，請稍後再試。',
+    LINE_VERIFY_FAILED:        'LINE 驗證失敗：請重新開啟 LIFF 或稍後再試。',
+    LINE_ID_TOKEN_REQUIRED:    'LINE 驗證失敗：請重新開啟 LIFF 或稍後再試。',
+    RAGIC_TIMEOUT:              'Ragic 回應較慢，請稍候片刻再試一次。',
+    RAGIC_UNAVAILABLE:          '資料查詢暫時失敗，請稍後再試。',
+    RATE_LIMITED:               '嘗試次數過多，請稍後再試。',
+    PHONE_FORMAT_INVALID:       '手機格式錯誤（需 09xxxxxxxx）。',
+    CLAIM_VERIFICATION_FAILED:  '學員姓名或身分證字號與資料不符，無法認領。請確認後再試，或洽櫃台 / LINE 客服。',
+    CLAIM_NO_ID_ON_FILE:        '系統資料不完整，無法自動核對身分證字號，請透過本館 LINE 官方帳號聯繫櫃檯協助綁定。',
+  };
+  if (code && MAP[code]) return MAP[code];
+  if (status === 429) return MAP.RATE_LIMITED;
+  if (serverMsg && typeof serverMsg === 'string') return serverMsg;
   return '發生錯誤，請稍後再試。';
 }
 
@@ -83,7 +109,7 @@ export default function LoginPage() {
   const fromPath = location.state?.from?.pathname || '';
   const coachContext = isCoachLiffContext(fromPath);
 
-  // parent flow state: 'checking'|'need_phone'|'manual'|'error'
+  // parent flow state: 'checking'|'need_phone'|'manual'|'need_claim'|'claim_data_gap'|'error'
   const [parentState, setParentState] = useState(coachContext ? null : 'checking');
   const [idToken, setIdToken] = useState(null);
   const [phone, setPhone] = useState('');
@@ -91,6 +117,8 @@ export default function LoginPage() {
   const [claimId, setClaimId] = useState('');
   const [busy, setBusy] = useState(false);
   const [errCode, setErrCode] = useState('');
+  // 'error' 狀態要顯示的實際文案（依 errCode 對應的具體原因，不再固定顯示同一句話）
+  const [errMsg, setErrMsg] = useState('');
 
   const autoRanRef = useRef(false);
 
@@ -152,6 +180,7 @@ export default function LoginPage() {
       if (!tk) {
         clearAfterAuth();
         setErrCode('LINE_ID_TOKEN_REQUIRED');
+        setErrMsg('LINE 驗證失敗：請重新開啟 LIFF 或稍後再試。');
         setParentState('error');
         toast.error('LINE 驗證失敗：請重新開啟 LIFF 或稍後再試。');
         setBusy(false);
@@ -171,14 +200,18 @@ export default function LoginPage() {
           setParentState('need_phone');
           return;
         }
-        // 未知 status
+        // 未知 status：後端回了 200 但 status 欄位不是我們認得的值（例如未來新增了狀態、
+        // 前端還沒更新對應），跟「請求失敗」是不同狀況，訊息要分開講清楚。
         clearAfterAuth();
         setErrCode('UNKNOWN_STATUS');
+        setErrMsg('登入回應異常（未知狀態），請稍後再試或回報問題。');
         setParentState('error');
         toast.error('登入失敗，請稍後再試。');
       } catch (err) {
         clearAfterAuth();
-        setErrCode(err?.response?.data?.code || err?.code || '');
+        const code = err?.response?.data?.code || err?.code || (!err?.response ? 'NETWORK_ERROR' : 'LOGIN_FAILED');
+        setErrCode(code);
+        setErrMsg(parentErrorMessage(err));
         setParentState('error');
         toast.error(parentErrorMessage(err));
       } finally {
@@ -261,6 +294,15 @@ export default function LoginPage() {
       }
       toast.error('綁定失敗，請稍後再試。');
     } catch (err) {
+      const code = err?.response?.data?.code;
+      if (code === 'CLAIM_NO_ID_ON_FILE') {
+        // 姓名對上了，但 Ragic 該學員身分證字號是空的——不管家長再輸入幾次都不可能比對成功，
+        // 停留在原表單只會讓人一直重試白費力氣；改顯示專屬引導畫面導去給櫃檯人工核對。
+        setErrCode(code);
+        setErrMsg(parentErrorMessage(err));
+        setParentState('claim_data_gap');
+        return;
+      }
       toast.error(parentErrorMessage(err));
     } finally {
       setBusy(false);
@@ -300,7 +342,7 @@ export default function LoginPage() {
       {parentState === 'error' && (
         <div className="w-full max-w-[340px] rounded-xl border border-rose-200 bg-rose-50 p-5 text-center">
           <p className="text-sm leading-6 text-rose-800">
-            LINE 驗證失敗，請從 LINE App 重新開啟連結，或稍後再試。
+            {errMsg || 'LINE 驗證失敗，請從 LINE App 重新開啟連結，或稍後再試。'}
           </p>
           <button type="button" onClick={() => window.location.reload()}
             className="mt-4 w-full rounded-lg bg-brand-primary py-2 text-sm font-bold text-white active:bg-brand-teal">
@@ -319,8 +361,30 @@ export default function LoginPage() {
         </div>
       )}
 
+      {parentState === 'claim_data_gap' && (
+        <div className="w-full max-w-[340px] rounded-xl border border-amber-300 bg-amber-50 p-5 text-center">
+          <p className="mb-1 text-sm font-bold leading-6 text-amber-900">系統資料不完整，無法自動核對</p>
+          <p className="text-xs leading-5 text-amber-800">
+            {errMsg || '我們找到您的家庭資料，但系統缺少學員身分證字號可供核對，無法自助完成綁定。'}
+            請截圖此畫面，回到<b>本館 LINE 官方帳號</b>洽詢客服協助人工核對並綁定。
+          </p>
+          <button type="button" onClick={() => { setParentState('need_phone'); setErrCode(''); setErrMsg(''); }}
+            className="mt-4 w-full rounded-lg border border-amber-400 bg-white py-2.5 text-sm font-bold text-amber-800 active:bg-amber-100">
+            重新輸入手機號碼
+          </button>
+          <div className="mt-3">
+            <ReportIssueButton
+              audience="parent"
+              errorCode={errCode}
+              errorMessage="家長端認領驗證：系統資料缺身分證字號"
+              context="家長端登入 - 手機綁定認領"
+            />
+          </div>
+        </div>
+      )}
+
       {/* 防呆：任何非預期狀態都不可停在純 LOGO 空白頁 → 給重試 + 問題回報 */}
-      {!['checking', 'error', 'need_phone', 'manual', 'need_claim'].includes(parentState) && (
+      {!['checking', 'error', 'need_phone', 'manual', 'need_claim', 'claim_data_gap'].includes(parentState) && (
         <div className="w-full max-w-[340px] rounded-xl border border-gray-200 bg-gray-50 p-5 text-center">
           <p className="text-sm leading-6 text-gray-700">
             登入流程未完成，請重新嘗試，或透過下方按鈕回報問題。

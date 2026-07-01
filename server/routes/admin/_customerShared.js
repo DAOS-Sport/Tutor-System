@@ -59,4 +59,45 @@ function auditReveal(req, kind, count) {
   console.log('[pii-reveal]', JSON.stringify({ by: u.sub || u.username || '?', role: u.role, kind, count }));
 }
 
-module.exports = { parseRocOrIso, courseTypeLabel, maskId, maskBlood, looksMasked, wantReveal, auditReveal };
+// ── 學員資料稽核（student_audit_logs）─────────────────────────────────────
+// 只記白名單欄位裡實際變動的部分 → { field: { before, after } }；無變動回 null。
+// 數值欄位以數值比較，避免假變動（例如 PG 回傳字串 "1" vs 前端送數字 1）。
+// 沿用 routes/admin/courseTypes.js 的 diffChanges 同一套邏輯（course_type_config_audit_logs
+// 的既有樣板），供 parents.js / customerStudents.js / customerParents.js 三處共用。
+function diffChanges(before, after, fields) {
+  const out = {};
+  for (const k of fields) {
+    const b = before?.[k];
+    const a = after?.[k];
+    const bn = Number(b);
+    const an = Number(a);
+    const numeric = b !== null && b !== undefined && b !== '' &&
+      a !== null && a !== undefined && a !== '' && Number.isFinite(bn) && Number.isFinite(an);
+    const same = numeric ? bn === an : String(b ?? '') === String(a ?? '');
+    if (!same) out[k] = { before: b ?? null, after: a ?? null };
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/**
+ * 寫一筆學員稽核紀錄。db 可傳 pool 或交易中的 client。
+ * byRole：'parent' | 'staff' | 'manager' | 'admin'，用來分辨「家長自己改的」跟「櫃檯/管理員改的」。
+ * changes 為 null（例如新建、或 diff 後沒有實際變動）仍會落一筆 action 紀錄，只是 changes 空。
+ */
+async function writeStudentAudit(db, studentId, action, { byUser, byRole, changes, note } = {}) {
+  await db.query(
+    `INSERT INTO student_audit_logs (student_id, action, by_user, by_role, changes, note)
+     VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
+    [studentId, action, byUser || null, byRole || null, changes ? JSON.stringify(changes) : null, note || null]
+  );
+}
+
+/** 從 admin JWT payload 取顯示用姓名/帳號（跟 courseTypes.js 的 auditUser 同邏輯）。 */
+function adminActorName(req) {
+  return req.adminUser?.name || req.adminUser?.username || 'unknown';
+}
+
+module.exports = {
+  parseRocOrIso, courseTypeLabel, maskId, maskBlood, looksMasked, wantReveal, auditReveal,
+  diffChanges, writeStudentAudit, adminActorName,
+};

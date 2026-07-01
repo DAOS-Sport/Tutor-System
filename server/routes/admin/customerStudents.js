@@ -15,7 +15,7 @@
 const express = require('express');
 const { pool } = require('../../models/db');
 const { requireAdminAuth, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
-const { parseRocOrIso, courseTypeLabel, maskId, maskBlood, looksMasked, wantReveal, auditReveal } = require('./_customerShared');
+const { parseRocOrIso, courseTypeLabel, maskId, maskBlood, looksMasked, wantReveal, auditReveal, diffChanges, writeStudentAudit, adminActorName } = require('./_customerShared');
 
 const router = express.Router();
 
@@ -97,6 +97,29 @@ router.get('/:id', requireAdminAuth, async (req, res) => {
   }
 });
 
+// GET /:id/audit-logs — 學員編輯紀錄（家長自己改 / 櫃檯 / 管理員改，含 before/after diff）
+router.get('/:id/audit-logs', requireAdminAuth, async (req, res) => {
+  try {
+    const own = await pool.query(
+      `SELECT p.primary_venue_id AS v FROM students s LEFT JOIN parents p ON p.id = s.parent_id WHERE s.id = $1`,
+      [req.params.id]
+    );
+    if (!own.rowCount || !isVenueInScope(req, own.rows[0].v)) {
+      return res.status(404).json({ error: '找不到此學員' });
+    }
+    const r = await pool.query(
+      `SELECT id, at, action, by_user, by_role, changes, note
+         FROM student_audit_logs WHERE student_id = $1
+        ORDER BY at DESC, id DESC LIMIT 200`,
+      [req.params.id]
+    );
+    res.json(r.rows);
+  } catch (err) {
+    console.error('[admin/customer-students] audit-logs', err);
+    res.status(500).json({ error: '讀取編輯紀錄失敗' });
+  }
+});
+
 // 購買紀錄查詢（新系統 course_periods）
 async function loadPurchases(studentId) {
   const r = await pool.query(
@@ -126,14 +149,16 @@ router.patch('/:id', requireAdminAuth, async (req, res) => {
   const b = req.body || {};
   if (b.name !== undefined && !String(b.name).trim()) return res.status(400).json({ error: '學員姓名不可為空', code: 'INPUT_INVALID' });
   try {
-    // 權限：學員所屬家長場館需落在操作者範圍
+    // 權限：學員所屬家長場館需落在操作者範圍；順便撈稽核 diff 要用的目前值。
     const own = await pool.query(
-      `SELECT p.primary_venue_id AS v FROM students s LEFT JOIN parents p ON p.id = s.parent_id WHERE s.id = $1`,
+      `SELECT p.primary_venue_id AS v, s.name, s.gender, s.id_number, s.blood_type, s.student_code, s.birth_date
+         FROM students s LEFT JOIN parents p ON p.id = s.parent_id WHERE s.id = $1`,
       [req.params.id]
     );
     if (!own.rowCount || !isVenueInScope(req, own.rows[0].v)) {
       return res.status(404).json({ error: '找不到此學員' });
     }
+    const before = own.rows[0];
 
     const sets = [];
     const args = [];
@@ -158,6 +183,9 @@ router.patch('/:id', requireAdminAuth, async (req, res) => {
     );
     if (!r.rowCount) return res.status(404).json({ error: '找不到此學員' });
     // TODO(Option A 寫回 Ragic)：ragic.updateStudentZ01Z02Strict，資料清洗後接上。
+    const changes = diffChanges(before, r.rows[0], ['name', 'gender', 'id_number', 'blood_type', 'student_code', 'birth_date']);
+    writeStudentAudit(pool, req.params.id, 'edit', { byUser: adminActorName(req), byRole: req.adminUser?.role, changes })
+      .catch((err) => console.warn('[student-audit] 管理員編輯稽核寫入失敗:', err.message));
     res.json(rowToStudent(r.rows[0], wantReveal(req)));
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: '身分證字號或 Ragic 連結重複', code: 'UNIQUE_CONFLICT' });

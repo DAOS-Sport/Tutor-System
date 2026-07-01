@@ -48,10 +48,12 @@ export default function CustomerParentsPage() {
   }, [filters]);
 
   async function openEditor(row) {
-    // 先抓 detail（含學員子表 + 依 reveal 決定遮罩）再開窗，避免子表掛載後才到、永遠空白。
+    // 先抓 detail（含學員子表）再開窗，避免子表掛載後才到、永遠空白。
+    // 一律用 reveal=true 抓：點「編輯」本身就是有明確對象、可稽核的操作，不用先在列表層級
+    // 按過「顯示個資」才能編輯——列表顯示的遮罩跟這裡分開，不受影響。
     let data = { parent: { ...row }, students: [] };
     try {
-      const detail = await customerParentsApi.get(row.id, reveal);
+      const detail = await customerParentsApi.get(row.id, true);
       if (detail) data = { parent: detail, students: detail.students || [] };
     } catch { /* detail 失敗 → 用列表基本資料，不阻擋編輯 */ }
     setEditing(data);
@@ -199,7 +201,6 @@ export default function CustomerParentsPage() {
           parent={editing.parent}
           students={editing.students}
           venues={venues}
-          reveal={reveal}
           busy={busy}
           onClose={() => setEditing(null)}
           onSave={handleSave}

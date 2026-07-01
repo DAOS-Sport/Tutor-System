@@ -19,6 +19,7 @@
  */
 const { pool } = require('../models/db');
 const ragic = require('./ragic');
+const parentSync = require('./parentSync');
 // Ragic 表單 / 欄位對應唯一來源（凍結點）：H01 LINE UID 候選、場館欄位、角色關鍵字
 const { H01 } = require('../config/ragicSchema');
 
@@ -886,6 +887,319 @@ async function _backupParentsStudentsImpl() {
 
 async function backupParentsStudentsToRagic(triggeredBy = 'cron') { return _singleflight('backup', triggeredBy); }
 
+// 每日全量同步：把 Ragic Z01（家長）+ 內嵌子表 Z02（學員）整份清單「拉」進本地
+// parents/students，補上既有缺口——目前 Z01/Z02 只有 (a) 登入/註冊時的即時單筆查詢、
+// (b) 上面 backup 是反方向（本地→Ragic）。任何被 HR/Ragic 手動異動、但客戶本人
+// 從未重新登入過的資料，過去永遠不會回流到本地鏡像；這支排程補上這個缺口。
+//
+// 刻意不走 parentSync.syncFromRagicRecord()/_syncWithLock：那組防護（advisory lock +
+// BindConflictError 409）是設計給「剛驗證身分的即時 LIFF request」用的，背景排程沒有
+// activate 使用者可以 409。真正的安全網已內建在 upsertLocalParent 的 SQL 裡——
+// line_uid = COALESCE(parents.line_uid, EXCLUDED.line_uid)，本來就不會拿新值覆蓋既有綁定；
+// 唯一可能出錯的情況（Ragic 上兩筆不同電話卻同一個 line_uid，撞 parents.line_uid UNIQUE）
+// 用逐筆自己的 transaction + catch 處理，失敗記錄後繼續下一筆，不影響其他筆。
+//
+// 效能：1300+ 家長直接逐筆呼叫 upsertLocalParent/upsertLocalStudents（各自最多 2+3 次
+// SELECT）會產生數千次序列 DB 往返，比照 H01 當年的效能事故（262 筆/500+ 往返/78-116秒）
+// 換算恐達 20-45 分鐘。這裡跑迴圈前先用 parentSync.loadVenuesMap/loadStudentsByParentPhone
+// 一次撈好場館代碼表跟「電話→現有學員列」表，讓 _resolveVenueId 跟三層學員比對都改查
+// 記憶體裡的 Map，把大部分序列 SELECT 省掉。
+//
+// reactivate:false（背景刷新，不復活本地已軟刪的家長，語意同 routes/parents.js /me/sync）。
+// 刻意不做「Ragic 沒有的本地家長 → 自動停用」：一來 RAGIC_MAX_PAGES 上限若靜默截斷會
+// 誤殺還在的人，二來這個方向本來就該跟 H01/H05 一樣先進待審核，不在這次範圍。
+function _pickZ01Raw(z01Row, keys) {
+  for (const k of keys) {
+    const v = z01Row?.[k];
+    if (v !== undefined && v !== null && String(v).trim() !== '') return String(v).trim();
+  }
+  return '';
+}
+
+// 把一筆壞姓名（或已是真人但姓名仍壞）的 Z01 記錄，連同底下學員子表格，整份原始值
+// upsert 進 Z03 人工整理表。刻意不經 mapZ01Parent/normalizeGender 之外的任何轉換
+// （mapped.* 本身只有 trim + fallback key，沒有語意轉換，可以直接當「原始值」使用；
+// 學員子表格改用 parseZ01StudentsRaw，避開 parseZ01Students 的 normalizeDate/toUpperCase）。
+// status 只在非 'dismissed' 時重置為 'pending'：一旦人工判定誤判並忽略，往後排程刷新
+// 不會又把它翻回待處理，除非真的重新指定。
+async function _upsertZ03Record(client, ragicRecordId, mapped, z01Row) {
+  if (!ragicRecordId) return;
+  const lineChatUrlRaw = _pickZ01Raw(z01Row, ['1002390', 'line對話網址']);
+  const studentCountRaw = _pickZ01Raw(z01Row, ['1001138', '名下有幾位學生']);
+  const r = await client.query(
+    `INSERT INTO ragic_z03_records
+       (z01_ragic_record_id, raw_name, venue_raw, phone, identity_raw, gender_raw,
+        email_raw, home_phone_raw, home_address_raw, line_id_raw, line_chat_url_raw,
+        line_uid_raw, student_count_raw, status, fetched_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'pending',NOW())
+     ON CONFLICT (z01_ragic_record_id) DO UPDATE SET
+       raw_name = EXCLUDED.raw_name, venue_raw = EXCLUDED.venue_raw, phone = EXCLUDED.phone,
+       identity_raw = EXCLUDED.identity_raw, gender_raw = EXCLUDED.gender_raw,
+       email_raw = EXCLUDED.email_raw, home_phone_raw = EXCLUDED.home_phone_raw,
+       home_address_raw = EXCLUDED.home_address_raw, line_id_raw = EXCLUDED.line_id_raw,
+       line_chat_url_raw = EXCLUDED.line_chat_url_raw, line_uid_raw = EXCLUDED.line_uid_raw,
+       student_count_raw = EXCLUDED.student_count_raw,
+       status = CASE WHEN ragic_z03_records.status = 'dismissed' THEN 'dismissed' ELSE 'pending' END,
+       fixed_name  = CASE WHEN ragic_z03_records.status = 'dismissed' THEN ragic_z03_records.fixed_name  ELSE NULL END,
+       resolved_at = CASE WHEN ragic_z03_records.status = 'dismissed' THEN ragic_z03_records.resolved_at ELSE NULL END,
+       resolved_by = CASE WHEN ragic_z03_records.status = 'dismissed' THEN ragic_z03_records.resolved_by ELSE NULL END,
+       fetched_at = NOW()
+     RETURNING id`,
+    [ragicRecordId, mapped.name || '', mapped.primary_venue_id || '', mapped.phone || '',
+     mapped.identity || '', mapped.gender || '', mapped.email || '', mapped.home_phone || '',
+     mapped.home_address || '', mapped.line_id || '', lineChatUrlRaw,
+     mapped.line_uid || '', studentCountRaw]
+  );
+  const z03Id = r.rows[0].id;
+  await client.query(`DELETE FROM ragic_z03_students WHERE z03_record_id = $1`, [z03Id]);
+  for (const s of ragic.parseZ01StudentsRaw(z01Row)) {
+    await client.query(
+      `INSERT INTO ragic_z03_students
+         (z03_record_id, seq_raw, student_status_raw, name_raw, birth_date_raw,
+          gender_raw, id_number_raw, blood_type_raw, age_raw, student_code_raw, registered_phone_raw)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [z03Id, s.seq_raw, s.student_status_raw, s.name_raw, s.birth_date_raw, s.gender_raw,
+       s.id_number_raw, s.blood_type_raw, s.age_raw, s.student_code_raw, s.registered_phone_raw]
+    );
+  }
+}
+
+// 姓名在 Ragic 端已經被改好（人工在 Z03 頁面寫回、或直接在 Ragic 後台改）→ 幫這筆
+// Z03 追蹤列畢業。只動 status='pending' 的列，'dismissed' 的忽略列不受影響。
+async function _resolveZ03IfPending(client, ragicRecordId, currentRawName) {
+  if (!ragicRecordId) return;
+  await client.query(
+    `UPDATE ragic_z03_records SET status = 'resolved', resolved_at = NOW(), fixed_name = $2
+       WHERE z01_ragic_record_id = $1 AND status = 'pending'`,
+    [ragicRecordId, currentRawName || '']
+  );
+}
+
+async function _pullParentsStudentsImpl() {
+  if (!ragicEnabled()) return { synced: 0, skipped: true };
+  let records;
+  try {
+    records = await ragic.getAllParents();
+  } catch (err) {
+    return { synced: 0, error: `Ragic Z01 全量查詢失敗：${err.message}` };
+  }
+
+  let synced = 0;
+  let quarantinedZ03 = 0;
+  const errors = [];
+  const client = await pool.connect();
+  try {
+    const venuesMap = await parentSync.loadVenuesMap(client);
+    const studentsByPhone = await parentSync.loadStudentsByParentPhone(client);
+    const boundPhones = await parentSync.loadBoundPhones(client);
+
+    for (const z01Row of records) {
+      const mapped = ragic.mapZ01Parent(z01Row);
+      if (!mapped.phone) continue; // 沒電話無法比對，且 upsertLocalParent 本身也會拒絕
+      const ragicRecordId = mapped.ragic_record_id ? String(mapped.ragic_record_id) : String(z01Row._ragicId || '');
+      const isBadName = isPlaceholderParentName(mapped.name);
+      // 已綁定 line_uid = 已經有真人透過即時登入流程建過帳號；即使姓名仍壞，也不能把這筆
+      // 從 parents/students 同步排除，否則會讓真實使用者的活動資料被冷落（見計畫「不動任何
+      // 現有使用者」的前提——這裡是防呆，理論上這批應該都還沒人登入過）。
+      const alreadyBound = boundPhones.has(mapped.phone);
+
+      try {
+        if (isBadName && !alreadyBound) {
+          // 壞名字 + 從未登入過 → 只進 Z03，不建立/更新 parents/students。
+          // 順手軟拆除：這支 Z03 分流邏輯上線前，pull job 舊版本已經把這些壞名字記錄
+          // 同步進 parents 過（沒有 line_uid，純鏡射殘留）——只影響「從未登入過」的列，
+          // 不會動到任何真人使用者（COALESCE 語意跟其餘軟刪除邏輯一致，只清 is_active）。
+          await client.query('BEGIN');
+          await _upsertZ03Record(client, ragicRecordId, mapped, z01Row);
+          const stale = await client.query(
+            `UPDATE parents SET is_active = FALSE, updated_at = NOW()
+              WHERE phone = $1 AND line_uid IS NULL AND is_active = TRUE
+              RETURNING id`,
+            [mapped.phone]
+          );
+          if (stale.rowCount) {
+            await client.query(
+              `UPDATE students SET is_active = FALSE, updated_at = NOW() WHERE parent_id = $1`,
+              [stale.rows[0].id]
+            );
+          }
+          await client.query('COMMIT');
+          quarantinedZ03++;
+          continue;
+        }
+
+        await client.query('BEGIN');
+        const local = await parentSync.upsertLocalParent(client, mapped, mapped.line_uid || null, {
+          reactivate: false,
+          venuesMap,
+        });
+        const students = ragic.parseZ01Students(z01Row);
+        await parentSync.upsertLocalStudents(client, local.id, students, {
+          authoritative: true,
+          existingStudents: studentsByPhone.get(mapped.phone) || [],
+        });
+        if (isBadName) {
+          // 已是真人但姓名仍壞：照常同步 + 仍寫進 Z03 供人工提醒改名（不排除、只提醒）。
+          await _upsertZ03Record(client, ragicRecordId, mapped, z01Row);
+        } else {
+          // 姓名正常：若先前卡在 Z03 待處理，這裡自動畢業。
+          await _resolveZ03IfPending(client, ragicRecordId, mapped.name);
+        }
+        await client.query('COMMIT');
+        synced++;
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        errors.push(err.message);
+        console.warn('[ragic-pull] parent sync failed (ragicId=%s):', z01Row._ragicId, err.message);
+      }
+    }
+  } finally {
+    client.release();
+  }
+
+  return errors.length
+    ? { synced, quarantined: quarantinedZ03, error: `${errors.length} 筆同步失敗（詳見伺服器 log）：${errors[0]}` }
+    : { synced, quarantined: quarantinedZ03 };
+}
+
+async function pullParentsStudentsFromRagic(triggeredBy = 'cron') { return _singleflight('pull', triggeredBy); }
+
+// ─────────────────────────────────────────────────────────────
+// Z03 人工整理表 — 後台 API 用（列表 / 修正寫回 / 忽略）
+// 資料本身由 _pullParentsStudentsImpl 的 Z03 分流邏輯灌入，這裡只負責讀取與人工動作。
+// ─────────────────────────────────────────────────────────────
+async function listZ03Records({ status = 'pending' } = {}) {
+  const where = [];
+  const vals = [];
+  if (status && status !== 'all') {
+    vals.push(status);
+    where.push(`status = $${vals.length}`);
+  }
+  const records = (await pool.query(
+    `SELECT * FROM ragic_z03_records
+       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+      ORDER BY (status = 'pending') DESC, fetched_at DESC`,
+    vals
+  )).rows;
+  if (!records.length) return records;
+
+  const students = (await pool.query(
+    `SELECT * FROM ragic_z03_students WHERE z03_record_id = ANY($1) ORDER BY seq_raw`,
+    [records.map((r) => r.id)]
+  )).rows;
+  const byRecord = new Map();
+  for (const s of students) {
+    const list = byRecord.get(s.z03_record_id);
+    if (list) list.push(s); else byRecord.set(s.z03_record_id, [s]);
+  }
+  return records.map((r) => ({ ...r, students: byRecord.get(r.id) || [] }));
+}
+
+// 人工確認正確姓名 → 只寫回 Ragic Z01 的姓名欄位（Field ID，partial update，
+// 不動同一筆的其他欄位），成功才標記本地 resolved；下一輪 01:00 pull 會依
+// _resolveZ03IfPending 的邏輯自然把這筆同步進 parents/students。
+async function resolveZ03Record(id, fixedName, adminUsername) {
+  const name = String(fixedName || '').trim();
+  if (!name) throw new Error('請輸入正確姓名');
+  const row = (await pool.query(`SELECT * FROM ragic_z03_records WHERE id = $1`, [id])).rows[0];
+  if (!row) throw new Error('找不到這筆 Z03 記錄');
+  if (isPlaceholderParentName(name)) throw new Error('這個姓名看起來仍是電話號碼，請確認後再送出');
+
+  await ragic.upsertParentStrict({ [ragic.FIELD.Z01.PARENT_NAME]: name }, row.z01_ragic_record_id);
+
+  const updated = (await pool.query(
+    `UPDATE ragic_z03_records
+        SET status = 'resolved', fixed_name = $2, resolved_at = NOW(), resolved_by = $3
+      WHERE id = $1
+      RETURNING *`,
+    [id, name, adminUsername || null]
+  )).rows[0];
+  return updated;
+}
+
+async function dismissZ03Record(id, adminUsername) {
+  const updated = (await pool.query(
+    `UPDATE ragic_z03_records
+        SET status = 'dismissed', resolved_at = NOW(), resolved_by = $2
+      WHERE id = $1
+      RETURNING *`,
+    [id, adminUsername || null]
+  )).rows[0];
+  if (!updated) throw new Error('找不到這筆 Z03 記錄');
+  return updated;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Z01 家長姓名資料品質偵測（Z01↔Z03 機制的可先做部分）
+//
+// 背景：2026-06-30 匯入的舊系統學生資料批次，511 筆 Z01 記錄裡有 433 筆（85%）的
+// 「家長姓名」欄位其實是電話號碼（例如姓名欄=行動電話欄=「0926332176」），不是真實姓名。
+// Z03（另一新表單，供人工整理新舊資料用）與「壞姓名寫進 Z03、家長改對名字後回頭清理」
+// 這兩塊，卡在 Z03 表單是否已建好、實際欄位 ID 尚未確認，暫緩實作（見下方 TODO）。
+// 這裡先做「偵測 + 本地追蹤」，不依賴 Z03 就能先跑：可以先掌握目前還有多少筆爛資料、
+// 且已內建「治癒後標記解決」的掛勾點（見 server/routes/parents.js `PATCH /me`）。
+// ─────────────────────────────────────────────────────────────
+
+// Tier 1：去除常見電話格式符號後整串是純數字 → 幾乎可以肯定是「拿電話號碼頂替姓名」
+// 的佔位資料（已知真實案例：「0926332176」），誤判機率極低，可以直接拿來觸發追蹤。
+function isPlaceholderParentName(name) {
+  const stripped = String(name || '').trim().replace(/[\s\-()（）.]/g, '');
+  if (!stripped) return false; // 空姓名是另一個問題（Z01 姓名為必填），不併入這條規則判斷
+  return /^\d+$/.test(stripped);
+}
+
+// Tier 2：完全不含中文字——範圍更寬，但這個系統從沒驗證過姓名格式，不能排除真的有
+// 非中文姓名的家長。先只回傳判斷結果供統計/記錄用，暫不接自動觸發追蹤，等實際抽樣
+// 確認這類資料真的都是垃圾資料後，才考慮升級成跟 Tier 1 一樣的觸發條件。
+function hasNoCjkCharacters(name) {
+  return !/[㐀-鿿豈-﫿]/.test(String(name || ''));
+}
+
+// 偵測 + 維護本地追蹤表（不依賴 Z03，可獨立跑）。目前只掃 Tier 1（純數字姓名）。
+async function _quarantineBadZ01NamesImpl() {
+  if (!ragicEnabled()) return { synced: 0, skipped: true };
+  let records;
+  try {
+    records = await ragic.getAllParents();
+  } catch (err) {
+    return { synced: 0, error: `Ragic Z01 全量查詢失敗：${err.message}` };
+  }
+
+  let tier1Count = 0, tier2Count = 0, tracked = 0;
+  const errors = [];
+  for (const z01Row of records) {
+    const mapped = ragic.mapZ01Parent(z01Row);
+    if (!mapped.name || !z01Row._ragicId) continue;
+    if (hasNoCjkCharacters(mapped.name)) tier2Count++; // 純統計，不觸發追蹤
+    if (!isPlaceholderParentName(mapped.name)) continue;
+    tier1Count++;
+    try {
+      await pool.query(
+        `INSERT INTO ragic_z01_quarantine (z01_ragic_record_id, phone, bad_name)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (z01_ragic_record_id) DO UPDATE SET
+           phone = EXCLUDED.phone, bad_name = EXCLUDED.bad_name
+           WHERE ragic_z01_quarantine.resolved_at IS NULL`,
+        [String(z01Row._ragicId), mapped.phone || '', mapped.name]
+      );
+      tracked++;
+    } catch (err) {
+      errors.push(err.message);
+      console.warn('[ragic-quarantine] track failed (ragicId=%s):', z01Row._ragicId, err.message);
+    }
+  }
+
+  // TODO(Z03)：等 Z03 表單確認存在 + 拿到真實欄位 ID 後，這裡補上「把 tracked 未推送過的
+  // 記錄寫進 Z03」；ragicSchema.js 需補 FORMS.Z03/Z03_FIELDS/FIELD.Z03。
+  // 在那之前，本 job 只維護本地 ragic_z01_quarantine 追蹤表，供後續人工查閱有多少筆待處理。
+  const note = `偵測到 ${tier1Count} 筆姓名疑似為電話號碼（另有 ${tier2Count} 筆不含中文字，僅統計未觸發）；Z03 推送待 Z03 表單確認後補上`;
+  return errors.length
+    ? { synced: tracked, error: `${errors.length} 筆追蹤寫入失敗（詳見伺服器 log）：${errors[0]}`, note }
+    : { synced: tracked, note };
+}
+
+async function quarantineBadZ01Names(triggeredBy = 'cron') { return _singleflight('quarantine', triggeredBy); }
+
 // Task #91：F-C-Admin 已合併至員工帳號管理；coaches 不再列為獨立 sync job。
 // staff sync 已會順帶 upsert coaches 1:1 行（透過 ragic_employee_id 對應），
 // 因此 FORM_META 移除 coaches 入口，避免後台「Ragic 狀態」頁顯示一張無法觸發的卡片。
@@ -898,7 +1212,40 @@ const FORM_META = {
   parents:  { code: 'Z01_PARENTS',  label: 'Z01 家長 (按請求查詢)',                   kind: 'healthcheck', impl: _pingZ01Impl,    env: 'RAGIC_FORM_Z01' },
   students: { code: 'Z02_STUDENTS', label: 'Z02 學員 (按請求查詢)',                   kind: 'healthcheck', impl: _pingZ02Impl,    env: 'RAGIC_FORM_Z02' },
   backup:   { code: 'Z01_Z02_BACKUP', label: 'Z01/Z02 本地→Ragic 每日備份同步',       kind: 'sync',        impl: _backupParentsStudentsImpl, env: 'RAGIC_FORM_Z01' },
+  pull:     { code: 'Z01_Z02_PULL',   label: 'Z01/Z02 Ragic→本地 每日全量同步',       kind: 'sync',        impl: _pullParentsStudentsImpl,   env: 'RAGIC_FORM_Z01' },
+  quarantine: { code: 'Z01_BAD_NAME_QUARANTINE', label: 'Z01 家長姓名品質偵測（→Z03，暫僅本地追蹤）', kind: 'sync', impl: _quarantineBadZ01NamesImpl, env: 'RAGIC_FORM_Z01' },
 };
+
+// ── 每個 Ragic sync job 可由 admin 在「Ragic 連線狀態」頁手動開關 ──
+// 存 admin_settings（key=ragic_sync_enabled_<job>，value 1/0；NUMERIC 欄位不能存布林/字串）。
+// 缺該 key 一律視為「啟用」，維持既有行為，不需要額外 migration/seed。
+function _toggleKey(jobName) { return `ragic_sync_enabled_${jobName}`; }
+
+async function isJobEnabled(jobName) {
+  const r = await pool.query(`SELECT value FROM admin_settings WHERE key = $1`, [_toggleKey(jobName)]);
+  return r.rows.length ? Number(r.rows[0].value) !== 0 : true;
+}
+
+async function setJobEnabled(jobName, enabled) {
+  if (!FORM_META[jobName]) throw new Error(`unknown ragic sync job: ${jobName}`);
+  await pool.query(
+    `INSERT INTO admin_settings (key, value, updated_at) VALUES ($1, $2, NOW())
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+    [_toggleKey(jobName), enabled ? 1 : 0]
+  );
+}
+
+async function getJobToggles() {
+  const jobs = Object.keys(FORM_META);
+  const r = await pool.query(
+    `SELECT key, value FROM admin_settings WHERE key = ANY($1)`,
+    [jobs.map(_toggleKey)]
+  );
+  const byKey = new Map(r.rows.map((row) => [row.key, Number(row.value) !== 0]));
+  const out = {};
+  for (const j of jobs) out[j] = byKey.has(_toggleKey(j)) ? byKey.get(_toggleKey(j)) : true;
+  return out;
+}
 
 async function _logSyncResult(jobName, formCode, result, durationMs, triggeredBy) {
   const status = result?.skipped ? 'skipped' : (result?.error ? 'error' : 'ok');
@@ -916,6 +1263,13 @@ async function _logSyncResult(jobName, formCode, result, durationMs, triggeredBy
 async function _runWithLog(jobName, triggeredBy = 'cron') {
   const meta = FORM_META[jobName];
   if (!meta) throw new Error(`unknown ragic sync job: ${jobName}`);
+  // admin 手動關閉的 job：cron 觸發和手動「立即同步」都在這裡統一擋下
+  // （所有觸發路徑最終都走 _runWithLog，單一把關點，不用個別改 cron.schedule）。
+  if (!(await isJobEnabled(jobName))) {
+    const result = { synced: 0, skipped: true, disabled: true };
+    await _logSyncResult(jobName, meta.code, result, 0, triggeredBy);
+    return result;
+  }
   const t0 = Date.now();
   let result;
   try {
@@ -966,6 +1320,7 @@ function getRagicEnvFlags() {
  * 給 GET /api/admin/ragic-status 用。
  */
 async function getSyncStatusSnapshot() {
+  const toggles = await getJobToggles();
   const out = {};
   for (const [job, meta] of Object.entries(FORM_META)) {
     const latest = await pool.query(
@@ -983,6 +1338,7 @@ async function getSyncStatusSnapshot() {
       form_code: meta.code,
       label: meta.label,
       kind: meta.kind || 'sync',
+      admin_enabled:         toggles[job],
       in_progress:           isJobRunning(job),
       last_run_at:           latest.rows[0]?.created_at      || null,
       last_status:           latest.rows[0]?.status          || null,
@@ -1226,10 +1582,21 @@ module.exports = {
   pingParentsFromRagic,
   pingStudentsFromRagic,
   backupParentsStudentsToRagic,
+  pullParentsStudentsFromRagic,
+  quarantineBadZ01Names,
+  isPlaceholderParentName,
+  hasNoCjkCharacters,
   getRagicJobNames,
   // Task #83 single-flight helpers
   isJobRunning,
   getRunningJobs,
+  // admin 手動開關（Ragic 連線狀態頁）
+  setJobEnabled,
+  getJobToggles,
+  // Z03 人工整理表
+  listZ03Records,
+  resolveZ03Record,
+  dismissZ03Record,
   // Task #66 staging
   applyStagedChange,
   rejectStagedChange,

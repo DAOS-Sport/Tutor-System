@@ -27,8 +27,32 @@ function statusBadge(s, inProgress) {
   return <span className={`${base} bg-gray-100 text-gray-500`}>—</span>;
 }
 
-function FormCard({ job, info, onSync, syncing, isAdmin, enabled }) {
+function ToggleSwitch({ checked, disabled, onChange, title }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      title={title}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition disabled:cursor-not-allowed disabled:opacity-50 ${
+        checked ? 'bg-brand-teal' : 'bg-gray-300'
+      }`}
+    >
+      <span
+        className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${
+          checked ? 'translate-x-[18px]' : 'translate-x-0.5'
+        }`}
+      />
+    </button>
+  );
+}
+
+function FormCard({ job, info, onSync, syncing, isAdmin, envEnabled, onToggle, toggling }) {
   const inProgress = !!info.in_progress || syncing;
+  const adminEnabled = info.admin_enabled !== false;
+  const canRun = envEnabled && adminEnabled;
   // Task #94：kind 區分「全表 bulk sync」與「連線 ping (healthcheck)」。
   // 後者不會真的把 Ragic 全表寫進 staging—只是發一筆 where=eq 驗證端點，
   // 文案 / 按鈕 / 統計欄都要改才不會誤導 admin。
@@ -47,8 +71,23 @@ function FormCard({ job, info, onSync, syncing, isAdmin, enabled }) {
           </div>
           <div className="mt-0.5 text-xs text-gray-500">form_code: {info.form_code}</div>
         </div>
-        {statusBadge(info.last_status, inProgress)}
+        <div className="flex items-center gap-2">
+          {statusBadge(info.last_status, inProgress)}
+          {isAdmin ? (
+            <ToggleSwitch
+              checked={adminEnabled}
+              disabled={toggling}
+              onChange={(next) => onToggle(job, next)}
+              title={adminEnabled ? '點擊關閉此排程/手動同步' : '點擊重新開啟'}
+            />
+          ) : null}
+        </div>
       </div>
+      {!adminEnabled ? (
+        <div className="mt-2 rounded bg-gray-100 px-2 py-1 text-[11px] font-bold text-gray-600">
+          已手動關閉 — cron 排程與手動同步都不會執行
+        </div>
+      ) : null}
       <dl className="mt-3 space-y-1.5 text-xs">
         <div className="flex justify-between">
           <dt className="text-gray-500">最後一次執行</dt>
@@ -81,9 +120,9 @@ function FormCard({ job, info, onSync, syncing, isAdmin, enabled }) {
       {isAdmin ? (
         <button
           type="button"
-          disabled={syncing || !enabled}
+          disabled={syncing || !canRun}
           onClick={() => onSync(job)}
-          title={!enabled ? 'Ragic 未設定，無法觸發' : ''}
+          title={!envEnabled ? 'Ragic 未設定，無法觸發' : (!adminEnabled ? '已手動關閉，請先開啟開關' : '')}
           className="mt-3 w-full rounded bg-brand-teal px-3 py-1.5 text-xs font-bold text-white transition hover:bg-brand-primary disabled:cursor-not-allowed disabled:opacity-50"
         >
           {syncing
@@ -165,6 +204,20 @@ export default function RagicStatusPage() {
     }
   }
 
+  const [togglingJob, setTogglingJob] = useState(null);
+  async function runToggle(job, enabled) {
+    setTogglingJob(job);
+    try {
+      const next = await ragicStatusApi.toggle(job, enabled);
+      toast.info(enabled ? `已開啟 ${job}` : `已關閉 ${job}（cron 與手動同步都會被擋下）`);
+      setData((prev) => (prev ? { ...prev, forms: next.forms || prev.forms } : prev));
+    } catch (e) {
+      toast.error(e?.response?.data?.error || e?.message || '開關切換失敗');
+    } finally {
+      setTogglingJob(null);
+    }
+  }
+
   if (!data && !loadError) return <LoadingSpinner />;
 
   if (loadError) {
@@ -233,7 +286,9 @@ export default function RagicStatusPage() {
             onSync={runSync}
             syncing={!!info.in_progress}
             isAdmin={isAdmin}
-            enabled={!!data.enabled}
+            envEnabled={!!data.enabled}
+            onToggle={runToggle}
+            toggling={togglingJob === job}
           />
         ))}
       </div>
@@ -242,8 +297,9 @@ export default function RagicStatusPage() {
         <div className="font-bold text-gray-700">說明</div>
         <ul className="mt-1 list-disc space-y-1 pl-4">
           <li>「最後一次成功」是最近一筆 status=ok 的紀錄；「最後一次執行」可能是失敗或略過。</li>
-          <li>H01 員工（含教練 1:1 同步）與 H05 場館為定期 <span className="font-bold">全表同步</span>（差異會進待審核區）；Z01 家長 / Z02 學員為「按請求查詢」，本頁僅提供<span className="font-bold">健康檢查 Ping</span> 驗證端點可用，不會抓全表。</li>
+          <li>H01 員工（含教練 1:1 同步）與 H05 場館為定期 <span className="font-bold">全表同步</span>（差異會進待審核區）；Z01 家長 / Z02 學員的 parents/students 卡片是「按請求查詢」<span className="font-bold">健康檢查 Ping</span>，不會抓全表——全表同步改由下方 pull（01:00 Ragic→本地）與 backup（02:00 本地→Ragic）兩張卡片負責，方向相反。</li>
           <li>每次執行會寫一筆 <span className="font-mono">ragic_sync_log</span>，可由 SQL 查詢歷史趨勢。</li>
+          <li>卡片右上角開關可個別暫停某個 job：關閉後該 job 的 cron 排程與「單獨同步此表」按鈕都不會執行，直到重新開啟。</li>
         </ul>
       </div>
     </div>

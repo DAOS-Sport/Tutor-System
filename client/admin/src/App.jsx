@@ -33,6 +33,7 @@ import CourseTypesPage from './pages/CourseTypesPage';
 import GroupOrdersPage from './pages/GroupOrdersPage';
 import RagicStatusPage from './pages/RagicStatusPage';
 import RagicStagingPage from './pages/RagicStagingPage';
+import RagicZ03Page from './pages/RagicZ03Page';
 import CustomerParentsPage from './pages/CustomerParentsPage';
 import CustomerStudentsPage from './pages/CustomerStudentsPage';
 
@@ -59,6 +60,7 @@ export default function App() {
         <Route path="/group-orders"  element={<RequireAuth roles={['admin', 'manager', 'staff']}><GroupOrdersPage /></RequireAuth>} />
         <Route path="/ragic-status"  element={<RequireAuth roles={['admin']}><RagicStatusPage /></RequireAuth>} />
         <Route path="/ragic-staging" element={<RequireAuth roles={['admin']}><RagicStagingPage /></RequireAuth>} />
+        <Route path="/ragic-z03"     element={<RequireAuth roles={['admin', 'manager', 'staff']}><RagicZ03Page /></RequireAuth>} />
 
         {/* 客戶資料管理（Z01 家長&學員關係 / Z02 學員資料含購買紀錄） */}
         <Route path="/customer-parents"  element={<RequireAuth roles={ALL}><CustomerParentsPage /></RequireAuth>} />

@@ -219,6 +219,12 @@ async function getAllStaff() {
   return cached('h01:all', async () => Object.values(await queryAllPaged(process.env.RAGIC_FORM_H01)));
 }
 
+// Z01：全量家長清單（Ragic → 本地每日全量拉取用；刻意不套 cached()，
+// 排程每次都要拿當下最新資料，語意同 getAllStaff 但不走 5 分鐘快取）
+async function getAllParents() {
+  return Object.values(await queryAllPaged(process.env.RAGIC_FORM_Z01));
+}
+
 // 註（Task #95 政策定案）：H01 員工資料一律「Ragic → 系統」單向，本系統**不寫** H01。
 // 曾實作 admin 編輯寫回（syncStaffToRagicStrict），後依政策移除：
 //   1. Ragic 為人事權威資料庫，異動一律請 HR 在 Ragic 操作，系統同步帶回即可。
@@ -437,6 +443,52 @@ function parseZ01Students(record) {
       ragic_record_id: pick(row, ['_ragicId', 'ragicId']),
     };
   }).filter((s) => s.name);
+}
+
+/**
+ * parseZ01Students 的「原始值」版本——供 Z03 人工整理表使用，刻意不做
+ * normalizeDate（不轉 yyyy-MM-dd）、不做 toUpperCase（身分證字號原樣），
+ * 讓人工看到 Ragic 裡實際存的字串去判斷要怎麼修正。子表格三種形狀的解析邏輯
+ * 與 parseZ01Students 相同（無法共用 helper，因為 pick/normalizeDate 是該函式的區域變數）。
+ */
+function parseZ01StudentsRaw(record) {
+  if (!record || typeof record !== 'object') return [];
+
+  const subtable =
+    record._subtable_1001119 ||
+    record['1001119'] ||
+    record['學員資料'] ||
+    record['項次'] ||
+    null;
+
+  const rows = Array.isArray(subtable)
+    ? subtable.map((row, index) => ({ row, rowKey: String(index) }))
+    : (subtable && typeof subtable === 'object'
+        ? Object.entries(subtable).map(([rowKey, row]) => ({ row, rowKey }))
+        : []);
+
+  const pickRaw = (row, keys) => {
+    for (const key of keys) {
+      const value = row?.[key];
+      if (value !== undefined && value !== null && String(value).trim() !== '') {
+        return String(value).trim();
+      }
+    }
+    return '';
+  };
+
+  return rows.map(({ row, rowKey }) => ({
+    seq_raw:              pickRaw(row, ['1001120', '項次']) || rowKey,
+    student_status_raw:   pickRaw(row, ['1002178', '學員身分']),
+    name_raw:             pickRaw(row, ['1001115', '學員姓名']),
+    birth_date_raw:       pickRaw(row, ['1001116', '出生年月日']),
+    gender_raw:           pickRaw(row, ['1001117', '(學)性別', '學(性別)']),
+    id_number_raw:        pickRaw(row, ['1001118', '身分證字號']),
+    blood_type_raw:       pickRaw(row, ['1001880', '血型']),
+    age_raw:              pickRaw(row, ['1001330', '歲數']),
+    student_code_raw:     pickRaw(row, ['1001132', '學員編號']),
+    registered_phone_raw: pickRaw(row, ['1004090', '登記電話']),
+  })).filter((s) => s.name_raw);
 }
 
 // 男/女 → 生理男/生理女。Ragic Z02「學(性別)」「(報)性別」與 Z01 子表性別均為「選項欄位」，
@@ -858,6 +910,7 @@ module.exports = {
   getCounterStaff,
   getAllStaff,
   getActiveVenues,
+  getAllParents,
   getParentByPhone,
   getParentByLineUid,
   bindParentLineUidToRagic,
@@ -868,6 +921,7 @@ module.exports = {
   venueLabel,
   mapZ01Parent,
   parseZ01Students,
+  parseZ01StudentsRaw,
   createParentWithStudentsInRagic,
   addStudentsToParentInRagic,
   resolveParentRagicRecord,

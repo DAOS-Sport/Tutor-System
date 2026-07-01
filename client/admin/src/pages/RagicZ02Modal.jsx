@@ -1,9 +1,18 @@
-import React, { useMemo, useState } from 'react';
-import { maskIdNumber, maskBloodType } from '../utils/pii';
+import React, { useEffect, useMemo, useState } from 'react';
+import { customerStudentsApi } from '../api/customers';
 
-// 仿 Ragic Z02 表單格線的學員編輯器：左藍學員資料、右黃家長資訊(唯讀)、紫消費分析、灰購買紀錄。
+// 仿 Ragic Z02 表單格線的學員編輯器：左藍學員資料、右黃家長資訊(唯讀)、紫消費分析、灰購買紀錄、綠編輯紀錄。
 const BLOOD_OPTS = ['不清楚', 'O', 'A', 'B', 'AB'];
 const inputCls = 'w-full rounded border border-gray-300 px-2 py-1 text-xs focus:border-brand-teal focus:outline-none';
+const FIELD_LABELS = { name: '姓名', gender: '性別', birth_date: '出生年月日', id_number: '身分證字號', blood_type: '血型', student_code: '學員編號' };
+const ROLE_LABELS = { parent: '家長', staff: '櫃檯', manager: '主管', admin: '管理員' };
+function fmtDateTimeSec(v) {
+  if (!v) return '—';
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return '—';
+  const p2 = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}/${p2(d.getMonth() + 1)}/${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`;
+}
 
 function Row({ label, required, children }) {
   return (
@@ -25,10 +34,20 @@ function ReadRow({ label, children }) {
   );
 }
 
-export default function RagicZ02Modal({ student: initStudent, reveal, busy, onClose, onSave }) {
+export default function RagicZ02Modal({ student: initStudent, busy, onClose, onSave }) {
   const [student, setStudent] = useState({ ...initStudent });
   const setS = (patch) => setStudent((s) => ({ ...s, ...patch }));
   const purchases = Array.isArray(initStudent.purchases) ? initStudent.purchases : [];
+  const [audit, setAudit] = useState(null); // null=載入中；[]=無紀錄
+
+  useEffect(() => {
+    let alive = true;
+    if (!initStudent.id) { setAudit([]); return undefined; }
+    customerStudentsApi.auditLogs(initStudent.id)
+      .then((rows) => { if (alive) setAudit(Array.isArray(rows) ? rows : []); })
+      .catch(() => { if (alive) setAudit([]); });
+    return () => { alive = false; };
+  }, [initStudent.id]);
 
   // 依分類分組（常態團體班 / 課後班 / …），保留 Ragic 雙表外觀
   const groups = useMemo(() => {
@@ -70,14 +89,10 @@ export default function RagicZ02Modal({ student: initStudent, reveal, busy, onCl
                 </Row>
                 <Row label="出生年月日" required><input className={`${inputCls} font-mono`} value={student.birth_date || ''} onChange={(e) => setS({ birth_date: e.target.value })} placeholder="2019-04-04" /></Row>
                 <Row label="身分證字號" required>
-                  {reveal
-                    ? <input className={`${inputCls} font-mono`} value={student.id_number || ''} onChange={(e) => setS({ id_number: e.target.value.toUpperCase() })} />
-                    : <span className="font-mono text-gray-500">{maskIdNumber(student.id_number, false)} <span className="text-[10px] text-gray-400">（按「顯示個資」可編輯）</span></span>}
+                  <input className={`${inputCls} font-mono`} value={student.id_number || ''} onChange={(e) => setS({ id_number: e.target.value.toUpperCase() })} />
                 </Row>
                 <Row label="血型" required>
-                  {reveal
-                    ? <select className={inputCls} value={student.blood_type || '不清楚'} onChange={(e) => setS({ blood_type: e.target.value })}>{BLOOD_OPTS.map((b) => <option key={b} value={b}>{b}</option>)}</select>
-                    : <span className="text-gray-500">{maskBloodType(student.blood_type, false)}</span>}
+                  <select className={inputCls} value={student.blood_type || '不清楚'} onChange={(e) => setS({ blood_type: e.target.value })}>{BLOOD_OPTS.map((b) => <option key={b} value={b}>{b}</option>)}</select>
                 </Row>
               </div>
             </div>
@@ -151,6 +166,42 @@ export default function RagicZ02Modal({ student: initStudent, reveal, busy, onCl
             <div className="overflow-hidden rounded border border-gray-300 shadow-sm">
               <div className="bg-rose-500 px-4 py-1.5 text-xs font-bold text-white">緊急聯絡人</div>
               <div className="bg-white p-4 text-center text-xs text-gray-400">此資料於 Ragic 端維護，本系統暫不鏡像。</div>
+            </div>
+
+            {/* 編輯紀錄（綠，誰改了什麼——家長自己改 / 櫃檯 / 主管 / 管理員） */}
+            <div className="overflow-hidden rounded border border-gray-300 shadow-sm">
+              <div className="bg-emerald-600 px-4 py-1.5 text-xs font-bold text-white">
+                編輯紀錄{audit ? `（${audit.length}）` : ''}
+              </div>
+              <div className="max-h-64 divide-y divide-gray-100 overflow-y-auto bg-white">
+                {audit === null && <div className="p-4 text-center text-xs text-gray-400">載入中…</div>}
+                {audit && audit.length === 0 && <div className="p-4 text-center text-xs text-gray-400">尚無編輯紀錄</div>}
+                {audit && audit.map((lg) => (
+                  <div key={lg.id} className="flex items-start justify-between gap-3 p-2.5 text-[11px]">
+                    <div>
+                      <div className="font-bold text-gray-700">
+                        {lg.action === 'create' ? '新增' : '編輯'}
+                        <span className="ml-1.5 rounded bg-gray-100 px-1.5 py-0.5 font-semibold text-gray-500">
+                          {ROLE_LABELS[lg.by_role] || lg.by_role || '未知身分'}
+                        </span>
+                      </div>
+                      <div className="mt-0.5 text-gray-500">操作人：{lg.by_user || '—'}{lg.note ? `・${lg.note}` : ''}</div>
+                      {lg.changes && (
+                        <div className="mt-1 space-y-0.5 text-gray-600">
+                          {Object.entries(lg.changes).map(([k, v]) => (
+                            <div key={k}>
+                              {FIELD_LABELS[k] || k}：
+                              {v && v.before != null ? <span className="text-gray-400 line-through">{String(v.before)}</span> : null}
+                              {' '}→ <span className="font-semibold text-brand-primary">{v && v.after != null ? String(v.after) : '—'}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="shrink-0 whitespace-nowrap font-mono text-gray-400">{fmtDateTimeSec(lg.at)}</div>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         </div>

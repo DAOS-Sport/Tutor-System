@@ -4,14 +4,23 @@
  *  GET  /api/admin/ragic-status
  *    → { enabled, env, missing_env, cron_schedule, forms{...}, now }
  *    `enabled` 為「6 個 RAGIC_* env 全到位」才為 true（光有 API_KEY+BASE_URL 不算齊全）
+ *    forms[job].admin_enabled 是 admin 手動開關（見下方 /toggle），與上面全域 env `enabled` 是兩件事：
+ *    env 沒設定 = 系統整體連不上 Ragic；admin_enabled=false = 這個 job 被人工暫停，其餘 job 不受影響。
  *
- *  POST /api/admin/ragic-status/sync?form=staff|coaches|venues|parents|students|all
+ *  POST /api/admin/ragic-status/sync?form=staff|venues|parents|students|backup|pull|all
  *    立即觸發同步 / ping，回傳每個 job 的結果與最新 forms 狀態。
- *    （也支援 body { form } 作為向後相容入口）
+ *    （也支援 body { form } 作為向後相容入口）。若該 job 被 /toggle 關閉，仍會回 202，
+ *    但背景執行會被 services/ragicAdmin.js `_runWithLog` 擋下（status=skipped, disabled=true）。
+ *
+ *  POST /api/admin/ragic-status/toggle { job, enabled }
+ *    手動開/關單一 job（存 admin_settings，見 ragicAdmin.setJobEnabled）。
+ *    關閉後：cron 排程 + 這裡的 /sync 手動觸發都會被擋下，直到重新開啟。
  *
  * 同步覆蓋：
- *   staff / coaches / venues — 真實 bulk sync（H01/H05）
- *   parents / students       — 對 Z01/Z02 發一次 where=eq 健康檢查 ping
+ *   staff / venues     — 真實 bulk sync（H01/H05）
+ *   parents / students — 對 Z01/Z02 發一次 where=eq 健康檢查 ping
+ *   backup             — 本地 parents/students → Ragic Z01/Z02（補寫回缺口；cron 02:00）
+ *   pull               — Ragic Z01/Z02 → 本地 parents/students 全量同步（補讀回缺口；cron 01:00）
  */
 const express = require('express');
 const ragicAdmin = require('../../services/ragicAdmin');
@@ -26,6 +35,8 @@ const JOB_RUNNERS = {
   parents:  ragicAdmin.pingParentsFromRagic,
   students: ragicAdmin.pingStudentsFromRagic,
   backup:   ragicAdmin.backupParentsStudentsToRagic,
+  pull:     ragicAdmin.pullParentsStudentsFromRagic,
+  quarantine: ragicAdmin.quarantineBadZ01Names,
 };
 const ALL_JOBS = Object.keys(JOB_RUNNERS);
 
@@ -94,6 +105,22 @@ router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, re
     queued_jobs: jobs,
     message: '已排入背景同步，請稍候自動更新狀態。',
   });
+});
+
+router.post('/toggle', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+  const job = String(req.body?.job || '');
+  const enabled = !!req.body?.enabled;
+  if (!ALL_JOBS.includes(job)) {
+    return res.status(400).json({ error: `未知 form：${job}（可用：${ALL_JOBS.join('|')}）` });
+  }
+  try {
+    await ragicAdmin.setJobEnabled(job, enabled);
+    const forms = await ragicAdmin.getSyncStatusSnapshot();
+    res.json({ ok: true, job, enabled, forms });
+  } catch (err) {
+    console.error('[admin/ragic-status toggle]', err);
+    res.status(500).json({ error: 'update toggle failed' });
+  }
 });
 
 module.exports = router;

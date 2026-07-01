@@ -174,6 +174,22 @@ CREATE TABLE IF NOT EXISTS course_type_config_audit_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_ctc_audit_type ON course_type_config_audit_logs(course_type, at DESC);
 
+-- 學員資料編輯稽核：家長自己改 / 櫃檯改 / 管理員改，統一記錄誰改了什麼（before/after diff）。
+-- 比照上面 course_type_config_audit_logs 同一套樣式；by_role 區分操作者身分
+-- （'parent' | 'staff' | 'manager' | 'admin'），供 client/admin/src/pages/RagicZ02Modal.jsx
+-- 顯示「編輯紀錄」清單用。
+CREATE TABLE IF NOT EXISTS student_audit_logs (
+  id         BIGSERIAL PRIMARY KEY,
+  student_id UUID NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+  at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  action     TEXT NOT NULL,        -- 'create' | 'edit'
+  by_user    TEXT,                 -- 顯示用姓名/帳號
+  by_role    TEXT,                 -- 'parent' | 'staff' | 'manager' | 'admin'
+  changes    JSONB,                -- { field: { before, after } }；只記實際變動欄位
+  note       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_student_audit_student ON student_audit_logs(student_id, at DESC);
+
 -- ─────────────────────────────────────────────────────────────
 -- U5：團購（group buy）資料模型
 --   group_orders        — 一張團購單（團主發起、含人數上下限快照、join_token）
@@ -501,6 +517,9 @@ DO $$ BEGIN
   ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS sync_source        TEXT NOT NULL DEFAULT 'replit';
   ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS last_pushed_at     TIMESTAMPTZ;
   ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS ragic_content_hash TEXT;
+  -- C-6：手動建檔的資料建立人（FK admin_users.id；比照 promotions.created_by 同一套樣式）。
+  -- 一律由後端從登入 token 決定（見 routes/admin/enrollments.js createdBy），不接受前端傳值。
+  ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS created_by TEXT REFERENCES admin_users(id) ON DELETE SET NULL;
   CREATE UNIQUE INDEX IF NOT EXISTS uq_admin_enrollments_external_order_no
     ON admin_enrollments(external_order_no) WHERE external_order_no IS NOT NULL;
   -- 櫃台補簽到（F-R01）：checkin_at = 選擇的上課/簽到時間；backfilled_at = 補簽到按鈕被按下的時間（供管理端查看）。
@@ -693,6 +712,51 @@ CREATE TABLE IF NOT EXISTS ragic_sync_log (
 );
 CREATE INDEX IF NOT EXISTS idx_ragic_sync_log_form ON ragic_sync_log(form_code, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ragic_sync_log_job  ON ragic_sync_log(job_name, created_at DESC);
+
+-- Z01 家長姓名資料品質追蹤：舊系統匯入批次曾把「家長姓名」欄位誤填成電話號碼
+-- （已證實：2026-06-30 匯入的 511 筆裡 433 筆），需要一張表追蹤哪些 Z01 記錄還沒
+-- 修正，避免同一筆爛資料每晚被重複處理，並在治癒（家長自己把姓名改對）後知道要
+-- 回頭清哪一筆。z03_ragic_record_id / resolved_at 相關的「推送到 Z03、清理 Z03」
+-- 邏輯目前卡在 Z03 表單尚未確認存在與欄位定義，暫緩實作；本表本身不依賴 Z03 就能先建。
+CREATE TABLE IF NOT EXISTS ragic_z01_quarantine (
+  id BIGSERIAL PRIMARY KEY,
+  z01_ragic_record_id VARCHAR(50) NOT NULL UNIQUE,
+  phone VARCHAR(20) NOT NULL,
+  bad_name TEXT NOT NULL,
+  z03_ragic_record_id VARCHAR(50),
+  pushed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  resolved_at TIMESTAMPTZ,
+  resolved_name TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ragic_z01_quarantine_unresolved ON ragic_z01_quarantine(phone) WHERE resolved_at IS NULL;
+
+-- Z03：本地完整鏡射「壞姓名」Z01 家長 + 底下學員子表格（與上面 ragic_z01_quarantine
+-- 並存，互不取代）。壞名字且尚未有真人登入過（本地 parents.line_uid 為空）的記錄
+-- 只落到這裡，不進 parents/students；姓名在 Ragic 端被改好後，下一輪 01:00 pull
+-- 會自動把這筆標記 resolved 並正常同步進 parents（見 ragicAdmin.js _pullParentsStudentsImpl）。
+-- 欄位一律存 Ragic 原始值（不經 mapZ01Parent/normalizeGender 等正規化），
+-- 讓人工看到 Ragic 裡實際長什麼樣去修正，欄位名一律加 _raw 後綴標示。
+CREATE TABLE IF NOT EXISTS ragic_z03_records (
+  id BIGSERIAL PRIMARY KEY,
+  z01_ragic_record_id VARCHAR(50) NOT NULL UNIQUE,
+  raw_name TEXT, venue_raw TEXT, phone TEXT, identity_raw TEXT, gender_raw TEXT,
+  email_raw TEXT, home_phone_raw TEXT, home_address_raw TEXT, line_id_raw TEXT,
+  line_chat_url_raw TEXT, line_uid_raw TEXT, student_count_raw TEXT,
+  status VARCHAR(20) NOT NULL DEFAULT 'pending', -- pending | resolved | dismissed
+  fixed_name TEXT, resolved_at TIMESTAMPTZ, resolved_by TEXT,
+  fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_ragic_z03_records_pending ON ragic_z03_records(status) WHERE status = 'pending';
+
+CREATE TABLE IF NOT EXISTS ragic_z03_students (
+  id BIGSERIAL PRIMARY KEY,
+  z03_record_id BIGINT NOT NULL REFERENCES ragic_z03_records(id) ON DELETE CASCADE,
+  seq_raw TEXT, student_status_raw TEXT, name_raw TEXT, birth_date_raw TEXT,
+  gender_raw TEXT, id_number_raw TEXT, blood_type_raw TEXT, age_raw TEXT,
+  student_code_raw TEXT, registered_phone_raw TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ragic_z03_students_record ON ragic_z03_students(z03_record_id);
 
 -- Task #66：Ragic 待審核區（同步先進 staging，admin 通過才合併到正式表）
 CREATE TABLE IF NOT EXISTS ragic_staging_changes (

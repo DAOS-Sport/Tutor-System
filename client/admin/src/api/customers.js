@@ -33,4 +33,6 @@ export const customerStudentsApi = {
     callApi(`/customer-students/${id}${rev(reveal)}`, {}, () => mockDb.customerStudentDetail(id)),
   update: (id, patch) =>
     callApi(`/customer-students/${id}`, { method: 'patch', data: patch }, () => mockDb.updateCustomerStudent(id, patch)),
+  auditLogs: (id) =>
+    callApi(`/customer-students/${id}/audit-logs`, {}, () => []),
 };

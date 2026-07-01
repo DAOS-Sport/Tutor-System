@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { maskIdNumber, maskBloodType } from '../utils/pii';
 
 // 仿 Ragic Z01 表單格線的家長編輯器（橘色家長資訊 + 藍色學員子表）。
 // 欄位只綁定 Replit 實際鏡像欄位；line_uid（登入鍵）唯讀，不在此更動。
@@ -29,7 +28,7 @@ function Cell({ label, required, children }) {
 
 const inputCls = 'w-full rounded border border-gray-300 px-2 py-1 text-xs focus:border-brand-teal focus:outline-none';
 
-export default function RagicZ01Modal({ isNew, parent: initParent, students: initStudents, venues, reveal, busy, onClose, onSave }) {
+export default function RagicZ01Modal({ isNew, parent: initParent, students: initStudents, venues, busy, onClose, onSave }) {
   const [parent, setParent] = useState({ ...initParent });
   const [kids, setKids] = useState((initStudents || []).map((s) => ({ ...s })));
   const [tab, setTab] = useState('other');
@@ -163,16 +162,12 @@ export default function RagicZ01Modal({ isNew, parent: initParent, students: ini
                         </select>
                       </td>
                       <td className="border-r border-gray-200 p-2">
-                        {reveal
-                          ? <input className={`${inputCls} font-mono`} value={kid.id_number || ''} onChange={(e) => setKid(i, { id_number: e.target.value.toUpperCase() })} placeholder="A123456789" />
-                          : <span className="font-mono text-gray-500">{maskIdNumber(kid.id_number, false)}</span>}
+                        <input className={`${inputCls} font-mono`} value={kid.id_number || ''} onChange={(e) => setKid(i, { id_number: e.target.value.toUpperCase() })} placeholder="A123456789" />
                       </td>
                       <td className="border-r border-gray-200 p-2">
-                        {reveal
-                          ? <select className={inputCls} value={kid.blood_type || '不清楚'} onChange={(e) => setKid(i, { blood_type: e.target.value })}>
-                              {BLOOD_OPTS.map((b) => <option key={b} value={b}>{b}</option>)}
-                            </select>
-                          : <span className="text-gray-500">{maskBloodType(kid.blood_type, false)}</span>}
+                        <select className={inputCls} value={kid.blood_type || '不清楚'} onChange={(e) => setKid(i, { blood_type: e.target.value })}>
+                          {BLOOD_OPTS.map((b) => <option key={b} value={b}>{b}</option>)}
+                        </select>
                       </td>
                       <td className="border-r border-gray-200 p-2 text-center font-mono text-gray-700">{rocAge(kid.birth_date) || '—'}</td>
                       <td className="border-r border-gray-200 p-2"><input className={`${inputCls} font-mono`} value={kid.student_code || ''} onChange={(e) => setKid(i, { student_code: e.target.value })} /></td>
@@ -190,7 +185,6 @@ export default function RagicZ01Modal({ isNew, parent: initParent, students: ini
                 </tbody>
               </table>
             </div>
-            {!reveal && <div className="bg-amber-50 px-3 py-1.5 text-[11px] text-amber-700">身分證 / 血型已遮蔽，需編輯請先按右上「顯示個資」。</div>}
           </div>
         </div>
 

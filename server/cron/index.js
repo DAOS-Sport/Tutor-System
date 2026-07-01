@@ -346,6 +346,38 @@ function initCronJobs() {
     }
   });
 
+  // ── 每日凌晨 01:00（台北）：Ragic Z01/Z02 → 本地 parents/students 全量同步 ──
+  // 方向與下面 02:00 那個工作**相反**：這支是把 Ragic 全量家長/學員清單「拉」進本地
+  // （Ragic→Replit，唯讀鏡像刷新）；下面 02:00 的 backupParentsStudentsToRagic 是把本地
+  // 尚未同步的列「推」回 Ragic（Replit→Ragic）。過去 Z01/Z02 只有 (a) 登入/註冊時的
+  // 即時單筆查詢、(b) 下面 02:00 反方向備份——docs/ragic_api.md 標記「即時雙向」，
+  // 從未有排程整份拉回本地；這支排程補上這個缺口：即使客戶從未重新登入，只要 Ragic/HR
+  // 端有異動，隔天也會回流到本地鏡像。reactivate:false（不復活本地已軟刪的家長）；
+  // 逐筆 try/catch，單筆壞資料不中斷整輪（同下面 backup 慣例）。
+  cron.schedule('0 1 * * *', async () => {
+    if (!ragicAdmin.ragicEnabled()) return;
+    try {
+      const r = await ragicAdmin.pullParentsStudentsFromRagic('cron');
+      console.log(`[Cron/RagicPull] synced=${r?.synced ?? 0}${r?.error ? ` error=${r.error}` : ''}`);
+    } catch (e) {
+      console.warn('[Cron/RagicPull] failed:', e.message);
+    }
+  }, { timezone: 'Asia/Taipei' });
+
+  // ── 每日凌晨 01:10（台北）：Z01 家長姓名資料品質偵測（Z01↔Z03 機制，暫僅本地追蹤）──
+  // 排在 01:00 拉取同步之後 10 分鐘，避免跟上面那支同時整包打 Ragic Z01。目前只掃
+  // 「姓名疑似為電話號碼」的記錄並寫進本地 ragic_z01_quarantine 追蹤表；實際推送到
+  // Z03、以及治癒後回頭清理 Z03，卡在 Z03 表單欄位定義尚未確認，見 ragicAdmin.js 內 TODO。
+  cron.schedule('10 1 * * *', async () => {
+    if (!ragicAdmin.ragicEnabled()) return;
+    try {
+      const r = await ragicAdmin.quarantineBadZ01Names('cron');
+      console.log(`[Cron/RagicQuarantine] tracked=${r?.synced ?? 0}${r?.note ? ` note=${r.note}` : ''}${r?.error ? ` error=${r.error}` : ''}`);
+    } catch (e) {
+      console.warn('[Cron/RagicQuarantine] failed:', e.message);
+    }
+  }, { timezone: 'Asia/Taipei' });
+
   // ── 每日凌晨 02:00（台北）：本地 parents/students → Ragic Z01/Z02 備份同步 ──
   // 補「櫃檯手動建檔（admin/customerParents.js）從不寫回 Ragic」與「家長端學員
   // best-effort 即時同步失敗後從未重試」兩個既有缺口；ragicAdmin.js 的

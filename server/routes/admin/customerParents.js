@@ -18,7 +18,7 @@
 const express = require('express');
 const { pool } = require('../../models/db');
 const { requireAdminAuth, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
-const { parseRocOrIso, maskId, maskBlood, looksMasked, wantReveal, auditReveal } = require('./_customerShared');
+const { parseRocOrIso, maskId, maskBlood, looksMasked, wantReveal, auditReveal, diffChanges, writeStudentAudit, adminActorName } = require('./_customerShared');
 
 const router = express.Router();
 
@@ -195,29 +195,41 @@ router.patch('/:id', requireAdminAuth, async (req, res) => {
         const idNum = looksMasked(s.id_number) ? undefined : s.id_number;
         const blood = looksMasked(s.blood_type) ? undefined : s.blood_type;
         if (s.id) {
-          const hit = await client.query(`SELECT id FROM students WHERE id = $1 AND parent_id = $2`, [s.id, req.params.id]);
+          const hit = await client.query(
+            `SELECT id, name, gender, birth_date, id_number, blood_type, student_code
+               FROM students WHERE id = $1 AND parent_id = $2`,
+            [s.id, req.params.id]
+          );
           if (hit.rowCount) {
+            const before = hit.rows[0];
             // id_number/blood_type：被遮罩（touch=false）→ 保留原值；未遮罩→以新值寫入（空字串→NULL 清空）。
-            await client.query(
+            const upd = await client.query(
               `UPDATE students SET name=$2, gender=NULLIF($3,''), birth_date=$4::date,
                      id_number  = CASE WHEN $5::boolean THEN NULLIF($6,'')  ELSE id_number  END,
                      blood_type = CASE WHEN $7::boolean THEN NULLIF($8,'')  ELSE blood_type END,
-                     student_code=NULLIF($9,''), is_active=$10, updated_at=NOW() WHERE id=$1`,
+                     student_code=NULLIF($9,''), is_active=$10, updated_at=NOW() WHERE id=$1
+               RETURNING name, gender, birth_date, id_number, blood_type, student_code`,
               [s.id, s.name || '', s.gender || '', bd,
                idNum !== undefined, idNum || '', blood !== undefined, blood || '',
                s.student_code || '', s.is_active !== false]
             );
+            const changes = diffChanges(before, upd.rows[0], ['name', 'gender', 'birth_date', 'id_number', 'blood_type', 'student_code']);
+            await writeStudentAudit(client, s.id, 'edit', { byUser: adminActorName(req), byRole: req.adminUser?.role, changes })
+              .catch((err) => console.warn('[student-audit] 家長頁編輯學員稽核寫入失敗:', err.message));
             continue;
           }
         }
         if (!String(s.name || '').trim()) continue; // 新列需有姓名才建
-        await client.query(
+        const ins = await client.query(
           `INSERT INTO students (parent_id, name, gender, birth_date, id_number, blood_type, student_code, is_active)
-           VALUES ($1,$2,NULLIF($3,''),$4::date,NULLIF($5,''),NULLIF($6,''),NULLIF($7,''), $8)`,
+           VALUES ($1,$2,NULLIF($3,''),$4::date,NULLIF($5,''),NULLIF($6,''),NULLIF($7,''), $8)
+           RETURNING id`,
           [req.params.id, s.name, s.gender || '', bd,
            idNum === undefined ? '' : (idNum || ''), blood === undefined ? '' : (blood || ''),
            s.student_code || '', s.is_active !== false]
         );
+        await writeStudentAudit(client, ins.rows[0].id, 'create', { byUser: adminActorName(req), byRole: req.adminUser?.role })
+          .catch((err) => console.warn('[student-audit] 家長頁新增學員稽核寫入失敗:', err.message));
       }
     }
 

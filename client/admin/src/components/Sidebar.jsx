@@ -31,6 +31,7 @@ const NAV_GROUPS = [
     items: [
       { to: '/customer-parents',  label: '(Z01) 家長 & 學員關係',       roles: ['admin', 'manager', 'staff'] },
       { to: '/customer-students', label: '(Z02) 學員資料（含購買紀錄）', roles: ['admin', 'manager', 'staff'] },
+      { to: '/ragic-z03',         label: '(Z03) 舊系統資料整理',        roles: ['admin', 'manager', 'staff'] },
     ],
   },
   {

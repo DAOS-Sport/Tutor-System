@@ -21,4 +21,13 @@ export const ragicStatusApi = {
     );
     return r.data;
   },
+  async toggle(job, enabled) {
+    if (USE_MOCK) return mockDb.ragicToggle(job, enabled);
+    const r = await http.post(
+      '/ragic-status/toggle',
+      { job, enabled },
+      { skipAuthRedirect: true }
+    );
+    return r.data;
+  },
 };

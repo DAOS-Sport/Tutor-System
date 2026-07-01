@@ -100,7 +100,7 @@ Ragic Z02 的兩張購買子表（`1001458`/`1004109`）**只有** `報名單號
 
 1. **乾跑（dry-run）**：完整爬 Ragic、逐階段算「預計 old==new 筆數」+ 重複手機報告 + 孤兒學員報告 + 教練解不到/period-skipped 報告 + 「堂數未知」訂單報告。**先 `pg_dump` 快照**。
 2. **正式匯入（`--apply`）**：Stage 0→6 各自交易；cron H01/H05 同步全程無害（不碰 Z01/Z02）。
-3. **抓增量**：本系統**沒有也不新增 Z01/Z02 增量 cron**——「登入懶載入」本身就是增量；上線前再跑一次匯入（冪等，安全）補齊匯入期間 Ragic 的異動。
+3. **抓增量**：本節原始結論「本系統沒有也不新增 Z01/Z02 增量 cron——登入懶載入本身就是增量」**已被後續新增的每日 01:00 `pullParentsStudentsFromRagic()` 全量拉取排程取代**（見 `docs/ragic_api.md`「排程補面」、`server/cron/index.js`）；該排程本來就沿用 `ragic.getAllParents()`（即本節建議新增的 helper，已實作），cutover 前仍可比照原計畫再跑一次一次性匯入腳本補齊細節資料（購買紀錄/堂數/緊急聯絡人，01:00 排程不處理這些）。
 4. **上線**：開放客戶端。靠第四節的「綁定即接上」讓接縫隱形。
 - **回滾**：所有寫入都是非破壞性 upsert 且帶 Ragic 來源標記 → 依反向 FK 順序 scoped delete（`ragic_record_id IS NOT NULL`）；parents/students 不硬刪（登入流程可能已合法綁定），改 `is_active=FALSE` 或還原快照。
 

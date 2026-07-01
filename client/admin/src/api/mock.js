@@ -375,9 +375,11 @@ const RAGIC_MOCK_ENV = {
   RAGIC_FORM_Z01: true, RAGIC_FORM_Z02: true,
 };
 // 模組級可變狀態：ragicSync() 會就地改它，下一次 ragicStatus() 回傳更新後的深拷貝。
+// admin_enabled：demo 模式下的「Ragic 連線狀態」手動開關初始值，皆預設開啟。
 const RAGIC_MOCK_FORMS = {
   staff: {
     form_code: 'H01_STAFF', label: 'H01 員工 + 教練 (admin_staff + coaches)', kind: 'sync',
+    admin_enabled: true,
     in_progress: false, last_status: 'ok', last_triggered_by: 'cron', last_error: null,
     last_run_at: new Date(Date.now() - 6 * 60000).toISOString(),
     last_success_at: new Date(Date.now() - 6 * 60000).toISOString(),
@@ -385,6 +387,7 @@ const RAGIC_MOCK_FORMS = {
   },
   venues: {
     form_code: 'H05_VENUES', label: 'H05 場館 (venues)', kind: 'sync',
+    admin_enabled: true,
     in_progress: false, last_status: 'ok', last_triggered_by: 'cron', last_error: null,
     last_run_at: new Date(Date.now() - 6 * 60000).toISOString(),
     last_success_at: new Date(Date.now() - 6 * 60000).toISOString(),
@@ -392,6 +395,7 @@ const RAGIC_MOCK_FORMS = {
   },
   parents: {
     form_code: 'Z01_PARENTS', label: 'Z01 家長（連線健康檢查）', kind: 'healthcheck',
+    admin_enabled: true,
     in_progress: false, last_status: 'ok', last_triggered_by: 'cron', last_error: null,
     last_run_at: new Date(Date.now() - 6 * 60000).toISOString(),
     last_success_at: new Date(Date.now() - 6 * 60000).toISOString(),
@@ -399,10 +403,27 @@ const RAGIC_MOCK_FORMS = {
   },
   students: {
     form_code: 'Z02_STUDENTS', label: 'Z02 學員（連線健康檢查）', kind: 'healthcheck',
+    admin_enabled: true,
     in_progress: false, last_status: 'ok', last_triggered_by: 'cron', last_error: null,
     last_run_at: new Date(Date.now() - 6 * 60000).toISOString(),
     last_success_at: new Date(Date.now() - 6 * 60000).toISOString(),
     last_count: 0, last_duration_ms: 610,
+  },
+  backup: {
+    form_code: 'Z01_Z02_BACKUP', label: 'Z01/Z02 本地→Ragic 每日備份同步', kind: 'sync',
+    admin_enabled: true,
+    in_progress: false, last_status: 'ok', last_triggered_by: 'cron', last_error: null,
+    last_run_at: new Date(Date.now() - 5 * 3600000).toISOString(),
+    last_success_at: new Date(Date.now() - 5 * 3600000).toISOString(),
+    last_count: 2, last_duration_ms: 980,
+  },
+  pull: {
+    form_code: 'Z01_Z02_PULL', label: 'Z01/Z02 Ragic→本地 每日全量同步', kind: 'sync',
+    admin_enabled: true,
+    in_progress: false, last_status: 'ok', last_triggered_by: 'cron', last_error: null,
+    last_run_at: new Date(Date.now() - 6 * 3600000).toISOString(),
+    last_success_at: new Date(Date.now() - 6 * 3600000).toISOString(),
+    last_count: 118, last_duration_ms: 15400,
   },
 };
 
@@ -572,6 +593,12 @@ export const mockDb = {
       ok: true, accepted: true, queued_jobs: jobs,
       message: '（demo）已排入背景同步，狀態會自動更新…',
     };
+  },
+  // POST /ragic-status/toggle 的 demo 版：就地改 admin_enabled，下一次 ragicStatus() 反映。
+  ragicToggle(job, enabled) {
+    const f = RAGIC_MOCK_FORMS[job];
+    if (f) f.admin_enabled = !!enabled;
+    return { ok: true, job, enabled: !!enabled, forms: JSON.parse(JSON.stringify(RAGIC_MOCK_FORMS)) };
   },
 
   staff(filters = {}) {

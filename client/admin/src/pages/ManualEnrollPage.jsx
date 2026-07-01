@@ -67,8 +67,13 @@ function StepCard({ no, color, title, children }) {
   );
 }
 
-// 模糊搜尋下拉（async）
-function SearchCombobox({ onSearch, onPick, renderOption, footer }) {
+// 模糊搜尋下拉（async 或 client-side 同步 filter 皆可，onSearch 回傳 array 或 Promise<array> 都吃）
+function SearchCombobox({
+  onSearch, onPick, renderOption, footer,
+  placeholder = '輸入家長姓名或手機號碼搜尋...',
+  emptyText = '無此關聯家長',
+  hintText = '輸入姓名或電話以模糊搜尋…',
+}) {
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
   const [opts, setOpts] = useState([]);
@@ -89,7 +94,7 @@ function SearchCombobox({ onSearch, onPick, renderOption, footer }) {
         <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5 text-slate-400"><Svg d={I.search} /></span>
         <input
           value={q} onChange={(e) => { setQ(e.target.value); setOpen(true); }} onFocus={() => setOpen(true)}
-          placeholder="輸入家長姓名或手機號碼搜尋..."
+          placeholder={placeholder}
           className="w-full rounded-xl border border-slate-200 bg-slate-50/80 py-3 pl-10 pr-4 text-sm font-semibold outline-none transition-all placeholder-slate-400 focus:border-indigo-500 focus:bg-white focus:ring-4 focus:ring-indigo-500/10"
         />
       </div>
@@ -98,8 +103,8 @@ function SearchCombobox({ onSearch, onPick, renderOption, footer }) {
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
           <div className="absolute left-0 right-0 z-40 mt-1.5 max-h-72 overflow-y-auto rounded-xl border border-slate-200/90 bg-white shadow-2xl">
             {loading && <div className="p-3 text-center text-xs text-slate-400">搜尋中…</div>}
-            {!loading && q.trim() && opts.length === 0 && <div className="p-3 text-center text-xs text-slate-400">無此關聯家長</div>}
-            {!loading && !q.trim() && <div className="p-3 text-center text-xs text-slate-400">輸入姓名或電話以模糊搜尋…</div>}
+            {!loading && q.trim() && opts.length === 0 && <div className="p-3 text-center text-xs text-slate-400">{emptyText}</div>}
+            {!loading && !q.trim() && <div className="p-3 text-center text-xs text-slate-400">{hintText}</div>}
             {opts.map((o) => (
               <button key={o.id} type="button"
                 onClick={() => { onPick(o); setOpen(false); setQ(''); setOpts([]); }}
@@ -116,9 +121,12 @@ function SearchCombobox({ onSearch, onPick, renderOption, footer }) {
 }
 
 const FRESH = {
-  courseType: '', totalSessions: 6, className: '', levelNote: '', submittedAt: '',
+  // C-4：periodCount（期數）取代 totalSessions（堂數）直接輸入，畫面顯示「N 期 × 6 堂 = 總堂數」。
+  // C-5：submittedAt 拿掉——不再讓使用者指定報名時間，送出時不帶這個欄位，後端自動用當下時間。
+  // C-3/C-7/C-8：拔掉 className / workType / levelNote。
+  courseType: '', periodCount: 1,
   basePrice: '', allowance: '', actual: '', paymentMethod: '轉帳', paymentDetail: '',
-  payer: '', taxId: '', carrier: '', workType: '',
+  payer: '', taxId: '', carrier: '',
 };
 
 export default function ManualEnrollPage() {
@@ -145,6 +153,9 @@ export default function ManualEnrollPage() {
   const [courseTypes, setCourseTypes] = useState([]);
   const [courseTypesLoading, setCourseTypesLoading] = useState(true);
   const activeCourseTypes = useMemo(() => courseTypes.filter((c) => c.is_active), [courseTypes]);
+  // C-9：使用者一旦親自選過組別（不論是接受自動帶入後又手動改、或一開始就手動選），
+  // 之後學員數再變動就不再自動覆蓋——用 ref 而非 state，純粹是判斷用途不需要觸發重渲染。
+  const courseTypeTouchedRef = useRef(false);
 
   const [f, setF] = useState(FRESH);
   const upd = (k) => (v) => setF((p) => ({ ...p, [k]: v }));
@@ -173,10 +184,14 @@ export default function ManualEnrollPage() {
     return () => { alive = false; };
   }, [venueId]);
 
+  // C-1：註冊館別只列「場館設定(F-A03)」已啟用的館。後端 venuesApi.list() 刻意回傳全部
+  // （POST /api/admin/enrollments 允許對停用館補登歷史資料），這裡只過濾下拉選單顯示。
+  const activeVenues = useMemo(() => venues.filter((v) => v.is_active !== false), [venues]);
   const venueName = (id) => venues.find((v) => v.id === id)?.name || id || '—';
   const coachName = useMemo(() => coaches.find((c) => c.id === coachId)?.name || '', [coaches, coachId]);
-  const lessons = Number(f.totalSessions) || 0;
-  const numPeriods = Math.max(1, Math.ceil(lessons / SESSIONS_PER_PERIOD));
+  // C-4：期數直接輸入，總堂數 = 期數 × 6（不再有「最後一期吃餘數」的情況，輸入保證是 6 的倍數）。
+  const numPeriods = Math.max(1, Number(f.periodCount) || 1);
+  const lessons = numPeriods * SESSIONS_PER_PERIOD;
   const unitPrice = lessons > 0 ? Math.round((num(f.actual) / lessons) * 10) / 10 : 0;
 
   const studentNames = useMemo(() => {
@@ -190,8 +205,10 @@ export default function ManualEnrollPage() {
   function onAllowance(v) { setF((p) => ({ ...p, allowance: v, actual: String(Math.max(0, num(p.basePrice) - num(v))) })); }
   function onActual(v) { setF((p) => ({ ...p, actual: v, allowance: String(Math.max(0, num(p.basePrice) - num(v))) })); }
   // 選組別 → 自動帶出「課程需求管理」設定的每期價格（原價），折讓沿用現有值重算實收；
-  // 帶完仍可手動覆蓋，跟原價欄位的既有編輯行為一致。
-  function onCourseType(v) {
+  // 帶完仍可手動覆蓋，跟原價欄位的既有編輯行為一致。applyCourseType 是純套用邏輯，
+  // 手動選（下方 <Sel> onChange）跟自動比對（下面 C-9 useEffect）都呼叫它，
+  // 但只有「使用者親自選」才設 touched 旗標——自動帶入不能算「使用者已介入」。
+  function applyCourseType(v) {
     const cfg = activeCourseTypes.find((c) => String(c.course_type) === String(v));
     setF((p) => ({
       ...p,
@@ -199,6 +216,27 @@ export default function ManualEnrollPage() {
       ...(cfg ? { basePrice: String(cfg.base_price ?? ''), actual: String(Math.max(0, num(cfg.base_price) - num(p.allowance))) } : {}),
     }));
   }
+  function onCourseType(v) {
+    courseTypeTouchedRef.current = true; // 使用者親自選過 → 之後學員數再變動不再自動覆蓋（見下方 C-9 useEffect）
+    applyCourseType(v);
+  }
+  // C-9：依目前選取的學員數，自動比對「課程需求管理」裡 min/max_students 涵蓋這個人數的組別，
+  // 找到就套用（一併帶出價格）。只在使用者「還沒手動選過組別」時自動帶入，且只在人數真的
+  // 有變化時才重算（避免每次 render 都跑）。人數 0（還沒選學員）不自動帶。
+  // 若多筆組別範圍重疊（DB 沒有唯一性約束擋這種狀況），取 activeCourseTypes 陣列中第一個符合的
+  // （已依 course_type_configs.sort_order 排序，通常就是最合理的預設）。
+  const lastAutoMatchedCountRef = useRef(null);
+  useEffect(() => {
+    const n = studentNames.length;
+    if (n === 0 || courseTypeTouchedRef.current) return;
+    if (lastAutoMatchedCountRef.current === n) return;
+    const matched = activeCourseTypes.find((c) => n >= (c.min_students ?? 1) && n <= c.max_students);
+    if (matched) {
+      lastAutoMatchedCountRef.current = n;
+      applyCourseType(String(matched.course_type));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [studentNames.length, activeCourseTypes]);
   function preset(p) {
     const b = num(f.basePrice);
     if (b <= 0) { toast.error('請先輸入原始費用（原價）'); return; }
@@ -236,6 +274,15 @@ export default function ManualEnrollPage() {
   const toggleStudent = (id) => setPickedStudentIds((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
   const changeParent = () => { setParent(null); setPickedStudentIds([]); setExtraStudents(''); };
 
+  // 清空課程與組別金額欄位，並重置 C-9 的「使用者已手動選過組別」追蹤，讓下一筆
+  // （通常是下一位客戶）重新套用自動判斷組別。
+  function resetCourseForm() {
+    setF(FRESH);
+    setCoachId('');
+    courseTypeTouchedRef.current = false;
+    lastAutoMatchedCountRef.current = null;
+  }
+
   async function fileOne() {
     if (!parent) { toast.error('請先連結家長 (Z01)'); return; }
     if (!studentNames.length) { toast.error('請選擇或填寫至少一位學員'); return; }
@@ -252,10 +299,12 @@ export default function ManualEnrollPage() {
       parentName: parent.name, parentPhone: parent.phone, students: [...studentNames],
       venue: venueName(venueId), coach: coachName || '（待指派）',
       groupType: courseTypes.find((t) => String(t.course_type) === String(f.courseType))?.label,
-      className: f.className.trim() || '—', lessons, basePrice: num(f.basePrice), discount: num(f.allowance),
+      lessons, basePrice: num(f.basePrice), discount: num(f.allowance),
       actual: num(f.actual), unit: unitPrice, paymentMethod: f.paymentMethod, paymentDetail: f.paymentDetail.trim() || '—',
     };
     try {
+      // C-5：不再送 submitted_at——後端沒收到就自動用當下時間，不再讓使用者指定報名時間。
+      // C-6：created_by 由後端從登入 token 決定，這裡不用送（送了也不會被採信）。
       const res = await enrollmentsApi.create({
         parent_name: parent.name, parent_phone: parent.phone, students: studentNames,
         venue_id: venueId, coach: coachName || '（待指派）', coach_id: coachId || null,
@@ -263,21 +312,20 @@ export default function ManualEnrollPage() {
         original_price: num(f.basePrice), final_price: num(f.actual),
         allowance_amount: num(f.allowance), unit_price: unitPrice,
         payment_method: f.paymentMethod, transfer_last_5: last5,
-        payer: f.payer.trim(), class_name: f.className.trim(), tax_id: f.taxId.trim(),
-        level_note: f.levelNote.trim(), work_type: f.workType.trim(), carrier: f.carrier.trim(),
-        full_sessions: lessons, submitted_at: f.submittedAt || undefined,
+        payer: f.payer.trim(), tax_id: f.taxId.trim(), carrier: f.carrier.trim(),
+        full_sessions: lessons,
       });
       setFiled((prev) => [...prev, { ...snap, key: (res.enrollment_ids || [res.id]).join(','), ids: res.enrollment_ids || [res.id], count: res.count || 1 }]);
       toast.success(`已建檔 ${res.count || 1} 張訂單（待對帳）`);
-      setF({ ...FRESH, submittedAt: f.submittedAt }); setCoachId('');
+      resetCourseForm();
     } catch (err) { toast.error(err?.response?.data?.error || '手動建檔失敗'); }
     finally { setBusy(false); }
   }
 
   function exportCsv() {
     if (!filed.length) return;
-    const head = ['編號', '家長', '電話', '學員', '館別', '班級', '組別', '教練', '堂數', '原價', '折讓', '實收', '單價', '付款', '對帳碼'];
-    const rows = filed.map((r) => [r.ids.join(' '), r.parentName, r.parentPhone, r.students.join(' '), r.venue, r.className, r.groupType, r.coach, r.lessons, r.basePrice, r.discount, r.actual, r.unit, r.paymentMethod, r.paymentDetail]);
+    const head = ['編號', '家長', '電話', '學員', '館別', '組別', '教練', '堂數', '原價', '折讓', '實收', '單價', '付款', '對帳碼'];
+    const rows = filed.map((r) => [r.ids.join(' '), r.parentName, r.parentPhone, r.students.join(' '), r.venue, r.groupType, r.coach, r.lessons, r.basePrice, r.discount, r.actual, r.unit, r.paymentMethod, r.paymentDetail]);
     const csv = [head, ...rows].map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
     const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
     const a = document.createElement('a');
@@ -384,15 +432,30 @@ export default function ManualEnrollPage() {
                     <Label>註冊館別 *</Label>
                     <Sel value={venueId} onChange={(v) => { setVenueId(v); setCoachId(''); }} disabled={isStaff}>
                       <option value="">請選擇</option>
-                      {venues.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+                      {activeVenues.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
                     </Sel>
                   </div>
                   <div>
                     <Label>授課教練 *</Label>
-                    <Sel value={coachId} onChange={setCoachId} disabled={!venueId || coachesLoading}>
-                      <option value="">{!venueId ? '請先選館別' : (coachesLoading ? '載入中…' : '請選取教練')}</option>
-                      {coaches.map((c) => <option key={c.id} value={c.id}>{c.name}{c.is_senior ? ' ⭐' : ''}</option>)}
-                    </Sel>
+                    {!venueId ? (
+                      <div className="flex items-center gap-2 rounded-xl border border-dashed border-slate-200 bg-slate-50/50 px-4 py-3 text-sm font-semibold text-slate-400">請先選館別</div>
+                    ) : coachId ? (
+                      <div className="flex items-center justify-between rounded-xl border border-indigo-200 bg-indigo-50/40 px-3.5 py-2.5">
+                        <div className="text-sm font-extrabold text-indigo-900">{coachName}{coaches.find((c) => c.id === coachId)?.is_senior ? ' ⭐' : ''}</div>
+                        <button type="button" onClick={() => setCoachId('')} className="text-slate-400 hover:text-slate-600"><Svg d={I.x} /></button>
+                      </div>
+                    ) : (
+                      <SearchCombobox
+                        placeholder={coachesLoading ? '載入中…' : '輸入教練姓名搜尋...'}
+                        emptyText="查無符合的教練"
+                        hintText="輸入姓名以搜尋本館教練…"
+                        onSearch={(q) => coaches.filter((c) => c.name.toLowerCase().includes(q.toLowerCase()))}
+                        onPick={(c) => setCoachId(c.id)}
+                        renderOption={(c) => (
+                          <div className="flex items-center gap-2"><span className="text-sm font-extrabold text-slate-800">{c.name}{c.is_senior ? ' ⭐' : ''}</span></div>
+                        )}
+                      />
+                    )}
                   </div>
                   <div>
                     <Label>組別型態 *</Label>
@@ -410,11 +473,19 @@ export default function ManualEnrollPage() {
                       </p>
                     )}
                   </div>
-                  <div><Label>班級名稱</Label><Inp value={f.className} onChange={upd('className')} placeholder="輸入特定班級編號" /></div>
-                  <div><Label>購買總堂數 *</Label><Inp type="number" value={f.totalSessions} onChange={upd('totalSessions')} className="font-extrabold" /></div>
-                  <div><Label>報名指定時間</Label><Inp type="datetime-local" value={f.submittedAt} onChange={upd('submittedAt')} /></div>
+                  <div>
+                    <Label>購買期數 *</Label>
+                    <Inp type="number" min="1" value={f.periodCount} onChange={upd('periodCount')} className="font-extrabold" />
+                    <p className="mt-1.5 text-[11px] font-semibold text-slate-500">{numPeriods} 期 × 6 堂 = {lessons} 堂</p>
+                  </div>
+                  <div>
+                    <Label>資料建立人</Label>
+                    <div className="flex h-[42px] items-center rounded-xl border border-slate-200 bg-slate-100/70 px-3.5 text-sm font-bold text-slate-500">
+                      {user?.name || user?.username || '—'}
+                    </div>
+                  </div>
                 </div>
-                {numPeriods > 1 && <p className="mt-3 text-xs font-bold text-amber-600">＞6 堂：將自動拆成 {numPeriods} 張訂單（每期 6 堂）。</p>}
+                {numPeriods > 1 && <p className="mt-3 text-xs font-bold text-amber-600">將依期數拆成 {numPeriods} 張訂單（每期 6 堂）。</p>}
               </StepCard>
             </div>
 
@@ -488,16 +559,14 @@ export default function ManualEnrollPage() {
           {/* 補充行政資訊（可展開） */}
           <div className="rounded-2xl border border-slate-200/80 bg-slate-50 p-5">
             <button type="button" onClick={() => setExtraOpen((v) => !v)} className="flex w-full items-center justify-between">
-              <span className="flex items-center gap-2.5 text-xs font-bold tracking-wide text-slate-600"><Svg d={I.folder} className="h-4 w-4 text-slate-400" />補充行政資訊（收款人、統編、發票載具、作業型態、程度，點選展開選填）</span>
+              <span className="flex items-center gap-2.5 text-xs font-bold tracking-wide text-slate-600"><Svg d={I.folder} className="h-4 w-4 text-slate-400" />補充行政資訊（收款人、統編、發票載具，點選展開選填）</span>
               <Svg d={I.chevron} className={`h-4 w-4 text-slate-400 transition-transform ${extraOpen ? 'rotate-180' : ''}`} />
             </button>
             {extraOpen && (
-              <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-5">
+              <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
                 <div><Label>收款人</Label><Inp value={f.payer} onChange={upd('payer')} placeholder="行政人員" /></div>
                 <div><Label>統一編號</Label><Inp value={f.taxId} onChange={upd('taxId')} placeholder="8 碼統編" className="font-mono" /></div>
                 <div><Label>發票載具</Label><Inp value={f.carrier} onChange={upd('carrier')} placeholder="/ABC1234" className="font-mono" /></div>
-                <div><Label>作業型態</Label><Inp value={f.workType} onChange={upd('workType')} placeholder="新報名 / 續報" /></div>
-                <div><Label>程度說明</Label><Inp value={f.levelNote} onChange={upd('levelNote')} placeholder="懼水、有基礎…" /></div>
               </div>
             )}
           </div>
@@ -509,7 +578,7 @@ export default function ManualEnrollPage() {
               <span>建檔後狀態為 <span className="rounded bg-amber-100 px-1.5 py-0.5 font-extrabold text-amber-800">待對帳</span>，沿用家長/學員可連續往下建。</span>
             </div>
             <div className="flex w-full gap-3 sm:w-auto">
-              <button type="button" onClick={() => setF({ ...FRESH, submittedAt: f.submittedAt })} className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-6 py-3 text-xs font-bold text-slate-700 hover:bg-slate-100 sm:flex-initial">清空課程</button>
+              <button type="button" onClick={resetCourseForm} className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-6 py-3 text-xs font-bold text-slate-700 hover:bg-slate-100 sm:flex-initial">清空課程</button>
               <button type="button" onClick={fileOne} disabled={busy} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-slate-900 to-indigo-950 px-8 py-3 text-xs font-extrabold text-white shadow-lg shadow-indigo-900/10 hover:from-indigo-900 hover:to-indigo-950 disabled:opacity-50 sm:flex-initial">
                 <Svg d={I.userPlus} className="h-4 w-4" />{busy ? '建檔中…' : `＋ 建立本筆報名（${numPeriods} 張）`}
               </button>
@@ -543,7 +612,7 @@ export default function ManualEnrollPage() {
             <table className="w-full border-collapse text-left text-xs">
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50/50 text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                  <th className="p-4 pl-6">關聯學員</th><th className="p-4">館別 / 班別</th><th className="p-4">教練 & 堂數</th>
+                  <th className="p-4 pl-6">關聯學員</th><th className="p-4">館別 / 組別</th><th className="p-4">教練 & 堂數</th>
                   <th className="p-4">定價 / 折讓</th><th className="p-4">實收 & 單價</th><th className="p-4">付款 / 對帳</th>
                   <th className="p-4 text-center">狀態</th><th className="p-4 pr-6 text-right">移除</th>
                 </tr>
@@ -555,7 +624,7 @@ export default function ManualEnrollPage() {
                       <div className="flex items-center gap-1.5 text-sm font-extrabold text-slate-950"><span className="h-1.5 w-1.5 rounded-full bg-indigo-500" />{r.students.join('、')}</div>
                       <div className="mt-1 text-[10px] text-slate-400">家長：{r.parentName}（{r.parentPhone}）· <span className="font-mono">{r.ids.join('、')}</span></div>
                     </td>
-                    <td className="p-4"><span className="mb-1.5 inline-block rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-extrabold text-slate-700">{r.venue}</span><div className="text-xs font-bold text-slate-800">{r.className}</div><div className="mt-0.5 text-[10px] text-slate-400">{r.groupType}</div></td>
+                    <td className="p-4"><span className="mb-1.5 inline-block rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-extrabold text-slate-700">{r.venue}</span><div className="mt-0.5 text-[10px] text-slate-400">{r.groupType}</div></td>
                     <td className="p-4"><div className="font-bold text-slate-800">{r.coach}</div><div className="mt-1 text-[10px] text-slate-400">規劃 <b className="text-slate-700">{r.lessons} 堂</b>{r.count > 1 ? ` · ${r.count} 期` : ''}</div></td>
                     <td className="p-4"><div className="text-slate-500">原價 ${r.basePrice.toLocaleString()}</div><div className="mt-0.5 text-red-500">折讓 -${r.discount.toLocaleString()}</div></td>
                     <td className="p-4"><div className="text-sm font-black text-emerald-700">${r.actual.toLocaleString()}</div><div className="mt-1 text-[10px] text-slate-400">均價 ${r.unit}/堂</div></td>

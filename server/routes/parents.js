@@ -14,6 +14,8 @@ const { signParentToken, requireParent } = require('../middlewares/parentAuth');
 const referrals = require('../services/referrals');
 const ragic = require('../services/ragic');
 const parentSync = require('../services/parentSync');
+const ragicAdmin = require('../services/ragicAdmin');
+const { diffChanges, writeStudentAudit } = require('./admin/_customerShared');
 
 const router = express.Router();
 
@@ -226,6 +228,17 @@ router.patch('/me', requireParent, async (req, res) => {
     // 回傳實際寫入的 record id（可能與本地不同 → 直接覆蓋校正，不再 COALESCE 留舊值）。
     const ragicRecordId = await ragic.syncParentProfileStrict(merged, ragicParentPayload(merged, venueName));
     console.log('[parent-sync] 編輯家長 Ragic 同步完成', { ragicId: ragicRecordId });
+    // Z01↔Z03 資料品質治癒掛勾點：Ragic 那邊的姓名早在上面 syncParentProfileStrict 就已經
+    // 修正了（ragicParentPayload 本來就會送 parent.name），這裡只補本地 ragic_z01_quarantine
+    // 追蹤表的收尾——若這位家長原本姓名是佔位資料（如電話號碼）、這次改成正常姓名，
+    // 標記對應追蹤列已解決。best-effort：失敗不擋家長編輯本身。
+    if (ragicAdmin.isPlaceholderParentName(cur.name) && !ragicAdmin.isPlaceholderParentName(patch.name)) {
+      pool.query(
+        `UPDATE ragic_z01_quarantine SET resolved_at = NOW(), resolved_name = $2
+          WHERE z01_ragic_record_id = $1 AND resolved_at IS NULL`,
+        [String(ragicRecordId), patch.name]
+      ).catch((err) => console.warn('[parent-sync] quarantine resolve 標記失敗（不影響本次編輯）:', err.message));
+    }
     const r = await pool.query(
       `UPDATE parents SET
          name = $2, primary_venue_id = $3, identity = $4, gender = $5, email = $6,
@@ -313,6 +326,8 @@ router.post('/me/students', requireParent, async (req, res) => {
       [req.parent.id, s.name, s.id_number, s.birth_date, s.gender, s.blood_type]
     );
     let row = ins.rows[0];
+    writeStudentAudit(pool, row.id, 'create', { byUser: parent.name, byRole: 'parent' })
+      .catch((err) => console.warn('[student-audit] 家長新增稽核寫入失敗:', err.message));
 
     // Ragic 同步（best-effort）：成功 → 補 ragic_record_id + last_synced_at；失敗 → 保留本地、回提醒
     let syncWarning = null;
@@ -381,6 +396,12 @@ router.patch('/me/students/:id', requireParent, async (req, res) => {
       [req.params.id, req.parent.id, s.name, s.id_number, s.birth_date, s.gender, s.blood_type]
     );
     let row = up.rows[0];
+
+    // 稽核：家長自己改學員資料，記錄實際變動欄位（不含身分證/血型以外的敏感值以外的判斷，
+    // 這裡沿用既有欄位白名單）。best-effort：稽核寫入失敗不擋家長編輯本身。
+    const studentChanges = diffChanges(cur.rows[0], s, ['name', 'id_number', 'birth_date', 'gender', 'blood_type']);
+    writeStudentAudit(pool, req.params.id, 'edit', { byUser: parent.name, byRole: 'parent', changes: studentChanges })
+      .catch((err) => console.warn('[student-audit] 家長編輯稽核寫入失敗:', err.message));
 
     // Ragic 同步（best-effort）：成功 → 補 ragic_record_id + last_synced_at；失敗 → 保留本地、回提醒
     let syncWarning = null;

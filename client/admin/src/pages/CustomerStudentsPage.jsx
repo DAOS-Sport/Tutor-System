@@ -46,10 +46,12 @@ export default function CustomerStudentsPage() {
   }
 
   async function openEditor(row) {
-    // 先抓 detail（含購買紀錄 + 依 reveal 遮罩）再開窗，避免購買紀錄掛載後才到、永遠空白。
+    // 先抓 detail（含購買紀錄）再開窗，避免購買紀錄掛載後才到、永遠空白。
+    // 一律用 reveal=true 抓：點「編輯」本身就是有明確對象、可稽核的操作，不用先在列表層級
+    // 按過「顯示個資」才能編輯——列表顯示的遮罩（下方 DataTable 欄位）跟這裡分開，不受影響。
     let data = { ...row, purchases: [] };
     try {
-      const detail = await customerStudentsApi.get(row.id, reveal);
+      const detail = await customerStudentsApi.get(row.id, true);
       if (detail) data = detail;
     } catch { /* detail 失敗 → 用列表基本資料 */ }
     setEditing(data);
@@ -150,7 +152,7 @@ export default function CustomerStudentsPage() {
       <DataTable columns={columns} rows={students} rowKey={(r) => r.id} empty="沒有符合條件的學員" />
 
       {editing && (
-        <RagicZ02Modal student={editing} reveal={reveal} busy={busy} onClose={() => setEditing(null)} onSave={handleSave} />
+        <RagicZ02Modal student={editing} busy={busy} onClose={() => setEditing(null)} onSave={handleSave} />
       )}
 
       <ConfirmDialog

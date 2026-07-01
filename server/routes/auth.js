@@ -189,6 +189,25 @@ function _issue(parent) {
 // _resolveVenueId / upsertLocalParent / upsertLocalStudents / syncFromRagicRecord /
 // _syncWithLock / BindConflictError 已抽至 services/parentSync.js（見檔頭 require）。
 
+// Ragic 呼叫失敗時統一轉成 HTTP 回應：services/ragic.js 的 _normalizeRagicError 已把
+// timeout 跟其他失敗區分成不同 err.code，這裡保留該區分（而非全部壓成同一句「暫時無法連線」），
+// 讓使用者知道「等一下再試就好」跟「系統本身有問題」是不同狀況。
+function _ragicErrorResponse(err, fallbackMsg) {
+  if (err?.code === 'RAGIC_TIMEOUT') {
+    return { status: 504, code: 'RAGIC_TIMEOUT', error: 'Ragic 回應較慢，請稍候片刻再試一次。' };
+  }
+  return { status: 502, code: 'RAGIC_UNAVAILABLE', error: fallbackMsg || '資料同步服務暫時無法連線，請稍後再試' };
+}
+
+// code → 使用者可讀訊息；services/lineAuth.js 依實際失敗原因附上對應 code，
+// 這裡逐一轉成不同文案，取代原本全部落到同一句「LINE 驗證失敗」的做法。
+const LINE_VERIFY_ERROR_MESSAGES = {
+  LINE_TOKEN_EXPIRED:        'LINE 登入已逾時，請重新從 LINE 開啟此頁面。',
+  LINE_CHANNEL_MISCONFIGURED:'系統設定異常，請聯繫客服協助處理（非您的操作問題）。',
+  LINE_VERIFY_NETWORK_ERROR: '暫時無法連上 LINE 驗證服務，請稍後再試。',
+  ID_TOKEN_REQUIRED:         'LINE 驗證資訊遺失，請重新從 LINE 開啟此頁面。',
+};
+
 async function _verifyLineUid(req, res) {
   const idToken = String(req.body?.id_token || '').trim();
   if (!idToken) {
@@ -203,8 +222,9 @@ async function _verifyLineUid(req, res) {
     }
     return profile.sub;
   } catch (err) {
-    console.warn('[auth] verifyLineIdToken failed:', err.message);
-    res.status(401).json({ error: 'LINE 驗證失敗', code: 'LINE_VERIFY_FAILED' });
+    console.warn('[auth] verifyLineIdToken failed:', err.code || '', err.message);
+    const code = err.code && LINE_VERIFY_ERROR_MESSAGES[err.code] ? err.code : 'LINE_VERIFY_FAILED';
+    res.status(401).json({ error: LINE_VERIFY_ERROR_MESSAGES[code] || 'LINE 驗證失敗', code });
     return null;
   }
 }
@@ -382,8 +402,9 @@ router.post('/parent-bind-phone', async (req, res) => {
     try {
       ragicRow = await ragic.getParentByPhone(phone);
     } catch (err) {
-      console.warn('[auth/parent-bind-phone] ragic.getParentByPhone failed:', err.message);
-      return res.status(502).json({ error: '資料同步服務暫時無法連線，請稍後再試', code: 'RAGIC_UNAVAILABLE' });
+      console.warn('[auth/parent-bind-phone] ragic.getParentByPhone failed:', err.code || '', err.message);
+      const r = _ragicErrorResponse(err);
+      return res.status(r.status).json({ error: r.error, code: r.code });
     }
 
     // 3) Ragic 也找不到 → 引導去註冊
@@ -413,7 +434,17 @@ router.post('/parent-bind-phone', async (req, res) => {
           parentSync.auditClaim({ phone, lineUid, result: 'need_verification' });
           return res.json({ status: 'need_claim_verification', line_uid: lineUid, phone });
         }
-        if (!parentSync.matchStudentClaim(ragicStudents, claim)) {
+        const verdict = parentSync.classifyStudentClaim(ragicStudents, claim);
+        if (verdict === 'no_id_on_file') {
+          // 姓名對上了，但 Ragic 該筆學員身分證字號欄位本來就是空的（常見於舊系統資料匯入不完整）。
+          // 這不是「家長打錯」，是資料缺口，用自助表單永遠比對不過，需請櫃檯人工核對後手動綁定。
+          parentSync.auditClaim({ phone, lineUid, result: 'no_id_on_file' });
+          return res.status(409).json({
+            error: '系統資料不完整，無法自動核對身分證字號，請透過本館 LINE 官方帳號聯繫櫃檯協助綁定。',
+            code: 'CLAIM_NO_ID_ON_FILE',
+          });
+        }
+        if (verdict !== 'matched') {
           parentSync.auditClaim({ phone, lineUid, result: 'failed' });
           return res.status(409).json({
             error: '學員姓名或身分證字號與資料不符，無法認領。請確認後再試，或洽櫃臺 / LINE 客服協助。',
@@ -544,8 +575,9 @@ router.post('/parent-register-line', async (req, res) => {
         });
       }
     } catch (err) {
-      console.warn('[auth/parent-register-line] ragic.getParentByLineUid failed:', err.message);
-      return res.status(502).json({ error: '資料同步服務暫時無法連線，請稍後再試', code: 'RAGIC_UNAVAILABLE' });
+      console.warn('[auth/parent-register-line] ragic.getParentByLineUid failed:', err.code || '', err.message);
+      const r = _ragicErrorResponse(err);
+      return res.status(r.status).json({ error: r.error, code: r.code });
     }
 
     // 衝突檢查 3：Ragic 已有此 phone
@@ -553,8 +585,9 @@ router.post('/parent-register-line', async (req, res) => {
     try {
       existsByPhone = await ragic.getParentByPhone(phone);
     } catch (err) {
-      console.warn('[auth/parent-register-line] ragic.getParentByPhone failed:', err.message);
-      return res.status(502).json({ error: '資料同步服務暫時無法連線，請稍後再試', code: 'RAGIC_UNAVAILABLE' });
+      console.warn('[auth/parent-register-line] ragic.getParentByPhone failed:', err.code || '', err.message);
+      const r = _ragicErrorResponse(err);
+      return res.status(r.status).json({ error: r.error, code: r.code });
     }
     if (existsByPhone) {
       return res.status(409).json({
@@ -583,8 +616,9 @@ router.post('/parent-register-line', async (req, res) => {
           code: 'STUDENT_ID_NUMBER_EXISTS',
         });
       }
-      console.error('[auth/parent-register-line] createParentWithStudentsInRagic failed:', err.message);
-      return res.status(502).json({ error: '資料暫時無法完成同步，請稍後再試', code: 'RAGIC_WRITE_FAILED' });
+      console.error('[auth/parent-register-line] createParentWithStudentsInRagic failed:', err.code || '', err.message);
+      const r = _ragicErrorResponse(err, '資料暫時無法完成同步，請稍後再試');
+      return res.status(r.status).json({ error: r.error, code: r.code === 'RAGIC_UNAVAILABLE' ? 'RAGIC_WRITE_FAILED' : r.code });
     }
 
     // 同步 / 建立本地 parents + students
