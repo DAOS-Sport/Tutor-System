@@ -6,6 +6,7 @@
  *   approve：以 transaction 將原 enrollment 標 transferred_out + 新建轉入學員 enrollment
  */
 const { pool } = require('../models/db');
+const ragicWriteback = require('./ragicWriteback');
 
 async function listMine(parentId) {
   const r = await pool.query(
@@ -124,6 +125,7 @@ async function approve({ id, adminUserId, note }) {
     }
     // 找 / 建轉入學員
     let toStudentId = tr.to_student_id;
+    let createdToStudent = false; // 新建者 COMMIT 後即時回寫 Ragic（新列 last_synced_at 預設 NULL）
     if (!toStudentId) {
       const sName = tr.to_student_name || '轉入學員';
       const sExist = await client.query(
@@ -138,6 +140,7 @@ async function approve({ id, adminUserId, note }) {
           [toParentId, sName]
         );
         toStudentId = sIns.rows[0].id;
+        createdToStudent = true;
       }
     }
 
@@ -165,6 +168,11 @@ async function approve({ id, adminUserId, note }) {
     // 並透過上面 transferred_out / 新建 active enrollment 的狀態變動，達成端對端可追溯。
     // （admin_enrollment_audit_logs 之 FK 對應 admin_enrollments，與本表不同網段，故不寫入。）
     await client.query('COMMIT');
+    // 即時回寫 Ragic（best-effort、fire-and-forget）：僅新建的轉入學員需要；
+    // 失敗時該列保持 last_synced_at IS NULL，由每日備份排程重試。
+    if (createdToStudent) {
+      ragicWriteback.scheduleWriteback({ studentIds: [toStudentId], reason: 'transfer-approve' });
+    }
     return { ...tr, status: 'approved', to_parent_id: toParentId, to_student_id: toStudentId };
   } catch (e) {
     await client.query('ROLLBACK');

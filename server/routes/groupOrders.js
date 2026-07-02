@@ -20,7 +20,7 @@ const { pool } = require('../models/db');
 const { objectExists } = require('../services/objectStorage');
 const { requireParent, optionalParent } = require('../middlewares/parentAuth');
 const { maskName, maskNames } = require('../utils/piiMask');
-const ragic = require('../services/ragic');
+const ragicWriteback = require('../services/ragicWriteback');
 const line = require('../services/line');
 
 const router = express.Router();
@@ -107,7 +107,7 @@ function cleanNewStudents(arr) {
  * 在交易內把「加入者本次選的學員」解析成綁定後的 { ids, names, createdForRagic }：
  *  - studentIds：限定為 req.parent 名下既有學員（驗證擁有權，避免綁別人的小孩）
  *  - newStudents：在本地 students 建檔（綁到 parentId），收集新 id/name；
- *    回傳 createdForRagic 供交易提交後 best-effort 寫入 Ragic 子表格。
+ *    回傳 createdForRagic（含本地 id）供交易提交後 best-effort 即時回寫 Ragic Z01/Z02。
  * 任一學員姓名都會進 names（供顯示），ids 收集既有 + 新建。
  */
 async function resolveBoundStudents(client, parentId, studentIds, newStudents) {
@@ -167,32 +167,25 @@ async function resolveBoundStudents(client, parentId, studentIds, newStudents) {
     );
     ids.push(ins.rows[0].id);
     names.push(ins.rows[0].name);
-    createdForRagic.push(s);
+    createdForRagic.push({ ...s, id: ins.rows[0].id }); // 新列 last_synced_at 預設 NULL（待同步）
   }
 
   return { ids, names, createdForRagic };
 }
 
 /**
- * best-effort 把新建學員補寫進該家長的 Ragic Z01 子表格。
- * 失敗只記 log、不拋錯（本地已建檔，加入動作不該因 Ragic 卡住）。
+ * best-effort 把新建學員即時回寫 Ragic Z01/Z02（services/ragicWriteback）。
+ * 失敗只記 log、不拋錯（本地已建檔，加入動作不該因 Ragic 卡住）；
+ * 新列 last_synced_at 預設 NULL，回寫失敗由每日備份排程重試。
+ * （舊版只 best-effort 附加 Z01 子表格、且家長沒 ragic_record_id 就整批略過，
+ *   Z02 從未落地 → 改走與家長端編輯相同的 Z01+Z02 嚴格路徑。）
  */
 async function syncNewStudentsToRagic(parentId, createdForRagic) {
   if (!createdForRagic || !createdForRagic.length) return;
-  try {
-    const pr = await pool.query(`SELECT ragic_record_id FROM parents WHERE id = $1`, [parentId]);
-    const ragicRecordId = pr.rows[0]?.ragic_record_id || null;
-    if (!ragicRecordId) {
-      console.warn('[group-orders ragic] parent 無 ragic_record_id，略過子表格回寫', parentId);
-      return;
-    }
-    // startIndex = 目前該家長本地學員數扣掉本次新建數（≈ Ragic 既有子表格列數）
-    const cnt = await pool.query(`SELECT COUNT(*)::int AS n FROM students WHERE parent_id = $1`, [parentId]);
-    const startIndex = Math.max(0, (cnt.rows[0]?.n || 0) - createdForRagic.length);
-    await ragic.addStudentsToParentInRagic({ ragicRecordId, startIndex, students: createdForRagic });
-  } catch (e) {
-    console.warn('[group-orders ragic] addStudentsToParentInRagic failed:', e.message);
-  }
+  ragicWriteback.scheduleWriteback({
+    studentIds: createdForRagic.map((s) => s.id),
+    reason: 'group-order-join',
+  });
 }
 
 // 將一筆 member row 整形為對外格式；isSelf=false 時遮罩姓名。
@@ -219,17 +212,23 @@ function shapeMember(m, isSelf, perStudent, periodCount) {
 }
 
 // 讀單一團購 + 成員（join parents 取姓名）；附 base_price + coach 倍率、場館匯款資料供金額/付款顯示。
+// 匯款帳戶以 admin_venues（F-A03 場館設定，各館各自維護）為準；該館尚未設定時才退回 venues 表
+// 既有值（現行「統一帳號」），避免顯示空白（Task: 匯款帳戶對應館別）。
 // 回 { order, members(raw) } 或 null
 async function loadOrderWithMembers(client, orderId) {
   const o = await client.query(
     `SELECT go.*, ctc.base_price, COALESCE(co.pricing_multiplier, 1) AS multiplier,
             co.name AS coach_name,
-            v.name AS venue_name, v.account_holder, v.account_number,
-            v.bank_institution_name, v.bank_branch_name
+            v.name AS venue_name,
+            COALESCE(NULLIF(av.account_holder, ''), v.account_holder) AS account_holder,
+            COALESCE(NULLIF(av.account_number, ''), v.account_number) AS account_number,
+            COALESCE(NULLIF(av.bank_institution_name, ''), v.bank_institution_name) AS bank_institution_name,
+            COALESCE(NULLIF(av.bank_branch_name, ''), v.bank_branch_name) AS bank_branch_name
        FROM group_orders go
        LEFT JOIN course_type_configs ctc ON ctc.course_type = go.course_type
        LEFT JOIN coaches co ON co.id = go.coach_id
        LEFT JOIN venues v ON v.id = go.venue_id
+       LEFT JOIN admin_venues av ON av.id = go.venue_id
       WHERE go.id = $1`,
     [orderId]
   );

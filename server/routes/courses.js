@@ -305,10 +305,16 @@ router.get('/:id', requireParent, async (req, res) => {
                          (SELECT cp2.id FROM course_periods cp2
                             WHERE cp2.admin_enrollment_id = e.id ORDER BY cp2.created_at LIMIT 1))
               ) AS period_total_sessions,
-              v.id AS venue_id, v.name AS venue_name, v.account_holder, v.account_number,
-              v.bank_institution_name, v.bank_branch_name
+              v.id AS venue_id, v.name AS venue_name,
+              -- 匯款帳戶以 admin_venues（F-A03 場館設定，各館各自維護）為準；
+              -- 該館尚未設定時才退回 venues 表既有值，避免顯示空白（Task: 匯款帳戶對應館別）。
+              COALESCE(NULLIF(av.account_holder, ''), v.account_holder) AS account_holder,
+              COALESCE(NULLIF(av.account_number, ''), v.account_number) AS account_number,
+              COALESCE(NULLIF(av.bank_institution_name, ''), v.bank_institution_name) AS bank_institution_name,
+              COALESCE(NULLIF(av.bank_branch_name, ''), v.bank_branch_name) AS bank_branch_name
          FROM admin_enrollments e
          LEFT JOIN venues v ON v.id = e.venue_id
+         LEFT JOIN admin_venues av ON av.id = e.venue_id
         WHERE e.id = $1`,
       [req.params.id, req.parent.id]
     );

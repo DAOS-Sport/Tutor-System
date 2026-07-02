@@ -993,44 +993,54 @@ async function _pullParentsStudentsImpl() {
     const studentsByPhone = await parentSync.loadStudentsByParentPhone(client);
     const boundPhones = await parentSync.loadBoundPhones(client);
 
+    // lazy require：parentRefresh 頂層 require ragicAdmin，這裡不可反向頂層 require（避免循環）。
+    const { getZ01MissingFields } = require('./parentRefresh');
+
     for (const z01Row of records) {
       const mapped = ragic.mapZ01Parent(z01Row);
       if (!mapped.phone) continue; // 沒電話無法比對，且 upsertLocalParent 本身也會拒絕
       const ragicRecordId = mapped.ragic_record_id ? String(mapped.ragic_record_id) : String(z01Row._ragicId || '');
-      // 孤兒姓名＝「拿電話號碼頂替姓名」(純數字 Tier-1，或 8–11 碼且數字過半的電話字串 Tier-1b)
-      // → 只進 Z03 清洗，不進 parents / 不成為 Z01/Z02 登入來源。兩條都不中才算非孤兒
-      // （含短姓名、英文名如 "Mandy"），照常同步。判定規則見 isPlaceholderParentName。
-      const isBadName = isPlaceholderParentName(mapped.name);
-      // 已綁定 line_uid = 已經有真人透過即時登入流程建過帳號；即使姓名仍壞，也不能把這筆
-      // 從 parents/students 同步排除，否則會讓真實使用者的活動資料被冷落（見計畫「不動任何
-      // 現有使用者」的前提——這裡是防呆，理論上這批應該都還沒人登入過）。
+      // ── 分流規則（Z01＝登入核心來源）──────────────────────────────────
+      // 本地 Z01/Z02 鏡像只收「必填齊全 ＋ LINE UID 已綁定」的完成記錄；
+      // 其餘（缺 UID、或任一必填殘缺、或姓名為電話佔位）一律只進 Z03 整理佇列，
+      // 不進 parents/students。完整性定義與登入閘門用同一套
+      // （parentRefresh.getZ01MissingFields，requireLineUid: true），兩邊不會漂移。
+      // 註冊頁以電話比對這個「Z03 池」（= Ragic 端未開通記錄）：對上→回寫 UID，
+      // 等客戶補齊必填 → 下輪 pull 自動從 Z03 畢業、落入 Z01。
+      const missingFields = getZ01MissingFields(mapped, { rejectPlaceholderName: true, requireLineUid: true });
+      const isIncomplete = missingFields.length > 0;
+      // 已綁定 line_uid（本地）＝有真人正在使用；殘缺時照樣分流進 Z03（不進 Z01 鏡像），
+      // 但「不」軟拆除其既有本地列——登入本來就由 Ragic 完整性閘門（z01_incomplete）把關，
+      // 拆掉列只會多害使用中 session 找不到資料。
       const alreadyBound = boundPhones.has(mapped.phone);
 
       try {
-        if (isBadName && !alreadyBound) {
-          // 壞名字 + 從未登入過 → 只進 Z03，不建立/更新 parents/students。
-          // 順手軟拆除：這支 Z03 分流邏輯上線前，pull job 舊版本已經把這些壞名字記錄
-          // 同步進 parents 過（沒有 line_uid，純鏡射殘留）——只影響「從未登入過」的列，
-          // 不會動到任何真人使用者（COALESCE 語意跟其餘軟刪除邏輯一致，只清 is_active）。
+        if (isIncomplete) {
+          // 殘缺/未開通 → 只進 Z03，不建立/更新 parents/students。
+          // 順手軟拆除舊鏡射殘留：只清「從未綁定」(line_uid IS NULL) 的本地列，
+          // 不動任何已綁定的真人使用者列。
           await client.query('BEGIN');
           await _upsertZ03Record(client, ragicRecordId, mapped, z01Row);
-          const stale = await client.query(
-            `UPDATE parents SET is_active = FALSE, updated_at = NOW()
-              WHERE phone = $1 AND line_uid IS NULL AND is_active = TRUE
-              RETURNING id`,
-            [mapped.phone]
-          );
-          if (stale.rowCount) {
-            await client.query(
-              `UPDATE students SET is_active = FALSE, updated_at = NOW() WHERE parent_id = $1`,
-              [stale.rows[0].id]
+          if (!alreadyBound) {
+            const stale = await client.query(
+              `UPDATE parents SET is_active = FALSE, updated_at = NOW()
+                WHERE phone = $1 AND line_uid IS NULL AND is_active = TRUE
+                RETURNING id`,
+              [mapped.phone]
             );
+            if (stale.rowCount) {
+              await client.query(
+                `UPDATE students SET is_active = FALSE, updated_at = NOW() WHERE parent_id = $1`,
+                [stale.rows[0].id]
+              );
+            }
           }
           await client.query('COMMIT');
           quarantinedZ03++;
           continue;
         }
 
+        // 完成記錄（必填齊全＋已綁 UID）→ 同步進本地 Z01/Z02 鏡像。
         await client.query('BEGIN');
         const local = await parentSync.upsertLocalParent(client, mapped, mapped.line_uid || null, {
           reactivate: false,
@@ -1041,13 +1051,8 @@ async function _pullParentsStudentsImpl() {
           authoritative: true,
           existingStudents: studentsByPhone.get(mapped.phone) || [],
         });
-        if (isBadName) {
-          // 已是真人但姓名仍壞：照常同步 + 仍寫進 Z03 供人工提醒改名（不排除、只提醒）。
-          await _upsertZ03Record(client, ragicRecordId, mapped, z01Row);
-        } else {
-          // 姓名正常：若先前卡在 Z03 待處理，這裡自動畢業。
-          await _resolveZ03IfPending(client, ragicRecordId, mapped.name);
-        }
+        // 已完成 → 若先前卡在 Z03 待處理，這裡自動畢業（dismissed 忽略列不受影響）。
+        await _resolveZ03IfPending(client, ragicRecordId, mapped.name);
         await client.query('COMMIT');
         synced++;
       } catch (err) {
@@ -1068,15 +1073,149 @@ async function _pullParentsStudentsImpl() {
 async function pullParentsStudentsFromRagic(triggeredBy = 'cron') { return _singleflight('pull', triggeredBy); }
 
 // ─────────────────────────────────────────────────────────────
-// Z03 人工整理表 — 後台 API 用（列表 / 修正寫回 / 忽略）
+// Z03 人工整理表 — 後台 API 用（列表 / 本地修正草稿 / 升級 Z01 / 忽略）
 // 資料本身由 _pullParentsStudentsImpl 的 Z03 分流邏輯灌入，這裡只負責讀取與人工動作。
 // ─────────────────────────────────────────────────────────────
-async function listZ03Records({ status = 'pending' } = {}) {
+const Z03_RECORD_UPDATE_FIELDS = [
+  'raw_name',
+  'venue_raw',
+  'phone',
+  'identity_raw',
+  'gender_raw',
+  'email_raw',
+  'home_phone_raw',
+  'home_address_raw',
+  'line_id_raw',
+  'line_chat_url_raw',
+  'line_uid_raw',
+  'student_count_raw',
+];
+
+const Z03_STUDENT_UPDATE_FIELDS = [
+  'seq_raw',
+  'student_status_raw',
+  'name_raw',
+  'birth_date_raw',
+  'gender_raw',
+  'id_number_raw',
+  'blood_type_raw',
+  'age_raw',
+  'student_code_raw',
+  'registered_phone_raw',
+];
+
+function _cleanText(v, max = 500) {
+  const s = String(v ?? '').trim();
+  return s ? s.slice(0, max) : '';
+}
+
+function _likePattern(v) {
+  return `%${String(v || '').replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
+}
+
+function _digits(v) {
+  return String(v || '').replace(/\D/g, '');
+}
+
+function _normalizeDateLike(value) {
+  const s = _cleanText(value, 30);
+  if (!s) return '';
+  const m = s.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/);
+  if (!m) return s;
+  return `${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`;
+}
+
+function _z03ParentFromRow(row) {
+  return {
+    ragic_record_id: String(row.z01_ragic_record_id || '').trim(),
+    name: _cleanText(row.raw_name, 120),
+    phone: _cleanText(row.phone, 30),
+    gender: _cleanText(row.gender_raw, 30),
+    email: _cleanText(row.email_raw, 255),
+    primary_venue_id: _cleanText(row.venue_raw, 120),
+    identity: _cleanText(row.identity_raw, 80),
+    home_phone: _cleanText(row.home_phone_raw, 50),
+    home_address: _cleanText(row.home_address_raw, 500),
+    line_id: _cleanText(row.line_id_raw, 120),
+    line_uid: _cleanText(row.line_uid_raw, 160),
+    line_chat_url: _cleanText(row.line_chat_url_raw, 500),
+  };
+}
+
+function _z03StudentFromRow(row) {
+  return {
+    name: _cleanText(row.name_raw, 100),
+    birth_date: _normalizeDateLike(row.birth_date_raw) || null,
+    gender: _cleanText(row.gender_raw, 30),
+    id_number: _cleanText(row.id_number_raw, 30).toUpperCase(),
+    blood_type: _cleanText(row.blood_type_raw, 20) || '不清楚',
+    student_code: _cleanText(row.student_code_raw, 80),
+  };
+}
+
+function getZ03UpgradeMissingFields(row) {
+  const parent = _z03ParentFromRow(row);
+  const missing = [];
+  const required = [
+    ['name', '家長姓名'],
+    ['identity', '角色身份'],
+    ['primary_venue_id', '場館'],
+    ['phone', '電話'],
+    ['email', 'Email'],
+    ['line_uid', 'LINE UID'],
+    ['gender', '性別'],
+  ];
+  for (const [key, label] of required) {
+    if (!String(parent[key] || '').trim()) missing.push({ key, label });
+  }
+  if (parent.primary_venue_id === '待補登' && !missing.some((m) => m.key === 'primary_venue_id')) {
+    missing.push({ key: 'primary_venue_id', label: '場館' });
+  }
+  if (parent.name && isPlaceholderParentName(parent.name) && !missing.some((m) => m.key === 'name')) {
+    missing.push({ key: 'name', label: '家長姓名' });
+  }
+  const validStudents = (row.students || []).map(_z03StudentFromRow).filter((s) => s.name);
+  if (!validStudents.length) missing.push({ key: 'students', label: '至少一位學員姓名' });
+  validStudents.forEach((s, idx) => {
+    if (!s.id_number && !s.student_code) {
+      missing.push({ key: `students.${idx}.student_code`, label: `第 ${idx + 1} 位學員編號或身分證字號` });
+    }
+  });
+  return missing;
+}
+
+async function _loadZ03RecordById(id, clientOrPool = pool) {
+  const record = (await clientOrPool.query(`SELECT * FROM ragic_z03_records WHERE id = $1`, [id])).rows[0];
+  if (!record) return null;
+  const students = (await clientOrPool.query(
+    `SELECT * FROM ragic_z03_students WHERE z03_record_id = $1 ORDER BY seq_raw, id`,
+    [record.id]
+  )).rows;
+  return { ...record, students };
+}
+
+async function listZ03Records({ status = 'pending', q = '' } = {}) {
   const where = [];
   const vals = [];
   if (status && status !== 'all') {
     vals.push(status);
     where.push(`status = $${vals.length}`);
+  }
+  const query = String(q || '').trim();
+  if (query) {
+    const parts = [];
+    const phoneDigits = _digits(query);
+    if (phoneDigits) {
+      vals.push(`%${phoneDigits}%`);
+      parts.push(`regexp_replace(COALESCE(phone,''), '\\D', '', 'g') LIKE $${vals.length}`);
+    }
+    vals.push(_likePattern(query));
+    parts.push(`EXISTS (
+      SELECT 1 FROM ragic_z03_students zs
+       WHERE zs.z03_record_id = ragic_z03_records.id
+         AND COALESCE(zs.name_raw, '') ILIKE $${vals.length} ESCAPE '\\'
+    )`);
+    where.push(`(${parts.join(' OR ')})`);
   }
   const records = (await pool.query(
     `SELECT * FROM ragic_z03_records
@@ -1096,6 +1235,130 @@ async function listZ03Records({ status = 'pending' } = {}) {
     if (list) list.push(s); else byRecord.set(s.z03_record_id, [s]);
   }
   return records.map((r) => ({ ...r, students: byRecord.get(r.id) || [] }));
+}
+
+async function _upgradeZ03RecordToZ01(row, adminUsername) {
+  if (row.status === 'dismissed') {
+    return { upgraded: false, skipped: 'dismissed', missing: [] };
+  }
+  const missing = getZ03UpgradeMissingFields(row);
+  if (missing.length) return { upgraded: false, missing };
+
+  const parent = _z03ParentFromRow(row);
+  const students = (row.students || []).map(_z03StudentFromRow).filter((s) => s.name);
+
+  // 比照註冊 found->update：先寫學員 Z02，最後才把 LINE UID 寫進 Z01，避免半套開通。
+  for (const student of students) {
+    await ragic.updateStudentZ01Z02Strict({ parent, student });
+  }
+
+  const venueName = await ragic.venueLabel(parent.primary_venue_id);
+  const payload = {
+    [ragic.FIELD.Z01.PARENT_NAME]: parent.name,
+    [ragic.FIELD.Z01.VENUE]: venueName || parent.primary_venue_id,
+    [ragic.FIELD.Z01.PHONE]: parent.phone,
+    [ragic.FIELD.Z01.IDENTITY]: parent.identity,
+    [ragic.FIELD.Z01.GENDER]: parent.gender,
+    [ragic.FIELD.Z01.EMAIL]: parent.email,
+    [ragic.FIELD.Z01.HOME_PHONE]: parent.home_phone,
+    [ragic.FIELD.Z01.HOME_ADDRESS]: parent.home_address,
+    [ragic.FIELD.Z01.LINE_ID]: parent.line_id,
+    [ragic.FIELD.Z01.LINE_UID]: parent.line_uid,
+  };
+  if (parent.line_chat_url) payload[ragic.FIELD.Z01.LINE_CHAT_URL] = parent.line_chat_url;
+  await ragic.upsertParentStrict(payload, parent.ragic_record_id);
+
+  const parentRefresh = require('./parentRefresh');
+  const refreshed = await parentRefresh.refreshParentMirrorFromRagic({
+    lineUid: parent.line_uid,
+    phone: parent.phone,
+    minStudents: students.length,
+    reason: 'admin-z03-upgrade',
+  });
+
+  await pool.query(
+    `UPDATE ragic_z03_records
+        SET status = 'resolved', fixed_name = $2, resolved_at = NOW(), resolved_by = $3
+      WHERE id = $1`,
+    [row.id, parent.name, adminUsername || null]
+  );
+
+  return { upgraded: true, missing: [], refreshed };
+}
+
+async function saveZ03RecordDraft(id, payload = {}, adminUsername = null) {
+  const recordIn = payload.record && typeof payload.record === 'object' ? payload.record : {};
+  const studentsIn = Array.isArray(payload.students) ? payload.students : [];
+  const client = await pool.connect();
+  let saved;
+  try {
+    await client.query('BEGIN');
+    const current = (await client.query(`SELECT * FROM ragic_z03_records WHERE id = $1 FOR UPDATE`, [id])).rows[0];
+    if (!current) throw new Error('找不到這筆 Z03 記錄');
+
+    const set = [];
+    const vals = [id];
+    for (const field of Z03_RECORD_UPDATE_FIELDS) {
+      if (Object.prototype.hasOwnProperty.call(recordIn, field)) {
+        vals.push(_cleanText(recordIn[field], field === 'home_address_raw' || field === 'line_chat_url_raw' ? 500 : 255));
+        set.push(`${field} = $${vals.length}`);
+      }
+    }
+    if (set.length) {
+      await client.query(
+        `UPDATE ragic_z03_records SET ${set.join(', ')} WHERE id = $1`,
+        vals
+      );
+    }
+
+    if (studentsIn.length) {
+      const existing = (await client.query(
+        `SELECT id FROM ragic_z03_students WHERE z03_record_id = $1`,
+        [id]
+      )).rows.map((r) => String(r.id));
+      const existingIds = new Set(existing);
+      for (const student of studentsIn) {
+        const sid = String(student?.id || '').trim();
+        if (!sid || !existingIds.has(sid)) {
+          throw new Error('學員資料不屬於這筆 Z03 記錄，請重新整理後再試');
+        }
+        const sSet = [];
+        const sVals = [sid, id];
+        for (const field of Z03_STUDENT_UPDATE_FIELDS) {
+          if (Object.prototype.hasOwnProperty.call(student, field)) {
+            sVals.push(_cleanText(student[field], 255));
+            sSet.push(`${field} = $${sVals.length}`);
+          }
+        }
+        if (sSet.length) {
+          await client.query(
+            `UPDATE ragic_z03_students SET ${sSet.join(', ')}
+              WHERE id = $1 AND z03_record_id = $2`,
+            sVals
+          );
+        }
+      }
+    }
+
+    saved = await _loadZ03RecordById(id, client);
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  let upgrade;
+  try {
+    upgrade = await _upgradeZ03RecordToZ01(saved, adminUsername);
+  } catch (err) {
+    err.z03Saved = true;
+    err.z03Item = await _loadZ03RecordById(id).catch(() => saved);
+    throw err;
+  }
+  const item = await _loadZ03RecordById(id);
+  return { item, ...upgrade };
 }
 
 // 人工確認正確姓名 → 只寫回 Ragic Z01 的姓名欄位（Field ID，partial update，
@@ -1238,9 +1501,11 @@ const FORM_META = {
   venues:   { code: 'H05_VENUES',   label: 'H05 場館 (venues)',                       kind: 'sync',        impl: _syncVenuesImpl, env: 'RAGIC_FORM_H05' },
   parents:  { code: 'Z01_PARENTS',  label: 'Z01 家長 (按請求查詢)',                   kind: 'healthcheck', impl: _pingZ01Impl,    env: 'RAGIC_FORM_Z01' },
   students: { code: 'Z02_STUDENTS', label: 'Z02 學員 (按請求查詢)',                   kind: 'healthcheck', impl: _pingZ02Impl,    env: 'RAGIC_FORM_Z02' },
+  // 夜間同步鏈：backup（00:30 推）→ pull（01:30 拉，Ragic→Z03 分流）→ quarantine（01:45 掃描）。
+  // 標籤依使用者指定：backup 維持原名；pull 明示「從 Ragic 拉到 Z03」以與 backup 區隔。
   backup:   { code: 'Z01_Z02_BACKUP', label: 'Z01/Z02 本地→Ragic 每日備份同步',       kind: 'sync',        impl: _backupParentsStudentsImpl, env: 'RAGIC_FORM_Z01' },
-  pull:     { code: 'Z01_Z02_PULL',   label: 'Z01/Z02 Ragic→本地 每日全量同步',       kind: 'sync',        impl: _pullParentsStudentsImpl,   env: 'RAGIC_FORM_Z01' },
-  quarantine: { code: 'Z01_BAD_NAME_QUARANTINE', label: 'Z01 家長姓名品質偵測（→Z03，暫僅本地追蹤）', kind: 'sync', impl: _quarantineBadZ01NamesImpl, env: 'RAGIC_FORM_Z01' },
+  pull:     { code: 'Z01_Z02_PULL',   label: 'Ragic Z01 → Z03 每日拉回整理（完成者入 Z01 鏡像）', kind: 'sync', impl: _pullParentsStudentsImpl,   env: 'RAGIC_FORM_Z01' },
+  quarantine: { code: 'Z01_BAD_NAME_QUARANTINE', label: 'Z01 姓名品質掃描（Z03 追蹤）', kind: 'sync', impl: _quarantineBadZ01NamesImpl, env: 'RAGIC_FORM_Z01' },
 };
 
 // ── 每個 Ragic sync job 可由 admin 在「Ragic 連線狀態」頁手動開關 ──
@@ -1272,6 +1537,25 @@ async function getJobToggles() {
   const out = {};
   for (const j of jobs) out[j] = byKey.has(_toggleKey(j)) ? byKey.get(_toggleKey(j)) : true;
   return out;
+}
+
+/**
+ * 夜間排程順序閘門：#1（00:30 本地→Ragic 回寫）最近一次是否成功。
+ * 給 #2（01:30 Ragic Z01→本地/Z03 拉回）與 #3（01:45 品質掃描）當前置條件——
+ * 回寫沒成功就拉回，會把「本地已修正、還沒推上去」的舊 Ragic 狀態灌回 Z03（堵塞 Z03）。
+ * 以 DB 的 ragic_sync_log 判定（非記憶體旗標），伺服器半夜重啟不影響判斷。
+ * 'skipped'（admin 手動停用 backup job）視為放行：管理者刻意停推送時，不該把拉回也卡死。
+ */
+async function hasRecentBackupSuccess(windowHours = 3) {
+  const r = await pool.query(
+    `SELECT 1 FROM ragic_sync_log
+      WHERE form_code = 'Z01_Z02_BACKUP'
+        AND status IN ('ok', 'skipped')
+        AND created_at >= NOW() - ($1 || ' hours')::interval
+      LIMIT 1`,
+    [windowHours]
+  );
+  return r.rowCount > 0;
 }
 
 async function _logSyncResult(jobName, formCode, result, durationMs, triggeredBy) {
@@ -1611,6 +1895,7 @@ module.exports = {
   backupParentsStudentsToRagic,
   pullParentsStudentsFromRagic,
   quarantineBadZ01Names,
+  hasRecentBackupSuccess,
   isPlaceholderParentName,
   hasNoCjkCharacters,
   getRagicJobNames,
@@ -1622,6 +1907,8 @@ module.exports = {
   getJobToggles,
   // Z03 人工整理表
   listZ03Records,
+  getZ03UpgradeMissingFields,
+  saveZ03RecordDraft,
   resolveZ03Record,
   dismissZ03Record,
   markPlaceholderNameResolved,

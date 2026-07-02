@@ -55,12 +55,13 @@ async function loadVenuesMap(client) {
 
 /**
  * Upsert parents（以 phone 為唯一鍵）。
- *  - line_uid 已有不同值時，絕不覆蓋（COALESCE 保護）。
+ *  - line_uid 已有不同值時，預設絕不覆蓋（COALESCE 保護）。
+ *    overwriteLineUid=true 僅供「Ragic 已確認改綁成功後」的登入/綁定刷新使用。
  *  - reactivate=true（刻意登入/綁定）才允許把軟刪除的家長重新啟用；
  *    reactivate=false（背景刷新）則保留既有 is_active，不讓被移除的孤兒因同步復活。
  *  - venuesMap：見 _resolveVenueId 說明，批次同步用。
  */
-async function upsertLocalParent(client, mapped, lineUid, { reactivate = true, venuesMap = null } = {}) {
+async function upsertLocalParent(client, mapped, lineUid, { reactivate = true, venuesMap = null, overwriteLineUid = false } = {}) {
   const name  = mapped.name  || '未命名家長';
   const phone = mapped.phone || '';
   if (!phone) throw new Error('缺少手機，無法 upsert parent');
@@ -75,7 +76,10 @@ async function upsertLocalParent(client, mapped, lineUid, { reactivate = true, v
              NULLIF($8, ''), NULLIF($9, ''), NULLIF($10, ''), NULLIF($11, ''), NOW())
      ON CONFLICT (phone) DO UPDATE SET
        name = EXCLUDED.name,
-       line_uid = COALESCE(parents.line_uid, EXCLUDED.line_uid),
+       line_uid = CASE
+         WHEN $13::boolean THEN NULLIF($3, '')
+         ELSE COALESCE(parents.line_uid, EXCLUDED.line_uid)
+       END,
        primary_venue_id = COALESCE(parents.primary_venue_id, EXCLUDED.primary_venue_id),
        gender = COALESCE(NULLIF(EXCLUDED.gender,''), parents.gender),
        email  = COALESCE(NULLIF(EXCLUDED.email,''),  parents.email),
@@ -93,7 +97,7 @@ async function upsertLocalParent(client, mapped, lineUid, { reactivate = true, v
     [phone, name, lineUid || '', venueId,
      ragic.normalizeGender(mapped.gender), mapped.email || '', mapped.ragic_record_id || '',
      mapped.identity || '', mapped.home_phone || '', mapped.home_address || '', mapped.line_id || '',
-     reactivate]
+     reactivate, overwriteLineUid]
   );
   return up.rows[0];
 }
@@ -102,8 +106,9 @@ async function upsertLocalParent(client, mapped, lineUid, { reactivate = true, v
  * Upsert students（id-stable）。
  *  匹配序：(parent_id, id_number) → (parent_id, ragic_record_id) → (parent_id, name, birth_date)。
  *  - 命中 → 就地 UPDATE（保留同一 student.id，活動紀錄不斷鏈）；設 is_active=TRUE、補 ragic_record_id。
- *    若本地該列為「尚未同步」(last_synced_at IS NULL，代表有家長端未送達 Ragic 的編輯)，
- *    則不覆蓋顯示欄位，避免用舊的 Ragic 值蓋掉本地待同步的新值（防 lost-update）。
+ *    preservePending=true 時，若本地該列為「尚未同步」(last_synced_at IS NULL)，
+ *    則不覆蓋顯示欄位，避免用舊的 Ragic 值蓋掉本地待同步的新值（背景批次防 lost-update）。
+ *    即時登入/個資嚴格刷新會傳 preservePending=false，確保本地鏡射真的等於 Ragic 權威資料。
  *  - 未命中 → INSERT 新列。
  *  - authoritative=true（同步來源為 Ragic 權威清單）時，對「先前已同步過(ragic_record_id 非空)、
  *    有 id_number、但不在本次權威清單」的本地學員做軟拆除（is_active=FALSE，隱藏不外露）。
@@ -112,7 +117,7 @@ async function upsertLocalParent(client, mapped, lineUid, { reactivate = true, v
  *    （至少含 id/id_number/ragic_record_id/name/birth_date）傳入，三層比對改成在記憶體裡
  *    做，省掉每位學員 3 次序列 SELECT；不傳就照舊逐筆查 DB（既有單筆呼叫端行為不變）。
  */
-async function upsertLocalStudents(client, parentId, students, { authoritative = false, existingStudents = null } = {}) {
+async function upsertLocalStudents(client, parentId, students, { authoritative = false, existingStudents = null, preservePending = true } = {}) {
   for (const s of students || []) {
     if (!s || !s.name) continue;
     const idNum  = s.id_number ? String(s.id_number).toUpperCase().trim() : null;
@@ -170,20 +175,20 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
     if (matched) {
       await client.query(
         `UPDATE students SET
-           -- 待同步(last_synced_at IS NULL)的本地編輯不被舊 Ragic 值覆蓋；其餘以 Ragic 為準。
-           name        = CASE WHEN last_synced_at IS NULL THEN name        ELSE $2 END,
-           birth_date  = CASE WHEN last_synced_at IS NULL THEN birth_date  ELSE COALESCE($3::date, birth_date) END,
-           gender      = CASE WHEN last_synced_at IS NULL THEN gender      ELSE COALESCE(NULLIF($4,''), gender) END,
-           blood_type  = CASE WHEN last_synced_at IS NULL THEN blood_type  ELSE COALESCE(NULLIF($6,''), blood_type) END,
-           student_code = CASE WHEN last_synced_at IS NULL THEN student_code ELSE COALESCE(NULLIF($7,''), student_code) END,
+           -- 背景批次可保留待同步本地編輯；嚴格刷新則以 Ragic 回讀值覆蓋，消除鏡射漂移。
+           name        = CASE WHEN $9::boolean AND last_synced_at IS NULL THEN name        ELSE $2 END,
+           birth_date  = CASE WHEN $9::boolean AND last_synced_at IS NULL THEN birth_date  ELSE COALESCE($3::date, birth_date) END,
+           gender      = CASE WHEN $9::boolean AND last_synced_at IS NULL THEN gender      ELSE COALESCE(NULLIF($4,''), gender) END,
+           blood_type  = CASE WHEN $9::boolean AND last_synced_at IS NULL THEN blood_type  ELSE COALESCE(NULLIF($6,''), blood_type) END,
+           student_code = CASE WHEN $9::boolean AND last_synced_at IS NULL THEN student_code ELSE COALESCE(NULLIF($7,''), student_code) END,
            id_number   = COALESCE(id_number, NULLIF($5,'')),
            ragic_record_id = COALESCE(ragic_record_id, NULLIF($8,'')),
            is_active   = TRUE,
-           last_synced_at = CASE WHEN last_synced_at IS NULL THEN last_synced_at ELSE NOW() END,
+           last_synced_at = CASE WHEN $9::boolean AND last_synced_at IS NULL THEN last_synced_at ELSE NOW() END,
            updated_at  = NOW()
          WHERE id = $1`,
         [matched.id, s.name, s.birth_date || null, ragic.normalizeGender(s.gender),
-         idNum || '', s.blood_type || '', s.student_code || '', ragicId || '']
+         idNum || '', s.blood_type || '', s.student_code || '', ragicId || '', preservePending]
       );
     } else {
       await client.query(
@@ -221,7 +226,7 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
  * 避免「conflict check 在 txn 外、upsert 在 txn 內」之間的縫導致誤綁。
  * 流程：lock → 重做 line/phone 衝突檢查 → upsert parent → 斷言 line_uid===caller → upsert students。
  */
-async function _syncWithLock({ mapped, students, lineUid, reactivate = true }) {
+async function _syncWithLock({ mapped, students, lineUid, reactivate = true, allowRebind = false, preservePending = true }) {
   const phone = mapped.phone;
   if (!phone) throw new Error('缺少手機');
   const client = await pool.connect();
@@ -237,12 +242,15 @@ async function _syncWithLock({ mapped, students, lineUid, reactivate = true }) {
     }
     const dupPhone = await client.query(
       `SELECT line_uid FROM parents WHERE phone = $1 LIMIT 1`, [phone]);
-    if (dupPhone.rowCount && dupPhone.rows[0].line_uid && dupPhone.rows[0].line_uid !== lineUid) {
+    if (!allowRebind && dupPhone.rowCount && dupPhone.rows[0].line_uid && dupPhone.rows[0].line_uid !== lineUid) {
       throw new BindConflictError('PHONE_ALREADY_BOUND_TO_OTHER_LINE',
         '此手機已綁定其他 LINE 帳號，請聯絡客服處理');
     }
 
-    const local = await upsertLocalParent(client, mapped, lineUid, { reactivate });
+    const local = await upsertLocalParent(client, mapped, lineUid, {
+      reactivate,
+      overwriteLineUid: allowRebind,
+    });
 
     if (local.line_uid && local.line_uid !== lineUid) {
       throw new BindConflictError('PHONE_ALREADY_BOUND_TO_OTHER_LINE',
@@ -250,7 +258,7 @@ async function _syncWithLock({ mapped, students, lineUid, reactivate = true }) {
     }
 
     // 來源為 Ragic 權威清單 → 開啟 id-stable upsert + 權威移除軟拆除。
-    await upsertLocalStudents(client, local.id, students || [], { authoritative: true });
+    await upsertLocalStudents(client, local.id, students || [], { authoritative: true, preservePending });
     await client.query('COMMIT');
     return local;
   } catch (err) {

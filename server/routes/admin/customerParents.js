@@ -9,7 +9,8 @@
  * 真相分工（設計討論定案，見 services/parentSync.js 註解）：
  *   - 登入身分欄（line_uid / is_active）：Replit 為權威 → 此處「永不」改 line_uid。
  *   - 業務資料欄（name/gender/email/venue/identity/住家電話/地址/line_id）：Ragic 為權威，
- *     admin 編輯先寫本地鏡像；TODO 後續加 Option A 回寫 Ragic（ragic.syncParentProfileStrict）。
+ *     admin 編輯先寫本地鏡像（交易內標記 last_synced_at = NULL），提交後即時回寫 Ragic
+ *     （services/ragicWriteback，best-effort）；失敗列保持待同步，由每日備份排程重試。
  *   - phone：值屬 Ragic、綁定關係屬 Replit；此處允許客服改號，唯一鍵衝突回 409。
  *
  * 權限：manager/staff 僅能存取「自己場館」的家長（依 primary_venue_id 收斂）；admin 全域。
@@ -19,6 +20,7 @@ const express = require('express');
 const { pool } = require('../../models/db');
 const { requireAdminAuth, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
 const { parseRocOrIso, maskId, maskBlood, looksMasked, wantReveal, auditReveal, diffChanges, writeStudentAudit, adminActorName } = require('./_customerShared');
+const ragicWriteback = require('../../services/ragicWriteback');
 
 const router = express.Router();
 
@@ -144,6 +146,8 @@ router.post('/', requireAdminAuth, async (req, res) => {
       [phone, name, b.gender || '', b.email || '', b.primary_venue_id || '',
        b.identity || '', b.home_phone || '', b.home_address || '', b.line_id || '']
     );
+    // 即時回寫 Ragic（best-effort；新列 last_synced_at 預設 NULL，失敗由每日備份重試）
+    ragicWriteback.scheduleWriteback({ parentId: r.rows[0].id, reason: 'admin-parent-create' });
     res.json(rowToParent(r.rows[0]));
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: '此行動電話已被其他家長使用', code: 'PHONE_DUPLICATE' });
@@ -181,12 +185,16 @@ router.patch('/:id', requireAdminAuth, async (req, res) => {
       sets.push(`${col} = $${args.length}`);
     }
     if (typeof b.is_active === 'boolean') { args.push(b.is_active); sets.push(`is_active = $${args.length}`); }
+    // 本地鏡像有異動 → 交易內先標記待同步（last_synced_at = NULL），COMMIT 後即時回寫 Ragic；
+    // 回寫成功才蓋回 NOW()，失敗保持 NULL 由每日備份排程重試。
+    const parentTouched = sets.length > 0;
     if (sets.length) {
       args.push(req.params.id);
-      await client.query(`UPDATE parents SET ${sets.join(', ')}, updated_at = NOW() WHERE id = $${args.length}`, args);
+      await client.query(`UPDATE parents SET ${sets.join(', ')}, last_synced_at = NULL, updated_at = NOW() WHERE id = $${args.length}`, args);
     }
 
     // 2) 子表學員 upsert（id 命中→就地更新，保留 student.id 不斷活動紀錄鏈）
+    const touchedStudentIds = []; // 本次更新/新增的學員 → COMMIT 後即時回寫 Ragic
     if (Array.isArray(b.students)) {
       for (const s of b.students) {
         if (!s) continue;
@@ -207,12 +215,13 @@ router.patch('/:id', requireAdminAuth, async (req, res) => {
               `UPDATE students SET name=$2, gender=NULLIF($3,''), birth_date=$4::date,
                      id_number  = CASE WHEN $5::boolean THEN NULLIF($6,'')  ELSE id_number  END,
                      blood_type = CASE WHEN $7::boolean THEN NULLIF($8,'')  ELSE blood_type END,
-                     student_code=NULLIF($9,''), is_active=$10, updated_at=NOW() WHERE id=$1
+                     student_code=NULLIF($9,''), is_active=$10, last_synced_at=NULL, updated_at=NOW() WHERE id=$1
                RETURNING name, gender, birth_date, id_number, blood_type, student_code`,
               [s.id, s.name || '', s.gender || '', bd,
                idNum !== undefined, idNum || '', blood !== undefined, blood || '',
                s.student_code || '', s.is_active !== false]
             );
+            touchedStudentIds.push(s.id);
             const changes = diffChanges(before, upd.rows[0], ['name', 'gender', 'birth_date', 'id_number', 'blood_type', 'student_code']);
             await writeStudentAudit(client, s.id, 'edit', { byUser: adminActorName(req), byRole: req.adminUser?.role, changes })
               .catch((err) => console.warn('[student-audit] 家長頁編輯學員稽核寫入失敗:', err.message));
@@ -228,6 +237,7 @@ router.patch('/:id', requireAdminAuth, async (req, res) => {
            idNum === undefined ? '' : (idNum || ''), blood === undefined ? '' : (blood || ''),
            s.student_code || '', s.is_active !== false]
         );
+        touchedStudentIds.push(ins.rows[0].id); // 新列 last_synced_at 預設 NULL（待同步）
         await writeStudentAudit(client, ins.rows[0].id, 'create', { byUser: adminActorName(req), byRole: req.adminUser?.role })
           .catch((err) => console.warn('[student-audit] 家長頁新增學員稽核寫入失敗:', err.message));
       }
@@ -238,7 +248,13 @@ router.patch('/:id', requireAdminAuth, async (req, res) => {
     const kids = await client.query(`SELECT ${KID_COLS} FROM students WHERE parent_id = $1 ORDER BY is_active DESC, created_at ASC`, [req.params.id]);
     await client.query('COMMIT');
     const reveal = wantReveal(req);
-    // TODO(Option A 寫回 Ragic)：ragic.syncParentProfileStrict + updateStudentZ01Z02Strict，資料清洗後接上。
+    // Option A 寫回 Ragic：COMMIT 後即時回寫（best-effort、fire-and-forget）；
+    // 失敗列已在交易內標記 last_synced_at = NULL，由每日備份排程重試。
+    ragicWriteback.scheduleWriteback({
+      parentId: parentTouched ? req.params.id : null,
+      studentIds: touchedStudentIds,
+      reason: 'admin-parent-patch',
+    });
     res.json({ ...rowToParent(p.rows[0]), students: kids.rows.map((k) => rowToStudent(k, reveal)) });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});

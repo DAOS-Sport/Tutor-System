@@ -58,6 +58,14 @@ function syncErrMsg(e) {
     EMAIL_INVALID: 'Email 格式有誤',
     VENUE_NOT_FOUND: '館別不存在，請重新選擇',
     STUDENT_ID_DUPLICATED: '此身分證字號已有學員資料，請確認後再試；若需協助請聯絡客服。',
+    STUDENT_ID_NUMBER_EXISTS: '此身分證字號已有學員資料，請確認後再試；若需協助請聯絡客服。',
+    Z01_INCOMPLETE: '會員資料尚未完整，請完成必填欄位後再儲存。',
+    LOCAL_VENUE_REFRESH_FAILED: '本地場館資料同步失敗，請聯絡客服確認場館設定。',
+    RAGIC_Z02_REFRESH_FAILED: '學員資料重新讀取失敗，請稍後再試。',
+    RAGIC_TIMEOUT: 'Ragic 回應較慢，請稍後再試。',
+    RAGIC_SYNC_FAILED: '資料暫時無法完成同步，請稍後再試。',
+    Z03_RESOLVE_FAILED: '舊資料清理狀態更新失敗，請稍後再試。',
+    PARENT_REFRESH_FAILED: '會員資料重新整理失敗，請稍後再試。',
   };
   if (code && MAP[code]) return MAP[code];
   if (status === 400) return e?.response?.data?.error || '資料格式有誤，請確認後再試';
@@ -180,25 +188,24 @@ export default function ProfilePage() {
     setStudentErrors({});
     setBusy('student');
     try {
-      const saved = editingId
+      const result = editingId
         ? await parentsApi.updateStudent(editingId, studentForm)
         : await parentsApi.createStudent(studentForm);
-      // 擇一儲存：學員一定先存進本地 DB；sync_warning 表示雲端同步暫緩（家長資料未補齊），
-      // 仍視為儲存成功並更新清單，只是改顯示警示而非綠色成功。
-      const { sync_warning: syncWarning, merged_existing: mergedExisting, ...savedStudent } = saved || {};
-      const hasExisting = students.some((s) => s.id === savedStudent.id);
-      const nextStudents = editingId
-        ? students.map((s) => (s.id === editingId ? savedStudent : s))
-        : hasExisting
-          ? students.map((s) => (s.id === savedStudent.id ? savedStudent : s))
-          : [...students, savedStudent];
-      updateAuth({ ...profile, students: nextStudents });
-      resetStudentForm();
-      if (syncWarning) {
-        toast.warning(syncWarning);
+      if (result?.students) {
+        updateAuth(result);
       } else {
-        toast.success(editingId || mergedExisting ? '學員資料已更新' : '學員已新增');
+        // mock/dev fallback：舊 mock API 仍回單筆 student；正式後端一律回 refresh 後完整 profile。
+        const savedStudent = result || {};
+        const hasExisting = students.some((s) => s.id === savedStudent.id);
+        const nextStudents = editingId
+          ? students.map((s) => (s.id === editingId ? savedStudent : s))
+          : hasExisting
+            ? students.map((s) => (s.id === savedStudent.id ? savedStudent : s))
+            : [...students, savedStudent];
+        updateAuth({ ...profile, students: nextStudents });
       }
+      resetStudentForm();
+      toast.success(editingId ? '學員資料已更新' : '學員已新增');
     } catch (err) {
       toast.error(syncErrMsg(err));
     } finally {
@@ -225,19 +232,49 @@ export default function ProfilePage() {
         <Collapsible title="編輯資料" open={editOpen} onToggle={() => setEditOpen((o) => !o)} accent>
           <div className="space-y-2.5">
             <Collapsible title="家長資料" open={parentOpen} onToggle={() => setParentOpen((o) => !o)} nested>
-              <p className="mb-2 text-[11px] text-gray-400">家長資料於註冊後鎖定為唯讀，如需修改請洽櫃台 / 客服。</p>
-              <div className="grid gap-3">
-                <ReadonlyField label="家長姓名" value={parentForm.name} />
-                <ReadonlyField label="手機" value={parentForm.phone} />
-                <ReadonlyField label="館別" value={venues.find((v) => v.id === parentForm.primary_venue_id)?.name || parentForm.primary_venue_id} />
-                <ReadonlyField label="性別" value={parentForm.gender} />
-                <ReadonlyField label="Email" value={parentForm.email} />
+              <form className="grid gap-3" onSubmit={saveParent} noValidate>
+                <Field label="家長姓名" required error={parentErrors.name}>
+                  <input className={fieldCls(parentErrors.name)} value={parentForm.name} onChange={(e) => setParentField('name', e.target.value)} />
+                </Field>
+                <Field label="手機">
+                  <input className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600" value={parentForm.phone} readOnly />
+                </Field>
                 <div className="grid grid-cols-2 gap-3">
-                  <ReadonlyField label="住家電話" value={parentForm.home_phone} />
-                  <ReadonlyField label="LINE ID" value={parentForm.line_id} />
+                  <Field label="館別" required error={parentErrors.primary_venue_id}>
+                    <select className={fieldCls(parentErrors.primary_venue_id)} value={parentForm.primary_venue_id} onChange={(e) => setParentField('primary_venue_id', e.target.value)}>
+                      <option value="">請選擇館別</option>
+                      {venues.map((v) => (
+                        <option key={v.id} value={v.id}>{v.name}</option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="性別" required error={parentErrors.gender}>
+                    <select className={fieldCls(parentErrors.gender)} value={parentForm.gender} onChange={(e) => setParentField('gender', e.target.value)}>
+                      <option value="">請選擇</option>
+                      <option value="生理女">生理女</option>
+                      <option value="生理男">生理男</option>
+                      <option value="不方便透漏">不方便透漏</option>
+                    </select>
+                  </Field>
                 </div>
-                <ReadonlyField label="住家地址" value={parentForm.home_address} />
-              </div>
+                <Field label="Email" required error={parentErrors.email}>
+                  <input type="email" className={fieldCls(parentErrors.email)} value={parentForm.email} onChange={(e) => setParentField('email', e.target.value)} />
+                </Field>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="住家電話">
+                    <input className={inputCls} value={parentForm.home_phone} onChange={(e) => setParentField('home_phone', e.target.value)} />
+                  </Field>
+                  <Field label="LINE ID">
+                    <input className={inputCls} value={parentForm.line_id} onChange={(e) => setParentField('line_id', e.target.value)} />
+                  </Field>
+                </div>
+                <Field label="住家地址">
+                  <input className={inputCls} value={parentForm.home_address} onChange={(e) => setParentField('home_address', e.target.value)} />
+                </Field>
+                <button type="submit" disabled={!!busy} className="rounded-lg bg-brand-primary py-2.5 text-sm font-bold text-white disabled:opacity-60">
+                  {busy === 'parent' ? '同步中...' : '儲存家長資料'}
+                </button>
+              </form>
             </Collapsible>
 
             <Collapsible title="學員資料" subtitle={`共 ${students.length} 位`} open={studentOpen} onToggle={() => setStudentOpen((o) => !o)} nested>
@@ -335,16 +372,6 @@ function ChevronIcon({ className = '' }) {
     <svg className={className} width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M6 9l6 6 6-6" />
     </svg>
-  );
-}
-
-// 唯讀欄位：標籤 + 灰底唯讀值（家長資料註冊後鎖定使用）。
-function ReadonlyField({ label, value }) {
-  return (
-    <div className="block">
-      <span className="mb-1 block text-xs font-medium text-gray-600">{label}</span>
-      <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">{value || '—'}</div>
-    </div>
   );
 }
 

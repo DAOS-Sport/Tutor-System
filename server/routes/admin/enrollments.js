@@ -14,6 +14,7 @@ const express = require('express');
 const { randomUUID } = require('crypto');
 const { pool } = require('../../models/db');
 const { requireAdminAuth, requireAdminRole, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
+const ragicWriteback = require('../../services/ragicWriteback');
 
 const router = express.Router();
 
@@ -158,8 +159,11 @@ async function ensureGroupCoursePeriod(client, enrollment, totalSessions) {
  *  因此對帳後「聊天室、學習歷程」立即可見；「教練課表 / 上課紀錄」仍需家長之後選槽排課才出現
  *  （與團報自動開通行為一致）。
  */
+// 回傳本次「新建」的本地學員 id 陣列（新列 last_synced_at 預設 NULL＝待同步），
+// 供 caller 在交易 COMMIT 後即時回寫 Ragic（best-effort；失敗由每日備份排程重試）。
 async function ensureSoloCoursePeriod(client, enrollment, totalSessions) {
-  if (enrollment.group_order_id) return; // 團報 → 交給 ensureGroupCoursePeriod
+  const createdStudentIds = [];
+  if (enrollment.group_order_id) return createdStudentIds; // 團報 → 交給 ensureGroupCoursePeriod
 
   // 解析教練（course_periods.coach_id NOT NULL，需容錯）：優先 coach_id，否則以 (coach 名 + venue) 反查
   let coachId = enrollment.coach_id || null;
@@ -175,7 +179,7 @@ async function ensureSoloCoursePeriod(client, enrollment, totalSessions) {
   }
   if (!coachId) {
     console.warn('[reconcile/solo] 一般報名無法解析教練，略過自動開通 period:', enrollment.id);
-    return;
+    return createdStudentIds;
   }
 
   // 解析家長（學員需綁到家長，家長端才讀得到自己的課）
@@ -183,7 +187,7 @@ async function ensureSoloCoursePeriod(client, enrollment, totalSessions) {
   const parentId = pr.rows[0]?.id || null;
   if (!parentId) {
     console.warn('[reconcile/solo] 一般報名家長尚未註冊，略過自動開通 period:', enrollment.id, 'phone:', enrollment.parent_phone);
-    return;
+    return createdStudentIds;
   }
 
   // get-or-create course_period（以 admin_enrollment_id 冪等；一般報名 group_order_id 為 NULL）
@@ -208,7 +212,7 @@ async function ensureSoloCoursePeriod(client, enrollment, totalSessions) {
     );
     periodId = ins.rows[0]?.id || null;
   }
-  if (!periodId) return;
+  if (!periodId) return createdStudentIds;
 
   // get-or-create 學員（以 parent_id + name）→ 綁進 course_period_enrollments
   const names = (enrollment.students || []).filter(Boolean);
@@ -224,6 +228,7 @@ async function ensureSoloCoursePeriod(client, enrollment, totalSessions) {
         [parentId, name]
       );
       sid = si.rows[0].id;
+      createdStudentIds.push(sid);
     }
     await client.query(
       `INSERT INTO course_period_enrollments (course_period_id, student_id, status)
@@ -231,6 +236,7 @@ async function ensureSoloCoursePeriod(client, enrollment, totalSessions) {
       [periodId, sid]
     );
   }
+  return createdStudentIds;
 }
 
 function tsToString(d) {
@@ -834,9 +840,15 @@ router.post('/:id/reconcile', requireAdminAuth, requireAdminRole('admin', 'manag
     await ensureGroupCoursePeriod(client, cur.rows[0], total);
     // U11 一般報名橋：非團報對帳通過也自動開通 course_period（補回家長/教練/聊天室/學習歷程
     // 讀正式課期的缺口）。與上方團報橋以 group_order_id 守門互斥，不重複建。
-    await ensureSoloCoursePeriod(client, cur.rows[0], total);
+    const reconcileCreatedStudentIds = (await ensureSoloCoursePeriod(client, cur.rows[0], total)) || [];
 
     await client.query('COMMIT');
+
+    // get-or-create 出來的新學員 → 即時回寫 Ragic（best-effort、fire-and-forget）；
+    // 新列 last_synced_at 預設 NULL，回寫失敗由每日備份排程重試。
+    if (reconcileCreatedStudentIds.length) {
+      ragicWriteback.scheduleWriteback({ studentIds: reconcileCreatedStudentIds, reason: 'enrollment-reconcile' });
+    }
 
     // 對帳通過 = 等同此筆轉「進行中」→ 立即補對應 course_period 的 chat_room
     try {

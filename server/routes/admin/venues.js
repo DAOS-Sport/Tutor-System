@@ -175,7 +175,24 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
        WHERE id = $1 RETURNING *`,
       [id, ...values]
     );
-    res.json(rowToVenueFull(r.rows[0]));
+    // Task: 匯款帳戶對應館別 — 銀行欄位同步寫回 LIFF 用的 venues 表，避免報名/團購頁
+    // （server/routes/courses.js、groupOrders.js、venues.js 皆 JOIN venues）讀到舊值。
+    // 若該 venues row 尚不存在則補建，避免日後 LIFF 查不到場館。
+    const updated = r.rows[0];
+    await pool.query(
+      `INSERT INTO venues (id, name, full_address, bank_institution_name, bank_branch_name,
+          account_holder, account_number, is_active)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
+       ON CONFLICT (id) DO UPDATE SET
+         bank_institution_name = EXCLUDED.bank_institution_name,
+         bank_branch_name = EXCLUDED.bank_branch_name,
+         account_holder = EXCLUDED.account_holder,
+         account_number = EXCLUDED.account_number,
+         updated_at = NOW()`,
+      [id, updated.name, updated.address || '', updated.bank_institution_name || '',
+       updated.bank_branch_name || '', updated.account_holder || '', updated.account_number || '']
+    );
+    res.json(rowToVenueFull(updated));
   } catch (err) {
     console.error('[admin/venues/:id PATCH]', err);
     res.status(500).json({ error: 'update venue failed' });

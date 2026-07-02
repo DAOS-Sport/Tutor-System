@@ -16,6 +16,7 @@ const express = require('express');
 const { pool } = require('../../models/db');
 const { requireAdminAuth, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
 const { parseRocOrIso, courseTypeLabel, maskId, maskBlood, looksMasked, wantReveal, auditReveal, diffChanges, writeStudentAudit, adminActorName } = require('./_customerShared');
+const ragicWriteback = require('../../services/ragicWriteback');
 
 const router = express.Router();
 
@@ -175,14 +176,17 @@ router.patch('/:id', requireAdminAuth, async (req, res) => {
     if (typeof b.is_active === 'boolean') { args.push(b.is_active); sets.push(`is_active = $${args.length}`); }
     if (!sets.length) return res.status(400).json({ error: '沒有可更新的欄位' });
     args.push(req.params.id);
+    // 先標記待同步（last_synced_at = NULL），下方即時回寫成功才蓋回 NOW()；
+    // 失敗保持 NULL，由每日備份排程（ragicAdmin.backupParentsStudentsToRagic）重試。
     const r = await pool.query(
-      `UPDATE students SET ${sets.join(', ')}, updated_at = NOW() WHERE id = $${args.length}
+      `UPDATE students SET ${sets.join(', ')}, last_synced_at = NULL, updated_at = NOW() WHERE id = $${args.length}
        RETURNING id, parent_id, name, id_number, gender, birth_date, blood_type,
                  student_code, ragic_record_id, is_active, last_synced_at`,
       args
     );
     if (!r.rowCount) return res.status(404).json({ error: '找不到此學員' });
-    // TODO(Option A 寫回 Ragic)：ragic.updateStudentZ01Z02Strict，資料清洗後接上。
+    // Option A 寫回 Ragic：即時回寫（best-effort、fire-and-forget，不擋本地更新）。
+    ragicWriteback.scheduleWriteback({ studentIds: [req.params.id], reason: 'admin-student-patch' });
     const changes = diffChanges(before, r.rows[0], ['name', 'gender', 'id_number', 'blood_type', 'student_code', 'birth_date']);
     writeStudentAudit(pool, req.params.id, 'edit', { byUser: adminActorName(req), byRole: req.adminUser?.role, changes })
       .catch((err) => console.warn('[student-audit] 管理員編輯稽核寫入失敗:', err.message));

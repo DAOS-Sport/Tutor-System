@@ -18,7 +18,7 @@ import ReportIssueButton from '../components/ReportIssueButton';
 const PENDING_COUPON_KEY = 'daos.pendingCoupon';
 const IS_PROD = import.meta.env.PROD;
 const BLOOD_TYPE_OPTIONS = ['A', 'B', 'O', 'AB', '不清楚'];
-const STEP1_FIELDS = ['name', 'phone', 'email'];
+const STEP1_FIELDS = ['name', 'phone', 'email', 'primary_venue_id'];
 
 function tryGetLineIdToken() {
   try {
@@ -44,6 +44,8 @@ function registerErrorMessage(err) {
     EMAIL_REQUIRED:           '請填寫家長 Email。',
     EMAIL_FORMAT_INVALID:     'Email 格式錯誤，請確認後重填。',
     GENDER_REQUIRED:          '請選擇家長性別。',
+    VENUE_REQUIRED:           '請選擇館別。',
+    VENUE_NOT_FOUND:          '館別不存在，請重新選擇。',
     ID_NUMBER_INVALID:        '學員身分證字號格式錯誤（如 A123456789）。',
     // —— 重複 / 衝突 ——
     STUDENT_ID_NUMBER_EXISTS: '此學員身分證字號已被系統內其他學員使用，請確認是否填錯；若確為本人請聯絡客服。',
@@ -61,6 +63,11 @@ function registerErrorMessage(err) {
     RAGIC_UNAVAILABLE:        '資料同步服務暫時無法連線，請稍後再試。',
     RAGIC_WRITE_FAILED:       '資料暫時無法完成同步，請稍後再試；若持續發生請聯絡客服。',
     LOCAL_UPSERT_FAILED:      '資料建檔失敗，請稍後再試；若持續發生請聯絡客服。',
+    Z01_INCOMPLETE:           '會員資料尚未完整寫入，請確認必填欄位後重新送出。',
+    RAGIC_REFRESH_STUDENTS_INCOMPLETE: '學員資料同步尚未完成，請稍後再試。',
+    LOCAL_STUDENT_REFRESH_FAILED: '本地學員資料同步尚未完成，請稍後再試。',
+    Z03_RESOLVE_FAILED:       '舊資料清理狀態更新失敗，請稍後再試。',
+    PARENT_REFRESH_FAILED:    '會員資料重新整理失敗，請稍後再試。',
     LOGIN_FAILED:             '系統忙線，請稍後再試。',
     RATE_LIMITED:             '嘗試次數過多，請稍後再試。',
     // —— 前端自設 ——
@@ -249,6 +256,10 @@ export default function RegisterPage() {
                 JSON.stringify({ coupon: 'TRIAL50', coachId: refInfo.coach.id }));
             } catch { /* noop */ }
             toast.success(`註冊完成！請選擇組別與場館後即可享 ${refInfo.coach.name} 教練體驗課 5 折`);
+          } else if (refInfo && refInfo.coach && r.ref_error === 'REF_EXISTING_CUSTOMER') {
+            // 舊客開通（found→update）依業務規則不適用新客推薦優惠——這是預期行為，
+            // 不是綁定失敗，不可顯示「請聯絡客服」造成無謂客訴。
+            toast.success('註冊完成！您是本館既有客戶，推薦優惠僅適用全新客戶');
           } else if (refInfo && refInfo.coach && r.ref_error) {
             // 推薦綁定失敗不阻擋註冊，但要告知使用者
             toast.warning('註冊完成，但推薦連結綁定失敗，請聯絡客服');
@@ -390,9 +401,12 @@ export default function RegisterPage() {
               </IconField>
 
               <div className="grid grid-cols-2 gap-3">
-                <Field label="館別（上課場館）" optional>
-                  <select {...register('primary_venue_id')} className={fieldCls(false)}>
-                    <option value="">尚未決定</option>
+                <Field label="館別（上課場館）" required error={errors.primary_venue_id?.message}>
+                  <select
+                    {...register('primary_venue_id', { required: '請選擇館別' })}
+                    className={fieldCls(!!errors.primary_venue_id)}
+                  >
+                    <option value="">請選擇館別</option>
                     {venues.map((v) => (
                       <option key={v.id} value={v.id}>{v.name}</option>
                     ))}

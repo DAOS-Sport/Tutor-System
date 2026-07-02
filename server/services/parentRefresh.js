@@ -1,0 +1,226 @@
+const { pool } = require('../models/db');
+const ragic = require('./ragic');
+const parentSync = require('./parentSync');
+const ragicAdmin = require('./ragicAdmin');
+
+class ParentRefreshError extends Error {
+  constructor(code, message, http = 500, details = null) {
+    super(message);
+    this.code = code;
+    this.http = http;
+    this.details = details;
+  }
+}
+
+const REQUIRED_Z01_FIELDS = [
+  ['name', '家長姓名'],
+  ['identity', '角色身份'],
+  ['primary_venue_id', '場館'],
+  ['phone', '電話'],
+  ['email', 'Email'],
+  ['line_uid', 'LINE UID'],
+  ['gender', '性別'],
+];
+
+function _isMissingVenue(v) {
+  const s = String(v || '').trim();
+  return !s || s === '待補登';
+}
+
+function getZ01MissingFields(mapped, { rejectPlaceholderName = true, requireLineUid = true } = {}) {
+  const missing = [];
+  for (const [key, label] of REQUIRED_Z01_FIELDS) {
+    if (key === 'line_uid' && !requireLineUid) continue;
+    if (key === 'primary_venue_id') {
+      if (_isMissingVenue(mapped?.[key])) missing.push({ key, label });
+      continue;
+    }
+    if (!String(mapped?.[key] || '').trim()) missing.push({ key, label });
+  }
+  if (
+    rejectPlaceholderName &&
+    mapped?.name &&
+    ragicAdmin.isPlaceholderParentName(mapped.name) &&
+    !missing.some((m) => m.key === 'name')
+  ) {
+    missing.push({ key: 'name', label: '家長姓名' });
+  }
+  return missing;
+}
+
+function assertZ01Complete(mapped, opts = {}) {
+  const missing = getZ01MissingFields(mapped, opts);
+  if (missing.length) {
+    throw new ParentRefreshError(
+      'Z01_INCOMPLETE',
+      `Z01 會員資料不完整：${missing.map((m) => m.label).join('、')}`,
+      409,
+      { missing }
+    );
+  }
+}
+
+function _studentKey(student) {
+  const idNum = String(student?.id_number || '').trim().toUpperCase();
+  if (idNum) return `id:${idNum}`;
+  const rid = String(student?.ragic_record_id || '').trim();
+  if (rid) return `rid:${rid}`;
+  return `name:${String(student?.name || '').trim()}|birth:${String(student?.birth_date || '').slice(0, 10)}`;
+}
+
+function _mergeStudents(...lists) {
+  const out = [];
+  const seen = new Set();
+  for (const list of lists) {
+    for (const s of list || []) {
+      if (!s?.name) continue;
+      const key = _studentKey(s);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(s);
+    }
+  }
+  return out;
+}
+
+async function _lookupZ01({ lineUid, phone }) {
+  let row = null;
+  if (lineUid) row = await ragic.getParentByLineUid(lineUid);
+  if (!row && phone) row = await ragic.getParentByPhone(phone);
+  return row;
+}
+
+async function _loadLocalStudents(parentId) {
+  const r = await pool.query(
+    `SELECT id, name, birth_date, gender, id_number, blood_type, student_code, is_active
+       FROM students
+      WHERE parent_id = $1 AND COALESCE(is_active, TRUE) = TRUE
+      ORDER BY created_at ASC`,
+    [parentId]
+  );
+  return r.rows;
+}
+
+/**
+ * Ragic 寫入後的嚴格刷新門檻：
+ *  1. 重新查 Z01，確認 UID/phone 指向剛寫入的乾淨會員資料。
+ *  2. 檢查 Z01 必填完整，且姓名不可仍是電話佔位。
+ *  3. 重新查 Z02 學員並與 Z01 linked 子表合併，更新本地 parents/students。
+ *  4. 若曾進 Z03/quarantine，標記 resolved。
+ *  5. 驗證本地鏡射已與本次登入 UID、phone、學生數一致。
+ */
+async function refreshParentMirrorFromRagic({
+  lineUid,
+  phone,
+  minStudents = 0,
+  allowRebind = false,
+  reactivate = true,
+  preservePending = false,
+  requireComplete = true,
+  markZ03Resolved = true,
+  reason = 'auth',
+} = {}) {
+  if (!lineUid && !phone) {
+    throw new ParentRefreshError('REFRESH_LOOKUP_REQUIRED', '缺少 LINE UID 或手機，無法重新整理會員資料', 500);
+  }
+
+  let z01Row;
+  try {
+    z01Row = await _lookupZ01({ lineUid, phone });
+  } catch (err) {
+    throw new ParentRefreshError(err.code || 'RAGIC_REFRESH_FAILED', `重新讀取 Ragic Z01 失敗：${err.message}`, 502);
+  }
+  if (!z01Row) {
+    throw new ParentRefreshError('RAGIC_REFRESH_NOT_FOUND', 'Ragic Z01 查無剛寫入的會員資料', 502);
+  }
+
+  const mapped = ragic.mapZ01Parent(z01Row);
+  const effectiveLineUid = lineUid || mapped.line_uid || null;
+  if (phone && mapped.phone && mapped.phone !== phone) {
+    throw new ParentRefreshError('RAGIC_REFRESH_PHONE_MISMATCH', '重新讀取的 Ragic Z01 手機與本次操作不一致', 502);
+  }
+  if (effectiveLineUid && mapped.line_uid !== effectiveLineUid) {
+    throw new ParentRefreshError('RAGIC_REFRESH_UID_MISMATCH', '重新讀取的 Ragic Z01 LINE UID 與本次操作不一致', 502);
+  }
+  if (requireComplete) assertZ01Complete(mapped);
+
+  let z02Students = [];
+  try {
+    z02Students = await ragic.getStudentsByParentPhone(mapped.phone);
+  } catch (err) {
+    throw new ParentRefreshError(err.code || 'RAGIC_Z02_REFRESH_FAILED', `重新讀取 Ragic Z02 學員失敗：${err.message}`, 502);
+  }
+
+  const z01Students = ragic.parseZ01Students(z01Row);
+  const students = _mergeStudents(z02Students, z01Students);
+  if (minStudents > 0 && students.length < minStudents) {
+    throw new ParentRefreshError(
+      'RAGIC_REFRESH_STUDENTS_INCOMPLETE',
+      '重新讀取 Ragic 學員資料未完成，請稍後再試',
+      502,
+      { expected_min: minStudents, actual: students.length }
+    );
+  }
+
+  let local;
+  try {
+    local = await parentSync._syncWithLock({
+      mapped,
+      students,
+      lineUid: effectiveLineUid,
+      reactivate,
+      allowRebind,
+      preservePending,
+    });
+  } catch (err) {
+    if (err instanceof parentSync.BindConflictError) throw err;
+    throw new ParentRefreshError(err.code || 'LOCAL_REFRESH_FAILED', `本地會員鏡射更新失敗：${err.message}`, 500);
+  }
+
+  if (requireComplete && !local.primary_venue_id) {
+    throw new ParentRefreshError('LOCAL_VENUE_REFRESH_FAILED', '本地場館鏡射更新失敗，請聯絡客服確認場館設定', 500);
+  }
+  if (effectiveLineUid && local.line_uid !== effectiveLineUid) {
+    throw new ParentRefreshError('LOCAL_UID_REFRESH_FAILED', '本地 LINE UID 鏡射更新失敗', 500);
+  }
+
+  if (markZ03Resolved && mapped.ragic_record_id && !ragicAdmin.isPlaceholderParentName(mapped.name)) {
+    try {
+      await ragicAdmin.markPlaceholderNameResolved(mapped.ragic_record_id, mapped.name);
+    } catch (err) {
+      throw new ParentRefreshError(err.code || 'Z03_RESOLVE_FAILED', `Z03 清理狀態更新失敗：${err.message}`, 500);
+    }
+  }
+
+  const localStudents = await _loadLocalStudents(local.id);
+  if (minStudents > 0 && localStudents.length < minStudents) {
+    throw new ParentRefreshError(
+      'LOCAL_STUDENT_REFRESH_FAILED',
+      '本地學員鏡射更新未完成，請稍後再試',
+      500,
+      { expected_min: minStudents, actual: localStudents.length }
+    );
+  }
+
+  console.log('[parent-refresh] ok', {
+    reason,
+    phone: mapped.phone,
+    ragicId: mapped.ragic_record_id,
+    students: localStudents.length,
+  });
+
+  return {
+    local,
+    students: localStudents,
+    mapped,
+    z01Row,
+  };
+}
+
+module.exports = {
+  ParentRefreshError,
+  REQUIRED_Z01_FIELDS,
+  getZ01MissingFields,
+  assertZ01Complete,
+  refreshParentMirrorFromRagic,
+};
