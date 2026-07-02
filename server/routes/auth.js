@@ -455,14 +455,14 @@ router.post('/parent-bind-phone', async (req, res) => {
 
     // 4b) 認領驗證（資安）：此門號在 Ragic 已有家庭資料、且本次會建立/更換 LINE 綁定時，
     //     不可只憑「知道門號」就綁定並繼承其學員與身分證等 PII（門號可能被回收）。
-    //     要求「學員姓名 + 身分證字號」與該家庭某位學員一致（= 電話 + 姓名 + 身分證 三者一致）才放行。
+    //     要求「學員姓名 + 登記手機號碼」與該家庭資料一致才放行。
     //     全新門號 / 無學員者 → 視為單純綁定，免驗證。在寫回 line_uid 到 Ragic「之前」就攔。
     const needsClaimVerification = mapped.line_uid !== lineUid;
     if (needsClaimVerification) {
       const ragicStudents = ragic.parseZ01Students(ragicRow);
       if (ragicStudents.length > 0) {
         const claim = req.body?.claim || null;
-        if (!claim || !claim.student_name || !claim.id_number) {
+        if (!claim || !claim.student_name || !claim.phone) {
           parentSync.auditClaim({
             phone,
             lineUid,
@@ -471,20 +471,11 @@ router.post('/parent-bind-phone', async (req, res) => {
           });
           return res.json({ status: 'need_claim_verification', line_uid: lineUid, phone });
         }
-        const verdict = parentSync.classifyStudentClaim(ragicStudents, claim);
-        if (verdict === 'no_id_on_file') {
-          // 姓名對上了，但 Ragic 該筆學員身分證字號欄位本來就是空的（常見於舊系統資料匯入不完整）。
-          // 這不是「家長打錯」，是資料缺口，用自助表單永遠比對不過，需請櫃檯人工核對後手動綁定。
-          parentSync.auditClaim({ phone, lineUid, result: 'no_id_on_file' });
-          return res.status(409).json({
-            error: '系統資料不完整，無法自動核對身分證字號，請透過本館 LINE 官方帳號聯繫櫃檯協助綁定。',
-            code: 'CLAIM_NO_ID_ON_FILE',
-          });
-        }
+        const verdict = parentSync.classifyStudentPhoneClaim(ragicStudents, claim, mapped.phone || phone);
         if (verdict !== 'matched') {
           parentSync.auditClaim({ phone, lineUid, result: 'failed' });
           return res.status(409).json({
-            error: '學員姓名或身分證字號與資料不符，無法認領。請確認後再試，或洽櫃臺 / LINE 客服協助。',
+            error: '學員姓名或登記手機號碼與資料不符，無法認領。請確認後再試，或洽櫃臺 / LINE 客服協助。',
             code: 'CLAIM_VERIFICATION_FAILED',
           });
         }

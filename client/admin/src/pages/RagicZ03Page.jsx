@@ -10,7 +10,7 @@ import { ragicZ03Api } from '../api/ragicZ03';
 //
 // 卡片版面沿用舊版設計（橘色家長資訊 header / 藍色學員資料 mini-table / 卡片底部快速動作），
 // 預設全部唯讀；只有按下「編輯」才會把家長欄位切成輸入框，交給 PATCH /ragic-z03/:id/draft
-// 儲存（完整時後端會自動升級成正式 Z01，不需要另外的「升級」按鈕）。
+// 儲存（完整時後端會寫回 Ragic；LINE UID 由家長登入流程自動綁定）。
 
 const STATUS_LABEL = {
   pending:   { text: '待處理', cls: 'bg-amber-100 text-amber-800' },
@@ -32,7 +32,8 @@ const PARENT_VIEW_FIELDS = [
 ];
 
 // 編輯模式可寫入的家長欄位 —— 對應後端 Z03_RECORD_UPDATE_FIELDS
-// （server/services/ragicAdmin.js 的 saveZ03RecordDraft），資料補齊後儲存會自動升級 Z01。
+// （server/services/ragicAdmin.js 的 saveZ03RecordDraft）。LINE UID 由家長登入時自動綁定，
+// 櫃台不可在 Z03 手填；住家電話/LINE ID/學生數/住家地址/LINE 對話網址也不做人工回填。
 // [field, label, fullWidth, required]
 const PARENT_EDIT_FIELDS = [
   ['raw_name',       '家長姓名',               false, true],
@@ -41,12 +42,10 @@ const PARENT_EDIT_FIELDS = [
   ['identity_raw',   '身分',                   false, true],
   ['gender_raw',     '性別',                   false, true],
   ['email_raw',      'Email',                  false, true],
-  ['line_uid_raw',   '家教系統uid（LINE UID）', false, true],
-  ['home_phone_raw', '住家電話',               false, false],
-  ['line_id_raw',    'LINE ID',                false, false],
-  ['student_count_raw', '學生數',              false, false],
-  ['home_address_raw',  '住家地址',            true,  false],
-  ['line_chat_url_raw', 'LINE 對話網址',       true,  false],
+];
+
+const PARENT_READONLY_EDIT_FIELDS = [
+  ['line_uid_raw', '家教系統uid（LINE UID）', '由家長登入時自動寫入，櫃台不可手動填寫'],
 ];
 
 const STUDENT_EDIT_FIELDS = [
@@ -101,6 +100,21 @@ function FieldInput({ value, onChange, placeholder = '', className = '' }) {
       placeholder={placeholder}
       className={`h-8 w-full min-w-0 rounded border border-gray-300 bg-white px-2 text-xs font-normal text-gray-800 outline-none focus:border-brand-teal focus:ring-1 focus:ring-brand-teal ${className}`}
     />
+  );
+}
+
+function ReadonlyField({ label, value, hint }) {
+  return (
+    <label className="block min-w-0 text-[11px] font-bold text-gray-500">
+      {label}
+      <input
+        value={value || ''}
+        readOnly
+        placeholder="登入後自動更新"
+        className="mt-0.5 h-8 w-full min-w-0 rounded border border-gray-200 bg-gray-100 px-2 text-xs font-normal text-gray-500 outline-none"
+      />
+      {hint ? <span className="mt-0.5 block text-[10px] font-normal leading-4 text-gray-400">{hint}</span> : null}
+    </label>
   );
 }
 
@@ -200,6 +214,9 @@ function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft }) {
               {label}{required && <span className="ml-0.5 text-red-500">*</span>}
               <FieldInput value={draft.record[field]} onChange={(v) => updateRecord(field, v)} className="mt-0.5" />
             </label>
+          ))}
+          {PARENT_READONLY_EDIT_FIELDS.map(([field, label, hint]) => (
+            <ReadonlyField key={field} label={label} value={row[field]} hint={hint} />
           ))}
         </div>
       ) : (
@@ -406,9 +423,11 @@ export default function RagicZ03Page() {
       const result = await ragicZ03Api.saveDraft(id, draft);
       replaceItem(result.item);
       if (result.upgraded) {
-        toast.success('已儲存並升級到 Z01');
+        toast.success('已儲存、寫回 Ragic 並同步正式客戶資料');
+      } else if (result.synced_to_ragic) {
+        toast.success('已儲存並寫回 Ragic；LINE UID 會在家長登入時自動綁定');
       } else if (result.skipped === 'dismissed') {
-        toast.info('已儲存；已忽略資料不會升級 Z01');
+        toast.info('已儲存；已忽略資料不會寫回 Ragic');
       } else {
         const missing = missingText(result.missing);
         toast.info(missing ? `已儲存，尚缺：${missing}` : '已儲存');
@@ -433,7 +452,7 @@ export default function RagicZ03Page() {
     <div>
       <PageHeader
         title="Z03 未開通資料整理"
-        subtitle="Ragic Z01 裡「尚未綁定 LINE UID」的家長資料會暫存於此，不會出現在正式客戶資料或登入來源。補齊必填欄位（標 * 號）並儲存後，系統會自動升級為正式 Z01 客戶。"
+        subtitle="Ragic Z01 裡「尚未綁定 LINE UID」或資料待整理的家長會暫存於此。櫃台只修正必要欄位；LINE UID 由家長登入時自動綁定。"
       />
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -515,11 +534,11 @@ export default function RagicZ03Page() {
         <div className="font-bold text-gray-700">說明</div>
         <ul className="mt-1 list-disc space-y-1 pl-4">
           <li>這裡的家長<span className="font-bold">尚未綁定 LINE UID</span>，不會出現在「客戶資料管理」，也不影響任何現有使用者。</li>
-          <li>標有 <span className="font-bold text-red-500">*</span> 的欄位為升級 Z01 必填（家長姓名、電話、館別、身分、性別、Email、LINE UID），7 項全補齊後儲存即自動升級。</li>
+          <li>標有 <span className="font-bold text-red-500">*</span> 的欄位為人工整理必填（家長姓名、電話、館別、身分、性別、Email）。LINE UID 不由櫃台填寫。</li>
           <li>卡片預設唯讀；點右上「編輯」後才會出現輸入框。</li>
           <li>「確認修正並寫回 Ragic」只更動 Ragic 該筆的姓名欄位；適合只有姓名錯誤、其他資料都正確的情況。</li>
-          <li>資料補齊後按「儲存」會自動寫回 Ragic 並升級成正式 Z01，不需要另外的升級按鈕。</li>
-          <li>Z01 只存放已綁定 LINE UID 的完整記錄；每日凌晨 01:30 全量同步會再次依此規則分流。</li>
+          <li>資料補齊後按「儲存」會寫回 Ragic；住家電話、LINE ID、學生數、住家地址、LINE 對話網址不由此頁回填。</li>
+          <li>家長完成登入綁定後，系統會自動寫入 LINE UID 並同步到正式客戶資料；每日凌晨 01:30 全量同步會再次依此規則分流。</li>
         </ul>
       </div>
     </div>

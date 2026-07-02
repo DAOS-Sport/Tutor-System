@@ -67,6 +67,29 @@ async function upsertLocalParent(client, mapped, lineUid, { reactivate = true, v
   if (!phone) throw new Error('缺少手機，無法 upsert parent');
 
   const venueId = await _resolveVenueId(client, mapped.primary_venue_id, venuesMap);
+  let lineUidForWrite = String(lineUid || '').trim();
+  if (lineUidForWrite) {
+    const holders = await client.query(
+      `SELECT id, is_active
+         FROM parents
+        WHERE line_uid = $1 AND phone <> $2`,
+      [lineUidForWrite, phone]
+    );
+    if (holders.rowCount) {
+      const hasActiveHolder = holders.rows.some((row) => row.is_active);
+      if (overwriteLineUid || !hasActiveHolder) {
+        await client.query(
+          `UPDATE parents
+              SET line_uid = NULL, updated_at = NOW()
+            WHERE line_uid = $1 AND phone <> $2`,
+          [lineUidForWrite, phone]
+        );
+      } else {
+        // 背景同步不應搶走另一個 active 家長的登入 UID；保留資料同步但不寫入 UID。
+        lineUidForWrite = '';
+      }
+    }
+  }
 
   const up = await client.query(
     `INSERT INTO parents
@@ -98,7 +121,7 @@ async function upsertLocalParent(client, mapped, lineUid, { reactivate = true, v
        updated_at = NOW()
      RETURNING id, name, phone, line_uid, primary_venue_id, gender, email, identity,
                home_phone, home_address, line_id, is_active`,
-    [phone, name, lineUid || '', venueId,
+    [phone, name, lineUidForWrite, venueId,
      ragic.normalizeGender(mapped.gender), mapped.email || '', mapped.ragic_record_id || '',
      mapped.identity || '', mapped.home_phone || '', mapped.home_address || '', mapped.line_id || '',
      reactivate, overwriteLineUid]
@@ -287,12 +310,12 @@ async function _syncWithLock({ mapped, students, lineUid, reactivate = true, all
       `SELECT id, phone, is_active FROM parents WHERE line_uid = $1 LIMIT 1`, [lineUid]);
     if (dupLine.rowCount && dupLine.rows[0].phone !== phone) {
       const dup = dupLine.rows[0];
-      if (dup.is_active) {
+      if (dup.is_active && !allowRebind) {
         // 活躍記錄持有這個 UID → 真正的衝突，阻擋並提示
         throw new BindConflictError('LINE_ALREADY_BOUND_TO_OTHER_PHONE',
           '此 LINE 帳號已綁定其他手機，請改用原手機登入或聯絡客服');
       }
-      // 停用 ghost 記錄仍持有 UID → 清除它，讓 upsert 可以正常寫入
+      // 停用 ghost 記錄仍持有 UID，或本次已經由 Ragic 驗證可換綁 → 清除它，讓 upsert 可以正常寫入
       await client.query(
         `UPDATE parents SET line_uid = NULL, updated_at = NOW() WHERE id = $1`, [dup.id]);
     }
@@ -343,6 +366,16 @@ function matchStudentClaim(ragicStudents, claim) {
   return classifyStudentClaim(ragicStudents, claim) === 'matched';
 }
 
+function _normalizePhone(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const half = raw.replace(/[０-９]/g, (ch) => String(ch.charCodeAt(0) - 0xFF10));
+  const compact = half.replace(/[\s\-()]/g, '');
+  if (compact.startsWith('+886')) return `0${compact.slice(4)}`.replace(/\D/g, '');
+  if (compact.startsWith('886') && compact.length === 12) return `0${compact.slice(3)}`.replace(/\D/g, '');
+  return compact.replace(/\D/g, '');
+}
+
 /**
  * 認領驗證分類版：區分「真的比對不符」與「Ragic 該學員本來就沒存身分證字號、
  * 家長不可能比對得過」兩種狀況，讓 caller 能回不同的錯誤碼與文案
@@ -360,6 +393,21 @@ function classifyStudentClaim(ragicStudents, claim) {
   const ragicId = String(byName.id_number || '').trim().toUpperCase();
   if (!ragicId) return 'no_id_on_file';
   return ragicId === id ? 'matched' : 'mismatch';
+}
+
+/**
+ * 認領驗證（手機版）：使用者提供「學員姓名 + 登記手機號碼」。
+ * 若 Ragic Z01 學員子表有「登記電話」欄，優先比對該欄；否則退回比對 Z01 家長手機。
+ */
+function classifyStudentPhoneClaim(ragicStudents, claim, parentPhone) {
+  const name = String(claim?.student_name || claim?.name || '').trim();
+  const phone = _normalizePhone(claim?.phone || claim?.parent_phone || claim?.registered_phone || '');
+  if (!name || !phone) return 'mismatch';
+  const byName = (ragicStudents || []).find((s) => String(s.name || '').trim() === name);
+  if (!byName) return 'mismatch';
+  const expectedPhone = _normalizePhone(byName.registered_phone || parentPhone || '');
+  if (!expectedPhone) return 'mismatch';
+  return phone === expectedPhone ? 'matched' : 'mismatch';
 }
 
 /** 認領稽核：寫進伺服器日誌；門號雜湊、line_uid 遮罩，嚴禁落地完整 PII。 */
@@ -420,5 +468,6 @@ module.exports = {
   syncFromRagicRecord,
   matchStudentClaim,
   classifyStudentClaim,
+  classifyStudentPhoneClaim,
   auditClaim,
 };

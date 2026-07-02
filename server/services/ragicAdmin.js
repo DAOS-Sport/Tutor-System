@@ -967,10 +967,10 @@ async function _upsertZ03Record(client, ragicRecordId, mapped, z01Row) {
        home_address_raw = EXCLUDED.home_address_raw, line_id_raw = EXCLUDED.line_id_raw,
        line_chat_url_raw = EXCLUDED.line_chat_url_raw, line_uid_raw = EXCLUDED.line_uid_raw,
        student_count_raw = EXCLUDED.student_count_raw,
-       status = CASE WHEN ragic_z03_records.status = 'dismissed' THEN 'dismissed' ELSE 'pending' END,
-       fixed_name  = CASE WHEN ragic_z03_records.status = 'dismissed' THEN ragic_z03_records.fixed_name  ELSE NULL END,
-       resolved_at = CASE WHEN ragic_z03_records.status = 'dismissed' THEN ragic_z03_records.resolved_at ELSE NULL END,
-       resolved_by = CASE WHEN ragic_z03_records.status = 'dismissed' THEN ragic_z03_records.resolved_by ELSE NULL END,
+       status = CASE WHEN ragic_z03_records.status IN ('dismissed', 'resolved') THEN ragic_z03_records.status ELSE 'pending' END,
+       fixed_name  = CASE WHEN ragic_z03_records.status IN ('dismissed', 'resolved') THEN ragic_z03_records.fixed_name  ELSE NULL END,
+       resolved_at = CASE WHEN ragic_z03_records.status IN ('dismissed', 'resolved') THEN ragic_z03_records.resolved_at ELSE NULL END,
+       resolved_by = CASE WHEN ragic_z03_records.status IN ('dismissed', 'resolved') THEN ragic_z03_records.resolved_by ELSE NULL END,
        fetched_at = NOW()
      RETURNING id`,
     [ragicRecordId, mapped.name || '', mapped.primary_venue_id || '', mapped.phone || '',
@@ -1124,7 +1124,7 @@ async function _pullParentsStudentsImpl() {
 async function pullParentsStudentsFromRagic(triggeredBy = 'cron') { return _singleflight('pull', triggeredBy); }
 
 // ─────────────────────────────────────────────────────────────
-// Z03 人工整理表 — 後台 API 用（列表 / 本地修正草稿 / 升級 Z01 / 忽略）
+// Z03 人工整理表 — 後台 API 用（列表 / 本地修正草稿 / 寫回 Ragic / 忽略）
 // 資料本身由 _pullParentsStudentsImpl 的 Z03 分流邏輯灌入，這裡只負責讀取與人工動作。
 // ─────────────────────────────────────────────────────────────
 const Z03_RECORD_UPDATE_FIELDS = [
@@ -1134,12 +1134,6 @@ const Z03_RECORD_UPDATE_FIELDS = [
   'identity_raw',
   'gender_raw',
   'email_raw',
-  'home_phone_raw',
-  'home_address_raw',
-  'line_id_raw',
-  'line_chat_url_raw',
-  'line_uid_raw',
-  'student_count_raw',
 ];
 
 const Z03_STUDENT_UPDATE_FIELDS = [
@@ -1185,11 +1179,7 @@ function _z03ParentFromRow(row) {
     email: _cleanText(row.email_raw, 255),
     primary_venue_id: _cleanText(row.venue_raw, 120),
     identity: _cleanText(row.identity_raw, 80),
-    home_phone: _cleanText(row.home_phone_raw, 50),
-    home_address: _cleanText(row.home_address_raw, 500),
-    line_id: _cleanText(row.line_id_raw, 120),
     line_uid: _cleanText(row.line_uid_raw, 160),
-    line_chat_url: _cleanText(row.line_chat_url_raw, 500),
   };
 }
 
@@ -1213,18 +1203,10 @@ function getZ03UpgradeMissingFields(row) {
     ['primary_venue_id', '場館'],
     ['phone', '電話'],
     ['email', 'Email'],
-    ['line_uid', 'LINE UID'],
     ['gender', '性別'],
   ];
   for (const [key, label] of required) {
     if (!String(parent[key] || '').trim()) missing.push({ key, label });
-  }
-  if (
-    parent.line_uid &&
-    (parent.line_uid.startsWith('demo:') || parent.line_uid.startsWith('DEMOTEST_')) &&
-    !missing.some((m) => m.key === 'line_uid')
-  ) {
-    missing.push({ key: 'line_uid', label: '真實 LINE UID' });
   }
   if (parent.primary_venue_id === '待補登' && !missing.some((m) => m.key === 'primary_venue_id')) {
     missing.push({ key: 'primary_venue_id', label: '場館' });
@@ -1313,28 +1295,29 @@ async function _upgradeZ03RecordToZ01(row, adminUsername) {
     [ragic.FIELD.Z01.IDENTITY]: parent.identity,
     [ragic.FIELD.Z01.GENDER]: parent.gender,
     [ragic.FIELD.Z01.EMAIL]: parent.email,
-    [ragic.FIELD.Z01.HOME_PHONE]: parent.home_phone,
-    [ragic.FIELD.Z01.HOME_ADDRESS]: parent.home_address,
-    [ragic.FIELD.Z01.LINE_ID]: parent.line_id,
-    [ragic.FIELD.Z01.LINE_UID]: parent.line_uid,
   };
-  if (parent.line_chat_url) payload[ragic.FIELD.Z01.LINE_CHAT_URL] = parent.line_chat_url;
 
-  // Z01 不再允許未綁 LINE UID 的資料寫入：人工升級時先把既有 Z01 主表補成
-  // 已綁定狀態，再寫學員，避免升級途中把新學員資料掛到未綁家長列。
+  // Z03 人工整理不允許手填 LINE UID；登入綁定流程會自動寫入。
+  // 此處只把可人工核對的核心欄位回寫 Ragic，並刻意不碰住家電話、LINE ID、
+  // 住家地址、LINE 對話網址等非核對欄位。
   await ragic.upsertParentStrict(payload, parent.ragic_record_id);
 
   for (const student of students) {
-    await ragic.updateStudentZ01Z02Strict({ parent, student });
+    await ragic.updateStudentFromZ03Strict({ parent, student });
   }
 
-  const parentRefresh = require('./parentRefresh');
-  const refreshed = await parentRefresh.refreshParentMirrorFromRagic({
-    lineUid: parent.line_uid,
-    phone: parent.phone,
-    minStudents: students.length,
-    reason: 'admin-z03-upgrade',
-  });
+  let refreshed = null;
+  let upgraded = false;
+  if (parent.line_uid && !parent.line_uid.startsWith('demo:') && !parent.line_uid.startsWith('DEMOTEST_')) {
+    const parentRefresh = require('./parentRefresh');
+    refreshed = await parentRefresh.refreshParentMirrorFromRagic({
+      lineUid: parent.line_uid,
+      phone: parent.phone,
+      minStudents: students.length,
+      reason: 'admin-z03-upgrade',
+    });
+    upgraded = true;
+  }
 
   await pool.query(
     `UPDATE ragic_z03_records
@@ -1343,7 +1326,7 @@ async function _upgradeZ03RecordToZ01(row, adminUsername) {
     [row.id, parent.name, adminUsername || null]
   );
 
-  return { upgraded: true, missing: [], refreshed };
+  return { upgraded, synced_to_ragic: true, missing: [], refreshed };
 }
 
 async function saveZ03RecordDraft(id, payload = {}, adminUsername = null) {

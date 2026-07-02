@@ -2,12 +2,12 @@
  * Z03 人工整理表 — 尚未綁定 LINE UID 的 Ragic Z01 家長/學員資料的審核佇列
  * - GET   /api/admin/ragic-z03/stats                  — 各狀態筆數統計
  * - GET   /api/admin/ragic-z03?status=pending|resolved|dismissed|all&q=電話或學生姓名
- * - PATCH /api/admin/ragic-z03/:id/draft ({ record, students }) — 儲存本地 Z03；完整時自動升級 Z01
+ * - PATCH /api/admin/ragic-z03/:id/draft ({ record, students }) — 儲存本地 Z03；完整時寫回 Ragic，LINE UID 由登入流程綁定
  * - PATCH /api/admin/ragic-z03/:id   ({ fixed_name }) — 寫回 Ragic Z01 姓名欄位並標記 resolved
  * - POST  /api/admin/ragic-z03/:id/dismiss           — 標記誤判，不寫 Ragic
  *
  * Z01 本地鏡像只收「必填齊全 ＋ LINE UID 已綁定」的完成記錄；
- * 其餘（缺 UID 或任一必填缺失）一律進此佇列，等補齊後自動升級 Z01。
+ * 其餘（缺 UID 或任一必填缺失）一律進此佇列。櫃台只整理核心資料；UID 由家長登入自動綁定。
  */
 const express = require('express');
 const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');

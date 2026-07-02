@@ -8,18 +8,16 @@ import { useToast } from '../context/ToastContext';
 import { isValidTWPhone } from '../utils/format';
 import { takeAfterAuth, clearAfterAuth } from '../utils/afterAuth';
 import LoadingSpinner from '../components/LoadingSpinner';
-import ReportIssueButton from '../components/ReportIssueButton';
 
 const MANUAL_LOGOUT_KEY = 'daos.manualLogout';
 import { USE_MOCK } from '../api/client';
 
 // 只刷一次 LINE token 的旗標（避免過期 token → 刷新 → 又過期的無限跳轉）
 const TOKEN_REFRESH_KEY = 'daos.liff.tokenRefreshed';
-// build 版本戳記：診斷區顯示，用來一眼確認線上跑的是不是最新部署
-const BUILD_SHA = import.meta.env.VITE_BUILD_SHA || 'dev';
-const BUILD_TIME = import.meta.env.VITE_BUILD_TIME || '';
 // 屬「id_token 本身有問題（過期/驗證失敗/缺）」的錯誤碼——可用 liff.login 重新取 token 自救
 const TOKEN_ERR_CODES = ['LINE_TOKEN_EXPIRED', 'LINE_VERIFY_FAILED', 'LINE_ID_TOKEN_REQUIRED'];
+// LINE 身分本身不可用時，手機頁使用中性文案，避免顯示「LINE 身分已驗證」。
+const LINE_IDENTITY_ERROR_CODES = [...TOKEN_ERR_CODES, 'LINE_VERIFY_NETWORK_ERROR', 'LINE_CHANNEL_MISCONFIGURED'];
 
 function clearManualLogout() {
   try { localStorage.removeItem(MANUAL_LOGOUT_KEY); } catch {}
@@ -79,7 +77,7 @@ function isCoachLiffContext(fromPath) {
  *   2. 網路：完全連不上我方伺服器（err.response 不存在，區別於「伺服器回了錯誤」）
  *   3. Ragic 連線：逾時（可重試）vs 其他無法連線
  *   4. 資料衝突：LINE / 手機互相綁定衝突
- *   5. 認領驗證：資料不符 vs 系統資料本身缺身分證字號（不是使用者打錯）
+ *   5. 認領驗證：資料不符 vs 系統資料不足（不是使用者打錯）
  *   6. 頻率限制
  * 找不到對應 code 時，優先採用後端已給的可讀訊息（err.response.data.error），
  * 只有連後端訊息都沒有時才顯示最後一句泛用文案。
@@ -110,8 +108,8 @@ function parentErrorMessage(err) {
     PARENT_REFRESH_FAILED:      '會員資料重新整理失敗，請稍後再試。',
     RATE_LIMITED:               '嘗試次數過多，請稍後再試。',
     PHONE_FORMAT_INVALID:       '手機格式錯誤（需 09xxxxxxxx）。',
-    CLAIM_VERIFICATION_FAILED:  '學員姓名或身分證字號與資料不符，無法認領。請確認後再試，或洽櫃台 / LINE 客服。',
-    CLAIM_NO_ID_ON_FILE:        '系統資料不完整，無法自動核對身分證字號，請透過本館 LINE 官方帳號聯繫櫃檯協助綁定。',
+    CLAIM_VERIFICATION_FAILED:  '學員姓名或登記手機號碼與資料不符，無法認領。請確認後再試，或洽櫃台 / LINE 客服。',
+    CLAIM_NO_ID_ON_FILE:        '系統資料不完整，無法自動核對，請透過本館 LINE 官方帳號聯繫櫃檯協助綁定。',
   };
   if (code && MAP[code]) return MAP[code];
   if (status === 429) return MAP.RATE_LIMITED;
@@ -137,47 +135,22 @@ export default function LoginPage() {
   const fromPath = location.state?.from?.pathname || '';
   const coachContext = isCoachLiffContext(fromPath);
 
-  // parent flow state: 'checking'|'need_phone'|'manual'|'need_claim'|'claim_data_gap'|'error'
+  // parent flow state: 'checking'|'need_phone'|'manual'|'need_claim'
   const [parentState, setParentState] = useState(coachContext ? null : 'checking');
   const [idToken, setIdToken] = useState(null);
   const [phone, setPhone] = useState('');
   const [claimName, setClaimName] = useState('');
-  const [claimId, setClaimId] = useState('');
+  const [claimPhone, setClaimPhone] = useState('');
   // 家長本人真實姓名：舊生綁定時一併補上，後端只在既有姓名是「電話佔位」時據以清洗回寫 Ragic。
   const [claimParentName, setClaimParentName] = useState('');
   const [busy, setBusy] = useState(false);
-  const [errCode, setErrCode] = useState('');
-  // 'error' 狀態要顯示的實際文案（依 errCode 對應的具體原因，不再固定顯示同一句話）
-  const [errMsg, setErrMsg] = useState('');
 
   const autoRanRef = useRef(false);
 
-  // 診斷資訊（不含 token），失敗畫面顯示供截圖判斷
-  const diag = (() => {
-    let isInClient = false, isLoggedIn = false, hasIdToken = false;
-    try { isInClient = !!(liff?.isInClient && liff.isInClient()); } catch {}
-    try { isLoggedIn = !!(liff?.isLoggedIn && liff.isLoggedIn()); } catch {}
-    try { hasIdToken = !!(liff?.getIDToken && liff.getIDToken()); } catch {}
-    return {
-      isInClient,
-      isLoggedIn,
-      hasIdToken,
-      pathname: typeof window !== 'undefined' ? window.location.pathname : '',
-      context: coachContext ? 'coach' : 'parent',
-    };
-  })();
-  const DiagBlock = () => (
-    <div className="mt-4 rounded-md border border-gray-200 bg-gray-50 p-3 text-left text-[11px] leading-5 text-gray-600">
-      <div className="mb-1 font-medium text-gray-700">診斷資訊（請截圖）</div>
-      <div>context: {diag.context}</div>
-      <div>pathname: {diag.pathname}</div>
-      <div>liff.isInClient: {String(diag.isInClient)}</div>
-      <div>liff.isLoggedIn: {String(diag.isLoggedIn)}</div>
-      <div>hasIdToken: {String(diag.hasIdToken)}</div>
-      <div>errCode: {errCode || '—'}</div>
-      <div>build: {BUILD_SHA}{BUILD_TIME ? ` @ ${BUILD_TIME}` : ''}</div>
-    </div>
-  );
+  const showPhoneEntry = (message, token = idToken || tryGetLineIdToken()) => {
+    setParentState(token ? 'need_phone' : 'manual');
+    if (message) toast.error(message);
+  };
 
   // ── effect: 自動執行對應流程 ──
   useEffect(() => {
@@ -196,8 +169,7 @@ export default function LoginPage() {
     if (coachContext) {
       // 教練端統一走 /coach-portal（web OAuth + 30天 portal token 續登）。
       // 舊版在本頁用 liff id_token 直登 /api/coaches/by-line-uid 已停用：
-      // 它在桌機/外部瀏覽器（isInClient=false）會失敗並顯示「無法自動登入」診斷畫面，
-      // 也可能把教練困在家長登入頁 → 一律改為導去教練專屬登入頁。
+      // 它在桌機/外部瀏覽器（isInClient=false）會失敗，也可能把教練困在家長登入頁。
       navigate('/coach-portal', { replace: true });
       return;
     }
@@ -212,7 +184,7 @@ export default function LoginPage() {
       // 無 idToken：
       //  - mock 模式：手機 fallback 可用（mockFn 直接回 need_registration）→ 顯示
       //  - 非 mock（dev 真 API or production）：後端會 400 ID_TOKEN_REQUIRED →
-      //    一律顯示「請從 LINE 開啟」錯誤，不放出無法成功的表單避免使用者卡死
+      //    停在手機輸入頁並用 toast 提示 LINE 驗證問題。
       if (!tk && USE_MOCK) {
         setParentState('manual');
         setBusy(false);
@@ -220,13 +192,10 @@ export default function LoginPage() {
       }
       if (!tk) {
         // 有 LINE session 卻取不到 id_token（多半是快取過期）→ 先自動刷新一次，
-        // 成功會轉址離開本頁；失敗（或非 LINE 環境）才落到錯誤畫面。
+        // 成功會轉址離開本頁；失敗（或非 LINE 環境）才停在手機輸入頁並顯示錯誤訊息。
         if (tryRefreshLineToken()) return;
         clearAfterAuth();
-        setErrCode('LINE_ID_TOKEN_REQUIRED');
-        setErrMsg('LINE 驗證失敗：請重新開啟 LIFF 或稍後再試。');
-        setParentState('error');
-        toast.error('LINE 驗證失敗：請重新開啟 LIFF 或稍後再試。');
+        showPhoneEntry('LINE 驗證失敗：請重新開啟 LIFF 或稍後再試。', null);
         setBusy(false);
         return;
       }
@@ -247,20 +216,16 @@ export default function LoginPage() {
         // 未知 status：後端回了 200 但 status 欄位不是我們認得的值（例如未來新增了狀態、
         // 前端還沒更新對應），跟「請求失敗」是不同狀況，訊息要分開講清楚。
         clearAfterAuth();
-        setErrCode('UNKNOWN_STATUS');
-        setErrMsg('登入回應異常（未知狀態），請稍後再試或回報問題。');
-        setParentState('error');
-        toast.error('登入失敗，請稍後再試。');
+        showPhoneEntry('登入回應異常，請稍後再試。', tk);
       } catch (err) {
         const code = err?.response?.data?.code || err?.code || (!err?.response ? 'NETWORK_ERROR' : 'LOGIN_FAILED');
         // id_token 過期/驗證失敗且仍在 LINE session 中 → 自動用 liff.login 換新 token（只一次），
         // 打破「過期 token → 錯誤 → reload → 又是同一顆過期 token」的死路。成功會轉址離開。
+        const identityUnavailable = LINE_IDENTITY_ERROR_CODES.includes(code);
         if (TOKEN_ERR_CODES.includes(code) && tryRefreshLineToken()) return;
         clearAfterAuth();
-        setErrCode(code);
-        setErrMsg(parentErrorMessage(err));
-        setParentState('error');
-        toast.error(parentErrorMessage(err));
+        if (identityUnavailable) setIdToken(null);
+        showPhoneEntry(parentErrorMessage(err), identityUnavailable ? null : tk);
       } finally {
         setBusy(false);
       }
@@ -281,6 +246,7 @@ export default function LoginPage() {
     try {
       const tk = idToken || tryGetLineIdToken();
       if (!tk && !USE_MOCK) {
+        setParentState('manual');
         toast.error('LINE 驗證失敗：請重新開啟 LIFF 或稍後再試。');
         return;
       }
@@ -298,9 +264,9 @@ export default function LoginPage() {
         return;
       }
       if (r?.status === 'need_claim_verification') {
-        // 此手機已有家庭資料 → 需驗證「學員姓名 + 身分證」才可認領綁定（資安）。
+        // 此手機已有家庭資料 → 需驗證「學員姓名 + 登記手機」才可認領綁定（資安）。
         setParentState('need_claim');
-        toast.info('此手機已有家庭資料，請驗證學員身分以完成綁定');
+        toast.info('此手機已有家庭資料，請驗證登記資料以完成綁定');
         return;
       }
       toast.error('綁定失敗，請稍後再試。');
@@ -311,21 +277,26 @@ export default function LoginPage() {
     }
   }
 
-  // ── 家長：認領驗證（電話 + 學員姓名 + 身分證字號 一致才綁定）──
+  // ── 家長：認領驗證（電話 + 學員姓名 + 登記手機 一致才綁定）──
   async function handleClaim(e) {
     e.preventDefault();
     const name = claimName.trim();
-    const id = claimId.trim().toUpperCase();
+    const claimPhoneValue = claimPhone.trim();
     const parentName = claimParentName.trim();
-    if (!name || !id) { toast.error('請填寫學員姓名與身分證字號'); return; }
+    if (!name || !claimPhoneValue) { toast.error('請填寫學員姓名與登記手機號碼'); return; }
+    if (!isValidTWPhone(claimPhoneValue)) { toast.error('請輸入正確的台灣手機號碼（09xxxxxxxx）'); return; }
     if (!parentName) { toast.error('請填寫您（家長本人）的姓名'); return; }
     setBusy(true);
     try {
       const tk = idToken || tryGetLineIdToken();
-      if (!tk && !USE_MOCK) { toast.error('LINE 驗證失敗：請重新開啟 LIFF 或稍後再試。'); return; }
+      if (!tk && !USE_MOCK) {
+        setParentState('manual');
+        toast.error('LINE 驗證失敗：請重新開啟 LIFF 或稍後再試。');
+        return;
+      }
       const r = await authApi.parentBindPhone({
         idToken: tk, phone: phone.trim(),
-        claim: { student_name: name, id_number: id, parent_name: parentName },
+        claim: { student_name: name, phone: claimPhoneValue, parent_name: parentName },
       });
       if (r?.status === 'bound_and_logged_in' && r.parent) {
         const parent = { ...r.parent, token: r.token || r.parent.token || null };
@@ -335,25 +306,21 @@ export default function LoginPage() {
         return;
       }
       if (r?.status === 'need_claim_verification') {
-        toast.error('學員姓名或身分證字號與資料不符，請確認後再試。');
+        showPhoneEntry('學員姓名或登記手機號碼與資料不符，請確認後再試。');
         return;
       }
       if (r?.status === 'need_registration') {
         navigate(`/register?phone=${encodeURIComponent(r.phone || phone.trim())}`, { replace: true });
         return;
       }
-      toast.error('綁定失敗，請稍後再試。');
+      showPhoneEntry('綁定失敗，請稍後再試。');
     } catch (err) {
       const code = err?.response?.data?.code;
       if (code === 'CLAIM_NO_ID_ON_FILE') {
-        // 姓名對上了，但 Ragic 該學員身分證字號是空的——不管家長再輸入幾次都不可能比對成功，
-        // 停留在原表單只會讓人一直重試白費力氣；改顯示專屬引導畫面導去給櫃檯人工核對。
-        setErrCode(code);
-        setErrMsg(parentErrorMessage(err));
-        setParentState('claim_data_gap');
+        showPhoneEntry(parentErrorMessage(err));
         return;
       }
-      toast.error(parentErrorMessage(err));
+      showPhoneEntry(parentErrorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -386,73 +353,6 @@ export default function LoginPage() {
       {parentState === 'checking' && (
         <div className="w-full max-w-[320px] text-center">
           <LoadingSpinner label="LINE 驗證中…" />
-        </div>
-      )}
-
-      {parentState === 'error' && (
-        <div className="w-full max-w-[340px] rounded-xl border border-rose-200 bg-rose-50 p-5 text-center">
-          <p className="text-sm leading-6 text-rose-800">
-            {errMsg || 'LINE 驗證失敗，請從 LINE App 重新開啟連結，或稍後再試。'}
-          </p>
-          <button type="button" onClick={() => window.location.reload()}
-            className="mt-4 w-full rounded-lg bg-brand-primary py-2 text-sm font-bold text-white active:bg-brand-teal">
-            重新嘗試
-          </button>
-          <div className="mt-3">
-            <ReportIssueButton
-              audience="parent"
-              errorCode={errCode}
-              errorMessage="家長端登入失敗"
-              context="家長端登入"
-              details={{ 畫面: diag.context, 路徑: diag.pathname, LINE內開啟: String(diag.isInClient), 已登入LINE: String(diag.isLoggedIn), 有idToken: String(diag.hasIdToken), 版本: `${BUILD_SHA}${BUILD_TIME ? ' @ ' + BUILD_TIME : ''}` }}
-            />
-          </div>
-          <DiagBlock />
-        </div>
-      )}
-
-      {parentState === 'claim_data_gap' && (
-        <div className="w-full max-w-[340px] rounded-xl border border-amber-300 bg-amber-50 p-5 text-center">
-          <p className="mb-1 text-sm font-bold leading-6 text-amber-900">系統資料不完整，無法自動核對</p>
-          <p className="text-xs leading-5 text-amber-800">
-            {errMsg || '我們找到您的家庭資料，但系統缺少學員身分證字號可供核對，無法自助完成綁定。'}
-            請截圖此畫面，回到<b>本館 LINE 官方帳號</b>洽詢客服協助人工核對並綁定。
-          </p>
-          <button type="button" onClick={() => { setParentState('need_phone'); setErrCode(''); setErrMsg(''); }}
-            className="mt-4 w-full rounded-lg border border-amber-400 bg-white py-2.5 text-sm font-bold text-amber-800 active:bg-amber-100">
-            重新輸入手機號碼
-          </button>
-          <div className="mt-3">
-            <ReportIssueButton
-              audience="parent"
-              errorCode={errCode}
-              errorMessage="家長端認領驗證：系統資料缺身分證字號"
-              context="家長端登入 - 手機綁定認領"
-            />
-          </div>
-        </div>
-      )}
-
-      {/* 防呆：任何非預期狀態都不可停在純 LOGO 空白頁 → 給重試 + 問題回報 */}
-      {!['checking', 'error', 'need_phone', 'manual', 'need_claim', 'claim_data_gap'].includes(parentState) && (
-        <div className="w-full max-w-[340px] rounded-xl border border-gray-200 bg-gray-50 p-5 text-center">
-          <p className="text-sm leading-6 text-gray-700">
-            登入流程未完成，請重新嘗試，或透過下方按鈕回報問題。
-          </p>
-          <button type="button" onClick={() => window.location.reload()}
-            className="mt-4 w-full rounded-lg bg-brand-primary py-2 text-sm font-bold text-white active:bg-brand-teal">
-            重新嘗試
-          </button>
-          <div className="mt-3">
-            <ReportIssueButton
-              audience="parent"
-              errorCode={errCode || 'LOGIN_INCOMPLETE'}
-              errorMessage="家長端登入流程未完成"
-              context="家長端登入"
-              details={{ 畫面: diag.context, 路徑: diag.pathname, LINE內開啟: String(diag.isInClient), 已登入LINE: String(diag.isLoggedIn), 有idToken: String(diag.hasIdToken), 版本: `${BUILD_SHA}${BUILD_TIME ? ' @ ' + BUILD_TIME : ''}` }}
-            />
-          </div>
-          <DiagBlock />
         </div>
       )}
 
@@ -501,7 +401,7 @@ export default function LoginPage() {
       {parentState === 'need_claim' && (
         <form onSubmit={handleClaim} className="w-full max-w-[320px] space-y-4">
           <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs leading-5 text-amber-800">
-            為保護個資，此手機已有家庭資料。請輸入「其中一位學員的姓名與身分證字號」以確認您是本人。
+            為保護個資，此手機已有家庭資料。請輸入「其中一位學員的姓名與登記手機號碼」以確認您是本人。
             若資料有誤，請洽櫃台或透過 LINE 官方帳號聯繫。
           </div>
           <div>
@@ -523,11 +423,11 @@ export default function LoginPage() {
             />
           </div>
           <div>
-            <label htmlFor="claimId" className="mb-1 block text-sm font-medium text-gray-700">學員身分證字號</label>
+            <label htmlFor="claimPhone" className="mb-1 block text-sm font-medium text-gray-700">登記手機號碼</label>
             <input
-              id="claimId" type="text" placeholder="A123456789" value={claimId}
-              onChange={(e) => setClaimId(e.target.value.toUpperCase().slice(0, 10))}
-              className="w-full rounded-lg border border-gray-300 px-4 py-3 text-base uppercase focus:border-brand-teal focus:outline-none focus:ring-2 focus:ring-brand-teal/30"
+              id="claimPhone" type="tel" inputMode="numeric" placeholder="09xxxxxxxx" value={claimPhone}
+              onChange={(e) => setClaimPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
+              className="w-full rounded-lg border border-gray-300 px-4 py-3 text-base focus:border-brand-teal focus:outline-none focus:ring-2 focus:ring-brand-teal/30"
               disabled={busy}
             />
           </div>
@@ -537,7 +437,7 @@ export default function LoginPage() {
           >
             {busy ? '驗證中…' : '驗證並完成綁定'}
           </button>
-          {busy && <LoadingSpinner label="驗證學員身分中…" />}
+          {busy && <LoadingSpinner label="驗證登記資料中…" />}
         </form>
       )}
     </div>

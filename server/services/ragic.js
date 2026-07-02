@@ -472,6 +472,7 @@ function parseZ01Students(record) {
       id_number: pick(row, ['1001118', '身分證字號']).toUpperCase(),
       blood_type: pick(row, ['1001880', '血型']),
       student_code: pick(row, ['1001132', '學員編號']),
+      registered_phone: pick(row, ['1004090', '登記電話']),
       ragic_record_id: pick(row, ['_ragicId', 'ragicId']),
     };
   }).filter((s) => s.name);
@@ -1093,6 +1094,22 @@ async function updateStudentZ01Z02Strict({ parent, student }) {
   return { z01: null, z02, parentRagicRecordId: ragicRecordId };
 }
 
+async function updateStudentFromZ03Strict({ parent, student }) {
+  if (!parent?.ragic_record_id) {
+    const err = new Error('Z03 寫回學員資料需要既有 Z01 Ragic record id');
+    err.code = 'PARENT_RAGIC_RECORD_REQUIRED';
+    throw err;
+  }
+  const ragicRecordId = String(parent.ragic_record_id);
+  try {
+    await updateStudentInParentSubtable({ ragicRecordId, student });
+  } catch (err) {
+    console.warn('[student-sync] Z03 Z01 子表更新略過（非致命，靠 Z02 連動帶出）:', err.message);
+  }
+  const z02 = await upsertZ02ForParentStudent({ parent, student });
+  return { z01: null, z02, parentRagicRecordId: ragicRecordId };
+}
+
 // DEPRECATED：家長端已不再提供「停用」；移除/轉出一律由櫃台在 Ragic 端處理。
 // 保留簽名以防舊呼叫端；現已不再寫入「學員身分」狀態欄（upsertZ02ForParentStudent
 // 對既有紀錄不碰該欄），故即使被呼叫也不會再覆蓋身分類別。
@@ -1145,5 +1162,6 @@ module.exports = {
   upsertStudentStrict,
   createStudentZ01Z02Strict,
   updateStudentZ01Z02Strict,
+  updateStudentFromZ03Strict,
   deactivateStudentZ02Strict,
 };
