@@ -115,12 +115,12 @@ function StudentEditTable({ students, onChange }) {
     );
   }
   return (
-    <div className="max-w-full min-w-0 overflow-x-auto rounded border border-blue-100">
+    <div className="max-w-full min-w-0 overflow-x-auto rounded border border-orange-100">
       <table className="w-full min-w-[760px] border-collapse text-[11px]">
         <thead>
-          <tr className="bg-blue-50 text-left font-bold text-blue-900">
+          <tr className="bg-orange-50 text-left font-bold text-orange-900">
             {STUDENT_EDIT_FIELDS.map(([field, label]) => (
-              <th key={field} className="border border-blue-100 px-1.5 py-1">{label}</th>
+              <th key={field} className="border border-orange-100 px-1.5 py-1">{label}</th>
             ))}
           </tr>
         </thead>
@@ -128,7 +128,7 @@ function StudentEditTable({ students, onChange }) {
           {students.map((student, index) => (
             <tr key={student.id || index} className="bg-white">
               {STUDENT_EDIT_FIELDS.map(([field]) => (
-                <td key={field} className="border border-blue-100 p-1 align-top">
+                <td key={field} className="border border-orange-100 p-1 align-top">
                   <FieldInput value={student[field]} onChange={(v) => onChange(index, field, v)} />
                 </td>
               ))}
@@ -176,7 +176,7 @@ function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft }) {
 
   return (
     <div className="flex h-full min-w-0 flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
-      <div className="flex items-start justify-between gap-2 border-b border-gray-100 bg-orange-50 px-3 py-2">
+      <div className="flex items-start justify-between gap-2 border-b border-gray-100 bg-blue-50 px-3 py-2">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-1.5">
             <span className={`rounded px-1.5 py-0.5 text-[11px] font-bold ${st.cls}`}>{st.text}</span>
@@ -214,13 +214,13 @@ function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft }) {
       )}
 
       {editing ? (
-        <div className="min-w-0 border-t border-gray-100 bg-blue-50 px-3 py-2">
-          <div className="mb-1 text-[11px] font-bold text-blue-800">學員資料（{draft.students.length} 位，可編輯）</div>
+        <div className="min-w-0 border-t border-gray-100 bg-orange-50 px-3 py-2">
+          <div className="mb-1 text-[11px] font-bold text-orange-800">學員資料（{draft.students.length} 位，可編輯）</div>
           <StudentEditTable students={draft.students} onChange={updateStudent} />
         </div>
       ) : row.students && row.students.length > 0 ? (
-        <div className="min-w-0 border-t border-gray-100 bg-blue-50 px-3 py-2">
-          <div className="mb-1 text-[11px] font-bold text-blue-800">學員資料（{row.students.length} 位，原始值）</div>
+        <div className="min-w-0 border-t border-gray-100 bg-orange-50 px-3 py-2">
+          <div className="mb-1 text-[11px] font-bold text-orange-800">學員資料（{row.students.length} 位，原始值）</div>
           <div className="max-w-full overflow-x-auto">
             <table className="w-full min-w-[520px] text-[11px]">
               <thead>
@@ -232,7 +232,7 @@ function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft }) {
               <tbody>
                 {row.students.map((s) => (
                   <tr key={s.id}>
-                    <td className="pr-2">{s.name_raw || '—'}</td>
+                    <td className="pr-2 text-sm font-bold text-gray-800">{s.name_raw || '—'}</td>
                     <td className="pr-2">{s.student_status_raw || '—'}</td>
                     <td className="pr-2">{s.birth_date_raw || '—'}</td>
                     <td className="pr-2">{s.gender_raw || '—'}</td>
