@@ -279,11 +279,20 @@ async function _syncWithLock({ mapped, students, lineUid, reactivate = true, all
     await client.query('BEGIN');
     await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`parent_bind:${phone}`]);
 
+    // dupLine：任何 phone 上（不限 is_active）都不能有同一 LINE UID，
+    // 因為 UNIQUE constraint parents_line_uid_key 不分 is_active。
     const dupLine = await client.query(
-      `SELECT phone FROM parents WHERE line_uid = $1 AND is_active = TRUE LIMIT 1`, [lineUid]);
+      `SELECT id, phone, is_active FROM parents WHERE line_uid = $1 LIMIT 1`, [lineUid]);
     if (dupLine.rowCount && dupLine.rows[0].phone !== phone) {
-      throw new BindConflictError('LINE_ALREADY_BOUND_TO_OTHER_PHONE',
-        '此 LINE 帳號已綁定其他手機，請改用原手機登入或聯絡客服');
+      const dup = dupLine.rows[0];
+      if (dup.is_active) {
+        // 活躍記錄持有這個 UID → 真正的衝突，阻擋並提示
+        throw new BindConflictError('LINE_ALREADY_BOUND_TO_OTHER_PHONE',
+          '此 LINE 帳號已綁定其他手機，請改用原手機登入或聯絡客服');
+      }
+      // 停用 ghost 記錄仍持有 UID → 清除它，讓 upsert 可以正常寫入
+      await client.query(
+        `UPDATE parents SET line_uid = NULL, updated_at = NOW() WHERE id = $1`, [dup.id]);
     }
     const dupPhone = await client.query(
       `SELECT line_uid FROM parents WHERE phone = $1 AND is_active = TRUE LIMIT 1`, [phone]);
