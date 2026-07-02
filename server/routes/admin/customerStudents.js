@@ -25,6 +25,11 @@ const STUDENT_SELECT = `s.id, s.parent_id, s.name, s.id_number, s.gender, s.birt
   p.name AS parent_name, p.phone AS parent_phone, p.gender AS parent_gender,
   p.identity AS parent_identity, p.email AS parent_email, p.primary_venue_id AS parent_venue_id`;
 
+function isRealLineUid(uid) {
+  const s = String(uid || '').trim();
+  return !!s && !s.startsWith('demo:') && !s.startsWith('DEMOTEST_');
+}
+
 function rowToStudent(r, reveal) {
   return {
     id: r.id,
@@ -152,7 +157,8 @@ router.patch('/:id', requireAdminAuth, async (req, res) => {
   try {
     // 權限：學員所屬家長場館需落在操作者範圍；順便撈稽核 diff 要用的目前值。
     const own = await pool.query(
-      `SELECT p.primary_venue_id AS v, s.name, s.gender, s.id_number, s.blood_type, s.student_code, s.birth_date
+      `SELECT p.primary_venue_id AS v, p.line_uid AS parent_line_uid,
+              s.name, s.gender, s.id_number, s.blood_type, s.student_code, s.birth_date
          FROM students s LEFT JOIN parents p ON p.id = s.parent_id WHERE s.id = $1`,
       [req.params.id]
     );
@@ -174,6 +180,12 @@ router.patch('/:id', requireAdminAuth, async (req, res) => {
     }
     if (b.birth_date !== undefined) { args.push(parseRocOrIso(b.birth_date)); sets.push(`birth_date = $${args.length}::date`); }
     if (typeof b.is_active === 'boolean') { args.push(b.is_active); sets.push(`is_active = $${args.length}`); }
+    if (b.is_active === true && !isRealLineUid(own.rows[0].parent_line_uid)) {
+      return res.status(409).json({
+        error: '此學員所屬家長尚未綁定真實 LINE，無法啟用',
+        code: 'PARENT_UNBOUND_CANNOT_ACTIVATE_STUDENT',
+      });
+    }
     if (!sets.length) return res.status(400).json({ error: '沒有可更新的欄位' });
     args.push(req.params.id);
     // 先標記待同步（last_synced_at = NULL），下方即時回寫成功才蓋回 NOW()；

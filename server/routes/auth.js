@@ -87,8 +87,12 @@ router.post('/demo-login', async (req, res) => {
 
     // parent
     const r = await pool.query(
-      `SELECT id, name, phone, line_uid, primary_venue_id FROM parents WHERE phone = $1`,
-      [acct.phone]
+      `SELECT id, name, phone, line_uid, primary_venue_id
+         FROM parents
+        WHERE phone = $1
+          AND is_active = TRUE
+          AND line_uid = $2`,
+      [acct.phone, `demo:${acct.phone}`]
     );
     if (!r.rowCount) {
       return res.status(500).json({ error: 'Demo 家長資料尚未建立', code: 'DEMO_PARENT_MISSING' });
@@ -373,13 +377,16 @@ router.post('/parent-line-login', async (req, res) => {
     // 2) Ragic 可達且查無此人 → 視為已從主庫移除，清掉本地殘留。
     //    Ragic 不可達時也不使用本地舊鏡像登入；改導手機備援，讓後續流程重新查 Z01。
     if (ragicReachable) {
-      // Ragic 可達且查無此人 → 視為已從主庫刪除，將本地殘留列軟刪除(is_active=FALSE)。
-      // 不用硬 DELETE：students.parent_id 為 ON DELETE RESTRICT，有學員時刪不掉；
-      // 軟刪除可讓既有 session 在 requireParent 的 is_active 檢查下立即失效。
+      // Ragic 可達且查無此人 → 視為已從主庫移除，硬刪除本地殘留。
+      // 有業務 FK（課程/簽到/轉讓）的學員/家長直接跳過，保留業務資料完整性。
+      // 硬邊界：只動本地 DB，Ragic 端完全不碰。
       try {
-        await pool.query(`UPDATE parents SET is_active = FALSE, updated_at = NOW() WHERE line_uid = $1`, [lineUid]);
+        const stale = await pool.query(`SELECT id FROM parents WHERE line_uid = $1`, [lineUid]);
+        for (const row of stale.rows) {
+          await parentSync.hardDeleteParentIfSafe(pool, row.id);
+        }
       } catch (err) {
-        console.warn('[auth/parent-line-login] deactivate stale local parent failed:', err.message);
+        console.warn('[auth/parent-line-login] hard-delete stale local parent failed:', err.message);
       }
     }
 
@@ -415,8 +422,8 @@ router.post('/parent-bind-phone', async (req, res) => {
     const lineUid = await _verifyLineUid(req, res);
     if (!lineUid) return;
 
-    // 1) 本地 line_uid 已綁到不同手機
-    const dupLine = await pool.query(`SELECT phone FROM parents WHERE line_uid = $1 LIMIT 1`, [lineUid]);
+    // 1) 本地 line_uid 已綁到不同手機（只看 active 記錄；inactive 舊列不應擋重新綁定）
+    const dupLine = await pool.query(`SELECT phone FROM parents WHERE line_uid = $1 AND is_active = TRUE LIMIT 1`, [lineUid]);
     if (dupLine.rowCount && dupLine.rows[0].phone !== phone) {
       return res.status(409).json({
         error: '此 LINE 帳號已綁定其他手機，請改用原手機登入或聯絡客服',
@@ -425,7 +432,7 @@ router.post('/parent-bind-phone', async (req, res) => {
     }
     // 1b) 本地手機已綁到不同 line_uid：先記錄，不在查 Ragic 前直接擋。
     // 以 Ragic Z01 為權威；若後續 Z01 完整且 UID 寫回成功，refresh 階段會覆蓋本地舊 UID。
-    const dupPhone = await pool.query(`SELECT line_uid FROM parents WHERE phone = $1 LIMIT 1`, [phone]);
+    const dupPhone = await pool.query(`SELECT line_uid FROM parents WHERE phone = $1 AND is_active = TRUE LIMIT 1`, [phone]);
     const localPhoneHasOtherUid = Boolean(dupPhone.rowCount && dupPhone.rows[0].line_uid && dupPhone.rows[0].line_uid !== lineUid);
 
     // 2) Ragic Z01 by phone
@@ -620,20 +627,22 @@ router.post('/parent-register-line', async (req, res) => {
       });
     }
 
-    // 測試用「Demo 新用戶」：ALLOW_DEMO_LOGIN=1 且 body 帶 demo:true 時，不驗 id_token，
-    // 改用可辨識的 DEMOTEST_ 前綴 line_uid（仍真寫 Ragic Z01，方便事後依此前綴清除）。
-    // production 未設 ALLOW_DEMO_LOGIN → 一律走正規 id_token 驗證（fail-closed，外部無法利用）。
+    // 測試用「Demo 新用戶」已停用：Z01 只允許真實 LINE UID，demo 註冊不得再寫
+    // DEMOTEST_ 假 UID 到 Ragic。固定測試帳號請走 /api/auth/demo-login（本地 demo:<phone> sentinel）。
     const demoNewUser = process.env.ALLOW_DEMO_LOGIN === '1' && req.body?.demo === true;
     let lineUid;
     if (demoNewUser) {
-      lineUid = `DEMOTEST_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      return res.status(410).json({
+        error: 'Demo 新用戶註冊已停用；請使用固定測試帳號登入',
+        code: 'DEMO_REGISTER_DISABLED',
+      });
     } else {
       lineUid = await _verifyLineUid(req, res);
       if (!lineUid) return;
     }
 
-    // 衝突檢查 1：本地 line_uid 已綁不同手機
-    const dupLine = await pool.query(`SELECT phone FROM parents WHERE line_uid = $1 LIMIT 1`, [lineUid]);
+    // 衝突檢查 1：本地 line_uid 已綁不同手機（只看 active；inactive 舊列不擋重新綁定）
+    const dupLine = await pool.query(`SELECT phone FROM parents WHERE line_uid = $1 AND is_active = TRUE LIMIT 1`, [lineUid]);
     if (dupLine.rowCount && dupLine.rows[0].phone !== phone) {
       return res.status(409).json({
         error: '此 LINE 帳號已綁定其他手機，請改用原手機登入',
@@ -646,7 +655,7 @@ router.post('/parent-register-line', async (req, res) => {
     //   Z02 學員且無回滾；若等到 _syncWithLock 內的同款 guard 才擋，Ragic 已被污染——
     //   在「本地已綁 UID、Ragic 端 UID 空白」的漂移狀態下（bind 的 Ragic 回寫是 best-effort，
     //   可能失敗），知道電話的人可搶綁 Ragic UID 把原用戶鎖在門外。
-    const dupPhoneLocal = await pool.query(`SELECT line_uid FROM parents WHERE phone = $1 LIMIT 1`, [phone]);
+    const dupPhoneLocal = await pool.query(`SELECT line_uid FROM parents WHERE phone = $1 AND is_active = TRUE LIMIT 1`, [phone]);
     if (dupPhoneLocal.rowCount && dupPhoneLocal.rows[0].line_uid && dupPhoneLocal.rows[0].line_uid !== lineUid) {
       return res.status(409).json({
         error: '此手機已綁定其他 LINE 帳號，請聯絡客服處理',
@@ -705,15 +714,6 @@ router.post('/parent-register-line', async (req, res) => {
     let linkedExisting = false;
 
     if (existsByPhone) {
-      // Demo 測試註冊只允許「建新」：不可在真實既有記錄上綁 DEMOTEST_ UID（污染正式資料，
-      // 且事後依前綴清除 demo 資料時不會涵蓋被改到的真實 Z01）。
-      if (demoNewUser) {
-        return res.status(409).json({
-          error: '此手機已存在於系統，demo 註冊不可開通既有記錄',
-          code: 'PHONE_EXISTS_USE_BINDING',
-        });
-      }
-
       const existing = ragic.mapZ01Parent(existsByPhone);
 
       // ★ 反枚舉：以下所有「電話已存在但不放行」的出口一律回同一組文案＋代碼

@@ -854,6 +854,7 @@ async function _backupParentsStudentsImpl() {
        FROM parents
       WHERE is_active = TRUE AND line_uid IS NOT NULL AND line_uid <> ''
         AND line_uid NOT LIKE 'demo:%'
+        AND line_uid NOT LIKE 'DEMOTEST_%'
         AND (ragic_record_id IS NULL OR last_synced_at IS NULL)
       ORDER BY updated_at ASC LIMIT $1`,
     [BACKUP_BATCH_LIMIT]
@@ -881,6 +882,7 @@ async function _backupParentsStudentsImpl() {
       WHERE s.is_active = TRUE AND p.is_active = TRUE
         AND p.line_uid IS NOT NULL AND p.line_uid <> ''
         AND p.line_uid NOT LIKE 'demo:%'
+        AND p.line_uid NOT LIKE 'DEMOTEST_%'
         AND (s.ragic_record_id IS NULL OR s.last_synced_at IS NULL)
       ORDER BY s.updated_at ASC LIMIT $1`,
     [BACKUP_BATCH_LIMIT]
@@ -1037,17 +1039,13 @@ async function _pullParentsStudentsImpl() {
           await client.query('BEGIN');
           await _upsertZ03Record(client, ragicRecordId, mapped, z01Row);
           if (!alreadyBound) {
+            // 硬刪除無 LINE UID 的本地殘留（有業務 FK 者跳過）
             const stale = await client.query(
-              `UPDATE parents SET is_active = FALSE, updated_at = NOW()
-                WHERE phone = $1 AND line_uid IS NULL AND is_active = TRUE
-                RETURNING id`,
+              `SELECT id FROM parents WHERE phone = $1 AND line_uid IS NULL`,
               [mapped.phone]
             );
-            if (stale.rowCount) {
-              await client.query(
-                `UPDATE students SET is_active = FALSE, updated_at = NOW() WHERE parent_id = $1`,
-                [stale.rows[0].id]
-              );
+            for (const row of stale.rows) {
+              await parentSync.hardDeleteParentIfSafe(client, row.id);
             }
           }
           await client.query('COMMIT');
@@ -1077,23 +1075,23 @@ async function _pullParentsStudentsImpl() {
       }
     }
 
-    // ── 不變量掃尾：本地 Z01 鏡像的 active 檢視「只准」已綁 LINE UID 的列 ──
-    // 不管未綁列是從哪條路徑漏進來的（歷史殘留、手建、匯入），這裡一律軟停用＋
-    // 連帶停用其學員，保證鏡像每輪 pull 後收斂到干淨狀態。已綁定的真人列不受影響。
+    // ── 不變量掃尾：本地鏡像「只准」已綁 LINE UID 的列 ──
+    // 不管未綁列是從哪條路徑漏進來的（歷史殘留、手建、匯入），這裡一律硬刪除。
+    // 有業務 FK（課程/簽到/轉讓）的記錄跳過不動，保留業務資料完整性。
+    // 硬邊界：只動本地 DB，Ragic 端完全不碰。
     try {
       await client.query('BEGIN');
       const sweep = await client.query(
-        `UPDATE parents SET is_active = FALSE, updated_at = NOW()
-          WHERE (line_uid IS NULL OR line_uid = '') AND is_active = TRUE
-          RETURNING id`
+        `SELECT id FROM parents
+          WHERE line_uid IS NULL OR line_uid = '' OR line_uid LIKE 'DEMOTEST_%'`
       );
-      if (sweep.rowCount) {
-        await client.query(
-          `UPDATE students SET is_active = FALSE, updated_at = NOW()
-            WHERE parent_id = ANY($1) AND is_active = TRUE`,
-          [sweep.rows.map((r) => r.id)]
-        );
-        console.warn('[ragic-pull] 掃尾：停用未綁 LINE UID 的殘留列 %d 筆', sweep.rowCount);
+      let deletedCount = 0;
+      for (const row of sweep.rows) {
+        const deleted = await parentSync.hardDeleteParentIfSafe(client, row.id);
+        if (deleted) deletedCount++;
+      }
+      if (deletedCount) {
+        console.log('[ragic-pull] 掃尾：硬刪除未綁 LINE UID 的殘留列 %d 筆（有 FK 者保留）', deletedCount);
       }
       await client.query('COMMIT');
     } catch (err) {
@@ -1208,6 +1206,13 @@ function getZ03UpgradeMissingFields(row) {
   for (const [key, label] of required) {
     if (!String(parent[key] || '').trim()) missing.push({ key, label });
   }
+  if (
+    parent.line_uid &&
+    (parent.line_uid.startsWith('demo:') || parent.line_uid.startsWith('DEMOTEST_')) &&
+    !missing.some((m) => m.key === 'line_uid')
+  ) {
+    missing.push({ key: 'line_uid', label: '真實 LINE UID' });
+  }
   if (parent.primary_venue_id === '待補登' && !missing.some((m) => m.key === 'primary_venue_id')) {
     missing.push({ key: 'primary_venue_id', label: '場館' });
   }
@@ -1287,11 +1292,6 @@ async function _upgradeZ03RecordToZ01(row, adminUsername) {
   const parent = _z03ParentFromRow(row);
   const students = (row.students || []).map(_z03StudentFromRow).filter((s) => s.name);
 
-  // 比照註冊 found->update：先寫學員 Z02，最後才把 LINE UID 寫進 Z01，避免半套開通。
-  for (const student of students) {
-    await ragic.updateStudentZ01Z02Strict({ parent, student });
-  }
-
   const venueName = await ragic.venueLabel(parent.primary_venue_id);
   const payload = {
     [ragic.FIELD.Z01.PARENT_NAME]: parent.name,
@@ -1306,7 +1306,14 @@ async function _upgradeZ03RecordToZ01(row, adminUsername) {
     [ragic.FIELD.Z01.LINE_UID]: parent.line_uid,
   };
   if (parent.line_chat_url) payload[ragic.FIELD.Z01.LINE_CHAT_URL] = parent.line_chat_url;
+
+  // Z01 不再允許未綁 LINE UID 的資料寫入：人工升級時先把既有 Z01 主表補成
+  // 已綁定狀態，再寫學員，避免升級途中把新學員資料掛到未綁家長列。
   await ragic.upsertParentStrict(payload, parent.ragic_record_id);
+
+  for (const student of students) {
+    await ragic.updateStudentZ01Z02Strict({ parent, student });
+  }
 
   const parentRefresh = require('./parentRefresh');
   const refreshed = await parentRefresh.refreshParentMirrorFromRagic({

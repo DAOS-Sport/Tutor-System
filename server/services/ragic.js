@@ -351,12 +351,44 @@ async function upsertParent(parentData, ragicRecordId = null) {
 
 async function upsertParentStrict(parentData, ragicRecordId = null) {
   const payload = toFieldIdPayload(parentData, Z01_FIELDS, 'Z01');
+  const payloadLineUid = _extractLineUidFromPayload(payload);
+  if (payloadLineUid || !ragicRecordId) {
+    payload[FIELD.Z01.LINE_UID] = _assertRealLineUidForZ01(payloadLineUid, 'upsertParentStrict');
+  }
   const base = ragicRecordId
     ? _recordPath(process.env.RAGIC_FORM_Z01, ragicRecordId)
     : process.env.RAGIC_FORM_Z01;
   const raw = await postRagicStrict(base, payload);
   _cacheInvalidate('z01:');
   return raw;
+}
+
+function _realLineUidForZ01(lineUid) {
+  const uid = String(lineUid || '').trim();
+  if (!uid) return '';
+  if (uid.startsWith('demo:') || uid.startsWith('DEMOTEST_')) return '';
+  return uid;
+}
+
+function _assertRealLineUidForZ01(lineUid, context = 'Z01 write') {
+  const uid = _realLineUidForZ01(lineUid);
+  if (uid) return uid;
+  const err = new Error(`${context}: 缺少有效 LINE UID，已拒絕寫入 Ragic Z01`);
+  err.code = 'PARENT_LINE_UID_REQUIRED';
+  throw err;
+}
+
+function _extractLineUidFromPayload(payloadByFieldId = {}) {
+  return payloadByFieldId[FIELD.Z01.LINE_UID] || payloadByFieldId[Z01_LINE_UID_FIELD] || '';
+}
+
+function _assertNoZ01LineUidConflict(record, lineUid, context = 'Z01 write') {
+  const mapped = mapZ01Parent(record);
+  if (mapped?.line_uid && mapped.line_uid !== lineUid) {
+    const err = new Error(`${context}: Ragic Z01 已綁定其他 LINE UID，拒絕覆蓋`);
+    err.code = 'PARENT_LINE_UID_MISMATCH';
+    throw err;
+  }
 }
 
 /**
@@ -572,7 +604,7 @@ async function _buildZ02RegistrationPayload({ parent, student }) {
 
 async function createParentWithStudentsInRagic({ parent, students = [], lineUid }) {
   if (!parent || !parent.phone) throw new Error('parent.phone 必填');
-  if (!lineUid) throw new Error('lineUid 必填');
+  lineUid = _assertRealLineUidForZ01(lineUid, 'createParentWithStudentsInRagic');
 
   const payload = {
     [FIELD.Z01.PARENT_NAME]:   parent.name || '',
@@ -680,7 +712,7 @@ async function _writeStudentsToZ02({ parent, students = [] }) {
 async function completeParentOnRegisterInRagic({ existing, parent, students = [], lineUid, nameToWrite = '' }) {
   const ragicRecordId = existing?.ragic_record_id;
   if (!ragicRecordId) throw new Error('existing.ragic_record_id 必填');
-  if (!lineUid) throw new Error('lineUid 必填');
+  lineUid = _assertRealLineUidForZ01(lineUid, 'completeParentOnRegisterInRagic');
 
   const { studentRecordIds, createdStudentIds } = await _writeStudentsToZ02({ parent, students });
 
@@ -760,6 +792,7 @@ async function resolveParentRagicRecord(parent) {
 
 // 在 Ragic 建立家長 Z01 主檔（補齊 INVALID 必填欄位 placeholder），回傳新 record id。
 async function createParentRagicRecord(parent) {
+  const lineUid = _assertRealLineUidForZ01(parent?.line_uid, 'createParentRagicRecord');
   const payload = {
     [FIELD.Z01.PARENT_NAME]:   parent?.name || '',
     [FIELD.Z01.PHONE]:         String(parent?.phone || '').trim(),
@@ -767,10 +800,10 @@ async function createParentRagicRecord(parent) {
     // 館別送「名稱」而非代碼（venueLabel 轉換），否則 Ragic「館別 為必填」INVALID。
     [FIELD.Z01.VENUE]:         (await venueLabel(parent?.primary_venue_id)) || '待補登',
     [FIELD.Z01.LINE_CHAT_URL]: '待補登',
+    [FIELD.Z01.LINE_UID]:      lineUid,
   };
   if (parent?.gender) payload[FIELD.Z01.GENDER] = _toPhysGender(parent.gender);
   if (parent?.email)  payload[FIELD.Z01.EMAIL]  = parent.email;
-  if (parent?.line_uid) payload[FIELD.Z01.LINE_UID] = parent.line_uid;
   const data = await postRagicStrict(process.env.RAGIC_FORM_Z01, payload);
   _cacheInvalidate('z01:');
   const id = data?.ragicId || data?._ragicId
@@ -792,6 +825,14 @@ async function createParentRagicRecord(parent) {
  * payloadByFieldId：以 Field ID 為 key 的 Z01 欄位（caller 用 ragicParentPayload 組好）。
  */
 async function syncParentProfileStrict(parent, payloadByFieldId) {
+  const lineUid = _assertRealLineUidForZ01(
+    parent?.line_uid || _extractLineUidFromPayload(payloadByFieldId),
+    'syncParentProfileStrict'
+  );
+  payloadByFieldId = {
+    ...payloadByFieldId,
+    [FIELD.Z01.LINE_UID]: lineUid,
+  };
   let ragicRecordId = parent?.ragic_record_id || null;
   if (ragicRecordId) {
     const existing = await getParentRecordByRagicId(ragicRecordId).catch(() => null);
@@ -800,10 +841,14 @@ async function syncParentProfileStrict(parent, payloadByFieldId) {
         staleId: String(ragicRecordId), phone: parent?.phone,
       });
       ragicRecordId = null;
+    } else {
+      _assertNoZ01LineUidConflict(existing, lineUid, 'syncParentProfileStrict');
     }
   }
   if (!ragicRecordId) {
     ragicRecordId = await resolveParentRagicRecord({ ...parent, ragic_record_id: null });
+    const existing = await getParentRecordByRagicId(ragicRecordId).catch(() => null);
+    if (existing) _assertNoZ01LineUidConflict(existing, lineUid, 'syncParentProfileStrict');
   }
   await upsertParentStrict(payloadByFieldId, ragicRecordId);
   return String(ragicRecordId);
@@ -1015,7 +1060,11 @@ async function upsertZ02ForParentStudent({ parent, student }) {
 // 真正落地靠 Z02（upsertZ02ForParentStudent）；故子表寫入一律 best-effort（失敗只記 log 不擋），
 // 與註冊流程 createParentWithStudentsInRagic「不再帶 dotted 子表」一致。
 async function createStudentZ01Z02Strict({ parent, student, startIndex = 0 }) {
+  const lineUid = _assertRealLineUidForZ01(parent?.line_uid, 'createStudentZ01Z02Strict');
   const ragicRecordId = await resolveParentRagicRecord(parent);
+  const existing = await getParentRecordByRagicId(ragicRecordId).catch(() => null);
+  if (existing) _assertNoZ01LineUidConflict(existing, lineUid, 'createStudentZ01Z02Strict');
+  await upsertParentStrict({ [FIELD.Z01.LINE_UID]: lineUid }, ragicRecordId);
   try {
     await postRagicStrict(
       _recordPath(process.env.RAGIC_FORM_Z01, ragicRecordId),
@@ -1030,7 +1079,11 @@ async function createStudentZ01Z02Strict({ parent, student, startIndex = 0 }) {
 }
 
 async function updateStudentZ01Z02Strict({ parent, student }) {
+  const lineUid = _assertRealLineUidForZ01(parent?.line_uid, 'updateStudentZ01Z02Strict');
   const ragicRecordId = await resolveParentRagicRecord(parent);
+  const existing = await getParentRecordByRagicId(ragicRecordId).catch(() => null);
+  if (existing) _assertNoZ01LineUidConflict(existing, lineUid, 'updateStudentZ01Z02Strict');
+  await upsertParentStrict({ [FIELD.Z01.LINE_UID]: lineUid }, ragicRecordId);
   try {
     await updateStudentInParentSubtable({ ragicRecordId, student });
   } catch (err) {
@@ -1044,7 +1097,11 @@ async function updateStudentZ01Z02Strict({ parent, student }) {
 // 保留簽名以防舊呼叫端；現已不再寫入「學員身分」狀態欄（upsertZ02ForParentStudent
 // 對既有紀錄不碰該欄），故即使被呼叫也不會再覆蓋身分類別。
 async function deactivateStudentZ02Strict({ parent, student }) {
+  const lineUid = _assertRealLineUidForZ01(parent?.line_uid, 'deactivateStudentZ02Strict');
   const ragicRecordId = await resolveParentRagicRecord(parent);
+  const existing = await getParentRecordByRagicId(ragicRecordId).catch(() => null);
+  if (existing) _assertNoZ01LineUidConflict(existing, lineUid, 'deactivateStudentZ02Strict');
+  await upsertParentStrict({ [FIELD.Z01.LINE_UID]: lineUid }, ragicRecordId);
   const z02 = await upsertZ02ForParentStudent({ parent, student });
   return { z02, parentRagicRecordId: ragicRecordId };
 }

@@ -69,6 +69,11 @@ function rowToStudent(r, reveal) {
 const KID_COLS = `id, parent_id, name, id_number, gender, birth_date, blood_type,
   student_code, ragic_record_id, is_active, last_synced_at`;
 
+function isRealLineUid(uid) {
+  const s = String(uid || '').trim();
+  return !!s && !s.startsWith('demo:') && !s.startsWith('DEMOTEST_');
+}
+
 // 取家長 venue 並檢查是否落在操作者範圍內；不在或不存在 → 回 null（caller 一律當 404）
 async function parentInScope(client, req, id) {
   const r = await client.query(`SELECT primary_venue_id FROM parents WHERE id = $1`, [id]);
@@ -151,6 +156,8 @@ router.patch('/:id', requireAdminAuth, async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: '找不到此家長' });
     }
+    const targetParent = await client.query(`SELECT line_uid FROM parents WHERE id = $1`, [req.params.id]);
+    const parentHasRealLineUid = isRealLineUid(targetParent.rows[0]?.line_uid);
 
     // 1) 家長業務欄位（白名單；line_uid 屬登入身分，永不在此更動）
     const sets = [];
@@ -169,11 +176,10 @@ router.patch('/:id', requireAdminAuth, async (req, res) => {
       // 未綁 LINE UID 的列不得重新啟用：active 鏡像只收已綁列（夜間 pull 掃尾也會再停用，
       // 這裡直接擋下並說明，避免「啟用→隔天又被停用」的困惑）。
       if (b.is_active === true) {
-        const cur = await client.query(`SELECT line_uid FROM parents WHERE id = $1`, [req.params.id]);
-        if (cur.rowCount && !cur.rows[0].line_uid) {
+        if (!parentHasRealLineUid) {
           await client.query('ROLLBACK');
           return res.status(409).json({
-            error: '此家長尚未綁定 LINE，無法啟用；請客戶完成 LINE 註冊綁定後會自動啟用',
+            error: '此家長尚未綁定真實 LINE，無法啟用；請客戶完成 LINE 註冊綁定後會自動啟用',
             code: 'PARENT_UNBOUND_CANNOT_ACTIVATE',
           });
         }
@@ -191,6 +197,13 @@ router.patch('/:id', requireAdminAuth, async (req, res) => {
     // 2) 子表學員 upsert（id 命中→就地更新，保留 student.id 不斷活動紀錄鏈）
     const touchedStudentIds = []; // 本次更新/新增的學員 → COMMIT 後即時回寫 Ragic
     if (Array.isArray(b.students)) {
+      if (!parentHasRealLineUid && b.students.some((s) => s && (!s.id || s.is_active !== false))) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: '此家長尚未綁定真實 LINE，無法新增或啟用學員',
+          code: 'PARENT_UNBOUND_CANNOT_ACTIVATE_STUDENT',
+        });
+      }
       for (const s of b.students) {
         if (!s) continue;
         const bd = parseRocOrIso(s.birth_date);

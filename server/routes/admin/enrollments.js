@@ -183,10 +183,19 @@ async function ensureSoloCoursePeriod(client, enrollment, totalSessions) {
   }
 
   // 解析家長（學員需綁到家長，家長端才讀得到自己的課）
-  const pr = await client.query(`SELECT id FROM parents WHERE phone = $1 LIMIT 1`, [enrollment.parent_phone]);
+  const pr = await client.query(
+    `SELECT id FROM parents
+      WHERE phone = $1
+        AND is_active = TRUE
+        AND line_uid IS NOT NULL AND line_uid <> ''
+        AND line_uid NOT LIKE 'demo:%'
+        AND line_uid NOT LIKE 'DEMOTEST_%'
+      LIMIT 1`,
+    [enrollment.parent_phone]
+  );
   const parentId = pr.rows[0]?.id || null;
   if (!parentId) {
-    console.warn('[reconcile/solo] 一般報名家長尚未註冊，略過自動開通 period:', enrollment.id, 'phone:', enrollment.parent_phone);
+    console.warn('[reconcile/solo] 一般報名家長尚未完成真實 LINE 綁定，略過自動開通 period:', enrollment.id, 'phone:', enrollment.parent_phone);
     return createdStudentIds;
   }
 

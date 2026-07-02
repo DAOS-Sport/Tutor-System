@@ -27,12 +27,21 @@ function _isMissingVenue(v) {
   return !s || s === '待補登';
 }
 
+function _isMissingLineUid(v) {
+  const s = String(v || '').trim();
+  return !s || s.startsWith('demo:') || s.startsWith('DEMOTEST_');
+}
+
 function getZ01MissingFields(mapped, { rejectPlaceholderName = true, requireLineUid = true } = {}) {
   const missing = [];
   for (const [key, label] of REQUIRED_Z01_FIELDS) {
     if (key === 'line_uid' && !requireLineUid) continue;
     if (key === 'primary_venue_id') {
       if (_isMissingVenue(mapped?.[key])) missing.push({ key, label });
+      continue;
+    }
+    if (key === 'line_uid') {
+      if (_isMissingLineUid(mapped?.[key])) missing.push({ key, label });
       continue;
     }
     if (!String(mapped?.[key] || '').trim()) missing.push({ key, label });

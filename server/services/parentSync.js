@@ -80,7 +80,9 @@ async function upsertLocalParent(client, mapped, lineUid, { reactivate = true, v
          WHEN $13::boolean THEN NULLIF($3, '')
          ELSE COALESCE(parents.line_uid, EXCLUDED.line_uid)
        END,
-       primary_venue_id = COALESCE(parents.primary_venue_id, EXCLUDED.primary_venue_id),
+       -- Ragic 是業務資料權威；有解析到場館時應更新本地鏡像，否則家長端改館別後
+       -- refresh 仍會保留舊值，看起來像沒有回寫。Ragic 空白/待補登解析成 NULL 時才保留本地值。
+       primary_venue_id = COALESCE(EXCLUDED.primary_venue_id, parents.primary_venue_id),
        gender = COALESCE(NULLIF(EXCLUDED.gender,''), parents.gender),
        email  = COALESCE(NULLIF(EXCLUDED.email,''),  parents.email),
        identity = COALESCE(NULLIF(EXCLUDED.identity,''), parents.identity),
@@ -208,17 +210,60 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
         .filter(Boolean)
     )];
     if (presentIds.length > 0) {
+      // 硬刪除 Ragic 已移除的學員（無業務 FK）；有報名/簽到/轉讓記錄者跳過不動。
       await client.query(
-        `UPDATE students SET is_active = FALSE, updated_at = NOW()
-          WHERE parent_id = $1
-            AND COALESCE(is_active, TRUE) = TRUE
-            AND ragic_record_id IS NOT NULL
-            AND id_number IS NOT NULL
-            AND NOT (UPPER(id_number) = ANY($2::text[]))`,
+        `DELETE FROM students
+           WHERE parent_id = $1
+             AND ragic_record_id IS NOT NULL
+             AND id_number IS NOT NULL
+             AND NOT (UPPER(id_number) = ANY($2::text[]))
+             AND id NOT IN (
+               SELECT student_id FROM course_period_enrollments
+               UNION ALL SELECT student_id FROM checkin_records WHERE student_id IS NOT NULL
+               UNION ALL SELECT from_student_id FROM transfer_records WHERE from_student_id IS NOT NULL
+             )`,
         [parentId, presentIds]
       );
     }
   }
+}
+
+/**
+ * 安全硬刪除本地家長及其學員（硬邊界：只動本地 DB，Ragic 完全不碰）。
+ *
+ * 策略：
+ *  1. 刪除「無業務 FK」的學員（課程報名 / 簽到 / 轉讓紀錄皆無）。
+ *  2. 若家長已無剩餘學員，且自身無其他業務 FK，則刪除家長。
+ *  有 FK 的學員/家長直接跳過（不刪也不軟刪），保留業務資料完整性。
+ *
+ * @param {object} db  - pg pool 或 pool client（支援 .query()）
+ * @param {string} parentId
+ * @returns {Promise<boolean>} true = 家長已刪除；false = 有 FK 暫留
+ */
+async function hardDeleteParentIfSafe(db, parentId) {
+  await db.query(
+    `DELETE FROM students
+       WHERE parent_id = $1
+         AND id NOT IN (
+           SELECT student_id FROM course_period_enrollments
+           UNION ALL SELECT student_id FROM checkin_records WHERE student_id IS NOT NULL
+           UNION ALL SELECT from_student_id FROM transfer_records WHERE from_student_id IS NOT NULL
+         )`,
+    [parentId]
+  );
+  const r = await db.query(
+    `DELETE FROM parents
+       WHERE id = $1
+         AND NOT EXISTS (SELECT 1 FROM students WHERE parent_id = $1)
+         AND id NOT IN (
+           SELECT checked_in_by_parent_id FROM checkin_records WHERE checked_in_by_parent_id IS NOT NULL
+           UNION ALL SELECT initiated_by_parent_id FROM course_sessions WHERE initiated_by_parent_id IS NOT NULL
+           UNION ALL SELECT from_parent_id FROM transfer_records WHERE from_parent_id IS NOT NULL
+         )
+       RETURNING id`,
+    [parentId]
+  );
+  return r.rowCount > 0;
 }
 
 /**
@@ -353,6 +398,7 @@ module.exports = {
   loadVenuesMap,
   loadStudentsByParentPhone,
   loadBoundPhones,
+  hardDeleteParentIfSafe,
   _syncWithLock,
   syncFromRagicRecord,
   matchStudentClaim,

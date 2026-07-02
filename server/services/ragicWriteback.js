@@ -46,8 +46,8 @@ async function syncParentNow(parentId) {
   }
   // 政策：Z01 只收已綁 LINE UID 的會員。未綁列不回寫，避免在 Ragic Z01 產生未綁殘留
   // （推上去只會被夜間 pull 分流進 Z03 佇列，形成清不完的循環）。
-  // `demo:` 哨兵 UID（bootstrap demo 帳號）＝本地測試資料，同樣不回寫。
-  if (!row.line_uid || String(row.line_uid).startsWith('demo:')) {
+  // `demo:` / `DEMOTEST_` 哨兵 UID＝測試資料，同樣不回寫。
+  if (!row.line_uid || String(row.line_uid).startsWith('demo:') || String(row.line_uid).startsWith('DEMOTEST_')) {
     console.warn('[ragic-writeback] parent 未綁 LINE UID（或 demo 帳號），略過回寫（Z01 不收未綁/測試資料）:', parentId);
     return null;
   }
@@ -92,8 +92,8 @@ async function syncStudentNow(studentId) {
     return null;
   }
   // 家長未綁 UID → 學員也不回寫：createStudentZ01Z02Strict 的自我修復會替不存在的
-  // 家長在 Z01 建新列，等於從側門把未綁家長塞進 Z01。demo 哨兵帳號同略。
-  if (!row.p_line_uid || String(row.p_line_uid).startsWith('demo:')) {
+  // 家長在 Z01 建新列，等於從側門把未綁家長塞進 Z01。demo / DEMOTEST 哨兵帳號同略。
+  if (!row.p_line_uid || String(row.p_line_uid).startsWith('demo:') || String(row.p_line_uid).startsWith('DEMOTEST_')) {
     console.warn('[ragic-writeback] 家長未綁 LINE UID（或 demo 帳號），略過學員回寫（Z01 不收未綁/測試資料）:', studentId);
     return null;
   }
