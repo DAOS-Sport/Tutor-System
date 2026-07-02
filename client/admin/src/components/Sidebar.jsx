@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { ragicStagingApi } from '../api/ragicStaging';
+import { USE_MOCK } from '../api/client';
 
 // 每個項目的 roles 控制可見性。空陣列表示所有登入者皆可見。
 // 顯示格式為「(代碼) 中文」，無代碼者僅顯示中文。
@@ -183,6 +184,11 @@ export default function Sidebar() {
         })}
       </nav>
       <div className="border-t border-white/10 px-4 py-3 text-[11px] text-white/50">
+        {USE_MOCK ? (
+          <div className="mb-2 rounded bg-amber-500/90 px-2 py-1 text-center text-[11px] font-bold text-black">
+            ⚠ MOCK 模式（假資料，未連真後端）
+          </div>
+        ) : null}
         v1.0 Phase 6
         <div className="mt-0.5 text-white/40">
           build {import.meta.env.VITE_BUILD_SHA || 'dev'}

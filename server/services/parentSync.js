@@ -89,7 +89,9 @@ async function upsertLocalParent(client, mapped, lineUid, { reactivate = true, v
        home_phone = COALESCE(NULLIF(EXCLUDED.home_phone,''), parents.home_phone),
        home_address = COALESCE(NULLIF(EXCLUDED.home_address,''), parents.home_address),
        line_id = COALESCE(NULLIF(EXCLUDED.line_id,''), parents.line_id),
-       ragic_record_id = COALESCE(parents.ragic_record_id, EXCLUDED.ragic_record_id),
+       -- Ragic 端記錄可能被取代/重建（同電話換新 _ragicId）；本地快取要跟著更新，
+       -- 否則後續寫回 Ragic 會一直打到已經不存在的舊記錄（見 resolveParentRagicRecord）。
+       ragic_record_id = COALESCE(NULLIF(EXCLUDED.ragic_record_id, ''), parents.ragic_record_id),
        -- 只刷新不復活：唯有 reactivate=true 才允許覆蓋先前的軟刪除。
        is_active = CASE WHEN $12::boolean THEN TRUE ELSE parents.is_active END,
        last_synced_at = NOW(),

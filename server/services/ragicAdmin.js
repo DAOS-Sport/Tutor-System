@@ -943,6 +943,17 @@ async function _upsertZ03Record(client, ragicRecordId, mapped, z01Row) {
   if (!ragicRecordId) return;
   const lineChatUrlRaw = _pickZ01Raw(z01Row, ['1002390', 'line對話網址']);
   const studentCountRaw = _pickZ01Raw(z01Row, ['1001138', '名下有幾位學生']);
+  // Ragic 端同電話換發新 _ragicId 時（舊記錄被取代/重建），INSERT ... ON CONFLICT
+  // 是用 z01_ragic_record_id 當鍵，換了 ID 會新插一筆、留舊列變孤兒（永遠停在被取代
+  // 當下的舊資料，抓不到新記錄的學員子表/最新 Email）。先用電話清掉同電話、不同
+  // ragicRecordId 的 pending 孤兒列；'dismissed'/'resolved' 是人工已處理過的歷史，不動。
+  if (mapped.phone) {
+    await client.query(
+      `DELETE FROM ragic_z03_records
+        WHERE phone = $1 AND z01_ragic_record_id <> $2 AND status = 'pending'`,
+      [mapped.phone, ragicRecordId]
+    );
+  }
   const r = await client.query(
     `INSERT INTO ragic_z03_records
        (z01_ragic_record_id, raw_name, venue_raw, phone, identity_raw, gender_raw,
@@ -1513,6 +1524,15 @@ async function _quarantineBadZ01NamesImpl() {
     if (!isPlaceholderParentName(mapped.name)) continue;
     tier1Count++;
     try {
+      // 同 _upsertZ03Record 的理由：ON CONFLICT 鍵是 z01_ragic_record_id，Ragic 換發
+      // 新 ID 時會留舊列變孤兒。先清掉同電話、不同 ID 的未解決列，已 resolved 的歷史不動。
+      if (mapped.phone) {
+        await pool.query(
+          `DELETE FROM ragic_z01_quarantine
+            WHERE phone = $1 AND z01_ragic_record_id <> $2 AND resolved_at IS NULL`,
+          [mapped.phone, String(z01Row._ragicId)]
+        );
+      }
       await pool.query(
         `INSERT INTO ragic_z01_quarantine (z01_ragic_record_id, phone, bad_name)
          VALUES ($1, $2, $3)
