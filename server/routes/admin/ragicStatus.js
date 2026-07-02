@@ -107,6 +107,53 @@ router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, re
   });
 });
 
+// 清除 Ragic 錯誤載入的 ghost 資料：
+//   1. 硬刪 parents WHERE line_uid IS NULL（有業務 FK 者跳過）
+//   2. 清空 ragic_z03_records
+//   3. 清空 ragic_z01_quarantine
+// 硬邊界：只動本地 DB，Ragic 端完全不碰。
+router.post('/purge-ghosts', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+  const { pool } = require('../../db');
+  const parentSync = require('../../services/parentSync');
+  const client = await pool.connect();
+  try {
+    // 1. 找出所有無 LINE UID 的 parents
+    const noUid = await client.query(
+      `SELECT id FROM parents WHERE line_uid IS NULL OR line_uid = ''`
+    );
+    let deletedParents = 0;
+    let skippedParents = 0;
+    for (const row of noUid.rows) {
+      const deleted = await parentSync.hardDeleteParentIfSafe(client, row.id);
+      if (deleted) deletedParents++;
+      else skippedParents++;
+    }
+
+    // 2. 清空 Z03 佇列
+    const z03 = await client.query(`DELETE FROM ragic_z03_records RETURNING 1`);
+    const deletedZ03 = z03.rowCount;
+
+    // 3. 清空 quarantine（佔位名單）
+    const q = await client.query(`DELETE FROM ragic_z01_quarantine RETURNING 1`);
+    const deletedQuarantine = q.rowCount;
+
+    console.log(`[purge-ghosts] parents 刪除=${deletedParents} 保留=${skippedParents}（有業務FK）; z03=${deletedZ03}; quarantine=${deletedQuarantine}`);
+    res.json({
+      ok: true,
+      deleted_parents: deletedParents,
+      skipped_parents: skippedParents,
+      deleted_z03: deletedZ03,
+      deleted_quarantine: deletedQuarantine,
+      message: `已清除：${deletedParents} 筆 ghost 家長、${deletedZ03} 筆 Z03、${deletedQuarantine} 筆 quarantine。${skippedParents ? `（${skippedParents} 筆有業務紀錄保留）` : ''}`,
+    });
+  } catch (err) {
+    console.error('[purge-ghosts]', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
 router.post('/toggle', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
   const job = String(req.body?.job || '');
   const enabled = !!req.body?.enabled;

@@ -204,6 +204,20 @@ export default function RagicStatusPage() {
     }
   }
 
+  const [purging, setPurging] = useState(false);
+  async function runPurgeGhosts() {
+    if (!window.confirm('確定要清除所有無 LINE UID 的 ghost 家長、Z03 佇列、quarantine 名單嗎？\n\n有業務紀錄（課程/報到）的記錄不會被刪除。\n\n此操作不可復原。')) return;
+    setPurging(true);
+    try {
+      const result = await ragicStatusApi.purgeGhosts();
+      toast.success(result.message || '清除完成');
+    } catch (e) {
+      toast.error(e?.response?.data?.error || e?.message || '清除失敗');
+    } finally {
+      setPurging(false);
+    }
+  }
+
   const [togglingJob, setTogglingJob] = useState(null);
   async function runToggle(job, enabled) {
     setTogglingJob(job);
@@ -302,6 +316,24 @@ export default function RagicStatusPage() {
           <li>卡片右上角開關可個別暫停某個 job：關閉後該 job 的 cron 排程與「單獨同步此表」按鈕都不會執行，直到重新開啟。</li>
         </ul>
       </div>
+
+      {isAdmin && (
+        <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-4">
+          <div className="mb-2 text-sm font-bold text-red-700">⚠ 資料維護</div>
+          <p className="mb-3 text-xs text-red-600">
+            清除所有「無 LINE UID」的 ghost 家長記錄、Z03 待處理佇列、quarantine 名單。
+            有業務紀錄（課程 / 報到 / 轉讓）的記錄不受影響。此操作不可復原，請確認後再執行。
+          </p>
+          <button
+            type="button"
+            disabled={purging}
+            onClick={runPurgeGhosts}
+            className="rounded bg-red-600 px-4 py-2 text-sm font-bold text-white shadow-sm transition hover:bg-red-700 disabled:opacity-50"
+          >
+            {purging ? '清除中…' : '清除錯誤載入資料（Ghost / Z03 / Quarantine）'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
