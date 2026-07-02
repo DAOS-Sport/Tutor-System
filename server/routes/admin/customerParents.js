@@ -126,34 +126,15 @@ router.get('/:id', requireAdminAuth, async (req, res) => {
   }
 });
 
-// POST / — 新增家長（本地鏡像）
-router.post('/', requireAdminAuth, async (req, res) => {
-  const b = req.body || {};
-  const name = String(b.name || '').trim();
-  const phone = String(b.phone || '').trim();
-  if (!name)  return res.status(400).json({ error: '家長姓名必填', code: 'INPUT_INVALID' });
-  if (!phone) return res.status(400).json({ error: '行動電話必填', code: 'INPUT_INVALID' });
-  if (!isVenueInScope(req, b.primary_venue_id)) {
-    return res.status(403).json({ error: '無權在此場館建立家長', code: 'OUT_OF_SCOPE' });
-  }
-  try {
-    const r = await pool.query(
-      `INSERT INTO parents (phone, name, gender, email, primary_venue_id, identity,
-                            home_phone, home_address, line_id, is_active)
-       VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),
-               NULLIF($7,''),NULLIF($8,''),NULLIF($9,''), TRUE)
-       RETURNING ${PARENT_COLS.replace(/p\./g, '')}`,
-      [phone, name, b.gender || '', b.email || '', b.primary_venue_id || '',
-       b.identity || '', b.home_phone || '', b.home_address || '', b.line_id || '']
-    );
-    // 即時回寫 Ragic（best-effort；新列 last_synced_at 預設 NULL，失敗由每日備份重試）
-    ragicWriteback.scheduleWriteback({ parentId: r.rows[0].id, reason: 'admin-parent-create' });
-    res.json(rowToParent(r.rows[0]));
-  } catch (err) {
-    if (err.code === '23505') return res.status(409).json({ error: '此行動電話已被其他家長使用', code: 'PHONE_DUPLICATE' });
-    console.error('[admin/customer-parents] create', err);
-    res.status(500).json({ error: '建立家長失敗' });
-  }
+// POST / — 新增家長：已依「Z01 只收已綁 LINE UID」政策停用。
+// 本地鏡像是「登入真相鏡像」，手建列必然未綁 UID → 進了鏡像就是殘留、推上 Ragic 就是
+// 未綁資料進 Z01（夜間 pull 又分流進 Z03，清不完的循環）。正確流程：櫃台在 Ragic Z01
+// 建檔 → 客戶 LINE 註冊綁定 → 下一輪 pull（或註冊當下刷新）自動進本地鏡像。
+router.post('/', requireAdminAuth, (req, res) => {
+  res.status(410).json({
+    error: '手動新增家長已停用：請於 Ragic Z01 建檔，客戶完成 LINE 註冊綁定後會自動進入本系統',
+    code: 'PARENT_CREATE_VIA_RAGIC',
+  });
 });
 
 // PATCH /:id — 更新家長業務欄位 + 子表學員（單一交易）
@@ -184,7 +165,21 @@ router.patch('/:id', requireAdminAuth, async (req, res) => {
       args.push(val === '' ? null : val);
       sets.push(`${col} = $${args.length}`);
     }
-    if (typeof b.is_active === 'boolean') { args.push(b.is_active); sets.push(`is_active = $${args.length}`); }
+    if (typeof b.is_active === 'boolean') {
+      // 未綁 LINE UID 的列不得重新啟用：active 鏡像只收已綁列（夜間 pull 掃尾也會再停用，
+      // 這裡直接擋下並說明，避免「啟用→隔天又被停用」的困惑）。
+      if (b.is_active === true) {
+        const cur = await client.query(`SELECT line_uid FROM parents WHERE id = $1`, [req.params.id]);
+        if (cur.rowCount && !cur.rows[0].line_uid) {
+          await client.query('ROLLBACK');
+          return res.status(409).json({
+            error: '此家長尚未綁定 LINE，無法啟用；請客戶完成 LINE 註冊綁定後會自動啟用',
+            code: 'PARENT_UNBOUND_CANNOT_ACTIVATE',
+          });
+        }
+      }
+      args.push(b.is_active); sets.push(`is_active = $${args.length}`);
+    }
     // 本地鏡像有異動 → 交易內先標記待同步（last_synced_at = NULL），COMMIT 後即時回寫 Ragic；
     // 回寫成功才蓋回 NOW()，失敗保持 NULL 由每日備份排程重試。
     const parentTouched = sets.length > 0;

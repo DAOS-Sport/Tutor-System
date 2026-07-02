@@ -11,7 +11,9 @@ import { useToast } from '../context/ToastContext';
 import { customerParentsApi } from '../api/customers';
 import { venuesApi } from '../api/venues';
 
-const EMPTY_FILTERS = { status: 'all', venueId: '', name: '', identity: '', phone: '' };
+// 預設只看啟用中：active 鏡像政策上只收「已綁 LINE UID」的登入會員，
+// 歷史未綁殘留列都已停用，預設不再攤在清單裡（要查可切「全部／已停用」）。
+const EMPTY_FILTERS = { status: 'active', venueId: '', name: '', identity: '', phone: '' };
 const IDENTITY_TONE = { '教練/員工': 'green', '行政櫃檯': 'gold' };
 
 export default function CustomerParentsPage() {
@@ -59,34 +61,16 @@ export default function CustomerParentsPage() {
     setEditing(data);
   }
 
-  function startCreate() {
-    setEditing({
-      isNew: true,
-      parent: {
-        id: null, line_uid: null, phone: '', name: '', gender: '生理女', email: '',
-        primary_venue_id: venues[0]?.id || '', identity: '一般身份', home_phone: '',
-        home_address: '', line_id: '', ragic_record_id: null, is_active: true, last_synced_at: null, family_id: null,
-      },
-      students: [],
-    });
-  }
-
   async function handleSave(parent, students) {
     setBusy(true);
     try {
-      if (editing?.isNew) {
-        const created = await customerParentsApi.create(parent);
-        if (students.length) await customerParentsApi.update(created.id, { students });
-        toast.success(`已建立家長 ${created.name}`);
-      } else {
-        await customerParentsApi.update(parent.id, {
-          name: parent.name, phone: parent.phone, gender: parent.gender, email: parent.email,
-          primary_venue_id: parent.primary_venue_id, identity: parent.identity,
-          home_phone: parent.home_phone, home_address: parent.home_address, line_id: parent.line_id,
-          students,
-        });
-        toast.success('已更新家長與學員（本地鏡像）');
-      }
+      await customerParentsApi.update(parent.id, {
+        name: parent.name, phone: parent.phone, gender: parent.gender, email: parent.email,
+        primary_venue_id: parent.primary_venue_id, identity: parent.identity,
+        home_phone: parent.home_phone, home_address: parent.home_address, line_id: parent.line_id,
+        students,
+      });
+      toast.success('已更新家長與學員（本地鏡像）');
       setEditing(null);
       reload();
     } catch (err) {
@@ -156,8 +140,13 @@ export default function CustomerParentsPage() {
     { key: 'actions', label: '操作', className: 'text-right', render: (r) => (
       <div className="space-x-2 whitespace-nowrap">
         <button className="text-xs font-medium text-brand-teal hover:underline" onClick={() => openEditor(r)}>編輯</button>
-        <button className={`text-xs font-medium hover:underline ${r.is_active ? 'text-brand-amber' : 'text-brand-green'}`}
-          onClick={() => setToggling(r)}>{r.is_active ? '停用' : '啟用'}</button>
+        {r.is_active ? (
+          <button className="text-xs font-medium text-brand-amber hover:underline" onClick={() => setToggling(r)}>停用</button>
+        ) : r.line_bound ? (
+          <button className="text-xs font-medium text-brand-green hover:underline" onClick={() => setToggling(r)}>啟用</button>
+        ) : (
+          <span className="text-xs text-gray-300" title="未綁定 LINE 的家長無法啟用；請客戶完成 LINE 註冊綁定">未綁定不可啟用</span>
+        )}
       </div>
     ) },
   ];
@@ -185,10 +174,8 @@ export default function CustomerParentsPage() {
               className={`rounded-lg px-4 py-2 text-sm font-bold ${reveal ? 'bg-brand-error-soft text-brand-error-strong' : 'border border-gray-300 text-gray-600 hover:border-brand-teal'}`}>
               {reveal ? '🙈 遮蔽個資' : '👁 顯示個資'}
             </button>
-            <button type="button" onClick={startCreate}
-              className="rounded-lg bg-brand-primary px-4 py-2 text-sm font-bold text-white hover:bg-brand-teal">
-              ＋ 新增家長
-            </button>
+            {/* 「新增家長」已依政策移除：家長一律於 Ragic Z01 建檔，
+                客戶完成 LINE 註冊綁定後自動進入本鏡像（後端 POST 也已回 410）。 */}
           </div>
         )}
       />

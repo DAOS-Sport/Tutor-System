@@ -134,6 +134,14 @@ function assertParentReadyForStrictSync(parent, lineUid) {
   });
 }
 
+// demo 哨兵帳號（bootstrap coreSchema seed：line_uid = 'demo:<phone>'，供 /liff/demo 帳密測試）：
+// /me 系列一律走「本地鏡像 only」——不寫 Ragic、不做嚴格刷新。理由：
+//  (1) 政策「Z01 不收未綁/測試資料」，demo 異動不得寫進 Ragic；
+//  (2) 嚴格刷新會比對 Ragic 端 line_uid 與哨兵值 → 必然 UID_MISMATCH，整個編輯流程會壞掉。
+function isDemoParent(parentRow, tokenLineUid) {
+  return String(parentRow?.line_uid || tokenLineUid || '').startsWith('demo:');
+}
+
 router.get('/me', requireParent, async (req, res) => {
   try {
     const me = await loadMe(req.parent.id);
@@ -163,7 +171,7 @@ router.post('/me/sync', requireParent, async (req, res) => {
     const fresh = last > 0 && (Date.now() - last) < SYNC_THROTTLE_MS;
 
     let syncStatus = fresh ? 'fresh' : 'synced';
-    if (!fresh && p.line_uid) {
+    if (!fresh && p.line_uid && !String(p.line_uid).startsWith('demo:')) {
       try {
         await refreshParentMirrorFromRagic({
           lineUid: p.line_uid,
@@ -224,6 +232,20 @@ router.patch('/me', requireParent, async (req, res) => {
     const cur = await loadMe(req.parent.id);
     if (!cur) return res.status(404).json({ error: '找不到家長帳號' });
     await assertVenueExists(patch.primary_venue_id);
+
+    // demo 帳號：只更新本地鏡像（含場館），不寫 Ragic、不做嚴格刷新。
+    if (isDemoParent(cur, req.parent.lineUid)) {
+      await pool.query(
+        `UPDATE parents SET name = $2, primary_venue_id = $3, identity = $4, gender = $5,
+                email = $6, home_phone = $7, line_id = $8, home_address = $9, updated_at = NOW()
+          WHERE id = $1`,
+        [req.parent.id, patch.name, patch.primary_venue_id, patch.identity, patch.gender,
+         patch.email, patch.home_phone, patch.line_id, patch.home_address]
+      );
+      console.log('[parent-sync] demo 帳號編輯：僅更新本地鏡像', { parent: patch.name, venue: patch.primary_venue_id });
+      return res.json(await loadMe(req.parent.id));
+    }
+
     const merged = { ...cur, ...patch };
     // 館別代碼 → Ragic 認得的場館名稱（這是「館別 為必填」同步失敗的真因）。
     const venueName = await ragic.venueLabel(merged.primary_venue_id);
@@ -259,6 +281,24 @@ router.post('/me/students', requireParent, async (req, res) => {
   try {
     const parent = await loadMe(req.parent.id);
     if (!parent) return res.status(404).json({ error: '找不到家長帳號' });
+
+    // demo 帳號：學員直接寫本地（僅查重），不進 Ragic。
+    if (isDemoParent(parent, req.parent.lineUid)) {
+      const dupDemo = await pool.query(
+        `SELECT id, parent_id FROM students WHERE id_number = $1 LIMIT 1`, [s.id_number]);
+      if (dupDemo.rowCount && String(dupDemo.rows[0].parent_id) !== String(req.parent.id)) {
+        return res.status(409).json({ error: '此身分證字號已有學員資料', code: 'STUDENT_ID_DUPLICATED' });
+      }
+      if (!dupDemo.rowCount) {
+        await pool.query(
+          `INSERT INTO students (parent_id, name, id_number, birth_date, gender, blood_type)
+           VALUES ($1,$2,$3,$4,$5,NULLIF($6,''))`,
+          [req.parent.id, s.name, s.id_number, s.birth_date, s.gender || null, s.blood_type || '']
+        );
+      }
+      return res.status(201).json(await loadMe(req.parent.id));
+    }
+
     const parentForSync = { ...parent, line_uid: parent.line_uid || req.parent.lineUid || null };
     assertParentReadyForStrictSync(parentForSync, req.parent.lineUid);
     const activeCount = Number(
@@ -331,8 +371,6 @@ router.patch('/me/students/:id', requireParent, async (req, res) => {
   try {
     const parent = await loadMe(req.parent.id);
     if (!parent) return res.status(404).json({ error: '找不到家長帳號' });
-    const parentForSync = { ...parent, line_uid: parent.line_uid || req.parent.lineUid || null };
-    assertParentReadyForStrictSync(parentForSync, req.parent.lineUid);
     const cur = await pool.query(
       `SELECT id, name, id_number, birth_date, gender, blood_type, student_code, ragic_record_id
          FROM students
@@ -353,6 +391,19 @@ router.patch('/me/students/:id', requireParent, async (req, res) => {
       });
     }
 
+    // demo 帳號：學員直接改本地，不進 Ragic。
+    if (isDemoParent(parent, req.parent.lineUid)) {
+      await pool.query(
+        `UPDATE students SET name = $2, id_number = $3, birth_date = $4,
+                gender = $5, blood_type = NULLIF($6,''), updated_at = NOW()
+          WHERE id = $1`,
+        [req.params.id, s.name, s.id_number, s.birth_date, s.gender || null, s.blood_type || '']
+      );
+      return res.json(await loadMe(req.parent.id));
+    }
+
+    const parentForSync = { ...parent, line_uid: parent.line_uid || req.parent.lineUid || null };
+    assertParentReadyForStrictSync(parentForSync, req.parent.lineUid);
     const before = cur.rows[0];
     const syncStudent = { ...before, ...s, _match_id_number: before.id_number };
     console.log('[student-sync] 編輯學員 start', { parent: parent.name, phone: parent.phone, student: s.name, studentId: req.params.id });

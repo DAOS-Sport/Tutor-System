@@ -804,10 +804,12 @@ async function _backupParentToRagic(row) {
 }
 
 async function _backupStudentToRagic(row) {
+  // line_uid 必帶：createStudentZ01Z02Strict 的自我修復在 Z01 找不到家長時會建新家長列，
+  // 沒帶 UID 建出來的就是未綁殘留。
   const parent = {
     id: row.parent_id, name: row.p_name, phone: row.p_phone, gender: row.p_gender,
     email: row.p_email, identity: row.p_identity, primary_venue_id: row.p_venue,
-    ragic_record_id: row.p_ragic_record_id,
+    ragic_record_id: row.p_ragic_record_id, line_uid: row.p_line_uid,
   };
   const student = {
     name: row.name, id_number: row.id_number, birth_date: row.birth_date,
@@ -842,11 +844,16 @@ async function _backupParentsStudentsImpl() {
 
   // 政策：Z01 只收「已綁 LINE UID」的會員資料。未綁列（admin 手建/歷史殘留）絕不推上
   // Ragic Z01 —— 推了會在 01:30 pull 被分流進 Z03 佇列，形成「清了又長回來」的殘留循環。
+  // `demo:` 哨兵 UID（bootstrap demo 帳號）視為本地測試資料，同樣不推。
+  // SELECT 必須帶 line_uid：syncParentProfileStrict 自我修復「重建」Z01 列時
+  // （ragic.createParentRagicRecord 依 parent.line_uid 決定要不要寫 UID 欄），
+  // 少了它連已綁定家長重建出來的列都會變成未綁殘留。
   const pendingParents = await pool.query(
     `SELECT id, name, phone, gender, email, identity, primary_venue_id,
-            home_phone, line_id, home_address, ragic_record_id
+            home_phone, line_id, home_address, ragic_record_id, line_uid
        FROM parents
       WHERE is_active = TRUE AND line_uid IS NOT NULL AND line_uid <> ''
+        AND line_uid NOT LIKE 'demo:%'
         AND (ragic_record_id IS NULL OR last_synced_at IS NULL)
       ORDER BY updated_at ASC LIMIT $1`,
     [BACKUP_BATCH_LIMIT]
@@ -867,11 +874,13 @@ async function _backupParentsStudentsImpl() {
     `SELECT s.id, s.parent_id, s.name, s.id_number, s.birth_date, s.gender, s.blood_type,
             s.student_code, s.ragic_record_id,
             p.name AS p_name, p.phone AS p_phone, p.gender AS p_gender, p.email AS p_email,
-            p.identity AS p_identity, p.primary_venue_id AS p_venue, p.ragic_record_id AS p_ragic_record_id
+            p.identity AS p_identity, p.primary_venue_id AS p_venue, p.ragic_record_id AS p_ragic_record_id,
+            p.line_uid AS p_line_uid
        FROM students s
        JOIN parents p ON p.id = s.parent_id
       WHERE s.is_active = TRUE AND p.is_active = TRUE
         AND p.line_uid IS NOT NULL AND p.line_uid <> ''
+        AND p.line_uid NOT LIKE 'demo:%'
         AND (s.ragic_record_id IS NULL OR s.last_synced_at IS NULL)
       ORDER BY s.updated_at ASC LIMIT $1`,
     [BACKUP_BATCH_LIMIT]

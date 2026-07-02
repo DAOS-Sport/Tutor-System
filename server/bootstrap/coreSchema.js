@@ -1002,12 +1002,16 @@ const COACHES = [
   { ragic_id: 'C004', name: '黃詩涵', phone: '0911000004', is_senior: false, multiplier: 1.10, venues: ['C'], bio: '具備 5 年場館團體班經驗。' },
 ];
 
+// demoLogin: true 的兩筆是 POST /api/auth/demo-login 依電話對應的帳密測試帳號。
+// 政策（Z01 未綁殘留修正）：demo 家長一律掛 `demo:<phone>` 哨兵 line_uid ——
+//  (1) 不算「未綁」→ 不會被 pull 掃尾停用、不佔後台未綁殘留檢視；
+//  (2) 哨兵前綴讓 backup / 即時回寫全部略過 → demo 資料永不寫進 Ragic Z01。
 const PARENTS = [
-  { phone: '0912345678', name: '張媽媽', venue: 'B', students: [{ name: '張小明', birth: '2015-03-12' }, { name: '張小美', birth: '2017-08-05' }] },
+  { phone: '0912345678', name: '張媽媽', venue: 'B', demoLogin: true, students: [{ name: '張小明', birth: '2015-03-12' }, { name: '張小美', birth: '2017-08-05' }] },
   { phone: '0922333444', name: '李爸爸', venue: 'B', students: [{ name: '李小龍', birth: '2014-11-30' }] },
   { phone: '0933555777', name: '陳媽媽', venue: 'C', students: [{ name: '陳小米', birth: '2016-02-20' }] },
   // Demo 第二測試家庭（custom2 / custom2，供測「他人加入團報」）。idempotent，正式環境發布後 bootstrap 自動建立。
-  { phone: '0922222222', name: '(測試帳號)家長2', venue: 'B', students: [{ name: '測試-學員A', birth: '2016-04-10' }, { name: '測試-學員B', birth: '2018-09-22' }] },
+  { phone: '0922222222', name: '(測試帳號)家長2', venue: 'B', demoLogin: true, students: [{ name: '測試-學員A', birth: '2016-04-10' }, { name: '測試-學員B', birth: '2018-09-22' }] },
 ];
 
 // 給定要建立的「期課程 + 已預約 session」demo（讓教練今日 / 排課表能看到 booked 槽位）
@@ -1045,10 +1049,22 @@ async function seedVenuesCoachesParents() {
       );
     }
   }
+  const isProd = process.env.NODE_ENV === 'production';
+  const demoLoginOn = process.env.ALLOW_DEMO_LOGIN === '1';
   for (const p of PARENTS) {
+    // production 只允許 demo 登入帳號（且 ALLOW_DEMO_LOGIN=1 時）落地；
+    // 純開發示範家庭（李爸爸/陳媽媽）只在非 production 建立，
+    // 避免每次部署重啟都把示範資料塞回正式鏡像（「清了又長回來」的元凶之一）。
+    const allowed = p.demoLogin ? (demoLoginOn || !isProd) : !isProd;
+    if (!allowed) continue;
+    // 哨兵 line_uid：只補在「從未綁定」的列上，絕不覆蓋真實 LINE 綁定。
     await pool.query(
-      `INSERT INTO parents (phone, name, primary_venue_id) VALUES ($1, $2, $3) ON CONFLICT (phone) DO NOTHING`,
-      [p.phone, p.name, p.venue]
+      `INSERT INTO parents (phone, name, primary_venue_id, line_uid)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (phone) DO UPDATE
+         SET line_uid = EXCLUDED.line_uid, is_active = TRUE, updated_at = NOW()
+       WHERE parents.line_uid IS NULL OR parents.line_uid = '' OR parents.line_uid LIKE 'demo:%'`,
+      [p.phone, p.name, p.venue, `demo:${p.phone}`]
     );
     const pr = await pool.query('SELECT id FROM parents WHERE phone = $1', [p.phone]);
     const parentId = pr.rows[0].id;

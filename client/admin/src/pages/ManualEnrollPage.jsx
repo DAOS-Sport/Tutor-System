@@ -253,18 +253,25 @@ export default function ManualEnrollPage() {
     try { const full = await customerParentsApi.get(id); setParent(full); setPickedStudentIds([]); setExtraStudents(''); }
     catch { toast.error('載入家長失敗'); }
   }
-  async function createParent() {
+  function createParent() {
+    // 政策：Z01 鏡像只收「已綁 LINE UID」的登入會員，手動報名不再建立本地家長列
+    // （報名單 admin_enrollments 只存姓名＋電話文字；家長之後完成 LINE 註冊，
+    //   對帳 reconcile 會自動以電話對回正式資料）。這裡改為「暫存連結」僅供本筆報名使用。
     if (!np.name.trim() || !np.phone.trim()) { toast.error('家長姓名與電話必填'); return; }
-    try {
-      const created = await customerParentsApi.create({
-        name: np.name.trim(), phone: np.phone.trim(), gender: np.gender, email: np.email.trim(),
-        primary_venue_id: isStaff ? user?.venue_id : (venueId || ''),
-      });
-      toast.success('已新增家長'); setNp({ name: '', phone: '', gender: '', email: '' }); await linkParent(created.id);
-    } catch (err) { toast.error(err?.response?.data?.error || '新增家長失敗'); }
+    setParent({ id: null, name: np.name.trim(), phone: np.phone.trim(), students: [] });
+    setPickedStudentIds([]); setExtraStudents('');
+    setNp({ name: '', phone: '', gender: '', email: '' });
+    toast.success('已連結家長（暫存，僅本筆報名使用；不建檔）');
   }
   async function createStudent() {
     if (!parent || !ns.name.trim()) { toast.error('學員姓名必填'); return; }
+    // 暫存家長（未建檔）→ 學員名直接併入「手動輸入學員」清單，一樣會進報名單。
+    if (!parent.id) {
+      const nm = ns.name.trim();
+      setExtraStudents((prev) => (prev.trim() ? `${prev.trim()}、${nm}` : nm));
+      toast.success('已加入學員（隨報名單送出）'); setShowNewStudent(false); setNs({ name: '', gender: '', birth_date: '', id_number: '' });
+      return;
+    }
     try {
       await customerParentsApi.update(parent.id, { students: [{ name: ns.name.trim(), gender: ns.gender, birth_date: ns.birth_date, id_number: ns.id_number.trim() }] });
       toast.success('已新增學員'); setShowNewStudent(false); setNs({ name: '', gender: '', birth_date: '', id_number: '' });
