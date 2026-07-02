@@ -226,7 +226,7 @@ function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft }) {
               <thead>
                 <tr className="text-left text-gray-500">
                   <th className="pr-2">姓名</th><th className="pr-2">學員身分</th><th className="pr-2">出生年月日</th>
-                  <th className="pr-2">性別</th><th className="pr-2">身分證字號</th><th className="pr-2">血型</th><th>學員編號</th>
+                  <th className="pr-2">性別</th><th className="pr-2">身分證字號</th><th className="pr-2">血型</th><th>登記電話</th>
                 </tr>
               </thead>
               <tbody>
@@ -238,7 +238,7 @@ function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft }) {
                     <td className="pr-2">{s.gender_raw || '—'}</td>
                     <td className="pr-2">{s.id_number_raw || '—'}</td>
                     <td className="pr-2">{s.blood_type_raw || '—'}</td>
-                    <td>{s.student_code_raw || '—'}</td>
+                    <td>{s.registered_phone_raw || '—'}</td>
                   </tr>
                 ))}
               </tbody>
