@@ -840,11 +840,14 @@ async function _backupParentsStudentsImpl() {
   let synced = 0;
   const errors = [];
 
+  // 政策：Z01 只收「已綁 LINE UID」的會員資料。未綁列（admin 手建/歷史殘留）絕不推上
+  // Ragic Z01 —— 推了會在 01:30 pull 被分流進 Z03 佇列，形成「清了又長回來」的殘留循環。
   const pendingParents = await pool.query(
     `SELECT id, name, phone, gender, email, identity, primary_venue_id,
             home_phone, line_id, home_address, ragic_record_id
        FROM parents
-      WHERE is_active = TRUE AND (ragic_record_id IS NULL OR last_synced_at IS NULL)
+      WHERE is_active = TRUE AND line_uid IS NOT NULL AND line_uid <> ''
+        AND (ragic_record_id IS NULL OR last_synced_at IS NULL)
       ORDER BY updated_at ASC LIMIT $1`,
     [BACKUP_BATCH_LIMIT]
   );
@@ -858,6 +861,8 @@ async function _backupParentsStudentsImpl() {
     }
   }
 
+  // 學員同樣只推「家長已綁 UID」的列：createStudentZ01Z02Strict 的自我修復會在 Z01
+  // 找不到家長時建新家長列，未綁家長的學員推上去等於從側門把未綁資料塞進 Z01。
   const pendingStudents = await pool.query(
     `SELECT s.id, s.parent_id, s.name, s.id_number, s.birth_date, s.gender, s.blood_type,
             s.student_code, s.ragic_record_id,
@@ -866,6 +871,7 @@ async function _backupParentsStudentsImpl() {
        FROM students s
        JOIN parents p ON p.id = s.parent_id
       WHERE s.is_active = TRUE AND p.is_active = TRUE
+        AND p.line_uid IS NOT NULL AND p.line_uid <> ''
         AND (s.ragic_record_id IS NULL OR s.last_synced_at IS NULL)
       ORDER BY s.updated_at ASC LIMIT $1`,
     [BACKUP_BATCH_LIMIT]
@@ -1060,6 +1066,31 @@ async function _pullParentsStudentsImpl() {
         errors.push(err.message);
         console.warn('[ragic-pull] parent sync failed (ragicId=%s):', z01Row._ragicId, err.message);
       }
+    }
+
+    // ── 不變量掃尾：本地 Z01 鏡像的 active 檢視「只准」已綁 LINE UID 的列 ──
+    // 不管未綁列是從哪條路徑漏進來的（歷史殘留、手建、匯入），這裡一律軟停用＋
+    // 連帶停用其學員，保證鏡像每輪 pull 後收斂到干淨狀態。已綁定的真人列不受影響。
+    try {
+      await client.query('BEGIN');
+      const sweep = await client.query(
+        `UPDATE parents SET is_active = FALSE, updated_at = NOW()
+          WHERE (line_uid IS NULL OR line_uid = '') AND is_active = TRUE
+          RETURNING id`
+      );
+      if (sweep.rowCount) {
+        await client.query(
+          `UPDATE students SET is_active = FALSE, updated_at = NOW()
+            WHERE parent_id = ANY($1) AND is_active = TRUE`,
+          [sweep.rows.map((r) => r.id)]
+        );
+        console.warn('[ragic-pull] 掃尾：停用未綁 LINE UID 的殘留列 %d 筆', sweep.rowCount);
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      errors.push(`未綁殘留掃尾失敗：${err.message}`);
+      console.warn('[ragic-pull] 未綁殘留掃尾失敗:', err.message);
     }
   } finally {
     client.release();
