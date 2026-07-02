@@ -33,19 +33,20 @@ const PARENT_VIEW_FIELDS = [
 
 // 編輯模式可寫入的家長欄位 —— 對應後端 Z03_RECORD_UPDATE_FIELDS
 // （server/services/ragicAdmin.js 的 saveZ03RecordDraft），資料補齊後儲存會自動升級 Z01。
+// [field, label, fullWidth, required]
 const PARENT_EDIT_FIELDS = [
-  ['raw_name', '家長姓名'],
-  ['phone', '電話'],
-  ['venue_raw', '館別'],
-  ['identity_raw', '身分'],
-  ['gender_raw', '性別'],
-  ['email_raw', 'Email'],
-  ['line_uid_raw', '家教系統uid（LINE UID）'],
-  ['home_phone_raw', '住家電話'],
-  ['line_id_raw', 'LINE ID'],
-  ['student_count_raw', '學生數'],
-  ['home_address_raw', '住家地址', true],
-  ['line_chat_url_raw', 'LINE 對話網址', true],
+  ['raw_name',       '家長姓名',               false, true],
+  ['phone',          '電話',                   false, true],
+  ['venue_raw',      '館別',                   false, true],
+  ['identity_raw',   '身分',                   false, true],
+  ['gender_raw',     '性別',                   false, true],
+  ['email_raw',      'Email',                  false, true],
+  ['line_uid_raw',   '家教系統uid（LINE UID）', false, true],
+  ['home_phone_raw', '住家電話',               false, false],
+  ['line_id_raw',    'LINE ID',                false, false],
+  ['student_count_raw', '學生數',              false, false],
+  ['home_address_raw',  '住家地址',            true,  false],
+  ['line_chat_url_raw', 'LINE 對話網址',       true,  false],
 ];
 
 const STUDENT_EDIT_FIELDS = [
@@ -194,9 +195,9 @@ function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft }) {
 
       {editing ? (
         <div className="grid min-w-0 grid-cols-1 gap-2 px-3 py-2 text-xs sm:grid-cols-2">
-          {PARENT_EDIT_FIELDS.map(([field, label, full]) => (
+          {PARENT_EDIT_FIELDS.map(([field, label, full, required]) => (
             <label key={field} className={`block min-w-0 text-[11px] font-bold text-gray-600 ${full ? 'sm:col-span-2' : ''}`}>
-              {label}
+              {label}{required && <span className="ml-0.5 text-red-500">*</span>}
               <FieldInput value={draft.record[field]} onChange={(v) => updateRecord(field, v)} className="mt-0.5" />
             </label>
           ))}
@@ -324,11 +325,21 @@ export default function RagicZ03Page() {
   const [query, setQuery] = useState('');
   const [busyKey, setBusyKey] = useState('');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [stats, setStats] = useState(null);
 
   useEffect(() => {
     const timer = setTimeout(() => setQuery(queryInput.trim()), 300);
     return () => clearTimeout(timer);
   }, [queryInput]);
+
+  async function loadStats() {
+    try {
+      const s = await ragicZ03Api.stats();
+      setStats(s);
+    } catch {
+      // stats 失敗不影響主要功能，靜默忽略
+    }
+  }
 
   async function load() {
     setItems(null);
@@ -348,6 +359,7 @@ export default function RagicZ03Page() {
       setLoadError(true);
     }
   }
+  useEffect(() => { loadStats(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, [status, query]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 只用來局部更新單筆卡片（儲存全欄位編輯後「refresh that record」），不影響其他
@@ -366,7 +378,7 @@ export default function RagicZ03Page() {
     try {
       await ragicZ03Api.resolve(id, fixedName);
       toast.success('已寫回 Ragic，下次凌晨 01:00 同步後會自動出現在客戶資料裡');
-      await load();
+      await Promise.all([load(), loadStats()]);
     } catch (e) {
       toast.error(e?.response?.data?.error || '修正失敗');
     } finally {
@@ -380,7 +392,7 @@ export default function RagicZ03Page() {
     try {
       await ragicZ03Api.dismiss(id);
       toast.success('已忽略');
-      await load();
+      await Promise.all([load(), loadStats()]);
     } catch (e) {
       toast.error(e?.response?.data?.error || '忽略失敗');
     } finally {
@@ -420,19 +432,25 @@ export default function RagicZ03Page() {
   return (
     <div>
       <PageHeader
-        title="Z03 舊系統資料整理"
-        subtitle="舊系統匯入批次裡「家長姓名」欄位其實是電話號碼（純數字）的記錄，會停在這裡（不會進入正式客戶資料 / 登入來源）。點卡片右上「編輯」即可快速修正姓名寫回 Ragic，或補齊完整欄位自動升級到 Z01。"
+        title="Z03 未開通資料整理"
+        subtitle="Ragic Z01 裡「尚未綁定 LINE UID」的家長資料會暫存於此，不會出現在正式客戶資料或登入來源。補齊必填欄位（標 * 號）並儲存後，系統會自動升級為正式 Z01 客戶。"
       />
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
-        {['pending', 'resolved', 'dismissed', 'all'].map((s) => (
+        {['pending', 'resolved', 'dismissed', 'all'].map((s) => {
+          const cnt = stats ? (s === 'all' ? stats.total : stats[s]) : null;
+          return (
           <button
             key={s}
             type="button"
             onClick={() => setStatus(s)}
             className={`rounded px-3 py-1 text-xs font-bold ${status === s ? 'bg-brand-primary text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
-          >{s === 'all' ? '全部' : STATUS_LABEL[s]?.text}</button>
-        ))}
+          >
+            {s === 'all' ? '全部' : STATUS_LABEL[s]?.text}
+            {cnt != null ? <span className={`ml-1 rounded-full px-1.5 py-0.5 text-[10px] ${status === s ? 'bg-white/20' : 'bg-gray-300 text-gray-600'}`}>{cnt}</span> : null}
+          </button>
+          );
+        })}
         <div className="ml-auto flex min-w-[200px] flex-1 items-center gap-2 sm:max-w-xs">
           <input
             value={queryInput}
@@ -496,12 +514,12 @@ export default function RagicZ03Page() {
       <div className="mt-6 rounded-lg bg-gray-50 p-4 text-xs text-gray-600">
         <div className="font-bold text-gray-700">說明</div>
         <ul className="mt-1 list-disc space-y-1 pl-4">
-          <li>這裡列出的家長都<span className="font-bold">尚未有人用 LINE 登入過</span>，不會出現在「客戶資料管理」裡，也不影響任何現有使用者。</li>
+          <li>這裡的家長<span className="font-bold">尚未綁定 LINE UID</span>，不會出現在「客戶資料管理」，也不影響任何現有使用者。</li>
+          <li>標有 <span className="font-bold text-red-500">*</span> 的欄位為升級 Z01 必填（家長姓名、電話、館別、身分、性別、Email、LINE UID），7 項全補齊後儲存即自動升級。</li>
           <li>卡片預設唯讀；點右上「編輯」後才會出現輸入框。</li>
-          <li>編輯模式裡的「確認修正並寫回 Ragic」只會更動 Ragic 該筆的姓名欄位，不動其他欄位；適合只有姓名放錯、其他資料都正確的情況。</li>
-          <li>「編輯」也可補齊電話 / 場館 / 身分 / 性別 / Email / LINE UID / 學員資料等完整欄位；資料補齊後按「儲存」會自動寫回 Ragic 並升級成正式 Z01，不需要另外的升級按鈕。</li>
-          <li>寫回成功後這筆會標記「已修正」；下一次凌晨 01:00 全量同步時會自動歸戶進正式的客戶資料。</li>
-          <li>若姓名之後在 Ragic 端又被改回電話號碼，下次同步會重新回到「待處理」。</li>
+          <li>「確認修正並寫回 Ragic」只更動 Ragic 該筆的姓名欄位；適合只有姓名錯誤、其他資料都正確的情況。</li>
+          <li>資料補齊後按「儲存」會自動寫回 Ragic 並升級成正式 Z01，不需要另外的升級按鈕。</li>
+          <li>Z01 只存放已綁定 LINE UID 的完整記錄；每日凌晨 01:30 全量同步會再次依此規則分流。</li>
         </ul>
       </div>
     </div>

@@ -2,6 +2,10 @@ import { http } from './client';
 
 // Task #70 慣例：skipAuthRedirect:true，401 由頁面自己判斷是否登出。
 export const ragicZ03Api = {
+  async stats() {
+    const r = await http.get('/ragic-z03/stats', { skipAuthRedirect: true });
+    return r.data;
+  },
   async list(status = 'pending', q = '') {
     const params = { status };
     if (q) params.q = q;

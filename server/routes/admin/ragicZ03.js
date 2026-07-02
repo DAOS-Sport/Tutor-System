@@ -1,22 +1,40 @@
 /**
- * Z03 人工整理表 — Ragic Z01 舊系統壞姓名（佔位電話號碼）家長/學員資料的審核佇列
+ * Z03 人工整理表 — 尚未綁定 LINE UID 的 Ragic Z01 家長/學員資料的審核佇列
+ * - GET   /api/admin/ragic-z03/stats                  — 各狀態筆數統計
  * - GET   /api/admin/ragic-z03?status=pending|resolved|dismissed|all&q=電話或學生姓名
  * - PATCH /api/admin/ragic-z03/:id/draft ({ record, students }) — 儲存本地 Z03；完整時自動升級 Z01
  * - PATCH /api/admin/ragic-z03/:id   ({ fixed_name }) — 寫回 Ragic Z01 姓名欄位並標記 resolved
  * - POST  /api/admin/ragic-z03/:id/dismiss           — 標記誤判，不寫 Ragic
  *
- * 資料本身由 server/services/ragicAdmin.js 的 01:00 pull job（_pullParentsStudentsImpl）
- * 灌入，這裡只負責讀取與人工動作。角色比照客戶資料管理（admin/manager/staff 皆可）——
- * 櫃台第一線最常直接知道客戶正確姓名，不比照 ragic-staging 的 admin-only（那是 HR 資料治理）。
+ * Z01 本地鏡像只收「必填齊全 ＋ LINE UID 已綁定」的完成記錄；
+ * 其餘（缺 UID 或任一必填缺失）一律進此佇列，等補齊後自動升級 Z01。
  */
 const express = require('express');
 const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
 const ragicAdmin = require('../../services/ragicAdmin');
+const { pool } = require('../../models/db');
 
 const router = express.Router();
 
 router.use(requireAdminAuth);
 router.use(requireAdminRole('admin', 'manager', 'staff'));
+
+router.get('/stats', async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT status, COUNT(*)::int AS n FROM ragic_z03_records GROUP BY status`
+    );
+    const stats = { pending: 0, resolved: 0, dismissed: 0, total: 0 };
+    for (const row of r.rows) {
+      if (stats[row.status] !== undefined) stats[row.status] = row.n;
+      stats.total += row.n;
+    }
+    res.json(stats);
+  } catch (err) {
+    console.error('[admin/ragic-z03/stats]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 router.get('/', async (req, res) => {
   try {
