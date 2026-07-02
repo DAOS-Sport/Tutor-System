@@ -81,12 +81,11 @@
 ### 索引狀態
 - Binary：`.local/bin/codebase-memory-mcp`（Linux amd64 portable，已 commit 進 repo）
 - 索引約 **~3,800 nodes、~8,500 edges**（只含 server/ + client/ 程式碼，排除 node_modules/build 產物）
-- **自動重新索引**：每次 git commit（含 Agent checkpoint）觸發 `.git/hooks/post-commit` 在背景增量更新
+- **手動重新索引**（auto hook 已停用，會 OOM）：需要時手動跑下方指令
 
-### Container 重建後重新安裝（`~/.cache/` 與 `.git/hooks/` 不進 git，重建後消失）
+### Container 重建後重新安裝（`~/.cache/` 不進 git，重建後消失）
 ```bash
 .local/bin/codebase-memory-mcp install -y
-python3 scripts/install-cbm-hook.py
 .local/bin/codebase-memory-mcp cli index_repository '{"repo_path":"/home/runner/workspace"}'
 ```
 
