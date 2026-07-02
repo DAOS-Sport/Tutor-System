@@ -194,6 +194,26 @@ function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft }) {
       </div>
 
       {editing ? (
+        <div className="grid min-w-0 grid-cols-1 gap-2 px-3 py-2 text-xs sm:grid-cols-2">
+          {PARENT_EDIT_FIELDS.map(([field, label, full, required]) => (
+            <label key={field} className={`block min-w-0 text-[11px] font-bold text-gray-600 ${full ? 'sm:col-span-2' : ''}`}>
+              {label}{required && <span className="ml-0.5 text-red-500">*</span>}
+              <FieldInput value={draft.record[field]} onChange={(v) => updateRecord(field, v)} className="mt-0.5" />
+            </label>
+          ))}
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-x-3 gap-y-1 px-3 py-2 text-xs">
+          {PARENT_VIEW_FIELDS.map(([field, label, full]) => (
+            <div key={field} className={`min-w-0 break-all ${full ? 'col-span-2' : ''}`}>
+              <span className="text-gray-500">{label}：</span>
+              {row[field] || (field === 'line_uid_raw' ? '（尚未登入）' : '—')}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {editing ? (
         <div className="min-w-0 border-t border-gray-100 bg-blue-50 px-3 py-2">
           <div className="mb-1 text-[11px] font-bold text-blue-800">學員資料（{draft.students.length} 位，可編輯）</div>
           <StudentEditTable students={draft.students} onChange={updateStudent} />
@@ -226,26 +246,6 @@ function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft }) {
           </div>
         </div>
       ) : null}
-
-      {editing ? (
-        <div className="grid min-w-0 grid-cols-1 gap-2 px-3 py-2 text-xs sm:grid-cols-2">
-          {PARENT_EDIT_FIELDS.map(([field, label, full, required]) => (
-            <label key={field} className={`block min-w-0 text-[11px] font-bold text-gray-600 ${full ? 'sm:col-span-2' : ''}`}>
-              {label}{required && <span className="ml-0.5 text-red-500">*</span>}
-              <FieldInput value={draft.record[field]} onChange={(v) => updateRecord(field, v)} className="mt-0.5" />
-            </label>
-          ))}
-        </div>
-      ) : (
-        <div className="grid grid-cols-2 gap-x-3 gap-y-1 px-3 py-2 text-xs">
-          {PARENT_VIEW_FIELDS.map(([field, label, full]) => (
-            <div key={field} className={`min-w-0 break-all ${full ? 'col-span-2' : ''}`}>
-              <span className="text-gray-500">{label}：</span>
-              {row[field] || (field === 'line_uid_raw' ? '（尚未登入）' : '—')}
-            </div>
-          ))}
-        </div>
-      )}
 
       {editing ? (
         <div className="mt-auto border-t border-gray-100">
