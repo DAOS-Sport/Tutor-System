@@ -280,13 +280,13 @@ async function _syncWithLock({ mapped, students, lineUid, reactivate = true, all
     await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`parent_bind:${phone}`]);
 
     const dupLine = await client.query(
-      `SELECT phone FROM parents WHERE line_uid = $1 LIMIT 1`, [lineUid]);
+      `SELECT phone FROM parents WHERE line_uid = $1 AND is_active = TRUE LIMIT 1`, [lineUid]);
     if (dupLine.rowCount && dupLine.rows[0].phone !== phone) {
       throw new BindConflictError('LINE_ALREADY_BOUND_TO_OTHER_PHONE',
         '此 LINE 帳號已綁定其他手機，請改用原手機登入或聯絡客服');
     }
     const dupPhone = await client.query(
-      `SELECT line_uid FROM parents WHERE phone = $1 LIMIT 1`, [phone]);
+      `SELECT line_uid FROM parents WHERE phone = $1 AND is_active = TRUE LIMIT 1`, [phone]);
     if (!allowRebind && dupPhone.rowCount && dupPhone.rows[0].line_uid && dupPhone.rows[0].line_uid !== lineUid) {
       throw new BindConflictError('PHONE_ALREADY_BOUND_TO_OTHER_LINE',
         '此手機已綁定其他 LINE 帳號，請聯絡客服處理');
@@ -387,7 +387,13 @@ async function loadStudentsByParentPhone(client) {
  * 的 Z03 分流規則：已綁定的人即使姓名是佔位資料也不能被排除在 parents 同步之外）。
  */
 async function loadBoundPhones(client) {
-  const r = await client.query(`SELECT phone FROM parents WHERE line_uid IS NOT NULL`);
+  const r = await client.query(
+    `SELECT phone FROM parents
+      WHERE is_active = TRUE
+        AND line_uid IS NOT NULL AND line_uid <> ''
+        AND line_uid NOT LIKE 'demo:%'
+        AND line_uid NOT LIKE 'DEMOTEST_%'`
+  );
   return new Set(r.rows.map((row) => row.phone));
 }
 

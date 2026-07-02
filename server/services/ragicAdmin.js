@@ -1039,9 +1039,11 @@ async function _pullParentsStudentsImpl() {
           await client.query('BEGIN');
           await _upsertZ03Record(client, ragicRecordId, mapped, z01Row);
           if (!alreadyBound) {
-            // 硬刪除無 LINE UID 的本地殘留（有業務 FK 者跳過）
+            // 硬刪除無真實 LINE UID 的本地殘留（有業務 FK 者跳過）
             const stale = await client.query(
-              `SELECT id FROM parents WHERE phone = $1 AND line_uid IS NULL`,
+              `SELECT id FROM parents
+                WHERE phone = $1
+                  AND (line_uid IS NULL OR line_uid = '' OR line_uid LIKE 'DEMOTEST_%')`,
               [mapped.phone]
             );
             for (const row of stale.rows) {
