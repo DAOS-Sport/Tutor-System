@@ -19,6 +19,7 @@ const PENDING_COUPON_KEY = 'daos.pendingCoupon';
 const IS_PROD = import.meta.env.PROD;
 const BLOOD_TYPE_OPTIONS = ['A', 'B', 'O', 'AB', '不清楚'];
 const STEP1_FIELDS = ['name', 'phone', 'email', 'primary_venue_id'];
+const STUDENT_GENDER_OPTIONS = ['生理男', '生理女', '不方便透漏'];
 
 function tryGetLineIdToken() {
   try {
@@ -66,6 +67,12 @@ function registerErrorMessage(err) {
     Z01_INCOMPLETE:           '會員資料尚未完整寫入，請確認必填欄位後重新送出。',
     RAGIC_REFRESH_STUDENTS_INCOMPLETE: '學員資料同步尚未完成，請稍後再試。',
     LOCAL_STUDENT_REFRESH_FAILED: '本地學員資料同步尚未完成，請稍後再試。',
+    STUDENT_NAME_REQUIRED:     '請填寫每位學員姓名。',
+    STUDENT_ID_REQUIRED:       '請填寫每位學員身分證字號。',
+    STUDENT_BIRTH_DATE_REQUIRED: '請填寫每位學員出生年月日。',
+    STUDENT_BIRTH_DATE_INVALID: '學員出生年月日格式錯誤。',
+    STUDENT_GENDER_REQUIRED:   '請選擇每位學員性別。',
+    STUDENT_BLOOD_TYPE_REQUIRED: '請選擇每位學員血型；不確定可選「不清楚」。',
     Z03_RESOLVE_FAILED:       '舊資料清理狀態更新失敗，請稍後再試。',
     PARENT_REFRESH_FAILED:    '會員資料重新整理失敗，請稍後再試。',
     LOGIN_FAILED:             '系統忙線，請稍後再試。',
@@ -166,7 +173,7 @@ export default function RegisterPage() {
     defaultValues: {
       name: '', phone: prefilledPhone, gender: '生理女', email: '', primary_venue_id: '',
       home_phone: '', line_id: '', home_address: '',
-      students: [{ name: '', id_number: '', birth_date: '', gender: '生理男', blood_type: '不清楚' }],
+      students: [{ name: '', id_number: '', birth_date: '', gender: '', blood_type: '' }],
     },
   });
 
@@ -209,8 +216,11 @@ export default function RegisterPage() {
       home_address: data.home_address || null,
     };
     const cleanStudents = data.students.map((s) => ({
-      ...s,
+      name: (s.name || '').trim(),
       id_number: (s.id_number || '').toUpperCase(),
+      birth_date: s.birth_date || '',
+      gender: s.gender || '',
+      blood_type: s.blood_type || '',
     }));
 
     try {
@@ -456,13 +466,13 @@ export default function RegisterPage() {
                   <span className="inline-block h-4 w-1.5 rounded-full bg-brand-green" /> 學員(學生)資料
                 </h2>
                 <button type="button"
-                  onClick={() => append({ name: '', id_number: '', birth_date: '', gender: '生理男', blood_type: '不清楚' })}
+                  onClick={() => append({ name: '', id_number: '', birth_date: '', gender: '', blood_type: '' })}
                   className="flex items-center gap-1 rounded-full bg-brand-green/10 px-3 py-1.5 text-xs font-bold text-brand-green active:bg-brand-green/20">
                   <IconPlus className="h-3 w-3" /> 新增學員
                 </button>
               </div>
               <p className="text-[11px] leading-4 text-gray-400">
-                身分證字號將用於銜接您先前的上課資料，請務必正確填寫
+                學員資料皆為必填；身分證字號將用於銜接您先前的上課資料，請務必正確填寫。
               </p>
 
               <div className="space-y-3">
@@ -493,17 +503,31 @@ export default function RegisterPage() {
                           })} className={`${fieldCls(!!errors.students?.[idx]?.id_number)} uppercase`} />
                       </Field>
                       <div className="grid grid-cols-2 gap-2">
-                        <Field label="出生年月日" optional>
-                          <input type="date" {...register(`students.${idx}.birth_date`)} className={fieldCls(false)} />
+                        <Field label="出生年月日" required error={errors.students?.[idx]?.birth_date?.message}>
+                          <input
+                            type="date"
+                            {...register(`students.${idx}.birth_date`, { required: '請填寫出生年月日' })}
+                            className={fieldCls(!!errors.students?.[idx]?.birth_date)}
+                          />
                         </Field>
-                        <Field label="性別" optional>
-                          <select {...register(`students.${idx}.gender`)} className={fieldCls(false)}>
-                            <option value="生理男">生理男</option><option value="生理女">生理女</option><option value="不方便透漏">不方便透漏</option>
+                        <Field label="性別" required error={errors.students?.[idx]?.gender?.message}>
+                          <select
+                            {...register(`students.${idx}.gender`, { required: '請選擇性別' })}
+                            className={fieldCls(!!errors.students?.[idx]?.gender)}
+                          >
+                            <option value="">請選擇</option>
+                            {STUDENT_GENDER_OPTIONS.map((g) => (
+                              <option key={g} value={g}>{g}</option>
+                            ))}
                           </select>
                         </Field>
                       </div>
-                      <Field label="血型" optional>
-                        <select {...register(`students.${idx}.blood_type`)} className={fieldCls(false)}>
+                      <Field label="血型" required error={errors.students?.[idx]?.blood_type?.message}>
+                        <select
+                          {...register(`students.${idx}.blood_type`, { required: '請選擇血型；不確定可選「不清楚」' })}
+                          className={fieldCls(!!errors.students?.[idx]?.blood_type)}
+                        >
+                          <option value="">請選擇</option>
                           {BLOOD_TYPE_OPTIONS.map((type) => (
                             <option key={type} value={type}>{type}</option>
                           ))}

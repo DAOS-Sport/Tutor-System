@@ -143,25 +143,15 @@ router.get('/line-config-debug', (req, res) => {
   });
 });
 
-// per-IP 速率限制（與 coach by-phone 同樣 5 / 5min → 429），抑制電話號碼暴搜
-const _attempts = new Map();
-const WINDOW_MS = 5 * 60 * 1000;
-const MAX_ATTEMPTS = 5;
-function _rateLimited(ip) {
-  const now = Date.now();
-  const arr = (_attempts.get(ip) || []).filter((t) => now - t < WINDOW_MS);
-  arr.push(now);
-  _attempts.set(ip, arr);
-  if (_attempts.size > 5000) _attempts.clear();
-  return arr.length > MAX_ATTEMPTS;
-}
-
 // 台灣手機格式：09xxxxxxxx
 const TW_PHONE_RE = /^09\d{8}$/;
 // 台灣身分證字號（保守版）
 const TW_ID_RE = /^[A-Z][12]\d{8}$/;
+// HTML date input / API contract：YYYY-MM-DD
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 // Email（寬鬆但足以擋空白 / 缺 @ / 缺網域）
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const STUDENT_BLOOD_TYPES = new Set(['A', 'B', 'O', 'AB', '不清楚']);
 
 // ─────────────────────────────────────────────────────────────
 // helpers
@@ -276,11 +266,7 @@ router.post('/parent-login', async (req, res) => {
   }
 
   try {
-    const ip = req.ip || req.socket?.remoteAddress || 'unknown';
-    if (_rateLimited(ip)) {
-      console.warn('[auth/parent-login] rate-limited ip=', ip);
-      return res.status(429).json({ error: '嘗試次數過多，請稍後再試' });
-    }
+
 
     const requireLine = process.env.NODE_ENV === 'production'
       || process.env.REQUIRE_LINE_ID_TOKEN === '1';
@@ -332,8 +318,6 @@ router.post('/parent-login', async (req, res) => {
 // ─────────────────────────────────────────────────────────────
 router.post('/parent-line-login', async (req, res) => {
   try {
-    const ip = req.ip || req.socket?.remoteAddress || 'unknown';
-    if (_rateLimited(ip)) return res.status(429).json({ error: '嘗試次數過多，請稍後再試', code: 'RATE_LIMITED' });
 
     const lineUid = await _verifyLineUid(req, res);
     if (!lineUid) return;
@@ -410,8 +394,6 @@ router.post('/parent-line-login', async (req, res) => {
 // ─────────────────────────────────────────────────────────────
 router.post('/parent-bind-phone', async (req, res) => {
   try {
-    const ip = req.ip || req.socket?.remoteAddress || 'unknown';
-    if (_rateLimited(ip)) return res.status(429).json({ error: '嘗試次數過多，請稍後再試', code: 'RATE_LIMITED' });
 
     const phone = String(req.body?.phone || '').trim();
     if (!phone) return res.status(400).json({ error: '手機必填', code: 'PHONE_REQUIRED' });
@@ -564,7 +546,7 @@ router.post('/parent-bind-phone', async (req, res) => {
 // Request:
 //   { id_token,
 //     parent:   { name, phone, gender?, email?, primary_venue_id? },
-//     students: [{ name, id_number?, birth_date?, gender?, blood_type? }, ...] }
+//     students: [{ name, id_number, birth_date, gender, blood_type }, ...] }
 //
 // Responses:
 //   200 { status:'registered_and_logged_in', parent, token, linked_existing? }
@@ -575,8 +557,6 @@ router.post('/parent-bind-phone', async (req, res) => {
 // ─────────────────────────────────────────────────────────────
 router.post('/parent-register-line', async (req, res) => {
   try {
-    const ip = req.ip || req.socket?.remoteAddress || 'unknown';
-    if (_rateLimited(ip)) return res.status(429).json({ error: '嘗試次數過多，請稍後再試', code: 'RATE_LIMITED' });
 
     const parentIn   = req.body?.parent   || {};
     const studentsIn = Array.isArray(req.body?.students) ? req.body.students : [];
@@ -612,18 +592,39 @@ router.post('/parent-register-line', async (req, res) => {
       const s = studentsIn[i] || {};
       const sName = String(s.name || '').trim();
       if (!sName) {
-        return res.status(400).json({ error: `第 ${i + 1} 位學員姓名必填`, code: 'INPUT_INVALID' });
+        return res.status(400).json({ error: `第 ${i + 1} 位學員姓名必填`, code: 'STUDENT_NAME_REQUIRED' });
       }
       let idNum = String(s.id_number || '').trim().toUpperCase();
-      if (idNum && !TW_ID_RE.test(idNum)) {
+      if (!idNum) {
+        return res.status(400).json({ error: `第 ${i + 1} 位學員身分證字號必填`, code: 'STUDENT_ID_REQUIRED' });
+      }
+      if (!TW_ID_RE.test(idNum)) {
         return res.status(400).json({ error: `第 ${i + 1} 位學員身分證字號格式錯誤`, code: 'ID_NUMBER_INVALID' });
+      }
+      const birthDate = String(s.birth_date || '').trim();
+      if (!birthDate) {
+        return res.status(400).json({ error: `第 ${i + 1} 位學員出生年月日必填`, code: 'STUDENT_BIRTH_DATE_REQUIRED' });
+      }
+      if (!ISO_DATE_RE.test(birthDate) || Number.isNaN(new Date(`${birthDate}T00:00:00+08:00`).getTime())) {
+        return res.status(400).json({ error: `第 ${i + 1} 位學員出生年月日格式錯誤`, code: 'STUDENT_BIRTH_DATE_INVALID' });
+      }
+      const studentGender = String(s.gender || '').trim();
+      if (!studentGender) {
+        return res.status(400).json({ error: `第 ${i + 1} 位學員性別必填`, code: 'STUDENT_GENDER_REQUIRED' });
+      }
+      const bloodType = String(s.blood_type || '').trim();
+      if (!bloodType) {
+        return res.status(400).json({ error: `第 ${i + 1} 位學員血型必填`, code: 'STUDENT_BLOOD_TYPE_REQUIRED' });
+      }
+      if (!STUDENT_BLOOD_TYPES.has(bloodType)) {
+        return res.status(400).json({ error: `第 ${i + 1} 位學員血型格式錯誤`, code: 'STUDENT_BLOOD_TYPE_REQUIRED' });
       }
       cleanStudents.push({
         name: sName,
-        id_number:  idNum || null,
-        birth_date: s.birth_date || null,
-        gender:     s.gender || null,
-        blood_type: s.blood_type || null,
+        id_number:  idNum,
+        birth_date: birthDate,
+        gender:     studentGender,
+        blood_type: bloodType,
       });
     }
 
