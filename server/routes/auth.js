@@ -153,6 +153,10 @@ const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const STUDENT_BLOOD_TYPES = new Set(['A', 'B', 'O', 'AB', '不清楚']);
 
+function _phoneDigits(value) {
+  return String(value || '').replace(/\D/g, '');
+}
+
 // ─────────────────────────────────────────────────────────────
 // helpers
 // ─────────────────────────────────────────────────────────────
@@ -322,88 +326,29 @@ router.post('/parent-line-login', async (req, res) => {
     const lineUid = await _verifyLineUid(req, res);
     if (!lineUid) return;
 
-    // 1) Ragic Z01 by 家教系統uid
-    let ragicRow = null;
-    let ragicReachable = true;   // 區分「Ragic 查無此人」與「Ragic 連不上」
-    try {
-      ragicRow = await ragic.getParentByLineUid(lineUid);
-    } catch (err) {
-      ragicReachable = false;
-      console.warn('[auth/parent-line-login] ragic.getParentByLineUid failed:', err.message);
+    // 定案規則（2026-07-03）：登入只看本地 Z01 鏡像的 LINE UID。
+    // Ragic/Z03 收斂交給註冊/電話驗證與排程；登入熱路徑不可因 Ragic 查詢失準、
+    // timeout 或未同步而刪資料/擋正常使用者。
+    const local = await pool.query(
+      `SELECT id, name, phone, line_uid, primary_venue_id, gender, email, identity,
+              home_phone, home_address, line_id
+         FROM parents
+        WHERE line_uid = $1
+          AND is_active = TRUE
+        LIMIT 1`,
+      [lineUid]
+    );
+    if (local.rowCount) {
+      const issued = _issue(local.rows[0]);
+      const students = await loadStudents(local.rows[0].id);
+      return res.json({ status: 'logged_in', parent: { ...issued, students }, token: issued.token });
     }
 
-    // 1b) UID 查無時的備援：若本地已有綁定此 UID 的家長，改用其電話反查 Ragic。
-    //     防護目標：Ragic 以 UID 搜尋偶發失準（索引延遲/查詢逾時邊界）時，
-    //     下面的「查無 → 硬刪本地 + 要求重新綁定」會誤傷正常使用者。
-    //     電話反查若找到同一 UID 的記錄 → 當作有查到，走正常登入路徑。
-    if (!ragicRow && ragicReachable) {
-      try {
-        const bound = await pool.query(
-          `SELECT phone FROM parents
-            WHERE line_uid = $1 AND phone IS NOT NULL AND phone <> '' LIMIT 3`,
-          [lineUid]
-        );
-        for (const row of bound.rows) {
-          const byPhone = await ragic.getParentByPhone(row.phone).catch(() => null);
-          const m = byPhone ? ragic.mapZ01Parent(byPhone) : null;
-          if (m && String(m.line_uid || '').trim() === lineUid) {
-            console.warn('[auth/parent-line-login] UID 搜尋查無但電話反查命中（Ragic 搜尋失準防護），照常登入 (phone=%s)', row.phone);
-            ragicRow = byPhone;
-            break;
-          }
-        }
-      } catch (err) {
-        console.warn('[auth/parent-line-login] 電話反查備援失敗（不影響主流程）:', err.message);
-      }
-    }
-
-    if (ragicRow) {
-      const mapped = ragic.mapZ01Parent(ragicRow);
-      const missing = parentRefresh.getZ01MissingFields(mapped);
-      if (missing.length) {
-        return res.json({
-          status: 'need_phone_binding',
-          line_uid: lineUid,
-          reason: 'z01_incomplete',
-          missing_fields: missing.map((m) => m.key),
-        });
-      }
-      try {
-        const refreshed = await refreshParentMirrorFromRagic({
-          lineUid,
-          phone: mapped.phone,
-          reason: 'parent-line-login',
-        });
-        const issued = _issue(refreshed.local);
-        return res.json({ status: 'logged_in', parent: { ...issued, students: refreshed.students }, token: issued.token });
-      } catch (err) {
-        console.error('[auth/parent-line-login] refresh failed:', err);
-        const r = _refreshErrorResponse(err, '同步家長資料失敗');
-        return res.status(r.status).json({ error: r.error, code: r.code });
-      }
-    }
-
-    // 2) Ragic 可達且查無此人 → 視為已從主庫移除，清掉本地殘留。
-    //    Ragic 不可達時也不使用本地舊鏡像登入；改導手機備援，讓後續流程重新查 Z01。
-    if (ragicReachable) {
-      // Ragic 可達且查無此人 → 視為已從主庫移除，硬刪除本地殘留。
-      // 有業務 FK（課程/簽到/轉讓）的學員/家長直接跳過，保留業務資料完整性。
-      // 硬邊界：只動本地 DB，Ragic 端完全不碰。
-      try {
-        const stale = await pool.query(`SELECT id FROM parents WHERE line_uid = $1`, [lineUid]);
-        for (const row of stale.rows) {
-          await parentSync.hardDeleteParentIfSafe(pool, row.id);
-        }
-      } catch (err) {
-        console.warn('[auth/parent-line-login] hard-delete stale local parent failed:', err.message);
-      }
-    }
-
-    // 3) 都找不到（或已從 Ragic 刪除）→ 需重新綁定手機
+    // 找不到本地 Z01 → 進電話多方驗證/註冊補資料，不在登入路徑打 Ragic。
     return res.json({
       status: 'need_phone_binding',
       line_uid: lineUid,
-      reason: ragicReachable ? 'z01_not_found' : 'ragic_unavailable',
+      reason: 'local_z01_not_found',
     });
   } catch (err) {
     console.error('[auth/parent-line-login]', err);
@@ -442,7 +387,26 @@ router.post('/parent-bind-phone', async (req, res) => {
     const dupPhone = await pool.query(`SELECT line_uid FROM parents WHERE phone = $1 AND is_active = TRUE LIMIT 1`, [phone]);
     const localPhoneHasOtherUid = Boolean(dupPhone.rowCount && dupPhone.rows[0].line_uid && dupPhone.rows[0].line_uid !== lineUid);
 
-    // 2) Ragic Z01 by phone
+    // 2) 本地 Z03 已有此電話：只靠電話綁定資料不足以畢業，導註冊表單補齊後自動升 Z01。
+    // 這條路不打 Ragic；手動同步只是救援，不是使用者登入前置條件。
+    const z03ByPhone = await ragicAdmin.findZ03RecordByPhone(phone);
+    if (z03ByPhone) {
+      if (z03ByPhone.parent?.line_uid && z03ByPhone.parent.line_uid !== lineUid) {
+        return res.status(409).json({
+          error: '此手機已綁定其他 LINE 帳號，請聯絡客服處理',
+          code: 'PHONE_ALREADY_BOUND_TO_OTHER_LINE',
+        });
+      }
+      return res.json({
+        status: 'need_registration',
+        line_uid: lineUid,
+        phone,
+        reason: 'local_z03_pending',
+        z03_matched: true,
+      });
+    }
+
+    // 3) Ragic Z01 by phone
     let ragicRow = null;
     try {
       ragicRow = await ragic.getParentByPhone(phone);
@@ -452,14 +416,14 @@ router.post('/parent-bind-phone', async (req, res) => {
       return res.status(r.status).json({ error: r.error, code: r.code });
     }
 
-    // 3) Ragic 也找不到 → 引導去註冊
+    // 4) Ragic 也找不到 → 引導去註冊
     if (!ragicRow) {
       return res.json({ status: 'need_registration', line_uid: lineUid, phone });
     }
 
     const mapped = ragic.mapZ01Parent(ragicRow);
 
-    // 4) Z01 不完整不可登入/綁定，改導註冊補齊。line_uid 會在本流程寫入，故此處不列入缺欄。
+    // 5) Z01 不完整不可登入/綁定，改導註冊補齊。line_uid 會在本流程寫入，故此處不列入缺欄。
     const missing = parentRefresh.getZ01MissingFields(mapped, { requireLineUid: false });
     if (missing.length) {
       return res.json({
@@ -680,136 +644,143 @@ router.post('/parent-register-line', async (req, res) => {
       });
     }
 
-    // 衝突檢查 2：Ragic 已有此 line_uid
-    let incompleteByLine = null;
+    const GENERIC_PHONE_CONFLICT = {
+      error: '此手機已存在於系統，請改用「以手機綁定」流程',
+      code: 'PHONE_EXISTS_USE_BINDING',
+    };
+    if (dupPhoneLocal.rowCount && dupPhoneLocal.rows[0].line_uid === lineUid) {
+      return res.status(409).json({
+        error: '此 LINE 帳號已註冊，請改走登入流程',
+        code: 'LINE_ALREADY_REGISTERED',
+      });
+    }
+
+    // 註冊分流定案（2026-07-03）：
+    //   1. 先比對本地 Z01（上面的 local phone/uid guard）；
+    //   2. 本地 Z01 無可登入資料 → 用電話比對本地 Z03；
+    //   3. Z03 命中 → 註冊表單補欄、回寫 Ragic Z01/Z02、標記 Z03 resolved、refresh 回本地 Z01；
+    //   4. Z03 尚未被排程拉入時，才以 phone 對 Ragic 做一次 read-only hydrate，避免使用者被迫手動同步；
+    //   5. 仍查無 → 全新電話，建立新的 Ragic Z01/Z02。
+    let linkedExisting = false;
+    let z03Match = await ragicAdmin.findZ03RecordByPhone(phone);
+    let ragicRowByPhone = null;
+
+    // Ragic same-UID guard：註冊前的防重複建檔保險。登入仍只看本地 Z01；
+    // 這裡只避免「本地鏡像缺失 + 同 UID 換電話註冊」時在 Ragic 建出第二筆 Z01。
     try {
       const existsByLine = await ragic.getParentByLineUid(lineUid);
       if (existsByLine) {
         const byLine = ragic.mapZ01Parent(existsByLine);
-        const missing = parentRefresh.getZ01MissingFields(byLine);
-        if (!missing.length) {
-          return res.status(409).json({
-            error: '此 LINE 帳號已註冊，請改走登入流程',
-            code: 'LINE_ALREADY_REGISTERED',
-          });
-        }
         if (byLine.phone && byLine.phone !== phone) {
           return res.status(409).json({
             error: '此 LINE 帳號已綁定其他手機，請改用原手機登入',
             code: 'LINE_ALREADY_BOUND_TO_OTHER_PHONE',
           });
         }
-        incompleteByLine = existsByLine;
+        if (!byLine.phone) {
+          return res.status(409).json({
+            error: '此 LINE 帳號已有未完成資料，請聯絡客服協助補齊手機資料',
+            code: 'LINE_ALREADY_REGISTERED',
+          });
+        }
+        ragicRowByPhone = existsByLine;
+        if (!z03Match) {
+          try {
+            z03Match = await ragicAdmin.hydrateZ03RecordFromRagicRow(existsByLine);
+          } catch (err) {
+            console.error('[auth/parent-register-line] hydrate Z03 from Ragic UID failed:', err.code || '', err.message);
+            const r = _ragicErrorResponse(err, '資料暫時無法完成同步，請稍後再試');
+            return res.status(r.status).json({ error: r.error, code: r.code === 'RAGIC_UNAVAILABLE' ? 'RAGIC_WRITE_FAILED' : r.code });
+          }
+        }
       }
     } catch (err) {
-      console.warn('[auth/parent-register-line] ragic.getParentByLineUid failed:', err.code || '', err.message);
+      console.warn('[auth/parent-register-line] ragic.getParentByLineUid guard failed:', err.code || '', err.message);
       const r = _ragicErrorResponse(err);
       return res.status(r.status).json({ error: r.error, code: r.code });
     }
 
-    // 衝突檢查 3 ／ 開通分流：Ragic 已有此 phone？
-    // ★ found→update：同號既有 Z01「未綁任何 LINE UID」（= 尚未開通，Z03 清洗池）時不再擋 409，
-    //   改在既有 record 上就地開通——回寫 UID、清洗佔位姓名、補齊空欄、表單學員入 Z02——
-    //   永不重複建立同號記錄。「登入驗證處是 Z01（已開通）、註冊驗證處是 Z03（未開通）」。
-    // ★ 資安底線（維持不變）：
-    //   · 既有記錄已綁「其他」LINE UID（= 已開通）→ 一律擋，防止知道電話的人搶占既有帳號。
-    //     （不可能是「自己的 UID」：衝突檢查 2 已先以本 lineUid 查過 Ragic 並擋 LINE_ALREADY_REGISTERED。）
-    //   · 既有家庭名下有學員 → 沿用 bind-phone 同一套認領驗證（電話＋學員姓名＋身分證三要素），
-    //     以註冊表單本來就必填的學員資料比對，對不上仍擋 409，不讓人繼承他人學員 PII。
-    //   · 家長姓名只在既有值為「電話佔位」時才覆蓋（isPlaceholderParentName），
-    //     不容許自助表單改掉一個已正常的姓名。
-    let existsByPhone = null;
-    try {
-      existsByPhone = await ragic.getParentByPhone(phone);
-    } catch (err) {
-      console.warn('[auth/parent-register-line] ragic.getParentByPhone failed:', err.code || '', err.message);
-      const r = _ragicErrorResponse(err);
-      return res.status(r.status).json({ error: r.error, code: r.code });
+    if (!z03Match) {
+      try {
+        ragicRowByPhone = ragicRowByPhone || await ragic.getParentByPhone(phone);
+      } catch (err) {
+        console.warn('[auth/parent-register-line] ragic.getParentByPhone hydrate failed:', err.code || '', err.message);
+        const r = _ragicErrorResponse(err);
+        return res.status(r.status).json({ error: r.error, code: r.code });
+      }
+      if (ragicRowByPhone) {
+        const existing = ragic.mapZ01Parent(ragicRowByPhone);
+        if (existing.line_uid && existing.line_uid !== lineUid) {
+          return res.status(409).json(GENERIC_PHONE_CONFLICT);
+        }
+        try {
+          z03Match = await ragicAdmin.hydrateZ03RecordFromRagicRow(ragicRowByPhone);
+        } catch (err) {
+          console.error('[auth/parent-register-line] hydrate Z03 from Ragic failed:', err.code || '', err.message);
+          const r = _ragicErrorResponse(err, '資料暫時無法完成同步，請稍後再試');
+          return res.status(r.status).json({ error: r.error, code: r.code === 'RAGIC_UNAVAILABLE' ? 'RAGIC_WRITE_FAILED' : r.code });
+        }
+        if (!z03Match) {
+          return res.status(409).json(GENERIC_PHONE_CONFLICT);
+        }
+      }
     }
-    if (!existsByPhone && incompleteByLine) existsByPhone = incompleteByLine;
 
-    let linkedExisting = false;
-
-    if (existsByPhone) {
-      const existing = ragic.mapZ01Parent(existsByPhone);
-
-      // ★ 反枚舉：以下所有「電話已存在但不放行」的出口一律回同一組文案＋代碼
-      //   （與改動前相同），不讓掃電話的人從回應差異推斷「已開通與否／有無學員／比對錯在哪」。
-      //   差異細節只進伺服器端 log / auditClaim。
-      const GENERIC_PHONE_CONFLICT = {
-        error: '此手機已存在於系統，請改用「以手機綁定」流程',
-        code: 'PHONE_EXISTS_USE_BINDING',
-      };
-
-      const existingMissing = parentRefresh.getZ01MissingFields(existing);
-
-      // 已開通且不是本次 LINE UID → 擋下。同一 UID 但資料不完整時允許走註冊補齊。
+    if (z03Match) {
+      const existing = z03Match.parent || {};
+      if (z03Match.row?.status === 'dismissed') {
+        return res.status(409).json(GENERIC_PHONE_CONFLICT);
+      }
+      // pending 是正常註冊候選；resolved 只作「Ragic 已完成但本地鏡像缺失」的恢復路徑，
+      // 必須仍是同電話，不能拿歷史 resolved row 認領到另一支手機。
+      if (z03Match.row?.status === 'resolved' && _phoneDigits(existing.phone) !== _phoneDigits(phone)) {
+        return res.status(409).json(GENERIC_PHONE_CONFLICT);
+      }
       if (existing.line_uid && existing.line_uid !== lineUid) {
         return res.status(409).json(GENERIC_PHONE_CONFLICT);
       }
-      if (existing.line_uid === lineUid && !existingMissing.length) {
-        return res.status(409).json(GENERIC_PHONE_CONFLICT);
-      }
 
-      // 認領驗證：既有家庭名下有學員才需要（0 學員 = 單純開通，與 bind-phone 語意一致）。
-      // 表單任一位學員與既有 Ragic 學員（姓名＋身分證）對上即放行。
+      // 認領驗證：既有家庭名下有學員才需要。表單任一位學員與既有 Z03 學員
+      // （姓名＋身分證）對上即放行。
       // ★ no_id_on_file 也放行（2026-07-03 政策調整）：上線前匯入的舊生資料 2/3 的
-      //   學員 Ragic 端沒有身分證字號可比對，硬要求「姓名＋身分證都對上」等於把這批
+      //   學員端沒有身分證字號可比對，硬要求「姓名＋身分證都對上」等於把這批
       //   老客戶永遠擋在 409（資料缺口不是使用者打錯）。改為「姓名精確對上、且該筆
-      //   Ragic 學員本來就沒存身分證」即視為通過（電話＋學員姓名雙要素）；
-      //   Ragic 有存身分證但對不上的仍一律擋（防冒用）。audit 以 passed_no_id_on_file
+      //   Z03 學員本來就沒存身分證」即視為通過（電話＋學員姓名雙要素）；
+      //   Z03 有存身分證但對不上的仍一律擋（防冒用）。audit 以 passed_no_id_on_file
       //   區分記錄，供事後稽核。
-      const ragicStudents = ragic.parseZ01Students(existsByPhone);
-      if (!existing.line_uid && ragicStudents.length > 0) {
+      const z03Students = z03Match.students || [];
+      if (!existing.line_uid && z03Students.length > 0) {
         let verdict = 'mismatch';
         for (const s of cleanStudents) {
-          const v = parentSync.classifyStudentClaim(ragicStudents, { student_name: s.name, id_number: s.id_number || '' });
+          const v = parentSync.classifyStudentClaim(z03Students, { student_name: s.name, id_number: s.id_number || '' });
           if (v === 'matched') { verdict = 'matched'; break; }
           if (v === 'no_id_on_file') verdict = 'no_id_on_file';
         }
         if (verdict === 'mismatch') {
-          parentSync.auditClaim({ phone, lineUid, result: 'failed', reason: 'register_found_update' });
+          parentSync.auditClaim({ phone, lineUid, result: 'failed', reason: 'register_z03_update' });
           return res.status(409).json(GENERIC_PHONE_CONFLICT);
         }
         parentSync.auditClaim({
           phone, lineUid,
           result: verdict === 'matched' ? 'passed' : 'passed_no_id_on_file',
-          reason: 'register_found_update',
+          reason: 'register_z03_update',
         });
       }
 
-      // 只把「不在既有家庭名單上」的學員寫進 Z02（身分證字號或姓名對上任一既有學員 = 已存在）。
-      // ★ 既有學員一律不動：表單只帶得出註冊預設值（學員編號=身分證頂替、學員身分 01.一般生、
-      //   血型「不清楚」、可能空白的生日），拿去更新既有 Z02 列會覆蓋掉 Ragic 真實資料；
-      //   而「Ragic 學員缺身分證字號、表單有填」時用身分證查重會查無 → 同一位小孩重複建檔。
-      //   Ragic 為權威，自助註冊不更新既有學員資料。
-      const famIds   = new Set(ragicStudents.map((s) => String(s.id_number || '').toUpperCase()).filter(Boolean));
-      const famNames = new Set(ragicStudents.map((s) => s.name));
-      const newStudents = cleanStudents.filter((s) =>
-        !(s.id_number && famIds.has(s.id_number)) && !famNames.has(s.name));
-
-      // 找到就更新：全新學員入 Z02 → 既有 Z01 一次 PATCH 開通（UID＋佔位姓名清洗＋補空欄）。
-      const wantNameFix  = !existing.name || ragicAdmin.isPlaceholderParentName(existing.name);
-      const nameToWrite  = (wantNameFix && !ragicAdmin.isPlaceholderParentName(name)) ? name : '';
       try {
-        // parent 物件同時供 Z02 學員列的家長欄位使用：既有非空值優先、表單只補缺，
-        // 避免「更新既有學員的 Z02 列」時用表單空值/新值蓋掉 Ragic 原有館別、性別、Email。
-        // （venueLabel 對「名稱」直通、對「代碼」轉名稱，兩種來源皆可安全傳入。）
-        await ragic.completeParentOnRegisterInRagic({
-          existing,
+        await ragicAdmin.completeZ03Registration({
+          z03: z03Match,
           parent: {
-            name: nameToWrite || existing.name || name,
+            name,
             phone,
-            gender: existing.gender || parentIn.gender || null,
-            email:  existing.email  || parentIn.email  || null,
-            primary_venue_id: (existing.primary_venue_id && existing.primary_venue_id !== '待補登')
-              ? existing.primary_venue_id
-              : (parentIn.primary_venue_id || null),
-            identity: existing.identity || parentIn.identity || '一般身分',
+            gender: parentIn.gender || null,
+            email: parentIn.email || null,
+            primary_venue_id: venueId,
+            identity: parentIn.identity || '一般身分',
           },
-          students: newStudents,
+          students: cleanStudents,
           lineUid,
-          nameToWrite,
+          actor: 'parent-register-line',
         });
       } catch (err) {
         if (err.code === 'STUDENT_ID_NUMBER_EXISTS') {
@@ -818,7 +789,7 @@ router.post('/parent-register-line', async (req, res) => {
             code: 'STUDENT_ID_NUMBER_EXISTS',
           });
         }
-        console.error('[auth/parent-register-line] completeParentOnRegisterInRagic failed:', err.code || '', err.message);
+        console.error('[auth/parent-register-line] completeZ03Registration failed:', err.code || '', err.message);
         const r = _ragicErrorResponse(err, '資料暫時無法完成同步，請稍後再試');
         return res.status(r.status).json({ error: r.error, code: r.code === 'RAGIC_UNAVAILABLE' ? 'RAGIC_WRITE_FAILED' : r.code });
       }

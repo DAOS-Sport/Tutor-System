@@ -1020,46 +1020,79 @@ async function _pullParentsStudentsImpl() {
     const venuesMap = await parentSync.loadVenuesMap(client);
     const studentsByPhone = await parentSync.loadStudentsByParentPhone(client);
     const boundPhones = await parentSync.loadBoundPhones(client);
-
-    // lazy require：parentRefresh 頂層 require ragicAdmin，這裡不可反向頂層 require（避免循環）。
-    const { getZ01MissingFields } = require('./parentRefresh');
+    // 「電話對上」檢查用的反向表：UID → 本地已綁定的電話。
+    const uidToPhone = new Map();
+    for (const [phone, uid] of boundPhones) uidToPhone.set(uid, phone);
+    const ragicUidPhones = new Map();
+    for (const z01Row of records) {
+      const mapped = ragic.mapZ01Parent(z01Row);
+      const uid = String(mapped.line_uid || '').trim();
+      const phoneDigits = _digits(mapped.phone);
+      if (!uid || uid.startsWith('demo:') || uid.startsWith('DEMOTEST_') || !phoneDigits) continue;
+      const phones = ragicUidPhones.get(uid) || new Set();
+      phones.add(phoneDigits);
+      ragicUidPhones.set(uid, phones);
+    }
 
     for (const z01Row of records) {
       const mapped = ragic.mapZ01Parent(z01Row);
       if (!mapped.phone) continue; // 沒電話無法比對，且 upsertLocalParent 本身也會拒絕
       const ragicRecordId = mapped.ragic_record_id ? String(mapped.ragic_record_id) : String(z01Row._ragicId || '');
       // ── 分流規則（Z01＝登入核心來源）──────────────────────────────────
-      // 本地 Z01/Z02 鏡像只收「必填齊全 ＋ LINE UID 已綁定」的完成記錄；
-      // 其餘（缺 UID、或任一必填殘缺、或姓名為電話佔位）一律只進 Z03 整理佇列，
-      // 不進 parents/students。完整性定義與登入閘門用同一套
-      // （parentRefresh.getZ01MissingFields，requireLineUid: true），兩邊不會漂移。
-      // 使用者註冊/綁定的即時流程會在本人驗證後回寫 UID/補齊欄位並 refresh 本地鏡像。
-      // 本 pull job 只讀取 Ragic、分類 Z03、同步已完成鏡像；不可在背景回寫 Ragic。
-      const missingFields = getZ01MissingFields(mapped, { rejectPlaceholderName: true, requireLineUid: true });
-      const isIncomplete = missingFields.length > 0;
-      // 已綁定 line_uid（本地）＝有真人正在使用；殘缺時照樣分流進 Z03（不進 Z01 鏡像），
-      // 但不清掉其既有本地列——登入本來就由 Ragic 完整性閘門（z01_incomplete）把關，
-      // 拆掉列只會多害使用中 session 找不到資料。
-      const alreadyBound = boundPhones.has(mapped.phone);
+      // 畢業（進本地 Z01/Z02 鏡像）採「三必備條件」（2026-07-03 資料流向定案）：
+      //   1. UID 有回寫 —— Ragic「家教系統uid」已是真實 LINE UID（demo:/DEMOTEST_ 不算）；
+      //   2. 電話對上 —— 記錄有電話，且該 UID 沒有被本地「另一支電話」綁走
+      //      （同 UID 掛兩支電話＝資料衝突，寧可留在 Z03 由人工/登入流程收斂）；
+      //   3. 家長姓名不等於電話 —— 姓名非空且不是電話佔位（isPlaceholderParentName）。
+      // 三者滿足即自行畢業回寫本地 Z01 鏡像；其餘欄位（Email/性別/身分/館別）缺漏
+      // 不再擋畢業，由家長端個資頁／夜間同步後續補齊。
+      // 未達成者一律只進 Z03 整理佇列，不進 parents/students。
+      // 本 pull job 只讀取 Ragic、比對分類、同步畢業者；不可在背景回寫 Ragic。
+      const hasRealUid = Boolean(
+        mapped.line_uid &&
+        !mapped.line_uid.startsWith('demo:') &&
+        !mapped.line_uid.startsWith('DEMOTEST_')
+      );
+      const phoneDigits = _digits(mapped.phone);
+      const boundPhoneOfUid = hasRealUid ? uidToPhone.get(mapped.line_uid) : undefined;
+      const boundPhoneDigits = _digits(boundPhoneOfUid);
+      const uidPhonesInRagic = hasRealUid ? ragicUidPhones.get(mapped.line_uid) : null;
+      const uidHasMultipleRagicPhones = Boolean(uidPhonesInRagic && uidPhonesInRagic.size > 1);
+      const phoneMatches = Boolean(phoneDigits) &&
+        !uidHasMultipleRagicPhones &&
+        (!boundPhoneDigits || boundPhoneDigits === phoneDigits);
+      const nameIsReal = Boolean(mapped.name) && !isPlaceholderParentName(mapped.name);
+      const isIncomplete = !(hasRealUid && phoneMatches && nameIsReal);
 
       try {
         if (isIncomplete) {
           // 殘缺/未開通 → 只進 Z03，不建立/更新 parents/students。
-          // 順手清掉舊鏡射殘留：只處理「從未綁定」(line_uid IS NULL) 的本地列，
-          // 不動任何已綁定的真人使用者列。
+          // 若本地同電話 / 同 Ragic record / 同 LINE UID 還留著可登入 UID，先清掉 UID 讓登入回到
+          // need_phone_binding；有業務 FK 的列不硬刪，只是不再算「已畢業 Z01 鏡像」。
+          // 這裡仍只動本地 DB，不反向寫回 Ragic。
           await client.query('BEGIN');
           await _upsertZ03Record(client, ragicRecordId, mapped, z01Row);
-          if (!alreadyBound) {
-            // 硬刪除無真實 LINE UID 的本地殘留（有業務 FK 者跳過）
-            const stale = await client.query(
-              `SELECT id FROM parents
-                WHERE phone = $1
-                  AND (line_uid IS NULL OR line_uid = '' OR line_uid LIKE 'DEMOTEST_%')`,
-              [mapped.phone]
-            );
-            for (const row of stale.rows) {
-              await parentSync.hardDeleteParentIfSafe(client, row.id);
+          const localRows = await client.query(
+            `SELECT id, phone, line_uid
+               FROM parents
+              WHERE phone = $1
+                 OR regexp_replace(COALESCE(phone,''), '\\D', '', 'g') = $3
+                 OR (NULLIF(ragic_record_id, '') IS NOT NULL AND ragic_record_id = $2)
+                 OR ($4 <> '' AND line_uid = $4)`,
+            [mapped.phone, ragicRecordId || '', phoneDigits, hasRealUid ? mapped.line_uid : '']
+          );
+          for (const row of localRows.rows) {
+            const uid = String(row.line_uid || '').trim();
+            if (uid) {
+              await client.query(
+                `UPDATE parents SET line_uid = NULL, updated_at = NOW() WHERE id = $1`,
+                [row.id]
+              );
+              const mappedPhone = uidToPhone.get(uid);
+              if (_digits(mappedPhone) === _digits(row.phone)) uidToPhone.delete(uid);
+              boundPhones.delete(row.phone);
             }
+            await parentSync.hardDeleteParentIfSafe(client, row.id);
           }
           await client.query('COMMIT');
           quarantinedZ03++;
@@ -1072,6 +1105,12 @@ async function _pullParentsStudentsImpl() {
           reactivate: false,
           venuesMap,
         });
+        if (hasRealUid && local.line_uid !== mapped.line_uid) {
+          await _upsertZ03Record(client, ragicRecordId, mapped, z01Row);
+          await client.query('COMMIT');
+          quarantinedZ03++;
+          continue;
+        }
         const students = ragic.parseZ01Students(z01Row);
         await parentSync.upsertLocalStudents(client, local.id, students, {
           authoritative: true,
@@ -1080,6 +1119,8 @@ async function _pullParentsStudentsImpl() {
         // 已完成 → 若先前卡在 Z03 待處理，這裡自動畢業（dismissed 忽略列不受影響）。
         await _resolveZ03IfPending(client, ragicRecordId, mapped.name);
         await client.query('COMMIT');
+        uidToPhone.set(mapped.line_uid, mapped.phone);
+        boundPhones.set(mapped.phone, mapped.line_uid);
         synced++;
       } catch (err) {
         await client.query('ROLLBACK').catch(() => {});
@@ -1191,6 +1232,9 @@ function _z03StudentFromRow(row) {
     id_number: _cleanText(row.id_number_raw, 30).toUpperCase(),
     blood_type: _cleanText(row.blood_type_raw, 20) || '不清楚',
     student_code: _cleanText(row.student_code_raw, 80),
+    // 登記電話：綁定/註冊流程的「學員姓名＋登記手機」多方驗證用
+    // （parentSync.classifyStudentPhoneClaim 讀 registered_phone，缺值退回比對家長電話）。
+    registered_phone: _cleanText(row.registered_phone_raw, 30),
   };
 }
 
@@ -1232,6 +1276,245 @@ async function _loadZ03RecordById(id, clientOrPool = pool) {
     [record.id]
   )).rows;
   return { ...record, students };
+}
+
+async function _loadZ03RecordByRagicId(ragicRecordId) {
+  if (!ragicRecordId) return null;
+  const record = (await pool.query(
+    `SELECT * FROM ragic_z03_records WHERE z01_ragic_record_id = $1 LIMIT 1`,
+    [String(ragicRecordId)]
+  )).rows[0];
+  if (!record) return null;
+  const students = (await pool.query(
+    `SELECT * FROM ragic_z03_students WHERE z03_record_id = $1 ORDER BY seq_raw, id`,
+    [record.id]
+  )).rows;
+  return {
+    row: { ...record, students },
+    parent: _z03ParentFromRow(record),
+    students: students.map(_z03StudentFromRow).filter((s) => s.name),
+  };
+}
+
+/**
+ * 註冊/綁定流程用：以電話在本地 Z03 佇列（ragic_z03_records）尋找未開通記錄。
+ * 資料流向定案（2026-07-03）：填完電話 → 比對本地 Z01 → 沒資料才來 Z03 核對，
+ * 兩處都不在熱路徑打 Ragic。比對同時接受「原字串相等」與「去非數字後相等」
+ * （Ragic 端電話可能帶 - / 空白等格式符號）。
+ * 回傳 { row, parent, students }（parent/students 已轉成 mapZ01Parent/認領驗證可用的形狀），
+ * 查無回 null。只取 pending；resolved 是歷史畢業列，不應再攔截綁定/註冊熱路徑。
+ */
+async function findZ03RecordByPhone(phone) {
+  const digits = _digits(phone);
+  if (!digits) return null;
+  const r = await pool.query(
+    `SELECT * FROM ragic_z03_records
+      WHERE status = 'pending'
+        AND (phone = $1 OR regexp_replace(COALESCE(phone,''), '\\D', '', 'g') = $2)
+      ORDER BY fetched_at DESC
+      LIMIT 1`,
+    [String(phone || '').trim(), digits]
+  );
+  const row = r.rows[0];
+  if (!row) return null;
+  const students = (await pool.query(
+    `SELECT * FROM ragic_z03_students WHERE z03_record_id = $1 ORDER BY seq_raw, id`,
+    [row.id]
+  )).rows;
+  return {
+    row: { ...row, students },
+    parent: _z03ParentFromRow(row),
+    students: students.map(_z03StudentFromRow).filter((s) => s.name),
+  };
+}
+
+/**
+ * 註冊熱路徑用：Ragic 仍查得到、但本地 Z03 尚未被排程拉入時，自動把該筆讀入 Z03。
+ * 這是 read-only hydrate；真正回寫 Ragic 只發生在家長完成註冊驗證後。
+ */
+async function hydrateZ03RecordFromRagicRow(z01Row) {
+  if (!z01Row) return null;
+  const mapped = ragic.mapZ01Parent(z01Row);
+  const ragicRecordId = mapped.ragic_record_id ? String(mapped.ragic_record_id) : String(z01Row._ragicId || '');
+  if (!mapped.phone || !ragicRecordId) return null;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await _upsertZ03Record(client, ragicRecordId, mapped, z01Row);
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  const pending = await findZ03RecordByPhone(mapped.phone);
+  return pending || _loadZ03RecordByRagicId(ragicRecordId);
+}
+
+function _studentMatchesRegistration(z03Student, formStudent) {
+  const zId = String(z03Student?.id_number || '').trim().toUpperCase();
+  const fId = String(formStudent?.id_number || '').trim().toUpperCase();
+  if (zId && fId && zId === fId) return true;
+  return String(z03Student?.name || '').trim() === String(formStudent?.name || '').trim();
+}
+
+function _newStudentsForZ03Registration(z03Students, formStudents) {
+  return (formStudents || []).filter((s) =>
+    !(z03Students || []).some((existing) => _studentMatchesRegistration(existing, s)));
+}
+
+async function _markZ03RegistrationResolved(z03Id, { parent, students, lineUid, actor }) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const current = (await client.query(
+      `SELECT * FROM ragic_z03_records WHERE id = $1 FOR UPDATE`,
+      [z03Id]
+    )).rows[0];
+    if (!current) throw new Error('找不到這筆 Z03 記錄');
+
+    await client.query(
+      `UPDATE ragic_z03_records
+          SET raw_name = $2,
+              phone = $3,
+              venue_raw = $4,
+              identity_raw = $5,
+              gender_raw = $6,
+              email_raw = $7,
+              line_uid_raw = $8,
+              status = 'resolved',
+              fixed_name = $2,
+              resolved_at = NOW(),
+              resolved_by = $9,
+              fetched_at = NOW()
+        WHERE id = $1`,
+      [
+        z03Id,
+        _cleanText(parent?.name, 120),
+        _cleanText(parent?.phone, 30),
+        _cleanText(parent?.primary_venue_id, 120),
+        _cleanText(parent?.identity || '一般身分', 80),
+        _cleanText(parent?.gender, 30),
+        _cleanText(parent?.email, 255),
+        _cleanText(lineUid, 160),
+        actor || 'parent-register-line',
+      ]
+    );
+
+    const existingRows = (await client.query(
+      `SELECT * FROM ragic_z03_students WHERE z03_record_id = $1 ORDER BY seq_raw, id`,
+      [z03Id]
+    )).rows;
+    const usedRowIds = new Set();
+    let nextSeq = existingRows.length + 1;
+
+    for (const s of students || []) {
+      const match = existingRows.find((row) => {
+        if (usedRowIds.has(row.id)) return false;
+        return _studentMatchesRegistration(_z03StudentFromRow(row), s);
+      });
+      if (match) {
+        usedRowIds.add(match.id);
+        await client.query(
+          `UPDATE ragic_z03_students
+              SET name_raw = $3,
+                  birth_date_raw = $4,
+                  gender_raw = $5,
+                  id_number_raw = $6,
+                  blood_type_raw = $7,
+                  registered_phone_raw = COALESCE(NULLIF(registered_phone_raw, ''), $8)
+            WHERE id = $1 AND z03_record_id = $2`,
+          [
+            match.id,
+            z03Id,
+            _cleanText(s.name, 100),
+            _cleanText(s.birth_date, 30),
+            _cleanText(s.gender, 30),
+            _cleanText(s.id_number, 30).toUpperCase(),
+            _cleanText(s.blood_type, 20),
+            _cleanText(parent?.phone, 30),
+          ]
+        );
+      } else {
+        await client.query(
+          `INSERT INTO ragic_z03_students
+             (z03_record_id, seq_raw, student_status_raw, name_raw, birth_date_raw,
+              gender_raw, id_number_raw, blood_type_raw, age_raw, student_code_raw, registered_phone_raw)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+          [
+            z03Id,
+            String(nextSeq++),
+            '01.一般生',
+            _cleanText(s.name, 100),
+            _cleanText(s.birth_date, 30),
+            _cleanText(s.gender, 30),
+            _cleanText(s.id_number, 30).toUpperCase(),
+            _cleanText(s.blood_type, 20),
+            '',
+            '',
+            _cleanText(parent?.phone, 30),
+          ]
+        );
+      }
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * 家長註冊命中本地 Z03 後的「補資料 → 回寫 Ragic → Z03 畢業」。
+ * 回寫 Ragic 使用既有 found→update helper，避免同電話重複建 Z01；本地 Z03 更新
+ * 是 audit/狀態收斂，不阻擋已驗證使用者後續 refresh。
+ */
+async function completeZ03Registration({ z03, parent, students = [], lineUid, actor = 'parent-register-line' }) {
+  if (!z03?.row) throw new Error('Z03 註冊需要 z03.row');
+  const existing = {
+    ...(z03.parent || {}),
+    ragic_record_id: String(z03.parent?.ragic_record_id || z03.row.z01_ragic_record_id || '').trim(),
+  };
+  if (!existing.ragic_record_id) {
+    const err = new Error('Z03 記錄缺少 Ragic Z01 record id');
+    err.code = 'PARENT_RAGIC_RECORD_REQUIRED';
+    throw err;
+  }
+
+  const z03Students = z03.students || [];
+  const newStudents = _newStudentsForZ03Registration(z03Students, students);
+  const wantNameFix = !existing.name || isPlaceholderParentName(existing.name);
+  const nameToWrite = (wantNameFix && !isPlaceholderParentName(parent?.name)) ? parent.name : '';
+  const resolvedParent = {
+    ...parent,
+    name: nameToWrite || existing.name || parent.name,
+    phone: parent.phone || existing.phone,
+    gender: existing.gender || parent.gender || null,
+    email: existing.email || parent.email || null,
+    primary_venue_id: (existing.primary_venue_id && existing.primary_venue_id !== '待補登')
+      ? existing.primary_venue_id
+      : (parent.primary_venue_id || null),
+    identity: existing.identity || parent.identity || '一般身分',
+  };
+
+  await ragic.completeParentOnRegisterInRagic({
+    existing,
+    parent: resolvedParent,
+    students: newStudents,
+    lineUid,
+    nameToWrite,
+  });
+
+  try {
+    await _markZ03RegistrationResolved(z03.row.id, { parent: resolvedParent, students, lineUid, actor });
+  } catch (err) {
+    console.warn('[ragic-z03] 註冊已回寫 Ragic，但本地 Z03 resolved 標記失敗:', err.message);
+    return { linked_existing: true, z03_updated: false, new_students: newStudents.length, z03_update_error: err.message };
+  }
+  return { linked_existing: true, z03_updated: true, new_students: newStudents.length };
 }
 
 async function listZ03Records({ status = 'pending', q = '' } = {}) {
@@ -1966,6 +2249,9 @@ module.exports = {
   getJobToggles,
   // Z03 人工整理表
   listZ03Records,
+  findZ03RecordByPhone,
+  hydrateZ03RecordFromRagicRow,
+  completeZ03Registration,
   getZ03UpgradeMissingFields,
   saveZ03RecordDraft,
   resolveZ03Record,
