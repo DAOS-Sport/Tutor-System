@@ -10,6 +10,8 @@
  */
 const { pool } = require('../models/db');
 
+const Z03_PURGE_SETTING_KEY = 'z03_hard_purge_20260703';
+
 const DDL = `
 -- ENUMs（重複建立會 throw duplicate_object）
 DO $$ BEGIN CREATE TYPE course_period_status AS ENUM ('pending_payment','payment_anomaly','active','completed','refunded'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
@@ -1316,9 +1318,68 @@ async function ensureCourseIntroFK() {
   `);
 }
 
+async function purgeZ03OnceForProductionPublish() {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [Z03_PURGE_SETTING_KEY]);
+
+    const tables = await client.query(
+      `SELECT
+         to_regclass('public.admin_settings') AS admin_settings,
+         to_regclass('public.ragic_z03_records') AS z03_records,
+         to_regclass('public.ragic_z03_students') AS z03_students`
+    );
+    const row = tables.rows[0] || {};
+    if (!row.admin_settings || !row.z03_records) {
+      await client.query('ROLLBACK');
+      return;
+    }
+
+    const done = await client.query(
+      `SELECT 1 FROM admin_settings WHERE key = $1 LIMIT 1`,
+      [Z03_PURGE_SETTING_KEY]
+    );
+    if (done.rowCount) {
+      await client.query('COMMIT');
+      return;
+    }
+
+    let deletedOrphanStudents = 0;
+    if (row.z03_students) {
+      const orphanStudents = await client.query(
+        `DELETE FROM ragic_z03_students s
+          WHERE NOT EXISTS (SELECT 1 FROM ragic_z03_records r WHERE r.id = s.z03_record_id)
+          RETURNING id`
+      );
+      deletedOrphanStudents = orphanStudents.rowCount;
+    }
+
+    const deletedRecords = await client.query(`DELETE FROM ragic_z03_records RETURNING id`);
+    await client.query(
+      `INSERT INTO admin_settings (key, value, updated_at)
+       VALUES ($1, 1, NOW())
+       ON CONFLICT (key) DO UPDATE SET value = 1, updated_at = NOW()`,
+      [Z03_PURGE_SETTING_KEY]
+    );
+    await client.query('COMMIT');
+    console.log(
+      '[core bootstrap] one-time hard purged local Z03: records=%d orphan_students=%d',
+      deletedRecords.rowCount,
+      deletedOrphanStudents
+    );
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 async function bootstrap() {
   try {
     await ensureSchema();
+    await purgeZ03OnceForProductionPublish();
     await seedVenuesCoachesParents();
     await seedSlotsAndSessions();
     await seedKeywords();
