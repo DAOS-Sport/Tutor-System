@@ -1014,6 +1014,7 @@ async function _pullParentsStudentsImpl() {
 
   let synced = 0;
   let quarantinedZ03 = 0;
+  let healedUid = 0;
   const errors = [];
   const client = await pool.connect();
   try {
@@ -1036,16 +1037,47 @@ async function _pullParentsStudentsImpl() {
       // 註冊頁以電話比對這個「Z03 池」（= Ragic 端未開通記錄）：對上→回寫 UID，
       // 等客戶補齊必填 → 下輪 pull 自動從 Z03 畢業、落入 Z01。
       const missingFields = getZ01MissingFields(mapped, { rejectPlaceholderName: true, requireLineUid: true });
-      const isIncomplete = missingFields.length > 0;
+      let isIncomplete = missingFields.length > 0;
       // 已綁定 line_uid（本地）＝有真人正在使用；殘缺時照樣分流進 Z03（不進 Z01 鏡像），
-      // 但「不」軟拆除其既有本地列——登入本來就由 Ragic 完整性閘門（z01_incomplete）把關，
+      // 但不清掉其既有本地列——登入本來就由 Ragic 完整性閘門（z01_incomplete）把關，
       // 拆掉列只會多害使用中 session 找不到資料。
       const alreadyBound = boundPhones.has(mapped.phone);
+
+      // ── Z03 自動畢業（UID 自癒）─────────────────────────────────────
+      // 資料清洗/重建後，Ragic 記錄可能「只缺家教系統uid、其餘必填齊全」；若本地
+      // 同號家長已綁定真實 LINE UID（該綁定當初已通過登入/認領驗證），自動把本地
+      // UID 回寫 Ragic，讓這筆立刻走完成路徑落回本地 Z01/Z02 鏡像 + Z03 畢業，
+      // 而不是每晚都被分流回 Z03 永遠卡待處理。
+      // 安全邊界：Ragic 端 UID 為空或哨兵值（demo:/DEMOTEST_）才回寫，絕不覆蓋
+      // 不同的真實 UID；且先確認該 UID 在 Ragic 沒有掛在其他記錄上（防止 Z01 內
+      // 產生兩筆同 UID → 登入查詢歧義）。
+      if (isIncomplete && alreadyBound && missingFields.every((m) => m.key === 'line_uid')) {
+        const localUid = boundPhones.get(mapped.phone) || '';
+        const ragicUid = String(mapped.line_uid || '').trim();
+        const overwritable = !ragicUid || ragicUid.startsWith('demo:') || ragicUid.startsWith('DEMOTEST_');
+        if (localUid && overwritable && ragicRecordId) {
+          try {
+            const holder = await ragic.getParentByLineUid(localUid);
+            const holderId = holder ? String(holder._ragicId || '') : '';
+            if (!holder || holderId === ragicRecordId) {
+              await ragic.upsertParentStrict({ [ragic.FIELD.Z01.LINE_UID]: localUid }, ragicRecordId);
+              mapped.line_uid = localUid;
+              isIncomplete = false;
+              healedUid++;
+              console.log('[ragic-pull] UID 自癒：本地綁定回寫 Ragic，該筆改走完成路徑 (ragicId=%s, phone=%s)', ragicRecordId, mapped.phone);
+            } else {
+              console.warn('[ragic-pull] UID 自癒略過：此 UID 已掛在 Ragic 另一筆記錄 (ragicId=%s, holder=%s)', ragicRecordId, holderId);
+            }
+          } catch (err) {
+            console.warn('[ragic-pull] UID 自癒回寫失敗，維持 Z03 分流 (ragicId=%s):', ragicRecordId, err.message);
+          }
+        }
+      }
 
       try {
         if (isIncomplete) {
           // 殘缺/未開通 → 只進 Z03，不建立/更新 parents/students。
-          // 順手軟拆除舊鏡射殘留：只清「從未綁定」(line_uid IS NULL) 的本地列，
+          // 順手清掉舊鏡射殘留：只處理「從未綁定」(line_uid IS NULL) 的本地列，
           // 不動任何已綁定的真人使用者列。
           await client.query('BEGIN');
           await _upsertZ03Record(client, ragicRecordId, mapped, z01Row);
@@ -1117,8 +1149,8 @@ async function _pullParentsStudentsImpl() {
   }
 
   return errors.length
-    ? { synced, quarantined: quarantinedZ03, error: `${errors.length} 筆同步失敗（詳見伺服器 log）：${errors[0]}` }
-    : { synced, quarantined: quarantinedZ03 };
+    ? { synced, quarantined: quarantinedZ03, healed_uid: healedUid, error: `${errors.length} 筆同步失敗（詳見伺服器 log）：${errors[0]}` }
+    : { synced, quarantined: quarantinedZ03, healed_uid: healedUid };
 }
 
 async function pullParentsStudentsFromRagic(triggeredBy = 'cron') { return _singleflight('pull', triggeredBy); }

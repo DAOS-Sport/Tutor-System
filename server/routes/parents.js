@@ -155,7 +155,8 @@ router.get('/me', requireParent, async (req, res) => {
 
 // 開場/進個資頁 → 主動向 Ragic 拉名單（Ragic 為名單權威，本地為鏡像）。
 //   - 節流：last_synced_at 在 SYNC_THROTTLE_MS 內 → 直接回 DB，不打 Ragic。
-//   - 刷新：reactivate=false（不復活被移除的孤兒）+ id-stable upsert + 權威移除軟拆除。
+//   - 刷新：reactivate=false（不重新啟用被移除的家長）+ id-stable upsert；
+//     權威移除的學員只硬刪無業務 FK 殘留，有 FK 者保留本地關聯避免斷鏈。
 //   - 讀取可靠性：Ragic 失敗/逾時 → 保留既有鏡像、回 sync_status='stale'，絕不清空、絕不回空名單。
 //   活動紀錄（課程/堂數/簽到）一律讀本地，與本同步無關。
 router.post('/me/sync', requireParent, async (req, res) => {
@@ -324,9 +325,15 @@ router.post('/me/students', requireParent, async (req, res) => {
           code: 'STUDENT_ID_DUPLICATED',
         });
       }
+      if (existing.is_active === false) {
+        return res.status(409).json({
+          error: '此學員曾由櫃台停用或移除，請聯絡客服協助恢復或重新建檔。',
+          code: 'STUDENT_INACTIVE_CONTACT_COUNTER',
+        });
+      }
 
       mergedExisting = true;
-      expectedMin = existing.is_active === false ? activeCount + 1 : activeCount;
+      expectedMin = activeCount;
       console.log('[student-sync] 新增學員比對到既有資料，改為嚴格更新', { parent: parent.name, phone: parent.phone, student: s.name });
       const sync = await ragic.updateStudentZ01Z02Strict({
         parent: parentForSync,

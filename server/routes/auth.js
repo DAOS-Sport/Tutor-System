@@ -332,6 +332,31 @@ router.post('/parent-line-login', async (req, res) => {
       console.warn('[auth/parent-line-login] ragic.getParentByLineUid failed:', err.message);
     }
 
+    // 1b) UID 查無時的備援：若本地已有綁定此 UID 的家長，改用其電話反查 Ragic。
+    //     防護目標：Ragic 以 UID 搜尋偶發失準（索引延遲/查詢逾時邊界）時，
+    //     下面的「查無 → 硬刪本地 + 要求重新綁定」會誤傷正常使用者。
+    //     電話反查若找到同一 UID 的記錄 → 當作有查到，走正常登入路徑。
+    if (!ragicRow && ragicReachable) {
+      try {
+        const bound = await pool.query(
+          `SELECT phone FROM parents
+            WHERE line_uid = $1 AND phone IS NOT NULL AND phone <> '' LIMIT 3`,
+          [lineUid]
+        );
+        for (const row of bound.rows) {
+          const byPhone = await ragic.getParentByPhone(row.phone).catch(() => null);
+          const m = byPhone ? ragic.mapZ01Parent(byPhone) : null;
+          if (m && String(m.line_uid || '').trim() === lineUid) {
+            console.warn('[auth/parent-line-login] UID 搜尋查無但電話反查命中（Ragic 搜尋失準防護），照常登入 (phone=%s)', row.phone);
+            ragicRow = byPhone;
+            break;
+          }
+        }
+      } catch (err) {
+        console.warn('[auth/parent-line-login] 電話反查備援失敗（不影響主流程）:', err.message);
+      }
+    }
+
     if (ragicRow) {
       const mapped = ragic.mapZ01Parent(ragicRow);
       const missing = parentRefresh.getZ01MissingFields(mapped);
@@ -728,6 +753,12 @@ router.post('/parent-register-line', async (req, res) => {
 
       // 認領驗證：既有家庭名下有學員才需要（0 學員 = 單純開通，與 bind-phone 語意一致）。
       // 表單任一位學員與既有 Ragic 學員（姓名＋身分證）對上即放行。
+      // ★ no_id_on_file 也放行（2026-07-03 政策調整）：上線前匯入的舊生資料 2/3 的
+      //   學員 Ragic 端沒有身分證字號可比對，硬要求「姓名＋身分證都對上」等於把這批
+      //   老客戶永遠擋在 409（資料缺口不是使用者打錯）。改為「姓名精確對上、且該筆
+      //   Ragic 學員本來就沒存身分證」即視為通過（電話＋學員姓名雙要素）；
+      //   Ragic 有存身分證但對不上的仍一律擋（防冒用）。audit 以 passed_no_id_on_file
+      //   區分記錄，供事後稽核。
       const ragicStudents = ragic.parseZ01Students(existsByPhone);
       if (!existing.line_uid && ragicStudents.length > 0) {
         let verdict = 'mismatch';
@@ -736,15 +767,15 @@ router.post('/parent-register-line', async (req, res) => {
           if (v === 'matched') { verdict = 'matched'; break; }
           if (v === 'no_id_on_file') verdict = 'no_id_on_file';
         }
-        if (verdict !== 'matched') {
-          parentSync.auditClaim({
-            phone, lineUid,
-            result: verdict === 'no_id_on_file' ? 'no_id_on_file' : 'failed',
-            reason: 'register_found_update',
-          });
+        if (verdict === 'mismatch') {
+          parentSync.auditClaim({ phone, lineUid, result: 'failed', reason: 'register_found_update' });
           return res.status(409).json(GENERIC_PHONE_CONFLICT);
         }
-        parentSync.auditClaim({ phone, lineUid, result: 'passed', reason: 'register_found_update' });
+        parentSync.auditClaim({
+          phone, lineUid,
+          result: verdict === 'matched' ? 'passed' : 'passed_no_id_on_file',
+          reason: 'register_found_update',
+        });
       }
 
       // 只把「不在既有家庭名單上」的學員寫進 Z02（身分證字號或姓名對上任一既有學員 = 已存在）。

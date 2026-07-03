@@ -186,8 +186,13 @@ async function refreshParentMirrorFromRagic({
     throw new ParentRefreshError(err.code || 'LOCAL_REFRESH_FAILED', `本地會員鏡射更新失敗：${err.message}`, 500);
   }
 
+  // 場館解析不到（Ragic 館別名稱在本地 venues 查無，多為 H05 尚未同步/改名過渡期）
+  // 不再硬擋登入/註冊——擋下只會把「資料層待收斂」升級成「使用者進不來」。
+  // 記大聲 log 供追蹤；場館值會由 H05 場館同步 + 每晚 01:30 pull 自動收斂回填。
   if (requireComplete && !local.primary_venue_id) {
-    throw new ParentRefreshError('LOCAL_VENUE_REFRESH_FAILED', '本地場館鏡射更新失敗，請聯絡客服確認場館設定', 500);
+    console.error('[parent-refresh] 場館鏡射未解析（不擋登入，待 H05/夜間同步收斂）:', {
+      reason, phone: mapped.phone, ragicVenue: mapped.primary_venue_id || null,
+    });
   }
   if (effectiveLineUid && local.line_uid !== effectiveLineUid) {
     throw new ParentRefreshError('LOCAL_UID_REFRESH_FAILED', '本地 LINE UID 鏡射更新失敗', 500);

@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { clearAfterAuth } from '../utils/afterAuth';
+import { parentsApi } from '../api/parents';
 
 /**
  * 同時支援家長 / 教練兩種角色：
@@ -56,6 +57,33 @@ export function AuthProvider({ children }) {
     }
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
+  // 開啟 App 即向資料庫重新請求一次（每次掛載只跑一次）：已登入家長不吃 localStorage
+  // 舊快取，主動打 POST /parents/me/sync 取最新家長＋學員鏡像（後端有節流與失敗降級，
+  // Ragic 失敗也會回 DB 鏡像）。token 過期 → 401 由 api/client.js 靜默重驗攔截器換新
+  // token 並重試，使用者無感。失敗一律靜默（開頁刷新不是硬性門檻，不打擾使用者）。
+  useEffect(() => {
+    const u = load();
+    if (!u || u.role !== 'parent' || !u.token) return;
+    let cancelled = false;
+    parentsApi.sync()
+      .then((me) => {
+        if (cancelled || !me || !me.id) return;
+        setUserState((prev) => {
+          if (!prev || prev.role !== 'parent') return prev;
+          const { line_uid, lineUid, sync_status, ...safe } = me;
+          // 401 interceptor 可能已靜默換新 token 並先寫入 localStorage；
+          // 這裡合併資料時以最新 storage 為底，避免把舊 token 寫回去。
+          const latest = load();
+          const base = latest && latest.role === 'parent' ? latest : prev;
+          const next = { ...base, data: { ...base.data, ...safe } };
+          save(next);
+          return next;
+        });
+      })
+      .catch(() => { /* 靜默：401 攔截器已處理換 token；其餘留給頁面層各自請求 */ });
+    return () => { cancelled = true; };
   }, []);
 
   const value = useMemo(() => ({
