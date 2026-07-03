@@ -611,8 +611,7 @@ async function loadStudentsByParentPhone(client) {
 /**
  * 供批次呼叫端一次撈好「已綁定 line_uid 的手機 → 該 UID」對照——用來判斷某支手機
  * 是否已經有真人透過即時登入流程建過帳號（見 ragicAdmin.js _pullParentsStudentsImpl
- * 的 Z03 分流規則：已綁定的人即使姓名是佔位資料也不能被排除在 parents 同步之外），
- * 以及 UID 自癒回寫（Ragic 記錄只缺 UID 時，用本地已驗證的綁定補回去）。
+ * 的 Z03 分流規則：已綁定的人即使姓名是佔位資料也不能被排除在 parents 同步之外）。
  * 回傳 Map(phone → line_uid)；.has(phone) 語意與先前的 Set 相容。
  */
 async function loadBoundPhones(client) {
