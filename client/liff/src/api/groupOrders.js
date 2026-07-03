@@ -15,11 +15,11 @@ export const groupOrdersApi = {
     callApi(`/group-orders/${id}`, { method: 'get' }, () => null),
 
   preview: (token) =>
-    callApi(`/group-orders/by-token/${token}`, { method: 'get' }, () => null),
+    callApi(`/group-orders/by-token/${token}`, { method: 'get', skipAuthRedirect: true }, () => null),
 
   // 以電話查詢「這支電話名下學生 + 在本團狀態」（免登入，供加入前確認）
   lookupPhone: (token, phone) =>
-    callApi(`/group-orders/by-token/${token}/lookup-phone`, { method: 'post', data: { phone } }, () => ({ found: false })),
+    callApi(`/group-orders/by-token/${token}/lookup-phone`, { method: 'post', data: { phone }, skipAuthRedirect: true }, () => ({ found: false })),
 
   // payload: { student_ids:[uuid], new_students:[{name,id_number,birth_date,gender}], payment_proof_url }
   join: (token, payload) =>

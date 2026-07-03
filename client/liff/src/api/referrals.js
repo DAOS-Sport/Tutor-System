@@ -10,7 +10,7 @@ export const referralsApi = {
       return { id: `mock-${tk}`, token: tk, url: `${location.origin}/r/${tk}` };
     }),
   byToken: (token) =>
-    callApi(`/referrals/by-token/${encodeURIComponent(token)}`, {}, () => null),
+    callApi(`/referrals/by-token/${encodeURIComponent(token)}`, { skipAuthRedirect: true }, () => null),
   mine: () =>
     callApi('/referrals/mine', {}, () => []),
 };

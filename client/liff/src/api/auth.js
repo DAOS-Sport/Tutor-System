@@ -5,7 +5,7 @@ export const authApi = {
   // POST /api/auth/parent-line-login { id_token }
   //   → { status:'logged_in', parent, token } | { status:'need_phone_binding', line_uid }
   parentLineLogin: (idToken) =>
-    callApi('/auth/parent-line-login', { method: 'post', data: { id_token: idToken } },
+    callApi('/auth/parent-line-login', { method: 'post', data: { id_token: idToken }, skipAuthRedirect: true },
       // mock：無 idToken 就回 need_phone_binding 讓 dev 走得下去
       () => ({ status: 'need_phone_binding', line_uid: 'U_dev_mock' })
     ),
@@ -19,7 +19,7 @@ export const authApi = {
   //           parent_name 為家長本人真實姓名，後端只在既有姓名是「電話佔位」時才據以清洗回寫 Ragic Z01。
   parentBindPhone: ({ idToken, phone, claim }) =>
     callApi('/auth/parent-bind-phone',
-      { method: 'post', data: { id_token: idToken, phone, claim: claim || undefined } },
+      { method: 'post', data: { id_token: idToken, phone, claim: claim || undefined }, skipAuthRedirect: true },
       // mock：直接讓使用者進到註冊流程
       () => ({ status: 'need_registration', line_uid: 'U_dev_mock', phone })
     ),
@@ -31,6 +31,7 @@ export const authApi = {
     callApi('/auth/parent-register-line',
       {
         method: 'post',
+        skipAuthRedirect: true,
         data: {
           id_token: idToken,
           demo: demo || undefined,
@@ -56,7 +57,7 @@ export const authApi = {
   // POST /api/auth/demo-login { username, password }
   //   → { role:'coach'|'parent', ...payload, token }
   demoLogin: ({ username, password }) =>
-    callApi('/auth/demo-login', { method: 'post', data: { username, password } },
+    callApi('/auth/demo-login', { method: 'post', data: { username, password }, skipAuthRedirect: true },
       () => ({ role: 'parent', id: 'mock-parent-demo', name: '示範家長', phone: '0912345678', students: [], token: 'mock.jwt.token' })
     ),
 };

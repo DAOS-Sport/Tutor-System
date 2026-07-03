@@ -15,6 +15,34 @@ const USER_KEY = 'daos.user';
 let redirectingOn401 = false;
 let reauthPromise = null; // single-flight：多個並發 401 共用同一次靜默重驗
 
+function normalizeAppPath(pathname) {
+  const path = String(pathname || '/');
+  return path.replace(/^\/liff(?=\/|$)/, '') || '/';
+}
+
+function isAuthBootstrapPath() {
+  if (typeof window === 'undefined') return false;
+  const path = normalizeAppPath(window.location.pathname || '/');
+  return path === '/login' || path === '/register' || path === '/demo' || path === '/coach-portal';
+}
+
+function apiPathFromUrl(url) {
+  const raw = String(url || '');
+  if (!raw) return '';
+  try {
+    const base = typeof window !== 'undefined' ? window.location.origin : 'http://localhost';
+    const path = new URL(raw, base).pathname;
+    return path.replace(/^\/api(?=\/|$)/, '') || '/';
+  } catch {
+    return raw.replace(/^\/api(?=\/|$)/, '') || '/';
+  }
+}
+
+function isAuthBootstrapRequest(url) {
+  const path = apiPathFromUrl(url);
+  return path === '/auth' || path.startsWith('/auth/');
+}
+
 // 靜默重新驗證（家長）：用目前 LINE session 的 id_token 換一顆新的 app JWT，寫回 localStorage。
 // 目的：token 過期造成的 401 不要把人登出，先在背景換新的、讓原請求重試，使用者無感。
 // 重點：
@@ -73,6 +101,13 @@ http.interceptors.response.use(
   async (err) => {
     if (err?.response?.status !== 401) return Promise.reject(err);
     const config = err.config || {};
+
+    // 登入、電話綁定、註冊流程本身會用 401 表示 LINE token 逾期/驗證失敗；
+    // 這些錯誤必須交給頁面層處理（LoginPage 有單次 liff.login 刷新守衛），
+    // 不能被全域攔截器搶先導回 /login，否則使用者會在電話/註冊頁看到 relogin loop。
+    if (config.skipAuthRedirect || isAuthBootstrapRequest(config.url) || isAuthBootstrapPath()) {
+      return Promise.reject(err);
+    }
 
     // 先記住「是不是教練」，決定後續行為與導向。
     let wasCoach = false;
@@ -138,14 +173,14 @@ function delay(value, ms = 280) {
  * - 真實模式：呼叫後端，若收到 501（stub）→ 自動 fallback 到 mockFn
  */
 export async function callApi(path, options = {}, mockFn) {
-  const { method = 'get', data, params, headers } = options;
+  const { method = 'get', data, params, headers, skipAuthRedirect = false } = options;
 
   if (USE_MOCK) {
     return delay(typeof mockFn === 'function' ? mockFn() : mockFn);
   }
 
   try {
-    const res = await http.request({ url: path, method, data, params, headers });
+    const res = await http.request({ url: path, method, data, params, headers, skipAuthRedirect });
     return res.data;
   } catch (err) {
     const status = err?.response?.status;
