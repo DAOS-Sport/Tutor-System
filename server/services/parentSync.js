@@ -257,9 +257,15 @@ async function _queryWithLineUidRetry(client, sql, buildParams, lineUidForWrite,
     return r;
   } catch (err) {
     if (err.code === '23505' && err.constraint === 'parents_line_uid_key') {
-      if (hasSavepoint) await client.query('ROLLBACK TO SAVEPOINT sp_upsert_parent');
-      console.warn('[parent-sync] line_uid 已被其他家長持有（並發競態），本筆改以不帶 UID 重試 (phone=%s)', phone);
-      return client.query(sql, buildParams(''));
+      if (hasSavepoint) {
+        await client.query('ROLLBACK TO SAVEPOINT sp_upsert_parent');
+        console.warn('[parent-sync] line_uid 衝突（並發競態），ROLLBACK SAVEPOINT 後不帶 UID 重試 (phone=%s)', phone);
+        return client.query(sql, buildParams(''));
+      }
+      // 無 SAVEPOINT 時（如未在交易中）不嘗試在 ABORT 的 tx 上重試，
+      // 直接重拋讓呼叫端做 ROLLBACK；下一輪排程可補回這筆。
+      console.warn('[parent-sync] line_uid 衝突（無 SAVEPOINT），由呼叫端 ROLLBACK 處理 (phone=%s)', phone);
+      throw err;
     }
     throw err;
   }

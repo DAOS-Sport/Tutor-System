@@ -147,16 +147,26 @@ async function query(formPath, params = {}) {
 // 避免單次回應 payload 過大導致 timeout。回傳合併後的 records map（同 query() 形狀）。
 const RAGIC_PAGE_SIZE = Number(process.env.RAGIC_PAGE_SIZE) || 200;
 const RAGIC_MAX_PAGES = Number(process.env.RAGIC_MAX_PAGES) || 50; // 上限 10000 筆，足夠 H01/H05
-async function queryAllPaged(formPath, params = {}) {
+// 預設批次並發頁數：H01/H05 筆數少，1 即可；Z01 傳 3 加速拉取。
+async function queryAllPaged(formPath, params = {}, concurrency = 1) {
   const merged = {};
-  for (let page = 0; page < RAGIC_MAX_PAGES; page++) {
-    const offset = page * RAGIC_PAGE_SIZE;
-    const pageData = await query(formPath, { ...params, limit: RAGIC_PAGE_SIZE, offset });
-    if (!pageData || typeof pageData !== 'object') break;
-    const keys = Object.keys(pageData);
-    if (keys.length === 0) break;
-    Object.assign(merged, pageData);
-    if (keys.length < RAGIC_PAGE_SIZE) break; // 最後一頁
+  let page = 0;
+  while (page < RAGIC_MAX_PAGES) {
+    const batchSize = Math.min(concurrency, RAGIC_MAX_PAGES - page);
+    const offsets = Array.from({ length: batchSize }, (_, i) => (page + i) * RAGIC_PAGE_SIZE);
+    const pages = await Promise.all(
+      offsets.map((offset) => query(formPath, { ...params, limit: RAGIC_PAGE_SIZE, offset }))
+    );
+    let done = false;
+    for (const pageData of pages) {
+      if (!pageData || typeof pageData !== 'object') { done = true; break; }
+      const keys = Object.keys(pageData);
+      if (keys.length === 0) { done = true; break; }
+      Object.assign(merged, pageData);
+      if (keys.length < RAGIC_PAGE_SIZE) { done = true; break; } // 最後一頁
+    }
+    page += batchSize;
+    if (done) break;
   }
   return merged;
 }
@@ -222,7 +232,8 @@ async function getAllStaff() {
 // Z01：全量家長清單（Ragic → 本地每日全量拉取用；刻意不套 cached()，
 // 排程每次都要拿當下最新資料，語意同 getAllStaff 但不走 5 分鐘快取）
 async function getAllParents() {
-  return Object.values(await queryAllPaged(process.env.RAGIC_FORM_Z01));
+  // Z01 約 1500 筆；並發 3 頁同時拉，把循序 7 趟縮成 3 趟，大幅減少 Ragic 網路等待。
+  return Object.values(await queryAllPaged(process.env.RAGIC_FORM_Z01, {}, 3));
 }
 
 // 註（Task #95 政策定案）：H01 員工資料一律「Ragic → 系統」單向，本系統**不寫** H01。
