@@ -326,6 +326,11 @@ export default function StaffPage() {
             {r.login_active ? '可登入' : '已停用'}
           </StatusBadge>
         : <span className="text-gray-300 text-xs">無</span> },
+    // LINE UID（辨識碼）：地端實際綁定值，比照打卡系統顯示，供與 Ragic H01「個人LINE ID」核對是否同步。
+    { key: 'line_uid', label: 'LINE UID',
+      render: (r) => r.line_uid
+        ? <span className="font-mono text-xs text-brand-primary break-all" title={r.line_uid}>{r.line_uid}</span>
+        : <span className="text-gray-300 text-xs">尚未綁定</span> },
     { key: 'has_coach_profile', label: '教練資料', className: 'text-center',
       render: (r) => r.has_coach_profile
         ? (

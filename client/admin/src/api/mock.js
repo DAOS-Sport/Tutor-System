@@ -91,6 +91,8 @@ function withCoachProfile(row) {
     known_roles: Array.from(new Set([row.role, ...(hasCoachProfile ? ['coach'] : [])])),
     coach_id: coach?.id || null,
     coach_active: coach ? !!coach.is_active : false,
+    line_uid: coach?.line_uid || row.line_uid || null,
+    line_uid_source: coach?.line_uid ? 'coach' : (row.line_uid ? 'login' : null),
   };
 }
 

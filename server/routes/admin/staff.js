@@ -68,6 +68,10 @@ function rowToStaff(r) {
     has_login_account: !!r.login_user_id,
     login_username: r.login_username || null,
     login_active: r.login_user_id ? !!r.login_is_active : false,
+    // LINE UID（辨識碼）— 地端實際綁定值，供與 Ragic H01「個人LINE ID」核對是否同步。
+    // 教練 LIFF 綁定寫入 coaches.line_uid（Ragic 同步目標）；後台登入綁定寫入 admin_users.line_uid。
+    line_uid: r.coach_line_uid || r.login_line_uid || null,
+    line_uid_source: r.coach_line_uid ? 'coach' : (r.login_line_uid ? 'login' : null),
   };
 }
 
@@ -84,6 +88,7 @@ const STAFF_SELECT = `
          u.id AS login_user_id,
          u.username AS login_username,
          u.is_active AS login_is_active,
+         u.line_uid AS login_line_uid,
          COALESCE(
            (SELECT array_agg(sv.venue_id ORDER BY sv.venue_id)
               FROM admin_staff_venues sv WHERE sv.staff_id = s.id),
