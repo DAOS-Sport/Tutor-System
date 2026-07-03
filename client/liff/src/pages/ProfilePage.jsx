@@ -57,6 +57,7 @@ function syncErrMsg(e) {
     FIELD_REQUIRED: '請完成標示 ＊ 的必填欄位',
     EMAIL_INVALID: 'Email 格式有誤',
     VENUE_NOT_FOUND: '館別不存在，請重新選擇',
+    STUDENT_INACTIVE_CONTACT_COUNTER: '此學員曾由櫃台停用或移除，請聯絡客服協助恢復或重新建檔。',
     STUDENT_ID_DUPLICATED: '此身分證字號已有學員資料，請確認後再試；若需協助請聯絡客服。',
     STUDENT_ID_NUMBER_EXISTS: '此身分證字號已有學員資料，請確認後再試；若需協助請聯絡客服。',
     Z01_INCOMPLETE: '會員資料尚未完整，請完成必填欄位後再儲存。',
@@ -64,6 +65,8 @@ function syncErrMsg(e) {
     RAGIC_Z02_REFRESH_FAILED: '學員資料重新讀取失敗，請稍後再試。',
     RAGIC_TIMEOUT: 'Ragic 回應較慢，請稍後再試。',
     RAGIC_SYNC_FAILED: '資料暫時無法完成同步，請稍後再試。',
+    RAGIC_REFRESH_STUDENTS_INCOMPLETE: '學員資料已送出，系統正在同步，請稍後重新整理。',
+    LOCAL_STUDENT_REFRESH_FAILED: '學員資料已送出，本地同步尚未完成，請稍後重新整理。',
     Z03_RESOLVE_FAILED: '舊資料清理狀態更新失敗，請稍後再試。',
     PARENT_REFRESH_FAILED: '會員資料重新整理失敗，請稍後再試。',
   };
@@ -205,7 +208,11 @@ export default function ProfilePage() {
         updateAuth({ ...profile, students: nextStudents });
       }
       resetStudentForm();
-      toast.success(editingId ? '學員資料已更新' : '學員已新增');
+      if (result?.sync_status === 'refresh_pending') {
+        toast.warning('學員資料已送出，系統正在同步；若畫面未更新請稍後重新整理。', 4200);
+      } else {
+        toast.success(editingId ? '學員資料已更新' : '學員已新增');
+      }
     } catch (err) {
       toast.error(syncErrMsg(err));
     } finally {

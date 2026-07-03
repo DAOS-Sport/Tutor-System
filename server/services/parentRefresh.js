@@ -226,6 +226,7 @@ async function refreshParentMirrorFromRagic({
   return {
     local,
     students: localStudents,
+    ragicStudents: students,
     mapped,
     z01Row,
   };

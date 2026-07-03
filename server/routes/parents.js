@@ -25,6 +25,15 @@ const TW_PHONE = /^09\d{8}$/;
 const TW_ID = /^[A-Z][12]\d{8}$/;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const BLOOD_TYPES = new Set(['A', 'B', 'O', 'AB', '不清楚']);
+const STUDENT_REFRESH_PENDING_CODES = new Set([
+  'RAGIC_REFRESH_FAILED',
+  'RAGIC_REFRESH_NOT_FOUND',
+  'RAGIC_Z02_REFRESH_FAILED',
+  'RAGIC_TIMEOUT',
+  'RAGIC_HTTP_ERROR',
+  'RAGIC_REFRESH_STUDENTS_INCOMPLETE',
+  'LOCAL_STUDENT_REFRESH_FAILED',
+]);
 
 function cleanText(v, max = 255) {
   const s = String(v ?? '').trim();
@@ -50,6 +59,37 @@ function cleanStudentInput(body) {
     gender: cleanText(body?.gender, 20) || null,
     blood_type: cleanBloodType(body?.blood_type),
   };
+}
+
+function isoDate(v) {
+  if (!v) return '';
+  if (typeof v === 'string') return v.slice(0, 10).replace(/\//g, '-');
+  try { return new Date(v).toISOString().slice(0, 10); } catch { return ''; }
+}
+
+function sameStudentValue(a, b) {
+  return String(a || '').trim() === String(b || '').trim();
+}
+
+function ragicStudentMatchesExpected(rows, expected, ragicRecordId = null) {
+  if (!expected) return true;
+  const idNum = String(expected.id_number || '').trim().toUpperCase();
+  const rid = ragicRecordId ? String(ragicRecordId).trim() : '';
+  const found = (rows || []).find((row) => (
+    (rid && String(row?.ragic_record_id || '').trim() === rid) ||
+    (idNum && String(row?.id_number || '').trim().toUpperCase() === idNum)
+  ));
+  if (!found) return false;
+  if (!sameStudentValue(found.name, expected.name)) return false;
+  if (idNum && String(found.id_number || '').trim().toUpperCase() !== idNum) return false;
+  if (expected.birth_date && isoDate(found.birth_date) !== isoDate(expected.birth_date)) return false;
+  if (expected.gender && ragic.normalizeGender(found.gender) !== ragic.normalizeGender(expected.gender)) return false;
+  if (expected.blood_type && String(found.blood_type || '').trim() !== String(expected.blood_type || '').trim()) return false;
+  return true;
+}
+
+function isStudentRefreshPendingError(err) {
+  return STUDENT_REFRESH_PENDING_CODES.has(err?.code || '');
 }
 
 async function loadMe(parentId) {
@@ -134,6 +174,211 @@ function assertParentReadyForStrictSync(parent, lineUid) {
   });
 }
 
+async function parentForStrictStudentSync(parent, lineUid) {
+  const base = { ...parent, line_uid: parent.line_uid || lineUid || null };
+  try {
+    assertParentReadyForStrictSync(base, lineUid);
+    return base;
+  } catch (err) {
+    if (!(err instanceof ParentRefreshError) || err.code !== 'Z01_INCOMPLETE') throw err;
+  }
+
+  let z01Row = null;
+  try {
+    if (base.line_uid) z01Row = await ragic.getParentByLineUid(base.line_uid);
+    if (!z01Row && base.phone) z01Row = await ragic.getParentByPhone(base.phone);
+  } catch (lookupErr) {
+    console.warn('[student-sync] 本地家長資料不完整，Ragic 補查失敗', {
+      phone: base.phone,
+      code: lookupErr.code,
+      msg: lookupErr.message,
+    });
+  }
+
+  const mapped = ragic.mapZ01Parent(z01Row);
+  if (!mapped) {
+    assertParentReadyForStrictSync(base, lineUid);
+    return base;
+  }
+  if (base.phone && mapped.phone !== base.phone) {
+    const e = new ParentRefreshError('RAGIC_REFRESH_PHONE_MISMATCH', 'Ragic Z01 手機與目前登入帳號不一致', 502);
+    throw e;
+  }
+  if (base.line_uid && mapped.line_uid && mapped.line_uid !== base.line_uid) {
+    const e = new ParentRefreshError('RAGIC_REFRESH_UID_MISMATCH', 'Ragic Z01 LINE UID 與目前登入帳號不一致', 502);
+    throw e;
+  }
+
+  const merged = {
+    ...base,
+    ...mapped,
+    id: parent.id,
+    line_uid: mapped.line_uid || base.line_uid || null,
+    phone: mapped.phone || base.phone,
+    primary_venue_id: mapped.primary_venue_id || base.primary_venue_id,
+  };
+  assertParentReadyForStrictSync(merged, lineUid);
+  return merged;
+}
+
+async function persistStudentMirrorAfterRagic({ parentId, studentId = null, student, sync = null, markSynced = false }) {
+  const z02Id = sync?.z02?.ragicRecordId ? String(sync.z02.ragicRecordId) : null;
+  const parentRagicId = sync?.parentRagicRecordId ? String(sync.parentRagicRecordId) : null;
+  let savedId = studentId;
+  const syncedSql = markSynced ? 'NOW()' : 'NULL';
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    if (savedId) {
+      const current = await client.query(
+        `SELECT id FROM students WHERE id = $1 AND parent_id = $2 LIMIT 1`,
+        [savedId, parentId]
+      );
+      if (!current.rowCount) savedId = null;
+    }
+    if (!savedId && student.id_number) {
+      const existing = await client.query(
+        `SELECT id FROM students
+          WHERE parent_id = $1 AND id_number = $2 AND COALESCE(is_active, TRUE) = TRUE
+          LIMIT 1`,
+        [parentId, student.id_number]
+      );
+      if (existing.rowCount) savedId = existing.rows[0].id;
+    }
+    if (!savedId && z02Id) {
+      const existing = await client.query(
+        `SELECT id FROM students
+          WHERE parent_id = $1 AND ragic_record_id = $2 AND COALESCE(is_active, TRUE) = TRUE
+          LIMIT 1`,
+        [parentId, z02Id]
+      );
+      if (existing.rowCount) savedId = existing.rows[0].id;
+    }
+
+    if (z02Id) {
+      await client.query(
+        `UPDATE students
+            SET ragic_record_id = NULL, updated_at = NOW()
+          WHERE ragic_record_id = $1
+            AND ($2::uuid IS NULL OR id <> $2::uuid)`,
+        [z02Id, savedId || null]
+      );
+    }
+
+    if (savedId) {
+      const updated = await client.query(
+        `UPDATE students SET
+            name = $3,
+            id_number = $4,
+            birth_date = $5,
+            gender = $6,
+            blood_type = NULLIF($7, ''),
+            ragic_record_id = COALESCE($8, ragic_record_id),
+            last_synced_at = ${syncedSql},
+            updated_at = NOW()
+          WHERE id = $1 AND parent_id = $2`,
+        [savedId, parentId, student.name, student.id_number, student.birth_date, student.gender || null, student.blood_type || '', z02Id]
+      );
+      if (!updated.rowCount) savedId = null;
+    }
+    if (!savedId) {
+      const inserted = await client.query(
+        `INSERT INTO students
+           (parent_id, name, id_number, birth_date, gender, blood_type, ragic_record_id, is_active, last_synced_at)
+         VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),$7,TRUE,${syncedSql})
+         RETURNING id`,
+        [parentId, student.name, student.id_number, student.birth_date, student.gender || null, student.blood_type || '', z02Id]
+      );
+      savedId = inserted.rows[0]?.id || null;
+    }
+
+    if (parentRagicId) {
+      await client.query(
+        `UPDATE parents SET ragic_record_id = COALESCE($2, ragic_record_id), updated_at = NOW()
+          WHERE id = $1`,
+        [parentId, parentRagicId]
+      );
+    }
+    await client.query('COMMIT');
+    return savedId;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+async function refreshAfterStudentWrite(req, parent, {
+  minStudents,
+  reason,
+  expectedStudent = null,
+  studentId = null,
+  sync = null,
+} = {}) {
+  const pendingResponse = async (err) => {
+    if (expectedStudent) {
+      await persistStudentMirrorAfterRagic({
+        parentId: req.parent.id,
+        studentId,
+        student: expectedStudent,
+        sync,
+        markSynced: false,
+      });
+    }
+    const me = await loadMe(req.parent.id);
+    if (!me) throw err;
+    return {
+      ...me,
+      sync_status: 'refresh_pending',
+      sync_warning: err.code || 'PARENT_REFRESH_FAILED',
+    };
+  };
+
+  try {
+    const refreshed = await refreshParentMirrorFromRagic({
+      lineUid: req.parent.lineUid || parent.line_uid,
+      phone: parent.phone,
+      minStudents,
+      preservePending: true,
+      reason,
+    });
+    if (expectedStudent && !ragicStudentMatchesExpected(
+      refreshed.ragicStudents || [],
+      expectedStudent,
+      sync?.z02?.ragicRecordId || expectedStudent.ragic_record_id || null
+    )) {
+      throw new ParentRefreshError(
+        'RAGIC_REFRESH_STUDENTS_INCOMPLETE',
+        '重新讀取 Ragic 學員資料尚未收斂',
+        502
+      );
+    }
+    if (expectedStudent) {
+      await persistStudentMirrorAfterRagic({
+        parentId: req.parent.id,
+        studentId,
+        student: expectedStudent,
+        sync,
+        markSynced: true,
+      });
+      return await loadMe(refreshed.local.id);
+    }
+    return await loadMe(refreshed.local.id);
+  } catch (err) {
+    if (!isStudentRefreshPendingError(err)) throw err;
+    console.warn('[student-sync] Ragic 寫入成功，但刷新本地鏡像失敗；先回本地鏡像待下次收斂', {
+      reason,
+      phone: parent.phone,
+      code: err.code,
+      msg: err.message,
+    });
+    return pendingResponse(err);
+  }
+}
+
 // demo 哨兵帳號（bootstrap coreSchema seed：line_uid = 'demo:<phone>'，供 /liff/demo 帳密測試）：
 // /me 系列一律走「本地鏡像 only」——不寫 Ragic、不做嚴格刷新。理由：
 //  (1) 政策「Z01 不收未綁/測試資料」，demo 異動不得寫進 Ragic；
@@ -179,6 +424,7 @@ router.post('/me/sync', requireParent, async (req, res) => {
           phone: p.phone,
           reactivate: false,
           requireComplete: false,
+          preservePending: true,
           reason: 'parents-me-sync',
         });
       } catch (err) {
@@ -300,8 +546,7 @@ router.post('/me/students', requireParent, async (req, res) => {
       return res.status(201).json(await loadMe(req.parent.id));
     }
 
-    const parentForSync = { ...parent, line_uid: parent.line_uid || req.parent.lineUid || null };
-    assertParentReadyForStrictSync(parentForSync, req.parent.lineUid);
+    const parentForSync = await parentForStrictStudentSync(parent, req.parent.lineUid);
     const activeCount = Number(
       (await pool.query(
         `SELECT COUNT(*)::int AS n FROM students WHERE parent_id = $1 AND COALESCE(is_active, TRUE) = TRUE`,
@@ -317,6 +562,8 @@ router.post('/me/students', requireParent, async (req, res) => {
     );
     let expectedMin = activeCount + 1;
     let mergedExisting = false;
+    let sync = null;
+    let fallbackStudentId = null;
     if (dup.rowCount) {
       const existing = dup.rows[0];
       if (String(existing.parent_id) !== String(req.parent.id)) {
@@ -333,31 +580,32 @@ router.post('/me/students', requireParent, async (req, res) => {
       }
 
       mergedExisting = true;
+      fallbackStudentId = existing.id;
       expectedMin = activeCount;
       console.log('[student-sync] 新增學員比對到既有資料，改為嚴格更新', { parent: parent.name, phone: parent.phone, student: s.name });
-      const sync = await ragic.updateStudentZ01Z02Strict({
+      sync = await ragic.updateStudentZ01Z02Strict({
         parent: parentForSync,
         student: { ...existing, ...s, _match_id_number: existing.id_number },
       });
-      if (sync?.z02?.ragicRecordId) {
-        await pool.query(
-          `UPDATE students SET ragic_record_id = COALESCE(ragic_record_id, $2) WHERE id = $1`,
-          [existing.id, sync.z02.ragicRecordId]
-        );
-      }
     } else {
       console.log('[student-sync] 新增學員 start', { parent: parent.name, phone: parent.phone, student: s.name });
-      const sync = await ragic.createStudentZ01Z02Strict({ parent: parentForSync, student: s, startIndex: activeCount });
+      sync = await ragic.createStudentZ01Z02Strict({ parent: parentForSync, student: s, startIndex: activeCount });
       console.log('[student-sync] 新增學員 Ragic 同步完成', { z02: sync?.z02?.ragicRecordId });
     }
+    await persistStudentMirrorAfterRagic({
+      parentId: req.parent.id,
+      studentId: fallbackStudentId,
+      student: s,
+      sync,
+    });
 
-    const refreshed = await refreshParentMirrorFromRagic({
-      lineUid: req.parent.lineUid || parent.line_uid,
-      phone: parent.phone,
+    const me = await refreshAfterStudentWrite(req, parentForSync, {
       minStudents: expectedMin,
       reason: mergedExisting ? 'parent-student-merge-existing' : 'parent-student-create',
+      expectedStudent: s,
+      studentId: fallbackStudentId,
+      sync,
     });
-    const me = await loadMe(refreshed.local.id);
     const saved = (me?.students || []).find((row) => String(row.id_number || '').toUpperCase() === s.id_number);
     if (saved && !mergedExisting) {
       writeStudentAudit(pool, saved.id, 'create', { byUser: parent.name, byRole: 'parent' })
@@ -409,18 +657,17 @@ router.patch('/me/students/:id', requireParent, async (req, res) => {
       return res.json(await loadMe(req.parent.id));
     }
 
-    const parentForSync = { ...parent, line_uid: parent.line_uid || req.parent.lineUid || null };
-    assertParentReadyForStrictSync(parentForSync, req.parent.lineUid);
+    const parentForSync = await parentForStrictStudentSync(parent, req.parent.lineUid);
     const before = cur.rows[0];
     const syncStudent = { ...before, ...s, _match_id_number: before.id_number };
     console.log('[student-sync] 編輯學員 start', { parent: parent.name, phone: parent.phone, student: s.name, studentId: req.params.id });
     const sync = await ragic.updateStudentZ01Z02Strict({ parent: parentForSync, student: syncStudent });
-    if (sync?.z02?.ragicRecordId) {
-      await pool.query(
-        `UPDATE students SET ragic_record_id = COALESCE(ragic_record_id, $2) WHERE id = $1`,
-        [req.params.id, sync.z02.ragicRecordId]
-      );
-    }
+    await persistStudentMirrorAfterRagic({
+      parentId: req.parent.id,
+      studentId: req.params.id,
+      student: syncStudent,
+      sync,
+    });
     console.log('[student-sync] 編輯學員 Ragic 同步完成', { z02: sync?.z02?.ragicRecordId });
 
     const activeCount = Number(
@@ -429,13 +676,13 @@ router.patch('/me/students/:id', requireParent, async (req, res) => {
         [req.parent.id]
       )).rows[0]?.n || 0
     );
-    const refreshed = await refreshParentMirrorFromRagic({
-      lineUid: req.parent.lineUid || parent.line_uid,
-      phone: parent.phone,
+    const me = await refreshAfterStudentWrite(req, parentForSync, {
       minStudents: activeCount,
       reason: 'parent-student-update',
+      expectedStudent: syncStudent,
+      studentId: req.params.id,
+      sync,
     });
-    const me = await loadMe(refreshed.local.id);
 
     // 稽核：家長自己改學員資料，記錄實際變動欄位（不含身分證/血型以外的敏感值以外的判斷，
     // 這裡沿用既有欄位白名單）。best-effort：稽核寫入失敗不擋家長編輯本身。

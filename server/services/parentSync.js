@@ -422,6 +422,7 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
            FROM students
           WHERE parent_id = $1
             AND ragic_record_id IS NOT NULL
+            AND NOT ($4::boolean AND last_synced_at IS NULL)
             AND NOT (
               (array_length($2::text[], 1) IS NOT NULL AND ragic_record_id = ANY($2::text[]))
               OR
@@ -429,7 +430,7 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
                AND id_number IS NOT NULL
                AND UPPER(id_number) = ANY($3::text[]))
             )`,
-        [parentId, presentRagicIds, presentIdNums]
+        [parentId, presentRagicIds, presentIdNums, preservePending]
       );
       for (const row of candidates.rows) {
         await hardDeleteStudentIfSafe(client, row.id);

@@ -40,7 +40,10 @@ import SlotBookingPage from './pages/SlotBookingPage';
 function RequireAuth() {
   const { isAuthed } = useAuth();
   const location = useLocation();
-  if (!isAuthed) return <Navigate to="/login" state={{ from: location }} replace />;
+  const isCoachRoute = /\/coach(\b|\/|$)/.test(location.pathname || '');
+  if (!isAuthed) {
+    return <Navigate to={isCoachRoute ? '/coach-portal' : '/login'} state={{ from: location }} replace />;
+  }
   return <Outlet />;
 }
 
@@ -56,9 +59,8 @@ function RequireParent() {
 
 function RequireCoach() {
   const { role } = useAuth();
-  if (role === 'parent') return <Navigate to="/" replace />;
-  // 未登入教練 → 導去教練專屬登入頁（web OAuth + 30天 portal token 續登），
-  // 不可導去家長 /login（會觸發不適用的家長登入流程、或困在家長 LIFF）。
+  // 教練路由只接受 coach session。若同一個 LINE 目前殘留 parent session，
+  // 也必須進教練專屬登入頁重新跑 coaches/H01 驗證，不可導回家長首頁。
   if (role !== 'coach') return <Navigate to="/coach-portal" replace />;
   return <Outlet />;
 }
