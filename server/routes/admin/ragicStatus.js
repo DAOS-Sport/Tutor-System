@@ -91,14 +91,19 @@ router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, re
   // 推導 UI 狀態（spinner / 完成 / 錯誤），不再阻塞 HTTP request。
   // single-flight mutex（services/ragicAdmin.js _singleflight）會自動把
   // 重複觸發合併成同一個 Promise，避免 cron + 手動雙擊打爆 Ragic。
-  for (const j of jobs) {
-    const runner = JOB_RUNNERS[j];
-    setImmediate(() => {
-      runner('manual').catch((err) => {
+  // form=all 不能同時把所有全表 job 丟出去：backup / pull / quarantine 有業務順序，
+  // 並行會讓 Ragic 同時處理多個大查詢/寫入，現場看起來就是「同步很久」。
+  // 單一 job 仍照原行為背景執行；全部同步改在同一背景工作中依 ALL_JOBS 順序跑。
+  setImmediate(async () => {
+    for (const j of jobs) {
+      const runner = JOB_RUNNERS[j];
+      try {
+        await runner('manual');
+      } catch (err) {
         console.warn(`[ragic-status/sync] ${j} background failed:`, err.message);
-      });
-    });
-  }
+      }
+    }
+  });
   res.status(202).json({
     ok: true,
     accepted: true,

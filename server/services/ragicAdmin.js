@@ -41,6 +41,21 @@ function ragicEnabled() {
   }
 })();
 
+function _syncErrorMessage(err, context = {}) {
+  const parts = [];
+  if (context.ragicId) parts.push(`ragicId=${context.ragicId}`);
+  if (context.localId) parts.push(`localId=${context.localId}`);
+
+  if (err?.code === '23505') {
+    parts.push(`資料唯一鍵衝突${err.constraint ? ` (${err.constraint})` : ''}`);
+  } else if (err?.code) {
+    parts.push(`${err.code}: ${err.message || '同步失敗'}`);
+  } else {
+    parts.push(err?.message || String(err || '同步失敗'));
+  }
+  return parts.filter(Boolean).join(' — ');
+}
+
 // ─────────────────────────────────────────────────────────────
 // Task #66：staging 共用 helpers
 // 改造後 sync 不再直接 UPSERT 正式表，而是把差異寫進 ragic_staging_changes，
@@ -864,8 +879,9 @@ async function _backupParentsStudentsImpl() {
       await _backupParentToRagic(row);
       synced++;
     } catch (err) {
-      errors.push(err.message);
-      console.warn('[ragic-backup] parent sync failed (id=%s):', row.id, err.message);
+      const msg = _syncErrorMessage(err, { localId: row.id });
+      errors.push(msg);
+      console.warn('[ragic-backup] parent sync failed (id=%s): %s %s', row.id, msg, err.detail || '');
     }
   }
 
@@ -892,8 +908,9 @@ async function _backupParentsStudentsImpl() {
       await _backupStudentToRagic(row);
       synced++;
     } catch (err) {
-      errors.push(err.message);
-      console.warn('[ragic-backup] student sync failed (id=%s):', row.id, err.message);
+      const msg = _syncErrorMessage(err, { localId: row.id });
+      errors.push(msg);
+      console.warn('[ragic-backup] student sync failed (id=%s): %s %s', row.id, msg, err.detail || '');
     }
   }
 
@@ -1124,8 +1141,9 @@ async function _pullParentsStudentsImpl() {
         synced++;
       } catch (err) {
         await client.query('ROLLBACK').catch(() => {});
-        errors.push(err.message);
-        console.warn('[ragic-pull] parent sync failed (ragicId=%s):', z01Row._ragicId, err.message);
+        const msg = _syncErrorMessage(err, { ragicId: z01Row._ragicId });
+        errors.push(msg);
+        console.warn('[ragic-pull] parent sync failed (ragicId=%s): %s %s', z01Row._ragicId, msg, err.detail || '');
       }
     }
 
@@ -1816,8 +1834,9 @@ async function _quarantineBadZ01NamesImpl() {
       );
       tracked++;
     } catch (err) {
-      errors.push(err.message);
-      console.warn('[ragic-quarantine] track failed (ragicId=%s):', z01Row._ragicId, err.message);
+      const msg = _syncErrorMessage(err, { ragicId: z01Row._ragicId });
+      errors.push(msg);
+      console.warn('[ragic-quarantine] track failed (ragicId=%s): %s %s', z01Row._ragicId, msg, err.detail || '');
     }
   }
 
