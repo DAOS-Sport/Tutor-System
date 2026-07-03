@@ -1297,9 +1297,16 @@ async function _upgradeZ03RecordToZ01(row, adminUsername) {
     [ragic.FIELD.Z01.EMAIL]: parent.email,
   };
 
-  // Z03 人工整理不允許手填 LINE UID；登入綁定流程會自動寫入。
-  // 此處只把可人工核對的核心欄位回寫 Ragic，並刻意不碰住家電話、LINE ID、
-  // 住家地址、LINE 對話網址等非核對欄位。
+  // 若本地 Z03 已有 LINE UID（家長登入後自動寫入），一併回寫 Ragic Z01。
+  // 不寫則每日 01:00 pull 讀到 Ragic 仍無 UID → 再次被分流回 Z03 → 永遠卡住。
+  // upsertParentStrict 的條件：`payloadLineUid || !ragicRecordId` → 需在 payload
+  // 裡明確帶上 UID 它才會寫入（有 ragicRecordId 的更新不自動補 UID）。
+  const realUid = parent.line_uid &&
+    !parent.line_uid.startsWith('demo:') &&
+    !parent.line_uid.startsWith('DEMOTEST_')
+    ? parent.line_uid : '';
+  if (realUid) payload[ragic.FIELD.Z01.LINE_UID] = realUid;
+
   await ragic.upsertParentStrict(payload, parent.ragic_record_id);
 
   for (const student of students) {
