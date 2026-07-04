@@ -1,0 +1,756 @@
+<title>Route 權限凍結清冊 · 家教課程系統</title>
+<style>
+  :root{
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang TC","Microsoft JhengHei","Noto Sans TC",Roboto,sans-serif;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Roboto Mono",monospace;
+    --paper:#EEF1F5; --surface:#FFFFFF; --surface-2:#F4F6F9; --surface-3:#E9EDF2;
+    --ink:#171C24; --ink-2:#48515F; --ink-3:#767F8D;
+    --line:#D9DFE7; --line-2:#C6CDD7;
+    --accent:#2F5C8A; --accent-2:#3E7ABF; --accent-soft:#E5EDF6;
+    --crit:#AE362F; --crit-bg:#F6E4E2; --crit-line:#E4B3AE;
+    --warn:#8C610F; --warn-bg:#F5ECD6; --warn-line:#E1CB98;
+    --ok:#256B4C; --ok-bg:#DEEFE7; --ok-line:#A9D6BF;
+    --shadow:0 1px 2px rgba(20,28,40,.06),0 4px 16px rgba(20,28,40,.05);
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --paper:#0E1219; --surface:#161C25; --surface-2:#1B222C; --surface-3:#222B37;
+      --ink:#E8ECF2; --ink-2:#AEB7C4; --ink-3:#79828F;
+      --line:#28303B; --line-2:#333D4A;
+      --accent:#6CA0D6; --accent-2:#8CB8E4; --accent-soft:#1A2836;
+      --crit:#E68B83; --crit-bg:#361F1D; --crit-line:#5A2F2B;
+      --warn:#DCA845; --warn-bg:#302713; --warn-line:#544525;
+      --ok:#68C099; --ok-bg:#16281F; --ok-line:#284D3C;
+      --shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.25);
+    }
+  }
+  :root[data-theme="light"]{
+    --paper:#EEF1F5; --surface:#FFFFFF; --surface-2:#F4F6F9; --surface-3:#E9EDF2;
+    --ink:#171C24; --ink-2:#48515F; --ink-3:#767F8D;
+    --line:#D9DFE7; --line-2:#C6CDD7;
+    --accent:#2F5C8A; --accent-2:#3E7ABF; --accent-soft:#E5EDF6;
+    --crit:#AE362F; --crit-bg:#F6E4E2; --crit-line:#E4B3AE;
+    --warn:#8C610F; --warn-bg:#F5ECD6; --warn-line:#E1CB98;
+    --ok:#256B4C; --ok-bg:#DEEFE7; --ok-line:#A9D6BF;
+    --shadow:0 1px 2px rgba(20,28,40,.06),0 4px 16px rgba(20,28,40,.05);
+  }
+  :root[data-theme="dark"]{
+    --paper:#0E1219; --surface:#161C25; --surface-2:#1B222C; --surface-3:#222B37;
+    --ink:#E8ECF2; --ink-2:#AEB7C4; --ink-3:#79828F;
+    --line:#28303B; --line-2:#333D4A;
+    --accent:#6CA0D6; --accent-2:#8CB8E4; --accent-soft:#1A2836;
+    --crit:#E68B83; --crit-bg:#361F1D; --crit-line:#5A2F2B;
+    --warn:#DCA845; --warn-bg:#302713; --warn-line:#544525;
+    --ok:#68C099; --ok-bg:#16281F; --ok-line:#284d3c;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.25);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);
+    font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+  .wrap{max-width:1160px;margin:0 auto;padding:0 22px}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  code,.mono{font-family:var(--mono)}
+  h1,h2,h3{text-wrap:balance;line-height:1.25;margin:0}
+
+  /* header */
+  header.top{background:
+      linear-gradient(180deg,var(--surface),var(--surface-2));
+    border-bottom:1px solid var(--line)}
+  .masthead{padding:40px 0 28px}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--accent);font-weight:600}
+  h1{font-size:clamp(26px,4vw,40px);font-weight:700;letter-spacing:-.01em;margin:12px 0 10px}
+  .lede{color:var(--ink-2);max-width:64ch;font-size:16px}
+  .meta{margin-top:16px;display:flex;flex-wrap:wrap;gap:8px 18px;font-family:var(--mono);
+    font-size:12.5px;color:var(--ink-3)}
+  .meta b{color:var(--ink-2);font-weight:600}
+
+  /* stat strip */
+  .stats{display:grid;grid-template-columns:repeat(6,1fr);gap:1px;background:var(--line);
+    border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-top:26px}
+  .stat{background:var(--surface);padding:14px 16px}
+  .stat .n{font-family:var(--mono);font-size:24px;font-weight:600;letter-spacing:-.02em;
+    font-variant-numeric:tabular-nums}
+  .stat .l{font-size:11.5px;color:var(--ink-3);margin-top:2px;line-height:1.3}
+  .stat.crit .n{color:var(--crit)} .stat.warn .n{color:var(--warn)} .stat.accent .n{color:var(--accent)}
+  @media (max-width:820px){.stats{grid-template-columns:repeat(3,1fr)}}
+  @media (max-width:460px){.stats{grid-template-columns:repeat(2,1fr)}}
+
+  /* sticky nav */
+  nav.toc{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--surface) 88%,transparent);
+    backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+  nav.toc .wrap{display:flex;gap:2px;overflow-x:auto;padding:0 22px;scrollbar-width:thin}
+  nav.toc a{white-space:nowrap;padding:11px 12px;font-size:13px;color:var(--ink-2);
+    border-bottom:2px solid transparent;font-weight:500}
+  nav.toc a:hover{color:var(--ink);text-decoration:none}
+  nav.toc a.active{color:var(--accent);border-bottom-color:var(--accent)}
+  nav.toc a b{font-family:var(--mono);color:var(--ink-3);font-weight:600;margin-right:5px;font-size:12px}
+
+  /* section */
+  section{padding:44px 0;border-bottom:1px solid var(--line)}
+  .sec-head{margin-bottom:22px}
+  .sec-num{font-family:var(--mono);font-size:12.5px;color:var(--accent);font-weight:600;letter-spacing:.1em}
+  h2{font-size:clamp(20px,2.6vw,26px);font-weight:700;margin:6px 0 8px;letter-spacing:-.01em}
+  .sec-sub{color:var(--ink-2);max-width:74ch}
+  h3{font-size:16px;font-weight:670;margin:28px 0 12px;color:var(--ink);
+    display:flex;align-items:center;gap:9px}
+  h3 .tag{font-family:var(--mono);font-size:11px;font-weight:600;color:var(--ink-3);
+    background:var(--surface-3);padding:2px 7px;border-radius:5px;letter-spacing:.02em}
+
+  /* callout */
+  .callout{background:var(--accent-soft);border:1px solid var(--line);border-left:3px solid var(--accent);
+    border-radius:10px;padding:15px 18px;margin:18px 0;color:var(--ink)}
+  .callout .k{font-weight:670;display:block;margin-bottom:4px}
+  .callout.q{border-left-color:var(--warn);background:var(--warn-bg)}
+
+  /* tables */
+  .scroll{overflow-x:auto;border:1px solid var(--line);border-radius:11px;box-shadow:var(--shadow);
+    margin:16px 0;background:var(--surface)}
+  table{border-collapse:collapse;width:100%;font-size:13.5px}
+  th,td{text-align:left;padding:9px 13px;border-bottom:1px solid var(--line);vertical-align:top}
+  thead th{background:var(--surface-2);font-size:11.5px;letter-spacing:.05em;text-transform:uppercase;
+    color:var(--ink-3);font-weight:650;position:sticky;top:0;white-space:nowrap}
+  tbody tr:last-child td{border-bottom:none}
+  tbody tr:hover{background:var(--surface-2)}
+  td.mono,th.mono{font-family:var(--mono);font-size:12.5px}
+  td .path{font-family:var(--mono);font-size:12.5px;color:var(--ink)}
+  .muted{color:var(--ink-3)}
+  .nowrap{white-space:nowrap}
+  .center{text-align:center}
+  td.yes{color:var(--ok);font-weight:700;text-align:center}
+  td.no{color:var(--ink-3);text-align:center}
+  td.ro{color:var(--warn);font-weight:600;text-align:center;font-size:12px}
+
+  /* method pills */
+  .m{font-family:var(--mono);font-size:11px;font-weight:700;padding:1px 6px;border-radius:4px;
+    letter-spacing:.03em}
+  .m.get{background:var(--ok-bg);color:var(--ok)}
+  .m.post{background:var(--accent-soft);color:var(--accent)}
+  .m.patch,.m.put{background:var(--warn-bg);color:var(--warn)}
+  .m.del{background:var(--crit-bg);color:var(--crit)}
+  .m.all{background:var(--surface-3);color:var(--ink-2)}
+
+  /* risk badge */
+  .r{display:inline-block;font-family:var(--mono);font-size:11px;font-weight:700;
+    padding:1px 7px;border-radius:20px;letter-spacing:.02em;white-space:nowrap}
+  .r.c{background:var(--crit-bg);color:var(--crit);border:1px solid var(--crit-line)}
+  .r.w{background:var(--warn-bg);color:var(--warn);border:1px solid var(--warn-line)}
+  .r.g{background:var(--ok-bg);color:var(--ok);border:1px solid var(--ok-line)}
+  .r.n{background:var(--surface-3);color:var(--ink-2);border:1px solid var(--line-2)}
+
+  /* role chip */
+  .role{display:inline-block;font-family:var(--mono);font-size:11px;font-weight:650;
+    padding:1px 6px;border-radius:5px;margin:1px 2px 1px 0;border:1px solid var(--line-2);
+    background:var(--surface-2);color:var(--ink-2)}
+  .role.a{background:var(--accent-soft);color:var(--accent);border-color:var(--accent)}
+
+  /* finding cards */
+  .find{border:1px solid var(--line);border-left-width:4px;border-radius:10px;background:var(--surface);
+    padding:16px 18px;margin:14px 0;box-shadow:var(--shadow)}
+  .find.c{border-left-color:var(--crit)}
+  .find.w{border-left-color:var(--warn)}
+  .find.g{border-left-color:var(--ok-line)}
+  .find .fh{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+  .find .fid{font-family:var(--mono);font-size:12px;font-weight:700;color:var(--ink-3)}
+  .find .ft{font-weight:680;font-size:15.5px}
+  .find .loc{font-family:var(--mono);font-size:12px;color:var(--accent);margin-top:2px}
+  .find p{margin:7px 0 0;color:var(--ink-2);font-size:14px}
+  .find .fix{margin-top:9px;font-size:13.5px;color:var(--ink);
+    border-top:1px dashed var(--line);padding-top:9px}
+  .find .fix b{color:var(--ok)}
+
+  /* role cards */
+  .rolegrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:14px;margin-top:8px}
+  .rc{border:1px solid var(--line);border-radius:11px;padding:15px 16px;background:var(--surface);
+    box-shadow:var(--shadow)}
+  .rc .rn{font-family:var(--mono);font-weight:700;font-size:15px;color:var(--accent);margin-bottom:2px}
+  .rc .rd{font-size:12px;color:var(--ink-3);margin-bottom:9px}
+  .rc ul{margin:0;padding-left:16px;font-size:13px;color:var(--ink-2)}
+  .rc li{margin:3px 0}
+
+  /* flow */
+  .flow{background:var(--surface);border:1px solid var(--line);border-radius:11px;padding:6px 4px;
+    margin:14px 0;overflow-x:auto;box-shadow:var(--shadow)}
+  .flow pre{margin:0;padding:14px 18px;font-family:var(--mono);font-size:12.5px;line-height:1.7;
+    color:var(--ink-2);white-space:pre}
+  .flow pre b{color:var(--accent);font-weight:600}
+  .flow pre .ok{color:var(--ok)} .flow pre .no{color:var(--crit)} .flow pre .cm{color:var(--ink-3)}
+
+  /* phase plan */
+  .phase{display:grid;grid-template-columns:auto 1fr;gap:0 20px;margin:16px 0}
+  .phase .pn{font-family:var(--mono);font-size:13px;font-weight:700;color:var(--surface);
+    background:var(--accent);width:30px;height:30px;border-radius:8px;display:grid;place-items:center}
+  .phase .pcol{position:relative}
+  .phase .pcol::before{content:"";position:absolute;left:-35px;top:30px;bottom:-16px;width:2px;
+    background:var(--line-2)}
+  .phase:last-child .pcol::before{display:none}
+  .phase .pt{font-weight:680;font-size:15px;margin-bottom:3px}
+  .phase .pb{color:var(--ink-2);font-size:14px;margin-bottom:20px}
+  .phase .pb .lab{font-family:var(--mono);font-size:11px;background:var(--surface-3);
+    padding:1px 6px;border-radius:4px;color:var(--ink-3);margin-left:6px}
+
+  ul.clean{margin:10px 0;padding-left:0;list-style:none}
+  ul.clean li{padding:7px 0 7px 22px;position:relative;border-bottom:1px solid var(--line);color:var(--ink-2);font-size:14px}
+  ul.clean li:last-child{border-bottom:none}
+  ul.clean li::before{content:"▸";position:absolute;left:2px;color:var(--accent);font-size:12px;top:9px}
+  ul.clean li b{color:var(--ink)}
+
+  footer{padding:34px 0 60px;color:var(--ink-3);font-size:13px}
+  footer .mono{font-size:12px}
+  .pill-legend{display:flex;flex-wrap:wrap;gap:8px 14px;font-size:12px;color:var(--ink-3);margin-top:10px}
+  @media (max-width:640px){
+    .masthead{padding:30px 0 22px}
+    section{padding:34px 0}
+    .phase{grid-template-columns:auto 1fr;gap:0 14px}
+    .phase .pcol::before{left:-29px}
+  }
+  @media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
+  html{scroll-behavior:smooth;scroll-padding-top:52px}
+</style>
+
+<header class="top">
+  <div class="wrap masthead">
+    <div class="eyebrow">Route · 權限 · 資料流 稽核清冊</div>
+    <h1>家教課程系統 — 路由與權限凍結清冊</h1>
+    <p class="lede">為「把 route 流向寫死拍板」而做的完整盤點：每一支後端路由、每一個前端頁面、每一種角色、每一項孤兒與死程式碼，全部攤在同一張圖上，作為凍結專案的唯一依據。本輪純盤點，未修改任何程式碼。</p>
+    <div class="meta">
+      <span><b>範圍</b> server/routes · client/admin · client/liff</span>
+      <span><b>方法</b> 9 個子代理逐行閱讀 + grep 交叉驗證 + route-audit.js</span>
+      <span><b>日期</b> 2026-07-03</span>
+      <span><b>狀態</b> 盤點完成 · 待拍板</span>
+    </div>
+    <div class="stats">
+      <div class="stat accent"><div class="n">5</div><div class="l">登入角色<br>admin/manager/staff/parent/coach</div></div>
+      <div class="stat"><div class="n">~218</div><div class="l">後端 API endpoint</div></div>
+      <div class="stat"><div class="n">33</div><div class="l">admin 後台頁面</div></div>
+      <div class="stat"><div class="n">31</div><div class="l">LIFF 家長/教練頁面</div></div>
+      <div class="stat crit"><div class="n">2</div><div class="l">🔴 高風險（可執行攻擊）</div></div>
+      <div class="stat warn"><div class="n">20+</div><div class="l">孤兒 / 死碼 / 待拍板項</div></div>
+    </div>
+  </div>
+</header>
+
+<nav class="toc">
+  <div class="wrap">
+    <a href="#roles"><b>01</b>角色</a>
+    <a href="#matrix"><b>02</b>頁面權限矩陣</a>
+    <a href="#routes"><b>03</b>Route 全清冊</a>
+    <a href="#flow"><b>04</b>登入流向</a>
+    <a href="#risks"><b>05</b>風險清單</a>
+    <a href="#orphans"><b>06</b>孤兒／死碼</a>
+    <a href="#freeze"><b>07</b>凍結計畫</a>
+    <a href="#decide"><b>08</b>待你拍板</a>
+  </div>
+</nav>
+
+<main class="wrap">
+
+<!-- ===== 01 ROLES ===== -->
+<section id="roles">
+  <div class="sec-head">
+    <div class="sec-num">§ 01</div>
+    <h2>角色總覽</h2>
+    <p class="sec-sub">系統有兩個獨立前端，各自的角色體系不同。<b>關鍵：coach 不是後台登入角色</b>——它只是員工資料表 role 欄位的一個值，教練本人一律走 LIFF，永遠進不了 admin 後台（最外層 <code>RequireAuth roles=['admin','manager','staff']</code> 會擋掉）。</p>
+  </div>
+  <div class="rolegrid">
+    <div class="rc"><div class="rn">admin</div><div class="rd">系統管理員 · 後台</div>
+      <ul><li>後台 33 頁全開</li><li>唯一能碰 settings / staff / venues / 關鍵字 / 門檻 / Ragic 系統設定</li><li>後端多數寫入的最終權限</li></ul></div>
+    <div class="rc"><div class="rn">manager</div><div class="rd">主管 · 後台</div>
+      <ul><li>後台 24 頁</li><li>報表 / 退費 / 轉讓 / 優惠 / 考核可碰</li><li>看不到 8 個 admin-only 系統設定頁</li></ul></div>
+    <div class="rc"><div class="rn">staff</div><div class="rd">行政櫃檯 · 後台</div>
+      <ul><li>後台 13 頁</li><li>對帳 / 建檔 / 簽到 / 客戶資料</li><li>復活頁唯讀（歸還鈕隱藏）</li></ul></div>
+    <div class="rc"><div class="rn">parent</div><div class="rd">家長 · LIFF</div>
+      <ul><li>LINE 登入，12h JWT</li><li>報名 / 團購 / 付款 / 轉讓 / 學習歷程</li><li>每次請求即時查 is_active</li></ul></div>
+    <div class="rc"><div class="rn">coach</div><div class="rd">教練 · LIFF（非後台）</div>
+      <ul><li>LINE OAuth，走 /coach-portal</li><li>課表 / 簽到 / 課前規劃 / 授課記錄</li><li>JWT <b>不</b>查 is_active（見風險）</li></ul></div>
+  </div>
+</section>
+
+<!-- ===== 02 MATRIX ===== -->
+<section id="matrix">
+  <div class="sec-head">
+    <div class="sec-num">§ 02</div>
+    <h2>頁面權限矩陣</h2>
+    <p class="sec-sub">前端 Sidebar 選單與 App.jsx route guard 已逐條比對<b>完全一致</b>（沒有「選單藏了但網址進得去」）。但有數處「頁面進得去、功能鈕靠元件內判斷」的細粒度鎖，只鎖路由會漏——已於下表標記。</p>
+  </div>
+
+  <h3>後台頁面 · admin / manager / staff <span class="tag">client/admin · App.jsx</span></h3>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>頁面（路由）</th><th class="center">A</th><th class="center">M</th><th class="center">S</th><th>細粒度鎖 / 備註</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">/dashboard 今日總覽</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="muted">—</td></tr>
+        <tr><td class="mono">/reports 營運報表</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td><td class="muted">—</td></tr>
+        <tr><td class="mono">/settings 全域設定</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td><td class="muted">admin-only</td></tr>
+        <tr><td class="mono">/staff 員工帳號</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td><td class="muted">admin-only</td></tr>
+        <tr><td class="mono">/venues 場館設定</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td><td class="muted">admin-only · 含收款帳戶</td></tr>
+        <tr><td class="mono">/course-intros 課程介紹</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td><td class="muted">—</td></tr>
+        <tr><td class="mono">/course-types 課程需求</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td><td class="muted">admin-only · 定價唯一來源</td></tr>
+        <tr><td class="mono">/group-orders 團購審核</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="ro">核准/退回鈕對 staff 未擋（靠後端）</td></tr>
+        <tr><td class="mono">/ragic-status 連線狀態</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td><td class="muted">admin-only</td></tr>
+        <tr><td class="mono">/ragic-staging 待審核</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td><td class="muted">admin-only</td></tr>
+        <tr><td class="mono">/ragic-z03 舊資料整理</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="muted">—</td></tr>
+        <tr><td class="mono">/customer-parents Z01 家長</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="ro">無角色閘 · staff 可改 PII</td></tr>
+        <tr><td class="mono">/customer-students Z02 學員</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="ro">無角色閘 · reveal 解遮罩</td></tr>
+        <tr><td class="mono">/manual-enroll 手動建檔</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="muted">—</td></tr>
+        <tr><td class="mono">/reconcile 待對帳</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="ro">canReconcile 寫死 true · 前端不分角色</td></tr>
+        <tr><td class="mono">/enrollments 所有報名</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="muted">—</td></tr>
+        <tr><td class="mono">/refund 退課處理</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td><td class="muted">—</td></tr>
+        <tr><td class="mono">/transfers 轉讓審核</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td><td class="muted">—</td></tr>
+        <tr><td class="mono">/sessions 上課紀錄</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="muted">—</td></tr>
+        <tr><td class="mono">/checkin 簽到驗證</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="muted">WebSocket /ws/admin</td></tr>
+        <tr><td class="mono">/revive 扣課復活</td><td class="yes">✓</td><td class="yes">✓</td><td class="ro">唯讀</td><td class="ro">歸還鈕對 staff 隱藏</td></tr>
+        <tr><td class="mono">/chat-logs 聊天紀錄</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td><td class="muted">—</td></tr>
+        <tr><td class="mono">/alerts 關鍵字警示</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td><td class="ro">後端仍放行 staff（與註解矛盾）</td></tr>
+        <tr><td class="mono">/keywords 關鍵字管理</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td><td class="muted">admin-only</td></tr>
+        <tr><td class="mono">/promotions 優惠活動</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td><td class="muted">—</td></tr>
+        <tr><td class="mono">/promotions-active 進行中優惠</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="muted">唯讀</td></tr>
+        <tr><td class="mono">/mgm-stats MGM 統計</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td><td class="ro">venueId 未收斂 · 可跨館</td></tr>
+        <tr><td class="mono">/tags 標籤庫</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td><td class="ro">刪分類鈕限 admin</td></tr>
+        <tr><td class="mono">/coach-eval 教練考核</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td><td class="ro">無場館過濾</td></tr>
+        <tr><td class="mono">/eval-threshold 考核門檻</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td><td class="muted">admin-only</td></tr>
+        <tr><td class="mono">/coach-intros-review 介紹送審</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td><td class="muted">—</td></tr>
+        <tr><td class="mono">/sop 操作手冊</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="muted">靜態 · 無 RequireAuth</td></tr>
+        <tr><td class="mono">/coaches → 轉址</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="ro">無選單、無專屬 guard · 導去 /staff</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>LIFF 頁面 · 家長 / 教練 / 公開 <span class="tag">client/liff · App.jsx</span></h3>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>頁面（路由）</th><th class="nowrap">端</th><th>登入需求</th><th>功能</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">/login</td><td>家長</td><td class="muted">公開</td><td>LINE 登入 / 綁手機 / 認領</td></tr>
+        <tr><td class="mono">/register</td><td>家長</td><td class="muted">公開</td><td>家長+學員註冊、MGM 綁定</td></tr>
+        <tr><td class="mono">/coach-portal</td><td>教練</td><td class="muted">公開</td><td>教練 LINE OAuth / 姓名綁定 / 續登</td></tr>
+        <tr><td class="mono">/demo</td><td>共用</td><td class="ro">dev-only</td><td>帳密繞過 LINE 測試登入</td></tr>
+        <tr><td class="mono">/group/join/:token</td><td>家長</td><td class="muted">公開瀏覽</td><td>免登入看團購、登入後加入</td></tr>
+        <tr><td class="mono">/ 首頁</td><td>家長</td><td>家長 JWT</td><td>優惠 / 課程組別 / 未完成團購提醒</td></tr>
+        <tr><td class="mono">/my-courses</td><td>家長</td><td>家長 JWT</td><td>我的課程清單</td></tr>
+        <tr><td class="mono">/my-lessons</td><td>家長</td><td>家長 JWT</td><td>上課記錄 / 簽到 / 內嵌預約</td></tr>
+        <tr><td class="mono">/profile</td><td>家長</td><td>家長 JWT</td><td>家長 / 學員個資編輯</td></tr>
+        <tr><td class="mono">/venue · /coaches</td><td>家長</td><td>家長 JWT</td><td>選場館 / 選教練</td></tr>
+        <tr><td class="mono">/enroll · /enroll-status/:id</td><td>家長</td><td>家長 JWT</td><td>報名+折價券 / 上傳匯款證明</td></tr>
+        <tr><td class="mono">/group/new · /group/:id</td><td>家長</td><td>家長 JWT</td><td>發起團購 / 狀態送審付款</td></tr>
+        <tr><td class="mono">/course/:id</td><td>家長</td><td>家長 JWT</td><td>已開通課程詳情</td></tr>
+        <tr><td class="mono">/history/:periodId</td><td>家長</td><td>家長 JWT</td><td>學習歷程 <span class="r c">見風險 R2</span></td></tr>
+        <tr><td class="mono">/book-slot/:periodId</td><td>家長</td><td>家長 JWT</td><td>選上課時段</td></tr>
+        <tr><td class="mono">/evaluation/:id</td><td>家長</td><td>家長 JWT</td><td>期末評鑑</td></tr>
+        <tr><td class="mono">/referral · /transfer/new</td><td>家長</td><td>家長 JWT</td><td>MGM 推薦 / 轉讓申請</td></tr>
+        <tr><td class="mono">/chat · /chat/:roomId</td><td>共用</td><td>家長或教練 JWT</td><td>聊天室列表 / 對話</td></tr>
+        <tr><td class="mono">/coach 今日</td><td>教練</td><td>教練 JWT</td><td>今日課程</td></tr>
+        <tr><td class="mono">/coach/schedule</td><td>教練</td><td>教練 JWT</td><td>排課總表 + 槽位管理</td></tr>
+        <tr><td class="mono">/coach/students</td><td>教練</td><td>教練 JWT</td><td>近兩週學員彙整</td></tr>
+        <tr><td class="mono">/coach/profile</td><td>教練</td><td>教練 JWT</td><td>個人介紹與媒體</td></tr>
+        <tr><td class="mono">/coach/session/:id</td><td>教練</td><td>教練 JWT</td><td>授課入口 / 代簽到</td></tr>
+        <tr><td class="mono">/coach/plan/:periodId</td><td>教練</td><td>教練 JWT</td><td>課前規劃</td></tr>
+        <tr><td class="mono">/coach/record/:sessionId</td><td>教練</td><td>教練 JWT</td><td>授課記錄</td></tr>
+        <tr><td class="mono">/enroll-success</td><td>家長</td><td class="ro">無法到達</td><td>報名成功頁 <span class="r n">孤兒路由</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ===== 03 ROUTES ===== -->
+<section id="routes">
+  <div class="sec-head">
+    <div class="sec-num">§ 03</div>
+    <h2>後端 Route 全清冊</h2>
+    <p class="sec-sub">按掛載點分組。<b>根因提醒：</b>auth 有四種掛法並存（檔頂 <code>router.use</code> 統一掛 / 每條行內掛 / handler 內自驗 / 公開），且 <code>admin.js</code> 掛載處<b>沒有</b>全域 auth——25 個子模組目前都「有記得自己掛」，但這是靠自律，不是框架保證。這正是要「寫死」的第一刀。</p>
+    <div class="pill-legend">
+      <span><span class="r c">🔴</span> 可執行攻擊</span>
+      <span><span class="r w">🟡</span> 越權/完整性/不一致</span>
+      <span><span class="r g">🟢</span> 低/設計確認</span>
+      <span><span class="role a">admin</span> 角色要求</span>
+      <span>場館範圍 <b style="color:var(--ok)">✓</b>=有收斂</span>
+    </div>
+  </div>
+
+  <h3>家長端 · 核心金流 <span class="tag">/api/auth · /parents · /enrollments · /group-orders · /transfers · /uploads · /promotions</span></h3>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Endpoint</th><th>Auth</th><th>備註 / 風險</th></tr></thead>
+      <tbody>
+        <tr><td><span class="m post">POST</span> <span class="path">/auth/parent-line-login</span></td><td class="muted">公開</td><td>LINE id_token 登入</td></tr>
+        <tr><td><span class="m post">POST</span> <span class="path">/auth/parent-bind-phone</span></td><td class="muted">公開</td><td>綁手機 / 認領（姓名+登記手機雙因子）</td></tr>
+        <tr><td><span class="m post">POST</span> <span class="path">/auth/parent-register-line</span></td><td class="muted">公開</td><td>LINE 註冊</td></tr>
+        <tr><td><span class="m post">POST</span> <span class="path">/auth/demo-login</span></td><td class="muted">flag</td><td><span class="r w">🟡</span> 缺 NODE_ENV 強制關閉（見 R10）· 含固定密碼</td></tr>
+        <tr><td><span class="m post">POST</span> <span class="path">/auth/parent-login</span></td><td class="muted">flag</td><td><span class="r n">legacy</span> 未開旗標即 410</td></tr>
+        <tr><td><span class="m get">GET</span> <span class="path">/parents/me</span> · <span class="path">/me/sync</span></td><td>requireParent</td><td>讀自己 / 拉 Ragic 同步</td></tr>
+        <tr><td><span class="m patch">PATCH</span> <span class="path">/parents/me</span> · <span class="m post">POST/PATCH</span> <span class="path">/me/students</span></td><td>requireParent</td><td><span class="r g">🟢</span> id_number 全域查重 oracle（R13）</td></tr>
+        <tr><td><span class="m del">DEL</span> <span class="path">/parents/me/students/:id</span></td><td>requireParent</td><td class="muted">恆 405（防禦殼）</td></tr>
+        <tr><td><span class="m post">POST</span> <span class="path">/enrollments</span></td><td>requireParent（檔頂）</td><td><span class="r w">🟡</span> TRIAL50 併發雙折（R3）·停用組別可繞過（R4）·金額後端重算✓</td></tr>
+        <tr><td><span class="m get">GET</span> <span class="path">/group-orders/by-token/:token</span></td><td class="muted">公開</td><td>他家資料已遮罩</td></tr>
+        <tr><td><span class="m post">POST</span> <span class="path">/group-orders/by-token/:token/lookup-phone</span></td><td class="muted">公開</td><td><span class="r w">🟡</span> 電話存在性 oracle（R12）</td></tr>
+        <tr><td><span class="m post">POST</span> <span class="path">/group-orders</span> · <span class="path">/:id/join</span> · <span class="path">/submit</span> · <span class="path">/cancel</span></td><td>requireParent</td><td>成員/團主檢查 + FOR UPDATE 鎖✓</td></tr>
+        <tr><td><span class="m get">GET/PUT/DEL</span> <span class="path">/group-orders/draft</span></td><td>requireParent</td><td class="muted">草稿</td></tr>
+        <tr><td><span class="m post">POST</span> <span class="path">/transfers</span> · <span class="m patch">PATCH</span> <span class="path">/:id/cancel</span></td><td>requireParent</td><td>from_parent_id 綁定✓ · <span class="r n">/:id/cancel 無 client 呼叫</span></td></tr>
+        <tr><td><span class="m post">POST</span> <span class="path">/uploads/payment-proof</span></td><td>requireParent</td><td><span class="r g">🟢</span> URL 未綁上傳者（檔名隨機·R低）</td></tr>
+        <tr><td><span class="m get">GET</span> <span class="path">/promotions</span> · <span class="m post">POST</span> <span class="path">/promotions/preview</span></td><td class="muted">公開/optional</td><td>preview 只顯示用·非金流授權來源</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>家長端 · 查詢 / 課務 <span class="tag">/api/courses · /venues · /sessions · /slots · /checkins · /chat · /learn · /evaluations · /referrals</span></h3>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Endpoint</th><th>Auth</th><th>備註 / 風險</th></tr></thead>
+      <tbody>
+        <tr><td><span class="m get">GET</span> <span class="path">/courses/mine</span> · <span class="path">/lessons</span> · <span class="path">/:id</span></td><td>requireParent</td><td>parent_id / phone 過濾✓</td></tr>
+        <tr><td><span class="m post">POST</span> <span class="path">/courses/:id/cancel</span> · <span class="path">/payment-proof</span></td><td>requireParent</td><td>FOR UPDATE + app 層 ownership✓</td></tr>
+        <tr><td><span class="m get">GET</span> <span class="path">/courses/types</span> · <span class="path">/base-price</span></td><td class="muted">公開</td><td>LIFF 卡片 / 底價</td></tr>
+        <tr><td><span class="m get">GET</span> <span class="path">/venues/</span></td><td class="muted">公開</td><td>filter is_active</td></tr>
+        <tr><td><span class="m get">GET</span> <span class="path">/venues/:id</span></td><td class="muted">公開</td><td><span class="r w">🟡</span> 未 filter is_active · 曝停用場館收款帳戶（R9）</td></tr>
+        <tr><td><span class="m get">GET</span> <span class="path">/sessions/coach/:coachId/(today|week)</span></td><td>requireCoach + Owner</td><td>coach_id 綁定✓</td></tr>
+        <tr><td><span class="m post">POST</span> <span class="path">/sessions/:id/checkins</span> · <span class="m get">GET</span> <span class="path">/:id</span></td><td>requireCoach</td><td>handler 比對 coach_id✓ · 簽到邏輯與 checkins.js 重複</td></tr>
+        <tr><td><span class="m get">GET/POST/PATCH/DEL</span> <span class="path">/slots/*</span>（教練）</td><td>requireCoach + Owner</td><td>ensureSlotOwner✓</td></tr>
+        <tr><td><span class="m get">GET</span> <span class="path">/slots/period/:id</span> · <span class="m post">POST</span> <span class="path">/slots/:id/book</span></td><td>requireParent</td><td>enrollment ownership✓</td></tr>
+        <tr><td><span class="m post">POST</span> <span class="path">/checkins/</span></td><td>requireParent</td><td>student.parent_id + 名單比對✓</td></tr>
+        <tr><td><span class="m get">GET</span> <span class="path">/chat/rooms</span> · <span class="path">/rooms/:id/messages</span> …</td><td>requireLiffUser + authzRoom</td><td><span class="r g">🟢</span> 群組房互曝家長/孩子姓名（R11·設計確認）</td></tr>
+        <tr><td><span class="m get">GET/PUT/POST</span> <span class="path">/learn/plans</span> · <span class="path">/records/*</span>（教練）</td><td>requireCoach + Owner</td><td>service 層 ownership✓</td></tr>
+        <tr><td><span class="m get">GET</span> <span class="path">/learn/history/:periodId</span></td><td>requireParent</td><td><span class="r c">🔴</span> 回傳同班全部學生記錄·未依本家孩子過濾（R2）</td></tr>
+        <tr><td><span class="m get">GET</span> <span class="path">/evaluations/mine</span> · <span class="path">/:id</span> · <span class="m post">POST</span> <span class="path">/:id/submit</span></td><td>requireParent</td><td>parent_id 過濾✓ · <span class="r n">mine 無 UI</span></td></tr>
+        <tr><td><span class="m post">POST</span> <span class="path">/referrals/</span> · <span class="m get">GET</span> <span class="path">/mine</span> · <span class="path">/by-token/:token</span></td><td>requireParent / 公開</td><td>by-token 刻意公開</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>教練端 <span class="tag">/api/coaches · /coach-portal</span></h3>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Endpoint</th><th>Auth</th><th>備註 / 風險</th></tr></thead>
+      <tbody>
+        <tr><td><span class="m get">GET</span> <span class="path">/coaches</span> · <span class="path">/:id</span> · <span class="path">/:id/media</span></td><td class="muted">公開</td><td>家長端選教練 · <b>教練姓名由此外洩</b>（助攻 R1）</td></tr>
+        <tr><td><span class="m get">GET</span> <span class="path">/coaches/by-phone</span></td><td class="muted">雙因子(prod)</td><td><span class="r w">🟡</span> 殭屍·前端已停用·id_token 允許放 query（R6）</td></tr>
+        <tr><td><span class="m get">GET</span> <span class="path">/coaches/by-line-uid</span></td><td class="muted">id_token</td><td><span class="r w">🟡</span> 殭屍·前端已停用（R6）</td></tr>
+        <tr><td><span class="m put">PUT</span> <span class="path">/coaches/:id/bio</span> · <span class="m post">POST</span> <span class="path">/:id/media</span> …</td><td>requireCoach + Owner</td><td>requireCoachOwner✓</td></tr>
+        <tr><td><span class="m get">GET</span> <span class="path">/coach-portal/auth/line(/callback|/status|/token-info)</span></td><td class="muted">公開</td><td>OAuth state 一次性消費✓</td></tr>
+        <tr><td><span class="m post">POST</span> <span class="path">/coach-portal/auth/exchange</span></td><td class="muted">一次性 code</td><td>A 層命中→發 JWT</td></tr>
+        <tr><td><span class="m post">POST</span> <span class="path">/coach-portal/link-by-name</span></td><td class="muted">IP 限流</td><td><span class="r c">🔴</span> 姓名單因子綁定 = 帳號劫持（R1）</td></tr>
+        <tr><td><span class="m get">GET</span> <span class="path">/coach-portal/session</span> · <span class="m post">POST</span> <span class="path">/logout</span></td><td class="muted">30 天 token</td><td>續登 · <span class="r n">logout 無 UI 呼叫</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>後台 · 25 子模組掛載矩陣 <span class="tag">/api/admin/* · admin.js</span></h3>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>子模組</th><th>Auth 掛法</th><th>角色</th><th class="center">場館範圍</th><th>備註 / 風險</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">auth</td><td>行內</td><td class="muted">login 無限制</td><td class="no">—</td><td class="muted">登入端點</td></tr>
+        <tr><td class="mono">staff</td><td>行內</td><td><span class="role a">admin</span></td><td class="ro">部分無</td><td><span class="r w">🟡</span> /coaches 給 AMS 但無場館過濾（R5）</td></tr>
+        <tr><td class="mono">coaches</td><td class="muted">—</td><td class="muted">410</td><td class="no">—</td><td><span class="r n">整檔殭屍·已遷移 /staff</span></td></tr>
+        <tr><td class="mono">venues</td><td>行內</td><td>讀 AMS·寫 admin</td><td class="no">無</td><td>manager/staff 看得到全部場館</td></tr>
+        <tr><td class="mono">settings</td><td>行內</td><td><span class="role a">admin</span></td><td class="no">N/A</td><td class="muted">—</td></tr>
+        <tr><td class="mono">enrollments</td><td>行內</td><td>AMS·退費 AM</td><td class="yes">✓</td><td class="muted">scope 完整</td></tr>
+        <tr><td class="mono">sessions</td><td>行內</td><td class="ro">部分無 role</td><td class="yes">✓</td><td><span class="r w">🟡</span> backfill-checkin / checkin 無角色閘（R8）</td></tr>
+        <tr><td class="mono">checkins</td><td>行內</td><td>AMS</td><td class="yes">✓</td><td class="muted">—</td></tr>
+        <tr><td class="mono">chat</td><td>行內</td><td>keywords=admin</td><td class="yes">✓</td><td><span class="r w">🟡</span> alerts 放行 staff·與註解矛盾（R5b）</td></tr>
+        <tr><td class="mono">periods</td><td>行內</td><td>AM</td><td class="yes">✓</td><td><span class="r n">activate 無 client 呼叫</span></td></tr>
+        <tr><td class="mono">learn</td><td>全域 auth</td><td>AM 為主</td><td class="ro">部分無</td><td><span class="r w">🟡</span> coach-eval / intros 無場館過濾（R7）</td></tr>
+        <tr><td class="mono">promotions</td><td>全域 auth</td><td>AM·active=AMS</td><td class="no">無</td><td><span class="r w">🟡</span> manager 可設別館優惠（R7b）</td></tr>
+        <tr><td class="mono">mgmStats</td><td>全域 auth+role</td><td>AM</td><td class="no">無</td><td><span class="r w">🟡</span> venueId 未收斂·可跨館（R7a）</td></tr>
+        <tr><td class="mono">transfers</td><td>行內</td><td>AM</td><td class="yes">✓</td><td class="muted">scope 最完整</td></tr>
+        <tr><td class="mono">reports</td><td>全域 auth+role</td><td>AMS</td><td class="yes">✓</td><td class="muted">staff 強制鎖館</td></tr>
+        <tr><td class="mono">uploads</td><td>行內</td><td class="muted">無 role</td><td class="no">N/A</td><td class="muted">檔案處理安全</td></tr>
+        <tr><td class="mono">courseTypes</td><td>行內</td><td>讀 AM·寫 admin</td><td class="no">N/A</td><td class="muted">定價來源</td></tr>
+        <tr><td class="mono">groupOrders</td><td>行內</td><td>AMS</td><td class="yes">✓</td><td class="muted">scope 完整</td></tr>
+        <tr><td class="mono">ragicStatus</td><td>行內</td><td><span class="role a">admin</span></td><td class="no">N/A</td><td><span class="r g">🟢</span> purge-ghosts 硬刪·無稽核表</td></tr>
+        <tr><td class="mono">ragicStaging</td><td>全域 auth+admin</td><td><span class="role a">admin</span></td><td class="no">N/A</td><td class="muted">—</td></tr>
+        <tr><td class="mono">ragicZ03</td><td>全域 auth+role</td><td>AMS</td><td class="no">全無</td><td><span class="r w">🟡</span> staff 可改任意館·與 staging 標準不一（R7c）</td></tr>
+        <tr><td class="mono">customerParents</td><td>行內</td><td class="ro">無 role</td><td class="yes">✓</td><td><span class="r w">🟡</span> staff 可改家長 PII·POST 已 410（R8b）</td></tr>
+        <tr><td class="mono">customerStudents</td><td>行內</td><td class="ro">無 role</td><td class="yes">✓</td><td><span class="r w">🟡</span> staff 可 reveal 解遮罩（有 audit）</td></tr>
+        <tr><td class="mono">courseIntros</td><td>行內</td><td>AM</td><td class="no">N/A</td><td class="muted">—</td></tr>
+        <tr><td class="mono">mgm-stats · _customerShared</td><td class="muted">—</td><td class="muted">—</td><td class="no">—</td><td class="muted">_shared 為純 helper</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="muted" style="font-size:13px">AMS = admin / manager / staff 三角色皆可。全域 = 檔頂 <code>router.use(requireAdminAuth)</code>；行內 = 每條 route 各自掛。<b>25 檔逐一確認：無任何資料端點漏掛 requireAdminAuth，route 宣告順序全部正確（無 /:id 吃掉具體路由）。</b></p>
+</section>
+
+<!-- ===== 04 FLOW ===== -->
+<section id="flow">
+  <div class="sec-head">
+    <div class="sec-num">§ 04</div>
+    <h2>登入身分流向</h2>
+    <p class="sec-sub">三條登入分支，凍結時每個箭頭都要拍板。前端唯一附 JWT 處：<code>api/client.js</code> axios 攔截器；token 存單一 key <code>daos.user</code>，line_uid 去敏不落地。</p>
+  </div>
+
+  <h3>家長 <span class="tag">LINE-first</span></h3>
+  <div class="flow"><pre>LIFF 開啟 → liff.init → <b>POST /auth/parent-line-login</b>(id_token)
+   ├─ <span class="ok">logged_in</span>            → 首頁 /
+   ├─ need_phone_binding    → <b>POST /auth/parent-bind-phone</b>
+   │      ├─ <span class="ok">bound_and_logged_in</span> → 首頁
+   │      ├─ need_registration    → /register → <b>POST /auth/parent-register-line</b>
+   │      └─ need_claim_verify    → 認領表單(學員姓名 + 登記手機 + 家長姓名) <span class="cm"># 雙因子</span>
+   └─ token 失效           → liff.login 刷一次 or 顯示手機輸入</pre></div>
+
+  <h3>教練 <span class="tag">OAuth · 現役</span></h3>
+  <div class="flow"><pre>路徑含 /coach → 略過 LIFF SDK → RequireCoach 導 <b>/coach-portal</b>
+   ├─ 有 30 天 portalToken → <b>GET /coach-portal/session</b> → /coach
+   └─ 點「LINE 登入」→ <b>GET /coach-portal/auth/line</b> → LINE 授權 → callback
+        ├─ lineLogin=existing → <b>POST /auth/exchange</b>(code)      <span class="ok"># A 層:UID 已綁</span> → /coach
+        └─ lineLogin=new      → <b>POST /link-by-name</b>(姓名)       <span class="no"># B 層:單因子·R1 劫持點</span> → /coach
+
+<span class="cm">殭屍：舊 /coaches/by-line-uid、by-phone 直登 — 前端已停用、後端仍活</span></pre></div>
+
+  <h3>後台 <span class="tag">帳密</span></h3>
+  <div class="flow"><pre>/login → <b>POST /admin/auth/login</b> → JWT{role, venue_ids} 存 localStorage
+   → RequireAuth roles=['admin','manager','staff'] <span class="cm"># coach 一律擋掉</span>
+   → 各頁 RequireAuth roles=[...] 疊加限制  ·  後端 requireAdminRole + venue scope</pre></div>
+</section>
+
+<!-- ===== 05 RISKS ===== -->
+<section id="risks">
+  <div class="sec-head">
+    <div class="sec-num">§ 05</div>
+    <h2>風險清單</h2>
+    <p class="sec-sub">依嚴重度排序。🔴 為我逐行複核、確認可實際執行的攻擊；🟡 為越權/完整性/不一致；🟢 為低風險或需設計確認。每項附 file:line 與修法方向。</p>
+  </div>
+
+  <div class="find c">
+    <div class="fh"><span class="fid">R1</span><span class="r c">🔴 高</span><span class="ft">教練帳號可被姓名單因子劫持</span></div>
+    <div class="loc">server/routes/coachPortal.js:240-326</div>
+    <p>任何人用自己的 LINE 跑完 OAuth，送一個「還沒登入過的在職教練姓名」即可綁成該教練、拿到 12h JWT + 30 天 token。教練姓名可從<b>公開免登入</b>的 <code>GET /api/coaches</code> 直接撈。剛上線 / 新進 / 換手機沒重登（line_uid 為 NULL）全中。綁到後能讀寫課表、學生與家長姓名電話、授課記錄。對比家長端認領要姓名+手機雙因子，此處只用姓名。成功綁定<b>不發告警</b>，只有 console.log。</p>
+    <div class="fix"><b>修法：</b>加第二因子（手機末碼 / 員工編號）或改「產生待審核請求 → 管理員/教練手機二次確認」；補「綁定成功」即時告警。</div>
+  </div>
+
+  <div class="find c">
+    <div class="fh"><span class="fid">R2</span><span class="r c">🔴 高</span><span class="ft">家長能看到同班別家孩子的學習歷程</span></div>
+    <div class="loc">server/routes/learn.js:140-158 · server/services/learning.js:345-352</div>
+    <p>guard 只驗「這家長在此期別有學生」，通過後 <code>listLearningHistory(periodId)</code> 把該期別<b>所有學生</b>的 session_records（姓名、評語、作業）整包回傳，未依家長自己的孩子過濾。1對2/1對3 共班就互看。同專案 <code>courses.js /mine</code> 已示範正確 parent_id 過濾——此條是唯一漏掉的。</p>
+    <div class="fix"><b>修法：</b>在 service 帶入 parent 的子女姓名清單，過濾 student_records 只回本家的孩子。</div>
+  </div>
+
+  <div class="find w">
+    <div class="fh"><span class="fid">R3</span><span class="r w">🟡 中</span><span class="ft">TRIAL50 體驗券可併發雙重折抵</span></div>
+    <div class="loc">server/routes/enrollments.js:155-169, 243-248</div>
+    <p>referral 狀態檢查未上 <code>FOR UPDATE</code>；<code>markTrialPaid</code> 更新 0 列被靜默忽略、不回滾；promotion_usages 也無 (promotion_id, parent_id) 唯一鍵。腳本併發兩次可拿兩份 5 折。</p>
+    <div class="fix"><b>修法：</b>referral 列上 FOR UPDATE；檢查 markTrialPaid rowCount，0 則回滾；加唯一鍵。</div>
+  </div>
+
+  <div class="find w">
+    <div class="fh"><span class="fid">R4</span><span class="r w">🟡 中</span><span class="ft">已停用課程組別可繞過報名下單</span></div>
+    <div class="loc">server/routes/enrollments.js:78-86</div>
+    <p>讀 base_price 只檢查 <code>&gt; 0</code>，未過濾 is_active；但團購 <code>groupOrders.js:455-463</code> 有擋。後台停用組別後直接打 <code>POST /enrollments</code> 帶該 course_type 仍能成單。兩條路徑邏輯已漂移。</p>
+    <div class="fix"><b>修法：</b>enrollments 讀價一併過濾 is_active，與團購對齊。</div>
+  </div>
+
+  <div class="find w">
+    <div class="fh"><span class="fid">R5</span><span class="r w">🟡 中</span><span class="ft">場館範圍（Task #90）落實不徹底 — manager/staff 可跨館</span></div>
+    <div class="loc">mgmStats.js · staff.js:323 · promotions.js:112 · learn.js:110-182 · ragicZ03.js（全檔）</div>
+    <p>這些端點未接 <code>getScopedVenueIds/isVenueInScope</code>，可帶任意 venueId 撈別館資料：MGM 轉換率(R7a)、教練名單/手機(R5)、建別館優惠券(R7b)、教練考核/自介(R7)、Z03 可改任意館(R7c)。同系統 transfers/reports/enrollments 卻做得完整——代表 scope 是「按模組自己決定要不要接」。</p>
+    <div class="fix"><b>修法：</b>逐一補 scope；coach-eval / ragicZ03 若屬總部集中審，改為書面豁免+檔頭註記。</div>
+  </div>
+
+  <div class="find w">
+    <div class="fh"><span class="fid">R5b</span><span class="r w">🟡 中</span><span class="ft">關鍵字警示 staff 可看，與註解矛盾</span></div>
+    <div class="loc">server/routes/admin/chat.js:157-158</div>
+    <p>註解白紙黑字「staff 不應看到關鍵字命中」，程式碼卻 <code>requireAdminRole('admin','manager','staff')</code>。</p>
+    <div class="fix"><b>修法：</b>拍板 staff 能否看 → 改碼或改註解二選一。</div>
+  </div>
+
+  <div class="find w">
+    <div class="fh"><span class="fid">R6</span><span class="r w">🟡 中</span><span class="ft">教練端兩套登入並存，舊的是殭屍</span></div>
+    <div class="loc">server/routes/coaches.js:100, 194</div>
+    <p>by-phone / by-line-uid 前端已停用、後端仍活可直接打，且不受新流程告警/衝突處理管轄。by-phone 還允許 id_token 放 query string（同檔 by-line-uid 卻只收 header 防外洩，自相矛盾）。</p>
+    <div class="fix"><b>修法：</b>下架這兩端點，只留 coach-portal；過渡期至少收斂 id_token 為 header-only。</div>
+  </div>
+
+  <div class="find w">
+    <div class="fh"><span class="fid">R7</span><span class="r w">🟡 中</span><span class="ft">教練停權後 JWT 仍可用</span></div>
+    <div class="loc">server/middlewares/coachAuth.js:31-42</div>
+    <p><code>requireParent</code> 每次查 parents.is_active，但 <code>requireCoach</code> 沒查 coaches.is_active。教練被下架後手上 12h JWT 仍能開時段、簽到、寫記錄。兩端失效速度不對等。</p>
+    <div class="fix"><b>修法：</b>requireCoach 補 is_active 即時查核，與 parentAuth 對齊。</div>
+  </div>
+
+  <div class="find w">
+    <div class="fh"><span class="fid">R8</span><span class="r w">🟡 中</span><span class="ft">角色閘不一致 — 部分端點只掛 auth 不分角色</span></div>
+    <div class="loc">customerParents/Students（全 CRUD）· sessions.js:243,276（backfill/checkin）</div>
+    <p>staff 可讀+改家長/學員 PII（含 reveal 解遮罩，學員有 audit、家長沒有）；staff 可補打卡/建簽到。但同檔 <code>/:id/revive</code> 卻限 admin/manager——標準不一。</p>
+    <div class="fix"><b>修法：</b>拍板「改客戶主檔 / 補打卡」是否限 manager 以上，統一角色閘。</div>
+  </div>
+
+  <div class="find w">
+    <div class="fh"><span class="fid">R9 · R10</span><span class="r w">🟡 中</span><span class="ft">venues/:id 公開曝收款帳戶 · demo-login 缺 prod 關閉</span></div>
+    <div class="loc">venues.js:55-74 · auth.js:47-50</div>
+    <p><b>R9：</b><code>GET /api/venues/:id</code> 公開且不過濾 is_active，已停用場館的匯款戶名/帳號任何人可查。<b>R10：</b>demo-login 只看 <code>ALLOW_DEMO_LOGIN==='1'</code>，姊妹端點都多一道 <code>NODE_ENV!=='production'</code>；含固定密碼，env 從 staging 複製過來就變後門。</p>
+    <div class="fix"><b>修法：</b>venues/:id 加 is_active 或標記；demo-login 補 NODE_ENV 防線。</div>
+  </div>
+
+  <div class="find g">
+    <div class="fh"><span class="fid">R11-R13</span><span class="r g">🟢 低 / 確認</span><span class="ft">群組聊天 PII 互曝 · 存在性 oracle · 上傳靜態</span></div>
+    <div class="loc">chat.js（群組房）· groupOrders lookup-phone · parents id_number · /uploads static</div>
+    <p><b>R11：</b>共班聊天室互曝家長真名+孩子姓名（班級群組常態，需確認是否預期）。<b>R12/13：</b>電話 / 身分證存在性 oracle（需登入或有效邀請碼，可利用性低）。<b>uploads：</b>靜態全公開靠不可猜檔名，URL 外流即無法補救。</p>
+    <div class="fix"><b>修法：</b>多為設計取捨，敏感檔可評估簽章網址；oracle 加帳號級限流。</div>
+  </div>
+
+  <div class="callout"><span class="k">✅ 已查證確實沒問題（讓你安心）</span>
+    家長端寫入 IDOR 防護紮實（都有 parent_id 綁定）· Route 宣告順序全正確 · 團購/優惠核銷併發鎖到位 · OAuth state 一次性無重放 · 回應多已遮罩 line_uid/電話 · 後台 25 子模組無漏掛 requireAdminAuth。</div>
+</section>
+
+<!-- ===== 06 ORPHANS ===== -->
+<section id="orphans">
+  <div class="sec-head">
+    <div class="sec-num">§ 06</div>
+    <h2>孤兒 / 死程式碼</h2>
+    <p class="sec-sub">凍結前該清或該確認的殘留。工具佐證：repo 內建 <code>server/scripts/route-audit.js</code> 比對 218 handler / 202 呼叫，「前端呼叫但後端缺」= 0、「未掛載」= 0。以下皆經 grep + 讀碼驗證。</p>
+  </div>
+
+  <h3>殭屍後端 route <span class="tag">410 / 停用 / flag</span></h3>
+  <div class="scroll"><table>
+    <thead><tr><th>項目</th><th>file:line</th><th>現況</th><th>建議</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">admin/coaches 整檔</td><td class="mono">admin/coaches.js:28</td><td>router.all 全回 410·已搬 /staff</td><td class="center"><span class="r n">移除</span></td></tr>
+      <tr><td class="mono">POST /admin/customer-parents</td><td class="mono">customerParents.js:138</td><td>410·刻意守門（只收 Ragic Z01）</td><td class="center"><span class="r g">保留</span></td></tr>
+      <tr><td class="mono">POST /auth/parent-login</td><td class="mono">auth.js:262</td><td>legacy·flag 未開即 410</td><td class="center"><span class="r w">確認</span></td></tr>
+      <tr><td class="mono">POST /parents/（建家長）</td><td class="mono">parents.js:711</td><td>legacy·flag 未開即 410</td><td class="center"><span class="r w">確認</span></td></tr>
+      <tr><td class="mono">DELETE /parents/me/students/:id</td><td class="mono">parents.js:704</td><td>恆 405·防禦殼</td><td class="center"><span class="r g">保留</span></td></tr>
+      <tr><td class="mono">coaches by-phone / by-line-uid</td><td class="mono">coaches.js:100, 194</td><td>未 410·可跑·前端已停用（R6）</td><td class="center"><span class="r w">確認後移除</span></td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>無 client 呼叫的後端 route <span class="tag">死路由或預留 seam</span></h3>
+  <div class="scroll"><table>
+    <thead><tr><th>項目</th><th>file:line</th><th>現況</th><th>建議</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">POST /admin/venues/sync</td><td class="mono">admin/venues.js:68</td><td>cron 直呼 function 不經此 route·註解已失效</td><td class="center"><span class="r n">移除</span></td></tr>
+      <tr><td class="mono">POST /admin/periods/:id/activate</td><td class="mono">admin/periods.js:18</td><td>兩端無呼叫·預留啟用 seam</td><td class="center"><span class="r w">確認</span></td></tr>
+      <tr><td class="mono">POST /admin/sessions/checkin</td><td class="mono">admin/sessions.js:276</td><td>體驗課→MGM 獎勵·疑未接</td><td class="center"><span class="r w">確認</span></td></tr>
+      <tr><td class="mono">PATCH /transfers/:id/cancel</td><td class="mono">transfers.js:65</td><td>後端完好·無 wrapper 無頁面</td><td class="center"><span class="r w">確認</span></td></tr>
+      <tr><td class="mono">GET /auth/line-config-debug</td><td class="mono">auth.js:121</td><td>DEBUG flag·手動 curl 工具</td><td class="center"><span class="r g">保留</span></td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>無 UI 的前端 api 函式 <span class="tag">死函式</span></h3>
+  <div class="scroll"><table>
+    <thead><tr><th>函式</th><th>file:line</th><th>現況</th><th>建議</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">customerParentsApi.create</td><td class="mono">admin/api/customers.js:22</td><td>無呼叫·後端已 410（你點名的例子）</td><td class="center"><span class="r n">移除</span></td></tr>
+      <tr><td class="mono">promotionsApi.submit/approve/reject</td><td class="mono">admin/api/promotions.js:24</td><td>註解自承「舊送審·UI 已不用」</td><td class="center"><span class="r n">移除</span></td></tr>
+      <tr><td class="mono">promotionsApi.detail/activate/archive</td><td class="mono">admin/api/promotions.js:15,19</td><td>後端仍活·UI 走 update PATCH</td><td class="center"><span class="r w">確認</span></td></tr>
+      <tr><td class="mono">coachesApi.byPhone / byLineUid</td><td class="mono">liff/api/coaches.js:13, 27</td><td>舊教練直登·已停用</td><td class="center"><span class="r n">移除</span></td></tr>
+      <tr><td class="mono">coachesApi.addMedia</td><td class="mono">liff/api/coaches.js:48</td><td>前端只用 multipart 版 uploadMedia</td><td class="center"><span class="r n">移除</span></td></tr>
+      <tr><td class="mono">groupOrdersApi.lookupPhone</td><td class="mono">liff/api/groupOrders.js:21</td><td>後端有 rate limiter·前端無呼叫</td><td class="center"><span class="r w">確認</span></td></tr>
+      <tr><td class="mono">learnApi.versions · evaluationsApi.mine</td><td class="mono">liff/api/learn.js:23,49</td><td>版本歷史 / 評鑑列表·無頁面</td><td class="center"><span class="r w">確認</span></td></tr>
+      <tr><td class="mono">coachPortalApi.logout</td><td class="mono">liff/api/coachPortal.js:35</td><td>全站無登出入口（見下）</td><td class="center"><span class="r w">確認</span></td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>孤兒頁面 / 檔案 / 死分支 <span class="tag">前端</span></h3>
+  <ul class="clean">
+    <li><b>/enroll-success（EnrollmentSuccessPage）</b> — 有路由但全站無 <code>navigate('/enroll-success')</code>·實際導向 /my-courses 或 /enroll-status。<span class="muted">目前無法到達</span></li>
+    <li><b>/coaches（CoachesRedirect）</b> — 唯一「進得去卻無專屬 RequireAuth」的 authed 路由·無選單入口·純轉址殼</li>
+    <li><b>EnrollmentSummary.jsx · SelfStudentSelector.jsx</b> — <code>client/liff/src/components/enroll/</code>·全 repo 零 import（實際用 PriceBreakdown / StudentMultiSelect）</li>
+    <li><b>DateRangeSelect 元件本體</b> — default export 從未被渲染·只用到同檔具名函式 rangeForPreset。死 UI 躲在看似有用的檔案裡</li>
+    <li><b>RagicZ01Modal isNew 分支</b> — 「新增家長」文案永不觸發（政策已移除新增）</li>
+    <li><b>SopPage.jsx:39</b> — 手冊「教練資料」連結仍指舊 /coaches·未跟 Task #91 更新</li>
+  </ul>
+
+  <div class="callout q"><span class="k">⚠ 全站沒有「登出」按鈕</span>
+    <code>AuthContext.logout()</code> 有定義並對外暴露，但全 pages/components <b>沒有任何頁面呼叫它</b>；對應 <code>coachPortalApi.logout</code> 也零呼叫。家長 session 依設計「不自動登出」，教練只在 401 時清除。<b>凍結前需確認這是刻意設計還是遺漏。</b></div>
+
+  <h3>重複實作 <span class="tag">維護風險</span></h3>
+  <ul class="clean">
+    <li><b>簽到寫入邏輯</b> — <code>sessions.js:81</code>（教練端）vs <code>checkins.js:16</code>（家長端）各寫一份幾乎相同的狀態機。<span class="muted">唯一真正該合併的重複</span></li>
+    <li><b>admin 一般課 vs 體驗課簽到</b> — <code>admin/sessions.js:243</code> vs <code>:276</code>·讀取端已合併、寫入端仍兩套資料模型</li>
+    <li><span class="muted">家長端 vs 後台同資源（enrollments/sessions/groupOrders/promotions/transfers…）逐一確認為<b>合理分工</b>（同資源不同權限視角），非複製</span></li>
+  </ul>
+
+  <h3>dev-only / 後門路徑 <span class="tag">凍結前確認 env</span></h3>
+  <ul class="clean">
+    <li><b>demo-login / DemoLoginPage / demoSeed</b> — <code>ALLOW_DEMO_LOGIN</code> / <code>DEMO_SEED</code> 控制·含固定密碼帳號</li>
+    <li><b>legacy 家長登入 / 建檔</b> — <code>ALLOW_LEGACY_PARENT_LOGIN</code> / <code>ALLOW_LEGACY_PARENT_CREATE</code></li>
+    <li><b>line-config-debug</b> — <code>DEBUG_LINE_AUTH</code> gate 健檢端點</li>
+  </ul>
+</section>
+
+<!-- ===== 07 FREEZE ===== -->
+<section id="freeze">
+  <div class="sec-head">
+    <div class="sec-num">§ 07</div>
+    <h2>凍結行動計畫</h2>
+    <p class="sec-sub">三個方案不是選一個，而是由淺到深疊上去。核心洞見：<b>把「auth / 角色 / 場館」三件事從各檔自由心證，改成框架強制</b>——這才是「寫死」的本體，其餘 IDOR/金流是必補的個案。</p>
+  </div>
+
+  <div class="phase">
+    <div class="pn">0</div>
+    <div class="pcol">
+      <div class="pt">止血 — 先擋會出事的 <span class="lab">方案 A · 可立即動手</span></div>
+      <div class="pb">修 R1 教練姓名劫持、R2 學習歷程互看、R3 TRIAL50 併發、R4 停用組別繞過。都是明確補法、範圍小。</div>
+    </div>
+  </div>
+  <div class="phase">
+    <div class="pn">1</div>
+    <div class="pcol">
+      <div class="pt">治本 — 把 auth 上收到掛載點 <span class="lab">方案 B</span></div>
+      <div class="pb">admin.js 統一 <code>router.use(requireAdminAuth)</code>（login 例外前置），子檔只留 requireAdminRole；coachAuth 補 is_active；下架教練殭屍登入。auth 從「可選」變「預設就有」。</div>
+    </div>
+  </div>
+  <div class="phase">
+    <div class="pn">2</div>
+    <div class="pcol">
+      <div class="pt">拍板 — 宣告式契約 + CI 守門 <span class="lab">方案 C · 字面的「寫死」</span></div>
+      <div class="pb">建一份 route manifest（每條 route 明列 method/path/role/scope/公開），寫測試列舉 Express 實際註冊路由，對不上 manifest 就 CI 失敗。以後加 route 必須先登記，否則過不了。這份表本身就是你要的流向文件。已有 <code>route-audit.js</code> 可當底座擴充。</div>
+    </div>
+  </div>
+  <div class="phase">
+    <div class="pn">3</div>
+    <div class="pcol">
+      <div class="pt">逐格決策 — 填設計題進 manifest</div>
+      <div class="pb">把 §08 的待拍板項逐一定案，補 scope / 角色閘，清孤兒死碼。收尾。</div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== 08 DECIDE ===== -->
+<section id="decide">
+  <div class="sec-head">
+    <div class="sec-num">§ 08</div>
+    <h2>待你拍板的設計題</h2>
+    <p class="sec-sub">這些「是刻意設計還是漏洞」只有你知道。凍結前逐一定案，我照著寫死。</p>
+  </div>
+  <div class="scroll"><table>
+    <thead><tr><th>#</th><th>問題</th><th>目前現況</th><th>相關</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">D1</td><td>關鍵字警示 staff 能不能看？</td><td>後端放行 staff·但註解說不行</td><td>R5b</td></tr>
+      <tr><td class="mono">D2</td><td>改客戶主檔（家長/學員 PII、reveal）要不要限 manager 以上？</td><td>目前 staff 就能改</td><td>R8</td></tr>
+      <tr><td class="mono">D3</td><td>櫃檯補打卡（backfill-checkin）staff 能不能做？</td><td>目前無角色閘 staff 可做</td><td>R8</td></tr>
+      <tr><td class="mono">D4</td><td>教練考核 / Z03 舊資料要不要鎖場館？</td><td>目前無 scope·可跨館</td><td>R5, R7</td></tr>
+      <tr><td class="mono">D5</td><td>優惠券 manager 能不能設別館？</td><td>目前 applicable_venue_ids 未驗證</td><td>R7b</td></tr>
+      <tr><td class="mono">D6</td><td>群組聊天室互曝家長真名+孩子姓名，可接受？</td><td>班級群組常態</td><td>R11</td></tr>
+      <tr><td class="mono">D7</td><td>全站沒有登出按鈕，是刻意的嗎？</td><td>logout 有定義但無 UI 呼叫</td><td>§06</td></tr>
+      <tr><td class="mono">D8</td><td>這些 env 旗標 prod 現況？決定 legacy/demo 是死是活</td><td>ALLOW_LEGACY_* · ALLOW_DEMO_LOGIN · DEMO_SEED</td><td>§06</td></tr>
+      <tr><td class="mono">D9</td><td>預留 seam 是「功能沒接上」還是「刻意預留」？</td><td>periods/activate · sessions/checkin(MGM) · transfers/:id/cancel</td><td>§06</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+</main>
+
+<footer class="wrap">
+  <div>本清冊由 9 個子代理逐行閱讀 server/routes、client/admin、client/liff 產出，並經 grep + <span class="mono">route-audit.js</span> 交叉驗證。所有結論引用實際 file:line。<b>本輪純盤點，未修改任何程式碼。</b></div>
+  <div class="mono" style="margin-top:8px;color:var(--ink-3)">家教課程系統 · Route 權限凍結清冊 · 2026-07-03</div>
+</footer>
+
+<script>
+  // scrollspy：高亮目前所在區塊的導覽項（respects reduced-motion via CSS）
+  (function(){
+    var links = Array.prototype.slice.call(document.querySelectorAll('nav.toc a'));
+    var map = {};
+    links.forEach(function(a){ var id=a.getAttribute('href').slice(1); map[id]=a; });
+    var secs = Array.prototype.slice.call(document.querySelectorAll('section[id]'));
+    if(!('IntersectionObserver' in window)) return;
+    var obs = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if(e.isIntersecting){
+          links.forEach(function(l){ l.classList.remove('active'); });
+          if(map[e.target.id]) map[e.target.id].classList.add('active');
+        }
+      });
+    }, { rootMargin:'-45% 0px -50% 0px', threshold:0 });
+    secs.forEach(function(s){ obs.observe(s); });
+  })();
+</script>
