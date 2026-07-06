@@ -42,8 +42,24 @@ function validatePayload(p) {
   if (!p.start_date || !p.end_date) errs.push('start_date / end_date 必填');
   if (p.start_date && p.end_date && p.end_date < p.start_date) errs.push('end_date 不可早於 start_date');
   if (p.min_threshold_type && p.min_threshold_type !== 'PERIOD_COUNT') errs.push('min_threshold_type 僅支援 PERIOD_COUNT');
+  // max_uses：留空 / 0 表示不限次數（create/update 皆以 `|| null` 收斂為 NULL）；其餘須為非負整數
+  if (p.max_uses != null && p.max_uses !== '') {
+    const mu = Number(p.max_uses);
+    if (!Number.isInteger(mu) || mu < 0) errs.push('max_uses 必須為非負整數（留空或 0 表示不限次數）');
+  }
+  // min_threshold_value：留空 / 0 收斂為 NULL；其餘須為非負整數（欄位型別 INTEGER）
+  if (p.min_threshold_value != null && p.min_threshold_value !== '') {
+    const mt = Number(p.min_threshold_value);
+    if (!Number.isInteger(mt) || mt < 0) errs.push('min_threshold_value 必須為非負整數');
+  }
+  // coupon_code 欄位為 VARCHAR(40)
+  if (p.coupon_code != null && String(p.coupon_code).trim().length > 40) errs.push('coupon_code 長度不可超過 40 字');
+  // applicable_course_types 為 INTEGER[]，每個元素須為整數；applicable_venue_ids 為 VARCHAR[]，每個元素須為字串
+  const isIntElem = (x) => Number.isInteger(x) || (typeof x === 'string' && /^-?\d+$/.test(x.trim()));
   if (p.applicable_course_types && !Array.isArray(p.applicable_course_types)) errs.push('applicable_course_types 必須為陣列');
+  else if (Array.isArray(p.applicable_course_types) && !p.applicable_course_types.every(isIntElem)) errs.push('applicable_course_types 每個元素必須為整數');
   if (p.applicable_venue_ids && !Array.isArray(p.applicable_venue_ids)) errs.push('applicable_venue_ids 必須為陣列');
+  else if (Array.isArray(p.applicable_venue_ids) && !p.applicable_venue_ids.every((x) => typeof x === 'string')) errs.push('applicable_venue_ids 每個元素必須為字串');
   return errs;
 }
 
@@ -136,6 +152,8 @@ router.post('/', requireAdminRole('admin', 'manager'), async (req, res) => {
     res.status(201).json(r.rows[0]);
   } catch (err) {
     if (err.code === '23505') return res.status(400).json({ error: '折價券代碼已存在' });
+    if (err.code === '22P02') return res.status(400).json({ error: '欄位格式錯誤（數值或陣列型別不符）' });
+    if (err.code === '22001') return res.status(400).json({ error: '欄位長度超過限制（折價券代碼上限 40 字）' });
     console.error('[admin promotion create]', err);
     res.status(500).json({ error: 'create failed' });
   }
@@ -176,6 +194,8 @@ router.patch('/:id', requireAdminRole('admin', 'manager'), async (req, res) => {
     res.json(r.rows[0]);
   } catch (err) {
     if (err.code === '23505') return res.status(400).json({ error: '折價券代碼已存在' });
+    if (err.code === '22P02') return res.status(400).json({ error: '欄位格式錯誤（數值或陣列型別不符）' });
+    if (err.code === '22001') return res.status(400).json({ error: '欄位長度超過限制（折價券代碼上限 40 字）' });
     console.error('[admin promotion patch]', err);
     res.status(500).json({ error: 'update failed' });
   }

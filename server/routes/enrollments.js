@@ -205,16 +205,51 @@ router.post('/', async (req, res) => {
     // 折扣門檻仍以整筆購買的 periodCount 計算（見上方 previewBestDiscount，不可改傳 1）。
     const batchId = randomUUID();
     const perPeriodOriginal = unitPrice * studentCount; // 單期原價（含所有學員）
-    const totalDiscount = (preview.promotion && preview.discountAmount > 0) ? preview.discountAmount : 0;
-    // 折扣按比例分攤到各期、餘數補最後一筆，使 N 筆 final_price 加總 = preview.finalPrice。
+    let totalDiscount = (preview.promotion && preview.discountAmount > 0) ? preview.discountAmount : 0;
+    // 先產生各期單號：促銷用量須掛在第一筆，且要「先確認用量」再寫各期價——
+    // 自動套用的促銷若在 preview 與 recordUsage（FOR UPDATE 覆核）之間被用盡/停用，
+    // 需能改以全額重算各期 final_price，故把用量確認排在各期 INSERT 之前。
     const enrollmentIds = [];
+    for (let i = 0; i < periodCount; i += 1) enrollmentIds.push(genEnrollmentId());
+    const firstId = enrollmentIds[0];
+
+    // 促銷用量只記一次（掛第一筆 + batch 總額），避免多期被當成多次使用而誤扣 max_uses。
+    //  - 家長「明確輸入折價券」（couponCode 有值）失敗 → 整筆退回（COUPON_* 交外層 catch 回 400）。
+    //  - 「自動套用」促銷（preview 的 coupon_code 為 NULL）若在此被用盡/失效 → 不中止一筆
+    //    全額原本就有效的報名；降級為全額（無折扣、不寫 promotion_usages）並照常成立。
+    const explicitCoupon = !!couponCode;
+    let usage = null;
+    if (totalDiscount > 0) {
+      try {
+        usage = await promotions.recordUsage({
+          promotionId: preview.promotion.id,
+          parentId: parentUuid, // 以 phone 解析自 parents 表，無對應則 null
+          coursePeriodId: null, // 對帳通過後再產 course_period
+          adminEnrollmentId: firstId,
+          originalPrice: preview.originalPrice,
+          discountAmount: preview.discountAmount,
+          finalPrice: preview.finalPrice,
+        }, client);
+      } catch (err) {
+        const softFail = err && err.code
+          && ['COUPON_EXHAUSTED', 'COUPON_EXPIRED', 'COUPON_NOT_ACTIVE', 'COUPON_NOT_STARTED'].includes(err.code);
+        if (explicitCoupon || !softFail) throw err; // 明確折價券、或非可降級錯誤 → 交外層 catch 整筆退回
+        // 自動促銷失效：降級全額，維持報名成立（各期改以全額入庫、回應不帶促銷）。
+        totalDiscount = 0;
+        usage = null;
+        preview.promotion = null;
+        preview.discountAmount = 0;
+        preview.finalPrice = preview.originalPrice;
+      }
+    }
+
+    // 折扣按比例分攤到各期、餘數補最後一筆，使 N 筆 final_price 加總 = preview.finalPrice。
     let discountAllocated = 0;
     for (let i = 0; i < periodCount; i += 1) {
       const d = (i < periodCount - 1) ? Math.round(totalDiscount / periodCount) : (totalDiscount - discountAllocated);
       if (i < periodCount - 1) discountAllocated += d;
       const finalThis = Math.max(0, perPeriodOriginal - d);
-      const eid = genEnrollmentId();
-      enrollmentIds.push(eid);
+      const eid = enrollmentIds[i];
       await client.query(
         `INSERT INTO admin_enrollments
            (id, parent_name, parent_phone, students, coach, coach_id, venue_id, course_type,
@@ -233,21 +268,6 @@ router.post('/', async (req, res) => {
          VALUES ($1, $2, $3)`,
         [eid, '家長提交報名', parentRow.phone]
       );
-    }
-    const firstId = enrollmentIds[0];
-
-    // 促銷用量只記一次（掛第一筆 + batch 總額），避免多期被當成多次使用而誤扣 max_uses。
-    let usage = null;
-    if (totalDiscount > 0) {
-      usage = await promotions.recordUsage({
-        promotionId: preview.promotion.id,
-        parentId: parentUuid, // 以 phone 解析自 parents 表，無對應則 null
-        coursePeriodId: null, // 對帳通過後再產 course_period
-        adminEnrollmentId: firstId,
-        originalPrice: preview.originalPrice,
-        discountAmount: preview.discountAmount,
-        finalPrice: preview.finalPrice,
-      }, client);
     }
 
     // MGM：若使用 TRIAL50，更新 referral_records 為 trial_paid（一次推薦＝一次，掛第一筆）。

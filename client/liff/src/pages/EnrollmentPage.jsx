@@ -189,7 +189,12 @@ export default function EnrollmentPage() {
         {pricing.previewError && (
           <p className="mt-1 text-xs text-brand-error">{pricing.previewError}</p>
         )}
-        {activeCoupon && pricing.promo && pricing.discount > 0 && (
+        {activeCoupon && pricing.previewLoading && (
+          <p className="mt-1 text-xs text-gray-500">套用中…</p>
+        )}
+        {/* 已套用橫幅只在「試算完成」且為「折價券來源」的優惠時顯示（coupon_code 有值＝折價券；自動優惠為 null），
+            避免試算中殘留的自動優惠被誤標為剛輸入的折價券。 */}
+        {activeCoupon && !pricing.previewLoading && pricing.promo?.coupon_code && pricing.discount > 0 && (
           <p className="mt-1 text-xs text-brand-green">已套用：{pricing.promo.name}（折抵 NT${pricing.discount.toLocaleString()}）</p>
         )}
       </div>

@@ -22,7 +22,7 @@ export default function useEnrollmentPricing(bootData, { courseType, venueId, co
   useEffect(() => {
     if (subtotal == null || !courseType) return;
     let alive = true;
-    setPreview((s) => ({ ...s, loading: true, error: null }));
+    setPreview({ discount: 0, promo: null, error: null, loading: true });
     promotionsApi
       .preview({
         originalPrice: subtotal,

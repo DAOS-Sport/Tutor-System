@@ -20,6 +20,15 @@ function isWithinWindow(p, today) {
   return toISODate(p.start_date) <= today && toISODate(p.end_date) >= today;
 }
 
+// 取台灣時區「今天」的曆日字串（YYYY-MM-DD）。DB pool 連線一律 SET TIME ZONE 'Asia/Taipei'
+// （見 models/db.js），故 recordUsage 的 FOR UPDATE 覆核用 SQL CURRENT_DATE＝台灣曆日；
+// preview / list 的 today 必須同步採台灣曆日，否則台灣 00:00–08:00（此時 UTC 仍是前一日）
+// 兩者會不一致 → 折扣「顯示得到卻被 recordUsage 拒絕」。
+// 注意：process TZ / new Date().toISOString() 皆無法修正此問題，須明確指定 timeZone。
+function todayTaipei() {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei' }).format(new Date());
+}
+
 function matchScope(p, { courseType, venueId, periodCount }) {
   const typeOk =
     !p.applicable_course_types ||
@@ -52,10 +61,10 @@ function computeDiscount(p, originalPrice) {
  * 列出 LIFF / R05 可見的「目前進行中」自動套用優惠（不含折價券需代碼者）。
  */
 async function listActivePromotions({ today } = {}) {
-  const t = today || new Date().toISOString().slice(0, 10);
+  const t = today || todayTaipei();
   const r = await pool.query(
     `SELECT id, name, description, type, discount_value, min_threshold_type, min_threshold_value,
-            applicable_course_types, applicable_venue_ids, coupon_code,
+            applicable_course_types, applicable_venue_ids, coupon_code, eligible_parent_id,
             start_date, end_date, max_uses, current_uses
        FROM promotions
       WHERE status = 'active'
@@ -73,7 +82,7 @@ async function listActivePromotions({ today } = {}) {
  *   - 若無 couponCode → 自動從 active 且 coupon_code IS NULL 的活動中挑「折抵最大」一筆。
  */
 async function previewBestDiscount({ originalPrice, courseType, venueId, periodCount = 1, couponCode = null, parentId = null }) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayTaipei();
   const op = Math.max(0, Math.round(Number(originalPrice) || 0));
   if (!op) return { originalPrice: 0, discountAmount: 0, finalPrice: 0, promotion: null };
 
@@ -176,10 +185,37 @@ async function recordUsage({ promotionId, parentId, coursePeriodId, adminEnrollm
   return r.rows[0];
 }
 
+/**
+ * 退回優惠使用（退費 / 取消時呼叫）：以 admin_enrollment_id 刪除 promotion_usages，
+ * 並依實刪筆數把對應 promotions.current_uses 減回（GREATEST 防負）。
+ *  - 必須傳入退費 / 取消交易的 client，與狀態變更同生共死。
+ *  - 冪等：找不到 usage（刪 0 筆）→ 不遞減、不報錯，可安全重複呼叫。
+ */
+async function revertUsage({ adminEnrollmentId }, client) {
+  if (!adminEnrollmentId) return { reverted: 0 };
+  const db = client || pool;
+  const del = await db.query(
+    `DELETE FROM promotion_usages WHERE admin_enrollment_id = $1 RETURNING promotion_id`,
+    [adminEnrollmentId]
+  );
+  if (!del.rowCount) return { reverted: 0 };
+  // 同一報名理論上只掛一筆 usage；仍依 promotion 分組彙總，避免多筆時遞減錯配。
+  const counts = new Map();
+  for (const r of del.rows) counts.set(r.promotion_id, (counts.get(r.promotion_id) || 0) + 1);
+  for (const [promotionId, n] of counts) {
+    await db.query(
+      `UPDATE promotions SET current_uses = GREATEST(0, current_uses - $2) WHERE id = $1`,
+      [promotionId, n]
+    );
+  }
+  return { reverted: del.rowCount };
+}
+
 module.exports = {
   listActivePromotions,
   previewBestDiscount,
   recordUsage,
+  revertUsage,
   // 內部 helper 也匯出方便測試
   _internal: { matchScope, computeDiscount },
 };

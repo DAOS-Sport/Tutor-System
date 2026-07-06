@@ -13,7 +13,8 @@ export default function PriceBreakdown({ pricing, multiplier, isSenior }) {
         value={formatTWD(pricing.unitPrice)}
       />
       <Row label={`數量（${qtyLabel}）`} value={`小計 ${formatTWD(pricing.subtotal)}`} />
-      {pricing.promo && pricing.discount > 0 && (
+      {/* 試算中不顯示優惠列（hook 會把 discount 歸零），待結果回來再顯示，避免閃爍或殘留舊優惠。 */}
+      {!pricing.previewLoading && pricing.promo && pricing.discount > 0 && (
         <Row
           label={`優惠：${pricing.promo.name || pricing.promo.title}${pricing.promo.coupon_code ? ` (${pricing.promo.coupon_code})` : ''}`}
           value={`-${formatTWD(pricing.discount)}`}
@@ -22,7 +23,10 @@ export default function PriceBreakdown({ pricing, multiplier, isSenior }) {
       )}
       <div className="mt-2 flex items-baseline justify-between border-t border-gray-100 pt-2">
         <span className="text-sm font-bold text-gray-700">應繳金額</span>
-        <span className="text-xl font-bold text-brand-primary">{formatTWD(pricing.final)}</span>
+        {/* 試算中顯示占位字，避免出現尚未折抵的暫時金額 */}
+        <span className="text-xl font-bold text-brand-primary">
+          {pricing.previewLoading ? '計算中…' : formatTWD(pricing.final)}
+        </span>
       </div>
     </Section>
   );

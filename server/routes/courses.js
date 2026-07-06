@@ -6,6 +6,7 @@ const express = require('express');
 const { pool } = require('../models/db');
 const { requireParent } = require('../middlewares/parentAuth');
 const { objectExists } = require('../services/objectStorage');
+const promotions = require('../services/promotions');
 
 const router = express.Router();
 
@@ -457,6 +458,8 @@ router.post('/:id/cancel', requireParent, async (req, res) => {
         WHERE id = $1`,
       [row.id]
     );
+    // 取消即釋放此報名占用的優惠用量（同交易內，以 admin_enrollment_id 冪等；無 usage 則 no-op）。
+    await promotions.revertUsage({ adminEnrollmentId: row.id }, client);
     await client.query(
       `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user, reason)
        VALUES ($1, '家長取消未完成報名', 'parent', '家長於 LIFF 取消')`,

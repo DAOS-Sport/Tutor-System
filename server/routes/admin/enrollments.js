@@ -15,6 +15,7 @@ const { randomUUID } = require('crypto');
 const { pool } = require('../../models/db');
 const { requireAdminAuth, requireAdminRole, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
 const ragicWriteback = require('../../services/ragicWriteback');
+const promotions = require('../../services/promotions');
 
 const router = express.Router();
 
@@ -972,6 +973,8 @@ router.post('/:id/refund', requireAdminAuth, requireAdminRole('admin', 'manager'
       `UPDATE admin_enrollments SET status = 'refunded', refund_amount = $2, refunded_at = NOW(), updated_at = NOW() WHERE id = $1`,
       [id, preview.refund_amount]
     );
+    // 退費即釋放此報名占用的優惠用量（同交易內，以 admin_enrollment_id 冪等；無 usage 則 no-op）。
+    await promotions.revertUsage({ adminEnrollmentId: id }, client);
     await client.query(
       `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user, reason, refund_amount)
        VALUES ($1, $2, $3, $4, $5)`,

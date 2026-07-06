@@ -7,6 +7,11 @@
  * 斷言「安全行為」：同一 (referee, coach) 並發 5 筆 TRIAL50 報名，最終只成立 1 筆折扣。
  *   修前 → 多筆 201 / 多筆 promotion_usages → 斷言失敗（暴露漏洞）。
  *   修後 → 恰 1 筆 201、其餘 400、promotion_usages 恰 1 筆 → 斷言通過。
+ *
+ * 註（已停用推薦折扣 2026-07：TRIAL50 移除，暫時停跑；恢復推薦折扣時再啟用）：
+ *   TRIAL50 優惠與 MGM 推薦折扣已下架，DB 內不再有此 promotion。
+ *   本測試於開頭加了守衛：找不到 TRIAL50 時記錄 SKIP 並以 exit 0 收場（不誤判為 FAIL），
+ *   保留整份測試邏輯以利日後恢復折扣時重新啟用。
  */
 const path = require('path');
 const SERVER = path.join(__dirname, '..', '..', 'server');
@@ -24,6 +29,18 @@ function ok(c, m) { console.log((c ? '  ✓ ' : '  ✗ ') + m); if (!c) failed =
 async function main() {
   const db = new Client({ connectionString: process.env.DATABASE_URL });
   await db.connect();
+
+  // 守衛：已停用推薦折扣（2026-07：TRIAL50 移除）。找不到 TRIAL50 優惠即 SKIP（no-op），
+  // 不進行任何 setup / 斷言，直接以 exit 0 收場，避免在無此優惠時誤判為 FAIL。
+  // 恢復推薦折扣時，重新種入 TRIAL50 即會自動恢復本測試。
+  const trialProbe = (await db.query(`SELECT id FROM promotions WHERE upper(coupon_code)='TRIAL50'`)).rows[0];
+  if (!trialProbe) {
+    console.log('  ⏭ SKIP R3：找不到 TRIAL50 優惠（已停用推薦折扣 2026-07：TRIAL50 移除，暫時停跑；恢復推薦折扣時再啟用）');
+    await db.end();
+    console.log('\nR3 SKIP');
+    process.exit(0);
+  }
+
   const parentId = randomUUID();
   const studentId = randomUUID();
   const token = randomUUID().replace(/-/g, '');
