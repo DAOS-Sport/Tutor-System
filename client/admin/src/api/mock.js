@@ -573,6 +573,8 @@ export const mockDb = {
     const missing = Object.entries(env).filter(([, v]) => !v).map(([k]) => k);
     const now = new Date();
     return {
+      // P0.1：標示為模擬資料；頁面須顯示 SIMULATED，不得把 mock 呈現為真實「已同步」全綠狀態。
+      simulated: true,
       enabled: missing.length === 0,
       env,
       missing_env: missing,

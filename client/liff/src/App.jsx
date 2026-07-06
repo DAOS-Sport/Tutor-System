@@ -3,6 +3,7 @@ import { Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 import AppLayout from './components/AppLayout';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ToastProvider } from './context/ToastContext';
+import MockBanner from './components/MockBanner';
 
 import LoginPage from './pages/LoginPage';
 import DemoLoginPage from './pages/DemoLoginPage';
@@ -69,6 +70,7 @@ export default function App() {
   return (
     <ToastProvider>
       <AuthProvider>
+        <MockBanner />
         <Routes>
           <Route element={<AppLayout />}>
             <Route path="/login" element={<LoginPage />} />

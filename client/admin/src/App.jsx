@@ -36,11 +36,14 @@ import RagicStagingPage from './pages/RagicStagingPage';
 import RagicZ03Page from './pages/RagicZ03Page';
 import CustomerParentsPage from './pages/CustomerParentsPage';
 import CustomerStudentsPage from './pages/CustomerStudentsPage';
+import MockBanner from './components/MockBanner';
 
 const ALL = ['admin', 'manager', 'staff'];
 
 export default function App() {
   return (
+    <>
+    <MockBanner />
     <Routes>
       <Route path="/login" element={<LoginPage />} />
 
@@ -98,5 +101,6 @@ export default function App() {
 
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
+    </>
   );
 }

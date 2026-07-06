@@ -320,6 +320,12 @@ export default function RagicStatusPage() {
         ) : null}
       />
 
+      {data.simulated && (
+        <div role="alert" className="mb-4 rounded-lg border-2 border-red-500 bg-red-50 p-3 text-sm font-bold text-red-700">
+          ⚠️ SIMULATED — 本頁為模擬（mock）資料，非真實 Ragic 同步狀態；下方綠燈不代表已同步。
+        </div>
+      )}
+
       <LiveProbePanel probe={data.live_probe} />
 
       <div className="mb-6 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">

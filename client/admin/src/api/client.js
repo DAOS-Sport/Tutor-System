@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 // P0.1 fail-safe：只有明確 VITE_USE_MOCK === 'true' 才啟用 mock。
-// 反轉先前 `!== 'false'`（未設即 mock）的 fail-dangerous 預設，避免正式環境誤用假資料。
+// 反轉先前「未設即啟用 mock」的 fail-dangerous 預設，避免正式環境誤用假資料。
 export const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true';
 
 const TOKEN_KEY = 'daos.admin.user';
