@@ -1052,6 +1052,21 @@ async function seedVenuesCoachesParents() {
       [v.id, v.name, v.full_address]
     );
   }
+  // 冪等對齊（2026-07）：把 LIFF 用的 venues 名稱/地址對齊 F-A03 admin_venues（單一真實來源）。
+  // 修正歷史殘留：早期 demo seed（DO NOTHING）先種了假地址（如 B「板橋文化路」），之後 Ragic H05
+  // 只同步了「名稱」（B→新北高中），舊版 admin/venues PATCH 又漏回寫 name/full_address，導致地址卡在舊值。
+  // 每次開機用當下的 admin_venues 覆蓋 venues 的名稱/地址；admin_venues 地址為空時不覆蓋（保留既有值）。
+  await pool.query(
+    `UPDATE venues v
+        SET name = av.name,
+            full_address = COALESCE(NULLIF(av.address, ''), v.full_address),
+            updated_at = NOW()
+       FROM admin_venues av
+      WHERE av.id = v.id
+        AND COALESCE(av.name, '') <> ''
+        AND ( v.name IS DISTINCT FROM av.name
+              OR v.full_address IS DISTINCT FROM COALESCE(NULLIF(av.address, ''), v.full_address) )`
+  ).catch((e) => console.error('[venues reconcile at boot]', e.message));
   for (const c of COACHES) {
     await pool.query(
       `INSERT INTO coaches (ragic_employee_id, name, phone, is_senior, pricing_multiplier, bio_rich_text, is_active, intro_review_status)
