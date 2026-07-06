@@ -56,11 +56,18 @@ router.get('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =>
     const missing = Object.entries(env).filter(([, v]) => !v).map(([k]) => k);
     const enabled = missing.length === 0;
     const forms = await ragicAdmin.getSyncStatusSnapshot();
+    const liveProbe = await ragicAdmin.getLiveRagicProbeSnapshot().catch((err) => ({
+      ok: false,
+      checked_at: new Date().toISOString(),
+      error: err.message || String(err),
+      forms: {},
+    }));
     const now = new Date();
     res.json({
       enabled,
       env,
       missing_env: missing,
+      live_probe: liveProbe,
       cron_schedule: '*/10 * * * *',
       next_cron_run_at: nextCronRunAt(now),
       forms,

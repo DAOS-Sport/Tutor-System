@@ -2009,6 +2009,16 @@ const FORM_META = {
   quarantine: { code: 'Z01_BAD_NAME_QUARANTINE', label: 'Z01 姓名品質掃描（Z03 追蹤）', kind: 'sync', impl: _quarantineBadZ01NamesImpl, env: 'RAGIC_FORM_Z01' },
 };
 
+const LIVE_PROBE_FORMS = {
+  h01: { label: 'H01 員工 API', env: 'RAGIC_FORM_H01' },
+  h05: { label: 'H05 場館 API', env: 'RAGIC_FORM_H05' },
+  z01: { label: 'Z01 家長 API', env: 'RAGIC_FORM_Z01' },
+  z02: { label: 'Z02 學員 API', env: 'RAGIC_FORM_Z02' },
+};
+const LIVE_PROBE_TTL_MS = Number(process.env.RAGIC_STATUS_PROBE_TTL_MS) || 60000;
+let _liveProbeCache = null;
+let _liveProbeCacheAt = 0;
+
 // ── 每個 Ragic sync job 可由 admin 在「Ragic 連線狀態」頁手動開關 ──
 // 存 admin_settings（key=ragic_sync_enabled_<job>，value 1/0；NUMERIC 欄位不能存布林/字串）。
 // 缺該 key 一律視為「啟用」，維持既有行為，不需要額外 migration/seed。
@@ -2125,6 +2135,60 @@ function getRagicEnvFlags() {
     RAGIC_FORM_Z01: !!process.env.RAGIC_FORM_Z01,
     RAGIC_FORM_Z02: !!process.env.RAGIC_FORM_Z02,
   };
+}
+
+async function getLiveRagicProbeSnapshot() {
+  if (_liveProbeCache && Date.now() - _liveProbeCacheAt < LIVE_PROBE_TTL_MS) {
+    return { ..._liveProbeCache, cached: true };
+  }
+  const checkedAt = new Date();
+  const env = getRagicEnvFlags();
+  const canProbe = env.RAGIC_API_KEY && env.RAGIC_BASE_URL;
+  const forms = {};
+  await Promise.all(Object.entries(LIVE_PROBE_FORMS).map(async ([key, meta]) => {
+    const formPath = process.env[meta.env];
+    const base = {
+      label: meta.label,
+      env: meta.env,
+      configured: !!formPath,
+      checked_at: checkedAt.toISOString(),
+    };
+    if (!canProbe) {
+      forms[key] = { ...base, status: 'skipped', ok: false, error: 'RAGIC_API_KEY / RAGIC_BASE_URL 未完整設定' };
+      return;
+    }
+    if (!formPath) {
+      forms[key] = { ...base, status: 'missing_env', ok: false, error: `${meta.env} 未設定` };
+      return;
+    }
+    try {
+      const probe = await ragic.probeForm(formPath);
+      forms[key] = {
+        ...base,
+        status: probe.ok ? 'ok' : 'empty',
+        ok: probe.ok,
+        empty: probe.empty,
+        record_count: probe.count,
+        duration_ms: probe.duration_ms,
+      };
+    } catch (err) {
+      forms[key] = {
+        ...base,
+        status: 'error',
+        ok: false,
+        error: err.message || String(err),
+      };
+    }
+  }));
+  const snapshot = {
+    checked_at: checkedAt.toISOString(),
+    cached: false,
+    ok: Object.values(forms).every((item) => item.ok),
+    forms,
+  };
+  _liveProbeCache = snapshot;
+  _liveProbeCacheAt = Date.now();
+  return snapshot;
 }
 
 /**
@@ -2390,6 +2454,7 @@ module.exports = {
   kickoffSyncVenuesAsync,
   ragicEnabled,
   getRagicEnvFlags,
+  getLiveRagicProbeSnapshot,
   getSyncStatusSnapshot,
   pingParentsFromRagic,
   pingStudentsFromRagic,

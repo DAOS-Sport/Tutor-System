@@ -151,6 +151,62 @@ function LoadError({ onRetry }) {
   );
 }
 
+function probeBadge(status) {
+  const base = 'rounded px-2 py-0.5 text-xs font-bold';
+  if (status === 'ok') return <span className={`${base} bg-brand-green/15 text-brand-green`}>API 可讀</span>;
+  if (status === 'empty') return <span className={`${base} bg-amber-100 text-amber-800`}>回 0 筆</span>;
+  if (status === 'missing_env') return <span className={`${base} bg-red-100 text-red-700`}>缺設定</span>;
+  if (status === 'skipped') return <span className={`${base} bg-gray-200 text-gray-600`}>未檢查</span>;
+  return <span className={`${base} bg-red-100 text-red-700`}>失敗</span>;
+}
+
+function LiveProbePanel({ probe }) {
+  if (!probe) return null;
+  const forms = probe.forms || {};
+  return (
+    <div className="mb-6 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <div className="text-sm font-bold text-gray-800">即時 Ragic API 驗證</div>
+          <div className="mt-0.5 text-xs text-gray-500">
+            直接用 Ragic API 對各表單讀取 1 筆，避免只看本地同步紀錄造成假同步。
+          </div>
+        </div>
+        {probe.ok
+          ? <span className="w-fit rounded bg-brand-green/15 px-2 py-0.5 text-xs font-bold text-brand-green">全部可讀</span>
+          : <span className="w-fit rounded bg-amber-100 px-2 py-0.5 text-xs font-bold text-amber-800">需確認</span>}
+      </div>
+      {probe.error ? (
+        <div className="mt-3 rounded bg-red-50 px-2 py-1.5 text-xs text-red-700">{probe.error}</div>
+      ) : null}
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        {Object.entries(forms).map(([key, item]) => (
+          <div key={key} className="rounded border border-gray-200 bg-gray-50 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0 text-xs font-bold text-gray-800">{item.label || key}</div>
+              {probeBadge(item.status)}
+            </div>
+            <div className="mt-2 space-y-1 text-[11px] text-gray-500">
+              <div className="font-mono">{item.env}</div>
+              <div>
+                筆數：<span className="font-mono text-gray-700">{item.record_count ?? '—'}</span>
+                {item.duration_ms != null ? (
+                  <span> · 耗時：<span className="font-mono text-gray-700">{item.duration_ms} ms</span></span>
+                ) : null}
+              </div>
+              {item.error ? <div className="text-red-700">{item.error}</div> : null}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-2 text-[11px] text-gray-500">
+        檢查時間：{fmtDate(probe.checked_at)}
+        {probe.cached ? ' · 使用最近快取結果' : null}
+      </div>
+    </div>
+  );
+}
+
 export default function RagicStatusPage() {
   const toast = useToast();
   const { isAdmin, logout } = useAuth();
@@ -263,6 +319,8 @@ export default function RagicStatusPage() {
           </button>
         ) : null}
       />
+
+      <LiveProbePanel probe={data.live_probe} />
 
       <div className="mb-6 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
         <div className="flex items-center justify-between">

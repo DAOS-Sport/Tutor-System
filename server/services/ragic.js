@@ -143,6 +143,23 @@ async function query(formPath, params = {}) {
   return res.data;
 }
 
+async function probeForm(formPath, params = {}) {
+  const started = Date.now();
+  const data = await query(formPath, { limit: 1, ...params });
+  let count = 0;
+  if (Array.isArray(data)) {
+    count = data.length;
+  } else if (data && typeof data === 'object') {
+    count = Object.keys(data).filter((key) => !['status', 'msg', 'message', 'code'].includes(key)).length;
+  }
+  return {
+    ok: count > 0,
+    empty: count === 0,
+    count,
+    duration_ms: Date.now() - started,
+  };
+}
+
 // Task #83：H01 教練 / H05 場館分頁拉取（Ragic 支援 ?limit=N&offset=N）
 // 避免單次回應 payload 過大導致 timeout。回傳合併後的 records map（同 query() 形狀）。
 const RAGIC_PAGE_SIZE = Number(process.env.RAGIC_PAGE_SIZE) || 200;
@@ -1149,6 +1166,7 @@ module.exports = {
   getAllStaff,
   getActiveVenues,
   getAllParents,
+  probeForm,
   getParentByPhone,
   getParentByLineUid,
   bindParentLineUidToRagic,
