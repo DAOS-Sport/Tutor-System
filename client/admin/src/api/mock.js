@@ -376,6 +376,17 @@ const RAGIC_MOCK_ENV = {
   RAGIC_FORM_H01: true, RAGIC_FORM_H05: true,
   RAGIC_FORM_Z01: true, RAGIC_FORM_Z02: true,
 };
+const RAGIC_MOCK_LIVE_PROBE = {
+  ok: true,
+  cached: false,
+  checked_at: new Date(Date.now() - 30000).toISOString(),
+  forms: {
+    h01: { label: 'H01 員工 API', env: 'RAGIC_FORM_H01', configured: true, status: 'ok', ok: true, empty: false, record_count: 1, duration_ms: 420 },
+    h05: { label: 'H05 場館 API', env: 'RAGIC_FORM_H05', configured: true, status: 'ok', ok: true, empty: false, record_count: 1, duration_ms: 380 },
+    z01: { label: 'Z01 家長 API', env: 'RAGIC_FORM_Z01', configured: true, status: 'ok', ok: true, empty: false, record_count: 1, duration_ms: 510 },
+    z02: { label: 'Z02 學員 API', env: 'RAGIC_FORM_Z02', configured: true, status: 'ok', ok: true, empty: false, record_count: 1, duration_ms: 490 },
+  },
+};
 // 模組級可變狀態：ragicSync() 會就地改它，下一次 ragicStatus() 回傳更新後的深拷貝。
 // admin_enabled：demo 模式下的「Ragic 連線狀態」手動開關初始值，皆預設開啟。
 const RAGIC_MOCK_FORMS = {
@@ -565,6 +576,10 @@ export const mockDb = {
       enabled: missing.length === 0,
       env,
       missing_env: missing,
+      live_probe: JSON.parse(JSON.stringify({
+        ...RAGIC_MOCK_LIVE_PROBE,
+        cached: true,
+      })),
       cron_schedule: '*/10 * * * *',
       next_cron_run_at: _ragicNextCron(now),
       // 深拷貝：避免頁面拿到 module 內部物件而被後續 setTimeout 變更「偷改」既有 render
