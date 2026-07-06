@@ -256,8 +256,9 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
           </div>
 
           <div>
-            <label className="mb-1 block text-xs text-gray-500">使用次數上限（空白 = 不限）</label>
+            <label className="mb-1 block text-xs text-gray-500">總使用次數上限（全部家長合計，空白 = 不限）</label>
             <input className={fieldClass()} value={d.max_uses} onChange={(e) => setD({ ...d, max_uses: e.target.value })} />
+            <p className="mt-1 text-[11px] leading-snug text-gray-400">整個活動可被兌換的「總」次數（所有家長共用，每成立一筆報名 +1），非每人可用次數；達上限後即自動停止套用、不再顯示。</p>
           </div>
           <div>
             <label className="mb-1 block text-xs text-gray-500">折價券代碼（空白 = 自動套用，不需代碼）</label>

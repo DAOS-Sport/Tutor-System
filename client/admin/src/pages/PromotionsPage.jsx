@@ -159,7 +159,7 @@ export default function PromotionsPage() {
                 <th className="px-3 py-2 text-left">名稱 / 折價券</th>
                 <th className="px-3 py-2 text-left">折扣</th>
                 <th className="px-3 py-2 text-left">期間</th>
-                <th className="px-3 py-2 text-left">使用 / 上限</th>
+                <th className="px-3 py-2 text-left">已用 / 總上限</th>
                 <th className="px-3 py-2 text-left">狀態</th>
                 <th className="px-3 py-2"></th>
               </tr>

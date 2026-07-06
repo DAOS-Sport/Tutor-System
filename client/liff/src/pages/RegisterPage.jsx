@@ -15,7 +15,7 @@ import { isValidTWPhone, isValidTWId } from '../utils/format';
 import { USE_MOCK } from '../api/client';
 import ReportIssueButton from '../components/ReportIssueButton';
 
-const PENDING_COUPON_KEY = 'daos.pendingCoupon';
+// PENDING_COUPON_KEY（daos.pendingCoupon）已隨推薦折扣停用移除（2026-07 全站優惠清除）。
 const IS_PROD = import.meta.env.PROD;
 const BLOOD_TYPE_OPTIONS = ['A', 'B', 'O', 'AB', '不清楚'];
 const STEP1_FIELDS = ['name', 'phone', 'email', 'primary_venue_id'];
@@ -115,7 +115,7 @@ export default function RegisterPage() {
   const authedParent = isAuthed && role === 'parent';
 
   // 用推薦的教練解析出有效場館（優先家長慣用場館，否則取教練第一個場館），
-  // 組出帶 coach/venue/courseType 的報名頁 URL；EnrollmentPage 會據 coachId 自動套 TRIAL50。
+  // 組出帶 coach/venue/courseType 的報名頁 URL（推薦折扣 TRIAL50 已停用，僅預帶教練/場館，不再自動套券）。
   const buildRefEnrollUrl = useCallback(async (coachId, preferVenueId) => {
     let venueId = preferVenueId || '';
     try {
@@ -142,19 +142,15 @@ export default function RegisterPage() {
   }, [refToken, toast]);
 
   // 已登入家長點教練分享連結：不該再被丟去新客戶註冊表。
-  // 等推薦資訊載入完 → 寫 pendingCoupon（享該教練 5 折）→ 直接導去報名頁帶現有學生報名。
+  // 等推薦資訊載入完 → 直接導去帶該教練的報名頁（推薦折扣已停用，不再寫 pendingCoupon）。
   useEffect(() => {
     if (!authedParent || !refToken || !refResolved) return;
     let alive = true;
     (async () => {
       const coachId = refInfo?.coach?.id;
       if (!coachId) { navigate('/', { replace: true }); return; } // 推薦連結失效 → 回首頁
-      if (refInfo.already_bound !== true) {
-        try {
-          localStorage.setItem(PENDING_COUPON_KEY,
-            JSON.stringify({ coupon: 'TRIAL50', coachId }));
-        } catch { /* noop */ }
-      }
+      // 推薦折扣（TRIAL50 體驗課 5 折）已停用（2026-07 全站優惠清除）：
+      // 受推薦家長仍導向該教練報名頁，但不再自動帶入折價券。
       const url = await buildRefEnrollUrl(coachId, parent?.primary_venue_id);
       if (alive) navigate(url, { replace: true });
     })();
@@ -258,14 +254,9 @@ export default function RegisterPage() {
         if (r?.status === 'registered_and_logged_in' && r.parent) {
           const merged = { ...r.parent, token: r.token || r.parent.token || null };
           setParent(merged);
-          // MGM：ref_bound=true 且 refInfo.coach 存在 → 寫 pendingCoupon
-          // 報名頁會偵測並自動套用 TRIAL50 (5 折)
+          // MGM：ref_bound=true → 綁定推薦關係（推薦折扣 TRIAL50 已停用，不再寫 pendingCoupon）
           if (refInfo && refInfo.coach && r.ref_bound) {
-            try {
-              localStorage.setItem(PENDING_COUPON_KEY,
-                JSON.stringify({ coupon: 'TRIAL50', coachId: refInfo.coach.id }));
-            } catch { /* noop */ }
-            toast.success(`註冊完成！請選擇組別與場館後即可享 ${refInfo.coach.name} 教練體驗課 5 折`);
+            toast.success('註冊完成！請選擇組別與場館開始報名');
           } else if (refInfo && refInfo.coach && r.ref_error === 'REF_EXISTING_CUSTOMER') {
             // 舊客開通（found→update）依業務規則不適用新客推薦優惠——這是預期行為，
             // 不是綁定失敗，不可顯示「請聯絡客服」造成無謂客訴。
@@ -276,7 +267,7 @@ export default function RegisterPage() {
           } else {
             toast.success('註冊完成！歡迎加入夢想體育學院');
           }
-          // 推薦註冊成功 → 直接導去帶該教練的報名頁，pendingCoupon 才套得上 5 折
+          // 推薦註冊成功 → 直接導去帶該教練的報名頁（推薦折扣已停用，僅預帶教練）
           if (refInfo?.coach && r.ref_bound) {
             const url = await buildRefEnrollUrl(refInfo.coach.id, merged?.primary_venue_id);
             navigate(url, { replace: true });
@@ -310,11 +301,8 @@ export default function RegisterPage() {
       const parent = { ...created, token: created?.token || null };
       setParent(parent);
       if (refInfo && refInfo.coach && created?.ref_bound) {
-        try {
-          localStorage.setItem(PENDING_COUPON_KEY,
-            JSON.stringify({ coupon: 'TRIAL50', coachId: refInfo.coach.id }));
-        } catch { /* noop */ }
-        toast.success(`註冊完成！請選擇組別與場館後即可享 ${refInfo.coach.name} 教練體驗課 5 折`);
+        // 推薦折扣（TRIAL50）已停用：不再寫入 pendingCoupon，改為中性完成訊息。
+        toast.success('註冊完成！請選擇組別與場館開始報名');
       } else {
         toast.success('註冊完成！歡迎加入夢想體育學院');
       }

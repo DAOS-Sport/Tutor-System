@@ -42,12 +42,14 @@ CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referral_records(referrer_p
 CREATE INDEX IF NOT EXISTS idx_referrals_coach ON referral_records(coach_id);
 CREATE INDEX IF NOT EXISTS idx_referrals_status ON referral_records(status);
 
--- 體驗課 5 折優惠 seed（cooupon_code = TRIAL50；發放後僅在後端
--- /api/enrollments 內額外驗證該家長是否有 referral_records 對應紀錄）
-INSERT INTO promotions
-  (name, description, type, discount_value, applicable_course_types,
-   coupon_code, start_date, end_date, status, created_at, updated_at)
-SELECT 'MGM 體驗課 5 折', '推薦連結專用：新客戶體驗課 5 折', 'PERCENTAGE', 0.5,
-       ARRAY[1,2,3], 'TRIAL50', CURRENT_DATE - INTERVAL '1 day',
-       CURRENT_DATE + INTERVAL '5 years', 'active', NOW(), NOW()
-WHERE NOT EXISTS (SELECT 1 FROM promotions WHERE coupon_code = 'TRIAL50');
+-- （已停用 2026-07）體驗課 5 折 TRIAL50 seed 已移除：全站優惠活動清除 + 停用推薦折扣。
+-- 此檔頭標示「可在 prod 重跑」，故一併註解掉此 seed，避免手動重跑 migration 又把 TRIAL50 種回。
+-- 若日後要恢復推薦體驗課折扣，重新啟用下方 INSERT，並同步恢復 coreSchema.js 的 seed、
+-- RegisterPage.jsx 的 pendingCoupon 寫入與 enrollments.js 的 TRIAL50 驗證。
+-- INSERT INTO promotions
+--   (name, description, type, discount_value, applicable_course_types,
+--    coupon_code, start_date, end_date, status, created_at, updated_at)
+-- SELECT 'MGM 體驗課 5 折', '推薦連結專用：新客戶體驗課 5 折', 'PERCENTAGE', 0.5,
+--        ARRAY[1,2,3], 'TRIAL50', CURRENT_DATE - INTERVAL '1 day',
+--        CURRENT_DATE + INTERVAL '5 years', 'active', NOW(), NOW()
+-- WHERE NOT EXISTS (SELECT 1 FROM promotions WHERE coupon_code = 'TRIAL50');

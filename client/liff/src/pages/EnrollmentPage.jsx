@@ -28,18 +28,11 @@ export default function EnrollmentPage() {
   const [couponInput, setCouponInput] = useState('');
   const [activeCoupon, setActiveCoupon] = useState('');
 
-  // MGM：若有 pendingCoupon 對應同一教練，自動套用
+  // 推薦折扣（TRIAL50）已停用（2026-07 全站優惠清除）：不再自動套用 pendingCoupon，
+  // 並主動清掉既有使用者瀏覽器內殘留的 daos.pendingCoupon，避免套到已刪除的券而報「折價券無效」。
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem('daos.pendingCoupon');
-      if (!raw || !coachId) return;
-      const v = JSON.parse(raw);
-      if (v && v.coupon && v.coachId === coachId) {
-        setCouponInput(v.coupon);
-        setActiveCoupon(v.coupon);
-      }
-    } catch { /* noop */ }
-  }, [coachId]);
+    try { localStorage.removeItem('daos.pendingCoupon'); } catch { /* noop */ }
+  }, []);
 
   const onBootError = useCallback((m) => toast.error(m), [toast]);
   const { bootData, bootError } = useEnrollmentBoot({

@@ -942,13 +942,17 @@ CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referral_records(referrer_p
 CREATE INDEX IF NOT EXISTS idx_referrals_coach ON referral_records(coach_id);
 CREATE INDEX IF NOT EXISTS idx_referrals_status ON referral_records(status);
 
-INSERT INTO promotions
-  (name, description, type, discount_value, applicable_course_types,
-   coupon_code, start_date, end_date, status, created_at, updated_at)
-SELECT 'MGM 體驗課 5 折', '推薦連結專用：新客戶體驗課 5 折', 'PERCENTAGE', 0.5,
-       ARRAY[1,2,3]::INTEGER[], 'TRIAL50', CURRENT_DATE - INTERVAL '1 day',
-       CURRENT_DATE + INTERVAL '5 years', 'active', NOW(), NOW()
-WHERE NOT EXISTS (SELECT 1 FROM promotions WHERE coupon_code = 'TRIAL50');
+-- （已停用）原本此處在每次開機自動重建 MGM 體驗課 5 折（TRIAL50）券。
+-- 2026-07：全站優惠活動清除 + 停用推薦折扣，故移除此 seed，避免刪除後開機又復活。
+-- 若日後要恢復推薦體驗課折扣，重新啟用下方 INSERT 並同步恢復
+-- RegisterPage.jsx 的 pendingCoupon 寫入與 enrollments.js 的 TRIAL50 驗證。
+-- INSERT INTO promotions
+--   (name, description, type, discount_value, applicable_course_types,
+--    coupon_code, start_date, end_date, status, created_at, updated_at)
+-- SELECT 'MGM 體驗課 5 折', '推薦連結專用：新客戶體驗課 5 折', 'PERCENTAGE', 0.5,
+--        ARRAY[1,2,3]::INTEGER[], 'TRIAL50', CURRENT_DATE - INTERVAL '1 day',
+--        CURRENT_DATE + INTERVAL '5 years', 'active', NOW(), NOW()
+-- WHERE NOT EXISTS (SELECT 1 FROM promotions WHERE coupon_code = 'TRIAL50');
 
 -- ─── Phase 7: 課程轉讓 (F-S08 / F-M04) ────────────────────────────────
 -- 簡化版 transfer_records（與 001_initial_schema.sql 結構一致，但 reviewed_by 用 admin_users.id）
