@@ -122,10 +122,15 @@ router.patch('/:id/active', requireAdminAuth, requireAdminRole('admin'), async (
       [id, isActive]
     );
     // 同步 LIFF 用的 venues 表（若該 row 不存在則 INSERT，避免日後 LIFF 看不到）
+    // 一併同步 name / full_address，讓 venues 永遠鏡像 admin_venues 的顯示資訊。
     await client.query(
       `INSERT INTO venues (id, name, full_address, is_active)
          VALUES ($1, $2, $3, $4)
-       ON CONFLICT (id) DO UPDATE SET is_active = EXCLUDED.is_active, updated_at = NOW()`,
+       ON CONFLICT (id) DO UPDATE SET
+         name = EXCLUDED.name,
+         full_address = EXCLUDED.full_address,
+         is_active = EXCLUDED.is_active,
+         updated_at = NOW()`,
       [id, r.rows[0].name, r.rows[0].address || '', isActive]
     );
     await client.query('COMMIT');
@@ -175,8 +180,10 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
        WHERE id = $1 RETURNING *`,
       [id, ...values]
     );
-    // Task: 匯款帳戶對應館別 — 銀行欄位同步寫回 LIFF 用的 venues 表，避免報名/團購頁
+    // Task: 場館資訊對應館別 — 名稱/地址/匯款帳戶同步寫回 LIFF 用的 venues 表，避免報名/團購頁
     // （server/routes/courses.js、groupOrders.js、venues.js 皆 JOIN venues）讀到舊值。
+    // 修正（2026-07）：原本 ON CONFLICT 只更新銀行欄位，漏了 name / full_address，
+    //   導致 F-A03 改場館名稱或地址後，LIFF 端 venues 永遠停在最初建立時的舊值（同步 bug）。
     // 若該 venues row 尚不存在則補建，避免日後 LIFF 查不到場館。
     const updated = r.rows[0];
     await pool.query(
@@ -184,6 +191,8 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
           account_holder, account_number, is_active)
        VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
        ON CONFLICT (id) DO UPDATE SET
+         name = EXCLUDED.name,
+         full_address = EXCLUDED.full_address,
          bank_institution_name = EXCLUDED.bank_institution_name,
          bank_branch_name = EXCLUDED.bank_branch_name,
          account_holder = EXCLUDED.account_holder,
