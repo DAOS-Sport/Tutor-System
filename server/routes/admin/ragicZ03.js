@@ -5,6 +5,7 @@
  * - PATCH /api/admin/ragic-z03/:id/draft ({ record, students }) — 儲存本地 Z03；完整時寫回 Ragic，LINE UID 由登入流程綁定
  * - PATCH /api/admin/ragic-z03/:id   ({ fixed_name }) — 寫回 Ragic Z01 姓名欄位並標記 resolved
  * - POST  /api/admin/ragic-z03/:id/dismiss           — 標記誤判，不寫 Ragic
+ * - DELETE /api/admin/ragic-z03/:id?confirm=true      — 強制刪除（僅 admin），寫 tombstone 防下次同步復活
  *
  * Z01 本地鏡像只收「必填齊全 ＋ LINE UID 已綁定」的完成記錄；
  * 其餘（缺 UID 或任一必填缺失）一律進此佇列。櫃台只整理核心資料；UID 由家長登入自動綁定。
@@ -80,6 +81,28 @@ router.post('/:id/dismiss', async (req, res) => {
     const updated = await ragicAdmin.dismissZ03Record(req.params.id, req.adminUser?.sub);
     res.json({ ok: true, item: updated });
   } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// 強制刪除：router 級的 requireAdminRole('admin','manager','staff') 只擋未登入/無關角色，
+// 這裡疊加一層更嚴格的 requireAdminRole('admin')，讓「刪除」只有 admin 能做（manager/staff
+// 仍可用上面其餘唯讀/整理路由）。需帶 ?confirm=true 二次確認，防止誤觸/自動化腳本誤刪。
+router.delete('/:id', requireAdminRole('admin'), async (req, res) => {
+  try {
+    if (String(req.query.confirm || '') !== 'true') {
+      return res.status(400).json({
+        error: '請帶 ?confirm=true 以確認強制刪除',
+        code: 'CONFIRM_REQUIRED',
+      });
+    }
+    const result = await ragicAdmin.deleteZ03Record(req.params.id, {
+      adminUsername: req.adminUser?.sub,
+      reason: req.body?.reason || null,
+    });
+    res.json({ ok: true, deleted: true, ...result });
+  } catch (err) {
+    console.error('[admin/ragic-z03] DELETE failed:', err.message);
     res.status(400).json({ error: err.message });
   }
 });

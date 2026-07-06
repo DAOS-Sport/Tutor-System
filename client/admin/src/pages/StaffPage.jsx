@@ -13,7 +13,7 @@ import { venuesApi } from '../api/venues';
 import { roleLabel } from '../utils/format';
 
 const EMPTY_FILTERS = { status: 'all', venueId: '', name: '', role: '', phone: '', senior: '' };
-const ROLE_TONE = { admin: 'primary', manager: 'teal', staff: 'gold', coach: 'green' };
+const ROLE_TONE = { admin: 'primary', manager: 'teal', staff: 'gold', coach: 'green', lifeguard: 'amber' };
 const MULTIPLIER_MIN = 1.00;
 const MULTIPLIER_MAX = 1.50;
 
@@ -66,16 +66,35 @@ function PasswordCell({ row, isAdmin, onReset }) {
 }
 
 function roleBadges(row) {
-  const badges = [{ role: row.role, active: true }];
   const knownRoles = Array.isArray(row.known_roles) ? row.known_roles : [];
   const coachActive = row.coach_profile_status === 'active' || row.coach_active;
+  const lifeguardActive = !!row.lifeguard_active;
+
+  // A0.5：role==='staff' 常只是「沒有更精確分類」的 DB enum 保底值（roleVal 的 fallback）。
+  // 若員工其實有教練/救生員等具體身分（is_coach / is_lifeguard），且 is_counter 並非 true
+  // （代表根本沒偵測到櫃檯關鍵字，role='staff' 只是保底），就不該再顯示「行政櫃檯」徽章，
+  // 只顯示其真正的身分；反之（is_counter===true，或完全沒有任何具體身分信號）維持原本
+  // 顯示「行政櫃檯」的行為不變（一般泛用員工不受影響）。
+  const hasOtherIdentity = !!row.is_coach || !!row.is_lifeguard;
+  const suppressStaffBadge = row.is_counter !== true && hasOtherIdentity;
+
+  const badges = [];
+  if (!(row.role === 'staff' && suppressStaffBadge)) {
+    badges.push({ role: row.role, active: true });
+  }
   for (const role of knownRoles) {
-    if (role && !badges.some((b) => b.role === role)) {
-      badges.push({ role, active: role === 'coach' && row.has_coach_profile ? coachActive : false });
-    }
+    if (role === 'staff' && suppressStaffBadge) continue;
+    if (!role || badges.some((b) => b.role === role)) continue;
+    let active = false;
+    if (role === 'coach') active = row.has_coach_profile ? coachActive : false;
+    else if (role === 'lifeguard') active = lifeguardActive;
+    badges.push({ role, active });
   }
   if (row.has_coach_profile && row.role !== 'coach' && !badges.some((b) => b.role === 'coach')) {
     badges.push({ role: 'coach', active: coachActive });
+  }
+  if (row.is_lifeguard && !badges.some((b) => b.role === 'lifeguard')) {
+    badges.push({ role: 'lifeguard', active: lifeguardActive });
   }
   return badges.map(({ role, active }) => (
     <StatusBadge
@@ -154,6 +173,7 @@ export default function StaffPage() {
 
   const venueMap = useMemo(() => Object.fromEntries(venues.map((v) => [v.id, v.name])), [venues]);
   const [togglingId, setTogglingId] = useState(null);
+  const [fieldToggling, setFieldToggling] = useState(null); // `${id}:${field}`，救生員/教練快捷開關忙碌狀態
 
   if (!staff) return <LoadingSpinner fullPage />;
 
@@ -171,6 +191,24 @@ export default function StaffPage() {
       toast.error('狀態切換失敗');
     } finally {
       setTogglingId(null);
+    }
+  }
+
+  // C2 / 救生員快捷開關：直接切換 coach_active 或 lifeguard_active，不需開啟完整編輯彈窗。
+  const FIELD_LABEL = { coach_active: '教練', lifeguard_active: '救生員' };
+  async function toggleField(row, field, current) {
+    const key = `${row.id}:${field}`;
+    if (fieldToggling === key) return;
+    const next = !current;
+    setFieldToggling(key);
+    try {
+      const res = await staffApi.update(row.id, { [field]: next });
+      setStaff((arr) => arr.map((x) => (x.id === res.id ? res : x)));
+      toast.success(`已${next ? '啟用' : '停用'} ${res.name} 的${FIELD_LABEL[field] || ''}身分`);
+    } catch {
+      toast.error('狀態切換失敗');
+    } finally {
+      setFieldToggling(null);
     }
   }
 
@@ -246,6 +284,8 @@ export default function StaffPage() {
           venue_id: venueIds[0] || null,
         };
         if (editing.role !== 'coach') patch.coach_active = !!editing.coach_active;
+        // 救生員身分 is_lifeguard 為 Ragic 判定唯讀值，只有它為真時，lifeguard_active 開關才有意義。
+        if (editing.is_lifeguard) patch.lifeguard_active = !!editing.lifeguard_active;
         // Task #91：若編輯彈窗動過 coach_profile，連同 bio / specialties / email 一起送
         if (editing.coach_profile && coachIdentityOn) {
           patch.coach_profile = {
@@ -332,16 +372,35 @@ export default function StaffPage() {
         ? <span className="font-mono text-xs text-brand-primary break-all" title={r.line_uid}>{r.line_uid}</span>
         : <span className="text-gray-300 text-xs">尚未綁定</span> },
     { key: 'has_coach_profile', label: '教練資料', className: 'text-center',
-      render: (r) => r.has_coach_profile
-        ? (
-            <button type="button" onClick={() => openEditor(r)}
-              className="inline-block hover:opacity-80" title="於員工編輯彈窗中設定教練欄位">
-              <StatusBadge tone={r.coach_active ? 'green' : 'gray'}>
-                {r.coach_active ? '上架中 →' : '已下架 →'}
-              </StatusBadge>
-            </button>
-          )
-        : <span className="text-gray-300 text-xs">無</span> },
+      render: (r) => {
+        if (!r.has_coach_profile) return <span className="text-gray-300 text-xs">無</span>;
+        const busyRow = fieldToggling === `${r.id}:coach_active`;
+        return (
+          <button type="button" onClick={() => toggleField(r, 'coach_active', r.coach_active)}
+            disabled={busyRow}
+            className="inline-block hover:opacity-80 disabled:cursor-wait disabled:opacity-60"
+            title={r.coach_active ? '點擊停用教練身分' : '點擊啟用教練身分'}>
+            <StatusBadge tone={r.coach_active ? 'green' : 'gray'}>
+              {busyRow ? '處理中…' : (r.coach_active ? '上架中' : '已下架')}
+            </StatusBadge>
+          </button>
+        );
+      } },
+    { key: 'is_lifeguard', label: '救生員', className: 'text-center',
+      render: (r) => {
+        if (!r.is_lifeguard) return <span className="text-gray-300 text-xs">無</span>;
+        const busyRow = fieldToggling === `${r.id}:lifeguard_active`;
+        return (
+          <button type="button" onClick={() => toggleField(r, 'lifeguard_active', r.lifeguard_active)}
+            disabled={busyRow}
+            className="inline-block hover:opacity-80 disabled:cursor-wait disabled:opacity-60"
+            title={r.lifeguard_active ? '點擊停用救生員身分' : '點擊啟用救生員身分'}>
+            <StatusBadge tone={r.lifeguard_active ? 'green' : 'gray'}>
+              {busyRow ? '處理中…' : (r.lifeguard_active ? '上架中' : '已下架')}
+            </StatusBadge>
+          </button>
+        );
+      } },
     { key: 'active', label: '狀態',
       render: (r) => {
         const busyRow = togglingId === r.id;
@@ -371,8 +430,8 @@ export default function StaffPage() {
   ];
 
   const filterFields = [
-    { key: 'status', label: '在職狀態', type: 'select', options: [
-        { value: 'all', label: '全部' }, { value: 'active', label: '在職' }, { value: 'inactive', label: '離職' }] },
+    { key: 'status', label: '狀態', type: 'select', options: [
+        { value: 'all', label: '全部' }, { value: 'active', label: '開啟' }, { value: 'inactive', label: '關閉' }] },
     { key: 'venueId', label: '所屬場館', type: 'combo',
       options: venues.map((v) => ({ value: v.id, label: `${v.id} ${v.name}` })), placeholder: '可輸入或選擇' },
     { key: 'name', label: '姓名', type: 'combo',

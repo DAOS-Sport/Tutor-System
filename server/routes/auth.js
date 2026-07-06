@@ -8,6 +8,7 @@
  *
  * 教練端登入沿用 routes/coaches.js: POST /api/coaches/by-phone（手機 + id_token）。
  */
+const crypto = require('crypto');
 const express = require('express');
 const { pool } = require('../models/db');
 const { signParentToken } = require('../middlewares/parentAuth');
@@ -144,6 +145,12 @@ router.get('/line-config-debug', (req, res) => {
 });
 
 // 台灣手機格式：09xxxxxxxx
+// 診斷 log 用手機遮蔽：比照 parentSync.auditClaim 的作法（sha256 雜湊取前段），
+// 只供比對同一支手機的 log 是否為同一人，不落地明碼門號。
+function _phoneHashForLog(phone) {
+  return phone ? crypto.createHash('sha256').update(String(phone)).digest('hex').slice(0, 12) : null;
+}
+
 const TW_PHONE_RE = /^09\d{8}$/;
 // 台灣身分證字號（保守版）
 const TW_ID_RE = /^[A-Z][12]\d{8}$/;
@@ -461,14 +468,22 @@ router.post('/parent-bind-phone', async (req, res) => {
           return res.json({ status: 'need_claim_verification', line_uid: lineUid, phone });
         }
         const verdict = parentSync.classifyStudentPhoneClaim(ragicStudents, claim, mapped.phone || phone);
-        if (verdict !== 'matched') {
+        // 'not_on_file'：送出的學員姓名在 Ragic 現有學員清單中完全找不到 → 視為單純
+        // 還沒建檔的新學生（新生/新增手足），不是身分衝突，不應卡 409。該手機本身的
+        // 家庭身分已由前面的手機比對確認過，直接放行繼續往下走（回寫/refresh），
+        // 真正的衝突（姓名對到但登記電話不同）仍維持原本 'mismatch' 的 409 阻斷。
+        if (verdict === 'mismatch') {
+          console.warn(
+            '[auth/parent-bind-phone] CLAIM_VERIFICATION_FAILED phoneHash=%s submittedName=%s onFileNames=%j',
+            _phoneHashForLog(phone), claim.student_name, ragicStudents.map((s) => s.name)
+          );
           parentSync.auditClaim({ phone, lineUid, result: 'failed' });
           return res.status(409).json({
             error: '學員姓名或登記手機號碼與資料不符，無法認領。請確認後再試，或洽櫃臺 / LINE 客服協助。',
             code: 'CLAIM_VERIFICATION_FAILED',
           });
         }
-        parentSync.auditClaim({ phone, lineUid, result: 'passed' });
+        parentSync.auditClaim({ phone, lineUid, result: verdict === 'matched' ? 'passed' : 'passed_not_on_file' });
       }
     }
 
@@ -750,19 +765,32 @@ router.post('/parent-register-line', async (req, res) => {
       //   區分記錄，供事後稽核。
       const z03Students = z03Match.students || [];
       if (!existing.line_uid && z03Students.length > 0) {
-        let verdict = 'mismatch';
+        // 'not_on_file'（送出的姓名完全沒對到任何現有 Z03 學員）預設視為「單純新增
+        // 還沒建檔的學生」，不是衝突；只有出現姓名有對到、但身分證字號不同的
+        // 'mismatch' 才是真衝突，需要擋下。'matched'/'no_id_on_file' 優先度高於
+        // 'not_on_file'（只要有任何一位送出學員能證明本人是這個家庭成員即可放行）。
+        let verdict = 'not_on_file';
+        let sawMismatch = false;
         for (const s of cleanStudents) {
           const v = parentSync.classifyStudentClaim(z03Students, { student_name: s.name, id_number: s.id_number || '' });
-          if (v === 'matched') { verdict = 'matched'; break; }
-          if (v === 'no_id_on_file') verdict = 'no_id_on_file';
+          if (v === 'matched') { verdict = 'matched'; sawMismatch = false; break; }
+          if (v === 'no_id_on_file') { verdict = 'no_id_on_file'; continue; }
+          if (v === 'mismatch') { sawMismatch = true; continue; }
+          // v === 'not_on_file'：維持目前 verdict，除非還沒有更好的結果
         }
+        if (verdict !== 'matched' && verdict !== 'no_id_on_file' && sawMismatch) verdict = 'mismatch';
+
         if (verdict === 'mismatch') {
+          console.warn(
+            '[auth/parent-register-line] GENERIC_PHONE_CONFLICT phoneHash=%s submittedNames=%j onFileNames=%j',
+            _phoneHashForLog(phone), cleanStudents.map((s) => s.name), z03Students.map((s) => s.name)
+          );
           parentSync.auditClaim({ phone, lineUid, result: 'failed', reason: 'register_z03_update' });
           return res.status(409).json(GENERIC_PHONE_CONFLICT);
         }
         parentSync.auditClaim({
           phone, lineUid,
-          result: verdict === 'matched' ? 'passed' : 'passed_no_id_on_file',
+          result: verdict === 'matched' ? 'passed' : (verdict === 'no_id_on_file' ? 'passed_no_id_on_file' : 'passed_not_on_file'),
           reason: 'register_z03_update',
         });
       }

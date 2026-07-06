@@ -221,7 +221,9 @@ async function _syncStaffImpl() {
     // 解析不到的值（公司名、內勤處室）一律忽略，不視為場館差異。
     const resolveVenues = await _buildVenueResolver();
     const dbRows = (await pool.query(
-      `SELECT id, name, phone, role, active, active_overridden_at FROM admin_staff`
+      `SELECT id, name, phone, role, active, active_overridden_at,
+              is_coach, is_counter, is_lifeguard, lifeguard_active, lifeguard_active_overridden_at
+         FROM admin_staff`
     )).rows;
     // key 用 normalize 過的值，value 保留 DB 原始 row（含 PK 原始大小寫）
     const dbMap = new Map(dbRows.map(r => [_normalizeStaffId(r.id), r]));
@@ -265,6 +267,11 @@ async function _syncStaffImpl() {
       const roleText = `${roleStr},${r['職稱'] || ''}`;
       const isCoach = roleText.includes(H01.ROLE_MATCH.COACH);
       const isCounter = H01.ROLE_MATCH.COUNTER.test(roleText);
+      const isLifeguard = H01.ROLE_MATCH.LIFEGUARD.test(roleText);
+      // A0 修法：isCoach/isCounter/isLifeguard 都各自獨立算出來，不能讓 roleVal 這個
+      // DB enum 欄位的三元運算式吃掉任一個信號——roleVal 僅作為 admin_staff.role 這個
+      // CHECK constraint 欄位的保底值（fallback），三個真正的身份判斷改走各自獨立的
+      // is_coach / is_counter / is_lifeguard（見下方 payload），互不覆蓋。
       const roleVal = isCounter ? 'staff' : (isCoach ? 'coach' : 'staff');
       const isActive = (r['在職狀態'] || r['3000945']) === '在職';
       // Task #90：解析 Ragic H01 多場館欄位（主場館 + 支援場館），合併為陣列
@@ -280,6 +287,11 @@ async function _syncStaffImpl() {
         id: entityId, name, phone, email, role: roleVal,
         is_active: isActive, venue_ids: venueIds,
         line_uid: lineUid,
+        // A0 / A0.5 / 救生員：三個獨立追蹤旗標，各自反映 Ragic 應徵職務關鍵字命中情形，
+        // 不受 roleVal 三元運算式影響（同一員工可以三者皆為 true）。
+        is_coach: isCoach,
+        is_counter: isCounter,
+        is_lifeguard: isLifeguard,
       };
 
       // 查目前 coaches.email / line_uid 作為 diff 比對基準（admin_staff 本身沒有這兩個欄位）
@@ -291,7 +303,10 @@ async function _syncStaffImpl() {
       // 因此唯有「已有 coaches 列」或「這次會被建成教練（role=coach 且有手機 → apply 會建列）」
       // 時，套用才寫得進去。純後勤員工（role=staff、無 coaches 列）若硬 stage 這兩欄，
       // approve 後無處可寫 → 下一輪 sync 又偵測到 coaches 仍為空 → 永遠重 stage、待審區清不掉。
-      const coachFieldsPersistable = !!coachRow || (roleVal === 'coach' && !!phone);
+      // A0 修法：改依 payload.is_coach（獨立信號）判斷，不再依賴已被 roleVal 三元運算式
+      // 吃掉 isCoach 之後的 roleVal === 'coach'——雙重身份（櫃檯+教練）員工的 is_coach
+      // 為 true 但 roleVal 仍會是 'staff'，用舊條件永遠不會成立。
+      const coachFieldsPersistable = !!coachRow || (payload.is_coach && !!phone);
 
       if (!cur) {
         if (await _stageIfNotRejected('H01_STAFF', 'staff', entityId, 'new', payload, null)) staged++;
@@ -315,6 +330,23 @@ async function _syncStaffImpl() {
       }
       if (cur.active_overridden_at == null && cur.active !== isActive) {
         diff.active = { from: cur.active, to: isActive };
+      }
+      // A0（既有員工回填，關鍵既有 bug 修復）：isCoach===true 但目前沒有 coaches 資料列
+      // → 產生一筆待審 is_coach diff，讓「已同步過、但當初被舊三元運算式 bug 漏掉教練身份」
+      // 的既有員工（如 S001 小林）能在下次同步時被抓出來進入待審核佇列，不再只對「新進
+      // 員工」生效（apply 時的建立邏輯見 _applyStaffChange 的 A0 dual-coach 分支）。
+      if (isCoach && !coachRow) {
+        diff.is_coach = { from: false, to: true };
+      }
+      // A0.5：is_counter 單純的布林狀態差異（比照 name/phone 既有寫法），讓既有員工的
+      // 「行政櫃檯」旗標也能被回填校正（不影響 admin_staff.role 本身，那仍是 roleVal fallback）。
+      if (!!cur.is_counter !== isCounter) {
+        diff.is_counter = { from: !!cur.is_counter, to: isCounter };
+      }
+      // 救生員：is_lifeguard 同樣是單純的布林狀態差異。lifeguard_active 本身不受 Ragic
+      // 同步影響（見 _applyStaffChange 註解），這裡只偵測「是否為救生員」這個身份信號。
+      if (!!cur.is_lifeguard !== isLifeguard) {
+        diff.is_lifeguard = { from: !!cur.is_lifeguard, to: isLifeguard };
       }
       // Task #95（取代 Task #90 的 venue_ids 差異 stage）：場館改為「自動套用」不經待審核 —
       // Ragic 部門即權威，清洗後的代碼與 DB 不同就直接寫入授權館別（admin_staff_venues +
@@ -462,15 +494,26 @@ async function _applyStaffChange(row, client) {
     return;
   }
   await client.query(
-    `INSERT INTO admin_staff (id, name, role, phone, is_senior, multiplier, active, ragic_record_id, last_synced_at)
-     VALUES ($1, $2, $3, $4, FALSE, 1.00, $5, $1, NOW())
+    `INSERT INTO admin_staff (id, name, role, phone, is_senior, multiplier, active,
+        is_coach, is_counter, is_lifeguard, ragic_record_id, last_synced_at)
+     VALUES ($1, $2, $3, $4, FALSE, 1.00, $5, $6, $7, $8, $1, NOW())
      ON CONFLICT (id) DO UPDATE SET
        name = EXCLUDED.name,
        phone = EXCLUDED.phone,
        active = CASE WHEN admin_staff.active_overridden_at IS NULL THEN EXCLUDED.active ELSE admin_staff.active END,
+       -- A0/A0.5/救生員：is_coach / is_counter / is_lifeguard 皆為 Ragic 來源、唯讀信號
+       -- （比照 role 的性質，但各自獨立追蹤、不互相覆蓋），每次 apply 一律以 Ragic 這次
+       -- 送來的值為準。注意：這裡刻意不寫 lifeguard_active——新建立的救生員身份靠欄位
+       -- DEFAULT FALSE 自然滿足「新身份預設關閉」；已存在的救生員身份因為這裡完全不觸碰
+       -- lifeguard_active 欄位，重複同步不會重置它，也不需要另外檢查
+       -- lifeguard_active_overridden_at（本來就沒有 Ragic 來源值會覆蓋過去）。
+       is_coach = EXCLUDED.is_coach,
+       is_counter = EXCLUDED.is_counter,
+       is_lifeguard = EXCLUDED.is_lifeguard,
        ragic_record_id = EXCLUDED.ragic_record_id,
        last_synced_at = NOW()`,
-    [row.entity_id, p.name || '', p.role || 'staff', p.phone || '', !!p.is_active]
+    [row.entity_id, p.name || '', p.role || 'staff', p.phone || '', !!p.is_active,
+     !!p.is_coach, !!p.is_counter, !!p.is_lifeguard]
   );
   if (p.is_active === false && p.name) {
     await client.query(
@@ -506,6 +549,11 @@ async function _applyStaffChange(row, client) {
   const isCoachRole = String(p.role || '') === 'coach';
   const hasCoachProfile = existingCoach.rowCount > 0;
   const incomingLineUid = p.line_uid ? String(p.line_uid).trim() : '';
+  // A0：疊加教練身份（role 仍是 'staff'/其他，但 Ragic 應徵職務同時命中「教練」關鍵字，
+  // 即 payload.is_coach===true）且目前尚無 coaches 資料列 → 也要建立教練身份，
+  // 不能只靠 isCoachRole（那只在 roleVal 剛好算成 'coach' 時才會是 true，雙重身份時
+  // roleVal 早被 COUNTER 命中壓成 'staff'，isCoachRole 永遠不會是 true）。
+  const isDualCoach = !!p.is_coach && !isCoachRole;
 
   if (hasCoachProfile && incomingLineUid && existingCoach.rows[0].line_uid
       && existingCoach.rows[0].line_uid !== incomingLineUid) {
@@ -542,6 +590,43 @@ async function _applyStaffChange(row, client) {
       const venueIds = [...new Set(p.venue_ids.map(String).map(s => s.trim()).filter(Boolean))];
       if (venueIds.length > 0) {
         // 部門可能是「名稱」（新北高中）或「代碼」（B）→ 統一解析成 venue id
+        const resolve = await _buildVenueResolver();
+        const validIds = resolve(venueIds);
+        if (validIds.length > 0) {
+          await client.query(`DELETE FROM coach_venues WHERE coach_id = $1`, [coachId]);
+          for (const vid of validIds) {
+            await client.query(
+              `INSERT INTO coach_venues (coach_id, venue_id) VALUES ($1, $2)
+               ON CONFLICT DO NOTHING`,
+              [coachId, vid]
+            );
+          }
+        }
+      }
+    }
+  } else if (isDualCoach && !hasCoachProfile && (p.phone || '').trim()) {
+    // A0（關鍵既有 bug 修復）：既有員工被 Ragic 標記為教練（疊加身份），但尚無
+    // coaches 資料列 → 新建。新建立的教練身份預設 coach_active=FALSE（比照本工作串
+    // 救生員「新身份預設關閉」的一致政策），需要管理員手動開通，不會讓一批櫃檯人員
+    // 一夕之間全部被動開放教練預約——這裡刻意不沿用 isCoachRole 分支的
+    // is_active: !!p.is_active（那是給「單一教練角色」新人用的行為，語意不同）。
+    const inserted = await client.query(
+      `INSERT INTO coaches
+         (ragic_employee_id, name, phone, email, line_uid,
+          is_senior, pricing_multiplier, specialties, bio_rich_text,
+          is_active, intro_review_status, active_overridden_at)
+       VALUES ($1, $2, $3, $4, NULLIF($5, ''),
+               FALSE, 1.00, ARRAY[]::text[], '',
+               FALSE, 'draft', NULL)
+       ON CONFLICT (ragic_employee_id) DO NOTHING
+       RETURNING id`,
+      [row.entity_id, p.name || '', String(p.phone || '').trim(),
+       String(p.email || '').trim(), incomingLineUid]
+    );
+    const coachId = inserted.rows[0]?.id;
+    if (coachId && Array.isArray(p.venue_ids) && p.venue_ids.length > 0) {
+      const venueIds = [...new Set(p.venue_ids.map(String).map(s => s.trim()).filter(Boolean))];
+      if (venueIds.length > 0) {
         const resolve = await _buildVenueResolver();
         const validIds = resolve(venueIds);
         if (validIds.length > 0) {
@@ -662,12 +747,16 @@ async function _applyVenueChange(row, client) {
 
 async function applyStagedChange(stagingId, byUserId) {
   const client = await pool.connect();
+  // A7（熊韋程卡 pending 調查）：hoist 到 try 外層，讓 catch block 在 apply 失敗時
+  // 仍能取得 entity_type/entity_id，附掛在錯誤物件上供上層（ragicStaging.js 的
+  // approve route）做結構化 log + 回傳具體失敗原因給前端，不必再多查一次 DB。
+  let row = null;
   try {
     await client.query('BEGIN');
     // FOR UPDATE 防併發 approve 同一 row
     const r = await client.query(`SELECT * FROM ragic_staging_changes WHERE id = $1 FOR UPDATE`, [stagingId]);
     if (!r.rowCount) throw new Error('staging row not found');
-    const row = r.rows[0];
+    row = r.rows[0];
     if (row.status !== 'pending') throw new Error(`status=${row.status}, only pending can be approved`);
     if (row.entity_type === 'staff')      await _applyStaffChange(row, client);
     else if (row.entity_type === 'coach') await _applyCoachChange(row, client);
@@ -683,6 +772,11 @@ async function applyStagedChange(stagingId, byUserId) {
     return row;
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
+    err.stagingId = stagingId;
+    if (row) {
+      err.stagingEntityType = row.entity_type;
+      err.stagingEntityId = row.entity_id;
+    }
     throw err;
   } finally {
     client.release();
@@ -958,6 +1052,15 @@ function _pickZ01Raw(z01Row, keys) {
 // 不會又把它翻回待處理，除非真的重新指定。
 async function _upsertZ03Record(client, ragicRecordId, mapped, z01Row) {
   if (!ragicRecordId) return;
+  // 強制刪除 tombstone：管理員在後台對這筆 z01_ragic_record_id 做過「強制刪除」
+  // （見 routes/admin/ragicZ03.js DELETE /:id），之後任何一輪同步都必須整筆跳過，
+  // 不再寫入/更新 ragic_z03_records，否則下次同步就會把已刪除的記錄復活。
+  // 來源 Ragic Z01 記錄本身完全不動，這裡只影響本 app 的 Z03 衍生佇列。
+  const tomb = await client.query(
+    `SELECT 1 FROM ragic_z03_deleted_tombstones WHERE z01_ragic_record_id = $1 LIMIT 1`,
+    [ragicRecordId]
+  );
+  if (tomb.rowCount) return;
   const lineChatUrlRaw = _pickZ01Raw(z01Row, ['1002390', 'line對話網址']);
   const studentCountRaw = _pickZ01Raw(z01Row, ['1001138', '名下有幾位學生']);
   // Ragic 端同電話換發新 _ragicId 時（舊記錄被取代/重建），INSERT ... ON CONFLICT
@@ -1747,6 +1850,43 @@ async function dismissZ03Record(id, adminUsername) {
   return updated;
 }
 
+/**
+ * Z03 強制刪除（含 tombstone，防止下次 Ragic 同步復活）：
+ *  - 交易內先讀出這筆的 z01_ragic_record_id，寫入 ragic_z03_deleted_tombstones，
+ *    再刪掉 ragic_z03_records 本列；ragic_z03_students 由既有 FK
+ *    （z03_record_id ... ON DELETE CASCADE）自動連帶刪除，不需額外語句。
+ *  - 之後每次 _upsertZ03Record 都會先查 tombstone 表，命中即整筆跳過，
+ *    來源 Ragic Z01 記錄本身完全不動。
+ */
+async function deleteZ03Record(id, { adminUsername = null, reason = null } = {}) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const row = (await client.query(
+      `SELECT * FROM ragic_z03_records WHERE id = $1 FOR UPDATE`, [id]
+    )).rows[0];
+    if (!row) {
+      await client.query('ROLLBACK');
+      throw new Error('找不到這筆 Z03 記錄');
+    }
+    await client.query(
+      `INSERT INTO ragic_z03_deleted_tombstones (z01_ragic_record_id, deleted_by, reason)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (z01_ragic_record_id) DO UPDATE SET
+         deleted_at = NOW(), deleted_by = EXCLUDED.deleted_by, reason = EXCLUDED.reason`,
+      [row.z01_ragic_record_id, adminUsername || null, reason || null]
+    );
+    await client.query(`DELETE FROM ragic_z03_records WHERE id = $1`, [id]);
+    await client.query('COMMIT');
+    return { id, z01_ragic_record_id: row.z01_ragic_record_id };
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 // 家長「即時綁定當下」把佔位電話姓名改成真實姓名（同時回寫 Ragic Z01 + 綁 UID）時呼叫：
 // 讓對應的 Z03 追蹤列與 ragic_z01_quarantine 追蹤列立即畢業，不必等下一輪 01:00 pull 的
 // _resolveZ03IfPending 自然收尾。best-effort 用途：caller 應 .catch 吞掉錯誤——Ragic/本地
@@ -2275,6 +2415,7 @@ module.exports = {
   saveZ03RecordDraft,
   resolveZ03Record,
   dismissZ03Record,
+  deleteZ03Record,
   markPlaceholderNameResolved,
   // Task #66 staging
   applyStagedChange,

@@ -69,16 +69,22 @@ router.post('/', async (req, res) => {
     // ── 後端重算 (server-authoritative)：完全忽略 client 的 original_price ──
     // 單期基準價一律讀 course_type_configs（後台可改），與報名頁試算 /api/courses/base-price
     // 及團報計價同源，避免後台改價後「顯示價 ≠ 入庫價」。DECIMAL 經 pg 回字串，需 Number() 轉型。
-    // 不加 is_active 過濾——與 courses.js / groupOrders.js 讀價路徑一致，不在此單元改變停用語意。
+    // R4 修正：課程組別停用（course_type_configs.is_active=FALSE）時，個人報名路徑須與
+    // groupOrders（server/routes/groupOrders.js 讀價處會拒絕停用組別）一致拒絕；先前此處
+    // 僅檢查 base_price>0，導致後台停用的組別仍能經個人報名路徑以停用價成立（繞過停用）。
     const courseTypeNum = Number(p.course_type);
     if (!Number.isInteger(courseTypeNum) || courseTypeNum < 1) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'invalid course_type' });
     }
     const cfgRes = await client.query(
-      `SELECT base_price FROM course_type_configs WHERE course_type = $1`,
+      `SELECT base_price, is_active FROM course_type_configs WHERE course_type = $1`,
       [courseTypeNum]
     );
+    if (cfgRes.rowCount && cfgRes.rows[0].is_active === false) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: '此課程組別已停用，無法報名', code: 'COURSE_TYPE_INACTIVE' });
+    }
     const basePrice = cfgRes.rowCount ? Number(cfgRes.rows[0].base_price) || 0 : 0;
     if (basePrice <= 0) {
       await client.query('ROLLBACK');
@@ -153,10 +159,15 @@ router.post('/', async (req, res) => {
 
     // ── MGM 體驗課 5 折專用驗證：TRIAL50 僅限有對應 referral 的家長 ──
     if (couponCode && couponCode.toUpperCase() === 'TRIAL50') {
+      // R3 修正：加 FOR UPDATE 鎖住這筆 referral row（= markTrialPaid 稍後更新的同一列），
+      // 讓同一 (referee, coach) 的並發報名序列化；後到的交易會 block 到前一筆 COMMIT，
+      // 於 READ COMMITTED 下重讀時 status 已變 'trial_paid' → 命中 0 列 → 被拒（COUPON_OUT_OF_SCOPE），
+      // 消除「一次推薦兌多筆 5 折」的並發雙折。
       const refCheck = await client.query(
         `SELECT id FROM referral_records
           WHERE referee_parent_id = $1 AND coach_id = $2
-            AND status IN ('pending','registered')`,
+            AND status IN ('pending','registered')
+          FOR UPDATE`,
         [parentRow.id, coachId]
       );
       if (!refCheck.rowCount) {
@@ -239,12 +250,22 @@ router.post('/', async (req, res) => {
       }, client);
     }
 
-    // MGM：若使用 TRIAL50，更新 referral_records 為 trial_paid（一次推薦＝一次，掛第一筆）
+    // MGM：若使用 TRIAL50，更新 referral_records 為 trial_paid（一次推薦＝一次，掛第一筆）。
+    // R3 縱深防禦：markTrialPaid 回傳 false 代表這筆推薦已被兌換（並發下另一交易先行）。
+    // 上方資格 SELECT 已加 FOR UPDATE 序列化，正常不會走到這裡；但一旦發生即整筆 ROLLBACK，
+    // 絕不讓同一推薦兌出第二筆 5 折。
     if (couponCode && couponCode.toUpperCase() === 'TRIAL50') {
-      await referrals.markTrialPaid(
+      const paid = await referrals.markTrialPaid(
         { refereeParentId: parentRow.id, coachId, enrollmentId: firstId },
         client
       );
+      if (!paid) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: '此推薦體驗課折扣已被使用，請重新整理後再試',
+          code: 'TRIAL50_ALREADY_USED',
+        });
+      }
     }
 
     await client.query('COMMIT');

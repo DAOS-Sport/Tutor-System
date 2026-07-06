@@ -72,6 +72,7 @@ export function roleLabel(role) {
     manager: '場館主管',
     staff: '行政櫃檯',
     coach: '教練',
+    lifeguard: '救生員',
   }[role] || role);
 }
 

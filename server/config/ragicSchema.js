@@ -142,6 +142,10 @@ const H01 = {
   ROLE_MATCH: {
     COACH: '教練',
     COUNTER: /櫃檯|櫃台|行政|counter|front\s*desk/i,
+    // 救生員（Workstream A）：與 COACH/COUNTER 同層獨立比對，非互斥判斷——
+    // 一位員工可同時命中 COUNTER + LIFEGUARD（甚至三者皆命中），各自獨立的
+    // is_counter / is_coach / is_lifeguard 旗標必須各自保留，不互相覆蓋。
+    LIFEGUARD: /體育署救生員|守望員|救生員/,
   },
   // 註（Task #95 政策定案）：H01 為 Ragic 權威、本系統不寫，故無寫回欄位定義。
   // 實機驗證過的 Field ID 對應（讀取/除錯查考用）：3000933=姓名、3001424=手機、

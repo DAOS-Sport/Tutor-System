@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
+import ConfirmDialog from '../components/ConfirmDialog';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import { ragicZ03Api } from '../api/ragicZ03';
@@ -154,7 +155,7 @@ function StudentEditTable({ students, onChange }) {
   );
 }
 
-function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft }) {
+function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft, onDeleteRequest }) {
   const st = STATUS_LABEL[row.status] || STATUS_LABEL.pending;
   const [fixedName, setFixedName] = useState('');
   const [editing, setEditing] = useState(false);
@@ -199,12 +200,20 @@ function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft }) {
           <div className="mt-1 truncate text-sm font-bold text-red-600">「{row.raw_name || '（空白）'}」</div>
           <div className="text-[11px] text-gray-500">抓取於 {fmtDate(row.fetched_at)}</div>
         </div>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => (editing ? cancelEdit() : startEdit())}
-          className="whitespace-nowrap rounded border border-gray-300 bg-white px-2 py-1 text-[11px] font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
-        >{editing ? '取消編輯' : '編輯'}</button>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => (editing ? cancelEdit() : startEdit())}
+            className="whitespace-nowrap rounded border border-gray-300 bg-white px-2 py-1 text-[11px] font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+          >{editing ? '取消編輯' : '編輯'}</button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => onDeleteRequest(row)}
+            className="whitespace-nowrap rounded border border-red-300 bg-white px-2 py-1 text-[11px] font-bold text-red-600 hover:bg-red-50 disabled:opacity-50"
+          >永久刪除</button>
+        </div>
       </div>
 
       {editing ? (
@@ -343,6 +352,8 @@ export default function RagicZ03Page() {
   const [busyKey, setBusyKey] = useState('');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [stats, setStats] = useState(null);
+  const [pendingDelete, setPendingDelete] = useState(null); // Z03 row 待確認永久刪除
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   useEffect(() => {
     const timer = setTimeout(() => setQuery(queryInput.trim()), 300);
@@ -414,6 +425,21 @@ export default function RagicZ03Page() {
       toast.error(e?.response?.data?.error || '忽略失敗');
     } finally {
       setBusyKey('');
+    }
+  }
+
+  async function confirmDelete() {
+    if (!pendingDelete) return;
+    setDeleteBusy(true);
+    try {
+      await ragicZ03Api.remove(pendingDelete.id);
+      toast.success('已永久刪除，不會因後續同步復活');
+      setPendingDelete(null);
+      await Promise.all([load(), loadStats()]);
+    } catch (e) {
+      toast.error(e?.response?.data?.error || '刪除失敗');
+    } finally {
+      setDeleteBusy(false);
     }
   }
 
@@ -515,6 +541,7 @@ export default function RagicZ03Page() {
                 onResolve={resolve}
                 onDismiss={dismiss}
                 onSaveDraft={saveDraft}
+                onDeleteRequest={setPendingDelete}
               />
             ))}
           </div>
@@ -541,6 +568,26 @@ export default function RagicZ03Page() {
           <li>家長完成登入綁定後，系統會自動寫入 LINE UID 並同步到正式客戶資料；每日凌晨 01:30 全量同步會再次依此規則分流。</li>
         </ul>
       </div>
+
+      <ConfirmDialog
+        open={!!pendingDelete}
+        title="永久刪除這筆 Z03 資料？"
+        confirmLabel="永久刪除"
+        tone="danger"
+        busy={deleteBusy}
+        onCancel={() => !deleteBusy && setPendingDelete(null)}
+        onConfirm={confirmDelete}
+      >
+        <div className="space-y-2">
+          <p>
+            「{pendingDelete?.raw_name || '（空白）'}」這筆記錄與其所有學員資料將被<span className="font-bold text-brand-error">永久刪除</span>，無法復原。
+          </p>
+          <ul className="list-disc space-y-1 pl-5 text-sm">
+            <li>即使之後再次觸發 Ragic 同步，這筆記錄也<span className="font-bold">不會重新出現</span>在 Z03 清單中（會寫入忽略清單）。</li>
+            <li>此操作<span className="font-bold">不會</span>刪除或修改 Ragic 平台本身的原始資料，僅影響本系統本地的整理紀錄。</li>
+          </ul>
+        </div>
+      </ConfirmDialog>
     </div>
   );
 }

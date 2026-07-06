@@ -41,7 +41,24 @@ router.post('/:id/approve', async (req, res) => {
     const row = await ragicAdmin.applyStagedChange(req.params.id, req.adminUser.sub);
     res.json({ ok: true, applied: { entity_type: row.entity_type, entity_id: row.entity_id, change_type: row.change_type } });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    // A7（熊韋程卡 pending 調查）：先前這個 catch block 完全沒有 log，前端也只看得到
+    // 一句通用錯誤訊息，管理員完全無從得知「為什麼卡住」。這裡補上伺服器端結構化
+    // log（含完整 stack + 這筆是哪個 entity），並把實際失敗原因（Postgres 錯誤訊息 /
+    // 明確描述，例如唯一鍵衝突）回傳給前端顯示在待審核介面——但不回傳完整 stack
+    // trace 給 client，避免洩漏內部細節。
+    console.error('[ragic-staging approve] failed to apply staged change', {
+      staging_id: req.params.id,
+      entity_type: err.stagingEntityType,
+      entity_id: err.stagingEntityId,
+      message: err.message,
+      code: err.code,
+      stack: err.stack,
+    });
+    res.status(400).json({
+      error: err.message || '核准失敗，原因不明',
+      entity_type: err.stagingEntityType,
+      entity_id: err.stagingEntityId,
+    });
   }
 });
 
@@ -65,7 +82,15 @@ router.post('/bulk-approve', async (req, res) => {
       await ragicAdmin.applyStagedChange(id, req.adminUser.sub);
       results.approved.push(id);
     } catch (err) {
-      results.failed.push({ id, error: err.message });
+      // 同 /:id/approve：補結構化 log，方便事後從伺服器 log 追查批次核准中卡住的那幾筆。
+      console.error('[ragic-staging bulk-approve] failed to apply staged change', {
+        staging_id: id,
+        entity_type: err.stagingEntityType,
+        entity_id: err.stagingEntityId,
+        message: err.message,
+        stack: err.stack,
+      });
+      results.failed.push({ id, error: err.message, entity_type: err.stagingEntityType, entity_id: err.stagingEntityId });
     }
   }
   res.json(results);

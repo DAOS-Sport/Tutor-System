@@ -24,4 +24,8 @@ export const ragicZ03Api = {
     const r = await http.post(`/ragic-z03/${id}/dismiss`, {}, { skipAuthRedirect: true });
     return r.data;
   },
+  async remove(id) {
+    const r = await http.delete(`/ragic-z03/${id}`, { params: { confirm: true }, skipAuthRedirect: true });
+    return r.data;
+  },
 };

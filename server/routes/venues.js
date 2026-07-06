@@ -62,7 +62,7 @@ router.get('/:id', async (req, res) => {
               COALESCE(NULLIF(av.account_number, ''), v.account_number) AS account_number
          FROM venues v
          LEFT JOIN admin_venues av ON av.id = v.id
-        WHERE v.id = $1`,
+        WHERE v.id = $1 AND v.is_active = TRUE`,
       [req.params.id]
     );
     if (!r.rowCount) return res.status(404).json({ error: '找不到場館' });

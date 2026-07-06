@@ -760,6 +760,18 @@ CREATE TABLE IF NOT EXISTS ragic_z03_students (
 );
 CREATE INDEX IF NOT EXISTS idx_ragic_z03_students_record ON ragic_z03_students(z03_record_id);
 
+-- Z03 強制刪除 tombstone：ragic_z03_records 是靠 z01_ragic_record_id 當唯一鍵、由每次
+-- Z01→Z03 拉回同步（ON CONFLICT ... DO UPDATE）持續維護的衍生佇列，單純 DELETE 該筆
+-- 下次同步就會復活。管理員在後台「強制刪除」一筆 Z03 記錄時，連同寫入本表一筆
+-- tombstone；之後每次 upsert 前先查本表，命中就整筆跳過、不再寫入/更新 ragic_z03_records
+-- （來源 Ragic Z01 原始記錄本身完全不動，Ragic 是權威來源，本 app 不寫回）。
+CREATE TABLE IF NOT EXISTS ragic_z03_deleted_tombstones (
+  z01_ragic_record_id TEXT PRIMARY KEY,
+  deleted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  deleted_by TEXT,
+  reason TEXT
+);
+
 -- Task #66：Ragic 待審核區（同步先進 staging，admin 通過才合併到正式表）
 CREATE TABLE IF NOT EXISTS ragic_staging_changes (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -306,6 +306,17 @@ async function ensureSchema() {
   // Task #53：admin_staff 增加覆寫旗標（後台勾啟用後 Ragic 不再覆蓋）
   await pool.query(`ALTER TABLE admin_staff ADD COLUMN IF NOT EXISTS active_overridden_at TIMESTAMPTZ`);
 
+  // Workstream A（救生員疊加身份 + A0/A0.5 既有雙重身份 bug 修復）：
+  // is_coach / is_counter / is_lifeguard 各自獨立追蹤 Ragic 應徵職務關鍵字命中情形，
+  // 不互相覆蓋（見 server/services/ragicAdmin.js ROLE_MATCH 判斷）。
+  // lifeguard_active 為後台可切換的啟用狀態（比照 coaches.is_active 的模式），
+  // lifeguard_active_overridden_at 防止 Ragic 同步覆蓋人工設定的啟用狀態。
+  await pool.query(`ALTER TABLE admin_staff ADD COLUMN IF NOT EXISTS is_coach BOOLEAN NOT NULL DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE admin_staff ADD COLUMN IF NOT EXISTS is_counter BOOLEAN NOT NULL DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE admin_staff ADD COLUMN IF NOT EXISTS is_lifeguard BOOLEAN NOT NULL DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE admin_staff ADD COLUMN IF NOT EXISTS lifeguard_active BOOLEAN NOT NULL DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE admin_staff ADD COLUMN IF NOT EXISTS lifeguard_active_overridden_at TIMESTAMPTZ`);
+
   // Task #54：admin_venues 增加欄位級覆寫旗標 — 後台手動編輯過的欄位，
   // Ragic 同步（POST /venues/sync-ragic）第二階段寫入時會跳過。
   // line_token 不在 Ragic 範圍，免追蹤。

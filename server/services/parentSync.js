@@ -552,20 +552,28 @@ function _normalizePhone(value) {
   return compact.replace(/\D/g, '');
 }
 
+// 學員姓名查找用正規化：僅供「找出對應的 Ragic 學員」比對，不放寬身分證字號/電話
+// 這類真正的身分驗證。.normalize('NFKC') 收斂全形/半形（如中文輸入法打出的「Ｅｒｉｃ」），
+// .toLowerCase() 收斂大小寫，.replace(/\s+/g,' ') 收斂內部多餘空白。
+function _normalizeStudentName(v) {
+  return String(v || '').trim().toLowerCase().normalize('NFKC').replace(/\s+/g, ' ');
+}
+
 /**
  * 認領驗證分類版：區分「真的比對不符」與「Ragic 該學員本來就沒存身分證字號、
- * 家長不可能比對得過」兩種狀況，讓 caller 能回不同的錯誤碼與文案
- * （後者是資料缺口，不是使用者打錯，不該顯示「請確認後再試」）。
+ * 家長不可能比對得過」、以及「這個姓名根本還沒建檔」三種狀況，讓 caller 能回
+ * 不同的錯誤碼與文案（後者是資料缺口，不是使用者打錯，不該顯示「請確認後再試」）。
  *   'matched'        姓名 + 身分證字號都對上
  *   'no_id_on_file'  姓名對上，但該筆 Ragic 學員身分證字號欄位是空的（無從比對）
- *   'mismatch'       姓名對不上任何學員，或身分證字號對不上（Ragic 有值但不同）
+ *   'not_on_file'    姓名對不上任何現有學員 → 視為尚未建檔的新學生，不是衝突
+ *   'mismatch'       姓名有對到某位現有學員，但身分證字號對不上（Ragic 有值但不同）
  */
 function classifyStudentClaim(ragicStudents, claim) {
   const name = String(claim?.student_name || claim?.name || '').trim();
   const id   = String(claim?.id_number || '').trim().toUpperCase();
   if (!name || !id) return 'mismatch';
-  const byName = (ragicStudents || []).find((s) => String(s.name || '').trim() === name);
-  if (!byName) return 'mismatch';
+  const byName = (ragicStudents || []).find((s) => _normalizeStudentName(s.name) === _normalizeStudentName(name));
+  if (!byName) return 'not_on_file';
   const ragicId = String(byName.id_number || '').trim().toUpperCase();
   if (!ragicId) return 'no_id_on_file';
   return ragicId === id ? 'matched' : 'mismatch';
@@ -579,8 +587,8 @@ function classifyStudentPhoneClaim(ragicStudents, claim, parentPhone) {
   const name = String(claim?.student_name || claim?.name || '').trim();
   const phone = _normalizePhone(claim?.phone || claim?.parent_phone || claim?.registered_phone || '');
   if (!name || !phone) return 'mismatch';
-  const byName = (ragicStudents || []).find((s) => String(s.name || '').trim() === name);
-  if (!byName) return 'mismatch';
+  const byName = (ragicStudents || []).find((s) => _normalizeStudentName(s.name) === _normalizeStudentName(name));
+  if (!byName) return 'not_on_file';
   const expectedPhone = _normalizePhone(byName.registered_phone || parentPhone || '');
   if (!expectedPhone) return 'mismatch';
   return phone === expectedPhone ? 'matched' : 'mismatch';

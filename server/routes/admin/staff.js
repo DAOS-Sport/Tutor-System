@@ -32,7 +32,20 @@ function rowToStaff(r) {
   const hasCoachProfile = !!r.coach_id;
   const isDualRoleCoach = hasCoachProfile && r.role !== 'coach';
   const coachProfileStatus = !hasCoachProfile ? 'none' : (r.coach_active ? 'active' : 'inactive');
-  const knownRoles = Array.from(new Set([r.role, ...(hasCoachProfile ? ['coach'] : [])]));
+  // A0.5【使用者審閱後明確要求】：is_counter===false 時，admin_staff.role 落在的值
+  // 其實只是 roleVal 三元運算式的 CHECK constraint 保底值（'staff'），不代表這個人
+  // 真的有櫃檯身份。若他還有其他具體身份（is_coach / is_lifeguard），known_roles
+  // 就不該塞進這個隱含的 role 值，否則前端徽章會誤顯示「行政櫃檯」（如純救生員案例）。
+  // 完全沒有任何具體身份信號時（一般泛用員工），維持原本顯示 role 的行為。
+  const isCounterFlag = !!r.is_counter;
+  const isCoachFlag = !!r.is_coach;
+  const isLifeguardFlag = !!r.is_lifeguard;
+  const includeImpliedRole = isCounterFlag || (!isCoachFlag && !isLifeguardFlag);
+  const knownRoles = Array.from(new Set([
+    ...(includeImpliedRole ? [r.role] : []),
+    ...(hasCoachProfile ? ['coach'] : []),
+    ...(isLifeguardFlag ? ['lifeguard'] : []),
+  ]));
   // Task #90：venue_ids 是真實多場館清單；venue_id 維持作為「第一筆」相容
   const venueIds = Array.isArray(r.venue_ids) ? r.venue_ids.filter(Boolean) : [];
   return {
@@ -51,6 +64,11 @@ function rowToStaff(r) {
     is_coach_profile: isDualRoleCoach,
     coach_profile_status: coachProfileStatus,
     known_roles: knownRoles,
+    // Workstream A：Ragic 來源的獨立身份旗標（唯讀，不影響 admin_staff.role 本身）
+    is_coach: isCoachFlag,
+    is_counter: isCounterFlag,
+    is_lifeguard: isLifeguardFlag,
+    lifeguard_active: !!r.lifeguard_active,
     coach_id: r.coach_id || null,
     coach_active: hasCoachProfile ? !!r.coach_active : false,
     // Task #91：合併教練設定後，列表也回傳教練欄位摘要供前端表格／搜尋使用
@@ -289,7 +307,11 @@ router.get('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =>
                      SELECT 1 FROM admin_staff_venues sv
                       WHERE sv.staff_id = s.id AND sv.venue_id = $${params.length}))`);
     }
-    if (role)    { params.push(role);    where.push(`s.role     = $${params.length}`); }
+    // A0 修法：篩「教練」時也要比對到雙重身份員工（role 因既有 bug/roleVal fallback
+    // 落在 'staff'，但實際已有 coaches 資料列）——比照本檔案 GET /coaches 既有的
+    // 「資深教練」雙重角色查法（(s.role = 'coach' OR c.is_active = TRUE)），
+    // STAFF_SELECT 已 LEFT JOIN coaches AS c，這裡沿用同一個 alias。
+    if (role)    { params.push(role);    where.push(`(s.role = $${params.length} OR (c.id IS NOT NULL AND $${params.length} = 'coach'))`); }
     if (name)    { params.push(`%${name}%`);  where.push(`s.name  ILIKE $${params.length}`); }
     if (phone)   { params.push(`%${phone}%`); where.push(`s.phone ILIKE $${params.length}`); }
     if (senior === 'yes') where.push(`s.is_senior = TRUE`);
@@ -549,6 +571,9 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
       is_senior: patch.is_senior != null ? !!patch.is_senior : !!cur.rows[0].is_senior,
       multiplier: patch.multiplier != null ? Number(patch.multiplier) : Number(cur.rows[0].multiplier),
       active: patch.active != null ? !!patch.active : !!cur.rows[0].active,
+      // 救生員：後台可切換的啟用狀態，比照 active 的 *_overridden_at 標記寫法
+      // （見下方 lifeguardActiveChanged），防止下次 Ragic 同步覆蓋人工設定。
+      lifeguard_active: patch.lifeguard_active != null ? !!patch.lifeguard_active : !!cur.rows[0].lifeguard_active,
     };
     if (!merged.name) return res.status(400).json({ error: '姓名必填' });
     if (merged.role === 'coach' && !merged.phone) {
@@ -556,6 +581,8 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
     }
 
     const activeChanged = patch.active != null && (!!patch.active) !== !!cur.rows[0].active;
+    const lifeguardActiveChanged = patch.lifeguard_active != null
+      && (!!patch.lifeguard_active) !== !!cur.rows[0].lifeguard_active;
     const roleChanged = patch.role != null && patch.role !== cur.rows[0].role;
     const coachProfilePatch = patch.coach_profile || null;
 
@@ -570,11 +597,14 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
           multiplier = $7,
           active = $8,
           active_overridden_at = CASE WHEN $9::boolean THEN NOW() ELSE active_overridden_at END,
+          lifeguard_active = $10,
+          lifeguard_active_overridden_at = CASE WHEN $11::boolean THEN NOW() ELSE lifeguard_active_overridden_at END,
           updated_at = NOW()
         WHERE id = $1
         RETURNING *`,
       [id, merged.name, merged.phone, merged.role, merged.venue_id,
-       merged.is_senior, merged.multiplier, merged.active, activeChanged]
+       merged.is_senior, merged.multiplier, merged.active, activeChanged,
+       merged.lifeguard_active, lifeguardActiveChanged]
     );
 
     const loginRole = merged.role === 'coach' ? 'staff' : merged.role;
