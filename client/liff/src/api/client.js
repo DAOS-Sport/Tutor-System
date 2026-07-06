@@ -1,8 +1,8 @@
 import axios from 'axios';
 import liff from '@line/liff';
 
-// 預設啟用 mock；要切真實 API 在 build / dev 時加 VITE_USE_MOCK=false
-export const USE_MOCK = import.meta.env.VITE_USE_MOCK !== 'false';
+// P0.1 fail-safe：只有明確 VITE_USE_MOCK === 'true' 才啟用 mock（正式環境預設走真實 API）。
+export const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true';
 
 // 一律走相對路徑（部署時走同源），開發時 vite proxy 已將 /api 轉到 :3000
 export const http = axios.create({
@@ -184,9 +184,9 @@ export async function callApi(path, options = {}, mockFn) {
     return res.data;
   } catch (err) {
     const status = err?.response?.status;
-    if (status === 501 && typeof mockFn === 'function') {
+    if (status === 501 && import.meta.env.DEV && typeof mockFn === 'function') {
       // eslint-disable-next-line no-console
-      console.warn(`[api] ${method.toUpperCase()} ${path} → 501 stub，回退到 mock`);
+      console.warn(`[api] ${method.toUpperCase()} ${path} → 501 stub，回退到 mock（僅 dev）`);
       return delay(mockFn());
     }
     throw err;
