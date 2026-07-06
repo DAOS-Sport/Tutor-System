@@ -1,6 +1,8 @@
 import axios from 'axios';
 
-export const USE_MOCK = import.meta.env.VITE_USE_MOCK !== 'false';
+// P0.1 fail-safe：只有明確 VITE_USE_MOCK === 'true' 才啟用 mock。
+// 反轉先前 `!== 'false'`（未設即 mock）的 fail-dangerous 預設，避免正式環境誤用假資料。
+export const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true';
 
 const TOKEN_KEY = 'daos.admin.user';
 
@@ -101,8 +103,9 @@ function delay(value, ms = 240) {
 
 /**
  * 統一入口：
- * - mock 模式（VITE_USE_MOCK 未設或 = 'true'）→ 直接打 mockFn
- * - 真實模式 → 打 axios；遇到 501（後端 stub）才 fallback 到 mockFn，並 console.warn
+ * - mock 模式（僅當 VITE_USE_MOCK === 'true'）→ 直接打 mockFn
+ * - 真實模式 → 打 axios；遇到 501（後端 stub）僅在 dev（import.meta.env.DEV）才 fallback 到 mockFn。
+ *   正式 build 不 fallback：501 直接拋出，避免用假資料掩蓋後端未實作。
  */
 export async function callApi(path, options = {}, mockFn) {
   const { method = 'get', data, params } = options;
@@ -116,9 +119,9 @@ export async function callApi(path, options = {}, mockFn) {
     return res.data;
   } catch (err) {
     const status = err?.response?.status;
-    if (status === 501 && typeof mockFn === 'function') {
+    if (status === 501 && import.meta.env.DEV && typeof mockFn === 'function') {
       // eslint-disable-next-line no-console
-      console.warn(`[admin api] ${method.toUpperCase()} /api/admin${path} → 501 stub，回退到 mock`);
+      console.warn(`[admin api] ${method.toUpperCase()} /api/admin${path} → 501 stub，回退到 mock（僅 dev）`);
       return delay(mockFn());
     }
     throw err;

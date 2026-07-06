@@ -125,7 +125,7 @@ router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, re
 //   3. 清空 ragic_z01_quarantine
 // 硬邊界：只動本地 DB，Ragic 端完全不碰。
 router.post('/purge-ghosts', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
-  const { pool } = require('../../db');
+  const { pool } = require('../../models/db');
   const parentSync = require('../../services/parentSync');
   const client = await pool.connect();
   try {
