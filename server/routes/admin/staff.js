@@ -1084,8 +1084,7 @@ router.post('/:id/reset-password', requireAdminAuth, requireAdminRole('admin'), 
   try {
     const { id } = req.params;
     const staffRes = await pool.query(
-      `SELECT s.id, s.name, s.venue_id, c.line_uid AS coach_line_uid
-              , s.phone
+      `SELECT s.id, s.name, s.venue_id, s.phone, c.line_uid AS coach_line_uid
          FROM admin_staff s
          LEFT JOIN coaches c ON c.ragic_employee_id = s.id
         WHERE s.id = $1`,

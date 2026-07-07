@@ -20,7 +20,7 @@ const HARD_DELETE_WARNING = '警告：此操作為物理級硬刪除（Hard Dele
 
 /**
  * 密碼欄：眼睛圖示檢視密碼。密碼以 bcrypt 雜湊保存無法直接還原，
- * 點眼睛時由後端確認「是否仍為預設（員工編號）」：是→顯示明碼；員工已自行改過→提示無法顯示。
+ * 點眼睛時由後端確認「是否仍為預設（手機號碼）」：是→顯示明碼；員工已自行改過→提示無法顯示。
  */
 function PasswordCell({ row, isAdmin, onReset }) {
   const [shown, setShown] = useState(false);
@@ -43,6 +43,7 @@ function PasswordCell({ row, isAdmin, onReset }) {
     if (busy) display = '…';
     else if (!data || data.error) display = '讀取失敗';
     else if (!data.has_account) display = '無登入帳號';
+    else if (data.missing_default_phone) display = '未設定手機';
     else if (data.is_default) display = data.password;
     else display = '已自行修改，無法顯示';
   }
@@ -58,7 +59,7 @@ function PasswordCell({ row, isAdmin, onReset }) {
       {isAdmin && (
         <button type="button" onClick={() => onReset(row)}
           className="text-xs font-medium text-brand-amber hover:underline"
-          title={`重設 ${row.name} 的密碼為原始密碼（員工編號）`}>
+          title={`重設 ${row.name} 的密碼為原始密碼（手機號碼）`}>
           重設密碼
         </button>
       )}
@@ -132,7 +133,8 @@ export default function StaffPage() {
       if (r.notified) {
         toast.success(`已重設 ${r.staff_name || resetting.name} 的密碼，並已透過 LINE 通知`);
       } else {
-        toast.success(`已重設 ${r.staff_name || resetting.name} 的密碼為員工編號（未發送 LINE 通知，請另行告知）`);
+        const hint = r.default_password_hint || resetting.phone || '手機號碼';
+        toast.success(`已重設 ${r.staff_name || resetting.name} 的密碼為手機號碼（${hint}），未發送 LINE 通知，請另行告知`);
       }
       setResetting(null);
     } catch (err) {
@@ -291,11 +293,16 @@ export default function StaffPage() {
           return;
         }
         if (!editing.name?.trim()) { toast.error('姓名必填'); setBusy(false); return; }
+        if (!String(editing.phone || '').trim()) {
+          toast.error('手機必填，登入帳號與預設密碼會使用手機號碼');
+          setBusy(false);
+          return;
+        }
         // 建立前確認 — 明示預設密碼規則
         const confirmMsg = `將建立員工 ${editing.name.trim()}（${editing.id}）：\n` +
           `• 角色：${roleLabel(editing.role)}\n` +
-          `• 後台登入帳號：${editing.phone || editing.id}\n` +
-          `• 預設登入密碼 = 員工編號（${editing.id}），請通知該員工首次登入後立即修改\n\n確認建立？`;
+          `• 後台登入帳號：${String(editing.phone || '').trim()}\n` +
+          `• 預設登入密碼 = 手機號碼（${String(editing.phone || '').trim()}），請通知該員工首次登入後立即修改\n\n確認建立？`;
         if (!window.confirm(confirmMsg)) { setBusy(false); return; }
         const venueIds = Array.isArray(editing.venue_ids)
           ? editing.venue_ids
@@ -304,7 +311,7 @@ export default function StaffPage() {
           id: editing.id, name: editing.name.trim(), role: editing.role,
           venue_ids: venueIds,
           venue_id: venueIds[0] || null,
-          phone: editing.phone || '',
+          phone: String(editing.phone || '').trim(),
           is_senior: editing.role === 'coach' ? !!editing.is_senior : false,
           multiplier: editing.role === 'coach' ? Number(editing.multiplier || 1) : 1,
           active: editing.active !== false,
@@ -321,13 +328,18 @@ export default function StaffPage() {
         toast.success(`已建立 ${res.name}（${res.id}）`);
         setCreatedHint({
           id: res.id, name: res.name,
-          username: res.login_username || res.id,
-          password: res.default_password_hint || res.id,
+          username: res.login_username || res.phone || res.id,
+          password: res.default_password_hint || res.phone || res.id,
         });
         const fresh = await staffApi.list(normalizeFilters(filters));
         setStaff(fresh);
         setEditing(null);
       } else {
+        if (!editing.ragic_locked && !String(editing.phone || '').trim()) {
+          toast.error('手機必填，登入帳號與預設密碼會使用手機號碼');
+          setBusy(false);
+          return;
+        }
         const venueIds = Array.isArray(editing.venue_ids)
           ? editing.venue_ids
           : (editing.venue_id ? [editing.venue_id] : []);
@@ -336,7 +348,7 @@ export default function StaffPage() {
         const coachIdentityOn = editing.role === 'coach' || editing.coach_active || editing.has_coach_profile;
         const patch = {
           name: editing.name,
-          phone: editing.phone,
+          phone: String(editing.phone || '').trim(),
           role: editing.role,
           is_senior: coachIdentityOn ? !!editing.is_senior : false,
           multiplier: coachIdentityOn ? Number(editing.multiplier || 1) : 1,
@@ -568,6 +580,7 @@ export default function StaffPage() {
         confirmLabel="確認重設"
         tone="primary"
         busy={resetBusy}
+        confirmDisabled={!!resetting && !String(resetting.phone || '').trim()}
         onCancel={() => !resetBusy && setResetting(null)}
         onConfirm={confirmReset}
       >
@@ -576,8 +589,13 @@ export default function StaffPage() {
             <p>
               將把 <span className="font-bold">{resetting.name}</span>
               （編號 <span className="font-mono">{resetting.id}</span>）的後台登入密碼
-              重設為員工編號 <span className="font-mono font-bold">{resetting.id}</span>。
+              重設為手機號碼 <span className="font-mono font-bold">{resetting.phone || '未設定'}</span>。
             </p>
+            {!String(resetting.phone || '').trim() && (
+              <p className="rounded bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
+                此員工尚未設定手機，請先在員工頁補上手機後再重設密碼。
+              </p>
+            )}
             <p className="text-xs text-gray-500">
               系統會嘗試以 LINE 通知該員工（若未綁定 LINE 則略過，請改用其他方式告知）。
               請提醒對方登入後立即修改密碼。

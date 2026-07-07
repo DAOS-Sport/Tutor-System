@@ -494,9 +494,11 @@ function invoiceIssued({ parentName, invoiceNumber, invoiceImageUrl, invoiceUrl,
 }
 
 // Task #82：admin 重設密碼通知（推給該員工）
-function adminPasswordReset({ employeeName, employeeId, loginUrl }) {
+function adminPasswordReset({ employeeName, employeeId, loginUsername, defaultPassword, loginUrl }) {
+  const username = loginUsername || defaultPassword || employeeId;
+  const password = defaultPassword || employeeId;
   return [{
-    type: 'flex', altText: `您的後台密碼已被重設為 ${employeeId}`,
+    type: 'flex', altText: '您的後台密碼已被重設為手機號碼',
     contents: {
       type: 'bubble',
       header: flexHeader('🔑 後台密碼已重設', BRAND.amber),
@@ -507,10 +509,14 @@ function adminPasswordReset({ employeeName, employeeId, loginUrl }) {
           { type: 'text', text: '系統管理員已重設您的後台登入密碼。', size: 'sm', wrap: true },
           { type: 'separator', margin: 'md' },
           { type: 'box', layout: 'horizontal', margin: 'md', contents: [
-            { type: 'text', text: '新密碼', size: 'sm', color: '#888888', flex: 2 },
-            { type: 'text', text: employeeId, size: 'sm', weight: 'bold', flex: 3, align: 'end' },
+            { type: 'text', text: '登入帳號', size: 'sm', color: '#888888', flex: 2 },
+            { type: 'text', text: username, size: 'sm', weight: 'bold', flex: 3, align: 'end' },
           ] },
-          { type: 'text', text: '（即為您的員工編號）', size: 'xs', color: '#888888', align: 'end' },
+          { type: 'box', layout: 'horizontal', margin: 'md', contents: [
+            { type: 'text', text: '新密碼', size: 'sm', color: '#888888', flex: 2 },
+            { type: 'text', text: password, size: 'sm', weight: 'bold', flex: 3, align: 'end' },
+          ] },
+          { type: 'text', text: '（即為您的手機號碼）', size: 'xs', color: '#888888', align: 'end' },
           { type: 'text', text: '為了帳號安全，請點下方按鈕登入後立即修改密碼。', size: 'xs', color: '#A32D2D', wrap: true, margin: 'md' },
         ],
       },

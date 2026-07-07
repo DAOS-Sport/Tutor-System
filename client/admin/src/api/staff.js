@@ -32,7 +32,7 @@ export const staffApi = {
       }));
     }),
   create: (body) =>
-    callApi(`/staff`, { method: 'post', data: body }, () => mockDb.createStaff?.(body) || { ...body, default_password_hint: body.id }),
+    callApi(`/staff`, { method: 'post', data: body }, () => mockDb.createStaff?.(body) || { ...body, default_password_hint: body.phone }),
   update: (id, patch) =>
     callApi(`/staff/${id}`, { method: 'patch', data: patch }, () => mockDb.updateStaff(id, patch)),
   hardDelete: (staffIds) =>
@@ -46,9 +46,17 @@ export const staffApi = {
     callApi('/staff/sync', { method: 'post', data: {} }, () => ({ synced: 0, skipped: true })),
   resetPassword: (id) =>
     callApi(`/staff/${id}/reset-password`, { method: 'post', data: {} },
-      () => ({ ok: true, staff_id: id, staff_name: id, notified: false, notify_error: 'mock' })),
-  // 檢視密碼：後端確認目前密碼是否仍為預設（員工編號）→ 是則回傳明碼，否則回 is_default=false
+      () => {
+        const row = mockDb.staff().find((x) => x.id === id);
+        return { ok: true, staff_id: id, staff_name: row?.name || id, notified: false, notify_error: 'mock', default_password_hint: row?.phone || '' };
+      }),
+  // 檢視密碼：後端確認目前密碼是否仍為預設（手機號碼）→ 是則回傳明碼，否則回 is_default=false
   passwordHint: (id) =>
     callApi(`/staff/${id}/password-hint`, {},
-      () => ({ has_account: true, is_default: true, password: id })),
+      () => {
+        const row = mockDb.staff().find((x) => x.id === id);
+        return row?.phone
+          ? { has_account: true, is_default: true, password: row.phone }
+          : { has_account: true, is_default: false, password: null, missing_default_phone: true };
+      }),
 };

@@ -314,7 +314,7 @@ export default function StaffEditModal({ editing, setEditing, venues, busy, onSa
                   />
                   <p className="mt-1 text-xs text-gray-500">
                     建議命名：教練 C***、主管 M***、行政 S***、系統管理員 U***；2–10 碼英數，首字母為英文。
-                    <span className="ml-1 font-medium text-amber-700">建立後預設密碼 = 員工編號（首次登入後請改密碼）。</span>
+                    <span className="ml-1 font-medium text-amber-700">建立後登入帳號與預設密碼 = 手機號碼（首次登入後請改密碼）。</span>
                   </p>
                 </div>
               )}
@@ -336,7 +336,7 @@ export default function StaffEditModal({ editing, setEditing, venues, busy, onSa
                   />
                 </div>
                 <div>
-                  <label className="mb-1 block text-sm font-medium text-gray-700">手機</label>
+                  <label className="mb-1 block text-sm font-medium text-gray-700">手機{!ragicLocked ? ' *' : ''}</label>
                   <input
                     value={editing.phone || ''}
                     onChange={(e) => setEditing({ ...editing, phone: e.target.value })}
