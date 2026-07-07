@@ -5,7 +5,7 @@ const ragicAdmin = require('../server/services/ragicAdmin');
 
 const { staffPayloadFromRagicRow, publicStagingRow, sanitizeH01RawRow } = ragicAdmin.__test__;
 
-function testDataNoUsesFieldIdOnly() {
+function testDataNoPrefersFieldId() {
   const payload = staffPayloadFromRagicRow(
     {
       _ragicId: 'R123',
@@ -21,6 +21,21 @@ function testDataNoUsesFieldIdOnly() {
   assert.strictEqual(payload.ragic_data_no, '1107076');
   assert.strictEqual(payload.id, 'S001');
   assert.strictEqual(payload.line_uid, 'U5713b8dca03d3a78777891da2e9f12b6');
+}
+
+function testDataNoFallsBackToDisplayName() {
+  const payload = staffPayloadFromRagicRow(
+    {
+      _ragicId: 'R124',
+      '資料編號': '321',
+      '3000935': 'S002',
+      '3000933': '測試員工二',
+      '3000945': '在職',
+    },
+    () => []
+  );
+  assert.strictEqual(payload.ragic_data_no, '321');
+  assert.strictEqual(payload.id, 'S002');
 }
 
 function testStagingDtoRedactsDataNo() {
@@ -103,7 +118,8 @@ function testH01ShadowRawDrops400LineFields() {
   }
 }
 
-testDataNoUsesFieldIdOnly();
+testDataNoPrefersFieldId();
+testDataNoFallsBackToDisplayName();
 testStagingDtoRedactsDataNo();
 testUiHasExplicitDataNoHideList();
 testH01ShadowRawDrops400LineFields();

@@ -1251,11 +1251,11 @@ CREATE INDEX IF NOT EXISTS idx_ragic_z01_shadow_fetched ON ragic_z01_shadow(fetc
 -- H01（員工）/H05（場館）影子表：同一套「無腦 pull → 從 shadow 清洗」分工，補上
 -- 決策9「所有 RAGIC 的同步都用影子表格式」原本沒收斂到的兩個表單（見 ragicAdmin.js
 -- _shadowPullH01Impl/_reconcileH01FromShadowImpl、_shadowPullH05Impl/
--- _reconcileH05FromShadowImpl）。H01 key 用 ragic_record_id（真正的 _ragicId，
--- 不是可變的員工編號，理由同上方 H01 員工/教練識別鍵修復段落）；H05 場館代碼本身
--- 穩定，key 直接用代碼即可。
+-- _reconcileH05FromShadowImpl）。H01 shadow key 優先使用「資料編號」Field 3000934
+-- （沒有資料編號才 fallback _ragicId / row index），raw_data 仍保留原始 _ragicId；
+-- H05 場館代碼本身穩定，key 直接用代碼即可。
 CREATE TABLE IF NOT EXISTS ragic_h01_shadow (
-  ragic_record_id TEXT PRIMARY KEY,
+  ragic_record_id TEXT PRIMARY KEY, -- shadow key；H01 優先 data:<3000934>，保留欄名以相容既有 DB
   ragic_data_no TEXT,
   raw_data JSONB NOT NULL,
   fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

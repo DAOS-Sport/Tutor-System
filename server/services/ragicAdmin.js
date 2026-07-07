@@ -130,6 +130,21 @@ async function _checkZ01IntegrityGate(integrityResult) {
   return null;
 }
 
+async function _checkPagedIntegrityGate(sheetCode, integrityResult) {
+  const code = String(sheetCode || 'Ragic').toUpperCase();
+  if (integrityResult?.truncated) {
+    const msg = `Ragic ${code} 全量拉取疑似遭截斷（撞到 RAGIC_MAX_PAGES 上限，非自然結尾），已中止本輪、不寫入 shadow / 不進 apply`;
+    await _alertAdmins(`【Ragic 同步告警】${msg}`);
+    return msg;
+  }
+  if (integrityResult?.boundaryMismatch) {
+    const msg = `Ragic ${code} 全量拉取邊界複查不一致（疑似拉取期間有並發修改導致分頁位移），已中止本輪、不寫入 shadow / 不進 apply`;
+    await _alertAdmins(`【Ragic 同步告警】${msg}`);
+    return msg;
+  }
+  return null;
+}
+
 (function logRagicStatus() {
   const hasKey = !!process.env.RAGIC_API_KEY;
   const hasBase = !!process.env.RAGIC_BASE_URL;
@@ -283,7 +298,7 @@ function _ragicLastUpdateValue(r) {
 }
 
 function _h01DataNo(r) {
-  return String(r?.[H01.DATA_NO] || '').trim();
+  return String(r?.[H01.DATA_NO] || r?.['資料編號'] || '').trim();
 }
 
 function _splitFieldIds(value) {
@@ -318,6 +333,40 @@ function _sanitizeH01RawRow(row) {
     out[key] = value;
   }
   return out;
+}
+
+function _ragicRecordId(row) {
+  return row && row._ragicId != null
+    ? String(row._ragicId)
+    : (row && row.ragicId != null ? String(row.ragicId) : '');
+}
+
+function _buildDuplicateSet(values) {
+  const seen = new Set();
+  const dup = new Set();
+  for (const value of values.filter(Boolean)) {
+    if (seen.has(value)) dup.add(value);
+    else seen.add(value);
+  }
+  return dup;
+}
+
+function _h01ShadowKey(row, idx, duplicateDataNos = new Set()) {
+  const dataNo = _h01DataNo(row);
+  if (dataNo && !duplicateDataNos.has(dataNo)) return `data:${dataNo}`;
+  const rid = _ragicRecordId(row);
+  if (rid) return `ragic:${rid}`;
+  if (dataNo) return `data:${dataNo}:row:${idx}`;
+  return `row:${idx}`;
+}
+
+function _h23ShadowKey(row, idx, duplicateKeys = new Set()) {
+  const ragicKey = _h23Value(row, H23.KEY_FIELD, '資料編號');
+  if (ragicKey && !duplicateKeys.has(ragicKey)) return `key:${ragicKey}`;
+  const rid = _ragicRecordId(row);
+  if (rid) return `ragic:${rid}`;
+  if (ragicKey) return `key:${ragicKey}:row:${idx}`;
+  return `row:${idx}`;
 }
 
 function _staffHaltEntityId(r, fallback = '') {
@@ -483,29 +532,31 @@ async function _shadowPullH01Impl() {
   let records;
   let freshness = null;
   try {
-    const pull = await ragic.getAllStaffWithFreshness();
+    const pull = await ragic.getAllStaffWithIntegrityAndFreshness();
     freshness = pull.freshness || null;
     if (pull.stale_read) {
       await _alertFreshnessIfNeeded('H01', freshness, pull.error);
       return _withFreshness({ synced: 0, stale_read: true, error: pull.error }, freshness);
     }
-    records = pull.records || [];
+    const gateError = await _checkPagedIntegrityGate('H01', pull);
+    if (gateError) return _withFreshness({ synced: 0, error: gateError }, freshness);
+    records = (pull.raw_records || pull.records || []).filter((row) => !ragic.isCanaryRecord(row, 'H01'));
     await _alertFreshnessIfNeeded('H01', freshness);
   } catch (err) {
     return { synced: 0, error: `Ragic H01 全量查詢失敗：${err.message}` };
   }
   const client = await pool.connect();
   let synced = 0;
+  const rawTotal = records.length;
   try {
     await client.query('BEGIN');
-    const presentIds = [];
-    for (const row of records) {
-      if (ragic.isCanaryRecord(row, 'H01')) continue;
-      const ragicRecordId = row && row._ragicId != null ? String(row._ragicId) : null;
-      if (!ragicRecordId) continue;
+    const duplicateDataNos = _buildDuplicateSet(records.map(_h01DataNo));
+    const presentKeys = [];
+    for (const [idx, row] of records.entries()) {
+      const shadowKey = _h01ShadowKey(row, idx, duplicateDataNos);
+      const ragicRecordId = _ragicRecordId(row) || null;
       const ragicDataNo = _h01DataNo(row) || null;
-      const shadowRow = _sanitizeH01RawRow(row);
-      presentIds.push(ragicRecordId);
+      presentKeys.push(shadowKey);
       await client.query(
         `INSERT INTO ragic_h01_shadow (ragic_record_id, ragic_data_no, raw_data, fetched_at)
          VALUES ($1, $2, $3::jsonb, NOW())
@@ -513,26 +564,31 @@ async function _shadowPullH01Impl() {
            ragic_data_no = EXCLUDED.ragic_data_no,
            raw_data = EXCLUDED.raw_data,
            fetched_at = NOW()`,
-        [ragicRecordId, ragicDataNo, JSON.stringify(shadowRow)]
+        [shadowKey, ragicDataNo, JSON.stringify(row)]
       );
       synced++;
     }
     await client.query(
       `DELETE FROM ragic_h01_shadow WHERE NOT (ragic_record_id = ANY($1::text[]))`,
-      [presentIds]
+      [presentKeys]
     );
+    const countRes = await client.query(`SELECT COUNT(*)::int AS n FROM ragic_h01_shadow`);
+    const shadowCount = countRes.rows[0]?.n || 0;
+    if (shadowCount !== rawTotal) {
+      throw new Error(`H01 shadow count mismatch: ragic_raw_total=${rawTotal}, shadow_count=${shadowCount}`);
+    }
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
-    return _withFreshness({ synced, error: `Shadow 寫入失敗：${err.message}` }, freshness);
+    return _withFreshness({ synced, raw_total: rawTotal, error: `Shadow 寫入失敗：${err.message}` }, freshness);
   } finally {
     client.release();
   }
-  return _withFreshness({ synced }, freshness);
+  return _withFreshness({ synced, raw_total: rawTotal, shadow_count: synced }, freshness);
 }
 
 async function _readShadowH01(client) {
-  const r = await client.query(`SELECT raw_data FROM ragic_h01_shadow`);
+  const r = await client.query(`SELECT raw_data FROM ragic_h01_shadow ORDER BY ragic_data_no NULLS LAST, ragic_record_id`);
   return r.rows.map((row) => row.raw_data).filter((row) => !ragic.isCanaryRecord(row, 'H01'));
 }
 
@@ -564,23 +620,25 @@ async function _shadowPullH23Impl() {
 
   let records;
   try {
-    records = await ragic.getAllStaffCoefficientRows();
+    records = await ragic.getAllStaffCoefficientRowsRaw();
   } catch (err) {
     return { synced: 0, error: `Ragic H23 全量查詢失敗：${err.message}` };
   }
 
   const client = await pool.connect();
   let synced = 0;
+  const rawRows = (records || []).filter((row) => !ragic.isCanaryRecord(row, 'H23'));
+  const rawTotal = rawRows.length;
   try {
     await client.query('BEGIN');
-    const presentIds = [];
-    for (const row of records || []) {
-      const ragicRecordId = row && row._ragicId != null ? String(row._ragicId) : null;
-      if (!ragicRecordId) continue;
+    const duplicateKeys = _buildDuplicateSet(rawRows.map((row) => _h23Value(row, H23.KEY_FIELD, '資料編號')));
+    const presentKeys = [];
+    for (const [idx, row] of rawRows.entries()) {
+      const shadowKey = _h23ShadowKey(row, idx, duplicateKeys);
       const ragicKey = _h23Value(row, H23.KEY_FIELD, '資料編號');
       const empId = _h23StaffEmpId(row);
       const name = _h23StaffName(row);
-      presentIds.push(ragicRecordId);
+      presentKeys.push(shadowKey);
       await client.query(
         `INSERT INTO ragic_h23_shadow
            (ragic_record_id, ragic_key, staff_emp_id, staff_name, raw_data, fetched_at)
@@ -591,22 +649,27 @@ async function _shadowPullH23Impl() {
            staff_name = EXCLUDED.staff_name,
            raw_data = EXCLUDED.raw_data,
            fetched_at = NOW()`,
-        [ragicRecordId, ragicKey || null, empId || null, name || null, JSON.stringify(row)]
+        [shadowKey, ragicKey || null, empId || null, name || null, JSON.stringify(row)]
       );
       synced++;
     }
     await client.query(
       `DELETE FROM ragic_h23_shadow WHERE NOT (ragic_record_id = ANY($1::text[]))`,
-      [presentIds]
+      [presentKeys]
     );
+    const countRes = await client.query(`SELECT COUNT(*)::int AS n FROM ragic_h23_shadow`);
+    const shadowCount = countRes.rows[0]?.n || 0;
+    if (shadowCount !== rawTotal) {
+      throw new Error(`H23 shadow count mismatch: ragic_raw_total=${rawTotal}, shadow_count=${shadowCount}`);
+    }
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
-    return { synced, error: `H23 shadow 寫入失敗：${err.message}` };
+    return { synced, raw_total: rawTotal, error: `H23 shadow 寫入失敗：${err.message}` };
   } finally {
     client.release();
   }
-  return { synced };
+  return { synced, raw_total: rawTotal, shadow_count: synced };
 }
 
 async function _reconcileH23FromShadowImpl() {
@@ -629,9 +692,10 @@ async function _reconcileH23FromShadowImpl() {
       const empId = _normalizeStaffId(row.staff_emp_id || _h23StaffEmpId(raw));
       const name = String(row.staff_name || _h23StaffName(raw) || '').trim();
       const courseCoefficient = _h23CourseCoefficient(raw);
+      const warningRecordId = _ragicRecordId(raw) || row.ragic_record_id;
       if (!empId || !name) {
         unmatched++;
-        warnings.push({ ragic_record_id: row.ragic_record_id, emp_id: empId, name, reason: 'missing_composite_key' });
+        warnings.push({ ragic_record_id: warningRecordId, shadow_key: row.ragic_record_id, emp_id: empId, name, reason: 'missing_composite_key' });
         continue;
       }
 
@@ -646,7 +710,8 @@ async function _reconcileH23FromShadowImpl() {
       if (matched.rowCount !== 1) {
         unmatched++;
         warnings.push({
-          ragic_record_id: row.ragic_record_id,
+          ragic_record_id: warningRecordId,
+          shadow_key: row.ragic_record_id,
           emp_id: empId,
           name,
           reason: matched.rowCount === 0 ? 'no_exact_staff_match' : 'non_unique_staff_match',
@@ -693,7 +758,13 @@ async function _syncStaffCoefficientImpl() {
   if (shadowResult.skipped) return shadowResult;
   if (shadowResult.error) return { synced: 0, error: `[h23-shadow-pull] ${shadowResult.error}` };
   const reconciled = await _reconcileH23FromShadowImpl();
-  return { ...reconciled, shadow_synced: shadowResult.synced };
+  return {
+    ...reconciled,
+    synced: shadowResult.synced,
+    shadow_synced: shadowResult.synced,
+    raw_total: shadowResult.raw_total,
+    shadow_count: shadowResult.shadow_count,
+  };
 }
 
 // 既有 diff/staging 邏輯，資料來源改讀 ragic_h01_shadow（由 _shadowPullH01Impl
@@ -763,23 +834,38 @@ async function _reconcileH01FromShadowImpl() {
     const seenKeys = new Set();
     let applied = 0;
     let failed = 0;
+    let h01Unmatched = 0;
     const staffErrors = [];
+    const h01Warnings = [];
     applyClient = await pool.connect();
     for (const [idx, r] of records.entries()) {
      try {
       const ragicId = r['員工編號'] || r['工號'] || r['3000935'];
-      if (!ragicId) continue;
-      const rawId = String(ragicId).trim();
-      const id = _normalizeStaffId(rawId);
-      if (!id) continue;
-      const ragicRecordId = r._ragicId != null ? String(r._ragicId) : null;
+      const rawId = String(ragicId || '').trim();
+      let id = _normalizeStaffId(rawId);
+      const ragicRecordId = _ragicRecordId(r) || null;
       const ragicDataNo = _h01DataNo(r);
-      seenKeys.add(id);
+      const curByRagicId = ragicRecordId ? dbByRagicId.get(ragicRecordId) : null;
+      let cur = (ragicDataNo ? dbByDataNo.get(ragicDataNo) : null) || curByRagicId || (id ? dbMap.get(id) : null);
+      if (!id && cur?.id) id = _normalizeStaffId(cur.id);
+      if (id) seenKeys.add(id);
+      const warnH01 = (reason) => {
+        h01Unmatched++;
+        h01Warnings.push({
+          ragic_record_id: ragicRecordId,
+          ragic_data_no: ragicDataNo,
+          emp_id: id,
+          name: String(r['姓名'] || r['3000933'] || '').trim(),
+          reason,
+        });
+      };
       const stageHalt = async (reason, message) => {
-        const existingForHalt = (ragicRecordId && dbByRagicId.get(ragicRecordId)) || dbMap.get(id);
+        const existingForHalt = cur || (ragicRecordId && dbByRagicId.get(ragicRecordId)) || (id ? dbMap.get(id) : null);
         if (existingForHalt) seenKeys.add(_normalizeStaffId(existingForHalt.id));
-        console.warn(`[Ragic sync] H01 資料品質中止 (${reason}): ${message}`);
-        await _alertAdmins(`【Ragic H01 對齊中止】${message}（_ragicId=${ragicRecordId || '(none)'}，員工編號=${id || '(none)'}）`);
+        warnH01(reason);
+        if (h01Warnings.length <= 10) {
+          console.warn(`[Ragic sync] H01 資料品質中止 (${reason}): ${message}`);
+        }
       };
       if (!ragicDataNo) {
         await stageHalt(
@@ -793,6 +879,10 @@ async function _reconcileH01FromShadowImpl() {
           'duplicate_ragic_data_no',
           `H01 同一次 pull 出現重複資料編號 Field ${H01.DATA_NO}，整組已略過`
         );
+        continue;
+      }
+      if (!id) {
+        warnH01('missing_staff_emp_id');
         continue;
       }
       const name = r['姓名'] || r['3000933'] || '';
@@ -820,7 +910,6 @@ async function _reconcileH01FromShadowImpl() {
       const lineUid = extractLineUid(r);
       // P1.5：業務對齊鍵改為 H01「資料編號」；_ragicId 作不可變錨點 / 舊資料回填，
       // 員工編號只保留最後 fallback（涵蓋尚未回填的過渡期資料）。
-      const curByRagicId = ragicRecordId ? dbByRagicId.get(ragicRecordId) : null;
       if (curByRagicId?.ragic_data_no && String(curByRagicId.ragic_data_no) !== ragicDataNo) {
         await stageHalt(
           'ragic_data_no_changed',
@@ -828,7 +917,6 @@ async function _reconcileH01FromShadowImpl() {
         );
         continue;
       }
-      const cur = dbByDataNo.get(ragicDataNo) || curByRagicId || dbMap.get(id);
       // 若靠 ragic_record_id 對到舊列（可能員工編號已變），該列的「舊」編號也要算
       // seen，否則會被下面的 deactivate 掃尾誤判成離職（它其實是要被就地更新，不是消失）。
       if (cur) seenKeys.add(_normalizeStaffId(cur.id));
@@ -996,6 +1084,13 @@ async function _reconcileH01FromShadowImpl() {
      }
     }
 
+    if (h01Unmatched > 0) {
+      const sampleText = h01Warnings.slice(0, 3)
+        .map((w) => `${w.reason}:${w.emp_id || w.ragic_data_no || w.ragic_record_id || 'unknown'}`)
+        .join('；');
+      await _alertAdmins(`【Ragic H01 對齊警告】h01_unmatched_staff_warning=${h01Unmatched}${sampleText ? `（sample: ${sampleText}）` : ''}`);
+    }
+
     // Ragic 名單外 + 仍 active + 未 override → 直接停用（無 staging）
     for (const r of dbRows) {
       if (!r.active || r.active_overridden_at != null || seenKeys.has(_normalizeStaffId(r.id))) continue;
@@ -1013,11 +1108,19 @@ async function _reconcileH01FromShadowImpl() {
     if (failed > 0) {
       return {
         synced: applied, applied, failed, partial: true,
+        h01_unmatched_staff_warning: h01Unmatched,
+        h01_unmatched_staff_warning_samples: h01Warnings.slice(0, 10),
         error: `${failed} 筆員工同步失敗（詳見伺服器 log，其餘 ${applied} 筆已正常套用）：${staffErrors[0]}`,
         skipped: false,
       };
     }
-    return { synced: applied, applied, skipped: false };
+    return {
+      synced: applied,
+      applied,
+      h01_unmatched_staff_warning: h01Unmatched,
+      h01_unmatched_staff_warning_samples: h01Warnings.slice(0, 10),
+      skipped: false,
+    };
   } catch (err) {
     console.warn('[Ragic sync] staff failed:', err.message);
     return { synced: 0, error: err.message };
@@ -1042,11 +1145,18 @@ async function _syncStaffImpl() {
   const coefficient = await _syncStaffCoefficientImpl();
   const combined = {
     ...reconciled,
-    synced: (Number(reconciled.synced) || 0) + (Number(coefficient.synced) || 0),
-    staff_staged: Number(reconciled.staged ?? reconciled.synced) || 0,
+    synced: Number(shadowResult.shadow_count ?? shadowResult.synced) || 0,
+    h01_raw_total: Number(shadowResult.raw_total) || 0,
+    h01_shadow_count: Number(shadowResult.shadow_count ?? shadowResult.synced) || 0,
+    h01_applied: Number(reconciled.applied ?? reconciled.synced) || 0,
+    staff_staged: Number(reconciled.staged ?? reconciled.applied ?? reconciled.synced) || 0,
     coefficient_updated: Number(coefficient.updated ?? coefficient.synced) || 0,
     coefficient_scanned: Number(coefficient.scanned) || 0,
     coefficient_shadow_synced: Number(coefficient.shadow_synced) || 0,
+    coefficient_raw_total: Number(coefficient.raw_total) || 0,
+    coefficient_shadow_count: Number(coefficient.shadow_count ?? coefficient.shadow_synced) || 0,
+    h01_unmatched_staff_warning: Number(reconciled.h01_unmatched_staff_warning) || 0,
+    h01_unmatched_staff_warning_samples: reconciled.h01_unmatched_staff_warning_samples || [],
     unmatched_staff_warning: Number(coefficient.unmatched_staff_warning) || 0,
     unmatched_staff_warning_samples: coefficient.unmatched_staff_warning_samples || [],
   };
@@ -3444,7 +3554,11 @@ function _webhookFormPath(sheetCode) {
 
 async function _deleteWebhookShadow(client, sheetCode, ragicRecordId) {
   if (sheetCode === 'H01') {
-    await client.query(`DELETE FROM ragic_h01_shadow WHERE ragic_record_id = $1`, [ragicRecordId]);
+    await client.query(
+      `DELETE FROM ragic_h01_shadow
+        WHERE ragic_record_id = $1 OR raw_data->>'_ragicId' = $1 OR raw_data->>'ragicId' = $1`,
+      [ragicRecordId]
+    );
   } else if (sheetCode === 'Z01') {
     await client.query(`DELETE FROM ragic_z01_shadow WHERE ragic_record_id = $1`, [ragicRecordId]);
   } else if (sheetCode === 'H05') {
@@ -3460,9 +3574,8 @@ async function _upsertWebhookShadow(client, sheetCode, row) {
   if (!row || ragic.isCanaryRecord(row, sheetCode)) return false;
   const rid = row._ragicId != null ? String(row._ragicId) : String(row.ragicId || '');
   if (sheetCode === 'H01') {
-    if (!rid) return false;
+    const shadowKey = _h01ShadowKey(row, 0, new Set());
     const ragicDataNo = _h01DataNo(row) || null;
-    const shadowRow = _sanitizeH01RawRow(row);
     await client.query(
       `INSERT INTO ragic_h01_shadow (ragic_record_id, ragic_data_no, raw_data, fetched_at)
        VALUES ($1, $2, $3::jsonb, NOW())
@@ -3470,7 +3583,7 @@ async function _upsertWebhookShadow(client, sheetCode, row) {
          ragic_data_no = EXCLUDED.ragic_data_no,
          raw_data = EXCLUDED.raw_data,
          fetched_at = NOW()`,
-      [rid, ragicDataNo, JSON.stringify(shadowRow)]
+      [shadowKey, ragicDataNo, JSON.stringify(row)]
     );
     return true;
   }

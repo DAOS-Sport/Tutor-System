@@ -180,6 +180,7 @@ async function runCanaryWriteReadProof({
     return {
       stale_read: false,
       snapshot,
+      raw_records: records,
       records,
       freshness: {
         freshness_verified: false,
@@ -241,19 +242,23 @@ async function runCanaryWriteReadProof({
   };
 
   if (!check.ok) {
+    const rawRecords = _recordsFromSnapshot(snapshot);
     return {
       stale_read: true,
       snapshot,
+      raw_records: rawRecords,
       records: [],
       freshness: baseFreshness,
       error: `stale_read: ${config.sheetCode} canary nonce 不一致（expected=${nonce}, observed=${check.observed || '(missing)'}, retries=${retries}）`,
     };
   }
 
+  const rawRecords = _recordsFromSnapshot(snapshot);
   return {
     stale_read: false,
     snapshot,
-    records: filterCanaryRecords(_recordsFromSnapshot(snapshot), config),
+    raw_records: rawRecords,
+    records: filterCanaryRecords(rawRecords, config),
     freshness: baseFreshness,
   };
 }

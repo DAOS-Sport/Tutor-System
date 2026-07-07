@@ -316,7 +316,8 @@ async function queryAllPagedWithFreshness(sheetCode, formPath, params = {}, conc
     )),
   });
   if (result.stale_read) return result;
-  return { ...result, records: filterCanaryRecords(result.records, config) };
+  const rawRecords = result.raw_records || result.records || [];
+  return { ...result, raw_records: rawRecords, records: filterCanaryRecords(rawRecords, config) };
 }
 
 async function queryAllPagedWithIntegrityAndFreshness(sheetCode, formPath, params = {}, concurrency = 1) {
@@ -344,9 +345,11 @@ async function queryAllPagedWithIntegrityAndFreshness(sheetCode, formPath, param
     };
   }
   const snapshot = result.snapshot || {};
+  const rawRecords = snapshot.records || result.raw_records || result.records || [];
   return {
     ...snapshot,
-    records: filterCanaryRecords(snapshot.records || result.records, config),
+    raw_records: rawRecords,
+    records: filterCanaryRecords(rawRecords, config),
     freshness: result.freshness,
     stale_read: false,
   };
@@ -415,7 +418,16 @@ async function getAllStaffWithFreshness() {
   return queryAllPagedWithFreshness('H01', process.env.RAGIC_FORM_H01);
 }
 
+async function getAllStaffWithIntegrityAndFreshness() {
+  return queryAllPagedWithIntegrityAndFreshness('H01', process.env.RAGIC_FORM_H01);
+}
+
 async function getAllStaffCoefficientRows() {
+  const formPath = process.env.RAGIC_FORM_H23 || 'https://ap7.ragic.com/xinsheng/general-information/23';
+  return Object.values(await queryAllPaged(formPath, {}, 1, { noCache: true }));
+}
+
+async function getAllStaffCoefficientRowsRaw() {
   const formPath = process.env.RAGIC_FORM_H23 || 'https://ap7.ragic.com/xinsheng/general-information/23';
   return Object.values(await queryAllPaged(formPath, {}, 1, { noCache: true }));
 }
@@ -1406,7 +1418,9 @@ module.exports = {
   getCounterStaff,
   getAllStaff,
   getAllStaffWithFreshness,
+  getAllStaffWithIntegrityAndFreshness,
   getAllStaffCoefficientRows,
+  getAllStaffCoefficientRowsRaw,
   getActiveVenues,
   getActiveVenuesWithFreshness,
   getAllParents,

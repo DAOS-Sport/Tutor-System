@@ -182,7 +182,12 @@ export default function StaffPage() {
     try {
       const r = await staffApi.syncRagic();
       if (r.skipped) toast.info('未設定 Ragic credentials，略過');
-      else toast.success(`已同步 ${r.synced || 0} 位員工`);
+      else {
+        toast.success(`已同步 ${r.synced || 0} 筆 H01 影子資料，套用 ${r.h01_applied ?? r.staff_staged ?? 0} 筆員工更新`);
+        if (Number(r.unmatched_staff_warning) > 0) {
+          toast.warning(`unmatched_staff_warning=${r.unmatched_staff_warning}：H23 係數表有員工編號+姓名未精確對應，已安全跳過`, 6000);
+        }
+      }
       await fetchStaffList();
     } catch {
       toast.error('Ragic 同步失敗');

@@ -43,7 +43,13 @@ export const staffApi = {
       counts: { admin_staff: (staffIds || []).length },
     })),
   syncRagic: () =>
-    callApi('/staff/sync', { method: 'post', data: {} }, () => ({ synced: 0, skipped: true })),
+    callApi('/staff/sync', { method: 'post', data: {} }, () => ({
+      synced: 0,
+      h01_applied: 0,
+      coefficient_updated: 0,
+      unmatched_staff_warning: 0,
+      skipped: true,
+    })),
   resetPassword: (id) =>
     callApi(`/staff/${id}/reset-password`, { method: 'post', data: {} },
       () => {
