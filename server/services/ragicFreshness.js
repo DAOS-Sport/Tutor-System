@@ -57,7 +57,9 @@ function getCanaryConfig(sheetCode, env = process.env) {
     identifierValue,
     maxRetries: _num(env, 'RAGIC_FRESHNESS_RETRIES', 5),
     backoffMs: _num(env, 'RAGIC_FRESHNESS_BACKOFF_MS', 1000),
-    requireConfigured: _bool(env, 'RAGIC_FRESHNESS_REQUIRE_CANARY', true),
+    // 預設 false：canary 未設定時退化為直接 fetch，不硬擋 sync；
+    // 正式啟用 canary 防護請設 RAGIC_FRESHNESS_REQUIRE_CANARY=1。
+    requireConfigured: _bool(env, 'RAGIC_FRESHNESS_REQUIRE_CANARY', false),
   };
 }
 
@@ -164,7 +166,34 @@ async function runCanaryWriteReadProof({
   now = () => new Date(),
   nowMs = () => Date.now(),
 }) {
-  assertCanaryConfigured(config);
+  // canary 未設定且不強制要求時，退化為直接 fetch（不做 write-read proof）。
+  if (!config.recordId || !config.nonceField) {
+    if (config.requireConfigured) {
+      assertCanaryConfigured(config); // 仍會 throw，語意不變
+    }
+    console.warn(
+      `[ragicFreshness] ${config.sheetCode} canary 未設定，略過 write-read proof，直接 fetch snapshot。` +
+      `如需 freshness 保護請設 RAGIC_CANARY_${config.sheetCode}_RECORD_ID / _NONCE_FIELD_ID 與 RAGIC_FRESHNESS_REQUIRE_CANARY=1`
+    );
+    const snapshot = await fetchSnapshot({ attempt: 0, noCache: true });
+    const records = _recordsFromSnapshot(snapshot);
+    return {
+      stale_read: false,
+      snapshot,
+      records,
+      freshness: {
+        freshness_verified: false,
+        freshness_latency_ms: 0,
+        stale_retries: 0,
+        canary_nonce: '',
+        canary_record_id: '',
+        observed_nonce: '',
+        canary_found_in_snapshot: false,
+        canary_found_by_single_get: null,
+        canary_skipped: true,
+      },
+    };
+  }
   if (typeof writeNonce !== 'function') throw new Error('writeNonce function is required');
   if (typeof fetchSnapshot !== 'function') throw new Error('fetchSnapshot function is required');
   if (typeof fetchCanary !== 'function') throw new Error('fetchCanary function is required');
