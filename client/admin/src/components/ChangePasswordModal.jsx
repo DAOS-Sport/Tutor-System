@@ -2,8 +2,11 @@ import React, { useEffect, useState } from 'react';
 import { authApi } from '../api/auth';
 import { useToast } from '../context/ToastContext';
 
-export default function ChangePasswordModal({ open, onClose }) {
+const USERNAME_RE = /^[A-Za-z0-9._@-]{2,40}$/;
+
+export default function ChangePasswordModal({ open, onClose, initialUsername = '', requireCredentialChange = false, onSaved }) {
   const toast = useToast();
+  const [username, setUsername] = useState(initialUsername || '');
   const [oldPwd, setOldPwd] = useState('');
   const [newPwd, setNewPwd] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -11,10 +14,11 @@ export default function ChangePasswordModal({ open, onClose }) {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
+    if (open) setUsername(initialUsername || '');
     if (!open) {
-      setOldPwd(''); setNewPwd(''); setConfirm(''); setShow(false); setBusy(false);
+      setUsername(initialUsername || ''); setOldPwd(''); setNewPwd(''); setConfirm(''); setShow(false); setBusy(false);
     }
-  }, [open]);
+  }, [open, initialUsername]);
 
   const inputType = show ? 'text' : 'password';
 
@@ -22,14 +26,23 @@ export default function ChangePasswordModal({ open, onClose }) {
 
   const lenOk = newPwd.length >= 4;
   const matchOk = newPwd && newPwd === confirm;
-  const canSubmit = oldPwd && lenOk && matchOk && newPwd !== oldPwd && !busy;
+  const cleanUsername = username.trim();
+  const usernameChanged = cleanUsername && cleanUsername !== String(initialUsername || '').trim();
+  const usernameOk = !cleanUsername || USERNAME_RE.test(cleanUsername);
+  const usernameReady = !requireCredentialChange || usernameChanged;
+  const canSubmit = oldPwd && lenOk && matchOk && newPwd !== oldPwd && usernameOk && usernameReady && !busy;
 
   async function submit() {
     if (!canSubmit) return;
     setBusy(true);
     try {
-      await authApi.changePassword({ oldPassword: oldPwd, newPassword: newPwd });
-      toast.success('密碼已更新，下次登入請使用新密碼');
+      const result = await authApi.changePassword({
+        oldPassword: oldPwd,
+        newPassword: newPwd,
+        newUsername: usernameChanged ? cleanUsername : undefined,
+      });
+      toast.success(usernameChanged ? '帳號與密碼已更新，下次登入請使用新帳密' : '密碼已更新，下次登入請使用新密碼');
+      onSaved?.(result || {});
       onClose?.();
     } catch (err) {
       const msg = err?.response?.data?.error || '修改密碼失敗';
@@ -46,10 +59,24 @@ export default function ChangePasswordModal({ open, onClose }) {
       role="dialog" aria-modal="true" aria-label="修改密碼"
     >
       <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
-        <h3 className="mb-1 text-lg font-bold text-brand-primary">修改密碼</h3>
-        <p className="mb-4 text-xs text-gray-500">輸入舊密碼與新密碼（至少 4 個字元）</p>
+        <h3 className="mb-1 text-lg font-bold text-brand-primary">修改帳號密碼</h3>
+        <p className="mb-4 text-xs text-gray-500">
+          {requireCredentialChange ? '目前仍使用預設帳密，請改成自己的帳號與密碼。' : '可更新登入帳號，並輸入舊密碼與新密碼。'}
+        </p>
 
         <div className="space-y-3">
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-gray-600">新帳號</span>
+            <input type="text" value={username} onChange={(e) => setUsername(e.target.value.trim())}
+              autoComplete="username"
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none" />
+            {cleanUsername && !usernameOk && (
+              <span className="mt-1 block text-xs text-brand-error">帳號需為 2–40 碼，可使用英文、數字、._@-</span>
+            )}
+            {requireCredentialChange && !usernameChanged && (
+              <span className="mt-1 block text-xs text-brand-error">請改成非預設的新帳號</span>
+            )}
+          </label>
           <label className="block">
             <span className="mb-1 block text-xs font-medium text-gray-600">舊密碼</span>
             <input type={inputType} value={oldPwd} onChange={(e) => setOldPwd(e.target.value)}

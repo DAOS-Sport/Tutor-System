@@ -288,6 +288,7 @@ async function ensureSchema() {
   // Task #53：admin_users 增加 is_active + 覆寫旗標（停用 admin login）
   await pool.query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE`);
   await pool.query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS active_overridden_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS credentials_changed_at TIMESTAMPTZ`);
   // Task #81：admin_users 加 staff_id 連回 admin_staff（單一事實來源）
   // 之前舊資料以 name 對應，這裡 backfill；新建員工會直接帶 staff_id。
   await pool.query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS staff_id TEXT`);

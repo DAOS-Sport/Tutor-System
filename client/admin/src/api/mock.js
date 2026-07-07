@@ -10,6 +10,7 @@ const USERS = [
   { id: 'U001', username: 'admin',   password: 'admin',   name: '系統管理員',  role: 'admin',   venue_id: null },
   { id: 'U002', username: 'manager', password: 'manager', name: '王主管',      role: 'manager', venue_id: 'B' },
   { id: 'U003', username: 'staff',   password: 'staff',   name: '小林櫃檯',    role: 'staff',   venue_id: 'B' },
+  { id: 'U_S001', username: 'S001',  password: '0933000001', name: '小林櫃檯', role: 'staff',   venue_id: 'B', staff_id: 'S001', must_change_credentials: true },
 ];
 
 const VENUES = [
@@ -564,7 +565,16 @@ export const mockDb = {
 
   login(username, password) {
     const u = USERS.find((x) => x.username === username && x.password === password);
-    return u ? { id: u.id, username: u.username, name: u.name, role: u.role, venue_id: u.venue_id, token: `mock-${u.id}-${Date.now()}` } : null;
+    return u ? {
+      id: u.id,
+      username: u.username,
+      name: u.name,
+      role: u.role,
+      venue_id: u.venue_id,
+      staff_id: u.staff_id || null,
+      must_change_credentials: !!u.must_change_credentials,
+      token: `mock-${u.id}-${Date.now()}`,
+    } : null;
   },
 
   // GET /ragic-status 的 demo 版（見上方 RAGIC_MOCK_* 說明）

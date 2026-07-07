@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
@@ -9,10 +9,19 @@ import ChangePasswordModal from './ChangePasswordModal';
 const ROLE_TONE = { admin: 'primary', manager: 'teal', staff: 'gold' };
 
 export default function Header() {
-  const { user, logout } = useAuth();
+  const { user, logout, setUser } = useAuth();
   const toast = useToast();
   const nav = useNavigate();
   const [openPwd, setOpenPwd] = useState(false);
+  const promptedDefaultCredentials = useRef(false);
+
+  useEffect(() => {
+    if (user?.must_change_credentials && !promptedDefaultCredentials.current) {
+      promptedDefaultCredentials.current = true;
+      setOpenPwd(true);
+      toast.warning('目前仍使用預設帳密，請改成自己的帳號與密碼', 5000);
+    }
+  }, [toast, user?.must_change_credentials]);
 
   const onLogout = () => {
     logout();
@@ -50,7 +59,20 @@ export default function Header() {
           登出
         </button>
       </div>
-      <ChangePasswordModal open={openPwd} onClose={() => setOpenPwd(false)} />
+      <ChangePasswordModal
+        open={openPwd}
+        onClose={() => setOpenPwd(false)}
+        initialUsername={user?.username || ''}
+        requireCredentialChange={!!user?.must_change_credentials}
+        onSaved={(result) => {
+          if (!user) return;
+          setUser({
+            ...user,
+            username: result.username || user.username,
+            must_change_credentials: false,
+          });
+        }}
+      />
     </header>
   );
 }

@@ -32,7 +32,11 @@ export const staffApi = {
       }));
     }),
   create: (body) =>
-    callApi(`/staff`, { method: 'post', data: body }, () => mockDb.createStaff?.(body) || { ...body, default_password_hint: body.phone }),
+    callApi(`/staff`, { method: 'post', data: body }, () => mockDb.createStaff?.(body) || {
+      ...body,
+      login_username: body.id,
+      default_password_hint: body.phone,
+    }),
   update: (id, patch) =>
     callApi(`/staff/${id}`, { method: 'patch', data: patch }, () => mockDb.updateStaff(id, patch)),
   hardDelete: (staffIds) =>
@@ -54,7 +58,15 @@ export const staffApi = {
     callApi(`/staff/${id}/reset-password`, { method: 'post', data: {} },
       () => {
         const row = mockDb.staff().find((x) => x.id === id);
-        return { ok: true, staff_id: id, staff_name: row?.name || id, notified: false, notify_error: 'mock', default_password_hint: row?.phone || '' };
+        return {
+          ok: true,
+          staff_id: id,
+          staff_name: row?.name || id,
+          login_username: row?.id || id,
+          notified: false,
+          notify_error: 'mock',
+          default_password_hint: row?.phone || '',
+        };
       }),
   // 檢視密碼：後端確認目前密碼是否仍為預設（手機號碼）→ 是則回傳明碼，否則回 is_default=false
   passwordHint: (id) =>

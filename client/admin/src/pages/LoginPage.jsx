@@ -79,7 +79,7 @@ export default function LoginPage() {
               className="w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:border-brand-teal"
               value={form.username}
               onChange={(e) => setForm({ ...form, username: e.target.value.trim() })}
-              placeholder={USE_MOCK ? 'admin / manager / staff' : '請輸入帳號'}
+              placeholder={USE_MOCK ? 'admin / manager / staff' : '櫃台請輸入員工編號'}
             />
           </div>
           <div>
@@ -90,7 +90,7 @@ export default function LoginPage() {
               className="w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:border-brand-teal"
               value={form.password}
               onChange={(e) => setForm({ ...form, password: e.target.value })}
-              placeholder={USE_MOCK ? '與帳號相同' : '請輸入密碼'}
+              placeholder={USE_MOCK ? '與帳號相同' : '櫃台請輸入電話號碼'}
             />
           </div>
           <button
@@ -113,7 +113,7 @@ export default function LoginPage() {
           </div>
         ) : (
           <div className="mt-6 rounded-lg bg-gray-50 p-3 text-xs text-gray-500">
-            <div>如忘記密碼，請聯絡系統管理員重設。</div>
+            <div>櫃台首次登入請使用員工編號與電話號碼；如忘記密碼，請聯絡系統管理員重設。</div>
             <div className="mt-1 text-[11px] text-gray-400">
               首次部署的初始密碼由 <code>ADMIN_BOOTSTRAP_PASSWORD</code> 決定（非 <code>admin</code>）。
             </div>

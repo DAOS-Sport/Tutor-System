@@ -783,7 +783,7 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
       return res.status(400).json({ error: '員工編號格式：英文字母開頭，共 2–10 碼' });
     }
     if (!name) return res.status(400).json({ error: '姓名必填' });
-    if (!phone) return res.status(400).json({ error: '手機必填，登入帳號與預設密碼會使用手機號碼' });
+    if (!phone) return res.status(400).json({ error: '手機必填，預設密碼會使用手機號碼' });
     if (!VALID_ROLES.includes(role)) return res.status(400).json({ error: '角色不合法' });
     if (role === 'coach') {
       if (Number.isNaN(multiplier) || multiplier < MULTIPLIER_MIN || multiplier > MULTIPLIER_MAX) {
@@ -794,11 +794,11 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
     const dup = await client.query(`SELECT id FROM admin_staff WHERE id = $1`, [id]);
     if (dup.rowCount) return res.status(409).json({ error: `員工編號 ${id} 已存在` });
 
-    const usernameExists = await client.query(`SELECT 1 FROM admin_users WHERE username = $1`, [phone]);
+    const username = id;
+    const usernameExists = await client.query(`SELECT 1 FROM admin_users WHERE username = $1`, [username]);
     if (usernameExists.rowCount) {
-      return res.status(409).json({ error: `手機 ${phone} 已被其他登入帳號使用` });
+      return res.status(409).json({ error: `員工編號 ${username} 已被其他登入帳號使用` });
     }
-    const username = phone;
 
     const pwdHash = await bcrypt.hash(phone, 10);
     const userId = `U_${id}`;
@@ -912,23 +912,10 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
     };
     if (!merged.name) return res.status(400).json({ error: '姓名必填' });
     if (!ragicLocked && patch.phone !== undefined && !merged.phone) {
-      return res.status(400).json({ error: '手機必填，登入帳號與預設密碼會使用手機號碼' });
+      return res.status(400).json({ error: '手機必填，預設密碼會使用手機號碼' });
     }
     if (merged.role === 'coach' && !merged.phone) {
       return res.status(400).json({ error: '教練角色必須有手機（用於建立教練 LIFF 紀錄）' });
-    }
-
-    const phoneChanged = !ragicLocked
-      && patch.phone !== undefined
-      && String(merged.phone || '') !== String(cur.rows[0].phone || '');
-    if (phoneChanged) {
-      const usernameDup = await client.query(
-        `SELECT 1 FROM admin_users WHERE username = $1 AND staff_id IS DISTINCT FROM $2 LIMIT 1`,
-        [merged.phone, id]
-      );
-      if (usernameDup.rowCount) {
-        return res.status(409).json({ error: `手機 ${merged.phone} 已被其他登入帳號使用` });
-      }
     }
 
     const activeChanged = patch.active != null && (!!patch.active) !== !!cur.rows[0].active;
@@ -966,10 +953,9 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
               venue_id = $4,
               is_active = $5,
               active_overridden_at = CASE WHEN $6::boolean THEN NOW() ELSE active_overridden_at END,
-              username = CASE WHEN $7::boolean THEN $8 ELSE username END,
               updated_at = NOW()
         WHERE staff_id = $1`,
-      [id, merged.name, loginRole, merged.venue_id, merged.active, activeChanged, phoneChanged, merged.phone]
+      [id, merged.name, loginRole, merged.venue_id, merged.active, activeChanged]
     );
 
     if (venueIdsTouched) {
@@ -1105,18 +1091,24 @@ router.post('/:id/reset-password', requireAdminAuth, requireAdminRole('admin'), 
     if (!defaultPassword) {
       return res.status(400).json({ error: '該員工尚未設定手機，無法重設為預設手機密碼' });
     }
+    const loginUsername = String(staff.id || '').trim();
     const usernameDup = await pool.query(
       `SELECT 1 FROM admin_users WHERE username = $1 AND id <> $2 LIMIT 1`,
-      [defaultPassword, adminUser.id]
+      [loginUsername, adminUser.id]
     );
     if (usernameDup.rowCount) {
-      return res.status(409).json({ error: `手機 ${defaultPassword} 已被其他登入帳號使用` });
+      return res.status(409).json({ error: `員工編號 ${loginUsername} 已被其他登入帳號使用` });
     }
 
     const newHash = await bcrypt.hash(defaultPassword, 10);
     await pool.query(
-      `UPDATE admin_users SET username = $2, password_hash = $3, updated_at = NOW() WHERE id = $1`,
-      [adminUser.id, defaultPassword, newHash]
+      `UPDATE admin_users
+          SET username = $2,
+              password_hash = $3,
+              credentials_changed_at = NULL,
+              updated_at = NOW()
+        WHERE id = $1`,
+      [adminUser.id, loginUsername, newHash]
     );
 
     let notified = false;
@@ -1129,7 +1121,7 @@ router.post('/:id/reset-password', requireAdminAuth, requireAdminRole('admin'), 
         const messages = lineService.templates.adminPasswordReset({
           employeeName: staff.name,
           employeeId: staff.id,
-          loginUsername: defaultPassword,
+          loginUsername,
           defaultPassword,
           loginUrl,
         });
@@ -1147,7 +1139,7 @@ router.post('/:id/reset-password', requireAdminAuth, requireAdminRole('admin'), 
       ok: true,
       staff_id: staff.id,
       staff_name: staff.name,
-      login_username: defaultPassword,
+      login_username: loginUsername,
       default_password_hint: defaultPassword,
       notified,
       notify_error: notifyError,

@@ -611,7 +611,16 @@ function _h23StaffName(row) {
 }
 
 function _h23CourseCoefficient(row) {
-  return parseFloat(_h23Value(row, H23.COURSE_COEFFICIENT, '家教班倍率', '家家班倍率', '修課係數')) || 1.00;
+  return parseFloat(_h23Value(
+    row,
+    H23.COURSE_COEFFICIENT,
+    '家教班倍率(目前)',
+    '家教班倍率',
+    '家家班倍率(目前)',
+    '家家班倍率',
+    '修課係數(目前)',
+    '修課係數',
+  )) || 1.00;
 }
 
 async function _shadowPullH23Impl() {
@@ -3943,6 +3952,7 @@ module.exports = {
   __test__: {
     extractLineUid,
     normalizeLineUserId,
+    h23CourseCoefficient: _h23CourseCoefficient,
     staffPayloadFromRagicRow: _staffPayloadFromRagicRow,
     publicStagingRow: _publicStagingRow,
     sanitizeH01RawRow: _sanitizeH01RawRow,
