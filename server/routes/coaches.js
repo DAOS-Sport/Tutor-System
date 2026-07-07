@@ -35,7 +35,8 @@ const mediaUpload = multer({
 function withMultiplierAlias(row) {
   if (!row) return row;
   const pm = row.pricing_multiplier;
-  return { ...row, multiplier: pm == null ? 1 : Number(pm) };
+  const { ragic_data_no, ...safe } = row;
+  return { ...safe, multiplier: pm == null ? 1 : Number(pm) };
 }
 
 async function loadCoach(id) {

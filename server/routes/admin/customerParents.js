@@ -87,6 +87,8 @@ router.get('/', requireAdminAuth, async (req, res) => {
     const { status = 'all', venueId = '', name = '', phone = '', identity = '' } = req.query;
     const where = [];
     const args = [];
+    where.push(`COALESCE(p.name, '') <> 'ZZ-CANARY'`);
+    where.push(`COALESCE(p.phone, '') <> 'ZZ-CANARY'`);
     const scope = getScopedVenueIds(req);
     if (scope) { args.push(scope); where.push(`p.primary_venue_id = ANY($${args.length}::text[])`); }
     if (status === 'active')   where.push('p.is_active = TRUE');

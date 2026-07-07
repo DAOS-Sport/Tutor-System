@@ -4,7 +4,7 @@
 - 在 LINE 內點教練專屬選單／連結 → 開啟 LIFF。
 - LINE 內連結：`https://liff.line.me/<LIFF_ID_COACH>/coach`（`<LIFF_ID_COACH>` 由系統管理員在 LINE Console 建好教練端 LIFF App 後告知）。
 - 備用網頁版（測試用）：`https://daos-tutoring-courses.replit.app/liff/coach`
-- **自動登入（Task #34）**：管理員若已在 Ragic H01「LINE userid」欄位幫你貼好 LINE userId → 在 LINE 內點教練端連結會直接登入，不用打手機。
+- **自動登入**：管理員若已在 Ragic H01「個人LINE ID」（Field ID `1003633`）幫你貼好 LINE userId → 在 LINE 內點教練端連結會直接登入，不用打手機。這裡填的是 LINE Login userId（`U` + 32 hex），不是 LINE 訊息 id。
 - 若管理員還沒幫你綁定（或你換了 LINE 帳號）→ fallback 手機輸入：第一次會要你輸入手機號碼 + 自動帶 LINE id_token，系統會把你的 LINE UID 綁到教練檔案（之後在 LINE 內開都會自動登入）。
 - 登入有效期 12 小時，超過要重新打開 LIFF 自動續期。
 

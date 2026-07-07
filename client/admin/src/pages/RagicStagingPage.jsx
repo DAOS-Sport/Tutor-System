@@ -33,8 +33,17 @@ function fmtDate(ts) {
 }
 
 function DiffTable({ diff, payload, changeType }) {
+  const hiddenFields = new Set([
+    'ragic_data_no',
+    'ragic_data_no_duplicate',
+    'ragic_data_no_changed',
+    'ragic_data_no_missing',
+    '資料編號',
+    '3000934',
+  ]);
   if (changeType === 'new') {
-    const entries = Object.entries(payload || {}).filter(([k]) => !['id', 'code', 'ragic_employee_id'].includes(k));
+    const entries = Object.entries(payload || {})
+      .filter(([k]) => !['id', 'code', 'ragic_employee_id'].includes(k) && !hiddenFields.has(k));
     return (
       <div className="rounded bg-gray-50 p-2 text-xs">
         <div className="mb-1 font-bold text-gray-700">新增資料</div>
@@ -51,7 +60,7 @@ function DiffTable({ diff, payload, changeType }) {
     <table className="w-full text-xs">
       <thead><tr className="text-left text-gray-500"><th className="py-0.5">欄位</th><th>原值</th><th>新值</th></tr></thead>
       <tbody>
-        {Object.entries(diff).map(([f, v]) => (
+        {Object.entries(diff).filter(([f]) => !hiddenFields.has(f)).map(([f, v]) => (
           <tr key={f}>
             <td className="py-0.5 pr-2 font-mono text-gray-600">{f}</td>
             <td className="pr-2 text-gray-500 line-through">{String(v.from ?? '')}</td>

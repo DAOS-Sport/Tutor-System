@@ -127,6 +127,11 @@ router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, re
 router.post('/purge-ghosts', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
   const { pool } = require('../../models/db');
   const parentSync = require('../../services/parentSync');
+  if (!(await ragicAdmin.hasRecentFreshPull?.().catch(() => false))) {
+    return res.status(409).json({
+      error: '缺少最近一次 freshness_verified=true 的 Z01 pull，已拒絕清除 ghost，避免依過期 shadow/狀態刪資料。',
+    });
+  }
   const client = await pool.connect();
   try {
     // 1. 找出所有無 LINE UID 的 parents

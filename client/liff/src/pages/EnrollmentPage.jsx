@@ -5,6 +5,7 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import StudentMultiSelect from '../components/enroll/StudentMultiSelect';
 import PriceBreakdown from '../components/enroll/PriceBreakdown';
 import ErrorBlock from '../components/enroll/ErrorBlock';
+import PaymentDisclaimerModal from '../components/PaymentDisclaimerModal';
 import useEnrollmentBoot from '../hooks/useEnrollmentBoot';
 import useEnrollmentPricing from '../hooks/useEnrollmentPricing';
 import { useAuth } from '../context/AuthContext';
@@ -25,6 +26,7 @@ export default function EnrollmentPage() {
   const [periodCount, setPeriodCount] = useState(1);
   const [selectedSelfStudents, setSelectedSelfStudents] = useState([]);
   const [submitting, setSubmitting] = useState(false);
+  const [showPaymentDisclaimer, setShowPaymentDisclaimer] = useState(false);
   const [couponInput, setCouponInput] = useState('');
   const [activeCoupon, setActiveCoupon] = useState('');
 
@@ -129,6 +131,16 @@ export default function EnrollmentPage() {
     }
   }
 
+  function handlePaymentClick() {
+    if (!canSubmit) return;
+    setShowPaymentDisclaimer(true);
+  }
+
+  function handleDisclaimerAgree() {
+    setShowPaymentDisclaimer(false);
+    handleConfirmSubmit();
+  }
+
   return (
     <div className="px-4 py-4 pb-10">
       <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3">
@@ -202,7 +214,7 @@ export default function EnrollmentPage() {
       <button
         type="button"
         disabled={!canSubmit || submitting}
-        onClick={handleConfirmSubmit}
+        onClick={handlePaymentClick}
         className="mt-4 w-full rounded-lg bg-brand-primary py-3.5 text-base font-bold text-white active:bg-brand-teal disabled:bg-gray-300"
       >
         {submitting ? '送出中…' : '下一步：填寫轉帳資料'}
@@ -228,6 +240,12 @@ export default function EnrollmentPage() {
         </button>
       )}
 
+      <PaymentDisclaimerModal
+        open={showPaymentDisclaimer}
+        onAgree={handleDisclaimerAgree}
+        onCancel={() => setShowPaymentDisclaimer(false)}
+        busy={submitting}
+      />
     </div>
   );
 }

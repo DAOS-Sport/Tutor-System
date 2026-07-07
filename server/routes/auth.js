@@ -83,7 +83,7 @@ router.post('/demo-login', async (req, res) => {
       const coach = r.rows[0];
       coach.multiplier = Number(coach.pricing_multiplier);
       const token = signCoachToken({ coachId: coach.id, phone: coach.phone, lineUid: coach.line_uid || null });
-      const { line_uid, ...safe } = coach;
+      const { line_uid, ragic_data_no, ...safe } = coach;
       return res.json({ role: 'coach', ...safe, token });
     }
 

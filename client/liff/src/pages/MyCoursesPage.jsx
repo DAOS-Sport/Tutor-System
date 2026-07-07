@@ -4,6 +4,7 @@ import { coursesApi } from '../api/courses';
 import { groupOrdersApi } from '../api/groupOrders';
 import CourseCard from '../components/CourseCard';
 import LoadingSpinner from '../components/LoadingSpinner';
+import PaymentDisclaimerModal from '../components/PaymentDisclaimerModal';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { courseTypeLabel } from '../utils/format';
@@ -35,6 +36,7 @@ export default function MyCoursesPage() {
   const [tab, setTab] = useState('all');
   const [loadError, setLoadError] = useState(null);
   const [cancellingId, setCancellingId] = useState(null);
+  const [paymentTarget, setPaymentTarget] = useState('');
 
   function load() {
     setLoadError(null);
@@ -100,6 +102,10 @@ export default function MyCoursesPage() {
   function navigateForCard(cp) {
     if (cp.lifecycle === 'active' || cp.lifecycle === 'completed') {
       navigate(`/course/${cp.id}`);
+      return;
+    }
+    if (cp.lifecycle === 'pending_payment') {
+      setPaymentTarget(cp.group_order_id ? `/group/${cp.group_order_id}` : `/enroll-status/${cp.id}`);
       return;
     }
     if (cp.group_order_id) {
@@ -238,6 +244,15 @@ export default function MyCoursesPage() {
           </div>
         )
       )}
+      <PaymentDisclaimerModal
+        open={!!paymentTarget}
+        onAgree={() => {
+          const target = paymentTarget;
+          setPaymentTarget('');
+          if (target) navigate(target);
+        }}
+        onCancel={() => setPaymentTarget('')}
+      />
     </div>
   );
 }

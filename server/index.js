@@ -69,6 +69,7 @@ app.use('/api/transfers',     require('./routes/transfers'));
 app.use('/api/chat',          require('./routes/chat'));
 app.use('/api/learn',         require('./routes/learn'));        // 學習歷程
 app.use('/api/evaluations',   require('./routes/evaluations'));  // 期末評鑑
+app.use('/api/ragic-webhook', require('./routes/ragicWebhook'));  // Ragic webhook：只信 record id，必 re-fetch
 app.use('/api/admin',         require('./routes/admin'));
 
 // Health check

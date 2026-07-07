@@ -22,9 +22,28 @@ function statusBadge(s, inProgress) {
   const base = 'inline-block rounded px-2 py-0.5 text-xs font-bold';
   if (inProgress)      return <span className={`${base} bg-brand-teal/15 text-brand-teal`}>同步中…</span>;
   if (s === 'ok')      return <span className={`${base} bg-brand-green/15 text-brand-green`}>成功</span>;
+  if (s === 'stale_read') return <span className={`${base} bg-red-100 text-red-700`}>舊快照</span>;
   if (s === 'error')   return <span className={`${base} bg-red-100 text-red-700`}>失敗</span>;
   if (s === 'skipped') return <span className={`${base} bg-gray-200 text-gray-600`}>未執行</span>;
   return <span className={`${base} bg-gray-100 text-gray-500`}>—</span>;
+}
+
+function freshnessText(info) {
+  if (info.freshness_verified === true) {
+    const retry = info.stale_retries ? `，重試 ${info.stale_retries}` : '';
+    return `已驗證 ${info.freshness_latency_ms ?? '—'} ms${retry}`;
+  }
+  if (info.freshness_verified === false || info.last_status === 'stale_read') {
+    const retry = info.stale_retries ? `，重試 ${info.stale_retries}` : '';
+    return `未通過${retry}`;
+  }
+  return '—';
+}
+
+function freshnessTone(info) {
+  if (info.freshness_verified === true) return 'text-brand-green';
+  if (info.freshness_verified === false || info.last_status === 'stale_read') return 'text-red-700';
+  return 'text-gray-800';
 }
 
 function ToggleSwitch({ checked, disabled, onChange, title }) {
@@ -111,6 +130,26 @@ function FormCard({ job, info, onSync, syncing, isAdmin, envEnabled, onToggle, t
           <dt className="text-gray-500">耗時</dt>
           <dd className="text-gray-800">{info.last_duration_ms != null ? `${info.last_duration_ms} ms` : '—'}</dd>
         </div>
+        {!isPing ? (
+          <>
+            <div className="flex justify-between">
+              <dt className="text-gray-500">讀取新鮮度</dt>
+              <dd className={`text-right font-mono ${freshnessTone(info)}`}>{freshnessText(info)}</dd>
+            </div>
+            <div className="flex justify-between">
+              <dt className="text-gray-500">7 日 stale_read</dt>
+              <dd className={info.stale_read_7d_count ? 'font-mono text-red-700' : 'font-mono text-gray-800'}>
+                {info.stale_read_7d_count ?? 0}
+              </dd>
+            </div>
+            <div className="flex justify-between gap-3">
+              <dt className="text-gray-500">7 日延遲趨勢</dt>
+              <dd className="min-w-0 truncate text-right font-mono text-gray-800">
+                {(info.freshness_7d || []).filter((x) => x.latency_ms != null).slice(-6).map((x) => `${x.latency_ms}ms`).join(' / ') || '—'}
+              </dd>
+            </div>
+          </>
+        ) : null}
       </dl>
       {info.last_error ? (
         <div className="mt-2 rounded bg-red-50 px-2 py-1.5 text-xs text-red-700">

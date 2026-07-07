@@ -58,6 +58,8 @@ router.get('/', requireAdminAuth, async (req, res) => {
     const { name = '', gender = '', code = '', parentId = '' } = req.query;
     const where = [];
     const args = [];
+    where.push(`COALESCE(s.name, '') <> 'ZZ-CANARY'`);
+    where.push(`COALESCE(s.student_code, '') <> 'ZZ-CANARY'`);
     const scope = getScopedVenueIds(req); // 學員無場館鏡像 → 以家長 primary_venue_id 收斂
     if (scope) { args.push(scope); where.push(`p.primary_venue_id = ANY($${args.length}::text[])`); }
     if (parentId) { args.push(parentId);   where.push(`s.parent_id = $${args.length}`); }

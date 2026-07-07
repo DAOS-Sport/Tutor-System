@@ -142,6 +142,8 @@ https://developers.line.biz/flex-simulator/
 ### 綁定來源（二擇一，由管理員操作）
 1. **Ragic H01「個人LINE ID」欄位**（Field ID `1003633`）
    - 由 HR / 員工自助填寫 LINE userId
+   - 系統只讀 Field ID `1003633`，不讀「400Line訊息」或任何 LINE 訊息 / 狀態欄位
+   - uid 必須是 LINE Login userId（格式 `U` + 32 hex），不是 message id 或對話 id
    - 每輪同步會把該值帶入 `coaches.line_uid`（透過 ragic_staging_changes 經管理員核准後 apply）
    - 寫入規則：本地空 → 補；本地已有 → 不被空值覆蓋；本地與 Ragic 不同 → 保留本地 + console.warn
 2. **後台員工管理頁手動編輯**

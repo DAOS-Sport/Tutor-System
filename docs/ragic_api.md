@@ -22,6 +22,10 @@ API Key、帳號、表單路徑都透過環境變數注入，**請勿** 將明�
 | `RAGIC_FORM_H05` | `/xinsheng/ragicforms4/7` | H05 場館清單與銀行（AP_Name `xinsheng`）|
 | `RAGIC_FORM_Z01` | `/xinsheng/general-information/6` | Z01 家長帳號（AP_Name `xinsheng`）|
 | `RAGIC_FORM_Z02` | `/xinsheng/general-information/11` | Z02 學員資料（AP_Name `xinsheng`）|
+| `RAGIC_CANARY_H01_RECORD_ID` / `RAGIC_CANARY_H01_NONCE_FIELD_ID` | `1036` / `300xxxx` | H01 freshness canary 專用 record id 與 nonce 欄位 Field ID |
+| `RAGIC_CANARY_H05_RECORD_ID` / `RAGIC_CANARY_H05_NONCE_FIELD_ID` | `25` / `100xxxx` | H05 freshness canary |
+| `RAGIC_CANARY_Z01_RECORD_ID` / `RAGIC_CANARY_Z01_NONCE_FIELD_ID` | `1500` / `100xxxx` | Z01 freshness canary |
+| `RAGIC_WEBHOOK_SECRET` | `（敏感資料，存 Replit Secrets）` | Ragic webhook 入口 `/api/ragic-webhook/:sheetCode` 驗證用 |
 
 > **`RAGIC_ACCOUNT` 與 `AP_Name` 的差別**：
 > - URL 第一段（如 `/xinsheng/...`）是 Ragic **帳號名稱**，所有表單都一樣（本系統一律是 `xinsheng`）。
@@ -33,6 +37,7 @@ API Key、帳號、表單路徑都透過環境變數注入，**請勿** 將明�
 3. **不要把實際 Key 提交到 git**。
 4. ⚠️ `RAGIC_BASE_URL` 與 `RAGIC_API_KEY` **必須同時存在**，否則 `ragicEnabled()` 回 false → `syncCoachesFromRagic` / `syncVenuesFromRagic` 整段被 noop（dev 環境用，但 prod 缺一個就靜默不同步）。Server 啟動時會印 `[Ragic] sync enabled=true (base=...)` 或 `[Ragic] sync DISABLED — missing <var>`，缺哪個一秒看出。
 5. ⚠️ `RAGIC_FORM_*` 路徑若已含 `?PAGEID=ruv` 等 query string，程式會自動用 `&api` append（不是第二個 `?`），且 `APIKey` 會以 axios `params` 傳入，無需手動拼接。
+6. ⚠️ 所有 Ragic API 呼叫預設帶 `version=2025-01-01`（官方 date-based current version，等價 v=3）。同步用全量讀取另帶 freshness canary gate；缺 canary env 時會 fail closed，不會寫入 shadow。
 
 ### H01 / H05 實際欄位對映（Task #37）
 
@@ -62,13 +67,13 @@ API Key、帳號、表單路徑都透過環境變數注入，**請勿** 將明�
 
 | 資料 | 方向 | 說明 |
 |---|---|---|
-| H01 員工 / 教練 | Ragic → 系統（唯讀，**Ragic 為人事權威**）| 姓名/手機/Email/在職 經 staging 待審核；**場館（部門）自動套用不經待審核**（Task #95，見下）。任何端（admin / 教練 LIFF）都不寫 H01，異動一律請 HR 在 Ragic 操作 |
+| H01 員工 / 教練 | Ragic → 系統（唯讀，**Ragic 為人事權威**）| 姓名/手機/Email/在職/場館 經 staging 待審核。任何端（admin / 教練 LIFF）都不寫 H01 業務資料，異動一律請 HR 在 Ragic 操作；系統只寫 canary nonce 到專用 canary record |
 | H05 場館清單 | Ragic → 系統（唯讀）| 每次進入系統即時 API 查詢 |
 | Z01 家長資料 | Ragic ↔ 系統（雙向）| 登入/註冊/`/me/sync` 即時單筆查詢與回寫；另有排程補面（見下）|
 | Z02 學員資料 | Ragic ↔ 系統（雙向）| 同上，Z02 隨 Z01 子表格一併帶出/寫入 |
 
 > **排程補面**（避免只看上表誤以為「即時」= 沒有排程）：
-> - **每日 01:00（台北）Ragic → 本地全量拉取**：`cron/index.js` 呼叫 `ragicAdmin.pullParentsStudentsFromRagic()`（`ragic.getAllParents()` 全量分頁拉 Z01，逐筆走既有 `parentSync.syncFromRagicRecord` upsert）。補「客戶從未重新登入、但 Ragic/HR 端已異動」永遠不會回流本地的缺口。`reactivate:false`，不會復活本地已軟刪的家長。
+> - **每日 01:00（台北）Ragic → 本地全量拉取**：`cron/index.js` 呼叫 `ragicAdmin.pullParentsStudentsFromRagic()`（`ragic.getAllParentsWithIntegrityAndFreshness()` 全量分頁拉 Z01，先通過 canary freshness + integrity/schema gate，才寫入 shadow 並 reconcile）。補「客戶從未重新登入、但 Ragic/HR 端已異動」永遠不會回流本地的缺口。`reactivate:false`，不會復活本地已軟刪的家長。
 > - **每日 02:00（台北）本地 → Ragic 備份回寫**：`ragicAdmin.backupParentsStudentsToRagic()`，只處理本地 `last_synced_at IS NULL`（從未同步成功）的待補列，跟上面 01:00 方向相反，互不重疊。
 > - 兩者皆可在後台「Ragic 連線狀態」頁個別手動開關（`POST /api/admin/ragic-status/toggle`），關閉後 cron 與手動「立即同步」都會被擋下。
 
@@ -79,12 +84,11 @@ API Key、帳號、表單路徑都透過環境變數注入，**請勿** 將明�
 - **後台 admin**：來自 Ragic 的員工（`admin_staff.ragic_record_id` 非空）其 姓名/手機/所屬場館 在員工編輯彈窗**鎖定唯讀**（後端 PATCH 同樣忽略，雙重防護），提示「請洽 HR 至 Ragic 修改」。內部欄位（角色/係數/資深/簡介/Email/啟用）照常可編。手建員工（無 H01 對應，如 demo 帳號）不受鎖定。
 - **修改 H01 資料的唯一路徑**：HR 在 Ragic 改 → 系統同步帶回。
 
-**場館自動套用（不經待審核）**：`_syncStaffImpl` 把 H01「部門」（多選欄位，值為場館名稱陣列，
+**場館待審核套用**：`_syncStaffImpl` 把 H01「部門」（多選欄位，值為場館名稱陣列，
 可能含逗號/頓號複合值與「三重商工 (test)」式後綴）經 `_extractStaffVenueIds`（拆分）+
-`_buildVenueResolver`（去後綴、名稱→代碼）清洗後，與 DB 不同即直接寫入
-`admin_staff_venues` + `coach_venues` + `admin_staff.venue_id`（教練端授權館別即時生效）。
-解析為空（部門是公司名/內勤處室）→ 不動 DB。先前版本拿「名稱」直接比「代碼」→ 全員每輪
-產生 venue_ids 假差異、核准後又重生（實測 373 筆 pending 中 357 筆為此類）— 已一併修除。
+`_buildVenueResolver`（去後綴、名稱→代碼）清洗後，與 DB 不同即併入 staging diff。
+approve 前會對 Ragic 目標 record 做 no-cache 單筆二次讀，確認 staging snapshot 未過期才套用
+`admin_staff_venues` + `coach_venues` + `admin_staff.venue_id`。
 
 **email**：維持「Ragic 只補空值」(Task #91)；diff 也只在「DB 空 + Ragic 有值」才 stage，
 admin 自填的信箱不會被 nag。
@@ -186,7 +190,7 @@ GET https://ap7.ragic.com/xinsheng/general-information/11?api&def=1
 | 分機 | `3000938` |  |  |
 | 手機（公司）| `3001424` | `coaches.phone` |  |
 | E-mail（公司）| `3000940` | `coaches.email` |  |
-| LINE userid | （由 user 維護，欄位 ID 自定）| `coaches.line_uid` | Task #34 — 教練端 LIFF 自動登入用；`server/services/ragicAdmin.js` 用多重鍵名 fallback + `RAGIC_FIELD_H01_LINE_UID` env 覆寫；空白值不會洗掉系統內已綁定值 |
+| 個人LINE ID | `1003633` | `coaches.line_uid` | 教練端 LIFF 自動登入用；`server/services/ragicAdmin.js` 只讀此 Field ID，禁止欄名 fallback / 模糊搜尋，避免誤抓「400Line訊息」等訊息欄位；值須為 `U` + 32 hex 的 LINE userId，空白或格式不符不會寫入 |
 
 **到離職與年資**
 
@@ -469,8 +473,13 @@ GET https://ap7.ragic.com/xinsheng/general-information/11?api&def=1
 |---|---|---|---|---|
 | 家教系統 LINE UID（家長登入綁定） | Z01.家教系統uid | `1006846` | `parents.line_uid` | parent-bind-phone（命中時 PATCH）/ parent-register-line（POST） |
 | 教練 LINE UID（教練 LINE-only 登入） | H01.個人LINE ID | `1003633` | `coaches.line_uid` | 由管理員預先在 Ragic 填入（**本系統不寫**） |
+| H01 staff 對齊鍵（背景使用，不顯示於 UI/DTO） | H01.資料編號 | `3000934` | `admin_staff.ragic_data_no` / `coaches.ragic_data_no` / `ragic_h01_shadow.ragic_data_no` | H01 pull/webhook re-fetch 時寫入本地 mirror；業務 upsert 以此鍵對齊 |
 
-兩個 Field ID 都可由 env `RAGIC_FIELD_Z01_LINE_UID` / `RAGIC_FIELD_H01_LINE_UID` 覆寫。
+Z01 Field ID 可由 env `RAGIC_FIELD_Z01_LINE_UID` 覆寫；H01 教練 LINE UID 固定只讀 `1003633`，不可由 env 覆寫。H01 的 `400Line訊息` / `chat.line.biz` 連結不是 LINE Messaging API userId 來源，本系統不拉取、不解析、不寫入；登入驗證 UID 只接受 LIFF id_token 驗證結果或 webhook `source.userId` 這類 LINE 官方來源。
+
+Ragic 欄位定義文件歸檔位置：`docs/ragic-field-ids/`。目前已在程式凍結 `3000934` / `1003633`；完整匯出檔需由 Chumg/HR 從 Ragic「開始 → 帳號設定 → 資料庫維護」下載後入庫。
+
+若日後查得 H01 `400Line訊息` 的 field id，請填入 `RAGIC_FIELD_H01_400LINE_MESSAGE` 或 `RAGIC_H01_BLOCKED_FIELD_IDS`；`ragicWriter` 會在 whitelist 前先套用 blocklist，確保此欄不被寫入。
 
 ### Ragic 子表格 dotted-key payload 寫法
 Ragic 主表 + 子表格在一次 POST 內建立時，子表格欄位 key 使用 `{subtableStid}_{rowIndex}_{fieldId}` dotted 寫法。

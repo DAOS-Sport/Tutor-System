@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { getRoomForPeriod } from '../api/chat';
 import { coursesApi } from '../api/courses';
 import LoadingSpinner from '../components/LoadingSpinner';
+import PaymentDisclaimerModal from '../components/PaymentDisclaimerModal';
 import { useToast } from '../context/ToastContext';
 import { courseTypeLabel, formatTWD, formatTWDate } from '../utils/format';
 
@@ -26,6 +27,7 @@ export default function CourseDetailPage() {
 
   const [course, setCourse] = useState(undefined); // undefined=loading, null=error
   const [openingRoom, setOpeningRoom] = useState(false);
+  const [paymentTarget, setPaymentTarget] = useState('');
 
   const load = useCallback(() => {
     let alive = true;
@@ -75,6 +77,7 @@ export default function CourseDetailPage() {
   const isActiveOrDone = lifecycle === 'active' || lifecycle === 'completed';
   const isPending = lifecycle === 'pending_payment';
   const hasInvoice = course.invoice_number || course.invoice_image_url;
+  const pendingPaymentTarget = course.group_order_id ? `/group/${course.group_order_id}` : `/enroll-status/${id}`;
 
   return (
     <div className="px-4 py-4 pb-10">
@@ -147,7 +150,7 @@ export default function CourseDetailPage() {
       {isPending && (
         <button
           type="button"
-          onClick={() => navigate(course.group_order_id ? `/group/${course.group_order_id}` : `/enroll-status/${id}`)}
+          onClick={() => setPaymentTarget(pendingPaymentTarget)}
           className="w-full rounded-lg bg-brand-primary py-2.5 text-sm font-bold text-white active:bg-brand-teal"
         >
           前往付款／上傳證明
@@ -211,6 +214,15 @@ export default function CourseDetailPage() {
       >
         前往我的課程
       </button>
+      <PaymentDisclaimerModal
+        open={!!paymentTarget}
+        onAgree={() => {
+          const target = paymentTarget;
+          setPaymentTarget('');
+          if (target) navigate(target);
+        }}
+        onCancel={() => setPaymentTarget('')}
+      />
     </div>
   );
 }
