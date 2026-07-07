@@ -1132,6 +1132,72 @@ async function rejectStagedChange(stagingId, byUserId, reason) {
   );
 }
 
+// P1.1「熊韋程 staff 事故」合併動作：admin 人工確認一筆 staff「新增」提案其實是
+// 既有 target_entity_id 這個人（員工編號變更被誤判成新人），把提案的身份/欄位
+// 寫到既有列上，而不是另建一筆第二筆同人記錄。跟熊韋程事發當下的手動修復是
+// 同一套邏輯，這裡把它一般化成可重複使用的動作。關聯資料（admin_staff_venues
+// 等）刻意不在這裡處理——合併後 ragic_record_id 對得上了，下一輪一般同步會
+// 把剩餘欄位差異（含場館）當成正常的 update 提案送審，不需要在合併當下全部
+// 處理完。
+async function mergeStagedStaffChange(stagingId, targetEntityId, byUserId) {
+  const client = await pool.connect();
+  let row = null;
+  try {
+    await client.query('BEGIN');
+    const r = await client.query(`SELECT * FROM ragic_staging_changes WHERE id = $1 FOR UPDATE`, [stagingId]);
+    if (!r.rowCount) throw new Error('staging row not found');
+    row = r.rows[0];
+    if (row.status !== 'pending') throw new Error(`status=${row.status}, only pending can be merged`);
+    if (row.entity_type !== 'staff' || row.change_type !== 'new') {
+      throw new Error('merge 僅支援 staff 的「新增」提案');
+    }
+    const p = row.payload_json || {};
+    const targetCheck = await client.query(`SELECT id FROM admin_staff WHERE id = $1`, [targetEntityId]);
+    if (!targetCheck.rowCount) throw new Error(`target_entity_id ${targetEntityId} 不存在`);
+
+    const newId = p.id || row.entity_id;
+    const ragicRecordId = p.ragic_record_id || null;
+    await client.query(
+      `UPDATE admin_staff SET
+         id = $1, name = $2, phone = $3,
+         active = CASE WHEN active_overridden_at IS NULL THEN $4 ELSE active END,
+         is_coach = $5, is_counter = $6, is_lifeguard = $7,
+         ragic_record_id = COALESCE($8, ragic_record_id),
+         last_synced_at = NOW()
+       WHERE id = $9`,
+      [newId, p.name || '', p.phone || '', !!p.is_active,
+       !!p.is_coach, !!p.is_counter, !!p.is_lifeguard, ragicRecordId, targetEntityId]
+    );
+    // admin_staff_venues.staff_id 已透過 ON UPDATE CASCADE 連動改成 newId，不需要另外處理。
+    const coach = await client.query(`SELECT id FROM coaches WHERE ragic_employee_id = $1`, [targetEntityId]);
+    if (coach.rowCount) {
+      const incomingLineUid = p.line_uid ? String(p.line_uid).trim() : '';
+      await client.query(
+        `UPDATE coaches SET ragic_employee_id = $1, ragic_record_id = COALESCE($2, ragic_record_id),
+           line_uid = COALESCE(line_uid, NULLIF($3, '')), updated_at = NOW()
+         WHERE id = $4`,
+        [newId, ragicRecordId, incomingLineUid, coach.rows[0].id]
+      );
+    }
+    await client.query(
+      `UPDATE ragic_staging_changes SET status = 'approved', reviewed_by = $2, reviewed_at = NOW() WHERE id = $1`,
+      [stagingId, byUserId]
+    );
+    await client.query('COMMIT');
+    return { merged_into: newId };
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    err.stagingId = stagingId;
+    if (row) {
+      err.stagingEntityType = row.entity_type;
+      err.stagingEntityId = row.entity_id;
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 async function listStagingChanges({ status = 'pending', form, search } = {}) {
   const where = [];
   const vals = [];
@@ -1154,6 +1220,14 @@ async function listStagingChanges({ status = 'pending', form, search } = {}) {
                  ORDER BY (status = 'pending') DESC, fetched_at DESC
                  LIMIT 500`;
   const r = await pool.query(sql, vals);
+  // P1.1「熊韋程 staff 事故」防線：pending 的 staff「新增」提案額外附上碰撞檢查結果，
+  // 供待審核頁呈現「疑似同一人，建議合併」——只在 change_type==='new' 才需要檢查
+  // （update/deactivate 一定是已知既有列，不會有「建出第二筆」的風險）。
+  await Promise.all(r.rows.map(async (row) => {
+    if (row.entity_type === 'staff' && row.change_type === 'new' && row.status === 'pending') {
+      row.collision = await _findStaffCollision(row.payload_json || {});
+    }
+  }));
   return r.rows;
 }
 
@@ -2937,6 +3011,7 @@ module.exports = {
   // Task #66 staging
   applyStagedChange,
   rejectStagedChange,
+  mergeStagedStaffChange,
   listStagingChanges,
   countStagingPending,
 };

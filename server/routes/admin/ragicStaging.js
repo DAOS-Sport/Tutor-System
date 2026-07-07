@@ -3,6 +3,10 @@
  * - GET    /api/admin/ragic-staging?status=pending&form=&search=
  * - GET    /api/admin/ragic-staging/count           （sidebar badge 用）
  * - POST   /api/admin/ragic-staging/:id/approve
+ * - POST   /api/admin/ragic-staging/:id/merge       ({ target_entity_id })
+ *     P1.1「熊韋程 staff 事故」防線：staff「新增」提案若跟既有列撞號（phone/
+ *     line_uid/姓名+場館），GET / 會在該筆附上 collision 欄位，approve 也會被
+ *     擋下（STAFF_COLLISION_SUSPECTED）；只能改用這支把提案套用到既有列上。
  * - POST   /api/admin/ragic-staging/:id/reject      ({ reason })
  * - POST   /api/admin/ragic-staging/bulk-approve    ({ ids: [...] })
  *
@@ -56,6 +60,33 @@ router.post('/:id/approve', async (req, res) => {
     });
     res.status(400).json({
       error: err.message || '核准失敗，原因不明',
+      entity_type: err.stagingEntityType,
+      entity_id: err.stagingEntityId,
+    });
+  }
+});
+
+// P1.1「熊韋程 staff 事故」合併動作：admin 人工確認一筆 staff「新增」提案其實是
+// 既有 target_entity_id 這個人（員工編號變更誤判成新人），把提案套用到既有列上，
+// 而不是走一般 approve 建出第二筆。前端待審核頁應在 GET / 回傳的 collision 欄位
+// 非空時，把「通過並套用」換成這個合併動作。
+router.post('/:id/merge', async (req, res) => {
+  const targetEntityId = String(req.body?.target_entity_id || '').trim();
+  if (!targetEntityId) return res.status(400).json({ error: 'target_entity_id 必填' });
+  try {
+    const result = await ragicAdmin.mergeStagedStaffChange(req.params.id, targetEntityId, req.adminUser.sub);
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('[ragic-staging merge] failed to merge staged change', {
+      staging_id: req.params.id,
+      target_entity_id: targetEntityId,
+      entity_type: err.stagingEntityType,
+      entity_id: err.stagingEntityId,
+      message: err.message,
+      stack: err.stack,
+    });
+    res.status(400).json({
+      error: err.message || '合併失敗，原因不明',
       entity_type: err.stagingEntityType,
       entity_id: err.stagingEntityId,
     });
