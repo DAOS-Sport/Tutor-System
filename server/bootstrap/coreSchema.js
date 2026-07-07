@@ -705,15 +705,46 @@ CREATE TABLE IF NOT EXISTS ragic_sync_log (
   id BIGSERIAL PRIMARY KEY,
   form_code VARCHAR(40) NOT NULL,        -- H01_STAFF | H01_COACHES | H05_VENUES
   job_name  VARCHAR(40) NOT NULL,        -- staff | coaches | venues
-  status    VARCHAR(10) NOT NULL,        -- ok | error | skipped
+  status    VARCHAR(20) NOT NULL,        -- ok | error | skipped | partial | stale_read
   synced_count INTEGER NOT NULL DEFAULT 0,
   error_message TEXT,
   duration_ms  INTEGER NOT NULL DEFAULT 0,
+  freshness_verified BOOLEAN,
+  freshness_latency_ms INTEGER,
+  stale_retries INTEGER NOT NULL DEFAULT 0,
+  freshness_nonce TEXT,
   triggered_by VARCHAR(20) NOT NULL DEFAULT 'cron', -- cron | manual | startup
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+DO $$ BEGIN ALTER TABLE ragic_sync_log ALTER COLUMN status TYPE VARCHAR(20); EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE ragic_sync_log ADD COLUMN IF NOT EXISTS freshness_verified BOOLEAN; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE ragic_sync_log ADD COLUMN IF NOT EXISTS freshness_latency_ms INTEGER; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE ragic_sync_log ADD COLUMN IF NOT EXISTS stale_retries INTEGER NOT NULL DEFAULT 0; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE ragic_sync_log ADD COLUMN IF NOT EXISTS freshness_nonce TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 CREATE INDEX IF NOT EXISTS idx_ragic_sync_log_form ON ragic_sync_log(form_code, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ragic_sync_log_job  ON ragic_sync_log(job_name, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ragic_sync_log_freshness ON ragic_sync_log(form_code, created_at DESC)
+  WHERE freshness_verified IS NOT NULL OR status = 'stale_read';
+
+-- Ragic writer audit: append-only log for attempted field writes and rejection reasons.
+CREATE TABLE IF NOT EXISTS ragic_write_audit (
+  id BIGSERIAL PRIMARY KEY,
+  sheet_code VARCHAR(20) NOT NULL,
+  record_key TEXT,
+  field_id TEXT,
+  old_value TEXT,
+  new_value TEXT,
+  actor TEXT,
+  source TEXT,
+  status VARCHAR(20) NOT NULL,
+  reason TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_ragic_write_audit_sheet_time
+  ON ragic_write_audit(sheet_code, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ragic_write_audit_rejected
+  ON ragic_write_audit(created_at DESC)
+  WHERE status = 'rejected';
 
 -- Z01 家長姓名資料品質追蹤：舊系統匯入批次曾把「家長姓名」欄位誤填成電話號碼
 -- （已證實：2026-06-30 匯入的 511 筆裡 433 筆），需要一張表追蹤哪些 Z01 記錄還沒
@@ -841,6 +872,9 @@ CREATE TABLE IF NOT EXISTS promotions (
   end_date DATE NOT NULL,
   max_uses INTEGER,
   current_uses INTEGER NOT NULL DEFAULT 0,
+  platform_total_period_cap INTEGER,
+  parent_period_cap INTEGER,
+  current_period_uses INTEGER NOT NULL DEFAULT 0,
   status VARCHAR(20) NOT NULL DEFAULT 'draft'
     CHECK (status IN ('draft','pending_review','active','rejected','archived')),
   review_note TEXT,
@@ -856,6 +890,9 @@ CREATE INDEX IF NOT EXISTS idx_promotions_active_dates
   ON promotions(status, start_date, end_date);
 CREATE INDEX IF NOT EXISTS idx_promotions_coupon
   ON promotions(coupon_code) WHERE coupon_code IS NOT NULL;
+DO $$ BEGIN ALTER TABLE promotions ADD COLUMN IF NOT EXISTS platform_total_period_cap INTEGER; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE promotions ADD COLUMN IF NOT EXISTS parent_period_cap INTEGER; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE promotions ADD COLUMN IF NOT EXISTS current_period_uses INTEGER NOT NULL DEFAULT 0; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
 -- promotion_usages：每次套用紀錄；資料隔離供日後對帳。
 CREATE TABLE IF NOT EXISTS promotion_usages (
@@ -866,10 +903,12 @@ CREATE TABLE IF NOT EXISTS promotion_usages (
   original_price INTEGER NOT NULL,
   discount_amount INTEGER NOT NULL,
   final_price INTEGER NOT NULL,
+  used_periods INTEGER NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_promo_usages_promo ON promotion_usages(promotion_id);
 CREATE INDEX IF NOT EXISTS idx_promo_usages_parent ON promotion_usages(parent_id);
+DO $$ BEGIN ALTER TABLE promotion_usages ADD COLUMN IF NOT EXISTS used_periods INTEGER NOT NULL DEFAULT 1; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
 -- 連結 LIFF 報名單（admin_enrollments.id 為 TEXT，故不設 FK）
 DO $$ BEGIN ALTER TABLE promotion_usages ADD COLUMN IF NOT EXISTS admin_enrollment_id TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
@@ -885,6 +924,28 @@ CREATE TABLE IF NOT EXISTS promotion_audit_logs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_promo_audit_promo ON promotion_audit_logs(promotion_id);
+
+-- 通用高風險操作稽核（例如員工硬刪除）。payload 放操作明細，severity 供後台/營運快速篩選。
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id BIGSERIAL PRIMARY KEY,
+  at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  action TEXT NOT NULL,
+  severity TEXT NOT NULL DEFAULT 'info',
+  admin_id TEXT,
+  target_type TEXT,
+  target_ids TEXT[] NOT NULL DEFAULT '{}',
+  details JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS action TEXT;
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS severity TEXT NOT NULL DEFAULT 'info';
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS admin_id TEXT;
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS target_type TEXT;
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS target_ids TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS details JSONB NOT NULL DEFAULT '{}'::jsonb;
+CREATE INDEX IF NOT EXISTS idx_audit_logs_action_at ON audit_logs(action, at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_severity_at ON audit_logs(severity, at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_admin_at ON audit_logs(admin_id, at DESC);
 
 -- ─── Phase 6（下）: MGM 推薦裂變 (F-S10 / F-M10) ─────────────────────
 -- 補齊家長 / 學員的可選欄位（LIFF RegisterPage 用）
@@ -1054,6 +1115,8 @@ END $$;
 DO $$
 BEGIN
   ALTER TABLE coaches ADD COLUMN IF NOT EXISTS ragic_record_id TEXT;
+  ALTER TABLE coaches ADD COLUMN IF NOT EXISTS ragic_data_no TEXT;
+  ALTER TABLE admin_staff ADD COLUMN IF NOT EXISTS ragic_data_no TEXT;
 
   WITH ranked AS (
     SELECT id, ROW_NUMBER() OVER (
@@ -1093,6 +1156,46 @@ BEGIN
   ELSE
     CREATE UNIQUE INDEX IF NOT EXISTS uq_admin_staff_ragic_record_id
       ON admin_staff(ragic_record_id) WHERE ragic_record_id IS NOT NULL;
+  END IF;
+
+  WITH ranked AS (
+    SELECT id, ROW_NUMBER() OVER (
+             PARTITION BY ragic_data_no ORDER BY updated_at DESC
+           ) AS rn
+      FROM coaches
+     WHERE ragic_data_no IS NOT NULL
+  )
+  UPDATE coaches SET ragic_data_no = NULL, updated_at = NOW()
+   WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
+
+  IF EXISTS (
+    SELECT ragic_data_no FROM coaches WHERE ragic_data_no IS NOT NULL
+    GROUP BY ragic_data_no HAVING COUNT(*) > 1
+  ) THEN
+    RAISE WARNING '[coreSchema] coaches.ragic_data_no 去重後仍有重複，略過唯一索引升級（需人工排查）';
+  ELSE
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_coaches_ragic_data_no
+      ON coaches(ragic_data_no) WHERE ragic_data_no IS NOT NULL;
+  END IF;
+
+  WITH ranked AS (
+    SELECT id, ROW_NUMBER() OVER (
+             PARTITION BY ragic_data_no ORDER BY updated_at DESC
+           ) AS rn
+      FROM admin_staff
+     WHERE ragic_data_no IS NOT NULL
+  )
+  UPDATE admin_staff SET ragic_data_no = NULL, last_synced_at = NOW()
+   WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
+
+  IF EXISTS (
+    SELECT ragic_data_no FROM admin_staff WHERE ragic_data_no IS NOT NULL
+    GROUP BY ragic_data_no HAVING COUNT(*) > 1
+  ) THEN
+    RAISE WARNING '[coreSchema] admin_staff.ragic_data_no 去重後仍有重複，略過唯一索引升級（需人工排查）';
+  ELSE
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_admin_staff_ragic_data_no
+      ON admin_staff(ragic_data_no) WHERE ragic_data_no IS NOT NULL;
   END IF;
 
   -- admin_staff.id 修復後可能因員工編號變更而被 UPDATE（見 _applyStaffChange），
@@ -1153,10 +1256,13 @@ CREATE INDEX IF NOT EXISTS idx_ragic_z01_shadow_fetched ON ragic_z01_shadow(fetc
 -- 穩定，key 直接用代碼即可。
 CREATE TABLE IF NOT EXISTS ragic_h01_shadow (
   ragic_record_id TEXT PRIMARY KEY,
+  ragic_data_no TEXT,
   raw_data JSONB NOT NULL,
   fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE ragic_h01_shadow ADD COLUMN IF NOT EXISTS ragic_data_no TEXT;
 CREATE INDEX IF NOT EXISTS idx_ragic_h01_shadow_fetched ON ragic_h01_shadow(fetched_at);
+CREATE INDEX IF NOT EXISTS idx_ragic_h01_shadow_data_no ON ragic_h01_shadow(ragic_data_no);
 
 CREATE TABLE IF NOT EXISTS ragic_h05_shadow (
   venue_code TEXT PRIMARY KEY,
@@ -1164,6 +1270,63 @@ CREATE TABLE IF NOT EXISTS ragic_h05_shadow (
   fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_ragic_h05_shadow_fetched ON ragic_h05_shadow(fetched_at);
+
+-- Form 23「新生/基本資料」教練薪資倍率影子表。key 用 Ragic _ragicId；
+-- reconcile 階段只允許用員工編號 + 姓名複合鍵更新 admin_staff/coaches 係數。
+CREATE TABLE IF NOT EXISTS ragic_h23_shadow (
+  ragic_record_id TEXT PRIMARY KEY,
+  ragic_key TEXT,
+  staff_emp_id TEXT,
+  staff_name TEXT,
+  raw_data JSONB NOT NULL,
+  fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_ragic_h23_shadow_fetched ON ragic_h23_shadow(fetched_at);
+CREATE INDEX IF NOT EXISTS idx_ragic_h23_shadow_staff ON ragic_h23_shadow(staff_emp_id, staff_name);
+
+CREATE TABLE IF NOT EXISTS ragic_webhook_log (
+  id BIGSERIAL PRIMARY KEY,
+  sheet_code TEXT NOT NULL,
+  ragic_record_id TEXT NOT NULL,
+  event_type TEXT,
+  refetched BOOLEAN NOT NULL DEFAULT FALSE,
+  latency_ms INTEGER,
+  error_message TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_ragic_webhook_log_sheet ON ragic_webhook_log(sheet_code, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ragic_webhook_log_record ON ragic_webhook_log(sheet_code, ragic_record_id, created_at DESC);
+
+-- ─── 部署鎖死工單（launch-20260707 B 段）：Cron 單一執行權 ────────────────────
+-- 四層鎖的 DB 租約層。job_locks 只存「目前持有者」單列 per job；取鎖是單一原子
+-- UPSERT（見 server/cron/lock.js acquireJobLock），不用 pg_advisory_lock（連線池下
+-- session 綁定不可靠，見工單 B.2 決策）。
+CREATE TABLE IF NOT EXISTS job_locks (
+  job_name TEXT PRIMARY KEY,
+  holder_id TEXT NOT NULL,
+  locked_until TIMESTAMPTZ NOT NULL,
+  run_id UUID
+);
+
+-- 通用 run ledger（工單標註為 P1.4 的前置依賴，但翻遍 repo 沒找到既有實作，
+-- 這裡當作本次任務的一部分建立）。涵蓋 server/cron/index.js 內全部 12 個排程
+-- job，不只 Ragic 同步（Ragic 專屬的細節仍留在既有 ragic_sync_log，兩者不衝突、
+-- 也不重複記錄——job_runs 記的是「這次排程執行本身」的起訖/持有者/狀態，
+-- ragic_sync_log 記的是 Ragic 同步各表單的筆數等業務細節）。
+CREATE TABLE IF NOT EXISTS job_runs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  job_name TEXT NOT NULL,
+  holder_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'running', -- running | success | error | skipped_lock | aborted
+  triggered_by TEXT NOT NULL,             -- 'cron' | 'manual:<admin_id>'
+  started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  finished_at TIMESTAMPTZ,
+  duration_ms INTEGER,
+  error_message TEXT,
+  result_summary JSONB
+);
+CREATE INDEX IF NOT EXISTS idx_job_runs_job_name ON job_runs(job_name, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_job_runs_status ON job_runs(status) WHERE status = 'running';
 `;
 
 // 預設關鍵字清單（F-A07，可在後台增減 / 停用）

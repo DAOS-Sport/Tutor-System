@@ -11,6 +11,13 @@
  */
 const axios = require('axios');
 const { pool } = require('../models/db');
+const {
+  getCanaryConfig,
+  filterCanaryRecords,
+  isCanaryRecord,
+  runCanaryWriteReadProof,
+} = require('./ragicFreshness');
+const ragicWriter = require('./ragicWriter');
 
 // ── 館別代碼 → 名稱（寫回 Ragic 用）────────────────────────────────────────
 // Ragic 的「館別」欄位（Z01 1002174 / Z02 1002175）存的是場館「名稱」（如「新北高中」），
@@ -41,6 +48,7 @@ async function venueLabel(venueId) {
 // 預設 60s：實測 H01_STAFF 同步偶發 ~35s 尖峰會超過舊預設 30s 而逾時失敗（約 25% 失敗率），
 // 提高至 60s 給足餘裕；仍可由 RAGIC_TIMEOUT_MS 覆寫。
 const RAGIC_TIMEOUT_MS = Number(process.env.RAGIC_TIMEOUT_MS) || 60000;
+const RAGIC_API_VERSION = process.env.RAGIC_API_VERSION || '2025-01-01';
 const client = axios.create({
   baseURL: process.env.RAGIC_BASE_URL,
   timeout: RAGIC_TIMEOUT_MS,
@@ -61,14 +69,47 @@ function _recordPath(formPath, ragicRecordId) {
   return `${_stripQuery(formPath)}/${ragicRecordId}`;
 }
 
+function _apiParams(params = {}, options = {}) {
+  const out = {
+    version: RAGIC_API_VERSION,
+    ...params,
+    APIKey: process.env.RAGIC_API_KEY,
+  };
+  if (options.noCache) {
+    out._ts = options.cacheBuster || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+  return out;
+}
+
+function _requestOptions(params = {}, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  if (options.noCache) headers['Cache-Control'] = 'no-cache';
+  return {
+    params: _apiParams(params, options),
+    headers,
+  };
+}
+
+function _freshReadParams(params = {}) {
+  const out = {
+    ...params,
+    ignoreFixedFilter: process.env.RAGIC_IGNORE_FIXED_FILTER === 'false' ? undefined : 'true',
+  };
+  for (const key of Object.keys(out)) {
+    if (out[key] === undefined) delete out[key];
+  }
+  return out;
+}
+
 // 補償用：盡力刪除指定表單的多筆 record（失敗只記 log、不拋）。
 // 用於「Z01 家長已建、Z02 學員寫一半失敗」時回滾，讓使用者可乾淨重試。
 async function _bestEffortDelete(formPath, ragicRecordIds = []) {
   for (const rid of ragicRecordIds) {
     if (rid == null) continue;
     try {
-      await client.delete(_withApi(_recordPath(formPath, rid)), {
-        params: { APIKey: process.env.RAGIC_API_KEY },
+      await ragicWriter.deleteByFormPath(formPath, rid, {
+        actor: 'system',
+        source: 'compensation-delete',
       });
     } catch (err) {
       console.error('[Ragic] 補償刪除失敗:', _stripQuery(formPath), rid, err.message);
@@ -127,12 +168,10 @@ function _normalizeRagicError(err) {
   return err;
 }
 
-async function query(formPath, params = {}) {
+async function query(formPath, params = {}, options = {}) {
   let res;
   try {
-    res = await client.get(_withApi(formPath), {
-      params: { ...params, APIKey: process.env.RAGIC_API_KEY },
-    });
+    res = await client.get(_withApi(formPath), _requestOptions(params, options));
   } catch (err) {
     throw _normalizeRagicError(err);
   }
@@ -165,14 +204,14 @@ async function probeForm(formPath, params = {}) {
 const RAGIC_PAGE_SIZE = Number(process.env.RAGIC_PAGE_SIZE) || 200;
 const RAGIC_MAX_PAGES = Number(process.env.RAGIC_MAX_PAGES) || 50; // 上限 10000 筆，足夠 H01/H05
 // 預設批次並發頁數：H01/H05 筆數少，1 即可；Z01 傳 3 加速拉取。
-async function queryAllPaged(formPath, params = {}, concurrency = 1) {
+async function queryAllPaged(formPath, params = {}, concurrency = 1, options = {}) {
   const merged = {};
   let page = 0;
   while (page < RAGIC_MAX_PAGES) {
     const batchSize = Math.min(concurrency, RAGIC_MAX_PAGES - page);
     const offsets = Array.from({ length: batchSize }, (_, i) => (page + i) * RAGIC_PAGE_SIZE);
     const pages = await Promise.all(
-      offsets.map((offset) => query(formPath, { ...params, limit: RAGIC_PAGE_SIZE, offset }))
+      offsets.map((offset) => query(formPath, { ...params, limit: RAGIC_PAGE_SIZE, offset }, options))
     );
     let done = false;
     for (const pageData of pages) {
@@ -198,7 +237,7 @@ async function queryAllPaged(formPath, params = {}, concurrency = 1) {
 //       （Ragic 未提供可獨立核對的「總筆數」端點），但足以攔下「offset 分頁在拉取
 //       當下發生位移」這個具體風險，比完全不做複查安全。
 // 回傳 { records, truncated, boundaryMismatch }，由 caller 決定是否 hard-fail。
-async function queryAllPagedWithIntegrity(formPath, params = {}, concurrency = 1) {
+async function queryAllPagedWithIntegrity(formPath, params = {}, concurrency = 1, options = {}) {
   const merged = {};
   let page = 0;
   let reachedNaturalEnd = false;
@@ -206,7 +245,7 @@ async function queryAllPagedWithIntegrity(formPath, params = {}, concurrency = 1
     const batchSize = Math.min(concurrency, RAGIC_MAX_PAGES - page);
     const offsets = Array.from({ length: batchSize }, (_, i) => (page + i) * RAGIC_PAGE_SIZE);
     const pages = await Promise.all(
-      offsets.map((offset) => query(formPath, { ...params, limit: RAGIC_PAGE_SIZE, offset }))
+      offsets.map((offset) => query(formPath, { ...params, limit: RAGIC_PAGE_SIZE, offset }, options))
     );
     for (const pageData of pages) {
       if (!pageData || typeof pageData !== 'object') { reachedNaturalEnd = true; break; }
@@ -223,7 +262,7 @@ async function queryAllPagedWithIntegrity(formPath, params = {}, concurrency = 1
   let boundaryMismatch = false;
   if (!truncated) {
     try {
-      const firstPage = await query(formPath, { ...params, limit: RAGIC_PAGE_SIZE, offset: 0 });
+      const firstPage = await query(formPath, { ...params, limit: RAGIC_PAGE_SIZE, offset: 0 }, options);
       for (const id of Object.keys(firstPage || {})) {
         if (!(id in merged)) { boundaryMismatch = true; break; }
       }
@@ -233,6 +272,84 @@ async function queryAllPagedWithIntegrity(formPath, params = {}, concurrency = 1
   }
 
   return { records: Object.values(merged), truncated, boundaryMismatch };
+}
+
+async function getRecordByRagicId(formPath, ragicRecordId, params = {}, options = {}) {
+  if (!ragicRecordId) return null;
+  const data = await query(_recordPath(formPath, ragicRecordId), params, options);
+  if (!data || typeof data !== 'object') return null;
+  if (data._ragicId || data.ragicId) return data;
+  return Object.values(data)[0] || null;
+}
+
+async function _writeCanaryNonce(sheetCode, config, nonce) {
+  try {
+    await ragicWriter.writeField(sheetCode, config.recordId, config.nonceField, nonce, 'system', 'freshness-canary', {
+      params: { doFormula: 'true', notification: 'false' },
+    });
+  } catch (err) {
+    throw _normalizeRagicError(err);
+  }
+}
+
+async function _fetchCanaryRecord(formPath, config, options = {}) {
+  return getRecordByRagicId(
+    formPath,
+    config.recordId,
+    { ignoreFixedFilter: process.env.RAGIC_IGNORE_FIXED_FILTER === 'false' ? undefined : 'true' },
+    { ...options, noCache: true }
+  );
+}
+
+async function queryAllPagedWithFreshness(sheetCode, formPath, params = {}, concurrency = 1) {
+  const config = getCanaryConfig(sheetCode);
+  const result = await runCanaryWriteReadProof({
+    sheetCode,
+    config,
+    writeNonce: (nonce, cfg) => _writeCanaryNonce(sheetCode, cfg, nonce),
+    fetchCanary: (opts) => _fetchCanaryRecord(formPath, config, opts),
+    fetchSnapshot: async (opts) => Object.values(await queryAllPaged(
+      formPath,
+      _freshReadParams(params),
+      concurrency,
+      opts
+    )),
+  });
+  if (result.stale_read) return result;
+  return { ...result, records: filterCanaryRecords(result.records, config) };
+}
+
+async function queryAllPagedWithIntegrityAndFreshness(sheetCode, formPath, params = {}, concurrency = 1) {
+  const config = getCanaryConfig(sheetCode);
+  const result = await runCanaryWriteReadProof({
+    sheetCode,
+    config,
+    writeNonce: (nonce, cfg) => _writeCanaryNonce(sheetCode, cfg, nonce),
+    fetchCanary: (opts) => _fetchCanaryRecord(formPath, config, opts),
+    fetchSnapshot: async (opts) => queryAllPagedWithIntegrity(
+      formPath,
+      _freshReadParams(params),
+      concurrency,
+      opts
+    ),
+  });
+  if (result.stale_read) {
+    return {
+      records: [],
+      truncated: false,
+      boundaryMismatch: false,
+      stale_read: true,
+      error: result.error,
+      freshness: result.freshness,
+    };
+  }
+  const snapshot = result.snapshot || {};
+  return {
+    ...snapshot,
+    records: filterCanaryRecords(snapshot.records || result.records, config),
+    freshness: result.freshness,
+    stale_read: false,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -276,7 +393,7 @@ function _roleStr(r) {
 async function getActiveCoaches() {
   return cached('h01:coaches', async () => {
     const data = await queryAllPaged(process.env.RAGIC_FORM_H01, { '在職狀態': '在職' });
-    return Object.values(data).filter(r => _roleStr(r).includes('教練'));
+    return filterCanaryRecords(Object.values(data), 'H01').filter(r => _roleStr(r).includes('教練'));
   });
 }
 
@@ -284,26 +401,40 @@ async function getActiveCoaches() {
 async function getCounterStaff() {
   return cached('h01:counter', async () => {
     const data = await queryAllPaged(process.env.RAGIC_FORM_H01, { '在職狀態': '在職' });
-    return Object.values(data).filter(r => _roleStr(r).includes('行政櫃台') || _roleStr(r).includes('行政櫃檯'));
+    return filterCanaryRecords(Object.values(data), 'H01')
+      .filter(r => _roleStr(r).includes('行政櫃台') || _roleStr(r).includes('行政櫃檯'));
   });
 }
 
 // H01：全員工（角色指派用，5 分鐘快取，分頁拉取）
 async function getAllStaff() {
-  return cached('h01:all', async () => Object.values(await queryAllPaged(process.env.RAGIC_FORM_H01)));
+  return cached('h01:all', async () => filterCanaryRecords(Object.values(await queryAllPaged(process.env.RAGIC_FORM_H01)), 'H01'));
+}
+
+async function getAllStaffWithFreshness() {
+  return queryAllPagedWithFreshness('H01', process.env.RAGIC_FORM_H01);
+}
+
+async function getAllStaffCoefficientRows() {
+  const formPath = process.env.RAGIC_FORM_H23 || 'https://ap7.ragic.com/xinsheng/general-information/23';
+  return Object.values(await queryAllPaged(formPath, {}, 1, { noCache: true }));
 }
 
 // Z01：全量家長清單（Ragic → 本地每日全量拉取用；刻意不套 cached()，
 // 排程每次都要拿當下最新資料，語意同 getAllStaff 但不走 5 分鐘快取）
 async function getAllParents() {
   // Z01 約 1500 筆；並發 3 頁同時拉，把循序 7 趟縮成 3 趟，大幅減少 Ragic 網路等待。
-  return Object.values(await queryAllPaged(process.env.RAGIC_FORM_Z01, {}, 3));
+  return filterCanaryRecords(Object.values(await queryAllPaged(process.env.RAGIC_FORM_Z01, {}, 3)), 'Z01');
 }
 
 // P1.1 決策4：帶完整性檢查的 Z01 全量拉取，供夜間 pull / quarantine 掃描使用
 // （取代直接呼叫 getAllParents，讓 caller 能在 truncated/boundaryMismatch 時 hard-fail）。
 async function getAllParentsWithIntegrity() {
   return queryAllPagedWithIntegrity(process.env.RAGIC_FORM_Z01, {}, 3);
+}
+
+async function getAllParentsWithIntegrityAndFreshness() {
+  return queryAllPagedWithIntegrityAndFreshness('Z01', process.env.RAGIC_FORM_Z01, {}, 3);
 }
 
 // P1.1 決策4：Z01 schema-drift 偵測（嫌疑3 CONFIRMED 的主動偵測版）。
@@ -357,8 +488,17 @@ async function checkZ01SchemaDrift() {
 async function getActiveVenues() {
   return cached('h05:venues', async () => {
     const data = await queryAllPaged(process.env.RAGIC_FORM_H05, { '履約狀態': '履約中' });
-    return Object.values(data).filter(r => r['營運性質'] !== '內勤單位');
+    return filterCanaryRecords(Object.values(data), 'H05').filter(r => r['營運性質'] !== '內勤單位');
   });
+}
+
+async function getActiveVenuesWithFreshness() {
+  const result = await queryAllPagedWithFreshness('H05', process.env.RAGIC_FORM_H05, { '履約狀態': '履約中' });
+  if (result.stale_read) return result;
+  return {
+    ...result,
+    records: result.records.filter(r => r['營運性質'] !== '內勤單位'),
+  };
 }
 
 // =====================================================================
@@ -433,26 +573,27 @@ async function getParentByLineUid(lineUid) {
 async function bindParentLineUidToRagic({ ragicRecordId, lineUid }) {
   if (!ragicRecordId) throw new Error('ragicRecordId 必填');
   if (!lineUid) throw new Error('lineUid 必填');
-  const payload = { [Z01_LINE_UID_FIELD]: lineUid };
-  const url = _withApi(_recordPath(process.env.RAGIC_FORM_Z01, ragicRecordId));
-  const res = await client.post(url, payload, { params: { APIKey: process.env.RAGIC_API_KEY } });
-  _assertWriteOk(res.data);
+  await ragicWriter.writeField(
+    'Z01',
+    ragicRecordId,
+    Z01_LINE_UID_FIELD,
+    lineUid,
+    'system',
+    'bindParentLineUidToRagic'
+  );
   _cacheInvalidate('z01:');
   return { ok: true };
 }
 
 async function postRagicStrict(formPath, payload) {
-  let res;
   try {
-    res = await client.post(_withApi(formPath), payload, {
-      params: { APIKey: process.env.RAGIC_API_KEY },
+    return await ragicWriter.postFormPath(formPath, payload, {
+      actor: 'system',
+      source: 'postRagicStrict',
     });
   } catch (err) {
     throw _normalizeRagicError(err);
   }
-  const data = res.data || {};
-  _assertWriteOk(data);
-  return data;
 }
 
 // Z01：回寫家長資料（key 可用中文欄位名或 Field ID，內部統一翻譯成 Field ID）
@@ -462,7 +603,10 @@ async function upsertParent(parentData, ragicRecordId = null) {
     const base = ragicRecordId
       ? _recordPath(process.env.RAGIC_FORM_Z01, ragicRecordId)
       : process.env.RAGIC_FORM_Z01;
-    await client.post(_withApi(base), payload, { params: { APIKey: process.env.RAGIC_API_KEY } });
+    await ragicWriter.postFormPath(base, payload, {
+      actor: 'system',
+      source: 'upsertParent',
+    });
     _cacheInvalidate('z01:');
   } catch (err) {
     console.error('[Ragic] upsertParent failed:', err.message);
@@ -742,13 +886,13 @@ async function createParentWithStudentsInRagic({ parent, students = [], lineUid 
   if (parent.email)  payload[FIELD.Z01.EMAIL]  = parent.email;
 
   // 1) 建 Z01 家長主檔（不再帶 dotted 子表，子表寫不進去，見 _buildZ02RegistrationPayload 註解）
-  const res = await client.post(_withApi(process.env.RAGIC_FORM_Z01), payload, {
-    params: { APIKey: process.env.RAGIC_API_KEY },
-  });
+  const data = await ragicWriter.createRecord(
+    'Z01',
+    payload,
+    'system',
+    'createParentWithStudentsInRagic'
+  );
   _cacheInvalidate('z01:');
-
-  const data = res.data || {};
-  _assertWriteOk(data);
 
   // 嘗試從常見三種位置抽 record id
   let ragicRecordId = data.ragicId || data._ragicId || null;
@@ -880,12 +1024,14 @@ async function addStudentsToParentInRagic({ ragicRecordId, startIndex = 0, stude
     if (s.blood_type) payload[`${prefix}${FIELD.Z01_STUDENT.BLOOD_TYPE}`] = s.blood_type;
   });
 
-  const res = await client.post(_withApi(_recordPath(process.env.RAGIC_FORM_Z01, ragicRecordId)), payload, {
-    params: { APIKey: process.env.RAGIC_API_KEY },
-  });
+  const data = await ragicWriter.writeFields(
+    'Z01',
+    ragicRecordId,
+    payload,
+    'system',
+    'addStudentsToParentInRagic'
+  );
   _cacheInvalidate('z01:');
-  const data = res.data || {};
-  _assertWriteOk(data);
   return { added: list.length, raw: data };
 }
 
@@ -1068,7 +1214,10 @@ async function upsertStudent(studentData, ragicRecordId = null) {
     const base = ragicRecordId
       ? _recordPath(process.env.RAGIC_FORM_Z02, ragicRecordId)
       : process.env.RAGIC_FORM_Z02;
-    await client.post(_withApi(base), payload, { params: { APIKey: process.env.RAGIC_API_KEY } });
+    await ragicWriter.postFormPath(base, payload, {
+      actor: 'system',
+      source: 'upsertStudent',
+    });
     _cacheInvalidate('z02:');
   } catch (err) {
     console.error('[Ragic] upsertStudent failed:', err.message);
@@ -1256,10 +1405,19 @@ module.exports = {
   getActiveCoaches,
   getCounterStaff,
   getAllStaff,
+  getAllStaffWithFreshness,
+  getAllStaffCoefficientRows,
   getActiveVenues,
+  getActiveVenuesWithFreshness,
   getAllParents,
   getAllParentsWithIntegrity,
+  getAllParentsWithIntegrityAndFreshness,
   checkZ01SchemaDrift,
+  queryAllPagedWithFreshness,
+  queryAllPagedWithIntegrityAndFreshness,
+  getRecordByRagicId,
+  isCanaryRecord,
+  filterCanaryRecords,
   probeForm,
   getParentByPhone,
   getParentByLineUid,

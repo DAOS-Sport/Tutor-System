@@ -53,9 +53,12 @@ router.post('/preview', optionalParent, async (req, res) => {
     res.json(r);
   } catch (err) {
     if (err.code && err.code.startsWith('COUPON_')) {
-      // 防止折價券枚舉：對外一律回相同訊息與通用 code，詳情只記在伺服器端
+      // 防止折價券枚舉：一般券錯誤維持通用訊息；額度上限採用後端明確提示。
       console.warn('[coupon preview rejected]', err.code, err.message);
-      return res.status(400).json({ error: '折價券無法使用，請確認代碼是否正確或仍在使用期間', code: 'COUPON_INVALID' });
+      return res.status(400).json({
+        error: err.publicMessage ? err.message : '折價券無法使用，請確認代碼是否正確或仍在使用期間',
+        code: err.publicMessage ? err.code : 'COUPON_INVALID',
+      });
     }
     console.error('[promotions preview]', err);
     res.status(500).json({ error: 'preview failed' });

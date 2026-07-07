@@ -25,11 +25,18 @@ router.use(requireAdminAuth);
 
 const PROMO_FIELDS = `id, name, description, type, discount_value,
   min_threshold_type, min_threshold_value, applicable_course_types, applicable_venue_ids,
-  coupon_code, start_date, end_date, max_uses, current_uses, status, review_note,
+  coupon_code, start_date, end_date, max_uses, current_uses,
+  platform_total_period_cap, parent_period_cap, current_period_uses, status, review_note,
   created_by, reviewed_by, reviewed_at, submitted_at, created_at, updated_at`;
 
 function genCouponCode() {
   return crypto.randomBytes(5).toString('hex').toUpperCase(); // 10 chars
+}
+
+function optionalNonNegativeInteger(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isInteger(n) && n >= 0 ? n : undefined;
 }
 
 function validatePayload(p) {
@@ -46,6 +53,12 @@ function validatePayload(p) {
   if (p.max_uses != null && p.max_uses !== '') {
     const mu = Number(p.max_uses);
     if (!Number.isInteger(mu) || mu < 0) errs.push('max_uses 必須為非負整數（留空或 0 表示不限次數）');
+  }
+  for (const [field, label] of [
+    ['platform_total_period_cap', 'platform_total_period_cap'],
+    ['parent_period_cap', 'parent_period_cap'],
+  ]) {
+    if (optionalNonNegativeInteger(p[field]) === undefined) errs.push(`${label} 必須為非負整數或留空`);
   }
   // min_threshold_value：留空 / 0 收斂為 NULL；其餘須為非負整數（欄位型別 INTEGER）
   if (p.min_threshold_value != null && p.min_threshold_value !== '') {
@@ -94,6 +107,7 @@ router.get('/active', requireAdminRole('admin', 'manager', 'staff'), async (req,
       `SELECT ${PROMO_FIELDS} FROM promotions
         WHERE status = 'active' AND start_date <= CURRENT_DATE AND end_date >= CURRENT_DATE
           AND (max_uses IS NULL OR current_uses < max_uses)
+          AND (platform_total_period_cap IS NULL OR current_period_uses < platform_total_period_cap)
         ORDER BY end_date ASC`
     );
     res.json(r.rows);
@@ -137,15 +151,19 @@ router.post('/', requireAdminRole('admin', 'manager'), async (req, res) => {
     const r = await pool.query(
       `INSERT INTO promotions (name, description, type, discount_value,
          min_threshold_type, min_threshold_value, applicable_course_types, applicable_venue_ids,
-         coupon_code, start_date, end_date, max_uses, status, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'draft',$13)
+         coupon_code, start_date, end_date, max_uses,
+         platform_total_period_cap, parent_period_cap, status, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'draft',$15)
        RETURNING ${PROMO_FIELDS}`,
       [
         p.name, p.description || '', p.type, p.discount_value,
         p.min_threshold_type || null, p.min_threshold_value || null,
         p.applicable_course_types && p.applicable_course_types.length ? p.applicable_course_types : null,
         p.applicable_venue_ids && p.applicable_venue_ids.length ? p.applicable_venue_ids : null,
-        coupon, p.start_date, p.end_date, p.max_uses || null, req.adminUser.sub,
+        coupon, p.start_date, p.end_date, p.max_uses || null,
+        optionalNonNegativeInteger(p.platform_total_period_cap),
+        optionalNonNegativeInteger(p.parent_period_cap),
+        req.adminUser.sub,
       ]
     );
     await audit(null, r.rows[0].id, 'create', req.adminUser.sub, null);
@@ -179,6 +197,7 @@ router.patch('/:id', requireAdminRole('admin', 'manager'), async (req, res) => {
          min_threshold_type=$6, min_threshold_value=$7,
          applicable_course_types=$8, applicable_venue_ids=$9,
          coupon_code=$10, start_date=$11, end_date=$12, max_uses=$13,
+         platform_total_period_cap=$14, parent_period_cap=$15,
          updated_at=NOW()
        WHERE id=$1 RETURNING ${PROMO_FIELDS}`,
       [
@@ -188,6 +207,8 @@ router.patch('/:id', requireAdminRole('admin', 'manager'), async (req, res) => {
         p.applicable_venue_ids && p.applicable_venue_ids.length ? p.applicable_venue_ids : null,
         p.coupon_code ? String(p.coupon_code).toUpperCase() : null,
         p.start_date, p.end_date, p.max_uses || null,
+        optionalNonNegativeInteger(p.platform_total_period_cap),
+        optionalNonNegativeInteger(p.parent_period_cap),
       ]
     );
     await audit(null, old.id, 'edit', req.adminUser.sub, null);

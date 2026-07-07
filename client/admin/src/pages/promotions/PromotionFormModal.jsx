@@ -22,6 +22,19 @@ function venuesOverlap(a = [], b = []) {
   const setB = new Set(b.map(String));
   return a.some((x) => setB.has(String(x)));
 }
+function sameValue(a, b) {
+  return String(a) === String(b);
+}
+function hasValue(arr = [], v) {
+  return arr.some((x) => sameValue(x, v));
+}
+function allOptionsSelected(selected = [], opts = []) {
+  return opts.length > 0 && opts.every((o) => hasValue(selected, o.value));
+}
+function selectedScopePayload(selected = [], opts = []) {
+  if (!opts.length || allOptionsSelected(selected, opts)) return [];
+  return selected;
+}
 
 export default function PromotionFormModal({ initial, onClose, onSaved, readOnly = false }) {
   const isEdit = !!initial?.id;
@@ -48,6 +61,8 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
     start_date: initial?.start_date ? toISODate(initial.start_date) : new Date().toISOString().slice(0, 10),
     end_date: initial?.end_date ? toISODate(initial.end_date) : '',
     max_uses: initial?.max_uses || '',
+    platform_total_period_cap: initial?.platform_total_period_cap != null ? String(initial.platform_total_period_cap) : '',
+    parent_period_cap: initial?.parent_period_cap != null ? String(initial.parent_period_cap) : '',
   });
 
   useEffect(() => {
@@ -65,6 +80,9 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
           if (!opts.some((o) => o.value === ct)) opts.push({ value: ct, label: `1對${ct}（已停用）` });
         }
         setCourseTypeOpts(opts);
+        if (!Array.isArray(initial?.applicable_course_types) || initial.applicable_course_types.length === 0) {
+          setD((prev) => ({ ...prev, applicable_course_types: opts.map((o) => o.value) }));
+        }
       })
       .catch(() => {
         if (!alive) return;
@@ -81,6 +99,9 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
           if (!opts.some((o) => o.value === id)) opts.push({ value: id, label: `${id} 館（已停用）` });
         }
         setVenueOpts(opts);
+        if (!Array.isArray(initial?.applicable_venue_ids) || initial.applicable_venue_ids.length === 0) {
+          setD((prev) => ({ ...prev, applicable_venue_ids: opts.map((o) => o.value) }));
+        }
       })
       .catch(() => {
         if (!alive) return;
@@ -96,7 +117,18 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
   }, []);
 
   function toggle(arr, v) {
-    return arr.includes(v) ? arr.filter((x) => x !== v) : [...arr, v];
+    return hasValue(arr, v) ? arr.filter((x) => !sameValue(x, v)) : [...arr, v];
+  }
+
+  function readOptionalNonNegativeInteger(value, label) {
+    const raw = String(value ?? '').trim();
+    if (!raw) return null;
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 0) {
+      toast.error(`${label}必須為非負整數`);
+      return undefined;
+    }
+    return n;
   }
 
   // (9) 重疊警告：選定場館 + 日期後，檢查是否與既有 active 優惠的場館 / 期間重疊
@@ -107,20 +139,21 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
       return o ? o.label : `${id} 館`;
     };
     const out = [];
+    const selectedVenues = selectedScopePayload(d.applicable_venue_ids, venueOpts || []);
     for (const p of activePromos) {
       if (isEdit && p.id === initial.id) continue; // 編輯自己不算重疊
       const pStart = toISODate(p.start_date);
       const pEnd = toISODate(p.end_date);
       if (!rangesOverlap(d.start_date, d.end_date, pStart, pEnd)) continue;
       const pVenues = Array.isArray(p.applicable_venue_ids) ? p.applicable_venue_ids : [];
-      if (!venuesOverlap(d.applicable_venue_ids, pVenues)) continue;
+      if (!venuesOverlap(selectedVenues, pVenues)) continue;
       // 找出造成重疊的場館文字（任一方為全館 → 標示為「全館」）
       let scope;
-      if (!d.applicable_venue_ids.length || !pVenues.length) {
+      if (!selectedVenues.length || !pVenues.length) {
         scope = '全館';
       } else {
         const setP = new Set(pVenues.map(String));
-        scope = d.applicable_venue_ids.filter((x) => setP.has(String(x))).map(venueLabel).join('、');
+        scope = selectedVenues.filter((x) => setP.has(String(x))).map(venueLabel).join('、');
       }
       out.push({ id: p.id, name: p.name, scope, start: pStart, end: pEnd });
     }
@@ -135,6 +168,12 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
     const v = parseFloat(d.discount_value);
     if (!Number.isFinite(v) || v <= 0) { toast.error('折扣值必須 > 0'); return; }
     if (d.type === 'PERCENTAGE' && (v <= 0 || v >= 1)) { toast.error('折數必須介於 0~1（如 0.9 = 9折）'); return; }
+    const maxUses = readOptionalNonNegativeInteger(d.max_uses, '總使用次數上限');
+    if (maxUses === undefined) return;
+    const platformTotalPeriodCap = readOptionalNonNegativeInteger(d.platform_total_period_cap, '平台總期數上限');
+    if (platformTotalPeriodCap === undefined) return;
+    const parentPeriodCap = readOptionalNonNegativeInteger(d.parent_period_cap, '每位家長期數上限');
+    if (parentPeriodCap === undefined) return;
 
     const payload = {
       name: d.name.trim(),
@@ -143,13 +182,15 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
       discount_value: v,
       min_threshold_type: d.min_threshold_type || null,
       min_threshold_value: d.min_threshold_value ? Number(d.min_threshold_value) : null,
-      applicable_course_types: d.applicable_course_types,
-      applicable_venue_ids: d.applicable_venue_ids,
+      applicable_course_types: selectedScopePayload(d.applicable_course_types, courseTypeOpts || []),
+      applicable_venue_ids: selectedScopePayload(d.applicable_venue_ids, venueOpts || []),
       coupon_code: d.coupon_code.trim() || null,
       generate_coupon_code: !isEdit && d.generate_coupon_code,
       start_date: d.start_date,
       end_date: d.end_date,
-      max_uses: d.max_uses ? Number(d.max_uses) : null,
+      max_uses: maxUses,
+      platform_total_period_cap: platformTotalPeriodCap,
+      parent_period_cap: parentPeriodCap,
     };
 
     setBusy(true);
@@ -221,7 +262,7 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
 
           {/* ③ 適用條件（由上而下逐步鎖定範圍） */}
           <section>
-            <h4 className="mb-2 flex items-center gap-2 text-[13px] font-bold text-brand-primary"><span>適用條件</span><span className="text-[11px] font-normal text-gray-400">逐步鎖定範圍 · 不選 = 全部</span><span className="h-px flex-1 bg-gray-100" /></h4>
+            <h4 className="mb-2 flex items-center gap-2 text-[13px] font-bold text-brand-primary"><span>適用條件</span><span className="h-px flex-1 bg-gray-100" /></h4>
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <div>
                 <label className="mb-1 block text-xs text-gray-500">門檻類型</label>
@@ -235,7 +276,7 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
                 <input className={fieldClass()} value={d.min_threshold_value} onChange={(e) => setD({ ...d, min_threshold_value: e.target.value })} disabled={!d.min_threshold_type} />
               </div>
               <div>
-                <label className="mb-1 block text-xs text-gray-500">適用組別（不選 = 全部）</label>
+                <label className="mb-1 block text-xs text-gray-500">適用組別</label>
                 <div className="flex flex-wrap gap-2">
                   {courseTypeOpts === null ? (
                     <span className="text-xs text-gray-400">載入中…</span>
@@ -243,12 +284,12 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
                     <span className="text-xs text-gray-400">（無可用組別）</span>
                   ) : courseTypeOpts.map((ct) => (
                     <button key={ct.value} type="button" onClick={() => setD({ ...d, applicable_course_types: toggle(d.applicable_course_types, ct.value) })}
-                      className={`rounded-full px-3 py-1 text-xs ${d.applicable_course_types.includes(ct.value) ? 'bg-brand-teal text-white' : 'bg-gray-100 text-gray-600'}`}>{ct.label}</button>
+                      className={`rounded-full border px-3 py-1 text-xs ${hasValue(d.applicable_course_types, ct.value) ? 'border-brand-teal bg-brand-teal text-white' : 'border-gray-300 bg-white text-gray-500'}`}>{ct.label}</button>
                   ))}
                 </div>
               </div>
               <div>
-                <label className="mb-1 block text-xs text-gray-500">適用場館（不選 = 全部）</label>
+                <label className="mb-1 block text-xs text-gray-500">適用場館</label>
                 <div className="flex flex-wrap gap-2">
                   {venueOpts === null ? (
                     <span className="text-xs text-gray-400">載入中…</span>
@@ -256,7 +297,7 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
                     <span className="text-xs text-gray-400">（無可用場館）</span>
                   ) : venueOpts.map((v) => (
                     <button key={v.value} type="button" onClick={() => setD({ ...d, applicable_venue_ids: toggle(d.applicable_venue_ids, v.value) })}
-                      className={`rounded-full px-3 py-1 text-xs ${d.applicable_venue_ids.includes(v.value) ? 'bg-brand-teal text-white' : 'bg-gray-100 text-gray-600'}`}>{v.label}</button>
+                      className={`rounded-full border px-3 py-1 text-xs ${hasValue(d.applicable_venue_ids, v.value) ? 'border-brand-teal bg-brand-teal text-white' : 'border-gray-300 bg-white text-gray-500'}`}>{v.label}</button>
                   ))}
                 </div>
               </div>
@@ -279,6 +320,16 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
                 <label className="mb-1 block text-xs text-gray-500">總使用次數上限（全部家長合計，空白 = 不限）</label>
                 <input className={fieldClass()} value={d.max_uses} onChange={(e) => setD({ ...d, max_uses: e.target.value })} />
                 <p className="mt-1 text-[11px] leading-snug text-gray-400">整個活動可被兌換的「總」次數（所有家長共用，每成立一筆報名 +1），非每人可用次數；達上限後即自動停止套用、不再顯示。</p>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-gray-500">平台總期數上限（空白 = 不限）</label>
+                <input className={fieldClass()} value={d.platform_total_period_cap} onChange={(e) => setD({ ...d, platform_total_period_cap: e.target.value })} />
+                <p className="mt-1 text-[11px] leading-snug text-gray-400">所有家長合計可折抵的購買期數；一筆 N 期報名會消耗 N。</p>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-gray-500">每位家長期數上限（空白 = 不限）</label>
+                <input className={fieldClass()} value={d.parent_period_cap} onChange={(e) => setD({ ...d, parent_period_cap: e.target.value })} />
+                <p className="mt-1 text-[11px] leading-snug text-gray-400">同一家長在此優惠下可折抵的累計購買期數。</p>
               </div>
             </div>
           </section>

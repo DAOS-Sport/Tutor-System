@@ -35,6 +35,13 @@ export const staffApi = {
     callApi(`/staff`, { method: 'post', data: body }, () => mockDb.createStaff?.(body) || { ...body, default_password_hint: body.id }),
   update: (id, patch) =>
     callApi(`/staff/${id}`, { method: 'patch', data: patch }, () => mockDb.updateStaff(id, patch)),
+  hardDelete: (staffIds) =>
+    callApi(`/staff/bulk`, { method: 'delete', data: { staff_ids: staffIds } }, () => ({
+      ok: true,
+      deleted_staff_ids: (staffIds || []).map((id) => String(id)),
+      deleted_coach_ids: [],
+      counts: { admin_staff: (staffIds || []).length },
+    })),
   syncRagic: () =>
     callApi('/staff/sync', { method: 'post', data: {} }, () => ({ synced: 0, skipped: true })),
   resetPassword: (id) =>

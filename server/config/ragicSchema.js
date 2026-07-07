@@ -31,6 +31,7 @@
 // ─────────────────────────────────────────────────────────────
 const FORMS = {
   get H01() { return process.env.RAGIC_FORM_H01; }, // 人事（員工 / 教練）
+  get H23() { return process.env.RAGIC_FORM_H23 || 'https://ap7.ragic.com/xinsheng/general-information/23'; }, // 新生/基本資料（薪資倍率）
   get H05() { return process.env.RAGIC_FORM_H05; }, // 場館
   get Z01() { return process.env.RAGIC_FORM_Z01; }, // 家長主檔（+ 學員子表格）
   get Z02() { return process.env.RAGIC_FORM_Z02; }, // 學員主檔
@@ -39,12 +40,13 @@ const FORMS = {
 // ─────────────────────────────────────────────────────────────
 // LINE UID 綁定欄位 Field ID（角色抓取核心 — 全系統唯一定義處）
 //   Z01 家教系統uid  → 預設 1006846，env RAGIC_FIELD_Z01_LINE_UID 可覆寫
-//   H01 個人LINE ID  → 預設 1003633，env RAGIC_FIELD_H01_LINE_UID 可覆寫
-//   用 env 覆寫是為了「Ragic 換欄位 ID 時不用改 code、不用重 deploy」。
+//   H01 個人LINE ID  → 固定 1003633。這是教練 LINE userId 唯一入口，不吃 env、
+//                     不吃欄名 fallback，避免誤抓「400Line訊息」等訊息/狀態欄位。
+//   Z01 仍保留 env 覆寫；H01 若 Ragic 真正換欄位，必須改 code + 文件一起審核。
 // ─────────────────────────────────────────────────────────────
 const LINE_UID_FIELD = {
   Z01: process.env.RAGIC_FIELD_Z01_LINE_UID || '1006846',
-  H01: process.env.RAGIC_FIELD_H01_LINE_UID || '1003633',
+  H01: '1003633',
 };
 
 // Z01 家長主檔（中文欄位 → Field ID）
@@ -114,27 +116,16 @@ const Z02_FIELDS = {
 // H01 員工 / 教練（角色抓取：行政櫃台/主管、教練）
 //   H01 在程式中多以「中文欄位名」直接讀取（在職狀態 / 應徵職務 / 館別…），
 //   並輔以 Field ID fallback。這裡集中定義：
+//     - DATA_NO：H01「資料編號」欄位（Field ID 3000934），staff sync 的業務對齊鍵
 //     - LINE_UID：員工 / 教練的個人 LINE ID 欄位（= LINE_UID_FIELD.H01）
-//     - LINE_UID_CANDIDATES：抓 LINE UID 時的容錯候選 key（env → 凍結 ID → 中英文欄名 → 模糊）
+//     - LINE_UID_CANDIDATES：僅保留凍結 Field ID；不得用欄名或模糊搜尋猜 uid。
 //     - VENUE_FIELD_ENV：多場館欄位的 env key（可逗號分隔多 Field ID）
 //     - ROLE_MATCH：角色判斷用的關鍵字
 // ─────────────────────────────────────────────────────────────
 const H01 = {
+  DATA_NO: '3000934',
   LINE_UID: LINE_UID_FIELD.H01,
-  // extractLineUid 容錯候選（env 覆寫優先，其次凍結 Field ID，再來中英文欄名）
-  LINE_UID_CANDIDATES: [
-    process.env.RAGIC_FIELD_H01_LINE_UID,
-    LINE_UID_FIELD.H01,
-    '個人LINE ID',
-    'LINE userid',
-    'LINE userId',
-    'LINE UID',
-    'LINE uid',
-    'LINE_USER_ID',
-    'lineUid',
-    'line_uid',
-    'Line userid',
-  ].filter(Boolean),
+  LINE_UID_CANDIDATES: [LINE_UID_FIELD.H01],
   // 多場館欄位（主場館 / 支援場館）：env 可指定 Field ID（逗號分隔），否則用中文欄名
   VENUE_FIELD_ENV: [
     process.env.RAGIC_FIELD_H01_VENUE_PRIMARY,
@@ -153,6 +144,14 @@ const H01 = {
   // 註（Task #95 政策定案）：H01 為 Ragic 權威、本系統不寫，故無寫回欄位定義。
   // 實機驗證過的 Field ID 對應（讀取/除錯查考用）：3000933=姓名、3001424=手機、
   // 3000940=電子郵件信箱、3000937=部門（多選，場館名稱陣列）、3000935=員工編號。
+};
+
+const H23 = {
+  AP_NAME: 'standardzhtw',
+  KEY_FIELD: '3000942',
+  STAFF_EMP_ID: '3000935',
+  STAFF_NAME: '3000933',
+  COURSE_COEFFICIENT: '1006300',
 };
 
 // 程式碼可讀別名（避免散落字串），對應上述 Field ID
@@ -196,6 +195,7 @@ const FIELD = {
     PARENT_EMAIL:   Z02_FIELDS['(報)Email'],
   },
   H01,
+  H23,
 };
 
 module.exports = {
@@ -206,5 +206,6 @@ module.exports = {
   Z01_STUDENTS_SUBTABLE_ID,
   Z02_FIELDS,
   H01,
+  H23,
   FIELD,
 };

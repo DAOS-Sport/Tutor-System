@@ -28,6 +28,244 @@ const VALID_ROLES = ['admin', 'manager', 'staff', 'coach'];
 const MULTIPLIER_MIN = 1.00;
 const MULTIPLIER_MAX = 1.50;
 
+function quoteIdent(name) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(String(name || ''))) {
+    throw new Error(`invalid SQL identifier: ${name}`);
+  }
+  return `"${name}"`;
+}
+
+function normalizeStaffIds(value) {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(
+    value
+      .map((id) => String(id ?? '').trim())
+      .filter(Boolean)
+  ));
+}
+
+function normalizeRoleFilter(value) {
+  const raw = String(value || '').trim();
+  const lower = raw.toLowerCase();
+  if (!raw) return '';
+  if (['admin', '系統管理員', '管理員'].includes(lower) || raw === '系統管理員' || raw === '管理員') return 'admin';
+  if (['manager', '主管', '場館主管'].includes(lower) || raw === '主管' || raw === '場館主管') return 'manager';
+  if (['staff', '行政', '櫃檯', '行政櫃檯', '行政櫃台'].includes(lower) || raw === '行政櫃檯' || raw === '行政櫃台') return 'staff';
+  if (['coach', '教練'].includes(lower) || raw === '教練') return 'coach';
+  if (
+    ['lifeguard', 'life_guard', '救生', '救生員', '體育署救生員', '守望員'].includes(lower) ||
+    /救生|守望員/i.test(raw)
+  ) return 'lifeguard';
+  return lower;
+}
+
+function addCount(counts, key, n) {
+  if (!n) return;
+  counts[key] = (counts[key] || 0) + Number(n);
+}
+
+async function getColumns(client, tableName) {
+  const r = await client.query(
+    `SELECT column_name
+       FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = $1`,
+    [tableName]
+  );
+  return new Set(r.rows.map((row) => row.column_name));
+}
+
+async function tableExists(client, tableName) {
+  const r = await client.query(`SELECT to_regclass($1) AS name`, [`public.${tableName}`]);
+  return !!r.rows[0]?.name;
+}
+
+async function tableHasColumns(client, tableName, columns) {
+  if (!(await tableExists(client, tableName))) return false;
+  const existing = await getColumns(client, tableName);
+  return columns.every((col) => existing.has(col));
+}
+
+async function fetchIds(client, tableName, whereSql, params) {
+  if (!(await tableHasColumns(client, tableName, ['id']))) return [];
+  const r = await client.query(
+    `SELECT id::text AS id FROM ${quoteIdent(tableName)} WHERE ${whereSql}`,
+    params
+  );
+  return r.rows.map((row) => row.id);
+}
+
+async function deleteWhere(client, tableName, whereSql, params, counts, key = tableName) {
+  if (!(await tableExists(client, tableName))) return 0;
+  const r = await client.query(
+    `DELETE FROM ${quoteIdent(tableName)} WHERE ${whereSql}`,
+    params
+  );
+  addCount(counts, key, r.rowCount);
+  return r.rowCount;
+}
+
+async function updateWhere(client, tableName, setSql, whereSql, params, counts, key = `${tableName}_updated`) {
+  if (!(await tableExists(client, tableName))) return 0;
+  const r = await client.query(
+    `UPDATE ${quoteIdent(tableName)} SET ${setSql} WHERE ${whereSql}`,
+    params
+  );
+  addCount(counts, key, r.rowCount);
+  return r.rowCount;
+}
+
+async function countWhere(client, tableName, whereSql, params) {
+  if (!(await tableExists(client, tableName))) return 0;
+  const r = await client.query(
+    `SELECT COUNT(*)::int AS n FROM ${quoteIdent(tableName)} WHERE ${whereSql}`,
+    params
+  );
+  return Number(r.rows[0]?.n) || 0;
+}
+
+async function deleteByOptionalUuidColumn(client, tableName, columnName, ids, counts, key = tableName) {
+  if (!ids.length || !(await tableHasColumns(client, tableName, [columnName]))) return 0;
+  return deleteWhere(
+    client,
+    tableName,
+    `${quoteIdent(columnName)} = ANY($1::uuid[])`,
+    [ids],
+    counts,
+    key
+  );
+}
+
+async function deleteByOptionalTextColumn(client, tableName, columnName, ids, counts, key = tableName) {
+  if (!ids.length || !(await tableHasColumns(client, tableName, [columnName]))) return 0;
+  return deleteWhere(
+    client,
+    tableName,
+    `${quoteIdent(columnName)} = ANY($1::text[])`,
+    [ids],
+    counts,
+    key
+  );
+}
+
+async function countByOptionalUuidColumn(client, tableName, columnName, ids) {
+  if (!ids.length || !(await tableHasColumns(client, tableName, [columnName]))) return 0;
+  return countWhere(
+    client,
+    tableName,
+    `${quoteIdent(columnName)} = ANY($1::uuid[])`,
+    [ids]
+  );
+}
+
+async function ensureAuditLogsTable(client) {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id BIGSERIAL PRIMARY KEY,
+      at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      action TEXT NOT NULL,
+      severity TEXT NOT NULL DEFAULT 'info',
+      admin_id TEXT,
+      target_type TEXT,
+      target_ids TEXT[] NOT NULL DEFAULT '{}',
+      details JSONB NOT NULL DEFAULT '{}'::jsonb
+    )
+  `);
+  await client.query(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
+  await client.query(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS action TEXT`);
+  await client.query(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS severity TEXT NOT NULL DEFAULT 'info'`);
+  await client.query(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS admin_id TEXT`);
+  await client.query(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS target_type TEXT`);
+  await client.query(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS target_ids TEXT[] NOT NULL DEFAULT '{}'`);
+  await client.query(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS details JSONB NOT NULL DEFAULT '{}'::jsonb`);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_audit_logs_action_at ON audit_logs(action, at DESC)`);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_audit_logs_severity_at ON audit_logs(severity, at DESC)`);
+  await client.query(`CREATE INDEX IF NOT EXISTS idx_audit_logs_admin_at ON audit_logs(admin_id, at DESC)`);
+}
+
+async function cleanupPendingOperationProposals(client, staffIds, counts) {
+  if (!staffIds.length || !(await tableExists(client, 'operation_proposals'))) return;
+  const columns = await getColumns(client, 'operation_proposals');
+  const match = [];
+  const params = [];
+  for (const col of ['staff_id', 'entity_id', 'target_entity_id', 'ragic_employee_id']) {
+    if (columns.has(col)) {
+      params.push(staffIds);
+      match.push(`${quoteIdent(col)} = ANY($${params.length}::text[])`);
+    }
+  }
+  if (!match.length) return;
+  const where = [];
+  if (columns.has('status')) where.push(`status = 'pending'`);
+  where.push(`(${match.join(' OR ')})`);
+  await deleteWhere(client, 'operation_proposals', where.join(' AND '), params, counts);
+}
+
+async function assertNoCoachBusinessReferences(client, coachIds) {
+  if (!coachIds.length) return;
+  const checks = [
+    ['course_periods', 'coach_id', '課程期'],
+    ['course_sessions', 'coach_id', '課堂'],
+    ['session_records', 'coach_id', '授課記錄'],
+    ['session_record_versions', 'edited_by', '授課記錄版本'],
+    ['course_evaluations', 'coach_id', '課程評鑑'],
+    ['lesson_plans', 'coach_id', '課前規劃'],
+    ['referral_records', 'coach_id', '推薦紀錄'],
+    ['referral_records', 'referred_coach_id', '推薦紀錄'],
+    ['admin_enrollments', 'coach_id', '後台報名'],
+    ['group_orders', 'coach_id', '團報訂單'],
+    ['checkin_records', 'checked_in_by_coach_id', '簽到紀錄'],
+  ];
+  const refs = [];
+  for (const [table, column, label] of checks) {
+    const count = await countByOptionalUuidColumn(client, table, column, coachIds);
+    if (count > 0) refs.push(`${label} ${count} 筆`);
+  }
+  if (refs.length) {
+    const err = new Error(`此員工已有業務紀錄，不能直接硬刪除；請先轉移/處理關聯資料：${refs.join('、')}`);
+    err.statusCode = 409;
+    err.code = 'STAFF_HAS_BUSINESS_REFERENCES';
+    throw err;
+  }
+}
+
+async function hardDeleteCoachAccountGraph(client, coachIds, counts) {
+  if (!coachIds.length) return;
+  await assertNoCoachBusinessReferences(client, coachIds);
+
+  const slotIds = await tableHasColumns(client, 'coach_availability_slots', ['id', 'coach_id'])
+    ? await fetchIds(client, 'coach_availability_slots', `coach_id = ANY($1::uuid[])`, [coachIds])
+    : [];
+  if (slotIds.length && await tableHasColumns(client, 'course_sessions', ['availability_slot_id'])) {
+    await updateWhere(
+      client,
+      'course_sessions',
+      `availability_slot_id = NULL`,
+      `availability_slot_id = ANY($1::uuid[])`,
+      [slotIds],
+      counts,
+      'course_sessions_nullified'
+    );
+  }
+  if (await tableHasColumns(client, 'course_sessions', ['reassigned_from_coach_id'])) {
+    await updateWhere(
+      client,
+      'course_sessions',
+      `reassigned_from_coach_id = NULL`,
+      `reassigned_from_coach_id = ANY($1::uuid[])`,
+      [coachIds],
+      counts,
+      'course_sessions_nullified'
+    );
+  }
+
+  if (slotIds.length) await deleteByOptionalUuidColumn(client, 'coach_availability_slots', 'id', slotIds, counts);
+  await deleteByOptionalUuidColumn(client, 'coach_bio_media', 'coach_id', coachIds, counts);
+  await deleteByOptionalUuidColumn(client, 'coach_venues', 'coach_id', coachIds, counts);
+  await deleteByOptionalUuidColumn(client, 'coach_portal_sessions', 'coach_id', coachIds, counts);
+  await deleteByOptionalUuidColumn(client, 'coach_personal_tags', 'coach_id', coachIds, counts);
+  await deleteByOptionalUuidColumn(client, 'eval_threshold_alerts', 'coach_id', coachIds, counts);
+}
+
 function rowToStaff(r) {
   const hasCoachProfile = !!r.coach_id;
   const isDualRoleCoach = hasCoachProfile && r.role !== 'coach';
@@ -296,8 +534,10 @@ router.get('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =>
     kickoffSyncStaffAsync();
 
     const { status, venueId, role, name, phone, senior } = req.query;
+    const roleFilter = normalizeRoleFilter(role);
     const where = [];
     const params = [];
+    where.push(`s.id <> 'ZZ-CANARY'`);
     if (status === 'active') where.push(`s.active = TRUE`);
     else if (status === 'inactive') where.push(`s.active = FALSE`);
     // Task #90：場館篩選 = 「該員工的所屬場館清單 包含 venueId」
@@ -311,7 +551,14 @@ router.get('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =>
     // 落在 'staff'，但實際已有 coaches 資料列）——比照本檔案 GET /coaches 既有的
     // 「資深教練」雙重角色查法（(s.role = 'coach' OR c.is_active = TRUE)），
     // STAFF_SELECT 已 LEFT JOIN coaches AS c，這裡沿用同一個 alias。
-    if (role)    { params.push(role);    where.push(`(s.role = $${params.length} OR (c.id IS NOT NULL AND $${params.length} = 'coach'))`); }
+    if (roleFilter === 'coach') {
+      where.push(`(s.role = 'coach' OR c.id IS NOT NULL)`);
+    } else if (roleFilter === 'lifeguard') {
+      where.push(`(s.is_lifeguard = TRUE OR s.lifeguard_active = TRUE)`);
+    } else if (roleFilter) {
+      params.push(roleFilter);
+      where.push(`s.role = $${params.length}`);
+    }
     if (name)    { params.push(`%${name}%`);  where.push(`s.name  ILIKE $${params.length}`); }
     if (phone)   { params.push(`%${phone}%`); where.push(`s.phone ILIKE $${params.length}`); }
     if (senior === 'yes') where.push(`s.is_senior = TRUE`);
@@ -334,6 +581,105 @@ router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, re
   } catch (err) {
     console.error('[admin/staff/sync]', err);
     res.status(500).json({ error: 'sync failed' });
+  }
+});
+
+router.delete('/bulk', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+  const staffIds = normalizeStaffIds(req.body?.staff_ids);
+  if (!staffIds.length) return res.status(400).json({ error: 'staff_ids 不能為空' });
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await ensureAuditLogsTable(client);
+
+    const staffRes = await client.query(
+      `SELECT id, name FROM admin_staff WHERE id = ANY($1::text[]) FOR UPDATE`,
+      [staffIds]
+    );
+    const staffRows = staffRes.rows;
+    const deletedStaffIds = staffRows.map((row) => row.id);
+    if (!deletedStaffIds.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: '找不到要刪除的員工' });
+    }
+    const counts = {};
+    let coachRows = [];
+
+    if (deletedStaffIds.length && await tableExists(client, 'coaches')) {
+      const cr = await client.query(
+        `SELECT id::text AS id, ragic_employee_id, name
+           FROM coaches
+          WHERE ragic_employee_id = ANY($1::text[])
+          FOR UPDATE`,
+        [deletedStaffIds]
+      );
+      coachRows = cr.rows;
+    }
+    const deletedCoachIds = coachRows.map((row) => row.id);
+
+    await cleanupPendingOperationProposals(client, deletedStaffIds, counts);
+
+    if (deletedStaffIds.length && await tableExists(client, 'admin_users')) {
+      const columns = await getColumns(client, 'admin_users');
+      const clauses = [];
+      const params = [];
+      if (columns.has('staff_id')) {
+        params.push(deletedStaffIds);
+        clauses.push(`staff_id = ANY($${params.length}::text[])`);
+      }
+      if (columns.has('id')) {
+        params.push(deletedStaffIds.map((id) => `U_${id}`));
+        clauses.push(`id = ANY($${params.length}::text[])`);
+      }
+      if (clauses.length) {
+        await deleteWhere(client, 'admin_users', `(${clauses.join(' OR ')})`, params, counts);
+      }
+    }
+
+    await deleteByOptionalTextColumn(client, 'admin_staff_venues', 'staff_id', deletedStaffIds, counts);
+    await hardDeleteCoachAccountGraph(client, deletedCoachIds, counts);
+    await deleteByOptionalUuidColumn(client, 'coaches', 'id', deletedCoachIds, counts);
+    await deleteByOptionalTextColumn(client, 'admin_staff', 'id', deletedStaffIds, counts);
+
+    await client.query(
+      `INSERT INTO audit_logs (action, severity, admin_id, target_type, target_ids, details)
+       VALUES ($1, $2, $3, $4, $5::text[], $6::jsonb)`,
+      [
+        'STAFF_HARD_DELETE',
+        'critical',
+        req.adminUser?.sub || req.adminUser?.id || req.adminUser?.username || null,
+        'staff',
+        deletedStaffIds,
+        JSON.stringify({
+          requested_staff_ids: staffIds,
+          staff_ids: deletedStaffIds,
+          staff: staffRows.map((row) => ({ id: row.id, name: row.name })),
+          coach_ids: deletedCoachIds,
+          coaches: coachRows.map((row) => ({
+            id: row.id,
+            ragic_employee_id: row.ragic_employee_id,
+            name: row.name,
+          })),
+          counts,
+          admin: {
+            id: req.adminUser?.sub || null,
+            username: req.adminUser?.username || null,
+            name: req.adminUser?.name || null,
+            role: req.adminUser?.role || null,
+          },
+        }),
+      ]
+    );
+
+    await client.query('COMMIT');
+    res.json({ ok: true, deleted_staff_ids: deletedStaffIds, deleted_coach_ids: deletedCoachIds, counts });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch { /* noop */ }
+    console.error('[admin/staff/bulk DELETE]', err);
+    res.status(err.statusCode || 500).json({ error: err.statusCode ? err.message : 'hard delete staff failed', code: err.code });
+  } finally {
+    client.release();
   }
 });
 

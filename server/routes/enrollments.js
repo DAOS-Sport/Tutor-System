@@ -192,7 +192,10 @@ router.post('/', async (req, res) => {
     } catch (err) {
       await client.query('ROLLBACK');
       if (err.code && err.code.startsWith('COUPON_')) {
-        return res.status(400).json({ error: '折價券無法使用，請確認代碼或重新試算', code: 'COUPON_INVALID' });
+        return res.status(400).json({
+          error: err.publicMessage ? err.message : '折價券無法使用，請確認代碼或重新試算',
+          code: err.publicMessage ? err.code : 'COUPON_INVALID',
+        });
       }
       throw err;
     }
@@ -229,6 +232,7 @@ router.post('/', async (req, res) => {
           originalPrice: preview.originalPrice,
           discountAmount: preview.discountAmount,
           finalPrice: preview.finalPrice,
+          requestPeriods: periodCount,
         }, client);
       } catch (err) {
         const softFail = err && err.code
@@ -320,7 +324,10 @@ router.post('/', async (req, res) => {
     await client.query('ROLLBACK').catch(() => {});
     console.error('[enrollments create]', err);
     if (err && err.code && String(err.code).startsWith('COUPON_')) {
-      return res.status(400).json({ error: '折價券無法使用，請確認代碼或重新試算', code: 'COUPON_INVALID' });
+      return res.status(400).json({
+        error: err.publicMessage ? err.message : '折價券無法使用，請確認代碼或重新試算',
+        code: err.publicMessage ? err.code : 'COUPON_INVALID',
+      });
     }
     res.status(500).json({ error: 'enrollment create failed' });
   } finally {

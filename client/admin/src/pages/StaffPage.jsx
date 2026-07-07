@@ -16,6 +16,7 @@ const EMPTY_FILTERS = { status: 'all', venueId: '', name: '', role: '', phone: '
 const ROLE_TONE = { admin: 'primary', manager: 'teal', staff: 'gold', coach: 'green', lifeguard: 'amber' };
 const MULTIPLIER_MIN = 1.00;
 const MULTIPLIER_MAX = 1.50;
+const HARD_DELETE_WARNING = '警告：此操作為物理級硬刪除（Hard Delete），將永久抹除本地資料庫中的員工紀錄。請確保您已在 Ragic 端同步修正或刪除了對應的髒資料，否則夜間同步時此髒資料將會再次寫入。是否確認刪除？';
 
 /**
  * 密碼欄：眼睛圖示檢視密碼。密碼以 bcrypt 雜湊保存無法直接還原，
@@ -119,6 +120,9 @@ export default function StaffPage() {
   const [createdHint, setCreatedHint] = useState(null);
   const [resetting, setResetting] = useState(null); // staff row pending reset confirm
   const [resetBusy, setResetBusy] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [deleting, setDeleting] = useState(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   async function confirmReset() {
     if (!resetting) return;
@@ -156,14 +160,28 @@ export default function StaffPage() {
     return () => { cancel = true; };
   }, [filters, venues]);
 
+  useEffect(() => {
+    if (!Array.isArray(staff)) return;
+    const visible = new Set(staff.map((row) => row.id));
+    setSelectedIds((prev) => {
+      const next = new Set([...prev].filter((id) => visible.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [staff]);
+
+  async function fetchStaffList() {
+    const fresh = await staffApi.list(normalizeFilters(filters));
+    setStaff(fresh);
+    return fresh;
+  }
+
   async function syncRagic() {
     setSyncing(true);
     try {
       const r = await staffApi.syncRagic();
       if (r.skipped) toast.info('未設定 Ragic credentials，略過');
       else toast.success(`已同步 ${r.synced || 0} 位員工`);
-      const fresh = await staffApi.list(normalizeFilters(filters));
-      setStaff(fresh);
+      await fetchStaffList();
     } catch {
       toast.error('Ragic 同步失敗');
     } finally {
@@ -172,10 +190,53 @@ export default function StaffPage() {
   }
 
   const venueMap = useMemo(() => Object.fromEntries(venues.map((v) => [v.id, v.name])), [venues]);
+  const visibleIds = useMemo(() => (staff || []).map((row) => row.id), [staff]);
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
   const [togglingId, setTogglingId] = useState(null);
   const [fieldToggling, setFieldToggling] = useState(null); // `${id}:${field}`，救生員/教練快捷開關忙碌狀態
 
   if (!staff) return <LoadingSpinner fullPage />;
+
+  function toggleSelected(id) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAllVisible() {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allVisibleSelected) visibleIds.forEach((id) => next.delete(id));
+      else visibleIds.forEach((id) => next.add(id));
+      return next;
+    });
+  }
+
+  function requestHardDelete(rows) {
+    const list = Array.isArray(rows) ? rows.filter(Boolean) : [rows].filter(Boolean);
+    if (!list.length) return;
+    setDeleting({ rows: list, ids: list.map((row) => row.id) });
+  }
+
+  async function confirmHardDelete() {
+    if (!deleting?.ids?.length) return;
+    setDeleteBusy(true);
+    try {
+      const res = await staffApi.hardDelete(deleting.ids);
+      const n = res?.deleted_staff_ids?.length ?? deleting.ids.length;
+      toast.success(`已硬刪除 ${n} 筆員工資料`);
+      setSelectedIds(new Set());
+      setDeleting(null);
+      await fetchStaffList();
+    } catch (err) {
+      toast.error(err?.response?.data?.error || '硬刪除失敗');
+    } finally {
+      setDeleteBusy(false);
+    }
+  }
 
   async function toggleActive(row) {
     if (togglingId === row.id) return;
@@ -333,6 +394,25 @@ export default function StaffPage() {
   }
 
   const columns = [
+    { key: '__select', label: (
+        <input
+          type="checkbox"
+          checked={allVisibleSelected}
+          onChange={toggleSelectAllVisible}
+          aria-label="全選目前列表員工"
+          className="h-4 w-4 rounded border-gray-300 text-brand-primary focus:ring-brand-teal"
+        />
+      ),
+      className: 'w-10 text-center',
+      render: (r) => (
+        <input
+          type="checkbox"
+          checked={selectedIds.has(r.id)}
+          onChange={() => toggleSelected(r.id)}
+          aria-label={`選取 ${r.name}`}
+          className="h-4 w-4 rounded border-gray-300 text-brand-primary focus:ring-brand-teal"
+        />
+      ) },
     { key: 'id', label: '編號', render: (r) => <span className="font-mono text-xs text-gray-500">{r.id}</span> },
     { key: 'name', label: '姓名', render: (r) => <span className="font-medium">{r.name}</span> },
     { key: 'role', label: '角色',
@@ -423,9 +503,14 @@ export default function StaffPage() {
       render: (r) => <PasswordCell row={r} isAdmin={isAdmin} onReset={setResetting} /> },
     { key: 'actions', label: '操作', className: 'text-right',
       render: (r) => (
-        <button className="text-xs font-medium text-brand-teal hover:underline" onClick={() => openEditor(r)}>
-          編輯
-        </button>
+        <div className="flex flex-wrap justify-end gap-2 whitespace-nowrap">
+          <button className="text-xs font-medium text-brand-teal hover:underline" onClick={() => openEditor(r)}>
+            編輯
+          </button>
+          <button className="text-xs font-bold text-brand-error hover:underline" onClick={() => requestHardDelete(r)}>
+            硬刪除
+          </button>
+        </div>
       ) },
   ];
 
@@ -438,7 +523,8 @@ export default function StaffPage() {
       options: (staff || []).map((s) => ({ value: s.name, label: s.name })), placeholder: '可輸入或選擇' },
     { key: 'role', label: '角色', type: 'select', options: [
         { value: '', label: '全部' }, { value: 'admin', label: '系統管理員' },
-        { value: 'manager', label: '主管' }, { value: 'staff', label: '行政櫃檯' }, { value: 'coach', label: '教練' }] },
+        { value: 'manager', label: '主管' }, { value: 'staff', label: '行政櫃檯' },
+        { value: 'coach', label: '教練' }, { value: 'lifeguard', label: '救生員' }] },
     { key: 'phone', label: '電話', type: 'input', placeholder: '末 4 碼或全號' },
     { key: 'senior', label: '資深', type: 'radio', options: [
         { value: '', label: '不限' }, { value: 'yes', label: '是' }, { value: 'no', label: '否' }] },
@@ -451,6 +537,12 @@ export default function StaffPage() {
         subtitle="F-A02 · 員工 / 登入帳號 / 教練資料三表單一事實來源；新建後自動建立登入帳號"
         actions={(
           <div className="flex gap-2">
+            <button type="button"
+              onClick={() => requestHardDelete(staff.filter((row) => selectedIds.has(row.id)))}
+              disabled={selectedIds.size === 0}
+              className="rounded-lg bg-brand-error px-4 py-2 text-sm font-bold text-white hover:bg-brand-error-strong disabled:cursor-not-allowed disabled:opacity-40">
+              {selectedIds.size > 0 ? `批量刪除 (${selectedIds.size})` : '批量刪除'}
+            </button>
             <button type="button" onClick={startCreate}
               className="rounded-lg bg-brand-primary px-4 py-2 text-sm font-bold text-white hover:bg-brand-teal">
               ＋ 新建員工
@@ -490,6 +582,30 @@ export default function StaffPage() {
               系統會嘗試以 LINE 通知該員工（若未綁定 LINE 則略過，請改用其他方式告知）。
               請提醒對方登入後立即修改密碼。
             </p>
+          </div>
+        )}
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        open={!!deleting}
+        title="硬刪除員工資料"
+        confirmLabel="確認無誤，強制執行"
+        tone="danger"
+        busy={deleteBusy}
+        onCancel={() => !deleteBusy && setDeleting(null)}
+        onConfirm={confirmHardDelete}
+      >
+        {deleting && (
+          <div className="space-y-3">
+            <p className="font-semibold text-brand-error">{HARD_DELETE_WARNING}</p>
+            <div className="max-h-36 overflow-y-auto rounded border border-gray-200 bg-gray-50 p-2 text-xs text-gray-600">
+              {deleting.rows.map((row) => (
+                <div key={row.id} className="flex justify-between gap-3 py-0.5">
+                  <span className="font-mono">{row.id}</span>
+                  <span className="truncate">{row.name}</span>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </ConfirmDialog>

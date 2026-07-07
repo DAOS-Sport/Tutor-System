@@ -117,6 +117,8 @@ export default function PromotionsPage() {
       start_date: p.start_date,
       end_date: p.end_date,
       max_uses: p.max_uses || '',
+      platform_total_period_cap: p.platform_total_period_cap != null ? p.platform_total_period_cap : '',
+      parent_period_cap: p.parent_period_cap != null ? p.parent_period_cap : '',
       // 不帶 id / status → 走新增（draft）路徑
     });
   }
@@ -159,7 +161,7 @@ export default function PromotionsPage() {
                 <th className="px-3 py-2 text-left">名稱 / 折價券</th>
                 <th className="px-3 py-2 text-left">折扣</th>
                 <th className="px-3 py-2 text-left">期間</th>
-                <th className="px-3 py-2 text-left">已用 / 總上限</th>
+                <th className="px-3 py-2 text-left">已用 / 上限</th>
                 <th className="px-3 py-2 text-left">狀態</th>
                 <th className="px-3 py-2"></th>
               </tr>
@@ -175,7 +177,15 @@ export default function PromotionsPage() {
                     </td>
                     <td className="px-3 py-2 text-gray-700">{fmtDiscount(p)}</td>
                     <td className="px-3 py-2 text-xs text-gray-500">{p.start_date} ～ {p.end_date}</td>
-                    <td className="px-3 py-2 text-xs text-gray-500">{p.current_uses}{p.max_uses ? ` / ${p.max_uses}` : ''}</td>
+                    <td className="px-3 py-2 text-xs text-gray-500">
+                      <div>{p.current_uses}{p.max_uses ? ` / ${p.max_uses}` : ''} 次</div>
+                      {(p.platform_total_period_cap != null || p.parent_period_cap != null) && (
+                        <div className="mt-0.5 text-[11px] text-gray-400">
+                          期數 {p.current_period_uses || 0}{p.platform_total_period_cap != null ? ` / ${p.platform_total_period_cap}` : ' / 不限'}
+                          {p.parent_period_cap != null ? `，每家長 ${p.parent_period_cap}` : ''}
+                        </div>
+                      )}
+                    </td>
                     <td className="px-3 py-2"><StatusBadge tone={stMeta.tone}>{stMeta.label}</StatusBadge></td>
                     <td className="px-3 py-2">
                       <div className="flex flex-wrap justify-end gap-1.5">
