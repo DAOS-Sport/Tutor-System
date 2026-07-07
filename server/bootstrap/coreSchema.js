@@ -1042,6 +1042,72 @@ BEGIN
   END IF;
 END $$;
 
+-- ─── H01 員工/教練識別鍵修復（P1.1「熊韋程 staff 事故」，2026-07-07）─────────
+-- 根治跟家長端同一種病因的另一個實例：H01 同步過去以使用者可編輯的「員工編號」
+-- 當比對鍵（coaches.ragic_employee_id、admin_staff.id 本身就是這個編號），Ragic
+-- 端「更新系統帳號資料」動作按鈕改掉編號後，本地舊列變孤兒（line_uid 永久凍結）、
+-- 新編號被誤判成新人（見 ragicAdmin.js _syncStaffImpl 註解 P1.1 決策 相關段落）。
+-- 修復：改以 Ragic 真正不可變的 _ragicId 為準（欄位名沿用既有 ragic_record_id）。
+-- admin_staff.ragic_record_id 欄位雖然已存在，但先前 _applyStaffChange 寫入時誤填
+-- 成員工編號本身（等同 id），這裡先做安全去重（同 parents/students 手法，不刪列，
+-- 只解除重複佔用）再建真正的 UNIQUE，實際的正確值由一次性回填 script 填入。
+DO $$
+BEGIN
+  ALTER TABLE coaches ADD COLUMN IF NOT EXISTS ragic_record_id TEXT;
+
+  WITH ranked AS (
+    SELECT id, ROW_NUMBER() OVER (
+             PARTITION BY ragic_record_id ORDER BY updated_at DESC
+           ) AS rn
+      FROM coaches
+     WHERE ragic_record_id IS NOT NULL
+  )
+  UPDATE coaches SET ragic_record_id = NULL, updated_at = NOW()
+   WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
+
+  IF EXISTS (
+    SELECT ragic_record_id FROM coaches WHERE ragic_record_id IS NOT NULL
+    GROUP BY ragic_record_id HAVING COUNT(*) > 1
+  ) THEN
+    RAISE WARNING '[coreSchema] coaches.ragic_record_id 去重後仍有重複，略過唯一索引升級（需人工排查）';
+  ELSE
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_coaches_ragic_record_id
+      ON coaches(ragic_record_id) WHERE ragic_record_id IS NOT NULL;
+  END IF;
+
+  WITH ranked AS (
+    SELECT id, ROW_NUMBER() OVER (
+             PARTITION BY ragic_record_id ORDER BY updated_at DESC
+           ) AS rn
+      FROM admin_staff
+     WHERE ragic_record_id IS NOT NULL
+  )
+  UPDATE admin_staff SET ragic_record_id = NULL, updated_at = NOW()
+   WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
+
+  IF EXISTS (
+    SELECT ragic_record_id FROM admin_staff WHERE ragic_record_id IS NOT NULL
+    GROUP BY ragic_record_id HAVING COUNT(*) > 1
+  ) THEN
+    RAISE WARNING '[coreSchema] admin_staff.ragic_record_id 去重後仍有重複，略過唯一索引升級（需人工排查）';
+  ELSE
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_admin_staff_ragic_record_id
+      ON admin_staff(ragic_record_id) WHERE ragic_record_id IS NOT NULL;
+  END IF;
+
+  -- admin_staff.id 修復後可能因員工編號變更而被 UPDATE（見 _applyStaffChange），
+  -- admin_staff_venues 的 FK 預設只处理 ON DELETE，補上 ON UPDATE CASCADE 讓
+  -- PK 值變更能連動更新，否則會撞 FK violation。只在尚未修正時才 DROP/ADD 一次。
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'admin_staff_venues_staff_id_fkey' AND confupdtype != 'c'
+  ) THEN
+    ALTER TABLE admin_staff_venues DROP CONSTRAINT admin_staff_venues_staff_id_fkey;
+    ALTER TABLE admin_staff_venues ADD CONSTRAINT admin_staff_venues_staff_id_fkey
+      FOREIGN KEY (staff_id) REFERENCES admin_staff(id) ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+END $$;
+
 -- 學員第三層 name+birth fallback 比對（upsertLocalStudents 內 ragic_record_id/id_number
 -- 皆未命中、僅靠姓名+生日猜測是同一人）不再靜默 upsert 覆蓋既有列，改記錄待人工複核，
 -- 避免同名同姓（尤其常見中文姓名）誤判成同一位學員、覆蓋錯的人的資料。
@@ -1078,6 +1144,26 @@ CREATE TABLE IF NOT EXISTS ragic_z01_shadow (
   fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_ragic_z01_shadow_fetched ON ragic_z01_shadow(fetched_at);
+
+-- H01（員工）/H05（場館）影子表：同一套「無腦 pull → 從 shadow 清洗」分工，補上
+-- 決策9「所有 RAGIC 的同步都用影子表格式」原本沒收斂到的兩個表單（見 ragicAdmin.js
+-- _shadowPullH01Impl/_reconcileH01FromShadowImpl、_shadowPullH05Impl/
+-- _reconcileH05FromShadowImpl）。H01 key 用 ragic_record_id（真正的 _ragicId，
+-- 不是可變的員工編號，理由同上方 H01 員工/教練識別鍵修復段落）；H05 場館代碼本身
+-- 穩定，key 直接用代碼即可。
+CREATE TABLE IF NOT EXISTS ragic_h01_shadow (
+  ragic_record_id TEXT PRIMARY KEY,
+  raw_data JSONB NOT NULL,
+  fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_ragic_h01_shadow_fetched ON ragic_h01_shadow(fetched_at);
+
+CREATE TABLE IF NOT EXISTS ragic_h05_shadow (
+  venue_code TEXT PRIMARY KEY,
+  raw_data JSONB NOT NULL,
+  fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_ragic_h05_shadow_fetched ON ragic_h05_shadow(fetched_at);
 `;
 
 // 預設關鍵字清單（F-A07，可在後台增減 / 停用）
