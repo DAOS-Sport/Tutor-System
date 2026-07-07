@@ -4,8 +4,9 @@
  * - requireParent: 必須持有有效 JWT 且 type === 'parent'
  *
  * 與 coachAuth 共用 JWT_SECRET（getSecret 邏輯一致）。
- * Phase 4 之前家長端皆走 mock，故 LIFF 直接用 mockDb；Phase 4 後若 VITE_USE_MOCK=false，
- * LIFF 會先呼叫 POST /api/auth/parent-login 取得 token，再用 Bearer 呼叫 /api/chat/*。
+ * 家長端一律走 LINE-first 流程取得 token（parent-line-login → verify-phone/
+ * verify-student → bind，見封閉狀態機規格），再用 Bearer 呼叫 /api/chat/* 等其餘端點。
+ * （legacy phone-only POST /api/auth/parent-login 已刪除，P1.1 §4 決策 2026-07-07）
  */
 const jwt = require('jsonwebtoken');
 const { pool } = require('../models/db');
@@ -32,7 +33,10 @@ async function requireParent(req, res, next) {
   } catch {
     return res.status(401).json({ error: 'Invalid or expired token' });
   }
-  if (p.type !== 'parent') return res.status(403).json({ error: 'Parent token required' });
+  // 401 而非 403：故意不區分「沒有 token」跟「type 不對（例如誤帶 flowToken）」，
+  // 避免讓呼叫端從狀態碼反推出「這是一個有效但錯誤類型的 token」（規格 §7 PASS
+  // 判準：以 flowToken 打家長業務 API 需回 401，而非透露 token 類型資訊的 403）。
+  if (p.type !== 'parent') return res.status(401).json({ error: 'Unauthorized', code: 'PARENT_TOKEN_REQUIRED' });
 
   // 每次請求都跟資料庫即時比對：帳號被刪除或停用(is_active=FALSE)即失效，前端會收到 401 並登出。
   try {

@@ -188,6 +188,53 @@ async function queryAllPaged(formPath, params = {}, concurrency = 1) {
   return merged;
 }
 
+// P1.1 決策4：完整性告警閘門專用分頁抓取。與 queryAllPaged 的差異：
+//   (a) 迴圈若是因為撞到 RAGIC_MAX_PAGES 才停（而非遇到自然的短頁/空頁），
+//       視為「可能截斷」——這是唯一能不靠 Ragic 回報總數、就 100% 確定判斷出來的
+//       不完整訊號（嫌疑2/(A) 10k 上限靜默截斷）。
+//   (b) 邊界複查：整輪拉完後重抓第一頁，確認每筆仍在 merged 內——用來抓「拉取過程中
+//       Ragic 端有記錄被刪除/插入，導致 offset 分頁位移、漏掉正在推移中的記錄」這類
+//       並發修改風險（嫌疑2/(B) 無穩定排序鍵）。這只是取樣式複查，非數學上的完整證明
+//       （Ragic 未提供可獨立核對的「總筆數」端點），但足以攔下「offset 分頁在拉取
+//       當下發生位移」這個具體風險，比完全不做複查安全。
+// 回傳 { records, truncated, boundaryMismatch }，由 caller 決定是否 hard-fail。
+async function queryAllPagedWithIntegrity(formPath, params = {}, concurrency = 1) {
+  const merged = {};
+  let page = 0;
+  let reachedNaturalEnd = false;
+  while (page < RAGIC_MAX_PAGES) {
+    const batchSize = Math.min(concurrency, RAGIC_MAX_PAGES - page);
+    const offsets = Array.from({ length: batchSize }, (_, i) => (page + i) * RAGIC_PAGE_SIZE);
+    const pages = await Promise.all(
+      offsets.map((offset) => query(formPath, { ...params, limit: RAGIC_PAGE_SIZE, offset }))
+    );
+    for (const pageData of pages) {
+      if (!pageData || typeof pageData !== 'object') { reachedNaturalEnd = true; break; }
+      const keys = Object.keys(pageData);
+      if (keys.length === 0) { reachedNaturalEnd = true; break; }
+      Object.assign(merged, pageData);
+      if (keys.length < RAGIC_PAGE_SIZE) { reachedNaturalEnd = true; break; }
+    }
+    page += batchSize;
+    if (reachedNaturalEnd) break;
+  }
+  const truncated = !reachedNaturalEnd;
+
+  let boundaryMismatch = false;
+  if (!truncated) {
+    try {
+      const firstPage = await query(formPath, { ...params, limit: RAGIC_PAGE_SIZE, offset: 0 });
+      for (const id of Object.keys(firstPage || {})) {
+        if (!(id in merged)) { boundaryMismatch = true; break; }
+      }
+    } catch (err) {
+      console.warn('[Ragic] 完整性邊界複查失敗（不視為 truncated，僅記錄）:', err.message);
+    }
+  }
+
+  return { records: Object.values(merged), truncated, boundaryMismatch };
+}
+
 // ─────────────────────────────────────────────────────────────
 // 簡易 in-process TTL 快取，避免高併發打爆 Ragic（不引入 Redis）
 // ─────────────────────────────────────────────────────────────
@@ -251,6 +298,51 @@ async function getAllStaff() {
 async function getAllParents() {
   // Z01 約 1500 筆；並發 3 頁同時拉，把循序 7 趟縮成 3 趟，大幅減少 Ragic 網路等待。
   return Object.values(await queryAllPaged(process.env.RAGIC_FORM_Z01, {}, 3));
+}
+
+// P1.1 決策4：帶完整性檢查的 Z01 全量拉取，供夜間 pull / quarantine 掃描使用
+// （取代直接呼叫 getAllParents，讓 caller 能在 truncated/boundaryMismatch 時 hard-fail）。
+async function getAllParentsWithIntegrity() {
+  return queryAllPagedWithIntegrity(process.env.RAGIC_FORM_Z01, {}, 3);
+}
+
+// P1.1 決策4：Z01 schema-drift 偵測（嫌疑3 CONFIRMED 的主動偵測版）。
+// 入站 GET 完全靠中文顯示名稱取值（mapZ01Parent/parseZ01Students），Field ID 在 Ragic
+// 後台若被改了顯示名稱、程式這邊 ragicSchema.js 沒跟著改，中文名 keyed 的讀取會全部
+// 讀到空字串 → 全量誤判成待整理/誤刪（見 docs/ragic-recon-investigation-20260707.md §2）。
+// 用 `?api&def=1`（docs/ragic_api.md 已文件化的 schema 探索端點）抓 Ragic 端目前真實的
+// 「Field ID → 顯示名稱」，逐一比對 ragicSchema.js 凍結定義，任何一個對不上就回報 drifted。
+async function checkZ01SchemaDrift() {
+  const data = await query(process.env.RAGIC_FORM_Z01, { def: 1 });
+  const liveNameById = new Map();
+  const fields = (data && typeof data === 'object' && data.fields) || {};
+  for (const [key, val] of Object.entries(fields)) {
+    if (key.startsWith('fid') && val && val.name) {
+      liveNameById.set(key.slice(3), val.name);
+    } else if (key.startsWith('stid') && val && typeof val === 'object') {
+      for (const [subKey, subVal] of Object.entries(val)) {
+        if (subKey.startsWith('fid') && subVal && subVal.name) {
+          liveNameById.set(subKey.slice(3), subVal.name);
+        }
+      }
+    }
+  }
+
+  const mismatches = [];
+  const checkGroup = (fieldMap, label) => {
+    for (const [expectedName, fieldId] of Object.entries(fieldMap || {})) {
+      const liveName = liveNameById.get(String(fieldId));
+      if (liveName === undefined) {
+        mismatches.push({ group: label, fieldId, expectedName, liveName: null, reason: 'field_missing' });
+      } else if (liveName !== expectedName) {
+        mismatches.push({ group: label, fieldId, expectedName, liveName, reason: 'name_changed' });
+      }
+    }
+  };
+  checkGroup(Z01_FIELDS, 'Z01');
+  checkGroup(Z01_STUDENT_FIELDS, 'Z01_STUDENT');
+
+  return { drifted: mismatches.length > 0, mismatches };
 }
 
 // 註（Task #95 政策定案）：H01 員工資料一律「Ragic → 系統」單向，本系統**不寫** H01。
@@ -485,7 +577,7 @@ function parseZ01Students(record) {
     const s = String(value || '').trim();
     if (!s) return '';
     // Ragic 實際回傳常見 yyyy/MM/dd；DB date 可吃 yyyy-MM-dd。
-    const m = s.match(/^(\\d{4})[\\/-](\\d{1,2})[\\/-](\\d{1,2})/);
+    const m = s.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/);
     if (!m) return s;
     return `${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`;
   };
@@ -1166,6 +1258,8 @@ module.exports = {
   getAllStaff,
   getActiveVenues,
   getAllParents,
+  getAllParentsWithIntegrity,
+  checkZ01SchemaDrift,
   probeForm,
   getParentByPhone,
   getParentByLineUid,

@@ -78,7 +78,10 @@ const Z01_STUDENTS_SUBTABLE_ID = '1001119';
 const Z01_STUDENT_FIELDS = {
   '學員姓名':       '1001115',
   '出生年月日':     '1001116',
-  '學(性別)':       '1001117',
+  // Ragic 後台顯示名稱已改為「(學)性別」（原「學(性別)」），2026-07-07 由
+  // checkZ01SchemaDrift() 的 ?api&def=1 即時比對發現並校正；parseZ01Students 的
+  // pick() 早已把兩種寫法都列為 fallback，故此前未造成實際讀取失效，僅本檔定義過期。
+  '(學)性別':       '1001117',
   '身分證字號':     '1001118',
   '血型':           '1001880',
   '學員編號':       '1001132',
@@ -171,7 +174,7 @@ const FIELD = {
   Z01_STUDENT: {
     NAME:         Z01_STUDENT_FIELDS['學員姓名'],
     BIRTH_DATE:   Z01_STUDENT_FIELDS['出生年月日'],
-    GENDER:       Z01_STUDENT_FIELDS['學(性別)'],
+    GENDER:       Z01_STUDENT_FIELDS['(學)性別'],
     ID_NUMBER:    Z01_STUDENT_FIELDS['身分證字號'],
     BLOOD_TYPE:   Z01_STUDENT_FIELDS['血型'],
     STUDENT_CODE: Z01_STUDENT_FIELDS['學員編號'],

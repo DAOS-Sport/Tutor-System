@@ -327,7 +327,6 @@ function classifyNoStatic(route) {
   const key = routeKey(route);
   const map = {
     'GET /api/auth/line-config-debug': 'manual debug endpoint; env gated by DEBUG_LINE_AUTH in production',
-    'POST /api/auth/parent-login': 'legacy endpoint; default 410 unless ALLOW_LEGACY_PARENT_LOGIN=1 outside production',
     'GET /api/coach-portal/auth/line/callback': 'external LINE OAuth callback; not called by frontend JS',
     'DELETE /api/parents/me/students/:id': 'intentional 405 guard; frontend deletion removed',
     'PATCH /api/transfers/:id/cancel': 'backend/service supports cancel; no current LIFF API wrapper or UI caller',

@@ -20,11 +20,77 @@
 const { pool } = require('../models/db');
 const ragic = require('./ragic');
 const parentSync = require('./parentSync');
+const line = require('./line');
 // Ragic 表單 / 欄位對應唯一來源（凍結點）：H01 LINE UID 候選、場館欄位、角色關鍵字
 const { H01 } = require('../config/ragicSchema');
 
 function ragicEnabled() {
   return !!process.env.RAGIC_API_KEY && !!process.env.RAGIC_BASE_URL;
+}
+
+// P1.1 決策4：完整性/schema-drift hard-fail 時通知 admin/manager（比照
+// cron/index.js eval-threshold 告警的既有寫法：查 admin_users 找有綁 LINE 的
+// admin/manager，補場館以解析 channel token，逐一 push；純 best-effort，
+// 告警本身失敗不影響 hard-fail 判斷已生效（run 仍然中止、不寫入）。
+async function _alertAdmins(text) {
+  try {
+    const mgrs = await pool.query(
+      `SELECT line_uid, venue_id FROM admin_users
+        WHERE role IN ('admin','manager') AND line_uid IS NOT NULL`
+    );
+    let fallbackVenue = null;
+    if (mgrs.rows.some((m) => !m.venue_id)) {
+      const v = await pool.query(`SELECT id FROM venues WHERE is_active = TRUE ORDER BY id LIMIT 1`);
+      fallbackVenue = v.rows[0]?.id || null;
+    }
+    const targets = mgrs.rows
+      .map((m) => ({ uid: m.line_uid, venueId: m.venue_id || fallbackVenue }))
+      .filter((t) => t.uid && t.venueId);
+    for (const t of targets) {
+      try {
+        await line.pushMessage(t.uid, [{ type: 'text', text }], t.venueId);
+      } catch (e) {
+        console.warn('[ragic-alert] push failed:', e.message);
+      }
+    }
+  } catch (err) {
+    console.warn('[ragic-alert] 查詢告警對象失敗:', err.message);
+  }
+}
+
+// P1.1 決策4：完整性/schema-drift 共用閘門。回傳 null 代表可放行；
+// 回傳字串代表應 hard-fail（caller 據此中止 run、不寫入任何本地變更），
+// 字串內容即為要記錄進 ragic_sync_log.error_message 的原因。
+// 兩種失敗都會觸發 LINE 告警——避免嫌疑3 那種欄位改名 CONFIRMED bug 在
+// 告警的同時繼續跑、又造成一批誤刪/解綁。
+async function _checkZ01IntegrityGate(integrityResult) {
+  if (integrityResult.truncated) {
+    const msg = `Ragic Z01 全量拉取疑似遭截斷（撞到 RAGIC_MAX_PAGES 上限，非自然結尾），已中止本輪、不寫入任何本地變更`;
+    await _alertAdmins(`【Ragic 同步告警】${msg}`);
+    return msg;
+  }
+  if (integrityResult.boundaryMismatch) {
+    const msg = `Ragic Z01 全量拉取邊界複查不一致（疑似拉取期間有並發修改導致分頁位移），已中止本輪、不寫入任何本地變更`;
+    await _alertAdmins(`【Ragic 同步告警】${msg}`);
+    return msg;
+  }
+  let drift;
+  try {
+    drift = await ragic.checkZ01SchemaDrift();
+  } catch (err) {
+    const msg = `Ragic Z01 schema-drift 偵測本身失敗：${err.message}`;
+    await _alertAdmins(`【Ragic 同步告警】${msg}`);
+    return msg;
+  }
+  if (drift.drifted) {
+    const detail = drift.mismatches
+      .map((m) => `${m.group}:${m.fieldId} 預期「${m.expectedName}」實際「${m.liveName ?? '(欄位消失)'}」`)
+      .join('；');
+    const msg = `Ragic Z01 欄位顯示名稱已變更（schema-drift）：${detail}，已中止本輪、不寫入任何本地變更，請更新 server/config/ragicSchema.js 後再重試`;
+    await _alertAdmins(`【Ragic 同步告警】${msg}`);
+    return msg;
+  }
+  return null;
 }
 
 (function logRagicStatus() {
@@ -157,50 +223,9 @@ async function _buildVenueResolver() {
   };
 }
 
-/**
- * Task #95：場館自動套用（Ragic 權威）。
- * H01「部門/主場館」欄位值經 _extractStaffVenueIds（拆逗號/頓號）+ _buildVenueResolver
- * （處理「三重商工 (test)」括號後綴、名稱→代碼）清洗後，直接寫入
- * admin_staff_venues / coach_venues / admin_staff.venue_id（**不經待審核**）——
- * 場館即權限可見範圍，依 Ragic 即時生效；後台員工編輯彈窗對 Ragic 來源員工已鎖定此欄。
- * 僅落地實際存在的場館代碼，避免 FK violation；codes 為空時不呼叫（caller 把關）。
- */
-async function _applyStaffVenuesDirect(staffId, venueCodes) {
-  const codes = [...new Set((venueCodes || []).map((s) => String(s).trim()).filter(Boolean))];
-  if (!codes.length) return false;
-  const vr = await pool.query(`SELECT id FROM admin_venues WHERE id = ANY($1::text[])`, [codes]);
-  const validIds = vr.rows.map((x) => x.id);
-  if (!validIds.length) return false;
-  await pool.query(`DELETE FROM admin_staff_venues WHERE staff_id = $1`, [staffId]);
-  for (const vid of validIds) {
-    await pool.query(
-      `INSERT INTO admin_staff_venues (staff_id, venue_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-      [staffId, vid]
-    );
-  }
-  // admin_staff.venue_id 維持「第一筆」fallback（向下相容舊讀取路徑）
-  await pool.query(
-    `UPDATE admin_staff SET venue_id = $2, updated_at = NOW() WHERE id = $1`,
-    [staffId, validIds[0]]
-  );
-  // 教練 1:1 行存在 → coach_venues 一併套用（FK 對 venues，僅取啟用中場館）
-  const c = await pool.query(`SELECT id FROM coaches WHERE ragic_employee_id = $1`, [staffId]);
-  const coachId = c.rows[0]?.id;
-  if (coachId) {
-    const cv = await pool.query(
-      `SELECT id FROM venues WHERE id = ANY($1::text[]) AND is_active = TRUE`,
-      [validIds]
-    );
-    await pool.query(`DELETE FROM coach_venues WHERE coach_id = $1`, [coachId]);
-    for (const row of cv.rows) {
-      await pool.query(
-        `INSERT INTO coach_venues (coach_id, venue_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-        [coachId, row.id]
-      );
-    }
-  }
-  return true;
-}
+// P1.1 決策3（2026-07-07）：原 Task #95「場館自動套用」_applyStaffVenuesDirect
+// 已移除——場館指派改回待審核，見 _syncStaffImpl 的 diff.venue_ids 與
+// _applyStaffChange 內既有的 admin_staff_venues/coach_venues 套用邏輯（Task #90）。
 
 // Task #92：normalize 員工編號比對 key。
 // admin 手建員工可能輸入 'c001' / ' C001 '，Ragic 回 'C001'，
@@ -247,9 +272,12 @@ async function _syncStaffImpl() {
     }
     const seenKeys = new Set();
     let staged = 0;
-    let venuesApplied = 0; // Task #95：場館自動套用筆數（不經待審核）
+    let venueDiffsStaged = 0; // P1.1 決策3：場館差異改送審核，不再直接套用
 
+    let failed = 0;
+    const staffErrors = [];
     for (const r of records) {
+     try {
       const ragicId = r['員工編號'] || r['工號'] || r['3000935'];
       if (!ragicId) continue;
       const rawId = String(ragicId).trim();
@@ -348,22 +376,35 @@ async function _syncStaffImpl() {
       if (!!cur.is_lifeguard !== isLifeguard) {
         diff.is_lifeguard = { from: !!cur.is_lifeguard, to: isLifeguard };
       }
-      // Task #95（取代 Task #90 的 venue_ids 差異 stage）：場館改為「自動套用」不經待審核 —
-      // Ragic 部門即權威，清洗後的代碼與 DB 不同就直接寫入授權館別（admin_staff_venues +
-      // coach_venues）。解析為空（部門是公司名/內勤處室）→ 不動 DB，避免清空既有場館。
-      // 同上：改查迴圈前撈齊的 venuesByStaff Map（已依 staff_id, venue_id 排序）。
+      // P1.1 決策3（2026-07-07 定案）：場館指派改回待審核，不再 auto-apply
+      // （原 Task #95 auto-apply 理由：待審模式曾因場館「名稱 vs 代碼」誤判成永遠
+      // 有差異，導致無限重複 stage、審核區永遠清不完——該 bug 已被上面的
+      // resolveVenues/_buildVenueResolver 正規化修好，不再需要繞過待審核；場館變更
+      // 併入下面既有的 diff → _stageIfNotRejected 一起送審。apply 端已有完整落地
+      // 邏輯，見 _applyStaffChange 內 Task #90 那段 admin_staff_venues 同步，
+      // approve 後自動套用，不需另外呼叫）。
       const curVenues = venuesByStaff.get(entityId) || [];
       const newVenues = [...venueIds].sort();
       const curVenuesSorted = [...curVenues].sort();
       if (newVenues.length > 0 && (newVenues.length !== curVenuesSorted.length
           || newVenues.some((v, i) => v !== curVenuesSorted[i]))) {
-        if (await _applyStaffVenuesDirect(entityId, venueIds)) venuesApplied++;
+        diff.venue_ids = { from: curVenuesSorted, to: newVenues };
+        venueDiffsStaged++;
       }
       if (Object.keys(diff).length > 0) {
         if (await _stageIfNotRejected('H01_STAFF', 'staff', entityId, 'update', payload, diff)) staged++;
       } else {
         await _markPendingResolved('staff', entityId);
       }
+     } catch (err) {
+      // 嫌疑4 CONFIRMED 修復：單筆壞資料不再中止整批（原本 function-level try 會讓
+      // 一筆毒資料炸掉整輪、回 {synced:0} 掩蓋已完成的進度）。失敗筆數獨立累計，
+      // 該筆下一輪同步再重試。
+      failed++;
+      const ragicIdForLog = r?.['員工編號'] || r?.['工號'] || r?.['3000935'] || '(unknown)';
+      staffErrors.push(`員工 ${ragicIdForLog}：${err.message}`);
+      console.warn('[Ragic sync] staff per-record failed (id=%s): %s', ragicIdForLog, err.message);
+     }
     }
 
     // Ragic 名單外 + 仍 active + 未 override → deactivate stage
@@ -373,10 +414,17 @@ async function _syncStaffImpl() {
       const diff = { active: { from: true, to: false } };
       if (await _stageIfNotRejected('H01_STAFF', 'staff', r.id, 'deactivate', payload, diff)) staged++;
     }
-    if (venuesApplied > 0) {
-      console.log(`[Ragic sync] staff：場館自動套用 ${venuesApplied} 位（Ragic 部門 → 授權館別）`);
+    if (venueDiffsStaged > 0) {
+      console.log(`[Ragic sync] staff：場館差異 ${venueDiffsStaged} 位已送待審核（不再 auto-apply）`);
     }
-    return { synced: staged, staged, venues_applied: venuesApplied, skipped: false };
+    if (failed > 0) {
+      return {
+        synced: staged, staged, venue_diffs_staged: venueDiffsStaged, failed, partial: true,
+        error: `${failed} 筆員工同步失敗（詳見伺服器 log，其餘 ${staged} 筆已正常完成）：${staffErrors[0]}`,
+        skipped: false,
+      };
+    }
+    return { synced: staged, staged, venue_diffs_staged: venueDiffsStaged, skipped: false };
   } catch (err) {
     console.warn('[Ragic sync] staff failed:', err.message);
     return { synced: 0, error: err.message };
@@ -431,8 +479,11 @@ async function _syncVenuesImpl() {
     const dbRows = (await pool.query(`SELECT * FROM admin_venues`)).rows;
     const dbMap = new Map(dbRows.map(r => [r.id, r]));
     let staged = 0;
+    let failed = 0;
+    const venueErrors = [];
 
     for (const [code, rv] of ragicMap) {
+     try {
       const cur = dbMap.get(code);
       const payload = { code, ...rv, is_active: true };
       if (!cur) {
@@ -456,6 +507,13 @@ async function _syncVenuesImpl() {
       } else {
         await _markPendingResolved('venue', code);
       }
+     } catch (err) {
+      // 嫌疑4 CONFIRMED 修復：單筆壞資料不再中止整批（原本 function-level try 會讓
+      // 一筆毒資料炸掉整輪、回 {synced:0} 掩蓋已完成的進度）。
+      failed++;
+      venueErrors.push(`場館 ${code}：${err.message}`);
+      console.warn('[Ragic sync] venue per-record failed (code=%s): %s', code, err.message);
+     }
     }
 
     // 不在 Ragic 但 active 中 + 未 override → deactivate stage
@@ -464,6 +522,13 @@ async function _syncVenuesImpl() {
       const payload = { code: r.id, name: r.name, is_active: false };
       const diff = { is_active: { from: true, to: false } };
       if (await _stageIfNotRejected('H05_VENUES', 'venue', r.id, 'deactivate', payload, diff)) staged++;
+    }
+    if (failed > 0) {
+      return {
+        synced: staged, staged, failed, partial: true,
+        error: `${failed} 筆場館同步失敗（詳見伺服器 log，其餘 ${staged} 筆已正常完成）：${venueErrors[0]}`,
+        skipped: false,
+      };
     }
     return { synced: staged, staged, skipped: false };
   } catch (err) {
@@ -1123,13 +1188,70 @@ async function _resolveZ03IfPending(client, ragicRecordId, currentRawName) {
   );
 }
 
-async function _pullParentsStudentsImpl() {
+// P1.1 決策9：無腦 shadow 寫入——只呼叫 Ragic API + 完整性/schema-drift 把關，
+// 不跑任何畢業判斷/quarantine/upsert 邏輯。這支是全系統「唯一」打 Z01 全量查詢的
+// 地方，讓「打 Ragic」與「跑清洗邏輯」在程式碼上解耦：清洗邏輯之後再怎麼變慢/變複雜，
+// 都不影響對 Ragic 的呼叫時程；也讓 ragic_z01_shadow 成為可獨立查驗的「Ragic 現況鏡像」。
+async function _shadowPullZ01Impl() {
   if (!ragicEnabled()) return { synced: 0, skipped: true };
-  let records;
+  let integrity;
   try {
-    records = await ragic.getAllParents();
+    integrity = await ragic.getAllParentsWithIntegrity();
   } catch (err) {
     return { synced: 0, error: `Ragic Z01 全量查詢失敗：${err.message}` };
+  }
+  const gateError = await _checkZ01IntegrityGate(integrity);
+  if (gateError) return { synced: 0, error: gateError };
+
+  const client = await pool.connect();
+  let synced = 0;
+  try {
+    await client.query('BEGIN');
+    const presentIds = [];
+    for (const row of integrity.records) {
+      const ragicRecordId = row && row._ragicId != null ? String(row._ragicId) : null;
+      if (!ragicRecordId) continue;
+      presentIds.push(ragicRecordId);
+      await client.query(
+        `INSERT INTO ragic_z01_shadow (ragic_record_id, raw_data, fetched_at)
+         VALUES ($1, $2::jsonb, NOW())
+         ON CONFLICT (ragic_record_id) DO UPDATE SET raw_data = EXCLUDED.raw_data, fetched_at = NOW()`,
+        [ragicRecordId, JSON.stringify(row)]
+      );
+      synced++;
+    }
+    // shadow 只鏡射「現況」，不留歷史孤兒：這次快照已不存在的舊列一併清掉。
+    await client.query(
+      `DELETE FROM ragic_z01_shadow WHERE NOT (ragic_record_id = ANY($1::text[]))`,
+      [presentIds]
+    );
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    return { synced, error: `Shadow 寫入失敗：${err.message}` };
+  } finally {
+    client.release();
+  }
+  return { synced };
+}
+
+async function _readShadowZ01(client) {
+  const r = await client.query(`SELECT raw_data FROM ragic_z01_shadow`);
+  return r.rows.map((row) => row.raw_data);
+}
+
+// 既有畢業判斷/quarantine/upsert 邏輯，資料來源改讀 ragic_z01_shadow（由
+// _shadowPullZ01Impl 維護），不再直接呼叫 Ragic API——完整性/schema-drift 把關
+// 已經在 shadow-pull 那一關做過，這裡只管清洗，不再重複呼叫 Ragic。
+async function _reconcileZ01FromShadowImpl() {
+  const client0 = await pool.connect();
+  let records;
+  try {
+    records = await _readShadowZ01(client0);
+  } catch (err) {
+    return { synced: 0, error: `讀取 ragic_z01_shadow 失敗：${err.message}` };
+  } finally {
+    client0.release();
   }
 
   let synced = 0;
@@ -1143,6 +1265,11 @@ async function _pullParentsStudentsImpl() {
     // 「電話對上」檢查用的反向表：UID → 本地已綁定的電話。
     const uidToPhone = new Map();
     for (const [phone, uid] of boundPhones) uidToPhone.set(uid, phone);
+    // P1.1 決策5掃尾用：本次 Ragic 完整快照裡「所有」出現過的 ragic_record_id
+    // （不限已畢業/已綁 UID 的列，只要 Ragic 端還有這筆記錄就算存在）。
+    const presentRagicIds = [...new Set(
+      records.map((r) => (r && r._ragicId != null ? String(r._ragicId) : null)).filter(Boolean)
+    )];
     const ragicUidPhones = new Map();
     for (const z01Row of records) {
       const mapped = ragic.mapZ01Parent(z01Row);
@@ -1224,6 +1351,9 @@ async function _pullParentsStudentsImpl() {
         const local = await parentSync.upsertLocalParent(client, mapped, mapped.line_uid || null, {
           reactivate: false,
           venuesMap,
+          // 夜間全量 pull：本地未回寫 Ragic 的編輯（last_synced_at IS NULL）保留，
+          // 不被 Ragic 舊值覆蓋（P1.1 決策1/2、嫌疑6 lost-update）。
+          preservePending: true,
         });
         if (hasRealUid && local.line_uid !== mapped.line_uid) {
           await _upsertZ03Record(client, ragicRecordId, mapped, z01Row);
@@ -1274,6 +1404,36 @@ async function _pullParentsStudentsImpl() {
       errors.push(`未綁殘留掃尾失敗：${err.message}`);
       console.warn('[ragic-pull] 未綁殘留掃尾失敗:', err.message);
     }
+
+    // ── P1.1 決策5掃尾：本地已綁定家長，若已不在本次 Ragic 完整快照裡 → 刪除 ──
+    // 前提：本函式已通過 _checkZ01IntegrityGate（fetched 未截斷、無邊界位移、無
+    // schema-drift）才會執行到這裡，「快照裡沒有」才具備刪除的正當性；只有 Ragic
+    // 資料才是核心，本地可自由做任何應刪除（決策5）。preservePending 的列（本地尚
+    // 有未回寫 Ragic 的編輯）跳過不刪——刪除不可逆，比一般 UPDATE 更需保守。
+    // 有業務 FK 的記錄跳過不動，保留業務資料完整性；硬邊界：只動本地 DB。
+    try {
+      await client.query('BEGIN');
+      const absent = await client.query(
+        `SELECT id FROM parents
+          WHERE ragic_record_id IS NOT NULL
+            AND NOT (ragic_record_id = ANY($1::text[]))
+            AND last_synced_at IS NOT NULL`,
+        [presentRagicIds]
+      );
+      let deletedAbsent = 0;
+      for (const row of absent.rows) {
+        const deleted = await parentSync.hardDeleteParentIfSafe(client, row.id);
+        if (deleted) deletedAbsent++;
+      }
+      if (deletedAbsent) {
+        console.log('[ragic-pull] 決策5掃尾：Ragic 完整快照已無此記錄，硬刪除 %d 筆（有 FK 者保留）', deletedAbsent);
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      errors.push(`Ragic 快照缺席掃尾失敗：${err.message}`);
+      console.warn('[ragic-pull] Ragic 快照缺席掃尾失敗:', err.message);
+    }
   } finally {
     client.release();
   }
@@ -1281,6 +1441,17 @@ async function _pullParentsStudentsImpl() {
   return errors.length
     ? { synced, quarantined: quarantinedZ03, error: `${errors.length} 筆同步失敗（詳見伺服器 log）：${errors[0]}` }
     : { synced, quarantined: quarantinedZ03 };
+}
+
+// 對外維持原函式名/簽名不變（FORM_META.pull、cron、admin 手動觸發皆呼叫這支，
+// 完全不需要跟著改）：內部改為「先無腦寫 shadow，再從 shadow 清洗」兩步驟。
+// shadow-pull 失敗（含完整性/schema-drift hard-fail）就不進 reconcile，
+// 避免拿不完整/過期的 shadow 資料跑清洗邏輯。
+async function _pullParentsStudentsImpl() {
+  const shadowResult = await _shadowPullZ01Impl();
+  if (shadowResult.skipped) return shadowResult;
+  if (shadowResult.error) return { synced: 0, error: `[shadow-pull] ${shadowResult.error}` };
+  return _reconcileZ01FromShadowImpl();
 }
 
 async function pullParentsStudentsFromRagic(triggeredBy = 'cron') { return _singleflight('pull', triggeredBy); }
@@ -1939,11 +2110,19 @@ function hasNoCjkCharacters(name) {
 // 偵測 + 維護本地追蹤表（不依賴 Z03，可獨立跑）。目前只掃 Tier 1（純數字姓名）。
 async function _quarantineBadZ01NamesImpl() {
   if (!ragicEnabled()) return { synced: 0, skipped: true };
+  // P1.1 決策9：改讀 ragic_z01_shadow（由當晚 #2 pull 的 _shadowPullZ01Impl 維護），
+  // 不再獨立重打一次 Ragic 全量查詢——同一份快照給多個消費者用，減少對 Ragic 的
+  // 重複呼叫。完整性/schema-drift 把關已經在寫入 shadow 那一關做過。
   let records;
   try {
-    records = await ragic.getAllParents();
+    const client0 = await pool.connect();
+    try {
+      records = await _readShadowZ01(client0);
+    } finally {
+      client0.release();
+    }
   } catch (err) {
-    return { synced: 0, error: `Ragic Z01 全量查詢失敗：${err.message}` };
+    return { synced: 0, error: `讀取 ragic_z01_shadow 失敗：${err.message}` };
   }
 
   let tier1Count = 0, tier2Count = 0, tracked = 0;
@@ -1980,10 +2159,10 @@ async function _quarantineBadZ01NamesImpl() {
     }
   }
 
-  // TODO(Z03)：等 Z03 表單確認存在 + 拿到真實欄位 ID 後，這裡補上「把 tracked 未推送過的
-  // 記錄寫進 Z03」；ragicSchema.js 需補 FORMS.Z03/Z03_FIELDS/FIELD.Z03。
-  // 在那之前，本 job 只維護本地 ragic_z01_quarantine 追蹤表，供後續人工查閱有多少筆待處理。
-  const note = `偵測到 ${tier1Count} 筆姓名疑似為電話號碼（另有 ${tier2Count} 筆不含中文字，僅統計未觸發）；Z03 推送待 Z03 表單確認後補上`;
+  // 決策(P1.1 #10，2026-07-07 定案，won't-do)：Ragic 端 Z01→Z03 表單 push 不做。
+  // 職責劃分：RAGIC PULL 只管無腦 pull，本地 REPLIT 做資料清洗——quarantine 維持
+  // 本地 ragic_z01_quarantine/ragic_z03_records 追蹤，不反向寫回 Ragic 端 Z03 表單。
+  const note = `偵測到 ${tier1Count} 筆姓名疑似為電話號碼（另有 ${tier2Count} 筆不含中文字，僅統計未觸發）；本地追蹤，不推送 Ragic Z03（決策 won't-do）`;
   return errors.length
     ? { synced: tracked, error: `${errors.length} 筆追蹤寫入失敗（詳見伺服器 log）：${errors[0]}`, note }
     : { synced: tracked, note };
@@ -2070,7 +2249,9 @@ async function hasRecentBackupSuccess(windowHours = 3) {
 }
 
 async function _logSyncResult(jobName, formCode, result, durationMs, triggeredBy) {
-  const status = result?.skipped ? 'skipped' : (result?.error ? 'error' : 'ok');
+  // 嫌疑4 CONFIRMED 修復：staff/venues 迴圈改 per-record 隔離後，「部分成功」需要
+  // 獨立於 ok/error 的狀態，不能把「已完成的進度」塌成單純 error（會誤導成整輪都沒做）。
+  const status = result?.skipped ? 'skipped' : (result?.partial ? 'partial' : (result?.error ? 'error' : 'ok'));
   try {
     await pool.query(
       `INSERT INTO ragic_sync_log (form_code, job_name, status, synced_count, error_message, duration_ms, triggered_by)

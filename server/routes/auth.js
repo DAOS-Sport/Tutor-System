@@ -1,11 +1,11 @@
 /**
  * /api/auth — LIFF 端 token 簽發
  *
- *  POST /api/auth/parent-login         { phone }                       → { ... , token } | null
  *  POST /api/auth/parent-line-login    { id_token }                    → logged_in | need_phone_binding
  *  POST /api/auth/parent-bind-phone    { id_token, phone }             → bound_and_logged_in | need_registration | 409
  *  POST /api/auth/parent-register-line { id_token, parent, students[] }→ registered_and_logged_in | 409 LINE/PHONE
  *
+ * （legacy phone-only `POST /api/auth/parent-login` 已刪除，P1.1 §4 決策 2026-07-07）
  * 教練端登入沿用 routes/coaches.js: POST /api/coaches/by-phone（手機 + id_token）。
  */
 const crypto = require('crypto');
@@ -13,6 +13,7 @@ const express = require('express');
 const { pool } = require('../models/db');
 const { signParentToken } = require('../middlewares/parentAuth');
 const { signCoachToken } = require('../middlewares/coachAuth');
+const { signFlowToken, requireFlowToken, verifyPhoneRateLimit } = require('../middlewares/flowAuth');
 const ragic = require('../services/ragic');
 const { verifyLineIdToken } = require('../services/lineAuth');
 // 家長/學員 ↔ Ragic 同步語意集中於此（登入/綁定/註冊/刷新共用，避免漂移）。
@@ -259,68 +260,10 @@ async function _verifyLineUid(req, res) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────
-// 手機單因素登入
-//   U4 資安：phone-only 等於「用任意電話撈出該家長學員 + 取得登入 token」，屬越權／
-//   帳號接管風險。production（或 REQUIRE_LINE_ID_TOKEN=1）下強制要求 LINE id_token 驗證，
-//   且只回「該 LINE 帳號本人」綁定的家長（依 line_uid 比對），phone 僅作交叉確認、不得用來枚舉他人。
-//   dev 環境保留 phone-only 後援，方便本地測試。
-// ─────────────────────────────────────────────────────────────
-router.post('/parent-login', async (req, res) => {
-  const allowLegacyLogin = process.env.ALLOW_LEGACY_PARENT_LOGIN === '1'
-    && process.env.NODE_ENV !== 'production';
-  if (!allowLegacyLogin) {
-    return res.status(410).json({
-      error: '家長登入請改走 LINE-first 驗證流程',
-      code: 'LINE_LOGIN_REQUIRED',
-    });
-  }
-
-  try {
-
-
-    const requireLine = process.env.NODE_ENV === 'production'
-      || process.env.REQUIRE_LINE_ID_TOKEN === '1';
-    const phone = String(req.body?.phone || '').trim();
-
-    let p;
-    if (requireLine) {
-      // 強制 LINE 驗證：以驗證後的 line_uid 查本人，phone 只做交叉確認。
-      const lineUid = await _verifyLineUid(req, res);
-      if (!lineUid) return; // _verifyLineUid 已寫入 4xx 回應
-      const r = await pool.query(
-        `SELECT id, name, phone, line_uid, primary_venue_id FROM parents WHERE line_uid = $1 AND is_active = TRUE`,
-        [lineUid]
-      );
-      if (!r.rowCount) return res.json(null);
-      p = r.rows[0];
-      if (phone && p.phone && phone !== p.phone) {
-        return res.status(403).json({ error: '手機與此 LINE 帳號不符', code: 'PHONE_MISMATCH' });
-      }
-    } else {
-      // dev 後援：phone-only。
-      if (!phone) return res.status(400).json({ error: '手機必填' });
-      const r = await pool.query(
-        `SELECT id, name, phone, line_uid, primary_venue_id FROM parents WHERE phone = $1 AND is_active = TRUE`,
-        [phone]
-      );
-      if (!r.rowCount) return res.json(null);
-      p = r.rows[0];
-    }
-
-    const token = signParentToken({ parentId: p.id, phone: p.phone, lineUid: p.line_uid });
-    const s = await loadStudents(p.id);
-    res.json({
-      id: p.id, name: p.name, phone: p.phone,
-      primary_venue_id: p.primary_venue_id,
-      students: s,
-      token,
-    });
-  } catch (err) {
-    console.error('[auth/parent-login]', err);
-    res.status(500).json({ error: '登入失敗', code: 'LOGIN_FAILED' });
-  }
-});
+// P1.1 §4 決策（2026-07-07）：legacy `POST /api/auth/parent-login`（phone-only /
+// phone+id_token 手機單因素登入）已刪除——確認全 repo 無 caller（僅 route-audit.js
+// 的盤點紀錄與文件註解引用），家長登入一律走下面的 LINE-first 流程
+// （parent-line-login → verify-phone/verify-student → bind，見封閉狀態機規格）。
 
 // ─────────────────────────────────────────────────────────────
 // 家長 LINE 登入
@@ -352,10 +295,15 @@ router.post('/parent-line-login', async (req, res) => {
     }
 
     // 找不到本地 Z01 → 進電話多方驗證/註冊補資料，不在登入路徑打 Ragic。
+    // 封閉狀態機（修改 PROMPT §3.2）：S1→S2 轉換時簽發 flowToken，之後
+    // verify-phone/verify-student/bind/register 四端點一律憑此 token（不再重複驗證
+    // LINE id_token）。
+    const flowToken = signFlowToken({ lineUid });
     return res.json({
       status: 'need_phone_binding',
       line_uid: lineUid,
       reason: 'local_z01_not_found',
+      flow_token: flowToken,
     });
   } catch (err) {
     console.error('[auth/parent-line-login]', err);
@@ -363,8 +311,221 @@ router.post('/parent-line-login', async (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════════════
+// 封閉狀態機（修改 PROMPT，2026-07-07 定案）：S2/S3/S3b 拆成三個獨立端點，
+// 皆以 requireFlowToken 把關（僅接受 S1 簽發的短效 flowToken，不接受
+// parent JWT，也不接受過期/其他流程的 flowToken）。
+//
+// 排序考量：這三支是「新增」端點，與既有 parent-bind-phone/parent-register-line
+// 並存，不互相取代——現有前端尚未改接這三支新端點前，舊端點行為完全不變、
+// 不會有任何既有使用者受影響。等前端完成對接封閉狀態機後，舊端點才會真正停用
+// （見交付文件的「尚未完成」章節）。
+// ═══════════════════════════════════════════════════════════════════════
+
+// S2 PHONE_VERIFY：電話存在與否判斷。命中一律**不回傳任何學員資料**（防列舉，
+// 修改 PROMPT §3.5）；學員清單只在 S3 姓名命中後才出現。防列舉加 rate limit
+// （比照 coachAuth.js byPhoneRateLimit 既有寫法，5 分鐘 5 次；鍵值為 UID+IP，
+// 故 requireFlowToken 必須排在 verifyPhoneRateLimit 之前，讓 req.flow.lineUid
+// 先就緒）。found/not_found 各分支原本執行路徑長短不一（有無打 Ragic），會構成
+// 時序側信道；一律拉平到固定下限（VERIFY_PHONE_MIN_MS）後才回應。
+const VERIFY_PHONE_MIN_MS = 400;
+router.post('/verify-phone', requireFlowToken, verifyPhoneRateLimit, async (req, res) => {
+  const _startedAt = Date.now();
+  const respond = async (status, body) => {
+    const elapsed = Date.now() - _startedAt;
+    const wait = VERIFY_PHONE_MIN_MS - elapsed;
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    return res.status(status).json(body);
+  };
+  try {
+    const phone = String(req.body?.phone || '').trim();
+    if (!phone) return respond(400, { error: '手機必填', code: 'PHONE_REQUIRED' });
+    if (!TW_PHONE_RE.test(phone)) {
+      return respond(400, { error: '手機格式錯誤（需 09xxxxxxxx）', code: 'PHONE_FORMAT_INVALID' });
+    }
+    const lineUid = req.flow.lineUid;
+
+    // 本地 Z03 已有殘缺記錄（未綁定/未開通）→ 電話存在但資料不完整，
+    // 導去 S4 REGISTER_NEW 由註冊表單補齊（與現有 parent-bind-phone 的
+    // local_z03_pending 分支同語意）。
+    const z03ByPhone = await ragicAdmin.findZ03RecordByPhone(phone);
+    if (z03ByPhone) {
+      return respond(200, { status: 'not_found', reason: 'z03_pending' });
+    }
+
+    let ragicRow;
+    try {
+      ragicRow = await ragic.getParentByPhone(phone);
+    } catch (err) {
+      console.warn('[auth/verify-phone] ragic.getParentByPhone failed:', err.code || '', err.message);
+      const r = _ragicErrorResponse(err);
+      return respond(r.status, { error: r.error, code: r.code });
+    }
+    if (!ragicRow) {
+      return respond(200, { status: 'not_found' });
+    }
+
+    // 命中：簽發帶 phone 的新 flowToken 供 S3 使用；刻意不揭露任何學員資料，
+    // 也不在此區分「電話已綁其他 LINE 帳號」——一律視為 found，交給 S3 的姓名+
+    // 登記電話認領驗證把關（與既有 parent-bind-phone 的 needsClaimVerification
+    // 同一套邏輯），避免用電話存在與否本身洩漏「這支電話已被誰綁定」的資訊。
+    const newToken = signFlowToken({ lineUid, phone, attempts: 0 });
+    return respond(200, { status: 'found', flow_token: newToken });
+  } catch (err) {
+    console.error('[auth/verify-phone]', err);
+    return respond(500, { error: '查詢失敗', code: 'VERIFY_PHONE_FAILED' });
+  }
+});
+
+// S3 STUDENT_VERIFY：姓名正規化（NFKC 全半形/大小寫/空白，見 parentSync.js
+// _normalizeStudentName）後與登記電話一併比對。3 次內未中即轉入 S4 並帶
+// phone_collision 旗標（修改 PROMPT §1/§5：預設重試次數 3 次）；命中回傳
+// 該家長名下**完整學員姓名清單**供 S3b 確認畫面顯示，不再像舊 parent-bind-phone
+// 那樣一次比對成功就直接靜默綁定。
+router.post('/verify-student', requireFlowToken, async (req, res) => {
+  try {
+    const { phone, lineUid, attempts } = req.flow;
+    if (!phone) return res.status(400).json({ error: '請先完成電話驗證', code: 'PHONE_NOT_VERIFIED' });
+
+    const claim = req.body?.claim || {};
+    const studentName = String(claim.student_name || '').trim();
+    const claimPhone = String(claim.phone || '').trim();
+    if (!studentName || !claimPhone) {
+      return res.status(400).json({ error: '學員姓名與登記電話必填', code: 'CLAIM_REQUIRED' });
+    }
+
+    let ragicRow;
+    try {
+      ragicRow = await ragic.getParentByPhone(phone);
+    } catch (err) {
+      console.warn('[auth/verify-student] ragic.getParentByPhone failed:', err.code || '', err.message);
+      const r = _ragicErrorResponse(err);
+      return res.status(r.status).json({ error: r.error, code: r.code });
+    }
+    if (!ragicRow) {
+      // 兩次呼叫之間電話記錄消失（極罕見）：回到 S2 重新查詢，不歸類為驗證失敗。
+      return res.status(409).json({ error: '資料異動，請重新查詢電話', code: 'PHONE_STATE_CHANGED' });
+    }
+    const mapped = ragic.mapZ01Parent(ragicRow);
+    const ragicStudents = ragic.parseZ01Students(ragicRow);
+
+    const verdict = parentSync.classifyStudentPhoneClaim(
+      ragicStudents, { student_name: studentName, phone: claimPhone }, mapped.phone || phone
+    );
+    parentSync.auditClaim({
+      phone, lineUid,
+      result: verdict === 'matched' ? 'passed' : (verdict === 'not_on_file' ? 'passed_not_on_file' : 'failed'),
+    });
+
+    // 'not_on_file'（姓名對不上任何現有學員）視同通過，比照既有 parent-bind-phone
+    // 的既定邏輯：電話比對已確認是這個家庭，姓名對不上通常是新增手足，不是身分衝突。
+    if (verdict === 'matched' || verdict === 'not_on_file') {
+      const newToken = signFlowToken({ lineUid, phone, attempts: 0 });
+      return res.json({
+        status: 'matched',
+        flow_token: newToken,
+        students: ragicStudents.map((s) => s.name),
+      });
+    }
+
+    const nextAttempts = attempts + 1;
+    if (nextAttempts >= 3) {
+      console.warn(
+        '[auth/verify-student] 3 次驗證失敗，轉入 S4(phone_collision) phoneHash=%s',
+        _phoneHashForLog(phone)
+      );
+      return res.json({ status: 'exhausted', reason: 'phone_collision' });
+    }
+    const retryToken = signFlowToken({ lineUid, phone, attempts: nextAttempts });
+    return res.status(409).json({
+      error: '學員姓名或登記手機號碼與資料不符，請確認後再試',
+      code: 'CLAIM_VERIFICATION_FAILED',
+      flow_token: retryToken,
+      attempts_remaining: 3 - nextAttempts,
+    });
+  } catch (err) {
+    console.error('[auth/verify-student]', err);
+    res.status(500).json({ error: '驗證失敗', code: 'VERIFY_STUDENT_FAILED' });
+  }
+});
+
+// S3b CONFIRM_BIND：交易性綁定（修改 PROMPT §3.4）。Ragic 寫入 + 本地 mirror
+// 屬於兩個無法用單一 DB transaction 涵蓋的異質系統操作（HTTP API + Postgres），
+// 用「先 Ragic 寫入、成功才本地 refresh、refresh 失敗則補償性清空 Ragic 剛寫入的
+// line_uid」模擬整體回滾，避免半套（Ragic 已綁但本地查無對應 parent）。
+// uid_conflict（記錄已綁其他真實 LINE UID）不自動改綁，直接分流 Z03 → S5。
+router.post('/bind', requireFlowToken, async (req, res) => {
+  try {
+    const { phone, lineUid } = req.flow;
+    if (!phone) return res.status(400).json({ error: '請先完成電話與學員驗證', code: 'FLOW_INCOMPLETE' });
+
+    let ragicRow;
+    try {
+      ragicRow = await ragic.getParentByPhone(phone);
+    } catch (err) {
+      console.warn('[auth/bind] ragic.getParentByPhone failed:', err.code || '', err.message);
+      const r = _ragicErrorResponse(err);
+      return res.status(r.status).json({ error: r.error, code: r.code });
+    }
+    if (!ragicRow) {
+      return res.status(409).json({ error: '資料異動，請重新查詢電話', code: 'PHONE_STATE_CHANGED' });
+    }
+    const mapped = ragic.mapZ01Parent(ragicRow);
+
+    const hasOtherRealUid = Boolean(
+      mapped.line_uid && mapped.line_uid !== lineUid
+      && !mapped.line_uid.startsWith('demo:') && !mapped.line_uid.startsWith('DEMOTEST_')
+    );
+    if (hasOtherRealUid) {
+      try {
+        await ragicAdmin.hydrateZ03RecordFromRagicRow(ragicRow);
+      } catch (err) {
+        console.error('[auth/bind] uid_conflict 分流 Z03 失敗:', err.message);
+      }
+      parentSync.auditClaim({ phone, lineUid, result: 'uid_conflict' });
+      return res.json({ status: 'pending_review', reason: 'uid_conflict' });
+    }
+
+    const missing = parentRefresh.getZ01MissingFields(mapped, { requireLineUid: false });
+    if (missing.length) {
+      return res.json({ status: 'need_registration', reason: 'z01_incomplete', missing_fields: missing.map((m) => m.key) });
+    }
+
+    if (!mapped.ragic_record_id) {
+      return res.status(409).json({ error: '資料異動，請重新查詢電話', code: 'PHONE_STATE_CHANGED' });
+    }
+    try {
+      await ragic.upsertParentStrict({ [ragic.FIELD.Z01.LINE_UID]: lineUid }, mapped.ragic_record_id);
+    } catch (err) {
+      console.error('[auth/bind] Ragic 回寫失敗，不進行本地綁定:', err.message);
+      const r = _ragicErrorResponse(err, '資料暫時無法完成同步，請稍後再試');
+      return res.status(r.status).json({ error: r.error, code: r.code === 'RAGIC_UNAVAILABLE' ? 'RAGIC_WRITE_FAILED' : r.code });
+    }
+
+    try {
+      const refreshed = await refreshParentMirrorFromRagic({ lineUid, phone, allowRebind: false, reason: 'flow-bind' });
+      const issued = _issue(refreshed.local);
+      return res.json({ status: 'bound_and_logged_in', parent: { ...issued, students: refreshed.students }, token: issued.token });
+    } catch (err) {
+      console.error('[auth/bind] refresh failed after Ragic write, 嘗試補償性清空 line_uid:', err);
+      try {
+        await ragic.upsertParentStrict({ [ragic.FIELD.Z01.LINE_UID]: '' }, mapped.ragic_record_id);
+        console.warn('[auth/bind] 補償回滾成功：已清空 Ragic line_uid，避免半套綁定');
+      } catch (compErr) {
+        console.error('[auth/bind] 補償回滾失敗（Ragic 端可能殘留半套綁定，需人工排查）ragicRecordId=%s:', mapped.ragic_record_id, compErr.message);
+      }
+      const r = _refreshErrorResponse(err, '綁定失敗，請重新嘗試');
+      return res.status(r.status).json({ error: r.error, code: r.code });
+    }
+  } catch (err) {
+    console.error('[auth/bind]', err);
+    res.status(500).json({ error: '綁定失敗', code: 'BIND_FAILED' });
+  }
+});
+
 // ─────────────────────────────────────────────────────────────
-// 家長手機綁定
+// 家長手機綁定（legacy 一次到位版；封閉狀態機請改用上面 verify-phone/
+// verify-student/bind 三支。此端點暫保留供現行前端相容，見交付文件說明）
 //   200 { status:'bound_and_logged_in', parent, token }
 //   200 { status:'need_registration',   line_uid, phone }
 //   409 LINE_ALREADY_BOUND_TO_OTHER_PHONE / PHONE_ALREADY_BOUND_TO_OTHER_LINE
@@ -531,12 +692,17 @@ router.post('/parent-bind-phone', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
-// 新：家長 LINE 註冊（以電話號碼為冪等鍵，永不重複建立同號 Z01）
+// 家長 LINE 註冊（以電話號碼為冪等鍵，永不重複建立同號 Z01）
 //   · Ragic 查無此電話            → 建立 Z01 主表 + Z02 學員 + 本地 + 簽 JWT
 //   · 已有此電話且「未綁 LINE UID」（未開通，Z03 清洗池）→ found→update 就地開通：
 //     名下有學員先過認領驗證（用表單學員姓名+身分證比對）→ 表單學員入 Z02 →
 //     既有 Z01 一次 PATCH（回寫 UID＋清洗佔位姓名＋補空欄）→ 本地 + Z03 畢業 + 簽 JWT
 //   · 已有此電話且已綁「其他」LINE UID（已開通）→ 409 擋下（防帳號搶占）
+//
+// 核心邏輯抽成共用函式（lineUid 由呼叫端決定如何取得），供下面兩支端點共用：
+//   · POST /parent-register-line（legacy，id_token 版，暫留供現行前端相容）
+//   · POST /register（封閉狀態機 S4 REGISTER_NEW，flowToken 版，見下方定義）
+// 避免兩支各維護一份、行為漂移。
 //
 // Request:
 //   { id_token,
@@ -550,9 +716,11 @@ router.post('/parent-bind-phone', async (req, res) => {
 //   409 LINE_ALREADY_BOUND_TO_OTHER_PHONE / LINE_ALREADY_REGISTERED / PHONE_EXISTS_USE_BINDING
 //   502 RAGIC_UNAVAILABLE / RAGIC_WRITE_FAILED
 // ─────────────────────────────────────────────────────────────
-router.post('/parent-register-line', async (req, res) => {
-  try {
-
+// resolveLineUid 在驗證完表單欄位「之後」才呼叫（保留原本 legacy 端點的順序：
+// 欄位驗證優先於身分驗證，避免這次重構意外讓 id_token/flowToken 檢查搶到驗證前面，
+// 改變了原本回給使用者的第一個錯誤訊息）。resolveLineUid 回傳 null/undefined 時
+// 視為已經自行寫好回應（比照 _verifyLineUid 的既有慣例），直接 return。
+async function _registerParentCore(req, res, resolveLineUid) {
     const parentIn   = req.body?.parent   || {};
     const studentsIn = Array.isArray(req.body?.students) ? req.body.students : [];
 
@@ -623,19 +791,8 @@ router.post('/parent-register-line', async (req, res) => {
       });
     }
 
-    // 測試用「Demo 新用戶」已停用：Z01 只允許真實 LINE UID，demo 註冊不得再寫
-    // DEMOTEST_ 假 UID 到 Ragic。固定測試帳號請走 /api/auth/demo-login（本地 demo:<phone> sentinel）。
-    const demoNewUser = process.env.ALLOW_DEMO_LOGIN === '1' && req.body?.demo === true;
-    let lineUid;
-    if (demoNewUser) {
-      return res.status(410).json({
-        error: 'Demo 新用戶註冊已停用；請使用固定測試帳號登入',
-        code: 'DEMO_REGISTER_DISABLED',
-      });
-    } else {
-      lineUid = await _verifyLineUid(req, res);
-      if (!lineUid) return;
-    }
+    const lineUid = await resolveLineUid();
+    if (!lineUid) return;
 
     // 衝突檢查 1：本地 line_uid 已綁不同手機（只看 active；inactive 舊列不擋重新綁定）
     const dupLine = await pool.query(`SELECT phone FROM parents WHERE line_uid = $1 AND is_active = TRUE LIMIT 1`, [lineUid]);
@@ -898,8 +1055,61 @@ router.post('/parent-register-line', async (req, res) => {
       ref_bound: refBound,
       ref_error: refError,
     });
+}
+
+router.post('/parent-register-line', async (req, res) => {
+  try {
+    await _registerParentCore(req, res, async () => {
+      // 測試用「Demo 新用戶」已停用：Z01 只允許真實 LINE UID，demo 註冊不得再寫
+      // DEMOTEST_ 假 UID 到 Ragic。固定測試帳號請走 /api/auth/demo-login（本地 demo:<phone> sentinel）。
+      const demoNewUser = process.env.ALLOW_DEMO_LOGIN === '1' && req.body?.demo === true;
+      if (demoNewUser) {
+        res.status(410).json({
+          error: 'Demo 新用戶註冊已停用；請使用固定測試帳號登入',
+          code: 'DEMO_REGISTER_DISABLED',
+        });
+        return null;
+      }
+      return _verifyLineUid(req, res);
+    });
   } catch (err) {
     console.error('[auth/parent-register-line]', err);
+    res.status(500).json({ error: '註冊失敗', code: 'REGISTER_FAILED' });
+  }
+});
+
+// S4 REGISTER_NEW（封閉狀態機，flowToken 版）：與上面 legacy 差別僅在如何取得
+// lineUid（flowToken 而非 id_token），業務邏輯完全共用 _registerParentCore。
+// 唯一分支：flowToken 帶有 phone 時，代表是從 S3 verify-student 三次驗證失敗的
+// phone_collision 轉入（見 /verify-student），而非 S2 not_found 的全新電話——這支
+// 電話已在 Ragic 對到一個既有家庭，但使用者三次都無法證明自己是該家庭成員，屬
+// 可疑行為。不論這次表單填了什麼，都不可完成正式註冊或建立第二筆同電話 parent
+// 記錄，一律導入 Z03 待審（S5），交由人工複核（規格 §5/§7 明定的刻意行為，非疏漏）。
+router.post('/register', requireFlowToken, async (req, res) => {
+  try {
+    const { lineUid, phone } = req.flow;
+    if (phone) {
+      let ragicRow = null;
+      try {
+        ragicRow = await ragic.getParentByPhone(phone);
+      } catch (err) {
+        console.warn('[auth/register] phone_collision lookup failed:', err.code || '', err.message);
+        const r = _ragicErrorResponse(err);
+        return res.status(r.status).json({ error: r.error, code: r.code });
+      }
+      if (ragicRow) {
+        try {
+          await ragicAdmin.hydrateZ03RecordFromRagicRow(ragicRow);
+        } catch (err) {
+          console.error('[auth/register] phone_collision Z03 hydrate failed:', err.message);
+        }
+      }
+      parentSync.auditClaim({ phone, lineUid, result: 'phone_collision_blocked', reason: 'register_phone_collision' });
+      return res.json({ status: 'pending_review', reason: 'phone_collision' });
+    }
+    await _registerParentCore(req, res, async () => lineUid);
+  } catch (err) {
+    console.error('[auth/register]', err);
     res.status(500).json({ error: '註冊失敗', code: 'REGISTER_FAILED' });
   }
 });

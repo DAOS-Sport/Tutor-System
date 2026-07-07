@@ -988,6 +988,96 @@ CREATE TABLE IF NOT EXISTS notification_log (
   UNIQUE(kind, ref_id, recipient_uid)
 );
 CREATE INDEX IF NOT EXISTS idx_notif_log_kind ON notification_log(kind, sent_at DESC);
+
+-- ─── Ragic 家長/學員識別鍵修復（P1.1 決策6/7，2026-07-07）──────────────────
+-- 根治「Ragic 端電話/ID 打錯或變更 → 本地孤兒列/誤合併」：parents/students 的
+-- upsert 改以 ragic_record_id 為主鍵（見 parentSync.js upsertLocalParent/
+-- upsertLocalStudents），此處先確保該欄位真正具備唯一性。不同於
+-- db/migrations/010_customer_family_base.sql（該檔遇重複只降級成非唯一索引、
+-- 且從未被自動執行——僅能手動 npm run db:migrate，未接進開機流程），這裡先做
+-- 安全去重（不刪除任何列，只解除重複列的 ragic_record_id 佔用，讓它們 fallback
+-- 回 phone 識別；業務資料/FK 完全不動）再建真正的 UNIQUE，且每次開機冪等執行。
+DO $$
+BEGIN
+  WITH ranked AS (
+    SELECT id, ROW_NUMBER() OVER (
+             PARTITION BY ragic_record_id
+             ORDER BY (line_uid IS NOT NULL) DESC, updated_at DESC
+           ) AS rn
+      FROM parents
+     WHERE ragic_record_id IS NOT NULL
+  )
+  UPDATE parents SET ragic_record_id = NULL, updated_at = NOW()
+   WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
+
+  IF EXISTS (
+    SELECT ragic_record_id FROM parents WHERE ragic_record_id IS NOT NULL
+    GROUP BY ragic_record_id HAVING COUNT(*) > 1
+  ) THEN
+    RAISE WARNING '[coreSchema] parents.ragic_record_id 去重後仍有重複，略過唯一索引升級（需人工排查）';
+  ELSE
+    DROP INDEX IF EXISTS idx_parents_ragic_record_id;
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_parents_ragic_record_id
+      ON parents(ragic_record_id) WHERE ragic_record_id IS NOT NULL;
+  END IF;
+
+  WITH ranked AS (
+    SELECT id, ROW_NUMBER() OVER (
+             PARTITION BY ragic_record_id ORDER BY updated_at DESC
+           ) AS rn
+      FROM students
+     WHERE ragic_record_id IS NOT NULL
+  )
+  UPDATE students SET ragic_record_id = NULL, updated_at = NOW()
+   WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
+
+  IF EXISTS (
+    SELECT ragic_record_id FROM students WHERE ragic_record_id IS NOT NULL
+    GROUP BY ragic_record_id HAVING COUNT(*) > 1
+  ) THEN
+    RAISE WARNING '[coreSchema] students.ragic_record_id 去重後仍有重複，略過唯一索引升級（需人工排查）';
+  ELSE
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_students_ragic_record_id
+      ON students(ragic_record_id) WHERE ragic_record_id IS NOT NULL;
+  END IF;
+END $$;
+
+-- 學員第三層 name+birth fallback 比對（upsertLocalStudents 內 ragic_record_id/id_number
+-- 皆未命中、僅靠姓名+生日猜測是同一人）不再靜默 upsert 覆蓋既有列，改記錄待人工複核，
+-- 避免同名同姓（尤其常見中文姓名）誤判成同一位學員、覆蓋錯的人的資料。
+CREATE TABLE IF NOT EXISTS ragic_student_match_review (
+  id BIGSERIAL PRIMARY KEY,
+  parent_id UUID NOT NULL REFERENCES parents(id) ON DELETE CASCADE,
+  candidate_student_id UUID REFERENCES students(id) ON DELETE SET NULL,
+  new_student_id UUID REFERENCES students(id) ON DELETE SET NULL,
+  incoming_name TEXT NOT NULL,
+  incoming_birth_date DATE,
+  incoming_gender VARCHAR(20),
+  incoming_ragic_record_id VARCHAR(50),
+  incoming_id_number VARCHAR(20),
+  incoming_blood_type VARCHAR(5),
+  incoming_student_code VARCHAR(50),
+  status VARCHAR(20) NOT NULL DEFAULT 'pending', -- pending | confirmed_same | confirmed_different | dismissed
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  resolved_at TIMESTAMPTZ,
+  resolved_by TEXT REFERENCES admin_users(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ragic_student_match_review_pending
+  ON ragic_student_match_review(status) WHERE status = 'pending';
+
+-- ─── Ragic 影子表（P1.1 決策9，2026-07-07）────────────────────────────────
+-- 職責分離：PULL 無腦寫入這裡（不比對/不清洗，只求速度），既有畢業判斷/quarantine/
+-- upsert 邏輯改讀這張表而非直接呼叫 Ragic API（見 ragicAdmin.js
+-- _shadowPullZ01Impl / _reconcileZ01FromShadowImpl）。raw_data 存整份 Ragic Z01
+-- record 原始 JSON（含內嵌 Z02 學員子表格），與 mapZ01Parent/parseZ01Students
+-- 直接吃的形狀一致，讀取端不需另外轉換。只鏡射「現況」，不留歷史：每輪 shadow-pull
+-- 會刪除本次快照已不存在的舊列。
+CREATE TABLE IF NOT EXISTS ragic_z01_shadow (
+  ragic_record_id TEXT PRIMARY KEY,
+  raw_data JSONB NOT NULL,
+  fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_ragic_z01_shadow_fetched ON ragic_z01_shadow(fetched_at);
 `;
 
 // 預設關鍵字清單（F-A07，可在後台增減 / 停用）
