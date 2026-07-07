@@ -8,7 +8,7 @@
  *                                         支援 ?venueId=&status=active|inactive|all
  *  GET    /api/admin/staff/:id          → 單筆詳細（含 coach_profile + bio_media，給編輯彈窗載入）
  *  POST   /api/admin/staff              → 新建員工（admin_staff + admin_users + 可選 coaches，transaction）
- *                                         預設密碼 = 員工編號 (id)
+ *                                         登入帳號 / 預設密碼 = 手機號碼
  *  POST   /api/admin/staff/sync         → 立即同步 Ragic H01
  *  PATCH  /api/admin/staff/:id          → 更新角色/場館/姓名/手機/資深/修課係數/啟用
  *                                         + 可選 coach_profile { bio_rich_text, specialties, email,
@@ -783,9 +783,9 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
       return res.status(400).json({ error: '員工編號格式：英文字母開頭，共 2–10 碼' });
     }
     if (!name) return res.status(400).json({ error: '姓名必填' });
+    if (!phone) return res.status(400).json({ error: '手機必填，登入帳號與預設密碼會使用手機號碼' });
     if (!VALID_ROLES.includes(role)) return res.status(400).json({ error: '角色不合法' });
     if (role === 'coach') {
-      if (!phone) return res.status(400).json({ error: '教練必須提供手機' });
       if (Number.isNaN(multiplier) || multiplier < MULTIPLIER_MIN || multiplier > MULTIPLIER_MAX) {
         return res.status(400).json({ error: `修課係數需在 ${MULTIPLIER_MIN.toFixed(2)}–${MULTIPLIER_MAX.toFixed(2)} 之間` });
       }
@@ -794,24 +794,13 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
     const dup = await client.query(`SELECT id FROM admin_staff WHERE id = $1`, [id]);
     if (dup.rowCount) return res.status(409).json({ error: `員工編號 ${id} 已存在` });
 
-    async function resolveUsername() {
-      const candidates = [];
-      if (phone) candidates.push(phone);
-      candidates.push(id);
-      for (const cand of candidates) {
-        const exists = await client.query(`SELECT 1 FROM admin_users WHERE username = $1`, [cand]);
-        if (!exists.rowCount) return cand;
-      }
-      for (let i = 1; i < 100; i++) {
-        const cand = `${id}_${String(i).padStart(2, '0')}`;
-        const exists = await client.query(`SELECT 1 FROM admin_users WHERE username = $1`, [cand]);
-        if (!exists.rowCount) return cand;
-      }
-      throw Object.assign(new Error('無法產生唯一的登入帳號'), { statusCode: 409 });
+    const usernameExists = await client.query(`SELECT 1 FROM admin_users WHERE username = $1`, [phone]);
+    if (usernameExists.rowCount) {
+      return res.status(409).json({ error: `手機 ${phone} 已被其他登入帳號使用` });
     }
-    const username = await resolveUsername();
+    const username = phone;
 
-    const pwdHash = await bcrypt.hash(id, 10);
+    const pwdHash = await bcrypt.hash(phone, 10);
     const userId = `U_${id}`;
     const loginRole = role === 'coach' ? 'staff' : role;
 
@@ -837,7 +826,7 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
     const after = await pool.query(`${STAFF_SELECT} WHERE s.id = $1`, [id]);
     res.status(201).json({
       ...rowToStaff(after.rows[0]),
-      default_password_hint: id,
+      default_password_hint: phone,
       login_username: username,
     });
   } catch (err) {
@@ -922,8 +911,24 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
       lifeguard_active: patch.lifeguard_active != null ? !!patch.lifeguard_active : !!cur.rows[0].lifeguard_active,
     };
     if (!merged.name) return res.status(400).json({ error: '姓名必填' });
+    if (!ragicLocked && patch.phone !== undefined && !merged.phone) {
+      return res.status(400).json({ error: '手機必填，登入帳號與預設密碼會使用手機號碼' });
+    }
     if (merged.role === 'coach' && !merged.phone) {
       return res.status(400).json({ error: '教練角色必須有手機（用於建立教練 LIFF 紀錄）' });
+    }
+
+    const phoneChanged = !ragicLocked
+      && patch.phone !== undefined
+      && String(merged.phone || '') !== String(cur.rows[0].phone || '');
+    if (phoneChanged) {
+      const usernameDup = await client.query(
+        `SELECT 1 FROM admin_users WHERE username = $1 AND staff_id IS DISTINCT FROM $2 LIMIT 1`,
+        [merged.phone, id]
+      );
+      if (usernameDup.rowCount) {
+        return res.status(409).json({ error: `手機 ${merged.phone} 已被其他登入帳號使用` });
+      }
     }
 
     const activeChanged = patch.active != null && (!!patch.active) !== !!cur.rows[0].active;
@@ -961,9 +966,10 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
               venue_id = $4,
               is_active = $5,
               active_overridden_at = CASE WHEN $6::boolean THEN NOW() ELSE active_overridden_at END,
+              username = CASE WHEN $7::boolean THEN $8 ELSE username END,
               updated_at = NOW()
         WHERE staff_id = $1`,
-      [id, merged.name, loginRole, merged.venue_id, merged.active, activeChanged]
+      [id, merged.name, loginRole, merged.venue_id, merged.active, activeChanged, phoneChanged, merged.phone]
     );
 
     if (venueIdsTouched) {
@@ -1073,12 +1079,13 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
   }
 });
 
-// Task #82：admin 重設員工密碼為員工編號 + 推 LINE 通知
+// Task #82：admin 重設員工密碼為手機號碼 + 推 LINE 通知
 router.post('/:id/reset-password', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
   try {
     const { id } = req.params;
     const staffRes = await pool.query(
       `SELECT s.id, s.name, s.venue_id, c.line_uid AS coach_line_uid
+              , s.phone
          FROM admin_staff s
          LEFT JOIN coaches c ON c.ragic_employee_id = s.id
         WHERE s.id = $1`,
@@ -1095,11 +1102,22 @@ router.post('/:id/reset-password', requireAdminAuth, requireAdminRole('admin'), 
     if (!adminUser) {
       return res.status(404).json({ error: '該員工尚無後台登入帳號' });
     }
+    const defaultPassword = String(staff.phone || '').trim();
+    if (!defaultPassword) {
+      return res.status(400).json({ error: '該員工尚未設定手機，無法重設為預設手機密碼' });
+    }
+    const usernameDup = await pool.query(
+      `SELECT 1 FROM admin_users WHERE username = $1 AND id <> $2 LIMIT 1`,
+      [defaultPassword, adminUser.id]
+    );
+    if (usernameDup.rowCount) {
+      return res.status(409).json({ error: `手機 ${defaultPassword} 已被其他登入帳號使用` });
+    }
 
-    const newHash = await bcrypt.hash(String(id), 10);
+    const newHash = await bcrypt.hash(defaultPassword, 10);
     await pool.query(
-      `UPDATE admin_users SET password_hash = $2, updated_at = NOW() WHERE id = $1`,
-      [adminUser.id, newHash]
+      `UPDATE admin_users SET username = $2, password_hash = $3, updated_at = NOW() WHERE id = $1`,
+      [adminUser.id, defaultPassword, newHash]
     );
 
     let notified = false;
@@ -1112,6 +1130,8 @@ router.post('/:id/reset-password', requireAdminAuth, requireAdminRole('admin'), 
         const messages = lineService.templates.adminPasswordReset({
           employeeName: staff.name,
           employeeId: staff.id,
+          loginUsername: defaultPassword,
+          defaultPassword,
           loginUrl,
         });
         await lineService.pushMessage(lineUid, messages, staff.venue_id);
@@ -1128,6 +1148,8 @@ router.post('/:id/reset-password', requireAdminAuth, requireAdminRole('admin'), 
       ok: true,
       staff_id: staff.id,
       staff_name: staff.name,
+      login_username: defaultPassword,
+      default_password_hint: defaultPassword,
       notified,
       notify_error: notifyError,
     });
@@ -1137,17 +1159,27 @@ router.post('/:id/reset-password', requireAdminAuth, requireAdminRole('admin'), 
   }
 });
 
-// 檢視密碼（眼睛）：密碼以 bcrypt 雜湊保存無法還原，但若仍為「預設＝員工編號」即可確認並回傳明碼；
+// 檢視密碼（眼睛）：密碼以 bcrypt 雜湊保存無法還原，但若仍為「預設＝手機號碼」即可確認並回傳明碼；
 // 員工自行改過後比對失敗 → is_default=false，誠實回報無法顯示。僅 admin 可用。
 router.get('/:id/password-hint', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
   try {
     const { id } = req.params;
-    const u = await pool.query(`SELECT password_hash FROM admin_users WHERE staff_id = $1`, [id]);
+    const u = await pool.query(
+      `SELECT u.password_hash, s.phone
+         FROM admin_users u
+         LEFT JOIN admin_staff s ON s.id = u.staff_id
+        WHERE u.staff_id = $1`,
+      [id]
+    );
     if (!u.rowCount || !u.rows[0].password_hash) {
       return res.json({ has_account: false, is_default: false, password: null });
     }
-    const isDefault = await bcrypt.compare(String(id), u.rows[0].password_hash);
-    res.json({ has_account: true, is_default: isDefault, password: isDefault ? String(id) : null });
+    const defaultPassword = String(u.rows[0].phone || '').trim();
+    if (!defaultPassword) {
+      return res.json({ has_account: true, is_default: false, password: null, missing_default_phone: true });
+    }
+    const isDefault = await bcrypt.compare(defaultPassword, u.rows[0].password_hash);
+    res.json({ has_account: true, is_default: isDefault, password: isDefault ? defaultPassword : null });
   } catch (err) {
     console.error('[admin/staff/:id/password-hint]', err);
     res.status(500).json({ error: '讀取密碼資訊失敗' });
