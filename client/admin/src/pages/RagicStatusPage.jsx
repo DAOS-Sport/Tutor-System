@@ -152,9 +152,15 @@ function FormCard({ job, info, onSync, syncing, isAdmin, envEnabled, onToggle, t
         ) : null}
       </dl>
       {info.last_error ? (
-        <div className="mt-2 rounded bg-red-50 px-2 py-1.5 text-xs text-red-700">
-          錯誤：{info.last_error}
-        </div>
+        /^unmatched_staff_warning=/.test(info.last_error) ? (
+          <div className="mt-2 rounded bg-amber-50 px-2 py-1.5 text-xs text-amber-700">
+            提醒：{info.last_error}（H23 係數表部分員工未對應，不影響主同步）
+          </div>
+        ) : (
+          <div className="mt-2 rounded bg-red-50 px-2 py-1.5 text-xs text-red-700">
+            錯誤：{info.last_error}
+          </div>
+        )
       ) : null}
       {isAdmin ? (
         <button
