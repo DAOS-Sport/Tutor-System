@@ -1746,9 +1746,23 @@ async function purgeZ03OnceForProductionPublish() {
   }
 }
 
+async function clearLegacyStagingChanges() {
+  // Staging 流程已下架（H01/H05 sync 改為直接 apply）。
+  // 每次啟動一律清空舊的待審核列，確保不留遺留資料干擾。
+  try {
+    const r = await pool.query(`DELETE FROM ragic_staging_changes`);
+    if (r.rowCount > 0) {
+      console.log(`[core bootstrap] cleared ${r.rowCount} legacy ragic_staging_changes rows`);
+    }
+  } catch (err) {
+    console.warn('[core bootstrap] clearLegacyStagingChanges skipped:', err.message);
+  }
+}
+
 async function bootstrap() {
   try {
     await ensureSchema();
+    await clearLegacyStagingChanges();
     await purgeZ03OnceForProductionPublish();
     await seedVenuesCoachesParents();
     await seedSlotsAndSessions();

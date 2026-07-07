@@ -5,6 +5,7 @@ import { coursesApi } from '../api/courses';
 import { venuesApi } from '../api/venues';
 import CoachCard from '../components/CoachCard';
 import LoadingSpinner from '../components/LoadingSpinner';
+import PaymentDisclaimerModal from '../components/PaymentDisclaimerModal';
 import { useToast } from '../context/ToastContext';
 import { courseTypeLabel } from '../utils/format';
 
@@ -20,6 +21,7 @@ export default function CoachListPage() {
   const [basePrice, setBasePrice] = useState(0);
   const [loadError, setLoadError] = useState(null);
   const [levelFilter, setLevelFilter] = useState('all'); // 'all' | 'senior' | 'regular'
+  const [pendingCoach, setPendingCoach] = useState(null);
 
   useEffect(() => {
     if (!venueId) {
@@ -52,6 +54,16 @@ export default function CoachListPage() {
       alive = false;
     };
   }, [venueId, courseType, toast]);
+
+  function handleCoachSelect(coach) {
+    setPendingCoach(coach);
+  }
+
+  function handleDisclaimerAgree() {
+    const c = pendingCoach;
+    setPendingCoach(null);
+    navigate(`/enroll?venue=${venueId}&courseType=${courseType}&coach=${c.id}`);
+  }
 
   if (loadError) {
     return (
@@ -108,12 +120,16 @@ export default function CoachListPage() {
             key={c.id}
             coach={c}
             basePrice={basePrice}
-            onSelect={() =>
-              navigate(`/enroll?venue=${venueId}&courseType=${courseType}&coach=${c.id}`)
-            }
+            onSelect={() => handleCoachSelect(c)}
           />
         ))}
       </div>
+
+      <PaymentDisclaimerModal
+        open={!!pendingCoach}
+        onAgree={handleDisclaimerAgree}
+        onCancel={() => setPendingCoach(null)}
+      />
     </div>
   );
 }

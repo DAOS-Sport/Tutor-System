@@ -699,6 +699,7 @@ async function _syncStaffCoefficientImpl() {
 // 既有 diff/staging 邏輯，資料來源改讀 ragic_h01_shadow（由 _shadowPullH01Impl
 // 維護），不再直接呼叫 Ragic API。
 async function _reconcileH01FromShadowImpl() {
+  let applyClient = null;
   try {
     const client0 = await pool.connect();
     let records;
@@ -760,11 +761,10 @@ async function _reconcileH01FromShadowImpl() {
       else venuesByStaff.set(vr.staff_id, [vr.venue_id]);
     }
     const seenKeys = new Set();
-    let staged = 0;
-    let venueDiffsStaged = 0; // P1.1 決策3：場館差異改送審核，不再直接套用
-
+    let applied = 0;
     let failed = 0;
     const staffErrors = [];
+    applyClient = await pool.connect();
     for (const [idx, r] of records.entries()) {
      try {
       const ragicId = r['員工編號'] || r['工號'] || r['3000935'];
@@ -775,35 +775,23 @@ async function _reconcileH01FromShadowImpl() {
       const ragicRecordId = r._ragicId != null ? String(r._ragicId) : null;
       const ragicDataNo = _h01DataNo(r);
       seenKeys.add(id);
-      const stageHalt = async (reason, message, diffKey) => {
+      const stageHalt = async (reason, message) => {
         const existingForHalt = (ragicRecordId && dbByRagicId.get(ragicRecordId)) || dbMap.get(id);
         if (existingForHalt) seenKeys.add(_normalizeStaffId(existingForHalt.id));
-        const haltPayload = {
-          ..._staffPayloadFromRagicRow(r, resolveVenues),
-          halt_reason: reason,
-          halt_message: message,
-        };
-        const haltEntityId = _staffHaltEntityId(r, String(idx));
-        const haltDiff = {
-          halt_reason: { from: '', to: message },
-          [diffKey]: { from: '(hidden)', to: '(hidden)' },
-        };
-        if (await _stageIfNotRejected('H01_STAFF', 'staff', haltEntityId, 'update', haltPayload, haltDiff)) staged++;
+        console.warn(`[Ragic sync] H01 資料品質中止 (${reason}): ${message}`);
         await _alertAdmins(`【Ragic H01 對齊中止】${message}（_ragicId=${ragicRecordId || '(none)'}，員工編號=${id || '(none)'}）`);
       };
       if (!ragicDataNo) {
         await stageHalt(
           'missing_ragic_data_no',
-          `H01 record 缺少資料編號 Field ${H01.DATA_NO}，已中止該筆套用`,
-          'ragic_data_no_missing'
+          `H01 record 缺少資料編號 Field ${H01.DATA_NO}，已中止該筆套用`
         );
         continue;
       }
       if (duplicateDataNos.has(ragicDataNo)) {
         await stageHalt(
           'duplicate_ragic_data_no',
-          `H01 同一次 pull 出現重複資料編號 Field ${H01.DATA_NO}，整組已進 staging 且不可套用`,
-          'ragic_data_no_duplicate'
+          `H01 同一次 pull 出現重複資料編號 Field ${H01.DATA_NO}，整組已略過`
         );
         continue;
       }
@@ -836,8 +824,7 @@ async function _reconcileH01FromShadowImpl() {
       if (curByRagicId?.ragic_data_no && String(curByRagicId.ragic_data_no) !== ragicDataNo) {
         await stageHalt(
           'ragic_data_no_changed',
-          `H01 _ragicId=${ragicRecordId} 的資料編號由既有值變更，已中止該筆套用並待人工排查`,
-          'ragic_data_no_changed'
+          `H01 _ragicId=${ragicRecordId} 的資料編號由既有值變更，已中止該筆套用並待人工排查`
         );
         continue;
       }
@@ -850,8 +837,7 @@ async function _reconcileH01FromShadowImpl() {
           && _normalizeStaffId(cur.ragic_record_id) !== _normalizeStaffId(cur.id)) {
         await stageHalt(
           'ragic_record_id_changed_for_data_no',
-          `H01 資料編號對到既有員工，但 _ragicId 與本地錨點不同，已中止該筆套用並待人工排查`,
-          'ragic_record_id_changed'
+          `H01 資料編號對到既有員工，但 _ragicId 與本地錨點不同，已中止該筆套用並待人工排查`
         );
         continue;
       }
@@ -925,7 +911,17 @@ async function _reconcileH01FromShadowImpl() {
       const coachFieldsPersistable = !!coachRow || (payload.is_coach && !!phone);
 
       if (!cur) {
-        if (await _stageIfNotRejected('H01_STAFF', 'staff', entityId, 'new', payload, null)) staged++;
+        try {
+          await applyClient.query('BEGIN');
+          await _applyStaffChange({ entity_id: entityId, change_type: 'new', payload_json: payload }, applyClient);
+          await applyClient.query('COMMIT');
+          applied++;
+        } catch (applyErr) {
+          await applyClient.query('ROLLBACK').catch(() => {});
+          failed++;
+          staffErrors.push(`新員工 ${entityId}：${applyErr.message}`);
+          console.warn('[Ragic sync] new staff direct-apply failed (id=%s): %s', entityId, applyErr.message);
+        }
         continue;
       }
       const diff = {};
@@ -968,25 +964,26 @@ async function _reconcileH01FromShadowImpl() {
       if (!!cur.is_lifeguard !== isLifeguard) {
         diff.is_lifeguard = { from: !!cur.is_lifeguard, to: isLifeguard };
       }
-      // P1.1 決策3（2026-07-07 定案）：場館指派改回待審核，不再 auto-apply
-      // （原 Task #95 auto-apply 理由：待審模式曾因場館「名稱 vs 代碼」誤判成永遠
-      // 有差異，導致無限重複 stage、審核區永遠清不完——該 bug 已被上面的
-      // resolveVenues/_buildVenueResolver 正規化修好，不再需要繞過待審核；場館變更
-      // 併入下面既有的 diff → _stageIfNotRejected 一起送審。apply 端已有完整落地
-      // 邏輯，見 _applyStaffChange 內 Task #90 那段 admin_staff_venues 同步，
-      // approve 後自動套用，不需另外呼叫）。
+      // 場館差異直接套用（移除 staging 流程，全量直接 apply）
       const curVenues = venuesByStaff.get(entityId) || [];
       const newVenues = [...venueIds].sort();
       const curVenuesSorted = [...curVenues].sort();
       if (newVenues.length > 0 && (newVenues.length !== curVenuesSorted.length
           || newVenues.some((v, i) => v !== curVenuesSorted[i]))) {
         diff.venue_ids = { from: curVenuesSorted, to: newVenues };
-        venueDiffsStaged++;
       }
       if (Object.keys(diff).length > 0) {
-        if (await _stageIfNotRejected('H01_STAFF', 'staff', entityId, 'update', payload, diff)) staged++;
-      } else {
-        await _markPendingResolved('staff', entityId);
+        try {
+          await applyClient.query('BEGIN');
+          await _applyStaffChange({ entity_id: entityId, change_type: 'update', payload_json: payload }, applyClient);
+          await applyClient.query('COMMIT');
+          applied++;
+        } catch (applyErr) {
+          await applyClient.query('ROLLBACK').catch(() => {});
+          failed++;
+          staffErrors.push(`員工 ${entityId}：${applyErr.message}`);
+          console.warn('[Ragic sync] staff update direct-apply failed (id=%s): %s', entityId, applyErr.message);
+        }
       }
      } catch (err) {
       // 嫌疑4 CONFIRMED 修復：單筆壞資料不再中止整批（原本 function-level try 會讓
@@ -999,27 +996,33 @@ async function _reconcileH01FromShadowImpl() {
      }
     }
 
-    // Ragic 名單外 + 仍 active + 未 override → deactivate stage
+    // Ragic 名單外 + 仍 active + 未 override → 直接停用（無 staging）
     for (const r of dbRows) {
       if (!r.active || r.active_overridden_at != null || seenKeys.has(_normalizeStaffId(r.id))) continue;
       const payload = { id: r.id, name: r.name, is_active: false };
-      const diff = { active: { from: true, to: false } };
-      if (await _stageIfNotRejected('H01_STAFF', 'staff', r.id, 'deactivate', payload, diff)) staged++;
-    }
-    if (venueDiffsStaged > 0) {
-      console.log(`[Ragic sync] staff：場館差異 ${venueDiffsStaged} 位已送待審核（不再 auto-apply）`);
+      try {
+        await applyClient.query('BEGIN');
+        await _applyStaffChange({ entity_id: r.id, change_type: 'deactivate', payload_json: payload }, applyClient);
+        await applyClient.query('COMMIT');
+        applied++;
+      } catch (deactivateErr) {
+        await applyClient.query('ROLLBACK').catch(() => {});
+        console.warn('[Ragic sync] staff deactivate direct-apply failed (id=%s): %s', r.id, deactivateErr.message);
+      }
     }
     if (failed > 0) {
       return {
-        synced: staged, staged, venue_diffs_staged: venueDiffsStaged, failed, partial: true,
-        error: `${failed} 筆員工同步失敗（詳見伺服器 log，其餘 ${staged} 筆已正常完成）：${staffErrors[0]}`,
+        synced: applied, applied, failed, partial: true,
+        error: `${failed} 筆員工同步失敗（詳見伺服器 log，其餘 ${applied} 筆已正常套用）：${staffErrors[0]}`,
         skipped: false,
       };
     }
-    return { synced: staged, staged, venue_diffs_staged: venueDiffsStaged, skipped: false };
+    return { synced: applied, applied, skipped: false };
   } catch (err) {
     console.warn('[Ragic sync] staff failed:', err.message);
     return { synced: 0, error: err.message };
+  } finally {
+    if (applyClient) applyClient.release();
   }
 }
 
@@ -1161,7 +1164,13 @@ async function _reconcileH05FromShadowImpl() {
       const cur = dbMap.get(code);
       const payload = { code, ...rv, is_active: true };
       if (!cur) {
-        if (await _stageIfNotRejected('H05_VENUES', 'venue', code, 'new', payload, null)) staged++;
+        await pool.query(
+          `INSERT INTO admin_venues (id, name, address, is_active)
+           VALUES ($1, $2, $3, TRUE)
+           ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, address=EXCLUDED.address, is_active=TRUE`,
+          [code, rv.name || '', rv.address || '']
+        );
+        staged++;
         continue;
       }
       const diff = {};
@@ -1177,9 +1186,10 @@ async function _reconcileH05FromShadowImpl() {
         diff.is_active = { from: false, to: true };
       }
       if (Object.keys(diff).length > 0) {
-        if (await _stageIfNotRejected('H05_VENUES', 'venue', code, 'update', payload, diff)) staged++;
-      } else {
-        await _markPendingResolved('venue', code);
+        if ('name' in diff) await pool.query(`UPDATE admin_venues SET name=$1 WHERE id=$2 AND name_overridden_at IS NULL`, [rv.name || '', code]);
+        if ('address' in diff) await pool.query(`UPDATE admin_venues SET address=$1 WHERE id=$2 AND address_overridden_at IS NULL`, [rv.address || '', code]);
+        if ('is_active' in diff) await pool.query(`UPDATE admin_venues SET is_active=TRUE WHERE id=$1 AND is_active_overridden_at IS NULL`, [code]);
+        staged++;
       }
      } catch (err) {
       // 嫌疑4 CONFIRMED 修復：單筆壞資料不再中止整批（原本 function-level try 會讓
@@ -1190,12 +1200,11 @@ async function _reconcileH05FromShadowImpl() {
      }
     }
 
-    // 不在 Ragic 但 active 中 + 未 override → deactivate stage
+    // 不在 Ragic 但 active 中 + 未 override → 直接停用（無 staging）
     for (const r of dbRows) {
       if (!r.is_active || r.is_active_overridden_at != null || ragicMap.has(r.id)) continue;
-      const payload = { code: r.id, name: r.name, is_active: false };
-      const diff = { is_active: { from: true, to: false } };
-      if (await _stageIfNotRejected('H05_VENUES', 'venue', r.id, 'deactivate', payload, diff)) staged++;
+      await pool.query(`UPDATE admin_venues SET is_active=FALSE WHERE id=$1 AND is_active_overridden_at IS NULL`, [r.id]);
+      staged++;
     }
     if (failed > 0) {
       return {
