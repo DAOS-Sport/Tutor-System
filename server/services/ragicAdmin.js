@@ -906,7 +906,7 @@ async function _reconcileH01FromShadowImpl() {
       // Task #90：解析 Ragic H01 多場館欄位（主場館 + 支援場館），合併為陣列
       // Task #95：立即 resolve 成 venue 代碼再比對 / 入 payload（見上方註解）
       const venueIds = resolveVenues(_extractStaffVenueIds(r));
-      // H01「個人LINE ID」(Field 1003633)；apply 時只在 coaches.line_uid 為空才補
+      // H01「個人LINE ID」(Field 1003633 / exact display key fallback)。
       const lineUid = extractLineUid(r);
       // P1.5：業務對齊鍵改為 H01「資料編號」；_ragicId 作不可變錨點 / 舊資料回填，
       // 員工編號只保留最後 fallback（涵蓋尚未回填的過渡期資料）。
@@ -1026,11 +1026,10 @@ async function _reconcileH01FromShadowImpl() {
       if (coachFieldsPersistable && email && !curCoachEmail) {
         diff.email = { from: '', to: email };
       }
-      // line_uid：只在「DB 為空 + Ragic 有值」才 diff，避免覆寫已綁定的教練 LINE
-      // （apply 路徑使用 COALESCE 雙重保險；這裡同樣不顯示「Ragic 空 → 蓋掉」的 diff）。
+      // line_uid：H01 有合法 UID 時以 Ragic 為權威校正；Ragic 空值不清掉本地已綁定值。
       // 同上 coachFieldsPersistable 把關：非教練的 line_uid 套用無處可寫，不再 stage。
-      if (coachFieldsPersistable && lineUid && !curCoachLineUid) {
-        diff.line_uid = { from: '', to: lineUid };
+      if (coachFieldsPersistable && lineUid && curCoachLineUid !== lineUid) {
+        diff.line_uid = { from: curCoachLineUid || '', to: lineUid };
       }
       if (cur.active_overridden_at == null && cur.active !== isActive) {
         diff.active = { from: cur.active, to: isActive };
@@ -1168,9 +1167,9 @@ async function _syncStaffImpl() {
 }
 
 /**
- * H01 教練登入只認「個人LINE ID」Field ID 1003633。
- * 禁止欄名 fallback / 模糊搜尋，避免把「400Line訊息」或其它訊息欄位誤當成
- * LINE Login userId。LINE userId 目前格式為 U + 32 hex；不符合即視為未綁定。
+ * H01 教練登入只認「個人LINE ID」Field ID 1003633，以及 Ragic API 實機會回傳的
+ * 精準中文欄名「個人LINE ID」。禁止模糊搜尋，避免把「400Line訊息」或其它訊息欄位
+ * 誤當成 LINE Login userId。LINE userId 目前格式為 U + 32 hex；不符合即視為未綁定。
  */
 function normalizeLineUserId(value) {
   const uid = String(value || '').trim();
@@ -1179,7 +1178,13 @@ function normalizeLineUserId(value) {
 }
 
 function extractLineUid(r) {
-  return normalizeLineUserId(r?.[H01.LINE_UID]);
+  const fieldIdValue = normalizeLineUserId(r?.[H01.LINE_UID]);
+  if (fieldIdValue) return fieldIdValue;
+  for (const key of H01.LINE_UID_DISPLAY_KEYS || []) {
+    const displayValue = normalizeLineUserId(r?.[key]);
+    if (displayValue) return displayValue;
+  }
+  return '';
 }
 
 
@@ -1495,15 +1500,15 @@ async function _applyStaffChange(row, client) {
   // 必須確保 coaches 表存在對應 row，否則 LIFF /api/coaches/by-line-uid 找不到、
   // 教練永遠無法登入。
   //
-  // line_uid 寫入規則（防誤蓋本地已綁定值）：
-  //   1) Ragic 有值 + 本地空 → 寫入
-  //   2) 本地已有值 → 不被空值覆蓋 (COALESCE)
-  //   3) Ragic 與本地不同 → 保留本地，console.warn（人工確認後可用 staging 強制覆蓋）
+  // line_uid 寫入規則：
+  //   1) Ragic 有合法 UID → 以 H01 為權威寫入 / 校正
+  //   2) Ragic 空值 → 不清掉本地已綁定值
+  //   3) Ragic 與本地不同 → log 一筆，然後由下方 UPDATE 校正
   if (hasCoachProfile && incomingLineUid && existingCoachRow.line_uid
       && existingCoachRow.line_uid !== incomingLineUid) {
     console.warn(
       `[ragicAdmin] line_uid mismatch for coach=${staffId}: `
-      + `local=${existingCoachRow.line_uid} ragic=${incomingLineUid} → 保留本地值`
+      + `local=${existingCoachRow.line_uid} ragic=${incomingLineUid} → 以 Ragic H01 校正`
     );
   }
 
@@ -1518,7 +1523,7 @@ async function _applyStaffChange(row, client) {
            ragic_data_no = COALESCE($4, ragic_data_no),
            name = $5, phone = $6,
            email = COALESCE(NULLIF($7, ''), email),
-           line_uid = COALESCE(line_uid, NULLIF($8, '')),
+           line_uid = CASE WHEN NULLIF($8, '') IS NOT NULL THEN NULLIF($8, '') ELSE line_uid END,
            is_active = CASE WHEN active_overridden_at IS NULL THEN $9 ELSE is_active END,
            updated_at = NOW()
          WHERE id = $1`,
@@ -1596,10 +1601,10 @@ async function _applyStaffChange(row, client) {
       }
     }
   } else if (hasCoachProfile && incomingLineUid) {
-    // dual-role 兼任教練 或 既有 coach row：只補 line_uid（不覆蓋）
+    // dual-role 兼任教練 或 既有 coach row：H01 有合法 UID 時校正，空值不覆蓋
     await client.query(
       `UPDATE coaches
-          SET line_uid = COALESCE(line_uid, NULLIF($2, '')),
+          SET line_uid = CASE WHEN NULLIF($2, '') IS NOT NULL THEN NULLIF($2, '') ELSE line_uid END,
               ragic_record_id = COALESCE($3, ragic_record_id),
               ragic_data_no = COALESCE($4, ragic_data_no),
               updated_at = NOW()
@@ -1656,7 +1661,7 @@ async function _applyCoachChange(row, client) {
        name = EXCLUDED.name,
        phone = EXCLUDED.phone,
        email = COALESCE(NULLIF(EXCLUDED.email, ''), coaches.email),
-       line_uid = COALESCE(coaches.line_uid, NULLIF($5, '')),
+       line_uid = CASE WHEN NULLIF($5, '') IS NOT NULL THEN NULLIF($5, '') ELSE coaches.line_uid END,
        is_active = CASE WHEN coaches.active_overridden_at IS NULL THEN TRUE ELSE coaches.is_active END,
        updated_at = NOW()`,
     [row.entity_id, p.name || '', p.phone || '', p.email || '', p.line_uid || '']

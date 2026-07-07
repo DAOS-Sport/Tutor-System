@@ -40,8 +40,9 @@ const FORMS = {
 // ─────────────────────────────────────────────────────────────
 // LINE UID 綁定欄位 Field ID（角色抓取核心 — 全系統唯一定義處）
 //   Z01 家教系統uid  → 預設 1006846，env RAGIC_FIELD_Z01_LINE_UID 可覆寫
-//   H01 個人LINE ID  → 固定 1003633。這是教練 LINE userId 唯一入口，不吃 env、
-//                     不吃欄名 fallback，避免誤抓「400Line訊息」等訊息/狀態欄位。
+//   H01 個人LINE ID  → 固定 1003633。這是教練 LINE userId 唯一入口，不吃 env。
+//                     實機 API 有時只回中文 key「個人LINE ID」，故只允許精準欄名 fallback，
+//                     不做 LINE/uid 模糊搜尋，避免誤抓「400Line訊息」等訊息/狀態欄位。
 //   Z01 仍保留 env 覆寫；H01 若 Ragic 真正換欄位，必須改 code + 文件一起審核。
 // ─────────────────────────────────────────────────────────────
 const LINE_UID_FIELD = {
@@ -118,7 +119,7 @@ const Z02_FIELDS = {
 //   並輔以 Field ID fallback。這裡集中定義：
 //     - DATA_NO：H01「資料編號」欄位（Field ID 3000934），staff sync 的業務對齊鍵
 //     - LINE_UID：員工 / 教練的個人 LINE ID 欄位（= LINE_UID_FIELD.H01）
-//     - LINE_UID_CANDIDATES：僅保留凍結 Field ID；不得用欄名或模糊搜尋猜 uid。
+//     - LINE_UID_CANDIDATES：凍結 Field ID + 精準中文欄名；不得用模糊搜尋猜 uid。
 //     - VENUE_FIELD_ENV：多場館欄位的 env key（可逗號分隔多 Field ID）
 //     - ROLE_MATCH：角色判斷用的關鍵字
 // ─────────────────────────────────────────────────────────────
@@ -126,6 +127,7 @@ const H01 = {
   DATA_NO: '3000934',
   LINE_UID: LINE_UID_FIELD.H01,
   LINE_UID_CANDIDATES: [LINE_UID_FIELD.H01],
+  LINE_UID_DISPLAY_KEYS: ['個人LINE ID', '*個人LINE ID'],
   // 多場館欄位（主場館 / 支援場館）：env 可指定 Field ID（逗號分隔），否則用中文欄名
   VENUE_FIELD_ENV: [
     process.env.RAGIC_FIELD_H01_VENUE_PRIMARY,
