@@ -428,6 +428,50 @@ export const mockDb = {
       }));
   },
 
+  // 教練授課記錄下拉：每期一列（含同組跨期相鄰示範：張小美、李小龍 兩期）
+  coachHistoryPeriods: (_coachId) => ([
+    { id: 'HP0001', course_type: 1, total_sessions: 6, period_number: 1, group_order_id: null,     student_names: ['張小明'],           used_sessions: 4 },
+    { id: 'HP0002', course_type: 2, total_sessions: 6, period_number: 1, group_order_id: 'GO0001', student_names: ['張小美', '李小龍'], used_sessions: 6 },
+    { id: 'HP0003', course_type: 2, total_sessions: 6, period_number: 2, group_order_id: 'GO0001', student_names: ['張小美', '李小龍'], used_sessions: 2 },
+    { id: 'HP0004', course_type: 1, total_sessions: 6, period_number: 1, group_order_id: null,     student_names: ['陳小米'],           used_sessions: 1 },
+  ]),
+
+  // 教練授課記錄：過去場次（含 from/to/status/periodId 過濾）
+  coachHistorySessions: (_coachId, { from, to, status, periodId } = {}) => {
+    const V = { id: 'B', name: '夢想體育學院 板橋館' };
+    const rows = [
+      { day: -1,  pid: 'HP0001', ct: 1, names: ['張小明'],           checked_in: true },
+      { day: -3,  pid: 'HP0001', ct: 1, names: ['張小明'],           checked_in: false },
+      { day: -5,  pid: 'HP0002', ct: 2, names: ['張小美', '李小龍'], checked_in: true },
+      { day: -8,  pid: 'HP0003', ct: 2, names: ['張小美', '李小龍'], checked_in: false },
+      { day: -12, pid: 'HP0001', ct: 1, names: ['張小明'],           checked_in: true },
+      { day: -20, pid: 'HP0004', ct: 1, names: ['陳小米'],           checked_in: false },
+    ].map((r, i) => ({
+      id: `HSE${String(i + 1).padStart(4, '0')}`,
+      scheduled_at: makeISO(r.day, 15),
+      duration_minutes: 60,
+      status: 'confirmed',
+      course_period_id: r.pid,
+      course_type: r.ct,
+      venue_id: V.id,
+      venue_name: V.name,
+      student_names: r.names,
+      checked_in: r.checked_in,
+    }));
+    const fromT = from ? new Date(`${from}T00:00:00+08:00`).getTime() : -Infinity;
+    const toT = to ? new Date(`${to}T23:59:59+08:00`).getTime() : Infinity;
+    return rows
+      .filter((s) => {
+        const t = new Date(s.scheduled_at).getTime();
+        if (t < fromT || t > toT) return false;
+        if (periodId && s.course_period_id !== periodId) return false;
+        if (status === 'checked' && !s.checked_in) return false;
+        if (status === 'unchecked' && s.checked_in) return false;
+        return true;
+      })
+      .sort((a, b) => new Date(b.scheduled_at) - new Date(a.scheduled_at));
+  },
+
   sessionDetail: (id) => {
     const s = COACH_SLOTS.find(x => x.session_id === id);
     if (!s) return null;

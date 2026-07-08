@@ -25,7 +25,7 @@ import CoachTodayPage from './pages/CoachTodayPage';
 import CoachScheduleWeekPage from './pages/CoachScheduleWeekPage';
 import CoachProfilePage from './pages/CoachProfilePage';
 import CoachSessionPage from './pages/CoachSessionPage';
-import CoachStudentsPage from './pages/CoachStudentsPage';
+import CoachHistoryPage from './pages/CoachHistoryPage';
 import LessonPlanFormPage from './pages/LessonPlanFormPage';
 import SessionRecordFormPage from './pages/SessionRecordFormPage';
 import LearningHistoryPage from './pages/LearningHistoryPage';
@@ -146,12 +146,14 @@ export default function App() {
               <Route element={<AppLayout />}>
                 <Route path="/coach" element={<CoachTodayPage />} />
                 <Route path="/coach/schedule" element={<CoachScheduleWeekPage />} />
-                <Route path="/coach/students" element={<CoachStudentsPage />} />
+                <Route path="/coach/history" element={<CoachHistoryPage />} />
                 <Route path="/coach/profile" element={<CoachProfilePage />} />
               </Route>
               <Route element={<AppLayout showBackButton title="授課入口" />}>
                 <Route path="/coach/session/:id" element={<CoachSessionPage />} />
               </Route>
+              {/* 舊「學員」分頁已改為「授課記錄」；保留舊網址轉址避免書籤 404 */}
+              <Route path="/coach/students" element={<Navigate to="/coach/history" replace />} />
               {/* 課前規劃 / 授課記錄 (Phase 5) */}
               <Route path="/coach/plan/:periodId" element={<LessonPlanFormPage />} />
               <Route path="/coach/record/:sessionId" element={<SessionRecordFormPage />} />

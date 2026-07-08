@@ -15,7 +15,7 @@ const PARENT_TABS = [
 const COACH_TABS = [
   { to: '/coach',          label: '今日',   end: true,  icon: HomeIcon },
   { to: '/coach/schedule', label: '排課',   end: false, icon: CalendarIcon },
-  { to: '/coach/students', label: '學員',   end: false, icon: UsersIcon },
+  { to: '/coach/history',  label: '記錄',   end: false, icon: UsersIcon },
   { to: '/coach/profile',  label: '個人',   end: false, icon: UserIcon },
 ];
 

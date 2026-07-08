@@ -4,7 +4,7 @@ import BottomNav from './BottomNav';
 
 const TAB_PATHS = [
   '/', '/my-courses', '/my-lessons', '/chat', '/profile',
-  '/coach', '/coach/schedule', '/coach/students', '/coach/chat', '/coach/profile',
+  '/coach', '/coach/schedule', '/coach/history', '/coach/chat', '/coach/profile',
 ];
 
 /**

@@ -78,6 +78,95 @@ router.get('/coach/:coachId/week', requireCoach, requireCoachOwner('coachId'), a
   }
 });
 
+/**
+ * 教練授課記錄：過去（台北時區今天之前）已排定的場次一覽。
+ * query：from / to（YYYY-MM-DD，可空）、status（all|checked|unchecked）、periodId（可空）
+ * 「已簽到」＝該 session 至少一人簽到（沿用 today handler 的 EXISTS 定義）。
+ */
+router.get('/coach/:coachId/history', requireCoach, requireCoachOwner('coachId'), async (req, res) => {
+  const from = req.query.from || null;
+  const to = req.query.to || null;
+  const status = ['all', 'checked', 'unchecked'].includes(req.query.status) ? req.query.status : 'all';
+  const periodId = req.query.periodId || null;
+  try {
+    const r = await pool.query(
+      `SELECT cs.id, cs.scheduled_at, cs.duration_minutes, cs.status,
+              cp.id AS course_period_id, cp.course_type,
+              v.id AS venue_id, v.name AS venue_name,
+              rc.name AS original_coach_name,
+              COALESCE(
+                (SELECT json_agg(s.name ORDER BY s.name)
+                 FROM course_period_enrollments cpe
+                 JOIN students s ON s.id = cpe.student_id
+                 WHERE cpe.course_period_id = cp.id AND cpe.status = 'active'),
+                '[]'::json
+              ) AS student_names,
+              EXISTS(SELECT 1 FROM checkin_records WHERE course_session_id = cs.id) AS checked_in
+       FROM course_sessions cs
+       JOIN course_periods cp ON cs.course_period_id = cp.id
+       JOIN venues v ON v.id = cp.venue_id
+       LEFT JOIN coaches rc ON rc.id = cs.reassigned_from_coach_id
+       WHERE COALESCE(cs.coach_id, cp.coach_id) = $1
+         AND (cs.scheduled_at AT TIME ZONE 'Asia/Taipei')::date < (NOW() AT TIME ZONE 'Asia/Taipei')::date
+         AND cs.status IN ('confirmed', 'completed')
+         AND ($2::date IS NULL OR (cs.scheduled_at AT TIME ZONE 'Asia/Taipei')::date >= $2::date)
+         AND ($3::date IS NULL OR (cs.scheduled_at AT TIME ZONE 'Asia/Taipei')::date <= $3::date)
+         AND ($4::uuid IS NULL OR cp.id = $4::uuid)
+         AND ($5 = 'all'
+              OR ($5 = 'checked'   AND     EXISTS(SELECT 1 FROM checkin_records WHERE course_session_id = cs.id))
+              OR ($5 = 'unchecked' AND NOT EXISTS(SELECT 1 FROM checkin_records WHERE course_session_id = cs.id)))
+       ORDER BY cs.scheduled_at DESC`,
+      [req.params.coachId, from, to, periodId, status]
+    );
+    res.json(r.rows);
+  } catch (err) {
+    console.error('[sessions] history failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * 教練授課記錄的「學員篩選」下拉：教練名下每一期課程一列。
+ * 每列含學員名單、總堂數、已用堂數（以簽到紀錄計，團體課用 DISTINCT session）、
+ * 以及 group_key（團報用 group_order_id；單人報名 fallback 用 active 學員 id 集合）
+ * 讓同一組學生跨期相鄰排序。
+ */
+router.get('/coach/:coachId/history/periods', requireCoach, requireCoachOwner('coachId'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT cp.id, cp.course_type, cp.total_sessions, cp.period_number, cp.group_order_id,
+              COALESCE(
+                (SELECT json_agg(s.name ORDER BY s.name)
+                 FROM course_period_enrollments cpe
+                 JOIN students s ON s.id = cpe.student_id
+                 WHERE cpe.course_period_id = cp.id AND cpe.status = 'active'),
+                '[]'::json
+              ) AS student_names,
+              COALESCE(
+                (SELECT COUNT(DISTINCT cr.course_session_id)
+                 FROM checkin_records cr
+                 JOIN course_sessions cs2 ON cs2.id = cr.course_session_id
+                 WHERE cs2.course_period_id = cp.id),
+                0
+              )::int AS used_sessions,
+              COALESCE(
+                cp.group_order_id::text,
+                (SELECT string_agg(cpe.student_id::text, ',' ORDER BY cpe.student_id)
+                 FROM course_period_enrollments cpe
+                 WHERE cpe.course_period_id = cp.id AND cpe.status = 'active')
+              ) AS group_key
+       FROM course_periods cp
+       WHERE cp.coach_id = $1
+       ORDER BY group_key NULLS LAST, cp.period_number, cp.created_at`,
+      [req.params.coachId]
+    );
+    res.json(r.rows);
+  } catch (err) {
+    console.error('[sessions] history periods failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/:id/checkins', requireCoach, async (req, res) => {
   const studentId = String(req.body?.studentId || '').trim();
   if (!studentId) return res.status(400).json({ error: 'studentId required' });
