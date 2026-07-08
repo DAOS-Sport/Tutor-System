@@ -10,7 +10,7 @@ import { courseTypeLabel } from '../utils/format';
  * 教練端：學員管理（MVP）
  * - 從本週課程聚合「教過 / 即將教」的學員清單
  * - 顯示：學員名、上課場次數、最近一次課程時間/場館
- * - 點擊 → 進入該學員下一場課程的授課入口（Phase 5 將擴成完整學習歷程頁）
+ * - 點擊 → 進入該學員下一場課程的授課入口
  */
 function startOfWeek(d) { const x = new Date(d); x.setHours(0,0,0,0); x.setDate(x.getDate() - x.getDay()); return x; }
 function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
@@ -91,10 +91,6 @@ export default function CoachStudentsPage() {
           ))}
         </ul>
       )}
-
-      <p className="mt-6 text-center text-[11px] text-gray-400">
-        完整學習歷程 / 上課記錄將於 Phase 5 開放
-      </p>
     </div>
   );
 }

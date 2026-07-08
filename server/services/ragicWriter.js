@@ -221,6 +221,10 @@ function _assertWriteOk(data) {
   }
 }
 
+// 分類邏輯與 ragic.js 的同名函式一致（見該檔案註解），但這裡刻意「不」加重試：
+// 寫入（POST/PATCH/DELETE）不是冪等操作，逾時後盲目重試可能造成 Ragic 端重複建立
+// 記錄；寫入失敗一律交給呼叫端的既有補償/佇列機制處理（見 ragicWriteback.js），
+// 不在這層自動重試。
 function _normalizeRagicError(err) {
   const isTimeout =
     err?.code === 'ECONNABORTED' ||
@@ -233,15 +237,31 @@ function _normalizeRagicError(err) {
     return e;
   }
   const status = err?.response?.status;
+  if (!status && err?.request) {
+    const e = new Error(`Ragic 連線失敗：${err.code || err.message || '未知網路錯誤'}`);
+    e.code = 'RAGIC_NETWORK_ERROR';
+    e.cause = err;
+    return e;
+  }
   if (status) {
     const body = err.response.data;
     let detail = '';
     if (typeof body === 'string') detail = body.replace(/<[^>]*>/g, ' ').trim().slice(0, 200);
     else if (body && typeof body === 'object') detail = (body.msg || body.message || JSON.stringify(body)).slice(0, 200);
     const e = new Error(`Ragic 回應 HTTP ${status}${detail ? `：${detail}` : ''}`);
-    e.code = 'RAGIC_HTTP_ERROR';
     e.status = status;
     e.cause = err;
+    if (status === 401 || status === 403) {
+      e.code = 'RAGIC_AUTH_FAILED';
+    } else if (status === 404) {
+      e.code = 'RAGIC_ENDPOINT_NOT_FOUND';
+    } else if (status === 429) {
+      e.code = 'RAGIC_RATE_LIMITED';
+    } else if (status === 408 || status >= 500) {
+      e.code = 'RAGIC_HTTP_SERVER_ERROR';
+    } else {
+      e.code = 'RAGIC_HTTP_ERROR';
+    }
     return e;
   }
   return err;

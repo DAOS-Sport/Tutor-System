@@ -8,7 +8,8 @@
     "start": "node index.js",
     "db:migrate": "NODE_PATH=./node_modules node ../db/migrate.js",
     "db:seed": "NODE_PATH=./node_modules node ../db/seed.js",
-    "smoke:ragic-auth": "node scripts/ragic-auth-smoke.js"
+    "smoke:ragic-auth": "node scripts/ragic-auth-smoke.js",
+    "ragic:smoke": "node scripts/ragic-sync-smoke.js"
   },
   "dependencies": {
     "@replit/object-storage": "^1.0.0",

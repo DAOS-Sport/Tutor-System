@@ -36,4 +36,14 @@ function maskIdNumber(id) {
   return '*'.repeat(s.length);
 }
 
-module.exports = { maskName, maskStudentName, maskNames, maskIdNumber };
+// 電話：供 server log 追蹤用途（非跨家庭顯示）——保留頭尾各一小段供人工比對，
+// 中間遮罩，避免完整號碼明文落地（docs/ragic_sync_audit.md §3 PII-in-logs 修復）。
+// 太短（<=6 碼）就全遮：頭 4 + 尾 2 的切法在短字串上會重疊，等於沒遮到。
+function maskPhone(phone) {
+  const s = (phone == null ? '' : String(phone)).trim();
+  if (!s) return '';
+  if (s.length <= 6) return '*'.repeat(s.length);
+  return `${s.slice(0, 4)}${'*'.repeat(s.length - 6)}${s.slice(-2)}`;
+}
+
+module.exports = { maskName, maskStudentName, maskNames, maskIdNumber, maskPhone };

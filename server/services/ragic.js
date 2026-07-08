@@ -18,6 +18,7 @@ const {
   runCanaryWriteReadProof,
 } = require('./ragicFreshness');
 const ragicWriter = require('./ragicWriter');
+const { maskName, maskPhone } = require('../utils/piiMask');
 
 // ── 館別代碼 → 名稱（寫回 Ragic 用）────────────────────────────────────────
 // Ragic 的「館別」欄位（Z01 1002174 / Z02 1002175）存的是場館「名稱」（如「新北高中」），
@@ -101,6 +102,27 @@ function _freshReadParams(params = {}) {
   return out;
 }
 
+// Ragic 系統欄位「最後更新日期」(field 109) 官方查詢格式為 yyyy/MM/dd HH:mm:ss，
+// 對應 Ragic 帳號所在時區（台灣，UTC+8，無日光節約時間，故用固定位移即可，
+// 不需要 Intl timezone 轉換）。
+const RAGIC_ACCOUNT_UTC_OFFSET_MS = 8 * 60 * 60 * 1000;
+function _formatRagicDateTime(date) {
+  const d = new Date(date.getTime() + RAGIC_ACCOUNT_UTC_OFFSET_MS);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}/${pad(d.getUTCMonth() + 1)}/${pad(d.getUTCDate())} `
+    + `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+}
+
+// Phase 5：增量同步查詢參數——`where=109,gte,<watermark>` + `order=109,ASC`
+// （依 Last Update Date 由舊到新排序，讓分頁邊界穩定、也方便未來若要支援
+// 「拉到一半中斷、下次從最後一筆的時間繼續」的續傳）。
+function _changedSinceParams(watermarkDate) {
+  return {
+    where: `109,gte,${_formatRagicDateTime(watermarkDate)}`,
+    order: '109,ASC',
+  };
+}
+
 // 補償用：盡力刪除指定表單的多筆 record（失敗只記 log、不拋）。
 // 用於「Z01 家長已建、Z02 學員寫一半失敗」時回滾，讓使用者可乾淨重試。
 async function _bestEffortDelete(formPath, ragicRecordIds = []) {
@@ -136,8 +158,11 @@ function _assertWriteOk(data) {
   }
 }
 
-// Task #83：把 axios timeout / 超時類錯誤正規化成中文友善文案，
-// 讓 admin UI 直顯「Ragic 慢回應，請稍後再試」而非 raw `timeout of 10000ms exceeded`。
+// Task #83 / docs/ragic_sync_audit.md §6 決策4：把 axios timeout / HTTP 錯誤正規化成
+// 分類過的 error code + 中文友善文案，而不是 raw axios message。分類依據直接對應
+// 「哪些錯誤值得重試」：逾時 / 連線層失敗（無回應）/ 429 / 5xx 是暫時性、值得重試；
+// 401/403（認證）、404（端點不存在）、其餘 4xx（欄位/邏輯錯誤）不值得重試——重試
+// 一個必然失敗的請求只會拖長總時間，不會提高成功率。
 function _normalizeRagicError(err) {
   const isTimeout =
     err?.code === 'ECONNABORTED' ||
@@ -149,37 +174,126 @@ function _normalizeRagicError(err) {
     e.cause = err;
     return e;
   }
+  const status = err?.response?.status;
+  // 有發出請求但完全沒收到回應（DNS 失敗 / 連線被拒 / 連線中途斷線，如
+  // ECONNRESET、ENOTFOUND、ECONNREFUSED）——與逾時同屬暫時性網路層問題，值得重試。
+  if (!status && err?.request) {
+    const e = new Error(`Ragic 連線失敗：${err.code || err.message || '未知網路錯誤'}`);
+    e.code = 'RAGIC_NETWORK_ERROR';
+    e.cause = err;
+    return e;
+  }
   // Ragic / 上游回 HTTP 4xx/5xx 時，axios 的 err.message 只是無資訊量的
   // 「Request failed with status code 400」——存進 ragic_sync_log.error_message 後，
   // 後台「Ragic 連線狀態」卡片就只顯示這串神祕代碼，admin 無從判斷原因。
-  // 這裡把真正的 HTTP 狀態 + Ragic 回應內容（msg/code 或前 200 字）萃取成可讀訊息。
-  const status = err?.response?.status;
+  // 這裡把真正的 HTTP 狀態 + Ragic 回應內容（msg/code 或前 200 字）萃取成可讀訊息，
+  // 並依狀態碼分類成不同 error code（決定上層要不要重試）。
   if (status) {
     const body = err.response.data;
     let detail = '';
     if (typeof body === 'string') detail = body.replace(/<[^>]*>/g, ' ').trim().slice(0, 200);
     else if (body && typeof body === 'object') detail = (body.msg || body.message || JSON.stringify(body)).slice(0, 200);
     const e = new Error(`Ragic 回應 HTTP ${status}${detail ? `：${detail}` : ''}`);
-    e.code = 'RAGIC_HTTP_ERROR';
     e.status = status;
     e.cause = err;
+    if (status === 401 || status === 403) {
+      e.code = 'RAGIC_AUTH_FAILED';
+    } else if (status === 404) {
+      e.code = 'RAGIC_ENDPOINT_NOT_FOUND';
+    } else if (status === 429) {
+      e.code = 'RAGIC_RATE_LIMITED';
+    } else if (status === 408 || status >= 500) {
+      e.code = 'RAGIC_HTTP_SERVER_ERROR';
+    } else {
+      e.code = 'RAGIC_HTTP_ERROR';
+    }
     return e;
   }
   return err;
 }
 
+// 可重試：逾時、連線層失敗、429（頻率限制）、5xx/408（伺服器端暫時性錯誤）。
+// 不可重試：401/403（認證失敗，重試不會變成功）、404（端點不存在）、其餘 4xx
+// （欄位/語法錯誤——Ragic 官方文件與白名單校驗都不會因為重試而改變結果）、
+// 以及 Ragic 200+status:'ERROR' 的應用層錯誤（RAGIC_APPLICATION_ERROR，通常是
+// where= 語法或欄位問題，重試也是同樣結果）。
+const RAGIC_RETRYABLE_CODES = new Set([
+  'RAGIC_TIMEOUT',
+  'RAGIC_NETWORK_ERROR',
+  'RAGIC_RATE_LIMITED',
+  'RAGIC_HTTP_SERVER_ERROR',
+]);
+
+const RAGIC_QUERY_MAX_RETRIES = Number(process.env.RAGIC_QUERY_MAX_RETRIES) || 3;
+const RAGIC_QUERY_RETRY_BASE_MS = Number(process.env.RAGIC_QUERY_RETRY_BASE_MS) || 500;
+
+function _sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// 不准把 timeout 單純調大當修復——這裡改用「短逾時 + 對暫時性錯誤重試」：
+// exponential backoff（base * 2^(attempt-1)）+ jitter，只對 RAGIC_RETRYABLE_CODES
+// 重試；非暫時性錯誤（認證/端點不存在/欄位錯誤）第一次失敗就直接拋出，不浪費重試。
+// 重試次數用盡時，外層錯誤改標 RAGIC_RETRY_EXHAUSTED，並附上 retryCount 與最後一次
+// 的真正錯誤（cause），讓呼叫端知道「已經試過幾次、最後死在哪一種錯誤」。
 async function query(formPath, params = {}, options = {}) {
+  const maxRetries = Number.isFinite(options.maxRetries) ? options.maxRetries : RAGIC_QUERY_MAX_RETRIES;
+  const requestOptions = _requestOptions(params, options);
+  const url = _withApi(formPath);
+  let attempt = 0;
   let res;
-  try {
-    res = await client.get(_withApi(formPath), _requestOptions(params, options));
-  } catch (err) {
-    throw _normalizeRagicError(err);
+  for (;;) {
+    try {
+      res = await client.get(url, requestOptions);
+      break;
+    } catch (rawErr) {
+      const normalized = _normalizeRagicError(rawErr);
+      if (RAGIC_RETRYABLE_CODES.has(normalized.code) && attempt < maxRetries) {
+        attempt += 1;
+        const backoffMs = RAGIC_QUERY_RETRY_BASE_MS * (2 ** (attempt - 1));
+        const jitterMs = backoffMs * 0.3 * Math.random();
+        await _sleep(backoffMs + jitterMs);
+        continue;
+      }
+      if (attempt > 0) {
+        const exhausted = new Error(`Ragic 重試 ${attempt} 次後仍失敗：${normalized.message}`);
+        exhausted.code = 'RAGIC_RETRY_EXHAUSTED';
+        exhausted.retryCount = attempt;
+        exhausted.cause = normalized;
+        throw exhausted;
+      }
+      normalized.retryCount = 0;
+      throw normalized;
+    }
   }
-  // Ragic 錯誤回應仍是 200 + JSON：{ status:'ERROR', msg, code }；要顯式拋出，避免被當成資料 swallow
+  // Ragic 錯誤回應仍是 200 + JSON：{ status:'ERROR', msg, code }；要顯式拋出，避免被當成資料
+  // swallow。這類是應用層（欄位/語法）錯誤，不屬於可重試的暫時性錯誤，故不進上面的重試迴圈。
   if (res.data && typeof res.data === 'object' && res.data.status === 'ERROR') {
-    throw new Error(`Ragic ${res.data.code}: ${res.data.msg}`);
+    const e = new Error(`Ragic ${res.data.code}: ${res.data.msg}`);
+    e.code = 'RAGIC_APPLICATION_ERROR';
+    e.retryCount = attempt;
+    throw e;
   }
   return res.data;
+}
+
+// Phase 6 smoke script 用：單頁查詢，直接暴露 limit/offset/where/order/listing/
+// subtables/naming 控制權，不像 getAllStaff 等封裝函式會做欄位過濾或跨頁合併——
+// 回傳原始 Ragic 回應（物件，key 為 record id）加上量測用的 duration_ms/http_status。
+async function fetchPage(formPath, {
+  limit = 100, offset = 0, where, order, listing, subtables, naming,
+} = {}) {
+  const params = { limit, offset };
+  if (where) params.where = where;
+  if (order) params.order = order;
+  if (listing != null) params.listing = listing;
+  if (subtables != null) params.subtables = subtables;
+  if (naming) params.naming = naming;
+  const started = Date.now();
+  const data = await query(formPath, params);
+  const durationMs = Date.now() - started;
+  const rows = data && typeof data === 'object' ? Object.values(data) : [];
+  return { rows, durationMs, count: rows.length };
 }
 
 async function probeForm(formPath, params = {}) {
@@ -422,6 +536,13 @@ async function getAllStaffWithIntegrityAndFreshness() {
   return queryAllPagedWithIntegrityAndFreshness('H01', process.env.RAGIC_FORM_H01);
 }
 
+// Phase 5（docs/ragic_sync_audit.md）：H01 增量拉取，只抓 Ragic 系統欄位「最後更新日期」
+// (field 109) >= watermark 的列。不套用完整性 gate（truncated/boundaryMismatch 只對「宣稱
+// 拿到全部」的全量快照有意義；增量本來就只拿變更子集，caller 端也不會用它做刪除判斷）。
+async function getAllStaffChangedSinceWithFreshness(watermarkDate) {
+  return queryAllPagedWithFreshness('H01', process.env.RAGIC_FORM_H01, _changedSinceParams(watermarkDate));
+}
+
 async function getAllStaffCoefficientRows() {
   const formPath = process.env.RAGIC_FORM_H23 || 'https://ap7.ragic.com/xinsheng/general-information/23';
   return Object.values(await queryAllPaged(formPath, {}, 1, { noCache: true }));
@@ -447,6 +568,11 @@ async function getAllParentsWithIntegrity() {
 
 async function getAllParentsWithIntegrityAndFreshness() {
   return queryAllPagedWithIntegrityAndFreshness('Z01', process.env.RAGIC_FORM_Z01, {}, 3);
+}
+
+// Phase 5（docs/ragic_sync_audit.md）：Z01 增量拉取，理由同 getAllStaffChangedSinceWithFreshness。
+async function getAllParentsChangedSinceWithFreshness(watermarkDate) {
+  return queryAllPagedWithFreshness('Z01', process.env.RAGIC_FORM_Z01, _changedSinceParams(watermarkDate), 3);
 }
 
 // P1.1 決策4：Z01 schema-drift 偵測（嫌疑3 CONFIRMED 的主動偵測版）。
@@ -1062,10 +1188,10 @@ async function resolveParentRagicRecord(parent) {
   // 讓「每次編輯都能同步回 Ragic」不因家長尚未入 Ragic（例如後台直建 / demo 帳號）而中斷。
   const record = await getParentByPhone(phone);
   if (record?._ragicId) {
-    console.log('[student-sync] resolveParent: 以手機查到既有 Z01', { phone, ragicId: record._ragicId });
+    console.log('[student-sync] resolveParent: 以手機查到既有 Z01', { phone: maskPhone(phone), ragicId: record._ragicId });
     return record._ragicId;
   }
-  console.log('[student-sync] resolveParent: Ragic 查無此家長，將新建 Z01', { phone, name: parent?.name });
+  console.log('[student-sync] resolveParent: Ragic 查無此家長，將新建 Z01', { phone: maskPhone(phone), name: maskName(parent?.name) });
   return await createParentRagicRecord(parent);
 }
 
@@ -1092,7 +1218,7 @@ async function createParentRagicRecord(parent) {
     err.code = 'PARENT_RAGIC_CREATE_FAILED';
     throw err;
   }
-  console.log('[student-sync] 已在 Ragic 新建家長 Z01', { id: String(id), name: parent?.name });
+  console.log('[student-sync] 已在 Ragic 新建家長 Z01', { id: String(id), name: maskName(parent?.name) });
   return String(id);
 }
 
@@ -1117,7 +1243,7 @@ async function syncParentProfileStrict(parent, payloadByFieldId) {
     const existing = await getParentRecordByRagicId(ragicRecordId).catch(() => null);
     if (!existing) {
       console.warn('[parent-sync] 本地 ragic_record_id 在 Ragic 查無，改以手機重新定位', {
-        staleId: String(ragicRecordId), phone: parent?.phone,
+        staleId: String(ragicRecordId), phone: maskPhone(parent?.phone),
       });
       ragicRecordId = null;
     } else {
@@ -1176,9 +1302,9 @@ async function updateStudentInParentSubtable({ ragicRecordId, student }) {
     // 子表格找不到對應列（學員尚未寫進 Z01、或無 id_number/編號 可比對）→ 視為新列附加，
     // 索引取目前列數（與新增流程 buildZ01StudentPayload(startIndex) 一致），避免整筆編輯被擋掉。
     rowIndex = (parseZ01Students(z01Record) || []).length;
-    console.log('[student-sync] Z01 子表格：無對應列 → 附加新列', { ragicRecordId, rowIndex, student: student?.name });
+    console.log('[student-sync] Z01 子表格：無對應列 → 附加新列', { ragicRecordId, rowIndex, student: maskName(student?.name) });
   } else {
-    console.log('[student-sync] Z01 子表格：比對到既有列 → 更新', { ragicRecordId, rowIndex, student: student?.name });
+    console.log('[student-sync] Z01 子表格：比對到既有列 → 更新', { ragicRecordId, rowIndex, student: maskName(student?.name) });
   }
   const raw = await postRagicStrict(
     _recordPath(process.env.RAGIC_FORM_Z01, ragicRecordId),
@@ -1419,6 +1545,7 @@ module.exports = {
   getAllStaff,
   getAllStaffWithFreshness,
   getAllStaffWithIntegrityAndFreshness,
+  getAllStaffChangedSinceWithFreshness,
   getAllStaffCoefficientRows,
   getAllStaffCoefficientRowsRaw,
   getActiveVenues,
@@ -1426,13 +1553,16 @@ module.exports = {
   getAllParents,
   getAllParentsWithIntegrity,
   getAllParentsWithIntegrityAndFreshness,
+  getAllParentsChangedSinceWithFreshness,
   checkZ01SchemaDrift,
+  formatRagicDateTime: _formatRagicDateTime,
   queryAllPagedWithFreshness,
   queryAllPagedWithIntegrityAndFreshness,
   getRecordByRagicId,
   isCanaryRecord,
   filterCanaryRecords,
   probeForm,
+  fetchPage,
   getParentByPhone,
   getParentByLineUid,
   bindParentLineUidToRagic,

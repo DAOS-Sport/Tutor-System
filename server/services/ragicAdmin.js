@@ -21,6 +21,7 @@ const { pool } = require('../models/db');
 const ragic = require('./ragic');
 const parentSync = require('./parentSync');
 const line = require('./line');
+const { maskPhone } = require('../utils/piiMask');
 // Ragic 表單 / 欄位對應唯一來源（凍結點）：H01 LINE UID 欄位、場館欄位、角色關鍵字
 const { H01, H23, FORMS } = require('../config/ragicSchema');
 // DB 租約層（launch-20260707 B 段既有基礎建設，先前未被任何呼叫端接上）：
@@ -534,23 +535,34 @@ async function _assertStagedRagicStillFresh(row) {
 // 清洗邏輯。結構比照 _shadowPullZ01Impl（ragicAdmin.js 上方 Z01 影子表段落）：
 // key 用 ragic_record_id（真正的 _ragicId，理由同「熊韋程 staff 事故」修復——員工
 // 編號可變，不可拿來當影子表主鍵，否則編號一變影子表自己也會長孤兒列）。
-async function _shadowPullH01Impl() {
+// Phase 5：incremental=true 時只拉 watermark 之後有變更的列（見 ragic.js
+// getAllStaffChangedSinceWithFreshness），且：
+//   (a) 不跑「shadowCount===rawTotal」全集校驗——增量本來就只是子集，這條校驗
+//       只對「宣稱拿到全部」的全量快照有意義。
+//   (b) 不做 DELETE-not-present 清理——增量沒有全集可比對「已刪除」，刪除偵測
+//       留給每日仍會跑的全量 reconcile（cron）負責。
+async function _shadowPullH01Impl({ incremental = false, watermark = null } = {}) {
   if (!ragicEnabled()) return { synced: 0, skipped: true };
+  const useIncremental = !!(incremental && watermark);
   let records;
   let freshness = null;
   try {
-    const pull = await ragic.getAllStaffWithIntegrityAndFreshness();
+    const pull = useIncremental
+      ? await ragic.getAllStaffChangedSinceWithFreshness(watermark)
+      : await ragic.getAllStaffWithIntegrityAndFreshness();
     freshness = pull.freshness || null;
     if (pull.stale_read) {
       await _alertFreshnessIfNeeded('H01', freshness, pull.error);
       return _withFreshness({ synced: 0, stale_read: true, error: pull.error }, freshness);
     }
-    const gateError = await _checkPagedIntegrityGate('H01', pull);
-    if (gateError) return _withFreshness({ synced: 0, error: gateError }, freshness);
+    if (!useIncremental) {
+      const gateError = await _checkPagedIntegrityGate('H01', pull);
+      if (gateError) return _withFreshness({ synced: 0, error: gateError }, freshness);
+    }
     records = (pull.raw_records || pull.records || []).filter((row) => !ragic.isCanaryRecord(row, 'H01'));
     await _alertFreshnessIfNeeded('H01', freshness);
   } catch (err) {
-    return { synced: 0, error: `Ragic H01 全量查詢失敗：${err.message}` };
+    return { synced: 0, error: `Ragic H01 ${useIncremental ? '增量' : '全量'}查詢失敗：${err.message}` };
   }
   const client = await pool.connect();
   let synced = 0;
@@ -575,14 +587,16 @@ async function _shadowPullH01Impl() {
       );
       synced++;
     }
-    await client.query(
-      `DELETE FROM ragic_h01_shadow WHERE NOT (ragic_record_id = ANY($1::text[]))`,
-      [presentKeys]
-    );
-    const countRes = await client.query(`SELECT COUNT(*)::int AS n FROM ragic_h01_shadow`);
-    const shadowCount = countRes.rows[0]?.n || 0;
-    if (shadowCount !== rawTotal) {
-      throw new Error(`H01 shadow count mismatch: ragic_raw_total=${rawTotal}, shadow_count=${shadowCount}`);
+    if (!useIncremental) {
+      await client.query(
+        `DELETE FROM ragic_h01_shadow WHERE NOT (ragic_record_id = ANY($1::text[]))`,
+        [presentKeys]
+      );
+      const countRes = await client.query(`SELECT COUNT(*)::int AS n FROM ragic_h01_shadow`);
+      const shadowCount = countRes.rows[0]?.n || 0;
+      if (shadowCount !== rawTotal) {
+        throw new Error(`H01 shadow count mismatch: ragic_raw_total=${rawTotal}, shadow_count=${shadowCount}`);
+      }
     }
     await client.query('COMMIT');
   } catch (err) {
@@ -593,7 +607,7 @@ async function _shadowPullH01Impl() {
   } finally {
     client.release();
   }
-  return _withFreshness({ synced, raw_total: rawTotal, shadow_count: synced }, freshness);
+  return _withFreshness({ synced, raw_total: rawTotal, shadow_count: synced, incremental: useIncremental }, freshness);
 }
 
 async function _readShadowH01(client) {
@@ -691,6 +705,12 @@ async function _shadowPullH23Impl() {
   return { synced, raw_total: rawTotal, shadow_count: synced };
 }
 
+// 去空白（含全形空白）比對用：H23/H01 姓名偶有半形/全形空白差異導致精確比對失手，
+// normalized_name 讓人工一眼看出「其實是同一個人，只是格式不同」。
+function _normalizeStaffNameForDiag(name) {
+  return String(name || '').replace(/[\s　]+/g, '');
+}
+
 async function _reconcileH23FromShadowImpl() {
   const client = await pool.connect();
   let scanned = 0;
@@ -699,6 +719,8 @@ async function _reconcileH23FromShadowImpl() {
   let failed = 0;
   const warnings = [];
   const errors = [];
+  const matchedStaffIds = new Set();
+  let h01MissingWarnings = [];
   try {
     const rows = (await client.query(
       `SELECT ragic_record_id, staff_emp_id, staff_name, raw_data
@@ -722,7 +744,11 @@ async function _reconcileH23FromShadowImpl() {
         const warningRecordId = _ragicRecordId(raw) || row.ragic_record_id;
         if (!empId || !name) {
           unmatched++;
-          warnings.push({ ragic_record_id: warningRecordId, shadow_key: row.ragic_record_id, emp_id: empId, name, reason: 'missing_composite_key' });
+          warnings.push({
+            ragic_record_id: warningRecordId, shadow_key: row.ragic_record_id,
+            employee_no: empId, name, normalized_name: _normalizeStaffNameForDiag(name),
+            source_form: 'H23', reason: 'missing_composite_key',
+          });
           continue;
         }
 
@@ -741,14 +767,17 @@ async function _reconcileH23FromShadowImpl() {
           warnings.push({
             ragic_record_id: warningRecordId,
             shadow_key: row.ragic_record_id,
-            emp_id: empId,
+            employee_no: empId,
             name,
+            normalized_name: _normalizeStaffNameForDiag(name),
+            source_form: 'H23',
             reason: matched.rowCount === 0 ? 'no_exact_staff_match' : 'non_unique_staff_match',
           });
           continue;
         }
 
         const staffId = matched.rows[0].id;
+        matchedStaffIds.add(staffId);
         await client.query(
           `UPDATE admin_staff
               SET multiplier = $2,
@@ -773,6 +802,44 @@ async function _reconcileH23FromShadowImpl() {
         console.warn('[Ragic sync] H23 coefficient per-record reconcile failed (ragic_record_id=%s): %s', row.ragic_record_id, err.message);
       }
     }
+
+    // docs/ragic_sync_audit.md §4：H23 unmatched_staff_warning 目前只涵蓋「H23 有這筆，
+    // 但 admin_staff 找不到精確對應」的單向情況；反向（H01 教練確實存在，但從沒有任何
+    // H23 列精確配對到過，multiplier 永遠停在舊值也不會有人被提醒）同樣要開警告，
+    // 只是不能拋錯中止（H23 表本來就未必涵蓋每一位教練——只警告，不阻斷）。
+    // 範圍限縮在「教練身分」的在職員工：非教練員工本來就不預期有 H23 列，全開警告只會洗版。
+    const uncoveredCoaches = (await client.query(
+      `SELECT id, name, phone FROM admin_staff
+        WHERE active = TRUE AND is_coach = TRUE
+          AND NOT (id = ANY($1::text[]))
+        ORDER BY id`,
+      [[...matchedStaffIds]]
+    )).rows;
+    h01MissingWarnings = uncoveredCoaches.map((r) => ({
+      employee_no: r.id,
+      name: r.name,
+      normalized_name: _normalizeStaffNameForDiag(r.name),
+      phone: maskPhone(r.phone),
+      source_form: 'H01',
+      reason: 'no_h23_coefficient_row',
+    }));
+
+    // H23（薪資倍率表）本身沒有手機欄位；最多只給 admin 看 10 筆樣本，用員工編號
+    // best-effort 查一次 admin_staff.phone 補上（僅供人工核對是哪一位，不因這步
+    // 失敗而讓整個 reconcile 掛掉——查不到就留空）。
+    const sampleSlice = warnings.slice(0, 10);
+    for (const w of sampleSlice) {
+      if (!w.employee_no) { w.phone = null; continue; }
+      try {
+        const r = await client.query(
+          `SELECT phone FROM admin_staff WHERE UPPER(TRIM(id)) = $1 LIMIT 1`,
+          [w.employee_no]
+        );
+        w.phone = maskPhone(r.rows[0]?.phone || '') || null;
+      } catch (_) {
+        w.phone = null;
+      }
+    }
   } catch (err) {
     return { synced: updated, scanned, updated, unmatched_staff_warning: unmatched, error: `H23 reconcile 失敗：${err.message}` };
   } finally {
@@ -784,6 +851,8 @@ async function _reconcileH23FromShadowImpl() {
     updated,
     unmatched_staff_warning: unmatched,
     unmatched_staff_warning_samples: warnings.slice(0, 10),
+    h01_missing_h23_warning: h01MissingWarnings.length,
+    h01_missing_h23_warning_samples: h01MissingWarnings.slice(0, 10),
   };
   if (failed > 0) {
     result.partial = true;
@@ -1171,12 +1240,20 @@ async function _reconcileH01FromShadowImpl() {
 // 對外維持原函式名/簽名不變（FORM_META.staff.impl、cron、admin 手動觸發皆呼叫這支，
 // 完全不需要跟著改）：內部改為「先無腦寫 shadow，再從 shadow 清洗」兩步驟，比照
 // _pullParentsStudentsImpl（Z01）已驗證過的模式。
-async function _syncStaffImpl() {
-  const shadowResult = await _shadowPullH01Impl();
+// Phase 5：手動觸發（triggeredBy==='manual'）且已有前一輪成功的 watermark 時走增量；
+// cron（每日/每 10 分鐘排程）或首次執行（尚無 watermark）一律全量——「每天仍會跑
+// 一次全量」由既有 cron 排程自然滿足，不需要另外加一個「強制全量」的旗標。
+// watermark 只在整輪「無 error、非 partial、非 stale_read」才推進，且推進到「這輪
+// 開始拉取的時間點」而非完成時間，避免拉取期間的新變更被漏掉。
+async function _syncStaffImpl(triggeredBy = 'cron') {
+  const watermark = await getSyncWatermark(FORM_META.staff.code);
+  const useIncremental = triggeredBy === 'manual' && !!watermark;
+  const runStartedAt = new Date();
+  const shadowResult = await _shadowPullH01Impl({ incremental: useIncremental, watermark });
   if (shadowResult.skipped) return shadowResult;
   if (shadowResult.error) {
     return _withFreshness(
-      { synced: 0, stale_read: !!shadowResult.stale_read, error: `[shadow-pull] ${shadowResult.error}` },
+      { synced: 0, stale_read: !!shadowResult.stale_read, error: `[shadow-pull] ${shadowResult.error}`, incremental: useIncremental },
       _freshnessFromResult(shadowResult)
     );
   }
@@ -1185,6 +1262,7 @@ async function _syncStaffImpl() {
   const combined = {
     ...reconciled,
     synced: Number(shadowResult.shadow_count ?? shadowResult.synced) || 0,
+    incremental: useIncremental,
     h01_raw_total: Number(shadowResult.raw_total) || 0,
     h01_shadow_count: Number(shadowResult.shadow_count ?? shadowResult.synced) || 0,
     h01_applied: Number(reconciled.applied ?? reconciled.synced) || 0,
@@ -1198,10 +1276,18 @@ async function _syncStaffImpl() {
     h01_unmatched_staff_warning_samples: reconciled.h01_unmatched_staff_warning_samples || [],
     unmatched_staff_warning: Number(coefficient.unmatched_staff_warning) || 0,
     unmatched_staff_warning_samples: coefficient.unmatched_staff_warning_samples || [],
+    // 反向警告：H01 教練確實存在，但沒有任何 H23 列精確配對到過（multiplier 停在舊值）。
+    h01_missing_h23_warning: Number(coefficient.h01_missing_h23_warning) || 0,
+    h01_missing_h23_warning_samples: coefficient.h01_missing_h23_warning_samples || [],
   };
   if (reconciled.partial || coefficient.error) combined.partial = true;
   if (reconciled.error || coefficient.error) {
     combined.error = [reconciled.error, coefficient.error].filter(Boolean).join('；');
+  }
+  if (!combined.error && !combined.partial && !shadowResult.stale_read) {
+    await setSyncWatermark(FORM_META.staff.code, runStartedAt).catch((err) => {
+      console.warn('[Ragic sync] H01 watermark 寫入失敗（不影響本輪同步結果）:', err.message);
+    });
   }
   return _withFreshness(combined, _freshnessFromResult(shadowResult));
 }
@@ -1280,7 +1366,8 @@ async function _shadowPullH05Impl() {
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
-    return _withFreshness({ synced, error: `Shadow 寫入失敗：${err.message}` }, freshness);
+    // ROLLBACK 已撤銷整個交易——回報實際持久化筆數 0，理由同 H01 shadow-pull 的同款修復。
+    return _withFreshness({ synced: 0, error: `Shadow 寫入失敗：${err.message}` }, freshness);
   } finally {
     client.release();
   }
@@ -2122,7 +2209,7 @@ async function _backupParentsStudentsImpl() {
     } catch (err) {
       const msg = _syncErrorMessage(err, { localId: row.id });
       errors.push(msg);
-      console.warn('[ragic-backup] parent sync failed (id=%s): %s %s', row.id, msg, err.detail || '');
+      console.warn('[ragic-backup] parent sync failed (id=%s): %s', row.id, msg);
     }
   }
 
@@ -2151,7 +2238,7 @@ async function _backupParentsStudentsImpl() {
     } catch (err) {
       const msg = _syncErrorMessage(err, { localId: row.id });
       errors.push(msg);
-      console.warn('[ragic-backup] student sync failed (id=%s): %s %s', row.id, msg, err.detail || '');
+      console.warn('[ragic-backup] student sync failed (id=%s): %s', row.id, msg);
     }
   }
 
@@ -2274,23 +2361,30 @@ async function _resolveZ03IfPending(client, ragicRecordId, currentRawName) {
 // 不跑任何畢業判斷/quarantine/upsert 邏輯。這支是全系統「唯一」打 Z01 全量查詢的
 // 地方，讓「打 Ragic」與「跑清洗邏輯」在程式碼上解耦：清洗邏輯之後再怎麼變慢/變複雜，
 // 都不影響對 Ragic 的呼叫時程；也讓 ragic_z01_shadow 成為可獨立查驗的「Ragic 現況鏡像」。
-async function _shadowPullZ01Impl() {
+// Phase 5：incremental=true 時走 ragic.getAllParentsChangedSinceWithFreshness（只抓
+// watermark 之後有變更的列，見該函式與 _shadowPullH01Impl 頂部註解，理由相同）。
+async function _shadowPullZ01Impl({ incremental = false, watermark = null } = {}) {
   if (!ragicEnabled()) return { synced: 0, skipped: true };
+  const useIncremental = !!(incremental && watermark);
   let integrity;
   let freshness = null;
   try {
-    integrity = await ragic.getAllParentsWithIntegrityAndFreshness();
+    integrity = useIncremental
+      ? await ragic.getAllParentsChangedSinceWithFreshness(watermark)
+      : await ragic.getAllParentsWithIntegrityAndFreshness();
     freshness = integrity.freshness || null;
   } catch (err) {
-    return { synced: 0, error: `Ragic Z01 全量查詢失敗：${err.message}` };
+    return { synced: 0, error: `Ragic Z01 ${useIncremental ? '增量' : '全量'}查詢失敗：${err.message}` };
   }
   if (integrity.stale_read) {
     await _alertFreshnessIfNeeded('Z01', freshness, integrity.error);
     return _withFreshness({ synced: 0, stale_read: true, error: integrity.error }, freshness);
   }
   await _alertFreshnessIfNeeded('Z01', freshness);
-  const gateError = await _checkZ01IntegrityGate(integrity);
-  if (gateError) return _withFreshness({ synced: 0, error: gateError }, freshness);
+  if (!useIncremental) {
+    const gateError = await _checkZ01IntegrityGate(integrity);
+    if (gateError) return _withFreshness({ synced: 0, error: gateError }, freshness);
+  }
 
   const client = await pool.connect();
   let synced = 0;
@@ -2310,19 +2404,24 @@ async function _shadowPullZ01Impl() {
       );
       synced++;
     }
-    // shadow 只鏡射「現況」，不留歷史孤兒：這次快照已不存在的舊列一併清掉。
-    await client.query(
-      `DELETE FROM ragic_z01_shadow WHERE NOT (ragic_record_id = ANY($1::text[]))`,
-      [presentIds]
-    );
+    if (!useIncremental) {
+      // shadow 只鏡射「現況」，不留歷史孤兒：這次快照已不存在的舊列一併清掉。
+      // 增量拉取只有變更子集，不能拿來當「目前存在」的全集比對，否則會把所有
+      // 「這輪沒變更」的既有列全部誤刪——刪除偵測留給每日仍會跑的全量 reconcile。
+      await client.query(
+        `DELETE FROM ragic_z01_shadow WHERE NOT (ragic_record_id = ANY($1::text[]))`,
+        [presentIds]
+      );
+    }
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
-    return _withFreshness({ synced, error: `Shadow 寫入失敗：${err.message}` }, freshness);
+    // ROLLBACK 已撤銷整個交易——回報實際持久化筆數 0，理由同 H01 shadow-pull 的同款修復。
+    return _withFreshness({ synced: 0, error: `Shadow 寫入失敗：${err.message}` }, freshness);
   } finally {
     client.release();
   }
-  return _withFreshness({ synced }, freshness);
+  return _withFreshness({ synced, incremental: useIncremental }, freshness);
 }
 
 async function _readShadowZ01(client) {
@@ -2466,7 +2565,7 @@ async function _reconcileZ01FromShadowImpl() {
         await client.query('ROLLBACK').catch(() => {});
         const msg = _syncErrorMessage(err, { ragicId: z01Row._ragicId });
         errors.push(msg);
-        console.warn('[ragic-pull] parent sync failed (ragicId=%s): %s %s', z01Row._ragicId, msg, err.detail || '');
+        console.warn('[ragic-pull] parent sync failed (ragicId=%s): %s', z01Row._ragicId, msg);
       }
     }
 
@@ -2537,17 +2636,28 @@ async function _reconcileZ01FromShadowImpl() {
 // 完全不需要跟著改）：內部改為「先無腦寫 shadow，再從 shadow 清洗」兩步驟。
 // shadow-pull 失敗（含完整性/schema-drift hard-fail）就不進 reconcile，
 // 避免拿不完整/過期的 shadow 資料跑清洗邏輯。
-async function _pullParentsStudentsImpl() {
-  const shadowResult = await _shadowPullZ01Impl();
+// Phase 5：手動觸發且已有 watermark 時走增量（理由同 _syncStaffImpl 頂部註解）；
+// watermark 只在整輪成功才推進。
+async function _pullParentsStudentsImpl(triggeredBy = 'cron') {
+  const watermark = await getSyncWatermark(FORM_META.pull.code);
+  const useIncremental = triggeredBy === 'manual' && !!watermark;
+  const runStartedAt = new Date();
+  const shadowResult = await _shadowPullZ01Impl({ incremental: useIncremental, watermark });
   if (shadowResult.skipped) return shadowResult;
   if (shadowResult.error) {
     return _withFreshness(
-      { synced: 0, stale_read: !!shadowResult.stale_read, error: `[shadow-pull] ${shadowResult.error}` },
+      { synced: 0, stale_read: !!shadowResult.stale_read, error: `[shadow-pull] ${shadowResult.error}`, incremental: useIncremental },
       _freshnessFromResult(shadowResult)
     );
   }
   const reconciled = await _reconcileZ01FromShadowImpl();
-  return _withFreshness(reconciled, _freshnessFromResult(shadowResult));
+  const combined = { ...reconciled, incremental: useIncremental };
+  if (!combined.error && !combined.partial && !shadowResult.stale_read) {
+    await setSyncWatermark(FORM_META.pull.code, runStartedAt).catch((err) => {
+      console.warn('[Ragic sync] Z01 watermark 寫入失敗（不影響本輪同步結果）:', err.message);
+    });
+  }
+  return _withFreshness(combined, _freshnessFromResult(shadowResult));
 }
 
 async function pullParentsStudentsFromRagic(triggeredBy = 'cron') { return _singleflight('pull', triggeredBy); }
@@ -3256,7 +3366,7 @@ async function _quarantineBadZ01NamesImpl() {
     } catch (err) {
       const msg = _syncErrorMessage(err, { ragicId: z01Row._ragicId });
       errors.push(msg);
-      console.warn('[ragic-quarantine] track failed (ragicId=%s): %s %s', z01Row._ragicId, msg, err.detail || '');
+      console.warn('[ragic-quarantine] track failed (ragicId=%s): %s', z01Row._ragicId, msg);
     }
   }
 
@@ -3321,6 +3431,30 @@ async function setJobEnabled(jobName, enabled) {
     `INSERT INTO admin_settings (key, value, updated_at) VALUES ($1, $2, NOW())
      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
     [_toggleKey(jobName), enabled ? 1 : 0]
+  );
+}
+
+// ── Phase 5（docs/ragic_sync_audit.md）：增量同步 watermark ──
+// 存 admin_settings（key=ragic_watermark_<formCode>，value = epoch 毫秒；同一張表
+// NUMERIC 欄位存不了 ISO 字串，用毫秒數最單純）。watermark 只在整輪成功（無 error、
+// 非 partial、非 stale_read）才推進，且推進到「這輪開始拉取的時間」而非「完成的
+// 時間」——寧可下次增量多重覆蓋一點時間範圍，也不要因為拉取期間又有新變更、
+// 而把 watermark 推到漏掉那筆變更的時間點之後。
+function _watermarkKey(formCode) { return `ragic_watermark_${formCode}`; }
+
+async function getSyncWatermark(formCode) {
+  const r = await pool.query(`SELECT value FROM admin_settings WHERE key = $1`, [_watermarkKey(formCode)]);
+  if (!r.rows.length) return null;
+  const ms = Number(r.rows[0].value);
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  return new Date(ms);
+}
+
+async function setSyncWatermark(formCode, date) {
+  await pool.query(
+    `INSERT INTO admin_settings (key, value, updated_at) VALUES ($1, $2, NOW())
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+    [_watermarkKey(formCode), date.getTime()]
   );
 }
 
@@ -3419,7 +3553,7 @@ async function _runWithLog(jobName, triggeredBy = 'cron') {
     // /sync）最終都走這裡，故單一把關點即可保證同一時間對 Ragic 帳號只有一個
     // in-flight 請求。搶不到鎖不是錯誤——只是另一個 Ragic job 正在跑，記一筆
     // skipped 讓下一輪 cron（10 分鐘後）或使用者重新手動觸發即可，不需要重試。
-    const outcome = await cronLock.runWithLock('ragic_sync', () => meta.impl(), { triggeredBy });
+    const outcome = await cronLock.runWithLock('ragic_sync', () => meta.impl(triggeredBy), { triggeredBy });
     if (outcome.status === 'skipped_lock') {
       result = { synced: 0, skipped: true, locked_by_other_ragic_job: true, current_holder: outcome.currentHolder };
     } else if (outcome.status === 'success') {
@@ -3429,7 +3563,7 @@ async function _runWithLog(jobName, triggeredBy = 'cron') {
     }
   } else {
     try {
-      result = await meta.impl();
+      result = await meta.impl(triggeredBy);
     } catch (err) {
       result = { synced: 0, error: err.message };
     }
@@ -3559,12 +3693,16 @@ async function getSyncStatusSnapshot() {
       [meta.code]
     );
     const stale7d = freshnessTrend.rows.filter((row) => row.status === 'stale_read' || row.freshness_verified === false).length;
+    // Phase 5：有 watermark 代表下次「手動」觸發會走增量（cron 排程仍固定全量）。
+    const watermark = await getSyncWatermark(meta.code).catch(() => null);
     out[job] = {
       form_code: meta.code,
       label: meta.label,
       kind: meta.kind || 'sync',
       admin_enabled:         toggles[job],
       in_progress:           isJobRunning(job),
+      incremental_watermark_at: watermark ? watermark.toISOString() : null,
+      next_manual_sync_mode: watermark ? 'incremental' : 'full',
       last_run_at:           latest.rows[0]?.created_at      || null,
       last_status:           latest.rows[0]?.status          || null,
       last_triggered_by:     latest.rows[0]?.triggered_by    || null,
@@ -3982,6 +4120,9 @@ module.exports = {
   // admin 手動開關（Ragic 連線狀態頁）
   setJobEnabled,
   getJobToggles,
+  // Phase 5：增量同步 watermark
+  getSyncWatermark,
+  setSyncWatermark,
   handleRagicWebhook,
   // Z03 人工整理表
   listZ03Records,
@@ -4007,5 +4148,6 @@ module.exports = {
     staffPayloadFromRagicRow: _staffPayloadFromRagicRow,
     publicStagingRow: _publicStagingRow,
     sanitizeH01RawRow: _sanitizeH01RawRow,
+    reconcileH23FromShadowImpl: _reconcileH23FromShadowImpl,
   },
 };

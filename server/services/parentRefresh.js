@@ -2,6 +2,7 @@ const { pool } = require('../models/db');
 const ragic = require('./ragic');
 const parentSync = require('./parentSync');
 const ragicAdmin = require('./ragicAdmin');
+const { maskPhone } = require('../utils/piiMask');
 
 class ParentRefreshError extends Error {
   constructor(code, message, http = 500, details = null) {
@@ -191,7 +192,7 @@ async function refreshParentMirrorFromRagic({
   // 記大聲 log 供追蹤；場館值會由 H05 場館同步 + 每晚 01:30 pull 自動收斂回填。
   if (requireComplete && !local.primary_venue_id) {
     console.error('[parent-refresh] 場館鏡射未解析（不擋登入，待 H05/夜間同步收斂）:', {
-      reason, phone: mapped.phone, ragicVenue: mapped.primary_venue_id || null,
+      reason, phone: maskPhone(mapped.phone), ragicVenue: mapped.primary_venue_id || null,
     });
   }
   if (effectiveLineUid && local.line_uid !== effectiveLineUid) {
@@ -218,7 +219,7 @@ async function refreshParentMirrorFromRagic({
 
   console.log('[parent-refresh] ok', {
     reason,
-    phone: mapped.phone,
+    phone: maskPhone(mapped.phone),
     ragicId: mapped.ragic_record_id,
     students: localStudents.length,
   });

@@ -17,6 +17,7 @@
 const crypto = require('crypto');
 const { pool } = require('../models/db');
 const ragic = require('./ragic');
+const { maskName, maskPhone } = require('../utils/piiMask');
 
 class BindConflictError extends Error {
   constructor(code, message, http = 409) {
@@ -311,12 +312,12 @@ async function _queryWithLineUidRetry(client, sql, buildParams, lineUidForWrite,
     if (err.code === '23505' && err.constraint === 'parents_line_uid_key') {
       if (hasSavepoint) {
         await client.query('ROLLBACK TO SAVEPOINT sp_upsert_parent');
-        console.warn('[parent-sync] line_uid 衝突（並發競態），ROLLBACK SAVEPOINT 後不帶 UID 重試 (phone=%s)', phone);
+        console.warn('[parent-sync] line_uid 衝突（並發競態），ROLLBACK SAVEPOINT 後不帶 UID 重試 (phone=%s)', maskPhone(phone));
         return client.query(sql, buildParams(''));
       }
       // 無 SAVEPOINT 時（如未在交易中）不嘗試在 ABORT 的 tx 上重試，
       // 直接重拋讓呼叫端做 ROLLBACK；下一輪排程可補回這筆。
-      console.warn('[parent-sync] line_uid 衝突（無 SAVEPOINT），由呼叫端 ROLLBACK 處理 (phone=%s)', phone);
+      console.warn('[parent-sync] line_uid 衝突（無 SAVEPOINT），由呼叫端 ROLLBACK 處理 (phone=%s)', maskPhone(phone));
       throw err;
     }
     throw err;
@@ -470,7 +471,7 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
              ragic.normalizeGender(s.gender), ragicId || null, idNum || null, s.blood_type || null, s.student_code || null]
           );
           console.warn('[parent-sync] 學員第三層(name+birth)命中但不足採信，改建新列並記錄待複核 (parent=%s, name=%s, candidate=%s, new=%s)',
-            parentId, s.name, matched.id, inserted.rows[0].id);
+            parentId, maskName(s.name), matched.id, inserted.rows[0].id);
           reviewCandidateIds.push(matched.id);
         }
       }
@@ -480,7 +481,7 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
         await client.query('ROLLBACK TO SAVEPOINT sp_upsert_student');
         await client.query('RELEASE SAVEPOINT sp_upsert_student').catch(() => {});
         console.warn('[parent-sync] 學員 upsert 撞唯一鍵（%s），略過此學員待下輪收斂 (parent=%s, name=%s)',
-          err.constraint || 'unique', parentId, s.name);
+          err.constraint || 'unique', parentId, maskName(s.name));
         continue;
       }
       throw err;
