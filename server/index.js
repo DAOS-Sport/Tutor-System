@@ -87,21 +87,39 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 app.use('/admin', express.static(path.join(PUBLIC_DIR, 'admin'), { setHeaders: noStoreHtml }));
 app.use('/liff', express.static(path.join(PUBLIC_DIR, 'liff'), { setHeaders: noStoreHtml }));
 
-// 聊天室媒體上傳（Phase 4）：本機 server/uploads 直接以 /uploads 對外
-// 安全：強制 X-Content-Type-Options + 對非媒體型一律以 attachment 下載，避免同源 XSS / iframe sandbox 逃逸
-app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
-  maxAge: '7d',
-  setHeaders(res, filePath) {
-    res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
-    const lower = filePath.toLowerCase();
-    const isMedia = /\.(jpg|jpeg|png|gif|webp|heic|heif|mp4|m4v|mov|webm|mp3|wav|m4a|aac|ogg|amr)$/.test(lower);
-    if (!isMedia) {
-      res.setHeader('Content-Disposition', 'attachment');
-    }
-  },
-}));
+// 聊天室媒體上傳（Phase 4）／匯款證明：以 /uploads 對外。
+// 安全：強制 X-Content-Type-Options + 對非媒體型一律以 attachment 下載，避免同源 XSS / iframe sandbox 逃逸。
+const objectStore = require('./services/objectStorage');
+const mime = require('mime-types');
+
+// 三道安全防線（local 與 bucket 兩條路徑共用）：nosniff + CSP sandbox +
+// 對非媒體副檔名一律 attachment 下載。傳入的是檔名或路徑，只看副檔名。
+function setUploadSecurityHeaders(res, nameOrPath) {
+  res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+  const isMedia = /\.(jpg|jpeg|png|gif|webp|heic|heif|mp4|m4v|mov|webm|mp3|wav|m4a|aac|ogg|amr)$/i.test(nameOrPath);
+  if (!isMedia) res.setHeader('Content-Disposition', 'attachment');
+}
+
+if (objectStore.driverName === 'replit') {
+  // 正式環境（Autoscale 多實例）：檔案存在共享 bucket，非本機磁碟。
+  // 由此 handler 依對外 URL 還原 key、從 bucket 串流回應（含相同三道安全標頭）。
+  app.get('/uploads/*', (req, res) => {
+    setUploadSecurityHeaders(res, req.path);
+    res.setHeader('Content-Type', mime.lookup(req.path) || 'application/octet-stream');
+    const stream = objectStore.openReadStream(req.path);
+    if (!stream) return res.status(404).json({ error: '檔案不存在' });
+    stream.on('error', () => { if (!res.headersSent) res.status(404).json({ error: '檔案不存在' }); else res.destroy(); });
+    stream.pipe(res);
+  });
+} else {
+  // dev / 單機：本機 server/uploads 直接以 express.static 提供。
+  app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
+    maxAge: '7d',
+    setHeaders(res, filePath) { setUploadSecurityHeaders(res, filePath); },
+  }));
+}
 
 // SPA fallback：將子路徑導回對應前端的 index.html，讓 React Router 接手
 app.get('/admin/*', (req, res, next) => {

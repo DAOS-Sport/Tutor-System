@@ -89,13 +89,51 @@ const LocalDiskDriver = {
   },
 };
 
-// ── Driver: Replit App Storage（占位實作；尚未 provision bucket 時自動退回 local）
+// ── Driver: Replit App Storage（Object Storage bucket）────────────
+// 為什麼需要：正式環境是 Autoscale 多實例＋臨時檔案系統，本機磁碟寫入的檔案
+// 無法跨實例存取、也無法在重新部署後存活。改存共享 bucket 後，上傳／驗證／事後
+// 檢視都與「處理請求的是哪個實例」無關。
+// 物件 key 用 `YYYY-MM/xxxx.ext`（去掉 /uploads 前綴的相對路徑），對外 URL 仍維持
+// `/uploads/YYYY-MM/xxxx.ext`，由 index.js 的 /uploads handler 從 bucket 串流回應。
+// 啟用條件：在 Replit 面板為此 App 開通 Object Storage（會提供 default bucket），
+// 並設環境變數 OBJECT_STORAGE_DRIVER=replit。Client 延遲建立，未開通 bucket 時
+// 只有在實際上傳/讀取才會拋錯（模組載入不受影響，dev 仍可用 local）。
+let replitClient = null;
+function getReplitClient() {
+  if (!replitClient) {
+    const { Client } = require('@replit/object-storage');
+    const bucketId = process.env.OBJECT_STORAGE_BUCKET_ID;
+    replitClient = bucketId ? new Client({ bucketId }) : new Client();
+  }
+  return replitClient;
+}
+
 const ReplitDriver = {
   name: 'replit',
-  async saveBuffer(/* { buffer, ext, mimeType } */) {
-    throw new Error('replit object storage adapter not configured; install @replit/object-storage and provision a bucket');
+  async saveBuffer({ buffer, ext }) {
+    const d = new Date();
+    const yyyymm = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const id = crypto.randomBytes(12).toString('hex');
+    const key = `${yyyymm}/${id}${ext}`;
+    const { ok, error } = await getReplitClient().uploadFromBytes(key, buffer);
+    if (!ok) throw new Error(`物件儲存上傳失敗：${(error && error.message) || error || 'unknown'}`);
+    return { url: `/uploads/${key}` };
+  },
+  // 回傳一個 Node Readable（PassThrough）；物件不存在時串流會 emit 'error'，
+  // 由 index.js 的 /uploads handler 轉成 404。key 已在 objectKeyFromUrl 過濾穿越。
+  openReadStream(key) {
+    return getReplitClient().downloadAsStream(key);
   },
 };
+
+// 從對外 URL 還原 bucket 物件 key：'/uploads/2026-06/abc.jpg' → '2026-06/abc.jpg'
+// 拒絕非 /uploads 前綴與路徑穿越（..），與 local 的防穿越規則一致。
+function objectKeyFromUrl(url) {
+  if (typeof url !== 'string' || !url.startsWith('/uploads/')) return null;
+  const key = url.slice('/uploads/'.length);
+  if (!key || key.includes('..')) return null;
+  return key;
+}
 
 const DRIVERS = { local: LocalDiskDriver, replit: ReplitDriver };
 const driverName = (process.env.OBJECT_STORAGE_DRIVER || 'local').toLowerCase();
@@ -134,11 +172,21 @@ function objectExists(url) {
   try { return fs.existsSync(full); } catch { return false; }
 }
 
+// 以對外 URL 開啟 bucket 物件的讀取串流（僅 replit driver）。
+// local driver 回 null — 那些檔案仍由 index.js 的 express.static 從磁碟提供。
+function openReadStream(url) {
+  if (driver.name !== 'replit') return null;
+  const key = objectKeyFromUrl(url);
+  if (!key) return null;
+  return driver.openReadStream(key);
+}
+
 module.exports = {
   saveBuffer,
   isAllowed,
   inferMessageType,
   objectExists,
+  openReadStream,
   UPLOAD_ROOT: LOCAL_ROOT,
   ALLOWED_MAX_BYTES,
   driverName: driver.name,

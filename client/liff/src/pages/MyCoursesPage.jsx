@@ -132,6 +132,10 @@ export default function MyCoursesPage() {
   }
 
   function renderCourseCard(cp) {
+    // 已填末 5 碼＋已上傳匯款證明＝付款資料已送出（與 EnrollStatusPage 的鎖定條件一致，用 AND）。
+    // 待櫃檯對帳期間（lifecycle 仍為 pending_payment）按鈕改顯示「已上傳，待櫃檯確認」，
+    // 不再重複顯示「上傳付款資料」，避免家長誤以為要再次上傳。團報付款走另一條流程，不套用。
+    const paymentSubmitted = !cp.group_order_id && !!cp.payment_proof_url && !!cp.transfer_last_5;
     const actions = cp.lifecycle === 'active'
       ? (cp.course_period_id ? [
         // 聯繫教練：依需求改為停用（灰掉、不可點）。
@@ -143,11 +147,11 @@ export default function MyCoursesPage() {
         { label: '課程開通處理中', primary: true, disabled: true, onClick: () => {} },
       ])
       : (cp.lifecycle === 'pending_payment' ? [
-        {
-          label: cp.group_order_id ? '查看團購狀態' : '上傳付款資料',
-          primary: true,
-          onClick: () => navigateForCard(cp),
-        },
+        cp.group_order_id
+          ? { label: '查看團購狀態', primary: true, onClick: () => navigateForCard(cp) }
+          : (paymentSubmitted
+            ? { label: '已上傳，待櫃檯確認', primary: true, disabled: true, onClick: () => {} }
+            : { label: '上傳付款資料', primary: true, onClick: () => navigateForCard(cp) }),
         ...(cp.group_order_id ? [] : [{
           label: cancellingId === cp.id ? '取消中…' : '取消訂單',
           disabled: cancellingId === cp.id,
