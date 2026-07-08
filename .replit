@@ -1,4 +1,4 @@
-run = "cd server && npm install && PORT=3999 npm run dev"
+run = "cd server && npm install && PORT=3999 npm run dev & node ../scripts/port-proxy.js"
 modules = ["nodejs-20", "python-3.11", "postgresql-16"]
 
 [nix]
@@ -22,6 +22,10 @@ externalPort = 3001
 [[ports]]
 localPort = 3002
 externalPort = 5000
+
+[[ports]]
+localPort = 3997
+externalPort = 5173
 
 [[ports]]
 localPort = 3998
@@ -70,7 +74,7 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "cd server && PORT=3999 npm start"
+args = "cd server && PORT=3999 npm start & node ../scripts/port-proxy.js"
 waitForPort = 3999
 
 [workflows.workflow.metadata]
