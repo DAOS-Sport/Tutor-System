@@ -34,7 +34,10 @@ function _loginPayload(u, password, token) {
   const staffPhone = String(u.staff_phone || '').trim();
   const defaultUsername = !!staffId && String(u.username || '').trim() === staffId;
   const defaultPassword = !!staffPhone && String(password || '') === staffPhone;
-  const mustChangeCredentials = !!staffId && !u.credentials_changed_at && (defaultUsername || defaultPassword);
+  // 櫃檯端（role='staff'）固定用員工編號＋手機號碼登入，不強制要求更換密碼；
+  // 僅 admin / manager 帳號仍會被要求把預設帳密改掉。
+  const mustChangeCredentials = !!staffId && u.role !== 'staff'
+    && !u.credentials_changed_at && (defaultUsername || defaultPassword);
   return {
     id: u.id,
     username: u.username,

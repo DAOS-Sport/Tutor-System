@@ -11,11 +11,11 @@ const PARENT_TABS = [
   { to: '/profile',    label: '個人',     end: false, icon: UserIcon },
 ];
 
+// 教練端聊天功能已完整關閉（含路由封鎖，見 App.jsx），底部導覽不再顯示此分頁。
 const COACH_TABS = [
   { to: '/coach',          label: '今日',   end: true,  icon: HomeIcon },
   { to: '/coach/schedule', label: '排課',   end: false, icon: CalendarIcon },
   { to: '/coach/students', label: '學員',   end: false, icon: UsersIcon },
-  { to: '/coach/chat',     label: '聊天',   end: false, icon: ChatIcon },
   { to: '/coach/profile',  label: '個人',   end: false, icon: UserIcon },
 ];
 

@@ -318,20 +318,29 @@ function initCronJobs() {
   // ── 每 10 分鐘：Ragic H01 / H05 同步（Task #53 — 從 GET 移走的阻塞 sync）──
   // 後台任何 GET 列表只純讀 DB；資料新鮮度由本 cron 維護，外加 GET 時 fire-and-forget
   // (kickoffSync*Async)，下一次 GET 就能拿到最新。
+  // 刻意循序（非 Promise.allSettled）：兩者都會走全量 Ragic 查詢 + freshness canary
+  // 重試，同時對 Ragic 打開兩條連線只會互相拖慢、更容易撞 timeout。比照
+  // routes/admin/ragicStatus.js「同步全部」既有的循序設計（見該檔案註解），
+  // 讓「同一時間對 Ragic 帳號只有一個 in-flight 請求」這條規則在 cron 這邊也成立。
   cron.schedule('*/10 * * * *', async () => {
     if (!ragicAdmin.ragicEnabled()) return;
+    // Task #91：教練資料已合併進員工帳號（H01 員工 API 就涵蓋姓名 / 手機 / 在職），
+    // 不再單獨同步 coaches；教練特有欄位（簡介 / 專長 / 介紹圖）由後台手動編輯。
+    let sTag = 'skipped';
     try {
-      // Task #91：教練資料已合併進員工帳號（H01 員工 API 就涵蓋姓名 / 手機 / 在職），
-      // 不再單獨同步 coaches；教練特有欄位（簡介 / 專長 / 介紹圖）由後台手動編輯。
-      const [s, v] = await Promise.allSettled([
-        ragicAdmin.syncStaffFromRagic(),
-        ragicAdmin.syncVenuesFromRagic(),
-      ]);
-      const tag = (r) => (r.status === 'fulfilled' ? `ok(${r.value.synced ?? 0})` : `err(${r.reason?.message || 'x'})`);
-      console.log(`[Cron/Ragic] staff=${tag(s)} venues=${tag(v)}`);
+      const s = await ragicAdmin.syncStaffFromRagic();
+      sTag = `ok(${s.synced ?? 0})`;
     } catch (e) {
-      console.warn('[Cron/Ragic] failed:', e.message);
+      sTag = `err(${e.message})`;
     }
+    let vTag = 'skipped';
+    try {
+      const v = await ragicAdmin.syncVenuesFromRagic();
+      vTag = `ok(${v.synced ?? 0})`;
+    } catch (e) {
+      vTag = `err(${e.message})`;
+    }
+    console.log(`[Cron/Ragic] staff=${sTag} venues=${vTag}`);
   });
 
   // ── 每 5 分鐘：套用「課程需求 (F-A07)」到期排程 ──

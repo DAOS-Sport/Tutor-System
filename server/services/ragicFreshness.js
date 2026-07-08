@@ -208,8 +208,18 @@ async function runCanaryWriteReadProof({
   let check = verifySnapshotNonce(snapshot, config, nonce);
   let singleCheck = null;
 
+  // Cost-aware retry: fetchSnapshot() is a full paginated re-fetch of the whole sheet and is
+  // expensive (this loop used to re-pay for it on every retry, which is the prime suspect for
+  // multi-minute sync durations when Ragic's write→read propagation lags). fetchCanary() is a
+  // cheap single-record GET. So on each retry we only re-check the canary; we only pay for
+  // another full fetchSnapshot() once that cheap check confirms the write has propagated —
+  // re-fetching the whole snapshot before that would predictably fail again for the same reason
+  // the first attempt did.
   while (!check.ok && retries < config.maxRetries) {
     retries += 1;
+    const waitMs = config.backoffMs * Math.max(1, 2 ** (retries - 1));
+    if (waitMs > 0) await sleep(waitMs);
+
     const canaryRecord = await fetchCanary({
       attempt: retries,
       noCache: true,
@@ -217,14 +227,14 @@ async function runCanaryWriteReadProof({
       cacheBuster: `${nowMs()}-${retries}`,
     });
     singleCheck = verifySnapshotNonce([canaryRecord].filter(Boolean), config, nonce);
-    const waitMs = config.backoffMs * Math.max(1, 2 ** (retries - 1));
-    if (waitMs > 0) await sleep(waitMs);
+    if (!singleCheck.ok) continue;
+
     snapshot = await fetchSnapshot({
       attempt: retries,
       noCache: true,
       nonce,
       cacheBuster: `${nowMs()}-${retries}`,
-      singleCanaryMatched: singleCheck.ok,
+      singleCanaryMatched: true,
     });
     check = verifySnapshotNonce(snapshot, config, nonce);
   }

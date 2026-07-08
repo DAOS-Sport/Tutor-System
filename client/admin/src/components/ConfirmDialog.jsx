@@ -1,12 +1,16 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 
 export default function ConfirmDialog({
   open, title, children,
   confirmLabel = '確認', cancelLabel = '取消',
   onConfirm, onCancel, busy = false, tone = 'primary', confirmDisabled = false,
 }) {
+  const cancelRef = useRef(null);
+
   useEffect(() => {
     if (!open) return;
+    // 預設 focus 在「取消」— 破壞性操作不該讓 Enter 鍵誤觸「確認」。
+    cancelRef.current?.focus();
     const onKey = (e) => { if (e.key === 'Escape') onCancel?.(); };
     document.addEventListener('keydown', onKey);
     document.body.style.overflow = 'hidden';
@@ -34,6 +38,7 @@ export default function ConfirmDialog({
         <div className="mb-5 text-sm text-gray-700">{children}</div>
         <div className="flex justify-end gap-3">
           <button
+            ref={cancelRef}
             type="button"
             className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50"
             onClick={onCancel}

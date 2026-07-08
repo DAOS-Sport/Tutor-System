@@ -147,7 +147,6 @@ export default function App() {
                 <Route path="/coach" element={<CoachTodayPage />} />
                 <Route path="/coach/schedule" element={<CoachScheduleWeekPage />} />
                 <Route path="/coach/students" element={<CoachStudentsPage />} />
-                <Route path="/coach/chat" element={<ChatListPage />} />
                 <Route path="/coach/profile" element={<CoachProfilePage />} />
               </Route>
               <Route element={<AppLayout showBackButton title="授課入口" />}>
@@ -156,7 +155,9 @@ export default function App() {
               {/* 課前規劃 / 授課記錄 (Phase 5) */}
               <Route path="/coach/plan/:periodId" element={<LessonPlanFormPage />} />
               <Route path="/coach/record/:sessionId" element={<SessionRecordFormPage />} />
-              <Route path="/coach/chat/:roomId" element={<ChatRoomPage />} />
+              {/* 教練端聊天功能已關閉：手動輸入舊網址一律導回「今日」，不渲染聊天頁面 */}
+              <Route path="/coach/chat" element={<Navigate to="/coach" replace />} />
+              <Route path="/coach/chat/:roomId" element={<Navigate to="/coach" replace />} />
             </Route>
           </Route>
 

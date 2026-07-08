@@ -19,7 +19,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const { pool } = require('../../models/db');
 const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
-const { syncStaffFromRagic, kickoffSyncStaffAsync } = require('../../services/ragicAdmin');
+const { syncStaffFromRagic, kickoffSyncStaffAsync, isJobRunning } = require('../../services/ragicAdmin');
 const lineService = require('../../services/line');
 
 const router = express.Router();
@@ -324,6 +324,9 @@ function rowToStaff(r) {
     has_login_account: !!r.login_user_id,
     login_username: r.login_username || null,
     login_active: r.login_user_id ? !!r.login_is_active : false,
+    // 密碼是否仍為預設（手機號碼）：credentials_changed_at 由 change-password 設 NOW()、
+    // 由建立 / 櫃檯預設登入 / admin 重設密碼設回 NULL，故 IS NULL 即代表目前仍是預設密碼。
+    password_is_default: !!r.login_user_id && !r.login_credentials_changed_at,
     // LINE UID（辨識碼）— 地端實際綁定值，供與 Ragic H01「個人LINE ID」核對是否同步。
     // 教練 LIFF 綁定寫入 coaches.line_uid（Ragic 同步目標）；後台登入綁定寫入 admin_users.line_uid。
     line_uid: r.coach_line_uid || r.login_line_uid || null,
@@ -345,6 +348,7 @@ const STAFF_SELECT = `
          u.username AS login_username,
          u.is_active AS login_is_active,
          u.line_uid AS login_line_uid,
+         u.credentials_changed_at AS login_credentials_changed_at,
          COALESCE(
            (SELECT array_agg(sv.venue_id ORDER BY sv.venue_id)
               FROM admin_staff_venues sv WHERE sv.staff_id = s.id),
@@ -573,15 +577,27 @@ router.get('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =>
   }
 });
 
+// Task #53 沿用既有 fire-and-forget 慣例（見 routes/admin/ragicStatus.js POST /sync）：
+// 立刻回 202，實際同步在背景跑並寫入 ragic_sync_log；不再讓這個 HTTP request
+// 卡在 freshness-canary 重試 + 全表拉取的耗時上（docs/ragic_sync_audit.md §1）。
+// _singleflight（services/ragicAdmin.js）仍會把重複觸發合併成同一個背景 Promise。
 router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
-  try {
-    const result = await syncStaffFromRagic('manual');
-    if (result && result.error) return res.status(502).json(result);
-    res.json(result);
-  } catch (err) {
-    console.error('[admin/staff/sync]', err);
-    res.status(500).json({ error: 'sync failed' });
-  }
+  const alreadyRunning = isJobRunning('staff');
+  setImmediate(async () => {
+    try {
+      await syncStaffFromRagic('manual');
+    } catch (err) {
+      console.warn('[admin/staff/sync] background failed:', err.message);
+    }
+  });
+  res.status(202).json({
+    ok: true,
+    accepted: true,
+    already_running: alreadyRunning,
+    message: alreadyRunning
+      ? '已有一次 H01 員工同步正在背景執行中，本次觸發會併入該次結果，請至「Ragic 連線狀態」查看。'
+      : '已排入背景同步，請至「Ragic 連線狀態」查看結果。',
+  });
 });
 
 router.delete('/bulk', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
@@ -1147,33 +1163,6 @@ router.post('/:id/reset-password', requireAdminAuth, requireAdminRole('admin'), 
   } catch (err) {
     console.error('[admin/staff/:id/reset-password]', err);
     res.status(500).json({ error: '重設密碼失敗' });
-  }
-});
-
-// 檢視密碼（眼睛）：密碼以 bcrypt 雜湊保存無法還原，但若仍為「預設＝手機號碼」即可確認並回傳明碼；
-// 員工自行改過後比對失敗 → is_default=false，誠實回報無法顯示。僅 admin 可用。
-router.get('/:id/password-hint', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
-  try {
-    const { id } = req.params;
-    const u = await pool.query(
-      `SELECT u.password_hash, s.phone
-         FROM admin_users u
-         LEFT JOIN admin_staff s ON s.id = u.staff_id
-        WHERE u.staff_id = $1`,
-      [id]
-    );
-    if (!u.rowCount || !u.rows[0].password_hash) {
-      return res.json({ has_account: false, is_default: false, password: null });
-    }
-    const defaultPassword = String(u.rows[0].phone || '').trim();
-    if (!defaultPassword) {
-      return res.json({ has_account: true, is_default: false, password: null, missing_default_phone: true });
-    }
-    const isDefault = await bcrypt.compare(defaultPassword, u.rows[0].password_hash);
-    res.json({ has_account: true, is_default: isDefault, password: isDefault ? defaultPassword : null });
-  } catch (err) {
-    console.error('[admin/staff/:id/password-hint]', err);
-    res.status(500).json({ error: '讀取密碼資訊失敗' });
   }
 });
 

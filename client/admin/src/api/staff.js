@@ -46,8 +46,14 @@ export const staffApi = {
       deleted_coach_ids: [],
       counts: { admin_staff: (staffIds || []).length },
     })),
+  // 真實端點現在是 202 fire-and-forget（見 docs/ragic_sync_audit.md 快速修復 #4）；
+  // 實際完成狀態由呼叫端輪詢 ragicStatusApi.get() 取得，這裡的 mock 只需回應觸發本身。
   syncRagic: () =>
     callApi('/staff/sync', { method: 'post', data: {} }, () => ({
+      ok: true,
+      accepted: true,
+      already_running: false,
+      message: '已排入背景同步（demo 模式）',
       synced: 0,
       h01_applied: 0,
       coefficient_updated: 0,
@@ -67,14 +73,5 @@ export const staffApi = {
           notify_error: 'mock',
           default_password_hint: row?.phone || '',
         };
-      }),
-  // 檢視密碼：後端確認目前密碼是否仍為預設（手機號碼）→ 是則回傳明碼，否則回 is_default=false
-  passwordHint: (id) =>
-    callApi(`/staff/${id}/password-hint`, {},
-      () => {
-        const row = mockDb.staff().find((x) => x.id === id);
-        return row?.phone
-          ? { has_account: true, is_default: true, password: row.phone }
-          : { has_account: true, is_default: false, password: null, missing_default_phone: true };
       }),
 };

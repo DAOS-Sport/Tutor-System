@@ -101,6 +101,7 @@ router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, re
   // form=all 不能同時把所有全表 job 丟出去：backup / pull / quarantine 有業務順序，
   // 並行會讓 Ragic 同時處理多個大查詢/寫入，現場看起來就是「同步很久」。
   // 單一 job 仍照原行為背景執行；全部同步改在同一背景工作中依 ALL_JOBS 順序跑。
+  const alreadyRunningJobs = jobs.filter((j) => ragicAdmin.isJobRunning(j));
   setImmediate(async () => {
     for (const j of jobs) {
       const runner = JOB_RUNNERS[j];
@@ -115,7 +116,10 @@ router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, re
     ok: true,
     accepted: true,
     queued_jobs: jobs,
-    message: '已排入背景同步，請稍候自動更新狀態。',
+    already_running_jobs: alreadyRunningJobs,
+    message: alreadyRunningJobs.length
+      ? `已排入背景同步，其中 ${alreadyRunningJobs.join('、')} 目前已在執行中，本次觸發會併入該次結果。`
+      : '已排入背景同步，請稍候自動更新狀態。',
   });
 });
 

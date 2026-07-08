@@ -21,6 +21,7 @@ export default function CoachListPage() {
   const [basePrice, setBasePrice] = useState(0);
   const [loadError, setLoadError] = useState(null);
   const [levelFilter, setLevelFilter] = useState('all'); // 'all' | 'senior' | 'regular'
+  const [nameQuery, setNameQuery] = useState('');
   const [pendingCoach, setPendingCoach] = useState(null);
 
   useEffect(() => {
@@ -82,8 +83,10 @@ export default function CoachListPage() {
   if (!coaches || !venue) return <LoadingSpinner fullPage label="載入教練中…" />;
 
   const filteredCoaches = (coaches || []).filter((c) => {
-    if (levelFilter === 'senior') return !!c.is_senior;
-    if (levelFilter === 'regular') return !c.is_senior;
+    if (levelFilter === 'senior' && !c.is_senior) return false;
+    if (levelFilter === 'regular' && c.is_senior) return false;
+    const q = nameQuery.trim().toLowerCase();
+    if (q && !(c.name || '').toLowerCase().includes(q)) return false;
     return true;
   });
 
@@ -95,35 +98,49 @@ export default function CoachListPage() {
         <span>{courseTypeLabel(courseType)}</span>
       </div>
 
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <p className="text-xs text-gray-500">
-          {coaches.length > 0
-            ? `共 ${filteredCoaches.length} 位教練，金色徽章為「資深教練」（含學習歷程服務）`
-            : '此場館暫無可預約教練'}
-        </p>
-        {coaches.length > 0 && (
+      {coaches.length > 0 && (
+        <div className="mb-3 flex flex-col gap-2 sm:flex-row">
           <select
             value={levelFilter}
             onChange={(e) => setLevelFilter(e.target.value)}
-            className="shrink-0 rounded-lg border border-gray-300 px-2 py-1.5 text-xs font-medium text-gray-700 focus:border-brand-teal focus:outline-none"
+            className="shrink-0 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 focus:border-brand-teal focus:outline-none sm:w-32"
           >
             <option value="all">全部</option>
-            <option value="senior">資深</option>
-            <option value="regular">一般</option>
+            <option value="senior">資深教練</option>
+            <option value="regular">一般教練</option>
           </select>
-        )}
-      </div>
-
-      <div className="space-y-3">
-        {filteredCoaches.map((c) => (
-          <CoachCard
-            key={c.id}
-            coach={c}
-            basePrice={basePrice}
-            onSelect={() => handleCoachSelect(c)}
+          <input
+            type="text"
+            value={nameQuery}
+            onChange={(e) => setNameQuery(e.target.value)}
+            placeholder="搜尋教練姓名"
+            className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 placeholder:text-gray-400 focus:border-brand-teal focus:outline-none"
           />
-        ))}
-      </div>
+        </div>
+      )}
+
+      <p className="mb-3 text-xs text-gray-500">
+        {coaches.length > 0
+          ? `共 ${filteredCoaches.length} 位教練，金色徽章為「資深教練」（含學習歷程服務）`
+          : '此場館暫無可預約教練'}
+      </p>
+
+      {coaches.length > 0 && filteredCoaches.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-gray-300 px-4 py-10 text-center text-sm text-gray-400">
+          查無符合條件的教練，請調整篩選條件或搜尋關鍵字
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {filteredCoaches.map((c) => (
+            <CoachCard
+              key={c.id}
+              coach={c}
+              basePrice={basePrice}
+              onSelect={() => handleCoachSelect(c)}
+            />
+          ))}
+        </div>
+      )}
 
       <PaymentDisclaimerModal
         open={!!pendingCoach}

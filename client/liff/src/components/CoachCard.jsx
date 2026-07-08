@@ -4,13 +4,17 @@ import { formatTWD } from '../utils/format';
 export default function CoachCard({ coach, basePrice, onSelect }) {
   const adjusted = Math.round((basePrice || 0) * (coach.multiplier || 1));
   const initial = (coach.name || '？').slice(0, 1);
+  const coefficientPct = Math.round((coach.multiplier ?? 1) * 100);
+  const isAdjustedCoefficient = coefficientPct !== 100;
 
   return (
     <button
       type="button"
       onClick={() => onSelect?.(coach)}
       className={`group block w-full rounded-2xl border-2 p-4 text-left transition active:scale-[0.99] ${
-        coach.is_senior
+        isAdjustedCoefficient
+          ? 'border-brand-amber bg-gradient-to-br from-amber-50 to-white shadow-sm shadow-amber-100'
+          : coach.is_senior
           ? 'border-brand-gold bg-gradient-to-br from-amber-50 to-white'
           : 'border-gray-200 bg-white'
       }`}
@@ -58,11 +62,14 @@ export default function CoachCard({ coach, basePrice, onSelect }) {
 
       <div className="mt-3 flex items-end justify-between border-t border-gray-100 pt-3">
         <div className="text-xs text-gray-500">
-          修課係數 <span className="font-bold text-brand-primary">{Math.round(coach.multiplier * 100)}%</span>
+          修課係數{' '}
+          <span className={`font-bold ${isAdjustedCoefficient ? 'text-brand-amber' : 'text-brand-primary'}`}>
+            {coefficientPct}%
+          </span>
           <span className="ml-2">/ 6 堂</span>
         </div>
         <div className="text-right">
-          {coach.multiplier !== 1 && (
+          {isAdjustedCoefficient && (
             <div className="text-[11px] text-gray-400 line-through">{formatTWD(basePrice)}</div>
           )}
           <div className="text-lg font-bold text-brand-primary">{formatTWD(adjusted)}</div>

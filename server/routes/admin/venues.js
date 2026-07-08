@@ -13,6 +13,7 @@ const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminA
 const {
   syncVenuesFromRagic,
   diffVenuesFromRagic, applyVenueSync, VENUE_SYNC_FIELDS, ragicEnabled,
+  isJobRunning,
 } = require('../../services/ragicAdmin');
 
 const router = express.Router();
@@ -64,16 +65,27 @@ router.get('/', requireAdminAuth, async (req, res) => {
   }
 });
 
-// Task #53：admin 立即同步 H05（同步等待結果，無 diff confirm；保留供 cron / 相容）
+// Task #53 沿用既有 fire-and-forget 慣例（見 routes/admin/ragicStatus.js POST /sync）：
+// 立刻回 202，實際同步在背景跑並寫入 ragic_sync_log；不再讓這個 HTTP request
+// 卡在 freshness-canary 重試 + 全表拉取的耗時上（docs/ragic_sync_audit.md §1）。
+// _singleflight（services/ragicAdmin.js）仍會把重複觸發合併成同一個背景 Promise。
 router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
-  try {
-    const result = await syncVenuesFromRagic('manual');
-    if (result && result.error) return res.status(502).json(result);
-    res.json(result);
-  } catch (err) {
-    console.error('[admin/venues/sync]', err);
-    res.status(500).json({ error: 'sync failed' });
-  }
+  const alreadyRunning = isJobRunning('venues');
+  setImmediate(async () => {
+    try {
+      await syncVenuesFromRagic('manual');
+    } catch (err) {
+      console.warn('[admin/venues/sync] background failed:', err.message);
+    }
+  });
+  res.status(202).json({
+    ok: true,
+    accepted: true,
+    already_running: alreadyRunning,
+    message: alreadyRunning
+      ? '已有一次 H05 場館同步正在背景執行中，本次觸發會併入該次結果，請至「Ragic 連線狀態」查看。'
+      : '已排入背景同步，請至「Ragic 連線狀態」查看結果。',
+  });
 });
 
 // Task #54：兩階段同步 — 預設 dry-run；body.confirm=true 時依 selections 寫入。

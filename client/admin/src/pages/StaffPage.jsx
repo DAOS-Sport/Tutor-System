@@ -10,51 +10,45 @@ import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import { staffApi } from '../api/staff';
 import { venuesApi } from '../api/venues';
+import { ragicStatusApi } from '../api/ragicStatus';
 import { roleLabel } from '../utils/format';
 
 const EMPTY_FILTERS = { status: 'all', venueId: '', name: '', role: '', phone: '', senior: '' };
 const ROLE_TONE = { admin: 'primary', manager: 'teal', staff: 'gold', coach: 'green', lifeguard: 'amber' };
 const MULTIPLIER_MIN = 1.00;
 const MULTIPLIER_MAX = 1.50;
-const HARD_DELETE_WARNING = '警告：此操作為物理級硬刪除（Hard Delete），將永久抹除本地資料庫中的員工紀錄。請確保您已在 Ragic 端同步修正或刪除了對應的髒資料，否則夜間同步時此髒資料將會再次寫入。是否確認刪除？';
+// Ragic 為權威資料來源：硬刪除後若沒同步處理對應髒資料，夜間同步會把它寫回來。
+const HARD_DELETE_RAGIC_NOTE = '請確保您已在 Ragic 端同步修正或刪除了對應的髒資料，否則夜間同步時此髒資料將會再次寫入。';
 
 /**
- * 密碼欄：眼睛圖示檢視密碼。密碼以 bcrypt 雜湊保存無法直接還原，
- * 點眼睛時由後端確認「是否仍為預設（手機號碼）」：是→顯示明碼；員工已自行改過→提示無法顯示。
+ * 密碼欄：密碼以 bcrypt 雜湊保存無法直接還原，但只要仍是預設密碼（= 手機號碼）
+ * 列表資料就已經帶著 password_is_default / phone，不用額外打 API。
+ * 預設遮罩顯示 ••••••••，點眼睛才切換顯示明碼（或不可顯示原因）。
  */
 function PasswordCell({ row, isAdmin, onReset }) {
   const [shown, setShown] = useState(false);
-  const [data, setData] = useState(null);
-  const [busy, setBusy] = useState(false);
 
-  async function toggle() {
-    if (shown) { setShown(false); return; }
-    if (!data && !busy) {
-      setBusy(true);
-      try { setData(await staffApi.passwordHint(row.id)); }
-      catch { setData({ error: true }); }
-      finally { setBusy(false); }
-    }
-    setShown(true);
+  let revealed;
+  let isDefault = false;
+  if (!row.has_login_account) {
+    revealed = '無登入帳號';
+  } else if (!row.password_is_default) {
+    revealed = '已自行修改，無法顯示';
+  } else if (!row.phone) {
+    revealed = '未設定手機';
+  } else {
+    revealed = row.phone;
+    isDefault = true;
   }
 
-  let display = '••••••••';
-  if (shown) {
-    if (busy) display = '…';
-    else if (!data || data.error) display = '讀取失敗';
-    else if (!data.has_account) display = '無登入帳號';
-    else if (data.missing_default_phone) display = '未設定手機';
-    else if (data.is_default) display = data.password;
-    else display = '已自行修改，無法顯示';
-  }
-  const revealable = !shown || (data && data.is_default);
+  const display = shown ? revealed : '••••••••';
 
   return (
     <div className="inline-flex items-center gap-2">
-      <span className={`font-mono tracking-widest ${shown && data?.is_default ? 'text-gray-800' : 'text-gray-400'}`}>{display}</span>
-      <button type="button" onClick={toggle} title={shown ? '隱藏密碼' : '檢視密碼'}
+      <span className={`font-mono tracking-widest ${shown && isDefault ? 'text-gray-800' : 'text-gray-400'}`}>{display}</span>
+      <button type="button" onClick={() => setShown((s) => !s)} title={shown ? '隱藏密碼' : '檢視密碼'}
         className="text-gray-400 hover:text-brand-primary" aria-label={shown ? '隱藏密碼' : '檢視密碼'}>
-        {shown && revealable ? '🙈' : '👁'}
+        {shown ? '🙈' : '👁'}
       </button>
       {isAdmin && (
         <button type="button" onClick={() => onReset(row)}
@@ -177,15 +171,43 @@ export default function StaffPage() {
     return fresh;
   }
 
+  // POST /staff/sync 現在是 202 fire-and-forget（見 docs/ragic_sync_audit.md 快速修復
+  // #4）——不再讓這顆按鈕卡在 freshness-canary 重試 + 全表拉取的耗時上。實際完成與否
+  // 靠 GET /ragic-status 的 forms.staff.in_progress 判斷，比照 RagicStatusPage.jsx
+  // 既有的 5 秒輪詢慣例；輪詢逾時（3 分鐘）就提示使用者改去「Ragic 連線狀態」頁查看，
+  // 而不是讓這顆按鈕無限轉圈。
+  const POLL_INTERVAL_MS = 2000;
+  const POLL_MAX_ATTEMPTS = 90; // 3 分鐘
+
   async function syncRagic() {
     setSyncing(true);
     try {
-      const r = await staffApi.syncRagic();
-      if (r.skipped) toast.info('未設定 Ragic credentials，略過');
-      else {
-        toast.success(`已同步 ${r.synced || 0} 筆 H01 影子資料，套用 ${r.h01_applied ?? r.staff_staged ?? 0} 筆員工更新`);
-        if (Number(r.unmatched_staff_warning) > 0) {
-          toast.warning(`unmatched_staff_warning=${r.unmatched_staff_warning}：H23 係數表有員工編號+姓名未精確對應，已安全跳過`, 6000);
+      const started = await staffApi.syncRagic();
+      if (started.already_running) {
+        toast.info('已有一次 H01 同步在背景執行中，將等待該次完成…');
+      }
+      let status = null;
+      for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt += 1) {
+        // eslint-disable-next-line no-await-in-loop
+        const snapshot = await ragicStatusApi.get();
+        status = snapshot?.forms?.staff;
+        if (!status?.in_progress) break;
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+      }
+      if (!status) {
+        toast.error('Ragic 同步狀態查詢失敗');
+      } else if (status.in_progress) {
+        toast.info('同步仍在背景執行中，請稍候至「Ragic 連線狀態」頁查看結果。');
+      } else if (status.last_status === 'error') {
+        toast.error(`Ragic 同步失敗：${status.last_error || '未知錯誤'}`);
+      } else if (status.last_status === 'skipped') {
+        toast.info('未設定 Ragic credentials 或本次被略過同步。');
+      } else {
+        toast.success(`已同步 ${status.last_run_count ?? 0} 筆 H01 資料`);
+        const unmatchedMatch = /unmatched_staff_warning=(\d+)/.exec(status.last_error || '');
+        if (unmatchedMatch && Number(unmatchedMatch[1]) > 0) {
+          toast.warning(`unmatched_staff_warning=${unmatchedMatch[1]}：H23 係數表有員工編號+姓名未精確對應，已安全跳過`, 6000);
         }
       }
       await fetchStaffList();
@@ -524,7 +546,10 @@ export default function StaffPage() {
           <button className="text-xs font-medium text-brand-teal hover:underline" onClick={() => openEditor(r)}>
             編輯
           </button>
-          <button className="text-xs font-bold text-brand-error hover:underline" onClick={() => requestHardDelete(r)}>
+          <button
+            className="text-xs font-bold text-brand-error hover:text-brand-error-strong hover:underline"
+            onClick={(e) => { e.stopPropagation(); requestHardDelete(r); }}
+          >
             硬刪除
           </button>
         </div>
@@ -611,8 +636,8 @@ export default function StaffPage() {
 
       <ConfirmDialog
         open={!!deleting}
-        title="硬刪除員工資料"
-        confirmLabel="確認無誤，強制執行"
+        title="⚠️ 警告：確定要進行硬刪除嗎？"
+        confirmLabel="確認永久刪除"
         tone="danger"
         busy={deleteBusy}
         onCancel={() => !deleteBusy && setDeleting(null)}
@@ -620,15 +645,22 @@ export default function StaffPage() {
       >
         {deleting && (
           <div className="space-y-3">
-            <p className="font-semibold text-brand-error">{HARD_DELETE_WARNING}</p>
-            <div className="max-h-36 overflow-y-auto rounded border border-gray-200 bg-gray-50 p-2 text-xs text-gray-600">
-              {deleting.rows.map((row) => (
-                <div key={row.id} className="flex justify-between gap-3 py-0.5">
-                  <span className="font-mono">{row.id}</span>
-                  <span className="truncate">{row.name}</span>
-                </div>
-              ))}
-            </div>
+            <p className="font-semibold text-brand-error">
+              {deleting.rows.length === 1
+                ? `此操作將從資料庫中永久抹除該名員工（${deleting.rows[0].name}）的所有紀錄，資料刪除後將無法還原，請謹慎操作。`
+                : `此操作將從資料庫中永久抹除以下 ${deleting.rows.length} 位員工的所有紀錄，資料刪除後將無法還原，請謹慎操作。`}
+            </p>
+            {deleting.rows.length > 1 && (
+              <div className="max-h-36 overflow-y-auto rounded border border-gray-200 bg-gray-50 p-2 text-xs text-gray-600">
+                {deleting.rows.map((row) => (
+                  <div key={row.id} className="flex justify-between gap-3 py-0.5">
+                    <span className="font-mono">{row.id}</span>
+                    <span className="truncate">{row.name}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <p className="rounded bg-amber-50 px-3 py-2 text-xs text-amber-800">{HARD_DELETE_RAGIC_NOTE}</p>
           </div>
         )}
       </ConfirmDialog>

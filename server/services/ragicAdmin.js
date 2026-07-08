@@ -23,6 +23,13 @@ const parentSync = require('./parentSync');
 const line = require('./line');
 // Ragic 表單 / 欄位對應唯一來源（凍結點）：H01 LINE UID 欄位、場館欄位、角色關鍵字
 const { H01, H23, FORMS } = require('../config/ragicSchema');
+// DB 租約層（launch-20260707 B 段既有基礎建設，先前未被任何呼叫端接上）：
+// 用同一把鎖名 'ragic_sync' 讓所有實際會打 Ragic 的 job（staff/venues/backup/
+// pull/parents/students）共用單一租約，確保「同一時間對 Ragic 帳號只有一個
+// in-flight 請求」，不論觸發來源是 cron、admin 手動、或不同 job name——
+// _singleflight 只擋「同一個 job name 重複觸發」，擋不住 staff 與 backup
+// 這種不同 job 同時打 Ragic（見 docs/ragic_sync_audit.md §1 root cause #4）。
+const cronLock = require('../cron/lock');
 
 function ragicEnabled() {
   return !!process.env.RAGIC_API_KEY && !!process.env.RAGIC_BASE_URL;
@@ -580,7 +587,9 @@ async function _shadowPullH01Impl() {
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
-    return _withFreshness({ synced, raw_total: rawTotal, error: `Shadow 寫入失敗：${err.message}` }, freshness);
+    // ROLLBACK 已撤銷整個交易——回報實際持久化筆數 0，不要沿用 rollback 前迴圈累加的
+    // in-memory synced 計數，否則會誤報「已同步 N 筆」但其實一筆都沒真的落地 shadow。
+    return _withFreshness({ synced: 0, raw_total: rawTotal, error: `Shadow 寫入失敗：${err.message}` }, freshness);
   } finally {
     client.release();
   }
@@ -674,7 +683,8 @@ async function _shadowPullH23Impl() {
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
-    return { synced, raw_total: rawTotal, error: `H23 shadow 寫入失敗：${err.message}` };
+    // ROLLBACK 已撤銷整個交易——回報實際持久化筆數 0，理由同 H01 shadow-pull 的同款修復。
+    return { synced: 0, raw_total: rawTotal, error: `H23 shadow 寫入失敗：${err.message}` };
   } finally {
     client.release();
   }
@@ -686,80 +696,101 @@ async function _reconcileH23FromShadowImpl() {
   let scanned = 0;
   let updated = 0;
   let unmatched = 0;
+  let failed = 0;
   const warnings = [];
+  const errors = [];
   try {
-    await client.query('BEGIN');
     const rows = (await client.query(
       `SELECT ragic_record_id, staff_emp_id, staff_name, raw_data
          FROM ragic_h23_shadow
         ORDER BY staff_emp_id NULLS LAST, staff_name NULLS LAST`
     )).rows;
 
+    // 每筆獨立 BEGIN/COMMIT（比照 H01/H05/Z01 reconcile 既有的「嫌疑4 CONFIRMED 修復」
+    // 寫法）：舊版把整個迴圈包在單一 BEGIN/COMMIT，任何一筆中途拋錯就 ROLLBACK 整輪，
+    // 但函式仍回傳 rollback 前累加的 `updated` 計數——等於回報「已同步 N 筆」卻其實
+    // 一筆都沒真的落地（比嫌疑4 原版塌成 synced:0 更誤導）。改成逐筆各自提交，
+    // 回傳的 updated/synced 才會等於實際寫進 DB 的筆數；單筆失敗只累計 failed，
+    // 不影響其餘筆數已提交的結果。
     for (const row of rows) {
       scanned++;
-      const raw = row.raw_data || {};
-      const empId = _normalizeStaffId(row.staff_emp_id || _h23StaffEmpId(raw));
-      const name = String(row.staff_name || _h23StaffName(raw) || '').trim();
-      const courseCoefficient = _h23CourseCoefficient(raw);
-      const warningRecordId = _ragicRecordId(raw) || row.ragic_record_id;
-      if (!empId || !name) {
-        unmatched++;
-        warnings.push({ ragic_record_id: warningRecordId, shadow_key: row.ragic_record_id, emp_id: empId, name, reason: 'missing_composite_key' });
-        continue;
-      }
+      try {
+        const raw = row.raw_data || {};
+        const empId = _normalizeStaffId(row.staff_emp_id || _h23StaffEmpId(raw));
+        const name = String(row.staff_name || _h23StaffName(raw) || '').trim();
+        const courseCoefficient = _h23CourseCoefficient(raw);
+        const warningRecordId = _ragicRecordId(raw) || row.ragic_record_id;
+        if (!empId || !name) {
+          unmatched++;
+          warnings.push({ ragic_record_id: warningRecordId, shadow_key: row.ragic_record_id, emp_id: empId, name, reason: 'missing_composite_key' });
+          continue;
+        }
 
-      const matched = await client.query(
-        `SELECT id
-           FROM admin_staff
-          WHERE UPPER(TRIM(id)) = $1
-            AND TRIM(name) = $2
-          FOR UPDATE`,
-        [empId, name]
-      );
-      if (matched.rowCount !== 1) {
-        unmatched++;
-        warnings.push({
-          ragic_record_id: warningRecordId,
-          shadow_key: row.ragic_record_id,
-          emp_id: empId,
-          name,
-          reason: matched.rowCount === 0 ? 'no_exact_staff_match' : 'non_unique_staff_match',
-        });
-        continue;
-      }
+        await client.query('BEGIN');
+        const matched = await client.query(
+          `SELECT id
+             FROM admin_staff
+            WHERE UPPER(TRIM(id)) = $1
+              AND TRIM(name) = $2
+            FOR UPDATE`,
+          [empId, name]
+        );
+        if (matched.rowCount !== 1) {
+          await client.query('ROLLBACK');
+          unmatched++;
+          warnings.push({
+            ragic_record_id: warningRecordId,
+            shadow_key: row.ragic_record_id,
+            emp_id: empId,
+            name,
+            reason: matched.rowCount === 0 ? 'no_exact_staff_match' : 'non_unique_staff_match',
+          });
+          continue;
+        }
 
-      const staffId = matched.rows[0].id;
-      await client.query(
-        `UPDATE admin_staff
-            SET multiplier = $2,
-                updated_at = NOW(),
-                last_synced_at = NOW()
-          WHERE id = $1`,
-        [staffId, courseCoefficient]
-      );
-      await client.query(
-        `UPDATE coaches
-            SET pricing_multiplier = $2,
-                updated_at = NOW()
-          WHERE ragic_employee_id = $1`,
-        [staffId, courseCoefficient]
-      );
-      updated++;
+        const staffId = matched.rows[0].id;
+        await client.query(
+          `UPDATE admin_staff
+              SET multiplier = $2,
+                  updated_at = NOW(),
+                  last_synced_at = NOW()
+            WHERE id = $1`,
+          [staffId, courseCoefficient]
+        );
+        await client.query(
+          `UPDATE coaches
+              SET pricing_multiplier = $2,
+                  updated_at = NOW()
+            WHERE ragic_employee_id = $1`,
+          [staffId, courseCoefficient]
+        );
+        await client.query('COMMIT');
+        updated++;
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        failed++;
+        errors.push(`H23 ${row.ragic_record_id}：${err.message}`);
+        console.warn('[Ragic sync] H23 coefficient per-record reconcile failed (ragic_record_id=%s): %s', row.ragic_record_id, err.message);
+      }
     }
-    await client.query('COMMIT');
   } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
     return { synced: updated, scanned, updated, unmatched_staff_warning: unmatched, error: `H23 reconcile 失敗：${err.message}` };
   } finally {
     client.release();
   }
-  return {
+  const result = {
     synced: updated,
     scanned,
     updated,
     unmatched_staff_warning: unmatched,
     unmatched_staff_warning_samples: warnings.slice(0, 10),
   };
+  if (failed > 0) {
+    result.partial = true;
+    result.failed = failed;
+    result.error = `${failed} 筆 H23 係數同步失敗（詳見伺服器 log，其餘 ${updated} 筆已正常套用）：${errors[0]}`;
+  }
+  return result;
 }
 
 async function _syncStaffCoefficientImpl() {
@@ -3258,6 +3289,11 @@ const FORM_META = {
   quarantine: { code: 'Z01_BAD_NAME_QUARANTINE', label: 'Z01 姓名品質掃描（Z03 追蹤）', kind: 'sync', impl: _quarantineBadZ01NamesImpl, env: 'RAGIC_FORM_Z01' },
 };
 
+// 哪些 job 真的會打 Ragic HTTP（見上表 impl 實作）——quarantine 只讀本地
+// ragic_z01_shadow，不打 Ragic，故不需要（也不應該）搶 'ragic_sync' 全域鎖，
+// 否則會被無關的 Ragic 忙碌狀態無謂卡住。
+const RAGIC_LOCKED_JOBS = new Set(['staff', 'venues', 'parents', 'students', 'backup', 'pull']);
+
 const LIVE_PROBE_FORMS = {
   h01: { label: 'H01 員工 API', env: 'RAGIC_FORM_H01' },
   h23: { label: 'H23 新生/基本資料 API', env: 'RAGIC_FORM_H23' },
@@ -3378,10 +3414,25 @@ async function _runWithLog(jobName, triggeredBy = 'cron') {
   }
   const t0 = Date.now();
   let result;
-  try {
-    result = await meta.impl();
-  } catch (err) {
-    result = { synced: 0, error: err.message };
+  if (RAGIC_LOCKED_JOBS.has(jobName)) {
+    // 全域 Ragic 帳號租約：所有觸發路徑（cron、kickoffSync*Async、admin 手動
+    // /sync）最終都走這裡，故單一把關點即可保證同一時間對 Ragic 帳號只有一個
+    // in-flight 請求。搶不到鎖不是錯誤——只是另一個 Ragic job 正在跑，記一筆
+    // skipped 讓下一輪 cron（10 分鐘後）或使用者重新手動觸發即可，不需要重試。
+    const outcome = await cronLock.runWithLock('ragic_sync', () => meta.impl(), { triggeredBy });
+    if (outcome.status === 'skipped_lock') {
+      result = { synced: 0, skipped: true, locked_by_other_ragic_job: true, current_holder: outcome.currentHolder };
+    } else if (outcome.status === 'success') {
+      result = outcome.result;
+    } else {
+      result = { synced: 0, error: outcome.error };
+    }
+  } else {
+    try {
+      result = await meta.impl();
+    } catch (err) {
+      result = { synced: 0, error: err.message };
+    }
   }
   const dur = Date.now() - t0;
   await _logSyncResult(jobName, meta.code, result, dur, triggeredBy);
