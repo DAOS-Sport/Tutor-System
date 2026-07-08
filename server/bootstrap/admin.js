@@ -317,6 +317,7 @@ async function ensureSchema() {
   await pool.query(`ALTER TABLE admin_staff ADD COLUMN IF NOT EXISTS is_lifeguard BOOLEAN NOT NULL DEFAULT FALSE`);
   await pool.query(`ALTER TABLE admin_staff ADD COLUMN IF NOT EXISTS lifeguard_active BOOLEAN NOT NULL DEFAULT FALSE`);
   await pool.query(`ALTER TABLE admin_staff ADD COLUMN IF NOT EXISTS lifeguard_active_overridden_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE admin_staff ADD COLUMN IF NOT EXISTS line_uid TEXT`);
 
   // Task #54：admin_venues 增加欄位級覆寫旗標 — 後台手動編輯過的欄位，
   // Ragic 同步（POST /venues/sync-ragic）第二階段寫入時會跳過。
@@ -328,6 +329,28 @@ async function ensureSchema() {
   // Task #53：載入效能 — 列表常依 active / venue 過濾
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_admin_staff_active ON admin_staff(active)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_admin_staff_venue ON admin_staff(venue_id)`);
+  await pool.query(`
+    DO $$
+    BEGIN
+      WITH ranked AS (
+        SELECT id, ROW_NUMBER() OVER (
+                 PARTITION BY line_uid ORDER BY updated_at DESC NULLS LAST, id
+               ) AS rn
+          FROM admin_staff
+         WHERE NULLIF(TRIM(line_uid), '') IS NOT NULL
+      )
+      UPDATE admin_staff SET line_uid = NULL, last_synced_at = NOW()
+       WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
+
+      IF NOT EXISTS (
+        SELECT line_uid FROM admin_staff WHERE NULLIF(TRIM(line_uid), '') IS NOT NULL
+        GROUP BY line_uid HAVING COUNT(*) > 1
+      ) THEN
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_admin_staff_line_uid
+          ON admin_staff(line_uid) WHERE NULLIF(TRIM(line_uid), '') IS NOT NULL;
+      END IF;
+    END $$;
+  `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_admin_users_active ON admin_users(is_active)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_admin_users_active_venue ON admin_users(is_active, venue_id)`);
 

@@ -309,6 +309,30 @@ function _h01DataNo(r) {
   return String(r?.[H01.DATA_NO] || r?.['資料編號'] || '').trim();
 }
 
+function _h01NodeId(r) {
+  return String(r?.[H01.NODE_ID] || r?._ragicId || r?.ragicId || '').trim();
+}
+
+function _h01Name(r) {
+  return String(r?.[H01.NAME] || r?.['姓名'] || '').trim();
+}
+
+function _h01EmployeeId(r) {
+  return _normalizeStaffId(r?.['員工編號'] || r?.['工號'] || r?.['3000935'] || '');
+}
+
+function _h01Phone(r) {
+  return String(r?.['手機'] || r?.['手機（公司）'] || r?.['3001424'] || r?.['手機（個人）'] || r?.['3000941'] || '').trim();
+}
+
+function _staffNameKey(name) {
+  return String(name || '').trim();
+}
+
+function _staffNaturalKey(name, lineUid) {
+  return `${_staffNameKey(name)}\u0001${String(lineUid || '').trim()}`;
+}
+
 function _splitFieldIds(value) {
   return String(value || '')
     .split(',')
@@ -359,12 +383,11 @@ function _buildDuplicateSet(values) {
   return dup;
 }
 
-function _h01ShadowKey(row, idx, duplicateDataNos = new Set()) {
+function _h01ShadowKey(row, idx) {
+  const rid = _h01NodeId(row);
+  if (rid) return `node:${rid}`;
   const dataNo = _h01DataNo(row);
-  if (dataNo && !duplicateDataNos.has(dataNo)) return `data:${dataNo}`;
-  const rid = _ragicRecordId(row);
-  if (rid) return `ragic:${rid}`;
-  if (dataNo) return `data:${dataNo}:row:${idx}`;
+  if (dataNo) return `legacy-data:${dataNo}:row:${idx}`;
   return `row:${idx}`;
 }
 
@@ -410,10 +433,10 @@ function _publicStagingRow(row) {
 }
 
 function _staffPayloadFromRagicRow(r, resolveVenues) {
-  const rawId = String(r?.['員工編號'] || r?.['工號'] || r?.['3000935'] || '').trim();
-  const id = _normalizeStaffId(rawId);
-  const name = r?.['姓名'] || r?.['3000933'] || '';
-  const phone = r?.['手機'] || r?.['手機（公司）'] || r?.['3001424'] || r?.['手機（個人）'] || r?.['3000941'] || '';
+  const nodeId = _h01NodeId(r);
+  const id = _h01EmployeeId(r) || (nodeId ? `H01-${nodeId}` : '');
+  const name = _h01Name(r);
+  const phone = _h01Phone(r);
   const email = r?.['E-mail'] || r?.['Email'] || r?.['email'] || r?.['信箱'] || r?.['3000940'] || '';
   const role = r?.['應徵職務'];
   const roleStr = Array.isArray(role) ? role.join(',') : (role || '');
@@ -432,7 +455,7 @@ function _staffPayloadFromRagicRow(r, resolveVenues) {
     venue_ids: resolveVenues(_extractStaffVenueIds(r)),
     line_uid: extractLineUid(r),
     ragic_data_no: _h01DataNo(r),
-    ragic_record_id: r?._ragicId != null ? String(r._ragicId) : null,
+    ragic_record_id: nodeId || null,
     ragic_last_update_at: _ragicLastUpdateValue(r),
     is_coach: isCoach,
     is_counter: isCounter,
@@ -532,9 +555,8 @@ async function _assertStagedRagicStillFresh(row) {
 }
 
 // P1.1 決策9：無腦 shadow 寫入——唯一打 Ragic H01 全量查詢的地方，不跑任何比對/
-// 清洗邏輯。結構比照 _shadowPullZ01Impl（ragicAdmin.js 上方 Z01 影子表段落）：
-// key 用 ragic_record_id（真正的 _ragicId，理由同「熊韋程 staff 事故」修復——員工
-// 編號可變，不可拿來當影子表主鍵，否則編號一變影子表自己也會長孤兒列）。
+// 清洗邏輯。key 只使用 Ragic node id（3000942；目前 listing 常 fallback _ragicId）。
+// 3000934「資料編號」已確認會重複，僅保存為 raw/debug，不參與 shadow 主鍵或 skip。
 // Phase 5：incremental=true 時只拉 watermark 之後有變更的列（見 ragic.js
 // getAllStaffChangedSinceWithFreshness），且：
 //   (a) 不跑「shadowCount===rawTotal」全集校驗——增量本來就只是子集，這條校驗
@@ -569,11 +591,10 @@ async function _shadowPullH01Impl({ incremental = false, watermark = null } = {}
   const rawTotal = records.length;
   try {
     await client.query('BEGIN');
-    const duplicateDataNos = _buildDuplicateSet(records.map(_h01DataNo));
     const presentKeys = [];
     for (const [idx, row] of records.entries()) {
-      const shadowKey = _h01ShadowKey(row, idx, duplicateDataNos);
-      const ragicRecordId = _ragicRecordId(row) || null;
+      const shadowKey = _h01ShadowKey(row, idx);
+      const ragicRecordId = _h01NodeId(row) || null;
       const ragicDataNo = _h01DataNo(row) || null;
       presentKeys.push(shadowKey);
       await client.query(
@@ -742,7 +763,7 @@ async function _reconcileH23FromShadowImpl() {
         const name = String(row.staff_name || _h23StaffName(raw) || '').trim();
         const courseCoefficient = _h23CourseCoefficient(raw);
         const warningRecordId = _ragicRecordId(raw) || row.ragic_record_id;
-        if (!empId || !name) {
+        if (!name) {
           unmatched++;
           warnings.push({
             ragic_record_id: warningRecordId, shadow_key: row.ragic_record_id,
@@ -754,14 +775,20 @@ async function _reconcileH23FromShadowImpl() {
 
         await client.query('BEGIN');
         const matched = await client.query(
-          `SELECT id
-             FROM admin_staff
-            WHERE UPPER(TRIM(id)) = $1
-              AND TRIM(name) = $2
-            FOR UPDATE`,
-          [empId, name]
+          `SELECT id, active, line_uid
+	             FROM admin_staff
+	            WHERE TRIM(name) = $1
+	            FOR UPDATE`,
+          [name]
         );
-        if (matched.rowCount !== 1) {
+        let staffId = null;
+        if (matched.rowCount === 1) {
+          staffId = matched.rows[0].id;
+        } else if (matched.rowCount > 1) {
+          const activeLineRows = matched.rows.filter((r) => r.active === true && String(r.line_uid || '').trim());
+          if (activeLineRows.length === 1) staffId = activeLineRows[0].id;
+        }
+        if (!staffId) {
           await client.query('ROLLBACK');
           unmatched++;
           warnings.push({
@@ -771,12 +798,13 @@ async function _reconcileH23FromShadowImpl() {
             name,
             normalized_name: _normalizeStaffNameForDiag(name),
             source_form: 'H23',
-            reason: matched.rowCount === 0 ? 'no_exact_staff_match' : 'non_unique_staff_match',
+            reason: matched.rowCount === 0
+              ? 'no_name_staff_match'
+              : (matched.rowCount > 1 ? 'duplicate_name_no_unique_line_uid' : 'no_exact_staff_match'),
           });
           continue;
         }
 
-        const staffId = matched.rows[0].id;
         matchedStaffIds.add(staffId);
         await client.query(
           `UPDATE admin_staff
@@ -894,34 +922,51 @@ async function _reconcileH01FromShadowImpl() {
     // 改為「比對前」就 resolve 成代碼（與 apply 同一套 resolver）；
     // 解析不到的值（公司名、內勤處室）一律忽略，不視為場館差異。
     const resolveVenues = await _buildVenueResolver();
-    const dbRows = (await pool.query(
-      `SELECT id, name, phone, role, active, active_overridden_at,
-              is_coach, is_counter, is_lifeguard, lifeguard_active, lifeguard_active_overridden_at,
-              ragic_record_id, ragic_data_no
-         FROM admin_staff`
-    )).rows;
-    // key 用 normalize 過的值，value 保留 DB 原始 row（含 PK 原始大小寫）
-    const dbMap = new Map(dbRows.map(r => [_normalizeStaffId(r.id), r]));
-    // P1.5「資料編號背景對齊」：員工編號在 Ragic 端可被改寫，不再當業務對齊鍵。
-    // 正式 matching 優先用 H01「資料編號」(3000934)；_ragicId 只作不可變錨點與
-    // 舊資料回填 fallback，員工編號只保留最後 fallback。
-    const dbByRagicId = new Map(
-      dbRows.filter(r => r.ragic_record_id).map(r => [String(r.ragic_record_id), r])
-    );
-    const dbByDataNo = new Map(
-      dbRows.filter(r => r.ragic_data_no).map(r => [String(r.ragic_data_no), r])
-    );
-    const recordsByDataNo = new Map();
-    records.forEach((row, idx) => {
-      const dataNo = _h01DataNo(row);
-      if (!dataNo) return;
-      const list = recordsByDataNo.get(dataNo) || [];
-      list.push({ row, idx });
-      recordsByDataNo.set(dataNo, list);
-    });
-    const duplicateDataNos = new Set(
-      [...recordsByDataNo.entries()].filter(([, list]) => list.length > 1).map(([dataNo]) => dataNo)
-    );
+	    const dbRows = (await pool.query(
+	      `SELECT id, name, phone, role, active, active_overridden_at,
+	              is_coach, is_counter, is_lifeguard, lifeguard_active, lifeguard_active_overridden_at,
+	              ragic_record_id, ragic_data_no, line_uid
+	         FROM admin_staff`
+	    )).rows;
+	    // Legacy lookup maps are fallback only. H01 business reconciliation is now name + LINE UID.
+	    const dbMap = new Map(dbRows.map(r => [_normalizeStaffId(r.id), r]));
+	    const dbByRagicId = new Map(
+	      dbRows.filter(r => r.ragic_record_id).map(r => [String(r.ragic_record_id), r])
+	    );
+	    const dbByLineUid = new Map(
+	      dbRows.filter(r => r.line_uid).map(r => [String(r.line_uid).trim(), r])
+	    );
+	    const dbByNameLine = new Map();
+	    const dbByName = new Map();
+	    for (const row of dbRows) {
+	      const nameKey = _staffNameKey(row.name);
+	      if (!nameKey) continue;
+	      if (row.line_uid) dbByNameLine.set(_staffNaturalKey(row.name, row.line_uid), row);
+	      const list = dbByName.get(nameKey) || [];
+	      list.push(row);
+	      dbByName.set(nameKey, list);
+	    }
+	    const findCurrentStaff = (name, lineUid, ragicRecordId, staffId) => {
+	      const nameKey = _staffNameKey(name);
+	      const cleanLineUid = String(lineUid || '').trim();
+	      if (nameKey && cleanLineUid) {
+	        const byNameLine = dbByNameLine.get(_staffNaturalKey(nameKey, cleanLineUid));
+	        if (byNameLine) return { row: byNameLine, matchedBy: 'name_line' };
+	      }
+	      if (nameKey) {
+	        const sameName = dbByName.get(nameKey) || [];
+	        if (sameName.length === 1) return { row: sameName[0], matchedBy: 'name_unique' };
+	        if (sameName.length > 1 && cleanLineUid) {
+	          const byLineWithinName = sameName.filter((r) => String(r.line_uid || '').trim() === cleanLineUid);
+	          if (byLineWithinName.length === 1) return { row: byLineWithinName[0], matchedBy: 'name_line_disambiguated' };
+	        }
+	        if (sameName.length > 1) return { row: null, matchedBy: 'ambiguous_name' };
+	      }
+	      if (cleanLineUid && dbByLineUid.has(cleanLineUid)) return { row: dbByLineUid.get(cleanLineUid), matchedBy: 'line_uid_fallback' };
+	      if (ragicRecordId && dbByRagicId.has(ragicRecordId)) return { row: dbByRagicId.get(ragicRecordId), matchedBy: 'ragic_record_fallback' };
+	      if (staffId && dbMap.has(staffId)) return { row: dbMap.get(staffId), matchedBy: 'staff_id_fallback' };
+	      return { row: null, matchedBy: 'new' };
+	    };
     // Perf（修「H01 同步偶發逾時 / 同步失敗」的根因）：原本在每筆員工迴圈裡各打 2 次 DB
     // （coaches 的 email/line_uid + admin_staff_venues），262 筆 ≈ 500+ 次序列往返 →
     // 同步要跑 78–116 秒。真正瓶頸不是 Ragic API（一次就撈得完，遠在 1000 筆/次上限內），
@@ -946,56 +991,42 @@ async function _reconcileH01FromShadowImpl() {
     let h01Unmatched = 0;
     const staffErrors = [];
     const h01Warnings = [];
-    applyClient = await pool.connect();
-    for (const [idx, r] of records.entries()) {
-     try {
-      const ragicId = r['員工編號'] || r['工號'] || r['3000935'];
-      const rawId = String(ragicId || '').trim();
-      let id = _normalizeStaffId(rawId);
-      const ragicRecordId = _ragicRecordId(r) || null;
-      const ragicDataNo = _h01DataNo(r);
-      const curByRagicId = ragicRecordId ? dbByRagicId.get(ragicRecordId) : null;
-      let cur = (ragicDataNo ? dbByDataNo.get(ragicDataNo) : null) || curByRagicId || (id ? dbMap.get(id) : null);
-      if (!id && cur?.id) id = _normalizeStaffId(cur.id);
-      if (id) seenKeys.add(id);
-      const warnH01 = (reason) => {
-        h01Unmatched++;
-        h01Warnings.push({
-          ragic_record_id: ragicRecordId,
-          ragic_data_no: ragicDataNo,
-          emp_id: id,
-          name: String(r['姓名'] || r['3000933'] || '').trim(),
-          reason,
-        });
-      };
-      const stageHalt = async (reason, message) => {
-        const existingForHalt = cur || (ragicRecordId && dbByRagicId.get(ragicRecordId)) || (id ? dbMap.get(id) : null);
-        if (existingForHalt) seenKeys.add(_normalizeStaffId(existingForHalt.id));
-        warnH01(reason);
-        if (h01Warnings.length <= 10) {
-          console.warn(`[Ragic sync] H01 資料品質中止 (${reason}): ${message}`);
-        }
-      };
-      if (!ragicDataNo) {
-        await stageHalt(
-          'missing_ragic_data_no',
-          `H01 record 缺少資料編號 Field ${H01.DATA_NO}，已中止該筆套用`
-        );
-        continue;
-      }
-      if (duplicateDataNos.has(ragicDataNo)) {
-        await stageHalt(
-          'duplicate_ragic_data_no',
-          `H01 同一次 pull 出現重複資料編號 Field ${H01.DATA_NO}，整組已略過`
-        );
-        continue;
-      }
-      if (!id) {
-        warnH01('missing_staff_emp_id');
-        continue;
-      }
-      const name = r['姓名'] || r['3000933'] || '';
-      const phone = r['手機'] || r['手機（公司）'] || r['3001424'] || r['手機（個人）'] || r['3000941'] || '';
+	    applyClient = await pool.connect();
+	    for (const [idx, r] of records.entries()) {
+	     try {
+	      const ragicRecordId = _h01NodeId(r) || null;
+	      let id = _h01EmployeeId(r) || (ragicRecordId ? `H01-${ragicRecordId}` : '');
+	      const ragicDataNo = _h01DataNo(r);
+	      const name = _h01Name(r);
+	      const lineUid = extractLineUid(r);
+	      const match = findCurrentStaff(name, lineUid, ragicRecordId, id);
+	      let cur = match.row;
+	      if (!id && cur?.id) id = _normalizeStaffId(cur.id);
+	      const warnH01 = (reason) => {
+	        h01Unmatched++;
+	        h01Warnings.push({
+	          ragic_record_id: ragicRecordId,
+	          ragic_data_no: ragicDataNo,
+	          emp_id: id,
+	          name,
+	          reason,
+	        });
+	      };
+	      if (name) seenKeys.add(_staffNameKey(name));
+	      if (cur?.name) seenKeys.add(_staffNameKey(cur.name));
+	      if (!name) {
+	        warnH01('missing_staff_name');
+	        continue;
+	      }
+	      if (match.matchedBy === 'ambiguous_name') {
+	        warnH01('ambiguous_name_without_line_uid');
+	        continue;
+	      }
+	      if (!id) {
+	        warnH01('missing_staff_emp_id');
+	        continue;
+	      }
+	      const phone = _h01Phone(r);
       // Task #91 後續：Ragic H01 公司 E-mail（field 3000940）也納入 staff sync，
       // 套用時若該員工有對應的 coaches 列，會把 email 寫入 coaches.email
       // （保留後台手動編輯：只在現值為空時覆寫）。
@@ -1015,70 +1046,35 @@ async function _reconcileH01FromShadowImpl() {
       // Task #90：解析 Ragic H01 多場館欄位（主場館 + 支援場館），合併為陣列
       // Task #95：立即 resolve 成 venue 代碼再比對 / 入 payload（見上方註解）
       const venueIds = resolveVenues(_extractStaffVenueIds(r));
-      // H01「個人LINE ID」(Field 1003633 / exact display key fallback)。
-      const lineUid = extractLineUid(r);
-      // P1.5：業務對齊鍵改為 H01「資料編號」；_ragicId 作不可變錨點 / 舊資料回填，
-      // 員工編號只保留最後 fallback（涵蓋尚未回填的過渡期資料）。
-      if (curByRagicId?.ragic_data_no && String(curByRagicId.ragic_data_no) !== ragicDataNo) {
-        await stageHalt(
-          'ragic_data_no_changed',
-          `H01 _ragicId=${ragicRecordId} 的資料編號由既有值變更，已中止該筆套用並待人工排查`
-        );
-        continue;
-      }
-      // 若靠 ragic_record_id 對到舊列（可能員工編號已變），該列的「舊」編號也要算
-      // seen，否則會被下面的 deactivate 掃尾誤判成離職（它其實是要被就地更新，不是消失）。
-      if (cur) seenKeys.add(_normalizeStaffId(cur.id));
-      if (cur?.ragic_record_id && ragicRecordId
-          && String(cur.ragic_record_id) !== ragicRecordId
-          && _normalizeStaffId(cur.ragic_record_id) !== _normalizeStaffId(cur.id)) {
-        await stageHalt(
-          'ragic_record_id_changed_for_data_no',
-          `H01 資料編號對到既有員工，但 _ragicId 與本地錨點不同，已中止該筆套用並待人工排查`
-        );
-        continue;
-      }
-      if (cur && ((!cur.ragic_data_no && ragicDataNo)
-          || (!cur.ragic_record_id && ragicRecordId)
-          || (_normalizeStaffId(cur.ragic_record_id) === _normalizeStaffId(cur.id) && ragicRecordId))) {
-        try {
-          await pool.query(
-            `UPDATE admin_staff
-                SET ragic_data_no = COALESCE(ragic_data_no, $1),
-                    ragic_record_id = CASE
-                      WHEN ragic_record_id IS NULL OR UPPER(TRIM(ragic_record_id)) = UPPER(TRIM(id))
-                      THEN COALESCE($2, ragic_record_id)
-                      ELSE ragic_record_id
-                    END,
-                    last_synced_at = NOW()
-              WHERE id = $3`,
-            [ragicDataNo || null, ragicRecordId || null, cur.id]
-          );
-          await pool.query(
-            `UPDATE coaches
-                SET ragic_data_no = COALESCE(ragic_data_no, $1),
-                    ragic_record_id = CASE
-                      WHEN ragic_record_id IS NULL OR UPPER(TRIM(ragic_record_id)) = UPPER(TRIM(ragic_employee_id))
-                      THEN COALESCE($2, ragic_record_id)
-                      ELSE ragic_record_id
-                    END,
-                    updated_at = NOW()
-              WHERE ragic_employee_id = $3`,
-            [ragicDataNo || null, ragicRecordId || null, cur.id]
-          );
-          cur.ragic_data_no = cur.ragic_data_no || ragicDataNo;
-          cur.ragic_record_id = cur.ragic_record_id && _normalizeStaffId(cur.ragic_record_id) !== _normalizeStaffId(cur.id)
-            ? cur.ragic_record_id
-            : (ragicRecordId || cur.ragic_record_id);
-        } catch (err) {
-          console.warn('[Ragic sync] H01 governance key backfill skipped:', err.message);
-        }
+	      if (cur && ((!cur.ragic_record_id && ragicRecordId)
+	          || (!cur.line_uid && lineUid))) {
+	        try {
+	          await pool.query(
+	            `UPDATE admin_staff
+	                SET ragic_record_id = COALESCE(ragic_record_id, $1),
+	                    line_uid = COALESCE(NULLIF(line_uid, ''), NULLIF($3, '')),
+	                    last_synced_at = NOW()
+	              WHERE id = $2`,
+	            [ragicRecordId || null, cur.id, lineUid || '']
+	          );
+	          await pool.query(
+	            `UPDATE coaches
+	                SET ragic_record_id = COALESCE(ragic_record_id, $1),
+	                    updated_at = NOW()
+	              WHERE ragic_employee_id = $2`,
+	            [ragicRecordId || null, cur.id]
+	          );
+	          cur.ragic_record_id = cur.ragic_record_id || ragicRecordId;
+	          cur.line_uid = cur.line_uid || lineUid;
+	        } catch (err) {
+	          console.warn('[Ragic sync] H01 governance key backfill skipped:', err.message);
+	        }
       }
       // 套用至正式表時 entity_id 是 staging 卡片的穩定身份（保留原始大小寫），員工編號
       // 變更時故意維持舊值不變——避免同一人在編號變更當下憑空多出一張新 staging 卡，
       // 真正要寫入的新編號改放 payload.id，由 _applyStaffChange 以 ragic_record_id
       // 為準 UPDATE 既有列（含 PK）。
-      const entityId = cur ? cur.id : id;
+	      const entityId = cur ? cur.id : id;
       const payload = {
         id, name, phone, email, role: roleVal,
         is_active: isActive, venue_ids: venueIds,
@@ -1095,9 +1091,9 @@ async function _reconcileH01FromShadowImpl() {
 
       // 查目前 coaches.email / line_uid 作為 diff 比對基準（admin_staff 本身沒有這兩個欄位）
       // ——改用迴圈前一次撈齊的 coachByEmp Map，避免每筆各打一次 DB（見上方 Perf 註解）。
-      const coachRow = coachByEmp.get(entityId);
-      const curCoachEmail = coachRow?.email || '';
-      const curCoachLineUid = coachRow?.line_uid || '';
+	      const coachRow = coachByEmp.get(entityId);
+	      const curCoachEmail = coachRow?.email || '';
+	      const curCoachLineUid = coachRow?.line_uid || cur?.line_uid || '';
       // email / line_uid 只存在於 coaches 表；apply 也只寫得進 coaches 列。
       // 因此唯有「已有 coaches 列」或「這次會被建成教練（role=coach 且有手機 → apply 會建列）」
       // 時，套用才寫得進去。純後勤員工（role=staff、無 coaches 列）若硬 stage 這兩欄，
@@ -1137,9 +1133,9 @@ async function _reconcileH01FromShadowImpl() {
       }
       // line_uid：H01 有合法 UID 時以 Ragic 為權威校正；Ragic 空值不清掉本地已綁定值。
       // 同上 coachFieldsPersistable 把關：非教練的 line_uid 套用無處可寫，不再 stage。
-      if (coachFieldsPersistable && lineUid && curCoachLineUid !== lineUid) {
-        diff.line_uid = { from: curCoachLineUid || '', to: lineUid };
-      }
+	      if (lineUid && curCoachLineUid !== lineUid) {
+	        diff.line_uid = { from: curCoachLineUid || '', to: lineUid };
+	      }
       if (cur.active_overridden_at == null && cur.active !== isActive) {
         diff.active = { from: cur.active, to: isActive };
       }
@@ -1161,7 +1157,7 @@ async function _reconcileH01FromShadowImpl() {
         diff.is_lifeguard = { from: !!cur.is_lifeguard, to: isLifeguard };
       }
       // 場館差異直接套用（移除 staging 流程，全量直接 apply）
-      const curVenues = venuesByStaff.get(entityId) || [];
+	      const curVenues = venuesByStaff.get(entityId) || [];
       const newVenues = [...venueIds].sort();
       const curVenuesSorted = [...curVenues].sort();
       if (newVenues.length > 0 && (newVenues.length !== curVenuesSorted.length
@@ -1199,9 +1195,9 @@ async function _reconcileH01FromShadowImpl() {
       await _alertAdmins(`【Ragic H01 對齊警告】h01_unmatched_staff_warning=${h01Unmatched}${sampleText ? `（sample: ${sampleText}）` : ''}`);
     }
 
-    // Ragic 名單外 + 仍 active + 未 override → 直接停用（無 staging）
-    for (const r of dbRows) {
-      if (!r.active || r.active_overridden_at != null || seenKeys.has(_normalizeStaffId(r.id))) continue;
+	    // Ragic 名單外 + 仍 active + 未 override → 依姓名停用（不做 hard delete）
+	    for (const r of dbRows) {
+	      if (!r.active || r.active_overridden_at != null || seenKeys.has(_staffNameKey(r.name))) continue;
       const payload = { id: r.id, name: r.name, is_active: false };
       try {
         await applyClient.query('BEGIN');
@@ -1498,28 +1494,36 @@ async function _applyStaffChange(row, client) {
     }
     return;
   }
-  // P1.1「熊韋程 staff 事故」修復：員工編號可被 Ragic 端「更新系統帳號資料」動作
-  // 按鈕改寫，不再是穩定值。row.entity_id 是這張 staging 卡片的穩定身份（員工編號
-  // 變更時 _syncStaffImpl 故意保留舊值，避免無端多出一張新卡），真正要寫進
-  // admin_staff.id 的值是 payload 帶來的 p.id（可能等於 entity_id，也可能是變更後的
-  // 新編號）。
-  //
-  // 刻意不用 ON CONFLICT (ragic_record_id) 推斷：待審核區裡還有大量舊版（此修復
-  // 之前產生的）payload 沒有 ragic_record_id 欄位，且回填 script 執行「之前」既有
-  // 列的 ragic_record_id 也還是舊式（等於員工編號本身）的值，並非真正的 _ragicId。
-  // 若靠 ON CONFLICT 推斷，這兩種過渡期資料在 approve 時會因為推斷不到既有列，
-  // 誤觸發 INSERT 而撞上 admin_staff PK（id）唯一性錯誤。改用明確查詢：先以
-  // ragic_record_id 找（找得到，代表已回填/新資料，可靠），找不到才 fallback 用
-  // id 找（涵蓋回填前的舊列、或編號本來就沒變的一般情況）——不論過渡期資料處在
-  // 哪個階段都能正確判斷。P1.5 起先以 H01「資料編號」找既有列，找不到才用
-  // _ragicId / 員工編號 fallback。
   const staffId = p.id || row.entity_id;
   const ragicRecordId = p.ragic_record_id || null;
-  const ragicDataNo = p.ragic_data_no || null;
+  const incomingLineUid = p.line_uid ? String(p.line_uid).trim() : '';
+  const incomingName = String(p.name || '').trim();
   let existingStaffId = null;
-  if (ragicDataNo) {
-    const byDataNo = await client.query(`SELECT id FROM admin_staff WHERE ragic_data_no = $1`, [ragicDataNo]);
-    existingStaffId = byDataNo.rows[0]?.id || null;
+  if (incomingName && incomingLineUid) {
+    const byNameLine = await client.query(
+      `SELECT id FROM admin_staff
+        WHERE TRIM(name) = $1 AND NULLIF(TRIM(line_uid), '') = $2
+        LIMIT 2`,
+      [incomingName, incomingLineUid]
+    );
+    if (byNameLine.rowCount === 1) existingStaffId = byNameLine.rows[0].id;
+  }
+  if (!existingStaffId && incomingName) {
+    const byName = await client.query(
+      `SELECT id FROM admin_staff WHERE TRIM(name) = $1 LIMIT 2`,
+      [incomingName]
+    );
+    if (byName.rowCount === 1) existingStaffId = byName.rows[0].id;
+    else if (byName.rowCount > 1 && !incomingLineUid) {
+      throw new Error(`H01 同名員工「${incomingName}」缺少 LINE ID，無法安全套用`);
+    }
+  }
+  if (!existingStaffId && incomingLineUid) {
+    const byLine = await client.query(
+      `SELECT id FROM admin_staff WHERE NULLIF(TRIM(line_uid), '') = $1 LIMIT 2`,
+      [incomingLineUid]
+    );
+    if (byLine.rowCount === 1) existingStaffId = byLine.rows[0].id;
   }
   if (!existingStaffId && ragicRecordId) {
     const byRid = await client.query(`SELECT id FROM admin_staff WHERE ragic_record_id = $1`, [ragicRecordId]);
@@ -1531,32 +1535,32 @@ async function _applyStaffChange(row, client) {
   }
   if (existingStaffId) {
     await client.query(
-      `UPDATE admin_staff SET
-         id = $1, name = $2, phone = $3,
-         active = CASE WHEN active_overridden_at IS NULL THEN $4 ELSE active END,
+	      `UPDATE admin_staff SET
+	         id = $1, name = $2, phone = $3,
+	         active = CASE WHEN active_overridden_at IS NULL THEN $4 ELSE active END,
          -- A0/A0.5/救生員：is_coach / is_counter / is_lifeguard 皆為 Ragic 來源、唯讀信號
          -- （比照 role 的性質，但各自獨立追蹤、不互相覆蓋），每次 apply 一律以 Ragic 這次
          -- 送來的值為準。注意：這裡刻意不寫 lifeguard_active——已存在的救生員身份因為
          -- 這裡完全不觸碰 lifeguard_active 欄位，重複同步不會重置它。
-         is_coach = $5, is_counter = $6, is_lifeguard = $7,
+	         is_coach = $5, is_counter = $6, is_lifeguard = $7,
          -- COALESCE：ragic_record_id 若這次 payload 沒帶（舊版 payload 過渡期）
          -- 就保留既有值，不要用 NULL 蓋掉已經有的紀錄。
-         ragic_record_id = COALESCE($8, ragic_record_id),
-         ragic_data_no = COALESCE($9, ragic_data_no),
-         last_synced_at = NOW()
-       WHERE id = $10`,
-      [staffId, p.name || '', p.phone || '', !!p.is_active,
-       !!p.is_coach, !!p.is_counter, !!p.is_lifeguard, ragicRecordId, ragicDataNo, existingStaffId]
-    );
-  } else {
-    await client.query(
-      `INSERT INTO admin_staff (id, name, role, phone, is_senior, multiplier, active,
-          is_coach, is_counter, is_lifeguard, ragic_record_id, ragic_data_no, last_synced_at)
-       VALUES ($1, $2, $3, $4, FALSE, 1.00, $5, $6, $7, $8, $9, $10, NOW())`,
-      [staffId, p.name || '', p.role || 'staff', p.phone || '', !!p.is_active,
-       !!p.is_coach, !!p.is_counter, !!p.is_lifeguard, ragicRecordId, ragicDataNo]
-    );
-  }
+	         ragic_record_id = COALESCE($8, ragic_record_id),
+	         line_uid = CASE WHEN NULLIF($9, '') IS NOT NULL THEN NULLIF($9, '') ELSE line_uid END,
+	         last_synced_at = NOW()
+	       WHERE id = $10`,
+	      [staffId, p.name || '', p.phone || '', !!p.is_active,
+	       !!p.is_coach, !!p.is_counter, !!p.is_lifeguard, ragicRecordId, incomingLineUid, existingStaffId]
+	    );
+	  } else {
+	    await client.query(
+	      `INSERT INTO admin_staff (id, name, role, phone, is_senior, multiplier, active,
+	          is_coach, is_counter, is_lifeguard, ragic_record_id, line_uid, last_synced_at)
+	       VALUES ($1, $2, $3, $4, FALSE, 1.00, $5, $6, $7, $8, $9, NULLIF($10, ''), NOW())`,
+	      [staffId, p.name || '', p.role || 'staff', p.phone || '', !!p.is_active,
+	       !!p.is_coach, !!p.is_counter, !!p.is_lifeguard, ragicRecordId, incomingLineUid]
+	    );
+	  }
   if (p.is_active === false && p.name) {
     await client.query(
       `UPDATE admin_users SET is_active = FALSE
@@ -1564,17 +1568,15 @@ async function _applyStaffChange(row, client) {
       [p.name]
     );
   }
-  // 教練連動同樣要避開「靠單一欄位推斷」的過渡期陷阱：coaches.ragic_record_id 是
-  // 全新欄位，回填 script 執行「之前」既有教練列一律是 NULL——若只靠 ragic_record_id
-  // 查詢，現有教練會全部被誤判成「沒有 profile」而重複走新建分支。P1.5 起先以
-  // ragic_data_no 找，找不到才 fallback 到 ragic_record_id / ragic_employee_id。
+  // 教練連動同樣退出 3000934 資料編號；先用 LINE UID / Ragic node，再 fallback
+  // 到員工編號與手機，避免髒資料編號把 coach row 對到錯人。
   let existingCoachRow = null;
-  if (ragicDataNo) {
-    const byDataNo = await client.query(
-      `SELECT id, line_uid, is_active, active_overridden_at FROM coaches WHERE ragic_data_no = $1`,
-      [ragicDataNo]
+  if (incomingLineUid) {
+    const byLine = await client.query(
+      `SELECT id, line_uid, is_active, active_overridden_at FROM coaches WHERE line_uid = $1`,
+      [incomingLineUid]
     );
-    existingCoachRow = byDataNo.rows[0] || null;
+    existingCoachRow = byLine.rows[0] || null;
   }
   if (!existingCoachRow && ragicRecordId) {
     const byRid = await client.query(
@@ -1615,7 +1617,6 @@ async function _applyStaffChange(row, client) {
   }
   const isCoachRole = String(p.role || '') === 'coach';
   const hasCoachProfile = !!existingCoachRow;
-  const incomingLineUid = p.line_uid ? String(p.line_uid).trim() : '';
   // A0：疊加教練身份（role 仍是 'staff'/其他，但 Ragic 應徵職務同時命中「教練」關鍵字，
   // 即 payload.is_coach===true）且目前尚無 coaches 資料列 → 也要建立教練身份，
   // 不能只靠 isCoachRole（那只在 roleVal 剛好算成 'coach' 時才會是 true，雙重身份時
@@ -1644,33 +1645,32 @@ async function _applyStaffChange(row, client) {
     let coachId;
     if (existingCoachRow) {
       await client.query(
-        `UPDATE coaches SET
-           ragic_employee_id = $2,
-           ragic_record_id = COALESCE($3, ragic_record_id),
-           ragic_data_no = COALESCE($4, ragic_data_no),
-           name = $5, phone = $6,
-           email = COALESCE(NULLIF($7, ''), email),
-           line_uid = CASE WHEN NULLIF($8, '') IS NOT NULL THEN NULLIF($8, '') ELSE line_uid END,
-           is_active = CASE WHEN active_overridden_at IS NULL THEN $9 ELSE is_active END,
-           updated_at = NOW()
-         WHERE id = $1`,
-        [existingCoachRow.id, staffId, ragicRecordId, ragicDataNo, p.name || '', String(p.phone || '').trim(),
-         String(p.email || '').trim(), incomingLineUid, !!p.is_active]
-      );
+	        `UPDATE coaches SET
+	           ragic_employee_id = $2,
+	           ragic_record_id = COALESCE($3, ragic_record_id),
+	           name = $4, phone = $5,
+	           email = COALESCE(NULLIF($6, ''), email),
+	           line_uid = CASE WHEN NULLIF($7, '') IS NOT NULL THEN NULLIF($7, '') ELSE line_uid END,
+	           is_active = CASE WHEN active_overridden_at IS NULL THEN $8 ELSE is_active END,
+	           updated_at = NOW()
+	         WHERE id = $1`,
+	        [existingCoachRow.id, staffId, ragicRecordId, p.name || '', String(p.phone || '').trim(),
+	         String(p.email || '').trim(), incomingLineUid, !!p.is_active]
+	      );
       coachId = existingCoachRow.id;
     } else {
       const inserted = await client.query(
-        `INSERT INTO coaches
-           (ragic_employee_id, ragic_record_id, ragic_data_no, name, phone, email, line_uid,
-            is_senior, pricing_multiplier, specialties, bio_rich_text,
-            is_active, intro_review_status, active_overridden_at)
-         VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''),
-                 FALSE, 1.00, ARRAY[]::text[], '',
-                 $8, 'draft', NOW())
-         RETURNING id`,
-        [staffId, ragicRecordId, ragicDataNo, p.name || '', String(p.phone || '').trim(),
-         String(p.email || '').trim(), incomingLineUid, !!p.is_active]
-      );
+	        `INSERT INTO coaches
+	           (ragic_employee_id, ragic_record_id, name, phone, email, line_uid,
+	            is_senior, pricing_multiplier, specialties, bio_rich_text,
+	            is_active, intro_review_status, active_overridden_at)
+	         VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''),
+	                 FALSE, 1.00, ARRAY[]::text[], '',
+	                 $7, 'draft', NOW())
+	         RETURNING id`,
+	        [staffId, ragicRecordId, p.name || '', String(p.phone || '').trim(),
+	         String(p.email || '').trim(), incomingLineUid, !!p.is_active]
+	      );
       coachId = inserted.rows[0]?.id || null;
     }
     if (coachId && Array.isArray(p.venue_ids) && p.venue_ids.length > 0) {
@@ -1698,17 +1698,17 @@ async function _applyStaffChange(row, client) {
     // 一夕之間全部被動開放教練預約——這裡刻意不沿用 isCoachRole 分支的
     // is_active: !!p.is_active（那是給「單一教練角色」新人用的行為，語意不同）。
     const inserted = await client.query(
-      `INSERT INTO coaches
-         (ragic_employee_id, ragic_record_id, ragic_data_no, name, phone, email, line_uid,
-          is_senior, pricing_multiplier, specialties, bio_rich_text,
-          is_active, intro_review_status, active_overridden_at)
-       VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''),
-               FALSE, 1.00, ARRAY[]::text[], '',
-               FALSE, 'draft', NULL)
-       RETURNING id`,
-      [staffId, ragicRecordId, ragicDataNo, p.name || '', String(p.phone || '').trim(),
-       String(p.email || '').trim(), incomingLineUid]
-    );
+	      `INSERT INTO coaches
+	         (ragic_employee_id, ragic_record_id, name, phone, email, line_uid,
+	          is_senior, pricing_multiplier, specialties, bio_rich_text,
+	          is_active, intro_review_status, active_overridden_at)
+	       VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''),
+	               FALSE, 1.00, ARRAY[]::text[], '',
+	               FALSE, 'draft', NULL)
+	       RETURNING id`,
+	      [staffId, ragicRecordId, p.name || '', String(p.phone || '').trim(),
+	       String(p.email || '').trim(), incomingLineUid]
+	    );
     const coachId = inserted.rows[0]?.id;
     if (coachId && Array.isArray(p.venue_ids) && p.venue_ids.length > 0) {
       const venueIds = [...new Set(p.venue_ids.map(String).map(s => s.trim()).filter(Boolean))];
@@ -1730,14 +1730,13 @@ async function _applyStaffChange(row, client) {
   } else if (hasCoachProfile && incomingLineUid) {
     // dual-role 兼任教練 或 既有 coach row：H01 有合法 UID 時校正，空值不覆蓋
     await client.query(
-      `UPDATE coaches
-          SET line_uid = CASE WHEN NULLIF($2, '') IS NOT NULL THEN NULLIF($2, '') ELSE line_uid END,
-              ragic_record_id = COALESCE($3, ragic_record_id),
-              ragic_data_no = COALESCE($4, ragic_data_no),
-              updated_at = NOW()
-        WHERE id = $1`,
-      [existingCoachRow.id, incomingLineUid, ragicRecordId, ragicDataNo]
-    );
+	      `UPDATE coaches
+	          SET line_uid = CASE WHEN NULLIF($2, '') IS NOT NULL THEN NULLIF($2, '') ELSE line_uid END,
+	              ragic_record_id = COALESCE($3, ragic_record_id),
+	              updated_at = NOW()
+	        WHERE id = $1`,
+	      [existingCoachRow.id, incomingLineUid, ragicRecordId]
+	    );
   }
   // Task #90：同步 admin_staff_venues（多場館），並把第一筆寫回 admin_staff.venue_id 作 fallback
   if (Array.isArray(p.venue_ids) && p.venue_ids.length > 0) {
@@ -1842,16 +1841,6 @@ async function _applyVenueChange(row, client) {
 // 並套用」直接建出第二筆同人記錄，只能走合併路徑（見 mergeStagedStaffChange）。
 async function _findStaffCollision(payload) {
   const ragicRecordId = payload.ragic_record_id || null;
-  const ragicDataNo = String(payload.ragic_data_no || '').trim();
-  if (ragicDataNo) {
-    const r = await pool.query(
-      `SELECT id, name, ragic_record_id FROM admin_staff
-        WHERE ragic_data_no = $1 AND ($2::text IS NULL OR ragic_record_id IS DISTINCT FROM $2)
-        LIMIT 1`,
-      [ragicDataNo, ragicRecordId]
-    );
-    if (r.rowCount) return { entity_id: r.rows[0].id, matched_name: r.rows[0].name, reason: 'ragic_data_no_match' };
-  }
   const phone = String(payload.phone || '').trim();
   if (phone) {
     const r = await pool.query(
@@ -1976,33 +1965,31 @@ async function mergeStagedStaffChange(stagingId, targetEntityId, byUserId) {
     if (!targetCheck.rowCount) throw new Error(`target_entity_id ${targetEntityId} 不存在`);
     await _assertStagedRagicStillFresh(row);
 
-    const newId = p.id || row.entity_id;
-    const ragicRecordId = p.ragic_record_id || null;
-    const ragicDataNo = p.ragic_data_no || null;
-    await client.query(
-      `UPDATE admin_staff SET
-         id = $1, name = $2, phone = $3,
-         active = CASE WHEN active_overridden_at IS NULL THEN $4 ELSE active END,
-         is_coach = $5, is_counter = $6, is_lifeguard = $7,
-         ragic_record_id = COALESCE($8, ragic_record_id),
-         ragic_data_no = COALESCE($9, ragic_data_no),
-         last_synced_at = NOW()
-       WHERE id = $10`,
-      [newId, p.name || '', p.phone || '', !!p.is_active,
-       !!p.is_coach, !!p.is_counter, !!p.is_lifeguard, ragicRecordId, ragicDataNo, targetEntityId]
-    );
+	    const newId = p.id || row.entity_id;
+	    const ragicRecordId = p.ragic_record_id || null;
+	    const incomingLineUid = p.line_uid ? String(p.line_uid).trim() : '';
+	    await client.query(
+	      `UPDATE admin_staff SET
+	         id = $1, name = $2, phone = $3,
+	         active = CASE WHEN active_overridden_at IS NULL THEN $4 ELSE active END,
+	         is_coach = $5, is_counter = $6, is_lifeguard = $7,
+	         ragic_record_id = COALESCE($8, ragic_record_id),
+	         line_uid = CASE WHEN NULLIF($9, '') IS NOT NULL THEN NULLIF($9, '') ELSE line_uid END,
+	         last_synced_at = NOW()
+	       WHERE id = $10`,
+	      [newId, p.name || '', p.phone || '', !!p.is_active,
+	       !!p.is_coach, !!p.is_counter, !!p.is_lifeguard, ragicRecordId, incomingLineUid, targetEntityId]
+	    );
     // admin_staff_venues.staff_id 已透過 ON UPDATE CASCADE 連動改成 newId，不需要另外處理。
     const coach = await client.query(`SELECT id FROM coaches WHERE ragic_employee_id = $1`, [targetEntityId]);
-    if (coach.rowCount) {
-      const incomingLineUid = p.line_uid ? String(p.line_uid).trim() : '';
-      await client.query(
-        `UPDATE coaches SET ragic_employee_id = $1, ragic_record_id = COALESCE($2, ragic_record_id),
-           ragic_data_no = COALESCE($3, ragic_data_no),
-           line_uid = COALESCE(line_uid, NULLIF($4, '')), updated_at = NOW()
-         WHERE id = $5`,
-        [newId, ragicRecordId, ragicDataNo, incomingLineUid, coach.rows[0].id]
-      );
-    }
+	    if (coach.rowCount) {
+	      await client.query(
+	        `UPDATE coaches SET ragic_employee_id = $1, ragic_record_id = COALESCE($2, ragic_record_id),
+	           line_uid = COALESCE(line_uid, NULLIF($3, '')), updated_at = NOW()
+	         WHERE id = $4`,
+	        [newId, ragicRecordId, incomingLineUid, coach.rows[0].id]
+	      );
+	    }
     await client.query(
       `UPDATE ragic_staging_changes SET status = 'approved', reviewed_by = $2, reviewed_at = NOW() WHERE id = $1`,
       [stagingId, byUserId]
@@ -3529,9 +3516,6 @@ async function _logSyncResult(jobName, formCode, result, durationMs, triggeredBy
   const status = result?.skipped
     ? 'skipped'
     : (result?.stale_read ? 'stale_read' : (result?.partial ? 'partial' : (result?.error ? 'error' : 'ok')));
-  const warningMessage = result?.unmatched_staff_warning
-    ? `unmatched_staff_warning=${result.unmatched_staff_warning}`
-    : null;
   try {
     await pool.query(
       `INSERT INTO ragic_sync_log
@@ -3543,7 +3527,7 @@ async function _logSyncResult(jobName, formCode, result, durationMs, triggeredBy
         jobName,
         status,
         result?.synced || 0,
-        result?.error || warningMessage,
+        result?.error || null,
         durationMs,
         result?.freshness_verified ?? null,
         result?.freshness_latency_ms ?? null,
@@ -4166,8 +4150,9 @@ module.exports = {
     extractLineUid,
     normalizeLineUserId,
     h23CourseCoefficient: _h23CourseCoefficient,
-    staffPayloadFromRagicRow: _staffPayloadFromRagicRow,
-    publicStagingRow: _publicStagingRow,
+	    staffPayloadFromRagicRow: _staffPayloadFromRagicRow,
+	    h01ShadowKey: _h01ShadowKey,
+	    publicStagingRow: _publicStagingRow,
     sanitizeH01RawRow: _sanitizeH01RawRow,
     reconcileH23FromShadowImpl: _reconcileH23FromShadowImpl,
   },

@@ -3,12 +3,13 @@ const fs = require('fs');
 const path = require('path');
 const ragicAdmin = require('../server/services/ragicAdmin');
 
-const { staffPayloadFromRagicRow, publicStagingRow, sanitizeH01RawRow } = ragicAdmin.__test__;
+const { staffPayloadFromRagicRow, h01ShadowKey, publicStagingRow, sanitizeH01RawRow } = ragicAdmin.__test__;
 
-function testDataNoPrefersFieldId() {
+function testH01PayloadUsesAuthoritativeFields() {
   const payload = staffPayloadFromRagicRow(
     {
       _ragicId: 'R123',
+      '3000942': 'N123',
       '資料編號': 'WRONG-NAME-FALLBACK',
       '3000934': '1107076',
       '3000935': 'S001',
@@ -19,11 +20,13 @@ function testDataNoPrefersFieldId() {
     () => []
   );
   assert.strictEqual(payload.ragic_data_no, '1107076');
+  assert.strictEqual(payload.ragic_record_id, 'N123');
   assert.strictEqual(payload.id, 'S001');
+  assert.strictEqual(payload.name, '測試員工');
   assert.strictEqual(payload.line_uid, 'U5713b8dca03d3a78777891da2e9f12b6');
 }
 
-function testDataNoFallsBackToDisplayName() {
+function testH01PayloadFallsBackToDisplayKeys() {
   const payload = staffPayloadFromRagicRow(
     {
       _ragicId: 'R124',
@@ -35,6 +38,7 @@ function testDataNoFallsBackToDisplayName() {
     () => []
   );
   assert.strictEqual(payload.ragic_data_no, '321');
+  assert.strictEqual(payload.ragic_record_id, 'R124');
   assert.strictEqual(payload.id, 'S002');
 }
 
@@ -46,7 +50,7 @@ function testStagingDtoRedactsDataNo() {
       id: 'S001',
       name: '測試員工',
       ragic_data_no: '1107076',
-      halt_reason: 'duplicate_ragic_data_no',
+      ragic_record_id: 'N123',
     },
     diff_json: {
       ragic_data_no: { from: '1107076', to: '1107077' },
@@ -56,6 +60,14 @@ function testStagingDtoRedactsDataNo() {
   assert.strictEqual(row.payload_json.ragic_data_no, undefined);
   assert.strictEqual(row.diff_json.ragic_data_no, undefined);
   assert.deepStrictEqual(row.diff_json.name, { from: 'A', to: 'B' });
+}
+
+function testH01ShadowKeyIgnoresDuplicateDataNo() {
+  const a = h01ShadowKey({ _ragicId: '1460', '資料編號': '262', '姓名': '辛啟駿' }, 0);
+  const b = h01ShadowKey({ _ragicId: '941', '資料編號': '262', '姓名': '江至婕' }, 1);
+  assert.strictEqual(a, 'node:1460');
+  assert.strictEqual(b, 'node:941');
+  assert.notStrictEqual(a, b);
 }
 
 function testUiHasExplicitDataNoHideList() {
@@ -118,9 +130,10 @@ function testH01ShadowRawDrops400LineFields() {
   }
 }
 
-testDataNoPrefersFieldId();
-testDataNoFallsBackToDisplayName();
+testH01PayloadUsesAuthoritativeFields();
+testH01PayloadFallsBackToDisplayKeys();
 testStagingDtoRedactsDataNo();
+testH01ShadowKeyIgnoresDuplicateDataNo();
 testUiHasExplicitDataNoHideList();
 testH01ShadowRawDrops400LineFields();
 console.log('ragic_data_no_visibility_test: PASS');

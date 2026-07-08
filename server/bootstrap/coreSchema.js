@@ -1114,9 +1114,12 @@ END $$;
 -- 只解除重複佔用）再建真正的 UNIQUE，實際的正確值由一次性回填 script 填入。
 DO $$
 BEGIN
-  ALTER TABLE coaches ADD COLUMN IF NOT EXISTS ragic_record_id TEXT;
-  ALTER TABLE coaches ADD COLUMN IF NOT EXISTS ragic_data_no TEXT;
-  ALTER TABLE admin_staff ADD COLUMN IF NOT EXISTS ragic_data_no TEXT;
+	  ALTER TABLE coaches ADD COLUMN IF NOT EXISTS ragic_record_id TEXT;
+	  ALTER TABLE coaches ADD COLUMN IF NOT EXISTS ragic_data_no TEXT;
+	  ALTER TABLE admin_staff ADD COLUMN IF NOT EXISTS ragic_data_no TEXT;
+	  ALTER TABLE admin_staff ADD COLUMN IF NOT EXISTS line_uid TEXT;
+	  DROP INDEX IF EXISTS uq_coaches_ragic_data_no;
+	  DROP INDEX IF EXISTS uq_admin_staff_ragic_data_no;
 
   WITH ranked AS (
     SELECT id, ROW_NUMBER() OVER (
@@ -1158,45 +1161,25 @@ BEGIN
       ON admin_staff(ragic_record_id) WHERE ragic_record_id IS NOT NULL;
   END IF;
 
-  WITH ranked AS (
-    SELECT id, ROW_NUMBER() OVER (
-             PARTITION BY ragic_data_no ORDER BY updated_at DESC
-           ) AS rn
-      FROM coaches
-     WHERE ragic_data_no IS NOT NULL
-  )
-  UPDATE coaches SET ragic_data_no = NULL, updated_at = NOW()
-   WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
+	  WITH ranked AS (
+	    SELECT id, ROW_NUMBER() OVER (
+	             PARTITION BY line_uid ORDER BY updated_at DESC NULLS LAST, id
+	           ) AS rn
+	      FROM admin_staff
+	     WHERE NULLIF(TRIM(line_uid), '') IS NOT NULL
+	  )
+	  UPDATE admin_staff SET line_uid = NULL, last_synced_at = NOW()
+	   WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
 
-  IF EXISTS (
-    SELECT ragic_data_no FROM coaches WHERE ragic_data_no IS NOT NULL
-    GROUP BY ragic_data_no HAVING COUNT(*) > 1
-  ) THEN
-    RAISE WARNING '[coreSchema] coaches.ragic_data_no 去重後仍有重複，略過唯一索引升級（需人工排查）';
-  ELSE
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_coaches_ragic_data_no
-      ON coaches(ragic_data_no) WHERE ragic_data_no IS NOT NULL;
-  END IF;
-
-  WITH ranked AS (
-    SELECT id, ROW_NUMBER() OVER (
-             PARTITION BY ragic_data_no ORDER BY updated_at DESC
-           ) AS rn
-      FROM admin_staff
-     WHERE ragic_data_no IS NOT NULL
-  )
-  UPDATE admin_staff SET ragic_data_no = NULL, last_synced_at = NOW()
-   WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
-
-  IF EXISTS (
-    SELECT ragic_data_no FROM admin_staff WHERE ragic_data_no IS NOT NULL
-    GROUP BY ragic_data_no HAVING COUNT(*) > 1
-  ) THEN
-    RAISE WARNING '[coreSchema] admin_staff.ragic_data_no 去重後仍有重複，略過唯一索引升級（需人工排查）';
-  ELSE
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_admin_staff_ragic_data_no
-      ON admin_staff(ragic_data_no) WHERE ragic_data_no IS NOT NULL;
-  END IF;
+	  IF EXISTS (
+	    SELECT line_uid FROM admin_staff WHERE NULLIF(TRIM(line_uid), '') IS NOT NULL
+	    GROUP BY line_uid HAVING COUNT(*) > 1
+	  ) THEN
+	    RAISE WARNING '[coreSchema] admin_staff.line_uid 去重後仍有重複，略過唯一索引升級（需人工排查）';
+	  ELSE
+	    CREATE UNIQUE INDEX IF NOT EXISTS uq_admin_staff_line_uid
+	      ON admin_staff(line_uid) WHERE NULLIF(TRIM(line_uid), '') IS NOT NULL;
+	  END IF;
 
   -- admin_staff.id 修復後可能因員工編號變更而被 UPDATE（見 _applyStaffChange），
   -- admin_staff_venues 的 FK 預設只处理 ON DELETE，補上 ON UPDATE CASCADE 讓
@@ -1251,11 +1234,11 @@ CREATE INDEX IF NOT EXISTS idx_ragic_z01_shadow_fetched ON ragic_z01_shadow(fetc
 -- H01（員工）/H05（場館）影子表：同一套「無腦 pull → 從 shadow 清洗」分工，補上
 -- 決策9「所有 RAGIC 的同步都用影子表格式」原本沒收斂到的兩個表單（見 ragicAdmin.js
 -- _shadowPullH01Impl/_reconcileH01FromShadowImpl、_shadowPullH05Impl/
--- _reconcileH05FromShadowImpl）。H01 shadow key 優先使用「資料編號」Field 3000934
--- （沒有資料編號才 fallback _ragicId / row index），raw_data 仍保留原始 _ragicId；
+  -- _reconcileH05FromShadowImpl）。H01 shadow key 使用 Ragic Node ID（Field 3000942，
+  -- 目前 API 常 fallback _ragicId）；3000934 資料編號只保留為歷史/除錯資訊；
 -- H05 場館代碼本身穩定，key 直接用代碼即可。
 CREATE TABLE IF NOT EXISTS ragic_h01_shadow (
-  ragic_record_id TEXT PRIMARY KEY, -- shadow key；H01 優先 data:<3000934>，保留欄名以相容既有 DB
+  ragic_record_id TEXT PRIMARY KEY, -- shadow key；H01 使用 node:<3000942|_ragicId>
   ragic_data_no TEXT,
   raw_data JSONB NOT NULL,
   fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

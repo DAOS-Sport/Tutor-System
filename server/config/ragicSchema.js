@@ -117,13 +117,18 @@ const Z02_FIELDS = {
 // H01 員工 / 教練（角色抓取：行政櫃台/主管、教練）
 //   H01 在程式中多以「中文欄位名」直接讀取（在職狀態 / 應徵職務 / 館別…），
 //   並輔以 Field ID fallback。這裡集中定義：
-//     - DATA_NO：H01「資料編號」欄位（Field ID 3000934），staff sync 的業務對齊鍵
+//     - NAME：H01「姓名」欄位（Field ID 3000933），staff sync 的主自然鍵
+//     - NODE_ID：Ragic record/node id（Field ID 3000942；目前 API 仍常只回 _ragicId）
+//     - DATA_NO：H01「資料編號」欄位（Field ID 3000934），僅保留為歷史/除錯資訊
 //     - LINE_UID：員工 / 教練的個人 LINE ID 欄位（= LINE_UID_FIELD.H01）
 //     - LINE_UID_CANDIDATES：凍結 Field ID + 精準中文欄名；不得用模糊搜尋猜 uid。
 //     - VENUE_FIELD_ENV：多場館欄位的 env key（可逗號分隔多 Field ID）
 //     - ROLE_MATCH：角色判斷用的關鍵字
 // ─────────────────────────────────────────────────────────────
 const H01 = {
+  NAME: '3000933',
+  NAME_DISPLAY_KEYS: ['姓名'],
+  NODE_ID: '3000942',
   DATA_NO: '3000934',
   LINE_UID: LINE_UID_FIELD.H01,
   LINE_UID_CANDIDATES: [LINE_UID_FIELD.H01],
@@ -145,7 +150,8 @@ const H01 = {
   },
   // 註（Task #95 政策定案）：H01 為 Ragic 權威、本系統不寫，故無寫回欄位定義。
   // 實機驗證過的 Field ID 對應（讀取/除錯查考用）：3000933=姓名、3001424=手機、
-  // 3000940=電子郵件信箱、3000937=部門（多選，場館名稱陣列）、3000935=員工編號。
+  // 3000940=電子郵件信箱、3000937=部門（多選，場館名稱陣列）、3000935=員工編號、
+  // 3000942=Ragic Node ID（若 listing 未回數字鍵則 fallback _ragicId）。
 };
 
 const H23 = {
