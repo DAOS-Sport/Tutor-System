@@ -39,6 +39,21 @@ const PROMOTIONS = [
     expires_at: '2026-12-31', is_auto_apply: false },
 ];
 
+function cleanVenueValue(value) {
+  if (value == null) return '';
+  if (typeof value === 'string' || typeof value === 'number') return String(value).trim();
+  return String(value.id || value.code || value.name || '').trim();
+}
+
+function venueMatches(values, selectedVenue) {
+  const selectedVenueClean = cleanVenueValue(selectedVenue);
+  if (!selectedVenueClean) return true;
+  return (values || []).some((v) => {
+    const vClean = cleanVenueValue(v);
+    return !!vClean && (vClean === selectedVenueClean || vClean.includes(selectedVenueClean));
+  });
+}
+
 const PARENTS = {
   '0912345678': { id: 'P0001', name: '張媽媽', phone: '0912345678', gender: '女', email: 'mama.chang@example.com',
     primary_venue_id: 'B', students: [
@@ -207,7 +222,9 @@ export const mockDb = {
   venues: () => VENUES.slice(),
   venue: (id) => VENUES.find((v) => v.id === id) || null,
   coaches: ({ venueId } = {}) =>
-    COACHES.filter((c) => !venueId || c.venues.includes(venueId)).map((c) => ({ ...c })),
+    COACHES
+      .filter((c) => venueMatches(c.venues, venueId))
+      .map((c) => ({ ...c, venues: [...c.venues], venue_ids: [...c.venues] })),
   coach: (id) => {
     const c = COACHES.find((x) => x.id === id);
     return c ? { ...c, venue_ids: c.venues } : null;

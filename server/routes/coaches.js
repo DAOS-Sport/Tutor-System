@@ -39,35 +39,104 @@ function withMultiplierAlias(row) {
   return { ...safe, multiplier: pm == null ? 1 : Number(pm) };
 }
 
+function cleanText(value) {
+  return String(value == null ? '' : value).trim();
+}
+
+function cleanTextList(values) {
+  return Array.from(new Set((Array.isArray(values) ? values : [])
+    .map(cleanText)
+    .filter(Boolean)));
+}
+
+function publicCoach(row) {
+  const coach = withMultiplierAlias(row);
+  if (!coach) return coach;
+  const venueIds = cleanTextList(coach.venue_ids || coach.venues || []);
+  return {
+    ...coach,
+    bio: coach.bio || coach.bio_rich_text || '',
+    venue_ids: venueIds,
+    venues: venueIds,
+  };
+}
+
+async function resolveVenueFilterCandidates(value) {
+  const q = cleanText(value);
+  if (!q) return [];
+  const r = await pool.query(
+    `SELECT id
+       FROM venues
+      WHERE TRIM(id) = $1
+         OR TRIM(name) = $1
+         OR TRIM(COALESCE(full_name, '')) = $1
+         OR TRIM(name) ILIKE '%' || $1 || '%'
+         OR TRIM(COALESCE(full_name, '')) ILIKE '%' || $1 || '%'`,
+    [q]
+  );
+  return cleanTextList([q, ...r.rows.map((row) => row.id)]);
+}
+
+const COACH_VENUE_SOURCE_SQL = `
+  SELECT DISTINCT venue_id
+    FROM (
+      SELECT TRIM(cv.venue_id) AS venue_id
+        FROM coach_venues cv
+       WHERE cv.coach_id = c.id
+      UNION
+      SELECT TRIM(sv.venue_id) AS venue_id
+        FROM admin_staff_venues sv
+       WHERE sv.staff_id = c.ragic_employee_id
+      UNION
+      SELECT TRIM(s.venue_id) AS venue_id
+       WHERE s.venue_id IS NOT NULL AND TRIM(s.venue_id) <> ''
+    ) raw_venues
+   WHERE venue_id IS NOT NULL AND venue_id <> ''
+`;
+
 async function loadCoach(id) {
   const r = await pool.query(
     `SELECT c.*, COALESCE(
-       (SELECT json_agg(cv.venue_id) FROM coach_venues cv WHERE cv.coach_id = c.id),
-       '[]'::json
+       (SELECT array_agg(v.venue_id ORDER BY v.venue_id)
+          FROM (${COACH_VENUE_SOURCE_SQL}) v),
+       ARRAY[]::text[]
      ) AS venue_ids
-     FROM coaches c WHERE c.id = $1`,
+     FROM coaches c
+     LEFT JOIN admin_staff s ON s.id = c.ragic_employee_id
+     WHERE c.id = $1`,
     [id]
   );
-  return withMultiplierAlias(r.rows[0]) || null;
+  return publicCoach(r.rows[0]) || null;
 }
 
 router.get('/', async (req, res) => {
-  const { venueId } = req.query;
   try {
-    const r = venueId
-      ? await pool.query(
-          `SELECT c.id, c.name, c.is_senior, c.pricing_multiplier, c.bio_rich_text
-           FROM coaches c
-           JOIN coach_venues cv ON cv.coach_id = c.id
-           WHERE cv.venue_id = $1 AND c.is_active = TRUE
-           ORDER BY c.name`,
-          [venueId]
-        )
-      : await pool.query(
-          `SELECT id, name, is_senior, pricing_multiplier, bio_rich_text
-           FROM coaches WHERE is_active = TRUE ORDER BY name`
-        );
-    res.json(r.rows.map(withMultiplierAlias));
+    const venueIds = await resolveVenueFilterCandidates(req.query.venueId);
+    const params = [];
+    let venueWhere = '';
+    if (venueIds.length) {
+      params.push(venueIds);
+      venueWhere = `AND EXISTS (
+        SELECT 1
+          FROM (${COACH_VENUE_SOURCE_SQL}) match_venues
+         WHERE match_venues.venue_id = ANY($${params.length}::text[])
+      )`;
+    }
+    const r = await pool.query(
+      `SELECT c.id, c.name, c.is_senior, c.pricing_multiplier, c.bio_rich_text,
+              COALESCE(
+                (SELECT array_agg(v.venue_id ORDER BY v.venue_id)
+                   FROM (${COACH_VENUE_SOURCE_SQL}) v),
+                ARRAY[]::text[]
+              ) AS venue_ids
+         FROM coaches c
+         LEFT JOIN admin_staff s ON s.id = c.ragic_employee_id
+        WHERE c.is_active = TRUE
+          ${venueWhere}
+        ORDER BY c.name`,
+      params
+    );
+    res.json(r.rows.map(publicCoach));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
