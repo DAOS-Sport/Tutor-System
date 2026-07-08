@@ -2502,6 +2502,18 @@ async function _reconcileZ01FromShadowImpl() {
 
       try {
         if (isIncomplete) {
+          // 使用者回報修復：admin 已（例如透過「清除 ghost」）主動決定永久排除這筆
+          // Ragic record（見 routes/admin/ragicStatus.js purge-ghosts 寫入
+          // ragic_z03_deleted_tombstones）→ 完全跳過，不進 Z03、不碰本地 parents，
+          // 避免「硬刪除後下次同步又被塞回黑名單」。只影響「尚未達成畢業條件」的
+          // 記錄；若這個人之後自己透過 LIFF 登入/綁定重新畢業（走即時查詢 Ragic，
+          // 不受此表影響），下面 else 分支的正常同步不受任何影響。
+          const tomb = await client.query(
+            `SELECT 1 FROM ragic_z03_deleted_tombstones WHERE z01_ragic_record_id = $1 LIMIT 1`,
+            [ragicRecordId]
+          );
+          if (tomb.rowCount) continue;
+
           // 殘缺/未開通 → 只進 Z03，不建立/更新 parents/students。
           // 若本地同電話 / 同 Ragic record / 同 LINE UID 還留著可登入 UID，先清掉 UID 讓登入回到
           // need_phone_binding；有業務 FK 的列不硬刪，只是不再算「已畢業 Z01 鏡像」。
@@ -3345,6 +3357,15 @@ async function _quarantineBadZ01NamesImpl() {
     if (!isPlaceholderParentName(mapped.name)) continue;
     tier1Count++;
     try {
+      // 使用者回報修復：同 _reconcileZ01FromShadowImpl 的 tombstone 檢查——admin
+      // 已主動決定永久排除這筆 Ragic record（例如 purge-ghosts），就不要因為姓名
+      // 判斷又把他寫回 quarantine「黑名單」。
+      const tomb = await pool.query(
+        `SELECT 1 FROM ragic_z03_deleted_tombstones WHERE z01_ragic_record_id = $1 LIMIT 1`,
+        [String(z01Row._ragicId)]
+      );
+      if (tomb.rowCount) continue;
+
       // 同 _upsertZ03Record 的理由：ON CONFLICT 鍵是 z01_ragic_record_id，Ragic 換發
       // 新 ID 時會留舊列變孤兒。先清掉同電話、不同 ID 的未解決列，已 resolved 的歷史不動。
       if (mapped.phone) {
