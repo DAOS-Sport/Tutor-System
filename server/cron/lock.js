@@ -21,6 +21,10 @@ const HOLDER_ID = `${os.hostname()}-${process.pid}-${BOOT_TS}`;
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
 const MIN_TTL_MS = 10 * 1000; // 即使歷史耗時極短，也給至少 10 秒緩衝，防抖動誤判
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function getHolderId() {
   return HOLDER_ID;
 }
@@ -125,12 +129,27 @@ async function recordSkippedLock(jobName, triggeredBy, currentHolder) {
  * 整個進程掛掉）已經沒有存在必要，故隨這次改動一併移除；job 內部「單筆記錄失敗
  * 不影響其他筆」的 per-record try/catch 不受影響、原樣保留。
  */
-async function runWithLock(jobName, fn, { triggeredBy = 'cron' } = {}) {
-  const lock = await acquireJobLock(jobName, triggeredBy);
+async function runWithLock(jobName, fn, { triggeredBy = 'cron', waitMs = 0, pollMs = 1000 } = {}) {
+  const deadline = waitMs > 0 ? Date.now() + waitMs : 0;
+  let lock = await acquireJobLock(jobName, triggeredBy);
+  let waitLogged = false;
+  const startedWaitingAt = Date.now();
+
+  while (!lock.acquired && deadline > Date.now()) {
+    if (!waitLogged) {
+      console.log(`[cron-lock] waiting job=${jobName} holder=${HOLDER_ID} current_holder=${lock.currentHolder} wait_ms=${waitMs}`);
+      waitLogged = true;
+    }
+    const remaining = Math.max(0, deadline - Date.now());
+    await sleep(Math.min(Math.max(pollMs, 250), remaining));
+    lock = await acquireJobLock(jobName, triggeredBy);
+  }
+
   if (!lock.acquired) {
-    console.log(`[cron-lock] skipped_lock job=${jobName} holder=${HOLDER_ID} current_holder=${lock.currentHolder}`);
+    const waitedMs = Date.now() - startedWaitingAt;
+    console.log(`[cron-lock] skipped_lock job=${jobName} holder=${HOLDER_ID} current_holder=${lock.currentHolder} waited_ms=${waitedMs}`);
     await recordSkippedLock(jobName, triggeredBy, lock.currentHolder);
-    return { status: 'skipped_lock', currentHolder: lock.currentHolder };
+    return { status: 'skipped_lock', currentHolder: lock.currentHolder, waitedMs };
   }
   console.log(`[cron-lock] acquired job=${jobName} holder=${HOLDER_ID} run_id=${lock.runId} triggered_by=${triggeredBy}`);
   const startedAt = Date.now();

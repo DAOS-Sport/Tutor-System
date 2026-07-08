@@ -24,10 +24,6 @@ localPort = 3002
 externalPort = 5000
 
 [[ports]]
-localPort = 3997
-externalPort = 5173
-
-[[ports]]
 localPort = 3998
 externalPort = 3000
 
@@ -72,13 +68,12 @@ args = "Start application"
 name = "Start application"
 author = "agent"
 
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "cd server && PORT=3999 npm start & node ../scripts/port-proxy.js"
-waitForPort = 3999
-
 [workflows.workflow.metadata]
 outputType = "console"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd server && PORT=3999 npm start"
 
 [postMerge]
 path = "scripts/post-merge.sh"

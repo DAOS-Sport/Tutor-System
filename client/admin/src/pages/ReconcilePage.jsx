@@ -11,6 +11,7 @@ import { formatTWD, formatTWDateTime, courseTypeLabel } from '../utils/format';
 import { exportEnrollmentsCsv, exportEnrollmentsXlsx } from '../utils/csvExport';
 import ExportMenu from '../components/ExportMenu';
 import Barcode from '../components/Barcode';
+import ImageLightbox from '../components/ImageLightbox';
 
 const INVOICE_RE = /^[A-Z]{2}\d{8}$/;
 
@@ -85,14 +86,11 @@ function InvoiceModal({ enrollment, canReconcile, onCancel, onDone }) {
           {enrollment.payment_proof_url && (
             <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
               <div className="mb-2 text-xs font-semibold text-gray-600">家長上傳的匯款／轉帳證明</div>
-              <a href={enrollment.payment_proof_url} target="_blank" rel="noreferrer">
-                <img
-                  src={enrollment.payment_proof_url}
-                  alt="匯款證明"
-                  className="max-h-40 rounded-lg border border-gray-200 object-contain"
-                />
-              </a>
-              <div className="mt-1 text-[11px] text-gray-400">點圖可放大檢視</div>
+              <ImageLightbox
+                src={enrollment.payment_proof_url}
+                alt="匯款證明"
+                label="匯款／轉帳證明"
+              />
             </div>
           )}
 

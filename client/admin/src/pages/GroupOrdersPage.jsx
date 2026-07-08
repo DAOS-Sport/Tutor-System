@@ -3,6 +3,7 @@ import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
 import { groupOrdersApi } from '../api/groupOrders';
+import ImageLightbox from '../components/ImageLightbox';
 
 const courseLabel = (ct) => ({ 1: '一對一', 2: '一對二', 3: '一對三' }[ct] || `一對${ct}`);
 const STATUS = {
@@ -199,8 +200,15 @@ export default function GroupOrdersPage() {
                         </span>
                       </div>
                       {m.payment_proof_url ? (
-                        <a href={m.payment_proof_url} target="_blank" rel="noreferrer"
-                          className="mt-1 inline-block text-xs font-bold text-brand-teal underline">查看匯款證明</a>
+                        <div className="mt-2 flex items-center gap-2">
+                          <ImageLightbox
+                            src={m.payment_proof_url}
+                            alt={`${m.parent_name || '成員'} 匯款證明`}
+                            label={`${m.parent_name || '成員'} 匯款證明`}
+                            thumbnailClassName="h-14 w-14"
+                          />
+                          <span className="text-xs font-bold text-slate-600">匯款證明</span>
+                        </div>
                       ) : (
                         <div className="mt-1 text-xs text-red-500">缺匯款證明</div>
                       )}

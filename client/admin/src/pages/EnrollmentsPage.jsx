@@ -14,6 +14,7 @@ import { exportEnrollmentsCsv, exportEnrollmentsXlsx } from '../utils/csvExport'
 import { useToast } from '../context/ToastContext';
 import ExportMenu from '../components/ExportMenu';
 import EditEnrollmentModal from './enrollments/EditEnrollmentModal';
+import ImageLightbox from '../components/ImageLightbox';
 
 const STATUS_OPTIONS = [
   { value: '',                 label: '全部狀態' },
@@ -150,6 +151,17 @@ export default function EnrollmentsPage() {
               </div>
             )}
 
+            {detail.payment_proof_url && (
+              <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <div className="mb-3 text-sm font-bold text-slate-700">匯款／轉帳證明</div>
+                <ImageLightbox
+                  src={detail.payment_proof_url}
+                  alt="匯款證明"
+                  label="匯款／轉帳證明"
+                />
+              </div>
+            )}
+
             {detail.invoice_number && (
               <div className="mt-4 rounded-xl border border-teal-200 bg-teal-50 p-4">
                 <div className="mb-3 text-sm font-bold text-teal-700">🧾 發票資訊</div>
@@ -174,9 +186,11 @@ export default function EnrollmentsPage() {
                     <div className="col-span-2">
                       <dt className="mb-1 text-gray-500">發票照片</dt>
                       <dd>
-                        <a href={detail.invoice_image_url} target="_blank" rel="noreferrer">
-                          <img src={detail.invoice_image_url} alt="發票" className="max-h-40 rounded-lg border border-teal-200 object-contain" />
-                        </a>
+                        <ImageLightbox
+                          src={detail.invoice_image_url}
+                          alt="發票"
+                          label="發票照片"
+                        />
                       </dd>
                     </div>
                   )}
