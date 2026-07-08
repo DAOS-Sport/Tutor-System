@@ -502,11 +502,6 @@ export default function StaffPage() {
           </button>
         );
       } },
-    { key: 'is_lifeguard', label: '救生員', className: 'text-center',
-      render: (r) => {
-        if (!r.is_lifeguard) return <span className="text-gray-300 text-xs">無</span>;
-        return <StatusBadge tone="amber">救生員</StatusBadge>;
-      } },
     { key: 'active', label: '狀態',
       render: (r) => {
         const busyRow = togglingId === r.id;
@@ -553,7 +548,7 @@ export default function StaffPage() {
     { key: 'role', label: '角色', type: 'select', options: [
         { value: '', label: '全部' }, { value: 'admin', label: '系統管理員' },
         { value: 'manager', label: '主管' }, { value: 'staff', label: '行政櫃檯' },
-        { value: 'coach', label: '教練' }, { value: 'lifeguard', label: '救生員' }] },
+        { value: 'coach', label: '教練' }] },
     { key: 'phone', label: '電話', type: 'input', placeholder: '末 4 碼或全號' },
     { key: 'senior', label: '資深', type: 'radio', options: [
         { value: '', label: '不限' }, { value: 'yes', label: '是' }, { value: 'no', label: '否' }] },

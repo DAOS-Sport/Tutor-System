@@ -306,7 +306,6 @@ function rowToStaff(r) {
     is_coach: isCoachFlag,
     is_counter: isCounterFlag,
     is_lifeguard: isLifeguardFlag,
-    lifeguard_active: isLifeguardFlag,
     coach_id: r.coach_id || null,
     coach_active: hasCoachProfile ? !!r.coach_active : false,
     // Task #91：合併教練設定後，列表也回傳教練欄位摘要供前端表格／搜尋使用

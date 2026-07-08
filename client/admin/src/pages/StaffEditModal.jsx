@@ -189,23 +189,6 @@ function CoachProfileSection({ editing, setEditing, multiplierMin, multiplierMax
   );
 }
 
-function LifeguardProfileSection({ editing }) {
-  return (
-    <div className="space-y-3 rounded-xl border border-amber-300/40 bg-amber-50 p-4">
-      <div className="flex items-center justify-between">
-        <h4 className="text-sm font-bold text-amber-800">救生員身分</h4>
-        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800"
-              title="是否為救生員由 Ragic 應徵職務欄位判定，此處唯讀">
-          Ragic 判定：{editing.is_lifeguard ? '是' : '否'}
-        </span>
-      </div>
-      <p className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
-        救生員身分只由 Ragic 應徵職務判定，後台不另外設定啟用或停用。
-      </p>
-    </div>
-  );
-}
-
 function SpecialtyChipsField({ value, onChange }) {
   const [draft, setDraft] = React.useState('');
   function commit(text) {
@@ -385,7 +368,7 @@ export default function StaffEditModal({ editing, setEditing, venues, busy, onSa
               )}
             </div>
 
-            {/* 右欄：教練設定 + 救生員設定 */}
+            {/* 右欄：教練設定 */}
             <div className="space-y-4">
               {showCoachPane ? (
                 <CoachProfileSection
@@ -400,9 +383,6 @@ export default function StaffEditModal({ editing, setEditing, venues, busy, onSa
                     角色選擇「教練」<br/>或勾選「啟用教練 LIFF 身分」<br/>後此處會出現教練專屬欄位<br/>（簡介、修課係數、Email、介紹圖等）。
                   </p>
                 </div>
-              )}
-              {editing.is_lifeguard && (
-                <LifeguardProfileSection editing={editing} />
               )}
             </div>
           </div>
