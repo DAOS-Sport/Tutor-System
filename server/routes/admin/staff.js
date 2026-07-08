@@ -278,7 +278,7 @@ function rowToStaff(r) {
   const isCounterFlag = !!r.is_counter;
   const isCoachFlag = !!r.is_coach;
   const isLifeguardFlag = !!r.is_lifeguard;
-  const includeImpliedRole = isCounterFlag || (!isCoachFlag && !isLifeguardFlag);
+  const includeImpliedRole = ['admin', 'manager'].includes(r.role) || isCounterFlag || (!isCoachFlag && !isLifeguardFlag);
   const knownRoles = Array.from(new Set([
     ...(includeImpliedRole ? [r.role] : []),
     ...(hasCoachProfile ? ['coach'] : []),
@@ -721,14 +721,29 @@ router.get('/coaches',
       }
       if (venueId) {
         params.push(venueId);
-        where.push(`EXISTS (SELECT 1 FROM coach_venues cv WHERE cv.coach_id = c.id AND cv.venue_id = $${params.length})`);
+        where.push(`(
+          EXISTS (SELECT 1 FROM coach_venues cv WHERE cv.coach_id = c.id AND cv.venue_id = $${params.length})
+          OR EXISTS (SELECT 1 FROM admin_staff_venues sv WHERE sv.staff_id = s.id AND sv.venue_id = $${params.length})
+          OR s.venue_id = $${params.length}
+        )`);
       }
       const sql = `
         SELECT c.id, c.ragic_employee_id, c.name, c.phone,
                c.is_senior, c.pricing_multiplier, c.is_active,
                COALESCE(
-                 (SELECT array_agg(cv.venue_id ORDER BY cv.venue_id)
-                    FROM coach_venues cv WHERE cv.coach_id = c.id),
+                 (SELECT array_agg(v.venue_id ORDER BY v.venue_id)
+                    FROM (
+                      SELECT cv.venue_id
+                        FROM coach_venues cv
+                       WHERE cv.coach_id = c.id
+                      UNION
+                      SELECT sv.venue_id
+                        FROM admin_staff_venues sv
+                       WHERE sv.staff_id = s.id
+                      UNION
+                      SELECT s.venue_id AS venue_id
+                       WHERE s.venue_id IS NOT NULL AND s.venue_id <> ''
+                    ) v),
                  ARRAY[]::text[]
                ) AS venue_ids
           FROM admin_staff s

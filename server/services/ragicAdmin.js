@@ -10,7 +10,8 @@
  * - 沒設定 RAGIC_API_KEY / RAGIC_BASE_URL → noop（dev 環境正常）
  * - Ragic 失敗一律 swallow + warn，不阻擋使用者操作
  * - 系統內部欄位（role / multiplier / is_senior / specialties / bio_rich_text /
- *   line_token / 銀行帳戶）不被 Ragic 覆蓋
+ *   line_token / 銀行帳戶）原則上不被 Ragic 覆蓋；H01 文字明確命中「管理員」時，
+ *   只允許單向升級為 admin，不做降級覆蓋。
  * - is_active：H01「離職」→ active=false，並停用對應 admin_users login；
  *   後台手動翻轉 active 後會記錄 `active_overridden_at`，下一輪同步不再覆蓋。
  *
@@ -441,10 +442,11 @@ function _staffPayloadFromRagicRow(r, resolveVenues) {
   const role = r?.['應徵職務'];
   const roleStr = Array.isArray(role) ? role.join(',') : (role || '');
   const roleText = `${roleStr},${r?.['職稱'] || ''}`;
+  const isAdmin = H01.ROLE_MATCH.ADMIN.test(roleText);
   const isCoach = roleText.includes(H01.ROLE_MATCH.COACH);
   const isCounter = H01.ROLE_MATCH.COUNTER.test(roleText);
   const isLifeguard = H01.ROLE_MATCH.LIFEGUARD.test(roleText);
-  const roleVal = isCounter ? 'staff' : (isCoach ? 'coach' : 'staff');
+  const roleVal = isAdmin ? 'admin' : (isCounter ? 'staff' : (isCoach ? 'coach' : 'staff'));
   return {
     id,
     name,
@@ -1034,6 +1036,7 @@ async function _reconcileH01FromShadowImpl() {
       const role = r['應徵職務'];
       const roleStr = Array.isArray(role) ? role.join(',') : (role || '');
       const roleText = `${roleStr},${r['職稱'] || ''}`;
+      const isAdmin = H01.ROLE_MATCH.ADMIN.test(roleText);
       const isCoach = roleText.includes(H01.ROLE_MATCH.COACH);
       const isCounter = H01.ROLE_MATCH.COUNTER.test(roleText);
       const isLifeguard = H01.ROLE_MATCH.LIFEGUARD.test(roleText);
@@ -1041,7 +1044,7 @@ async function _reconcileH01FromShadowImpl() {
       // DB enum 欄位的三元運算式吃掉任一個信號——roleVal 僅作為 admin_staff.role 這個
       // CHECK constraint 欄位的保底值（fallback），三個真正的身份判斷改走各自獨立的
       // is_coach / is_counter / is_lifeguard（見下方 payload），互不覆蓋。
-      const roleVal = isCounter ? 'staff' : (isCoach ? 'coach' : 'staff');
+      const roleVal = isAdmin ? 'admin' : (isCounter ? 'staff' : (isCoach ? 'coach' : 'staff'));
       const isActive = (r['在職狀態'] || r['3000945']) === '在職';
       // Task #90：解析 Ragic H01 多場館欄位（主場館 + 支援場館），合併為陣列
       // Task #95：立即 resolve 成 venue 代碼再比對 / 入 payload（見上方註解）
@@ -1124,7 +1127,12 @@ async function _reconcileH01FromShadowImpl() {
       if (_normalizeStaffId(cur.id) !== id) diff.id = { from: cur.id, to: id };
       if ((cur.name || '') !== name) diff.name = { from: cur.name || '', to: name };
       if ((cur.phone || '') !== phone) diff.phone = { from: cur.phone || '', to: phone };
-      // role 為系統內部欄位（admin 可改 staff/coach/manager）— 不從 Ragic 同步
+      // role 為系統內部欄位（admin 可改 staff/coach/manager）— 原則上不從 Ragic 同步。
+      // 唯一例外：H01 應徵職務/職稱明確命中「管理員」時，單向升級為 admin；
+      // 不做反向降級，避免把後台手動指派洗掉。
+      if (isAdmin && cur.role !== 'admin') {
+        diff.role = { from: cur.role || 'staff', to: 'admin' };
+      }
       // email：apply 端只在 DB 空值時補（保留後台手動編輯）→ diff 也只在「DB 空 + Ragic 有值」
       // 才 stage（Task #95：先前「值不同就 diff」會讓 admin 自填信箱後，同一筆差異每輪重現、
       // approve 又套不進去（fill-empty-only），待審區永遠清不掉）
@@ -1537,6 +1545,7 @@ async function _applyStaffChange(row, client) {
     await client.query(
 	      `UPDATE admin_staff SET
 	         id = $1, name = $2, phone = $3,
+	         role = CASE WHEN $11::text = 'admin' THEN 'admin' ELSE role END,
 	         active = CASE WHEN active_overridden_at IS NULL THEN $4 ELSE active END,
          -- A0/A0.5/救生員：is_coach / is_counter / is_lifeguard 皆為 Ragic 來源、唯讀信號
          -- （比照 role 的性質，但各自獨立追蹤、不互相覆蓋），每次 apply 一律以 Ragic 這次
@@ -1549,7 +1558,7 @@ async function _applyStaffChange(row, client) {
 	         last_synced_at = NOW()
 	       WHERE id = $10`,
 	      [staffId, p.name || '', p.phone || '', !!p.is_active,
-	       !!p.is_coach, !!p.is_counter, !!p.is_lifeguard, ragicRecordId, incomingLineUid, existingStaffId]
+	       !!p.is_coach, !!p.is_counter, !!p.is_lifeguard, ragicRecordId, incomingLineUid, existingStaffId, p.role || '']
 	    );
 	  } else {
 	    await client.query(
@@ -1560,6 +1569,14 @@ async function _applyStaffChange(row, client) {
 	       !!p.is_coach, !!p.is_counter, !!p.is_lifeguard, ragicRecordId, incomingLineUid]
 	    );
 	  }
+  if (p.role === 'admin') {
+    await client.query(
+      `UPDATE admin_users
+          SET role = 'admin', updated_at = NOW()
+        WHERE staff_id = $1 OR staff_id = $2`,
+      [staffId, existingStaffId || staffId]
+    );
+  }
   if (p.is_active === false && p.name) {
     await client.query(
       `UPDATE admin_users SET is_active = FALSE
@@ -1970,15 +1987,24 @@ async function mergeStagedStaffChange(stagingId, targetEntityId, byUserId) {
 	    await client.query(
 	      `UPDATE admin_staff SET
 	         id = $1, name = $2, phone = $3,
+	         role = CASE WHEN $10::text = 'admin' THEN 'admin' ELSE role END,
 	         active = CASE WHEN active_overridden_at IS NULL THEN $4 ELSE active END,
 	         is_coach = $5, is_counter = $6, is_lifeguard = $7,
 	         ragic_record_id = COALESCE($8, ragic_record_id),
 	         line_uid = CASE WHEN NULLIF($9, '') IS NOT NULL THEN NULLIF($9, '') ELSE line_uid END,
 	         last_synced_at = NOW()
-	       WHERE id = $10`,
+	       WHERE id = $11`,
 	      [newId, p.name || '', p.phone || '', !!p.is_active,
-	       !!p.is_coach, !!p.is_counter, !!p.is_lifeguard, ragicRecordId, incomingLineUid, targetEntityId]
+	       !!p.is_coach, !!p.is_counter, !!p.is_lifeguard, ragicRecordId, incomingLineUid, p.role || '', targetEntityId]
 	    );
+    if (p.role === 'admin') {
+      await client.query(
+        `UPDATE admin_users
+            SET role = 'admin', updated_at = NOW()
+          WHERE staff_id = $1 OR staff_id = $2`,
+        [newId, targetEntityId]
+      );
+    }
     // admin_staff_venues.staff_id 已透過 ON UPDATE CASCADE 連動改成 newId，不需要另外處理。
     const coach = await client.query(`SELECT id FROM coaches WHERE ragic_employee_id = $1`, [targetEntityId]);
 	    if (coach.rowCount) {

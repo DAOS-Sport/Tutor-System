@@ -17,8 +17,8 @@
  *     程式不改、不重 build（見下方各欄位的 env fallback）。
  *
  * 對應的角色抓取（roles）：
- *   - 行政端 櫃台(staff)/主管(manager)：來源 H01（在職員工，應徵職務含「行政櫃台/櫃檯」→ staff；
- *     主管 manager 由後台手動指派，不從 Ragic 同步）。
+ *   - 行政端 管理員(admin)/櫃台(staff)/主管(manager)：來源 H01（在職員工，應徵職務含
+ *     「管理員」→ admin；含「行政櫃台/櫃檯」→ staff；主管 manager 由後台手動指派，不從 Ragic 同步）。
  *   - 教練(coach)：來源 H01（應徵職務含「教練」）+ 個人 LINE ID 欄位綁定。
  *   - 客人/家長(parent)：來源 Z01（家教系統 uid 綁定 LINE userId）。
  */
@@ -141,6 +141,7 @@ const H01 = {
   VENUE_NAME_KEYS: ['主場館', '主要場館', '支援場館', '服務場館', '場館', '館別', '部門'],
   // 角色關鍵字（roleText = 應徵職務 + 職稱 的字串化）
   ROLE_MATCH: {
+    ADMIN: /系統管理員|管理員|admin/i,
     COACH: '教練',
     COUNTER: /櫃檯|櫃台|行政|counter|front\s*desk/i,
     // 救生員（Workstream A）：與 COACH/COUNTER 同層獨立比對，非互斥判斷——

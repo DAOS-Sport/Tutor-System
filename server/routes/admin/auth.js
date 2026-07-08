@@ -27,6 +27,21 @@ function _rateLimited(ip) {
   return arr.length > MAX_ATTEMPTS;
 }
 
+const STAFF_BACKOFFICE_ROLES = new Set(['admin', 'manager', 'staff']);
+const STAFF_BACKOFFICE_ROLE_RANK = { staff: 1, manager: 2, admin: 3 };
+function _staffBackofficeRole(value) {
+  const role = String(value || '').trim();
+  return STAFF_BACKOFFICE_ROLES.has(role) ? role : null;
+}
+
+function _effectiveLoginUser(u) {
+  const staffRole = _staffBackofficeRole(u?.staff_role);
+  const currentRole = _staffBackofficeRole(u?.role);
+  if (!staffRole || staffRole === u.role) return u;
+  if (currentRole && STAFF_BACKOFFICE_ROLE_RANK[staffRole] <= STAFF_BACKOFFICE_ROLE_RANK[currentRole]) return u;
+  return { ...u, role: staffRole };
+}
+
 function _loginPayload(u, password, token) {
   const venueIds = Array.isArray(u.venue_ids) ? u.venue_ids.filter(Boolean) : [];
   const primaryVenue = u.venue_id || venueIds[0] || null;
@@ -52,18 +67,26 @@ function _loginPayload(u, password, token) {
 }
 
 async function _issueLogin(u, password) {
-  const venueIds = Array.isArray(u.venue_ids) ? u.venue_ids.filter(Boolean) : [];
-  const primaryVenue = u.venue_id || venueIds[0] || null;
+  const loginUser = _effectiveLoginUser(u);
+  const venueIds = Array.isArray(loginUser.venue_ids) ? loginUser.venue_ids.filter(Boolean) : [];
+  const primaryVenue = loginUser.venue_id || venueIds[0] || null;
   const token = signToken({
-    sub: u.id,
-    username: u.username,
-    name: u.name,
-    role: u.role,
+    sub: loginUser.id,
+    username: loginUser.username,
+    name: loginUser.name,
+    role: loginUser.role,
     venue_id: primaryVenue,       // Task #90：相容欄位（= venue_ids[0]）
     venue_ids: venueIds,          // Task #90：多場館
   });
-  await pool.query(`UPDATE admin_users SET updated_at = NOW() WHERE id = $1`, [u.id]);
-  return _loginPayload(u, password, token);
+  if (loginUser.role !== u.role) {
+    await pool.query(
+      `UPDATE admin_users SET role = $2, updated_at = NOW() WHERE id = $1`,
+      [loginUser.id, loginUser.role]
+    );
+  } else {
+    await pool.query(`UPDATE admin_users SET updated_at = NOW() WHERE id = $1`, [loginUser.id]);
+  }
+  return _loginPayload(loginUser, password, token);
 }
 
 async function _counterStaffDefaultLogin(username, password) {
@@ -85,7 +108,7 @@ async function _counterStaffDefaultLogin(username, password) {
       WHERE UPPER(TRIM(s.id)) = $1
         AND TRIM(COALESCE(s.phone, '')) = $2
         AND s.active = TRUE
-        AND (s.role = 'staff' OR COALESCE(s.is_counter, FALSE) = TRUE)
+        AND (s.role IN ('admin','manager','staff') OR COALESCE(s.is_counter, FALSE) = TRUE)
       LIMIT 1`,
     [staffId, phone]
   );
@@ -104,25 +127,26 @@ async function _counterStaffDefaultLogin(username, password) {
   }
 
   const userId = staff.login_user_id || `U_${staff.id}`;
+  const loginRole = _staffBackofficeRole(staff.role) || 'staff';
   const hash = await bcrypt.hash(phone, 10);
   const upsert = await pool.query(
     `INSERT INTO admin_users
        (id, username, password_hash, name, role, venue_id, is_active, staff_id, credentials_changed_at)
-     VALUES ($1, $2, $3, $4, 'staff', $5, TRUE, $6, NULL)
+     VALUES ($1, $2, $3, $4, $7, $5, TRUE, $6, NULL)
      ON CONFLICT (id) DO UPDATE SET
        username = EXCLUDED.username,
        password_hash = EXCLUDED.password_hash,
        name = EXCLUDED.name,
-       role = 'staff',
+       role = EXCLUDED.role,
        venue_id = EXCLUDED.venue_id,
        is_active = TRUE,
        staff_id = EXCLUDED.staff_id,
        credentials_changed_at = NULL,
        updated_at = NOW()
      RETURNING id, username, password_hash, name, role, venue_id, is_active,
-               staff_id, $7::text AS staff_phone, NULL::timestamptz AS credentials_changed_at,
-               $8::text[] AS venue_ids`,
-    [userId, staff.id, hash, staff.name, staff.venue_id || null, staff.id, phone, staff.venue_ids || []]
+               staff_id, $8::text AS staff_phone, NULL::timestamptz AS credentials_changed_at,
+               $9::text[] AS venue_ids`,
+    [userId, staff.id, hash, staff.name, staff.venue_id || null, staff.id, loginRole, phone, staff.venue_ids || []]
   );
   return upsert.rows[0] || null;
 }
@@ -140,7 +164,7 @@ router.post('/login', async (req, res) => {
     }
     const r = await pool.query(
       `SELECT u.id, u.username, u.password_hash, u.name, u.role, u.venue_id, u.is_active,
-              u.staff_id, s.phone AS staff_phone, u.credentials_changed_at,
+              u.staff_id, s.phone AS staff_phone, s.role AS staff_role, u.credentials_changed_at,
               COALESCE(
                 (SELECT array_agg(sv.venue_id ORDER BY sv.venue_id)
                    FROM admin_staff_venues sv WHERE sv.staff_id = u.staff_id),
