@@ -29,8 +29,7 @@ export default function ChangePasswordModal({ open, onClose, initialUsername = '
   const cleanUsername = username.trim();
   const usernameChanged = cleanUsername && cleanUsername !== String(initialUsername || '').trim();
   const usernameOk = !cleanUsername || USERNAME_RE.test(cleanUsername);
-  const usernameReady = !requireCredentialChange || usernameChanged;
-  const canSubmit = oldPwd && lenOk && matchOk && newPwd !== oldPwd && usernameOk && usernameReady && !busy;
+  const canSubmit = oldPwd && lenOk && matchOk && newPwd !== oldPwd && usernameOk && !busy;
 
   async function submit() {
     if (!canSubmit) return;
@@ -61,7 +60,7 @@ export default function ChangePasswordModal({ open, onClose, initialUsername = '
       <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
         <h3 className="mb-1 text-lg font-bold text-brand-primary">修改帳號密碼</h3>
         <p className="mb-4 text-xs text-gray-500">
-          {requireCredentialChange ? '目前仍使用預設帳密，請改成自己的帳號與密碼。' : '可更新登入帳號，並輸入舊密碼與新密碼。'}
+          {requireCredentialChange ? '目前仍使用預設帳密，建議改成自己的帳號與密碼；可先略過，不影響後台使用。' : '可更新登入帳號，並輸入舊密碼與新密碼。'}
         </p>
 
         <div className="space-y-3">
@@ -74,7 +73,7 @@ export default function ChangePasswordModal({ open, onClose, initialUsername = '
               <span className="mt-1 block text-xs text-brand-error">帳號需為 2–40 碼，可使用英文、數字、._@-</span>
             )}
             {requireCredentialChange && !usernameChanged && (
-              <span className="mt-1 block text-xs text-brand-error">請改成非預設的新帳號</span>
+              <span className="mt-1 block text-xs text-gray-400">可沿用員工編號；若要改帳號，請在此輸入新帳號。</span>
             )}
           </label>
           <label className="block">

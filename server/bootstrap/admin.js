@@ -32,7 +32,6 @@ function relDays(days, hh = 9, mm = 0) {
  */
 const DEFAULT_USERS = [
   { id: 'U001', username: 'admin',   password: 'admin',   name: '系統管理員', role: 'admin',   venue_id: null },
-  { id: 'U002', username: 'manager', password: 'manager', name: '王主管',     role: 'manager', venue_id: 'B' },
   { id: 'U003', username: 'staff',   password: 'staff',   name: '小林櫃檯',   role: 'staff',   venue_id: 'B' },
 ];
 
@@ -384,13 +383,13 @@ async function seedIfEmpty() {
     if (IS_PROD && !bootstrapPwd) {
       console.warn(
         '[admin bootstrap] SKIPPED admin_users seed in production: ' +
-        '請在 Replit Secrets 設定 ADMIN_BOOTSTRAP_PASSWORD（將會套用到 admin/manager/staff 三個 seed 帳號）後再重新啟動。' +
+        '請在 Replit Secrets 設定 ADMIN_BOOTSTRAP_PASSWORD（將會套用到 admin/staff 兩個 seed 帳號）後再重新啟動。' +
         '若已透過其他方式建立第一個 admin 帳號，可忽略此警告。'
       );
     } else {
       // Task #68：ADMIN_BOOTSTRAP_PASSWORD 只在 production 套用，避免 dev DB 被
       // 強密碼覆寫造成「admin/admin 進不去」的混淆。dev 永遠用 DEFAULT_USERS 內的
-      // 弱密碼（admin/manager/staff = 帳號）方便開發 / 自動化測試。
+      // 弱密碼（admin/staff = 帳號）方便開發 / 自動化測試。
       const useEnvPwd = IS_PROD && !!bootstrapPwd;
       for (const x of DEFAULT_USERS) {
         const pwd = useEnvPwd ? bootstrapPwd : x.password;
@@ -402,9 +401,9 @@ async function seedIfEmpty() {
         );
       }
       if (useEnvPwd) {
-        console.log('[admin bootstrap] seeded admin_users (3 accounts, password = ADMIN_BOOTSTRAP_PASSWORD)');
+        console.log('[admin bootstrap] seeded admin_users (2 accounts, password = ADMIN_BOOTSTRAP_PASSWORD)');
       } else {
-        console.log('[admin bootstrap] seeded admin_users (3 dev accounts: admin/manager/staff with weak passwords — NODE_ENV != production)');
+        console.log('[admin bootstrap] seeded admin_users (2 dev accounts: admin/staff with weak passwords — NODE_ENV != production)');
       }
     }
   }

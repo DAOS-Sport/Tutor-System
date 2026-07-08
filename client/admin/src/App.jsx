@@ -38,7 +38,7 @@ import CustomerParentsPage from './pages/CustomerParentsPage';
 import CustomerStudentsPage from './pages/CustomerStudentsPage';
 import MockBanner from './components/MockBanner';
 
-const ALL = ['admin', 'manager', 'staff'];
+const ALL = ['admin', 'staff'];
 
 export default function App() {
   return (

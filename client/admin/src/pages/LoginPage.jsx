@@ -79,7 +79,7 @@ export default function LoginPage() {
               className="w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:border-brand-teal"
               value={form.username}
               onChange={(e) => setForm({ ...form, username: e.target.value.trim() })}
-              placeholder={USE_MOCK ? 'admin / manager / staff' : '櫃台請輸入員工編號'}
+              placeholder={USE_MOCK ? 'admin / staff' : '請輸入員工編號'}
             />
           </div>
           <div>
@@ -90,7 +90,7 @@ export default function LoginPage() {
               className="w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:border-brand-teal"
               value={form.password}
               onChange={(e) => setForm({ ...form, password: e.target.value })}
-              placeholder={USE_MOCK ? '與帳號相同' : '櫃台請輸入電話號碼'}
+              placeholder={USE_MOCK ? '與帳號相同' : '請輸入電話號碼'}
             />
           </div>
           <button
@@ -107,13 +107,12 @@ export default function LoginPage() {
             <div className="mb-1 font-bold text-gray-700">Mock 測試帳號（密碼=帳號）</div>
             <ul className="list-disc pl-5">
               <li><b>admin</b> — 系統管理員（看得到全部功能）</li>
-              <li><b>manager</b> — 場館主管（板橋館，無系統設定）</li>
               <li><b>staff</b> — 行政櫃檯（板橋館，無退課/系統設定）</li>
             </ul>
           </div>
         ) : (
           <div className="mt-6 rounded-lg bg-gray-50 p-3 text-xs text-gray-500">
-            <div>櫃台首次登入請使用員工編號與電話號碼；如忘記密碼，請聯絡系統管理員重設。</div>
+            <div>後台登入限系統管理員與行政櫃檯；預設帳號為員工編號，預設密碼為電話號碼。</div>
             <div className="mt-1 text-[11px] text-gray-400">
               首次部署的初始密碼由 <code>ADMIN_BOOTSTRAP_PASSWORD</code> 決定（非 <code>admin</code>）。
             </div>

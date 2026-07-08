@@ -8,7 +8,6 @@ const todayISO = () => {
 
 const USERS = [
   { id: 'U001', username: 'admin',   password: 'admin',   name: '系統管理員',  role: 'admin',   venue_id: null },
-  { id: 'U002', username: 'manager', password: 'manager', name: '王主管',      role: 'manager', venue_id: 'B' },
   { id: 'U003', username: 'staff',   password: 'staff',   name: '小林櫃檯',    role: 'staff',   venue_id: 'B' },
   { id: 'U_S001', username: 'S001',  password: '0933000001', name: '小林櫃檯', role: 'staff',   venue_id: 'B', staff_id: 'S001', must_change_credentials: true },
 ];
@@ -565,6 +564,7 @@ export const mockDb = {
 
   login(username, password) {
     const u = USERS.find((x) => x.username === username && x.password === password);
+    if (u && !['admin', 'staff'].includes(u.role)) return null;
     return u ? {
       id: u.id,
       username: u.username,

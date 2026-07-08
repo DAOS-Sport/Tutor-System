@@ -31,19 +31,25 @@ function _rateLimited(ip) {
   return arr.length > MAX_ATTEMPTS;
 }
 
-const STAFF_BACKOFFICE_ROLES = new Set(['admin', 'manager', 'staff']);
-const STAFF_BACKOFFICE_ROLE_RANK = { staff: 1, manager: 2, admin: 3 };
+const STAFF_BACKOFFICE_ROLES = new Set(['admin', 'staff']);
 function _staffBackofficeRole(value) {
   const role = String(value || '').trim();
   return STAFF_BACKOFFICE_ROLES.has(role) ? role : null;
 }
 
 function _effectiveLoginUser(u) {
-  const staffRole = _staffBackofficeRole(u?.staff_role);
-  const currentRole = _staffBackofficeRole(u?.role);
-  if (!staffRole || staffRole === u.role) return u;
-  if (currentRole && STAFF_BACKOFFICE_ROLE_RANK[staffRole] <= STAFF_BACKOFFICE_ROLE_RANK[currentRole]) return u;
-  return { ...u, role: staffRole };
+  if (!u) return null;
+  const staffId = String(u.staff_id || '').trim();
+  const staffRole = String(u.staff_role || '').trim();
+  const currentRole = _staffBackofficeRole(u.role);
+  if (staffId) {
+    if (staffRole === 'admin' || currentRole === 'admin') return { ...u, role: 'admin' };
+    if (u.is_counter || (staffRole === 'staff' && !u.is_coach && !u.is_lifeguard)) {
+      return { ...u, role: 'staff' };
+    }
+    return null;
+  }
+  return currentRole ? { ...u, role: currentRole } : null;
 }
 
 function _loginPayload(u, password, token) {
@@ -53,9 +59,8 @@ function _loginPayload(u, password, token) {
   const staffPhone = String(u.staff_phone || '').trim();
   const defaultUsername = !!staffId && String(u.username || '').trim() === staffId;
   const defaultPassword = !!staffPhone && String(password || '') === staffPhone;
-  // 櫃檯端（role='staff'）固定用員工編號＋手機號碼登入，不強制要求更換密碼；
-  // 僅 admin / manager 帳號仍會被要求把預設帳密改掉。
-  const mustChangeCredentials = !!staffId && u.role !== 'staff'
+  // 預設帳密只提醒，不阻擋登入：前端會跳出可關閉的個人設定視窗。
+  const mustChangeCredentials = !!staffId
     && !u.credentials_changed_at && (defaultUsername || defaultPassword);
   return {
     id: u.id,
@@ -72,6 +77,7 @@ function _loginPayload(u, password, token) {
 
 async function _issueLogin(u, password) {
   const loginUser = _effectiveLoginUser(u);
+  if (!loginUser) return null;
   const venueIds = cleanVenueList(loginUser.venue_ids);
   const primaryVenue = venueIds[0] || loginUser.venue_id || null;
   const token = signToken({
@@ -99,15 +105,23 @@ async function _counterStaffDefaultLogin(username, password) {
   if (!staffId || !phone) return null;
 
   const r = await pool.query(
-    `SELECT s.id, s.name, s.phone, s.venue_id, s.active, s.role, s.is_counter,
-            u.id AS login_user_id, u.credentials_changed_at,
+    `SELECT s.id, s.name, s.phone, s.venue_id, s.active, s.role,
+            s.is_counter, s.is_coach, s.is_lifeguard,
+            u.id AS login_user_id, u.role AS user_role, u.credentials_changed_at,
             ${ADMIN_USER_VENUE_IDS_SELECT} AS venue_ids
        FROM admin_staff s
        LEFT JOIN admin_users u ON u.staff_id = s.id
       WHERE UPPER(TRIM(s.id)) = $1
         AND TRIM(COALESCE(s.phone, '')) = $2
         AND s.active = TRUE
-        AND (s.role IN ('admin','manager','staff') OR COALESCE(s.is_counter, FALSE) = TRUE)
+        AND (
+          s.role = 'admin'
+          OR u.role = 'admin'
+          OR COALESCE(s.is_counter, FALSE) = TRUE
+          OR (s.role = 'staff'
+              AND COALESCE(s.is_coach, FALSE) = FALSE
+              AND COALESCE(s.is_lifeguard, FALSE) = FALSE)
+        )
       LIMIT 1`,
     [staffId, phone]
   );
@@ -126,7 +140,7 @@ async function _counterStaffDefaultLogin(username, password) {
   }
 
   const userId = staff.login_user_id || `U_${staff.id}`;
-  const loginRole = _staffBackofficeRole(staff.role) || 'staff';
+  const loginRole = staff.role === 'admin' || staff.user_role === 'admin' ? 'admin' : 'staff';
   const hash = await bcrypt.hash(phone, 10);
   const upsert = await pool.query(
     `INSERT INTO admin_users
@@ -144,8 +158,13 @@ async function _counterStaffDefaultLogin(username, password) {
        updated_at = NOW()
      RETURNING id, username, password_hash, name, role, venue_id, is_active,
                staff_id, $8::text AS staff_phone, NULL::timestamptz AS credentials_changed_at,
-               $9::text[] AS venue_ids`,
-    [userId, staff.id, hash, staff.name, staff.venue_id || null, staff.id, loginRole, phone, cleanVenueList(staff.venue_ids)]
+               $9::text[] AS venue_ids, $10::text AS staff_role,
+               $11::boolean AS is_counter, $12::boolean AS is_coach, $13::boolean AS is_lifeguard`,
+    [
+      userId, staff.id, hash, staff.name, staff.venue_id || null, staff.id, loginRole,
+      phone, cleanVenueList(staff.venue_ids), staff.role,
+      !!staff.is_counter, !!staff.is_coach, !!staff.is_lifeguard,
+    ]
   );
   return upsert.rows[0] || null;
 }
@@ -163,7 +182,8 @@ router.post('/login', async (req, res) => {
     }
     const r = await pool.query(
       `SELECT u.id, u.username, u.password_hash, u.name, u.role, u.venue_id, u.is_active,
-              u.staff_id, s.phone AS staff_phone, s.role AS staff_role, u.credentials_changed_at,
+              u.staff_id, s.phone AS staff_phone, s.role AS staff_role,
+              s.is_counter, s.is_coach, s.is_lifeguard, u.credentials_changed_at,
               ${ADMIN_USER_VENUE_IDS_SELECT} AS venue_ids
          FROM admin_users u
          LEFT JOIN admin_staff s ON s.id = u.staff_id
@@ -174,7 +194,9 @@ router.post('/login', async (req, res) => {
     if (!u) {
       const staffLogin = await _counterStaffDefaultLogin(username, password);
       if (!staffLogin) return res.json(null);
-      return res.json(await _issueLogin(staffLogin, password));
+      const payload = await _issueLogin(staffLogin, password);
+      if (!payload) return res.json(null);
+      return res.json(payload);
     }
     const ok = await bcrypt.compare(String(password), u.password_hash);
     if (!ok) return res.json(null);
@@ -183,7 +205,9 @@ router.post('/login', async (req, res) => {
       return res.status(403).json({ error: '此帳號已停用，請聯絡系統管理員' });
     }
 
-    res.json(await _issueLogin(u, password));
+    const payload = await _issueLogin(u, password);
+    if (!payload) return res.json(null);
+    res.json(payload);
   } catch (err) {
     console.error('[admin/auth/login]', err);
     res.status(err.statusCode || 500).json({ error: err.statusCode ? err.message : 'login failed' });

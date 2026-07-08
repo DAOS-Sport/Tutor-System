@@ -19,7 +19,7 @@ export default function Header() {
     if (user?.must_change_credentials && !promptedDefaultCredentials.current) {
       promptedDefaultCredentials.current = true;
       setOpenPwd(true);
-      toast.warning('目前仍使用預設帳密，請改成自己的帳號與密碼', 5000);
+      toast.warning('目前仍使用預設帳密，建議至個人設定更新帳號或密碼', 5000);
     }
   }, [toast, user?.must_change_credentials]);
 

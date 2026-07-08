@@ -2,13 +2,13 @@
  * WebSocket 服務（聊天室即時推播）
  *
  * 連線：ws(s)://host/ws?token=<JWT>&room=<chat_room_id>
- *  - JWT 驗證：parent / coach / admin / manager token（共用 JWT_SECRET）
+ *  - JWT 驗證：parent / coach / admin / staff token（共用 JWT_SECRET）
  *      · staff token 雖可 verify，但 chatRooms.canAccess('staff') 一律回 false →
  *        會在 connection handler 內 close(4003)；F-M03 政策：staff 不得查閱聊天內容。
  *        參考 docs/adr_phase4_chat.md §4。
  *  - room 授權：透過 chatRooms.canAccess 嚴格檢查
  *      · parent / coach：必須是該 period 的參與者
- *      · admin：全域；manager：限自己 venue（WS 端從 admin JWT.venue_id 取得）
+ *      · admin：全域；staff：限自己 venue（WS 端從 admin JWT.venue_id 取得）
  *      · WS 只接收訊息/已讀/上線廣播，不寫入（寫入走 HTTP POST /api/chat/rooms/:id/messages）
  *
  * 訊息格式（server → client）：
@@ -86,7 +86,7 @@ function initWebSocket(server) {
       const token = url.searchParams.get('token');
       if (!token) return ws.close(4400, 'Missing token');
       payload = jwt.verify(token, getSecret());
-      if (!payload?.role || !['admin','manager','staff'].includes(payload.role)) {
+      if (!payload?.role || !['admin','staff'].includes(payload.role)) {
         return ws.close(4003, 'Unsupported token');
       }
     } catch {
@@ -124,7 +124,7 @@ function initWebSocket(server) {
       if (!active || !active.rowCount) return ws.close(4001, 'Parent account not found');
     }
     else if (payload.type === 'coach') { role = 'coach'; userId = payload.coachId; }
-    else if (payload.role && ['admin', 'manager', 'staff'].includes(payload.role)) {
+    else if (payload.role && ['admin', 'staff'].includes(payload.role)) {
       // admin token 走 routes/admin/auth.js 簽發，payload.role/venue_id 帶角色與場館
       role = payload.role;
       userId = payload.sub || null;
