@@ -98,13 +98,21 @@ export default function EnrollStatusPage() {
     if (!/^\d{5}$/.test(transferLast5.trim())) return toast.error('請先填寫 5 位數字的轉帳末碼');
     if (!proofFile && !enr.has_payment_proof) return toast.error('請選擇匯款／轉帳證明');
     setProofBusy(true);
-    try {
-      let url = null;
-      if (proofFile) {
+    // 末碼與證明「解耦」：末碼只是 5 位數字、不經 object storage，必須保證能獨立落地。
+    // 先前把 uploadProof 綁在「圖片上傳成功之後」，一旦上傳失敗整個送出中止，家長打的
+    // 末碼也跟著丟 → 櫃檯對帳（F-M02）看不到末碼。改成上傳失敗仍送出末碼、僅提示補傳證明。
+    let url = null;
+    let uploadFailed = false;
+    if (proofFile) {
+      try {
         const uploaded = await enrollmentsApi.uploadPaymentProof(proofFile);
         url = uploaded?.url || null;
         if (!url) throw new Error('no url');
+      } catch {
+        uploadFailed = true;
       }
+    }
+    try {
       await coursesApi.uploadProof(id, {
         transfer_last_5: transferLast5.trim(),
         payment_proof_url: url || undefined,
@@ -112,8 +120,13 @@ export default function EnrollStatusPage() {
       });
       // 載具快取：記住本次填寫，下次報名/付款自動帶入（純前端 localStorage）。
       if (carrier.trim()) localStorage.setItem('daos_invoice_carrier', carrier.trim());
-      toast.success('付款資料已送出，待櫃台確認');
-      setProofFile(null);
+      if (uploadFailed) {
+        // 末碼已存，留著 proofFile 讓家長可直接重試上傳證明。
+        toast.error('末碼已送出，但證明圖片上傳失敗，請稍後於本頁重新上傳證明');
+      } else {
+        toast.success('付款資料已送出，待櫃台確認');
+        setProofFile(null);
+      }
       load();
     } catch (e) {
       toast.error(e?.response?.data?.error || '送出失敗，請重試');

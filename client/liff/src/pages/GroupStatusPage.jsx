@@ -165,20 +165,31 @@ export default function GroupStatusPage() {
     if (!/^\d{5}$/.test(transferLast5.trim())) return toast.error('請先填寫 5 位數字的轉帳末碼');
     if (!proofFile && !m?.has_payment_proof) return toast.error('請選擇匯款／轉帳證明');
     setProofBusy(true);
-    try {
-      let url = null;
-      if (proofFile) {
+    // 末碼與證明「解耦」：圖片上傳失敗也要先把末碼存下供櫃檯對帳（同 EnrollStatusPage 修正）。
+    let url = null;
+    let uploadFailed = false;
+    if (proofFile) {
+      try {
         const uploaded = await enrollmentsApi.uploadPaymentProof(proofFile);
         url = uploaded?.url || null;
         if (!url) throw new Error('no url');
+      } catch {
+        uploadFailed = true;
       }
+    }
+    try {
       const updated = await groupOrdersApi.uploadMyProof(id, {
         transfer_last_5: transferLast5.trim(),
         payment_proof_url: url || undefined,
       });
       if (updated) setOrder(updated); else load();
-      setProofFile(null);
-      toast.success('付款資料已送出，待櫃檯確認');
+      if (uploadFailed) {
+        // 末碼已存，留著 proofFile 讓成員可直接重試上傳證明。
+        toast.error('末碼已送出，但證明圖片上傳失敗，請稍後重新上傳證明');
+      } else {
+        setProofFile(null);
+        toast.success('付款資料已送出，待櫃檯確認');
+      }
     } catch (e) {
       toast.error(e?.response?.data?.error || '送出失敗，請重試');
     } finally {
