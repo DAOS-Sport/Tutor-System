@@ -64,7 +64,6 @@ function PasswordCell({ row, isAdmin, onReset }) {
 function roleBadges(row) {
   const knownRoles = Array.isArray(row.known_roles) ? row.known_roles : [];
   const coachActive = row.coach_profile_status === 'active' || row.coach_active;
-  const lifeguardActive = !!row.lifeguard_active;
 
   // A0.5：role==='staff' 常只是「沒有更精確分類」的 DB enum 保底值（roleVal 的 fallback）。
   // 若員工其實有教練/救生員等具體身分（is_coach / is_lifeguard），且 is_counter 並非 true
@@ -83,14 +82,14 @@ function roleBadges(row) {
     if (!role || badges.some((b) => b.role === role)) continue;
     let active = false;
     if (role === 'coach') active = row.has_coach_profile ? coachActive : false;
-    else if (role === 'lifeguard') active = lifeguardActive;
+    else if (role === 'lifeguard') active = true;
     badges.push({ role, active });
   }
   if (row.has_coach_profile && row.role !== 'coach' && !badges.some((b) => b.role === 'coach')) {
     badges.push({ role: 'coach', active: coachActive });
   }
   if (row.is_lifeguard && !badges.some((b) => b.role === 'lifeguard')) {
-    badges.push({ role: 'lifeguard', active: lifeguardActive });
+    badges.push({ role: 'lifeguard', active: true });
   }
   return badges.map(({ role, active }) => (
     <StatusBadge
@@ -222,7 +221,7 @@ export default function StaffPage() {
   const visibleIds = useMemo(() => (staff || []).map((row) => row.id), [staff]);
   const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
   const [togglingId, setTogglingId] = useState(null);
-  const [fieldToggling, setFieldToggling] = useState(null); // `${id}:${field}`，救生員/教練快捷開關忙碌狀態
+  const [fieldToggling, setFieldToggling] = useState(null); // `${id}:${field}`，教練快捷開關忙碌狀態
 
   if (!staff) return <LoadingSpinner fullPage />;
 
@@ -284,8 +283,8 @@ export default function StaffPage() {
     }
   }
 
-  // C2 / 救生員快捷開關：直接切換 coach_active 或 lifeguard_active，不需開啟完整編輯彈窗。
-  const FIELD_LABEL = { coach_active: '教練', lifeguard_active: '救生員' };
+  // C2：直接切換 coach_active，不需開啟完整編輯彈窗。
+  const FIELD_LABEL = { coach_active: '教練' };
   async function toggleField(row, field, current) {
     const key = `${row.id}:${field}`;
     if (fieldToggling === key) return;
@@ -384,8 +383,6 @@ export default function StaffPage() {
           venue_id: venueIds[0] || null,
         };
         if (editing.role !== 'coach') patch.coach_active = !!editing.coach_active;
-        // 救生員身分 is_lifeguard 為 Ragic 判定唯讀值，只有它為真時，lifeguard_active 開關才有意義。
-        if (editing.is_lifeguard) patch.lifeguard_active = !!editing.lifeguard_active;
         // Task #91：若編輯彈窗動過 coach_profile，連同 bio / specialties / email 一起送
         if (editing.coach_profile && coachIdentityOn) {
           patch.coach_profile = {
@@ -508,17 +505,7 @@ export default function StaffPage() {
     { key: 'is_lifeguard', label: '救生員', className: 'text-center',
       render: (r) => {
         if (!r.is_lifeguard) return <span className="text-gray-300 text-xs">無</span>;
-        const busyRow = fieldToggling === `${r.id}:lifeguard_active`;
-        return (
-          <button type="button" onClick={() => toggleField(r, 'lifeguard_active', r.lifeguard_active)}
-            disabled={busyRow}
-            className="inline-block hover:opacity-80 disabled:cursor-wait disabled:opacity-60"
-            title={r.lifeguard_active ? '點擊停用救生員身分' : '點擊啟用救生員身分'}>
-            <StatusBadge tone={r.lifeguard_active ? 'green' : 'gray'}>
-              {busyRow ? '處理中…' : (r.lifeguard_active ? '上架中' : '已下架')}
-            </StatusBadge>
-          </button>
-        );
+        return <StatusBadge tone="amber">救生員</StatusBadge>;
       } },
     { key: 'active', label: '狀態',
       render: (r) => {

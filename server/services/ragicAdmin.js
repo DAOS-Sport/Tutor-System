@@ -1540,8 +1540,7 @@ async function _applyStaffChange(row, client) {
 	         active = CASE WHEN active_overridden_at IS NULL THEN $4 ELSE active END,
          -- A0/A0.5/救生員：is_coach / is_counter / is_lifeguard 皆為 Ragic 來源、唯讀信號
          -- （比照 role 的性質，但各自獨立追蹤、不互相覆蓋），每次 apply 一律以 Ragic 這次
-         -- 送來的值為準。注意：這裡刻意不寫 lifeguard_active——已存在的救生員身份因為
-         -- 這裡完全不觸碰 lifeguard_active 欄位，重複同步不會重置它。
+         -- 送來的值為準。救生員不另設啟用狀態，lifeguard_active 舊欄位不再參與同步。
 	         is_coach = $5, is_counter = $6, is_lifeguard = $7,
          -- COALESCE：ragic_record_id 若這次 payload 沒帶（舊版 payload 過渡期）
          -- 就保留既有值，不要用 NULL 蓋掉已經有的紀錄。
@@ -1693,8 +1692,8 @@ async function _applyStaffChange(row, client) {
     }
   } else if (isDualCoach && !hasCoachProfile && (p.phone || '').trim()) {
     // A0（關鍵既有 bug 修復）：既有員工被 Ragic 標記為教練（疊加身份），但尚無
-    // coaches 資料列 → 新建。新建立的教練身份預設 coach_active=FALSE（比照本工作串
-    // 救生員「新身份預設關閉」的一致政策），需要管理員手動開通，不會讓一批櫃檯人員
+    // coaches 資料列 → 新建。新建立的教練身份預設 coach_active=FALSE，需要管理員手動開通，
+    // 不會讓一批櫃檯人員
     // 一夕之間全部被動開放教練預約——這裡刻意不沿用 isCoachRole 分支的
     // is_active: !!p.is_active（那是給「單一教練角色」新人用的行為，語意不同）。
     const inserted = await client.query(

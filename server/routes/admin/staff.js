@@ -306,7 +306,7 @@ function rowToStaff(r) {
     is_coach: isCoachFlag,
     is_counter: isCounterFlag,
     is_lifeguard: isLifeguardFlag,
-    lifeguard_active: !!r.lifeguard_active,
+    lifeguard_active: isLifeguardFlag,
     coach_id: r.coach_id || null,
     coach_active: hasCoachProfile ? !!r.coach_active : false,
     // Task #91：合併教練設定後，列表也回傳教練欄位摘要供前端表格／搜尋使用
@@ -558,7 +558,7 @@ router.get('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =>
     if (roleFilter === 'coach') {
       where.push(`(s.role = 'coach' OR c.id IS NOT NULL)`);
     } else if (roleFilter === 'lifeguard') {
-      where.push(`(s.is_lifeguard = TRUE OR s.lifeguard_active = TRUE)`);
+      where.push(`s.is_lifeguard = TRUE`);
     } else if (roleFilter) {
       params.push(roleFilter);
       where.push(`s.role = $${params.length}`);
@@ -922,9 +922,6 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
       is_senior: patch.is_senior != null ? !!patch.is_senior : !!cur.rows[0].is_senior,
       multiplier: patch.multiplier != null ? Number(patch.multiplier) : Number(cur.rows[0].multiplier),
       active: patch.active != null ? !!patch.active : !!cur.rows[0].active,
-      // 救生員：後台可切換的啟用狀態，比照 active 的 *_overridden_at 標記寫法
-      // （見下方 lifeguardActiveChanged），防止下次 Ragic 同步覆蓋人工設定。
-      lifeguard_active: patch.lifeguard_active != null ? !!patch.lifeguard_active : !!cur.rows[0].lifeguard_active,
     };
     if (!merged.name) return res.status(400).json({ error: '姓名必填' });
     if (!ragicLocked && patch.phone !== undefined && !merged.phone) {
@@ -935,8 +932,6 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
     }
 
     const activeChanged = patch.active != null && (!!patch.active) !== !!cur.rows[0].active;
-    const lifeguardActiveChanged = patch.lifeguard_active != null
-      && (!!patch.lifeguard_active) !== !!cur.rows[0].lifeguard_active;
     const roleChanged = patch.role != null && patch.role !== cur.rows[0].role;
     const coachProfilePatch = patch.coach_profile || null;
 
@@ -951,14 +946,11 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
           multiplier = $7,
           active = $8,
           active_overridden_at = CASE WHEN $9::boolean THEN NOW() ELSE active_overridden_at END,
-          lifeguard_active = $10,
-          lifeguard_active_overridden_at = CASE WHEN $11::boolean THEN NOW() ELSE lifeguard_active_overridden_at END,
           updated_at = NOW()
         WHERE id = $1
         RETURNING *`,
       [id, merged.name, merged.phone, merged.role, merged.venue_id,
-       merged.is_senior, merged.multiplier, merged.active, activeChanged,
-       merged.lifeguard_active, lifeguardActiveChanged]
+       merged.is_senior, merged.multiplier, merged.active, activeChanged]
     );
 
     const loginRole = merged.role === 'coach' ? 'staff' : merged.role;

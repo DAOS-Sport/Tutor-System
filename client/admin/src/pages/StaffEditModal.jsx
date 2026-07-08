@@ -189,25 +189,19 @@ function CoachProfileSection({ editing, setEditing, multiplierMin, multiplierMax
   );
 }
 
-/** 救生員設定區塊 — 比 CoachProfileSection 簡單得多：
- *  is_lifeguard 是否為救生員身分由 Ragic 應徵職務欄位判定，此處唯讀顯示；
- *  admin 只能開關 lifeguard_active（是否啟用救生員身分，比照教練上架/下架邏輯）。 */
-function LifeguardProfileSection({ editing, setEditing }) {
+function LifeguardProfileSection({ editing }) {
   return (
     <div className="space-y-3 rounded-xl border border-amber-300/40 bg-amber-50 p-4">
       <div className="flex items-center justify-between">
-        <h4 className="text-sm font-bold text-amber-800">救生員設定</h4>
+        <h4 className="text-sm font-bold text-amber-800">救生員身分</h4>
         <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800"
               title="是否為救生員由 Ragic 應徵職務欄位判定，此處唯讀">
           Ragic 判定：{editing.is_lifeguard ? '是' : '否'}
         </span>
       </div>
-      <label className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm">
-        <input type="checkbox"
-               checked={editing.lifeguard_active !== false}
-               onChange={(e) => setEditing({ ...editing, lifeguard_active: e.target.checked })} />
-        <span>救生員上架（取消勾選會立即暫停其救生員身分；是否具救生員身分本身由 Ragic 判定，不受此開關影響）</span>
-      </label>
+      <p className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
+        救生員身分只由 Ragic 應徵職務判定，後台不另外設定啟用或停用。
+      </p>
     </div>
   );
 }
@@ -408,7 +402,7 @@ export default function StaffEditModal({ editing, setEditing, venues, busy, onSa
                 </div>
               )}
               {editing.is_lifeguard && (
-                <LifeguardProfileSection editing={editing} setEditing={setEditing} />
+                <LifeguardProfileSection editing={editing} />
               )}
             </div>
           </div>
