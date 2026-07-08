@@ -4,6 +4,7 @@ import { venuesApi } from "../api/venues";
 import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ToastContext";
 import LoadingSpinner from "../components/LoadingSpinner";
+import { cleanVenueList } from "../utils/venues";
 
 /**
  * 版面調整重點（邏輯零變動）：
@@ -37,8 +38,7 @@ export default function CoachProfilePage() {
     coachesApi
       .detail(coach.id)
       .then((c) => {
-        if (alive && c && Array.isArray(c.venue_ids))
-          setFreshVenueIds(c.venue_ids);
+        if (alive && c) setFreshVenueIds(cleanVenueList(c.venue_ids || c.venues || []));
       })
       .catch(() => {
         /* 失敗則退回快取的 coach.venue_ids */
@@ -68,7 +68,7 @@ export default function CoachProfilePage() {
     );
   }
   // 優先用重抓到的最新陣列；失敗才退回快取，避免舊登入快取顯示不全。
-  const venueIds = freshVenueIds || coach?.venue_ids || [];
+  const venueIds = cleanVenueList(freshVenueIds || coach?.venue_ids || coach?.venues || []);
   const venueNames = venueIds.map((id) => venueMap[id] || id);
   const introReviewStatusText = coach?.intro_review_status
     ? {

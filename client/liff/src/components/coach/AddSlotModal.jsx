@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { slotsApi } from '../../api/slots';
 import { todayTaipeiYMD } from '../../utils/format';
+import { cleanVenueList } from '../../utils/venues';
 
 const DURATION_MINUTES = 60; // 一堂課固定 60 分鐘，不開放教練調整
 
@@ -12,13 +13,24 @@ function taipeiInputToIso(date, time) {
  * 單筆新增槽位
  */
 export default function AddSlotModal({ coachId, venueIds, venueNameMap, onClose, onCreated, onError }) {
+  const cleanVenueIds = useMemo(() => cleanVenueList(venueIds), [venueIds]);
   const [date, setDate] = useState(todayTaipeiYMD());
   const [time, setTime] = useState('14:00');
-  const [venueId, setVenueId] = useState(venueIds?.[0] || 'B');
+  const [venueId, setVenueId] = useState(() => cleanVenueIds[0] || '');
   const [busy, setBusy] = useState(false);
   const [conflict, setConflict] = useState(null);
 
   const venueName = (v) => (venueNameMap && venueNameMap[v]) || `${v} 館`;
+
+  useEffect(() => {
+    if (!cleanVenueIds.length) {
+      setVenueId('');
+      return;
+    }
+    if (!cleanVenueIds.includes(venueId)) {
+      setVenueId(cleanVenueIds[0]);
+    }
+  }, [cleanVenueIds, venueId]);
 
   async function checkConflict() {
     if (!date || !time) return;
@@ -32,6 +44,10 @@ export default function AddSlotModal({ coachId, venueIds, venueNameMap, onClose,
   async function handleSubmit(e) {
     e.preventDefault();
     if (busy) return;
+    if (!venueId) {
+      onError && onError('此教練尚未設定可排課場館');
+      return;
+    }
     const start = taipeiInputToIso(date, time);
     setBusy(true);
     try {
@@ -72,9 +88,10 @@ export default function AddSlotModal({ coachId, venueIds, venueNameMap, onClose,
               </div>
             </Field>
             <Field label="場館">
-              <select value={venueId} onChange={(e) => setVenueId(e.target.value)}
+              <select value={venueId} onChange={(e) => setVenueId(e.target.value)} disabled={!cleanVenueIds.length}
                 className="block w-full min-w-0 box-border appearance-none rounded-lg border border-gray-300 px-3 py-2">
-                {venueIds.map((v) => <option key={v} value={v}>{venueName(v)}</option>)}
+                {!cleanVenueIds.length && <option value="">尚未設定場館</option>}
+                {cleanVenueIds.map((v) => <option key={v} value={v}>{venueName(v)}</option>)}
               </select>
             </Field>
           </div>

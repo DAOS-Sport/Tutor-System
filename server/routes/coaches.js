@@ -17,6 +17,12 @@ const { pool } = require('../models/db');
 const { signCoachToken, requireCoach, requireCoachOwner, byPhoneRateLimit, byLineUidRateLimit, logFailedLogin } = require('../middlewares/coachAuth');
 const { verifyLineIdToken, isLineVerificationRequired } = require('../services/lineAuth');
 const { saveBuffer } = require('../services/objectStorage');
+const {
+  cleanVenueText,
+  cleanVenueList,
+  COACH_VENUE_SOURCE_SQL,
+  COACH_STAFF_PROFILE_SELECT,
+} = require('../services/coachVenueScope');
 
 const MEDIA_UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
 const mediaUpload = multer({
@@ -39,20 +45,10 @@ function withMultiplierAlias(row) {
   return { ...safe, multiplier: pm == null ? 1 : Number(pm) };
 }
 
-function cleanText(value) {
-  return String(value == null ? '' : value).trim();
-}
-
-function cleanTextList(values) {
-  return Array.from(new Set((Array.isArray(values) ? values : [])
-    .map(cleanText)
-    .filter(Boolean)));
-}
-
-function publicCoach(row) {
+function normalizeCoach(row) {
   const coach = withMultiplierAlias(row);
   if (!coach) return coach;
-  const venueIds = cleanTextList(coach.venue_ids || coach.venues || []);
+  const venueIds = cleanVenueList(coach.venue_ids || coach.venues || []);
   return {
     ...coach,
     bio: coach.bio || coach.bio_rich_text || '',
@@ -61,8 +57,15 @@ function publicCoach(row) {
   };
 }
 
+function publicCoach(row) {
+  const coach = normalizeCoach(row);
+  if (!coach) return coach;
+  const { line_uid, staff_active, coach_profile_active, ...safe } = coach;
+  return safe;
+}
+
 async function resolveVenueFilterCandidates(value) {
-  const q = cleanText(value);
+  const q = cleanVenueText(value);
   if (!q) return [];
   const r = await pool.query(
     `SELECT id
@@ -74,36 +77,15 @@ async function resolveVenueFilterCandidates(value) {
          OR TRIM(COALESCE(full_name, '')) ILIKE '%' || $1 || '%'`,
     [q]
   );
-  return cleanTextList([q, ...r.rows.map((row) => row.id)]);
+  return cleanVenueList([q, ...r.rows.map((row) => row.id)]);
 }
-
-const COACH_VENUE_SOURCE_SQL = `
-  SELECT DISTINCT venue_id
-    FROM (
-      SELECT TRIM(cv.venue_id) AS venue_id
-        FROM coach_venues cv
-       WHERE cv.coach_id = c.id
-      UNION
-      SELECT TRIM(sv.venue_id) AS venue_id
-        FROM admin_staff_venues sv
-       WHERE sv.staff_id = c.ragic_employee_id
-      UNION
-      SELECT TRIM(s.venue_id) AS venue_id
-       WHERE s.venue_id IS NOT NULL AND TRIM(s.venue_id) <> ''
-    ) raw_venues
-   WHERE venue_id IS NOT NULL AND venue_id <> ''
-`;
 
 async function loadCoach(id) {
   const r = await pool.query(
-    `SELECT c.*, COALESCE(
-       (SELECT array_agg(v.venue_id ORDER BY v.venue_id)
-          FROM (${COACH_VENUE_SOURCE_SQL}) v),
-       ARRAY[]::text[]
-     ) AS venue_ids
+    `SELECT ${COACH_STAFF_PROFILE_SELECT}
      FROM coaches c
-     LEFT JOIN admin_staff s ON s.id = c.ragic_employee_id
-     WHERE c.id = $1`,
+     JOIN admin_staff s ON s.id = c.ragic_employee_id
+     WHERE c.id = $1 AND s.active = TRUE AND c.is_active = TRUE`,
     [id]
   );
   return publicCoach(r.rows[0]) || null;
@@ -123,17 +105,13 @@ router.get('/', async (req, res) => {
       )`;
     }
     const r = await pool.query(
-      `SELECT c.id, c.name, c.is_senior, c.pricing_multiplier, c.bio_rich_text,
-              COALESCE(
-                (SELECT array_agg(v.venue_id ORDER BY v.venue_id)
-                   FROM (${COACH_VENUE_SOURCE_SQL}) v),
-                ARRAY[]::text[]
-              ) AS venue_ids
+      `SELECT ${COACH_STAFF_PROFILE_SELECT}
          FROM coaches c
-         LEFT JOIN admin_staff s ON s.id = c.ragic_employee_id
-        WHERE c.is_active = TRUE
+         JOIN admin_staff s ON s.id = c.ragic_employee_id
+        WHERE s.active = TRUE
+          AND c.is_active = TRUE
           ${venueWhere}
-        ORDER BY c.name`,
+        ORDER BY s.name`,
       params
     );
     res.json(r.rows.map(publicCoach));
@@ -168,25 +146,26 @@ router.get('/', async (req, res) => {
 const UNBOUND_MSG = '尚未完成綁定，請截圖傳送結果至 400 官方帳號';
 
 router.get('/by-phone', byPhoneRateLimit, async (req, res) => {
-  const phone = req.query.phone;
+  const phone = String(req.query.phone || '').trim();
   const idToken = req.query.id_token || req.headers['x-line-id-token'];
   const ip = (req.headers['x-forwarded-for']?.split(',')[0] || req.ip || 'unknown').trim();
   if (!phone) return res.status(400).json({ error: 'phone is required' });
 
   try {
     const r = await pool.query(
-      `SELECT c.*, COALESCE(
-         (SELECT json_agg(cv.venue_id) FROM coach_venues cv WHERE cv.coach_id = c.id),
-         '[]'::json
-       ) AS venue_ids
-       FROM coaches c WHERE c.phone = $1 AND c.is_active = TRUE`,
+      `SELECT ${COACH_STAFF_PROFILE_SELECT}
+       FROM coaches c
+       JOIN admin_staff s ON s.id = c.ragic_employee_id
+       WHERE TRIM(s.phone) = $1
+         AND s.active = TRUE
+         AND c.is_active = TRUE`,
       [phone]
     );
     if (r.rows.length === 0) {
       logFailedLogin(ip, phone, 'phone-not-found');
       return res.status(404).json({ error: 'not found', code: 'COACH_NOT_FOUND' });
     }
-    let coach = withMultiplierAlias(r.rows[0]);
+    let coach = normalizeCoach(r.rows[0]);
 
     // ── LINE id_token 驗證 ──
     let verifiedLineUid = null;
@@ -286,11 +265,12 @@ router.get('/by-line-uid', byLineUidRateLimit, async (req, res) => {
       return res.status(401).json({ error: 'lineUid 與 id_token sub 不符' });
     }
     const r = await pool.query(
-      `SELECT c.*, COALESCE(
-         (SELECT json_agg(cv.venue_id) FROM coach_venues cv WHERE cv.coach_id = c.id),
-         '[]'::json
-       ) AS venue_ids
-       FROM coaches c WHERE c.line_uid = $1 AND c.is_active = TRUE`,
+      `SELECT ${COACH_STAFF_PROFILE_SELECT}
+       FROM coaches c
+       JOIN admin_staff s ON s.id = c.ragic_employee_id
+       WHERE (c.line_uid = $1 OR s.line_uid = $1)
+         AND s.active = TRUE
+         AND c.is_active = TRUE`,
       [lineUid]
     );
     if (r.rows.length === 0) {
@@ -299,7 +279,7 @@ router.get('/by-line-uid', byLineUidRateLimit, async (req, res) => {
         code: 'COACH_LINE_NOT_BOUND',
       });
     }
-    const coach = withMultiplierAlias(r.rows[0]);
+    const coach = normalizeCoach(r.rows[0]);
     const token = signCoachToken({ coachId: coach.id, phone: coach.phone, lineUid: coach.line_uid });
     res.json({ ...coach, token });
   } catch (err) {

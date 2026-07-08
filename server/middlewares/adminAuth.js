@@ -10,6 +10,7 @@
  * - 非 production 才允許用一個帶警告的開發用 fallback，且每次使用都會 log。
  */
 const jwt = require('jsonwebtoken');
+const { cleanVenueList } = require('../services/coachVenueScope');
 
 const IS_PROD = process.env.NODE_ENV === 'production';
 const DEV_FALLBACK_SECRET = '__DEV_ONLY_admin_jwt_fallback__';
@@ -52,12 +53,8 @@ function requireAdminAuth(req, res, next) {
       return res.status(403).json({ error: 'Not an admin/manager/staff token' });
     }
     // Task #90：venue_ids 為主，venue_id 維持作為「主場館 / 第一筆」的向後相容欄位
-    if (!Array.isArray(payload.venue_ids)) {
-      payload.venue_ids = payload.venue_id ? [payload.venue_id] : [];
-    }
-    if (!payload.venue_id && payload.venue_ids.length) {
-      payload.venue_id = payload.venue_ids[0];
-    }
+    payload.venue_ids = cleanVenueList(payload.venue_ids || (payload.venue_id ? [payload.venue_id] : []));
+    payload.venue_id = payload.venue_ids[0] || payload.venue_id || null;
     req.adminUser = payload;
     next();
   } catch (err) {
@@ -77,7 +74,7 @@ function getScopedVenueIds(req) {
   const u = req.adminUser;
   if (!u) return ['__no_venue__'];
   if (u.role === 'admin') return null;
-  const ids = Array.isArray(u.venue_ids) ? u.venue_ids.filter(Boolean) : [];
+  const ids = cleanVenueList(u.venue_ids);
   return ids.length ? ids : ['__no_venue__'];
 }
 

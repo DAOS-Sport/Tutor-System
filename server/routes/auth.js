@@ -24,6 +24,7 @@ const { BindConflictError } = parentSync;
 const ragicAdmin = require('../services/ragicAdmin');
 const parentRefresh = require('../services/parentRefresh');
 const { refreshParentMirrorFromRagic, ParentRefreshError } = parentRefresh;
+const { cleanVenueList, COACH_STAFF_PROFILE_SELECT } = require('../services/coachVenueScope');
 
 const router = express.Router();
 
@@ -64,15 +65,15 @@ router.post('/demo-login', async (req, res) => {
       //   coach  → 名稱含「測試帳號」者取 ragic_employee_id 最小的一位（第一測試教練）
       //   coach2 → 以指定名稱精準比對（acct.coachName），避免與 coach 取到同一人
       const filter = acct.coachName
-        ? { clause: 'c.name = $1', params: [acct.coachName] }
-        : { clause: "c.name LIKE '%測試帳號%'", params: [] };
+        ? { clause: 's.name = $1', params: [acct.coachName] }
+        : { clause: "s.name LIKE '%測試帳號%'", params: [] };
       const r = await pool.query(
-        `SELECT c.*, COALESCE(
-           (SELECT json_agg(cv.venue_id) FROM coach_venues cv WHERE cv.coach_id = c.id),
-           '[]'::json
-         ) AS venue_ids
+        `SELECT ${COACH_STAFF_PROFILE_SELECT}
          FROM coaches c
-         WHERE c.is_active = TRUE AND ${filter.clause}
+         JOIN admin_staff s ON s.id = c.ragic_employee_id
+         WHERE s.active = TRUE
+           AND c.is_active = TRUE
+           AND ${filter.clause}
          ORDER BY c.ragic_employee_id ASC
          LIMIT 1`,
         filter.params
@@ -82,6 +83,8 @@ router.post('/demo-login', async (req, res) => {
       }
       const coach = r.rows[0];
       coach.multiplier = Number(coach.pricing_multiplier);
+      coach.venue_ids = cleanVenueList(coach.venue_ids);
+      coach.venues = coach.venue_ids;
       const token = signCoachToken({ coachId: coach.id, phone: coach.phone, lineUid: coach.line_uid || null });
       const { line_uid, ragic_data_no, ...safe } = coach;
       return res.json({ role: 'coach', ...safe, token });

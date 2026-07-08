@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { coachesApi } from '../api/coaches';
 import { slotsApi } from '../api/slots';
 import { venuesApi } from '../api/venues';
 import { useAuth } from '../context/AuthContext';
@@ -10,6 +11,7 @@ import BatchAddSlotModal from '../components/coach/BatchAddSlotModal';
 import BatchResultModal from '../components/coach/BatchResultModal';
 import SlotActionSheet from '../components/coach/SlotActionSheet';
 import MonthGrid from '../components/coach/MonthGrid';
+import { cleanVenueList } from '../utils/venues';
 
 const WEEKDAY_TC = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
 
@@ -51,6 +53,7 @@ export default function CoachScheduleWeekPage() {
   const [batchResult, setBatchResult] = useState(null);
   const [reload, setReload] = useState(0);
   const [venueNameMap, setVenueNameMap] = useState({}); // { 場館代碼: 場館名稱 }
+  const [freshVenueIds, setFreshVenueIds] = useState(null);
 
   function toggleVenue(v) {
     setVenueFilter((prev) => {
@@ -60,8 +63,28 @@ export default function CoachScheduleWeekPage() {
     });
   }
 
-  const venueIds = coach?.venue_ids || [];
+  const venueIds = useMemo(() => {
+    const source = freshVenueIds !== null ? freshVenueIds : (coach?.venue_ids || coach?.venues || []);
+    return cleanVenueList(source);
+  }, [freshVenueIds, coach?.venue_ids, coach?.venues]);
   const venueLabel = (v) => venueNameMap[v] || `${v} 館`;
+
+  useEffect(() => {
+    if (!coach?.id) {
+      setFreshVenueIds(null);
+      return undefined;
+    }
+    let alive = true;
+    setFreshVenueIds(null);
+    coachesApi.detail(coach.id)
+      .then((c) => {
+        if (alive) setFreshVenueIds(cleanVenueList(c?.venue_ids || c?.venues || []));
+      })
+      .catch(() => {
+        if (alive) setFreshVenueIds(null);
+      });
+    return () => { alive = false; };
+  }, [coach?.id]);
 
   useEffect(() => {
     let alive = true;

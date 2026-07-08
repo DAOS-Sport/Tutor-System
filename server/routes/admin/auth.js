@@ -10,6 +10,10 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const { pool } = require('../../models/db');
 const { signToken, requireAdminAuth } = require('../../middlewares/adminAuth');
+const {
+  cleanVenueList,
+  ADMIN_USER_VENUE_IDS_SELECT,
+} = require('../../services/coachVenueScope');
 
 const router = express.Router();
 
@@ -43,8 +47,8 @@ function _effectiveLoginUser(u) {
 }
 
 function _loginPayload(u, password, token) {
-  const venueIds = Array.isArray(u.venue_ids) ? u.venue_ids.filter(Boolean) : [];
-  const primaryVenue = u.venue_id || venueIds[0] || null;
+  const venueIds = cleanVenueList(u.venue_ids);
+  const primaryVenue = venueIds[0] || u.venue_id || null;
   const staffId = String(u.staff_id || '').trim();
   const staffPhone = String(u.staff_phone || '').trim();
   const defaultUsername = !!staffId && String(u.username || '').trim() === staffId;
@@ -68,8 +72,8 @@ function _loginPayload(u, password, token) {
 
 async function _issueLogin(u, password) {
   const loginUser = _effectiveLoginUser(u);
-  const venueIds = Array.isArray(loginUser.venue_ids) ? loginUser.venue_ids.filter(Boolean) : [];
-  const primaryVenue = loginUser.venue_id || venueIds[0] || null;
+  const venueIds = cleanVenueList(loginUser.venue_ids);
+  const primaryVenue = venueIds[0] || loginUser.venue_id || null;
   const token = signToken({
     sub: loginUser.id,
     username: loginUser.username,
@@ -97,12 +101,7 @@ async function _counterStaffDefaultLogin(username, password) {
   const r = await pool.query(
     `SELECT s.id, s.name, s.phone, s.venue_id, s.active, s.role, s.is_counter,
             u.id AS login_user_id, u.credentials_changed_at,
-            COALESCE(
-              (SELECT array_agg(sv.venue_id ORDER BY sv.venue_id)
-                 FROM admin_staff_venues sv WHERE sv.staff_id = s.id),
-              CASE WHEN s.venue_id IS NOT NULL AND s.venue_id <> ''
-                   THEN ARRAY[s.venue_id]::text[] ELSE ARRAY[]::text[] END
-            ) AS venue_ids
+            ${ADMIN_USER_VENUE_IDS_SELECT} AS venue_ids
        FROM admin_staff s
        LEFT JOIN admin_users u ON u.staff_id = s.id
       WHERE UPPER(TRIM(s.id)) = $1
@@ -146,7 +145,7 @@ async function _counterStaffDefaultLogin(username, password) {
      RETURNING id, username, password_hash, name, role, venue_id, is_active,
                staff_id, $8::text AS staff_phone, NULL::timestamptz AS credentials_changed_at,
                $9::text[] AS venue_ids`,
-    [userId, staff.id, hash, staff.name, staff.venue_id || null, staff.id, loginRole, phone, staff.venue_ids || []]
+    [userId, staff.id, hash, staff.name, staff.venue_id || null, staff.id, loginRole, phone, cleanVenueList(staff.venue_ids)]
   );
   return upsert.rows[0] || null;
 }
@@ -165,12 +164,7 @@ router.post('/login', async (req, res) => {
     const r = await pool.query(
       `SELECT u.id, u.username, u.password_hash, u.name, u.role, u.venue_id, u.is_active,
               u.staff_id, s.phone AS staff_phone, s.role AS staff_role, u.credentials_changed_at,
-              COALESCE(
-                (SELECT array_agg(sv.venue_id ORDER BY sv.venue_id)
-                   FROM admin_staff_venues sv WHERE sv.staff_id = u.staff_id),
-                CASE WHEN u.venue_id IS NOT NULL AND u.venue_id <> ''
-                     THEN ARRAY[u.venue_id]::text[] ELSE ARRAY[]::text[] END
-              ) AS venue_ids
+              ${ADMIN_USER_VENUE_IDS_SELECT} AS venue_ids
          FROM admin_users u
          LEFT JOIN admin_staff s ON s.id = u.staff_id
         WHERE u.username = $1`,

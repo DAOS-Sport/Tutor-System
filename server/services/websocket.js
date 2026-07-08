@@ -26,6 +26,7 @@ const jwt = require('jsonwebtoken');
 const { canAccess } = require('./chatRooms');
 const { getSecret } = require('../middlewares/parentAuth');
 const { pool } = require('../models/db');
+const { cleanVenueList } = require('./coachVenueScope');
 
 const rooms = new Map(); // roomId → Set<ws>
 // Task #60：後台事件總線（簽到等即時推播給所有已登入後台 client）
@@ -93,9 +94,7 @@ function initWebSocket(server) {
     }
     ws.adminRole = payload.role;
     // Task #90：支援多場館員工 — 收 venue_ids 陣列；舊 token 退回 [venue_id]
-    ws.adminVenueIds = Array.isArray(payload.venue_ids) && payload.venue_ids.length
-      ? payload.venue_ids
-      : (payload.venue_id ? [payload.venue_id] : []);
+    ws.adminVenueIds = cleanVenueList(payload.venue_ids || (payload.venue_id ? [payload.venue_id] : []));
     ws.adminVenueId = ws.adminVenueIds[0] || null;
     adminClients.add(ws);
     ws.on('close', () => adminClients.delete(ws));
@@ -188,7 +187,7 @@ function broadcastAdminEvent(eventType, payload) {
     // 任一邊缺 venue_id 一律 drop（避免 staff/manager 帳號設定異常時看到跨場館資料）
     if (c.adminRole !== 'admin') {
       // Task #90：event venue_id 須在 client 所屬 venue_ids 內；任一邊缺值一律 drop
-      const ids = c.adminVenueIds && c.adminVenueIds.length ? c.adminVenueIds : (c.adminVenueId ? [c.adminVenueId] : []);
+      const ids = cleanVenueList(c.adminVenueIds || (c.adminVenueId ? [c.adminVenueId] : []));
       if (!payload?.venue_id || !ids.length || !ids.includes(payload.venue_id)) continue;
     }
     try { c.send(data); } catch { /* ignore */ }

@@ -21,6 +21,11 @@ const { pool } = require('../../models/db');
 const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
 const { syncStaffFromRagic, kickoffSyncStaffAsync, isJobRunning } = require('../../services/ragicAdmin');
 const lineService = require('../../services/line');
+const {
+  cleanVenueList,
+  COACH_STAFF_PROFILE_SELECT,
+  STAFF_VENUE_IDS_SELECT,
+} = require('../../services/coachVenueScope');
 
 const router = express.Router();
 
@@ -285,12 +290,12 @@ function rowToStaff(r) {
     ...(isLifeguardFlag ? ['lifeguard'] : []),
   ]));
   // Task #90：venue_ids 是真實多場館清單；venue_id 維持作為「第一筆」相容
-  const venueIds = Array.isArray(r.venue_ids) ? r.venue_ids.filter(Boolean) : [];
+  const venueIds = cleanVenueList(r.venue_ids);
   return {
     id: r.id,
     name: r.name,
     role: r.role,
-    venue_id: r.venue_id || venueIds[0] || null,
+    venue_id: venueIds[0] || r.venue_id || null,
     venue_ids: venueIds,
     phone: r.phone,
     // Task #95：來自 Ragic 的員工，H01 同步欄位（姓名/手機/場館）鎖定為唯讀（修改請洽 HR）
@@ -348,12 +353,7 @@ const STAFF_SELECT = `
          u.is_active AS login_is_active,
          u.line_uid AS login_line_uid,
          u.credentials_changed_at AS login_credentials_changed_at,
-         COALESCE(
-           (SELECT array_agg(sv.venue_id ORDER BY sv.venue_id)
-              FROM admin_staff_venues sv WHERE sv.staff_id = s.id),
-           CASE WHEN s.venue_id IS NOT NULL AND s.venue_id <> ''
-                THEN ARRAY[s.venue_id]::text[] ELSE ARRAY[]::text[] END
-         ) AS venue_ids
+         ${STAFF_VENUE_IDS_SELECT} AS venue_ids
     FROM admin_staff s
     LEFT JOIN coaches c ON c.ragic_employee_id = s.id
     LEFT JOIN admin_users u ON (u.staff_id = s.id OR (u.staff_id IS NULL AND u.name = s.name))
@@ -361,7 +361,7 @@ const STAFF_SELECT = `
 
 /** Task #90：把 admin_staff_venues 與 coach_venues 同步成 venueIds 清單（idempotent）。 */
 async function syncStaffVenues(client, staffId, venueIds) {
-  const list = Array.from(new Set((venueIds || []).filter(Boolean).map(String)));
+  const list = cleanVenueList(venueIds);
   await client.query(`DELETE FROM admin_staff_venues WHERE staff_id = $1`, [staffId]);
   for (const vid of list) {
     await client.query(
@@ -373,7 +373,7 @@ async function syncStaffVenues(client, staffId, venueIds) {
 }
 
 async function syncCoachVenues(client, coachId, venueIds) {
-  const list = Array.from(new Set((venueIds || []).filter(Boolean).map(String)));
+  const list = cleanVenueList(venueIds);
   if (!coachId) return;
   await client.query(`DELETE FROM coach_venues WHERE coach_id = $1`, [coachId]);
   if (!list.length) return;
@@ -391,10 +391,10 @@ async function syncCoachVenues(client, coachId, venueIds) {
 
 function pickVenueIds(body, fallbackVenueId) {
   if (Array.isArray(body?.venue_ids)) {
-    return Array.from(new Set(body.venue_ids.filter(Boolean).map((s) => String(s).trim())));
+    return cleanVenueList(body.venue_ids);
   }
-  if (body?.venue_id) return [String(body.venue_id).trim()];
-  if (fallbackVenueId) return [String(fallbackVenueId).trim()];
+  if (body?.venue_id) return cleanVenueList([body.venue_id]);
+  if (fallbackVenueId) return cleanVenueList([fallbackVenueId]);
   return [];
 }
 
@@ -485,9 +485,9 @@ async function setCoachProfileActive(client, staffRow, active, opts = {}) {
 
   const coachId = inserted.rows[0]?.id;
   // Task #90：把 staff 的多場館展開寫入 coach_venues
-  const venueIds = Array.isArray(staffRow.venue_ids) && staffRow.venue_ids.length
-    ? staffRow.venue_ids
-    : (staffRow.venue_id ? [staffRow.venue_id] : []);
+  const venueIds = cleanVenueList(staffRow.venue_ids).length
+    ? cleanVenueList(staffRow.venue_ids)
+    : cleanVenueList([staffRow.venue_id]);
   if (coachId && venueIds.length) {
     await syncCoachVenues(client, coachId, venueIds);
   }
@@ -518,9 +518,9 @@ async function ensureCoachRow(client, staffRow, opts = {}) {
   );
   const coachId = inserted.rows[0]?.id;
   // Task #90：把 staff 的多場館展開寫入 coach_venues（取代單筆 INSERT）
-  const venueIds = Array.isArray(staffRow.venue_ids) && staffRow.venue_ids.length
-    ? staffRow.venue_ids
-    : (staffRow.venue_id ? [staffRow.venue_id] : []);
+  const venueIds = cleanVenueList(staffRow.venue_ids).length
+    ? cleanVenueList(staffRow.venue_ids)
+    : cleanVenueList([staffRow.venue_id]);
   if (coachId && venueIds.length) {
     await syncCoachVenues(client, coachId, venueIds);
   }
@@ -728,28 +728,11 @@ router.get('/coaches',
         )`);
       }
       const sql = `
-        SELECT c.id, c.ragic_employee_id, c.name, c.phone,
-               c.is_senior, c.pricing_multiplier, c.is_active,
-               COALESCE(
-                 (SELECT array_agg(v.venue_id ORDER BY v.venue_id)
-                    FROM (
-                      SELECT cv.venue_id
-                        FROM coach_venues cv
-                       WHERE cv.coach_id = c.id
-                      UNION
-                      SELECT sv.venue_id
-                        FROM admin_staff_venues sv
-                       WHERE sv.staff_id = s.id
-                      UNION
-                      SELECT s.venue_id AS venue_id
-                       WHERE s.venue_id IS NOT NULL AND s.venue_id <> ''
-                    ) v),
-                 ARRAY[]::text[]
-               ) AS venue_ids
+        SELECT ${COACH_STAFF_PROFILE_SELECT}
           FROM admin_staff s
           JOIN coaches c ON c.ragic_employee_id = s.id
          WHERE ${where.join(' AND ')}
-         ORDER BY c.name`;
+         ORDER BY s.name`;
       const r = await pool.query(sql, params);
       res.json(r.rows.map((row) => ({
         id: row.id,
@@ -760,7 +743,7 @@ router.get('/coaches',
         pricing_multiplier: Number(row.pricing_multiplier),
         multiplier: Number(row.pricing_multiplier),
         is_active: !!row.is_active,
-        venue_ids: row.venue_ids || [],
+        venue_ids: cleanVenueList(row.venue_ids),
       })));
     } catch (err) {
       console.error('[admin/staff/coaches]', err);
@@ -921,7 +904,7 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
       `SELECT array_agg(venue_id ORDER BY venue_id) AS ids FROM admin_staff_venues WHERE staff_id = $1`,
       [id]
     );
-    const existingVenueIds = (existingVenuesQ.rows[0]?.ids || []).filter(Boolean);
+    const existingVenueIds = cleanVenueList(existingVenuesQ.rows[0]?.ids);
     const venueIdsTouched = !ragicLocked && (Array.isArray(patch.venue_ids) || patch.venue_id !== undefined);
     const newVenueIds = venueIdsTouched
       ? pickVenueIds(patch)

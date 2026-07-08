@@ -8,27 +8,7 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import PaymentDisclaimerModal from '../components/PaymentDisclaimerModal';
 import { useToast } from '../context/ToastContext';
 import { courseTypeLabel } from '../utils/format';
-
-function cleanVenueValue(value) {
-  if (value == null) return '';
-  if (typeof value === 'string' || typeof value === 'number') return String(value).trim();
-  return String(value.id || value.code || value.name || '').trim();
-}
-
-function coachVenueValues(coach) {
-  const raw = Array.isArray(coach?.venue_ids)
-    ? coach.venue_ids
-    : (Array.isArray(coach?.venues) ? coach.venues : []);
-  return [...new Set(raw.map(cleanVenueValue).filter(Boolean))];
-}
-
-function coachMatchesVenue(coach, selectedValues) {
-  const venues = coachVenueValues(coach);
-  if (!venues.length) return true;
-  const selected = selectedValues.map(cleanVenueValue).filter(Boolean);
-  if (!selected.length) return true;
-  return venues.some((venue) => selected.some((want) => venue === want || venue.includes(want)));
-}
+import { coachMatchesVenue } from '../utils/venues';
 
 export default function CoachListPage() {
   const [params] = useSearchParams();

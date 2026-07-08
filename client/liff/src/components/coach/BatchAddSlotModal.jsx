@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { slotsApi } from '../../api/slots';
 import { addDaysToTaipeiYMD, todayTaipeiYMD } from '../../utils/format';
+import { cleanVenueList } from '../../utils/venues';
 
 const DURATION_MINUTES = 60; // 一堂課固定 60 分鐘，不開放教練調整
 
@@ -23,14 +24,25 @@ function plusDaysStr(n) { return addDaysToTaipeiYMD(todayTaipeiYMD(), n); }
  * 批量新增槽位（範圍 + 星期 + 時段陣列）
  */
 export default function BatchAddSlotModal({ coachId, venueIds, venueNameMap, onClose, onDone, onError }) {
+  const cleanVenueIds = useMemo(() => cleanVenueList(venueIds), [venueIds]);
   const [from, setFrom] = useState(todayTaipeiYMD());
   const [to, setTo] = useState(plusDaysStr(13));
   const [weekdays, setWeekdays] = useState([1, 3, 5]);
   const [times, setTimes] = useState(['14:00', '15:00', '16:00']);
-  const [venueId, setVenueId] = useState(venueIds?.[0] || 'B');
+  const [venueId, setVenueId] = useState(() => cleanVenueIds[0] || '');
   const [busy, setBusy] = useState(false);
 
   const venueName = (v) => (venueNameMap && venueNameMap[v]) || `${v} 館`;
+
+  useEffect(() => {
+    if (!cleanVenueIds.length) {
+      setVenueId('');
+      return;
+    }
+    if (!cleanVenueIds.includes(venueId)) {
+      setVenueId(cleanVenueIds[0]);
+    }
+  }, [cleanVenueIds, venueId]);
 
   function toggleWd(v) {
     setWeekdays((prev) => prev.includes(v) ? prev.filter((x) => x !== v) : [...prev, v].sort());
@@ -54,6 +66,7 @@ export default function BatchAddSlotModal({ coachId, venueIds, venueNameMap, onC
     if (busy) return;
     if (weekdays.length === 0) { onError && onError('請至少勾選一個星期'); return; }
     if (times.length === 0) { onError && onError('請至少加入一個時段'); return; }
+    if (!venueId) { onError && onError('此教練尚未設定可排課場館'); return; }
     const uniqueTimes = Array.from(new Set(times)); // 去重保險
     setBusy(true);
     try {
@@ -137,9 +150,10 @@ export default function BatchAddSlotModal({ coachId, venueIds, venueNameMap, onC
               </div>
             </Field>
             <Field label="場館">
-              <select value={venueId} onChange={(e) => setVenueId(e.target.value)}
+              <select value={venueId} onChange={(e) => setVenueId(e.target.value)} disabled={!cleanVenueIds.length}
                 className="block w-full min-w-0 box-border appearance-none rounded-lg border border-gray-300 px-3 py-2">
-                {venueIds.map((v) => <option key={v} value={v}>{venueName(v)}</option>)}
+                {!cleanVenueIds.length && <option value="">尚未設定場館</option>}
+                {cleanVenueIds.map((v) => <option key={v} value={v}>{venueName(v)}</option>)}
               </select>
             </Field>
           </div>

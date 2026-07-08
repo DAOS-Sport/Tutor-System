@@ -12,6 +12,7 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { takeAfterAuth } from '../utils/afterAuth';
 import { isValidTWPhone, isValidTWId } from '../utils/format';
+import { cleanVenueList } from '../utils/venues';
 import { USE_MOCK } from '../api/client';
 import ReportIssueButton from '../components/ReportIssueButton';
 
@@ -120,7 +121,7 @@ export default function RegisterPage() {
     let venueId = preferVenueId || '';
     try {
       const cd = await coachesApi.detail(coachId);
-      const vids = cd?.venue_ids || [];
+      const vids = cleanVenueList(cd?.venue_ids || cd?.venues || []);
       if (vids.length && !vids.includes(venueId)) venueId = vids[0];
     } catch { /* 場館解析失敗就沿用 preferVenueId */ }
     const q = new URLSearchParams();

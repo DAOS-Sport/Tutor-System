@@ -23,6 +23,7 @@ const ragic = require('./ragic');
 const parentSync = require('./parentSync');
 const line = require('./line');
 const { maskPhone } = require('../utils/piiMask');
+const { cleanVenueList } = require('./coachVenueScope');
 // Ragic 表單 / 欄位對應唯一來源（凍結點）：H01 LINE UID 欄位、場館欄位、角色關鍵字
 const { H01, H23, FORMS } = require('../config/ragicSchema');
 // DB 租約層（launch-20260707 B 段既有基礎建設，先前未被任何呼叫端接上）：
@@ -284,6 +285,58 @@ async function _buildVenueResolver() {
   };
 }
 
+async function _resolveVenueIdList(rawValues) {
+  const values = cleanVenueList(rawValues);
+  if (!values.length) return [];
+  const resolve = await _buildVenueResolver();
+  return cleanVenueList(resolve(values));
+}
+
+async function _syncCoachVenueIds(client, coachId, rawVenueIds) {
+  if (!coachId) return [];
+  const venueIds = await _resolveVenueIdList(rawVenueIds);
+  if (!venueIds.length) return [];
+  const r = await client.query(
+    `SELECT id FROM venues WHERE id = ANY($1::text[]) AND is_active = TRUE`,
+    [venueIds]
+  );
+  const validIds = cleanVenueList(r.rows.map((row) => row.id));
+  if (!validIds.length) return [];
+  await client.query(`DELETE FROM coach_venues WHERE coach_id = $1`, [coachId]);
+  for (const vid of validIds) {
+    await client.query(
+      `INSERT INTO coach_venues (coach_id, venue_id) VALUES ($1, $2)
+       ON CONFLICT DO NOTHING`,
+      [coachId, vid]
+    );
+  }
+  return validIds;
+}
+
+async function _syncStaffVenueIds(client, staffId, rawVenueIds) {
+  const venueIds = await _resolveVenueIdList(rawVenueIds);
+  if (!venueIds.length) return [];
+  const r = await client.query(
+    `SELECT id FROM admin_venues WHERE id = ANY($1::text[])`,
+    [venueIds]
+  );
+  const validIds = cleanVenueList(r.rows.map((row) => row.id));
+  if (!validIds.length) return [];
+  await client.query(`DELETE FROM admin_staff_venues WHERE staff_id = $1`, [staffId]);
+  for (const vid of validIds) {
+    await client.query(
+      `INSERT INTO admin_staff_venues (staff_id, venue_id) VALUES ($1, $2)
+       ON CONFLICT DO NOTHING`,
+      [staffId, vid]
+    );
+  }
+  await client.query(
+    `UPDATE admin_staff SET venue_id = $2 WHERE id = $1`,
+    [staffId, validIds[0]]
+  );
+  return validIds;
+}
+
 // P1.1 決策3（2026-07-07）：原 Task #95「場館自動套用」_applyStaffVenuesDirect
 // 已移除——場館指派改回待審核，見 _syncStaffImpl 的 diff.venue_ids 與
 // _applyStaffChange 內既有的 admin_staff_venues/coach_venues 套用邏輯（Task #90）。
@@ -470,8 +523,8 @@ function _sameScalar(a, b) {
 }
 
 function _sameArray(a, b) {
-  const aa = (Array.isArray(a) ? a : []).map((v) => String(v).trim()).filter(Boolean).sort();
-  const bb = (Array.isArray(b) ? b : []).map((v) => String(v).trim()).filter(Boolean).sort();
+  const aa = cleanVenueList(a).sort();
+  const bb = cleanVenueList(b).sort();
   return aa.length === bb.length && aa.every((v, i) => v === bb[i]);
 }
 
@@ -1689,24 +1742,7 @@ async function _applyStaffChange(row, client) {
 	      );
       coachId = inserted.rows[0]?.id || null;
     }
-    if (coachId && Array.isArray(p.venue_ids) && p.venue_ids.length > 0) {
-      const venueIds = [...new Set(p.venue_ids.map(String).map(s => s.trim()).filter(Boolean))];
-      if (venueIds.length > 0) {
-        // 部門可能是「名稱」（新北高中）或「代碼」（B）→ 統一解析成 venue id
-        const resolve = await _buildVenueResolver();
-        const validIds = resolve(venueIds);
-        if (validIds.length > 0) {
-          await client.query(`DELETE FROM coach_venues WHERE coach_id = $1`, [coachId]);
-          for (const vid of validIds) {
-            await client.query(
-              `INSERT INTO coach_venues (coach_id, venue_id) VALUES ($1, $2)
-               ON CONFLICT DO NOTHING`,
-              [coachId, vid]
-            );
-          }
-        }
-      }
-    }
+    await _syncCoachVenueIds(client, coachId, p.venue_ids);
   } else if (isDualCoach && !hasCoachProfile && (p.phone || '').trim()) {
     // A0（關鍵既有 bug 修復）：既有員工被 Ragic 標記為教練（疊加身份），但尚無
     // coaches 資料列 → 新建。新建立的教練身份預設 coach_active=FALSE，需要管理員手動開通，
@@ -1726,23 +1762,7 @@ async function _applyStaffChange(row, client) {
 	       String(p.email || '').trim(), incomingLineUid]
 	    );
     const coachId = inserted.rows[0]?.id;
-    if (coachId && Array.isArray(p.venue_ids) && p.venue_ids.length > 0) {
-      const venueIds = [...new Set(p.venue_ids.map(String).map(s => s.trim()).filter(Boolean))];
-      if (venueIds.length > 0) {
-        const resolve = await _buildVenueResolver();
-        const validIds = resolve(venueIds);
-        if (validIds.length > 0) {
-          await client.query(`DELETE FROM coach_venues WHERE coach_id = $1`, [coachId]);
-          for (const vid of validIds) {
-            await client.query(
-              `INSERT INTO coach_venues (coach_id, venue_id) VALUES ($1, $2)
-               ON CONFLICT DO NOTHING`,
-              [coachId, vid]
-            );
-          }
-        }
-      }
-    }
+    await _syncCoachVenueIds(client, coachId, p.venue_ids);
   } else if (hasCoachProfile && incomingLineUid) {
     // dual-role 兼任教練 或 既有 coach row：H01 有合法 UID 時校正，空值不覆蓋
     await client.query(
@@ -1755,35 +1775,10 @@ async function _applyStaffChange(row, client) {
 	    );
   }
   // Task #90：同步 admin_staff_venues（多場館），並把第一筆寫回 admin_staff.venue_id 作 fallback
-  if (Array.isArray(p.venue_ids) && p.venue_ids.length > 0) {
-    const venueIds = [...new Set(p.venue_ids.map(String).map(s => s.trim()).filter(Boolean))];
-    if (venueIds.length > 0) {
-      // 僅針對 Ragic 上實際存在的 admin_venues 落地，避免 FK violation
-      const vr = await client.query(
-        `SELECT id FROM admin_venues WHERE id = ANY($1::text[])`,
-        [venueIds]
-      );
-      const validIds = vr.rows.map(x => x.id);
-      if (validIds.length > 0) {
-        // staffId（非 row.entity_id）：上面 admin_staff.id 若因員工編號變更被 UPDATE，
-        // admin_staff_venues.staff_id 已透過 ON UPDATE CASCADE 連動改成新值，這裡要用
-        // 新值查/寫，用舊的 row.entity_id 會完全對不到任何列。
-        await client.query(`DELETE FROM admin_staff_venues WHERE staff_id = $1`, [staffId]);
-        for (const vid of validIds) {
-          await client.query(
-            `INSERT INTO admin_staff_venues (staff_id, venue_id) VALUES ($1, $2)
-             ON CONFLICT DO NOTHING`,
-            [staffId, vid]
-          );
-        }
-        // 保留 admin_staff.venue_id 為第一筆 fallback（向下相容舊讀取路徑）
-        await client.query(
-          `UPDATE admin_staff SET venue_id = $2 WHERE id = $1`,
-          [staffId, validIds[0]]
-        );
-      }
-    }
-  }
+  // staffId（非 row.entity_id）：上面 admin_staff.id 若因員工編號變更被 UPDATE，
+  // admin_staff_venues.staff_id 已透過 ON UPDATE CASCADE 連動改成新值，這裡要用新值查/寫。
+  // admin_staff.venue_id 保留第一筆作舊讀取路徑 fallback；完整權限以 admin_staff_venues 為準。
+  await _syncStaffVenueIds(client, staffId, p.venue_ids);
 }
 
 async function _applyCoachChange(row, client) {
@@ -1878,7 +1873,7 @@ async function _findStaffCollision(payload) {
     if (r.rowCount) return { entity_id: r.rows[0].id, matched_name: r.rows[0].name, reason: 'line_uid_match' };
   }
   const name = String(payload.name || '').trim().normalize('NFKC');
-  const venueIds = Array.isArray(payload.venue_ids) ? payload.venue_ids.filter(Boolean) : [];
+  const venueIds = cleanVenueList(payload.venue_ids);
   if (name && venueIds.length) {
     const r = await pool.query(
       `SELECT s.id, s.name, s.ragic_record_id FROM admin_staff s

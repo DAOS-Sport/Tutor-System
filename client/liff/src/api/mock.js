@@ -1,6 +1,7 @@
 // Centralized Mock dataset for Phase 1 (no backend wiring yet).
 // All API modules under client/liff/src/api/ pull from here when
 // VITE_USE_MOCK !== "false" or when backend returns 501.
+import { cleanVenueList, cleanVenueValue } from '../utils/venues';
 
 const VENUES = [
   { id: 'B', code: 'B', name: '夢想體育學院 板橋館', address: '新北市板橋區文化路一段 188 號 3 樓',
@@ -39,16 +40,10 @@ const PROMOTIONS = [
     expires_at: '2026-12-31', is_auto_apply: false },
 ];
 
-function cleanVenueValue(value) {
-  if (value == null) return '';
-  if (typeof value === 'string' || typeof value === 'number') return String(value).trim();
-  return String(value.id || value.code || value.name || '').trim();
-}
-
 function venueMatches(values, selectedVenue) {
   const selectedVenueClean = cleanVenueValue(selectedVenue);
   if (!selectedVenueClean) return true;
-  return (values || []).some((v) => {
+  return cleanVenueList(values).some((v) => {
     const vClean = cleanVenueValue(v);
     return !!vClean && (vClean === selectedVenueClean || vClean.includes(selectedVenueClean));
   });
@@ -224,10 +219,15 @@ export const mockDb = {
   coaches: ({ venueId } = {}) =>
     COACHES
       .filter((c) => venueMatches(c.venues, venueId))
-      .map((c) => ({ ...c, venues: [...c.venues], venue_ids: [...c.venues] })),
+      .map((c) => {
+        const venues = cleanVenueList(c.venues);
+        return { ...c, venues, venue_ids: venues };
+      }),
   coach: (id) => {
     const c = COACHES.find((x) => x.id === id);
-    return c ? { ...c, venue_ids: c.venues } : null;
+    if (!c) return null;
+    const venues = cleanVenueList(c.venues);
+    return { ...c, venues, venue_ids: venues };
   },
   promotions: () => PROMOTIONS.slice(),
   previewPromotion: ({ originalPrice, courseType, venueId, periodCount, couponCode }) => {
@@ -377,7 +377,8 @@ export const mockDb = {
   coachByPhone: (phone) => {
     const c = COACHES.find((x) => x.phone === String(phone || '').trim());
     if (!c) return null;
-    return { ...c, venue_ids: c.venues, token: `mock-coach-${c.id}` };
+    const venues = cleanVenueList(c.venues);
+    return { ...c, venues, venue_ids: venues, token: `mock-coach-${c.id}` };
   },
 
   coachSlots: (coachId, from, to) => _slotsByCoach(coachId, from, to),

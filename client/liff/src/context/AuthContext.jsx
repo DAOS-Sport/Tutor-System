@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { clearAfterAuth } from '../utils/afterAuth';
 import { parentsApi } from '../api/parents';
+import { cleanVenueList } from '../utils/venues';
 
 /**
  * 同時支援家長 / 教練兩種角色：
@@ -40,9 +41,15 @@ export function AuthProvider({ children }) {
     const { line_uid, lineUid, ...rest } = obj;
     return rest;
   };
+  const _normalizeCoach = (obj) => {
+    const safe = _stripSensitive(obj);
+    if (!safe || typeof safe !== 'object') return safe;
+    const venueIds = cleanVenueList(safe.venue_ids || safe.venues || []);
+    return { ...safe, venue_ids: venueIds, venues: venueIds };
+  };
   // coach 物件的 token 拉到頂層 (供 axios interceptor 直接讀)，data 仍保留全欄位（去敏後）
   const setParent = (p) => setUser(p ? { role: 'parent', data: _stripSensitive(p), token: p?.token || null } : null);
-  const setCoach  = (c) => setUser(c ? { role: 'coach',  data: _stripSensitive(c), token: c?.token || null } : null);
+  const setCoach  = (c) => setUser(c ? { role: 'coach',  data: _normalizeCoach(c), token: c?.token || null } : null);
   const logout    = () => {
     localStorage.setItem(DAOS_MANUAL_LOGOUT_KEY, '1');
     // 清除殘留的登入後回跳路徑（可能是上一個團購 join 連結），

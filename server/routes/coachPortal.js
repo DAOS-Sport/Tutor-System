@@ -32,6 +32,7 @@ const { signCoachToken } = require('../middlewares/coachAuth');
 const oauth = require('../services/coachOAuth');
 const session = require('../services/coachPortalSession');
 const itAlert = require('../services/itAlert');
+const { cleanVenueList, COACH_STAFF_PROFILE_SELECT } = require('../services/coachVenueScope');
 
 const router = express.Router();
 
@@ -93,16 +94,19 @@ async function peekState(token, kind) {
 // ── 載入完整 coach（含 venue_ids + multiplier alias，與 coaches.js 一致）──
 async function loadCoach(coachId) {
   const r = await pool.query(
-    `SELECT c.*, COALESCE(
-       (SELECT json_agg(cv.venue_id) FROM coach_venues cv WHERE cv.coach_id = c.id),
-       '[]'::json
-     ) AS venue_ids
-       FROM coaches c WHERE c.id = $1 AND c.is_active = TRUE`,
+    `SELECT ${COACH_STAFF_PROFILE_SELECT}
+       FROM coaches c
+       JOIN admin_staff s ON s.id = c.ragic_employee_id
+      WHERE c.id = $1
+        AND s.active = TRUE
+        AND c.is_active = TRUE`,
     [coachId]
   );
   if (!r.rowCount) return null;
   const coach = stripCoachGovernanceFields(r.rows[0]);
   coach.multiplier = Number(coach.pricing_multiplier);
+  coach.venue_ids = cleanVenueList(coach.venue_ids);
+  coach.venues = coach.venue_ids;
   // [可教場館診斷] 印出 DB 端完整 venue_ids 陣列，定位「只顯示新北」是資料/API/前端哪一層
   console.log('[coach.venue_ids][db]', coachId, JSON.stringify(coach.venue_ids));
   return coach;
