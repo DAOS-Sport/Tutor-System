@@ -3410,6 +3410,8 @@ const FORM_META = {
 // ragic_z01_shadow，不打 Ragic，故不需要（也不應該）搶 'ragic_sync' 全域鎖，
 // 否則會被無關的 Ragic 忙碌狀態無謂卡住。
 const RAGIC_LOCKED_JOBS = new Set(['staff', 'venues', 'parents', 'students', 'backup', 'pull']);
+const MANUAL_RAGIC_LOCK_WAIT_MS = Number(process.env.RAGIC_MANUAL_LOCK_WAIT_MS || 10 * 60 * 1000);
+const MANUAL_RAGIC_LOCK_POLL_MS = Number(process.env.RAGIC_MANUAL_LOCK_POLL_MS || 1500);
 
 const LIVE_PROBE_FORMS = {
   h01: { label: 'H01 員工 API', env: 'RAGIC_FORM_H01' },
@@ -3557,9 +3559,21 @@ async function _runWithLog(jobName, triggeredBy = 'cron') {
     // /sync）最終都走這裡，故單一把關點即可保證同一時間對 Ragic 帳號只有一個
     // in-flight 請求。搶不到鎖不是錯誤——只是另一個 Ragic job 正在跑，記一筆
     // skipped 讓下一輪 cron（10 分鐘後）或使用者重新手動觸發即可，不需要重試。
-    const outcome = await cronLock.runWithLock('ragic_sync', () => meta.impl(triggeredBy), { triggeredBy });
+    const lockOptions = String(triggeredBy) === 'manual'
+      ? { triggeredBy, waitMs: MANUAL_RAGIC_LOCK_WAIT_MS, pollMs: MANUAL_RAGIC_LOCK_POLL_MS }
+      : { triggeredBy };
+    const outcome = await cronLock.runWithLock('ragic_sync', () => meta.impl(triggeredBy), lockOptions);
     if (outcome.status === 'skipped_lock') {
-      result = { synced: 0, skipped: true, locked_by_other_ragic_job: true, current_holder: outcome.currentHolder };
+      const waitedSeconds = Math.round((outcome.waitedMs || 0) / 1000);
+      result = {
+        synced: 0,
+        skipped: true,
+        locked_by_other_ragic_job: true,
+        current_holder: outcome.currentHolder,
+        error: String(triggeredBy) === 'manual'
+          ? `等待 Ragic 同步鎖 ${waitedSeconds} 秒後仍未取得；目前由 ${outcome.currentHolder || 'unknown'} 執行中，請稍後再試。`
+          : null,
+      };
     } else if (outcome.status === 'success') {
       result = outcome.result;
     } else {
