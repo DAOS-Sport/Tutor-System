@@ -2,32 +2,40 @@ const WEEKDAY_TC = ['週日', '週一', '週二', '週三', '週四', '週五', 
 
 function pad2(n) { return String(n).padStart(2, '0'); }
 
+// 全站時間一律顯示台北時間（UTC+8，無日光節約時間），不可用 getHours() 等本地時區
+// getter — 瀏覽器/伺服器所在時區不一定是台北，會導致顯示時間整整偏差 8 小時。
+function toTaipei(input) {
+  const d = input instanceof Date ? input : new Date(input);
+  if (Number.isNaN(d.getTime())) return null;
+  return new Date(d.getTime() + 8 * 60 * 60 * 1000);
+}
+
 export function formatTWD(amount) {
   if (amount == null || Number.isNaN(Number(amount))) return 'NT$ 0';
   return `NT$ ${Math.round(Number(amount)).toLocaleString('en-US')}`;
 }
 
 export function formatTWDate(input) {
-  const d = input instanceof Date ? input : new Date(input);
-  if (Number.isNaN(d.getTime())) return '—';
-  return `${d.getFullYear()}/${pad2(d.getMonth() + 1)}/${pad2(d.getDate())}（${WEEKDAY_TC[d.getDay()]}）`;
+  const d = toTaipei(input);
+  if (!d) return '—';
+  return `${d.getUTCFullYear()}/${pad2(d.getUTCMonth() + 1)}/${pad2(d.getUTCDate())}（${WEEKDAY_TC[d.getUTCDay()]}）`;
 }
 
 export function formatTWDateTime(input) {
-  const d = input instanceof Date ? input : new Date(input);
-  if (Number.isNaN(d.getTime())) return '—';
-  return `${formatTWDate(d)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  const d = toTaipei(input);
+  if (!d) return '—';
+  return `${formatTWDate(input)} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`;
 }
 
 export function formatHM(input) {
-  const d = input instanceof Date ? input : new Date(input);
-  if (Number.isNaN(d.getTime())) return '—';
-  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  const d = toTaipei(input);
+  if (!d) return '—';
+  return `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`;
 }
 
 export function todayISO() {
-  const d = new Date();
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  const d = toTaipei(new Date());
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
 }
 
 export function isValidTWPhone(phone) {

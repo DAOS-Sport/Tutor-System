@@ -1,3 +1,8 @@
+// 全站統一台灣時區（見 models/db.js 的 DB session 設定）：Node 執行期本身也強制
+// 固定，避免部署環境（Docker/不同雲端機房）系統時區不一致，導致 new Date() 相關的
+// 本地時間 getter/setter（如 bootstrap 種子資料的 relDays()）解讀出錯的時間。
+process.env.TZ = 'Asia/Taipei';
+
 require('dotenv').config();
 const path = require('path');
 const express = require('express');
