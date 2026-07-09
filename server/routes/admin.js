@@ -22,6 +22,7 @@ router.use('/coaches',       require('./admin/coaches'));   // F-C-Admin (Task #
 router.use('/venues',        require('./admin/venues'));
 router.use('/settings',      require('./admin/settings'));
 router.use('/course-intros', require('./admin/courseIntros'));
+router.use('/checkouts',     require('./admin/checkouts'));
 router.use('/enrollments',   require('./admin/enrollments'));
 router.use('/sessions',      require('./admin/sessions'));
 router.use('/checkins',      require('./admin/checkins'));   // Task #60

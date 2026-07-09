@@ -67,6 +67,7 @@ app.use('/api/sessions',      require('./routes/sessions'));     // course_sessi
 app.use('/api/checkins',      require('./routes/checkins'));
 app.use('/api/promotions',    require('./routes/promotions'));
 app.use('/api/enrollments',   require('./routes/enrollments'));  // F-S02 LIFF 報名建立 + promotion_usages
+app.use('/api/checkout',      require('./routes/checkout'));     // checkout 母單付款頁
 app.use('/api/group-orders',  require('./routes/groupOrders'));  // U6 團購（家長端）
 app.use('/api/uploads',       require('./routes/uploads'));      // U3 家長端匯款證明上傳
 app.use('/api/referrals',     require('./routes/referrals'));    // MGM

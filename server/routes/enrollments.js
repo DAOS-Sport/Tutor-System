@@ -18,13 +18,60 @@ const promotions = require('../services/promotions');
 const referrals = require('../services/referrals');
 const { objectExists } = require('../services/objectStorage');
 const { requireParent } = require('../middlewares/parentAuth');
+const {
+  createCheckoutSession,
+  refreshCheckoutTotal,
+  routeInstruction,
+  normalizeRequestId,
+} = require('../services/checkouts');
 
 const router = express.Router();
+
+router.use((req, res, next) => {
+  if (req.method !== 'POST' || req.path !== '/') return next();
+  const startedAt = Date.now();
+  const p = req.body || {};
+  const summary = {
+    has_auth: !!req.headers.authorization,
+    parent_id: p.parent_id || null,
+    request_id: p.request_id || req.get('Idempotency-Key') || null,
+    coach_id: p.coach?.id || null,
+    venue_id: p.venue?.id || null,
+    course_type: p.course_type ?? null,
+    period_count: p.period_count ?? null,
+    student_count: Array.isArray(p.students) ? p.students.length : null,
+    student_ids: Array.isArray(p.students) ? p.students.map((s) => s?.id).filter(Boolean) : [],
+  };
+  console.log('[enrollments request] incoming:', summary);
+
+  const originalJson = res.json.bind(res);
+  res.json = (body) => {
+    if (res.statusCode >= 400) {
+      console.error('[enrollments request] response_error:', {
+        status: res.statusCode,
+        duration_ms: Date.now() - startedAt,
+        request: summary,
+        body,
+      });
+    } else {
+      console.log('[enrollments request] response_ok:', {
+        status: res.statusCode,
+        duration_ms: Date.now() - startedAt,
+        checkout_id: body?.checkout_id || body?.data?.checkout_id || null,
+        count: body?.count ?? null,
+        total_amount: body?.data?.total_amount ?? body?.total_amount ?? null,
+      });
+    }
+    return originalJson(body);
+  };
+  return next();
+});
+
 router.use(requireParent);
 
 function genEnrollmentId() {
   const ts = Date.now().toString(36).toUpperCase();
-  const rand = Math.floor(Math.random() * 1296).toString(36).toUpperCase().padStart(2, '0');
+  const rand = randomUUID().replace(/-/g, '').slice(0, 16).toUpperCase();
   return `E${ts}${rand}`;
 }
 
@@ -145,6 +192,10 @@ router.post('/', async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: '學員資料不完整' });
     }
+    if (new Set(submittedStudentIds).size !== submittedStudentIds.length) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: '學員資料重複，請重新選擇', code: 'DUPLICATE_STUDENT' });
+    }
     const studentRows = await client.query(
       `SELECT id, name FROM students
         WHERE parent_id = $1 AND id = ANY($2::uuid[]) AND COALESCE(is_active, TRUE) = TRUE`,
@@ -201,20 +252,56 @@ router.post('/', async (req, res) => {
     }
 
     const parentUuid = parentRow.id;
-    const studentNames = submittedStudentIds.map((id) => studentRows.rows.find((s) => s.id === id)?.name).filter(Boolean);
+    const studentById = new Map(studentRows.rows.map((s) => [String(s.id), s]));
+    const selectedStudents = submittedStudentIds
+      .map((id) => studentById.get(id))
+      .filter(Boolean);
+    const studentNames = selectedStudents.map((s) => s.name);
     const submittedAt = new Date();
 
-    // 訂單依期數拆分：買 N 期 → 建 N 筆 admin_enrollments，每筆 1 期(6 堂)，各自付款/對帳/鎖定。
+    // 訂單依「學員 × 期數」拆分：
+    // 2 位學員買 4 期 → 建 8 筆 admin_enrollments，每筆只代表 1 位學員的 1 期。
+    // 這讓 checkout 母單仍聚合總額，但後續對帳、開通與發票品項都能精準到單生單期。
     // 折扣門檻仍以整筆購買的 periodCount 計算（見上方 previewBestDiscount，不可改傳 1）。
     const batchId = randomUUID();
-    const perPeriodOriginal = unitPrice * studentCount; // 單期原價（含所有學員）
+    const childOrderCount = studentCount * periodCount;
+    const perChildOriginal = unitPrice; // 單一學員、單一期的原價
     let totalDiscount = (preview.promotion && preview.discountAmount > 0) ? preview.discountAmount : 0;
-    // 先產生各期單號：促銷用量須掛在第一筆，且要「先確認用量」再寫各期價——
+    // 先產生各子訂單單號：促銷用量須掛在第一筆，且要「先確認用量」再寫各期價——
     // 自動套用的促銷若在 preview 與 recordUsage（FOR UPDATE 覆核）之間被用盡/停用，
     // 需能改以全額重算各期 final_price，故把用量確認排在各期 INSERT 之前。
     const enrollmentIds = [];
-    for (let i = 0; i < periodCount; i += 1) enrollmentIds.push(genEnrollmentId());
+    for (let i = 0; i < childOrderCount; i += 1) enrollmentIds.push(genEnrollmentId());
     const firstId = enrollmentIds[0];
+
+    const checkout = await createCheckoutSession(client, {
+      parentId: parentUuid,
+      enrollmentBatchId: batchId,
+      totalAmount: preview.finalPrice,
+      transferLast5: last5 || null,
+      paymentProofUrl,
+      carrier: p.carrier ? String(p.carrier).trim().slice(0, 64) : null,
+      requestId: normalizeRequestId(p.request_id || req.get('Idempotency-Key')),
+      by: parentRow.phone,
+    });
+    if (!checkout.created && checkout.enrollmentBatchId !== batchId) {
+      await client.query('COMMIT');
+      const instruction = routeInstruction(checkout.checkoutId, checkout.paymentStatus);
+      const totalCheck = await pool.query(
+        `SELECT total_amount FROM checkout_sessions WHERE checkout_id = $1`,
+        [checkout.checkoutId]
+      );
+      const checkoutTotalAmount = Number(totalCheck.rows[0]?.total_amount ?? 0) || 0;
+      return res.status(200).json({
+        status: 'success',
+        ok: true,
+        checkout_id: checkout.checkoutId,
+        idempotent: true,
+        ...instruction,
+        data: { ...instruction, total_amount: checkoutTotalAmount },
+        route_instruction: instruction,
+      });
+    }
 
     // 促銷用量只記一次（掛第一筆 + batch 總額），避免多期被當成多次使用而誤扣 max_uses。
     //  - 家長「明確輸入折價券」（couponCode 有值）失敗 → 整筆退回（COUPON_* 交外層 catch 回 400）。
@@ -247,32 +334,59 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // 折扣按比例分攤到各期、餘數補最後一筆，使 N 筆 final_price 加總 = preview.finalPrice。
+    // 折扣按比例分攤到每一筆「單生單期」子訂單，餘數補最後一筆，
+    // 使所有子訂單 final_price 加總嚴格等於 preview.finalPrice / checkout total_amount。
     let discountAllocated = 0;
-    for (let i = 0; i < periodCount; i += 1) {
-      const d = (i < periodCount - 1) ? Math.round(totalDiscount / periodCount) : (totalDiscount - discountAllocated);
-      if (i < periodCount - 1) discountAllocated += d;
-      const finalThis = Math.max(0, perPeriodOriginal - d);
-      const eid = enrollmentIds[i];
-      await client.query(
-        `INSERT INTO admin_enrollments
-           (id, parent_name, parent_phone, students, coach, coach_id, venue_id, course_type,
-            original_price, final_price, transfer_last_5, payment_proof_url, status, submitted_at,
-            period_count, period_number, enrollment_batch_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending_payment',$13,1,$14,$15)`,
-        [
-          eid, parentRow.name, parentRow.phone, studentNames,
-          coachName, coachId, venueId, Number(p.course_type),
-          perPeriodOriginal, finalThis, last5 || null,
-          paymentProofUrl, submittedAt, i + 1, batchId,
-        ]
-      );
-      await client.query(
-        `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user)
-         VALUES ($1, $2, $3)`,
-        [eid, '家長提交報名', parentRow.phone]
-      );
+    const insertedOrders = [];
+    let orderIndex = 0;
+    for (const student of selectedStudents) {
+      for (let period = 1; period <= periodCount; period += 1) {
+        const d = (orderIndex < childOrderCount - 1)
+          ? Math.round(totalDiscount / childOrderCount)
+          : (totalDiscount - discountAllocated);
+        if (orderIndex < childOrderCount - 1) discountAllocated += d;
+        const finalThis = Math.max(0, perChildOriginal - d);
+        const eid = enrollmentIds[orderIndex];
+        await client.query(
+          `INSERT INTO admin_enrollments
+             (id, parent_name, parent_phone, students, coach, coach_id, venue_id, course_type,
+              original_price, final_price, transfer_last_5, payment_proof_url, status, submitted_at,
+              period_count, period_number, enrollment_batch_id, checkout_id, carrier)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending_payment',$13,1,$14,$15,$16,$17)`,
+          [
+            eid, parentRow.name, parentRow.phone, [student.name],
+            coachName, coachId, venueId, Number(p.course_type),
+            perChildOriginal, finalThis, last5 || null,
+            paymentProofUrl, submittedAt, period, batchId, checkout.checkoutId,
+            p.carrier ? String(p.carrier).trim().slice(0, 64) : null,
+          ]
+        );
+        await client.query(
+          `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user)
+           VALUES ($1, $2, $3)`,
+          [eid, '家長提交報名', parentRow.phone]
+        );
+        insertedOrders.push({
+          id: eid,
+          student_id: student.id,
+          student_name: student.name,
+          period_number: period,
+          original_price: perChildOriginal,
+          final_price: finalThis,
+        });
+        orderIndex += 1;
+      }
     }
+    console.log('[enrollments create] child orders inserted', {
+      checkout_id: checkout.checkoutId,
+      enrollment_batch_id: batchId,
+      parent_id: parentUuid,
+      student_count: studentCount,
+      period_count: periodCount,
+      child_order_count: insertedOrders.length,
+      child_final_sum: insertedOrders.reduce((sum, row) => sum + row.final_price, 0),
+      orders: insertedOrders,
+    });
 
     // MGM：若使用 TRIAL50，更新 referral_records 為 trial_paid（一次推薦＝一次，掛第一筆）。
     // R3 縱深防禦：markTrialPaid 回傳 false 代表這筆推薦已被兌換（並發下另一交易先行）。
@@ -292,13 +406,25 @@ router.post('/', async (req, res) => {
       }
     }
 
+    await refreshCheckoutTotal(client, checkout.checkoutId);
     await client.query('COMMIT');
+    const instruction = routeInstruction(checkout.checkoutId, checkout.paymentStatus);
+    const totalCheck = await pool.query(
+      `SELECT total_amount FROM checkout_sessions WHERE checkout_id = $1`,
+      [checkout.checkoutId]
+    );
+    const checkoutTotalAmount = Number(totalCheck.rows[0]?.total_amount ?? preview.finalPrice) || 0;
 
     res.status(201).json({
+      status: 'success',
       id: firstId,        // 相容：維持單一 id（=第一期）供舊呼叫端／單期導頁
       first_id: firstId,
       batch_id: batchId,
-      count: periodCount,
+      checkout_id: checkout.checkoutId,
+      count: enrollmentIds.length,
+      period_count: periodCount,
+      student_count: studentCount,
+      order_count: enrollmentIds.length,
       enrollment_ids: enrollmentIds,
       parent_id: parentRow.id,
       coach: p.coach,
@@ -308,10 +434,13 @@ router.post('/', async (req, res) => {
       total_sessions: 6,
       used_sessions: 0,
       original_price: preview.originalPrice, // 費用明細顯示整筆（N 期）總額
-      final_price: preview.finalPrice,
+      final_price: checkoutTotalAmount,
       payment_status: 'pending_payment',
       transfer_last_5: last5 || null,
       payment_proof_url: paymentProofUrl,
+      ...instruction,
+      data: { ...instruction, total_amount: checkoutTotalAmount },
+      route_instruction: instruction,
       promotion: preview.promotion ? {
         id: preview.promotion.id,
         name: preview.promotion.name,
@@ -322,7 +451,7 @@ router.post('/', async (req, res) => {
     });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
-    console.error('[enrollments create]', err);
+    console.error('[enrollments create] error:', err);
     if (err && err.code && String(err.code).startsWith('COUPON_')) {
       return res.status(400).json({
         error: err.publicMessage ? err.message : '折價券無法使用，請確認代碼或重新試算',

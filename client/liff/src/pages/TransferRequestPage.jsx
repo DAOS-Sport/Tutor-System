@@ -19,7 +19,9 @@ export default function TransferRequestPage() {
   const [busy, setBusy] = useState(false);
 
   function reload() {
-    coursesApi.myCourses(parent.id).then((d) => setPeriods(Array.isArray(d) ? d.filter((c) => c.payment_status === 'active' && c.course_period_id) : []))
+    coursesApi.myCourses(parent.id).then((d) => setPeriods(Array.isArray(d)
+      ? d.filter((c) => (c.lifecycle === 'active' || c.payment_status === 'active') && c.course_period_id)
+      : []))
       .catch(() => setPeriods([]));
     transfersApi.mine().then(setMine).catch(() => setMine([]));
   }

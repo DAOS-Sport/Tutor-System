@@ -16,6 +16,9 @@ const { pool } = require('../../models/db');
 const { requireAdminAuth, requireAdminRole, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
 const ragicWriteback = require('../../services/ragicWriteback');
 const promotions = require('../../services/promotions');
+const {
+  createCheckoutSession,
+} = require('../../services/checkouts');
 
 const router = express.Router();
 
@@ -68,7 +71,7 @@ async function ensureGroupCoursePeriod(client, enrollment, totalSessions) {
   // reconcile 會先把本筆 admin_enrollments.status 更新為 confirmed，再呼叫此函式；
   // 同一交易內查詢能看到本筆最新狀態，因此可用來當該期開通守門。
   const groupEnrollments = await client.query(
-    `SELECT id, status, final_price
+    `SELECT id, status, final_price, checkout_id, enrollment_batch_id
        FROM admin_enrollments
       WHERE group_order_id = $1 AND period_number = $2
       ORDER BY submitted_at, id`,
@@ -88,6 +91,35 @@ async function ensureGroupCoursePeriod(client, enrollment, totalSessions) {
       'waiting:', waiting.map((row) => `${row.id}:${row.status}`).join(',') || '(無)'
     );
     return;
+  }
+
+  // 團報金流守門：同一個 enrollment_batch_id 代表同一團報購買批次；
+  // 但 checkout 以 parent_id 隔離成多張母單。只有該批次所有有效 checkout 都 paid，
+  // 才能正式開通團報課程，避免 A 家長對帳通過時直接開通 B 家長尚未付清的課。
+  const batchId = enrollment.enrollment_batch_id || relevant.find((row) => row.enrollment_batch_id)?.enrollment_batch_id || null;
+  if (batchId) {
+    const pay = await client.query(
+      `SELECT cs.checkout_id, cs.payment_status
+         FROM checkout_sessions cs
+        WHERE cs.enrollment_batch_id = $1
+          AND EXISTS (
+            SELECT 1 FROM admin_enrollments ae
+             WHERE ae.checkout_id = cs.checkout_id
+               AND ae.group_order_id = $2
+               AND ae.status NOT IN ('cancelled','refunded')
+          )`,
+      [batchId, groupOrderId]
+    );
+    const unpaid = pay.rows.filter((row) => row.payment_status !== 'paid');
+    if (!pay.rowCount || unpaid.length > 0) {
+      console.warn(
+        '[reconcile/group] 團報 batch 尚未全數 checkout paid，暫不建立課程:',
+        'group:', groupOrderId,
+        'batch:', batchId,
+        'unpaid:', unpaid.map((row) => `${row.checkout_id}:${row.payment_status}`).join(',') || '(none)'
+      );
+      return;
+    }
   }
 
   const members = await client.query(
@@ -411,6 +443,15 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
     const batchId = randomUUID();
     const enrollmentIds = [];
     let origAlloc = 0, finalAlloc = 0, allowAlloc = 0;
+    const parentMatch = await client.query(`SELECT id FROM parents WHERE phone = $1 LIMIT 1`, [parentPhone]);
+    const checkout = await createCheckoutSession(client, {
+      parentId: parentMatch.rows[0]?.id || null,
+      enrollmentBatchId: batchId,
+      totalAmount: finalPrice,
+      transferLast5: last5 || null,
+      carrier,
+      by: byUser,
+    });
 
     for (let i = 0; i < numPeriods; i += 1) {
       const isLast = i === numPeriods - 1;
@@ -427,14 +468,14 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
            (id, parent_name, parent_phone, students, coach, coach_id, venue_id, course_type,
             original_price, final_price, transfer_last_5, status, submitted_at,
             total_sessions, used_sessions, period_count, period_number, enrollment_batch_id,
-            payment_method, payer, class_name, allowance_amount, tax_id, level_note,
+            checkout_id, payment_method, payer, class_name, allowance_amount, tax_id, level_note,
             unit_price, work_type, full_sessions, carrier, sync_source, created_by)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending_payment',$12,
-                 $13,0,1,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,'replit',$26)`,
+                 $13,0,1,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,'replit',$27)`,
         [
           eid, parentName, parentPhone, students, coachName, coachId, venueId, courseType,
           po, pf, last5 || null, submittedAt,
-          periodSessions, i + 1, batchId,
+          periodSessions, i + 1, batchId, checkout.checkoutId,
           paymentMethod, payer, className, pa, taxId, levelNote,
           unitPrice, workType, fullSessions, carrier, createdBy,
         ]
@@ -451,6 +492,7 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
       id: enrollmentIds[0],
       first_id: enrollmentIds[0],
       batch_id: batchId,
+      checkout_id: checkout.checkoutId,
       count: numPeriods,
       enrollment_ids: enrollmentIds,
       status: 'pending_payment',
@@ -818,6 +860,44 @@ router.post('/:id/reconcile', requireAdminAuth, requireAdminRole('admin', 'manag
        VALUES ($1, $2, $3)`,
       [id, `對帳通過（發票 ${invoiceNumber}）`, by]
     );
+    if (cur.rows[0].checkout_id) {
+      await client.query(
+        `INSERT INTO checkout_invoices
+           (checkout_id, order_id, buyer_name, amount, invoice_number, invoice_image_url, invoice_url, issued_at)
+         VALUES ($1, NULL, $2, $3, $4, $5, $6, NOW())
+         ON CONFLICT (checkout_id) WHERE order_id IS NULL
+         DO UPDATE SET buyer_name = EXCLUDED.buyer_name,
+                       amount = EXCLUDED.amount,
+                       invoice_number = EXCLUDED.invoice_number,
+                       invoice_image_url = EXCLUDED.invoice_image_url,
+                       invoice_url = EXCLUDED.invoice_url,
+                       issued_at = EXCLUDED.issued_at,
+                       updated_at = NOW()`,
+        [cur.rows[0].checkout_id, cur.rows[0].parent_name, cur.rows[0].final_price, invoiceNumber, invoiceImageUrl, invoiceUrl || null]
+      );
+      await client.query(
+        `UPDATE checkout_sessions cs
+            SET payment_status = CASE
+                  WHEN NOT EXISTS (
+                    SELECT 1 FROM admin_enrollments ae
+                     WHERE ae.checkout_id = cs.checkout_id
+                       AND ae.status NOT IN ('confirmed','active','cancelled','refunded')
+                  ) THEN 'paid'
+                  ELSE cs.payment_status
+                END,
+                current_route_state = CASE
+                  WHEN NOT EXISTS (
+                    SELECT 1 FROM admin_enrollments ae
+                     WHERE ae.checkout_id = cs.checkout_id
+                       AND ae.status NOT IN ('confirmed','active','cancelled','refunded')
+                  ) THEN 'paid'
+                  ELSE cs.current_route_state
+                END,
+                updated_at = NOW()
+          WHERE cs.checkout_id = $1`,
+        [cur.rows[0].checkout_id]
+      );
+    }
 
     // U10 修補：團報對帳通過 → 回寫該成員 group_order_members.payment_confirmed。
     //   家長端團報狀態頁（GroupStatusPage 讀 group_order_members.payment_confirmed）原本只認
@@ -1023,6 +1103,32 @@ router.post('/:id/cancel', requireAdminAuth, requireAdminRole('admin', 'manager'
       `UPDATE admin_enrollments SET status = 'cancelled', updated_at = NOW() WHERE id = $1`,
       [id]
     );
+    if (cur.rows[0].checkout_id) {
+      await client.query(
+        `UPDATE checkout_sessions cs
+            SET payment_status = CASE
+                  WHEN NOT EXISTS (
+                    SELECT 1 FROM admin_enrollments ae
+                     WHERE ae.checkout_id = cs.checkout_id
+                       AND ae.id <> $2
+                       AND ae.status <> 'cancelled'
+                  ) THEN 'cancelled'
+                  ELSE cs.payment_status
+                END,
+                current_route_state = CASE
+                  WHEN NOT EXISTS (
+                    SELECT 1 FROM admin_enrollments ae
+                     WHERE ae.checkout_id = cs.checkout_id
+                       AND ae.id <> $2
+                       AND ae.status <> 'cancelled'
+                  ) THEN 'cancelled'
+                  ELSE cs.current_route_state
+                END,
+                updated_at = NOW()
+          WHERE cs.checkout_id = $1`,
+        [cur.rows[0].checkout_id, id]
+      );
+    }
     await client.query(
       `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user, reason)
        VALUES ($1, $2, $3, $4)`,
@@ -1039,5 +1145,11 @@ router.post('/:id/cancel', requireAdminAuth, requireAdminRole('admin', 'manager'
     client.release();
   }
 });
+
+router._checkoutInternals = {
+  getSettings,
+  ensureGroupCoursePeriod,
+  ensureSoloCoursePeriod,
+};
 
 module.exports = router;

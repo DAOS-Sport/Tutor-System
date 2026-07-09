@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { coursesApi } from '../api/courses';
 import { groupOrdersApi } from '../api/groupOrders';
+import { checkoutApi } from '../api/checkout';
 import CourseCard from '../components/CourseCard';
 import LoadingSpinner from '../components/LoadingSpinner';
 import PaymentDisclaimerModal from '../components/PaymentDisclaimerModal';
@@ -36,6 +37,7 @@ export default function MyCoursesPage() {
   const [tab, setTab] = useState('all');
   const [loadError, setLoadError] = useState(null);
   const [cancellingId, setCancellingId] = useState(null);
+  const [resolvingPaymentId, setResolvingPaymentId] = useState(null);
   const [paymentTarget, setPaymentTarget] = useState('');
 
   function load() {
@@ -95,24 +97,52 @@ export default function MyCoursesPage() {
     review: pendingCourses.length + reviewGroupOrders.length,
   }), [allCourses, activeCourses, pendingCourses, visibleGroupOrders, reviewGroupOrders]);
 
-  // 卡片點擊導航：
-  //  - active / completed → 課程詳情頁 /course/:id
-  //  - pending_payment 且為團報共享報名（有 group_order_id）→ 團購狀態頁 /group/:id
-  //  - 其餘 pending_payment → 報名狀態頁 /enroll-status/:id
-  function navigateForCard(cp) {
-    if (cp.lifecycle === 'active' || cp.lifecycle === 'completed') {
-      navigate(`/course/${cp.id}`);
-      return;
-    }
-    if (cp.lifecycle === 'pending_payment') {
-      setPaymentTarget(cp.group_order_id ? `/group/${cp.group_order_id}` : `/enroll-status/${cp.id}`);
+  async function openPaymentTarget(cp) {
+    if (!cp) return;
+    if (cp.checkout_id) {
+      setPaymentTarget(`/checkout/${cp.checkout_id}`);
       return;
     }
     if (cp.group_order_id) {
       navigate(`/group/${cp.group_order_id}`);
       return;
     }
-    navigate(`/enroll-status/${cp.id}`);
+    if (!cp.enrollment_batch_id) {
+      toast.error('此報名缺少付款單資料，請聯繫櫃檯');
+      return;
+    }
+    setResolvingPaymentId(cp.id);
+    try {
+      const route = await checkoutApi.route({ enrollment_batch_id: cp.enrollment_batch_id });
+      const checkoutId = route?.data?.checkout_id || route?.checkout_id || route?.route_instruction?.checkout_id;
+      if (!checkoutId) throw new Error('missing checkout id');
+      setPaymentTarget(`/checkout/${checkoutId}`);
+      load();
+    } catch (e) {
+      toast.error(e?.response?.data?.error || '付款單導向失敗，請聯繫櫃檯');
+    } finally {
+      setResolvingPaymentId(null);
+    }
+  }
+
+  // 卡片點擊導航：
+  //  - active / completed → 課程詳情頁 /course/:id
+  //  - pending_payment → checkout 母單付款；缺 checkout_id 時嘗試用 enrollment_batch_id 修復
+  //  - pending_payment 且為團報共享報名（有 group_order_id）→ 團購狀態頁 /group/:id
+  async function navigateForCard(cp) {
+    if (cp.lifecycle === 'active' || cp.lifecycle === 'completed') {
+      navigate(`/course/${cp.id}`);
+      return;
+    }
+    if (cp.lifecycle === 'pending_payment') {
+      await openPaymentTarget(cp);
+      return;
+    }
+    if (cp.group_order_id) {
+      navigate(`/group/${cp.group_order_id}`);
+      return;
+    }
+    if (cp.checkout_id) navigate(`/checkout/${cp.checkout_id}`);
   }
 
   async function cancelPendingCourse(cp) {
@@ -121,7 +151,13 @@ export default function MyCoursesPage() {
     if (!ok) return;
     setCancellingId(cp.id);
     try {
-      await coursesApi.cancelPending(cp.id);
+      if (cp.is_checkout_aggregate && cp.checkout_id) {
+        await checkoutApi.cancel(cp.checkout_id);
+      } else if (cp.is_checkout_aggregate && Array.isArray(cp.sub_order_ids) && cp.sub_order_ids.length) {
+        await Promise.all(cp.sub_order_ids.map((id) => coursesApi.cancelPending(id)));
+      } else {
+        await coursesApi.cancelPending(cp.id);
+      }
       toast.success('已取消未完成報名');
       load();
     } catch (e) {
@@ -151,7 +187,12 @@ export default function MyCoursesPage() {
           ? { label: '查看團購狀態', primary: true, onClick: () => navigateForCard(cp) }
           : (paymentSubmitted
             ? { label: '已上傳，待櫃檯確認', primary: true, disabled: true, onClick: () => {} }
-            : { label: '上傳付款資料', primary: true, onClick: () => navigateForCard(cp) }),
+            : {
+              label: resolvingPaymentId === cp.id ? '付款單確認中…' : '上傳付款資料',
+              primary: true,
+              disabled: resolvingPaymentId === cp.id,
+              onClick: () => navigateForCard(cp),
+            }),
         ...(cp.group_order_id ? [] : [{
           label: cancellingId === cp.id ? '取消中…' : '取消訂單',
           disabled: cancellingId === cp.id,

@@ -108,6 +108,7 @@ export function courseTypeLabel(type) {
 export function paymentStatusLabel(status) {
   return ({
     pending_payment: '待對帳',
+    pending_reconcile: '待櫃檯確認',
     active: '進行中',
     completed: '已結束',
     expired: '已到期',
@@ -118,6 +119,7 @@ export function paymentStatusLabel(status) {
 export function paymentStatusColor(status) {
   return ({
     pending_payment: 'bg-brand-amber text-white',
+    pending_reconcile: 'bg-brand-amber text-white',
     active: 'bg-brand-green text-white',
     completed: 'bg-gray-400 text-white',
     expired: 'bg-gray-400 text-white',

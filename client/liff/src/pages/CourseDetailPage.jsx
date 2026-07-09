@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { getRoomForPeriod } from '../api/chat';
+import { checkoutApi } from '../api/checkout';
 import { coursesApi } from '../api/courses';
 import LoadingSpinner from '../components/LoadingSpinner';
 import PaymentDisclaimerModal from '../components/PaymentDisclaimerModal';
@@ -27,6 +28,7 @@ export default function CourseDetailPage() {
 
   const [course, setCourse] = useState(undefined); // undefined=loading, null=error
   const [openingRoom, setOpeningRoom] = useState(false);
+  const [resolvingPayment, setResolvingPayment] = useState(false);
   const [paymentTarget, setPaymentTarget] = useState('');
 
   const load = useCallback(() => {
@@ -54,6 +56,34 @@ export default function CourseDetailPage() {
     }
   }
 
+  async function openPayment() {
+    if (!course || resolvingPayment) return;
+    if (course.checkout_id) {
+      setPaymentTarget(`/checkout/${course.checkout_id}`);
+      return;
+    }
+    if (course.group_order_id) {
+      setPaymentTarget(`/group/${course.group_order_id}`);
+      return;
+    }
+    if (!course.enrollment_batch_id) {
+      toast.error('此報名缺少付款單資料，請聯繫櫃檯');
+      return;
+    }
+    setResolvingPayment(true);
+    try {
+      const route = await checkoutApi.route({ enrollment_batch_id: course.enrollment_batch_id });
+      const checkoutId = route?.data?.checkout_id || route?.checkout_id || route?.route_instruction?.checkout_id;
+      if (!checkoutId) throw new Error('missing checkout id');
+      setPaymentTarget(`/checkout/${checkoutId}`);
+      load();
+    } catch (e) {
+      toast.error(e?.response?.data?.error || '付款單導向失敗，請聯繫櫃檯');
+    } finally {
+      setResolvingPayment(false);
+    }
+  }
+
   if (course === undefined) return <LoadingSpinner fullPage label="載入課程詳情…" />;
   if (course === null) {
     return (
@@ -77,8 +107,6 @@ export default function CourseDetailPage() {
   const isActiveOrDone = lifecycle === 'active' || lifecycle === 'completed';
   const isPending = lifecycle === 'pending_payment';
   const hasInvoice = course.invoice_number || course.invoice_image_url;
-  const pendingPaymentTarget = course.group_order_id ? `/group/${course.group_order_id}` : `/enroll-status/${id}`;
-
   return (
     <div className="px-4 py-4 pb-10">
       {/* 標題 + 狀態 */}
@@ -150,10 +178,11 @@ export default function CourseDetailPage() {
       {isPending && (
         <button
           type="button"
-          onClick={() => setPaymentTarget(pendingPaymentTarget)}
+          disabled={resolvingPayment}
+          onClick={openPayment}
           className="w-full rounded-lg bg-brand-primary py-2.5 text-sm font-bold text-white active:bg-brand-teal"
         >
-          前往付款／上傳證明
+          {resolvingPayment ? '付款單確認中…' : '前往付款／上傳證明'}
         </button>
       )}
 

@@ -17,6 +17,7 @@ const { pool } = require('../../models/db');
 const {
   requireAdminAuth, requireAdminRole, getScopedVenueIds, isVenueInScope,
 } = require('../../middlewares/adminAuth');
+const { createCheckoutSession } = require('../../services/checkouts');
 
 const router = express.Router();
 const AMS = requireAdminRole('admin', 'manager', 'staff');
@@ -204,24 +205,32 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
     }
 
     const createdIds = [];
+    const groupBatchId = randomUUID();
     for (const m of ms.rows) {
       const names = m.student_names || [];
       const count = names.length || 1;
       // 訂單依期數拆分：每位成員的 N 期各自一筆（period_count=1，6 堂），各自付款/對帳。
-      const memberBatchId = randomUUID();
       const perPeriodPrice = perStudent * count; // 單期（該成員所有學員）
+      const checkout = await createCheckoutSession(client, {
+        parentId: m.parent_id,
+        enrollmentBatchId: groupBatchId,
+        totalAmount: perPeriodPrice * periodCount,
+        transferLast5: m.transfer_last_5 || null,
+        paymentProofUrl: m.payment_proof_url || null,
+        by: req.adminUser?.username || 'system',
+      });
       for (let j = 1; j <= periodCount; j += 1) {
         const eid = genEnrollmentId();
         await client.query(
           `INSERT INTO admin_enrollments
              (id, parent_name, parent_phone, students, coach, coach_id, venue_id, course_type,
               original_price, final_price, transfer_last_5, payment_proof_url, status, submitted_at,
-              group_order_id, is_group_shared, period_count, period_number, enrollment_batch_id)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending_payment',NOW(),$13,TRUE,1,$14,$15)`,
+              group_order_id, is_group_shared, period_count, period_number, enrollment_batch_id, checkout_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending_payment',NOW(),$13,TRUE,1,$14,$15,$16)`,
           [
             eid, m.parent_name, m.parent_phone, names, coachName, order.coach_id,
             order.venue_id, order.course_type, perPeriodPrice, perPeriodPrice, m.transfer_last_5 || null, m.payment_proof_url,
-            order.id, j, memberBatchId,
+            order.id, j, groupBatchId, checkout.checkoutId,
           ]
         );
         await client.query(

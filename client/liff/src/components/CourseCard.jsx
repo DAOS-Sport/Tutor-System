@@ -45,8 +45,10 @@ export default function CourseCard({ variant = 'period', period, type, onClick, 
   const sessTotal = Number(period.total_sessions) || 0;
   const sessRemaining = Math.max(0, sessTotal - (Number(period.used_sessions) || 0));
   const multiplierPct = Math.round((Number(period.pricing_multiplier) || 1) * 100);
-  const summaryLine = `${period.coach?.name || '教練'}_${courseTypeLabel(period.course_type)}-${multiplierPct}%`
-    + (sessTotal > 0 ? `（剩 ${sessRemaining}/總 ${sessTotal}）` : '');
+  const summaryLine = period.is_checkout_aggregate
+    ? `${period.coach?.name || '教練'}_${courseTypeLabel(period.course_type)}（共 ${period.period_count || period.sub_order_count || 1} 期）`
+    : `${period.coach?.name || '教練'}_${courseTypeLabel(period.course_type)}-${multiplierPct}%`
+      + (sessTotal > 0 ? `（剩 ${sessRemaining}/總 ${sessTotal}）` : '');
   // 已結束（completed）以 lifecycle 判定並顯示灰色「已結束」徽章；
   // 其餘維持原本以 payment_status 顯示狀態（待對帳／進行中…）。
   const badgeStatus = period.lifecycle === 'completed' ? 'completed' : period.payment_status;
@@ -79,7 +81,9 @@ export default function CourseCard({ variant = 'period', period, type, onClick, 
           <p className="mt-0.5 truncate text-xs text-gray-500">
             {period.venue?.name ? `${period.venue.name} · ` : ''}學員：{studentNames || '—'}
           </p>
-          <p className="mt-0.5 truncate font-mono text-[11px] text-gray-400">訂單編號：{period.id || '—'}</p>
+          <p className="mt-0.5 truncate font-mono text-[11px] text-gray-400">
+            {period.is_checkout_aggregate ? '付款單編號' : '訂單編號'}：{period.id || '—'}
+          </p>
           {period.group_order_id && (
             <p className="mt-0.5 truncate font-mono text-[11px] text-gray-400">團購單號：{period.group_order_id}</p>
           )}
@@ -90,13 +94,24 @@ export default function CourseCard({ variant = 'period', period, type, onClick, 
         </div>
 
         <div className="mt-2 mb-1 flex items-center justify-between text-xs text-gray-600">
-        <span>
-          堂數進度{' '}
-          <span className="font-bold text-brand-primary">
-            {hasSessionProgress ? `${period.used_sessions}/${period.total_sessions}` : '尚未開通'}
-          </span>
-        </span>
-        <span>到期 {formatTWDate(period.expires_at)}</span>
+        {period.is_checkout_aggregate ? (
+          <>
+            <span>
+              付款單 <span className="font-bold text-brand-primary">共 {period.period_count || period.sub_order_count || 1} 期</span>
+            </span>
+            <span>待完成付款</span>
+          </>
+        ) : (
+          <>
+            <span>
+              堂數進度{' '}
+              <span className="font-bold text-brand-primary">
+                {hasSessionProgress ? `${period.used_sessions}/${period.total_sessions}` : '尚未開通'}
+              </span>
+            </span>
+            <span>到期 {formatTWDate(period.expires_at)}</span>
+          </>
+        )}
         </div>
         <div className="h-2 w-full overflow-hidden rounded-full bg-gray-100">
         <div
@@ -106,7 +121,7 @@ export default function CourseCard({ variant = 'period', period, type, onClick, 
         </div>
 
         <div className="mt-3 flex items-baseline justify-between border-t border-gray-100 pt-2 text-xs text-gray-500">
-        <span>實付金額</span>
+        <span>{period.is_checkout_aggregate ? '總應繳金額' : '實付金額'}</span>
         <span className="text-base font-bold text-brand-primary">{formatTWD(period.final_price)}</span>
         </div>
       </button>

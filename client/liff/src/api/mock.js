@@ -91,9 +91,20 @@ const COURSE_PERIODS = [
     payment_status: 'completed', is_experience_course: false },
 ];
 
+const CHECKOUTS = [];
+
 let _periodSeq = 100;
 let _slotSeq = 1;
 let _mediaSeq = 1;
+
+function checkoutRouteInstruction(checkoutId) {
+  return {
+    current_state: 'PENDING_PAYMENT',
+    checkout_id: checkoutId,
+    target_page: '/checkout/payment-view',
+    action_required: 'DISPLAY_BANK_INFO',
+  };
+}
 
 function normalizeCoursePeriod(cp) {
   if (!cp) return null;
@@ -319,44 +330,153 @@ export const mockDb = {
     p.students = (p.students || []).filter((s) => s.id !== id);
     return { ok: true };
   },
-  myCourses: (parentId) =>
-    COURSE_PERIODS
+  myCourses: (parentId) => {
+    const rows = COURSE_PERIODS
       .filter((cp) => cp.parent_id === parentId)
-      .map((cp) => JSON.parse(JSON.stringify(normalizeCoursePeriod(cp)))),
+      .map((cp) => normalizeCoursePeriod(cp));
+    const groups = new Map();
+    const out = [];
+    for (const row of rows) {
+      const key = row.lifecycle === 'pending_payment' && !row.group_order_id
+        ? (row.checkout_id || (row.enrollment_batch_id ? `batch:${row.enrollment_batch_id}` : null))
+        : null;
+      if (!key) out.push(row);
+      else {
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(row);
+      }
+    }
+    for (const [key, group] of groups.entries()) {
+      const first = group[0];
+      const checkout = CHECKOUTS.find((c) => c.checkout_id === first.checkout_id);
+      const total = checkout?.total_amount ?? group.reduce((sum, row) => sum + (Number(row.final_price) || 0), 0);
+      out.push({
+        ...first,
+        id: first.checkout_id || first.enrollment_batch_id || key,
+        is_checkout_aggregate: true,
+        needs_checkout_route: !first.checkout_id,
+        sub_order_ids: group.map((row) => row.id),
+        sub_order_count: group.length,
+        period_count: Math.max(...group.map((row) => Number(row.period_number) || 1), 1),
+        original_price: group.reduce((sum, row) => sum + (Number(row.original_price) || 0), 0),
+        final_price: total,
+        total_sessions: 0,
+        used_sessions: 0,
+        remaining_sessions: 0,
+        course_period_id: null,
+      });
+    }
+    return JSON.parse(JSON.stringify(out));
+  },
   course: (id) => {
     const cp = COURSE_PERIODS.find((x) => x.id === id);
     return cp ? JSON.parse(JSON.stringify(courseDetailShape(cp))) : null;
   },
   createEnrollment: (payload) => {
-    // 訂單依期數拆分：買 N 期 → 建 N 筆，每筆 1 期(6 堂)，與真實 API 回傳形狀一致。
+    // 訂單依「學員 × 期數」拆分：2 位學員買 4 期 → 建 8 筆單生單期子訂單。
     const count = Math.min(6, Math.max(1, Number(payload.period_count) || 1));
+    const selectedStudents = Array.isArray(payload.students) ? payload.students : [];
+    const studentCount = Math.max(1, selectedStudents.length);
+    const childOrderCount = studentCount * count;
     const batchId = `MB${++_periodSeq}`;
-    const perOriginal = Math.round((Number(payload.original_price) || 0) / count);
-    const perFinal = Math.round((Number(payload.final_price) || 0) / count);
+    const checkoutId = `CK${Date.now()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+    const perOriginal = Math.round((Number(payload.original_price) || 0) / childOrderCount);
+    const perFinal = Math.round((Number(payload.final_price) || 0) / childOrderCount);
     const created = [];
-    for (let i = 1; i <= count; i += 1) {
-      const id = `CP${String(++_periodSeq).padStart(4, '0')}`;
-      const period = {
-        id, parent_id: payload.parent_id, coach: payload.coach, venue: payload.venue,
-        course_type: payload.course_type, students: payload.students,
-        total_sessions: 6, used_sessions: 0,
-        expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
-        original_price: perOriginal, final_price: perFinal,
-        payment_status: 'pending_payment', transfer_last_5: payload.transfer_last_5,
-        payment_proof_url: payload.payment_proof_url || null,
-        period_count: 1, period_number: i, enrollment_batch_id: batchId,
-        is_experience_course: false,
-      };
-      COURSE_PERIODS.push(period);
-      created.push(period);
+    CHECKOUTS.push({
+      checkout_id: checkoutId,
+      parent_id: payload.parent_id,
+      enrollment_batch_id: batchId,
+      total_amount: Number(payload.final_price) || perFinal * childOrderCount,
+      payment_status: 'pending_payment',
+      current_route_state: 'pending_payment',
+      transfer_last_5: payload.transfer_last_5 || '',
+      payment_proof_url: payload.payment_proof_url || null,
+      carrier: payload.carrier || '',
+      created_at: new Date().toISOString(),
+    });
+    for (const student of selectedStudents) {
+      for (let i = 1; i <= count; i += 1) {
+        const id = `CP${String(++_periodSeq).padStart(4, '0')}`;
+        const period = {
+          id, parent_id: payload.parent_id, coach: payload.coach, venue: payload.venue,
+          course_type: payload.course_type, students: [student],
+          total_sessions: 6, used_sessions: 0,
+          expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+          original_price: perOriginal, final_price: perFinal,
+          payment_status: 'pending_payment', transfer_last_5: payload.transfer_last_5,
+          payment_proof_url: payload.payment_proof_url || null,
+          period_count: 1, period_number: i, enrollment_batch_id: batchId, checkout_id: checkoutId,
+          is_experience_course: false,
+        };
+        COURSE_PERIODS.push(period);
+        created.push(period);
+      }
     }
     const first = normalizeCoursePeriod(created[0]);
+    const instruction = checkoutRouteInstruction(checkoutId);
     return JSON.parse(JSON.stringify({
       ...first,
+      status: 'success',
       first_id: created[0].id,
       batch_id: batchId,
-      count,
+      checkout_id: checkoutId,
+      count: created.length,
+      period_count: count,
+      student_count: studentCount,
+      order_count: created.length,
       enrollment_ids: created.map((c) => c.id),
+      final_price: Number(payload.final_price) || perFinal * childOrderCount,
+      ...instruction,
+      data: { ...instruction, total_amount: Number(payload.final_price) || perFinal * childOrderCount },
+      route_instruction: instruction,
+    }));
+  },
+  routeCheckout: ({ enrollment_batch_id } = {}) => {
+    const rows = COURSE_PERIODS.filter((cp) => cp.enrollment_batch_id === enrollment_batch_id);
+    if (!rows.length) return { ok: false };
+    let checkoutId = rows.find((cp) => cp.checkout_id)?.checkout_id;
+    if (!checkoutId) {
+      checkoutId = `CK${Date.now()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+      rows.forEach((row) => { row.checkout_id = checkoutId; });
+      CHECKOUTS.push({
+        checkout_id: checkoutId,
+        parent_id: rows[0].parent_id,
+        enrollment_batch_id,
+        total_amount: rows.reduce((sum, row) => sum + (Number(row.final_price) || 0), 0),
+        payment_status: 'pending_payment',
+        current_route_state: 'pending_payment',
+        transfer_last_5: '',
+        payment_proof_url: null,
+        carrier: '',
+        created_at: new Date().toISOString(),
+      });
+    }
+    const checkout = CHECKOUTS.find((c) => c.checkout_id === checkoutId);
+    const instruction = checkoutRouteInstruction(checkoutId);
+    return { status: 'success', ok: true, checkout_id: checkoutId, ...instruction, data: { ...instruction, total_amount: checkout?.total_amount || 0 }, route_instruction: instruction };
+  },
+  checkout: (checkoutId) => {
+    const checkout = CHECKOUTS.find((c) => c.checkout_id === checkoutId);
+    if (!checkout) return null;
+    const subOrders = COURSE_PERIODS.filter((cp) => cp.checkout_id === checkoutId);
+    const first = subOrders[0] || {};
+    const venueRow = VENUES.find((v) => v.id === (first.venue?.id || first.venue_id));
+    return JSON.parse(JSON.stringify({
+      ...checkout,
+      total_amount: checkout.total_amount,
+      has_payment_proof: !!checkout.payment_proof_url,
+      order_count: subOrders.length,
+      sub_orders: subOrders.map((row) => ({
+        id: row.id,
+        students: (row.students || []).map((s) => (typeof s === 'string' ? s : s.name)),
+        coach: typeof row.coach === 'string' ? row.coach : row.coach?.name,
+        course_type: row.course_type,
+        final_price: row.final_price,
+        period_number: row.period_number,
+        period_count: row.period_count,
+      })),
+      venue: { ...(venueRow || {}), ...(first.venue || {}) },
     }));
   },
   uploadPaymentProofForCourse: (id, payload = {}) => {

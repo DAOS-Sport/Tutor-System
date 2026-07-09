@@ -79,8 +79,14 @@ router.get('/mine', requireParent, async (req, res) => {
     const r = await pool.query(
               `SELECT admin_enrollments.id, parent_name, parent_phone, students,
                       coach, coach_id, venue_id, v.name AS venue_name, course_type,
-                      original_price, final_price, transfer_last_5, status, submitted_at,
-                      admin_enrollments.total_sessions, admin_enrollments.used_sessions, refund_amount, payment_proof_url, period_count,
+                      original_price, final_price, admin_enrollments.transfer_last_5, status, submitted_at,
+                      admin_enrollments.total_sessions, admin_enrollments.used_sessions, admin_enrollments.refund_amount, admin_enrollments.payment_proof_url,
+                      admin_enrollments.period_count, admin_enrollments.period_number, admin_enrollments.enrollment_batch_id, admin_enrollments.checkout_id,
+                      cs.total_amount AS checkout_total_amount,
+                      cs.payment_status AS checkout_payment_status,
+                      cs.transfer_last_5 AS checkout_transfer_last_5,
+                      cs.payment_proof_url AS checkout_payment_proof_url,
+                      cs.created_at AS checkout_created_at,
                       invoice_number, invoice_image_url, invoice_url, invoice_issued_at,
                       extra_parent_phones, notes, group_order_id, is_group_shared,
                       -- 已開通正式 course_period（團報走 group_order_id 共用、一般走 admin_enrollment_id），
@@ -112,6 +118,7 @@ router.get('/mine', requireParent, async (req, res) => {
                            AND st.parent_id = $2
                       ) AS attended_sessions
                  FROM admin_enrollments
+                 LEFT JOIN checkout_sessions cs ON cs.checkout_id = admin_enrollments.checkout_id
                  LEFT JOIN venues v ON v.id = admin_enrollments.venue_id
                  LEFT JOIN LATERAL (
                    SELECT cp.id, cp.total_sessions, cp.expires_at, co.pricing_multiplier, co.is_senior
@@ -147,18 +154,27 @@ router.get('/mine', requireParent, async (req, res) => {
       if (s === 'confirmed' || s === 'active') return 'active';
       return 'pending_payment';
     };
-    res.json(r.rows.map((row) => {
-      // 堂數真相：總取自 course_period（避免 admin_enrollments 對帳前 NULL）；
-      // 已用＝已出席(checkin_records 計數)；剩餘(未上課)＝總−已出席，不為負。
-      const total = Number(row.period_total_sessions) || Number(row.total_sessions) || 0;
-      const used = Number(row.attended_sessions) || 0;
+    const shapedRows = r.rows.map((row) => {
+      const ownStudents = Array.isArray(row.students_detail) ? row.students_detail : [];
+      const canAccessPeriod = !!row.course_period_id && ownStudents.length > 0;
+      // 堂數真相：
+      // - 有正式 period 且 period_enrollments 確認掛到本家長學員時，才開放期別操作與使用 period 堂數。
+      // - 舊資料可能只有 admin_enrollments.status=active / course_period.admin_enrollment_id，
+      //   但缺 course_period_enrollments；若仍回 course_period_id，家長點學習歷程/預約會被
+      //   learn/slots 權限守衛 403。這裡收斂成「課程開通處理中」的不可操作狀態。
+      const total = canAccessPeriod
+        ? (Number(row.period_total_sessions) || Number(row.total_sessions) || 0)
+        : (Number(row.total_sessions) || 0);
+      const used = canAccessPeriod
+        ? (Number(row.attended_sessions) || 0)
+        : (Number(row.used_sessions) || 0);
       const remaining = Math.max(0, total - used);
       return {
       id: row.id,
       parent_name: row.parent_name,
       parent_phone: row.parent_phone,
       students: row.students || [],
-      students_detail: row.students_detail || [],
+      students_detail: ownStudents,
               coach: { id: row.coach_id || null, name: row.coach, is_senior: !!row.is_senior },
               coach_name: row.coach,
               venue_id: row.venue_id,
@@ -169,13 +185,13 @@ router.get('/mine', requireParent, async (req, res) => {
       transfer_last_5: row.transfer_last_5,
       payment_status: toPaymentStatus(row.status),
       lifecycle: toLifecycle(row, total, used),
-      course_period_id: row.course_period_id || null,
-      expires_at: row.expires_at || null,
+      course_period_id: canAccessPeriod ? row.course_period_id : null,
+      expires_at: canAccessPeriod ? row.expires_at : null,
       submitted_at: row.submitted_at,
       total_sessions: total,
       used_sessions: used,
       remaining_sessions: remaining,
-      pricing_multiplier: Number(row.pricing_multiplier) || 1,
+      pricing_multiplier: canAccessPeriod ? (Number(row.pricing_multiplier) || 1) : 1,
       refund_amount: row.refund_amount != null ? Number(row.refund_amount) : null,
       invoice_number: row.invoice_number || null,
       invoice_image_url: row.invoice_image_url || null,
@@ -185,10 +201,73 @@ router.get('/mine', requireParent, async (req, res) => {
       notes: row.notes || null,
       payment_proof_url: row.payment_proof_url || null,
       period_count: row.period_count || 1,
+      period_number: row.period_number || 1,
+      enrollment_batch_id: row.enrollment_batch_id || null,
+      checkout_id: row.checkout_id || null,
+      checkout_total_amount: row.checkout_total_amount != null ? Number(row.checkout_total_amount) : null,
+      checkout_payment_status: row.checkout_payment_status || null,
+      checkout_transfer_last_5: row.checkout_transfer_last_5 || null,
+      checkout_payment_proof_url: row.checkout_payment_proof_url || null,
+      checkout_created_at: row.checkout_created_at || null,
       group_order_id: row.group_order_id || null,
       is_group_shared: !!row.is_group_shared,
       };
-    }));
+    });
+
+    const checkoutGroups = new Map();
+    const out = [];
+    for (const row of shapedRows) {
+      const pendingGroupKey = row.lifecycle === 'pending_payment' && !row.group_order_id
+        ? (row.checkout_id || (row.enrollment_batch_id ? `batch:${row.enrollment_batch_id}` : null))
+        : null;
+      if (pendingGroupKey) {
+        if (!checkoutGroups.has(pendingGroupKey)) checkoutGroups.set(pendingGroupKey, []);
+        checkoutGroups.get(pendingGroupKey).push(row);
+      } else {
+        out.push(row);
+      }
+    }
+
+    for (const [groupKey, rows] of checkoutGroups.entries()) {
+      const first = rows.slice().sort((a, b) => new Date(a.submitted_at) - new Date(b.submitted_at))[0];
+      const checkoutId = first.checkout_id || null;
+      const groupId = checkoutId || first.enrollment_batch_id || groupKey;
+      const studentNames = Array.from(new Set(rows.flatMap((row) => row.students || []).filter(Boolean)));
+      const periodNumbers = rows.map((row) => Number(row.period_number) || 1);
+      const maxPeriodNumber = Math.max(...periodNumbers);
+      const periodCount = maxPeriodNumber > 1
+        ? maxPeriodNumber
+        : Math.max(...rows.map((row) => Number(row.period_count) || 1), rows.length);
+      const totalAmount = first.checkout_total_amount != null
+        ? first.checkout_total_amount
+        : rows.reduce((sum, row) => sum + (Number(row.final_price) || 0), 0);
+      const paymentStatus = first.checkout_payment_status || first.payment_status || 'pending_payment';
+      out.push({
+        ...first,
+        id: groupId,
+        is_checkout_aggregate: true,
+        needs_checkout_route: !checkoutId,
+        checkout_id: checkoutId,
+        sub_order_ids: rows.map((row) => row.id),
+        sub_order_count: rows.length,
+        students: studentNames,
+        original_price: rows.reduce((sum, row) => sum + (Number(row.original_price) || 0), 0),
+        final_price: totalAmount,
+        payment_status: paymentStatus,
+        lifecycle: 'pending_payment',
+        transfer_last_5: first.checkout_transfer_last_5 || first.transfer_last_5 || null,
+        payment_proof_url: first.checkout_payment_proof_url || first.payment_proof_url || null,
+        period_count: periodCount,
+        total_sessions: 0,
+        used_sessions: 0,
+        remaining_sessions: 0,
+        course_period_id: null,
+        expires_at: null,
+      });
+    }
+
+    out.sort((a, b) => new Date(b.submitted_at || b.checkout_created_at || 0) - new Date(a.submitted_at || a.checkout_created_at || 0));
+    res.json(out);
   } catch (e) {
     console.error('[courses/mine]', e);
     res.status(500).json({ error: e.message });
@@ -251,7 +330,8 @@ router.get('/:id', requireParent, async (req, res) => {
   try {
     const r = await pool.query(
       `SELECT e.id, e.parent_phone, e.extra_parent_phones, e.students, e.coach, e.course_type,
-              e.original_price, e.final_price, e.transfer_last_5, e.status, e.payment_proof_url, e.period_count,
+              e.original_price, e.final_price, e.transfer_last_5, e.status, e.payment_proof_url,
+              e.period_count, e.enrollment_batch_id, e.checkout_id,
               e.invoice_number, e.invoice_image_url, e.submitted_at, e.group_order_id,
               e.total_sessions, e.used_sessions, e.is_group_shared, e.carrier,
               -- 與 /mine 相同：團報走 group_order_id（共用）、一般報名走 admin_enrollment_id。
@@ -306,6 +386,21 @@ router.get('/:id', requireParent, async (req, res) => {
                          (SELECT cp2.id FROM course_periods cp2
                             WHERE cp2.admin_enrollment_id = e.id ORDER BY cp2.created_at LIMIT 1))
               ) AS period_total_sessions,
+              (
+                SELECT COALESCE(
+                         jsonb_agg(jsonb_build_object('id', s.id, 'name', s.name) ORDER BY s.name),
+                         '[]'::jsonb)
+                  FROM course_period_enrollments cpe
+                  JOIN students s ON s.id = cpe.student_id
+                 WHERE cpe.course_period_id = COALESCE(
+                         (SELECT cp2.id FROM course_periods cp2
+                            WHERE e.group_order_id IS NOT NULL AND cp2.group_order_id = e.group_order_id
+                            ORDER BY cp2.created_at LIMIT 1),
+                         (SELECT cp2.id FROM course_periods cp2
+                            WHERE cp2.admin_enrollment_id = e.id ORDER BY cp2.created_at LIMIT 1))
+                   AND cpe.status = 'active'
+                   AND s.parent_id = $2
+              ) AS students_detail,
               v.id AS venue_id, v.name AS venue_name,
               -- 匯款帳戶以 admin_venues（F-A03 場館設定，各館各自維護）為準；
               -- 該館尚未設定時才退回 venues 表既有值，避免顯示空白（Task: 匯款帳戶對應館別）。
@@ -324,9 +419,17 @@ router.get('/:id', requireParent, async (req, res) => {
     const phone = req.parent.phone;
     const owns = row.parent_phone === phone || (row.extra_parent_phones || []).includes(phone);
     if (!owns) return res.status(403).json({ error: '無權檢視此報名' });
-    // 堂數真相：總取自 course_period、已用＝已出席(checkin)；剩餘＝總−已出席。
-    const total = Number(row.period_total_sessions) || Number(row.total_sessions) || 0;
-    const used = Number(row.attended_sessions) || 0;
+    const ownStudents = Array.isArray(row.students_detail) ? row.students_detail : [];
+    const canAccessPeriod = !!row.course_period_id && ownStudents.length > 0;
+    // 舊資料可能有 course_period 但沒有 course_period_enrollments；若把 period id 回給前端，
+    // 家長點學習歷程/預約會被 learn/slots 權限守衛 403。沒有本家長 active 學員掛載時，
+    // 收斂成「課程開通處理中」不可操作狀態。
+    const total = canAccessPeriod
+      ? (Number(row.period_total_sessions) || Number(row.total_sessions) || 0)
+      : (Number(row.total_sessions) || 0);
+    const used = canAccessPeriod
+      ? (Number(row.attended_sessions) || 0)
+      : (Number(row.used_sessions) || 0);
     const remaining = Math.max(0, total - used);
     // lifecycle：與 /mine 一致的課程生命週期狀態（completed/active/closed/pending_payment）。
     const lifecycle = (() => {
@@ -342,19 +445,22 @@ router.get('/:id', requireParent, async (req, res) => {
       coach: row.coach,
       course_type: row.course_type,
       period_count: row.period_count || 1,
+      enrollment_batch_id: row.enrollment_batch_id || null,
+      checkout_id: row.checkout_id || null,
       original_price: Number(row.original_price),
       final_price: Number(row.final_price),
       transfer_last_5: row.transfer_last_5 || '',
       carrier: row.carrier || '',
       payment_status: row.status,
       lifecycle,
-      course_period_id: row.course_period_id || null,
+      course_period_id: canAccessPeriod ? row.course_period_id : null,
       total_sessions: total,
       used_sessions: used,
       remaining_sessions: remaining,
-      pricing_multiplier: Number(row.pricing_multiplier) || 1,
+      pricing_multiplier: canAccessPeriod ? (Number(row.pricing_multiplier) || 1) : 1,
       is_group_shared: !!row.is_group_shared,
-      expires_at: row.expires_at || null,
+      expires_at: canAccessPeriod ? row.expires_at : null,
+      students_detail: ownStudents,
       has_payment_proof: !!row.payment_proof_url,
       submitted_at: row.submitted_at,
       group_order_id: row.group_order_id || null,
@@ -385,7 +491,7 @@ router.post('/:id/payment-proof', requireParent, async (req, res) => {
   }
   try {
     const r = await pool.query(
-      `SELECT parent_phone, extra_parent_phones, status, payment_proof_url, transfer_last_5
+      `SELECT parent_phone, extra_parent_phones, status, payment_proof_url, transfer_last_5, checkout_id
          FROM admin_enrollments WHERE id = $1`,
       [req.params.id]
     );
@@ -414,6 +520,29 @@ router.post('/:id/payment-proof', requireParent, async (req, res) => {
         WHERE id = $1`,
       [req.params.id, url || null, last5 || null, carrier || null]
     );
+    if (row.checkout_id) {
+      await pool.query(
+        `UPDATE checkout_sessions
+            SET payment_proof_url = COALESCE($2, payment_proof_url),
+                transfer_last_5 = COALESCE($3, transfer_last_5),
+                carrier = COALESCE($4, carrier),
+                payment_status = CASE
+                  WHEN COALESCE($2, payment_proof_url) IS NOT NULL
+                    OR COALESCE($3, transfer_last_5) IS NOT NULL
+                    THEN 'pending_reconcile'
+                  ELSE payment_status
+                END,
+                current_route_state = CASE
+                  WHEN COALESCE($2, payment_proof_url) IS NOT NULL
+                    OR COALESCE($3, transfer_last_5) IS NOT NULL
+                    THEN 'pending_reconcile'
+                  ELSE current_route_state
+                END,
+                updated_at = NOW()
+          WHERE checkout_id = $1`,
+        [row.checkout_id, url || null, last5 || null, carrier || null]
+      );
+    }
     res.json({ ok: true });
   } catch (e) {
     console.error('[courses/:id/payment-proof]', e);
@@ -428,7 +557,7 @@ router.post('/:id/cancel', requireParent, async (req, res) => {
   try {
     await client.query('BEGIN');
     const r = await client.query(
-      `SELECT id, parent_phone, extra_parent_phones, status, group_order_id
+      `SELECT id, parent_phone, extra_parent_phones, status, group_order_id, checkout_id
          FROM admin_enrollments
         WHERE id = $1
         FOR UPDATE`,
@@ -458,6 +587,28 @@ router.post('/:id/cancel', requireParent, async (req, res) => {
         WHERE id = $1`,
       [row.id]
     );
+    if (row.checkout_id) {
+      await client.query(
+        `UPDATE checkout_sessions
+            SET payment_status = CASE
+                  WHEN NOT EXISTS (
+                    SELECT 1 FROM admin_enrollments
+                     WHERE checkout_id = $1 AND id <> $2 AND status <> 'cancelled'
+                  ) THEN 'cancelled'
+                  ELSE payment_status
+                END,
+                current_route_state = CASE
+                  WHEN NOT EXISTS (
+                    SELECT 1 FROM admin_enrollments
+                     WHERE checkout_id = $1 AND id <> $2 AND status <> 'cancelled'
+                  ) THEN 'cancelled'
+                  ELSE current_route_state
+                END,
+                updated_at = NOW()
+          WHERE checkout_id = $1`,
+        [row.checkout_id, row.id]
+      );
+    }
     // 取消即釋放此報名占用的優惠用量（同交易內，以 admin_enrollment_id 冪等；無 usage 則 no-op）。
     await promotions.revertUsage({ adminEnrollmentId: row.id }, client);
     await client.query(

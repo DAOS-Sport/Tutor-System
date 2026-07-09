@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { checkoutApi } from '../api/checkout';
 import { enrollmentsApi } from '../api/enrollments';
 import LoadingSpinner from '../components/LoadingSpinner';
 import StudentMultiSelect from '../components/enroll/StudentMultiSelect';
@@ -9,12 +10,22 @@ import useEnrollmentBoot from '../hooks/useEnrollmentBoot';
 import useEnrollmentPricing from '../hooks/useEnrollmentPricing';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
+import { resolveRouteInstruction } from '../utils/routeInstruction';
+
+function createSubmitRequestId() {
+  try {
+    if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  } catch { /* noop */ }
+  return `enroll-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 export default function EnrollmentPage() {
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const { parent } = useAuth();
   const toast = useToast();
+  const submitRequestIdRef = useRef(null);
+  const submitLockRef = useRef(false);
 
   const venueId = params.get('venue');
   const initialCourseType = Number(params.get('courseType') || 1);
@@ -98,9 +109,13 @@ export default function EnrollmentPage() {
   }
 
   async function handleConfirmSubmit() {
+    if (submitLockRef.current || submitting) return;
+    submitLockRef.current = true;
     setSubmitting(true);
+    if (!submitRequestIdRef.current) submitRequestIdRef.current = createSubmitRequestId();
     try {
       const result = await enrollmentsApi.create({
+        request_id: submitRequestIdRef.current,
         parent_id: parent.id,
         parent_name: parent.name,
         parent_phone: parent.phone,
@@ -116,15 +131,29 @@ export default function EnrollmentPage() {
           : null,
       });
       try { localStorage.removeItem('daos.pendingCoupon'); } catch { /* noop */ }
-      // 訂單依期數拆分：買多期會建多筆訂單 → 導到「我的課程」逐筆繳款；單期維持直接進狀態頁。
-      if ((result.count || 1) > 1) {
-        navigate('/my-courses', { replace: true });
-      } else {
-        navigate(`/enroll-status/${result.first_id || result.id}`, { replace: true });
+      const directPath = resolveRouteInstruction(result);
+      if (directPath) {
+        navigate(directPath, { replace: true });
+        submitRequestIdRef.current = null;
+        return;
       }
-    } catch {
-      toast.error('送出失敗，請稍後再試');
+      const batchId = result?.batch_id || result?.batchId || result?.data?.batch_id || result?.data?.batchId;
+      if (batchId) {
+        const route = await checkoutApi.route({ enrollment_batch_id: batchId });
+        const repairedPath = resolveRouteInstruction(route);
+        if (repairedPath) {
+          navigate(repairedPath, { replace: true });
+          submitRequestIdRef.current = null;
+          return;
+        }
+      }
+      // eslint-disable-next-line no-console
+      console.warn('[EnrollmentPage] enrollment created without route instruction', result);
+      navigate('/my-courses', { replace: true });
+    } catch (err) {
+      toast.error(err?.response?.data?.error || '送出失敗，請稍後再試');
     } finally {
+      submitLockRef.current = false;
       setSubmitting(false);
     }
   }

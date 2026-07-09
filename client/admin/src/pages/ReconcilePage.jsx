@@ -8,6 +8,7 @@ import ConfirmDialog from '../components/ConfirmDialog';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import { enrollmentsApi } from '../api/enrollments';
+import { checkoutsApi } from '../api/checkouts';
 import { venuesApi } from '../api/venues';
 import { formatTWD, formatTWDateTime, courseTypeLabel } from '../utils/format';
 import { exportEnrollmentsCsv, exportEnrollmentsXlsx } from '../utils/csvExport';
@@ -22,7 +23,7 @@ const EMPTY_FILTERS = {
 
 const INVOICE_RE = /^[A-Z]{2}\d{8}$/;
 
-function InvoiceModal({ enrollment, canReconcile, onCancel, onDone }) {
+function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
   const toast = useToast();
   const { user } = useAuth();
   const fileRef = useRef(null);
@@ -58,7 +59,7 @@ function InvoiceModal({ enrollment, canReconcile, onCancel, onDone }) {
       setUploading(true);
       const { url: imageUrl } = await enrollmentsApi.uploadInvoice(imageFile);
       setUploading(false);
-      await enrollmentsApi.reconcile(enrollment.id, {
+      await checkoutsApi.reconcile(checkout.checkout_id, {
         by: user.name,
         invoice_number: invoiceNumber,
         invoice_image_url: imageUrl,
@@ -84,32 +85,47 @@ function InvoiceModal({ enrollment, canReconcile, onCancel, onDone }) {
         <div className="shrink-0 border-b border-gray-100 px-6 pt-5 pb-4">
           <h3 className="text-lg font-bold text-brand-primary">對帳通過 — 輸入發票資訊</h3>
           <p className="mt-0.5 text-xs text-gray-500">
-            {enrollment.id} ／ {enrollment.parent_name} ／ 應收 {formatTWD(enrollment.final_price)}，末 5 碼 <b>{enrollment.transfer_last_5}</b>
+            {checkout.checkout_id} ／ {checkout.parent_name} ／ 應收 {formatTWD(checkout.total_amount)}，末 5 碼 <b>{checkout.transfer_last_5 || '—'}</b>
           </p>
         </div>
 
         {/* ── 可捲動 Body ── */}
         <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-          {enrollment.payment_proof_url && (
+          {checkout.payment_proof_url && (
             <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
               <div className="mb-2 text-xs font-semibold text-gray-600">家長上傳的匯款／轉帳證明</div>
               <ImageLightbox
-                src={enrollment.payment_proof_url}
+                src={checkout.payment_proof_url}
                 alt="匯款證明"
                 label="匯款／轉帳證明"
               />
             </div>
           )}
 
-          {enrollment.carrier && (
+          {checkout.carrier && (
             <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3">
-              <div className="mb-1 text-xs font-semibold text-indigo-700">📱 載具（開發票掃描用）</div>
-              <div className="font-mono text-sm font-bold text-indigo-900">{enrollment.carrier}</div>
+              <div className="mb-1 text-xs font-semibold text-indigo-700">載具（開發票掃描用）</div>
+              <div className="font-mono text-sm font-bold text-indigo-900">{checkout.carrier}</div>
               <div className="mt-2 inline-block rounded-lg bg-white p-2">
-                <Barcode value={enrollment.carrier} />
+                <Barcode value={checkout.carrier} />
               </div>
             </div>
           )}
+
+          <div className="rounded-lg border border-gray-200 bg-white p-3">
+            <div className="mb-2 text-xs font-semibold text-gray-600">發票品項</div>
+            <div className="space-y-2">
+              {(checkout.sub_orders || []).map((order) => (
+                <div key={order.id} className="flex items-center justify-between gap-3 rounded-md bg-gray-50 px-3 py-2 text-sm">
+                  <div className="min-w-0">
+                    <div className="truncate font-medium text-gray-800">{order.id}・{(order.students || []).join('、') || '—'}</div>
+                    <div className="mt-0.5 text-xs text-gray-500">{order.coach}・{courseTypeLabel(order.course_type)}・第 {order.period_number || 1} 期</div>
+                  </div>
+                  <div className="shrink-0 font-mono font-bold">{formatTWD(order.final_price)}</div>
+                </div>
+              ))}
+            </div>
+          </div>
 
           <div>
             <label className="mb-1 block text-sm font-semibold text-gray-700">
@@ -173,7 +189,7 @@ function InvoiceModal({ enrollment, canReconcile, onCancel, onDone }) {
           </div>
 
           <div className="rounded-lg bg-amber-50 p-3 text-xs text-amber-700">
-            對帳後系統將開通 {enrollment.coach} 教練的課程，並透過 LINE 推播發票通知給家長。
+            對帳後系統將一次開通此付款單的 {checkout.sub_orders?.length || 0} 筆子訂單，並透過 LINE 推播發票通知給家長。
           </div>
         </div>
 
@@ -204,11 +220,12 @@ export default function ReconcilePage() {
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [cancelling, setCancelling] = useState(null);
   const [cancelBusy, setCancelBusy] = useState(false);
+  const [expanded, setExpanded] = useState({});
 
   async function load() {
     const venueId = isStaff ? user?.venue_id : undefined;
     const [data, vs] = await Promise.all([
-      enrollmentsApi.list({ status: 'pending_payment', venueId }),
+      checkoutsApi.list({ status: 'pending', venueId }),
       venuesApi.list(),
     ]);
     setList(data); setVenues(vs);
@@ -216,12 +233,12 @@ export default function ReconcilePage() {
   useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
 
   const coachOptions = useMemo(() => {
-    const names = new Set((list || []).map((r) => r.coach).filter(Boolean));
+    const names = new Set((list || []).flatMap((r) => (r.sub_orders || []).map((o) => o.coach)).filter(Boolean));
     return [...names].sort().map((name) => ({ value: name, label: name }));
   }, [list]);
 
   const courseTypeOptions = useMemo(() => {
-    const types = new Set((list || []).map((r) => r.course_type).filter((t) => t != null));
+    const types = new Set((list || []).flatMap((r) => (r.sub_orders || []).map((o) => o.course_type)).filter((t) => t != null));
     return [...types].sort((a, b) => a - b).map((t) => ({ value: String(t), label: courseTypeLabel(t) }));
   }, [list]);
 
@@ -246,11 +263,12 @@ export default function ReconcilePage() {
     return list.filter((r) => {
       if (filters.submittedFrom && (r.submitted_at || '').slice(0, 10) < filters.submittedFrom) return false;
       if (filters.submittedTo && (r.submitted_at || '').slice(0, 10) > filters.submittedTo) return false;
-      if (phoneQ && !(r.parent_phone || '').includes(phoneQ)) return false;
-      if (parentQ && !(r.parent_name || '').toLowerCase().includes(parentQ)) return false;
-      if (studentQ && !(r.students || []).some((s) => (s || '').toLowerCase().includes(studentQ))) return false;
-      if (coachQ && !(r.coach || '').toLowerCase().includes(coachQ)) return false;
-      if (filters.courseType && String(r.course_type) !== filters.courseType) return false;
+      const orders = r.sub_orders || [];
+      if (phoneQ && !(r.parent_phone || '').includes(phoneQ) && !orders.some((o) => (o.parent_phone || '').includes(phoneQ))) return false;
+      if (parentQ && !(r.parent_name || '').toLowerCase().includes(parentQ) && !orders.some((o) => (o.parent_name || '').toLowerCase().includes(parentQ))) return false;
+      if (studentQ && !orders.some((o) => (o.students || []).some((s) => (s || '').toLowerCase().includes(studentQ)))) return false;
+      if (coachQ && !orders.some((o) => (o.coach || '').toLowerCase().includes(coachQ))) return false;
+      if (filters.courseType && !orders.some((o) => String(o.course_type) === filters.courseType)) return false;
       if (last5Q && !(r.transfer_last_5 || '').includes(last5Q)) return false;
       return true;
     });
@@ -260,9 +278,9 @@ export default function ReconcilePage() {
     if (!cancelling) return;
     setCancelBusy(true);
     try {
-      const updated = await enrollmentsApi.cancel(cancelling.id, { by: user.name });
-      setList((prev) => prev.map((r) => (r.id === cancelling.id ? { ...r, ...updated } : r)));
-      toast.success('已取消此筆報名');
+      const updated = await checkoutsApi.cancel(cancelling.checkout_id, { by: user.name });
+      setList((prev) => prev.map((r) => (r.checkout_id === cancelling.checkout_id ? { ...r, ...updated } : r)));
+      toast.success('已取消此付款單');
       setCancelling(null);
     } catch (err) {
       toast.error(err?.response?.data?.error || '取消失敗');
@@ -275,38 +293,79 @@ export default function ReconcilePage() {
 
   const venueName = (id) => venues.find((v) => v.id === id)?.name || id;
 
-  function lastAction(r) {
-    const logs = r.audit_logs;
-    return Array.isArray(logs) && logs.length ? logs[logs.length - 1] : null;
-  }
+  const exportRows = (list || []).flatMap((checkout) => (
+    (checkout.sub_orders || []).map((order) => ({
+      ...order,
+      parent_name: checkout.parent_name || order.parent_name,
+      parent_phone: checkout.parent_phone || order.parent_phone,
+      transfer_last_5: checkout.transfer_last_5 || order.transfer_last_5,
+      payment_proof_url: checkout.payment_proof_url || order.payment_proof_url,
+    }))
+  ));
 
   const columns = [
-    { key: 'id', label: '報名編號', render: (r) => <span className="font-mono text-xs">{r.id}</span> },
+    {
+      key: 'checkout_id',
+      label: 'Checkout_ID',
+      render: (r) => (
+        <button
+          type="button"
+          className="text-left font-mono text-xs text-brand-primary underline-offset-2 hover:underline"
+          onClick={() => setExpanded((prev) => ({ ...prev, [r.checkout_id]: !prev[r.checkout_id] }))}
+        >
+          {r.checkout_id}
+        </button>
+      ),
+    },
     { key: 'submitted_at', label: '送出時間', render: (r) => <span className="text-xs text-gray-600">{formatTWDateTime(r.submitted_at)}</span> },
     { key: 'parent', label: '家長', render: (r) => <div><div className="font-medium">{r.parent_name}</div><div className="text-xs text-gray-500">{r.parent_phone}</div></div> },
-    { key: 'students', label: '學員', render: (r) => <span className="text-sm">{r.students.join('、')}</span> },
-    { key: 'coach', label: '教練 / 場館', render: (r) => <div><div>{r.coach}</div><div className="text-xs text-gray-500">{venueName(r.venue_id)}</div></div> },
-    { key: 'course_type', label: '組別', render: (r) => <StatusBadge tone="teal">{courseTypeLabel(r.course_type)}</StatusBadge> },
-    { key: 'final_price', label: '應收', className: 'text-right', render: (r) => <span className="font-mono">{formatTWD(r.final_price)}</span> },
-    { key: 'transfer_last_5', label: '末 5 碼', className: 'text-center', render: (r) => <span className="font-mono">{r.transfer_last_5}</span> },
     {
-      key: 'audit', label: '審核 / 對帳紀錄',
+      key: 'sub_orders',
+      label: '子訂單',
       render: (r) => {
-        const last = lastAction(r);
-        if (!last) return <span className="text-xs text-gray-300">—</span>;
+        const open = !!expanded[r.checkout_id];
+        const orders = r.sub_orders || [];
         return (
-          <div className="text-xs text-gray-500">
-            <div>{last.action}</div>
-            <div>{last.by} · {formatTWDateTime(last.at)}</div>
+          <div className="min-w-[260px]">
+            <button
+              type="button"
+              className="rounded-md border border-gray-300 px-2 py-1 text-xs font-bold text-gray-700 hover:bg-gray-50"
+              onClick={() => setExpanded((prev) => ({ ...prev, [r.checkout_id]: !prev[r.checkout_id] }))}
+            >
+              {open ? '收合' : '展開'} {orders.length} 筆
+            </button>
+            {open && (
+              <div className="mt-2 space-y-2">
+                {orders.map((order) => (
+                  <div key={order.id} className="rounded-md bg-gray-50 p-2 text-xs text-gray-700">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-mono text-gray-500">{order.id}</span>
+                      <span className="font-mono font-bold text-brand-primary">{formatTWD(order.final_price)}</span>
+                    </div>
+                    <div className="mt-1">{(order.students || []).join('、') || '—'}</div>
+                    <div className="mt-0.5 text-gray-500">
+                      {order.coach}／{venueName(order.venue_id)}／{courseTypeLabel(order.course_type)}／第 {order.period_number || 1} 期
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         );
       },
     },
+    { key: 'total_amount', label: '應收總額', className: 'text-right', render: (r) => <span className="font-mono">{formatTWD(r.total_amount)}</span> },
+    { key: 'transfer_last_5', label: '末 5 碼', className: 'text-center', render: (r) => <span className="font-mono">{r.transfer_last_5}</span> },
+    {
+      key: 'proof',
+      label: '憑證',
+      render: (r) => (r.payment_proof_url ? <StatusBadge tone="amber">已上傳</StatusBadge> : <span className="text-xs text-gray-400">未上傳</span>),
+    },
     {
       key: 'actions', label: '操作', className: 'text-right',
       render: (r) => {
-        if (r.status === 'cancelled') {
-          return <StatusBadge tone={STATUS_TONE.cancelled}>取消報名</StatusBadge>;
+        if (r.payment_status === 'cancelled') {
+          return <StatusBadge tone={STATUS_TONE.cancelled}>已取消</StatusBadge>;
         }
         if (!canReconcile) {
           return <span className="text-xs text-gray-400" title="僅主管 / 管理員可對帳">唯讀</span>;
@@ -333,22 +392,22 @@ export default function ReconcilePage() {
             disabled={!list || list.length === 0}
             onExportCsv={() => {
               if (!list || list.length === 0) { toast.error('沒有可匯出的資料'); return; }
-              exportEnrollmentsCsv({ filenamePrefix: 'reconcile', enrollments: list, venueName });
-              toast.success(`已匯出 ${list.length} 筆對帳資料 (CSV)`);
+              exportEnrollmentsCsv({ filenamePrefix: 'reconcile', enrollments: exportRows, venueName });
+              toast.success(`已匯出 ${exportRows.length} 筆子訂單資料 (CSV)`);
             }}
             onExportXlsx={() => {
               if (!list || list.length === 0) { toast.error('沒有可匯出的資料'); return; }
-              exportEnrollmentsXlsx({ filenamePrefix: 'reconcile', enrollments: list, venueName });
-              toast.success(`已匯出 ${list.length} 筆對帳資料 (XLSX)`);
+              exportEnrollmentsXlsx({ filenamePrefix: 'reconcile', enrollments: exportRows, venueName });
+              toast.success(`已匯出 ${exportRows.length} 筆子訂單資料 (XLSX)`);
             }}
           />
         }
       />
       <FilterBar fields={filterFields} values={filters} onChange={setFilters} onReset={() => setFilters(EMPTY_FILTERS)} />
-      <DataTable columns={columns} rows={filteredList} rowKey={(r) => r.id} empty="目前沒有符合條件的待對帳報名" />
+      <DataTable columns={columns} rows={filteredList} rowKey={(r) => r.checkout_id} empty="目前沒有符合條件的待對帳付款單" />
       {confirming && (
         <InvoiceModal
-          enrollment={confirming}
+          checkout={confirming}
           canReconcile={canReconcile}
           onCancel={() => setConfirming(null)}
           onDone={() => { setConfirming(null); load(); }}
@@ -364,8 +423,8 @@ export default function ReconcilePage() {
       >
         {cancelling && (
           <>
-            {cancelling.parent_name}／{cancelling.students?.join('、')}，末 5 碼 {cancelling.transfer_last_5}。
-            取消後將顯示為「取消報名」，此動作無法復原。
+            {cancelling.parent_name}／{cancelling.sub_orders?.length || 0} 筆子訂單，末 5 碼 {cancelling.transfer_last_5 || '—'}。
+            取消後將顯示為「已取消」，此動作無法復原。
           </>
         )}
       </ConfirmDialog>

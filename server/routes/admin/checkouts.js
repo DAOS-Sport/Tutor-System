@@ -1,0 +1,373 @@
+const express = require('express');
+const { pool } = require('../../models/db');
+const {
+  requireAdminAuth,
+  requireAdminRole,
+  getScopedVenueIds,
+  isVenueInScope,
+} = require('../../middlewares/adminAuth');
+const ragicWriteback = require('../../services/ragicWriteback');
+const promotions = require('../../services/promotions');
+const { CHECKOUT_STATUS, readCheckout } = require('../../services/checkouts');
+const enrollmentRouter = require('./enrollments');
+
+const { getSettings, ensureGroupCoursePeriod, ensureSoloCoursePeriod } = enrollmentRouter._checkoutInternals;
+
+const router = express.Router();
+const AMS = requireAdminRole('admin', 'manager', 'staff');
+const INVOICE_RE = /^[A-Z]{2}\d{8}$/;
+
+function courseTypeLabel(courseType) {
+  return { 1: '1 對 1', 2: '1 對 2', 3: '1 對 3' }[Number(courseType)] || `1 對 ${courseType}`;
+}
+
+function scopedCheckoutWhere(req, params) {
+  const where = [];
+  const scope = getScopedVenueIds(req);
+  if (scope) {
+    if (!scope.length) where.push('FALSE');
+    else {
+      params.push(scope);
+      where.push(`EXISTS (
+        SELECT 1 FROM admin_enrollments ae_scope
+         WHERE ae_scope.checkout_id = cs.checkout_id
+           AND ae_scope.venue_id = ANY($${params.length}::text[])
+      )`);
+    }
+  }
+  if (req.query.venueId) {
+    const venueId = String(req.query.venueId);
+    if (!isVenueInScope(req, venueId)) where.push('FALSE');
+    else {
+      params.push(venueId);
+      where.push(`EXISTS (
+        SELECT 1 FROM admin_enrollments ae_venue
+         WHERE ae_venue.checkout_id = cs.checkout_id
+           AND ae_venue.venue_id = $${params.length}
+      )`);
+    }
+  }
+  return where;
+}
+
+router.get('/', requireAdminAuth, AMS, async (req, res) => {
+  try {
+    const params = [];
+    const where = scopedCheckoutWhere(req, params);
+
+    const status = req.query.status ? String(req.query.status) : '';
+    if (status === 'pending') {
+      where.push(`cs.payment_status IN ('pending_payment','pending_reconcile')`);
+    } else if (status) {
+      params.push(status);
+      where.push(`cs.payment_status = $${params.length}`);
+    }
+
+    const search = req.query.search ? String(req.query.search).trim().toLowerCase() : '';
+    if (search) {
+      params.push(`%${search}%`);
+      const idx = params.length;
+      where.push(`(
+        LOWER(cs.checkout_id::text) LIKE $${idx}
+        OR LOWER(COALESCE(p.name, '')) LIKE $${idx}
+        OR COALESCE(p.phone, '') LIKE $${idx}
+        OR EXISTS (
+          SELECT 1 FROM admin_enrollments ae_search
+           WHERE ae_search.checkout_id = cs.checkout_id
+             AND (
+               LOWER(ae_search.id) LIKE $${idx}
+               OR LOWER(ae_search.parent_name) LIKE $${idx}
+               OR ae_search.parent_phone LIKE $${idx}
+               OR LOWER(ae_search.coach) LIKE $${idx}
+               OR EXISTS (SELECT 1 FROM unnest(ae_search.students) s WHERE LOWER(s) LIKE $${idx})
+             )
+        )
+      )`);
+    }
+
+    const r = await pool.query(
+      `SELECT cs.checkout_id
+         FROM checkout_sessions cs
+         LEFT JOIN parents p ON p.id = cs.parent_id
+        ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+        ORDER BY cs.created_at DESC
+        LIMIT 500`,
+      params
+    );
+    const out = [];
+    for (const row of r.rows) out.push(await readCheckout(pool, row.checkout_id));
+    res.json(out.filter(Boolean));
+  } catch (err) {
+    console.error('[admin/checkouts GET]', err);
+    res.status(500).json({ error: '載入付款單失敗' });
+  }
+});
+
+router.get('/:checkoutId', requireAdminAuth, AMS, async (req, res) => {
+  try {
+    const checkout = await readCheckout(pool, req.params.checkoutId);
+    if (!checkout) return res.status(404).json({ error: '找不到付款單' });
+    if (!(checkout.sub_orders || []).every((row) => isVenueInScope(req, row.venue_id))) {
+      return res.status(403).json({ error: '此付款單含有您無權檢視的場館' });
+    }
+    res.json(checkout);
+  } catch (err) {
+    console.error('[admin/checkouts GET /:id]', err);
+    res.status(500).json({ error: '載入付款單失敗' });
+  }
+});
+
+router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) => {
+  const client = await pool.connect();
+  const createdStudentIds = [];
+  try {
+    await client.query('BEGIN');
+    const by = req.body?.by || req.adminUser?.name || req.adminUser?.username || 'unknown';
+    const invoiceNumber = String(req.body?.invoice_number || '').trim().toUpperCase();
+    const invoiceImageUrl = String(req.body?.invoice_image_url || '').trim();
+    const invoiceUrl = String(req.body?.invoice_url || '').trim();
+    const buyerName = String(req.body?.buyer_name || '').trim() || null;
+    const taxId = String(req.body?.tax_id || '').trim() || null;
+
+    if (!invoiceNumber) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: '發票號碼必填' });
+    }
+    if (!INVOICE_RE.test(invoiceNumber)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: '發票號碼格式錯誤（應為 2 大寫英文 + 8 數字）' });
+    }
+    if (!invoiceImageUrl) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: '發票照片必填' });
+    }
+
+    const cr = await client.query(`SELECT * FROM checkout_sessions WHERE checkout_id = $1 FOR UPDATE`, [req.params.checkoutId]);
+    if (!cr.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: '找不到付款單' });
+    }
+    const checkoutRow = cr.rows[0];
+    if (![CHECKOUT_STATUS.PENDING_PAYMENT, CHECKOUT_STATUS.PENDING_RECONCILE].includes(checkoutRow.payment_status)) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '此付款單狀態非待對帳' });
+    }
+
+    const children = await client.query(
+      `SELECT * FROM admin_enrollments
+        WHERE checkout_id = $1
+        ORDER BY submitted_at, period_number, id
+        FOR UPDATE`,
+      [req.params.checkoutId]
+    );
+    if (!children.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: '此付款單沒有子訂單' });
+    }
+    if (!children.rows.every((row) => isVenueInScope(req, row.venue_id))) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: '此付款單含有您無權對帳的場館' });
+    }
+    if (children.rows.some((row) => row.status !== 'pending_payment')) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '此付款單含有非待對帳子訂單，請重新整理後再試' });
+    }
+
+    const settings = await getSettings();
+    const perPeriod = settings.sessions_per_period || 6;
+    const groupPaymentMarked = new Set();
+    const rowsToOpen = [];
+    for (const row of children.rows) {
+      const total = Number(row.total_sessions) || perPeriod * (Number(row.period_count) || 1);
+      await client.query(
+        `UPDATE admin_enrollments
+            SET status = 'confirmed',
+                total_sessions = $2,
+                used_sessions = COALESCE(used_sessions, 0),
+                invoice_number = $3,
+                invoice_image_url = $4,
+                invoice_url = $5,
+                invoice_issued_at = NOW(),
+                updated_at = NOW()
+          WHERE id = $1`,
+        [row.id, total, invoiceNumber, invoiceImageUrl, invoiceUrl || null]
+      );
+      await client.query(
+        `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user)
+         VALUES ($1, $2, $3)`,
+        [row.id, `checkout 對帳通過（發票 ${invoiceNumber}）`, by]
+      );
+
+      if (row.group_order_id) {
+        const groupKey = `${row.group_order_id}:${row.parent_phone}`;
+        if (!groupPaymentMarked.has(groupKey)) {
+          groupPaymentMarked.add(groupKey);
+          await client.query(
+            `UPDATE group_order_members gom
+                SET payment_confirmed = TRUE,
+                    payment_confirmed_at = NOW(),
+                    payment_confirmed_by = $3
+              FROM parents p
+              WHERE p.id = gom.parent_id
+                AND gom.group_order_id = $1
+                AND p.phone = $2
+                AND gom.payment_confirmed = FALSE`,
+            [row.group_order_id, row.parent_phone, String(by).slice(0, 50)]
+          );
+        }
+      }
+      rowsToOpen.push({ row, total });
+    }
+
+    await client.query(
+      `INSERT INTO checkout_invoices
+         (checkout_id, order_id, buyer_name, tax_id, amount, invoice_number, invoice_image_url, invoice_url, issued_at)
+       VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, NOW())
+       ON CONFLICT (checkout_id) WHERE order_id IS NULL
+       DO UPDATE SET buyer_name = EXCLUDED.buyer_name,
+                     tax_id = EXCLUDED.tax_id,
+                     amount = EXCLUDED.amount,
+                     invoice_number = EXCLUDED.invoice_number,
+                     invoice_image_url = EXCLUDED.invoice_image_url,
+                     invoice_url = EXCLUDED.invoice_url,
+                     issued_at = EXCLUDED.issued_at,
+                     updated_at = NOW()`,
+      [
+        req.params.checkoutId,
+        buyerName || children.rows[0].parent_name,
+        taxId || children.rows[0].tax_id || null,
+        Number(checkoutRow.total_amount) || children.rows.reduce((sum, row) => sum + (Number(row.final_price) || 0), 0),
+        invoiceNumber,
+        invoiceImageUrl,
+        invoiceUrl || null,
+      ]
+    );
+    await client.query(
+      `UPDATE checkout_sessions
+          SET payment_status = 'paid',
+              current_route_state = 'paid',
+              audit_log = COALESCE(audit_log, '[]'::jsonb) ||
+                jsonb_build_array(jsonb_build_object('at', NOW(), 'action', 'checkout_reconciled', 'by', $2::text, 'invoice_number', $3::text)),
+              updated_at = NOW()
+        WHERE checkout_id = $1`,
+      [req.params.checkoutId, by, invoiceNumber]
+    );
+
+    for (const { row, total } of rowsToOpen) {
+      await ensureGroupCoursePeriod(client, row, total);
+      const ids = (await ensureSoloCoursePeriod(client, row, total)) || [];
+      createdStudentIds.push(...ids);
+    }
+
+    await client.query('COMMIT');
+
+    if (createdStudentIds.length) {
+      ragicWriteback.scheduleWriteback({ studentIds: createdStudentIds, reason: 'checkout-reconcile' });
+    }
+    try {
+      const chatRooms = require('../../services/chatRooms');
+      await chatRooms.backfillRoomsForActivePeriods();
+    } catch (e) {
+      console.warn('[checkout reconcile] backfill chat rooms failed:', e.message);
+    }
+    try {
+      const line = require('../../services/line');
+      const checkout = await readCheckout(pool, req.params.checkoutId);
+      const first = checkout.sub_orders[0] || {};
+      const parentQuery = checkout.parent_id
+        ? await pool.query(`SELECT line_uid FROM parents WHERE id = $1`, [checkout.parent_id])
+        : await pool.query(`SELECT line_uid FROM parents WHERE phone = $1`, [checkout.parent_phone]);
+      const lineUid = parentQuery.rows[0]?.line_uid;
+      if (lineUid && first.venue_id) {
+        const publicBase = (process.env.PUBLIC_BASE_URL || process.env.ADMIN_URL || '').replace(/\/$/, '');
+        const absoluteImageUrl = invoiceImageUrl.startsWith('http') ? invoiceImageUrl : `${publicBase}${invoiceImageUrl}`;
+        const liffUrl = process.env.LIFF_URL_PARENT || process.env.LIFF_URL || '';
+        const courseTypes = [...new Set(checkout.sub_orders.map((o) => o.course_type).filter(Boolean))];
+        const messages = line.templates.invoiceIssued({
+          parentName: checkout.parent_name,
+          invoiceNumber,
+          invoiceImageUrl: absoluteImageUrl,
+          invoiceUrl: invoiceUrl || null,
+          coachName: checkout.sub_orders.length === 1 ? first.coach : `${checkout.sub_orders.length} 筆子訂單`,
+          venueName: checkout.venue?.name || first.venue_id,
+          courseType: courseTypes.length === 1 ? courseTypeLabel(courseTypes[0]) : `${courseTypes.length} 種組別`,
+          finalPrice: checkout.total_amount,
+          liffUrl,
+        });
+        await line.pushMessage(lineUid, messages, first.venue_id);
+      }
+    } catch (e) {
+      console.warn('[checkout reconcile] LINE push invoice failed:', e.message);
+    }
+
+    res.json(await readCheckout(pool, req.params.checkoutId));
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('[admin/checkouts reconcile]', err);
+    res.status(500).json({ error: 'checkout reconcile failed' });
+  } finally {
+    client.release();
+  }
+});
+
+router.post('/:checkoutId/cancel', requireAdminAuth, AMS, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const by = req.body?.by || req.adminUser?.name || req.adminUser?.username || 'unknown';
+    const reason = String(req.body?.reason || '').trim() || null;
+    const cr = await client.query(`SELECT * FROM checkout_sessions WHERE checkout_id = $1 FOR UPDATE`, [req.params.checkoutId]);
+    if (!cr.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: '找不到付款單' });
+    }
+    const children = await client.query(
+      `SELECT * FROM admin_enrollments WHERE checkout_id = $1 FOR UPDATE`,
+      [req.params.checkoutId]
+    );
+    if (!children.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: '此付款單沒有子訂單' });
+    }
+    if (!children.rows.every((row) => isVenueInScope(req, row.venue_id))) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: '此付款單含有您無權取消的場館' });
+    }
+    if (children.rows.some((row) => row.status !== 'pending_payment')) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '此付款單含有非待對帳子訂單，無法取消' });
+    }
+    for (const row of children.rows) {
+      await promotions.revertUsage({ adminEnrollmentId: row.id }, client);
+      await client.query(
+        `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user, reason)
+         VALUES ($1, $2, $3, $4)`,
+        [row.id, reason ? `取消 checkout（原因：${reason}）` : '取消 checkout', by, reason]
+      );
+    }
+    await client.query(
+      `UPDATE admin_enrollments SET status = 'cancelled', updated_at = NOW() WHERE checkout_id = $1`,
+      [req.params.checkoutId]
+    );
+    await client.query(
+      `UPDATE checkout_sessions
+          SET payment_status = 'cancelled',
+              current_route_state = 'cancelled',
+              audit_log = COALESCE(audit_log, '[]'::jsonb) ||
+                jsonb_build_array(jsonb_build_object('at', NOW(), 'action', 'checkout_cancelled', 'by', $2::text)),
+              updated_at = NOW()
+        WHERE checkout_id = $1`,
+      [req.params.checkoutId, by]
+    );
+    await client.query('COMMIT');
+    res.json(await readCheckout(pool, req.params.checkoutId));
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('[admin/checkouts cancel]', err);
+    res.status(500).json({ error: '取消付款單失敗' });
+  } finally {
+    client.release();
+  }
+});
+
+module.exports = router;

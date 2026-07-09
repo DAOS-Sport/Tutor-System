@@ -15,6 +15,7 @@ import CoachListPage from './pages/CoachListPage';
 import EnrollmentPage from './pages/EnrollmentPage';
 import EnrollmentSuccessPage from './pages/EnrollmentSuccessPage';
 import EnrollStatusPage from './pages/EnrollStatusPage';
+import CheckoutPage from './pages/CheckoutPage';
 import MyCoursesPage from './pages/MyCoursesPage';
 import CourseDetailPage from './pages/CourseDetailPage';
 import ChatListPage from './pages/ChatListPage';
@@ -49,8 +50,8 @@ function RequireAuth() {
 }
 
 function RequireParent() {
-  const { role } = useAuth();
-  if (role === 'parent') return <Outlet />;
+  const { role, parent } = useAuth();
+  if (role === 'parent' && parent?.id) return <Outlet />;
   // 教練（或殘留的 coach session）走「家長 link」進來 → 不要踢去教練畫面，
   // 而是導去 /login 以同一個 LINE 帳號建立家長 session（家長情境會自動跑
   // parentLineLogin：有家長資料→直接登入；沒有→手機綁定/註冊）。這樣教練也能
@@ -115,6 +116,9 @@ export default function App() {
               {/* U10 報名狀態頁（送出後：繳款 / 上傳證明 / 等待櫃台確認） */}
               <Route element={<AppLayout showBackButton title="報名狀態" />}>
                 <Route path="/enroll-status/:id" element={<EnrollStatusPage />} />
+              </Route>
+              <Route element={<AppLayout showBackButton title="付款資訊" />}>
+                <Route path="/checkout/:checkoutId" element={<CheckoutPage />} />
               </Route>
               {/* U7 團購 */}
               <Route element={<AppLayout showBackButton title="發起團購" />}>

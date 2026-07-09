@@ -17,6 +17,9 @@ const PATHS = [
   ['F', 'path_f_mgm.js'],
   ['G', 'path_g_learning_history.js'],
   ['H', 'path_h_transfer.js'],
+  ['Checkout', 'checkout_idempotency.js'],
+  ['Checkout2x4', 'checkout_multi_student_periods.js'],
+  ['CheckoutGroup', 'checkout_group_isolation.js'],
   ['Flex18', 'flex_templates_verify.js'],
 ];
 
