@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
@@ -13,15 +13,6 @@ export default function Header() {
   const toast = useToast();
   const nav = useNavigate();
   const [openPwd, setOpenPwd] = useState(false);
-  const promptedDefaultCredentials = useRef(false);
-
-  useEffect(() => {
-    if (user?.must_change_credentials && !promptedDefaultCredentials.current) {
-      promptedDefaultCredentials.current = true;
-      setOpenPwd(true);
-      toast.warning('目前仍使用預設帳密，建議至個人設定更新帳號或密碼', 5000);
-    }
-  }, [toast, user?.must_change_credentials]);
 
   const onLogout = () => {
     logout();
