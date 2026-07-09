@@ -1,8 +1,10 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import DataTable from '../components/DataTable';
-import StatusBadge from '../components/StatusBadge';
+import StatusBadge, { STATUS_TONE } from '../components/StatusBadge';
+import FilterBar from '../components/FilterBar';
+import ConfirmDialog from '../components/ConfirmDialog';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import { enrollmentsApi } from '../api/enrollments';
@@ -12,6 +14,11 @@ import { exportEnrollmentsCsv, exportEnrollmentsXlsx } from '../utils/csvExport'
 import ExportMenu from '../components/ExportMenu';
 import Barcode from '../components/Barcode';
 import ImageLightbox from '../components/ImageLightbox';
+
+const EMPTY_FILTERS = {
+  submittedFrom: '', submittedTo: '', phone: '', parentName: '', studentName: '',
+  coach: '', courseType: '', last5: '',
+};
 
 const INVOICE_RE = /^[A-Z]{2}\d{8}$/;
 
@@ -194,6 +201,9 @@ export default function ReconcilePage() {
   const [list, setList] = useState(null);
   const [venues, setVenues] = useState([]);
   const [confirming, setConfirming] = useState(null);
+  const [filters, setFilters] = useState(EMPTY_FILTERS);
+  const [cancelling, setCancelling] = useState(null);
+  const [cancelBusy, setCancelBusy] = useState(false);
 
   async function load() {
     const venueId = isStaff ? user?.venue_id : undefined;
@@ -205,9 +215,70 @@ export default function ReconcilePage() {
   }
   useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
 
+  const coachOptions = useMemo(() => {
+    const names = new Set((list || []).map((r) => r.coach).filter(Boolean));
+    return [...names].sort().map((name) => ({ value: name, label: name }));
+  }, [list]);
+
+  const courseTypeOptions = useMemo(() => {
+    const types = new Set((list || []).map((r) => r.course_type).filter((t) => t != null));
+    return [...types].sort((a, b) => a - b).map((t) => ({ value: String(t), label: courseTypeLabel(t) }));
+  }, [list]);
+
+  const filterFields = [
+    { key: 'submitted', label: '報名日期', type: 'dateRange' },
+    { key: 'phone', label: '行動電話', type: 'input', placeholder: '家長手機' },
+    { key: 'parentName', label: '家長姓名', type: 'input' },
+    { key: 'studentName', label: '學員姓名', type: 'input' },
+    { key: 'coach', label: '教練', type: 'combo', options: coachOptions, placeholder: '可輸入或選擇' },
+    { key: 'courseType', label: '組別', type: 'select',
+      options: [{ value: '', label: '全部' }, ...courseTypeOptions] },
+    { key: 'last5', label: '末五碼', type: 'input', placeholder: '轉帳末 5 碼' },
+  ];
+
+  const filteredList = useMemo(() => {
+    if (!Array.isArray(list)) return [];
+    const phoneQ = filters.phone.trim();
+    const parentQ = filters.parentName.trim().toLowerCase();
+    const studentQ = filters.studentName.trim().toLowerCase();
+    const coachQ = filters.coach.trim().toLowerCase();
+    const last5Q = filters.last5.trim();
+    return list.filter((r) => {
+      if (filters.submittedFrom && (r.submitted_at || '').slice(0, 10) < filters.submittedFrom) return false;
+      if (filters.submittedTo && (r.submitted_at || '').slice(0, 10) > filters.submittedTo) return false;
+      if (phoneQ && !(r.parent_phone || '').includes(phoneQ)) return false;
+      if (parentQ && !(r.parent_name || '').toLowerCase().includes(parentQ)) return false;
+      if (studentQ && !(r.students || []).some((s) => (s || '').toLowerCase().includes(studentQ))) return false;
+      if (coachQ && !(r.coach || '').toLowerCase().includes(coachQ)) return false;
+      if (filters.courseType && String(r.course_type) !== filters.courseType) return false;
+      if (last5Q && !(r.transfer_last_5 || '').includes(last5Q)) return false;
+      return true;
+    });
+  }, [list, filters]);
+
+  async function handleCancelConfirm() {
+    if (!cancelling) return;
+    setCancelBusy(true);
+    try {
+      const updated = await enrollmentsApi.cancel(cancelling.id, { by: user.name });
+      setList((prev) => prev.map((r) => (r.id === cancelling.id ? { ...r, ...updated } : r)));
+      toast.success('已取消此筆報名');
+      setCancelling(null);
+    } catch (err) {
+      toast.error(err?.response?.data?.error || '取消失敗');
+    } finally {
+      setCancelBusy(false);
+    }
+  }
+
   if (!list) return <LoadingSpinner fullPage />;
 
   const venueName = (id) => venues.find((v) => v.id === id)?.name || id;
+
+  function lastAction(r) {
+    const logs = r.audit_logs;
+    return Array.isArray(logs) && logs.length ? logs[logs.length - 1] : null;
+  }
 
   const columns = [
     { key: 'id', label: '報名編號', render: (r) => <span className="font-mono text-xs">{r.id}</span> },
@@ -219,13 +290,36 @@ export default function ReconcilePage() {
     { key: 'final_price', label: '應收', className: 'text-right', render: (r) => <span className="font-mono">{formatTWD(r.final_price)}</span> },
     { key: 'transfer_last_5', label: '末 5 碼', className: 'text-center', render: (r) => <span className="font-mono">{r.transfer_last_5}</span> },
     {
+      key: 'audit', label: '審核 / 對帳紀錄',
+      render: (r) => {
+        const last = lastAction(r);
+        if (!last) return <span className="text-xs text-gray-300">—</span>;
+        return (
+          <div className="text-xs text-gray-500">
+            <div>{last.action}</div>
+            <div>{last.by} · {formatTWDateTime(last.at)}</div>
+          </div>
+        );
+      },
+    },
+    {
       key: 'actions', label: '操作', className: 'text-right',
-      render: (r) => canReconcile ? (
-        <button className="rounded-md bg-brand-green px-3 py-1.5 text-xs font-bold text-white hover:bg-brand-teal"
-          onClick={() => setConfirming(r)}>對帳通過</button>
-      ) : (
-        <span className="text-xs text-gray-400" title="僅主管 / 管理員可對帳">唯讀</span>
-      ),
+      render: (r) => {
+        if (r.status === 'cancelled') {
+          return <StatusBadge tone={STATUS_TONE.cancelled}>取消報名</StatusBadge>;
+        }
+        if (!canReconcile) {
+          return <span className="text-xs text-gray-400" title="僅主管 / 管理員可對帳">唯讀</span>;
+        }
+        return (
+          <div className="flex justify-end gap-2">
+            <button className="rounded-md bg-brand-green px-3 py-1.5 text-xs font-bold text-white hover:bg-brand-teal"
+              onClick={() => setConfirming(r)}>對帳通過</button>
+            <button className="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-bold text-gray-600 hover:bg-gray-100"
+              onClick={() => setCancelling(r)}>取消</button>
+          </div>
+        );
+      },
     },
   ];
 
@@ -250,7 +344,8 @@ export default function ReconcilePage() {
           />
         }
       />
-      <DataTable columns={columns} rows={list} rowKey={(r) => r.id} empty="目前沒有待對帳的報名" />
+      <FilterBar fields={filterFields} values={filters} onChange={setFilters} onReset={() => setFilters(EMPTY_FILTERS)} />
+      <DataTable columns={columns} rows={filteredList} rowKey={(r) => r.id} empty="目前沒有符合條件的待對帳報名" />
       {confirming && (
         <InvoiceModal
           enrollment={confirming}
@@ -259,6 +354,21 @@ export default function ReconcilePage() {
           onDone={() => { setConfirming(null); load(); }}
         />
       )}
+      <ConfirmDialog
+        open={!!cancelling}
+        title="確定取消此筆報名？"
+        confirmLabel="確定取消" cancelLabel="返回"
+        tone="danger" busy={cancelBusy}
+        onConfirm={handleCancelConfirm}
+        onCancel={() => setCancelling(null)}
+      >
+        {cancelling && (
+          <>
+            {cancelling.parent_name}／{cancelling.students?.join('、')}，末 5 碼 {cancelling.transfer_last_5}。
+            取消後將顯示為「取消報名」，此動作無法復原。
+          </>
+        )}
+      </ConfirmDialog>
     </div>
   );
 }

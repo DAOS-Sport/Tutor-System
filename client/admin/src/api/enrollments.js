@@ -36,4 +36,7 @@ export const enrollmentsApi = {
 
   refund: (id, reason, by) =>
     callApi(`/enrollments/${id}/refund`, { method: 'post', data: { reason, by } }, () => mockDb.refundEnrollment(id, reason, by)),
+
+  cancel: (id, { reason, by } = {}) =>
+    callApi(`/enrollments/${id}/cancel`, { method: 'post', data: { reason, by } }, () => mockDb.cancelEnrollment(id, reason, by)),
 };

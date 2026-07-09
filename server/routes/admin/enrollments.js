@@ -993,4 +993,51 @@ router.post('/:id/refund', requireAdminAuth, requireAdminRole('admin', 'manager'
   }
 });
 
+/**
+ * POST /api/admin/enrollments/:id/cancel  — F-M02 待對帳清單的「取消」操作
+ * 僅能取消仍在待對帳（pending_payment）狀態的報名；已對帳/已退費/已取消不可重複取消。
+ */
+router.post('/:id/cancel', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { id } = req.params;
+    const reason = (req.body && req.body.reason || '').trim();
+    const by = (req.body && req.body.by) || req.adminUser?.name || req.adminUser?.username || 'unknown';
+
+    const cur = await client.query(`SELECT * FROM admin_enrollments WHERE id = $1 FOR UPDATE`, [id]);
+    if (!cur.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'enrollment not found' });
+    }
+    if (!isVenueInScope(req, cur.rows[0].venue_id)) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: '此報名不在您的場館範圍內' });
+    }
+    if (cur.rows[0].status !== 'pending_payment') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: `狀態 ${cur.rows[0].status} 的報名不可取消` });
+    }
+
+    await client.query(
+      `UPDATE admin_enrollments SET status = 'cancelled', updated_at = NOW() WHERE id = $1`,
+      [id]
+    );
+    await client.query(
+      `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user, reason)
+       VALUES ($1, $2, $3, $4)`,
+      [id, reason ? `取消報名（原因：${reason}）` : '取消報名', by, reason || null]
+    );
+    await client.query('COMMIT');
+
+    res.json(await readEnrollment(id));
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('[admin/enrollments/:id/cancel]', err);
+    res.status(500).json({ error: 'cancel failed' });
+  } finally {
+    client.release();
+  }
+});
+
 module.exports = router;

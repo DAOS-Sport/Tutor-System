@@ -548,7 +548,7 @@ export default function StaffPage() {
     { key: 'role', label: '角色', type: 'select', options: [
         { value: '', label: '全部' }, { value: 'admin', label: '系統管理員' },
         { value: 'manager', label: '主管' }, { value: 'staff', label: '行政櫃檯' },
-        { value: 'coach', label: '教練' }] },
+        { value: 'coach', label: '教練' }, { value: 'lifeguard', label: '救生員' }] },
     { key: 'phone', label: '電話', type: 'input', placeholder: '末 4 碼或全號' },
     { key: 'senior', label: '資深', type: 'radio', options: [
         { value: '', label: '不限' }, { value: 'yes', label: '是' }, { value: 'no', label: '否' }] },

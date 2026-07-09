@@ -12,6 +12,15 @@ const TONE_CLS = {
   disabledRole: 'bg-gray-400 text-white',
 };
 
+// 全域狀態顏色規範：綠＝通過/成功/啟用、灰＝取消、紅＝退費/停用、橘＝待審核。
+// 各頁面的狀態徽章應優先對應到這四類語意，而非各自挑色，才能維持全站一致。
+export const STATUS_TONE = {
+  success: 'green',
+  cancelled: 'gray',
+  danger: 'error',
+  pending: 'amber',
+};
+
 export default function StatusBadge({ tone = 'gray', children, className = '', title }) {
   const cls = TONE_CLS[tone] || TONE_CLS.gray;
   return (

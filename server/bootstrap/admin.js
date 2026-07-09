@@ -459,30 +459,35 @@ async function seedIfEmpty() {
     console.log('[admin bootstrap] seeded admin_course_intros (3 types)');
   }
 
-  // Enrollments + audit logs
-  const e = await pool.query('SELECT COUNT(*)::int AS n FROM admin_enrollments');
-  if (e.rows[0].n === 0) {
-    for (const x of DEFAULT_ENROLLMENTS) {
-      await pool.query(
-        `INSERT INTO admin_enrollments
-         (id, parent_name, parent_phone, students, coach, venue_id, course_type,
-          original_price, final_price, transfer_last_5, status, submitted_at,
-          total_sessions, used_sessions, refund_amount)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-         ON CONFLICT (id) DO NOTHING`,
-        [x.id, x.parent_name, x.parent_phone, x.students, x.coach, x.venue_id, x.course_type,
-         x.original_price, x.final_price, x.transfer_last_5, x.status, x.submitted_at,
-         x.total_sessions || null, x.used_sessions || null, x.refund_amount || null]
-      );
-      for (const a of x.audit_logs) {
+  // Enrollments + audit logs — 假資料一律不得進 production：即使 admin_enrollments
+  // 因故清空（如清理測試資料後），也不該在正式站重新塞入 24 筆假客戶報名紀錄。
+  if (IS_PROD) {
+    console.log('[admin bootstrap] SKIPPED admin_enrollments demo seed (NODE_ENV=production)');
+  } else {
+    const e = await pool.query('SELECT COUNT(*)::int AS n FROM admin_enrollments');
+    if (e.rows[0].n === 0) {
+      for (const x of DEFAULT_ENROLLMENTS) {
         await pool.query(
-          `INSERT INTO admin_enrollment_audit_logs (enrollment_id, at, action, by_user, reason, refund_amount)
-           VALUES ($1,$2,$3,$4,$5,$6)`,
-          [x.id, a.at, a.action, a.by, a.reason || null, a.refund_amount || null]
+          `INSERT INTO admin_enrollments
+           (id, parent_name, parent_phone, students, coach, venue_id, course_type,
+            original_price, final_price, transfer_last_5, status, submitted_at,
+            total_sessions, used_sessions, refund_amount)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+           ON CONFLICT (id) DO NOTHING`,
+          [x.id, x.parent_name, x.parent_phone, x.students, x.coach, x.venue_id, x.course_type,
+           x.original_price, x.final_price, x.transfer_last_5, x.status, x.submitted_at,
+           x.total_sessions || null, x.used_sessions || null, x.refund_amount || null]
         );
+        for (const a of x.audit_logs) {
+          await pool.query(
+            `INSERT INTO admin_enrollment_audit_logs (enrollment_id, at, action, by_user, reason, refund_amount)
+             VALUES ($1,$2,$3,$4,$5,$6)`,
+            [x.id, a.at, a.action, a.by, a.reason || null, a.refund_amount || null]
+          );
+        }
       }
+      console.log(`[admin bootstrap] seeded admin_enrollments (${DEFAULT_ENROLLMENTS.length} records)`);
     }
-    console.log(`[admin bootstrap] seeded admin_enrollments (${DEFAULT_ENROLLMENTS.length} records)`);
   }
 
   // Today sessions

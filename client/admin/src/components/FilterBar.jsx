@@ -4,10 +4,11 @@ import React, { useId } from 'react';
  * 通用 FilterBar — 桌機優先，欄位橫向排列；窄螢幕自動換行
  *
  * fields: [{ key, label, type, options?, placeholder?, datalist? }]
- *   - type='select'  → 純下拉
- *   - type='combo'   → 下拉 + 輸入（datalist；可自由輸入或選清單值）
- *   - type='input'   → 純文字輸入
- *   - type='radio'   → 多選一 radio group（options 必填）
+ *   - type='select'    → 純下拉
+ *   - type='combo'     → 下拉 + 輸入（datalist；可自由輸入或選清單值）
+ *   - type='input'     → 純文字輸入
+ *   - type='radio'     → 多選一 radio group（options 必填）
+ *   - type='dateRange' → 起訖日期選擇器；值存在 `${key}From` / `${key}To`
  * values:   { [key]: string }
  * onChange: (next) => void
  */
@@ -76,6 +77,31 @@ export default function FilterBar({ fields, values, onChange, onReset }) {
                   placeholder={f.placeholder || ''}
                   className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm focus:border-brand-teal focus:outline-none"
                 />
+              </div>
+            );
+          }
+
+          if (f.type === 'dateRange') {
+            const fromKey = `${f.key}From`;
+            const toKey = `${f.key}To`;
+            return (
+              <div key={f.key} className="min-w-[220px]">
+                <label className="mb-1 block text-xs font-medium text-gray-600">{f.label}</label>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    id={id} type="date"
+                    value={values?.[fromKey] ?? ''}
+                    onChange={(e) => set(fromKey, e.target.value)}
+                    className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm focus:border-brand-teal focus:outline-none"
+                  />
+                  <span className="text-gray-400">–</span>
+                  <input
+                    type="date"
+                    value={values?.[toKey] ?? ''}
+                    onChange={(e) => set(toKey, e.target.value)}
+                    className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm focus:border-brand-teal focus:outline-none"
+                  />
+                </div>
               </div>
             );
           }

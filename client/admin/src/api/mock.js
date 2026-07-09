@@ -828,6 +828,20 @@ export const mockDb = {
     return { ...e, refund_amount: refund };
   },
 
+  cancelEnrollment(id, reason, by) {
+    const e = ENROLLMENTS.find((x) => x.id === id);
+    if (!e) return null;
+    if (e.status !== 'pending_payment') throw new Error(`狀態 ${e.status} 的報名不可取消`);
+    e.status = 'cancelled';
+    e.audit_logs.push({
+      at: new Date().toISOString().slice(0, 19),
+      action: reason ? `取消報名（原因：${reason}）` : '取消報名',
+      by,
+      ...(reason ? { reason } : {}),
+    });
+    return { ...e, audit_logs: e.audit_logs.map((a) => ({ ...a })) };
+  },
+
   refundPreview(id) {
     const e = ENROLLMENTS.find((x) => x.id === id);
     if (!e) return null;
