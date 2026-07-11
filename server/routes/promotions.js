@@ -1,15 +1,32 @@
 /**
  * LIFF / 公開優惠 API
  *  GET  /api/promotions                → 進行中、自動套用的優惠（首頁橫幅 + R05 共用）
- *  POST /api/promotions/preview        → 報名頁試算：傳 { originalPrice, courseType, venueId, periodCount?, couponCode? }
+ *  POST /api/promotions/preview        → 報名頁試算：傳 { originalPrice, courseType, venueId, periodCount?, couponCode?, coachId? }
  *
  * 套用後寫入 promotion_usages 由 enrollments 流程在交易內呼叫 services.recordUsage（不在這條路由）
  */
 const express = require('express');
 const promotions = require('../services/promotions');
+const { pool } = require('../models/db');
 const { optionalParent } = require('../middlewares/parentAuth');
 
 const router = express.Router();
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// 教練加成一律以 DB 為權威值（與 enrollments 成交流程同源）：優先用 coachId 查 coaches.pricing_multiplier，
+// 查不到時才退回前端傳入的 coachMultiplier（相容舊版前端）。避免因前端漏傳/過時而誤判「不適用」。
+async function resolveCoachMultiplier(coachId, clientMultiplier) {
+  if (coachId && UUID_RE.test(String(coachId))) {
+    try {
+      const r = await pool.query(`SELECT pricing_multiplier FROM coaches WHERE id = $1`, [String(coachId)]);
+      if (r.rowCount && r.rows[0].pricing_multiplier != null) return Number(r.rows[0].pricing_multiplier);
+    } catch (err) {
+      console.warn('[preview resolveCoachMultiplier]', err.message);
+    }
+  }
+  return clientMultiplier != null ? Number(clientMultiplier) : null;
+}
 
 router.get('/', async (req, res) => {
   try {
@@ -38,10 +55,11 @@ router.get('/', async (req, res) => {
 
 router.post('/preview', optionalParent, async (req, res) => {
   try {
-    const { originalPrice, courseType, venueId, periodCount, couponCode, coachMultiplier } = req.body || {};
+    const { originalPrice, courseType, venueId, periodCount, couponCode, coachMultiplier, coachId } = req.body || {};
     if (!originalPrice || !courseType) {
       return res.status(400).json({ error: 'originalPrice / courseType 必填' });
     }
+    const effectiveMultiplier = await resolveCoachMultiplier(coachId, coachMultiplier);
     const r = await promotions.previewBestDiscount({
       originalPrice: Number(originalPrice),
       courseType: Number(courseType),
@@ -49,7 +67,7 @@ router.post('/preview', optionalParent, async (req, res) => {
       periodCount: periodCount ? Number(periodCount) : 1,
       couponCode: couponCode || null,
       parentId: req.parent?.id || null,
-      coachMultiplier: coachMultiplier != null ? Number(coachMultiplier) : null,
+      coachMultiplier: effectiveMultiplier,
     });
     res.json(r);
   } catch (err) {

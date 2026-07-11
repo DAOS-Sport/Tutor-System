@@ -30,7 +30,8 @@ export default function useEnrollmentPricing(bootData, { courseType, venueId, co
         venueId,
         periodCount,
         couponCode: couponCode || undefined,
-        coachMultiplier: bootData.coach?.multiplier,
+        coachId: bootData.coach?.id,               // 後端以此查 DB 權威加成值
+        coachMultiplier: bootData.coach?.multiplier, // 相容用途：後端查不到 coachId 時的退回值
       })
       .then((r) => {
         if (!alive) return;
