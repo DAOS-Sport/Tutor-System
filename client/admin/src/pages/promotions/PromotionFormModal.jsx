@@ -11,6 +11,11 @@ function fieldClass(extra = '') {
 function toISODate(v) {
   return v ? String(v).slice(0, 10) : '';
 }
+// 教練加成倍率 → 顯示％：1.30 →「+30%」；1.00 →「+0%（一般）」
+function multiplierLabel(m) {
+  const pct = Math.round((Number(m) - 1) * 100);
+  return pct === 0 ? '+0%（一般）' : `+${pct}%`;
+}
 // 兩日期區間是否重疊：aStart <= bEnd && bStart <= aEnd
 function rangesOverlap(aStart, aEnd, bStart, bEnd) {
   if (!aStart || !aEnd || !bStart || !bEnd) return false;
@@ -44,6 +49,7 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
   // 選項來源：課程需求管理（適用組別）/ F-A03 場館設定（適用場館）
   const [courseTypeOpts, setCourseTypeOpts] = useState(null); // null = 載入中
   const [venueOpts, setVenueOpts] = useState(null);
+  const [coachMultiplierOpts, setCoachMultiplierOpts] = useState(null); // 適用教練加成（％）選項；null = 載入中
   // 重疊偵測：目前進行中（active）的優惠
   const [activePromos, setActivePromos] = useState([]);
 
@@ -56,6 +62,8 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
     min_threshold_value: initial?.min_threshold_value || '',
     applicable_course_types: initial?.applicable_course_types || [],
     applicable_venue_ids: initial?.applicable_venue_ids || [],
+    applicable_coach_multipliers: (initial?.applicable_coach_multipliers || []).map(Number),
+    show_on_parent_home: initial?.show_on_parent_home !== false,
     coupon_code: initial?.coupon_code || '',
     generate_coupon_code: false,
     start_date: initial?.start_date ? toISODate(initial.start_date) : new Date().toISOString().slice(0, 10),
@@ -107,6 +115,28 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
         if (!alive) return;
         const fallback = (initial?.applicable_venue_ids || []).map((id) => ({ value: id, label: `${id} 館` }));
         setVenueOpts(fallback);
+      });
+    // 適用教練加成（％）← 目前 active 教練的相異加成值；失敗時退回 initial 已選值推導
+    promotionsApi.coachMultipliers()
+      .then((rows) => {
+        if (!alive) return;
+        const opts = (Array.isArray(rows) ? rows : [])
+          .map((r) => Number(r.multiplier))
+          .filter((m) => Number.isFinite(m) && m > 0)
+          .sort((a, b) => a - b)
+          .map((m) => ({ value: m, label: multiplierLabel(m) }));
+        // 保留「已選但目前無教練使用」的加成值，使其仍可見並可取消勾選
+        for (const m of (initial?.applicable_coach_multipliers || []).map(Number)) {
+          if (!opts.some((o) => o.value === m)) opts.push({ value: m, label: `${multiplierLabel(m)}（無教練）` });
+        }
+        setCoachMultiplierOpts(opts);
+      })
+      .catch(() => {
+        if (!alive) return;
+        const fallback = (initial?.applicable_coach_multipliers || [])
+          .map(Number)
+          .map((m) => ({ value: m, label: multiplierLabel(m) }));
+        setCoachMultiplierOpts(fallback);
       });
     // (9) 重疊偵測：抓目前進行中的優惠
     promotionsApi.active()
@@ -184,6 +214,8 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
       min_threshold_value: d.min_threshold_value ? Number(d.min_threshold_value) : null,
       applicable_course_types: selectedScopePayload(d.applicable_course_types, courseTypeOpts || []),
       applicable_venue_ids: selectedScopePayload(d.applicable_venue_ids, venueOpts || []),
+      applicable_coach_multipliers: selectedScopePayload(d.applicable_coach_multipliers, coachMultiplierOpts || []),
+      show_on_parent_home: d.show_on_parent_home,
       coupon_code: d.coupon_code.trim() || null,
       generate_coupon_code: !isEdit && d.generate_coupon_code,
       start_date: d.start_date,
@@ -301,6 +333,20 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
                   ))}
                 </div>
               </div>
+              <div className="md:col-span-2">
+                <label className="mb-1 block text-xs text-gray-500">適用教練加成（％）<span className="ml-1 text-gray-400">（不選 = 全部教練）</span></label>
+                <div className="flex flex-wrap gap-2">
+                  {coachMultiplierOpts === null ? (
+                    <span className="text-xs text-gray-400">載入中…</span>
+                  ) : coachMultiplierOpts.length === 0 ? (
+                    <span className="text-xs text-gray-400">（無可用教練加成）</span>
+                  ) : coachMultiplierOpts.map((m) => (
+                    <button key={m.value} type="button" onClick={() => setD({ ...d, applicable_coach_multipliers: toggle(d.applicable_coach_multipliers, m.value) })}
+                      className={`rounded-full border px-3 py-1 text-xs ${hasValue(d.applicable_coach_multipliers, m.value) ? 'border-brand-teal bg-brand-teal text-white' : 'border-gray-300 bg-white text-gray-500'}`}>{m.label}</button>
+                  ))}
+                </div>
+                <p className="mt-1 text-[11px] leading-snug text-gray-400">依教練加成％限定此優惠適用對象；此優惠只會套用在被勾選加成的教練課程上。</p>
+              </div>
             </div>
           </section>
 
@@ -349,6 +395,13 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
                     建立時自動產生隨機代碼
                   </label>
                 )}
+              </div>
+              <div className="md:col-span-2">
+                <label className="inline-flex items-center gap-2 text-sm text-gray-700">
+                  <input type="checkbox" checked={d.show_on_parent_home} onChange={(e) => setD({ ...d, show_on_parent_home: e.target.checked })} />
+                  顯示在家長首頁
+                </label>
+                <p className="mt-1 text-[11px] leading-snug text-gray-400">關閉時此優惠不會出現在家長首頁橫幅（主管專屬 / 特定族群優惠可搭配折扣碼，不公開曝光）。有折扣碼的優惠本就不會顯示在首頁。</p>
               </div>
             </div>
           </section>

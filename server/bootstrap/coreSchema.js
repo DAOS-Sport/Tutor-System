@@ -973,6 +973,8 @@ CREATE TABLE IF NOT EXISTS promotions (
   min_threshold_value INTEGER,
   applicable_course_types INTEGER[],                 -- NULL = 全組別
   applicable_venue_ids VARCHAR(10)[],                -- NULL = 全場館
+  applicable_coach_multipliers NUMERIC(5,2)[],       -- NULL = 不限教練加成（存 coaches.pricing_multiplier 值，如 1.30）
+  show_on_parent_home BOOLEAN NOT NULL DEFAULT TRUE, -- 是否顯示在家長首頁
   coupon_code VARCHAR(40) UNIQUE,                    -- NULL = 自動套用；有值 = 需輸入代碼
   start_date DATE NOT NULL,
   end_date DATE NOT NULL,
@@ -999,6 +1001,8 @@ CREATE INDEX IF NOT EXISTS idx_promotions_coupon
 DO $$ BEGIN ALTER TABLE promotions ADD COLUMN IF NOT EXISTS platform_total_period_cap INTEGER; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE promotions ADD COLUMN IF NOT EXISTS parent_period_cap INTEGER; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE promotions ADD COLUMN IF NOT EXISTS current_period_uses INTEGER NOT NULL DEFAULT 0; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE promotions ADD COLUMN IF NOT EXISTS applicable_coach_multipliers NUMERIC(5,2)[]; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE promotions ADD COLUMN IF NOT EXISTS show_on_parent_home BOOLEAN NOT NULL DEFAULT TRUE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
 -- promotion_usages：每次套用紀錄；資料隔離供日後對帳。
 CREATE TABLE IF NOT EXISTS promotion_usages (

@@ -30,6 +30,7 @@ export default function useEnrollmentPricing(bootData, { courseType, venueId, co
         venueId,
         periodCount,
         couponCode: couponCode || undefined,
+        coachMultiplier: bootData.coach?.multiplier,
       })
       .then((r) => {
         if (!alive) return;

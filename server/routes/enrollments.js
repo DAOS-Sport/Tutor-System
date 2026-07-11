@@ -239,6 +239,7 @@ router.post('/', async (req, res) => {
         periodCount,
         couponCode,
         parentId: parentRow.id,
+        coachMultiplier: multiplier, // 權威值：來自 DB coaches.pricing_multiplier（第 155 行），不信前端
       });
     } catch (err) {
       await client.query('ROLLBACK');

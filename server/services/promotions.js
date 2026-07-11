@@ -30,7 +30,7 @@ function todayTaipei() {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei' }).format(new Date());
 }
 
-function matchScope(p, { courseType, venueId, periodCount }) {
+function matchScope(p, { courseType, venueId, periodCount, coachMultiplier }) {
   const typeOk =
     !p.applicable_course_types ||
     p.applicable_course_types.length === 0 ||
@@ -43,7 +43,13 @@ function matchScope(p, { courseType, venueId, periodCount }) {
     !p.min_threshold_type ||
     !p.min_threshold_value ||
     (p.min_threshold_type === 'PERIOD_COUNT' && (periodCount || 1) >= p.min_threshold_value);
-  return typeOk && venueOk && threshOk;
+  // 教練加成％篩選：空/NULL = 不限；否則教練加成須在名單內（NUMERIC 由 pg 回字串，兩邊 Number 後比值）
+  const multiplierOk =
+    !p.applicable_coach_multipliers ||
+    p.applicable_coach_multipliers.length === 0 ||
+    (coachMultiplier != null &&
+      p.applicable_coach_multipliers.some((m) => Number(m) === Number(coachMultiplier)));
+  return typeOk && venueOk && threshOk && multiplierOk;
 }
 
 function computeDiscount(p, originalPrice) {
@@ -93,7 +99,8 @@ async function listActivePromotions({ today } = {}) {
   const t = today || todayTaipei();
   const r = await pool.query(
     `SELECT id, name, description, type, discount_value, min_threshold_type, min_threshold_value,
-            applicable_course_types, applicable_venue_ids, coupon_code, eligible_parent_id,
+            applicable_course_types, applicable_venue_ids, applicable_coach_multipliers,
+            show_on_parent_home, coupon_code, eligible_parent_id,
             start_date, end_date, max_uses, current_uses,
             platform_total_period_cap, parent_period_cap, current_period_uses
        FROM promotions
@@ -112,7 +119,7 @@ async function listActivePromotions({ today } = {}) {
  *   - 若有 couponCode → 嚴格驗證該代碼（必須符合 status/日期/scope/max_uses）。
  *   - 若無 couponCode → 自動從 active 且 coupon_code IS NULL 的活動中挑「折抵最大」一筆。
  */
-async function previewBestDiscount({ originalPrice, courseType, venueId, periodCount = 1, couponCode = null, parentId = null }) {
+async function previewBestDiscount({ originalPrice, courseType, venueId, periodCount = 1, couponCode = null, parentId = null, coachMultiplier = null }) {
   const today = todayTaipei();
   const op = Math.max(0, Math.round(Number(originalPrice) || 0));
   const requestPeriods = normalizeRequestPeriods(periodCount);
@@ -146,7 +153,7 @@ async function previewBestDiscount({ originalPrice, courseType, venueId, periodC
         throw quotaError('您已達到該優惠活動的個人使用上限');
       }
     }
-    if (!matchScope(p, { courseType, venueId, periodCount })) {
+    if (!matchScope(p, { courseType, venueId, periodCount, coachMultiplier })) {
       const err = new Error('折價券不適用本次購課'); err.code = 'COUPON_OUT_OF_SCOPE'; throw err;
     }
     if (p.eligible_parent_id && p.eligible_parent_id !== parentId) {
@@ -167,7 +174,7 @@ async function previewBestDiscount({ originalPrice, courseType, venueId, periodC
   for (const p of candidates) {
     if (p.coupon_code) continue; // 需要代碼的不自動套用
     if (p.eligible_parent_id) continue; // 私人券不能自動套用
-    if (!matchScope(p, { courseType, venueId, periodCount })) continue;
+    if (!matchScope(p, { courseType, venueId, periodCount, coachMultiplier })) continue;
     if (!hasPlatformPeriodCapacity(p, requestPeriods)) continue;
     if (p.parent_period_cap != null && parentId) {
       const usedPeriods = await getParentPeriodUses(pool, p.id, parentId);

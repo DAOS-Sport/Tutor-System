@@ -16,7 +16,7 @@ router.get('/', async (req, res) => {
     const rows = await promotions.listActivePromotions();
     // 對 LIFF 首頁簡化欄位（只回自動套用的；coupon code 不公開）
     const out = rows
-      .filter((p) => !p.coupon_code)
+      .filter((p) => !p.coupon_code && p.show_on_parent_home !== false)
       .map((p) => ({
         id: p.id,
         title: p.name,
@@ -38,7 +38,7 @@ router.get('/', async (req, res) => {
 
 router.post('/preview', optionalParent, async (req, res) => {
   try {
-    const { originalPrice, courseType, venueId, periodCount, couponCode } = req.body || {};
+    const { originalPrice, courseType, venueId, periodCount, couponCode, coachMultiplier } = req.body || {};
     if (!originalPrice || !courseType) {
       return res.status(400).json({ error: 'originalPrice / courseType 必填' });
     }
@@ -49,6 +49,7 @@ router.post('/preview', optionalParent, async (req, res) => {
       periodCount: periodCount ? Number(periodCount) : 1,
       couponCode: couponCode || null,
       parentId: req.parent?.id || null,
+      coachMultiplier: coachMultiplier != null ? Number(coachMultiplier) : null,
     });
     res.json(r);
   } catch (err) {

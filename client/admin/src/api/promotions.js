@@ -11,6 +11,8 @@ async function req(path, options = {}) {
 export const promotionsApi = {
   // active：staff 也需要看，必須尊重 USE_MOCK（mock token 打不了真後端）
   active:  ()              => callApi('/promotions/active', {}, () => mockDb.activePromotions()),
+  // 表單「適用教練加成（％）」選項來源：目前 active 教練的相異加成值
+  coachMultipliers: ()     => callApi('/promotions/coach-multipliers', {}, () => (mockDb.coachMultipliers ? mockDb.coachMultipliers() : [])),
   list:    (params)        => callApi('/promotions', { params }, () => mockDb.allPromotions(params)),
   detail:  (id)            => req(`/promotions/${id}`),
   create:  (payload)       => callApi('/promotions', { method: 'post', data: payload }, () => mockDb.createPromotion(payload)),

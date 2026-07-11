@@ -25,6 +25,7 @@ router.use(requireAdminAuth);
 
 const PROMO_FIELDS = `id, name, description, type, discount_value,
   min_threshold_type, min_threshold_value, applicable_course_types, applicable_venue_ids,
+  applicable_coach_multipliers, show_on_parent_home,
   coupon_code, start_date, end_date, max_uses, current_uses,
   platform_total_period_cap, parent_period_cap, current_period_uses, status, review_note,
   created_by, reviewed_by, reviewed_at, submitted_at, created_at, updated_at`;
@@ -73,6 +74,11 @@ function validatePayload(p) {
   else if (Array.isArray(p.applicable_course_types) && !p.applicable_course_types.every(isIntElem)) errs.push('applicable_course_types 每個元素必須為整數');
   if (p.applicable_venue_ids && !Array.isArray(p.applicable_venue_ids)) errs.push('applicable_venue_ids 必須為陣列');
   else if (Array.isArray(p.applicable_venue_ids) && !p.applicable_venue_ids.every((x) => typeof x === 'string')) errs.push('applicable_venue_ids 每個元素必須為字串');
+  // applicable_coach_multipliers 為 NUMERIC[]，每個元素須為 > 0 的有限數（教練加成，如 1.30）
+  if (p.applicable_coach_multipliers && !Array.isArray(p.applicable_coach_multipliers)) errs.push('applicable_coach_multipliers 必須為陣列');
+  else if (Array.isArray(p.applicable_coach_multipliers) && !p.applicable_coach_multipliers.every((x) => Number.isFinite(Number(x)) && Number(x) > 0)) errs.push('applicable_coach_multipliers 每個元素必須為大於 0 的數值');
+  // show_on_parent_home 若有值須為布林（缺省視為 true）
+  if (p.show_on_parent_home != null && typeof p.show_on_parent_home !== 'boolean') errs.push('show_on_parent_home 必須為布林值');
   return errs;
 }
 
@@ -117,6 +123,22 @@ router.get('/active', requireAdminRole('admin', 'manager', 'staff'), async (req,
   }
 });
 
+// 表單「適用教練加成（％）」選項來源：目前 active 教練的相異加成值（存 pricing_multiplier）。
+router.get('/coach-multipliers', requireAdminRole('admin', 'manager'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT DISTINCT pricing_multiplier AS multiplier
+         FROM coaches
+        WHERE is_active = TRUE AND pricing_multiplier IS NOT NULL
+        ORDER BY 1`
+    );
+    res.json(r.rows.map((row) => ({ multiplier: Number(row.multiplier) })));
+  } catch (err) {
+    console.error('[admin promotions coach-multipliers]', err);
+    res.status(500).json({ error: 'list coach multipliers failed' });
+  }
+});
+
 router.get('/:id', requireAdminRole('admin', 'manager'), async (req, res) => {
   try {
     const r = await pool.query(`SELECT ${PROMO_FIELDS} FROM promotions WHERE id = $1`, [req.params.id]);
@@ -151,15 +173,18 @@ router.post('/', requireAdminRole('admin', 'manager'), async (req, res) => {
     const r = await pool.query(
       `INSERT INTO promotions (name, description, type, discount_value,
          min_threshold_type, min_threshold_value, applicable_course_types, applicable_venue_ids,
+         applicable_coach_multipliers, show_on_parent_home,
          coupon_code, start_date, end_date, max_uses,
          platform_total_period_cap, parent_period_cap, status, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'draft',$15)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'draft',$17)
        RETURNING ${PROMO_FIELDS}`,
       [
         p.name, p.description || '', p.type, p.discount_value,
         p.min_threshold_type || null, p.min_threshold_value || null,
         p.applicable_course_types && p.applicable_course_types.length ? p.applicable_course_types : null,
         p.applicable_venue_ids && p.applicable_venue_ids.length ? p.applicable_venue_ids : null,
+        p.applicable_coach_multipliers && p.applicable_coach_multipliers.length ? p.applicable_coach_multipliers : null,
+        p.show_on_parent_home !== false,
         coupon, p.start_date, p.end_date, p.max_uses || null,
         optionalNonNegativeInteger(p.platform_total_period_cap),
         optionalNonNegativeInteger(p.parent_period_cap),
@@ -196,6 +221,7 @@ router.patch('/:id', requireAdminRole('admin', 'manager'), async (req, res) => {
          name=$2, description=$3, type=$4, discount_value=$5,
          min_threshold_type=$6, min_threshold_value=$7,
          applicable_course_types=$8, applicable_venue_ids=$9,
+         applicable_coach_multipliers=$16, show_on_parent_home=$17,
          coupon_code=$10, start_date=$11, end_date=$12, max_uses=$13,
          platform_total_period_cap=$14, parent_period_cap=$15,
          updated_at=NOW()
@@ -209,6 +235,8 @@ router.patch('/:id', requireAdminRole('admin', 'manager'), async (req, res) => {
         p.start_date, p.end_date, p.max_uses || null,
         optionalNonNegativeInteger(p.platform_total_period_cap),
         optionalNonNegativeInteger(p.parent_period_cap),
+        p.applicable_coach_multipliers && p.applicable_coach_multipliers.length ? p.applicable_coach_multipliers : null,
+        p.show_on_parent_home !== false,
       ]
     );
     await audit(null, old.id, 'edit', req.adminUser.sub, null);
