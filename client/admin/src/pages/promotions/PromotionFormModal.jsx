@@ -8,8 +8,25 @@ function fieldClass(extra = '') {
   return `w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none ${extra}`;
 }
 
-function toISODate(v) {
-  return v ? String(v).slice(0, 10) : '';
+function pad2(n) { return String(n).padStart(2, '0'); }
+// 把 TIMESTAMPTZ / ISO 時刻拆成台灣時區的日期與時間（供 date / time input 回填）
+function taipeiParts(v) {
+  if (!v) return null;
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return null;
+  const t = new Date(d.getTime() + 8 * 60 * 60 * 1000); // UTC+8，無日光節約
+  return {
+    date: `${t.getUTCFullYear()}-${pad2(t.getUTCMonth() + 1)}-${pad2(t.getUTCDate())}`,
+    time: `${pad2(t.getUTCHours())}:${pad2(t.getUTCMinutes())}`,
+  };
+}
+function taipeiDate(v) { return taipeiParts(v)?.date || ''; }
+function todayTaipeiDate() { return taipeiParts(new Date().toISOString()).date; }
+// 組成帶 +08:00 的 ISO 時刻；迄日（isEnd）秒數用 59 以涵蓋整分（如 23:59:59）
+function composeTaipeiISO(date, time, isEnd = false) {
+  if (!date) return null;
+  const tm = time || (isEnd ? '23:59' : '00:00');
+  return `${date}T${tm}:${isEnd ? '59' : '00'}+08:00`;
 }
 // 教練加成倍率 → 顯示％：1.30 →「+30%」；1.00 →「+0%（一般）」
 function multiplierLabel(m) {
@@ -66,8 +83,10 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
     show_on_parent_home: initial?.show_on_parent_home !== false,
     coupon_code: initial?.coupon_code || '',
     generate_coupon_code: false,
-    start_date: initial?.start_date ? toISODate(initial.start_date) : new Date().toISOString().slice(0, 10),
-    end_date: initial?.end_date ? toISODate(initial.end_date) : '',
+    start_date: initial?.start_date ? taipeiDate(initial.start_date) : todayTaipeiDate(),
+    start_time: initial?.start_date ? (taipeiParts(initial.start_date)?.time || '00:00') : '00:00',
+    end_date: initial?.end_date ? taipeiDate(initial.end_date) : '',
+    end_time: initial?.end_date ? (taipeiParts(initial.end_date)?.time || '23:59') : '23:59',
     max_uses: initial?.max_uses || '',
     platform_total_period_cap: initial?.platform_total_period_cap != null ? String(initial.platform_total_period_cap) : '',
     parent_period_cap: initial?.parent_period_cap != null ? String(initial.parent_period_cap) : '',
@@ -172,8 +191,8 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
     const selectedVenues = selectedScopePayload(d.applicable_venue_ids, venueOpts || []);
     for (const p of activePromos) {
       if (isEdit && p.id === initial.id) continue; // 編輯自己不算重疊
-      const pStart = toISODate(p.start_date);
-      const pEnd = toISODate(p.end_date);
+      const pStart = taipeiDate(p.start_date);
+      const pEnd = taipeiDate(p.end_date);
       if (!rangesOverlap(d.start_date, d.end_date, pStart, pEnd)) continue;
       const pVenues = Array.isArray(p.applicable_venue_ids) ? p.applicable_venue_ids : [];
       if (!venuesOverlap(selectedVenues, pVenues)) continue;
@@ -193,8 +212,11 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
   async function save() {
     if (readOnly) { toast.error('當前狀態不可編輯'); return; }
     if (!d.name.trim()) { toast.error('名稱必填'); return; }
+    if (!d.start_date) { toast.error('起始日期必填'); return; }
     if (!d.end_date) { toast.error('結束日期必填'); return; }
-    if (d.end_date < d.start_date) { toast.error('結束日期不可早於開始日期'); return; }
+    const startISO = composeTaipeiISO(d.start_date, d.start_time, false);
+    const endISO = composeTaipeiISO(d.end_date, d.end_time, true);
+    if (new Date(endISO).getTime() < new Date(startISO).getTime()) { toast.error('結束時間不可早於開始時間'); return; }
     const v = parseFloat(d.discount_value);
     if (!Number.isFinite(v) || v <= 0) { toast.error('折扣值必須 > 0'); return; }
     if (d.type === 'PERCENTAGE' && (v <= 0 || v >= 1)) { toast.error('折數必須介於 0~1（如 0.9 = 9折）'); return; }
@@ -218,8 +240,8 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
       show_on_parent_home: d.show_on_parent_home,
       coupon_code: d.coupon_code.trim() || null,
       generate_coupon_code: !isEdit && d.generate_coupon_code,
-      start_date: d.start_date,
-      end_date: d.end_date,
+      start_date: startISO,
+      end_date: endISO,
       max_uses: maxUses,
       platform_total_period_cap: platformTotalPeriodCap,
       parent_period_cap: parentPeriodCap,
@@ -355,12 +377,20 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
             <h4 className="mb-2 flex items-center gap-2 text-[13px] font-bold text-brand-primary"><span>檔期與限量</span><span className="h-px flex-1 bg-gray-100" /></h4>
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <div>
-                <label className="mb-1 block text-xs text-gray-500">起始日 ＊</label>
-                <input type="date" className={fieldClass()} value={d.start_date} onChange={(e) => setD({ ...d, start_date: e.target.value })} />
+                <label className="mb-1 block text-xs text-gray-500">起始日 / 時間 ＊</label>
+                <div className="flex gap-2">
+                  <input type="date" className={fieldClass()} value={d.start_date} onChange={(e) => setD({ ...d, start_date: e.target.value })} />
+                  <input type="time" className="w-28 shrink-0 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none" value={d.start_time} onChange={(e) => setD({ ...d, start_time: e.target.value })} />
+                </div>
+                <p className="mt-1 text-[11px] text-gray-400">預設 00:00（當日開始）</p>
               </div>
               <div>
-                <label className="mb-1 block text-xs text-gray-500">結束日 <span className="text-brand-error">＊</span></label>
-                <input type="date" className={fieldClass()} value={d.end_date} onChange={(e) => setD({ ...d, end_date: e.target.value })} required />
+                <label className="mb-1 block text-xs text-gray-500">結束日 / 時間 <span className="text-brand-error">＊</span></label>
+                <div className="flex gap-2">
+                  <input type="date" className={fieldClass()} value={d.end_date} onChange={(e) => setD({ ...d, end_date: e.target.value })} required />
+                  <input type="time" className="w-28 shrink-0 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none" value={d.end_time} onChange={(e) => setD({ ...d, end_time: e.target.value })} />
+                </div>
+                <p className="mt-1 text-[11px] text-gray-400">預設 23:59（當日結束，含整分）</p>
               </div>
               <div className="md:col-span-2">
                 <label className="mb-1 block text-xs text-gray-500">總使用次數上限（全部家長合計，空白 = 不限）</label>

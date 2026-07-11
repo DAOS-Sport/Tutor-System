@@ -12,22 +12,11 @@
  */
 const { pool } = require('../models/db');
 
-function toISODate(v) {
-  if (!v) return '';
-  if (v instanceof Date) return v.toISOString().slice(0, 10);
-  return String(v).slice(0, 10);
-}
-function isWithinWindow(p, today) {
-  return toISODate(p.start_date) <= today && toISODate(p.end_date) >= today;
-}
-
-// 取台灣時區「今天」的曆日字串（YYYY-MM-DD）。DB pool 連線一律 SET TIME ZONE 'Asia/Taipei'
-// （見 models/db.js），故 recordUsage 的 FOR UPDATE 覆核用 SQL CURRENT_DATE＝台灣曆日；
-// preview / list 的 today 必須同步採台灣曆日，否則台灣 00:00–08:00（此時 UTC 仍是前一日）
-// 兩者會不一致 → 折扣「顯示得到卻被 recordUsage 拒絕」。
-// 注意：process TZ / new Date().toISOString() 皆無法修正此問題，須明確指定 timeZone。
-function todayTaipei() {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei' }).format(new Date());
+// start_date / end_date 為 TIMESTAMPTZ（絕對時刻）→ 直接比當前時刻，含端點（迄日已存至 23:59:59）。
+function isWithinWindow(p, now = Date.now()) {
+  const start = new Date(p.start_date).getTime();
+  const end = new Date(p.end_date).getTime();
+  return start <= now && end >= now;
 }
 
 function matchScope(p, { courseType, venueId, periodCount, coachMultiplier }) {
@@ -95,8 +84,8 @@ async function getParentPeriodUses(db, promotionId, parentId) {
 /**
  * 列出 LIFF / R05 可見的「目前進行中」自動套用優惠（不含折價券需代碼者）。
  */
-async function listActivePromotions({ today } = {}) {
-  const t = today || todayTaipei();
+async function listActivePromotions() {
+  // 起迄為 TIMESTAMPTZ → 直接以 NOW()（絕對時刻）判定是否在檔期內（含 23:59:59 端點）。
   const r = await pool.query(
     `SELECT id, name, description, type, discount_value, min_threshold_type, min_threshold_value,
             applicable_course_types, applicable_venue_ids, applicable_coach_multipliers,
@@ -105,11 +94,10 @@ async function listActivePromotions({ today } = {}) {
             platform_total_period_cap, parent_period_cap, current_period_uses
        FROM promotions
       WHERE status = 'active'
-        AND start_date <= $1 AND end_date >= $1
+        AND start_date <= NOW() AND end_date >= NOW()
         AND (max_uses IS NULL OR current_uses < max_uses)
         AND (platform_total_period_cap IS NULL OR current_period_uses < platform_total_period_cap)
-      ORDER BY end_date ASC`,
-    [t]
+      ORDER BY end_date ASC`
   );
   return r.rows;
 }
@@ -120,7 +108,6 @@ async function listActivePromotions({ today } = {}) {
  *   - 若無 couponCode → 自動從 active 且 coupon_code IS NULL 的活動中挑「折抵最大」一筆。
  */
 async function previewBestDiscount({ originalPrice, courseType, venueId, periodCount = 1, couponCode = null, parentId = null, coachMultiplier = null }) {
-  const today = todayTaipei();
   const op = Math.max(0, Math.round(Number(originalPrice) || 0));
   const requestPeriods = normalizeRequestPeriods(periodCount);
   if (!op) return { originalPrice: 0, discountAmount: 0, finalPrice: 0, promotion: null };
@@ -138,7 +125,7 @@ async function previewBestDiscount({ originalPrice, courseType, venueId, periodC
     if (p.status !== 'active') {
       const err = new Error('折價券尚未啟用'); err.code = 'COUPON_NOT_ACTIVE'; throw err;
     }
-    if (!isWithinWindow(p, today)) {
+    if (!isWithinWindow(p)) {
       const err = new Error('折價券已過期或尚未開始'); err.code = 'COUPON_OUT_OF_WINDOW'; throw err;
     }
     if (p.max_uses != null && p.current_uses >= p.max_uses) {
@@ -168,7 +155,7 @@ async function previewBestDiscount({ originalPrice, courseType, venueId, periodC
     };
   }
 
-  const candidates = await listActivePromotions({ today });
+  const candidates = await listActivePromotions();
   let best = null;
   let bestDiscount = 0;
   for (const p of candidates) {
@@ -211,12 +198,12 @@ async function recordUsage({
   const db = client || pool;
   const usedPeriods = normalizeRequestPeriods(requestPeriods ?? periodCount);
   // 套用前的最後一道防線：在交易內 lock 該筆 promotion 並驗證 status / 使用量
-  // 在 lock 同時用 SQL CURRENT_DATE 做日期內含比較（避免 JS Date 把 end_date 當午夜）
+  // 起迄為 TIMESTAMPTZ → 以 NOW()（絕對時刻）做內含比較（迄日已含至 23:59:59）。
   const lock = await db.query(
     `SELECT status, max_uses, current_uses, eligible_parent_id,
             platform_total_period_cap, parent_period_cap, current_period_uses,
-            (start_date IS NULL OR start_date <= CURRENT_DATE) AS started,
-            (end_date   IS NULL OR end_date   >= CURRENT_DATE) AS not_expired
+            (start_date IS NULL OR start_date <= NOW()) AS started,
+            (end_date   IS NULL OR end_date   >= NOW()) AS not_expired
        FROM promotions WHERE id = $1 FOR UPDATE`,
     [promotionId]
   );

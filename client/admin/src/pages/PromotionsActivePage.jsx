@@ -3,6 +3,7 @@ import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import StatusBadge from '../components/StatusBadge';
 import { promotionsApi } from '../api/promotions';
+import { formatTWDateTime } from '../utils/format';
 import { useToast } from '../context/ToastContext';
 
 function fmtDiscount(p) {
@@ -39,7 +40,7 @@ export default function PromotionsActivePage() {
               {p.description && <p className="mt-1 text-xs text-gray-500">{p.description}</p>}
               <dl className="mt-3 grid grid-cols-2 gap-y-1 text-xs">
                 <dt className="text-gray-400">折扣</dt><dd className="text-gray-700">{fmtDiscount(p)}</dd>
-                <dt className="text-gray-400">期間</dt><dd className="text-gray-700">{p.start_date} ～ {p.end_date}</dd>
+                <dt className="text-gray-400">期間</dt><dd className="text-gray-700">{formatTWDateTime(p.start_date)} ～ {formatTWDateTime(p.end_date)}</dd>
                 <dt className="text-gray-400">已用 / 總上限</dt><dd className="text-gray-700">{p.current_uses}{p.max_uses ? ` / ${p.max_uses}` : '（不限）'}</dd>
                 <dt className="text-gray-400">門檻</dt>
                 <dd className="text-gray-700">{p.min_threshold_type ? `購買 ≥ ${p.min_threshold_value} 期` : '無'}</dd>

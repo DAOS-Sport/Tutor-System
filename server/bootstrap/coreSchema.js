@@ -976,8 +976,8 @@ CREATE TABLE IF NOT EXISTS promotions (
   applicable_coach_multipliers NUMERIC(5,2)[],       -- NULL = 不限教練加成（存 coaches.pricing_multiplier 值，如 1.30）
   show_on_parent_home BOOLEAN NOT NULL DEFAULT TRUE, -- 是否顯示在家長首頁
   coupon_code VARCHAR(40) UNIQUE,                    -- NULL = 自動套用；有值 = 需輸入代碼
-  start_date DATE NOT NULL,
-  end_date DATE NOT NULL,
+  start_date TIMESTAMPTZ NOT NULL,                   -- 起始時刻（台灣時間；預設當日 00:00）
+  end_date TIMESTAMPTZ NOT NULL,                      -- 結束時刻（台灣時間；預設當日 23:59:59）
   max_uses INTEGER,
   current_uses INTEGER NOT NULL DEFAULT 0,
   platform_total_period_cap INTEGER,
@@ -1003,6 +1003,15 @@ DO $$ BEGIN ALTER TABLE promotions ADD COLUMN IF NOT EXISTS parent_period_cap IN
 DO $$ BEGIN ALTER TABLE promotions ADD COLUMN IF NOT EXISTS current_period_uses INTEGER NOT NULL DEFAULT 0; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE promotions ADD COLUMN IF NOT EXISTS applicable_coach_multipliers NUMERIC(5,2)[]; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE promotions ADD COLUMN IF NOT EXISTS show_on_parent_home BOOLEAN NOT NULL DEFAULT TRUE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+-- 019：start_date / end_date DATE → TIMESTAMPTZ（僅在仍為 date 時升級；backfill start 00:00 / end 23:59:59 台灣時間）
+DO $$ BEGIN
+  IF (SELECT data_type FROM information_schema.columns
+        WHERE table_name = 'promotions' AND column_name = 'start_date') = 'date' THEN
+    ALTER TABLE promotions
+      ALTER COLUMN start_date TYPE TIMESTAMPTZ USING (start_date::timestamptz),
+      ALTER COLUMN end_date   TYPE TIMESTAMPTZ USING (end_date::timestamptz + INTERVAL '23 hours 59 minutes 59 seconds');
+  END IF;
+EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
 -- promotion_usages：每次套用紀錄；資料隔離供日後對帳。
 CREATE TABLE IF NOT EXISTS promotion_usages (

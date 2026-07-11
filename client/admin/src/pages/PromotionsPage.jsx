@@ -6,6 +6,7 @@ import ConfirmDialog from '../components/ConfirmDialog';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { promotionsApi } from '../api/promotions';
+import { formatTWDateTime } from '../utils/format';
 import PromotionFormModal from './promotions/PromotionFormModal';
 
 function ConfirmWithNote({ open, title, requireNote, busy, onCancel, onConfirm, confirmLabel }) {
@@ -176,7 +177,7 @@ export default function PromotionsPage() {
                       {p.coupon_code && <div className="text-[11px] font-mono text-brand-teal">{p.coupon_code}</div>}
                     </td>
                     <td className="px-3 py-2 text-gray-700">{fmtDiscount(p)}</td>
-                    <td className="px-3 py-2 text-xs text-gray-500">{p.start_date} ～ {p.end_date}</td>
+                    <td className="px-3 py-2 text-xs text-gray-500">{formatTWDateTime(p.start_date)} ～ {formatTWDateTime(p.end_date)}</td>
                     <td className="px-3 py-2 text-xs text-gray-500">
                       <div>{p.current_uses}{p.max_uses ? ` / ${p.max_uses}` : ''} 次</div>
                       {(p.platform_total_period_cap != null || p.parent_period_cap != null) && (

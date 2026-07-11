@@ -48,7 +48,12 @@ function validatePayload(p) {
   if (!Number.isFinite(v) || v <= 0) errs.push('discount_value 必須 > 0');
   if (p.type === 'PERCENTAGE' && (v <= 0 || v >= 1)) errs.push('折數 PERCENTAGE 必須 0 < v < 1（如 0.9 = 9折）');
   if (!p.start_date || !p.end_date) errs.push('start_date / end_date 必填');
-  if (p.start_date && p.end_date && p.end_date < p.start_date) errs.push('end_date 不可早於 start_date');
+  if (p.start_date && p.end_date) {
+    const s = new Date(p.start_date).getTime();
+    const e = new Date(p.end_date).getTime();
+    if (Number.isNaN(s) || Number.isNaN(e)) errs.push('start_date / end_date 格式錯誤');
+    else if (e < s) errs.push('end_date 不可早於 start_date');
+  }
   if (p.min_threshold_type && p.min_threshold_type !== 'PERIOD_COUNT') errs.push('min_threshold_type 僅支援 PERIOD_COUNT');
   // max_uses：留空 / 0 表示不限次數（create/update 皆以 `|| null` 收斂為 NULL）；其餘須為非負整數
   if (p.max_uses != null && p.max_uses !== '') {
@@ -111,7 +116,7 @@ router.get('/active', requireAdminRole('admin', 'manager', 'staff'), async (req,
   try {
     const r = await pool.query(
       `SELECT ${PROMO_FIELDS} FROM promotions
-        WHERE status = 'active' AND start_date <= CURRENT_DATE AND end_date >= CURRENT_DATE
+        WHERE status = 'active' AND start_date <= NOW() AND end_date >= NOW()
           AND (max_uses IS NULL OR current_uses < max_uses)
           AND (platform_total_period_cap IS NULL OR current_period_uses < platform_total_period_cap)
         ORDER BY end_date ASC`
