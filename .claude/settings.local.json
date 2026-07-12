@@ -6,11 +6,16 @@
       "Bash(grep -nA6 \"^const VENUES\" api/mock.js)",
       "Bash(VITE_USE_MOCK=false npm run build)",
       "Bash(awk '/CREATE TABLE IF NOT EXISTS admin_course_intros/,/\\\\\\);/' server/bootstrap/coreSchema.js)",
-      "Bash(npx vite *)"
+      "Bash(npx vite *)",
+      "Bash(node -e \"require\\('./routes/groupOrders.js'\\); console.log\\('groupOrders.js OK'\\)\")",
+      "Bash(node *)",
+      "Bash(git -C /home/runner/workspace status --short)",
+      "Bash([ -f \"$MEM\" ])",
+      "Bash(npm run *)"
     ]
   },
+  "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "codebase-memory-mcp"
-  ],
-  "enableAllProjectMcpServers": true
+  ]
 }
