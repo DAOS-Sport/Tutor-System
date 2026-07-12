@@ -145,10 +145,17 @@ async function saveBuffer({ buffer, originalName = 'file.bin', mimeType = 'appli
   if (buffer.length > ALLOWED_MAX_BYTES) {
     throw new Error(`檔案過大（上限 ${Math.round(ALLOWED_MAX_BYTES / 1024 / 1024)} MB）`);
   }
-  const ext = safeExt(originalName);
-  if (!isAllowed(mimeType, ext)) {
-    throw new Error(`不支援的檔案類型（${mimeType || 'unknown'}${ext}）`);
+  // 副檔名一律以「已驗證的 MIME」為準正規化，而非全信原始檔名：
+  // 手機／LINE 相機挑的圖常常沒有副檔名（檔名如 image），Windows 的 JPEG 又可能是 .jfif，
+  // 這些都通過 MIME 白名單卻與 safeExt 取到的副檔名不符，舊寫法會誤判「不支援的檔案類型」而整個上傳失敗
+  // （家長端症狀：末 5 碼能送出、但匯款證明圖片一直傳不上去）。改為：MIME 不在白名單才拒絕；
+  // 原始副檔名缺漏或與 MIME 不符時，一律套用該 MIME 的正規副檔名，確保落地檔名可被後續 PROOF_URL 驗證通過。
+  const allowedExts = ALLOWED[(mimeType || '').toLowerCase()];
+  if (!allowedExts) {
+    throw new Error(`不支援的檔案類型（${mimeType || 'unknown'}）`);
   }
+  const originalExt = safeExt(originalName);
+  const ext = allowedExts.includes(originalExt.toLowerCase()) ? originalExt : allowedExts[0];
   const { url } = await driver.saveBuffer({ buffer, ext, mimeType });
   return {
     url,

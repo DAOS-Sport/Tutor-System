@@ -219,7 +219,10 @@ export default function CheckoutPage() {
 
   function handleFileChange(file) {
     if (!file) return;
-    if (!['image/jpeg', 'image/png'].includes(file.type)) {
+    // 有明確 file.type 時才擋非 JPG/PNG；部分 Android/LINE webview 的相機圖 file.type 為空字串，
+    // 放行交由後端以檔案內容（magic bytes）驗證，避免這類圖在選檔階段就被誤擋。
+    const fileType = (file.type || '').toLowerCase();
+    if (fileType && !['image/jpeg', 'image/png'].includes(fileType)) {
       toast.warning('請上傳 JPG 或 PNG 格式圖片');
       return;
     }
