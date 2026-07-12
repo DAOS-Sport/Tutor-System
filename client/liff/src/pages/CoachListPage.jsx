@@ -69,14 +69,17 @@ export default function CoachListPage() {
 
   const filteredCoaches = useMemo(() => {
     if (!Array.isArray(coaches)) return [];
-    // API/舊資料可能回傳 boolean、0/1 或字串；先正規化，避免字串 "false" 被當成資深教練。
-    const isSenior = (value) => value === true || value === 1 || String(value).toLowerCase() === 'true';
+    // Ragic 倍率是分類唯一真相：倍率不等於 1 即為資深教練。
+    const isSenior = (coach) => {
+      const multiplier = Number(coach.multiplier ?? coach.pricing_multiplier ?? 1);
+      return Number.isFinite(multiplier) && multiplier !== 1;
+    };
     // 空白全部濾掉，避免家長誤打空格導致查無結果。
     const normalizedQuery = nameQuery.replace(/\s+/g, '').toLocaleLowerCase('zh-TW');
 
     return coaches.filter((coach) => {
       if (!coachMatchesVenue(coach, [venueId, venue?.id, venue?.name])) return false;
-      const senior = isSenior(coach.is_senior);
+      const senior = isSenior(coach);
       if (levelFilter === 'senior' && !senior) return false;
       if (levelFilter === 'regular' && senior) return false;
       const normalizedName = String(coach.name || '').replace(/\s+/g, '').toLocaleLowerCase('zh-TW');

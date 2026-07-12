@@ -63,7 +63,9 @@ const COACH_STAFF_PROFILE_SELECT = `
   COALESCE(NULLIF(TRIM(c.line_uid), ''), NULLIF(TRIM(s.line_uid), '')) AS line_uid,
   c.email,
   c.specialties,
-  COALESCE(s.is_senior, c.is_senior, FALSE) AS is_senior,
+  -- H23/Ragic 課程係數是分類的唯一真相：倍率不是 1 即為資深教練。
+  -- 不讀歷史 is_senior，避免倍率已同步但布林欄位仍停在舊值時家長端分類錯誤。
+  (COALESCE(s.multiplier, c.pricing_multiplier, 1.00) <> 1.00) AS is_senior,
   COALESCE(s.multiplier, c.pricing_multiplier, 1.00) AS pricing_multiplier,
   c.bio_rich_text,
   c.intro_review_status,

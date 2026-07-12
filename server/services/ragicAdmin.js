@@ -864,6 +864,7 @@ async function _reconcileH23FromShadowImpl() {
         await client.query(
           `UPDATE admin_staff
               SET multiplier = $2,
+                  is_senior = ($2::numeric <> 1.00),
                   updated_at = NOW(),
                   last_synced_at = NOW()
             WHERE id = $1`,
@@ -872,6 +873,7 @@ async function _reconcileH23FromShadowImpl() {
         await client.query(
           `UPDATE coaches
               SET pricing_multiplier = $2,
+                  is_senior = ($2::numeric <> 1.00),
                   updated_at = NOW()
             WHERE ragic_employee_id = $1`,
           [staffId, courseCoefficient]

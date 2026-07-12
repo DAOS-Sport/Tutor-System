@@ -42,7 +42,13 @@ function withMultiplierAlias(row) {
   if (!row) return row;
   const pm = row.pricing_multiplier;
   const { ragic_data_no, ...safe } = row;
-  return { ...safe, multiplier: pm == null ? 1 : Number(pm) };
+  const multiplier = pm == null ? 1 : Number(pm);
+  return {
+    ...safe,
+    multiplier,
+    // API 邊界再做一次衍生，確保任何舊查詢／舊資料都遵守「倍率 != 1 即資深」。
+    is_senior: Number.isFinite(multiplier) && multiplier !== 1,
+  };
 }
 
 function normalizeCoach(row) {
