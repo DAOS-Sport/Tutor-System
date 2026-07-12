@@ -209,7 +209,53 @@ function _ragicErrorResponse(err, fallbackMsg) {
   if (err?.code === 'RAGIC_TIMEOUT') {
     return { status: 504, code: 'RAGIC_TIMEOUT', error: 'Ragic 回應較慢，請稍候片刻再試一次。' };
   }
-  return { status: 502, code: 'RAGIC_UNAVAILABLE', error: fallbackMsg || '資料同步服務暫時無法連線，請稍後再試' };
+  if (['RAGIC_VALIDATION_ERROR', 'RAGIC_APPLICATION_ERROR', 'RAGIC_UNCONFIRMED_WRITE'].includes(err?.code)) {
+    return {
+      status: 422,
+      code: 'RAGIC_SCHEMA_VALIDATION_FAILED',
+      error: '送出的資料未通過同步欄位驗證，請確認選項與必填資料後再試。',
+    };
+  }
+  if (err?.code === 'RAGIC_AUTH_FAILED') {
+    return { status: 502, code: 'RAGIC_CONFIGURATION_ERROR', error: '同步服務驗證設定異常，請聯絡客服。' };
+  }
+  if (err?.code === 'RAGIC_RATE_LIMITED') {
+    return { status: 503, code: 'RAGIC_RATE_LIMITED', error: '同步服務目前忙碌，請稍後再試。' };
+  }
+  return { status: 502, code: err?.code || 'RAGIC_UNAVAILABLE', error: fallbackMsg || '資料同步服務暫時無法連線，請稍後再試' };
+}
+
+// 註冊失敗診斷只記欄位存在性與不可逆 hash；禁止把姓名、電話、身分證、LINE UID 寫入 log。
+function _registrationLogContext({ phone, venueId, students, parent }) {
+  return {
+    phone_hash: _phoneHashForLog(phone),
+    venue_id: venueId || null,
+    student_count: Array.isArray(students) ? students.length : 0,
+    parent_fields: {
+      name: Boolean(String(parent?.name || '').trim()),
+      email: Boolean(String(parent?.email || '').trim()),
+      gender: Boolean(String(parent?.gender || '').trim()),
+    },
+    student_fields_complete: (students || []).map((s) => ({
+      name: Boolean(s.name),
+      id_number: Boolean(s.id_number),
+      birth_date: Boolean(s.birth_date),
+      gender: Boolean(s.gender),
+      blood_type: Boolean(s.blood_type),
+    })),
+  };
+}
+
+function _logRegistrationSyncFailure(stage, err, context) {
+  console.error('[auth/parent-register-line] sync failed', {
+    stage,
+    code: err?.code || null,
+    ragic_status: err?.ragicStatus || null,
+    ragic_code: err?.ragicCode || null,
+    message: err?.message || String(err),
+    context,
+    stack: err?.stack || null,
+  });
 }
 
 function _refreshErrorResponse(err, fallbackMsg) {
@@ -977,7 +1023,8 @@ async function _registerParentCore(req, res, resolveLineUid) {
             code: 'STUDENT_ID_NUMBER_EXISTS',
           });
         }
-        console.error('[auth/parent-register-line] completeZ03Registration failed:', err.code || '', err.message);
+        _logRegistrationSyncFailure('complete_existing_z01_z02', err,
+          _registrationLogContext({ phone, venueId, students: cleanStudents, parent: parentIn }));
         const r = _ragicErrorResponse(err, '資料暫時無法完成同步，請稍後再試');
         return res.status(r.status).json({ error: r.error, code: r.code === 'RAGIC_UNAVAILABLE' ? 'RAGIC_WRITE_FAILED' : r.code });
       }
@@ -1002,7 +1049,8 @@ async function _registerParentCore(req, res, resolveLineUid) {
             code: 'STUDENT_ID_NUMBER_EXISTS',
           });
         }
-        console.error('[auth/parent-register-line] createParentWithStudentsInRagic failed:', err.code || '', err.message);
+        _logRegistrationSyncFailure('create_new_z01_z02', err,
+          _registrationLogContext({ phone, venueId, students: cleanStudents, parent: parentIn }));
         const r = _ragicErrorResponse(err, '資料暫時無法完成同步，請稍後再試');
         return res.status(r.status).json({ error: r.error, code: r.code === 'RAGIC_UNAVAILABLE' ? 'RAGIC_WRITE_FAILED' : r.code });
       }

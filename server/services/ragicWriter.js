@@ -210,14 +210,21 @@ function _validatePayload(sheet, payload = {}) {
 function _assertWriteOk(data) {
   const d = data || {};
   if (d.status && d.status !== 'SUCCESS') {
-    throw new Error(`Ragic ${d.status} ${d.code || ''}: ${d.msg || ''}`.trim());
+    const err = new Error(`Ragic ${d.status} ${d.code || ''}: ${d.msg || ''}`.trim());
+    // Ragic 常以 HTTP 200 回 INVALID/ERROR；若不標記，route 會誤判成「服務無法連線」。
+    err.code = d.status === 'INVALID' ? 'RAGIC_VALIDATION_ERROR' : 'RAGIC_APPLICATION_ERROR';
+    err.ragicStatus = String(d.status || '');
+    err.ragicCode = String(d.code || '');
+    throw err;
   }
   const hasRecordId =
     d.ragicId != null ||
     d._ragicId != null ||
     (d.data && typeof d.data === 'object' && (d.data._ragicId != null || d.data.ragicId != null));
   if (d.status !== 'SUCCESS' && !hasRecordId) {
-    throw new Error('Ragic 寫入未確認成功（回應無 SUCCESS 狀態且無 record id）');
+    const err = new Error('Ragic 寫入未確認成功（回應無 SUCCESS 狀態且無 record id）');
+    err.code = 'RAGIC_UNCONFIRMED_WRITE';
+    throw err;
   }
 }
 

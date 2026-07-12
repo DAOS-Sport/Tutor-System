@@ -34,6 +34,22 @@ function makeWriter() {
   return { writer, calls, audits, alerts };
 }
 
+async function testClassifiesHttp200InvalidResponse() {
+  const audits = [];
+  const invalidWriter = createWriter({
+    http: {
+      post: async () => ({ data: { status: 'INVALID', code: '202', msg: 'required field missing' } }),
+    },
+    audit: async (entry) => { audits.push(entry); },
+    alert: async () => {},
+  });
+  await assert.rejects(
+    () => invalidWriter.createRecord('Z01', { '1001101': '測試' }),
+    (err) => err.code === 'RAGIC_VALIDATION_ERROR' && err.ragicCode === '202'
+  );
+  assert.strictEqual(audits[0].status, 'error');
+}
+
 async function testRejectsUrlIntoH01UidWithoutHttp() {
   const { writer, calls, audits, alerts } = makeWriter();
   await assert.rejects(
@@ -114,6 +130,7 @@ async function testValidH01UidWritesByFieldId() {
   await testRejectsFieldNameWrites();
   await testH01BlocklistWinsOverWhitelist();
   await testValidH01UidWritesByFieldId();
+  await testClassifiesHttp200InvalidResponse();
   console.log('ragic_writer_test: PASS');
 })().catch((err) => {
   console.error(err);

@@ -15,11 +15,12 @@ import { isValidTWPhone, isValidTWId } from '../utils/format';
 import { cleanVenueList } from '../utils/venues';
 import { USE_MOCK } from '../api/client';
 import ReportIssueButton from '../components/ReportIssueButton';
+import ConfirmModal from '../components/ConfirmModal';
 
 // PENDING_COUPON_KEY（daos.pendingCoupon）已隨推薦折扣停用移除（2026-07 全站優惠清除）。
 const IS_PROD = import.meta.env.PROD;
 const BLOOD_TYPE_OPTIONS = ['A', 'B', 'O', 'AB', '不清楚'];
-const STEP1_FIELDS = ['name', 'phone', 'email', 'primary_venue_id'];
+const STEP1_FIELDS = ['name', 'phone', 'email', 'primary_venue_id', 'gender'];
 const STUDENT_GENDER_OPTIONS = ['生理男', '生理女', '不方便透漏'];
 
 function tryGetLineIdToken() {
@@ -64,6 +65,9 @@ function registerErrorMessage(err) {
     RAGIC_TIMEOUT:            'Ragic 回應較慢，請稍候片刻再試一次。',
     RAGIC_UNAVAILABLE:        '資料同步服務暫時無法連線，請稍後再試。',
     RAGIC_WRITE_FAILED:       '資料暫時無法完成同步，請稍後再試；若持續發生請聯絡客服。',
+    RAGIC_SCHEMA_VALIDATION_FAILED: '送出的資料未通過同步欄位驗證，請確認選項與必填資料後再試。',
+    RAGIC_CONFIGURATION_ERROR: '同步服務設定異常，請聯絡客服協助處理。',
+    RAGIC_RATE_LIMITED:       '同步服務目前忙碌，請稍後再試。',
     LOCAL_UPSERT_FAILED:      '資料建檔失敗，請稍後再試；若持續發生請聯絡客服。',
     Z01_INCOMPLETE:           '會員資料尚未完整寫入，請確認必填欄位後重新送出。',
     RAGIC_REFRESH_STUDENTS_INCOMPLETE: '學員資料同步尚未完成，請稍後再試。',
@@ -113,6 +117,7 @@ export default function RegisterPage() {
   const [phoneConflict, setPhoneConflict] = useState(false);
   const [step, setStep] = useState(1);
   const [showOptional, setShowOptional] = useState(false);
+  const [missingFields, setMissingFields] = useState([]);
   const authedParent = isAuthed && role === 'parent';
 
   // 用推薦的教練解析出有效場館（優先家長慣用場館，否則取教練第一個場館），
@@ -166,7 +171,7 @@ export default function RegisterPage() {
     return () => { alive = false; };
   }, []);
 
-  const { register, handleSubmit, control, setValue, getValues, trigger, formState: { errors, isSubmitting } } = useForm({
+  const { register, handleSubmit, control, setValue, getValues, getFieldState, trigger, formState: { errors, isSubmitting } } = useForm({
     defaultValues: {
       name: '', phone: prefilledPhone, gender: '生理女', email: '', primary_venue_id: '',
       home_phone: '', line_id: '', home_address: '',
@@ -175,6 +180,31 @@ export default function RegisterPage() {
   });
 
   const { fields, append, remove } = useFieldArray({ control, name: 'students' });
+
+  function missingFieldList(validationErrors) {
+    const list = [];
+    const add = (path, label, error) => {
+      if (error) list.push({ path, label, message: error.message || '此欄位為必填' });
+    };
+    add('name', '家長姓名', validationErrors?.name);
+    add('phone', '手機號碼', validationErrors?.phone);
+    add('email', '家長 Email', validationErrors?.email);
+    add('primary_venue_id', '館別（上課場館）', validationErrors?.primary_venue_id);
+    add('gender', '家長性別', validationErrors?.gender);
+    (validationErrors?.students || []).forEach((studentErrors, index) => {
+      add(`students.${index}.name`, `學員 ${index + 1}－姓名`, studentErrors?.name);
+      add(`students.${index}.id_number`, `學員 ${index + 1}－身分證字號`, studentErrors?.id_number);
+      add(`students.${index}.birth_date`, `學員 ${index + 1}－出生年月日`, studentErrors?.birth_date);
+      add(`students.${index}.gender`, `學員 ${index + 1}－性別`, studentErrors?.gender);
+      add(`students.${index}.blood_type`, `學員 ${index + 1}－血型`, studentErrors?.blood_type);
+    });
+    return list;
+  }
+
+  function handleInvalid(validationErrors) {
+    const list = missingFieldList(validationErrors);
+    setMissingFields(list);
+  }
 
   // 帶入 LINE 顯示名稱作為姓名欄位建議值（僅在使用者尚未自行填寫時才帶入，且可再編輯）
   useEffect(() => {
@@ -193,7 +223,12 @@ export default function RegisterPage() {
 
   async function goToStep2() {
     const ok = await trigger(STEP1_FIELDS);
-    if (ok) setStep(2);
+    if (ok) {
+      setStep(2);
+      return;
+    }
+    const stepErrors = Object.fromEntries(STEP1_FIELDS.map((path) => [path, getFieldState(path).error]));
+    setMissingFields(missingFieldList(stepErrors));
   }
   function goToStep1() { setStep(1); }
 
@@ -367,7 +402,7 @@ export default function RegisterPage() {
           </div>
         )}
 
-        <form onSubmit={handleSubmit(onSubmit)}>
+        <form onSubmit={handleSubmit(onSubmit, handleInvalid)} noValidate>
           {/* ========== STEP 1：家長資料 ========== */}
           {step === 1 && (
             <div className="space-y-4">
@@ -411,8 +446,8 @@ export default function RegisterPage() {
                     ))}
                   </select>
                 </Field>
-                <Field label="性別" required>
-                  <select {...register('gender')} className={fieldCls(false)}>
+                <Field label="性別" required error={errors.gender?.message}>
+                  <select {...register('gender', { required: '請選擇家長性別' })} className={fieldCls(!!errors.gender)}>
                     <option value="生理女">生理女</option><option value="生理男">生理男</option><option value="不方便透漏">不方便透漏</option>
                   </select>
                 </Field>
@@ -596,6 +631,28 @@ export default function RegisterPage() {
           </div>
         </div>
       )}
+
+      <ConfirmModal
+        open={missingFields.length > 0}
+        title={`尚有 ${missingFields.length} 個欄位需要補填`}
+        confirmLabel="知道了"
+        cancelLabel="關閉"
+        onCancel={() => setMissingFields([])}
+        onConfirm={() => setMissingFields([])}
+      >
+        <p className="mb-3 text-xs leading-5 text-gray-500">請完成以下資料後再送出。</p>
+        <div className="space-y-2">
+          {missingFields.map((item) => (
+            <div
+              key={item.path}
+              className="rounded-xl border border-rose-100 bg-rose-50 px-3 py-2.5"
+            >
+              <span className="block text-xs font-bold text-rose-800">{item.label}</span>
+              <span className="mt-0.5 block text-[11px] text-rose-600">{item.message}</span>
+            </div>
+          ))}
+        </div>
+      </ConfirmModal>
     </div>
   );
 }
