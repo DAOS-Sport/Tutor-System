@@ -28,7 +28,7 @@ const STATUS_OPTIONS = [
 const EDITABLE_STATUSES = ['pending_payment', 'confirmed', 'active'];
 
 export default function EnrollmentsPage() {
-  const { user, isStaff, isAdmin, isManager } = useAuth();
+  const { isStaff, isAdmin, isManager } = useAuth();
   const toast = useToast();
   const [filters, setFilters] = useState({ status: '', search: '' });
   const [list, setList] = useState(null);
@@ -43,10 +43,11 @@ export default function EnrollmentsPage() {
   useEffect(() => {
     let alive = true;
     setList(null);
-    const venueId = isStaff ? user?.venue_id : undefined;
-    enrollmentsApi.list({ ...filters, venueId }).then((d) => { if (alive) setList(d); });
+    // Task #90 修正：多場館櫃檯不再鎖單一主場館。不帶 venueId → 後端依 venue_ids scope
+    // 列出「所屬全部場館」的報名（原本 isStaff 帶 user.venue_id 只會看到主場館＝新北）。
+    enrollmentsApi.list({ ...filters }).then((d) => { if (alive) setList(d); });
     return () => { alive = false; };
-  }, [filters, isStaff, user]);
+  }, [filters]);
 
   const venueMap = useMemo(() => Object.fromEntries(venues.map((v) => [v.id, v.name])), [venues]);
 
@@ -71,7 +72,7 @@ export default function EnrollmentsPage() {
     <div>
       <PageHeader
         title="所有報名"
-        subtitle={`F-R02 · 共 ${list?.length ?? '—'} 筆${isStaff ? '（限本場館）' : ''}`}
+        subtitle={`F-R02 · 共 ${list?.length ?? '—'} 筆${isStaff ? '（限您管轄的場館）' : ''}`}
         actions={
           <ExportMenu
             disabled={!list || list.length === 0}

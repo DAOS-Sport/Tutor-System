@@ -26,12 +26,13 @@ function fmtTime(iso) {
 
 export default function CheckinPage() {
   const toast = useToast();
-  const { role, user } = useAuth();
+  const { role, venueIds } = useAuth();
   const isStaff = role === 'staff';
 
   // 篩選器
   const [date, setDate] = useState(todayStr());
-  const [venueId, setVenueId] = useState(isStaff ? (user?.venue_id || '') : '');
+  // Task #90 修正：預設「全部（我的場館）」而非鎖單一主場館，讓多場館櫃檯看得到所有所屬場館。
+  const [venueId, setVenueId] = useState('');
   const [venues, setVenues] = useState([]);
 
   // 列表
@@ -47,13 +48,15 @@ export default function CheckinPage() {
   const wsRef = useRef(null);
   const pollRef = useRef(null);
 
-  // 載入場館清單（staff 不需要切換，鎖在自己場館）
+  // 載入場館清單（staff 也載入，用來提供「所屬多場館」下拉；下面再依 venueIds 過濾選項）
   useEffect(() => {
-    if (isStaff) return;
     let alive = true;
     venuesApi.list().then((d) => alive && setVenues(d || [])).catch(() => {});
     return () => { alive = false; };
-  }, [isStaff]);
+  }, []);
+
+  // staff 只能在自己所屬場館間切換；admin 顯示全部場館。
+  const myVenues = isStaff ? venues.filter((v) => venueIds.includes(v.id)) : venues;
 
   // 拉清單
   async function reload() {
@@ -144,14 +147,13 @@ export default function CheckinPage() {
             <select
               value={venueId}
               onChange={(e) => setVenueId(e.target.value)}
-              disabled={isStaff}
+              disabled={isStaff && myVenues.length <= 1}
               className="rounded-lg border border-gray-300 px-3 py-2 text-sm disabled:bg-gray-100"
             >
-              {!isStaff && <option value="">全部場館</option>}
-              {(isStaff ? venues.filter((v) => v.id === venueId) : venues).map((v) => (
+              <option value="">{isStaff ? '全部（我的場館）' : '全部場館'}</option>
+              {myVenues.map((v) => (
                 <option key={v.id} value={v.id}>{v.name}</option>
               ))}
-              {isStaff && !venues.length && <option value={venueId}>{user?.venue_id || '本場館'}</option>}
             </select>
           </div>
           <div>

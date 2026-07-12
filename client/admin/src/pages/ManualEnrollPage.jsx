@@ -130,7 +130,7 @@ const FRESH = {
 };
 
 export default function ManualEnrollPage() {
-  const { user, isStaff } = useAuth();
+  const { user, isStaff, venueIds } = useAuth();
   const toast = useToast();
 
   const [formOpen, setFormOpen] = useState(true);
@@ -187,6 +187,11 @@ export default function ManualEnrollPage() {
   // C-1：註冊館別只列「場館設定(F-A03)」已啟用的館。後端 venuesApi.list() 刻意回傳全部
   // （POST /api/admin/enrollments 允許對停用館補登歷史資料），這裡只過濾下拉選單顯示。
   const activeVenues = useMemo(() => venues.filter((v) => v.is_active !== false), [venues]);
+  // Task #90 修正：staff 可在自己所屬全部場館間選擇報名館別（原本鎖死單一主場館＝新北）。
+  const venueOptions = useMemo(
+    () => (isStaff ? activeVenues.filter((v) => venueIds.includes(v.id)) : activeVenues),
+    [isStaff, activeVenues, venueIds],
+  );
   const venueName = (id) => venues.find((v) => v.id === id)?.name || id || '—';
   const coachName = useMemo(() => coaches.find((c) => c.id === coachId)?.name || '', [coaches, coachId]);
   // C-4：期數直接輸入，總堂數 = 期數 × 6（不再有「最後一期吃餘數」的情況，輸入保證是 6 的倍數）。
@@ -437,9 +442,9 @@ export default function ManualEnrollPage() {
                 <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
                   <div>
                     <Label>註冊館別 *</Label>
-                    <Sel value={venueId} onChange={(v) => { setVenueId(v); setCoachId(''); }} disabled={isStaff}>
+                    <Sel value={venueId} onChange={(v) => { setVenueId(v); setCoachId(''); }} disabled={isStaff && venueOptions.length <= 1}>
                       <option value="">請選擇</option>
-                      {activeVenues.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+                      {venueOptions.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
                     </Sel>
                   </div>
                   <div>

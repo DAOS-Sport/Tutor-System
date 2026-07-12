@@ -67,8 +67,9 @@ router.get('/', requireAdminAuth, async (req, res) => {
     const scope = getScopedVenueIds(req);
     if (scope) {
       venueIds = scope;
-      if (req.query.venueIds && req.adminUser.role !== 'staff') {
-        // manager 可在自己場館範圍內再縮小
+      if (req.query.venueIds) {
+        // staff / manager 皆可在自己場館範圍內再縮小（交集後才套用，越權的 venueId 會被濾掉）。
+        // 多場館櫃檯若不指定 venueIds，則預設看見所屬全部場館。
         const want = String(req.query.venueIds).split(',').map((s) => s.trim()).filter(Boolean);
         const allowed = new Set(scope);
         const filtered = want.filter((v) => allowed.has(v));

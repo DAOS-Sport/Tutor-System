@@ -25,13 +25,14 @@ export default function DashboardPage() {
   useEffect(() => {
     let alive = true;
     (async () => {
-      const venueId = isStaff ? user?.venue_id : undefined;
+      // Task #90 修正：多場館櫃檯不再鎖單一主場館。不帶 venueId → 後端依 venue_ids scope
+      // 統計「所屬全部場館」（原本 isStaff 帶 user.venue_id 只會統計到主場館＝新北）。
       // Task #68：改 allSettled，單支 API 失敗（如 Neon DB 連線暫斷）不會讓整頁白屏；
       // 失敗的格子改顯示 '—'。
       const [pendingR, allR, sessionsR] = await Promise.allSettled([
-        enrollmentsApi.list({ status: 'pending_payment', venueId }),
-        enrollmentsApi.list({ venueId }),
-        sessionsApi.today(venueId),
+        enrollmentsApi.list({ status: 'pending_payment' }),
+        enrollmentsApi.list({}),
+        sessionsApi.today(),
       ]);
       if (!alive) return;
       const pending = pendingR.status === 'fulfilled' ? pendingR.value : null;
@@ -56,7 +57,7 @@ export default function DashboardPage() {
     <div>
       <PageHeader
         title={`您好，${user?.name || ''}`}
-        subtitle={`目前角色：${roleLabel(user?.role)}${isStaff ? '（限本場館資料）' : ''}`}
+        subtitle={`目前角色：${roleLabel(user?.role)}${isStaff ? '（限您管轄的場館資料）' : ''}`}
       />
       {!stats ? (
         <LoadingSpinner />

@@ -223,9 +223,10 @@ export default function ReconcilePage() {
   const [expanded, setExpanded] = useState({});
 
   async function load() {
-    const venueId = isStaff ? user?.venue_id : undefined;
+    // Task #90 修正：多場館櫃檯不再鎖單一主場館。不帶 venueId → 後端依 venue_ids scope
+    // 顯示「所屬全部場館」的待對帳清單（原本 isStaff 帶 user.venue_id 只會看到主場館＝新北）。
     const [data, vs] = await Promise.all([
-      checkoutsApi.list({ status: 'pending', venueId }),
+      checkoutsApi.list({ status: 'pending' }),
       venuesApi.list(),
     ]);
     setList(data); setVenues(vs);
@@ -386,7 +387,7 @@ export default function ReconcilePage() {
     <div>
       <PageHeader
         title="待對帳清單"
-        subtitle={`F-M02 · 共 ${list.length} 筆等待對帳${isStaff ? '（限本場館）' : ''}`}
+        subtitle={`F-M02 · 共 ${list.length} 筆等待對帳${isStaff ? '（限您管轄的場館）' : ''}`}
         actions={
           <ExportMenu
             disabled={!list || list.length === 0}

@@ -20,11 +20,12 @@ const CHECKIN_TONE = { checked_in: 'green', not_yet: 'gray', absent: 'error' };
 const MAX_VENUES_GRID = 3;
 
 export default function SessionsPage() {
-  const { user, isStaff } = useAuth();
+  const { isStaff, venueIds: myVenueIds } = useAuth();
   const toast = useToast();
   const [view, setView] = useState('list'); // 'list' | 'week'
   const [range, setRange] = useState(() => rangeForPreset('this_week'));
-  const [venueIds, setVenueIds] = useState(() => (isStaff && user?.venue_id ? [user.venue_id] : []));
+  // Task #90 修正：staff 預設帶「所屬全部場館」而非單一主場館，並可在自己場館間縮小。
+  const [venueIds, setVenueIds] = useState(() => (isStaff ? myVenueIds : []));
   const [list, setList] = useState(null);
   const [venues, setVenues] = useState([]);
   const [detail, setDetail] = useState(null);
@@ -33,23 +34,18 @@ export default function SessionsPage() {
   const [backfillAt, setBackfillAt] = useState('');
   const [backfillBusy, setBackfillBusy] = useState(false);
 
-  // staff 強制鎖場館
-  useEffect(() => {
-    if (isStaff && user?.venue_id) setVenueIds([user.venue_id]);
-  }, [isStaff, user]);
-
   async function load() {
     setList(null);
-    const effectiveVenues = isStaff && user?.venue_id ? [user.venue_id] : venueIds;
-    // 一律走 /sessions range API：依起訖日 + 多場館過濾
+    // 一律走 /sessions range API：依起訖日 + 多場館過濾。staff 空選＝所屬全部場館（後端 scope 處理），
+    // 選了子集則在自己場館範圍內縮小（後端會與 scope 取交集，越權 id 自動濾掉）。
     const [data, vs] = await Promise.all([
-      sessionsApi.range({ from: range.from, to: range.to, venueIds: effectiveVenues }),
+      sessionsApi.range({ from: range.from, to: range.to, venueIds }),
       venuesApi.list(),
     ]);
     setList(data);
     setVenues(vs);
   }
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [view, range.from, range.to, venueIds.join(','), user, isStaff]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [view, range.from, range.to, venueIds.join(','), isStaff]);
 
   const venueName = (id) => venues.find((v) => v.id === id)?.name || id;
 
@@ -198,13 +194,13 @@ export default function SessionsPage() {
           </div>
         </div>
         <VenueMultiSelect
-          venues={venues}
+          venues={isStaff ? venues.filter((v) => myVenueIds.includes(v.id)) : venues}
           value={venueIds}
           onChange={handleVenueChange}
           maxSelected={lockGridByCount ? MAX_VENUES_GRID : undefined}
           onLimit={handleVenueLimit}
-          disabled={isStaff}
-          label={isStaff ? '場館（鎖定本館）' : '場館'}
+          disabled={isStaff && myVenueIds.length <= 1}
+          label={isStaff ? '場館（限所屬）' : '場館'}
         />
         <div className="ml-auto text-xs text-gray-500">
           {range.from} ~ {range.to}（{range.days} 天）
