@@ -21,6 +21,18 @@ const COURSE_TYPES = [
 ];
 const TYPE_META = Object.fromEntries(COURSE_TYPES.map((t) => [t.type, t]));
 
+function promotionValue(promotion) {
+  const value = Number(promotion?.value ?? promotion?.discount_value);
+  if (!Number.isFinite(value) || value <= 0) return '優惠詳情請洽櫃檯';
+  if (promotion?.type === 'PERCENTAGE' && value <= 1) {
+    return `${Number((value * 10).toFixed(1))} 折`;
+  }
+  if (promotion?.type === 'FIXED_AMOUNT') {
+    return `現折 NT$ ${Math.round(value).toLocaleString('zh-TW')}`;
+  }
+  return '優惠詳情請洽櫃檯';
+}
+
 export default function HomePage() {
   const navigate = useNavigate();
   const { parent } = useAuth();
@@ -32,7 +44,7 @@ export default function HomePage() {
     let alive = true;
     promotionsApi
       .list()
-      .then((d) => alive && setPromos(d || []))
+      .then((d) => alive && setPromos(Array.isArray(d) ? d : []))
       .catch(() => {
         if (!alive) return;
         // 優惠載入失敗不阻擋首頁，用 toast 提示且把 promos 設為空陣列讓 UI 繼續渲染
@@ -95,15 +107,20 @@ export default function HomePage() {
         promos.length > 0 && (
           <section className="mb-5">
             <h3 className="mb-2 text-sm font-bold text-brand-primary">🔥 進行中優惠</h3>
-            <div className="space-y-2">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {promos.map((p) => (
                 <div
                   key={p.id}
-                  className="rounded-xl border-l-4 border-brand-amber bg-amber-50 px-3 py-2.5 text-xs"
+                  className="flex h-full min-h-36 flex-col rounded-xl border-l-4 border-brand-amber bg-amber-50 px-4 py-3 text-xs"
                 >
-                  <div className="font-bold text-brand-amber">{p.title}</div>
-                  <div className="mt-0.5 text-gray-600">{p.description}</div>
-                  <div className="mt-1 text-[11px] text-gray-400">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 font-bold leading-5 text-brand-amber">{p.title || p.name || '優惠活動'}</div>
+                    <div className="shrink-0 rounded-full bg-brand-amber px-2.5 py-1 text-[11px] font-black text-white">
+                      {promotionValue(p)}
+                    </div>
+                  </div>
+                  <div className="mt-1 flex-1 leading-5 text-gray-600">{p.description || '活動詳情請洽櫃檯'}</div>
+                  <div className="mt-3 border-t border-amber-200 pt-2 text-[11px] text-gray-500">
                     至 {formatTWDate(p.expires_at)}
                   </div>
                 </div>

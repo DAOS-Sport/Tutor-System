@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { coachesApi } from '../api/coaches';
 import { coursesApi } from '../api/courses';
@@ -67,6 +67,23 @@ export default function CoachListPage() {
     navigate(`/enroll?venue=${venueId}&courseType=${courseType}&coach=${c.id}`);
   }
 
+  const filteredCoaches = useMemo(() => {
+    if (!Array.isArray(coaches)) return [];
+    // API/舊資料可能回傳 boolean、0/1 或字串；先正規化，避免字串 "false" 被當成資深教練。
+    const isSenior = (value) => value === true || value === 1 || String(value).toLowerCase() === 'true';
+    // 空白全部濾掉，避免家長誤打空格導致查無結果。
+    const normalizedQuery = nameQuery.replace(/\s+/g, '').toLocaleLowerCase('zh-TW');
+
+    return coaches.filter((coach) => {
+      if (!coachMatchesVenue(coach, [venueId, venue?.id, venue?.name])) return false;
+      const senior = isSenior(coach.is_senior);
+      if (levelFilter === 'senior' && !senior) return false;
+      if (levelFilter === 'regular' && senior) return false;
+      const normalizedName = String(coach.name || '').replace(/\s+/g, '').toLocaleLowerCase('zh-TW');
+      return !normalizedQuery || normalizedName.includes(normalizedQuery);
+    });
+  }, [coaches, levelFilter, nameQuery, venueId, venue?.id, venue?.name]);
+
   if (loadError) {
     return (
       <div className="px-4 py-8 text-center">
@@ -83,19 +100,6 @@ export default function CoachListPage() {
   }
   if (!coaches || !venue) return <LoadingSpinner fullPage label="載入教練中…" />;
 
-  // 空白全部濾掉，避免家長誤打空格導致查無結果
-  const normalizedQuery = nameQuery.replace(/\s+/g, '').toLowerCase();
-  // 未輸入姓名且篩選器停在「全部」時，不列出任何教練，改顯示引導文字
-  const searchActive = normalizedQuery.length > 0 || levelFilter !== 'all';
-
-  const filteredCoaches = (coaches || []).filter((c) => {
-    if (!coachMatchesVenue(c, [venueId, venue?.id, venue?.name])) return false;
-    if (levelFilter === 'senior' && !c.is_senior) return false;
-    if (levelFilter === 'regular' && c.is_senior) return false;
-    if (normalizedQuery && !(c.name || '').replace(/\s+/g, '').toLowerCase().includes(normalizedQuery)) return false;
-    return true;
-  });
-
   return (
     <div className="px-4 py-4">
       <div className="mb-4 rounded-lg bg-brand-primary/5 px-3 py-2 text-xs text-brand-primary">
@@ -107,8 +111,9 @@ export default function CoachListPage() {
       {coaches.length > 0 && (
         <div className="mb-3 flex flex-col gap-2 sm:flex-row">
           <select
+            aria-label="教練分類"
             value={levelFilter}
-            onChange={(e) => setLevelFilter(e.target.value)}
+            onChange={(e) => setLevelFilter(e.currentTarget.value)}
             className="shrink-0 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 focus:border-brand-teal focus:outline-none sm:w-32"
           >
             <option value="all">全部</option>
@@ -126,27 +131,19 @@ export default function CoachListPage() {
       )}
 
       {coaches.length === 0 && <p className="mb-3 text-xs text-gray-500">此場館暫無可預約教練</p>}
-      {coaches.length > 0 && searchActive && (
+      {coaches.length > 0 && (
         <p className="mb-3 text-xs text-gray-500">
           {`共 ${filteredCoaches.length} 位教練，金色徽章為「資深教練」（含學習歷程服務）`}
         </p>
       )}
 
-      {coaches.length > 0 && !searchActive && (
-        <div className="flex min-h-[50vh] flex-col items-center justify-center px-6 text-center">
-          <div className="mb-3 text-3xl">🔍</div>
-          <p className="text-sm font-medium text-gray-500">請輸入教練姓名或透過上方篩選器選擇教練</p>
-          <p className="mt-2 text-xs text-gray-400">金色徽章為「資深教練」（含學習歷程服務）</p>
-        </div>
-      )}
-
-      {searchActive && filteredCoaches.length === 0 && (
+      {coaches.length > 0 && filteredCoaches.length === 0 && (
         <div className="rounded-lg border border-dashed border-gray-300 px-4 py-10 text-center text-sm text-gray-400">
           查無符合條件的教練，請調整篩選條件或搜尋關鍵字
         </div>
       )}
 
-      {searchActive && filteredCoaches.length > 0 && (
+      {filteredCoaches.length > 0 && (
         <div className="space-y-3">
           {filteredCoaches.map((c) => (
             <CoachCard
