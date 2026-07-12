@@ -2,6 +2,7 @@ import React from 'react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
+import { usePendingPayments } from '../context/PendingPaymentsContext';
 
 const PARENT_TABS = [
   { to: '/',           label: '首頁',     end: true,  icon: HomeIcon },
@@ -24,13 +25,17 @@ const COL_MAP = { 3: 'grid-cols-3', 4: 'grid-cols-4', 5: 'grid-cols-5' };
 export default function BottomNav() {
   const { role } = useAuth();
   const toast = useToast();
+  const { count: pendingPaymentCount } = usePendingPayments();
   const tabs = role === 'coach' ? COACH_TABS : PARENT_TABS;
   const cols = COL_MAP[tabs.length] || 'grid-cols-4';
 
   return (
     <nav className="shrink-0 border-t border-gray-200 bg-white pb-[env(safe-area-inset-bottom)]">
       <ul className={`grid ${cols}`}>
-        {tabs.map(({ to, label, end, icon: Icon, comingSoon }) => (
+        {tabs.map(({ to, label, end, icon: Icon, comingSoon }) => {
+          // 「我的課程」右上角紅色數字：待家長填寫/送出轉帳資料的訂單數（僅家長端）。
+          const badge = role === 'parent' && to === '/my-courses' ? pendingPaymentCount : 0;
+          return (
           <li key={to}>
             {comingSoon ? (
               // 未上線：反灰、不可導頁，點擊提示「敬請期待」，並在右上角標示。
@@ -49,7 +54,7 @@ export default function BottomNav() {
                 to={to}
                 end={end}
                 className={({ isActive }) =>
-                  `flex flex-col items-center justify-center gap-1 py-3 text-xs ${
+                  `relative flex flex-col items-center justify-center gap-1 py-3 text-xs ${
                     isActive ? 'text-brand-teal' : 'text-gray-500'
                   }`
                 }
@@ -58,12 +63,21 @@ export default function BottomNav() {
                   <>
                     <Icon active={isActive} />
                     <span className="font-medium">{label}</span>
+                    {badge > 0 && (
+                      <span
+                        aria-label={`${badge} 筆待上傳付款資料`}
+                        className="pointer-events-none absolute right-[18%] top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-brand-error px-1 text-[10px] font-bold leading-none text-white"
+                      >
+                        {badge > 99 ? '99+' : badge}
+                      </span>
+                    )}
                   </>
                 )}
               </NavLink>
             )}
           </li>
-        ))}
+          );
+        })}
       </ul>
     </nav>
   );

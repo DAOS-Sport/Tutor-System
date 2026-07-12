@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { coursesApi } from '../api/courses';
 import { groupOrdersApi } from '../api/groupOrders';
 import { checkoutApi } from '../api/checkout';
@@ -8,6 +8,7 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import PaymentDisclaimerModal from '../components/PaymentDisclaimerModal';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
+import { usePendingPayments } from '../context/PendingPaymentsContext';
 import { courseTypeLabel } from '../utils/format';
 
 // 三分頁：
@@ -30,11 +31,17 @@ const GROUP_STATUS_LABEL = {
 
 export default function MyCoursesPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { parent } = useAuth();
   const toast = useToast();
+  const { refresh: refreshPendingPayments } = usePendingPayments();
   const [courses, setCourses] = useState(null);
   const [groupOrders, setGroupOrders] = useState([]);
-  const [tab, setTab] = useState('all');
+  // 支援自首頁「尚未上傳付款資料」橫幅帶入 ?tab=review 直接落在待審核分頁。
+  const initialTab = TABS.some((t) => t.key === searchParams.get('tab'))
+    ? searchParams.get('tab')
+    : 'all';
+  const [tab, setTab] = useState(initialTab);
   const [loadError, setLoadError] = useState(null);
   const [cancellingId, setCancellingId] = useState(null);
   const [resolvingPaymentId, setResolvingPaymentId] = useState(null);
@@ -118,6 +125,7 @@ export default function MyCoursesPage() {
       if (!checkoutId) throw new Error('missing checkout id');
       setPaymentTarget(`/checkout/${checkoutId}`);
       load();
+      refreshPendingPayments();
     } catch (e) {
       toast.error(e?.response?.data?.error || '付款單導向失敗，請聯繫櫃檯');
     } finally {
@@ -160,6 +168,7 @@ export default function MyCoursesPage() {
       }
       toast.success('已取消未完成報名');
       load();
+      refreshPendingPayments();
     } catch (e) {
       toast.error(e?.response?.data?.error || '取消失敗');
     } finally {

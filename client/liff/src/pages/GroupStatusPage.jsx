@@ -66,13 +66,12 @@ export default function GroupStatusPage() {
   }, [id]);
 
   useEffect(() => load(), [load]);
+  // 只在「伺服器已存的末碼」有值且變動時回填（例如曾送出過或送出成功後）；
+  // 不清空使用者輸入中的末碼／已選檔案，避免揪團中每 6 秒輪詢把填到一半的內容洗掉。
+  const selfSavedLast5 = ((order?.members || []).find((m) => m.is_self)?.transfer_last_5) || '';
   useEffect(() => {
-    const self = (order?.members || []).find((m) => m.is_self);
-    if (self) {
-      setTransferLast5(self.transfer_last_5 || '');
-      setProofFile(null);
-    }
-  }, [order?.id, order?.members]);
+    if (selfSavedLast5) setTransferLast5(selfSavedLast5);
+  }, [order?.id, selfSavedLast5]);
 
   // 揪團中自動輪詢，讓團主在頁面上即時看到新加入的成員/學生（不必手動重整）
   useEffect(() => {
@@ -253,7 +252,7 @@ export default function GroupStatusPage() {
         </div>
       )}
 
-      {order.status !== 'forming' && !allPaymentConfirmed && (
+      {['forming', 'submitted', 'approved'].includes(order.status) && !allPaymentConfirmed && (
         <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3">
           <h3 className="mb-2 text-xs font-bold text-gray-600">轉帳資訊</h3>
           <div className="space-y-1 text-sm text-gray-700">
@@ -310,13 +309,8 @@ export default function GroupStatusPage() {
                   </div>
                 </div>
 
-                {/* 自己這筆：送審後、櫃檯確認前，可填付款資料 */}
-                {m.is_self && !m.payment_confirmed && order.status === 'forming' && (
-                  <div className="mt-2 rounded-lg bg-brand-gold/10 px-3 py-2 text-[11px] leading-5 text-brand-gold">
-                    送審後會開放填寫轉帳末 5 碼與上傳證明。
-                  </div>
-                )}
-                {m.is_self && !m.payment_confirmed && order.status === 'submitted' && (
+                {/* 自己這筆：揪團中(forming)即可先轉帳並上傳付款資料，送審後(submitted)仍可補；櫃檯確認前皆可 */}
+                {m.is_self && !m.payment_confirmed && ['forming', 'submitted'].includes(order.status) && (
                   <div className="mt-2 space-y-2">
                     <input
                       type="tel"
@@ -387,7 +381,7 @@ export default function GroupStatusPage() {
             <>
               {/* 送審前警語：名單鎖定；證明改送審後各家上傳 */}
               <div className="rounded-lg border border-brand-gold/40 bg-brand-gold/5 px-3 py-2 text-[12px] leading-5 text-brand-gold">
-                ⚠️ 送審後名單<strong>鎖定、不能再加人</strong>；接著各家在此頁轉帳並上傳證明。
+                ⚠️ 送審後名單<strong>鎖定、不能再加人</strong>；各家可先在此頁轉帳並上傳證明。
               </div>
               {/* 送審鈕已由上方 NextActionBlock 提供（reachedMin 時顯示「送審並鎖定名單」），此處只保留警語避免兩顆重複送審鈕。 */}
               {!reachedMin && (
@@ -416,7 +410,7 @@ export default function GroupStatusPage() {
         onConfirm={() => doAction('submit')}
       >
         <p className="text-sm text-gray-600">
-          送審後名單<strong>鎖定、不能再加人</strong>；各家接著在本頁轉帳並上傳證明，櫃檯核對後開課。確定送審？
+          送審後名單<strong>鎖定、不能再加人</strong>；各家在本頁轉帳並上傳證明（送審前即可先付），櫃檯核對後開課。確定送審？
         </p>
       </ConfirmModal>
 
@@ -450,17 +444,20 @@ function NextActionBlock({
   let tone = 'teal';
 
   if (order.status === 'forming') {
+    tone = selfPaymentReady ? 'gold' : 'teal';
     if (order.is_leader) {
       title = reachedMin ? '人數已達標，可以送審' : '先邀請其他家長加入';
       body = reachedMin
-        ? ''
-        : `還差 ${Math.max(0, order.min_students - order.total_students)} 人成團，用下方連結邀請家長加入。`;
+        ? '可先在下方轉帳並上傳付款資料；送審後名單鎖定，由櫃檯核對開課。'
+        : `還差 ${Math.max(0, order.min_students - order.total_students)} 人成團，用下方連結邀請家長加入；您也可先完成自己的付款。`;
       primary = reachedMin
         ? { label: '送審並鎖定名單', onClick: onSubmit }
         : null;
     } else {
-      title = '等待團主送審';
-      body = '您已在團內，待人數達標後團主送審。';
+      title = selfPaymentReady ? '付款資料已送出' : '已加入，可先完成付款';
+      body = selfPaymentReady
+        ? '等待人數達標、團主送審後由櫃檯核對開課。'
+        : '您已在團內，可先轉帳並在下方成員卡上傳付款資料，不必等團主送審。';
     }
   } else if (order.status === 'submitted') {
     tone = selfPaymentReady ? 'gold' : 'teal';
@@ -506,7 +503,7 @@ function NextActionBlock({
           {primary.label}
         </button>
       )}
-      {order.status === 'submitted' && selfMember && !selfMember.payment_confirmed && (
+      {['forming', 'submitted'].includes(order.status) && selfMember && !selfMember.payment_confirmed && (
         <div className="mt-2 rounded-lg bg-white/70 px-3 py-2 text-[11px] leading-5 text-gray-600">
           您這筆：{selfPaymentReady ? '已填付款資料，等待確認。' : '尚未完成付款資料。'}
         </div>

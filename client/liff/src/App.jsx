@@ -3,6 +3,7 @@ import { Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 import AppLayout from './components/AppLayout';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ToastProvider } from './context/ToastContext';
+import { PendingPaymentsProvider } from './context/PendingPaymentsContext';
 import MockBanner from './components/MockBanner';
 
 import LoginPage from './pages/LoginPage';
@@ -71,6 +72,7 @@ export default function App() {
   return (
     <ToastProvider>
       <AuthProvider>
+        <PendingPaymentsProvider>
         <MockBanner />
         <Routes>
           <Route element={<AppLayout />}>
@@ -169,6 +171,7 @@ export default function App() {
 
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        </PendingPaymentsProvider>
       </AuthProvider>
     </ToastProvider>
   );

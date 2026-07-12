@@ -675,7 +675,8 @@ router.post('/by-token/:token/join', async (req, res) => {
 });
 
 // ── POST /:id/my-proof 成員上傳/更新自己的轉帳證明（U10） ──────
-//    團報流程：發起/加入時不收證明，團主送審後（審核中）才由各家自行上傳。
+//    團報流程：揪團中(forming)或送審後(submitted)皆可由各家自行轉帳並上傳付款資料，
+//    讓家長不必等團主送審就能先付款、避免遺忘或重複報名（送審只鎖定名單，不影響收款）。
 //    限本團成員、限上傳自己那筆；櫃檯已「確認帳款」後不可再改（避免改掉已查核的證明）。
 router.post('/:id/my-proof', async (req, res) => {
   const proof = validProof(req.body?.payment_proof_url);
@@ -686,8 +687,8 @@ router.post('/:id/my-proof', async (req, res) => {
   try {
     const o = await pool.query(`SELECT status FROM group_orders WHERE id = $1`, [req.params.id]);
     if (!o.rowCount) return res.status(404).json({ error: '找不到此團購' });
-    if (o.rows[0].status !== 'submitted') {
-      return res.status(409).json({ error: '送審後才可上傳付款資料', code: 'NOT_UPLOADABLE' });
+    if (!['forming', 'submitted'].includes(o.rows[0].status)) {
+      return res.status(409).json({ error: '此團購狀態無法上傳付款資料', code: 'NOT_UPLOADABLE' });
     }
     const m = await pool.query(
       `SELECT id, payment_confirmed, transfer_last_5, payment_proof_url
