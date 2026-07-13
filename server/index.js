@@ -117,24 +117,34 @@ function setUploadSecurityHeaders(res, nameOrPath) {
   if (!isMedia) res.setHeader('Content-Disposition', 'attachment');
 }
 
-if (objectStore.driverName === 'replit') {
-  // 正式環境（Autoscale 多實例）：檔案存在共享 bucket，非本機磁碟。
-  // 由此 handler 依對外 URL 還原 key、從 bucket 串流回應（含相同三道安全標頭）。
-  app.get('/uploads/*', (req, res) => {
-    setUploadSecurityHeaders(res, req.path);
+// /uploads/* — 動態判斷：driver 可能在 preflight 後降級，因此每次請求才讀 driverName。
+// replit driver：從 bucket 串流；local driver（包含 preflight 降級後）：從磁碟提供。
+app.get('/uploads/*', (req, res) => {
+  setUploadSecurityHeaders(res, req.path);
+  if (objectStore.driverName === 'replit') {
     res.setHeader('Content-Type', mime.lookup(req.path) || 'application/octet-stream');
     const stream = objectStore.openReadStream(req.path);
     if (!stream) return res.status(404).json({ error: '檔案不存在' });
-    stream.on('error', () => { if (!res.headersSent) res.status(404).json({ error: '檔案不存在' }); else res.destroy(); });
+    stream.on('error', (err) => {
+      const msg = err?.message || String(err);
+      console.error('[uploads/stream]', req.path, msg.slice(0, 200));
+      if (!res.headersSent) res.status(404).json({ error: '檔案不存在' }); else res.destroy();
+    });
     stream.pipe(res);
-  });
-} else {
-  // dev / 單機：本機 server/uploads 直接以 express.static 提供。
-  app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
-    maxAge: '7d',
-    setHeaders(res, filePath) { setUploadSecurityHeaders(res, filePath); },
-  }));
-}
+  } else {
+    // local driver（dev 或 bucket preflight 降級後）：從磁碟以 sendFile 提供。
+    // 注意：不能用 express.static 的 localUploadsMiddleware 直接呼叫，因為 route handler
+    // 不會剝掉 /uploads 前綴，static 中間件會找到兩層 uploads 路徑。改用 res.sendFile。
+    const safePath = req.path.slice('/uploads/'.length); // → '2026-07/abc.jpg'
+    if (!safePath || safePath.startsWith('/') || safePath.includes('..') || safePath.includes('\0')) {
+      return res.status(400).json({ error: '無效路徑' });
+    }
+    const filePath = path.join(__dirname, 'uploads', safePath);
+    res.sendFile(filePath, { maxAge: '7d' }, (err) => {
+      if (err && !res.headersSent) res.status(404).json({ error: '檔案不存在' });
+    });
+  }
+});
 
 // SPA fallback：將子路徑導回對應前端的 index.html，讓 React Router 接手
 app.get('/admin/*', (req, res, next) => {
@@ -206,7 +216,8 @@ const PORT = process.env.PORT || 3000;
   try {
     await objectStore.assertProductionStorageReady();
   } catch (err) {
-    console.warn('[objectStorage] preflight warning (uploads may fail but server will start):', err.message);
+    console.warn('[objectStorage] preflight warning — switching to local disk fallback:', err.message);
+    objectStore.useFallbackLocalDriver();
   }
   try {
     await bootstrapDemo();

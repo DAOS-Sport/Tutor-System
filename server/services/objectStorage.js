@@ -175,14 +175,27 @@ const requestedDriver = String(process.env.OBJECT_STORAGE_DRIVER || '').trim().t
 const shouldAutoUseReplit = !requestedDriver
   && process.env.NODE_ENV === 'production';
 const selectedDriverName = requestedDriver || (shouldAutoUseReplit ? 'replit' : 'local');
-const driver = DRIVERS[selectedDriverName] || LocalDiskDriver;
+let activeDriver = DRIVERS[selectedDriverName] || LocalDiskDriver;
+
+// 當 bucket preflight 失敗時，由啟動流程呼叫此函式降級至本機磁碟驅動器。
+// 降級後 saveBuffer / openReadStream 均改用本地磁碟；driverName getter 即時反映。
+// ⚠️ 本機磁碟在 Autoscale 多實例環境不跨機共享，降級僅適用於緊急上線保底。
+function useFallbackLocalDriver() {
+  if (activeDriver.name !== 'local') {
+    console.warn(
+      '[objectStorage] bucket preflight failed — falling back to local disk driver. ' +
+      'Uploads will NOT be durable on Autoscale. Please provision Replit Object Storage.',
+    );
+    activeDriver = LocalDiskDriver;
+  }
+}
 
 // An explicit local override remains useful for local troubleshooting, but it
 // is intentionally loud in production because files would not be durable on
 // an Autoscale deployment.
 function assertProductionStorageConfigured({
   nodeEnv = process.env.NODE_ENV,
-  actualDriver = driver.name,
+  actualDriver = activeDriver.name,
 } = {}) {
   if (nodeEnv === 'production' && actualDriver !== 'replit') {
     const err = new Error('production 必須使用 Replit shared object storage；local driver 已拒絕');
@@ -194,7 +207,7 @@ function assertProductionStorageConfigured({
 
 async function assertProductionStorageReady({
   nodeEnv = process.env.NODE_ENV,
-  actualDriver = driver.name,
+  actualDriver = activeDriver.name,
   listObjects = () => getReplitClient().list({ maxResults: 1 }),
 } = {}) {
   assertProductionStorageConfigured({ nodeEnv, actualDriver });
@@ -230,14 +243,14 @@ async function saveBuffer({ buffer, originalName = 'file.bin', mimeType = 'appli
   }
   const originalExt = safeExt(originalName);
   const ext = allowedExts.includes(originalExt.toLowerCase()) ? originalExt : allowedExts[0];
-  const { url } = await driver.saveBuffer({ buffer, ext, mimeType });
+  const { url } = await activeDriver.saveBuffer({ buffer, ext, mimeType });
   return {
     url,
     filename: originalName,
     size: buffer.length,
     mimeType,
     messageType: inferMessageType(mimeType, ext),
-    driver: driver.name,
+    driver: activeDriver.name,
   };
 }
 
@@ -246,16 +259,16 @@ async function saveBuffer({ buffer, originalName = 'file.bin', mimeType = 'appli
 async function objectExists(url) {
   const key = objectKeyFromUrl(url);
   if (!key) return false;
-  return driver.exists(key);
+  return activeDriver.exists(key);
 }
 
 // 以對外 URL 開啟 bucket 物件的讀取串流（僅 replit driver）。
 // local driver 回 null — 那些檔案仍由 index.js 的 express.static 從磁碟提供。
 function openReadStream(url) {
-  if (driver.name !== 'replit') return null;
+  if (activeDriver.name !== 'replit') return null;
   const key = objectKeyFromUrl(url);
   if (!key) return null;
-  return driver.openReadStream(key);
+  return activeDriver.openReadStream(key);
 }
 
 module.exports = {
@@ -264,9 +277,10 @@ module.exports = {
   inferMessageType,
   objectExists,
   openReadStream,
+  useFallbackLocalDriver,
   UPLOAD_ROOT: LOCAL_ROOT,
   ALLOWED_MAX_BYTES,
-  driverName: driver.name,
+  get driverName() { return activeDriver.name; },
   assertProductionStorageConfigured,
   assertProductionStorageReady,
   __test__: {
