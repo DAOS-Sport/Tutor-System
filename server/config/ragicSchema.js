@@ -39,16 +39,66 @@ const FORMS = {
 
 // ─────────────────────────────────────────────────────────────
 // LINE UID 綁定欄位 Field ID（角色抓取核心 — 全系統唯一定義處）
-//   Z01 家教系統uid  → 預設 1006846，env RAGIC_FIELD_Z01_LINE_UID 可覆寫
+//   Z01 家教系統uid  → 固定 1006846。這是家長登入身分的安全邊界，禁止 env
+//                     覆寫、中文欄名 fallback 或從網址／顯示狀態猜測。
 //   H01 個人LINE ID  → 固定 1003633。這是教練 LINE userId 唯一入口，不吃 env。
 //                     實機 API 有時只回中文 key「個人LINE ID」，故只允許精準欄名 fallback，
 //                     不做 LINE/uid 模糊搜尋，避免誤抓「400Line訊息」等訊息/狀態欄位。
 //   Z01 仍保留 env 覆寫；H01 若 Ragic 真正換欄位，必須改 code + 文件一起審核。
 // ─────────────────────────────────────────────────────────────
 const LINE_UID_FIELD = {
-  Z01: process.env.RAGIC_FIELD_Z01_LINE_UID || '1006846',
+  Z01: '1006846',
   H01: '1003633',
 };
+
+const RAGIC_Z01_FIELDS = Object.freeze({
+  PARENT_SYSTEM_LINE_UID: '1006846',
+});
+const RAGIC_Z01_FIELD_NAMES = Object.freeze({
+  PARENT_SYSTEM_LINE_UID: '家教系統uid',
+});
+
+function normalizeLineUid(value) {
+  const uid = String(value == null ? '' : value).normalize('NFKC').trim();
+  if (!uid || uid.startsWith('demo:') || uid.startsWith('DEMOTEST_')) return '';
+  return uid;
+}
+
+/**
+ * 家長 Ragic LINE UID 的唯一讀取入口。刻意只讀數字 Field ID；即使 payload
+ * 同時帶有「家教系統uid」中文 key，也不得 fallback，避免 schema drift 時誤認。
+ */
+function getTrueRagicLineUid(record) {
+  return normalizeLineUid(record?.[RAGIC_Z01_FIELDS.PARENT_SYSTEM_LINE_UID]);
+}
+
+function _envFlag(name, defaultValue) {
+  const raw = process.env[name];
+  if (raw == null || raw === '') return defaultValue;
+  return /^(1|true|yes|on)$/i.test(String(raw).trim());
+}
+
+const STABILITY_FLAGS = Object.freeze({
+  get EXISTING_USER_LOCAL_FASTPATH() { return _envFlag('EXISTING_USER_LOCAL_FASTPATH', true); },
+  get PARENT_IDENTITY_RESOLVER_V2() { return _envFlag('PARENT_IDENTITY_RESOLVER_V2', false); },
+  get PARENT_LOCAL_FIRST() { return _envFlag('PARENT_LOCAL_FIRST', true); },
+  get RAGIC_PARENT_OUTBOX() { return _envFlag('RAGIC_PARENT_OUTBOX', false); },
+  get LEGACY_CLAIM_AUTO_CREATE() { return _envFlag('LEGACY_CLAIM_AUTO_CREATE', false); },
+  get DESTRUCTIVE_RECONCILE_ENABLED() { return _envFlag('DESTRUCTIVE_RECONCILE_ENABLED', false); },
+  get PASSED_NOT_ON_FILE_ENABLED() { return _envFlag('PASSED_NOT_ON_FILE_ENABLED', false); },
+});
+
+function assertParentUidSchemaDefinition(fieldEntries) {
+  const entries = Array.isArray(fieldEntries) ? fieldEntries : [];
+  const matches = entries.filter((entry) => String(entry?.id || '') === RAGIC_Z01_FIELDS.PARENT_SYSTEM_LINE_UID);
+  if (matches.length !== 1 || String(matches[0]?.name || '') !== RAGIC_Z01_FIELD_NAMES.PARENT_SYSTEM_LINE_UID) {
+    const err = new Error('Ragic Z01 field 1006846 必須唯一存在且名稱為「家教系統uid」');
+    err.code = 'RAGIC_UID_FIELD_SCHEMA_MISMATCH';
+    err.matches = matches.map((entry) => ({ id: String(entry?.id || ''), name: String(entry?.name || '') }));
+    throw err;
+  }
+  return true;
+}
 
 // Z01 家長主檔（中文欄位 → Field ID）
 const Z01_FIELDS = {
@@ -210,6 +260,12 @@ const FIELD = {
 module.exports = {
   FORMS,
   LINE_UID_FIELD,
+  RAGIC_Z01_FIELDS,
+  RAGIC_Z01_FIELD_NAMES,
+  normalizeLineUid,
+  getTrueRagicLineUid,
+  assertParentUidSchemaDefinition,
+  STABILITY_FLAGS,
   Z01_FIELDS,
   Z01_STUDENT_FIELDS,
   Z01_STUDENTS_SUBTABLE_ID,

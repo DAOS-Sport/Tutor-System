@@ -1,0 +1,123 @@
+{
+  "run_started_at": "2026-07-13T14:28:07Z",
+  "run_completed_at": "2026-07-13T14:50:00Z",
+  "summary": { "passed": 25, "failed": 0, "total": 25 },
+  "results": {
+    "T01": "T01: PASS",
+    "T02": "T02: PASS",
+    "T03": "T03: PASS (Ragic call count 0)",
+    "T04": "T04: PASS",
+    "T05": "T05: PASS",
+    "T06": "T06: PASS",
+    "T07": "T07: PASS",
+    "T08": "T08: PASS",
+    "T09": "T09: PASS",
+    "T10": "T10: PASS",
+    "T11": "T11: PASS",
+    "T12": "T12: PASS",
+    "T13": "T13: PASS",
+    "T14": "T14: PASS",
+    "T15": "T15: PASS",
+    "T16": "T16: PASS",
+    "T17": "multiple_candidate_integration P4: PASS",
+    "T18": "multiple_candidate_integration P5: PASS",
+    "T19": "multiple_candidate_integration P6: PASS",
+    "T20": "multiple_candidate_integration NO_WINNER: PASS",
+    "T21": "T21: PASS",
+    "T22": "parent_local_first_registration: PASS (idempotency, timeout login, exact UID create, rights protection)",
+    "T23": "T23: PASS",
+    "T24": "multiple_candidate_integration NO_WINNER: PASS; rights hash unchanged",
+    "T25": {
+      "result": "PASS",
+      "previous_build_id": "6049880c29739c5e020fb37b23b28963865336e6",
+      "release_candidate_build_id": "6049880c29739c5e020fb37b23b28963865336e6+b72ad77e9f2831c8",
+      "rollback_timestamp": "2026-07-13T14:49:50.159Z",
+      "health_checks": { "rc_before": "PASS", "previous_build": "PASS", "rc_after": "PASS" },
+      "login_checks": { "existing_fast_path": "PASS", "new_claim_local_login": "PASS", "pre_release_token": "PASS" },
+      "db_counts_before": { "parents": 2, "students": 2, "outbox": 1, "links": 0 },
+      "db_counts_after_rollback": { "parents": 2, "students": 2, "outbox": 1, "links": 0 },
+      "db_counts_after_redeploy": { "parents": 2, "students": 2, "outbox": 1, "links": 1 },
+      "ragic_write_count": 1,
+      "destructive_down_migration": false
+    }
+  },
+  "supplemental_gates": {
+    "schema_freshness": "PASS — live evidence contract, missing/name/stale block, worker gate, local login",
+    "account_recovery": "PASS — active LIFF API, unverified guard, failed rollback audit, manual proof, atomic rebind, replay, concurrency, rate limit, timeout, audit",
+    "source_claim_concurrency": "PASS — one canonical parent/student/link/outbox",
+    "outbox_failure": "PASS — non-retryable blocked, local login retained",
+    "safety_invariants": "PASS — national-ID no overwrite, no passed_not_on_file, no hard delete, no LINE UID clearing",
+    "canary_configuration": "PASS — allowlist, known records, deterministic percentage, existing-fastpath exclusion",
+    "frozen_parent_identity_closure": "PASS — 4 suites",
+    "frozen_z01_z03_split_claim": "PASS — 6 suites",
+    "frozen_z03_tombstone": "PASS"
+  },
+  "rights_evidence": {
+    "before_hash": "1af3a53f07124cbecf1ea34a78318cd51cfd7f0f5ebb59504162429233c4a714",
+    "after_hash": "1af3a53f07124cbecf1ea34a78318cd51cfd7f0f5ebb59504162429233c4a714",
+    "unchanged": true,
+    "counts": {
+      "course_periods": { "count": 10, "total": 66, "used": 9, "amount": "127555.00" },
+      "course_period_enrollments": { "count": 3 },
+      "group_orders": { "count": 3 },
+      "group_order_members": { "count": 3 },
+      "admin_enrollments": { "count": 139, "total": 96, "used": 26, "amount": "1264596.00" }
+    }
+  },
+  "live_reconciliation": {
+    "status": "PASS",
+    "source": "LIVE_RAGIC_READ_ONLY",
+    "fetched_count": 1096,
+    "linked_local_z01_count": 238,
+    "pending_z03_count": 856,
+    "pending_reconciliation_count": 0,
+    "manual_review_count": 2,
+    "ignored_count": 0,
+    "retryable_error_count": 0,
+    "non_retryable_error_count": 0,
+    "missing_source_count": 0,
+    "live_shadow_source_set_match": true
+  },
+  "schema_evidence": {
+    "schema_freshness_verified": true,
+    "fetched_at": "2026-07-13T14:50:59.234Z",
+    "endpoint": "https://ap7.ragic.com/xinsheng/general-information/6?api&def=1",
+    "sheet_path": "https://ap7.ragic.com/xinsheng/general-information/6",
+    "sheet_id": "6",
+    "http_status": 200,
+    "response_hash": "89b5f55e0e32f3cdac6ac60edf9265dcb31de2414f6754fa290ab84dea3ed5b8",
+    "field_id": "1006846",
+    "field_name": "家教系統uid",
+    "attr_noDup": true,
+    "attr_must": false,
+    "attr_ro": false,
+    "schema_version": null,
+    "correlation_id": "933b7de7-6067-4233-ab14-ea9be6252064",
+    "expires_at": "2026-07-13T15:05:59.234Z"
+  },
+  "db_invariants": {
+    "duplicate_canonical_phone": 0,
+    "duplicate_active_line_uid": 0,
+    "duplicate_active_source_link": 0,
+    "missing_source_count": 0
+  },
+  "manual_review_evidence": [
+    {
+      "source_record_id": "1186",
+      "reason_code": "MISSING_CANONICAL_PHONE",
+      "canonical_candidate": "NO_SAFE_CANONICAL_CANDIDATE",
+      "suggested_next_action": "DATA_RECONCILIATION"
+    },
+    {
+      "source_record_id": "6504",
+      "reason_code": "TRUE_LINE_UID_PRESENT_WITH_CONFLICT",
+      "canonical_candidate_count": 1,
+      "suggested_next_action": "ACCOUNT_RECOVERY"
+    }
+  ],
+  "named_source_traces": {
+    "149": "PENDING_Z03; true field 1006846 blank; 8/8 student rows classified; retained",
+    "6504": "one canonical parent candidate; non-empty UID hash mismatch; manual verified recovery required; live data not mutated",
+    "6786": "existing source link/current UID/canonical parent Ragic ID all agree; P4-P6 and no-winner regressions use isolated ZZ6786 fixtures"
+  }
+}

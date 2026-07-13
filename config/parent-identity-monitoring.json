@@ -1,0 +1,41 @@
+{
+  "stage_advance": {
+    "required_consecutive_windows": 2,
+    "minimum_window_minutes": 15,
+    "metrics": [
+      "existing_login_success_rate",
+      "new_claim_success_rate",
+      "generic_sync_failed_count",
+      "duplicate_parent_count",
+      "duplicate_student_count",
+      "line_uid_conflict_count",
+      "reconciliation_pending_count",
+      "outbox_pending_age_seconds",
+      "ragic_failure_by_code",
+      "rights_delta_count"
+    ]
+  },
+  "immediate_stop": {
+    "existing_login_ragic_call_count": { "operator": ">", "value": 0 },
+    "existing_login_success_rate_drop": { "operator": ">", "value": 0 },
+    "unexpected_logout_count": { "operator": ">", "value": 0 },
+    "hard_delete_count": { "operator": ">", "value": 0 },
+    "line_uid_cleared_count": { "operator": ">", "value": 0 },
+    "duplicate_canonical_parent_count": { "operator": ">", "value": 0 },
+    "duplicate_active_uid_count": { "operator": ">", "value": 0 },
+    "missing_source_count": { "operator": ">", "value": 0 },
+    "rights_delta_without_approval_count": { "operator": ">", "value": 0 }
+  },
+  "outbox": {
+    "warn_pending_age_seconds": 300,
+    "rollback_pending_age_seconds": 900,
+    "schema_not_verified_action": "pause_remote_uid_writes_only"
+  },
+  "rollback_action": {
+    "application_only": true,
+    "disable_flags": ["PARENT_IDENTITY_RESOLVER_V2", "RAGIC_PARENT_OUTBOX"],
+    "drop_tables": false,
+    "clear_outbox": false,
+    "clear_line_uid": false
+  }
+}

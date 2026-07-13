@@ -953,6 +953,216 @@ CREATE TABLE IF NOT EXISTS ragic_z03_deleted_tombstones (
   reason TEXT
 );
 
+-- Z01 -> Z03 canonical split metadata. The only split key is the real Z01
+-- LINE UID field: blank goes to Z03; non-blank goes to the canonical parent
+-- mirror. These columns preserve the source identity and claim outcome without
+-- changing or deleting any original raw field.
+ALTER TABLE ragic_z03_records ADD COLUMN IF NOT EXISTS phone_canonical TEXT;
+ALTER TABLE ragic_z03_records ADD COLUMN IF NOT EXISTS source_updated_at TIMESTAMPTZ;
+ALTER TABLE ragic_z03_records ADD COLUMN IF NOT EXISTS source_updated_raw TEXT;
+ALTER TABLE ragic_z03_records ADD COLUMN IF NOT EXISTS classification TEXT NOT NULL DEFAULT 'PENDING_Z03';
+ALTER TABLE ragic_z03_records ADD COLUMN IF NOT EXISTS reason_code TEXT;
+ALTER TABLE ragic_z03_records ADD COLUMN IF NOT EXISTS canonical_parent_id UUID REFERENCES parents(id) ON DELETE SET NULL;
+ALTER TABLE ragic_z03_records ADD COLUMN IF NOT EXISTS canonical_student_id UUID REFERENCES students(id) ON DELETE SET NULL;
+ALTER TABLE ragic_z03_records ADD COLUMN IF NOT EXISTS claim_state TEXT NOT NULL DEFAULT 'UNRESOLVED';
+ALTER TABLE ragic_z03_records ADD COLUMN IF NOT EXISTS last_error_code TEXT;
+ALTER TABLE ragic_z03_records ADD COLUMN IF NOT EXISTS last_processed_at TIMESTAMPTZ;
+ALTER TABLE ragic_z03_records ADD COLUMN IF NOT EXISTS correlation_id UUID;
+CREATE INDEX IF NOT EXISTS idx_ragic_z03_phone_canonical_status
+  ON ragic_z03_records(phone_canonical, status);
+CREATE INDEX IF NOT EXISTS idx_ragic_z03_source_updated
+  ON ragic_z03_records(source_updated_at DESC NULLS LAST);
+
+-- Local-first legacy identity claim. line_uid_hash is a correlation-safe
+-- ownership reference; the raw UID remains only on parents.line_uid.
+CREATE TABLE IF NOT EXISTS identity_claims (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  purpose TEXT NOT NULL,
+  state TEXT NOT NULL,
+  phone_canonical TEXT NOT NULL,
+  student_name_normalized TEXT NOT NULL,
+  canonical_parent_id UUID REFERENCES parents(id) ON DELETE SET NULL,
+  canonical_student_id UUID REFERENCES students(id) ON DELETE SET NULL,
+  line_uid_hash CHAR(64),
+  source_system TEXT NOT NULL,
+  source_table TEXT NOT NULL,
+  source_record_id TEXT NOT NULL,
+  last_error_code TEXT,
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  version INTEGER NOT NULL DEFAULT 1,
+  correlation_id UUID NOT NULL DEFAULT gen_random_uuid(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  verified_at TIMESTAMPTZ,
+  linked_at TIMESTAMPTZ,
+  UNIQUE(purpose, source_system, source_table, source_record_id, student_name_normalized)
+);
+CREATE INDEX IF NOT EXISTS idx_identity_claims_state_updated ON identity_claims(state, updated_at);
+CREATE INDEX IF NOT EXISTS idx_identity_claims_phone ON identity_claims(phone_canonical);
+
+CREATE TABLE IF NOT EXISTS source_record_links (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  source_system TEXT NOT NULL,
+  source_table TEXT NOT NULL,
+  source_record_id TEXT NOT NULL,
+  canonical_parent_id UUID NOT NULL REFERENCES parents(id) ON DELETE RESTRICT,
+  canonical_student_id UUID REFERENCES students(id) ON DELETE RESTRICT,
+  enrollment_id UUID,
+  claim_id UUID REFERENCES identity_claims(id) ON DELETE SET NULL,
+  link_method TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(source_system, source_table, source_record_id)
+);
+CREATE INDEX IF NOT EXISTS idx_source_record_links_parent ON source_record_links(canonical_parent_id);
+CREATE INDEX IF NOT EXISTS idx_source_record_links_student
+  ON source_record_links(canonical_student_id) WHERE canonical_student_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS identity_claim_events (
+  id BIGSERIAL PRIMARY KEY,
+  claim_id UUID NOT NULL REFERENCES identity_claims(id) ON DELETE RESTRICT,
+  from_state TEXT,
+  to_state TEXT NOT NULL,
+  reason_code TEXT,
+  actor_type TEXT NOT NULL DEFAULT 'parent',
+  correlation_id UUID NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_identity_claim_events_claim_created
+  ON identity_claim_events(claim_id, created_at);
+
+-- Transactional outbox: auth commits the local identity first, then this queue
+-- retries the Ragic UID write without re-running identity creation/resolution.
+CREATE TABLE IF NOT EXISTS ragic_sync_outbox (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  idempotency_key TEXT NOT NULL UNIQUE,
+  claim_id UUID NOT NULL REFERENCES identity_claims(id) ON DELETE RESTRICT,
+  operation TEXT NOT NULL,
+  source_system TEXT NOT NULL,
+  source_table TEXT NOT NULL,
+  source_record_id TEXT NOT NULL,
+  payload_reference JSONB NOT NULL DEFAULT '{}'::jsonb,
+  state TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 8,
+  next_retry_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_error_code TEXT,
+  sanitized_error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  completed_at TIMESTAMPTZ,
+  correlation_id UUID NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ragic_sync_outbox_due
+  ON ragic_sync_outbox(next_retry_at, created_at)
+  WHERE state IN ('pending', 'retryable');
+
+-- Parent identity release hardening (migrations 023/024). Additive only.
+ALTER TABLE ragic_z03_students ADD COLUMN IF NOT EXISTS source_row_key TEXT;
+ALTER TABLE ragic_z03_students ADD COLUMN IF NOT EXISTS name_normalized TEXT;
+ALTER TABLE ragic_z03_students ADD COLUMN IF NOT EXISTS classification TEXT NOT NULL DEFAULT 'VALID';
+ALTER TABLE ragic_z03_students ADD COLUMN IF NOT EXISTS reason_code TEXT;
+ALTER TABLE ragic_z03_students ADD COLUMN IF NOT EXISTS present_in_latest_payload BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE ragic_z03_students ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE ragic_z03_students ADD COLUMN IF NOT EXISTS canonical_student_id UUID REFERENCES students(id) ON DELETE SET NULL;
+ALTER TABLE ragic_sync_outbox ADD COLUMN IF NOT EXISTS target_record_id TEXT;
+ALTER TABLE ragic_sync_outbox ADD COLUMN IF NOT EXISTS field_id TEXT;
+
+CREATE TABLE IF NOT EXISTS parent_identity_requests (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(), idempotency_key TEXT NOT NULL,
+  line_uid_hash CHAR(64) NOT NULL, operation TEXT NOT NULL, payload_hash CHAR(64) NOT NULL,
+  canonical_parent_id UUID REFERENCES parents(id) ON DELETE RESTRICT,
+  canonical_student_id UUID REFERENCES students(id) ON DELETE RESTRICT,
+  claim_id UUID REFERENCES identity_claims(id) ON DELETE RESTRICT,
+  state TEXT NOT NULL, correlation_id UUID NOT NULL DEFAULT gen_random_uuid(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(line_uid_hash, operation, idempotency_key)
+);
+
+CREATE TABLE IF NOT EXISTS ragic_z01_uid_schema_verifications (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(), fetched_at TIMESTAMPTZ NOT NULL,
+  endpoint TEXT NOT NULL, sheet_path TEXT NOT NULL, sheet_id TEXT, http_status INTEGER NOT NULL,
+  response_hash CHAR(64) NOT NULL, field_id TEXT NOT NULL, field_name TEXT,
+  attr_no_dup BOOLEAN, attr_must BOOLEAN, attr_ro BOOLEAN, schema_version TEXT,
+  schema_metadata JSONB NOT NULL DEFAULT '{}'::jsonb, correlation_id UUID NOT NULL,
+  verified BOOLEAN NOT NULL, failure_code TEXT, expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_ragic_z01_uid_schema_latest ON ragic_z01_uid_schema_verifications(fetched_at DESC);
+
+CREATE TABLE IF NOT EXISTS ragic_source_identity_status (
+  source_system TEXT NOT NULL, source_table TEXT NOT NULL, source_record_id TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('MERGED','INVALID_SOURCE','ARCHIVED','SUPERSEDED')),
+  reason TEXT NOT NULL CHECK (btrim(reason) <> ''), set_by TEXT NOT NULL,
+  set_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), correlation_id UUID NOT NULL,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  PRIMARY KEY (source_system, source_table, source_record_id)
+);
+CREATE TABLE IF NOT EXISTS ragic_source_identity_status_audit (
+  id BIGSERIAL PRIMARY KEY, source_system TEXT NOT NULL, source_table TEXT NOT NULL,
+  source_record_id TEXT NOT NULL, from_status TEXT, to_status TEXT NOT NULL,
+  reason TEXT NOT NULL, actor TEXT NOT NULL, correlation_id UUID NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS parent_account_recovery_requests (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(), request_key CHAR(64) NOT NULL UNIQUE,
+  state TEXT NOT NULL CHECK (state IN ('ACCOUNT_RECOVERY_REQUIRED','ACCOUNT_RECOVERY_VERIFYING',
+    'ACCOUNT_RECOVERY_VERIFIED','ACCOUNT_REBIND_PENDING','ACCOUNT_REBOUND',
+    'ACCOUNT_RECOVERY_FAILED','ACCOUNT_RECOVERY_LOCKED')),
+  canonical_parent_id UUID NOT NULL REFERENCES parents(id) ON DELETE RESTRICT,
+  canonical_student_id UUID NOT NULL REFERENCES students(id) ON DELETE RESTRICT,
+  claim_id UUID REFERENCES identity_claims(id) ON DELETE SET NULL, ragic_record_id TEXT NOT NULL,
+  phone_canonical TEXT NOT NULL, student_name_normalized TEXT NOT NULL,
+  old_uid_hash CHAR(64) NOT NULL, ragic_old_uid_hash CHAR(64) NOT NULL, new_uid_hash CHAR(64) NOT NULL,
+  requested_line_uid TEXT NOT NULL, recovery_token_hash CHAR(64) NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER NOT NULL DEFAULT 5,
+  initiated_by TEXT NOT NULL, approved_by TEXT, verification_method TEXT,
+  verification_reference TEXT, reason TEXT, correlation_id UUID NOT NULL,
+  requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), verifying_at TIMESTAMPTZ,
+  verified_at TIMESTAMPTZ, committed_at TIMESTAMPTZ, failed_at TIMESTAMPTZ,
+  locked_at TIMESTAMPTZ, consumed_at TIMESTAMPTZ, expires_at TIMESTAMPTZ NOT NULL,
+  ragic_sync_state TEXT NOT NULL DEFAULT 'NOT_QUEUED', last_error_code TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_parent_recovery_active_parent
+  ON parent_account_recovery_requests(canonical_parent_id)
+  WHERE state IN ('ACCOUNT_RECOVERY_REQUIRED','ACCOUNT_RECOVERY_VERIFYING','ACCOUNT_RECOVERY_VERIFIED','ACCOUNT_REBIND_PENDING');
+
+CREATE TABLE IF NOT EXISTS parent_account_recovery_events (
+  id BIGSERIAL PRIMARY KEY,
+  recovery_request_id UUID NOT NULL REFERENCES parent_account_recovery_requests(id) ON DELETE RESTRICT,
+  from_state TEXT, to_state TEXT NOT NULL, reason_code TEXT, actor TEXT NOT NULL,
+  correlation_id UUID NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS parent_line_uid_bindings (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  canonical_parent_id UUID NOT NULL REFERENCES parents(id) ON DELETE RESTRICT,
+  uid_hash CHAR(64) NOT NULL, status TEXT NOT NULL CHECK (status IN ('ACTIVE','REVOKED','REPLACED')),
+  activated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), revoked_at TIMESTAMPTZ,
+  replaced_by_uid_hash CHAR(64), correlation_id UUID NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_parent_line_uid_binding_active_uid ON parent_line_uid_bindings(uid_hash) WHERE status='ACTIVE';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_parent_line_uid_binding_active_parent ON parent_line_uid_bindings(canonical_parent_id) WHERE status='ACTIVE';
+INSERT INTO parent_line_uid_bindings(canonical_parent_id,uid_hash,status,correlation_id)
+SELECT p.id,encode(digest(p.line_uid,'sha256'),'hex'),'ACTIVE',gen_random_uuid()
+  FROM parents p WHERE p.is_active=TRUE AND COALESCE(p.line_uid,'')<>''
+ON CONFLICT DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS parent_line_uid_rebind_audit (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  canonical_parent_id UUID NOT NULL REFERENCES parents(id) ON DELETE RESTRICT,
+  ragic_record_id TEXT, recovery_request_id UUID REFERENCES parent_account_recovery_requests(id) ON DELETE RESTRICT,
+  old_uid_hash CHAR(64) NOT NULL, new_uid_hash CHAR(64) NOT NULL,
+  verification_method TEXT, verification_reference TEXT, initiated_by TEXT, approved_by TEXT,
+  reason TEXT, reason_code TEXT NOT NULL, correlation_id UUID NOT NULL,
+  requested_at TIMESTAMPTZ, verified_at TIMESTAMPTZ NOT NULL, committed_at TIMESTAMPTZ,
+  ragic_sync_state TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_parent_line_uid_rebind_request ON parent_line_uid_rebind_audit(recovery_request_id) WHERE recovery_request_id IS NOT NULL;
+
 -- Task #66：Ragic 待審核區（同步先進 staging，admin 通過才合併到正式表）
 CREATE TABLE IF NOT EXISTS ragic_staging_changes (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1325,6 +1535,9 @@ CREATE TABLE IF NOT EXISTS ragic_z01_shadow (
   raw_data JSONB NOT NULL,
   fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE ragic_z01_shadow ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;
+ALTER TABLE ragic_z01_shadow ADD COLUMN IF NOT EXISTS missing_since TIMESTAMPTZ;
+ALTER TABLE ragic_z01_shadow ADD COLUMN IF NOT EXISTS present_in_latest_pull BOOLEAN NOT NULL DEFAULT TRUE;
 CREATE INDEX IF NOT EXISTS idx_ragic_z01_shadow_fetched ON ragic_z01_shadow(fetched_at);
 
 -- H01（員工）/H05（場館）影子表：同一套「無腦 pull → 從 shadow 清洗」分工，補上

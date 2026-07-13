@@ -614,6 +614,52 @@ async function checkZ01SchemaDrift() {
   return { drifted: mismatches.length > 0, mismatches };
 }
 
+// Parent UID write gate: fetch the current Z01 definition with an explicit
+// cache buster and expose the real HTTP status/metadata for auditable
+// freshness evidence. The returned endpoint never contains API credentials.
+async function fetchZ01DefinitionFresh({ correlationId = null } = {}) {
+  const formPath = process.env.RAGIC_FORM_Z01;
+  if (!formPath) {
+    const err = new Error('RAGIC_FORM_Z01 is not configured');
+    err.code = 'RAGIC_SCHEMA_NOT_VERIFIED';
+    throw err;
+  }
+  const endpoint = `${_stripQuery(formPath)}?api&def=1`;
+  const fetchedAt = new Date();
+  try {
+    const response = await client.get(_withApi(formPath), _requestOptions(
+      { def: 1 },
+      {
+        noCache: true,
+        cacheBuster: `${fetchedAt.getTime()}-${correlationId || Math.random().toString(36).slice(2, 10)}`,
+        headers: correlationId ? { 'X-Correlation-ID': String(correlationId) } : {},
+      }
+    ));
+    if (response.data && typeof response.data === 'object' && response.data.status === 'ERROR') {
+      const err = new Error(`Ragic ${response.data.code}: ${response.data.msg}`);
+      err.code = 'RAGIC_APPLICATION_ERROR';
+      throw err;
+    }
+    const headers = response.headers || {};
+    return {
+      fetchedAt,
+      endpoint,
+      sheetPath: _stripQuery(formPath),
+      httpStatus: Number(response.status),
+      data: response.data,
+      responseMetadata: {
+        etag: headers.etag || null,
+        last_modified: headers['last-modified'] || null,
+        response_date: headers.date || null,
+        ragic_version: headers['x-ragic-version'] || null,
+      },
+    };
+  } catch (rawErr) {
+    if (rawErr?.code && rawErr.code.startsWith('RAGIC_') && !rawErr.response) throw rawErr;
+    throw _normalizeRagicError(rawErr);
+  }
+}
+
 // 註（Task #95 政策定案）：H01 員工資料一律「Ragic → 系統」單向，本系統**不寫** H01。
 // 曾實作 admin 編輯寫回（syncStaffToRagicStrict），後依政策移除：
 //   1. Ragic 為人事權威資料庫，異動一律請 HR 在 Ragic 操作，系統同步帶回即可。
@@ -946,6 +992,10 @@ function parseZ01StudentsRaw(record) {
     return '';
   };
 
+  // Keep every source row, including blank template/error rows. Z03 is the
+  // staging/audit plane; dropping a row here would make the fetched Ragic
+  // payload impossible to reconcile later. Canonical student import can still
+  // choose only rows with a valid name through parseZ01Students().
   return rows.map(({ row, rowKey }) => ({
     seq_raw:              pickRaw(row, ['1001120', '項次']) || rowKey,
     student_status_raw:   pickRaw(row, ['1002178', '學員身分']),
@@ -957,7 +1007,7 @@ function parseZ01StudentsRaw(record) {
     age_raw:              pickRaw(row, ['1001330', '歲數']),
     student_code_raw:     pickRaw(row, ['1001132', '學員編號']),
     registered_phone_raw: pickRaw(row, ['1004090', '登記電話']),
-  })).filter((s) => s.name_raw);
+  }));
 }
 
 // 男/女 → 生理男/生理女。Ragic Z02「學(性別)」「(報)性別」與 Z01 子表性別均為「選項欄位」，
@@ -1156,7 +1206,9 @@ async function addStudentsToParentInRagic({ ragicRecordId, startIndex = 0, stude
   list.forEach((s, i) => {
     const prefix = `${Z01_STUDENTS_SUBTABLE_ID}_${startIndex + i}_`;
     payload[`${prefix}${FIELD.Z01_STUDENT.NAME}`] = s.name;
-    if (s.birth_date) payload[`${prefix}${FIELD.Z01_STUDENT.BIRTH_DATE}`] = s.birth_date;
+    // 與 _buildZ02RegistrationPayload 對齊：Ragic 日期欄位吃 yyyy/MM/dd，ISO 的 '-' 需轉 '/'，
+    // 否則會被當無效值 INVALID（見 createParentWithStudentsInRagic 旁註解）。
+    if (s.birth_date) payload[`${prefix}${FIELD.Z01_STUDENT.BIRTH_DATE}`] = String(s.birth_date).replace(/-/g, '/');
     if (s.gender)     payload[`${prefix}${FIELD.Z01_STUDENT.GENDER}`]     = _toPhysGender(s.gender);
     if (s.id_number)  payload[`${prefix}${FIELD.Z01_STUDENT.ID_NUMBER}`]  = String(s.id_number).toUpperCase();
     if (s.blood_type) payload[`${prefix}${FIELD.Z01_STUDENT.BLOOD_TYPE}`] = s.blood_type;
@@ -1263,7 +1315,9 @@ function buildZ01StudentPayload(student, rowIndex) {
   const prefix = `${Z01_STUDENTS_SUBTABLE_ID}_${rowIndex}_`;
   const payload = {};
   payload[`${prefix}${FIELD.Z01_STUDENT.NAME}`] = student.name || '';
-  if (student.birth_date) payload[`${prefix}${FIELD.Z01_STUDENT.BIRTH_DATE}`] = student.birth_date;
+  // 與 _buildZ02RegistrationPayload 對齊：Ragic 日期欄位吃 yyyy/MM/dd，ISO 的 '-' 需轉 '/'，
+  // 否則會被當無效值 INVALID（見 createParentWithStudentsInRagic 旁註解）。
+  if (student.birth_date) payload[`${prefix}${FIELD.Z01_STUDENT.BIRTH_DATE}`] = String(student.birth_date).replace(/-/g, '/');
   if (student.gender) payload[`${prefix}${FIELD.Z01_STUDENT.GENDER}`] = _toPhysGender(student.gender);
   if (student.id_number) payload[`${prefix}${FIELD.Z01_STUDENT.ID_NUMBER}`] = String(student.id_number).toUpperCase();
   if (student.blood_type) payload[`${prefix}${FIELD.Z01_STUDENT.BLOOD_TYPE}`] = student.blood_type;
@@ -1555,6 +1609,7 @@ module.exports = {
   getAllParentsWithIntegrityAndFreshness,
   getAllParentsChangedSinceWithFreshness,
   checkZ01SchemaDrift,
+  fetchZ01DefinitionFresh,
   formatRagicDateTime: _formatRagicDateTime,
   queryAllPagedWithFreshness,
   queryAllPagedWithIntegrityAndFreshness,

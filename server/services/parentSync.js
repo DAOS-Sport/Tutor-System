@@ -18,6 +18,8 @@ const crypto = require('crypto');
 const { pool } = require('../models/db');
 const ragic = require('./ragic');
 const { maskName, maskPhone } = require('../utils/piiMask');
+const { normalizePhone, normalizeStudentName } = require('./identityNormalizer');
+const { STABILITY_FLAGS, getTrueRagicLineUid } = require('../config/ragicSchema');
 
 class BindConflictError extends Error {
   constructor(code, message, http = 409) {
@@ -25,6 +27,23 @@ class BindConflictError extends Error {
     this.code = code;
     this.http = http;
   }
+}
+
+async function findActiveParentByLineUid(lineUid, db = pool) {
+  const uid = String(lineUid || '').trim();
+  if (!uid) return null;
+  const rows = (await db.query(
+    `SELECT id,name,phone,line_uid,primary_venue_id,gender,email,identity,
+            home_phone,home_address,line_id,is_active
+       FROM parents
+      WHERE line_uid=$1 AND is_active=TRUE
+      ORDER BY id`,
+    [uid]
+  )).rows;
+  if (rows.length > 1) {
+    throw new BindConflictError('DATA_RECONCILIATION_PENDING', 'LINE UID 命中多個 active parent');
+  }
+  return rows[0] || null;
 }
 
 // Ragic Z01「館別」欄位存的是場館「名稱」（如「新北高中」），本地 venues.id 是「代碼」（如「B」）。
@@ -154,17 +173,16 @@ const PARENT_REFERENCE_SPECS = [
 ];
 
 async function hardDeleteStudentIfSafe(client, studentId) {
-  if (await _hasAnyReference(client, studentId, STUDENT_REFERENCE_SPECS)) return false;
-  const r = await client.query(`DELETE FROM students WHERE id = $1 RETURNING id`, [studentId]);
-  return r.rowCount > 0;
+  void client;
+  void studentId;
+  return false;
 }
 
 /**
- * Upsert parents（以 ragic_record_id 為主鍵，phone 為 fallback；P1.1 決策6）。
- *  - 主鍵選擇：mapped.ragic_record_id 有值時以其為 ON CONFLICT 鍵——Ragic 端記錄
- *    換電話/改資料時直接「就地更新」，不會像舊版（ON CONFLICT phone）那樣把
- *    「改號前的舊列」孤立、又對「改號後」新插一列。理論上 Ragic 拉回一定帶
- *    ragic_record_id，只有未來手建情境才會落到 phone-only 分支。
+ * Upsert canonical parent。
+ *  - 身分候選固定依 LINE UID → canonical phone → source_record_link 收斂；
+ *    ragic_record_id 只定位來源，不能單獨證明人的身分。
+ *  - 同一手機即使帶來另一個 Ragic record id，也只補 source_record_link，不建第二人。
  *  - line_uid 已有不同值時，預設絕不覆蓋（COALESCE 保護）。
  *    overwriteLineUid=true 僅供「Ragic 已確認改綁成功後」的登入/綁定刷新使用。
  *  - reactivate=true（刻意登入/綁定）才允許把軟刪除的家長重新啟用；
@@ -178,120 +196,88 @@ async function hardDeleteStudentIfSafe(client, studentId) {
  */
 async function upsertLocalParent(client, mapped, lineUid, { reactivate = true, venuesMap = null, overwriteLineUid = false, preservePending = true } = {}) {
   const name  = mapped.name  || '未命名家長';
-  const phone = mapped.phone || '';
+  const phone = normalizePhone(mapped.phone);
   if (!phone) throw new Error('缺少手機，無法 upsert parent');
   const ragicRecordId = mapped.ragic_record_id ? String(mapped.ragic_record_id).trim() : '';
 
   const venueId = await _resolveVenueId(client, mapped.primary_venue_id, venuesMap);
-  let lineUidForWrite = String(lineUid || '').trim();
-  if (lineUidForWrite) {
-    const holders = await client.query(
-      `SELECT id, is_active
-         FROM parents
-        WHERE line_uid = $1 AND phone <> $2`,
-      [lineUidForWrite, phone]
-    );
-    if (holders.rowCount) {
-      const hasActiveHolder = holders.rows.some((row) => row.is_active);
-      if (overwriteLineUid || !hasActiveHolder) {
-        await client.query(
-          `UPDATE parents
-              SET line_uid = NULL, updated_at = NOW()
-            WHERE line_uid = $1 AND phone <> $2`,
-          [lineUidForWrite, phone]
-        );
-      } else {
-        // 背景同步不應搶走另一個 active 家長的登入 UID；保留資料同步但不寫入 UID。
-        lineUidForWrite = '';
-      }
-    }
+  const lineUidForWrite = String(lineUid || '').trim();
+
+  // Canonical identity order: LINE UID -> phone -> explicit source link. A
+  // bare Ragic record id is never accepted as proof that two people are one.
+  const byUid = lineUidForWrite
+    ? (await client.query(`SELECT * FROM parents WHERE line_uid=$1 FOR UPDATE`, [lineUidForWrite])).rows[0] || null
+    : null;
+  const byPhoneRows = (await client.query(
+    `SELECT * FROM parents
+      WHERE phone=$1 OR regexp_replace(COALESCE(phone,''),'\\D','','g')=$1
+      ORDER BY created_at,id FOR UPDATE`,
+    [phone]
+  )).rows;
+  if (byPhoneRows.length > 1) {
+    throw new BindConflictError('DATA_RECONCILIATION_PENDING', 'canonical phone 命中多個 parent');
+  }
+  const byPhone = byPhoneRows[0] || null;
+  const byLink = ragicRecordId
+    ? (await client.query(
+      `SELECT p.* FROM source_record_links l JOIN parents p ON p.id=l.canonical_parent_id
+        WHERE l.source_system='RAGIC' AND l.source_table='Z01' AND l.source_record_id=$1
+        FOR UPDATE OF p`, [ragicRecordId]
+    )).rows[0] || null
+    : null;
+  const candidates = new Map([byUid, byPhone, byLink].filter(Boolean).map((row) => [String(row.id), row]));
+  if (candidates.size > 1) {
+    throw new BindConflictError('DATA_RECONCILIATION_PENDING', 'LINE UID、canonical phone 與 source link 指向不同 parent');
+  }
+  let parent = candidates.values().next().value || null;
+  if (parent && normalizePhone(parent.phone) !== phone) {
+    throw new BindConflictError('ACCOUNT_RECOVERY_REQUIRED', 'LINE UID 或 source link 指向不同手機');
+  }
+  if (parent?.line_uid && lineUidForWrite && parent.line_uid !== lineUidForWrite) {
+    throw new BindConflictError('ACCOUNT_RECOVERY_REQUIRED', 'canonical parent 已綁定另一個 LINE UID');
   }
 
-  // 兩種 ON CONFLICT 目標各自獨立成完整 SQL 字串（PG 不支援同一 query 動態切換
-  // arbiter）；欄位集合與參數順序完全一致，僅 ON CONFLICT 目標與 phone 是否可寫不同。
-  const UPSERT_BY_RAGIC_ID_SQL =
-    `INSERT INTO parents
-       (phone, name, line_uid, primary_venue_id, gender, email, ragic_record_id,
-        identity, home_phone, home_address, line_id, last_synced_at)
-     VALUES ($1, $2, NULLIF($3, ''), $4, NULLIF($5, ''), NULLIF($6, ''), NULLIF($7, ''),
-             NULLIF($8, ''), NULLIF($9, ''), NULLIF($10, ''), NULLIF($11, ''), NOW())
-     ON CONFLICT (ragic_record_id) WHERE ragic_record_id IS NOT NULL DO UPDATE SET
-       -- Ragic 為權威來源：記錄本身換號要跟著更新，這正是本次要根治的識別鍵 bug
-       -- （舊版 ON CONFLICT phone 遇到 Ragic 改號會孤立舊列、另插一列）。
-       phone = EXCLUDED.phone,
-       name = CASE WHEN $14::boolean AND parents.last_synced_at IS NULL THEN parents.name ELSE EXCLUDED.name END,
-       line_uid = CASE
-         WHEN $13::boolean THEN NULLIF($3, '')
-         ELSE COALESCE(parents.line_uid, EXCLUDED.line_uid)
-       END,
-       primary_venue_id = CASE WHEN $14::boolean AND parents.last_synced_at IS NULL THEN parents.primary_venue_id
-         ELSE COALESCE(EXCLUDED.primary_venue_id, parents.primary_venue_id) END,
-       gender = CASE WHEN $14::boolean AND parents.last_synced_at IS NULL THEN parents.gender
-         ELSE COALESCE(NULLIF(EXCLUDED.gender,''), parents.gender) END,
-       email  = CASE WHEN $14::boolean AND parents.last_synced_at IS NULL THEN parents.email
-         ELSE COALESCE(NULLIF(EXCLUDED.email,''),  parents.email) END,
-       identity = CASE WHEN $14::boolean AND parents.last_synced_at IS NULL THEN parents.identity
-         ELSE COALESCE(NULLIF(EXCLUDED.identity,''), parents.identity) END,
-       home_phone = CASE WHEN $14::boolean AND parents.last_synced_at IS NULL THEN parents.home_phone
-         ELSE COALESCE(NULLIF(EXCLUDED.home_phone,''), parents.home_phone) END,
-       home_address = CASE WHEN $14::boolean AND parents.last_synced_at IS NULL THEN parents.home_address
-         ELSE COALESCE(NULLIF(EXCLUDED.home_address,''), parents.home_address) END,
-       line_id = CASE WHEN $14::boolean AND parents.last_synced_at IS NULL THEN parents.line_id
-         ELSE COALESCE(NULLIF(EXCLUDED.line_id,''), parents.line_id) END,
-       ragic_record_id = COALESCE(NULLIF(EXCLUDED.ragic_record_id, ''), parents.ragic_record_id),
-       -- 只刷新不復活：唯有 reactivate=true 才允許覆蓋先前的軟刪除。
-       is_active = CASE WHEN $12::boolean THEN TRUE ELSE parents.is_active END,
-       last_synced_at = CASE WHEN $14::boolean AND parents.last_synced_at IS NULL THEN parents.last_synced_at ELSE NOW() END,
-       updated_at = NOW()
-     RETURNING id, name, phone, line_uid, primary_venue_id, gender, email, identity,
-               home_phone, home_address, line_id, is_active`;
-  // Fallback：理論上不會發生於 Ragic 拉回（一定帶 ragic_record_id），保留給未來手建情境。
-  const UPSERT_BY_PHONE_SQL =
-    `INSERT INTO parents
-       (phone, name, line_uid, primary_venue_id, gender, email, ragic_record_id,
-        identity, home_phone, home_address, line_id, last_synced_at)
-     VALUES ($1, $2, NULLIF($3, ''), $4, NULLIF($5, ''), NULLIF($6, ''), NULLIF($7, ''),
-             NULLIF($8, ''), NULLIF($9, ''), NULLIF($10, ''), NULLIF($11, ''), NOW())
-     ON CONFLICT (phone) DO UPDATE SET
-       name = CASE WHEN $14::boolean AND parents.last_synced_at IS NULL THEN parents.name ELSE EXCLUDED.name END,
-       line_uid = CASE
-         WHEN $13::boolean THEN NULLIF($3, '')
-         ELSE COALESCE(parents.line_uid, EXCLUDED.line_uid)
-       END,
-       primary_venue_id = CASE WHEN $14::boolean AND parents.last_synced_at IS NULL THEN parents.primary_venue_id
-         ELSE COALESCE(EXCLUDED.primary_venue_id, parents.primary_venue_id) END,
-       gender = CASE WHEN $14::boolean AND parents.last_synced_at IS NULL THEN parents.gender
-         ELSE COALESCE(NULLIF(EXCLUDED.gender,''), parents.gender) END,
-       email  = CASE WHEN $14::boolean AND parents.last_synced_at IS NULL THEN parents.email
-         ELSE COALESCE(NULLIF(EXCLUDED.email,''),  parents.email) END,
-       identity = CASE WHEN $14::boolean AND parents.last_synced_at IS NULL THEN parents.identity
-         ELSE COALESCE(NULLIF(EXCLUDED.identity,''), parents.identity) END,
-       home_phone = CASE WHEN $14::boolean AND parents.last_synced_at IS NULL THEN parents.home_phone
-         ELSE COALESCE(NULLIF(EXCLUDED.home_phone,''), parents.home_phone) END,
-       home_address = CASE WHEN $14::boolean AND parents.last_synced_at IS NULL THEN parents.home_address
-         ELSE COALESCE(NULLIF(EXCLUDED.home_address,''), parents.home_address) END,
-       line_id = CASE WHEN $14::boolean AND parents.last_synced_at IS NULL THEN parents.line_id
-         ELSE COALESCE(NULLIF(EXCLUDED.line_id,''), parents.line_id) END,
-       ragic_record_id = COALESCE(NULLIF(EXCLUDED.ragic_record_id, ''), parents.ragic_record_id),
-       is_active = CASE WHEN $12::boolean THEN TRUE ELSE parents.is_active END,
-       last_synced_at = CASE WHEN $14::boolean AND parents.last_synced_at IS NULL THEN parents.last_synced_at ELSE NOW() END,
-       updated_at = NOW()
-     RETURNING id, name, phone, line_uid, primary_venue_id, gender, email, identity,
-               home_phone, home_address, line_id, is_active`;
-  const UPSERT_SQL = ragicRecordId ? UPSERT_BY_RAGIC_ID_SQL : UPSERT_BY_PHONE_SQL;
-  const buildParams = (uidForWrite) => [phone, name, uidForWrite, venueId,
-     ragic.normalizeGender(mapped.gender), mapped.email || '', ragicRecordId,
-     mapped.identity || '', mapped.home_phone || '', mapped.home_address || '', mapped.line_id || '',
-     reactivate, overwriteLineUid, preservePending];
-
-  // 唯一鍵最後防線：前面的 holders 檢查只能擋「已 commit」的持有者；與並發請求
-  // （另一個登入/綁定在本交易途中把同一 UID 寫進別的 phone）對撞時，
-  // parents_line_uid_key 23505 仍可能發生，會讓整筆同步失敗並在後台顯示
-  // 「duplicate key value violates unique constraint "parents_line_uid_key"」。
-  // 以 SAVEPOINT 隔離：撞鍵時放棄寫 UID 重試一次（其餘欄位照常同步，UID 讓給
-  // 現任持有者，下一輪同步/登入會再收斂），同步不再因此炸掉。
-  const up = await _queryWithLineUidRetry(client, UPSERT_SQL, buildParams, lineUidForWrite, phone);
-  return up.rows[0];
+  if (!parent) {
+    try {
+      parent = (await client.query(
+        `INSERT INTO parents
+           (phone,name,line_uid,primary_venue_id,gender,email,ragic_record_id,identity,
+            home_phone,home_address,line_id,is_active,last_synced_at)
+         VALUES ($1,$2,NULLIF($3,''),$4,NULLIF($5,''),NULLIF($6,''),NULLIF($7,''),
+                 NULLIF($8,''),NULLIF($9,''),NULLIF($10,''),NULLIF($11,''),TRUE,NOW())
+         RETURNING *`,
+        [phone, name, lineUidForWrite, venueId, ragic.normalizeGender(mapped.gender), mapped.email || '',
+         ragicRecordId, mapped.identity || '', mapped.home_phone || '', mapped.home_address || '', mapped.line_id || '']
+      )).rows[0];
+    } catch (err) {
+      if (err.code === '23505' && err.constraint === 'uq_parents_ragic_record_id') {
+        throw new BindConflictError('DATA_RECONCILIATION_PENDING', 'Ragic source id 已存在但缺少安全 source link');
+      }
+      throw err;
+    }
+  } else {
+    parent = (await client.query(
+      `UPDATE parents SET
+         name=CASE WHEN $13::boolean AND last_synced_at IS NULL THEN name ELSE COALESCE(NULLIF($2,''),name) END,
+         line_uid=CASE WHEN $12::boolean THEN NULLIF($3,'') ELSE COALESCE(line_uid,NULLIF($3,'')) END,
+         primary_venue_id=CASE WHEN $13::boolean AND last_synced_at IS NULL THEN primary_venue_id ELSE COALESCE($4,primary_venue_id) END,
+         gender=CASE WHEN $13::boolean AND last_synced_at IS NULL THEN gender ELSE COALESCE(NULLIF($5,''),gender) END,
+         email=CASE WHEN $13::boolean AND last_synced_at IS NULL THEN email ELSE COALESCE(NULLIF($6,''),email) END,
+         identity=CASE WHEN $13::boolean AND last_synced_at IS NULL THEN identity ELSE COALESCE(NULLIF($7,''),identity) END,
+         home_phone=CASE WHEN $13::boolean AND last_synced_at IS NULL THEN home_phone ELSE COALESCE(NULLIF($8,''),home_phone) END,
+         home_address=CASE WHEN $13::boolean AND last_synced_at IS NULL THEN home_address ELSE COALESCE(NULLIF($9,''),home_address) END,
+         line_id=CASE WHEN $13::boolean AND last_synced_at IS NULL THEN line_id ELSE COALESCE(NULLIF($10,''),line_id) END,
+         ragic_record_id=COALESCE(ragic_record_id,NULLIF($11,'')),
+         is_active=CASE WHEN $14::boolean THEN TRUE ELSE is_active END,
+         last_synced_at=CASE WHEN $13::boolean AND last_synced_at IS NULL THEN last_synced_at ELSE NOW() END,
+         updated_at=NOW()
+       WHERE id=$1 RETURNING *`,
+      [parent.id, name, lineUidForWrite, venueId, ragic.normalizeGender(mapped.gender), mapped.email || '',
+       mapped.identity || '', mapped.home_phone || '', mapped.home_address || '', mapped.line_id || '',
+       ragicRecordId, overwriteLineUid, preservePending, reactivate]
+    )).rows[0];
+  }
+  return parent;
 }
 
 async function _queryWithLineUidRetry(client, sql, buildParams, lineUidForWrite, phone) {
@@ -349,64 +335,17 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
     const idNum  = s.id_number ? String(s.id_number).toUpperCase().trim() : null;
     const ragicId = s.ragic_record_id ? String(s.ragic_record_id).trim() : null;
     let matched = null;
-    // matchTier：1=id_number、2=ragic_record_id（可信，就地更新）；
-    // 3=name+birth（P1.1 決策7：僅靠姓名+生日猜測是同一人，不足採信，不再靜默覆蓋
-    // 既有列——同名同姓時會誤判成同一位學員、覆蓋錯的人的資料；改建新列並記錄待複核）。
-    let matchTier = null;
-
-    if (existingStudents) {
-      if (idNum) {
-        matched = existingStudents.find((r) => r.id_number && String(r.id_number).toUpperCase() === idNum) || null;
-        if (matched) matchTier = 1;
-      }
-      if (!matched && ragicId) {
-        matched = existingStudents.find((r) => r.ragic_record_id && String(r.ragic_record_id) === ragicId) || null;
-        if (matched) matchTier = 2;
-      }
-      if (!matched) {
-        // r.birth_date 來自 pg 對 DATE 欄位的預設解析（Date 物件或可解析字串皆有可能），
-        // 一律經 new Date().toISOString() 正規化再比對，不可直接 String() 轉換
-        // （String(dateObj) 會是 "Wed Jul 01 2026..." 這種人類可讀格式，永遠比不出結果）。
-        const sBirth = s.birth_date ? new Date(s.birth_date).toISOString().slice(0, 10) : null;
-        matched = existingStudents.find((r) => {
-          if (r.name !== s.name) return false;
-          // 比照原 SQL 的 ($3::date IS NULL OR birth_date = $3::date)：
-          // 沒帶入生日 → 純比姓名；有帶入但本地是 NULL → 不算相等，不視為同一人。
-          if (!sBirth) return true;
-          if (!r.birth_date) return false;
-          return new Date(r.birth_date).toISOString().slice(0, 10) === sBirth;
-        }) || null;
-        if (matched) matchTier = 3;
-      }
-    } else {
-      if (idNum) {
-        const r = await client.query(
-          `SELECT id FROM students WHERE parent_id = $1 AND id_number = $2 LIMIT 1`,
-          [parentId, idNum]
-        );
-        matched = r.rows[0] || null;
-        if (matched) matchTier = 1;
-      }
-      if (!matched && ragicId) {
-        const r = await client.query(
-          `SELECT id FROM students WHERE parent_id = $1 AND ragic_record_id = $2 LIMIT 1`,
-          [parentId, ragicId]
-        );
-        matched = r.rows[0] || null;
-        if (matched) matchTier = 2;
-      }
-      if (!matched) {
-        const r = await client.query(
-          `SELECT id FROM students
-            WHERE parent_id = $1 AND name = $2
-              AND ($3::date IS NULL OR birth_date = $3::date)
-            LIMIT 1`,
-          [parentId, s.name, s.birth_date || null]
-        );
-        matched = r.rows[0] || null;
-        if (matched) matchTier = 3;
-      }
+    const incomingName = normalizeStudentName(s.name);
+    const familyRows = existingStudents || (await client.query(
+      `SELECT id,name,birth_date,id_number,ragic_record_id
+         FROM students WHERE parent_id=$1 ORDER BY created_at,id FOR UPDATE`,
+      [parentId]
+    )).rows;
+    const exactNameMatches = familyRows.filter((row) => normalizeStudentName(row.name) === incomingName);
+    if (exactNameMatches.length > 1) {
+      throw new BindConflictError('DATA_RECONCILIATION_PENDING', '同一家庭內學員姓名精準命中多筆');
     }
+    matched = exactNameMatches[0] || null;
 
     // 單一學員撞唯一鍵（並發競態等）不應讓整位家長同步失敗：SAVEPOINT 隔離，
     // 失敗記 log 跳下一位（該位學員下一輪同步會再收斂）。
@@ -431,7 +370,7 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
           console.warn('[parent-sync] 學員 ragic_record_id=%s 原掛在其他家長名下，已解除舊佔用（移轉到 parent=%s）', ragicId, parentId);
         }
       }
-      if (matched && matchTier !== 3) {
+      if (matched) {
         await client.query(
           `UPDATE students SET
              -- 背景批次可保留待同步本地編輯；嚴格刷新則以 Ragic 回讀值覆蓋，消除鏡射漂移。
@@ -450,9 +389,6 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
            idNum || '', s.blood_type || '', s.student_code || '', ragicId || '', preservePending]
         );
       } else {
-        // matchTier===3（僅姓名+生日對上，無 id_number/ragic_record_id 佐證）不足採信：
-        // 不覆蓋既有列（避免同名學員被誤判成同一人、資料互相污染），改建新列並寫一筆
-        // 待複核紀錄，由人工判斷是否為同一人（合併）或本來就是不同人（保留兩筆）。
         const inserted = await client.query(
           `INSERT INTO students
              (parent_id, name, birth_date, gender, id_number, blood_type, student_code, ragic_record_id, is_active, last_synced_at)
@@ -461,19 +397,13 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
           [parentId, s.name, s.birth_date || null, ragic.normalizeGender(s.gender),
            idNum || '', s.blood_type || '', s.student_code || '', ragicId || '']
         );
-        if (matchTier === 3) {
-          await client.query(
-            `INSERT INTO ragic_student_match_review
-               (parent_id, candidate_student_id, new_student_id, incoming_name, incoming_birth_date,
-                incoming_gender, incoming_ragic_record_id, incoming_id_number, incoming_blood_type, incoming_student_code)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-            [parentId, matched.id, inserted.rows[0].id, s.name, s.birth_date || null,
-             ragic.normalizeGender(s.gender), ragicId || null, idNum || null, s.blood_type || null, s.student_code || null]
-          );
-          console.warn('[parent-sync] 學員第三層(name+birth)命中但不足採信，改建新列並記錄待複核 (parent=%s, name=%s, candidate=%s, new=%s)',
-            parentId, maskName(s.name), matched.id, inserted.rows[0].id);
-          reviewCandidateIds.push(matched.id);
-        }
+        if (existingStudents) existingStudents.push({
+          id: inserted.rows[0].id,
+          name: s.name,
+          birth_date: s.birth_date || null,
+          id_number: idNum,
+          ragic_record_id: ragicId,
+        });
       }
       if (spActive) await client.query('RELEASE SAVEPOINT sp_upsert_student');
     } catch (err) {
@@ -488,7 +418,7 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
     }
   }
 
-  if (authoritative) {
+  if (authoritative && STABILITY_FLAGS.DESTRUCTIVE_RECONCILE_ENABLED) {
     const presentIdNums = [...new Set(
       (students || [])
         .map((s) => (s && s.id_number ? String(s.id_number).toUpperCase().trim() : null))
@@ -536,19 +466,11 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
  * @returns {Promise<boolean>} true = 家長已刪除；false = 有 FK 暫留
  */
 async function hardDeleteParentIfSafe(db, parentId) {
-  const kids = await db.query(`SELECT id FROM students WHERE parent_id = $1`, [parentId]);
-  for (const row of kids.rows) {
-    await hardDeleteStudentIfSafe(db, row.id);
-  }
-  if (await _hasAnyReference(db, parentId, PARENT_REFERENCE_SPECS)) return false;
-  const r = await db.query(
-    `DELETE FROM parents
-       WHERE id = $1
-         AND NOT EXISTS (SELECT 1 FROM students WHERE parent_id = $1)
-       RETURNING id`,
-    [parentId]
-  );
-  return r.rowCount > 0;
+  // Compatibility no-op: identity reconciliation is permanently
+  // non-destructive and no feature flag may reactivate hard deletion.
+  void db;
+  void parentId;
+  return false;
 }
 
 /**
@@ -569,21 +491,14 @@ async function _syncWithLock({ mapped, students, lineUid, reactivate = true, all
     const dupLine = await client.query(
       `SELECT id, phone, is_active FROM parents WHERE line_uid = $1 LIMIT 1`, [lineUid]);
     if (dupLine.rowCount && dupLine.rows[0].phone !== phone) {
-      const dup = dupLine.rows[0];
-      if (dup.is_active && !allowRebind) {
-        // 活躍記錄持有這個 UID → 真正的衝突，阻擋並提示
-        throw new BindConflictError('LINE_ALREADY_BOUND_TO_OTHER_PHONE',
-          '此 LINE 帳號已綁定其他手機，請改用原手機登入或聯絡客服');
-      }
-      // 停用 ghost 記錄仍持有 UID，或本次已經由 Ragic 驗證可換綁 → 清除它，讓 upsert 可以正常寫入
-      await client.query(
-        `UPDATE parents SET line_uid = NULL, updated_at = NOW() WHERE id = $1`, [dup.id]);
+      throw new BindConflictError('ACCOUNT_RECOVERY_REQUIRED',
+        '此 LINE UID 已由另一個 canonical parent 持有，需完成帳號恢復驗證');
     }
     const dupPhone = await client.query(
       `SELECT line_uid FROM parents WHERE phone = $1 AND is_active = TRUE LIMIT 1`, [phone]);
-    if (!allowRebind && dupPhone.rowCount && dupPhone.rows[0].line_uid && dupPhone.rows[0].line_uid !== lineUid) {
-      throw new BindConflictError('PHONE_ALREADY_BOUND_TO_OTHER_LINE',
-        '此手機已綁定其他 LINE 帳號，請聯絡客服處理');
+    if (dupPhone.rowCount && dupPhone.rows[0].line_uid && dupPhone.rows[0].line_uid !== lineUid) {
+      throw new BindConflictError('ACCOUNT_RECOVERY_REQUIRED',
+        '此手機已綁定其他 LINE 帳號，需完成帳號恢復驗證');
     }
 
     const local = await upsertLocalParent(client, mapped, lineUid, {
@@ -617,6 +532,90 @@ async function syncFromRagicRecord(z01Row, lineUid, { reactivate = true } = {}) 
   const mapped = ragic.mapZ01Parent(z01Row);
   const students = ragic.parseZ01Students(z01Row);
   return _syncWithLock({ mapped, students, lineUid, reactivate });
+}
+
+async function linkFromRagicRecordLocalFirst(z01Row, lineUid, { reactivate = true } = {}) {
+  const trueUid = getTrueRagicLineUid(z01Row);
+  if (!trueUid || trueUid !== String(lineUid || '').trim()) {
+    throw new BindConflictError(trueUid ? 'ACCOUNT_RECOVERY_REQUIRED' : 'RAGIC_UID_WRITE_PENDING',
+      trueUid ? 'Ragic source 已綁定另一個 LINE UID' : 'Ragic source 尚未綁定 LINE UID');
+  }
+  const mapped = { ...ragic.mapZ01Parent(z01Row), line_uid: trueUid };
+  const sourceRecordId = String(mapped.ragic_record_id || '').trim();
+  if (!sourceRecordId) throw new BindConflictError('LOCAL_LINK_FAILED', 'Ragic source record id 缺失', 500);
+  const students = ragic.parseZ01Students(z01Row);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const phone = normalizePhone(mapped.phone);
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`canonical-parent:${phone}`]);
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`ragic-z01:${sourceRecordId}`]);
+    const parent = await upsertLocalParent(client, { ...mapped, phone }, trueUid, {
+      reactivate,
+      overwriteLineUid: false,
+      preservePending: true,
+    });
+    await upsertLocalStudents(client, parent.id, students, { authoritative: false, preservePending: true });
+    await client.query(
+      `INSERT INTO source_record_links
+         (source_system,source_table,source_record_id,canonical_parent_id,link_method)
+       VALUES ('RAGIC','Z01',$1,$2,'TRUE_LINE_UID_EXACT')
+       ON CONFLICT (source_system,source_table,source_record_id) DO UPDATE SET
+         canonical_parent_id=EXCLUDED.canonical_parent_id,
+         link_method=EXCLUDED.link_method,updated_at=NOW()`,
+      [sourceRecordId, parent.id]
+    );
+    await client.query('COMMIT');
+    return parent;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+async function linkSourceAliases({ parentId, sourceRecordIds = [], studentName = '' } = {}) {
+  const ids = [...new Set(sourceRecordIds.map((value) => String(value || '').trim()).filter(Boolean))];
+  if (!parentId || !ids.length) return { linked: 0 };
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const parent = (await client.query(`SELECT * FROM parents WHERE id=$1 FOR UPDATE`, [parentId])).rows[0];
+    if (!parent) throw new BindConflictError('LOCAL_LINK_FAILED', 'canonical parent 不存在', 500);
+    const normalizedName = normalizeStudentName(studentName);
+    const students = normalizedName
+      ? (await client.query(`SELECT * FROM students WHERE parent_id=$1 FOR UPDATE`, [parentId])).rows
+        .filter((row) => normalizeStudentName(row.name) === normalizedName)
+      : [];
+    if (students.length > 1) throw new BindConflictError('DATA_RECONCILIATION_PENDING', 'canonical student 命中多筆');
+    for (const sourceRecordId of ids) {
+      const existing = (await client.query(
+        `SELECT * FROM source_record_links WHERE source_system='RAGIC' AND source_table='Z01'
+          AND source_record_id=$1 FOR UPDATE`, [sourceRecordId]
+      )).rows[0];
+      if (existing && String(existing.canonical_parent_id) !== String(parentId)) {
+        throw new BindConflictError('DATA_RECONCILIATION_PENDING', 'source alias 已指向另一個 parent');
+      }
+      await client.query(
+        `INSERT INTO source_record_links
+           (source_system,source_table,source_record_id,canonical_parent_id,canonical_student_id,link_method)
+         VALUES ('RAGIC','Z01',$1,$2,$3,'MULTIPLE_SOURCE_ALIAS')
+         ON CONFLICT (source_system,source_table,source_record_id) DO UPDATE SET
+           canonical_parent_id=EXCLUDED.canonical_parent_id,
+           canonical_student_id=COALESCE(source_record_links.canonical_student_id,EXCLUDED.canonical_student_id),
+           link_method=EXCLUDED.link_method,updated_at=NOW()`,
+        [sourceRecordId, parentId, students[0]?.id || null]
+      );
+    }
+    await client.query('COMMIT');
+    return { linked: ids.length };
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 /**
@@ -684,8 +683,10 @@ function auditClaim({ phone, lineUid, result, reason }) {
   const phoneHash = phone
     ? crypto.createHash('sha256').update(String(phone)).digest('hex').slice(0, 12)
     : null;
-  const uidTail = lineUid ? `***${String(lineUid).slice(-4)}` : null;
-  console.log('[claim-audit]', JSON.stringify({ phoneHash, uidTail, result, reason: reason || null }));
+  const uidHash = lineUid
+    ? crypto.createHash('sha256').update(String(lineUid)).digest('hex').slice(0, 12)
+    : null;
+  console.log('[claim-audit]', JSON.stringify({ phoneHash, uidHash, result, reason: reason || null }));
 }
 
 /**
@@ -727,6 +728,7 @@ async function loadBoundPhones(client) {
 
 module.exports = {
   BindConflictError,
+  findActiveParentByLineUid,
   upsertLocalParent,
   upsertLocalStudents,
   loadVenuesMap,
@@ -735,6 +737,8 @@ module.exports = {
   hardDeleteParentIfSafe,
   _syncWithLock,
   syncFromRagicRecord,
+  linkFromRagicRecordLocalFirst,
+  linkSourceAliases,
   matchStudentClaim,
   classifyStudentClaim,
   classifyStudentPhoneClaim,

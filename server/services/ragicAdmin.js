@@ -24,8 +24,15 @@ const parentSync = require('./parentSync');
 const line = require('./line');
 const { maskPhone } = require('../utils/piiMask');
 const { cleanVenueList } = require('./coachVenueScope');
+const { normalizePhone, normalizeStudentName } = require('./identityNormalizer');
 // Ragic 表單 / 欄位對應唯一來源（凍結點）：H01 LINE UID 欄位、場館欄位、角色關鍵字
-const { H01, H23, FORMS } = require('../config/ragicSchema');
+const {
+  H01,
+  H23,
+  FORMS,
+  getTrueRagicLineUid,
+  STABILITY_FLAGS,
+} = require('../config/ragicSchema');
 // DB 租約層（launch-20260707 B 段既有基礎建設，先前未被任何呼叫端接上）：
 // 用同一把鎖名 'ragic_sync' 讓所有實際會打 Ragic 的 job（staff/venues/backup/
 // pull/parents/students）共用單一租約，確保「同一時間對 Ragic 帳號只有一個
@@ -2289,42 +2296,70 @@ function _pickZ01Raw(z01Row, keys) {
   return '';
 }
 
+function _trueZ01LineUid(z01Row) {
+  return getTrueRagicLineUid(z01Row);
+}
+
+function _sourceUpdatedTime(z01Row) {
+  const raw = _pickZ01Raw(z01Row, ['109', '最後更新日期', '_update_date']);
+  if (!raw) return { raw: '', iso: null };
+  const m = raw.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/);
+  if (!m) return { raw, iso: null };
+  const iso = `${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}` +
+    `T${String(m[4] || 0).padStart(2, '0')}:${String(m[5] || 0).padStart(2, '0')}:${String(m[6] || 0).padStart(2, '0')}+08:00`;
+  return Number.isNaN(new Date(iso).getTime()) ? { raw, iso: null } : { raw, iso };
+}
+
+function _safeDateForPreview(value) {
+  const raw = String(value || '').trim();
+  const match = raw.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/);
+  if (!match) return null;
+  const iso = `${match[1]}-${String(match[2]).padStart(2, '0')}-${String(match[3]).padStart(2, '0')}`;
+  return Number.isNaN(new Date(`${iso}T00:00:00+08:00`).getTime()) ? null : iso;
+}
+
 // 把一筆壞姓名（或已是真人但姓名仍壞）的 Z01 記錄，連同底下學員子表格，整份原始值
 // upsert 進 Z03 人工整理表。刻意不經 mapZ01Parent/normalizeGender 之外的任何轉換
 // （mapped.* 本身只有 trim + fallback key，沒有語意轉換，可以直接當「原始值」使用；
 // 學員子表格改用 parseZ01StudentsRaw，避開 parseZ01Students 的 normalizeDate/toUpperCase）。
 // status 只在非 'dismissed' 時重置為 'pending'：一旦人工判定誤判並忽略，往後排程刷新
 // 不會又把它翻回待處理，除非真的重新指定。
-async function _upsertZ03Record(client, ragicRecordId, mapped, z01Row) {
-  if (!ragicRecordId) return;
-  // 強制刪除 tombstone：管理員在後台對這筆 z01_ragic_record_id 做過「強制刪除」
-  // （見 routes/admin/ragicZ03.js DELETE /:id），之後任何一輪同步都必須整筆跳過，
-  // 不再寫入/更新 ragic_z03_records，否則下次同步就會把已刪除的記錄復活。
-  // 來源 Ragic Z01 記錄本身完全不動，這裡只影響本 app 的 Z03 衍生佇列。
+async function _upsertZ03Record(client, ragicRecordId, mapped, z01Row, options = {}) {
+  if (!ragicRecordId) {
+    const err = new Error('Z01 source record 缺少 immutable record id');
+    err.code = 'RAGIC_SOURCE_RECORD_ID_MISSING';
+    throw err;
+  }
+  if (_trueZ01LineUid(z01Row)) {
+    const err = new Error('真正 LINE UID 已存在的 Z01 record 不得進入 Z03');
+    err.code = 'Z03_TRUE_LINE_UID_PRESENT';
+    throw err;
+  }
+
+  // Historical tombstones previously made fetched source records disappear.
+  // Keep the audit row, but surface it as manual_review instead of silently
+  // skipping or deleting the source-derived Z03 record.
   const tomb = await client.query(
-    `SELECT 1 FROM ragic_z03_deleted_tombstones WHERE z01_ragic_record_id = $1 LIMIT 1`,
+    `SELECT reason FROM ragic_z03_deleted_tombstones WHERE z01_ragic_record_id = $1 LIMIT 1`,
     [ragicRecordId]
   );
-  if (tomb.rowCount) return;
   const lineChatUrlRaw = _pickZ01Raw(z01Row, ['1002390', 'line對話網址']);
   const studentCountRaw = _pickZ01Raw(z01Row, ['1001138', '名下有幾位學生']);
-  // Ragic 端同電話換發新 _ragicId 時（舊記錄被取代/重建），INSERT ... ON CONFLICT
-  // 是用 z01_ragic_record_id 當鍵，換了 ID 會新插一筆、留舊列變孤兒（永遠停在被取代
-  // 當下的舊資料，抓不到新記錄的學員子表/最新 Email）。先用電話清掉同電話、不同
-  // ragicRecordId 的 pending 孤兒列；'dismissed'/'resolved' 是人工已處理過的歷史，不動。
-  if (mapped.phone) {
-    await client.query(
-      `DELETE FROM ragic_z03_records
-        WHERE phone = $1 AND z01_ragic_record_id <> $2 AND status = 'pending'`,
-      [mapped.phone, ragicRecordId]
-    );
-  }
+  const phoneCanonical = normalizePhone(mapped.phone);
+  const sourceUpdated = _sourceUpdatedTime(z01Row);
+  const initialStatus = tomb.rowCount || !phoneCanonical ? 'manual_review' : 'pending';
+  const reasonCode = options.reasonCode || (tomb.rowCount
+    ? 'LEGACY_TOMBSTONE_RETAINED'
+    : (!phoneCanonical ? 'MISSING_CANONICAL_PHONE' : 'TRUE_LINE_UID_EMPTY'));
   const r = await client.query(
     `INSERT INTO ragic_z03_records
        (z01_ragic_record_id, raw_name, venue_raw, phone, identity_raw, gender_raw,
         email_raw, home_phone_raw, home_address_raw, line_id_raw, line_chat_url_raw,
-        line_uid_raw, student_count_raw, status, fetched_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'pending',NOW())
+        line_uid_raw, student_count_raw, status, fetched_at, phone_canonical,
+        source_updated_at, source_updated_raw, classification, reason_code,
+        claim_state, last_processed_at, correlation_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW(),$15,$16,$17,
+             $18,$19,'UNRESOLVED',NOW(),COALESCE($20::uuid, gen_random_uuid()))
      ON CONFLICT (z01_ragic_record_id) DO UPDATE SET
        raw_name = EXCLUDED.raw_name, venue_raw = EXCLUDED.venue_raw, phone = EXCLUDED.phone,
        identity_raw = EXCLUDED.identity_raw, gender_raw = EXCLUDED.gender_raw,
@@ -2332,27 +2367,92 @@ async function _upsertZ03Record(client, ragicRecordId, mapped, z01Row) {
        home_address_raw = EXCLUDED.home_address_raw, line_id_raw = EXCLUDED.line_id_raw,
        line_chat_url_raw = EXCLUDED.line_chat_url_raw, line_uid_raw = EXCLUDED.line_uid_raw,
        student_count_raw = EXCLUDED.student_count_raw,
-       status = CASE WHEN ragic_z03_records.status IN ('dismissed', 'resolved') THEN ragic_z03_records.status ELSE 'pending' END,
-       fixed_name  = CASE WHEN ragic_z03_records.status IN ('dismissed', 'resolved') THEN ragic_z03_records.fixed_name  ELSE NULL END,
-       resolved_at = CASE WHEN ragic_z03_records.status IN ('dismissed', 'resolved') THEN ragic_z03_records.resolved_at ELSE NULL END,
-       resolved_by = CASE WHEN ragic_z03_records.status IN ('dismissed', 'resolved') THEN ragic_z03_records.resolved_by ELSE NULL END,
-       fetched_at = NOW()
+       phone_canonical = EXCLUDED.phone_canonical,
+       source_updated_at = EXCLUDED.source_updated_at,
+       source_updated_raw = EXCLUDED.source_updated_raw,
+       status = CASE
+         WHEN ragic_z03_records.status = 'resolved' THEN 'resolved'
+         WHEN ragic_z03_records.status IN ('manual_review', 'dismissed') THEN 'manual_review'
+         ELSE EXCLUDED.status
+       END,
+       classification = CASE
+         WHEN ragic_z03_records.status = 'resolved' THEN 'RESOLVED'
+         WHEN ragic_z03_records.status IN ('manual_review', 'dismissed') THEN 'MANUAL_REVIEW'
+         ELSE EXCLUDED.classification
+       END,
+       reason_code = CASE
+         WHEN ragic_z03_records.status = 'resolved' THEN ragic_z03_records.reason_code
+         WHEN ragic_z03_records.status IN ('manual_review', 'dismissed')
+           THEN COALESCE(ragic_z03_records.reason_code, EXCLUDED.reason_code)
+         ELSE EXCLUDED.reason_code
+       END,
+       fetched_at = NOW(), last_processed_at = NOW(),
+       correlation_id = COALESCE(ragic_z03_records.correlation_id, EXCLUDED.correlation_id)
      RETURNING id`,
     [ragicRecordId, mapped.name || '', mapped.primary_venue_id || '', mapped.phone || '',
      mapped.identity || '', mapped.gender || '', mapped.email || '', mapped.home_phone || '',
      mapped.home_address || '', mapped.line_id || '', lineChatUrlRaw,
-     mapped.line_uid || '', studentCountRaw]
+     '', studentCountRaw, initialStatus, phoneCanonical, sourceUpdated.iso,
+     sourceUpdated.raw, initialStatus === 'manual_review' ? 'MANUAL_REVIEW' : 'PENDING_Z03',
+     reasonCode, options.correlationId || null]
   );
   const z03Id = r.rows[0].id;
-  await client.query(`DELETE FROM ragic_z03_students WHERE z03_record_id = $1`, [z03Id]);
-  for (const s of ragic.parseZ01StudentsRaw(z01Row)) {
+  const sourceStudents = ragic.parseZ01StudentsRaw(z01Row);
+  await client.query(
+    `UPDATE ragic_z03_students
+        SET present_in_latest_payload = FALSE
+      WHERE z03_record_id = $1`,
+    [z03Id]
+  );
+  const normalizedCounts = new Map();
+  for (const s of sourceStudents) {
+    const key = normalizeStudentName(s.name_raw);
+    if (key) normalizedCounts.set(key, (normalizedCounts.get(key) || 0) + 1);
+  }
+  for (let rowIndex = 0; rowIndex < sourceStudents.length; rowIndex++) {
+    const s = sourceStudents[rowIndex];
+    const normalizedName = normalizeStudentName(s.name_raw);
+    const anyContent = [s.name_raw, s.birth_date_raw, s.gender_raw, s.id_number_raw,
+      s.student_code_raw, s.registered_phone_raw].some((value) => String(value || '').trim());
+    let classification = 'VALID';
+    let studentReason = 'STUDENT_ROW_VALID';
+    if (!anyContent) {
+      classification = 'EMPTY_TEMPLATE_ROW';
+      studentReason = 'EMPTY_TEMPLATE_ROW';
+    } else if (!normalizedName) {
+      classification = 'INVALID_ROW';
+      studentReason = 'STUDENT_NAME_MISSING';
+    } else if ((normalizedCounts.get(normalizedName) || 0) > 1) {
+      classification = 'DUPLICATE_CANDIDATE';
+      studentReason = 'DUPLICATE_STUDENT_NAME_IN_SOURCE';
+    } else if (!String(s.birth_date_raw || '').trim()) {
+      classification = 'INVALID_ROW';
+      studentReason = 'STUDENT_BIRTH_DATE_MISSING';
+    } else if (!_sourceUpdatedTime({ 109: s.birth_date_raw }).iso) {
+      classification = 'INVALID_ROW';
+      studentReason = 'STUDENT_BIRTH_DATE_INVALID';
+    }
+    const sourceRowKey = `${String(s.seq_raw || 'row').trim()}:${rowIndex}`;
     await client.query(
       `INSERT INTO ragic_z03_students
          (z03_record_id, seq_raw, student_status_raw, name_raw, birth_date_raw,
-          gender_raw, id_number_raw, blood_type_raw, age_raw, student_code_raw, registered_phone_raw)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+          gender_raw, id_number_raw, blood_type_raw, age_raw, student_code_raw,
+          registered_phone_raw, source_row_key, name_normalized, classification,
+          reason_code, present_in_latest_payload, last_seen_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,TRUE,NOW())
+       ON CONFLICT (z03_record_id, source_row_key) DO UPDATE SET
+         seq_raw=EXCLUDED.seq_raw, student_status_raw=EXCLUDED.student_status_raw,
+         name_raw=EXCLUDED.name_raw, birth_date_raw=EXCLUDED.birth_date_raw,
+         gender_raw=EXCLUDED.gender_raw, id_number_raw=EXCLUDED.id_number_raw,
+         blood_type_raw=EXCLUDED.blood_type_raw, age_raw=EXCLUDED.age_raw,
+         student_code_raw=EXCLUDED.student_code_raw,
+         registered_phone_raw=EXCLUDED.registered_phone_raw,
+         name_normalized=EXCLUDED.name_normalized,
+         classification=EXCLUDED.classification, reason_code=EXCLUDED.reason_code,
+         present_in_latest_payload=TRUE, last_seen_at=NOW()`,
       [z03Id, s.seq_raw, s.student_status_raw, s.name_raw, s.birth_date_raw, s.gender_raw,
-       s.id_number_raw, s.blood_type_raw, s.age_raw, s.student_code_raw, s.registered_phone_raw]
+       s.id_number_raw, s.blood_type_raw, s.age_raw, s.student_code_raw, s.registered_phone_raw,
+       sourceRowKey, normalizedName, classification, studentReason]
     );
   }
 }
@@ -2374,6 +2474,53 @@ async function _resolveZ03IfPending(client, ragicRecordId, currentRawName) {
 // 都不影響對 Ragic 的呼叫時程；也讓 ragic_z01_shadow 成為可獨立查驗的「Ragic 現況鏡像」。
 // Phase 5：incremental=true 時走 ragic.getAllParentsChangedSinceWithFreshness（只抓
 // watermark 之後有變更的列，見該函式與 _shadowPullH01Impl 頂部註解，理由相同）。
+async function _fetchZ01ByFieldId({ incremental = false, watermark = null } = {}) {
+  const pageSize = Number(process.env.RAGIC_PAGE_SIZE) || 200;
+  const maxPages = Number(process.env.RAGIC_MAX_PAGES) || 50;
+  const where = incremental && watermark
+    ? `109,gte,${ragic.formatRagicDateTime(new Date(watermark))}`
+    : undefined;
+  const records = [];
+  let naturalEnd = false;
+  let firstPageIds = [];
+  for (let page = 0; page < maxPages; page++) {
+    const result = await ragic.fetchPage(FORMS.Z01, {
+      limit: pageSize,
+      offset: page * pageSize,
+      where,
+      order: '109,ASC',
+      naming: 'EID',
+    });
+    if (page === 0) firstPageIds = result.rows.map((row) => String(row._ragicId || '')).filter(Boolean);
+    records.push(...result.rows);
+    if (result.count < pageSize) {
+      naturalEnd = true;
+      break;
+    }
+  }
+  if (!naturalEnd) {
+    const err = new Error('naming=EID fetch reached page limit');
+    err.code = 'RAGIC_Z01_EID_TRUNCATED';
+    throw err;
+  }
+  const boundary = await ragic.fetchPage(FORMS.Z01, {
+    limit: pageSize,
+    offset: 0,
+    where,
+    order: '109,ASC',
+    naming: 'EID',
+  });
+  const allIds = new Set(records.map((row) => String(row._ragicId || '')).filter(Boolean));
+  const boundaryMismatch = boundary.rows.some((row) => !allIds.has(String(row._ragicId || '')))
+    || firstPageIds.some((id) => !allIds.has(id));
+  if (boundaryMismatch) {
+    const err = new Error('naming=EID boundary recheck mismatch');
+    err.code = 'RAGIC_Z01_EID_BOUNDARY_MISMATCH';
+    throw err;
+  }
+  return records;
+}
+
 async function _shadowPullZ01Impl({ incremental = false, watermark = null } = {}) {
   if (!ragicEnabled()) return { synced: 0, skipped: true };
   const useIncremental = !!(incremental && watermark);
@@ -2396,31 +2543,64 @@ async function _shadowPullZ01Impl({ incremental = false, watermark = null } = {}
     const gateError = await _checkZ01IntegrityGate(integrity);
     if (gateError) return _withFreshness({ synced: 0, error: gateError }, freshness);
   }
+  try {
+    const eidRecords = await _fetchZ01ByFieldId({ incremental: useIncremental, watermark });
+    const normalIds = new Set(integrity.records.map((row) => String(row?._ragicId || '')).filter(Boolean));
+    const eidIds = new Set(eidRecords.map((row) => String(row?._ragicId || '')).filter(Boolean));
+    const sameIds = normalIds.size === eidIds.size && [...normalIds].every((id) => eidIds.has(id));
+    if (!sameIds) {
+      return _withFreshness({
+        synced: 0,
+        error: `RAGIC_Z01_EID_SOURCE_SET_MISMATCH normal=${normalIds.size} eid=${eidIds.size}`,
+      }, freshness);
+    }
+    integrity.records = eidRecords;
+  } catch (err) {
+    return _withFreshness({ synced: 0, error: `${err.code || 'RAGIC_Z01_EID_FETCH_FAILED'}: ${err.message}` }, freshness);
+  }
 
   const client = await pool.connect();
   let synced = 0;
   try {
     await client.query('BEGIN');
     const presentIds = [];
+    if (!useIncremental) {
+      // Mark first, then mark fetched records present below. A partial/error run
+      // rolls the whole transaction back, so an incomplete page set can never
+      // make an old source look missing.
+      await client.query(`UPDATE ragic_z01_shadow SET present_in_latest_pull = FALSE`);
+    }
     for (const row of integrity.records) {
       if (ragic.isCanaryRecord(row, 'Z01')) continue;
       const ragicRecordId = row && row._ragicId != null ? String(row._ragicId) : null;
-      if (!ragicRecordId) continue;
+      if (!ragicRecordId) {
+        const err = new Error('Ragic Z01 fetch 回傳一筆沒有 _ragicId 的 source record');
+        err.code = 'RAGIC_SOURCE_RECORD_ID_MISSING';
+        throw err;
+      }
       presentIds.push(ragicRecordId);
       await client.query(
-        `INSERT INTO ragic_z01_shadow (ragic_record_id, raw_data, fetched_at)
-         VALUES ($1, $2::jsonb, NOW())
-         ON CONFLICT (ragic_record_id) DO UPDATE SET raw_data = EXCLUDED.raw_data, fetched_at = NOW()`,
+        `INSERT INTO ragic_z01_shadow
+           (ragic_record_id, raw_data, fetched_at, last_seen_at, missing_since, present_in_latest_pull)
+         VALUES ($1, $2::jsonb, NOW(), NOW(), NULL, TRUE)
+         ON CONFLICT (ragic_record_id) DO UPDATE SET
+           raw_data = EXCLUDED.raw_data,
+           fetched_at = NOW(),
+           last_seen_at = NOW(),
+           missing_since = NULL,
+           present_in_latest_pull = TRUE`,
         [ragicRecordId, JSON.stringify(row)]
       );
       synced++;
     }
     if (!useIncremental) {
-      // shadow 只鏡射「現況」，不留歷史孤兒：這次快照已不存在的舊列一併清掉。
-      // 增量拉取只有變更子集，不能拿來當「目前存在」的全集比對，否則會把所有
-      // 「這輪沒變更」的既有列全部誤刪——刪除偵測留給每日仍會跑的全量 reconcile。
+      // Source history is never deleted. Missing is an observable state and is
+      // only assigned after a complete, integrity-checked full pull.
       await client.query(
-        `DELETE FROM ragic_z01_shadow WHERE NOT (ragic_record_id = ANY($1::text[]))`,
+        `UPDATE ragic_z01_shadow
+            SET missing_since = COALESCE(missing_since, NOW())
+          WHERE NOT (ragic_record_id = ANY($1::text[]))
+            AND present_in_latest_pull = FALSE`,
         [presentIds]
       );
     }
@@ -2436,14 +2616,551 @@ async function _shadowPullZ01Impl({ incremental = false, watermark = null } = {}
 }
 
 async function _readShadowZ01(client) {
-  const r = await client.query(`SELECT raw_data FROM ragic_z01_shadow`);
+  const r = await client.query(
+    `SELECT raw_data FROM ragic_z01_shadow WHERE present_in_latest_pull = TRUE`
+  );
   return r.rows.map((row) => row.raw_data).filter((row) => !ragic.isCanaryRecord(row, 'Z01'));
 }
 
-// 既有畢業判斷/quarantine/upsert 邏輯，資料來源改讀 ragic_z01_shadow（由
-// _shadowPullZ01Impl 維護），不再直接呼叫 Ragic API——完整性/schema-drift 把關
-// 已經在 shadow-pull 那一關做過，這裡只管清洗，不再重複呼叫 Ragic。
+function _z01SyncError(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
+function _venueIdFromMap(venuesMap, value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  if (venuesMap.byId.has(raw)) return raw;
+  return venuesMap.byName.get(raw) || null;
+}
+
+async function _recordZ01ImportReview({ ragicRecordId, mapped, code }) {
+  const phoneCanonical = normalizePhone(mapped?.phone);
+  await pool.query(
+    `INSERT INTO identity_claims
+       (purpose, state, phone_canonical, student_name_normalized,
+        source_system, source_table, source_record_id, last_error_code)
+     VALUES ('IMPORT_SOURCE', 'MANUAL_REVIEW', $1, '__import__', 'RAGIC', 'Z01', $2, $3)
+     ON CONFLICT (purpose, source_system, source_table, source_record_id, student_name_normalized)
+     DO UPDATE SET state = 'MANUAL_REVIEW', last_error_code = EXCLUDED.last_error_code,
+                   version = identity_claims.version + 1, updated_at = NOW()`,
+    [phoneCanonical, ragicRecordId, code]
+  );
+}
+
+async function _syncCanonicalZ01Record(client, z01Row, mapped, venuesMap) {
+  const ragicRecordId = String(mapped.ragic_record_id || z01Row?._ragicId || '').trim();
+  const phoneCanonical = normalizePhone(mapped.phone);
+  const lineUid = _trueZ01LineUid(z01Row);
+  if (!ragicRecordId) throw _z01SyncError('RAGIC_SOURCE_RECORD_ID_MISSING', 'Z01 缺少 source record id');
+  if (!lineUid) throw _z01SyncError('Z01_LINE_UID_MISSING', '正式 Z01 同步缺少真正 LINE UID');
+  if (!phoneCanonical) throw _z01SyncError('INVALID_PHONE', '真正 LINE UID 已存在，但手機無法 canonicalize');
+
+  // One lock order for every formal Z01 import: canonical phone first, source
+  // record second. This serializes same-family records without relying on the
+  // mutable Ragic record id as the parent identity key.
+  await client.query(`SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`, [
+    `canonical-parent:${phoneCanonical}`,
+    `ragic-z01:${ragicRecordId}`,
+  ]);
+
+  const linked = (await client.query(
+    `SELECT * FROM source_record_links
+      WHERE source_system = 'RAGIC' AND source_table = 'Z01' AND source_record_id = $1
+      FOR UPDATE`,
+    [ragicRecordId]
+  )).rows[0] || null;
+  const phoneRows = (await client.query(
+    `SELECT * FROM parents
+      WHERE phone = $1 OR regexp_replace(COALESCE(phone,''), '\\D', '', 'g') = $1
+      ORDER BY created_at, id
+      FOR UPDATE`,
+    [phoneCanonical]
+  )).rows;
+  if (phoneRows.length > 1) {
+    throw _z01SyncError('DUPLICATE_PARENT_IDENTITY', 'canonical phone 命中多個 parent');
+  }
+  const uidParent = (await client.query(
+    `SELECT * FROM parents WHERE line_uid = $1 FOR UPDATE`, [lineUid]
+  )).rows[0] || null;
+
+  const candidateIds = new Set([
+    linked?.canonical_parent_id,
+    phoneRows[0]?.id,
+    uidParent?.id,
+  ].filter(Boolean).map(String));
+  if (candidateIds.size > 1) {
+    throw _z01SyncError('MEMBER_MERGE_REQUIRED', 'source link、canonical phone 與 LINE UID 指向不同 parent');
+  }
+  let parent = linked
+    ? (await client.query(`SELECT * FROM parents WHERE id = $1 FOR UPDATE`, [linked.canonical_parent_id])).rows[0]
+    : (uidParent || phoneRows[0] || null);
+
+  if (uidParent && parent && uidParent.id !== parent.id) {
+    throw _z01SyncError('PHONE_BOUND_TO_OTHER_UID', 'LINE UID 已屬於另一個 canonical parent');
+  }
+  if (uidParent && !parent) {
+    if (normalizePhone(uidParent.phone) !== phoneCanonical) {
+      throw _z01SyncError('PHONE_BOUND_TO_OTHER_UID', 'LINE UID 與 incoming canonical phone 不一致');
+    }
+    parent = uidParent;
+  }
+  if (parent?.line_uid && parent.line_uid !== lineUid) {
+    throw _z01SyncError('PHONE_BOUND_TO_OTHER_UID', 'canonical phone 已綁另一個 LINE UID');
+  }
+
+  const venueId = _venueIdFromMap(venuesMap, mapped.primary_venue_id);
+  if (!parent) {
+    parent = (await client.query(
+      `INSERT INTO parents
+         (phone, name, line_uid, primary_venue_id, gender, email, ragic_record_id,
+          identity, home_phone, home_address, line_id, is_active, last_synced_at)
+       VALUES ($1,$2,$3,$4,NULLIF($5,''),NULLIF($6,''),$7,NULLIF($8,''),
+               NULLIF($9,''),NULLIF($10,''),NULLIF($11,''),TRUE,NOW())
+       RETURNING *`,
+      [phoneCanonical, mapped.name || '未命名家長', lineUid, venueId,
+       ragic.normalizeGender(mapped.gender), mapped.email || '', ragicRecordId,
+       mapped.identity || '', mapped.home_phone || '', mapped.home_address || '', mapped.line_id || '']
+    )).rows[0];
+  } else {
+    parent = (await client.query(
+      `UPDATE parents SET
+         phone = $2,
+         name = COALESCE(NULLIF($3,''), name),
+         line_uid = COALESCE(line_uid, $4),
+         primary_venue_id = COALESCE($5, primary_venue_id),
+         gender = COALESCE(NULLIF($6,''), gender),
+         email = COALESCE(NULLIF($7,''), email),
+         ragic_record_id = COALESCE(ragic_record_id, NULLIF($8,'')),
+         identity = COALESCE(NULLIF($9,''), identity),
+         home_phone = COALESCE(NULLIF($10,''), home_phone),
+         home_address = COALESCE(NULLIF($11,''), home_address),
+         line_id = COALESCE(NULLIF($12,''), line_id),
+         is_active = TRUE, last_synced_at = NOW(), updated_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [parent.id, phoneCanonical, mapped.name || '', lineUid, venueId,
+       ragic.normalizeGender(mapped.gender), mapped.email || '', ragicRecordId,
+       mapped.identity || '', mapped.home_phone || '', mapped.home_address || '', mapped.line_id || '']
+    )).rows[0];
+  }
+
+  if (linked && linked.canonical_parent_id !== parent.id) {
+    throw _z01SyncError('SOURCE_ALREADY_CLAIMED', 'source record 已連結另一個 parent');
+  }
+  await client.query(
+    `INSERT INTO source_record_links
+       (source_system, source_table, source_record_id, canonical_parent_id, link_method)
+     VALUES ('RAGIC','Z01',$1,$2,'TRUE_LINE_UID_IMPORT')
+     ON CONFLICT (source_system, source_table, source_record_id) DO UPDATE SET
+       canonical_parent_id = EXCLUDED.canonical_parent_id,
+       link_method = EXCLUDED.link_method,
+       updated_at = NOW()`,
+    [ragicRecordId, parent.id]
+  );
+
+  // Exact normalized name inside this canonical family only. National ID is
+  // retained in the source mirror but never used as a match/merge key here.
+  const rawStudentRows = ragic.parseZ01StudentsRaw(z01Row);
+  const studentIssues = [];
+  for (const raw of rawStudentRows) {
+    const anyContent = [raw.name_raw, raw.birth_date_raw, raw.gender_raw, raw.id_number_raw,
+      raw.student_code_raw].some((value) => String(value || '').trim());
+    if (!anyContent) studentIssues.push({ code: 'EMPTY_TEMPLATE_ROW', source_row_id: raw.seq_raw || null });
+    else if (!normalizeStudentName(raw.name_raw)) studentIssues.push({ code: 'STUDENT_NAME_MISSING', source_row_id: raw.seq_raw || null });
+  }
+  const sourceStudents = ragic.parseZ01Students(z01Row);
+  const sourceNameCounts = new Map();
+  for (const s of sourceStudents) {
+    const key = normalizeStudentName(s.name);
+    if (key) sourceNameCounts.set(key, (sourceNameCounts.get(key) || 0) + 1);
+  }
+  const existingStudents = (await client.query(
+    `SELECT * FROM students WHERE parent_id = $1 ORDER BY created_at, id FOR UPDATE`, [parent.id]
+  )).rows;
+  const syncedStudentIds = [];
+  for (const s of sourceStudents) {
+    const normalizedName = normalizeStudentName(s.name);
+    if (!normalizedName) {
+      studentIssues.push({ code: 'STUDENT_NAME_MISSING', source_row_id: s.seq_raw || null });
+      continue;
+    }
+    if (sourceNameCounts.get(normalizedName) > 1) {
+      studentIssues.push({ code: 'AMBIGUOUS_STUDENT_MATCH', name: normalizedName });
+      continue;
+    }
+    const matches = existingStudents.filter((row) => normalizeStudentName(row.name) === normalizedName);
+    if (matches.length > 1) {
+      studentIssues.push({ code: 'AMBIGUOUS_STUDENT_MATCH', name: normalizedName });
+      continue;
+    }
+    let student = matches[0] || null;
+    const birthDate = /^\d{4}-\d{2}-\d{2}$/.test(String(s.birth_date || '')) ? s.birth_date : null;
+    if (student) {
+      student = (await client.query(
+        `UPDATE students SET
+           name = $2,
+           birth_date = COALESCE($3::date, birth_date),
+           gender = COALESCE(NULLIF($4,''), gender),
+           blood_type = COALESCE(NULLIF($5,''), blood_type),
+           student_code = COALESCE(NULLIF($6,''), student_code),
+           is_active = TRUE, last_synced_at = NOW(), updated_at = NOW()
+         WHERE id = $1 RETURNING *`,
+        [student.id, s.name, birthDate, ragic.normalizeGender(s.gender), s.blood_type || '', s.student_code || '']
+      )).rows[0];
+    } else {
+      student = (await client.query(
+        `INSERT INTO students
+           (parent_id, name, birth_date, gender, blood_type, student_code, is_active, last_synced_at)
+         VALUES ($1,$2,$3::date,NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),TRUE,NOW())
+         RETURNING *`,
+        [parent.id, s.name, birthDate, ragic.normalizeGender(s.gender), s.blood_type || '', s.student_code || '']
+      )).rows[0];
+      existingStudents.push(student);
+    }
+    syncedStudentIds.push(student.id);
+  }
+  if (syncedStudentIds.length === 1) {
+    await client.query(
+      `UPDATE source_record_links SET canonical_student_id = $2, updated_at = NOW()
+        WHERE source_system='RAGIC' AND source_table='Z01' AND source_record_id=$1`,
+      [ragicRecordId, syncedStudentIds[0]]
+    );
+  }
+  return { parent, syncedStudentIds, studentIssues };
+}
+
+async function reconcileZ01BlankUidCoverage(clientOrPool = pool) {
+  const rows = (await clientOrPool.query(
+    `SELECT s.ragic_record_id, s.raw_data, z.status
+       FROM ragic_z01_shadow s
+       LEFT JOIN ragic_z03_records z ON z.z01_ragic_record_id = s.ragic_record_id
+      ORDER BY s.ragic_record_id`
+  )).rows;
+  const blankRows = rows.filter((row) => !_trueZ01LineUid(row.raw_data));
+  const allowed = new Set(['pending', 'resolved', 'manual_review']);
+  const missingSourceIds = blankRows.filter((row) => !row.status).map((row) => row.ragic_record_id);
+  const invalidStatusSourceIds = blankRows
+    .filter((row) => row.status && !allowed.has(row.status))
+    .map((row) => row.ragic_record_id);
+  return {
+    blank_uid_source_count: blankRows.length,
+    accounted_count: blankRows.length - missingSourceIds.length - invalidStatusSourceIds.length,
+    missing_source_count: missingSourceIds.length,
+    invalid_status_count: invalidStatusSourceIds.length,
+    missing_source_ids: missingSourceIds,
+    invalid_status_source_ids: invalidStatusSourceIds,
+    pass: missingSourceIds.length === 0 && invalidStatusSourceIds.length === 0,
+  };
+}
+
+async function reconcileZ01SourceCoverage(clientOrPool = pool) {
+  const r = await clientOrPool.query(
+    `WITH source AS (
+       SELECT ragic_record_id
+         FROM ragic_z01_shadow
+        WHERE present_in_latest_pull = TRUE
+     ), classified AS (
+       SELECT s.ragic_record_id,
+         CASE
+           WHEN l.id IS NOT NULL THEN 'LINKED_LOCAL_Z01'
+           WHEN z.id IS NOT NULL AND z.status IN ('pending','manual_review')
+             THEN CASE WHEN z.status='manual_review' THEN 'MANUAL_REVIEW' ELSE 'PENDING_Z03' END
+           WHEN z.id IS NOT NULL AND z.status='dismissed' THEN 'EXPLICIT_IGNORED'
+           WHEN c.state = 'MANUAL_REVIEW' THEN 'MANUAL_REVIEW'
+           WHEN c.state = 'SYNC_BLOCKED_SCHEMA' THEN 'ERROR_NON_RETRYABLE'
+           WHEN c.state = 'SYNC_FAILED_RETRYABLE' THEN 'ERROR_RETRYABLE'
+           WHEN c.id IS NOT NULL THEN 'PENDING_RECONCILIATION'
+           WHEN z.id IS NOT NULL THEN 'PENDING_RECONCILIATION'
+           WHEN t.z01_ragic_record_id IS NOT NULL THEN 'EXPLICIT_IGNORED'
+           ELSE 'MISSING'
+         END AS classification
+       FROM source s
+       LEFT JOIN source_record_links l
+         ON l.source_system='RAGIC' AND l.source_table='Z01'
+        AND l.source_record_id=s.ragic_record_id
+       LEFT JOIN ragic_z03_records z ON z.z01_ragic_record_id=s.ragic_record_id
+       LEFT JOIN LATERAL (
+         SELECT id,state FROM identity_claims
+          WHERE source_system='RAGIC' AND source_table='Z01'
+            AND source_record_id=s.ragic_record_id
+          ORDER BY updated_at DESC,id LIMIT 1
+       ) c ON TRUE
+       LEFT JOIN ragic_z03_deleted_tombstones t ON t.z01_ragic_record_id=s.ragic_record_id
+     )
+     SELECT classification, COUNT(*)::int AS count,
+            ARRAY_AGG(ragic_record_id ORDER BY ragic_record_id)
+              FILTER (WHERE classification='MISSING') AS missing_ids
+       FROM classified GROUP BY classification`,
+  );
+  const counts = Object.fromEntries(r.rows.map((row) => [row.classification, row.count]));
+  const fetched = Object.values(counts).reduce((sum, value) => sum + Number(value || 0), 0);
+  const missingRow = r.rows.find((row) => row.classification === 'MISSING');
+  return {
+    fetched_count: fetched,
+    linked_local_z01_count: counts.LINKED_LOCAL_Z01 || 0,
+    pending_z03_count: counts.PENDING_Z03 || 0,
+    pending_reconciliation_count: counts.PENDING_RECONCILIATION || 0,
+    manual_review_count: counts.MANUAL_REVIEW || 0,
+    ignored_count: counts.EXPLICIT_IGNORED || 0,
+    retryable_error_count: counts.ERROR_RETRYABLE || 0,
+    non_retryable_error_count: counts.ERROR_NON_RETRYABLE || 0,
+    missing_source_count: counts.MISSING || 0,
+    missing_source_ids: missingRow?.missing_ids || [],
+    pass: !counts.MISSING,
+  };
+}
+
+async function findZ01SourcesByTrueLineUid(lineUid, clientOrPool = pool) {
+  const uid = String(lineUid || '').trim();
+  if (!uid) return [];
+  return (await clientOrPool.query(
+    `SELECT raw_data FROM ragic_z01_shadow
+      WHERE present_in_latest_pull=TRUE AND raw_data->>'1006846'=$1
+      ORDER BY ragic_record_id`, [uid]
+  )).rows.map((row) => row.raw_data);
+}
+
+async function findZ01SourcesByPhoneStudent(phone, studentName, clientOrPool = pool) {
+  const phoneCanonical = normalizePhone(phone);
+  const studentNameNormalized = normalizeStudentName(studentName);
+  if (!phoneCanonical || !studentNameNormalized) return [];
+  const rows = (await clientOrPool.query(
+    `SELECT raw_data FROM ragic_z01_shadow
+      WHERE present_in_latest_pull=TRUE
+        AND regexp_replace(COALESCE(raw_data->>'1001100',''),'\\D','','g') IN ($1,$2)
+      ORDER BY ragic_record_id`,
+    [phoneCanonical, phoneCanonical.startsWith('0') ? `886${phoneCanonical.slice(1)}` : phoneCanonical]
+  )).rows;
+  return rows.map((row) => row.raw_data).filter((raw) =>
+    ragic.parseZ01StudentsRaw(raw).some((student) =>
+      normalizeStudentName(student.name_raw) === studentNameNormalized
+    )
+  );
+}
+
+async function reingestZ01Record(z01Row, { dryRun = true } = {}) {
+  const mapped = ragic.mapZ01Parent(z01Row);
+  const ragicRecordId = String(mapped?.ragic_record_id || z01Row?._ragicId || '').trim();
+  if (!ragicRecordId) throw _z01SyncError('RAGIC_SOURCE_RECORD_ID_MISSING', 'Z01 source record id 必填');
+  const trueLineUid = _trueZ01LineUid(z01Row);
+  const phoneCanonical = normalizePhone(mapped.phone);
+  const target = trueLineUid ? 'LINKED_LOCAL_Z01' : (phoneCanonical ? 'PENDING_Z03' : 'MANUAL_REVIEW');
+  const current = (await pool.query(
+    `SELECT
+       (SELECT status FROM ragic_z03_records WHERE z01_ragic_record_id=$1) AS z03_status,
+       (SELECT canonical_parent_id FROM source_record_links
+         WHERE source_system='RAGIC' AND source_table='Z01' AND source_record_id=$1) AS linked_parent_id,
+       (SELECT COUNT(*)::int FROM parents
+         WHERE phone=$2 OR regexp_replace(COALESCE(phone,''), '\\D', '', 'g')=$2) AS phone_parent_count,
+       (SELECT COUNT(*)::int FROM parents WHERE ragic_record_id=$1) AS source_parent_count,
+       (SELECT COUNT(*)::int FROM parents WHERE line_uid=$3) AS uid_parent_count`,
+    [ragicRecordId, phoneCanonical, trueLineUid || `__blank__:${ragicRecordId}`]
+  )).rows[0];
+  const rawStudents = ragic.parseZ01StudentsRaw(z01Row);
+  const normalizedCounts = new Map();
+  rawStudents.forEach((row) => {
+    const key = normalizeStudentName(row.name_raw);
+    if (key) normalizedCounts.set(key, (normalizedCounts.get(key) || 0) + 1);
+  });
+  const studentRows = rawStudents.map((row, index) => {
+    const nameNormalized = normalizeStudentName(row.name_raw);
+    const anyContent = [row.name_raw, row.birth_date_raw, row.gender_raw, row.id_number_raw,
+      row.student_code_raw].some((value) => String(value || '').trim());
+    let validation = 'VALID';
+    let reasonCode = 'STUDENT_ROW_VALID';
+    if (!anyContent) { validation = 'EMPTY_TEMPLATE_ROW'; reasonCode = 'EMPTY_TEMPLATE_ROW'; }
+    else if (!nameNormalized) { validation = 'INVALID_ROW'; reasonCode = 'STUDENT_NAME_MISSING'; }
+    else if ((normalizedCounts.get(nameNormalized) || 0) > 1) {
+      validation = 'DUPLICATE_CANDIDATE'; reasonCode = 'DUPLICATE_STUDENT_NAME_IN_SOURCE';
+    } else if (!String(row.birth_date_raw || '').trim()) {
+      validation = 'INVALID_ROW'; reasonCode = 'STUDENT_BIRTH_DATE_MISSING';
+    }
+    return {
+      source_row_id: row.seq_raw || String(index),
+      student_name_normalized: nameNormalized,
+      birth_date_parse_state: String(row.birth_date_raw || '').trim() ? (_safeDateForPreview(row.birth_date_raw) ? 'PARSED' : 'INVALID') : 'MISSING',
+      gender_mapping_state: String(row.gender_raw || '').trim() ? 'PRESENT' : 'MISSING',
+      national_id_present: Boolean(String(row.id_number_raw || '').trim()),
+      student_number_present: Boolean(String(row.student_code_raw || '').trim()),
+      validation,
+      reason_code: reasonCode,
+    };
+  });
+  const preview = {
+    dry_run: !!dryRun,
+    source_record_id: ragicRecordId,
+    true_line_uid_present: Boolean(trueLineUid),
+    canonical_phone_present: Boolean(phoneCanonical),
+    canonical_phone_masked: phoneCanonical ? maskPhone(phoneCanonical) : null,
+    target,
+    reason_code: trueLineUid ? 'TRUE_LINE_UID_PRESENT' : (phoneCanonical ? 'TRUE_LINE_UID_EMPTY' : 'MISSING_CANONICAL_PHONE'),
+    line_chat_url_present: Boolean(_pickZ01Raw(z01Row, ['1002390'])),
+    current,
+    student_source_row_count: rawStudents.length,
+    student_rows: studentRows,
+  };
+  if (dryRun) return preview;
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    if (!trueLineUid) {
+      await _upsertZ03Record(client, ragicRecordId, mapped, z01Row);
+    } else {
+      const venuesMap = await parentSync.loadVenuesMap(client);
+      const result = await _syncCanonicalZ01Record(client, z01Row, mapped, venuesMap);
+      await client.query(
+        `UPDATE ragic_z03_records SET
+           status='resolved', classification='LINKED_LOCAL_Z01', reason_code='TRUE_LINE_UID_PRESENT',
+           claim_state='SYNCED', canonical_parent_id=$2, last_error_code=NULL,
+           resolved_at=COALESCE(resolved_at,NOW()), resolved_by=COALESCE(resolved_by,'z01-reingest'),
+           last_processed_at=NOW()
+         WHERE z01_ragic_record_id=$1`,
+        [ragicRecordId, result.parent.id]
+      );
+      preview.canonical_parent_id = result.parent.id;
+      preview.canonical_student_ids = result.syncedStudentIds;
+      preview.student_issues = result.studentIssues;
+    }
+    await client.query('COMMIT');
+    return { ...preview, dry_run: false, applied: true };
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 async function _reconcileZ01FromShadowImpl() {
+  const reader = await pool.connect();
+  let records;
+  try {
+    records = await _readShadowZ01(reader);
+  } catch (err) {
+    return { synced: 0, staged_z03: 0, error: `讀取 ragic_z01_shadow 失敗：${err.message}` };
+  } finally {
+    reader.release();
+  }
+
+  const client = await pool.connect();
+  let linkedLocalZ01 = 0;
+  let stagedZ03 = 0;
+  let manualReview = 0;
+  const errors = [];
+  try {
+    const venuesMap = await parentSync.loadVenuesMap(client);
+    for (const z01Row of records) {
+      const mapped = ragic.mapZ01Parent(z01Row);
+      const ragicRecordId = String(mapped?.ragic_record_id || z01Row?._ragicId || '').trim();
+      if (!ragicRecordId) {
+        errors.push('RAGIC_SOURCE_RECORD_ID_MISSING');
+        continue;
+      }
+
+      // Sole split rule: only the exact frozen LINE UID field participates.
+      // No phone/name completeness, chat URL, account text, or display status
+      // can send a blank-UID source away from Z03.
+      const trueLineUid = _trueZ01LineUid(z01Row);
+      try {
+        await client.query('BEGIN');
+        if (!trueLineUid) {
+          await _upsertZ03Record(client, ragicRecordId, mapped, z01Row);
+          await client.query('COMMIT');
+          stagedZ03++;
+          continue;
+        }
+
+        const synced = await _syncCanonicalZ01Record(client, z01Row, mapped, venuesMap);
+        await client.query(
+          `UPDATE ragic_z03_records
+              SET status = 'resolved', classification = 'LINKED_LOCAL_Z01',
+                  reason_code = 'TRUE_LINE_UID_PRESENT', claim_state = 'SYNCED',
+                  canonical_parent_id = $2, last_error_code = NULL,
+                  resolved_at = COALESCE(resolved_at, NOW()),
+                  resolved_by = COALESCE(resolved_by, 'z01-reconcile'),
+                  last_processed_at = NOW()
+            WHERE z01_ragic_record_id = $1 AND status <> 'resolved'`,
+          [ragicRecordId, synced.parent.id]
+        );
+        await client.query('COMMIT');
+        linkedLocalZ01++;
+
+        if (synced.studentIssues.length) {
+          manualReview++;
+          await _recordZ01ImportReview({
+            ragicRecordId,
+            mapped,
+            code: synced.studentIssues[0].code,
+          });
+        }
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        const code = err.code || 'LOCAL_TRANSACTION_FAILED';
+        manualReview++;
+        await _recordZ01ImportReview({ ragicRecordId, mapped, code }).catch((reviewErr) => {
+          errors.push(`${ragicRecordId}:REVIEW_WRITE_FAILED:${reviewErr.code || 'ERROR'}`);
+        });
+        // A source that now has a true UID must not remain in the active Z03
+        // pending queue. Preserve any historical row for audit and route the
+        // conflict through identity_claims.MANUAL_REVIEW instead.
+        if (trueLineUid) {
+          try {
+            await pool.query(
+              `UPDATE ragic_z03_records
+                  SET status = 'resolved', classification = 'MIGRATED_OUT_OF_Z03',
+                      reason_code = 'TRUE_LINE_UID_PRESENT_WITH_CONFLICT',
+                      claim_state = 'MANUAL_REVIEW', last_error_code = $2,
+                      resolved_at = COALESCE(resolved_at, NOW()),
+                      resolved_by = COALESCE(resolved_by, 'z01-reconcile'),
+                      last_processed_at = NOW()
+                WHERE z01_ragic_record_id = $1`,
+              [ragicRecordId, code]
+            );
+          } catch (reviewUpdateErr) {
+            errors.push(`${ragicRecordId}:Z03_REVIEW_WRITE_FAILED:${reviewUpdateErr.code || 'ERROR'}`);
+          }
+        }
+      }
+    }
+  } finally {
+    client.release();
+  }
+
+  const coverage = await reconcileZ01SourceCoverage().catch((err) => ({
+    pass: false,
+    missing_source_count: -1,
+    error: err.message,
+  }));
+  if (!coverage.pass) {
+    errors.push(`Z01_COVERAGE_INCOMPLETE:missing=${coverage.missing_source_count}`);
+  }
+
+  const result = {
+    fetched_count: coverage.fetched_count ?? records.length,
+    linked_local_z01_count: coverage.linked_local_z01_count ?? linkedLocalZ01,
+    pending_z03_count: coverage.pending_z03_count ?? stagedZ03,
+    pending_reconciliation_count: coverage.pending_reconciliation_count ?? 0,
+    manual_review_count: coverage.manual_review_count ?? manualReview,
+    ignored_count: coverage.ignored_count ?? 0,
+    retryable_error_count: coverage.retryable_error_count ?? 0,
+    non_retryable_error_count: coverage.non_retryable_error_count ?? 0,
+    synced: coverage.linked_local_z01_count ?? linkedLocalZ01,
+    staged_z03: coverage.pending_z03_count ?? stagedZ03,
+    coverage,
+  };
+  return errors.length
+    ? { ...result, partial: true, error: `${errors.length} 筆/項未完成：${errors[0]}` }
+    : result;
+}
+
+// Retained temporarily for audit comparison only. It is deliberately not
+// exported or called: it contains the superseded three-condition split and
+// destructive sweep behavior that Z01 split v2 disables.
+async function _reconcileZ01FromShadowLegacyDisabled() {
+  throw _z01SyncError('DESTRUCTIVE_RECONCILE_DISABLED', 'legacy Z01 reconcile 已永久停用');
   const client0 = await pool.connect();
   let records;
   try {
@@ -2513,46 +3230,11 @@ async function _reconcileZ01FromShadowImpl() {
 
       try {
         if (isIncomplete) {
-          // 使用者回報修復：admin 已（例如透過「清除 ghost」）主動決定永久排除這筆
-          // Ragic record（見 routes/admin/ragicStatus.js purge-ghosts 寫入
-          // ragic_z03_deleted_tombstones）→ 完全跳過，不進 Z03、不碰本地 parents，
-          // 避免「硬刪除後下次同步又被塞回黑名單」。只影響「尚未達成畢業條件」的
-          // 記錄；若這個人之後自己透過 LIFF 登入/綁定重新畢業（走即時查詢 Ragic，
-          // 不受此表影響），下面 else 分支的正常同步不受任何影響。
-          const tomb = await client.query(
-            `SELECT 1 FROM ragic_z03_deleted_tombstones WHERE z01_ragic_record_id = $1 LIMIT 1`,
-            [ragicRecordId]
-          );
-          if (tomb.rowCount) continue;
-
           // 殘缺/未開通 → 只進 Z03，不建立/更新 parents/students。
-          // 若本地同電話 / 同 Ragic record / 同 LINE UID 還留著可登入 UID，先清掉 UID 讓登入回到
-          // need_phone_binding；有業務 FK 的列不硬刪，只是不再算「已畢業 Z01 鏡像」。
-          // 這裡仍只動本地 DB，不反向寫回 Ragic。
+          // _upsertZ03Record 會把歷史 tombstone 轉成 manual_review；不得讓
+          // source 消失，也不得清除既有本地 UID 或破壞既有 session。
           await client.query('BEGIN');
           await _upsertZ03Record(client, ragicRecordId, mapped, z01Row);
-          const localRows = await client.query(
-            `SELECT id, phone, line_uid
-               FROM parents
-              WHERE phone = $1
-                 OR regexp_replace(COALESCE(phone,''), '\\D', '', 'g') = $3
-                 OR (NULLIF(ragic_record_id, '') IS NOT NULL AND ragic_record_id = $2)
-                 OR ($4 <> '' AND line_uid = $4)`,
-            [mapped.phone, ragicRecordId || '', phoneDigits, hasRealUid ? mapped.line_uid : '']
-          );
-          for (const row of localRows.rows) {
-            const uid = String(row.line_uid || '').trim();
-            if (uid) {
-              await client.query(
-                `UPDATE parents SET line_uid = NULL, updated_at = NOW() WHERE id = $1`,
-                [row.id]
-              );
-              const mappedPhone = uidToPhone.get(uid);
-              if (_digits(mappedPhone) === _digits(row.phone)) uidToPhone.delete(uid);
-              boundPhones.delete(row.phone);
-            }
-            await parentSync.hardDeleteParentIfSafe(client, row.id);
-          }
           await client.query('COMMIT');
           quarantinedZ03++;
           continue;
@@ -2741,7 +3423,9 @@ function _z03ParentFromRow(row) {
     email: _cleanText(row.email_raw, 255),
     primary_venue_id: _cleanText(row.venue_raw, 120),
     identity: _cleanText(row.identity_raw, 80),
-    line_uid: _cleanText(row.line_uid_raw, 160),
+    // Staging display data is never an identity credential. Canonical UID is
+    // read only from raw Ragic field 1006846 before a source enters Z03.
+    line_uid: '',
   };
 }
 
@@ -2826,16 +3510,24 @@ async function _loadZ03RecordByRagicId(ragicRecordId) {
  * 查無回 null。只取 pending；resolved 是歷史畢業列，不應再攔截綁定/註冊熱路徑。
  */
 async function findZ03RecordByPhone(phone) {
-  const digits = _digits(phone);
-  if (!digits) return null;
+  const phoneCanonical = normalizePhone(phone);
+  if (!phoneCanonical) return null;
   const r = await pool.query(
     `SELECT * FROM ragic_z03_records
       WHERE status = 'pending'
-        AND (phone = $1 OR regexp_replace(COALESCE(phone,''), '\\D', '', 'g') = $2)
-      ORDER BY fetched_at DESC
-      LIMIT 1`,
-    [String(phone || '').trim(), digits]
+        AND (phone_canonical = $1
+          OR phone = $2
+          OR regexp_replace(COALESCE(phone,''), '\\D', '', 'g') = $1)
+      ORDER BY fetched_at DESC, id`,
+    [phoneCanonical, String(phone || '').trim()]
   );
+  if (r.rowCount > 1) {
+    const err = new Error('同一 canonical phone 命中多筆 active Z03 family，禁止 LIMIT 1');
+    err.code = 'MANUAL_REVIEW_REQUIRED';
+    err.reason = 'AMBIGUOUS_Z03_FAMILY';
+    err.z03Ids = r.rows.map((row) => row.id);
+    throw err;
+  }
   const row = r.rows[0];
   if (!row) return null;
   const students = (await pool.query(
@@ -2994,6 +3686,9 @@ async function _markZ03RegistrationResolved(z03Id, { parent, students, lineUid, 
  * 是 audit/狀態收斂，不阻擋已驗證使用者後續 refresh。
  */
 async function completeZ03Registration({ z03, parent, students = [], lineUid, actor = 'parent-register-line' }) {
+  const disabled = new Error('Z03 認領必須使用 local-first claim + transactional outbox');
+  disabled.code = 'LOCAL_FIRST_CLAIM_REQUIRED';
+  throw disabled;
   if (!z03?.row) throw new Error('Z03 註冊需要 z03.row');
   const existing = {
     ...(z03.parent || {}),
@@ -3054,10 +3749,25 @@ async function listZ03Records({ status = 'pending', q = '' } = {}) {
       parts.push(`regexp_replace(COALESCE(phone,''), '\\D', '', 'g') LIKE $${vals.length}`);
     }
     vals.push(_likePattern(query));
+    const textPatternParam = vals.length;
+    parts.push(`COALESCE(raw_name, '') ILIKE $${textPatternParam} ESCAPE '\\'`);
+    parts.push(`COALESCE(fixed_name, '') ILIKE $${textPatternParam} ESCAPE '\\'`);
+    parts.push(`COALESCE(z01_ragic_record_id, '') ILIKE $${textPatternParam} ESCAPE '\\'`);
+    parts.push(`COALESCE(phone_canonical, '') ILIKE $${textPatternParam} ESCAPE '\\'`);
+    parts.push(`COALESCE(canonical_parent_id::text, '') ILIKE $${textPatternParam} ESCAPE '\\'`);
+    parts.push(`COALESCE(correlation_id::text, '') ILIKE $${textPatternParam} ESCAPE '\\'`);
     parts.push(`EXISTS (
       SELECT 1 FROM ragic_z03_students zs
        WHERE zs.z03_record_id = ragic_z03_records.id
-         AND COALESCE(zs.name_raw, '') ILIKE $${vals.length} ESCAPE '\\'
+         AND COALESCE(zs.name_raw, '') ILIKE $${textPatternParam} ESCAPE '\\'
+    )`);
+    parts.push(`EXISTS (
+      SELECT 1 FROM identity_claims ic
+       WHERE ic.source_system = 'RAGIC'
+         AND ic.source_table = 'Z01'
+         AND ic.source_record_id = ragic_z03_records.z01_ragic_record_id
+         AND (ic.id::text ILIKE $${textPatternParam} ESCAPE '\\'
+           OR COALESCE(ic.phone_canonical, '') ILIKE $${textPatternParam} ESCAPE '\\')
     )`);
     where.push(`(${parts.join(' OR ')})`);
   }
@@ -3241,7 +3951,9 @@ async function resolveZ03Record(id, fixedName, adminUsername) {
 async function dismissZ03Record(id, adminUsername) {
   const updated = (await pool.query(
     `UPDATE ragic_z03_records
-        SET status = 'dismissed', resolved_at = NOW(), resolved_by = $2
+        SET status = 'manual_review', classification = 'MANUAL_REVIEW',
+            reason_code = 'ADMIN_DISMISSED', claim_state = 'MANUAL_REVIEW',
+            resolved_at = NOW(), resolved_by = $2, last_processed_at = NOW()
       WHERE id = $1
       RETURNING *`,
     [id, adminUsername || null]
@@ -3269,16 +3981,23 @@ async function deleteZ03Record(id, { adminUsername = null, reason = null } = {})
       await client.query('ROLLBACK');
       throw new Error('找不到這筆 Z03 記錄');
     }
-    await client.query(
-      `INSERT INTO ragic_z03_deleted_tombstones (z01_ragic_record_id, deleted_by, reason)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (z01_ragic_record_id) DO UPDATE SET
-         deleted_at = NOW(), deleted_by = EXCLUDED.deleted_by, reason = EXCLUDED.reason`,
-      [row.z01_ragic_record_id, adminUsername || null, reason || null]
-    );
-    await client.query(`DELETE FROM ragic_z03_records WHERE id = $1`, [id]);
+    const updated = (await client.query(
+      `UPDATE ragic_z03_records SET
+         status='manual_review', classification='MANUAL_REVIEW',
+         reason_code='ADMIN_ARCHIVE_REQUESTED', claim_state='MANUAL_REVIEW',
+         last_error_code=NULL, resolved_at=COALESCE(resolved_at,NOW()),
+         resolved_by=$2, last_processed_at=NOW()
+       WHERE id=$1 RETURNING *`,
+      [id, adminUsername || null]
+    )).rows[0];
     await client.query('COMMIT');
-    return { id, z01_ragic_record_id: row.z01_ragic_record_id };
+    return {
+      id,
+      z01_ragic_record_id: row.z01_ragic_record_id,
+      archived: true,
+      status: updated.status,
+      reason: reason || null,
+    };
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     throw err;
@@ -3505,11 +4224,9 @@ async function getJobToggles() {
 }
 
 /**
- * 夜間排程順序閘門：#1（00:30 本地→Ragic 回寫）最近一次是否成功。
- * 給 #2（01:30 Ragic Z01→本地/Z03 拉回）與 #3（01:45 品質掃描）當前置條件——
- * 回寫沒成功就拉回，會把「本地已修正、還沒推上去」的舊 Ragic 狀態灌回 Z03（堵塞 Z03）。
- * 以 DB 的 ragic_sync_log 判定（非記憶體旗標），伺服器半夜重啟不影響判斷。
- * 'skipped'（admin 手動停用 backup job）視為放行：管理者刻意停推送時，不該把拉回也卡死。
+ * 相容既有 cron 呼叫名稱，但 backup 已降級為 observation，不再是 pull gate。
+ * 入站 Z01 是獨立的 source-discovery plane；本地→Ragic 寫入失敗只能告警，
+ * 不得讓下一輪唯讀 pull 跳過，否則來源會在本地持續不可見。
  */
 async function hasRecentBackupSuccess(windowHours = 3) {
   const r = await pool.query(
@@ -3520,7 +4237,10 @@ async function hasRecentBackupSuccess(windowHours = 3) {
       LIMIT 1`,
     [windowHours]
   );
-  return r.rowCount > 0;
+  if (r.rowCount === 0) {
+    console.warn('[ragic-pull] Z01_Z02_BACKUP_MISSING: inbound pull remains enabled (windowHours=%s)', windowHours);
+  }
+  return true;
 }
 
 async function hasRecentFreshPull(windowHours = FRESH_SHADOW_MAX_AGE_HOURS) {
@@ -3806,7 +4526,13 @@ async function _deleteWebhookShadow(client, sheetCode, ragicRecordId) {
       [ragicRecordId]
     );
   } else if (sheetCode === 'Z01') {
-    await client.query(`DELETE FROM ragic_z01_shadow WHERE ragic_record_id = $1`, [ragicRecordId]);
+    await client.query(
+      `UPDATE ragic_z01_shadow
+          SET present_in_latest_pull=FALSE,
+              missing_since=COALESCE(missing_since,NOW())
+        WHERE ragic_record_id=$1`,
+      [ragicRecordId]
+    );
   } else if (sheetCode === 'H05') {
     await client.query(
       `DELETE FROM ragic_h05_shadow
@@ -4151,6 +4877,11 @@ module.exports = {
   pingStudentsFromRagic,
   backupParentsStudentsToRagic,
   pullParentsStudentsFromRagic,
+  reconcileZ01BlankUidCoverage,
+  reconcileZ01SourceCoverage,
+  findZ01SourcesByTrueLineUid,
+  findZ01SourcesByPhoneStudent,
+  reingestZ01Record,
   quarantineBadZ01Names,
   hasRecentBackupSuccess,
   hasRecentFreshPull,
@@ -4187,6 +4918,13 @@ module.exports = {
   __test__: {
     extractLineUid,
     normalizeLineUserId,
+    trueZ01LineUid: _trueZ01LineUid,
+    sourceUpdatedTime: _sourceUpdatedTime,
+    upsertZ03Record: _upsertZ03Record,
+    syncCanonicalZ01Record: _syncCanonicalZ01Record,
+    reconcileZ01BlankUidCoverage,
+    reconcileZ01SourceCoverage,
+    shadowPullZ01Impl: _shadowPullZ01Impl,
     h23CourseCoefficient: _h23CourseCoefficient,
 	    staffPayloadFromRagicRow: _staffPayloadFromRagicRow,
 	    h01ShadowKey: _h01ShadowKey,

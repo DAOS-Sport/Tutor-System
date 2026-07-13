@@ -33,7 +33,8 @@ function tryGetLineIdToken() {
 }
 
 function registerErrorMessage(err) {
-  const code = err?.response?.data?.code;
+  const data = err?.response?.data || {};
+  const code = data.code;
   const status = err?.response?.status;
   // 後端若帶了明確 error 文字（如身分證重複會帶實際號碼），優先沿用
   const serverMsg = err?.response?.data?.error;
@@ -55,6 +56,12 @@ function registerErrorMessage(err) {
     LINE_ALREADY_REGISTERED:  '此 LINE 帳號已註冊過，請直接從 LINE 開啟連結登入。',
     LINE_ALREADY_BOUND_TO_OTHER_PHONE: '此 LINE 帳號已綁定其他手機，請改用原手機登入或聯絡客服。',
     PHONE_ALREADY_BOUND_TO_OTHER_LINE: '此手機已綁定其他 LINE 帳號，請聯絡客服協助處理。',
+    ACCOUNT_RECOVERY_REQUIRED: '此家庭已綁定其他 LINE 帳號，請完成手機所有權驗證或聯絡客服協助恢復。',
+    DATA_RECONCILIATION_PENDING: '身分已保留，資料正在整理中；請勿重複註冊。',
+    RAGIC_UID_DUPLICATE: '來源資料有重複 LINE 綁定，已停止自動覆蓋。',
+    RAGIC_SCHEMA_BLOCKED: '會員已建立，外部資料欄位設定待處理。',
+    RAGIC_SCHEMA_NOT_VERIFIED: '會員已建立且可登入；外部資料欄位驗證尚未完成，系統會稍後重試。',
+    LOCAL_LINK_FAILED: '本地身分連結失敗，未建立重複資料，請聯絡客服。',
     // —— LINE 驗證 ——
     LINE_TOKEN_EXPIRED:        'LINE 登入已逾時，請重新由 LINE 開啟註冊頁。',
     LINE_CHANNEL_MISCONFIGURED:'系統設定異常，請聯繫客服協助處理（非您的操作問題）。',
@@ -86,6 +93,9 @@ function registerErrorMessage(err) {
     REGISTER_NO_STATUS:       '註冊未完成（伺服器未回傳成功狀態），請稍後再試。',
     DEMO_REGISTER_FAILED:     'Demo 測試註冊失敗，請稍後再試。',
   };
+  if (code === 'ACCOUNT_RECOVERY_REQUIRED' && data.recovery_request_id && data.recovery_token) {
+    return `${MAP.ACCOUNT_RECOVERY_REQUIRED} 案件編號：${data.recovery_request_id}；一次性驗證碼：${data.recovery_token}（短效，請只提供給客服）。`;
+  }
   if (code && MAP[code]) return MAP[code];
   if (status === 429) return MAP.RATE_LIMITED;
   // 後端有給可讀訊息就用它，否則泛用
@@ -95,6 +105,9 @@ function registerErrorMessage(err) {
 
 function publicErrorCode(code) {
   const c = String(code || '');
+  if (c === 'RAGIC_SCHEMA_NOT_VERIFIED' || c === 'SYNC_BLOCKED_SCHEMA') return 'RAGIC_SCHEMA_BLOCKED';
+  if (['ACCOUNT_RECOVERY_REQUIRED', 'DATA_RECONCILIATION_PENDING', 'RAGIC_UID_DUPLICATE',
+    'RAGIC_SCHEMA_BLOCKED', 'LOCAL_LINK_FAILED'].includes(c)) return c;
   if (/RAGIC|LOCAL_UPSERT/i.test(c)) return 'SYNC_FAILED';
   return c;
 }
@@ -299,6 +312,11 @@ export default function RegisterPage() {
         if (r?.status === 'registered_and_logged_in' && r.parent) {
           const merged = { ...r.parent, token: r.token || r.parent.token || null };
           setParent(merged);
+          if (r.sync_pending || r.sync_state === 'SYNC_PENDING' || r.sync_state === 'DATA_RECONCILIATION_PENDING') {
+            toast.info(r.sync_state === 'DATA_RECONCILIATION_PENDING'
+              ? '登入完成，歷史資料整理中，請勿重複註冊'
+              : '登入完成，Ragic 資料正在背景同步');
+          }
           // MGM：ref_bound=true → 綁定推薦關係（推薦折扣 TRIAL50 已停用，不再寫 pendingCoupon）
           if (refInfo && refInfo.coach && r.ref_bound) {
             toast.success('註冊完成！請選擇組別與場館開始報名');

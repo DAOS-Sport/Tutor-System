@@ -8,12 +8,49 @@ const line = require('../services/line');
 const chatRooms = require('../services/chatRooms');
 const evaluations = require('../services/evaluations');
 const ragicAdmin = require('../services/ragicAdmin');
+const { processRagicSyncOutbox } = require('../services/ragicSyncOutbox');
+const { verifyRagicZ01UidSchemaFreshness } = require('../services/ragicSchemaFreshness');
+const { STABILITY_FLAGS } = require('../config/ragicSchema');
 const { applyDueScheduledCourseTypeChanges } = require('../services/courseTypeSchedule');
 
 // 對家長推播的 LIFF base URL；新版用 LIFF_URL_PARENT，舊版 LIFF_URL 為 fallback
 const LIFF_URL = process.env.LIFF_URL_PARENT || process.env.LIFF_URL || 'https://liff.line.me/-';
 
 function initCronJobs() {
+  // Startup/deployment proof. Failure blocks only the remote UID worker; local
+  // parent auth and already-committed local claims remain available.
+  if (ragicAdmin.ragicEnabled()) {
+    verifyRagicZ01UidSchemaFreshness()
+      .then((e) => console.log(`[Cron/RagicSchema] verified=${e.verified} hash=${e.response_hash.slice(0, 12)} fetched=${e.fetched_at.toISOString()}`))
+      .catch((err) => console.warn('[Cron/RagicSchema] RAGIC_SCHEMA_NOT_VERIFIED:', err.code || err.message));
+  }
+  // Periodic live def=1 renewal. The 5-minute cadence remains below the default
+  // 15-minute TTL, so a missed/failed renewal naturally makes the worker stale.
+  cron.schedule('*/5 * * * *', async () => {
+    if (!ragicAdmin.ragicEnabled()) return;
+    try {
+      const evidence = await verifyRagicZ01UidSchemaFreshness();
+      if (!evidence.verified) console.warn('[Cron/RagicSchema] schema mismatch; UID writes remain paused');
+    } catch (err) {
+      console.warn('[Cron/RagicSchema] verification failed; UID writes remain paused:', err.code || err.message);
+    }
+  });
+
+  // Local-first Z03 claims commit before Ragic. This worker is the only path
+  // that writes the claimed LINE UID back; it never resolves or creates an
+  // identity, and failed writes remain retryable/blocked in the outbox.
+  cron.schedule('*/5 * * * *', async () => {
+    if (!ragicAdmin.ragicEnabled() || !STABILITY_FLAGS.RAGIC_PARENT_OUTBOX) return;
+    try {
+      const r = await processRagicSyncOutbox({ limit: 20 });
+      if (r.processed) {
+        console.log(`[Cron/RagicOutbox] processed=${r.processed} synced=${r.synced} retryable=${r.retryable} blocked=${r.blocked}`);
+      }
+    } catch (err) {
+      console.warn('[Cron/RagicOutbox] failed:', err.code || err.message);
+    }
+  });
+
   // ── 每 5 分鐘：補 active period 的 chat_room（防漂移；spec F-S09）──
   // 任何「直接 UPDATE course_periods.status='active'」或 race condition 都會被這個排程兜底。
   cron.schedule('*/5 * * * *', async () => {

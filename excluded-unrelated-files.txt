@@ -1,0 +1,19 @@
+# Dirty paths excluded from the parent-identity release commit.
+# These files remain untouched and unstaged.
+.replit
+.release-safety/concurrent-worktree-20260713.patch
+.release-safety/parent-identity-rc-preflight.txt
+.release-safety/pre-continuation-20260712.patch
+.release-safety/pre-continuation-stat.txt
+.release-safety/pre-continuation-status.txt
+.release-safety/pre-continuation-untracked.tar.gz
+.release-safety/pre-continuation-untracked.txt
+.release-safety/pre-z01-z03-20260713-stat.txt
+.release-safety/pre-z01-z03-20260713-status.txt
+.release-safety/pre-z01-z03-20260713.patch
+client/admin/src/pages/RagicZ03Page.jsx
+docs/shotscreen/螢幕擷取畫面 2026-07-13 164756.png
+
+# The two narrow admin backend compatibility routes are allowlisted because
+# they directly enforce the parent Z03 no-hard-delete boundary. No admin UI,
+# permissions, course, scheduling, attendance, payment or rights code is included.

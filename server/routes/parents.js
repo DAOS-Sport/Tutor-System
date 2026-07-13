@@ -546,6 +546,10 @@ router.post('/me/students', requireParent, async (req, res) => {
       return res.status(201).json(await loadMe(req.parent.id));
     }
 
+    // 場館可能在家長註冊後被停用/改代碼（五大場館重構期間風險最高）；不先擋，
+    // 交給 Ragic 才會回一個含糊的 502「資料暫時無法完成同步」，使用者無從得知是館別問題。
+    await assertVenueExists(parent.primary_venue_id);
+
     const parentForSync = await parentForStrictStudentSync(parent, req.parent.lineUid);
     const activeCount = Number(
       (await pool.query(
@@ -656,6 +660,10 @@ router.patch('/me/students/:id', requireParent, async (req, res) => {
       );
       return res.json(await loadMe(req.parent.id));
     }
+
+    // 場館可能在家長註冊後被停用/改代碼（五大場館重構期間風險最高）；不先擋，
+    // 交給 Ragic 才會回一個含糊的 502「資料暫時無法完成同步」，使用者無從得知是館別問題。
+    await assertVenueExists(parent.primary_venue_id);
 
     const parentForSync = await parentForStrictStudentSync(parent, req.parent.lineUid);
     const before = cur.rows[0];

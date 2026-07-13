@@ -123,80 +123,13 @@ router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, re
   });
 });
 
-// 清除 Ragic 錯誤載入的 ghost 資料：
-//   1. 硬刪 parents WHERE line_uid IS NULL（有業務 FK 者跳過）
-//   2. 清空 ragic_z03_records
-//   3. 清空 ragic_z01_quarantine
-// 硬邊界：只動本地 DB，Ragic 端完全不碰。
-//
-// 修復（使用者回報：硬刪除幽靈家長後，下次 Z01 夜間同步又把他塞回 Z03/quarantine
-// 「黑名單」）：Ragic 端這筆記錄本身沒有被刪除（本系統從不寫 Ragic H01/Z01），
-// 硬刪除只是清掉本地鏡射；下次同步重新讀到同一筆 Ragic 原始資料，若姓名/UID/電話
-// 仍不滿足「三必備條件」，_reconcileZ01FromShadowImpl 會無條件把他寫回 Z03，
-// _quarantineBadZ01NamesImpl 也會無條件把他寫回 quarantine——因為兩者都沒有查過
-// 「這個人是否已被 admin 決定永久排除」。改為：硬刪除當下順便把該筆的
-// z01_ragic_record_id 寫進既有的 ragic_z03_deleted_tombstones（本來就是為了
-// 「後台強制刪除後不要復活」設計的表，語意完全通用，不需要新建表），
-// _upsertZ03Record／_quarantineBadZ01NamesImpl 之後都會查這張表並跳過。
-// 只在「Ragic 端這筆仍未滿足畢業條件」時才會被排除；若這個人之後自己重新走
-// LIFF 登入/綁定流程（走即時查詢 Ragic，不受此 tombstone 影響）而真正畢業，
-// 夜間同步仍會正常同步他的最新資料，不會被永久卡住。
-router.post('/purge-ghosts', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
-  const { pool } = require('../../models/db');
-  const parentSync = require('../../services/parentSync');
-  if (!(await ragicAdmin.hasRecentFreshPull?.().catch(() => false))) {
-    return res.status(409).json({
-      error: '缺少最近一次 freshness_verified=true 的 Z01 pull，已拒絕清除 ghost，避免依過期 shadow/狀態刪資料。',
-    });
-  }
-  const client = await pool.connect();
-  try {
-    // 1. 找出所有無 LINE UID 的 parents
-    const noUid = await client.query(
-      `SELECT id, ragic_record_id FROM parents WHERE line_uid IS NULL OR line_uid = ''`
-    );
-    let deletedParents = 0;
-    let skippedParents = 0;
-    let tombstoned = 0;
-    for (const row of noUid.rows) {
-      const deleted = await parentSync.hardDeleteParentIfSafe(client, row.id);
-      if (!deleted) { skippedParents++; continue; }
-      deletedParents++;
-      if (row.ragic_record_id) {
-        await client.query(
-          `INSERT INTO ragic_z03_deleted_tombstones (z01_ragic_record_id, deleted_by, reason)
-           VALUES ($1, $2, $3)
-           ON CONFLICT (z01_ragic_record_id) DO NOTHING`,
-          [String(row.ragic_record_id), req.adminUser?.sub || null, 'purge-ghosts：手動清除無 LINE UID 的幽靈家長']
-        );
-        tombstoned++;
-      }
-    }
-
-    // 2. 清空 Z03 佇列
-    const z03 = await client.query(`DELETE FROM ragic_z03_records RETURNING 1`);
-    const deletedZ03 = z03.rowCount;
-
-    // 3. 清空 quarantine（佔位名單）
-    const q = await client.query(`DELETE FROM ragic_z01_quarantine RETURNING 1`);
-    const deletedQuarantine = q.rowCount;
-
-    console.log(`[purge-ghosts] parents 刪除=${deletedParents} 保留=${skippedParents}（有業務FK）; tombstoned=${tombstoned}; z03=${deletedZ03}; quarantine=${deletedQuarantine}`);
-    res.json({
-      ok: true,
-      deleted_parents: deletedParents,
-      skipped_parents: skippedParents,
-      tombstoned,
-      deleted_z03: deletedZ03,
-      deleted_quarantine: deletedQuarantine,
-      message: `已清除：${deletedParents} 筆 ghost 家長（其中 ${tombstoned} 筆已標記永久排除，未來同步不會再進 Z03/quarantine）、${deletedZ03} 筆 Z03、${deletedQuarantine} 筆 quarantine。${skippedParents ? `（${skippedParents} 筆有業務紀錄保留）` : ''}`,
-    });
-  } catch (err) {
-    console.error('[purge-ghosts]', err);
-    res.status(500).json({ error: err.message });
-  } finally {
-    client.release();
-  }
+// Compatibility endpoint retained so older admin builds fail closed. Source
+// records, claims, parents and students are never deleted by reconciliation.
+router.post('/purge-ghosts', requireAdminAuth, requireAdminRole('admin'), (req, res) => {
+  res.status(410).json({
+    error: '破壞性 reconcile 已停用；Ragic blank-UID source 必須保留在 Z03 resolved/pending/manual-review 之一。',
+    code: 'DESTRUCTIVE_RECONCILE_DISABLED',
+  });
 });
 
 router.post('/toggle', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {

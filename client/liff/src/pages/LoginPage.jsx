@@ -83,7 +83,8 @@ function isCoachLiffContext(fromPath) {
  * 只有連後端訊息都沒有時才顯示最後一句泛用文案。
  */
 function parentErrorMessage(err) {
-  const code = err?.response?.data?.code;
+  const data = err?.response?.data || {};
+  const code = data.code;
   const status = err?.response?.status;
   const serverMsg = err?.response?.data?.error;
   // 完全沒有 response：請求根本沒送達（離線 / DNS / CORS / 逾時無回應），
@@ -93,6 +94,13 @@ function parentErrorMessage(err) {
   const MAP = {
     LINE_ALREADY_BOUND_TO_OTHER_PHONE: '此 LINE 已綁定其他手機，請聯絡管理員。',
     PHONE_ALREADY_BOUND_TO_OTHER_LINE: '此手機已綁定其他 LINE，請聯絡管理員。',
+    ACCOUNT_RECOVERY_REQUIRED: '此家庭已綁定其他 LINE 帳號，請完成手機所有權驗證或聯絡客服協助恢復。',
+    DATA_RECONCILIATION_PENDING: '登入身分已確認，歷史資料正在整理中，請勿重複註冊。',
+    IDENTITY_NOT_FOUND:          '既有家庭中找不到這位學員，已停止自動建立重複資料。',
+    RAGIC_UID_DUPLICATE:         '來源資料有重複 LINE 綁定，已停止自動覆蓋。',
+    RAGIC_SCHEMA_BLOCKED:        '本地登入可用，外部資料欄位設定待處理。',
+    RAGIC_SCHEMA_NOT_VERIFIED:   '本地登入可用；外部資料欄位驗證尚未完成，系統會稍後重試。',
+    LOCAL_LINK_FAILED:           '本地身分連結失敗，未建立重複資料，請聯絡客服。',
     LINE_TOKEN_EXPIRED:        'LINE 登入已逾時，請重新從 LINE 開啟此頁面。',
     LINE_CHANNEL_MISCONFIGURED:'系統設定異常，請聯繫客服協助處理（非您的操作問題）。',
     LINE_VERIFY_NETWORK_ERROR: '暫時無法連上 LINE 驗證服務，請稍後再試。',
@@ -111,6 +119,9 @@ function parentErrorMessage(err) {
     CLAIM_VERIFICATION_FAILED:  '學員姓名或登記手機號碼與資料不符，無法認領。請確認後再試，或洽櫃台 / LINE 客服。',
     CLAIM_NO_ID_ON_FILE:        '系統資料不完整，無法自動核對，請透過本館 LINE 官方帳號聯繫櫃檯協助綁定。',
   };
+  if (code === 'ACCOUNT_RECOVERY_REQUIRED' && data.recovery_request_id && data.recovery_token) {
+    return `${MAP.ACCOUNT_RECOVERY_REQUIRED} 案件編號：${data.recovery_request_id}；一次性驗證碼：${data.recovery_token}（短效，請只提供給客服）。`;
+  }
   if (code && MAP[code]) return MAP[code];
   if (status === 429) return MAP.RATE_LIMITED;
   if (serverMsg && typeof serverMsg === 'string') return serverMsg;
@@ -271,7 +282,9 @@ export default function LoginPage() {
       if (r?.status === 'bound_and_logged_in' && r.parent) {
         const parent = { ...r.parent, token: r.token || r.parent.token || null };
         setParent(parent);
-        toast.success(`歡迎，${parent.name || ''}`);
+        if (r.sync_state === 'DATA_RECONCILIATION_PENDING') toast.info('登入完成，歷史資料整理中，請勿重複註冊');
+        else if (r.sync_pending) toast.info('登入完成，Ragic 資料正在背景同步');
+        else toast.success(`歡迎，${parent.name || ''}`);
         goAfterParentAuth('success');
         return;
       }
@@ -318,7 +331,9 @@ export default function LoginPage() {
       if (r?.status === 'bound_and_logged_in' && r.parent) {
         const parent = { ...r.parent, token: r.token || r.parent.token || null };
         setParent(parent);
-        toast.success(`歡迎，${parent.name || ''}`);
+        if (r.sync_state === 'DATA_RECONCILIATION_PENDING') toast.info('登入完成，歷史資料整理中，請勿重複註冊');
+        else if (r.sync_pending) toast.info('登入完成，Ragic 資料正在背景同步');
+        else toast.success(`歡迎，${parent.name || ''}`);
         goAfterParentAuth('success');
         return;
       }

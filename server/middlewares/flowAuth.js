@@ -18,11 +18,15 @@ function getSecret() { return _adminGetSecret(); }
 
 const FLOW_TTL_SECONDS = 10 * 60; // 修改 PROMPT §1：短效 10 分鐘
 
-function signFlowToken({ lineUid, phone = null, attempts = 0 }) {
+function signFlowToken({ lineUid, phone = null, attempts = 0, studentName = null }) {
   const uid = String(lineUid || '').trim();
   if (!uid) throw new Error('signFlowToken: lineUid 必填');
   return jwt.sign(
-    { type: 'flow', lineUid: uid, phone: phone || null, attempts: Number(attempts) || 0 },
+    {
+      type: 'flow', lineUid: uid, phone: phone || null,
+      attempts: Number(attempts) || 0,
+      studentName: studentName ? String(studentName) : null,
+    },
     getSecret(),
     { expiresIn: FLOW_TTL_SECONDS }
   );
@@ -44,6 +48,7 @@ function requireFlowToken(req, res, next) {
     lineUid: payload.lineUid,
     phone: payload.phone || null,
     attempts: Number(payload.attempts) || 0,
+    studentName: payload.studentName || null,
   };
   next();
 }

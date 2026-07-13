@@ -1,0 +1,258 @@
+{
+  "manifest_version": 1,
+  "release_candidate": "parent-identity-rc-hardening",
+  "executed_at": "2026-07-13T14:50:00Z",
+  "runtime": "NODE_PATH=./server/node_modules",
+  "tests": [
+    {
+      "test_id": "T01",
+      "category": "API regression",
+      "test_file": "tests/release/parent_identity_release_cases.js",
+      "test_name": "既有 local line_uid 會員發布後登入",
+      "command": "NODE_PATH=./server/node_modules node tests/release/parent_identity_release_cases.js T01",
+      "expected_result": "Local active parent authenticates and receives the compatible successful response.",
+      "actual_result": "PASS",
+      "evidence_artifact": "tests/release/evidence/parent_identity_release_results_2026-07-13.json:T01"
+    },
+    {
+      "test_id": "T02",
+      "category": "API regression",
+      "test_file": "tests/release/parent_identity_release_cases.js",
+      "test_name": "發布前 token 發布後仍有效",
+      "command": "NODE_PATH=./server/node_modules node tests/release/parent_identity_release_cases.js T02",
+      "expected_result": "A token signed with the frozen pre-release contract remains valid.",
+      "actual_result": "PASS",
+      "evidence_artifact": "tests/release/evidence/parent_identity_release_results_2026-07-13.json:T02"
+    },
+    {
+      "test_id": "T03",
+      "category": "API regression",
+      "test_file": "tests/release/parent_identity_release_cases.js",
+      "test_name": "既有會員 Ragic call count = 0",
+      "command": "NODE_PATH=./server/node_modules node tests/release/parent_identity_release_cases.js T03",
+      "expected_result": "Existing-user local fast path succeeds with zero Ragic calls.",
+      "actual_result": "PASS",
+      "evidence_artifact": "tests/release/evidence/parent_identity_release_results_2026-07-13.json:T03"
+    },
+    {
+      "test_id": "T04",
+      "category": "API regression",
+      "test_file": "tests/release/parent_identity_release_cases.js",
+      "test_name": "Ragic offline 既有會員登入成功",
+      "command": "NODE_PATH=./server/node_modules node tests/release/parent_identity_release_cases.js T04",
+      "expected_result": "Existing-user login remains successful while Ragic is unavailable.",
+      "actual_result": "PASS",
+      "evidence_artifact": "tests/release/evidence/parent_identity_release_results_2026-07-13.json:T04"
+    },
+    {
+      "test_id": "T05",
+      "category": "Unit",
+      "test_file": "tests/release/parent_identity_release_cases.js",
+      "test_name": "只讀取 1006846 作為 LINE UID",
+      "command": "NODE_PATH=./server/node_modules node tests/release/parent_identity_release_cases.js T05",
+      "expected_result": "Identity extraction reads field 1006846 exclusively.",
+      "actual_result": "PASS",
+      "evidence_artifact": "tests/release/evidence/parent_identity_release_results_2026-07-13.json:T05"
+    },
+    {
+      "test_id": "T06",
+      "category": "Unit",
+      "test_file": "tests/release/parent_identity_release_cases.js",
+      "test_name": "chat URL 不等於 LINE UID",
+      "command": "NODE_PATH=./server/node_modules node tests/release/parent_identity_release_cases.js T06",
+      "expected_result": "LINE chat URL and display text are rejected as identity evidence.",
+      "actual_result": "PASS",
+      "evidence_artifact": "tests/release/evidence/parent_identity_release_results_2026-07-13.json:T06"
+    },
+    {
+      "test_id": "T07",
+      "category": "Integration",
+      "test_file": "tests/release/parent_identity_release_cases.js",
+      "test_name": "顯示已建立但 1006846 空白仍進 Z03",
+      "command": "NODE_PATH=./server/node_modules node tests/release/parent_identity_release_cases.js T07",
+      "expected_result": "Blank 1006846 is classified PENDING_Z03 despite display text.",
+      "actual_result": "PASS",
+      "evidence_artifact": "tests/release/evidence/parent_identity_release_results_2026-07-13.json:T07"
+    },
+    {
+      "test_id": "T08",
+      "category": "Integration",
+      "test_file": "tests/release/parent_identity_release_cases.js",
+      "test_name": "phone＋student 唯一命中 PATCH 原 Ragic Record ID",
+      "command": "NODE_PATH=./server/node_modules node tests/release/parent_identity_release_cases.js T08",
+      "expected_result": "Unique exact claim queues a PATCH for the original source record only.",
+      "actual_result": "PASS",
+      "evidence_artifact": "tests/release/evidence/parent_identity_release_results_2026-07-13.json:T08"
+    },
+    {
+      "test_id": "T09",
+      "category": "DB constraint",
+      "test_file": "tests/release/parent_identity_release_cases.js",
+      "test_name": "不建立第二 parent",
+      "command": "NODE_PATH=./server/node_modules node tests/release/parent_identity_release_cases.js T09",
+      "expected_result": "Claim reuses one canonical parent under repeated source identity.",
+      "actual_result": "PASS",
+      "evidence_artifact": "tests/release/evidence/parent_identity_release_results_2026-07-13.json:T09"
+    },
+    {
+      "test_id": "T10",
+      "category": "DB constraint",
+      "test_file": "tests/release/parent_identity_release_cases.js",
+      "test_name": "不建立第二 student",
+      "command": "NODE_PATH=./server/node_modules node tests/release/parent_identity_release_cases.js T10",
+      "expected_result": "Claim reuses one canonical student under repeated source identity.",
+      "actual_result": "PASS",
+      "evidence_artifact": "tests/release/evidence/parent_identity_release_results_2026-07-13.json:T10"
+    },
+    {
+      "test_id": "T11",
+      "category": "Integration",
+      "test_file": "tests/release/parent_identity_release_cases.js",
+      "test_name": "同 phone＋不同 Ragic ID 建立 aliases/source links",
+      "command": "NODE_PATH=./server/node_modules node tests/release/parent_identity_release_cases.js T11",
+      "expected_result": "Multiple source records become aliases of one canonical identity.",
+      "actual_result": "PASS",
+      "evidence_artifact": "tests/release/evidence/parent_identity_release_results_2026-07-13.json:T11"
+    },
+    {
+      "test_id": "T12",
+      "category": "Integration",
+      "test_file": "tests/release/parent_identity_release_cases.js",
+      "test_name": "1006846 已等於 current UID 時冪等",
+      "command": "NODE_PATH=./server/node_modules node tests/release/parent_identity_release_cases.js T12",
+      "expected_result": "Repeated exact-UID claim produces no duplicate identity or remote write.",
+      "actual_result": "PASS",
+      "evidence_artifact": "tests/release/evidence/parent_identity_release_results_2026-07-13.json:T12"
+    },
+    {
+      "test_id": "T13",
+      "category": "API regression",
+      "test_file": "tests/release/parent_identity_release_cases.js",
+      "test_name": "不同非空 UID 進 account recovery",
+      "command": "NODE_PATH=./server/node_modules node tests/release/parent_identity_release_cases.js T13",
+      "expected_result": "A non-empty conflicting UID fails closed as ACCOUNT_RECOVERY_REQUIRED.",
+      "actual_result": "PASS",
+      "evidence_artifact": "tests/release/evidence/parent_identity_release_results_2026-07-13.json:T13"
+    },
+    {
+      "test_id": "T14",
+      "category": "Integration",
+      "test_file": "tests/release/parent_identity_release_cases.js",
+      "test_name": "Priority 1 source link winner",
+      "command": "NODE_PATH=./server/node_modules node tests/release/parent_identity_release_cases.js T14",
+      "expected_result": "A unique persisted source link selects the winner.",
+      "actual_result": "PASS",
+      "evidence_artifact": "tests/release/evidence/parent_identity_release_results_2026-07-13.json:T14"
+    },
+    {
+      "test_id": "T15",
+      "category": "Integration",
+      "test_file": "tests/release/parent_identity_release_cases.js",
+      "test_name": "Priority 2 current UID winner",
+      "command": "NODE_PATH=./server/node_modules node tests/release/parent_identity_release_cases.js T15",
+      "expected_result": "A unique exact 1006846 current UID selects the winner.",
+      "actual_result": "PASS",
+      "evidence_artifact": "tests/release/evidence/parent_identity_release_results_2026-07-13.json:T15"
+    },
+    {
+      "test_id": "T16",
+      "category": "Integration",
+      "test_file": "tests/release/parent_identity_release_cases.js",
+      "test_name": "Priority 3 parent Ragic ID winner",
+      "command": "NODE_PATH=./server/node_modules node tests/release/parent_identity_release_cases.js T16",
+      "expected_result": "The canonical parent persisted Ragic record selects the winner.",
+      "actual_result": "PASS",
+      "evidence_artifact": "tests/release/evidence/parent_identity_release_results_2026-07-13.json:T16"
+    },
+    {
+      "test_id": "T17",
+      "category": "Integration",
+      "test_file": "tests/release/multiple_candidate_integration.js",
+      "test_name": "Priority 4 student source winner",
+      "command": "NODE_PATH=./server/node_modules node tests/release/multiple_candidate_integration.js P4",
+      "expected_result": "A unique canonical-student source mapping selects its Z01 candidate without name guessing.",
+      "actual_result": "PASS",
+      "evidence_artifact": "tests/release/evidence/parent_identity_release_results_2026-07-13.json:T17"
+    },
+    {
+      "test_id": "T18",
+      "category": "Integration",
+      "test_file": "tests/release/multiple_candidate_integration.js",
+      "test_name": "Priority 5 registration source winner或明確 NO_DECISION",
+      "command": "NODE_PATH=./server/node_modules node tests/release/multiple_candidate_integration.js P5",
+      "expected_result": "Only explicit registration-source evidence selects a winner; absent schema evidence returns NO_DECISION.",
+      "actual_result": "PASS",
+      "evidence_artifact": "tests/release/evidence/parent_identity_release_results_2026-07-13.json:T18"
+    },
+    {
+      "test_id": "T19",
+      "category": "Integration",
+      "test_file": "tests/release/multiple_candidate_integration.js",
+      "test_name": "Priority 6 唯一空 UID＋其餘失效來源",
+      "command": "NODE_PATH=./server/node_modules node tests/release/multiple_candidate_integration.js P6",
+      "expected_result": "A sole blank UID wins only when every other source has audited inactive state.",
+      "actual_result": "PASS",
+      "evidence_artifact": "tests/release/evidence/parent_identity_release_results_2026-07-13.json:T19"
+    },
+    {
+      "test_id": "T20",
+      "category": "Integration",
+      "test_file": "tests/release/multiple_candidate_integration.js",
+      "test_name": "無 winner 時 reconciliation pending，不新建 Ragic",
+      "command": "NODE_PATH=./server/node_modules node tests/release/multiple_candidate_integration.js NO_WINNER",
+      "expected_result": "All aliases persist against one local identity, claim is DATA_RECONCILIATION_PENDING, no Ragic create/write occurs.",
+      "actual_result": "PASS",
+      "evidence_artifact": "tests/release/evidence/parent_identity_release_results_2026-07-13.json:T20"
+    },
+    {
+      "test_id": "T21",
+      "category": "Integration",
+      "test_file": "tests/release/parent_identity_release_cases.js",
+      "test_name": "真正 0 match 才建立 Ragic Z01",
+      "command": "NODE_PATH=./server/node_modules node tests/release/parent_identity_release_cases.js T21",
+      "expected_result": "Create is queued only after a proven zero-match result.",
+      "actual_result": "PASS",
+      "evidence_artifact": "tests/release/evidence/parent_identity_release_results_2026-07-13.json:T21"
+    },
+    {
+      "test_id": "T22",
+      "category": "End-to-end",
+      "test_file": "tests/e2e/parent_local_first_registration.js",
+      "test_name": "remote create 成功但 response timeout 不重複 create",
+      "command": "NODE_PATH=./server/node_modules node tests/e2e/parent_local_first_registration.js",
+      "expected_result": "Local login succeeds and retry resolves idempotently without a second remote create.",
+      "actual_result": "PASS — idempotency, timeout login, exact UID create, rights protection",
+      "evidence_artifact": "tests/release/evidence/parent_identity_release_results_2026-07-13.json:T22"
+    },
+    {
+      "test_id": "T23",
+      "category": "Integration",
+      "test_file": "tests/release/parent_identity_release_cases.js",
+      "test_name": "source pull 不完整不得刪除 shadow／不得前進成功狀態",
+      "command": "NODE_PATH=./server/node_modules node tests/release/parent_identity_release_cases.js T23",
+      "expected_result": "Incomplete paging rolls back freshness/coverage advancement and retains every shadow row.",
+      "actual_result": "PASS",
+      "evidence_artifact": "tests/release/evidence/parent_identity_release_results_2026-07-13.json:T23"
+    },
+    {
+      "test_id": "T24",
+      "category": "Production-like DB integration",
+      "test_file": "tests/release/multiple_candidate_integration.js",
+      "test_name": "團班 source 重跑完全冪等，權益不增加",
+      "command": "NODE_PATH=./server/node_modules node tests/release/multiple_candidate_integration.js NO_WINNER",
+      "expected_result": "Repeated reconciliation does not add enrollments or change any rights aggregate/hash.",
+      "actual_result": "PASS — rights hash unchanged",
+      "evidence_artifact": "tests/release/evidence/parent_identity_release_results_2026-07-13.json:T24"
+    },
+    {
+      "test_id": "T25",
+      "category": "Production-like rollback",
+      "test_file": "tests/release/application_rollback_rehearsal.js",
+      "test_name": "application rollback 後既有會員仍登入",
+      "command": "NODE_PATH=./server/node_modules node tests/release/application_rollback_rehearsal.js",
+      "expected_result": "Previous build runs against additive DB, accepts old token/local login, ignores outbox, and RC resumes it once after redeploy.",
+      "actual_result": "PASS",
+      "evidence_artifact": "tests/release/evidence/parent_identity_release_results_2026-07-13.json:T25"
+    }
+  ]
+}

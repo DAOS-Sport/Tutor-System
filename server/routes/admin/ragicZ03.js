@@ -5,7 +5,7 @@
  * - PATCH /api/admin/ragic-z03/:id/draft ({ record, students }) — 儲存本地 Z03；完整時寫回 Ragic，LINE UID 由登入流程綁定
  * - PATCH /api/admin/ragic-z03/:id   ({ fixed_name }) — 寫回 Ragic Z01 姓名欄位並標記 resolved
  * - POST  /api/admin/ragic-z03/:id/dismiss           — 標記誤判，不寫 Ragic
- * - DELETE /api/admin/ragic-z03/:id?confirm=true      — 強制刪除（僅 admin），寫 tombstone 防下次同步復活
+ * - DELETE /api/admin/ragic-z03/:id?confirm=true      — 相容舊 UI；保留來源並轉人工審核
  *
  * Z01 本地鏡像只收「必填齊全 ＋ LINE UID 已綁定」的完成記錄；
  * 其餘（缺 UID 或任一必填缺失）一律進此佇列。櫃台只整理核心資料；UID 由家長登入自動綁定。
@@ -25,7 +25,7 @@ router.get('/stats', async (req, res) => {
     const r = await pool.query(
       `SELECT status, COUNT(*)::int AS n FROM ragic_z03_records GROUP BY status`
     );
-    const stats = { pending: 0, resolved: 0, dismissed: 0, total: 0 };
+    const stats = { pending: 0, resolved: 0, manual_review: 0, dismissed: 0, total: 0 };
     for (const row of r.rows) {
       if (stats[row.status] !== undefined) stats[row.status] = row.n;
       stats.total += row.n;
@@ -85,14 +85,14 @@ router.post('/:id/dismiss', async (req, res) => {
   }
 });
 
-// 強制刪除：router 級的 requireAdminRole('admin','manager','staff') 只擋未登入/無關角色，
-// 這裡疊加一層更嚴格的 requireAdminRole('admin')，讓「刪除」只有 admin 能做（manager/staff
-// 仍可用上面其餘唯讀/整理路由）。需帶 ?confirm=true 二次確認，防止誤觸/自動化腳本誤刪。
+// Compatibility endpoint for the older admin UI. It is admin-only and requires
+// explicit confirmation, but the service archives into manual review and keeps
+// every source row and audit record.
 router.delete('/:id', requireAdminRole('admin'), async (req, res) => {
   try {
     if (String(req.query.confirm || '') !== 'true') {
       return res.status(400).json({
-        error: '請帶 ?confirm=true 以確認強制刪除',
+        error: '請帶 ?confirm=true 以確認轉入人工審核',
         code: 'CONFIRM_REQUIRED',
       });
     }
@@ -100,9 +100,9 @@ router.delete('/:id', requireAdminRole('admin'), async (req, res) => {
       adminUsername: req.adminUser?.sub,
       reason: req.body?.reason || null,
     });
-    res.json({ ok: true, deleted: true, ...result });
+    res.json({ ok: true, deleted: false, archived: true, ...result });
   } catch (err) {
-    console.error('[admin/ragic-z03] DELETE failed:', err.message);
+    console.error('[admin/ragic-z03] archive compatibility endpoint failed:', err.message);
     res.status(400).json({ error: err.message });
   }
 });

@@ -1,0 +1,33 @@
+{
+  "release_mode": "canary_only",
+  "required_flags": {
+    "EXISTING_USER_LOCAL_FASTPATH": true,
+    "PARENT_IDENTITY_RESOLVER_V2": true,
+    "PARENT_LOCAL_FIRST": true,
+    "RAGIC_PARENT_OUTBOX": true,
+    "LEGACY_CLAIM_AUTO_CREATE": false,
+    "DESTRUCTIVE_RECONCILE_ENABLED": false,
+    "PASSED_NOT_ON_FILE_ENABLED": false
+  },
+  "existing_user_fast_path": {
+    "percentage_experiment": false,
+    "ragic_calls_allowed": 0
+  },
+  "phase_1": {
+    "mode": "allowlist",
+    "source_record_ids": ["149", "6504", "6786"],
+    "line_uid_hashes_env": "PARENT_IDENTITY_CANARY_LINE_UID_HASHES",
+    "phones_env": "PARENT_IDENTITY_CANARY_PHONES",
+    "additional_source_ids_env": "PARENT_IDENTITY_CANARY_SOURCE_RECORD_IDS"
+  },
+  "phase_2": {
+    "mode": "known_complaint_cases",
+    "required_steps": ["explain", "dry-run", "local_transaction", "outbox", "login_validation", "rights_comparison"]
+  },
+  "phase_3": {
+    "eligibility": "local_line_uid_not_found",
+    "sequence_percent": [5, 20, 50, 100],
+    "phase_env": "PARENT_IDENTITY_CANARY_PHASE=percentage",
+    "percent_env": "PARENT_IDENTITY_CANARY_PERCENT"
+  }
+}
