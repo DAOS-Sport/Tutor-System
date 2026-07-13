@@ -20,6 +20,11 @@ const PATHS = [
   ['Checkout', 'checkout_idempotency.js'],
   ['Checkout2x4', 'checkout_multi_student_periods.js'],
   ['CheckoutGroup', 'checkout_group_isolation.js'],
+  ['F-M02Scope', 'admin_checkout_scope_cancel.js'],
+  ['EnrollmentIdempotency', 'enrollment_idempotency.js'],
+  ['GroupProofPersistence', 'group_proof_persistence.js'],
+  ['ManualDeduction', 'admin_manual_deduction.js'],
+  ['SessionsRegression', 'admin_sessions_regression.js'],
   ['Flex18', 'flex_templates_verify.js'],
 ];
 

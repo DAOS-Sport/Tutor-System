@@ -152,8 +152,8 @@ router.put('/thresholds', requireAdminRole('admin'), wrap(async (req, res) => {
 router.get('/intros', requireAdminRole('admin', 'manager'), wrap(async (req, res) => {
   const status = req.query.status || 'pending_review';
   const where = status === 'all'
-    ? `WHERE is_active = TRUE`
-    : `WHERE is_active = TRUE AND intro_review_status = $1`;
+    ? `WHERE is_active = TRUE AND COALESCE(is_placeholder, FALSE) = FALSE`
+    : `WHERE is_active = TRUE AND COALESCE(is_placeholder, FALSE) = FALSE AND intro_review_status = $1`;
   const args = status === 'all' ? [] : [status];
   const r = await pool.query(
     `SELECT id, name, phone, intro_review_status, intro_review_note,

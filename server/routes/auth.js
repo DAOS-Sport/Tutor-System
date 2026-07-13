@@ -48,7 +48,9 @@ const DEMO_ACCOUNTS = {
 };
 
 router.post('/demo-login', async (req, res) => {
-  if (process.env.ALLOW_DEMO_LOGIN !== '1') {
+  // 即使有人誤把 ALLOW_DEMO_LOGIN 放進 production Secrets，也絕不可開啟 demo
+  // 身分。production 只接受真實的 LINE / JWT 身分流程。
+  if (process.env.NODE_ENV === 'production' || process.env.ALLOW_DEMO_LOGIN !== '1') {
     return res.status(404).json({ error: 'Not found' });
   }
   try {
@@ -189,7 +191,9 @@ function _issue(parent) {
   });
   return {
     id: parent.id, name: parent.name, phone: parent.phone,
-    primary_venue_id: parent.primary_venue_id, line_uid: parent.line_uid,
+    // line_uid 只供後端驗證／簽 JWT 使用，不回傳給 LIFF，避免被 browser devtools、
+    // 第三方 error reporter 或錯誤的前端 log 蒐集。
+    primary_venue_id: parent.primary_venue_id,
     gender: parent.gender || null,
     email: parent.email || null,
     identity: parent.identity || null,
@@ -315,9 +319,20 @@ async function _verifyLineUid(req, res) {
 // （parent-line-login → verify-phone/verify-student → bind，見封閉狀態機規格）。
 
 // ─────────────────────────────────────────────────────────────
+// 舊 LINE Login Channel callback 的安全相容入口。
+// 這不是 OAuth callback：不讀、不驗、不轉送 code/state/token/UID，避免把舊連結
+// 變成可重放的綁定端點。它只導回正式 LIFF /liff/bind，由 LIFF SDK 重新建立登入
+// state，後端再以 id_token 驗 audience/sub，才會進既有 UID→手機→學員認領流程。
+function redirectLegacyParentLineCallback(req, res) {
+  res.set('Cache-Control', 'no-store');
+  res.set('Referrer-Policy', 'no-referrer');
+  return res.redirect(303, '/liff/bind?source=legacy-callback');
+}
+router.get('/line/callback', redirectLegacyParentLineCallback);
+
 // 家長 LINE 登入
 //   200 { status:'logged_in',           parent, token }
-//   200 { status:'need_phone_binding',  line_uid }
+//   200 { status:'need_phone_binding' }
 // ─────────────────────────────────────────────────────────────
 router.post('/parent-line-login', async (req, res) => {
   try {
@@ -350,7 +365,6 @@ router.post('/parent-line-login', async (req, res) => {
     const flowToken = signFlowToken({ lineUid });
     return res.json({
       status: 'need_phone_binding',
-      line_uid: lineUid,
       reason: 'local_z01_not_found',
       flow_token: flowToken,
     });
@@ -576,7 +590,7 @@ router.post('/bind', requireFlowToken, async (req, res) => {
 // 家長手機綁定（legacy 一次到位版；封閉狀態機請改用上面 verify-phone/
 // verify-student/bind 三支。此端點暫保留供現行前端相容，見交付文件說明）
 //   200 { status:'bound_and_logged_in', parent, token }
-//   200 { status:'need_registration',   line_uid, phone }
+//   200 { status:'need_registration',   phone }
 //   409 LINE_ALREADY_BOUND_TO_OTHER_PHONE / PHONE_ALREADY_BOUND_TO_OTHER_LINE
 // ─────────────────────────────────────────────────────────────
 router.post('/parent-bind-phone', async (req, res) => {
@@ -616,7 +630,6 @@ router.post('/parent-bind-phone', async (req, res) => {
       }
       return res.json({
         status: 'need_registration',
-        line_uid: lineUid,
         phone,
         reason: 'local_z03_pending',
         z03_matched: true,
@@ -635,7 +648,7 @@ router.post('/parent-bind-phone', async (req, res) => {
 
     // 4) Ragic 也找不到 → 引導去註冊
     if (!ragicRow) {
-      return res.json({ status: 'need_registration', line_uid: lineUid, phone });
+      return res.json({ status: 'need_registration', phone });
     }
 
     const mapped = ragic.mapZ01Parent(ragicRow);
@@ -645,7 +658,6 @@ router.post('/parent-bind-phone', async (req, res) => {
     if (missing.length) {
       return res.json({
         status: 'need_registration',
-        line_uid: lineUid,
         phone,
         reason: 'z01_incomplete',
         missing_fields: missing.map((m) => m.key),
@@ -675,7 +687,7 @@ router.post('/parent-bind-phone', async (req, res) => {
             result: 'need_verification',
             reason: mapped.line_uid ? 'rebind_requires_claim' : 'unbound_requires_claim',
           });
-          return res.json({ status: 'need_claim_verification', line_uid: lineUid, phone });
+          return res.json({ status: 'need_claim_verification', phone });
         }
         const verdict = parentSync.classifyStudentPhoneClaim(ragicStudents, claim, mapped.phone || phone);
         // 'not_on_file'：送出的學員姓名在 Ragic 現有學員清單中完全找不到 → 視為單純

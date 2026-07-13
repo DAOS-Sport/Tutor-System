@@ -25,6 +25,7 @@ async function main() {
   await db.connect();
   const parentId = randomUUID();
   const studentId = randomUUID();
+  const requestId = `r4-${randomUUID()}`;
   let origActive = true;
   try {
     // setup：sentinel 家長 + 學生（is_active）；挑一個 active coach / venue
@@ -42,10 +43,15 @@ async function main() {
     const token = signParentToken({ parentId, phone: PHONE });
     const res = await fetch(`${BASE}/api/enrollments`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${token}`,
+        'Idempotency-Key': requestId,
+      },
       body: JSON.stringify({
         coach: { id: coach.id }, venue: { id: venue.id }, course_type: CT,
         students: [{ id: studentId }], period_count: 1,
+        request_id: requestId,
       }),
     });
     let body; try { body = await res.json(); } catch { body = null; }
@@ -58,6 +64,9 @@ async function main() {
     // 清掉可能建立的報名（修前會成立）
     await db.query(`DELETE FROM admin_enrollment_audit_logs WHERE by_user=$1`, [PHONE]).catch(() => {});
     await db.query(`DELETE FROM admin_enrollments WHERE parent_phone=$1`, [PHONE]).catch(() => {});
+    await db.query(`DELETE FROM checkout_invoices WHERE checkout_id IN (SELECT checkout_id FROM checkout_sessions WHERE parent_id=$1)`, [parentId]).catch(() => {});
+    await db.query(`DELETE FROM request_idempotency_ledger WHERE actor_type='parent' AND actor_id=$1`, [parentId]).catch(() => {});
+    await db.query(`DELETE FROM checkout_sessions WHERE parent_id=$1`, [parentId]).catch(() => {});
     await db.query(`DELETE FROM students WHERE id=$1`, [studentId]).catch(() => {});
     await db.query(`DELETE FROM parents WHERE id=$1`, [parentId]).catch(() => {});
     await db.end();

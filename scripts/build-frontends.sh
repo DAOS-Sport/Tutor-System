@@ -26,14 +26,17 @@ echo "[build] (2/3) cleaning admin assets + building"
 # 清掉整個 assets 目錄（包含未來 vite chunk 切分後的 vendor-*.js 等檔），避免殘檔累積
 rm -rf "$ROOT/server/public/admin/assets" 2>/dev/null || true
 cd "$ROOT/client/admin"
-npm install --no-audit --no-fund
+# Replit deployment containers commonly set NODE_ENV=production. Vite and the
+# React build toolchain intentionally live in devDependencies, so opt in to
+# those dependencies explicitly for this build-only install.
+npm install --include=dev --no-audit --no-fund
 VITE_USE_MOCK=false npm run build
 
 # 3. clean + build liff
 echo "[build] (3/3) cleaning liff assets + building"
 rm -rf "$ROOT/server/public/liff/assets" 2>/dev/null || true
 cd "$ROOT/client/liff"
-npm install --no-audit --no-fund
+npm install --include=dev --no-audit --no-fund
 VITE_USE_MOCK=false \
   VITE_LIFF_ID_PARENT="${VITE_LIFF_ID_PARENT:-}" \
   VITE_LIFF_ID_COACH="${VITE_LIFF_ID_COACH:-}" \

@@ -9,7 +9,7 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const { pool } = require('../../models/db');
-const { signToken, requireAdminAuth } = require('../../middlewares/adminAuth');
+const { signToken, requireAdminAuth, BACKOFFICE_ROLES } = require('../../middlewares/adminAuth');
 const {
   cleanVenueList,
   ADMIN_USER_VENUE_IDS_SELECT,
@@ -31,19 +31,22 @@ function _rateLimited(ip) {
   return arr.length > MAX_ATTEMPTS;
 }
 
-const STAFF_BACKOFFICE_ROLES = new Set(['admin', 'staff']);
-function _staffBackofficeRole(value) {
+const BACKOFFICE_ROLE_SET = new Set(BACKOFFICE_ROLES);
+function _backofficeRole(value) {
   const role = String(value || '').trim();
-  return STAFF_BACKOFFICE_ROLES.has(role) ? role : null;
+  return BACKOFFICE_ROLE_SET.has(role) ? role : null;
 }
 
 function _effectiveLoginUser(u) {
   if (!u) return null;
   const staffId = String(u.staff_id || '').trim();
   const staffRole = String(u.staff_role || '').trim();
-  const currentRole = _staffBackofficeRole(u.role);
+  const currentRole = _backofficeRole(u.role);
   if (staffId) {
     if (staffRole === 'admin' || currentRole === 'admin') return { ...u, role: 'admin' };
+    // 主管與櫃檯一樣受 venue_ids 範圍限制；不可因登入裁判漏掉 manager
+    // 而退回單館欄位或把 manager 提升成全館 admin。
+    if (staffRole === 'manager' || currentRole === 'manager') return { ...u, role: 'manager' };
     if (u.is_counter || (staffRole === 'staff' && !u.is_coach && !u.is_lifeguard)) {
       return { ...u, role: 'staff' };
     }
@@ -115,8 +118,8 @@ async function _counterStaffDefaultLogin(username, password) {
         AND TRIM(COALESCE(s.phone, '')) = $2
         AND s.active = TRUE
         AND (
-          s.role = 'admin'
-          OR u.role = 'admin'
+          s.role IN ('admin', 'manager')
+          OR u.role IN ('admin', 'manager')
           OR COALESCE(s.is_counter, FALSE) = TRUE
           OR (s.role = 'staff'
               AND COALESCE(s.is_coach, FALSE) = FALSE
@@ -140,7 +143,9 @@ async function _counterStaffDefaultLogin(username, password) {
   }
 
   const userId = staff.login_user_id || `U_${staff.id}`;
-  const loginRole = staff.role === 'admin' || staff.user_role === 'admin' ? 'admin' : 'staff';
+  const loginRole = staff.role === 'admin' || staff.user_role === 'admin'
+    ? 'admin'
+    : (staff.role === 'manager' || staff.user_role === 'manager' ? 'manager' : 'staff');
   const hash = await bcrypt.hash(phone, 10);
   const upsert = await pool.query(
     `INSERT INTO admin_users

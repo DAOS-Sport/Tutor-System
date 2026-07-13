@@ -78,6 +78,15 @@ app.use('/api/evaluations',   require('./routes/evaluations'));  // 期末評鑑
 app.use('/api/ragic-webhook', require('./routes/ragicWebhook'));  // Ragic webhook：只信 record id，必 re-fetch
 app.use('/api/admin',         require('./routes/admin'));
 
+// 舊 LINE Console 曾被文件指向無 `/api` 前綴的 callback。相容入口不接收 OAuth
+// code/state，也不會建立或綁定帳號；安全地丟棄 query 後回正式 LIFF bind 頁，
+// 由 LIFF SDK + 後端 id_token 驗證走既有流程，避免白頁與 token/UID 出現在 URL。
+app.get('/auth/line/callback', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.set('Referrer-Policy', 'no-referrer');
+  res.redirect(303, '/liff/bind?source=legacy-callback');
+});
+
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', ts: new Date().toISOString(), build: BUILD_INFO }));
 
@@ -176,40 +185,33 @@ app.use((err, req, res, next) => {
 // ── WebSocket (聊天室) ───────────────────────
 initWebSocket(server);
 
-// ── Cron Jobs ───────────────────────────────
-initCronJobs();
-
 const PORT = process.env.PORT || 3000;
 
 // 啟動順序：
 // 1) production 必須有 JWT_SECRET（assertSecretConfigured 會 throw 讓 process exit）
-// 2) 立即 listen——讓 port 先綁好，autoscale health probe 可立刻通過
-// 3) bootstrap admin_* 表、core schema、demo seed（非同步，不阻塞 health check）
+// 2) 先完成 admin/core 的 additive schema bootstrap；任何失敗都不接受流量
+// 3) schema ready 後才 listen，health=ok 代表 API 可使用，不會出現「health 已綠但新欄位
+//    尚未建立」的暫態 500。這也使部署平台保留上一個健康版本而非提早切流。
+// Demo seed 不是正式功能前置條件，維持 best-effort 且只在 DEMO_SEED 明確設定時才動作。
 (async () => {
   try {
     assertSecretConfigured();
-  } catch (err) {
-    console.error(err.message);
-    process.exit(1);
-  }
-  // 先 listen，health probe (GET /) 可立刻回 302→200，不會 timeout
-  server.listen(PORT, '0.0.0.0', () => {
-    console.log(`DAOS Server running on port ${PORT}`);
-  });
-  // bootstrap 在背景執行；失敗只影響對應功能，不阻擋已監聽的 port
-  try {
+    await objectStore.assertProductionStorageReady();
     await bootstrapAdmin();
-  } catch (err) {
-    console.error('Admin bootstrap failed (server will still start, but /api/admin may error):', err.message);
-  }
-  try {
     await bootstrapCore();
   } catch (err) {
-    console.error('Core schema bootstrap failed (LIFF coach module may error):', err.message);
+    console.error('Startup schema bootstrap failed; refusing to accept traffic:', err.message);
+    process.exit(1);
+    return;
   }
   try {
     await bootstrapDemo();
   } catch (err) {
     console.error('Demo seed bootstrap failed (DEMO_SEED ignored):', err.message);
   }
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`DAOS Server running on port ${PORT}`);
+    // 排程只在 schema ready 後啟動，避免剛部署時對尚未升級的資料表讀寫。
+    initCronJobs();
+  });
 })();

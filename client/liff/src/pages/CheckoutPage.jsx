@@ -49,7 +49,7 @@ function groupSubOrdersByStudent(subOrders) {
   return Array.from(grouped.values());
 }
 
-function getCheckoutStatusMeta(paymentStatus, hasProof, last5) {
+function getCheckoutStatusMeta(paymentStatus, hasProof, last5, paymentMethod = 'bank_transfer') {
   const status = String(paymentStatus || '');
   const isCancelled = status === 'cancelled';
   const isPaid = status === 'paid' || status === 'completed';
@@ -71,6 +71,15 @@ function getCheckoutStatusMeta(paymentStatus, hasProof, last5) {
       step: 3,
       headline: '本期課程開通完成',
       body: '櫃檯已核對款項無誤，您的上課堂數已正式開通。',
+    };
+  }
+  if (paymentMethod === 'on_site') {
+    return {
+      label: '待現場付費',
+      badgeClass: 'bg-amber-50 text-amber-700 border border-amber-200',
+      step: 2,
+      headline: '請於上課前至場館櫃檯完成付款',
+      body: '此試上訂單尚未付款；櫃檯完成收款與對帳後才會開通課程。',
     };
   }
   if (isPendingReconcile) {
@@ -172,17 +181,23 @@ export default function CheckoutPage() {
   }
 
   const venue = checkout.venue || {};
+  const isOnSite = checkout.payment_method === 'on_site';
   const accountHolder = venue.account_holder || venue.bank_account_name || '—';
   const bankName = venue.bank_institution_name || venue.bank_name || '—';
   const branchName = venue.bank_branch_name || '';
   const accountNumber = venue.account_number || venue.bank_account_number || '';
   const hasGroupOrder = subOrders.some((order) => order.group_order_id);
-  const canUpload = ['pending_payment', 'pending_reconcile'].includes(checkout.payment_status);
+  const canUpload = !isOnSite && ['pending_payment', 'pending_reconcile'].includes(checkout.payment_status);
   const paymentLocked = canUpload && checkout.has_payment_proof && !!checkout.transfer_last_5;
   const showPaymentForm = canUpload && !paymentLocked;
   const validLast5 = /^\d{5}$/.test(transferLast5.trim());
   const submitDisabled = proofBusy || !validLast5 || (!proofFile && !checkout.has_payment_proof);
-  const meta = getCheckoutStatusMeta(checkout.payment_status, checkout.has_payment_proof, checkout.transfer_last_5);
+  const meta = getCheckoutStatusMeta(
+    checkout.payment_status,
+    checkout.has_payment_proof,
+    checkout.transfer_last_5,
+    checkout.payment_method,
+  );
   const billingLabel = groupedSubOrders.length > 1
     ? `${groupedSubOrders.length}位 報名`
     : groupedSubOrders[0]?.courseType
@@ -311,7 +326,7 @@ export default function CheckoutPage() {
               {meta.step >= 2.5 ? '✓' : '2'}
             </div>
             <span className={`text-[10px] font-bold ${meta.step >= 2.5 ? 'text-slate-400' : 'text-brand-primary'}`}>
-              轉帳付款
+              {isOnSite ? '現場付費' : '轉帳付款'}
             </span>
           </div>
           <div className="mx-2 h-px flex-1 bg-slate-100" />
@@ -363,6 +378,14 @@ export default function CheckoutPage() {
           </div>
         </section>
 
+        {isOnSite && (
+          <section className="rounded-xl border border-amber-200 bg-amber-50 p-5 shadow-sm">
+            <SectionTitle>現場付費說明</SectionTitle>
+            <p className="text-xs font-semibold leading-relaxed text-amber-900">請於試上課程前至 {venue.name || '所選場館'} 櫃檯完成付款。此訂單目前是待對帳狀態，尚未標記為已付款。</p>
+            <p className="mt-2 text-[11px] leading-relaxed text-amber-800">請向櫃檯提供帳單號 {formatInvoiceId(checkout.checkout_id)}；付款後由授權人員進行對帳與開通。</p>
+          </section>
+        )}
+
         <section className="rounded-xl border border-slate-100 bg-white p-5 shadow-sm">
           <SectionTitle>本期課程細項</SectionTitle>
           <div className="space-y-3">
@@ -409,7 +432,7 @@ export default function CheckoutPage() {
           </div>
         </section>
 
-        <section className="rounded-xl border border-slate-100 bg-white p-5 shadow-sm">
+        {!isOnSite && <section className="rounded-xl border border-slate-100 bg-white p-5 shadow-sm">
           <div className="mb-3 flex items-center gap-1.5 border-b border-slate-50 pb-2">
             <span className="h-3 w-1 rounded-full bg-brand-green" />
             <h3 className="text-xs font-bold tracking-wider text-slate-800">轉帳匯款資訊</h3>
@@ -462,7 +485,7 @@ export default function CheckoutPage() {
               )}
             </button>
           </div>
-        </section>
+        </section>}
 
         {showPaymentForm ? (
           <form onSubmit={handleSubmitPayment} className="space-y-3.5 rounded-xl border border-slate-100 bg-white p-5 shadow-sm">
@@ -604,7 +627,7 @@ export default function CheckoutPage() {
 
         <section className="space-y-1 rounded-xl border border-slate-100 bg-white p-4 text-[10px] font-medium leading-relaxed text-slate-400">
           <p className="font-bold tracking-wide text-slate-500">帳單及轉帳需知：</p>
-          <p>1. 完成匯款後，請務必於本頁回填金融卡或網銀轉帳的「卡片末 5 碼」並上傳截圖，以便加速對帳開通。</p>
+          <p>{isOnSite ? '1. 此為現場付費試上訂單；完成付款前不會被標記為已付款或開通。' : '1. 完成匯款後，請務必於本頁回填金融卡或網銀轉帳的「卡片末 5 碼」並上傳截圖，以便加速對帳開通。'}</p>
           <p>2. 對於本筆合併帳單或金額明細有任何問題，請在櫃檯對帳開通前直接向場館諮詢。</p>
         </section>
 

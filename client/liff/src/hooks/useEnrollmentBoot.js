@@ -22,7 +22,13 @@ export default function useEnrollmentBoot({ coachId, venueId, courseType, onErro
     ])
       .then(([coach, venue, bp]) => {
         if (!alive) return;
-        setBootData({ coach, venue, basePrice: bp.original_price });
+        setBootData({
+          coach,
+          venue,
+          basePrice: bp.original_price,
+          trialPrice: bp.trial_price,
+          sessionsPerPeriod: bp.sessions_per_period,
+        });
       })
       .catch(() => {
         if (!alive) return;

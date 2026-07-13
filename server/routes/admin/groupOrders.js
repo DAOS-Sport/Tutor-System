@@ -18,13 +18,42 @@ const {
   requireAdminAuth, requireAdminRole, getScopedVenueIds, isVenueInScope,
 } = require('../../middlewares/adminAuth');
 const { createCheckoutSession } = require('../../services/checkouts');
+const { parseProofInput } = require('../../services/paymentProof');
+const {
+  validateRequestId,
+  payloadFingerprint,
+  acquireRequestLock,
+} = require('../../services/idempotency');
 
 const router = express.Router();
 const AMS = requireAdminRole('admin', 'manager', 'staff');
+const GROUP_APPROVAL_OPERATION = 'approve_group_order_checkouts';
+
+async function readApprovedGroupResult(client, groupOrderId, { idempotent = false } = {}) {
+  const result = await client.query(
+    `SELECT id, checkout_id
+       FROM admin_enrollments
+      WHERE group_order_id = $1
+      ORDER BY submitted_at, period_number, id`,
+    [groupOrderId]
+  );
+  const checkoutIds = [...new Set(result.rows.map((row) => row.checkout_id).filter(Boolean))];
+  return {
+    ok: true,
+    group_order_id: groupOrderId,
+    enrollment_ids: result.rows.map((row) => row.id),
+    checkout_ids: checkoutIds,
+    count: result.rowCount,
+    idempotent,
+  };
+}
 
 function genEnrollmentId() {
   const ts = Date.now().toString(36).toUpperCase();
-  const rand = Math.floor(Math.random() * 1296).toString(36).toUpperCase().padStart(2, '0');
+  // 團購核准會在同一個 transaction 內一次建立「家庭 × 期數」多筆子訂單。
+  // 兩碼隨機數在 1v3/1v4 以上很容易在同毫秒碰撞，改用與一般報名相同等級的 UUID 熵；
+  // 僅影響新單號格式，不重寫既有資料。
+  const rand = randomUUID().replace(/-/g, '').slice(0, 16).toUpperCase();
   return `E${ts}${rand}`;
 }
 
@@ -154,13 +183,69 @@ router.get('/:id', requireAdminAuth, AMS, async (req, res) => {
 
 // ── POST /:id/approve 核准 ──────────────────────────────────
 router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
+  const requestCheck = validateRequestId(req.body?.request_id || req.get('Idempotency-Key'));
+  if (requestCheck.error) {
+    return res.status(requestCheck.status).json({ error: requestCheck.error, code: requestCheck.code });
+  }
+  const requestId = requestCheck.requestId;
+  const actorId = String(req.adminUser?.sub || req.adminUser?.username || '').trim();
+  if (!actorId) return res.status(403).json({ error: '無法確認核准操作人員', code: 'ACTOR_REQUIRED' });
+  const fingerprint = payloadFingerprint({ group_order_id: String(req.params.id) });
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // lock 順序：admin/request advisory → ledger → group order row → member/order rows。
+    // 原有 group FOR UPDATE 仍保留，負責不同 admin / 不同 request 之間的狀態序列化。
+    await acquireRequestLock(client, {
+      actorId,
+      operation: GROUP_APPROVAL_OPERATION,
+      requestId,
+    });
+    const prior = await client.query(
+      `SELECT payload_fingerprint, result_entity_id, status
+         FROM request_idempotency_ledger
+        WHERE actor_type = 'admin' AND actor_id = $1
+          AND operation = $2 AND normalized_request_id = $3
+        FOR UPDATE`,
+      [actorId, GROUP_APPROVAL_OPERATION, requestId]
+    );
     const o = await client.query(`SELECT * FROM group_orders WHERE id = $1 FOR UPDATE`, [req.params.id]);
     if (!o.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: '找不到此團購' }); }
     const order = o.rows[0];
     if (!isVenueInScope(req, order.venue_id)) { await client.query('ROLLBACK'); return res.status(403).json({ error: '無權審核此場館的團購' }); }
+    if (prior.rowCount) {
+      const ledger = prior.rows[0];
+      if (ledger.payload_fingerprint !== fingerprint) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: '相同 request ID 已用於不同團購核准內容',
+          code: 'IDEMPOTENCY_PAYLOAD_MISMATCH',
+        });
+      }
+      if (ledger.status !== 'completed' || ledger.result_entity_id !== String(order.id)) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: '此 request ID 正在處理或原結果不完整，請稍後重試',
+          code: 'IDEMPOTENCY_IN_PROGRESS',
+        });
+      }
+      const existing = await readApprovedGroupResult(client, order.id, { idempotent: true });
+      if (!existing.count || !existing.checkout_ids.length) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: '此 request ID 的原始團購訂單不存在，請聯繫管理員',
+          code: 'IDEMPOTENCY_RESULT_MISSING',
+        });
+      }
+      await client.query('COMMIT');
+      return res.json(existing);
+    }
+    await client.query(
+      `INSERT INTO request_idempotency_ledger
+         (normalized_request_id, actor_type, actor_id, operation, payload_fingerprint, status)
+       VALUES ($1,'admin',$2,$3,$4,'processing')`,
+      [requestId, actorId, GROUP_APPROVAL_OPERATION, fingerprint]
+    );
     if (order.status !== 'submitted') {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '只有「待審核」的團購可以核准', code: 'NOT_SUBMITTED' });
@@ -203,21 +288,34 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
         missing_members: missingProofs,
       });
     }
+    // member proof 可能來自舊資料，或在上傳後、核准前被 bucket 管理作業移除。
+    // 在複製到 checkout/admin_enrollments 前逐筆重驗真實 object；任何 lookup
+    // failure 都整筆 rollback，不可把「格式正確但已不存在」的 key 擴散到新訂單。
+    for (const member of ms.rows) {
+      const proofInput = await parseProofInput({ payment_proof_url: member.payment_proof_url });
+      if (proofInput.error) {
+        await client.query('ROLLBACK');
+        return res.status(proofInput.status).json({ error: proofInput.error, code: proofInput.code });
+      }
+    }
 
-    const createdIds = [];
-    const groupBatchId = randomUUID();
     for (const m of ms.rows) {
       const names = m.student_names || [];
       const count = names.length || 1;
+      // 每個家庭有自己的 checkout / idempotency batch。部分舊 production schema
+      // 仍保有 enrollment_batch_id 的全域 unique constraint；共用同一 batch 會令第二個
+      // 家庭核准失敗。開課守門改以 group_order + 期數查所有 checkout，不再依賴共用 batch。
+      const memberBatchId = randomUUID();
       // 訂單依期數拆分：每位成員的 N 期各自一筆（period_count=1，6 堂），各自付款/對帳。
       const perPeriodPrice = perStudent * count; // 單期（該成員所有學員）
       const checkout = await createCheckoutSession(client, {
         parentId: m.parent_id,
-        enrollmentBatchId: groupBatchId,
+        enrollmentBatchId: memberBatchId,
         totalAmount: perPeriodPrice * periodCount,
         transferLast5: m.transfer_last_5 || null,
         paymentProofUrl: m.payment_proof_url || null,
         by: req.adminUser?.username || 'system',
+        requestFingerprint: fingerprint,
       });
       for (let j = 1; j <= periodCount; j += 1) {
         const eid = genEnrollmentId();
@@ -230,7 +328,7 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
           [
             eid, m.parent_name, m.parent_phone, names, coachName, order.coach_id,
             order.venue_id, order.course_type, perPeriodPrice, perPeriodPrice, m.transfer_last_5 || null, m.payment_proof_url,
-            order.id, j, groupBatchId, checkout.checkoutId,
+            order.id, j, memberBatchId, checkout.checkoutId,
           ]
         );
         await client.query(
@@ -238,7 +336,6 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
            VALUES ($1, $2, $3)`,
           [eid, '團購核准建立報名', req.adminUser?.username || 'system']
         );
-        createdIds.push(eid);
       }
     }
 
@@ -247,11 +344,19 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
         WHERE id=$1`,
       [order.id, req.adminUser?.username || 'system']
     );
+    await client.query(
+      `UPDATE request_idempotency_ledger
+          SET result_entity_id = $4, status = 'completed', completed_at = NOW()
+        WHERE actor_type = 'admin' AND actor_id = $1
+          AND operation = $2 AND normalized_request_id = $3`,
+      [actorId, GROUP_APPROVAL_OPERATION, requestId, order.id]
+    );
+    const response = await readApprovedGroupResult(client, order.id);
     await client.query('COMMIT');
-    res.json({ ok: true, enrollment_ids: createdIds, count: createdIds.length });
+    res.json(response);
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (_) {}
-    console.error('[admin/group-orders approve]', err);
+    console.error('[admin/group-orders approve]', { code: err?.code || 'UNEXPECTED' });
     res.status(500).json({ error: '核准失敗' });
   } finally {
     client.release();
@@ -279,5 +384,8 @@ router.post('/:id/reject', requireAdminAuth, AMS, async (req, res) => {
     res.status(500).json({ error: '退回失敗' });
   }
 });
+
+// 純函式只供不連 DB 的 regression test 使用；路由對外行為不受影響。
+router.__test__ = { genEnrollmentId };
 
 module.exports = router;

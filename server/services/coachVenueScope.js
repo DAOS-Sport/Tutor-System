@@ -77,6 +77,7 @@ const COACH_STAFF_PROFILE_SELECT = `
   c.ragic_data_no,
   c.created_at,
   c.updated_at,
+  COALESCE(c.is_placeholder, FALSE) AS is_placeholder,
   c.is_active AS coach_profile_active,
   s.active AS staff_active,
   (COALESCE(s.active, FALSE) AND COALESCE(c.is_active, FALSE)) AS is_active,

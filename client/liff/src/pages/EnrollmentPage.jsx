@@ -30,10 +30,13 @@ export default function EnrollmentPage() {
   const venueId = params.get('venue');
   const initialCourseType = Number(params.get('courseType') || 1);
   const coachId = params.get('coach');
+  const initialTrial = params.get('trial') === '1';
 
   // 組別由顧客在首頁「商品」選好後帶進來（?courseType=N），報名頁不再重複讓人選，避免誤導。
   const [courseType] = useState(initialCourseType);
   const [periodCount, setPeriodCount] = useState(1);
+  const [isTrial, setIsTrial] = useState(initialTrial);
+  const [paymentMethod, setPaymentMethod] = useState(initialTrial ? 'on_site' : 'bank_transfer');
   const [selectedSelfStudents, setSelectedSelfStudents] = useState([]);
   const [submitting, setSubmitting] = useState(false);
   const [couponInput, setCouponInput] = useState('');
@@ -55,9 +58,22 @@ export default function EnrollmentPage() {
     setSelectedSelfStudents([]);
   }, [courseType]);
 
+  // 試上永遠是一位學員、一堂；切回一般報名時只清除試上專屬付款方式，其他既有流程不變。
+  useEffect(() => {
+    if (isTrial) {
+      setPeriodCount(1);
+      setSelectedSelfStudents([]);
+      setActiveCoupon('');
+      setCouponInput('');
+      setPaymentMethod('on_site');
+    } else {
+      setPaymentMethod('bank_transfer');
+    }
+  }, [isTrial]);
+
   // 1對N 須剛好湊滿 N 位（min=max=courseType）；同組多家庭請改走團購（GroupCreate）。
-  const maxStudents = courseType;
-  const minStudents = courseType;
+  const maxStudents = isTrial ? 1 : courseType;
+  const minStudents = isTrial ? 1 : courseType;
   const totalSelected = selectedSelfStudents.length;
   const pricingStudentCount = Math.max(totalSelected, minStudents);
 
@@ -67,6 +83,7 @@ export default function EnrollmentPage() {
     couponCode: activeCoupon || undefined,
     studentCount: pricingStudentCount,
     periodCount,
+    orderKind: isTrial ? 'trial' : 'standard',
   });
 
   if (bootError) return <ErrorBlock message={bootError} onBack={() => navigate('/', { replace: true })} />;
@@ -123,10 +140,12 @@ export default function EnrollmentPage() {
         venue: { id: venue.id, name: venue.name },
         course_type: courseType,
         period_count: periodCount,
+        order_kind: isTrial ? 'trial' : 'standard',
+        payment_method: isTrial ? paymentMethod : 'bank_transfer',
         students: allSelectedStudents.map((s) => ({ id: s.id, name: s.name })),
         original_price: pricing.subtotal,
         final_price: pricing.final,
-        promotion: pricing.promo
+        promotion: !isTrial && pricing.promo
           ? { id: pricing.promo.id, discount: pricing.discount, coupon_code: pricing.promo.coupon_code || null }
           : null,
       });
@@ -172,12 +191,42 @@ export default function EnrollmentPage() {
         <p className="mt-0.5 text-xs text-gray-500">{venue.name}</p>
       </div>
 
+      <div className="mt-2 rounded-xl border border-gray-200 bg-white p-3">
+        <span className="mb-2 block text-xs font-medium text-gray-600">報名方式</span>
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => setIsTrial(false)}
+            className={`min-w-0 rounded-lg border px-3 py-2 text-sm font-bold transition ${
+              !isTrial
+                ? 'border-brand-teal bg-brand-teal/10 text-brand-primary'
+                : 'border-gray-200 bg-white text-gray-600 hover:border-brand-teal/50'
+            }`}
+          >
+            一般報名
+          </button>
+          <button
+            type="button"
+            onClick={() => setIsTrial(true)}
+            className={`min-w-0 rounded-lg border px-3 py-2 text-sm font-bold transition ${
+              isTrial
+                ? 'border-brand-teal bg-brand-teal/10 text-brand-primary'
+                : 'border-gray-200 bg-white text-gray-600 hover:border-brand-teal/50'
+            }`}
+          >
+            試上單次課
+          </button>
+        </div>
+        {isTrial && <p className="mt-2 text-xs leading-relaxed text-gray-500">試上限一位學員、一堂課，可選擇現場付費或轉帳。</p>}
+      </div>
+
       {/* 購買期數（下拉；費用會隨期數變動） */}
       <div className="mt-2 rounded-xl border border-gray-200 bg-white p-3">
         <label className="mb-1 block text-xs font-medium text-gray-600">購買期數</label>
         <select
           value={periodCount}
           onChange={(e) => setPeriodCount(Number(e.target.value))}
+          disabled={isTrial}
           className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm font-bold text-gray-800 focus:border-brand-teal focus:outline-none"
         >
           {[1, 2, 3, 4, 5, 6].map((n) => (
@@ -196,7 +245,21 @@ export default function EnrollmentPage() {
 
       <PriceBreakdown pricing={pricing} multiplier={coach.multiplier} isSenior={coach.is_senior} />
 
-      <div className="mt-2 rounded-xl border border-gray-200 bg-white p-3">
+      {isTrial && (
+        <div className="mt-2 rounded-xl border border-gray-200 bg-white p-3">
+          <label className="mb-1 block text-xs font-medium text-gray-600">付款方式</label>
+          <select
+            value={paymentMethod}
+            onChange={(e) => setPaymentMethod(e.target.value)}
+            className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm font-bold text-gray-800 focus:border-brand-teal focus:outline-none"
+          >
+            <option value="on_site">現場付費</option>
+            <option value="bank_transfer">轉帳付款</option>
+          </select>
+        </div>
+      )}
+
+      {!isTrial && <div className="mt-2 rounded-xl border border-gray-200 bg-white p-3">
         <label className="mb-1 block text-xs font-medium text-gray-600">折價券代碼（選填）</label>
         <div className="flex gap-2">
           <input
@@ -226,7 +289,7 @@ export default function EnrollmentPage() {
         {activeCoupon && !pricing.previewLoading && pricing.promo?.coupon_code && pricing.discount > 0 && (
           <p className="mt-1 text-xs text-brand-green">已套用：{pricing.promo.name}（折抵 NT${pricing.discount.toLocaleString()}）</p>
         )}
-      </div>
+      </div>}
 
       <button
         type="button"
@@ -234,11 +297,11 @@ export default function EnrollmentPage() {
         onClick={() => { if (canSubmit) handleConfirmSubmit(); }}
         className="mt-4 w-full rounded-lg bg-brand-primary py-3.5 text-base font-bold text-white active:bg-brand-teal disabled:bg-gray-300"
       >
-        {submitting ? '送出中…' : '下一步：填寫轉帳資料'}
+        {submitting ? '送出中…' : isTrial && paymentMethod === 'on_site' ? '確認試上現場付費' : '下一步：填寫轉帳資料'}
       </button>
 
       {/* 發起團購：移到最下面、移除上方行銷文案；帶入已選的組別/期數/學員。1V1 不開團。 */}
-      {courseType !== 1 && (
+      {!isTrial && courseType !== 1 && (
         <button
           type="button"
           onClick={() => {

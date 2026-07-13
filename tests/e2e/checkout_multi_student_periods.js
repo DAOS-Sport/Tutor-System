@@ -79,6 +79,7 @@ const { call, assert, step } = require('./_lib');
     }
     if (cleanup.checkoutId) {
       await pg.query(`DELETE FROM checkout_invoices WHERE checkout_id=$1`, [cleanup.checkoutId]).catch(() => {});
+      await pg.query(`DELETE FROM request_idempotency_ledger WHERE result_entity_id=$1`, [cleanup.checkoutId]).catch(() => {});
       await pg.query(`DELETE FROM checkout_sessions WHERE checkout_id=$1`, [cleanup.checkoutId]).catch(() => {});
     }
     await pg.end();

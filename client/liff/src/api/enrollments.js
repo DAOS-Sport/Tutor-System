@@ -3,7 +3,11 @@ import { mockDb } from './mock';
 
 export const enrollmentsApi = {
   create: (payload) =>
-    callApi('/enrollments', { method: 'post', data: payload }, () => mockDb.createEnrollment(payload)),
+    callApi('/enrollments', {
+      method: 'post',
+      data: payload,
+      headers: payload?.request_id ? { 'Idempotency-Key': payload.request_id } : undefined,
+    }, () => mockDb.createEnrollment(payload)),
 
   // U3：匯款／轉帳證明上傳（家長端，限 JPG/PNG ≤5MB；回傳 { url }）
   uploadPaymentProof: (file) => {

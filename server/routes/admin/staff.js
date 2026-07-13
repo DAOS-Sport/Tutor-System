@@ -303,6 +303,7 @@ function rowToStaff(r) {
     is_senior: !!r.is_senior,
     multiplier: Number(r.multiplier),
     active: !!r.active,
+    is_placeholder: !!r.is_placeholder,
     has_coach_profile: hasCoachProfile,
     is_coach_profile: isDualRoleCoach,
     coach_profile_status: coachProfileStatus,
@@ -609,7 +610,8 @@ router.delete('/bulk', requireAdminAuth, requireAdminRole('admin'), async (req, 
     await ensureAuditLogsTable(client);
 
     const staffRes = await client.query(
-      `SELECT id, name FROM admin_staff WHERE id = ANY($1::text[]) FOR UPDATE`,
+      `SELECT id, name, COALESCE(is_placeholder, FALSE) AS is_placeholder
+         FROM admin_staff WHERE id = ANY($1::text[]) FOR UPDATE`,
       [staffIds]
     );
     const staffRows = staffRes.rows;
@@ -617,6 +619,10 @@ router.delete('/bulk', requireAdminAuth, requireAdminRole('admin'), async (req, 
     if (!deletedStaffIds.length) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: '找不到要刪除的員工' });
+    }
+    if (staffRows.some((row) => row.is_placeholder)) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '系統「待分配」教練不可刪除；請改派既有訂單的正式教練', code: 'PLACEHOLDER_PROTECTED' });
     }
     const counts = {};
     let coachRows = [];
@@ -711,7 +717,11 @@ router.get('/coaches',
       const { venueId, status = 'active' } = req.query;
       // Task #91 fix：包含 dual-role 兼任教練（s.role != 'coach' 但 c.id 存在且 c.is_active=TRUE）。
       // 否則「行政櫃檯啟用教練 LIFF 身分」之後，報名 / 排課的教練下拉看不到他。
-      const where = [`c.id IS NOT NULL`, `(s.role = 'coach' OR c.is_active = TRUE)`];
+      const where = [
+        `c.id IS NOT NULL`,
+        `(s.role = 'coach' OR c.is_active = TRUE)`,
+        `(COALESCE(c.is_placeholder, FALSE) = TRUE OR TRIM(COALESCE(c.name, '')) NOT IN ('待分配', '01待分配'))`,
+      ];
       const params = [];
       if (status === 'active') {
         where.push(`s.active = TRUE`);
@@ -732,7 +742,7 @@ router.get('/coaches',
           FROM admin_staff s
           JOIN coaches c ON c.ragic_employee_id = s.id
          WHERE ${where.join(' AND ')}
-         ORDER BY s.name`;
+         ORDER BY COALESCE(c.is_placeholder, FALSE) DESC, s.name`;
       const r = await pool.query(sql, params);
       res.json(r.rows.map((row) => ({
         id: row.id,
@@ -743,6 +753,7 @@ router.get('/coaches',
         pricing_multiplier: Number(row.pricing_multiplier),
         multiplier: Number(row.pricing_multiplier),
         is_active: !!row.is_active,
+        is_placeholder: !!row.is_placeholder,
         venue_ids: cleanVenueList(row.venue_ids),
       })));
     } catch (err) {
@@ -858,6 +869,9 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
     const patch = req.body || {};
     const cur = await client.query(`SELECT * FROM admin_staff WHERE id = $1`, [id]);
     if (!cur.rowCount) return res.status(404).json({ error: 'staff not found' });
+    if (cur.rows[0].is_placeholder) {
+      return res.status(409).json({ error: '系統「待分配」教練不可編輯；請在訂單上改派正式教練', code: 'PLACEHOLDER_PROTECTED' });
+    }
 
     if (patch.role && !VALID_ROLES.includes(patch.role)) {
       return res.status(400).json({ error: '角色不合法' });

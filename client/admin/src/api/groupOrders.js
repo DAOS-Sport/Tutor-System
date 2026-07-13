@@ -4,6 +4,13 @@ import { callApi } from './client';
 export const groupOrdersApi = {
   list:    (status)        => callApi('/group-orders', { params: status ? { status } : {} }, () => []),
   get:     (id)            => callApi(`/group-orders/${id}`, {}, () => null),
-  approve: (id)            => callApi(`/group-orders/${id}/approve`, { method: 'post' }, () => ({ ok: true })),
+  approve: (id)            => {
+    const requestId = `group-approve:${id}`;
+    return callApi(`/group-orders/${id}/approve`, {
+      method: 'post',
+      data: { request_id: requestId },
+      headers: { 'Idempotency-Key': requestId },
+    }, () => ({ ok: true }));
+  },
   reject:  (id, reason)    => callApi(`/group-orders/${id}/reject`, { method: 'post', data: { reason } }, () => ({ ok: true })),
 };

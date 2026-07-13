@@ -39,6 +39,7 @@ import GroupCreatePage from './pages/GroupCreatePage';
 import GroupJoinPage from './pages/GroupJoinPage';
 import GroupStatusPage from './pages/GroupStatusPage';
 import SlotBookingPage from './pages/SlotBookingPage';
+import LineBindPage from './pages/LineBindPage';
 
 function RequireAuth() {
   const { isAuthed } = useAuth();
@@ -77,6 +78,7 @@ export default function App() {
         <Routes>
           <Route element={<AppLayout />}>
             <Route path="/login" element={<LoginPage />} />
+            <Route path="/bind" element={<LineBindPage />} />
             <Route path="/demo" element={<DemoLoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
           </Route>

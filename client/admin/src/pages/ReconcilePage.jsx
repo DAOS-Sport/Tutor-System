@@ -18,14 +18,53 @@ import ImageLightbox from '../components/ImageLightbox';
 
 const EMPTY_FILTERS = {
   submittedFrom: '', submittedTo: '', phone: '', parentName: '', studentName: '',
-  coach: '', courseType: '', last5: '',
+  coach: '', courseType: '', last5: '', venueId: '',
 };
 
 const INVOICE_RE = /^[A-Z]{2}\d{8}$/;
 
+// 場館是 checkout 的子訂單資料。優先使用後端提供的穩定 { venue_id, venue_name }
+// 契約，舊回應才退回子訂單欄位；不可拿母單第一筆 venue 代表全部子訂單。
+function checkoutVenueEntries(checkout) {
+  const source = Array.isArray(checkout?.venues) && checkout.venues.length
+    ? checkout.venues
+    : (checkout?.sub_orders || []);
+  const seen = new Set();
+  return source
+    .map((venue) => {
+      const venueId = venue?.venue_id ?? venue?.id;
+      if (venueId == null || venueId === '') return null;
+      const id = String(venueId);
+      if (seen.has(id)) return null;
+      seen.add(id);
+      return {
+        venue_id: id,
+        venue_name: venue?.venue_name || venue?.name || id,
+      };
+    })
+    .filter(Boolean);
+}
+
+function VenueBadges({ checkout, className = '' }) {
+  const entries = checkoutVenueEntries(checkout);
+  if (!entries.length) return <span className="text-xs text-gray-400">未綁定場館</span>;
+  return (
+    <div className={`flex flex-wrap gap-1 ${className}`}>
+      {entries.map((venue) => (
+        <span
+          key={venue.venue_id}
+          title={`${venue.venue_name} (${venue.venue_id})`}
+          className="inline-flex max-w-[10rem] truncate rounded-full border border-brand-teal/30 bg-brand-teal/10 px-2 py-0.5 text-xs font-medium text-brand-primary"
+        >
+          {venue.venue_name}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
   const toast = useToast();
-  const { user } = useAuth();
   const fileRef = useRef(null);
   const [invoiceNumber, setInvoiceNumber] = useState('');
   const [invoiceUrl, setInvoiceUrl] = useState('');
@@ -60,7 +99,6 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
       const { url: imageUrl } = await enrollmentsApi.uploadInvoice(imageFile);
       setUploading(false);
       await checkoutsApi.reconcile(checkout.checkout_id, {
-        by: user.name,
         invoice_number: invoiceNumber,
         invoice_image_url: imageUrl,
         invoice_url: invoiceUrl.trim() || undefined,
@@ -211,7 +249,7 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
 
 export default function ReconcilePage() {
   const toast = useToast();
-  const { user, isStaff } = useAuth();
+  const { isAdmin, venueIds } = useAuth();
   // 對帳改由行政櫃檯處理：staff 亦可對帳（後端 reconcile 已開放 staff）。
   const canReconcile = true;
   const [list, setList] = useState(null);
@@ -219,19 +257,31 @@ export default function ReconcilePage() {
   const [confirming, setConfirming] = useState(null);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [cancelling, setCancelling] = useState(null);
+  const [cancelReason, setCancelReason] = useState('');
   const [cancelBusy, setCancelBusy] = useState(false);
   const [expanded, setExpanded] = useState({});
+  const loadVersionRef = useRef(0);
 
-  async function load() {
-    // Task #90 修正：多場館櫃檯不再鎖單一主場館。不帶 venueId → 後端依 venue_ids scope
-    // 顯示「所屬全部場館」的待對帳清單（原本 isStaff 帶 user.venue_id 只會看到主場館＝新北）。
-    const [data, vs] = await Promise.all([
-      checkoutsApi.list({ status: 'pending' }),
-      venuesApi.list(),
-    ]);
-    setList(data); setVenues(vs);
+  async function load(venueId = filters.venueId) {
+    const loadVersion = ++loadVersionRef.current;
+    try {
+      // 場館篩選送進 API；後端仍以 token venue_ids 交集裁判，不能只相信前端下拉選單。
+      const [data, vs] = await Promise.all([
+        checkoutsApi.list({ status: 'pending', venueId: venueId || undefined }),
+        venuesApi.list(),
+      ]);
+      // 場館下拉快速切換時，舊請求不可覆蓋較新的篩選結果。
+      if (loadVersion !== loadVersionRef.current) return;
+      setList(Array.isArray(data) ? data : []);
+      setVenues(Array.isArray(vs) ? vs : []);
+    } catch (err) {
+      if (loadVersion !== loadVersionRef.current) return;
+      setList([]);
+      setVenues([]);
+      toast.error(err?.response?.data?.error || '載入待對帳清單失敗');
+    }
   }
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [filters.venueId]);
 
   const coachOptions = useMemo(() => {
     const names = new Set((list || []).flatMap((r) => (r.sub_orders || []).map((o) => o.coach)).filter(Boolean));
@@ -243,6 +293,17 @@ export default function ReconcilePage() {
     return [...types].sort((a, b) => a - b).map((t) => ({ value: String(t), label: courseTypeLabel(t) }));
   }, [list]);
 
+  const isVenueScoped = !isAdmin;
+  const venueOptions = useMemo(() => {
+    const allowed = isVenueScoped
+      ? venues.filter((venue) => venueIds.map(String).includes(String(venue.id)))
+      : venues;
+    return [
+      { value: '', label: isVenueScoped ? '全部（我的場館）' : '全部場館' },
+      ...allowed.map((venue) => ({ value: String(venue.id), label: venue.name || venue.id })),
+    ];
+  }, [venues, isVenueScoped, venueIds]);
+
   const filterFields = [
     { key: 'submitted', label: '報名日期', type: 'dateRange' },
     { key: 'phone', label: '行動電話', type: 'input', placeholder: '家長手機' },
@@ -251,6 +312,7 @@ export default function ReconcilePage() {
     { key: 'coach', label: '教練', type: 'combo', options: coachOptions, placeholder: '可輸入或選擇' },
     { key: 'courseType', label: '組別', type: 'select',
       options: [{ value: '', label: '全部' }, ...courseTypeOptions] },
+    { key: 'venueId', label: '場館', type: 'select', options: venueOptions },
     { key: 'last5', label: '末五碼', type: 'input', placeholder: '轉帳末 5 碼' },
   ];
 
@@ -261,6 +323,7 @@ export default function ReconcilePage() {
     const studentQ = filters.studentName.trim().toLowerCase();
     const coachQ = filters.coach.trim().toLowerCase();
     const last5Q = filters.last5.trim();
+    const venueQ = filters.venueId;
     return list.filter((r) => {
       if (filters.submittedFrom && (r.submitted_at || '').slice(0, 10) < filters.submittedFrom) return false;
       if (filters.submittedTo && (r.submitted_at || '').slice(0, 10) > filters.submittedTo) return false;
@@ -270,6 +333,7 @@ export default function ReconcilePage() {
       if (studentQ && !orders.some((o) => (o.students || []).some((s) => (s || '').toLowerCase().includes(studentQ)))) return false;
       if (coachQ && !orders.some((o) => (o.coach || '').toLowerCase().includes(coachQ))) return false;
       if (filters.courseType && !orders.some((o) => String(o.course_type) === filters.courseType)) return false;
+      if (venueQ && !checkoutVenueEntries(r).some((venue) => venue.venue_id === venueQ)) return false;
       if (last5Q && !(r.transfer_last_5 || '').includes(last5Q)) return false;
       return true;
     });
@@ -277,12 +341,16 @@ export default function ReconcilePage() {
 
   async function handleCancelConfirm() {
     if (!cancelling) return;
+    const reason = cancelReason.trim();
+    if (!reason) { toast.warning('請填寫取消原因'); return; }
     setCancelBusy(true);
     try {
-      const updated = await checkoutsApi.cancel(cancelling.checkout_id, { by: user.name });
-      setList((prev) => prev.map((r) => (r.checkout_id === cancelling.checkout_id ? { ...r, ...updated } : r)));
+      await checkoutsApi.cancel(cancelling.checkout_id, { reason });
+      // 僅在 API 成功後才移除；失敗時保留原列，避免前端假裝取消成功。
+      setList((prev) => (prev || []).filter((row) => row.checkout_id !== cancelling.checkout_id));
       toast.success('已取消此付款單');
       setCancelling(null);
+      setCancelReason('');
     } catch (err) {
       toast.error(err?.response?.data?.error || '取消失敗');
     } finally {
@@ -309,14 +377,23 @@ export default function ReconcilePage() {
       key: 'checkout_id',
       label: 'Checkout_ID',
       render: (r) => (
-        <button
-          type="button"
-          className="text-left font-mono text-xs text-brand-primary underline-offset-2 hover:underline"
-          onClick={() => setExpanded((prev) => ({ ...prev, [r.checkout_id]: !prev[r.checkout_id] }))}
-        >
-          {r.checkout_id}
-        </button>
+        <div className="min-w-[132px]">
+          <button
+            type="button"
+            className="text-left font-mono text-xs text-brand-primary underline-offset-2 hover:underline"
+            onClick={() => setExpanded((prev) => ({ ...prev, [r.checkout_id]: !prev[r.checkout_id] }))}
+          >
+            {r.checkout_id}
+          </button>
+          {/* 窄螢幕橫向表格時，仍在第一欄呈現館別，不能只藏在右側欄位。 */}
+          <VenueBadges checkout={r} className="mt-1 md:hidden" />
+        </div>
       ),
+    },
+    {
+      key: 'venues',
+      label: '場館',
+      render: (r) => <VenueBadges checkout={r} />,
     },
     { key: 'submitted_at', label: '送出時間', render: (r) => <span className="text-xs text-gray-600">{formatTWDateTime(r.submitted_at)}</span> },
     { key: 'parent', label: '家長', render: (r) => <div><div className="font-medium">{r.parent_name}</div><div className="text-xs text-gray-500">{r.parent_phone}</div></div> },
@@ -345,7 +422,7 @@ export default function ReconcilePage() {
                     </div>
                     <div className="mt-1">{(order.students || []).join('、') || '—'}</div>
                     <div className="mt-0.5 text-gray-500">
-                      {order.coach}／{venueName(order.venue_id)}／{courseTypeLabel(order.course_type)}／第 {order.period_number || 1} 期
+                      {order.coach}／{order.venue_name || venueName(order.venue_id)}／{courseTypeLabel(order.course_type)}／第 {order.period_number || 1} 期
                     </div>
                   </div>
                 ))}
@@ -376,7 +453,7 @@ export default function ReconcilePage() {
             <button className="rounded-md bg-brand-green px-3 py-1.5 text-xs font-bold text-white hover:bg-brand-teal"
               onClick={() => setConfirming(r)}>對帳通過</button>
             <button className="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-bold text-gray-600 hover:bg-gray-100"
-              onClick={() => setCancelling(r)}>取消</button>
+              onClick={() => { setCancelReason(''); setCancelling(r); }}>取消</button>
           </div>
         );
       },
@@ -387,7 +464,7 @@ export default function ReconcilePage() {
     <div>
       <PageHeader
         title="待對帳清單"
-        subtitle={`F-M02 · 共 ${list.length} 筆等待對帳${isStaff ? '（限您管轄的場館）' : ''}`}
+        subtitle={`F-M02 · 共 ${list.length} 筆等待對帳${isVenueScoped ? '（限您管轄的場館）' : ''}`}
         actions={
           <ExportMenu
             disabled={!list || list.length === 0}
@@ -416,17 +493,35 @@ export default function ReconcilePage() {
       )}
       <ConfirmDialog
         open={!!cancelling}
-        title="確定取消此筆報名？"
+        title="確定取消此筆付款單？"
         confirmLabel="確定取消" cancelLabel="返回"
-        tone="danger" busy={cancelBusy}
+        tone="danger" busy={cancelBusy} confirmDisabled={!cancelReason.trim()}
         onConfirm={handleCancelConfirm}
-        onCancel={() => setCancelling(null)}
+        onCancel={() => {
+          if (cancelBusy) return;
+          setCancelling(null);
+          setCancelReason('');
+        }}
       >
         {cancelling && (
-          <>
-            {cancelling.parent_name}／{cancelling.sub_orders?.length || 0} 筆子訂單，末 5 碼 {cancelling.transfer_last_5 || '—'}。
-            取消後將顯示為「已取消」，此動作無法復原。
-          </>
+          <div className="space-y-3">
+            <p>
+              {cancelling.parent_name}／{cancelling.sub_orders?.length || 0} 筆子訂單，末 5 碼 {cancelling.transfer_last_5 || '—'}。
+              取消後會從待對帳清單移除，仍可在「所有報名」的已取消篩選中追查。
+            </p>
+            <label className="block">
+              <span className="mb-1 block text-xs font-semibold text-gray-700">取消原因 <span className="text-brand-error">*</span></span>
+              <textarea
+                value={cancelReason}
+                maxLength={500}
+                rows={3}
+                disabled={cancelBusy}
+                onChange={(e) => setCancelReason(e.target.value)}
+                placeholder="請記錄取消原因（最多 500 字）"
+                className="w-full resize-y rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none disabled:bg-gray-100"
+              />
+            </label>
+          </div>
         )}
       </ConfirmDialog>
     </div>

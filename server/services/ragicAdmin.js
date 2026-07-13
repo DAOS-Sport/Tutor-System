@@ -1545,7 +1545,8 @@ async function _applyStaffChange(row, client) {
   if (row.change_type === 'deactivate') {
     await client.query(
       `UPDATE admin_staff SET active = FALSE, last_synced_at = NOW()
-         WHERE id = $1 AND active_overridden_at IS NULL`,
+         WHERE id = $1 AND active_overridden_at IS NULL
+           AND COALESCE(is_placeholder, FALSE) = FALSE`,
       [row.entity_id]
     );
     if (p.name) {
@@ -1788,7 +1789,8 @@ async function _applyCoachChange(row, client) {
   if (row.change_type === 'deactivate') {
     await client.query(
       `UPDATE coaches SET is_active = FALSE, updated_at = NOW()
-         WHERE ragic_employee_id = $1 AND active_overridden_at IS NULL`,
+         WHERE ragic_employee_id = $1 AND active_overridden_at IS NULL
+           AND COALESCE(is_placeholder, FALSE) = FALSE`,
       [row.entity_id]
     );
     return;

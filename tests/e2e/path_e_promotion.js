@@ -1,7 +1,7 @@
 // 路徑 E：優惠完整生命週期 + 角色授權測試
-// 1) admin 建一筆 promotion（venue_id=B 限定）→ submit → approve → 驗 status=active
-// 2) 角色授權：staff 角色不可 approve（路由僅 admin）→ 驗 403
-// 3) manager 也不可 approve（路由僅 admin）→ 驗 403
+// 1) admin 建一筆 promotion（venue_id=B 限定）→ submit → manager approve → 驗 status=active
+// 2) 角色授權：staff 角色不可 approve → 驗 403
+// 3) manager 依既有 admin/manager 生命週期規則可 approve → 驗 200
 // 4) DB row 驗 applicable_venue_ids=['B']（前端 / staff 端依此過濾）
 // 5) archive → 驗 status=archived
 const { Client } = require('../../server/node_modules/pg');
@@ -40,16 +40,13 @@ const { call, assert, step, loginAdmin } = require('./_lib');
     const sub = await call('POST', `/api/admin/promotions/${pid}/submit`, { token: adminToken });
     assert(sub.status === 200, `submit 200`);
 
-    // manager 不可 approve（路由限 admin）
-    const mgrApp = await call('POST', `/api/admin/promotions/${pid}/approve`, { token: managerToken });
-    assert(mgrApp.status === 403, `manager approve 403，實際 ${mgrApp.status}`);
-
     // staff 不可 approve
     const stApp = await call('POST', `/api/admin/promotions/${pid}/approve`, { token: staffToken });
     assert(stApp.status === 403, `staff approve 403，實際 ${stApp.status}`);
 
-    const app = await call('POST', `/api/admin/promotions/${pid}/approve`, { token: adminToken });
-    assert(app.status === 200, `admin approve 200`);
+    // baseline route 的既有規則是 admin/manager 皆可管理完整生命週期。
+    const mgrApp = await call('POST', `/api/admin/promotions/${pid}/approve`, { token: managerToken });
+    assert(mgrApp.status === 200, `manager approve 200，實際 ${mgrApp.status}`);
 
     const dbRow = await pg.query(`SELECT status, applicable_venue_ids FROM promotions WHERE id=$1`, [pid]);
     assert(dbRow.rows[0].status === 'active', `DB status=active`);

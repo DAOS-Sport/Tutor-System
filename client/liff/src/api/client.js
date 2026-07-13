@@ -23,7 +23,7 @@ function normalizeAppPath(pathname) {
 function isAuthBootstrapPath() {
   if (typeof window === 'undefined') return false;
   const path = normalizeAppPath(window.location.pathname || '/');
-  return path === '/login' || path === '/register' || path === '/demo' || path === '/coach-portal';
+  return path === '/login' || path === '/bind' || path === '/register' || path === '/demo' || path === '/coach-portal';
 }
 
 function apiPathFromUrl(url) {

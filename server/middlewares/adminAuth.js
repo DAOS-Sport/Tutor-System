@@ -1,7 +1,7 @@
 /**
  * Admin Phase 3 後台 JWT 驗證 middleware
  * - Token 簽發於 routes/admin/auth.js（POST /api/admin/auth/login）
- * - payload 至少含 { sub, username, name, role: 'admin'|'staff', venue_id }
+ * - payload 至少含 { sub, username, name, role: 'admin'|'manager'|'staff', venue_id }
  * - 前端把 token 寫進 localStorage 後，由 client.js interceptor 帶 Authorization: Bearer
  *
  * 安全規則：
@@ -14,6 +14,9 @@ const { cleanVenueList } = require('../services/coachVenueScope');
 
 const IS_PROD = process.env.NODE_ENV === 'production';
 const DEV_FALLBACK_SECRET = '__DEV_ONLY_admin_jwt_fallback__';
+// 後台共用角色裁判。所有受保護的 admin route 都必須先通過 requireAdminAuth，
+// 場館範圍再由 getScopedVenueIds / isVenueInScope 統一判定；manager 不是全館 admin。
+const BACKOFFICE_ROLES = Object.freeze(['admin', 'manager', 'staff']);
 
 let warnedFallback = false;
 function getSecret() {
@@ -49,8 +52,8 @@ function requireAdminAuth(req, res, next) {
   if (!token) return res.status(401).json({ error: 'Missing bearer token' });
   try {
     const payload = verifyToken(token);
-    if (!['admin', 'staff'].includes(payload.role)) {
-      return res.status(403).json({ error: 'Not an admin/staff token' });
+    if (!BACKOFFICE_ROLES.includes(payload.role)) {
+      return res.status(403).json({ error: 'Not a backoffice token' });
     }
     // Task #90：venue_ids 為主，venue_id 維持作為「主場館 / 第一筆」的向後相容欄位
     payload.venue_ids = cleanVenueList(payload.venue_ids || (payload.venue_id ? [payload.venue_id] : []));
@@ -65,7 +68,7 @@ function requireAdminAuth(req, res, next) {
 /**
  * Task #90：抓「目前 admin user 可見的場館清單」。
  *   - admin            → null（不過濾，全部場館可見）
- *   - staff            → venue_ids 陣列；若無任何場館 → ['__no_venue__']（fail closed）
+ *   - manager / staff  → venue_ids 陣列；若無任何場館 → ['__no_venue__']（fail closed）
  * 呼叫端應用法：
  *   const scope = getScopedVenueIds(req);
  *   if (scope) { args.push(scope); sql += ` AND xxx.venue_id = ANY($n::text[])`; }
@@ -81,7 +84,7 @@ function getScopedVenueIds(req) {
 /**
  * Task #90：判斷某筆資料的 venue_id 是否在目前 admin user 的可見範圍內。
  *   - admin → 永遠允許
- *   - staff → 必須落在 venue_ids 內，否則 false
+ *   - manager / staff → 必須落在 venue_ids 內，否則 false
  *   - venueId 為 null / 空 → 視為「未綁定場館」，僅 admin 可操作
  */
 function isVenueInScope(req, venueId) {
@@ -109,4 +112,14 @@ function assertSecretConfigured() {
   }
 }
 
-module.exports = { signToken, verifyToken, requireAdminAuth, requireAdminRole, assertSecretConfigured, getSecret, getScopedVenueIds, isVenueInScope };
+module.exports = {
+  BACKOFFICE_ROLES,
+  signToken,
+  verifyToken,
+  requireAdminAuth,
+  requireAdminRole,
+  assertSecretConfigured,
+  getSecret,
+  getScopedVenueIds,
+  isVenueInScope,
+};

@@ -33,7 +33,8 @@ function draftHasContent(fields, note) {
 
 /**
  * 發起團購頁。由報名頁帶 venue / coach / courseType 進來。
- * 團主填自己的學生 + 匯款證明 → 建立團購 → 導到狀態頁分享邀請碼。
+ * 團主填自己的學生 → 建立團購 → 導到狀態頁分享邀請碼；付款資料由每個家庭在
+ * 團購狀態頁各自上傳，不能與一般購買的付款證明共用或互相覆寫。
  * 填到一半會自動暫存到後端草稿（group_order_drafts），重整 / 換裝置回來可還原。
  */
 export default function GroupCreatePage() {
@@ -51,6 +52,7 @@ export default function GroupCreatePage() {
 
   const [fields, setFields] = useState({ studentIds: carriedStudentIds, newStudents: [], proofUrl: '' });
   const [submitting, setSubmitting] = useState(false);
+  const [createError, setCreateError] = useState('');
   const [note, setNote] = useState('');
   const [periodCount, setPeriodCount] = useState(carriedPeriod >= 1 && carriedPeriod <= 6 ? carriedPeriod : 1);
 
@@ -130,6 +132,7 @@ export default function GroupCreatePage() {
 
   async function handleCreate() {
     if (!canSubmit) return;
+    setCreateError('');
     setSubmitting(true);
     try {
       const order = await groupOrdersApi.create({
@@ -145,7 +148,9 @@ export default function GroupCreatePage() {
       toast.success('團購已建立，快邀請其他家長加入！');
       navigate(`/group/${order.id}`, { replace: true });
     } catch (e) {
-      toast.error(e?.response?.data?.error || '發起團購失敗');
+      const message = e?.response?.data?.error || '發起團購失敗';
+      setCreateError(message);
+      toast.error(message);
     } finally {
       setSubmitting(false);
     }
@@ -159,8 +164,9 @@ export default function GroupCreatePage() {
 
       <GroupMemberFields
         value={fields}
-        onChange={setFields}
+        onChange={(next) => { setCreateError(''); setFields(next); }}
         maxStudents={courseType}
+        error={createError}
       />
 
       <div className="mt-3 rounded-xl border border-gray-200 bg-white p-3">

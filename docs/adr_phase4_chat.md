@@ -17,14 +17,14 @@
 
 ## 2. Object Storage driver adapter
 
-- **計畫**：直接接 Replit App Storage blueprint。
-- **實作**：抽象 `services/objectStorage.js` driver pattern；目前 active driver 為
-  `LocalDiskDriver`（寫到 `server/uploads/…`，搭配 `/uploads` 靜態 + 安全 headers），
-  並保留 `ReplitDriver` placeholder，可由 `OBJECT_STORAGE_DRIVER` env 切換。
-- **理由**：blueprint 安裝需使用者授權與 bucket 配置；driver pattern 在不阻塞
-  P4 完成的前提下保留無痛切換空間。
-- **影響**：切換 storage 時不需改任何 route／service，只需新增 `ReplitDriver`
-  實作 + 設 env。
+- **實作**：`services/objectStorage.js` 採 driver pattern；local 開發使用
+  `LocalDiskDriver`（搭配 `/uploads` 安全 headers），production 偵測到 Replit bucket
+  時自動使用已實作的 `ReplitDriver`。也可用 `OBJECT_STORAGE_DRIVER=local|replit`
+  明確覆寫。
+- **理由**：Autoscale 的 local filesystem 不會跨實例或重部署保存；付款證明與媒體
+  需要 shared object storage，而 local 開發仍須可不依賴 Replit sidecar 運作。
+- **影響**：切換 storage 不需改 route／service；production 發布前必須驗證
+  upload → reload → read。
 
 ## 3. 期數 → active 立即建房
 

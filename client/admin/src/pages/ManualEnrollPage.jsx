@@ -156,6 +156,9 @@ export default function ManualEnrollPage() {
   // C-9：使用者一旦親自選過組別（不論是接受自動帶入後又手動改、或一開始就手動選），
   // 之後學員數再變動就不再自動覆蓋——用 ref 而非 state，純粹是判斷用途不需要觸發重渲染。
   const courseTypeTouchedRef = useRef(false);
+  // 同一份尚未成功的建檔表單固定使用同一 request ID。網路 timeout 後重按不會
+  // 建第二張 checkout；成功或使用者明確清空表單後才換新 ID。
+  const createRequestIdRef = useRef(null);
 
   const [f, setF] = useState(FRESH);
   const upd = (k) => (v) => setF((p) => ({ ...p, [k]: v }));
@@ -291,6 +294,7 @@ export default function ManualEnrollPage() {
   function resetCourseForm() {
     setF(FRESH);
     setCoachId('');
+    createRequestIdRef.current = null;
     courseTypeTouchedRef.current = false;
     lastAutoMatchedCountRef.current = null;
   }
@@ -315,9 +319,15 @@ export default function ManualEnrollPage() {
       actual: num(f.actual), unit: unitPrice, paymentMethod: f.paymentMethod, paymentDetail: f.paymentDetail.trim() || '—',
     };
     try {
+      if (!createRequestIdRef.current) {
+        const nonce = globalThis.crypto?.randomUUID?.()
+          || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        createRequestIdRef.current = `admin-enrollment:${nonce}`;
+      }
       // C-5：不再送 submitted_at——後端沒收到就自動用當下時間，不再讓使用者指定報名時間。
       // C-6：created_by 由後端從登入 token 決定，這裡不用送（送了也不會被採信）。
       const res = await enrollmentsApi.create({
+        request_id: createRequestIdRef.current,
         parent_name: parent.name, parent_phone: parent.phone, students: studentNames,
         venue_id: venueId, coach: coachName || '（待指派）', coach_id: coachId || null,
         course_type: Number(f.courseType), total_sessions: lessons,

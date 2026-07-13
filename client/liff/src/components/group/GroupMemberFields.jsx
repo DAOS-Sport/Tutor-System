@@ -15,7 +15,7 @@ import { useToast } from '../../context/ToastContext';
  */
 const emptyNewStudent = () => ({ name: '', id_number: '', birth_date: '', gender: '生理男' });
 
-export default function GroupMemberFields({ value, onChange, maxStudents }) {
+export default function GroupMemberFields({ value, onChange, maxStudents, error = '' }) {
   const toast = useToast();
   const { parent } = useAuth();
   const myStudents = (parent?.students || []).filter((s) => s && s.id && s.name && s.is_active !== false);
@@ -53,7 +53,7 @@ export default function GroupMemberFields({ value, onChange, maxStudents }) {
 
   return (
     <div className="space-y-3">
-      <div className="rounded-xl border border-gray-200 bg-white p-3">
+      <div className={`rounded-xl border p-3 ${error ? 'border-brand-error bg-brand-error/5' : 'border-gray-200 bg-white'}`}>
         <label className="mb-2 block text-xs font-medium text-gray-600">
           選擇學生（您名下，可多位）
           {Number.isFinite(cap) && <span className="ml-1 text-brand-teal">已選 {pickedCount}/{cap}</span>}
@@ -63,13 +63,21 @@ export default function GroupMemberFields({ value, onChange, maxStudents }) {
           <div className="flex flex-wrap gap-2">
             {myStudents.map((s) => {
               const on = studentIds.includes(s.id);
+              const disabled = !on && atCap;
               return (
                 <button
                   key={s.id}
                   type="button"
+                  disabled={disabled}
+                  aria-pressed={on}
+                  title={disabled ? `此組別最多選 ${cap} 位學員` : undefined}
                   onClick={() => togglePick(s.id)}
-                  className={`rounded-full px-3 py-1.5 text-sm font-medium transition ${
-                    on ? 'bg-brand-teal text-white' : 'bg-gray-100 text-gray-600 active:bg-gray-200'
+                  className={`rounded-full border px-3 py-1.5 text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-brand-teal/30 ${
+                    on
+                      ? 'border-brand-teal bg-brand-teal text-white hover:bg-brand-primary'
+                      : disabled
+                        ? 'cursor-not-allowed border-gray-200 bg-gray-50 text-gray-400'
+                        : 'border-gray-300 bg-white text-gray-700 hover:border-brand-teal/60 hover:bg-brand-teal/5 active:bg-brand-teal/10'
                   }`}
                 >
                   {on ? '✓ ' : ''}{s.name}
@@ -80,6 +88,8 @@ export default function GroupMemberFields({ value, onChange, maxStudents }) {
         ) : (
           <p className="text-xs text-gray-400">名下尚無學生資料，請用下方新增學員。</p>
         )}
+
+        {error && <p role="alert" className="mt-2 text-xs font-medium text-brand-error">{error}</p>}
 
         <button type="button" onClick={() => (showNew ? setShowNew(false) : addNew())}
           className="mt-2 text-xs font-bold text-brand-teal">

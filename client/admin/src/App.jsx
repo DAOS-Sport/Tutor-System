@@ -16,6 +16,7 @@ import RefundPage from './pages/RefundPage';
 import SessionsPage from './pages/SessionsPage';
 import CheckinPage from './pages/CheckinPage';
 import RevivePage from './pages/RevivePage';
+import ManualDeductionPage from './pages/ManualDeductionPage';
 import ChatLogsPage from './pages/ChatLogsPage';
 import AlertsPage from './pages/AlertsPage';
 import KeywordsPage from './pages/KeywordsPage';
@@ -38,7 +39,9 @@ import CustomerParentsPage from './pages/CustomerParentsPage';
 import CustomerStudentsPage from './pages/CustomerStudentsPage';
 import MockBanner from './components/MockBanner';
 
-const ALL = ['admin', 'staff'];
+// 後台登入角色須與 server/middlewares/adminAuth.js 的共用裁判一致。
+// manager 仍由 API 依 venue_ids 限制可見場館，並非取得 admin 全館權限。
+const ALL = ['admin', 'manager', 'staff'];
 
 export default function App() {
   return (
@@ -79,6 +82,7 @@ export default function App() {
         {/* 場館營運 */}
         <Route path="/sessions" element={<RequireAuth roles={ALL}><SessionsPage /></RequireAuth>} />
         <Route path="/checkin"  element={<RequireAuth roles={ALL}><CheckinPage /></RequireAuth>} />
+        <Route path="/manual-deduction" element={<RequireAuth roles={['admin', 'manager', 'staff']}><ManualDeductionPage /></RequireAuth>} />
         <Route path="/revive"   element={<RequireAuth roles={['admin', 'manager', 'staff']}><RevivePage /></RequireAuth>} />
 
         {/* 聊天監察（Phase 4） */}

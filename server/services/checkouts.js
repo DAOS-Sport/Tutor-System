@@ -1,4 +1,5 @@
 const { randomUUID } = require('crypto');
+const { normalizeRequestId } = require('./idempotency');
 
 const CHECKOUT_STATUS = {
   PENDING_PAYMENT: 'pending_payment',
@@ -7,24 +8,22 @@ const CHECKOUT_STATUS = {
   CANCELLED: 'cancelled',
 };
 
-function normalizeRequestId(value) {
-  const s = String(value || '').trim();
-  if (!s) return null;
-  return s.slice(0, 128);
-}
-
-function routeInstruction(checkoutId, state = CHECKOUT_STATUS.PENDING_PAYMENT) {
+function routeInstruction(checkoutId, state = CHECKOUT_STATUS.PENDING_PAYMENT, paymentMethod = 'bank_transfer') {
   const rawState = String(state || CHECKOUT_STATUS.PENDING_PAYMENT);
   const normalizedState = rawState.toUpperCase();
   return {
     current_state: normalizedState,
     checkout_id: checkoutId,
+    payment_method: paymentMethod === 'on_site' ? 'on_site' : 'bank_transfer',
     target_page: '/checkout/payment-view',
-    action_required: rawState.toLowerCase() === CHECKOUT_STATUS.PAID ? 'NONE' : 'DISPLAY_BANK_INFO',
+    action_required: rawState.toLowerCase() === CHECKOUT_STATUS.PAID
+      ? 'NONE'
+      : paymentMethod === 'on_site' ? 'DISPLAY_ON_SITE_PAYMENT' : 'DISPLAY_BANK_INFO',
   };
 }
 
-function paymentStateFromProof({ transferLast5, paymentProofUrl }) {
+function paymentStateFromProof({ transferLast5, paymentProofUrl, paymentMethod }) {
+  if (paymentMethod === 'on_site') return CHECKOUT_STATUS.PENDING_PAYMENT;
   return transferLast5 || paymentProofUrl
     ? CHECKOUT_STATUS.PENDING_RECONCILE
     : CHECKOUT_STATUS.PENDING_PAYMENT;
@@ -48,11 +47,20 @@ async function createCheckoutSession(client, {
   carrier = null,
   requestId = null,
   by = 'system',
+  paymentMethod = 'bank_transfer',
+  orderKind = 'standard',
+  requestFingerprint = null,
 } = {}) {
   const batchId = enrollmentBatchId || randomUUID();
-  const normalizedRequestId = normalizeRequestId(requestId);
-  const paymentStatus = paymentStateFromProof({ transferLast5, paymentProofUrl });
-  const audit = [auditEntry('checkout_created', by, { enrollment_batch_id: batchId })];
+  const normalizedRequestId = normalizeRequestId(requestId) || null;
+  const normalizedPaymentMethod = paymentMethod === 'on_site' ? 'on_site' : 'bank_transfer';
+  const normalizedOrderKind = orderKind === 'trial' ? 'trial' : 'standard';
+  const paymentStatus = paymentStateFromProof({ transferLast5, paymentProofUrl, paymentMethod: normalizedPaymentMethod });
+  const audit = [auditEntry('checkout_created', by, {
+    enrollment_batch_id: batchId,
+    payment_method: normalizedPaymentMethod,
+    order_kind: normalizedOrderKind,
+  })];
 
   const args = [
     parentId || null,
@@ -65,6 +73,9 @@ async function createCheckoutSession(client, {
     paymentProofUrl || null,
     carrier || null,
     JSON.stringify(audit),
+    normalizedPaymentMethod,
+    normalizedOrderKind,
+    requestFingerprint || null,
   ];
 
   let result;
@@ -72,35 +83,38 @@ async function createCheckoutSession(client, {
     result = await client.query(
       `INSERT INTO checkout_sessions
          (parent_id, enrollment_batch_id, request_id, total_amount, payment_status,
-          current_route_state, transfer_last_5, payment_proof_url, carrier, audit_log)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+          current_route_state, transfer_last_5, payment_proof_url, carrier, audit_log,
+          payment_method, order_kind, request_payload_fingerprint)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13)
        ON CONFLICT (parent_id, request_id) WHERE request_id IS NOT NULL
        DO UPDATE SET updated_at = checkout_sessions.updated_at
-       RETURNING checkout_id, enrollment_batch_id, payment_status, (xmax = 0) AS created`,
+       RETURNING checkout_id, enrollment_batch_id, payment_status, payment_method, order_kind, (xmax = 0) AS created`,
       args
     );
   } else if (parentId) {
     result = await client.query(
       `INSERT INTO checkout_sessions
          (parent_id, enrollment_batch_id, request_id, total_amount, payment_status,
-          current_route_state, transfer_last_5, payment_proof_url, carrier, audit_log)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+          current_route_state, transfer_last_5, payment_proof_url, carrier, audit_log,
+          payment_method, order_kind, request_payload_fingerprint)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13)
        ON CONFLICT (parent_id, enrollment_batch_id)
        WHERE parent_id IS NOT NULL AND enrollment_batch_id IS NOT NULL
        DO UPDATE SET updated_at = checkout_sessions.updated_at
-       RETURNING checkout_id, enrollment_batch_id, payment_status, (xmax = 0) AS created`,
+       RETURNING checkout_id, enrollment_batch_id, payment_status, payment_method, order_kind, (xmax = 0) AS created`,
       args
     );
   } else {
     result = await client.query(
       `INSERT INTO checkout_sessions
          (parent_id, enrollment_batch_id, request_id, total_amount, payment_status,
-          current_route_state, transfer_last_5, payment_proof_url, carrier, audit_log)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+          current_route_state, transfer_last_5, payment_proof_url, carrier, audit_log,
+          payment_method, order_kind, request_payload_fingerprint)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13)
        ON CONFLICT (enrollment_batch_id)
        WHERE parent_id IS NULL AND enrollment_batch_id IS NOT NULL
        DO UPDATE SET updated_at = checkout_sessions.updated_at
-       RETURNING checkout_id, enrollment_batch_id, payment_status, (xmax = 0) AS created`,
+       RETURNING checkout_id, enrollment_batch_id, payment_status, payment_method, order_kind, (xmax = 0) AS created`,
       args
     );
   }
@@ -110,6 +124,8 @@ async function createCheckoutSession(client, {
     checkoutId: row.checkout_id,
     enrollmentBatchId: row.enrollment_batch_id,
     paymentStatus: row.payment_status,
+    paymentMethod: row.payment_method || 'bank_transfer',
+    orderKind: row.order_kind || 'standard',
     created: row.created === true || row.created === 't',
   };
 }
@@ -168,6 +184,19 @@ function shapeCheckout(row) {
     extra_parent_phones: Array.isArray(o.extra_parent_phones) ? o.extra_parent_phones : [],
   }));
   const first = subOrders[0] || {};
+  // 場館是 checkout 子訂單層級的資料；母單的第一筆 venue 僅為舊 API 相容欄位，
+  // 不可當成整張 checkout 的唯一場館。由 API 的每筆子訂單名稱收斂為穩定陣列。
+  const venueById = new Map();
+  for (const order of subOrders) {
+    const venueId = order.venue_id == null ? '' : String(order.venue_id);
+    if (!venueId || venueById.has(venueId)) continue;
+    venueById.set(venueId, {
+      venue_id: venueId,
+      venue_name: order.venue_name || venueId,
+    });
+  }
+  const venues = [...venueById.values()].sort((a, b) => a.venue_id.localeCompare(b.venue_id));
+  const fallbackVenueIds = parseJsonArray(row.venue_ids).map((id) => String(id)).filter(Boolean);
   return {
     checkout_id: row.checkout_id,
     parent_id: row.parent_id || null,
@@ -177,6 +206,8 @@ function shapeCheckout(row) {
     parent_phone: row.parent_phone || first.parent_phone || null,
     total_amount: Number(row.total_amount) || 0,
     payment_status: row.payment_status,
+    payment_method: row.payment_method || 'bank_transfer',
+    order_kind: row.order_kind || 'standard',
     current_route_state: row.current_route_state || row.payment_status,
     transfer_last_5: row.transfer_last_5 || '',
     carrier: row.carrier || '',
@@ -185,12 +216,13 @@ function shapeCheckout(row) {
     submitted_at: row.submitted_at || row.created_at,
     created_at: row.created_at,
     updated_at: row.updated_at,
-    venue_ids: parseJsonArray(row.venue_ids),
+    venue_ids: venues.length ? venues.map((venue) => venue.venue_id) : fallbackVenueIds,
+    venues,
     order_count: Number(row.order_count) || subOrders.length,
     sub_orders: subOrders,
     venue: {
       id: row.venue_id || first.venue_id || null,
-      name: row.venue_name || row.venue_id || first.venue_id || null,
+      name: row.venue_name || first.venue_name || row.venue_id || first.venue_id || null,
       account_holder: row.account_holder || null,
       account_number: row.account_number || null,
       bank_institution_name: row.bank_institution_name || null,
@@ -205,7 +237,7 @@ async function readCheckout(clientOrPool, checkoutId) {
             p.name AS parent_name,
             p.phone AS parent_phone,
             first_ae.venue_id,
-            v.name AS venue_name,
+            COALESCE(av.name, v.name, first_ae.venue_id) AS venue_name,
             COALESCE(NULLIF(av.account_holder, ''), v.account_holder) AS account_holder,
             COALESCE(NULLIF(av.account_number, ''), v.account_number) AS account_number,
             COALESCE(NULLIF(av.bank_institution_name, ''), v.bank_institution_name) AS bank_institution_name,
@@ -224,12 +256,15 @@ async function readCheckout(clientOrPool, checkoutId) {
                   'coach', ae.coach,
                   'coach_id', ae.coach_id,
                   'venue_id', ae.venue_id,
+                  'venue_name', COALESCE(ae_av.name, ae_v.name, ae.venue_id),
                   'course_type', ae.course_type,
                   'original_price', ae.original_price,
                   'final_price', ae.final_price,
                   'transfer_last_5', ae.transfer_last_5,
                   'payment_proof_url', ae.payment_proof_url,
                   'carrier', ae.carrier,
+                  'payment_method', ae.payment_method,
+                  'order_kind', ae.order_kind,
                   'status', ae.status,
                   'submitted_at', ae.submitted_at,
                   'total_sessions', ae.total_sessions,
@@ -255,6 +290,8 @@ async function readCheckout(clientOrPool, checkoutId) {
        LEFT JOIN venues v ON v.id = first_ae.venue_id
        LEFT JOIN admin_venues av ON av.id = first_ae.venue_id
        LEFT JOIN admin_enrollments ae ON ae.checkout_id = cs.checkout_id
+       LEFT JOIN venues ae_v ON ae_v.id = ae.venue_id
+       LEFT JOIN admin_venues ae_av ON ae_av.id = ae.venue_id
       WHERE cs.checkout_id = $1
       GROUP BY cs.checkout_id, p.id, first_ae.venue_id, v.id, av.id`,
     [checkoutId]

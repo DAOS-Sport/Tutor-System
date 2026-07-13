@@ -5,7 +5,7 @@
 const express = require('express');
 const { pool } = require('../models/db');
 const { requireParent } = require('../middlewares/parentAuth');
-const { objectExists } = require('../services/objectStorage');
+const { parseProofInput } = require('../services/paymentProof');
 const promotions = require('../services/promotions');
 
 const router = express.Router();
@@ -81,11 +81,14 @@ router.get('/mine', requireParent, async (req, res) => {
                       coach, coach_id, venue_id, v.name AS venue_name, course_type,
                       original_price, final_price, admin_enrollments.transfer_last_5, status, submitted_at,
                       admin_enrollments.total_sessions, admin_enrollments.used_sessions, admin_enrollments.refund_amount, admin_enrollments.payment_proof_url,
+                      admin_enrollments.payment_method, admin_enrollments.order_kind,
                       admin_enrollments.period_count, admin_enrollments.period_number, admin_enrollments.enrollment_batch_id, admin_enrollments.checkout_id,
                       cs.total_amount AS checkout_total_amount,
                       cs.payment_status AS checkout_payment_status,
                       cs.transfer_last_5 AS checkout_transfer_last_5,
                       cs.payment_proof_url AS checkout_payment_proof_url,
+                      cs.payment_method AS checkout_payment_method,
+                      cs.order_kind AS checkout_order_kind,
                       cs.created_at AS checkout_created_at,
                       invoice_number, invoice_image_url, invoice_url, invoice_issued_at,
                       extra_parent_phones, notes, group_order_id, is_group_shared,
@@ -200,6 +203,8 @@ router.get('/mine', requireParent, async (req, res) => {
       extra_parent_phones: row.extra_parent_phones || [],
       notes: row.notes || null,
       payment_proof_url: row.payment_proof_url || null,
+      payment_method: row.payment_method || row.checkout_payment_method || 'bank_transfer',
+      order_kind: row.order_kind || row.checkout_order_kind || 'standard',
       period_count: row.period_count || 1,
       period_number: row.period_number || 1,
       enrollment_batch_id: row.enrollment_batch_id || null,
@@ -208,6 +213,8 @@ router.get('/mine', requireParent, async (req, res) => {
       checkout_payment_status: row.checkout_payment_status || null,
       checkout_transfer_last_5: row.checkout_transfer_last_5 || null,
       checkout_payment_proof_url: row.checkout_payment_proof_url || null,
+      checkout_payment_method: row.checkout_payment_method || null,
+      checkout_order_kind: row.checkout_order_kind || null,
       checkout_created_at: row.checkout_created_at || null,
       group_order_id: row.group_order_id || null,
       is_group_shared: !!row.is_group_shared,
@@ -302,7 +309,10 @@ router.get('/types', async (req, res) => {
 
 /**
  * GET /api/courses/base-price?courseType=1|2|3
- * LIFF 報名頁取得各組別底價，回傳 { course_type, original_price }。
+ * LIFF 報名頁取得各組別底價與試上顯示用價格來源。
+ * trial_price_course_<N> / trial_price 均為選填覆寫；未設定時前端僅以
+ * original_price ÷ sessions_per_period 做同一套保守估算，最終仍由
+ * POST /api/enrollments 重新計算。
  */
 router.get('/base-price', async (req, res) => {
   const ct = Number(req.query.courseType);
@@ -311,13 +321,24 @@ router.get('/base-price', async (req, res) => {
   }
   try {
     const r = await pool.query(
-      `SELECT course_type, base_price FROM course_type_configs WHERE course_type = $1`,
+      `SELECT c.course_type,
+              c.base_price,
+              COALESCE((SELECT value FROM admin_settings WHERE key = ('trial_price_course_' || c.course_type::text)),
+                       (SELECT value FROM admin_settings WHERE key = 'trial_price')) AS trial_price,
+              COALESCE((SELECT value FROM admin_settings WHERE key = 'sessions_per_period'), 6) AS sessions_per_period
+         FROM course_type_configs c
+        WHERE c.course_type = $1`,
       [ct]
     );
     if (r.rows.length === 0) {
       return res.status(400).json({ error: `Unknown courseType: ${ct}` });
     }
-    res.json({ course_type: r.rows[0].course_type, original_price: Number(r.rows[0].base_price) });
+    res.json({
+      course_type: r.rows[0].course_type,
+      original_price: Number(r.rows[0].base_price),
+      trial_price: r.rows[0].trial_price == null ? null : Number(r.rows[0].trial_price),
+      sessions_per_period: Math.max(1, Number(r.rows[0].sessions_per_period) || 6),
+    });
   } catch (e) {
     console.error('[courses/base-price]', e);
     res.status(500).json({ error: e.message });
@@ -331,6 +352,7 @@ router.get('/:id', requireParent, async (req, res) => {
     const r = await pool.query(
       `SELECT e.id, e.parent_phone, e.extra_parent_phones, e.students, e.coach, e.course_type,
               e.original_price, e.final_price, e.transfer_last_5, e.status, e.payment_proof_url,
+              e.payment_method, e.order_kind,
               e.period_count, e.enrollment_batch_id, e.checkout_id,
               e.invoice_number, e.invoice_image_url, e.submitted_at, e.group_order_id,
               e.total_sessions, e.used_sessions, e.is_group_shared, e.carrier,
@@ -451,6 +473,8 @@ router.get('/:id', requireParent, async (req, res) => {
       final_price: Number(row.final_price),
       transfer_last_5: row.transfer_last_5 || '',
       carrier: row.carrier || '',
+      payment_method: row.payment_method || 'bank_transfer',
+      order_kind: row.order_kind || 'standard',
       payment_status: row.status,
       lifecycle,
       course_period_id: canAccessPeriod ? row.course_period_id : null,
@@ -478,75 +502,117 @@ router.get('/:id', requireParent, async (req, res) => {
 
 // ── POST /:id/payment-proof 事後填寫付款資料（限本人、限待對帳）──
 router.post('/:id/payment-proof', requireParent, async (req, res) => {
-  const PROOF_URL_RE = /^\/uploads\/\d{4}-\d{2}\/[a-f0-9]{24}\.(jpg|jpeg|png)$/;
-  const url = typeof req.body?.payment_proof_url === 'string' ? req.body.payment_proof_url.trim() : '';
   const last5 = typeof req.body?.transfer_last_5 === 'string' ? req.body.transfer_last_5.trim() : '';
   // 載具（選填）：電子發票手機條碼載具，trim + 上限長度，空字串視為未填。
   const carrier = typeof req.body?.carrier === 'string' ? req.body.carrier.trim().slice(0, 64) : '';
   if (last5 && !/^\d{5}$/.test(last5)) {
     return res.status(400).json({ error: '轉帳末 5 碼需為 5 位數字', code: 'TRANSFER_LAST5_INVALID' });
   }
-  if (url && (!PROOF_URL_RE.test(url) || !objectExists(url))) {
-    return res.status(400).json({ error: '請上傳有效的匯款／轉帳證明', code: 'PAYMENT_PROOF_INVALID' });
-  }
+  const client = await pool.connect();
   try {
-    const r = await pool.query(
-      `SELECT parent_phone, extra_parent_phones, status, payment_proof_url, transfer_last_5, checkout_id
-         FROM admin_enrollments WHERE id = $1`,
+    await client.query('BEGIN');
+    // checkout payment route 的 lock 順序是 checkout → child enrollment；先讀 soft
+    // reference 再鎖 checkout，最後鎖 enrollment，避免與母單更新互相 deadlock。
+    const reference = await client.query(
+      `SELECT checkout_id FROM admin_enrollments WHERE id = $1`,
       [req.params.id]
     );
-    if (!r.rowCount) return res.status(404).json({ error: '找不到此報名' });
+    if (!reference.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: '找不到此報名' });
+    }
+    if (reference.rows[0].checkout_id) {
+      await client.query(
+        `SELECT checkout_id FROM checkout_sessions WHERE checkout_id = $1 FOR UPDATE`,
+        [reference.rows[0].checkout_id]
+      );
+    }
+    const r = await client.query(
+      `SELECT parent_phone, extra_parent_phones, status, payment_proof_url, transfer_last_5,
+              carrier, checkout_id, payment_method
+         FROM admin_enrollments WHERE id = $1 FOR UPDATE`,
+      [req.params.id]
+    );
     const row = r.rows[0];
+    if (row.checkout_id !== reference.rows[0].checkout_id) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: '付款單剛完成建立，請重新送出付款資料',
+        code: 'CHECKOUT_CHANGED_RETRY',
+      });
+    }
     const phone = req.parent.phone;
     if (!(row.parent_phone === phone || (row.extra_parent_phones || []).includes(phone))) {
+      await client.query('ROLLBACK');
       return res.status(403).json({ error: '無權操作此報名' });
     }
     if (row.status !== 'pending_payment') {
+      await client.query('ROLLBACK');
       return res.status(409).json({ error: '此報名狀態無法再上傳證明', code: 'NOT_PENDING' });
     }
+    if (row.payment_method === 'on_site') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '此訂單為現場付費，無需上傳轉帳證明', code: 'ON_SITE_PAYMENT_NO_TRANSFER_PROOF' });
+    }
+    const proofInput = await parseProofInput(req.body, { allowClear: true });
+    if (proofInput.error) {
+      await client.query('ROLLBACK');
+      return res.status(proofInput.status).json({ error: proofInput.error, code: proofInput.code });
+    }
+    const sameProof = proofInput.supplied && !proofInput.clear
+      && proofInput.value === row.payment_proof_url;
+    const sameLast5 = !last5 || last5 === row.transfer_last_5;
     // 末碼＋證明皆已送出 → 鎖定唯讀，家長不可自行重編（需聯繫櫃檯）。
-    if (row.transfer_last_5 && row.payment_proof_url) {
+    if (row.transfer_last_5 && row.payment_proof_url
+        && !proofInput.clear && !(sameProof && sameLast5)) {
+      await client.query('ROLLBACK');
       return res.status(409).json({ error: '付款資料已送出，如需更改請聯繫櫃檯', code: 'PAYMENT_LOCKED' });
     }
-    if (!url && !row.payment_proof_url && !last5 && !carrier) {
+
+    const nextProof = proofInput.clear
+      ? null
+      : proofInput.supplied ? proofInput.value : row.payment_proof_url;
+    const nextLast5 = last5 || row.transfer_last_5 || null;
+    const nextCarrier = carrier || row.carrier || null;
+    if (!proofInput.clear && !nextProof && !nextLast5 && !nextCarrier) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ error: '請填寫轉帳末 5 碼或上傳匯款／轉帳證明', code: 'PAYMENT_INFO_REQUIRED' });
     }
-    await pool.query(
+
+    const updateEnrollmentWhere = row.checkout_id
+      ? 'checkout_id = $1 AND status = \'pending_payment\''
+      : 'id = $1';
+    await client.query(
       `UPDATE admin_enrollments
-          SET payment_proof_url = COALESCE($2, payment_proof_url),
-              transfer_last_5 = COALESCE($3, transfer_last_5),
-              carrier = COALESCE($4, carrier),
+          SET payment_proof_url = $2,
+              transfer_last_5 = $3,
+              carrier = $4,
               updated_at = NOW()
-        WHERE id = $1`,
-      [req.params.id, url || null, last5 || null, carrier || null]
+        WHERE ${updateEnrollmentWhere}`,
+      [row.checkout_id || req.params.id, nextProof, nextLast5, nextCarrier]
     );
     if (row.checkout_id) {
-      await pool.query(
+      const nextStatus = nextProof || nextLast5 ? 'pending_reconcile' : 'pending_payment';
+      await client.query(
         `UPDATE checkout_sessions
-            SET payment_proof_url = COALESCE($2, payment_proof_url),
-                transfer_last_5 = COALESCE($3, transfer_last_5),
-                carrier = COALESCE($4, carrier),
-                payment_status = CASE
-                  WHEN COALESCE($2, payment_proof_url) IS NOT NULL
-                    OR COALESCE($3, transfer_last_5) IS NOT NULL
-                    THEN 'pending_reconcile'
-                  ELSE payment_status
-                END,
-                current_route_state = CASE
-                  WHEN COALESCE($2, payment_proof_url) IS NOT NULL
-                    OR COALESCE($3, transfer_last_5) IS NOT NULL
-                    THEN 'pending_reconcile'
-                  ELSE current_route_state
-                END,
+            SET payment_proof_url = $2,
+                transfer_last_5 = $3,
+                carrier = $4,
+                payment_status = $5,
+                current_route_state = $5,
                 updated_at = NOW()
           WHERE checkout_id = $1`,
-        [row.checkout_id, url || null, last5 || null, carrier || null]
+        [row.checkout_id, nextProof, nextLast5, nextCarrier, nextStatus]
       );
     }
+    await client.query('COMMIT');
     res.json({ ok: true });
   } catch (e) {
-    console.error('[courses/:id/payment-proof]', e);
-    res.status(500).json({ error: e.message });
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('[courses/:id/payment-proof]', { code: e?.code || 'UNEXPECTED' });
+    res.status(500).json({ error: '送出付款資料失敗' });
+  } finally {
+    client.release();
   }
 });
 

@@ -91,7 +91,9 @@ async function loadCoach(id) {
     `SELECT ${COACH_STAFF_PROFILE_SELECT}
      FROM coaches c
      JOIN admin_staff s ON s.id = c.ragic_employee_id
-     WHERE c.id = $1 AND s.active = TRUE AND c.is_active = TRUE`,
+     WHERE c.id = $1 AND s.active = TRUE AND c.is_active = TRUE
+       AND (COALESCE(c.is_placeholder, FALSE) = TRUE
+            OR TRIM(COALESCE(c.name, '')) NOT IN ('待分配', '01待分配'))`,
     [id]
   );
   return publicCoach(r.rows[0]) || null;
@@ -116,8 +118,12 @@ router.get('/', async (req, res) => {
          JOIN admin_staff s ON s.id = c.ragic_employee_id
         WHERE s.active = TRUE
           AND c.is_active = TRUE
+          -- 有且只有 canonical placeholder 可供選擇；歷史同名列保留供訂單追查，
+          -- 不刪除也不再出現在新的選擇器中。
+          AND (COALESCE(c.is_placeholder, FALSE) = TRUE
+               OR TRIM(COALESCE(c.name, '')) NOT IN ('待分配', '01待分配'))
           ${venueWhere}
-        ORDER BY s.name`,
+        ORDER BY COALESCE(c.is_placeholder, FALSE) DESC, s.name`,
       params
     );
     res.json(r.rows.map(publicCoach));
@@ -164,7 +170,8 @@ router.get('/by-phone', byPhoneRateLimit, async (req, res) => {
        JOIN admin_staff s ON s.id = c.ragic_employee_id
        WHERE TRIM(s.phone) = $1
          AND s.active = TRUE
-         AND c.is_active = TRUE`,
+         AND c.is_active = TRUE
+         AND COALESCE(c.is_placeholder, FALSE) = FALSE`,
       [phone]
     );
     if (r.rows.length === 0) {

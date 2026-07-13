@@ -112,7 +112,7 @@ export default function LoginPage() {
           </div>
         ) : (
           <div className="mt-6 rounded-lg bg-gray-50 p-3 text-xs text-gray-500">
-            <div>後台登入限系統管理員與行政櫃檯；預設帳號為員工編號，預設密碼為電話號碼。</div>
+            <div>後台登入限系統管理員、主管與行政櫃檯；預設帳號為員工編號，預設密碼為電話號碼。</div>
             <div className="mt-1 text-[11px] text-gray-400">
               首次部署的初始密碼由 <code>ADMIN_BOOTSTRAP_PASSWORD</code> 決定（非 <code>admin</code>）。
             </div>

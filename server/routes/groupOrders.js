@@ -17,7 +17,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const { pool } = require('../models/db');
-const { objectExists } = require('../services/objectStorage');
+const { parseProofInput } = require('../services/paymentProof');
 const { requireParent, optionalParent } = require('../middlewares/parentAuth');
 const { maskName, maskNames } = require('../utils/piiMask');
 const ragicWriteback = require('../services/ragicWriteback');
@@ -25,8 +25,6 @@ const line = require('../services/line');
 
 const router = express.Router();
 
-// 與 enrollments.js 共用的匯款證明路徑格式（local driver 產生）
-const PROOF_URL_RE = /^\/uploads\/\d{4}-\d{2}\/[a-f0-9]{24}\.(jpg|jpeg|png)$/;
 // 台灣手機格式（與 auth.js 一致）
 const TW_PHONE_RE = /^09\d{8}$/;
 
@@ -52,9 +50,13 @@ function normalizePeriodCount(v) {
   return Math.min(PERIOD_COUNT_MAX, Math.max(PERIOD_COUNT_MIN, n));
 }
 
-function validProof(url) {
-  const u = typeof url === 'string' ? url.trim() : '';
-  return PROOF_URL_RE.test(u) && objectExists(u) ? u : null;
+// 同一筆 upload 在網路 retry / 雙擊時，第二個請求在 row lock 之後會看到第一個
+// 請求的結果；只要每個已送欄位都相同，就回成功而不再寫入或報 PAYMENT_LOCKED。
+function isSamePaymentPayload(member, { value: proof, last5, clear = false, supplied = false }) {
+  const hasInput = Boolean(supplied || last5);
+  if (!hasInput) return false;
+  return (clear ? member.payment_proof_url == null : (!proof || member.payment_proof_url === proof))
+    && (!last5 || member.transfer_last_5 === last5);
 }
 
 function genJoinToken() {
@@ -364,22 +366,24 @@ router.use(requireParent);
 // ═══════════════════════════════════════════════════════════
 
 // 整理草稿 payload：只收白名單欄位、限制大小，避免存進髒資料/過大內容。
-function cleanDraftPayload(body) {
+async function cleanDraftPayload(body) {
   const b = body && typeof body === 'object' ? body : {};
   const courseType = parseInt(b.course_type, 10);
   const studentIds = Array.isArray(b.student_ids)
     ? b.student_ids.map((x) => String(x || '').trim()).filter(Boolean).slice(0, DRAFT_MAX_STUDENTS)
     : [];
-  return {
+  const proofInput = await parseProofInput(b, { field: 'proof_url' });
+  if (proofInput.error) return { error: proofInput };
+  return { payload: {
     venue_id: b.venue_id ? String(b.venue_id).trim().slice(0, 10) : null,
     coach_id: b.coach_id ? String(b.coach_id).trim().slice(0, 64) : null,
     course_type: Number.isInteger(courseType) && courseType >= 2 ? courseType : null,
     period_count: normalizePeriodCount(b.period_count),
     student_ids: studentIds,
     new_students: cleanNewStudents(b.new_students).slice(0, DRAFT_MAX_STUDENTS),
-    proof_url: validProof(b.proof_url) || null,
+    proof_url: proofInput.value,
     note: typeof b.note === 'string' ? b.note.trim().slice(0, 500) : null,
-  };
+  } };
 }
 
 // ── GET /draft 取回我目前的團報草稿（沒有則回 {draft:null}） ──
@@ -400,7 +404,14 @@ router.get('/draft', async (req, res) => {
 // ── PUT /draft 暫存（upsert）我目前的團報草稿 ──
 router.put('/draft', async (req, res) => {
   try {
-    const payload = cleanDraftPayload(req.body);
+    const cleaned = await cleanDraftPayload(req.body);
+    if (cleaned.error) {
+      return res.status(cleaned.error.status).json({
+        error: cleaned.error.error,
+        code: cleaned.error.code,
+      });
+    }
+    const payload = cleaned.payload;
     const r = await pool.query(
       `INSERT INTO group_order_drafts (parent_id, payload, updated_at)
          VALUES ($1, $2::jsonb, NOW())
@@ -438,7 +449,11 @@ router.post('/', async (req, res) => {
   const note = typeof p.note === 'string' ? p.note.trim().slice(0, 500) : null;
   const periodCount = normalizePeriodCount(p.period_count);
   // U10：證明改為「送審後各家自行上傳」，發起時不再要求；若前端仍帶（向後相容）則沿用。
-  const proof = validProof(p.payment_proof_url);
+  const proofInput = await parseProofInput(p);
+  if (proofInput.error) {
+    return res.status(proofInput.status).json({ error: proofInput.error, code: proofInput.code });
+  }
+  const proof = proofInput.value;
 
   if (isNaN(courseType) || courseType < 1) return res.status(400).json({ error: 'course_type 無效' });
   // 一對一（1V1, course_type===1）不開放團購：團報是「揪多位家長一起上課」流程，
@@ -585,7 +600,11 @@ router.post('/by-token/:token/join', async (req, res) => {
   const studentIds = Array.isArray(p.student_ids) ? p.student_ids : [];
   const newStudents = cleanNewStudents(p.new_students);
   // U10：證明改送審後上傳，加入時不再要求；若帶了則沿用。
-  const proof = validProof(p.payment_proof_url);
+  const proofInput = await parseProofInput(p);
+  if (proofInput.error) {
+    return res.status(proofInput.status).json({ error: proofInput.error, code: proofInput.code });
+  }
+  const proof = proofInput.value;
   if (!studentIds.length && !newStudents.length) return res.status(400).json({ error: '請選擇或填寫至少一位學生' });
 
   const client = await pool.connect();
@@ -679,47 +698,109 @@ router.post('/by-token/:token/join', async (req, res) => {
 //    讓家長不必等團主送審就能先付款、避免遺忘或重複報名（送審只鎖定名單，不影響收款）。
 //    限本團成員、限上傳自己那筆；櫃檯已「確認帳款」後不可再改（避免改掉已查核的證明）。
 router.post('/:id/my-proof', async (req, res) => {
-  const proof = validProof(req.body?.payment_proof_url);
+  const proofInput = await parseProofInput(req.body, { allowClear: true });
+  if (proofInput.error) {
+    return res.status(proofInput.status).json({ error: proofInput.error, code: proofInput.code });
+  }
+  const proof = proofInput.value;
   const last5 = String(req.body?.transfer_last_5 || '').trim();
   if (last5 && !/^\d{5}$/.test(last5)) {
     return res.status(400).json({ error: '轉帳末 5 碼需為 5 位數字', code: 'TRANSFER_LAST5_INVALID' });
   }
+  if (!proofInput.supplied && !last5) {
+    return res.status(400).json({ error: '請填寫轉帳末 5 碼或上傳匯款／轉帳證明', code: 'PAYMENT_INFO_REQUIRED' });
+  }
+
+  const client = await pool.connect();
+  let committed = false;
   try {
-    const o = await pool.query(`SELECT status FROM group_orders WHERE id = $1`, [req.params.id]);
-    if (!o.rowCount) return res.status(404).json({ error: '找不到此團購' });
+    // 鎖 group → member 的順序與 submit/cancel 一致。這樣雙擊、網路 retry 和
+    // 櫃檯確認不會在「先讀後寫」的空窗互相覆蓋付款證明。
+    await client.query('BEGIN');
+    const o = await client.query(`SELECT status FROM group_orders WHERE id = $1 FOR UPDATE`, [req.params.id]);
+    if (!o.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: '找不到此團購' });
+    }
     if (!['forming', 'submitted'].includes(o.rows[0].status)) {
+      await client.query('ROLLBACK');
       return res.status(409).json({ error: '此團購狀態無法上傳付款資料', code: 'NOT_UPLOADABLE' });
     }
-    const m = await pool.query(
+    const m = await client.query(
       `SELECT id, payment_confirmed, transfer_last_5, payment_proof_url
-         FROM group_order_members WHERE group_order_id = $1 AND parent_id = $2`,
+         FROM group_order_members
+        WHERE group_order_id = $1 AND parent_id = $2
+        FOR UPDATE`,
       [req.params.id, req.parent.id]
     );
-    if (!m.rowCount) return res.status(403).json({ error: '您不是此團購的成員' });
-    if (m.rows[0].payment_confirmed) {
+    if (!m.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: '您不是此團購的成員' });
+    }
+    const member = m.rows[0];
+
+    // 先辨識同 payload retry：第一筆已寫完後，第二筆安全地回目前資料，
+    // 不會被已確認／已鎖定狀態誤判成失敗，也不會更新 proof_uploaded_at。
+    const idempotent = isSamePaymentPayload(member, { ...proofInput, last5 });
+    if (idempotent) {
+      await client.query('COMMIT');
+      committed = true;
+      const loaded = await loadOrderWithMembers(pool, req.params.id);
+      return res.json({
+        ...shapeOrder(loaded.order, loaded.members, req.parent.id,
+          loaded.order.leader_parent_id === req.parent.id ? { join_token: loaded.order.join_token } : {}),
+        idempotent: true,
+      });
+    }
+
+    if (member.payment_confirmed) {
+      await client.query('ROLLBACK');
       return res.status(409).json({ error: '櫃檯已確認您的帳款，如需更換請聯繫櫃檯', code: 'ALREADY_CONFIRMED' });
     }
     // 末碼＋證明皆已送出 → 鎖定唯讀，成員不可自行重編（需聯繫櫃檯）。
-    if (m.rows[0].transfer_last_5 && m.rows[0].payment_proof_url) {
+    if (member.transfer_last_5 && member.payment_proof_url && !proofInput.clear) {
+      await client.query('ROLLBACK');
       return res.status(409).json({ error: '付款資料已送出，如需更改請聯繫櫃檯', code: 'PAYMENT_LOCKED' });
     }
-    if (!proof && !last5) {
-      return res.status(400).json({ error: '請填寫轉帳末 5 碼或上傳匯款／轉帳證明', code: 'PAYMENT_INFO_REQUIRED' });
+
+    // 付款資料一旦在此成員 row 落地就不可由另一個 stale tab 覆寫成不同值。
+    // 現行 UI 只會在同一次送出帶 proof + last5，這個防線額外保護舊頁面/API retry。
+    if (!proofInput.clear && proof && member.payment_proof_url && member.payment_proof_url !== proof) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '匯款證明已上傳，如需更換請聯繫櫃檯', code: 'PAYMENT_PROOF_LOCKED' });
     }
-    await pool.query(
+    if (last5 && member.transfer_last_5 && member.transfer_last_5 !== last5) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '轉帳末 5 碼已送出，如需更換請聯繫櫃檯', code: 'TRANSFER_LAST5_LOCKED' });
+    }
+
+    await client.query(
       `UPDATE group_order_members
-          SET payment_proof_url = COALESCE($2, payment_proof_url),
-              proof_uploaded_at = CASE WHEN $2 IS NULL THEN proof_uploaded_at ELSE NOW() END,
+          SET payment_proof_url = CASE
+                WHEN $4 THEN NULL
+                WHEN $5 THEN $2
+                ELSE payment_proof_url
+              END,
+              proof_uploaded_at = CASE
+                WHEN $4 THEN NULL
+                WHEN $5 THEN NOW()
+                ELSE proof_uploaded_at
+              END,
               transfer_last_5 = COALESCE($3, transfer_last_5)
         WHERE id = $1`,
-      [m.rows[0].id, proof || null, last5 || null]
+      [member.id, proof, last5 || null, proofInput.clear, proofInput.supplied]
     );
+    await client.query('COMMIT');
+    committed = true;
     const loaded = await loadOrderWithMembers(pool, req.params.id);
     res.json(shapeOrder(loaded.order, loaded.members, req.parent.id,
       loaded.order.leader_parent_id === req.parent.id ? { join_token: loaded.order.join_token } : {}));
   } catch (err) {
-    console.error('[group-orders my-proof]', err);
+    if (!committed) await client.query('ROLLBACK').catch(() => {});
+    console.error('[group-orders my-proof]', { code: err?.code || 'UNEXPECTED' });
     res.status(500).json({ error: '上傳失敗' });
+  } finally {
+    client.release();
   }
 });
 
@@ -792,5 +873,8 @@ router.post('/:id/cancel', async (req, res) => {
     res.status(500).json({ error: '取消失敗' });
   }
 });
+
+// 純函式只供不連 DB 的 regression test 使用；路由對外行為不受影響。
+router.__test__ = { parseProofInput, isSamePaymentPayload };
 
 module.exports = router;

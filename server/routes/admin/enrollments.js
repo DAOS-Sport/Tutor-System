@@ -18,12 +18,34 @@ const ragicWriteback = require('../../services/ragicWriteback');
 const promotions = require('../../services/promotions');
 const {
   createCheckoutSession,
+  readCheckout,
 } = require('../../services/checkouts');
+const {
+  validateRequestId,
+  payloadFingerprint,
+  acquireRequestLock,
+} = require('../../services/idempotency');
 
 const router = express.Router();
 
 // 一期固定 6 堂；手動建檔總堂數 > 6 → 依 ceil(N/6) 拆成多張訂單（每張一期）。
 const SESSIONS_PER_PERIOD = 6;
+const ADMIN_ENROLLMENT_OPERATION = 'admin_create_enrollment_checkout';
+
+function adminEnrollmentResponse(checkout, { idempotent = false } = {}) {
+  const orders = checkout?.sub_orders || [];
+  const enrollmentIds = orders.map((order) => order.id).filter(Boolean);
+  return {
+    id: enrollmentIds[0] || null,
+    first_id: enrollmentIds[0] || null,
+    batch_id: checkout?.enrollment_batch_id || null,
+    checkout_id: checkout?.checkout_id || null,
+    count: enrollmentIds.length,
+    enrollment_ids: enrollmentIds,
+    status: orders[0]?.status || 'pending_payment',
+    idempotent,
+  };
+}
 
 // 與 routes/enrollments.js 同款報名單號（E + 時戳 + 亂數），各期一筆。
 function genEnrollmentId() {
@@ -93,33 +115,27 @@ async function ensureGroupCoursePeriod(client, enrollment, totalSessions) {
     return;
   }
 
-  // 團報金流守門：同一個 enrollment_batch_id 代表同一團報購買批次；
-  // 但 checkout 以 parent_id 隔離成多張母單。只有該批次所有有效 checkout 都 paid，
-  // 才能正式開通團報課程，避免 A 家長對帳通過時直接開通 B 家長尚未付清的課。
-  const batchId = enrollment.enrollment_batch_id || relevant.find((row) => row.enrollment_batch_id)?.enrollment_batch_id || null;
-  if (batchId) {
-    const pay = await client.query(
-      `SELECT cs.checkout_id, cs.payment_status
-         FROM checkout_sessions cs
-        WHERE cs.enrollment_batch_id = $1
-          AND EXISTS (
-            SELECT 1 FROM admin_enrollments ae
-             WHERE ae.checkout_id = cs.checkout_id
-               AND ae.group_order_id = $2
-               AND ae.status NOT IN ('cancelled','refunded')
-          )`,
-      [batchId, groupOrderId]
+  // 團報金流守門：每戶可以有獨立 enrollment_batch_id（兼容舊 schema 的 batch
+  // 全域 unique constraint），因此以 group_order + period_number 取得全部有效 checkout。
+  // 只有每戶的付款單都 paid 才開課，避免 A 家長對帳通過時提前開通 B 家長未付款的課。
+  const pay = await client.query(
+    `SELECT DISTINCT cs.checkout_id, cs.payment_status
+       FROM checkout_sessions cs
+       JOIN admin_enrollments ae ON ae.checkout_id = cs.checkout_id
+      WHERE ae.group_order_id = $1
+        AND ae.period_number = $2
+        AND ae.status NOT IN ('cancelled','refunded')`,
+    [groupOrderId, periodNumber]
+  );
+  const unpaid = pay.rows.filter((row) => row.payment_status !== 'paid');
+  if (!pay.rowCount || unpaid.length > 0) {
+    console.warn(
+      '[reconcile/group] 團報尚未全數 checkout paid，暫不建立課程:',
+      'group:', groupOrderId,
+      'period:', periodNumber,
+      'unpaid:', unpaid.map((row) => `${row.checkout_id}:${row.payment_status}`).join(',') || '(none)'
     );
-    const unpaid = pay.rows.filter((row) => row.payment_status !== 'paid');
-    if (!pay.rowCount || unpaid.length > 0) {
-      console.warn(
-        '[reconcile/group] 團報 batch 尚未全數 checkout paid，暫不建立課程:',
-        'group:', groupOrderId,
-        'batch:', batchId,
-        'unpaid:', unpaid.map((row) => `${row.checkout_id}:${row.payment_status}`).join(',') || '(none)'
-      );
-      return;
-    }
+    return;
   }
 
   const members = await client.query(
@@ -140,28 +156,49 @@ async function ensureGroupCoursePeriod(client, enrollment, totalSessions) {
   const groupTotalPrice = confirmed.reduce((sum, row) => sum + (Number(row.final_price) || 0), 0)
     || (Number(enrollment.final_price) || 0);
 
-  // get-or-create「本期」共用 period（並發對帳同團同期多筆時，ON CONFLICT 收斂到同一個 period）
-  const ins = await client.query(
-    `INSERT INTO course_periods
-       (coach_id, venue_id, course_type, total_sessions, used_sessions,
-        expires_at, original_price, final_price, status, admin_enrollment_id, group_order_id, period_number)
-     VALUES ($1,$2,$3,$4,0,(NOW() + ($5 || ' days')::interval)::date,$6,$6,'active',$7,$8,$9)
-     ON CONFLICT (group_order_id, period_number) WHERE group_order_id IS NOT NULL
-     DO NOTHING
-     RETURNING id`,
-    [
-      enrollment.coach_id, enrollment.venue_id, enrollment.course_type, totalSessions,
-      String(365 * (Number(enrollment.period_count) || 1)),
-      groupTotalPrice, enrollment.id, groupOrderId, periodNumber,
-    ]
+  // 同一團採 transaction-scoped advisory lock 序列化（鎖 key 刻意不含期數）。這避免依賴
+  // `ON CONFLICT (group_order_id, period_number)` 推斷特定 index：某些舊 production
+  // schema 尚保留單欄 group_order_id unique index，若直接推斷複合 index 會變成 500。
+  // 正確的複合 unique index 仍是第二道保護；此鎖也讓舊版/新版交錯部署時行為可預期。
+  await client.query(
+    `SELECT pg_advisory_xact_lock(hashtext($1))`,
+    [`group-period:${groupOrderId}`]
   );
-  let periodId = ins.rows[0]?.id;
+  const ex = await client.query(
+    `SELECT id FROM course_periods WHERE group_order_id = $1 AND period_number = $2 LIMIT 1`,
+    [groupOrderId, periodNumber]
+  );
+  let periodId = ex.rows[0]?.id || null;
   if (!periodId) {
-    const ex = await client.query(
-      `SELECT id FROM course_periods WHERE group_order_id = $1 AND period_number = $2`,
-      [groupOrderId, periodNumber]
+    // 舊的單欄 unique index 可以安全支援既有第一期，但不能在不 drop/rebuild index
+    // 的前提下建立第二期。不可暗中重用第 1 期或覆寫其價格／堂數；明確回可診斷錯誤，
+    // 讓 release preflight 擋住未升級環境，而不是運行時 500 或資料混寫。
+    const legacy = await client.query(
+      `SELECT id, period_number FROM course_periods
+        WHERE group_order_id = $1
+        ORDER BY created_at, id
+        LIMIT 1`,
+      [groupOrderId]
     );
-    periodId = ex.rows[0]?.id || null;
+    if (legacy.rowCount) {
+      const err = new Error('團購多期課程資料結構尚未升級，請先完成場館資料庫 release migration');
+      err.code = 'GROUP_PERIOD_SCHEMA_UPGRADE_REQUIRED';
+      err.statusCode = 409;
+      throw err;
+    }
+    const ins = await client.query(
+      `INSERT INTO course_periods
+         (coach_id, venue_id, course_type, total_sessions, used_sessions,
+          expires_at, original_price, final_price, status, admin_enrollment_id, group_order_id, period_number)
+       VALUES ($1,$2,$3,$4,0,(NOW() + ($5 || ' days')::interval)::date,$6,$6,'active',$7,$8,$9)
+       RETURNING id`,
+      [
+        enrollment.coach_id, enrollment.venue_id, enrollment.course_type, totalSessions,
+        String(365 * (Number(enrollment.period_count) || 1)),
+        groupTotalPrice, enrollment.id, groupOrderId, periodNumber,
+      ]
+    );
+    periodId = ins.rows[0]?.id || null;
   }
   if (!periodId) return; // 理論上不會發生；保險
 
@@ -242,14 +279,14 @@ async function ensureSoloCoursePeriod(client, enrollment, totalSessions) {
     const ins = await client.query(
       `INSERT INTO course_periods
          (coach_id, venue_id, course_type, total_sessions, used_sessions,
-          expires_at, original_price, final_price, status, admin_enrollment_id)
-       VALUES ($1,$2,$3,$4,0,(NOW() + ($5 || ' days')::interval)::date,$6,$7,'active',$8)
+          expires_at, original_price, final_price, status, admin_enrollment_id, is_experience_course)
+       VALUES ($1,$2,$3,$4,0,(NOW() + ($5 || ' days')::interval)::date,$6,$7,'active',$8,$9)
        RETURNING id`,
       [
         coachId, enrollment.venue_id, enrollment.course_type, totalSessions,
         String(365 * (Number(enrollment.period_count) || 1)),
         Number(enrollment.original_price) || 0, Number(enrollment.final_price) || 0,
-        enrollment.id,
+        enrollment.id, enrollment.order_kind === 'trial',
       ]
     );
     periodId = ins.rows[0]?.id || null;
@@ -326,6 +363,8 @@ async function readEnrollment(id) {
     invoice_number: row.invoice_number || null,
     invoice_image_url: row.invoice_image_url || null,
     payment_proof_url: row.payment_proof_url || null,
+    payment_method: row.payment_method || 'bank_transfer',
+    order_kind: row.order_kind || 'standard',
     invoice_url: row.invoice_url || null,
     invoice_issued_at: tsToString(row.invoice_issued_at),
     extra_parent_phones: row.extra_parent_phones || [],
@@ -363,6 +402,13 @@ async function readEnrollment(id) {
  */
 router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
   const b = req.body || {};
+  const requestCheck = validateRequestId(b.request_id || req.get('Idempotency-Key'));
+  if (requestCheck.error) {
+    return res.status(requestCheck.status).json({ error: requestCheck.error, code: requestCheck.code });
+  }
+  const idempotencyKey = requestCheck.requestId;
+  const actorId = String(req.adminUser?.sub || req.adminUser?.username || '').trim();
+  if (!actorId) return res.status(403).json({ error: '無法確認建檔操作人員', code: 'ACTOR_REQUIRED' });
 
   const parentName  = String(b.parent_name || '').trim();
   const parentPhone = String(b.parent_phone || '').trim();
@@ -414,10 +460,83 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
   const byUser = req.adminUser?.name || req.adminUser?.username || req.adminUser?.sub || 'admin';
   // C-6：資料建立人一律從登入 token 決定（FK 到 admin_users.id），不接受前端傳值。
   const createdBy = req.adminUser?.sub || null;
+  const fingerprint = payloadFingerprint({
+    parent_name: parentName,
+    parent_phone: parentPhone,
+    students,
+    venue_id: venueId,
+    coach: coachName,
+    coach_id: b.coach_id ? String(b.coach_id).trim() : null,
+    course_type: courseType,
+    total_sessions: totalSessions,
+    original_price: originalPrice,
+    final_price: finalPrice,
+    allowance_amount: allowanceTotal,
+    payment_method: paymentMethod,
+    transfer_last_5: last5 || null,
+    unit_price: unitPrice,
+    payer,
+    class_name: className,
+    tax_id: taxId,
+    level_note: levelNote,
+    work_type: workType,
+    full_sessions: fullSessions,
+    carrier,
+    submitted_at: b.submitted_at ? submittedAt.toISOString() : null,
+  });
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // 與家長報名相同：actor/request advisory lock → ledger → business rows。
+    // 同一 request 的重送在任何 checkout/order/audit 副作用前即完成序列化。
+    await acquireRequestLock(client, {
+      actorId,
+      operation: ADMIN_ENROLLMENT_OPERATION,
+      requestId: idempotencyKey,
+    });
+    const prior = await client.query(
+      `SELECT payload_fingerprint, result_entity_id, status
+         FROM request_idempotency_ledger
+        WHERE actor_type = 'admin' AND actor_id = $1
+          AND operation = $2 AND normalized_request_id = $3
+        FOR UPDATE`,
+      [actorId, ADMIN_ENROLLMENT_OPERATION, idempotencyKey]
+    );
+    if (prior.rowCount) {
+      const ledger = prior.rows[0];
+      if (ledger.payload_fingerprint !== fingerprint) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: '相同 request ID 已用於不同建檔內容',
+          code: 'IDEMPOTENCY_PAYLOAD_MISMATCH',
+        });
+      }
+      if (ledger.status !== 'completed' || !ledger.result_entity_id) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: '此 request ID 正在處理，請稍後以相同內容重試',
+          code: 'IDEMPOTENCY_IN_PROGRESS',
+        });
+      }
+      const existingCheckout = await readCheckout(client, ledger.result_entity_id);
+      if (!existingCheckout?.sub_orders?.length) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: '此 request ID 的原始建檔結果不存在，請聯繫管理員',
+          code: 'IDEMPOTENCY_RESULT_MISSING',
+        });
+      }
+      await client.query('COMMIT');
+      return res.json(adminEnrollmentResponse(existingCheckout, { idempotent: true }));
+    }
+    await client.query(
+      `INSERT INTO request_idempotency_ledger
+         (normalized_request_id, actor_type, actor_id, operation, payload_fingerprint, status)
+       VALUES ($1,'admin',$2,$3,$4,'processing')`,
+      [idempotencyKey, actorId, ADMIN_ENROLLMENT_OPERATION, fingerprint]
+    );
 
     // 場館須存在；停用館仍允許（補登歷史 / 舊資料匯入）。
     const vr = await client.query(`SELECT id FROM venues WHERE id = $1`, [venueId]);
@@ -451,6 +570,7 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
       transferLast5: last5 || null,
       carrier,
       by: byUser,
+      requestFingerprint: fingerprint,
     });
 
     for (let i = 0; i < numPeriods; i += 1) {
@@ -487,6 +607,14 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
       );
     }
 
+    await client.query(
+      `UPDATE request_idempotency_ledger
+          SET result_entity_id = $4, status = 'completed', completed_at = NOW()
+        WHERE actor_type = 'admin' AND actor_id = $1
+          AND operation = $2 AND normalized_request_id = $3`,
+      [actorId, ADMIN_ENROLLMENT_OPERATION, idempotencyKey, checkout.checkoutId]
+    );
+
     await client.query('COMMIT');
     res.status(201).json({
       id: enrollmentIds[0],
@@ -499,7 +627,7 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
     });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
-    console.error('[admin/enrollments create]', err);
+    console.error('[admin/enrollments create]', { code: err?.code || 'UNEXPECTED' });
     res.status(500).json({ error: '手動建檔失敗', code: 'CREATE_FAILED' });
   } finally {
     client.release();
@@ -840,7 +968,8 @@ router.post('/:id/reconcile', requireAdminAuth, requireAdminRole('admin', 'manag
     const perPeriod = settings.sessions_per_period || 6;
     // U9：一張報名可購買多期 → 總堂數 = 每期堂數 × 期數（一般報名 period_count 預設 1，行為不變）。
     const periodCount = Number(cur.rows[0].period_count) || 1;
-    const total = perPeriod * periodCount;
+    // 試上為明確單次課，不得在對帳時被既有「每期 N 堂」邏輯放大成完整一期。
+    const total = cur.rows[0].order_kind === 'trial' ? 1 : (perPeriod * periodCount);
 
     await client.query(
       `UPDATE admin_enrollments

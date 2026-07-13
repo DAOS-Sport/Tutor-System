@@ -46,7 +46,9 @@ function venueScope(req) {
 router.get('/coach-options', async (req, res) => {
   try {
     const r = await pool.query(
-      `SELECT id, name FROM coaches WHERE is_active IS NOT FALSE ORDER BY name`
+      `SELECT id, name FROM coaches
+        WHERE is_active IS NOT FALSE AND COALESCE(is_placeholder, FALSE) = FALSE
+        ORDER BY name`
     );
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -56,7 +58,7 @@ router.get('/revenue', async (req, res) => {
   try {
     const { from, to } = parseRange(req.query);
     const venueIds = venueScope(req);
-    const conds = [`cp.created_at::date BETWEEN $1 AND $2`];
+    const conds = [`cp.created_at::date BETWEEN $1 AND $2`, `COALESCE(co.is_placeholder, FALSE) = FALSE`];
     const args = [from, to];
     if (venueIds) { args.push(venueIds); conds.push(`cp.venue_id = ANY($${args.length}::text[])`); }
     if (req.query.coachId) { args.push(req.query.coachId); conds.push(`cp.coach_id = $${args.length}`); }
@@ -81,7 +83,7 @@ router.get('/sessions', async (req, res) => {
   try {
     const { from, to } = parseRange(req.query);
     const venueIds = venueScope(req);
-    const conds = [`cp.created_at::date <= $2`];
+    const conds = [`cp.created_at::date <= $2`, `COALESCE(co.is_placeholder, FALSE) = FALSE`];
     const args = [from, to];
     if (venueIds) { args.push(venueIds); conds.push(`cp.venue_id = ANY($${args.length}::text[])`); }
     if (req.query.coachId) { args.push(req.query.coachId); conds.push(`cp.coach_id = $${args.length}`); }
@@ -175,7 +177,11 @@ router.get('/learning-completion', async (req, res) => {
   try {
     const { from, to } = parseRange(req.query);
     const venueIds = venueScope(req);
-    const conds = [`cp.created_at::date BETWEEN $1 AND $2`, `co.is_senior = TRUE`];
+    const conds = [
+      `cp.created_at::date BETWEEN $1 AND $2`,
+      `co.is_senior = TRUE`,
+      `COALESCE(co.is_placeholder, FALSE) = FALSE`,
+    ];
     const args = [from, to];
     if (venueIds) { args.push(venueIds); conds.push(`cp.venue_id = ANY($${args.length}::text[])`); }
     if (req.query.coachId) { args.push(req.query.coachId); conds.push(`cp.coach_id = $${args.length}`); }

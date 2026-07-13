@@ -10,17 +10,22 @@
 Replit 提供內建 PostgreSQL。在 Replit 中：
 1. 點選左側「Database」建立 PostgreSQL 資料庫
 2. 複製 `DATABASE_URL` 至 Secrets
-3. 執行 `npm run db:migrate` 初始化 Schema
+3. 初次／變更 schema 前先備份並審核 migration；production 不可在每次部署盲跑
+   `npm run db:migrate`（現有 runner 會重跑目錄中的 SQL）
 
 ### Replit Object Storage（媒體檔案）
 1. 在 Replit 中啟用 Object Storage
 2. 設定 `REPLIT_OBJECT_STORAGE_BUCKET` Secrets
-3. 使用 `@replit/object-storage` npm 套件上傳媒體
+3. production 未覆寫時會自動選 Replit driver，並在 listen 前執行 SDK bucket probe；若明確設成 `local`，startup 會 fail closed
+4. 使用 `@replit/object-storage` npm 套件上傳媒體
+
+> Autoscale 的本機檔案系統不會跨實例或重部署保存。正式付款證明、聊天媒體與教練圖片不可依賴 `server/uploads/`；發布前需實際測試 upload → reload → read。
 
 ```js
 const { Client } = require('@replit/object-storage');
 const client = new Client();
-await client.uploadFromBuffer(buffer, 'filename.jpg');
+const result = await client.uploadFromBytes('filename.jpg', buffer);
+if (!result.ok) throw new Error('object upload failed');
 ```
 
 ## 2. PORT 設定

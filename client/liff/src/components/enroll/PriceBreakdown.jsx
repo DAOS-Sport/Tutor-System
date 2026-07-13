@@ -3,6 +3,18 @@ import { Section, Row } from './EnrollmentParts';
 import { formatTWD } from '../../utils/format';
 
 export default function PriceBreakdown({ pricing, multiplier, isSenior }) {
+  if (pricing.isTrial) {
+    return (
+      <Section title="費用明細">
+        <Row label="試上單次課" value={formatTWD(pricing.unitPrice)} />
+        <p className="mt-1 text-xs leading-relaxed text-gray-500">限一位學員、一堂課；最終金額以送出時系統報價為準。</p>
+        <div className="mt-2 flex items-baseline justify-between border-t border-gray-100 pt-2">
+          <span className="text-sm font-bold text-gray-700">應繳金額</span>
+          <span className="text-xl font-bold text-brand-primary">{formatTWD(pricing.final)}</span>
+        </div>
+      </Section>
+    );
+  }
   const qtyLabel = `${pricing.studentCount} 位${pricing.periodCount > 1 ? ` × ${pricing.periodCount} 期` : ''}`;
   const pct = Math.round((multiplier || 1) * 100);
   return (

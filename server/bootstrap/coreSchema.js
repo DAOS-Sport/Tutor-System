@@ -9,8 +9,7 @@
  * `server/bootstrap/admin.js` 的 DEFAULT_VENUES / DEFAULT_STAFF 以利日後合併。
  */
 const { pool } = require('../models/db');
-
-const Z03_PURGE_SETTING_KEY = 'z03_hard_purge_20260703';
+const { ensureUnassignedCoach } = require('../services/unassignedCoach');
 
 const DDL = `
 -- ENUMs（重複建立會 throw duplicate_object）
@@ -317,22 +316,53 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS bio_rich_text TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS intro_review_status VARCHAR(20) NOT NULL DEFAULT 'draft'; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS pricing_multiplier NUMERIC(5,2) NOT NULL DEFAULT 1.00; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+-- 「待分配」是系統 placeholder，不計入真實教練資料與業績。
+DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS is_placeholder BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 -- Task #53：is_active 手動覆寫旗標 — 後台勾啟用後 Ragic 同步不再覆蓋
 DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS active_overridden_at TIMESTAMPTZ; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 -- Task #53：載入效能 — coaches 列表常依 is_active + name 過濾
 CREATE INDEX IF NOT EXISTS idx_coaches_active ON coaches(is_active);
 DO $$ BEGIN ALTER TABLE coach_availability_slots ADD COLUMN IF NOT EXISTS notes TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE coach_availability_slots ADD COLUMN IF NOT EXISTS booked_session_id UUID; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE course_periods ADD COLUMN IF NOT EXISTS is_experience_course BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
 -- Task #67：admin_course_intros 增 title_overridden 旗標（true 表示 admin 改過 title，label 同步時不再覆蓋）
 DO $$ BEGIN
   ALTER TABLE admin_course_intros ADD COLUMN IF NOT EXISTS title_overridden BOOLEAN NOT NULL DEFAULT FALSE;
 EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
+-- F-R02 手動扣課：以 completed session + checkin 作為堂數真相，並保留不可覆寫的
+-- request-id ledger，防止雙擊／網路 retry 重複扣課。此表不對歷史資料做回填。
+CREATE TABLE IF NOT EXISTS manual_lesson_deductions (
+  id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  request_id          TEXT NOT NULL,
+  payload_fingerprint CHAR(64),
+  course_period_id    UUID NOT NULL REFERENCES course_periods(id) ON DELETE RESTRICT,
+  admin_enrollment_id TEXT,
+  course_session_id   UUID NOT NULL REFERENCES course_sessions(id) ON DELETE RESTRICT,
+  student_id          UUID NOT NULL REFERENCES students(id) ON DELETE RESTRICT,
+  venue_id            TEXT NOT NULL,
+  quantity            INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
+  remaining_before    INTEGER NOT NULL CHECK (remaining_before >= 0),
+  remaining_after     INTEGER NOT NULL CHECK (remaining_after >= 0),
+  reason              TEXT NOT NULL,
+  deducted_by         TEXT NOT NULL,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(course_period_id, request_id),
+  UNIQUE(course_session_id)
+);
+DO $$ BEGIN ALTER TABLE manual_lesson_deductions ADD COLUMN IF NOT EXISTS payload_fingerprint CHAR(64); EXCEPTION WHEN undefined_table THEN NULL; END $$;
+CREATE INDEX IF NOT EXISTS idx_manual_lesson_deductions_period_created
+  ON manual_lesson_deductions(course_period_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_manual_lesson_deductions_student_created
+  ON manual_lesson_deductions(student_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS checkin_records (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   course_session_id UUID NOT NULL REFERENCES course_sessions(id) ON DELETE CASCADE,
   student_id UUID NOT NULL REFERENCES students(id) ON DELETE RESTRICT,
+  -- 舊 schema 的相容欄位；櫃檯補登以目標學員寫入，真實操作者另記 audit/ledger。
+  checked_in_by_student_id UUID REFERENCES students(id),
   is_auto_linked BOOLEAN NOT NULL DEFAULT FALSE,
   checked_in_source VARCHAR(20) NOT NULL DEFAULT 'parent',
   checked_in_by_parent_id UUID REFERENCES parents(id),
@@ -341,17 +371,11 @@ CREATE TABLE IF NOT EXISTS checkin_records (
   UNIQUE(course_session_id, student_id)
 );
 DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS checked_in_source VARCHAR(20) NOT NULL DEFAULT 'parent'; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+-- 某些既有環境有此 legacy NOT NULL 欄位，另一些早期環境完全沒有；只補欄位，
+-- 不變更既有 nullability/constraint，讓舊查詢與 production 契約維持原樣。
+DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS checked_in_by_student_id UUID REFERENCES students(id); EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS checked_in_by_parent_id UUID REFERENCES parents(id); EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS checked_in_by_coach_id UUID REFERENCES coaches(id); EXCEPTION WHEN undefined_table THEN NULL; END $$;
-DO $$ BEGIN
-  IF EXISTS (
-    SELECT 1 FROM information_schema.columns
-     WHERE table_name = 'checkin_records'
-       AND column_name = 'checked_in_by_student_id'
-  ) THEN
-    ALTER TABLE checkin_records ALTER COLUMN checked_in_by_student_id DROP NOT NULL;
-  END IF;
-EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
 -- ─── Phase 4: 聊天室 / 訊息 / 關鍵字警示 ───────────────────────────────
 DO $$ BEGIN CREATE TYPE alert_status AS ENUM ('pending','reviewed','no_issue','resolved'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
@@ -455,15 +479,14 @@ DO $$ BEGIN
   ALTER TABLE course_periods    ADD COLUMN IF NOT EXISTS group_order_id UUID;
   -- 訂單依期數拆分：course_periods 也記 period_number；團報一團 N 期 → 每期各自一個 period。
   ALTER TABLE course_periods    ADD COLUMN IF NOT EXISTS period_number INTEGER NOT NULL DEFAULT 1;
-  -- 唯一鍵由單欄 (group_order_id) 改複合 (group_order_id, period_number)：
-  -- 既有同名單欄索引，CREATE IF NOT EXISTS 會直接略過、無法自動升級，故先 DROP 再重建。
-  -- 容錯（失敗只警告不中斷啟動，沿用本檔既有 pattern）：歷史資料一團一期、period_number 預設 1，不會撞重複。
+  -- 唯一鍵由單欄 (group_order_id) 改複合 (group_order_id, period_number)。
+  -- 啟動 bootstrap 不可 drop/rebuild production index；已存在的 legacy index 保留，
+  -- 需要結構升級時應以備份後的明確 migration 執行。
   BEGIN
-    DROP INDEX IF EXISTS uq_course_periods_group_order;
-    CREATE UNIQUE INDEX uq_course_periods_group_order
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_course_periods_group_order
       ON course_periods(group_order_id, period_number) WHERE group_order_id IS NOT NULL;
   EXCEPTION WHEN OTHERS THEN
-    RAISE WARNING 'uq_course_periods_group_order 複合索引重建失敗（可能有重複資料），略過: %', SQLERRM;
+    RAISE WARNING 'uq_course_periods_group_order 建立失敗（保留既有資料／索引）: %', SQLERRM;
   END;
   -- U11 一般報名橋：一般報名以 admin_enrollment_id 冪等 get-or-create 一個 course_period。
   -- 容錯建立：若正式環境已有重複 admin_enrollment_id 的歷史資料，索引建不起來也不中斷啟動
@@ -517,11 +540,15 @@ DO $$ BEGIN
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
   );
+  -- 試上 / 現場付費欄位只新增預設，不回填或覆寫既有付款資料。
+  ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS payment_method TEXT NOT NULL DEFAULT 'bank_transfer';
+  ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS order_kind TEXT NOT NULL DEFAULT 'standard';
+  ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS request_payload_fingerprint CHAR(64);
   CREATE UNIQUE INDEX IF NOT EXISTS uq_checkout_sessions_parent_request
     ON checkout_sessions(parent_id, request_id)
     WHERE request_id IS NOT NULL;
-  ALTER TABLE checkout_sessions DROP CONSTRAINT IF EXISTS checkout_sessions_enrollment_batch_id_key;
-  DROP INDEX IF EXISTS checkout_sessions_enrollment_batch_id_key;
+  -- 保留舊版 enrollment_batch_id unique constraint/index；啟動時不做 destructive
+  -- constraint/index replacement。若需變更，請走有備份與資料驗證的顯式 migration。
   CREATE UNIQUE INDEX IF NOT EXISTS uq_checkout_sessions_parent_batch
     ON checkout_sessions(parent_id, enrollment_batch_id)
     WHERE parent_id IS NOT NULL AND enrollment_batch_id IS NOT NULL;
@@ -531,7 +558,26 @@ DO $$ BEGIN
   CREATE INDEX IF NOT EXISTS idx_checkout_sessions_parent ON checkout_sessions(parent_id);
   CREATE INDEX IF NOT EXISTS idx_checkout_sessions_status ON checkout_sessions(payment_status);
   CREATE INDEX IF NOT EXISTS idx_checkout_sessions_created_at ON checkout_sessions(created_at DESC);
+  -- 所有家長／櫃檯建單共用冪等 ledger。processing 與 checkout/referral/promotion 置於同一
+  -- transaction；失敗會一起 rollback，不可能留下假的 completed 紀錄。
+  CREATE TABLE IF NOT EXISTS request_idempotency_ledger (
+    id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    normalized_request_id TEXT NOT NULL,
+    actor_type            TEXT NOT NULL,
+    actor_id              TEXT NOT NULL,
+    operation             TEXT NOT NULL,
+    payload_fingerprint   CHAR(64) NOT NULL,
+    result_entity_id      TEXT,
+    status                TEXT NOT NULL CHECK (status IN ('processing','completed')),
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at          TIMESTAMPTZ,
+    UNIQUE(actor_type, actor_id, operation, normalized_request_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_request_idempotency_result
+    ON request_idempotency_ledger(operation, result_entity_id)
+    WHERE result_entity_id IS NOT NULL;
   ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS checkout_id UUID REFERENCES checkout_sessions(checkout_id) ON DELETE SET NULL;
+  ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS order_kind TEXT NOT NULL DEFAULT 'standard';
   CREATE INDEX IF NOT EXISTS idx_admin_enrollments_checkout ON admin_enrollments(checkout_id);
   CREATE TABLE IF NOT EXISTS checkout_invoices (
     invoice_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -614,6 +660,7 @@ DO $$ BEGIN
   ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS payer            TEXT;          -- 收款人
   ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS class_name       TEXT;          -- 班級名稱
   ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS payment_method   TEXT;          -- 付款方式：現金 / 轉帳
+  ALTER TABLE admin_staff ADD COLUMN IF NOT EXISTS is_placeholder BOOLEAN NOT NULL DEFAULT FALSE;
   ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS allowance_amount NUMERIC(10,2); -- 折讓金額
   ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS tax_id           VARCHAR(20);   -- 統一編號
   ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS level_note       TEXT;          -- 程度說明
@@ -670,12 +717,9 @@ DO $$ BEGIN
   BEGIN ALTER TABLE session_record_versions ALTER COLUMN version_number DROP NOT NULL; EXCEPTION WHEN undefined_column THEN NULL; END;
   BEGIN ALTER TABLE session_record_versions ALTER COLUMN content_snapshot DROP NOT NULL; EXCEPTION WHEN undefined_column THEN NULL; END;
 EXCEPTION WHEN undefined_table THEN NULL; END $$;
-DO $$ BEGIN
-  IF EXISTS (SELECT 1 FROM information_schema.columns
-              WHERE table_name = 'session_record_tags' AND column_name = 'tag_text') THEN
-    DROP TABLE session_record_tags CASCADE;
-  END IF;
-EXCEPTION WHEN undefined_table THEN NULL; END $$;
+-- 舊版 session_record_tags 可能含已發布的標籤資料；bootstrap 不得 DROP TABLE。
+-- services/learning.js 保有舊欄位相容 read fallback，結構轉換須由明確 migration
+-- 先備份／backfill 後執行。
 DO $$ BEGIN
   ALTER TABLE course_evaluations ADD COLUMN IF NOT EXISTS coach_id UUID REFERENCES coaches(id) ON DELETE RESTRICT;
   ALTER TABLE course_evaluations ADD COLUMN IF NOT EXISTS score_teaching INTEGER;
@@ -924,22 +968,19 @@ CREATE TABLE IF NOT EXISTS ragic_staging_changes (
   reviewed_at  TIMESTAMPTZ,
   reject_reason TEXT
 );
--- 每個 UID（entity_type, entity_id）只保留「一筆」staging，就地更新（以 UID 為該用戶資料的真相）。
--- 舊設計用「WHERE status='pending'」的局部唯一索引 → 只 dedup pending；一旦轉成
--- approved/auto_resolved/rejected，下次 sync 有差異就「再 INSERT 一筆」→ 同一人累積多筆歷史。
--- 改為全狀態唯一：先收斂既有重複列（保留 pending 優先、否則最新 fetched_at），再建全唯一索引。
-DELETE FROM ragic_staging_changes a
- USING (
-   SELECT id, ROW_NUMBER() OVER (
-            PARTITION BY entity_type, entity_id
-            ORDER BY (status = 'pending') DESC, fetched_at DESC
-          ) AS rn
-     FROM ragic_staging_changes
- ) d
- WHERE a.id = d.id AND d.rn > 1;
-DROP INDEX IF EXISTS uq_ragic_staging_pending;
-CREATE UNIQUE INDEX IF NOT EXISTS uq_ragic_staging_entity
-  ON ragic_staging_changes(entity_type, entity_id);
+-- staging 是稽核資料，不在 bootstrap 去重或刪除。只有現有資料本來已唯一時才
+-- 補上全狀態 unique index；否則保留資料並留給人工、可回滾 migration 處理。
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM ragic_staging_changes
+    GROUP BY entity_type, entity_id HAVING COUNT(*) > 1
+  ) THEN
+    RAISE WARNING '[coreSchema] ragic_staging_changes 有重複資料，保留原列並略過 uq_ragic_staging_entity 建立';
+  ELSE
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_ragic_staging_entity
+      ON ragic_staging_changes(entity_type, entity_id);
+  END IF;
+EXCEPTION WHEN undefined_table THEN NULL; END $$;
 CREATE INDEX IF NOT EXISTS idx_ragic_staging_status ON ragic_staging_changes(status, fetched_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ragic_staging_form ON ragic_staging_changes(form_code, status);
 
@@ -1174,48 +1215,26 @@ CREATE INDEX IF NOT EXISTS idx_notif_log_kind ON notification_log(kind, sent_at 
 -- upsert 改以 ragic_record_id 為主鍵（見 parentSync.js upsertLocalParent/
 -- upsertLocalStudents），此處先確保該欄位真正具備唯一性。不同於
 -- db/migrations/010_customer_family_base.sql（該檔遇重複只降級成非唯一索引、
--- 且從未被自動執行——僅能手動 npm run db:migrate，未接進開機流程），這裡先做
--- 安全去重（不刪除任何列，只解除重複列的 ragic_record_id 佔用，讓它們 fallback
--- 回 phone 識別；業務資料/FK 完全不動）再建真正的 UNIQUE，且每次開機冪等執行。
+-- 且從未被自動執行——僅能手動 npm run db:migrate，未接進開機流程）。啟動時
+-- 絕不清空重複列的識別鍵；若偵測到衝突就保留資料、略過 unique index，交由有
+-- 備份與人工確認的明確 migration 處理。
 DO $$
 BEGIN
-  WITH ranked AS (
-    SELECT id, ROW_NUMBER() OVER (
-             PARTITION BY ragic_record_id
-             ORDER BY (line_uid IS NOT NULL) DESC, updated_at DESC
-           ) AS rn
-      FROM parents
-     WHERE ragic_record_id IS NOT NULL
-  )
-  UPDATE parents SET ragic_record_id = NULL, updated_at = NOW()
-   WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
-
   IF EXISTS (
     SELECT ragic_record_id FROM parents WHERE ragic_record_id IS NOT NULL
     GROUP BY ragic_record_id HAVING COUNT(*) > 1
   ) THEN
-    RAISE WARNING '[coreSchema] parents.ragic_record_id 去重後仍有重複，略過唯一索引升級（需人工排查）';
+    RAISE WARNING '[coreSchema] parents.ragic_record_id 有重複，保留原資料並略過唯一索引升級（需人工排查）';
   ELSE
-    DROP INDEX IF EXISTS idx_parents_ragic_record_id;
     CREATE UNIQUE INDEX IF NOT EXISTS uq_parents_ragic_record_id
       ON parents(ragic_record_id) WHERE ragic_record_id IS NOT NULL;
   END IF;
-
-  WITH ranked AS (
-    SELECT id, ROW_NUMBER() OVER (
-             PARTITION BY ragic_record_id ORDER BY updated_at DESC
-           ) AS rn
-      FROM students
-     WHERE ragic_record_id IS NOT NULL
-  )
-  UPDATE students SET ragic_record_id = NULL, updated_at = NOW()
-   WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
 
   IF EXISTS (
     SELECT ragic_record_id FROM students WHERE ragic_record_id IS NOT NULL
     GROUP BY ragic_record_id HAVING COUNT(*) > 1
   ) THEN
-    RAISE WARNING '[coreSchema] students.ragic_record_id 去重後仍有重複，略過唯一索引升級（需人工排查）';
+    RAISE WARNING '[coreSchema] students.ragic_record_id 有重複，保留原資料並略過唯一索引升級（需人工排查）';
   ELSE
     CREATE UNIQUE INDEX IF NOT EXISTS uq_students_ragic_record_id
       ON students(ragic_record_id) WHERE ragic_record_id IS NOT NULL;
@@ -1229,88 +1248,46 @@ END $$;
 -- 新編號被誤判成新人（見 ragicAdmin.js _syncStaffImpl 註解 P1.1 決策 相關段落）。
 -- 修復：改以 Ragic 真正不可變的 _ragicId 為準（欄位名沿用既有 ragic_record_id）。
 -- admin_staff.ragic_record_id 欄位雖然已存在，但先前 _applyStaffChange 寫入時誤填
--- 成員工編號本身（等同 id），這裡先做安全去重（同 parents/students 手法，不刪列，
--- 只解除重複佔用）再建真正的 UNIQUE，實際的正確值由一次性回填 script 填入。
+-- 成員工編號本身（等同 id）。bootstrap 不會再清除重複識別鍵或替換 constraint；
+-- 衝突資料保留並交由一次性、可備份回滾的修復流程處理。
 DO $$
 BEGIN
-	  ALTER TABLE coaches ADD COLUMN IF NOT EXISTS ragic_record_id TEXT;
-	  ALTER TABLE coaches ADD COLUMN IF NOT EXISTS ragic_data_no TEXT;
-	  ALTER TABLE admin_staff ADD COLUMN IF NOT EXISTS ragic_data_no TEXT;
-	  ALTER TABLE admin_staff ADD COLUMN IF NOT EXISTS line_uid TEXT;
-	  DROP INDEX IF EXISTS uq_coaches_ragic_data_no;
-	  DROP INDEX IF EXISTS uq_admin_staff_ragic_data_no;
-
-  WITH ranked AS (
-    SELECT id, ROW_NUMBER() OVER (
-             PARTITION BY ragic_record_id ORDER BY updated_at DESC
-           ) AS rn
-      FROM coaches
-     WHERE ragic_record_id IS NOT NULL
-  )
-  UPDATE coaches SET ragic_record_id = NULL, updated_at = NOW()
-   WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
+	ALTER TABLE coaches ADD COLUMN IF NOT EXISTS ragic_record_id TEXT;
+	ALTER TABLE coaches ADD COLUMN IF NOT EXISTS ragic_data_no TEXT;
+	ALTER TABLE admin_staff ADD COLUMN IF NOT EXISTS ragic_data_no TEXT;
+	ALTER TABLE admin_staff ADD COLUMN IF NOT EXISTS line_uid TEXT;
 
   IF EXISTS (
     SELECT ragic_record_id FROM coaches WHERE ragic_record_id IS NOT NULL
     GROUP BY ragic_record_id HAVING COUNT(*) > 1
   ) THEN
-    RAISE WARNING '[coreSchema] coaches.ragic_record_id 去重後仍有重複，略過唯一索引升級（需人工排查）';
+    RAISE WARNING '[coreSchema] coaches.ragic_record_id 有重複，保留原資料並略過唯一索引升級（需人工排查）';
   ELSE
     CREATE UNIQUE INDEX IF NOT EXISTS uq_coaches_ragic_record_id
       ON coaches(ragic_record_id) WHERE ragic_record_id IS NOT NULL;
   END IF;
 
-  WITH ranked AS (
-    SELECT id, ROW_NUMBER() OVER (
-             PARTITION BY ragic_record_id ORDER BY updated_at DESC
-           ) AS rn
-      FROM admin_staff
-     WHERE ragic_record_id IS NOT NULL
-  )
-  UPDATE admin_staff SET ragic_record_id = NULL, updated_at = NOW()
-   WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
-
   IF EXISTS (
     SELECT ragic_record_id FROM admin_staff WHERE ragic_record_id IS NOT NULL
     GROUP BY ragic_record_id HAVING COUNT(*) > 1
   ) THEN
-    RAISE WARNING '[coreSchema] admin_staff.ragic_record_id 去重後仍有重複，略過唯一索引升級（需人工排查）';
+    RAISE WARNING '[coreSchema] admin_staff.ragic_record_id 有重複，保留原資料並略過唯一索引升級（需人工排查）';
   ELSE
     CREATE UNIQUE INDEX IF NOT EXISTS uq_admin_staff_ragic_record_id
       ON admin_staff(ragic_record_id) WHERE ragic_record_id IS NOT NULL;
   END IF;
 
-	  WITH ranked AS (
-	    SELECT id, ROW_NUMBER() OVER (
-	             PARTITION BY line_uid ORDER BY updated_at DESC NULLS LAST, id
-	           ) AS rn
-	      FROM admin_staff
-	     WHERE NULLIF(TRIM(line_uid), '') IS NOT NULL
-	  )
-	  UPDATE admin_staff SET line_uid = NULL, last_synced_at = NOW()
-	   WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
+	IF EXISTS (
+	  SELECT line_uid FROM admin_staff WHERE NULLIF(TRIM(line_uid), '') IS NOT NULL
+	  GROUP BY line_uid HAVING COUNT(*) > 1
+	) THEN
+	  RAISE WARNING '[coreSchema] admin_staff.line_uid 有重複，保留原資料並略過唯一索引升級（需人工排查）';
+	ELSE
+	  CREATE UNIQUE INDEX IF NOT EXISTS uq_admin_staff_line_uid
+	    ON admin_staff(line_uid) WHERE NULLIF(TRIM(line_uid), '') IS NOT NULL;
+	END IF;
 
-	  IF EXISTS (
-	    SELECT line_uid FROM admin_staff WHERE NULLIF(TRIM(line_uid), '') IS NOT NULL
-	    GROUP BY line_uid HAVING COUNT(*) > 1
-	  ) THEN
-	    RAISE WARNING '[coreSchema] admin_staff.line_uid 去重後仍有重複，略過唯一索引升級（需人工排查）';
-	  ELSE
-	    CREATE UNIQUE INDEX IF NOT EXISTS uq_admin_staff_line_uid
-	      ON admin_staff(line_uid) WHERE NULLIF(TRIM(line_uid), '') IS NOT NULL;
-	  END IF;
-
-  -- admin_staff.id 修復後可能因員工編號變更而被 UPDATE（見 _applyStaffChange），
-  -- admin_staff_venues 的 FK 預設只处理 ON DELETE，補上 ON UPDATE CASCADE 讓
-  -- PK 值變更能連動更新，否則會撞 FK violation。只在尚未修正時才 DROP/ADD 一次。
-  IF EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conname = 'admin_staff_venues_staff_id_fkey' AND confupdtype != 'c'
-  ) THEN
-    ALTER TABLE admin_staff_venues DROP CONSTRAINT admin_staff_venues_staff_id_fkey;
-    ALTER TABLE admin_staff_venues ADD CONSTRAINT admin_staff_venues_staff_id_fkey
-      FOREIGN KEY (staff_id) REFERENCES admin_staff(id) ON DELETE CASCADE ON UPDATE CASCADE;
-  END IF;
+  -- 保留既有 FK constraint；啟動時不 drop/recreate production constraint。
 END $$;
 
 -- 學員第三層 name+birth fallback 比對（upsertLocalStudents 內 ragic_record_id/id_number
@@ -1790,83 +1767,12 @@ async function ensureCourseIntroFK() {
   `);
 }
 
-async function purgeZ03OnceForProductionPublish() {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [Z03_PURGE_SETTING_KEY]);
-
-    const tables = await client.query(
-      `SELECT
-         to_regclass('public.admin_settings') AS admin_settings,
-         to_regclass('public.ragic_z03_records') AS z03_records,
-         to_regclass('public.ragic_z03_students') AS z03_students`
-    );
-    const row = tables.rows[0] || {};
-    if (!row.admin_settings || !row.z03_records) {
-      await client.query('ROLLBACK');
-      return;
-    }
-
-    const done = await client.query(
-      `SELECT 1 FROM admin_settings WHERE key = $1 LIMIT 1`,
-      [Z03_PURGE_SETTING_KEY]
-    );
-    if (done.rowCount) {
-      await client.query('COMMIT');
-      return;
-    }
-
-    let deletedOrphanStudents = 0;
-    if (row.z03_students) {
-      const orphanStudents = await client.query(
-        `DELETE FROM ragic_z03_students s
-          WHERE NOT EXISTS (SELECT 1 FROM ragic_z03_records r WHERE r.id = s.z03_record_id)
-          RETURNING id`
-      );
-      deletedOrphanStudents = orphanStudents.rowCount;
-    }
-
-    const deletedRecords = await client.query(`DELETE FROM ragic_z03_records RETURNING id`);
-    await client.query(
-      `INSERT INTO admin_settings (key, value, updated_at)
-       VALUES ($1, 1, NOW())
-       ON CONFLICT (key) DO UPDATE SET value = 1, updated_at = NOW()`,
-      [Z03_PURGE_SETTING_KEY]
-    );
-    await client.query('COMMIT');
-    console.log(
-      '[core bootstrap] one-time hard purged local Z03: records=%d orphan_students=%d',
-      deletedRecords.rowCount,
-      deletedOrphanStudents
-    );
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw err;
-  } finally {
-    client.release();
-  }
-}
-
-async function clearLegacyStagingChanges() {
-  // Staging 流程已下架（H01/H05 sync 改為直接 apply）。
-  // 每次啟動一律清空舊的待審核列，確保不留遺留資料干擾。
-  try {
-    const r = await pool.query(`DELETE FROM ragic_staging_changes`);
-    if (r.rowCount > 0) {
-      console.log(`[core bootstrap] cleared ${r.rowCount} legacy ragic_staging_changes rows`);
-    }
-  } catch (err) {
-    console.warn('[core bootstrap] clearLegacyStagingChanges skipped:', err.message);
-  }
-}
-
 async function bootstrap() {
   try {
     await ensureSchema();
-    await clearLegacyStagingChanges();
-    await purgeZ03OnceForProductionPublish();
+    // 啟動流程只能做向前相容的 schema / seed；不可清除 Ragic 暫存或 Z03 歷史資料。
     await seedVenuesCoachesParents();
+    await ensureUnassignedCoach();
     await seedSlotsAndSessions();
     await seedKeywords();
     await seedTagsAndThresholds();

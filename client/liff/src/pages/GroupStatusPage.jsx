@@ -42,6 +42,9 @@ export default function GroupStatusPage() {
   const [proofFile, setProofFile] = useState(null);
   const [lineName, setLineName] = useState('');
   const proofInputRef = useRef(null);
+  // 檔案已上傳、但 my-proof API 回應在網路中斷時，重試必須沿用同一 URL；
+  // 否則重傳同一張圖會產生新 URL，被後端的 anti-overwrite lock 誤判成不同證明。
+  const uploadedProofUrlRef = useRef(null);
 
   // 取家長的 LINE 顯示名稱，組分享訊息用（在 LINE 內才拿得到；dev/瀏覽器時靜默略過）
   useEffect(() => {
@@ -160,6 +163,7 @@ export default function GroupStatusPage() {
       toast.error('圖片大小不得超過 5MB');
       return;
     }
+    uploadedProofUrlRef.current = null;
     setProofFile(file);
   }
 
@@ -168,13 +172,14 @@ export default function GroupStatusPage() {
     if (!proofFile && !m?.has_payment_proof) return toast.error('請選擇匯款／轉帳證明');
     setProofBusy(true);
     // 末碼與證明「解耦」：圖片上傳失敗也要先把末碼存下供櫃檯對帳（同 EnrollStatusPage 修正）。
-    let url = null;
+    let url = uploadedProofUrlRef.current;
     let uploadFailed = false;
-    if (proofFile) {
+    if (proofFile && !url) {
       try {
         const uploaded = await enrollmentsApi.uploadPaymentProof(proofFile);
         url = uploaded?.url || null;
         if (!url) throw new Error('no url');
+        uploadedProofUrlRef.current = url;
       } catch {
         uploadFailed = true;
       }
@@ -189,6 +194,7 @@ export default function GroupStatusPage() {
         // 末碼已存，留著 proofFile 讓成員可直接重試上傳證明。
         toast.error('末碼已送出，但證明圖片上傳失敗，請稍後重新上傳證明');
       } else {
+        uploadedProofUrlRef.current = null;
         setProofFile(null);
         toast.success('付款資料已送出，待櫃檯確認');
       }
@@ -295,8 +301,15 @@ export default function GroupStatusPage() {
               : (m.has_payment_proof ? { label: '已上傳，待確認', cls: 'text-brand-gold' } : { label: '未上傳證明', cls: 'text-gray-400' });
             // 末碼＋證明都送出後即唯讀（移除自行重編入口），需更改請聯繫櫃檯。
             const paymentLocked = m.is_self && m.has_payment_proof && !!m.transfer_last_5;
+            const cardStateClass = m.payment_confirmed
+              ? 'border-brand-green/40 bg-brand-green/5'
+              : paymentLocked
+                ? 'border-brand-gold/40 bg-brand-gold/5'
+                : m.is_self
+                  ? 'border-brand-teal/40 bg-brand-teal/5'
+                  : 'border-gray-200 bg-white hover:border-brand-teal/40';
             return (
-              <div key={m.id} className="rounded-lg bg-gray-50 px-3 py-2">
+              <div key={m.id} className={`rounded-lg border px-3 py-2 transition-colors ${cardStateClass}`}>
                 <div className="flex items-center justify-between">
                   <div className="min-w-0">
                     <div className="flex items-center gap-1.5">

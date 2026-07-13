@@ -87,6 +87,11 @@ export default function CoachListPage() {
     });
   }, [coaches, levelFilter, nameQuery, venueId, venue?.id, venue?.name]);
 
+  const realCoachCount = useMemo(
+    () => filteredCoaches.filter((coach) => !coach.is_placeholder).length,
+    [filteredCoaches],
+  );
+
   if (loadError) {
     return (
       <div className="px-4 py-8 text-center">
@@ -136,7 +141,7 @@ export default function CoachListPage() {
       {coaches.length === 0 && <p className="mb-3 text-xs text-gray-500">此場館暫無可預約教練</p>}
       {coaches.length > 0 && (
         <p className="mb-3 text-xs text-gray-500">
-          {`共 ${filteredCoaches.length} 位教練，金色徽章為「資深教練」（含學習歷程服務）`}
+          {`共 ${realCoachCount} 位教練${filteredCoaches.some((coach) => coach.is_placeholder) ? '；另可選擇「待分配」' : ''}，金色徽章為「資深教練」（含學習歷程服務）`}
         </p>
       )}
 

@@ -37,25 +37,28 @@ LIFF 一開即拿 `id_token`，無手動輸入登入：
 設定步驟：
 1. 進入 LINE Developers Console → 建立新 Provider（若無）
 2. 建立 LINE Login Channel
-3. 在 Channel 設定頁：
-   - Callback URL：`https://daos-tutoring-courses.replit.app/api/auth/line/callback`
-4. 記錄 Channel ID 與 Channel Secret → 存入 Secrets
+3. 家長綁定走 LIFF SDK 的 `id_token`，**不是** server-side OAuth callback：
+   - 對外綁定入口：`https://liff.line.me/<LIFF_ID_PARENT>/bind`
+   - 不要把家長 callback 設成 `/api/auth/line/callback` 或 `/auth/line/callback` 來交換 code；系統不會用 code 建立／綁定帳號。
+   - 為了不讓已發出的舊連結白頁，這兩個舊路徑只會以 `Cache-Control: no-store`、`Referrer-Policy: no-referrer` 的 303 回 `/liff/bind`，且會丟棄所有 `code`、`state`、token 與 UID query；真正驗證仍由 LIFF + `POST /api/auth/parent-line-login` 的 id_token audience/sub 驗證完成。
+4. 教練 web OAuth 才使用 callback；以 `GET /api/coach-portal/auth/line/status` 回傳的 `redirectUri` 為 LINE Console 唯一設定值（通常為 `https://<repl-domain>/api/coach-portal/auth/line/callback`）。
+5. 記錄 Channel ID 與 Channel Secret → 存入 Secrets
 
 ### 2. LIFF App（建立 2 個：家長端 + 教練端）
 家長端跟教練端**各建一個 LIFF**，掛在同一個 LINE Login Channel 下。前端會根據 URL path 自動挑要 init 哪個 LIFF。
 
 | LIFF App | 名稱建議 | Endpoint URL | 用途 |
 |---|---|---|---|
-| 家長端 | 夢想體育學院-家教系統（家長端） | `https://daos-tutoring-courses.replit.app/liff/` | 家長 / 學員端 |
-| 教練端 | 夢想體育學院-家教系統（教練端） | `https://daos-tutoring-courses.replit.app/liff/` | 教練端 |
+| 家長端 | 夢想體育學院-家教系統（家長端） | `https://<repl-domain>/liff/` | 家長 / 學員端（`/bind` 為綁定成功頁） |
+| 教練端 | 夢想體育學院-家教系統（教練端） | `https://<repl-domain>/liff/coach-portal` | 教練端 web OAuth 入口 |
 
-**兩個 LIFF 的 Endpoint URL 完全一樣** — 前端 BrowserRouter mount 在 `/liff/` 底下，靠 path（`/coach` vs 其他）區分角色，後端用同一個 Login Channel 驗證 id_token，所以 `aud` 也一致。
+家長 BrowserRouter mount 在 `/liff/`；`/bind` 是可直接分享的家長綁定入口。教練入口與家長綁定流程分離，請勿把家長連結導到教練 OAuth callback。
 
 設定步驟（兩個 LIFF 都這樣設）：
 1. 在 LINE Login Channel → LIFF → Add
 2. Size：Full（全螢幕）
 3. Endpoint URL（**結尾的 `/` 不能漏，沒有 `#`**）：
-   `https://daos-tutoring-courses.replit.app/liff/`
+   `https://<repl-domain>/liff/`（家長端）
 4. Scope：勾 `profile`、`openid`（教練登入需要 id_token）
 5. Module mode：開啟
 6. Bot link feature：依需求（建議 `On (Aggressive)`）
@@ -80,6 +83,7 @@ LIFF 一開即拿 `id_token`，無手動輸入登入：
 | 對象 | 分享連結 | 開啟後落點 |
 |---|---|---|
 | 家長 | `https://liff.line.me/<LIFF_ID_PARENT>` | `/liff/`（家長首頁） |
+| 家長綁定 | `https://liff.line.me/<LIFF_ID_PARENT>/bind` | `/liff/bind`（已綁定／綁定成功提示） |
 | 教練 | `https://liff.line.me/<LIFF_ID_COACH>/coach` | `/liff/coach`（教練今日） |
 
 LIFF SDK 會自動把 `liff.line.me/{LIFF_ID}/coach` 後面的 `/coach` 拼到 Endpoint URL 後送給前端，BrowserRouter 看到 `/liff/coach` 就由 `<RequireCoach>` 接手，`main.jsx` 也會偵測這條 path 並改用 `LIFF_ID_COACH` init。
@@ -124,16 +128,16 @@ https://developers.line.biz/flex-simulator/
 - 警示狀態：`#e8a020`
 - 資深教練：`#c9a84c`
 
-## LINE Login 流程
+## 家長 LINE Login／綁定安全流程
 ```
-用戶點擊 LIFF 連結
-  → LINE Login 取得 Access Token
-  → 呼叫 /api/auth/line（帶 access token + venue 參數）
-  → 後端驗證 token，取得 LINE UID 與 profile
-  → 比對本地 DB（parents / coaches）
-  → 回傳 JWT Token
-  → 前端儲存 JWT，後續 API 呼叫帶 Authorization header
+用戶點擊家長 LIFF 或 /bind 連結
+  → LIFF SDK 建立登入 state 並取得 id_token
+  → POST /api/auth/parent-line-login（後端驗 aud + sub）
+  → UID 命中：登入；未命中：手機比對 → 學員姓名認領 → 舊資料認領或新註冊
+  → 成功後才簽發本系統 JWT
 ```
+
+不得把 access token、id_token、LINE UID 或 callback `code/state` 放到分享 URL、前端 console 或使用者可見錯誤訊息。`/api/auth/line/callback` 僅為舊連結相容 redirect，並非 OAuth token endpoint。
 
 ## 教練端登入（LINE-only，不可手機首次綁定）
 

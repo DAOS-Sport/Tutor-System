@@ -19,7 +19,11 @@ router.post('/', requireParent, async (req, res) => {
   try {
     const coachId = String(req.body?.coach_id || '').trim();
     if (!UUID_RE.test(coachId)) return res.status(400).json({ error: 'invalid coach_id' });
-    const cr = await pool.query(`SELECT id FROM coaches WHERE id = $1 AND is_active = TRUE`, [coachId]);
+    const cr = await pool.query(
+      `SELECT id FROM coaches
+        WHERE id = $1 AND is_active = TRUE AND COALESCE(is_placeholder, FALSE) = FALSE`,
+      [coachId]
+    );
     if (!cr.rowCount) return res.status(404).json({ error: 'coach not found' });
     const link = await referrals.createReferralLink({ parentId: req.parent.id, coachId });
     const host = (process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '') || `${req.protocol}://${req.get('host')}`;

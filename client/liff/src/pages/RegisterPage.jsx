@@ -104,6 +104,7 @@ export default function RegisterPage() {
   const prefilledPhone = params.get('phone') || '';
   const refToken = params.get('ref') || '';
   const demoMode = params.get('demo') === '1';
+  const bindIntent = params.get('intent') === 'bind';
   const navigate = useNavigate();
   const { setParent, parent, isAuthed, role } = useAuth();
   const toast = useToast();
@@ -119,6 +120,14 @@ export default function RegisterPage() {
   const [showOptional, setShowOptional] = useState(false);
   const [missingFields, setMissingFields] = useState([]);
   const authedParent = isAuthed && role === 'parent';
+
+  function finishRegistration() {
+    if (bindIntent) {
+      navigate('/bind', { replace: true, state: { binding: 'success' } });
+      return;
+    }
+    navigate(takeAfterAuth('/'), { replace: true });
+  }
 
   // 用推薦的教練解析出有效場館（優先家長慣用場館，否則取教練第一個場館），
   // 組出帶 coach/venue/courseType 的報名頁 URL（推薦折扣 TRIAL50 已停用，僅預帶教練/場館，不再自動套券）。
@@ -267,7 +276,7 @@ export default function RegisterPage() {
         if (r?.status === 'registered_and_logged_in' && r.parent) {
           setParent({ ...r.parent, token: r.token || r.parent.token || null });
           toast.success('Demo 測試註冊完成！已建立測試資料，自動登入');
-          navigate(takeAfterAuth('/'), { replace: true });
+          finishRegistration();
           return;
         }
         setErrCode('DEMO_REGISTER_FAILED');
@@ -301,7 +310,11 @@ export default function RegisterPage() {
             // 推薦綁定失敗不阻擋註冊，但要告知使用者
             toast.warning('註冊完成，但推薦連結綁定失敗，請聯絡客服');
           } else {
-            toast.success('註冊完成！歡迎加入夢想體育學院');
+            toast.success(bindIntent ? 'LINE 綁定成功！歡迎加入夢想體育學院' : '註冊完成！歡迎加入夢想體育學院');
+          }
+          if (bindIntent) {
+            finishRegistration();
+            return;
           }
           // 推薦註冊成功 → 直接導去帶該教練的報名頁（推薦折扣已停用，僅預帶教練）
           if (refInfo?.coach && r.ref_bound) {
@@ -342,11 +355,13 @@ export default function RegisterPage() {
       } else {
         toast.success('註冊完成！歡迎加入夢想體育學院');
       }
-      if (refInfo?.coach && created?.ref_bound) {
+      if (bindIntent) {
+        finishRegistration();
+      } else if (refInfo?.coach && created?.ref_bound) {
         const url = await buildRefEnrollUrl(refInfo.coach.id, parent?.primary_venue_id);
         navigate(url, { replace: true });
       } else {
-        navigate(takeAfterAuth('/'), { replace: true });
+        finishRegistration();
       }
     } catch (err) {
       const code = publicErrorCode(err?.response?.data?.code || err?.code || '');

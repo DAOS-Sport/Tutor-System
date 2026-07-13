@@ -17,14 +17,6 @@ const axios = require('axios');
 
 const VERIFY_URL = 'https://api.line.me/oauth2/v2.1/verify';
 
-function _tokenFingerprint(idToken) {
-  // 安全 log：只記長度 + 前 12 碼（id_token 是長 JWT，前 12 碼為 header b64
-  // 一部分，不足以拿來重放）
-  if (!idToken) return 'none';
-  const s = String(idToken);
-  return `len=${s.length} head=${s.slice(0, 12)}…`;
-}
-
 function _channelIdTail() {
   const cid = process.env.LINE_LOGIN_CHANNEL_ID;
   if (!cid) return 'unconfigured';
@@ -60,7 +52,7 @@ async function verifyLineIdToken(idToken) {
   } catch (err) {
     console.warn(
       `[lineAuth] verify network-error channelId=${_channelIdTail()} ` +
-      `token=${_tokenFingerprint(idToken)} err=${err.message}`
+      `token=present err=${err.message}`
     );
     const e = new Error(`LINE verify network error: ${err.message}`);
     e.code = 'LINE_VERIFY_NETWORK_ERROR';
@@ -72,7 +64,7 @@ async function verifyLineIdToken(idToken) {
     const errDesc = res.data?.error_description || '';
     console.warn(
       `[lineAuth] verify FAIL channelId=${_channelIdTail()} ` +
-      `token=${_tokenFingerprint(idToken)} ` +
+      'token=present ' +
       `http=${res.status} error=${errCode} desc=${errDesc}`
     );
     const detail = errDesc || errCode;

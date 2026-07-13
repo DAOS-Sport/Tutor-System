@@ -16,6 +16,7 @@ const { getSettings, ensureGroupCoursePeriod, ensureSoloCoursePeriod } = enrollm
 const router = express.Router();
 const AMS = requireAdminRole('admin', 'manager', 'staff');
 const INVOICE_RE = /^[A-Z]{2}\d{8}$/;
+const CANCEL_REASON_MAX_LENGTH = 500;
 
 function courseTypeLabel(courseType) {
   return { 1: '1 對 1', 2: '1 對 2', 3: '1 對 3' }[Number(courseType)] || `1 對 ${courseType}`;
@@ -28,10 +29,22 @@ function scopedCheckoutWhere(req, params) {
     if (!scope.length) where.push('FALSE');
     else {
       params.push(scope);
+      const scopeParam = params.length;
+      // 一張 checkout 是所有子訂單的原子操作單位：若只靠 EXISTS 選到「其中一筆」
+      // 所屬場館，再由 readCheckout 聚合全部子訂單，便會把未授權場館資料洩漏給櫃檯。
+      // 非 admin 必須同時滿足：至少有一筆在 scope，且不存在任何 scope 外（含 NULL）的子單。
+      // 不做部分投影，避免 UI 看得到卻不能對帳/取消的半張 checkout。
       where.push(`EXISTS (
         SELECT 1 FROM admin_enrollments ae_scope
          WHERE ae_scope.checkout_id = cs.checkout_id
-           AND ae_scope.venue_id = ANY($${params.length}::text[])
+           AND ae_scope.venue_id = ANY($${scopeParam}::text[])
+      ) AND NOT EXISTS (
+        SELECT 1 FROM admin_enrollments ae_outside_scope
+         WHERE ae_outside_scope.checkout_id = cs.checkout_id
+           AND (
+             ae_outside_scope.venue_id IS NULL
+             OR NOT (ae_outside_scope.venue_id = ANY($${scopeParam}::text[]))
+           )
       )`);
     }
   }
@@ -122,7 +135,9 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
   const createdStudentIds = [];
   try {
     await client.query('BEGIN');
-    const by = req.body?.by || req.adminUser?.name || req.adminUser?.username || 'unknown';
+    // 稽核操作者只能取自已驗證的後台 JWT；不可接受 client 自填的 by，
+    // 否則任何有權呼叫者都能偽造對帳／發票的操作者紀錄。
+    const by = req.adminUser?.name || req.adminUser?.username || req.adminUser?.sub || 'unknown';
     const invoiceNumber = String(req.body?.invoice_number || '').trim().toUpperCase();
     const invoiceImageUrl = String(req.body?.invoice_image_url || '').trim();
     const invoiceUrl = String(req.body?.invoice_url || '').trim();
@@ -178,7 +193,10 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
     const groupPaymentMarked = new Set();
     const rowsToOpen = [];
     for (const row of children.rows) {
-      const total = Number(row.total_sessions) || perPeriod * (Number(row.period_count) || 1);
+      // 試上是明確的一次課；不可因 checkout 批次對帳被通用每期堂數放大成 6 堂。
+      const total = row.order_kind === 'trial'
+        ? 1
+        : (Number(row.total_sessions) || perPeriod * (Number(row.period_count) || 1));
       await client.query(
         `UPDATE admin_enrollments
             SET status = 'confirmed',
@@ -304,6 +322,9 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('[admin/checkouts reconcile]', err);
+    if (err?.code === 'GROUP_PERIOD_SCHEMA_UPGRADE_REQUIRED') {
+      return res.status(err.statusCode || 409).json({ error: err.message, code: err.code });
+    }
     res.status(500).json({ error: 'checkout reconcile failed' });
   } finally {
     client.release();
@@ -311,15 +332,27 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
 });
 
 router.post('/:checkoutId/cancel', requireAdminAuth, AMS, async (req, res) => {
+  const reason = String(req.body?.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: '取消原因必填' });
+  if (reason.length > CANCEL_REASON_MAX_LENGTH) {
+    return res.status(400).json({ error: `取消原因不可超過 ${CANCEL_REASON_MAX_LENGTH} 字` });
+  }
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const by = req.body?.by || req.adminUser?.name || req.adminUser?.username || 'unknown';
-    const reason = String(req.body?.reason || '').trim() || null;
+    // 稽核操作者必須來自已驗證 token，不接受 client 自填 by 竄改紀錄。
+    const by = req.adminUser?.name || req.adminUser?.username || 'unknown';
+    const byUserId = req.adminUser?.sub || null;
     const cr = await client.query(`SELECT * FROM checkout_sessions WHERE checkout_id = $1 FOR UPDATE`, [req.params.checkoutId]);
     if (!cr.rowCount) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: '找不到付款單' });
+    }
+    const checkoutRow = cr.rows[0];
+    if (![CHECKOUT_STATUS.PENDING_PAYMENT, CHECKOUT_STATUS.PENDING_RECONCILE].includes(checkoutRow.payment_status)) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '此付款單狀態非待對帳，無法取消' });
     }
     const children = await client.query(
       `SELECT * FROM admin_enrollments WHERE checkout_id = $1 FOR UPDATE`,
@@ -342,7 +375,7 @@ router.post('/:checkoutId/cancel', requireAdminAuth, AMS, async (req, res) => {
       await client.query(
         `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user, reason)
          VALUES ($1, $2, $3, $4)`,
-        [row.id, reason ? `取消 checkout（原因：${reason}）` : '取消 checkout', by, reason]
+        [row.id, `取消 checkout（原始狀態：${row.status}）`, by, reason]
       );
     }
     await client.query(
@@ -354,10 +387,25 @@ router.post('/:checkoutId/cancel', requireAdminAuth, AMS, async (req, res) => {
           SET payment_status = 'cancelled',
               current_route_state = 'cancelled',
               audit_log = COALESCE(audit_log, '[]'::jsonb) ||
-                jsonb_build_array(jsonb_build_object('at', NOW(), 'action', 'checkout_cancelled', 'by', $2::text)),
+                jsonb_build_array(jsonb_build_object(
+                  'at', NOW(),
+                  'action', 'checkout_cancelled',
+                  'by', $2::text,
+                  'by_user_id', $3::text,
+                  'reason', $4::text,
+                  'from_payment_status', $5::text,
+                  'from_route_state', $6::text
+                )),
               updated_at = NOW()
         WHERE checkout_id = $1`,
-      [req.params.checkoutId, by]
+      [
+        req.params.checkoutId,
+        by,
+        byUserId,
+        reason,
+        checkoutRow.payment_status,
+        checkoutRow.current_route_state || checkoutRow.payment_status,
+      ]
     );
     await client.query('COMMIT');
     res.json(await readCheckout(pool, req.params.checkoutId));

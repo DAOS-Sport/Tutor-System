@@ -134,6 +134,9 @@ export default function LoginPage() {
 
   const fromPath = location.state?.from?.pathname || '';
   const coachContext = isCoachLiffContext(fromPath);
+  // /liff/bind 是專門的相容入口：完成既有 LIFF id-token 綁定後回成功頁，
+  // 不讓舊 callback / deep link 因為一般首頁導向而看似沒有反應。
+  const bindIntent = new URLSearchParams(location.search).get('intent') === 'bind';
 
   // parent flow state: 'checking'|'need_phone'|'manual'|'need_claim'
   const [parentState, setParentState] = useState(coachContext ? null : 'checking');
@@ -146,6 +149,20 @@ export default function LoginPage() {
   const [busy, setBusy] = useState(false);
 
   const autoRanRef = useRef(false);
+
+  function goAfterParentAuth(binding = 'existing') {
+    if (bindIntent) {
+      navigate('/bind', { replace: true, state: { binding } });
+      return;
+    }
+    navigate(takeAfterAuth('/'), { replace: true });
+  }
+
+  function registerPath(phoneValue) {
+    const params = new URLSearchParams({ phone: String(phoneValue || '').trim() });
+    if (bindIntent) params.set('intent', 'bind');
+    return `/register?${params.toString()}`;
+  }
 
   const showPhoneEntry = (message, token = idToken || tryGetLineIdToken()) => {
     setParentState(token ? 'need_phone' : 'manual');
@@ -206,7 +223,7 @@ export default function LoginPage() {
           const parent = { ...r.parent, token: r.token || r.parent.token || null };
           setParent(parent);
           toast.success(`歡迎回來，${parent.name || ''}`);
-          navigate(takeAfterAuth('/'), { replace: true });
+          goAfterParentAuth('existing');
           return;
         }
         if (r?.status === 'need_phone_binding') {
@@ -255,12 +272,12 @@ export default function LoginPage() {
         const parent = { ...r.parent, token: r.token || r.parent.token || null };
         setParent(parent);
         toast.success(`歡迎，${parent.name || ''}`);
-        navigate(takeAfterAuth('/'), { replace: true });
+        goAfterParentAuth('success');
         return;
       }
       if (r?.status === 'need_registration') {
         toast.info('查無此手機，請完成家長註冊');
-        navigate(`/register?phone=${encodeURIComponent(r.phone || trimmed)}`, { replace: true });
+        navigate(registerPath(r.phone || trimmed), { replace: true });
         return;
       }
       if (r?.status === 'need_claim_verification') {
@@ -302,7 +319,7 @@ export default function LoginPage() {
         const parent = { ...r.parent, token: r.token || r.parent.token || null };
         setParent(parent);
         toast.success(`歡迎，${parent.name || ''}`);
-        navigate(takeAfterAuth('/'), { replace: true });
+        goAfterParentAuth('success');
         return;
       }
       if (r?.status === 'need_claim_verification') {
@@ -310,7 +327,7 @@ export default function LoginPage() {
         return;
       }
       if (r?.status === 'need_registration') {
-        navigate(`/register?phone=${encodeURIComponent(r.phone || phone.trim())}`, { replace: true });
+        navigate(registerPath(r.phone || phone.trim()), { replace: true });
         return;
       }
       showPhoneEntry('綁定失敗，請稍後再試。');

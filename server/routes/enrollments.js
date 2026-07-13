@@ -16,56 +16,78 @@ const { randomUUID } = require('crypto');
 const { pool } = require('../models/db');
 const promotions = require('../services/promotions');
 const referrals = require('../services/referrals');
-const { objectExists } = require('../services/objectStorage');
+const { parseProofInput } = require('../services/paymentProof');
+const {
+  validateRequestId,
+  payloadFingerprint,
+  acquireRequestLock,
+} = require('../services/idempotency');
 const { requireParent } = require('../middlewares/parentAuth');
 const {
   createCheckoutSession,
   refreshCheckoutTotal,
+  readCheckout,
   routeInstruction,
-  normalizeRequestId,
 } = require('../services/checkouts');
+const {
+  ORDER_KIND,
+  PAYMENT_METHOD,
+  normalizeOrderKind,
+  normalizePaymentMethod,
+  calculateTrialPrice,
+} = require('../services/trialEnrollment');
 
 const router = express.Router();
+const ENROLLMENT_OPERATION = 'create_enrollment_checkout';
 
-router.use((req, res, next) => {
-  if (req.method !== 'POST' || req.path !== '/') return next();
-  const startedAt = Date.now();
-  const p = req.body || {};
-  const summary = {
-    has_auth: !!req.headers.authorization,
-    parent_id: p.parent_id || null,
-    request_id: p.request_id || req.get('Idempotency-Key') || null,
-    coach_id: p.coach?.id || null,
-    venue_id: p.venue?.id || null,
-    course_type: p.course_type ?? null,
-    period_count: p.period_count ?? null,
-    student_count: Array.isArray(p.students) ? p.students.length : null,
-    student_ids: Array.isArray(p.students) ? p.students.map((s) => s?.id).filter(Boolean) : [],
+function fingerprintEnrollmentPayload(payload) {
+  const p = payload || {};
+  const orderKind = normalizeOrderKind(p.order_kind);
+  const paymentMethod = normalizePaymentMethod(p.payment_method, orderKind);
+  const parsedPeriods = parseInt(p.period_count, 10);
+  const periodCount = Number.isInteger(parsedPeriods)
+    ? Math.min(6, Math.max(1, parsedPeriods))
+    : 1;
+  const studentIds = Array.isArray(p.students)
+    ? p.students.map((student) => String(student?.id || '').trim()).filter(Boolean).sort()
+    : [];
+  return {
+    coach_id: String(p.coach?.id || '').trim(),
+    venue_id: String(p.venue?.id || '').trim(),
+    course_type: Number(p.course_type),
+    student_ids: studentIds,
+    period_count: periodCount,
+    order_kind: orderKind,
+    payment_method: paymentMethod,
+    coupon_code: String(p.promotion?.coupon_code || '').trim().toUpperCase() || null,
+    transfer_last_5: String(p.transfer_last_5 || '').trim() || null,
+    payment_proof_url: String(p.payment_proof_url || '').trim() || null,
+    carrier: String(p.carrier || '').trim().slice(0, 64) || null,
   };
-  console.log('[enrollments request] incoming:', summary);
+}
 
-  const originalJson = res.json.bind(res);
-  res.json = (body) => {
-    if (res.statusCode >= 400) {
-      console.error('[enrollments request] response_error:', {
-        status: res.statusCode,
-        duration_ms: Date.now() - startedAt,
-        request: summary,
-        body,
-      });
-    } else {
-      console.log('[enrollments request] response_ok:', {
-        status: res.statusCode,
-        duration_ms: Date.now() - startedAt,
-        checkout_id: body?.checkout_id || body?.data?.checkout_id || null,
-        count: body?.count ?? null,
-        total_amount: body?.data?.total_amount ?? body?.total_amount ?? null,
-      });
-    }
-    return originalJson(body);
+function idempotentCheckoutResponse(checkout) {
+  const instruction = routeInstruction(
+    checkout.checkout_id,
+    checkout.payment_status,
+    checkout.payment_method,
+  );
+  return {
+    status: 'success',
+    ok: true,
+    checkout_id: checkout.checkout_id,
+    batch_id: checkout.enrollment_batch_id || null,
+    count: checkout.order_count,
+    order_count: checkout.order_count,
+    enrollment_ids: (checkout.sub_orders || []).map((order) => order.id),
+    payment_method: checkout.payment_method,
+    order_kind: checkout.order_kind,
+    idempotent: true,
+    ...instruction,
+    data: { ...instruction, total_amount: checkout.total_amount },
+    route_instruction: instruction,
   };
-  return next();
-});
+}
 
 router.use(requireParent);
 
@@ -77,29 +99,143 @@ function genEnrollmentId() {
 
 router.post('/', async (req, res) => {
   const p = req.body || {};
+  const requestCheck = validateRequestId(p.request_id || req.get('Idempotency-Key'));
+  if (requestCheck.error) {
+    return res.status(requestCheck.status).json({ error: requestCheck.error, code: requestCheck.code });
+  }
+  const idempotencyKey = requestCheck.requestId;
+  const fingerprint = payloadFingerprint(fingerprintEnrollmentPayload(p));
+
   if (!p.coach || !p.venue || !p.course_type
       || !Array.isArray(p.students) || !p.students.length) {
     return res.status(400).json({ error: '報名資料不完整' });
   }
 
-  // 匯款／轉帳證明在訂單成立後於狀態頁補填；若前端帶值則驗格式後落地。
-  const PROOF_URL_RE = /^\/uploads\/\d{4}-\d{2}\/[a-f0-9]{24}\.(jpg|jpeg|png)$/;
+  // 試上是既有一般報名的「明確子類型」，不是另一條未受保護的建單路徑。
+  // 除試上外一律維持原本的轉帳流程；不可把任意一般訂單偽裝成現場付費。
+  const orderKind = normalizeOrderKind(p.order_kind);
+  const paymentMethod = normalizePaymentMethod(p.payment_method, orderKind);
+  const isTrial = orderKind === ORDER_KIND.TRIAL;
+  if (!isTrial && String(p.payment_method || '').trim().toLowerCase() === PAYMENT_METHOD.ON_SITE) {
+    return res.status(400).json({ error: '現場付費僅適用於試上課程', code: 'ON_SITE_TRIAL_ONLY' });
+  }
+
+  // 匯款／轉帳證明在訂單成立後於狀態頁補填；若前端帶值，會在取得
+  // request advisory lock 與 ledger 後再做真實 storage lookup。
   const last5 = String(p.transfer_last_5 || '').trim();
   if (last5 && !/^\d{5}$/.test(last5)) {
     return res.status(400).json({ error: '轉帳末 5 碼格式錯誤', code: 'TRANSFER_LAST5_INVALID' });
-  }
-  const rawProof = typeof p.payment_proof_url === 'string' ? p.payment_proof_url.trim() : '';
-  let paymentProofUrl = null;
-  if (rawProof) {
-    if (!PROOF_URL_RE.test(rawProof) || !objectExists(rawProof)) {
-      return res.status(400).json({ error: '匯款／轉帳證明格式不正確', code: 'PAYMENT_PROOF_INVALID' });
-    }
-    paymentProofUrl = rawProof;
   }
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // lock 順序固定為 actor/request advisory lock → ledger/existing checkout →
+    // parent/business rows。相同 request 的第二個請求會等待第一個 COMMIT/ROLLBACK，
+    // 不會在 promotion/referral/order 任一副作用之後才發現重複。
+    await acquireRequestLock(client, {
+      actorId: req.parent.id,
+      operation: ENROLLMENT_OPERATION,
+      requestId: idempotencyKey,
+    });
+    const ledgerResult = await client.query(
+      `SELECT id, payload_fingerprint, result_entity_id, status
+         FROM request_idempotency_ledger
+        WHERE actor_type = 'parent'
+          AND actor_id = $1
+          AND operation = $2
+          AND normalized_request_id = $3
+        FOR UPDATE`,
+      [req.parent.id, ENROLLMENT_OPERATION, idempotencyKey],
+    );
+    if (ledgerResult.rowCount) {
+      const ledger = ledgerResult.rows[0];
+      if (ledger.payload_fingerprint !== fingerprint) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: '相同 request ID 已用於不同報名內容',
+          code: 'IDEMPOTENCY_PAYLOAD_MISMATCH',
+        });
+      }
+      if (ledger.status !== 'completed' || !ledger.result_entity_id) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: '此 request ID 正在處理或結果尚未完成，請稍後以相同內容重試',
+          code: 'IDEMPOTENCY_IN_PROGRESS',
+        });
+      }
+      const existingCheckout = await readCheckout(client, ledger.result_entity_id);
+      if (!existingCheckout) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: '此 request ID 的原始付款單不存在，請聯繫櫃檯',
+          code: 'IDEMPOTENCY_RESULT_MISSING',
+        });
+      }
+      await client.query('COMMIT');
+      return res.status(200).json(idempotentCheckoutResponse(existingCheckout));
+    }
+
+    // 向後相容：發布前 checkout_sessions 可能已有 request_id、但尚無新 ledger。
+    // 在同一把 advisory lock 下收編成 completed ledger，避免部署後 retry 重建訂單。
+    const legacyCheckoutResult = await client.query(
+      `SELECT checkout_id, request_payload_fingerprint
+         FROM checkout_sessions
+        WHERE parent_id = $1 AND request_id = $2
+        FOR UPDATE`,
+      [req.parent.id, idempotencyKey],
+    );
+    if (legacyCheckoutResult.rowCount) {
+      const checkoutId = legacyCheckoutResult.rows[0].checkout_id;
+      const storedFingerprint = legacyCheckoutResult.rows[0].request_payload_fingerprint;
+      if (!storedFingerprint || storedFingerprint !== fingerprint) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: storedFingerprint
+            ? '相同 request ID 已用於不同報名內容'
+            : '此舊付款單缺少 payload fingerprint，無法安全重送，請聯繫櫃檯',
+          code: storedFingerprint
+            ? 'IDEMPOTENCY_PAYLOAD_MISMATCH'
+            : 'IDEMPOTENCY_LEGACY_UNVERIFIABLE',
+        });
+      }
+      const existingCheckout = await readCheckout(client, checkoutId);
+      if (!existingCheckout) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: '原始付款單資料不完整', code: 'IDEMPOTENCY_RESULT_MISSING' });
+      }
+      await client.query(
+        `INSERT INTO request_idempotency_ledger
+           (normalized_request_id, actor_type, actor_id, operation, payload_fingerprint,
+            result_entity_id, status, completed_at)
+         VALUES ($1,'parent',$2,$3,$4,$5,'completed',NOW())`,
+        [idempotencyKey, req.parent.id, ENROLLMENT_OPERATION, fingerprint, checkoutId],
+      );
+      await client.query('COMMIT');
+      return res.status(200).json(idempotentCheckoutResponse(existingCheckout));
+    }
+
+    await client.query(
+      `INSERT INTO request_idempotency_ledger
+         (normalized_request_id, actor_type, actor_id, operation, payload_fingerprint, status)
+       VALUES ($1,'parent',$2,$3,$4,'processing')`,
+      [idempotencyKey, req.parent.id, ENROLLMENT_OPERATION, fingerprint],
+    );
+
+    const proofInput = await parseProofInput(p);
+    if (proofInput.error) {
+      await client.query('ROLLBACK');
+      return res.status(proofInput.status).json({ error: proofInput.error, code: proofInput.code });
+    }
+    const paymentProofUrl = proofInput.value;
+    if (paymentMethod === PAYMENT_METHOD.ON_SITE && (last5 || paymentProofUrl)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: '現場付費訂單不需填寫轉帳資料或上傳轉帳證明',
+        code: 'ON_SITE_PAYMENT_FIELDS_NOT_ALLOWED',
+      });
+    }
 
     // ── server-authoritative 身份綁定：忽略 client 傳來的 parent_name/phone/id
     //    一律以 JWT 解出的 req.parent.id 為準，從 parents 表讀真實資料 ──
@@ -177,6 +313,10 @@ router.post('/', async (req, res) => {
     // U10：費用 = 單期單生價(base×倍率) × 學生數 × 期數（server-authoritative，忽略 client 金額）。
     const unitPrice = Math.round(basePrice * multiplier);
     const studentCount = Array.isArray(p.students) ? p.students.length : 0;
+    const suppliedPeriodCount = (() => {
+      const n = parseInt(p.period_count, 10);
+      return Number.isInteger(n) ? n : 1;
+    })();
     const periodCount = (() => {
       const n = parseInt(p.period_count, 10);
       return Number.isInteger(n) ? Math.min(6, Math.max(1, n)) : 1;
@@ -184,6 +324,13 @@ router.post('/', async (req, res) => {
     if (studentCount < 1) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: '請選擇至少一位學生' });
+    }
+    if (isTrial && (studentCount !== 1 || suppliedPeriodCount !== 1)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: '試上課程限單一學員、單次下單',
+        code: 'TRIAL_SINGLE_ORDER_REQUIRED',
+      });
     }
     const submittedStudentIds = p.students
       .map((s) => String(s?.id || '').trim())
@@ -205,8 +352,26 @@ router.post('/', async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: '所選學員不存在、已停用或不屬於您', code: 'STUDENT_NOT_AVAILABLE' });
     }
-    const original = unitPrice * studentCount * periodCount;
+    const settingsRows = await client.query(
+      `SELECT key, value FROM admin_settings
+        WHERE key IN ('sessions_per_period', 'trial_price', $1)`,
+      [`trial_price_course_${courseTypeNum}`]
+    );
+    const settings = Object.fromEntries(settingsRows.rows.map((row) => [row.key, row.value]));
+    const trialPrice = isTrial
+      ? calculateTrialPrice({ basePrice: unitPrice, courseType: courseTypeNum, settings })
+      : null;
+    if (isTrial && trialPrice <= 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: '試上課程價格尚未設定，請洽櫃檯', code: 'TRIAL_PRICE_NOT_CONFIGURED' });
+    }
+    const original = isTrial ? trialPrice : (unitPrice * studentCount * periodCount);
     const couponCode = p.promotion && p.promotion.coupon_code ? String(p.promotion.coupon_code).trim() : null;
+
+    if (isTrial && couponCode) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: '試上課程不支援折價券，請先移除折價券後再送出', code: 'TRIAL_COUPON_NOT_SUPPORTED' });
+    }
 
     // ── MGM 體驗課 5 折專用驗證：TRIAL50 僅限有對應 referral 的家長 ──
     if (couponCode && couponCode.toUpperCase() === 'TRIAL50') {
@@ -230,26 +395,33 @@ router.post('/', async (req, res) => {
       }
     }
 
-    let preview;
-    try {
-      preview = await promotions.previewBestDiscount({
-        originalPrice: original,
-        courseType: Number(p.course_type),
-        venueId: p.venue.id || null,
-        periodCount,
-        couponCode,
-        parentId: parentRow.id,
-        coachMultiplier: multiplier, // 權威值：來自 DB coaches.pricing_multiplier（第 155 行），不信前端
-      });
-    } catch (err) {
-      await client.query('ROLLBACK');
-      if (err.code && err.code.startsWith('COUPON_')) {
-        return res.status(400).json({
-          error: err.publicMessage ? err.message : '折價券無法使用，請確認代碼或重新試算',
-          code: err.publicMessage ? err.code : 'COUPON_INVALID',
+    let preview = {
+      originalPrice: original,
+      discountAmount: 0,
+      finalPrice: original,
+      promotion: null,
+    };
+    if (!isTrial) {
+      try {
+        preview = await promotions.previewBestDiscount({
+          originalPrice: original,
+          courseType: Number(p.course_type),
+          venueId: p.venue.id || null,
+          periodCount,
+          couponCode,
+          parentId: parentRow.id,
+          coachMultiplier: multiplier, // 權威值：來自 DB coaches.pricing_multiplier（第 155 行），不信前端
         });
+      } catch (err) {
+        await client.query('ROLLBACK');
+        if (err.code && err.code.startsWith('COUPON_')) {
+          return res.status(400).json({
+            error: err.publicMessage ? err.message : '折價券無法使用，請確認代碼或重新試算',
+            code: err.publicMessage ? err.code : 'COUPON_INVALID',
+          });
+        }
+        throw err;
       }
-      throw err;
     }
 
     const parentUuid = parentRow.id;
@@ -265,8 +437,8 @@ router.post('/', async (req, res) => {
     // 這讓 checkout 母單仍聚合總額，但後續對帳、開通與發票品項都能精準到單生單期。
     // 折扣門檻仍以整筆購買的 periodCount 計算（見上方 previewBestDiscount，不可改傳 1）。
     const batchId = randomUUID();
-    const childOrderCount = studentCount * periodCount;
-    const perChildOriginal = unitPrice; // 單一學員、單一期的原價
+    const childOrderCount = isTrial ? 1 : (studentCount * periodCount);
+    const perChildOriginal = isTrial ? original : unitPrice; // 單一學員、單一期的原價
     let totalDiscount = (preview.promotion && preview.discountAmount > 0) ? preview.discountAmount : 0;
     // 先產生各子訂單單號：促銷用量須掛在第一筆，且要「先確認用量」再寫各期價——
     // 自動套用的促銷若在 preview 與 recordUsage（FOR UPDATE 覆核）之間被用盡/停用，
@@ -282,26 +454,27 @@ router.post('/', async (req, res) => {
       transferLast5: last5 || null,
       paymentProofUrl,
       carrier: p.carrier ? String(p.carrier).trim().slice(0, 64) : null,
-      requestId: normalizeRequestId(p.request_id || req.get('Idempotency-Key')),
+      requestId: idempotencyKey,
       by: parentRow.phone,
+      paymentMethod,
+      orderKind,
+      requestFingerprint: fingerprint,
     });
     if (!checkout.created && checkout.enrollmentBatchId !== batchId) {
-      await client.query('COMMIT');
-      const instruction = routeInstruction(checkout.checkoutId, checkout.paymentStatus);
-      const totalCheck = await pool.query(
-        `SELECT total_amount FROM checkout_sessions WHERE checkout_id = $1`,
-        [checkout.checkoutId]
+      await client.query(
+        `UPDATE request_idempotency_ledger
+            SET result_entity_id = $4, status = 'completed', completed_at = NOW()
+          WHERE actor_type = 'parent' AND actor_id = $1
+            AND operation = $2 AND normalized_request_id = $3`,
+        [req.parent.id, ENROLLMENT_OPERATION, idempotencyKey, checkout.checkoutId],
       );
-      const checkoutTotalAmount = Number(totalCheck.rows[0]?.total_amount ?? 0) || 0;
-      return res.status(200).json({
-        status: 'success',
-        ok: true,
-        checkout_id: checkout.checkoutId,
-        idempotent: true,
-        ...instruction,
-        data: { ...instruction, total_amount: checkoutTotalAmount },
-        route_instruction: instruction,
-      });
+      const existingCheckout = await readCheckout(client, checkout.checkoutId);
+      if (!existingCheckout) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: '原始付款單資料不完整', code: 'IDEMPOTENCY_RESULT_MISSING' });
+      }
+      await client.query('COMMIT');
+      return res.status(200).json(idempotentCheckoutResponse(existingCheckout));
     }
 
     // 促銷用量只記一次（掛第一筆 + batch 總額），避免多期被當成多次使用而誤扣 max_uses。
@@ -338,10 +511,9 @@ router.post('/', async (req, res) => {
     // 折扣按比例分攤到每一筆「單生單期」子訂單，餘數補最後一筆，
     // 使所有子訂單 final_price 加總嚴格等於 preview.finalPrice / checkout total_amount。
     let discountAllocated = 0;
-    const insertedOrders = [];
     let orderIndex = 0;
     for (const student of selectedStudents) {
-      for (let period = 1; period <= periodCount; period += 1) {
+      for (let period = 1; period <= (isTrial ? 1 : periodCount); period += 1) {
         const d = (orderIndex < childOrderCount - 1)
           ? Math.round(totalDiscount / childOrderCount)
           : (totalDiscount - discountAllocated);
@@ -352,43 +524,28 @@ router.post('/', async (req, res) => {
           `INSERT INTO admin_enrollments
              (id, parent_name, parent_phone, students, coach, coach_id, venue_id, course_type,
               original_price, final_price, transfer_last_5, payment_proof_url, status, submitted_at,
-              period_count, period_number, enrollment_batch_id, checkout_id, carrier)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending_payment',$13,1,$14,$15,$16,$17)`,
+              period_count, period_number, enrollment_batch_id, checkout_id, carrier, payment_method,
+              order_kind, total_sessions, used_sessions)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending_payment',$13,1,$14,$15,$16,$17,$18,$19,$20,0)`,
           [
             eid, parentRow.name, parentRow.phone, [student.name],
             coachName, coachId, venueId, Number(p.course_type),
             perChildOriginal, finalThis, last5 || null,
             paymentProofUrl, submittedAt, period, batchId, checkout.checkoutId,
             p.carrier ? String(p.carrier).trim().slice(0, 64) : null,
+            paymentMethod, orderKind, isTrial ? 1 : 6,
           ]
         );
         await client.query(
           `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user)
            VALUES ($1, $2, $3)`,
-          [eid, '家長提交報名', parentRow.phone]
+          [eid, isTrial
+            ? `家長提交試上課程（${paymentMethod === PAYMENT_METHOD.ON_SITE ? '現場付費' : '轉帳'}）`
+            : '家長提交報名', parentRow.phone]
         );
-        insertedOrders.push({
-          id: eid,
-          student_id: student.id,
-          student_name: student.name,
-          period_number: period,
-          original_price: perChildOriginal,
-          final_price: finalThis,
-        });
         orderIndex += 1;
       }
     }
-    console.log('[enrollments create] child orders inserted', {
-      checkout_id: checkout.checkoutId,
-      enrollment_batch_id: batchId,
-      parent_id: parentUuid,
-      student_count: studentCount,
-      period_count: periodCount,
-      child_order_count: insertedOrders.length,
-      child_final_sum: insertedOrders.reduce((sum, row) => sum + row.final_price, 0),
-      orders: insertedOrders,
-    });
-
     // MGM：若使用 TRIAL50，更新 referral_records 為 trial_paid（一次推薦＝一次，掛第一筆）。
     // R3 縱深防禦：markTrialPaid 回傳 false 代表這筆推薦已被兌換（並發下另一交易先行）。
     // 上方資格 SELECT 已加 FOR UPDATE 序列化，正常不會走到這裡；但一旦發生即整筆 ROLLBACK，
@@ -408,13 +565,20 @@ router.post('/', async (req, res) => {
     }
 
     await refreshCheckoutTotal(client, checkout.checkoutId);
-    await client.query('COMMIT');
-    const instruction = routeInstruction(checkout.checkoutId, checkout.paymentStatus);
-    const totalCheck = await pool.query(
+    await client.query(
+      `UPDATE request_idempotency_ledger
+          SET result_entity_id = $4, status = 'completed', completed_at = NOW()
+        WHERE actor_type = 'parent' AND actor_id = $1
+          AND operation = $2 AND normalized_request_id = $3`,
+      [req.parent.id, ENROLLMENT_OPERATION, idempotencyKey, checkout.checkoutId],
+    );
+    const totalCheck = await client.query(
       `SELECT total_amount FROM checkout_sessions WHERE checkout_id = $1`,
       [checkout.checkoutId]
     );
     const checkoutTotalAmount = Number(totalCheck.rows[0]?.total_amount ?? preview.finalPrice) || 0;
+    await client.query('COMMIT');
+    const instruction = routeInstruction(checkout.checkoutId, checkout.paymentStatus, checkout.paymentMethod);
 
     res.status(201).json({
       status: 'success',
@@ -432,13 +596,15 @@ router.post('/', async (req, res) => {
       venue: p.venue,
       course_type: Number(p.course_type),
       students: p.students,
-      total_sessions: 6,
+      total_sessions: isTrial ? 1 : 6,
       used_sessions: 0,
       original_price: preview.originalPrice, // 費用明細顯示整筆（N 期）總額
       final_price: checkoutTotalAmount,
       payment_status: 'pending_payment',
       transfer_last_5: last5 || null,
       payment_proof_url: paymentProofUrl,
+      payment_method: paymentMethod,
+      order_kind: orderKind,
       ...instruction,
       data: { ...instruction, total_amount: checkoutTotalAmount },
       route_instruction: instruction,
@@ -452,7 +618,7 @@ router.post('/', async (req, res) => {
     });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
-    console.error('[enrollments create] error:', err);
+    console.error('[enrollments create]', { code: err?.code || 'UNEXPECTED' });
     if (err && err.code && String(err.code).startsWith('COUPON_')) {
       return res.status(400).json({
         error: err.publicMessage ? err.message : '折價券無法使用，請確認代碼或重新試算',

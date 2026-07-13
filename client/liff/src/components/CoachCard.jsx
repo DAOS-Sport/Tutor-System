@@ -2,8 +2,9 @@ import React from 'react';
 import { formatTWD } from '../utils/format';
 
 export default function CoachCard({ coach, basePrice, onSelect }) {
+  const isPlaceholder = !!coach.is_placeholder;
   const adjusted = Math.round((basePrice || 0) * (coach.multiplier || 1));
-  const initial = (coach.name || '？').slice(0, 1);
+  const initial = isPlaceholder ? '待' : (coach.name || '？').slice(0, 1);
   const coefficientPct = Math.round((coach.multiplier ?? 1) * 100);
   const isAdjustedCoefficient = coefficientPct !== 100;
 
@@ -12,7 +13,9 @@ export default function CoachCard({ coach, basePrice, onSelect }) {
       type="button"
       onClick={() => onSelect?.(coach)}
       className={`group block w-full rounded-2xl border-2 p-4 text-left transition active:scale-[0.99] ${
-        isAdjustedCoefficient
+        isPlaceholder
+          ? 'border-dashed border-brand-teal/60 bg-brand-teal/5'
+          : isAdjustedCoefficient
           ? 'border-brand-amber bg-gradient-to-br from-amber-50 to-white shadow-sm shadow-amber-100'
           : coach.is_senior
           ? 'border-brand-gold bg-gradient-to-br from-amber-50 to-white'
@@ -22,7 +25,7 @@ export default function CoachCard({ coach, basePrice, onSelect }) {
       <div className="flex items-start gap-3">
         <div
           className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-full text-xl font-bold ${
-            coach.is_senior ? 'bg-brand-gold text-white' : 'bg-brand-primary text-white'
+            isPlaceholder ? 'bg-brand-teal text-white' : coach.is_senior ? 'bg-brand-gold text-white' : 'bg-brand-primary text-white'
           }`}
         >
           {initial}
@@ -31,6 +34,9 @@ export default function CoachCard({ coach, basePrice, onSelect }) {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <h3 className="text-base font-bold text-gray-900">{coach.name}</h3>
+            {isPlaceholder && (
+              <span className="rounded-full bg-brand-teal/10 px-2 py-0.5 text-xs font-bold text-brand-teal">稍後分派</span>
+            )}
             {coach.is_senior && (
               <span className="inline-flex items-center gap-1 rounded-full bg-brand-gold px-2 py-0.5 text-xs font-medium text-white">
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
@@ -41,7 +47,7 @@ export default function CoachCard({ coach, basePrice, onSelect }) {
             )}
           </div>
 
-          {coach.tags?.length > 0 && (
+          {!isPlaceholder && coach.tags?.length > 0 && (
             <div className="mt-1.5 flex flex-wrap gap-1">
               {coach.tags.map((t) => (
                 <span
@@ -54,7 +60,9 @@ export default function CoachCard({ coach, basePrice, onSelect }) {
             </div>
           )}
 
-          {coach.bio && (
+          {isPlaceholder ? (
+            <p className="mt-2 text-xs leading-relaxed text-gray-600">先完成報名，櫃檯可於後續分派正式教練；不會納入教練介紹或業績。</p>
+          ) : coach.bio && (
             <p className="mt-2 line-clamp-2 text-xs text-gray-600">{coach.bio}</p>
           )}
         </div>
@@ -62,11 +70,13 @@ export default function CoachCard({ coach, basePrice, onSelect }) {
 
       <div className="mt-3 flex items-end justify-between border-t border-gray-100 pt-3">
         <div className="text-xs text-gray-500">
+          {isPlaceholder ? '待場館分派正式教練' : <>
           修課係數{' '}
           <span className={`font-bold ${isAdjustedCoefficient ? 'text-brand-amber' : 'text-brand-primary'}`}>
             {coefficientPct}%
           </span>
           <span className="ml-2">/ 6 堂</span>
+          </>}
         </div>
         <div className="text-right">
           {isAdjustedCoefficient && (

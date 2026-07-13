@@ -211,7 +211,9 @@ async function _windowedMetric(coachId, metric, windowMonths) {
 async function listAllCoachReports() {
   const coaches = await pool.query(
     `SELECT co.id, co.name, co.is_senior, co.intro_review_status
-       FROM coaches co WHERE co.is_active = TRUE ORDER BY co.name`
+       FROM coaches co
+      WHERE co.is_active = TRUE AND COALESCE(co.is_placeholder, FALSE) = FALSE
+      ORDER BY co.name`
   );
   const ths = (await thresholds()).filter((t) => t.is_active && METRIC_KEYS.includes(t.metric));
   const out = [];

@@ -35,6 +35,7 @@ export default function GroupJoinPage() {
   const [preview, setPreview] = useState(undefined); // undefined=loading, null=error
   const [fields, setFields] = useState({ studentIds: [], newStudents: [], proofUrl: '' });
   const [joining, setJoining] = useState(false);
+  const [joinError, setJoinError] = useState('');
 
   useEffect(() => {
     let alive = true;
@@ -87,13 +88,16 @@ export default function GroupJoinPage() {
 
   async function handleJoin() {
     if (!canJoin) return;
+    setJoinError('');
     setJoining(true);
     try {
       const order = await groupOrdersApi.join(token, { ...memberFieldsPayload(fields) });
       toast.success('已加入團購！');
       navigate(`/group/${order.id}`, { replace: true });
     } catch (e) {
-      toast.error(e?.response?.data?.error || '加入失敗');
+      const message = e?.response?.data?.error || '加入失敗';
+      setJoinError(message);
+      toast.error(message);
     } finally {
       setJoining(false);
     }
@@ -122,9 +126,9 @@ export default function GroupJoinPage() {
           <h3 className="mb-2 text-xs font-bold text-gray-600">已加入家庭（{members.length}）</h3>
           <div className="space-y-2">
             {members.map((m) => (
-              <div key={m.id} className="rounded-lg bg-gray-50 px-3 py-2.5">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-sm font-medium text-gray-800">家長：{m.parent_name || '—'}</span>
+              <div key={m.id} className="rounded-lg border border-gray-200 bg-white px-3 py-2.5 transition-colors hover:border-brand-teal/40">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium text-gray-800">家長：{m.parent_name || '—'}</span>
                   {m.is_leader && (
                     <span className="rounded bg-brand-primary/10 px-1.5 py-0.5 text-[10px] font-bold text-brand-primary">團主</span>
                   )}
@@ -149,8 +153,9 @@ export default function GroupJoinPage() {
         <>
           <GroupMemberFields
             value={fields}
-            onChange={setFields}
+            onChange={(next) => { setJoinError(''); setFields(next); }}
             maxStudents={Math.max(0, (preview.max_students || 0) - (preview.total_students || 0))}
+            error={joinError}
           />
           <button
             type="button"

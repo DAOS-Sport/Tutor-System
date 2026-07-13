@@ -68,13 +68,20 @@ async function main() {
       students: [{ id: studentId }], period_count: 1,
       promotion: { coupon_code: 'TRIAL50' },
     };
-    const fire = () => fetch(`${BASE}/api/enrollments`, {
+    const fire = (index) => {
+      const requestId = `r3-${token}-${index}`;
+      return fetch(`${BASE}/api/enrollments`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${jwt}` },
-      body: JSON.stringify(payload),
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${jwt}`,
+        'Idempotency-Key': requestId,
+      },
+      body: JSON.stringify({ ...payload, request_id: requestId }),
     }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
+    };
 
-    const results = await Promise.all(Array.from({ length: N }, fire));
+    const results = await Promise.all(Array.from({ length: N }, (_, index) => fire(index)));
     const statuses = results.map((r) => r.status);
     const n201 = statuses.filter((s) => s === 201).length;
     console.log(`  fired ${N} concurrent TRIAL50 enrollments -> statuses ${JSON.stringify(statuses)}`);
@@ -94,6 +101,9 @@ async function main() {
     await db.query(`DELETE FROM promotion_usages WHERE parent_id=$1`, [parentId]).catch(() => {});
     await db.query(`DELETE FROM admin_enrollment_audit_logs WHERE by_user=$1`, [PHONE]).catch(() => {});
     await db.query(`DELETE FROM admin_enrollments WHERE parent_phone=$1`, [PHONE]).catch(() => {});
+    await db.query(`DELETE FROM checkout_invoices WHERE checkout_id IN (SELECT checkout_id FROM checkout_sessions WHERE parent_id=$1)`, [parentId]).catch(() => {});
+    await db.query(`DELETE FROM request_idempotency_ledger WHERE actor_type='parent' AND actor_id=$1`, [parentId]).catch(() => {});
+    await db.query(`DELETE FROM checkout_sessions WHERE parent_id=$1`, [parentId]).catch(() => {});
     await db.query(`DELETE FROM referral_records WHERE token=$1`, [token]).catch(() => {});
     await db.query(`DELETE FROM students WHERE id=$1`, [studentId]).catch(() => {});
     await db.query(`DELETE FROM parents WHERE id=$1`, [parentId]).catch(() => {});

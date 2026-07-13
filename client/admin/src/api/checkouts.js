@@ -7,13 +7,14 @@ export const checkoutsApi = {
   get: (checkoutId) =>
     callApi(`/checkouts/${checkoutId}`, {}, () => null),
 
-  reconcile: (checkoutId, { by, invoice_number, invoice_image_url, invoice_url, buyer_name, tax_id } = {}) =>
+  reconcile: (checkoutId, { invoice_number, invoice_image_url, invoice_url, buyer_name, tax_id } = {}) =>
     callApi(
       `/checkouts/${checkoutId}/reconcile`,
-      { method: 'post', data: { by, invoice_number, invoice_image_url, invoice_url, buyer_name, tax_id } },
+      { method: 'post', data: { invoice_number, invoice_image_url, invoice_url, buyer_name, tax_id } },
       () => ({ ok: true }),
     ),
 
-  cancel: (checkoutId, { reason, by } = {}) =>
-    callApi(`/checkouts/${checkoutId}/cancel`, { method: 'post', data: { reason, by } }, () => ({ ok: true })),
+  // 操作者由後端從已驗證 JWT 寫入 audit，不接受前端 by 欄位。
+  cancel: (checkoutId, { reason } = {}) =>
+    callApi(`/checkouts/${checkoutId}/cancel`, { method: 'post', data: { reason } }, () => ({ ok: true })),
 };

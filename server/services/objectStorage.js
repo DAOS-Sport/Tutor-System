@@ -1,9 +1,9 @@
 /**
  * Chat 媒體儲存 — Adapter 抽象層（spec F-S09 / F-C03）
  *
- * 為了滿足 v1 上線時程，預設使用 LocalDiskDriver；介面被刻意做成
- * driver pattern，未來要切到 Replit App Storage / S3 / GCS 只需在
- * driver 物件實作同一份 contract（saveBuffer / urlFor），業務碼不需改動。
+ * 開發環境預設使用 LocalDiskDriver；production 一律選用 Replit App Storage，
+ * 並在 listen 前實際探測 bucket，避免 Autoscale 多實例／重部署遺失附件。
+ * driver pattern 讓未來切到 S3 / GCS 時業務碼不需改動。
  *
  * 安全：
  *  - 強制 MIME + 副檔名白名單（杜絕 .html/.svg/.js 同源 XSS）
@@ -11,7 +11,8 @@
  *  - LocalDisk 由 server/index.js 的 /uploads middleware 加上
  *    nosniff / CSP sandbox / Content-Disposition:attachment 三道防線
  *
- * 切換方式：環境變數 OBJECT_STORAGE_DRIVER=local|replit （預設 local）
+ * 切換方式：環境變數 OBJECT_STORAGE_DRIVER=local|replit。
+ * 未設定時：production → replit，其餘（含 local dev）→ local。
  */
 const fs = require('fs');
 const path = require('path');
@@ -87,6 +88,16 @@ const LocalDiskDriver = {
     // /uploads 由 server/index.js 提供 middleware（含 nosniff + CSP sandbox）
     return { url: `/uploads/${yyyymm}/${filename}` };
   },
+  async exists(key) {
+    const full = path.resolve(LOCAL_ROOT, key);
+    if (full !== LOCAL_ROOT && !full.startsWith(LOCAL_ROOT + path.sep)) return false;
+    try {
+      await fs.promises.access(full, fs.constants.F_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  },
 };
 
 // ── Driver: Replit App Storage（Object Storage bucket）────────────
@@ -95,49 +106,111 @@ const LocalDiskDriver = {
 // 檢視都與「處理請求的是哪個實例」無關。
 // 物件 key 用 `YYYY-MM/xxxx.ext`（去掉 /uploads 前綴的相對路徑），對外 URL 仍維持
 // `/uploads/YYYY-MM/xxxx.ext`，由 index.js 的 /uploads handler 從 bucket 串流回應。
-// 啟用條件：在 Replit 面板為此 App 開通 Object Storage（會提供 default bucket），
-// 並設環境變數 OBJECT_STORAGE_DRIVER=replit。Client 延遲建立，未開通 bucket 時
-// 只有在實際上傳/讀取才會拋錯（模組載入不受影響，dev 仍可用 local）。
+// 啟用條件：在 Replit 面板為此 App 開通 Object Storage（會提供 default bucket）。
+// production 偵測到 bucket 時會自動選用此 driver，也可明確設
+// OBJECT_STORAGE_DRIVER=replit。Client 延遲建立，未開通 bucket 時只有在實際
+// 上傳/讀取才會拋錯（模組載入不受影響，dev 仍可用 local）。
 let replitClient = null;
 function getReplitClient() {
   if (!replitClient) {
     const { Client } = require('@replit/object-storage');
-    const bucketId = process.env.OBJECT_STORAGE_BUCKET_ID;
+    // SDK v1 的唯一自訂選項是 { bucketId }；未提供時由 Replit sidecar 取得
+    // default bucket。REPLIT_OBJECT_STORAGE_BUCKET 保留相容專案既有部署命名。
+    const bucketId = process.env.OBJECT_STORAGE_BUCKET_ID
+      || process.env.REPLIT_OBJECT_STORAGE_BUCKET;
     replitClient = bucketId ? new Client({ bucketId }) : new Client();
   }
   return replitClient;
 }
 
-const ReplitDriver = {
-  name: 'replit',
-  async saveBuffer({ buffer, ext }) {
-    const d = new Date();
-    const yyyymm = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-    const id = crypto.randomBytes(12).toString('hex');
-    const key = `${yyyymm}/${id}${ext}`;
-    const { ok, error } = await getReplitClient().uploadFromBytes(key, buffer);
-    if (!ok) throw new Error(`物件儲存上傳失敗：${(error && error.message) || error || 'unknown'}`);
-    return { url: `/uploads/${key}` };
-  },
-  // 回傳一個 Node Readable（PassThrough）；物件不存在時串流會 emit 'error'，
-  // 由 index.js 的 /uploads handler 轉成 404。key 已在 objectKeyFromUrl 過濾穿越。
-  openReadStream(key) {
-    return getReplitClient().downloadAsStream(key);
-  },
-};
+function createReplitDriver(getClient = getReplitClient) {
+  return {
+    name: 'replit',
+    async saveBuffer({ buffer, ext }) {
+      const d = new Date();
+      const yyyymm = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      const id = crypto.randomBytes(12).toString('hex');
+      const key = `${yyyymm}/${id}${ext}`;
+      const result = await getClient().uploadFromBytes(key, buffer);
+      if (!result || result.ok !== true) {
+        const err = new Error('物件儲存上傳失敗');
+        err.code = 'OBJECT_STORAGE_UPLOAD_FAILED';
+        throw err;
+      }
+      return { url: `/uploads/${key}` };
+    },
+    async exists(key) {
+      // @replit/object-storage v1 Result<boolean, RequestError>：不存在是
+      // { ok:true, value:false }；SDK/credential/bucket error 是 ok:false。
+      const result = await getClient().exists(key);
+      if (!result || result.ok !== true) {
+        const err = new Error('物件儲存查詢失敗');
+        err.code = 'OBJECT_STORAGE_LOOKUP_FAILED';
+        throw err;
+      }
+      return result.value === true;
+    },
+    // 回傳一個 Node Readable（PassThrough）；物件不存在時串流會 emit 'error'，
+    // 由 index.js 的 /uploads handler 轉成 404。key 已在 objectKeyFromUrl 過濾穿越。
+    openReadStream(key) {
+      return getClient().downloadAsStream(key);
+    },
+  };
+}
+
+const ReplitDriver = createReplitDriver();
 
 // 從對外 URL 還原 bucket 物件 key：'/uploads/2026-06/abc.jpg' → '2026-06/abc.jpg'
 // 拒絕非 /uploads 前綴與路徑穿越（..），與 local 的防穿越規則一致。
 function objectKeyFromUrl(url) {
   if (typeof url !== 'string' || !url.startsWith('/uploads/')) return null;
   const key = url.slice('/uploads/'.length);
-  if (!key || key.includes('..')) return null;
+  if (!key || key.startsWith('/') || key.includes('..') || key.includes('\\') || key.includes('\0')) return null;
   return key;
 }
 
 const DRIVERS = { local: LocalDiskDriver, replit: ReplitDriver };
-const driverName = (process.env.OBJECT_STORAGE_DRIVER || 'local').toLowerCase();
-const driver = DRIVERS[driverName] || LocalDiskDriver;
+const requestedDriver = String(process.env.OBJECT_STORAGE_DRIVER || '').trim().toLowerCase();
+const shouldAutoUseReplit = !requestedDriver
+  && process.env.NODE_ENV === 'production';
+const selectedDriverName = requestedDriver || (shouldAutoUseReplit ? 'replit' : 'local');
+const driver = DRIVERS[selectedDriverName] || LocalDiskDriver;
+
+// An explicit local override remains useful for local troubleshooting, but it
+// is intentionally loud in production because files would not be durable on
+// an Autoscale deployment.
+function assertProductionStorageConfigured({
+  nodeEnv = process.env.NODE_ENV,
+  actualDriver = driver.name,
+} = {}) {
+  if (nodeEnv === 'production' && actualDriver !== 'replit') {
+    const err = new Error('production 必須使用 Replit shared object storage；local driver 已拒絕');
+    err.code = 'PRODUCTION_LOCAL_STORAGE_FORBIDDEN';
+    throw err;
+  }
+  return true;
+}
+
+async function assertProductionStorageReady({
+  nodeEnv = process.env.NODE_ENV,
+  actualDriver = driver.name,
+  listObjects = () => getReplitClient().list({ maxResults: 1 }),
+} = {}) {
+  assertProductionStorageConfigured({ nodeEnv, actualDriver });
+  if (nodeEnv !== 'production') return true;
+  let result;
+  try {
+    result = await listObjects();
+  } catch {
+    result = null;
+  }
+  if (!result || result.ok !== true) {
+    const err = new Error('production object storage bucket/credentials preflight failed');
+    err.code = 'PRODUCTION_STORAGE_PREFLIGHT_FAILED';
+    throw err;
+  }
+  return true;
+}
 
 // ── 對外 API（保持 v1 簽名，呼叫端無需改動） ────────────────────
 async function saveBuffer({ buffer, originalName = 'file.bin', mimeType = 'application/octet-stream' }) {
@@ -168,15 +241,11 @@ async function saveBuffer({ buffer, originalName = 'file.bin', mimeType = 'appli
 }
 
 // 驗證一個對外 URL 是否真的指向本服務已落地的檔案（防止偽造 /uploads 路徑）。
-// 非 local driver 無法同步檢查檔案存在，回 true 交由上層信任（best-effort）。
-function objectExists(url) {
-  if (driver.name !== 'local') return true;
-  if (typeof url !== 'string' || !url.startsWith('/uploads/')) return false;
-  const rel = url.replace(/^\/uploads\//, '');
-  if (!rel || rel.includes('..')) return false;
-  const full = path.join(LOCAL_ROOT, rel);
-  if (full !== LOCAL_ROOT && !full.startsWith(LOCAL_ROOT + path.sep)) return false;
-  try { return fs.existsSync(full); } catch { return false; }
+// Replit driver 必須呼叫 SDK exists；lookup error 會 throw，交由 route fail closed。
+async function objectExists(url) {
+  const key = objectKeyFromUrl(url);
+  if (!key) return false;
+  return driver.exists(key);
 }
 
 // 以對外 URL 開啟 bucket 物件的讀取串流（僅 replit driver）。
@@ -197,4 +266,10 @@ module.exports = {
   UPLOAD_ROOT: LOCAL_ROOT,
   ALLOWED_MAX_BYTES,
   driverName: driver.name,
+  assertProductionStorageConfigured,
+  assertProductionStorageReady,
+  __test__: {
+    createReplitDriver,
+    objectKeyFromUrl,
+  },
 };
