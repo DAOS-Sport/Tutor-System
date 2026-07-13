@@ -1,0 +1,40 @@
+captured_at_utc=2026-07-13T13:52:58Z
+source_branch=feat/upload-counts-revive-sessions
+source_commit=6049880c29739c5e020fb37b23b28963865336e6
+release_candidate_branch=release/parent-identity-rc-hardening
+
+status_at_branch_creation:
+ M .replit
+ M client/admin/src/pages/RagicZ03Page.jsx
+ M client/liff/src/pages/LoginPage.jsx
+ M client/liff/src/pages/RegisterPage.jsx
+ M server/bootstrap/coreSchema.js
+ M server/config/ragicSchema.js
+ M server/cron/index.js
+ D server/public/liff/assets/index-Be9WhR0w.js
+ M server/public/liff/index.html
+ M server/routes/admin/ragicStatus.js
+ M server/routes/admin/ragicZ03.js
+ M server/routes/auth.js
+ M server/routes/parents.js
+ M server/services/parentSync.js
+ M server/services/ragic.js
+ M server/services/ragicAdmin.js
+ M tests/ragic_z03_tombstone_test.js
+?? .release-safety/
+?? db/migrations/022_ragic_z01_z03_claim_closure.sql
+?? db/migrations/023_parent_identity_local_first.sql
+?? docs/shotscreen/螢幕擷取畫面 2026-07-13 164756.png
+?? scripts/explain-ragic-z01.js
+?? scripts/reconcile-ragic-z01-z03.js
+?? scripts/reingest-ragic-z01.js
+?? server/public/liff/assets/index--Ltg2MrH.js
+?? server/services/identityNormalizer.js
+?? server/services/ragicSyncOutbox.js
+?? server/services/z03IdentityClaim.js
+?? tests/e2e/parent_local_first_registration.js
+?? tests/e2e/ragic_z01_z03_split_claim.js
+?? tests/parent_identity_closure_test.js
+
+isolation_rule=Only paths listed in parent-identity-release-files.txt may be staged in the final release commit.
+excluded_rule=Existing unrelated work is preserved in place and must remain unstaged.

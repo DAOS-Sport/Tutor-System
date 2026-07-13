@@ -784,6 +784,18 @@ export const mockDb = {
     return list.sort((a, b) => (b.submitted_at > a.submitted_at ? 1 : -1));
   },
 
+  enrollmentDetail(id) {
+    const row = ENROLLMENTS.find((e) => e.id === id);
+    if (!row) return null;
+    return {
+      ...row,
+      line_bound: true,
+      line_display_name: row.line_display_name || `LINE ${row.parent_name}`,
+      line_profile_state: 'CACHED',
+      audit_logs: row.audit_logs.map((a) => ({ ...a })),
+    };
+  },
+
   updateEnrollment(id, patch) {
     const e = ENROLLMENTS.find((x) => x.id === id);
     if (!e) throw new Error('報名不存在');

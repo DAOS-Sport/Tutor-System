@@ -113,7 +113,7 @@ function setUploadSecurityHeaders(res, nameOrPath) {
   res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
-  const isMedia = /\.(jpg|jpeg|png|gif|webp|heic|heif|mp4|m4v|mov|webm|mp3|wav|m4a|aac|ogg|amr)$/i.test(nameOrPath);
+  const isMedia = /\.(jpg|jpeg|jfif|png|gif|webp|heic|heif|avif|mp4|m4v|mov|webm|mp3|wav|m4a|aac|ogg|amr)$/i.test(nameOrPath);
   if (!isMedia) res.setHeader('Content-Disposition', 'attachment');
 }
 
@@ -196,13 +196,17 @@ const PORT = process.env.PORT || 3000;
 (async () => {
   try {
     assertSecretConfigured();
-    await objectStore.assertProductionStorageReady();
     await bootstrapAdmin();
     await bootstrapCore();
   } catch (err) {
     console.error('Startup schema bootstrap failed; refusing to accept traffic:', err.message);
     process.exit(1);
     return;
+  }
+  try {
+    await objectStore.assertProductionStorageReady();
+  } catch (err) {
+    console.warn('[objectStorage] preflight warning (uploads may fail but server will start):', err.message);
   }
   try {
     await bootstrapDemo();

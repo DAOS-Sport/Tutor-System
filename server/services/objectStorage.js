@@ -23,12 +23,13 @@ const ALLOWED_MAX_BYTES = Number(process.env.CHAT_UPLOAD_MAX_BYTES) || 25 * 1024
 // 嚴格 MIME → ext 白名單
 const ALLOWED = {
   // 影像（不接受 image/svg+xml — SVG 內可嵌 <script>）
-  'image/jpeg':      ['.jpg', '.jpeg'],
+  'image/jpeg':      ['.jpg', '.jpeg', '.jfif'],
   'image/png':       ['.png'],
   'image/gif':       ['.gif'],
   'image/webp':      ['.webp'],
   'image/heic':      ['.heic'],
   'image/heif':      ['.heif'],
+  'image/avif':      ['.avif'],
   // 影片
   'video/mp4':       ['.mp4', '.m4v'],
   'video/quicktime': ['.mov'],
@@ -60,7 +61,7 @@ function inferMessageType(mimeType, ext) {
   if (m.startsWith('image/')) return 'image';
   if (m.startsWith('video/')) return 'video';
   if (m.startsWith('audio/')) return 'voice';
-  if (['.jpg','.jpeg','.png','.gif','.webp','.heic','.heif'].includes(e)) return 'image';
+  if (['.jpg','.jpeg','.jfif','.png','.gif','.webp','.heic','.heif','.avif'].includes(e)) return 'image';
   if (['.mp4','.mov','.webm','.m4v'].includes(e)) return 'video';
   if (['.mp3','.wav','.m4a','.ogg','.aac','.amr'].includes(e)) return 'voice';
   return 'file';

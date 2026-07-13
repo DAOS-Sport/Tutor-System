@@ -7,6 +7,7 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import ConfirmModal from '../components/ConfirmModal';
 import { useToast } from '../context/ToastContext';
 import { courseTypeLabel } from '../utils/format';
+import { isPaymentProofCandidate, PAYMENT_PROOF_ACCEPT } from '../utils/paymentProofImage';
 
 const money = (n) => `NT$ ${Number(n || 0).toLocaleString()}`;
 
@@ -152,11 +153,8 @@ export default function GroupStatusPage() {
   // U10：成員上傳自己的轉帳證明（先傳檔取得 URL，再記到本團我的那筆 member）
   function selectProofFile(file) {
     if (!file) return;
-    // 有明確 file.type 時才擋非 JPG/PNG；部分 Android/LINE webview 的相機圖 file.type 為空字串，
-    // 放行交由後端以檔案內容（magic bytes）驗證，避免這類圖在選檔階段就被誤擋。
-    const fileType = (file.type || '').toLowerCase();
-    if (fileType && !['image/jpeg', 'image/png'].includes(fileType)) {
-      toast.error('只接受 JPG / PNG 圖片');
+    if (!isPaymentProofCandidate(file)) {
+      toast.error('請上傳 JPG、PNG、WebP、HEIC、HEIF 或 AVIF 圖片');
       return;
     }
     if (file.size > 5 * 1024 * 1024) {
@@ -345,7 +343,7 @@ export default function GroupStatusPage() {
                         <input
                           ref={proofInputRef}
                           type="file"
-                          accept="image/jpeg,image/png"
+                          accept={PAYMENT_PROOF_ACCEPT}
                           className="hidden"
                           disabled={proofBusy}
                           onChange={(e) => selectProofFile(e.target.files?.[0])}

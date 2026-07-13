@@ -9,7 +9,7 @@ export const enrollmentsApi = {
       headers: payload?.request_id ? { 'Idempotency-Key': payload.request_id } : undefined,
     }, () => mockDb.createEnrollment(payload)),
 
-  // U3：匯款／轉帳證明上傳（家長端，限 JPG/PNG ≤5MB；回傳 { url }）
+  // U3：匯款／轉帳證明上傳（家長端，常見手機圖片 ≤5MB；後端回傳正規化 preview url）
   uploadPaymentProof: (file) => {
     const form = new FormData();
     form.append('file', file);

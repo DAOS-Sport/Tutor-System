@@ -21,6 +21,8 @@ async function cleanup() {
     await pool.query(`DELETE FROM identity_claim_events WHERE claim_id=ANY($1::uuid[])`, [claimIds]);
     await pool.query(`DELETE FROM ragic_sync_outbox WHERE claim_id=ANY($1::uuid[])`, [claimIds]);
   }
+  await pool.query(`DELETE FROM parent_identity_backoffice_tasks WHERE source_record_ids && ARRAY[$1]::text[]`, [sourceId]);
+  await pool.query(`DELETE FROM parent_profile_patch_audit WHERE source_record_id=$1`, [sourceId]);
   await pool.query(`DELETE FROM source_record_links WHERE source_record_id=$1`, [sourceId]);
   if (claimIds.length) await pool.query(`DELETE FROM identity_claims WHERE id=ANY($1::uuid[])`, [claimIds]);
   await pool.query(`DELETE FROM ragic_z03_records WHERE z01_ragic_record_id=$1`, [sourceId]);

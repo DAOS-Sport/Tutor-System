@@ -1,0 +1,71 @@
+diff --git a/.replit b/.replit
+index 5df3831..c7c6a37 100644
+--- a/.replit
++++ b/.replit
+@@ -26,6 +26,14 @@ exposeLocalhost = true
+ localPort = 3002
+ externalPort = 5000
+ 
++[[ports]]
++localPort = 3100
++externalPort = 6000
++
++[[ports]]
++localPort = 3200
++externalPort = 6800
++
+ [[ports]]
+ localPort = 3997
+ externalPort = 5173
+diff --git a/server/routes/parents.js b/server/routes/parents.js
+index 165c048..04b8c0d 100644
+--- a/server/routes/parents.js
++++ b/server/routes/parents.js
+@@ -546,6 +546,10 @@ router.post('/me/students', requireParent, async (req, res) => {
+       return res.status(201).json(await loadMe(req.parent.id));
+     }
+ 
++    // 場館可能在家長註冊後被停用/改代碼（五大場館重構期間風險最高）；不先擋，
++    // 交給 Ragic 才會回一個含糊的 502「資料暫時無法完成同步」，使用者無從得知是館別問題。
++    await assertVenueExists(parent.primary_venue_id);
++
+     const parentForSync = await parentForStrictStudentSync(parent, req.parent.lineUid);
+     const activeCount = Number(
+       (await pool.query(
+@@ -657,6 +661,10 @@ router.patch('/me/students/:id', requireParent, async (req, res) => {
+       return res.json(await loadMe(req.parent.id));
+     }
+ 
++    // 場館可能在家長註冊後被停用/改代碼（五大場館重構期間風險最高）；不先擋，
++    // 交給 Ragic 才會回一個含糊的 502「資料暫時無法完成同步」，使用者無從得知是館別問題。
++    await assertVenueExists(parent.primary_venue_id);
++
+     const parentForSync = await parentForStrictStudentSync(parent, req.parent.lineUid);
+     const before = cur.rows[0];
+     const syncStudent = { ...before, ...s, _match_id_number: before.id_number };
+diff --git a/server/services/ragic.js b/server/services/ragic.js
+index c51c4c5..7aa40e4 100644
+--- a/server/services/ragic.js
++++ b/server/services/ragic.js
+@@ -1156,7 +1156,9 @@ async function addStudentsToParentInRagic({ ragicRecordId, startIndex = 0, stude
+   list.forEach((s, i) => {
+     const prefix = `${Z01_STUDENTS_SUBTABLE_ID}_${startIndex + i}_`;
+     payload[`${prefix}${FIELD.Z01_STUDENT.NAME}`] = s.name;
+-    if (s.birth_date) payload[`${prefix}${FIELD.Z01_STUDENT.BIRTH_DATE}`] = s.birth_date;
++    // 與 _buildZ02RegistrationPayload 對齊：Ragic 日期欄位吃 yyyy/MM/dd，ISO 的 '-' 需轉 '/'，
++    // 否則會被當無效值 INVALID（見 createParentWithStudentsInRagic 旁註解）。
++    if (s.birth_date) payload[`${prefix}${FIELD.Z01_STUDENT.BIRTH_DATE}`] = String(s.birth_date).replace(/-/g, '/');
+     if (s.gender)     payload[`${prefix}${FIELD.Z01_STUDENT.GENDER}`]     = _toPhysGender(s.gender);
+     if (s.id_number)  payload[`${prefix}${FIELD.Z01_STUDENT.ID_NUMBER}`]  = String(s.id_number).toUpperCase();
+     if (s.blood_type) payload[`${prefix}${FIELD.Z01_STUDENT.BLOOD_TYPE}`] = s.blood_type;
+@@ -1263,7 +1265,9 @@ function buildZ01StudentPayload(student, rowIndex) {
+   const prefix = `${Z01_STUDENTS_SUBTABLE_ID}_${rowIndex}_`;
+   const payload = {};
+   payload[`${prefix}${FIELD.Z01_STUDENT.NAME}`] = student.name || '';
+-  if (student.birth_date) payload[`${prefix}${FIELD.Z01_STUDENT.BIRTH_DATE}`] = student.birth_date;
++  // 與 _buildZ02RegistrationPayload 對齊：Ragic 日期欄位吃 yyyy/MM/dd，ISO 的 '-' 需轉 '/'，
++  // 否則會被當無效值 INVALID（見 createParentWithStudentsInRagic 旁註解）。
++  if (student.birth_date) payload[`${prefix}${FIELD.Z01_STUDENT.BIRTH_DATE}`] = String(student.birth_date).replace(/-/g, '/');
+   if (student.gender) payload[`${prefix}${FIELD.Z01_STUDENT.GENDER}`] = _toPhysGender(student.gender);
+   if (student.id_number) payload[`${prefix}${FIELD.Z01_STUDENT.ID_NUMBER}`] = String(student.id_number).toUpperCase();
+   if (student.blood_type) payload[`${prefix}${FIELD.Z01_STUDENT.BLOOD_TYPE}`] = student.blood_type;

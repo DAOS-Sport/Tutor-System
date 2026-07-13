@@ -24,7 +24,8 @@ const parentSync = require('./parentSync');
 const line = require('./line');
 const { maskPhone } = require('../utils/piiMask');
 const { cleanVenueList } = require('./coachVenueScope');
-const { normalizePhone, normalizeStudentName } = require('./identityNormalizer');
+const { normalizePhone, normalizeStudentName, isCanonicalMobilePhone } = require('./identityNormalizer');
+const { createParentIdentityBackofficeTask } = require('./parentIdentityBackoffice');
 // Ragic 表單 / 欄位對應唯一來源（凍結點）：H01 LINE UID 欄位、場館欄位、角色關鍵字
 const {
   H01,
@@ -2347,10 +2348,11 @@ async function _upsertZ03Record(client, ragicRecordId, mapped, z01Row, options =
   const studentCountRaw = _pickZ01Raw(z01Row, ['1001138', '名下有幾位學生']);
   const phoneCanonical = normalizePhone(mapped.phone);
   const sourceUpdated = _sourceUpdatedTime(z01Row);
-  const initialStatus = tomb.rowCount || !phoneCanonical ? 'manual_review' : 'pending';
+  const validMobile = isCanonicalMobilePhone(phoneCanonical);
+  const initialStatus = tomb.rowCount || !validMobile ? 'manual_review' : 'pending';
   const reasonCode = options.reasonCode || (tomb.rowCount
     ? 'LEGACY_TOMBSTONE_RETAINED'
-    : (!phoneCanonical ? 'MISSING_CANONICAL_PHONE' : 'TRUE_LINE_UID_EMPTY'));
+    : (!validMobile ? 'INVALID_CANONICAL_PHONE' : 'TRUE_LINE_UID_EMPTY'));
   const r = await client.query(
     `INSERT INTO ragic_z03_records
        (z01_ragic_record_id, raw_name, venue_raw, phone, identity_raw, gender_raw,
@@ -2388,7 +2390,7 @@ async function _upsertZ03Record(client, ragicRecordId, mapped, z01Row, options =
        END,
        fetched_at = NOW(), last_processed_at = NOW(),
        correlation_id = COALESCE(ragic_z03_records.correlation_id, EXCLUDED.correlation_id)
-     RETURNING id`,
+     RETURNING id,correlation_id`,
     [ragicRecordId, mapped.name || '', mapped.primary_venue_id || '', mapped.phone || '',
      mapped.identity || '', mapped.gender || '', mapped.email || '', mapped.home_phone || '',
      mapped.home_address || '', mapped.line_id || '', lineChatUrlRaw,
@@ -2454,6 +2456,16 @@ async function _upsertZ03Record(client, ragicRecordId, mapped, z01Row, options =
        s.id_number_raw, s.blood_type_raw, s.age_raw, s.student_code_raw, s.registered_phone_raw,
        sourceRowKey, normalizedName, classification, studentReason]
     );
+  }
+  if (!validMobile) {
+    await createParentIdentityBackofficeTask({
+      client,
+      phone: mapped.phone || '',
+      sourceRecordIds: [ragicRecordId],
+      reasonCode: 'INVALID_CANONICAL_PHONE',
+      suggestedAction: 'Correct the misplaced Ragic mobile field after source review; do not auto-link or create a duplicate family.',
+      correlationId: r.rows[0].correlation_id,
+    });
   }
 }
 
@@ -2922,18 +2934,23 @@ async function findZ01SourcesByTrueLineUid(lineUid, clientOrPool = pool) {
   )).rows.map((row) => row.raw_data);
 }
 
-async function findZ01SourcesByPhoneStudent(phone, studentName, clientOrPool = pool) {
+async function findZ01SourcesByPhone(phone, clientOrPool = pool) {
   const phoneCanonical = normalizePhone(phone);
-  const studentNameNormalized = normalizeStudentName(studentName);
-  if (!phoneCanonical || !studentNameNormalized) return [];
-  const rows = (await clientOrPool.query(
+  if (!isCanonicalMobilePhone(phoneCanonical)) return [];
+  return (await clientOrPool.query(
     `SELECT raw_data FROM ragic_z01_shadow
       WHERE present_in_latest_pull=TRUE
         AND regexp_replace(COALESCE(raw_data->>'1001100',''),'\\D','','g') IN ($1,$2)
       ORDER BY ragic_record_id`,
-    [phoneCanonical, phoneCanonical.startsWith('0') ? `886${phoneCanonical.slice(1)}` : phoneCanonical]
-  )).rows;
-  return rows.map((row) => row.raw_data).filter((raw) =>
+    [phoneCanonical, `886${phoneCanonical.slice(1)}`]
+  )).rows.map((row) => row.raw_data);
+}
+
+async function findZ01SourcesByPhoneStudent(phone, studentName, clientOrPool = pool) {
+  const phoneCanonical = normalizePhone(phone);
+  const studentNameNormalized = normalizeStudentName(studentName);
+  if (!phoneCanonical || !studentNameNormalized) return [];
+  return (await findZ01SourcesByPhone(phoneCanonical, clientOrPool)).filter((raw) =>
     ragic.parseZ01StudentsRaw(raw).some((student) =>
       normalizeStudentName(student.name_raw) === studentNameNormalized
     )
@@ -2946,7 +2963,8 @@ async function reingestZ01Record(z01Row, { dryRun = true } = {}) {
   if (!ragicRecordId) throw _z01SyncError('RAGIC_SOURCE_RECORD_ID_MISSING', 'Z01 source record id 必填');
   const trueLineUid = _trueZ01LineUid(z01Row);
   const phoneCanonical = normalizePhone(mapped.phone);
-  const target = trueLineUid ? 'LINKED_LOCAL_Z01' : (phoneCanonical ? 'PENDING_Z03' : 'MANUAL_REVIEW');
+  const validMobile = isCanonicalMobilePhone(phoneCanonical);
+  const target = trueLineUid ? 'LINKED_LOCAL_Z01' : (validMobile ? 'PENDING_Z03' : 'MANUAL_REVIEW');
   const current = (await pool.query(
     `SELECT
        (SELECT status FROM ragic_z03_records WHERE z01_ragic_record_id=$1) AS z03_status,
@@ -2995,7 +3013,7 @@ async function reingestZ01Record(z01Row, { dryRun = true } = {}) {
     canonical_phone_present: Boolean(phoneCanonical),
     canonical_phone_masked: phoneCanonical ? maskPhone(phoneCanonical) : null,
     target,
-    reason_code: trueLineUid ? 'TRUE_LINE_UID_PRESENT' : (phoneCanonical ? 'TRUE_LINE_UID_EMPTY' : 'MISSING_CANONICAL_PHONE'),
+    reason_code: trueLineUid ? 'TRUE_LINE_UID_PRESENT' : (validMobile ? 'TRUE_LINE_UID_EMPTY' : 'INVALID_CANONICAL_PHONE'),
     line_chat_url_present: Boolean(_pickZ01Raw(z01Row, ['1002390'])),
     current,
     student_source_row_count: rawStudents.length,
@@ -3561,8 +3579,13 @@ async function hydrateZ03RecordFromRagicRow(z01Row) {
   } finally {
     client.release();
   }
-  const pending = await findZ03RecordByPhone(mapped.phone);
-  return pending || _loadZ03RecordByRagicId(ragicRecordId);
+  try {
+    const pending = await findZ03RecordByPhone(mapped.phone);
+    return pending || _loadZ03RecordByRagicId(ragicRecordId);
+  } catch (err) {
+    if (err.code !== 'MANUAL_REVIEW_REQUIRED') throw err;
+    return _loadZ03RecordByRagicId(ragicRecordId);
+  }
 }
 
 function _studentMatchesRegistration(z03Student, formStudent) {
@@ -4880,6 +4903,7 @@ module.exports = {
   reconcileZ01BlankUidCoverage,
   reconcileZ01SourceCoverage,
   findZ01SourcesByTrueLineUid,
+  findZ01SourcesByPhone,
   findZ01SourcesByPhoneStudent,
   reingestZ01Record,
   quarantineBadZ01Names,

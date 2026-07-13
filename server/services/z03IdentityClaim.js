@@ -2,9 +2,17 @@
 
 const crypto = require('crypto');
 const { pool } = require('../models/db');
-const { normalizePhone, normalizeStudentName } = require('./identityNormalizer');
+const ragic = require('./ragic');
+const parentSync = require('./parentSync');
+const { getTrueRagicLineUid } = require('../config/ragicSchema');
+const { normalizePhone, normalizeStudentName, isCanonicalMobilePhone } = require('./identityNormalizer');
 const { resolveMultipleSourceCandidate } = require('./parentIdentityResolver');
 const { evaluateParentIdentityCanary } = require('./parentIdentityCanary');
+const { createParentIdentityBackofficeTask } = require('./parentIdentityBackoffice');
+const {
+  buildParentProfilePatch,
+  insertProfilePatchAudit,
+} = require('./parentRegistrationProfile');
 
 class Z03ClaimError extends Error {
   constructor(code, message, http = 409, details = {}) {
@@ -26,6 +34,59 @@ function _safeDate(value) {
   if (!m) return null;
   const normalized = `${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`;
   return Number.isNaN(new Date(`${normalized}T00:00:00+08:00`).getTime()) ? null : normalized;
+}
+
+function _sourceProfileFromFamily(family, trueLineUid = '') {
+  return {
+    name: family?.raw_name || '',
+    phone: family?.phone || '',
+    email: family?.email_raw || '',
+    home_phone: family?.home_phone_raw || '',
+    home_address: family?.home_address_raw || '',
+    line_id: family?.line_id_raw || '',
+    line_uid: String(trueLineUid || ''),
+  };
+}
+
+async function _applyAllowlistedLocalProfile(client, parent, parentProfile = {}, ownershipVerified = false) {
+  const incomingName = String(parentProfile.name || '').trim();
+  const incomingEmail = String(parentProfile.email || '').trim();
+  const incomingHomePhone = String(parentProfile.home_phone || '').trim();
+  const incomingHomeAddress = String(parentProfile.home_address || '').trim();
+  const incomingLineId = String(parentProfile.line_id || '').trim();
+  return (await client.query(
+    `UPDATE parents SET
+       name=CASE WHEN (name IS NULL OR BTRIM(name)='' OR name='未命名家長') AND $2<>'' THEN $2 ELSE name END,
+       email=CASE WHEN $7::boolean AND $3<>'' THEN $3 WHEN (email IS NULL OR BTRIM(email)='') THEN NULLIF($3,'') ELSE email END,
+       home_phone=CASE WHEN $7::boolean AND $4<>'' THEN $4 WHEN (home_phone IS NULL OR BTRIM(home_phone)='') THEN NULLIF($4,'') ELSE home_phone END,
+       home_address=CASE WHEN $7::boolean AND $5<>'' THEN $5 WHEN (home_address IS NULL OR BTRIM(home_address)='') THEN NULLIF($5,'') ELSE home_address END,
+       line_id=CASE WHEN $7::boolean AND $6<>'' THEN $6 WHEN (line_id IS NULL OR BTRIM(line_id)='') THEN NULLIF($6,'') ELSE line_id END,
+       updated_at=NOW()
+     WHERE id=$1 RETURNING *`,
+    [parent.id, incomingName, incomingEmail, incomingHomePhone, incomingHomeAddress,
+     incomingLineId, Boolean(ownershipVerified)]
+  )).rows[0];
+}
+
+async function _insertOrReuseStudent(client, parentId, studentInput) {
+  const normalized = normalizeStudentName(studentInput?.name);
+  const existing = (await client.query(
+    `SELECT * FROM students WHERE parent_id=$1 ORDER BY created_at,id FOR UPDATE`, [parentId]
+  )).rows.filter((row) => normalizeStudentName(row.name) === normalized);
+  if (existing.length > 1) {
+    throw new Z03ClaimError('DATA_RECONCILIATION_PENDING', 'canonical family 內同名 student 命中多筆', 409);
+  }
+  if (existing[0]) return { student: existing[0], appended: false };
+  const student = (await client.query(
+    `INSERT INTO students
+       (parent_id,name,birth_date,gender,id_number,blood_type,student_code,is_active,last_synced_at)
+     VALUES ($1,$2,$3::date,NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),NULLIF($7,''),TRUE,NULL)
+     RETURNING *`,
+    [parentId, String(studentInput?.name || '').trim(), _safeDate(studentInput?.birth_date),
+     studentInput?.gender || '', String(studentInput?.id_number || '').trim().toUpperCase(),
+     studentInput?.blood_type || '', studentInput?.student_code || '']
+  )).rows[0];
+  return { student, appended: true };
 }
 
 function _payloadHash(value) {
@@ -160,6 +221,126 @@ async function registerNewParentLocalFirst({
   }
 }
 
+async function completeTrueUidRegistration({
+  source,
+  parentProfile = {},
+  students = [],
+  lineUid,
+  ownershipVerified = false,
+  actor = 'parent-register-line',
+  correlationId = crypto.randomUUID(),
+} = {}) {
+  const uid = String(lineUid || '').trim();
+  if (!source || getTrueRagicLineUid(source) !== uid) {
+    throw new Z03ClaimError('ACCOUNT_RECOVERY_REQUIRED', 'Ragic field 1006846 與目前 LINE UID 不一致', 409);
+  }
+  const mapped = ragic.mapZ01Parent(source);
+  const sourceRecordId = String(mapped?.ragic_record_id || source?._ragicId || '').trim();
+  const phoneCanonical = normalizePhone(mapped?.phone);
+  if (!sourceRecordId || !isCanonicalMobilePhone(phoneCanonical)) {
+    throw new Z03ClaimError('MANUAL_REVIEW_REQUIRED', 'Ragic source 缺少安全 canonical phone 或 record id', 409);
+  }
+  const submitted = (students || []).filter((row) => normalizeStudentName(row?.name));
+  if (!submitted.length) throw new Z03ClaimError('STUDENT_NAME_REQUIRED', '學員姓名必填', 400);
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`canonical-parent:${phoneCanonical}`]);
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`line-uid:${_lineUidHash(uid)}`]);
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`ragic-z01:${sourceRecordId}`]);
+
+    let parent = await parentSync.upsertLocalParent(client, { ...mapped, phone: phoneCanonical }, uid, {
+      reactivate: true,
+      overwriteLineUid: false,
+      preservePending: true,
+    });
+    await parentSync.upsertLocalStudents(client, parent.id, ragic.parseZ01Students(source), {
+      authoritative: false,
+      preservePending: true,
+    });
+    parent = await _applyAllowlistedLocalProfile(client, parent,
+      { ...parentProfile, phone: phoneCanonical }, ownershipVerified);
+
+    const sourceStudentNames = new Set(ragic.parseZ01Students(source).map((row) => normalizeStudentName(row.name)));
+    const localStudents = [];
+    const studentsToAppend = [];
+    for (const studentInput of submitted) {
+      const local = await _insertOrReuseStudent(client, parent.id, studentInput);
+      localStudents.push(local.student);
+      if (!sourceStudentNames.has(normalizeStudentName(studentInput.name))) studentsToAppend.push(studentInput);
+    }
+    await client.query(
+      `INSERT INTO source_record_links
+         (source_system,source_table,source_record_id,canonical_parent_id,canonical_student_id,link_method)
+       VALUES ('RAGIC','Z01',$1,$2,$3,'TRUE_LINE_UID_EXACT')
+       ON CONFLICT (source_system,source_table,source_record_id) DO UPDATE SET
+         canonical_parent_id=EXCLUDED.canonical_parent_id,
+         canonical_student_id=COALESCE(source_record_links.canonical_student_id,EXCLUDED.canonical_student_id),
+         link_method=EXCLUDED.link_method,updated_at=NOW()`,
+      [sourceRecordId, parent.id, localStudents[0]?.id || null]
+    );
+
+    const profile = buildParentProfilePatch({
+      sourceProfile: { ...mapped, line_uid: getTrueRagicLineUid(source) },
+      parentInput: { ...parentProfile, phone: phoneCanonical },
+      lineUid: uid,
+      ownershipVerified,
+      includeUid: false,
+    });
+    const needsSync = Object.keys(profile.patch).length > 0 || studentsToAppend.length > 0;
+    if (needsSync) {
+      const primaryStudent = localStudents[0];
+      const claim = (await client.query(
+        `INSERT INTO identity_claims
+           (purpose,state,phone_canonical,student_name_normalized,canonical_parent_id,
+            canonical_student_id,line_uid_hash,source_system,source_table,source_record_id,
+            correlation_id,verified_at,linked_at)
+         VALUES ('UID_REGISTRATION','SYNC_PENDING',$1,$2,$3,$4,$5,'RAGIC','Z01',$6,$7,NOW(),NOW())
+         ON CONFLICT (purpose,source_system,source_table,source_record_id,student_name_normalized)
+         DO UPDATE SET state='SYNC_PENDING',canonical_parent_id=EXCLUDED.canonical_parent_id,
+           canonical_student_id=EXCLUDED.canonical_student_id,last_error_code=NULL,
+           version=identity_claims.version+1,updated_at=NOW()
+         RETURNING *`,
+        [phoneCanonical, normalizeStudentName(primaryStudent?.name), parent.id, primaryStudent?.id || null,
+         _lineUidHash(uid), sourceRecordId, correlationId]
+      )).rows[0];
+      await insertProfilePatchAudit(client, {
+        parentId: parent.id,
+        sourceRecordId,
+        changes: profile.changes,
+        correlationId: claim.correlation_id,
+        actor,
+      });
+      await client.query(
+        `INSERT INTO ragic_sync_outbox
+           (idempotency_key,claim_id,operation,source_system,source_table,source_record_id,
+            payload_reference,state,correlation_id,target_record_id,field_id)
+         VALUES ($1,$2,'BIND_Z01_LINE_UID','RAGIC','Z01',$3,$4::jsonb,'pending',$5,$3,'1006846')
+         ON CONFLICT (idempotency_key) DO NOTHING`,
+        [`complete-z01-registration:${sourceRecordId}:${_lineUidHash(uid).slice(0,16)}`, claim.id,
+         sourceRecordId, JSON.stringify({ canonical_parent_id: parent.id, profile_patch: profile.patch,
+           students_to_append: studentsToAppend, verify_readback: true, skip_uid_write: true }),
+         claim.correlation_id]
+      );
+    }
+    await client.query('COMMIT');
+    return { parent, students: localStudents, replayed: false,
+      sync_state: needsSync ? 'SYNC_PENDING' : 'SYNCED', correlation_id: correlationId };
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (err instanceof Z03ClaimError) throw err;
+    if (err.code === 'ACCOUNT_RECOVERY_REQUIRED') {
+      throw new Z03ClaimError('ACCOUNT_RECOVERY_REQUIRED', err.message, 409);
+    }
+    throw new Z03ClaimError(_classifyConstraint(err), '本地 UID source transaction 失敗', 409, {
+      constraint: err.constraint || null,
+    });
+  } finally {
+    client.release();
+  }
+}
+
 async function _persistManualReview({ z03Ids = [], sourceRecordId = null, phoneCanonical, studentNameNormalized, lineUid, code, correlationId }) {
   const client = await pool.connect();
   try {
@@ -195,6 +376,14 @@ async function _persistManualReview({ z03Ids = [], sourceRecordId = null, phoneC
         [claim.id, code, claim.correlation_id]
       );
     }
+    await createParentIdentityBackofficeTask({
+      client,
+      phone: phoneCanonical,
+      sourceRecordIds: sourceRecordId ? [sourceRecordId] : [],
+      reasonCode: code || 'PARENT_IDENTITY_MANUAL_REVIEW',
+      suggestedAction: 'Review canonical phone and source evidence; preserve all existing rights and do not create a duplicate parent.',
+      correlationId,
+    });
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
@@ -207,8 +396,12 @@ async function _persistManualReview({ z03Ids = [], sourceRecordId = null, phoneC
 async function claimZ03Identity({
   phone,
   studentName,
+  studentInput = null,
   lineUid,
   parentName = '',
+  parentProfile = null,
+  allowStudentAppend = false,
+  ownershipVerified = false,
   z03Id = null,
   sourceRecordId = null,
   actor = 'parent-auth',
@@ -216,9 +409,12 @@ async function claimZ03Identity({
 } = {}) {
   const phoneCanonical = normalizePhone(phone);
   const studentNameNormalized = normalizeStudentName(studentName);
-  if (!phoneCanonical) throw new Z03ClaimError('INVALID_PHONE', '手機無法正規化', 400);
+  if (!isCanonicalMobilePhone(phoneCanonical)) throw new Z03ClaimError('INVALID_PHONE', '手機無法安全正規化', 400);
   if (!studentNameNormalized) throw new Z03ClaimError('STUDENT_NAME_REQUIRED', '學員姓名必填', 400);
   if (!String(lineUid || '').trim()) throw new Z03ClaimError('LINE_UID_REQUIRED', 'LINE UID 必填', 400);
+  const submittedStudent = { ...(studentInput || {}), name: String(studentInput?.name || studentName || '').trim() };
+  const submittedProfile = { ...(parentProfile || {}), name: String(parentProfile?.name || parentName || '').trim(), phone: phoneCanonical };
+  const registrationCompletion = Boolean(parentProfile || studentInput || allowStudentAppend);
 
   const client = await pool.connect();
   let reviewContext = null;
@@ -262,6 +458,231 @@ async function claimZ03Identity({
     )).rows;
     let exactMatches = childRows.filter((row) => normalizeStudentName(row.name_raw) === studentNameNormalized);
     if (exactMatches.length === 0) {
+      if (allowStudentAppend) {
+        const localCandidates = (await client.query(
+          `SELECT * FROM parents
+            WHERE line_uid=$1 OR phone=$2 OR regexp_replace(COALESCE(phone,''),'\\D','','g')=$2
+            ORDER BY created_at,id FOR UPDATE`, [lineUid, phoneCanonical]
+        )).rows;
+        const canonicalIds = [...new Set(localCandidates.map((row) => String(row.id)))];
+        if (canonicalIds.length > 1) {
+          reviewContext = { z03Ids: familyIds, sourceRecordId: null, code: 'DUPLICATE_PARENT_IDENTITY' };
+          throw new Z03ClaimError('DATA_RECONCILIATION_PENDING', '本地 canonical parent 證據互相衝突', 409);
+        }
+        let parent = localCandidates[0] || null;
+        if (parent?.line_uid && parent.line_uid !== lineUid) {
+          throw new Z03ClaimError('ACCOUNT_RECOVERY_REQUIRED', '手機已綁定另一個 LINE UID', 409);
+        }
+
+        let family = families.length === 1 ? families[0] : null;
+        let aliasFamilies = [];
+        let resolutionMethod = 'PHONE_MATCH_STUDENT_APPEND';
+        if (!family) {
+          const canary = evaluateParentIdentityCanary({
+            lineUid,
+            phone: phoneCanonical,
+            sourceRecordIds: families.map((row) => row.z01_ragic_record_id),
+            existingLocalLineUidFound: false,
+          });
+          const resolution = await resolveMultipleSourceCandidate(client, {
+            matchedFamilies: families,
+            exactMatches: [],
+            canonicalParent: parent,
+            currentLineUid: lineUid,
+            maxPriority: canary.allowed ? 6 : 3,
+          });
+          family = resolution.winnerSourceId
+            ? families.find((row) => String(row.z01_ragic_record_id) === String(resolution.winnerSourceId))
+            : null;
+          if (family) {
+            aliasFamilies = families.filter((row) => row.id !== family.id);
+            resolutionMethod = `PHONE_MATCH_STUDENT_APPEND_PRIORITY_${resolution.priority}`;
+          }
+        }
+
+        if (!family) {
+          if (!parent) {
+            parent = (await client.query(
+              `INSERT INTO parents (phone,name,line_uid,is_active)
+               VALUES ($1,$2,$3,TRUE) RETURNING *`,
+              [phoneCanonical, submittedProfile.name || '未命名家長', lineUid]
+            )).rows[0];
+          } else if (!parent.line_uid) {
+            parent = (await client.query(
+              `UPDATE parents SET line_uid=$2,is_active=TRUE,updated_at=NOW() WHERE id=$1 RETURNING *`,
+              [parent.id, lineUid]
+            )).rows[0];
+          }
+          parent = await _applyAllowlistedLocalProfile(client, parent, submittedProfile, ownershipVerified);
+          const { student } = await _insertOrReuseStudent(client, parent.id, submittedStudent);
+          for (const source of families) {
+            const claim = (await client.query(
+              `INSERT INTO identity_claims
+                 (purpose,state,phone_canonical,student_name_normalized,canonical_parent_id,
+                  canonical_student_id,line_uid_hash,source_system,source_table,source_record_id,
+                  last_error_code,correlation_id,verified_at,linked_at)
+               VALUES ('CLAIM_LEGACY','DATA_RECONCILIATION_PENDING',$1,$2,$3,$4,$5,
+                       'RAGIC','Z01',$6,'MULTIPLE_SOURCE_NO_UNIQUE_WINNER',$7,NOW(),NOW())
+               ON CONFLICT (purpose,source_system,source_table,source_record_id,student_name_normalized)
+               DO UPDATE SET state='DATA_RECONCILIATION_PENDING',canonical_parent_id=EXCLUDED.canonical_parent_id,
+                 canonical_student_id=EXCLUDED.canonical_student_id,last_error_code=EXCLUDED.last_error_code,
+                 version=identity_claims.version+1,updated_at=NOW()
+               RETURNING *`,
+              [phoneCanonical, studentNameNormalized, parent.id, student.id, _lineUidHash(lineUid),
+               source.z01_ragic_record_id, correlationId]
+            )).rows[0];
+            await client.query(
+              `INSERT INTO source_record_links
+                 (source_system,source_table,source_record_id,canonical_parent_id,
+                  canonical_student_id,claim_id,link_method)
+               VALUES ('RAGIC','Z01',$1,$2,$3,$4,'MULTIPLE_SOURCE_ALIAS')
+               ON CONFLICT (source_system,source_table,source_record_id) DO UPDATE SET
+                 canonical_parent_id=EXCLUDED.canonical_parent_id,
+                 canonical_student_id=COALESCE(source_record_links.canonical_student_id,EXCLUDED.canonical_student_id),
+                 claim_id=EXCLUDED.claim_id,link_method=EXCLUDED.link_method,updated_at=NOW()`,
+              [source.z01_ragic_record_id, parent.id, student.id, claim.id]
+            );
+          }
+          await client.query(
+            `UPDATE ragic_z03_records SET status='resolved',classification='DATA_RECONCILIATION_PENDING',
+               reason_code='MULTIPLE_SOURCE_NO_UNIQUE_WINNER',claim_state='DATA_RECONCILIATION_PENDING',
+               canonical_parent_id=$2,canonical_student_id=$3,last_processed_at=NOW(),correlation_id=$4
+             WHERE id=ANY($1::bigint[])`,
+            [familyIds, parent.id, student.id, correlationId]
+          );
+          await createParentIdentityBackofficeTask({
+            client,
+            parent,
+            sourceRecordIds: families.map((row) => row.z01_ragic_record_id),
+            reasonCode: 'MULTIPLE_SOURCE_NO_UNIQUE_WINNER',
+            suggestedAction: 'Review source evidence and select the primary Z01; do not create another parent.',
+            correlationId,
+          });
+          await client.query('COMMIT');
+          return { parent, student, replayed: false, student_appended: true,
+            sync_state: 'DATA_RECONCILIATION_PENDING', correlation_id: correlationId };
+        }
+
+        await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [
+          `ragic-z01:${family.z01_ragic_record_id}`,
+        ]);
+        const shadow = (await client.query(
+          `SELECT raw_data FROM ragic_z01_shadow WHERE ragic_record_id=$1 FOR UPDATE`,
+          [family.z01_ragic_record_id]
+        )).rows[0]?.raw_data || {};
+        const remoteUid = String(shadow['1006846'] || '').trim();
+        if (remoteUid && remoteUid !== lineUid) {
+          throw new Z03ClaimError('ACCOUNT_RECOVERY_REQUIRED', 'Ragic source 已綁定另一個 LINE UID', 409);
+        }
+        const existingLink = (await client.query(
+          `SELECT * FROM source_record_links
+            WHERE source_system='RAGIC' AND source_table='Z01' AND source_record_id=$1 FOR UPDATE`,
+          [family.z01_ragic_record_id]
+        )).rows[0] || null;
+        if (existingLink) {
+          const linkedParent = (await client.query(
+            `SELECT * FROM parents WHERE id=$1 FOR UPDATE`, [existingLink.canonical_parent_id]
+          )).rows[0];
+          if (!linkedParent || normalizePhone(linkedParent.phone) !== phoneCanonical) {
+            throw new Z03ClaimError('SOURCE_RECORD_ALREADY_LINKED', 'source record 已連結另一個家庭', 409);
+          }
+          if (parent && String(parent.id) !== String(linkedParent.id)) {
+            throw new Z03ClaimError('DATA_RECONCILIATION_PENDING', 'source link 與 canonical phone 指向不同 parent', 409);
+          }
+          parent = linkedParent;
+        }
+        if (!parent) {
+          parent = (await client.query(
+            `INSERT INTO parents
+               (phone,name,line_uid,email,home_phone,home_address,line_id,ragic_record_id,is_active,last_synced_at)
+             VALUES ($1,$2,$3,NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),NULLIF($7,''),$8,TRUE,NOW())
+             RETURNING *`,
+            [phoneCanonical, submittedProfile.name || family.raw_name || '未命名家長', lineUid,
+             family.email_raw || '', family.home_phone_raw || '', family.home_address_raw || '',
+             family.line_id_raw || '', family.z01_ragic_record_id]
+          )).rows[0];
+        } else {
+          parent = (await client.query(
+            `UPDATE parents SET line_uid=COALESCE(line_uid,$2),ragic_record_id=COALESCE(ragic_record_id,$3),
+               is_active=TRUE,updated_at=NOW() WHERE id=$1 RETURNING *`,
+            [parent.id, lineUid, family.z01_ragic_record_id]
+          )).rows[0];
+        }
+        parent = await _applyAllowlistedLocalProfile(client, parent, submittedProfile, ownershipVerified);
+        const { student } = await _insertOrReuseStudent(client, parent.id, submittedStudent);
+        const claim = (await client.query(
+          `INSERT INTO identity_claims
+             (purpose,state,phone_canonical,student_name_normalized,canonical_parent_id,
+              canonical_student_id,line_uid_hash,source_system,source_table,source_record_id,
+              correlation_id,verified_at,linked_at)
+           VALUES ('CLAIM_LEGACY','SYNC_PENDING',$1,$2,$3,$4,$5,'RAGIC','Z01',$6,$7,NOW(),NOW())
+           ON CONFLICT (purpose,source_system,source_table,source_record_id,student_name_normalized)
+           DO UPDATE SET state='SYNC_PENDING',canonical_parent_id=EXCLUDED.canonical_parent_id,
+             canonical_student_id=EXCLUDED.canonical_student_id,line_uid_hash=EXCLUDED.line_uid_hash,
+             last_error_code=NULL,version=identity_claims.version+1,updated_at=NOW()
+           RETURNING *`,
+          [phoneCanonical, studentNameNormalized, parent.id, student.id, _lineUidHash(lineUid),
+           family.z01_ragic_record_id, correlationId]
+        )).rows[0];
+        await client.query(
+          `INSERT INTO source_record_links
+             (source_system,source_table,source_record_id,canonical_parent_id,
+              canonical_student_id,claim_id,link_method)
+           VALUES ('RAGIC','Z01',$1,$2,$3,$4,$5)
+           ON CONFLICT (source_system,source_table,source_record_id) DO UPDATE SET
+             canonical_parent_id=EXCLUDED.canonical_parent_id,
+             canonical_student_id=COALESCE(source_record_links.canonical_student_id,EXCLUDED.canonical_student_id),
+             claim_id=EXCLUDED.claim_id,link_method=EXCLUDED.link_method,updated_at=NOW()`,
+          [family.z01_ragic_record_id, parent.id, student.id, claim.id, resolutionMethod]
+        );
+        for (const alias of aliasFamilies) {
+          await client.query(
+            `INSERT INTO source_record_links
+               (source_system,source_table,source_record_id,canonical_parent_id,canonical_student_id,claim_id,link_method)
+             VALUES ('RAGIC','Z01',$1,$2,$3,$4,'MULTIPLE_SOURCE_ALIAS')
+             ON CONFLICT (source_system,source_table,source_record_id) DO UPDATE SET
+               canonical_parent_id=EXCLUDED.canonical_parent_id,
+               canonical_student_id=COALESCE(source_record_links.canonical_student_id,EXCLUDED.canonical_student_id),
+               claim_id=EXCLUDED.claim_id,link_method=EXCLUDED.link_method,updated_at=NOW()`,
+            [alias.z01_ragic_record_id, parent.id, student.id, claim.id]
+          );
+        }
+        const profile = buildParentProfilePatch({
+          sourceProfile: _sourceProfileFromFamily(family, remoteUid),
+          parentInput: submittedProfile,
+          lineUid,
+          ownershipVerified,
+          includeUid: remoteUid !== lineUid,
+        });
+        await insertProfilePatchAudit(client, {
+          parentId: parent.id,
+          sourceRecordId: family.z01_ragic_record_id,
+          changes: profile.changes,
+          correlationId: claim.correlation_id,
+          actor,
+        });
+        await client.query(
+          `INSERT INTO ragic_sync_outbox
+             (idempotency_key,claim_id,operation,source_system,source_table,source_record_id,
+              payload_reference,state,correlation_id,target_record_id,field_id)
+           VALUES ($1,$2,'BIND_Z01_LINE_UID','RAGIC','Z01',$3,$4::jsonb,'pending',$5,$3,'1006846')
+           ON CONFLICT (idempotency_key) DO NOTHING`,
+          [`bind-z01-line-uid:${family.z01_ragic_record_id}`, claim.id, family.z01_ragic_record_id,
+           JSON.stringify({ canonical_parent_id: parent.id, profile_patch: profile.patch,
+             students_to_append: [submittedStudent], verify_readback: true,
+             skip_uid_write: remoteUid === lineUid }), claim.correlation_id]
+        );
+        await client.query(
+          `UPDATE ragic_z03_records SET status='resolved',classification='RESOLVED',
+             reason_code='STUDENT_APPENDED_LOCAL',claim_state='SYNC_PENDING',canonical_parent_id=$2,
+             canonical_student_id=$3,resolved_at=NOW(),resolved_by=$4,last_error_code=NULL,
+             last_processed_at=NOW(),correlation_id=$5 WHERE id=$1`,
+          [family.id, parent.id, student.id, actor, claim.correlation_id]
+        );
+        await client.query('COMMIT');
+        return { parent, student, replayed: false, student_appended: true,
+          sync_state: 'SYNC_PENDING', correlation_id: claim.correlation_id };
+      }
       reviewContext = {
         z03Ids: familyIds,
         sourceRecordId: families.length === 1 ? families[0].z01_ragic_record_id : null,
@@ -406,6 +827,14 @@ async function claimZ03Identity({
     await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [
       `ragic-z01:${family.z01_ragic_record_id}`,
     ]);
+    const shadow = (await client.query(
+      `SELECT raw_data FROM ragic_z01_shadow WHERE ragic_record_id=$1 FOR UPDATE`,
+      [family.z01_ragic_record_id]
+    )).rows[0]?.raw_data || {};
+    const remoteUid = String(shadow['1006846'] || '').trim();
+    if (remoteUid && remoteUid !== lineUid) {
+      throw new Z03ClaimError('ACCOUNT_RECOVERY_REQUIRED', 'Ragic source 已綁定另一個 LINE UID', 409);
+    }
 
     const existingLink = (await client.query(
       `SELECT * FROM source_record_links
@@ -499,6 +928,7 @@ async function claimZ03Identity({
         [parent.id, lineUid, String(parentName || '').trim(), family.raw_name || '', family.z01_ragic_record_id]
       )).rows[0];
     }
+    parent = await _applyAllowlistedLocalProfile(client, parent, submittedProfile, ownershipVerified);
 
     const canonicalStudents = (await client.query(
       `SELECT * FROM students WHERE parent_id=$1 ORDER BY created_at,id FOR UPDATE`, [parent.id]
@@ -544,7 +974,7 @@ async function claimZ03Identity({
        VALUES ('RAGIC','Z01',$1,$2,$3,$4,$5)
        ON CONFLICT (source_system,source_table,source_record_id) DO UPDATE SET
          canonical_parent_id=EXCLUDED.canonical_parent_id,
-         canonical_student_id=EXCLUDED.canonical_student_id,
+         canonical_student_id=COALESCE(source_record_links.canonical_student_id,EXCLUDED.canonical_student_id),
          claim_id=EXCLUDED.claim_id,
          link_method=EXCLUDED.link_method,
          updated_at=NOW()`,
@@ -563,7 +993,7 @@ async function claimZ03Identity({
          VALUES ('RAGIC','Z01',$1,$2,$3,$4,'MULTIPLE_SOURCE_ALIAS')
          ON CONFLICT (source_system,source_table,source_record_id) DO UPDATE SET
            canonical_parent_id=EXCLUDED.canonical_parent_id,
-           canonical_student_id=EXCLUDED.canonical_student_id,
+           canonical_student_id=COALESCE(source_record_links.canonical_student_id,EXCLUDED.canonical_student_id),
            claim_id=EXCLUDED.claim_id,link_method=EXCLUDED.link_method,updated_at=NOW()`,
         [alias.z01_ragic_record_id, parent.id, student.id, claim.id]
       );
@@ -583,14 +1013,31 @@ async function claimZ03Identity({
        VALUES ($1,'MATCHED','SYNC_PENDING','LOCAL_LINK_COMMITTED',$2,$3)`,
       [claim.id, actor, claim.correlation_id]
     );
+    const profile = buildParentProfilePatch({
+      sourceProfile: _sourceProfileFromFamily(family, remoteUid),
+      parentInput: submittedProfile,
+      lineUid,
+      ownershipVerified,
+      includeUid: remoteUid !== lineUid,
+    });
+    await insertProfilePatchAudit(client, {
+      parentId: parent.id,
+      sourceRecordId: family.z01_ragic_record_id,
+      changes: profile.changes,
+      correlationId: claim.correlation_id,
+      actor,
+    });
     await client.query(
       `INSERT INTO ragic_sync_outbox
          (idempotency_key,claim_id,operation,source_system,source_table,source_record_id,
           payload_reference,state,correlation_id,target_record_id,field_id)
        VALUES ($1,$2,'BIND_Z01_LINE_UID','RAGIC','Z01',$3,$4::jsonb,'pending',$5,$3,'1006846')
-       ON CONFLICT (idempotency_key) DO NOTHING`,
+      ON CONFLICT (idempotency_key) DO NOTHING`,
       [`bind-z01-line-uid:${family.z01_ragic_record_id}`, claim.id, family.z01_ragic_record_id,
-       JSON.stringify({ canonical_parent_id: parent.id }), claim.correlation_id]
+       JSON.stringify({ canonical_parent_id: parent.id, profile_patch: profile.patch,
+         students_to_append: [], verify_readback: registrationCompletion,
+         skip_uid_write: remoteUid === lineUid }),
+       claim.correlation_id]
     );
     await client.query(
       `UPDATE ragic_z03_records SET
@@ -634,6 +1081,7 @@ module.exports = {
   Z03ClaimError,
   claimZ03Identity,
   registerNewParentLocalFirst,
+  completeTrueUidRegistration,
   __test__: {
     safeDate: _safeDate,
     lineUidHash: _lineUidHash,

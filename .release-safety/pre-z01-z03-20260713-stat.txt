@@ -1,0 +1,4 @@
+ .replit                  | 8 ++++++++
+ server/routes/parents.js | 8 ++++++++
+ server/services/ragic.js | 8 ++++++--
+ 3 files changed, 22 insertions(+), 2 deletions(-)

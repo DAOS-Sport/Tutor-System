@@ -16,6 +16,7 @@ const { pool } = require('../../models/db');
 const { requireAdminAuth, requireAdminRole, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
 const ragicWriteback = require('../../services/ragicWriteback');
 const promotions = require('../../services/promotions');
+const { resolveParentLineDisplayName } = require('../../services/parentLineProfile');
 const {
   createCheckoutSession,
   readCheckout,
@@ -326,11 +327,18 @@ function tsToString(d) {
   return iso.slice(0, 19);
 }
 
-async function readEnrollment(id) {
+async function readEnrollment(id, { resolveLineProfile = false } = {}) {
   const e = await pool.query(
-    `SELECT ae.*, au.name AS created_by_name
+    `SELECT ae.*, au.name AS created_by_name,
+            p.line_uid AS parent_line_uid,
+            plp.display_name AS line_display_name,
+            plp.source AS line_profile_source
        FROM admin_enrollments ae
        LEFT JOIN admin_users au ON au.id = ae.created_by
+       LEFT JOIN parents p ON p.is_active=TRUE
+         AND regexp_replace(COALESCE(p.phone,''),'\\D','','g') =
+             regexp_replace(COALESCE(ae.parent_phone,''),'\\D','','g')
+       LEFT JOIN parent_line_profiles plp ON plp.line_uid=p.line_uid
       WHERE ae.id = $1`,
     [id]
   );
@@ -341,10 +349,23 @@ async function readEnrollment(id) {
     [id]
   );
   const row = e.rows[0];
+  let lineDisplayName = row.line_display_name || '';
+  let lineProfileState = lineDisplayName ? 'CACHED' : (row.parent_line_uid ? 'NOT_CACHED' : 'NOT_BOUND');
+  if (resolveLineProfile && row.parent_line_uid && !lineDisplayName) {
+    const profile = await resolveParentLineDisplayName({
+      lineUid: row.parent_line_uid,
+      venueId: row.venue_id,
+    });
+    lineDisplayName = profile.displayName || '';
+    lineProfileState = profile.state;
+  }
   return {
     id: row.id,
     parent_name: row.parent_name,
     parent_phone: row.parent_phone,
+    line_display_name: lineDisplayName,
+    line_bound: Boolean(row.parent_line_uid),
+    line_profile_state: lineProfileState,
     students: row.students || [],
     coach: row.coach,
     coach_id: row.coach_id || null,
@@ -675,6 +696,19 @@ router.get('/', requireAdminAuth, async (req, res) => {
   } catch (err) {
     console.error('[admin/enrollments]', err);
     res.status(500).json({ error: 'list enrollments failed' });
+  }
+});
+
+// 明細才 best-effort 取 LINE display name；清單絕不會對 LINE API 產生 N+1 calls。
+router.get('/:id', requireAdminAuth, async (req, res) => {
+  try {
+    const basic = await readEnrollment(req.params.id);
+    if (!basic) return res.status(404).json({ error: '報名不存在' });
+    if (!isVenueInScope(req, basic.venue_id)) return res.status(403).json({ error: '無權限查看此報名' });
+    return res.json(await readEnrollment(req.params.id, { resolveLineProfile: true }));
+  } catch (err) {
+    console.error('[admin/enrollments/:id]', err);
+    return res.status(500).json({ error: 'read enrollment failed' });
   }
 });
 
@@ -1280,5 +1314,6 @@ router._checkoutInternals = {
   ensureGroupCoursePeriod,
   ensureSoloCoursePeriod,
 };
+router._lineProfileInternals = { readEnrollment };
 
 module.exports = router;

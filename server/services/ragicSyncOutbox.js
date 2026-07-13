@@ -8,6 +8,8 @@ const {
   STABILITY_FLAGS,
 } = require('../config/ragicSchema');
 const { assertRagicZ01UidSchemaFresh } = require('./ragicSchemaFreshness');
+const { sanitizeAllowlistedProfilePatch } = require('./parentRegistrationProfile');
+const { createParentIdentityBackofficeTask } = require('./parentIdentityBackoffice');
 
 const RETRYABLE_CODES = new Set([
   'RAGIC_TIMEOUT',
@@ -227,6 +229,30 @@ async function _findRemoteByTrueUid(lineUid) {
   return matches[0] || null;
 }
 
+function _recordIdOf(row) {
+  return String(row?._ragicId || row?.ragicId || '').trim();
+}
+
+function _assertReadback({ row, targetRecordId, expectedPatch, expectedUid }) {
+  if (!row || _recordIdOf(row) !== String(targetRecordId || '').trim()) {
+    const err = new Error('Ragic readback record id mismatch');
+    err.code = 'RAGIC_UNCONFIRMED_WRITE';
+    throw err;
+  }
+  if (expectedUid && getTrueRagicLineUid(row) !== expectedUid) {
+    const err = new Error('Ragic field 1006846 readback mismatch');
+    err.code = 'RAGIC_UNCONFIRMED_WRITE';
+    throw err;
+  }
+  for (const [fieldId, value] of Object.entries(expectedPatch || {})) {
+    if (String(row[fieldId] == null ? '' : row[fieldId]).trim() !== String(value).trim()) {
+      const err = new Error('Ragic allowlisted profile readback mismatch');
+      err.code = 'RAGIC_UNCONFIRMED_WRITE';
+      throw err;
+    }
+  }
+}
+
 async function _markFailure(job, err) {
   const failure = classifySyncFailure(err, Number(job.attempts), Number(job.max_attempts));
   const delaySeconds = Math.min(3600, 30 * (2 ** Math.max(0, Number(job.attempts) - 1)));
@@ -287,6 +313,22 @@ async function _markFailure(job, err) {
         [job.claim_id, failure.claimState]
       );
     }
+    if (failure.outboxState !== 'retryable') {
+      const parent = (await client.query(
+        `SELECT p.* FROM identity_claims c JOIN parents p ON p.id=c.canonical_parent_id WHERE c.id=$1`,
+        [job.claim_id]
+      )).rows[0] || null;
+      await createParentIdentityBackofficeTask({
+        client,
+        parent,
+        sourceRecordIds: [job.target_record_id || job.source_record_id].filter(Boolean),
+        reasonCode: failure.claimState,
+        suggestedAction: failure.claimState === 'SYNC_BLOCKED_SCHEMA'
+          ? 'Complete the required Ragic profile schema fields, then replay the same outbox job.'
+          : 'Reconcile the source conflict without changing orders, payments, lessons, or attendance.',
+        correlationId: job.correlation_id,
+      });
+    }
     await client.query('COMMIT');
     return failure;
   } catch (dbErr) {
@@ -300,6 +342,8 @@ async function _markFailure(job, err) {
 async function processRagicSyncOutbox({
   limit = 20,
   writer = ragic.upsertParentStrict,
+  reader = ragic.getParentRecordByRagicId,
+  studentWriter = ragic.updateStudentFromZ03Strict,
   idempotencyKey = null,
   schemaGuard = assertRagicZ01UidSchemaFresh,
 } = {}) {
@@ -338,7 +382,54 @@ async function processRagicSyncOutbox({
         throw err;
       }
       if (job.operation === 'BIND_Z01_LINE_UID' || job.operation === 'REBIND_Z01_LINE_UID') {
-        await writer({ [RAGIC_Z01_FIELDS.PARENT_SYSTEM_LINE_UID]: parent.line_uid }, job.target_record_id || job.source_record_id);
+        const targetRecordId = job.target_record_id || job.source_record_id;
+        const ref = job.payload_reference || {};
+        const profilePatch = sanitizeAllowlistedProfilePatch(ref.profile_patch);
+        const patch = { ...profilePatch };
+        if (!ref.skip_uid_write) patch[RAGIC_Z01_FIELDS.PARENT_SYSTEM_LINE_UID] = parent.line_uid;
+        let before = null;
+        if (ref.verify_readback) {
+          before = await reader(targetRecordId);
+          if (!before || _recordIdOf(before) !== String(targetRecordId)) {
+            const err = new Error('Ragic target record is missing or changed');
+            err.code = 'RAGIC_UNCONFIRMED_WRITE';
+            throw err;
+          }
+          const currentUid = getTrueRagicLineUid(before);
+          if (currentUid && currentUid !== parent.line_uid) {
+            const err = new Error('Ragic field 1006846 already belongs to another account');
+            err.code = 'PARENT_LINE_UID_MISMATCH';
+            throw err;
+          }
+        }
+        for (const student of Array.isArray(ref.students_to_append) ? ref.students_to_append : []) {
+          const result = await studentWriter({
+            parent: { ...parent, ragic_record_id: String(targetRecordId) },
+            student,
+          });
+          const localStudent = (await pool.query(
+            `SELECT id FROM students WHERE parent_id=$1 AND regexp_replace(lower(name),'\\s','','g')=regexp_replace(lower($2),'\\s','','g')
+              ORDER BY created_at,id LIMIT 1`,
+            [parent.id, String(student?.name || '').trim()]
+          )).rows[0];
+          const z02Id = result?.z02?.ragicRecordId || null;
+          if (localStudent && z02Id) {
+            await pool.query(
+              `UPDATE students SET ragic_record_id=COALESCE(ragic_record_id,$2),last_synced_at=NOW(),updated_at=NOW()
+                WHERE id=$1`, [localStudent.id, String(z02Id)]
+            );
+          }
+        }
+        if (Object.keys(patch).length) await writer(patch, targetRecordId);
+        if (ref.verify_readback) {
+          const after = await reader(targetRecordId);
+          _assertReadback({
+            row: after,
+            targetRecordId,
+            expectedPatch: profilePatch,
+            expectedUid: parent.line_uid,
+          });
+        }
         await _markSuccess(job);
       } else {
         // A create response may time out after Ragic committed. Always perform a

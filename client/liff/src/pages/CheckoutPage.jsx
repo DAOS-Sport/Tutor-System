@@ -5,6 +5,7 @@ import { enrollmentsApi } from '../api/enrollments';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
 import { courseTypeLabel, formatTWD, formatTWYMD } from '../utils/format';
+import { isPaymentProofCandidate, PAYMENT_PROOF_ACCEPT } from '../utils/paymentProofImage';
 
 function formatInvoiceId(id) {
   const cleanId = String(id || '').replace(/-/g, '').toUpperCase();
@@ -234,11 +235,8 @@ export default function CheckoutPage() {
 
   function handleFileChange(file) {
     if (!file) return;
-    // 有明確 file.type 時才擋非 JPG/PNG；部分 Android/LINE webview 的相機圖 file.type 為空字串，
-    // 放行交由後端以檔案內容（magic bytes）驗證，避免這類圖在選檔階段就被誤擋。
-    const fileType = (file.type || '').toLowerCase();
-    if (fileType && !['image/jpeg', 'image/png'].includes(fileType)) {
-      toast.warning('請上傳 JPG 或 PNG 格式圖片');
+    if (!isPaymentProofCandidate(file)) {
+      toast.warning('請上傳 JPG、PNG、WebP、HEIC、HEIF 或 AVIF 圖片');
       return;
     }
     if (file.size > 5 * 1024 * 1024) {
@@ -525,11 +523,11 @@ export default function CheckoutPage() {
                 <span className="mt-2 block w-full truncate text-[11px] font-bold tracking-wide text-brand-primary">
                   {proofFile ? proofFile.name : checkout.has_payment_proof ? '舊憑證已保留，點擊更換' : '選擇或拍攝匯款憑證圖片'}
                 </span>
-                <span className="mt-0.5 text-[9px] text-slate-400">支援 PNG、JPG 或 LINE 截圖</span>
+                <span className="mt-0.5 text-[9px] text-slate-400">支援 JPG、PNG、WebP、HEIC、HEIF、AVIF</span>
                 <input
                   ref={proofInputRef}
                   type="file"
-                  accept="image/jpeg,image/png"
+                  accept={PAYMENT_PROOF_ACCEPT}
                   onChange={(e) => handleFileChange(e.target.files?.[0])}
                   className="hidden"
                   disabled={proofBusy}

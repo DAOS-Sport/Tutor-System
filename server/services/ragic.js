@@ -698,6 +698,7 @@ const {
   Z01_STUDENTS_SUBTABLE_ID,
   Z02_FIELDS,
   FIELD,
+  getTrueRagicLineUid,
 } = require('../config/ragicSchema');
 
 // 向後相容別名（本檔多處仍以這兩個名稱引用）
@@ -841,8 +842,8 @@ function _assertNoZ01LineUidConflict(record, lineUid, context = 'Z01 write') {
 
 /**
  * 將 Z01 record 主表轉成本地 parent 欄位形狀。
- * Ragic 回傳 key 同時包含中文欄位名（如「家長姓名」）與 Field ID 字串（"1001101"），
- * 兩者都當 fallback 嘗試一次。
+ * 一般 profile 欄位可容忍 Ragic 回傳中文顯示名；LINE UID 是例外，只能
+ * 讀數字 Field ID 1006846，不得以中文欄名或任何舊欄位 fallback。
  */
 function mapZ01Parent(record) {
   if (!record) return null;
@@ -863,7 +864,7 @@ function mapZ01Parent(record) {
     home_phone:       get(FIELD.Z01.HOME_PHONE, '住家電話'),
     home_address:     get(FIELD.Z01.HOME_ADDRESS, '住家地址'),
     line_id:          get(FIELD.Z01.LINE_ID, 'LINE ID'),
-    line_uid:         get(FIELD.Z01.LINE_UID, '家教系統uid'),
+    line_uid:         getTrueRagicLineUid(record),
   };
 }
 

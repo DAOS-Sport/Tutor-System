@@ -1,0 +1,134 @@
+{
+  "baseline": {
+    "branch": "release/parent-identity-final-business-closure",
+    "commit": "87e0dad023a905599a1d80971c8f02ca31bead86"
+  },
+  "completed_at": "2026-07-13T17:47:21Z",
+  "result": "READY_FOR_CANARY",
+  "tests": {
+    "T01_T25": { "passed": 25, "failed": 0 },
+    "T26_T31": { "passed": 6, "failed": 0 },
+    "full_T01_T31": { "passed": 31, "failed": 0 },
+    "supplemental": {
+      "schema_freshness": "PASS",
+      "account_recovery": "PASS",
+      "source_claim_concurrency": "PASS",
+      "outbox_failure_local_login_retained": "PASS",
+      "safety_invariants": "PASS",
+      "canary_configuration": "PASS"
+    },
+    "record_652_simulation": {
+      "result": "PASS",
+      "mode": "LIVE_READ_ONLY_PLUS_ANONYMIZED_TEMP_CLONE",
+      "http_status": 200,
+      "login_status": "registered_and_logged_in",
+      "parent_state": "SYNC_IN_PROGRESS",
+      "synchronous_ragic_calls": 0,
+      "parent_count": 1,
+      "student_count": 1,
+      "outbox_operation": "BIND_Z01_LINE_UID",
+      "uid_field": "1006846",
+      "email_field": "1002820",
+      "student_append_count": 0,
+      "rights_hash_unchanged": true,
+      "real_record_652_unchanged": true,
+      "fixture_cleanup": "PASS"
+    },
+    "admin_enrollment_line_name": {
+      "result": "PASS",
+      "display_source": "VERIFIED_LINE_LOGIN_ID_TOKEN_OR_MESSAGING_API_CACHE",
+      "list_line_api_calls": 0,
+      "detail_best_effort_lookup": true,
+      "existing_login_ragic_calls": 0,
+      "rights_unchanged": true,
+      "messaging_api_smoke_state": "PROFILE_UNAVAILABLE",
+      "fallback": "BOUND_WAITING_FOR_NEXT_LINE_LOGIN"
+    }
+  },
+  "live_shadow_analysis": {
+    "source": "LIVE_RAGIC_SHADOW_READ_ONLY",
+    "fetched": 1095,
+    "zero_student": {
+      "count": 47,
+      "legacy_unbound_candidate": 47
+    },
+    "email_blank": {
+      "count": 607,
+      "legacy_unbound_candidate": 607
+    },
+    "status_created_uid_blank": {
+      "count": 730,
+      "legacy_unbound_candidate": 729,
+      "manual_review": 1
+    },
+    "uid_blank": {
+      "count": 857,
+      "legacy_unbound_candidate": 856,
+      "manual_review": 1
+    },
+    "csv_reference_only": {
+      "row_count": 1000,
+      "email_blank": 515,
+      "status_created_uid_blank": 634,
+      "uid_blank": 761,
+      "note": "Counts supplied by the release brief; no CSV file exists in this workspace and CSV is not treated as the source of truth."
+    }
+  },
+  "live_reconciliation": {
+    "generated_at": "2026-07-13T17:45:08.460Z",
+    "fetched": 1095,
+    "linked": 237,
+    "z03_pending": 856,
+    "reconciliation": 0,
+    "manual_review": 2,
+    "ignored": 0,
+    "retryable_error": 0,
+    "non_retryable_error": 0,
+    "missing_source_count": 0,
+    "equation_pass": true,
+    "record_149": "PENDING_Z03; field 1006846 blank; 8/8 student rows classified; retained"
+  },
+  "schema": {
+    "verified_at": "2026-07-13T18:05:14.035Z",
+    "field_id": "1006846",
+    "field_name": "家教系統uid",
+    "no_duplicate": true,
+    "required": false,
+    "read_only": false,
+    "verified": true
+  },
+  "invariants": {
+    "duplicate_canonical_phone": 0,
+    "duplicate_active_line_uid": 0,
+    "duplicate_source_link": 0,
+    "pending_outbox": 0,
+    "parent_frontend_sync_failed_count": 0,
+    "parent_frontend_schema_error_count": 0
+  },
+  "rights": {
+    "aggregate_before": "1af3a53f07124cbecf1ea34a78318cd51cfd7f0f5ebb59504162429233c4a714",
+    "aggregate_after": "1af3a53f07124cbecf1ea34a78318cd51cfd7f0f5ebb59504162429233c4a714",
+    "row_snapshot_before": "1a8491dcced809fcbe00fb1214a978c8f5e4c934fbf4d9b26d3f35bb6f1e4b25",
+    "row_snapshot_after": "1a8491dcced809fcbe00fb1214a978c8f5e4c934fbf4d9b26d3f35bb6f1e4b25",
+    "unchanged": true
+  },
+  "rollback": {
+    "result": "PASS",
+    "previous_build_id": "87e0dad023a905599a1d80971c8f02ca31bead86",
+    "release_candidate_build_id": "87e0dad023a905599a1d80971c8f02ca31bead86+88fd9bde070f1cc6",
+    "rollback_timestamp": "2026-07-13T18:05:02.866Z",
+    "existing_login": "PASS",
+    "pre_release_token": "PASS",
+    "ragic_write_count": 1,
+    "destructive_down_migration": false
+  },
+  "canary": {
+    "db_invariants": "PASS",
+    "resolver_v2_runtime": false,
+    "phase": "off",
+    "percentage": 0,
+    "configured_internal_source_allowlist_count": 3,
+    "live_write_canary_executed": false,
+    "reason": "Runtime canary flags and operator identities are not enabled; no unapproved remote mutation was performed."
+  }
+}

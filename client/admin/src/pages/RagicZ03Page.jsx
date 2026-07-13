@@ -16,6 +16,7 @@ import { ragicZ03Api } from '../api/ragicZ03';
 const STATUS_LABEL = {
   pending:   { text: '待處理', cls: 'bg-amber-100 text-amber-800' },
   resolved:  { text: '已修正', cls: 'bg-brand-green/15 text-brand-green' },
+  manual_review: { text: '人工審核', cls: 'bg-red-100 text-red-700' },
   dismissed: { text: '已忽略', cls: 'bg-gray-200 text-gray-600' },
 };
 
@@ -199,6 +200,7 @@ function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft, onDeleteRequ
           </div>
           <div className="mt-1 truncate text-sm font-bold text-red-600">「{row.raw_name || '（空白）'}」</div>
           <div className="text-[11px] text-gray-500">抓取於 {fmtDate(row.fetched_at)}</div>
+          <div className="text-[11px] text-gray-500">來源更新 {fmtDate(row.source_updated_at)} ・ {row.reason_code || '—'} ・ {row.claim_state || 'UNRESOLVED'}</div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <button
@@ -212,7 +214,7 @@ function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft, onDeleteRequ
             disabled={busy}
             onClick={() => onDeleteRequest(row)}
             className="whitespace-nowrap rounded border border-red-300 bg-white px-2 py-1 text-[11px] font-bold text-red-600 hover:bg-red-50 disabled:opacity-50"
-          >永久刪除</button>
+          >轉人工審核</button>
         </div>
       </div>
 
@@ -352,7 +354,7 @@ export default function RagicZ03Page() {
   const [busyKey, setBusyKey] = useState('');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [stats, setStats] = useState(null);
-  const [pendingDelete, setPendingDelete] = useState(null); // Z03 row 待確認永久刪除
+  const [pendingDelete, setPendingDelete] = useState(null); // Z03 row 待確認轉人工審核
   const [deleteBusy, setDeleteBusy] = useState(false);
 
   useEffect(() => {
@@ -433,7 +435,7 @@ export default function RagicZ03Page() {
     setDeleteBusy(true);
     try {
       await ragicZ03Api.remove(pendingDelete.id);
-      toast.success('已永久刪除，不會因後續同步復活');
+      toast.success('已保留來源資料並轉入人工審核');
       setPendingDelete(null);
       await Promise.all([load(), loadStats()]);
     } catch (e) {
@@ -482,7 +484,7 @@ export default function RagicZ03Page() {
       />
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
-        {['pending', 'resolved', 'dismissed', 'all'].map((s) => {
+        {['pending', 'resolved', 'manual_review', 'all'].map((s) => {
           const cnt = stats ? (s === 'all' ? stats.total : stats[s]) : null;
           return (
           <button
@@ -500,7 +502,7 @@ export default function RagicZ03Page() {
           <input
             value={queryInput}
             onChange={(e) => setQueryInput(e.target.value)}
-            placeholder="搜尋電話或學生姓名"
+            placeholder="搜尋 record ID、家長/學生姓名、電話或 claim ID"
             className="h-8 w-full min-w-0 rounded border border-gray-300 bg-white px-3 text-xs outline-none focus:border-brand-teal focus:ring-1 focus:ring-brand-teal"
           />
           {queryInput ? (
@@ -571,20 +573,20 @@ export default function RagicZ03Page() {
 
       <ConfirmDialog
         open={!!pendingDelete}
-        title="永久刪除這筆 Z03 資料？"
-        confirmLabel="永久刪除"
-        tone="danger"
+        title="將這筆 Z03 資料轉人工審核？"
+        confirmLabel="轉人工審核"
+        tone="warning"
         busy={deleteBusy}
         onCancel={() => !deleteBusy && setPendingDelete(null)}
         onConfirm={confirmDelete}
       >
         <div className="space-y-2">
           <p>
-            「{pendingDelete?.raw_name || '（空白）'}」這筆記錄與其所有學員資料將被<span className="font-bold text-brand-error">永久刪除</span>，無法復原。
+            「{pendingDelete?.raw_name || '（空白）'}」這筆記錄與其所有學員資料會完整保留，並停止自動認領。
           </p>
           <ul className="list-disc space-y-1 pl-5 text-sm">
-            <li>即使之後再次觸發 Ragic 同步，這筆記錄也<span className="font-bold">不會重新出現</span>在 Z03 清單中（會寫入忽略清單）。</li>
-            <li>此操作<span className="font-bold">不會</span>刪除或修改 Ragic 平台本身的原始資料，僅影響本系統本地的整理紀錄。</li>
+            <li>後續 Ragic 同步只會更新同一筆 source record，不會建立重複 Z03。</li>
+            <li>此操作不會刪除本地或 Ragic 原始資料；可在「人工審核」分頁繼續查詢。</li>
           </ul>
         </div>
       </ConfirmDialog>

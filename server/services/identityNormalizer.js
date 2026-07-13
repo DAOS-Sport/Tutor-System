@@ -25,7 +25,12 @@ function normalizeStudentName(value) {
     .toLowerCase();
 }
 
+function isCanonicalMobilePhone(value) {
+  return /^09\d{8}$/.test(normalizePhone(value));
+}
+
 module.exports = {
   normalizePhone,
   normalizeStudentName,
+  isCanonicalMobilePhone,
 };

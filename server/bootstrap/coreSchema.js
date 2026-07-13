@@ -99,6 +99,14 @@ CREATE TABLE IF NOT EXISTS parents (
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+CREATE TABLE IF NOT EXISTS parent_line_profiles (
+  line_uid VARCHAR(100) PRIMARY KEY,
+  display_name VARCHAR(100) NOT NULL DEFAULT '',
+  source VARCHAR(30) NOT NULL,
+  last_verified_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 -- 軟刪除旗標：家長從 Ragic 主庫刪除時設為 FALSE，requireParent 即時拒絕（students FK 為 RESTRICT，無法硬刪）。
 DO $$ BEGIN ALTER TABLE parents ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
@@ -1162,6 +1170,34 @@ CREATE TABLE IF NOT EXISTS parent_line_uid_rebind_audit (
   ragic_sync_state TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_parent_line_uid_rebind_request ON parent_line_uid_rebind_audit(recovery_request_id) WHERE recovery_request_id IS NOT NULL;
+
+-- Parent registration profile completion / safe-review audit support.
+CREATE TABLE IF NOT EXISTS parent_profile_patch_audit (
+  id BIGSERIAL PRIMARY KEY,
+  canonical_parent_id UUID NOT NULL REFERENCES parents(id) ON DELETE RESTRICT,
+  source_system TEXT NOT NULL DEFAULT 'RAGIC', source_table TEXT NOT NULL DEFAULT 'Z01',
+  source_record_id TEXT NOT NULL, field_id TEXT NOT NULL,
+  old_value_hash CHAR(64), new_value_hash CHAR(64) NOT NULL,
+  change_reason TEXT NOT NULL CHECK (change_reason IN ('FILL_BLANK','VERIFIED_CONTACT_UPDATE')),
+  ownership_verified BOOLEAN NOT NULL DEFAULT FALSE, actor TEXT NOT NULL,
+  correlation_id UUID NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_parent_profile_patch_audit_parent_created
+  ON parent_profile_patch_audit(canonical_parent_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS parent_identity_backoffice_tasks (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  canonical_parent_id UUID REFERENCES parents(id) ON DELETE RESTRICT,
+  masked_parent JSONB NOT NULL DEFAULT '{}'::jsonb,
+  source_record_ids TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+  reason_code TEXT NOT NULL, suggested_action TEXT NOT NULL, correlation_id UUID NOT NULL,
+  rights_protection_status TEXT NOT NULL DEFAULT 'NO_RIGHTS_MUTATION',
+  status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN','IN_REVIEW','RESOLVED','DISMISSED')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(correlation_id, reason_code)
+);
+CREATE INDEX IF NOT EXISTS idx_parent_identity_backoffice_open
+  ON parent_identity_backoffice_tasks(status, created_at) WHERE status IN ('OPEN','IN_REVIEW');
 
 -- Task #66：Ragic 待審核區（同步先進 staging，admin 通過才合併到正式表）
 CREATE TABLE IF NOT EXISTS ragic_staging_changes (

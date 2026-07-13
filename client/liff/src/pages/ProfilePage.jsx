@@ -64,13 +64,13 @@ function syncErrMsg(e) {
     LOCAL_VENUE_REFRESH_FAILED: '本地場館資料同步失敗，請聯絡客服確認場館設定。',
     RAGIC_Z02_REFRESH_FAILED: '學員資料重新讀取失敗，請稍後再試。',
     RAGIC_TIMEOUT: 'Ragic 回應較慢，請稍後再試。',
-    RAGIC_SYNC_FAILED: '資料暫時無法完成同步，請稍後再試。',
     RAGIC_REFRESH_STUDENTS_INCOMPLETE: '學員資料已送出，系統正在同步，請稍後重新整理。',
     LOCAL_STUDENT_REFRESH_FAILED: '學員資料已送出，本地同步尚未完成，請稍後重新整理。',
     Z03_RESOLVE_FAILED: '舊資料清理狀態更新失敗，請稍後再試。',
     PARENT_REFRESH_FAILED: '會員資料重新整理失敗，請稍後再試。',
   };
   if (code && MAP[code]) return MAP[code];
+  if (/^RAGIC_|^SYNC_/i.test(String(code || ''))) return '本地資料已保留，外部資料正在背景同步。';
   if (status === 400) return e?.response?.data?.error || '資料格式有誤，請確認後再試';
   if (status === 409) return '資料已存在，請確認後再試；若需協助請聯絡客服。';
   return '資料暫時無法儲存，請稍後再試。';

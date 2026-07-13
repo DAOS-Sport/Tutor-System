@@ -5,6 +5,7 @@ import { enrollmentsApi } from '../api/enrollments';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
 import { courseTypeLabel, formatTWD } from '../utils/format';
+import { isPaymentProofCandidate, PAYMENT_PROOF_ACCEPT } from '../utils/paymentProofImage';
 
 /**
  * 報名狀態頁（U10）— 一般報名「送出後的審核等候畫面」。
@@ -83,8 +84,8 @@ export default function EnrollStatusPage() {
 
   function selectProofFile(file) {
     if (!file) return;
-    if (!['image/jpeg', 'image/png'].includes(file.type)) {
-      toast.error('只接受 JPG / PNG 圖片');
+    if (!isPaymentProofCandidate(file)) {
+      toast.error('請上傳 JPG、PNG、WebP、HEIC、HEIF 或 AVIF 圖片');
       return;
     }
     if (file.size > 5 * 1024 * 1024) {
@@ -223,7 +224,7 @@ export default function EnrollStatusPage() {
             <input
               ref={proofInputRef}
               type="file"
-              accept="image/jpeg,image/png"
+              accept={PAYMENT_PROOF_ACCEPT}
               className="hidden"
               disabled={proofBusy}
               onChange={(e) => selectProofFile(e.target.files?.[0])}

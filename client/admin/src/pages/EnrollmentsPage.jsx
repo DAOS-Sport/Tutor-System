@@ -51,8 +51,18 @@ export default function EnrollmentsPage() {
 
   const venueMap = useMemo(() => Object.fromEntries(venues.map((v) => [v.id, v.name])), [venues]);
 
+  async function openDetail(row) {
+    setDetail(row);
+    try {
+      const latest = await enrollmentsApi.detail(row.id);
+      if (latest) setDetail(latest);
+    } catch {
+      toast.warning('LINE 名稱暫時無法更新，其他報名資料不受影響。');
+    }
+  }
+
   const columns = [
-    { key: 'id', label: '編號', render: (r) => <button className="font-mono text-xs text-brand-teal hover:underline" onClick={() => setDetail(r)}>{r.id}</button> },
+    { key: 'id', label: '編號', render: (r) => <button className="font-mono text-xs text-brand-teal hover:underline" onClick={() => openDetail(r)}>{r.id}</button> },
     { key: 'submitted_at', label: '送出', render: (r) => <span className="text-xs text-gray-600">{formatTWDateTime(r.submitted_at)}</span> },
     { key: 'parent', label: '家長', render: (r) => <div className="text-sm"><div className="font-medium">{r.parent_name}</div><div className="text-xs text-gray-500">{r.parent_phone}</div></div> },
     { key: 'students', label: '學員', render: (r) => r.students.join('、') },
@@ -124,6 +134,12 @@ export default function EnrollmentsPage() {
             </div>
             <dl className="grid grid-cols-2 gap-3 text-sm">
               <div><dt className="text-gray-500">家長</dt><dd>{detail.parent_name} ({detail.parent_phone})</dd></div>
+              <div>
+                <dt className="text-gray-500">LINE 名稱</dt>
+                <dd className="font-medium text-[#06C755]">
+                  {detail.line_display_name || (detail.line_bound ? '已綁定（待下次 LINE 登入取得名稱）' : '未綁定')}
+                </dd>
+              </div>
               <div><dt className="text-gray-500">學員</dt><dd>{detail.students.join('、')}</dd></div>
               <div><dt className="text-gray-500">教練</dt><dd>{detail.coach}</dd></div>
               <div><dt className="text-gray-500">場館</dt><dd>{venueMap[detail.venue_id] || detail.venue_id}</dd></div>

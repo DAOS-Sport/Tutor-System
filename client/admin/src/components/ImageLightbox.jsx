@@ -1,13 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-
-function normalizeImageSrc(src) {
-  const value = String(src || '').trim();
-  if (!value) return '';
-  if (/^(https?:|blob:|data:)/i.test(value) || value.startsWith('/')) return value;
-  if (value.startsWith('uploads/')) return `/${value}`;
-  return value;
-}
+import { createLocalPreview, resolveImagePreviewSource } from '../utils/imagePreview.mjs';
 
 function MagnifierIcon({ className = '' }) {
   return (
@@ -26,19 +19,33 @@ function CloseIcon({ className = '' }) {
   );
 }
 
-export default function ImageLightbox({
+export function ImagePreviewCard({
   src,
   alt = '圖片預覽',
   label,
   className = '',
   thumbnailClassName = '',
   imageClassName = '',
+  fileName = '',
+  onRetry,
 }) {
-  const imageSrc = normalizeImageSrc(src);
+  const resolved = resolveImagePreviewSource(src);
+  const [localUrl, setLocalUrl] = useState('');
+  const imageSrc = resolved.kind === 'local' ? localUrl : resolved.url;
   const [open, setOpen] = useState(false);
   const [closing, setClosing] = useState(false);
   const [failed, setFailed] = useState(false);
   const closeTimerRef = useRef(null);
+
+  useEffect(() => {
+    if (resolved.kind !== 'local' || !resolved.blob) {
+      setLocalUrl('');
+      return undefined;
+    }
+    const local = createLocalPreview(resolved.blob);
+    setLocalUrl(local.url);
+    return () => local.revoke();
+  }, [src]);
 
   useEffect(() => {
     setFailed(false);
@@ -66,7 +73,7 @@ export default function ImageLightbox({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, closing]);
 
-  if (!imageSrc) return null;
+  if (!imageSrc && !failed) return null;
 
   function openModal(event) {
     event?.preventDefault();
@@ -111,7 +118,13 @@ export default function ImageLightbox({
             className={`rounded-xl bg-white px-6 py-5 text-sm font-medium text-slate-600 shadow-2xl transition duration-150 ${closing ? 'scale-95 opacity-0' : 'scale-100 opacity-100'}`}
             onClick={(event) => event.stopPropagation()}
           >
-            圖片無法載入
+            <div>圖片載入失敗，可重新上傳</div>
+            {(fileName || resolved.name) && <div className="mt-1 text-xs text-slate-400">{fileName || resolved.name}</div>}
+            {onRetry && (
+              <button type="button" className="mt-3 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-bold" onClick={onRetry}>
+                重新上傳
+              </button>
+            )}
           </div>
         ) : (
           <img
@@ -137,12 +150,12 @@ export default function ImageLightbox({
         onClick={openModal}
       >
         {failed ? (
-          <span className="px-2 text-center text-[11px] font-medium leading-tight text-slate-400">圖片無法載入</span>
+          <span className="px-2 text-center text-[11px] font-medium leading-tight text-slate-500">圖片載入失敗，可重新上傳</span>
         ) : (
           <img
             src={imageSrc}
             alt={alt}
-            className="h-full w-full object-cover"
+            className="h-full w-full object-contain"
             loading="lazy"
             onError={() => setFailed(true)}
           />
@@ -156,3 +169,6 @@ export default function ImageLightbox({
     </>
   );
 }
+
+export const ImageLightbox = ImagePreviewCard;
+export default ImagePreviewCard;

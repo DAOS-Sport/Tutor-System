@@ -1,0 +1,77 @@
+ M .env.example
+ M .replit
+ M client/admin/src/App.jsx
+ M client/admin/src/api/checkouts.js
+ M client/admin/src/components/Sidebar.jsx
+ M client/admin/src/pages/LoginPage.jsx
+ M client/admin/src/pages/ReconcilePage.jsx
+ M client/liff/src/App.jsx
+ M client/liff/src/api/auth.js
+ M client/liff/src/api/client.js
+ M client/liff/src/components/CoachCard.jsx
+ M client/liff/src/components/enroll/PriceBreakdown.jsx
+ M client/liff/src/components/group/GroupMemberFields.jsx
+ M client/liff/src/hooks/useEnrollmentBoot.js
+ M client/liff/src/hooks/useEnrollmentPricing.js
+ M client/liff/src/pages/CheckoutPage.jsx
+ M client/liff/src/pages/CoachListPage.jsx
+ M client/liff/src/pages/EnrollmentPage.jsx
+ M client/liff/src/pages/GroupCreatePage.jsx
+ M client/liff/src/pages/GroupJoinPage.jsx
+ M client/liff/src/pages/GroupStatusPage.jsx
+ M client/liff/src/pages/LoginPage.jsx
+ M client/liff/src/pages/RegisterPage.jsx
+ M docs/adr_phase4_chat.md
+ M docs/deploy_checklist.md
+ M docs/line_setup.md
+ M docs/replit_notes.md
+ M scripts/build-frontends.sh
+ M server/bootstrap/coreSchema.js
+ M server/index.js
+ M server/middlewares/adminAuth.js
+ D server/public/admin/assets/index-CSucB8QK.css
+ D server/public/admin/assets/index-Hj7daZ3J.js
+ M server/public/admin/index.html
+ D server/public/liff/assets/index-Btn4RsjU.js
+ D server/public/liff/assets/index-Du0VOntN.css
+ M server/public/liff/index.html
+ M server/routes/admin.js
+ M server/routes/admin/auth.js
+ M server/routes/admin/checkouts.js
+ M server/routes/admin/enrollments.js
+ M server/routes/admin/groupOrders.js
+ M server/routes/admin/learn.js
+ M server/routes/admin/reports.js
+ M server/routes/admin/staff.js
+ M server/routes/auth.js
+ M server/routes/checkout.js
+ M server/routes/coaches.js
+ M server/routes/courses.js
+ M server/routes/enrollments.js
+ M server/routes/groupOrders.js
+ M server/routes/referrals.js
+ M server/services/checkouts.js
+ M server/services/coachVenueScope.js
+ M server/services/evaluations.js
+ M server/services/lineAuth.js
+ M server/services/objectStorage.js
+ M server/services/ragicAdmin.js
+ M tests/e2e/run_all.js
+?? .release-safety/
+?? PROMPT_NEXT_SESSION.md
+?? client/admin/src/api/manualDeductions.js
+?? client/admin/src/pages/ManualDeductionPage.jsx
+?? client/liff/src/pages/LineBindPage.jsx
+?? db/migrations/021_release_ops_hardening.sql
+?? docs/release_handover_2026-07-12.md
+?? server/public/admin/assets/index-BRqx1Rgf.js
+?? server/public/admin/assets/index-D57ErIdI.css
+?? server/public/liff/assets/index-BjIK0pRm.css
+?? server/public/liff/assets/index-D7VVMwML.js
+?? server/routes/admin/manualDeductions.js
+?? server/services/trialEnrollment.js
+?? server/services/unassignedCoach.js
+?? tests/e2e/admin_checkout_scope_cancel.js
+?? tests/group_payment_proof_test.js
+?? tests/line_parent_bind_compat_test.js
+?? tests/object_storage_driver_test.js

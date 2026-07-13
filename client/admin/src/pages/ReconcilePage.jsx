@@ -15,6 +15,7 @@ import { exportEnrollmentsCsv, exportEnrollmentsXlsx } from '../utils/csvExport'
 import ExportMenu from '../components/ExportMenu';
 import Barcode from '../components/Barcode';
 import ImageLightbox from '../components/ImageLightbox';
+import { isSupportedImageCandidate, RECEIPT_IMAGE_ACCEPT } from '../utils/imagePreview.mjs';
 
 const EMPTY_FILTERS = {
   submittedFrom: '', submittedTo: '', phone: '', parentName: '', studentName: '',
@@ -69,7 +70,6 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
   const [invoiceNumber, setInvoiceNumber] = useState('');
   const [invoiceUrl, setInvoiceUrl] = useState('');
   const [imageFile, setImageFile] = useState(null);
-  const [imagePreview, setImagePreview] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -82,10 +82,9 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
 
   function handleFile(file) {
     if (!file) return;
-    if (!['image/jpeg', 'image/png'].includes(file.type)) { toast.error('只接受 JPG / PNG 圖片'); return; }
+    if (!isSupportedImageCandidate(file)) { toast.error('請選擇 JPG、PNG、WebP、HEIC、HEIF 或 AVIF 圖片'); return; }
     if (file.size > 5 * 1024 * 1024) { toast.error('圖片大小不得超過 5MB'); return; }
     setImageFile(file);
-    setImagePreview(URL.createObjectURL(file));
   }
 
   const numOk = INVOICE_RE.test(invoiceNumber);
@@ -96,8 +95,12 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
     setBusy(true);
     try {
       setUploading(true);
-      const { url: imageUrl } = await enrollmentsApi.uploadInvoice(imageFile);
+      const uploaded = await enrollmentsApi.uploadInvoice(imageFile);
+      const imageUrl = uploaded.preview_url || uploaded.url;
       setUploading(false);
+      if (uploaded.conversion_status === 'pending') {
+        toast.warning('原始圖片已保存，預覽轉檔處理中；本次對帳仍可繼續');
+      }
       await checkoutsApi.reconcile(checkout.checkout_id, {
         invoice_number: invoiceNumber,
         invoice_image_url: imageUrl,
@@ -184,7 +187,7 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
           <div>
             <label className="mb-1 block text-sm font-semibold text-gray-700">
               發票照片 <span className="text-red-500">*</span>
-              <span className="ml-2 font-normal text-gray-400">（JPG / PNG，≤ 5MB）</span>
+              <span className="ml-2 font-normal text-gray-400">（JPG / PNG / WebP / HEIC / HEIF / AVIF，≤ 5MB）</span>
             </label>
             <div
               className={`relative flex min-h-24 flex-col items-center justify-center rounded-xl border-2 border-dashed p-4 transition ${imageFile ? 'border-brand-teal bg-brand-teal/5' : 'cursor-pointer border-gray-300 hover:border-brand-teal'}`}
@@ -192,13 +195,20 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
               onDrop={(e) => { e.preventDefault(); handleFile(e.dataTransfer.files?.[0]); }}
               onClick={() => !imageFile && fileRef.current?.click()}
             >
-              {imagePreview ? (
+              {imageFile ? (
                 <>
-                  <img src={imagePreview} alt="發票預覽" className="max-h-36 rounded-lg object-contain" />
+                  <ImageLightbox
+                    src={imageFile}
+                    alt="發票預覽"
+                    label="新選擇的發票照片"
+                    fileName={imageFile.name}
+                    thumbnailClassName="h-36 w-full max-w-sm"
+                    onRetry={() => fileRef.current?.click()}
+                  />
                   <button
                     type="button"
                     className="mt-2 text-xs text-gray-500 underline hover:text-red-500"
-                    onClick={(e) => { e.stopPropagation(); setImageFile(null); setImagePreview(null); }}
+                    onClick={(e) => { e.stopPropagation(); setImageFile(null); if (fileRef.current) fileRef.current.value = ''; }}
                   >重新選擇</button>
                 </>
               ) : (
@@ -207,7 +217,7 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
                   <div>拖放或點此選擇發票照片</div>
                 </div>
               )}
-              <input ref={fileRef} type="file" accept="image/jpeg,image/png" className="hidden"
+              <input ref={fileRef} type="file" accept={RECEIPT_IMAGE_ACCEPT} className="hidden"
                 onChange={(e) => handleFile(e.target.files?.[0])} />
             </div>
           </div>

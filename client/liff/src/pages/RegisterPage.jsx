@@ -40,12 +40,14 @@ function registerErrorMessage(err) {
   const serverMsg = err?.response?.data?.error;
   // 完全沒有 response：請求根本沒送達（離線 / DNS / CORS / 逾時無回應），跟「伺服器回了 4xx/5xx」不同狀況。
   if (!err?.response) return '網路連線異常，請檢查網路連線後再試一次。';
+  if (/^(RAGIC_|SYNC_|LOCAL_UPSERT_|LOCAL_STUDENT_REFRESH_|PARENT_REFRESH_|Z03_RESOLVE_)/i.test(String(code || ''))) {
+    return '登入資料已保留，歷史資料正在背景整理中，請勿重複註冊。';
+  }
 
   const MAP = {
     // —— 必填 / 格式 ——
     INPUT_INVALID:            '資料不完整，請確認家長姓名、手機與至少一位學員都已填寫。',
     PHONE_FORMAT_INVALID:     '手機格式錯誤（需 09 開頭共 10 碼）。',
-    EMAIL_REQUIRED:           '請填寫家長 Email。',
     EMAIL_FORMAT_INVALID:     'Email 格式錯誤，請確認後重填。',
     GENDER_REQUIRED:          '請選擇家長性別。',
     VENUE_REQUIRED:           '請選擇館別。',
@@ -57,6 +59,8 @@ function registerErrorMessage(err) {
     LINE_ALREADY_BOUND_TO_OTHER_PHONE: '此 LINE 帳號已綁定其他手機，請改用原手機登入或聯絡客服。',
     PHONE_ALREADY_BOUND_TO_OTHER_LINE: '此手機已綁定其他 LINE 帳號，請聯絡客服協助處理。',
     ACCOUNT_RECOVERY_REQUIRED: '此家庭已綁定其他 LINE 帳號，請完成手機所有權驗證或聯絡客服協助恢復。',
+    ACCOUNT_CONFIRMATION_REQUIRED: '需要確認家庭帳號，系統已保留本次資料，請依畫面指示完成確認。',
+    SYNC_IN_PROGRESS: '登入資料已保留，歷史資料正在背景整理中，請勿重複註冊。',
     DATA_RECONCILIATION_PENDING: '身分已保留，資料正在整理中；請勿重複註冊。',
     RAGIC_UID_DUPLICATE: '來源資料有重複 LINE 綁定，已停止自動覆蓋。',
     RAGIC_SCHEMA_BLOCKED: '會員已建立，外部資料欄位設定待處理。',
@@ -72,7 +76,6 @@ function registerErrorMessage(err) {
     RAGIC_TIMEOUT:            'Ragic 回應較慢，請稍候片刻再試一次。',
     RAGIC_UNAVAILABLE:        '資料同步服務暫時無法連線，請稍後再試。',
     RAGIC_WRITE_FAILED:       '資料暫時無法完成同步，請稍後再試；若持續發生請聯絡客服。',
-    RAGIC_SCHEMA_VALIDATION_FAILED: '送出的資料未通過同步欄位驗證，請確認選項與必填資料後再試。',
     RAGIC_CONFIGURATION_ERROR: '同步服務設定異常，請聯絡客服協助處理。',
     RAGIC_RATE_LIMITED:       '同步服務目前忙碌，請稍後再試。',
     LOCAL_UPSERT_FAILED:      '資料建檔失敗，請稍後再試；若持續發生請聯絡客服。',
@@ -105,10 +108,9 @@ function registerErrorMessage(err) {
 
 function publicErrorCode(code) {
   const c = String(code || '');
-  if (c === 'RAGIC_SCHEMA_NOT_VERIFIED' || c === 'SYNC_BLOCKED_SCHEMA') return 'RAGIC_SCHEMA_BLOCKED';
   if (['ACCOUNT_RECOVERY_REQUIRED', 'DATA_RECONCILIATION_PENDING', 'RAGIC_UID_DUPLICATE',
-    'RAGIC_SCHEMA_BLOCKED', 'LOCAL_LINK_FAILED'].includes(c)) return c;
-  if (/RAGIC|LOCAL_UPSERT/i.test(c)) return 'SYNC_FAILED';
+    'MANUAL_REVIEW_REQUIRED', 'LOCAL_LINK_FAILED'].includes(c)) return 'ACCOUNT_CONFIRMATION_REQUIRED';
+  if (/RAGIC|LOCAL_UPSERT|SYNC_/i.test(c)) return 'SYNC_IN_PROGRESS';
   return c;
 }
 
@@ -461,10 +463,10 @@ export default function RegisterPage() {
                   })} className={fieldCls(!!errors.phone, true)} />
               </IconField>
 
-              <IconField label="家長 Email" required icon={<IconMail />} error={errors.email?.message}>
+              <IconField label="家長 Email（可稍後補填）" icon={<IconMail />} error={errors.email?.message}>
                 <input type="email" placeholder="you@example.com"
-                  {...register('email', { required: '請填寫 Email', pattern: { value: /^[^\s@]+@[^\s@]+\.[^\s@]+$/, message: 'Email 格式錯誤' } })}
-                  className={fieldCls(!!errors.email, true)} />
+                  {...register('email', { pattern: { value: /^[^\s@]+@[^\s@]+\.[^\s@]+$/, message: 'Email 格式錯誤' } })}
+                  className={fieldCls(!!errors.email)} />
               </IconField>
 
               <div className="grid grid-cols-2 gap-3">

@@ -25,8 +25,13 @@ const ragicAdmin = require('../services/ragicAdmin');
 const parentRefresh = require('../services/parentRefresh');
 const { refreshParentMirrorFromRagic, ParentRefreshError } = parentRefresh;
 const { cleanVenueList, COACH_STAFF_PROFILE_SELECT } = require('../services/coachVenueScope');
-const { claimZ03Identity, registerNewParentLocalFirst, Z03ClaimError } = require('../services/z03IdentityClaim');
-const { normalizePhone } = require('../services/identityNormalizer');
+const {
+  claimZ03Identity,
+  registerNewParentLocalFirst,
+  completeTrueUidRegistration,
+  Z03ClaimError,
+} = require('../services/z03IdentityClaim');
+const { normalizePhone, normalizeStudentName } = require('../services/identityNormalizer');
 const { STABILITY_FLAGS, getTrueRagicLineUid } = require('../config/ragicSchema');
 const {
   requestAccountRecovery,
@@ -34,6 +39,8 @@ const {
   AccountRecoveryError,
 } = require('../services/parentAccountRecovery');
 const { requireAdminAuth, requireAdminRole } = require('../middlewares/adminAuth');
+const { captureParentLineProfile } = require('../services/parentLineProfile');
+const { createParentIdentityBackofficeTask } = require('../services/parentIdentityBackoffice');
 
 const router = express.Router();
 
@@ -234,7 +241,15 @@ async function _respondExistingParentFastPath(res, lineUid, status = 'logged_in'
   return true;
 }
 
-async function _completeLocalZ03Claim(req, res, { phone, lineUid, successStatus = 'bound_and_logged_in' }) {
+async function _completeLocalZ03Claim(req, res, {
+  phone,
+  lineUid,
+  successStatus = 'bound_and_logged_in',
+  allowStudentAppend = false,
+  parentProfile = null,
+  studentInput = null,
+  ownershipVerified = false,
+} = {}) {
   const claim = req.body?.claim || {};
   const studentName = String(claim.student_name || claim.name || '').trim();
   const claimPhone = normalizePhone(claim.phone || phone);
@@ -253,9 +268,13 @@ async function _completeLocalZ03Claim(req, res, { phone, lineUid, successStatus 
     const result = await claimZ03Identity({
       phone: canonicalPhone,
       studentName,
+      studentInput,
       lineUid,
       parentName: claim.parent_name || '',
-      actor: 'parent-bind-phone',
+      parentProfile,
+      allowStudentAppend,
+      ownershipVerified,
+      actor: allowStudentAppend ? 'parent-register-line' : 'parent-bind-phone',
     });
     const issued = _issue(result.parent);
     const students = await loadStudents(result.parent.id);
@@ -267,6 +286,7 @@ async function _completeLocalZ03Claim(req, res, { phone, lineUid, successStatus 
       sync_pending: result.sync_state !== 'SYNCED',
       replayed: result.replayed,
       correlation_id: result.correlation_id,
+      parent_state: result.sync_state === 'SYNCED' ? 'AUTHENTICATED' : 'SYNC_IN_PROGRESS',
     });
   } catch (err) {
     if (err instanceof Z03ClaimError) {
@@ -384,6 +404,13 @@ async function _verifyLineUid(req, res) {
     if (!profile?.sub) {
       res.status(401).json({ error: 'LINE 驗證未取得 UID', code: 'LINE_VERIFY_FAILED' });
       return null;
+    }
+    // LINE 顯示名稱是後台輔助資訊，與 parent identity 分離儲存。
+    // 快取寫入失敗不得阻擋家長本地登入。
+    try {
+      await captureParentLineProfile({ lineUid: profile.sub, displayName: profile.name });
+    } catch (profileErr) {
+      console.warn('[auth] LINE display-name cache skipped:', profileErr.code || profileErr.message);
     }
     return profile.sub;
   } catch (err) {
@@ -664,6 +691,14 @@ router.post('/bind', requireFlowToken, async (req, res) => {
     if (hasOtherRealUid) {
       parentSync.auditClaim({ phone, lineUid, result: 'uid_conflict' });
       if (!verifiedStudentName) {
+        const duplicateUidCorrelationId = crypto.randomUUID();
+        await createParentIdentityBackofficeTask({
+          phone,
+          sourceRecordIds: sourceIds,
+          reasonCode: 'MULTIPLE_UID_SOURCE_NO_WINNER',
+          suggestedAction: 'Review source links/student evidence, select one primary Z01, and retain the others as aliases.',
+          correlationId: duplicateUidCorrelationId,
+        });
         return res.status(409).json({
           error: '帳號恢復前必須重新完成學員驗證',
           code: 'ACCOUNT_RECOVERY_VERIFYING',
@@ -992,10 +1027,9 @@ router.post('/parent-bind-phone', async (req, res) => {
 //   409 LINE_ALREADY_BOUND_TO_OTHER_PHONE / LINE_ALREADY_REGISTERED / PHONE_EXISTS_USE_BINDING
 //   502 RAGIC_UNAVAILABLE / RAGIC_WRITE_FAILED
 // ─────────────────────────────────────────────────────────────
-// resolveLineUid 在驗證完表單欄位「之後」才呼叫（保留原本 legacy 端點的順序：
-// 欄位驗證優先於身分驗證，避免這次重構意外讓 id_token/flowToken 檢查搶到驗證前面，
-// 改變了原本回給使用者的第一個錯誤訊息）。resolveLineUid 回傳 null/undefined 時
-// 視為已經自行寫好回應（比照 _verifyLineUid 的既有慣例），直接 return。
+// 先驗證 LINE token 並走本地 active line_uid fast path；命中時不讀表單、
+// 不查 Ragic，因此舊 token/session 不會因 profile 或學員缺欄被導回註冊。
+// resolveLineUid 回傳 null/undefined 時視為已自行寫好回應。
 async function _registerParentCore(req, res, resolveLineUid) {
     const lineUid = await resolveLineUid();
     if (!lineUid) return;
@@ -1012,12 +1046,12 @@ async function _registerParentCore(req, res, resolveLineUid) {
     if (!TW_PHONE_RE.test(phone)) {
       return res.status(400).json({ error: '手機格式錯誤（需 09xxxxxxxx）', code: 'PHONE_FORMAT_INVALID' });
     }
-    // Ragic Z01 必填欄位：家長 Email + 性別。缺一 Ragic 會回 INVALID 202、整筆寫不進去。
-    // 在打 Ragic 前先 server-side 驗證，回明確錯誤碼，而非難解的 502 RAGIC_WRITE_FAILED。
+    // Email is profile completion, not parent identity. Legacy Z01 rows commonly
+    // have it blank; a later Ragic schema rejection is handled by the outbox and
+    // must never prevent the already-committed local login.
     const email  = String(parentIn.email  || '').trim();
     const gender = String(parentIn.gender || '').trim();
-    if (!email)                return res.status(400).json({ error: 'Email 必填',     code: 'EMAIL_REQUIRED' });
-    if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Email 格式錯誤', code: 'EMAIL_FORMAT_INVALID' });
+    if (email && !EMAIL_RE.test(email)) return res.status(400).json({ error: 'Email 格式錯誤', code: 'EMAIL_FORMAT_INVALID' });
     if (!gender)               return res.status(400).json({ error: '家長性別必填',   code: 'GENDER_REQUIRED' });
     const venueId = String(parentIn.primary_venue_id || '').trim();
     if (!venueId) {
@@ -1107,11 +1141,55 @@ async function _registerParentCore(req, res, resolveLineUid) {
     if (STABILITY_FLAGS.PARENT_IDENTITY_RESOLVER_V2) {
       const uidSources = await ragicAdmin.findZ01SourcesByTrueLineUid(lineUid);
       if (uidSources.length > 1) {
+        const sourceIds = uidSources.map((source) => String(source._ragicId || '')).filter(Boolean);
+        const links = (await pool.query(
+          `SELECT source_record_id,canonical_parent_id,link_method FROM source_record_links
+            WHERE source_system='RAGIC' AND source_table='Z01' AND source_record_id=ANY($1::text[])
+            ORDER BY source_record_id`, [sourceIds]
+        )).rows;
+        const primaryLinks = links.filter((row) => row.link_method !== 'MULTIPLE_SOURCE_ALIAS');
+        let winnerId = primaryLinks.length === 1 ? String(primaryLinks[0].source_record_id) : '';
+        if (!winnerId) {
+          const persisted = (await pool.query(
+            `SELECT ragic_record_id FROM parents WHERE ragic_record_id=ANY($1::text[]) ORDER BY id`,
+            [sourceIds]
+          )).rows.map((row) => String(row.ragic_record_id));
+          if ([...new Set(persisted)].length === 1) winnerId = persisted[0];
+        }
+        if (!winnerId) {
+          const wanted = normalizeStudentName(cleanStudents[0].name);
+          const studentEvidence = uidSources.filter((source) =>
+            normalizePhone(ragic.mapZ01Parent(source)?.phone) === normalizePhone(phone)
+            && ragic.parseZ01StudentsRaw(source).some((student) => normalizeStudentName(student.name_raw) === wanted));
+          if (studentEvidence.length === 1) winnerId = String(studentEvidence[0]._ragicId || '');
+        }
+        const winner = uidSources.find((source) => String(source._ragicId || '') === winnerId);
+        if (winner) {
+          const completed = await completeTrueUidRegistration({
+            source: winner,
+            parentProfile: { ...parentIn, name, phone, email },
+            students: cleanStudents,
+            lineUid,
+            ownershipVerified: true,
+          });
+          await parentSync.linkSourceAliases({
+            parentId: completed.parent.id,
+            sourceRecordIds: sourceIds.filter((id) => id !== winnerId),
+            studentName: cleanStudents[0].name,
+          });
+          const issued = _issue(completed.parent);
+          const localStudents = await loadStudents(completed.parent.id);
+          return res.json({ status: 'registered_and_logged_in', parent: { ...issued, students: localStudents },
+            token: issued.token, linked_existing: true, sync_state: completed.sync_state,
+            sync_pending: completed.sync_state !== 'SYNCED', loginAllowed: true,
+            parent_state: completed.sync_state === 'SYNCED' ? 'AUTHENTICATED' : 'SYNC_IN_PROGRESS',
+            correlationId: completed.correlation_id });
+        }
         return res.status(409).json({
-          error: 'Ragic 中同一 LINE UID 命中多筆來源，已停止自動選擇',
-          code: 'RAGIC_UID_DUPLICATE', internalCode: 'RAGIC_UID_DUPLICATE',
-          retryable: false, correlationId: crypto.randomUUID(), loginAllowed: false,
-          syncState: 'DATA_RECONCILIATION_PENDING',
+          error: '同一 LINE 帳號有多筆歷史來源，需完成帳號確認',
+          code: 'ACCOUNT_CONFIRMATION_REQUIRED', internalCode: 'MULTIPLE_UID_SOURCE_NO_WINNER',
+          retryable: false, correlationId: duplicateUidCorrelationId, loginAllowed: false,
+          syncState: 'DATA_RECONCILIATION_PENDING', parent_state: 'ACCOUNT_CONFIRMATION_REQUIRED',
         });
       }
       if (uidSources.length === 1) {
@@ -1125,14 +1203,40 @@ async function _registerParentCore(req, res, resolveLineUid) {
             syncState: 'ACCOUNT_RECOVERY_REQUIRED',
           });
         }
-        const local = await parentSync.linkFromRagicRecordLocalFirst(source, lineUid);
+        const completed = await completeTrueUidRegistration({
+          source,
+          parentProfile: { ...parentIn, name, phone, email },
+          students: cleanStudents,
+          lineUid,
+          ownershipVerified: true,
+        });
+        const local = completed.parent;
         const issued = _issue(local);
         const localStudents = await loadStudents(local.id);
         return res.json({ status: 'registered_and_logged_in', parent: { ...issued, students: localStudents },
-          token: issued.token, linked_existing: true, sync_state: 'SYNCED', loginAllowed: true });
+          token: issued.token, linked_existing: true, sync_state: completed.sync_state,
+          sync_pending: completed.sync_state !== 'SYNCED', loginAllowed: true,
+          parent_state: completed.sync_state === 'SYNCED' ? 'AUTHENTICATED' : 'SYNC_IN_PROGRESS',
+          correlationId: completed.correlation_id });
       }
 
-      const sourceMatches = await ragicAdmin.findZ01SourcesByPhoneStudent(phone, cleanStudents[0].name);
+      const phoneSources = await ragicAdmin.findZ01SourcesByPhone(phone);
+      const conflictingPhoneUid = phoneSources.find((source) => {
+        const sourceUid = getTrueRagicLineUid(source);
+        return sourceUid && sourceUid !== lineUid;
+      });
+      if (conflictingPhoneUid) {
+        return res.status(409).json({
+          error: '既有家庭已綁定其他 LINE UID，需完成帳號恢復驗證',
+          code: 'ACCOUNT_RECOVERY_REQUIRED', internalCode: 'ACCOUNT_RECOVERY_REQUIRED',
+          retryable: false, correlationId: crypto.randomUUID(), loginAllowed: false,
+          syncState: 'ACCOUNT_RECOVERY_REQUIRED', parent_state: 'ACCOUNT_CONFIRMATION_REQUIRED',
+        });
+      }
+      const wantedStudent = normalizeStudentName(cleanStudents[0].name);
+      const sourceMatches = phoneSources.filter((source) =>
+        ragic.parseZ01StudentsRaw(source).some((student) =>
+          normalizeStudentName(student.name_raw) === wantedStudent));
       if (sourceMatches.length) {
         const conflictingUid = sourceMatches.find((source) => {
           const uid = getTrueRagicLineUid(source);
@@ -1148,7 +1252,14 @@ async function _registerParentCore(req, res, resolveLineUid) {
         }
         const currentUidSource = sourceMatches.find((source) => getTrueRagicLineUid(source) === lineUid);
         if (currentUidSource) {
-          const local = await parentSync.linkFromRagicRecordLocalFirst(currentUidSource, lineUid);
+          const completed = await completeTrueUidRegistration({
+            source: currentUidSource,
+            parentProfile: { ...parentIn, name, phone, email },
+            students: cleanStudents,
+            lineUid,
+            ownershipVerified: true,
+          });
+          const local = completed.parent;
           await parentSync.linkSourceAliases({
             parentId: local.id,
             sourceRecordIds: sourceMatches.map((source) => source._ragicId),
@@ -1157,7 +1268,10 @@ async function _registerParentCore(req, res, resolveLineUid) {
           const issued = _issue(local);
           const localStudents = await loadStudents(local.id);
           return res.json({ status: 'registered_and_logged_in', parent: { ...issued, students: localStudents },
-            token: issued.token, linked_existing: true, sync_state: 'SYNCED', loginAllowed: true });
+            token: issued.token, linked_existing: true, sync_state: completed.sync_state,
+            sync_pending: completed.sync_state !== 'SYNCED', loginAllowed: true,
+            parent_state: completed.sync_state === 'SYNCED' ? 'AUTHENTICATED' : 'SYNC_IN_PROGRESS',
+            correlationId: completed.correlation_id });
         }
         for (const source of sourceMatches) {
           if (!getTrueRagicLineUid(source)) await ragicAdmin.hydrateZ03RecordFromRagicRow(source);
@@ -1171,7 +1285,17 @@ async function _registerParentCore(req, res, resolveLineUid) {
           phone,
           lineUid,
           successStatus: 'registered_and_logged_in',
+          allowStudentAppend: true,
+          parentProfile: { ...parentIn, name, phone, email },
+          studentInput: cleanStudents[0],
+          ownershipVerified: true,
         });
+      }
+      // Phone exists but the submitted child is new (including zero-student
+      // legacy rows). Hydrate every blank-UID source, then let the multi-source
+      // claim resolver append under one canonical parent.
+      for (const source of phoneSources) {
+        if (!getTrueRagicLineUid(source)) await ragicAdmin.hydrateZ03RecordFromRagicRow(source);
       }
     }
 
@@ -1187,10 +1311,22 @@ async function _registerParentCore(req, res, resolveLineUid) {
       z03Match = await ragicAdmin.findZ03RecordByPhone(phone);
     } catch (err) {
       if (err.code !== 'MANUAL_REVIEW_REQUIRED') throw err;
-      return res.status(409).json({
-        error: '此手機對應多筆舊家庭資料，已轉人工處理；不得重新註冊',
-        code: 'MANUAL_REVIEW_REQUIRED',
-        reason: err.reason || 'AMBIGUOUS_Z03_FAMILY',
+      // Do not LIMIT 1 and do not create a duplicate family. The claim service
+      // evaluates source-link / parent Ragic ID / student evidence across all
+      // candidates, preserving aliases or routing an unresolved primary to the
+      // reconciliation queue while still keeping one local identity.
+      z03Match = { multiple_candidates: true, z03_ids: err.z03Ids || [] };
+    }
+    if (z03Match) {
+      req.body.claim = { student_name: cleanStudents[0].name, phone, parent_name: name };
+      return _completeLocalZ03Claim(req, res, {
+        phone,
+        lineUid,
+        successStatus: 'registered_and_logged_in',
+        allowStudentAppend: true,
+        parentProfile: { ...parentIn, name, phone, email },
+        studentInput: cleanStudents[0],
+        ownershipVerified: true,
       });
     }
     let ragicRowByPhone = null;
@@ -1257,14 +1393,25 @@ async function _registerParentCore(req, res, resolveLineUid) {
     }
 
     if (z03Match) {
-      // Existing legacy source must be claimed through parent-bind-phone,
-      // which performs family-scoped exact-name verification and commits the
-      // local identity before enqueueing Ragic. Registration must never run a
-      // second create/update path for the same source record.
-      return res.status(409).json({
-        error: '此手機已有舊家庭資料，請返回登入頁完成學員姓名認領',
-        code: 'LEGACY_CLAIM_REQUIRED',
+      // Registration is the ownership-confirmed completion path for legacy
+      // families. Exact-name students are linked; a missing student is appended
+      // under the same canonical parent/source record through the local-first
+      // transaction and outbox. No synchronous Ragic failure can block login.
+      req.body.claim = {
+        student_name: cleanStudents[0].name,
+        phone,
+        parent_name: name,
+      };
+      return _completeLocalZ03Claim(req, res, {
+        phone,
+        lineUid,
+        successStatus: 'registered_and_logged_in',
+        allowStudentAppend: true,
+        parentProfile: { ...parentIn, name, phone, email },
+        studentInput: cleanStudents[0],
+        ownershipVerified: true,
       });
+      /* istanbul ignore next -- frozen rollback-only legacy code */
       const existing = z03Match.parent || {};
       if (z03Match.row?.status === 'dismissed') {
         return res.status(409).json(GENERIC_PHONE_CONFLICT);
