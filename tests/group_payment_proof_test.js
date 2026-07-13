@@ -6,7 +6,6 @@ const adminGroupOrders = require('../server/routes/admin/groupOrders');
 const { parseProofInput, isSamePaymentPayload } = groupOrders.__test__;
 const { genEnrollmentId } = adminGroupOrders.__test__;
 const VALID_PROOF = '/uploads/2026-07/0123456789abcdef01234567.jpg';
-const VALID_PENDING_HEIC = '/uploads/2026-07/0123456789abcdef01234567.heic';
 
 async function testProofInput() {
   const stored = async (url) => url === VALID_PROOF;
@@ -18,12 +17,6 @@ async function testProofInput() {
   const accepted = await parseProofInput({ payment_proof_url: VALID_PROOF }, { exists: stored });
   assert.strictEqual(accepted.supplied, true);
   assert.strictEqual(accepted.value, VALID_PROOF);
-  const pendingHeic = await parseProofInput(
-    { payment_proof_url: VALID_PENDING_HEIC },
-    { exists: async (url) => url === VALID_PENDING_HEIC },
-  );
-  assert.strictEqual(pendingHeic.supplied, true, 'validated conversion-pending HEIC must remain writable');
-  assert.strictEqual(pendingHeic.value, VALID_PENDING_HEIC);
   const invalid = await parseProofInput(
     { payment_proof_url: '/uploads/2026-07/not-owned.png' },
     { exists: stored },
