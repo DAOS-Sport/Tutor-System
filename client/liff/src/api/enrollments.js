@@ -10,9 +10,13 @@ export const enrollmentsApi = {
     }, () => mockDb.createEnrollment(payload)),
 
   // U3：匯款／轉帳證明上傳（家長端，常見手機圖片 ≤5MB；後端回傳正規化 preview url）
-  uploadPaymentProof: (file) => {
+  uploadPaymentProof: (file, { targetType, targetId } = {}) => {
     const form = new FormData();
     form.append('file', file);
+    if (targetType && targetId) {
+      form.append('target_type', targetType);
+      form.append('target_id', targetId);
+    }
     return callApi(
       '/uploads/payment-proof',
       { method: 'post', data: form, headers: { 'Content-Type': 'multipart/form-data' } },

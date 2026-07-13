@@ -174,7 +174,10 @@ export default function GroupStatusPage() {
     let uploadFailed = false;
     if (proofFile && !url) {
       try {
-        const uploaded = await enrollmentsApi.uploadPaymentProof(proofFile);
+        const uploaded = await enrollmentsApi.uploadPaymentProof(proofFile, {
+          targetType: 'group_order',
+          targetId: id,
+        });
         url = uploaded?.url || null;
         if (!url) throw new Error('no url');
         uploadedProofUrlRef.current = url;

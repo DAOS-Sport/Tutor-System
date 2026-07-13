@@ -106,7 +106,10 @@ export default function EnrollStatusPage() {
     let uploadFailed = false;
     if (proofFile) {
       try {
-        const uploaded = await enrollmentsApi.uploadPaymentProof(proofFile);
+        const uploaded = await enrollmentsApi.uploadPaymentProof(proofFile, {
+          targetType: 'enrollment',
+          targetId: id,
+        });
         url = uploaded?.url || null;
         if (!url) throw new Error('no url');
       } catch {

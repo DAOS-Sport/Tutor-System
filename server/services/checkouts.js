@@ -184,6 +184,25 @@ function shapeCheckout(row) {
     extra_parent_phones: Array.isArray(o.extra_parent_phones) ? o.extra_parent_phones : [],
   }));
   const first = subOrders[0] || {};
+  // 舊版家長端有一段時間只把匯款證明寫進 admin_enrollments，沒有同步到
+  // checkout_sessions。F-M02 以 checkout 為單位讀取時，不能因此把仍存在的照片
+  // 誤顯示成「未上傳」。母單欄位維持最高優先，並保留所有子訂單上的不同 URL，
+  // 讓後台可逐張檢視；不在讀取時回寫或猜測任何孤兒檔案。
+  const paymentProofUrls = [];
+  const proofSeen = new Set();
+  const ledgerProofUrls = parseJsonArray(row.uploaded_payment_proof_urls);
+  const groupMemberProofUrls = parseJsonArray(row.group_member_payment_proof_urls);
+  for (const candidate of [
+    row.payment_proof_url,
+    ...subOrders.map((order) => order.payment_proof_url),
+    ...groupMemberProofUrls,
+    ...ledgerProofUrls,
+  ]) {
+    const url = typeof candidate === 'string' ? candidate.trim() : '';
+    if (!url || proofSeen.has(url)) continue;
+    proofSeen.add(url);
+    paymentProofUrls.push(url);
+  }
   // 場館是 checkout 子訂單層級的資料；母單的第一筆 venue 僅為舊 API 相容欄位，
   // 不可當成整張 checkout 的唯一場館。由 API 的每筆子訂單名稱收斂為穩定陣列。
   const venueById = new Map();
@@ -211,8 +230,9 @@ function shapeCheckout(row) {
     current_route_state: row.current_route_state || row.payment_status,
     transfer_last_5: row.transfer_last_5 || '',
     carrier: row.carrier || '',
-    payment_proof_url: row.payment_proof_url || null,
-    has_payment_proof: !!row.payment_proof_url,
+    payment_proof_url: paymentProofUrls[0] || null,
+    payment_proof_urls: paymentProofUrls,
+    has_payment_proof: paymentProofUrls.length > 0,
     submitted_at: row.submitted_at || row.created_at,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -244,6 +264,52 @@ async function readCheckout(clientOrPool, checkoutId) {
             COALESCE(NULLIF(av.bank_branch_name, ''), v.bank_branch_name) AS bank_branch_name,
             MIN(ae.submitted_at) AS submitted_at,
             COUNT(ae.id)::int AS order_count,
+            -- 團報家長的原始上傳來源在 group_order_members，不可只讀 checkout / enrollment。
+            -- 以 group_order_id + canonical parent_id 精準歸戶；只有舊 checkout 缺 parent_id
+            -- 時才用同一子訂單上的標準化家長電話補足，絕不以學生姓名或姓氏猜測。
+            COALESCE((
+              SELECT jsonb_agg(DISTINCT gom.payment_proof_url)
+                FROM group_order_members gom
+               WHERE NULLIF(gom.payment_proof_url, '') IS NOT NULL
+                 AND EXISTS (
+                   SELECT 1 FROM admin_enrollments ae_group_member
+                    WHERE ae_group_member.checkout_id = cs.checkout_id
+                      AND ae_group_member.group_order_id = gom.group_order_id
+                 )
+                 AND (
+                   gom.parent_id = cs.parent_id
+                   OR (
+                     cs.parent_id IS NULL
+                     AND EXISTS (
+                       SELECT 1
+                         FROM parents gom_parent
+                         JOIN admin_enrollments ae_group_phone
+                           ON ae_group_phone.checkout_id = cs.checkout_id
+                          AND regexp_replace(COALESCE(ae_group_phone.parent_phone, ''), '\\D', '', 'g') =
+                              regexp_replace(COALESCE(gom_parent.phone, ''), '\\D', '', 'g')
+                        WHERE gom_parent.id = gom.parent_id
+                     )
+                   )
+                 )
+            ), '[]'::jsonb) AS group_member_payment_proof_urls,
+            COALESCE((
+              SELECT jsonb_agg(DISTINCT COALESCE(pu.preview_url, pu.original_url))
+                FROM payment_proof_uploads pu
+               WHERE pu.parent_id = cs.parent_id
+                 AND (
+                   (pu.target_type = 'checkout' AND pu.target_id = cs.checkout_id::text)
+                   OR (pu.target_type = 'enrollment' AND EXISTS (
+                     SELECT 1 FROM admin_enrollments ae_upload
+                      WHERE ae_upload.checkout_id = cs.checkout_id
+                        AND ae_upload.id = pu.target_id
+                   ))
+                   OR (pu.target_type = 'group_order' AND EXISTS (
+                     SELECT 1 FROM admin_enrollments ae_group_upload
+                      WHERE ae_group_upload.checkout_id = cs.checkout_id
+                        AND ae_group_upload.group_order_id::text = pu.target_id
+                   ))
+                 )
+            ), '[]'::jsonb) AS uploaded_payment_proof_urls,
             COALESCE(jsonb_agg(DISTINCT to_jsonb(ae.venue_id)) FILTER (WHERE ae.venue_id IS NOT NULL), '[]'::jsonb) AS venue_ids,
             COALESCE(
               jsonb_agg(

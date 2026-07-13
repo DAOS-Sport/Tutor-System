@@ -64,6 +64,13 @@ function VenueBadges({ checkout, className = '' }) {
   );
 }
 
+function checkoutProofUrls(checkout) {
+  const candidates = Array.isArray(checkout?.payment_proof_urls)
+    ? checkout.payment_proof_urls
+    : [checkout?.payment_proof_url];
+  return [...new Set(candidates.map((value) => String(value || '').trim()).filter(Boolean))];
+}
+
 function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
   const toast = useToast();
   const fileRef = useRef(null);
@@ -72,6 +79,7 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
   const [imageFile, setImageFile] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const paymentProofUrls = checkoutProofUrls(checkout);
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape' && !busy) onCancel(); };
@@ -132,14 +140,19 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
 
         {/* ── 可捲動 Body ── */}
         <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-          {checkout.payment_proof_url && (
+          {paymentProofUrls.length > 0 && (
             <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
               <div className="mb-2 text-xs font-semibold text-gray-600">家長上傳的匯款／轉帳證明</div>
-              <ImageLightbox
-                src={checkout.payment_proof_url}
-                alt="匯款證明"
-                label="匯款／轉帳證明"
-              />
+              <div className="flex flex-wrap gap-2">
+                {paymentProofUrls.map((url, index) => (
+                  <ImageLightbox
+                    key={url}
+                    src={url}
+                    alt={`匯款證明 ${index + 1}`}
+                    label={`匯款／轉帳證明 ${index + 1}`}
+                  />
+                ))}
+              </div>
             </div>
           )}
 
@@ -447,7 +460,23 @@ export default function ReconcilePage() {
     {
       key: 'proof',
       label: '憑證',
-      render: (r) => (r.payment_proof_url ? <StatusBadge tone="amber">已上傳</StatusBadge> : <span className="text-xs text-gray-400">未上傳</span>),
+      render: (r) => {
+        const urls = checkoutProofUrls(r);
+        if (!urls.length) return <span className="text-xs text-gray-400">未上傳</span>;
+        return (
+          <div className="flex min-w-[72px] flex-wrap gap-1.5">
+            {urls.map((url, index) => (
+              <ImageLightbox
+                key={url}
+                src={url}
+                alt={`匯款證明 ${index + 1}`}
+                label={`匯款／轉帳證明 ${index + 1}`}
+                thumbnailClassName="h-14 w-14"
+              />
+            ))}
+          </div>
+        );
+      },
     },
     {
       key: 'actions', label: '操作', className: 'text-right',

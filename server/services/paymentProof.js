@@ -1,6 +1,10 @@
 const { objectExists } = require('./objectStorage');
 
-const PROOF_URL_RE = /^\/uploads\/\d{4}-\d{2}\/[a-f0-9]{24}\.(jpg|jpeg|png)$/;
+// processReceiptImage 正常時回 JPEG preview；若第二次 storage write／轉檔暫時
+// 失敗則會回已完成 magic-byte 驗證並保存的原始檔。原始檔可能是 WebP/HEIC/
+// HEIF/AVIF/JFIF，這些 URL 仍必須能先持久化，否則家長明明上傳成功，DB 卻只剩末五碼。
+// 檔案真實性仍由 upload route 的 magic bytes 與 objectExists 雙重驗證，不信任副檔名。
+const PROOF_URL_RE = /^\/uploads\/\d{4}-\d{2}\/[a-f0-9]{24}\.(?:jpe?g|jfif|png|webp|heic|heif|avif)$/i;
 
 function invalidProof() {
   return {

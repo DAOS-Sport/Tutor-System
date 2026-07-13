@@ -265,7 +265,10 @@ export default function CheckoutPage() {
     let uploadedUrl = checkout.payment_proof_url || null;
     try {
       if (proofFile) {
-        const uploaded = await enrollmentsApi.uploadPaymentProof(proofFile);
+        const uploaded = await enrollmentsApi.uploadPaymentProof(proofFile, {
+          targetType: 'checkout',
+          targetId: checkout.checkout_id,
+        });
         uploadedUrl = uploaded?.url || uploaded?.data?.url || null;
         if (!uploadedUrl) throw new Error('圖片上傳解析錯誤');
       }
