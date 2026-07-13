@@ -1,6 +1,9 @@
 const { objectExists } = require('./objectStorage');
 
-const PROOF_URL_RE = /^\/uploads\/\d{4}-\d{2}\/[a-f0-9]{24}\.(jpg|jpeg|png)$/;
+// 正常路徑會儲存 JPEG preview；若 preview 暫時轉檔失敗，upload API 會保留並回傳
+// 已通過 magic-byte + decoder 驗證的原始手機圖片。這裡必須接受同一份安全 allowlist，
+// 否則第一段 upload 成功、第二段 payment-proof 寫 DB 卻被舊 JPG/PNG regex 拒絕。
+const PROOF_URL_RE = /^\/uploads\/\d{4}-\d{2}\/[a-f0-9]{24}\.(jpg|jpeg|jfif|png|webp|heic|heif|avif)$/;
 
 function invalidProof() {
   return {

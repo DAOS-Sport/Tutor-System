@@ -447,7 +447,17 @@ export default function ReconcilePage() {
     {
       key: 'proof',
       label: '憑證',
-      render: (r) => (r.payment_proof_url ? <StatusBadge tone="amber">已上傳</StatusBadge> : <span className="text-xs text-gray-400">未上傳</span>),
+      render: (r) => (r.payment_proof_url ? (
+        <div className="flex items-center gap-2">
+          <ImageLightbox
+            src={r.payment_proof_url}
+            alt="匯款／轉帳證明"
+            label="匯款／轉帳證明"
+            thumbnailClassName="h-12 w-12"
+          />
+          <StatusBadge tone="amber">已上傳</StatusBadge>
+        </div>
+      ) : <span className="text-xs text-gray-400">未上傳</span>),
     },
     {
       key: 'actions', label: '操作', className: 'text-right',
