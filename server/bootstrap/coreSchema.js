@@ -990,6 +990,17 @@ CREATE TABLE IF NOT EXISTS ragic_z03_deleted_tombstones (
   reason TEXT
 );
 
+-- Z03 學員 clean delete：刪除本地衍生列後，以來源 family + source row key
+-- 阻止下一輪 Ragic pull 把同一個學員列重新建立。Ragic 原始資料不受影響。
+CREATE TABLE IF NOT EXISTS ragic_z03_deleted_student_tombstones (
+  z01_ragic_record_id TEXT NOT NULL,
+  source_row_key TEXT NOT NULL,
+  deleted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  deleted_by TEXT,
+  reason TEXT,
+  PRIMARY KEY (z01_ragic_record_id, source_row_key)
+);
+
 -- Z01 -> Z03 canonical split metadata. The only split key is the real Z01
 -- LINE UID field: blank goes to Z03; non-blank goes to the canonical parent
 -- mirror. These columns preserve the source identity and claim outcome without

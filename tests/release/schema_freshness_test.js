@@ -6,6 +6,7 @@ const { pool } = require('../../server/models/db');
 const parentSync = require('../../server/services/parentSync');
 const {
   extractSchemaEvidence,
+  schemaGuardFailureDetails,
   verifyRagicZ01UidSchemaFreshness,
   assertRagicZ01UidSchemaFresh,
 } = require('../../server/services/ragicSchemaFreshness');
@@ -55,6 +56,10 @@ async function unitSchemaCases() {
   nonUnique.fields.fid1006846.attr_noDup = 'false';
   assert.strictEqual(extractSchemaEvidence(nonUnique).failureCode, 'RAGIC_UID_FIELD_NOT_UNIQUE',
     'non-unique UID field cannot satisfy the identity write contract');
+  const readOnly = definition();
+  readOnly.fields.fid1006846.attr_ro = 'true';
+  assert.strictEqual(extractSchemaEvidence(readOnly).failureCode, 'RAGIC_UID_FIELD_READ_ONLY',
+    'read-only UID field cannot satisfy the identity write contract');
 
   const goodDb = captureDb();
   const good = await verifyRagicZ01UidSchemaFreshness({
@@ -78,14 +83,33 @@ async function unitSchemaCases() {
     () => assertRagicZ01UidSchemaFresh({
       db: { query: async () => ({ rows: [{
         verified: true,
+        field_id: '1006846',
+        field_name: '家教系統uid',
+        attr_no_dup: true,
+        attr_ro: false,
         fetched_at: new Date('2026-07-13T13:00:00Z'),
         expires_at: new Date('2026-07-13T13:15:00Z'),
         response_hash: 'a'.repeat(64),
+        correlation_id: '00000000-0000-4000-8000-000000000011',
       }] }) },
       now: new Date('2026-07-13T14:00:00Z'),
     }),
-    (err) => err.code === 'RAGIC_SCHEMA_NOT_VERIFIED'
+    (err) => {
+      assert.strictEqual(err.code, 'RAGIC_SCHEMA_NOT_VERIFIED');
+      assert.deepStrictEqual(err.schema.expected, {
+        field_id: '1006846', field_name: '家教系統uid', unique: true, readOnly: false, fresh: true,
+      });
+      assert.strictEqual(err.schema.actual.fresh, false);
+      assert.strictEqual(err.schema.actual.attr_no_dup, true);
+      assert.strictEqual(err.schema.actual.response_hash, 'a'.repeat(64));
+      assert.deepStrictEqual(err.schema.differences, [{ property: 'fresh', expected: true, actual: false }]);
+      assert.strictEqual(err.schema.correlationId, '00000000-0000-4000-8000-000000000011');
+      return true;
+    }
   );
+  const missing = schemaGuardFailureDetails(null, new Date('2026-07-13T14:00:00Z'));
+  assert.strictEqual(missing.actual.failure_code, 'RAGIC_SCHEMA_EVIDENCE_MISSING');
+  assert.ok(missing.differences.some((difference) => difference.property === 'field_id'));
 }
 
 async function workerAndLocalLoginCases() {
@@ -94,15 +118,40 @@ async function workerAndLocalLoginCases() {
     limit: 1, idempotencyKey: nonexistentKey, schemaGuard: async () => ({ verified: true }),
   });
   assert.deepStrictEqual(allowed, { processed: 0, synced: 0, retryable: 0, blocked: 0 });
-  const blocked = await processRagicSyncOutbox({
-    limit: 1,
-    idempotencyKey: nonexistentKey,
-    schemaGuard: async () => { const err = new Error('stale'); err.code = 'RAGIC_SCHEMA_NOT_VERIFIED'; throw err; },
-  });
+  const originalConsoleError = console.error;
+  const logs = [];
+  console.error = (line) => logs.push(String(line));
+  let blocked;
+  try {
+    blocked = await processRagicSyncOutbox({
+      limit: 1,
+      idempotencyKey: nonexistentKey,
+      schemaGuard: async () => {
+        const err = new Error('stale');
+        err.code = 'RAGIC_SCHEMA_NOT_VERIFIED';
+        err.schema = {
+          expected: { field_id: '1006846', field_name: '家教系統uid', unique: true, readOnly: false, fresh: true },
+          actual: { field_id: '1006846', field_name: 'wrong', attr_no_dup: false, attr_ro: true, verified: false, fresh: false },
+          differences: [{ property: 'field_name', expected: '家教系統uid', actual: 'wrong' }],
+          correlationId: '00000000-0000-4000-8000-000000000012',
+        };
+        throw err;
+      },
+    });
+  } finally {
+    console.error = originalConsoleError;
+  }
   assert.deepStrictEqual(blocked, {
     processed: 0, synced: 0, retryable: 0, blocked: 1,
     skipped: true, reason: 'RAGIC_SCHEMA_NOT_VERIFIED',
   });
+  assert.strictEqual(logs.length, 1);
+  const structured = JSON.parse(logs[0]);
+  assert.strictEqual(structured.event, 'ragic_parent_outbox_schema_guard_failed');
+  assert.strictEqual(structured.expected.field_id, '1006846');
+  assert.strictEqual(structured.actual.field_name, 'wrong');
+  assert.strictEqual(structured.correlationId, '00000000-0000-4000-8000-000000000012');
+  assert.strictEqual(logs[0].includes('RAGIC_API_KEY'), false);
 
   const suffix = `${Date.now()}`.slice(-6);
   const phone = `0933${suffix}`;

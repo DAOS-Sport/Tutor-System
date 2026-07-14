@@ -17,9 +17,24 @@ const { applyDueScheduledCourseTypeChanges } = require('../services/courseTypeSc
 const LIFF_URL = process.env.LIFF_URL_PARENT || process.env.LIFF_URL || 'https://liff.line.me/-';
 
 function initCronJobs() {
+  const ragicConfigured = ragicAdmin.ragicEnabled();
+  const ragicZ01Configured = ragicConfigured && Boolean(process.env.RAGIC_FORM_Z01);
+  const outboxFlagEnabled = STABILITY_FLAGS.RAGIC_PARENT_OUTBOX;
+  console.log(JSON.stringify({
+    event: 'ragic_parent_outbox_startup',
+    ragic_configured: ragicConfigured,
+    z01_configured: ragicZ01Configured,
+    flag_enabled: outboxFlagEnabled,
+    enabled: ragicZ01Configured && outboxFlagEnabled,
+    disabled_reason: !ragicConfigured
+      ? 'RAGIC_NOT_CONFIGURED'
+      : (!ragicZ01Configured
+        ? 'RAGIC_Z01_NOT_CONFIGURED'
+        : (!outboxFlagEnabled ? 'RAGIC_PARENT_OUTBOX_DISABLED' : null)),
+  }));
   // Startup/deployment proof. Failure blocks only the remote UID worker; local
   // parent auth and already-committed local claims remain available.
-  if (ragicAdmin.ragicEnabled()) {
+  if (ragicZ01Configured) {
     verifyRagicZ01UidSchemaFreshness()
       .then((e) => console.log(`[Cron/RagicSchema] verified=${e.verified} hash=${e.response_hash.slice(0, 12)} fetched=${e.fetched_at.toISOString()}`))
       .catch((err) => console.warn('[Cron/RagicSchema] RAGIC_SCHEMA_NOT_VERIFIED:', err.code || err.message));
@@ -27,7 +42,7 @@ function initCronJobs() {
   // Periodic live def=1 renewal. The 5-minute cadence remains below the default
   // 15-minute TTL, so a missed/failed renewal naturally makes the worker stale.
   cron.schedule('*/5 * * * *', async () => {
-    if (!ragicAdmin.ragicEnabled()) return;
+    if (!ragicAdmin.ragicEnabled() || !process.env.RAGIC_FORM_Z01) return;
     try {
       const evidence = await verifyRagicZ01UidSchemaFreshness();
       if (!evidence.verified) console.warn('[Cron/RagicSchema] schema mismatch; UID writes remain paused');
@@ -40,7 +55,7 @@ function initCronJobs() {
   // that writes the claimed LINE UID back; it never resolves or creates an
   // identity, and failed writes remain retryable/blocked in the outbox.
   cron.schedule('*/5 * * * *', async () => {
-    if (!ragicAdmin.ragicEnabled() || !STABILITY_FLAGS.RAGIC_PARENT_OUTBOX) return;
+    if (!ragicAdmin.ragicEnabled() || !process.env.RAGIC_FORM_Z01 || !STABILITY_FLAGS.RAGIC_PARENT_OUTBOX) return;
     try {
       const r = await processRagicSyncOutbox({ limit: 20 });
       if (r.processed) {

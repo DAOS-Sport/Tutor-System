@@ -362,7 +362,16 @@ function createWriter(deps = {}) {
       });
       _assertWriteOk(res.data);
       await audit({ ...entry, oldValue, status: 'success', reason: null }).catch(() => {});
-      return res.data || {};
+      const data = res.data || {};
+      if (meta.includeResponseMetadata === true) {
+        return {
+          data,
+          responseMetadata: {
+            httpStatus: Number(res.status || 0) || null,
+          },
+        };
+      }
+      return data;
     } catch (err) {
       const normalized = _normalizeRagicError(err);
       await audit({ ...entry, oldValue, status: 'error', reason: normalized.message }).catch(() => {});

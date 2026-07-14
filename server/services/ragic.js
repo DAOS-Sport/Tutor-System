@@ -770,11 +770,12 @@ async function bindParentLineUidToRagic({ ragicRecordId, lineUid }) {
   return { ok: true };
 }
 
-async function postRagicStrict(formPath, payload) {
+async function postRagicStrict(formPath, payload, options = {}) {
   try {
     return await ragicWriter.postFormPath(formPath, payload, {
       actor: 'system',
       source: 'postRagicStrict',
+      includeResponseMetadata: options.includeResponseMetadata === true,
     });
   } catch (err) {
     throw _normalizeRagicError(err);
@@ -798,7 +799,7 @@ async function upsertParent(parentData, ragicRecordId = null) {
   }
 }
 
-async function upsertParentStrict(parentData, ragicRecordId = null) {
+async function upsertParentStrict(parentData, ragicRecordId = null, options = {}) {
   const payload = toFieldIdPayload(parentData, Z01_FIELDS, 'Z01');
   const payloadLineUid = _extractLineUidFromPayload(payload);
   if (payloadLineUid || !ragicRecordId) {
@@ -807,7 +808,7 @@ async function upsertParentStrict(parentData, ragicRecordId = null) {
   const base = ragicRecordId
     ? _recordPath(process.env.RAGIC_FORM_Z01, ragicRecordId)
     : process.env.RAGIC_FORM_Z01;
-  const raw = await postRagicStrict(base, payload);
+  const raw = await postRagicStrict(base, payload, options);
   _cacheInvalidate('z01:');
   return raw;
 }

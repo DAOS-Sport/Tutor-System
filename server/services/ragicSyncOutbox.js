@@ -94,6 +94,56 @@ async function _claimNextJob(idempotencyKey = null) {
   }
 }
 
+async function _claimExactJob({
+  jobId,
+  idempotencyKey,
+  sourceRecordId,
+  targetRecordId,
+  operation,
+  requiredState = 'pending',
+  requiredAttempts = 0,
+}) {
+  if (![jobId, idempotencyKey, sourceRecordId, targetRecordId, operation].every((value) => String(value || '').trim())) {
+    const err = new Error('exact outbox claim requires job id, idempotency key, source/target record id, and operation');
+    err.code = 'RAGIC_OUTBOX_EXACT_SELECTOR_REQUIRED';
+    throw err;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const job = (await client.query(
+      `SELECT * FROM ragic_sync_outbox
+        WHERE id=$1 AND idempotency_key=$2 AND source_record_id=$3
+          AND target_record_id=$4 AND operation=$5
+          AND state=$6 AND attempts=$7
+        FOR UPDATE SKIP LOCKED`,
+      [jobId, idempotencyKey, String(sourceRecordId), String(targetRecordId), operation,
+       requiredState, Number(requiredAttempts)]
+    )).rows[0] || null;
+    if (!job) {
+      await client.query('COMMIT');
+      return null;
+    }
+    const claimed = (await client.query(
+      `UPDATE ragic_sync_outbox
+          SET state='processing', attempts=attempts+1, updated_at=NOW()
+        WHERE id=$1 AND state=$2 AND attempts=$3 RETURNING *`,
+      [job.id, requiredState, Number(requiredAttempts)]
+    )).rows[0] || null;
+    await client.query('COMMIT');
+    if (claimed) {
+      claimed._claimed_from_state = job.state;
+      claimed._claimed_from_attempts = Number(job.attempts);
+    }
+    return claimed;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 async function _markSuccess(job) {
   const client = await pool.connect();
   try {
@@ -253,6 +303,65 @@ function _assertReadback({ row, targetRecordId, expectedPatch, expectedUid }) {
   }
 }
 
+function _httpStatusFromWriterResult(result) {
+  return Number(result?.responseMetadata?.httpStatus || result?.http_status || 0) || null;
+}
+
+function _logSchemaGuardFailure(err) {
+  console.error(JSON.stringify({
+    event: 'ragic_parent_outbox_schema_guard_failed',
+    code: err?.code || 'RAGIC_SCHEMA_NOT_VERIFIED',
+    message: 'worker stopped before claiming a job; local parent login remains available',
+    expected: err?.schema?.expected || null,
+    actual: err?.schema?.actual || err?.evidence || null,
+    differences: err?.schema?.differences || null,
+    correlationId: err?.schema?.correlationId || err?.correlationId || null,
+  }));
+}
+
+async function _loadCanonicalParent(job) {
+  const claim = (await pool.query(
+    `SELECT canonical_parent_id FROM identity_claims WHERE id=$1`, [job.claim_id]
+  )).rows[0];
+  const parent = claim?.canonical_parent_id
+    ? (await pool.query(`SELECT * FROM parents WHERE id=$1`, [claim.canonical_parent_id])).rows[0]
+    : null;
+  if (!parent?.line_uid) {
+    const err = new Error('canonical parent has no LINE UID');
+    err.code = 'LINE_UID_REQUIRED';
+    throw err;
+  }
+  return parent;
+}
+
+async function readbackRagicSyncOutboxJob({
+  job,
+  reader = ragic.getParentRecordByRagicId,
+} = {}) {
+  if (!job || job.operation !== 'BIND_Z01_LINE_UID') {
+    const err = new Error('readback is restricted to BIND_Z01_LINE_UID jobs');
+    err.code = 'RAGIC_OUTBOX_OPERATION_UNSUPPORTED';
+    throw err;
+  }
+  const parent = await _loadCanonicalParent(job);
+  const targetRecordId = job.target_record_id || job.source_record_id;
+  const profilePatch = sanitizeAllowlistedProfilePatch(job.payload_reference?.profile_patch);
+  const row = await reader(targetRecordId);
+  _assertReadback({
+    row,
+    targetRecordId,
+    expectedPatch: profilePatch,
+    expectedUid: parent.line_uid,
+  });
+  return {
+    job_id: job.id,
+    correlation_id: job.correlation_id,
+    node: String(targetRecordId),
+    readback_verified: true,
+    final_job_state: job.state,
+  };
+}
+
 async function _markFailure(job, err) {
   const failure = classifySyncFailure(err, Number(job.attempts), Number(job.max_attempts));
   const delaySeconds = Math.min(3600, 30 * (2 ** Math.max(0, Number(job.attempts) - 1)));
@@ -339,6 +448,165 @@ async function _markFailure(job, err) {
   }
 }
 
+async function processClaimedRagicSyncOutboxJob(job, {
+  writer = ragic.upsertParentStrict,
+  reader = ragic.getParentRecordByRagicId,
+  studentWriter = ragic.updateStudentFromZ03Strict,
+  forceReadback = false,
+} = {}) {
+  const metadata = {
+    job_id: job.id,
+    correlation_id: job.correlation_id,
+    node: String(job.target_record_id || job.source_record_id || ''),
+    before_state: job._claimed_from_state || 'processing',
+    after_state: null,
+    attempts_before: job._claimed_from_attempts == null
+      ? Math.max(0, Number(job.attempts) - 1)
+      : Number(job._claimed_from_attempts),
+    attempts_after: Number(job.attempts),
+    write_performed: false,
+    http_status: null,
+    readback_verified: false,
+  };
+  try {
+    if (!['BIND_Z01_LINE_UID', 'REBIND_Z01_LINE_UID', 'CREATE_Z01_PARENT'].includes(job.operation)) {
+      const err = new Error('unsupported outbox operation');
+      err.code = 'RAGIC_OUTBOX_OPERATION_UNSUPPORTED';
+      throw err;
+    }
+    const parent = await _loadCanonicalParent(job);
+    if (job.operation === 'BIND_Z01_LINE_UID' || job.operation === 'REBIND_Z01_LINE_UID') {
+      const targetRecordId = job.target_record_id || job.source_record_id;
+      const ref = job.payload_reference || {};
+      const profilePatch = sanitizeAllowlistedProfilePatch(ref.profile_patch);
+      const patch = { ...profilePatch };
+      if (!ref.skip_uid_write) patch[RAGIC_Z01_FIELDS.PARENT_SYSTEM_LINE_UID] = parent.line_uid;
+      const shouldReadback = forceReadback || ref.verify_readback;
+      if (shouldReadback) {
+        const before = await reader(targetRecordId);
+        if (!before || _recordIdOf(before) !== String(targetRecordId)) {
+          const err = new Error('Ragic target record is missing or changed');
+          err.code = 'RAGIC_UNCONFIRMED_WRITE';
+          throw err;
+        }
+        const currentUid = getTrueRagicLineUid(before);
+        if (currentUid && currentUid !== parent.line_uid) {
+          const err = new Error('Ragic field 1006846 already belongs to another account');
+          err.code = 'PARENT_LINE_UID_MISMATCH';
+          throw err;
+        }
+      }
+      for (const student of Array.isArray(ref.students_to_append) ? ref.students_to_append : []) {
+        const studentResult = await studentWriter({
+          parent: { ...parent, ragic_record_id: String(targetRecordId) },
+          student,
+        });
+        metadata.write_performed = true;
+        metadata.http_status = metadata.http_status || _httpStatusFromWriterResult(studentResult);
+        const localStudent = (await pool.query(
+          `SELECT id FROM students WHERE parent_id=$1 AND regexp_replace(lower(name),'\\s','','g')=regexp_replace(lower($2),'\\s','','g')
+            ORDER BY created_at,id LIMIT 1`,
+          [parent.id, String(student?.name || '').trim()]
+        )).rows[0];
+        const z02Id = studentResult?.z02?.ragicRecordId || null;
+        if (localStudent && z02Id) {
+          await pool.query(
+            `UPDATE students SET ragic_record_id=COALESCE(ragic_record_id,$2),last_synced_at=NOW(),updated_at=NOW()
+              WHERE id=$1`, [localStudent.id, String(z02Id)]
+          );
+        }
+      }
+      if (Object.keys(patch).length) {
+        const writeResult = await writer(patch, targetRecordId, { includeResponseMetadata: true });
+        metadata.write_performed = true;
+        metadata.http_status = _httpStatusFromWriterResult(writeResult) || metadata.http_status;
+      }
+      if (shouldReadback) {
+        const after = await reader(targetRecordId);
+        _assertReadback({
+          row: after,
+          targetRecordId,
+          expectedPatch: profilePatch,
+          expectedUid: parent.line_uid,
+        });
+        metadata.readback_verified = true;
+      }
+      await _markSuccess(job);
+    } else {
+      // A create response may time out after Ragic committed. Always perform a
+      // strict Field-ID lookup before retrying create; display-name payloads are
+      // intentionally rejected by getTrueRagicLineUid().
+      let remote = await _findRemoteByTrueUid(parent.line_uid);
+      let recordId = remote?._ragicId || remote?.ragicId || null;
+      if (!remote) {
+        const ref = job.payload_reference || {};
+        const created = await ragic.createParentWithStudentsInRagic({
+          parent: { ...(ref.parent || {}), phone: parent.phone, name: parent.name },
+          students: Array.isArray(ref.students) ? ref.students : [],
+          lineUid: parent.line_uid,
+        });
+        metadata.write_performed = true;
+        metadata.http_status = _httpStatusFromWriterResult(created);
+        recordId = created.ragicRecordId;
+      }
+      await _markCreateSuccess(job, recordId);
+    }
+    metadata.after_state = 'synced';
+    return { ...metadata, outcome: 'synced', final_job_state: 'synced' };
+  } catch (err) {
+    const failure = await _markFailure(job, err);
+    metadata.after_state = failure.outboxState;
+    return {
+      ...metadata,
+      outcome: failure.outboxState === 'retryable' ? 'retryable' : 'blocked',
+      final_job_state: failure.outboxState,
+      error_code: failure.code,
+    };
+  }
+}
+
+async function processRagicSyncOutboxJob({
+  jobId,
+  idempotencyKey,
+  sourceRecordId,
+  targetRecordId,
+  operation,
+  requiredState = 'pending',
+  requiredAttempts = 0,
+  writer = ragic.upsertParentStrict,
+  reader = ragic.getParentRecordByRagicId,
+  studentWriter = ragic.updateStudentFromZ03Strict,
+  schemaGuard = assertRagicZ01UidSchemaFresh,
+  forceReadback = true,
+} = {}) {
+  try {
+    await schemaGuard();
+  } catch (err) {
+    if (SCHEMA_CODES.has(err.code)) {
+      _logSchemaGuardFailure(err);
+      return { status: 'SCHEMA_BLOCKED', final_job_state: requiredState, error_code: 'RAGIC_SCHEMA_NOT_VERIFIED' };
+    }
+    throw err;
+  }
+  const job = await _claimExactJob({
+    jobId,
+    idempotencyKey,
+    sourceRecordId,
+    targetRecordId,
+    operation,
+    requiredState,
+    requiredAttempts,
+  });
+  if (!job) return { status: 'NOT_CLAIMED', final_job_state: null };
+  const processed = await processClaimedRagicSyncOutboxJob(job, {
+    writer,
+    reader,
+    studentWriter,
+    forceReadback,
+  });
+  return { status: processed.outcome === 'synced' ? 'SYNCED' : 'FAILED', ...processed };
+}
+
 async function processRagicSyncOutbox({
   limit = 20,
   writer = ragic.upsertParentStrict,
@@ -355,7 +623,7 @@ async function processRagicSyncOutbox({
     await schemaGuard();
   } catch (err) {
     if (SCHEMA_CODES.has(err.code)) {
-      console.error('[ragic-parent-outbox] RAGIC_SCHEMA_NOT_VERIFIED: worker stopped; local parent login remains available');
+      _logSchemaGuardFailure(err);
       return { ...result, skipped: true, blocked: 1, reason: 'RAGIC_SCHEMA_NOT_VERIFIED' };
     }
     throw err;
@@ -363,103 +631,24 @@ async function processRagicSyncOutbox({
   for (let i = 0; i < limit; i++) {
     const job = await _claimNextJob(idempotencyKey);
     if (!job) break;
+    job._claimed_from_state = Number(job.attempts) === 1 ? 'pending' : 'retryable';
+    job._claimed_from_attempts = Math.max(0, Number(job.attempts) - 1);
     result.processed++;
-    try {
-      if (!['BIND_Z01_LINE_UID', 'REBIND_Z01_LINE_UID', 'CREATE_Z01_PARENT'].includes(job.operation)) {
-        const err = new Error('unsupported outbox operation');
-        err.code = 'RAGIC_OUTBOX_OPERATION_UNSUPPORTED';
-        throw err;
-      }
-      const claim = (await pool.query(
-        `SELECT canonical_parent_id FROM identity_claims WHERE id=$1`, [job.claim_id]
-      )).rows[0];
-      const parent = claim?.canonical_parent_id
-        ? (await pool.query(`SELECT * FROM parents WHERE id=$1`, [claim.canonical_parent_id])).rows[0]
-        : null;
-      if (!parent?.line_uid) {
-        const err = new Error('canonical parent has no LINE UID');
-        err.code = 'LINE_UID_REQUIRED';
-        throw err;
-      }
-      if (job.operation === 'BIND_Z01_LINE_UID' || job.operation === 'REBIND_Z01_LINE_UID') {
-        const targetRecordId = job.target_record_id || job.source_record_id;
-        const ref = job.payload_reference || {};
-        const profilePatch = sanitizeAllowlistedProfilePatch(ref.profile_patch);
-        const patch = { ...profilePatch };
-        if (!ref.skip_uid_write) patch[RAGIC_Z01_FIELDS.PARENT_SYSTEM_LINE_UID] = parent.line_uid;
-        let before = null;
-        if (ref.verify_readback) {
-          before = await reader(targetRecordId);
-          if (!before || _recordIdOf(before) !== String(targetRecordId)) {
-            const err = new Error('Ragic target record is missing or changed');
-            err.code = 'RAGIC_UNCONFIRMED_WRITE';
-            throw err;
-          }
-          const currentUid = getTrueRagicLineUid(before);
-          if (currentUid && currentUid !== parent.line_uid) {
-            const err = new Error('Ragic field 1006846 already belongs to another account');
-            err.code = 'PARENT_LINE_UID_MISMATCH';
-            throw err;
-          }
-        }
-        for (const student of Array.isArray(ref.students_to_append) ? ref.students_to_append : []) {
-          const result = await studentWriter({
-            parent: { ...parent, ragic_record_id: String(targetRecordId) },
-            student,
-          });
-          const localStudent = (await pool.query(
-            `SELECT id FROM students WHERE parent_id=$1 AND regexp_replace(lower(name),'\\s','','g')=regexp_replace(lower($2),'\\s','','g')
-              ORDER BY created_at,id LIMIT 1`,
-            [parent.id, String(student?.name || '').trim()]
-          )).rows[0];
-          const z02Id = result?.z02?.ragicRecordId || null;
-          if (localStudent && z02Id) {
-            await pool.query(
-              `UPDATE students SET ragic_record_id=COALESCE(ragic_record_id,$2),last_synced_at=NOW(),updated_at=NOW()
-                WHERE id=$1`, [localStudent.id, String(z02Id)]
-            );
-          }
-        }
-        if (Object.keys(patch).length) await writer(patch, targetRecordId);
-        if (ref.verify_readback) {
-          const after = await reader(targetRecordId);
-          _assertReadback({
-            row: after,
-            targetRecordId,
-            expectedPatch: profilePatch,
-            expectedUid: parent.line_uid,
-          });
-        }
-        await _markSuccess(job);
-      } else {
-        // A create response may time out after Ragic committed. Always perform a
-        // strict Field-ID lookup before retrying create; display-name payloads are
-        // intentionally rejected by getTrueRagicLineUid().
-        let remote = await _findRemoteByTrueUid(parent.line_uid);
-        let recordId = remote?._ragicId || remote?.ragicId || null;
-        if (!remote) {
-          const ref = job.payload_reference || {};
-          const created = await ragic.createParentWithStudentsInRagic({
-            parent: { ...(ref.parent || {}), phone: parent.phone, name: parent.name },
-            students: Array.isArray(ref.students) ? ref.students : [],
-            lineUid: parent.line_uid,
-          });
-          recordId = created.ragicRecordId;
-        }
-        await _markCreateSuccess(job, recordId);
-      }
+    const processed = await processClaimedRagicSyncOutboxJob(job, { writer, reader, studentWriter });
+    if (processed.outcome === 'synced') {
       result.synced++;
-    } catch (err) {
-      const failure = await _markFailure(job, err);
-      if (failure.outboxState === 'retryable') result.retryable++;
-      else result.blocked++;
-    }
+    } else if (processed.outcome === 'retryable') result.retryable++;
+    else result.blocked++;
   }
   return result;
 }
 
 module.exports = {
   processRagicSyncOutbox,
+  processRagicSyncOutboxJob,
+  processClaimedRagicSyncOutboxJob,
+  readbackRagicSyncOutboxJob,
   classifySyncFailure,
   _findRemoteByTrueUid,
+  _claimExactJob,
 };

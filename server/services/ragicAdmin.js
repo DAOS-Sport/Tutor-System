@@ -2344,6 +2344,11 @@ async function _upsertZ03Record(client, ragicRecordId, mapped, z01Row, options =
     `SELECT reason FROM ragic_z03_deleted_tombstones WHERE z01_ragic_record_id = $1 LIMIT 1`,
     [ragicRecordId]
   );
+  // New hard deletes are intentionally irreversible in the local Z03
+  // projection. Historical tombstones keep their legacy manual-review
+  // behaviour so an old marker cannot silently hide a source row.
+  const hardDeleted = String(tomb.rows[0]?.reason || '').startsWith('ADMIN_HARD_DELETE');
+  if (hardDeleted) return { skipped: true, reason: 'ADMIN_HARD_DELETE' };
   const lineChatUrlRaw = _pickZ01Raw(z01Row, ['1002390', 'line對話網址']);
   const studentCountRaw = _pickZ01Raw(z01Row, ['1001138', '名下有幾位學生']);
   const phoneCanonical = normalizePhone(mapped.phone);
@@ -2400,6 +2405,12 @@ async function _upsertZ03Record(client, ragicRecordId, mapped, z01Row, options =
   );
   const z03Id = r.rows[0].id;
   const sourceStudents = ragic.parseZ01StudentsRaw(z01Row);
+  const deletedStudentRows = (await client.query(
+    `SELECT source_row_key FROM ragic_z03_deleted_student_tombstones
+      WHERE z01_ragic_record_id = $1`,
+    [ragicRecordId]
+  )).rows;
+  const deletedStudentKeys = new Set(deletedStudentRows.map((row) => String(row.source_row_key)));
   await client.query(
     `UPDATE ragic_z03_students
         SET present_in_latest_payload = FALSE
@@ -2435,6 +2446,7 @@ async function _upsertZ03Record(client, ragicRecordId, mapped, z01Row, options =
       studentReason = 'STUDENT_BIRTH_DATE_INVALID';
     }
     const sourceRowKey = `${String(s.seq_raw || 'row').trim()}:${rowIndex}`;
+    if (deletedStudentKeys.has(sourceRowKey)) continue;
     await client.query(
       `INSERT INTO ragic_z03_students
          (z03_record_id, seq_raw, student_status_raw, name_raw, birth_date_raw,
@@ -3875,7 +3887,17 @@ async function _upgradeZ03RecordToZ01(row, adminUsername) {
 
 async function saveZ03RecordDraft(id, payload = {}, adminUsername = null) {
   const recordIn = payload.record && typeof payload.record === 'object' ? payload.record : {};
-  const studentsIn = Array.isArray(payload.students) ? payload.students : [];
+  const studentsProvided = Object.prototype.hasOwnProperty.call(payload, 'students');
+  // Defensive cleanup: null / undefined / {} must never survive as student
+  // rows. A row that only carries its database id but has every editable field
+  // blank is also empty and therefore means clean delete. Non-empty rows
+  // without a valid id are rejected below.
+  const studentsIn = Array.isArray(payload.students)
+    ? payload.students.filter((student) => (
+      student && typeof student === 'object'
+      && Z03_STUDENT_UPDATE_FIELDS.some((field) => _cleanText(student[field], 255))
+    ))
+    : [];
   const client = await pool.connect();
   let saved;
   try {
@@ -3898,17 +3920,21 @@ async function saveZ03RecordDraft(id, payload = {}, adminUsername = null) {
       );
     }
 
-    if (studentsIn.length) {
-      const existing = (await client.query(
-        `SELECT id FROM ragic_z03_students WHERE z03_record_id = $1`,
+    if (studentsProvided) {
+      const existingRows = (await client.query(
+        `SELECT id, source_row_key FROM ragic_z03_students
+          WHERE z03_record_id = $1 FOR UPDATE`,
         [id]
-      )).rows.map((r) => String(r.id));
-      const existingIds = new Set(existing);
+      )).rows;
+      const existingIds = new Set(existingRows.map((row) => String(row.id)));
+      const submittedIds = new Set();
       for (const student of studentsIn) {
         const sid = String(student?.id || '').trim();
         if (!sid || !existingIds.has(sid)) {
           throw new Error('學員資料不屬於這筆 Z03 記錄，請重新整理後再試');
         }
+        if (submittedIds.has(sid)) throw new Error('學員資料重複，請重新整理後再試');
+        submittedIds.add(sid);
         const sSet = [];
         const sVals = [sid, id];
         for (const field of Z03_STUDENT_UPDATE_FIELDS) {
@@ -3924,6 +3950,28 @@ async function saveZ03RecordDraft(id, payload = {}, adminUsername = null) {
             sVals
           );
         }
+      }
+
+      const removedRows = existingRows.filter((row) => !submittedIds.has(String(row.id)));
+      for (const removed of removedRows) {
+        const sourceRowKey = String(removed.source_row_key || '').trim();
+        if (sourceRowKey) {
+          await client.query(
+            `INSERT INTO ragic_z03_deleted_student_tombstones
+               (z01_ragic_record_id, source_row_key, deleted_by, reason)
+             VALUES ($1,$2,$3,'ADMIN_STUDENT_CLEAN_DELETE')
+             ON CONFLICT (z01_ragic_record_id, source_row_key) DO UPDATE SET
+               deleted_at=NOW(), deleted_by=EXCLUDED.deleted_by, reason=EXCLUDED.reason`,
+            [current.z01_ragic_record_id, sourceRowKey, adminUsername || null]
+          );
+        }
+      }
+      if (removedRows.length) {
+        await client.query(
+          `DELETE FROM ragic_z03_students
+            WHERE z03_record_id=$1 AND id = ANY($2::bigint[])`,
+          [id, removedRows.map((row) => row.id)]
+        );
       }
     }
 
@@ -4004,22 +4052,25 @@ async function deleteZ03Record(id, { adminUsername = null, reason = null } = {})
       await client.query('ROLLBACK');
       throw new Error('找不到這筆 Z03 記錄');
     }
-    const updated = (await client.query(
-      `UPDATE ragic_z03_records SET
-         status='manual_review', classification='MANUAL_REVIEW',
-         reason_code='ADMIN_ARCHIVE_REQUESTED', claim_state='MANUAL_REVIEW',
-         last_error_code=NULL, resolved_at=COALESCE(resolved_at,NOW()),
-         resolved_by=$2, last_processed_at=NOW()
-       WHERE id=$1 RETURNING *`,
-      [id, adminUsername || null]
-    )).rows[0];
+    const cleanReason = _cleanText(reason, 300);
+    await client.query(
+      `INSERT INTO ragic_z03_deleted_tombstones
+         (z01_ragic_record_id, deleted_by, reason)
+       VALUES ($1,$2,$3)
+       ON CONFLICT (z01_ragic_record_id) DO UPDATE SET
+         deleted_at=NOW(), deleted_by=EXCLUDED.deleted_by, reason=EXCLUDED.reason`,
+      [row.z01_ragic_record_id, adminUsername || null,
+       cleanReason ? `ADMIN_HARD_DELETE:${cleanReason}` : 'ADMIN_HARD_DELETE']
+    );
+    // ragic_z03_students is removed by ON DELETE CASCADE.
+    await client.query(`DELETE FROM ragic_z03_records WHERE id=$1`, [id]);
     await client.query('COMMIT');
     return {
       id,
       z01_ragic_record_id: row.z01_ragic_record_id,
-      archived: true,
-      status: updated.status,
-      reason: reason || null,
+      deleted: true,
+      archived: false,
+      reason: cleanReason || null,
     };
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});

@@ -12,6 +12,68 @@ const UID_FIELD_ID = RAGIC_Z01_FIELDS.PARENT_SYSTEM_LINE_UID;
 const UID_FIELD_NAME = RAGIC_Z01_FIELD_NAMES.PARENT_SYSTEM_LINE_UID;
 const DEFAULT_TTL_MS = 15 * 60 * 1000;
 
+function _isoOrNull(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
+
+function schemaGuardFailureDetails(evidence, now = new Date()) {
+  const fresh = Boolean(evidence?.expires_at)
+    && new Date(evidence.expires_at).getTime() > now.getTime();
+  const actual = evidence ? {
+    field_id: evidence.field_id == null ? null : String(evidence.field_id),
+    field_name: evidence.field_name ?? null,
+    attr_no_dup: evidence.attr_no_dup ?? null,
+    attr_ro: evidence.attr_ro ?? null,
+    verified: evidence.verified === true,
+    fresh,
+    fetched_at: _isoOrNull(evidence.fetched_at),
+    expires_at: _isoOrNull(evidence.expires_at),
+    failure_code: evidence.failure_code || null,
+    response_hash: evidence.response_hash || null,
+  } : {
+    field_id: null,
+    field_name: null,
+    attr_no_dup: null,
+    attr_ro: null,
+    verified: false,
+    fresh: false,
+    fetched_at: null,
+    expires_at: null,
+    failure_code: 'RAGIC_SCHEMA_EVIDENCE_MISSING',
+    response_hash: null,
+  };
+  const expected = {
+    field_id: UID_FIELD_ID,
+    field_name: UID_FIELD_NAME,
+    unique: true,
+    readOnly: false,
+    fresh: true,
+  };
+  const comparisons = [
+    ['field_id', expected.field_id, actual.field_id],
+    ['field_name', expected.field_name, actual.field_name],
+    ['unique', expected.unique, actual.attr_no_dup],
+    ['readOnly', expected.readOnly, actual.attr_ro],
+    ['fresh', expected.fresh, actual.fresh],
+    ['verified', true, actual.verified],
+  ];
+  const differences = comparisons
+    .filter(([, expectedValue, actualValue]) => expectedValue !== actualValue)
+    .map(([property, expectedValue, actualValue]) => ({
+      property,
+      expected: expectedValue,
+      actual: actualValue,
+    }));
+  return {
+    expected,
+    actual,
+    differences,
+    correlationId: evidence?.correlation_id || null,
+  };
+}
+
 function schemaTtlMs() {
   const configured = Number(process.env.RAGIC_Z01_UID_SCHEMA_TTL_MS);
   return Number.isFinite(configured) && configured >= 60_000 ? configured : DEFAULT_TTL_MS;
@@ -197,13 +259,9 @@ async function assertRagicZ01UidSchemaFresh({ db = pool, now = new Date() } = {}
   if (!isFresh) {
     const err = new Error('Ragic Z01 UID schema is missing, stale, or mismatched');
     err.code = 'RAGIC_SCHEMA_NOT_VERIFIED';
-    err.evidence = evidence ? {
-      fetched_at: evidence.fetched_at,
-      expires_at: evidence.expires_at,
-      failure_code: evidence.failure_code,
-      response_hash: evidence.response_hash,
-      correlation_id: evidence.correlation_id,
-    } : null;
+    err.schema = schemaGuardFailureDetails(evidence, now);
+    err.evidence = err.schema.actual;
+    err.correlationId = err.schema.correlationId;
     throw err;
   }
   return evidence;
@@ -215,6 +273,7 @@ module.exports = {
   schemaTtlMs,
   responseHash,
   extractSchemaEvidence,
+  schemaGuardFailureDetails,
   verifyRagicZ01UidSchemaFreshness,
   getLatestRagicZ01UidSchemaEvidence,
   assertRagicZ01UidSchemaFresh,

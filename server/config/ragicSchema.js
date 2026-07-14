@@ -72,20 +72,20 @@ function getTrueRagicLineUid(record) {
   return normalizeLineUid(record?.[RAGIC_Z01_FIELDS.PARENT_SYSTEM_LINE_UID]);
 }
 
-function _envFlag(name, defaultValue) {
+function envFlag(name, defaultValue = false) {
   const raw = process.env[name];
   if (raw == null || raw === '') return defaultValue;
   return /^(1|true|yes|on)$/i.test(String(raw).trim());
 }
 
 const STABILITY_FLAGS = Object.freeze({
-  get EXISTING_USER_LOCAL_FASTPATH() { return _envFlag('EXISTING_USER_LOCAL_FASTPATH', true); },
-  get PARENT_IDENTITY_RESOLVER_V2() { return _envFlag('PARENT_IDENTITY_RESOLVER_V2', false); },
-  get PARENT_LOCAL_FIRST() { return _envFlag('PARENT_LOCAL_FIRST', true); },
-  get RAGIC_PARENT_OUTBOX() { return _envFlag('RAGIC_PARENT_OUTBOX', false); },
-  get LEGACY_CLAIM_AUTO_CREATE() { return _envFlag('LEGACY_CLAIM_AUTO_CREATE', false); },
-  get DESTRUCTIVE_RECONCILE_ENABLED() { return _envFlag('DESTRUCTIVE_RECONCILE_ENABLED', false); },
-  get PASSED_NOT_ON_FILE_ENABLED() { return _envFlag('PASSED_NOT_ON_FILE_ENABLED', false); },
+  get EXISTING_USER_LOCAL_FASTPATH() { return envFlag('EXISTING_USER_LOCAL_FASTPATH', true); },
+  get PARENT_IDENTITY_RESOLVER_V2() { return envFlag('PARENT_IDENTITY_RESOLVER_V2', false); },
+  get PARENT_LOCAL_FIRST() { return envFlag('PARENT_LOCAL_FIRST', true); },
+  get RAGIC_PARENT_OUTBOX() { return envFlag('RAGIC_PARENT_OUTBOX', false); },
+  get LEGACY_CLAIM_AUTO_CREATE() { return envFlag('LEGACY_CLAIM_AUTO_CREATE', false); },
+  get DESTRUCTIVE_RECONCILE_ENABLED() { return envFlag('DESTRUCTIVE_RECONCILE_ENABLED', false); },
+  get PASSED_NOT_ON_FILE_ENABLED() { return envFlag('PASSED_NOT_ON_FILE_ENABLED', false); },
 });
 
 function assertParentUidSchemaDefinition(fieldEntries) {
@@ -264,6 +264,7 @@ module.exports = {
   RAGIC_Z01_FIELD_NAMES,
   normalizeLineUid,
   getTrueRagicLineUid,
+  envFlag,
   assertParentUidSchemaDefinition,
   STABILITY_FLAGS,
   Z01_FIELDS,

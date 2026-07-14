@@ -5,7 +5,7 @@
  * - PATCH /api/admin/ragic-z03/:id/draft ({ record, students }) — 儲存本地 Z03；完整時寫回 Ragic，LINE UID 由登入流程綁定
  * - PATCH /api/admin/ragic-z03/:id   ({ fixed_name }) — 寫回 Ragic Z01 姓名欄位並標記 resolved
  * - POST  /api/admin/ragic-z03/:id/dismiss           — 標記誤判，不寫 Ragic
- * - DELETE /api/admin/ragic-z03/:id?confirm=true      — 相容舊 UI；保留來源並轉人工審核
+ * - DELETE /api/admin/ragic-z03/:id?confirm=true      — 實體刪除 Z03 家長與學員，保留 tombstone 防止復活
  *
  * Z01 本地鏡像只收「必填齊全 ＋ LINE UID 已綁定」的完成記錄；
  * 其餘（缺 UID 或任一必填缺失）一律進此佇列。櫃台只整理核心資料；UID 由家長登入自動綁定。
@@ -85,14 +85,13 @@ router.post('/:id/dismiss', async (req, res) => {
   }
 });
 
-// Compatibility endpoint for the older admin UI. It is admin-only and requires
-// explicit confirmation, but the service archives into manual review and keeps
-// every source row and audit record.
+// Destructive local Z03 delete. Admin-only and requires explicit confirmation;
+// the Ragic source record is not modified.
 router.delete('/:id', requireAdminRole('admin'), async (req, res) => {
   try {
     if (String(req.query.confirm || '') !== 'true') {
       return res.status(400).json({
-        error: '請帶 ?confirm=true 以確認轉入人工審核',
+        error: '請帶 ?confirm=true 以確認刪除',
         code: 'CONFIRM_REQUIRED',
       });
     }
@@ -100,9 +99,9 @@ router.delete('/:id', requireAdminRole('admin'), async (req, res) => {
       adminUsername: req.adminUser?.sub,
       reason: req.body?.reason || null,
     });
-    res.json({ ok: true, deleted: false, archived: true, ...result });
+    res.json({ ok: true, ...result });
   } catch (err) {
-    console.error('[admin/ragic-z03] archive compatibility endpoint failed:', err.message);
+    console.error('[admin/ragic-z03] delete failed:', err.message);
     res.status(400).json({ error: err.message });
   }
 });

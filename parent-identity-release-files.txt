@@ -1,4 +1,5 @@
 # Release-candidate allowlist. Only these repository-relative paths may be staged.
+.env.example
 client/liff/src/pages/LoginPage.jsx
 client/liff/src/pages/RegisterPage.jsx
 config/parent-identity-canary.json
@@ -8,6 +9,7 @@ db/migrations/023_parent_identity_local_first.sql
 db/migrations/024_parent_identity_release_hardening.sql
 docs/parent-identity-release-evidence-2026-07-13.md
 scripts/explain-ragic-z01.js
+scripts/force_trigger_outbox.js
 scripts/parent-identity-canary-status.js
 scripts/parent-identity-release-dry-run.js
 scripts/reconcile-ragic-z01-z03.js
@@ -33,10 +35,14 @@ server/services/ragic.js
 server/services/ragicAdmin.js
 server/services/ragicSchemaFreshness.js
 server/services/ragicSyncOutbox.js
+server/services/ragicWriter.js
 server/services/z03IdentityClaim.js
 tests/e2e/parent_local_first_registration.js
 tests/e2e/ragic_z01_z03_split_claim.js
 tests/parent_identity_closure_test.js
+tests/force_trigger_outbox_cli_test.js
+tests/ragic_parent_outbox_flag_test.js
+tests/ragic_writer_test.js
 tests/ragic_z03_tombstone_test.js
 tests/release/account_recovery_integration.js
 tests/release/application_rollback_rehearsal.js
@@ -44,6 +50,7 @@ tests/release/canary_config_test.js
 tests/release/evidence/parent_identity_release_results_2026-07-13.json
 tests/release/multiple_candidate_integration.js
 tests/release/outbox_failure_test.js
+tests/release/outbox_exact_processor_test.js
 tests/release/parent_identity_release_cases.js
 tests/release/parent_identity_release_manifest.json
 tests/release/safety_invariants_test.js

@@ -72,6 +72,30 @@ function text(v) {
   return v == null ? '' : String(v);
 }
 
+function hasStudentData(student) {
+  return Boolean(
+    student && typeof student === 'object'
+    && STUDENT_EDIT_FIELDS.some(([field]) => text(student[field]).trim())
+  );
+}
+
+function cleanStudentRows(students) {
+  return (Array.isArray(students) ? students : []).filter(hasStudentData);
+}
+
+function cleanDraftPayload(draft) {
+  return {
+    record: draft?.record && typeof draft.record === 'object' ? { ...draft.record } : {},
+    students: cleanStudentRows(draft?.students)
+      .filter((student) => text(student.id).trim())
+      .map((student) => {
+        const out = { id: student.id };
+        STUDENT_EDIT_FIELDS.forEach(([field]) => { out[field] = text(student[field]); });
+        return out;
+      }),
+  };
+}
+
 function fmtDate(ts) {
   if (!ts) return '—';
   try { return new Date(ts).toLocaleString('zh-TW', { hour12: false }); } catch { return ts; }
@@ -82,7 +106,7 @@ function rowToDraft(row) {
   PARENT_EDIT_FIELDS.forEach(([field]) => { record[field] = text(row[field]); });
   return {
     record,
-    students: (row.students || []).map((s) => {
+    students: cleanStudentRows(row.students).map((s) => {
       const out = { id: s.id };
       STUDENT_EDIT_FIELDS.forEach(([field]) => { out[field] = text(s[field]); });
       return out;
@@ -122,7 +146,15 @@ function ReadonlyField({ label, value, hint }) {
 
 // 學員編輯表格欄位較多，容器加 overflow-x-auto + min-w，寧可讓表格本身橫向捲動
 // 也不要撐爆卡片（防破版需求）。
-function StudentEditTable({ students, onChange }) {
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14M10 10v6m4-6v6" />
+    </svg>
+  );
+}
+
+function StudentEditTable({ students, onChange, onRemove }) {
   if (!students.length) {
     return (
       <div className="rounded border border-dashed border-gray-300 bg-gray-50 p-2 text-[11px] text-gray-500">
@@ -132,12 +164,13 @@ function StudentEditTable({ students, onChange }) {
   }
   return (
     <div className="max-w-full min-w-0 overflow-x-auto rounded border border-blue-100">
-      <table className="w-full min-w-[760px] border-collapse text-[11px]">
+      <table className="w-full min-w-[820px] border-collapse text-[11px]">
         <thead>
           <tr className="bg-blue-50 text-left font-bold text-blue-900">
             {STUDENT_EDIT_FIELDS.map(([field, label]) => (
               <th key={field} className="border border-blue-100 px-1.5 py-1">{label}</th>
             ))}
+            <th className="w-16 border border-blue-100 px-1.5 py-1 text-center">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -148,6 +181,17 @@ function StudentEditTable({ students, onChange }) {
                   <FieldInput value={student[field]} onChange={(v) => onChange(index, field, v)} />
                 </td>
               ))}
+              <td className="border border-blue-100 p-1 text-center align-middle">
+                <button
+                  type="button"
+                  onClick={() => onRemove(index)}
+                  aria-label={`刪除學員 ${student.name_raw || index + 1}`}
+                  title={`刪除學員 ${student.name_raw || index + 1}`}
+                  className="inline-flex items-center gap-1 rounded border border-red-200 bg-white px-1.5 py-1 font-bold text-red-600 hover:bg-red-50"
+                >
+                  <TrashIcon />刪除
+                </button>
+              </td>
             </tr>
           ))}
         </tbody>
@@ -156,7 +200,7 @@ function StudentEditTable({ students, onChange }) {
   );
 }
 
-function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft, onDeleteRequest }) {
+function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft, onDeleteRequest, canDelete }) {
   const st = STATUS_LABEL[row.status] || STATUS_LABEL.pending;
   const [fixedName, setFixedName] = useState('');
   const [editing, setEditing] = useState(false);
@@ -167,6 +211,7 @@ function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft, onDeleteRequ
   const resolving = busyKey === `resolve:${row.id}`;
   const dismissing = busyKey === `dismiss:${row.id}`;
   const saving = busyKey === `save:${row.id}`;
+  const viewStudents = cleanStudentRows(row.students);
 
   function startEdit() {
     setDraft(rowToDraft(row));
@@ -185,8 +230,14 @@ function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft, onDeleteRequ
       students: prev.students.map((s, i) => (i === index ? { ...s, [field]: value } : s)),
     }));
   }
+  function removeStudent(index) {
+    setDraft((prev) => ({
+      ...prev,
+      students: (Array.isArray(prev.students) ? prev.students : []).filter((_, i) => i !== index),
+    }));
+  }
   async function handleSave() {
-    const ok = await onSaveDraft(row.id, draft);
+    const ok = await onSaveDraft(row.id, cleanDraftPayload(draft));
     if (ok) setEditing(false);
   }
 
@@ -212,9 +263,17 @@ function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft, onDeleteRequ
           <button
             type="button"
             disabled={busy}
-            onClick={() => onDeleteRequest(row)}
+            onClick={() => onDismiss(row.id)}
             className="whitespace-nowrap rounded border border-red-300 bg-white px-2 py-1 text-[11px] font-bold text-red-600 hover:bg-red-50 disabled:opacity-50"
           >轉人工審核</button>
+          {canDelete ? (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => onDeleteRequest(row)}
+              className="whitespace-nowrap rounded border border-brand-error bg-brand-error px-2 py-1 text-[11px] font-bold text-white hover:bg-brand-error-strong disabled:opacity-50"
+            >刪除</button>
+          ) : null}
         </div>
       </div>
 
@@ -244,11 +303,11 @@ function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft, onDeleteRequ
       {editing ? (
         <div className="min-w-0 border-t border-gray-100 bg-blue-50 px-3 py-2">
           <div className="mb-1 text-[11px] font-bold text-blue-800">學員資料（{draft.students.length} 位，可編輯）</div>
-          <StudentEditTable students={draft.students} onChange={updateStudent} />
+          <StudentEditTable students={draft.students} onChange={updateStudent} onRemove={removeStudent} />
         </div>
-      ) : row.students && row.students.length > 0 ? (
+      ) : viewStudents.length > 0 ? (
         <div className="min-w-0 border-t border-gray-100 bg-blue-50 px-3 py-2">
-          <div className="mb-1 text-[11px] font-bold text-blue-800">學員資料（{row.students.length} 位，原始值）</div>
+          <div className="mb-1 text-[11px] font-bold text-blue-800">學員資料（{viewStudents.length} 位，原始值）</div>
           <div className="max-w-full overflow-x-auto">
             <table className="w-full min-w-[520px] text-[11px]">
               <thead>
@@ -258,8 +317,8 @@ function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft, onDeleteRequ
                 </tr>
               </thead>
               <tbody>
-                {row.students.map((s) => (
-                  <tr key={s.id}>
+                {viewStudents.map((s, index) => (
+                  <tr key={s.id || index}>
                     <td className="pr-2 text-sm font-bold text-gray-800">{s.name_raw || '—'}</td>
                     <td className="pr-2">{s.student_status_raw || '—'}</td>
                     <td className="pr-2">{s.birth_date_raw || '—'}</td>
@@ -345,7 +404,7 @@ function LoadError({ onRetry }) {
 
 export default function RagicZ03Page() {
   const toast = useToast();
-  const { logout } = useAuth();
+  const { logout, isAdmin } = useAuth();
   const [items, setItems] = useState(null);
   const [loadError, setLoadError] = useState(false);
   const [status, setStatus] = useState('pending');
@@ -354,7 +413,7 @@ export default function RagicZ03Page() {
   const [busyKey, setBusyKey] = useState('');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [stats, setStats] = useState(null);
-  const [pendingDelete, setPendingDelete] = useState(null); // Z03 row 待確認轉人工審核
+  const [pendingDelete, setPendingDelete] = useState(null); // Z03 row 待確認永久刪除
   const [deleteBusy, setDeleteBusy] = useState(false);
 
   useEffect(() => {
@@ -435,9 +494,20 @@ export default function RagicZ03Page() {
     setDeleteBusy(true);
     try {
       await ragicZ03Api.remove(pendingDelete.id);
-      toast.success('已保留來源資料並轉入人工審核');
+      setItems((prev) => (Array.isArray(prev)
+        ? prev.filter((row) => row.id !== pendingDelete.id)
+        : prev));
+      setStats((prev) => {
+        if (!prev) return prev;
+        const next = { ...prev, total: Math.max(0, Number(prev.total || 0) - 1) };
+        if (Object.prototype.hasOwnProperty.call(next, pendingDelete.status)) {
+          next[pendingDelete.status] = Math.max(0, Number(next[pendingDelete.status] || 0) - 1);
+        }
+        return next;
+      });
+      toast.success('已完整刪除 Z03 家長與學員資料');
       setPendingDelete(null);
-      await Promise.all([load(), loadStats()]);
+      void loadStats();
     } catch (e) {
       toast.error(e?.response?.data?.error || '刪除失敗');
     } finally {
@@ -544,6 +614,7 @@ export default function RagicZ03Page() {
                 onDismiss={dismiss}
                 onSaveDraft={saveDraft}
                 onDeleteRequest={setPendingDelete}
+                canDelete={isAdmin}
               />
             ))}
           </div>
@@ -573,21 +644,19 @@ export default function RagicZ03Page() {
 
       <ConfirmDialog
         open={!!pendingDelete}
-        title="將這筆 Z03 資料轉人工審核？"
-        confirmLabel="轉人工審核"
-        tone="warning"
+        title="完全刪除這筆家長資料？"
+        confirmLabel="確認刪除"
+        tone="danger"
         busy={deleteBusy}
         onCancel={() => !deleteBusy && setPendingDelete(null)}
         onConfirm={confirmDelete}
       >
         <div className="space-y-2">
-          <p>
-            「{pendingDelete?.raw_name || '（空白）'}」這筆記錄與其所有學員資料會完整保留，並停止自動認領。
+          <p className="font-bold text-red-700">
+            確定要完全刪除此筆家長資料與其關聯的所有資料嗎？此操作不可逆。
           </p>
-          <ul className="list-disc space-y-1 pl-5 text-sm">
-            <li>後續 Ragic 同步只會更新同一筆 source record，不會建立重複 Z03。</li>
-            <li>此操作不會刪除本地或 Ragic 原始資料；可在「人工審核」分頁繼續查詢。</li>
-          </ul>
+          <p>家長：「{pendingDelete?.raw_name || '（空白）'}」</p>
+          <p className="text-xs text-gray-500">此操作只刪除 DAOS Z03 整理資料，不會刪除 Ragic 原始記錄。</p>
         </div>
       </ConfirmDialog>
     </div>

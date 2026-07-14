@@ -19,7 +19,7 @@ function makeWriter() {
     },
     post: async (url, payload, options) => {
       calls.push({ method: 'post', url, payload, options });
-      return { data: { status: 'SUCCESS', ragicId: '123' } };
+      return { status: 200, data: { status: 'SUCCESS', ragicId: '123' } };
     },
     delete: async (url, options) => {
       calls.push({ method: 'delete', url, options });
@@ -124,6 +124,19 @@ async function testValidH01UidWritesByFieldId() {
   assert.strictEqual(audits[0].newValue, uid);
 }
 
+async function testResponseMetadataIsOptIn() {
+  const { writer } = makeWriter();
+  const payload = { 1006846: `U${'f'.repeat(32)}` };
+  const legacy = await writer.postFormPath(process.env.RAGIC_FORM_Z01, payload);
+  assert.strictEqual(legacy.status, 'SUCCESS');
+  assert.strictEqual(legacy.responseMetadata, undefined);
+  const withMetadata = await writer.postFormPath(process.env.RAGIC_FORM_Z01, payload, {
+    includeResponseMetadata: true,
+  });
+  assert.strictEqual(withMetadata.data.status, 'SUCCESS');
+  assert.deepStrictEqual(withMetadata.responseMetadata, { httpStatus: 200 });
+}
+
 (async () => {
   await testRejectsUrlIntoH01UidWithoutHttp();
   await testRejectsUidResidueWithoutHttp();
@@ -131,6 +144,7 @@ async function testValidH01UidWritesByFieldId() {
   await testH01BlocklistWinsOverWhitelist();
   await testValidH01UidWritesByFieldId();
   await testClassifiesHttp200InvalidResponse();
+  await testResponseMetadataIsOptIn();
   console.log('ragic_writer_test: PASS');
 })().catch((err) => {
   console.error(err);
