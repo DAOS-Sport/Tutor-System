@@ -142,6 +142,12 @@ get_architecture(...)  # 整體架構摘要
 受控驗證腳本：`cd server && npm run smoke:ragic-auth`（read-only by default；寫入須 `ENABLE_RAGIC_WRITE_SMOKE=1` + `TEST_PHONE` / `TEST_PARENT_NAME` / `TEST_LINE_UID`）。
 
 ## 變更紀錄
+- 2026-07-14：上架後修正——「上課記錄查詢」(F-R01) 查不到真實上課資料：
+  - **根因（既有缺口，非本日部署引入）**：`/api/admin/sessions`（range/today）、補簽到、verify-checkin 的「下一堂」全部只讀舊示範表 `admin_today_sessions`——沒有任何真實流程（預約排課、自助簽到、教練簽到）回寫該表，真實課堂永遠查不到。上架首日營運端第一次真用此頁即暴露（實測正式環境新購買＋自助簽到後此頁空白）。
+  - **修正**：主資料源改讀真實 `course_sessions`（統一 `REAL_SESSIONS_SELECT`，台灣時區、簽到狀態以 checkin_records 為真相），UNION 舊表列向後相容（既有補登/示範資料不消失），場館範圍過濾兩邊一體適用，回傳 shape 不變（前端零改動）。補簽到改寫真實簽到紀錄（該堂全期 active 學員、來源 'staff'、找不到真實課堂時退回舊表路徑）；verify-checkin「下一堂」改解析報名對應課程期（團報→家庭共班→anchor 三層）取今日真實課堂。
+  - **手動扣課頁查無資料**：後端實測正常（完整重現正式流程：購買→對帳→自助簽到→搜尋命中），需輸入 ≥2 字的家長姓名/電話/學員姓名/報名編號後搜尋，頁面不自動列出全部。
+  - **驗證**：admin_sessions_regression（F-R01/F-R03/F-M05 場館防護＋補簽到＋復活）、U13 全項、家庭共班、拆單聚合、smoke 全過。UNION 修過 uuid/text 型別衝突（id::text）。
+  - **需重新部署**（Publish）後正式環境生效。
 - 2026-07-14：U13 雙軌簽到（新系統過渡期：舊生/教練未養成預約習慣 → 免預約自助簽到模式）：
   - **模式開關**：`course_periods.checkin_mode`——`booking`（預約制，預設，行為完全不變）｜`self`（免預約自助簽到）。schema：migration 030＋coreSchema bootstrap（含 CHECK constraint）。
   - **自助簽到本質＝簽到當下補建真實課堂**：`POST /api/checkins/self`（家長）同交易建 `course_sessions`（`created_via='self_checkin'`、status=completed、時間=當下）＋勾選學員的 `checkin_records`（共班一次一堂多筆簽到）→ 堂數計算/教練今日課程與上課紀錄/學習歷程/報表/儀表板 WS 即時通知全部沿用既有資料路徑，零分岔。教練今日課程查詢不 JOIN slots，自助課堂自然出現。

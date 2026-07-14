@@ -11,6 +11,29 @@ const { requireAdminAuth, requireAdminRole, getScopedVenueIds, isVenueInScope } 
 
 const router = express.Router();
 
+// 真實課堂的統一 SELECT（range / today 共用）：欄位對齊 rowToSession 既有 shape。
+// 時間一律以台灣時區呈現；簽到狀態以 checkin_records 為真相（任一學員簽到＝該堂已簽）。
+const REAL_SESSIONS_SELECT = `
+  SELECT cs.id::text AS id,
+         ((cs.scheduled_at AT TIME ZONE 'Asia/Taipei')::date)::text AS date,
+         to_char(cs.scheduled_at AT TIME ZONE 'Asia/Taipei', 'HH24:MI') AS start_time,
+         to_char((cs.scheduled_at AT TIME ZONE 'Asia/Taipei')
+                 + make_interval(mins => COALESCE(cs.duration_minutes, 60)), 'HH24:MI') AS end_time,
+         cp.venue_id,
+         COALESCE(c.name, '') AS coach,
+         COALESCE((SELECT json_agg(s.name ORDER BY s.name)
+                     FROM course_period_enrollments cpe
+                     JOIN students s ON s.id = cpe.student_id
+                    WHERE cpe.course_period_id = cp.id AND cpe.status = 'active'), '[]'::json) AS students,
+         cp.course_type,
+         CASE WHEN EXISTS (SELECT 1 FROM checkin_records cr WHERE cr.course_session_id = cs.id)
+              THEN 'checked_in' ELSE 'not_yet' END AS checkin_status,
+         (SELECT MIN(cr.checked_in_at) FROM checkin_records cr WHERE cr.course_session_id = cs.id) AS checkin_at,
+         NULL::timestamptz AS backfilled_at
+    FROM course_sessions cs
+    JOIN course_periods cp ON cp.id = cs.course_period_id
+    LEFT JOIN coaches c ON c.id = COALESCE(cs.coach_id, cp.coach_id)`;
+
 function rowToSession(r) {
   return {
     id: r.id,
@@ -80,13 +103,27 @@ router.get('/', requireAdminAuth, async (req, res) => {
       venueIds = raw.split(',').map((s) => s.trim()).filter(Boolean);
     }
 
+    // U13 修正：主資料源改讀「真實課堂」course_sessions（預約排課＋自助簽到都在這）
+    // ——舊版只讀示範表 admin_today_sessions，該表沒有任何真實流程回寫，導致上課
+    // 記錄查詢永遠查不到實際上課資料。UNION 保留舊表列（向後相容既有補登/示範資料），
+    // 場館範圍過濾對兩邊一體適用；回傳 shape 與原本完全相同（前端零改動）。
     const args = [from, to];
-    let sql = `SELECT * FROM admin_today_sessions WHERE date >= $1 AND date <= $2`;
+    let sql = `SELECT * FROM (
+      ${REAL_SESSIONS_SELECT}
+       WHERE (cs.scheduled_at AT TIME ZONE 'Asia/Taipei')::date BETWEEN $1::date AND $2::date
+         AND cs.status::text NOT LIKE 'cancelled%'
+      UNION ALL
+      SELECT ats.id::text AS id, ats.date::text AS date, ats.start_time, ats.end_time, ats.venue_id, ats.coach,
+             to_json(ats.students) AS students, ats.course_type, ats.checkin_status::text AS checkin_status,
+             ats.checkin_at, ats.backfilled_at
+        FROM admin_today_sessions ats
+       WHERE ats.date >= $1::date AND ats.date <= $2::date
+    ) t WHERE TRUE`;
     if (venueIds && venueIds.length) {
       args.push(venueIds);
-      sql += ` AND venue_id = ANY($${args.length}::text[])`;
+      sql += ` AND t.venue_id = ANY($${args.length}::text[])`;
     }
-    sql += ` ORDER BY date, start_time`;
+    sql += ` ORDER BY t.date, t.start_time`;
     const r = await pool.query(sql, args);
     res.json(r.rows.map(rowToSession));
   } catch (err) {
@@ -98,17 +135,28 @@ router.get('/', requireAdminAuth, async (req, res) => {
 router.get('/today', requireAdminAuth, async (req, res) => {
   try {
     // Task #90：staff/manager 鎖在自己所屬場館集合；admin 可選 venueId 縮小
+    // U13 修正：主資料源改讀真實課堂＋UNION 舊表（見 range 端點說明）。
     const scope = getScopedVenueIds(req);
-    let sql = `SELECT * FROM admin_today_sessions`;
+    let sql = `SELECT * FROM (
+      ${REAL_SESSIONS_SELECT}
+       WHERE (cs.scheduled_at AT TIME ZONE 'Asia/Taipei')::date = (NOW() AT TIME ZONE 'Asia/Taipei')::date
+         AND cs.status::text NOT LIKE 'cancelled%'
+      UNION ALL
+      SELECT ats.id::text AS id, ats.date::text AS date, ats.start_time, ats.end_time, ats.venue_id, ats.coach,
+             to_json(ats.students) AS students, ats.course_type, ats.checkin_status::text AS checkin_status,
+             ats.checkin_at, ats.backfilled_at
+        FROM admin_today_sessions ats
+       WHERE ats.date = (NOW() AT TIME ZONE 'Asia/Taipei')::date
+    ) t WHERE TRUE`;
     const args = [];
     if (scope) {
       args.push(scope);
-      sql += ` WHERE venue_id = ANY($${args.length}::text[])`;
+      sql += ` AND t.venue_id = ANY($${args.length}::text[])`;
     } else if (req.query.venueId) {
       args.push(req.query.venueId);
-      sql += ` WHERE venue_id = $${args.length}`;
+      sql += ` AND t.venue_id = $${args.length}`;
     }
-    sql += ` ORDER BY start_time`;
+    sql += ` ORDER BY t.start_time`;
     const r = await pool.query(sql, args);
     res.json(r.rows.map(rowToSession));
   } catch (err) {
@@ -156,14 +204,40 @@ router.get('/verify-checkin', requireAdminAuth, async (req, res) => {
       used_sessions: e.used_sessions,
     };
 
-    const s = await pool.query(
-      `SELECT * FROM admin_today_sessions WHERE coach = $1 AND venue_id = $2 LIMIT 1`,
-      [e.coach, e.venue_id]
+    // U13 修正：「下一堂」提示改讀真實課堂——解析此報名對應的課程期
+    // （團報 → 家庭共班批次 → 單筆 anchor 三層，與 courses.js 一致），
+    // 取今天尚未取消的課堂。自助簽到模式無預排課堂時為 null（前端不顯示該區塊）。
+    const pRes = await pool.query(
+      `SELECT COALESCE(
+         (SELECT cp.id FROM course_periods cp
+            WHERE $2::uuid IS NOT NULL AND cp.group_order_id = $2::uuid
+            ORDER BY cp.created_at LIMIT 1),
+         (SELECT cp.id FROM course_periods cp
+            WHERE $3::uuid IS NOT NULL AND cp.enrollment_batch_id = $3::uuid
+              AND cp.period_number = COALESCE($4::int, 1)
+            LIMIT 1),
+         (SELECT cp.id FROM course_periods cp
+            WHERE cp.admin_enrollment_id = $1
+            ORDER BY cp.created_at LIMIT 1)) AS period_id`,
+      [e.id, e.group_order_id || null, e.enrollment_batch_id || null, e.period_number || 1]
     );
+    const resolvedPeriodId = pRes.rows[0]?.period_id || null;
+    let session = null;
+    if (resolvedPeriodId) {
+      const s = await pool.query(
+        `${REAL_SESSIONS_SELECT}
+          WHERE cp.id = $1
+            AND (cs.scheduled_at AT TIME ZONE 'Asia/Taipei')::date = (NOW() AT TIME ZONE 'Asia/Taipei')::date
+            AND cs.status::text NOT LIKE 'cancelled%'
+          ORDER BY cs.scheduled_at LIMIT 1`,
+        [resolvedPeriodId]
+      );
+      if (s.rowCount) session = rowToSession(s.rows[0]);
+    }
     res.json({
       found: true,
       enrollment,
-      session: s.rowCount ? rowToSession(s.rows[0]) : null,
+      session,
     });
   } catch (err) {
     console.error('[admin/sessions/verify-checkin]', err);
@@ -249,6 +323,46 @@ router.post('/:id/backfill-checkin', requireAdminAuth, async (req, res) => {
     if (!dt || isNaN(dt.getTime())) {
       return res.status(400).json({ error: '請選擇有效的簽到時間' });
     }
+    // U13 修正：清單改讀真實課堂後，補簽到也寫「真實簽到紀錄」——
+    // 對該堂課的本期全部 active 學員補 checkin_records（來源 'staff'、時間＝操作者選擇），
+    // 已簽過的學員不重複。堂數計算與全系統同一真相。找不到真實課堂時，退回舊示範表
+    // 路徑（向後相容既有 demo 資料，不影響新流程）。
+    const real = await pool.query(
+      `SELECT cs.id, cs.status::text AS status, cp.id AS period_id, cp.venue_id
+         FROM course_sessions cs JOIN course_periods cp ON cp.id = cs.course_period_id
+        WHERE cs.id::text = $1`,
+      [id]
+    );
+    if (real.rowCount) {
+      const row = real.rows[0];
+      if (!isVenueInScope(req, row.venue_id)) {
+        return res.status(403).json({ error: '此時段不在您的場館範圍內' });
+      }
+      if (row.status.startsWith('cancelled')) {
+        return res.status(400).json({ error: '已取消的課堂不可補簽到' });
+      }
+      await pool.query(
+        `INSERT INTO checkin_records (course_session_id, student_id, checked_in_source, checked_in_at)
+         SELECT $1, cpe.student_id, 'staff', $2
+           FROM course_period_enrollments cpe
+          WHERE cpe.course_period_id = $3 AND cpe.status = 'active'
+         ON CONFLICT (course_session_id, student_id) DO NOTHING`,
+        [id, dt.toISOString(), row.period_id]
+      );
+      await pool.query(
+        `UPDATE course_sessions
+            SET status = 'completed', completed_at = COALESCE(completed_at, NOW()), updated_at = NOW()
+          WHERE id = $1 AND status = 'confirmed'`,
+        [id]
+      );
+      return res.json({
+        id,
+        checkin_status: 'checked_in',
+        checkin_at: dt.toISOString(),
+        backfilled_at: new Date().toISOString(),
+      });
+    }
+
     const cur = await pool.query(`SELECT venue_id FROM admin_today_sessions WHERE id = $1`, [id]);
     if (!cur.rowCount) return res.status(404).json({ error: '找不到此時段' });
     if (!isVenueInScope(req, cur.rows[0].venue_id)) {
