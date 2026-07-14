@@ -73,7 +73,9 @@ export default function RefundPage() {
     setBusy(true);
     try {
       const res = await enrollmentsApi.refund(target.id, reason.trim(), user.name);
-      toast.success(`已完成退課，退款 ${formatTWD(res.refund_amount)}`);
+      toast.success(res.family_shared
+        ? `已完成整期退課（${(res.refunded_enrollment_ids || []).length} 筆子訂單一併退費），退款合計 ${formatTWD(res.refund_amount)}`
+        : `已完成退課，退款 ${formatTWD(res.refund_amount)}`);
       closeRefund();
       await load();
     } catch (e) {
@@ -133,8 +135,18 @@ export default function RefundPage() {
               <div className="mb-1 text-brand-error-strong"><b>家長：</b>{target.parent_name}（{target.parent_phone}）</div>
               <div className="text-brand-error-strong"><b>學員：</b>{target.students.join('、')}</div>
             </div>
+            {preview.family_shared && (
+              <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-800">
+                <b>家庭共班・整期退費</b>：此課程為同堂共學（多位學員共用同一課程期）。
+                確認後本期 <b>{(preview.sibling_ids || []).length} 筆</b>子訂單將
+                <b>一併退費</b>（不支援退單一學員），課程期關閉、未上課的預約將取消並釋出教練時段。
+              </div>
+            )}
             <ul className="space-y-1 rounded-lg border border-gray-200 p-3">
-              <li className="flex justify-between"><span className="text-gray-600">原應收</span><span className="font-mono">{formatTWD(preview.enrollment.final_price)}</span></li>
+              <li className="flex justify-between">
+                <span className="text-gray-600">{preview.family_shared ? `原應收（整期 ${(preview.sibling_ids || []).length} 筆合計）` : '原應收'}</span>
+                <span className="font-mono">{formatTWD(preview.family_shared ? preview.batch_final_price : preview.enrollment.final_price)}</span>
+              </li>
               <li className="flex justify-between"><span className="text-gray-600">已使用堂數</span><span>{preview.used} / {preview.total}</span></li>
               <li className="flex justify-between"><span className="text-gray-600">剩餘比例</span><span>{(preview.remainRatio * 100).toFixed(1)}%</span></li>
               <li className="flex justify-between"><span className="text-gray-600">手續費率</span><span>{(preview.fee_rate * 100).toFixed(0)}%</span></li>

@@ -261,7 +261,7 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'invalid course_type' });
     }
     const cfgRes = await client.query(
-      `SELECT base_price, is_active FROM course_type_configs WHERE course_type = $1`,
+      `SELECT base_price, is_active, max_students FROM course_type_configs WHERE course_type = $1`,
       [courseTypeNum]
     );
     if (cfgRes.rowCount && cfgRes.rows[0].is_active === false) {
@@ -324,6 +324,16 @@ router.post('/', async (req, res) => {
     if (studentCount < 1) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: '請選擇至少一位學生' });
+    }
+    // U12 家庭共班：一對二以上＝同堂共學，單次報名學員數不得超過課型人數上限
+    // （超額的班放不下，開通也會壞掉）。一對一不設限——多位小孩＝各自獨立的一對一課。
+    const maxStudents = cfgRes.rowCount ? (Number(cfgRes.rows[0].max_students) || 1) : 1;
+    if (maxStudents > 1 && studentCount > maxStudents) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: `此課程為一對${maxStudents}，單次報名最多 ${maxStudents} 位學員；人數更多請分次報名或使用團體報名`,
+        code: 'STUDENT_COUNT_EXCEEDS_COURSE_TYPE',
+      });
     }
     if (isTrial && (studentCount !== 1 || suppliedPeriodCount !== 1)) {
       await client.query('ROLLBACK');

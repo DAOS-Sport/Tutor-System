@@ -133,6 +133,35 @@ export default function CheckinPage() {
   }
   function clearLookup() { setResult(null); setPhone(''); setPeriodId(''); }
 
+  // U13：撤銷自助簽到（家長端不開放自撤，誤點一律由櫃檯在此更正）。
+  // 撤銷＝該堂全部簽到刪除、課堂取消、堂數歸還、家長當天可重新簽到。
+  const [revokingId, setRevokingId] = useState(null);
+  async function revokeSelf(row) {
+    if (revokingId) return;
+    const ok = window.confirm(
+      `確定撤銷這筆自助簽到？\n學員：${row.student}\n撤銷後該堂全部簽到會移除、堂數歸還，家長今天可重新簽到。`
+    );
+    if (!ok) return;
+    setRevokingId(row.checkin_id);
+    try {
+      await checkinsApi.revokeSelfSession(row.session_id);
+      toast.success('已撤銷自助簽到，堂數已歸還');
+      await reload();
+    } catch (e) {
+      toast.error(e?.response?.data?.error || '撤銷失敗，請稍後再試');
+    } finally {
+      setRevokingId(null);
+    }
+  }
+
+  // 簽到來源徽章：自助簽到（免預約模式）特別標示，讓櫃檯一眼分辨
+  function sourceBadge(row) {
+    if (row.session_created_via === 'self_checkin') return <StatusBadge tone="amber">自助</StatusBadge>;
+    if (row.source === 'coach') return <StatusBadge tone="teal">教練</StatusBadge>;
+    if (row.source === 'staff') return <StatusBadge tone="gray">櫃檯</StatusBadge>;
+    return <StatusBadge tone="green">家長</StatusBadge>;
+  }
+
   const isToday = date === todayStr();
 
   return (
@@ -225,13 +254,26 @@ export default function CheckinPage() {
             {list.map((r) => (
               <li key={r.checkin_id} className="grid grid-cols-12 items-center gap-2 px-4 py-3 text-sm">
                 <span className="col-span-2 font-mono text-brand-primary">{fmtTime(r.at)}</span>
-                <span className="col-span-3 truncate"><b>{r.student || '—'}</b></span>
+                <span className="col-span-2 truncate"><b>{r.student || '—'}</b></span>
                 <span className="col-span-3 truncate text-gray-600">
                   {r.course_type ? courseTypeLabel(r.course_type) : '—'}
                   {r.coach ? <span className="ml-1 text-gray-400">· {r.coach}</span> : null}
                 </span>
-                <span className="col-span-3 truncate text-gray-500">{r.venue_name || r.venue_id}</span>
-                <span className="col-span-1 text-right text-xs text-gray-400">#{String(r.period_id || '').slice(-6)}</span>
+                <span className="col-span-2 truncate text-gray-500">{r.venue_name || r.venue_id}</span>
+                <span className="col-span-1">{sourceBadge(r)}</span>
+                <span className="col-span-2 flex items-center justify-end gap-2">
+                  {r.session_created_via === 'self_checkin' && r.session_id && (
+                    <button
+                      type="button"
+                      disabled={revokingId === r.checkin_id}
+                      onClick={() => revokeSelf(r)}
+                      className="rounded-md border border-brand-error px-2 py-1 text-xs font-bold text-brand-error hover:bg-brand-error-soft disabled:opacity-50"
+                    >
+                      {revokingId === r.checkin_id ? '撤銷中…' : '撤銷'}
+                    </button>
+                  )}
+                  <span className="text-xs text-gray-400">#{String(r.period_id || '').slice(-6)}</span>
+                </span>
               </li>
             ))}
           </ul>

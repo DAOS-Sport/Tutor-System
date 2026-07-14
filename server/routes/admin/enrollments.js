@@ -217,6 +217,15 @@ async function ensureGroupCoursePeriod(client, enrollment, totalSessions) {
  *
  *  - 僅處理一般報名（enrollment.group_order_id 為 NULL）；團報交給 ensureGroupCoursePeriod，
  *    兩者以 group_order_id 守門互斥，零重複。
+ *  - U12 家庭共班：家長端「同一家長多位小孩」報名一對二以上（course_type max_students > 1）時，
+ *    訂單已按「學員 × 期數」拆成多筆（共用 enrollment_batch_id、同期同 period_number）。
+ *    這些兄弟訂單實體上是「同一班、同一期」→ 等本期全部兄弟訂單對帳完成後，以
+ *    (enrollment_batch_id, period_number) 冪等 get-or-create「一個」共用 course_period
+ *    （總堂數＝每期堂數、全班共用堂數池；金額＝兄弟訂單加總），把全部小孩綁進同一 period。
+ *    否則會膨脹成每位小孩各自一期（3 位小孩 × 6 堂 = 18 堂）。
+ *    一對一（max_students=1）維持每筆各自開 period——多位小孩＝各自獨立的一對一堂數。
+ *    家長端報名已強制學員必須屬於登入家長本人（routes/enrollments.js STUDENT_NOT_AVAILABLE），
+ *    跨家庭共班唯一入口仍是團報，此處不會混入他人學員。
  *  - 補資料模型落差：admin_enrollments.students 只有姓名（TEXT[]），但 course_period_enrollments
  *    需要 students.id（UUID）→ 以 (parent_id, name) get-or-create 學員（比照 services/transfers.js）。
  *  - course_periods.coach_id 為 NOT NULL：enrollment.coach_id 為空時以 (coach 名 + venue) 反查；
@@ -270,32 +279,130 @@ async function ensureSoloCoursePeriod(client, enrollment, totalSessions) {
     return createdStudentIds;
   }
 
-  // get-or-create course_period（以 admin_enrollment_id 冪等；一般報名 group_order_id 為 NULL）
-  const exist = await client.query(
-    `SELECT id FROM course_periods WHERE admin_enrollment_id = $1 AND group_order_id IS NULL LIMIT 1`,
-    [enrollment.id]
-  );
-  let periodId = exist.rows[0]?.id || null;
-  if (!periodId) {
-    const ins = await client.query(
-      `INSERT INTO course_periods
-         (coach_id, venue_id, course_type, total_sessions, used_sessions,
-          expires_at, original_price, final_price, status, admin_enrollment_id, is_experience_course)
-       VALUES ($1,$2,$3,$4,0,(NOW() + ($5 || ' days')::interval)::date,$6,$7,'active',$8,$9)
-       RETURNING id`,
-      [
-        coachId, enrollment.venue_id, enrollment.course_type, totalSessions,
-        String(365 * (Number(enrollment.period_count) || 1)),
-        Number(enrollment.original_price) || 0, Number(enrollment.final_price) || 0,
-        enrollment.id, enrollment.order_kind === 'trial',
-      ]
+  // U12 家庭共班判定：同批（enrollment_batch_id）同期（period_number）存在多筆兄弟訂單，
+  // 且課型為一對二以上 → 走「共用 period」模式；否則維持原「每筆一 period」行為。
+  const periodNumber = Number(enrollment.period_number) || 1;
+  let siblingRows = null; // 非 null＝共用 period 模式（含本筆在內、本期全部有效兄弟訂單）
+  if (enrollment.enrollment_batch_id && enrollment.order_kind !== 'trial') {
+    const sib = await client.query(
+      `SELECT id, students, status, original_price, final_price
+         FROM admin_enrollments
+        WHERE enrollment_batch_id = $1
+          AND period_number = $2
+          AND group_order_id IS NULL
+          AND status NOT IN ('cancelled','refunded')
+        ORDER BY submitted_at, id`,
+      [enrollment.enrollment_batch_id, periodNumber]
     );
-    periodId = ins.rows[0]?.id || null;
+    if (sib.rowCount > 1) {
+      const cfg = await client.query(
+        `SELECT max_students FROM course_type_configs WHERE course_type = $1`,
+        [enrollment.course_type]
+      );
+      if ((Number(cfg.rows[0]?.max_students) || 1) > 1) {
+        // 共用開通守門（比照團報）：本期全部兄弟訂單都 confirmed 才建共用 period。
+        // reconcile 已先把本筆轉 confirmed，同一交易內查得到最新狀態。
+        const waiting = sib.rows.filter((row) => row.status !== 'confirmed');
+        if (waiting.length) {
+          console.warn(
+            '[reconcile/solo] 家庭共班尚未全數對帳完成，暫不開通共用 period:',
+            'batch:', enrollment.enrollment_batch_id,
+            'period:', periodNumber,
+            'waiting:', waiting.map((row) => `${row.id}:${row.status}`).join(',')
+          );
+          return createdStudentIds;
+        }
+        siblingRows = sib.rows;
+      }
+    }
+  }
+
+  let periodId = null;
+  if (siblingRows) {
+    // 兄弟訂單可能並發對帳（逐筆 reconcile / checkout 整單迴圈），以 advisory lock 序列化，
+    // 不依賴推斷特定 unique index（比照 ensureGroupCoursePeriod 的做法）。
+    await client.query(
+      `SELECT pg_advisory_xact_lock(hashtext($1))`,
+      [`batch-period:${enrollment.enrollment_batch_id}`]
+    );
+    const ex = await client.query(
+      `SELECT id FROM course_periods
+        WHERE enrollment_batch_id = $1 AND period_number = $2 LIMIT 1`,
+      [enrollment.enrollment_batch_id, periodNumber]
+    );
+    periodId = ex.rows[0]?.id || null;
+    if (!periodId) {
+      // 混版保護：舊版部署可能已替部分兄弟訂單各自建 period。此時不可再新建
+      // 共用 period（堂數會重複），改「收編」最早那個為共用 period；其餘重複
+      // period 由 scripts/merge_family_shared_periods.js 修復合併。
+      const legacy = await client.query(
+        `SELECT id FROM course_periods
+          WHERE admin_enrollment_id = ANY($1::text[]) AND group_order_id IS NULL
+          ORDER BY created_at, id LIMIT 1`,
+        [siblingRows.map((row) => row.id)]
+      );
+      if (legacy.rowCount) {
+        periodId = legacy.rows[0].id;
+        await client.query(
+          `UPDATE course_periods
+              SET enrollment_batch_id = $2, period_number = $3, updated_at = NOW()
+            WHERE id = $1`,
+          [periodId, enrollment.enrollment_batch_id, periodNumber]
+        );
+      }
+    }
+    if (!periodId) {
+      // 共用 period 金額＝本期全部兄弟訂單加總（period 為班級層級金額，
+      // 逐筆收款／發票仍在各 admin_enrollments）。堂數＝每期堂數，全班共用。
+      const originalSum = siblingRows.reduce((sum, row) => sum + (Number(row.original_price) || 0), 0);
+      const finalSum = siblingRows.reduce((sum, row) => sum + (Number(row.final_price) || 0), 0);
+      const ins = await client.query(
+        `INSERT INTO course_periods
+           (coach_id, venue_id, course_type, total_sessions, used_sessions,
+            expires_at, original_price, final_price, status, admin_enrollment_id,
+            enrollment_batch_id, period_number)
+         VALUES ($1,$2,$3,$4,0,(NOW() + ($5 || ' days')::interval)::date,$6,$7,'active',$8,$9,$10)
+         RETURNING id`,
+        [
+          coachId, enrollment.venue_id, enrollment.course_type, totalSessions,
+          String(365 * (Number(enrollment.period_count) || 1)),
+          originalSum, finalSum,
+          siblingRows[0].id, enrollment.enrollment_batch_id, periodNumber,
+        ]
+      );
+      periodId = ins.rows[0]?.id || null;
+    }
+  } else {
+    // get-or-create course_period（以 admin_enrollment_id 冪等；一般報名 group_order_id 為 NULL）
+    const exist = await client.query(
+      `SELECT id FROM course_periods WHERE admin_enrollment_id = $1 AND group_order_id IS NULL LIMIT 1`,
+      [enrollment.id]
+    );
+    periodId = exist.rows[0]?.id || null;
+    if (!periodId) {
+      const ins = await client.query(
+        `INSERT INTO course_periods
+           (coach_id, venue_id, course_type, total_sessions, used_sessions,
+            expires_at, original_price, final_price, status, admin_enrollment_id, is_experience_course)
+         VALUES ($1,$2,$3,$4,0,(NOW() + ($5 || ' days')::interval)::date,$6,$7,'active',$8,$9)
+         RETURNING id`,
+        [
+          coachId, enrollment.venue_id, enrollment.course_type, totalSessions,
+          String(365 * (Number(enrollment.period_count) || 1)),
+          Number(enrollment.original_price) || 0, Number(enrollment.final_price) || 0,
+          enrollment.id, enrollment.order_kind === 'trial',
+        ]
+      );
+      periodId = ins.rows[0]?.id || null;
+    }
   }
   if (!periodId) return createdStudentIds;
 
-  // get-or-create 學員（以 parent_id + name）→ 綁進 course_period_enrollments
-  const names = (enrollment.students || []).filter(Boolean);
+  // get-or-create 學員（以 parent_id + name）→ 綁進 course_period_enrollments。
+  // 共用 period 模式：綁「本期全部兄弟訂單」的學員（每筆家長端子訂單只有 1 位）。
+  const names = siblingRows
+    ? [...new Set(siblingRows.flatMap((row) => row.students || []).filter(Boolean))]
+    : (enrollment.students || []).filter(Boolean);
   for (const name of names) {
     const se = await client.query(
       `SELECT id FROM students WHERE parent_id = $1 AND name = $2 LIMIT 1`,
@@ -393,6 +500,8 @@ async function readEnrollment(id, { resolveLineProfile = false } = {}) {
     group_order_id: row.group_order_id || null,
     is_group_shared: !!row.is_group_shared,
     period_count: Number(row.period_count) || 1,
+    period_number: Number(row.period_number) || 1,
+    enrollment_batch_id: row.enrollment_batch_id || null,
     created_by: row.created_by || null,
     created_by_name: row.created_by_name || null,
     audit_logs: a.rows.map((x) => ({
@@ -1168,10 +1277,61 @@ async function computeRefundPreview(id) {
   const enrollment = await readEnrollment(id);
   if (!enrollment) return null;
   const settings = await getSettings();
+  const fee_rate = settings.refund_fee_rate ?? 0.1;
+
+  // U12 家庭共班退費＝「整班整期」處理（營運規則：不會有單一小孩中途退出）。
+  // 此報名若屬共用 period（同批同期多筆兄弟訂單、period 掛 enrollment_batch_id），
+  // 預覽與退費都以本期「全部兄弟訂單」為單位：
+  //   - 已用堂數＝共用 period 有簽到的堂（DISTINCT session，班級層級，同堂多孩不重複計）
+  //   - 退款＝各兄弟訂單 final_price 按同一剩餘比例逐筆計算後加總（逐筆入庫，帳能對回發票）
+  if (!enrollment.group_order_id && enrollment.enrollment_batch_id) {
+    const sp = await pool.query(
+      `SELECT cp.id, cp.total_sessions,
+              (SELECT COUNT(DISTINCT cs.id)::int
+                 FROM course_sessions cs
+                 JOIN checkin_records cr ON cr.course_session_id = cs.id
+                WHERE cs.course_period_id = cp.id) AS used_sessions
+         FROM course_periods cp
+        WHERE cp.enrollment_batch_id = $1 AND cp.period_number = $2
+        LIMIT 1`,
+      [enrollment.enrollment_batch_id, enrollment.period_number || 1]
+    );
+    if (sp.rowCount) {
+      const siblings = await pool.query(
+        `SELECT id, final_price::float8 AS final_price
+           FROM admin_enrollments
+          WHERE enrollment_batch_id = $1 AND COALESCE(period_number, 1) = $2
+            AND group_order_id IS NULL AND status NOT IN ('cancelled','refunded')
+          ORDER BY submitted_at, id`,
+        [enrollment.enrollment_batch_id, enrollment.period_number || 1]
+      );
+      // 只要共用 period 存在（有 enrollment_batch_id 就是共班），退費一律整期處理；
+      // rowCount 可能因舊版部署期間的單筆退費而少於原班人數，剩幾筆就整批退幾筆。
+      if (siblings.rowCount >= 1) {
+        const total = sp.rows[0].total_sessions || settings.sessions_per_period || 6;
+        const used = sp.rows[0].used_sessions || 0;
+        const remainRatio = Math.max(0, (total - used) / total);
+        const sibling_refunds = siblings.rows.map((row) => ({
+          id: row.id,
+          final_price: Number(row.final_price) || 0,
+          refund_amount: Math.round(Number(row.final_price) * remainRatio * (1 - fee_rate)),
+        }));
+        return {
+          enrollment, total, used, remainRatio, fee_rate,
+          refund_amount: sibling_refunds.reduce((sum, row) => sum + row.refund_amount, 0),
+          family_shared: true,
+          course_period_id: sp.rows[0].id,
+          sibling_refunds,
+          sibling_ids: sibling_refunds.map((row) => row.id),
+          batch_final_price: sibling_refunds.reduce((sum, row) => sum + row.final_price, 0),
+        };
+      }
+    }
+  }
+
   const total = enrollment.total_sessions || settings.sessions_per_period || 6;
   const used = enrollment.used_sessions || 0;
   const remainRatio = Math.max(0, (total - used) / total);
-  const fee_rate = settings.refund_fee_rate ?? 0.1;
   const refund_amount = Math.round(enrollment.final_price * remainRatio * (1 - fee_rate));
   return { enrollment, total, used, remainRatio, fee_rate, refund_amount };
 }
@@ -1210,6 +1370,78 @@ router.post('/:id/refund', requireAdminAuth, requireAdminRole('admin', 'manager'
     if (!isVenueInScope(req, preview.enrollment.venue_id)) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: '此報名不在您的場館範圍內' });
+    }
+    if (['refunded', 'cancelled'].includes(preview.enrollment.status)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: `狀態 ${preview.enrollment.status} 的報名不可退費` });
+    }
+
+    if (preview.family_shared) {
+      // U12 家庭共班：退費一律「整班整期」——本期全部兄弟訂單同交易一起退，
+      // 共用 period 轉 refunded、未來未上課的課堂取消並釋出教練時段。
+      // 不支援退單一小孩（營運規則：不會有單一小孩中途退出）。
+      // FOR UPDATE 鎖住全批兄弟訂單：並發重複退費會 block 到前一筆 COMMIT，
+      // 重讀後已退的列被剔除，不會二次入帳。
+      const locked = await client.query(
+        `SELECT id, status FROM admin_enrollments WHERE id = ANY($1::text[]) FOR UPDATE`,
+        [preview.sibling_ids]
+      );
+      const refundable = new Set(
+        locked.rows
+          .filter((row) => !['refunded', 'cancelled'].includes(row.status))
+          .map((row) => row.id)
+      );
+      if (!refundable.size) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: '本期兄弟訂單皆已退費/取消，無可退項目' });
+      }
+      const applied = preview.sibling_refunds.filter((row) => refundable.has(row.id));
+      const appliedTotal = applied.reduce((sum, row) => sum + row.refund_amount, 0);
+      for (const sib of applied) {
+        await client.query(
+          `UPDATE admin_enrollments SET status = 'refunded', refund_amount = $2, refunded_at = NOW(), updated_at = NOW() WHERE id = $1`,
+          [sib.id, sib.refund_amount]
+        );
+        await promotions.revertUsage({ adminEnrollmentId: sib.id }, client);
+        await client.query(
+          `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user, reason, refund_amount)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [sib.id,
+           `退課（家庭共班整期退費，理由：${reason}，本筆退款 NT$ ${sib.refund_amount.toLocaleString()}，整期合計 NT$ ${appliedTotal.toLocaleString()}）`,
+           by, reason, sib.refund_amount]
+        );
+      }
+      // 釋出未來已排課堂占用的教練時段，再取消課堂（已上完的課保留紀錄）。
+      await client.query(
+        `UPDATE coach_availability_slots
+            SET status = 'available', booked_session_id = NULL, updated_at = NOW()
+          WHERE booked_session_id IN (
+            SELECT id FROM course_sessions
+             WHERE course_period_id = $1 AND scheduled_at > NOW()
+               AND status IN ('confirmed','pending_group_confirm'))`,
+        [preview.course_period_id]
+      );
+      await client.query(
+        `UPDATE course_sessions
+            SET status = 'cancelled_normal', cancelled_at = NOW(), updated_at = NOW()
+          WHERE course_period_id = $1 AND scheduled_at > NOW()
+            AND status IN ('confirmed','pending_group_confirm')`,
+        [preview.course_period_id]
+      );
+      await client.query(
+        `UPDATE course_periods SET status = 'refunded', updated_at = NOW() WHERE id = $1`,
+        [preview.course_period_id]
+      );
+      await client.query('COMMIT');
+
+      const updated = await readEnrollment(id);
+      return res.json({
+        ...updated,
+        refund_amount: appliedTotal,
+        family_shared: true,
+        refunded_enrollment_ids: applied.map((row) => row.id),
+        sibling_refunds: applied,
+      });
     }
 
     await client.query(

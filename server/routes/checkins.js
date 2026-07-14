@@ -1,5 +1,6 @@
 /**
  * Task #60：學員自助報到（LIFF 端）
+ *  POST /api/checkins/self  { course_period_id, student_ids[] }（U13 免預約自助簽到）
  *  POST /api/checkins  { sessionId, studentId }
  *    - 寫入 checkin_records（UNIQUE: session+student → 重複時回傳既有 row，不報錯）
  *    - 廣播 admin WS 事件 'checkin:created'
@@ -12,6 +13,219 @@ const router = express.Router();
 const { pool } = require('../models/db');
 const { requireParent } = require('../middlewares/parentAuth');
 const { broadcastAdminEvent } = require('../services/websocket');
+
+/**
+ * U13 免預約自助簽到 —— checkin_mode='self' 的課程期，家長不需先排課：
+ * 按「今日上課簽到」→ 同交易「即時補建一堂當日課堂（created_via='self_checkin'、
+ * status='completed'）＋勾選學員的簽到紀錄」。因為是真實 course_session，
+ * 堂數計算／教練上課紀錄／學習歷程／報表全部沿用既有資料路徑，零分岔。
+ *
+ * 防呆層次（server 為唯一真相，前端顯示過期只會收到明確 409）：
+ *  1. 同一期每日限一次：uq_sessions_self_checkin_daily partial unique index 硬保證，
+ *     雙擊／斷網重送／多裝置並發都不可能扣兩堂（撞鍵回 409 ALREADY_CHECKED_IN_TODAY）。
+ *  2. 堂數上限：非取消課堂數 >= total_sessions → 409 NO_SESSIONS_LEFT（與 slots 容量同款）。
+ *  3. advisory lock 序列化同期並發，容量檢查與建堂之間無競態。
+ *  4. 共班一堂＝一個 session，多位學員掛同一堂的多筆 checkin（不會一堂扣多堂）。
+ *  5. 過渡保護（預約制→自助切換期，既有已排課堂/既有簽到照舊有效）：
+ *     a. 同一期「今天」已有任何簽到（含預約課堂由家長/教練/櫃檯簽）→ 409，杜絕跨模式一天雙扣；
+ *     b. 今天已排、未簽到的預約課堂 → 直接簽進該堂（reused_booked_session=true，不另建），
+ *        預約課堂不會變成佔堂數的幽靈課堂。
+ * 家長不可自行撤銷（營運規則）；誤點由櫃檯走 DELETE /api/admin/checkins/self-sessions/:id。
+ */
+router.post('/self', requireParent, async (req, res) => {
+  const periodId = String(req.body?.course_period_id || '').trim();
+  const studentIds = Array.isArray(req.body?.student_ids)
+    ? [...new Set(req.body.student_ids.map((s) => String(s || '').trim()).filter(Boolean))]
+    : [];
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!UUID_RE.test(periodId)) return res.status(400).json({ error: 'course_period_id required', code: 'PERIOD_REQUIRED' });
+  if (!studentIds.length || studentIds.some((s) => !UUID_RE.test(s))) {
+    return res.status(400).json({ error: '請選擇至少一位今日上課的學員', code: 'STUDENTS_REQUIRED' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // 同期並發簽到序列化（容量檢查 → 建堂之間無競態）
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`self-checkin:${periodId}`]);
+
+    const pr = await client.query(
+      `SELECT cp.id, cp.status::text AS status, cp.checkin_mode, cp.total_sessions,
+              cp.coach_id, cp.venue_id, cp.course_type,
+              (cp.expires_at >= (NOW() AT TIME ZONE 'Asia/Taipei')::date) AS not_expired,
+              c.name AS coach_name, av.name AS venue_name
+         FROM course_periods cp
+         LEFT JOIN coaches c ON c.id = cp.coach_id
+         LEFT JOIN admin_venues av ON av.id = cp.venue_id
+        WHERE cp.id = $1
+        FOR UPDATE OF cp`,
+      [periodId]
+    );
+    if (!pr.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: '找不到課程期', code: 'PERIOD_NOT_FOUND' });
+    }
+    const period = pr.rows[0];
+    if (period.checkin_mode !== 'self') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '此課程為預約制，請先預約課程再簽到', code: 'SELF_CHECKIN_NOT_ENABLED' });
+    }
+    if (period.status !== 'active') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '此課程期目前非進行中，無法簽到', code: 'PERIOD_NOT_ACTIVE' });
+    }
+    if (!period.not_expired) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '此課程期已到期，請洽櫃檯', code: 'PERIOD_EXPIRED' });
+    }
+
+    // 學員必須屬於本家長且在本期 active 名單中（防越權／防誤選）
+    const own = await client.query(
+      `SELECT s.id, s.name
+         FROM students s
+         JOIN course_period_enrollments cpe
+           ON cpe.course_period_id = $2 AND cpe.student_id = s.id AND cpe.status = 'active'
+        WHERE s.id = ANY($1::uuid[]) AND s.parent_id = $3`,
+      [studentIds, periodId, req.parent.id]
+    );
+    if (own.rowCount !== studentIds.length) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: '所選學員不在此課程名單中', code: 'STUDENT_NOT_IN_PERIOD' });
+    }
+
+    // 過渡保護 1（預約制→自助切換期）：同一期「今天」已有任何簽到——不論是
+    // 預約課堂的逐堂簽到（家長/教練/櫃檯）或自助簽到——一律擋。每日一次的
+    // unique index 只涵蓋自助建立的課堂，這裡把跨模式的「一天雙扣」也關掉。
+    const todayCheckedIn = await client.query(
+      `SELECT 1 FROM checkin_records cr
+         JOIN course_sessions cs ON cs.id = cr.course_session_id
+        WHERE cs.course_period_id = $1
+          AND cs.status NOT IN ('cancelled_normal','cancelled_penalty')
+          AND (cr.checked_in_at AT TIME ZONE 'Asia/Taipei')::date = (NOW() AT TIME ZONE 'Asia/Taipei')::date
+        LIMIT 1`,
+      [periodId]
+    );
+    if (todayCheckedIn.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: '今日此課程已有簽到紀錄（每日限一堂）；如需更正請洽櫃檯',
+        code: 'ALREADY_CHECKED_IN_TODAY',
+      });
+    }
+
+    // 過渡保護 2：今天已排、尚未簽到的預約課堂 → 直接簽進「那一堂」，不另建課堂。
+    // 否則預約那堂會變成佔用堂數的幽靈課堂（家長看似扣了兩堂）。
+    const todayBooked = await client.query(
+      `SELECT id, scheduled_at FROM course_sessions
+        WHERE course_period_id = $1
+          AND status IN ('confirmed','completed')
+          AND (scheduled_at AT TIME ZONE 'Asia/Taipei')::date = (NOW() AT TIME ZONE 'Asia/Taipei')::date
+        ORDER BY scheduled_at
+        LIMIT 1`,
+      [periodId]
+    );
+    let sessionRow = null;
+    let reusedBookedSession = false;
+    if (todayBooked.rowCount) {
+      sessionRow = todayBooked.rows[0];
+      reusedBookedSession = true;
+      await client.query(
+        `UPDATE course_sessions
+            SET status = 'completed', completed_at = COALESCE(completed_at, NOW()), updated_at = NOW()
+          WHERE id = $1`,
+        [sessionRow.id]
+      );
+    } else {
+      // 堂數上限：非取消課堂（含預約制已排未上）達購買堂數即擋。
+      // 只有「需要新建課堂」時才檢查——簽進既有課堂不會增加課堂數。
+      const cap = await client.query(
+        `SELECT COUNT(*)::int AS n FROM course_sessions
+          WHERE course_period_id = $1 AND status NOT IN ('cancelled_normal','cancelled_penalty')`,
+        [periodId]
+      );
+      if (cap.rows[0].n >= period.total_sessions) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: '本期堂數已用完，如需續課請重新報名', code: 'NO_SESSIONS_LEFT' });
+      }
+
+      // 建當日課堂；同一期同一天第二次會撞 uq_sessions_self_checkin_daily → 409
+      try {
+        const ins = await client.query(
+          `INSERT INTO course_sessions
+             (course_period_id, coach_id, scheduled_at, duration_minutes, status,
+              completed_at, created_via, self_checkin_date)
+           VALUES ($1, $2, NOW(), 60, 'completed', NOW(), 'self_checkin',
+                   (NOW() AT TIME ZONE 'Asia/Taipei')::date)
+           RETURNING id, scheduled_at`,
+          [periodId, period.coach_id]
+        );
+        sessionRow = ins.rows[0];
+      } catch (e) {
+        if (e.code === '23505') {
+          await client.query('ROLLBACK');
+          return res.status(409).json({
+            error: '今日已完成簽到（同一課程每日限簽一次）；如需更正請洽櫃檯',
+            code: 'ALREADY_CHECKED_IN_TODAY',
+          });
+        }
+        throw e;
+      }
+    }
+
+    for (const s of own.rows) {
+      await client.query(
+        `INSERT INTO checkin_records
+           (course_session_id, student_id, checked_in_source, checked_in_by_parent_id)
+         VALUES ($1, $2, 'parent', $3)
+         ON CONFLICT (course_session_id, student_id) DO NOTHING`,
+        [sessionRow.id, s.id, req.parent.id]
+      );
+    }
+
+    // 最新已用堂數（DISTINCT session，與 /courses/mine 同一真相）供前端即時更新
+    const usedRes = await client.query(
+      `SELECT COUNT(DISTINCT cr.course_session_id)::int AS n
+         FROM checkin_records cr
+         JOIN course_sessions cs ON cs.id = cr.course_session_id
+        WHERE cs.course_period_id = $1`,
+      [periodId]
+    );
+    await client.query('COMMIT');
+
+    const used = usedRes.rows[0].n;
+    for (const s of own.rows) {
+      try {
+        broadcastAdminEvent('checkin:created', {
+          at: sessionRow.scheduled_at instanceof Date ? sessionRow.scheduled_at.toISOString() : String(sessionRow.scheduled_at),
+          session_id: sessionRow.id,
+          period_id: periodId,
+          venue_id: period.venue_id,
+          venue_name: period.venue_name || period.venue_id,
+          course_type: Number(period.course_type) || null,
+          coach: period.coach_name || '',
+          student: s.name || '',
+          source: 'parent_self',
+        });
+      } catch (e) { console.warn('[checkins/self] broadcast skipped:', e?.message); }
+    }
+
+    res.status(201).json({
+      ok: true,
+      session_id: sessionRow.id,
+      reused_booked_session: reusedBookedSession, // true＝簽進今天既有的預約課堂（未另建）
+      checked_in_students: own.rows.map((s) => s.name),
+      total_sessions: period.total_sessions,
+      used_sessions: used,
+      remaining_sessions: Math.max(0, period.total_sessions - used),
+    });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('[checkins/self POST]', err);
+    res.status(500).json({ error: '簽到失敗，請稍後再試或洽櫃檯', code: 'SELF_CHECKIN_FAILED' });
+  } finally {
+    client.release();
+  }
+});
 
 router.post('/', requireParent, async (req, res) => {
   const sessionId = String(req.body?.sessionId || '').trim();

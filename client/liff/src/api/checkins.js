@@ -11,4 +11,20 @@ export const checkinsApi = {
       checked_in_at: new Date().toISOString(),
       source: 'parent',
     })),
+
+  // U13 免預約自助簽到：POST /api/checkins/self { course_period_id, student_ids[] }
+  //   限 checkin_mode='self' 的課程期；同一期每日限一次（伺服器硬保證，可安心重試）。
+  //   回傳 { ok, session_id, checked_in_students, total_sessions, used_sessions, remaining_sessions }。
+  selfCheckin: ({ coursePeriodId, studentIds }) =>
+    callApi('/checkins/self', {
+      method: 'post',
+      data: { course_period_id: coursePeriodId, student_ids: studentIds },
+    }, () => ({
+      ok: true,
+      session_id: `sess_${Date.now()}`,
+      checked_in_students: [],
+      total_sessions: 6,
+      used_sessions: 1,
+      remaining_sessions: 5,
+    })),
 };

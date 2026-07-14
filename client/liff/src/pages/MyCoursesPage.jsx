@@ -6,6 +6,7 @@ import { checkoutApi } from '../api/checkout';
 import CourseCard from '../components/CourseCard';
 import LoadingSpinner from '../components/LoadingSpinner';
 import PaymentDisclaimerModal from '../components/PaymentDisclaimerModal';
+import SelfCheckinModal from '../components/SelfCheckinModal';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { usePendingPayments } from '../context/PendingPaymentsContext';
@@ -46,6 +47,8 @@ export default function MyCoursesPage() {
   const [cancellingId, setCancellingId] = useState(null);
   const [resolvingPaymentId, setResolvingPaymentId] = useState(null);
   const [paymentTarget, setPaymentTarget] = useState('');
+  // U13 免預約自助簽到：目前開啟簽到彈窗的課程卡（null = 關閉）
+  const [selfCheckinTarget, setSelfCheckinTarget] = useState(null);
 
   function load() {
     setLoadError(null);
@@ -181,14 +184,27 @@ export default function MyCoursesPage() {
     // 待櫃檯對帳期間（lifecycle 仍為 pending_payment）按鈕改顯示「已上傳，待櫃檯確認」，
     // 不再重複顯示「上傳付款資料」，避免家長誤以為要再次上傳。團報付款走另一條流程，不套用。
     const paymentSubmitted = !cp.group_order_id && !!cp.payment_proof_url && !!cp.transfer_last_5;
+    // U13 雙軌簽到：checkin_mode='self'（免預約自助簽到）的進行中課程，
+    // 「預約劃課／上課簽到」換成「今日上課簽到」＋「查看上課紀錄」；
+    // 預約制（booking，預設）維持原樣。
+    const isSelfMode = cp.checkin_mode === 'self';
     const actions = cp.lifecycle === 'active'
-      ? (cp.course_period_id ? [
+      ? (cp.course_period_id ? (isSelfMode ? [
+        { label: '聯繫教練', primary: true, disabled: true, onClick: () => {} },
+        {
+          label: cp.self_checked_in_today ? '今日已簽到 ✓' : '今日上課簽到',
+          tone: 'accent',
+          disabled: !!cp.self_checked_in_today,
+          onClick: () => setSelfCheckinTarget(cp),
+        },
+        { label: '查看上課紀錄', onClick: () => navigate(`/my-lessons?period=${cp.course_period_id}`) },
+      ] : [
         // 聯繫教練：依需求改為停用（灰掉、不可點）。
         { label: '聯繫教練', primary: true, disabled: true, onClick: () => {} },
         { label: '預約劃課', onClick: () => navigate(`/book-slot/${cp.course_period_id}`) },
         // 上課簽到：橘底黑字，進入該期六堂逐堂視圖（上課記錄頁，預選此期）。
         { label: '上課簽到', tone: 'accent', onClick: () => navigate(`/my-lessons?period=${cp.course_period_id}`) },
-      ] : [
+      ]) : [
         { label: '課程開通處理中', primary: true, disabled: true, onClick: () => {} },
       ])
       : (cp.lifecycle === 'pending_payment' ? [
@@ -306,6 +322,22 @@ export default function MyCoursesPage() {
           if (target) navigate(target);
         }}
         onCancel={() => setPaymentTarget('')}
+      />
+      <SelfCheckinModal
+        course={selfCheckinTarget}
+        onClose={() => setSelfCheckinTarget(null)}
+        onDone={(result) => {
+          setSelfCheckinTarget(null);
+          if (result?.error) {
+            toast.error(result.error);
+          } else {
+            toast.success(
+              `簽到完成：${(result.students || []).join('、')}（剩餘 ${result.remaining} 堂）`
+            );
+          }
+          // 無論成敗都重抓列表——伺服器為唯一真相，避免卡片顯示過期堂數
+          load();
+        }}
       />
     </div>
   );

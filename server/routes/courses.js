@@ -92,12 +92,15 @@ router.get('/mine', requireParent, async (req, res) => {
                       cs.created_at AS checkout_created_at,
                       invoice_number, invoice_image_url, invoice_url, invoice_issued_at,
                       extra_parent_phones, notes, group_order_id, is_group_shared,
-                      -- 已開通正式 course_period（團報走 group_order_id 共用、一般走 admin_enrollment_id），
+                      -- 已開通正式 course_period（團報走 group_order_id 共用、家庭共班走
+                      -- enrollment_batch_id+period_number 共用、其餘走 admin_enrollment_id），
                       -- 以 LATERAL 一次解析，供 期id / 到期 / 總堂數 / 教練修課係數 / 資深旗標 共用。
                       -- 係數/資深取自 course_period 的教練 FK（admin_enrollments.coach_id 多為空，不可靠）。
                       cper.id            AS course_period_id,
                       cper.expires_at,
                       cper.total_sessions AS period_total_sessions,
+                      cper.checkin_mode,
+                      cper.self_checked_in_today,
                       cper.pricing_multiplier,
                       cper.is_senior,
                       -- 課程轉讓頁(F-S08)用：本家長名下、在該 period active 掛載的學生 {id,name}。
@@ -111,9 +114,11 @@ router.get('/mine', requireParent, async (req, res) => {
                            AND cpe.status = 'active'
                            AND s.parent_id = $2
                       ) AS students_detail,
-                      -- 已出席堂數＝該 period 下、本家長學生的 checkin_records 計數；剩餘(未上課)＝總−已出席。
+                      -- 已出席堂數＝該 period 下、本家長學生有簽到的「堂數」（DISTINCT session）；
+                      -- 同堂多位小孩（家庭共班／團報同家庭多孩）一堂有多筆 checkin，
+                      -- 不可數列數，否則一堂被算成多堂。剩餘(未上課)＝總−已出席。
                       (
-                        SELECT COUNT(cr.id)::int
+                        SELECT COUNT(DISTINCT cs2.id)::int
                           FROM course_sessions cs2
                           JOIN checkin_records cr ON cr.course_session_id = cs2.id
                           JOIN students st ON st.id = cr.student_id
@@ -124,7 +129,13 @@ router.get('/mine', requireParent, async (req, res) => {
                  LEFT JOIN checkout_sessions cs ON cs.checkout_id = admin_enrollments.checkout_id
                  LEFT JOIN venues v ON v.id = admin_enrollments.venue_id
                  LEFT JOIN LATERAL (
-                   SELECT cp.id, cp.total_sessions, cp.expires_at, co.pricing_multiplier, co.is_senior
+                   SELECT cp.id, cp.total_sessions, cp.expires_at, cp.checkin_mode,
+                          co.pricing_multiplier, co.is_senior,
+                          EXISTS (SELECT 1 FROM course_sessions cs3
+                                   WHERE cs3.course_period_id = cp.id
+                                     AND cs3.created_via = 'self_checkin'
+                                     AND cs3.self_checkin_date = (NOW() AT TIME ZONE 'Asia/Taipei')::date
+                                     AND cs3.status NOT IN ('cancelled_normal','cancelled_penalty')) AS self_checked_in_today
                      FROM course_periods cp
                      LEFT JOIN coaches co ON co.id = cp.coach_id
                     WHERE cp.id = COALESCE(
@@ -132,6 +143,11 @@ router.get('/mine', requireParent, async (req, res) => {
                                WHERE admin_enrollments.group_order_id IS NOT NULL
                                  AND cp2.group_order_id = admin_enrollments.group_order_id
                                ORDER BY cp2.created_at LIMIT 1),
+                            (SELECT cp2.id FROM course_periods cp2
+                               WHERE admin_enrollments.enrollment_batch_id IS NOT NULL
+                                 AND cp2.enrollment_batch_id = admin_enrollments.enrollment_batch_id
+                                 AND cp2.period_number = COALESCE(admin_enrollments.period_number, 1)
+                               LIMIT 1),
                             (SELECT cp2.id FROM course_periods cp2
                                WHERE cp2.admin_enrollment_id = admin_enrollments.id
                                ORDER BY cp2.created_at LIMIT 1))
@@ -189,6 +205,8 @@ router.get('/mine', requireParent, async (req, res) => {
       payment_status: toPaymentStatus(row.status),
       lifecycle: toLifecycle(row, total, used),
       course_period_id: canAccessPeriod ? row.course_period_id : null,
+      checkin_mode: canAccessPeriod ? (row.checkin_mode || 'booking') : 'booking',
+      self_checked_in_today: canAccessPeriod ? !!row.self_checked_in_today : false,
       expires_at: canAccessPeriod ? row.expires_at : null,
       submitted_at: row.submitted_at,
       total_sessions: total,
@@ -221,9 +239,38 @@ router.get('/mine', requireParent, async (req, res) => {
       };
     });
 
+    // U12 家庭共班顯示合併：同批多學員（一對二以上）開通後共用同一 course_period，
+    // 兄弟子訂單合併成「一張」課程卡（學員合併、金額加總；堂數本來就同源自共用 period），
+    // 避免 3 位小孩顯示成 3 期 18 堂。合併鍵＝course_period_id（非團報、已開通才會共用）。
+    // 一對一多小孩各有獨立 period → 天然不會被合併；取消/退費列維持獨立顯示。
+    const periodGroups = new Map();
+    const displayRows = [];
+    for (const row of shapedRows) {
+      const mergeable = !row.group_order_id
+        && row.course_period_id
+        && (row.lifecycle === 'active' || row.lifecycle === 'completed');
+      if (!mergeable) { displayRows.push(row); continue; }
+      if (!periodGroups.has(row.course_period_id)) periodGroups.set(row.course_period_id, []);
+      periodGroups.get(row.course_period_id).push(row);
+    }
+    for (const rows of periodGroups.values()) {
+      if (rows.length === 1) { displayRows.push(rows[0]); continue; }
+      const sorted = rows.slice().sort((a, b) =>
+        (new Date(a.submitted_at) - new Date(b.submitted_at)) || String(a.id).localeCompare(String(b.id)));
+      const base = sorted[0];
+      displayRows.push({
+        ...base,
+        students: Array.from(new Set(sorted.flatMap((row) => row.students || []).filter(Boolean))),
+        original_price: sorted.reduce((sum, row) => sum + (Number(row.original_price) || 0), 0),
+        final_price: sorted.reduce((sum, row) => sum + (Number(row.final_price) || 0), 0),
+        sub_order_ids: sorted.map((row) => row.id),
+        sub_order_count: sorted.length,
+      });
+    }
+
     const checkoutGroups = new Map();
     const out = [];
-    for (const row of shapedRows) {
+    for (const row of displayRows) {
       const pendingGroupKey = row.lifecycle === 'pending_payment' && !row.group_order_id
         ? (row.checkout_id || (row.enrollment_batch_id ? `batch:${row.enrollment_batch_id}` : null))
         : null;
@@ -356,70 +403,35 @@ router.get('/:id', requireParent, async (req, res) => {
               e.period_count, e.enrollment_batch_id, e.checkout_id,
               e.invoice_number, e.invoice_image_url, e.submitted_at, e.group_order_id,
               e.total_sessions, e.used_sessions, e.is_group_shared, e.carrier,
-              -- 與 /mine 相同：團報走 group_order_id（共用）、一般報名走 admin_enrollment_id。
-              COALESCE(
-                (SELECT cp.id FROM course_periods cp
-                   WHERE e.group_order_id IS NOT NULL
-                     AND cp.group_order_id = e.group_order_id
-                   ORDER BY cp.created_at LIMIT 1),
-                (SELECT cp.id FROM course_periods cp
-                   WHERE cp.admin_enrollment_id = e.id
-                   ORDER BY cp.created_at LIMIT 1)
-              ) AS course_period_id,
+              -- 與 /mine 相同：團報走 group_order_id（共用）、家庭共班走
+              -- enrollment_batch_id+period_number（共用）、其餘走 admin_enrollment_id。
+              -- 解析收斂在下方 LATERAL cper，一次算好供各欄位共用。
+              cper.id AS course_period_id,
               -- 到期日來自正式 course_period（admin_enrollments 無此欄）。
-              COALESCE(
-                (SELECT cp.expires_at FROM course_periods cp
-                   WHERE e.group_order_id IS NOT NULL
-                     AND cp.group_order_id = e.group_order_id
-                   ORDER BY cp.created_at LIMIT 1),
-                (SELECT cp.expires_at FROM course_periods cp
-                   WHERE cp.admin_enrollment_id = e.id
-                   ORDER BY cp.created_at LIMIT 1)
-              ) AS expires_at,
+              cper.expires_at,
+              cper.checkin_mode,
+              cper.self_checked_in_today,
               -- 係數/資深取自 course_period 的教練 FK（e.coach_id 多為空，不可靠）。
-              (SELECT co.pricing_multiplier FROM course_periods cp JOIN coaches co ON co.id = cp.coach_id
-                WHERE cp.id = COALESCE(
-                        (SELECT cp2.id FROM course_periods cp2 WHERE e.group_order_id IS NOT NULL AND cp2.group_order_id = e.group_order_id ORDER BY cp2.created_at LIMIT 1),
-                        (SELECT cp2.id FROM course_periods cp2 WHERE cp2.admin_enrollment_id = e.id ORDER BY cp2.created_at LIMIT 1))) AS pricing_multiplier,
-              (SELECT co.is_senior FROM course_periods cp JOIN coaches co ON co.id = cp.coach_id
-                WHERE cp.id = COALESCE(
-                        (SELECT cp2.id FROM course_periods cp2 WHERE e.group_order_id IS NOT NULL AND cp2.group_order_id = e.group_order_id ORDER BY cp2.created_at LIMIT 1),
-                        (SELECT cp2.id FROM course_periods cp2 WHERE cp2.admin_enrollment_id = e.id ORDER BY cp2.created_at LIMIT 1))) AS is_senior,
-              -- 已出席堂數（本家長學生於該 period 的 checkin_records 計數）與總堂數（取自 course_period）。
+              cper.pricing_multiplier,
+              cper.is_senior,
+              -- 已出席堂數（本家長學生有簽到的 DISTINCT session 數；同堂多位小孩一堂多筆
+              -- checkin，不可數列數）與總堂數（取自 course_period）。
               (
-                SELECT COUNT(cr.id)::int
+                SELECT COUNT(DISTINCT cs2.id)::int
                   FROM course_sessions cs2
                   JOIN checkin_records cr ON cr.course_session_id = cs2.id
                   JOIN students st ON st.id = cr.student_id
-                 WHERE cs2.course_period_id = COALESCE(
-                         (SELECT cp.id FROM course_periods cp
-                            WHERE e.group_order_id IS NOT NULL AND cp.group_order_id = e.group_order_id
-                            ORDER BY cp.created_at LIMIT 1),
-                         (SELECT cp.id FROM course_periods cp
-                            WHERE cp.admin_enrollment_id = e.id ORDER BY cp.created_at LIMIT 1))
+                 WHERE cs2.course_period_id = cper.id
                    AND st.parent_id = $2
               ) AS attended_sessions,
-              (
-                SELECT cp.total_sessions FROM course_periods cp
-                 WHERE cp.id = COALESCE(
-                         (SELECT cp2.id FROM course_periods cp2
-                            WHERE e.group_order_id IS NOT NULL AND cp2.group_order_id = e.group_order_id
-                            ORDER BY cp2.created_at LIMIT 1),
-                         (SELECT cp2.id FROM course_periods cp2
-                            WHERE cp2.admin_enrollment_id = e.id ORDER BY cp2.created_at LIMIT 1))
-              ) AS period_total_sessions,
+              cper.total_sessions AS period_total_sessions,
               (
                 SELECT COALESCE(
                          jsonb_agg(jsonb_build_object('id', s.id, 'name', s.name) ORDER BY s.name),
                          '[]'::jsonb)
                   FROM course_period_enrollments cpe
                   JOIN students s ON s.id = cpe.student_id
-                 WHERE cpe.course_period_id = COALESCE(
-                         (SELECT cp2.id FROM course_periods cp2
-                            WHERE e.group_order_id IS NOT NULL AND cp2.group_order_id = e.group_order_id
-                            ORDER BY cp2.created_at LIMIT 1),
-                         (SELECT cp2.id FROM course_periods cp2
-                            WHERE cp2.admin_enrollment_id = e.id ORDER BY cp2.created_at LIMIT 1))
+                 WHERE cpe.course_period_id = cper.id
                    AND cpe.status = 'active'
                    AND s.parent_id = $2
               ) AS students_detail,
@@ -433,6 +445,30 @@ router.get('/:id', requireParent, async (req, res) => {
          FROM admin_enrollments e
          LEFT JOIN venues v ON v.id = e.venue_id
          LEFT JOIN admin_venues av ON av.id = e.venue_id
+         LEFT JOIN LATERAL (
+           SELECT cp.id, cp.expires_at, cp.total_sessions, cp.checkin_mode,
+                  co.pricing_multiplier, co.is_senior,
+                  EXISTS (SELECT 1 FROM course_sessions cs3
+                           WHERE cs3.course_period_id = cp.id
+                             AND cs3.created_via = 'self_checkin'
+                             AND cs3.self_checkin_date = (NOW() AT TIME ZONE 'Asia/Taipei')::date
+                             AND cs3.status NOT IN ('cancelled_normal','cancelled_penalty')) AS self_checked_in_today
+             FROM course_periods cp
+             LEFT JOIN coaches co ON co.id = cp.coach_id
+            WHERE cp.id = COALESCE(
+                    (SELECT cp2.id FROM course_periods cp2
+                       WHERE e.group_order_id IS NOT NULL
+                         AND cp2.group_order_id = e.group_order_id
+                       ORDER BY cp2.created_at LIMIT 1),
+                    (SELECT cp2.id FROM course_periods cp2
+                       WHERE e.enrollment_batch_id IS NOT NULL
+                         AND cp2.enrollment_batch_id = e.enrollment_batch_id
+                         AND cp2.period_number = COALESCE(e.period_number, 1)
+                       LIMIT 1),
+                    (SELECT cp2.id FROM course_periods cp2
+                       WHERE cp2.admin_enrollment_id = e.id
+                       ORDER BY cp2.created_at LIMIT 1))
+         ) cper ON true
         WHERE e.id = $1`,
       [req.params.id, req.parent.id]
     );
@@ -478,6 +514,8 @@ router.get('/:id', requireParent, async (req, res) => {
       payment_status: row.status,
       lifecycle,
       course_period_id: canAccessPeriod ? row.course_period_id : null,
+      checkin_mode: canAccessPeriod ? (row.checkin_mode || 'booking') : 'booking',
+      self_checked_in_today: canAccessPeriod ? !!row.self_checked_in_today : false,
       total_sessions: total,
       used_sessions: used,
       remaining_sessions: remaining,

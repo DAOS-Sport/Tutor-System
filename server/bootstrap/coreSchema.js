@@ -20,6 +20,17 @@ DO $$ BEGIN CREATE TYPE enrollment_status AS ENUM ('active','transferred_out'); 
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
+-- 全站統一台灣時區的最後一道防線：把「資料庫預設時區」也設成 Asia/Taipei。
+-- 應用層已三重覆蓋（server/index.js 的 process.env.TZ、models/db.js 每條 pool 連線
+-- SET TIME ZONE、cron 的 timezone 選項），但維運 script / psql / 測試用的裸連線
+-- 吃的是資料庫預設值（多為 GMT），日期邊界運算（NOW()::date 等）會差 8 小時。
+-- 需 database owner 權限；無權限時警告不中斷（pool 連線仍逐條設定，不受影響）。
+DO $$ BEGIN
+  EXECUTE format('ALTER DATABASE %I SET timezone TO %L', current_database(), 'Asia/Taipei');
+EXCEPTION WHEN OTHERS THEN
+  RAISE WARNING '設定資料庫預設時區 Asia/Taipei 失敗（需 owner 權限）: %', SQLERRM;
+END $$;
+
 CREATE TABLE IF NOT EXISTS venues (
   id VARCHAR(10) PRIMARY KEY,
   name VARCHAR(100) NOT NULL,
@@ -504,6 +515,41 @@ DO $$ BEGIN
       ON course_periods(admin_enrollment_id) WHERE admin_enrollment_id IS NOT NULL;
   EXCEPTION WHEN OTHERS THEN
     RAISE WARNING 'uq_course_periods_admin_enrollment 建立失敗（可能有重複 admin_enrollment_id），略過: %', SQLERRM;
+  END;
+  -- U12 家庭共班：同一家長多位學員報名一對二以上課程時，家長端訂單按「學員 × 期數」
+  -- 拆成多筆 admin_enrollments（共用 enrollment_batch_id）。這些兄弟訂單實體上是
+  -- 「同一班、同一期」→ 對帳開通時以 (enrollment_batch_id, period_number) 冪等
+  -- get-or-create「一個」共用 course_period（全班共用同一堂數池），否則會膨脹成
+  -- 每位小孩各自一期。一對一或單學員報名此欄維持 NULL（沿用 admin_enrollment_id 冪等）。
+  ALTER TABLE course_periods ADD COLUMN IF NOT EXISTS enrollment_batch_id UUID;
+  BEGIN
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_course_periods_batch_period
+      ON course_periods(enrollment_batch_id, period_number) WHERE enrollment_batch_id IS NOT NULL;
+  EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'uq_course_periods_batch_period 建立失敗（保留既有資料／索引）: %', SQLERRM;
+  END;
+  -- U13 雙軌簽到：checkin_mode —— 'self'（免預約自助簽到，2026-07-14 起全站預設：
+  -- 家長按「今日上課簽到」當下自動補建一堂當日課堂＋簽到，堂數/教練紀錄/學習歷程/
+  -- 報表全部沿用既有資料路徑）｜'booking'（預約制，後台可逐期或整館切換回來）。
+  -- 既有期別的一次性切換在 migration 031（bootstrap 不做全表 UPDATE，
+  -- 避免每次重啟覆蓋管理者手動切回 booking 的期別）。
+  ALTER TABLE course_periods ADD COLUMN IF NOT EXISTS checkin_mode TEXT NOT NULL DEFAULT 'self';
+  ALTER TABLE course_periods ALTER COLUMN checkin_mode SET DEFAULT 'self';
+  BEGIN
+    ALTER TABLE course_periods ADD CONSTRAINT chk_course_periods_checkin_mode
+      CHECK (checkin_mode IN ('booking','self'));
+  EXCEPTION WHEN duplicate_object THEN NULL; END;
+  -- 自助簽到建立的課堂：created_via 標記來源（後台/報表可分辨）；self_checkin_date 記
+  -- 台灣營運日，配 partial unique index 做「同一期每日限一次」的 DB 硬保證（雙擊/重送/
+  -- 多裝置並發都擋）。櫃檯撤銷時清 NULL（釋放當日名額）＋課堂轉 cancelled_normal。
+  ALTER TABLE course_sessions ADD COLUMN IF NOT EXISTS created_via TEXT NOT NULL DEFAULT 'booking';
+  ALTER TABLE course_sessions ADD COLUMN IF NOT EXISTS self_checkin_date DATE;
+  BEGIN
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_sessions_self_checkin_daily
+      ON course_sessions(course_period_id, self_checkin_date)
+      WHERE created_via = 'self_checkin' AND self_checkin_date IS NOT NULL;
+  EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'uq_sessions_self_checkin_daily 建立失敗（保留既有資料／索引）: %', SQLERRM;
   END;
   ALTER TABLE course_sessions   ADD COLUMN IF NOT EXISTS coach_id UUID REFERENCES coaches(id) ON DELETE RESTRICT;
   -- F2：換教練歸屬。reassigned_from_coach_id 記錄「轉走前的原授課教練」，
@@ -1749,6 +1795,23 @@ function relHour(daysFromToday, hour, minute = 0) {
 
 async function ensureSchema() {
   await pool.query(DDL);
+  // U13 一次性營運切換（2026-07-14 上架決策）：全部既有課程期改為「自助簽到」。
+  // 以 system_flags 冪等——只在旗標第一次寫入時執行整批 UPDATE；之後管理者於後台
+  // 手動切回 booking 的期別不會被重啟覆蓋。production 部署重啟即自動生效，
+  // 與 db/migrations/031 等價（先跑 migration 的環境旗標照插、UPDATE 命中 0 列）。
+  await pool.query(
+    `CREATE TABLE IF NOT EXISTS system_flags (key TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`
+  );
+  const flag = await pool.query(
+    `INSERT INTO system_flags (key) VALUES ('u13_self_checkin_default_20260714')
+     ON CONFLICT (key) DO NOTHING RETURNING key`
+  );
+  if (flag.rowCount) {
+    const upd = await pool.query(
+      `UPDATE course_periods SET checkin_mode = 'self', updated_at = NOW() WHERE checkin_mode <> 'self'`
+    );
+    console.log(`[bootstrap/U13] 全站課程期一次性切換為自助簽到：${upd.rowCount} 期`);
+  }
 }
 
 async function seedVenuesCoachesParents() {

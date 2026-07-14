@@ -15,6 +15,7 @@ import ManualEnrollPage from './pages/ManualEnrollPage';
 import RefundPage from './pages/RefundPage';
 import SessionsPage from './pages/SessionsPage';
 import CheckinPage from './pages/CheckinPage';
+import CheckinModesPage from './pages/CheckinModesPage';
 import RevivePage from './pages/RevivePage';
 import ManualDeductionPage from './pages/ManualDeductionPage';
 import ChatLogsPage from './pages/ChatLogsPage';
@@ -82,6 +83,7 @@ export default function App() {
         {/* 場館營運 */}
         <Route path="/sessions" element={<RequireAuth roles={ALL}><SessionsPage /></RequireAuth>} />
         <Route path="/checkin"  element={<RequireAuth roles={ALL}><CheckinPage /></RequireAuth>} />
+        <Route path="/checkin-modes" element={<RequireAuth roles={ALL}><CheckinModesPage /></RequireAuth>} />
         <Route path="/manual-deduction" element={<RequireAuth roles={['admin', 'manager', 'staff']}><ManualDeductionPage /></RequireAuth>} />
         <Route path="/revive"   element={<RequireAuth roles={['admin', 'manager', 'staff']}><RevivePage /></RequireAuth>} />
 
