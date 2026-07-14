@@ -3537,14 +3537,16 @@ async function _loadZ03RecordByRagicId(ragicRecordId) {
  * 兩處都不在熱路徑打 Ragic。比對同時接受「原字串相等」與「去非數字後相等」
  * （Ragic 端電話可能帶 - / 空白等格式符號）。
  * 回傳 { row, parent, students }（parent/students 已轉成 mapZ01Parent/認領驗證可用的形狀），
- * 查無回 null。只取 pending；resolved 是歷史畢業列，不應再攔截綁定/註冊熱路徑。
+ * 查無回 null。取 pending，以及可由同 source 同名重新驗證恢復的舊
+ * AMBIGUOUS_STUDENT_MATCH；其他 manual_review 與 resolved 不攔截熱路徑。
  */
 async function findZ03RecordByPhone(phone) {
   const phoneCanonical = normalizePhone(phone);
   if (!phoneCanonical) return null;
   const r = await pool.query(
     `SELECT * FROM ragic_z03_records
-      WHERE status = 'pending'
+      WHERE (status = 'pending'
+        OR (status = 'manual_review' AND reason_code = 'AMBIGUOUS_STUDENT_MATCH'))
         AND (phone_canonical = $1
           OR phone = $2
           OR regexp_replace(COALESCE(phone,''), '\\D', '', 'g') = $1)

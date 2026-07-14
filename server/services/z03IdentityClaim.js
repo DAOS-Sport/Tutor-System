@@ -697,16 +697,6 @@ async function claimZ03Identity({
     const matchedFamilies = families.filter((row) => matchedFamilyIds.includes(row.id));
     let aliasFamilies = [];
     let resolutionMethod = 'PHONE_AND_EXACT_STUDENT_NAME';
-    if (exactMatches.length > 1 && matchedFamilyIds.length === 1) {
-      reviewContext = {
-        z03Ids: matchedFamilyIds,
-        sourceRecordId: matchedFamilies[0]?.z01_ragic_record_id || null,
-        code: 'AMBIGUOUS_STUDENT_MATCH',
-      };
-      throw new Z03ClaimError('AMBIGUOUS_STUDENT_MATCH', '同一 source 內學員姓名命中多列', 409, {
-        reason: 'DATA_RECONCILIATION_PENDING',
-      });
-    }
     if (matchedFamilyIds.length > 1) {
       // Evidence-only winner order. No ID ordering, timestamps or first-row
       // fallback may choose the primary source.
@@ -819,7 +809,11 @@ async function claimZ03Identity({
     const matchedChild = exactMatches[0];
     const family = families.find((row) => row.id === matchedChild.z03_record_id);
     if (!family) throw new Z03ClaimError('LOCAL_TRANSACTION_FAILED', 'Z03 family/child 關係不一致', 500);
-    if (family.status === 'manual_review') {
+    const recoverableSameSourceDuplicate = family.status === 'manual_review'
+      && family.reason_code === 'AMBIGUOUS_STUDENT_MATCH'
+      && matchedFamilyIds.length === 1
+      && exactMatches.length > 1;
+    if (family.status === 'manual_review' && !recoverableSameSourceDuplicate) {
       throw new Z03ClaimError('MANUAL_REVIEW_REQUIRED', '此 Z03 family 已進人工處理', 409, {
         reason: family.reason_code || 'MANUAL_REVIEW',
       });

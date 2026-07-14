@@ -28,6 +28,7 @@ const phones = {
 };
 const lineUids = {
   claim: `U${crypto.randomBytes(16).toString('hex')}`,
+  ambiguous: `U${crypto.randomBytes(16).toString('hex')}`,
   formal: `U${crypto.randomBytes(16).toString('hex')}`,
 };
 
@@ -219,7 +220,7 @@ async function testLocalFirstClaimAndOutbox() {
   assert.strictEqual(writes, 1);
 }
 
-async function testZeroAndAmbiguousMatchesFailClosed() {
+async function testZeroMatchFailsClosedAndSameSourceDuplicateNameBinds() {
   await upsertZ03(sourceRow({
     id: sourceIds.noMatch,
     phone: phones.noMatch,
@@ -240,13 +241,26 @@ async function testZeroAndAmbiguousMatchesFailClosed() {
     phone: phones.ambiguous,
     students: [{ name: '同名學生', seq: '1' }, { name: '同名 學生', seq: '2' }],
   }));
-  await assert.rejects(
-    () => claimZ03Identity({ phone: phones.ambiguous, studentName: '同名學生', lineUid: `U${crypto.randomBytes(16).toString('hex')}` }),
-    (err) => err instanceof Z03ClaimError && err.code === 'AMBIGUOUS_STUDENT_MATCH'
-  );
-  assert.strictEqual((await pool.query(
-    `SELECT status FROM ragic_z03_records WHERE z01_ragic_record_id=$1`, [sourceIds.ambiguous]
-  )).rows[0].status, 'manual_review');
+  const duplicateName = await claimZ03Identity({
+    phone: phones.ambiguous,
+    studentName: '同名學生',
+    lineUid: lineUids.ambiguous,
+  });
+  assert.strictEqual(duplicateName.sync_state, 'SYNC_PENDING');
+  const duplicateState = (await pool.query(
+    `SELECT
+       (SELECT status FROM ragic_z03_records WHERE z01_ragic_record_id=$1) AS status,
+       (SELECT COUNT(*)::int FROM parents WHERE phone=$2) AS parents,
+       (SELECT COUNT(*)::int FROM ragic_sync_outbox WHERE source_record_id=$1) AS outbox,
+       (SELECT COUNT(DISTINCT s.canonical_student_id)::int
+          FROM ragic_z03_students s
+          JOIN ragic_z03_records r ON r.id=s.z03_record_id
+         WHERE r.z01_ragic_record_id=$1 AND s.canonical_student_id IS NOT NULL) AS canonical_students`,
+    [sourceIds.ambiguous, phones.ambiguous]
+  )).rows[0];
+  assert.deepStrictEqual(duplicateState, {
+    status: 'resolved', parents: 1, outbox: 1, canonical_students: 1,
+  });
 }
 
 async function testTrueUidGoesFormalOnlyAndSharesCanonicalParent() {
@@ -298,7 +312,7 @@ async function testBlankUidCoverageInvariant() {
     await testNormalization();
     await testSplitAndIdempotentZ03();
     await testLocalFirstClaimAndOutbox();
-    await testZeroAndAmbiguousMatchesFailClosed();
+    await testZeroMatchFailsClosedAndSameSourceDuplicateNameBinds();
     await testTrueUidGoesFormalOnlyAndSharesCanonicalParent();
     await testBlankUidCoverageInvariant();
     console.log('ragic_z01_z03_split_claim: PASS (6 suites)');

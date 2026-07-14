@@ -56,5 +56,9 @@ tests/release/parent_identity_release_manifest.json
 tests/release/safety_invariants_test.js
 tests/release/schema_freshness_test.js
 tests/release/source_claim_concurrency_test.js
+tests/release/z03_persisted_error_recovery_test.js
+tests/release/z03_random_sample_login_test.js
+tests/release/z03_registration_form_50_batch_test.js
+tests/release/z03_same_source_duplicate_student_bind_test.js
 excluded-unrelated-files.txt
 parent-identity-release-files.txt
