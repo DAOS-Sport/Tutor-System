@@ -225,9 +225,10 @@ async function call(base, method, path, { token, body } = {}) {
     await pg.query(`UPDATE course_periods SET total_sessions = 6 WHERE id = $1`, [periodId]);
 
     // 9) 過渡保護：今天已排「預約課堂」未簽到 → 自助簽到直接簽進那一堂（不另建）
+    // 排在「當下」而非 +1 小時：接近午夜時 +1 小時會跨日，導致不屬於「今日」課堂（測試時間脆弱性）
     const booked = await pg.query(
       `INSERT INTO course_sessions (course_period_id, coach_id, scheduled_at, status)
-       VALUES ($1, $2, NOW() + interval '1 hour', 'confirmed') RETURNING id`,
+       VALUES ($1, $2, NOW(), 'confirmed') RETURNING id`,
       [periodId, coachId]
     );
     const beforeCount = await pg.query(

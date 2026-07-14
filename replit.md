@@ -148,6 +148,9 @@ get_architecture(...)  # 整體架構摘要
   - **手動扣課頁查無資料**：後端實測正常（完整重現正式流程：購買→對帳→自助簽到→搜尋命中），需輸入 ≥2 字的家長姓名/電話/學員姓名/報名編號後搜尋，頁面不自動列出全部。
   - **驗證**：admin_sessions_regression（F-R01/F-R03/F-M05 場館防護＋補簽到＋復活）、U13 全項、家庭共班、拆單聚合、smoke 全過。UNION 修過 uuid/text 型別衝突（id::text）。
   - **需重新部署**（Publish）後正式環境生效。
+  - **（同輪追加）「扣課復活」(F-M05) 同款修正**：清單只讀舊示範表 `admin_cancelled_sessions` → 主資料源改讀真實「已扣堂取消」課堂（`course_sessions.status='cancelled_penalty'`）＋UNION 舊表相容；revive 對真實課堂＝轉 `cancelled_normal`（歸還、退出清單）＋anchor 報名 audit＋used_sessions 相容遞減，舊表 id 走原路徑（F-M05 回歸全過）。
+  - **（同輪追加）正式環境「測試紀錄」根除**：`bootstrap/admin.js` 原本只要 `admin_today_sessions`/`admin_cancelled_sessions` 空表就種 demo 列（含 production！刪了重啟又長回來）→ 改為僅非 production 種；production 反向自動清除固定 demo id（SE001-4/SX001-2，重啟即消失），`demo_cleanup_prod.sql` 同步涵蓋。使用者在正式「扣課復活」看到的舊測試紀錄即此來源。
+  - **測試時間脆弱性修正**：self_checkin_mode 情境 9 的「今日預約課堂」改排 NOW()（原 +1 小時在接近午夜時跨日導致誤判）。
 - 2026-07-14：U13 雙軌簽到（新系統過渡期：舊生/教練未養成預約習慣 → 免預約自助簽到模式）：
   - **模式開關**：`course_periods.checkin_mode`——`booking`（預約制，預設，行為完全不變）｜`self`（免預約自助簽到）。schema：migration 030＋coreSchema bootstrap（含 CHECK constraint）。
   - **自助簽到本質＝簽到當下補建真實課堂**：`POST /api/checkins/self`（家長）同交易建 `course_sessions`（`created_via='self_checkin'`、status=completed、時間=當下）＋勾選學員的 `checkin_records`（共班一次一堂多筆簽到）→ 堂數計算/教練今日課程與上課紀錄/學習歷程/報表/儀表板 WS 即時通知全部沿用既有資料路徑，零分岔。教練今日課程查詢不 JOIN slots，自助課堂自然出現。

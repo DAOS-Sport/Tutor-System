@@ -246,16 +246,36 @@ router.get('/verify-checkin', requireAdminAuth, async (req, res) => {
 });
 
 // 櫃台（staff）可唯讀檢視（getScopedVenueIds 會自動鎖其場館）；實際「歸還」仍僅 admin/manager
+// U13 修正：主資料源改讀「真實已扣堂取消」課堂（course_sessions.status='cancelled_penalty'，
+// 即逾時取消堂數已扣者），UNION 舊示範表 admin_cancelled_sessions 向後相容——舊版只讀
+// 示範表，真實取消永遠不會出現（正式環境只看得到當年測試殘留）。
 router.get('/cancelled', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
   try {
     const scope = getScopedVenueIds(req);
     const args = [];
-    let sql = `SELECT * FROM admin_cancelled_sessions`;
+    let sql = `SELECT * FROM (
+      SELECT cs.id::text AS id,
+             ((cs.scheduled_at AT TIME ZONE 'Asia/Taipei')::date)::text AS date,
+             to_char(cs.scheduled_at AT TIME ZONE 'Asia/Taipei', 'HH24:MI') AS start_time,
+             COALESCE(cp.admin_enrollment_id, '') AS period_id,
+             COALESCE(ae.parent_name, '') AS parent_name,
+             COALESCE(c.name, '') AS coach,
+             cp.venue_id,
+             FALSE AS refunded
+        FROM course_sessions cs
+        JOIN course_periods cp ON cp.id = cs.course_period_id
+        LEFT JOIN admin_enrollments ae ON ae.id = cp.admin_enrollment_id
+        LEFT JOIN coaches c ON c.id = COALESCE(cs.coach_id, cp.coach_id)
+       WHERE cs.status = 'cancelled_penalty'
+      UNION ALL
+      SELECT id::text AS id, date::text AS date, start_time, period_id, parent_name, coach, venue_id, refunded
+        FROM admin_cancelled_sessions
+    ) t WHERE TRUE`;
     if (scope) {
       args.push(scope);
-      sql += ` WHERE venue_id = ANY($1::text[])`;
+      sql += ` AND t.venue_id = ANY($1::text[])`;
     }
-    sql += ` ORDER BY date DESC, start_time`;
+    sql += ` ORDER BY t.date DESC, t.start_time`;
     const r = await pool.query(sql, args);
     res.json(r.rows.map(rowToCancelled));
   } catch (err) {
@@ -269,6 +289,49 @@ router.post('/:id/revive', requireAdminAuth, requireAdminRole('admin', 'manager'
   try {
     await client.query('BEGIN');
     const { id } = req.params;
+
+    // U13：真實已扣堂取消（cancelled_penalty）的復活——轉為 cancelled_normal（＝堂數歸還、
+    // 不再列於扣課復活清單），audit 掛 anchor 報名單；找不到真實課堂時退回舊示範表路徑。
+    const real = await client.query(
+      `SELECT cs.id, cs.status::text AS status, cp.venue_id, cp.admin_enrollment_id
+         FROM course_sessions cs
+         JOIN course_periods cp ON cp.id = cs.course_period_id
+        WHERE cs.id::text = $1
+        FOR UPDATE OF cs`,
+      [id]
+    );
+    if (real.rowCount) {
+      const row = real.rows[0];
+      if (!isVenueInScope(req, row.venue_id)) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({ error: '此時段不在您的場館範圍內' });
+      }
+      if (row.status !== 'cancelled_penalty') {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: '僅「已扣堂」的取消課堂可復活', code: 'NOT_PENALTY_CANCELLED' });
+      }
+      await client.query(
+        `UPDATE course_sessions SET status = 'cancelled_normal', updated_at = NOW() WHERE id = $1`,
+        [id]
+      );
+      if (row.admin_enrollment_id) {
+        const by = req.adminUser?.name || req.adminUser?.username || 'unknown';
+        await client.query(
+          `UPDATE admin_enrollments
+              SET used_sessions = GREATEST(COALESCE(used_sessions, 0) - 1, 0), updated_at = NOW()
+            WHERE id = $1 AND used_sessions IS NOT NULL AND used_sessions > 0`,
+          [row.admin_enrollment_id]
+        );
+        await client.query(
+          `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user)
+           SELECT id, $2, $3 FROM admin_enrollments WHERE id = $1`,
+          [row.admin_enrollment_id, `扣課復活（課堂 ${id}，已歸還 1 堂）`, by]
+        );
+      }
+      await client.query('COMMIT');
+      return res.json({ id, refunded: true });
+    }
+
     const cur = await client.query(`SELECT * FROM admin_cancelled_sessions WHERE id = $1 FOR UPDATE`, [id]);
     if (!cur.rowCount) {
       await client.query('ROLLBACK');

@@ -132,4 +132,9 @@ UPDATE venues
        updated_at             = NOW()
  WHERE id = 'B' AND account_number = '00012345678900';
 
+-- 11) 舊示範表的 demo 固定 id（上課記錄查詢／扣課復活的測試殘留；
+--     production bootstrap 亦會自動清除，此處供手動 cleanup 一致涵蓋）
+DELETE FROM admin_today_sessions WHERE id IN ('SE001','SE002','SE003','SE004');
+DELETE FROM admin_cancelled_sessions WHERE id IN ('SX001','SX002');
+
 COMMIT;

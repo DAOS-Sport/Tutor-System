@@ -490,30 +490,45 @@ async function seedIfEmpty() {
     }
   }
 
-  // Today sessions
-  const ts = await pool.query('SELECT COUNT(*)::int AS n FROM admin_today_sessions');
-  if (ts.rows[0].n === 0) {
-    for (const x of DEFAULT_TODAY_SESSIONS) {
-      await pool.query(
-        `INSERT INTO admin_today_sessions (id, date, start_time, end_time, venue_id, coach, students, course_type, checkin_status)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (id) DO NOTHING`,
-        [x.id, x.date, x.start_time, x.end_time, x.venue_id, x.coach, x.students, x.course_type, x.checkin_status]
-      );
+  // Today / Cancelled sessions demo 種子：僅限非 production（U13 修正——這兩張舊示範表
+  // 先前無條件在空表時種 demo 列，正式環境的「上課記錄查詢／扣課復活」因此永遠顯示
+  // 測試殘留）。production 改為反向清除既有 demo 固定 id（idempotent，重啟即自動消失）。
+  if (IS_PROD) {
+    const delT = await pool.query(
+      `DELETE FROM admin_today_sessions WHERE id IN ('SE001','SE002','SE003','SE004')`
+    );
+    const delC = await pool.query(
+      `DELETE FROM admin_cancelled_sessions WHERE id IN ('SX001','SX002')`
+    );
+    if (delT.rowCount || delC.rowCount) {
+      console.log(`[admin bootstrap] removed legacy demo sessions (today=${delT.rowCount}, cancelled=${delC.rowCount}) — NODE_ENV=production`);
     }
-    console.log('[admin bootstrap] seeded admin_today_sessions (4 sessions)');
-  }
+  } else {
+    // Today sessions
+    const ts = await pool.query('SELECT COUNT(*)::int AS n FROM admin_today_sessions');
+    if (ts.rows[0].n === 0) {
+      for (const x of DEFAULT_TODAY_SESSIONS) {
+        await pool.query(
+          `INSERT INTO admin_today_sessions (id, date, start_time, end_time, venue_id, coach, students, course_type, checkin_status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (id) DO NOTHING`,
+          [x.id, x.date, x.start_time, x.end_time, x.venue_id, x.coach, x.students, x.course_type, x.checkin_status]
+        );
+      }
+      console.log('[admin bootstrap] seeded admin_today_sessions (4 sessions)');
+    }
 
-  // Cancelled sessions
-  const cs = await pool.query('SELECT COUNT(*)::int AS n FROM admin_cancelled_sessions');
-  if (cs.rows[0].n === 0) {
-    for (const x of DEFAULT_CANCELLED_SESSIONS) {
-      await pool.query(
-        `INSERT INTO admin_cancelled_sessions (id, date, start_time, period_id, parent_name, coach, venue_id, refunded)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO NOTHING`,
-        [x.id, x.date, x.start_time, x.period_id, x.parent_name, x.coach, x.venue_id, x.refunded]
-      );
+    // Cancelled sessions
+    const cs = await pool.query('SELECT COUNT(*)::int AS n FROM admin_cancelled_sessions');
+    if (cs.rows[0].n === 0) {
+      for (const x of DEFAULT_CANCELLED_SESSIONS) {
+        await pool.query(
+          `INSERT INTO admin_cancelled_sessions (id, date, start_time, period_id, parent_name, coach, venue_id, refunded)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO NOTHING`,
+          [x.id, x.date, x.start_time, x.period_id, x.parent_name, x.coach, x.venue_id, x.refunded]
+        );
+      }
+      console.log('[admin bootstrap] seeded admin_cancelled_sessions (2 records)');
     }
-    console.log('[admin bootstrap] seeded admin_cancelled_sessions (2 records)');
   }
 }
 
