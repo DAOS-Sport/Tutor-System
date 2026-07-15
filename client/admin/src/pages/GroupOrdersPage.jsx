@@ -42,6 +42,13 @@ export default function GroupOrdersPage() {
   }
 
   const venueName = (id) => venues.find((v) => String(v.id) === String(id))?.name || id || '—';
+  const venueNames = (row) => {
+    const resolved = Array.isArray(row?.venues) ? row.venues : [];
+    if (resolved.length) return resolved.map((v) => v.name || venueName(v.id)).join('、');
+    return row?.venue_mapping_status === 'VENUE_MAPPING_REQUIRED'
+      ? 'VENUE_MAPPING_REQUIRED'
+      : venueName(row?.venue_id);
+  };
 
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -158,7 +165,7 @@ export default function GroupOrdersPage() {
                   </td>
                   <td className="px-4 py-3">{courseLabel(g.course_type)}</td>
                   <td className="px-4 py-3">{g.coach_name || '—'}</td>
-                  <td className="px-4 py-3 text-xs">{venueName(g.venue_id)}</td>
+                  <td className="px-4 py-3 text-xs">{venueNames(g)}</td>
                   <td className="px-4 py-3">{g.member_count}</td>
                   <td className="px-4 py-3">{g.total_students} / {g.min_students}–{g.max_students}</td>
                   <td className="px-4 py-3 text-xs text-gray-600">
@@ -209,7 +216,7 @@ export default function GroupOrdersPage() {
                   <div>電話：{detail.leader_phone}</div>
                   <div>教練：{detail.coach_name || '—'}</div>
                   <div>開團人數：{detail.min_students}–{detail.max_students}</div>
-                  <div>場館：{venueName(detail.venue_id)}</div>
+                  <div>場館：{venueNames(detail)}</div>
                   <div>開團時間：{formatTWDateTime(detail.created_at)}</div>
                   <div>送審時間：{detail.submitted_at ? formatTWDateTime(detail.submitted_at) : '—'}</div>
                   <div>審核：{detail.reviewed_at ? `${formatTWDateTime(detail.reviewed_at)}${detail.reviewed_by ? `・${detail.reviewed_by}` : ''}` : '—'}</div>

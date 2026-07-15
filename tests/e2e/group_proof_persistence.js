@@ -412,6 +412,24 @@ async function call(base, method, routePath, { token, body, requestId } = {}) {
     assert(approvedState.rows[0].status === 'approved', 'group moves to approved exactly once');
     assert(approvedState.rows[0].orders === 2 && approvedState.rows[0].checkouts === 2, 'two families produce exactly two orders and two checkouts');
     assert(approvedState.rows[0].audits === 2 && approvedState.rows[0].ledgers === 1, 'concurrent retry creates no duplicate audit or ledger');
+
+    step('group admin list/detail resolves all registration venues without LIMIT 1');
+    const otherVenue = await pg.query(
+      `SELECT id FROM venues WHERE is_active = TRUE AND id <> $1 ORDER BY id LIMIT 1`,
+      [venueId]
+    );
+    assert(otherVenue.rowCount === 1, 'test database has a second venue for multi-venue contract');
+    await pg.query(
+      `UPDATE admin_enrollments SET venue_id = $2 WHERE id = $1`,
+      [approvalIds[0], otherVenue.rows[0].id]
+    );
+    const groupList = await call(route.base, 'GET', '/api/admin/group-orders', { token: adminToken });
+    const groupListRow = groupList.data?.find((row) => row.id === groupOrderId);
+    assert(groupList.status === 200 && groupListRow?.venues?.length === 2,
+      '團購清單顯示 registration item 的全部場館');
+    const groupDetail = await call(route.base, 'GET', `/api/admin/group-orders/${groupOrderId}`, { token: adminToken });
+    assert(groupDetail.status === 200 && groupDetail.data?.venues?.length === 2,
+      '團購明細顯示全部場館，不只第一館');
   } finally {
     await pg.query(`DELETE FROM promotion_usages WHERE parent_id = ANY($1::uuid[])`, [[parentA, parentB]]).catch(() => {});
     await pg.query(`DELETE FROM admin_enrollment_audit_logs WHERE enrollment_id = ANY($1::text[])`, [enrollmentIds]).catch(() => {});
