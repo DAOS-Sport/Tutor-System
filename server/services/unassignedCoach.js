@@ -11,6 +11,7 @@ const UNASSIGNED_STAFF_ID = '__SYSTEM_UNASSIGNED_COACH__';
 // 不放寬 schema，也不偽裝成真實客戶電話。
 const UNASSIGNED_PHONE = '__UNASSIGNED_PHONE__';
 const UNASSIGNED_NAME = '待分配';
+const UNASSIGNED_SYSTEM_KEY = 'UNASSIGNED_COACH';
 
 function isUnassignedCoach(coach) {
   return !!coach && (
@@ -44,8 +45,9 @@ async function ensureUnassignedCoach() {
     const coach = await client.query(
       `INSERT INTO coaches
          (ragic_employee_id, name, phone, is_senior, pricing_multiplier, is_active,
-          intro_review_status, is_placeholder)
-       VALUES ($1,$2,$3,FALSE,1.00,TRUE,'draft',TRUE)
+          intro_review_status, is_placeholder, system_key, system_managed, visible,
+          assignable, login_allowed, payroll_eligible, percentage_eligible)
+       VALUES ($1,$2,$3,FALSE,1.00,TRUE,'draft',TRUE,$4,TRUE,TRUE,TRUE,FALSE,FALSE,FALSE)
        ON CONFLICT (ragic_employee_id) DO UPDATE
           SET name = EXCLUDED.name,
               phone = EXCLUDED.phone,
@@ -53,9 +55,16 @@ async function ensureUnassignedCoach() {
               pricing_multiplier = 1.00,
               is_active = TRUE,
               is_placeholder = TRUE,
+              system_key = EXCLUDED.system_key,
+              system_managed = TRUE,
+              visible = TRUE,
+              assignable = TRUE,
+              login_allowed = FALSE,
+              payroll_eligible = FALSE,
+              percentage_eligible = FALSE,
               updated_at = NOW()
        RETURNING id`,
-      [UNASSIGNED_STAFF_ID, UNASSIGNED_NAME, UNASSIGNED_PHONE]
+      [UNASSIGNED_STAFF_ID, UNASSIGNED_NAME, UNASSIGNED_PHONE, UNASSIGNED_SYSTEM_KEY]
     );
     const coachId = coach.rows[0]?.id;
     if (!coachId) throw new Error('unassigned coach upsert did not return id');
@@ -74,7 +83,7 @@ async function ensureUnassignedCoach() {
       [UNASSIGNED_STAFF_ID]
     );
     await client.query('COMMIT');
-    return { id: coachId, ragic_employee_id: UNASSIGNED_STAFF_ID, name: UNASSIGNED_NAME };
+    return { id: coachId, system_key: UNASSIGNED_SYSTEM_KEY, ragic_employee_id: UNASSIGNED_STAFF_ID, name: UNASSIGNED_NAME };
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     throw err;
@@ -87,6 +96,7 @@ module.exports = {
   UNASSIGNED_STAFF_ID,
   UNASSIGNED_PHONE,
   UNASSIGNED_NAME,
+  UNASSIGNED_SYSTEM_KEY,
   isUnassignedCoach,
   ensureUnassignedCoach,
 };
