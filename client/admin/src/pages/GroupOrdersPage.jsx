@@ -13,6 +13,19 @@ const STATUS = {
   approved: { label: '已核准', cls: 'bg-green-100 text-green-700' },
   rejected: { label: '已退回', cls: 'bg-red-100 text-red-700' },
 };
+const EMPTY_CATEGORY_FILTERS = { leader: '', courseType: '', coach: '', venue: '' };
+
+function uniqueOptions(rows, keyOf, labelOf) {
+  const seen = new Map();
+  for (const row of rows || []) {
+    const value = keyOf(row);
+    if (!value || seen.has(value)) continue;
+    seen.set(value, labelOf(row));
+  }
+  return [...seen.entries()]
+    .map(([value, label]) => ({ value, label }))
+    .sort((a, b) => a.label.localeCompare(b.label, 'zh-Hant'));
+}
 
 export default function GroupOrdersPage() {
   const toast = useToast();
@@ -24,6 +37,7 @@ export default function GroupOrdersPage() {
   const [rejecting, setRejecting] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [venues, setVenues] = useState([]);
+  const [categoryFilters, setCategoryFilters] = useState(EMPTY_CATEGORY_FILTERS);
 
   // 一次抓全部狀態，分頁切換前端過濾，讓每個分頁都能顯示正確筆數
   async function load() {
@@ -41,7 +55,11 @@ export default function GroupOrdersPage() {
     }
   }
 
-  const venueName = (id) => venues.find((v) => String(v.id) === String(id))?.name || id || '—';
+  const venueNames = useMemo(
+    () => new Map(venues.map((venue) => [String(venue.id), venue.name || String(venue.id)])),
+    [venues]
+  );
+  const venueName = (id) => venueNames.get(String(id)) || id || '—';
 
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -54,10 +72,49 @@ export default function GroupOrdersPage() {
     return c;
   }, [allRows]);
 
+  const categoryOptions = useMemo(() => {
+    const source = Array.isArray(allRows) ? allRows : [];
+    return {
+      leaders: uniqueOptions(
+        source,
+        (row) => String(row.leader_phone || row.leader_name || ''),
+        (row) => row.leader_phone ? `${row.leader_name || '未命名團主'}（${row.leader_phone}）` : (row.leader_name || '未命名團主')
+      ),
+      courseTypes: uniqueOptions(
+        source,
+        (row) => String(row.course_type ?? ''),
+        (row) => courseLabel(row.course_type)
+      ),
+      coaches: uniqueOptions(
+        source,
+        (row) => String(row.coach_id || '__unassigned__'),
+        (row) => row.coach_name || '未指定教練'
+      ),
+      venues: uniqueOptions(
+        source,
+        (row) => String(row.venue_id || '__missing__'),
+        (row) => venueName(row.venue_id)
+      ),
+    };
+  }, [allRows, venueNames]);
+
   const rows = useMemo(() => {
     if (!Array.isArray(allRows)) return null;
-    return statusFilter === '' ? allRows : allRows.filter((r) => r.status === statusFilter);
-  }, [allRows, statusFilter]);
+    return allRows.filter((row) => {
+      if (statusFilter && row.status !== statusFilter) return false;
+      if (categoryFilters.leader
+        && String(row.leader_phone || row.leader_name || '') !== categoryFilters.leader) return false;
+      if (categoryFilters.courseType && String(row.course_type ?? '') !== categoryFilters.courseType) return false;
+      if (categoryFilters.coach && String(row.coach_id || '__unassigned__') !== categoryFilters.coach) return false;
+      if (categoryFilters.venue && String(row.venue_id || '__missing__') !== categoryFilters.venue) return false;
+      return true;
+    });
+  }, [allRows, statusFilter, categoryFilters]);
+
+  const hasCategoryFilter = Object.values(categoryFilters).some(Boolean);
+  const updateCategoryFilter = (key) => (event) => {
+    setCategoryFilters((current) => ({ ...current, [key]: event.target.value }));
+  };
 
   async function openDetail(id) {
     setDetailId(id);
@@ -118,6 +175,71 @@ export default function GroupOrdersPage() {
             {label}（{Array.isArray(allRows) ? (k === '' ? counts.all : counts[k] || 0) : '…'}）
           </button>
         ))}
+      </div>
+
+      <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <div className="text-xs font-bold text-gray-600">固定分類篩選</div>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-gray-400">顯示 {Array.isArray(rows) ? rows.length : '…'} 筆</span>
+            <button
+              type="button"
+              disabled={!hasCategoryFilter}
+              onClick={() => setCategoryFilters(EMPTY_CATEGORY_FILTERS)}
+              className="text-xs font-bold text-brand-teal disabled:cursor-not-allowed disabled:text-gray-300"
+            >清除分類</button>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-gray-500">團主</span>
+            <select
+              aria-label="依團主篩選"
+              value={categoryFilters.leader}
+              onChange={updateCategoryFilter('leader')}
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-brand-teal focus:outline-none"
+            >
+              <option value="">全部團主</option>
+              {categoryOptions.leaders.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-gray-500">組別</span>
+            <select
+              aria-label="依組別篩選"
+              value={categoryFilters.courseType}
+              onChange={updateCategoryFilter('courseType')}
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-brand-teal focus:outline-none"
+            >
+              <option value="">全部組別</option>
+              {categoryOptions.courseTypes.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-gray-500">教練</span>
+            <select
+              aria-label="依教練篩選"
+              value={categoryFilters.coach}
+              onChange={updateCategoryFilter('coach')}
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-brand-teal focus:outline-none"
+            >
+              <option value="">全部教練</option>
+              {categoryOptions.coaches.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-gray-500">場館</span>
+            <select
+              aria-label="依場館篩選"
+              value={categoryFilters.venue}
+              onChange={updateCategoryFilter('venue')}
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-brand-teal focus:outline-none"
+            >
+              <option value="">全部場館</option>
+              {categoryOptions.venues.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </label>
+        </div>
       </div>
 
       {rows === null ? (
