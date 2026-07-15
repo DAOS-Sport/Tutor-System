@@ -65,4 +65,13 @@ const gate = spawnSync(
 );
 assert.notStrictEqual(gate.status, 0, 'production + local storage must fail startup/preflight');
 
+// Regression: production 曾在 bucket preflight 失敗後切到 Autoscale 的本機空目錄，
+// 讓所有既有 /uploads 照片變成 404，且新上傳不具持久性。正式環境不可再有此入口。
+const storageModule = require(modulePath);
+assert.strictEqual(
+  storageModule.useFallbackLocalDriver,
+  undefined,
+  'object storage must not expose an unsafe runtime local-disk fallback',
+);
+
 console.log('object_storage_driver_test: PASS');

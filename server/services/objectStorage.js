@@ -176,19 +176,6 @@ const shouldAutoUseReplit = !requestedDriver
 const selectedDriverName = requestedDriver || (shouldAutoUseReplit ? 'replit' : 'local');
 let activeDriver = DRIVERS[selectedDriverName] || LocalDiskDriver;
 
-// 當 bucket preflight 失敗時，由啟動流程呼叫此函式降級至本機磁碟驅動器。
-// 降級後 saveBuffer / openReadStream 均改用本地磁碟；driverName getter 即時反映。
-// ⚠️ 本機磁碟在 Autoscale 多實例環境不跨機共享，降級僅適用於緊急上線保底。
-function useFallbackLocalDriver() {
-  if (activeDriver.name !== 'local') {
-    console.warn(
-      '[objectStorage] bucket preflight failed — falling back to local disk driver. ' +
-      'Uploads will NOT be durable on Autoscale. Please provision Replit Object Storage.',
-    );
-    activeDriver = LocalDiskDriver;
-  }
-}
-
 // An explicit local override remains useful for local troubleshooting, but it
 // is intentionally loud in production because files would not be durable on
 // an Autoscale deployment.
@@ -276,7 +263,6 @@ module.exports = {
   inferMessageType,
   objectExists,
   openReadStream,
-  useFallbackLocalDriver,
   UPLOAD_ROOT: LOCAL_ROOT,
   ALLOWED_MAX_BYTES,
   get driverName() { return activeDriver.name; },

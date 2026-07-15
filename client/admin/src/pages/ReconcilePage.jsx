@@ -769,27 +769,6 @@ export default function ReconcilePage() {
     { key: 'total_amount', label: '應收總額', className: 'text-right', render: (r) => <span className="font-mono">{formatTWD(r.total_amount)}</span> },
     { key: 'transfer_last_5', label: '末 5 碼', className: 'text-center', render: (r) => <span className="font-mono">{r.transfer_last_5}</span> },
     {
-      key: 'proof',
-      label: '憑證',
-      render: (r) => {
-        const urls = checkoutProofUrls(r);
-        if (!urls.length) return <span className="text-xs text-gray-400">未上傳</span>;
-        return (
-          <div className="flex min-w-[72px] flex-wrap gap-1.5">
-            {urls.map((url, index) => (
-              <ImageLightbox
-                key={url}
-                src={url}
-                alt={`匯款證明 ${index + 1}`}
-                label={`匯款／轉帳證明 ${index + 1}`}
-                thumbnailClassName="h-14 w-14"
-              />
-            ))}
-          </div>
-        );
-      },
-    },
-    {
       key: 'actions', label: '操作', className: 'text-right',
       render: (r) => {
         if (r.payment_status === 'cancelled') {

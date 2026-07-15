@@ -68,14 +68,15 @@ async function testPendingConversionExtensionsPersist() {
   }
 }
 
-function testFamiliarUiContract() {
+function testReconcileUiContract() {
   const source = fs.readFileSync(
     path.resolve(__dirname, '../client/admin/src/pages/ReconcilePage.jsx'),
     'utf8',
   );
-  assert.ok(source.includes("key: 'proof'"));
-  assert.ok(source.includes('checkoutProofUrls(r)'));
-  assert.ok(source.includes('thumbnailClassName="h-14 w-14"'), 'F-M02 list must show the actual thumbnail, not only a badge');
+  assert.ok(!source.includes("key: 'proof'"), 'F-M02 list must not render the removed 憑證 column');
+  assert.ok(source.includes('const paymentProofUrls = checkoutProofUrls(checkout)'));
+  assert.ok(source.includes('家長上傳的匯款／轉帳證明'), 'proof images remain available in the reconcile modal');
+  assert.ok(source.includes('<ImageLightbox'), 'proof images must use the shared routed image preview');
   assert.ok(source.includes('setConfirming(r)'), 'existing reconcile action must remain unchanged');
 }
 
@@ -103,7 +104,7 @@ function testUploadOwnershipContract() {
 (async () => {
   testCheckoutAndLegacyFallback();
   await testPendingConversionExtensionsPersist();
-  testFamiliarUiContract();
+  testReconcileUiContract();
   testUploadOwnershipContract();
   console.log('reconcile_payment_proof_visibility_test: PASS');
 })().catch((error) => {

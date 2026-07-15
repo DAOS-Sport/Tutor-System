@@ -145,8 +145,9 @@ function setUploadSecurityHeaders(res, nameOrPath) {
   if (!isMedia) res.setHeader('Content-Disposition', 'attachment');
 }
 
-// /uploads/* — 動態判斷：driver 可能在 preflight 後降級，因此每次請求才讀 driverName。
-// replit driver：從 bucket 串流；local driver（包含 preflight 降級後）：從磁碟提供。
+// /uploads/* — production 從 shared bucket 串流；local dev 從磁碟提供。
+// production 不得在 bucket 異常時降級到本機磁碟，否則既有照片會全部變成 404，
+// 新上傳也會在 Autoscale 換實例或重新部署後消失。
 app.get('/uploads/*', (req, res) => {
   setUploadSecurityHeaders(res, req.path);
   if (objectStore.driverName === 'replit') {
@@ -160,7 +161,7 @@ app.get('/uploads/*', (req, res) => {
     });
     stream.pipe(res);
   } else {
-    // local driver（dev 或 bucket preflight 降級後）：從磁碟以 sendFile 提供。
+    // local driver（僅供 dev）：從磁碟以 sendFile 提供。
     // 注意：不能用 express.static 的 localUploadsMiddleware 直接呼叫，因為 route handler
     // 不會剝掉 /uploads 前綴，static 中間件會找到兩層 uploads 路徑。改用 res.sendFile。
     const safePath = req.path.slice('/uploads/'.length); // → '2026-07/abc.jpg'
@@ -244,8 +245,9 @@ const PORT = process.env.PORT || 3000;
   try {
     await objectStore.assertProductionStorageReady();
   } catch (err) {
-    console.warn('[objectStorage] preflight warning — switching to local disk fallback:', err.message);
-    objectStore.useFallbackLocalDriver();
+    console.error('[objectStorage] preflight failed; refusing unsafe local-disk fallback:', err.message);
+    process.exit(1);
+    return;
   }
   try {
     await bootstrapDemo();
