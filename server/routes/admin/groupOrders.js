@@ -271,8 +271,10 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
       [order.id]
     );
 
+    // 家長端 my-proof 允許「轉帳末 5 碼」或「匯款證明」擇一送出（櫃檯憑末 5 碼即可查帳），
+    // 核准守門必須採同一標準：兩者皆缺才擋，避免只填末 5 碼的家庭永遠無法成團。
     const missingProofs = ms.rows
-      .filter((m) => !m.payment_proof_url)
+      .filter((m) => !m.payment_proof_url && !String(m.transfer_last_5 || '').trim())
       .map((m) => ({
         member_id: m.id,
         parent_id: m.parent_id,
@@ -283,7 +285,7 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
     if (missingProofs.length > 0) {
       await client.query('ROLLBACK');
       return res.status(400).json({
-        error: '仍有家庭尚未上傳匯款證明，請補齊後再核准成團',
+        error: '仍有家庭尚未提供付款資料（轉帳末 5 碼或匯款證明），請補齊後再核准成團',
         code: 'MISSING_PAYMENT_PROOF',
         missing_members: missingProofs,
       });

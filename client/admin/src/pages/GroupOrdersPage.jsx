@@ -209,8 +209,11 @@ export default function GroupOrdersPage() {
                           />
                           <span className="text-xs font-bold text-slate-600">匯款證明</span>
                         </div>
+                      ) : m.transfer_last_5 ? (
+                        // 末 5 碼或匯款證明擇一即可核准（與後端守門一致）；有末 5 碼可直接查帳。
+                        <div className="mt-1 text-xs text-slate-500">未上傳匯款證明（已填末 5 碼，可查帳）</div>
                       ) : (
-                        <div className="mt-1 text-xs text-red-500">缺匯款證明</div>
+                        <div className="mt-1 text-xs text-red-500">缺付款資料（末 5 碼或匯款證明）</div>
                       )}
                     </div>
                   ))}
