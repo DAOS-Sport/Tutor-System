@@ -11,6 +11,7 @@ const promotions = require('../../services/promotions');
 const { logGroupOrderAudit } = require('../../services/groupOrderAudit');
 const { CHECKOUT_STATUS, readCheckout } = require('../../services/checkouts');
 const enrollmentRouter = require('./enrollments');
+const { isGloballyEnabled } = require('../../config/businessFeatureFlags');
 
 const { getSettings, ensureGroupCoursePeriod, ensureSoloCoursePeriod } = enrollmentRouter._checkoutInternals;
 
@@ -301,10 +302,11 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
       const checkout = await readCheckout(pool, req.params.checkoutId);
       const first = checkout.sub_orders[0] || {};
       const parentQuery = checkout.parent_id
-        ? await pool.query(`SELECT line_uid FROM parents WHERE id = $1`, [checkout.parent_id])
-        : await pool.query(`SELECT line_uid FROM parents WHERE phone = $1`, [checkout.parent_phone]);
+        ? await pool.query(`SELECT id, line_uid FROM parents WHERE id = $1`, [checkout.parent_id])
+        : await pool.query(`SELECT id, line_uid FROM parents WHERE phone = $1`, [checkout.parent_phone]);
       const lineUid = parentQuery.rows[0]?.line_uid;
-      if (lineUid && first.venue_id) {
+      const notificationV2 = isGloballyEnabled('LINE_NOTIFICATION_BINDING_V2');
+      if ((notificationV2 ? parentQuery.rows[0]?.id : lineUid) && first.venue_id) {
         const publicBase = (process.env.PUBLIC_BASE_URL || process.env.ADMIN_URL || '').replace(/\/$/, '');
         const absoluteImageUrl = invoiceImageUrl.startsWith('http') ? invoiceImageUrl : `${publicBase}${invoiceImageUrl}`;
         const liffUrl = process.env.LIFF_URL_PARENT || process.env.LIFF_URL || '';
@@ -320,7 +322,19 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
           finalPrice: checkout.total_amount,
           liffUrl,
         });
-        await line.pushMessage(lineUid, messages, first.venue_id);
+        if (notificationV2) {
+          const jobs = require('../../services/notificationJobs');
+          await jobs.enqueueParentNotification({
+            eventName: 'invoice_issued',
+            refId: req.params.checkoutId,
+            parentId: parentQuery.rows[0].id,
+            venueId: first.venue_id,
+            messages,
+          });
+          jobs.scheduleNotificationJobs();
+        } else {
+          await line.pushMessage(lineUid, messages, first.venue_id);
+        }
       }
     } catch (e) {
       console.warn('[checkout reconcile] LINE push invoice failed:', e.message);
