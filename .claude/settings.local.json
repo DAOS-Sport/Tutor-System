@@ -11,7 +11,8 @@
       "Bash(node *)",
       "Bash(git -C /home/runner/workspace status --short)",
       "Bash([ -f \"$MEM\" ])",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "WebFetch(domain:daos-tutoring-courses.replit.app)"
     ]
   },
   "enableAllProjectMcpServers": true,

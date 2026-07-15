@@ -291,14 +291,37 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
       });
     }
     // member proof 可能來自舊資料，或在上傳後、核准前被 bucket 管理作業移除。
-    // 在複製到 checkout/admin_enrollments 前逐筆重驗真實 object；任何 lookup
-    // failure 都整筆 rollback，不可把「格式正確但已不存在」的 key 擴散到新訂單。
+    // 在複製到 checkout/admin_enrollments 前逐筆重驗真實 object，不可把
+    // 「格式正確但已不存在」的 key 擴散到新訂單。
+    // 驗證失敗的處理與核准守門同標準：該家庭若已填末 5 碼（櫃檯可直接查帳）→ 丟棄
+    // 失效的 proof 引用（複製到新訂單時以 NULL 取代，成員原始資料不動）繼續核准；
+    // 連末 5 碼都沒有才整筆擋下。storage 暫時查不到（503 LOOKUP_FAILED）一律
+    // rollback——那是暫時性故障，應重試而非誤判證明失效。
+    const proofByMemberId = new Map();
     for (const member of ms.rows) {
       const proofInput = await parseProofInput({ payment_proof_url: member.payment_proof_url });
       if (proofInput.error) {
-        await client.query('ROLLBACK');
-        return res.status(proofInput.status).json({ error: proofInput.error, code: proofInput.code });
+        const hasLast5 = !!String(member.transfer_last_5 || '').trim();
+        if (proofInput.code === 'PAYMENT_PROOF_LOOKUP_FAILED' || !hasLast5) {
+          await client.query('ROLLBACK');
+          return res.status(proofInput.status).json({
+            error: proofInput.error,
+            code: proofInput.code,
+            missing_members: [{
+              member_id: member.id,
+              parent_id: member.parent_id,
+              parent_name: member.parent_name,
+              parent_phone: member.parent_phone,
+              student_names: member.student_names || [],
+            }],
+          });
+        }
+        console.warn('[admin/groupOrders approve] 成員匯款證明已失效，憑末 5 碼放行（proof 不複製到新訂單）:',
+          order.id, member.parent_id, member.payment_proof_url);
+        proofByMemberId.set(member.id, null);
+        continue;
       }
+      proofByMemberId.set(member.id, proofInput.supplied ? proofInput.value : null);
     }
 
     for (const m of ms.rows) {
@@ -315,7 +338,7 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
         enrollmentBatchId: memberBatchId,
         totalAmount: perPeriodPrice * periodCount,
         transferLast5: m.transfer_last_5 || null,
-        paymentProofUrl: m.payment_proof_url || null,
+        paymentProofUrl: proofByMemberId.get(m.id) || null,
         by: req.adminUser?.username || 'system',
         requestFingerprint: fingerprint,
       });
@@ -329,7 +352,7 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending_payment',NOW(),$13,TRUE,1,$14,$15,$16)`,
           [
             eid, m.parent_name, m.parent_phone, names, coachName, order.coach_id,
-            order.venue_id, order.course_type, perPeriodPrice, perPeriodPrice, m.transfer_last_5 || null, m.payment_proof_url,
+            order.venue_id, order.course_type, perPeriodPrice, perPeriodPrice, m.transfer_last_5 || null, proofByMemberId.get(m.id) || null,
             order.id, j, memberBatchId, checkout.checkoutId,
           ]
         );
