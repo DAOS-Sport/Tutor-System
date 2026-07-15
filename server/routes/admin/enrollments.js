@@ -172,27 +172,16 @@ async function ensureGroupCoursePeriod(client, enrollment, totalSessions) {
   );
   let periodId = ex.rows[0]?.id || null;
   if (!periodId) {
-    // 舊的單欄 unique index 可以安全支援既有第一期，但不能在不 drop/rebuild index
-    // 的前提下建立第二期。不可暗中重用第 1 期或覆寫其價格／堂數；明確回可診斷錯誤，
-    // 讓 release preflight 擋住未升級環境，而不是運行時 500 或資料混寫。
-    const legacy = await client.query(
-      `SELECT id, period_number FROM course_periods
-        WHERE group_order_id = $1
-        ORDER BY created_at, id
-        LIMIT 1`,
-      [groupOrderId]
-    );
-    if (legacy.rowCount) {
-      const err = new Error('團購多期課程資料結構尚未升級，請先完成場館資料庫 release migration');
-      err.code = 'GROUP_PERIOD_SCHEMA_UPGRADE_REQUIRED';
-      err.statusCode = 409;
-      throw err;
-    }
+    // 不能因為「同團已有其他期」就判定 schema 尚未升級：正確的多期資料本來就會
+    // 先有第 1 期、再建立第 2 期。讓資料庫真正的 unique constraints 判斷能否插入；
+    // ON CONFLICT DO NOTHING 不會把目前 transaction 打進 aborted 狀態，並可兼容
+    // 新舊版交錯部署時另一實例剛建立同一期的情況。
     const ins = await client.query(
       `INSERT INTO course_periods
          (coach_id, venue_id, course_type, total_sessions, used_sessions,
           expires_at, original_price, final_price, status, admin_enrollment_id, group_order_id, period_number)
        VALUES ($1,$2,$3,$4,0,(NOW() + ($5 || ' days')::interval)::date,$6,$6,'active',$7,$8,$9)
+       ON CONFLICT DO NOTHING
        RETURNING id`,
       [
         enrollment.coach_id, enrollment.venue_id, enrollment.course_type, totalSessions,
@@ -201,6 +190,21 @@ async function ensureGroupCoursePeriod(client, enrollment, totalSessions) {
       ]
     );
     periodId = ins.rows[0]?.id || null;
+    if (!periodId) {
+      // 同一期並發建立成功時回收既有 id；若查不到，代表真正被 legacy
+      // UNIQUE(group_order_id) 擋下，才回可診斷的 release schema 錯誤。
+      const raced = await client.query(
+        `SELECT id FROM course_periods WHERE group_order_id = $1 AND period_number = $2 LIMIT 1`,
+        [groupOrderId, periodNumber]
+      );
+      periodId = raced.rows[0]?.id || null;
+      if (!periodId) {
+        const err = new Error('團購多期課程資料結構尚未升級，請先完成場館資料庫 release migration');
+        err.code = 'GROUP_PERIOD_SCHEMA_UPGRADE_REQUIRED';
+        err.statusCode = 409;
+        throw err;
+      }
+    }
   }
   if (!periodId) return; // 理論上不會發生；保險
 

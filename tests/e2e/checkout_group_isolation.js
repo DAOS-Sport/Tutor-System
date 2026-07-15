@@ -21,6 +21,8 @@ const { ensureGroupCoursePeriod } = enrollmentRouter._checkoutInternals;
     checkoutB: null,
     enrollmentA: `e2e-GA-${suffix}`,
     enrollmentB: `e2e-GB-${suffix}`,
+    enrollmentA2: `e2e-GA2-${suffix}`,
+    enrollmentB2: `e2e-GB2-${suffix}`,
     parentA: null,
     parentB: null,
     studentA: null,
@@ -114,12 +116,37 @@ const { ensureGroupCoursePeriod } = enrollmentRouter._checkoutInternals;
     await ensureGroupCoursePeriod(pg, enrollmentA, 6);
     const after = await pg.query(`SELECT COUNT(*)::int AS n FROM course_periods WHERE group_order_id = $1`, [ids.groupOrderId]);
     assert(after.rows[0].n === 1, 'A/B checkout 都 paid 後才建立團報課程');
+
+    await pg.query(
+      `INSERT INTO admin_enrollments
+         (id, parent_name, parent_phone, students, coach, coach_id, venue_id, course_type,
+          original_price, final_price, status, submitted_at, group_order_id, is_group_shared,
+          period_count, period_number, enrollment_batch_id, checkout_id)
+       VALUES
+         ($1, 'E2E團報A', $2, ARRAY['E2E A 學員'], 'E2E教練', $3, $4, 2,
+          9000, 9000, 'confirmed', NOW(), $5, TRUE, 1, 2, $6, $7),
+         ($8, 'E2E團報B', $9, ARRAY['E2E B 學員'], 'E2E教練', $3, $4, 2,
+          9000, 9000, 'confirmed', NOW(), $5, TRUE, 1, 2, $6, $10)`,
+      [ids.enrollmentA2, phoneA, coachId, venueId, ids.groupOrderId, batchId, ids.checkoutA,
+       ids.enrollmentB2, phoneB, ids.checkoutB]
+    );
+    const enrollmentA2 = (await pg.query(`SELECT * FROM admin_enrollments WHERE id = $1`, [ids.enrollmentA2])).rows[0];
+    await ensureGroupCoursePeriod(pg, enrollmentA2, 6);
+    await ensureGroupCoursePeriod(pg, enrollmentA2, 6);
+    const multiPeriod = await pg.query(
+      `SELECT period_number, total_sessions FROM course_periods
+        WHERE group_order_id = $1 ORDER BY period_number`,
+      [ids.groupOrderId]
+    );
+    assert(multiPeriod.rowCount === 2, '已有第 1 期時可建立第 2 期，不誤報 schema 尚未升級');
+    assert(multiPeriod.rows.map((row) => Number(row.period_number)).join(',') === '1,2', '同團保留兩個正確期別');
+    assert(multiPeriod.rows.every((row) => Number(row.total_sessions) === 6), '每期各 6 堂且重送不重複建立');
   } finally {
     if (ids.groupOrderId) {
       await pg.query(`DELETE FROM course_period_enrollments WHERE course_period_id IN (SELECT id FROM course_periods WHERE group_order_id = $1)`, [ids.groupOrderId]).catch(() => {});
       await pg.query(`DELETE FROM course_periods WHERE group_order_id = $1`, [ids.groupOrderId]).catch(() => {});
     }
-    await pg.query(`DELETE FROM admin_enrollments WHERE id = ANY($1::text[])`, [[ids.enrollmentA, ids.enrollmentB]]).catch(() => {});
+    await pg.query(`DELETE FROM admin_enrollments WHERE id = ANY($1::text[])`, [[ids.enrollmentA, ids.enrollmentB, ids.enrollmentA2, ids.enrollmentB2]]).catch(() => {});
     if (ids.checkoutA || ids.checkoutB) await pg.query(`DELETE FROM checkout_sessions WHERE checkout_id = ANY($1::uuid[])`, [[ids.checkoutA, ids.checkoutB].filter(Boolean)]).catch(() => {});
     if (ids.groupOrderId) await pg.query(`DELETE FROM group_order_members WHERE group_order_id = $1`, [ids.groupOrderId]).catch(() => {});
     if (ids.groupOrderId) await pg.query(`DELETE FROM group_orders WHERE id = $1`, [ids.groupOrderId]).catch(() => {});

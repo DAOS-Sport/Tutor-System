@@ -530,13 +530,63 @@ DO $$ BEGIN
   -- 訂單依期數拆分：course_periods 也記 period_number；團報一團 N 期 → 每期各自一個 period。
   ALTER TABLE course_periods    ADD COLUMN IF NOT EXISTS period_number INTEGER NOT NULL DEFAULT 1;
   -- 唯一鍵由單欄 (group_order_id) 改複合 (group_order_id, period_number)。
-  -- 啟動 bootstrap 不可 drop/rebuild production index；已存在的 legacy index 保留，
-  -- 需要結構升級時應以備份後的明確 migration 執行。
+  -- 正式環境可能已有同名 legacy 單欄索引，CREATE ... IF NOT EXISTS 會誤以為完成；
+  -- 先建立另一個複合唯一索引，成功後才移除只擋多期的舊限制，最後保留標準名稱。
+  -- 任一步失敗只 warning，讓既有版本繼續供服務；route 仍會 fail-closed 而不混寫期別。
   BEGIN
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_course_periods_group_order
-      ON course_periods(group_order_id, period_number) WHERE group_order_id IS NOT NULL;
+    IF NOT EXISTS (
+      SELECT 1
+        FROM pg_index i
+       WHERE i.indrelid = 'course_periods'::regclass
+         AND i.indisunique AND i.indisvalid
+         AND ARRAY(
+           SELECT pg_get_indexdef(i.indexrelid, n, TRUE)
+             FROM generate_series(1, i.indnkeyatts) AS n ORDER BY n
+         ) = ARRAY['group_order_id', 'period_number']::TEXT[]
+    ) THEN
+      CREATE UNIQUE INDEX uq_course_periods_group_order_period_v2
+        ON course_periods(group_order_id, period_number) WHERE group_order_id IS NOT NULL;
+    END IF;
+
+    IF EXISTS (
+      SELECT 1
+        FROM pg_index i
+       WHERE i.indrelid = 'course_periods'::regclass
+         AND i.indisunique AND i.indisvalid
+         AND ARRAY(
+           SELECT pg_get_indexdef(i.indexrelid, n, TRUE)
+             FROM generate_series(1, i.indnkeyatts) AS n ORDER BY n
+         ) = ARRAY['group_order_id', 'period_number']::TEXT[]
+    ) THEN
+      DECLARE blocker RECORD;
+      BEGIN
+        FOR blocker IN
+          SELECT idx.relname AS index_name, con.conname AS constraint_name
+            FROM pg_index i
+            JOIN pg_class idx ON idx.oid = i.indexrelid
+            LEFT JOIN pg_constraint con ON con.conindid = i.indexrelid
+           WHERE i.indrelid = 'course_periods'::regclass
+             AND i.indisunique
+             AND ARRAY(
+               SELECT pg_get_indexdef(i.indexrelid, n, TRUE)
+                 FROM generate_series(1, i.indnkeyatts) AS n ORDER BY n
+             ) = ARRAY['group_order_id']::TEXT[]
+        LOOP
+          IF blocker.constraint_name IS NOT NULL THEN
+            EXECUTE format('ALTER TABLE course_periods DROP CONSTRAINT %I', blocker.constraint_name);
+          ELSE
+            EXECUTE format('DROP INDEX %I', blocker.index_name);
+          END IF;
+        END LOOP;
+      END;
+    END IF;
+
+    IF to_regclass('public.uq_course_periods_group_order') IS NULL
+       AND to_regclass('public.uq_course_periods_group_order_period_v2') IS NOT NULL THEN
+      ALTER INDEX uq_course_periods_group_order_period_v2 RENAME TO uq_course_periods_group_order;
+    END IF;
   EXCEPTION WHEN OTHERS THEN
-    RAISE WARNING 'uq_course_periods_group_order 建立失敗（保留既有資料／索引）: %', SQLERRM;
+    RAISE WARNING '團購多期複合索引升級失敗（保留既有資料／限制）: %', SQLERRM;
   END;
   -- U11 一般報名橋：一般報名以 admin_enrollment_id 冪等 get-or-create 一個 course_period。
   -- 容錯建立：若正式環境已有重複 admin_enrollment_id 的歷史資料，索引建不起來也不中斷啟動
