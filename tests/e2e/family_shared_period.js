@@ -99,7 +99,7 @@ async function call(base, method, path, { token, body } = {}) {
     const parentToken = signParentToken({ parentId, phone: parentRow.rows[0].phone, lineUid: parentRow.rows[0].line_uid });
     const adminToken = signToken({ sub: randomUUID(), username: 'e2e-admin', name: 'e2e-admin', role: 'admin' });
 
-    const enroll = async (courseType, students, tag, periodCount = 1) => {
+    const enroll = async (courseType, students, tag) => {
       const created = await call(route.base, 'POST', '/api/enrollments', {
         token: parentToken,
         body: {
@@ -107,7 +107,7 @@ async function call(base, method, path, { token, body } = {}) {
           venue: { id: venueId, name: `e2e館${suffix}` },
           course_type: courseType,
           students: students.map((id, i) => ({ id, name: `s${i}` })),
-          period_count: periodCount,
+          period_count: 1,
           request_id: `e2e-u12-${tag}-${suffix}-${Date.now()}`,
         },
       });
@@ -174,33 +174,6 @@ async function call(base, method, path, { token, body } = {}) {
         `明細 ${id} 解析到共用 period，實際 ${detail.data && detail.data.course_period_id}`);
       assert(detail.data.total_sessions === 6, `明細 ${id} 顯示 6 堂，實際 ${detail.data.total_sessions}`);
     }
-
-    // ── 情境 A2：一對二 × 2 生 × 2 期 → 4 財務列、2 份共享期別、總計 12 堂 ──
-    const twoByTwoOrder = await enroll(CT_GROUP, studentIds.slice(0, 2), 'two-by-two', 2);
-    assert(twoByTwoOrder.count === 4, `一對二兩期保留 2 生 × 2 期 = 4 筆財務列，實際 ${twoByTwoOrder.count}`);
-    for (const id of twoByTwoOrder.enrollment_ids) {
-      const reconciled = await reconcile(id);
-      assert(reconciled.status === 200, `two-by-two reconcile ${id} 200，實際 ${reconciled.status}`);
-    }
-    const twoByTwoPeriods = await pg.query(
-      `SELECT cp.id, cp.period_number, cp.total_sessions,
-              COUNT(cpe.student_id) FILTER (WHERE cpe.status = 'active')::int AS participant_count
-         FROM course_periods cp
-         LEFT JOIN course_period_enrollments cpe ON cpe.course_period_id = cp.id
-        WHERE cp.enrollment_batch_id = $1
-        GROUP BY cp.id
-        ORDER BY cp.period_number`,
-      [twoByTwoOrder.batch_id]
-    );
-    assert(twoByTwoPeriods.rowCount === 2, `四筆財務列只建立兩個共享期別，實際 ${twoByTwoPeriods.rowCount}`);
-    assert(twoByTwoPeriods.rows.every((row) => row.total_sessions === 6 && row.participant_count === 2),
-      '每一期各 6 堂且共同掛兩位學生');
-    assert(twoByTwoPeriods.rows.reduce((sum, row) => sum + row.total_sessions, 0) === 12,
-      '兩期共享權益總堂數為 12，未乘入 4 筆 registration');
-    const twoByTwoCards = (await call(route.base, 'GET', '/api/courses/mine', { token: parentToken })).data
-      .filter((row) => row.enrollment_batch_id === twoByTwoOrder.batch_id);
-    assert(twoByTwoCards.length === 2 && twoByTwoCards.every((row) => row.students?.length === 2),
-      `手動扣課/我的課程資料源按 entitlement 顯示兩張共享期別卡，實際 ${twoByTwoCards.length}`);
 
     // ── 情境 B：一對一 × 2 生 × 1 期 → 各自獨立 period ───────────
     const soloOrder = await enroll(CT_SOLO, studentIds.slice(0, 2), 'solo');

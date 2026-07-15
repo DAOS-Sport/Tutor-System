@@ -246,7 +246,6 @@ CREATE TABLE IF NOT EXISTS group_order_members (
   -- U7：加入時綁定的正式學員 id（student_names 仍保留供顯示／向後相容）
   student_ids       UUID[] NOT NULL DEFAULT '{}',
   transfer_last_5   VARCHAR(5),
-  carrier           TEXT,
   payment_proof_url TEXT,
   is_leader         BOOLEAN NOT NULL DEFAULT FALSE,
   status            VARCHAR(20) NOT NULL DEFAULT 'joined',
@@ -351,14 +350,6 @@ DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS intro_review_status VAR
 DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS pricing_multiplier NUMERIC(5,2) NOT NULL DEFAULT 1.00; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 -- 「待分配」是系統 placeholder，不計入真實教練資料與業績。
 DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS is_placeholder BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
-DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS system_key TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
-DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS system_managed BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
-DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS visible BOOLEAN NOT NULL DEFAULT TRUE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
-DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS assignable BOOLEAN NOT NULL DEFAULT TRUE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
-DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS login_allowed BOOLEAN NOT NULL DEFAULT TRUE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
-DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS payroll_eligible BOOLEAN NOT NULL DEFAULT TRUE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
-DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS percentage_eligible BOOLEAN NOT NULL DEFAULT TRUE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
-CREATE UNIQUE INDEX IF NOT EXISTS uq_coaches_system_key ON coaches(system_key) WHERE system_key IS NOT NULL;
 -- Task #53：is_active 手動覆寫旗標 — 後台勾啟用後 Ragic 同步不再覆蓋
 DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS active_overridden_at TIMESTAMPTZ; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 -- Task #53：載入效能 — coaches 列表常依 is_active + name 過濾
@@ -393,11 +384,6 @@ CREATE TABLE IF NOT EXISTS manual_lesson_deductions (
   UNIQUE(course_session_id)
 );
 DO $$ BEGIN ALTER TABLE manual_lesson_deductions ADD COLUMN IF NOT EXISTS payload_fingerprint CHAR(64); EXCEPTION WHEN undefined_table THEN NULL; END $$;
-DO $$ BEGIN ALTER TABLE manual_lesson_deductions ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'APPLIED'; EXCEPTION WHEN undefined_table THEN NULL; END $$;
-DO $$ BEGIN ALTER TABLE manual_lesson_deductions ADD COLUMN IF NOT EXISTS reversed_by TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
-DO $$ BEGIN ALTER TABLE manual_lesson_deductions ADD COLUMN IF NOT EXISTS reversal_reason TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
-DO $$ BEGIN ALTER TABLE manual_lesson_deductions ADD COLUMN IF NOT EXISTS reversed_at TIMESTAMPTZ; EXCEPTION WHEN undefined_table THEN NULL; END $$;
-DO $$ BEGIN ALTER TABLE manual_lesson_deductions ADD CONSTRAINT chk_manual_deduction_status CHECK (status IN ('APPLIED','REVERSED')); EXCEPTION WHEN duplicate_object OR undefined_table THEN NULL; END $$;
 CREATE INDEX IF NOT EXISTS idx_manual_lesson_deductions_period_created
   ON manual_lesson_deductions(course_period_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_manual_lesson_deductions_student_created
@@ -422,11 +408,6 @@ DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS checked_in_sour
 DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS checked_in_by_student_id UUID REFERENCES students(id); EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS checked_in_by_parent_id UUID REFERENCES parents(id); EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS checked_in_by_coach_id UUID REFERENCES coaches(id); EXCEPTION WHEN undefined_table THEN NULL; END $$;
-DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS attendance_status TEXT NOT NULL DEFAULT 'ATTENDED'; EXCEPTION WHEN undefined_table THEN NULL; END $$;
-DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS reversed_by TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
-DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS reversal_reason TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
-DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS reversed_at TIMESTAMPTZ; EXCEPTION WHEN undefined_table THEN NULL; END $$;
-DO $$ BEGIN ALTER TABLE checkin_records ADD CONSTRAINT chk_checkin_attendance_status CHECK (attendance_status IN ('ATTENDED','REVERSED')); EXCEPTION WHEN duplicate_object OR undefined_table THEN NULL; END $$;
 
 -- ─── Phase 4: 聊天室 / 訊息 / 關鍵字警示 ───────────────────────────────
 DO $$ BEGIN CREATE TYPE alert_status AS ENUM ('pending','reviewed','no_issue','resolved'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
@@ -531,63 +512,13 @@ DO $$ BEGIN
   -- 訂單依期數拆分：course_periods 也記 period_number；團報一團 N 期 → 每期各自一個 period。
   ALTER TABLE course_periods    ADD COLUMN IF NOT EXISTS period_number INTEGER NOT NULL DEFAULT 1;
   -- 唯一鍵由單欄 (group_order_id) 改複合 (group_order_id, period_number)。
-  -- 正式環境可能已有同名 legacy 單欄索引，CREATE ... IF NOT EXISTS 會誤以為完成；
-  -- 先建立另一個複合唯一索引，成功後才移除只擋多期的舊限制，最後保留標準名稱。
-  -- 任一步失敗只 warning，讓既有版本繼續供服務；route 仍會 fail-closed 而不混寫期別。
+  -- 啟動 bootstrap 不可 drop/rebuild production index；已存在的 legacy index 保留，
+  -- 需要結構升級時應以備份後的明確 migration 執行。
   BEGIN
-    IF NOT EXISTS (
-      SELECT 1
-        FROM pg_index i
-       WHERE i.indrelid = 'course_periods'::regclass
-         AND i.indisunique AND i.indisvalid
-         AND ARRAY(
-           SELECT pg_get_indexdef(i.indexrelid, n, TRUE)
-             FROM generate_series(1, i.indnkeyatts) AS n ORDER BY n
-         ) = ARRAY['group_order_id', 'period_number']::TEXT[]
-    ) THEN
-      CREATE UNIQUE INDEX uq_course_periods_group_order_period_v2
-        ON course_periods(group_order_id, period_number) WHERE group_order_id IS NOT NULL;
-    END IF;
-
-    IF EXISTS (
-      SELECT 1
-        FROM pg_index i
-       WHERE i.indrelid = 'course_periods'::regclass
-         AND i.indisunique AND i.indisvalid
-         AND ARRAY(
-           SELECT pg_get_indexdef(i.indexrelid, n, TRUE)
-             FROM generate_series(1, i.indnkeyatts) AS n ORDER BY n
-         ) = ARRAY['group_order_id', 'period_number']::TEXT[]
-    ) THEN
-      DECLARE blocker RECORD;
-      BEGIN
-        FOR blocker IN
-          SELECT idx.relname AS index_name, con.conname AS constraint_name
-            FROM pg_index i
-            JOIN pg_class idx ON idx.oid = i.indexrelid
-            LEFT JOIN pg_constraint con ON con.conindid = i.indexrelid
-           WHERE i.indrelid = 'course_periods'::regclass
-             AND i.indisunique
-             AND ARRAY(
-               SELECT pg_get_indexdef(i.indexrelid, n, TRUE)
-                 FROM generate_series(1, i.indnkeyatts) AS n ORDER BY n
-             ) = ARRAY['group_order_id']::TEXT[]
-        LOOP
-          IF blocker.constraint_name IS NOT NULL THEN
-            EXECUTE format('ALTER TABLE course_periods DROP CONSTRAINT %I', blocker.constraint_name);
-          ELSE
-            EXECUTE format('DROP INDEX %I', blocker.index_name);
-          END IF;
-        END LOOP;
-      END;
-    END IF;
-
-    IF to_regclass('public.uq_course_periods_group_order') IS NULL
-       AND to_regclass('public.uq_course_periods_group_order_period_v2') IS NOT NULL THEN
-      ALTER INDEX uq_course_periods_group_order_period_v2 RENAME TO uq_course_periods_group_order;
-    END IF;
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_course_periods_group_order
+      ON course_periods(group_order_id, period_number) WHERE group_order_id IS NOT NULL;
   EXCEPTION WHEN OTHERS THEN
-    RAISE WARNING '團購多期複合索引升級失敗（保留既有資料／限制）: %', SQLERRM;
+    RAISE WARNING 'uq_course_periods_group_order 建立失敗（保留既有資料／索引）: %', SQLERRM;
   END;
   -- U11 一般報名橋：一般報名以 admin_enrollment_id 冪等 get-or-create 一個 course_period。
   -- 容錯建立：若正式環境已有重複 admin_enrollment_id 的歷史資料，索引建不起來也不中斷啟動
@@ -604,17 +535,6 @@ DO $$ BEGIN
   -- get-or-create「一個」共用 course_period（全班共用同一堂數池），否則會膨脹成
   -- 每位小孩各自一期。一對一或單學員報名此欄維持 NULL（沿用 admin_enrollment_id 冪等）。
   ALTER TABLE course_periods ADD COLUMN IF NOT EXISTS enrollment_batch_id UUID;
-  ALTER TABLE course_periods ADD COLUMN IF NOT EXISTS entitlement_state TEXT NOT NULL DEFAULT 'ACTIVE';
-  ALTER TABLE course_periods ADD COLUMN IF NOT EXISTS superseded_by_course_period_id UUID REFERENCES course_periods(id) ON DELETE RESTRICT;
-  ALTER TABLE course_periods ADD COLUMN IF NOT EXISTS superseded_at TIMESTAMPTZ;
-  ALTER TABLE course_periods ADD COLUMN IF NOT EXISTS superseded_by TEXT;
-  ALTER TABLE course_periods ADD COLUMN IF NOT EXISTS superseded_reason TEXT;
-  BEGIN
-    ALTER TABLE course_periods ADD CONSTRAINT chk_course_periods_entitlement_state
-      CHECK (entitlement_state IN ('ACTIVE','SUPERSEDED','MANUAL_REVIEW'));
-  EXCEPTION WHEN duplicate_object THEN NULL; END;
-  CREATE INDEX IF NOT EXISTS idx_course_periods_entitlement_state
-    ON course_periods(entitlement_state, created_at DESC);
   BEGIN
     CREATE UNIQUE INDEX IF NOT EXISTS uq_course_periods_batch_period
       ON course_periods(enrollment_batch_id, period_number) WHERE enrollment_batch_id IS NOT NULL;
@@ -691,25 +611,6 @@ DO $$ BEGIN
   ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS payment_method TEXT NOT NULL DEFAULT 'bank_transfer';
   ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS order_kind TEXT NOT NULL DEFAULT 'standard';
   ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS request_payload_fingerprint CHAR(64);
-  ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS cancelled_by TEXT;
-  ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS cancelled_by_user_id TEXT;
-  ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
-  ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS cancellation_reason TEXT;
-  ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS archive_state TEXT NOT NULL DEFAULT 'ACTIVE';
-  ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS onsite_payment_status TEXT NOT NULL DEFAULT 'NOT_APPLICABLE';
-  BEGIN ALTER TABLE checkout_sessions ADD CONSTRAINT chk_checkout_archive_state CHECK (archive_state IN ('ACTIVE','SYSTEM_CANCELLED','ARCHIVED')); EXCEPTION WHEN duplicate_object THEN NULL; END;
-  BEGIN ALTER TABLE checkout_sessions ADD CONSTRAINT chk_checkout_onsite_payment_status CHECK (onsite_payment_status IN ('NOT_APPLICABLE','PENDING_ONSITE_PAYMENT','PAID')); EXCEPTION WHEN duplicate_object THEN NULL; END;
-  CREATE TABLE IF NOT EXISTS onsite_payment_collections (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    checkout_id UUID NOT NULL REFERENCES checkout_sessions(checkout_id) ON DELETE RESTRICT,
-    operator_id TEXT NOT NULL,
-    operator_name TEXT NOT NULL,
-    venue_id TEXT NOT NULL,
-    amount NUMERIC(10,2) NOT NULL CHECK (amount >= 0),
-    collected_at TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE(checkout_id)
-  );
   CREATE UNIQUE INDEX IF NOT EXISTS uq_checkout_sessions_parent_request
     ON checkout_sessions(parent_id, request_id)
     WHERE request_id IS NOT NULL;
@@ -879,7 +780,6 @@ DO $$ BEGIN
   --   兩者皆成立才自動建檔。成員層級記證明上傳時間 + 帳款確認狀態；訂單層級記名單核准狀態。
   ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS proof_uploaded_at   TIMESTAMPTZ;
   ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS transfer_last_5     VARCHAR(5);
-  ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS carrier             TEXT;
   ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS payment_confirmed   BOOLEAN NOT NULL DEFAULT FALSE;
   ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS payment_confirmed_at TIMESTAMPTZ;
   ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS payment_confirmed_by VARCHAR(50);
@@ -1654,26 +1554,6 @@ CREATE TABLE IF NOT EXISTS notification_log (
   UNIQUE(kind, ref_id, recipient_uid)
 );
 CREATE INDEX IF NOT EXISTS idx_notif_log_kind ON notification_log(kind, sent_at DESC);
-CREATE TABLE IF NOT EXISTS notification_jobs (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  event_name TEXT NOT NULL,
-  ref_id TEXT NOT NULL,
-  parent_id UUID NOT NULL REFERENCES parents(id) ON DELETE RESTRICT,
-  venue_id TEXT NOT NULL,
-  payload JSONB NOT NULL,
-  status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING','PROCESSING','SENT','FAILED')),
-  attempts INTEGER NOT NULL DEFAULT 0,
-  line_response_code INTEGER,
-  correlation_id UUID NOT NULL DEFAULT gen_random_uuid(),
-  last_error_code TEXT,
-  next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  sent_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE(event_name, ref_id, parent_id)
-);
-CREATE INDEX IF NOT EXISTS idx_notification_jobs_due
-  ON notification_jobs(status, next_attempt_at) WHERE status IN ('PENDING','FAILED');
 
 -- ─── Ragic 家長/學員識別鍵修復（P1.1 決策6/7，2026-07-07）──────────────────
 -- 根治「Ragic 端電話/ID 打錯或變更 → 本地孤兒列/誤合併」：parents/students 的

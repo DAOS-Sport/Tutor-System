@@ -17,7 +17,6 @@ export default function RevivePage() {
   const [venues, setVenues] = useState([]);
   const [target, setTarget] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [reason, setReason] = useState('');
 
   async function load() {
     const [data, vs] = await Promise.all([
@@ -36,15 +35,9 @@ export default function RevivePage() {
     if (!target) return;
     setBusy(true);
     try {
-      if (!reason.trim()) {
-        toast.warning('請填寫扣課復活原因');
-        setBusy(false);
-        return;
-      }
-      await sessionsApi.revive(target.id, reason.trim());
+      await sessionsApi.revive(target.id);
       toast.success(`已將時段 ${target.id} 的堂數歸還給家長`);
       setTarget(null);
-      setReason('');
       await load();
     } catch {
       toast.error('復活失敗');
@@ -59,7 +52,6 @@ export default function RevivePage() {
     { key: 'start', label: '時間', render: (r) => <span className="font-mono">{r.start}</span> },
     { key: 'period_id', label: '所屬報名', render: (r) => <span className="font-mono text-xs">{r.period_id}</span> },
     { key: 'parent_name', label: '家長' },
-    { key: 'students', label: '到課學生', render: (r) => (r.students || []).map((s) => s.name).join('、') || '—' },
     { key: 'coach', label: '教練' },
     { key: 'venue_id', label: '場館', render: (r) => venueName(r.venue_id) },
     {
@@ -75,7 +67,7 @@ export default function RevivePage() {
         : (
           <button
             className="rounded-md bg-brand-primary px-3 py-1.5 text-xs font-bold text-white hover:bg-brand-teal"
-            onClick={() => { setTarget(r); setReason(''); }}
+            onClick={() => setTarget(r)}
           >
             歸還堂數
           </button>
@@ -105,18 +97,8 @@ export default function RevivePage() {
           <div className="space-y-1 text-sm">
             <div>時段 <b className="font-mono">{target.id}</b>（{formatTWDate(target.date)} {target.start}）</div>
             <div>所屬報名 <b className="font-mono">{target.period_id}</b>（{target.parent_name}）</div>
-            <div>到課學生：<b>{(target.students || []).map((s) => s.name).join('、') || '—'}</b></div>
-            <label className="mt-3 block text-xs font-medium text-gray-600" htmlFor="revival-reason">復活原因</label>
-            <textarea
-              id="revival-reason"
-              value={reason}
-              onChange={(e) => setReason(e.target.value.slice(0, 1000))}
-              rows={2}
-              className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
-              placeholder="必填，將寫入稽核紀錄"
-            />
             <div className="mt-3 rounded bg-brand-amber/10 p-2 text-xs text-brand-amber">
-              系統會將同一 usage event 的共享堂數歸還 1 堂，所有 attendance 一起標記復活；不會刪除歷史紀錄。
+              系統會將該家長已使用堂數 -1，並透過 LINE 通知。
             </div>
           </div>
         )}

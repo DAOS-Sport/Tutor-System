@@ -205,16 +205,10 @@ function idsFromList(data) {
     });
     assert(cancel.status === 200 && cancel.data?.payment_status === 'cancelled', '授權櫃檯取消成功且回傳正式 cancelled');
     const state = await pg.query(
-      `SELECT payment_status, current_route_state, archive_state, cancelled_by,
-              cancelled_by_user_id, cancelled_at, cancellation_reason, audit_log
-         FROM checkout_sessions WHERE checkout_id = $1`,
+      `SELECT payment_status, current_route_state, audit_log FROM checkout_sessions WHERE checkout_id = $1`,
       [ids.cancelB]
     );
-    assert(state.rows[0]?.payment_status === 'cancelled'
-      && state.rows[0]?.current_route_state === 'cancelled'
-      && state.rows[0]?.archive_state === 'SYSTEM_CANCELLED', 'checkout 進入 SYSTEM_CANCELLED，未 hard delete');
-    assert(state.rows[0]?.cancelled_by === 'E2E 櫃檯 B' && state.rows[0]?.cancelled_at
-      && state.rows[0]?.cancellation_reason === 'E2E 場館測試取消', '取消欄位保存 actor/time/reason');
+    assert(state.rows[0]?.payment_status === 'cancelled' && state.rows[0]?.current_route_state === 'cancelled', 'checkout 狀態已正式歸檔為 cancelled');
     const auditLog = Array.isArray(state.rows[0]?.audit_log) ? state.rows[0].audit_log : JSON.parse(state.rows[0]?.audit_log || '[]');
     const audit = auditLog[auditLog.length - 1] || {};
     assert(audit.reason === 'E2E 場館測試取消' && audit.from_payment_status === 'pending_payment' && audit.by === 'E2E 櫃檯 B', 'checkout audit 有原因、原始狀態與真實操作者（忽略偽造 by）');
@@ -235,19 +229,7 @@ function idsFromList(data) {
       token: staffB,
       body: { reason: 'E2E second click' },
     });
-    assert(repeated.status === 200 && repeated.data?.idempotent === true, `重複取消冪等回第一次結果（${repeated.status}）`);
-    const archived = await call(routeServer.base, 'POST', `/api/admin/checkouts/${ids.cancelB}/archive`, {
-      token: managerLogin.data.token,
-      body: {},
-    });
-    assert(archived.status === 200 && archived.data?.archive_state === 'ARCHIVED', '主管可將 SYSTEM_CANCELLED 歸檔');
-    const archivedAgain = await call(routeServer.base, 'POST', `/api/admin/checkouts/${ids.cancelB}/archive`, {
-      token: managerLogin.data.token,
-      body: {},
-    });
-    assert(archivedAgain.status === 200 && archivedAgain.data?.idempotent === true, '重複歸檔冪等');
-    const archivedList = await call(routeServer.base, 'GET', '/api/admin/checkouts?status=cancelled&archiveState=ARCHIVED', { token: managerLogin.data.token });
-    assert(idsFromList(archivedList.data).includes(ids.cancelB), '已取消／已歸檔篩選可查回付款單');
+    assert(repeated.status === 409, `重複取消不會重複執行（${repeated.status}）`);
   } finally {
     await pg.query(`DELETE FROM admin_enrollments WHERE id = ANY($1::text[])`, [enrollmentIds]).catch(() => {});
     await pg.query(`DELETE FROM checkout_sessions WHERE checkout_id = ANY($1::uuid[])`, [checkoutIds]).catch(() => {});

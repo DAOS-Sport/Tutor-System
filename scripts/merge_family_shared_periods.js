@@ -286,18 +286,6 @@ async function main() {
   const database = sanitizedDatabaseIdentity(connectionString || '');
   const output = { script: 'merge_family_shared_periods', mode: execute ? 'execute' : 'dry-run', database };
 
-  // 舊版 execute 會搬移後 DELETE course_periods，與目前「不得 hard delete」契約衝突。
-  // 保留 dry-run 供歷史診斷，但永久封鎖寫入；正式修復請用下方 phone-scoped 新工具。
-  if (execute) {
-    console.log(JSON.stringify({
-      ...output,
-      status: 'BLOCKED',
-      reason: '此 legacy 工具的 hard-delete execute 已停用；請改用 repair_shared_entitlements.js --phone <phone>',
-    }, null, 2));
-    process.exitCode = 2;
-    return;
-  }
-
   if (!connectionString) {
     console.log(JSON.stringify({ ...output, status: 'BLOCKED', reason: 'DATABASE_URL is missing' }, null, 2));
     process.exitCode = 2;

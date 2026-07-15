@@ -12,8 +12,6 @@ const { processRagicSyncOutbox } = require('../services/ragicSyncOutbox');
 const { verifyRagicZ01UidSchemaFreshness } = require('../services/ragicSchemaFreshness');
 const { STABILITY_FLAGS } = require('../config/ragicSchema');
 const { applyDueScheduledCourseTypeChanges } = require('../services/courseTypeSchedule');
-const { processNotificationJobs } = require('../services/notificationJobs');
-const { isGloballyEnabled } = require('../config/businessFeatureFlags');
 
 // 對家長推播的 LIFF base URL；新版用 LIFF_URL_PARENT，舊版 LIFF_URL 為 fallback
 const LIFF_URL = process.env.LIFF_URL_PARENT || process.env.LIFF_URL || 'https://liff.line.me/-';
@@ -22,11 +20,6 @@ function initCronJobs() {
   const ragicConfigured = ragicAdmin.ragicEnabled();
   const ragicZ01Configured = ragicConfigured && Boolean(process.env.RAGIC_FORM_Z01);
   const outboxFlagEnabled = STABILITY_FLAGS.RAGIC_PARENT_OUTBOX;
-  cron.schedule('* * * * *', async () => {
-    if (!isGloballyEnabled('LINE_NOTIFICATION_BINDING_V2')) return;
-    try { await processNotificationJobs({ limit: 20 }); }
-    catch (error) { console.warn('[Cron/notification-jobs] failed:', error?.code || 'WORKER_FAILED'); }
-  });
   console.log(JSON.stringify({
     event: 'ragic_parent_outbox_startup',
     ragic_configured: ragicConfigured,

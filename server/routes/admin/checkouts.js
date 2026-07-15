@@ -11,7 +11,6 @@ const promotions = require('../../services/promotions');
 const { logGroupOrderAudit } = require('../../services/groupOrderAudit');
 const { CHECKOUT_STATUS, readCheckout } = require('../../services/checkouts');
 const enrollmentRouter = require('./enrollments');
-const { isGloballyEnabled } = require('../../config/businessFeatureFlags');
 
 const { getSettings, ensureGroupCoursePeriod, ensureSoloCoursePeriod } = enrollmentRouter._checkoutInternals;
 
@@ -76,11 +75,6 @@ router.get('/', requireAdminAuth, AMS, async (req, res) => {
     } else if (status) {
       params.push(status);
       where.push(`cs.payment_status = $${params.length}`);
-    }
-    const archiveState = req.query.archiveState ? String(req.query.archiveState).toUpperCase() : '';
-    if (archiveState) {
-      params.push(archiveState);
-      where.push(`cs.archive_state = $${params.length}`);
     }
 
     const search = req.query.search ? String(req.query.search).trim().toLowerCase() : '';
@@ -195,26 +189,6 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
       return res.status(409).json({ error: '此付款單含有非待對帳子訂單，請重新整理後再試' });
     }
 
-    const onsiteTrialV2 = isGloballyEnabled('TRIAL_ONSITE_CHECKOUT_V2')
-      && checkoutRow.payment_method === 'on_site'
-      && checkoutRow.order_kind === 'trial'
-      && children.rows.every((row) => row.order_kind === 'trial' && row.payment_method === 'on_site');
-    let onsiteCollection = null;
-    if (onsiteTrialV2) {
-      const venueId = String(req.body?.collection_venue_id || '').trim();
-      const amount = Number(req.body?.collected_amount);
-      const expectedAmount = Number(checkoutRow.total_amount);
-      if (!venueId || !children.rows.some((row) => String(row.venue_id) === venueId)) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: '現場收款場館必填且須屬於訂單', code: 'COLLECTION_VENUE_REQUIRED' });
-      }
-      if (!Number.isFinite(amount) || Math.round(amount * 100) !== Math.round(expectedAmount * 100)) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: '現場收款金額須與付款單一致', code: 'COLLECTION_AMOUNT_MISMATCH' });
-      }
-      onsiteCollection = { venueId, amount };
-    }
-
     const settings = await getSettings();
     const perPeriod = settings.sessions_per_period || 6;
     const groupPaymentMarked = new Set();
@@ -304,20 +278,6 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
         WHERE checkout_id = $1`,
       [req.params.checkoutId, by, invoiceNumber]
     );
-    if (onsiteCollection) {
-      await client.query(
-        `INSERT INTO onsite_payment_collections
-           (checkout_id, operator_id, operator_name, venue_id, amount, collected_at)
-         VALUES ($1,$2,$3,$4,$5,NOW())
-         ON CONFLICT (checkout_id) DO NOTHING`,
-        [req.params.checkoutId, String(req.adminUser?.sub || req.adminUser?.username || 'unknown'),
-          String(by), onsiteCollection.venueId, onsiteCollection.amount]
-      );
-      await client.query(
-        `UPDATE checkout_sessions SET onsite_payment_status = 'PAID' WHERE checkout_id = $1`,
-        [req.params.checkoutId]
-      );
-    }
 
     for (const { row, total } of rowsToOpen) {
       await ensureGroupCoursePeriod(client, row, total);
@@ -341,11 +301,10 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
       const checkout = await readCheckout(pool, req.params.checkoutId);
       const first = checkout.sub_orders[0] || {};
       const parentQuery = checkout.parent_id
-        ? await pool.query(`SELECT id, line_uid FROM parents WHERE id = $1`, [checkout.parent_id])
-        : await pool.query(`SELECT id, line_uid FROM parents WHERE phone = $1`, [checkout.parent_phone]);
+        ? await pool.query(`SELECT line_uid FROM parents WHERE id = $1`, [checkout.parent_id])
+        : await pool.query(`SELECT line_uid FROM parents WHERE phone = $1`, [checkout.parent_phone]);
       const lineUid = parentQuery.rows[0]?.line_uid;
-      const notificationV2 = isGloballyEnabled('LINE_NOTIFICATION_BINDING_V2');
-      if ((notificationV2 ? parentQuery.rows[0]?.id : lineUid) && first.venue_id) {
+      if (lineUid && first.venue_id) {
         const publicBase = (process.env.PUBLIC_BASE_URL || process.env.ADMIN_URL || '').replace(/\/$/, '');
         const absoluteImageUrl = invoiceImageUrl.startsWith('http') ? invoiceImageUrl : `${publicBase}${invoiceImageUrl}`;
         const liffUrl = process.env.LIFF_URL_PARENT || process.env.LIFF_URL || '';
@@ -361,19 +320,7 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
           finalPrice: checkout.total_amount,
           liffUrl,
         });
-        if (notificationV2) {
-          const jobs = require('../../services/notificationJobs');
-          await jobs.enqueueParentNotification({
-            eventName: 'invoice_issued',
-            refId: req.params.checkoutId,
-            parentId: parentQuery.rows[0].id,
-            venueId: first.venue_id,
-            messages,
-          });
-          jobs.scheduleNotificationJobs();
-        } else {
-          await line.pushMessage(lineUid, messages, first.venue_id);
-        }
+        await line.pushMessage(lineUid, messages, first.venue_id);
       }
     } catch (e) {
       console.warn('[checkout reconcile] LINE push invoice failed:', e.message);
@@ -411,7 +358,7 @@ router.post('/:checkoutId/cancel', requireAdminAuth, AMS, async (req, res) => {
       return res.status(404).json({ error: '找不到付款單' });
     }
     const checkoutRow = cr.rows[0];
-    if (![CHECKOUT_STATUS.PENDING_PAYMENT, CHECKOUT_STATUS.PENDING_RECONCILE, CHECKOUT_STATUS.CANCELLED].includes(checkoutRow.payment_status)) {
+    if (![CHECKOUT_STATUS.PENDING_PAYMENT, CHECKOUT_STATUS.PENDING_RECONCILE].includes(checkoutRow.payment_status)) {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '此付款單狀態非待對帳，無法取消' });
     }
@@ -426,11 +373,6 @@ router.post('/:checkoutId/cancel', requireAdminAuth, AMS, async (req, res) => {
     if (!children.rows.every((row) => isVenueInScope(req, row.venue_id))) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: '此付款單含有您無權取消的場館' });
-    }
-    if (checkoutRow.payment_status === CHECKOUT_STATUS.CANCELLED) {
-      await client.query('COMMIT');
-      const checkout = await readCheckout(pool, req.params.checkoutId);
-      return res.json({ ...checkout, idempotent: true });
     }
     if (children.rows.some((row) => row.status !== 'pending_payment')) {
       await client.query('ROLLBACK');
@@ -452,11 +394,6 @@ router.post('/:checkoutId/cancel', requireAdminAuth, AMS, async (req, res) => {
       `UPDATE checkout_sessions
           SET payment_status = 'cancelled',
               current_route_state = 'cancelled',
-              archive_state = 'SYSTEM_CANCELLED',
-              cancelled_by = $2,
-              cancelled_by_user_id = $3,
-              cancelled_at = NOW(),
-              cancellation_reason = $4,
               audit_log = COALESCE(audit_log, '[]'::jsonb) ||
                 jsonb_build_array(jsonb_build_object(
                   'at', NOW(),
@@ -484,55 +421,6 @@ router.post('/:checkoutId/cancel', requireAdminAuth, AMS, async (req, res) => {
     await client.query('ROLLBACK').catch(() => {});
     console.error('[admin/checkouts cancel]', err);
     res.status(500).json({ error: '取消付款單失敗' });
-  } finally {
-    client.release();
-  }
-});
-
-router.post('/:checkoutId/archive', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    const checkout = await client.query(
-      `SELECT * FROM checkout_sessions WHERE checkout_id = $1 FOR UPDATE`,
-      [req.params.checkoutId]
-    );
-    if (!checkout.rowCount) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ error: '找不到付款單' });
-    }
-    const children = await client.query(
-      `SELECT venue_id FROM admin_enrollments WHERE checkout_id = $1`,
-      [req.params.checkoutId]
-    );
-    if (!children.rows.every((row) => isVenueInScope(req, row.venue_id))) {
-      await client.query('ROLLBACK');
-      return res.status(403).json({ error: '此付款單含有您無權歸檔的場館' });
-    }
-    const row = checkout.rows[0];
-    if (row.archive_state === 'ARCHIVED') {
-      await client.query('COMMIT');
-      return res.json({ ...(await readCheckout(pool, req.params.checkoutId)), idempotent: true });
-    }
-    if (row.payment_status !== CHECKOUT_STATUS.CANCELLED || row.archive_state !== 'SYSTEM_CANCELLED') {
-      await client.query('ROLLBACK');
-      return res.status(409).json({ error: '僅系統取消的付款單可歸檔', code: 'NOT_SYSTEM_CANCELLED' });
-    }
-    await client.query(
-      `UPDATE checkout_sessions
-          SET archive_state = 'ARCHIVED',
-              audit_log = COALESCE(audit_log, '[]'::jsonb) || jsonb_build_array(jsonb_build_object(
-                'at', NOW(), 'action', 'checkout_archived', 'by', $2::text)),
-              updated_at = NOW()
-        WHERE checkout_id = $1`,
-      [req.params.checkoutId, req.adminUser?.name || req.adminUser?.username || 'unknown']
-    );
-    await client.query('COMMIT');
-    res.json(await readCheckout(pool, req.params.checkoutId));
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    console.error('[admin/checkouts archive]', err);
-    res.status(500).json({ error: '歸檔付款單失敗' });
   } finally {
     client.release();
   }

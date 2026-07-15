@@ -23,6 +23,6 @@ export const sessionsApi = {
     callApi(`/sessions/${id}/backfill-checkin`, { method: 'post', data: { checkin_at: checkinAt } },
       () => ({ id, checkin_status: 'checked_in', checkin_at: checkinAt, backfilled_at: new Date().toISOString() })),
   cancelled: () => callApi('/sessions/cancelled', {}, () => mockDb.cancelledSessions()),
-  revive: (id, reason) =>
-    callApi(`/sessions/${id}/revive`, { method: 'post', data: { reason } }, () => mockDb.reviveSession(id)),
+  revive: (id) =>
+    callApi(`/sessions/${id}/revive`, { method: 'post' }, () => mockDb.reviveSession(id)),
 };

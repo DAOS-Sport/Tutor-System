@@ -8,7 +8,6 @@
 const express = require('express');
 const { pool } = require('../../models/db');
 const { validateRequestId, payloadFingerprint } = require('../../services/idempotency');
-const { isEnabledFor } = require('../../config/businessFeatureFlags');
 const {
   requireAdminAuth,
   requireAdminRole,
@@ -37,7 +36,6 @@ function publicRow(row) {
     course_session_id: row.course_session_id,
     student_id: row.student_id,
     student_name: row.student_name || null,
-    students: Array.isArray(row.students) ? row.students : [],
     venue_id: row.venue_id,
     quantity: Number(row.quantity) || 1,
     remaining_before: Number(row.remaining_before),
@@ -45,26 +43,14 @@ function publicRow(row) {
     reason: row.reason,
     deducted_by: row.deducted_by,
     created_at: row.created_at,
-    status: row.status || 'APPLIED',
-    reversed_by: row.reversed_by || null,
-    reversal_reason: row.reversal_reason || null,
-    reversed_at: row.reversed_at || null,
   };
 }
 
 async function readDeduction(client, periodId, id) {
   const r = await client.query(
-    `SELECT d.*, s.name AS student_name,
-            COALESCE(att.students, '[]'::jsonb) AS students
+    `SELECT d.*, s.name AS student_name
        FROM manual_lesson_deductions d
        LEFT JOIN students s ON s.id = d.student_id
-       LEFT JOIN LATERAL (
-         SELECT jsonb_agg(jsonb_build_object('id', st.id, 'name', st.name)
-                          ORDER BY st.name) AS students
-           FROM checkin_records cr
-           JOIN students st ON st.id = cr.student_id
-          WHERE cr.course_session_id = d.course_session_id
-       ) att ON TRUE
       WHERE d.course_period_id = $1 AND d.id = $2`,
     [periodId, id]
   );
@@ -84,7 +70,6 @@ router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'),
     const args = [`%${q.toLowerCase()}%`];
     const where = [
       `cp.status = 'active'`,
-      `COALESCE(cp.entitlement_state, 'ACTIVE') = 'ACTIVE'`,
       `(
         LOWER(COALESCE(ae.id, '')) LIKE $1
         OR LOWER(COALESCE(ae.parent_name, '')) LIKE $1
@@ -172,9 +157,6 @@ router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'),
       // 手動補登誤寫成新的共用 session，否則會扣到其他家庭。請走既有 F-R03
       // 簽到流程，直到有明確的整班扣課資料契約。
       is_shared_period: !!row.group_order_id || Number(row.active_student_count) > 1,
-      shared_checkin_usage_v2_enabled: isEnabledFor('SHARED_CHECKIN_USAGE_V2', {
-        parentPhone: row.parent_phone,
-      }),
     })));
   } catch (err) {
     console.error('[admin/manual-deductions list]', err);
@@ -243,13 +225,10 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
     // 取得教練 lock 後才鎖 period；接下來的容量檢查 + 建 session 與選槽序列化。
     const pr = await client.query(
       `SELECT cp.id, cp.venue_id, cp.coach_id, cp.total_sessions, cp.used_sessions,
-              cp.admin_enrollment_id, cp.group_order_id, cp.enrollment_batch_id,
-              cp.period_number, cp.status, COALESCE(cp.entitlement_state, 'ACTIVE') AS entitlement_state,
-              ae.parent_phone
+              cp.admin_enrollment_id, cp.group_order_id, cp.status
          FROM course_periods cp
-    LEFT JOIN admin_enrollments ae ON ae.id = cp.admin_enrollment_id
         WHERE cp.id = $1
-        FOR UPDATE OF cp`,
+        FOR UPDATE`,
       [periodId]
     );
     const period = pr.rows[0];
@@ -266,7 +245,7 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
       await client.query('ROLLBACK');
       return res.status(403).json({ error: '此課期不在您的場館範圍內', code: 'VENUE_OUT_OF_SCOPE' });
     }
-    if (period.status !== 'active' || period.entitlement_state !== 'ACTIVE') {
+    if (period.status !== 'active') {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '此課期目前不可扣課', code: 'PERIOD_NOT_ACTIVE' });
     }
@@ -300,19 +279,13 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
     }
 
     const activeMembers = await client.query(
-      `SELECT cpe.student_id, s.name
-         FROM course_period_enrollments cpe
-         JOIN students s ON s.id = cpe.student_id
-        WHERE cpe.course_period_id = $1 AND cpe.status = 'active'
-        ORDER BY s.name, cpe.student_id
+      `SELECT student_id
+         FROM course_period_enrollments
+        WHERE course_period_id = $1 AND status = 'active'
         FOR SHARE`,
       [periodId]
     );
-    const sharedPeriod = !!period.group_order_id || activeMembers.rowCount > 1;
-    const sharedUsageEnabled = isEnabledFor('SHARED_CHECKIN_USAGE_V2', {
-      parentPhone: period.parent_phone,
-    });
-    if (sharedPeriod && !sharedUsageEnabled) {
+    if (period.group_order_id || activeMembers.rowCount > 1) {
       await client.query('ROLLBACK');
       return res.status(409).json({
         error: '此為共享課期；請由簽到驗證處理整班出席，避免影響其他團購成員的堂數',
@@ -366,23 +339,13 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
       [periodId, period.coach_id || null, occurredAt.toISOString()]
     );
     const courseSessionId = session.rows[0].id;
-    const attendance = await client.query(
+    await client.query(
       `INSERT INTO checkin_records
          (course_session_id, student_id, checked_in_by_student_id,
           is_auto_linked, checked_in_source, checked_in_at)
-       SELECT $1, cpe.student_id, cpe.student_id, FALSE, 'staff', $3
-         FROM course_period_enrollments cpe
-        WHERE cpe.course_period_id = $4
-          AND cpe.status = 'active'
-          AND ($5::boolean OR cpe.student_id = $2)
-       ON CONFLICT (course_session_id, student_id) DO NOTHING
-       RETURNING student_id`,
-      [courseSessionId, studentId, occurredAt.toISOString(), periodId, sharedPeriod]
+       VALUES ($1, $2, $2, FALSE, 'staff', $3)`,
+      [courseSessionId, studentId, occurredAt.toISOString()]
     );
-    const expectedAttendance = sharedPeriod ? activeMembers.rowCount : 1;
-    if (attendance.rowCount !== expectedAttendance) {
-      throw Object.assign(new Error('attendance fan-out incomplete'), { code: 'ATTENDANCE_FANOUT_INCOMPLETE' });
-    }
 
     const remainingAfter = remainingBefore - 1;
     const ledger = await client.query(
@@ -405,29 +368,23 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
         WHERE id = $1`,
       [periodId, Math.min(total, attended + 1)]
     );
-    if (period.admin_enrollment_id || period.enrollment_batch_id || period.group_order_id) {
-      const newUsed = Math.min(total, attended + 1);
+    if (period.admin_enrollment_id) {
       const updatedEnrollment = await client.query(
-        `UPDATE admin_enrollments ae
-            SET used_sessions = LEAST(COALESCE(NULLIF(ae.total_sessions, 0), $5), $5),
+        `UPDATE admin_enrollments
+            SET used_sessions = LEAST(COALESCE(NULLIF(total_sessions, 0), $2),
+                                      GREATEST(COALESCE(used_sessions, 0), $2)),
                 updated_at = NOW()
-          WHERE ae.id = $1
-             OR ($2::uuid IS NOT NULL AND ae.enrollment_batch_id = $2
-                 AND COALESCE(ae.period_number, 1) = COALESCE($4, 1))
-             OR ($3::uuid IS NOT NULL AND ae.group_order_id = $3
-                 AND COALESCE(ae.period_number, 1) = COALESCE($4, 1))
-          RETURNING ae.id`,
-        [period.admin_enrollment_id, period.enrollment_batch_id, period.group_order_id,
-          period.period_number, newUsed]
+          WHERE id = $1
+          RETURNING id`,
+        [period.admin_enrollment_id, Math.min(total, attended + 1)]
       );
       if (updatedEnrollment.rowCount) {
-        const names = activeMembers.rows.map((member) => member.name).join('、');
         await client.query(
           `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user, reason)
-           SELECT id, $2, $3, $4 FROM unnest($1::text[]) AS enrollment(id)`,
+           VALUES ($1,$2,$3,$4)`,
           [
-            updatedEnrollment.rows.map((row) => row.id),
-            `共享手動扣課 1 堂（到課：${names || membership.rows[0].name}；剩餘 ${remainingAfter} 堂）`,
+            period.admin_enrollment_id,
+            `手動扣課 1 堂（學員：${membership.rows[0].name}；剩餘 ${remainingAfter} 堂）`,
             by,
             reason,
           ]

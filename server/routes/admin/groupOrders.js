@@ -18,7 +18,6 @@ const {
   requireAdminAuth, requireAdminRole, getScopedVenueIds, isVenueInScope,
 } = require('../../middlewares/adminAuth');
 const { createCheckoutSession } = require('../../services/checkouts');
-const { isGloballyEnabled } = require('../../config/businessFeatureFlags');
 const { parseProofInput } = require('../../services/paymentProof');
 const { logGroupOrderAudit } = require('../../services/groupOrderAudit');
 const {
@@ -30,48 +29,6 @@ const {
 const router = express.Router();
 const AMS = requireAdminRole('admin', 'manager', 'staff');
 const GROUP_APPROVAL_OPERATION = 'approve_group_order_checkouts';
-
-// 場館來源優先：已開通 course period → registration item → 團購商品 mapping。
-// 每一層都 DISTINCT 聚合全部場館，不用 LIMIT 1 掩蓋跨館資料。
-const RESOLVED_VENUES_SQL = `COALESCE(
-  (SELECT jsonb_agg(to_jsonb(vp) ORDER BY vp.name, vp.id)
-     FROM (
-       SELECT DISTINCT cp.venue_id AS id,
-              COALESCE(NULLIF(av.name, ''), v.name, cp.venue_id) AS name
-         FROM course_periods cp
-         LEFT JOIN venues v ON v.id = cp.venue_id
-         LEFT JOIN admin_venues av ON av.id = cp.venue_id
-        WHERE cp.group_order_id = go.id
-          AND COALESCE(cp.entitlement_state, 'ACTIVE') <> 'SUPERSEDED'
-          AND cp.venue_id IS NOT NULL
-     ) vp),
-  (SELECT jsonb_agg(to_jsonb(ve) ORDER BY ve.name, ve.id)
-     FROM (
-       SELECT DISTINCT ae.venue_id AS id,
-              COALESCE(NULLIF(av.name, ''), v.name, ae.venue_id) AS name
-         FROM admin_enrollments ae
-         LEFT JOIN venues v ON v.id = ae.venue_id
-         LEFT JOIN admin_venues av ON av.id = ae.venue_id
-        WHERE ae.group_order_id = go.id AND ae.venue_id IS NOT NULL
-     ) ve),
-  (SELECT jsonb_build_array(jsonb_build_object(
-            'id', go.venue_id,
-            'name', COALESCE(
-              (SELECT NULLIF(av.name, '') FROM admin_venues av WHERE av.id = go.venue_id),
-              (SELECT v.name FROM venues v WHERE v.id = go.venue_id),
-              go.venue_id)))
-     WHERE go.venue_id IS NOT NULL),
-  '[]'::jsonb
-)`;
-
-function venueContract(row) {
-  const venues = Array.isArray(row.resolved_venues) ? row.resolved_venues : [];
-  return {
-    venues,
-    venue_mapping_status: venues.length ? 'RESOLVED' : 'VENUE_MAPPING_REQUIRED',
-    group_venue_display_v2_enabled: isGloballyEnabled('GROUP_VENUE_DISPLAY_V2'),
-  };
-}
 
 async function readApprovedGroupResult(client, groupOrderId, { idempotent = false } = {}) {
   const result = await client.query(
@@ -126,7 +83,6 @@ router.get('/', requireAdminAuth, AMS, async (req, res) => {
       `SELECT go.*,
               p.name AS leader_name, p.phone AS leader_phone,
               c.name AS coach_name,
-              ${RESOLVED_VENUES_SQL} AS resolved_venues,
               (SELECT COUNT(*) FROM group_order_members m WHERE m.group_order_id = go.id) AS member_count,
               (SELECT COALESCE(SUM(COALESCE(array_length(m.student_names,1),0)),0)
                  FROM group_order_members m WHERE m.group_order_id = go.id) AS total_students
@@ -141,7 +97,6 @@ router.get('/', requireAdminAuth, AMS, async (req, res) => {
       id: go.id,
       status: go.status,
       venue_id: go.venue_id,
-      ...venueContract(go),
       course_type: go.course_type,
       coach_id: go.coach_id,
       coach_name: go.coach_name || null,
@@ -169,8 +124,7 @@ router.get('/', requireAdminAuth, AMS, async (req, res) => {
 router.get('/:id', requireAdminAuth, AMS, async (req, res) => {
   try {
     const o = await pool.query(
-      `SELECT go.*, p.name AS leader_name, p.phone AS leader_phone, c.name AS coach_name,
-              ${RESOLVED_VENUES_SQL} AS resolved_venues
+      `SELECT go.*, p.name AS leader_name, p.phone AS leader_phone, c.name AS coach_name
          FROM group_orders go
          JOIN parents p ON p.id = go.leader_parent_id
          LEFT JOIN coaches c ON c.id = go.coach_id
@@ -200,7 +154,6 @@ router.get('/:id', requireAdminAuth, AMS, async (req, res) => {
       id: order.id,
       status: order.status,
       venue_id: order.venue_id,
-      ...venueContract(order),
       course_type: order.course_type,
       coach_id: order.coach_id,
       coach_name: order.coach_name || null,
@@ -407,7 +360,6 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
         totalAmount: perPeriodPrice * periodCount,
         transferLast5: m.transfer_last_5 || null,
         paymentProofUrl: proofByMemberId.get(m.id) || null,
-        carrier: m.carrier || null,
         by: req.adminUser?.username || 'system',
         requestFingerprint: fingerprint,
       });
@@ -417,12 +369,12 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
           `INSERT INTO admin_enrollments
              (id, parent_name, parent_phone, students, coach, coach_id, venue_id, course_type,
               original_price, final_price, transfer_last_5, payment_proof_url, status, submitted_at,
-              group_order_id, is_group_shared, period_count, period_number, enrollment_batch_id, checkout_id, carrier)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending_payment',NOW(),$13,TRUE,1,$14,$15,$16,$17)`,
+              group_order_id, is_group_shared, period_count, period_number, enrollment_batch_id, checkout_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending_payment',NOW(),$13,TRUE,1,$14,$15,$16)`,
           [
             eid, m.parent_name, m.parent_phone, names, coachName, order.coach_id,
             order.venue_id, order.course_type, perPeriodPrice, perPeriodPrice, m.transfer_last_5 || null, proofByMemberId.get(m.id) || null,
-            order.id, j, memberBatchId, checkout.checkoutId, m.carrier || null,
+            order.id, j, memberBatchId, checkout.checkoutId,
           ]
         );
         await client.query(

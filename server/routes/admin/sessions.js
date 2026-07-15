@@ -8,7 +8,6 @@
 const express = require('express');
 const { pool } = require('../../models/db');
 const { requireAdminAuth, requireAdminRole, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
-const { isEnabledFor } = require('../../config/businessFeatureFlags');
 
 const router = express.Router();
 
@@ -61,9 +60,6 @@ function rowToCancelled(r) {
     coach: r.coach,
     venue_id: r.venue_id,
     refunded: !!r.refunded,
-    source: r.source || 'LEGACY_CANCELLED',
-    students: Array.isArray(r.students) ? r.students : [],
-    reason: r.reason || null,
   };
 }
 
@@ -258,28 +254,6 @@ router.get('/cancelled', requireAdminAuth, requireAdminRole('admin', 'manager', 
     const scope = getScopedVenueIds(req);
     const args = [];
     let sql = `SELECT * FROM (
-      SELECT d.course_session_id::text AS id,
-             ((cs.scheduled_at AT TIME ZONE 'Asia/Taipei')::date)::text AS date,
-             to_char(cs.scheduled_at AT TIME ZONE 'Asia/Taipei', 'HH24:MI') AS start_time,
-             COALESCE(cp.admin_enrollment_id, '') AS period_id,
-             COALESCE(ae.parent_name, '') AS parent_name,
-             COALESCE(c.name, '') AS coach,
-             cp.venue_id,
-             FALSE AS refunded,
-             COALESCE(ae.parent_phone, '') AS parent_phone,
-             COALESCE((SELECT json_agg(json_build_object('id', s.id, 'name', s.name) ORDER BY s.name)
-                         FROM checkin_records cr
-                         JOIN students s ON s.id = cr.student_id
-                        WHERE cr.course_session_id = cs.id), '[]'::json) AS students,
-             'MANUAL_DEDUCTION'::text AS source,
-             d.reason
-        FROM manual_lesson_deductions d
-        JOIN course_sessions cs ON cs.id = d.course_session_id
-        JOIN course_periods cp ON cp.id = d.course_period_id
-        LEFT JOIN admin_enrollments ae ON ae.id = cp.admin_enrollment_id
-        LEFT JOIN coaches c ON c.id = COALESCE(cs.coach_id, cp.coach_id)
-       WHERE d.status = 'APPLIED'
-      UNION ALL
       SELECT cs.id::text AS id,
              ((cs.scheduled_at AT TIME ZONE 'Asia/Taipei')::date)::text AS date,
              to_char(cs.scheduled_at AT TIME ZONE 'Asia/Taipei', 'HH24:MI') AS start_time,
@@ -287,23 +261,14 @@ router.get('/cancelled', requireAdminAuth, requireAdminRole('admin', 'manager', 
              COALESCE(ae.parent_name, '') AS parent_name,
              COALESCE(c.name, '') AS coach,
              cp.venue_id,
-             FALSE AS refunded,
-             COALESCE(ae.parent_phone, '') AS parent_phone,
-             COALESCE((SELECT json_agg(json_build_object('id', s.id, 'name', s.name) ORDER BY s.name)
-                         FROM checkin_records cr
-                         JOIN students s ON s.id = cr.student_id
-                        WHERE cr.course_session_id = cs.id), '[]'::json) AS students,
-             'PENALTY_CANCELLED'::text AS source,
-             NULL::text AS reason
+             FALSE AS refunded
         FROM course_sessions cs
         JOIN course_periods cp ON cp.id = cs.course_period_id
         LEFT JOIN admin_enrollments ae ON ae.id = cp.admin_enrollment_id
         LEFT JOIN coaches c ON c.id = COALESCE(cs.coach_id, cp.coach_id)
        WHERE cs.status = 'cancelled_penalty'
       UNION ALL
-      SELECT id::text AS id, date::text AS date, start_time, period_id, parent_name, coach, venue_id, refunded,
-             ''::text AS parent_phone, '[]'::json AS students, 'LEGACY_CANCELLED'::text AS source,
-             NULL::text AS reason
+      SELECT id::text AS id, date::text AS date, start_time, period_id, parent_name, coach, venue_id, refunded
         FROM admin_cancelled_sessions
     ) t WHERE TRUE`;
     if (scope) {
@@ -312,11 +277,7 @@ router.get('/cancelled', requireAdminAuth, requireAdminRole('admin', 'manager', 
     }
     sql += ` ORDER BY t.date DESC, t.start_time`;
     const r = await pool.query(sql, args);
-    res.json(r.rows
-      .filter((row) => row.source !== 'MANUAL_DEDUCTION' || isEnabledFor('DEDUCTION_REVIVAL_V2', {
-        parentPhone: row.parent_phone,
-      }))
-      .map(rowToCancelled));
+    res.json(r.rows.map(rowToCancelled));
   } catch (err) {
     console.error('[admin/sessions/cancelled]', err);
     res.status(500).json({ error: 'load cancelled failed' });
@@ -328,106 +289,6 @@ router.post('/:id/revive', requireAdminAuth, requireAdminRole('admin', 'manager'
   try {
     await client.query('BEGIN');
     const { id } = req.params;
-    const by = req.adminUser?.name || req.adminUser?.username || 'unknown';
-    const reversalReason = String(req.body?.reason || '').trim().slice(0, 1000);
-
-    // V2 使用既有 manual deduction/session 作為 usage event；一筆 ledger 永遠只對應
-    // 一個 session，checkin_records 則保留每位到課學生並做 soft reversal。
-    const deduction = await client.query(
-      `SELECT d.id AS deduction_id, d.status AS deduction_status,
-              cp.id AS course_period_id, cp.venue_id, cp.total_sessions,
-              cp.admin_enrollment_id, cp.enrollment_batch_id, cp.group_order_id, cp.period_number,
-              ae.parent_phone, cs.status::text AS session_status
-         FROM manual_lesson_deductions d
-         JOIN course_sessions cs ON cs.id = d.course_session_id
-         JOIN course_periods cp ON cp.id = d.course_period_id
-    LEFT JOIN admin_enrollments ae ON ae.id = cp.admin_enrollment_id
-        WHERE d.course_session_id::text = $1
-        FOR UPDATE OF d, cs, cp`,
-      [id]
-    );
-    if (deduction.rowCount && isEnabledFor('DEDUCTION_REVIVAL_V2', {
-      parentPhone: deduction.rows[0].parent_phone,
-    })) {
-      const row = deduction.rows[0];
-      if (!isVenueInScope(req, row.venue_id)) {
-        await client.query('ROLLBACK');
-        return res.status(403).json({ error: '此時段不在您的場館範圍內' });
-      }
-      if (row.deduction_status === 'REVERSED') {
-        await client.query('COMMIT');
-        return res.json({ id, refunded: true, idempotent: true });
-      }
-      if (!reversalReason) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: '請填寫扣課復活原因', code: 'REVERSAL_REASON_REQUIRED' });
-      }
-
-      const reversedAttendance = await client.query(
-        `UPDATE checkin_records
-            SET attendance_status = 'REVERSED', reversed_by = $2,
-                reversal_reason = $3, reversed_at = NOW()
-          WHERE course_session_id = $1 AND attendance_status = 'ATTENDED'
-          RETURNING student_id`,
-        [id, by, reversalReason]
-      );
-      await client.query(
-        `UPDATE course_sessions
-            SET status = 'cancelled_normal', updated_at = NOW()
-          WHERE id = $1`,
-        [id]
-      );
-      await client.query(
-        `UPDATE manual_lesson_deductions
-            SET status = 'REVERSED', reversed_by = $2,
-                reversal_reason = $3, reversed_at = NOW()
-          WHERE id = $1 AND status = 'APPLIED'`,
-        [row.deduction_id, by, reversalReason]
-      );
-
-      const usage = await client.query(
-        `SELECT COUNT(DISTINCT cs.id)::int AS used_sessions
-           FROM course_sessions cs
-           JOIN checkin_records cr ON cr.course_session_id = cs.id
-          WHERE cs.course_period_id = $1
-            AND cs.status::text NOT LIKE 'cancelled%'
-            AND COALESCE(cr.attendance_status, 'ATTENDED') = 'ATTENDED'`,
-        [row.course_period_id]
-      );
-      const used = Math.min(Number(row.total_sessions) || 0, Number(usage.rows[0]?.used_sessions) || 0);
-      await client.query(
-        `UPDATE course_periods SET used_sessions = $2, updated_at = NOW() WHERE id = $1`,
-        [row.course_period_id, used]
-      );
-      const updatedEnrollments = await client.query(
-        `UPDATE admin_enrollments ae
-            SET used_sessions = LEAST(COALESCE(NULLIF(ae.total_sessions, 0), $5), $5),
-                updated_at = NOW()
-          WHERE ae.id = $1
-             OR ($2::uuid IS NOT NULL AND ae.enrollment_batch_id = $2
-                 AND COALESCE(ae.period_number, 1) = COALESCE($4, 1))
-             OR ($3::uuid IS NOT NULL AND ae.group_order_id = $3
-                 AND COALESCE(ae.period_number, 1) = COALESCE($4, 1))
-          RETURNING ae.id`,
-        [row.admin_enrollment_id, row.enrollment_batch_id, row.group_order_id, row.period_number, used]
-      );
-      if (updatedEnrollments.rowCount) {
-        await client.query(
-          `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user, reason)
-           SELECT id, $2, $3, $4 FROM unnest($1::text[]) AS enrollment(id)`,
-          [updatedEnrollments.rows.map((item) => item.id), `扣課復活（usage ${id}，共享堂數 +1）`, by, reversalReason]
-        );
-      }
-      await client.query('COMMIT');
-      return res.json({
-        id,
-        refunded: true,
-        idempotent: false,
-        reversed_attendance_count: reversedAttendance.rowCount,
-        used_sessions: used,
-        remaining_sessions: Math.max(0, (Number(row.total_sessions) || 0) - used),
-      });
-    }
 
     // U13：真實已扣堂取消（cancelled_penalty）的復活——轉為 cancelled_normal（＝堂數歸還、
     // 不再列於扣課復活清單），audit 掛 anchor 報名單；找不到真實課堂時退回舊示範表路徑。
@@ -454,6 +315,7 @@ router.post('/:id/revive', requireAdminAuth, requireAdminRole('admin', 'manager'
         [id]
       );
       if (row.admin_enrollment_id) {
+        const by = req.adminUser?.name || req.adminUser?.username || 'unknown';
         await client.query(
           `UPDATE admin_enrollments
               SET used_sessions = GREATEST(COALESCE(used_sessions, 0) - 1, 0), updated_at = NOW()

@@ -56,12 +56,11 @@ function normalizePeriodCount(v) {
 
 // 同一筆 upload 在網路 retry / 雙擊時，第二個請求在 row lock 之後會看到第一個
 // 請求的結果；只要每個已送欄位都相同，就回成功而不再寫入或報 PAYMENT_LOCKED。
-function isSamePaymentPayload(member, { value: proof, last5, carrier, clear = false, supplied = false }) {
-  const hasInput = Boolean(supplied || last5 || carrier);
+function isSamePaymentPayload(member, { value: proof, last5, clear = false, supplied = false }) {
+  const hasInput = Boolean(supplied || last5);
   if (!hasInput) return false;
   return (clear ? member.payment_proof_url == null : (!proof || member.payment_proof_url === proof))
-    && (!last5 || member.transfer_last_5 === last5)
-    && (!carrier || member.carrier === carrier);
+    && (!last5 || member.transfer_last_5 === last5);
 }
 
 function genJoinToken() {
@@ -210,7 +209,6 @@ function shapeMember(m, isSelf, perStudent, periodCount) {
     // U10：每家應繳金額 = 單生價 × 該家學生數 × 期數
     amount_due: perStudent * studentCount * periodCount,
     transfer_last_5: isSelf ? (m.transfer_last_5 || '') : '',
-    carrier: isSelf ? (m.carrier || '') : '',
     has_payment_proof: !!m.payment_proof_url,
     proof_uploaded_at: m.proof_uploaded_at || null,
     payment_confirmed: !!m.payment_confirmed,
@@ -720,12 +718,11 @@ router.post('/:id/my-proof', async (req, res) => {
   }
   const proof = proofInput.value;
   const last5 = String(req.body?.transfer_last_5 || '').trim();
-  const carrier = typeof req.body?.carrier === 'string' ? req.body.carrier.trim().slice(0, 64) : '';
   if (last5 && !/^\d{5}$/.test(last5)) {
     return res.status(400).json({ error: '轉帳末 5 碼需為 5 位數字', code: 'TRANSFER_LAST5_INVALID' });
   }
-  if (!proofInput.supplied && !last5 && !carrier) {
-    return res.status(400).json({ error: '請填寫轉帳末 5 碼、載具或上傳匯款／轉帳證明', code: 'PAYMENT_INFO_REQUIRED' });
+  if (!proofInput.supplied && !last5) {
+    return res.status(400).json({ error: '請填寫轉帳末 5 碼或上傳匯款／轉帳證明', code: 'PAYMENT_INFO_REQUIRED' });
   }
 
   const client = await pool.connect();
@@ -744,7 +741,7 @@ router.post('/:id/my-proof', async (req, res) => {
       return res.status(409).json({ error: '此團購狀態無法上傳付款資料', code: 'NOT_UPLOADABLE' });
     }
     const m = await client.query(
-      `SELECT id, payment_confirmed, transfer_last_5, carrier, payment_proof_url
+      `SELECT id, payment_confirmed, transfer_last_5, payment_proof_url
          FROM group_order_members
         WHERE group_order_id = $1 AND parent_id = $2
         FOR UPDATE`,
@@ -758,7 +755,7 @@ router.post('/:id/my-proof', async (req, res) => {
 
     // 先辨識同 payload retry：第一筆已寫完後，第二筆安全地回目前資料，
     // 不會被已確認／已鎖定狀態誤判成失敗，也不會更新 proof_uploaded_at。
-    const idempotent = isSamePaymentPayload(member, { ...proofInput, last5, carrier });
+    const idempotent = isSamePaymentPayload(member, { ...proofInput, last5 });
     if (idempotent) {
       await client.query('COMMIT');
       committed = true;
@@ -775,10 +772,7 @@ router.post('/:id/my-proof', async (req, res) => {
       return res.status(409).json({ error: '櫃檯已確認您的帳款，如需更換請聯繫櫃檯', code: 'ALREADY_CONFIRMED' });
     }
     // 末碼＋證明皆已送出 → 鎖定唯讀，成員不可自行重編（需聯繫櫃檯）。
-    const completingMissingCarrier = carrier && !member.carrier
-      && (!last5 || last5 === member.transfer_last_5)
-      && !proofInput.supplied;
-    if (member.transfer_last_5 && member.payment_proof_url && !proofInput.clear && !completingMissingCarrier) {
+    if (member.transfer_last_5 && member.payment_proof_url && !proofInput.clear) {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '付款資料已送出，如需更改請聯繫櫃檯', code: 'PAYMENT_LOCKED' });
     }
@@ -793,10 +787,6 @@ router.post('/:id/my-proof', async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '轉帳末 5 碼已送出，如需更換請聯繫櫃檯', code: 'TRANSFER_LAST5_LOCKED' });
     }
-    if (carrier && member.carrier && member.carrier !== carrier) {
-      await client.query('ROLLBACK');
-      return res.status(409).json({ error: '發票載具已送出，如需更換請聯繫櫃檯', code: 'CARRIER_LOCKED' });
-    }
 
     await client.query(
       `UPDATE group_order_members
@@ -810,17 +800,15 @@ router.post('/:id/my-proof', async (req, res) => {
                 WHEN $5 THEN NOW()
                 ELSE proof_uploaded_at
               END,
-              transfer_last_5 = COALESCE($3, transfer_last_5),
-              carrier = COALESCE($6, carrier)
+              transfer_last_5 = COALESCE($3, transfer_last_5)
         WHERE id = $1`,
-      [member.id, proof, last5 || null, proofInput.clear, proofInput.supplied, carrier || null]
+      [member.id, proof, last5 || null, proofInput.clear, proofInput.supplied]
     );
     // 冪等重送已在前面提早 return，走到這裡必有實際變更。
     const proofActions = [];
     if (proofInput.clear) proofActions.push('刪除匯款證明');
     else if (proofInput.supplied) proofActions.push('上傳匯款證明');
     if (last5) proofActions.push(`填寫轉帳末 5 碼 ${last5}`);
-    if (carrier) proofActions.push('填寫電子發票載具');
     await logGroupOrderAudit(client, {
       groupOrderId: req.params.id,
       action: `更新付款資料（${proofActions.join('、') || '無變更'}）`,

@@ -50,7 +50,7 @@ export default function ManualDeductionPage() {
       toast.error('此課期已無剩餘堂數，不能扣成負數');
       return;
     }
-    const key = `${row.course_period_id}:${row.is_shared_period ? 'shared' : student.id}`;
+    const key = `${row.course_period_id}:${student.id}`;
     if (busyKey) return;
     const requestId = requestIdsRef.current.get(key) || createRequestId();
     requestIdsRef.current.set(key, requestId);
@@ -129,24 +129,13 @@ export default function ManualDeductionPage() {
                 剩餘 {row.remaining_sessions} / {row.total_sessions} 堂
               </span>
             </div>
-            {row.is_shared_period && !row.shared_checkin_usage_v2_enabled && (
+            {row.is_shared_period && (
               <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
                 此為共享課期。為避免誤扣其他團購成員堂數，請改由「簽到驗證」處理整班出席。
               </p>
             )}
             <div className="mt-3 flex flex-wrap gap-2 border-t border-gray-100 pt-3">
-              {row.is_shared_period && row.shared_checkin_usage_v2_enabled && row.students?.length > 0 ? (
-                <button
-                  type="button"
-                  disabled={Number(row.remaining_sessions) < 1 || !!busyKey}
-                  onClick={() => deduct(row, row.students[0])}
-                  className="rounded-lg border border-brand-teal px-3 py-2 text-sm font-bold text-brand-teal transition hover:bg-brand-teal/10 disabled:cursor-not-allowed disabled:border-gray-200 disabled:text-gray-400"
-                >
-                  {busyKey === `${row.course_period_id}:shared`
-                    ? '正在建立共享到課紀錄…'
-                    : `全體簽到並扣 1 堂（${row.students.length} 人）`}
-                </button>
-              ) : (row.students || []).map((student) => {
+              {(row.students || []).map((student) => {
                 const key = `${row.course_period_id}:${student.id}`;
                 const disabled = Number(row.remaining_sessions) < 1 || !!busyKey || !!row.is_shared_period;
                 return (

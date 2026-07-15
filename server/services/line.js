@@ -23,13 +23,12 @@ function getToken(venueId) {
 
 async function pushMessage(lineUserId, messages, venueId) {
   const token = getToken(venueId);
-  const response = await axios.post('https://api.line.me/v2/bot/message/push', {
+  await axios.post('https://api.line.me/v2/bot/message/push', {
     to: lineUserId,
     messages,
   }, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  return { status: response.status };
 }
 
 // ── Flex Message 模板 ────────────────────────
