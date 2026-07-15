@@ -190,6 +190,26 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
       return res.status(409).json({ error: '此付款單含有非待對帳子訂單，請重新整理後再試' });
     }
 
+    const onsiteTrialV2 = isGloballyEnabled('TRIAL_ONSITE_CHECKOUT_V2')
+      && checkoutRow.payment_method === 'on_site'
+      && checkoutRow.order_kind === 'trial'
+      && children.rows.every((row) => row.order_kind === 'trial' && row.payment_method === 'on_site');
+    let onsiteCollection = null;
+    if (onsiteTrialV2) {
+      const venueId = String(req.body?.collection_venue_id || '').trim();
+      const amount = Number(req.body?.collected_amount);
+      const expectedAmount = Number(checkoutRow.total_amount);
+      if (!venueId || !children.rows.some((row) => String(row.venue_id) === venueId)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: '現場收款場館必填且須屬於訂單', code: 'COLLECTION_VENUE_REQUIRED' });
+      }
+      if (!Number.isFinite(amount) || Math.round(amount * 100) !== Math.round(expectedAmount * 100)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: '現場收款金額須與付款單一致', code: 'COLLECTION_AMOUNT_MISMATCH' });
+      }
+      onsiteCollection = { venueId, amount };
+    }
+
     const settings = await getSettings();
     const perPeriod = settings.sessions_per_period || 6;
     const groupPaymentMarked = new Set();
@@ -279,6 +299,20 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
         WHERE checkout_id = $1`,
       [req.params.checkoutId, by, invoiceNumber]
     );
+    if (onsiteCollection) {
+      await client.query(
+        `INSERT INTO onsite_payment_collections
+           (checkout_id, operator_id, operator_name, venue_id, amount, collected_at)
+         VALUES ($1,$2,$3,$4,$5,NOW())
+         ON CONFLICT (checkout_id) DO NOTHING`,
+        [req.params.checkoutId, String(req.adminUser?.sub || req.adminUser?.username || 'unknown'),
+          String(by), onsiteCollection.venueId, onsiteCollection.amount]
+      );
+      await client.query(
+        `UPDATE checkout_sessions SET onsite_payment_status = 'PAID' WHERE checkout_id = $1`,
+        [req.params.checkoutId]
+      );
+    }
 
     for (const { row, total } of rowsToOpen) {
       await ensureGroupCoursePeriod(client, row, total);

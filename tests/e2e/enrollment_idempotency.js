@@ -200,7 +200,9 @@ async function post(base, token, body, { headerKey = body?.request_id } = {}) {
               COUNT(ae.id)::int AS order_count,
               MIN(ae.total_sessions)::int AS sessions,
               MIN(ae.order_kind) AS order_kind,
-              MIN(ae.payment_method) AS payment_method
+              MIN(ae.payment_method) AS payment_method,
+              MIN(cs.payment_status) AS checkout_payment_status,
+              MIN(cs.onsite_payment_status) AS onsite_payment_status
          FROM checkout_sessions cs
          JOIN admin_enrollments ae ON ae.checkout_id = cs.checkout_id
         WHERE cs.parent_id = $1 AND cs.request_id = $2`,
@@ -208,6 +210,9 @@ async function post(base, token, body, { headerKey = body?.request_id } = {}) {
     );
     assert(trialDb.rows[0].checkout_count === 1 && trialDb.rows[0].order_count === 1, 'trial creates one checkout and one order');
     assert(trialDb.rows[0].sessions === 1 && trialDb.rows[0].order_kind === 'trial' && trialDb.rows[0].payment_method === 'on_site', 'trial data remains one-session/on-site and does not inherit standard contract');
+    assert(trialDb.rows[0].checkout_payment_status === 'pending_payment'
+      && trialDb.rows[0].onsite_payment_status === 'PENDING_ONSITE_PAYMENT',
+    'trial onsite stays pending until an audited counter collection');
 
     step('success-page checkout routing refresh reuses the enrollment checkout');
     const routeKey = `checkout-route:${normal.data.batch_id}`;

@@ -120,12 +120,24 @@ async function createCheckoutSession(client, {
   }
 
   const row = result.rows[0];
+  const onsitePaymentStatus = normalizedPaymentMethod === 'on_site' && normalizedOrderKind === 'trial'
+    ? 'PENDING_ONSITE_PAYMENT'
+    : 'NOT_APPLICABLE';
+  if (row.created && onsitePaymentStatus === 'PENDING_ONSITE_PAYMENT') {
+    await client.query(
+      `UPDATE checkout_sessions
+          SET onsite_payment_status = 'PENDING_ONSITE_PAYMENT'
+        WHERE checkout_id = $1 AND onsite_payment_status = 'NOT_APPLICABLE'`,
+      [row.checkout_id]
+    );
+  }
   return {
     checkoutId: row.checkout_id,
     enrollmentBatchId: row.enrollment_batch_id,
     paymentStatus: row.payment_status,
     paymentMethod: row.payment_method || 'bank_transfer',
     orderKind: row.order_kind || 'standard',
+    onsitePaymentStatus,
     created: row.created === true || row.created === 't',
   };
 }
@@ -228,6 +240,15 @@ function shapeCheckout(row) {
     payment_method: row.payment_method || 'bank_transfer',
     order_kind: row.order_kind || 'standard',
     current_route_state: row.current_route_state || row.payment_status,
+    archive_state: row.archive_state || 'ACTIVE',
+    cancelled_by: row.cancelled_by || null,
+    cancelled_by_user_id: row.cancelled_by_user_id || null,
+    cancelled_at: row.cancelled_at || null,
+    cancellation_reason: row.cancellation_reason || null,
+    onsite_payment_status: row.onsite_payment_status || (
+      row.payment_method === 'on_site' && row.order_kind === 'trial'
+        ? 'PENDING_ONSITE_PAYMENT' : 'NOT_APPLICABLE'
+    ),
     transfer_last_5: row.transfer_last_5 || '',
     carrier: row.carrier || '',
     payment_proof_url: paymentProofUrls[0] || null,
