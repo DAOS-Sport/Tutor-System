@@ -384,6 +384,11 @@ CREATE TABLE IF NOT EXISTS manual_lesson_deductions (
   UNIQUE(course_session_id)
 );
 DO $$ BEGIN ALTER TABLE manual_lesson_deductions ADD COLUMN IF NOT EXISTS payload_fingerprint CHAR(64); EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE manual_lesson_deductions ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'APPLIED'; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE manual_lesson_deductions ADD COLUMN IF NOT EXISTS reversed_by TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE manual_lesson_deductions ADD COLUMN IF NOT EXISTS reversal_reason TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE manual_lesson_deductions ADD COLUMN IF NOT EXISTS reversed_at TIMESTAMPTZ; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE manual_lesson_deductions ADD CONSTRAINT chk_manual_deduction_status CHECK (status IN ('APPLIED','REVERSED')); EXCEPTION WHEN duplicate_object OR undefined_table THEN NULL; END $$;
 CREATE INDEX IF NOT EXISTS idx_manual_lesson_deductions_period_created
   ON manual_lesson_deductions(course_period_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_manual_lesson_deductions_student_created
@@ -408,6 +413,11 @@ DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS checked_in_sour
 DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS checked_in_by_student_id UUID REFERENCES students(id); EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS checked_in_by_parent_id UUID REFERENCES parents(id); EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS checked_in_by_coach_id UUID REFERENCES coaches(id); EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS attendance_status TEXT NOT NULL DEFAULT 'ATTENDED'; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS reversed_by TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS reversal_reason TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS reversed_at TIMESTAMPTZ; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE checkin_records ADD CONSTRAINT chk_checkin_attendance_status CHECK (attendance_status IN ('ATTENDED','REVERSED')); EXCEPTION WHEN duplicate_object OR undefined_table THEN NULL; END $$;
 
 -- ─── Phase 4: 聊天室 / 訊息 / 關鍵字警示 ───────────────────────────────
 DO $$ BEGIN CREATE TYPE alert_status AS ENUM ('pending','reviewed','no_issue','resolved'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
@@ -535,6 +545,17 @@ DO $$ BEGIN
   -- get-or-create「一個」共用 course_period（全班共用同一堂數池），否則會膨脹成
   -- 每位小孩各自一期。一對一或單學員報名此欄維持 NULL（沿用 admin_enrollment_id 冪等）。
   ALTER TABLE course_periods ADD COLUMN IF NOT EXISTS enrollment_batch_id UUID;
+  ALTER TABLE course_periods ADD COLUMN IF NOT EXISTS entitlement_state TEXT NOT NULL DEFAULT 'ACTIVE';
+  ALTER TABLE course_periods ADD COLUMN IF NOT EXISTS superseded_by_course_period_id UUID REFERENCES course_periods(id) ON DELETE RESTRICT;
+  ALTER TABLE course_periods ADD COLUMN IF NOT EXISTS superseded_at TIMESTAMPTZ;
+  ALTER TABLE course_periods ADD COLUMN IF NOT EXISTS superseded_by TEXT;
+  ALTER TABLE course_periods ADD COLUMN IF NOT EXISTS superseded_reason TEXT;
+  BEGIN
+    ALTER TABLE course_periods ADD CONSTRAINT chk_course_periods_entitlement_state
+      CHECK (entitlement_state IN ('ACTIVE','SUPERSEDED','MANUAL_REVIEW'));
+  EXCEPTION WHEN duplicate_object THEN NULL; END;
+  CREATE INDEX IF NOT EXISTS idx_course_periods_entitlement_state
+    ON course_periods(entitlement_state, created_at DESC);
   BEGIN
     CREATE UNIQUE INDEX IF NOT EXISTS uq_course_periods_batch_period
       ON course_periods(enrollment_batch_id, period_number) WHERE enrollment_batch_id IS NOT NULL;
