@@ -16,5 +16,6 @@ assert.ok(source.includes("row.coach_id || '__unassigned__'"), 'coach filter use
 assert.ok(source.includes("row.venue_id || '__missing__'"), 'venue filter uses venue_id and classifies missing rows');
 assert.ok(source.includes("String(row.course_type ?? '')"), 'course-type filter uses the persisted course_type');
 assert.ok(source.includes('Object.values(categoryFilters).some(Boolean)'), 'category filters expose a deterministic reset state');
+assert.ok(source.includes("{m.carrier || '—'}"), 'group member detail keeps the carrier field visible in admin');
 
 console.log('admin_group_order_filter_ui_test: PASS');

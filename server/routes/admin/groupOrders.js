@@ -177,6 +177,7 @@ router.get('/:id', requireAdminAuth, AMS, async (req, res) => {
         student_names: m.student_names || [],
         student_count: (m.student_names || []).length,
         transfer_last_5: m.transfer_last_5 || null,
+        carrier: m.carrier || null,
         payment_proof_url: m.payment_proof_url || null,
         proof_uploaded_at: m.proof_uploaded_at || null,
         payment_confirmed: !!m.payment_confirmed,

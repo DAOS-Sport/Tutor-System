@@ -358,6 +358,7 @@ export default function GroupOrdersPage() {
                       </div>
                       <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
                         <span className="text-gray-500">末 5 碼：<span className="font-mono font-bold text-gray-700">{m.transfer_last_5 || '—'}</span></span>
+                        <span className="text-gray-500">載具：<span className="font-mono font-bold text-indigo-700">{m.carrier || '—'}</span></span>
                         <span className={m.payment_confirmed ? 'font-bold text-green-600' : 'font-bold text-amber-600'}>
                           {m.payment_confirmed ? '帳款已確認' : '待確認'}
                         </span>

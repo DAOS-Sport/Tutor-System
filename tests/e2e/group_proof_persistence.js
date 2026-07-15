@@ -438,6 +438,12 @@ async function call(base, method, routePath, { token, body, requestId } = {}) {
     assert(carrierPropagation.rows[0].order_carrier === '/E2ETEST'
       && carrierPropagation.rows[0].checkout_carrier === '/E2ETEST',
     'group carrier propagates to checkout and reconciliation order');
+    const adminGroupDetail = await call(route.base, 'GET', `/api/admin/group-orders/${groupOrderId}`, {
+      token: adminToken,
+    });
+    const leaderDetail = adminGroupDetail.data?.members?.find((member) => member.parent_id === parentA);
+    assert(adminGroupDetail.status === 200 && leaderDetail?.carrier === '/E2ETEST',
+      'admin group-order detail returns the carrier for the matching family');
 
     step('legacy approved group checkout may scan a missing carrier in the existing reconcile transaction');
     const leaderCheckoutId = carrierPropagation.rows[0].checkout_id;
