@@ -3,7 +3,9 @@ import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
 import { groupOrdersApi } from '../api/groupOrders';
+import { venuesApi } from '../api/venues';
 import ImageLightbox from '../components/ImageLightbox';
+import { formatTWDateTime } from '../utils/format';
 
 const courseLabel = (ct) => ({ 1: '一對一', 2: '一對二', 3: '一對三' }[ct] || `一對${ct}`);
 const STATUS = {
@@ -21,18 +23,25 @@ export default function GroupOrdersPage() {
   const [busy, setBusy] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
+  const [venues, setVenues] = useState([]);
 
   // 一次抓全部狀態，分頁切換前端過濾，讓每個分頁都能顯示正確筆數
   async function load() {
     setAllRows(null);
     try {
-      const data = await groupOrdersApi.list(undefined);
+      const [data, vs] = await Promise.all([
+        groupOrdersApi.list(undefined),
+        venuesApi.list().catch(() => []),
+      ]);
       setAllRows(Array.isArray(data) ? data : []);
+      setVenues(Array.isArray(vs) ? vs : []);
     } catch (e) {
       toast.error(e?.response?.data?.error || '載入失敗');
       setAllRows([]);
     }
   }
+
+  const venueName = (id) => venues.find((v) => String(v.id) === String(id))?.name || id || '—';
 
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -122,11 +131,14 @@ export default function GroupOrdersPage() {
           <table className="w-full text-sm">
             <thead className="bg-gray-50 text-left text-xs text-gray-500">
               <tr>
+                <th className="px-4 py-3">序號</th>
                 <th className="px-4 py-3">團主</th>
                 <th className="px-4 py-3">組別</th>
                 <th className="px-4 py-3">教練</th>
+                <th className="px-4 py-3">場館</th>
                 <th className="px-4 py-3">家庭數</th>
                 <th className="px-4 py-3">學生數</th>
+                <th className="px-4 py-3">送審時間</th>
                 <th className="px-4 py-3">狀態</th>
                 <th className="px-4 py-3"></th>
               </tr>
@@ -135,17 +147,31 @@ export default function GroupOrdersPage() {
               {rows.map((g) => (
                 <tr key={g.id} className="border-t border-gray-100">
                   <td className="px-4 py-3">
+                    <button type="button" title={g.id} onClick={() => openDetail(g.id)}
+                      className="font-mono text-xs text-brand-primary underline-offset-2 hover:underline">
+                      {String(g.id).slice(0, 8).toUpperCase()}
+                    </button>
+                  </td>
+                  <td className="px-4 py-3">
                     <div className="font-medium text-gray-800">{g.leader_name}</div>
                     <div className="text-xs text-gray-400">{g.leader_phone}</div>
                   </td>
                   <td className="px-4 py-3">{courseLabel(g.course_type)}</td>
                   <td className="px-4 py-3">{g.coach_name || '—'}</td>
+                  <td className="px-4 py-3 text-xs">{venueName(g.venue_id)}</td>
                   <td className="px-4 py-3">{g.member_count}</td>
                   <td className="px-4 py-3">{g.total_students} / {g.min_students}–{g.max_students}</td>
+                  <td className="px-4 py-3 text-xs text-gray-600">
+                    <div>{g.submitted_at ? formatTWDateTime(g.submitted_at) : '—'}</div>
+                    {!g.submitted_at && <div className="text-gray-400">開團 {formatTWDateTime(g.created_at)}</div>}
+                  </td>
                   <td className="px-4 py-3">
                     <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${STATUS[g.status]?.cls || 'bg-gray-100 text-gray-500'}`}>
                       {STATUS[g.status]?.label || g.status}
                     </span>
+                    {g.reviewed_at && (
+                      <div className="mt-1 text-[10px] text-gray-400">{formatTWDateTime(g.reviewed_at)}{g.reviewed_by ? `・${g.reviewed_by}` : ''}</div>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-right">
                     <button type="button" onClick={() => openDetail(g.id)}
@@ -174,13 +200,24 @@ export default function GroupOrdersPage() {
                     {STATUS[detail.status]?.label || detail.status}
                   </span>
                 </div>
+                <div className="mb-2 rounded-lg bg-gray-50 px-3 py-2">
+                  <span className="text-xs text-gray-500">序號：</span>
+                  <span className="select-all font-mono text-xs font-bold text-gray-700">{detail.id}</span>
+                </div>
                 <div className="mb-3 grid grid-cols-2 gap-2 text-sm text-gray-600">
                   <div>團主：<span className="font-medium text-gray-800">{detail.leader_name}</span></div>
                   <div>電話：{detail.leader_phone}</div>
                   <div>教練：{detail.coach_name || '—'}</div>
                   <div>開團人數：{detail.min_students}–{detail.max_students}</div>
+                  <div>場館：{venueName(detail.venue_id)}</div>
+                  <div>開團時間：{formatTWDateTime(detail.created_at)}</div>
+                  <div>送審時間：{detail.submitted_at ? formatTWDateTime(detail.submitted_at) : '—'}</div>
+                  <div>審核：{detail.reviewed_at ? `${formatTWDateTime(detail.reviewed_at)}${detail.reviewed_by ? `・${detail.reviewed_by}` : ''}` : '—'}</div>
                 </div>
                 {detail.note && <p className="mb-3 rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-500">備註：{detail.note}</p>}
+                {detail.status === 'rejected' && detail.reject_reason && (
+                  <p className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">退回原因：{detail.reject_reason}</p>
+                )}
 
                 <h3 className="mb-2 text-sm font-bold text-gray-700">成員（{detail.members?.length} 個家庭）</h3>
                 <div className="space-y-2">
@@ -193,6 +230,10 @@ export default function GroupOrdersPage() {
                         <div className="text-xs text-gray-400">{m.parent_phone}</div>
                       </div>
                       <div className="mt-1 text-xs text-gray-500">學生：{(m.student_names || []).join('、') || '—'}</div>
+                      <div className="mt-1 text-xs text-gray-400">
+                        加入：{formatTWDateTime(m.joined_at)}
+                        {m.proof_uploaded_at && <>・上傳付款資料：{formatTWDateTime(m.proof_uploaded_at)}</>}
+                      </div>
                       <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
                         <span className="text-gray-500">末 5 碼：<span className="font-mono font-bold text-gray-700">{m.transfer_last_5 || '—'}</span></span>
                         <span className={m.payment_confirmed ? 'font-bold text-green-600' : 'font-bold text-amber-600'}>
@@ -217,6 +258,26 @@ export default function GroupOrdersPage() {
                       )}
                     </div>
                   ))}
+                </div>
+
+                <div className="mt-4">
+                  <h3 className="mb-2 text-sm font-bold text-gray-700">操作紀錄</h3>
+                  {(detail.audit_logs || []).length === 0 ? (
+                    <p className="text-xs text-gray-400">尚無紀錄（此團購建立於操作紀錄功能上線前）</p>
+                  ) : (
+                    <ul className="space-y-1 text-xs text-gray-600">
+                      {detail.audit_logs.map((a, i) => (
+                        <li key={i} className="flex gap-2">
+                          <span className="w-32 shrink-0 font-mono text-gray-400">{formatTWDateTime(a.at)}</span>
+                          <span className="flex-1">
+                            {a.action}
+                            {a.reason && <span className="text-gray-400">（{a.reason}）</span>}
+                          </span>
+                          <span className="shrink-0 text-gray-500">— {a.by}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
 
                 {detail.status === 'submitted' && (

@@ -8,6 +8,7 @@ const {
 } = require('../../middlewares/adminAuth');
 const ragicWriteback = require('../../services/ragicWriteback');
 const promotions = require('../../services/promotions');
+const { logGroupOrderAudit } = require('../../services/groupOrderAudit');
 const { CHECKOUT_STATUS, readCheckout } = require('../../services/checkouts');
 const enrollmentRouter = require('./enrollments');
 
@@ -220,7 +221,7 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
         const groupKey = `${row.group_order_id}:${row.parent_phone}`;
         if (!groupPaymentMarked.has(groupKey)) {
           groupPaymentMarked.add(groupKey);
-          await client.query(
+          const gconf = await client.query(
             `UPDATE group_order_members gom
                 SET payment_confirmed = TRUE,
                     payment_confirmed_at = NOW(),
@@ -232,6 +233,13 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
                 AND gom.payment_confirmed = FALSE`,
             [row.group_order_id, row.parent_phone, String(by).slice(0, 50)]
           );
+          if (gconf.rowCount) {
+            await logGroupOrderAudit(client, {
+              groupOrderId: row.group_order_id,
+              action: `櫃檯確認帳款（${row.parent_name}／${row.parent_phone}，checkout 對帳通過，發票 ${invoiceNumber}）`,
+              by,
+            });
+          }
         }
       }
       rowsToOpen.push({ row, total });

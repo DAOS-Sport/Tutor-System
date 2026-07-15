@@ -22,6 +22,10 @@ const { requireParent, optionalParent } = require('../middlewares/parentAuth');
 const { maskName, maskNames } = require('../utils/piiMask');
 const ragicWriteback = require('../services/ragicWriteback');
 const line = require('../services/line');
+const { logGroupOrderAudit } = require('../services/groupOrderAudit');
+
+// 家長端操作者標記：token 只含 id/phone，櫃檯亦以手機辨識家長。
+const parentActor = (req) => `家長 ${req.parent?.phone || req.parent?.id || 'unknown'}`;
 
 const router = express.Router();
 
@@ -524,6 +528,11 @@ router.post('/', async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,${'CASE WHEN $5::text IS NOT NULL THEN NOW() ELSE NULL END'},TRUE,'joined')`,
       [order.id, req.parent.id, bound.names, bound.ids, proof]
     );
+    await logGroupOrderAudit(client, {
+      groupOrderId: order.id,
+      action: `發起團購（學生：${bound.names.join('、')}${periodCount > 1 ? `；${periodCount} 期` : ''}）`,
+      by: parentActor(req),
+    });
 
     await client.query('COMMIT');
     await syncNewStudentsToRagic(req.parent.id, createdForRagic); // best-effort，失敗不阻擋
@@ -661,6 +670,11 @@ router.post('/by-token/:token/join', async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,${'CASE WHEN $5::text IS NOT NULL THEN NOW() ELSE NULL END'},FALSE,'joined')`,
       [order.id, req.parent.id, bound.names, bound.ids, proof]
     );
+    await logGroupOrderAudit(client, {
+      groupOrderId: order.id,
+      action: `加入團購（學生：${bound.names.join('、')}）`,
+      by: parentActor(req),
+    });
     await client.query('COMMIT');
     await syncNewStudentsToRagic(req.parent.id, createdForRagic); // best-effort，失敗不阻擋
 
@@ -790,6 +804,16 @@ router.post('/:id/my-proof', async (req, res) => {
         WHERE id = $1`,
       [member.id, proof, last5 || null, proofInput.clear, proofInput.supplied]
     );
+    // 冪等重送已在前面提早 return，走到這裡必有實際變更。
+    const proofActions = [];
+    if (proofInput.clear) proofActions.push('刪除匯款證明');
+    else if (proofInput.supplied) proofActions.push('上傳匯款證明');
+    if (last5) proofActions.push(`填寫轉帳末 5 碼 ${last5}`);
+    await logGroupOrderAudit(client, {
+      groupOrderId: req.params.id,
+      action: `更新付款資料（${proofActions.join('、') || '無變更'}）`,
+      by: parentActor(req),
+    });
     await client.query('COMMIT');
     committed = true;
     const loaded = await loadOrderWithMembers(pool, req.params.id);
@@ -842,6 +866,11 @@ router.post('/:id/submit', async (req, res) => {
         WHERE id=$1 RETURNING *`,
       [order.id]
     );
+    await logGroupOrderAudit(client, {
+      groupOrderId: order.id,
+      action: `團主送審（共 ${total} 位學生）`,
+      by: parentActor(req),
+    });
     await client.query('COMMIT');
     const loaded = await loadOrderWithMembers(pool, r.rows[0].id);
     res.json(shapeOrder(loaded.order, loaded.members, req.parent.id));
@@ -860,11 +889,17 @@ router.post('/:id/cancel', async (req, res) => {
     const o = await pool.query(`SELECT leader_parent_id FROM group_orders WHERE id = $1`, [req.params.id]);
     if (!o.rowCount) return res.status(404).json({ error: '找不到此團購' });
     if (o.rows[0].leader_parent_id !== req.parent.id) return res.status(403).json({ error: '只有團主可以取消' });
-    // 原子轉換：只在 forming/submitted 時可取消，避免覆蓋已核准/已退回的終態
+    // 原子轉換：只在 forming/submitted 時可取消，避免覆蓋已核准/已退回的終態。
+    // 以 CTE 讓「狀態變更 + 操作紀錄」同一語句落地，不會取消成功卻漏記稽核。
     const r = await pool.query(
-      `UPDATE group_orders SET status='cancelled', updated_at=NOW()
-        WHERE id=$1 AND status IN ('forming','submitted') RETURNING id`,
-      [req.params.id]
+      `WITH upd AS (
+         UPDATE group_orders SET status='cancelled', updated_at=NOW()
+          WHERE id=$1 AND status IN ('forming','submitted') RETURNING id
+       )
+       INSERT INTO group_order_audit_logs (group_order_id, action, by_user)
+       SELECT id, '團主取消', $2 FROM upd
+       RETURNING group_order_id`,
+      [req.params.id, parentActor(req)]
     );
     if (!r.rowCount) return res.status(409).json({ error: '此團購狀態無法取消' });
     res.json({ ok: true });

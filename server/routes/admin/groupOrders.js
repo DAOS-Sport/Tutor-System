@@ -19,6 +19,7 @@ const {
 } = require('../../middlewares/adminAuth');
 const { createCheckoutSession } = require('../../services/checkouts');
 const { parseProofInput } = require('../../services/paymentProof');
+const { logGroupOrderAudit } = require('../../services/groupOrderAudit');
 const {
   validateRequestId,
   payloadFingerprint,
@@ -142,6 +143,13 @@ router.get('/:id', requireAdminAuth, AMS, async (req, res) => {
         ORDER BY m.is_leader DESC, m.joined_at ASC`,
       [order.id]
     );
+    const audit = await pool.query(
+      `SELECT at, action, by_user, reason
+         FROM group_order_audit_logs
+        WHERE group_order_id = $1
+        ORDER BY at ASC, id ASC`,
+      [order.id]
+    );
     res.json({
       id: order.id,
       status: order.status,
@@ -170,9 +178,16 @@ router.get('/:id', requireAdminAuth, AMS, async (req, res) => {
         student_count: (m.student_names || []).length,
         transfer_last_5: m.transfer_last_5 || null,
         payment_proof_url: m.payment_proof_url || null,
+        proof_uploaded_at: m.proof_uploaded_at || null,
         payment_confirmed: !!m.payment_confirmed,
         status: m.status,
         joined_at: m.joined_at,
+      })),
+      audit_logs: audit.rows.map((x) => ({
+        at: x.at,
+        action: x.action,
+        by: x.by_user,
+        ...(x.reason ? { reason: x.reason } : {}),
       })),
     });
   } catch (err) {
@@ -318,6 +333,12 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
         }
         console.warn('[admin/groupOrders approve] 成員匯款證明已失效，憑末 5 碼放行（proof 不複製到新訂單）:',
           order.id, member.parent_id, member.payment_proof_url);
+        await logGroupOrderAudit(client, {
+          groupOrderId: order.id,
+          action: `核准時成員匯款證明已失效，憑末 5 碼放行（${member.parent_name}／${member.parent_phone}）`,
+          by: req.adminUser?.name || req.adminUser?.username || 'unknown',
+          reason: member.payment_proof_url,
+        });
         proofByMemberId.set(member.id, null);
         continue;
       }
@@ -369,6 +390,11 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
         WHERE id=$1`,
       [order.id, req.adminUser?.username || 'system']
     );
+    await logGroupOrderAudit(client, {
+      groupOrderId: order.id,
+      action: `核准成團（${ms.rows.length} 個家庭 × ${periodCount} 期，送待對帳清單）`,
+      by: req.adminUser?.name || req.adminUser?.username || 'unknown',
+    });
     await client.query(
       `UPDATE request_idempotency_ledger
           SET result_entity_id = $4, status = 'completed', completed_at = NOW()
@@ -396,11 +422,18 @@ router.post('/:id/reject', requireAdminAuth, AMS, async (req, res) => {
     const o = await pool.query(`SELECT venue_id FROM group_orders WHERE id = $1`, [req.params.id]);
     if (!o.rowCount) return res.status(404).json({ error: '找不到此團購' });
     if (!isVenueInScope(req, o.rows[0].venue_id)) return res.status(403).json({ error: '無權審核此場館的團購' });
-    // 原子轉換：只在 submitted 時可退回，避免與並發 approve 互相覆蓋終態
+    // 原子轉換：只在 submitted 時可退回，避免與並發 approve 互相覆蓋終態。
+    // CTE 讓「狀態變更 + 操作紀錄」同一語句落地，不會退回成功卻漏記稽核。
     const r = await pool.query(
-      `UPDATE group_orders SET status='rejected', reject_reason=$2, reviewed_by=$3, reviewed_at=NOW(), updated_at=NOW()
-        WHERE id=$1 AND status='submitted' RETURNING id`,
-      [req.params.id, reason, req.adminUser?.username || 'system']
+      `WITH upd AS (
+         UPDATE group_orders SET status='rejected', reject_reason=$2, reviewed_by=$3, reviewed_at=NOW(), updated_at=NOW()
+          WHERE id=$1 AND status='submitted' RETURNING id
+       )
+       INSERT INTO group_order_audit_logs (group_order_id, action, by_user, reason)
+       SELECT id, '退回團購', $4, $2 FROM upd
+       RETURNING group_order_id`,
+      [req.params.id, reason, req.adminUser?.username || 'system',
+       req.adminUser?.name || req.adminUser?.username || 'unknown']
     );
     if (!r.rowCount) return res.status(409).json({ error: '只有「待審核」的團購可以退回', code: 'NOT_SUBMITTED' });
     res.json({ ok: true });

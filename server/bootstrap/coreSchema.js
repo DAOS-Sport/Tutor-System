@@ -255,6 +255,19 @@ CREATE TABLE IF NOT EXISTS group_order_members (
 CREATE INDEX IF NOT EXISTS idx_group_members_order  ON group_order_members(group_order_id);
 CREATE INDEX IF NOT EXISTS idx_group_members_parent ON group_order_members(parent_id);
 
+-- 團購操作紀錄 — 比照 admin_enrollment_audit_logs（對帳）的追查標準：
+-- 任何人（家長端發起/加入/上傳付款資料/送審/取消、後台核准/退回/確認帳款）
+-- 對一筆團購的每次修改都留一列（時間 + 動作 + 操作者 + 原因）。
+CREATE TABLE IF NOT EXISTS group_order_audit_logs (
+  id             BIGSERIAL PRIMARY KEY,
+  group_order_id UUID NOT NULL REFERENCES group_orders(id) ON DELETE CASCADE,
+  at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  action         TEXT NOT NULL,
+  by_user        TEXT NOT NULL,
+  reason         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_group_order_audit ON group_order_audit_logs(group_order_id);
+
 -- ─────────────────────────────────────────────────────────────
 -- 團報「草稿暫存」：客人端發起團購頁填到一半時，先把未完成資訊存起來，
 --   重整 / 切走 / 換裝置回來都不流失（每位家長保留一筆「進行中」草稿）。

@@ -17,6 +17,7 @@ const { requireAdminAuth, requireAdminRole, getScopedVenueIds, isVenueInScope } 
 const ragicWriteback = require('../../services/ragicWriteback');
 const promotions = require('../../services/promotions');
 const { resolveParentLineDisplayName } = require('../../services/parentLineProfile');
+const { logGroupOrderAudit } = require('../../services/groupOrderAudit');
 const {
   createCheckoutSession,
   readCheckout,
@@ -1193,6 +1194,12 @@ router.post('/:id/reconcile', requireAdminAuth, requireAdminRole('admin', 'manag
       if (!gconf.rowCount) {
         console.warn('[reconcile/group] 對帳通過但未回寫 payment_confirmed（找不到對應成員或已是已確認）:',
           cur.rows[0].id, 'group:', cur.rows[0].group_order_id);
+      } else {
+        await logGroupOrderAudit(client, {
+          groupOrderId: cur.rows[0].group_order_id,
+          action: `櫃檯確認帳款（${cur.rows[0].parent_name}／${cur.rows[0].parent_phone}，報名 ${cur.rows[0].id} 對帳通過，發票 ${invoiceNumber}）`,
+          by,
+        });
       }
     }
 
