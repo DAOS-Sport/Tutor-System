@@ -10,6 +10,7 @@ const { Client } = require('../../server/node_modules/pg');
 const { signToken } = require('../../server/middlewares/adminAuth');
 const { signParentToken } = require('../../server/middlewares/parentAuth');
 const manualRouter = require('../../server/routes/admin/manualDeductions');
+const sessionsRouter = require('../../server/routes/admin/sessions');
 const slotsRouter = require('../../server/routes/slots');
 const { assert, step } = require('./_lib');
 
@@ -17,6 +18,7 @@ async function startRouteServer() {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
   app.use('/api/admin/manual-deductions', manualRouter);
+  app.use('/api/admin/sessions', sessionsRouter);
   app.use('/api/slots', slotsRouter);
   // eslint-disable-next-line no-unused-vars
   app.use((err, req, res, next) => res.status(500).json({ error: 'test route failure' }));
@@ -136,6 +138,7 @@ async function call(base, method, path, { token, body, requestId } = {}) {
     const success = await addPeriod('success', { total: 2 });
     const reserved = await addPeriod('reserved', { total: 1, reserved: 1 });
     const shared = await addPeriod('shared', { total: 2, members: [studentId, secondStudentId] });
+    const sharedV2 = await addPeriod('shared-v2', { total: 2, members: [studentId, secondStudentId] });
     const outOfScope = await addPeriod('outscope', { total: 1, venue: venueB });
     const adminCrossVenue = await addPeriod('admin-cross', { total: 1, venue: venueB });
     const concurrentManual = await addPeriod('concurrent', { total: 1 });
@@ -301,6 +304,80 @@ async function call(base, method, path, { token, body, requestId } = {}) {
     const sharedState = await pg.query(`SELECT COUNT(*)::int AS n FROM course_sessions WHERE course_period_id = $1`, [shared.periodId]);
     assert(sharedState.rows[0].n === 0, 'shared-period rejection creates no personal session');
 
+    step('shared usage V2 creates one usage event, fans out attendance, and F-M05 reverses once');
+    process.env.SHARED_CHECKIN_USAGE_V2 = 'true';
+    process.env.DEDUCTION_REVIVAL_V2 = 'true';
+    const sharedV2Key = `shared-v2-${suffix}`;
+    const sharedV2Body = {
+      course_period_id: sharedV2.periodId,
+      student_id: studentId,
+      reason: `shared v2 attendance ${suffix}`,
+      request_id: sharedV2Key,
+    };
+    const sharedCreated = await call(route.base, 'POST', '/api/admin/manual-deductions', {
+      token: staffToken,
+      body: sharedV2Body,
+      requestId: sharedV2Key,
+    });
+    assert(sharedCreated.status === 201, `shared V2 deduction succeeds (${sharedCreated.status})`);
+    assert(sharedCreated.data?.deduction?.remaining_before === 2
+      && sharedCreated.data?.deduction?.remaining_after === 1, 'shared remaining decreases by exactly one');
+    assert(sharedCreated.data?.deduction?.students?.length === 2, 'shared result returns both attending students');
+    const sharedUsage = await pg.query(
+      `SELECT d.course_session_id, d.status,
+              COUNT(DISTINCT cs.id)::int AS usage_events,
+              COUNT(cr.id)::int AS attendances,
+              cp.used_sessions
+         FROM manual_lesson_deductions d
+         JOIN course_sessions cs ON cs.id = d.course_session_id
+         JOIN checkin_records cr ON cr.course_session_id = cs.id
+         JOIN course_periods cp ON cp.id = d.course_period_id
+        WHERE d.course_period_id = $1
+        GROUP BY d.course_session_id, d.status, cp.used_sessions`,
+      [sharedV2.periodId]
+    );
+    assert(sharedUsage.rows[0].usage_events === 1 && sharedUsage.rows[0].attendances === 2
+      && Number(sharedUsage.rows[0].used_sessions) === 1, 'one shared usage event creates two attendances and used +1');
+
+    const sharedRetry = await call(route.base, 'POST', '/api/admin/manual-deductions', {
+      token: staffToken,
+      body: sharedV2Body,
+      requestId: sharedV2Key,
+    });
+    assert(sharedRetry.status === 200 && sharedRetry.data?.idempotent === true, 'shared retry returns first result without another deduction');
+
+    const revivalList = await call(route.base, 'GET', '/api/admin/sessions/cancelled', { token: managerToken });
+    const revivalRow = revivalList.data?.find((item) => item.id === sharedUsage.rows[0].course_session_id);
+    assert(revivalList.status === 200 && revivalRow?.students?.length === 2, 'F-M05 shows one usage row with both students');
+    const revived = await call(route.base, 'POST', `/api/admin/sessions/${sharedUsage.rows[0].course_session_id}/revive`, {
+      token: managerToken,
+      body: { reason: `shared revival ${suffix}` },
+    });
+    assert(revived.status === 200 && revived.data?.reversed_attendance_count === 2
+      && revived.data?.remaining_sessions === 2, 'revival adds one shared lesson and reverses both attendances');
+    const revivedState = await pg.query(
+      `SELECT d.status, cs.status::text AS session_status, cp.used_sessions,
+              COUNT(*) FILTER (WHERE cr.attendance_status = 'REVERSED')::int AS reversed_attendances
+         FROM manual_lesson_deductions d
+         JOIN course_sessions cs ON cs.id = d.course_session_id
+         JOIN course_periods cp ON cp.id = d.course_period_id
+         JOIN checkin_records cr ON cr.course_session_id = cs.id
+        WHERE d.course_period_id = $1
+        GROUP BY d.status, cs.status, cp.used_sessions`,
+      [sharedV2.periodId]
+    );
+    assert(revivedState.rows[0].status === 'REVERSED'
+      && revivedState.rows[0].session_status === 'cancelled_normal'
+      && revivedState.rows[0].reversed_attendances === 2
+      && Number(revivedState.rows[0].used_sessions) === 0, 'usage and all attendance are soft-reversed without deletion');
+    const revivedAgain = await call(route.base, 'POST', `/api/admin/sessions/${sharedUsage.rows[0].course_session_id}/revive`, {
+      token: managerToken,
+      body: { reason: `repeat ${suffix}` },
+    });
+    assert(revivedAgain.status === 200 && revivedAgain.data?.idempotent === true, 'repeating revival is idempotent and cannot add another lesson');
+    delete process.env.SHARED_CHECKIN_USAGE_V2;
+    delete process.env.DEDUCTION_REVIVAL_V2;
+
     const adminKey = `admin-cross-${suffix}`;
     const adminResult = await call(route.base, 'POST', '/api/admin/manual-deductions', {
       token: adminToken,
@@ -401,6 +478,8 @@ async function call(base, method, path, { token, body, requestId } = {}) {
     );
     assert(failedState.rows[0].ledgers === 0 && failedState.rows[0].sessions === 0 && failedState.rows[0].checkins === 0 && failedState.rows[0].audits === 0, 'forced failure leaves no ledger/session/check-in/audit half-product');
   } finally {
+    delete process.env.SHARED_CHECKIN_USAGE_V2;
+    delete process.env.DEDUCTION_REVIVAL_V2;
     if (triggerInstalled) await pg.query(`DROP TRIGGER IF EXISTS ${triggerName} ON manual_lesson_deductions`).catch(() => {});
     await pg.query(`DROP FUNCTION IF EXISTS ${functionName}()`).catch(() => {});
     await pg.query(`DELETE FROM admin_enrollment_audit_logs WHERE enrollment_id = ANY($1::text[])`, [enrollmentIds]).catch(() => {});
