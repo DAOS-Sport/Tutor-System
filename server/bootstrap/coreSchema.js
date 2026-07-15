@@ -763,6 +763,18 @@ DO $$ BEGIN
     ON payment_proof_uploads(target_type, target_id, created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_payment_proof_upload_parent
     ON payment_proof_uploads(parent_id, created_at DESC);
+  -- 上傳檔案的 PostgreSQL 耐久儲存（Object Storage bucket 未開通／preflight 失敗時的
+  -- fallback driver）。Autoscale 本機磁碟不跨實例共享、重部署即清空——曾造成家長
+  -- 上傳的匯款證明在對帳前 404、objectExists 於別台實例驗證失敗而寫不進 checkout。
+  -- key 為 'YYYY-MM/<hex24>.<ext>'（同 bucket 物件 key），對外 URL 維持 /uploads/<key>，
+  -- 由 index.js 的 /uploads handler 經 objectStorage.openUpload 讀出。
+  CREATE TABLE IF NOT EXISTS uploaded_files (
+    key TEXT PRIMARY KEY,
+    mime_type TEXT,
+    bytes BYTEA NOT NULL,
+    byte_size INTEGER NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
   -- 所有家長／櫃檯建單共用冪等 ledger。processing 與 checkout/referral/promotion 置於同一
   -- transaction；失敗會一起 rollback，不可能留下假的 completed 紀錄。
   CREATE TABLE IF NOT EXISTS request_idempotency_ledger (

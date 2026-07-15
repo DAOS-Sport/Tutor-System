@@ -135,43 +135,55 @@ app.use('/liff', express.static(path.join(PUBLIC_DIR, 'liff'), { setHeaders: noS
 const objectStore = require('./services/objectStorage');
 const mime = require('mime-types');
 
-// 三道安全防線（local 與 bucket 兩條路徑共用）：nosniff + CSP sandbox +
+// 安全標頭（local 與 bucket 兩條路徑共用）：nosniff + CSP sandbox +
 // 對非媒體副檔名一律 attachment 下載。傳入的是檔名或路徑，只看副檔名。
+// 快取標頭刻意不在這裡設：只有「成功且有內容」的回應才能長快取；404/502 等
+// 暫時性錯誤必須 no-store，否則一次 transient miss 會被瀏覽器 immutable 快取
+// 7 天，讓稍後才補上／儲存恢復的照片在櫃檯端持續顯示成壞圖（對帳照片「失效」）。
 function setUploadSecurityHeaders(res, nameOrPath) {
-  res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
   const isMedia = /\.(jpg|jpeg|jfif|png|gif|webp|heic|heif|avif|mp4|m4v|mov|webm|mp3|wav|m4a|aac|ogg|amr)$/i.test(nameOrPath);
   if (!isMedia) res.setHeader('Content-Disposition', 'attachment');
 }
 
-// /uploads/* — production 從 shared bucket 串流；local dev 從磁碟提供。
-// production 不得在 bucket 異常時降級到本機磁碟，否則既有照片會全部變成 404，
-// 新上傳也會在 Autoscale 換實例或重新部署後消失。
-app.get('/uploads/*', (req, res) => {
+const UPLOAD_SUCCESS_CACHE = 'public, max-age=604800, immutable';
+
+function sendUploadError(res, status, message) {
+  if (res.headersSent) return res.destroy();
+  res.setHeader('Cache-Control', 'no-store');
+  return res.status(status).json({ error: message });
+}
+
+// /uploads/* — 由 objectStorage.openUpload 解析來源：bucket 串流、PostgreSQL
+// uploaded_files buffer、或 local dev 磁碟。三個來源共用同一個 /uploads URL
+// namespace 並做 read-through——bucket 不可用期間上傳的檔案存於 DB，bucket 恢復
+// 後同一 URL 仍可讀。production 絕不落本機磁碟（Autoscale 換實例／重部署即 404）。
+app.get('/uploads/*', async (req, res) => {
   setUploadSecurityHeaders(res, req.path);
-  if (objectStore.driverName === 'replit') {
-    res.setHeader('Content-Type', mime.lookup(req.path) || 'application/octet-stream');
-    const stream = objectStore.openReadStream(req.path);
-    if (!stream) return res.status(404).json({ error: '檔案不存在' });
-    stream.on('error', (err) => {
+  try {
+    const found = await objectStore.openUpload(req.path);
+    if (!found) return sendUploadError(res, 404, '檔案不存在');
+    if (found.kind === 'file') {
+      // local dev：不能用 express.static（route handler 不剝 /uploads 前綴），改 sendFile。
+      // sendFile 自帶成功回應的 Cache-Control（maxAge/immutable）。
+      return res.sendFile(found.path, { maxAge: '7d', immutable: true }, (err) => {
+        if (err) sendUploadError(res, 404, '檔案不存在');
+      });
+    }
+    res.setHeader('Cache-Control', UPLOAD_SUCCESS_CACHE);
+    res.setHeader('Content-Type', found.mimeType || mime.lookup(req.path) || 'application/octet-stream');
+    if (found.kind === 'buffer') return res.send(found.buffer);
+    found.stream.on('error', (err) => {
       const msg = err?.message || String(err);
       console.error('[uploads/stream]', req.path, msg.slice(0, 200));
-      if (!res.headersSent) res.status(404).json({ error: '檔案不存在' }); else res.destroy();
+      // exists() 已在 openUpload 內確認過；走到這裡是讀取階段的傳輸錯誤，屬 5xx 而非 404。
+      sendUploadError(res, 502, '檔案暫時無法讀取，請稍後再試');
     });
-    stream.pipe(res);
-  } else {
-    // local driver（僅供 dev）：從磁碟以 sendFile 提供。
-    // 注意：不能用 express.static 的 localUploadsMiddleware 直接呼叫，因為 route handler
-    // 不會剝掉 /uploads 前綴，static 中間件會找到兩層 uploads 路徑。改用 res.sendFile。
-    const safePath = req.path.slice('/uploads/'.length); // → '2026-07/abc.jpg'
-    if (!safePath || safePath.startsWith('/') || safePath.includes('..') || safePath.includes('\0')) {
-      return res.status(400).json({ error: '無效路徑' });
-    }
-    const filePath = path.join(__dirname, 'uploads', safePath);
-    res.sendFile(filePath, { maxAge: '7d' }, (err) => {
-      if (err && !res.headersSent) res.status(404).json({ error: '檔案不存在' });
-    });
+    found.stream.pipe(res);
+  } catch (err) {
+    console.error('[uploads/serve]', req.path, String(err?.message || err).slice(0, 200));
+    sendUploadError(res, 502, '檔案暫時無法讀取，請稍後再試');
   }
 });
 
@@ -245,10 +257,17 @@ const PORT = process.env.PORT || 3000;
   try {
     await objectStore.assertProductionStorageReady();
   } catch (err) {
-    console.warn('[objectStorage] preflight failed; falling back to local disk driver (uploads will not persist across deploys):', err.message);
-    objectStore.useFallbackLocalDriver();
-    // 繼續啟動：local disk 在 Autoscale 只存活到下次重新部署，
-    // 長久方案是在 Replit UI 開通 Object Storage。
+    // bucket 未開通／異常：降級到 PostgreSQL 耐久儲存，部署照常成功、照片不消失。
+    // 絕不可退回本機磁碟——Autoscale 換實例即 404、objectExists 跨實例驗證失敗，
+    // 正是「家長上傳成功、對帳清單卻讀不到照片」的根因。
+    console.warn('[objectStorage] bucket preflight failed; using durable PostgreSQL upload storage instead:', err.message);
+    try {
+      await objectStore.useFallbackDbDriver();
+    } catch (dbErr) {
+      console.error('[objectStorage] durable DB upload storage also unavailable; refusing to start:', dbErr.message);
+      process.exit(1);
+      return;
+    }
   }
   try {
     await bootstrapDemo();

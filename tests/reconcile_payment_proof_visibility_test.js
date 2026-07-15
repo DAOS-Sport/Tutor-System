@@ -99,6 +99,12 @@ function testUploadOwnershipContract() {
   );
   assert.ok(checkoutSource.includes('FROM group_order_members gom'));
   assert.ok(checkoutSource.includes('gom.parent_id = cs.parent_id'));
+  // 第一階段上傳 ledger 的歸戶必須涵蓋 upload route 的完整 ownership 規則：
+  // 除了母單家長本人，也包含子訂單上的家長／額外家長電話（配偶合法上傳）。
+  assert.ok(
+    checkoutSource.includes('pu_parent.phone = ANY(COALESCE(ae_pu.extra_parent_phones'),
+    'uploaded_payment_proof_urls 必須認得額外家長電話上傳的照片',
+  );
 }
 
 (async () => {

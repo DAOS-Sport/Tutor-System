@@ -3,6 +3,10 @@
  *
  * 開發環境預設使用 LocalDiskDriver；production 一律選用 Replit App Storage，
  * 並在 listen 前實際探測 bucket，避免 Autoscale 多實例／重部署遺失附件。
+ * bucket 未開通／preflight 失敗時，production 改用 PostgreSQL 耐久 driver
+ * （uploaded_files 表）——與 schema bootstrap 同一顆 DB，跨實例共享、重部署不消失。
+ * 絕不可降級 local disk：Autoscale 本機磁碟會讓家長照片 404、objectExists 於別台
+ * 實例驗證失敗（對帳清單讀不到匯款證明的根因）。
  * driver pattern 讓未來切到 S3 / GCS 時業務碼不需改動。
  *
  * 安全：
@@ -11,8 +15,8 @@
  *  - LocalDisk 由 server/index.js 的 /uploads middleware 加上
  *    nosniff / CSP sandbox / Content-Disposition:attachment 三道防線
  *
- * 切換方式：環境變數 OBJECT_STORAGE_DRIVER=local|replit。
- * 未設定時：production → replit，其餘（含 local dev）→ local。
+ * 切換方式：環境變數 OBJECT_STORAGE_DRIVER=local|replit|db。
+ * 未設定時：production → replit（preflight 失敗自動降級 db），其餘（含 local dev）→ local。
  */
 const fs = require('fs');
 const path = require('path');
@@ -160,6 +164,41 @@ function createReplitDriver(getClient = getReplitClient) {
 
 const ReplitDriver = createReplitDriver();
 
+// ── Driver: PostgreSQL（uploaded_files 表）───────────────────────
+// bucket 未開通／異常時的耐久 fallback：檔案存 bytea，與 schema bootstrap 同一顆
+// DB，天生跨實例共享且重部署不消失。lazy require pool，讓 driver 選擇契約測試
+// 可以在沒有 DATABASE_URL 的獨立 process 載入本模組。
+function createDbDriver(getPool = () => require('../models/db').pool) {
+  return {
+    name: 'db',
+    async saveBuffer({ buffer, ext, mimeType }) {
+      const yyyymm = formatPlainDate(new Date()).slice(0, 7);
+      const id = crypto.randomBytes(12).toString('hex');
+      const key = `${yyyymm}/${id}${ext}`;
+      await getPool().query(
+        `INSERT INTO uploaded_files (key, mime_type, bytes, byte_size)
+         VALUES ($1, $2, $3, $4)`,
+        [key, mimeType || 'application/octet-stream', buffer, buffer.length]
+      );
+      return { url: `/uploads/${key}` };
+    },
+    async exists(key) {
+      const r = await getPool().query('SELECT 1 FROM uploaded_files WHERE key = $1', [key]);
+      return r.rowCount > 0;
+    },
+    async readFile(key) {
+      const r = await getPool().query(
+        'SELECT bytes, mime_type FROM uploaded_files WHERE key = $1',
+        [key]
+      );
+      if (!r.rowCount) return null;
+      return { buffer: r.rows[0].bytes, mimeType: r.rows[0].mime_type || null };
+    },
+  };
+}
+
+const DbDriver = createDbDriver();
+
 // 從對外 URL 還原 bucket 物件 key：'/uploads/2026-06/abc.jpg' → '2026-06/abc.jpg'
 // 拒絕非 /uploads 前綴與路徑穿越（..），與 local 的防穿越規則一致。
 function objectKeyFromUrl(url) {
@@ -169,21 +208,22 @@ function objectKeyFromUrl(url) {
   return key;
 }
 
-const DRIVERS = { local: LocalDiskDriver, replit: ReplitDriver };
+const DRIVERS = { local: LocalDiskDriver, replit: ReplitDriver, db: DbDriver };
 const requestedDriver = String(process.env.OBJECT_STORAGE_DRIVER || '').trim().toLowerCase();
 const shouldAutoUseReplit = !requestedDriver
   && process.env.NODE_ENV === 'production';
 const selectedDriverName = requestedDriver || (shouldAutoUseReplit ? 'replit' : 'local');
 let activeDriver = DRIVERS[selectedDriverName] || LocalDiskDriver;
 
-// 供 index.js 在 preflight 失敗時呼叫：降級至 local disk driver（冪等）。
-// Production 下若 bucket 不可用，總好過讓整個 server 無法啟動。
-// 注意：Autoscale 的 local disk 在重部署後會被清除，此時 uploads 僅在本次部署存活。
-// 長久之計：在 Replit UI 開通 Object Storage 以獲得跨部署持久儲存。
-function useFallbackLocalDriver() {
-  if (activeDriver.name === 'local') return; // 已是 local，no-op
-  console.warn('[objectStorage] switching to local disk driver (fallback); uploads will not persist across deploys');
-  activeDriver = LocalDiskDriver;
+// 供 index.js 在 bucket preflight 失敗時呼叫：降級至 PostgreSQL 耐久 driver（冪等）。
+// probe 先確認 uploaded_files 可讀（coreSchema bootstrap 已在此之前建表）；
+// probe 失敗會 throw，由啟動流程 fail closed——寧可拒絕啟動，也不可退回
+// 會弄丟家長照片的本機磁碟。
+async function useFallbackDbDriver() {
+  if (activeDriver.name === 'db') return;
+  await DbDriver.exists('__driver_preflight__');
+  console.warn('[objectStorage] bucket unavailable; switching to durable PostgreSQL upload storage (uploaded_files)');
+  activeDriver = DbDriver;
 }
 
 // An explicit local override remains useful for local troubleshooting, but it
@@ -193,8 +233,8 @@ function assertProductionStorageConfigured({
   nodeEnv = process.env.NODE_ENV,
   actualDriver = activeDriver.name,
 } = {}) {
-  if (nodeEnv === 'production' && actualDriver !== 'replit') {
-    const err = new Error('production 必須使用 Replit shared object storage；local driver 已拒絕');
+  if (nodeEnv === 'production' && !['replit', 'db'].includes(actualDriver)) {
+    const err = new Error('production 必須使用共享儲存（Replit bucket 或 PostgreSQL）；local driver 已拒絕');
     err.code = 'PRODUCTION_LOCAL_STORAGE_FORBIDDEN';
     throw err;
   }
@@ -205,9 +245,20 @@ async function assertProductionStorageReady({
   nodeEnv = process.env.NODE_ENV,
   actualDriver = activeDriver.name,
   listObjects = () => getReplitClient().list({ maxResults: 1 }),
+  probeDb = () => DbDriver.exists('__driver_preflight__'),
 } = {}) {
   assertProductionStorageConfigured({ nodeEnv, actualDriver });
   if (nodeEnv !== 'production') return true;
+  if (actualDriver === 'db') {
+    try {
+      await probeDb();
+      return true;
+    } catch {
+      const err = new Error('production PostgreSQL upload storage preflight failed');
+      err.code = 'PRODUCTION_STORAGE_PREFLIGHT_FAILED';
+      throw err;
+    }
+  }
   let result;
   try {
     result = await listObjects();
@@ -250,21 +301,90 @@ async function saveBuffer({ buffer, originalName = 'file.bin', mimeType = 'appli
   };
 }
 
+// 檢查一個物件 key 是否已落地於任何耐久來源。
+// 為什麼查兩個來源：bucket 不可用期間上傳的檔案存在 uploaded_files；bucket 恢復
+// （或日後開通）切回 replit driver 後，這些 URL 仍必須驗證通過、照片仍要能顯示，
+// 否則對帳清單上既有的匯款證明會整批失效。
+// fail closed：bucket lookup error 且 DB 也沒有此檔時，把 bucket error 丟回，
+// 交由 parseProofInput 回 503，絕不把「查不到」當成「存在」。
+async function sourceExists(key, { driver = activeDriver, dbDriver = DbDriver } = {}) {
+  if (driver.name === 'replit') {
+    let bucketError = null;
+    try {
+      if (await driver.exists(key)) return true;
+    } catch (err) {
+      bucketError = err;
+    }
+    let inDb = false;
+    try {
+      inDb = await dbDriver.exists(key);
+    } catch (err) {
+      throw bucketError || err;
+    }
+    if (inDb) return true;
+    if (bucketError) throw bucketError;
+    return false;
+  }
+  if (driver.name === 'db') return dbDriver.exists(key);
+  // local dev：磁碟優先；開發資料庫可能存有 db-driver 時期的檔案，miss 時補查。
+  if (await driver.exists(key)) return true;
+  try {
+    return await dbDriver.exists(key);
+  } catch {
+    return false;
+  }
+}
+
 // 驗證一個對外 URL 是否真的指向本服務已落地的檔案（防止偽造 /uploads 路徑）。
-// Replit driver 必須呼叫 SDK exists；lookup error 會 throw，交由 route fail closed。
 async function objectExists(url) {
   const key = objectKeyFromUrl(url);
   if (!key) return false;
-  return activeDriver.exists(key);
+  return sourceExists(key);
 }
 
-// 以對外 URL 開啟 bucket 物件的讀取串流（僅 replit driver）。
-// local driver 回 null — 那些檔案仍由 index.js 的 express.static 從磁碟提供。
-function openReadStream(url) {
-  if (activeDriver.name !== 'replit') return null;
+// 以對外 URL 解析上傳檔案的讀取來源，供 index.js 的 /uploads handler 回應：
+//   { kind: 'stream', stream }            — bucket 物件串流
+//   { kind: 'buffer', buffer, mimeType }  — PostgreSQL uploaded_files
+//   { kind: 'file',   path }              — local dev 磁碟（由 res.sendFile 提供）
+//   null                                  — 不存在（404）
+// 與 sourceExists 同一套 read-through 順序，任何 driver 切換都不會讓既有 URL 404。
+async function openUpload(url, { driver = activeDriver, dbDriver = DbDriver } = {}) {
   const key = objectKeyFromUrl(url);
   if (!key) return null;
-  return activeDriver.openReadStream(key);
+  if (driver.name === 'replit') {
+    // 先 exists 再開串流：downloadAsStream 對不存在物件只會 emit error，
+    // 無法在 header 送出前改走 DB fallback。多一次 lookup 換 read-through 正確性。
+    let bucketError = null;
+    try {
+      if (await driver.exists(key)) {
+        return { kind: 'stream', stream: driver.openReadStream(key) };
+      }
+    } catch (err) {
+      bucketError = err;
+    }
+    let fromDb = null;
+    try {
+      fromDb = await dbDriver.readFile(key);
+    } catch (err) {
+      throw bucketError || err;
+    }
+    if (fromDb) return { kind: 'buffer', buffer: fromDb.buffer, mimeType: fromDb.mimeType };
+    if (bucketError) throw bucketError;
+    return null;
+  }
+  if (driver.name === 'db') {
+    const found = await dbDriver.readFile(key);
+    return found ? { kind: 'buffer', buffer: found.buffer, mimeType: found.mimeType } : null;
+  }
+  if (await driver.exists(key)) {
+    return { kind: 'file', path: path.join(LOCAL_ROOT, key) };
+  }
+  try {
+    const found = await dbDriver.readFile(key);
+    return found ? { kind: 'buffer', buffer: found.buffer, mimeType: found.mimeType } : null;
+  } catch {
+    return null;
+  }
 }
 
 module.exports = {
@@ -272,15 +392,17 @@ module.exports = {
   isAllowed,
   inferMessageType,
   objectExists,
-  openReadStream,
+  openUpload,
   UPLOAD_ROOT: LOCAL_ROOT,
   ALLOWED_MAX_BYTES,
   get driverName() { return activeDriver.name; },
-  useFallbackLocalDriver,
+  useFallbackDbDriver,
   assertProductionStorageConfigured,
   assertProductionStorageReady,
   __test__: {
     createReplitDriver,
+    createDbDriver,
+    sourceExists,
     objectKeyFromUrl,
   },
 };

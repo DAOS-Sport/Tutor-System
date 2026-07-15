@@ -297,10 +297,27 @@ async function readCheckout(clientOrPool, checkoutId) {
                    )
                  )
             ), '[]'::jsonb) AS group_member_payment_proof_urls,
+            -- 第一階段上傳 ledger：upload route 已在寫入時以 resolveOwnedTarget 驗證
+            -- 上傳者擁有 target（母單家長、或子訂單上的家長／額外家長電話）。這裡的
+            -- 歸戶條件必須涵蓋同一組規則——只認 cs.parent_id 會漏掉配偶等額外家長
+            -- 合法上傳的照片，對帳清單就「讀不到」明明上傳成功的匯款證明。
             COALESCE((
               SELECT jsonb_agg(DISTINCT COALESCE(pu.preview_url, pu.original_url))
                 FROM payment_proof_uploads pu
-               WHERE pu.parent_id = cs.parent_id
+               WHERE (
+                   pu.parent_id = cs.parent_id
+                   OR EXISTS (
+                     SELECT 1
+                       FROM parents pu_parent
+                       JOIN admin_enrollments ae_pu
+                         ON ae_pu.checkout_id = cs.checkout_id
+                      WHERE pu_parent.id = pu.parent_id
+                        AND (
+                          ae_pu.parent_phone = pu_parent.phone
+                          OR pu_parent.phone = ANY(COALESCE(ae_pu.extra_parent_phones, '{}'))
+                        )
+                   )
+                 )
                  AND (
                    (pu.target_type = 'checkout' AND pu.target_id = cs.checkout_id::text)
                    OR (pu.target_type = 'enrollment' AND EXISTS (
@@ -333,7 +350,11 @@ async function readCheckout(clientOrPool, checkoutId) {
                   'final_price', ae.final_price,
                   'transfer_last_5', ae.transfer_last_5,
                   'payment_proof_url', ae.payment_proof_url,
-                  'carrier', ae.carrier,
+                  -- 團報成員的電子發票載具存在 group_order_members.carrier，家長自助填寫
+                  -- 的 my-proof 流程從不回寫 admin_enrollments.carrier；對帳（F-M02）
+                  -- 家庭載具欄若只讀 ae.carrier 會空白（櫃檯得重刷）。以 group_order_id
+                  -- ＋正規化家長電話對應成員載具補足；ae.carrier 有值（櫃檯手動填）優先。
+                  'carrier', COALESCE(NULLIF(ae.carrier, ''), ae_gom_carrier.carrier),
                   'tax_id', ae.tax_id,
                   'payment_method', ae.payment_method,
                   'order_kind', ae.order_kind,
@@ -364,6 +385,18 @@ async function readCheckout(clientOrPool, checkoutId) {
        LEFT JOIN admin_enrollments ae ON ae.checkout_id = cs.checkout_id
        LEFT JOIN venues ae_v ON ae_v.id = ae.venue_id
        LEFT JOIN admin_venues ae_av ON ae_av.id = ae.venue_id
+       LEFT JOIN LATERAL (
+         -- 對應此子訂單所屬團報成員的載具（同團 + 同一位家長電話）。
+         SELECT gom.carrier
+           FROM group_order_members gom
+           JOIN parents gom_p ON gom_p.id = gom.parent_id
+          WHERE gom.group_order_id = ae.group_order_id
+            AND regexp_replace(COALESCE(gom_p.phone, ''), '\\D', '', 'g') =
+                regexp_replace(COALESCE(ae.parent_phone, ''), '\\D', '', 'g')
+            AND NULLIF(gom.carrier, '') IS NOT NULL
+          ORDER BY gom.proof_uploaded_at DESC NULLS LAST
+          LIMIT 1
+       ) ae_gom_carrier ON ae.group_order_id IS NOT NULL
       WHERE cs.checkout_id = $1
       GROUP BY cs.checkout_id, p.id, first_ae.venue_id, v.id, av.id`,
     [checkoutId]
