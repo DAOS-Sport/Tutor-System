@@ -76,6 +76,7 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
   const fileRef = useRef(null);
   const [invoiceNumber, setInvoiceNumber] = useState('');
   const [invoiceUrl, setInvoiceUrl] = useState('');
+  const [carrier, setCarrier] = useState(checkout.carrier || '');
   const [imageFile, setImageFile] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -113,6 +114,7 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
         invoice_number: invoiceNumber,
         invoice_image_url: imageUrl,
         invoice_url: invoiceUrl.trim() || undefined,
+        carrier: carrier.trim() || undefined,
       });
       toast.success(`對帳通過，發票 ${invoiceNumber} 已記錄並推播家長`);
       onDone();
@@ -156,15 +158,26 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
             </div>
           )}
 
-          {checkout.carrier && (
-            <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3">
-              <div className="mb-1 text-xs font-semibold text-indigo-700">載具（開發票掃描用）</div>
-              <div className="font-mono text-sm font-bold text-indigo-900">{checkout.carrier}</div>
+          <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3">
+            <label className="mb-1 block text-xs font-semibold text-indigo-700" htmlFor="reconcile-carrier">
+              電子發票載具（選填，可直接用掃描器刷入）
+            </label>
+            <input
+              id="reconcile-carrier"
+              type="text"
+              maxLength={64}
+              value={carrier}
+              disabled={busy}
+              onChange={(e) => setCarrier(e.target.value.slice(0, 64))}
+              placeholder="例如 /ABC+123；舊團購可在此補刷"
+              className="w-full rounded-lg border border-indigo-200 bg-white px-3 py-2 font-mono text-sm text-indigo-900 focus:border-brand-teal focus:outline-none disabled:bg-gray-100"
+            />
+            {carrier && (
               <div className="mt-2 inline-block rounded-lg bg-white p-2">
-                <Barcode value={checkout.carrier} />
+                <Barcode value={carrier} />
               </div>
-            </div>
-          )}
+            )}
+          </div>
 
           <div className="rounded-lg border border-gray-200 bg-white p-3">
             <div className="mb-2 text-xs font-semibold text-gray-600">發票品項</div>

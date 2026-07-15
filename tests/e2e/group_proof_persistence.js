@@ -14,6 +14,7 @@ const checkoutRouter = require('../../server/routes/checkout');
 const coursesRouter = require('../../server/routes/courses');
 const groupOrdersRouter = require('../../server/routes/groupOrders');
 const adminGroupOrdersRouter = require('../../server/routes/admin/groupOrders');
+const adminCheckoutsRouter = require('../../server/routes/admin/checkouts');
 const { assert, step } = require('./_lib');
 
 async function startRouteServer() {
@@ -24,6 +25,7 @@ async function startRouteServer() {
   app.use('/api/courses', coursesRouter);
   app.use('/api/group-orders', groupOrdersRouter);
   app.use('/api/admin/group-orders', adminGroupOrdersRouter);
+  app.use('/api/admin/checkouts', adminCheckoutsRouter);
   // eslint-disable-next-line no-unused-vars
   app.use((err, req, res, next) => res.status(500).json({ error: 'test route failure' }));
   const server = await new Promise((resolve) => {
@@ -426,7 +428,7 @@ async function call(base, method, routePath, { token, body, requestId } = {}) {
     assert(approvedState.rows[0].orders === 2 && approvedState.rows[0].checkouts === 2, 'two families produce exactly two orders and two checkouts');
     assert(approvedState.rows[0].audits === 2 && approvedState.rows[0].ledgers === 1, 'concurrent retry creates no duplicate audit or ledger');
     const carrierPropagation = await pg.query(
-      `SELECT ae.carrier AS order_carrier, cs.carrier AS checkout_carrier
+      `SELECT ae.carrier AS order_carrier, cs.carrier AS checkout_carrier, cs.checkout_id
          FROM admin_enrollments ae
          JOIN checkout_sessions cs ON cs.checkout_id = ae.checkout_id
         WHERE ae.group_order_id = $1 AND ae.parent_phone = $2`,
@@ -436,6 +438,35 @@ async function call(base, method, routePath, { token, body, requestId } = {}) {
     assert(carrierPropagation.rows[0].order_carrier === '/E2ETEST'
       && carrierPropagation.rows[0].checkout_carrier === '/E2ETEST',
     'group carrier propagates to checkout and reconciliation order');
+
+    step('legacy approved group checkout may scan a missing carrier in the existing reconcile transaction');
+    const leaderCheckoutId = carrierPropagation.rows[0].checkout_id;
+    await pg.query(`UPDATE checkout_sessions SET carrier = NULL WHERE checkout_id = $1`, [leaderCheckoutId]);
+    await pg.query(`UPDATE admin_enrollments SET carrier = NULL WHERE checkout_id = $1`, [leaderCheckoutId]);
+    await pg.query(
+      `UPDATE group_order_members SET carrier = NULL WHERE group_order_id = $1 AND parent_id = $2`,
+      [groupOrderId, parentA]
+    );
+    const counterCarrier = await call(route.base, 'POST', `/api/admin/checkouts/${leaderCheckoutId}/reconcile`, {
+      token: adminToken,
+      body: {
+        invoice_number: 'AB12345678',
+        invoice_image_url: '/uploads/e2e-invoice.png',
+        carrier: '/COUNTER',
+      },
+    });
+    assert(counterCarrier.status === 200, 'counter reconcile accepts a scanned carrier for a legacy group checkout');
+    const counterCarrierState = await pg.query(
+      `SELECT
+         (SELECT carrier FROM checkout_sessions WHERE checkout_id = $1) AS checkout_carrier,
+         (SELECT carrier FROM admin_enrollments WHERE checkout_id = $1 LIMIT 1) AS order_carrier,
+         (SELECT carrier FROM group_order_members WHERE group_order_id = $2 AND parent_id = $3) AS member_carrier`,
+      [leaderCheckoutId, groupOrderId, parentA]
+    );
+    assert(counterCarrierState.rows[0].checkout_carrier === '/COUNTER'
+      && counterCarrierState.rows[0].order_carrier === '/COUNTER'
+      && counterCarrierState.rows[0].member_carrier === '/COUNTER',
+    'counter-scanned carrier is preserved on checkout, child order, and matching group member');
   } finally {
     await pg.query(`DELETE FROM promotion_usages WHERE parent_id = ANY($1::uuid[])`, [[parentA, parentB]]).catch(() => {});
     await pg.query(`DELETE FROM admin_enrollment_audit_logs WHERE enrollment_id = ANY($1::text[])`, [enrollmentIds]).catch(() => {});

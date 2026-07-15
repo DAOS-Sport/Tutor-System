@@ -144,6 +144,9 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
     const invoiceUrl = String(req.body?.invoice_url || '').trim();
     const buyerName = String(req.body?.buyer_name || '').trim() || null;
     const taxId = String(req.body?.tax_id || '').trim() || null;
+    const requestedCarrier = typeof req.body?.carrier === 'string'
+      ? req.body.carrier.trim().slice(0, 64)
+      : '';
 
     if (!invoiceNumber) {
       await client.query('ROLLBACK');
@@ -164,6 +167,9 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
       return res.status(404).json({ error: '找不到付款單' });
     }
     const checkoutRow = cr.rows[0];
+    // 舊團購核准時沒有 carrier 傳遞欄位；允許櫃檯在既有 reconcile transaction
+    // 直接補刷，未提供時則完整保留 checkout 原值。
+    const carrier = requestedCarrier || String(checkoutRow.carrier || '').trim() || null;
     if (![CHECKOUT_STATUS.PENDING_PAYMENT, CHECKOUT_STATUS.PENDING_RECONCILE].includes(checkoutRow.payment_status)) {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '此付款單狀態非待對帳' });
@@ -206,10 +212,11 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
                 invoice_number = $3,
                 invoice_image_url = $4,
                 invoice_url = $5,
+                carrier = COALESCE($6, carrier),
                 invoice_issued_at = NOW(),
                 updated_at = NOW()
           WHERE id = $1`,
-        [row.id, total, invoiceNumber, invoiceImageUrl, invoiceUrl || null]
+        [row.id, total, invoiceNumber, invoiceImageUrl, invoiceUrl || null, carrier]
       );
       await client.query(
         `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user)
@@ -222,16 +229,17 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
         if (!groupPaymentMarked.has(groupKey)) {
           groupPaymentMarked.add(groupKey);
           const gconf = await client.query(
-            `UPDATE group_order_members gom
+              `UPDATE group_order_members gom
                 SET payment_confirmed = TRUE,
                     payment_confirmed_at = NOW(),
-                    payment_confirmed_by = $3
+                    payment_confirmed_by = $3,
+                    carrier = COALESCE($4, gom.carrier)
               FROM parents p
               WHERE p.id = gom.parent_id
                 AND gom.group_order_id = $1
                 AND p.phone = $2
                 AND gom.payment_confirmed = FALSE`,
-            [row.group_order_id, row.parent_phone, String(by).slice(0, 50)]
+            [row.group_order_id, row.parent_phone, String(by).slice(0, 50), carrier]
           );
           if (gconf.rowCount) {
             await logGroupOrderAudit(client, {
@@ -272,11 +280,15 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
       `UPDATE checkout_sessions
           SET payment_status = 'paid',
               current_route_state = 'paid',
+              carrier = COALESCE($4, carrier),
               audit_log = COALESCE(audit_log, '[]'::jsonb) ||
-                jsonb_build_array(jsonb_build_object('at', NOW(), 'action', 'checkout_reconciled', 'by', $2::text, 'invoice_number', $3::text)),
+                jsonb_build_array(jsonb_build_object(
+                  'at', NOW(), 'action', 'checkout_reconciled', 'by', $2::text,
+                  'invoice_number', $3::text, 'carrier_supplied', ($4::text IS NOT NULL)
+                )),
               updated_at = NOW()
         WHERE checkout_id = $1`,
-      [req.params.checkoutId, by, invoiceNumber]
+      [req.params.checkoutId, by, invoiceNumber, carrier]
     );
 
     for (const { row, total } of rowsToOpen) {
