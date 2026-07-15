@@ -77,6 +77,11 @@ router.get('/', requireAdminAuth, AMS, async (req, res) => {
       params.push(status);
       where.push(`cs.payment_status = $${params.length}`);
     }
+    const archiveState = req.query.archiveState ? String(req.query.archiveState).toUpperCase() : '';
+    if (archiveState) {
+      params.push(archiveState);
+      where.push(`cs.archive_state = $${params.length}`);
+    }
 
     const search = req.query.search ? String(req.query.search).trim().toLowerCase() : '';
     if (search) {
@@ -406,7 +411,7 @@ router.post('/:checkoutId/cancel', requireAdminAuth, AMS, async (req, res) => {
       return res.status(404).json({ error: '找不到付款單' });
     }
     const checkoutRow = cr.rows[0];
-    if (![CHECKOUT_STATUS.PENDING_PAYMENT, CHECKOUT_STATUS.PENDING_RECONCILE].includes(checkoutRow.payment_status)) {
+    if (![CHECKOUT_STATUS.PENDING_PAYMENT, CHECKOUT_STATUS.PENDING_RECONCILE, CHECKOUT_STATUS.CANCELLED].includes(checkoutRow.payment_status)) {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '此付款單狀態非待對帳，無法取消' });
     }
@@ -421,6 +426,11 @@ router.post('/:checkoutId/cancel', requireAdminAuth, AMS, async (req, res) => {
     if (!children.rows.every((row) => isVenueInScope(req, row.venue_id))) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: '此付款單含有您無權取消的場館' });
+    }
+    if (checkoutRow.payment_status === CHECKOUT_STATUS.CANCELLED) {
+      await client.query('COMMIT');
+      const checkout = await readCheckout(pool, req.params.checkoutId);
+      return res.json({ ...checkout, idempotent: true });
     }
     if (children.rows.some((row) => row.status !== 'pending_payment')) {
       await client.query('ROLLBACK');
@@ -442,6 +452,11 @@ router.post('/:checkoutId/cancel', requireAdminAuth, AMS, async (req, res) => {
       `UPDATE checkout_sessions
           SET payment_status = 'cancelled',
               current_route_state = 'cancelled',
+              archive_state = 'SYSTEM_CANCELLED',
+              cancelled_by = $2,
+              cancelled_by_user_id = $3,
+              cancelled_at = NOW(),
+              cancellation_reason = $4,
               audit_log = COALESCE(audit_log, '[]'::jsonb) ||
                 jsonb_build_array(jsonb_build_object(
                   'at', NOW(),
@@ -469,6 +484,55 @@ router.post('/:checkoutId/cancel', requireAdminAuth, AMS, async (req, res) => {
     await client.query('ROLLBACK').catch(() => {});
     console.error('[admin/checkouts cancel]', err);
     res.status(500).json({ error: '取消付款單失敗' });
+  } finally {
+    client.release();
+  }
+});
+
+router.post('/:checkoutId/archive', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const checkout = await client.query(
+      `SELECT * FROM checkout_sessions WHERE checkout_id = $1 FOR UPDATE`,
+      [req.params.checkoutId]
+    );
+    if (!checkout.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: '找不到付款單' });
+    }
+    const children = await client.query(
+      `SELECT venue_id FROM admin_enrollments WHERE checkout_id = $1`,
+      [req.params.checkoutId]
+    );
+    if (!children.rows.every((row) => isVenueInScope(req, row.venue_id))) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: '此付款單含有您無權歸檔的場館' });
+    }
+    const row = checkout.rows[0];
+    if (row.archive_state === 'ARCHIVED') {
+      await client.query('COMMIT');
+      return res.json({ ...(await readCheckout(pool, req.params.checkoutId)), idempotent: true });
+    }
+    if (row.payment_status !== CHECKOUT_STATUS.CANCELLED || row.archive_state !== 'SYSTEM_CANCELLED') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '僅系統取消的付款單可歸檔', code: 'NOT_SYSTEM_CANCELLED' });
+    }
+    await client.query(
+      `UPDATE checkout_sessions
+          SET archive_state = 'ARCHIVED',
+              audit_log = COALESCE(audit_log, '[]'::jsonb) || jsonb_build_array(jsonb_build_object(
+                'at', NOW(), 'action', 'checkout_archived', 'by', $2::text)),
+              updated_at = NOW()
+        WHERE checkout_id = $1`,
+      [req.params.checkoutId, req.adminUser?.name || req.adminUser?.username || 'unknown']
+    );
+    await client.query('COMMIT');
+    res.json(await readCheckout(pool, req.params.checkoutId));
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('[admin/checkouts archive]', err);
+    res.status(500).json({ error: '歸檔付款單失敗' });
   } finally {
     client.release();
   }
