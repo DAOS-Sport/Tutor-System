@@ -5,7 +5,7 @@ import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import { coursesApi } from '../api/courses';
 import { transfersApi } from '../api/transfers';
-import { courseTypeLabel, formatTWDate, formatTWD } from '../utils/format';
+import { courseTypeLabel, formatTWDate, formatTWDateTime, formatTWD } from '../utils/format';
 
 export default function TransferRequestPage() {
   const navigate = useNavigate();
@@ -126,7 +126,7 @@ export default function TransferRequestPage() {
                 <div className="mt-1 text-[11px] text-gray-500">主管備註：{r.review_note}</div>
               )}
               <div className="mt-1 text-[10px] text-gray-400">
-                {new Date(r.created_at).toLocaleString('zh-TW', { hour12: false })}
+                {formatTWDateTime(r.created_at)}（台北時間）
               </div>
             </div>
           ))}

@@ -17,6 +17,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { formatPlainDate } = require('../utils/dateTime');
 
 const ALLOWED_MAX_BYTES = Number(process.env.CHAT_UPLOAD_MAX_BYTES) || 25 * 1024 * 1024;
 
@@ -79,8 +80,7 @@ const LocalDiskDriver = {
   name: 'local',
   async saveBuffer({ buffer, ext }) {
     if (!fs.existsSync(LOCAL_ROOT)) fs.mkdirSync(LOCAL_ROOT, { recursive: true });
-    const d = new Date();
-    const yyyymm = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const yyyymm = formatPlainDate(new Date()).slice(0, 7);
     const dir = path.join(LOCAL_ROOT, yyyymm);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     const id = crypto.randomBytes(12).toString('hex');
@@ -128,8 +128,7 @@ function createReplitDriver(getClient = getReplitClient) {
   return {
     name: 'replit',
     async saveBuffer({ buffer, ext }) {
-      const d = new Date();
-      const yyyymm = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      const yyyymm = formatPlainDate(new Date()).slice(0, 7);
       const id = crypto.randomBytes(12).toString('hex');
       const key = `${yyyymm}/${id}${ext}`;
       const result = await getClient().uploadFromBytes(key, buffer);

@@ -3,7 +3,7 @@ import { parentsApi } from '../api/parents';
 import { venuesApi } from '../api/venues';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
-import { normalizeGender } from '../utils/format';
+import { formatPlainDate, normalizeGender } from '../utils/format';
 
 const BLOOD_TYPE_OPTIONS = ['A', 'B', 'O', 'AB', '不清楚'];
 const emptyStudent = { name: '', id_number: '', birth_date: '', gender: '生理男', blood_type: '不清楚' };
@@ -168,7 +168,7 @@ export default function ProfilePage() {
     setStudentForm({
       name: s.name || '',
       id_number: s.id_number || '',
-      birth_date: String(s.birth_date || '').slice(0, 10),
+      birth_date: formatPlainDate(s.birth_date),
       gender: normalizeGender(s.gender) || '生理男',
       blood_type: normalizeBloodType(s.blood_type),
     });
@@ -295,7 +295,7 @@ export default function ProfilePage() {
                       <div>
                         <div className="text-sm font-bold text-gray-900">{s.name}</div>
                         <div className="text-xs text-gray-500">{s.id_number}</div>
-                        <div className="mt-0.5 text-xs text-gray-500">{String(s.birth_date || '').slice(0, 10)}・{normalizeGender(s.gender) || '未指定'}{s.blood_type ? `・${s.blood_type}` : ''}</div>
+                        <div className="mt-0.5 text-xs text-gray-500">{formatPlainDate(s.birth_date)}・{normalizeGender(s.gender) || '未指定'}{s.blood_type ? `・${s.blood_type}` : ''}</div>
                       </div>
                       <div className="flex shrink-0 gap-2">
                         <button type="button" onClick={() => editStudent(s)} className="rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-700">編輯</button>

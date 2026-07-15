@@ -192,7 +192,9 @@ export default function MyCoursesPage() {
       ? (cp.course_period_id ? (isSelfMode ? [
         { label: '聯繫教練', primary: true, disabled: true, onClick: () => {} },
         {
-          label: cp.self_checked_in_today ? '今日已簽到 ✓' : '今日上課簽到',
+          label: cp.self_checked_in_today
+            ? (cp.partner_checkin_label ? '夥伴已代簽 ✓' : '今日已簽到 ✓')
+            : '今日上課簽到',
           tone: 'accent',
           disabled: !!cp.self_checked_in_today,
           onClick: () => setSelfCheckinTarget(cp),

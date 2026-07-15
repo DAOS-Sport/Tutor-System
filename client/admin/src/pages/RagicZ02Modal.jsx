@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { customerStudentsApi } from '../api/customers';
+import { formatTWDateTimeSeconds } from '../utils/format';
 
 // 仿 Ragic Z02 表單格線的學員編輯器：左藍學員資料、右黃家長資訊(唯讀)、紫消費分析、灰購買紀錄、綠編輯紀錄。
 const BLOOD_OPTS = ['不清楚', 'O', 'A', 'B', 'AB'];
@@ -7,11 +8,7 @@ const inputCls = 'w-full rounded border border-gray-300 px-2 py-1 text-xs focus:
 const FIELD_LABELS = { name: '姓名', gender: '性別', birth_date: '出生年月日', id_number: '身分證字號', blood_type: '血型', student_code: '學員編號' };
 const ROLE_LABELS = { parent: '家長', staff: '櫃檯', manager: '主管', admin: '管理員' };
 function fmtDateTimeSec(v) {
-  if (!v) return '—';
-  const d = new Date(v);
-  if (Number.isNaN(d.getTime())) return '—';
-  const p2 = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}/${p2(d.getMonth() + 1)}/${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`;
+  return formatTWDateTimeSeconds(v);
 }
 
 function Row({ label, required, children }) {

@@ -115,8 +115,9 @@ router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'),
       SELECT
         COUNT(DISTINCT cs.id) FILTER (WHERE cs.status::text NOT LIKE 'cancelled%')::int AS reserved_sessions,
         COUNT(DISTINCT cs.id) FILTER (
-          WHERE cs.status::text NOT LIKE 'cancelled%'
+           WHERE cs.status::text NOT LIKE 'cancelled%'
             AND cr.course_session_id IS NOT NULL
+            AND cr.attendance_status = 'ATTENDED'
         )::int AS attended_sessions
         FROM course_sessions cs
    LEFT JOIN checkin_records cr ON cr.course_session_id = cs.id
@@ -314,6 +315,7 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
          COUNT(DISTINCT cs.id) FILTER (
            WHERE cs.status::text NOT LIKE 'cancelled%'
              AND cr.course_session_id IS NOT NULL
+             AND cr.attendance_status = 'ATTENDED'
          )::int AS attended_sessions
          FROM course_sessions cs
     LEFT JOIN checkin_records cr ON cr.course_session_id = cs.id
@@ -333,8 +335,8 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
 
     const session = await client.query(
       `INSERT INTO course_sessions
-         (course_period_id, coach_id, scheduled_at, duration_minutes, status, completed_at)
-       VALUES ($1, $2, $3, 60, 'completed', NOW())
+         (course_period_id, coach_id, scheduled_at, duration_minutes, status, completed_at, session_deducted)
+       VALUES ($1, $2, $3, 60, 'completed', NOW(), TRUE)
        RETURNING id`,
       [periodId, period.coach_id || null, occurredAt.toISOString()]
     );

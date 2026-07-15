@@ -11,18 +11,8 @@ import {
   formatTWD, courseTypeLabel,
   paymentStatusLabel, paymentStatusTone,
   isValidTWPhone,
+  todayISO, formatHM,
 } from '../utils/format';
-
-// 取今天 YYYY-MM-DD（local time）
-function todayStr() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-}
-function fmtTime(iso) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  return d.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false });
-}
 
 export default function CheckinPage() {
   const toast = useToast();
@@ -30,7 +20,7 @@ export default function CheckinPage() {
   const isStaff = role === 'staff';
 
   // 篩選器
-  const [date, setDate] = useState(todayStr());
+  const [date, setDate] = useState(todayISO());
   // Task #90 修正：預設「全部（我的場館）」而非鎖單一主場館，讓多場館櫃檯看得到所有所屬場館。
   const [venueId, setVenueId] = useState('');
   const [venues, setVenues] = useState([]);
@@ -74,7 +64,7 @@ export default function CheckinPage() {
 
   // WebSocket 即時推播；無 WS 時 fallback 30 秒輪詢
   useEffect(() => {
-    if (date !== todayStr()) {
+    if (date !== todayISO()) {
       // 看歷史日期不開 WS
       if (wsRef.current) { try { wsRef.current.close(); } catch{} wsRef.current = null; }
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -134,17 +124,19 @@ export default function CheckinPage() {
   function clearLookup() { setResult(null); setPhone(''); setPeriodId(''); }
 
   // U13：撤銷自助簽到（家長端不開放自撤，誤點一律由櫃檯在此更正）。
-  // 撤銷＝該堂全部簽到刪除、課堂取消、堂數歸還、家長當天可重新簽到。
+  // 撤銷＝該堂全部 attendance 標記 REVERSED、課堂取消、堂數歸還；不刪歷史。
   const [revokingId, setRevokingId] = useState(null);
   async function revokeSelf(row) {
     if (revokingId) return;
-    const ok = window.confirm(
-      `確定撤銷這筆自助簽到？\n學員：${row.student}\n撤銷後該堂全部簽到會移除、堂數歸還，家長今天可重新簽到。`
+    const reason = window.prompt(
+      `請填寫撤銷原因。這會將同一課堂全部學員的 attendance 標記為已復活，並歸還 1 堂。\n學員：${row.student}`,
+      ''
     );
-    if (!ok) return;
+    if (reason == null) return;
+    if (!reason.trim()) { toast.error('請填寫撤銷原因'); return; }
     setRevokingId(row.checkin_id);
     try {
-      await checkinsApi.revokeSelfSession(row.session_id);
+      await checkinsApi.revokeSelfSession(row.session_id, reason.trim());
       toast.success('已撤銷自助簽到，堂數已歸還');
       await reload();
     } catch (e) {
@@ -162,7 +154,7 @@ export default function CheckinPage() {
     return <StatusBadge tone="green">家長</StatusBadge>;
   }
 
-  const isToday = date === todayStr();
+  const isToday = date === todayISO();
 
   return (
     <div>
@@ -186,7 +178,7 @@ export default function CheckinPage() {
             </select>
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-gray-600">日期</label>
+            <label className="mb-1 block text-xs font-medium text-gray-600">日期（台北）</label>
             <input
               type="date"
               value={date}
@@ -241,7 +233,7 @@ export default function CheckinPage() {
       <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
         <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
           <h3 className="text-base font-bold text-brand-primary">
-            {isToday ? '今日已報到' : `${date} 已報到`}
+            {isToday ? '今日已報到（台北時間）' : `${date} 已報到（台北時間）`}
           </h3>
           <span className="text-sm text-gray-500">共 {list.length} 筆</span>
         </div>
@@ -253,7 +245,7 @@ export default function CheckinPage() {
           <ul className="divide-y divide-gray-100">
             {list.map((r) => (
               <li key={r.checkin_id} className="grid grid-cols-12 items-center gap-2 px-4 py-3 text-sm">
-                <span className="col-span-2 font-mono text-brand-primary">{fmtTime(r.at)}</span>
+                <span className="col-span-2 font-mono text-brand-primary">{formatHM(r.at)}</span>
                 <span className="col-span-2 truncate"><b>{r.student || '—'}</b></span>
                 <span className="col-span-3 truncate text-gray-600">
                   {r.course_type ? courseTypeLabel(r.course_type) : '—'}

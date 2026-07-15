@@ -9,6 +9,22 @@ const router = express.Router();
 const { pool } = require('../models/db');
 const { requireCoach, requireCoachOwner } = require('../middlewares/coachAuth');
 const { broadcastAdminEvent } = require('../services/websocket');
+const { getFeatureFlag, flagAllowsPhone } = require('../services/featureFlags');
+const { addCalendarDays, taipeiWeekStart } = require('../utils/dateTime');
+
+async function syncStoredUsage(client, period, used) {
+  await client.query(`UPDATE course_periods SET used_sessions = $2, updated_at = NOW() WHERE id = $1`, [period.period_id, used]);
+  await client.query(
+    `UPDATE admin_enrollments ae SET used_sessions = $5, updated_at = NOW()
+      WHERE ae.id = $1
+         OR ($2::uuid IS NOT NULL AND ae.group_order_id = $2::uuid
+             AND COALESCE(ae.period_number, 1) = COALESCE($4::int, 1))
+         OR ($3::uuid IS NOT NULL AND ae.enrollment_batch_id = $3::uuid
+             AND COALESCE(ae.period_number, 1) = COALESCE($4::int, 1))`,
+    [period.admin_enrollment_id || '', period.group_order_id || null,
+     period.enrollment_batch_id || null, period.period_number || 1, used]
+  );
+}
 
 function todayWhereTaipei(columnSql = 'cs.scheduled_at') {
   return `(${columnSql} AT TIME ZONE 'Asia/Taipei')::date = (NOW() AT TIME ZONE 'Asia/Taipei')::date`;
@@ -48,8 +64,10 @@ router.get('/coach/:coachId/today', requireCoach, requireCoachOwner('coachId'), 
 
 router.get('/coach/:coachId/week', requireCoach, requireCoachOwner('coachId'), async (req, res) => {
   const { from, to } = req.query;
-  const fromD = from ? new Date(from) : (() => { const d = new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate() - d.getDay()); return d; })();
-  const toD = to ? new Date(to) : new Date(fromD.getTime() + 7 * 24 * 3600 * 1000);
+  const fromDate = /^\d{4}-\d{2}-\d{2}$/.test(from || '') ? from : taipeiWeekStart();
+  const toDate = /^\d{4}-\d{2}-\d{2}$/.test(to || '') ? to : addCalendarDays(fromDate, 7);
+  const fromD = new Date(`${fromDate}T00:00:00+08:00`);
+  const toD = new Date(`${toDate}T00:00:00+08:00`);
   try {
     const r = await pool.query(
       `SELECT cs.id, cs.scheduled_at, cs.duration_minutes, cs.status,
@@ -146,7 +164,9 @@ router.get('/coach/:coachId/history/periods', requireCoach, requireCoachOwner('c
                 (SELECT COUNT(DISTINCT cr.course_session_id)
                  FROM checkin_records cr
                  JOIN course_sessions cs2 ON cs2.id = cr.course_session_id
-                 WHERE cs2.course_period_id = cp.id),
+                 WHERE cs2.course_period_id = cp.id
+                   AND cs2.status::text NOT LIKE 'cancelled%'
+                   AND cr.attendance_status = 'ATTENDED'),
                 0
               )::int AS used_sessions,
               COALESCE(
@@ -178,6 +198,7 @@ router.post('/:id/checkins', requireCoach, async (req, res) => {
     const ctx = await client.query(
       `SELECT cs.id AS session_id, cs.status::text AS session_status,
               cp.id AS period_id, cp.venue_id, cp.course_type,
+              cp.admin_enrollment_id, cp.group_order_id, cp.enrollment_batch_id, cp.period_number,
               COALESCE(cs.coach_id, cp.coach_id) AS coach_id,
               c.name AS coach_name, v.name AS venue_name
          FROM course_sessions cs
@@ -221,14 +242,57 @@ router.post('/:id/checkins', requireCoach, async (req, res) => {
       return res.status(403).json({ error: '該學員未在此課程名單中' });
     }
 
-    const ins = await client.query(
-      `INSERT INTO checkin_records
-         (course_session_id, student_id, checked_in_source, checked_in_by_coach_id)
-       VALUES ($1, $2, 'coach', $3)
-       ON CONFLICT (course_session_id, student_id) DO UPDATE SET checked_in_at = checkin_records.checked_in_at
-       RETURNING id, checked_in_at, checked_in_source`,
-      [req.params.id, studentId, req.coach.id]
+    const roster = await client.query(
+      `SELECT s.id, p.phone
+         FROM course_period_enrollments cpe
+         JOIN students s ON s.id = cpe.student_id
+         JOIN parents p ON p.id = s.parent_id
+        WHERE cpe.course_period_id = $1 AND cpe.status = 'active'
+          AND COALESCE(s.is_active, TRUE) = TRUE`,
+      [session.period_id]
     );
+    const sharedFlag = await getFeatureFlag('SHARED_CHECKIN_USAGE_V2', client);
+    const sharedV2 = roster.rows.some((row) => flagAllowsPhone(sharedFlag, row.phone));
+    if (sharedV2) {
+      await client.query(
+        `INSERT INTO checkin_records
+           (course_session_id, student_id, checked_in_by_student_id,
+            checked_in_source, checked_in_by_coach_id)
+         SELECT $1, cpe.student_id, cpe.student_id, 'coach', $2
+           FROM course_period_enrollments cpe
+           JOIN students s ON s.id = cpe.student_id
+          WHERE cpe.course_period_id = $3 AND cpe.status = 'active'
+            AND COALESCE(s.is_active, TRUE) = TRUE
+         ON CONFLICT (course_session_id, student_id) DO NOTHING`,
+        [req.params.id, req.coach.id, session.period_id]
+      );
+    } else {
+      await client.query(
+        `INSERT INTO checkin_records
+           (course_session_id, student_id, checked_in_by_student_id,
+            checked_in_source, checked_in_by_coach_id)
+         VALUES ($1, $2, $2, 'coach', $3)
+         ON CONFLICT (course_session_id, student_id) DO NOTHING`,
+        [req.params.id, studentId, req.coach.id]
+      );
+    }
+    const ins = await client.query(
+      `SELECT id, checked_in_at, checked_in_source
+         FROM checkin_records WHERE course_session_id = $1 AND student_id = $2`,
+      [req.params.id, studentId]
+    );
+    const usedRes = await client.query(
+      `SELECT COUNT(DISTINCT cs.id)::int AS n
+         FROM course_sessions cs JOIN checkin_records cr ON cr.course_session_id = cs.id
+        WHERE cs.course_period_id = $1 AND cs.status::text NOT LIKE 'cancelled%'
+          AND cr.attendance_status = 'ATTENDED'`,
+      [session.period_id]
+    );
+    await client.query(
+      `UPDATE course_sessions SET session_deducted = TRUE, updated_at = NOW() WHERE id = $1`,
+      [req.params.id]
+    );
+    await syncStoredUsage(client, session, Number(usedRes.rows[0]?.n || 0));
     await client.query('COMMIT');
 
     const row = ins.rows[0];
@@ -300,6 +364,7 @@ router.get('/:id', requireCoach, async (req, res) => {
                    LEFT JOIN checkin_records cr
                      ON cr.course_session_id = cs.id
                     AND cr.student_id = s.id
+                    AND cr.attendance_status = 'ATTENDED'
                   WHERE cpe.course_period_id = cp.id AND cpe.status = 'active'),
                 '[]'::json
               ) AS students_detail

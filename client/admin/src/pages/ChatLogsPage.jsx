@@ -5,13 +5,12 @@ import DataTable from '../components/DataTable';
 import StatusBadge from '../components/StatusBadge';
 import { useToast } from '../context/ToastContext';
 import { adminChatApi } from '../api/chat';
+import { formatTWDateTime } from '../utils/format';
 
 const COURSE_LABEL = { 1: '1v1', 2: '1v2', 3: '1v3' };
 
 function fmtDate(iso) {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return formatTWDateTime(iso);
 }
 
 function MessageItem({ m }) {

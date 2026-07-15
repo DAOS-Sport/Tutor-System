@@ -3,6 +3,7 @@
  * 核心：衝突偵測在「教練新增槽位時」執行，而非學員預約時
  */
 const { pool } = require('../models/db');
+const { formatTaipeiDateTime } = require('../utils/dateTime');
 
 /**
  * 衝突偵測（共用：可在任意 client / pool 上執行）
@@ -45,7 +46,7 @@ async function createSlot({ coachId, venueId, startAt, durationMinutes, notes })
     const conflicts = await _detectConflictOn(client, coachId, startAt, durationMinutes);
     if (conflicts.length > 0) {
       const c = conflicts[0];
-      throw new Error(`時段衝突：與 ${c.venue_name} ${new Date(c.start_at).toLocaleString('zh-TW')} 的課程重疊`);
+      throw new Error(`時段衝突：與 ${c.venue_name} ${formatTaipeiDateTime(c.start_at)}（台北時間）的課程重疊`);
     }
     const res = await client.query(
       `INSERT INTO coach_availability_slots (coach_id, venue_id, start_at, duration_minutes, status, notes)

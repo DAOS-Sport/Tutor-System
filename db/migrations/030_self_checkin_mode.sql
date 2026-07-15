@@ -7,7 +7,7 @@
 -- 防呆：同一期每日限一次自助簽到，由 partial unique index 硬保證（雙擊/重送/
 -- 多裝置並發皆擋）；堂數上限沿用「非取消課堂數 >= total_sessions 擋」。
 -- 家長不可自行撤銷；櫃檯撤銷（admin API）會清 self_checkin_date（釋放當日名額）
--- 並把課堂轉 cancelled_normal、刪除簽到紀錄，全程 audit。
+-- 並把課堂轉 cancelled_normal；新版 reversal 只標記 attendance、不刪除歷史，全程 audit。
 
 ALTER TABLE course_periods ADD COLUMN IF NOT EXISTS checkin_mode TEXT NOT NULL DEFAULT 'booking';
 DO $$ BEGIN

@@ -6,6 +6,7 @@ const express = require('express');
 const { pool } = require('../models/db');
 const { requireParent } = require('../middlewares/parentAuth');
 const { parseProofInput } = require('../services/paymentProof');
+const { partnerCheckinLabel } = require('../services/groupPartner');
 const promotions = require('../services/promotions');
 
 const router = express.Router();
@@ -48,7 +49,9 @@ router.get('/lessons', requireParent, async (req, res) => {
               v.name AS venue_name,
               s.id AS student_id, s.name AS student_name,
               cr.id AS checkin_id, cr.checked_in_at,
-              sr.id AS record_id, sr.status AS record_status
+              cr.checked_in_by_parent_id,
+              sr.id AS record_id, sr.status AS record_status,
+              pc.partner_parent_id, pc.partner_name, pc.partner_gender
          FROM course_period_enrollments cpe
          JOIN students s ON s.id = cpe.student_id
          JOIN course_periods cp ON cp.id = cpe.course_period_id
@@ -56,13 +59,45 @@ router.get('/lessons', requireParent, async (req, res) => {
          JOIN course_sessions cs ON cs.course_period_id = cp.id
          LEFT JOIN venues v ON v.id = cp.venue_id
          LEFT JOIN checkin_records cr ON cr.course_session_id = cs.id AND cr.student_id = s.id
+          AND cr.attendance_status = 'ATTENDED'
          LEFT JOIN session_records sr ON sr.course_session_id = cs.id
+         -- 團報（跨家庭共班）夥伴代簽：同一堂上「另一位家長」的最早有效簽到。
+         -- 僅團報 period（group_order_id 有值）才解析，一般/家庭共班不揭露他人身分。
+         LEFT JOIN LATERAL (
+           SELECT p2.id AS partner_parent_id, p2.name AS partner_name, p2.gender AS partner_gender
+             FROM checkin_records cr2
+             JOIN parents p2 ON p2.id = cr2.checked_in_by_parent_id
+            WHERE cp.group_order_id IS NOT NULL
+              AND cr2.course_session_id = cs.id
+              AND cr2.attendance_status = 'ATTENDED'
+              AND cr2.checked_in_by_parent_id <> $1
+            ORDER BY cr2.checked_in_at
+            LIMIT 1
+         ) pc ON true
         WHERE ${conds.join(' AND ')}
         ORDER BY cs.scheduled_at DESC
         LIMIT 500`,
       args
     );
-    res.json(r.rows);
+    // 夥伴代簽標籤（「團報夥伴陳媽媽」）：本家學員尚未簽到、或簽到紀錄由夥伴家長建立時顯示；
+    // 自己簽的、教練／櫃檯代簽的（checked_in_by_parent_id 為空）不標。只回稱謂，不回全名。
+    const rows = r.rows.map((row) => {
+      const {
+        partner_parent_id: partnerParentId,
+        partner_name: partnerName,
+        partner_gender: partnerGender,
+        checked_in_by_parent_id: ownAuthor,
+        ...rest
+      } = row;
+      const ownByCoach = !!row.checkin_id && !ownAuthor;
+      const showPartner = !!partnerParentId && !ownByCoach
+        && (!row.checkin_id || String(ownAuthor) !== String(req.parent.id));
+      return {
+        ...rest,
+        partner_checkin_label: showPartner ? partnerCheckinLabel(partnerName, partnerGender) : null,
+      };
+    });
+    res.json(rows);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -101,6 +136,7 @@ router.get('/mine', requireParent, async (req, res) => {
                       cper.total_sessions AS period_total_sessions,
                       cper.checkin_mode,
                       cper.self_checked_in_today,
+                      cper.today_partner_checkin,
                       cper.pricing_multiplier,
                       cper.is_senior,
                       -- 課程轉讓頁(F-S08)用：本家長名下、在該 period active 掛載的學生 {id,name}。
@@ -114,16 +150,15 @@ router.get('/mine', requireParent, async (req, res) => {
                            AND cpe.status = 'active'
                            AND s.parent_id = $2
                       ) AS students_detail,
-                      -- 已出席堂數＝該 period 下、本家長學生有簽到的「堂數」（DISTINCT session）；
-                      -- 同堂多位小孩（家庭共班／團報同家庭多孩）一堂有多筆 checkin，
-                      -- 不可數列數，否則一堂被算成多堂。剩餘(未上課)＝總−已出席。
+                      -- 已用堂數＝該共享 period 下有有效出席的「堂數」（DISTINCT session）。
+                      -- 不限本家庭，因家庭共班／團報共用同一堂數池；同堂多位小孩仍只算一堂。
                       (
                         SELECT COUNT(DISTINCT cs2.id)::int
                           FROM course_sessions cs2
                           JOIN checkin_records cr ON cr.course_session_id = cs2.id
-                          JOIN students st ON st.id = cr.student_id
                          WHERE cs2.course_period_id = cper.id
-                           AND st.parent_id = $2
+                           AND cs2.status::text NOT LIKE 'cancelled%'
+                           AND cr.attendance_status = 'ATTENDED'
                       ) AS attended_sessions
                  FROM admin_enrollments
                  LEFT JOIN checkout_sessions cs ON cs.checkout_id = admin_enrollments.checkout_id
@@ -135,13 +170,28 @@ router.get('/mine', requireParent, async (req, res) => {
                                    WHERE cs3.course_period_id = cp.id
                                      AND cs3.created_via = 'self_checkin'
                                      AND cs3.self_checkin_date = (NOW() AT TIME ZONE 'Asia/Taipei')::date
-                                     AND cs3.status NOT IN ('cancelled_normal','cancelled_penalty')) AS self_checked_in_today
+                                     AND cs3.status NOT IN ('cancelled_normal','cancelled_penalty')) AS self_checked_in_today,
+                          CASE WHEN cp.group_order_id IS NOT NULL THEN (
+                            SELECT jsonb_build_object('name', p4.name, 'gender', p4.gender)
+                              FROM course_sessions cs4
+                              JOIN checkin_records cr4 ON cr4.course_session_id = cs4.id
+                              JOIN parents p4 ON p4.id = cr4.checked_in_by_parent_id
+                             WHERE cs4.course_period_id = cp.id
+                               AND cs4.status::text NOT LIKE 'cancelled%'
+                               AND cr4.attendance_status = 'ATTENDED'
+                               AND cr4.checked_in_by_parent_id <> $2
+                               AND (cr4.checked_in_at AT TIME ZONE 'Asia/Taipei')::date =
+                                   (NOW() AT TIME ZONE 'Asia/Taipei')::date
+                             ORDER BY cr4.checked_in_at
+                             LIMIT 1
+                          ) END AS today_partner_checkin
                      FROM course_periods cp
                      LEFT JOIN coaches co ON co.id = cp.coach_id
                     WHERE cp.id = COALESCE(
                             (SELECT cp2.id FROM course_periods cp2
                                WHERE admin_enrollments.group_order_id IS NOT NULL
                                  AND cp2.group_order_id = admin_enrollments.group_order_id
+                                 AND cp2.period_number = COALESCE(admin_enrollments.period_number, 1)
                                ORDER BY cp2.created_at LIMIT 1),
                             (SELECT cp2.id FROM course_periods cp2
                                WHERE admin_enrollments.enrollment_batch_id IS NOT NULL
@@ -207,6 +257,9 @@ router.get('/mine', requireParent, async (req, res) => {
       course_period_id: canAccessPeriod ? row.course_period_id : null,
       checkin_mode: canAccessPeriod ? (row.checkin_mode || 'booking') : 'booking',
       self_checked_in_today: canAccessPeriod ? !!row.self_checked_in_today : false,
+      partner_checkin_label: canAccessPeriod && row.today_partner_checkin
+        ? partnerCheckinLabel(row.today_partner_checkin.name, row.today_partner_checkin.gender)
+        : null,
       expires_at: canAccessPeriod ? row.expires_at : null,
       submitted_at: row.submitted_at,
       total_sessions: total,
@@ -411,18 +464,18 @@ router.get('/:id', requireParent, async (req, res) => {
               cper.expires_at,
               cper.checkin_mode,
               cper.self_checked_in_today,
+              cper.today_partner_checkin,
               -- 係數/資深取自 course_period 的教練 FK（e.coach_id 多為空，不可靠）。
               cper.pricing_multiplier,
               cper.is_senior,
-              -- 已出席堂數（本家長學生有簽到的 DISTINCT session 數；同堂多位小孩一堂多筆
-              -- checkin，不可數列數）與總堂數（取自 course_period）。
+              -- 已用堂數取共享 period 的有效 DISTINCT session；家庭共班／團報不按學員或家庭倍增。
               (
                 SELECT COUNT(DISTINCT cs2.id)::int
                   FROM course_sessions cs2
                   JOIN checkin_records cr ON cr.course_session_id = cs2.id
-                  JOIN students st ON st.id = cr.student_id
                  WHERE cs2.course_period_id = cper.id
-                   AND st.parent_id = $2
+                   AND cs2.status::text NOT LIKE 'cancelled%'
+                   AND cr.attendance_status = 'ATTENDED'
               ) AS attended_sessions,
               cper.total_sessions AS period_total_sessions,
               (
@@ -452,13 +505,28 @@ router.get('/:id', requireParent, async (req, res) => {
                            WHERE cs3.course_period_id = cp.id
                              AND cs3.created_via = 'self_checkin'
                              AND cs3.self_checkin_date = (NOW() AT TIME ZONE 'Asia/Taipei')::date
-                             AND cs3.status NOT IN ('cancelled_normal','cancelled_penalty')) AS self_checked_in_today
+                             AND cs3.status NOT IN ('cancelled_normal','cancelled_penalty')) AS self_checked_in_today,
+                  CASE WHEN cp.group_order_id IS NOT NULL THEN (
+                    SELECT jsonb_build_object('name', p4.name, 'gender', p4.gender)
+                      FROM course_sessions cs4
+                      JOIN checkin_records cr4 ON cr4.course_session_id = cs4.id
+                      JOIN parents p4 ON p4.id = cr4.checked_in_by_parent_id
+                     WHERE cs4.course_period_id = cp.id
+                       AND cs4.status::text NOT LIKE 'cancelled%'
+                       AND cr4.attendance_status = 'ATTENDED'
+                       AND cr4.checked_in_by_parent_id <> $2
+                       AND (cr4.checked_in_at AT TIME ZONE 'Asia/Taipei')::date =
+                           (NOW() AT TIME ZONE 'Asia/Taipei')::date
+                     ORDER BY cr4.checked_in_at
+                     LIMIT 1
+                  ) END AS today_partner_checkin
              FROM course_periods cp
              LEFT JOIN coaches co ON co.id = cp.coach_id
             WHERE cp.id = COALESCE(
                     (SELECT cp2.id FROM course_periods cp2
                        WHERE e.group_order_id IS NOT NULL
                          AND cp2.group_order_id = e.group_order_id
+                         AND cp2.period_number = COALESCE(e.period_number, 1)
                        ORDER BY cp2.created_at LIMIT 1),
                     (SELECT cp2.id FROM course_periods cp2
                        WHERE e.enrollment_batch_id IS NOT NULL
@@ -516,6 +584,9 @@ router.get('/:id', requireParent, async (req, res) => {
       course_period_id: canAccessPeriod ? row.course_period_id : null,
       checkin_mode: canAccessPeriod ? (row.checkin_mode || 'booking') : 'booking',
       self_checked_in_today: canAccessPeriod ? !!row.self_checked_in_today : false,
+      partner_checkin_label: canAccessPeriod && row.today_partner_checkin
+        ? partnerCheckinLabel(row.today_partner_checkin.name, row.today_partner_checkin.gender)
+        : null,
       total_sessions: total,
       used_sessions: used,
       remaining_sessions: remaining,

@@ -12,7 +12,8 @@ import { courseTypeLabel, formatTWDate, formatTWTime } from '../utils/format';
 
 // 家長可自助簽到：尚未簽到、且課程已確認/完成（不限上課當天，隨時可補簽）。
 function canParentCheckin(r) {
-  return !r.checked_in_at && ['confirmed', 'completed'].includes(r.session_status);
+  return !r.checked_in_at && !r.partner_checkin_label
+    && ['confirmed', 'completed'].includes(r.session_status);
 }
 
 export default function MyLessonsPage() {
@@ -49,12 +50,10 @@ export default function MyLessonsPage() {
     if (checkinBusyKey) return;
     setCheckinBusyKey(key);
     try {
-      const res = await checkinsApi.create({ sessionId: r.session_id, studentId: r.student_id });
-      setLessons((prev) => (prev || []).map((row) => (
-        row.session_id === r.session_id && row.student_id === r.student_id
-          ? { ...row, checkin_id: res.checkin_id, checked_in_at: res.checked_in_at }
-          : row
-      )));
+      await checkinsApi.create({ sessionId: r.session_id, studentId: r.student_id });
+      // 共班簽到會一次寫入整組 active roster；重抓兩個清單才能讓同家庭其他學員、
+      // 團報夥伴代簽標籤與共享剩餘堂數同時更新，不只改目前點擊的那一列。
+      await load();
       toast.success(`${r.student_name} 已簽到`);
       setConfirmRow(null);
     } catch (err) {
@@ -90,6 +89,7 @@ export default function MyLessonsPage() {
           student: st.name,
           studentId: st.id,
           total: Number(c.total_sessions) || 0,
+          used: Number(c.used_sessions) || 0,
           records: [],
         });
       }
@@ -107,14 +107,16 @@ export default function MyLessonsPage() {
           student: r.student_name,
           studentId: r.student_id,
           total: Number(r.total_sessions) || 0,
+          used: Number(r.used_sessions) || 0,
           records: [],
         });
       }
       m.get(key).records.push(r);
     }
-    // 剩餘(未上課) = 總 − 已出席（已簽到的 records 數）。
+    // 剩餘堂數以共享 period 的 used_sessions 為主；records 計數作舊 API 保底。
     for (const e of m.values()) {
-      e.remain = Math.max(0, e.total - e.records.filter((r) => r.checked_in_at).length);
+      const recordUsed = e.records.filter((r) => r.checked_in_at || r.partner_checkin_label).length;
+      e.remain = Math.max(0, e.total - Math.max(e.used || 0, recordUsed));
     }
     return Array.from(m.values());
   }, [courses, lessons]);
@@ -314,8 +316,8 @@ function RecordCard({ r, e, busy, onCheckin, onOpen }) {
   const checkinDateStr = r.checked_in_at ? r.checked_in_at.toString().slice(0, 10) : null;
 
   let btn;
-  if (r.checked_in_at) {
-    btn = <StatusSquare label={['已出席']} tone="attended" disabled />;
+  if (r.checked_in_at || r.partner_checkin_label) {
+    btn = <StatusSquare label={r.partner_checkin_label ? ['已代簽'] : ['已出席']} tone="attended" disabled />;
   } else if (checkinable) {
     btn = <StatusSquare label={busy ? ['簽到中'] : ['簽到']} tone="checkin" disabled={busy} onClick={onCheckin} />;
   } else if (r.session_status === 'pending_group_confirm') {
@@ -336,6 +338,11 @@ function RecordCard({ r, e, busy, onCheckin, onOpen }) {
           <div className="mt-0.5 text-sm text-gray-500">學員：{r.student_name || e.student}</div>
           {checkinDateStr && (
             <div className="mt-0.5 text-xs text-gray-400">簽到時間：{checkinDateStr}</div>
+          )}
+          {r.partner_checkin_label && (
+            <div className="mt-1 text-xs font-medium text-brand-teal">
+              {r.partner_checkin_label}已代為簽到
+            </div>
           )}
           {clickable && (
             <div className="mt-2 text-xs font-medium text-brand-teal">📝 教練已上傳上課紀錄，點擊查看 ›</div>

@@ -34,6 +34,21 @@ export function todayTaipeiYMD() {
   return formatTWYMD(new Date());
 }
 
+// PostgreSQL DATE / birthday serializer: do not reinterpret a plain calendar date as UTC.
+export function formatPlainDate(input) {
+  if (input == null || input === '') return '';
+  const raw = String(input).trim();
+  const m = raw.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})$/);
+  if (m) return `${m[1]}-${pad2(m[2])}-${pad2(m[3])}`;
+  return formatTWYMD(input);
+}
+
+// Calendar-only Date container. Always use UTC getters/setters with this value.
+export function taipeiCalendarDate(input = new Date()) {
+  const ymd = formatPlainDate(input);
+  return ymd ? new Date(`${ymd}T00:00:00Z`) : null;
+}
+
 export function addDaysToTaipeiYMD(ymd, days) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(ymd || ''))) return '';
   const d = new Date(`${ymd}T00:00:00+08:00`);

@@ -5,7 +5,9 @@
  *   - 前兩筆對帳完成時「不」開課（共用開通守門）
  *   - 第三筆對帳完成 → 恰好「一個」共用 course_period（6 堂、3 位學員、金額=兄弟訂單加總）
  *   - /api/courses/mine 合併成一張卡（3 位學員、6 堂、sub_order_count=3）
- * 情境 B（行為守恆）：同一家長 2 位小孩報名「一對一」1 期 →
+ * 情境 B（回歸案例）：同一家長 2 位小孩報名「一對二」2 期 →
+ *   - 4 筆金流子訂單只落地 2 個共享 course_period，各 6 堂，總權益 12 堂（不是 24）
+ * 情境 C（行為守恆）：同一家長 2 位小孩報名「一對一」1 期 →
  *   - 兩筆各自開獨立 course_period（各 6 堂），不合併
  */
 const { randomUUID } = require('crypto');
@@ -63,6 +65,7 @@ async function call(base, method, path, { token, body } = {}) {
   const coachId = randomUUID();
   const CT_GROUP = 9301; // 測試專用課型：一對三
   const CT_SOLO = 9302;  // 測試專用課型：一對一
+  const CT_PAIR = 9303;  // 測試專用課型：一對二
   const batchIds = [];
   const allEnrollmentIds = [];
   const checkoutIds = [];
@@ -91,15 +94,17 @@ async function call(base, method, path, { token, body } = {}) {
     }
     await pg.query(
       `INSERT INTO course_type_configs (course_type, label, min_students, max_students, sort_order, base_price, is_active)
-       VALUES ($1, 'e2e一對三', 1, 3, 990, 3000, TRUE), ($2, 'e2e一對一', 1, 1, 991, 9000, TRUE)`,
-      [CT_GROUP, CT_SOLO]
+       VALUES ($1, 'e2e一對三', 1, 3, 990, 3000, TRUE),
+              ($2, 'e2e一對一', 1, 1, 991, 9000, TRUE),
+              ($3, 'e2e一對二', 1, 2, 992, 4500, TRUE)`,
+      [CT_GROUP, CT_SOLO, CT_PAIR]
     );
 
     const parentRow = await pg.query(`SELECT phone, line_uid FROM parents WHERE id = $1`, [parentId]);
     const parentToken = signParentToken({ parentId, phone: parentRow.rows[0].phone, lineUid: parentRow.rows[0].line_uid });
     const adminToken = signToken({ sub: randomUUID(), username: 'e2e-admin', name: 'e2e-admin', role: 'admin' });
 
-    const enroll = async (courseType, students, tag) => {
+    const enroll = async (courseType, students, tag, periodCount = 1) => {
       const created = await call(route.base, 'POST', '/api/enrollments', {
         token: parentToken,
         body: {
@@ -107,7 +112,7 @@ async function call(base, method, path, { token, body } = {}) {
           venue: { id: venueId, name: `e2e館${suffix}` },
           course_type: courseType,
           students: students.map((id, i) => ({ id, name: `s${i}` })),
-          period_count: 1,
+          period_count: periodCount,
           request_id: `e2e-u12-${tag}-${suffix}-${Date.now()}`,
         },
       });
@@ -175,7 +180,49 @@ async function call(base, method, path, { token, body } = {}) {
       assert(detail.data.total_sessions === 6, `明細 ${id} 顯示 6 堂，實際 ${detail.data.total_sessions}`);
     }
 
-    // ── 情境 B：一對一 × 2 生 × 1 期 → 各自獨立 period ───────────
+    // ── 情境 B：一對二 × 2 生 × 2 期 → 2 個 period、總權益 12 堂 ─
+    const pairTwoPeriods = await enroll(CT_PAIR, studentIds.slice(0, 2), 'pair-2-periods', 2);
+    assert(pairTwoPeriods.count === 4, `一對二 2 生 × 2 期拆 4 筆金流子訂單，實際 ${pairTwoPeriods.count}`);
+    for (const id of pairTwoPeriods.enrollment_ids) {
+      const r = await reconcile(id);
+      assert(r.status === 200, `pair 2-period reconcile ${id} 200，實際 ${r.status} ${JSON.stringify(r.data)}`);
+    }
+    const pairPeriods = await pg.query(
+      `SELECT id, total_sessions, period_number
+         FROM course_periods
+        WHERE enrollment_batch_id = $1
+        ORDER BY period_number`,
+      [pairTwoPeriods.batch_id]
+    );
+    assert(pairPeriods.rowCount === 2, `一對二 2 期只建立 2 個共享 period，實際 ${pairPeriods.rowCount}`);
+    assert(pairPeriods.rows.every((row) => row.total_sessions === 6),
+      `每期固定 6 堂，實際 ${pairPeriods.rows.map((row) => row.total_sessions).join(',')}`);
+    assert(pairPeriods.rows.map((row) => row.period_number).join(',') === '1,2',
+      `課期編號為 1、2，實際 ${pairPeriods.rows.map((row) => row.period_number).join(',')}`);
+    assert(pairPeriods.rows.reduce((sum, row) => sum + row.total_sessions, 0) === 12,
+      `總課程權益 12 堂（不乘 2 位學員），實際 ${pairPeriods.rows.reduce((sum, row) => sum + row.total_sessions, 0)}`);
+    for (const row of pairPeriods.rows) {
+      const roster = await pg.query(
+        `SELECT COUNT(*)::int AS n FROM course_period_enrollments
+          WHERE course_period_id = $1 AND status = 'active'`,
+        [row.id]
+      );
+      assert(roster.rows[0].n === 2, `第 ${row.period_number} 期共用 2 位學員名冊，實際 ${roster.rows[0].n}`);
+    }
+    const pairMine = await call(route.base, 'GET', '/api/courses/mine', { token: parentToken });
+    const pairCards = (pairMine.data || []).filter((row) => row.enrollment_batch_id === pairTwoPeriods.batch_id);
+    assert(pairCards.length === 2, `家長端顯示 2 張課期卡（非 4 張學員卡），實際 ${pairCards.length}`);
+    assert(pairCards.reduce((sum, row) => sum + Number(row.total_sessions || 0), 0) === 12,
+      `家長端兩期合計 12 堂（非 24），實際 ${pairCards.reduce((sum, row) => sum + Number(row.total_sessions || 0), 0)}`);
+    for (const id of pairTwoPeriods.enrollment_ids) {
+      const detail = await call(route.base, 'GET', `/api/courses/${id}`, { token: parentToken });
+      const orderPeriod = await pg.query(`SELECT period_number FROM admin_enrollments WHERE id = $1`, [id]);
+      const expectedPeriod = pairPeriods.rows.find((row) => row.period_number === orderPeriod.rows[0].period_number);
+      assert(detail.status === 200 && detail.data.course_period_id === expectedPeriod.id,
+        `兩期明細 ${id} 正確對到第 ${orderPeriod.rows[0].period_number} 期`);
+    }
+
+    // ── 情境 C：一對一 × 2 生 × 1 期 → 各自獨立 period ───────────
     const soloOrder = await enroll(CT_SOLO, studentIds.slice(0, 2), 'solo');
     assert(soloOrder.count === 2, `一對一 2 生拆 2 筆子訂單，實際 ${soloOrder.count}`);
     for (const id of soloOrder.enrollment_ids) {
@@ -212,7 +259,7 @@ async function call(base, method, path, { token, body } = {}) {
     assert(over.status === 400 && over.data.code === 'STUDENT_COUNT_EXCEEDS_COURSE_TYPE',
       `一對三帶 4 生應被拒（STUDENT_COUNT_EXCEEDS_COURSE_TYPE），實際 ${over.status} ${over.data && over.data.code}`);
 
-    // ── 情境 C：家庭共班退費＝整班整期 ───────────────────────────
+    // ── 情境 D：家庭共班退費＝整班整期 ───────────────────────────
     // 先排一堂未來課占用教練時段，驗證退費會取消課堂並釋出時段。
     const slot = await pg.query(
       `INSERT INTO coach_availability_slots (coach_id, venue_id, start_at, status)
@@ -255,7 +302,7 @@ async function call(base, method, path, { token, body } = {}) {
     });
     assert(again.status === 400, `重複退費被擋（400），實際 ${again.status}`);
 
-    step('PASS: 家庭共班共用 period、顯示合併、一對一守恆、超額守門、整期退費 全數通過');
+    step('PASS: 家庭共班共用 period、2 生 × 2 期 = 12 堂、一對一守恆、超額守門、整期退費 全數通過');
   } finally {
     await pg.query(`DELETE FROM admin_enrollment_audit_logs WHERE enrollment_id = ANY($1::text[])`, [allEnrollmentIds]).catch(() => {});
     await pg.query(`UPDATE coach_availability_slots SET booked_session_id = NULL WHERE coach_id = $1`, [coachId]).catch(() => {});
@@ -273,7 +320,7 @@ async function call(base, method, path, { token, body } = {}) {
     await pg.query(`DELETE FROM parents WHERE id = $1`, [parentId]).catch(() => {});
     await pg.query(`DELETE FROM coach_venues WHERE coach_id = $1`, [coachId]).catch(() => {});
     await pg.query(`DELETE FROM coaches WHERE id = $1`, [coachId]).catch(() => {});
-    await pg.query(`DELETE FROM course_type_configs WHERE course_type IN ($1, $2)`, [CT_GROUP, CT_SOLO]).catch(() => {});
+    await pg.query(`DELETE FROM course_type_configs WHERE course_type IN ($1, $2, $3)`, [CT_GROUP, CT_SOLO, CT_PAIR]).catch(() => {});
     await pg.query(`DELETE FROM venues WHERE id = $1`, [venueId]).catch(() => {});
     await route.close().catch(() => {});
     await pg.end().catch(() => {});

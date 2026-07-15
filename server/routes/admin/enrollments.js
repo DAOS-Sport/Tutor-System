@@ -1140,9 +1140,9 @@ router.post('/:id/reconcile', requireAdminAuth, requireAdminRole('admin', 'manag
     if (cur.rows[0].checkout_id) {
       await client.query(
         `INSERT INTO checkout_invoices
-           (checkout_id, order_id, buyer_name, amount, invoice_number, invoice_image_url, invoice_url, issued_at)
-         VALUES ($1, NULL, $2, $3, $4, $5, $6, NOW())
-         ON CONFLICT (checkout_id) WHERE order_id IS NULL
+           (checkout_id, order_id, family_key, buyer_name, amount, invoice_number, invoice_image_url, invoice_url, issued_at)
+         VALUES ($1, NULL, NULL, $2, $3, $4, $5, $6, NOW())
+         ON CONFLICT (checkout_id) WHERE order_id IS NULL AND family_key IS NULL
          DO UPDATE SET buyer_name = EXCLUDED.buyer_name,
                        amount = EXCLUDED.amount,
                        invoice_number = EXCLUDED.invoice_number,
@@ -1301,7 +1301,9 @@ async function computeRefundPreview(id) {
               (SELECT COUNT(DISTINCT cs.id)::int
                  FROM course_sessions cs
                  JOIN checkin_records cr ON cr.course_session_id = cs.id
-                WHERE cs.course_period_id = cp.id) AS used_sessions
+                WHERE cs.course_period_id = cp.id
+                  AND cs.status::text NOT LIKE 'cancelled%'
+                  AND cr.attendance_status = 'ATTENDED') AS used_sessions
          FROM course_periods cp
         WHERE cp.enrollment_batch_id = $1 AND cp.period_number = $2
         LIMIT 1`,

@@ -1,4 +1,5 @@
 import React from 'react';
+import { formatPlainDate, todayISO } from '../utils/format';
 
 /**
  * 日期範圍預設選項：本週 / 下週 / 上週 / 整月（週日為第一天）
@@ -13,27 +14,28 @@ const PRESETS = [
 ];
 
 function fmt(d) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
 }
 
 // 週日 = 0；回傳 [週日, 週六] 兩端
 function weekRange(base, weekOffset = 0) {
-  const d = new Date(base.getFullYear(), base.getMonth(), base.getDate());
-  const dow = d.getDay(); // 0..6 (Sun..Sat)
+  const d = new Date(`${formatPlainDate(base)}T00:00:00Z`);
+  const dow = d.getUTCDay(); // 0..6 (Sun..Sat)
   const sun = new Date(d);
-  sun.setDate(d.getDate() - dow + weekOffset * 7);
+  sun.setUTCDate(d.getUTCDate() - dow + weekOffset * 7);
   const sat = new Date(sun);
-  sat.setDate(sun.getDate() + 6);
+  sat.setUTCDate(sun.getUTCDate() + 6);
   return [sun, sat];
 }
 
 function monthRange(base) {
-  const first = new Date(base.getFullYear(), base.getMonth(), 1);
-  const last = new Date(base.getFullYear(), base.getMonth() + 1, 0);
+  const d = new Date(`${formatPlainDate(base)}T00:00:00Z`);
+  const first = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
+  const last = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0));
   return [first, last];
 }
 
-export function rangeForPreset(preset, base = new Date()) {
+export function rangeForPreset(preset, base = new Date(`${todayISO()}T00:00:00+08:00`)) {
   let from; let to;
   switch (preset) {
     case 'next_week': [from, to] = weekRange(base, 1); break;

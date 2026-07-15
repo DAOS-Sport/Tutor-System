@@ -3,6 +3,7 @@ import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
 import { adminTransfersApi } from '../api/transfers';
+import { formatTWDateTime } from '../utils/format';
 
 const STATUS_TABS = [
   { key: 'all',            label: '全部',   color: 'bg-gray-100 text-gray-700' },
@@ -93,7 +94,7 @@ export default function TransfersReviewPage() {
               {list.map((r) => (
                 <tr key={r.id} className="border-t border-gray-100">
                   <td className="px-3 py-2 text-xs text-gray-500">
-                    {new Date(r.created_at).toLocaleString('zh-TW', { hour12: false })}
+                    {formatTWDateTime(r.created_at)}
                   </td>
                   <td className="px-3 py-2">
                     <div>{r.from_parent_name}</div>

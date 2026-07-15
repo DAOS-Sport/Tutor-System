@@ -4,6 +4,7 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import StatusBadge from '../components/StatusBadge';
 import { useToast } from '../context/ToastContext';
 import { adminIntrosApi } from '../api/learn';
+import { formatTWDateTime } from '../utils/format';
 
 const STATUS_TONE = {
   draft: 'gold', pending_review: 'amber', published: 'green', rejected: 'error',
@@ -104,7 +105,7 @@ export default function CoachIntrosReviewPage() {
             )}
 
             <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[11px] text-gray-500">
-              <span>送審於：{c.intro_submitted_at ? new Date(c.intro_submitted_at).toLocaleString() : '—'} · 審核於：{c.intro_reviewed_at ? new Date(c.intro_reviewed_at).toLocaleString() : '—'}</span>
+              <span>送審於（台北時間）：{c.intro_submitted_at ? formatTWDateTime(c.intro_submitted_at) : '—'} · 審核於：{c.intro_reviewed_at ? formatTWDateTime(c.intro_reviewed_at) : '—'}</span>
               {c.intro_review_status === 'pending_review' && (
                 <div className="flex gap-2">
                   <button disabled={busyId === c.id} onClick={() => reject(c)}

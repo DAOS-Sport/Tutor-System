@@ -1,13 +1,14 @@
 import React from 'react';
+import { taipeiCalendarDate } from '../../utils/format';
 
 const WEEKDAY_TC = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
 
-function startOfWeek(d) { const x = new Date(d); x.setHours(0,0,0,0); x.setDate(x.getDate() - x.getDay()); return x; }
-function startOfMonth(d) { const x = new Date(d.getFullYear(), d.getMonth(), 1); x.setHours(0,0,0,0); return x; }
-function startOfNextMonth(d) { return new Date(d.getFullYear(), d.getMonth() + 1, 1); }
-function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+function startOfWeek(d) { const x = taipeiCalendarDate(d); x.setUTCDate(x.getUTCDate() - x.getUTCDay()); return x; }
+function startOfMonth(d) { const x = taipeiCalendarDate(d); return new Date(Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), 1)); }
+function startOfNextMonth(d) { return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)); }
+function addDays(d, n) { const x = new Date(d); x.setUTCDate(x.getUTCDate() + n); return x; }
 function sameYMD(a, b) {
-  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  return a.getUTCFullYear() === b.getUTCFullYear() && a.getUTCMonth() === b.getUTCMonth() && a.getUTCDate() === b.getUTCDate();
 }
 
 /**
@@ -24,12 +25,12 @@ export default function MonthGrid({ anchor, slots, onPickDate }) {
 
   const cells = [];
   for (let d = new Date(gridStart); d < gridEnd; d = addDays(d, 1)) cells.push(new Date(d));
-  const today = new Date();
+  const today = taipeiCalendarDate();
 
   function bucketsFor(d) {
     const counts = { available: 0, booked: 0, blocked: 0 };
     for (const s of slots) {
-      if (!sameYMD(new Date(s.start_at), d)) continue;
+      if (!sameYMD(taipeiCalendarDate(s.start_at), d)) continue;
       if (s.status === 'available') counts.available++;
       else if (s.status === 'booked' || s.status === 'pending_group_confirm') counts.booked++;
       else if (s.status === 'blocked') counts.blocked++;
@@ -57,7 +58,7 @@ export default function MonthGrid({ anchor, slots, onPickDate }) {
               } ${isToday ? 'ring-2 ring-brand-teal' : ''}`}
             >
               <span className={`text-[11px] font-bold ${isToday ? 'text-brand-teal' : inMonth ? 'text-brand-primary' : 'text-gray-400'}`}>
-                {d.getDate()}
+                {d.getUTCDate()}
               </span>
               {total > 0 && (
                 <div className="mt-auto flex gap-0.5">

@@ -13,8 +13,10 @@ const { pool } = require('../models/db');
 const { signParentToken, requireParent } = require('../middlewares/parentAuth');
 const referrals = require('../services/referrals');
 const ragic = require('../services/ragic');
+const ragicWriteback = require('../services/ragicWriteback');
 const { refreshParentMirrorFromRagic, ParentRefreshError, assertZ01Complete } = require('../services/parentRefresh');
 const { diffChanges, writeStudentAudit } = require('./admin/_customerShared');
+const { formatPlainDate } = require('../utils/dateTime');
 
 const router = express.Router();
 
@@ -62,9 +64,7 @@ function cleanStudentInput(body) {
 }
 
 function isoDate(v) {
-  if (!v) return '';
-  if (typeof v === 'string') return v.slice(0, 10).replace(/\//g, '-');
-  try { return new Date(v).toISOString().slice(0, 10); } catch { return ''; }
+  return formatPlainDate(v);
 }
 
 function sameStudentValue(a, b) {
@@ -107,7 +107,13 @@ async function loadMe(parentId) {
       ORDER BY created_at ASC`,
     [parentId]
   );
-  return { ...pr.rows[0], students: sr.rows };
+  return {
+    ...pr.rows[0],
+    students: sr.rows.map((student) => ({
+      ...student,
+      birth_date: formatPlainDate(student.birth_date),
+    })),
+  };
 }
 
 async function assertVenueExists(venueId) {
@@ -493,27 +499,38 @@ router.patch('/me', requireParent, async (req, res) => {
       return res.json(await loadMe(req.parent.id));
     }
 
-    const merged = { ...cur, ...patch };
-    // 館別代碼 → Ragic 認得的場館名稱（這是「館別 為必填」同步失敗的真因）。
-    const venueName = await ragic.venueLabel(merged.primary_venue_id);
-    console.log('[parent-sync] 編輯家長 start', {
-      parent: cur.name, phone: cur.phone, ragicId: cur.ragic_record_id || null,
-      venueId: merged.primary_venue_id, venueName,
-    });
-    // 自我修復：本地 ragic_record_id 失效（後台刪除）時會改用手機重查 / 新建，
-    // 回傳實際寫入的 record id（可能與本地不同 → 直接覆蓋校正，不再 COALESCE 留舊值）。
-    const ragicRecordId = await ragic.syncParentProfileStrict(merged, ragicParentPayload(merged, venueName));
-    console.log('[parent-sync] 編輯家長 Ragic 同步完成', { ragicId: ragicRecordId });
+    // Local-first：先在單一 transaction 保存使用者輸入並標記 pending；Ragic 回讀有
+    // 延遲或暫時失敗都不得讓剛儲存的 Email／場館回到舊值。/me/sync 的
+    // preservePending=true 會在 last_synced_at IS NULL 時保留這些本地欄位。
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const updated = await client.query(
+        `UPDATE parents SET
+            name = $2, primary_venue_id = $3, identity = $4, gender = $5,
+            email = $6, home_phone = $7, line_id = $8, home_address = $9,
+            last_synced_at = NULL, updated_at = NOW()
+          WHERE id = $1
+          RETURNING id`,
+        [req.parent.id, patch.name, patch.primary_venue_id, patch.identity, patch.gender,
+         patch.email, patch.home_phone, patch.line_id, patch.home_address]
+      );
+      if (!updated.rowCount) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: '找不到家長帳號' });
+      }
+      await client.query('COMMIT');
+    } catch (dbErr) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw dbErr;
+    } finally {
+      client.release();
+    }
 
-    // 嚴格刷新：Ragic 寫入成功後，重新拉 Z01/Z02，更新本地 parents/students，
-    // 並同步標記 Z03/quarantine resolved。任一步失敗都不回成功，避免本地與 Ragic 漂移。
-    const refreshed = await refreshParentMirrorFromRagic({
-      lineUid: req.parent.lineUid,
-      phone: cur.phone,
-      reason: 'parent-profile-update',
-    });
-    const me = await loadMe(refreshed.local.id);
-    res.json(me);
+    // COMMIT 後才排程 best-effort writeback；失敗時 pending 保留，由每日補寫重試。
+    ragicWriteback.scheduleWriteback({ parentId: req.parent.id, reason: 'parent-profile-update' });
+    const me = await loadMe(req.parent.id);
+    res.json({ ...me, sync_status: 'pending' });
   } catch (err) {
     console.error('[parent-sync] 編輯家長 失敗', { code: err.code, msg: err.message });
     return ragicError(res, err);

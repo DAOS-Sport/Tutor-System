@@ -6,10 +6,13 @@
   "scripts": {
     "dev": "nodemon index.js",
     "start": "node index.js",
+    "test": "node --test test/*.test.js",
+    "test:migration": "node scripts/test-migration-idempotency.js",
     "db:migrate": "NODE_PATH=./node_modules node ../db/migrate.js",
     "db:seed": "NODE_PATH=./node_modules node ../db/seed.js",
     "smoke:ragic-auth": "node scripts/ragic-auth-smoke.js",
-    "ragic:smoke": "node scripts/ragic-sync-smoke.js"
+    "ragic:smoke": "node scripts/ragic-sync-smoke.js",
+    "report:birthday-diff": "node scripts/birthday-date-diff-report.js"
   },
   "dependencies": {
     "@replit/object-storage": "^1.0.0",

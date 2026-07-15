@@ -5,6 +5,7 @@ import ConfirmDialog from '../components/ConfirmDialog';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import { ragicZ03Api } from '../api/ragicZ03';
+import { formatTWDateTime } from '../utils/format';
 
 // Task #70 邊緣案例處理準則（同 RagicStagingPage）：
 // skipAuthRedirect=true，401 由頁面自己判斷是否登出，其餘錯誤顯示 toast + 重試。
@@ -97,8 +98,7 @@ function cleanDraftPayload(draft) {
 }
 
 function fmtDate(ts) {
-  if (!ts) return '—';
-  try { return new Date(ts).toLocaleString('zh-TW', { hour12: false }); } catch { return ts; }
+  return ts ? formatTWDateTime(ts) : '—';
 }
 
 function rowToDraft(row) {

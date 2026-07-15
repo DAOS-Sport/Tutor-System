@@ -10,14 +10,13 @@ const fs = require('fs');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const { pool } = require('../models/db');
+const { addCalendarDays, taipeiToday } = require('../utils/dateTime');
 
 const MIGRATION_FILE = path.join(__dirname, '..', '..', 'db', 'migrations', '002_admin_tables.sql');
 
 function relDays(days, hh = 9, mm = 0) {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  d.setHours(hh, mm, 0, 0);
-  return d.toISOString();
+  const day = addCalendarDays(taipeiToday(), days);
+  return new Date(`${day}T${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00+08:00`).toISOString();
 }
 
 /**
@@ -250,8 +249,7 @@ const DEFAULT_ENROLLMENTS = [
 ];
 
 function todayISO() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return taipeiToday();
 }
 
 const DEFAULT_TODAY_SESSIONS = [

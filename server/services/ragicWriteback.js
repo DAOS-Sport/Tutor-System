@@ -17,6 +17,7 @@
  */
 const { pool } = require('../models/db');
 const ragic = require('./ragic');
+const { formatPlainDate } = require('../utils/dateTime');
 
 // 與 ragicAdmin.ragicEnabled 同義（不 require ragicAdmin，避免服務層互相糾纏）。
 function _ragicEnabled() {
@@ -24,9 +25,7 @@ function _ragicEnabled() {
 }
 
 function _isoDate(v) {
-  if (!v) return '';
-  if (typeof v === 'string') return v.slice(0, 10);
-  try { return new Date(v).toISOString().slice(0, 10); } catch { return ''; }
+  return formatPlainDate(v);
 }
 
 // 家長單筆回寫：Z01 全欄位（與 ragicAdmin._backupParentToRagic 相同 payload），

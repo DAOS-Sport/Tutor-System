@@ -3,6 +3,8 @@
  * 所有 node-cron 排程在此統一管理
  */
 const cron = require('node-cron');
+const { formatTaipeiDateTime, formatPlainDate } = require('../utils/dateTime');
+const scheduleTaipei = (expression, task) => cron.schedule(expression, task, { timezone: 'Asia/Taipei' });
 const { pool } = require('../models/db');
 const line = require('../services/line');
 const chatRooms = require('../services/chatRooms');
@@ -41,7 +43,7 @@ function initCronJobs() {
   }
   // Periodic live def=1 renewal. The 5-minute cadence remains below the default
   // 15-minute TTL, so a missed/failed renewal naturally makes the worker stale.
-  cron.schedule('*/5 * * * *', async () => {
+  scheduleTaipei('*/5 * * * *', async () => {
     if (!ragicAdmin.ragicEnabled() || !process.env.RAGIC_FORM_Z01) return;
     try {
       const evidence = await verifyRagicZ01UidSchemaFreshness();
@@ -54,7 +56,7 @@ function initCronJobs() {
   // Local-first Z03 claims commit before Ragic. This worker is the only path
   // that writes the claimed LINE UID back; it never resolves or creates an
   // identity, and failed writes remain retryable/blocked in the outbox.
-  cron.schedule('*/5 * * * *', async () => {
+  scheduleTaipei('*/5 * * * *', async () => {
     if (!ragicAdmin.ragicEnabled() || !process.env.RAGIC_FORM_Z01 || !STABILITY_FLAGS.RAGIC_PARENT_OUTBOX) return;
     try {
       const r = await processRagicSyncOutbox({ limit: 20 });
@@ -68,7 +70,7 @@ function initCronJobs() {
 
   // ── 每 5 分鐘：補 active period 的 chat_room（防漂移；spec F-S09）──
   // 任何「直接 UPDATE course_periods.status='active'」或 race condition 都會被這個排程兜底。
-  cron.schedule('*/5 * * * *', async () => {
+  scheduleTaipei('*/5 * * * *', async () => {
     try {
       const n = await chatRooms.backfillRoomsForActivePeriods();
       if (n > 0) console.log(`[Cron/chat] backfilled ${n} chat_rooms for active periods`);
@@ -79,7 +81,7 @@ function initCronJobs() {
 
 
   // ── 每分鐘：1vN 槽位逾時自動確認 ──────────
-  cron.schedule('* * * * *', async () => {
+  scheduleTaipei('* * * * *', async () => {
     const res = await pool.query(
       `SELECT cs.id, cp.venue_id FROM course_sessions cs
        JOIN course_periods cp ON cs.course_period_id = cp.id
@@ -102,7 +104,7 @@ function initCronJobs() {
   // ── 每小時：上課前 1 小時提醒 (F-S05) ────
   // 抓未來 60–120 分鐘內的 confirmed sessions，推給教練 + 該堂所有學員之家長。
   // notification_log UNIQUE(kind,ref_id,recipient_uid) 確保不重複推。
-  cron.schedule('0 * * * *', async () => {
+  scheduleTaipei('0 * * * *', async () => {
     try {
       const start = new Date(Date.now() + 60 * 60 * 1000);
       const end   = new Date(Date.now() + 120 * 60 * 1000);
@@ -130,8 +132,7 @@ function initCronJobs() {
           ...(s.coach_uid ? [{ uid: s.coach_uid, role: 'coach' }] : []),
           ...ps.rows.map((r) => ({ uid: r.line_uid, role: 'parent' })),
         ];
-        const startStr = new Date(s.scheduled_at).toLocaleString('zh-TW',
-          { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+        const startStr = formatTaipeiDateTime(s.scheduled_at);
         for (const t of targets) {
           // claim send-right first：插入成功才推播，杜絕並發雙發
           const claim = await pool.query(
@@ -159,7 +160,7 @@ function initCronJobs() {
   });
 
   // ── 每天 09:00：堂數快到期提醒 (F-S05) ────
-  cron.schedule('0 9 * * *', async () => {
+  scheduleTaipei('0 9 * * *', async () => {
     try {
       const r = await pool.query(
         `SELECT cp.id, cp.venue_id, cp.expires_at, cp.course_type,
@@ -190,7 +191,7 @@ function initCronJobs() {
           if (!claim.rowCount) continue;
           const msg = line.templates.expiryReminder({
             coachName: cp.coach_name, remainingSessions: cp.remaining,
-            expiresAt: new Date(cp.expires_at).toISOString().slice(0, 10),
+            expiresAt: formatPlainDate(cp.expires_at),
             liffUrl: `${LIFF_URL}/my-courses`,
           });
           try { await line.pushMessage(row.line_uid, msg, cp.venue_id); }
@@ -207,7 +208,7 @@ function initCronJobs() {
   // ── 每天 09:30：MGM 體驗課當日提醒 (F-S10) ────
   // 抓今天即將上 trial 的 referral_records（status=trial_paid 且該 enrollment 對應 session 在今天）
   // → 推播給推薦方家長，提醒簽到後可獲獎勵。
-  cron.schedule('30 9 * * *', async () => {
+  scheduleTaipei('30 9 * * *', async () => {
     try {
       const r = await pool.query(
         `SELECT rr.id, rr.referrer_parent_id, rp.line_uid AS referrer_uid,
@@ -251,7 +252,7 @@ function initCronJobs() {
   // 不限定 10:00，避免下午/晚上才上完課當天的期別錯過觸發。
   // 觸發條件改為「最後一堂的最新點名時間在最近 24 小時內，且尚未建立
   // 該家長的 invitation」；ensureInvitation() 之 ON CONFLICT 確保冪等。
-  cron.schedule('5 * * * *', async () => {
+  scheduleTaipei('5 * * * *', async () => {
     try {
       // (a) F-S12 觸發：「最後一堂的點名日 = 今天」且尚未建立 invitation。
       // 以 checkin_records 的時間為準（不依賴 used_sessions 計數），符合
@@ -271,6 +272,7 @@ function initCronJobs() {
             AND EXISTS (
               SELECT 1 FROM checkin_records cr
                WHERE cr.course_session_id = ls.session_id
+                 AND cr.attendance_status = 'ATTENDED'
                  AND cr.checked_in_at >= NOW() - INTERVAL '25 hours'
             )
             -- 不再以「period 已有任一 invitation」為前置過濾，
@@ -317,7 +319,7 @@ function initCronJobs() {
 
   // ── 每天 10:30：考核門檻不達標偵測 → 通知主管 (F-A09) ────────
   // 同月、同教練、同 metric 不重複（資料庫 UNIQUE 兜底）；推 LINE 給管理層 admin_users.line_uid。
-  cron.schedule('30 10 * * *', async () => {
+  scheduleTaipei('30 10 * * *', async () => {
     try {
       const created = await evaluations.detectBelowThreshold();
       if (created.length) {
@@ -374,7 +376,7 @@ function initCronJobs() {
   // 重試，同時對 Ragic 打開兩條連線只會互相拖慢、更容易撞 timeout。比照
   // routes/admin/ragicStatus.js「同步全部」既有的循序設計（見該檔案註解），
   // 讓「同一時間對 Ragic 帳號只有一個 in-flight 請求」這條規則在 cron 這邊也成立。
-  cron.schedule('*/10 * * * *', async () => {
+  scheduleTaipei('*/10 * * * *', async () => {
     if (!ragicAdmin.ragicEnabled()) return;
     // Task #91：教練資料已合併進員工帳號（H01 員工 API 就涵蓋姓名 / 手機 / 在職），
     // 不再單獨同步 coaches；教練特有欄位（簡介 / 專長 / 介紹圖）由後台手動編輯。
@@ -398,7 +400,7 @@ function initCronJobs() {
   // ── 每 5 分鐘：套用「課程需求 (F-A07)」到期排程 ──
   //   scheduled_effective_date <= 現在（含日期＋時間）且有 pending_changes 的列 → 套用成正式資料。
   //   改為每 5 分鐘（原每日 01:10），使排定的「時間」一到即生效；與 GET 讀取時保險套用雙保險，皆 idempotent。
-  cron.schedule('*/5 * * * *', async () => {
+  scheduleTaipei('*/5 * * * *', async () => {
     try {
       const n = await applyDueScheduledCourseTypeChanges(pool);
       if (n) console.log(`[Cron/CourseType] 套用到期排程 ${n} 筆`);
@@ -420,7 +422,7 @@ function initCronJobs() {
   // 補「即時寫回失敗後從未重試」的缺口；_backupParentsStudentsImpl 每輪處理
   // ragic_record_id IS NULL 或 last_synced_at IS NULL 的待同步列。
   // 成功與否寫進 ragic_sync_log（form_code=Z01_Z02_BACKUP），#2/#3 以此為閘門。
-  cron.schedule('30 0 * * *', async () => {
+  scheduleTaipei('30 0 * * *', async () => {
     if (!ragicAdmin.ragicEnabled()) return;
     try {
       const r = await ragicAdmin.backupParentsStudentsToRagic('cron');
@@ -435,7 +437,7 @@ function initCronJobs() {
   // 閘門：#1（00:30 回寫）3 小時內沒有成功紀錄 → 跳過本輪，避免把本地已修正、
   // 尚未推上去的舊 Ragic 狀態灌回 Z03。reactivate:false（不復活本地已軟刪的家長）；
   // 逐筆 try/catch，單筆壞資料不中斷整輪。
-  cron.schedule('30 1 * * *', async () => {
+  scheduleTaipei('30 1 * * *', async () => {
     if (!ragicAdmin.ragicEnabled()) return;
     try {
       if (!(await ragicAdmin.hasRecentBackupSuccess(3))) {
@@ -454,7 +456,7 @@ function initCronJobs() {
   // 未合併本地修正的舊狀態就沒有意義）。目前只掃「姓名疑似為電話號碼」的記錄並寫進
   // 本地 ragic_z01_quarantine 追蹤表；實際推送到 Ragic 端 Z03 表單，卡在該表單欄位
   // 定義尚未確認，見 ragicAdmin.js 內 TODO。
-  cron.schedule('45 1 * * *', async () => {
+  scheduleTaipei('45 1 * * *', async () => {
     if (!ragicAdmin.ragicEnabled()) return;
     try {
       if (!(await ragicAdmin.hasRecentBackupSuccess(3))) {

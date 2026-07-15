@@ -19,6 +19,7 @@ const {
 } = require('./ragicFreshness');
 const ragicWriter = require('./ragicWriter');
 const { maskName, maskPhone } = require('../utils/piiMask');
+const { formatRagicDate } = require('../utils/dateTime');
 
 // ── 館別代碼 → 名稱（寫回 Ragic 用）────────────────────────────────────────
 // Ragic 的「館別」欄位（Z01 1002174 / Z02 1002175）存的是場館「名稱」（如「新北高中」），
@@ -1039,7 +1040,7 @@ function _toPhysGender(g) {
 //   - 血型：未填以「不清楚」placeholder（Ragic 接受的選項值）。
 async function _buildZ02RegistrationPayload({ parent, student }) {
   const idnum = student.id_number ? String(student.id_number).toUpperCase() : '';
-  const birth = student.birth_date ? String(student.birth_date).replace(/-/g, '/') : '';
+  const birth = formatRagicDate(student.birth_date);
   return {
     [FIELD.Z02.NAME]:            student.name || '',
     [FIELD.Z02.STUDENT_STATUS]:  '01.一般生',                    // 學員身分（學生類別）
@@ -1210,7 +1211,7 @@ async function addStudentsToParentInRagic({ ragicRecordId, startIndex = 0, stude
     payload[`${prefix}${FIELD.Z01_STUDENT.NAME}`] = s.name;
     // 與 _buildZ02RegistrationPayload 對齊：Ragic 日期欄位吃 yyyy/MM/dd，ISO 的 '-' 需轉 '/'，
     // 否則會被當無效值 INVALID（見 createParentWithStudentsInRagic 旁註解）。
-    if (s.birth_date) payload[`${prefix}${FIELD.Z01_STUDENT.BIRTH_DATE}`] = String(s.birth_date).replace(/-/g, '/');
+    if (s.birth_date) payload[`${prefix}${FIELD.Z01_STUDENT.BIRTH_DATE}`] = formatRagicDate(s.birth_date);
     if (s.gender)     payload[`${prefix}${FIELD.Z01_STUDENT.GENDER}`]     = _toPhysGender(s.gender);
     if (s.id_number)  payload[`${prefix}${FIELD.Z01_STUDENT.ID_NUMBER}`]  = String(s.id_number).toUpperCase();
     if (s.blood_type) payload[`${prefix}${FIELD.Z01_STUDENT.BLOOD_TYPE}`] = s.blood_type;
@@ -1319,7 +1320,7 @@ function buildZ01StudentPayload(student, rowIndex) {
   payload[`${prefix}${FIELD.Z01_STUDENT.NAME}`] = student.name || '';
   // 與 _buildZ02RegistrationPayload 對齊：Ragic 日期欄位吃 yyyy/MM/dd，ISO 的 '-' 需轉 '/'，
   // 否則會被當無效值 INVALID（見 createParentWithStudentsInRagic 旁註解）。
-  if (student.birth_date) payload[`${prefix}${FIELD.Z01_STUDENT.BIRTH_DATE}`] = String(student.birth_date).replace(/-/g, '/');
+  if (student.birth_date) payload[`${prefix}${FIELD.Z01_STUDENT.BIRTH_DATE}`] = formatRagicDate(student.birth_date);
   if (student.gender) payload[`${prefix}${FIELD.Z01_STUDENT.GENDER}`] = _toPhysGender(student.gender);
   if (student.id_number) payload[`${prefix}${FIELD.Z01_STUDENT.ID_NUMBER}`] = String(student.id_number).toUpperCase();
   if (student.blood_type) payload[`${prefix}${FIELD.Z01_STUDENT.BLOOD_TYPE}`] = student.blood_type;
@@ -1440,7 +1441,7 @@ async function buildZ02StudentPayload({ parent, student, setIdentity = false }) 
     //   只在「首次建立 Z02」時設一次（setIdentity=true）；既有紀錄一律不寫此欄，
     //   避免家長端編輯/同步把 Ragic 端的身分類別覆蓋掉（過去 bug：寫入「啟用/停用」）。
     [FIELD.Z02.GENDER]: _toPhysGender(student.gender),
-    [FIELD.Z02.BIRTH_DATE]: student.birth_date || '',
+    [FIELD.Z02.BIRTH_DATE]: formatRagicDate(student.birth_date),
     [FIELD.Z02.ID_NUMBER]: idnum,
     [FIELD.Z02.STUDENT_CODE]: student.student_code || idnum, // 學員編號 必填，缺則用身分證
     [FIELD.Z02.BLOOD_TYPE]: student.blood_type || '不清楚',  // Z02 必填

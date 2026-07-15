@@ -71,13 +71,230 @@ function checkoutProofUrls(checkout) {
   return [...new Set(candidates.map((value) => String(value || '').trim()).filter(Boolean))];
 }
 
+function checkoutInvoiceFamilies(checkout) {
+  const serverFamilies = Array.isArray(checkout?.invoice_families)
+    ? checkout.invoice_families.filter((family) => family?.family_key)
+    : [];
+  if (serverFamilies.length) return serverFamilies;
+
+  // 舊 API 回應相容：沒有家庭摘要時仍只走原本的一張發票流程，不在前端猜跨戶。
+  const orders = checkout?.sub_orders || [];
+  return [{
+    family_key: `checkout:${checkout?.checkout_id || 'legacy'}`,
+    parent_name: checkout?.parent_name || orders[0]?.parent_name || null,
+    parent_phone: checkout?.parent_phone || orders[0]?.parent_phone || null,
+    carrier: checkout?.carrier || orders[0]?.carrier || '',
+    amount: Number(checkout?.total_amount) || 0,
+    order_ids: orders.map((order) => order.id).filter(Boolean),
+    order_count: orders.length,
+    payment_proof_urls: checkoutProofUrls(checkout),
+  }];
+}
+
+function ordersForInvoiceFamily(checkout, family) {
+  const ids = new Set(Array.isArray(family?.order_ids) ? family.order_ids.map(String) : []);
+  return (checkout?.sub_orders || []).filter((order) => ids.has(String(order.id)));
+}
+
+function validateInvoiceImage(file, toast) {
+  if (!file) return false;
+  if (!isSupportedImageCandidate(file)) {
+    toast.error('請選擇 JPG、PNG、WebP、HEIC、HEIF 或 AVIF 圖片');
+    return false;
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    toast.error('圖片大小不得超過 5MB');
+    return false;
+  }
+  return true;
+}
+
+function FamilyInvoiceFields({ family, familyIndex, orders, value, onChange, busy, toast }) {
+  const fileRef = useRef(null);
+  const numOk = INVOICE_RE.test(value.invoiceNumber);
+  const familyProofs = Array.isArray(family.payment_proof_urls)
+    ? family.payment_proof_urls.filter(Boolean)
+    : [];
+
+  function handleFile(file) {
+    if (!validateInvoiceImage(file, toast)) return;
+    onChange('imageFile', file);
+  }
+
+  return (
+    <section className="overflow-hidden rounded-xl border-2 border-brand-teal/30 bg-white">
+      <div className="flex flex-wrap items-start justify-between gap-3 bg-brand-teal/10 px-4 py-3">
+        <div>
+          <div className="text-sm font-bold text-brand-primary">
+            家庭 {familyIndex + 1}：{family.parent_name || '未命名家長'}
+          </div>
+          <div className="mt-0.5 text-xs text-gray-600">
+            帳號手機 {family.parent_phone || '未提供（系統已採保守獨立歸戶）'}・{orders.length} 筆子訂單
+          </div>
+        </div>
+        <div className="rounded-full bg-white px-3 py-1 font-mono text-sm font-bold text-brand-primary shadow-sm">
+          應開 {formatTWD(family.amount)}
+        </div>
+      </div>
+
+      <div className="space-y-4 p-4">
+        {familyProofs.length > 0 && (
+          <div>
+            <div className="mb-2 text-xs font-semibold text-gray-600">此家庭的匯款／轉帳證明</div>
+            <div className="flex flex-wrap gap-2">
+              {familyProofs.map((url, index) => (
+                <ImageLightbox
+                  key={url}
+                  src={url}
+                  alt={`家庭 ${familyIndex + 1} 匯款證明 ${index + 1}`}
+                  label={`家庭 ${familyIndex + 1} 匯款／轉帳證明 ${index + 1}`}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+          <div className="mb-2 text-xs font-semibold text-gray-600">此家庭的發票品項</div>
+          <div className="space-y-2">
+            {orders.map((order) => (
+              <div key={order.id} className="flex items-center justify-between gap-3 rounded-md bg-white px-3 py-2 text-sm">
+                <div className="min-w-0">
+                  <div className="truncate font-medium text-gray-800">{order.id}・{(order.students || []).join('、') || '—'}</div>
+                  <div className="mt-0.5 text-xs text-gray-500">{order.coach}・{courseTypeLabel(order.course_type)}・第 {order.period_number || 1} 期</div>
+                </div>
+                <div className="shrink-0 font-mono font-bold">{formatTWD(order.final_price)}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3">
+          <label className="mb-1 block text-xs font-semibold text-indigo-700" htmlFor={`family-carrier-${familyIndex}`}>
+            此家庭電子發票載具（選填，可直接用掃描器刷入）
+          </label>
+          <input
+            id={`family-carrier-${familyIndex}`}
+            type="text"
+            maxLength={64}
+            value={value.carrier}
+            disabled={busy}
+            onChange={(e) => onChange('carrier', e.target.value.slice(0, 64))}
+            placeholder="例如 /ABC+123"
+            className="w-full rounded-lg border border-indigo-200 bg-white px-3 py-2 font-mono text-sm text-indigo-900 focus:border-brand-teal focus:outline-none disabled:bg-gray-100"
+          />
+          {value.carrier && (
+            <div className="mt-2 inline-block rounded-lg bg-white p-2">
+              <Barcode value={value.carrier} />
+            </div>
+          )}
+        </div>
+
+        <div>
+          <label className="mb-1 block text-sm font-semibold text-gray-700" htmlFor={`family-invoice-number-${familyIndex}`}>
+            此家庭發票號碼 <span className="text-red-500">*</span>
+          </label>
+          <input
+            id={`family-invoice-number-${familyIndex}`}
+            type="text"
+            maxLength={10}
+            disabled={busy}
+            className={`w-full rounded-lg border px-3 py-2 font-mono text-sm uppercase tracking-widest focus:outline-none focus:ring-2 ${numOk || !value.invoiceNumber ? 'border-gray-300 focus:ring-brand-teal' : 'border-red-400 focus:ring-red-400'}`}
+            placeholder="AA00000000"
+            value={value.invoiceNumber}
+            onChange={(e) => onChange('invoiceNumber', e.target.value.toUpperCase())}
+          />
+          {value.invoiceNumber && !numOk && (
+            <p className="mt-1 text-xs text-red-500">格式：2 大寫英文 + 8 數字，例如 AB12345678</p>
+          )}
+        </div>
+
+        <div>
+          <label className="mb-1 block text-sm font-semibold text-gray-700">
+            此家庭發票照片 <span className="text-red-500">*</span>
+            <span className="ml-2 font-normal text-gray-400">（JPG / PNG / WebP / HEIC / HEIF / AVIF，≤ 5MB）</span>
+          </label>
+          <div
+            className={`relative flex min-h-24 flex-col items-center justify-center rounded-xl border-2 border-dashed p-4 transition ${value.imageFile ? 'border-brand-teal bg-brand-teal/5' : 'cursor-pointer border-gray-300 hover:border-brand-teal'}`}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => { e.preventDefault(); handleFile(e.dataTransfer.files?.[0]); }}
+            onClick={() => !value.imageFile && fileRef.current?.click()}
+          >
+            {value.imageFile ? (
+              <>
+                <ImageLightbox
+                  src={value.imageFile}
+                  alt={`家庭 ${familyIndex + 1} 發票預覽`}
+                  label={`家庭 ${familyIndex + 1} 新選擇的發票照片`}
+                  fileName={value.imageFile.name}
+                  thumbnailClassName="h-36 w-full max-w-sm"
+                  onRetry={() => fileRef.current?.click()}
+                />
+                <button
+                  type="button"
+                  disabled={busy}
+                  className="mt-2 text-xs text-gray-500 underline hover:text-red-500"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onChange('imageFile', null);
+                    if (fileRef.current) fileRef.current.value = '';
+                  }}
+                >重新選擇</button>
+              </>
+            ) : (
+              <div className="text-center text-sm text-gray-400">
+                <div className="mb-1 text-3xl">📄</div>
+                <div>拖放或點此選擇此家庭的發票照片</div>
+              </div>
+            )}
+            <input
+              ref={fileRef}
+              type="file"
+              accept={RECEIPT_IMAGE_ACCEPT}
+              className="hidden"
+              disabled={busy}
+              onChange={(e) => handleFile(e.target.files?.[0])}
+            />
+          </div>
+        </div>
+
+        <div>
+          <label className="mb-1 block text-sm font-semibold text-gray-700" htmlFor={`family-invoice-url-${familyIndex}`}>
+            此家庭發票查詢連結
+            <span className="ml-2 font-normal text-gray-400">（選填）</span>
+          </label>
+          <input
+            id={`family-invoice-url-${familyIndex}`}
+            type="url"
+            disabled={busy}
+            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-teal disabled:bg-gray-100"
+            placeholder="https://inv.ezpay.com.tw/..."
+            value={value.invoiceUrl}
+            onChange={(e) => onChange('invoiceUrl', e.target.value)}
+          />
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
   const toast = useToast();
   const fileRef = useRef(null);
+  const invoiceFamilies = useMemo(() => checkoutInvoiceFamilies(checkout), [checkout]);
+  const multiFamily = invoiceFamilies.length > 1;
   const [invoiceNumber, setInvoiceNumber] = useState('');
   const [invoiceUrl, setInvoiceUrl] = useState('');
   const [carrier, setCarrier] = useState(checkout.carrier || '');
   const [imageFile, setImageFile] = useState(null);
+  const [familyForms, setFamilyForms] = useState(() => Object.fromEntries(
+    checkoutInvoiceFamilies(checkout).map((family) => [family.family_key, {
+      invoiceNumber: '',
+      invoiceUrl: '',
+      carrier: family.carrier || '',
+      imageFile: null,
+    }])
+  ));
   const [uploading, setUploading] = useState(false);
   const [busy, setBusy] = useState(false);
   const paymentProofUrls = checkoutProofUrls(checkout);
@@ -90,20 +307,54 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
   }, [busy, onCancel]);
 
   function handleFile(file) {
-    if (!file) return;
-    if (!isSupportedImageCandidate(file)) { toast.error('請選擇 JPG、PNG、WebP、HEIC、HEIF 或 AVIF 圖片'); return; }
-    if (file.size > 5 * 1024 * 1024) { toast.error('圖片大小不得超過 5MB'); return; }
+    if (!validateInvoiceImage(file, toast)) return;
     setImageFile(file);
   }
 
+  function updateFamilyForm(familyKey, field, value) {
+    setFamilyForms((previous) => ({
+      ...previous,
+      [familyKey]: { ...previous[familyKey], [field]: value },
+    }));
+  }
+
   const numOk = INVOICE_RE.test(invoiceNumber);
-  const canSubmit = numOk && imageFile && !busy && canReconcile;
+  const familyNumbers = invoiceFamilies.map((family) => familyForms[family.family_key]?.invoiceNumber || '');
+  const familyFormsOk = invoiceFamilies.every((family) => {
+    const form = familyForms[family.family_key];
+    return form && INVOICE_RE.test(form.invoiceNumber) && form.imageFile;
+  }) && new Set(familyNumbers).size === familyNumbers.length;
+  const canSubmit = (multiFamily ? familyFormsOk : (numOk && imageFile)) && !busy && canReconcile;
 
   async function handleSubmit() {
     if (!canSubmit) return;
     setBusy(true);
     try {
       setUploading(true);
+      if (multiFamily) {
+        const uploadedFamilies = await Promise.all(invoiceFamilies.map(async (family) => {
+          const form = familyForms[family.family_key];
+          const uploaded = await enrollmentsApi.uploadInvoice(form.imageFile);
+          return { family, form, uploaded };
+        }));
+        setUploading(false);
+        if (uploadedFamilies.some(({ uploaded }) => uploaded.conversion_status === 'pending')) {
+          toast.warning('原始圖片已保存，部分預覽轉檔處理中；本次對帳仍可繼續');
+        }
+        await checkoutsApi.reconcile(checkout.checkout_id, {
+          family_invoices: uploadedFamilies.map(({ family, form, uploaded }) => ({
+            family_key: family.family_key,
+            invoice_number: form.invoiceNumber,
+            invoice_image_url: uploaded.preview_url || uploaded.url,
+            invoice_url: form.invoiceUrl.trim() || undefined,
+            carrier: form.carrier.trim() || undefined,
+          })),
+        });
+        toast.success(`對帳通過，已依 ${invoiceFamilies.length} 個家庭記錄 ${invoiceFamilies.length} 張發票並分別推播`);
+        onDone();
+        return;
+      }
+
       const uploaded = await enrollmentsApi.uploadInvoice(imageFile);
       const imageUrl = uploaded.preview_url || uploaded.url;
       setUploading(false);
@@ -131,12 +382,12 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
       onClick={(e) => e.target === e.currentTarget && !busy && onCancel()}
       role="dialog" aria-modal="true" aria-label="對帳通過 — 輸入發票資訊"
     >
-      <div className="flex w-full max-w-lg flex-col rounded-2xl bg-white shadow-xl" style={{ maxHeight: '90dvh' }}>
+      <div className={`flex w-full ${multiFamily ? 'max-w-3xl' : 'max-w-lg'} flex-col rounded-2xl bg-white shadow-xl`} style={{ maxHeight: '90dvh' }}>
         {/* ── 固定 Header ── */}
         <div className="shrink-0 border-b border-gray-100 px-6 pt-5 pb-4">
           <h3 className="text-lg font-bold text-brand-primary">對帳通過 — 輸入發票資訊</h3>
           <p className="mt-0.5 text-xs text-gray-500">
-            {checkout.checkout_id} ／ {checkout.parent_name} ／ 應收 {formatTWD(checkout.total_amount)}，末 5 碼 <b>{checkout.transfer_last_5 || '—'}</b>
+            {checkout.checkout_id} ／ {multiFamily ? `${invoiceFamilies.length} 個家庭` : checkout.parent_name} ／ 應收 {formatTWD(checkout.total_amount)}，末 5 碼 <b>{checkout.transfer_last_5 || '—'}</b>
           </p>
         </div>
 
@@ -158,6 +409,30 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
             </div>
           )}
 
+          {multiFamily ? (
+            <>
+              <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
+                <div className="font-bold">此付款單包含 {invoiceFamilies.length} 個不同家庭，需分別開立 {invoiceFamilies.length} 張發票。</div>
+                <div className="mt-1 text-xs">系統已依家長帳號歸戶品項與金額；每戶的發票號碼、照片及載具皆獨立保存。</div>
+              </div>
+              {invoiceFamilies.map((family, index) => (
+                <FamilyInvoiceFields
+                  key={family.family_key}
+                  family={family}
+                  familyIndex={index}
+                  orders={ordersForInvoiceFamily(checkout, family)}
+                  value={familyForms[family.family_key]}
+                  onChange={(field, value) => updateFamilyForm(family.family_key, field, value)}
+                  busy={busy}
+                  toast={toast}
+                />
+              ))}
+              {familyNumbers.some(Boolean) && new Set(familyNumbers.filter(Boolean)).size !== familyNumbers.filter(Boolean).length && (
+                <p className="text-xs font-medium text-red-600">不同家庭不可填寫相同的發票號碼。</p>
+              )}
+            </>
+          ) : (
+            <>
           <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3">
             <label className="mb-1 block text-xs font-semibold text-indigo-700" htmlFor="reconcile-carrier">
               電子發票載具（選填，可直接用掃描器刷入）
@@ -261,9 +536,13 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
               onChange={(e) => setInvoiceUrl(e.target.value)}
             />
           </div>
+            </>
+          )}
 
           <div className="rounded-lg bg-amber-50 p-3 text-xs text-amber-700">
-            對帳後系統將一次開通此付款單的 {checkout.sub_orders?.length || 0} 筆子訂單，並透過 LINE 推播發票通知給家長。
+            {multiFamily
+              ? `對帳後系統將一次開通此付款單的 ${checkout.sub_orders?.length || 0} 筆子訂單，並依家庭分別保存及推播各自的發票。`
+              : `對帳後系統將一次開通此付款單的 ${checkout.sub_orders?.length || 0} 筆子訂單，並透過 LINE 推播發票通知給家長。`}
           </div>
         </div>
 
@@ -275,7 +554,7 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
           <button type="button" disabled={!canSubmit}
             className="rounded-lg bg-brand-green px-4 py-2 text-sm font-bold text-white hover:bg-brand-teal disabled:opacity-50"
             onClick={handleSubmit}>
-            {uploading ? '上傳中…' : busy ? '處理中…' : '確認對帳'}
+            {uploading ? '上傳中…' : busy ? '處理中…' : multiFamily ? `確認 ${invoiceFamilies.length} 張發票並對帳` : '確認對帳'}
           </button>
         </div>
       </div>
@@ -432,7 +711,21 @@ export default function ReconcilePage() {
       render: (r) => <VenueBadges checkout={r} />,
     },
     { key: 'submitted_at', label: '送出時間', render: (r) => <span className="text-xs text-gray-600">{formatTWDateTime(r.submitted_at)}</span> },
-    { key: 'parent', label: '家長', render: (r) => <div><div className="font-medium">{r.parent_name}</div><div className="text-xs text-gray-500">{r.parent_phone}</div></div> },
+    {
+      key: 'parent',
+      label: '家長',
+      render: (r) => (
+        <div>
+          <div className="font-medium">{r.requires_separate_invoices ? `${r.family_count} 個家庭` : r.parent_name}</div>
+          <div className="text-xs text-gray-500">{r.requires_separate_invoices ? '需分開立發票' : r.parent_phone}</div>
+          {r.requires_separate_invoices && (
+            <span className="mt-1 inline-flex rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-700">
+              {r.family_count} 張家庭發票
+            </span>
+          )}
+        </div>
+      ),
+    },
     {
       key: 'sub_orders',
       label: '子訂單',
@@ -457,6 +750,11 @@ export default function ReconcilePage() {
                       <span className="font-mono font-bold text-brand-primary">{formatTWD(order.final_price)}</span>
                     </div>
                     <div className="mt-1">{(order.students || []).join('、') || '—'}</div>
+                    {r.requires_separate_invoices && (
+                      <div className="mt-0.5 font-medium text-amber-700">
+                        發票歸戶：{order.parent_name || '未命名家長'}／{order.parent_phone || '未提供手機'}
+                      </div>
+                    )}
                     <div className="mt-0.5 text-gray-500">
                       {order.coach}／{order.venue_name || venueName(order.venue_id)}／{courseTypeLabel(order.course_type)}／第 {order.period_number || 1} 期
                     </div>

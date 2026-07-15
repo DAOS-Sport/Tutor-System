@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
 import { evaluationsApi } from '../api/learn';
+import { formatTWDate } from '../utils/format';
 
 const DIMENSIONS = [
   { key: 'score_teaching', label: '教學內容' },
@@ -80,7 +81,7 @@ export default function EvaluationFormPage() {
       <header>
         <h1 className="text-xl font-bold text-brand-primary">期末評鑑</h1>
         <p className="mt-1 text-xs text-gray-500">F-S12 / 教練：{data.coach_name}</p>
-        {submitted && <p className="mt-1 text-[11px] text-brand-green">已於 {new Date(data.submitted_at).toLocaleDateString()} 送出</p>}
+        {submitted && <p className="mt-1 text-[11px] text-brand-green">已於 {formatTWDate(data.submitted_at)}（台北時間）送出</p>}
       </header>
 
       <section className="mt-4 space-y-4 rounded-2xl border border-brand-primary/15 bg-white p-4">

@@ -7,10 +7,29 @@ export const checkoutsApi = {
   get: (checkoutId) =>
     callApi(`/checkouts/${checkoutId}`, {}, () => null),
 
-  reconcile: (checkoutId, { invoice_number, invoice_image_url, invoice_url, buyer_name, tax_id, carrier } = {}) =>
+  reconcile: (checkoutId, {
+    invoice_number,
+    invoice_image_url,
+    invoice_url,
+    buyer_name,
+    tax_id,
+    carrier,
+    family_invoices,
+  } = {}) =>
     callApi(
       `/checkouts/${checkoutId}/reconcile`,
-      { method: 'post', data: { invoice_number, invoice_image_url, invoice_url, buyer_name, tax_id, carrier } },
+      {
+        method: 'post',
+        data: {
+          invoice_number,
+          invoice_image_url,
+          invoice_url,
+          buyer_name,
+          tax_id,
+          carrier,
+          family_invoices,
+        },
+      },
       () => ({ ok: true }),
     ),
 

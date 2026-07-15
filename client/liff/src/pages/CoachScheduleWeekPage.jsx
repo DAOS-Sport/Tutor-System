@@ -12,16 +12,21 @@ import BatchResultModal from '../components/coach/BatchResultModal';
 import SlotActionSheet from '../components/coach/SlotActionSheet';
 import MonthGrid from '../components/coach/MonthGrid';
 import { cleanVenueList } from '../utils/venues';
+import { formatPlainDate, taipeiCalendarDate } from '../utils/format';
 
 const WEEKDAY_TC = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
 
-function startOfWeek(d) { const x = new Date(d); x.setHours(0,0,0,0); x.setDate(x.getDate() - x.getDay()); return x; }
-function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
-function startOfMonth(d) { const x = new Date(d.getFullYear(), d.getMonth(), 1); x.setHours(0,0,0,0); return x; }
-function startOfNextMonth(d) { return new Date(d.getFullYear(), d.getMonth() + 1, 1); }
+function startOfWeek(d) { const x = taipeiCalendarDate(d); x.setUTCDate(x.getUTCDate() - x.getUTCDay()); return x; }
+function addDays(d, n) { const x = new Date(d); x.setUTCDate(x.getUTCDate() + n); return x; }
+function startOfMonth(d) { const x = taipeiCalendarDate(d); return new Date(Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), 1)); }
+function startOfNextMonth(d) { return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)); }
 
 function sameYMD(a, b) {
-  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  return a.getUTCFullYear() === b.getUTCFullYear() && a.getUTCMonth() === b.getUTCMonth() && a.getUTCDate() === b.getUTCDate();
+}
+
+function taipeiBoundaryIso(calendarDate) {
+  return new Date(`${formatPlainDate(calendarDate)}T00:00:00+08:00`).toISOString();
 }
 
 function FilterChip({ active, onClick, children }) {
@@ -109,7 +114,7 @@ export default function CoachScheduleWeekPage() {
     if (!coach?.id) return;
     let alive = true;
     setSlots(null);
-    slotsApi.listByCoach(coach.id, { from: range.from.toISOString(), to: range.to.toISOString() })
+    slotsApi.listByCoach(coach.id, { from: taipeiBoundaryIso(range.from), to: taipeiBoundaryIso(range.to) })
       .then((d) => alive && setSlots(d || []))
       .catch(() => { if (alive) { setSlots([]); toast.error('排課資料載入失敗'); } });
     return () => { alive = false; };
@@ -132,7 +137,7 @@ export default function CoachScheduleWeekPage() {
     const days = view === 'week' ? 7 : (direction > 0 ? 31 : -31);
     setAnchor((prev) => view === 'week'
       ? addDays(prev, 7 * direction)
-      : new Date(prev.getFullYear(), prev.getMonth() + direction, 1));
+      : new Date(Date.UTC(prev.getUTCFullYear(), prev.getUTCMonth() + direction, 1)));
   }
   function jumpToday() {
     setAnchor(view === 'week' ? startOfWeek(new Date()) : startOfMonth(new Date()));
@@ -142,8 +147,8 @@ export default function CoachScheduleWeekPage() {
   if (!coach) return null;
 
   const headerLabel = view === 'week'
-    ? `${range.from.getMonth() + 1}/${range.from.getDate()} – ${addDays(range.from, 6).getMonth() + 1}/${addDays(range.from, 6).getDate()}`
-    : `${anchor.getFullYear()}年 ${anchor.getMonth() + 1} 月`;
+    ? `${range.from.getUTCMonth() + 1}/${range.from.getUTCDate()} – ${addDays(range.from, 6).getUTCMonth() + 1}/${addDays(range.from, 6).getUTCDate()}`
+    : `${anchor.getUTCFullYear()}年 ${anchor.getUTCMonth() + 1} 月`;
 
   return (
     <div className="pb-4">
@@ -182,7 +187,7 @@ export default function CoachScheduleWeekPage() {
         {slots !== null && view === 'week' && (
           <div className="space-y-3">
             {days.map((d) => {
-              const daySlots = filteredSlots.filter((s) => sameYMD(new Date(s.start_at), d));
+              const daySlots = filteredSlots.filter((s) => sameYMD(taipeiCalendarDate(s.start_at), d));
               return <DaySection key={d.toISOString()} date={d} slots={daySlots} onClickSlot={(slot) => setActiveSlot(slot)} />;
             })}
             {filteredSlots.length === 0 && (
@@ -227,12 +232,12 @@ export default function CoachScheduleWeekPage() {
 }
 
 function DaySection({ date, slots, onClickSlot }) {
-  const isToday = sameYMD(date, new Date());
+  const isToday = sameYMD(date, taipeiCalendarDate());
   return (
     <div>
       <div className="mb-1.5 flex items-baseline justify-between">
         <h3 className={`text-xs font-bold ${isToday ? 'text-brand-teal' : 'text-brand-primary'}`}>
-          {date.getMonth() + 1}/{date.getDate()}（{WEEKDAY_TC[date.getDay()]}）{isToday && ' · 今天'}
+          {date.getUTCMonth() + 1}/{date.getUTCDate()}（{WEEKDAY_TC[date.getUTCDay()]}）{isToday && ' · 今天'}
         </h3>
         <span className="text-[10px] text-gray-400">{slots.length} 筆</span>
       </div>

@@ -134,6 +134,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_parent_line_uid_binding_active_uid
 CREATE UNIQUE INDEX IF NOT EXISTS uq_parent_line_uid_binding_active_parent
   ON parent_line_uid_bindings(canonical_parent_id) WHERE status='ACTIVE';
 
+-- 001_initial_schema predates the soft-active parent flag used by this seed.
+ALTER TABLE parents ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+
 INSERT INTO parent_line_uid_bindings
   (canonical_parent_id, uid_hash, status, correlation_id)
 SELECT p.id, encode(digest(p.line_uid, 'sha256'), 'hex'), 'ACTIVE', gen_random_uuid()

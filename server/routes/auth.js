@@ -41,6 +41,7 @@ const {
 const { requireAdminAuth, requireAdminRole } = require('../middlewares/adminAuth');
 const { captureParentLineProfile } = require('../services/parentLineProfile');
 const { createParentIdentityBackofficeTask } = require('../services/parentIdentityBackoffice');
+const { formatPlainDate } = require('../utils/dateTime');
 
 const router = express.Router();
 
@@ -198,7 +199,10 @@ async function loadStudents(parentId) {
       ORDER BY created_at ASC`,
     [parentId]
   );
-  return r.rows;
+  return r.rows.map((student) => ({
+    ...student,
+    birth_date: formatPlainDate(student.birth_date),
+  }));
 }
 
 function _issue(parent) {

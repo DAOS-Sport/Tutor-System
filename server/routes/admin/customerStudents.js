@@ -13,6 +13,7 @@
  * 舊系統消費紀錄尚未清洗匯入，故 legacy 家庭此處可能為空（設計討論已知）。
  */
 const express = require('express');
+const { formatPlainDate } = require('../../utils/dateTime');
 const { pool } = require('../../models/db');
 const { requireAdminAuth, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
 const { parseRocOrIso, courseTypeLabel, maskId, maskBlood, looksMasked, wantReveal, auditReveal, diffChanges, writeStudentAudit, adminActorName } = require('./_customerShared');
@@ -37,7 +38,7 @@ function rowToStudent(r, reveal) {
     name: r.name || '',
     id_number: reveal ? (r.id_number || '') : maskId(r.id_number),
     gender: r.gender || '',
-    birth_date: r.birth_date ? new Date(r.birth_date).toISOString().slice(0, 10) : '',
+    birth_date: formatPlainDate(r.birth_date),
     blood_type: reveal ? (r.blood_type || '') : maskBlood(r.blood_type),
     student_code: r.student_code || '',
     ragic_record_id: r.ragic_record_id || null,
@@ -147,8 +148,8 @@ async function loadPurchases(studentId) {
     sessions: `${p.used_sessions ?? 0}/${p.total_sessions ?? 0}`,
     price: p.final_price,
     period_number: p.period_number,
-    date: (p.enrolled_at || p.created_at) ? new Date(p.enrolled_at || p.created_at).toISOString().slice(0, 10) : '',
-    expires_at: p.expires_at ? new Date(p.expires_at).toISOString().slice(0, 10) : '',
+    date: formatPlainDate(p.enrolled_at || p.created_at),
+    expires_at: formatPlainDate(p.expires_at),
   }));
 }
 

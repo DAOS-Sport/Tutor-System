@@ -4,6 +4,7 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import { ragicStagingApi } from '../api/ragicStaging';
+import { formatTWDateTime } from '../utils/format';
 
 // Task #70 邊緣案例處理準則：
 // skipAuthRedirect=true 讓 axios interceptor 不跳轉，改由頁面自己決定：
@@ -28,8 +29,7 @@ const FORM_LABEL = {
 };
 
 function fmtDate(ts) {
-  if (!ts) return '—';
-  try { return new Date(ts).toLocaleString('zh-TW', { hour12: false }); } catch { return ts; }
+  return ts ? formatTWDateTime(ts) : '—';
 }
 
 function DiffTable({ diff, payload, changeType }) {

@@ -39,9 +39,9 @@ function slotOf(t) {
 }
 
 function dateAdd(iso, days) {
-  const d = new Date(iso + 'T00:00:00');
-  d.setDate(d.getDate() + days);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const d = new Date(iso + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + days);
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
 }
 
 export default function WeekGridView({ sessions, from, to, venues, onSelect }) {
@@ -109,10 +109,10 @@ export default function WeekGridView({ sessions, from, to, venues, onSelect }) {
                    style={{ gridTemplateColumns: `64px repeat(${dates.length}, minmax(96px, 1fr))` }}>
                 <div className="px-2 py-2 text-gray-400">時段</div>
                 {dates.map((d) => {
-                  const dt = new Date(d + 'T00:00:00');
+                  const dt = new Date(d + 'T00:00:00Z');
                   return (
                     <div key={d} className="border-l border-gray-200 px-2 py-2 text-center">
-                      <div className="font-semibold text-gray-700">週{DOW[dt.getDay()]}</div>
+                      <div className="font-semibold text-gray-700">週{DOW[dt.getUTCDay()]}</div>
                       <div className="text-[11px] text-gray-400">{d.slice(5)}</div>
                     </div>
                   );

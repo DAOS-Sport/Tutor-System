@@ -47,7 +47,11 @@ export default function SelfCheckinModal({ course, onClose, onDone }) {
   const remaining = info ? Math.max(0, (info.total_sessions || 0) - (info.used_sessions || 0)) : null;
   const blocked = useMemo(() => {
     if (!info) return null;
-    if (info.self_checked_in_today) return '今日已完成簽到（同一課程每日限簽一次）；如需更正請洽櫃檯。';
+    if (info.self_checked_in_today) {
+      return info.partner_checkin_label
+        ? `${info.partner_checkin_label}已代為簽到；如需更正請洽櫃檯。`
+        : '今日已完成簽到（同一課程每日限簽一次）；如需更正請洽櫃檯。';
+    }
     if (remaining <= 0) return '本期堂數已用完，如需續課請重新報名。';
     if (info.checkin_mode !== 'self') return '此課程為預約制，請改用「預約劃課」。';
     return null;

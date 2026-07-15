@@ -29,6 +29,7 @@ const { requireParent } = require('../middlewares/parentAuth');
 const learning = require('../services/learning');
 const { saveBuffer, ALLOWED_MAX_BYTES } = require('../services/objectStorage');
 const line = require('../services/line');
+const { formatPlainDate } = require('../utils/dateTime');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: ALLOWED_MAX_BYTES } });
@@ -206,8 +207,8 @@ async function notifyRecordSubmitted(sessionId) {
   if (!r.rowCount) return;
   const row = r.rows[0];
   if (!row.uids || row.uids.length === 0) return;
-  const dt = new Date(row.scheduled_at);
-  const dateStr = `${dt.getMonth()+1}/${dt.getDate()}`;
+  const [, month, day] = formatPlainDate(row.scheduled_at).split('-');
+  const dateStr = `${Number(month)}/${Number(day)}`;
   const liffUrl = (process.env.LIFF_URL_PARENT || process.env.LIFF_URL || 'https://liff.line.me/-') + `/history/${row.period_id}`;
   const msg = line.templates.sessionRecordPublished({ coachName: row.coach_name, sessionDate: dateStr, liffUrl });
   for (const uid of row.uids) {

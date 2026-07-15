@@ -87,6 +87,11 @@ export default function CourseCard({ variant = 'period', period, type, onClick, 
           {period.group_order_id && (
             <p className="mt-0.5 truncate font-mono text-[11px] text-gray-400">團購單號：{period.group_order_id}</p>
           )}
+          {period.partner_checkin_label && (
+            <p className="mt-1 text-xs font-medium text-brand-teal">
+              ✓ {period.partner_checkin_label}已代為簽到
+            </p>
+          )}
         </div>
         <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-bold ${paymentStatusColor(badgeStatus)}`}>
           {paymentStatusLabel(badgeStatus)}

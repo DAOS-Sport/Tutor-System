@@ -31,6 +31,16 @@ CREATE TABLE IF NOT EXISTS promotions (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CHECK (end_date >= start_date)
 );
+-- 001_initial_schema.sql already created an earlier promotions shape.  CREATE
+-- TABLE IF NOT EXISTS does not evolve that table, so add every column used by
+-- this migration before creating the new indexes.  Keep the legacy
+-- created_by UUID column intact: changing its FK/type is not an additive
+-- migration and existing production rows may still reference staff_roles.
+ALTER TABLE promotions ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'draft';
+ALTER TABLE promotions ADD COLUMN IF NOT EXISTS review_note TEXT;
+ALTER TABLE promotions ADD COLUMN IF NOT EXISTS reviewed_by TEXT REFERENCES admin_users(id) ON DELETE SET NULL;
+ALTER TABLE promotions ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
+ALTER TABLE promotions ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS idx_promotions_active_dates
   ON promotions(status, start_date, end_date);
 CREATE INDEX IF NOT EXISTS idx_promotions_coupon
@@ -46,6 +56,11 @@ CREATE TABLE IF NOT EXISTS promotion_usages (
   final_price INTEGER NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- Same compatibility rule for the v1 promotion_usages table from migration
+-- 001.  These columns are nullable/additive so reruns and live upgrades are
+-- safe.
+ALTER TABLE promotion_usages ADD COLUMN IF NOT EXISTS parent_id UUID REFERENCES parents(id) ON DELETE SET NULL;
+ALTER TABLE promotion_usages ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 CREATE INDEX IF NOT EXISTS idx_promo_usages_promo ON promotion_usages(promotion_id);
 CREATE INDEX IF NOT EXISTS idx_promo_usages_parent ON promotion_usages(parent_id);
 

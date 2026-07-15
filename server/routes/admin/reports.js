@@ -11,15 +11,16 @@
 const express = require('express');
 const { pool } = require('../../models/db');
 const { requireAdminAuth, requireAdminRole, getScopedVenueIds } = require('../../middlewares/adminAuth');
+const { formatPlainDate, taipeiToday } = require('../../utils/dateTime');
 
 const router = express.Router();
 router.use(requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'));
 
 function parseRange(q) {
-  const to = q.to || new Date().toISOString().slice(0, 10);
+  const to = q.to || taipeiToday();
   const from = q.from || (() => {
-    const d = new Date(); d.setDate(d.getDate() - 30);
-    return d.toISOString().slice(0, 10);
+    const d = new Date(`${to}T00:00:00+08:00`); d.setUTCDate(d.getUTCDate() - 30);
+    return formatPlainDate(d);
   })();
   return { from, to };
 }

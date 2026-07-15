@@ -13,6 +13,25 @@ const router = express.Router();
 const { pool } = require('../models/db');
 const { requireParent } = require('../middlewares/parentAuth');
 const { broadcastAdminEvent } = require('../services/websocket');
+const { getFeatureFlag, flagAllowsPhone } = require('../services/featureFlags');
+
+async function syncStoredUsage(client, period, used) {
+  await client.query(
+    `UPDATE course_periods SET used_sessions = $2, updated_at = NOW() WHERE id = $1`,
+    [period.id, used]
+  );
+  await client.query(
+    `UPDATE admin_enrollments ae
+        SET used_sessions = $5, updated_at = NOW()
+      WHERE ae.id = $1
+         OR ($2::uuid IS NOT NULL AND ae.group_order_id = $2::uuid
+             AND COALESCE(ae.period_number, 1) = COALESCE($4::int, 1))
+         OR ($3::uuid IS NOT NULL AND ae.enrollment_batch_id = $3::uuid
+             AND COALESCE(ae.period_number, 1) = COALESCE($4::int, 1))`,
+    [period.admin_enrollment_id || '', period.group_order_id || null,
+     period.enrollment_batch_id || null, period.period_number || 1, used]
+  );
+}
 
 /**
  * U13 免預約自助簽到 —— checkin_mode='self' 的課程期，家長不需先排課：
@@ -52,6 +71,7 @@ router.post('/self', requireParent, async (req, res) => {
     const pr = await client.query(
       `SELECT cp.id, cp.status::text AS status, cp.checkin_mode, cp.total_sessions,
               cp.coach_id, cp.venue_id, cp.course_type,
+              cp.admin_enrollment_id, cp.group_order_id, cp.enrollment_batch_id, cp.period_number,
               (cp.expires_at >= (NOW() AT TIME ZONE 'Asia/Taipei')::date) AS not_expired,
               c.name AS coach_name, av.name AS venue_name
          FROM course_periods cp
@@ -79,7 +99,9 @@ router.post('/self', requireParent, async (req, res) => {
       return res.status(409).json({ error: '此課程期已到期，請洽櫃檯', code: 'PERIOD_EXPIRED' });
     }
 
-    // 學員必須屬於本家長且在本期 active 名單中（防越權／防誤選）
+    // 請求中的學員必須屬於本家長且在本期 active 名單中（防越權／防誤選）。
+    // v2 對共享課期的實際 attendance 會由後端重新取得完整 active roster，不能
+    // 信任某一位家長送來的清單來決定其他家庭是否扣課。
     const own = await client.query(
       `SELECT s.id, s.name
          FROM students s
@@ -93,6 +115,64 @@ router.post('/self', requireParent, async (req, res) => {
       return res.status(403).json({ error: '所選學員不在此課程名單中', code: 'STUDENT_NOT_IN_PERIOD' });
     }
 
+    const sharedFlag = await getFeatureFlag('SHARED_CHECKIN_USAGE_V2', client);
+    const useSharedUsageV2 = flagAllowsPhone(sharedFlag, req.parent.phone);
+    const activeParticipants = useSharedUsageV2
+      ? await client.query(
+        `SELECT s.id, s.name, s.parent_id
+           FROM course_period_enrollments cpe
+           JOIN students s ON s.id = cpe.student_id
+          WHERE cpe.course_period_id = $1
+            AND cpe.status = 'active'
+            AND COALESCE(s.is_active, TRUE) = TRUE
+          ORDER BY s.id
+          FOR SHARE OF cpe, s`,
+        [periodId]
+      )
+      : own;
+    if (!activeParticipants.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '此課程目前沒有有效學員', code: 'NO_ACTIVE_PARTICIPANTS' });
+    }
+
+    // 已成功建立的自助課堂是 retry 的冪等結果。advisory lock 讓雙擊與多裝置
+    // 並發在這裡序列化；第二個請求回同一 session，而不是再扣一堂或模糊 409。
+    const existingSelf = await client.query(
+      `SELECT id, scheduled_at
+         FROM course_sessions
+        WHERE course_period_id = $1
+          AND created_via = 'self_checkin'
+          AND self_checkin_date = (NOW() AT TIME ZONE 'Asia/Taipei')::date
+        ORDER BY created_at
+        LIMIT 1`,
+      [periodId]
+    );
+    if (existingSelf.rowCount) {
+      const existing = existingSelf.rows[0];
+      const usedRes = await client.query(
+        `SELECT COUNT(DISTINCT cr.course_session_id)::int AS n
+           FROM checkin_records cr
+           JOIN course_sessions cs ON cs.id = cr.course_session_id
+          WHERE cs.course_period_id = $1
+            AND cs.status::text NOT LIKE 'cancelled%'
+            AND cr.attendance_status = 'ATTENDED'`,
+        [periodId]
+      );
+      const used = Number(usedRes.rows[0]?.n || 0);
+      await syncStoredUsage(client, period, used);
+      await client.query('COMMIT');
+      return res.json({
+        ok: true,
+        idempotent: true,
+        session_id: existing.id,
+        reused_booked_session: false,
+        checked_in_students: own.rows.map((s) => s.name),
+        total_sessions: period.total_sessions,
+        used_sessions: used,
+        remaining_sessions: Math.max(0, period.total_sessions - used),
+      });
+    }
+
     // 過渡保護 1（預約制→自助切換期）：同一期「今天」已有任何簽到——不論是
     // 預約課堂的逐堂簽到（家長/教練/櫃檯）或自助簽到——一律擋。每日一次的
     // unique index 只涵蓋自助建立的課堂，這裡把跨模式的「一天雙扣」也關掉。
@@ -101,6 +181,7 @@ router.post('/self', requireParent, async (req, res) => {
          JOIN course_sessions cs ON cs.id = cr.course_session_id
         WHERE cs.course_period_id = $1
           AND cs.status NOT IN ('cancelled_normal','cancelled_penalty')
+          AND cr.attendance_status = 'ATTENDED'
           AND (cr.checked_in_at AT TIME ZONE 'Asia/Taipei')::date = (NOW() AT TIME ZONE 'Asia/Taipei')::date
         LIMIT 1`,
       [periodId]
@@ -131,7 +212,8 @@ router.post('/self', requireParent, async (req, res) => {
       reusedBookedSession = true;
       await client.query(
         `UPDATE course_sessions
-            SET status = 'completed', completed_at = COALESCE(completed_at, NOW()), updated_at = NOW()
+            SET status = 'completed', completed_at = COALESCE(completed_at, NOW()),
+                session_deducted = TRUE, updated_at = NOW()
           WHERE id = $1`,
         [sessionRow.id]
       );
@@ -153,9 +235,9 @@ router.post('/self', requireParent, async (req, res) => {
         const ins = await client.query(
           `INSERT INTO course_sessions
              (course_period_id, coach_id, scheduled_at, duration_minutes, status,
-              completed_at, created_via, self_checkin_date)
+              completed_at, created_via, self_checkin_date, session_deducted)
            VALUES ($1, $2, NOW(), 60, 'completed', NOW(), 'self_checkin',
-                   (NOW() AT TIME ZONE 'Asia/Taipei')::date)
+                   (NOW() AT TIME ZONE 'Asia/Taipei')::date, TRUE)
            RETURNING id, scheduled_at`,
           [periodId, period.coach_id]
         );
@@ -172,11 +254,12 @@ router.post('/self', requireParent, async (req, res) => {
       }
     }
 
-    for (const s of own.rows) {
+    for (const s of activeParticipants.rows) {
       await client.query(
         `INSERT INTO checkin_records
-           (course_session_id, student_id, checked_in_source, checked_in_by_parent_id)
-         VALUES ($1, $2, 'parent', $3)
+           (course_session_id, student_id, checked_in_by_student_id,
+            checked_in_source, checked_in_by_parent_id)
+         VALUES ($1, $2, $2, 'parent', $3)
          ON CONFLICT (course_session_id, student_id) DO NOTHING`,
         [sessionRow.id, s.id, req.parent.id]
       );
@@ -187,13 +270,16 @@ router.post('/self', requireParent, async (req, res) => {
       `SELECT COUNT(DISTINCT cr.course_session_id)::int AS n
          FROM checkin_records cr
          JOIN course_sessions cs ON cs.id = cr.course_session_id
-        WHERE cs.course_period_id = $1`,
+        WHERE cs.course_period_id = $1
+          AND cs.status::text NOT LIKE 'cancelled%'
+          AND cr.attendance_status = 'ATTENDED'`,
       [periodId]
     );
-    await client.query('COMMIT');
 
     const used = usedRes.rows[0].n;
-    for (const s of own.rows) {
+    await syncStoredUsage(client, period, used);
+    await client.query('COMMIT');
+    for (const s of activeParticipants.rows) {
       try {
         broadcastAdminEvent('checkin:created', {
           at: sessionRow.scheduled_at instanceof Date ? sessionRow.scheduled_at.toISOString() : String(sessionRow.scheduled_at),
@@ -211,9 +297,12 @@ router.post('/self', requireParent, async (req, res) => {
 
     res.status(201).json({
       ok: true,
+      idempotent: false,
       session_id: sessionRow.id,
       reused_booked_session: reusedBookedSession, // true＝簽進今天既有的預約課堂（未另建）
+      // 不把其他家庭的姓名透露給操作家長；後端仍已替完整 active roster 建 attendance。
       checked_in_students: own.rows.map((s) => s.name),
+      attendance_count: activeParticipants.rowCount,
       total_sessions: period.total_sessions,
       used_sessions: used,
       remaining_sessions: Math.max(0, period.total_sessions - used),
@@ -248,6 +337,8 @@ router.post('/', requireParent, async (req, res) => {
     const ctx = await client.query(
       `SELECT cs.id AS session_id, cs.status::text AS session_status,
               cp.id AS period_id, cp.venue_id, cp.course_type, cp.coach_id,
+              cp.total_sessions, cp.admin_enrollment_id, cp.group_order_id,
+              cp.enrollment_batch_id, cp.period_number,
               c.name AS coach_name, v.name AS venue_name, s.name AS student_name
          FROM course_sessions cs
          JOIN course_periods  cp ON cp.id = cs.course_period_id
@@ -277,14 +368,47 @@ router.post('/', requireParent, async (req, res) => {
       });
     }
 
+    const sharedFlag = await getFeatureFlag('SHARED_CHECKIN_USAGE_V2', client);
+    if (flagAllowsPhone(sharedFlag, req.parent.phone)) {
+      await client.query(
+        `INSERT INTO checkin_records
+           (course_session_id, student_id, checked_in_by_student_id,
+            checked_in_source, checked_in_by_parent_id)
+         SELECT $1, cpe.student_id, cpe.student_id, 'parent', $2
+           FROM course_period_enrollments cpe
+           JOIN students s ON s.id = cpe.student_id
+          WHERE cpe.course_period_id = $3 AND cpe.status = 'active'
+            AND COALESCE(s.is_active, TRUE) = TRUE
+         ON CONFLICT (course_session_id, student_id) DO NOTHING`,
+        [sessionId, req.parent.id, ctx.rows[0].period_id]
+      );
+    } else {
+      await client.query(
+        `INSERT INTO checkin_records
+           (course_session_id, student_id, checked_in_by_student_id,
+            checked_in_source, checked_in_by_parent_id)
+         VALUES ($1, $2, $2, 'parent', $3)
+         ON CONFLICT (course_session_id, student_id) DO NOTHING`,
+        [sessionId, studentId, req.parent.id]
+      );
+    }
     const ins = await client.query(
-      `INSERT INTO checkin_records
-         (course_session_id, student_id, checked_in_source, checked_in_by_parent_id)
-       VALUES ($1, $2, 'parent', $3)
-       ON CONFLICT (course_session_id, student_id) DO UPDATE SET checked_in_at = checkin_records.checked_in_at
-       RETURNING id, checked_in_at, checked_in_source`,
-      [sessionId, studentId, req.parent.id]
+      `SELECT id, checked_in_at, checked_in_source
+         FROM checkin_records WHERE course_session_id = $1 AND student_id = $2`,
+      [sessionId, studentId]
     );
+    const usedRes = await client.query(
+      `SELECT COUNT(DISTINCT cs.id)::int AS n
+         FROM course_sessions cs JOIN checkin_records cr ON cr.course_session_id = cs.id
+        WHERE cs.course_period_id = $1 AND cs.status::text NOT LIKE 'cancelled%'
+          AND cr.attendance_status = 'ATTENDED'`,
+      [ctx.rows[0].period_id]
+    );
+    await client.query(
+      `UPDATE course_sessions SET session_deducted = TRUE, updated_at = NOW() WHERE id = $1`,
+      [sessionId]
+    );
+    await syncStoredUsage(client, { ...ctx.rows[0], id: ctx.rows[0].period_id }, Number(usedRes.rows[0]?.n || 0));
     await client.query('COMMIT');
 
     const row = ins.rows[0];

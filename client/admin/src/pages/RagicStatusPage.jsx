@@ -4,6 +4,7 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import { ragicStatusApi } from '../api/ragicStatus';
+import { formatTWDateTime } from '../utils/format';
 
 // Task #70 邊緣案例處理準則：
 // skipAuthRedirect=true 讓 axios interceptor 不跳轉，改由頁面自己決定：
@@ -11,11 +12,7 @@ import { ragicStatusApi } from '../api/ragicStatus';
 //   - HTTP 500 / timeout / 其他 → toast + 重試按鈕，不觸碰 session
 
 function fmtDate(ts) {
-  if (!ts) return '—';
-  try {
-    const d = new Date(ts);
-    return d.toLocaleString('zh-TW', { hour12: false });
-  } catch { return String(ts); }
+  return ts ? formatTWDateTime(ts) : '—';
 }
 
 function statusBadge(s, inProgress) {

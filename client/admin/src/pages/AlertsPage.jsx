@@ -5,6 +5,7 @@ import DataTable from '../components/DataTable';
 import StatusBadge from '../components/StatusBadge';
 import { useToast } from '../context/ToastContext';
 import { adminAlertsApi } from '../api/chat';
+import { formatTWDateTime } from '../utils/format';
 
 const STATUS_OPTIONS = [
   { v: 'pending',   label: '待處理',   tone: 'orange' },
@@ -17,9 +18,7 @@ const STATUS_LABEL = Object.fromEntries(STATUS_OPTIONS.map((o) => [o.v, o.label]
 const NEXT_STATUS_OPTIONS = STATUS_OPTIONS.filter((s) => s.v !== 'pending');
 
 function fmt(iso) {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return formatTWDateTime(iso);
 }
 
 export default function AlertsPage() {

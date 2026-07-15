@@ -10,6 +10,7 @@
  */
 const { pool } = require('../models/db');
 const { ensureUnassignedCoach } = require('../services/unassignedCoach');
+const { addCalendarDays, taipeiToday } = require('../utils/dateTime');
 
 const DDL = `
 -- ENUMs（重複建立會 throw duplicate_object）
@@ -410,6 +411,63 @@ DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS checked_in_by_s
 DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS checked_in_by_parent_id UUID REFERENCES parents(id); EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS checked_in_by_coach_id UUID REFERENCES coaches(id); EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
+-- Shared usage / reversal v2. Keep this block in bootstrap as well as migration 032:
+-- production startup must be safe whether migrations were run separately or not.
+DO $$ BEGIN ALTER TABLE course_periods ADD COLUMN IF NOT EXISTS entitlement_state TEXT NOT NULL DEFAULT 'ACTIVE'; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE course_periods ADD COLUMN IF NOT EXISTS superseded_by_course_period_id UUID REFERENCES course_periods(id) ON DELETE RESTRICT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE course_periods ADD COLUMN IF NOT EXISTS superseded_at TIMESTAMPTZ; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE course_periods ADD COLUMN IF NOT EXISTS superseded_by TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE course_periods ADD COLUMN IF NOT EXISTS superseded_reason TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE course_sessions ADD COLUMN IF NOT EXISTS session_deducted BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE course_periods ADD CONSTRAINT chk_course_periods_entitlement_state CHECK (entitlement_state IN ('ACTIVE','SUPERSEDED','MANUAL_REVIEW')); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+CREATE INDEX IF NOT EXISTS idx_course_periods_entitlement_state ON course_periods(entitlement_state, created_at DESC);
+
+DO $$ BEGIN ALTER TABLE manual_lesson_deductions ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'APPLIED'; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE manual_lesson_deductions ADD COLUMN IF NOT EXISTS reversed_by TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE manual_lesson_deductions ADD COLUMN IF NOT EXISTS reversal_reason TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE manual_lesson_deductions ADD COLUMN IF NOT EXISTS reversed_at TIMESTAMPTZ; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE manual_lesson_deductions ADD CONSTRAINT chk_manual_deduction_status CHECK (status IN ('APPLIED','REVERSED')); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+CREATE INDEX IF NOT EXISTS idx_manual_deductions_status_created ON manual_lesson_deductions(status, created_at DESC);
+
+DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS attendance_status TEXT NOT NULL DEFAULT 'ATTENDED'; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS reversed_by TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS reversal_reason TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS reversed_at TIMESTAMPTZ; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE checkin_records ADD CONSTRAINT chk_checkin_attendance_status CHECK (attendance_status IN ('ATTENDED','REVERSED')); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+CREATE INDEX IF NOT EXISTS idx_checkin_records_attendance_status ON checkin_records(course_session_id, attendance_status);
+
+CREATE TABLE IF NOT EXISTS lesson_deduction_reversals (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  course_session_id UUID NOT NULL REFERENCES course_sessions(id) ON DELETE RESTRICT,
+  course_period_id UUID NOT NULL REFERENCES course_periods(id) ON DELETE RESTRICT,
+  reason TEXT NOT NULL,
+  reversed_by TEXT NOT NULL,
+  reversed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(course_session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_lesson_deduction_reversals_period ON lesson_deduction_reversals(course_period_id, reversed_at DESC);
+
+CREATE TABLE IF NOT EXISTS application_feature_flags (
+  key TEXT PRIMARY KEY,
+  enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  allowed_phones TEXT[] NOT NULL DEFAULT '{}',
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+-- 團報／家庭共班共享簽到已正式全量啟用。這裡不能只 DO NOTHING：既有 production
+-- 可能已有 migration 032 建立的單一手機 canary，Replit deployment 又是直接 npm start，
+-- 未必會另跑 migration 036。啟動 bootstrap 必須把舊 canary 冪等升級成全量設定。
+INSERT INTO application_feature_flags (key, enabled, allowed_phones)
+VALUES ('SHARED_CHECKIN_USAGE_V2', TRUE, '{}'::text[])
+ON CONFLICT (key) DO UPDATE
+  SET enabled = TRUE,
+      allowed_phones = '{}'::text[],
+      updated_at = NOW();
+
+-- 扣課撤銷仍維持 canary；不要被上述全量切換連帶擴大。
+INSERT INTO application_feature_flags (key, enabled, allowed_phones)
+VALUES ('DEDUCTION_REVIVAL_V2', TRUE, ARRAY['0982252694']::text[])
+ON CONFLICT (key) DO NOTHING;
+
 -- ─── Phase 4: 聊天室 / 訊息 / 關鍵字警示 ───────────────────────────────
 DO $$ BEGIN CREATE TYPE alert_status AS ENUM ('pending','reviewed','no_issue','resolved'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
@@ -730,6 +788,7 @@ DO $$ BEGIN
     invoice_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     checkout_id UUID NOT NULL REFERENCES checkout_sessions(checkout_id) ON DELETE CASCADE,
     order_id TEXT REFERENCES admin_enrollments(id) ON DELETE SET NULL,
+    family_key TEXT,
     buyer_name TEXT,
     tax_id VARCHAR(20),
     amount NUMERIC(10,2) NOT NULL DEFAULT 0,
@@ -740,10 +799,32 @@ DO $$ BEGIN
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
   );
+  ALTER TABLE checkout_invoices ADD COLUMN IF NOT EXISTS family_key TEXT;
   CREATE INDEX IF NOT EXISTS idx_checkout_invoices_checkout ON checkout_invoices(checkout_id);
+  -- 舊 production index predicate 只有 order_id IS NULL；僅在偵測到舊版時替換，
+  -- 正常重啟不反覆 DROP/CREATE，降低 checkout_invoices 的 schema lock。
+  DO $family_invoice_index$
+  DECLARE
+    index_oid OID := to_regclass('uq_checkout_invoice_checkout_level');
+    index_predicate TEXT;
+  BEGIN
+    IF index_oid IS NOT NULL THEN
+      SELECT pg_get_expr(indpred, indrelid)
+        INTO index_predicate
+        FROM pg_index
+       WHERE indexrelid = index_oid;
+      IF index_predicate IS NULL OR index_predicate NOT ILIKE '%family_key%' THEN
+        EXECUTE 'DROP INDEX uq_checkout_invoice_checkout_level';
+      END IF;
+    END IF;
+  END
+  $family_invoice_index$;
   CREATE UNIQUE INDEX IF NOT EXISTS uq_checkout_invoice_checkout_level
     ON checkout_invoices(checkout_id)
-    WHERE order_id IS NULL;
+    WHERE order_id IS NULL AND family_key IS NULL;
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_checkout_invoice_family
+    ON checkout_invoices(checkout_id, family_key)
+    WHERE family_key IS NOT NULL;
   UPDATE admin_enrollments
      SET enrollment_batch_id = gen_random_uuid()
    WHERE enrollment_batch_id IS NULL;
@@ -1444,7 +1525,8 @@ DO $$ BEGIN ALTER TABLE promotions ADD COLUMN IF NOT EXISTS show_on_parent_home 
 -- 019：start_date / end_date DATE → TIMESTAMPTZ（僅在仍為 date 時升級；backfill start 00:00 / end 23:59:59 台灣時間）
 DO $$ BEGIN
   IF (SELECT data_type FROM information_schema.columns
-        WHERE table_name = 'promotions' AND column_name = 'start_date') = 'date' THEN
+        WHERE table_schema = current_schema()
+          AND table_name = 'promotions' AND column_name = 'start_date') = 'date' THEN
     ALTER TABLE promotions
       ALTER COLUMN start_date TYPE TIMESTAMPTZ USING (start_date::timestamptz),
       ALTER COLUMN end_date   TYPE TIMESTAMPTZ USING (end_date::timestamptz + INTERVAL '23 hours 59 minutes 59 seconds');
@@ -1852,10 +1934,8 @@ const PARENTS = [
 
 // 給定要建立的「期課程 + 已預約 session」demo（讓教練今日 / 排課表能看到 booked 槽位）
 function relHour(daysFromToday, hour, minute = 0) {
-  const d = new Date();
-  d.setDate(d.getDate() + daysFromToday);
-  d.setHours(hour, minute, 0, 0);
-  return d;
+  const day = addCalendarDays(taipeiToday(), daysFromToday);
+  return new Date(`${day}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00+08:00`);
 }
 
 async function ensureSchema() {

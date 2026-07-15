@@ -8,6 +8,7 @@
 const express = require('express');
 const { pool } = require('../../models/db');
 const { requireAdminAuth, requireAdminRole, getScopedVenueIds } = require('../../middlewares/adminAuth');
+const { reverseLessonDeduction } = require('../../services/deductionRevival');
 
 const router = express.Router();
 
@@ -56,6 +57,7 @@ router.get('/', requireAdminAuth, async (req, res) => {
    LEFT JOIN coaches         c  ON c.id  = cp.coach_id
    LEFT JOIN admin_venues    v  ON v.id  = cp.venue_id
        WHERE (cr.checked_in_at AT TIME ZONE 'Asia/Taipei')::date = $1::date
+         AND cr.attendance_status = 'ATTENDED'
          ${venueWhere}
     `;
     const r1 = await pool.query(recSql, args);
@@ -108,13 +110,15 @@ router.get('/', requireAdminAuth, async (req, res) => {
 /**
  * U13 撤銷自助簽到（櫃檯更正入口——家長端不開放自撤，誤點一律走這裡）。
  *  DELETE /api/admin/checkins/self-sessions/:sessionId
- *  - 僅限 created_via='self_checkin' 的課堂（預約制課堂不可用此路徑刪）。
- *  - 刪除該堂全部簽到 → 課堂轉 cancelled_normal → self_checkin_date 清 NULL
+ *  - 僅限 created_via='self_checkin' 的課堂（預約制課堂不可用此路徑撤銷）。
+ *  - 該堂全部 attendance 標記 REVERSED → 課堂轉 cancelled_normal → self_checkin_date 清 NULL
  *    （釋放「每日一次」名額，家長當天可重簽正確內容）。
  *  - 教練已寫上課紀錄（session_records）→ 409 擋下，避免默默孤兒化教學紀錄。
- *  - audit 掛 period anchor 報名單，堂數即時歸還（堂數真相=checkin_records，刪即還）。
+ *  - audit 掛 period anchor 報名單，堂數依有效 attendance distinct session 即時回算。
  */
 router.delete('/self-sessions/:sessionId', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+  const reason = String(req.body?.reason || '').trim().slice(0, 1000);
+  if (!reason) return res.status(400).json({ error: '請填寫撤銷原因', code: 'REASON_REQUIRED' });
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -141,44 +145,36 @@ router.delete('/self-sessions/:sessionId', requireAdminAuth, requireAdminRole('a
       await client.query('ROLLBACK');
       return res.status(400).json({ error: '僅自助簽到課堂可用此方式撤銷', code: 'NOT_SELF_CHECKIN' });
     }
-    if (['cancelled_normal', 'cancelled_penalty'].includes(row.status)) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: '此課堂已撤銷', code: 'ALREADY_REVOKED' });
-    }
     const hasRecord = await client.query(
       `SELECT 1 FROM session_records WHERE course_session_id = $1 LIMIT 1`,
       [req.params.sessionId]
     );
-    if (hasRecord.rowCount) {
+    if (hasRecord.rowCount && !['cancelled_normal', 'cancelled_penalty'].includes(row.status)) {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '教練已填寫此堂上課紀錄，請先與教練確認後再處理', code: 'SESSION_RECORD_EXISTS' });
     }
 
-    const delCk = await client.query(
-      `DELETE FROM checkin_records WHERE course_session_id = $1`,
-      [req.params.sessionId]
-    );
-    await client.query(
-      `UPDATE course_sessions
-          SET status = 'cancelled_normal', cancelled_at = NOW(), self_checkin_date = NULL, updated_at = NOW()
-        WHERE id = $1`,
-      [req.params.sessionId]
-    );
-    if (row.admin_enrollment_id) {
-      const by = req.adminUser?.name || req.adminUser?.username || 'unknown';
-      await client.query(
-        `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user)
-         SELECT id, $2, $3 FROM admin_enrollments WHERE id = $1`,
-        [row.admin_enrollment_id,
-         `撤銷自助簽到（課堂 ${req.params.sessionId}，移除 ${delCk.rowCount} 筆簽到，堂數已歸還）`, by]
-      );
-    }
+    const by = req.adminUser?.name || req.adminUser?.username || req.adminUser?.sub || 'unknown';
+    const result = await reverseLessonDeduction(client, {
+      sessionId: req.params.sessionId,
+      reason,
+      reversedBy: by,
+      allowCreatedVia: 'self_checkin',
+    });
     await client.query('COMMIT');
-    res.json({ ok: true, session_id: req.params.sessionId, removed_checkins: delCk.rowCount });
+    res.json({
+      ok: true,
+      session_id: req.params.sessionId,
+      idempotent: result.idempotent,
+      reversed_attendances: result.reversedAttendances,
+    });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('[admin/checkins/self-sessions delete]', err);
-    res.status(500).json({ error: 'revoke self checkin failed' });
+    res.status(err.http || 500).json({
+      error: err.http ? err.message : 'revoke self checkin failed',
+      ...(err.code ? { code: err.code } : {}),
+    });
   } finally {
     client.release();
   }

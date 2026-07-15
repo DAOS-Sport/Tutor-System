@@ -3,8 +3,8 @@
  *
  *  1. 預約制（預設）打自助簽到 → 409 SELF_CHECKIN_NOT_ENABLED（行為守恆）
  *  2. 後台單期切換 self（含 audit）→ 管理清單看得到模式
- *  3. 自助簽到 2 位小孩 → 一堂（1 session、2 checkins）、剩餘 5 堂
- *  4. 同日重複簽到 → 409 ALREADY_CHECKED_IN_TODAY（DB 唯一鍵硬擋）
+ *  3. 自助簽到 → 一堂（1 session、完整 active roster）、剩餘 5 堂
+ *  4. 同日重送 → 回同一堂的冪等成功（不重複扣堂）
  *  5. /courses/mine 卡片：checkin_mode='self'、self_checked_in_today=true、堂數 1/6
  *  6. 櫃檯撤銷 → 簽到移除、課堂取消、當日可重簽（名額釋放）
  *  7. 堂數用完 → 409 NO_SESSIONS_LEFT
@@ -15,6 +15,8 @@ const express = require('../../server/node_modules/express');
 const { Client } = require('../../server/node_modules/pg');
 const { signToken } = require('../../server/middlewares/adminAuth');
 const { signParentToken } = require('../../server/middlewares/parentAuth');
+const previousSharedFlag = process.env.SHARED_CHECKIN_USAGE_V2;
+process.env.SHARED_CHECKIN_USAGE_V2 = 'all';
 const checkinsRouter = require('../../server/routes/checkins');
 const adminPeriodsRouter = require('../../server/routes/admin/periods');
 const adminCheckinsRouter = require('../../server/routes/admin/checkins');
@@ -162,7 +164,7 @@ async function call(base, method, path, { token, body } = {}) {
     assert(r.status === 200 && r.data.length === 1 && r.data[0].checkin_mode === 'self',
       `管理清單顯示 self 模式，實際 ${r.status} ${JSON.stringify(r.data && r.data[0] && r.data[0].checkin_mode)}`);
 
-    // 3) 自助簽到 2 位小孩 → 一堂
+    // 3) 家長勾 2 位送出；共享簽到後端仍替完整 3 人 active roster 建 attendance → 一堂
     r = await call(route.base, 'POST', '/api/checkins/self', {
       token: parentToken, body: { course_period_id: periodId, student_ids: studentIds.slice(0, 2) },
     });
@@ -176,15 +178,17 @@ async function call(base, method, path, { token, body } = {}) {
          FROM course_sessions cs WHERE cs.id = $1`,
       [firstSessionId]
     );
-    assert(sess.rows[0].created_via === 'self_checkin' && sess.rows[0].status === 'completed' && sess.rows[0].checkins === 2,
-      `一堂 self 課堂＋2 筆簽到，實際 ${JSON.stringify(sess.rows[0])}`);
+    assert(sess.rows[0].created_via === 'self_checkin' && sess.rows[0].status === 'completed' && sess.rows[0].checkins === 3,
+      `一堂 self 課堂＋完整 3 人 roster，實際 ${JSON.stringify(sess.rows[0])}`);
 
-    // 4) 同日重複 → 409
+    // 4) 同日重送 → 回同一 session，冪等成功且不再扣堂
     r = await call(route.base, 'POST', '/api/checkins/self', {
       token: parentToken, body: { course_period_id: periodId, student_ids: [studentIds[2]] },
     });
-    assert(r.status === 409 && r.data.code === 'ALREADY_CHECKED_IN_TODAY',
-      `同日重複簽到被擋，實際 ${r.status} ${r.data && r.data.code}`);
+    assert(r.status === 200 && r.data.idempotent === true && r.data.session_id === firstSessionId,
+      `同日重送回原 session，實際 ${r.status} ${JSON.stringify(r.data && { idempotent: r.data.idempotent, same: r.data.session_id === firstSessionId })}`);
+    assert(r.data.used_sessions === 1 && r.data.remaining_sessions === 5,
+      `冪等重送仍只扣 1 堂，實際 ${r.data.used_sessions}/${r.data.remaining_sessions}`);
 
     // 5) /courses/mine 卡片狀態
     r = await call(route.base, 'GET', '/api/courses/mine', { token: parentToken });
@@ -195,8 +199,11 @@ async function call(base, method, path, { token, body } = {}) {
       `課程卡堂數 1/6，實際 ${card.used_sessions}/${card.remaining_sessions}`);
 
     // 6) 櫃檯撤銷 → 可重簽（名額釋放、堂數歸還）
-    r = await call(route.base, 'DELETE', `/api/admin/checkins/self-sessions/${firstSessionId}`, { token: adminToken });
-    assert(r.status === 200 && r.data.removed_checkins === 2, `撤銷成功移除 2 筆簽到，實際 ${r.status} ${JSON.stringify(r.data)}`);
+    r = await call(route.base, 'DELETE', `/api/admin/checkins/self-sessions/${firstSessionId}`, {
+      token: adminToken, body: { reason: 'e2e 自助簽到更正' },
+    });
+    assert(r.status === 200 && r.data.reversed_attendances === 3,
+      `撤銷成功處理完整 3 筆 attendance，實際 ${r.status} ${JSON.stringify(r.data)}`);
     const revoked = await pg.query(
       `SELECT status::text AS status, self_checkin_date FROM course_sessions WHERE id = $1`, [firstSessionId]
     );
@@ -267,6 +274,11 @@ async function call(base, method, path, { token, body } = {}) {
     step('PASS: U13 雙軌簽到（守恆/切換/簽到/每日一次/撤銷/上限/越權/批次）全數通過');
   } finally {
     await pg.query(`DELETE FROM admin_enrollment_audit_logs WHERE enrollment_id = $1`, [enrollmentId]).catch(() => {});
+    if (periodId) {
+      // reversal ledger 對 session/period 採 ON DELETE RESTRICT；測試清理必須先移除 ledger，
+      // 否則後續 period/student/parent 刪除會被擋住並留下測試資料。
+      await pg.query(`DELETE FROM lesson_deduction_reversals WHERE course_period_id = $1`, [periodId]).catch(() => {});
+    }
     if (periodId) await pg.query(`DELETE FROM course_periods WHERE id = $1`, [periodId]).catch(() => {});
     await pg.query(`DELETE FROM admin_enrollments WHERE id = $1`, [enrollmentId]).catch(() => {});
     await pg.query(`DELETE FROM students WHERE parent_id IN ($1, $2)`, [parentId, strangerId]).catch(() => {});
@@ -277,6 +289,8 @@ async function call(base, method, path, { token, body } = {}) {
     await pg.query(`DELETE FROM venues WHERE id = $1`, [venueId]).catch(() => {});
     await route.close().catch(() => {});
     await pg.end().catch(() => {});
+    if (previousSharedFlag === undefined) delete process.env.SHARED_CHECKIN_USAGE_V2;
+    else process.env.SHARED_CHECKIN_USAGE_V2 = previousSharedFlag;
   }
 })().catch((error) => {
   console.error('FAIL:', error.message);

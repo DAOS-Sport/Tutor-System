@@ -6,6 +6,7 @@ import ExportMenu from '../components/ExportMenu';
 import { useToast } from '../context/ToastContext';
 import { adminEvalApi } from '../api/learn';
 import { rowsToCsv, downloadCsv, downloadXlsx } from '../utils/csvExport';
+import { formatTWDate, todayISO } from '../utils/format';
 
 const COACH_EVAL_HEADERS = ['教練', '資深', '件數', '整體 avg', '教學 avg', '續報率', '不達標項目'];
 function coachEvalRow(c) {
@@ -19,7 +20,7 @@ function coachEvalRow(c) {
     (c.failed_metrics || []).join('、'),
   ];
 }
-function todayStamp() { return new Date().toISOString().slice(0, 10); }
+function todayStamp() { return todayISO(); }
 
 const METRIC_LABEL = { avg_overall: '整體', avg_teaching: '教學' };
 
@@ -156,7 +157,7 @@ export default function CoachEvalPage() {
                   <li key={c.id} className="rounded bg-gray-50 p-2 text-xs">
                     <div className="flex justify-between text-gray-500">
                       <span>★ {c.score_overall} · 續報：{c.renew_intent}</span>
-                      <span>{new Date(c.submitted_at).toLocaleDateString()}</span>
+                      <span>{formatTWDate(c.submitted_at)}</span>
                     </div>
                     <p className="mt-1 text-gray-800">{c.comment}</p>
                   </li>

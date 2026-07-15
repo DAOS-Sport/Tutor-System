@@ -25,6 +25,10 @@ const PATHS = [
   ['GroupProofPersistence', 'group_proof_persistence.js'],
   ['ManualDeduction', 'admin_manual_deduction.js'],
   ['SessionsRegression', 'admin_sessions_regression.js'],
+  ['FamilyShared', 'family_shared_period.js'],
+  ['ParentReconcileLink', 'parent_reconcile_link.js'],
+  ['CheckoutFamilyInvoices', 'checkout_family_invoices.js'],
+  ['GroupPartnerCheckin', 'group_partner_checkin.js'],
   ['Flex18', 'flex_templates_verify.js'],
 ];
 

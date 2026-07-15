@@ -14,6 +14,8 @@ const { bootstrap: bootstrapAdmin } = require('./bootstrap/admin');
 const { bootstrap: bootstrapCore } = require('./bootstrap/coreSchema');
 const { bootstrap: bootstrapDemo } = require('./bootstrap/demoSeed');
 const { assertSecretConfigured } = require('./middlewares/adminAuth');
+const { pool } = require('./models/db');
+const { formatTaipeiDateTime, TAIPEI_TIME_ZONE } = require('./utils/dateTime');
 
 const app = express();
 const server = http.createServer(app);
@@ -88,7 +90,33 @@ app.get('/auth/line/callback', (req, res) => {
 });
 
 // Health check
-app.get('/health', (req, res) => res.json({ status: 'ok', ts: new Date().toISOString(), build: BUILD_INFO }));
+app.get('/health', async (req, res) => {
+  const now = new Date();
+  let dbTimeZone = null;
+  let dbNowUtc = null;
+  try {
+    const db = await pool.query(
+      `SELECT current_setting('TimeZone') AS timezone,
+              to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS utc_now`
+    );
+    dbTimeZone = db.rows[0]?.timezone || null;
+    dbNowUtc = db.rows[0]?.utc_now || null;
+  } catch (err) {
+    console.warn('[health] DB timezone probe failed:', err.message);
+  }
+  res.json({
+    status: 'ok',
+    ts: now.toISOString(),
+    build: BUILD_INFO,
+    timezone: {
+      application: process.env.TZ || TAIPEI_TIME_ZONE,
+      database: dbTimeZone,
+      utc_now: now.toISOString(),
+      database_utc_now: dbNowUtc,
+      taipei_now: formatTaipeiDateTime(now, { seconds: true }),
+    },
+  });
+});
 
 // MGM 短連結：/r/:token → /liff/register?ref=<token>
 app.get('/r/:token', (req, res) => {

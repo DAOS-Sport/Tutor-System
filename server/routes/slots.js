@@ -16,21 +16,10 @@ const { pool } = require('../models/db');
 const { detectConflict, createSlot, batchCreateSlots, bookSlot1v1, bookSlot1vN } = require('../services/slots');
 const { requireCoach, requireCoachOwner } = require('../middlewares/coachAuth');
 const { requireParent } = require('../middlewares/parentAuth');
+const { addCalendarDays, taipeiToday, taipeiWeekStart } = require('../utils/dateTime');
 
-function startOfWeek(d) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  x.setDate(x.getDate() - x.getDay()); // 週日為起
-  return x;
-}
-function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
 function todayInTaipei() {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Taipei',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(new Date());
+  return taipeiToday();
 }
 function parseTaipeiDateBoundary(value) {
   const v = String(value || '').trim();
@@ -77,8 +66,8 @@ async function ensureSlotOwner(req, res, next) {
 router.get('/coach/:coachId', requireCoach, requireCoachOwner('coachId'), async (req, res) => {
   const { coachId } = req.params;
   const { from, to } = req.query;
-  const fromDate = from ? new Date(from) : startOfWeek(new Date());
-  const toDate = to ? new Date(to) : addDays(fromDate, 7);
+  const fromDate = parseTaipeiDateBoundary(from || taipeiWeekStart());
+  const toDate = parseTaipeiDateBoundary(to || addCalendarDays(from || taipeiWeekStart(), 7));
   try {
     const r = await pool.query(
       `SELECT cas.id, cas.coach_id, cas.venue_id, v.name AS venue_name,
@@ -193,7 +182,9 @@ router.get('/period/:coursePeriodId', requireParent, async (req, res) => {
   }
 
   const fromDate = req.query.from ? parseTaipeiDateBoundary(req.query.from) : parseTaipeiDateBoundary(todayInTaipei());
-  const toDate = req.query.to ? parseTaipeiDateBoundary(req.query.to) : addDays(fromDate, 30);
+  const toDate = req.query.to
+    ? parseTaipeiDateBoundary(req.query.to)
+    : parseTaipeiDateBoundary(addCalendarDays(ymdInTaipei(fromDate), 30));
   if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
     return res.status(400).json({ error: 'from/to 日期格式錯誤' });
   }

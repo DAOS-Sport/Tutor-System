@@ -35,6 +35,41 @@ CREATE TABLE IF NOT EXISTS referral_records (
   reward_issued_at TIMESTAMPTZ
 );
 
+-- Upgrade the v1 referral_records shape created by 001_initial_schema.sql.
+-- Preserve the legacy columns because older reports still read them; the new
+-- columns are backfilled deterministically before their constraints are added.
+ALTER TABLE referral_records ADD COLUMN IF NOT EXISTS token VARCHAR(40);
+ALTER TABLE referral_records ADD COLUMN IF NOT EXISTS coach_id UUID;
+ALTER TABLE referral_records ADD COLUMN IF NOT EXISTS experience_enrollment_id TEXT;
+ALTER TABLE referral_records ADD COLUMN IF NOT EXISTS registered_at TIMESTAMPTZ;
+ALTER TABLE referral_records ADD COLUMN IF NOT EXISTS trial_paid_at TIMESTAMPTZ;
+ALTER TABLE referral_records ADD COLUMN IF NOT EXISTS checked_in_at TIMESTAMPTZ;
+DO $$ BEGIN
+  UPDATE referral_records
+     SET token = COALESCE(token, referral_code, id::text),
+         coach_id = COALESCE(coach_id, referred_coach_id),
+         checked_in_at = COALESCE(checked_in_at, experience_completed_at);
+EXCEPTION WHEN undefined_column THEN
+  UPDATE referral_records SET token = COALESCE(token, id::text);
+END $$;
+ALTER TABLE referral_records ALTER COLUMN token SET NOT NULL;
+ALTER TABLE referral_records ALTER COLUMN coach_id SET NOT NULL;
+DO $$ BEGIN
+  ALTER TABLE referral_records ADD CONSTRAINT uq_referral_records_token UNIQUE (token);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE referral_records ADD CONSTRAINT fk_referral_records_coach
+    FOREIGN KEY (coach_id) REFERENCES coaches(id) ON DELETE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+-- The v1 enum cannot represent the v2 workflow states (trial_paid/checked_in).
+-- VARCHAR retains old values and permits the new workflow without rewriting
+-- or deleting historical referrals.
+DO $$ BEGIN
+  ALTER TABLE referral_records ALTER COLUMN status DROP DEFAULT;
+  ALTER TABLE referral_records ALTER COLUMN status TYPE VARCHAR(30) USING status::text;
+  ALTER TABLE referral_records ALTER COLUMN status SET DEFAULT 'pending';
+EXCEPTION WHEN undefined_column THEN NULL; END $$;
+
 -- 防刷：同一手機號碼只能被同一教練推薦一次（NULL referee_phone 不算）
 CREATE UNIQUE INDEX IF NOT EXISTS uq_referrals_referee_coach
   ON referral_records(referee_phone, coach_id) WHERE referee_phone IS NOT NULL;

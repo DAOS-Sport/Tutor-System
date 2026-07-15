@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { formatTWDateTime } from '../utils/format';
 
 /**
  * 共用「問題回報」按鈕 —— 登入 / 註冊流程出錯時改顯示本鈕，
@@ -36,11 +37,7 @@ export function classifyError(code) {
 }
 
 function nowStr() {
-  try {
-    return new Date().toLocaleString('zh-TW', { hour12: false });
-  } catch {
-    return '';
-  }
+  return formatTWDateTime(new Date());
 }
 
 function buildReportText({ audience, errorCode, errorMessage, context, details }) {

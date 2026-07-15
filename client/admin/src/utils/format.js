@@ -27,6 +27,18 @@ export function formatTWDateTime(input) {
   return `${formatTWDate(input)} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`;
 }
 
+export function formatTWDateTimeSeconds(input) {
+  const d = toTaipei(input);
+  if (!d) return '—';
+  return `${d.getUTCFullYear()}/${pad2(d.getUTCMonth() + 1)}/${pad2(d.getUTCDate())} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}:${pad2(d.getUTCSeconds())}`;
+}
+
+export function toTaipeiDateTimeInput(input) {
+  const d = toTaipei(input);
+  if (!d) return '';
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}T${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`;
+}
+
 export function formatHM(input) {
   const d = toTaipei(input);
   if (!d) return '—';
@@ -36,6 +48,16 @@ export function formatHM(input) {
 export function todayISO() {
   const d = toTaipei(new Date());
   return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
+}
+
+// DATE 欄位不代表 timestamp；純字串只正規化分隔符，不做 UTC 轉換。
+export function formatPlainDate(input) {
+  if (input == null || input === '') return '';
+  const raw = String(input).trim();
+  const m = raw.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})$/);
+  if (m) return `${m[1]}-${pad2(m[2])}-${pad2(m[3])}`;
+  const d = toTaipei(input);
+  return d ? `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}` : '';
 }
 
 export function isValidTWPhone(phone) {

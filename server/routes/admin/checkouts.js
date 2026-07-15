@@ -10,6 +10,11 @@ const ragicWriteback = require('../../services/ragicWriteback');
 const promotions = require('../../services/promotions');
 const { logGroupOrderAudit } = require('../../services/groupOrderAudit');
 const { CHECKOUT_STATUS, readCheckout } = require('../../services/checkouts');
+const {
+  checkoutFamilyKey,
+  groupCheckoutFamilies,
+  normalizeFamilyPhone,
+} = require('../../services/checkoutFamilies');
 const enrollmentRouter = require('./enrollments');
 
 const { getSettings, ensureGroupCoursePeriod, ensureSoloCoursePeriod } = enrollmentRouter._checkoutInternals;
@@ -21,6 +26,97 @@ const CANCEL_REASON_MAX_LENGTH = 500;
 
 function courseTypeLabel(courseType) {
   return { 1: '1 對 1', 2: '1 對 2', 3: '1 對 3' }[Number(courseType)] || `1 對 ${courseType}`;
+}
+
+function normalizeInvoiceEntry(source, family, fallbackCarrier = '', { familyRequired = false } = {}) {
+  const invoiceNumber = String(source?.invoice_number || '').trim().toUpperCase();
+  const invoiceImageUrl = String(source?.invoice_image_url || '').trim();
+  const invoiceUrl = String(source?.invoice_url || '').trim();
+  const buyerName = String(source?.buyer_name || '').trim() || family.parent_name || null;
+  const taxId = String(source?.tax_id || '').trim() || family.tax_id || null;
+  const carrier = typeof source?.carrier === 'string'
+    ? source.carrier.trim().slice(0, 64)
+    : String(fallbackCarrier || family.carrier || '').trim().slice(0, 64);
+  if (!invoiceNumber) {
+    return {
+      error: familyRequired ? '每個家庭的發票號碼皆為必填' : '發票號碼必填',
+      code: familyRequired ? 'FAMILY_INVOICE_NUMBER_REQUIRED' : undefined,
+    };
+  }
+  if (!INVOICE_RE.test(invoiceNumber)) {
+    return {
+      error: '發票號碼格式錯誤（應為 2 大寫英文 + 8 數字）',
+      code: familyRequired ? 'INVOICE_NUMBER_INVALID' : undefined,
+    };
+  }
+  if (!invoiceImageUrl) {
+    return {
+      error: familyRequired ? '每個家庭的發票照片皆為必填' : '發票照片必填',
+      code: familyRequired ? 'FAMILY_INVOICE_IMAGE_REQUIRED' : undefined,
+    };
+  }
+  return {
+    value: {
+      family,
+      familyKey: family.family_key,
+      invoiceNumber,
+      invoiceImageUrl,
+      invoiceUrl: invoiceUrl || null,
+      buyerName,
+      taxId,
+      carrier: carrier || null,
+      amount: Number(family.amount) || 0,
+    },
+  };
+}
+
+/**
+ * 單家庭維持舊 payload；只有真的混合兩戶以上，才要求 family_invoices。
+ * 家庭與金額完全由 locked child orders 重算，client 只能填發票資料，不能指定品項或金額。
+ */
+function buildInvoicePlans(families, body, checkoutRow) {
+  if (families.length <= 1) {
+    const family = families[0];
+    const supplied = Array.isArray(body?.family_invoices) && body.family_invoices.length === 1
+      ? body.family_invoices[0]
+      : body;
+    return normalizeInvoiceEntry(supplied, family, checkoutRow.carrier || family.carrier || '');
+  }
+
+  if (!Array.isArray(body?.family_invoices)) {
+    return {
+      error: `此付款單包含 ${families.length} 個家庭，必須分別填寫 ${families.length} 張發票`,
+      code: 'FAMILY_INVOICES_REQUIRED',
+    };
+  }
+  const suppliedByKey = new Map();
+  for (const entry of body.family_invoices) {
+    const key = String(entry?.family_key || '');
+    if (!key || suppliedByKey.has(key)) {
+      return { error: '家庭發票資料重複或缺少家庭識別', code: 'FAMILY_INVOICE_KEYS_INVALID' };
+    }
+    suppliedByKey.set(key, entry);
+  }
+  if (suppliedByKey.size !== families.length
+      || families.some((family) => !suppliedByKey.has(family.family_key))) {
+    return { error: '家庭發票數量與付款單家庭數不一致，請重新整理後再填寫', code: 'FAMILY_INVOICE_KEYS_MISMATCH' };
+  }
+
+  const plans = [];
+  for (const family of families) {
+    const normalized = normalizeInvoiceEntry(
+      suppliedByKey.get(family.family_key),
+      family,
+      family.carrier || '',
+      { familyRequired: true }
+    );
+    if (normalized.error) return normalized;
+    plans.push(normalized.value);
+  }
+  if (new Set(plans.map((plan) => plan.invoiceNumber)).size !== plans.length) {
+    return { error: '不同家庭不可使用相同發票號碼', code: 'FAMILY_INVOICE_NUMBER_DUPLICATE' };
+  }
+  return { value: plans };
 }
 
 function scopedCheckoutWhere(req, params) {
@@ -139,37 +235,12 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
     // 稽核操作者只能取自已驗證的後台 JWT；不可接受 client 自填的 by，
     // 否則任何有權呼叫者都能偽造對帳／發票的操作者紀錄。
     const by = req.adminUser?.name || req.adminUser?.username || req.adminUser?.sub || 'unknown';
-    const invoiceNumber = String(req.body?.invoice_number || '').trim().toUpperCase();
-    const invoiceImageUrl = String(req.body?.invoice_image_url || '').trim();
-    const invoiceUrl = String(req.body?.invoice_url || '').trim();
-    const buyerName = String(req.body?.buyer_name || '').trim() || null;
-    const taxId = String(req.body?.tax_id || '').trim() || null;
-    const requestedCarrier = typeof req.body?.carrier === 'string'
-      ? req.body.carrier.trim().slice(0, 64)
-      : '';
-
-    if (!invoiceNumber) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: '發票號碼必填' });
-    }
-    if (!INVOICE_RE.test(invoiceNumber)) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: '發票號碼格式錯誤（應為 2 大寫英文 + 8 數字）' });
-    }
-    if (!invoiceImageUrl) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: '發票照片必填' });
-    }
-
     const cr = await client.query(`SELECT * FROM checkout_sessions WHERE checkout_id = $1 FOR UPDATE`, [req.params.checkoutId]);
     if (!cr.rowCount) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: '找不到付款單' });
     }
     const checkoutRow = cr.rows[0];
-    // 舊團購核准時沒有 carrier 傳遞欄位；允許櫃檯在既有 reconcile transaction
-    // 直接補刷，未提供時則完整保留 checkout 原值。
-    const carrier = requestedCarrier || String(checkoutRow.carrier || '').trim() || null;
     if (![CHECKOUT_STATUS.PENDING_PAYMENT, CHECKOUT_STATUS.PENDING_RECONCILE].includes(checkoutRow.payment_status)) {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '此付款單狀態非待對帳' });
@@ -195,11 +266,22 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
       return res.status(409).json({ error: '此付款單含有非待對帳子訂單，請重新整理後再試' });
     }
 
+    const families = groupCheckoutFamilies(children.rows);
+    const invoiceResult = buildInvoicePlans(families, req.body || {}, checkoutRow);
+    if (invoiceResult.error) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: invoiceResult.error, code: invoiceResult.code });
+    }
+    const invoicePlans = Array.isArray(invoiceResult.value) ? invoiceResult.value : [invoiceResult.value];
+    const invoiceByFamily = new Map(invoicePlans.map((plan) => [plan.familyKey, plan]));
+
     const settings = await getSettings();
     const perPeriod = settings.sessions_per_period || 6;
     const groupPaymentMarked = new Set();
     const rowsToOpen = [];
     for (const row of children.rows) {
+      const invoice = invoiceByFamily.get(checkoutFamilyKey(row));
+      if (!invoice) throw new Error('invoice family mapping missing after validation');
       // 試上是明確的一次課；不可因 checkout 批次對帳被通用每期堂數放大成 6 堂。
       const total = row.order_kind === 'trial'
         ? 1
@@ -216,16 +298,16 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
                 invoice_issued_at = NOW(),
                 updated_at = NOW()
           WHERE id = $1`,
-        [row.id, total, invoiceNumber, invoiceImageUrl, invoiceUrl || null, carrier]
+        [row.id, total, invoice.invoiceNumber, invoice.invoiceImageUrl, invoice.invoiceUrl, invoice.carrier]
       );
       await client.query(
         `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user)
          VALUES ($1, $2, $3)`,
-        [row.id, `checkout 對帳通過（發票 ${invoiceNumber}）`, by]
+        [row.id, `checkout 對帳通過（發票 ${invoice.invoiceNumber}）`, by]
       );
 
       if (row.group_order_id) {
-        const groupKey = `${row.group_order_id}:${row.parent_phone}`;
+        const groupKey = `${row.group_order_id}:${checkoutFamilyKey(row)}`;
         if (!groupPaymentMarked.has(groupKey)) {
           groupPaymentMarked.add(groupKey);
           const gconf = await client.query(
@@ -237,45 +319,74 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
               FROM parents p
               WHERE p.id = gom.parent_id
                 AND gom.group_order_id = $1
-                AND p.phone = $2
+                AND regexp_replace(COALESCE(p.phone, ''), '\\D', '', 'g') =
+                    regexp_replace(COALESCE($2::text, ''), '\\D', '', 'g')
                 AND gom.payment_confirmed = FALSE`,
-            [row.group_order_id, row.parent_phone, String(by).slice(0, 50), carrier]
+            [row.group_order_id, row.parent_phone, String(by).slice(0, 50), invoice.carrier]
           );
           if (gconf.rowCount) {
             await logGroupOrderAudit(client, {
               groupOrderId: row.group_order_id,
-              action: `櫃檯確認帳款（${row.parent_name}／${row.parent_phone}，checkout 對帳通過，發票 ${invoiceNumber}）`,
+              action: `櫃檯確認帳款（${row.parent_name}／${row.parent_phone}，checkout 對帳通過，發票 ${invoice.invoiceNumber}）`,
               by,
             });
           }
         }
       }
-      rowsToOpen.push({ row, total });
+      rowsToOpen.push({ row, total, invoice });
     }
 
-    await client.query(
-      `INSERT INTO checkout_invoices
-         (checkout_id, order_id, buyer_name, tax_id, amount, invoice_number, invoice_image_url, invoice_url, issued_at)
-       VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, NOW())
-       ON CONFLICT (checkout_id) WHERE order_id IS NULL
-       DO UPDATE SET buyer_name = EXCLUDED.buyer_name,
-                     tax_id = EXCLUDED.tax_id,
-                     amount = EXCLUDED.amount,
-                     invoice_number = EXCLUDED.invoice_number,
-                     invoice_image_url = EXCLUDED.invoice_image_url,
-                     invoice_url = EXCLUDED.invoice_url,
-                     issued_at = EXCLUDED.issued_at,
-                     updated_at = NOW()`,
-      [
-        req.params.checkoutId,
-        buyerName || children.rows[0].parent_name,
-        taxId || children.rows[0].tax_id || null,
-        Number(checkoutRow.total_amount) || children.rows.reduce((sum, row) => sum + (Number(row.final_price) || 0), 0),
-        invoiceNumber,
-        invoiceImageUrl,
-        invoiceUrl || null,
-      ]
-    );
+    if (invoicePlans.length === 1) {
+      const invoice = invoicePlans[0];
+      await client.query(
+        `INSERT INTO checkout_invoices
+           (checkout_id, order_id, family_key, buyer_name, tax_id, amount,
+            invoice_number, invoice_image_url, invoice_url, issued_at)
+         VALUES ($1, NULL, NULL, $2, $3, $4, $5, $6, $7, NOW())
+         ON CONFLICT (checkout_id) WHERE order_id IS NULL AND family_key IS NULL
+         DO UPDATE SET buyer_name = EXCLUDED.buyer_name,
+                       tax_id = EXCLUDED.tax_id,
+                       amount = EXCLUDED.amount,
+                       invoice_number = EXCLUDED.invoice_number,
+                       invoice_image_url = EXCLUDED.invoice_image_url,
+                       invoice_url = EXCLUDED.invoice_url,
+                       issued_at = EXCLUDED.issued_at,
+                       updated_at = NOW()`,
+        [
+          req.params.checkoutId,
+          invoice.buyerName,
+          invoice.taxId,
+          Number(checkoutRow.total_amount) || invoice.amount,
+          invoice.invoiceNumber,
+          invoice.invoiceImageUrl,
+          invoice.invoiceUrl,
+        ]
+      );
+    } else {
+      // pending checkout 不應已有發票；若是歷史半成品，改以本次鎖定後的家庭資料為準。
+      await client.query(`DELETE FROM checkout_invoices WHERE checkout_id = $1`, [req.params.checkoutId]);
+      for (const invoice of invoicePlans) {
+        await client.query(
+          `INSERT INTO checkout_invoices
+             (checkout_id, order_id, family_key, buyer_name, tax_id, amount,
+              invoice_number, invoice_image_url, invoice_url, issued_at)
+           VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, NOW())`,
+          [
+            req.params.checkoutId,
+            invoice.familyKey,
+            invoice.buyerName,
+            invoice.taxId,
+            invoice.amount,
+            invoice.invoiceNumber,
+            invoice.invoiceImageUrl,
+            invoice.invoiceUrl,
+          ]
+        );
+      }
+    }
+    const invoiceSummary = invoicePlans.map((invoice) => invoice.invoiceNumber).join(',');
+    const checkoutCarrier = invoicePlans.length === 1 ? invoicePlans[0].carrier : null;
+    const anyCarrier = invoicePlans.some((invoice) => !!invoice.carrier);
     await client.query(
       `UPDATE checkout_sessions
           SET payment_status = 'paid',
@@ -284,11 +395,13 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
               audit_log = COALESCE(audit_log, '[]'::jsonb) ||
                 jsonb_build_array(jsonb_build_object(
                   'at', NOW(), 'action', 'checkout_reconciled', 'by', $2::text,
-                  'invoice_number', $3::text, 'carrier_supplied', ($4::text IS NOT NULL)
+                  'invoice_number', $3::text,
+                  'invoice_count', $6::int,
+                  'carrier_supplied', $5::boolean
                 )),
               updated_at = NOW()
         WHERE checkout_id = $1`,
-      [req.params.checkoutId, by, invoiceNumber, carrier]
+      [req.params.checkoutId, by, invoiceSummary, checkoutCarrier, anyCarrier, invoicePlans.length]
     );
 
     for (const { row, total } of rowsToOpen) {
@@ -308,34 +421,45 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
     } catch (e) {
       console.warn('[checkout reconcile] backfill chat rooms failed:', e.message);
     }
-    try {
-      const line = require('../../services/line');
-      const checkout = await readCheckout(pool, req.params.checkoutId);
-      const first = checkout.sub_orders[0] || {};
-      const parentQuery = checkout.parent_id
-        ? await pool.query(`SELECT line_uid FROM parents WHERE id = $1`, [checkout.parent_id])
-        : await pool.query(`SELECT line_uid FROM parents WHERE phone = $1`, [checkout.parent_phone]);
-      const lineUid = parentQuery.rows[0]?.line_uid;
-      if (lineUid && first.venue_id) {
+    const line = require('../../services/line');
+    for (const invoice of invoicePlans) {
+      try {
+        const familyOrders = children.rows.filter((row) => checkoutFamilyKey(row) === invoice.familyKey);
+        const first = familyOrders[0] || {};
+        const phone = normalizeFamilyPhone(invoice.family.parent_phone);
+        const parentQuery = phone
+          ? await pool.query(
+            `SELECT line_uid FROM parents
+              WHERE regexp_replace(COALESCE(phone, ''), '\\D', '', 'g') = $1
+                AND is_active = TRUE
+              ORDER BY updated_at DESC LIMIT 1`,
+            [phone]
+          )
+          : { rows: [] };
+        const lineUid = parentQuery.rows[0]?.line_uid;
+        if (!lineUid || !first.venue_id) continue;
         const publicBase = (process.env.PUBLIC_BASE_URL || process.env.ADMIN_URL || '').replace(/\/$/, '');
-        const absoluteImageUrl = invoiceImageUrl.startsWith('http') ? invoiceImageUrl : `${publicBase}${invoiceImageUrl}`;
+        const absoluteImageUrl = invoice.invoiceImageUrl.startsWith('http')
+          ? invoice.invoiceImageUrl
+          : `${publicBase}${invoice.invoiceImageUrl}`;
         const liffUrl = process.env.LIFF_URL_PARENT || process.env.LIFF_URL || '';
-        const courseTypes = [...new Set(checkout.sub_orders.map((o) => o.course_type).filter(Boolean))];
+        const courseTypes = [...new Set(familyOrders.map((order) => order.course_type).filter(Boolean))];
+        const venue = await pool.query(`SELECT name FROM venues WHERE id = $1`, [first.venue_id]);
         const messages = line.templates.invoiceIssued({
-          parentName: checkout.parent_name,
-          invoiceNumber,
+          parentName: invoice.family.parent_name,
+          invoiceNumber: invoice.invoiceNumber,
           invoiceImageUrl: absoluteImageUrl,
-          invoiceUrl: invoiceUrl || null,
-          coachName: checkout.sub_orders.length === 1 ? first.coach : `${checkout.sub_orders.length} 筆子訂單`,
-          venueName: checkout.venue?.name || first.venue_id,
+          invoiceUrl: invoice.invoiceUrl,
+          coachName: familyOrders.length === 1 ? first.coach : `${familyOrders.length} 筆子訂單`,
+          venueName: venue.rows[0]?.name || first.venue_id,
           courseType: courseTypes.length === 1 ? courseTypeLabel(courseTypes[0]) : `${courseTypes.length} 種組別`,
-          finalPrice: checkout.total_amount,
+          finalPrice: invoice.amount,
           liffUrl,
         });
         await line.pushMessage(lineUid, messages, first.venue_id);
+      } catch (e) {
+        console.warn('[checkout reconcile] family LINE invoice push failed:', e.message);
       }
-    } catch (e) {
-      console.warn('[checkout reconcile] LINE push invoice failed:', e.message);
     }
 
     res.json(await readCheckout(pool, req.params.checkoutId));

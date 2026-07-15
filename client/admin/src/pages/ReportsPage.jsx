@@ -6,6 +6,7 @@ import { adminReportsApi } from '../api/reports';
 import { venuesApi } from '../api/venues';
 import { rowsToCsv, downloadCsv, downloadXlsx } from '../utils/csvExport';
 import ExportMenu from '../components/ExportMenu';
+import { formatPlainDate, todayISO } from '../utils/format';
 
 const TABS = [
   { key: 'revenue',     label: '營收報表' },
@@ -16,9 +17,9 @@ const TABS = [
 ];
 
 function defaultRange() {
-  const to = new Date().toISOString().slice(0, 10);
-  const d = new Date(); d.setDate(d.getDate() - 30);
-  return { from: d.toISOString().slice(0, 10), to };
+  const to = todayISO();
+  const d = new Date(`${to}T00:00:00+08:00`); d.setUTCDate(d.getUTCDate() - 30);
+  return { from: formatPlainDate(d), to };
 }
 
 export default function ReportsPage() {

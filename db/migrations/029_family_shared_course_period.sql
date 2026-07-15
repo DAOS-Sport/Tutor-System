@@ -5,6 +5,7 @@
 -- 此欄位供開通橋以 (enrollment_batch_id, period_number) 冪等 get-or-create。
 -- 一對一或單學員報名維持 NULL（沿用 admin_enrollment_id 冪等，行為不變）。
 ALTER TABLE course_periods ADD COLUMN IF NOT EXISTS enrollment_batch_id UUID;
+ALTER TABLE course_periods ADD COLUMN IF NOT EXISTS period_number INTEGER NOT NULL DEFAULT 1;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_course_periods_batch_period
   ON course_periods(enrollment_batch_id, period_number)

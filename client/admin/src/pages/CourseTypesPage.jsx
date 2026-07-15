@@ -3,6 +3,7 @@ import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
 import { courseTypesApi } from '../api/courseTypes';
+import { formatTWDateTime, formatTWDateTimeSeconds, toTaipeiDateTimeInput } from '../utils/format';
 
 const autoLabel = (ct) => {
   const map = { 1: '一對一', 2: '一對二', 3: '一對三', 4: '一對四', 5: '一對五', 6: '一對六' };
@@ -11,28 +12,10 @@ const autoLabel = (ct) => {
 
 const fmtDate = (v) => (v ? String(v).slice(0, 10).replace(/-/g, '/') : '—');
 const fmtMoney = (v) => `NT$ ${Number(v || 0).toLocaleString('en-US')}`;
-const pad2 = (n) => String(n).padStart(2, '0');
-// 排程生效改為 timestamptz：以瀏覽器本地時間（櫃台在台灣＝台北）顯示「日期 時:分」。
-const fmtDateTime = (v) => {
-  if (!v) return '—';
-  const d = new Date(v);
-  if (Number.isNaN(d.getTime())) return '—';
-  return `${d.getFullYear()}/${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
-};
-// 含「秒」的完整時間戳（資料建立 / 最後更新日期、編輯軌跡用）。
-const fmtDateTimeSec = (v) => {
-  if (!v) return '—';
-  const d = new Date(v);
-  if (Number.isNaN(d.getTime())) return '—';
-  return `${d.getFullYear()}/${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
-};
-// timestamptz → <input type="datetime-local"> 需要的本地值（YYYY-MM-DDTHH:MM）。
-const toLocalInput = (v) => {
-  if (!v) return '';
-  const d = new Date(v);
-  if (Number.isNaN(d.getTime())) return '';
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
-};
+const fmtDateTime = formatTWDateTime;
+const fmtDateTimeSec = formatTWDateTimeSeconds;
+const toLocalInput = toTaipeiDateTimeInput;
+const taipeiInputInstant = (value) => new Date(`${value}:00+08:00`).getTime();
 const FIELD_LABELS = { label: '名稱', base_price: '每期價格', min_students: '最少學生', max_students: '最多學生', is_active: '狀態', data_group: '資料管理群組' };
 const showVal = (k, v) => (k === 'base_price' ? fmtMoney(v) : k === 'is_active' ? (v ? '啟用中' : '已停用') : (v ?? '—'));
 
@@ -220,14 +203,14 @@ export default function CourseTypesPage() {
     // 排程：選「排程生效」必選生效起日；起日在未來＝排程，此時「生效迄日」必填且需晚於起日。
     // 起日在過去/現在 → 後端視為立即生效（不需迄日）。
     const start = editing.scheduled_effective_date;
-    const isFuture = editing.mode === 'scheduled' && !!start && new Date(start).getTime() > Date.now();
+    const isFuture = editing.mode === 'scheduled' && !!start && taipeiInputInstant(start) > Date.now();
     if (editing.mode === 'scheduled') {
       if (!start) { setEditErr('排程生效請選擇「生效起日」'); return; }
       patch.scheduled_effective_date = start;
       if (isFuture) {
         const until = editing.scheduled_effective_until;
         if (!until) { setEditErr('排程生效需同時填寫「生效起日」與「生效迄日」'); return; }
-        if (new Date(until).getTime() <= new Date(start).getTime()) { setEditErr('「生效迄日」需晚於「生效起日」'); return; }
+        if (taipeiInputInstant(until) <= taipeiInputInstant(start)) { setEditErr('「生效迄日」需晚於「生效起日」'); return; }
         patch.scheduled_effective_until = until;
       }
     }
@@ -323,7 +306,7 @@ export default function CourseTypesPage() {
     // 系統資訊頁的生命週期狀態 pill（待生效／生效中／已過期）
     let lifeTxt = '生效中', lifeCls = 'ok';
     if (editing.pending && editing.cur_scheduled && new Date(editing.cur_scheduled).getTime() > now) { lifeTxt = '待生效'; lifeCls = 'warn'; }
-    else if (editing.effective_until && new Date(`${String(editing.effective_until).slice(0, 10)}T23:59:59`).getTime() < now) { lifeTxt = '已過期'; lifeCls = 'done'; }
+    else if (editing.effective_until && new Date(`${String(editing.effective_until).slice(0, 10)}T23:59:59+08:00`).getTime() < now) { lifeTxt = '已過期'; lifeCls = 'done'; }
     const isSched = editing.mode === 'scheduled';
     const uid = `ct-${String(editing.course_type).padStart(4, '0')}`;
     const fmtLocal = (v) => (v ? String(v).replace(/-/g, '/').replace('T', ' ') : '');

@@ -12,7 +12,8 @@ SET TIME ZONE 'Asia/Taipei';
 DO $$
 BEGIN
   IF (SELECT data_type FROM information_schema.columns
-        WHERE table_name = 'promotions' AND column_name = 'start_date') = 'date' THEN
+        WHERE table_schema = current_schema()
+          AND table_name = 'promotions' AND column_name = 'start_date') = 'date' THEN
     ALTER TABLE promotions
       ALTER COLUMN start_date TYPE TIMESTAMPTZ USING (start_date::timestamptz),
       ALTER COLUMN end_date   TYPE TIMESTAMPTZ USING (end_date::timestamptz + INTERVAL '23 hours 59 minutes 59 seconds');

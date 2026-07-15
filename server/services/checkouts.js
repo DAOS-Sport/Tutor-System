@@ -1,5 +1,6 @@
 const { randomUUID } = require('crypto');
 const { normalizeRequestId } = require('./idempotency');
+const { groupCheckoutFamilies } = require('./checkoutFamilies');
 
 const CHECKOUT_STATUS = {
   PENDING_PAYMENT: 'pending_payment',
@@ -184,6 +185,7 @@ function shapeCheckout(row) {
     extra_parent_phones: Array.isArray(o.extra_parent_phones) ? o.extra_parent_phones : [],
   }));
   const first = subOrders[0] || {};
+  const invoiceFamilies = groupCheckoutFamilies(subOrders);
   // 舊版家長端有一段時間只把匯款證明寫進 admin_enrollments，沒有同步到
   // checkout_sessions。F-M02 以 checkout 為單位讀取時，不能因此把仍存在的照片
   // 誤顯示成「未上傳」。母單欄位維持最高優先，並保留所有子訂單上的不同 URL，
@@ -240,6 +242,9 @@ function shapeCheckout(row) {
     venues,
     order_count: Number(row.order_count) || subOrders.length,
     sub_orders: subOrders,
+    invoice_families: invoiceFamilies,
+    family_count: invoiceFamilies.length,
+    requires_separate_invoices: invoiceFamilies.length > 1,
     venue: {
       id: row.venue_id || first.venue_id || null,
       name: row.venue_name || first.venue_name || row.venue_id || first.venue_id || null,
@@ -329,6 +334,7 @@ async function readCheckout(clientOrPool, checkoutId) {
                   'transfer_last_5', ae.transfer_last_5,
                   'payment_proof_url', ae.payment_proof_url,
                   'carrier', ae.carrier,
+                  'tax_id', ae.tax_id,
                   'payment_method', ae.payment_method,
                   'order_kind', ae.order_kind,
                   'status', ae.status,

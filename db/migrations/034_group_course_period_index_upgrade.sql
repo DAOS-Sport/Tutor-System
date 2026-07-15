@@ -1,5 +1,8 @@
 -- 團購多期 course_period 唯一鍵升級。
 -- 先建立可支援多期的複合唯一索引，成功後才移除 legacy 單欄唯一限制；不改任何業務資料。
+ALTER TABLE course_periods ADD COLUMN IF NOT EXISTS group_order_id UUID;
+ALTER TABLE course_periods ADD COLUMN IF NOT EXISTS period_number INTEGER NOT NULL DEFAULT 1;
+
 DO $$
 DECLARE blocker RECORD;
 BEGIN

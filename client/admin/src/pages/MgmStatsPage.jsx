@@ -5,13 +5,14 @@ import ExportMenu from '../components/ExportMenu';
 import { useToast } from '../context/ToastContext';
 import { mgmStatsApi } from '../api/mgmStats';
 import { rowsToCsv, downloadCsv, downloadXlsx } from '../utils/csvExport';
+import { todayISO } from '../utils/format';
 
 const RANK_HEADERS = ['排名', '教練', '推薦總數', '已發獎勵', '轉換率'];
 function rankRow(r, idx) {
   const rate = r.total ? Math.round((r.rewarded / r.total) * 1000) / 10 : 0;
   return [idx + 1, r.coach_name, r.total, r.rewarded, `${rate}%`];
 }
-function todayStamp() { return new Date().toISOString().slice(0, 10); }
+function todayStamp() { return todayISO(); }
 
 const STATUS_LABEL = {
   pending: '已產生連結',

@@ -65,7 +65,9 @@ router.get('/checkin-modes', requireAdminAuth, async (req, res) => {
               COALESCE((SELECT COUNT(DISTINCT cr.course_session_id)::int
                           FROM checkin_records cr
                           JOIN course_sessions cs ON cs.id = cr.course_session_id
-                         WHERE cs.course_period_id = cp.id), 0) AS used_sessions,
+                         WHERE cs.course_period_id = cp.id
+                           AND cs.status::text NOT LIKE 'cancelled%'
+                           AND cr.attendance_status = 'ATTENDED'), 0) AS used_sessions,
               EXISTS (SELECT 1 FROM course_sessions cs2
                        WHERE cs2.course_period_id = cp.id
                          AND cs2.created_via = 'self_checkin'

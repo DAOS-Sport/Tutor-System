@@ -8,7 +8,7 @@ import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import { sessionsApi } from '../api/sessions';
 import { venuesApi } from '../api/venues';
-import { formatTWDate } from '../utils/format';
+import { formatTWDate, formatTWDateTime } from '../utils/format';
 
 export default function RevivePage() {
   const toast = useToast();
@@ -16,6 +16,7 @@ export default function RevivePage() {
   const [list, setList] = useState(null);
   const [venues, setVenues] = useState([]);
   const [target, setTarget] = useState(null);
+  const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
 
   async function load() {
@@ -35,9 +36,14 @@ export default function RevivePage() {
     if (!target) return;
     setBusy(true);
     try {
-      await sessionsApi.revive(target.id);
-      toast.success(`已將時段 ${target.id} 的堂數歸還給家長`);
+      if (!reason.trim()) {
+        toast.error('請填寫歸還原因');
+        return;
+      }
+      await sessionsApi.revive(target.id, reason.trim());
+      toast.success(`已將課堂 ${target.id} 歸還 1 堂`);
       setTarget(null);
+      setReason('');
       await load();
     } catch {
       toast.error('復活失敗');
@@ -48,10 +54,11 @@ export default function RevivePage() {
 
   const columns = [
     { key: 'id', label: '時段編號', render: (r) => <span className="font-mono text-xs">{r.id}</span> },
-    { key: 'date', label: '原排定日期', render: (r) => formatTWDate(r.date) },
-    { key: 'start', label: '時間', render: (r) => <span className="font-mono">{r.start}</span> },
+    { key: 'date', label: '原排定日期（台北）', render: (r) => formatTWDate(r.date) },
+    { key: 'start', label: '時間（台北）', render: (r) => <span className="font-mono">{r.start}</span> },
     { key: 'period_id', label: '所屬報名', render: (r) => <span className="font-mono text-xs">{r.period_id}</span> },
     { key: 'parent_name', label: '家長' },
+    { key: 'students', label: '到課學員', render: (r) => (r.students || []).join('、') || '—' },
     { key: 'coach', label: '教練' },
     { key: 'venue_id', label: '場館', render: (r) => venueName(r.venue_id) },
     {
@@ -61,13 +68,24 @@ export default function RevivePage() {
         : <StatusBadge tone="amber">尚未處理</StatusBadge>,
     },
     {
+      key: 'reversal_audit', label: '歸還紀錄（台北）',
+      render: (r) => r.refunded && r.reversed_at
+        ? (
+          <div className="max-w-xs text-xs text-gray-600">
+            <div>{formatTWDateTime(r.reversed_at)} · {r.reversed_by || '—'}</div>
+            <div className="truncate" title={r.reversal_reason || ''}>{r.reversal_reason || '—'}</div>
+          </div>
+        )
+        : '—',
+    },
+    {
       key: 'actions', label: '操作', className: 'text-right',
       render: (r) => (isStaff || r.refunded)
         ? <span className="text-xs text-gray-400">—</span>
         : (
           <button
             className="rounded-md bg-brand-primary px-3 py-1.5 text-xs font-bold text-white hover:bg-brand-teal"
-            onClick={() => setTarget(r)}
+            onClick={() => { setTarget(r); setReason(''); }}
           >
             歸還堂數
           </button>
@@ -89,16 +107,26 @@ export default function RevivePage() {
         open={!!target}
         title="確認歸還堂數？"
         confirmLabel="確認歸還"
-        onCancel={() => setTarget(null)}
+        onCancel={() => { setTarget(null); setReason(''); }}
         onConfirm={doRevive}
         busy={busy}
       >
         {target && (
           <div className="space-y-1 text-sm">
-            <div>時段 <b className="font-mono">{target.id}</b>（{formatTWDate(target.date)} {target.start}）</div>
-            <div>所屬報名 <b className="font-mono">{target.period_id}</b>（{target.parent_name}）</div>
+            <div>時段 <b className="font-mono">{target.id}</b>（台北時間 {formatTWDate(target.date)} {target.start}）</div>
+            <div>所屬課期 <b className="font-mono">{target.period_id}</b>（{target.parent_name}）</div>
+            {!!target.students?.length && <div>到課學員：<b>{target.students.join('、')}</b></div>}
+            <label className="mt-3 block text-xs font-medium text-gray-600">歸還原因 *</label>
+            <textarea
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              maxLength={1000}
+              rows={3}
+              className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+              placeholder="請填寫實際未上課或更正原因"
+            />
             <div className="mt-3 rounded bg-brand-amber/10 p-2 text-xs text-brand-amber">
-              系統會將該家長已使用堂數 -1，並透過 LINE 通知。
+              系統只歸還這個共享 session 的 1 堂，並保留全部 attendance 與操作者稽核紀錄。
             </div>
           </div>
         )}
