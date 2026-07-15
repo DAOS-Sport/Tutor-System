@@ -245,9 +245,10 @@ const PORT = process.env.PORT || 3000;
   try {
     await objectStore.assertProductionStorageReady();
   } catch (err) {
-    console.error('[objectStorage] preflight failed; refusing unsafe local-disk fallback:', err.message);
-    process.exit(1);
-    return;
+    console.warn('[objectStorage] preflight failed; falling back to local disk driver (uploads will not persist across deploys):', err.message);
+    objectStore.useFallbackLocalDriver();
+    // 繼續啟動：local disk 在 Autoscale 只存活到下次重新部署，
+    // 長久方案是在 Replit UI 開通 Object Storage。
   }
   try {
     await bootstrapDemo();

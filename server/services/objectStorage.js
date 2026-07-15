@@ -176,6 +176,16 @@ const shouldAutoUseReplit = !requestedDriver
 const selectedDriverName = requestedDriver || (shouldAutoUseReplit ? 'replit' : 'local');
 let activeDriver = DRIVERS[selectedDriverName] || LocalDiskDriver;
 
+// 供 index.js 在 preflight 失敗時呼叫：降級至 local disk driver（冪等）。
+// Production 下若 bucket 不可用，總好過讓整個 server 無法啟動。
+// 注意：Autoscale 的 local disk 在重部署後會被清除，此時 uploads 僅在本次部署存活。
+// 長久之計：在 Replit UI 開通 Object Storage 以獲得跨部署持久儲存。
+function useFallbackLocalDriver() {
+  if (activeDriver.name === 'local') return; // 已是 local，no-op
+  console.warn('[objectStorage] switching to local disk driver (fallback); uploads will not persist across deploys');
+  activeDriver = LocalDiskDriver;
+}
+
 // An explicit local override remains useful for local troubleshooting, but it
 // is intentionally loud in production because files would not be durable on
 // an Autoscale deployment.
@@ -266,6 +276,7 @@ module.exports = {
   UPLOAD_ROOT: LOCAL_ROOT,
   ALLOWED_MAX_BYTES,
   get driverName() { return activeDriver.name; },
+  useFallbackLocalDriver,
   assertProductionStorageConfigured,
   assertProductionStorageReady,
   __test__: {
