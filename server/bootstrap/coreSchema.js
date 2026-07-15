@@ -350,6 +350,14 @@ DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS intro_review_status VAR
 DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS pricing_multiplier NUMERIC(5,2) NOT NULL DEFAULT 1.00; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 -- 「待分配」是系統 placeholder，不計入真實教練資料與業績。
 DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS is_placeholder BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS system_key TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS system_managed BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS visible BOOLEAN NOT NULL DEFAULT TRUE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS assignable BOOLEAN NOT NULL DEFAULT TRUE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS login_allowed BOOLEAN NOT NULL DEFAULT TRUE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS payroll_eligible BOOLEAN NOT NULL DEFAULT TRUE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS percentage_eligible BOOLEAN NOT NULL DEFAULT TRUE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_coaches_system_key ON coaches(system_key) WHERE system_key IS NOT NULL;
 -- Task #53：is_active 手動覆寫旗標 — 後台勾啟用後 Ragic 同步不再覆蓋
 DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS active_overridden_at TIMESTAMPTZ; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 -- Task #53：載入效能 — coaches 列表常依 is_active + name 過濾
@@ -632,6 +640,25 @@ DO $$ BEGIN
   ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS payment_method TEXT NOT NULL DEFAULT 'bank_transfer';
   ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS order_kind TEXT NOT NULL DEFAULT 'standard';
   ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS request_payload_fingerprint CHAR(64);
+  ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS cancelled_by TEXT;
+  ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS cancelled_by_user_id TEXT;
+  ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
+  ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS cancellation_reason TEXT;
+  ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS archive_state TEXT NOT NULL DEFAULT 'ACTIVE';
+  ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS onsite_payment_status TEXT NOT NULL DEFAULT 'NOT_APPLICABLE';
+  BEGIN ALTER TABLE checkout_sessions ADD CONSTRAINT chk_checkout_archive_state CHECK (archive_state IN ('ACTIVE','SYSTEM_CANCELLED','ARCHIVED')); EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER TABLE checkout_sessions ADD CONSTRAINT chk_checkout_onsite_payment_status CHECK (onsite_payment_status IN ('NOT_APPLICABLE','PENDING_ONSITE_PAYMENT','PAID')); EXCEPTION WHEN duplicate_object THEN NULL; END;
+  CREATE TABLE IF NOT EXISTS onsite_payment_collections (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    checkout_id UUID NOT NULL REFERENCES checkout_sessions(checkout_id) ON DELETE RESTRICT,
+    operator_id TEXT NOT NULL,
+    operator_name TEXT NOT NULL,
+    venue_id TEXT NOT NULL,
+    amount NUMERIC(10,2) NOT NULL CHECK (amount >= 0),
+    collected_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(checkout_id)
+  );
   CREATE UNIQUE INDEX IF NOT EXISTS uq_checkout_sessions_parent_request
     ON checkout_sessions(parent_id, request_id)
     WHERE request_id IS NOT NULL;
@@ -1575,6 +1602,26 @@ CREATE TABLE IF NOT EXISTS notification_log (
   UNIQUE(kind, ref_id, recipient_uid)
 );
 CREATE INDEX IF NOT EXISTS idx_notif_log_kind ON notification_log(kind, sent_at DESC);
+CREATE TABLE IF NOT EXISTS notification_jobs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  event_name TEXT NOT NULL,
+  ref_id TEXT NOT NULL,
+  parent_id UUID NOT NULL REFERENCES parents(id) ON DELETE RESTRICT,
+  venue_id TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING','PROCESSING','SENT','FAILED')),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  line_response_code INTEGER,
+  correlation_id UUID NOT NULL DEFAULT gen_random_uuid(),
+  last_error_code TEXT,
+  next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  sent_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(event_name, ref_id, parent_id)
+);
+CREATE INDEX IF NOT EXISTS idx_notification_jobs_due
+  ON notification_jobs(status, next_attempt_at) WHERE status IN ('PENDING','FAILED');
 
 -- ─── Ragic 家長/學員識別鍵修復（P1.1 決策6/7，2026-07-07）──────────────────
 -- 根治「Ragic 端電話/ID 打錯或變更 → 本地孤兒列/誤合併」：parents/students 的
