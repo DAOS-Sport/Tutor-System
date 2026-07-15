@@ -246,6 +246,7 @@ CREATE TABLE IF NOT EXISTS group_order_members (
   -- U7：加入時綁定的正式學員 id（student_names 仍保留供顯示／向後相容）
   student_ids       UUID[] NOT NULL DEFAULT '{}',
   transfer_last_5   VARCHAR(5),
+  carrier           TEXT,
   payment_proof_url TEXT,
   is_leader         BOOLEAN NOT NULL DEFAULT FALSE,
   status            VARCHAR(20) NOT NULL DEFAULT 'joined',
@@ -830,6 +831,7 @@ DO $$ BEGIN
   --   兩者皆成立才自動建檔。成員層級記證明上傳時間 + 帳款確認狀態；訂單層級記名單核准狀態。
   ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS proof_uploaded_at   TIMESTAMPTZ;
   ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS transfer_last_5     VARCHAR(5);
+  ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS carrier             TEXT;
   ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS payment_confirmed   BOOLEAN NOT NULL DEFAULT FALSE;
   ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS payment_confirmed_at TIMESTAMPTZ;
   ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS payment_confirmed_by VARCHAR(50);

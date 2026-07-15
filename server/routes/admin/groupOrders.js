@@ -360,6 +360,7 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
         totalAmount: perPeriodPrice * periodCount,
         transferLast5: m.transfer_last_5 || null,
         paymentProofUrl: proofByMemberId.get(m.id) || null,
+        carrier: m.carrier || null,
         by: req.adminUser?.username || 'system',
         requestFingerprint: fingerprint,
       });
@@ -369,12 +370,12 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
           `INSERT INTO admin_enrollments
              (id, parent_name, parent_phone, students, coach, coach_id, venue_id, course_type,
               original_price, final_price, transfer_last_5, payment_proof_url, status, submitted_at,
-              group_order_id, is_group_shared, period_count, period_number, enrollment_batch_id, checkout_id)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending_payment',NOW(),$13,TRUE,1,$14,$15,$16)`,
+              group_order_id, is_group_shared, period_count, period_number, enrollment_batch_id, checkout_id, carrier)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending_payment',NOW(),$13,TRUE,1,$14,$15,$16,$17)`,
           [
             eid, m.parent_name, m.parent_phone, names, coachName, order.coach_id,
             order.venue_id, order.course_type, perPeriodPrice, perPeriodPrice, m.transfer_last_5 || null, proofByMemberId.get(m.id) || null,
-            order.id, j, memberBatchId, checkout.checkoutId,
+            order.id, j, memberBatchId, checkout.checkoutId, m.carrier || null,
           ]
         );
         await client.query(

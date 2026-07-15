@@ -217,7 +217,7 @@ async function call(base, method, routePath, { token, body, requestId } = {}) {
     ]);
     assert(concurrent.every((result) => result.status === 200), `concurrent group updates both succeed (${concurrent.map((x) => x.status).join(',')})`);
     let groupState = await pg.query(
-      `SELECT parent_id, payment_proof_url, transfer_last_5
+      `SELECT parent_id, payment_proof_url, transfer_last_5, carrier
          FROM group_order_members WHERE group_order_id = $1 ORDER BY parent_id`,
       [groupOrderId]
     );
@@ -225,6 +225,19 @@ async function call(base, method, routePath, { token, body, requestId } = {}) {
     const memberAfterConcurrent = groupState.rows.find((row) => row.parent_id === parentB);
     assert(leaderAfterConcurrent.payment_proof_url === proofUrls[1] && leaderAfterConcurrent.transfer_last_5 === '12345', 'concurrent updates cause no lost proof or last5 update');
     assert(memberAfterConcurrent.payment_proof_url === null, 'leader update does not write another member row');
+
+    step('group member may scan an invoice carrier, including after proof and last5 are locked');
+    const carrierUpdate = await call(route.base, 'POST', `/api/group-orders/${groupOrderId}/my-proof`, {
+      token: tokenA,
+      body: { transfer_last_5: '12345', carrier: '/E2ETEST' },
+    });
+    assert(carrierUpdate.status === 200, 'locked group payment accepts one-time missing carrier completion');
+    groupState = await pg.query(
+      `SELECT parent_id, carrier FROM group_order_members WHERE group_order_id = $1 ORDER BY parent_id`,
+      [groupOrderId]
+    );
+    assert(groupState.rows.find((row) => row.parent_id === parentA).carrier === '/E2ETEST', 'carrier persists on the correct group member');
+    assert(groupState.rows.find((row) => row.parent_id === parentB).carrier === null, 'carrier is not copied to another family');
 
     step('omitted proof preserves existing value; member and individual proof updates stay isolated');
     const omitted = await call(route.base, 'POST', `/api/group-orders/${groupOrderId}/my-proof`, {
@@ -412,6 +425,17 @@ async function call(base, method, routePath, { token, body, requestId } = {}) {
     assert(approvedState.rows[0].status === 'approved', 'group moves to approved exactly once');
     assert(approvedState.rows[0].orders === 2 && approvedState.rows[0].checkouts === 2, 'two families produce exactly two orders and two checkouts');
     assert(approvedState.rows[0].audits === 2 && approvedState.rows[0].ledgers === 1, 'concurrent retry creates no duplicate audit or ledger');
+    const carrierPropagation = await pg.query(
+      `SELECT ae.carrier AS order_carrier, cs.carrier AS checkout_carrier
+         FROM admin_enrollments ae
+         JOIN checkout_sessions cs ON cs.checkout_id = ae.checkout_id
+        WHERE ae.group_order_id = $1 AND ae.parent_phone = $2`,
+      [groupOrderId, phoneA]
+    );
+    assert(carrierPropagation.rowCount === 1, 'leader group approval creates one carrier-bearing order');
+    assert(carrierPropagation.rows[0].order_carrier === '/E2ETEST'
+      && carrierPropagation.rows[0].checkout_carrier === '/E2ETEST',
+    'group carrier propagates to checkout and reconciliation order');
   } finally {
     await pg.query(`DELETE FROM promotion_usages WHERE parent_id = ANY($1::uuid[])`, [[parentA, parentB]]).catch(() => {});
     await pg.query(`DELETE FROM admin_enrollment_audit_logs WHERE enrollment_id = ANY($1::text[])`, [enrollmentIds]).catch(() => {});

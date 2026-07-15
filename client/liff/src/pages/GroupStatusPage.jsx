@@ -40,6 +40,7 @@ export default function GroupStatusPage() {
   const [confirm, setConfirm] = useState(null); // 'submit' | 'cancel' | null
   const [proofBusy, setProofBusy] = useState(false);
   const [transferLast5, setTransferLast5] = useState('');
+  const [carrier, setCarrier] = useState('');
   const [proofFile, setProofFile] = useState(null);
   const [lineName, setLineName] = useState('');
   const proofInputRef = useRef(null);
@@ -73,9 +74,14 @@ export default function GroupStatusPage() {
   // 只在「伺服器已存的末碼」有值且變動時回填（例如曾送出過或送出成功後）；
   // 不清空使用者輸入中的末碼／已選檔案，避免揪團中每 6 秒輪詢把填到一半的內容洗掉。
   const selfSavedLast5 = ((order?.members || []).find((m) => m.is_self)?.transfer_last_5) || '';
+  const selfSavedCarrier = ((order?.members || []).find((m) => m.is_self)?.carrier) || '';
   useEffect(() => {
     if (selfSavedLast5) setTransferLast5(selfSavedLast5);
   }, [order?.id, selfSavedLast5]);
+  useEffect(() => {
+    if (selfSavedCarrier) setCarrier(selfSavedCarrier);
+    else if (order?.id) setCarrier((current) => current || localStorage.getItem('daos_invoice_carrier') || '');
+  }, [order?.id, selfSavedCarrier]);
 
   // 揪團中自動輪詢，讓團主在頁面上即時看到新加入的成員/學生（不必手動重整）
   useEffect(() => {
@@ -189,7 +195,9 @@ export default function GroupStatusPage() {
       const updated = await groupOrdersApi.uploadMyProof(id, {
         transfer_last_5: transferLast5.trim(),
         payment_proof_url: url || undefined,
+        carrier: carrier.trim() || undefined,
       });
+      if (carrier.trim()) localStorage.setItem('daos_invoice_carrier', carrier.trim());
       if (updated) setOrder(updated); else load();
       if (uploadFailed) {
         // 末碼已存，留著 proofFile 讓成員可直接重試上傳證明。
@@ -339,8 +347,34 @@ export default function GroupStatusPage() {
                       className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-mono focus:border-brand-teal focus:outline-none"
                       placeholder="轉帳末 5 碼"
                     />
+                    <div>
+                      <label className="mb-1 block text-[11px] font-medium text-gray-500" htmlFor={`group-carrier-${m.id}`}>
+                        電子發票載具條碼（選填）
+                      </label>
+                      <input
+                        id={`group-carrier-${m.id}`}
+                        type="text"
+                        value={carrier}
+                        disabled={proofBusy || !!m.carrier}
+                        onChange={(e) => setCarrier(e.target.value.slice(0, 64))}
+                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-mono focus:border-brand-teal focus:outline-none disabled:bg-gray-100"
+                        placeholder="可直接刷入，例如 /ABC+123"
+                      />
+                    </div>
                     {paymentLocked ? (
-                      <p className="text-[11px] text-gray-400">已送出，需更改請聯繫櫃檯。</p>
+                      <>
+                        <p className="text-[11px] text-gray-400">付款資料已送出，需更改請聯繫櫃檯。</p>
+                        {!m.carrier && (
+                          <button
+                            type="button"
+                            disabled={proofBusy || !carrier.trim()}
+                            onClick={() => handleConfirmPayment(m)}
+                            className="w-full rounded-lg bg-brand-primary px-3 py-2 text-xs font-bold text-white disabled:bg-gray-300"
+                          >
+                            {proofBusy ? '儲存中…' : '補存電子發票載具'}
+                          </button>
+                        )}
+                      </>
                     ) : (
                       <>
                         <input
