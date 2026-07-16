@@ -39,6 +39,7 @@ import GroupCreatePage from './pages/GroupCreatePage';
 import GroupJoinPage from './pages/GroupJoinPage';
 import GroupStatusPage from './pages/GroupStatusPage';
 import SlotBookingPage from './pages/SlotBookingPage';
+import TrialSelectPage from './pages/TrialSelectPage';
 import LineBindPage from './pages/LineBindPage';
 
 function RequireAuth() {
@@ -105,6 +106,10 @@ export default function App() {
                 <Route path="/my-lessons" element={<MyLessonsPage />} />
               </Route>
               <Route path="/chat/:roomId" element={<ChatRoomPage />} />
+              {/* 試上課程：選品項 → 沿用既有 /venue → /coaches → /enroll（?trial=1 一路帶） */}
+              <Route element={<AppLayout showBackButton title="試上課程" />}>
+                <Route path="/trial" element={<TrialSelectPage />} />
+              </Route>
               <Route element={<AppLayout showBackButton title="選擇場館" />}>
                 <Route path="/venue" element={<VenueSelectPage />} />
               </Route>

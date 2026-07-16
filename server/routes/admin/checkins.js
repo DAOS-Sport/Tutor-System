@@ -1,3 +1,9 @@
+// ═══════════════════════════════════════════════════════════════════
+// 🧊 凍結（2026-07-16 使用者凍結令）：簽到／扣課政策 2026-07 版
+// 本檔凍結範圍：簽到列表 checked_in_by 揭露、DELETE self-sessions 衝正。
+// 修改凍結範圍前，必須先向使用者嚴格詢問並取得明確同意。
+// 政策與完整範圍清單：repo 根目錄 CLAUDE.md、replit.md「簽到／扣課政策」節。
+// ═══════════════════════════════════════════════════════════════════
 /**
  * Task #60：GET /api/admin/checkins?venueId=&date=YYYY-MM-DD
  *  - 列出指定日期已簽到名單（最新在最上方）。預設為今日。
@@ -50,6 +56,7 @@ router.get('/', requireAdminAuth, async (req, res) => {
              c.name           AS coach_name,
              s.name           AS student_name,
              cp.id            AS period_id,
+             COALESCE(cp.is_experience_course, FALSE) AS is_experience_course,
              pby.name         AS by_parent_name,
              cby.name         AS by_coach_name
         FROM checkin_records cr
@@ -80,7 +87,8 @@ router.get('/', requireAdminAuth, async (req, res) => {
              ae.course_type              AS course_type,
              ae.coach                    AS coach_name,
              COALESCE(array_to_string(ae.students, '、'), '') AS student_name,
-             ae.id                       AS period_id
+             ae.id                       AS period_id,
+             FALSE                       AS is_experience_course
         FROM admin_enrollments ae
    LEFT JOIN admin_venues      v ON v.id = ae.venue_id
        WHERE ae.experience_checked_in_at IS NOT NULL
@@ -102,6 +110,8 @@ router.get('/', requireAdminAuth, async (req, res) => {
         student: r.student_name || '',
         source: r.source || null,
         session_created_via: r.session_created_via || 'booking',
+        // 試上/單堂標記（course_periods.is_experience_course）——前端顯示「試上」徽章用
+        is_experience_course: !!r.is_experience_course,
         // 簽到人：家長全名／教練／櫃檯——櫃台可直接核對是誰簽的。
         checked_in_by: r.source === 'staff'
           ? '櫃檯'

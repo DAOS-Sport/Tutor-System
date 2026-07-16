@@ -7,6 +7,7 @@ import { useToast } from '../context/ToastContext';
 export default function VenueSelectPage() {
   const [params] = useSearchParams();
   const courseType = params.get('courseType') || '1';
+  const isTrial = params.get('trial') === '1'; // 試上流程（/trial 入口）一路帶到報名頁
   const navigate = useNavigate();
   const toast = useToast();
   const [venues, setVenues] = useState(null);
@@ -46,13 +47,13 @@ export default function VenueSelectPage() {
 
   return (
     <div className="px-4 py-4">
-      <p className="mb-4 text-xs text-gray-500">選擇您要上課的場館</p>
+      <p className="mb-4 text-xs text-gray-500">選擇您要上課的場館{isTrial ? '（試上單次課）' : ''}</p>
       <div className="space-y-3">
         {venues.map((v) => (
           <button
             key={v.id}
             type="button"
-            onClick={() => navigate(`/coaches?venue=${v.id}&courseType=${courseType}`)}
+            onClick={() => navigate(`/coaches?venue=${v.id}&courseType=${courseType}${isTrial ? '&trial=1' : ''}`)}
             className="block w-full rounded-2xl border border-gray-200 bg-white p-4 text-left active:scale-[0.99]"
           >
             <div className="flex items-start justify-between gap-3">

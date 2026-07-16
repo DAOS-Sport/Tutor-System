@@ -433,7 +433,8 @@ export default function RegisterPage() {
             <div className="mt-0.5 text-gray-600">
               來自 <b>{refInfo.referrer?.name}</b> 推薦 <b>{refInfo.coach?.name}</b> 教練
             </div>
-            <div className="mt-0.5 text-gray-600">完成註冊後，體驗課將自動套用 <b>5 折優惠</b>。</div>
+            {/* TRIAL50 推薦折扣已於 2026-07 全站優惠清除時停用，不再承諾自動套用折扣 */}
+            <div className="mt-0.5 text-gray-600">完成註冊後即可預約課程與試上體驗。</div>
           </div>
         )}
 

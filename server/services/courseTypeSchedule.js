@@ -10,7 +10,7 @@
 const { pool } = require('../models/db');
 
 // 可被排程套用的白名單欄位（避免 pending_changes JSON 被塞入非預期欄位）。
-const EDITABLE = ['label', 'min_students', 'max_students', 'is_active', 'base_price', 'data_group'];
+const EDITABLE = ['label', 'min_students', 'max_students', 'is_active', 'base_price', 'data_group', 'trial_enabled', 'trial_price'];
 
 async function applyDueScheduledCourseTypeChanges(db = pool) {
   const due = await db.query(

@@ -145,11 +145,14 @@ async function call(base, method, routePath, { token, body } = {}) {
     const cancelledList = await call(route.base, 'GET', '/api/admin/sessions/cancelled', { token: staffA });
     assert(cancelledList.status === 200 && cancelledList.data.some((row) => row.id === cancelledA), 'staff may inspect own-venue cancelled sessions');
     assert(!cancelledList.data.some((row) => row.id === cancelledB), 'cancelled list hides another venue');
-    const staffRevive = await call(route.base, 'POST', `/api/admin/sessions/${cancelledA}/revive`, { token: staffA });
+    // 2026-07 起 revive 必填 reason（REASON_REQUIRED）；本測試對齊該既定行為。
+    const staffRevive = await call(route.base, 'POST', `/api/admin/sessions/${cancelledA}/revive`, { token: staffA, body: { reason: 'E2E 回歸測試' } });
     assert(staffRevive.status === 403, 'staff cannot execute F-M05 restore');
-    const foreignRevive = await call(route.base, 'POST', `/api/admin/sessions/${cancelledB}/revive`, { token: managerA });
+    const noReason = await call(route.base, 'POST', `/api/admin/sessions/${cancelledA}/revive`, { token: managerA, body: {} });
+    assert(noReason.status === 400 && noReason.data?.code === 'REASON_REQUIRED', 'revive without reason is rejected');
+    const foreignRevive = await call(route.base, 'POST', `/api/admin/sessions/${cancelledB}/revive`, { token: managerA, body: { reason: 'E2E 回歸測試' } });
     assert(foreignRevive.status === 403, 'manager cannot revive an out-of-scope venue');
-    const revive = await call(route.base, 'POST', `/api/admin/sessions/${cancelledA}/revive`, { token: managerA });
+    const revive = await call(route.base, 'POST', `/api/admin/sessions/${cancelledA}/revive`, { token: managerA, body: { reason: 'E2E 回歸測試' } });
     assert(revive.status === 200 && revive.data?.refunded === true, 'manager revives an authorized cancelled session');
     const reviveDb = await pg.query(
       `SELECT ae.used_sessions,

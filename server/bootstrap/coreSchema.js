@@ -1,3 +1,9 @@
+// ═══════════════════════════════════════════════════════════════════
+// 🧊 凍結（2026-07-16 使用者凍結令）：簽到／扣課政策 2026-07 版
+// 本檔凍結範圍：pending_group_confirm 冪等遷移、SHARED_CHECKIN_USAGE_V2 / DEDUCTION_REVIVAL_V2 flag seed（維持全量）、manual_lesson_deductions roster_snapshot 欄。
+// 修改凍結範圍前，必須先向使用者嚴格詢問並取得明確同意。
+// 政策與完整範圍清單：repo 根目錄 CLAUDE.md、replit.md「簽到／扣課政策」節。
+// ═══════════════════════════════════════════════════════════════════
 /**
  * 核心 schema bootstrap：
  * - 將 db/migrations/001_initial_schema.sql 中、本 task #14 與後續 phase 真正會用到的表
@@ -155,6 +161,11 @@ DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS pending_cha
 --   effective_date=目前生效起日(=使用期限起 starts_at，既有)、effective_until=目前生效版本迄日。
 DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS scheduled_effective_until TIMESTAMPTZ; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS effective_until DATE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+-- 試上課程（F-A07 試上設定）：trial_enabled＝此品項提供試上；trial_price＝試上單價（每人）。
+--   trial_price 為 NULL 時沿用舊推算（admin_settings.trial_price_course_<N> / trial_price / base_price÷sessions_per_period），
+--   價格快照仍於下單當下落 admin_enrollments.original_price，此處只是來源主資料。
+DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS trial_enabled BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS trial_price NUMERIC(10,2); EXCEPTION WHEN undefined_table THEN NULL; END $$;
 -- F-A07 排程生效支援「日期＋時間」：scheduled_effective_date 由 DATE 升級為 TIMESTAMPTZ。
 -- 僅在仍為 date 時轉換（既有日期值以台北時區午夜為準），避免每次開機重寫整表。
 DO $$ BEGIN
@@ -466,10 +477,16 @@ ON CONFLICT (key) DO UPDATE
       allowed_phones = '{}'::text[],
       updated_at = NOW();
 
--- 扣課撤銷仍維持 canary；不要被上述全量切換連帶擴大。
+-- 扣課復活（2026-07 全量開放）：canary 期間清單與 revive 端點都以家長電話白名單
+-- 過濾，導致非 canary 家長（含所有團報成員）的手動扣課在 RevivePage 看不到、
+-- 也無法歸還。營運需要對全部家長開放，比照 SHARED_CHECKIN_USAGE_V2 冪等升級：
+-- 既有 canary 單一手機設定也會被此 upsert 覆蓋為全量。
 INSERT INTO application_feature_flags (key, enabled, allowed_phones)
-VALUES ('DEDUCTION_REVIVAL_V2', TRUE, ARRAY['0982252694']::text[])
-ON CONFLICT (key) DO NOTHING;
+VALUES ('DEDUCTION_REVIVAL_V2', TRUE, '{}'::text[])
+ON CONFLICT (key) DO UPDATE
+  SET enabled = TRUE,
+      allowed_phones = '{}'::text[],
+      updated_at = NOW();
 
 -- 政策變更（2026-07）：團報/共班預約不再需要「同組家長確認」——
 -- pending_group_confirm 已無任何寫入來源（bookSlot1vN 與逾時自動確認 cron 皆移除），

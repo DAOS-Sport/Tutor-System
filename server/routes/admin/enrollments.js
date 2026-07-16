@@ -1295,7 +1295,10 @@ async function computeRefundPreview(id) {
   // 預覽與退費都以本期「全部兄弟訂單」為單位：
   //   - 已用堂數＝共用 period 有簽到的堂（DISTINCT session，班級層級，同堂多孩不重複計）
   //   - 退款＝各兄弟訂單 final_price 按同一剩餘比例逐筆計算後加總（逐筆入庫，帳能對回發票）
-  if (!enrollment.group_order_id && enrollment.enrollment_batch_id) {
+  // 試上單防禦：試上訂單也帶 enrollment_batch_id，但其 period 由 solo 分支建立（不寫 batch id）。
+  // 目前查詢會自然落空 fallthrough，但為避免未來 trial period 也寫 batch id 時誤入整批退費，
+  // 明確以 order_kind 排除（試上一律走下方單筆比例公式）。
+  if (!enrollment.group_order_id && enrollment.enrollment_batch_id && enrollment.order_kind !== 'trial') {
     const sp = await pool.query(
       `SELECT cp.id, cp.total_sessions,
               (SELECT COUNT(DISTINCT cs.id)::int

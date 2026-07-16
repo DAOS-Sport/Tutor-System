@@ -1,3 +1,9 @@
+// ═══════════════════════════════════════════════════════════════════
+// 🧊 凍結（2026-07-16 使用者凍結令）：簽到／扣課政策 2026-07 版
+// 本檔全檔屬凍結範圍（扣課復活清單／歸還，全量開放）。
+// 修改凍結範圍前，必須先向使用者嚴格詢問並取得明確同意。
+// 政策與完整範圍清單：repo 根目錄 CLAUDE.md、replit.md「簽到／扣課政策」節。
+// ═══════════════════════════════════════════════════════════════════
 import React, { useEffect, useState } from 'react';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';

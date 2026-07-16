@@ -31,6 +31,8 @@ export default function EnrollmentPage() {
   const initialCourseType = Number(params.get('courseType') || 1);
   const coachId = params.get('coach');
   const initialTrial = params.get('trial') === '1';
+  // 續報掛券入口：?coupon=CODE 直接預填並套用既有折價券（試上模式不吃券，會被下方 effect 清除）。
+  const initialCoupon = (params.get('coupon') || '').trim().toUpperCase();
 
   // 組別由顧客在首頁「商品」選好後帶進來（?courseType=N），報名頁不再重複讓人選，避免誤導。
   const [courseType] = useState(initialCourseType);
@@ -39,8 +41,8 @@ export default function EnrollmentPage() {
   const [paymentMethod, setPaymentMethod] = useState(initialTrial ? 'on_site' : 'bank_transfer');
   const [selectedSelfStudents, setSelectedSelfStudents] = useState([]);
   const [submitting, setSubmitting] = useState(false);
-  const [couponInput, setCouponInput] = useState('');
-  const [activeCoupon, setActiveCoupon] = useState('');
+  const [couponInput, setCouponInput] = useState(initialCoupon);
+  const [activeCoupon, setActiveCoupon] = useState(initialTrial ? '' : initialCoupon);
 
   // 推薦折扣（TRIAL50）已停用（2026-07 全站優惠清除）：不再自動套用 pendingCoupon，
   // 並主動清掉既有使用者瀏覽器內殘留的 daos.pendingCoupon，避免套到已刪除的券而報「折價券無效」。
@@ -52,6 +54,17 @@ export default function EnrollmentPage() {
   const { bootData, bootError } = useEnrollmentBoot({
     coachId, venueId, courseType, onError: onBootError,
   });
+
+  // F-A07 試上開關：此品項未開放試上（trial_enabled=false）→ 隱藏試上入口；
+  // 若經 ?trial=1 深連結進來則強制切回一般報名並提示（後端另有 TRIAL_NOT_ENABLED fail-closed）。
+  const trialEnabled = bootData ? bootData.trialEnabled === true : false;
+  useEffect(() => {
+    if (bootData && isTrial && bootData.trialEnabled !== true) {
+      setIsTrial(false);
+      toast.warning('此課程組別未開放試上，已切換為一般報名');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bootData]);
 
   // 切換組別時重置學員選擇
   useEffect(() => {
@@ -191,34 +204,48 @@ export default function EnrollmentPage() {
         <p className="mt-0.5 text-xs text-gray-500">{venue.name}</p>
       </div>
 
-      <div className="mt-2 rounded-xl border border-gray-200 bg-white p-3">
-        <span className="mb-2 block text-xs font-medium text-gray-600">報名方式</span>
-        <div className="grid grid-cols-2 gap-2">
-          <button
-            type="button"
-            onClick={() => setIsTrial(false)}
-            className={`min-w-0 rounded-lg border px-3 py-2 text-sm font-bold transition ${
-              !isTrial
-                ? 'border-brand-teal bg-brand-teal/10 text-brand-primary'
-                : 'border-gray-200 bg-white text-gray-600 hover:border-brand-teal/50'
-            }`}
-          >
-            一般報名
-          </button>
-          <button
-            type="button"
-            onClick={() => setIsTrial(true)}
-            className={`min-w-0 rounded-lg border px-3 py-2 text-sm font-bold transition ${
-              isTrial
-                ? 'border-brand-teal bg-brand-teal/10 text-brand-primary'
-                : 'border-gray-200 bg-white text-gray-600 hover:border-brand-teal/50'
-            }`}
-          >
+      {/* 報名方式：品項未開放試上 → 整塊隱藏（只走一般報名）；
+          由試上入口（?trial=1）進來 → 鎖定「試上單次課」不再提供切換；
+          其餘（開放試上、非試上入口）→ 維持原本雙鈕切換。 */}
+      {trialEnabled && initialTrial && isTrial && (
+        <div className="mt-2 rounded-xl border border-gray-200 bg-white p-3">
+          <span className="mb-2 block text-xs font-medium text-gray-600">報名方式</span>
+          <div className="rounded-lg border border-brand-teal bg-brand-teal/10 px-3 py-2 text-center text-sm font-bold text-brand-primary">
             試上單次課
-          </button>
+          </div>
+          <p className="mt-2 text-xs leading-relaxed text-gray-500">試上限一位學員、一堂課，可選擇現場付費或轉帳。</p>
         </div>
-        {isTrial && <p className="mt-2 text-xs leading-relaxed text-gray-500">試上限一位學員、一堂課，可選擇現場付費或轉帳。</p>}
-      </div>
+      )}
+      {trialEnabled && !(initialTrial && isTrial) && (
+        <div className="mt-2 rounded-xl border border-gray-200 bg-white p-3">
+          <span className="mb-2 block text-xs font-medium text-gray-600">報名方式</span>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => setIsTrial(false)}
+              className={`min-w-0 rounded-lg border px-3 py-2 text-sm font-bold transition ${
+                !isTrial
+                  ? 'border-brand-teal bg-brand-teal/10 text-brand-primary'
+                  : 'border-gray-200 bg-white text-gray-600 hover:border-brand-teal/50'
+              }`}
+            >
+              一般報名
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsTrial(true)}
+              className={`min-w-0 rounded-lg border px-3 py-2 text-sm font-bold transition ${
+                isTrial
+                  ? 'border-brand-teal bg-brand-teal/10 text-brand-primary'
+                  : 'border-gray-200 bg-white text-gray-600 hover:border-brand-teal/50'
+              }`}
+            >
+              試上單次課
+            </button>
+          </div>
+          {isTrial && <p className="mt-2 text-xs leading-relaxed text-gray-500">試上限一位學員、一堂課，可選擇現場付費或轉帳。</p>}
+        </div>
+      )}
 
       {/* 購買期數（下拉；費用會隨期數變動） */}
       <div className="mt-2 rounded-xl border border-gray-200 bg-white p-3">

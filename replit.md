@@ -33,11 +33,13 @@
 - 並發保護：`server/services/slots.js#createSlot` 用 `pg_advisory_xact_lock(hashtext(coach_id))` 包住「衝突檢查 + INSERT」，5 個並發同 start_at 請求測試 → 1 success + 4 conflict（已驗證）
 - Multiplier 相容：`coaches.js` 將 DB 的 `pricing_multiplier (NUMERIC)` 同時對外曝露為 `multiplier (Number)`，避免家長端 CoachCard / useEnrollmentPricing 在切換 mock=false 時計算錯誤
 
-## 簽到／扣課政策（2026-07 改版）
+## 簽到／扣課政策（2026-07 改版）🧊 已凍結
+> **凍結令（2026-07-16，專案擁有者下達）**：本節路線已定案凍結。任何 agent 若需修改本節描述的行為或涉及檔案（詳見根目錄 `CLAUDE.md` 凍結範圍清單），必須先向使用者嚴格詢問並取得明確同意，才能動手；未經同意一律不得修改。
 - **團報預約免同組確認**：`pending_group_confirm` 流程整組移除（`bookSlot1vN`、每分鐘自動確認 cron、SlotPicker/SlotActionSheet 等待文案）；所有預約一律 `bookSlot1v1` 即時 confirmed。舊 pending 資料由 `bootstrap/coreSchema.js` 冪等遷移轉正（enum 值保留）。`multi_confirm_minutes` 設定與 `groupConfirmInvite` Flex 模板成為死碼（未刪，勿再接線）。
 - **一方簽到＝整組生效＋揭露簽到方全名**：團報期（`group_order_id` 非空）其他成員在上課記錄按鈕看到「已簽 · 簽到方家長姓名」（`/courses/lessons` 回 `checked_in_by_name`、`/mine` 與 `/:id` 回 `partner_checkin_name`，僅姓名不含電話/parent id；稱謂版 `partner_checkin_label` 保留相容）。後台簽到驗證列表回 `checked_in_by`（家長全名/教練/櫃檯）。
 - **櫃台手動扣課解除共享課期限制**：`SHARED_PERIOD_REQUIRES_CHECKIN` 409 移除，改為「整班簽到語意」——一筆 completed session＋整班 active roster（過濾 `students.is_active`，anchor 例外保留）各一筆 staff checkin＝整期共扣 1 堂；ledger 加 `roster_snapshot` JSONB；前端共享期只render一顆「扣除 1 堂（整班 N 位簽到）」按鈕。
 - **used_sessions 鏡射統一**：`services/usageSync.js`（自 checkins/sessions 抽取）為唯一同步入口，含 `listLinkedEnrollmentIds` 供扣課/衝正稽核對同團全部訂單各寫一筆；家長/教練逐堂簽到的計數改在 `FOR UPDATE OF cp` 之下，修並發舊值覆寫。WS `checkin:created` 事件一律帶 `checkin_id`（缺了會被 CheckinPage 去重誤吞）。
+- **扣課復活全量開放**：`DEDUCTION_REVIVAL_V2` 原為單一手機 canary（清單 `GET /api/admin/sessions/cancelled` 與 `POST /:id/revive` 都以家長電話白名單過濾，非 canary 家長的手動扣課在 RevivePage 看不到也不能歸還——曾被誤判為「團報沒接上」）。bootstrap 已比照 SHARED_CHECKIN_USAGE_V2 冪等升級為全量（`allowed_phones='{}'`），部署重啟即生效，正式環境卡住的舊扣課單免資料遷移直接可歸還。
 
 ## 文件
 - 文件索引以 `README.md` 為主。
@@ -148,6 +150,15 @@ get_architecture(...)  # 整體架構摘要
 受控驗證腳本：`cd server && npm run smoke:ragic-auth`（read-only by default；寫入須 `ENABLE_RAGIC_WRITE_SMOKE=1` + `TEST_PHONE` / `TEST_PARENT_NAME` / `TEST_LINE_UID`）。
 
 ## 變更紀錄
+- 2026-07-16：試上課程補完（PRP 計劃 P1-P5，凍結區改動經使用者批准 PLAN §10 後實作）：
+  - **背景**：`order_kind='trial'` 全鏈（建單/對帳 total=1/開通 `is_experience_course` 課期/自助簽到）原本已上線，本輪補「後台設定、前台入口、辨識標記、續報」四塊缺口。
+  - **F-A07 試上設定（P1）**：`course_type_configs` 加 `trial_enabled BOOLEAN DEFAULT FALSE` + `trial_price NUMERIC(10,2)`（coreSchema 冪等 DDL）；courseTypes API 兩份白名單（`EDITABLE_FIELDS`/排程 `EDITABLE`）、GET/POST/PATCH、CourseTypesPage 表單+列表「試上」欄全接上，稽核自動涵蓋。試上價來源改「F-A07 config 優先 → admin_settings 舊鍵 fallback → 每期價推算」（`calculateTrialPrice` 加 `configTrialPrice`）；`POST /api/enrollments` 加 `TRIAL_NOT_ENABLED` fail-closed gate；`GET /courses/base-price`、`/courses/types` 回 `trial_enabled`/`trial_price`。
+  - **LIFF 前台（P2）**：新頁 `/trial`（TrialSelectPage，只列啟用中+trial_enabled 品項）；HomePage「上課記錄」與「課程組別」之間加試上入口卡（有任一品項開試上才顯示）；`trial=1` 經 VenueSelectPage→CoachListPage pass-through；EnrollmentPage 依 `trial_enabled` 隱藏試上 toggle、`?trial=1` 進入鎖定試上模式、新增 `?coupon=` 參數（續報帶券入口）。
+  - **後台辨識（P3）**：F-M02 ReconcilePage 加「訂單類型」篩選（全部/試上/一般，前端記憶體過濾）＋家長欄「試上・現場付費」徽章；CSV/XLSX 匯出加「訂單類型」欄（EnrollmentsPage 匯出同步受益）。後端零改動（`order_kind`/`payment_method` 本已回傳）。
+  - **凍結區（P4，PLAN §10 批准）**：MyCoursesPage 試上卡加「續報一般課程」按鈕（active 附加、completed 卡=續報+查看上課紀錄；`/mine` 已回 coach.id/venue.id/course_type，server 零改動）；CourseCard「試上・單堂」徽章（非凍結）；`admin/checkins.js` recSql＋`admin/sessions.js` `REAL_SESSIONS_SELECT`（含兩處 UNION 腿補 `FALSE`）帶出 `is_experience_course` → CheckinPage/SessionsPage「試上」徽章。**未做（原列裁決後才做）**：cron 期末評鑑排除試上、試上效期縮短（維持 365 天）、櫃台手動建試上單。
+  - **防禦+清理（P5）**：退費共班分支（admin/enrollments.js `computeRefundPreview`）明確排除 `order_kind='trial'`（原靠「trial period 不寫 batch id」的隱性巧合）；RegisterPage 移除已停用的「體驗課 5 折」死文案。
+  - **驗證**：新 e2e `tests/e2e/trial_full_chain.js`（gate→建單快照 F-A07 價→checkout 對帳→1 堂課期開通→/mine 續報契約→自助簽到→後台試上標記→NO_SESSIONS_LEFT→退費防禦，已入 run_all）全過；回歸 enrollment_idempotency（補 trial_enabled fixture）/admin_sessions_regression（測試對齊既有 REASON_REQUIRED 行為，非本輪引入）/family_shared_period/admin_manual_deduction/group_partner_checkin/self_checkin_mode 全過；admin+LIFF 前端已重建、smoke-admin 7 端點全綠。**需 Publish 後正式環境生效**；上線後至 F-A07 對目標品項開 `trial_enabled` 並填 `trial_price`。
+  - **（同日）扣課復活驗證**：使用者詢問櫃台誤扣可否復活——實測全流程通過（手動扣課→復活清單命中（所有來源課堂都列）→歸還→ledger/鏡射落地→雙擊冪等），權限經使用者裁定維持現狀（admin+manager 可復活、staff 唯讀），零程式改動。
 - 2026-07-14：上架後修正——「上課記錄查詢」(F-R01) 查不到真實上課資料：
   - **根因（既有缺口，非本日部署引入）**：`/api/admin/sessions`（range/today）、補簽到、verify-checkin 的「下一堂」全部只讀舊示範表 `admin_today_sessions`——沒有任何真實流程（預約排課、自助簽到、教練簽到）回寫該表，真實課堂永遠查不到。上架首日營運端第一次真用此頁即暴露（實測正式環境新購買＋自助簽到後此頁空白）。
   - **修正**：主資料源改讀真實 `course_sessions`（統一 `REAL_SESSIONS_SELECT`，台灣時區、簽到狀態以 checkin_records 為真相），UNION 舊表列向後相容（既有補登/示範資料不消失），場館範圍過濾兩邊一體適用，回傳 shape 不變（前端零改動）。補簽到改寫真實簽到紀錄（該堂全期 active 學員、來源 'staff'、找不到真實課堂時退回舊表路徑）；verify-checkin「下一堂」改解析報名對應課程期（團報→家庭共班→anchor 三層）取今日真實課堂。

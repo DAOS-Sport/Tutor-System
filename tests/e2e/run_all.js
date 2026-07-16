@@ -29,6 +29,7 @@ const PATHS = [
   ['ParentReconcileLink', 'parent_reconcile_link.js'],
   ['CheckoutFamilyInvoices', 'checkout_family_invoices.js'],
   ['GroupPartnerCheckin', 'group_partner_checkin.js'],
+  ['TrialFullChain', 'trial_full_chain.js'],
   ['Flex18', 'flex_templates_verify.js'],
 ];
 

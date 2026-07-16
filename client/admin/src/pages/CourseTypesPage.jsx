@@ -16,8 +16,13 @@ const fmtDateTime = formatTWDateTime;
 const fmtDateTimeSec = formatTWDateTimeSeconds;
 const toLocalInput = toTaipeiDateTimeInput;
 const taipeiInputInstant = (value) => new Date(`${value}:00+08:00`).getTime();
-const FIELD_LABELS = { label: '名稱', base_price: '每期價格', min_students: '最少學生', max_students: '最多學生', is_active: '狀態', data_group: '資料管理群組' };
-const showVal = (k, v) => (k === 'base_price' ? fmtMoney(v) : k === 'is_active' ? (v ? '啟用中' : '已停用') : (v ?? '—'));
+const FIELD_LABELS = { label: '名稱', base_price: '每期價格', min_students: '最少學生', max_students: '最多學生', is_active: '狀態', data_group: '資料管理群組', trial_enabled: '提供試上', trial_price: '試上單價' };
+const showVal = (k, v) => (
+  k === 'base_price' ? fmtMoney(v)
+    : k === 'trial_price' ? (v == null || v === '' ? '未設定' : fmtMoney(v))
+      : k === 'is_active' ? (v ? '啟用中' : '已停用')
+        : k === 'trial_enabled' ? (v ? '提供' : '不提供')
+          : (v ?? '—'));
 
 // Ragic 風格編輯卡片的樣式（全部 scope 在 .ragic-edit 下，避免與全站 class 撞名）。
 const RAGIC_CSS = `
@@ -93,7 +98,7 @@ export default function CourseTypesPage() {
   const [rows, setRows] = useState(null);
   const [saving, setSaving] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
-  const [form, setForm] = useState({ course_type: '', label: '', min_students: '', max_students: '', base_price: '', data_group: '' });
+  const [form, setForm] = useState({ course_type: '', label: '', min_students: '', max_students: '', base_price: '', data_group: '', trial_enabled: false, trial_price: '' });
   const [addErr, setAddErr] = useState('');
   const [editing, setEditing] = useState(null); // 整列 + 表單狀態
   const [editErr, setEditErr] = useState('');
@@ -139,9 +144,11 @@ export default function CourseTypesPage() {
         max_students: form.max_students,
         base_price: form.base_price,
         data_group: form.data_group.trim() || null,
+        trial_enabled: form.trial_enabled,
+        trial_price: form.trial_price === '' ? null : form.trial_price,
       });
       setShowAdd(false);
-      setForm({ course_type: '', label: '', min_students: '', max_students: '', base_price: '', data_group: '' });
+      setForm({ course_type: '', label: '', min_students: '', max_students: '', base_price: '', data_group: '', trial_enabled: false, trial_price: '' });
       toast.success(`已新增「${form.label.trim() || autoLabel(ct)}」`);
       await load();
     } catch (e) {
@@ -158,6 +165,8 @@ export default function CourseTypesPage() {
       max_students: String(row.max_students),
       is_active: !!row.is_active,
       data_group: row.data_group || '',
+      trial_enabled: !!row.trial_enabled,
+      trial_price: row.trial_price == null ? '' : String(row.trial_price),
       // 生效方式 + 排程起訖（datetime-local 值；若已有排程則預填，方便修改）
       mode: 'immediate',
       scheduled_effective_date: toLocalInput(row.scheduled_effective_date),
@@ -173,7 +182,7 @@ export default function CourseTypesPage() {
       // 編輯軌跡（非同步載入）
       audit: null,
       auditOpen: false,
-      _live: { label: row.label, base_price: row.base_price, min_students: row.min_students, max_students: row.max_students, is_active: row.is_active, data_group: row.data_group },
+      _live: { label: row.label, base_price: row.base_price, min_students: row.min_students, max_students: row.max_students, is_active: row.is_active, data_group: row.data_group, trial_enabled: row.trial_enabled, trial_price: row.trial_price },
     });
     setEditErr('');
     setActiveTab('basic');
@@ -199,6 +208,8 @@ export default function CourseTypesPage() {
       max_students: editing.max_students,
       is_active: editing.is_active,
       data_group: editing.data_group.trim() || null,
+      trial_enabled: editing.trial_enabled,
+      trial_price: editing.trial_price === '' ? null : editing.trial_price,
     };
     // 排程：選「排程生效」必選生效起日；起日在未來＝排程，此時「生效迄日」必填且需晚於起日。
     // 起日在過去/現在 → 後端視為立即生效（不需迄日）。
@@ -348,6 +359,11 @@ export default function CourseTypesPage() {
                 {ecell({ field: 'min_students', type: 'number', display: editing.min_students, editValue: editing.min_students, apply: (v) => setEditing((s) => ({ ...s, min_students: v })) })}
                 <div className="lbl"><span className="req">＊</span>最多學生</div>
                 {ecell({ field: 'max_students', type: 'number', display: editing.max_students, editValue: editing.max_students, apply: (v) => setEditing((s) => ({ ...s, max_students: v })) })}
+
+                <div className="lbl">提供試上</div>
+                {ecell({ field: 'trial_enabled', type: 'select', options: ['提供', '不提供'], display: editing.trial_enabled ? '提供' : '不提供', editValue: editing.trial_enabled ? '提供' : '不提供', apply: (v) => setEditing((s) => ({ ...s, trial_enabled: v === '提供' })) })}
+                <div className="lbl">試上單價（每人，NT$）</div>
+                {ecell({ field: 'trial_price', type: 'number', display: editing.trial_price, editValue: editing.trial_price, placeholder: '未設定（自動推算）', apply: (v) => setEditing((s) => ({ ...s, trial_price: v })) })}
               </div>
             </div>
           )}
@@ -505,6 +521,17 @@ export default function CourseTypesPage() {
               <label className="mb-1 block text-xs font-medium text-gray-600">資料管理群組（選填）</label>
               <input type="text" value={form.data_group} onChange={(e) => setForm((f) => ({ ...f, data_group: e.target.value }))} className={inputCls} placeholder="例：新北高中【櫃台】" />
             </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-600">提供試上</label>
+              <select value={form.trial_enabled ? '1' : '0'} onChange={(e) => setForm((f) => ({ ...f, trial_enabled: e.target.value === '1' }))} className={inputCls}>
+                <option value="0">不提供</option>
+                <option value="1">提供</option>
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-600">試上單價（每人，NT$，選填）</label>
+              <input type="number" step="100" value={form.trial_price} onChange={(e) => setForm((f) => ({ ...f, trial_price: e.target.value }))} className={inputCls} placeholder="未填＝自動推算" />
+            </div>
             {addErr && <p className="col-span-full text-sm text-red-600">{addErr}</p>}
             <div className="col-span-full flex gap-2">
               <button type="submit" className="rounded-lg bg-brand-primary px-5 py-2 text-sm font-semibold text-white hover:opacity-90">新增</button>
@@ -521,6 +548,7 @@ export default function CourseTypesPage() {
             <tr>
               <th className="px-4 py-3 text-left font-semibold text-gray-600">課程需求</th>
               <th className="px-4 py-3 text-left font-semibold text-gray-600">每期價格</th>
+              <th className="px-4 py-3 text-left font-semibold text-gray-600">試上</th>
               <th className="px-4 py-3 text-left font-semibold text-gray-600">最少</th>
               <th className="px-4 py-3 text-left font-semibold text-gray-600">最多</th>
               <th className="px-4 py-3 text-left font-semibold text-gray-600">系統代碼</th>
@@ -532,7 +560,7 @@ export default function CourseTypesPage() {
           </thead>
           <tbody className="divide-y divide-gray-100">
             {rows.length === 0 && (
-              <tr><td colSpan={9} className="py-12 text-center text-gray-400">尚無課程需求設定</td></tr>
+              <tr><td colSpan={10} className="py-12 text-center text-gray-400">尚無課程需求設定</td></tr>
             )}
             {rows.map((row) => {
               const isEditing = editing?.course_type === row.course_type;
@@ -541,6 +569,11 @@ export default function CourseTypesPage() {
                   <tr className={`transition ${isEditing ? 'bg-brand-primary/5' : 'hover:bg-gray-50'} ${!row.is_active && !isEditing ? 'opacity-50' : ''}`}>
                     <td className="px-4 py-4 font-semibold text-gray-800">{row.label}</td>
                     <td className="px-4 py-4 font-medium text-gray-800">{fmtMoney(row.base_price)}</td>
+                    <td className="px-4 py-4 text-xs">
+                      {row.trial_enabled
+                        ? <span className="rounded-full bg-teal-100 px-2 py-1 font-semibold text-teal-700">{row.trial_price != null ? fmtMoney(row.trial_price) : '推算'}</span>
+                        : <span className="text-gray-400">—</span>}
+                    </td>
                     <td className="px-4 py-4 text-gray-600">{row.min_students ?? 1} 人</td>
                     <td className="px-4 py-4 text-gray-600">{row.max_students} 人</td>
                     <td className="px-4 py-4"><span className="rounded bg-gray-100 px-2 py-0.5 font-mono text-xs text-gray-500">{row.course_type}</span></td>
@@ -572,7 +605,7 @@ export default function CourseTypesPage() {
                   </tr>
                   {isEditing && (
                     <tr className="bg-brand-primary/5">
-                      <td colSpan={9} className="px-4 pb-5 pt-1">
+                      <td colSpan={10} className="px-4 pb-5 pt-1">
                         {renderEditPanel()}
                       </td>
                     </tr>

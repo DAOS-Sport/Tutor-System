@@ -94,6 +94,7 @@ async function post(base, token, body, { headerKey = body?.request_id } = {}) {
   let adminActorId = null;
   let adminRequestKey = null;
   let triggerInstalled = false;
+  let trialCfgOrig = null; // F-A07 trial gate fixture（course_type=1 原值，finally 還原）
 
   try {
     const reference = await pg.query(
@@ -120,6 +121,15 @@ async function post(base, token, body, { headerKey = body?.request_id } = {}) {
     assert(autoPromotions.rowCount === 0, 'isolated test DB has no active automatic promotion that could mutate shared quota');
     const existingTrial50 = await pg.query(`SELECT id FROM promotions WHERE UPPER(coupon_code) = 'TRIAL50'`);
     assert(existingTrial50.rowCount === 0, 'isolated test DB has no pre-existing TRIAL50 configuration');
+
+    // F-A07 試上開關：trial 建單需 course_type=1 開啟 trial_enabled（TRIAL_NOT_ENABLED gate）。
+    // 測試自備 fixture、finally 還原，不依賴環境現值。
+    trialCfgOrig = (await pg.query(
+      `SELECT trial_enabled, trial_price FROM course_type_configs WHERE course_type = 1`
+    )).rows[0] || null;
+    if (trialCfgOrig) {
+      await pg.query(`UPDATE course_type_configs SET trial_enabled = TRUE WHERE course_type = 1`);
+    }
 
     await pg.query(
       `INSERT INTO parents (id, phone, name, is_active)
@@ -404,6 +414,12 @@ async function post(base, token, body, { headerKey = body?.request_id } = {}) {
     }
     await pg.query(`DELETE FROM checkout_sessions WHERE parent_id = $1`, [parentId]).catch(() => {});
     if (promotionId) await pg.query(`DELETE FROM promotions WHERE id = $1`, [promotionId]).catch(() => {});
+    if (trialCfgOrig) {
+      await pg.query(
+        `UPDATE course_type_configs SET trial_enabled = $1, trial_price = $2 WHERE course_type = 1`,
+        [trialCfgOrig.trial_enabled, trialCfgOrig.trial_price]
+      ).catch(() => {});
+    }
     await pg.query(`DELETE FROM students WHERE id = $1`, [studentId]).catch(() => {});
     await pg.query(`DELETE FROM parents WHERE id = ANY($1::uuid[])`, [[parentId, referrerId]]).catch(() => {});
     await pg.end().catch(() => {});

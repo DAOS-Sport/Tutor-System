@@ -1,3 +1,9 @@
+// ═══════════════════════════════════════════════════════════════════
+// 🧊 凍結（2026-07-16 使用者凍結令）：簽到／扣課政策 2026-07 版
+// 本檔凍結範圍：/lessons、/mine、/:id 的簽到方姓名揭露（checked_in_by_name / partner_checkin_name，僅團報期、僅姓名）。
+// 修改凍結範圍前，必須先向使用者嚴格詢問並取得明確同意。
+// 政策與完整範圍清單：repo 根目錄 CLAUDE.md、replit.md「簽到／扣課政策」節。
+// ═══════════════════════════════════════════════════════════════════
 /**
  * 家長端課程查詢 (F-S07 上課記錄)
  *   GET /api/courses/lessons   登入家長的所有上課記錄（含已簽到）
@@ -400,6 +406,8 @@ router.get('/types', async (req, res) => {
     const r = await pool.query(
       `SELECT c.course_type, c.label, c.max_students, c.is_active, c.sort_order,
               COALESCE(c.base_price, 0)::float8 AS base_price,
+              COALESCE(c.trial_enabled, FALSE)  AS trial_enabled,
+              c.trial_price::float8             AS trial_price,
               COALESCE(i.title, c.label)        AS title,
               COALESCE(i.body, '')              AS body,
               COALESCE(i.image_url, '')         AS image_url
@@ -431,7 +439,9 @@ router.get('/base-price', async (req, res) => {
     const r = await pool.query(
       `SELECT c.course_type,
               c.base_price,
-              COALESCE((SELECT value FROM admin_settings WHERE key = ('trial_price_course_' || c.course_type::text)),
+              COALESCE(c.trial_enabled, FALSE) AS trial_enabled,
+              COALESCE(c.trial_price,
+                       (SELECT value FROM admin_settings WHERE key = ('trial_price_course_' || c.course_type::text)),
                        (SELECT value FROM admin_settings WHERE key = 'trial_price')) AS trial_price,
               COALESCE((SELECT value FROM admin_settings WHERE key = 'sessions_per_period'), 6) AS sessions_per_period
          FROM course_type_configs c
@@ -444,6 +454,7 @@ router.get('/base-price', async (req, res) => {
     res.json({
       course_type: r.rows[0].course_type,
       original_price: Number(r.rows[0].base_price),
+      trial_enabled: r.rows[0].trial_enabled === true,
       trial_price: r.rows[0].trial_price == null ? null : Number(r.rows[0].trial_price),
       sessions_per_period: Math.max(1, Number(r.rows[0].sessions_per_period) || 6),
     });

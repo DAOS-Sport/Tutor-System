@@ -13,7 +13,7 @@ const { applyDueScheduledCourseTypeChanges } = require('../../services/courseTyp
 const router = express.Router();
 const AM = requireAdminRole('admin', 'manager');
 
-const EDITABLE_FIELDS = ['label', 'min_students', 'max_students', 'is_active', 'base_price', 'data_group'];
+const EDITABLE_FIELDS = ['label', 'min_students', 'max_students', 'is_active', 'base_price', 'data_group', 'trial_enabled', 'trial_price'];
 const pad2 = (n) => String(n).padStart(2, '0');
 
 // datetime-local（YYYY-MM-DDTHH:MM）或純日期 → 以台北固定時區 +08:00 解讀的 Date（無法解析回 null）。
@@ -62,6 +62,7 @@ router.get('/', requireAdminAuth, AM, async (req, res) => {
     const r = await pool.query(
       `SELECT course_type, label, min_students, max_students,
               base_price::float8 AS base_price, is_active, sort_order,
+              trial_enabled, trial_price::float8 AS trial_price,
               created_at, updated_at, data_group, effective_date, effective_until,
               scheduled_effective_date, scheduled_effective_until, pending_changes,
               CURRENT_DATE AS current_date
@@ -77,7 +78,7 @@ router.get('/', requireAdminAuth, AM, async (req, res) => {
 router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
   const client = await pool.connect();
   try {
-    const { course_type, label, max_students, min_students, base_price, data_group } = req.body || {};
+    const { course_type, label, max_students, min_students, base_price, data_group, trial_enabled, trial_price } = req.body || {};
     // 依需求「拿掉所有驗證」：除主鍵 course_type 仍需可解析為整數外，其餘欄位不檢查範圍/長度/大小關係，
     // 僅做型別解析與安全預設（避免 NaN/NULL 寫入 NOT NULL 欄位）。
     const ct = parseInt(course_type, 10);
@@ -92,17 +93,21 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
     const bpParsed = Number(base_price);
     const bp = Number.isFinite(bpParsed) ? bpParsed : 0;
     const dg = data_group == null ? null : (String(data_group).trim() || null);
+    // 試上設定（F-A07 試上開關 + 試上單價）：trial_price 可為 NULL（未設定 → 沿用推算 fallback）。
+    const te = Boolean(trial_enabled);
+    const tpParsed = Number(trial_price);
+    const tp = trial_price == null || trial_price === '' || !Number.isFinite(tpParsed) ? null : tpParsed;
 
     await client.query('BEGIN');
     const maxOrder = await client.query(`SELECT COALESCE(MAX(sort_order),0) AS m FROM course_type_configs`);
     const nextOrder = maxOrder.rows[0].m + 1;
 
     const r = await client.query(
-      `INSERT INTO course_type_configs (course_type, label, min_students, max_students, sort_order, base_price, data_group, effective_date, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,CURRENT_DATE,NOW())
+      `INSERT INTO course_type_configs (course_type, label, min_students, max_students, sort_order, base_price, data_group, trial_enabled, trial_price, effective_date, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,CURRENT_DATE,NOW())
        ON CONFLICT (course_type) DO NOTHING
        RETURNING *`,
-      [ct, lb, mn, ms, nextOrder, bp, dg]
+      [ct, lb, mn, ms, nextOrder, bp, dg, te, tp]
     );
     if (!r.rowCount) {
       await client.query('ROLLBACK');
@@ -121,6 +126,8 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
       min_students: { before: null, after: mn },
       max_students: { before: null, after: ms },
       data_group: { before: null, after: dg },
+      trial_enabled: { before: null, after: te },
+      trial_price: { before: null, after: tp },
     }, null);
     await client.query('COMMIT');
     res.status(201).json(r.rows[0]);
@@ -184,8 +191,19 @@ router.patch('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, 
     if (p.data_group !== undefined) {
       data_group = p.data_group === null ? null : (String(p.data_group).trim() || null);
     }
+    const trial_enabled = p.trial_enabled !== undefined ? Boolean(p.trial_enabled) : row.trial_enabled;
+    // trial_price 允許清空（null / 空字串 → NULL，回退推算 fallback）；無法解析時沿用現值。
+    let trial_price = row.trial_price === null ? null : Number(row.trial_price);
+    if (p.trial_price !== undefined) {
+      if (p.trial_price === null || p.trial_price === '') {
+        trial_price = null;
+      } else {
+        const tp = Number(p.trial_price);
+        if (Number.isFinite(tp)) trial_price = tp;
+      }
+    }
 
-    const next = { label, min_students, max_students, is_active, base_price, data_group };
+    const next = { label, min_students, max_students, is_active, base_price, data_group, trial_enabled, trial_price };
 
     // 生效方式：scheduled_effective_date 接受 datetime-local（YYYY-MM-DDTHH:MM）或純日期，
     // 以台北固定時區 +08:00 解讀。> 現在 → 排程；否則（過去／現在／無法解析）→ 立即生效。
@@ -220,10 +238,11 @@ router.patch('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, 
       const r = await client.query(
         `UPDATE course_type_configs
             SET label=$2, max_students=$3, is_active=$4, base_price=$5, min_students=$6, data_group=$7,
+                trial_enabled=$8, trial_price=$9,
                 effective_date=CURRENT_DATE, scheduled_effective_date=NULL, scheduled_effective_until=NULL,
                 pending_changes=NULL, updated_at=NOW()
           WHERE course_type=$1 RETURNING *`,
-        [ct, label, max_students, is_active, base_price, min_students, data_group]
+        [ct, label, max_students, is_active, base_price, min_students, data_group, trial_enabled, trial_price]
       );
       result = r.rows[0];
       // label 變更 → 同步未被覆寫的介紹 title

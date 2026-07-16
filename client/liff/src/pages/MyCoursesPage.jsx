@@ -1,3 +1,9 @@
+// ═══════════════════════════════════════════════════════════════════
+// 🧊 凍結（2026-07-16 使用者凍結令）：簽到／扣課政策 2026-07 版
+// 本檔凍結範圍：自助簽到按鈕「已簽 · 簽到方姓名」顯示。
+// 修改凍結範圍前，必須先向使用者嚴格詢問並取得明確同意。
+// 政策與完整範圍清單：repo 根目錄 CLAUDE.md、replit.md「簽到／扣課政策」節。
+// ═══════════════════════════════════════════════════════════════════
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { coursesApi } from '../api/courses';
@@ -179,6 +185,22 @@ export default function MyCoursesPage() {
     }
   }
 
+  // 試上續報（D1）：付款/開票後（lifecycle=active）即可續報，不 gate 完成狀態；
+  // 簽完（completed）的試上卡保留續報入口。續報＝帶同教練/場館/組別導向一般報名頁；
+  // 缺 coach id（理論上試上單必有，防禦舊資料）時退回選場館重挑。
+  function renewFromTrial(cp) {
+    const coachId = cp.coach?.id;
+    const venueId = cp.venue?.id || cp.venue_id;
+    const courseType = cp.course_type;
+    if (coachId && venueId && courseType) {
+      navigate(`/enroll?venue=${venueId}&courseType=${courseType}&coach=${coachId}`);
+    } else if (courseType) {
+      navigate(`/venue?courseType=${courseType}`);
+    } else {
+      navigate('/venue');
+    }
+  }
+
   function renderCourseCard(cp) {
     // 已填末 5 碼＋已上傳匯款證明＝付款資料已送出（與 EnrollStatusPage 的鎖定條件一致，用 AND）。
     // 待櫃檯對帳期間（lifecycle 仍為 pending_payment）按鈕改顯示「已上傳，待櫃檯確認」，
@@ -188,7 +210,7 @@ export default function MyCoursesPage() {
     // 「預約劃課／上課簽到」換成「今日上課簽到」＋「查看上課紀錄」；
     // 預約制（booking，預設）維持原樣。
     const isSelfMode = cp.checkin_mode === 'self';
-    const actions = cp.lifecycle === 'active'
+    const baseActions = cp.lifecycle === 'active'
       ? (cp.course_period_id ? (isSelfMode ? [
         { label: '聯繫教練', primary: true, disabled: true, onClick: () => {} },
         {
@@ -228,6 +250,21 @@ export default function MyCoursesPage() {
           onClick: () => cancelPendingCourse(cp),
         }]),
       ] : []);
+
+    // 試上單追加「續報」按鈕：active 直接附加；completed（原本無任何按鈕）給續報＋查看上課紀錄。
+    const isTrialOrder = cp.order_kind === 'trial';
+    const actions = !isTrialOrder
+      ? baseActions
+      : cp.lifecycle === 'completed'
+        ? [
+          { label: '續報一般課程', primary: true, onClick: () => renewFromTrial(cp) },
+          ...(cp.course_period_id
+            ? [{ label: '查看上課紀錄', onClick: () => navigate(`/my-lessons?period=${cp.course_period_id}`) }]
+            : []),
+        ]
+        : cp.lifecycle === 'active'
+          ? [...baseActions, { label: '續報一般課程', onClick: () => renewFromTrial(cp) }]
+          : baseActions;
 
     // 進行中課程：卡片本體不再導向詳細頁（/course/:id），改由下方三個按鈕操作；
     // 其餘狀態（已結束無按鈕、待處理）保留點卡片進入對應頁面，避免無路可點。

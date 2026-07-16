@@ -19,8 +19,11 @@ import { isSupportedImageCandidate, RECEIPT_IMAGE_ACCEPT } from '../utils/imageP
 
 const EMPTY_FILTERS = {
   submittedFrom: '', submittedTo: '', phone: '', parentName: '', studentName: '',
-  coach: '', courseType: '', last5: '', venueId: '',
+  coach: '', courseType: '', last5: '', venueId: '', orderKind: '',
 };
+
+// 試上判斷：母單 order_kind 為主，子訂單任一筆 trial 亦視為試上（防母單欄位缺值的舊資料）。
+const isTrialCheckout = (r) => r?.order_kind === 'trial' || (r?.sub_orders || []).some((o) => o.order_kind === 'trial');
 
 const INVOICE_RE = /^[A-Z]{2}\d{8}$/;
 
@@ -629,6 +632,8 @@ export default function ReconcilePage() {
       options: [{ value: '', label: '全部' }, ...courseTypeOptions] },
     { key: 'venueId', label: '場館', type: 'select', options: venueOptions },
     { key: 'last5', label: '末五碼', type: 'input', placeholder: '轉帳末 5 碼' },
+    { key: 'orderKind', label: '訂單類型', type: 'select',
+      options: [{ value: '', label: '全部' }, { value: 'trial', label: '試上' }, { value: 'standard', label: '一般' }] },
   ];
 
   const filteredList = useMemo(() => {
@@ -650,6 +655,8 @@ export default function ReconcilePage() {
       if (filters.courseType && !orders.some((o) => String(o.course_type) === filters.courseType)) return false;
       if (venueQ && !checkoutVenueEntries(r).some((venue) => venue.venue_id === venueQ)) return false;
       if (last5Q && !(r.transfer_last_5 || '').includes(last5Q)) return false;
+      if (filters.orderKind === 'trial' && !isTrialCheckout(r)) return false;
+      if (filters.orderKind === 'standard' && isTrialCheckout(r)) return false;
       return true;
     });
   }, [list, filters]);
@@ -718,6 +725,11 @@ export default function ReconcilePage() {
         <div>
           <div className="font-medium">{r.requires_separate_invoices ? `${r.family_count} 個家庭` : r.parent_name}</div>
           <div className="text-xs text-gray-500">{r.requires_separate_invoices ? '需分開立發票' : r.parent_phone}</div>
+          {isTrialCheckout(r) && (
+            <span className="mt-1 inline-flex rounded-full border border-teal-300 bg-teal-50 px-2 py-0.5 text-[11px] font-bold text-teal-700">
+              試上{r.payment_method === 'on_site' ? '・現場付費' : ''}
+            </span>
+          )}
           {r.requires_separate_invoices && (
             <span className="mt-1 inline-flex rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-700">
               {r.family_count} 張家庭發票

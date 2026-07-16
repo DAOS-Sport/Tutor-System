@@ -1,3 +1,9 @@
+// ═══════════════════════════════════════════════════════════════════
+// 🧊 凍結（2026-07-16 使用者凍結令）：簽到／扣課政策 2026-07 版
+// 本檔凍結範圍：簽到人欄位顯示、WS checkin_id 去重。
+// 修改凍結範圍前，必須先向使用者嚴格詢問並取得明確同意。
+// 政策與完整範圍清單：repo 根目錄 CLAUDE.md、replit.md「簽到／扣課政策」節。
+// ═══════════════════════════════════════════════════════════════════
 import React, { useEffect, useRef, useState } from 'react';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -254,6 +260,9 @@ export default function CheckinPage() {
                 </span>
                 <span className="col-span-3 truncate text-gray-600">
                   {r.course_type ? courseTypeLabel(r.course_type) : '—'}
+                  {r.is_experience_course && (
+                    <span className="ml-1 rounded-full bg-teal-50 px-1.5 py-0.5 text-[11px] font-bold text-teal-700">試上</span>
+                  )}
                   {r.coach ? <span className="ml-1 text-gray-400">· {r.coach}</span> : null}
                 </span>
                 <span className="col-span-2 truncate text-gray-500">{r.venue_name || r.venue_id}</span>

@@ -261,7 +261,7 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'invalid course_type' });
     }
     const cfgRes = await client.query(
-      `SELECT base_price, is_active, max_students FROM course_type_configs WHERE course_type = $1`,
+      `SELECT base_price, is_active, max_students, trial_enabled, trial_price FROM course_type_configs WHERE course_type = $1`,
       [courseTypeNum]
     );
     if (cfgRes.rowCount && cfgRes.rows[0].is_active === false) {
@@ -272,6 +272,11 @@ router.post('/', async (req, res) => {
     if (basePrice <= 0) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: '此課程組別尚未設定價格，請洽櫃檯', code: 'PRICE_NOT_CONFIGURED' });
+    }
+    // F-A07 試上開關：品項未開啟試上（trial_enabled=FALSE）時拒絕試上下單（fail-closed）。
+    if (isTrial && !(cfgRes.rowCount && cfgRes.rows[0].trial_enabled === true)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: '此課程組別未開放試上，請洽櫃檯', code: 'TRIAL_NOT_ENABLED' });
     }
     // 教練必須為合法 UUID 並存在於 active coaches；倍率只能來自 DB（fail-closed，無 fallback）。
     const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -369,7 +374,13 @@ router.post('/', async (req, res) => {
     );
     const settings = Object.fromEntries(settingsRows.rows.map((row) => [row.key, row.value]));
     const trialPrice = isTrial
-      ? calculateTrialPrice({ basePrice: unitPrice, courseType: courseTypeNum, settings })
+      ? calculateTrialPrice({
+          basePrice: unitPrice,
+          courseType: courseTypeNum,
+          settings,
+          // F-A07 為試上價唯一主來源；admin_settings 舊鍵僅為過渡 fallback。
+          configTrialPrice: cfgRes.rowCount ? cfgRes.rows[0].trial_price : null,
+        })
       : null;
     if (isTrial && trialPrice <= 0) {
       await client.query('ROLLBACK');

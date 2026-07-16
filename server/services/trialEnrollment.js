@@ -35,7 +35,12 @@ function positiveMoney(value) {
   return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
 }
 
-function calculateTrialPrice({ basePrice, courseType, settings = {} } = {}) {
+function calculateTrialPrice({ basePrice, courseType, settings = {}, configTrialPrice = null } = {}) {
+  // F-A07 為品項價格唯一來源：course_type_configs.trial_price 優先；
+  // 未設定時退回舊 admin_settings 鍵（過渡相容），最後才以每期價推算。
+  const fromConfig = positiveMoney(configTrialPrice);
+  if (fromConfig) return fromConfig;
+
   const courseSpecific = positiveMoney(settings[`trial_price_course_${courseType}`]);
   const configured = courseSpecific || positiveMoney(settings.trial_price);
   if (configured) return configured;

@@ -98,7 +98,14 @@ export default function SessionsPage() {
     { key: 'time', label: '時間', render: (r) => <span className="font-mono">{r.start} – {r.end}</span> },
     { key: 'venue', label: '場館', render: (r) => venueName(r.venue_id) },
     { key: 'coach', label: '教練' },
-    { key: 'course_type', label: '組別', render: (r) => <StatusBadge tone="teal">{courseTypeLabel(r.course_type)}</StatusBadge> },
+    { key: 'course_type', label: '組別', render: (r) => (
+      <span className="inline-flex items-center gap-1">
+        <StatusBadge tone="teal">{courseTypeLabel(r.course_type)}</StatusBadge>
+        {r.is_experience_course && (
+          <span className="rounded-full bg-teal-50 px-1.5 py-0.5 text-[11px] font-bold text-teal-700">試上</span>
+        )}
+      </span>
+    ) },
     { key: 'students', label: '學員', render: (r) => r.students.join('、') },
     {
       key: 'checkin_status', label: '簽到', className: 'text-center',

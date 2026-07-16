@@ -76,6 +76,11 @@ export default function CourseCard({ variant = 'period', period, type, onClick, 
                 團購共享
               </span>
             )}
+            {period.order_kind === 'trial' && (
+              <span className="rounded-md bg-brand-amber/15 px-2 py-0.5 text-xs font-medium text-brand-amber">
+                試上・單堂
+              </span>
+            )}
           </div>
           <h3 className="mt-1 truncate text-base font-bold text-brand-primary">{summaryLine}</h3>
           <p className="mt-0.5 truncate text-xs text-gray-500">

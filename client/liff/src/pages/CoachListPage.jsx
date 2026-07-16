@@ -14,6 +14,7 @@ export default function CoachListPage() {
   const [params] = useSearchParams();
   const venueId = params.get('venue');
   const courseType = Number(params.get('courseType') || 1);
+  const isTrial = params.get('trial') === '1'; // 試上流程（/trial 入口）一路帶到報名頁
   const navigate = useNavigate();
   const toast = useToast();
 
@@ -64,7 +65,7 @@ export default function CoachListPage() {
   function handleDisclaimerAgree() {
     const c = pendingCoach;
     setPendingCoach(null);
-    navigate(`/enroll?venue=${venueId}&courseType=${courseType}&coach=${c.id}`);
+    navigate(`/enroll?venue=${venueId}&courseType=${courseType}&coach=${c.id}${isTrial ? '&trial=1' : ''}`);
   }
 
   const filteredCoaches = useMemo(() => {
@@ -114,6 +115,12 @@ export default function CoachListPage() {
         <span className="font-bold">{venue.name}</span>
         <span className="mx-1.5 text-gray-300">·</span>
         <span>{courseTypeLabel(courseType)}</span>
+        {isTrial && (
+          <>
+            <span className="mx-1.5 text-gray-300">·</span>
+            <span className="rounded-full bg-brand-teal/10 px-2 py-0.5 font-bold text-brand-teal">試上單次課</span>
+          </>
+        )}
       </div>
 
       {coaches.length > 0 && (

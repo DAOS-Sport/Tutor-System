@@ -146,6 +146,21 @@ export default function HomePage() {
         <span aria-hidden="true">›</span>
       </button>
 
+      {/* 試上課程入口：僅在有任一品項開放試上（F-A07 trial_enabled）時顯示 */}
+      {Array.isArray(types) && types.some((t) => t.trial_enabled === true) && (
+        <button
+          type="button"
+          onClick={() => navigate('/trial')}
+          className="mb-5 flex w-full items-center justify-between rounded-2xl bg-brand-teal p-4 text-left text-white active:opacity-90"
+        >
+          <div>
+            <div className="text-sm font-bold">⚡ 試上課程</div>
+            <div className="mt-0.5 text-[11px] text-white/80">單堂體驗・現場付費，滿意再續報</div>
+          </div>
+          <span aria-hidden="true">›</span>
+        </button>
+      )}
+
       <section>
         <h3 className="mb-3 text-sm font-bold text-brand-primary">課程組別</h3>
         <div className="space-y-3">

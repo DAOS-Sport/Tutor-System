@@ -1,3 +1,9 @@
+// ═══════════════════════════════════════════════════════════════════
+// 🧊 凍結（2026-07-16 使用者凍結令）：簽到／扣課政策 2026-07 版
+// 本檔凍結範圍：GET /cancelled 復活清單與 POST /:id/revive（DEDUCTION_REVIVAL_V2 維持全量）。
+// 修改凍結範圍前，必須先向使用者嚴格詢問並取得明確同意。
+// 政策與完整範圍清單：repo 根目錄 CLAUDE.md、replit.md「簽到／扣課政策」節。
+// ═══════════════════════════════════════════════════════════════════
 /**
  * 場館營運：今日課程 / 簽到驗證 / 退課時段復活 (F-R01 / F-R03 / F-M05)
  *  GET   /api/admin/sessions/today           ?venueId=
@@ -32,7 +38,8 @@ const REAL_SESSIONS_SELECT = `
          CASE WHEN EXISTS (SELECT 1 FROM checkin_records cr WHERE cr.course_session_id = cs.id AND cr.attendance_status = 'ATTENDED')
               THEN 'checked_in' ELSE 'not_yet' END AS checkin_status,
          (SELECT MIN(cr.checked_in_at) FROM checkin_records cr WHERE cr.course_session_id = cs.id AND cr.attendance_status = 'ATTENDED') AS checkin_at,
-         NULL::timestamptz AS backfilled_at
+         NULL::timestamptz AS backfilled_at,
+         COALESCE(cp.is_experience_course, FALSE) AS is_experience_course
     FROM course_sessions cs
     JOIN course_periods cp ON cp.id = cs.course_period_id
     LEFT JOIN coaches c ON c.id = COALESCE(cs.coach_id, cp.coach_id)`;
@@ -50,6 +57,8 @@ function rowToSession(r) {
     checkin_status: r.checkin_status,
     checkin_at: r.checkin_at || null,
     backfilled_at: r.backfilled_at || null,
+    // 試上/單堂標記（course_periods.is_experience_course；舊示範表列固定 false）
+    is_experience_course: !!r.is_experience_course,
   };
 }
 
@@ -124,7 +133,7 @@ router.get('/', requireAdminAuth, async (req, res) => {
       UNION ALL
       SELECT ats.id::text AS id, ats.date::text AS date, ats.start_time, ats.end_time, ats.venue_id, ats.coach,
              to_json(ats.students) AS students, ats.course_type, ats.checkin_status::text AS checkin_status,
-             ats.checkin_at, ats.backfilled_at
+             ats.checkin_at, ats.backfilled_at, FALSE AS is_experience_course
         FROM admin_today_sessions ats
        WHERE ats.date >= $1::date AND ats.date <= $2::date
     ) t WHERE TRUE`;
@@ -153,7 +162,7 @@ router.get('/today', requireAdminAuth, async (req, res) => {
       UNION ALL
       SELECT ats.id::text AS id, ats.date::text AS date, ats.start_time, ats.end_time, ats.venue_id, ats.coach,
              to_json(ats.students) AS students, ats.course_type, ats.checkin_status::text AS checkin_status,
-             ats.checkin_at, ats.backfilled_at
+             ats.checkin_at, ats.backfilled_at, FALSE AS is_experience_course
         FROM admin_today_sessions ats
        WHERE ats.date = (NOW() AT TIME ZONE 'Asia/Taipei')::date
     ) t WHERE TRUE`;
