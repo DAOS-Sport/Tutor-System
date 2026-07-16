@@ -108,7 +108,8 @@ export default function SlotPicker({ periodId, onBooked, embedded = false }) {
       await slotsApi.book(selectedId, periodId);
       setBusy(false);
       setConfirmOpen(false);
-      toast.success(isGroup ? '已送出時段，等待同組家長確認' : '已預約 1 堂');
+      // 政策 2026-07：團班預約也即時成立（不再等待同組確認），任一家長預約即整組生效。
+      toast.success(isGroup ? '已預約 1 堂（同組成員的課表將同步更新）' : '已預約 1 堂');
       if (onBooked) onBooked();
     } catch (e) {
       setBusy(false);
@@ -144,7 +145,7 @@ export default function SlotPicker({ periodId, onBooked, embedded = false }) {
         {isGroup && (
           <div className="mt-1.5 flex items-start gap-1.5 text-sm text-gray-500">
             <InfoIcon className="mt-0.5 shrink-0 text-gray-400" />
-            <span>團班時段送出後，需等待同組家庭確認才會正式成立。</span>
+            <span>團班時段預約後立即成立，同組成員共用堂數並同步顯示於各自課表。</span>
           </div>
         )}
       </div>
@@ -163,7 +164,7 @@ export default function SlotPicker({ periodId, onBooked, embedded = false }) {
       {!embedded && infoCard}
 
       {embedded && isGroup && (
-        <div className="px-3 pt-2 text-[11px] text-gray-400">團班時段送出後，需等待同組家庭確認才會正式成立。</div>
+        <div className="px-3 pt-2 text-[11px] text-gray-400">團班時段預約後立即成立，同組成員共用堂數並同步顯示。</div>
       )}
 
       {/* 日期列 */}
@@ -214,7 +215,7 @@ export default function SlotPicker({ periodId, onBooked, embedded = false }) {
         onConfirm={submit}
       >
         <div className="space-y-2">
-          {isGroup && <p className="text-xs text-gray-500">團班時段送出後，需等待同組家庭確認才會正式成立。</p>}
+          {isGroup && <p className="text-xs text-gray-500">團班時段預約後立即成立，同組成員共用堂數並同步顯示。</p>}
           {selectedSlot && (
             <div className="rounded-lg bg-gray-50 px-3 py-2">
               <div className="text-xs font-bold text-brand-primary">{formatTWDate(selectedSlot.start_at)}</div>

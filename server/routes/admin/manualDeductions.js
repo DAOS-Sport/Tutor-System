@@ -8,6 +8,8 @@
 const express = require('express');
 const { pool } = require('../../models/db');
 const { validateRequestId, payloadFingerprint } = require('../../services/idempotency');
+const { syncStoredUsage, listLinkedEnrollmentIds } = require('../../services/usageSync');
+const { broadcastAdminEvent } = require('../../services/websocket');
 const {
   requireAdminAuth,
   requireAdminRole,
@@ -43,6 +45,8 @@ function publicRow(row) {
     reason: row.reason,
     deducted_by: row.deducted_by,
     created_at: row.created_at,
+    // 這堂扣課實際登記出席的整班名單快照 [{id,name}]（單人課期為一人）。
+    roster_snapshot: Array.isArray(row.roster_snapshot) ? row.roster_snapshot : null,
   };
 }
 
@@ -124,7 +128,9 @@ router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'),
        WHERE cs.course_period_id = cp.id
     ) session_usage ON TRUE
     LEFT JOIN LATERAL (
-      SELECT jsonb_agg(jsonb_build_object('id', s.id, 'name', s.name) ORDER BY s.name) AS students
+      SELECT jsonb_agg(jsonb_build_object(
+               'id', s.id, 'name', s.name,
+               'is_active', COALESCE(s.is_active, TRUE)) ORDER BY s.name) AS students
         FROM course_period_enrollments cpe
         JOIN students s ON s.id = cpe.student_id
        WHERE cpe.course_period_id = cp.id AND cpe.status = 'active'
@@ -154,10 +160,11 @@ router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'),
       reserved_sessions: Number(row.reserved_sessions) || 0,
       remaining_sessions: Number(row.remaining_sessions) || 0,
       students: Array.isArray(row.students) ? row.students : [],
-      // 團購／共享課期以「同一個 session 對所有成員」計堂；不能把單一學員的
-      // 手動補登誤寫成新的共用 session，否則會扣到其他家庭。請走既有 F-R03
-      // 簽到流程，直到有明確的整班扣課資料契約。
+      // 共享課期（團購/家庭共班）不再是 blocker：POST 已改為整班簽到語意
+      // （一筆 session＋整班出席＝整期共扣 1 堂）。旗標保留供前端顯示
+      // 「整班扣課」說明與單顆整班按鈕。
       is_shared_period: !!row.group_order_id || Number(row.active_student_count) > 1,
+      active_student_count: Number(row.active_student_count) || 0,
     })));
   } catch (err) {
     console.error('[admin/manual-deductions list]', err);
@@ -224,12 +231,19 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
     );
 
     // 取得教練 lock 後才鎖 period；接下來的容量檢查 + 建 session 與選槽序列化。
+    // FOR UPDATE OF cp：只鎖 period 列，LEFT JOIN 的名稱表不加鎖（僅供 WS 事件顯示）。
     const pr = await client.query(
       `SELECT cp.id, cp.venue_id, cp.coach_id, cp.total_sessions, cp.used_sessions,
-              cp.admin_enrollment_id, cp.group_order_id, cp.status
+              cp.admin_enrollment_id, cp.group_order_id, cp.enrollment_batch_id,
+              cp.period_number, cp.status, cp.course_type,
+              COALESCE(NULLIF(av.name, ''), v.name, cp.venue_id) AS venue_name,
+              c.name AS coach_name
          FROM course_periods cp
+    LEFT JOIN admin_venues av ON av.id = cp.venue_id
+    LEFT JOIN venues v ON v.id = cp.venue_id
+    LEFT JOIN coaches c ON c.id = cp.coach_id
         WHERE cp.id = $1
-        FOR UPDATE`,
+        FOR UPDATE OF cp`,
       [periodId]
     );
     const period = pr.rows[0];
@@ -279,51 +293,36 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
       return res.json({ ok: true, idempotent: true, deduction });
     }
 
-    const activeMembers = await client.query(
-      `SELECT student_id
-         FROM course_period_enrollments
-        WHERE course_period_id = $1 AND status = 'active'
-        FOR SHARE`,
-      [periodId]
-    );
-    if (period.group_order_id || activeMembers.rowCount > 1) {
-      await client.query('ROLLBACK');
-      return res.status(409).json({
-        error: '此為共享課期；請由簽到驗證處理整班出席，避免影響其他團購成員的堂數',
-        code: 'SHARED_PERIOD_REQUIRES_CHECKIN',
-      });
-    }
-
-    const membership = await client.query(
-      `SELECT s.id, s.name
+    // 整班簽到語意：共享課期（團報/家庭共班）以「同一個 session 對所有成員」計堂，
+    // 手動扣課建立的 completed session 為整班 active 名單各寫一筆出席紀錄——
+    // 整期共扣 1 堂、每位成員都拿到該堂出席，與家長/教練/自助簽到四路資料契約一致，
+    // 因此不再擋共享課期（原 SHARED_PERIOD_REQUIRES_CHECKIN 409 已移除）。
+    const rosterRes = await client.query(
+      `SELECT s.id, s.name, COALESCE(s.is_active, TRUE) AS is_active
          FROM course_period_enrollments cpe
          JOIN students s ON s.id = cpe.student_id
-        WHERE cpe.course_period_id = $1
-          AND cpe.student_id = $2
-          AND cpe.status = 'active'
-        FOR SHARE`,
-      [periodId, studentId]
+        WHERE cpe.course_period_id = $1 AND cpe.status = 'active'
+        ORDER BY s.name
+        FOR SHARE OF cpe`,
+      [periodId]
     );
-    if (!membership.rowCount) {
+    const anchor = rosterRes.rows.find((r) => String(r.id) === String(studentId));
+    if (!anchor) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: '此學員不屬於可扣課的課期', code: 'STUDENT_NOT_IN_PERIOD' });
     }
+    // 出席名單：停用學員不列入，但櫃檯點名的 anchor 學員一律登記（單人課期停用
+    // 學員的補登仍要留下出席紀錄，否則扣課會變成無出席的幽靈 session）。
+    const attendanceRoster = rosterRes.rows.filter((r) => r.is_active || String(r.id) === String(studentId));
 
     const usage = await client.query(
       `SELECT
-         COUNT(DISTINCT cs.id) FILTER (WHERE cs.status::text NOT LIKE 'cancelled%')::int AS reserved_sessions,
-         COUNT(DISTINCT cs.id) FILTER (
-           WHERE cs.status::text NOT LIKE 'cancelled%'
-             AND cr.course_session_id IS NOT NULL
-             AND cr.attendance_status = 'ATTENDED'
-         )::int AS attended_sessions
+         COUNT(DISTINCT cs.id) FILTER (WHERE cs.status::text NOT LIKE 'cancelled%')::int AS reserved_sessions
          FROM course_sessions cs
-    LEFT JOIN checkin_records cr ON cr.course_session_id = cs.id
         WHERE cs.course_period_id = $1`,
       [periodId]
     );
     const reserved = Number(usage.rows[0]?.reserved_sessions) || 0;
-    const attended = Number(usage.rows[0]?.attended_sessions) || 0;
     const total = Number(period.total_sessions) || 0;
     // 可再排／可再補登的堂數以「所有未取消 session」計算，不能只看已簽到數；
     // 已排而尚未簽到的 session 已保留一堂，否則後續簽到會使課期超額。
@@ -341,62 +340,89 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
       [periodId, period.coach_id || null, occurredAt.toISOString()]
     );
     const courseSessionId = session.rows[0].id;
-    await client.query(
-      `INSERT INTO checkin_records
-         (course_session_id, student_id, checked_in_by_student_id,
-          is_auto_linked, checked_in_source, checked_in_at)
-       VALUES ($1, $2, $2, FALSE, 'staff', $3)`,
-      [courseSessionId, studentId, occurredAt.toISOString()]
-    );
+    // 整班出席：與 F-R03 簽到（checkins.js / sessions.js 的 roster 寫入）同一資料契約——
+    // 一筆 session＋整班 checkin_records＝整期共扣 1 堂。新建 session 不可能撞鍵，
+    // ON CONFLICT 僅作防禦。
+    for (const member of attendanceRoster) {
+      const ins = await client.query(
+        `INSERT INTO checkin_records
+           (course_session_id, student_id, checked_in_by_student_id,
+            is_auto_linked, checked_in_source, checked_in_at)
+         VALUES ($1, $2, $2, FALSE, 'staff', $3)
+         ON CONFLICT (course_session_id, student_id) DO NOTHING
+         RETURNING id`,
+        [courseSessionId, member.id, occurredAt.toISOString()]
+      );
+      // WS 事件用；ON CONFLICT 無回列時以合成 key 保底，避免前端以 undefined 去重互吞。
+      member.checkin_id = ins.rows[0]?.id || `${courseSessionId}:${member.id}`;
+    }
 
     const remainingAfter = remainingBefore - 1;
+    const rosterSnapshot = attendanceRoster.map((m) => ({ id: m.id, name: m.name }));
     const ledger = await client.query(
       `INSERT INTO manual_lesson_deductions
          (request_id, payload_fingerprint, course_period_id, admin_enrollment_id, course_session_id, student_id,
-          venue_id, quantity, remaining_before, remaining_after, reason, deducted_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8,$9,$10,$11)
+          venue_id, quantity, remaining_before, remaining_after, reason, deducted_by, roster_snapshot)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8,$9,$10,$11,$12::jsonb)
        RETURNING id`,
       [
         idempotencyKey, fingerprint, periodId, period.admin_enrollment_id || null, courseSessionId, studentId,
-        period.venue_id, remainingBefore, remainingAfter, reason, by,
+        period.venue_id, remainingBefore, remainingAfter, reason, by, JSON.stringify(rosterSnapshot),
       ]
     );
 
-    // Legacy counters are deliberately derived from the authoritative checkin count,
-    // never decremented below zero and never allowed to exceed the purchased total.
-    await client.query(
-      `UPDATE course_periods
-          SET used_sessions = $2, updated_at = NOW()
-        WHERE id = $1`,
-      [periodId, Math.min(total, attended + 1)]
+    // 鏡射欄位以權威簽到數重算，並同步「共享此 period 的全部訂單」（anchor／團報／
+    // 多期批次），與 checkins.js / sessions.js 的 syncStoredUsage 同一條路。
+    const usedAfterRes = await client.query(
+      `SELECT COUNT(DISTINCT cs.id)::int AS n
+         FROM course_sessions cs
+         JOIN checkin_records cr ON cr.course_session_id = cs.id
+        WHERE cs.course_period_id = $1
+          AND cs.status::text NOT LIKE 'cancelled%'
+          AND cr.attendance_status = 'ATTENDED'`,
+      [periodId]
     );
-    if (period.admin_enrollment_id) {
-      const updatedEnrollment = await client.query(
-        `UPDATE admin_enrollments
-            SET used_sessions = LEAST(COALESCE(NULLIF(total_sessions, 0), $2),
-                                      GREATEST(COALESCE(used_sessions, 0), $2)),
-                updated_at = NOW()
-          WHERE id = $1
-          RETURNING id`,
-        [period.admin_enrollment_id, Math.min(total, attended + 1)]
+    const usedAfter = Math.min(total, Number(usedAfterRes.rows[0]?.n || 0));
+    await syncStoredUsage(client, period, usedAfter);
+
+    // 稽核：對共享此 period 的所有訂單各寫一筆（單人課期即 anchor 一筆）。
+    const isSharedPeriod = !!period.group_order_id || rosterRes.rows.length > 1;
+    const auditAction = isSharedPeriod
+      ? `手動扣課 1 堂（整班出席 ${attendanceRoster.length} 名：${attendanceRoster.map((m) => m.name).join('、')}；剩餘 ${remainingAfter} 堂）`
+      : `手動扣課 1 堂（學員：${anchor.name}；剩餘 ${remainingAfter} 堂）`;
+    const linkedEnrollmentIds = await listLinkedEnrollmentIds(client, period);
+    for (const enrollmentId of linkedEnrollmentIds) {
+      await client.query(
+        `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user, reason)
+         VALUES ($1,$2,$3,$4)`,
+        [enrollmentId, auditAction, by, reason]
       );
-      if (updatedEnrollment.rowCount) {
-        await client.query(
-          `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user, reason)
-           VALUES ($1,$2,$3,$4)`,
-          [
-            period.admin_enrollment_id,
-            `手動扣課 1 堂（學員：${membership.rows[0].name}；剩餘 ${remainingAfter} 堂）`,
-            by,
-            reason,
-          ]
-        );
-      }
     }
 
     const deduction = await readDeduction(client, periodId, ledger.rows[0].id);
     await client.query('COMMIT');
-    res.status(201).json({ ok: true, idempotent: false, deduction });
+
+    // 與家長/教練簽到相同的後台即時事件（簽到驗證頁自動更新）；payload 形狀對齊
+    // checkins.js 的廣播（含 checkin_id，缺了會被 CheckinPage 去重誤吞）。失敗不影響已扣課結果。
+    for (const member of attendanceRoster) {
+      try {
+        broadcastAdminEvent('checkin:created', {
+          checkin_id: member.checkin_id,
+          at: occurredAt.toISOString(),
+          session_id: courseSessionId,
+          period_id: periodId,
+          venue_id: period.venue_id,
+          venue_name: period.venue_name || period.venue_id,
+          course_type: Number(period.course_type) || null,
+          coach: period.coach_name || '',
+          student: member.name || '',
+          source: 'staff',
+          checked_in_by: '櫃檯',
+        });
+      } catch (e) { console.warn('[admin/manual-deductions] broadcast skipped:', e?.message); }
+    }
+
+    res.status(201).json({ ok: true, idempotent: false, deduction, attendance_count: attendanceRoster.length });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     // A unique conflict can only occur if another client created the same request

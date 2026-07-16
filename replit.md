@@ -33,6 +33,12 @@
 - 並發保護：`server/services/slots.js#createSlot` 用 `pg_advisory_xact_lock(hashtext(coach_id))` 包住「衝突檢查 + INSERT」，5 個並發同 start_at 請求測試 → 1 success + 4 conflict（已驗證）
 - Multiplier 相容：`coaches.js` 將 DB 的 `pricing_multiplier (NUMERIC)` 同時對外曝露為 `multiplier (Number)`，避免家長端 CoachCard / useEnrollmentPricing 在切換 mock=false 時計算錯誤
 
+## 簽到／扣課政策（2026-07 改版）
+- **團報預約免同組確認**：`pending_group_confirm` 流程整組移除（`bookSlot1vN`、每分鐘自動確認 cron、SlotPicker/SlotActionSheet 等待文案）；所有預約一律 `bookSlot1v1` 即時 confirmed。舊 pending 資料由 `bootstrap/coreSchema.js` 冪等遷移轉正（enum 值保留）。`multi_confirm_minutes` 設定與 `groupConfirmInvite` Flex 模板成為死碼（未刪，勿再接線）。
+- **一方簽到＝整組生效＋揭露簽到方全名**：團報期（`group_order_id` 非空）其他成員在上課記錄按鈕看到「已簽 · 簽到方家長姓名」（`/courses/lessons` 回 `checked_in_by_name`、`/mine` 與 `/:id` 回 `partner_checkin_name`，僅姓名不含電話/parent id；稱謂版 `partner_checkin_label` 保留相容）。後台簽到驗證列表回 `checked_in_by`（家長全名/教練/櫃檯）。
+- **櫃台手動扣課解除共享課期限制**：`SHARED_PERIOD_REQUIRES_CHECKIN` 409 移除，改為「整班簽到語意」——一筆 completed session＋整班 active roster（過濾 `students.is_active`，anchor 例外保留）各一筆 staff checkin＝整期共扣 1 堂；ledger 加 `roster_snapshot` JSONB；前端共享期只render一顆「扣除 1 堂（整班 N 位簽到）」按鈕。
+- **used_sessions 鏡射統一**：`services/usageSync.js`（自 checkins/sessions 抽取）為唯一同步入口，含 `listLinkedEnrollmentIds` 供扣課/衝正稽核對同團全部訂單各寫一筆；家長/教練逐堂簽到的計數改在 `FOR UPDATE OF cp` 之下，修並發舊值覆寫。WS `checkin:created` 事件一律帶 `checkin_id`（缺了會被 CheckinPage 去重誤吞）。
+
 ## 文件
 - 文件索引以 `README.md` 為主。
 - `docs/ragic_api.md`：Ragic 整合手冊（含完整欄位對照表 + Field ID）。

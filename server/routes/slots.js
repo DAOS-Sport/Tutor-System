@@ -13,7 +13,7 @@
 const express = require('express');
 const router = express.Router();
 const { pool } = require('../models/db');
-const { detectConflict, createSlot, batchCreateSlots, bookSlot1v1, bookSlot1vN } = require('../services/slots');
+const { detectConflict, createSlot, batchCreateSlots, bookSlot1v1 } = require('../services/slots');
 const { requireCoach, requireCoachOwner } = require('../middlewares/coachAuth');
 const { requireParent } = require('../middlewares/parentAuth');
 const { addCalendarDays, taipeiToday, taipeiWeekStart } = require('../utils/dateTime');
@@ -253,10 +253,10 @@ router.get('/period/:coursePeriodId', requireParent, async (req, res) => {
 //   1) 鎖該教練（與教練開槽用同一把 advisory lock，序列化避免雙訂）
 //   2) 驗證家長確實擁有該 course_period（透過 course_period_enrollments→students.parent_id）
 //   3) 驗證 period 為 active、未超過已購堂數、slot 與 period 的教練/場館一致
-//   4) 依「同期家庭數」分流：單一家庭→bookSlot1v1 即時 confirmed；
-//      多家庭（團報共享）→bookSlot1vN 暫鎖待同組確認
-//   注意：選槽「不」異動 used_sessions——全系統堂數以 checkin_records 為準
-//   （cron/index.js:204），used_sessions 無任何 +1 處，動它會破壞既有計數。
+//   4) 一律 bookSlot1v1 即時 confirmed（政策 2026-07：團報/共班預約不再等待
+//      同組確認；任一家長預約即整組成立）
+//   注意：選槽「不」異動 used_sessions——全系統堂數以 checkin_records 為準，
+//   used_sessions 無任何 +1 處，動它會破壞既有計數。
 router.post('/:id/book', requireParent, async (req, res) => {
   const slotId = req.params.id;
   const coursePeriodId = req.body?.course_period_id ? String(req.body.course_period_id) : '';
@@ -320,22 +320,10 @@ router.post('/:id/book', requireParent, async (req, res) => {
       return res.status(409).json({ error: '可預約堂數已用完', code: 'NO_SESSIONS_LEFT' });
     }
 
-    // 5) 分流：同期不同家庭數 → 1v1 即時確認 / 1vN 暫鎖待同組確認
-    const fam = await client.query(
-      `SELECT DISTINCT s.parent_id
-         FROM course_period_enrollments cpe
-         JOIN students s ON s.id = cpe.student_id
-        WHERE cpe.course_period_id = $1 AND cpe.status = 'active'`,
-      [coursePeriodId]
-    );
-    const groupParentIds = fam.rows.map((r) => r.parent_id);
-
-    let session;
-    if (groupParentIds.length <= 1) {
-      session = await bookSlot1v1(slotId, coursePeriodId, client);
-    } else {
-      session = await bookSlot1vN(slotId, coursePeriodId, req.parent.id, groupParentIds, client);
-    }
+    // 5) 一律即時確認（政策變更）：團報/家庭共班不再走 pending_group_confirm
+    //    「等待同組確認」流程——任一家長預約即代表整組成立，其他成員之後在
+    //    上課記錄看到「已簽 · 簽到方姓名」。舊 pending 資料由 bootstrap 遷移轉正。
+    const session = await bookSlot1v1(slotId, coursePeriodId, client);
 
     await client.query('COMMIT');
     res.status(201).json({ session });

@@ -79,8 +79,11 @@ router.get('/lessons', requireParent, async (req, res) => {
         LIMIT 500`,
       args
     );
-    // 夥伴代簽標籤（「團報夥伴陳媽媽」）：本家學員尚未簽到、或簽到紀錄由夥伴家長建立時顯示；
-    // 自己簽的、教練／櫃檯代簽的（checked_in_by_parent_id 為空）不標。只回稱謂，不回全名。
+    // 夥伴代簽顯示：本家學員尚未簽到、或簽到紀錄由夥伴家長建立時標示；
+    // 自己簽的、教練／櫃檯代簽的（checked_in_by_parent_id 為空）不標。
+    // 政策變更（2026-07）：團報一方簽到即整組生效，另一方按鈕顯示「已簽＋簽到方
+    // 家長姓名」——checked_in_by_name 揭露全名（僅限團報期、僅姓名不含電話）；
+    // partner_checkin_label（稱謂版）保留供未更新的舊版前端快取相容。
     const rows = r.rows.map((row) => {
       const {
         partner_parent_id: partnerParentId,
@@ -94,6 +97,7 @@ router.get('/lessons', requireParent, async (req, res) => {
         && (!row.checkin_id || String(ownAuthor) !== String(req.parent.id));
       return {
         ...rest,
+        checked_in_by_name: showPartner ? (partnerName || null) : null,
         partner_checkin_label: showPartner ? partnerCheckinLabel(partnerName, partnerGender) : null,
       };
     });
@@ -259,6 +263,10 @@ router.get('/mine', requireParent, async (req, res) => {
       self_checked_in_today: canAccessPeriod ? !!row.self_checked_in_today : false,
       partner_checkin_label: canAccessPeriod && row.today_partner_checkin
         ? partnerCheckinLabel(row.today_partner_checkin.name, row.today_partner_checkin.gender)
+        : null,
+      // 簽到方家長全名（僅團報期；一方簽到後其他成員按鈕顯示「已簽 · 姓名」）
+      partner_checkin_name: canAccessPeriod && row.today_partner_checkin
+        ? (row.today_partner_checkin.name || null)
         : null,
       expires_at: canAccessPeriod ? row.expires_at : null,
       submitted_at: row.submitted_at,
@@ -586,6 +594,10 @@ router.get('/:id', requireParent, async (req, res) => {
       self_checked_in_today: canAccessPeriod ? !!row.self_checked_in_today : false,
       partner_checkin_label: canAccessPeriod && row.today_partner_checkin
         ? partnerCheckinLabel(row.today_partner_checkin.name, row.today_partner_checkin.gender)
+        : null,
+      // 簽到方家長全名（僅團報期；SelfCheckinModal 的 blocked 訊息用）
+      partner_checkin_name: canAccessPeriod && row.today_partner_checkin
+        ? (row.today_partner_checkin.name || null)
         : null,
       total_sessions: total,
       used_sessions: used,

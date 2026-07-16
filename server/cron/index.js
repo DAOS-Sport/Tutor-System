@@ -80,26 +80,8 @@ function initCronJobs() {
   });
 
 
-  // ── 每分鐘：1vN 槽位逾時自動確認 ──────────
-  scheduleTaipei('* * * * *', async () => {
-    const res = await pool.query(
-      `SELECT cs.id, cp.venue_id FROM course_sessions cs
-       JOIN course_periods cp ON cs.course_period_id = cp.id
-       WHERE cs.status = 'pending_group_confirm'
-         AND cs.group_confirm_deadline < NOW()`
-    );
-    for (const row of res.rows) {
-      await pool.query(
-        `UPDATE course_sessions SET status = 'confirmed', auto_confirmed_at = NOW() WHERE id = $1`,
-        [row.id]
-      );
-      await pool.query(
-        `UPDATE coach_availability_slots SET status = 'booked' WHERE booked_session_id = $1`,
-        [row.id]
-      );
-      // TODO: 發送全組確認 Flex Message
-    }
-  });
+  // （已移除）1vN 槽位逾時自動確認 cron：團報預約不再產生 pending_group_confirm，
+  // 舊 pending 資料由 bootstrap/coreSchema.js 的冪等遷移一次轉正。
 
   // ── 每小時：上課前 1 小時提醒 (F-S05) ────
   // 抓未來 60–120 分鐘內的 confirmed sessions，推給教練 + 該堂所有學員之家長。

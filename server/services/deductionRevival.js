@@ -1,3 +1,5 @@
+const { listLinkedEnrollmentIds } = require('./usageSync');
+
 /**
  * Reverse one lesson usage event without deleting attendance history.
  * The caller owns the transaction. Lock order is course_session -> course_period,
@@ -131,11 +133,14 @@ async function reverseLessonDeduction(client, {
     [session.admin_enrollment_id || '', session.group_order_id || null,
      session.enrollment_batch_id || null, session.period_number || 1, used]
   );
-  if (session.admin_enrollment_id) {
+  // 稽核對「共享此 period 的全部訂單」各寫一筆（與手動扣課的 audit 同一組匹配條件；
+  // usageSync.listLinkedEnrollmentIds），否則團報非 anchor 成員的稽核只見扣課、不見衝正。
+  const linkedEnrollmentIds = await listLinkedEnrollmentIds(client, session);
+  for (const enrollmentId of linkedEnrollmentIds) {
     await client.query(
       `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user)
-       SELECT id, $2, $3 FROM admin_enrollments WHERE id = $1`,
-      [session.admin_enrollment_id, `扣課復活（課堂 ${sessionId}，歸還 1 堂；原因：${cleanReason}）`, actor]
+       VALUES ($1, $2, $3)`,
+      [enrollmentId, `扣課復活（課堂 ${sessionId}，歸還 1 堂；原因：${cleanReason}）`, actor]
     );
   }
 

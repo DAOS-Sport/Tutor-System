@@ -246,7 +246,12 @@ export default function CheckinPage() {
             {list.map((r) => (
               <li key={r.checkin_id} className="grid grid-cols-12 items-center gap-2 px-4 py-3 text-sm">
                 <span className="col-span-2 font-mono text-brand-primary">{formatHM(r.at)}</span>
-                <span className="col-span-2 truncate"><b>{r.student || '—'}</b></span>
+                <span className="col-span-2 truncate">
+                  <b>{r.student || '—'}</b>
+                  {r.checked_in_by && (
+                    <span className="block truncate text-xs text-gray-400">簽到人：{r.checked_in_by}</span>
+                  )}
+                </span>
                 <span className="col-span-3 truncate text-gray-600">
                   {r.course_type ? courseTypeLabel(r.course_type) : '—'}
                   {r.coach ? <span className="ml-1 text-gray-400">· {r.coach}</span> : null}

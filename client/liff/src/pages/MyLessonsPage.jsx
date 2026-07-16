@@ -10,9 +10,11 @@ import { lessonsApi } from '../api/lessons';
 import { checkinsApi } from '../api/checkins';
 import { courseTypeLabel, formatTWDate, formatTWTime } from '../utils/format';
 
-// 家長可自助簽到：尚未簽到、且課程已確認/完成（不限上課當天，隨時可補簽）。
+// 家長可自助簽到：尚未簽到（本家未簽、夥伴也未代簽）、且課程已確認/完成
+// （不限上課當天，隨時可補簽）。團報一方簽到即整組生效——checked_in_by_name
+// 有值代表夥伴家長已簽，按鈕轉為「已簽 · 姓名」不可再簽。
 function canParentCheckin(r) {
-  return !r.checked_in_at && !r.partner_checkin_label
+  return !r.checked_in_at && !r.checked_in_by_name && !r.partner_checkin_label
     && ['confirmed', 'completed'].includes(r.session_status);
 }
 
@@ -115,7 +117,7 @@ export default function MyLessonsPage() {
     }
     // 剩餘堂數以共享 period 的 used_sessions 為主；records 計數作舊 API 保底。
     for (const e of m.values()) {
-      const recordUsed = e.records.filter((r) => r.checked_in_at || r.partner_checkin_label).length;
+      const recordUsed = e.records.filter((r) => r.checked_in_at || r.checked_in_by_name || r.partner_checkin_label).length;
       e.remain = Math.max(0, e.total - Math.max(e.used || 0, recordUsed));
     }
     return Array.from(m.values());
@@ -299,7 +301,10 @@ function StatusSquare({ label, tone, disabled, onClick }) {
       style={{ width: 68, height: 68 }}
       className={`flex shrink-0 flex-col items-center justify-center rounded-xl text-sm font-bold leading-tight disabled:cursor-default ${toneCls}`}
     >
-      {label.map((t) => <span key={t}>{t}</span>)}
+      {/* 第二行（簽到方姓名等）縮小字級並截斷，避免長名字撐破 68px 方塊 */}
+      {label.map((t, i) => (
+        <span key={`${t}-${i}`} className={`max-w-full truncate px-1 ${i > 0 ? 'text-[11px] font-medium' : ''}`}>{t}</span>
+      ))}
     </button>
   );
 }
@@ -315,13 +320,20 @@ function RecordCard({ r, e, busy, onCheckin, onOpen }) {
   const coachLine = coachParts.join('・');
   const checkinDateStr = r.checked_in_at ? r.checked_in_at.toString().slice(0, 10) : null;
 
+  // 簽到方家長姓名（團報一方簽到即整組生效）：有姓名顯示「已簽 · 姓名」；
+  // 舊 API 快取只有稱謂 label 時退回「已代簽」。
+  const signerName = r.checked_in_by_name || null;
   let btn;
-  if (r.checked_in_at || r.partner_checkin_label) {
-    btn = <StatusSquare label={r.partner_checkin_label ? ['已代簽'] : ['已出席']} tone="attended" disabled />;
+  if (r.checked_in_at || signerName || r.partner_checkin_label) {
+    btn = (
+      <StatusSquare
+        label={signerName ? ['已簽', signerName] : (r.partner_checkin_label ? ['已代簽'] : ['已出席'])}
+        tone="attended"
+        disabled
+      />
+    );
   } else if (checkinable) {
     btn = <StatusSquare label={busy ? ['簽到中'] : ['簽到']} tone="checkin" disabled={busy} onClick={onCheckin} />;
-  } else if (r.session_status === 'pending_group_confirm') {
-    btn = <StatusSquare label={['待確認']} tone="pending" disabled />;
   } else {
     btn = <StatusSquare label={['即將', '上課']} tone="pending" disabled />;
   }
@@ -339,9 +351,9 @@ function RecordCard({ r, e, busy, onCheckin, onOpen }) {
           {checkinDateStr && (
             <div className="mt-0.5 text-xs text-gray-400">簽到時間：{checkinDateStr}</div>
           )}
-          {r.partner_checkin_label && (
+          {(signerName || r.partner_checkin_label) && (
             <div className="mt-1 text-xs font-medium text-brand-teal">
-              {r.partner_checkin_label}已代為簽到
+              已由 {signerName || r.partner_checkin_label} 代為簽到
             </div>
           )}
           {clickable && (

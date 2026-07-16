@@ -14,24 +14,7 @@ const { pool } = require('../models/db');
 const { requireParent } = require('../middlewares/parentAuth');
 const { broadcastAdminEvent } = require('../services/websocket');
 const { getFeatureFlag, flagAllowsPhone } = require('../services/featureFlags');
-
-async function syncStoredUsage(client, period, used) {
-  await client.query(
-    `UPDATE course_periods SET used_sessions = $2, updated_at = NOW() WHERE id = $1`,
-    [period.id, used]
-  );
-  await client.query(
-    `UPDATE admin_enrollments ae
-        SET used_sessions = $5, updated_at = NOW()
-      WHERE ae.id = $1
-         OR ($2::uuid IS NOT NULL AND ae.group_order_id = $2::uuid
-             AND COALESCE(ae.period_number, 1) = COALESCE($4::int, 1))
-         OR ($3::uuid IS NOT NULL AND ae.enrollment_batch_id = $3::uuid
-             AND COALESCE(ae.period_number, 1) = COALESCE($4::int, 1))`,
-    [period.admin_enrollment_id || '', period.group_order_id || null,
-     period.enrollment_batch_id || null, period.period_number || 1, used]
-  );
-}
+const { syncStoredUsage } = require('../services/usageSync');
 
 /**
  * U13 免預約自助簽到 —— checkin_mode='self' 的課程期，家長不需先排課：
@@ -282,6 +265,8 @@ router.post('/self', requireParent, async (req, res) => {
     for (const s of activeParticipants.rows) {
       try {
         broadcastAdminEvent('checkin:created', {
+          // 合成唯一 key：缺 checkin_id 時 CheckinPage 去重會把第 2 位起的事件誤吞
+          checkin_id: `${sessionRow.id}:${s.id}`,
           at: sessionRow.scheduled_at instanceof Date ? sessionRow.scheduled_at.toISOString() : String(sessionRow.scheduled_at),
           session_id: sessionRow.id,
           period_id: periodId,
@@ -349,9 +334,12 @@ router.post('/', requireParent, async (req, res) => {
           AND EXISTS (
                 SELECT 1 FROM course_period_enrollments cpe
                  WHERE cpe.course_period_id = cp.id AND cpe.student_id = $2
-              )`,
+              )
+        FOR UPDATE OF cp`,
       [sessionId, studentId]
     );
+    // FOR UPDATE OF cp：與手動扣課／自助簽到共用 period 列鎖，讓「計數已出席堂數 →
+    // 寫回 used_sessions 鏡射」序列化，避免並發時以舊計數覆寫（低估 1 堂）。
     if (!ctx.rowCount) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: '該學員未在此課程名單中' });

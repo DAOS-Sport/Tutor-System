@@ -273,7 +273,7 @@ async function call(base, method, path, { token, body, requestId } = {}) {
     );
     assert(exactlyOnce.rows[0].ledgers === 1 && exactlyOnce.rows[0].sessions === 1 && exactlyOnce.rows[0].checkins === 1, 'retry/mismatch create no duplicate ledger, session, or check-in');
 
-    step('venue scope, manager capacity, shared-period, and admin rules fail closed as designed');
+    step('venue scope, manager capacity, and admin rules fail closed as designed');
     const foreign = await call(route.base, 'POST', '/api/admin/manual-deductions', {
       token: staffToken,
       body: { course_period_id: outOfScope.periodId, student_id: studentId, reason: 'foreign venue', request_id: `foreign-${suffix}` },
@@ -293,13 +293,26 @@ async function call(base, method, path, { token, body, requestId } = {}) {
     );
     assert(reservedState.rows[0].ledgers === 0 && reservedState.rows[0].checkins === 0, 'insufficient transaction leaves no ledger/check-in half-product');
 
+    // 政策變更（2026-07）：共享課期不再 fail-closed——手動扣課改為「整班簽到語意」：
+    // 一筆 completed session＋整班 active 名單各一筆 staff 出席＝整期共扣 1 堂。
+    step('shared period deduction records whole-roster attendance and deducts exactly one shared session');
     const sharedResult = await call(route.base, 'POST', '/api/admin/manual-deductions', {
       token: staffToken,
-      body: { course_period_id: shared.periodId, student_id: studentId, reason: 'shared period', request_id: `shared-${suffix}` },
+      body: { course_period_id: shared.periodId, student_id: studentId, reason: 'shared period whole-class', request_id: `shared-${suffix}` },
     });
-    assert(sharedResult.status === 409 && sharedResult.data?.code === 'SHARED_PERIOD_REQUIRES_CHECKIN', 'shared/group period fails closed');
-    const sharedState = await pg.query(`SELECT COUNT(*)::int AS n FROM course_sessions WHERE course_period_id = $1`, [shared.periodId]);
-    assert(sharedState.rows[0].n === 0, 'shared-period rejection creates no personal session');
+    assert(sharedResult.status === 201 && sharedResult.data?.attendance_count === 2, `shared period deducts with whole-roster attendance (${sharedResult.status}/${sharedResult.data?.attendance_count})`);
+    assert(Array.isArray(sharedResult.data?.deduction?.roster_snapshot)
+      && sharedResult.data.deduction.roster_snapshot.length === 2, 'ledger snapshots the whole roster');
+    const sharedState = await pg.query(
+      `SELECT
+         (SELECT COUNT(*)::int FROM course_sessions WHERE course_period_id = $1 AND status::text NOT LIKE 'cancelled%') AS sessions,
+         (SELECT COUNT(*)::int FROM checkin_records cr JOIN course_sessions cs ON cs.id = cr.course_session_id WHERE cs.course_period_id = $1) AS checkins,
+         (SELECT used_sessions FROM course_periods WHERE id = $1) AS period_used,
+         (SELECT used_sessions FROM admin_enrollments WHERE id = $2) AS enrollment_used`,
+      [shared.periodId, shared.enrollmentId]
+    );
+    assert(sharedState.rows[0].sessions === 1 && sharedState.rows[0].checkins === 2, 'one shared session carries attendance for every member');
+    assert(Number(sharedState.rows[0].period_used) === 1 && Number(sharedState.rows[0].enrollment_used) === 1, 'shared pool deducts exactly one session across members');
 
     const adminKey = `admin-cross-${suffix}`;
     const adminResult = await call(route.base, 'POST', '/api/admin/manual-deductions', {

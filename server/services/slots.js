@@ -109,33 +109,9 @@ async function bookSlot1v1(slotId, coursePeriodId, client) {
   return session;
 }
 
-/**
- * 學員選槽（1vN）：暫時鎖定，等待同組確認
- */
-async function bookSlot1vN(slotId, coursePeriodId, initiatorParentId, groupParentIds, db = pool) {
-  const confirmDeadline = new Date(Date.now() + 60 * 60 * 1000); // 1 小時後
-  const groupStatus = {};
-  groupParentIds.forEach(pid => { groupStatus[pid] = pid === initiatorParentId ? 'agreed' : 'pending'; });
-
-  const sessionRes = await db.query(
-    `INSERT INTO course_sessions
-       (course_period_id, availability_slot_id, scheduled_at, duration_minutes, status,
-        initiated_by_parent_id, group_confirm_status, group_confirm_deadline, coach_id)
-     SELECT $1, cas.id, cas.start_at, cas.duration_minutes, 'pending_group_confirm', $2, $3, $4,
-            (SELECT coach_id FROM course_periods WHERE id = $1)
-     FROM coach_availability_slots cas WHERE cas.id = $5 AND cas.status = 'available'
-     RETURNING *`,
-    [coursePeriodId, initiatorParentId, JSON.stringify(groupStatus), confirmDeadline.toISOString(), slotId]
-  );
-  if (sessionRes.rows.length === 0) throw new Error('此時段已被預約或不存在');
-  const session = sessionRes.rows[0];
-  // 槽位暫時鎖定
-  await db.query(
-    `UPDATE coach_availability_slots SET status = 'pending_group_confirm', booked_session_id = $1 WHERE id = $2`,
-    [session.id, slotId]
-  );
-  return session;
-}
+// bookSlot1vN（1vN 暫鎖等待同組確認）已於政策變更時移除：團報預約不再需要
+// 雙方同意，所有預約一律走 bookSlot1v1 即時確認。舊 pending_group_confirm 資料
+// 由 bootstrap/coreSchema.js 的冪等遷移轉正；enum 值保留（PG 刪 enum 值成本高且無害）。
 
 /**
  * 取消課程時段（學員自助），釋回槽位
@@ -172,4 +148,4 @@ async function cancelSession(sessionId, cancelType) {
   }
 }
 
-module.exports = { detectConflict, createSlot, batchCreateSlots, bookSlot1v1, bookSlot1vN, cancelSession };
+module.exports = { detectConflict, createSlot, batchCreateSlots, bookSlot1v1, cancelSession };

@@ -75,7 +75,13 @@ export default function ManualDeductionPage() {
           : item
       )));
       requestIdsRef.current.delete(key);
-      toast.success(result?.idempotent ? '已確認原扣課操作，未重複扣除' : '已手動扣除 1 堂，餘額與上課紀錄已同步');
+      const attendanceCount = Number(result?.attendance_count)
+        || (Array.isArray(result?.deduction?.roster_snapshot) ? result.deduction.roster_snapshot.length : 0);
+      toast.success(result?.idempotent
+        ? '已確認原扣課操作，未重複扣除'
+        : (row.is_shared_period && attendanceCount > 1
+          ? `已扣除 1 堂，並為整班 ${attendanceCount} 位學員登記出席`
+          : '已手動扣除 1 堂，餘額與上課紀錄已同步'));
     } catch (err) {
       // 保留 request_id，網路逾時後同一操作 retry 會回到同一筆 ledger，而非再扣一次。
       toast.error(err?.response?.data?.error || '手動扣課失敗，尚未變更畫面餘額');
@@ -130,14 +136,37 @@ export default function ManualDeductionPage() {
               </span>
             </div>
             {row.is_shared_period && (
-              <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
-                此為共享課期。為避免誤扣其他團購成員堂數，請改由「簽到驗證」處理整班出席。
+              <p className="mt-2 rounded-lg border border-brand-teal/30 bg-brand-teal/5 px-3 py-2 text-xs leading-5 text-gray-700">
+                此為共享課期（{(row.students || []).filter((s) => s.is_active !== false).map((s) => s.name).join('、')} 共用堂數）：
+                扣課會建立一堂完成課程並為整班登記出席，整期共扣 1 堂，餘額與所有成員訂單同步。
               </p>
             )}
             <div className="mt-3 flex flex-wrap gap-2 border-t border-gray-100 pt-3">
-              {(row.students || []).map((student) => {
+              {row.is_shared_period ? (() => {
+                // 共享課期＝整班一堂：只給一顆整班按鈕（點任一學員效果相同，
+                // 逐學員按鈕會誤導成「各扣各的」）。人數與 anchor 都以「未停用學員」
+                // 為準（與後端 attendanceRoster 的 is_active 過濾一致）；全停用時
+                // 退回名單第一位，保留單人停用學員的補登語意。
+                const activeStudents = (row.students || []).filter((s) => s.is_active !== false);
+                const anchorStudent = activeStudents[0] || (row.students || [])[0];
+                if (!anchorStudent) {
+                  return <span className="text-xs text-gray-400">此課期沒有有效學員，無法扣課</span>;
+                }
+                const key = `${row.course_period_id}:${anchorStudent.id}`;
+                const disabled = Number(row.remaining_sessions) < 1 || !!busyKey;
+                return (
+                  <button
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => deduct(row, anchorStudent)}
+                    className="rounded-lg border border-brand-teal px-3 py-2 text-sm font-bold text-brand-teal transition hover:bg-brand-teal/10 disabled:cursor-not-allowed disabled:border-gray-200 disabled:text-gray-400"
+                  >
+                    {busyKey === key ? '正在扣除…' : `扣除 1 堂（整班 ${activeStudents.length || 1} 位簽到）`}
+                  </button>
+                );
+              })() : (row.students || []).map((student) => {
                 const key = `${row.course_period_id}:${student.id}`;
-                const disabled = Number(row.remaining_sessions) < 1 || !!busyKey || !!row.is_shared_period;
+                const disabled = Number(row.remaining_sessions) < 1 || !!busyKey;
                 return (
                   <button
                     key={student.id}

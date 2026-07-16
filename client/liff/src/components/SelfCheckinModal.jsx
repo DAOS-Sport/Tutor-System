@@ -48,6 +48,9 @@ export default function SelfCheckinModal({ course, onClose, onDone }) {
   const blocked = useMemo(() => {
     if (!info) return null;
     if (info.self_checked_in_today) {
+      if (info.partner_checkin_name) {
+        return `已由 ${info.partner_checkin_name} 完成簽到（整組共用堂數，每日限簽一次）；如需更正請洽櫃檯。`;
+      }
       return info.partner_checkin_label
         ? `${info.partner_checkin_label}已代為簽到；如需更正請洽櫃檯。`
         : '今日已完成簽到（同一課程每日限簽一次）；如需更正請洽櫃檯。';

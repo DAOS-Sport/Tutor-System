@@ -49,13 +49,17 @@ router.get('/', requireAdminAuth, async (req, res) => {
              cp.course_type   AS course_type,
              c.name           AS coach_name,
              s.name           AS student_name,
-             cp.id            AS period_id
+             cp.id            AS period_id,
+             pby.name         AS by_parent_name,
+             cby.name         AS by_coach_name
         FROM checkin_records cr
         JOIN course_sessions cs ON cs.id = cr.course_session_id
         JOIN course_periods  cp ON cp.id = cs.course_period_id
         JOIN students        s  ON s.id  = cr.student_id
    LEFT JOIN coaches         c  ON c.id  = cp.coach_id
    LEFT JOIN admin_venues    v  ON v.id  = cp.venue_id
+   LEFT JOIN parents         pby ON pby.id = cr.checked_in_by_parent_id
+   LEFT JOIN coaches         cby ON cby.id = cr.checked_in_by_coach_id
        WHERE (cr.checked_in_at AT TIME ZONE 'Asia/Taipei')::date = $1::date
          AND cr.attendance_status = 'ATTENDED'
          ${venueWhere}
@@ -98,6 +102,10 @@ router.get('/', requireAdminAuth, async (req, res) => {
         student: r.student_name || '',
         source: r.source || null,
         session_created_via: r.session_created_via || 'booking',
+        // 簽到人：家長全名／教練／櫃檯——櫃台可直接核對是誰簽的。
+        checked_in_by: r.source === 'staff'
+          ? '櫃檯'
+          : (r.by_parent_name || (r.by_coach_name ? `${r.by_coach_name} 教練` : null)),
       }))
       .sort((a, b) => (a.at < b.at ? 1 : -1));
     res.json(all);

@@ -3,9 +3,10 @@
  *
  *  A 家長替同一堂簽到：
  *    - 同一共享 period 的完整 active roster 都建立 attendance，但只扣 1 堂。
- *    - B 家長的逐堂清單與課程卡顯示「團報夥伴王媽媽已代為簽到」。
- *    - A 自己不會看到自己被標成團報夥伴，API 也不回傳對方全名／parent id。
- *  下一堂由 B 簽到時方向相反，A 顯示「團報夥伴李爸爸已代為簽到」。
+ *    - B 家長的逐堂清單與課程卡顯示「已簽＋簽到方家長全名」（政策 2026-07：
+ *      團報一方簽到即整組生效，揭露簽到方全名；稱謂版 label 保留相容舊前端）。
+ *    - A 自己不會看到自己被標成團報夥伴，API 不回傳 parent id／電話等原始欄位。
+ *  下一堂由 B 簽到時方向相反，A 顯示李大明。
  */
 const { randomUUID } = require('crypto');
 const express = require('../../server/node_modules/express');
@@ -184,18 +185,23 @@ async function call(base, method, path, { token, body } = {}) {
     const bFirst = (r.data || []).find((row) => row.session_id === firstSession.rows[0].id && row.student_id === studentB);
     assert(r.status === 200 && bFirst?.checked_in_at, 'B 家長看到同一堂已完成簽到');
     assert(bFirst.partner_checkin_label === '團報夥伴王媽媽',
-      `B 看到「團報夥伴王媽媽」，實際 ${bFirst?.partner_checkin_label}`);
+      `B 仍看到相容稱謂 label，實際 ${bFirst?.partner_checkin_label}`);
+    assert(bFirst.checked_in_by_name === '王小華',
+      `B 看到簽到方家長全名（政策 2026-07），實際 ${bFirst?.checked_in_by_name}`);
     assert(!Object.hasOwn(bFirst, 'partner_name') && !Object.hasOwn(bFirst, 'checked_in_by_parent_id'),
-      '跨家庭 API 只回稱謂，不回對方全名或 parent id');
+      '跨家庭 API 只回顯示用姓名欄位，不回 parent id 等原始欄位');
 
     r = await call(route.base, 'GET', '/api/courses/lessons', { token: tokenA });
     const aFirst = (r.data || []).find((row) => row.session_id === firstSession.rows[0].id && row.student_id === studentA);
-    assert(aFirst?.partner_checkin_label == null, 'A 自己簽到不會把自己標成團報夥伴');
+    assert(aFirst?.partner_checkin_label == null && aFirst?.checked_in_by_name == null,
+      'A 自己簽到不會把自己標成團報夥伴');
 
     r = await call(route.base, 'GET', '/api/courses/mine', { token: tokenB });
     const bCard = (r.data || []).find((row) => row.course_period_id === periodId);
     assert(bCard?.partner_checkin_label === '團報夥伴王媽媽',
       `B 的課程卡同步顯示代簽者，實際 ${bCard?.partner_checkin_label}`);
+    assert(bCard?.partner_checkin_name === '王小華',
+      `B 的課程卡顯示簽到方全名，實際 ${bCard?.partner_checkin_name}`);
     assert(bCard?.used_sessions === 1 && bCard?.remaining_sessions === 5,
       `B 的共享堂數進度為 1/6，實際 ${bCard?.used_sessions}/${bCard?.remaining_sessions}`);
 
@@ -228,7 +234,9 @@ async function call(base, method, path, { token, body } = {}) {
     r = await call(route.base, 'GET', '/api/courses/lessons', { token: tokenA });
     const aSecond = (r.data || []).find((row) => row.session_id === secondSession.rows[0].id && row.student_id === studentA);
     assert(aSecond?.partner_checkin_label === '團報夥伴李爸爸',
-      `A 看到「團報夥伴李爸爸」，實際 ${aSecond?.partner_checkin_label}`);
+      `A 看到相容稱謂 label「團報夥伴李爸爸」，實際 ${aSecond?.partner_checkin_label}`);
+    assert(aSecond?.checked_in_by_name === '李大明',
+      `A 看到簽到方家長全名，實際 ${aSecond?.checked_in_by_name}`);
     const finalUsage = await pg.query(`SELECT used_sessions FROM course_periods WHERE id = $1`, [periodId]);
     assert(finalUsage.rows[0].used_sessions === 2, `兩堂各扣一次，最後 used_sessions=2，實際 ${finalUsage.rows[0].used_sessions}`);
 

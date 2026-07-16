@@ -11,20 +11,7 @@ const { requireCoach, requireCoachOwner } = require('../middlewares/coachAuth');
 const { broadcastAdminEvent } = require('../services/websocket');
 const { getFeatureFlag, flagAllowsPhone } = require('../services/featureFlags');
 const { addCalendarDays, taipeiWeekStart } = require('../utils/dateTime');
-
-async function syncStoredUsage(client, period, used) {
-  await client.query(`UPDATE course_periods SET used_sessions = $2, updated_at = NOW() WHERE id = $1`, [period.period_id, used]);
-  await client.query(
-    `UPDATE admin_enrollments ae SET used_sessions = $5, updated_at = NOW()
-      WHERE ae.id = $1
-         OR ($2::uuid IS NOT NULL AND ae.group_order_id = $2::uuid
-             AND COALESCE(ae.period_number, 1) = COALESCE($4::int, 1))
-         OR ($3::uuid IS NOT NULL AND ae.enrollment_batch_id = $3::uuid
-             AND COALESCE(ae.period_number, 1) = COALESCE($4::int, 1))`,
-    [period.admin_enrollment_id || '', period.group_order_id || null,
-     period.enrollment_batch_id || null, period.period_number || 1, used]
-  );
-}
+const { syncStoredUsage } = require('../services/usageSync');
 
 function todayWhereTaipei(columnSql = 'cs.scheduled_at') {
   return `(${columnSql} AT TIME ZONE 'Asia/Taipei')::date = (NOW() AT TIME ZONE 'Asia/Taipei')::date`;
@@ -205,9 +192,12 @@ router.post('/:id/checkins', requireCoach, async (req, res) => {
          JOIN course_periods cp ON cp.id = cs.course_period_id
          LEFT JOIN coaches c ON c.id = COALESCE(cs.coach_id, cp.coach_id)
          LEFT JOIN venues v ON v.id = cp.venue_id
-        WHERE cs.id = $1`,
+        WHERE cs.id = $1
+        FOR UPDATE OF cp`,
       [req.params.id]
     );
+    // FOR UPDATE OF cp：與手動扣課／家長簽到共用 period 列鎖，序列化
+    // 「計數已出席堂數 → 寫回 used_sessions 鏡射」，避免並發舊值覆寫。
     if (!ctx.rowCount) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'session not found' });

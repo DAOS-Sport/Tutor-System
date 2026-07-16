@@ -63,11 +63,6 @@ export default function SlotActionSheet({ slot, onClose, onMutated, onError }) {
               已預約的時段須由家長端取消後才能釋回。
             </div>
           )}
-          {slot.status === 'pending_group_confirm' && (
-            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
-              此槽位等待小組確認中，自動確認時間到後將決定狀態。
-            </div>
-          )}
         </div>
 
         <button type="button" onClick={onClose}

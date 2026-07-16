@@ -428,6 +428,9 @@ DO $$ BEGIN ALTER TABLE manual_lesson_deductions ADD COLUMN IF NOT EXISTS revers
 DO $$ BEGIN ALTER TABLE manual_lesson_deductions ADD COLUMN IF NOT EXISTS reversed_at TIMESTAMPTZ; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE manual_lesson_deductions ADD CONSTRAINT chk_manual_deduction_status CHECK (status IN ('APPLIED','REVERSED')); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 CREATE INDEX IF NOT EXISTS idx_manual_deductions_status_created ON manual_lesson_deductions(status, created_at DESC);
+-- 共享課期手動扣課（整班簽到語意）：快照扣課當下的整班 active 名單 [{id,name}]，
+-- 稽核可追「這堂扣課涵蓋哪些學員」。單人課期亦寫入（一人名單），格式一致。
+DO $$ BEGIN ALTER TABLE manual_lesson_deductions ADD COLUMN IF NOT EXISTS roster_snapshot JSONB; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
 DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS attendance_status TEXT NOT NULL DEFAULT 'ATTENDED'; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS reversed_by TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
@@ -467,6 +470,22 @@ ON CONFLICT (key) DO UPDATE
 INSERT INTO application_feature_flags (key, enabled, allowed_phones)
 VALUES ('DEDUCTION_REVIVAL_V2', TRUE, ARRAY['0982252694']::text[])
 ON CONFLICT (key) DO NOTHING;
+
+-- 政策變更（2026-07）：團報/共班預約不再需要「同組家長確認」——
+-- pending_group_confirm 已無任何寫入來源（bookSlot1vN 與逾時自動確認 cron 皆移除），
+-- 這裡把歷史 pending 資料冪等轉正：session 轉 confirmed、已掛 session 的槽位轉 booked、
+-- 孤兒槽位釋回 available。多次啟動執行安全（命中 0 列即 no-op）。
+-- enum 值本身保留：PG 移除 enum 值成本高，且殘值對 status IN (...) 查詢無害。
+DO $$ BEGIN ALTER TABLE course_sessions ADD COLUMN IF NOT EXISTS auto_confirmed_at TIMESTAMPTZ; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+UPDATE course_sessions
+   SET status = 'confirmed', auto_confirmed_at = NOW(), updated_at = NOW()
+ WHERE status = 'pending_group_confirm';
+UPDATE coach_availability_slots
+   SET status = 'booked'
+ WHERE status = 'pending_group_confirm' AND booked_session_id IS NOT NULL;
+UPDATE coach_availability_slots
+   SET status = 'available', booked_session_id = NULL
+ WHERE status = 'pending_group_confirm' AND booked_session_id IS NULL;
 
 -- ─── Phase 4: 聊天室 / 訊息 / 關鍵字警示 ───────────────────────────────
 DO $$ BEGIN CREATE TYPE alert_status AS ENUM ('pending','reviewed','no_issue','resolved'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
