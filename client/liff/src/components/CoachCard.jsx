@@ -1,9 +1,15 @@
 import React from 'react';
 import { formatTWD } from '../utils/format';
 
-export default function CoachCard({ coach, basePrice, onSelect }) {
+export default function CoachCard({ coach, basePrice, onSelect, isTrial = false, trialPrice = null, sessionsPerPeriod = 6 }) {
   const isPlaceholder = !!coach.is_placeholder;
   const adjusted = Math.round((basePrice || 0) * (coach.multiplier || 1));
+  // 試上單堂顯示價（與後端 calculateTrialPrice 同語意）：
+  // F-A07 trial_price 有設＝每人固定價（不吃教練係數）；未設＝單期價×係數 ÷ 每期堂數推算。
+  const trialUnit = trialPrice != null && Number(trialPrice) > 0
+    ? Math.round(Number(trialPrice))
+    : Math.round(adjusted / Math.max(1, Number(sessionsPerPeriod) || 6));
+  const displayPrice = isTrial ? trialUnit : adjusted;
   const initial = isPlaceholder ? '待' : (coach.name || '？').slice(0, 1);
   const coefficientPct = Math.round((coach.multiplier ?? 1) * 100);
   const isAdjustedCoefficient = coefficientPct !== 100;
@@ -75,14 +81,17 @@ export default function CoachCard({ coach, basePrice, onSelect }) {
           <span className={`font-bold ${isAdjustedCoefficient ? 'text-brand-amber' : 'text-brand-primary'}`}>
             {coefficientPct}%
           </span>
-          <span className="ml-2">/ 6 堂</span>
+          <span className="ml-2">{isTrial ? '/ 試上 1 堂' : '/ 6 堂'}</span>
           </>}
         </div>
         <div className="text-right">
-          {isAdjustedCoefficient && (
+          {isTrial && isPlaceholder && (
+            <div className="text-[11px] text-gray-400">試上 1 堂</div>
+          )}
+          {!isTrial && isAdjustedCoefficient && (
             <div className="text-[11px] text-gray-400 line-through">{formatTWD(basePrice)}</div>
           )}
-          <div className="text-lg font-bold text-brand-primary">{formatTWD(adjusted)}</div>
+          <div className="text-lg font-bold text-brand-primary">{formatTWD(displayPrice)}</div>
         </div>
       </div>
     </button>

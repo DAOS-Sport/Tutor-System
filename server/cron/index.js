@@ -257,6 +257,8 @@ function initCronJobs() {
            JOIN coaches co ON co.id = cp.coach_id
            JOIN last_sess ls ON ls.course_period_id = cp.id
           WHERE cp.status IN ('active','completed')
+            -- 試上期（單堂體驗）不發期末評鑑邀請（政策 2026-07-16，PRP §8-6b／§10-5 經使用者批准）
+            AND COALESCE(cp.is_experience_course, FALSE) = FALSE
             AND EXISTS (
               SELECT 1 FROM checkin_records cr
                WHERE cr.course_session_id = ls.session_id

@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>試上課程・邏輯閉環</title>
+<style>
+  :root {
+    /* DAOS 品牌 token（docs/brand_colors.md） */
+    --navy: #15316a;      /* 深海藍：家長端 / 標題 */
+    --teal: #31aeab;      /* 青碧綠：系統自動 / 試上識別 */
+    --amber: #e8a020;     /* 橘黃：櫃台後台 */
+    --green: #97bf36;     /* 草地綠：完成 / 通過 */
+    --gold: #c9a84c;
+    --error: #d64545;
+
+    --bg: #ffffff;
+    --bg-soft: #f4f6fa;          /* 藍偏灰，非純灰 */
+    --card: #ffffff;
+    --ink: #212a3d;
+    --ink-2: #5b6479;
+    --ink-3: #8b93a8;
+    --line: #dfe4ee;
+    --line-soft: #ecf0f7;
+    --head: var(--navy);
+    --navy-bg: #eaeffa;
+    --teal-bg: #e4f4f3;
+    --amber-bg: #fdf3e0;
+    --green-bg: #f0f6df;
+    --code-bg: #f0f3f9;
+    --shadow: 0 1px 3px rgba(21, 49, 106, .07);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1424;
+      --bg-soft: #131a2e;
+      --card: #171f36;
+      --ink: #e2e7f2;
+      --ink-2: #a6afc4;
+      --ink-3: #7b8499;
+      --line: #2a3554;
+      --line-soft: #222c48;
+      --head: #a8bde8;
+      --navy-bg: #1d2a4d;
+      --teal-bg: #14343640;
+      --amber-bg: #3a2c1140;
+      --green-bg: #2a331340;
+      --code-bg: #1d2742;
+      --teal: #46c4c1;
+      --amber: #f0b04a;
+      --green: #accf55;
+      --shadow: 0 1px 3px rgba(0, 0, 0, .35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0e1424; --bg-soft: #131a2e; --card: #171f36;
+    --ink: #e2e7f2; --ink-2: #a6afc4; --ink-3: #7b8499;
+    --line: #2a3554; --line-soft: #222c48; --head: #a8bde8;
+    --navy-bg: #1d2a4d; --teal-bg: #14343640; --amber-bg: #3a2c1140;
+    --green-bg: #2a331340; --code-bg: #1d2742;
+    --teal: #46c4c1; --amber: #f0b04a; --green: #accf55;
+    --shadow: 0 1px 3px rgba(0, 0, 0, .35);
+  }
+  :root[data-theme="light"] {
+    --bg: #ffffff; --bg-soft: #f4f6fa; --card: #ffffff;
+    --ink: #212a3d; --ink-2: #5b6479; --ink-3: #8b93a8;
+    --line: #dfe4ee; --line-soft: #ecf0f7; --head: #15316a;
+    --navy-bg: #eaeffa; --teal-bg: #e4f4f3; --amber-bg: #fdf3e0;
+    --green-bg: #f0f6df; --code-bg: #f0f3f9;
+    --teal: #31aeab; --amber: #e8a020; --green: #97bf36;
+    --shadow: 0 1px 3px rgba(21, 49, 106, .07);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", "Segoe UI", sans-serif;
+    font-size: 15px;
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+  }
+  code, .mono {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: .82em;
+    background: var(--code-bg);
+    border-radius: 4px;
+    padding: .1em .45em;
+    color: var(--ink-2);
+    white-space: nowrap;
+  }
+  .wrap { max-width: 940px; margin: 0 auto; padding: 40px 22px 72px; }
+
+  /* ── 頁首 ─────────────────────────── */
+  header { border-bottom: 3px solid var(--head); padding-bottom: 22px; margin-bottom: 36px; }
+  .eyebrow {
+    font-size: 12px; font-weight: 700; letter-spacing: .18em;
+    color: var(--teal); text-transform: uppercase; margin-bottom: 8px;
+  }
+  h1 {
+    margin: 0 0 10px; font-size: 30px; line-height: 1.3;
+    color: var(--head); font-weight: 800; letter-spacing: .01em; text-wrap: balance;
+  }
+  .lede { margin: 0; max-width: 42em; color: var(--ink-2); }
+  .meta { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 12.5px; color: var(--ink-3); }
+
+  /* ── 章節 ─────────────────────────── */
+  section { margin-top: 48px; }
+  .sec-label {
+    display: flex; align-items: baseline; gap: 10px;
+    font-size: 12px; font-weight: 700; letter-spacing: .16em; color: var(--ink-3);
+    margin-bottom: 6px;
+  }
+  h2 { margin: 0 0 6px; font-size: 21px; color: var(--head); font-weight: 800; text-wrap: balance; }
+  .sec-note { margin: 0 0 20px; color: var(--ink-2); font-size: 14px; max-width: 46em; }
+
+  /* ── 角色圖例 ─────────────────────── */
+  .legend { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 22px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 12.5px; font-weight: 700; padding: 4px 12px; border-radius: 999px;
+  }
+  .chip .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .chip.parent { background: var(--navy-bg); color: var(--head); }
+  .chip.parent .dot { background: var(--navy); }
+  :root[data-theme="dark"] .chip.parent .dot, .dark-dot-fix { background: var(--head); }
+  .chip.staff { background: var(--amber-bg); color: var(--amber); }
+  .chip.staff .dot { background: var(--amber); }
+  .chip.system { background: var(--teal-bg); color: var(--teal); }
+  .chip.system .dot { background: var(--teal); }
+
+  /* ── 閉環流程 ─────────────────────── */
+  .loop { position: relative; padding-left: 34px; }
+  /* 左側迴路軌道：由最後一步繞回第一步 */
+  .loop::before {
+    content: "";
+    position: absolute; left: 0; top: 26px; bottom: 26px; width: 22px;
+    border: 2.5px dashed var(--teal);
+    border-right: none;
+    border-radius: 18px 0 0 18px;
+    opacity: .55;
+  }
+  .loop::after {
+    content: "▲";
+    position: absolute; left: 15px; top: 8px;
+    color: var(--teal); font-size: 13px; opacity: .85;
+  }
+  .loop-tag {
+    position: absolute; left: -8px; top: 50%;
+    transform: translateY(-50%) rotate(180deg);
+    writing-mode: vertical-rl;
+    font-size: 11.5px; font-weight: 700; letter-spacing: .3em;
+    color: var(--teal); background: var(--bg); padding: 10px 0;
+  }
+  .steps { list-style: none; margin: 0; padding: 0; position: relative; }
+  .steps::before {
+    content: ""; position: absolute; left: 17px; top: 20px; bottom: 20px;
+    width: 2px; background: var(--line);
+  }
+  .step {
+    position: relative; display: grid;
+    grid-template-columns: 36px 1fr; gap: 14px;
+    padding: 13px 0;
+  }
+  .step-no {
+    position: relative; z-index: 1;
+    width: 36px; height: 36px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 14px; color: #fff;
+    background: var(--navy); border: 3px solid var(--bg);
+    font-variant-numeric: tabular-nums;
+  }
+  .step.r-staff .step-no { background: var(--amber); }
+  .step.r-system .step-no { background: var(--teal); }
+  .step-body {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 10px; padding: 13px 17px; box-shadow: var(--shadow);
+  }
+  .step.r-staff .step-body { border-left: 3px solid var(--amber); }
+  .step.r-system .step-body { border-left: 3px solid var(--teal); }
+  .step.r-parent .step-body { border-left: 3px solid var(--navy); }
+  :root[data-theme="dark"] .step.r-parent .step-body { border-left-color: var(--head); }
+  .step-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+  .step-title { font-weight: 800; font-size: 15.5px; color: var(--ink); }
+  .step-role { font-size: 11px; font-weight: 700; padding: 1.5px 9px; border-radius: 999px; letter-spacing: .05em; }
+  .r-parent .step-role { background: var(--navy-bg); color: var(--head); }
+  .r-staff .step-role { background: var(--amber-bg); color: var(--amber); }
+  .r-system .step-role { background: var(--teal-bg); color: var(--teal); }
+  .step-desc { margin: 5px 0 0; color: var(--ink-2); font-size: 13.5px; }
+  .step-detail { margin: 7px 0 0; font-size: 12.5px; color: var(--ink-3); }
+  .loopback {
+    margin-top: 14px; padding: 12px 17px;
+    border: 1.5px dashed var(--teal); border-radius: 10px;
+    background: var(--teal-bg); color: var(--ink);
+    font-size: 14px; font-weight: 700;
+  }
+  .loopback span { font-weight: 400; color: var(--ink-2); font-size: 13px; }
+
+  /* ── 狀態機 ───────────────────────── */
+  .states { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 0 2px; overflow-x: auto; }
+  .state {
+    display: flex; flex-direction: column; gap: 1px;
+    border: 1.5px solid var(--line); border-radius: 10px;
+    padding: 8px 16px; background: var(--card); min-width: 118px;
+  }
+  .state b { font-size: 14px; color: var(--ink); }
+  .state code { background: none; padding: 0; font-size: 11px; color: var(--ink-3); }
+  .state.s2 { border-color: var(--amber); }
+  .state.s3 { border-color: var(--teal); }
+  .state.s4 { border-color: var(--green); background: var(--green-bg); }
+  .arrow { color: var(--ink-3); font-size: 15px; flex: none; }
+  .state-note { font-size: 12.5px; color: var(--ink-3); margin-top: 12px; }
+
+  /* ── 卡片群 ───────────────────────── */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); gap: 12px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 16px; box-shadow: var(--shadow);
+  }
+  .card h3 { margin: 0 0 6px; font-size: 14.5px; color: var(--head); }
+  .card p { margin: 0; font-size: 13px; color: var(--ink-2); }
+  .card .big { font-size: 21px; font-weight: 800; color: var(--ink); font-variant-numeric: tabular-nums; }
+
+  /* ── 價格優先序 ───────────────────── */
+  .price-chain { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; }
+  .price-step {
+    flex: 1 1 200px; border-radius: 10px; padding: 12px 15px;
+    border: 1px solid var(--line); background: var(--card);
+  }
+  .price-step.first { border: 2px solid var(--teal); background: var(--teal-bg); }
+  .price-step .pk { font-size: 11px; font-weight: 700; letter-spacing: .1em; color: var(--ink-3); }
+  .price-step.first .pk { color: var(--teal); }
+  .price-step .pv { font-weight: 800; font-size: 14.5px; margin-top: 2px; }
+  .price-step .pd { font-size: 12.5px; color: var(--ink-2); margin-top: 3px; }
+
+  /* ── 表格 ─────────────────────────── */
+  .tbl-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th {
+    text-align: left; font-size: 12px; letter-spacing: .08em; color: var(--ink-3);
+    background: var(--bg-soft); padding: 9px 15px; border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  td { padding: 9px 15px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  td:first-child { font-weight: 700; white-space: nowrap; }
+  .ok { color: var(--green); font-weight: 800; }
+  .no { color: var(--error); font-weight: 800; }
+
+  /* ── 驗證頁尾 ─────────────────────── */
+  .verify {
+    margin-top: 52px; border-top: 3px solid var(--green);
+    padding-top: 18px; display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px 26px;
+  }
+  .verify h3 { margin: 0 0 4px; font-size: 13.5px; color: var(--head); }
+  .verify p { margin: 0; font-size: 12.5px; color: var(--ink-2); }
+  footer { margin-top: 40px; font-size: 12px; color: var(--ink-3); border-top: 1px solid var(--line-soft); padding-top: 14px; }
+
+  @media (max-width: 560px) {
+    .wrap { padding: 26px 14px 56px; }
+    h1 { font-size: 24px; }
+    .loop { padding-left: 22px; }
+    .loop-tag { display: none; }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .step-body { transition: border-color .15s ease; }
+  }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">DAOS 夢想體育學院 · 功能總覽</div>
+    <h1>⚡ 試上課程 — 體驗閉環</h1>
+    <p class="lede">單堂體驗、現場付費，上完課一鍵續報轉入一般報名。試上是<b>一般報名的最小變體</b>：最大化復用既有報名／對帳／發票／簽到／優惠模組，只在必要處加試上分支——不開獨立訂單表、不開獨立對帳頁、不開獨立簽到模組。</p>
+    <div class="meta">
+      <span>上線日 2026-07-16</span>
+      <span>訂單型別 <code>order_kind='trial'</code></span>
+      <span>全鏈 e2e 驗證通過</span>
+    </div>
+  </header>
+
+  <section>
+    <div class="sec-label">閉環主流程</div>
+    <h2>從「試上」到「續報」的完整旅程</h2>
+    <p class="sec-note">三個角色接力完成：家長只操作 LINE 內的 LIFF，櫃台只多一個篩選條件，其餘全部由系統沿既有軌道自動完成。</p>
+    <div class="legend">
+      <span class="chip parent"><span class="dot"></span>家長（LIFF）</span>
+      <span class="chip staff"><span class="dot"></span>櫃台（後台）</span>
+      <span class="chip system"><span class="dot"></span>系統（自動）</span>
+    </div>
+
+    <div class="loop">
+      <span class="loop-tag">體驗閉環</span>
+      <ol class="steps">
+        <li class="step r-parent">
+          <div class="step-no">1</div>
+          <div class="step-body">
+            <div class="step-head"><span class="step-title">首頁看到「⚡ 試上課程」入口</span><span class="step-role">家長</span></div>
+            <p class="step-desc">入口卡只在<b>至少一個品項開放試上</b>時出現，位於「上課記錄」與「課程組別」之間。點入試上選擇頁，僅列出「啟用中且開放試上」的品項與試上單堂價。</p>
+            <p class="step-detail">頁面：LIFF 首頁 → <code>/trial</code>（品項清單由後台 F-A07 即時決定）</p>
+          </div>
+        </li>
+        <li class="step r-parent">
+          <div class="step-no">2</div>
+          <div class="step-body">
+            <div class="step-head"><span class="step-title">選場館 → 選教練</span><span class="step-role">家長</span></div>
+            <p class="step-desc">完全沿用一般報名的場館與教練來源（F-A02 同源自動映射），不排時段、不排程。教練卡顯示<b>試上單堂價</b>（「/ 試上 1 堂」），不再顯示每期價。</p>
+            <p class="step-detail">頁面：<code>/venue</code> → <code>/coaches</code>（試上標記一路帶著走）</p>
+          </div>
+        </li>
+        <li class="step r-parent">
+          <div class="step-no">3</div>
+          <div class="step-body">
+            <div class="step-head"><span class="step-title">送出試上單 → 出示「待現場付費」畫面</span><span class="step-role">家長</span></div>
+            <p class="step-desc">試上以<b>每人每堂計價</b>，可一次為多位學員、多堂下單（依「學員 × 堂數」拆分子訂單），預設<b>現場付費</b>（也可選轉帳）。送出後進入付款資訊頁，顯示「待現場付費」，家長到場時出示此畫面即可。</p>
+            <p class="step-detail">訂單狀態 <code>pending_payment</code>・價格於下單當下快照，事後改價不影響已成立訂單</p>
+          </div>
+        </li>
+        <li class="step r-staff">
+          <div class="step-no">4</div>
+          <div class="step-body">
+            <div class="step-head"><span class="step-title">F-M02 對帳通過＋回填發票</span><span class="step-role">櫃台</span></div>
+            <p class="step-desc">收款後，在「待對帳清單」用<b>「訂單類型：試上」</b>篩選快速找到該單（有「試上・現場付費」徽章），與一般單同一套流程按「對帳通過」：發票號碼＋發票照片必填。</p>
+            <p class="step-detail">後台 <code>/reconcile</code>・發票格式 2 大寫英文＋8 數字・可搜家長／電話／末五碼</p>
+          </div>
+        </li>
+        <li class="step r-system">
+          <div class="step-no">5</div>
+          <div class="step-body">
+            <div class="step-head"><span class="step-title">自動開通 1 堂試上課期＋LINE 通知</span><span class="step-role">系統</span></div>
+            <p class="step-desc">對帳通過即自動開課：<b>每位學員每堂各開通一個 1 堂課期・效期 30 天・自助簽到模式</b>，帶試上標記。同時 LINE 推播發票通知，家長打開 LIFF 就看到課程已開通。</p>
+            <p class="step-detail">課期 <code>total_sessions=1</code>・<code>is_experience_course=true</code>・<code>checkin_mode='self'</code></p>
+          </div>
+        </li>
+        <li class="step r-parent">
+          <div class="step-no">6</div>
+          <div class="step-body">
+            <div class="step-head"><span class="step-title">課程卡出現兩顆按鈕</span><span class="step-role">家長</span></div>
+            <p class="step-desc">「我的課程」的試上卡（有「試上・單堂」徽章）顯示：①<b>今日上課簽到</b> ②<b>續報一般課程</b>。續報按鈕<b>付款後立即出現</b>，不必等上完課。</p>
+            <p class="step-detail">頁面：<code>/my-courses</code>・簽到走既有自助簽到，零新機制</p>
+          </div>
+        </li>
+        <li class="step r-system">
+          <div class="step-no">7</div>
+          <div class="step-body">
+            <div class="step-head"><span class="step-title">簽到落地：後台看得見、教練寫得了紀錄</span><span class="step-role">系統</span></div>
+            <p class="step-desc">簽到當下建立真實課堂＋出席紀錄，即時進後台「簽到驗證」清單（<b>試上徽章</b>＋自助來源）與教練今日課程；教練照常撰寫上課紀錄。1/1 簽完課程轉「已結束」，<b>續報按鈕保留</b>。</p>
+            <p class="step-detail">每日限簽一次・1 堂簽完即止・簽錯可由櫃台撤銷歸還（不發期末評鑑）</p>
+          </div>
+        </li>
+        <li class="step r-parent">
+          <div class="step-no">8</div>
+          <div class="step-body">
+            <div class="step-head"><span class="step-title">續報：一鍵回到一般報名</span><span class="step-role">家長</span></div>
+            <p class="step-desc">點「續報一般課程」直達一般報名頁，<b>自動帶入同教練／同場館／同組別</b>；行銷連結可附折價券代碼自動套用（券由後台優惠活動管理發放，試上費本身不折抵）。</p>
+            <p class="step-detail">導向 <code>/enroll?venue=…&coach=…</code>（可加 <code>&coupon=代碼</code>）・伺服器重新驗價，不信任前端金額</p>
+          </div>
+        </li>
+      </ol>
+      <div class="loopback">↩ 閉環完成：試上 → 續報 → 正式學員 <span>之後就是既有的一般報名 → 對帳 → 開課 → 簽到軌道</span></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-label">F-A07 · 課程需求管理</div>
+    <h2>唯一的開關與價格來源</h2>
+    <p class="sec-note">後台「課程需求管理」每個品項新增兩欄。<b>關閉開關＝入口消失＋後端拒單</b>（首頁卡片、試上頁、深連結全部失效），改動全部進編輯軌跡，也支援排程生效。</p>
+    <div class="cards" style="margin-bottom:14px">
+      <div class="card"><h3>提供試上（開關）</h3><p class="big">開 / 關</p><p>預設關閉。只有打開的品項會出現在試上選擇頁。</p></div>
+      <div class="card"><h3>試上單價（每人）</h3><p class="big">NT$ ____</p><p>選填。設定後為固定價、<b>不吃教練係數</b>；留空則自動推算。</p></div>
+    </div>
+    <div class="price-chain">
+      <div class="price-step first"><div class="pk">第 1 順位</div><div class="pv">F-A07 試上單價</div><div class="pd">每人固定價，所有教練一致</div></div>
+      <div class="price-step"><div class="pk">第 2 順位</div><div class="pv">舊系統設定值</div><div class="pd">過渡相容，一般不會用到</div></div>
+      <div class="price-step"><div class="pk">第 3 順位</div><div class="pv">自動推算</div><div class="pd">每期價 × 教練係數 ÷ 每期堂數</div></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-label">訂單狀態機</div>
+    <h2>四個狀態，全部沿用既有值</h2>
+    <div class="states">
+      <div class="state"><b>待現場付費</b><code>pending_payment</code></div>
+      <span class="arrow">→</span>
+      <div class="state s2"><b>已對帳・已開票</b><code>confirmed</code></div>
+      <span class="arrow">→</span>
+      <div class="state s3"><b>課程進行中</b><code>active（課期）</code></div>
+      <span class="arrow">→</span>
+      <div class="state s4"><b>已結束（1/1）</b><code>completed</code></div>
+    </div>
+    <p class="state-note">取消／退費／發票作廢：<b>櫃台現場人工處理</b>（營運決策，不做線上退款）。退費預覽對試上單固定走單筆公式，已上完課退 0。</p>
+  </section>
+
+  <section>
+    <div class="sec-label">防呆守門</div>
+    <h2>系統擋掉的每一種錯誤操作</h2>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>情境</th><th>系統行為</th><th>對應守門</th></tr></thead>
+        <tbody>
+          <tr><td>品項沒開試上就下單</td><td><span class="no">擋單</span>——含舊的深連結、直接打 API</td><td><code>TRIAL_NOT_ENABLED</code></td></tr>
+          <tr><td>試上想選多位學員或多堂</td><td><span class="ok">放行</span>——以每人每堂計價，逐學員逐堂開通獨立體驗課期</td><td>依「學員 × 堂數」拆分子訂單</td></tr>
+          <tr><td>試上單想套折價券</td><td><span class="no">擋單</span>——試上費不折抵；<b>續報時才能用券</b></td><td><code>TRIAL_COUPON_NOT_SUPPORTED</code></td></tr>
+          <tr><td>一般報名想選「現場付費」</td><td><span class="no">擋單</span>——現場付費僅限試上</td><td><code>ON_SITE_TRIAL_ONLY</code></td></tr>
+          <tr><td>同一天重複按簽到</td><td><span class="ok">安全</span>——回同一筆，不會多扣（資料庫層硬保證）</td><td>每日一次 unique index</td></tr>
+          <tr><td>1 堂簽完後再簽</td><td><span class="no">擋簽</span>——單堂體驗簽完即止</td><td><code>NO_SESSIONS_LEFT</code></td></tr>
+          <tr><td>櫃台簽錯／扣錯</td><td><span class="ok">可撤銷</span>——簽到驗證頁撤銷、扣課復活頁歸還（admin／主管）</td><td>衝正 ledger，防重複歸還</td></tr>
+          <tr><td>試上上完當天觸發期末評鑑</td><td><span class="ok">不會</span>——試上課期已排除評鑑邀請</td><td>評鑑排程過濾試上</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-label">後台辨識點</div>
+    <h2>同事在哪裡看得到「試上」</h2>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>頁面</th><th>路徑</th><th>看得到什麼</th></tr></thead>
+        <tbody>
+          <tr><td>課程需求管理 F-A07</td><td><code>/course-types</code></td><td>「提供試上」開關、「試上單價」欄、列表試上欄、編輯軌跡</td></tr>
+          <tr><td>待對帳清單 F-M02</td><td><code>/reconcile</code></td><td>「訂單類型」篩選（試上／一般）、「試上・現場付費」徽章</td></tr>
+          <tr><td>簽到驗證 F-R03</td><td><code>/checkin</code></td><td>試上簽到列「試上」徽章＋自助來源、可撤銷</td></tr>
+          <tr><td>今日／區間課程 F-R01</td><td><code>/sessions</code></td><td>試上課堂「試上」徽章</td></tr>
+          <tr><td>報表匯出</td><td>CSV / XLSX</td><td>新增「訂單類型」欄（試上／一般）</td></tr>
+          <tr><td>家長端 LIFF</td><td>課程卡・上課記錄</td><td>「試上・單堂」徽章、簽到＋續報雙按鈕</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-label">政策速記</div>
+    <h2>五條規則講完試上</h2>
+    <div class="cards">
+      <div class="card"><h3>堂數</h3><p class="big">每人每堂</p><p>可多位學員、多堂，各自獨立開通</p></div>
+      <div class="card"><h3>付款</h3><p class="big">現場付費</p><p>到場繳費，櫃台對帳後開課</p></div>
+      <div class="card"><h3>效期</h3><p class="big">30 天</p><p>一般報名維持 365 天／期</p></div>
+      <div class="card"><h3>續報時機</h3><p class="big">付款後即可</p><p>不必等上完課；上完課按鈕仍在</p></div>
+      <div class="card"><h3>優惠</h3><p class="big">續報才折</p><p>試上費不折抵；續報可套折價券</p></div>
+    </div>
+  </section>
+
+  <div class="verify">
+    <div><h3>✓ 全鏈自動化驗證</h3><p>開關擋單 → 建單 → 對帳開票 → 自動開課 → 簽到 → 堂數上限 → 退費防禦，端到端測試全數通過並納入例行迴歸。</p></div>
+    <div><h3>✓ 既有功能零影響</h3><p>手動扣課、團報共享簽到、自助簽到、家庭共班、扣課復活等既有核心流程迴歸測試全數通過。</p></div>
+    <div><h3>✓ 上線兩步驟</h3><p>① 正式環境 Publish（資料表自動升級）② 後台 F-A07 對目標品項開「提供試上」＋填試上單價。</p></div>
+  </div>
+
+  <footer>DAOS 家教課程系統 · 試上課程功能地圖 · 2026-07-16 · 詳細技術紀錄見 replit.md「變更紀錄」</footer>
+</div>
+
+</html>

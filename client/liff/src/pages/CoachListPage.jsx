@@ -21,6 +21,7 @@ export default function CoachListPage() {
   const [coaches, setCoaches] = useState(null);
   const [venue, setVenue] = useState(null);
   const [basePrice, setBasePrice] = useState(0);
+  const [priceInfo, setPriceInfo] = useState(null); // base-price 完整回應（trial_price / sessions_per_period）
   const [loadError, setLoadError] = useState(null);
   const [levelFilter, setLevelFilter] = useState('all'); // 'all' | 'senior' | 'regular'
   const [nameQuery, setNameQuery] = useState('');
@@ -47,6 +48,7 @@ export default function CoachListPage() {
         setCoaches(cs || []);
         setVenue(v);
         setBasePrice(bp.original_price);
+        setPriceInfo(bp);
       })
       .catch(() => {
         if (!alive) return;
@@ -165,6 +167,9 @@ export default function CoachListPage() {
               key={c.id}
               coach={c}
               basePrice={basePrice}
+              isTrial={isTrial}
+              trialPrice={priceInfo?.trial_price}
+              sessionsPerPeriod={priceInfo?.sessions_per_period}
               onSelect={() => handleCoachSelect(c)}
             />
           ))}

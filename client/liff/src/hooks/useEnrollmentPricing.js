@@ -21,8 +21,9 @@ export default function useEnrollmentPricing(bootData, {
   }, [bootData]);
 
   const isTrial = orderKind === 'trial';
-  // U10：小計 = 單生價 × 學生數 × 期數。試上則固定一位、一堂，並優先使用
-  // 後端公開的 trial_price 覆寫值；最終建單仍會由伺服器重新計算。
+  // U10：小計 = 單生價 × 學生數 × 期數。試上（2026-07-16 起開放多學員／多堂）
+  // 同式計算：試上單堂價（每人）× 學生數 × 堂數，單價優先使用後端公開的
+  // trial_price 覆寫值；最終建單仍會由伺服器重新計算。
   const sessionsPerPeriod = Math.max(1, Number(bootData?.sessionsPerPeriod) || 6);
   const trialUnitPrice = useMemo(() => {
     if (unitPrice == null) return null;
@@ -31,8 +32,8 @@ export default function useEnrollmentPricing(bootData, {
       ? Math.round(configured)
       : Math.round(unitPrice / sessionsPerPeriod);
   }, [bootData?.trialPrice, sessionsPerPeriod, unitPrice]);
-  const qty = isTrial ? 1 : (Math.max(1, studentCount) * Math.max(1, periodCount));
-  const subtotal = unitPrice == null ? null : (isTrial ? trialUnitPrice : unitPrice * qty);
+  const qty = Math.max(1, studentCount) * Math.max(1, periodCount);
+  const subtotal = unitPrice == null ? null : (isTrial ? trialUnitPrice : unitPrice) * qty;
 
   const [preview, setPreview] = useState({ discount: 0, promo: null, error: null, loading: false });
 
@@ -71,8 +72,8 @@ export default function useEnrollmentPricing(bootData, {
     return {
       base: bootData.basePrice,
       unitPrice: isTrial ? trialUnitPrice : unitPrice,
-      studentCount: isTrial ? 1 : Math.max(1, studentCount),
-      periodCount: isTrial ? 1 : Math.max(1, periodCount),
+      studentCount: Math.max(1, studentCount),
+      periodCount: Math.max(1, periodCount),
       isTrial,
       subtotal,                  // 折扣前小計
       afterMultiplier: subtotal, // 向後相容（舊欄位 = 折扣前小計）

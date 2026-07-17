@@ -4,7 +4,9 @@
  *   → F-M02 checkout 對帳（發票必填、total_sessions=1）→ 自動開通 course_period
  *     （1 堂、is_experience_course、checkin_mode='self'）→ /mine 續報資料契約
  *   → 自助簽到（1/1）→ 後台簽到清單試上標記 → 堂數上限 NO_SESSIONS_LEFT
- *   → 退費預覽走單筆公式（不誤入家庭共班整批分支）。
+ *   → 退費預覽走單筆公式（不誤入家庭共班整批分支）
+ *   → 多學員 × 多堂（2026-07-16 放行）：依「學員 × 堂數」拆分子訂單、
+ *     對帳後逐筆開通獨立 1 堂體驗課期。
  * 比照 enrollment_idempotency.js：in-process 掛 router、隔離 fixture、finally 全清理。
  */
 const { randomUUID } = require('crypto');
@@ -162,13 +164,16 @@ async function call(base, method, path, token, body, headers = {}) {
     assert(afterRec.invoice_number === 'AB12345678' && !!afterRec.invoice_issued_at, '發票號碼＋開票時間已回填');
     assert(afterRec.payment_status === 'paid', `checkout 轉 paid（${afterRec.payment_status}）`);
     const period = (await pg.query(
-      `SELECT cp.id, cp.total_sessions, cp.used_sessions, cp.is_experience_course, cp.checkin_mode, cp.status::text AS status
+      `SELECT cp.id, cp.total_sessions, cp.used_sessions, cp.is_experience_course, cp.checkin_mode, cp.status::text AS status,
+              (cp.expires_at - CURRENT_DATE)::int AS days_left
          FROM course_periods cp WHERE cp.admin_enrollment_id = $1`, [enrollmentId]
     )).rows[0];
     assert(!!period, '自動開通 course_period');
     assert(period.total_sessions === 1 && period.is_experience_course === true
       && period.checkin_mode === 'self' && period.status === 'active',
       `課期為 1 堂/試上標記/self 簽到/active（${period.total_sessions}/${period.is_experience_course}/${period.checkin_mode}/${period.status}）`);
+    assert(period.days_left >= 29 && period.days_left <= 31,
+      `試上效期 30 天（非一般 365 天；實際剩 ${period.days_left} 天）`);
     const cpe = await pg.query(
       `SELECT 1 FROM course_period_enrollments WHERE course_period_id = $1 AND student_id = $2 AND status = 'active'`,
       [period.id, studentId]
@@ -204,6 +209,12 @@ async function call(base, method, path, token, body, headers = {}) {
     assert(landed.status === 'completed' && landed.created_via === 'self_checkin' && landed.attended === 1,
       `課堂 completed/self_checkin/1 筆出席（${landed.status}/${landed.created_via}/${landed.attended}）`);
     assert(Number(landed.period_used) === 1 && Number(landed.order_used) === 1, 'used_sessions 鏡射 period+order 皆為 1');
+
+    step('家長端上課記錄 /lessons：試上標記');
+    const lessons = await call(route.base, 'GET', '/api/courses/lessons', token);
+    const lessonRow = (lessons.data || []).find((r) => r.session_id === sessionId);
+    assert(!!lessonRow && lessonRow.is_experience_course === true,
+      `/lessons 回傳試上標記（${lessonRow?.is_experience_course}）`);
 
     step('後台簽到清單：試上標記 is_experience_course=true');
     const today = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10); // 台北日期
@@ -241,7 +252,79 @@ async function call(base, method, path, token, body, headers = {}) {
     assert(Number(preview.data?.total) === 1 && Number(preview.data?.used) === 1 && Number(preview.data?.refund_amount) === 0,
       `1/1 用畢退 0（total=${preview.data?.total} used=${preview.data?.used} refund=${preview.data?.refund_amount}）`);
 
-    step('PASS: 試上全鏈（gate→建單→對帳開通→續報契約→簽到→標記→上限→退費防禦）全數通過');
+    step('多學員 × 多堂：不再擋單，依「學員 × 堂數」拆分子訂單（2026-07-16 放行）');
+    const student2Id = randomUUID();
+    await pg.query(
+      `INSERT INTO students (id, parent_id, name, is_active) VALUES ($1,$2,$3,TRUE)`,
+      [student2Id, parentId, `E2E trial student2 ${suffix}`]
+    );
+    const multiKey = `e2e-trialmulti-${suffix}`;
+    const multi = await call(route.base, 'POST', '/api/enrollments', token, {
+      request_id: multiKey,
+      coach: { id: coachId }, venue: { id: venueId },
+      course_type: 1,
+      students: [{ id: studentId }, { id: student2Id }],
+      period_count: 2,
+      order_kind: 'trial', payment_method: 'on_site',
+    }, { 'Idempotency-Key': multiKey });
+    assert(multi.status === 201, `2 學員 × 2 堂試上建單成功（${multi.status} ${multi.data?.code || multi.data?.error || ''}）`);
+    assert(multi.data.order_count === 4 && (multi.data.enrollment_ids || []).length === 4,
+      `拆 4 筆子訂單（order_count=${multi.data.order_count}）`);
+    assert(Number(multi.data.final_price) === TRIAL_PRICE * 4,
+      `總額＝試上單堂價 × 2 學員 × 2 堂（${multi.data.final_price}）`);
+    const childRows = await pg.query(
+      `SELECT original_price::float8 AS original_price, final_price::float8 AS final_price,
+              total_sessions, order_kind
+         FROM admin_enrollments WHERE id = ANY($1::text[])`,
+      [multi.data.enrollment_ids]
+    );
+    assert(childRows.rowCount === 4
+      && childRows.rows.every((r) => r.order_kind === 'trial' && r.total_sessions === 1
+        && r.original_price === TRIAL_PRICE && r.final_price === TRIAL_PRICE),
+      '每筆子訂單＝1 堂、單價快照 F-A07 試上價');
+
+    step('多學員 × 多堂：對帳一次通過 → 逐筆開通獨立 1 堂體驗課期');
+    const rec2 = await call(route.base, 'POST', `/api/admin/checkouts/${multi.data.checkout_id}/reconcile`, adminToken, {
+      invoice_number: 'CD87654321',
+      invoice_image_url: `https://example.com/e2e-invoice2-${suffix}.jpg`,
+    });
+    assert(rec2.status === 200, `多筆子訂單對帳通過（${rec2.status}）`);
+    const multiPeriods = await pg.query(
+      `SELECT cp.total_sessions, cp.is_experience_course, cp.checkin_mode,
+              (cp.expires_at - CURRENT_DATE)::int AS days_left,
+              (SELECT COUNT(*)::int FROM course_period_enrollments cpe
+                WHERE cpe.course_period_id = cp.id AND cpe.status = 'active') AS enrolled
+         FROM course_periods cp
+        WHERE cp.admin_enrollment_id = ANY($1::text[])`,
+      [multi.data.enrollment_ids]
+    );
+    assert(multiPeriods.rowCount === 4, `4 筆子訂單各開 1 個獨立課期（${multiPeriods.rowCount}）`);
+    assert(multiPeriods.rows.every((r) => r.total_sessions === 1 && r.is_experience_course === true
+      && r.checkin_mode === 'self' && Number(r.enrolled) === 1 && r.days_left >= 29 && r.days_left <= 31),
+      '每課期＝1 堂・試上標記・self 簽到・單一學員・效期 30 天');
+
+    step('學員 id 正規化：大寫 UUID 正常收單（非幽靈單）、非正規 {uuid} 形式 400');
+    const upperKey = `e2e-trialupper-${suffix}`;
+    const upper = await call(route.base, 'POST', '/api/enrollments', token, {
+      request_id: upperKey,
+      coach: { id: coachId }, venue: { id: venueId },
+      course_type: 1, students: [{ id: studentId.toUpperCase() }], period_count: 1,
+      order_kind: 'trial', payment_method: 'on_site',
+    }, { 'Idempotency-Key': upperKey });
+    assert(upper.status === 201, `大寫學員 id 正規化後收單（${upper.status}）`);
+    const upperRow = await pg.query(
+      `SELECT 1 FROM admin_enrollments WHERE id = $1`, [upper.data.enrollment_ids[0]]
+    );
+    assert(upperRow.rowCount === 1, '大寫 id 子訂單真實入庫（enrollment_ids 非幽靈單號）');
+    const braced = await call(route.base, 'POST', '/api/enrollments', token, {
+      request_id: `e2e-trialbrace-${suffix}`,
+      coach: { id: coachId }, venue: { id: venueId },
+      course_type: 1, students: [{ id: `{${studentId}}` }], period_count: 1,
+      order_kind: 'trial', payment_method: 'on_site',
+    }, { 'Idempotency-Key': `e2e-trialbrace-${suffix}` });
+    assert(braced.status === 400, `非正規 {uuid} 學員 id 形式被擋（${braced.status}）`);
+
+    step('PASS: 試上全鏈（gate→建單→對帳開通→續報契約→簽到→標記→上限→退費防禦→多學員多堂拆分→id 正規化）全數通過');
   } finally {
     await pg.query(`DELETE FROM checkin_records WHERE course_session_id IN (
         SELECT cs.id FROM course_sessions cs JOIN course_periods cp ON cp.id = cs.course_period_id
@@ -257,7 +340,7 @@ async function call(base, method, path, token, body, headers = {}) {
     await pg.query(`DELETE FROM admin_enrollments WHERE parent_phone = $1`, [phone]).catch(() => {});
     await pg.query(`DELETE FROM request_idempotency_ledger WHERE actor_type = 'parent' AND actor_id = $1`, [parentId]).catch(() => {});
     await pg.query(`DELETE FROM checkout_sessions WHERE parent_id = $1`, [parentId]).catch(() => {});
-    await pg.query(`DELETE FROM students WHERE id = $1`, [studentId]).catch(() => {});
+    await pg.query(`DELETE FROM students WHERE parent_id = $1`, [parentId]).catch(() => {});
     await pg.query(`DELETE FROM parents WHERE id = $1`, [parentId]).catch(() => {});
     if (cfg1Orig) {
       await pg.query(`UPDATE course_type_configs SET trial_enabled = $1, trial_price = $2 WHERE course_type = 1`,

@@ -1,10 +1,12 @@
 /**
  * 試上單次課的共用資料契約。
  *
- * 一般報名的價格仍是「每期」；試上明確標記為 order_kind=trial，並只建立
- * 一堂。若營運端日後設定了 `trial_price` 或 `trial_price_course_<N>`，會優先
- * 使用該值；未設定時才以既有每期價格除以 sessions_per_period 計算，避免把
- * 任意前端金額當成權威值。
+ * 一般報名的價格仍是「每期」；試上明確標記為 order_kind=trial，以「每人每堂」
+ * 計價。2026-07-16 起開放多學員 × 多堂：一張試上訂單依「學員 × 堂數」拆分
+ * 子訂單，每筆＝1 學員 1 堂（total_sessions=1），對帳後各自開通獨立體驗課期。
+ * 若營運端設定了 `trial_price` 或 `trial_price_course_<N>`，會優先使用該值；
+ * 未設定時才以既有每期價格除以 sessions_per_period 計算，避免把任意前端金額
+ * 當成權威值。
  */
 const ORDER_KIND = Object.freeze({
   STANDARD: 'standard',

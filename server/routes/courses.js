@@ -50,6 +50,7 @@ router.get('/lessons', requireParent, async (req, res) => {
               cp.id AS period_id,
               cp.course_type,
               cp.venue_id,
+              COALESCE(cp.is_experience_course, FALSE) AS is_experience_course,
               cp.total_sessions, cp.used_sessions,
               co.id AS coach_id, co.name AS coach_name, co.pricing_multiplier,
               v.name AS venue_name,

@@ -385,6 +385,11 @@ async function ensureSoloCoursePeriod(client, enrollment, totalSessions) {
     );
     periodId = exist.rows[0]?.id || null;
     if (!periodId) {
+      // 試上（order_kind='trial'）＝單堂體驗：效期縮短為 30 天（政策 2026-07-16，PRP §8-6a），
+      // 一般報名維持 365 天 × 期數不變。
+      const validityDays = enrollment.order_kind === 'trial'
+        ? '30'
+        : String(365 * (Number(enrollment.period_count) || 1));
       const ins = await client.query(
         `INSERT INTO course_periods
            (coach_id, venue_id, course_type, total_sessions, used_sessions,
@@ -393,7 +398,7 @@ async function ensureSoloCoursePeriod(client, enrollment, totalSessions) {
          RETURNING id`,
         [
           coachId, enrollment.venue_id, enrollment.course_type, totalSessions,
-          String(365 * (Number(enrollment.period_count) || 1)),
+          validityDays,
           Number(enrollment.original_price) || 0, Number(enrollment.final_price) || 0,
           enrollment.id, enrollment.order_kind === 'trial',
         ]

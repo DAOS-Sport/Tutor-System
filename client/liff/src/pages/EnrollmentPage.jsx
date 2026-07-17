@@ -71,21 +71,26 @@ export default function EnrollmentPage() {
     setSelectedSelfStudents([]);
   }, [courseType]);
 
-  // 試上永遠是一位學員、一堂；切回一般報名時只清除試上專屬付款方式，其他既有流程不變。
+  // 試上（2026-07-16 起開放多學員／多堂）：切換時保留學員與期數/堂數選擇讓流程順暢，
+  // 只清除試上不適用的折價券並帶入預設付款方式；切回一般報名時只還原付款方式。
   useEffect(() => {
     if (isTrial) {
-      setPeriodCount(1);
-      setSelectedSelfStudents([]);
       setActiveCoupon('');
       setCouponInput('');
       setPaymentMethod('on_site');
     } else {
       setPaymentMethod('bank_transfer');
+      // 試上多選後切回一般報名：超出 1對N 上限的部分裁掉，避免送出鈕永遠灰的死路
+      // （一般報名 min=max=courseType，超額時 canSubmit 恆 false 且無任何提示）。
+      setSelectedSelfStudents((prev) => (prev.length > courseType ? prev.slice(0, courseType) : prev));
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isTrial]);
 
   // 1對N 須剛好湊滿 N 位（min=max=courseType）；同組多家庭請改走團購（GroupCreate）。
-  const maxStudents = isTrial ? 1 : courseType;
+  // 試上：1 位起、可多位（每位各自開通獨立 1 堂體驗課期），上限＝名下有效學員數。
+  const activeStudentCount = (parent.students || []).filter((s) => s?.is_active !== false).length;
+  const maxStudents = isTrial ? Math.max(1, activeStudentCount) : courseType;
   const minStudents = isTrial ? 1 : courseType;
   const totalSelected = selectedSelfStudents.length;
   const pricingStudentCount = Math.max(totalSelected, minStudents);
@@ -213,7 +218,7 @@ export default function EnrollmentPage() {
           <div className="rounded-lg border border-brand-teal bg-brand-teal/10 px-3 py-2 text-center text-sm font-bold text-brand-primary">
             試上單次課
           </div>
-          <p className="mt-2 text-xs leading-relaxed text-gray-500">試上限一位學員、一堂課，可選擇現場付費或轉帳。</p>
+          <p className="mt-2 text-xs leading-relaxed text-gray-500">試上以每人每堂計價，可一次為多位學員、多堂下單；可選擇現場付費或轉帳。</p>
         </div>
       )}
       {trialEnabled && !(initialTrial && isTrial) && (
@@ -243,21 +248,20 @@ export default function EnrollmentPage() {
               試上單次課
             </button>
           </div>
-          {isTrial && <p className="mt-2 text-xs leading-relaxed text-gray-500">試上限一位學員、一堂課，可選擇現場付費或轉帳。</p>}
+          {isTrial && <p className="mt-2 text-xs leading-relaxed text-gray-500">試上以每人每堂計價，可一次為多位學員、多堂下單；可選擇現場付費或轉帳。</p>}
         </div>
       )}
 
-      {/* 購買期數（下拉；費用會隨期數變動） */}
+      {/* 購買期數（下拉；費用會隨期數變動）；試上語意為「堂數」——每位學員 N 堂 */}
       <div className="mt-2 rounded-xl border border-gray-200 bg-white p-3">
-        <label className="mb-1 block text-xs font-medium text-gray-600">購買期數</label>
+        <label className="mb-1 block text-xs font-medium text-gray-600">{isTrial ? '購買堂數（每位學員）' : '購買期數'}</label>
         <select
           value={periodCount}
           onChange={(e) => setPeriodCount(Number(e.target.value))}
-          disabled={isTrial}
           className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm font-bold text-gray-800 focus:border-brand-teal focus:outline-none"
         >
           {[1, 2, 3, 4, 5, 6].map((n) => (
-            <option key={n} value={n}>{n} 期</option>
+            <option key={n} value={n}>{n} {isTrial ? '堂' : '期'}</option>
           ))}
         </select>
       </div>

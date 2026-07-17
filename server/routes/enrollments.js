@@ -318,10 +318,6 @@ router.post('/', async (req, res) => {
     // U10：費用 = 單期單生價(base×倍率) × 學生數 × 期數（server-authoritative，忽略 client 金額）。
     const unitPrice = Math.round(basePrice * multiplier);
     const studentCount = Array.isArray(p.students) ? p.students.length : 0;
-    const suppliedPeriodCount = (() => {
-      const n = parseInt(p.period_count, 10);
-      return Number.isInteger(n) ? n : 1;
-    })();
     const periodCount = (() => {
       const n = parseInt(p.period_count, 10);
       return Number.isInteger(n) ? Math.min(6, Math.max(1, n)) : 1;
@@ -332,25 +328,25 @@ router.post('/', async (req, res) => {
     }
     // U12 家庭共班：一對二以上＝同堂共學，單次報名學員數不得超過課型人數上限
     // （超額的班放不下，開通也會壞掉）。一對一不設限——多位小孩＝各自獨立的一對一課。
+    // 試上不受此限（2026-07-16 起開放多學員／多堂）：每位學員各自開通獨立 1 堂體驗
+    // 課期（不共班，見 admin/enrollments.js ensureSoloCoursePeriod 對 trial 的排除），
+    // 課型人數上限對試上無意義。
     const maxStudents = cfgRes.rowCount ? (Number(cfgRes.rows[0].max_students) || 1) : 1;
-    if (maxStudents > 1 && studentCount > maxStudents) {
+    if (!isTrial && maxStudents > 1 && studentCount > maxStudents) {
       await client.query('ROLLBACK');
       return res.status(400).json({
         error: `此課程為一對${maxStudents}，單次報名最多 ${maxStudents} 位學員；人數更多請分次報名或使用團體報名`,
         code: 'STUDENT_COUNT_EXCEEDS_COURSE_TYPE',
       });
     }
-    if (isTrial && (studentCount !== 1 || suppliedPeriodCount !== 1)) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({
-        error: '試上課程限單一學員、單次下單',
-        code: 'TRIAL_SINGLE_ORDER_REQUIRED',
-      });
-    }
+    // 學員 id 正規化小寫＋嚴格 UUID 驗證（與教練 id 同標準）：Postgres uuid 輸入
+    // 接受大寫/{braces}/urn 形式，但下方 studentById Map 以 DB 正規小寫字串為 key，
+    // 不驗證會讓 selectedStudents 靜默縮水、子訂單數與 enrollmentIds/checkout 金額脫鉤。
     const submittedStudentIds = p.students
-      .map((s) => String(s?.id || '').trim())
+      .map((s) => String(s?.id || '').trim().toLowerCase())
       .filter(Boolean);
-    if (submittedStudentIds.length !== studentCount) {
+    if (submittedStudentIds.length !== studentCount
+        || submittedStudentIds.some((id) => !UUID_RE.test(id))) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: '學員資料不完整' });
     }
@@ -386,7 +382,8 @@ router.post('/', async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: '試上課程價格尚未設定，請洽櫃檯', code: 'TRIAL_PRICE_NOT_CONFIGURED' });
     }
-    const original = isTrial ? trialPrice : (unitPrice * studentCount * periodCount);
+    // 試上總額 = 試上單堂價（每人）× 學員數 × 堂數（試上語意下 period_count＝堂數）。
+    const original = (isTrial ? trialPrice : unitPrice) * studentCount * periodCount;
     const couponCode = p.promotion && p.promotion.coupon_code ? String(p.promotion.coupon_code).trim() : null;
 
     if (isTrial && couponCode) {
@@ -450,6 +447,12 @@ router.post('/', async (req, res) => {
     const selectedStudents = submittedStudentIds
       .map((id) => studentById.get(id))
       .filter(Boolean);
+    // 縱深防禦：解析後數量必須嚴格等於送單學員數，維持「子訂單數 = 學員 × 期數」
+    // 不變量；寧可整筆失敗也不建立金額與子訂單脫鉤的付款單。
+    if (selectedStudents.length !== studentCount) {
+      await client.query('ROLLBACK');
+      return res.status(500).json({ error: 'enrollment create failed', code: 'STUDENT_RESOLUTION_MISMATCH' });
+    }
     const studentNames = selectedStudents.map((s) => s.name);
     const submittedAt = new Date();
 
@@ -457,9 +460,11 @@ router.post('/', async (req, res) => {
     // 2 位學員買 4 期 → 建 8 筆 admin_enrollments，每筆只代表 1 位學員的 1 期。
     // 這讓 checkout 母單仍聚合總額，但後續對帳、開通與發票品項都能精準到單生單期。
     // 折扣門檻仍以整筆購買的 periodCount 計算（見上方 previewBestDiscount，不可改傳 1）。
+    // 試上（order_kind='trial'）同樣拆分：每筆＝1 位學員的 1 堂（total_sessions=1），
+    // 對帳後各自開通獨立體驗課期，簽到／退費全走既有逐筆軌道。
     const batchId = randomUUID();
-    const childOrderCount = isTrial ? 1 : (studentCount * periodCount);
-    const perChildOriginal = isTrial ? original : unitPrice; // 單一學員、單一期的原價
+    const childOrderCount = studentCount * periodCount;
+    const perChildOriginal = isTrial ? trialPrice : unitPrice; // 單一學員、單一期（試上＝單堂）的原價
     let totalDiscount = (preview.promotion && preview.discountAmount > 0) ? preview.discountAmount : 0;
     // 先產生各子訂單單號：促銷用量須掛在第一筆，且要「先確認用量」再寫各期價——
     // 自動套用的促銷若在 preview 與 recordUsage（FOR UPDATE 覆核）之間被用盡/停用，
@@ -534,7 +539,7 @@ router.post('/', async (req, res) => {
     let discountAllocated = 0;
     let orderIndex = 0;
     for (const student of selectedStudents) {
-      for (let period = 1; period <= (isTrial ? 1 : periodCount); period += 1) {
+      for (let period = 1; period <= periodCount; period += 1) {
         const d = (orderIndex < childOrderCount - 1)
           ? Math.round(totalDiscount / childOrderCount)
           : (totalDiscount - discountAllocated);

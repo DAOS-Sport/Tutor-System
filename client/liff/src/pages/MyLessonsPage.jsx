@@ -98,6 +98,7 @@ export default function MyLessonsPage() {
           studentId: st.id,
           total: Number(c.total_sessions) || 0,
           used: Number(c.used_sessions) || 0,
+          isTrial: c.order_kind === 'trial',
           records: [],
         });
       }
@@ -116,6 +117,7 @@ export default function MyLessonsPage() {
           studentId: r.student_id,
           total: Number(r.total_sessions) || 0,
           used: Number(r.used_sessions) || 0,
+          isTrial: r.is_experience_course === true,
           records: [],
         });
       }
@@ -283,6 +285,11 @@ function EnrollmentLines({ e, compact }) {
     <div className="min-w-0 flex-1">
       <div className="truncate text-sm font-semibold text-brand-primary">
         {e.coach}_{e.group} <span className="font-medium text-gray-400">({e.pct}%)</span>
+        {e.isTrial && (
+          <span className="ml-1 rounded-md bg-brand-amber/15 px-1.5 py-0.5 text-[11px] font-medium text-brand-amber">
+            試上・單堂
+          </span>
+        )}
       </div>
       <div className={`truncate text-xs text-gray-500 ${compact ? 'mt-0.5' : 'mt-1'}`}>
         {e.student} · 共 {e.total} 堂
