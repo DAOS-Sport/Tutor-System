@@ -20,3 +20,8 @@ server/build-info.json
 /codebase-memory-mcp/
 .mcp.json
 .cbmignore
+
+# agent runtime — binaries (254MB MCP binary) and session state should not be in git.
+# Use "git rm --cached -r .local/bin/ .local/state/" to remove already-tracked copies.
+.local/bin/
+.local/state/
