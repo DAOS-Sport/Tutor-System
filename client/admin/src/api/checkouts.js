@@ -15,6 +15,7 @@ export const checkoutsApi = {
     tax_id,
     carrier,
     family_invoices,
+    note,
   } = {}) =>
     callApi(
       `/checkouts/${checkoutId}/reconcile`,
@@ -28,6 +29,7 @@ export const checkoutsApi = {
           tax_id,
           carrier,
           family_invoices,
+          note,
         },
       },
       () => ({ ok: true }),

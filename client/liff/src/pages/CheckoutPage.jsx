@@ -121,6 +121,7 @@ export default function CheckoutPage() {
   const [proofBusy, setProofBusy] = useState(false);
   const [transferLast5, setTransferLast5] = useState('');
   const [carrier, setCarrier] = useState('');
+  const [parentNote, setParentNote] = useState('');
   const [proofFile, setProofFile] = useState(null);
   const [proofPreview, setProofPreview] = useState('');
   const [cancelBusy, setCancelBusy] = useState(false);
@@ -140,10 +141,11 @@ export default function CheckoutPage() {
     if (checkout) {
       setTransferLast5(checkout.transfer_last_5 || '');
       setCarrier(checkout.carrier || localStorage.getItem('daos_invoice_carrier') || '');
+      setParentNote(checkout.parent_note || '');
       setProofFile(null);
       setProofPreview('');
     }
-  }, [checkout?.checkout_id, checkout?.transfer_last_5, checkout?.has_payment_proof, checkout?.carrier]);
+  }, [checkout?.checkout_id, checkout?.transfer_last_5, checkout?.has_payment_proof, checkout?.carrier, checkout?.parent_note]);
 
   useEffect(() => () => {
     if (copyResetTimerRef.current) clearTimeout(copyResetTimerRef.current);
@@ -277,6 +279,7 @@ export default function CheckoutPage() {
         transfer_last_5: transferLast5.trim(),
         payment_proof_url: uploadedUrl || undefined,
         carrier: carrier.trim() || undefined,
+        parent_note: parentNote.trim() || undefined,
       });
 
       if (carrier.trim()) localStorage.setItem('daos_invoice_carrier', carrier.trim());
@@ -564,6 +567,22 @@ export default function CheckoutPage() {
               </p>
             </div>
 
+            <div>
+              <label className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400" htmlFor="checkout-note">
+                備註 <span className="font-normal text-slate-400">(選填)</span>
+              </label>
+              <textarea
+                id="checkout-note"
+                rows={2}
+                maxLength={500}
+                placeholder="例如：分次匯款、末碼有誤說明等，給櫃檯參考"
+                value={parentNote}
+                disabled={proofBusy}
+                onChange={(e) => setParentNote(e.target.value)}
+                className="w-full resize-y rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold transition focus:border-brand-primary focus:outline-none focus:ring-1 focus:ring-brand-green/30 disabled:bg-slate-50"
+              />
+            </div>
+
             <button
               type="submit"
               disabled={submitDisabled}
@@ -614,6 +633,11 @@ export default function CheckoutPage() {
                 </>
               )}
             </p>
+            {checkout.parent_note && checkout.payment_status !== 'cancelled' && (
+              <p className="mt-2 whitespace-pre-wrap rounded-lg bg-white/60 p-2 text-left text-[11px] font-medium text-brand-primary/80">
+                您的備註：{checkout.parent_note}
+              </p>
+            )}
             <div className="mt-4 border-t border-brand-green/30 pt-3">
               <button
                 type="button"

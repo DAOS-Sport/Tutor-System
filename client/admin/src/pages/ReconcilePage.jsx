@@ -261,21 +261,6 @@ function FamilyInvoiceFields({ family, familyIndex, orders, value, onChange, bus
           </div>
         </div>
 
-        <div>
-          <label className="mb-1 block text-sm font-semibold text-gray-700" htmlFor={`family-invoice-url-${familyIndex}`}>
-            此家庭發票查詢連結
-            <span className="ml-2 font-normal text-gray-400">（選填）</span>
-          </label>
-          <input
-            id={`family-invoice-url-${familyIndex}`}
-            type="url"
-            disabled={busy}
-            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-teal disabled:bg-gray-100"
-            placeholder="https://inv.ezpay.com.tw/..."
-            value={value.invoiceUrl}
-            onChange={(e) => onChange('invoiceUrl', e.target.value)}
-          />
-        </div>
       </div>
     </section>
   );
@@ -287,13 +272,12 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
   const invoiceFamilies = useMemo(() => checkoutInvoiceFamilies(checkout), [checkout]);
   const multiFamily = invoiceFamilies.length > 1;
   const [invoiceNumber, setInvoiceNumber] = useState('');
-  const [invoiceUrl, setInvoiceUrl] = useState('');
   const [carrier, setCarrier] = useState(checkout.carrier || '');
+  const [note, setNote] = useState('');
   const [imageFile, setImageFile] = useState(null);
   const [familyForms, setFamilyForms] = useState(() => Object.fromEntries(
     checkoutInvoiceFamilies(checkout).map((family) => [family.family_key, {
       invoiceNumber: '',
-      invoiceUrl: '',
       carrier: family.carrier || '',
       imageFile: null,
     }])
@@ -349,9 +333,9 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
             family_key: family.family_key,
             invoice_number: form.invoiceNumber,
             invoice_image_url: uploaded.preview_url || uploaded.url,
-            invoice_url: form.invoiceUrl.trim() || undefined,
             carrier: form.carrier.trim() || undefined,
           })),
+          note: note.trim() || undefined,
         });
         toast.success(`對帳通過，已依 ${invoiceFamilies.length} 個家庭記錄 ${invoiceFamilies.length} 張發票並分別推播`);
         onDone();
@@ -367,8 +351,8 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
       await checkoutsApi.reconcile(checkout.checkout_id, {
         invoice_number: invoiceNumber,
         invoice_image_url: imageUrl,
-        invoice_url: invoiceUrl.trim() || undefined,
         carrier: carrier.trim() || undefined,
+        note: note.trim() || undefined,
       });
       toast.success(`對帳通過，發票 ${invoiceNumber} 已記錄並推播家長`);
       onDone();
@@ -396,6 +380,13 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
 
         {/* ── 可捲動 Body ── */}
         <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+          {checkout.parent_note && (
+            <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3">
+              <div className="mb-1 text-xs font-semibold text-indigo-700">家長備註</div>
+              <p className="whitespace-pre-wrap text-sm text-indigo-900">{checkout.parent_note}</p>
+            </div>
+          )}
+
           {paymentProofUrls.length > 0 && (
             <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
               <div className="mb-2 text-xs font-semibold text-gray-600">家長上傳的匯款／轉帳證明</div>
@@ -526,21 +517,25 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
             </div>
           </div>
 
-          <div>
-            <label className="mb-1 block text-sm font-semibold text-gray-700">
-              發票查詢連結
-              <span className="ml-2 font-normal text-gray-400">（選填）</span>
-            </label>
-            <input
-              type="url"
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-teal"
-              placeholder="https://inv.ezpay.com.tw/..."
-              value={invoiceUrl}
-              onChange={(e) => setInvoiceUrl(e.target.value)}
-            />
-          </div>
             </>
           )}
+
+          <div>
+            <label className="mb-1 block text-sm font-semibold text-gray-700" htmlFor="reconcile-note">
+              備註
+              <span className="ml-2 font-normal text-gray-400">（選填，僅供內部稽核紀錄查閱）</span>
+            </label>
+            <textarea
+              id="reconcile-note"
+              value={note}
+              maxLength={500}
+              rows={2}
+              disabled={busy}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="例如：家長來電補充說明、對帳異常處理方式"
+              className="w-full resize-y rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none disabled:bg-gray-100"
+            />
+          </div>
 
           <div className="rounded-lg bg-amber-50 p-3 text-xs text-amber-700">
             {multiFamily

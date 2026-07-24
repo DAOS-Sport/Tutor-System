@@ -235,6 +235,7 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
     // 稽核操作者只能取自已驗證的後台 JWT；不可接受 client 自填的 by，
     // 否則任何有權呼叫者都能偽造對帳／發票的操作者紀錄。
     const by = req.adminUser?.name || req.adminUser?.username || req.adminUser?.sub || 'unknown';
+    const note = String(req.body?.note || '').trim().slice(0, 500);
     const cr = await client.query(`SELECT * FROM checkout_sessions WHERE checkout_id = $1 FOR UPDATE`, [req.params.checkoutId]);
     if (!cr.rowCount) {
       await client.query('ROLLBACK');
@@ -300,10 +301,11 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
           WHERE id = $1`,
         [row.id, total, invoice.invoiceNumber, invoice.invoiceImageUrl, invoice.invoiceUrl, invoice.carrier]
       );
+      const reconcileAction = `checkout 對帳通過（發票 ${invoice.invoiceNumber}）` + (note ? `，備註：${note}` : '');
       await client.query(
         `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user)
          VALUES ($1, $2, $3)`,
-        [row.id, `checkout 對帳通過（發票 ${invoice.invoiceNumber}）`, by]
+        [row.id, reconcileAction, by]
       );
 
       if (row.group_order_id) {
@@ -397,11 +399,12 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
                   'at', NOW(), 'action', 'checkout_reconciled', 'by', $2::text,
                   'invoice_number', $3::text,
                   'invoice_count', $6::int,
-                  'carrier_supplied', $5::boolean
+                  'carrier_supplied', $5::boolean,
+                  'note', $7::text
                 )),
               updated_at = NOW()
         WHERE checkout_id = $1`,
-      [req.params.checkoutId, by, invoiceSummary, checkoutCarrier, anyCarrier, invoicePlans.length]
+      [req.params.checkoutId, by, invoiceSummary, checkoutCarrier, anyCarrier, invoicePlans.length, note || null]
     );
 
     for (const { row, total } of rowsToOpen) {

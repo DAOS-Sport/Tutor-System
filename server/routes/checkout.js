@@ -236,6 +236,7 @@ router.post('/:checkoutId/payment-proof', async (req, res) => {
 
   const last5 = typeof req.body?.transfer_last_5 === 'string' ? req.body.transfer_last_5.trim() : '';
   const carrier = typeof req.body?.carrier === 'string' ? req.body.carrier.trim().slice(0, 64) : '';
+  const parentNote = typeof req.body?.parent_note === 'string' ? req.body.parent_note.trim().slice(0, 500) : '';
 
   if (last5 && !/^\d{5}$/.test(last5)) {
     return res.status(400).json({ error: '轉帳末 5 碼需為 5 位數字', code: 'TRANSFER_LAST5_INVALID' });
@@ -286,6 +287,7 @@ router.post('/:checkoutId/payment-proof', async (req, res) => {
       ? null
       : proofInput.supplied ? proofInput.value : (locked.rows[0].payment_proof_url || null);
     const nextCarrier = carrier || locked.rows[0].carrier || null;
+    const nextParentNote = parentNote || locked.rows[0].parent_note || null;
     if (!proofInput.clear && !nextProofUrl && !nextLast5 && !nextCarrier) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: '請填寫轉帳末 5 碼或上傳匯款／轉帳證明', code: 'PAYMENT_INFO_REQUIRED' });
@@ -300,6 +302,7 @@ router.post('/:checkoutId/payment-proof', async (req, res) => {
           SET transfer_last_5 = $2,
               payment_proof_url = $3,
               carrier = $4,
+              parent_note = $7,
               payment_status = $5,
               current_route_state = $5,
               audit_log = COALESCE(audit_log, '[]'::jsonb) ||
@@ -310,7 +313,7 @@ router.post('/:checkoutId/payment-proof', async (req, res) => {
                 )),
               updated_at = NOW()
         WHERE checkout_id = $1`,
-      [checkoutId, nextLast5, nextProofUrl, nextCarrier, nextStatus, proofInput.clear]
+      [checkoutId, nextLast5, nextProofUrl, nextCarrier, nextStatus, proofInput.clear, nextParentNote]
     );
     await client.query(
       `UPDATE admin_enrollments

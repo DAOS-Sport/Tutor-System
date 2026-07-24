@@ -13,9 +13,11 @@ class ParentRefreshError extends Error {
   }
 }
 
+// 角色身份（identity）已從家長端 UI 移除，全系統一律以 parent.identity || '一般身分'
+// 當預設值使用（見 parentRegistrationProfile.js／ProfilePage.jsx），不可再列為無預設的硬性必填，
+// 否則舊資料 identity 空值的帳號會永遠卡在「新增學員」動作。
 const REQUIRED_Z01_FIELDS = [
   ['name', '家長姓名'],
-  ['identity', '角色身份'],
   ['primary_venue_id', '場館'],
   ['phone', '電話'],
   ['email', 'Email'],

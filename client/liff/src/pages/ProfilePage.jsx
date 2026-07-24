@@ -50,7 +50,7 @@ function parentFormFrom(parent) {
   };
 }
 
-function syncErrMsg(e) {
+function syncErrMsg(e, context = 'parent') {
   const code = e?.response?.data?.code;
   const status = e?.response?.status;
   const MAP = {
@@ -60,7 +60,9 @@ function syncErrMsg(e) {
     STUDENT_INACTIVE_CONTACT_COUNTER: '此學員曾由櫃台停用或移除，請聯絡客服協助恢復或重新建檔。',
     STUDENT_ID_DUPLICATED: '此身分證字號已有學員資料，請確認後再試；若需協助請聯絡客服。',
     STUDENT_ID_NUMBER_EXISTS: '此身分證字號已有學員資料，請確認後再試；若需協助請聯絡客服。',
-    Z01_INCOMPLETE: '會員資料尚未完整，請完成必填欄位後再儲存。',
+    Z01_INCOMPLETE: context === 'student'
+      ? '請先完成上方「家長資料」的必填欄位（＊），才能新增學員。'
+      : '會員資料尚未完整，請完成必填欄位後再儲存。',
     LOCAL_VENUE_REFRESH_FAILED: '本地場館資料同步失敗，請聯絡客服確認場館設定。',
     RAGIC_Z02_REFRESH_FAILED: '學員資料重新讀取失敗，請稍後再試。',
     RAGIC_TIMEOUT: 'Ragic 回應較慢，請稍後再試。',
@@ -214,7 +216,11 @@ export default function ProfilePage() {
         toast.success(editingId ? '學員資料已更新' : '學員已新增');
       }
     } catch (err) {
-      toast.error(syncErrMsg(err));
+      toast.error(syncErrMsg(err, 'student'));
+      if (err?.response?.data?.code === 'Z01_INCOMPLETE') {
+        setEditOpen(true);
+        setParentOpen(true);
+      }
     } finally {
       setBusy('');
     }
@@ -240,6 +246,7 @@ export default function ProfilePage() {
           <div className="space-y-2.5">
             <Collapsible title="家長資料" open={parentOpen} onToggle={() => setParentOpen((o) => !o)} nested>
               <form className="grid gap-3" onSubmit={saveParent} noValidate>
+                <p className="text-[11px] text-gray-400">標示 <span className="font-bold text-brand-error">＊</span> 為必填欄位，其餘欄位可留空。</p>
                 <Field label="家長姓名" required error={parentErrors.name}>
                   <input className={fieldCls(parentErrors.name)} value={parentForm.name} onChange={(e) => setParentField('name', e.target.value)} />
                 </Field>
@@ -268,14 +275,14 @@ export default function ProfilePage() {
                   <input type="email" className={fieldCls(parentErrors.email)} value={parentForm.email} onChange={(e) => setParentField('email', e.target.value)} />
                 </Field>
                 <div className="grid grid-cols-2 gap-3">
-                  <Field label="住家電話">
+                  <Field label="住家電話" optional>
                     <input className={inputCls} value={parentForm.home_phone} onChange={(e) => setParentField('home_phone', e.target.value)} />
                   </Field>
-                  <Field label="LINE ID">
+                  <Field label="LINE ID" optional>
                     <input className={inputCls} value={parentForm.line_id} onChange={(e) => setParentField('line_id', e.target.value)} />
                   </Field>
                 </div>
-                <Field label="住家地址">
+                <Field label="住家地址" optional>
                   <input className={inputCls} value={parentForm.home_address} onChange={(e) => setParentField('home_address', e.target.value)} />
                 </Field>
                 <button type="submit" disabled={!!busy} className="rounded-lg bg-brand-primary py-2.5 text-sm font-bold text-white disabled:opacity-60">
@@ -307,6 +314,7 @@ export default function ProfilePage() {
 
               <form className="mt-3 grid gap-3 border-t border-gray-100 pt-3" onSubmit={saveStudent} noValidate>
                 <h4 className="text-xs font-bold text-gray-700">{editingId ? '編輯學員' : '新增學員'}</h4>
+                <p className="text-[11px] text-gray-400">標示 <span className="font-bold text-brand-error">＊</span> 為必填欄位，其餘欄位可留空。</p>
                 <Field label="姓名" required error={studentErrors.name}>
                   <input className={fieldCls(studentErrors.name)} value={studentForm.name} onChange={(e) => setStudentField('name', e.target.value)} />
                 </Field>
@@ -317,14 +325,14 @@ export default function ProfilePage() {
                   <input type="date" className={fieldCls(studentErrors.birth_date)} value={studentForm.birth_date} onChange={(e) => setStudentField('birth_date', e.target.value)} />
                 </Field>
                 <div className="grid grid-cols-2 gap-3">
-                  <Field label="性別">
+                  <Field label="性別" optional>
                     <select className={inputCls} value={studentForm.gender} onChange={(e) => setStudentField('gender', e.target.value)}>
                       <option value="生理男">生理男</option>
                       <option value="生理女">生理女</option>
                       <option value="不方便透漏">不方便透漏</option>
                     </select>
                   </Field>
-                  <Field label="血型">
+                  <Field label="血型" optional>
                     <select className={inputCls} value={studentForm.blood_type} onChange={(e) => setStudentField('blood_type', e.target.value)}>
                       {BLOOD_TYPE_OPTIONS.map((type) => (
                         <option key={type} value={type}>{type}</option>
@@ -382,11 +390,13 @@ function ChevronIcon({ className = '' }) {
   );
 }
 
-function Field({ label, required, error, children }) {
+function Field({ label, required, optional, error, children }) {
   return (
     <label className="block">
       <span className="mb-1 block text-xs font-medium text-gray-600">
-        {label}{required && <span className="ml-0.5 font-bold text-brand-error">＊</span>}
+        {label}
+        {required && <span className="ml-0.5 font-bold text-brand-error">＊</span>}
+        {optional && <span className="ml-1 font-normal text-gray-400">（選填）</span>}
       </span>
       {children}
       {error && <span className="mt-1 block text-[11px] font-medium text-brand-error">{error}</span>}

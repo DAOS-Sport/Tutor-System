@@ -756,6 +756,8 @@ DO $$ BEGIN
   ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS payment_method TEXT NOT NULL DEFAULT 'bank_transfer';
   ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS order_kind TEXT NOT NULL DEFAULT 'standard';
   ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS request_payload_fingerprint CHAR(64);
+  -- 家長回報付款資料時可留言的備註（例如分次匯款、末碼打錯說明），供櫃檯對帳時參考。
+  ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS parent_note TEXT;
   CREATE UNIQUE INDEX IF NOT EXISTS uq_checkout_sessions_parent_request
     ON checkout_sessions(parent_id, request_id)
     WHERE request_id IS NOT NULL;

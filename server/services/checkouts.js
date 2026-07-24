@@ -232,6 +232,7 @@ function shapeCheckout(row) {
     current_route_state: row.current_route_state || row.payment_status,
     transfer_last_5: row.transfer_last_5 || '',
     carrier: row.carrier || '',
+    parent_note: row.parent_note || '',
     payment_proof_url: paymentProofUrls[0] || null,
     payment_proof_urls: paymentProofUrls,
     has_payment_proof: paymentProofUrls.length > 0,
