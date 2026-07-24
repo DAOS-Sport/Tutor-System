@@ -302,20 +302,98 @@ function createMcpRouter() {
     }
   });
 
+  // ── StreamableHTTP session 管理（POST /mcp 必須用同一個 transport 實例跨請求）
+  // SDK validateSession：_initialized=false 時任何非 initialize 請求都丟 400。
+  // 修法：session Map 存 transport 實例；initialize → 建新 transport 並存入 Map；
+  // 後續請求帶 mcp-session-id header → 從 Map 取出舊 transport 繼續用；
+  // 無 session 且非 initialize → 回友善的 JSON-RPC 400（不是 500）。
+  const httpSessions = new Map();
+
+  // ── OPTIONS /mcp → CORS preflight（不需 auth）
+  router.options('/', (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id, Accept');
+    res.status(204).end();
+  });
+
   // ── POST /mcp → StreamableHTTP transport（新版 Claude Desktop ≥ 0.7）
-  // 注意：必須放在 /messages 之後才不會被攔截
   router.post('/', express.json(), async (req, res) => {
+    const sessionId = req.headers['mcp-session-id'];
+
+    // 帶 session id → 路由至既有 transport
+    if (sessionId) {
+      const existing = httpSessions.get(sessionId);
+      if (!existing) {
+        const body = req.body;
+        return res.status(404).json({
+          jsonrpc: '2.0',
+          id: (body && !Array.isArray(body)) ? (body.id ?? null) : null,
+          error: { code: -32000, message: `Session 不存在或已過期：${sessionId}` },
+        });
+      }
+      try {
+        await existing.handleRequest(req, res, req.body);
+      } catch (err) {
+        console.error('[MCP/HTTP/session] error:', err.message);
+        if (!res.headersSent) res.status(500).json({ error: err.message });
+      }
+      return;
+    }
+
+    // 無 session id → 只允許 initialize（或批次中含 initialize）
+    const body = req.body;
+    const msgs = Array.isArray(body) ? body : [body];
+    const isInit = msgs.some(m => m && m.method === 'initialize');
+
+    if (!isInit) {
+      // 探測請求 / 重連嘗試：回 400 JSON-RPC 而非 express 預設的 Cannot POST
+      return res.status(400).json({
+        jsonrpc: '2.0',
+        id: (!Array.isArray(body) && body) ? (body.id ?? null) : null,
+        error: {
+          code: -32600,
+          message: '尚未初始化連線：請先送 initialize 請求，後續請求需在 header 帶 Mcp-Session-Id',
+        },
+      });
+    }
+
+    // initialize → 建立新 transport 並存入 session Map
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => require('crypto').randomUUID(),
+      onsessioninitialized: (id) => {
+        httpSessions.set(id, transport);
+        console.log(`[MCP/HTTP] session opened: ${id} (total: ${httpSessions.size})`);
+      },
+      onsessionclosed: (id) => {
+        httpSessions.delete(id);
+        console.log(`[MCP/HTTP] session closed: ${id} (total: ${httpSessions.size})`);
+      },
     });
+
     const mcpServer = createMcpServer();
     await mcpServer.connect(transport);
+
     try {
       await transport.handleRequest(req, res, req.body);
     } catch (err) {
-      console.error('[MCP/HTTP] error:', err.message);
+      console.error('[MCP/HTTP] initialize error:', err.message);
       if (!res.headersSent) res.status(500).json({ error: err.message });
     }
+  });
+
+  // ── DELETE /mcp → 終止 session（標準 MCP session termination）
+  router.delete('/', async (req, res) => {
+    const sessionId = req.headers['mcp-session-id'];
+    if (sessionId) {
+      const existing = httpSessions.get(sessionId);
+      if (existing) {
+        try { await existing.close(); } catch { /* ignore */ }
+        httpSessions.delete(sessionId);
+        console.log(`[MCP/HTTP] session terminated by client: ${sessionId}`);
+      }
+    }
+    res.status(200).end();
   });
 
   return router;
