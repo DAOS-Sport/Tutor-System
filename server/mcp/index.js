@@ -246,7 +246,20 @@ function createMcpRouter() {
   // SSE transport 的 session 管理（GET /mcp → SSE，POST /mcp/messages → message）
   const sseSessions = new Map();
 
-  // Auth middleware
+  // ── GET /mcp/info → 快速確認 MCP 是否活著（不需 auth，放在 auth 前）
+  router.get('/info', (req, res) => {
+    res.json({
+      name: 'daos-workspace',
+      version: '1.0.0',
+      transport: ['sse', 'streamable-http'],
+      auth: 'Bearer token (MCP_API_KEY)',
+      tools: ['read_file', 'write_file', 'edit_file', 'list_directory', 'run_shell', 'search_code', 'delete_file'],
+      workspace: WORKSPACE,
+      mcp_configured: !!process.env.MCP_API_KEY,
+    });
+  });
+
+  // Auth middleware（/info 之外的所有端點）
   router.use((req, res, next) => {
     const key = process.env.MCP_API_KEY;
     if (!key) {
@@ -303,18 +316,6 @@ function createMcpRouter() {
       console.error('[MCP/HTTP] error:', err.message);
       if (!res.headersSent) res.status(500).json({ error: err.message });
     }
-  });
-
-  // ── GET /mcp/info → 快速確認 MCP 是否活著（不需 auth）
-  router.get('/info', (req, res) => {
-    res.json({
-      name: 'daos-workspace',
-      version: '1.0.0',
-      transport: ['sse', 'streamable-http'],
-      auth: 'Bearer token (MCP_API_KEY)',
-      tools: ['read_file', 'write_file', 'edit_file', 'list_directory', 'run_shell', 'search_code', 'delete_file'],
-      workspace: WORKSPACE,
-    });
   });
 
   return router;
