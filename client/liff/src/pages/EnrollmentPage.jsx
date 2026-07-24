@@ -218,7 +218,7 @@ export default function EnrollmentPage() {
           <div className="rounded-lg border border-brand-teal bg-brand-teal/10 px-3 py-2 text-center text-sm font-bold text-brand-primary">
             試上單次課
           </div>
-          <p className="mt-2 text-xs leading-relaxed text-gray-500">試上以每人每堂計價，可一次為多位學員、多堂下單；可選擇現場付費或轉帳。</p>
+          <p className="mt-2 text-xs leading-relaxed text-gray-500">試上以每人每堂計價，可一次為多位學員、多堂下單；一律現場付費。</p>
         </div>
       )}
       {trialEnabled && !(initialTrial && isTrial) && (
@@ -248,7 +248,7 @@ export default function EnrollmentPage() {
               試上單次課
             </button>
           </div>
-          {isTrial && <p className="mt-2 text-xs leading-relaxed text-gray-500">試上以每人每堂計價，可一次為多位學員、多堂下單；可選擇現場付費或轉帳。</p>}
+          {isTrial && <p className="mt-2 text-xs leading-relaxed text-gray-500">試上以每人每堂計價，可一次為多位學員、多堂下單；一律現場付費。</p>}
         </div>
       )}
 
@@ -279,14 +279,10 @@ export default function EnrollmentPage() {
       {isTrial && (
         <div className="mt-2 rounded-xl border border-gray-200 bg-white p-3">
           <label className="mb-1 block text-xs font-medium text-gray-600">付款方式</label>
-          <select
-            value={paymentMethod}
-            onChange={(e) => setPaymentMethod(e.target.value)}
-            className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm font-bold text-gray-800 focus:border-brand-teal focus:outline-none"
-          >
-            <option value="on_site">現場付費</option>
-            <option value="bank_transfer">轉帳付款</option>
-          </select>
+          <div className="rounded-lg border border-brand-teal bg-brand-teal/10 px-3 py-2.5 text-sm font-bold text-brand-primary">
+            現場付費
+          </div>
+          <p className="mt-1 text-xs leading-relaxed text-gray-500">試上單堂一律現場付費，將於上課時至櫃檯完成付款。</p>
         </div>
       )}
 

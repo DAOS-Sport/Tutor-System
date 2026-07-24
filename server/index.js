@@ -58,6 +58,10 @@ app.use((req, res, next) => _jsonParser(req, res, (err) => {
 app.use(express.urlencoded({ extended: true }));
 
 // ── Routes ──────────────────────────────────
+// ── MCP Server（Claude Desktop / Claude.ai 工作區遠端操控）────────────
+const { createMcpRouter } = require('./mcp');
+app.use('/mcp', createMcpRouter());
+
 app.use('/api/auth',          require('./routes/auth'));
 app.use('/api/venues',        require('./routes/venues'));
 app.use('/api/coaches',       require('./routes/coaches'));

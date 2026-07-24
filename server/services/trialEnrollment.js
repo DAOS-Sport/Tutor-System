@@ -25,8 +25,9 @@ function normalizeOrderKind(value) {
 }
 
 function normalizePaymentMethod(value, orderKind = ORDER_KIND.STANDARD) {
-  const raw = String(value || '').trim().toLowerCase();
-  if (orderKind === ORDER_KIND.TRIAL && raw === PAYMENT_METHOD.ON_SITE) {
+  // 試上一律現場付費（2026-07：移除試上轉帳選項）；一般報名維持轉帳。
+  // 即使前端／API 傳入 bank_transfer，試上也強制成 on_site（後端為權威來源）。
+  if (orderKind === ORDER_KIND.TRIAL) {
     return PAYMENT_METHOD.ON_SITE;
   }
   return PAYMENT_METHOD.BANK_TRANSFER;
