@@ -1,6 +1,8 @@
 /**
  * 課程需求管理（師生比規格）
- *  GET    /api/admin/course-types         → 全部設定（含停用）
+ *  GET    /api/admin/course-types         → 全部設定（含停用）；讀取一併開放 staff，
+ *                                            因為「手動建檔」的組別型態與自動帶入價格以此為唯一來源。
+ *                                            寫入（POST/PATCH/DELETE）維持 admin-only。
  *  POST   /api/admin/course-types         → 新增課程需求（同步建一筆預設課程介紹）
  *  PATCH  /api/admin/course-types/:type   → 更新 label / is_active（label 同步未被覆寫的介紹 title）
  *  DELETE /api/admin/course-types/:type   → 刪除（cascade 刪對應介紹；只允許無報名記錄）
@@ -55,7 +57,7 @@ async function writeCtAudit(db, courseType, action, byUser, changes, note) {
 }
 const auditUser = (req) => req.adminUser?.name || req.adminUser?.username || 'unknown';
 
-router.get('/', requireAdminAuth, AM, async (req, res) => {
+router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
   try {
     // 讀取前先套用「已到期」排程（保險：即使每日 cron 沒跑，下次讀取也會生效）。
     try { await applyDueScheduledCourseTypeChanges(pool); } catch (e) { console.warn('[course-types apply-due]', e.message); }

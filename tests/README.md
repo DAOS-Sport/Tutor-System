@@ -9,7 +9,20 @@ tests/
 └── perf/         # 效能基線：autocannon HTTP、WS handshake/ping-pong、Ragic 高併發、上傳成功率
 ```
 
-## 跑法
+## npm 入口（分層）
+
+```bash
+cd server
+npm test          # unit：19 支零外部相依測試 + server/test 的 node:test；隨時可跑
+npm run test:db   # 需 TEST_DATABASE_URL 指向拋棄式測試庫（含 DELETE，刻意不吃 DATABASE_URL）
+npm run test:e2e  # 委派 tests/e2e/run_all.js，需先起 server
+npm run test:server  # 只跑 server/test 的 node:test（原本的 npm test）
+```
+
+分層清單在 `scripts/run-tests.js`。**新增測試檔若未列入清單，`npm test` 會直接失敗**，
+避免測試被靜默漏掉。
+
+## 跑法（手動，個別執行）
 ```bash
 # 預備：先確保 server 在跑
 cd server && npm start &

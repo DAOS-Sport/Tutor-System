@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "nodemon index.js",
     "start": "node index.js",
-    "test": "node --test test/*.test.js",
+    "test": "node ../scripts/run-tests.js unit",
+    "test:server": "node --test test/*.test.js",
+    "test:db": "node ../scripts/run-tests.js db",
+    "test:e2e": "node ../scripts/run-tests.js e2e",
     "test:migration": "node scripts/test-migration-idempotency.js",
     "db:migrate": "NODE_PATH=./node_modules node ../db/migrate.js",
     "db:seed": "NODE_PATH=./node_modules node ../db/seed.js",
