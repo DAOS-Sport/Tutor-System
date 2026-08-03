@@ -464,10 +464,16 @@ export default function RegisterPage() {
                   })} className={fieldCls(!!errors.phone, true)} />
               </IconField>
 
-              <IconField label="家長 Email（可稍後補填）" icon={<IconMail />} error={errors.email?.message}>
+              {/* Email 於 2026-08-03 改為必填：Ragic Z01「(報)Email」是必填欄，
+                  本地留空的家長一律寫不回 Ragic（RAGIC_VALIDATION_ERROR INVALID 202），
+                  連帶讓該家長之後每次開 App 的 /parents/me/sync 都失敗。 */}
+              <IconField label="家長 Email" required icon={<IconMail />} error={errors.email?.message}>
                 <input type="email" placeholder="you@example.com"
-                  {...register('email', { pattern: { value: /^[^\s@]+@[^\s@]+\.[^\s@]+$/, message: 'Email 格式錯誤' } })}
-                  className={fieldCls(!!errors.email)} />
+                  {...register('email', {
+                    required: '請填寫 Email',
+                    pattern: { value: /^[^\s@]+@[^\s@]+\.[^\s@]+$/, message: 'Email 格式錯誤' },
+                  })}
+                  className={fieldCls(!!errors.email, true)} />
               </IconField>
 
               <div className="grid grid-cols-2 gap-3">

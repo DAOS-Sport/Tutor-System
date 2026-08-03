@@ -1050,12 +1050,15 @@ async function _registerParentCore(req, res, resolveLineUid) {
     if (!TW_PHONE_RE.test(phone)) {
       return res.status(400).json({ error: '手機格式錯誤（需 09xxxxxxxx）', code: 'PHONE_FORMAT_INVALID' });
     }
-    // Email is profile completion, not parent identity. Legacy Z01 rows commonly
-    // have it blank; a later Ragic schema rejection is handled by the outbox and
-    // must never prevent the already-committed local login.
+    // Email 於 2026-08-03 改為註冊必填（使用者決策）。
+    // 原設計把 Email 視為「資料完整度」而非身分，留空由 outbox 事後補回寫；但 outbox 的
+    // RAGIC_PARENT_OUTBOX 旗標實際是關閉的，Ragic Z01「(報)Email」又是必填欄，於是留空的
+    // 家長寫不回 Ragic（INVALID 202），連帶讓該家長之後每次 /parents/me/sync 都失敗。
+    // 在入口擋住，是為了不再產生新的無解資料；既有留空者仍需另行補齊。
     const email  = String(parentIn.email  || '').trim();
     const gender = String(parentIn.gender || '').trim();
-    if (email && !EMAIL_RE.test(email)) return res.status(400).json({ error: 'Email 格式錯誤', code: 'EMAIL_FORMAT_INVALID' });
+    if (!email)                        return res.status(400).json({ error: 'Email 必填',     code: 'EMAIL_REQUIRED' });
+    if (!EMAIL_RE.test(email))         return res.status(400).json({ error: 'Email 格式錯誤', code: 'EMAIL_FORMAT_INVALID' });
     if (!gender)               return res.status(400).json({ error: '家長性別必填',   code: 'GENDER_REQUIRED' });
     const venueId = String(parentIn.primary_venue_id || '').trim();
     if (!venueId) {

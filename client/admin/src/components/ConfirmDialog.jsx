@@ -7,10 +7,18 @@ export default function ConfirmDialog({
 }) {
   const cancelRef = useRef(null);
 
+  // 預設 focus 在「取消」— 破壞性操作不該讓 Enter 鍵誤觸「確認」。
+  // 只依賴 open：呼叫端的 onCancel 幾乎都是 inline 箭頭函式，每次 render 都是新身分。
+  // 若把 onCancel 放進依賴陣列，對話框內的輸入框每打一個字就會重跑這個 effect、
+  // 把焦點搶回「取消」按鈕（實際回報：輸入退回原因時打一個字就跳掉）。
   useEffect(() => {
     if (!open) return;
-    // 預設 focus 在「取消」— 破壞性操作不該讓 Enter 鍵誤觸「確認」。
     cancelRef.current?.focus();
+  }, [open]);
+
+  // Escape 關閉 + 鎖背景捲動：這段需要最新的 onCancel，維持原本的依賴。
+  useEffect(() => {
+    if (!open) return;
     const onKey = (e) => { if (e.key === 'Escape') onCancel?.(); };
     document.addEventListener('keydown', onKey);
     document.body.style.overflow = 'hidden';
