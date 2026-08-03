@@ -276,8 +276,12 @@ router.get('/period/:coursePeriodId', requireParent, async (req, res) => {
       // JOIN 必須是 LEFT，否則 NULL venue 的列會被整批濾掉（回傳空清單）。
       // 旗標守門（模組 1 規格：不得只用 cron 開關）：功能關閉或不在 canary 範圍時，
       // $5=false，NULL venue 的自動時段對家長完全不可見，等同未上線前的行為。
+      // is_auto 必須由後端明確給出布林值：前端曾用 `is_auto !== false` 判斷，
+      // 而後端當時根本沒回這個欄位 → undefined !== false 恆真 → 連教練手建的時段
+      // 也被首次提示攔下。這裡回真正的布林，前端改用嚴格 === true。
       `SELECT cas.id, cas.coach_id, COALESCE(cas.venue_id, $2) AS venue_id,
               COALESCE(v.name, pv.name) AS venue_name,
+              (cas.generated_by = 'auto') AS is_auto,
               cas.start_at, cas.duration_minutes, cas.status
          FROM coach_availability_slots cas
          LEFT JOIN venues v  ON v.id  = cas.venue_id

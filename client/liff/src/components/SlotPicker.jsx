@@ -131,7 +131,9 @@ export default function SlotPicker({ periodId, onBooked, embedded = false }) {
     // 只有自動產生的時段需要先確認（venue 由預約時認領，教練不一定知道這個時間）。
     // 教練手建的時段是教練自己排的，不必多這一道。
     const slot = slotById.get(selectedId);
-    if (data?.needs_booking_notice && slot?.status === 'available' && slot?.is_auto !== false) {
+    // 嚴格判斷：只有後端明確標記 is_auto === true 的時段才需要先確認。
+    // 不可用 `!== false`——欄位缺失時會誤攔教練手建的時段。
+    if (data?.needs_booking_notice && slot?.status === 'available' && slot?.is_auto === true) {
       setConfirmOpen(false);
       setNoticeOpen(true);
       return;

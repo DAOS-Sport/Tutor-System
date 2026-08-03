@@ -22,6 +22,9 @@ const VENUE = 'ZZ';                       // 測試用場館 id（不與正式 A
 let coachId; let periodId; let parentId; let studentId;
 
 async function cleanup() {
+  await pool.query(`DELETE FROM checkin_records WHERE course_session_id IN (SELECT id FROM course_sessions WHERE coach_id IN (SELECT id FROM coaches WHERE name=$1))`, [TAG]);
+  await pool.query(`DELETE FROM course_sessions WHERE coach_id IN (SELECT id FROM coaches WHERE name=$1)`, [TAG]);
+  await pool.query(`DELETE FROM course_sessions WHERE course_period_id IN (SELECT id FROM course_periods WHERE course_type=999)`);
   await pool.query(`DELETE FROM coach_availability_slots WHERE coach_id IN (SELECT id FROM coaches WHERE name=$1)`, [TAG]);
   await pool.query(`DELETE FROM course_period_enrollments WHERE course_period_id IN (SELECT id FROM course_periods WHERE course_type=999)`);
   await pool.query(`DELETE FROM course_periods WHERE course_type=999`);
@@ -137,7 +140,38 @@ function ymd(d) { return new Date(d.getTime() + 8 * 3600000).toISOString().slice
     assert.strictEqual(canSelfCancel(new Date(now.getTime() + 25 * 3600000), now).allowed, true, '⑥ 25h 可取消');
     assert.strictEqual(canSelfCancel(new Date(now.getTime() + 2 * 3600000), now).allowed, false, '⑥ 2h 不可取消');
 
-    console.log('slot_supply_e2e: PASS（6 項全通過）');
+    // ⑦ 取消並發：同一筆預約同時取消兩次，堆數只能退一次
+    {
+      const slot = (await pool.query(
+        `SELECT id FROM coach_availability_slots WHERE coach_id=$1 AND status='available' ORDER BY start_at LIMIT 1`,
+        [coachId])).rows[0];
+      const future = new Date(Date.now() + 72 * 3600000);
+      await pool.query(`UPDATE coach_availability_slots SET start_at=$2 WHERE id=$1`, [slot.id, future]);
+      const sess = (await pool.query(
+        `INSERT INTO course_sessions (course_period_id, availability_slot_id, scheduled_at, duration_minutes, status, coach_id)
+         VALUES ($1,$2,$3,60,'confirmed',$4) RETURNING id`,
+        [periodId, slot.id, future, coachId])).rows[0];
+      await pool.query(
+        `UPDATE coach_availability_slots SET status='booked', booked_session_id=$1 WHERE id=$2`, [sess.id, slot.id]);
+      await pool.query(`UPDATE course_periods SET used_sessions=1 WHERE id=$1`, [periodId]);
+
+      const slots = require('../../server/services/slots');
+      const results = await Promise.allSettled([
+        slots.cancelSession(sess.id, 'normal'),
+        slots.cancelSession(sess.id, 'normal'),
+      ]);
+      const okCount = results.filter((x) => x.status === 'fulfilled').length;
+      const used = Number((await pool.query(
+        `SELECT used_sessions FROM course_periods WHERE id=$1`, [periodId])).rows[0].used_sessions);
+      const st = (await pool.query(
+        `SELECT status, booked_session_id FROM coach_availability_slots WHERE id=$1`, [slot.id])).rows[0];
+      assert.ok(okCount >= 1, '⑦ 至少一次取消應成功');
+      assert.strictEqual(used, 0, `⑦ 堆數只能退一次，實際 used_sessions=${used}`);
+      assert.strictEqual(st.status, 'available', '⑦ 槽位應釋回');
+      assert.strictEqual(st.booked_session_id, null, '⑦ booked_session_id 應清空');
+    }
+
+    console.log('slot_supply_e2e: PASS（7 項全通過）');
   } catch (err) {
     console.error('slot_supply_e2e: FAIL —', err.message);
     process.exitCode = 1;

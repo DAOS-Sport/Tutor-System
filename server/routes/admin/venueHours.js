@@ -157,19 +157,49 @@ router.post('/closed-dates', requireAdminAuth, AM, async (req, res) => {
           AND (cs.scheduled_at AT TIME ZONE 'Asia/Taipei')::date = $2::date`,
       [venueId, closedDate]
     );
-    const r = await pool.query(
-      `INSERT INTO venue_closed_dates (venue_id, closed_date, reason, created_by)
-       VALUES ($1,$2::date,$3,$4)
-       ON CONFLICT (venue_id, closed_date) DO UPDATE SET reason = EXCLUDED.reason
-       RETURNING id, venue_id, to_char(closed_date,'YYYY-MM-DD') AS closed_date, reason`,
-      [venueId, closedDate, reason, req.adminUser?.username || req.adminUser?.sub || null]
-    );
+    const client = await pool.connect();
+    let removedSlots = 0;
+    let r;
+    try {
+      await client.query('BEGIN');
+      r = await client.query(
+        `INSERT INTO venue_closed_dates (venue_id, closed_date, reason, created_by)
+         VALUES ($1,$2::date,$3,$4)
+         ON CONFLICT (venue_id, closed_date) DO UPDATE SET reason = EXCLUDED.reason
+         RETURNING id, venue_id, to_char(closed_date,'YYYY-MM-DD') AS closed_date, reason`,
+        [venueId, closedDate, reason, req.adminUser?.username || req.adminUser?.sub || null]
+      );
+      const del = await client.query(
+        `DELETE FROM coach_availability_slots cas
+          WHERE cas.generated_by = 'auto'
+            AND cas.status = 'available'
+            AND cas.venue_id IS NULL
+            AND cas.booked_session_id IS NULL
+            AND (cas.start_at AT TIME ZONE 'Asia/Taipei')::date = $1::date
+            AND EXISTS (SELECT 1 FROM coach_venues cv
+                         WHERE cv.coach_id = cas.coach_id AND cv.venue_id = $2)
+            AND NOT EXISTS (
+              SELECT 1 FROM coach_venues cv2
+               JOIN venues v2 ON v2.id = cv2.venue_id AND v2.is_active
+               WHERE cv2.coach_id = cas.coach_id
+                 AND NOT EXISTS (SELECT 1 FROM venue_closed_dates c2
+                                  WHERE c2.venue_id = cv2.venue_id AND c2.closed_date = $1::date))
+          RETURNING cas.id`,
+        [closedDate, venueId]
+      );
+      removedSlots = del.rowCount;
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw e;
+    } finally { client.release(); }    const notes = [];
+    if (removedSlots) notes.push(`已移除該日 ${removedSlots} 個尚未被預約的自動時段。`);
+    if (booked.rows[0].n) notes.push(`該日已有 ${booked.rows[0].n} 筆預約，休館設定不會自動取消，請另行處理。`);
     res.json({
       ok: true, ...r.rows[0],
       existing_bookings: booked.rows[0].n,
-      note: booked.rows[0].n
-        ? `該日已有 ${booked.rows[0].n} 筆預約，休館設定不會自動取消，請另行處理。`
-        : null,
+      removed_auto_slots: removedSlots,
+      note: notes.length ? notes.join(' ') : null,
     });
   } catch (err) {
     console.error('[admin/venue-hours closed-dates create]', err.message);
