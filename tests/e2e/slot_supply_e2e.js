@@ -222,7 +222,41 @@ function ymd(d) { return new Date(d.getTime() + 8 * 3600000).toISOString().slice
       assert.ok(left.some((x) => x.generated_by === null), '8 coach-made must survive');
       assert.ok(left.some((x) => x.status === 'booked'), '8 booked must survive');
     }
-    console.log('slot_supply_e2e: PASS（8 項全通過）');
+    // ⑨ 衝突偵測必須看得見 NULL venue 的自動時段
+    //    否則教練手建一個與自動時段重疊的槽位不會被擋，同一教練同時段被重複佔用。
+    {
+      const { detectConflict } = require('../../server/services/slots');
+      // 循環外鍵：先鬆開 course_sessions 這一側，才刪得掉 ⑧ 留下的已預約槽位
+      await pool.query(
+        `UPDATE course_sessions SET availability_slot_id = NULL
+           WHERE availability_slot_id IN
+                 (SELECT id FROM coach_availability_slots WHERE coach_id = $1)`, [coachId]);
+      await pool.query('UPDATE coach_availability_slots SET booked_session_id=NULL WHERE coach_id=$1', [coachId]);
+      await pool.query('DELETE FROM coach_availability_slots WHERE coach_id=$1', [coachId]);
+      const day = gen.addDays(today, 6);
+      const start = new Date(day + 'T14:00:00+08:00');
+      await pool.query(
+        `INSERT INTO coach_availability_slots
+           (coach_id, venue_id, start_at, duration_minutes, status, generated_by)
+         VALUES ($1, NULL, $2, 60, 'available', 'auto')`, [coachId, start.toISOString()]);
+
+      // 完全重疊：必須偵測到
+      const overlap = await detectConflict(coachId, start.toISOString(), 60);
+      assert.strictEqual(overlap.length, 1,
+        '9 與 NULL venue 自動時段重疊必須被偵測到，實際 ' + overlap.length);
+      assert.ok(overlap[0].venue_name, '9 衝突訊息需要有可顯示的場館字樣（NULL venue 要有 fallback）');
+
+      // 部分重疊（晚 30 分鐘開始）：同樣算衝突
+      const half = new Date(start.getTime() + 30 * 60000);
+      assert.strictEqual((await detectConflict(coachId, half.toISOString(), 60)).length, 1,
+        '9 部分重疊也必須算衝突');
+
+      // 完全不重疊（緊接其後）：不得誤判
+      const after = new Date(start.getTime() + 60 * 60000);
+      assert.strictEqual((await detectConflict(coachId, after.toISOString(), 60)).length, 0,
+        '9 緊接但不重疊不得誤判為衝突');
+    }
+    console.log('slot_supply_e2e: PASS（9 項全通過）');
   } catch (err) {
     console.error('slot_supply_e2e: FAIL —', err.message);
     process.exitCode = 1;

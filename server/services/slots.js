@@ -23,9 +23,13 @@ async function detectConflict(coachIdOrClient, startAtMaybe, durationMinutesMayb
 
 async function _detectConflictOn(db, coachId, startAt, durationMinutes, excludeSlotId = null) {
   const res = await db.query(
-    `SELECT cas.id, cas.venue_id, cas.start_at, cas.duration_minutes, v.name AS venue_name
+    // 039：auto 時段 venue_id 為 NULL。這裡若用 INNER JOIN venues，那些列會被
+    // 濾掉，衝突偵測就漏判——教練手建一個與自動時段重疊的槽位不會被擋下，
+    // 同一教練同時段被重複佔用。上面註解寫的「跨場館均計算」要成立就必須 LEFT JOIN。
+    `SELECT cas.id, cas.venue_id, cas.start_at, cas.duration_minutes,
+            COALESCE(v.name, '全場館共用') AS venue_name
      FROM coach_availability_slots cas
-     JOIN venues v ON cas.venue_id = v.id
+     LEFT JOIN venues v ON cas.venue_id = v.id
      WHERE cas.coach_id = $1
        AND cas.status IN ('available', 'pending_group_confirm', 'booked')
        AND ($2::timestamptz < cas.start_at + (cas.duration_minutes || ' minutes')::interval)
