@@ -107,10 +107,14 @@ async function bookSlot1v1(slotId, coursePeriodId, client) {
   );
   if (sessionRes.rows.length === 0) throw new Error('此時段已被預約或不存在');
   const session = sessionRes.rows[0];
-  // 更新槽位狀態
+  // 更新槽位狀態。039：自動產生的槽位 venue_id 為 NULL，於此認領本期場館；
+  // 教練手建的槽位已有 venue_id，COALESCE 保證不被覆蓋。
   await db.query(
-    `UPDATE coach_availability_slots SET status = 'booked', booked_session_id = $1 WHERE id = $2`,
-    [session.id, slotId]
+    `UPDATE coach_availability_slots
+        SET status = 'booked', booked_session_id = $1,
+            venue_id = COALESCE(venue_id, (SELECT venue_id FROM course_periods WHERE id = $3))
+      WHERE id = $2`,
+    [session.id, slotId, coursePeriodId]
   );
   return session;
 }

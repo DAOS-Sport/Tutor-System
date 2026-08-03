@@ -333,6 +333,48 @@ CREATE TABLE IF NOT EXISTS coach_availability_slots (
 );
 CREATE INDEX IF NOT EXISTS idx_slots_coach ON coach_availability_slots(coach_id);
 CREATE INDEX IF NOT EXISTS idx_slots_start ON coach_availability_slots(start_at);
+CREATE INDEX IF NOT EXISTS idx_slots_generated
+  ON coach_availability_slots(generated_by, status) WHERE generated_by IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_slots_coach_status_start
+  ON coach_availability_slots(coach_id, status, start_at);
+-- 039 自動產生的時段不綁場館：venue_id 語意改為「已認領的場館」，家長預約時才寫入。
+-- 教練手建的時段仍會帶 venue_id，行為不變。
+ALTER TABLE coach_availability_slots ALTER COLUMN venue_id DROP NOT NULL;
+
+-- 038 場館營業時間：時段產生器的唯一時間來源。由系統管理員／場館主管設定。
+-- 040 逐筆同步失敗落庫（Phase 1 可觀測性）：ragic_sync_log 只保存 errors[0]，
+-- 其餘失敗原因原本只在 console，事後無法還原。本表讓每一筆失敗都留下證據。
+CREATE TABLE IF NOT EXISTS ragic_sync_failures (
+  id              BIGSERIAL PRIMARY KEY,
+  job_name        TEXT NOT NULL,
+  form_code       TEXT,
+  entity_kind     TEXT NOT NULL CHECK (entity_kind IN ('parent', 'student')),
+  local_id        UUID NOT NULL,
+  ragic_record_id TEXT,
+  error_code      TEXT,
+  error_kind      TEXT NOT NULL CHECK (error_kind IN ('permanent', 'transient', 'unknown')),
+  message         TEXT,
+  run_id          UUID,
+  occurred_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_rsf_occurred ON ragic_sync_failures(occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_rsf_local    ON ragic_sync_failures(local_id, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_rsf_kind     ON ragic_sync_failures(error_kind, occurred_at DESC);
+
+CREATE TABLE IF NOT EXISTS venue_business_hours (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  venue_id     VARCHAR(10) NOT NULL REFERENCES venues(id) ON DELETE CASCADE,
+  weekday      SMALLINT NOT NULL CHECK (weekday BETWEEN 0 AND 6),
+  open_time    TIME NOT NULL,
+  close_time   TIME NOT NULL,
+  slot_minutes INTEGER NOT NULL DEFAULT 60 CHECK (slot_minutes > 0),
+  is_active    BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CHECK (close_time > open_time),
+  UNIQUE (venue_id, weekday, open_time)
+);
+CREATE INDEX IF NOT EXISTS idx_vbh_venue ON venue_business_hours(venue_id) WHERE is_active;
 
 CREATE TABLE IF NOT EXISTS course_sessions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -975,6 +1017,12 @@ DO $$ BEGIN
     ON promotion_usages(group_order_id) WHERE group_order_id IS NOT NULL;
   CREATE UNIQUE INDEX IF NOT EXISTS uq_promo_usages_group_member
     ON promotion_usages(group_order_member_id) WHERE group_order_member_id IS NOT NULL;
+  -- 038 時段供給：家教預約改為「預設全開、教練自己關」。
+  --   generated_by 是安全邊界——產生器/rollback 只能碰 'auto' 且 available 的列，
+  --   絕不動教練手建（NULL）、已預約（booked）、教練刻意關閉（blocked）的時段。
+  --   booking_notice_ack_at 放在 enrollments：同一家長的不同課期要各自提示一次。
+  ALTER TABLE coach_availability_slots  ADD COLUMN IF NOT EXISTS generated_by TEXT;
+  ALTER TABLE course_period_enrollments ADD COLUMN IF NOT EXISTS booking_notice_ack_at TIMESTAMPTZ;
   -- 櫃台補簽到（F-R01）：checkin_at = 選擇的上課/簽到時間；backfilled_at = 補簽到按鈕被按下的時間（供管理端查看）。
   ALTER TABLE admin_today_sessions ADD COLUMN IF NOT EXISTS checkin_at TIMESTAMPTZ;
   ALTER TABLE admin_today_sessions ADD COLUMN IF NOT EXISTS backfilled_at TIMESTAMPTZ;

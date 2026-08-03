@@ -43,6 +43,9 @@ const UNIT = [
   'tests/ragic_query_retry_test.js',
   'tests/ragic_writer_test.js',
   'tests/reconcile_payment_proof_visibility_test.js',
+  'tests/ragic_baseline_audit_test.js',
+  'tests/sync_failure_log_test.js',
+  'tests/slot_generator_test.js',
   'tests/release/canary_config_test.js',
   'tests/release/reconcile_image_pipeline_test.js',
 ];

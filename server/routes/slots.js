@@ -226,12 +226,16 @@ router.get('/period/:coursePeriodId', requireParent, async (req, res) => {
     }
 
     const slots = await pool.query(
-      `SELECT cas.id, cas.coach_id, cas.venue_id, v.name AS venue_name,
+      // 039：venue_id 為 NULL＝自動產生、尚未認領場館的時段，對本期同樣可選。
+      // JOIN 必須是 LEFT，否則 NULL venue 的列會被整批濾掉（回傳空清單）。
+      `SELECT cas.id, cas.coach_id, COALESCE(cas.venue_id, $2) AS venue_id,
+              COALESCE(v.name, pv.name) AS venue_name,
               cas.start_at, cas.duration_minutes, cas.status
          FROM coach_availability_slots cas
-         JOIN venues v ON v.id = cas.venue_id
+         LEFT JOIN venues v  ON v.id  = cas.venue_id
+         LEFT JOIN venues pv ON pv.id = $2
         WHERE cas.coach_id = $1
-          AND cas.venue_id = $2
+          AND (cas.venue_id IS NULL OR cas.venue_id = $2)
           AND cas.status = 'available'
           AND cas.start_at >= $3
           AND cas.start_at < $4
@@ -307,7 +311,11 @@ router.post('/:id/book', requireParent, async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '此課程期尚未開通或已結束', code: 'PERIOD_NOT_ACTIVE' });
     }
-    if (slot.coach_id !== cp.coach_id || String(slot.venue_id) !== String(cp.venue_id)) {
+    // 039：自動產生的時段 venue_id 為 NULL（語意＝「這位教練這個時間有空」，尚未認領場館），
+    // 對任何該教練的課程期都成立，預約當下才由 bookSlot1v1 寫入本期場館。
+    // 教練手建的時段仍帶 venue_id，維持原本的嚴格比對。
+    const venueMismatch = slot.venue_id !== null && String(slot.venue_id) !== String(cp.venue_id);
+    if (slot.coach_id !== cp.coach_id || venueMismatch) {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '此時段與課程期的教練或場館不符', code: 'SLOT_MISMATCH' });
     }

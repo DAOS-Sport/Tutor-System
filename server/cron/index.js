@@ -19,6 +19,7 @@ const ragicAdmin = require('../services/ragicAdmin');
 const { processRagicSyncOutbox } = require('../services/ragicSyncOutbox');
 const { verifyRagicZ01UidSchemaFreshness } = require('../services/ragicSchemaFreshness');
 const { STABILITY_FLAGS } = require('../config/ragicSchema');
+const slotGenerator = require('../services/slotGenerator');
 const { applyDueScheduledCourseTypeChanges } = require('../services/courseTypeSchedule');
 
 // 對家長推播的 LIFF base URL；新版用 LIFF_URL_PARENT，舊版 LIFF_URL 為 fallback
@@ -71,6 +72,27 @@ function initCronJobs() {
       }
     } catch (err) {
       console.warn('[Cron/RagicOutbox] failed:', err.code || err.message);
+    }
+  });
+
+  // ── 每日 02:30（台北）：產生未來 N 天的可預約時段（migration 038/039）──
+  //   排在 01:30 Ragic pull、01:45 品質掃描之後，確保用到的是當天最新的教練/場館資料。
+  //   scope 預設 'active-periods'（只為實際帶課的教練產生）；設 SLOT_GEN_SCOPE=all
+  //   可擴大到所有在職教練——先小後大，避免一次灌爆家長端可選清單。
+  //   產生器只寫 generated_by='auto'，永不觸碰教練手建、已預約、已關閉的時段。
+  scheduleTaipei('30 2 * * *', async () => {
+    // 功能旗標：預設關閉。時段功能的教練關班 UI、家長首次提示、取消流程都尚未完成，
+    // 在那之前自動產生時段會讓家長約到教練無法拒絕的時間。
+    // 開啟前置條件見 replit.md「自動時段供給」節；不得只用這個開關當唯一保護。
+    if (process.env.SLOT_GEN_ENABLED !== '1') return;
+    try {
+      const days = Number(process.env.SLOT_GEN_DAYS) || 21;
+      const scope = process.env.SLOT_GEN_SCOPE === 'all' ? 'all' : 'active-periods';
+      const r = await slotGenerator.generateAll({ days, scope });
+      console.log(`[Cron/Slots] scope=${r.scope} coaches=${r.coaches} skipped=${r.skipped} `
+        + `inserted=${r.inserted} carriedBlocked=${r.blocked} range=${r.fromDate}~${r.toDate}`);
+    } catch (err) {
+      console.warn('[Cron/Slots] 時段產生失敗:', err.code || err.message);
     }
   });
 

@@ -25,3 +25,6 @@ server/build-info.json
 # Use "git rm --cached -r .local/bin/ .local/state/" to remove already-tracked copies.
 .local/bin/
 .local/state/
+
+# Phase 0 診斷輸出與資料清理備份：含正式資料快照，不入版控
+reports/
