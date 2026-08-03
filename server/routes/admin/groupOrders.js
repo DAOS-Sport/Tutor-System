@@ -21,6 +21,8 @@ const { createCheckoutSession } = require('../../services/checkouts');
 const { isGloballyEnabled } = require('../../config/businessFeatureFlags');
 const { parseProofInput } = require('../../services/paymentProof');
 const { logGroupOrderAudit } = require('../../services/groupOrderAudit');
+const line = require('../../services/line');
+const promotions = require('../../services/promotions');
 const {
   validateRequestId,
   payloadFingerprint,
@@ -392,6 +394,19 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
       proofByMemberId.set(member.id, proofInput.supplied ? proofInput.value : null);
     }
 
+    // U14：有促銷的團，金額在「加入當下」就落地到 member 列（家長照那個金額轉帳），
+    // 這裡一律沿用落地值，不重算 —— 重算會與家長已匯出的金額不一致。
+    // 既有團（含本次改版前建立的）final_amount 為 NULL → 走原本的 perStudent × 人數 × 期數。
+    const memberAmount = (m, count) => {
+      const fallback = perStudent * count * periodCount;
+      if (m.final_amount == null) return { original: fallback, final: fallback, discount: 0 };
+      return {
+        original: Number(m.original_amount) || fallback,
+        final: Number(m.final_amount),
+        discount: Number(m.discount_amount) || 0,
+      };
+    };
+
     for (const m of ms.rows) {
       const names = m.student_names || [];
       const count = names.length || 1;
@@ -400,19 +415,33 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
       // 家庭核准失敗。開課守門改以 group_order + 期數查所有 checkout，不再依賴共用 batch。
       const memberBatchId = randomUUID();
       // 訂單依期數拆分：每位成員的 N 期各自一筆（period_count=1，6 堂），各自付款/對帳。
-      const perPeriodPrice = perStudent * count; // 單期（該成員所有學員）
+      // U14：單期金額由「該家落地總額 ÷ 期數」推回，確保 N 期加總 = 家長實際轉帳金額
+      // （最後一期補足餘數，避免整數除法造成尾差）。
+      const amt = memberAmount(m, count);
+      const perPeriodOriginal = Math.round((amt.original || 0) / periodCount);
+      const perPeriodPrice = Math.round(amt.final / periodCount); // 單期（該成員所有學員）
       const checkout = await createCheckoutSession(client, {
         parentId: m.parent_id,
         enrollmentBatchId: memberBatchId,
-        totalAmount: perPeriodPrice * periodCount,
+        totalAmount: amt.final,
         transferLast5: m.transfer_last_5 || null,
         paymentProofUrl: proofByMemberId.get(m.id) || null,
         carrier: m.carrier || null,
         by: req.adminUser?.username || 'system',
         requestFingerprint: fingerprint,
       });
+      let firstEid = null;
+      let allocatedOriginal = 0;
+      let allocatedFinal = 0;
       for (let j = 1; j <= periodCount; j += 1) {
         const eid = genEnrollmentId();
+        if (!firstEid) firstEid = eid;
+        // 最後一期補足餘數，讓 N 期加總嚴格等於該家落地金額（整數除法尾差不落在客人身上）。
+        const isLast = j === periodCount;
+        const rowOriginal = isLast ? (amt.original - allocatedOriginal) : perPeriodOriginal;
+        const rowFinal = isLast ? (amt.final - allocatedFinal) : perPeriodPrice;
+        allocatedOriginal += rowOriginal;
+        allocatedFinal += rowFinal;
         await client.query(
           `INSERT INTO admin_enrollments
              (id, parent_name, parent_phone, students, coach, coach_id, venue_id, course_type,
@@ -421,14 +450,26 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending_payment',NOW(),$13,TRUE,1,$14,$15,$16,$17)`,
           [
             eid, m.parent_name, m.parent_phone, names, coachName, order.coach_id,
-            order.venue_id, order.course_type, perPeriodPrice, perPeriodPrice, m.transfer_last_5 || null, proofByMemberId.get(m.id) || null,
+            order.venue_id, order.course_type, rowOriginal, rowFinal, m.transfer_last_5 || null, proofByMemberId.get(m.id) || null,
             order.id, j, memberBatchId, checkout.checkoutId, m.carrier || null,
           ]
         );
         await client.query(
           `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user)
            VALUES ($1, $2, $3)`,
-          [eid, '團購核准建立報名', req.adminUser?.username || 'system']
+          [eid, amt.discount > 0 ? `團購核准建立報名（已折 ${amt.discount} 元）` : '團購核准建立報名',
+           req.adminUser?.username || 'system']
+        );
+      }
+      // U14：把該家的 usage 綁到第一筆 enrollment 上。
+      // 這一步讓「團購核准後的退費」自動走既有的 revertUsage({ adminEnrollmentId }) 回沖路徑，
+      // 不需要在退費流程另外寫團購分支。
+      if (amt.discount > 0 && firstEid) {
+        await client.query(
+          `UPDATE promotion_usages
+              SET admin_enrollment_id = $2
+            WHERE group_order_member_id = $1 AND admin_enrollment_id IS NULL`,
+          [m.id, firstEid]
         );
       }
     }
@@ -488,6 +529,109 @@ router.post('/:id/reject', requireAdminAuth, AMS, async (req, res) => {
   } catch (err) {
     console.error('[admin/group-orders reject]', err);
     res.status(500).json({ error: '退回失敗' });
+  }
+});
+
+// ── POST /:id/return-for-fix 退回補件（U14）──────────────────
+// 與 /reject 的差別：
+//   reject          → rejected（終態，家長無法續作）— 行為完全不變，既有資料不受影響
+//   return-for-fix  → forming （可續作）— 家長回到揪團中狀態補齊付款資料後重新送審
+// 之所以要「退回到 forming」而不是留在 submitted：group_orders 的 my-proof 雖然
+// forming/submitted 都允許上傳，但退回 forming 才能讓團主重新走一次送審守門，
+// 也讓「名單鎖定」解除（退回原因可能就是要換人）。
+//
+// reset_member_ids：清空指定成員的付款欄位。這是必要的——家長端 my-proof 對
+// 「已送出的末 5 碼」是硬鎖的（TRANSFER_LAST5_LOCKED，且 clear 旁路擋不掉），
+// 若退回原因正是末 5 碼填錯，不由櫃檯清空的話家長永遠改不了。
+// 已 payment_confirmed 的成員一律不清（櫃檯已查核過的帳款不可被抹掉）。
+router.post('/:id/return-for-fix', requireAdminAuth, AMS, async (req, res) => {
+  const reason = (req.body && typeof req.body.reason === 'string') ? req.body.reason.trim() : '';
+  if (!reason) return res.status(400).json({ error: '請填寫退回原因', code: 'REASON_REQUIRED' });
+  const resetIds = Array.isArray(req.body?.reset_member_ids)
+    ? [...new Set(req.body.reset_member_ids.map((x) => String(x || '').trim()).filter(Boolean))]
+    : [];
+
+  const client = await pool.connect();
+  let notify = null;
+  try {
+    await client.query('BEGIN');
+    const o = await client.query(`SELECT * FROM group_orders WHERE id = $1 FOR UPDATE`, [req.params.id]);
+    if (!o.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: '找不到此團購' }); }
+    const order = o.rows[0];
+    if (!isVenueInScope(req, order.venue_id)) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: '無權審核此場館的團購' });
+    }
+    if (order.status !== 'submitted') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '只有「待審核」的團購可以退回補件', code: 'NOT_SUBMITTED' });
+    }
+
+    let resetCount = 0;
+    if (resetIds.length) {
+      const cleared = await client.query(
+        `UPDATE group_order_members
+            SET payment_proof_url = NULL,
+                transfer_last_5   = NULL,
+                proof_uploaded_at = NULL
+          WHERE group_order_id = $1
+            AND id = ANY($2::uuid[])
+            AND COALESCE(payment_confirmed, FALSE) = FALSE
+          RETURNING id`,
+        [order.id, resetIds]
+      );
+      resetCount = cleared.rowCount;
+    }
+    // 注意：這裡「不」回沖優惠名額。退回補件的語意是「付款資料重填」，不是「退出團購」，
+    // 該家仍在名單內、金額（含已鎖定的折扣）不變，補齊後重新送審即可。
+    // 回沖名額會造成 final_amount 仍是折扣價、名額卻已歸還的不一致。
+    // 真正該回沖的是「整團取消」（家長端 cancel）與退費，那兩條路徑已各自處理。
+
+    await client.query(
+      `UPDATE group_orders
+          SET status='forming', reject_reason=$2, reviewed_by=$3, reviewed_at=NOW(),
+              submitted_at=NULL, return_count=COALESCE(return_count,0)+1, updated_at=NOW()
+        WHERE id=$1`,
+      [order.id, reason, req.adminUser?.username || 'system']
+    );
+    await logGroupOrderAudit(client, {
+      groupOrderId: order.id,
+      action: `退回補件（回到揪團中${resetCount ? `，清空 ${resetCount} 筆付款資料供重填` : ''}）`,
+      by: req.adminUser?.name || req.adminUser?.username || 'unknown',
+      reason,
+    });
+
+    const members = await client.query(
+      `SELECT p.line_uid FROM group_order_members m
+         JOIN parents p ON p.id = m.parent_id
+        WHERE m.group_order_id = $1 AND p.line_uid IS NOT NULL`,
+      [order.id]
+    );
+    notify = { uids: members.rows.map((x) => x.line_uid), venueId: order.venue_id, orderId: order.id, resetCount };
+
+    await client.query('COMMIT');
+    res.json({ ok: true, status: 'forming', reset_members: resetCount });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    console.error('[admin/group-orders return-for-fix]', { code: err?.code || 'UNEXPECTED' });
+    return res.status(500).json({ error: '退回補件失敗' });
+  } finally {
+    client.release();
+  }
+
+  // best-effort 通知全體成員（交易外，失敗只記 log，不影響已落地的退回結果）
+  if (notify && notify.uids.length) {
+    const liffUrl = `${process.env.LIFF_URL_PARENT || process.env.LIFF_URL || 'https://liff.line.me/-'}/group/${notify.orderId}`;
+    const msg = line.templates.returnedForFix({
+      title: '您的團購已退回補件',
+      reason,
+      hint: notify.resetCount ? '部分家庭的付款資料已清空，請重新填寫轉帳末 5 碼並上傳證明。' : null,
+      liffUrl,
+    });
+    for (const uid of notify.uids) {
+      line.pushMessage(uid, msg, notify.venueId)
+        .catch((e) => console.warn('[group return-for-fix push]', e.message));
+    }
   }
 });
 

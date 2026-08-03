@@ -23,6 +23,11 @@ export default function GroupOrdersPage() {
   const [busy, setBusy] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
+  // U14 退回補件：mode 區分「退回補件（可續作）」與「退回（終止）」；
+  // resetIds 是要清空付款資料供家長重填的成員。
+  const [returning, setReturning] = useState(false);
+  const [returnReason, setReturnReason] = useState('');
+  const [resetIds, setResetIds] = useState([]);
   const [venues, setVenues] = useState([]);
 
   // 一次抓全部狀態，分頁切換前端過濾，讓每個分頁都能顯示正確筆數
@@ -111,6 +116,19 @@ export default function GroupOrdersPage() {
       load();
     } catch (e) {
       toast.error(e?.response?.data?.error || '退回失敗');
+    } finally { setBusy(false); }
+  }
+
+  async function handleReturnForFix() {
+    if (!returnReason.trim()) return toast.error('請填寫退回原因');
+    setBusy(true);
+    try {
+      const r = await groupOrdersApi.returnForFix(detail.id, returnReason.trim(), resetIds);
+      toast.success(`已退回補件${r.reset_members ? `，已清空 ${r.reset_members} 筆付款資料供重填` : ''}`);
+      setReturning(false); setReturnReason(''); setResetIds([]);
+      closeDetail(); load();
+    } catch (e) {
+      toast.error(e?.response?.data?.error || '退回補件失敗');
     } finally { setBusy(false); }
   }
 
@@ -289,12 +307,54 @@ export default function GroupOrdersPage() {
 
                 {detail.status === 'submitted' && (
                   <div className="mt-4 border-t border-gray-100 pt-4">
-                    {!rejecting ? (
-                      <div className="flex gap-2">
+                    {/* U14 退回補件：與「退回」（終態）並列。多數退回其實只是付款資料沒齊，
+                        用終態退回會讓家長無路可走，只能重新發起整個團。 */}
+                    {returning ? (
+                      <div>
+                        <p className="mb-2 text-xs font-bold text-amber-700">退回補件（團購回到「揪團中」，家長可補齊後重新送審）</p>
+                        <textarea value={returnReason} onChange={(e) => setReturnReason(e.target.value)}
+                          rows={2} placeholder="退回原因（必填，家長會收到 LINE 通知看到這段文字）"
+                          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none" />
+                        <div className="mt-2 rounded-lg bg-gray-50 px-3 py-2">
+                          <p className="mb-1 text-[11px] font-bold text-gray-600">要清空付款資料供重填的家庭（選填）</p>
+                          <p className="mb-2 text-[11px] leading-snug text-gray-400">
+                            家長端的轉帳末 5 碼一旦送出就鎖定、自己改不了。若退回原因是末 5 碼或證明填錯，請勾選該家庭。已確認帳款的家庭不會被清空。
+                          </p>
+                          <div className="space-y-1">
+                            {(detail.members || []).filter((m) => !m.payment_confirmed).map((m) => (
+                              <label key={m.id} className="flex items-center gap-2 text-xs text-gray-700">
+                                <input
+                                  type="checkbox"
+                                  checked={resetIds.includes(m.id)}
+                                  onChange={(e) => setResetIds(e.target.checked
+                                    ? [...resetIds, m.id]
+                                    : resetIds.filter((x) => x !== m.id))}
+                                />
+                                <span>{m.parent_name}{m.is_leader ? '（團主）' : ''} — {m.transfer_last_5 ? `末5碼 ${m.transfer_last_5}` : '未填末5碼'}／{m.payment_proof_url ? '有證明' : '無證明'}</span>
+                              </label>
+                            ))}
+                            {!(detail.members || []).some((m) => !m.payment_confirmed) && (
+                              <p className="text-[11px] text-gray-400">所有家庭都已確認帳款，無可清空對象。</p>
+                            )}
+                          </div>
+                        </div>
+                        <div className="mt-2 flex gap-2">
+                          <button type="button" disabled={busy} onClick={handleReturnForFix}
+                            className="flex-1 rounded-lg bg-amber-500 py-2.5 text-sm font-bold text-white disabled:opacity-50">確認退回補件</button>
+                          <button type="button" disabled={busy} onClick={() => { setReturning(false); setResetIds([]); }}
+                            className="flex-1 rounded-lg border border-gray-300 py-2.5 text-sm font-bold text-gray-600">取消</button>
+                        </div>
+                      </div>
+                    ) : !rejecting ? (
+                      <div className="space-y-2">
                         <button type="button" disabled={busy} onClick={handleApprove}
-                          className="flex-1 rounded-lg bg-brand-green py-2.5 text-sm font-bold text-white disabled:opacity-50">核准後送待對帳</button>
-                        <button type="button" disabled={busy} onClick={() => setRejecting(true)}
-                          className="flex-1 rounded-lg border border-red-300 py-2.5 text-sm font-bold text-red-500">退回</button>
+                          className="w-full rounded-lg bg-brand-green py-2.5 text-sm font-bold text-white disabled:opacity-50">核准後送待對帳</button>
+                        <div className="flex gap-2">
+                          <button type="button" disabled={busy} onClick={() => setReturning(true)}
+                            className="flex-1 rounded-lg border border-amber-400 py-2.5 text-sm font-bold text-amber-600">退回補件（可續作）</button>
+                          <button type="button" disabled={busy} onClick={() => setRejecting(true)}
+                            className="flex-1 rounded-lg border border-red-300 py-2.5 text-sm font-bold text-red-500">退回（終止）</button>
+                        </div>
                       </div>
                     ) : (
                       <div>

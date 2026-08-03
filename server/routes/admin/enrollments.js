@@ -1552,6 +1552,100 @@ router.post('/:id/cancel', requireAdminAuth, requireAdminRole('admin', 'manager'
   }
 });
 
+// ── POST /:id/return-for-fix 退回補件（U14）──────────────────
+// 與 /cancel 的差別：
+//   cancel         → cancelled（終態，家長無法續作）— 行為完全不變
+//   return-for-fix → pending_payment（可續作）— 家長回去補付款資料後繼續完成
+// 兩種入口都支援：
+//   ① 單還在 pending_payment、但付款資料有問題 → 清空供重填
+//   ② 單已被 cancelled → 復活回 pending_payment（使用者訴求的「不要直接刪掉」）
+// 清空付款欄位是必要的：courses.js 的 payment-proof 對「末 5 碼＋證明皆已送出」
+// 是鎖死的（PAYMENT_LOCKED），不清空家長改不了。
+// 付款資料屬 checkout 層級（見 courses.js payment-proof 的 updateEnrollmentWhere），
+// 故有 checkout_id 時一併把該 checkout 的付款欄位與狀態退回。
+router.post('/:id/return-for-fix', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+  const reason = (req.body && typeof req.body.reason === 'string') ? req.body.reason.trim() : '';
+  if (!reason) return res.status(400).json({ error: '請填寫退回原因', code: 'REASON_REQUIRED' });
+  const by = req.adminUser?.name || req.adminUser?.username || 'unknown';
+
+  const client = await pool.connect();
+  let notify = null;
+  try {
+    await client.query('BEGIN');
+    const cur = await client.query(`SELECT * FROM admin_enrollments WHERE id = $1 FOR UPDATE`, [req.params.id]);
+    if (!cur.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'enrollment not found' });
+    }
+    const row = cur.rows[0];
+    if (!isVenueInScope(req, row.venue_id)) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: '此報名不在您的場館範圍內' });
+    }
+    // 已對帳成立（confirmed）或已退費的單不可退回補件——那要走退費流程，不是補件。
+    if (!['pending_payment', 'cancelled'].includes(row.status)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: `狀態 ${row.status} 的報名不可退回補件`, code: 'NOT_RETURNABLE',
+      });
+    }
+
+    await client.query(
+      `UPDATE admin_enrollments
+          SET status = 'pending_payment',
+              cancel_reason = $2, returned_at = NOW(), returned_by = $3,
+              payment_proof_url = NULL, transfer_last_5 = NULL,
+              updated_at = NOW()
+        WHERE id = $1`,
+      [row.id, reason, by]
+    );
+    if (row.checkout_id) {
+      await client.query(
+        `UPDATE checkout_sessions
+            SET payment_status = 'pending_payment',
+                current_route_state = 'pending_payment',
+                payment_proof_url = NULL, transfer_last_5 = NULL,
+                updated_at = NOW()
+          WHERE checkout_id = $1`,
+        [row.checkout_id]
+      );
+    }
+    await client.query(
+      `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user, reason)
+       VALUES ($1, $2, $3, $4)`,
+      [row.id, `退回補件（原狀態 ${row.status} → pending_payment，付款資料已清空供重填）`, by, reason]
+    );
+
+    const p = await client.query(
+      `SELECT line_uid FROM parents WHERE phone = $1 AND line_uid IS NOT NULL LIMIT 1`,
+      [row.parent_phone]
+    );
+    notify = { uid: p.rows[0]?.line_uid || null, venueId: row.venue_id, enrollmentId: row.id };
+
+    await client.query('COMMIT');
+    res.json(await readEnrollment(row.id));
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    console.error('[admin/enrollments/:id/return-for-fix]', { code: err?.code || 'UNEXPECTED' });
+    return res.status(500).json({ error: '退回補件失敗' });
+  } finally {
+    client.release();
+  }
+
+  // best-effort 通知家長（交易外；失敗只記 log，不影響已落地的退回結果）
+  // line 沿用本檔既有的 lazy require 慣例（見 reconcile 內），不動模組載入順序。
+  if (notify && notify.uid) {
+    const line = require('../../services/line');
+    const liffUrl = `${process.env.LIFF_URL_PARENT || process.env.LIFF_URL || 'https://liff.line.me/-'}/enroll-status/${notify.enrollmentId}`;
+    line.pushMessage(notify.uid, line.templates.returnedForFix({
+      title: '您的報名已退回補件',
+      reason,
+      hint: '原本的轉帳末 5 碼與匯款證明已清空，請重新填寫並上傳。',
+      liffUrl,
+    }), notify.venueId).catch((e) => console.warn('[enrollment return-for-fix push]', e.message));
+  }
+});
+
 router._checkoutInternals = {
   getSettings,
   ensureGroupCoursePeriod,

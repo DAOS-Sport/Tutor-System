@@ -872,6 +872,26 @@ DO $$ BEGIN
   ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS created_by TEXT REFERENCES admin_users(id) ON DELETE SET NULL;
   CREATE UNIQUE INDEX IF NOT EXISTS uq_admin_enrollments_external_order_no
     ON admin_enrollments(external_order_no) WHERE external_order_no IS NOT NULL;
+  -- U14 退回補件（migration 036）：退回原因需落在資料列上（原本只寫進 audit log，
+  -- 家長端看不到），並記錄是誰在何時退的。既有列為 NULL，顯示端需容忍 NULL。
+  ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS cancel_reason TEXT;
+  ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS returned_at   TIMESTAMPTZ;
+  ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS returned_by   TEXT;
+  ALTER TABLE group_orders      ADD COLUMN IF NOT EXISTS return_count  INTEGER NOT NULL DEFAULT 0;
+  -- U14 團購套用優惠（migration 037）：促銷通路開關預設 FALSE = 既有促銷行為零變動；
+  -- 團購發起時鎖促銷快照、每家加入時落地金額（nullable → 既有團走 COALESCE 舊路徑）。
+  ALTER TABLE promotions   ADD COLUMN IF NOT EXISTS applicable_to_group_orders BOOLEAN NOT NULL DEFAULT FALSE;
+  ALTER TABLE group_orders ADD COLUMN IF NOT EXISTS promotion_id UUID REFERENCES promotions(id) ON DELETE SET NULL;
+  ALTER TABLE group_orders ADD COLUMN IF NOT EXISTS promotion_snapshot JSONB;
+  ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS original_amount INTEGER;
+  ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS discount_amount INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS final_amount    INTEGER;
+  ALTER TABLE promotion_usages ADD COLUMN IF NOT EXISTS group_order_id UUID REFERENCES group_orders(id) ON DELETE SET NULL;
+  ALTER TABLE promotion_usages ADD COLUMN IF NOT EXISTS group_order_member_id UUID;
+  CREATE INDEX IF NOT EXISTS idx_promo_usages_group
+    ON promotion_usages(group_order_id) WHERE group_order_id IS NOT NULL;
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_promo_usages_group_member
+    ON promotion_usages(group_order_member_id) WHERE group_order_member_id IS NOT NULL;
   -- 櫃台補簽到（F-R01）：checkin_at = 選擇的上課/簽到時間；backfilled_at = 補簽到按鈕被按下的時間（供管理端查看）。
   ALTER TABLE admin_today_sessions ADD COLUMN IF NOT EXISTS checkin_at TIMESTAMPTZ;
   ALTER TABLE admin_today_sessions ADD COLUMN IF NOT EXISTS backfilled_at TIMESTAMPTZ;

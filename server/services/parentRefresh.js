@@ -128,6 +128,9 @@ async function refreshParentMirrorFromRagic({
   preservePending = false,
   requireComplete = true,
   markZ03Resolved = true,
+  // 預設 true＝維持既有的嚴格語意（註冊／綁定寫入後必須驗到 UID 已生效）。
+  // 只有「背景刷新」這類非安全門檻的呼叫端可以放寬，見下方 UID 檢查處的說明。
+  strictUidMatch = true,
   reason = 'auth',
 } = {}) {
   if (!lineUid && !phone) {
@@ -150,7 +153,26 @@ async function refreshParentMirrorFromRagic({
     throw new ParentRefreshError('RAGIC_REFRESH_PHONE_MISMATCH', '重新讀取的 Ragic Z01 手機與本次操作不一致', 502);
   }
   if (effectiveLineUid && mapped.line_uid !== effectiveLineUid) {
-    throw new ParentRefreshError('RAGIC_REFRESH_UID_MISMATCH', '重新讀取的 Ragic Z01 LINE UID 與本次操作不一致', 502);
+    // 區分「UID 尚未回寫」與「UID 綁到別人」——這兩件事後果天差地遠，不能用同一道門擋。
+    //
+    // 背景：_lookupZ01 先以 UID 查 Z01，查不到才用電話反查。若該筆 Z01 的
+    // 「家教系統uid」欄位是空的（回寫失敗／舊資料從未回寫），電話反查會命中「正確的家長」，
+    // 但 mapped.line_uid 為空 → 舊邏輯一律判定不一致並拋 502。
+    // 對 /parents/me/sync（每次開 App 的背景刷新）而言，這代表該家長「永遠同步失敗」，
+    // 而且是持續性的，不是偶發 —— production log 中大量重複的
+    // 「重新讀取的 Ragic Z01 LINE UID 與本次操作不一致」即此。
+    //
+    // 嚴格模式（預設，註冊／綁定的寫入後驗證）：維持原行為，一律擋，
+    //   確保剛寫進 Ragic 的 UID 真的生效，否則可能把資料綁到錯的人。
+    // 寬鬆模式（背景刷新）：Z01 UID 為空 = 待回寫，放行並續做同步；
+    //   Z01 已有「別的」UID 仍然擋 —— 那是真的兩支 LINE 搶同一支電話，必須人工處理。
+    const ragicUidEmpty = !String(mapped.line_uid || '').trim();
+    if (strictUidMatch || !ragicUidEmpty) {
+      throw new ParentRefreshError('RAGIC_REFRESH_UID_MISMATCH', '重新讀取的 Ragic Z01 LINE UID 與本次操作不一致', 502);
+    }
+    console.warn('[parent-refresh] Z01 LINE UID 尚未回寫，以本地 UID 續行同步（待 outbox 回寫收斂）:', {
+      reason, phone: maskPhone(mapped.phone), ragic_record_id: mapped.ragic_record_id || null,
+    });
   }
   if (requireComplete) assertZ01Complete(mapped);
 

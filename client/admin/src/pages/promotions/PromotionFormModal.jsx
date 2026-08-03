@@ -81,6 +81,8 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
     applicable_venue_ids: initial?.applicable_venue_ids || [],
     applicable_coach_multipliers: (initial?.applicable_coach_multipliers || []).map(Number),
     show_on_parent_home: initial?.show_on_parent_home !== false,
+    // U14 團購通路開關：預設 false —— 既有促銷不會突然套用到團購而改變定價。
+    applicable_to_group_orders: initial?.applicable_to_group_orders === true,
     coupon_code: initial?.coupon_code || '',
     generate_coupon_code: false,
     start_date: initial?.start_date ? taipeiDate(initial.start_date) : todayTaipeiDate(),
@@ -238,6 +240,7 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
       applicable_venue_ids: selectedScopePayload(d.applicable_venue_ids, venueOpts || []),
       applicable_coach_multipliers: selectedScopePayload(d.applicable_coach_multipliers, coachMultiplierOpts || []),
       show_on_parent_home: d.show_on_parent_home,
+      applicable_to_group_orders: d.applicable_to_group_orders,
       coupon_code: d.coupon_code.trim() || null,
       generate_coupon_code: !isEdit && d.generate_coupon_code,
       start_date: startISO,
@@ -432,6 +435,13 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
                   顯示在家長首頁
                 </label>
                 <p className="mt-1 text-[11px] leading-snug text-gray-400">關閉時此優惠不會出現在家長首頁橫幅（主管專屬 / 特定族群優惠可搭配折扣碼，不公開曝光）。有折扣碼的優惠本就不會顯示在首頁。</p>
+              </div>
+              <div className="md:col-span-2">
+                <label className="inline-flex items-center gap-2 text-sm text-gray-700">
+                  <input type="checkbox" checked={d.applicable_to_group_orders} onChange={(e) => setD({ ...d, applicable_to_group_orders: e.target.checked })} />
+                  可套用於團購
+                </label>
+                <p className="mt-1 text-[11px] leading-snug text-gray-400">預設關閉。開啟後，團主發起團購時可套用此優惠，折扣會「各家獨立計算」並在加入當下鎖定金額（家長看到的金額＝轉帳金額＝核准金額）。名額於加入時扣除，取消團購時自動回沖。</p>
               </div>
             </div>
           </section>

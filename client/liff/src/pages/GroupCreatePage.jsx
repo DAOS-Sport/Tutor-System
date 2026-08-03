@@ -54,6 +54,8 @@ export default function GroupCreatePage() {
   const [submitting, setSubmitting] = useState(false);
   const [createError, setCreateError] = useState('');
   const [note, setNote] = useState('');
+  // U14：團購折價券。空白＝不輸入（後端仍會嘗試自動套用有勾選「可用於團購」的促銷）。
+  const [couponCode, setCouponCode] = useState('');
   const [periodCount, setPeriodCount] = useState(carriedPeriod >= 1 && carriedPeriod <= 6 ? carriedPeriod : 1);
 
   // 草稿自動暫存控制：hydrated 後才開始存；lastSaved 去重，避免重複 PUT。
@@ -142,6 +144,7 @@ export default function GroupCreatePage() {
         period_count: periodCount,
         ...memberFieldsPayload(fields),
         note: note.trim() || undefined,
+        coupon_code: couponCode.trim().toUpperCase() || undefined,
       });
       // 後端建立成功會自動刪草稿；mock 模式再補一刀確保乾淨。
       groupOrdersApi.clearDraft().catch(() => {});
@@ -187,6 +190,21 @@ export default function GroupCreatePage() {
             </button>
           ))}
         </div>
+      </div>
+
+      <div className="mt-3 rounded-xl border border-gray-200 bg-white p-3">
+        <label className="mb-1 block text-xs font-medium text-gray-600">折價券代碼（選填）</label>
+        <input
+          type="text"
+          value={couponCode}
+          onChange={(e) => { setCreateError(''); setCouponCode(e.target.value.replace(/\s/g, '').slice(0, 40)); }}
+          placeholder="有代碼再輸入"
+          autoCapitalize="characters"
+          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm uppercase focus:border-brand-teal focus:outline-none"
+        />
+        <p className="mt-1 text-[11px] leading-snug text-gray-400">
+          折扣會在發起時鎖定，之後<strong>每個家庭各自套用</strong>；每家看到的金額就是要轉帳的金額，不會因為後來有人加入而改變。
+        </p>
       </div>
 
       <div className="mt-3 rounded-xl border border-gray-200 bg-white p-3">

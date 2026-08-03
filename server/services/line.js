@@ -14,10 +14,33 @@ const BRAND = {
   white:    '#ffffff',
 };
 
+// 已警告過的場館（避免 cron 迴圈裡每個收件人都刷一行相同的錯誤，把真正的問題淹掉）。
+const _warnedMissingToken = new Set();
+
 function getToken(venueId) {
-  const tokens = JSON.parse(process.env.LINE_MESSAGING_TOKENS || '{}');
+  let tokens = {};
+  try {
+    tokens = JSON.parse(process.env.LINE_MESSAGING_TOKENS || '{}');
+  } catch (e) {
+    // JSON 壞掉時整個推播都會死，而且訊息會變成難懂的 SyntaxError —— 講清楚是哪裡的問題。
+    throw new Error('LINE_MESSAGING_TOKENS 不是合法 JSON，所有場館推播都會失敗，請檢查 Replit Secrets');
+  }
   const token = tokens[venueId];
-  if (!token) throw new Error(`No LINE token for venue: ${venueId}`);
+  if (!token) {
+    // 每個場館只印一次完整診斷：講清楚「設了哪些、缺哪個、去哪裡補」。
+    // 沒有這段的話，production 上的症狀就是滿屏 "No LINE token for venue: X"，
+    // 但看不出是「整個變數沒設」還是「只少了某一館」。
+    if (!_warnedMissingToken.has(venueId)) {
+      _warnedMissingToken.add(venueId);
+      const configured = Object.keys(tokens);
+      console.error(
+        `[line] 場館 ${venueId} 沒有 Messaging API token，該館所有 LINE 推播都會失敗（評鑑提醒／團購通知／退回補件通知等）。`
+        + ` 目前 LINE_MESSAGING_TOKENS 已設定的場館：${configured.length ? configured.join(', ') : '（空的）'}。`
+        + ` 請到 Replit Secrets 補上，格式：{"B":"<token>","K":"<token>","L":"<token>"}`
+      );
+    }
+    throw new Error(`No LINE token for venue: ${venueId}`);
+  }
   return token;
 }
 
@@ -268,6 +291,32 @@ function groupMemberJoined({ memberName, total, min, max, reachedMin, liffUrl })
       footer: {
         type: 'box', layout: 'vertical',
         contents: [flexButton('查看團購並送審 →', liffUrl, BRAND.teal)],
+      },
+    },
+  }];
+}
+
+// 退回補件（U14）：團購或一般報名被櫃檯退回，但「單沒有消失」，補齊即可續作。
+// 與「取消／退回終止」不同，文案刻意強調可以繼續完成，避免家長誤以為要重新報名。
+function returnedForFix({ title, reason, hint, liffUrl }) {
+  return [{
+    type: 'flex', altText: `${title}：請補件後重新送出`,
+    contents: {
+      type: 'bubble',
+      header: flexHeader('📝 需要補件', BRAND.amber),
+      body: {
+        type: 'box', layout: 'vertical', spacing: 'sm',
+        contents: [
+          { type: 'text', text: title, size: 'sm', weight: 'bold', wrap: true },
+          { type: 'text', text: `退回原因：${reason}`, size: 'sm', wrap: true },
+          ...(hint ? [{ type: 'text', text: hint, size: 'xs', color: '#888888', wrap: true }] : []),
+          { type: 'text', text: '這筆單並未取消，補齊資料後即可繼續完成。',
+            size: 'xs', color: BRAND.green, wrap: true },
+        ],
+      },
+      footer: {
+        type: 'box', layout: 'vertical',
+        contents: [flexButton('前往補件 →', liffUrl, BRAND.amber)],
       },
     },
   }];
@@ -557,6 +606,7 @@ module.exports = {
     coursePlanPublished,
     sessionRecordPublished,
     groupMemberJoined,
+    returnedForFix,
     evaluationInvite,
     keywordAlert,
     mgmRewardIssued,

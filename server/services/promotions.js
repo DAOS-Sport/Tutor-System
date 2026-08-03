@@ -19,7 +19,10 @@ function isWithinWindow(p, now = Date.now()) {
   return start <= now && end >= now;
 }
 
-function matchScope(p, { courseType, venueId, periodCount, coachMultiplier }) {
+function matchScope(p, { courseType, venueId, periodCount, coachMultiplier, isGroupOrder = false }) {
+  // U14 通路維度：團購路徑只吃有明確勾選「可用於團購」的促銷。
+  // 欄位預設 FALSE，所以既有促銷一律不會被團購自動套用（一般報名路徑不傳此旗標，行為不變）。
+  if (isGroupOrder && !p.applicable_to_group_orders) return false;
   const typeOk =
     !p.applicable_course_types ||
     p.applicable_course_types.length === 0 ||
@@ -89,6 +92,7 @@ async function listActivePromotions() {
   const r = await pool.query(
     `SELECT id, name, description, type, discount_value, min_threshold_type, min_threshold_value,
             applicable_course_types, applicable_venue_ids, applicable_coach_multipliers,
+            applicable_to_group_orders,
             show_on_parent_home, coupon_code, eligible_parent_id,
             start_date, end_date, max_uses, current_uses,
             platform_total_period_cap, parent_period_cap, current_period_uses
@@ -107,7 +111,7 @@ async function listActivePromotions() {
  *   - 若有 couponCode → 嚴格驗證該代碼（必須符合 status/日期/scope/max_uses）。
  *   - 若無 couponCode → 自動從 active 且 coupon_code IS NULL 的活動中挑「折抵最大」一筆。
  */
-async function previewBestDiscount({ originalPrice, courseType, venueId, periodCount = 1, couponCode = null, parentId = null, coachMultiplier = null }) {
+async function previewBestDiscount({ originalPrice, courseType, venueId, periodCount = 1, couponCode = null, parentId = null, coachMultiplier = null, isGroupOrder = false }) {
   const op = Math.max(0, Math.round(Number(originalPrice) || 0));
   const requestPeriods = normalizeRequestPeriods(periodCount);
   if (!op) return { originalPrice: 0, discountAmount: 0, finalPrice: 0, promotion: null };
@@ -140,7 +144,7 @@ async function previewBestDiscount({ originalPrice, courseType, venueId, periodC
         throw quotaError('您已達到該優惠活動的個人使用上限');
       }
     }
-    if (!matchScope(p, { courseType, venueId, periodCount, coachMultiplier })) {
+    if (!matchScope(p, { courseType, venueId, periodCount, coachMultiplier, isGroupOrder })) {
       const err = new Error('折價券不適用本次購課'); err.code = 'COUPON_OUT_OF_SCOPE'; throw err;
     }
     if (p.eligible_parent_id && p.eligible_parent_id !== parentId) {
@@ -151,7 +155,7 @@ async function previewBestDiscount({ originalPrice, courseType, venueId, periodC
       originalPrice: op,
       discountAmount: discount,
       finalPrice: op - discount,
-      promotion: { id: p.id, name: p.name, description: p.description, type: p.type, coupon_code: p.coupon_code },
+      promotion: { id: p.id, name: p.name, description: p.description, type: p.type, coupon_code: p.coupon_code, discount_value: p.discount_value },
     };
   }
 
@@ -161,7 +165,7 @@ async function previewBestDiscount({ originalPrice, courseType, venueId, periodC
   for (const p of candidates) {
     if (p.coupon_code) continue; // 需要代碼的不自動套用
     if (p.eligible_parent_id) continue; // 私人券不能自動套用
-    if (!matchScope(p, { courseType, venueId, periodCount, coachMultiplier })) continue;
+    if (!matchScope(p, { courseType, venueId, periodCount, coachMultiplier, isGroupOrder })) continue;
     if (!hasPlatformPeriodCapacity(p, requestPeriods)) continue;
     if (p.parent_period_cap != null && parentId) {
       const usedPeriods = await getParentPeriodUses(pool, p.id, parentId);
@@ -175,7 +179,7 @@ async function previewBestDiscount({ originalPrice, courseType, venueId, periodC
     originalPrice: op,
     discountAmount: bestDiscount,
     finalPrice: op - bestDiscount,
-    promotion: { id: best.id, name: best.name, description: best.description, type: best.type, coupon_code: null },
+    promotion: { id: best.id, name: best.name, description: best.description, type: best.type, coupon_code: null, discount_value: best.discount_value },
   };
 }
 
@@ -193,6 +197,11 @@ async function recordUsage({
   finalPrice,
   periodCount,
   requestPeriods,
+  // U14 團購：forming 階段還沒有 admin_enrollments，改以 group_order_id / member_id 綁定，
+  // 供 revertUsage 在取消／退回時回沖名額；approve 時再把 admin_enrollment_id 回填上去，
+  // 讓既有的退費回沖路徑（revertUsage({adminEnrollmentId})）自動生效。
+  groupOrderId = null,
+  groupOrderMemberId = null,
 }, client) {
   if (!promotionId) return null;
   const db = client || pool;
@@ -241,10 +250,12 @@ async function recordUsage({
   }
   const r = await db.query(
     `INSERT INTO promotion_usages (promotion_id, parent_id, course_period_id, admin_enrollment_id,
-        original_price, discount_amount, final_price, used_periods)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id, created_at`,
+        original_price, discount_amount, final_price, used_periods,
+        group_order_id, group_order_member_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id, created_at`,
     [promotionId, parentId || null, coursePeriodId || null, adminEnrollmentId || null,
-     originalPrice, discountAmount, finalPrice, usedPeriods]
+     originalPrice, discountAmount, finalPrice, usedPeriods,
+     groupOrderId || null, groupOrderMemberId || null]
   );
   const quotaUpdate = await db.query(
     `UPDATE promotions
@@ -267,14 +278,19 @@ async function recordUsage({
  *  - 必須傳入退費 / 取消交易的 client，與狀態變更同生共死。
  *  - 冪等：找不到 usage（刪 0 筆）→ 不遞減、不報錯，可安全重複呼叫。
  */
-async function revertUsage({ adminEnrollmentId }, client) {
-  if (!adminEnrollmentId) return { reverted: 0 };
+async function revertUsage({ adminEnrollmentId, groupOrderId, groupOrderMemberId }, client) {
+  // U14：新增 group 維度的回沖入口。既有呼叫點一律只傳 { adminEnrollmentId }，行為完全不變。
+  //   groupOrderId       → 整團回沖（團主取消、櫃檯退回補件）
+  //   groupOrderMemberId → 單一家庭回沖（該家退出／付款資料被清空重填）
+  if (!adminEnrollmentId && !groupOrderId && !groupOrderMemberId) return { reverted: 0 };
   const db = client || pool;
   const del = await db.query(
     `DELETE FROM promotion_usages
-      WHERE admin_enrollment_id = $1
+      WHERE ($1::text IS NOT NULL AND admin_enrollment_id    = $1)
+         OR ($2::uuid IS NOT NULL AND group_order_id         = $2)
+         OR ($3::uuid IS NOT NULL AND group_order_member_id  = $3)
       RETURNING promotion_id, COALESCE(used_periods, 1)::int AS used_periods`,
-    [adminEnrollmentId]
+    [adminEnrollmentId || null, groupOrderId || null, groupOrderMemberId || null]
   );
   if (!del.rowCount) return { reverted: 0 };
   // 同一報名理論上只掛一筆 usage；仍依 promotion 分組彙總，避免多筆時遞減錯配。
