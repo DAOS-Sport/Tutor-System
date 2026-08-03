@@ -16,6 +16,9 @@ import { formatTWDateTime } from '../../utils/format';
  */
 export default function SlotActionSheet({ slot, onClose, onMutated, onError }) {
   const [busy, setBusy] = useState(false);
+  // 嚴格布林：後端沒回這個欄位時（舊版本、mock）一律當手建處理，不可用 !== false，
+  // 否則 undefined 會被當成自動時段，把手建槽位的「刪除」也一起藏掉。
+  const isAuto = slot.is_auto === true;
 
   async function run(fn) {
     if (busy) return;
@@ -36,7 +39,8 @@ export default function SlotActionSheet({ slot, onClose, onMutated, onError }) {
     <div className="fixed inset-0 z-40 flex items-end bg-black/40" onClick={onClose}>
       <div className="w-full max-w-[390px] mx-auto rounded-t-2xl bg-white p-4" onClick={(e) => e.stopPropagation()}>
         <div className="mb-3">
-          <div className="text-xs text-gray-500">{slot.venue_name || slot.venue_id}</div>
+          {/* auto 時段 venue_id 為 NULL（跨場館），沒有場館名可顯示 */}
+          <div className="text-xs text-gray-500">{slot.venue_name || slot.venue_id || '全場館共用'}</div>
           <div className="text-base font-bold text-brand-primary">
             {formatTWDateTime(slot.start_at)} · {slot.duration_minutes} 分
           </div>
@@ -52,11 +56,21 @@ export default function SlotActionSheet({ slot, onClose, onMutated, onError }) {
           {slot.status === 'available' && (
             <>
               <ActionButton onClick={() => run(() => slotsApi.block(slot.id))} disabled={busy}>
-                封鎖此時段（不開放預約）
+                {isAuto ? '關閉此時段（不開放預約）' : '封鎖此時段（不開放預約）'}
               </ActionButton>
-              <ActionButton onClick={() => run(() => slotsApi.remove(slot.id))} disabled={busy} danger>
-                刪除此槽位
-              </ActionButton>
+              {/* 自動時段不提供「刪除」：刪掉只是抹掉這一列，下個產生週期會照場館營業
+                  時間原樣長回來，教練會以為關掉了其實沒關。關班的唯一持久做法是封鎖
+                  ——產生器會回看前一週期的 blocked 並沿用。手建的槽位沒有這個問題。 */}
+              {!isAuto && (
+                <ActionButton onClick={() => run(() => slotsApi.remove(slot.id))} disabled={busy} danger>
+                  刪除此槽位
+                </ActionButton>
+              )}
+              {isAuto && (
+                <p className="px-1 text-[11px] leading-relaxed text-gray-500">
+                  這是依場館營業時間自動開放的時段。關閉後會沿用到之後的週期，要恢復隨時可解除。
+                </p>
+              )}
             </>
           )}
           {slot.status === 'blocked' && (

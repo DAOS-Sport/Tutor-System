@@ -219,7 +219,7 @@ export default function VenueHoursPage() {
         <div className="mt-4 flex items-center justify-end gap-2">
           {invalidDays.length > 0 && (
             <span className="text-xs font-bold text-brand-error">
-              {invalidDays.map((d) => WEEKDAYS[d]).join('、')} 尚未填完整
+              {invalidDays.map((d) => WEEKDAYS[d]).join('、')} 的時間不完整或顛倒
             </span>
           )}
           <button type="button" onClick={save} disabled={busy || readOnly || invalidDays.length > 0}

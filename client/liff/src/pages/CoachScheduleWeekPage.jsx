@@ -121,7 +121,11 @@ export default function CoachScheduleWeekPage() {
   }, [coach?.id, range.from, range.to, reload, toast]);
 
   const filteredSlots = useMemo(
-    () => (slots || []).filter((s) => venueFilter.size === 0 || venueFilter.has(s.venue_id)),
+    // auto 時段 venue_id 為 NULL＝跨場館共用，任何場館篩選下都該留著；
+    // 否則教練一按場館 chip，自己那些自動時段就整批消失，看起來像沒產生。
+    () => (slots || []).filter(
+      (s) => venueFilter.size === 0 || s.venue_id == null || venueFilter.has(s.venue_id)
+    ),
     [slots, venueFilter]
   );
 

@@ -79,7 +79,12 @@ router.get('/coach/:coachId', requireCoach, requireCoachOwner('coachId'), async 
   const toDate = parseTaipeiDateBoundary(to || addCalendarDays(from || taipeiWeekStart(), 7));
   try {
     const r = await pool.query(
+      // 039：auto 產生的時段 venue_id 為 NULL（跨場館共用）。這裡若用 INNER JOIN
+      // venues，整批 NULL venue 的列會被濾掉 → 教練在排課總表上看不見自動時段，
+      // 也就永遠無法關班。家長端（下方 availableForPeriod）早已改成 LEFT JOIN，
+      // 教練端必須同步，否則「預設開放、教練關班」的模型在教練側根本無從操作。
       `SELECT cas.id, cas.coach_id, cas.venue_id, v.name AS venue_name,
+              (cas.generated_by = 'auto') AS is_auto,
               cas.start_at, cas.duration_minutes, cas.status, cas.notes,
               cas.booked_session_id,
               cs.id AS session_id, cs.course_period_id,
@@ -92,7 +97,7 @@ router.get('/coach/:coachId', requireCoach, requireCoachOwner('coachId'), async 
                 '[]'::json
               ) AS student_names
        FROM coach_availability_slots cas
-       JOIN venues v ON v.id = cas.venue_id
+       LEFT JOIN venues v ON v.id = cas.venue_id
        LEFT JOIN course_sessions cs ON cs.id = cas.booked_session_id
        LEFT JOIN course_periods cp ON cp.id = cs.course_period_id
        WHERE cas.coach_id = $1
