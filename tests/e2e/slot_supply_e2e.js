@@ -22,6 +22,7 @@ const VENUE = 'ZZ';                       // 測試用場館 id（不與正式 A
 let coachId; let periodId; let parentId; let studentId;
 
 async function cleanup() {
+  await pool.query(`UPDATE coach_availability_slots SET booked_session_id=NULL WHERE coach_id IN (SELECT id FROM coaches WHERE name=$1)`, [TAG]);
   await pool.query(`DELETE FROM checkin_records WHERE course_session_id IN (SELECT id FROM course_sessions WHERE coach_id IN (SELECT id FROM coaches WHERE name=$1))`, [TAG]);
   await pool.query(`DELETE FROM course_sessions WHERE coach_id IN (SELECT id FROM coaches WHERE name=$1)`, [TAG]);
   await pool.query(`DELETE FROM course_sessions WHERE course_period_id IN (SELECT id FROM course_periods WHERE course_type=999)`);
@@ -175,6 +176,9 @@ function ymd(d) { return new Date(d.getTime() + 8 * 3600000).toISOString().slice
     {
       const day = gen.addDays(today, 5);
       const at = (h) => new Date(day + 'T' + String(h).padStart(2, '0') + ':00:00+08:00');
+      // 循環外鍵：course_sessions.availability_slot_id ↔ slots.booked_session_id
+      await pool.query("UPDATE coach_availability_slots SET booked_session_id=NULL WHERE coach_id=$1", [coachId]);
+      await pool.query('DELETE FROM course_sessions WHERE coach_id=$1', [coachId]);
       await pool.query('DELETE FROM coach_availability_slots WHERE coach_id=$1', [coachId]);
       await pool.query(
         `INSERT INTO coach_availability_slots (coach_id, venue_id, start_at, duration_minutes, status, generated_by)
