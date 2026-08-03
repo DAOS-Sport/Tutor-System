@@ -38,6 +38,7 @@ router.use('/uploads',       require('./admin/uploads'));    // Task #39 發票�
 router.use('/course-types',  require('./admin/courseTypes')); // 課程需求管理
 router.use('/group-orders',  require('./admin/groupOrders')); // U6 團購審核
 router.use('/ragic-status',  require('./admin/ragicStatus')); // Task #65 Ragic 健康檢查
+router.use('/venue-hours',   require('./admin/venueHours'));  // 模組 1：場館營業時間（自動時段的時間來源）
 router.use('/ragic-staging', require('./admin/ragicStaging')); // Task #66 Ragic 待審核區
 router.use('/ragic-z03',     require('./admin/ragicZ03'));     // Z03 舊系統壞姓名人工整理表
 router.use('/customer-parents',  require('./admin/customerParents'));  // 客戶資料管理 Z01 家長&學員關係

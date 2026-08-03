@@ -45,7 +45,10 @@ const UNIT = [
   'tests/reconcile_payment_proof_visibility_test.js',
   'tests/ragic_baseline_audit_test.js',
   'tests/sync_failure_log_test.js',
+  'tests/booking_policy_test.js',
   'tests/slot_generator_test.js',
+  'tests/slot_supply_flags_test.js',
+  'tests/venue_hours_test.js',
   'tests/release/canary_config_test.js',
   'tests/release/reconcile_image_pipeline_test.js',
 ];

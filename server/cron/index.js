@@ -20,6 +20,9 @@ const { processRagicSyncOutbox } = require('../services/ragicSyncOutbox');
 const { verifyRagicZ01UidSchemaFreshness } = require('../services/ragicSchemaFreshness');
 const { STABILITY_FLAGS } = require('../config/ragicSchema');
 const slotGenerator = require('../services/slotGenerator');
+const { isSlotSupplyEnabled } = require('../config/slotSupplyFlags');
+const bookingPolicy = require('../services/bookingPolicy');
+const slotsService = require('../services/slots');
 const { applyDueScheduledCourseTypeChanges } = require('../services/courseTypeSchedule');
 
 // 對家長推播的 LIFF base URL；新版用 LIFF_URL_PARENT，舊版 LIFF_URL 為 fallback
@@ -84,7 +87,7 @@ function initCronJobs() {
     // 功能旗標：預設關閉。時段功能的教練關班 UI、家長首次提示、取消流程都尚未完成，
     // 在那之前自動產生時段會讓家長約到教練無法拒絕的時間。
     // 開啟前置條件見 replit.md「自動時段供給」節；不得只用這個開關當唯一保護。
-    if (process.env.SLOT_GEN_ENABLED !== '1') return;
+    if (!isSlotSupplyEnabled()) return;
     try {
       const days = Number(process.env.SLOT_GEN_DAYS) || 21;
       const scope = process.env.SLOT_GEN_SCOPE === 'all' ? 'all' : 'active-periods';
@@ -93,6 +96,43 @@ function initCronJobs() {
         + `inserted=${r.inserted} carriedBlocked=${r.blocked} range=${r.fromDate}~${r.toDate}`);
     } catch (err) {
       console.warn('[Cron/Slots] 時段產生失敗:', err.code || err.message);
+    }
+  });
+
+  // ── 每 30 分鐘：逾時未簽到自動復原（模組 1）────────────────────────
+  //   使用者決策：開課前 <24h 不可取消，家長「不出席」即可；時間過了仍未簽到，
+  //   系統自動把該堂標為取消並歸還容量，家長就能重新預約。
+  //   不標 no_show、不做課程鎖定（使用者明確指示）。
+  //   判定條件見 services/bookingPolicy.js：課程結束 + 緩衝（預設 120 分）且無簽到。
+  //   只處理 confirmed 且真的沒有任何 checkin_records 的堂，逐筆 try/catch。
+  scheduleTaipei('*/30 * * * *', async () => {
+    if (!isSlotSupplyEnabled()) return;
+    try {
+      const graceMin = bookingPolicy.NO_SHOW_GRACE_MINUTES;
+      const due = await pool.query(
+        `SELECT cs.id
+           FROM course_sessions cs
+          WHERE cs.status = 'confirmed'
+            AND cs.scheduled_at + (cs.duration_minutes || ' minutes')::interval
+                + ($1 || ' minutes')::interval <= NOW()
+            AND NOT EXISTS (SELECT 1 FROM checkin_records cr WHERE cr.course_session_id = cs.id)
+          ORDER BY cs.scheduled_at
+          LIMIT 200`,
+        [String(graceMin)]
+      );
+      let restored = 0;
+      for (const row of due.rows) {
+        try {
+          // normal＝釋回槽位 + 歸還堂數，與家長自助取消同一條路徑
+          await slotsService.cancelSession(row.id, 'normal');
+          restored += 1;
+        } catch (e) {
+          console.warn('[Cron/NoShowRestore] 單筆復原失敗（不影響其他筆）:', row.id, e.message);
+        }
+      }
+      if (restored) console.log(`[Cron/NoShowRestore] 逾時未簽到自動復原 ${restored} 堂（grace=${graceMin}分）`);
+    } catch (err) {
+      console.warn('[Cron/NoShowRestore] 失敗:', err.message);
     }
   });
 

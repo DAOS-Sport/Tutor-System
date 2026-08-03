@@ -19,10 +19,13 @@
 const express = require('express');
 const router = express.Router();
 const { pool } = require('../models/db');
-const { detectConflict, createSlot, batchCreateSlots, bookSlot1v1 } = require('../services/slots');
+const { detectConflict, createSlot, batchCreateSlots, bookSlot1v1, cancelSession } = require('../services/slots');
+const { canSelfCancel, cancelRejectMessage } = require('../services/bookingPolicy');
 const { requireCoach, requireCoachOwner } = require('../middlewares/coachAuth');
 const { requireParent } = require('../middlewares/parentAuth');
 const { addCalendarDays, taipeiToday, taipeiWeekStart } = require('../utils/dateTime');
+// 模組 1 旗標：同時守住 cron 產生、家長查詢可見性、預約 auto slot 三個入口。
+const { isInSlotSupplyScope } = require('../config/slotSupplyFlags');
 
 function todayInTaipei() {
   return taipeiToday();
@@ -172,6 +175,49 @@ router.delete('/:id', requireCoach, ensureSlotOwner, async (req, res) => {
   res.json({ ok: true, id: req.params.id });
 });
 
+// ── 家長端：取消自己的預約（模組 1）────────────────────────────────
+//   DELETE /api/slots/booking/:sessionId
+//   政策（使用者決策 2026-08-03）：開課前 ≥24h 可自行取消；<24h 不可取消，
+//   家長不出席即可，逾時未簽到由 cron 自動復原容量（見 bookingPolicy.js）。
+//
+//   服務層 cancelSession() 早就存在但從未有任何端點呼叫它（只有 e2e 直接呼叫函式），
+//   所以「家長自助取消」這個功能實際上從未上線。這裡把它接起來。
+router.delete('/booking/:sessionId', requireParent, async (req, res) => {
+  const sessionId = String(req.params.sessionId || '');
+  try {
+    // 只允許取消「自己名下在籍學員」的預約，且必須是未取消、未完成的堂
+    const own = await pool.query(
+      `SELECT cs.id, cs.scheduled_at, cs.status
+         FROM course_sessions cs
+         JOIN course_periods cp ON cp.id = cs.course_period_id
+         JOIN course_period_enrollments cpe ON cpe.course_period_id = cp.id AND cpe.status = 'active'
+         JOIN students s ON s.id = cpe.student_id
+        WHERE cs.id = $1 AND s.parent_id = $2
+        LIMIT 1`,
+      [sessionId, req.parent.id]
+    );
+    if (!own.rowCount) return res.status(404).json({ error: '找不到此預約', code: 'SESSION_NOT_FOUND' });
+    const session = own.rows[0];
+    if (session.status !== 'confirmed') {
+      return res.status(409).json({ error: '此堂課目前無法取消', code: 'SESSION_NOT_CANCELLABLE' });
+    }
+    const verdict = canSelfCancel(session.scheduled_at);
+    if (!verdict.allowed) {
+      return res.status(409).json({
+        error: cancelRejectMessage(verdict.reason, verdict.hoursUntil),
+        code: `CANCEL_${verdict.reason}`,
+        hours_until: Math.max(0, Math.round(verdict.hoursUntil * 10) / 10),
+      });
+    }
+    // normal＝釋回槽位 + 歸還堂數（cancelSession 內含 transaction）
+    await cancelSession(sessionId, 'normal');
+    res.json({ ok: true, session_id: sessionId, cancel_type: 'normal' });
+  } catch (err) {
+    console.error('[slots cancel-booking]', err.message);
+    res.status(500).json({ error: '取消預約失敗' });
+  }
+});
+
 router.post('/preview-conflict', requireCoach, ensureBodyOwner, async (req, res) => {
   const { coach_id, start_at, duration_minutes = 60 } = req.body || {};
   if (!coach_id || !start_at) return res.status(400).json({ error: 'coach_id / start_at 必填' });
@@ -228,6 +274,8 @@ router.get('/period/:coursePeriodId', requireParent, async (req, res) => {
     const slots = await pool.query(
       // 039：venue_id 為 NULL＝自動產生、尚未認領場館的時段，對本期同樣可選。
       // JOIN 必須是 LEFT，否則 NULL venue 的列會被整批濾掉（回傳空清單）。
+      // 旗標守門（模組 1 規格：不得只用 cron 開關）：功能關閉或不在 canary 範圍時，
+      // $5=false，NULL venue 的自動時段對家長完全不可見，等同未上線前的行為。
       `SELECT cas.id, cas.coach_id, COALESCE(cas.venue_id, $2) AS venue_id,
               COALESCE(v.name, pv.name) AS venue_name,
               cas.start_at, cas.duration_minutes, cas.status
@@ -235,23 +283,61 @@ router.get('/period/:coursePeriodId', requireParent, async (req, res) => {
          LEFT JOIN venues v  ON v.id  = cas.venue_id
          LEFT JOIN venues pv ON pv.id = $2
         WHERE cas.coach_id = $1
-          AND (cas.venue_id IS NULL OR cas.venue_id = $2)
+          AND ((cas.venue_id IS NULL AND $5::boolean) OR cas.venue_id = $2)
           AND cas.status = 'available'
           AND cas.start_at >= $3
           AND cas.start_at < $4
         ORDER BY cas.start_at
         LIMIT 120`,
-      [period.coach_id, period.venue_id, fromDate.toISOString(), toDate.toISOString()]
+      [period.coach_id, period.venue_id, fromDate.toISOString(), toDate.toISOString(),
+        isInSlotSupplyScope({ coachId: period.coach_id, venueId: period.venue_id })]
+    );
+
+    // 首次預約提示（模組 1）：每個課期跳一次「請先與教練確認時間再預約」。
+    // 放在 course_period_enrollments 而非 parents —— 同一位家長的不同課期各提示一次。
+    // 這裡只回狀態，實際確認由 POST /period/:id/ack-notice 寫入。
+    const ack = await pool.query(
+      `SELECT bool_or(cpe.booking_notice_ack_at IS NOT NULL) AS acked
+         FROM course_period_enrollments cpe
+         JOIN students s ON s.id = cpe.student_id
+        WHERE cpe.course_period_id = $1 AND s.parent_id = $2 AND cpe.status = 'active'`,
+      [coursePeriodId, req.parent.id]
     );
 
     res.json({
       period,
       sessions_left: Math.max(0, Number(period.total_sessions) - Number(period.booked_sessions || 0)),
       slots: slots.rows,
+      needs_booking_notice: ack.rows[0]?.acked !== true,
+      booking_notice_text: '請先與教練確認時間，再進行預約。',
     });
   } catch (err) {
     console.error('[slots period]', err);
     res.status(500).json({ error: '可選時段載入失敗' });
+  }
+});
+
+// ── 家長端：確認已讀「請先與教練確認時間」提示（模組 1）─────────────
+//   POST /api/slots/period/:coursePeriodId/ack-notice
+//   每個課期只需確認一次；重複呼叫冪等（COALESCE 保留第一次的時間戳）。
+router.post('/period/:coursePeriodId/ack-notice', requireParent, async (req, res) => {
+  try {
+    const r = await pool.query(
+      `UPDATE course_period_enrollments cpe
+          SET booking_notice_ack_at = COALESCE(cpe.booking_notice_ack_at, NOW())
+         FROM students s
+        WHERE s.id = cpe.student_id
+          AND cpe.course_period_id = $1
+          AND s.parent_id = $2
+          AND cpe.status = 'active'
+        RETURNING cpe.id`,
+      [req.params.coursePeriodId, req.parent.id]
+    );
+    if (!r.rowCount) return res.status(404).json({ error: '找不到此課程期', code: 'PERIOD_NOT_FOUND' });
+    res.json({ ok: true, acked: true });
+  } catch (err) {
+    console.error('[slots ack-notice]', err.message);
+    res.status(500).json({ error: '確認失敗' });
   }
 });
 
@@ -318,6 +404,12 @@ router.post('/:id/book', requireParent, async (req, res) => {
     if (slot.coach_id !== cp.coach_id || venueMismatch) {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '此時段與課程期的教練或場館不符', code: 'SLOT_MISMATCH' });
+    }
+    // 旗標守門（第三個入口）：功能關閉時，即使家長拿到舊的 slot id 直接打 API，
+    // 也不能預約自動產生的時段。教練手建的時段（venue_id 有值）不受影響。
+    if (slot.venue_id === null && !isInSlotSupplyScope({ coachId: cp.coach_id, venueId: cp.venue_id })) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '此時段目前無法預約，請洽櫃台', code: 'SLOT_SUPPLY_DISABLED' });
     }
     if (slot.status !== 'available') {
       await client.query('ROLLBACK');
