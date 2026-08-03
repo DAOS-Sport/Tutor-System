@@ -117,12 +117,38 @@ export default function SlotPicker({ periodId, onBooked, embedded = false }) {
     try {
       await slotsApi.ackBookingNotice(periodId);
       setData((prev) => (prev ? { ...prev, needs_booking_notice: false } : prev));
-      setNoticeOpen(false);
     } catch (e) {
-      // 不關彈窗、不改狀態：下次還是會擋，避免「以為確認了其實沒有」
+      // 不關彈窗、不改狀態、不預約：下次還是會擋，避免「以為確認了其實沒有」
       toast.error(e?.response?.data?.error || '確認失敗，請再試一次');
-    } finally {
       setBusy(false);
+      return;
+    }
+    setBusy(false);
+    // 按鈕寫的是「我已確認，繼續預約」，就必須真的繼續。
+    // 這裡若只關窗結束，每個課期的第一次預約都會靜默失敗——沒有成功也沒有失敗
+    // 提示，家長會以為約好了。不能回頭呼叫 submit()：它讀到的 data 還是同一個
+    // render 的舊值，needs_booking_notice 仍是 true，會再把提示彈窗打開一次。
+    await doBook();
+  }
+
+  // 真正送出預約。submit()（不需提示時）與 ackNotice()（提示確認後）共用同一段，
+  // 確保兩條路徑的成功／失敗處理完全一致。
+  async function doBook() {
+    setBusy(true);
+    try {
+      await slotsApi.book(selectedId, periodId);
+      setBusy(false);
+      setConfirmOpen(false);
+      setNoticeOpen(false);
+      // 政策 2026-07：團班預約也即時成立（不再等待同組確認），任一家長預約即整組生效。
+      toast.success(isGroup ? '已預約 1 堂（同組成員的課表將同步更新）' : '已預約 1 堂');
+      if (onBooked) onBooked();
+    } catch (e) {
+      setBusy(false);
+      setConfirmOpen(false);
+      setNoticeOpen(false);
+      toast.error(e?.response?.data?.error || '預約失敗，請改選其他時段');
+      load();
     }
   }
 
@@ -138,20 +164,7 @@ export default function SlotPicker({ periodId, onBooked, embedded = false }) {
       setNoticeOpen(true);
       return;
     }
-    setBusy(true);
-    try {
-      await slotsApi.book(selectedId, periodId);
-      setBusy(false);
-      setConfirmOpen(false);
-      // 政策 2026-07：團班預約也即時成立（不再等待同組確認），任一家長預約即整組生效。
-      toast.success(isGroup ? '已預約 1 堂（同組成員的課表將同步更新）' : '已預約 1 堂');
-      if (onBooked) onBooked();
-    } catch (e) {
-      setBusy(false);
-      setConfirmOpen(false);
-      toast.error(e?.response?.data?.error || '預約失敗，請改選其他時段');
-      load();
-    }
+    await doBook();
   }
 
   if (error) {

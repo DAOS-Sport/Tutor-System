@@ -13,7 +13,8 @@
 const assert = require('assert');
 const path = require('path');
 
-const BASE = process.env.BASE_URL || 'http://localhost:4137';
+// 預設值與 tests/e2e/_lib.js 一致，這樣在 run_all.js 底下不必額外設環境變數。
+const BASE = process.env.BASE_URL || 'http://localhost:3000';
 const SERVER_DIR = path.join(__dirname, '..', '..', 'server');
 const { pool } = require(path.join(SERVER_DIR, 'models', 'db'));
 const { signCoachToken } = require(path.join(SERVER_DIR, 'middlewares', 'coachAuth'));
