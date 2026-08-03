@@ -249,12 +249,32 @@ const PORT = process.env.PORT || 3000;
 //    尚未建立」的暫態 500。這也使部署平台保留上一個健康版本而非提早切流。
 // Demo seed 不是正式功能前置條件，維持 best-effort 且只在 DEMO_SEED 明確設定時才動作。
 (async () => {
-  try {
+  // Bootstrap retry: deadlock (40P01) is transient — retry up to 3 times with backoff.
+  async function runBootstrap () {
     assertSecretConfigured();
     await bootstrapAdmin();
     await bootstrapCore();
-  } catch (err) {
-    console.error('Startup schema bootstrap failed; refusing to accept traffic:', err.message);
+  }
+  let lastErr;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await runBootstrap();
+      lastErr = null;
+      break;
+    } catch (err) {
+      lastErr = err;
+      const isDeadlock = err.code === '40P01' || /deadlock/i.test(err.message);
+      if (isDeadlock && attempt < 3) {
+        const wait = attempt * 2000;
+        console.warn(`[bootstrap] deadlock on attempt ${attempt}, retrying in ${wait}ms…`);
+        await new Promise(r => setTimeout(r, wait));
+      } else {
+        break;
+      }
+    }
+  }
+  if (lastErr) {
+    console.error('Startup schema bootstrap failed; refusing to accept traffic:', lastErr.message);
     process.exit(1);
     return;
   }
