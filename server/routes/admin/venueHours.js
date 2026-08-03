@@ -107,5 +107,86 @@ router.put('/:venueId', requireAdminAuth, AM, async (req, res) => {
   }
 });
 
+// ── 特殊日期休館（migration 041）──────────────────────────────────
+//   GET    /api/admin/venue-hours/closed-dates?venueId=&from=&to=
+//   POST   /api/admin/venue-hours/closed-dates      { venue_id, closed_date, reason }
+//   DELETE /api/admin/venue-hours/closed-dates/:id
+//
+//   只記「關閉」不記「加開」：加開屬臨時排班，走教練手建時段即可，
+//   不需要第二套規則跟營業時間互相打架。
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+router.get('/closed-dates', requireAdminAuth, AM, async (req, res) => {
+  const venueId = String(req.query.venueId || '').trim();
+  const from = DATE_RE.test(String(req.query.from || '')) ? req.query.from : null;
+  const to = DATE_RE.test(String(req.query.to || '')) ? req.query.to : null;
+  try {
+    const r = await pool.query(
+      `SELECT c.id, c.venue_id, v.name AS venue_name,
+              to_char(c.closed_date,'YYYY-MM-DD') AS closed_date, c.reason, c.created_at
+         FROM venue_closed_dates c JOIN venues v ON v.id = c.venue_id
+        WHERE ($1 = '' OR c.venue_id = $1)
+          AND ($2::date IS NULL OR c.closed_date >= $2::date)
+          AND ($3::date IS NULL OR c.closed_date <= $3::date)
+        ORDER BY c.closed_date, c.venue_id`,
+      [venueId, from, to]
+    );
+    res.json(r.rows);
+  } catch (err) {
+    console.error('[admin/venue-hours closed-dates list]', err.message);
+    res.status(500).json({ error: '讀取休館日期失敗' });
+  }
+});
+
+router.post('/closed-dates', requireAdminAuth, AM, async (req, res) => {
+  const venueId = String(req.body?.venue_id || '').trim();
+  const closedDate = String(req.body?.closed_date || '').trim();
+  const reason = String(req.body?.reason || '').trim() || null;
+  if (!venueId) return res.status(400).json({ error: '請選擇場館', code: 'INPUT_INVALID' });
+  if (!DATE_RE.test(closedDate)) return res.status(400).json({ error: '日期格式須為 YYYY-MM-DD', code: 'INPUT_INVALID' });
+  try {
+    const v = await pool.query(`SELECT id FROM venues WHERE id = $1`, [venueId]);
+    if (!v.rowCount) return res.status(404).json({ error: '找不到此場館' });
+    // 已經有預約的時段不會被休館設定影響（產生器只管未來要不要「產生」，
+    // 不會刪既有時段）。這裡明確告知櫃檯當天已有幾筆預約，避免誤以為會自動取消。
+    const booked = await pool.query(
+      `SELECT count(*)::int AS n FROM course_sessions cs
+         JOIN course_periods cp ON cp.id = cs.course_period_id
+        WHERE cp.venue_id = $1
+          AND cs.status = 'confirmed'
+          AND (cs.scheduled_at AT TIME ZONE 'Asia/Taipei')::date = $2::date`,
+      [venueId, closedDate]
+    );
+    const r = await pool.query(
+      `INSERT INTO venue_closed_dates (venue_id, closed_date, reason, created_by)
+       VALUES ($1,$2::date,$3,$4)
+       ON CONFLICT (venue_id, closed_date) DO UPDATE SET reason = EXCLUDED.reason
+       RETURNING id, venue_id, to_char(closed_date,'YYYY-MM-DD') AS closed_date, reason`,
+      [venueId, closedDate, reason, req.adminUser?.username || req.adminUser?.sub || null]
+    );
+    res.json({
+      ok: true, ...r.rows[0],
+      existing_bookings: booked.rows[0].n,
+      note: booked.rows[0].n
+        ? `該日已有 ${booked.rows[0].n} 筆預約，休館設定不會自動取消，請另行處理。`
+        : null,
+    });
+  } catch (err) {
+    console.error('[admin/venue-hours closed-dates create]', err.message);
+    res.status(500).json({ error: '設定休館日期失敗' });
+  }
+});
+
+router.delete('/closed-dates/:id', requireAdminAuth, AM, async (req, res) => {
+  try {
+    const r = await pool.query(`DELETE FROM venue_closed_dates WHERE id = $1 RETURNING id`, [req.params.id]);
+    if (!r.rowCount) return res.status(404).json({ error: '找不到此休館設定' });
+    res.json({ ok: true, id: req.params.id });
+  } catch (err) {
+    console.error('[admin/venue-hours closed-dates delete]', err.message);
+    res.status(500).json({ error: '刪除休館日期失敗' });
+  }
+});
+
 module.exports = router;
 module.exports.validateRow = validateRow;

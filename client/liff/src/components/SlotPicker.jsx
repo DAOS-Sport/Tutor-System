@@ -41,6 +41,7 @@ export default function SlotPicker({ periodId, onBooked, embedded = false }) {
   const [selectedId, setSelectedId] = useState(null);
   const [activeDate, setActiveDate] = useState('');
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [noticeOpen, setNoticeOpen] = useState(false);   // 首次預約提示（模組 1）
   const [busy, setBusy] = useState(false);
 
   function load() {
@@ -107,8 +108,34 @@ export default function SlotPicker({ periodId, onBooked, embedded = false }) {
       .filter((g) => g.slots.length > 0);
   }, [byDate, activeDate]);
 
+  // 首次預約提示（模組 1）：後端回 needs_booking_notice=true 才擋。
+  // 刻意不靠 localStorage —— 換裝置/清快取就會漏跳，而且我們要的是「這個課期確認過」，
+  // 那是伺服器端的事實。ack 成功才放行；ack 失敗絕不可當成已確認。
+  async function ackNotice() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await slotsApi.ackBookingNotice(periodId);
+      setData((prev) => (prev ? { ...prev, needs_booking_notice: false } : prev));
+      setNoticeOpen(false);
+    } catch (e) {
+      // 不關彈窗、不改狀態：下次還是會擋，避免「以為確認了其實沒有」
+      toast.error(e?.response?.data?.error || '確認失敗，請再試一次');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function submit() {
     if (!selectedId || busy) return;
+    // 只有自動產生的時段需要先確認（venue 由預約時認領，教練不一定知道這個時間）。
+    // 教練手建的時段是教練自己排的，不必多這一道。
+    const slot = slotById.get(selectedId);
+    if (data?.needs_booking_notice && slot?.status === 'available' && slot?.is_auto !== false) {
+      setConfirmOpen(false);
+      setNoticeOpen(true);
+      return;
+    }
     setBusy(true);
     try {
       await slotsApi.book(selectedId, periodId);
@@ -232,6 +259,23 @@ export default function SlotPicker({ periodId, onBooked, embedded = false }) {
               </div>
             </div>
           )}
+        </div>
+      </ConfirmModal>
+
+      {/* 首次預約提示（模組 1）：每個課期跳一次，確認寫入伺服器後才放行 */}
+      <ConfirmModal
+        open={noticeOpen}
+        title="預約前請先與教練確認"
+        confirmLabel="我已確認，繼續預約"
+        cancelLabel="先不預約"
+        busy={busy}
+        onCancel={() => { if (!busy) setNoticeOpen(false); }}
+        onConfirm={ackNotice}
+      >
+        <div className="space-y-2 text-sm text-gray-700">
+          <p>系統顯示的時段是依場館營業時間自動開放的，<b>教練不一定已排定該時段</b>。</p>
+          <p>請先與教練確認時間可行，再進行預約，避免到場後無法上課。</p>
+          <p className="text-xs text-gray-500">此提示每個課程只會出現一次。</p>
         </div>
       </ConfirmModal>
     </div>

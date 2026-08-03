@@ -23,6 +23,8 @@ const NAV_GROUPS = [
       { to: '/course-intros', label: '(F-A04/F-M06) 課程介紹', roles: ['admin', 'manager'] },
       { to: '/course-types',  label: '課程需求管理',           roles: ['admin'] },
       { to: '/ragic-status',  label: 'Ragic 連線狀態',         roles: ['admin'] },
+      // 模組 1：自動時段產生的唯一時間來源，場館主管也需要維護，故不限 admin。
+      { to: '/venue-hours',   label: '場館營業時間',           roles: ['admin', 'manager'] },
     ],
   },
   {

@@ -376,6 +376,19 @@ CREATE TABLE IF NOT EXISTS venue_business_hours (
 );
 CREATE INDEX IF NOT EXISTS idx_vbh_venue ON venue_business_hours(venue_id) WHERE is_active;
 
+-- 041 特殊日期休館：038 只表達「每週固定」，無法表達單日例外（國定假日／場地整修）。
+-- 只記關閉不記加開——加開屬臨時排班，走教練手建時段即可，不需第二套規則互相打架。
+CREATE TABLE IF NOT EXISTS venue_closed_dates (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  venue_id    VARCHAR(10) NOT NULL REFERENCES venues(id) ON DELETE CASCADE,
+  closed_date DATE NOT NULL,
+  reason      TEXT,
+  created_by  TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (venue_id, closed_date)
+);
+CREATE INDEX IF NOT EXISTS idx_vcd_venue_date ON venue_closed_dates(venue_id, closed_date);
+
 CREATE TABLE IF NOT EXISTS course_sessions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   course_period_id UUID NOT NULL REFERENCES course_periods(id) ON DELETE CASCADE,

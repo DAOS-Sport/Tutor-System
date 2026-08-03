@@ -69,6 +69,25 @@ const HOURS = [{ weekday: MON, open_time: '14:00', close_time: '17:00', slot_min
   assert.strictEqual(s.length, 2, '已存在的那格不應再產生');
 }
 
+// ── 特殊日期休館（migration 041）：整天不產生 ──
+{
+  const s = computeSlots({
+    businessHours: HOURS, fromDate: '2026-08-03', toDate: '2026-08-17',
+    closedDates: new Set(['2026-08-10']),   // 中間那個週一公休
+  });
+  assert.strictEqual(s.length, 6, `三個週一扣掉一天公休應剩 6 格，實際 ${s.length}`);
+  const closedIso = new Date('2026-08-10T14:00:00+08:00').toISOString();
+  assert.ok(!s.some((x) => x.startAtISO === closedIso), '休館日不得出現任何時段');
+}
+{
+  // 休館日期不在區間內 → 不影響
+  const s = computeSlots({
+    businessHours: HOURS, fromDate: '2026-08-03', toDate: '2026-08-03',
+    closedDates: new Set(['2026-09-01']),
+  });
+  assert.strictEqual(s.length, 3);
+}
+
 // ── 防呆 ──
 assert.deepStrictEqual(computeSlots({ businessHours: [], fromDate: '2026-08-03', toDate: '2026-08-03' }), []);
 assert.deepStrictEqual(computeSlots({ businessHours: HOURS, fromDate: '2026-08-10', toDate: '2026-08-03' }), [], 'to < from → 空');

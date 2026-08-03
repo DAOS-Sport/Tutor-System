@@ -34,6 +34,7 @@ import SopPage from './pages/SopPage';
 import CourseTypesPage from './pages/CourseTypesPage';
 import GroupOrdersPage from './pages/GroupOrdersPage';
 import RagicStatusPage from './pages/RagicStatusPage';
+import VenueHoursPage from './pages/VenueHoursPage';
 import RagicStagingPage from './pages/RagicStagingPage';
 import RagicZ03Page from './pages/RagicZ03Page';
 import CustomerParentsPage from './pages/CustomerParentsPage';
@@ -66,6 +67,7 @@ export default function App() {
         <Route path="/course-types"  element={<RequireAuth roles={['admin']}><CourseTypesPage /></RequireAuth>} />
         <Route path="/group-orders"  element={<RequireAuth roles={['admin', 'manager', 'staff']}><GroupOrdersPage /></RequireAuth>} />
         <Route path="/ragic-status"  element={<RequireAuth roles={['admin']}><RagicStatusPage /></RequireAuth>} />
+        <Route path="/venue-hours"   element={<RequireAuth roles={['admin', 'manager']}><VenueHoursPage /></RequireAuth>} />
         <Route path="/ragic-staging" element={<RequireAuth roles={['admin']}><RagicStagingPage /></RequireAuth>} />
         <Route path="/ragic-z03"     element={<RequireAuth roles={['admin', 'manager', 'staff']}><RagicZ03Page /></RequireAuth>} />
 

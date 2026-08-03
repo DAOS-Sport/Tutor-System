@@ -68,7 +68,10 @@ function carryKey(weekday, hhmm) {
  * @param {Set}      [p.existingKeys] 已存在的 ISO start_at 集合（避免重複產生）
  * @returns {Array<{startAtISO,durationMinutes,status}>}  status='available'|'blocked'
  */
-function computeSlots({ businessHours, fromDate, toDate, blockedKeys = new Set(), existingKeys = new Set() }) {
+function computeSlots({
+  businessHours, fromDate, toDate,
+  blockedKeys = new Set(), existingKeys = new Set(), closedDates = new Set(),
+}) {
   if (!Array.isArray(businessHours) || !businessHours.length) return [];
   if (!/^\d{4}-\d{2}-\d{2}$/.test(fromDate) || !/^\d{4}-\d{2}-\d{2}$/.test(toDate)) {
     throw new Error('fromDate / toDate 需為 YYYY-MM-DD');
@@ -86,6 +89,7 @@ function computeSlots({ businessHours, fromDate, toDate, blockedKeys = new Set()
 
   const out = [];
   for (let ymd = fromDate; ymd <= toDate; ymd = addDays(ymd, 1)) {
+    if (closedDates.has(ymd)) continue;   // 特殊日期休館（migration 041）：整天不產生
     const wd = weekdayOf(ymd);
     for (const bh of byWeekday.get(wd) || []) {
       const open = timeToMinutes(bh.open_time);
@@ -175,6 +179,21 @@ async function loadTargets(scope, db) {
   return r.rows;
 }
 
+/** 特殊日期休館（migration 041）：venue_id → Set<'YYYY-MM-DD'> */
+async function loadClosedDates(db, fromDate, toDate) {
+  const r = await db.query(
+    `SELECT venue_id, to_char(closed_date,'YYYY-MM-DD') AS d
+       FROM venue_closed_dates WHERE closed_date BETWEEN $1::date AND $2::date`,
+    [fromDate, toDate]
+  );
+  const byVenue = new Map();
+  for (const row of r.rows) {
+    if (!byVenue.has(row.venue_id)) byVenue.set(row.venue_id, new Set());
+    byVenue.get(row.venue_id).add(row.d);
+  }
+  return byVenue;
+}
+
 async function loadBusinessHours(db) {
   const r = await db.query(
     `SELECT venue_id, weekday, open_time, close_time, slot_minutes
@@ -216,7 +235,7 @@ async function loadExistingStarts(coachId, fromISO, toISO, db) {
  * 場館由家長預約當下依 course_period.venue_id 認領（見 routes/slots.js /book）。
  * UNIQUE(coach_id, start_at) 因此成為正確的約束，而非障礙。
  */
-async function generateForCoach({ coachId, fromDate, toDate, hours, lookbackDays = 21 }, db) {
+async function generateForCoach({ coachId, fromDate, toDate, hours, lookbackDays = 21, closedDates = new Set() }, db) {
   if (!hours || !hours.length) return { inserted: 0, blocked: 0 };
   const fromISO = new Date(`${fromDate}T00:00:00+08:00`).toISOString();
   const toISO = new Date(`${addDays(toDate, 1)}T00:00:00+08:00`).toISOString();
@@ -227,7 +246,7 @@ async function generateForCoach({ coachId, fromDate, toDate, hours, lookbackDays
   ]);
   const slots = computeSlots({
     businessHours: hours, fromDate, toDate,
-    blockedKeys: buildBlockedKeys(prev), existingKeys: existing,
+    blockedKeys: buildBlockedKeys(prev), existingKeys: existing, closedDates,
   });
   if (!slots.length) return { inserted: 0, blocked: 0 };
 
@@ -246,14 +265,23 @@ async function generateAll({ days = 21, scope = 'active-periods', lookbackDays =
   const db = pool;
   const today = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10); // 台北今天
   const toDate = addDays(today, days);
-  const [targets, hoursByVenue] = await Promise.all([loadTargets(scope, db), loadBusinessHours(db)]);
+  const [targets, hoursByVenue, closedByVenue] = await Promise.all([
+    loadTargets(scope, db), loadBusinessHours(db), loadClosedDates(db, today, toDate),
+  ]);
 
   let inserted = 0; let blocked = 0; let coaches = 0; let skipped = 0;
   for (const t of targets) {
-    const rows = (t.venue_ids || []).flatMap((vid) => hoursByVenue.get(vid) || []);
+    const venueIds = t.venue_ids || [];
+    const rows = venueIds.flatMap((vid) => hoursByVenue.get(vid) || []);
     const hours = unionHours(rows);
     if (!hours.length) { skipped += 1; continue; }   // 所屬場館都沒設營業時間 → 略過，非錯誤
-    const r = await generateForCoach({ coachId: t.coach_id, fromDate: today, toDate, hours, lookbackDays }, db);
+    // 跨館教練：只有「所有所屬場館都休館」的日子才整天不產生，
+    // 否則某館公休會誤刪掉他在其他館的可上課時間。
+    const closedDates = new Set();
+    for (const d of closedByVenue.get(venueIds[0]) || []) {
+      if (venueIds.every((vid) => (closedByVenue.get(vid) || new Set()).has(d))) closedDates.add(d);
+    }
+    const r = await generateForCoach({ coachId: t.coach_id, fromDate: today, toDate, hours, lookbackDays, closedDates }, db);
     inserted += r.inserted; blocked += r.blocked; coaches += 1;
   }
   return { coaches, skipped, inserted, blocked, fromDate: today, toDate, scope };
@@ -261,5 +289,5 @@ async function generateAll({ days = 21, scope = 'active-periods', lookbackDays =
 
 module.exports = {
   computeSlots, buildBlockedKeys, unionHours, timeToMinutes, minutesToTime, weekdayOf, addDays, carryKey,
-  generateAll, generateForCoach, loadTargets, loadBusinessHours,
+  generateAll, generateForCoach, loadTargets, loadBusinessHours, loadClosedDates,
 };

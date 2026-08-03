@@ -33,4 +33,13 @@ export const slotsApi = {
   book: (slotId, coursePeriodId) =>
     callApi(`/slots/${slotId}/book`, { method: 'post', data: { course_period_id: coursePeriodId } }, () =>
       mockDb.bookSlot(slotId, coursePeriodId)),
+
+  // 模組 1：首次預約提示確認（每個課期一次；伺服器端事實，不靠 localStorage）
+  ackBookingNotice: (coursePeriodId) =>
+    callApi(`/slots/period/${coursePeriodId}/ack-notice`, { method: 'post', data: {} },
+      () => ({ ok: true, acked: true })),
+
+  // 模組 1：家長自助取消預約（開課前 ≥24h）
+  cancelBooking: (sessionId) =>
+    callApi(`/slots/booking/${sessionId}`, { method: 'delete' }, () => ({ ok: true, session_id: sessionId })),
 };

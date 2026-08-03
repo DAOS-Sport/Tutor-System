@@ -14,6 +14,7 @@ import { useToast } from '../context/ToastContext';
 import { coursesApi } from '../api/courses';
 import { lessonsApi } from '../api/lessons';
 import { checkinsApi } from '../api/checkins';
+import { slotsApi } from '../api/slots';
 import { courseTypeLabel, formatTWDate, formatTWTime } from '../utils/format';
 
 // 家長可自助簽到：尚未簽到（本家未簽、夥伴也未代簽）、且課程已確認/完成
@@ -38,6 +39,8 @@ export default function MyLessonsPage() {
   const [expandedKey, setExpandedKey] = useState(null); // 內嵌預約：展開中的佔位 key
   const [checkinBusyKey, setCheckinBusyKey] = useState(null);
   const [confirmRow, setConfirmRow] = useState(null);
+  const [cancelRow, setCancelRow] = useState(null);       // 取消預約的二次確認（模組 1）
+  const [cancelBusyId, setCancelBusyId] = useState(null); // 用 session_id 當鍵，防重複點擊
 
   function load() {
     return Promise.allSettled([coursesApi.myCourses(parent.id), lessonsApi.mine({})])
@@ -52,6 +55,42 @@ export default function MyLessonsPage() {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [parent.id]);
+
+  /**
+   * 取消預約（模組 1）。
+   * 防重複：cancelBusyId 鎖住該筆；成功或失敗都會清掉並重抓清單。
+   * 後端才是真正的守門（24h 判斷在 services/bookingPolicy.js），
+   * 這裡只負責把後端的 409/403/404 翻成家長看得懂的話。
+   */
+  async function handleCancel(r) {
+    if (cancelBusyId) return;
+    setCancelBusyId(r.session_id);
+    try {
+      await slotsApi.cancelBooking(r.session_id);
+      await load();                       // 立即更新預約清單與剩餘堂數
+      toast.success('已取消這堂預約，時段已釋出');
+      setCancelRow(null);
+    } catch (err) {
+      const status = err?.response?.status;
+      const code = err?.response?.data?.code;
+      const serverMsg = err?.response?.data?.error;
+      if (status === 409 && code === 'CANCEL_TOO_LATE') {
+        toast.error(serverMsg || '距離上課不到 24 小時，無法自行取消，請洽櫃檯');
+      } else if (status === 409) {
+        toast.error(serverMsg || '此堂課目前無法取消');
+      } else if (status === 403) {
+        toast.error('沒有權限取消這筆預約');
+      } else if (status === 404) {
+        toast.error('找不到這筆預約，可能已被取消，請重新整理');
+      } else {
+        toast.error(serverMsg || '取消失敗，請稍後再試');
+      }
+      await load();                       // 狀態可能已在伺服器端改變，一律重抓
+      setCancelRow(null);
+    } finally {
+      setCancelBusyId(null);
+    }
+  }
 
   async function handleCheckin(r) {
     const key = r.session_id + r.student_id;
@@ -227,6 +266,8 @@ export default function MyLessonsPage() {
                     busy={checkinBusyKey === it.key}
                     onCheckin={() => setConfirmRow(it.r)}
                     onOpen={() => it.r.record_status === 'submitted' && navigate(`/history/${it.r.period_id}`)}
+                    onCancel={(row) => setCancelRow(row)}
+                    cancelBusy={cancelBusyId === it.r.session_id}
                   />
                 ) : (
                   <PlaceholderCard
@@ -261,6 +302,31 @@ export default function MyLessonsPage() {
       >
         {confirmRow && (
           <>確定要為 <span className="font-bold text-brand-primary">{confirmRow.student_name}</span> 簽到嗎？簽到後將無法取消。</>
+        )}
+      </ConfirmModal>
+
+      {/* 取消預約的二次確認（模組 1） */}
+      <ConfirmModal
+        open={!!cancelRow}
+        title="取消這堂預約？"
+        confirmLabel={cancelBusyId ? '取消中…' : '確定取消預約'}
+        cancelLabel="不取消"
+        tone="danger"
+        busy={!!cancelBusyId}
+        onCancel={() => { if (!cancelBusyId) setCancelRow(null); }}
+        onConfirm={() => cancelRow && handleCancel(cancelRow)}
+      >
+        {cancelRow && (
+          <div className="space-y-2 text-sm text-gray-700">
+            <div className="rounded-lg bg-gray-50 px-3 py-2">
+              <div className="font-bold text-brand-primary">
+                {formatTWDate(cancelRow.scheduled_at)}{formatTWTime(cancelRow.scheduled_at)}
+              </div>
+              <div className="mt-0.5 text-xs text-gray-500">學員：{cancelRow.student_name}</div>
+            </div>
+            <p>取消後這堂會回到未預約，堂數退回，時段釋出給其他人。</p>
+            <p className="text-xs text-gray-500">你可以之後再重新選時間。</p>
+          </div>
         )}
       </ConfirmModal>
     </div>
@@ -322,9 +388,23 @@ function StatusSquare({ label, tone, disabled, onClick }) {
   );
 }
 
-function RecordCard({ r, e, busy, onCheckin, onOpen }) {
+// 家長可自助取消：尚未簽到、狀態為 confirmed、且距離上課 ≥ CANCEL_DEADLINE_HOURS。
+// 判斷同時放前後端：前端決定「按鈕長怎樣」，後端才是真正的守門（DELETE /slots/booking/:id）。
+const CANCEL_DEADLINE_HOURS = 24;
+function cancelInfo(r) {
+  if (r.checked_in_at || r.checked_in_by_name || r.partner_checkin_label) return { show: false };
+  if (r.session_status !== 'confirmed') return { show: false };
+  const start = new Date(r.scheduled_at);
+  if (Number.isNaN(start.getTime())) return { show: false };
+  const hours = (start.getTime() - Date.now()) / 3600000;
+  if (hours < 0) return { show: false };                       // 已開始：不顯示取消
+  return { show: true, allowed: hours >= CANCEL_DEADLINE_HOURS, hours };
+}
+
+function RecordCard({ r, e, busy, onCheckin, onOpen, onCancel, cancelBusy }) {
   const checkinable = canParentCheckin(r);
   const clickable = r.record_status === 'submitted';
+  const cancel = cancelInfo(r);
 
   const dateStr = formatTWDate(r.scheduled_at);
   const timeStr = formatTWTime(r.scheduled_at);
@@ -371,6 +451,28 @@ function RecordCard({ r, e, busy, onCheckin, onOpen }) {
           )}
           {clickable && (
             <div className="mt-2 text-xs font-medium text-brand-teal">📝 教練已上傳上課紀錄，點擊查看 ›</div>
+          )}
+
+          {/* 取消預約（模組 1）：≥24h 可自行取消；<24h 顯示需洽櫃檯，不給按鈕 */}
+          {cancel.show && (
+            <div className="mt-2">
+              {cancel.allowed ? (
+                <button
+                  type="button"
+                  disabled={cancelBusy}
+                  onClick={(ev) => { ev.stopPropagation(); onCancel && onCancel(r); }}
+                  className="rounded-lg border border-brand-error/40 px-2.5 py-1 text-xs font-bold text-brand-error
+                             active:bg-brand-error-soft disabled:opacity-50"
+                >
+                  {cancelBusy ? '取消中…' : '取消這堂預約'}
+                </button>
+              ) : (
+                <div className="text-[11px] leading-snug text-gray-400">
+                  距上課不到 {CANCEL_DEADLINE_HOURS} 小時（剩約 {Math.max(0, Math.floor(cancel.hours))} 小時），
+                  無法自行取消，請洽櫃檯。
+                </div>
+              )}
+            </div>
           )}
         </div>
         <div className="shrink-0">{btn}</div>
