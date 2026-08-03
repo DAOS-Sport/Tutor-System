@@ -285,6 +285,24 @@ export default function StaffPage() {
 
   // C2：直接切換 coach_active，不需開啟完整編輯彈窗。
   const FIELD_LABEL = { coach_active: '教練' };
+  async function handleUnbindLine(row) {
+    // 身分綁定變更、且原 UID 不會留在 coaches 表，因此一定要二次確認。
+    const lines = [
+      `確定解除 ${row.name} 的 LINE 綁定？`,
+      '',
+      '解除後該教練會回到「未綁定」，下次用 LINE 登入時輸入姓名即可重新綁上。',
+      '原本綁定的 UID 會記錄在稽核紀錄中。',
+    ];
+    if (!window.confirm(lines.join('\n'))) return;
+    try {
+      const r = await staffApi.unbindLine(row.id);
+      toast.success(`已解除 ${row.name} 的 LINE 綁定（原 UID 尾碼 ${r.previous_uid_tail || '—'}），請通知他重新用 LINE 登入`);
+      fetchStaffList();
+    } catch (e) {
+      toast.error(e?.response?.data?.error || '解除綁定失敗');
+    }
+  }
+
   async function toggleField(row, field, current) {
     const key = `${row.id}:${field}`;
     if (fieldToggling === key) return;
@@ -485,14 +503,36 @@ export default function StaffPage() {
     // LINE UID（辨識碼）：地端實際綁定值，比照打卡系統顯示，供與 Ragic H01「個人LINE ID」核對是否同步。
     { key: 'line_uid', label: 'LINE UID',
       render: (r) => r.line_uid
-        ? <span className="font-mono text-xs text-brand-primary break-all" title={r.line_uid}>{r.line_uid}</span>
+        ? (
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-xs text-brand-primary break-all" title={r.line_uid}>{r.line_uid}</span>
+            {r.has_coach_profile && (
+              <button type="button" onClick={() => handleUnbindLine(r)}
+                title="教練換過 LINE、或 UID 存錯導致登不進教練端時，解綁後可重新綁定"
+                className="shrink-0 rounded border border-amber-400 px-1.5 py-0.5 text-[11px] font-bold text-amber-600 hover:bg-amber-50">
+                解綁
+              </button>
+            )}
+          </div>
+        )
         : <span className="text-gray-300 text-xs">尚未綁定</span> },
     { key: 'has_coach_profile', label: '教練資料', className: 'text-center',
       render: (r) => {
         if (!r.has_coach_profile) return <span className="text-gray-300 text-xs">無</span>;
         const busyRow = fieldToggling === `${r.id}:coach_active`;
         return (
-          <button type="button" onClick={() => toggleField(r, 'coach_active', r.coach_active)}
+          <button type="button"
+            onClick={() => {
+              // 下架會讓 coaches.is_active=FALSE，教練端登入的三層查詢（line_uid 命中 /
+              // 姓名候選 / 已綁他人）全部帶 is_active=TRUE 條件而一起 miss，
+              // 教練會看到「查無此姓名的教練資料」完全登不進去 —— 誤觸成本很高，
+              // 但原本是單擊即生效、零確認。停用時要求二次確認（啟用不擋）。
+              if (r.coach_active && !window.confirm(
+                [`確定將 ${r.name} 下架？`, '',
+                  '下架後該教練會從家長端清單消失，而且「無法登入教練端」（會顯示查無教練資料）。'].join('\n')
+              )) return;
+              toggleField(r, 'coach_active', r.coach_active);
+            }}
             disabled={busyRow}
             className="inline-block hover:opacity-80 disabled:cursor-wait disabled:opacity-60"
             title={r.coach_active ? '點擊停用教練身分' : '點擊啟用教練身分'}>

@@ -1085,6 +1085,58 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
 });
 
 // Task #82：admin 重設員工密碼為手機號碼 + 推 LINE 通知
+// ── POST /:id/unbind-line 解除教練的 LINE 綁定（U14）────────────────
+// 為什麼需要這個：coaches.line_uid 一旦有值就無法從後台改動（本檔原本只讀不寫），
+// 而 coach portal 的 link-by-name 只接受「未綁定」的教練當候選。
+// 因此只要 UID 存錯（HR 在 Ragic H01 貼錯、教練換過 LINE 帳號、或被他人以姓名搶綁），
+// 該教練就永久登不進教練端，且沒有任何自助或後台修復路徑，只能工程師下 SQL。
+//
+// 解綁後該教練回到「未綁定」狀態，下次用 LINE 登入走姓名 fallback 即可重新綁上。
+// 限 admin；寫 critical 等級 audit（這是身分綁定變更，必須可追查是誰解的）。
+router.post('/:id/unbind-line', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query(
+      `SELECT s.id, s.name, c.id AS coach_id, c.line_uid
+         FROM admin_staff s
+         LEFT JOIN coaches c ON c.ragic_employee_id = s.id
+        WHERE s.id = $1
+        FOR UPDATE OF c`,
+      [req.params.id]
+    );
+    const row = r.rows[0];
+    if (!row) { await client.query('ROLLBACK'); return res.status(404).json({ error: '找不到該員工' }); }
+    if (!row.coach_id) { await client.query('ROLLBACK'); return res.status(400).json({ error: '該員工沒有教練資料', code: 'NOT_A_COACH' }); }
+    const previous = String(row.line_uid || '').trim();
+    if (!previous) { await client.query('ROLLBACK'); return res.status(400).json({ error: '該教練目前沒有綁定 LINE', code: 'NOT_BOUND' }); }
+
+    await client.query(`UPDATE coaches SET line_uid = NULL, updated_at = NOW() WHERE id = $1`, [row.coach_id]);
+    await client.query(
+      `INSERT INTO audit_logs (action, severity, admin_id, target_type, target_ids, details)
+       VALUES ($1, $2, $3, $4, $5::text[], $6::jsonb)`,
+      [
+        'COACH_LINE_UNBIND',
+        'critical',
+        req.adminUser?.sub || req.adminUser?.id || req.adminUser?.username || null,
+        'staff',
+        [String(row.id)],
+        // 保留原 UID 全文供追查（audit_logs 僅 admin 可讀），日誌只印尾碼。
+        JSON.stringify({ staff_id: row.id, name: row.name, coach_id: row.coach_id, previous_line_uid: previous }),
+      ]
+    );
+    await client.query('COMMIT');
+    console.warn(`[staff] 解除教練 LINE 綁定 staff=${row.id} name=${row.name} uid_tail=***${previous.slice(-4)} by=${req.adminUser?.username || 'unknown'}`);
+    res.json({ ok: true, unbound: true, previous_uid_tail: previous.slice(-4) });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    console.error('[admin/staff unbind-line]', err);
+    res.status(500).json({ error: '解除綁定失敗' });
+  } finally {
+    client.release();
+  }
+});
+
 router.post('/:id/reset-password', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
   try {
     const { id } = req.params;

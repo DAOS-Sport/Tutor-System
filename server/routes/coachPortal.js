@@ -313,12 +313,23 @@ router.post('/link-by-name', async (req, res) => {
 
     // cand === 0：同名教練是否「已綁別的 LINE」？
     const boundOther = await pool.query(
-      `SELECT 1 FROM coaches
+      `SELECT line_uid FROM coaches
         WHERE name = $1 AND is_active = TRUE
           AND COALESCE(line_uid,'') <> '' AND line_uid <> $2 LIMIT 1`,
       [name, lineUid]
     );
     if (boundOther.rowCount) {
+      // 這條路徑原本完全靜默 → production 上教練回報「登不進去」時，
+      // log 裡查不到他實際用哪支 LINE、DB 存的又是哪一支，無從判斷是
+      // 「他換了 LINE」還是「UID 被別人搶綁 / HR 貼錯」。
+      // 只印尾 4 碼（不外露完整 UID），足以比對兩者是否為同一支。
+      const dbUid = String(boundOther.rows[0].line_uid || '');
+      console.warn('[coach-portal] NAME_ALREADY_BOUND', {
+        name,
+        incoming_uid_tail: `***${String(lineUid).slice(-4)}`,
+        db_uid_tail: `***${dbUid.slice(-4)}`,
+        hint: '兩者尾碼不同即代表登入者與 DB 綁定的不是同一支 LINE，需由後台解除綁定後重綁',
+      });
       return res.status(409).json({
         error: '此姓名的教練已綁定其他 LINE，請聯絡管理員', code: 'NAME_ALREADY_BOUND',
       });

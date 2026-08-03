@@ -60,6 +60,13 @@ export const staffApi = {
       unmatched_staff_warning: 0,
       skipped: true,
     })),
+  // U14：解除教練 LINE 綁定。coaches.line_uid 一旦存錯（HR 貼錯／教練換 LINE／被他人以姓名搶綁），
+  // 該教練就永久登不進教練端且無自助修復路徑；解綁後可重新用 LINE 登入綁定。
+  unbindLine: (id) =>
+    callApi(`/staff/${id}/unbind-line`, { method: 'post', data: {} }, () => {
+      throw new Error('解除綁定需在真實 API 模式下使用');
+    }),
+
   resetPassword: (id) =>
     callApi(`/staff/${id}/reset-password`, { method: 'post', data: {} },
       () => {
