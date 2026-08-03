@@ -128,6 +128,7 @@ router.get('/mine', requireParent, async (req, res) => {
                       original_price, final_price, admin_enrollments.transfer_last_5, status, submitted_at,
                       admin_enrollments.total_sessions, admin_enrollments.used_sessions, admin_enrollments.refund_amount, admin_enrollments.payment_proof_url,
                       admin_enrollments.payment_method, admin_enrollments.order_kind,
+                      admin_enrollments.cancel_reason, admin_enrollments.returned_at,
                       admin_enrollments.period_count, admin_enrollments.period_number, admin_enrollments.enrollment_batch_id, admin_enrollments.checkout_id,
                       cs.total_amount AS checkout_total_amount,
                       cs.payment_status AS checkout_payment_status,
@@ -264,6 +265,10 @@ router.get('/mine', requireParent, async (req, res) => {
       final_price: Number(row.final_price),
       transfer_last_5: row.transfer_last_5,
       payment_status: toPaymentStatus(row.status),
+      // U14 退回補件：讓家長看得到「為什麼被退」。原本 reason 只寫進 audit log，
+      // 家長端只看得到單子狀態變了、不知道要補什麼。
+      cancel_reason: row.cancel_reason || null,
+      returned_at: row.returned_at || null,
       lifecycle: toLifecycle(row, total, used),
       course_period_id: canAccessPeriod ? row.course_period_id : null,
       checkin_mode: canAccessPeriod ? (row.checkin_mode || 'booking') : 'booking',

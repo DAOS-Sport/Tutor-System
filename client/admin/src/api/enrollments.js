@@ -46,4 +46,12 @@ export const enrollmentsApi = {
 
   cancel: (id, { reason, by } = {}) =>
     callApi(`/enrollments/${id}/cancel`, { method: 'post', data: { reason, by } }, () => mockDb.cancelEnrollment(id, reason, by)),
+
+  // U14 退回補件：與 cancel（終態）並存。把單退回 pending_payment 並清空付款欄位，
+  // 家長可重新填末 5 碼／重傳證明後繼續完成，不需要重新報名。
+  // 有 checkout_id 時後端會一併把整張 checkout 的付款欄位與狀態退回。
+  returnForFix: (id, reason) =>
+    callApi(`/enrollments/${id}/return-for-fix`, { method: 'post', data: { reason } }, () => {
+      throw new Error('退回補件需在真實 API 模式下使用');
+    }),
 };

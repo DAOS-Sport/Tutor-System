@@ -570,6 +570,11 @@ export default function ReconcilePage() {
   const [confirming, setConfirming] = useState(null);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [cancelling, setCancelling] = useState(null);
+  // U14 退回補件：與「取消付款單」並存。多數退回其實只是付款資料填錯，
+  // 用取消會讓家長得從頭報名一次。
+  const [returning, setReturning] = useState(null);
+  const [returnReason, setReturnReason] = useState('');
+  const [returnBusy, setReturnBusy] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
   const [cancelBusy, setCancelBusy] = useState(false);
   const [expanded, setExpanded] = useState({});
@@ -672,6 +677,28 @@ export default function ReconcilePage() {
       toast.error(err?.response?.data?.error || '取消失敗');
     } finally {
       setCancelBusy(false);
+    }
+  }
+
+  async function handleReturnConfirm() {
+    if (!returning) return;
+    const reason = returnReason.trim();
+    if (!reason) { toast.warning('請填寫退回原因'); return; }
+    // 後端以單筆 enrollment 為入口，但有 checkout_id 時會一併退回整張 checkout 的付款狀態，
+    // 與家長端 payment-proof 的 checkout 層級語意一致，故傳第一筆子訂單即可。
+    const firstId = returning.sub_orders?.[0]?.id;
+    if (!firstId) { toast.error('此付款單沒有可退回的子訂單'); return; }
+    setReturnBusy(true);
+    try {
+      await enrollmentsApi.returnForFix(firstId, reason);
+      toast.success('已退回補件，家長可重新填寫付款資料');
+      setReturning(null);
+      setReturnReason('');
+      load();
+    } catch (err) {
+      toast.error(err?.response?.data?.error || '退回補件失敗');
+    } finally {
+      setReturnBusy(false);
     }
   }
 
@@ -788,6 +815,9 @@ export default function ReconcilePage() {
           <div className="flex justify-end gap-2">
             <button className="rounded-md bg-brand-green px-3 py-1.5 text-xs font-bold text-white hover:bg-brand-teal"
               onClick={() => setConfirming(r)}>對帳通過</button>
+            <button className="rounded-md border border-amber-400 px-3 py-1.5 text-xs font-bold text-amber-600 hover:bg-amber-50"
+              title="退回讓家長補正付款資料，訂單保留、不需重新報名"
+              onClick={() => { setReturnReason(''); setReturning(r); }}>退回補件</button>
             <button className="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-bold text-gray-600 hover:bg-gray-100"
               onClick={() => { setCancelReason(''); setCancelling(r); }}>取消</button>
           </div>
@@ -827,6 +857,40 @@ export default function ReconcilePage() {
           onDone={() => { setConfirming(null); load(); }}
         />
       )}
+      <ConfirmDialog
+        open={!!returning}
+        title="退回補件？"
+        confirmLabel="確定退回補件" cancelLabel="返回"
+        busy={returnBusy} confirmDisabled={!returnReason.trim()}
+        onConfirm={handleReturnConfirm}
+        onCancel={() => {
+          if (returnBusy) return;
+          setReturning(null);
+          setReturnReason('');
+        }}
+      >
+        {returning && (
+          <div className="space-y-3">
+            <p>
+              {returning.parent_name}／{returning.sub_orders?.length || 0} 筆子訂單，末 5 碼 {returning.transfer_last_5 || '—'}。
+              退回後訂單<strong>保留</strong>並回到「待繳款」，原本的末 5 碼與匯款證明會清空供家長重填，
+              家長會收到 LINE 通知看到下方原因。不需要重新報名。
+            </p>
+            <label className="block">
+              <span className="mb-1 block text-xs font-semibold text-gray-700">退回原因 <span className="text-brand-error">*</span></span>
+              <textarea
+                value={returnReason}
+                maxLength={500}
+                rows={3}
+                disabled={returnBusy}
+                onChange={(e) => setReturnReason(e.target.value)}
+                placeholder="例如：轉帳末 5 碼與帳戶紀錄不符，請重新確認後填寫"
+                className="w-full resize-y rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none disabled:bg-gray-100"
+              />
+            </label>
+          </div>
+        )}
+      </ConfirmDialog>
       <ConfirmDialog
         open={!!cancelling}
         title="確定取消此筆付款單？"

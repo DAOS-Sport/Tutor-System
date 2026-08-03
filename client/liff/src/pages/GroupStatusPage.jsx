@@ -109,6 +109,15 @@ export default function GroupStatusPage() {
   const selfMember = (order.members || []).find((m) => m.is_self) || null;
   const selfPaymentReady = !!(selfMember?.has_payment_proof && selfMember?.transfer_last_5);
   const missingPaymentCount = (order.members || []).filter((m) => !m.payment_confirmed).length;
+  // U14 送審守門：全團都要「末 5 碼 + 匯款證明」皆備才可送審。
+  // has_payment_info 是後端新增的布林（他家的 transfer_last_5 不外露，無法在前端自行判斷）。
+  // 向後相容：舊 API 沒有這個欄位時退回只看 has_payment_proof，
+  // 避免前端先上線／CDN 還吐舊 bundle 的時間差把所有送審鈕鎖死。
+  const memberPaymentReady = (m) => (
+    m.has_payment_info === undefined ? !!m.has_payment_proof : !!m.has_payment_info
+  );
+  const unpaidMembers = (order.members || []).filter((m) => !memberPaymentReady(m));
+  const allPaymentReady = (order.members || []).length > 0 && unpaidMembers.length === 0;
   const v = order.venue || {};
   const joinUrl = order.is_leader ? buildJoinUrl(order.join_token) : null;
   const canCancelGroup = order.is_leader && ['forming', 'submitted'].includes(order.status);
@@ -227,7 +236,16 @@ export default function GroupStatusPage() {
       setConfirm(null);
       load();
     } catch (e) {
-      toast.error(e?.response?.data?.error || '操作失敗');
+      const d = e?.response?.data;
+      // U14：後端送審守門擋下時列出待補家庭（姓名後端已遮罩），並重抓最新狀態，
+      // 讓別的裝置剛補齊的資料能即時反映到按鈕上。
+      if (d?.code === 'MISSING_PAYMENT_PROOF' && Array.isArray(d.pending_members) && d.pending_members.length) {
+        toast.error(`${d.pending_members.map((m) => m.parent_name).filter(Boolean).join('、')} 尚未備齊付款資料，請提醒後再送審`);
+        setConfirm(null);
+        load();
+      } else {
+        toast.error(d?.error || '操作失敗');
+      }
     } finally {
       setBusy(false);
     }
@@ -329,7 +347,14 @@ export default function GroupStatusPage() {
                     <p className="mt-0.5 truncate text-xs text-gray-500">學生：{(m.student_names || []).join('、') || '—'}</p>
                   </div>
                   <div className="shrink-0 text-right">
+                    {/* U14：有折扣時顯示原價刪除線，讓家長看得出自己折了多少 */}
+                    {m.discount_amount > 0 && (
+                      <div className="text-[11px] text-gray-400 line-through">{money(m.original_amount)}</div>
+                    )}
                     <div className="text-xs font-bold text-gray-700">{money(m.amount_due)}</div>
+                    {m.discount_amount > 0 && (
+                      <div className="text-[11px] font-medium text-brand-green">已折 {money(m.discount_amount)}</div>
+                    )}
                     <div className={`text-[11px] font-medium ${proofState.cls}`}>{proofState.label}</div>
                   </div>
                 </div>
@@ -414,6 +439,18 @@ export default function GroupStatusPage() {
         </p>
       </div>
 
+      {/* U14 退回補件：狀態已轉回 forming，但 reject_reason 還在 → 家長必須看得到為什麼被退，
+          否則只會看到「揪團中」卻不知道要補什麼。rejected（終止）由 NextActionBlock 另外處理。 */}
+      {order.status === 'forming' && order.reject_reason && (
+        <div className="mb-4 rounded-xl border border-brand-error/40 bg-brand-error/5 px-3 py-3">
+          <div className="text-sm font-bold text-brand-error">此團購已被退回，請補件後重新送審</div>
+          <p className="mt-1 text-xs leading-5 text-gray-700">退回原因：{order.reject_reason}</p>
+          <p className="mt-1 text-[11px] leading-5 text-gray-500">
+            這筆團購<strong>沒有被取消</strong>，名單與已繳資料都還在。補齊後團主即可再次送審。
+          </p>
+        </div>
+      )}
+
       {/* 下一步行動模組：移到取消團購上方 */}
       <NextActionBlock
         order={order}
@@ -422,6 +459,9 @@ export default function GroupStatusPage() {
         selfMember={selfMember}
         selfPaymentReady={selfPaymentReady}
         missingPaymentCount={missingPaymentCount}
+        allPaymentReady={allPaymentReady}
+        unpaidCount={unpaidMembers.length}
+        unpaidNames={unpaidMembers.map((m) => m.parent_name).filter(Boolean)}
         onGoCourses={() => navigate('/my-courses')}
         onSubmit={() => setConfirm('submit')}
       />
@@ -432,11 +472,16 @@ export default function GroupStatusPage() {
             <>
               {/* 送審前警語：名單鎖定；證明改送審後各家上傳 */}
               <div className="rounded-lg border border-brand-gold/40 bg-brand-gold/5 px-3 py-2 text-[12px] leading-5 text-brand-gold">
-                ⚠️ 送審後名單<strong>鎖定、不能再加人</strong>；各家可先在此頁轉帳並上傳證明。
+                ⚠️ 送審後名單<strong>鎖定、不能再加人</strong>；全團都要備齊「轉帳末 5 碼 + 匯款證明」才能送審。
               </div>
-              {/* 送審鈕已由上方 NextActionBlock 提供（reachedMin 時顯示「送審並鎖定名單」），此處只保留警語避免兩顆重複送審鈕。 */}
+              {/* 送審鈕已由上方 NextActionBlock 提供（人數達標＋全員付款齊備才顯示），此處只保留警語避免兩顆重複送審鈕。 */}
               {!reachedMin && (
                 <p className="px-1 text-[12px] text-gray-500">還差 {order.min_students - order.total_students} 人才能送審。</p>
+              )}
+              {reachedMin && !allPaymentReady && (
+                <p className="px-1 text-[12px] text-gray-500">
+                  人數已達標，還有 {unpaidMembers.length} 個家庭未備齊付款資料，補齊後即可送審。
+                </p>
               )}
             </>
           )}
@@ -461,7 +506,7 @@ export default function GroupStatusPage() {
         onConfirm={() => doAction('submit')}
       >
         <p className="text-sm text-gray-600">
-          送審後名單<strong>鎖定、不能再加人</strong>；各家在本頁轉帳並上傳證明（送審前即可先付），櫃檯核對後開課。確定送審？
+          全團付款資料已備齊。送審後名單<strong>鎖定、不能再加人</strong>，由櫃檯核對後開課。確定送審？
         </p>
       </ConfirmModal>
 
@@ -486,6 +531,9 @@ function NextActionBlock({
   selfMember,
   selfPaymentReady,
   missingPaymentCount,
+  allPaymentReady,
+  unpaidCount,
+  unpaidNames,
   onGoCourses,
   onSubmit,
 }) {
@@ -497,13 +545,19 @@ function NextActionBlock({
   if (order.status === 'forming') {
     tone = selfPaymentReady ? 'gold' : 'teal';
     if (order.is_leader) {
-      title = reachedMin ? '人數已達標，可以送審' : '先邀請其他家長加入';
-      body = reachedMin
-        ? '可先在下方轉帳並上傳付款資料；送審後名單鎖定，由櫃檯核對開課。'
-        : `還差 ${Math.max(0, order.min_students - order.total_students)} 人成團，用下方連結邀請家長加入；您也可先完成自己的付款。`;
-      primary = reachedMin
-        ? { label: '送審並鎖定名單', onClick: onSubmit }
-        : null;
+      // U14 送審三態：①人數未達標 ②人數到了但付款未齊（送審鈕不出現＝唯讀）③兩者皆備才可送審
+      if (!reachedMin) {
+        title = '先邀請其他家長加入';
+        body = `還差 ${Math.max(0, order.min_students - order.total_students)} 人成團，用下方連結邀請家長加入；您也可先完成自己的付款。`;
+      } else if (!allPaymentReady) {
+        tone = 'gold';
+        title = `人數已達標，還有 ${unpaidCount} 個家庭未交付款資料`;
+        body = `${(unpaidNames || []).join('、') || '部分家庭'} 尚未備齊「轉帳末 5 碼 + 匯款證明」。全部齊了才能送審，請提醒他們到本頁補齊。`;
+      } else {
+        title = '全員付款資料已齊，可以送審';
+        body = '送審後名單鎖定，由櫃檯核對後開課。';
+        primary = { label: '送審並鎖定名單', onClick: onSubmit };
+      }
     } else {
       title = selfPaymentReady ? '付款資料已送出' : '已加入，可先完成付款';
       body = selfPaymentReady

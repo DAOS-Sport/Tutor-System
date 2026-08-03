@@ -431,6 +431,9 @@ router.post('/me/sync', requireParent, async (req, res) => {
           reactivate: false,
           requireComplete: false,
           preservePending: true,
+          // 開頁刷新不是安全門檻（本地 UID 已由登入時驗過），Z01 UID 尚未回寫不該讓同步整個失敗。
+          // 仍會擋「Z01 已綁到別的 UID」的真衝突。
+          strictUidMatch: false,
           reason: 'parents-me-sync',
         });
       } catch (err) {

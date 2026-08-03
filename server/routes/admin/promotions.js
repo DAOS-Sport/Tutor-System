@@ -25,7 +25,7 @@ router.use(requireAdminAuth);
 
 const PROMO_FIELDS = `id, name, description, type, discount_value,
   min_threshold_type, min_threshold_value, applicable_course_types, applicable_venue_ids,
-  applicable_coach_multipliers, show_on_parent_home,
+  applicable_coach_multipliers, show_on_parent_home, applicable_to_group_orders,
   coupon_code, start_date, end_date, max_uses, current_uses,
   platform_total_period_cap, parent_period_cap, current_period_uses, status, review_note,
   created_by, reviewed_by, reviewed_at, submitted_at, created_at, updated_at`;
@@ -84,6 +84,8 @@ function validatePayload(p) {
   else if (Array.isArray(p.applicable_coach_multipliers) && !p.applicable_coach_multipliers.every((x) => Number.isFinite(Number(x)) && Number(x) > 0)) errs.push('applicable_coach_multipliers 每個元素必須為大於 0 的數值');
   // show_on_parent_home 若有值須為布林（缺省視為 true）
   if (p.show_on_parent_home != null && typeof p.show_on_parent_home !== 'boolean') errs.push('show_on_parent_home 必須為布林值');
+  // U14 團購通路開關（缺省視為 false = 不套用團購，既有促銷行為不變）
+  if (p.applicable_to_group_orders != null && typeof p.applicable_to_group_orders !== 'boolean') errs.push('applicable_to_group_orders 必須為布林值');
   return errs;
 }
 
@@ -178,10 +180,10 @@ router.post('/', requireAdminRole('admin', 'manager'), async (req, res) => {
     const r = await pool.query(
       `INSERT INTO promotions (name, description, type, discount_value,
          min_threshold_type, min_threshold_value, applicable_course_types, applicable_venue_ids,
-         applicable_coach_multipliers, show_on_parent_home,
+         applicable_coach_multipliers, show_on_parent_home, applicable_to_group_orders,
          coupon_code, start_date, end_date, max_uses,
          platform_total_period_cap, parent_period_cap, status, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'draft',$17)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'draft',$18)
        RETURNING ${PROMO_FIELDS}`,
       [
         p.name, p.description || '', p.type, p.discount_value,
@@ -190,6 +192,7 @@ router.post('/', requireAdminRole('admin', 'manager'), async (req, res) => {
         p.applicable_venue_ids && p.applicable_venue_ids.length ? p.applicable_venue_ids : null,
         p.applicable_coach_multipliers && p.applicable_coach_multipliers.length ? p.applicable_coach_multipliers : null,
         p.show_on_parent_home !== false,
+        p.applicable_to_group_orders === true,
         coupon, p.start_date, p.end_date, p.max_uses || null,
         optionalNonNegativeInteger(p.platform_total_period_cap),
         optionalNonNegativeInteger(p.parent_period_cap),
@@ -227,6 +230,7 @@ router.patch('/:id', requireAdminRole('admin', 'manager'), async (req, res) => {
          min_threshold_type=$6, min_threshold_value=$7,
          applicable_course_types=$8, applicable_venue_ids=$9,
          applicable_coach_multipliers=$16, show_on_parent_home=$17,
+         applicable_to_group_orders=$18,
          coupon_code=$10, start_date=$11, end_date=$12, max_uses=$13,
          platform_total_period_cap=$14, parent_period_cap=$15,
          updated_at=NOW()
@@ -242,6 +246,7 @@ router.patch('/:id', requireAdminRole('admin', 'manager'), async (req, res) => {
         optionalNonNegativeInteger(p.parent_period_cap),
         p.applicable_coach_multipliers && p.applicable_coach_multipliers.length ? p.applicable_coach_multipliers : null,
         p.show_on_parent_home !== false,
+        p.applicable_to_group_orders === true,
       ]
     );
     await audit(null, old.id, 'edit', req.adminUser.sub, null);

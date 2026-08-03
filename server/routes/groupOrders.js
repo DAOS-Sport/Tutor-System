@@ -22,6 +22,7 @@ const { requireParent, optionalParent } = require('../middlewares/parentAuth');
 const { maskName, maskNames } = require('../utils/piiMask');
 const ragicWriteback = require('../services/ragicWriteback');
 const line = require('../services/line');
+const promotions = require('../services/promotions');
 const { logGroupOrderAudit } = require('../services/groupOrderAudit');
 
 // 家長端操作者標記：token 只含 id/phone，櫃檯亦以手機辨識家長。
@@ -208,10 +209,18 @@ function shapeMember(m, isSelf, perStudent, periodCount) {
     student_names: isSelf ? (m.student_names || []) : maskNames(m.student_names || []),
     student_count: studentCount,
     // U10：每家應繳金額 = 單生價 × 該家學生數 × 期數
-    amount_due: perStudent * studentCount * periodCount,
+    // U14：有促銷的新團在「加入當下」就把金額落地到 member 列（final_amount），
+    //      之後一律以落地值為準，任何後續變動都不會改到已轉帳家庭的金額。
+    //      既有團的 final_amount 為 NULL → COALESCE 退回原本的動態計算，行為完全不變。
+    amount_due: m.final_amount != null ? Number(m.final_amount) : perStudent * studentCount * periodCount,
+    original_amount: m.original_amount != null ? Number(m.original_amount) : perStudent * studentCount * periodCount,
+    discount_amount: Number(m.discount_amount) || 0,
     transfer_last_5: isSelf ? (m.transfer_last_5 || '') : '',
     carrier: isSelf ? (m.carrier || '') : '',
     has_payment_proof: !!m.payment_proof_url,
+    // 送審守門用：末 5 碼 + 匯款證明「皆備」才算付款資料完成。
+    // 只回布林，不外露他家的實際末 5 碼／證明網址（transfer_last_5 仍僅 isSelf 可見）。
+    has_payment_info: !!(m.payment_proof_url && String(m.transfer_last_5 || '').trim()),
     proof_uploaded_at: m.proof_uploaded_at || null,
     payment_confirmed: !!m.payment_confirmed,
     status: m.status,
@@ -255,6 +264,29 @@ async function loadOrderWithMembers(client, orderId) {
 // 單期單生價（四捨五入），供每家金額計算；order 須帶 base_price/multiplier（loadOrderWithMembers 附帶）。
 function perStudentPrice(order) {
   return Math.round((Number(order.base_price) || 0) * (Number(order.multiplier) || 1));
+}
+
+/**
+ * U14：依團購鎖定的促銷快照，算出「單一家庭」的原價／折抵／應付。
+ *
+ * 為什麼是每家獨立算，而不是「折總額再按人數攤分」：
+ *   攤分的分母（全團學生數）會隨新成員加入而變動 → 已經照畫面金額轉完帳的家庭金額會被改掉。
+ *   各家的 amount_due 本來就互相獨立（單價不隨團的人數變動），折扣照樣獨立即可保證
+ *   「看到的金額 = 轉帳的金額 = 核准的金額」。
+ *
+ * 折抵一律走 promotions 的 computeDiscount（已 export 於 _internal，註明供重用），
+ * 避免這裡自己重寫一套百分比／定額規則而與報名路徑產生分歧。
+ */
+function computeMemberAmount(order, studentCount) {
+  const perStudent = perStudentPrice(order);
+  const periodCount = order.period_count || 1;
+  const original = perStudent * (Number(studentCount) || 0) * periodCount;
+  const snap = order.promotion_snapshot || null;
+  if (!order.promotion_id || !snap || !snap.type) {
+    return { original, discount: 0, final: original };
+  }
+  const discount = Math.min(original, Math.max(0, promotions._internal.computeDiscount(snap, original)));
+  return { original, discount, final: original - discount };
 }
 
 function totalStudents(members) {
@@ -454,6 +486,8 @@ router.post('/', async (req, res) => {
   const newStudents = cleanNewStudents(p.new_students);
   const note = typeof p.note === 'string' ? p.note.trim().slice(0, 500) : null;
   const periodCount = normalizePeriodCount(p.period_count);
+  // U14：團主發起時可輸入折價券；空字串視為未輸入（走自動套用路徑）。
+  const couponCode = typeof p.coupon_code === 'string' ? p.coupon_code.trim().toUpperCase() : '';
   // U10：證明改為「送審後各家自行上傳」，發起時不再要求；若前端仍帶（向後相容）則沿用。
   const proofInput = await parseProofInput(p);
   if (proofInput.error) {
@@ -474,7 +508,7 @@ router.post('/', async (req, res) => {
     await client.query('BEGIN');
 
     const cfg = await client.query(
-      `SELECT course_type, min_students, max_students, is_active
+      `SELECT course_type, min_students, max_students, is_active, base_price
          FROM course_type_configs WHERE course_type = $1`,
       [courseType]
     );
@@ -492,9 +526,11 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: '場館不存在或已停用' });
     }
 
+    let coachMultiplier = 1;
     if (coachId) {
-      const cr = await client.query(`SELECT id FROM coaches WHERE id = $1`, [coachId]);
+      const cr = await client.query(`SELECT id, pricing_multiplier FROM coaches WHERE id = $1`, [coachId]);
       if (!cr.rowCount) { await client.query('ROLLBACK'); return res.status(400).json({ error: '教練不存在' }); }
+      coachMultiplier = Number(cr.rows[0].pricing_multiplier) || 1;
     }
 
     let bound;
@@ -514,22 +550,106 @@ router.post('/', async (req, res) => {
     }
     createdForRagic = bound.createdForRagic;
 
+    // ── U14 團購優惠：發起時驗券並「鎖定快照」，之後每家加入時依快照各自打折 ──
+    // 之所以在發起時就鎖定：團購是先轉帳後審核，家長在 forming 階段就照畫面金額付款，
+    // 折扣不能等到核准才算（那時錢已經匯出去了）。快照落地後，即使促銷被下架或改內容，
+    // 本團金額也不會變 —— 保證「看到的 = 轉的 = 核准的」。
+    const perStudentAtCreate = Math.round((Number(cfg.rows[0].base_price) || 0) * coachMultiplier);
+    const leaderOriginal = perStudentAtCreate * bound.names.length * periodCount;
+    let promoId = null;
+    let promoSnapshot = null;
+    try {
+      const preview = await promotions.previewBestDiscount({
+        originalPrice: leaderOriginal,
+        courseType,
+        venueId,
+        periodCount,
+        couponCode: couponCode || null,
+        parentId: req.parent.id,
+        coachMultiplier,
+        isGroupOrder: true,
+      });
+      if (preview.promotion && preview.discountAmount > 0) {
+        promoId = preview.promotion.id;
+        promoSnapshot = {
+          id: preview.promotion.id,
+          name: preview.promotion.name,
+          coupon_code: preview.promotion.coupon_code || null,
+          type: preview.promotion.type,
+          discount_value: preview.promotion.discount_value,
+        };
+      }
+    } catch (e) {
+      // 與一般報名（enrollments.js）相同的降級策略：
+      //  - 家長「明確輸入券碼」失敗 → 整筆退回，讓他知道券不能用，而不是默默用原價成團。
+      //  - 「自動套用」失敗（沒輸碼、名額剛好被搶完）→ 降級為無折扣，不中止發起。
+      if (couponCode) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: e.publicMessage || e.message ? (e.message || '折價券不可用') : '折價券不可用',
+          code: e.code || 'COUPON_INVALID',
+        });
+      }
+      console.warn('[group-orders create] 自動套用優惠失敗，降級為原價:', e.code || e.message);
+    }
+
     const token = genJoinToken();
     const o = await client.query(
       `INSERT INTO group_orders
          (leader_parent_id, venue_id, course_type, coach_id, status, join_token,
-          min_students, max_students, note, period_count)
-       VALUES ($1,$2,$3,$4,'forming',$5,$6,$7,$8,$9)
+          min_students, max_students, note, period_count, promotion_id, promotion_snapshot)
+       VALUES ($1,$2,$3,$4,'forming',$5,$6,$7,$8,$9,$10,$11::jsonb)
        RETURNING *`,
-      [req.parent.id, venueId, courseType, coachId, token, min_students, max_students, note, periodCount]
+      [req.parent.id, venueId, courseType, coachId, token, min_students, max_students, note, periodCount,
+       promoId, promoSnapshot ? JSON.stringify(promoSnapshot) : null]
     );
     const order = o.rows[0];
-    await client.query(
-      `INSERT INTO group_order_members
-         (group_order_id, parent_id, student_names, student_ids, payment_proof_url, proof_uploaded_at, is_leader, status)
-       VALUES ($1,$2,$3,$4,$5,${'CASE WHEN $5::text IS NOT NULL THEN NOW() ELSE NULL END'},TRUE,'joined')`,
-      [order.id, req.parent.id, bound.names, bound.ids, proof]
+    // 團主自己那筆也走同一套「每家獨立計價」邏輯（order 需帶 base_price/multiplier 給 perStudentPrice）
+    const leaderAmt = computeMemberAmount(
+      { ...order, base_price: cfg.rows[0].base_price, multiplier: coachMultiplier },
+      bound.names.length
     );
+    const lm = await client.query(
+      `INSERT INTO group_order_members
+         (group_order_id, parent_id, student_names, student_ids, payment_proof_url, proof_uploaded_at, is_leader, status,
+          original_amount, discount_amount, final_amount)
+       VALUES ($1,$2,$3,$4,$5,${'CASE WHEN $5::text IS NOT NULL THEN NOW() ELSE NULL END'},TRUE,'joined',$6,$7,$8)
+       RETURNING id`,
+      [order.id, req.parent.id, bound.names, bound.ids, proof,
+       leaderAmt.original, leaderAmt.discount, leaderAmt.final]
+    );
+    // 名額在「加入當下」就扣（此時該家已看到折扣價、準備轉帳），取消／退回時由 revertUsage 回沖。
+    // 同 join：用 SAVEPOINT 隔離，preview 到 recordUsage 之間若名額被別人搶走（race），
+    // 團主這家降級為原價並清掉快照，整團就不帶折扣，而不是整筆發起失敗。
+    if (promoId && leaderAmt.discount > 0) {
+      await client.query('SAVEPOINT promo_create');
+      try {
+        await promotions.recordUsage({
+          promotionId: promoId,
+          parentId: req.parent.id,
+          originalPrice: leaderAmt.original,
+          discountAmount: leaderAmt.discount,
+          finalPrice: leaderAmt.final,
+          requestPeriods: periodCount,
+          groupOrderId: order.id,
+          groupOrderMemberId: lm.rows[0].id,
+        }, client);
+        await client.query('RELEASE SAVEPOINT promo_create');
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT promo_create');
+        console.warn('[group-orders create] 優惠名額已滿，本團不帶折扣:', e.code || e.message);
+        await client.query(
+          `UPDATE group_order_members SET discount_amount = 0, final_amount = original_amount WHERE id = $1`,
+          [lm.rows[0].id]
+        );
+        await client.query(
+          `UPDATE group_orders SET promotion_id = NULL, promotion_snapshot = NULL WHERE id = $1`,
+          [order.id]
+        );
+        order.promotion_id = null;
+        order.promotion_snapshot = null;
+      }
+    }
     await logGroupOrderAudit(client, {
       groupOrderId: order.id,
       action: `發起團購（學生：${bound.names.join('、')}${periodCount > 1 ? `；${periodCount} 期` : ''}）`,
@@ -666,15 +786,64 @@ router.post('/by-token/:token/join', async (req, res) => {
       });
     }
 
-    await client.query(
-      `INSERT INTO group_order_members
-         (group_order_id, parent_id, student_names, student_ids, payment_proof_url, proof_uploaded_at, is_leader, status)
-       VALUES ($1,$2,$3,$4,$5,${'CASE WHEN $5::text IS NOT NULL THEN NOW() ELSE NULL END'},FALSE,'joined')`,
-      [order.id, req.parent.id, bound.names, bound.ids, proof]
+    // U14：依團購鎖定的促銷快照，替「這一家」獨立算折扣並落地金額。
+    // 需要 base_price / multiplier 才能算單生價，故補查（order 是 group_orders 原始列，不含這兩欄）。
+    const pr = await client.query(
+      `SELECT ctc.base_price, COALESCE(co.pricing_multiplier, 1) AS multiplier
+         FROM group_orders go
+         LEFT JOIN course_type_configs ctc ON ctc.course_type = go.course_type
+         LEFT JOIN coaches co ON co.id = go.coach_id
+        WHERE go.id = $1`,
+      [order.id]
     );
+    const joinAmt = computeMemberAmount(
+      { ...order, base_price: pr.rows[0]?.base_price, multiplier: pr.rows[0]?.multiplier },
+      bound.names.length
+    );
+    const jm = await client.query(
+      `INSERT INTO group_order_members
+         (group_order_id, parent_id, student_names, student_ids, payment_proof_url, proof_uploaded_at, is_leader, status,
+          original_amount, discount_amount, final_amount)
+       VALUES ($1,$2,$3,$4,$5,${'CASE WHEN $5::text IS NOT NULL THEN NOW() ELSE NULL END'},FALSE,'joined',$6,$7,$8)
+       RETURNING id`,
+      [order.id, req.parent.id, bound.names, bound.ids, proof,
+       joinAmt.original, joinAmt.discount, joinAmt.final]
+    );
+    // 名額不足時「這一家照原價加入」，不擋下加入、也不改其他家庭的金額。
+    // 誠實優先：家長在轉帳前就知道自己沒吃到折扣，而不是事後被改價。
+    // 用 SAVEPOINT 隔離：recordUsage 若在 SQL 層失敗（撞 unique / 名額 UPDATE 影響 0 列），
+    // 整個 transaction 會進入 aborted 狀態，後續語句一律失敗 —— 必須先 ROLLBACK TO SAVEPOINT
+    // 才能繼續把這家改成原價。（同 parentSync upsert 的既有處理方式。）
+    let promotionUnavailable = false;
+    if (order.promotion_id && joinAmt.discount > 0) {
+      await client.query('SAVEPOINT promo_join');
+      try {
+        await promotions.recordUsage({
+          promotionId: order.promotion_id,
+          parentId: req.parent.id,
+          originalPrice: joinAmt.original,
+          discountAmount: joinAmt.discount,
+          finalPrice: joinAmt.final,
+          requestPeriods: order.period_count || 1,
+          groupOrderId: order.id,
+          groupOrderMemberId: jm.rows[0].id,
+        }, client);
+        await client.query('RELEASE SAVEPOINT promo_join');
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT promo_join');
+        console.warn('[group-orders join] 優惠名額不足，此家庭照原價加入:', e.code || e.message);
+        await client.query(
+          `UPDATE group_order_members
+              SET discount_amount = 0, final_amount = original_amount
+            WHERE id = $1`,
+          [jm.rows[0].id]
+        );
+        promotionUnavailable = true;
+      }
+    }
     await logGroupOrderAudit(client, {
       groupOrderId: order.id,
-      action: `加入團購（學生：${bound.names.join('、')}）`,
+      action: `加入團購（學生：${bound.names.join('、')}${promotionUnavailable ? '；優惠名額已滿，照原價' : ''}）`,
       by: parentActor(req),
     });
     await client.query('COMMIT');
@@ -873,6 +1042,32 @@ router.post('/:id/submit', async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: `超過人數上限（最多 ${order.max_students} 人）`, code: 'OVER_CAPACITY' });
     }
+    // 送審前置：每個家庭都要備齊「轉帳末 5 碼 + 匯款證明」才可送審（U14）。
+    // 與櫃檯核准端（admin/groupOrders.js 的 MISSING_PAYMENT_PROOF）同向但更嚴：
+    // 核准端維持「末 5 碼或證明擇一」以相容既有已送審單，送審端收緊擋住不完整的新單，
+    // 讓「不完整的團」在團主端就停下來，而不是送進後台才被退。
+    const unpaid = await client.query(
+      `SELECT m.id, p.name AS parent_name
+         FROM group_order_members m
+         JOIN parents p ON p.id = m.parent_id
+        WHERE m.group_order_id = $1
+          AND (m.payment_proof_url IS NULL
+               OR NULLIF(TRIM(COALESCE(m.transfer_last_5, '')), '') IS NULL)
+        ORDER BY m.is_leader DESC, m.joined_at ASC`,
+      [order.id]
+    );
+    if (unpaid.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: '仍有家庭未完成付款資料（需轉帳末 5 碼 + 匯款證明），請補齊後再送審',
+        code: 'MISSING_PAYMENT_PROOF',
+        // 姓名遮罩：團主看得到「誰還沒交」，但看不到其他家庭的完整個資。
+        pending_members: unpaid.rows.map((x) => ({
+          member_id: x.id,
+          parent_name: maskName(x.parent_name),
+        })),
+      });
+    }
     const r = await client.query(
       `UPDATE group_orders SET status='submitted', submitted_at=NOW(), updated_at=NOW()
         WHERE id=$1 RETURNING *`,
@@ -914,6 +1109,10 @@ router.post('/:id/cancel', async (req, res) => {
       [req.params.id, parentActor(req)]
     );
     if (!r.rowCount) return res.status(409).json({ error: '此團購狀態無法取消' });
+    // U14：團購取消 → 回沖整團已扣的優惠名額（冪等：沒有 usage 就刪 0 筆不報錯）。
+    // best-effort：名額回沖失敗不該讓「已經成功取消」的結果變成 500。
+    await promotions.revertUsage({ groupOrderId: req.params.id })
+      .catch((e) => console.warn('[group-orders cancel revertUsage]', e.message));
     res.json({ ok: true });
   } catch (err) {
     console.error('[group-orders cancel]', err);
