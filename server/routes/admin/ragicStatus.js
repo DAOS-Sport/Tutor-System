@@ -79,6 +79,60 @@ router.get('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =>
   }
 });
 
+// ── GET /api/admin/ragic-status/sync-failures ────────────────────────────────
+// Phase 1 可觀測性（migration 040）：逐筆同步失敗一覽。
+//   背景：ragic_sync_log 只保存 errors[0]，「144 筆失敗」在 DB 裡只剩第 1 筆訊息，
+//   其餘原因原本只在 Replit console，事後無法還原、無法統計。
+//   本端點純唯讀 SELECT，不觸發任何同步，不改任何狀態。
+//   message 在寫入時已去識別化（syncFailureLog.sanitizeMessage），不含個資。
+router.get('/sync-failures', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
+  const days = Math.min(Math.max(Number(req.query.days) || 7, 1), 90);
+  const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 500);
+  try {
+    const { pool } = require('../../models/db');
+    const since = `${days} days`;
+    const [summary, byCode, recent] = await Promise.all([
+      pool.query(
+        `SELECT error_kind, entity_kind, count(*)::int AS n,
+                count(DISTINCT local_id)::int AS distinct_records,
+                max(occurred_at) AS latest
+           FROM ragic_sync_failures
+          WHERE occurred_at >= NOW() - $1::interval
+          GROUP BY 1,2 ORDER BY 3 DESC`, [since]),
+      pool.query(
+        `SELECT COALESCE(error_code,'(null)') AS error_code, count(*)::int AS n,
+                count(DISTINCT local_id)::int AS distinct_records
+           FROM ragic_sync_failures
+          WHERE occurred_at >= NOW() - $1::interval
+          GROUP BY 1 ORDER BY 2 DESC`, [since]),
+      pool.query(
+        `SELECT occurred_at, job_name, entity_kind, local_id, error_code, error_kind, message
+           FROM ragic_sync_failures
+          WHERE occurred_at >= NOW() - $1::interval
+          ORDER BY occurred_at DESC LIMIT $2`, [since, limit]),
+    ]);
+    // 反覆失敗的同一筆資料 = Phase 2 隔離（quarantine）的候選
+    const repeat = await pool.query(
+      `SELECT local_id, entity_kind, count(*)::int AS failures,
+              min(occurred_at) AS first_seen, max(occurred_at) AS last_seen
+         FROM ragic_sync_failures
+        WHERE occurred_at >= NOW() - $1::interval AND error_kind = 'permanent'
+        GROUP BY 1,2 HAVING count(*) >= 2
+        ORDER BY 3 DESC LIMIT 100`, [since]);
+    res.json({
+      window_days: days,
+      summary: summary.rows,
+      by_error_code: byCode.rows,
+      repeat_permanent_failures: repeat.rows,
+      recent: recent.rows,
+      note: 'message 已去識別化；permanent 表示資料本身不合法，重試永遠失敗。',
+    });
+  } catch (err) {
+    console.error('[admin/ragic-status sync-failures]', err.message);
+    res.status(500).json({ error: '讀取同步失敗紀錄失敗' });
+  }
+});
+
 router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
   // 用與 GET 相同的判定（必須 6 個 RAGIC_* env 全到位）作為單一真相來源
   const env = ragicAdmin.getRagicEnvFlags();

@@ -1932,6 +1932,25 @@ CREATE INDEX IF NOT EXISTS idx_ragic_webhook_log_record ON ragic_webhook_log(she
 -- 四層鎖的 DB 租約層。job_locks 只存「目前持有者」單列 per job；取鎖是單一原子
 -- UPSERT（見 server/cron/lock.js acquireJobLock），不用 pg_advisory_lock（連線池下
 -- session 綁定不可靠，見工單 B.2 決策）。
+-- 040 逐筆同步失敗落庫（Phase 1 可觀測性）：ragic_sync_log 只保存 errors[0]，
+-- 其餘失敗原因原本只在 console，事後無法還原。本表讓每一筆失敗都留下證據。
+CREATE TABLE IF NOT EXISTS ragic_sync_failures (
+  id              BIGSERIAL PRIMARY KEY,
+  job_name        TEXT NOT NULL,
+  form_code       TEXT,
+  entity_kind     TEXT NOT NULL CHECK (entity_kind IN ('parent', 'student')),
+  local_id        UUID NOT NULL,
+  ragic_record_id TEXT,
+  error_code      TEXT,
+  error_kind      TEXT NOT NULL CHECK (error_kind IN ('permanent', 'transient', 'unknown')),
+  message         TEXT,
+  run_id          UUID,
+  occurred_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_rsf_occurred ON ragic_sync_failures(occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_rsf_local    ON ragic_sync_failures(local_id, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_rsf_kind     ON ragic_sync_failures(error_kind, occurred_at DESC);
+
 CREATE TABLE IF NOT EXISTS job_locks (
   job_name TEXT PRIMARY KEY,
   holder_id TEXT NOT NULL,

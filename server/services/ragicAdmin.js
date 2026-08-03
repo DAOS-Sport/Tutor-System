@@ -41,6 +41,8 @@ const {
 // _singleflight 只擋「同一個 job name 重複觸發」，擋不住 staff 與 backup
 // 這種不同 job 同時打 Ragic（見 docs/ragic_sync_audit.md §1 root cause #4）。
 const cronLock = require('../cron/lock');
+// Phase 1 可觀測性（migration 040）：逐筆同步失敗落庫。純新增觀測，不改同步行為。
+const syncFailureLog = require('./syncFailureLog');
 
 function ragicEnabled() {
   return !!process.env.RAGIC_API_KEY && !!process.env.RAGIC_BASE_URL;
@@ -2229,6 +2231,13 @@ async function _backupParentsStudentsImpl() {
       const msg = _syncErrorMessage(err, { localId: row.id });
       errors.push(msg);
       console.warn('[ragic-backup] parent sync failed (id=%s): %s', row.id, msg);
+      // Phase 1 可觀測性（migration 040）：逐筆落庫。ragic_sync_log 只保存 errors[0]，
+      // 其餘失敗原因原本只在 console、事後無法還原。record() 自行吞掉所有錯誤，
+      // 不會改變 errors 陣列，也不會中斷本迴圈。
+      await syncFailureLog.record(pool, {
+        jobName: 'backup', formCode: 'Z01_Z02_BACKUP', entityKind: 'parent',
+        localId: row.id, ragicRecordId: row.ragic_record_id, error: err,
+      });
     }
   }
 
@@ -2258,6 +2267,10 @@ async function _backupParentsStudentsImpl() {
       const msg = _syncErrorMessage(err, { localId: row.id });
       errors.push(msg);
       console.warn('[ragic-backup] student sync failed (id=%s): %s', row.id, msg);
+      await syncFailureLog.record(pool, {
+        jobName: 'backup', formCode: 'Z01_Z02_BACKUP', entityKind: 'student',
+        localId: row.id, ragicRecordId: row.ragic_record_id, error: err,
+      });
     }
   }
 
