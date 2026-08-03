@@ -171,7 +171,54 @@ function ymd(d) { return new Date(d.getTime() + 8 * 3600000).toISOString().slice
       assert.strictEqual(st.booked_session_id, null, '⑦ booked_session_id 應清空');
     }
 
-    console.log('slot_supply_e2e: PASS（7 項全通過）');
+    // ⑧ 休館日清除規則：只刪 auto+available+未預約，其餘一律保留
+    {
+      const day = gen.addDays(today, 5);
+      const at = (h) => new Date(day + 'T' + String(h).padStart(2, '0') + ':00:00+08:00');
+      await pool.query('DELETE FROM coach_availability_slots WHERE coach_id=$1', [coachId]);
+      await pool.query(
+        `INSERT INTO coach_availability_slots (coach_id, venue_id, start_at, duration_minutes, status, generated_by)
+         VALUES ($1,NULL,$2,60,'available','auto'),
+                ($1,NULL,$3,60,'blocked','auto'),
+                ($1,$4,$5,60,'available',NULL)`,
+        [coachId, at(9), at(10), VENUE, at(11)]);
+      const bookedSlot = (await pool.query(
+        `INSERT INTO coach_availability_slots (coach_id, venue_id, start_at, duration_minutes, status, generated_by)
+         VALUES ($1,NULL,$2,60,'available','auto') RETURNING id`, [coachId, at(12)])).rows[0];
+      const bs = (await pool.query(
+        `INSERT INTO course_sessions (course_period_id, availability_slot_id, scheduled_at, duration_minutes, status, coach_id)
+         VALUES ($1,$2,$3,60,'confirmed',$4) RETURNING id`, [periodId, bookedSlot.id, at(12), coachId])).rows[0];
+      await pool.query(
+        `UPDATE coach_availability_slots SET status='booked', booked_session_id=$1 WHERE id=$2`, [bs.id, bookedSlot.id]);
+      await pool.query(
+        `INSERT INTO venue_closed_dates (venue_id, closed_date, reason) VALUES ($1,$2::date,'E2E') ON CONFLICT DO NOTHING`,
+        [VENUE, day]);
+      const del = await pool.query(
+        `DELETE FROM coach_availability_slots cas
+          WHERE cas.generated_by = 'auto'
+            AND cas.status = 'available'
+            AND cas.venue_id IS NULL
+            AND cas.booked_session_id IS NULL
+            AND (cas.start_at AT TIME ZONE 'Asia/Taipei')::date = $1::date
+            AND EXISTS (SELECT 1 FROM coach_venues cv
+                         WHERE cv.coach_id = cas.coach_id AND cv.venue_id = $2)
+            AND NOT EXISTS (
+              SELECT 1 FROM coach_venues cv2
+               JOIN venues v2 ON v2.id = cv2.venue_id AND v2.is_active
+               WHERE cv2.coach_id = cas.coach_id
+                 AND NOT EXISTS (SELECT 1 FROM venue_closed_dates c2
+                                  WHERE c2.venue_id = cv2.venue_id AND c2.closed_date = $1::date))
+          RETURNING cas.id`, [day, VENUE]);
+      assert.strictEqual(del.rowCount, 1, '8 only auto+available+unbooked may be deleted, got ' + del.rowCount);
+      const left = (await pool.query(
+        'SELECT status, generated_by, booked_session_id FROM coach_availability_slots WHERE coach_id=$1 ORDER BY start_at',
+        [coachId])).rows;
+      assert.strictEqual(left.length, 3, '8 three rows must remain');
+      assert.ok(left.some((x) => x.status === 'blocked' && x.generated_by === 'auto'), '8 coach-blocked must survive');
+      assert.ok(left.some((x) => x.generated_by === null), '8 coach-made must survive');
+      assert.ok(left.some((x) => x.status === 'booked'), '8 booked must survive');
+    }
+    console.log('slot_supply_e2e: PASS（8 項全通過）');
   } catch (err) {
     console.error('slot_supply_e2e: FAIL —', err.message);
     process.exitCode = 1;
