@@ -15,6 +15,7 @@ import { coursesApi } from '../api/courses';
 import { lessonsApi } from '../api/lessons';
 import { checkinsApi } from '../api/checkins';
 import { courseTypeLabel, formatTWDate, formatTWTime } from '../utils/format';
+import SelfCheckinModal from '../components/SelfCheckinModal';
 
 // 家長可自助簽到：尚未簽到（本家未簽、夥伴也未代簽）、且課程已確認/完成
 // （不限上課當天，隨時可補簽）。團報一方簽到即整組生效——checked_in_by_name
@@ -37,6 +38,8 @@ export default function MyLessonsPage() {
   const [open, setOpen] = useState(false);              // 課程包下拉
   const [expandedKey, setExpandedKey] = useState(null); // 內嵌預約：展開中的佔位 key
   const [checkinBusyKey, setCheckinBusyKey] = useState(null);
+  // 自助簽到模式的課期，從「尚未上課」那格直接簽到（不經過預約時段）。
+  const [selfCheckinPeriodId, setSelfCheckinPeriodId] = useState(null);
   const [confirmRow, setConfirmRow] = useState(null);
 
   function load() {
@@ -99,6 +102,9 @@ export default function MyLessonsPage() {
           total: Number(c.total_sessions) || 0,
           used: Number(c.used_sessions) || 0,
           isTrial: c.order_kind === 'trial',
+          // 簽到模式決定未排課的那幾格要顯示「簽到」還是「預約上課」。
+          // 後端未給時保守當成 booking——不要在不確定的情況下讓家長直接扣課。
+          checkinMode: c.checkin_mode || 'booking',
           records: [],
         });
       }
@@ -118,6 +124,7 @@ export default function MyLessonsPage() {
           total: Number(r.total_sessions) || 0,
           used: Number(r.used_sessions) || 0,
           isTrial: r.is_experience_course === true,
+          checkinMode: r.checkin_mode || 'booking',
           records: [],
         });
       }
@@ -235,6 +242,7 @@ export default function MyLessonsPage() {
                     expanded={expandedKey === it.key}
                     onToggle={() => setExpandedKey((k) => (k === it.key ? null : it.key))}
                     onBooked={() => { setExpandedKey(null); load(); }}
+                    onSelfCheckin={() => setSelfCheckinPeriodId(enrollment.periodId)}
                   />
                 )
               ))}
@@ -250,6 +258,26 @@ export default function MyLessonsPage() {
           {open && <button aria-label="關閉" onClick={() => setOpen(false)} className="fixed inset-0 z-40 cursor-default" />}
         </>
       )}
+
+      {/* 自助簽到模式：直接開既有的 SelfCheckinModal。它會向伺服器重抓最新狀態
+          （剩餘堂數、今天是否已簽），不信任卡片上的舊資料；後端每日一次的唯一鍵
+          與堂數上限也都還在，所以按錯或重按都不會多扣。 */}
+      <SelfCheckinModal
+        course={selfCheckinPeriodId ? { id: selfCheckinPeriodId } : null}
+        onClose={() => setSelfCheckinPeriodId(null)}
+        onDone={(result) => {
+          setSelfCheckinPeriodId(null);
+          if (result?.error) {
+            toast.error(result.error);
+          } else {
+            toast.success(
+              `簽到完成：${(result?.students || []).join('、')}`
+              + (result?.remaining != null ? `（剩餘 ${result.remaining} 堂）` : '')
+            );
+          }
+          load();
+        }}
+      />
 
       <ConfirmModal
         open={!!confirmRow}
@@ -382,8 +410,30 @@ function RecordCard({ r, e, busy, onCheckin, onOpen }) {
 // 未預約佔位卡：點卡片或「預約上課」展開內嵌時段選擇器（單選）。
 // 展開時 z-[15]：浮在收合背板（z-10）之上、但仍低於 sticky 標頭（z-20）與固定底部導覽列（z-30），
 // 避免卡片蓋過底部導覽列（破版）。未展開的卡片不抬升，維持一般文件流。
-function PlaceholderCard({ e, expanded, onToggle, onBooked }) {
+function PlaceholderCard({ e, expanded, onToggle, onBooked, onSelfCheckin }) {
   const coachLine = [`${e.coach} 教練`, e.group, e.venue].filter(Boolean).join('・');
+  // 自助簽到模式的課期不需要先預約時間——家長是「來上課就簽到」。
+  // 對這些課期顯示「預約上課」是錯的：他們沒有要挑時段，挑了也沒有意義。
+  const selfMode = e.checkinMode === 'self';
+
+  if (selfMode) {
+    return (
+      <div
+        onClick={onSelfCheckin}
+        className="cursor-pointer overflow-hidden rounded-2xl border border-gray-100 bg-white shadow-sm transition active:bg-gray-50"
+      >
+        <div className="flex items-start gap-3 p-4">
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-bold text-gray-400">尚未上課</div>
+            <div className="mt-1 text-sm text-gray-700">{coachLine}</div>
+            <div className="mt-0.5 text-sm text-gray-500">學員：{e.student}</div>
+          </div>
+          <StatusSquare label={['簽到']} tone="checkin" onClick={onSelfCheckin} />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       onClick={() => { if (!expanded) onToggle(); }}

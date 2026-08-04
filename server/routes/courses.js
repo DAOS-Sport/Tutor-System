@@ -52,6 +52,11 @@ router.get('/lessons', requireParent, async (req, res) => {
               cp.venue_id,
               COALESCE(cp.is_experience_course, FALSE) AS is_experience_course,
               cp.total_sessions, cp.used_sessions,
+              -- 家長端「尚未上課」那幾格要依簽到模式決定顯示「簽到」還是「預約上課」。
+              -- 這支端點原本沒回這個欄位（只有 /courses/mine 與 /courses/:id 有），
+              -- 而許多家長的 /courses/mine 是空的、資料全來自這裡，前端因此一律
+              -- fallback 成 booking，自助簽到制的課期也被畫成「預約上課」。
+              COALESCE(cp.checkin_mode, 'booking') AS checkin_mode,
               co.id AS coach_id, co.name AS coach_name, co.pricing_multiplier,
               v.name AS venue_name,
               s.id AS student_id, s.name AS student_name,
