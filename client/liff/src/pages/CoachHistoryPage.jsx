@@ -186,7 +186,7 @@ export default function CoachHistoryPage() {
                 </div>
                 <div className="mt-2 flex items-center gap-2 text-xs">
                   <span className={`rounded-full px-2 py-0.5 ${s.checked_in ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
-                    {s.checked_in ? '已簽到' : '未簽到'}
+                    {s.checked_in ? (s.checked_in_at ? '已簽到 ' + formatTWTime(s.checked_in_at) : '已簽到') : '未簽到'}
                   </span>
                   <span className="text-brand-teal">點選進入 →</span>
                 </div>

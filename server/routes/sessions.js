@@ -117,7 +117,11 @@ router.get('/coach/:coachId/today', requireCoach, requireCoachOwner('coachId'), 
                  WHERE cpe.course_period_id = cp.id AND cpe.status = 'active'),
                 '[]'::json
               ) AS student_names,
-              EXISTS(SELECT 1 FROM checkin_records WHERE course_session_id = cs.id) AS checked_in
+              EXISTS(SELECT 1 FROM checkin_records WHERE course_session_id = cs.id) AS checked_in,
+              -- 教練列表要顯示簽到時分。與上面的 checked_in 採同一判準（不濾 attendance_status），
+              -- 否則會出現「已簽到但沒有時間」這種對不起來的畫面。
+              (SELECT MIN(cr.checked_in_at) FROM checkin_records cr
+                WHERE cr.course_session_id = cs.id) AS checked_in_at
        FROM course_sessions cs
        JOIN course_periods cp ON cs.course_period_id = cp.id
        JOIN venues v ON v.id = cp.venue_id
@@ -192,7 +196,11 @@ router.get('/coach/:coachId/history', requireCoach, requireCoachOwner('coachId')
                  WHERE cpe.course_period_id = cp.id AND cpe.status = 'active'),
                 '[]'::json
               ) AS student_names,
-              EXISTS(SELECT 1 FROM checkin_records WHERE course_session_id = cs.id) AS checked_in
+              EXISTS(SELECT 1 FROM checkin_records WHERE course_session_id = cs.id) AS checked_in,
+              -- 教練列表要顯示簽到時分。與上面的 checked_in 採同一判準（不濾 attendance_status），
+              -- 否則會出現「已簽到但沒有時間」這種對不起來的畫面。
+              (SELECT MIN(cr.checked_in_at) FROM checkin_records cr
+                WHERE cr.course_session_id = cs.id) AS checked_in_at
        FROM course_sessions cs
        JOIN course_periods cp ON cs.course_period_id = cp.id
        JOIN venues v ON v.id = cp.venue_id

@@ -14,7 +14,7 @@ import { useToast } from '../context/ToastContext';
 import { coursesApi } from '../api/courses';
 import { lessonsApi } from '../api/lessons';
 import { checkinsApi } from '../api/checkins';
-import { courseTypeLabel, formatTWDate, formatTWTime } from '../utils/format';
+import { courseTypeLabel, formatTWDate, formatTWTime, formatTWDateTime } from '../utils/format';
 import SelfCheckinModal from '../components/SelfCheckinModal';
 
 // 家長可自助簽到：尚未簽到（本家未簽、夥伴也未代簽）、且課程已確認/完成
@@ -359,7 +359,9 @@ function RecordCard({ r, e, busy, onCheckin, onOpen }) {
 
   const coachParts = [`${r.coach_name || e.coach} 教練`, e.group, r.venue_name || e.venue].filter(Boolean);
   const coachLine = coachParts.join('・');
-  const checkinDateStr = r.checked_in_at ? r.checked_in_at.toString().slice(0, 10) : null;
+  // 不可用 slice(0,10) 切 ISO 字串 —— 那切出來是 UTC 日期，台北 00:00~07:59 簽到的
+  // 會顯示成前一天；而且標著「簽到時間」卻只有日期沒有時分。
+  const checkinTimeStr = r.checked_in_at ? formatTWDateTime(r.checked_in_at) : null;
 
   // 簽到方家長姓名（團報一方簽到即整組生效）：有姓名顯示「已簽 · 姓名」；
   // 舊 API 快取只有稱謂 label 時退回「已代簽」。
@@ -389,8 +391,8 @@ function RecordCard({ r, e, busy, onCheckin, onOpen }) {
           <div className="text-sm font-bold tabular-nums text-gray-900">{dateStr}{timeStr}</div>
           <div className="mt-1 text-sm text-gray-700">{coachLine}</div>
           <div className="mt-0.5 text-sm text-gray-500">學員：{r.student_name || e.student}</div>
-          {checkinDateStr && (
-            <div className="mt-0.5 text-xs text-gray-400">簽到時間：{checkinDateStr}</div>
+          {checkinTimeStr && (
+            <div className="mt-0.5 text-xs text-gray-400">簽到時間：{checkinTimeStr}</div>
           )}
           {(signerName || r.partner_checkin_label) && (
             <div className="mt-1 text-xs font-medium text-brand-teal">
