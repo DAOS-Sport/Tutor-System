@@ -10,6 +10,7 @@ import RagicZ01Modal from './RagicZ01Modal';
 import { useToast } from '../context/ToastContext';
 import { customerParentsApi } from '../api/customers';
 import { venuesApi } from '../api/venues';
+import { formatTWDateTime } from '../utils/format';
 
 // 預設只看啟用中：active 鏡像政策上只收「已綁 LINE UID」的登入會員，
 // 歷史未綁殘留列都已停用，預設不再攤在清單裡（要查可切「全部／已停用」）。
@@ -135,7 +136,7 @@ export default function CustomerParentsPage() {
       <StatusBadge tone={r.is_active ? 'green' : 'errorSoft'}>{r.is_active ? '啟用中' : '已停用'}</StatusBadge>
     ) },
     { key: 'synced', label: 'Ragic 同步', className: 'text-center', render: (r) => (
-      <span className="font-mono text-[11px] text-gray-400">{r.last_synced_at || '未同步'}</span>
+      <span className="font-mono text-[11px] text-gray-400">{r.last_synced_at ? formatTWDateTime(r.last_synced_at) : '未同步'}</span>
     ) },
     { key: 'actions', label: '操作', className: 'text-right', render: (r) => (
       <div className="space-x-2 whitespace-nowrap">

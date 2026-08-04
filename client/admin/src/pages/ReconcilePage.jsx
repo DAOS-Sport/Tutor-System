@@ -10,7 +10,7 @@ import { useAuth } from '../context/AuthContext';
 import { enrollmentsApi } from '../api/enrollments';
 import { checkoutsApi } from '../api/checkouts';
 import { venuesApi } from '../api/venues';
-import { formatTWD, formatTWDateTime, courseTypeLabel } from '../utils/format';
+import { formatTWD, formatTWDateTime, courseTypeLabel, toTaipeiDateTimeInput } from '../utils/format';
 import { exportEnrollmentsCsv, exportEnrollmentsXlsx } from '../utils/csvExport';
 import ExportMenu from '../components/ExportMenu';
 import Barcode from '../components/Barcode';
@@ -645,8 +645,11 @@ export default function ReconcilePage() {
     const last5Q = filters.last5.trim();
     const venueQ = filters.venueId;
     return list.filter((r) => {
-      if (filters.submittedFrom && (r.submitted_at || '').slice(0, 10) < filters.submittedFrom) return false;
-      if (filters.submittedTo && (r.submitted_at || '').slice(0, 10) > filters.submittedTo) return false;
+      // submitted_at 是帶 Z 的 UTC 時刻，直接 slice 拿到的是 UTC 日期 —— 台北 00:00~08:00
+      // 送出的單會被歸到前一天，日期篩選就會漏單。先轉台北日期再比。
+      const submittedYMD = r.submitted_at ? toTaipeiDateTimeInput(r.submitted_at).slice(0, 10) : '';
+      if (filters.submittedFrom && submittedYMD < filters.submittedFrom) return false;
+      if (filters.submittedTo && submittedYMD > filters.submittedTo) return false;
       const orders = r.sub_orders || [];
       if (phoneQ && !(r.parent_phone || '').includes(phoneQ) && !orders.some((o) => (o.parent_phone || '').includes(phoneQ))) return false;
       if (parentQ && !(r.parent_name || '').toLowerCase().includes(parentQ) && !orders.some((o) => (o.parent_name || '').toLowerCase().includes(parentQ))) return false;

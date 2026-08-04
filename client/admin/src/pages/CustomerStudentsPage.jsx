@@ -10,6 +10,7 @@ import RagicZ02Modal from './RagicZ02Modal';
 import { useToast } from '../context/ToastContext';
 import { customerStudentsApi } from '../api/customers';
 import { maskIdNumber, maskBloodType } from '../utils/pii';
+import { formatTWDateTime } from '../utils/format';
 
 const EMPTY_FILTERS = { name: '', gender: '', code: '', parentId: '' };
 
@@ -112,7 +113,7 @@ export default function CustomerStudentsPage() {
     { key: 'active', label: '學籍', className: 'text-center', render: (r) => (
       <StatusBadge tone={r.is_active ? 'green' : 'errorSoft'}>{r.is_active ? '在籍中' : '休/退學'}</StatusBadge>
     ) },
-    { key: 'synced', label: 'Ragic 同步', className: 'text-center', render: (r) => <span className="font-mono text-[11px] text-gray-400">{r.last_synced_at || '未同步'}</span> },
+    { key: 'synced', label: 'Ragic 同步', className: 'text-center', render: (r) => <span className="font-mono text-[11px] text-gray-400">{r.last_synced_at ? formatTWDateTime(r.last_synced_at) : '未同步'}</span> },
     { key: 'actions', label: '操作', className: 'text-right', render: (r) => (
       <div className="space-x-2 whitespace-nowrap">
         <button className="text-xs font-medium text-brand-teal hover:underline" onClick={() => openEditor(r)}>編輯 / 購買紀錄</button>

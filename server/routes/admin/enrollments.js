@@ -439,9 +439,10 @@ async function ensureSoloCoursePeriod(client, enrollment, totalSessions) {
 function tsToString(d) {
   if (!d) return null;
   if (typeof d === 'string') return d;
-  // 取「YYYY-MM-DDTHH:mm:ss」格式（不含 ms / timezone），與 mock 行為對齊
-  const iso = new Date(d).toISOString();
-  return iso.slice(0, 19);
+  // 必須保留 Z。切掉時區標記會把「明確的 UTC 時刻」變成「意義不明的本地時間」：
+  // 前端 new Date("2026-08-04T10:48:34") 依規範當本地時間解讀，於是台北 18:48 的
+  // 報名在畫面上顯示成 10:48 —— 送出時間、退費時間、發票時間、操作紀錄全少 8 小時。
+  return new Date(d).toISOString();
 }
 
 async function readEnrollment(id, { resolveLineProfile = false } = {}) {

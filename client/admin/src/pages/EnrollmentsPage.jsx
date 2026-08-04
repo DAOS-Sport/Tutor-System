@@ -6,10 +6,7 @@ import StatusBadge from '../components/StatusBadge';
 import { useAuth } from '../context/AuthContext';
 import { enrollmentsApi } from '../api/enrollments';
 import { venuesApi } from '../api/venues';
-import {
-  formatTWD, formatTWDateTime, courseTypeLabel,
-  paymentStatusLabel, paymentStatusTone,
-} from '../utils/format';
+import { formatTWD, formatTWDateTime, courseTypeLabel, paymentStatusLabel, paymentStatusTone, formatTWDateTimeSeconds } from '../utils/format';
 import { exportEnrollmentsCsv, exportEnrollmentsXlsx } from '../utils/csvExport';
 import { useToast } from '../context/ToastContext';
 import ExportMenu from '../components/ExportMenu';
@@ -220,7 +217,7 @@ export default function EnrollmentsPage() {
               <ul className="space-y-1 text-xs text-gray-600">
                 {detail.audit_logs.map((a, i) => (
                   <li key={i} className="flex gap-3">
-                    <span className="w-36 shrink-0 font-mono text-gray-400">{a.at.replace('T', ' ')}</span>
+                    <span className="w-36 shrink-0 font-mono text-gray-400">{formatTWDateTimeSeconds(a.at)}</span>
                     <span className="flex-1">{a.action}</span>
                     <span className="text-gray-500">— {a.by}</span>
                   </li>

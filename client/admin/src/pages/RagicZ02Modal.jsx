@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { customerStudentsApi } from '../api/customers';
-import { formatTWDateTimeSeconds } from '../utils/format';
+import { formatTWDateTimeSeconds, formatTWDateTime } from '../utils/format';
 
 // 仿 Ragic Z02 表單格線的學員編輯器：左藍學員資料、右黃家長資訊(唯讀)、紫消費分析、灰購買紀錄、綠編輯紀錄。
 const BLOOD_OPTS = ['不清楚', 'O', 'A', 'B', 'AB'];
@@ -96,7 +96,7 @@ export default function RagicZ02Modal({ student: initStudent, busy, onClose, onS
             <div className="space-y-1 rounded border border-gray-300 bg-white p-3 text-[11px] font-mono text-gray-500">
               <div>Ragic Node：{student.ragic_record_id || '—'}</div>
               <div>系統 UUID：{student.id}</div>
-              <div>最後同步：{student.last_synced_at || '未同步'}</div>
+              <div>最後同步：{student.last_synced_at ? formatTWDateTime(student.last_synced_at) : '未同步'}</div>
             </div>
           </div>
 

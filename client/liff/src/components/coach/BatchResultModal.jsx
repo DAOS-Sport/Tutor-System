@@ -1,4 +1,5 @@
 import React from 'react';
+import { formatTWDateTime } from '../../utils/format';
 
 /**
  * 批量新增結果摘要 modal（規格：批量結果應有專屬摘要而非 toast）
@@ -25,7 +26,7 @@ export default function BatchResultModal({ result, onClose }) {
             <div className="mb-1 font-semibold">{errs.length} 筆錯誤：</div>
             <ul className="space-y-0.5">
               {errs.slice(0, 5).map((e, i) => (
-                <li key={i}>· {e.start_at?.slice(5,16)?.replace('T',' ') || ''} — {e.error}</li>
+                <li key={i}>· {e.start_at ? formatTWDateTime(e.start_at) : ''} — {e.error}</li>
               ))}
               {errs.length > 5 && <li>… 等 {errs.length - 5} 筆</li>}
             </ul>

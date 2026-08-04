@@ -73,7 +73,8 @@ router.get('/coach/:coachId/promotions', requireCoach, requireCoachOwner('coachI
     const r = await pool.query(
       `SELECT p.id, p.name, p.description, p.type, p.discount_value,
               p.applicable_course_types, p.applicable_venue_ids,
-              p.coupon_code, p.start_date, p.end_date
+              -- DATE 轉字串：直接回 Date 物件會在 JSON 序列化時退回前一天。
+              p.coupon_code, p.start_date::text AS start_date, p.end_date::text AS end_date
          FROM promotions p
         WHERE p.status = 'active'
           AND NOW() BETWEEN p.start_date AND p.end_date

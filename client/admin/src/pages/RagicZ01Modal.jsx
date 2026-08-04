@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { formatTWDateTime } from '../utils/format';
 
 // 仿 Ragic Z01 表單格線的家長編輯器（橘色家長資訊 + 藍色學員子表）。
 // 欄位只綁定 Replit 實際鏡像欄位；line_uid（登入鍵）唯讀，不在此更動。
@@ -128,7 +129,7 @@ export default function RagicZ01Modal({ isNew, parent: initParent, students: ini
                 <p><b>Ragic Node：</b><span className="font-mono">{parent.ragic_record_id || '—'}</span></p>
                 <p><b>系統 UUID：</b><span className="font-mono">{parent.id || '（建立後產生）'}</span></p>
                 <p><b>Family ID（家庭組 · 背景預留）：</b><span className="font-mono">{parent.family_id || '—'}</span></p>
-                <p><b>最後同步：</b><span className="font-mono">{parent.last_synced_at || '未同步'}</span></p>
+                <p><b>最後同步：</b><span className="font-mono">{parent.last_synced_at ? formatTWDateTime(parent.last_synced_at) : '未同步'}</span></p>
               </div>
             )}
           </div>

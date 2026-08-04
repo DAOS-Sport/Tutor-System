@@ -77,9 +77,14 @@ router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'),
       `SELECT course_type, label, min_students, max_students,
               base_price::float8 AS base_price, is_active, sort_order,
               trial_enabled, trial_price::float8 AS trial_price, tier_prices,
-              created_at, updated_at, data_group, effective_date, effective_until,
+              created_at, updated_at, data_group,
+              -- DATE 欄位一律轉字串再出去。pg 會把 DATE 解析成「本地午夜」的 Date 物件，
+              -- JSON 序列化成 UTC 之後就退回前一天（實測：DB 2026-08-04 → 前端顯示 2026/08/03）。
+              -- DATE 本來就沒有時區，回字串才是正確表示。
+              effective_date::text AS effective_date,
+              effective_until::text AS effective_until,
               scheduled_effective_date, scheduled_effective_until, pending_changes,
-              CURRENT_DATE AS current_date
+              CURRENT_DATE::text AS current_date
          FROM course_type_configs ORDER BY sort_order, course_type`
     );
     res.json(r.rows);
