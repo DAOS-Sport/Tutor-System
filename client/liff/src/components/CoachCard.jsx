@@ -1,9 +1,11 @@
 import React from 'react';
 import { formatTWD } from '../utils/format';
+import { resolveUnitPrice } from '../utils/coursePricing';
 
-export default function CoachCard({ coach, basePrice, onSelect, isTrial = false, trialPrice = null, sessionsPerPeriod = 6 }) {
+export default function CoachCard({ coach, basePrice, tierPrices = null, onSelect, isTrial = false, trialPrice = null, sessionsPerPeriod = 6 }) {
   const isPlaceholder = !!coach.is_placeholder;
-  const adjusted = Math.round((basePrice || 0) * (coach.multiplier || 1));
+  // 不可自己乘：課別對該加成級距若有落定明價，要以明價為準（與後端成交金額同源）。
+  const adjusted = resolveUnitPrice(basePrice, coach.multiplier ?? coach.pricing_multiplier ?? 1, tierPrices);
   // 試上單堂顯示價（與後端 calculateTrialPrice 同語意）：
   // F-A07 trial_price 有設＝每人固定價（不吃教練係數）；未設＝單期價×係數 ÷ 每期堂數推算。
   const trialUnit = trialPrice != null && Number(trialPrice) > 0

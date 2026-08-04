@@ -450,6 +450,7 @@ router.get('/base-price', async (req, res) => {
     const r = await pool.query(
       `SELECT c.course_type,
               c.base_price,
+              c.tier_prices,
               COALESCE(c.trial_enabled, FALSE) AS trial_enabled,
               COALESCE(c.trial_price,
                        (SELECT value FROM admin_settings WHERE key = ('trial_price_course_' || c.course_type::text)),
@@ -465,6 +466,9 @@ router.get('/base-price', async (req, res) => {
     res.json({
       course_type: r.rows[0].course_type,
       original_price: Number(r.rows[0].base_price),
+      // 前端要靠這個算「選擇教練」與報名頁的顯示價；沒有它前端只能 base x 倍率，
+      // 就會出現「畫面顯示 10,350、實際成交 9,000」的不一致。
+      tier_prices: r.rows[0].tier_prices || null,
       trial_enabled: r.rows[0].trial_enabled === true,
       trial_price: r.rows[0].trial_price == null ? null : Number(r.rows[0].trial_price),
       sessions_per_period: Math.max(1, Number(r.rows[0].sessions_per_period) || 6),

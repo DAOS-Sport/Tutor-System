@@ -167,6 +167,7 @@ export default function CoachListPage() {
               key={c.id}
               coach={c}
               basePrice={basePrice}
+              tierPrices={priceInfo?.tier_prices}
               isTrial={isTrial}
               trialPrice={priceInfo?.trial_price}
               sessionsPerPeriod={priceInfo?.sessions_per_period}

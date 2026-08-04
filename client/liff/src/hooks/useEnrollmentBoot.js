@@ -26,6 +26,7 @@ export default function useEnrollmentBoot({ coachId, venueId, courseType, onErro
           coach,
           venue,
           basePrice: bp.original_price,
+          tierPrices: bp.tier_prices || null,
           trialEnabled: bp.trial_enabled === true,
           trialPrice: bp.trial_price,
           sessionsPerPeriod: bp.sessions_per_period,

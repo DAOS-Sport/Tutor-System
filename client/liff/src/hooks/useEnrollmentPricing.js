@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { promotionsApi } from '../api/promotions';
+import { resolveUnitPrice } from '../utils/coursePricing';
 
 /**
  * 純計算 hook：base + afterMultiplier，並 expose `applyPreview` 接後端試算結果。
@@ -14,10 +15,11 @@ export default function useEnrollmentPricing(bootData, {
   periodCount = 1,
   orderKind = 'standard',
 } = {}) {
-  // 單期單生價（base × 教練倍率），與後端 unitPrice 一致。
+  // 單期單生價，與後端 unitPrice 同源：該加成級距有落定明價就用明價，
+  // 否則 base x 倍率。自己乘會讓畫面價與成交價不一致。
   const unitPrice = useMemo(() => {
     if (!bootData) return null;
-    return Math.round(bootData.basePrice * (bootData.coach?.multiplier || 1));
+    return resolveUnitPrice(bootData.basePrice, bootData.coach?.multiplier || 1, bootData.tierPrices);
   }, [bootData]);
 
   const isTrial = orderKind === 'trial';

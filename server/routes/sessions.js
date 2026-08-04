@@ -78,6 +78,12 @@ router.get('/coach/:coachId/promotions', requireCoach, requireCoachOwner('coachI
          FROM promotions p
         WHERE p.status = 'active'
           AND NOW() BETWEEN p.start_date AND p.end_date
+          -- 與家長端 routes/promotions.js:36 採同一套露出過濾：
+          --   show_on_parent_home＝後台的「顯示」開關（純顯示用，不影響折扣是否套用）
+          --   有 coupon_code 的要輸入折扣碼，不該被當成「進行中活動」廣播出去
+          -- 教練會拿這張卡回答家長「現在有什麼活動」，兩邊看到的必須一致。
+          AND p.show_on_parent_home IS NOT FALSE
+          AND (p.coupon_code IS NULL OR p.coupon_code = '')
           AND (
             p.applicable_coach_multipliers IS NULL
             OR EXISTS (
