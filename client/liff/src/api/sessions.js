@@ -13,6 +13,17 @@ export const sessionsApi = {
     callApi(`/sessions/coach/${coachId}/history`, { method: 'get', params: { from, to, status, periodId } }, () =>
       mockDb.coachHistorySessions(coachId, { from, to, status, periodId })),
 
+  // 教練端唯讀：自己學生的報名狀態（含卡在待付款的）。
+  // 只回狀態與姓名，不含金額／付款證明——教練不需要也不該看到金流細節。
+  enrollmentsByCoach: (coachId) =>
+    callApi(`/sessions/coach/${coachId}/enrollments`, { method: 'get' },
+      () => ({ counts: {}, items: [] })),
+
+  // 教練端唯讀：目前進行中、且會套用到這位教練的優惠活動。
+  promotionsByCoach: (coachId) =>
+    callApi(`/sessions/coach/${coachId}/promotions`, { method: 'get' },
+      () => ({ promotions: [] })),
+
   historyPeriodsByCoach: (coachId) =>
     callApi(`/sessions/coach/${coachId}/history/periods`, { method: 'get' }, () =>
       mockDb.coachHistoryPeriods(coachId)),

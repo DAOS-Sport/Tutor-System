@@ -23,6 +23,86 @@ function todayWhereTaipei(columnSql = 'cs.scheduled_at') {
   return `(${columnSql} AT TIME ZONE 'Asia/Taipei')::date = (NOW() AT TIME ZONE 'Asia/Taipei')::date`;
 }
 
+// 教練端唯讀：自己學生的報名狀態總覽。
+//
+// 教練現在只看得到「已經開通的課」，看不到卡在報名流程中的學生——家長說「我報名了」
+// 但課還沒出現時，教練無從判斷是家長還沒付款、櫃檯還沒對帳、還是根本沒報。
+// 這裡把 admin_enrollments 的狀態依教練範圍攤開，讓他自己看得到。
+//
+// 只回狀態與姓名，不回金額／付款證明／發票等金流細節——教練不需要，也不該看到。
+router.get('/coach/:coachId/enrollments', requireCoach, requireCoachOwner('coachId'), async (req, res) => {
+  const { coachId } = req.params;
+  try {
+    const r = await pool.query(
+      `SELECT ae.id, ae.status::text AS status, ae.parent_name, ae.students,
+              ae.course_type, ae.venue_id, v.name AS venue_name,
+              ae.total_sessions, ae.used_sessions,
+              ae.submitted_at, ae.created_at
+         FROM admin_enrollments ae
+         LEFT JOIN admin_venues v ON v.id = ae.venue_id
+        WHERE ae.coach_id = $1
+          AND ae.status::text IN ('pending_payment','confirmed','active')
+        ORDER BY
+          -- 卡住的排前面：教練最需要知道的是「誰還沒完成」
+          CASE ae.status::text WHEN 'pending_payment' THEN 0 ELSE 1 END,
+          COALESCE(ae.submitted_at, ae.created_at) DESC
+        LIMIT 60`,
+      [coachId]
+    );
+    const counts = { pending_payment: 0, confirmed: 0, active: 0 };
+    for (const row of r.rows) {
+      if (counts[row.status] !== undefined) counts[row.status] += 1;
+    }
+    res.json({ counts, items: r.rows });
+  } catch (err) {
+    console.error('[sessions coach enrollments]', err.message);
+    res.status(500).json({ error: '報名狀態載入失敗' });
+  }
+});
+
+// 教練端唯讀：目前進行中、且會套用到這位教練的優惠活動。
+//
+// 判定條件與家長端的套用邏輯一致：
+//   狀態 active、當下在起訖區間內
+//   applicable_coach_multipliers 為 NULL（不限教練加成）或含這位教練的 pricing_multiplier
+//   applicable_venue_ids 為 NULL（全場館）或與這位教練的所屬場館有交集
+// 不做 course_type 過濾——教練可能帶多種組別，列出來讓他自己判斷。
+router.get('/coach/:coachId/promotions', requireCoach, requireCoachOwner('coachId'), async (req, res) => {
+  const { coachId } = req.params;
+  try {
+    const r = await pool.query(
+      `SELECT p.id, p.name, p.description, p.type, p.discount_value,
+              p.applicable_course_types, p.applicable_venue_ids,
+              p.coupon_code, p.start_date, p.end_date
+         FROM promotions p
+        WHERE p.status = 'active'
+          AND NOW() BETWEEN p.start_date AND p.end_date
+          AND (
+            p.applicable_coach_multipliers IS NULL
+            OR EXISTS (
+              SELECT 1 FROM coaches c
+               WHERE c.id = $1
+                 AND c.pricing_multiplier = ANY(p.applicable_coach_multipliers)
+            )
+          )
+          AND (
+            p.applicable_venue_ids IS NULL
+            OR EXISTS (
+              SELECT 1 FROM coach_venues cv
+               WHERE cv.coach_id = $1 AND cv.venue_id = ANY(p.applicable_venue_ids)
+            )
+          )
+        ORDER BY p.end_date
+        LIMIT 20`,
+      [coachId]
+    );
+    res.json({ promotions: r.rows });
+  } catch (err) {
+    console.error('[sessions coach promotions]', err.message);
+    res.status(500).json({ error: '優惠活動載入失敗' });
+  }
+});
+
 router.get('/coach/:coachId/today', requireCoach, requireCoachOwner('coachId'), async (req, res) => {
   try {
     const r = await pool.query(

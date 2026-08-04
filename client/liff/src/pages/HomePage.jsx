@@ -10,6 +10,7 @@ import { parentsApi } from '../api/parents';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { formatTWDate } from '../utils/format';
+import { promotionValueLabel } from '../utils/promotionLabel';
 
 // 組別卡片的文案（title/subtitle/description）；單人價格改由後台「課程介紹維護」設定，於下方動態帶入。
 const COURSE_TYPES = [
@@ -22,17 +23,8 @@ const COURSE_TYPES = [
 ];
 const TYPE_META = Object.fromEntries(COURSE_TYPES.map((t) => [t.type, t]));
 
-function promotionValue(promotion) {
-  const value = Number(promotion?.value ?? promotion?.discount_value);
-  if (!Number.isFinite(value) || value <= 0) return '優惠詳情請洽櫃檯';
-  if (promotion?.type === 'PERCENTAGE' && value <= 1) {
-    return `${Number((value * 10).toFixed(1))} 折`;
-  }
-  if (promotion?.type === 'FIXED_AMOUNT') {
-    return `現折 NT$ ${Math.round(value).toLocaleString('zh-TW')}`;
-  }
-  return '優惠詳情請洽櫃檯';
-}
+// 折扣文字改由 utils/promotionLabel 提供，與教練端今日頁共用同一份實作。
+const promotionValue = promotionValueLabel;
 
 export default function HomePage() {
   const navigate = useNavigate();

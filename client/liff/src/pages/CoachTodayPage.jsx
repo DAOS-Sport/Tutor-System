@@ -5,12 +5,25 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { courseTypeLabel, formatTWDate, formatTWTime } from '../utils/format';
+import { promotionValueLabel } from '../utils/promotionLabel';
+
+// 報名階段。順序＝教練最需要注意的排前面：卡在待付款的，課永遠不會出現。
+// 只列教練該看到的三個狀態；cancelled / refunded 不列——那是已經結束的事，
+// 放在這裡只會讓教練誤以為還有待辦。
+const ENROLL_STAGES = [
+  { key: 'pending_payment', label: '待付款', icon: '⏳', chip: 'bg-amber-100 text-amber-800' },
+  { key: 'confirmed', label: '已確認', icon: '✅', chip: 'bg-emerald-100 text-emerald-700' },
+  { key: 'active', label: '上課中', icon: '📗', chip: 'bg-brand-teal/15 text-brand-teal' },
+];
+
 
 export default function CoachTodayPage() {
   const { coach } = useAuth();
   const navigate = useNavigate();
   const toast = useToast();
   const [sessions, setSessions] = useState(null);
+  const [enroll, setEnroll] = useState(null);
+  const [promos, setPromos] = useState(null);
 
   useEffect(() => {
     if (!coach?.id) return;
@@ -20,6 +33,20 @@ export default function CoachTodayPage() {
       .catch(() => { if (alive) { setSessions([]); toast.error('今日課程載入失敗'); } });
     return () => { alive = false; };
   }, [coach?.id, toast]);
+
+  // 報名狀態與優惠是「附加資訊」：載入失敗就安靜地不顯示那張卡，
+  // 不要跳錯誤打斷教練看今日課程——那才是這一頁的主體。
+  useEffect(() => {
+    if (!coach?.id) return undefined;
+    let alive = true;
+    sessionsApi.enrollmentsByCoach(coach.id)
+      .then((d) => alive && setEnroll(d || null))
+      .catch(() => { if (alive) setEnroll(null); });
+    sessionsApi.promotionsByCoach(coach.id)
+      .then((d) => alive && setPromos(d?.promotions || []))
+      .catch(() => { if (alive) setPromos([]); });
+    return () => { alive = false; };
+  }, [coach?.id]);
 
   if (!coach) return null;
   const todayLabel = formatTWDate(new Date());
@@ -89,6 +116,79 @@ export default function CoachTodayPage() {
           </div>
         )}
       </section>
+
+      {/* 學生報名狀態：教練原本只看得到「已經開通的課」，家長說「我報名了」
+          但課還沒出現時，他無從判斷是家長還沒付款、櫃檯還沒對帳、還是根本沒報。 */}
+      {enroll && (enroll.items || []).length > 0 && (
+        <section className="mb-5">
+          <div className="mb-2 flex items-center justify-between">
+            <h3 className="text-sm font-bold text-brand-primary">學生報名狀態</h3>
+            <span className="text-xs text-gray-500">共 {enroll.items.length} 筆</span>
+          </div>
+
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {ENROLL_STAGES.map((st) => (
+              (enroll.counts?.[st.key] || 0) > 0 && (
+                <span key={st.key}
+                  className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-bold ${st.chip}`}>
+                  <span aria-hidden="true">{st.icon}</span>
+                  {st.label} {enroll.counts[st.key]}
+                </span>
+              )
+            ))}
+          </div>
+
+          <div className="space-y-1.5">
+            {enroll.items.slice(0, 8).map((it) => {
+              const st = ENROLL_STAGES.find((x) => x.key === it.status) || ENROLL_STAGES[0];
+              const students = Array.isArray(it.students) ? it.students.join('、') : (it.students || '—');
+              return (
+                <div key={it.id} className="flex items-center gap-2 rounded-xl border border-gray-100 bg-white px-3 py-2 shadow-sm">
+                  <span aria-hidden="true" className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-sm ${st.chip}`}>
+                    {st.icon}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium text-gray-800">{students}</div>
+                    <div className="truncate text-[11px] text-gray-500">
+                      {[it.parent_name, courseTypeLabel(it.course_type), it.venue_name].filter(Boolean).join('・')}
+                    </div>
+                  </div>
+                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${st.chip}`}>{st.label}</span>
+                </div>
+              );
+            })}
+            {enroll.items.length > 8 && (
+              <p className="pt-0.5 text-center text-[11px] text-gray-400">
+                另有 {enroll.items.length - 8} 筆，詳情請洽櫃檯
+              </p>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* 目前套用到這位教練的優惠。教練被家長問「現在有沒有活動」時答得出來。 */}
+      {promos && promos.length > 0 && (
+        <section className="mb-5">
+          <div className="mb-2 flex items-center justify-between">
+            <h3 className="text-sm font-bold text-brand-primary">進行中的優惠</h3>
+            <span className="text-xs text-gray-500">套用到你的課程</span>
+          </div>
+          <div className="space-y-1.5">
+            {promos.map((p) => (
+              <div key={p.id} className="rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="truncate text-sm font-bold text-amber-900">🎟 {p.name}</span>
+                  <span className="shrink-0 text-[11px] font-bold text-amber-800">{promotionValueLabel(p)}</span>
+                </div>
+                <div className="mt-0.5 flex items-center gap-2 text-[11px] text-amber-800/80">
+                  <span>至 {String(p.end_date).slice(0, 10)}</span>
+                  {p.coupon_code && <span className="rounded bg-amber-200 px-1.5 py-0.5 font-mono">{p.coupon_code}</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       <section className="grid grid-cols-2 gap-2">
         <button onClick={() => navigate('/coach/schedule')}

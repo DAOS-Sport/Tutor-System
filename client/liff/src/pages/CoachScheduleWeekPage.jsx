@@ -176,6 +176,17 @@ export default function CoachScheduleWeekPage() {
       </header>
 
       <div className="px-4 pt-3">
+        {/* 目前所有課期都是自助簽到制：家長不必先預約，來上課就自己簽到。
+            排課時段只有在教練「主動排出來」之後才會變成預約制。教練不知道這件事
+            的話，會以為沒排時段＝學生約不到課，其實學生照樣可以簽到。 */}
+        <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5">
+          <p className="text-[13px] font-bold text-amber-900">目前是自助簽到制</p>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-amber-800/90">
+            若有需求則可增加時段變成授課預約制；否則家長可於家長畫面任意進行簽到，
+            再請提醒家長。
+          </p>
+        </div>
+
         <div className="mb-3 grid grid-cols-2 gap-2">
           <button onClick={() => setShowAdd(true)}
             className="rounded-lg bg-brand-primary py-2 text-sm font-bold text-white active:bg-brand-teal">＋ 新增槽位</button>
