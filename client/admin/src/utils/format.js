@@ -33,6 +33,16 @@ export function formatTWDateTimeSeconds(input) {
   return `${d.getUTCFullYear()}/${pad2(d.getUTCMonth() + 1)}/${pad2(d.getUTCDate())} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}:${pad2(d.getUTCSeconds())}`;
 }
 
+// datetime-local 的值（YYYY-MM-DDTHH:MM，可帶秒）沒有時區資訊。直接 new Date() 會依
+// 「瀏覽器本機時區」解讀 —— 櫃台電腦時區設錯，寫進資料庫的時間就整段偏移。台北營運，
+// 固定釘 UTC+8。格式不合或無法解析一律回 null，由呼叫端決定怎麼擋。
+export function taipeiInputToDate(value) {
+  const s = String(value ?? '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(s)) return null;
+  const d = new Date(`${s.length === 16 ? s + ':00' : s}+08:00`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 export function toTaipeiDateTimeInput(input) {
   const d = toTaipei(input);
   if (!d) return '';

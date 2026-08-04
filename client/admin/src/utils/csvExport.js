@@ -99,7 +99,7 @@ export function exportEnrollmentsXlsx({ filenamePrefix, enrollments, venueName, 
 }
 
 // === 上課紀錄（sessions）共用列定義 =========================================
-export const SESSION_HEADERS = ['日期', '時間', '場館', '教練', '組別', '學員', '簽到狀態'];
+export const SESSION_HEADERS = ['日期', '時間', '場館', '教練', '組別', '學員', '簽到狀態', '簽到時間'];
 
 export function sessionToRow(s, venueName) {
   return [
@@ -110,6 +110,7 @@ export function sessionToRow(s, venueName) {
     courseTypeLabel(s.course_type),
     (s.students || []).join('、'),
     checkinStatusLabel(s.checkin_status),
+    s.checkin_at ? formatTWDateTime(s.checkin_at) : '',
   ];
 }
 

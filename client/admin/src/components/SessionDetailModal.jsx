@@ -1,6 +1,6 @@
 import React from 'react';
 import StatusBadge from './StatusBadge';
-import { courseTypeLabel, checkinStatusLabel } from '../utils/format';
+import { courseTypeLabel, checkinStatusLabel, formatTWDateTime } from '../utils/format';
 
 const CHECKIN_TONE = { checked_in: 'green', not_yet: 'gray', absent: 'error' };
 
@@ -25,6 +25,7 @@ export default function SessionDetailModal({ session, venueName, onClose }) {
               {checkinStatusLabel(session.checkin_status)}
             </StatusBadge>
           } />
+          {session.checkin_at && <Row k="簽到時間" v={<span className="font-mono">{formatTWDateTime(session.checkin_at)}</span>} />}
         </dl>
         <div className="flex justify-end border-t border-gray-100 px-4 py-3">
           <button

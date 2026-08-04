@@ -77,8 +77,8 @@ export default function SessionsPage() {
   async function doBackfill() {
     if (!backfilling) return;
     if (!backfillAt) { toast.warning('請選擇簽到時間'); return; }
-    const d = new Date(backfillAt);
-    if (Number.isNaN(d.getTime())) { toast.error('簽到時間格式有誤'); return; }
+    const d = taipeiInputToDate(backfillAt);
+    if (!d) { toast.error('簽到時間格式有誤'); return; }
     setBackfillBusy(true);
     try {
       // 轉成帶時區的 ISO instant（瀏覽器在地時間 → UTC），後端與顯示一致
@@ -112,13 +112,14 @@ export default function SessionsPage() {
       render: (r) => <StatusBadge tone={CHECKIN_TONE[r.checkin_status] || 'gray'}>{checkinStatusLabel(r.checkin_status)}</StatusBadge>,
     },
     {
-      key: 'backfill', label: '補簽到', className: 'text-center',
-      render: (r) => r.backfilled_at
+      key: 'backfill', label: '簽到時間', className: 'text-center',
+      // 判斷以 checkin_at 為準，不可用 backfilled_at —— 真實課堂的 backfilled_at
+      // 在 admin/sessions.js 是硬寫的 NULL，用它判斷會讓所有已簽到的列都掉進「—」。
+      render: (r) => r.checkin_at
         ? (
           <div className="text-[11px] leading-tight text-gray-500">
-            <div className="font-medium text-brand-primary">已補簽</div>
-            <div title="補簽到按下時間">補於 {formatTWDateTime(r.backfilled_at)}</div>
-            {r.checkin_at && <div title="選擇的簽到時間">簽到 {formatTWDateTime(r.checkin_at)}</div>}
+            <div className="font-medium text-brand-primary" title="簽到時間">{formatTWDateTime(r.checkin_at)}</div>
+            {r.backfilled_at && <div title="補簽到按下時間">補於 {formatTWDateTime(r.backfilled_at)}</div>}
           </div>
         )
         : r.checkin_status === 'checked_in'

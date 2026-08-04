@@ -3,7 +3,7 @@ import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
 import { courseTypesApi } from '../api/courseTypes';
-import { formatTWDateTime, formatTWDateTimeSeconds, toTaipeiDateTimeInput } from '../utils/format';
+import { formatTWDateTime, formatTWDateTimeSeconds, toTaipeiDateTimeInput, taipeiInputToDate } from '../utils/format';
 
 const autoLabel = (ct) => {
   const map = { 1: '一對一', 2: '一對二', 3: '一對三', 4: '一對四', 5: '一對五', 6: '一對六' };
@@ -15,7 +15,8 @@ const fmtMoney = (v) => `NT$ ${Number(v || 0).toLocaleString('en-US')}`;
 const fmtDateTime = formatTWDateTime;
 const fmtDateTimeSec = formatTWDateTimeSeconds;
 const toLocalInput = toTaipeiDateTimeInput;
-const taipeiInputInstant = (value) => new Date(`${value}:00+08:00`).getTime();
+// 無法解析回 NaN：後續比較一律為 false，會退回「立即生效」這個保守分支，後端仍會再驗一次。
+const taipeiInputInstant = (value) => { const d = taipeiInputToDate(value); return d ? d.getTime() : NaN; };
 const FIELD_LABELS = { label: '名稱', base_price: '每期價格', min_students: '最少學生', max_students: '最多學生', is_active: '狀態', data_group: '資料管理群組', trial_enabled: '提供試上', trial_price: '試上單價', tier_prices: '加成級距價格' };
 // 1.5 / '1.50' → '1.50'（與後端 services/coursePricing.js tierKey 同規則）
 const tierKey = (m) => (Number.isFinite(Number(m)) && Number(m) > 0 ? Number(m) : 1).toFixed(2);
