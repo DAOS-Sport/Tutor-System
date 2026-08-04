@@ -139,9 +139,17 @@ const { pool } = require('../models/db');
  * 一位教練掛 3 個場館，若逐館產生會在同一時刻產出 3 格，撞上
  * UNIQUE(coach_id, start_at) 只會留下一格 —— 其餘場館的家長就看到空清單。
  *
- * 合併規則：同一 weekday 取「最早開店 ~ 最晚打烊」，slot_minutes 取最小值。
- * 這假設各館當日是單一連續時段（正式庫目前四館皆是）；若未來出現中午休息的
- * 分段營業，這裡要改成真正的區間聯集。
+ * 合併規則：真正的區間聯集——同一 weekday 的各館時段依開店時間排序後，
+ * 只把「有重疊或首尾相接」的段落併起來，其餘各自保留。
+ *
+ * 原本是取「最早開店 ~ 最晚打烊」的凸包，那在各館時段不重疊時會憑空生出
+ * 誰都沒開的時間：A 館 06:00–09:00、B 館 18:00–21:00 → 凸包 06:00–21:00，
+ * 於是 09:00–18:00 這段也長出可預約時段，家長約得到、教練到場卻進不了館。
+ * 凸包只有在各館時段互相重疊時才剛好等於聯集（正式庫目前的四館是這種情況，
+ * 所以一直沒被發現），但那是巧合，不是保證。
+ *
+ * slot_minutes 在合併後的每一段取該段成員的最小值——粒度小只會多切幾格，
+ * 每一格仍完整落在營業時間內；粒度大反而會漏掉尾段。
  */
 function unionHours(rows) {
   const byWeekday = new Map();
@@ -152,14 +160,29 @@ function unionHours(rows) {
     const close = timeToMinutes(r.close_time);
     const step = Number(r.slot_minutes) || 60;
     if (open == null || close == null || close <= open) continue;
-    const cur = byWeekday.get(wd);
-    if (!cur) { byWeekday.set(wd, { weekday: wd, open, close, step }); continue; }
-    cur.open = Math.min(cur.open, open);
-    cur.close = Math.max(cur.close, close);
-    cur.step = Math.min(cur.step, step);
+    if (!byWeekday.has(wd)) byWeekday.set(wd, []);
+    byWeekday.get(wd).push({ open, close, step });
   }
-  return [...byWeekday.values()].map((x) => ({
-    weekday: x.weekday, open_time: minutesToTime(x.open), close_time: minutesToTime(x.close), slot_minutes: x.step,
+
+  const out = [];
+  for (const [wd, list] of [...byWeekday.entries()].sort((a, b) => a[0] - b[0])) {
+    list.sort((a, b) => a.open - b.open || a.close - b.close);
+    let cur = null;
+    for (const seg of list) {
+      // seg.open <= cur.close 才算重疊或相接；嚴格大於代表中間有一段誰都沒開。
+      if (cur && seg.open <= cur.close) {
+        cur.close = Math.max(cur.close, seg.close);
+        cur.step = Math.min(cur.step, seg.step);
+      } else {
+        if (cur) out.push({ wd, ...cur });
+        cur = { open: seg.open, close: seg.close, step: seg.step };
+      }
+    }
+    if (cur) out.push({ wd, ...cur });
+  }
+
+  return out.map((x) => ({
+    weekday: x.wd, open_time: minutesToTime(x.open), close_time: minutesToTime(x.close), slot_minutes: x.step,
   }));
 }
 
@@ -208,13 +231,22 @@ async function loadBusinessHours(db) {
 }
 
 /**
- * 智慧記憶來源：該教練在該場館「最近 lookbackDays 天內被關閉」的時段。
+ * 智慧記憶來源：該教練「最近 lookbackDays 天內**自己關掉**」的時段。
  * 教練兩週排一次班，取 21 天足以涵蓋上一輪。
+ *
+ * 條件是 blocked_by_coach_at IS NOT NULL，不是 status='blocked'（042）。
+ * 用 status 的話會讀到產生器自己依記憶建出來的 blocked 格子——那些格子也在
+ * 查詢範圍內（本查詢只有下界沒有上界，未來的列一樣命中），於是下一輪又把它們
+ * 讀回去當記憶來源，形成閉環：一次性關班會自我複製成每週永久關閉，而且解封
+ * 收不回來（解封那一格變 available，但更外緣早就又被建成 blocked）。
+ *
+ * 產生器建立的 blocked 不寫 blocked_by_coach_at，教練 PATCH /:id/block 才寫、
+ * unblock 清空——記憶因此只反映教練的實際意圖，且解封立即生效。
  */
 async function loadPreviousBlocks(coachId, lookbackDays, db) {
   const r = await db.query(
     `SELECT start_at FROM coach_availability_slots
-      WHERE coach_id = $1 AND status = 'blocked'
+      WHERE coach_id = $1 AND blocked_by_coach_at IS NOT NULL
         AND start_at >= NOW() - ($2 || ' days')::interval`,
     [coachId, String(lookbackDays)]
   );

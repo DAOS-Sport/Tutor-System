@@ -26,6 +26,7 @@ const { requireParent } = require('../middlewares/parentAuth');
 const { addCalendarDays, taipeiToday, taipeiWeekStart } = require('../utils/dateTime');
 // 模組 1 旗標：同時守住 cron 產生、家長查詢可見性、預約 auto slot 三個入口。
 const { isInSlotSupplyScope, isSlotSupplyEnabled } = require('../config/slotSupplyFlags');
+const { checkVenueOpen, openingRejectMessage } = require('../services/venueOpening');
 
 function todayInTaipei() {
   return taipeiToday();
@@ -209,9 +210,12 @@ router.post('/batch', requireCoach, ensureBodyOwner, async (req, res) => {
   }
 });
 
+// blocked_by_coach_at 是智慧記憶的唯一來源。產生器依記憶建出來的 blocked 不寫
+// 這個欄位，所以不會被下一輪讀回去當記憶——避免一次性關班自我複製成永久關班。
 router.patch('/:id/block', requireCoach, ensureSlotOwner, async (req, res) => {
   const r = await pool.query(
-    `UPDATE coach_availability_slots SET status = 'blocked', updated_at = NOW()
+    `UPDATE coach_availability_slots
+        SET status = 'blocked', blocked_by_coach_at = NOW(), updated_at = NOW()
      WHERE id = $1 AND status = 'available' RETURNING *`,
     [req.params.id]
   );
@@ -219,9 +223,12 @@ router.patch('/:id/block', requireCoach, ensureSlotOwner, async (req, res) => {
   res.json(r.rows[0]);
 });
 
+// 解封必須清掉標記，否則記憶還在，下個週期又會把它建成 blocked，
+// 教練會覺得「我明明開回來了」。
 router.patch('/:id/unblock', requireCoach, ensureSlotOwner, async (req, res) => {
   const r = await pool.query(
-    `UPDATE coach_availability_slots SET status = 'available', updated_at = NOW()
+    `UPDATE coach_availability_slots
+        SET status = 'available', blocked_by_coach_at = NULL, updated_at = NOW()
      WHERE id = $1 AND status = 'blocked' RETURNING *`,
     [req.params.id]
   );
@@ -453,7 +460,8 @@ router.post('/:id/book', requireParent, async (req, res) => {
 
     // 1) 取槽位（拿 coach_id/venue_id 供上鎖與一致性檢查）
     const slotRes = await client.query(
-      `SELECT id, coach_id, venue_id, status, start_at FROM coach_availability_slots WHERE id = $1`,
+      `SELECT id, coach_id, venue_id, status, start_at, duration_minutes
+         FROM coach_availability_slots WHERE id = $1`,
       [slotId]
     );
     if (!slotRes.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: '時段不存在' }); }
@@ -503,6 +511,24 @@ router.post('/:id/book', requireParent, async (req, res) => {
     if (slot.status !== 'available') {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '此時段已被預約或不可選', code: 'SLOT_UNAVAILABLE' });
+    }
+    // 自動時段：拿確定的場館再驗一次「這個館這個時間真的有開嗎」。
+    // 產生端是用「教練所屬全部場館的聯集」算的，某一格可能只有 A 館有開卻被
+    // B 館的課期認領；休館日在產生端也只有「全部場館都休」才排除；營業時間
+    // 縮短時舊時段更是完全不會被回收。這三種漏網只有在這裡判得準。
+    // 手建時段不驗——那本來就是營業時間以外的臨時加開。
+    if (slot.venue_id === null) {
+      const opening = await checkVenueOpen(client, {
+        venueId: cp.venue_id,
+        startAt: slot.start_at,
+        durationMinutes: slot.duration_minutes,
+      });
+      if (!opening.open) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: openingRejectMessage(opening.reason), code: opening.reason,
+        });
+      }
     }
     // 不得預約已經過去的時間。查詢端雖然也過濾了，但那是列表產生當下的判斷——
     // 家長把頁面開著十分鐘再送出、或直接拿舊的 slot id 打 API，都會繞過它。

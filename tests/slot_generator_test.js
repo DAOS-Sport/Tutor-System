@@ -127,4 +127,53 @@ assert.deepStrictEqual(
   assert.strictEqual(s.length, 16, `05:30~22:00 每 60 分應為 16 格，實際 ${s.length}`);
 }
 
+// ── unionHours：不重疊的跨館時段不得被併成一段（凸包缺陷的迴歸）──
+// 取「最早開店~最晚打烊」在各館時段不重疊時會憑空生出誰都沒開的時間。
+{
+  const { unionHours } = require('../server/services/slotGenerator');
+  const merged = unionHours([
+    { weekday: 1, open_time: '06:00', close_time: '09:00', slot_minutes: 60 },  // 早上館
+    { weekday: 1, open_time: '18:00', close_time: '21:00', slot_minutes: 60 },  // 晚上館
+  ]);
+  assert.strictEqual(merged.length, 2,
+    '不重疊的兩段必須各自保留，合併成一段會長出 09:00–18:00 這種誰都沒開的時間');
+  assert.deepStrictEqual(
+    merged.map((x) => `${x.open_time}-${x.close_time}`).sort(),
+    ['06:00-09:00', '18:00-21:00']);
+
+  // 切格驗證：3 + 3 = 6 格，中間那 9 小時一格都不能有
+  const s = computeSlots({ businessHours: merged, fromDate: '2026-08-03', toDate: '2026-08-03' });
+  assert.strictEqual(s.length, 6, `應為 6 格，實際 ${s.length}`);
+  const hhmm = s.map((x) => new Date(new Date(x.startAtISO).getTime() + 8 * 3600000)
+    .toISOString().slice(11, 16));
+  assert.ok(!hhmm.some((t) => t >= '09:00' && t < '18:00'),
+    '09:00–18:00 之間不得有任何時段：' + hhmm.join(','));
+}
+
+// 重疊要併、首尾相接也要併（09:00-12:00 + 12:00-15:00 → 一段 09:00-15:00）
+{
+  const { unionHours } = require('../server/services/slotGenerator');
+  assert.strictEqual(unionHours([
+    { weekday: 2, open_time: '09:00', close_time: '12:00', slot_minutes: 60 },
+    { weekday: 2, open_time: '12:00', close_time: '15:00', slot_minutes: 60 },
+  ]).length, 1, '首尾相接應併成一段');
+  assert.strictEqual(unionHours([
+    { weekday: 2, open_time: '09:00', close_time: '13:00', slot_minutes: 60 },
+    { weekday: 2, open_time: '12:00', close_time: '15:00', slot_minutes: 90 },
+  ]).length, 1, '重疊應併成一段');
+  // 三段：兩段可併、第三段分開
+  const three = unionHours([
+    { weekday: 4, open_time: '18:00', close_time: '20:00', slot_minutes: 60 },
+    { weekday: 4, open_time: '06:00', close_time: '08:00', slot_minutes: 90 },
+    { weekday: 4, open_time: '19:00', close_time: '22:00', slot_minutes: 60 },
+  ]);
+  assert.strictEqual(three.length, 2);
+  assert.deepStrictEqual(three.map((x) => `${x.open_time}-${x.close_time}`).sort(),
+    ['06:00-08:00', '18:00-22:00']);
+  // 合併後的 slot_minutes 取該段成員最小值——粒度小只會多切幾格，
+  // 每格仍完整落在營業時間內；取大的反而會漏掉尾段。
+  assert.strictEqual(three.find((x) => x.open_time === '06:00').slot_minutes, 90);
+  assert.strictEqual(three.find((x) => x.open_time === '18:00').slot_minutes, 60);
+}
+
 console.log('slot_generator_test: PASS');

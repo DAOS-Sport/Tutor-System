@@ -1036,6 +1036,16 @@ DO $$ BEGIN
   --   booking_notice_ack_at 放在 enrollments：同一家長的不同課期要各自提示一次。
   ALTER TABLE coach_availability_slots  ADD COLUMN IF NOT EXISTS generated_by TEXT;
   ALTER TABLE course_period_enrollments ADD COLUMN IF NOT EXISTS booking_notice_ack_at TIMESTAMPTZ;
+  -- 042：智慧記憶只認「教練自己關的」，不認產生器沿用而建立的 blocked。
+  -- 少了這個標記，carry-forward 會讀到自己上一輪的輸出，把一次性關班自我複製
+  -- 成每週永久關閉，而且解封收不回來。回填：042 之前的 blocked 都是教練關的。
+  ALTER TABLE coach_availability_slots  ADD COLUMN IF NOT EXISTS blocked_by_coach_at TIMESTAMPTZ;
+  UPDATE coach_availability_slots
+     SET blocked_by_coach_at = COALESCE(blocked_by_coach_at, updated_at, created_at, NOW())
+   WHERE status = 'blocked' AND blocked_by_coach_at IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_cas_blocked_by_coach
+    ON coach_availability_slots(coach_id, blocked_by_coach_at)
+    WHERE blocked_by_coach_at IS NOT NULL;
   -- 櫃台補簽到（F-R01）：checkin_at = 選擇的上課/簽到時間；backfilled_at = 補簽到按鈕被按下的時間（供管理端查看）。
   ALTER TABLE admin_today_sessions ADD COLUMN IF NOT EXISTS checkin_at TIMESTAMPTZ;
   ALTER TABLE admin_today_sessions ADD COLUMN IF NOT EXISTS backfilled_at TIMESTAMPTZ;
