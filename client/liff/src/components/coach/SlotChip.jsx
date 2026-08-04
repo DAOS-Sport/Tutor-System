@@ -11,17 +11,29 @@ const STATUS_STYLES = {
 /**
  * 單一槽位 chip。點擊觸發 onClick(slot) 由父層決定彈 menu。
  */
-export default function SlotChip({ slot, onClick }) {
+export default function SlotChip({ slot, onClick, batchMode = false, selected = false }) {
   const s = STATUS_STYLES[slot.status] || STATUS_STYLES.available;
   const end = new Date(new Date(slot.start_at).getTime() + (slot.duration_minutes || 60) * 60_000);
+  // 已預約的不可批量處理：關掉或刪掉它等於把家長已約好的課弄不見。
+  const lockedInBatch = batchMode && slot.status === 'booked';
   return (
     <button
       type="button"
-      onClick={() => onClick && onClick(slot)}
-      className={`w-full rounded-lg border ${s.border} ${s.bg} px-3 py-2 text-left transition active:scale-[0.99]`}
+      onClick={() => !lockedInBatch && onClick && onClick(slot)}
+      aria-pressed={batchMode ? selected : undefined}
+      className={`w-full rounded-lg border ${s.border} ${s.bg} px-3 py-2 text-left transition active:scale-[0.99]`
+        + (selected ? ' ring-2 ring-brand-primary ring-offset-1' : '')
+        + (lockedInBatch ? ' opacity-40' : '')}
     >
       <div className="flex items-baseline justify-between gap-2">
-        <div className={`text-sm font-bold ${s.text}`}>
+        <div className={`flex items-center gap-2 text-sm font-bold ${s.text}`}>
+          {batchMode && (
+            <span aria-hidden="true"
+              className={`inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[10px] ${
+                lockedInBatch ? 'border-gray-300 text-gray-300'
+                  : selected ? 'border-brand-primary bg-brand-primary text-white' : 'border-gray-400 text-transparent'
+              }`}>✓</span>
+          )}
           {formatTWTime(slot.start_at)} – {formatTWTime(end)}
         </div>
         <span className={`rounded-full border ${s.border} px-2 py-0.5 text-[10px] font-medium ${s.text}`}>

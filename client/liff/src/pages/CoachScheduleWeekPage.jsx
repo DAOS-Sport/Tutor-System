@@ -59,6 +59,11 @@ export default function CoachScheduleWeekPage() {
   const [reload, setReload] = useState(0);
   const [venueNameMap, setVenueNameMap] = useState({}); // { 場館代碼: 場館名稱 }
   const [freshVenueIds, setFreshVenueIds] = useState(null);
+  // 批量編輯：模組 1 的模型是「預設全開，教練自己排掉不能上的」，
+  // 所以主要動作是一次關掉一整批，不是一格一格加。
+  const [batchMode, setBatchMode] = useState(false);
+  const [selected, setSelected] = useState(() => new Set());
+  const [batchBusy, setBatchBusy] = useState(false);
 
   function toggleVenue(v) {
     setVenueFilter((prev) => {
@@ -148,6 +153,49 @@ export default function CoachScheduleWeekPage() {
   }
   function refresh() { setReload((x) => x + 1); }
 
+  // ── 批量編輯 ─────────────────────────────────────────────────────────
+  // 已預約的槽位不可被選：關掉或刪掉它等於把家長已經約好的課弄不見，
+  // 那必須走家長端取消或櫃檯。這裡直接不給選，而不是選了才報錯。
+  const selectableSlots = filteredSlots.filter((s) => s.status !== 'booked');
+  const selectedSlots = selectableSlots.filter((s) => selected.has(s.id));
+  const selectedAvailable = selectedSlots.filter((s) => s.status === 'available');
+  const selectedBlocked = selectedSlots.filter((s) => s.status === 'blocked');
+  const selectedAuto = selectedSlots.filter((s) => s.is_auto === true);
+
+  function toggleSelect(slot) {
+    if (slot.status === 'booked') return;
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(slot.id)) next.delete(slot.id); else next.add(slot.id);
+      return next;
+    });
+  }
+  function exitBatch() { setBatchMode(false); setSelected(new Set()); }
+
+  /**
+   * 逐筆送出。刻意不用 Promise.all：一次選幾十格時同時打幾十個請求會被限流，
+   * 而且任何一筆失敗都要能繼續處理其餘的，並如實回報「成功幾筆、失敗幾筆」。
+   */
+  async function runBatch(list, fn, verb) {
+    if (!list.length || batchBusy) return;
+    setBatchBusy(true);
+    let ok = 0;
+    const failed = [];
+    for (const s of list) {
+      try { await fn(s.id); ok += 1; } catch (e) {
+        failed.push(e?.response?.data?.error || e.message || '未知錯誤');
+      }
+    }
+    setBatchBusy(false);
+    setSelected(new Set());
+    refresh();
+    if (failed.length) {
+      toast.error(`${verb} ${ok} 個成功、${failed.length} 個失敗：${failed[0]}`);
+    } else {
+      toast.success(`已${verb} ${ok} 個時段`);
+    }
+  }
+
   if (!coach) return null;
 
   const headerLabel = view === 'week'
@@ -191,6 +239,28 @@ export default function CoachScheduleWeekPage() {
             隨時可以再打開。
           </p>
         </div>
+        {/* 主要動作：批量把不能上的時段排掉。 */}
+        <div className="mb-3 flex gap-2">
+          {!batchMode ? (
+            <button onClick={() => setBatchMode(true)}
+              disabled={selectableSlots.length === 0}
+              className="flex-1 rounded-lg bg-brand-primary py-2 text-sm font-bold text-white active:bg-brand-teal disabled:opacity-40">
+              批量編輯時段
+            </button>
+          ) : (
+            <>
+              <button onClick={() => setSelected(new Set(selectableSlots.map((s) => s.id)))}
+                className="flex-1 rounded-lg border border-brand-primary/30 py-2 text-sm font-bold text-brand-primary active:bg-brand-primary/5">
+                全選本{view === 'week' ? '週' : '月'}（{selectableSlots.length}）
+              </button>
+              <button onClick={exitBatch}
+                className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-600 active:bg-gray-50">
+                完成
+              </button>
+            </>
+          )}
+        </div>
+
         <details className="mb-3">
           <summary className="cursor-pointer list-none rounded-lg border border-gray-300 py-2 text-center text-sm font-medium text-gray-600 active:bg-gray-50">
             需要臨時加開營業時間以外的時段？
@@ -208,7 +278,11 @@ export default function CoachScheduleWeekPage() {
           <div className="space-y-3">
             {days.map((d) => {
               const daySlots = filteredSlots.filter((s) => sameYMD(taipeiCalendarDate(s.start_at), d));
-              return <DaySection key={d.toISOString()} date={d} slots={daySlots} onClickSlot={(slot) => setActiveSlot(slot)} />;
+              return (
+                <DaySection key={d.toISOString()} date={d} slots={daySlots}
+                  batchMode={batchMode} selected={selected}
+                  onClickSlot={(slot) => (batchMode ? toggleSelect(slot) : setActiveSlot(slot))} />
+              );
             })}
             {/* 空狀態要說得出「為什麼空」。舊文案「此範圍尚無槽位」在新模型下
                 會讓教練以為是自己沒排——實際上多半是場館營業時間還沒設定，
@@ -231,7 +305,49 @@ export default function CoachScheduleWeekPage() {
             onPickDate={(d) => { setView('week'); setAnchor(startOfWeek(d)); }}
           />
         )}
+        {/* 批量模式時底部留白，免得動作列蓋住最後一天 */}
+        {batchMode && <div className="h-36" />}
       </div>
+
+      {batchMode && (
+        <div className="fixed inset-x-0 bottom-0 z-30 border-t border-gray-200 bg-white/95 px-4 pb-6 pt-3 backdrop-blur">
+          <div className="mx-auto max-w-[390px]">
+            <p className="mb-2 text-center text-xs text-gray-600">
+              已選 <span className="font-bold text-brand-primary">{selectedSlots.length}</span> 個時段
+              {selectedSlots.length === 0 && '（點時段選取；已預約的不能選）'}
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={() => runBatch(selectedAvailable, slotsApi.block, '關閉')}
+                disabled={batchBusy || selectedAvailable.length === 0}
+                className="rounded-lg bg-gray-700 py-2.5 text-sm font-bold text-white active:bg-gray-800 disabled:opacity-40">
+                {batchBusy ? '處理中…' : `設為不可預約（${selectedAvailable.length}）`}
+              </button>
+              <button
+                onClick={() => runBatch(selectedBlocked, slotsApi.unblock, '重新開放')}
+                disabled={batchBusy || selectedBlocked.length === 0}
+                className="rounded-lg border border-brand-teal py-2.5 text-sm font-bold text-brand-teal active:bg-brand-teal/5 disabled:opacity-40">
+                重新開放（{selectedBlocked.length}）
+              </button>
+            </div>
+            <button
+              onClick={() => runBatch(selectedSlots, slotsApi.remove, '刪除')}
+              disabled={batchBusy || selectedSlots.length === 0 || selectedAuto.length > 0}
+              className="mt-2 w-full rounded-lg border border-brand-error/40 py-2 text-sm font-bold text-brand-error active:bg-brand-error/5 disabled:opacity-40">
+              刪除（{selectedSlots.length}）
+            </button>
+            {/* 刪除自動時段沒有意義：那一列被抹掉，下個產生週期會照場館營業時間
+                原樣長回來，教練會以為排掉了其實沒有。持久的做法只有「設為不可
+                預約」——產生器會沿用。與其給一顆按了等於沒按的按鈕，不如講清楚。 */}
+            {selectedAuto.length > 0 && (
+              <p className="mt-1.5 text-center text-[11px] leading-relaxed text-gray-500">
+                選取中有 {selectedAuto.length} 個自動開放的時段，刪除後下個週期會再出現。
+                請改用「設為不可預約」，那個會沿用到之後的週期。
+              </p>
+            )}
+          </div>
+        </div>
+      )}
 
       {showAdd && (
         <AddSlotModal coachId={coach.id} venueIds={venueIds} venueNameMap={venueNameMap}
@@ -258,7 +374,7 @@ export default function CoachScheduleWeekPage() {
   );
 }
 
-function DaySection({ date, slots, onClickSlot }) {
+function DaySection({ date, slots, onClickSlot, batchMode = false, selected }) {
   const isToday = sameYMD(date, taipeiCalendarDate());
   return (
     <div>
@@ -274,7 +390,10 @@ function DaySection({ date, slots, onClickSlot }) {
         </div>
       ) : (
         <div className="space-y-1.5">
-          {slots.map((s) => <SlotChip key={s.id} slot={s} onClick={onClickSlot} />)}
+          {slots.map((s) => (
+            <SlotChip key={s.id} slot={s} onClick={onClickSlot}
+              batchMode={batchMode} selected={Boolean(selected && selected.has(s.id))} />
+          ))}
         </div>
       )}
     </div>
