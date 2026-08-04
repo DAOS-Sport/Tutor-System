@@ -6,6 +6,7 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import LoadingSpinner from '../components/LoadingSpinner';
 import SlotChip from '../components/coach/SlotChip';
+import VenueHoursNote from '../components/coach/VenueHoursNote';
 import AddSlotModal from '../components/coach/AddSlotModal';
 import BatchAddSlotModal from '../components/coach/BatchAddSlotModal';
 import BatchResultModal from '../components/coach/BatchResultModal';
@@ -64,6 +65,7 @@ export default function CoachScheduleWeekPage() {
   const [batchMode, setBatchMode] = useState(false);
   const [selected, setSelected] = useState(() => new Set());
   const [batchBusy, setBatchBusy] = useState(false);
+  const [venueHours, setVenueHours] = useState(null);
 
   function toggleVenue(v) {
     setVenueFilter((prev) => {
@@ -124,6 +126,20 @@ export default function CoachScheduleWeekPage() {
       .catch(() => { if (alive) { setSlots([]); toast.error('排課資料載入失敗'); } });
     return () => { alive = false; };
   }, [coach?.id, range.from, range.to, reload, toast]);
+
+  // 營業時間與休館日：跟著檢視範圍走（休館日只列這段期間的）。
+  // 失敗不擋畫面——排課總表本身還是要能看，備註區安靜地不顯示就好。
+  useEffect(() => {
+    if (!coach?.id) return undefined;
+    let alive = true;
+    slotsApi.venueHoursForCoach(coach.id, {
+      from: taipeiBoundaryIso(range.from).slice(0, 10),
+      to: taipeiBoundaryIso(range.to).slice(0, 10),
+    })
+      .then((d) => alive && setVenueHours(d?.venues || []))
+      .catch(() => { if (alive) setVenueHours(null); });
+    return () => { alive = false; };
+  }, [coach?.id, range.from, range.to, reload]);
 
   const filteredSlots = useMemo(
     // auto 時段 venue_id 為 NULL＝跨場館共用，任何場館篩選下都該留著；
@@ -228,17 +244,11 @@ export default function CoachScheduleWeekPage() {
       </header>
 
       <div className="px-4 pt-3">
-        {/* 模組 1 的模型是反過來的：可預約時段依場館營業時間自動開放，教練做的是
-            「關掉不想開的時段」，不是「一格一格加上去」。頁面第一眼如果還是
-            「＋ 新增槽位」，教練會以為沒加就沒有時段，整個反轉等於沒發生。
-            手動新增仍然保留——營業時間以外的臨時加開還是需要它——但降為次要。 */}
-        <div className="mb-3 rounded-xl border border-teal-200 bg-teal-50/60 px-3 py-2.5">
-          <p className="text-[13px] font-bold text-teal-900">可預約時段會依場館營業時間自動開放</p>
-          <p className="mt-0.5 text-[11px] leading-relaxed text-teal-800/80">
-            不用逐格新增。點下面任一時段可以「關閉」它，關掉的時段之後的週期會沿用，
-            隨時可以再打開。
-          </p>
-        </div>
+        {/* 模組 1 的模型是反過來的：營業時間內預設全開，教練做的是「關掉不能上的
+            時段」，不是「一格一格加上去」。這裡直接把依據（各館營業時間與這段期間
+            的休館日）攤開來——只寫一句「依場館營業時間自動開放」而看不到實際時間，
+            教練在整週空白時仍然無從判斷是自己關光了還是場館沒設定。 */}
+        <VenueHoursNote venues={venueHours} rangeLabel={headerLabel} />
         {/* 主要動作：批量把不能上的時段排掉。 */}
         <div className="mb-3 flex gap-2">
           {!batchMode ? (

@@ -71,6 +71,64 @@ async function ensureSlotOwner(req, res, next) {
   }
 }
 
+// 教練端唯讀：自己所屬場館的營業時間 + 範圍內的特殊休館日。
+//
+// 為什麼要有這支：時段是依營業時間自動長出來的，教練在排課總表上只看得到
+// 「有哪些格」，看不到「依據是什麼」。整週空白時無從判斷是自己關光了、
+// 還是場館根本沒設營業時間。後台那支 /api/admin/venue-hours 限 admin/manager，
+// 教練不該也不需要拿到寫入權，所以另開一個唯讀端點。
+router.get('/coach/:coachId/venue-hours', requireCoach, requireCoachOwner('coachId'), async (req, res) => {
+  const { coachId } = req.params;
+  const { from, to } = req.query;
+  try {
+    const r = await pool.query(
+      `SELECT cv.venue_id, v.name AS venue_name,
+              h.weekday, h.open_time, h.close_time, h.slot_minutes
+         FROM coach_venues cv
+         JOIN venues v ON v.id = cv.venue_id AND v.is_active
+         LEFT JOIN venue_business_hours h ON h.venue_id = cv.venue_id AND h.is_active
+        WHERE cv.coach_id = $1
+        ORDER BY v.name, h.weekday`,
+      [coachId]
+    );
+    const closed = await pool.query(
+      `SELECT c.venue_id, to_char(c.closed_date,'YYYY-MM-DD') AS closed_date, c.reason
+         FROM venue_closed_dates c
+         JOIN coach_venues cv ON cv.venue_id = c.venue_id AND cv.coach_id = $1
+        WHERE ($2::date IS NULL OR c.closed_date >= $2::date)
+          AND ($3::date IS NULL OR c.closed_date <= $3::date)
+        ORDER BY c.closed_date`,
+      [coachId, from || null, to || null]
+    );
+
+    const byVenue = new Map();
+    for (const row of r.rows) {
+      if (!byVenue.has(row.venue_id)) {
+        byVenue.set(row.venue_id, {
+          venue_id: row.venue_id, venue_name: row.venue_name, hours: [], closed_dates: [],
+        });
+      }
+      // LEFT JOIN：場館尚未設定營業時間時 weekday 為 NULL，不能當成一筆時間。
+      if (row.weekday !== null && row.weekday !== undefined) {
+        byVenue.get(row.venue_id).hours.push({
+          weekday: Number(row.weekday),
+          open_time: String(row.open_time).slice(0, 5),
+          close_time: String(row.close_time).slice(0, 5),
+          slot_minutes: Number(row.slot_minutes) || 60,
+        });
+      }
+    }
+    for (const c of closed.rows) {
+      const v = byVenue.get(c.venue_id);
+      if (v) v.closed_dates.push({ closed_date: c.closed_date, reason: c.reason || null });
+    }
+    res.json({ venues: [...byVenue.values()] });
+  } catch (err) {
+    console.error('[slots coach venue-hours]', err.message);
+    res.status(500).json({ error: '營業時間載入失敗' });
+  }
+});
+
 // 取教練槽位 + 已 booked 的 session 細節（學員姓名）
 router.get('/coach/:coachId', requireCoach, requireCoachOwner('coachId'), async (req, res) => {
   const { coachId } = req.params;
