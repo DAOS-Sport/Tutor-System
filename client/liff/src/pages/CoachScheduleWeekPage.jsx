@@ -180,12 +180,28 @@ export default function CoachScheduleWeekPage() {
       </header>
 
       <div className="px-4 pt-3">
-        <div className="mb-3 grid grid-cols-2 gap-2">
-          <button onClick={() => setShowAdd(true)}
-            className="rounded-lg bg-brand-primary py-2 text-sm font-bold text-white active:bg-brand-teal">＋ 新增槽位</button>
-          <button onClick={() => setShowBatch(true)}
-            className="rounded-lg border border-brand-primary/30 py-2 text-sm font-bold text-brand-primary active:bg-brand-primary/5">批量新增</button>
+        {/* 模組 1 的模型是反過來的：可預約時段依場館營業時間自動開放，教練做的是
+            「關掉不想開的時段」，不是「一格一格加上去」。頁面第一眼如果還是
+            「＋ 新增槽位」，教練會以為沒加就沒有時段，整個反轉等於沒發生。
+            手動新增仍然保留——營業時間以外的臨時加開還是需要它——但降為次要。 */}
+        <div className="mb-3 rounded-xl border border-teal-200 bg-teal-50/60 px-3 py-2.5">
+          <p className="text-[13px] font-bold text-teal-900">可預約時段會依場館營業時間自動開放</p>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-teal-800/80">
+            不用逐格新增。點下面任一時段可以「關閉」它，關掉的時段之後的週期會沿用，
+            隨時可以再打開。
+          </p>
         </div>
+        <details className="mb-3">
+          <summary className="cursor-pointer list-none rounded-lg border border-gray-300 py-2 text-center text-sm font-medium text-gray-600 active:bg-gray-50">
+            需要臨時加開營業時間以外的時段？
+          </summary>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <button onClick={() => setShowAdd(true)}
+              className="rounded-lg border border-brand-primary/30 py-2 text-sm font-bold text-brand-primary active:bg-brand-primary/5">＋ 新增槽位</button>
+            <button onClick={() => setShowBatch(true)}
+              className="rounded-lg border border-brand-primary/30 py-2 text-sm font-bold text-brand-primary active:bg-brand-primary/5">批量新增</button>
+          </div>
+        </details>
 
         {slots === null && <LoadingSpinner label="載入排課中…" />}
         {slots !== null && view === 'week' && (
@@ -194,9 +210,16 @@ export default function CoachScheduleWeekPage() {
               const daySlots = filteredSlots.filter((s) => sameYMD(taipeiCalendarDate(s.start_at), d));
               return <DaySection key={d.toISOString()} date={d} slots={daySlots} onClickSlot={(slot) => setActiveSlot(slot)} />;
             })}
+            {/* 空狀態要說得出「為什麼空」。舊文案「此範圍尚無槽位」在新模型下
+                會讓教練以為是自己沒排——實際上多半是場館營業時間還沒設定，
+                那是系統管理員／場館主管的事，教練自己怎麼點都不會有時段。 */}
             {filteredSlots.length === 0 && (
               <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-6 text-center text-sm text-gray-500">
-                此範圍尚無槽位。
+                <p className="font-medium text-gray-600">這週沒有可預約時段</p>
+                <p className="mt-1 text-[12px] leading-relaxed">
+                  時段依場館營業時間自動開放。如果整週都是空的，通常是所屬場館尚未設定營業時間，
+                  請聯繫櫃檯或場館主管確認；你不需要自己逐格新增。
+                </p>
               </div>
             )}
           </div>

@@ -57,10 +57,22 @@ assert.strictEqual(
 
 // ── 文案 ──
 assert.ok(cancelRejectMessage('ALREADY_STARTED', -1).includes('已開始'));
+// 「時間過後會自動回復」的兌現者是那支每 30 分鐘的 cron，而它第一行就是
+// `if (!isSlotSupplyEnabled()) return;`。旗標沒開就不能講這句話——家長被擋住
+// 不能取消、又等不到任何回復，那堂課就這樣沒了。文案必須跟著旗標實況走。
 {
-  const m = cancelRejectMessage('TOO_LATE', 5);
-  assert.ok(m.includes('24 小時'), '須告知期限');
-  assert.ok(m.includes('自動回復'), '須告知不出席會自動復原，否則家長不知道怎麼辦');
+  const on = cancelRejectMessage('TOO_LATE', 5, { autoRestoreEnabled: true });
+  assert.ok(on.includes('24 小時'), '須告知期限');
+  assert.ok(on.includes('自動回復'), '自動復原有開時，須告知不出席會自動復原');
+
+  const off = cancelRejectMessage('TOO_LATE', 5, { autoRestoreEnabled: false });
+  assert.ok(off.includes('24 小時'), '須告知期限');
+  assert.ok(!off.includes('自動回復'), '自動復原沒開時，不得承諾會自動回復');
+  assert.ok(off.includes('櫃檯'), '不能自動回復時，須給家長一個真的能處理的窗口');
+
+  // 預設值必須是 fail-closed：漏傳參數不得默默承諾一個不會發生的行為。
+  const dflt = cancelRejectMessage('TOO_LATE', 5);
+  assert.ok(!dflt.includes('自動回復'), '預設不得承諾自動回復');
 }
 assert.ok(cancelRejectMessage('WEIRD', 0).includes('洽櫃台'));
 

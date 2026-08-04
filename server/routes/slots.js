@@ -25,7 +25,7 @@ const { requireCoach, requireCoachOwner } = require('../middlewares/coachAuth');
 const { requireParent } = require('../middlewares/parentAuth');
 const { addCalendarDays, taipeiToday, taipeiWeekStart } = require('../utils/dateTime');
 // 模組 1 旗標：同時守住 cron 產生、家長查詢可見性、預約 auto slot 三個入口。
-const { isInSlotSupplyScope } = require('../config/slotSupplyFlags');
+const { isInSlotSupplyScope, isSlotSupplyEnabled } = require('../config/slotSupplyFlags');
 
 function todayInTaipei() {
   return taipeiToday();
@@ -209,13 +209,31 @@ router.delete('/booking/:sessionId', requireParent, async (req, res) => {
     const verdict = canSelfCancel(session.scheduled_at);
     if (!verdict.allowed) {
       return res.status(409).json({
-        error: cancelRejectMessage(verdict.reason, verdict.hoursUntil),
+        // 只有自動復原真的會跑時，才對家長承諾「時間過後會自動回復」。
+        error: cancelRejectMessage(verdict.reason, verdict.hoursUntil, {
+          autoRestoreEnabled: isSlotSupplyEnabled(),
+        }),
         code: `CANCEL_${verdict.reason}`,
         hours_until: Math.max(0, Math.round(verdict.hoursUntil * 10) / 10),
       });
     }
-    // normal＝釋回槽位 + 歸還堂數（cancelSession 內含 transaction）
-    await cancelSession(sessionId, 'normal');
+    // 真正的裁判在 cancelSession 的交易內：上面的 status 檢查用的是另一條連線、
+    // 又在交易外，兩個並發請求會同時通過。服務層以 `WHERE status='confirmed'`
+    // 讓資料庫決定誰贏，這裡只負責把結果翻成人話。
+    const result = await cancelSession(sessionId, 'normal');
+    if (!result.cancelled) {
+      if (result.reason === 'ALREADY_CHECKED_IN') {
+        return res.status(409).json({
+          error: '這堂課已完成簽到，無法取消。如需處理請洽櫃檯。',
+          code: 'CANCEL_ALREADY_CHECKED_IN',
+        });
+      }
+      if (result.reason === 'SESSION_NOT_FOUND') {
+        return res.status(404).json({ error: '找不到此預約', code: 'SESSION_NOT_FOUND' });
+      }
+      // NOT_CONFIRMED：多半是另一個分頁剛剛取消掉了，對使用者而言結果一樣。
+      return res.status(409).json({ error: '此堂課目前無法取消', code: 'SESSION_NOT_CANCELLABLE' });
+    }
     res.json({ ok: true, session_id: sessionId, cancel_type: 'normal' });
   } catch (err) {
     console.error('[slots cancel-booking]', err.message);
@@ -296,6 +314,10 @@ router.get('/period/:coursePeriodId', requireParent, async (req, res) => {
           AND cas.status = 'available'
           AND cas.start_at >= $3
           AND cas.start_at < $4
+          -- 下界 $3 是「台北今天 00:00」，不是現在。少了這條，今天稍早已經過去的
+          -- 時段仍會列在可選清單裡；逾時未簽到自動復原又會把過去的槽位改回
+          -- available，等於固定會有一批「約得到的過去時間」。
+          AND cas.start_at > NOW()
         ORDER BY cas.start_at
         LIMIT 120`,
       [period.coach_id, period.venue_id, fromDate.toISOString(), toDate.toISOString(),
@@ -373,7 +395,7 @@ router.post('/:id/book', requireParent, async (req, res) => {
 
     // 1) 取槽位（拿 coach_id/venue_id 供上鎖與一致性檢查）
     const slotRes = await client.query(
-      `SELECT id, coach_id, venue_id, status FROM coach_availability_slots WHERE id = $1`,
+      `SELECT id, coach_id, venue_id, status, start_at FROM coach_availability_slots WHERE id = $1`,
       [slotId]
     );
     if (!slotRes.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: '時段不存在' }); }
@@ -423,6 +445,13 @@ router.post('/:id/book', requireParent, async (req, res) => {
     if (slot.status !== 'available') {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '此時段已被預約或不可選', code: 'SLOT_UNAVAILABLE' });
+    }
+    // 不得預約已經過去的時間。查詢端雖然也過濾了，但那是列表產生當下的判斷——
+    // 家長把頁面開著十分鐘再送出、或直接拿舊的 slot id 打 API，都會繞過它。
+    // 而且逾時未簽到的自動復原會把過去的槽位改回 available，這種列一直都會存在。
+    if (new Date(slot.start_at).getTime() <= Date.now()) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '此時段已經過了，請改選其他時間', code: 'SLOT_IN_PAST' });
     }
     // 容量：已排（未取消）堂數不得超過已購買 total_sessions
     const used = await client.query(

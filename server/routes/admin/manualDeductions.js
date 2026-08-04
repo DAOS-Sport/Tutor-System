@@ -341,8 +341,11 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
     const session = await client.query(
       `INSERT INTO course_sessions
          (course_period_id, coach_id, scheduled_at, duration_minutes, status, completed_at, session_deducted)
-       VALUES ($1, $2, $3, 60, 'completed', NOW(), TRUE)
+       VALUES ($1, $2, $3, 60, 'completed', $3, TRUE)
        RETURNING id`,
+      // completed_at 原本寫死 NOW()。補登（壓時間）時 scheduled_at 是過去、
+      // completed_at 卻是「按下按鈕的當下」，同一堂課的兩個時間戳互相矛盾，
+      // 報表與學習歷程會依 completed_at 排到今天。兩者一律用 occurred_at。
       [periodId, period.coach_id || null, occurredAt.toISOString()]
     );
     const courseSessionId = session.rows[0].id;

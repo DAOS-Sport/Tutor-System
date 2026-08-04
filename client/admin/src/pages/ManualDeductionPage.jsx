@@ -9,6 +9,7 @@ import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
 import { manualDeductionsApi } from '../api/manualDeductions';
+import { parseOccurredAt, toLocalInputValue } from '../utils/occurredAt';
 
 function createRequestId() {
   try {
@@ -21,6 +22,10 @@ export default function ManualDeductionPage() {
   const toast = useToast();
   const [query, setQuery] = useState('');
   const [reason, setReason] = useState('');
+  // 壓時間用。空字串＝不指定，由後端以接收當下為準。
+  const [occurredAt, setOccurredAt] = useState('');
+  const { iso: occurredAtIso, error: occurredAtError } = parseOccurredAt(occurredAt);
+  const nowLocalValue = toLocalInputValue(new Date());
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [busyKey, setBusyKey] = useState('');
@@ -52,6 +57,10 @@ export default function ManualDeductionPage() {
       toast.warning('請先填寫扣課原因');
       return;
     }
+    if (occurredAtError) {
+      toast.warning(occurredAtError);
+      return;
+    }
     if (Number(row.remaining_sessions) < 1) {
       toast.error('此課期已無剩餘堂數，不能扣成負數');
       return;
@@ -67,6 +76,9 @@ export default function ManualDeductionPage() {
         student_id: student.id,
         reason: trimmedReason,
         request_id: requestId,
+        // 只在有填時送。留空要維持「伺服器接收時間」語意——後端的冪等指紋
+        // 對「未指定」與「明確指定」是分開處理的，不能自己補一個 now 進去。
+        ...(occurredAtIso ? { occurred_at: occurredAtIso } : {}),
       });
       const after = Number(result?.deduction?.remaining_after);
       setRows((prev) => prev.map((item) => (
@@ -114,6 +126,25 @@ export default function ManualDeductionPage() {
             {loading ? '查詢中…' : '查詢'}
           </button>
         </div>
+        {/* 上課時間（可壓時間）：留空＝現在。補登已經上過的課時要能填回當時的時間，
+            否則報表與學習歷程會把那堂算到今天。後端把它同時寫進 scheduled_at、
+            completed_at 與 checked_in_at，三個時間戳一致。 */}
+        <label htmlFor="manual-deduction-occurred-at" className="mb-1 mt-3 block text-xs font-medium text-gray-600">
+          上課時間
+          <span className="ml-1 font-normal text-gray-400">（留空＝現在；補登舊課請填當時時間）</span>
+        </label>
+        <input
+          id="manual-deduction-occurred-at"
+          type="datetime-local"
+          value={occurredAt}
+          max={nowLocalValue}
+          onChange={(e) => setOccurredAt(e.target.value)}
+          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none sm:w-auto"
+        />
+        {occurredAtError && (
+          <p className="mt-1 text-[11px] font-bold text-brand-error">{occurredAtError}</p>
+        )}
+
         <label htmlFor="manual-deduction-reason" className="mb-1 mt-3 block text-xs font-medium text-gray-600">扣課原因 <span className="text-brand-error">*</span></label>
         <textarea
           id="manual-deduction-reason"

@@ -34,10 +34,16 @@ const { syncStoredUsage } = require('../services/usageSync');
  *  2. 堂數上限：非取消課堂數 >= total_sessions → 409 NO_SESSIONS_LEFT（與 slots 容量同款）。
  *  3. advisory lock 序列化同期並發，容量檢查與建堂之間無競態。
  *  4. 共班一堂＝一個 session，多位學員掛同一堂的多筆 checkin（不會一堂扣多堂）。
- *  5. 過渡保護（預約制→自助切換期，既有已排課堂/既有簽到照舊有效）：
- *     a. 同一期「今天」已有任何簽到（含預約課堂由家長/教練/櫃檯簽）→ 409，杜絕跨模式一天雙扣；
- *     b. 今天已排、未簽到的預約課堂 → 直接簽進該堂（reused_booked_session=true，不另建），
- *        預約課堂不會變成佔堂數的幽靈課堂。
+ *  5. 預約與自助的分流（使用者決策 2026-08-04，順序不可對調）：
+ *     a. 先找「今天已排、尚未簽到的預約課堂」→ 直接簽進該堂
+ *        （reused_booked_session=true，不另建），預約課堂不會變成佔堂數的幽靈課堂。
+ *        這條**不受每日一堂限制**：家長可以連續預約兩個小時（兩格時段＝兩堂），
+ *        兩堂都要能各自簽到。堂數在預約當下就已經佔掉，簽到只是把它結掉，不會多扣。
+ *     b. 今天沒有可簽的預約課堂，才輪到「當場建一堂」的走客路徑；那裡才套用
+ *        每日一堂（既有簽到就擋 + uq_sessions_self_checkin_daily 硬保證），
+ *        因為走客沒有預約當憑據，重複按就是重複扣課。
+ *     逐堂簽到端點 POST /api/checkins/（預約簽到）本來就沒有每日限制，
+ *     其唯一性是 (course_session_id, student_id)，與這裡一致。
  * 家長不可自行撤銷（營運規則）；誤點由櫃檯走 DELETE /api/admin/checkins/self-sessions/:id。
  */
 router.post('/self', requireParent, async (req, res) => {
@@ -162,35 +168,24 @@ router.post('/self', requireParent, async (req, res) => {
       });
     }
 
-    // 過渡保護 1（預約制→自助切換期）：同一期「今天」已有任何簽到——不論是
-    // 預約課堂的逐堂簽到（家長/教練/櫃檯）或自助簽到——一律擋。每日一次的
-    // unique index 只涵蓋自助建立的課堂，這裡把跨模式的「一天雙扣」也關掉。
-    const todayCheckedIn = await client.query(
-      `SELECT 1 FROM checkin_records cr
-         JOIN course_sessions cs ON cs.id = cr.course_session_id
-        WHERE cs.course_period_id = $1
-          AND cs.status NOT IN ('cancelled_normal','cancelled_penalty')
-          AND cr.attendance_status = 'ATTENDED'
-          AND (cr.checked_in_at AT TIME ZONE 'Asia/Taipei')::date = (NOW() AT TIME ZONE 'Asia/Taipei')::date
-        LIMIT 1`,
-      [periodId]
-    );
-    if (todayCheckedIn.rowCount) {
-      await client.query('ROLLBACK');
-      return res.status(409).json({
-        error: '今日此課程已有簽到紀錄（每日限一堂）；如需更正請洽櫃檯',
-        code: 'ALREADY_CHECKED_IN_TODAY',
-      });
-    }
-
-    // 過渡保護 2：今天已排、尚未簽到的預約課堂 → 直接簽進「那一堂」，不另建課堂。
-    // 否則預約那堂會變成佔用堂數的幽靈課堂（家長看似扣了兩堂）。
+    // 順序很重要：先找「今天已排、還沒簽到的預約課堂」，有就簽進那一堂。
+    //
+    // 使用者決策 2026-08-04：預約簽到不受「當天只能簽一堂」限制——家長可以連續
+    // 預約兩個小時（兩格時段＝兩堂），兩堂都要能各自簽到。原本的順序是先擋
+    // 「今天已有任何簽到」，於是第二堂連檢查都到不了，家長會看到「每日限一堂」。
+    //
+    // 每日一堂的上限只保留給「當場建課堂」的走客路徑（下面的 else 分支）：
+    // 那裡沒有預約當憑據，重複按就是重複扣課。有預約的堂數在預約時就已經佔掉，
+    // 簽到只是把它結掉，不會多扣。
     const todayBooked = await client.query(
-      `SELECT id, scheduled_at FROM course_sessions
-        WHERE course_period_id = $1
-          AND status IN ('confirmed','completed')
-          AND (scheduled_at AT TIME ZONE 'Asia/Taipei')::date = (NOW() AT TIME ZONE 'Asia/Taipei')::date
-        ORDER BY scheduled_at
+      `SELECT cs.id, cs.scheduled_at FROM course_sessions cs
+        WHERE cs.course_period_id = $1
+          AND cs.status IN ('confirmed','completed')
+          AND (cs.scheduled_at AT TIME ZONE 'Asia/Taipei')::date = (NOW() AT TIME ZONE 'Asia/Taipei')::date
+          AND NOT EXISTS (
+                SELECT 1 FROM checkin_records cr
+                 WHERE cr.course_session_id = cs.id AND cr.attendance_status = 'ATTENDED')
+        ORDER BY cs.scheduled_at
         LIMIT 1`,
       [periodId]
     );
@@ -207,6 +202,26 @@ router.post('/self', requireParent, async (req, res) => {
         [sessionRow.id]
       );
     } else {
+      // 走客路徑：今天沒有可簽的預約課堂，才輪到「當場建一堂」。
+      // 這裡維持每日一堂：同一期今天已經有任何簽到就擋，避免重複扣課。
+      const todayCheckedIn = await client.query(
+        `SELECT 1 FROM checkin_records cr
+           JOIN course_sessions cs ON cs.id = cr.course_session_id
+          WHERE cs.course_period_id = $1
+            AND cs.status NOT IN ('cancelled_normal','cancelled_penalty')
+            AND cr.attendance_status = 'ATTENDED'
+            AND (cr.checked_in_at AT TIME ZONE 'Asia/Taipei')::date = (NOW() AT TIME ZONE 'Asia/Taipei')::date
+          LIMIT 1`,
+        [periodId]
+      );
+      if (todayCheckedIn.rowCount) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: '今日此課程已完成簽到；若還有其他預約堂數，請到「上課記錄」逐堂簽到，'
+            + '或洽櫃檯協助。',
+          code: 'ALREADY_CHECKED_IN_TODAY',
+        });
+      }
       // 堂數上限：非取消課堂（含預約制已排未上）達購買堂數即擋。
       // 只有「需要新建課堂」時才檢查——簽進既有課堂不會增加課堂數。
       const cap = await client.query(

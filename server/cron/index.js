@@ -23,6 +23,7 @@ const slotGenerator = require('../services/slotGenerator');
 const { isSlotSupplyEnabled } = require('../config/slotSupplyFlags');
 const bookingPolicy = require('../services/bookingPolicy');
 const slotsService = require('../services/slots');
+const { runWithLock } = require('./lock');
 const { applyDueScheduledCourseTypeChanges } = require('../services/courseTypeSchedule');
 
 // 對家長推播的 LIFF base URL；新版用 LIFF_URL_PARENT，舊版 LIFF_URL 為 fallback
@@ -88,15 +89,14 @@ function initCronJobs() {
     // 在那之前自動產生時段會讓家長約到教練無法拒絕的時間。
     // 開啟前置條件見 replit.md「自動時段供給」節；不得只用這個開關當唯一保護。
     if (!isSlotSupplyEnabled()) return;
-    try {
+    await runWithLock('slot_generation', async () => {
       const days = Number(process.env.SLOT_GEN_DAYS) || 21;
       const scope = process.env.SLOT_GEN_SCOPE === 'all' ? 'all' : 'active-periods';
       const r = await slotGenerator.generateAll({ days, scope });
       console.log(`[Cron/Slots] scope=${r.scope} coaches=${r.coaches} skipped=${r.skipped} `
         + `inserted=${r.inserted} carriedBlocked=${r.blocked} range=${r.fromDate}~${r.toDate}`);
-    } catch (err) {
-      console.warn('[Cron/Slots] 時段產生失敗:', err.code || err.message);
-    }
+      return r;
+    });
   });
 
   // ── 每 30 分鐘：逾時未簽到自動復原（模組 1）────────────────────────
@@ -107,33 +107,51 @@ function initCronJobs() {
   //   只處理 confirmed 且真的沒有任何 checkin_records 的堂，逐筆 try/catch。
   scheduleTaipei('*/30 * * * *', async () => {
     if (!isSlotSupplyEnabled()) return;
-    try {
+    // job lock：多實例（部署重疊、手動觸發）同時跑會對同一批 session 各自呼叫
+    // cancelSession。服務層雖然有 `WHERE status='confirmed'` 守門不會重複退堂數，
+    // 但兩邊都在掃同一批、寫同一批鏡射，純屬浪費且會互相卡鎖。
+    await runWithLock('slot_no_show_restore', async () => {
       const graceMin = bookingPolicy.NO_SHOW_GRACE_MINUTES;
+      // 時間下界：只回收「最近」逾時未簽到的堂。
+      //
+      // 沒有下界的話，這條 SQL 會匹配到資料庫裡所有歷史上「confirmed 但從未簽到」
+      // 的課堂——那是系統上線以來累積的資料，多半根本不是 no-show，而是舊流程沒有
+      // 補簽到、或匯入的歷史單。旗標一開，第一天就會把它們整批改成 cancelled 並
+      // 重算堂數，而且完全沒有人按下任何按鈕。這是不可逆的資料破壞。
+      //
+      // 歷史資料要處理就必須是一次有意識的 backfill（先 dry-run 出清單給人看），
+      // 不是讓一個每 30 分鐘的排程默默做掉。
+      const maxAgeHours = Number(process.env.BOOKING_NO_SHOW_MAX_AGE_HOURS) || 48;
       const due = await pool.query(
         `SELECT cs.id
            FROM course_sessions cs
           WHERE cs.status = 'confirmed'
             AND cs.scheduled_at + (cs.duration_minutes || ' minutes')::interval
                 + ($1 || ' minutes')::interval <= NOW()
+            AND cs.scheduled_at >= NOW() - ($2 || ' hours')::interval
             AND NOT EXISTS (SELECT 1 FROM checkin_records cr WHERE cr.course_session_id = cs.id)
           ORDER BY cs.scheduled_at
           LIMIT 200`,
-        [String(graceMin)]
+        [String(graceMin), String(maxAgeHours)]
       );
       let restored = 0;
+      let skipped = 0;
       for (const row of due.rows) {
         try {
-          // normal＝釋回槽位 + 歸還堂數，與家長自助取消同一條路徑
-          await slotsService.cancelSession(row.id, 'normal');
-          restored += 1;
+          // normal＝釋回槽位 + 重算堂數，與家長自助取消同一條路徑
+          const r = await slotsService.cancelSession(row.id, 'normal');
+          if (r && r.cancelled) restored += 1;
+          else skipped += 1; // 已簽到 / 已被取消：正常情況，不是錯誤
         } catch (e) {
           console.warn('[Cron/NoShowRestore] 單筆復原失敗（不影響其他筆）:', row.id, e.message);
         }
       }
-      if (restored) console.log(`[Cron/NoShowRestore] 逾時未簽到自動復原 ${restored} 堂（grace=${graceMin}分）`);
-    } catch (err) {
-      console.warn('[Cron/NoShowRestore] 失敗:', err.message);
-    }
+      if (restored || skipped) {
+        console.log(`[Cron/NoShowRestore] 復原 ${restored} 堂、略過 ${skipped} 堂`
+          + `（grace=${graceMin}分、只回收 ${maxAgeHours} 小時內）`);
+      }
+      return { restored, skipped, candidates: due.rowCount };
+    });
   });
 
   // ── 每 5 分鐘：補 active period 的 chat_room（防漂移；spec F-S09）──

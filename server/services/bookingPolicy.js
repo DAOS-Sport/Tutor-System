@@ -51,13 +51,23 @@ function isNoShowRestorable({ scheduledAt, durationMinutes = 60, hasCheckin }, n
   return now.getTime() >= endMs + NO_SHOW_GRACE_MINUTES * 60000;
 }
 
-/** 給家長看的文案：說明為什麼不能取消、以及該怎麼做。 */
-function cancelRejectMessage(reason, hoursUntil) {
+/**
+ * 給家長看的文案：說明為什麼不能取消、以及該怎麼做。
+ *
+ * autoRestoreEnabled 必須由呼叫端傳入實際狀態，不要寫死。
+ * 「時間過後會自動回復」這句話的兌現者是那支每 30 分鐘的 cron，而它第一行就是
+ * `if (!isSlotSupplyEnabled()) return;`。旗標預設關閉，所以在預設設定下這句是
+ * 空頭支票：家長被擋住不能取消，也等不到任何自動回復，那堂課就這樣消失。
+ * 旗標沒開時改成請洽櫃檯——櫃檯至少是真的能處理的窗口。
+ */
+function cancelRejectMessage(reason, hoursUntil, { autoRestoreEnabled = false } = {}) {
   if (reason === 'ALREADY_STARTED') return '此堂課已開始，無法取消';
   if (reason === 'TOO_LATE') {
     const h = Math.max(0, Math.floor(hoursUntil));
-    return `距離上課不到 ${CANCEL_DEADLINE_HOURS} 小時（剩約 ${h} 小時），無法自行取消。`
-      + '若無法出席，該堂課在時間過後會自動回復為可預約。';
+    const head = `距離上課不到 ${CANCEL_DEADLINE_HOURS} 小時（剩約 ${h} 小時），無法自行取消。`;
+    return autoRestoreEnabled
+      ? head + '若無法出席，該堂課在時間過後會自動回復為可預約。'
+      : head + '若無法出席，請直接聯繫櫃檯協助處理。';
   }
   return '此堂課目前無法取消，請洽櫃台';
 }
