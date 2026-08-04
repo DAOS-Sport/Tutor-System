@@ -223,17 +223,52 @@ router.patch('/:id/block', requireCoach, ensureSlotOwner, async (req, res) => {
   res.json(r.rows[0]);
 });
 
-// 解封必須清掉標記，否則記憶還在，下個週期又會把它建成 blocked，
-// 教練會覺得「我明明開回來了」。
+// 解封＝「這個每週時段重新開放」，必須把記憶一起清掉。
+//
+// 只清這一格的標記是不夠的：教練關掉的是 8/10(一)15:00（那筆有標記），產生器
+// 依記憶在 8/31(一)15:00 建了一格 blocked（那筆沒有標記，它只是記憶的結果）。
+// 教練在畫面上看到並解封的通常是後者——把後者的標記清掉等於沒清，8/10 那筆
+// 還在記憶範圍內，下一輪又會把 9/7 關掉。教練會覺得「我明明開回來了」。
+// 所以清掉的是「同一位教練、同一個星期幾＋同一個時刻」在回看範圍內的所有標記。
+//
+// 只清標記，不動其他列的狀態：批量畫面上看得到什麼就只改什麼，
+// 不去偷偷改教練沒有選到的其他日期。
 router.patch('/:id/unblock', requireCoach, ensureSlotOwner, async (req, res) => {
-  const r = await pool.query(
-    `UPDATE coach_availability_slots
-        SET status = 'available', blocked_by_coach_at = NULL, updated_at = NOW()
-     WHERE id = $1 AND status = 'blocked' RETURNING *`,
-    [req.params.id]
-  );
-  if (r.rows.length === 0) return res.status(409).json({ error: '只有 blocked 槽位可解封' });
-  res.json(r.rows[0]);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query(
+      `UPDATE coach_availability_slots
+          SET status = 'available', blocked_by_coach_at = NULL, updated_at = NOW()
+       WHERE id = $1 AND status = 'blocked' RETURNING *`,
+      [req.params.id]
+    );
+    if (r.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '只有 blocked 槽位可解封' });
+    }
+    const slot = r.rows[0];
+    const cleared = await client.query(
+      `UPDATE coach_availability_slots
+          SET blocked_by_coach_at = NULL, updated_at = NOW()
+        WHERE coach_id = $1
+          AND blocked_by_coach_at IS NOT NULL
+          AND EXTRACT(DOW FROM (start_at AT TIME ZONE 'Asia/Taipei'))
+              = EXTRACT(DOW FROM ($2::timestamptz AT TIME ZONE 'Asia/Taipei'))
+          AND (start_at AT TIME ZONE 'Asia/Taipei')::time
+              = ($2::timestamptz AT TIME ZONE 'Asia/Taipei')::time
+        RETURNING id`,
+      [slot.coach_id, slot.start_at]
+    );
+    await client.query('COMMIT');
+    return res.json({ ...slot, carry_memory_cleared: cleared.rowCount });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('[slots unblock]', err.message);
+    return res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
 });
 
 router.delete('/:id', requireCoach, ensureSlotOwner, async (req, res) => {

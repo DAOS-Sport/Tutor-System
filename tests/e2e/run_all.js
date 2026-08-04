@@ -35,6 +35,7 @@ const PATHS = [
   ['SlotSupply', 'slot_supply_e2e.js'],
   ['SlotSupplyPerm', 'slot_supply_permissions_smoke.js'],
   ['CoachAutoSlotVisible', 'coach_auto_slot_visibility.js'],
+  ['CoachBlockFlow', 'coach_block_flow.js'],
 ];
 
 // 已知未納入、尚待分流的 E2E。列在這裡不代表沒問題，只代表「有人知道它沒在跑」——
