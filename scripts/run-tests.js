@@ -27,6 +27,7 @@ const SERVER = path.join(ROOT, 'server');
 // 零外部相依：Ragic/LINE/物件儲存都是 stub 或純字串斷言，不碰 DB 也不出網路。
 const UNIT = [
   'tests/admin_group_order_filter_ui_test.js',
+  'tests/course_tier_price_test.js',
   'tests/force_trigger_outbox_cli_test.js',
   'tests/group_payment_proof_test.js',
   'tests/line_parent_bind_compat_test.js',
@@ -35,6 +36,7 @@ const UNIT = [
   'tests/object_storage_existence_test.js',
   'tests/piiMask_test.js',
   'tests/preflight_release_20260712_test.js',
+  'tests/promotion_label_test.js',
   'tests/ragic_data_no_visibility_test.js',
   'tests/ragic_freshness_test.js',
   'tests/ragic_h01_line_uid_test.js',

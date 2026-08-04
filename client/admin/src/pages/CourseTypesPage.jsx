@@ -16,9 +16,20 @@ const fmtDateTime = formatTWDateTime;
 const fmtDateTimeSec = formatTWDateTimeSeconds;
 const toLocalInput = toTaipeiDateTimeInput;
 const taipeiInputInstant = (value) => new Date(`${value}:00+08:00`).getTime();
-const FIELD_LABELS = { label: '名稱', base_price: '每期價格', min_students: '最少學生', max_students: '最多學生', is_active: '狀態', data_group: '資料管理群組', trial_enabled: '提供試上', trial_price: '試上單價' };
+const FIELD_LABELS = { label: '名稱', base_price: '每期價格', min_students: '最少學生', max_students: '最多學生', is_active: '狀態', data_group: '資料管理群組', trial_enabled: '提供試上', trial_price: '試上單價', tier_prices: '加成級距價格' };
+// 1.5 / '1.50' → '1.50'（與後端 services/coursePricing.js tierKey 同規則）
+const tierKey = (m) => (Number.isFinite(Number(m)) && Number(m) > 0 ? Number(m) : 1).toFixed(2);
+const tierPct = (m) => `${Math.round((Number(m) - 1) * 100)}%`;
+// 軌跡顯示：{'1.50':9000} → 「50% NT$ 9,000」；空的顯示「未設定」。
+const showTierPrices = (v) => {
+  if (!v || typeof v !== 'object') return '未設定';
+  const ks = Object.keys(v).sort();
+  if (!ks.length) return '未設定';
+  return ks.map((k) => `${tierPct(k)} ${fmtMoney(v[k])}`).join('、');
+};
 const showVal = (k, v) => (
-  k === 'base_price' ? fmtMoney(v)
+  k === 'tier_prices' ? showTierPrices(v)
+    : k === 'base_price' ? fmtMoney(v)
     : k === 'trial_price' ? (v == null || v === '' ? '未設定' : fmtMoney(v))
       : k === 'is_active' ? (v ? '啟用中' : '已停用')
         : k === 'trial_enabled' ? (v ? '提供' : '不提供')
@@ -100,6 +111,7 @@ export default function CourseTypesPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState({ course_type: '', label: '', min_students: '', max_students: '', base_price: '', data_group: '', trial_enabled: false, trial_price: '' });
   const [addErr, setAddErr] = useState('');
+  const [tiers, setTiers] = useState([]);   // 加成級距（只列 >1，1.00 就是每期價格本身）
   const [editing, setEditing] = useState(null); // 整列 + 表單狀態
   const [editErr, setEditErr] = useState('');
   const [activeTab, setActiveTab] = useState('basic'); // Ragic 卡片分頁：basic / eff / sys
@@ -119,6 +131,13 @@ export default function CourseTypesPage() {
     }
   }
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // 級距清單載入失敗不擋整頁（只是少了加成價格欄位），維持與軌跡載入相同的容錯策略。
+  useEffect(() => {
+    courseTypesApi.coachMultipliers()
+      .then((list) => setTiers((Array.isArray(list) ? list : [])
+        .map((x) => Number(x.multiplier)).filter((m) => Number.isFinite(m) && m > 1).sort((a, b) => a - b)))
+      .catch(() => setTiers([]));
+  }, []);
 
   async function toggleActive(row) {
     setSaving(row.course_type);
@@ -167,6 +186,8 @@ export default function CourseTypesPage() {
       data_group: row.data_group || '',
       trial_enabled: !!row.trial_enabled,
       trial_price: row.trial_price == null ? '' : String(row.trial_price),
+      // 各加成級距明價：字串態（空字串＝未設定，送出時會被後端丟掉）。
+      tier_prices: Object.fromEntries(Object.entries(row.tier_prices || {}).map(([k, v]) => [tierKey(k), String(v)])),
       // 生效方式 + 排程起訖（datetime-local 值；若已有排程則預填，方便修改）
       mode: 'immediate',
       scheduled_effective_date: toLocalInput(row.scheduled_effective_date),
@@ -182,7 +203,7 @@ export default function CourseTypesPage() {
       // 編輯軌跡（非同步載入）
       audit: null,
       auditOpen: false,
-      _live: { label: row.label, base_price: row.base_price, min_students: row.min_students, max_students: row.max_students, is_active: row.is_active, data_group: row.data_group, trial_enabled: row.trial_enabled, trial_price: row.trial_price },
+      _live: { label: row.label, base_price: row.base_price, min_students: row.min_students, max_students: row.max_students, is_active: row.is_active, data_group: row.data_group, trial_enabled: row.trial_enabled, trial_price: row.trial_price, tier_prices: row.tier_prices || null },
     });
     setEditErr('');
     setActiveTab('basic');
@@ -210,6 +231,8 @@ export default function CourseTypesPage() {
       data_group: editing.data_group.trim() || null,
       trial_enabled: editing.trial_enabled,
       trial_price: editing.trial_price === '' ? null : editing.trial_price,
+      // 空字串的級距不送值 → 後端 normalizeTierPrices 會丟掉 → 該級距回退「每期價格 x 加成」。
+      tier_prices: editing.tier_prices || {},
     };
     // 排程：選「排程生效」必選生效起日；起日在未來＝排程，此時「生效迄日」必填且需晚於起日。
     // 起日在過去/現在 → 後端視為立即生效（不需迄日）。
@@ -364,6 +387,27 @@ export default function CourseTypesPage() {
                 {ecell({ field: 'trial_enabled', type: 'select', options: ['提供', '不提供'], display: editing.trial_enabled ? '提供' : '不提供', editValue: editing.trial_enabled ? '提供' : '不提供', apply: (v) => setEditing((s) => ({ ...s, trial_enabled: v === '提供' })) })}
                 <div className="lbl">試上單價（每人，NT$）</div>
                 {ecell({ field: 'trial_price', type: 'number', display: editing.trial_price, editValue: editing.trial_price, placeholder: '未設定（自動推算）', apply: (v) => setEditing((s) => ({ ...s, trial_price: v })) })}
+
+                {tiers.map((m) => {
+                  const k = tierKey(m);
+                  return (
+                    <React.Fragment key={k}>
+                      <div className="lbl">加成 {tierPct(m)} 價格（每人，NT$）</div>
+                      {ecell({
+                        field: `tier_${k}`, type: 'number',
+                        display: editing.tier_prices?.[k] ?? '',
+                        editValue: editing.tier_prices?.[k] ?? '',
+                        placeholder: '未設定',
+                        apply: (v) => setEditing((s) => ({ ...s, tier_prices: { ...(s.tier_prices || {}), [k]: v } })),
+                      })}
+                    </React.Fragment>
+                  );
+                })}
+                {tiers.length > 0 && (
+                  <div style={{ gridColumn: '1 / -1', padding: '7px 11px', background: '#fbfcfd', borderRight: '1px solid #c9d4e0', borderBottom: '1px solid #c9d4e0', fontSize: 12, color: '#5e6b7a' }}>
+                    加成級距價格留空＝該級距沿用「每期價格 × 加成倍率」自動計算；填了就以填的為準（成交金額以此為唯一來源）。
+                  </div>
+                )}
               </div>
             </div>
           )}

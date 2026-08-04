@@ -11,11 +11,12 @@ const express = require('express');
 const { pool } = require('../../models/db');
 const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
 const { applyDueScheduledCourseTypeChanges } = require('../../services/courseTypeSchedule');
+const { normalizeTierPrices } = require('../../services/coursePricing');
 
 const router = express.Router();
 const AM = requireAdminRole('admin', 'manager');
 
-const EDITABLE_FIELDS = ['label', 'min_students', 'max_students', 'is_active', 'base_price', 'data_group', 'trial_enabled', 'trial_price'];
+const EDITABLE_FIELDS = ['label', 'min_students', 'max_students', 'is_active', 'base_price', 'data_group', 'trial_enabled', 'trial_price', 'tier_prices'];
 const pad2 = (n) => String(n).padStart(2, '0');
 
 // datetime-local（YYYY-MM-DDTHH:MM）或純日期 → 以台北固定時區 +08:00 解讀的 Date（無法解析回 null）。
@@ -35,15 +36,26 @@ function taipeiStr(d) {
 }
 // 只記實際變動的白名單欄位 → { field: { before, after } }；無變動回 null。
 // 數值欄位（如 base_price：PG DECIMAL 回 "9000.00" 字串 vs 數字 9000）以數值比較，避免假變動。
+// key 排序後序列化：jsonb 讀回來的 key 順序不保證與寫入時相同，直接比字串會誤判成「有變動」。
+function stableJson(v) {
+  if (v === null || v === undefined) return 'null';
+  if (typeof v !== 'object') return JSON.stringify(v);
+  if (Array.isArray(v)) return '[' + v.map(stableJson).join(',') + ']';
+  return '{' + Object.keys(v).sort().map((k) => JSON.stringify(k) + ':' + stableJson(v[k])).join(',') + '}';
+}
 function diffChanges(before, after, fields) {
   const out = {};
   for (const k of fields) {
     const b = before?.[k];
     const a = after?.[k];
+    const isObj = (x) => x !== null && x !== undefined && typeof x === 'object';
     const bn = Number(b);
     const an = Number(a);
     const numeric = b !== null && b !== '' && a !== null && a !== '' && Number.isFinite(bn) && Number.isFinite(an);
-    const same = numeric ? bn === an : String(b ?? '') === String(a ?? '');
+    // 物件欄位（tier_prices）走 stableJson —— 走 String() 會兩邊都變 "[object Object]"，永遠判定沒變動。
+    const same = (isObj(b) || isObj(a))
+      ? stableJson(b ?? null) === stableJson(a ?? null)
+      : (numeric ? bn === an : String(b ?? '') === String(a ?? ''));
     if (!same) out[k] = { before: b ?? null, after: a ?? null };
   }
   return Object.keys(out).length ? out : null;
@@ -64,7 +76,7 @@ router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'),
     const r = await pool.query(
       `SELECT course_type, label, min_students, max_students,
               base_price::float8 AS base_price, is_active, sort_order,
-              trial_enabled, trial_price::float8 AS trial_price,
+              trial_enabled, trial_price::float8 AS trial_price, tier_prices,
               created_at, updated_at, data_group, effective_date, effective_until,
               scheduled_effective_date, scheduled_effective_until, pending_changes,
               CURRENT_DATE AS current_date
@@ -80,7 +92,7 @@ router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'),
 router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
   const client = await pool.connect();
   try {
-    const { course_type, label, max_students, min_students, base_price, data_group, trial_enabled, trial_price } = req.body || {};
+    const { course_type, label, max_students, min_students, base_price, data_group, trial_enabled, trial_price, tier_prices } = req.body || {};
     // 依需求「拿掉所有驗證」：除主鍵 course_type 仍需可解析為整數外，其餘欄位不檢查範圍/長度/大小關係，
     // 僅做型別解析與安全預設（避免 NaN/NULL 寫入 NOT NULL 欄位）。
     const ct = parseInt(course_type, 10);
@@ -99,17 +111,19 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
     const te = Boolean(trial_enabled);
     const tpParsed = Number(trial_price);
     const tp = trial_price == null || trial_price === '' || !Number.isFinite(tpParsed) ? null : tpParsed;
+    // 各加成級距明價：未填的級距不落庫（＝沿用 base_price x 加成）。
+    const tprc = normalizeTierPrices(tier_prices);
 
     await client.query('BEGIN');
     const maxOrder = await client.query(`SELECT COALESCE(MAX(sort_order),0) AS m FROM course_type_configs`);
     const nextOrder = maxOrder.rows[0].m + 1;
 
     const r = await client.query(
-      `INSERT INTO course_type_configs (course_type, label, min_students, max_students, sort_order, base_price, data_group, trial_enabled, trial_price, effective_date, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,CURRENT_DATE,NOW())
+      `INSERT INTO course_type_configs (course_type, label, min_students, max_students, sort_order, base_price, data_group, trial_enabled, trial_price, tier_prices, effective_date, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,CURRENT_DATE,NOW())
        ON CONFLICT (course_type) DO NOTHING
        RETURNING *`,
-      [ct, lb, mn, ms, nextOrder, bp, dg, te, tp]
+      [ct, lb, mn, ms, nextOrder, bp, dg, te, tp, tprc === null ? null : JSON.stringify(tprc)]
     );
     if (!r.rowCount) {
       await client.query('ROLLBACK');
@@ -130,6 +144,7 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
       data_group: { before: null, after: dg },
       trial_enabled: { before: null, after: te },
       trial_price: { before: null, after: tp },
+      tier_prices: { before: null, after: tprc },
     }, null);
     await client.query('COMMIT');
     res.status(201).json(r.rows[0]);
@@ -205,7 +220,11 @@ router.patch('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, 
       }
     }
 
-    const next = { label, min_students, max_students, is_active, base_price, data_group, trial_enabled, trial_price };
+    // tier_prices 允許清空（null / 空物件 → NULL，所有級距回退 base_price x 加成）；未提供則沿用現值。
+    let tier_prices = row.tier_prices || null;
+    if (p.tier_prices !== undefined) tier_prices = normalizeTierPrices(p.tier_prices);
+
+    const next = { label, min_students, max_students, is_active, base_price, data_group, trial_enabled, trial_price, tier_prices };
 
     // 生效方式：scheduled_effective_date 接受 datetime-local（YYYY-MM-DDTHH:MM）或純日期，
     // 以台北固定時區 +08:00 解讀。> 現在 → 排程；否則（過去／現在／無法解析）→ 立即生效。
@@ -240,11 +259,12 @@ router.patch('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, 
       const r = await client.query(
         `UPDATE course_type_configs
             SET label=$2, max_students=$3, is_active=$4, base_price=$5, min_students=$6, data_group=$7,
-                trial_enabled=$8, trial_price=$9,
+                trial_enabled=$8, trial_price=$9, tier_prices=$10::jsonb,
                 effective_date=CURRENT_DATE, scheduled_effective_date=NULL, scheduled_effective_until=NULL,
                 pending_changes=NULL, updated_at=NOW()
           WHERE course_type=$1 RETURNING *`,
-        [ct, label, max_students, is_active, base_price, min_students, data_group, trial_enabled, trial_price]
+        [ct, label, max_students, is_active, base_price, min_students, data_group, trial_enabled, trial_price,
+         tier_prices === null ? null : JSON.stringify(tier_prices)]
       );
       result = r.rows[0];
       // label 變更 → 同步未被覆寫的介紹 title

@@ -22,6 +22,7 @@ const { parseProofInput } = require('../../services/paymentProof');
 const { logGroupOrderAudit } = require('../../services/groupOrderAudit');
 const line = require('../../services/line');
 const promotions = require('../../services/promotions');
+const { resolveUnitPrice } = require('../../services/coursePricing');
 const {
   validateRequestId,
   payloadFingerprint,
@@ -270,7 +271,7 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
     }
 
     // 課程基準價 + 教練倍率（與一般報名一致）
-    const cfg = await client.query(`SELECT base_price FROM course_type_configs WHERE course_type = $1`, [order.course_type]);
+    const cfg = await client.query(`SELECT base_price, tier_prices FROM course_type_configs WHERE course_type = $1`, [order.course_type]);
     const basePrice = cfg.rowCount ? Number(cfg.rows[0].base_price) || 0 : 0;
     let coachName = null;
     let multiplier = 1;
@@ -278,7 +279,7 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
       const cr = await client.query(`SELECT name, pricing_multiplier FROM coaches WHERE id = $1`, [order.coach_id]);
       if (cr.rowCount) { coachName = cr.rows[0].name; multiplier = Number(cr.rows[0].pricing_multiplier) || 1; }
     }
-    const perStudent = Math.round(basePrice * multiplier);
+    const perStudent = resolveUnitPrice(basePrice, multiplier, cfg.rowCount ? cfg.rows[0].tier_prices : null);
     // U9：一張團報訂單可購買多期；每位成員費用 = 單期價 × 學生數 × 期數。
     const periodCount = Number(order.period_count) || 1;
 

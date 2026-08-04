@@ -23,6 +23,7 @@ const {
   acquireRequestLock,
 } = require('../services/idempotency');
 const { requireParent } = require('../middlewares/parentAuth');
+const { resolveUnitPrice } = require('../services/coursePricing');
 const {
   createCheckoutSession,
   refreshCheckoutTotal,
@@ -261,7 +262,7 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'invalid course_type' });
     }
     const cfgRes = await client.query(
-      `SELECT base_price, is_active, max_students, trial_enabled, trial_price FROM course_type_configs WHERE course_type = $1`,
+      `SELECT base_price, is_active, max_students, trial_enabled, trial_price, tier_prices FROM course_type_configs WHERE course_type = $1`,
       [courseTypeNum]
     );
     if (cfgRes.rowCount && cfgRes.rows[0].is_active === false) {
@@ -316,7 +317,7 @@ router.post('/', async (req, res) => {
       });
     }
     // U10：費用 = 單期單生價(base×倍率) × 學生數 × 期數（server-authoritative，忽略 client 金額）。
-    const unitPrice = Math.round(basePrice * multiplier);
+    const unitPrice = resolveUnitPrice(basePrice, multiplier, cfgRes.rows[0] && cfgRes.rows[0].tier_prices);
     const studentCount = Array.isArray(p.students) ? p.students.length : 0;
     const periodCount = (() => {
       const n = parseInt(p.period_count, 10);

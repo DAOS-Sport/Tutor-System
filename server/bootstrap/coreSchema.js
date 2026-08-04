@@ -166,6 +166,9 @@ DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS effective_u
 --   價格快照仍於下單當下落 admin_enrollments.original_price，此處只是來源主資料。
 DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS trial_enabled BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS trial_price NUMERIC(10,2); EXCEPTION WHEN undefined_table THEN NULL; END $$;
+-- 各教練加成級距的明價，形如 {"1.20":8500,"1.50":10500}（key = pricing_multiplier 兩位小數）。
+-- 未列出的級距 → 沿用 base_price x 加成（既有行為）。單一計算來源：services/coursePricing.js
+DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS tier_prices JSONB; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 -- F-A07 排程生效支援「日期＋時間」：scheduled_effective_date 由 DATE 升級為 TIMESTAMPTZ。
 -- 僅在仍為 date 時轉換（既有日期值以台北時區午夜為準），避免每次開機重寫整表。
 DO $$ BEGIN

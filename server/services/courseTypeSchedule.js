@@ -10,7 +10,7 @@
 const { pool } = require('../models/db');
 
 // 可被排程套用的白名單欄位（避免 pending_changes JSON 被塞入非預期欄位）。
-const EDITABLE = ['label', 'min_students', 'max_students', 'is_active', 'base_price', 'data_group', 'trial_enabled', 'trial_price'];
+const EDITABLE = ['label', 'min_students', 'max_students', 'is_active', 'base_price', 'data_group', 'trial_enabled', 'trial_price', 'tier_prices'];
 
 async function applyDueScheduledCourseTypeChanges(db = pool) {
   const due = await db.query(
@@ -26,7 +26,15 @@ async function applyDueScheduledCourseTypeChanges(db = pool) {
     const sets = [];
     const vals = [row.course_type];
     for (const k of EDITABLE) {
-      if (pc[k] !== undefined) { vals.push(pc[k]); sets.push(`${k} = $${vals.length}`); }
+      if (pc[k] === undefined) continue;
+      // tier_prices 是 jsonb：明確轉型，否則 pg 送出的 JSON 會被當 text 而失敗。
+      if (k === 'tier_prices') {
+        vals.push(pc[k] === null ? null : JSON.stringify(pc[k]));
+        sets.push(`${k} = $${vals.length}::jsonb`);
+      } else {
+        vals.push(pc[k]);
+        sets.push(`${k} = $${vals.length}`);
+      }
     }
     // 即使 pending 沒有任何白名單欄位，也要把排程清掉、生效起日推進，避免卡住。
     // scheduled_* 為 timestamptz、effective_* 為 date → 取台北日期；迄日由 scheduled_effective_until 帶入。

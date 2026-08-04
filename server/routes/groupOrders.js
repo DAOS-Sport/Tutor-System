@@ -24,6 +24,7 @@ const ragicWriteback = require('../services/ragicWriteback');
 const line = require('../services/line');
 const promotions = require('../services/promotions');
 const { logGroupOrderAudit } = require('../services/groupOrderAudit');
+const { resolveUnitPrice } = require('../services/coursePricing');
 
 // 家長端操作者標記：token 只含 id/phone，櫃檯亦以手機辨識家長。
 const parentActor = (req) => `家長 ${req.parent?.phone || req.parent?.id || 'unknown'}`;
@@ -234,7 +235,7 @@ function shapeMember(m, isSelf, perStudent, periodCount) {
 // 回 { order, members(raw) } 或 null
 async function loadOrderWithMembers(client, orderId) {
   const o = await client.query(
-    `SELECT go.*, ctc.base_price, COALESCE(co.pricing_multiplier, 1) AS multiplier,
+    `SELECT go.*, ctc.base_price, ctc.tier_prices, COALESCE(co.pricing_multiplier, 1) AS multiplier,
             co.name AS coach_name,
             v.name AS venue_name,
             COALESCE(NULLIF(av.account_holder, ''), v.account_holder) AS account_holder,
@@ -263,7 +264,7 @@ async function loadOrderWithMembers(client, orderId) {
 
 // 單期單生價（四捨五入），供每家金額計算；order 須帶 base_price/multiplier（loadOrderWithMembers 附帶）。
 function perStudentPrice(order) {
-  return Math.round((Number(order.base_price) || 0) * (Number(order.multiplier) || 1));
+  return resolveUnitPrice(order.base_price, order.multiplier, order.tier_prices);
 }
 
 /**
@@ -508,7 +509,7 @@ router.post('/', async (req, res) => {
     await client.query('BEGIN');
 
     const cfg = await client.query(
-      `SELECT course_type, min_students, max_students, is_active, base_price
+      `SELECT course_type, min_students, max_students, is_active, base_price, tier_prices
          FROM course_type_configs WHERE course_type = $1`,
       [courseType]
     );
@@ -554,7 +555,7 @@ router.post('/', async (req, res) => {
     // 之所以在發起時就鎖定：團購是先轉帳後審核，家長在 forming 階段就照畫面金額付款，
     // 折扣不能等到核准才算（那時錢已經匯出去了）。快照落地後，即使促銷被下架或改內容，
     // 本團金額也不會變 —— 保證「看到的 = 轉的 = 核准的」。
-    const perStudentAtCreate = Math.round((Number(cfg.rows[0].base_price) || 0) * coachMultiplier);
+    const perStudentAtCreate = resolveUnitPrice(cfg.rows[0].base_price, coachMultiplier, cfg.rows[0].tier_prices);
     const leaderOriginal = perStudentAtCreate * bound.names.length * periodCount;
     let promoId = null;
     let promoSnapshot = null;
@@ -789,7 +790,7 @@ router.post('/by-token/:token/join', async (req, res) => {
     // U14：依團購鎖定的促銷快照，替「這一家」獨立算折扣並落地金額。
     // 需要 base_price / multiplier 才能算單生價，故補查（order 是 group_orders 原始列，不含這兩欄）。
     const pr = await client.query(
-      `SELECT ctc.base_price, COALESCE(co.pricing_multiplier, 1) AS multiplier
+      `SELECT ctc.base_price, ctc.tier_prices, COALESCE(co.pricing_multiplier, 1) AS multiplier
          FROM group_orders go
          LEFT JOIN course_type_configs ctc ON ctc.course_type = go.course_type
          LEFT JOIN coaches co ON co.id = go.coach_id
@@ -797,7 +798,7 @@ router.post('/by-token/:token/join', async (req, res) => {
       [order.id]
     );
     const joinAmt = computeMemberAmount(
-      { ...order, base_price: pr.rows[0]?.base_price, multiplier: pr.rows[0]?.multiplier },
+      { ...order, base_price: pr.rows[0]?.base_price, multiplier: pr.rows[0]?.multiplier, tier_prices: pr.rows[0]?.tier_prices },
       bound.names.length
     );
     const jm = await client.query(
