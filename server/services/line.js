@@ -15,20 +15,8 @@ const BRAND = {
   white:    '#ffffff',
 };
 
-// 場館代號 → 獨立環境變數的別名。
-//
-// token 有兩種設定方式，都支援：
-//   1. LINE_MESSAGING_TOKENS   一個 JSON，key＝venue_id，例如 {"B":"...","K":"..."}
-//   2. LINE_MESSAGING_TOKEN_X  一個場館一個變數
-// 第 2 種的變數名歷史上用的是館名（NEWPEI / SANCHONG / …）而不是 venue_id，
-// 所以這裡留一份對照。新增場館時建議直接用 LINE_MESSAGING_TOKEN_<venue_id>，
-// 不必再往這張表加東西。
-const VENUE_ENV_ALIAS = {
-  B: ['NEWPEI', 'XINBEI'],   // 新北高中
-  K: ['SANCHONG'],           // 三重商工
-  L: ['SANMIN'],             // 三民高中
-  C: ['SONGSHAN'],           // 松山國小
-};
+// 場館代號 ↔ 館名別名，與 lineRouting 共用同一份（兩份會漂移，實際已經漂過一次）。
+const { VENUE_ENV_ALIAS } = require('./lineRouting');
 
 // 已警告過的場館（避免 cron 迴圈裡每個收件人都刷一行相同的錯誤，把真正的問題淹掉）。
 const _warnedMissingToken = new Set();
@@ -43,11 +31,20 @@ function getToken(venueId) {
   }
   const clean = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
 
-  let token = clean(tokens[venueId]);
+  // 候選名稱：場館代號本身，加上該館的館名別名。
+  // 兩種設定方式的 key/變數名都可能用其中任一種寫法，全部試過才算沒有。
+  const names = [String(venueId), ...(VENUE_ENV_ALIAS[venueId] || [])];
 
-  // (2) 獨立環境變數：先試 venue_id 本身，再試館名別名
+  // (1) JSON：key 可能是場館代號（"B"），也可能是館名（"Songshan"）。大小寫不敏感 ——
+  //     實際資料裡就是 "Songshan" 這種混合大小寫，硬要求全等會查不到。
+  let token = null;
+  const wanted = new Set(names.map((n) => n.toLowerCase()));
+  for (const [k, v] of Object.entries(tokens)) {
+    if (wanted.has(String(k).toLowerCase())) { token = clean(v); if (token) break; }
+  }
+
+  // (2) 獨立環境變數 LINE_MESSAGING_TOKEN_<場館代號 或 館名>
   if (!token) {
-    const names = [String(venueId), ...(VENUE_ENV_ALIAS[venueId] || [])];
     for (const n of names) {
       token = clean(process.env['LINE_MESSAGING_TOKEN_' + n]);
       if (token) break;
