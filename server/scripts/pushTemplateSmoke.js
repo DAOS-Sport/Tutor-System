@@ -39,6 +39,8 @@ const AT = '2026-08-06T14:00:00+08:00';
 // 每個模板配一組看得懂的假資料。刻意用「範例」字樣，避免收件者誤以為是真的通知。
 const SAMPLES = {
   enrollmentSuccess:     { coachName: '範例教練', venueName: '範例場館', courseType: '1 對 1', finalPrice: 6900, liffUrl: LIFF },
+  checkinConfirmed:      { studentName: '範例學員', coachName: '範例教練', venueName: '範例場館', checkedInAt: AT, liffUrl: LIFF },
+  checkinConfirmedToCoach: { parentName: '範例家長', studentName: '範例學員', courseType: '1 對 2', venueName: '範例場館', checkedInAt: AT, source: 'parent' },
   groupSubmitted:        { total: 4, venueName: '範例場館', courseType: '1 對 3', liffUrl: LIFF },
   courseActivated:       { coachName: '範例教練', venueName: '範例場館', liffUrl: LIFF },
   slotBooked:            { coachName: '範例教練', venueName: '範例場館', scheduledAt: AT, liffUrl: LIFF },

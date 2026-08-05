@@ -57,6 +57,8 @@ async function loadCheckins(db, sessionId, studentIds) {
     `SELECT cr.id AS checkin_id, cr.checked_in_at, cr.checked_in_source,
             s.name AS student_name,
             p.line_uid AS parent_uid,
+            p.name AS parent_name,
+            cp.course_type AS course_type,
             p.primary_venue_id AS parent_venue_id,
             p.line_login_channel_id AS parent_login_channel,
             co.name AS coach_name, co.line_uid AS coach_uid,
@@ -102,7 +104,9 @@ async function notifyCheckin(sessionId, studentIds, db = pool) {
           const res = await line.pushMessage(
             r.coach_uid,
             line.templates.checkinConfirmedToCoach({
+              parentName: r.parent_name,
               studentName: r.student_name,
+              courseType: r.course_type ? '1 對 ' + r.course_type : null,
               venueName: r.venue_name || r.venue_id,
               checkedInAt: when,
               source: r.checked_in_source,

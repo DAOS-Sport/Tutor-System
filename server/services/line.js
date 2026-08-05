@@ -737,18 +737,23 @@ function checkinConfirmed({ studentName, coachName, venueName, checkedInAt, liff
 }
 
 // 簽到確認 → 教練（家長自助簽到或櫃台補登時通知；教練自己簽的不再通知他自己）
-function checkinConfirmedToCoach({ studentName, venueName, checkedInAt, source }) {
+function checkinConfirmedToCoach({ parentName, studentName, courseType, venueName, checkedInAt, source }) {
   const from = source === 'staff' ? '櫃台補登' : '家長自助簽到';
+  // 教練要一眼看出「哪位家長、什麼課、誰要上」，所以主標是家長，學員放在組別下面。
+  const who = parentName || studentName || '家長';
   return [{
-    type: 'flex', altText: `${studentName} 已簽到（${from}）`,
+    type: 'flex', altText: `${who} 已簽到`,
     contents: {
       type: 'bubble',
-      header: flexHeader('📋 學員已簽到', BRAND.primary),
+      header: flexHeader('📋 已簽到', BRAND.primary),
       body: {
         type: 'box', layout: 'vertical', spacing: 'sm',
         contents: [
-          { type: 'text', text: studentName, size: 'lg', weight: 'bold', wrap: true },
-          { type: 'text', text: `簽到時間：${twTime(checkedInAt)}`, size: 'sm', weight: 'bold' },
+          { type: 'text', text: who, size: 'lg', weight: 'bold', wrap: true },
+          ...(courseType ? [{ type: 'text', text: `組別：${courseType}`, size: 'sm', weight: 'bold' }] : []),
+          // 沒有家長姓名時 who 已經退回學員名，這裡就不再重複一次。
+          ...(studentName && studentName !== who ? [{ type: 'text', text: `學員：${studentName}`, size: 'sm' }] : []),
+          { type: 'text', text: `簽到時間：${twTime(checkedInAt)}`, size: 'sm' },
           ...(venueName ? [{ type: 'text', text: `場館：${venueName}`, size: 'sm' }] : []),
           { type: 'text', text: `來源：${from}`, size: 'xs', color: '#888888' },
         ],
