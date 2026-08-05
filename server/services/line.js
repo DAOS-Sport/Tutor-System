@@ -15,48 +15,65 @@ const BRAND = {
   white:    '#ffffff',
 };
 
+// 場館代號 → 獨立環境變數的別名。
+//
+// token 有兩種設定方式，都支援：
+//   1. LINE_MESSAGING_TOKENS   一個 JSON，key＝venue_id，例如 {"B":"...","K":"..."}
+//   2. LINE_MESSAGING_TOKEN_X  一個場館一個變數
+// 第 2 種的變數名歷史上用的是館名（NEWPEI / SANCHONG / …）而不是 venue_id，
+// 所以這裡留一份對照。新增場館時建議直接用 LINE_MESSAGING_TOKEN_<venue_id>，
+// 不必再往這張表加東西。
+const VENUE_ENV_ALIAS = {
+  B: ['NEWPEI', 'XINBEI'],   // 新北高中
+  K: ['SANCHONG'],           // 三重商工
+  L: ['SANMIN'],             // 三民高中
+  C: ['SONGSHAN'],           // 松山國小
+};
+
 // 已警告過的場館（避免 cron 迴圈裡每個收件人都刷一行相同的錯誤，把真正的問題淹掉）。
 const _warnedMissingToken = new Set();
 
 function getToken(venueId) {
+  // (1) JSON 形式
   let tokens = {};
   try {
     tokens = JSON.parse(process.env.LINE_MESSAGING_TOKENS || '{}');
   } catch (e) {
-    // JSON 壞掉時整個推播都會死，而且訊息會變成難懂的 SyntaxError —— 講清楚是哪裡的問題。
     throw new Error('LINE_MESSAGING_TOKENS 不是合法 JSON，所有場館推播都會失敗，請檢查 Replit Secrets');
   }
-  const token = tokens[venueId];
+  const clean = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+
+  let token = clean(tokens[venueId]);
+
+  // (2) 獨立環境變數：先試 venue_id 本身，再試館名別名
+  if (!token) {
+    const names = [String(venueId), ...(VENUE_ENV_ALIAS[venueId] || [])];
+    for (const n of names) {
+      token = clean(process.env['LINE_MESSAGING_TOKEN_' + n]);
+      if (token) break;
+    }
+  }
+
   if (!token) {
     // 每個場館只印一次完整診斷：講清楚「設了哪些、缺哪個、去哪裡補」。
-    // 沒有這段的話，production 上的症狀就是滿屏 "No LINE token for venue: X"，
-    // 但看不出是「整個變數沒設」還是「只少了某一館」。
     if (!_warnedMissingToken.has(venueId)) {
       _warnedMissingToken.add(venueId);
-      const configured = Object.keys(tokens);
+      const fromJson = Object.keys(tokens);
+      const fromEnv = Object.keys(process.env)
+        .filter((k) => k.startsWith('LINE_MESSAGING_TOKEN_'))
+        .map((k) => k.replace('LINE_MESSAGING_TOKEN_', ''));
       console.error(
-        `[line] 場館 ${venueId} 沒有 Messaging API token，該館所有 LINE 推播都會失敗（評鑑提醒／團購通知／退回補件通知等）。`
-        + ` 目前 LINE_MESSAGING_TOKENS 已設定的場館：${configured.length ? configured.join(', ') : '（空的）'}。`
-        + ` 請到 Replit Secrets 補上，格式：{"B":"<token>","K":"<token>","L":"<token>"}`
+        '[line] 場館 ' + venueId + ' 沒有 Messaging API token，該館所有 LINE 推播都會失敗。'
+        + ' LINE_MESSAGING_TOKENS 內的 key：' + (fromJson.length ? fromJson.join(', ') : '（空）')
+        + '；獨立變數 LINE_MESSAGING_TOKEN_*：' + (fromEnv.length ? fromEnv.join(', ') : '（無）')
+        + '。請設 LINE_MESSAGING_TOKEN_' + venueId + '，或在 LINE_MESSAGING_TOKENS 內加上 "' + venueId + '"。'
       );
     }
-    throw new Error(`No LINE token for venue: ${venueId}`);
+    throw new Error('No LINE token for venue: ' + venueId);
   }
   return token;
 }
 
-/**
- * 送出一則推播。所有推播都必須走這裡 —— services/pushGate.js 是唯一的安全閥。
- *
- * opts（皆選填）：
- *   event         事件代號。未給＝'legacy'，涵蓋既有 20 個呼叫點；它們預設是關的，
- *                 所以修好 token key 之後也不會突然全部開始送給真實客戶。
- *   refId         去重用的業務主鍵。給了就保證同一對象同一事件只送一次。
- *   recipientKind 'parent' / 'coach' / 'admin'，只為了事後查得出來送給誰。
- *
- * 回傳 { sent, reason }。被閘擋下不算錯誤，不 throw；真的送失敗才 throw，
- * 讓既有呼叫點的 try/catch 行為維持不變。
- */
 async function pushMessage(lineUserId, messages, venueId, opts = {}) {
   const event = opts.event || 'legacy';
   const meta = {
@@ -684,3 +701,6 @@ module.exports = {
     adminPasswordReset,
   },
 };
+
+// 供維運診斷用：只回「拿不拿得到」，呼叫端不得印出回傳值。
+module.exports._getTokenForDiagnostics = getToken;
