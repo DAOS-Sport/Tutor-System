@@ -1,106 +1,138 @@
 /**
  * LINE 推播路由 —— 決定「這個人該用哪個官方帳號推」。
  *
- * ── 兩層判斷，順序不可顛倒 ──
- *   第一層（正確性）：uid 屬於哪個 provider？
- *       LINE 的 userId 是 per-provider 的。uid 從哪個 Login channel 發出來，就只能用
- *       同 provider 的 Messaging channel 推回去，跨 provider 必定 404。
- *       來源記在 parents/coaches.line_login_channel_id（登入時由 lineIdentity 寫入）；
- *       沒有記錄就退回環境變數的現行 Login channel。
- *   第二層（意圖）：在那個 provider 底下，這個角色該送哪一個帳號？
- *       教練 → 內部帳號；家長 → 自己主場館的帳號。
+ * ── 核心事實 ──
+ * LINE 的 userId 是「每個 provider 各自獨立」的。uid 從哪個 Login channel 發出來，
+ * 就只能用同 provider 的 Messaging channel 推回去，跨 provider 必定 404。
+ * 所以規則很單純：**從哪個 provider 進來，就推回哪個 provider。**
  *
- * 先判 provider 再判角色，是因為「家長要從各館推」是意圖，而「uid 對不對得上」
- * 是事實。事實不成立時寧可不送並記錄原因，也不要送出一整排 404。
+ * ── 本專案的 provider 結構 ──
+ *   各場館：LINE_LOGIN_ID_<NAME>  +  LINE_MESSAGING_TOKEN_<NAME>   （家長）
+ *   員工：  LINE_LOGIN_CHANNEL_ID +  LINE_MESSAGING_TOKENS.dreams400（教練）
+ * <NAME> 是兩者的接合鍵（NEWPEI / SANCHONG / SANMIN / SONGSHAN），
+ * 所以路由表用環境變數即時組出來 —— 新增場館只要加那兩個 Secret，程式不用改。
  *
- * ── 現況（2026-08-05 實測）──
- * 目前只有一個 Login channel（2009958451），它同 provider 底下只有 dreams400，
- * 所以家長與教練都路由到 dreams400。四個場館 OA 在另一個 provider，
- * 家長 uid 對它們的可達率實測 0/36 —— 加好友也沒用。
- * 等家長端 LIFF 換到場館那個 provider 的 Login channel 後，在下面補一組設定，
- * 家長就會自動改推到自己的場館帳號，程式不用改。
+ * ── 邊界 ──
+ * 家長只能走自己場館的官方帳號。dreams400 是員工在用的內部窗口，
+ * 把家長通知送進去，家長收不到、員工被灌一堆不相干的訊息 —— 刻意沒有保底值。
+ * 查不到目的地就回 null，呼叫端記錄原因並跳過，絕不試別的 channel。
  */
+
+// 場館代號 → 環境變數用的名稱。第一個是主要名稱，其餘為歷史別名。
+// 新增場館時在這裡補一行，並設好 LINE_LOGIN_ID_<NAME> 與 LINE_MESSAGING_TOKEN_<NAME>。
+const VENUE_ENV_ALIAS = {
+  B: ['NEWPEI', 'XINBEI'],   // 新北高中
+  K: ['SANCHONG'],           // 三重商工
+  L: ['SANMIN'],             // 三民高中
+  C: ['SONGSHAN'],           // 松山國小
+};
+
+// 教練／員工用的 Messaging channel key（在 LINE_MESSAGING_TOKENS 內）
+const STAFF_CHANNEL = process.env.LINE_STAFF_CHANNEL_KEY || 'dreams400';
 
 /**
- * Login channel（＝provider 的入口）→ 該 provider 底下的推播目的地。
- *   coach    這個 provider 給教練用的 Messaging channel（內部員工帳號）
- *   venues   venue_id → Messaging channel，家長依主場館對應
- *
- * 刻意「沒有」家長的保底值。家長只能走自己場館的官方帳號 —— dreams400 是
- * 員工在用的內部窗口，把家長通知送進去是策略錯誤，寧可不送。
- * 查不到就回 null，呼叫端記錄原因並跳過。
+ * 依目前環境組出 provider 路由表。
+ * 每個 provider： { label, parent, coach }
+ *   parent 該 provider 給家長用的 Messaging channel（＝場館代號）
+ *   coach  該 provider 給教練用的 Messaging channel
+ * 不快取 —— 這不是熱路徑，而快取會讓「補了 Secret 卻沒生效」變成難查的問題。
  */
-const PROVIDERS = {
-  '2009958451': {
-    label: 'LIFF 家長端＋教練端（現行）',
-    coach: 'dreams400',    // 400_駿斯內部服務窗口：員工專用
-    venues: {},            // 這個 provider 底下沒有任何場館 OA
-                           // → 家長目前無目的地，一律不送（不會退到 400）
-  },
+function buildProviders() {
+  const out = {};
 
-  // ── 家長端遷移到場館 provider 後，把新的 Login channel id 填進來即可 ──
-  // '<新的 Login channel id>': {
-  //   label: '場館 provider',
-  //   coach: null,
-  //   venues: { B: 'B', K: 'K', L: 'L', C: 'C' },
-  // },
-};
+  // 各場館 provider：家長從自己館的 LIFF 進來
+  for (const [venue, names] of Object.entries(VENUE_ENV_ALIAS)) {
+    for (const n of names) {
+      const id = String(process.env['LINE_LOGIN_ID_' + n] || '').trim();
+      if (!id) continue;
+      out[id] = { label: venue + ' 館（' + n + '）', parent: venue, coach: null };
+      break;   // 同一場館只認第一個有設定的名稱
+    }
+  }
+
+  // 員工 provider：教練從這裡進來。放在後面，若與場館撞號則以場館為準（家長優先）。
+  const staffLogin = String(process.env.LINE_LOGIN_CHANNEL_ID || '').trim();
+  if (staffLogin && !out[staffLogin]) {
+    out[staffLogin] = { label: '員工／教練', parent: null, coach: STAFF_CHANNEL };
+  }
+  return out;
+}
 
 const currentLoginChannel = () => String(process.env.LINE_LOGIN_CHANNEL_ID || '').trim();
 
 function providerFor(loginChannelId) {
   const id = String(loginChannelId || currentLoginChannel()).trim();
-  return id ? (PROVIDERS[id] || null) : null;
+  if (!id) return null;
+  return buildProviders()[id] || null;
+}
+
+/** 這個 Login channel 是否為我方認可的（供 lineAuth 白名單驗證用） */
+function isKnownLoginChannel(id) {
+  const k = String(id || '').trim();
+  return !!(k && buildProviders()[k]);
+}
+
+/** 我方所有認可的 Login channel id */
+function allowedLoginChannels() {
+  return Object.keys(buildProviders());
 }
 
 /**
  * 決定收訊者的 Messaging channel。
  * @param {object} r
  * @param {'parent'|'coach'} r.kind
- * @param {string} [r.venueId]              家長的主場館（parents.primary_venue_id）
- * @param {string} [r.loginChannelId]       來源 Login channel（省略＝用現行的）
- * @returns {string|null} channel key，或 null（＝不可送，呼叫端須記錄原因並跳過）
+ * @param {string} [r.loginChannelId] 來源 Login channel（省略＝用現行的）
+ * @param {string} [r.venueId]        家長主場館，僅作交叉檢核，不參與決策
+ * @returns {string|null} channel key，或 null（不可送）
  */
 function channelForRecipient(r) {
   const p = providerFor(r && r.loginChannelId);
   if (!p) return null;
   if (r && r.kind === 'coach') return p.coach || null;
-  // 家長：只認自己主場館的帳號。沒有對應就是沒有 —— 不退回員工帳號。
-  return (r && r.venueId && p.venues[r.venueId]) || null;
+  // 家長：uid 只在自己 provider 內有效，所以目的地由 provider 決定，
+  // 不看 primary_venue_id —— 那只是我方資料，改不了 uid 的歸屬。
+  return p.parent || null;
 }
 
-// 相容舊呼叫：只問「現行 provider 對應哪個 channel」。
-function messagingChannelFor(loginChannelId) {
-  const p = providerFor(loginChannelId);
-  return p ? (p.coach || null) : null;
+/** 交叉檢核：家長的主場館與其來源 provider 對不對得上（不一致不擋，只回報） */
+function venueMismatch(r) {
+  const p = providerFor(r && r.loginChannelId);
+  if (!p || !p.parent || !r || !r.venueId) return null;
+  return p.parent === r.venueId ? null : { expected: p.parent, actual: r.venueId };
 }
 
-/**
- * 開機/維運自檢：印出路由表與各目的地有無 token。
- * 路由設錯最糟的情況是「上線後才發現一則都沒送出去」，寧可開機就吵。
- */
+/** 維運自檢：印出路由表與各目的地有無 token。 */
 function selfCheck(getToken) {
   const out = [];
+  const providers = buildProviders();
   const cur = currentLoginChannel();
-  for (const [login, p] of Object.entries(PROVIDERS)) {
-    out.push('  Login ' + login + (login === cur ? ' (現行)' : '') + '  ' + p.label);
-    const targets = new Set([p.coach, ...Object.values(p.venues)].filter(Boolean));
-    for (const ch of targets) {
+  const ids = Object.keys(providers);
+  if (!ids.length) { out.push('  ** 路由表是空的 —— 沒有任何 Login channel 設定，所有推播都會被擋下。 **'); return out; }
+  for (const id of ids) {
+    const p = providers[id];
+    out.push('  Login ' + id + (id === cur ? ' (LINE_LOGIN_CHANNEL_ID)' : '') + '  ' + p.label);
+    for (const [role, ch] of [['家長', p.parent], ['教練', p.coach]]) {
+      if (!ch) { out.push('      ' + role + ' → （不送）'); continue; }
       let state;
       try { getToken(ch); state = 'token OK'; }
       catch (e) { state = '** 沒有 token：' + e.message + ' **'; }
-      out.push('      → ' + String(ch).padEnd(12) + state);
+      out.push('      ' + role + ' → ' + String(ch).padEnd(12) + state);
     }
-    out.push('      教練 → ' + (p.coach || '（不送）'));
-    out.push('      家長 → ' + (Object.keys(p.venues).length
-      ? '依主場館 ' + JSON.stringify(p.venues)
-      : '（不送 —— 此 provider 底下沒有場館 OA，且家長不得走員工帳號）'));
   }
-  if (cur && !PROVIDERS[cur]) {
-    out.push('  ** 現行 LINE_LOGIN_CHANNEL_ID=' + cur + ' 不在路由表內 —— 所有推播都會被擋下'
-      + '（不會亂送）。請在 services/lineRouting.js 的 PROVIDERS 補上。 **');
+  // 場館有 Messaging token 但沒有 Login channel → 家長進不來，推播也無從送起
+  for (const [venue, names] of Object.entries(VENUE_ENV_ALIAS)) {
+    const hasLogin = names.some((n) => String(process.env['LINE_LOGIN_ID_' + n] || '').trim());
+    if (hasLogin) continue;
+    let hasToken = false;
+    try { getToken(venue); hasToken = true; } catch (_) { /* 沒有就算了 */ }
+    if (hasToken) out.push('  ** ' + venue + ' 館有 Messaging token 但沒有 LINE_LOGIN_ID_'
+      + names[0] + ' —— 家長無法從該館登入，推播也送不出去。 **');
   }
   return out;
 }
 
-module.exports = { PROVIDERS, providerFor, channelForRecipient, messagingChannelFor, selfCheck };
+module.exports = {
+  VENUE_ENV_ALIAS, STAFF_CHANNEL,
+  buildProviders, providerFor, channelForRecipient, venueMismatch,
+  isKnownLoginChannel, allowedLoginChannels, selfCheck,
+};

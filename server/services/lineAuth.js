@@ -16,6 +16,26 @@
 const axios = require('axios');
 
 const VERIFY_URL = 'https://api.line.me/oauth2/v2.1/verify';
+const routing = require('./lineRouting');
+
+/**
+ * 先「窺看」id_token 的 aud（不驗簽）。
+ *
+ * 為什麼安全：LINE 的 /oauth2/v2.1/verify 需要指定 client_id 才能驗，我方有多個
+ * Login channel（各場館一個 + 員工一個），必須先知道這張票是哪個 channel 發的。
+ * 窺看到的 aud 只用來「從白名單裡挑一個 client_id」—— 真正的簽章驗證仍由 LINE
+ * 用那個 client_id 執行。若有人偽造 aud 指向別的 channel，簽章對不上就會被 LINE
+ * 打回，拿不到任何好處。不在白名單內的一律直接拒絕，連驗都不驗。
+ */
+function peekAudience(idToken) {
+  const parts = String(idToken || '').split('.');
+  if (parts.length < 2) return null;
+  try {
+    const json = Buffer.from(parts[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+    const p = JSON.parse(json);
+    return p && p.aud ? String(p.aud) : null;
+  } catch (_) { return null; }
+}
 
 function _channelIdTail() {
   const cid = process.env.LINE_LOGIN_CHANNEL_ID;
@@ -24,9 +44,27 @@ function _channelIdTail() {
 }
 
 async function verifyLineIdToken(idToken) {
-  const channelId = process.env.LINE_LOGIN_CHANNEL_ID;
+  // 我方認可的 Login channel：各場館（LINE_LOGIN_ID_*）+ 員工（LINE_LOGIN_CHANNEL_ID）。
+  // 家長從自己場館的 LIFF 進來，教練從員工的 LIFF 進來，兩者的 aud 不同。
+  const allowed = routing.allowedLoginChannels();
+  if (!allowed.length) {
+    console.warn('[lineAuth] verify aborted: 沒有任何 Login channel 設定');
+    const e = new Error('no LINE Login channel configured');
+    e.code = 'LINE_CHANNEL_MISCONFIGURED';
+    throw e;
+  }
+  const peeked = peekAudience(idToken);
+  if (peeked && !allowed.includes(peeked)) {
+    console.warn('[lineAuth] verify FAIL 不認可的 Login channel aud_tail=***'
+      + String(peeked).slice(-4) + ' 已設定=' + allowed.join(','));
+    const e = new Error('LINE id_token audience not allowed');
+    e.code = 'LINE_CHANNEL_MISCONFIGURED';
+    throw e;
+  }
+  // 沒窺看到就退回現行的（相容舊 token 格式）
+  const channelId = peeked || process.env.LINE_LOGIN_CHANNEL_ID;
   if (!channelId) {
-    console.warn('[lineAuth] verify aborted: LINE_LOGIN_CHANNEL_ID not configured');
+    console.warn('[lineAuth] verify aborted: 無法決定要用哪個 Login channel 驗證');
     const e = new Error('LINE_LOGIN_CHANNEL_ID not configured');
     e.code = 'LINE_CHANNEL_MISCONFIGURED';
     throw e;
@@ -76,6 +114,7 @@ async function verifyLineIdToken(idToken) {
   }
   const payload = res.data || {};
   // 雙重檢查：audience 必須等於我們的 channel id
+  // LINE 已用 channelId 驗過簽章；這裡再確認一次 aud 沒被中途換掉。
   if (payload.aud && String(payload.aud) !== String(channelId)) {
     console.warn(
       `[lineAuth] verify FAIL audience-mismatch channelId=${_channelIdTail()} ` +
