@@ -54,6 +54,7 @@ const UNIT = [
 // 需要真實 Postgres。多數含破壞性前置清理，只可對拋棄式測試庫執行。
 const DB = [
   'tests/parent_identity_closure_test.js',
+  'tests/push_gate_test.js',
   'tests/ragic_incremental_sync_test.js',
   'tests/ragic_z03_clean_delete_test.js',
   'tests/ragic_z03_tombstone_test.js',

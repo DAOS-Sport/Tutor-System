@@ -1762,6 +1762,29 @@ CREATE TABLE IF NOT EXISTS notification_log (
 );
 CREATE INDEX IF NOT EXISTS idx_notif_log_kind ON notification_log(kind, sent_at DESC);
 
+-- 推播發送紀錄（含被安全閥擋下與失敗的）。notification_log 只記成功、只有 4 種 kind、
+-- 而且只有 3 個 cron 呼叫點在用；route 層 13 個呼叫點完全不寫，重送就是重複推播。
+-- 這張表由 services/pushGate.js 統一寫入，涵蓋每一則推播的每一種結局。
+CREATE TABLE IF NOT EXISTS line_push_log (
+  id BIGSERIAL PRIMARY KEY,
+  at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  event TEXT NOT NULL,              -- 事件代號，如 enrollment_success / checkin_confirmed
+  venue_id TEXT,
+  recipient_uid TEXT,
+  recipient_kind TEXT,              -- parent / coach / admin
+  ref_id TEXT,                      -- 去重用的業務主鍵（如 checkin_record id）
+  status TEXT NOT NULL,             -- sending / sent / failed / skipped / dry_run
+  reason TEXT,
+  http_status INT,
+  duration_ms INT
+);
+CREATE INDEX IF NOT EXISTS idx_push_log_at ON line_push_log(at DESC);
+CREATE INDEX IF NOT EXISTS idx_push_log_event ON line_push_log(event, at DESC);
+-- 去重：同一事件 + 業務主鍵 + 收訊者只送一次。failed 不納入，才能重試。
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_push_log_dedupe
+  ON line_push_log(event, ref_id, recipient_uid)
+  WHERE ref_id IS NOT NULL AND status <> 'failed';
+
 -- ─── Ragic 家長/學員識別鍵修復（P1.1 決策6/7，2026-07-07）──────────────────
 -- 根治「Ragic 端電話/ID 打錯或變更 → 本地孤兒列/誤合併」：parents/students 的
 -- upsert 改以 ragic_record_id 為主鍵（見 parentSync.js upsertLocalParent/

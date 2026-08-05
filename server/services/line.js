@@ -4,6 +4,7 @@
  * 所有通知使用 LINE Flex Message 格式，套用品牌色系
  */
 const axios = require('axios');
+const pushGate = require('./pushGate');
 
 const BRAND = {
   primary:  '#15316a',  // 深海藍（主色）
@@ -44,14 +45,81 @@ function getToken(venueId) {
   return token;
 }
 
-async function pushMessage(lineUserId, messages, venueId) {
-  const token = getToken(venueId);
-  await axios.post('https://api.line.me/v2/bot/message/push', {
-    to: lineUserId,
-    messages,
-  }, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+/**
+ * 送出一則推播。所有推播都必須走這裡 —— services/pushGate.js 是唯一的安全閥。
+ *
+ * opts（皆選填）：
+ *   event         事件代號。未給＝'legacy'，涵蓋既有 20 個呼叫點；它們預設是關的，
+ *                 所以修好 token key 之後也不會突然全部開始送給真實客戶。
+ *   refId         去重用的業務主鍵。給了就保證同一對象同一事件只送一次。
+ *   recipientKind 'parent' / 'coach' / 'admin'，只為了事後查得出來送給誰。
+ *
+ * 回傳 { sent, reason }。被閘擋下不算錯誤，不 throw；真的送失敗才 throw，
+ * 讓既有呼叫點的 try/catch 行為維持不變。
+ */
+async function pushMessage(lineUserId, messages, venueId, opts = {}) {
+  const event = opts.event || 'legacy';
+  const meta = {
+    event,
+    refId: opts.refId || null,
+    venueId: venueId || null,
+    recipientKind: opts.recipientKind || null,
+  };
+
+  const d = await pushGate.decide({ event, uid: lineUserId });
+  if (!d.allow) {
+    await pushGate.logSkipped({ ...meta, uid: lineUserId, reason: d.reason });
+    return { sent: false, reason: d.reason };
+  }
+  const uid = d.uid;   // 測試模式下會被改寫成指定的 LINE ID，必須用這個而不是原本的
+
+  // 先確定拿得到 token 再佔位。順序反過來的話，缺 token 會留下永遠卡在 sending
+  // 的紀錄，而那個組合之後就再也送不出去（被去重的唯一索引擋住）。
+  let token;
+  try {
+    token = getToken(venueId);
+  } catch (e) {
+    await pushGate.logSkipped({ ...meta, uid, reason: 'NO_TOKEN:' + e.message });
+    throw e;
+  }
+
+  const id = await pushGate.claim({ ...meta, uid });
+  if (!id) {
+    await pushGate.logSkipped({ ...meta, uid, reason: 'DUPLICATE' });
+    return { sent: false, reason: 'DUPLICATE' };
+  }
+
+  if (d.dryRun) {
+    await pushGate.finish({ id, status: 'dry_run', reason: d.redirected ? 'REDIRECTED_TO_TEST_UID' : null });
+    return { sent: false, reason: 'DRY_RUN' };
+  }
+
+  const t0 = Date.now();
+  try {
+    const r = await axios.post('https://api.line.me/v2/bot/message/push', {
+      to: uid,
+      messages,
+    }, {
+      headers: { Authorization: `Bearer ${token}` },
+      // 沒有 timeout 的話，LINE 慢回應會把呼叫它的那個 HTTP request 一起拖住。
+      timeout: 10000,
+      validateStatus: () => true,
+    });
+    const ms = Date.now() - t0;
+    if (r.status >= 200 && r.status < 300) {
+      await pushGate.finish({
+        id, status: 'sent', httpStatus: r.status, durationMs: ms,
+        reason: d.redirected ? 'REDIRECTED_TO_TEST_UID' : null,
+      });
+      return { sent: true };
+    }
+    const body = (() => { try { return JSON.stringify(r.data); } catch (_) { return String(r.data); } })();
+    await pushGate.finish({ id, status: 'failed', httpStatus: r.status, durationMs: ms, reason: body.slice(0, 300) });
+    throw new Error('LINE push failed: HTTP ' + r.status + ' ' + body.slice(0, 200));
+  } catch (e) {
+    await pushGate.finish({ id, status: 'failed', reason: String(e.message).slice(0, 300), durationMs: Date.now() - t0 });
+    throw e;
+  }
 }
 
 // ── Flex Message 模板 ────────────────────────
