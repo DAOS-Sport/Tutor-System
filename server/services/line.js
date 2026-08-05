@@ -161,6 +161,10 @@ function flexButton(label, action, color = BRAND.teal) {
 }
 
 // 報名成功通知
+// 報名成功 → 家長
+// courseType 收「完整標籤」（例：'1 對 1'），不是數字。原本模板寫死
+// `組別：1 對 ${courseType}`，呼叫端傳標籤就會變成「1 對 1 對 1」，傳數字又與
+// 其他模板不一致 —— 統一成標籤，跟 groupSubmitted / invoiceIssued 同一個約定。
 function enrollmentSuccess({ coachName, venueName, courseType, finalPrice, liffUrl }) {
   return [{
     type: 'flex', altText: '課程報名成功！',
@@ -172,12 +176,14 @@ function enrollmentSuccess({ coachName, venueName, courseType, finalPrice, liffU
         contents: [
           { type: 'text', text: `教練：${coachName}`, size: 'sm' },
           { type: 'text', text: `場館：${venueName}`, size: 'sm' },
-          { type: 'text', text: `組別：1 對 ${courseType}`, size: 'sm' },
-          { type: 'text', text: `費用：NT$ ${finalPrice.toLocaleString()}`, size: 'sm' },
+          { type: 'text', text: `組別：${courseType}`, size: 'sm' },
+          { type: 'text', text: `費用：NT$ ${Number(finalPrice).toLocaleString()}`, size: 'sm' },
           { type: 'separator', margin: 'md' },
           { type: 'text', text: '請等待主管對帳確認，確認後課程即自動開通。', size: 'xs', color: '#888888', wrap: true },
         ],
       },
+      // 原本收了 liffUrl 卻沒用，家長看完無處可點；與簽到通知的行為對齊。
+      ...(liffUrl ? { footer: { type: 'box', layout: 'vertical', contents: [flexButton('查看我的課程', liffUrl, BRAND.primary)] } } : {}),
     },
   }];
 }
