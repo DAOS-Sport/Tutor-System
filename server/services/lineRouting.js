@@ -1,25 +1,32 @@
 /**
  * LINE 推播路由 —— 決定「這個人該用哪個官方帳號推」。
  *
- * ── 核心事實 ──
- * LINE 的 userId 是「每個 provider 各自獨立」的。uid 從哪個 Login channel 發出來，
- * 就只能用同 provider 的 Messaging channel 推回去，跨 provider 必定 404。
- * 所以規則很單純：**從哪個 provider 進來，就推回哪個 provider。**
+ * ── 目標形狀 ──
+ *   教練 → 固定走內部帳號 dreams400（@010aiefh）
+ *   家長 → 走自己選的場館的官方帳號（primary_venue_id）；該館推不到就退回 dreams400
  *
- * ── 本專案的 provider 結構 ──
- *   各場館：LINE_LOGIN_ID_<NAME>  +  LINE_MESSAGING_TOKEN_<NAME>   （家長）
- *   員工：  LINE_LOGIN_CHANNEL_ID +  LINE_MESSAGING_TOKENS.dreams400（教練）
- * <NAME> 是兩者的接合鍵（NEWPEI / SANCHONG / SANMIN / SONGSHAN），
- * 所以路由表用環境變數即時組出來 —— 新增場館只要加那兩個 Secret，程式不用改。
+ * ── 為什麼「推不到」是常態，而不是例外 ──
+ * LINE 的 userId 是「每個 provider 各自獨立」的。本系統的 LIFF 掛在 Login channel
+ * 2009958451（provider: oshuoshuo）底下，dreams400 也在同一個 provider，所以
+ * parents.line_uid 對 dreams400 是有效的（2026-08-05 實測：顯示名稱 4/4 一致）。
  *
- * ── 邊界 ──
- * 家長只能走自己場館的官方帳號。dreams400 是員工在用的內部窗口，
- * 把家長通知送進去，家長收不到、員工被灌一堆不相干的訊息 —— 刻意沒有保底值。
- * 查不到目的地就回 null，呼叫端記錄原因並跳過，絕不試別的 channel。
+ * 但四個場館 OA（@597kqtbz 新北 / @703sndbg 三重 / @642fcufc 三民 / @318wjncz 松山）
+ * 屬於另一個 provider —— 它們是舊系統 dream-dream 的資產。同一組 uid 對它們
+ * 實測 0/60，加好友也沒用，因為編號天生不同。
+ *
+ * 所以各館預設是「關」的：開了只會每則都 404。等該館的 provider 問題解決
+ * （例如在 oshuoshuo 底下開該館的 Messaging channel，或家長改從該館 channel 登入），
+ * 再用下面的開關逐館打開。用開關而不是「每次試試看」，是因為後者會讓每一則
+ * 推播都先浪費一次必定失敗的 API 呼叫。
+ *
+ * ── 開關（admin_settings，value 1＝開）──
+ *   push_venue_channel_<venue_id>   例：push_venue_channel_B
+ * 未設定＝關＝該館家長退回 dreams400。
  */
+const { pool } = require('../models/db');
 
-// 場館代號 → 環境變數用的名稱。第一個是主要名稱，其餘為歷史別名。
-// 新增場館時在這裡補一行，並設好 LINE_LOGIN_ID_<NAME> 與 LINE_MESSAGING_TOKEN_<NAME>。
+// 場館代號 ↔ 館名別名。token 兩種設定法都吃：
+//   LINE_MESSAGING_TOKENS 的 key（可用場館代號或館名），或 LINE_MESSAGING_TOKEN_<名稱>
 const VENUE_ENV_ALIAS = {
   B: ['NEWPEI', 'XINBEI'],   // 新北高中
   K: ['SANCHONG'],           // 三重商工
@@ -27,112 +34,80 @@ const VENUE_ENV_ALIAS = {
   C: ['SONGSHAN'],           // 松山國小
 };
 
-// 教練／員工用的 Messaging channel key（在 LINE_MESSAGING_TOKENS 內）
+// 教練固定用這個；家長在場館推不到時也退回它。
 const STAFF_CHANNEL = process.env.LINE_STAFF_CHANNEL_KEY || 'dreams400';
 
-/**
- * 依目前環境組出 provider 路由表。
- * 每個 provider： { label, parent, coach }
- *   parent 該 provider 給家長用的 Messaging channel（＝場館代號）
- *   coach  該 provider 給教練用的 Messaging channel
- * 不快取 —— 這不是熱路徑，而快取會讓「補了 Secret 卻沒生效」變成難查的問題。
- */
-function buildProviders() {
-  const out = {};
+const VENUE_FLAG = (venueId) => 'push_venue_channel_' + venueId;
 
-  // 各場館 provider：家長從自己館的 LIFF 進來
-  for (const [venue, names] of Object.entries(VENUE_ENV_ALIAS)) {
-    for (const n of names) {
-      const id = String(process.env['LINE_LOGIN_ID_' + n] || '').trim();
-      if (!id) continue;
-      out[id] = { label: venue + ' 館（' + n + '）', parent: venue, coach: null };
-      break;   // 同一場館只認第一個有設定的名稱
-    }
+// 開關讀 admin_settings（value 是 NUMERIC，1＝開），快取 60 秒 ——
+// 推播是熱路徑，但也不能久到「改了設定要等很久才生效」。
+let _cache = { at: 0, map: {} };
+async function loadVenueFlags(db = pool) {
+  const now = Date.now();
+  if (now - _cache.at < 60000) return _cache.map;
+  const map = {};
+  try {
+    const r = await db.query(
+      `SELECT key, value FROM admin_settings WHERE key LIKE 'push\\_venue\\_channel\\_%' ESCAPE '\\'`);
+    r.rows.forEach((x) => { map[String(x.key).replace('push_venue_channel_', '')] = Number(x.value) === 1; });
+  } catch (e) {
+    console.warn('[lineRouting] 讀取場館開關失敗，全部視為關閉：' + e.message);
   }
-
-  // 員工 provider：教練從這裡進來。放在後面，若與場館撞號則以場館為準（家長優先）。
-  const staffLogin = String(process.env.LINE_LOGIN_CHANNEL_ID || '').trim();
-  if (staffLogin && !out[staffLogin]) {
-    out[staffLogin] = { label: '員工／教練', parent: null, coach: STAFF_CHANNEL };
-  }
-  return out;
-}
-
-const currentLoginChannel = () => String(process.env.LINE_LOGIN_CHANNEL_ID || '').trim();
-
-function providerFor(loginChannelId) {
-  const id = String(loginChannelId || currentLoginChannel()).trim();
-  if (!id) return null;
-  return buildProviders()[id] || null;
-}
-
-/** 這個 Login channel 是否為我方認可的（供 lineAuth 白名單驗證用） */
-function isKnownLoginChannel(id) {
-  const k = String(id || '').trim();
-  return !!(k && buildProviders()[k]);
-}
-
-/** 我方所有認可的 Login channel id */
-function allowedLoginChannels() {
-  return Object.keys(buildProviders());
+  _cache = { at: now, map };
+  return map;
 }
 
 /**
  * 決定收訊者的 Messaging channel。
- * @param {object} r
- * @param {'parent'|'coach'} r.kind
- * @param {string} [r.loginChannelId] 來源 Login channel（省略＝用現行的）
- * @param {string} [r.venueId]        家長主場館，僅作交叉檢核，不參與決策
- * @returns {string|null} channel key，或 null（不可送）
+ * @param {'parent'|'coach'} kind
+ * @param {string} [venueId] 家長的主場館（parents.primary_venue_id）
+ * @returns {Promise<{channel: string, reason: string}>}
  */
-function channelForRecipient(r) {
-  const p = providerFor(r && r.loginChannelId);
-  if (!p) return null;
-  if (r && r.kind === 'coach') return p.coach || null;
-  // 家長：uid 只在自己 provider 內有效，所以目的地由 provider 決定，
-  // 不看 primary_venue_id —— 那只是我方資料，改不了 uid 的歸屬。
-  return p.parent || null;
+async function resolveChannel({ kind, venueId }, db = pool) {
+  if (kind === 'coach') return { channel: STAFF_CHANNEL, reason: 'coach_fixed' };
+
+  if (venueId) {
+    const flags = await loadVenueFlags(db);
+    if (flags[venueId]) return { channel: venueId, reason: 'venue' };
+  }
+  // 場館沒開／沒有場館 → 退回能用的固定帳號
+  return { channel: STAFF_CHANNEL, reason: venueId ? 'venue_disabled_fallback' : 'no_venue_fallback' };
 }
 
-/** 交叉檢核：家長的主場館與其來源 provider 對不對得上（不一致不擋，只回報） */
-function venueMismatch(r) {
-  const p = providerFor(r && r.loginChannelId);
-  if (!p || !p.parent || !r || !r.venueId) return null;
-  return p.parent === r.venueId ? null : { expected: p.parent, actual: r.venueId };
-}
-
-/** 維運自檢：印出路由表與各目的地有無 token。 */
-function selfCheck(getToken) {
+/** 維運自檢：印出每個場館目前會走哪個帳號，以及 token 在不在。 */
+async function selfCheck(getToken, db = pool) {
   const out = [];
-  const providers = buildProviders();
-  const cur = currentLoginChannel();
-  const ids = Object.keys(providers);
-  if (!ids.length) { out.push('  ** 路由表是空的 —— 沒有任何 Login channel 設定，所有推播都會被擋下。 **'); return out; }
-  for (const id of ids) {
-    const p = providers[id];
-    out.push('  Login ' + id + (id === cur ? ' (LINE_LOGIN_CHANNEL_ID)' : '') + '  ' + p.label);
-    for (const [role, ch] of [['家長', p.parent], ['教練', p.coach]]) {
-      if (!ch) { out.push('      ' + role + ' → （不送）'); continue; }
-      let state;
-      try { getToken(ch); state = 'token OK'; }
-      catch (e) { state = '** 沒有 token：' + e.message + ' **'; }
-      out.push('      ' + role + ' → ' + String(ch).padEnd(12) + state);
-    }
+  const flags = await loadVenueFlags(db);
+  const tok = (ch) => { try { getToken(ch); return 'token OK'; } catch (e) { return '** 無 token **'; } };
+  out.push('  教練  → ' + STAFF_CHANNEL + '   ' + tok(STAFF_CHANNEL));
+  for (const v of Object.keys(VENUE_ENV_ALIAS)) {
+    const on = !!flags[v];
+    out.push('  家長 ' + v + ' → ' + (on ? v + '   ' + tok(v) : STAFF_CHANNEL + '（該館開關未開，退回）   ' + tok(v) + '（該館 token 狀態）'));
   }
-  // 場館有 Messaging token 但沒有 Login channel → 家長進不來，推播也無從送起
-  for (const [venue, names] of Object.entries(VENUE_ENV_ALIAS)) {
-    const hasLogin = names.some((n) => String(process.env['LINE_LOGIN_ID_' + n] || '').trim());
-    if (hasLogin) continue;
-    let hasToken = false;
-    try { getToken(venue); hasToken = true; } catch (_) { /* 沒有就算了 */ }
-    if (hasToken) out.push('  ** ' + venue + ' 館有 Messaging token 但沒有 LINE_LOGIN_ID_'
-      + names[0] + ' —— 家長無法從該館登入，推播也送不出去。 **');
-  }
+  out.push('  家長（無場館）→ ' + STAFF_CHANNEL);
   return out;
 }
 
+/**
+ * 我方認可的 LINE Login channel（lineAuth 的白名單）。
+ * 目前家長與教練都走 LINE_LOGIN_CHANNEL_ID；LINE_LOGIN_ID_* 是舊系統 dream-dream
+ * 的各館 channel，留在白名單內是為了「萬一有人從那邊的 LIFF 進來也能登入」，
+ * 不影響推播路由（推播只看 primary_venue_id 與場館開關）。
+ */
+function allowedLoginChannels() {
+  const ids = new Set();
+  const staff = String(process.env.LINE_LOGIN_CHANNEL_ID || '').trim();
+  if (staff) ids.add(staff);
+  for (const names of Object.values(VENUE_ENV_ALIAS)) {
+    for (const n of names) {
+      const v = String(process.env['LINE_LOGIN_ID_' + n] || '').trim();
+      if (v) ids.add(v);
+    }
+  }
+  return [...ids];
+}
+
 module.exports = {
-  VENUE_ENV_ALIAS, STAFF_CHANNEL,
-  buildProviders, providerFor, channelForRecipient, venueMismatch,
-  isKnownLoginChannel, allowedLoginChannels, selfCheck,
+  VENUE_ENV_ALIAS, STAFF_CHANNEL, VENUE_FLAG,
+  loadVenueFlags, resolveChannel, selfCheck, allowedLoginChannels,
 };

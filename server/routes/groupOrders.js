@@ -868,10 +868,8 @@ router.post('/by-token/:token/join', async (req, res) => {
             memberName: maskName(me?.parent_name || ''),
             total, min: order.min_students, max: order.max_students,
             reachedMin: total >= order.min_students, liffUrl,
-          }), routing.channelForRecipient({
-            kind: 'parent',
-            loginChannelId: ld.rows[0]?.line_login_channel_id,
-          }), { event: 'group_member_joined', refId: 'j:' + order.id + ':' + req.parent.id, recipientKind: 'parent' })
+          }), (await routing.resolveChannel({ kind: 'parent', venueId: order.venue_id })).channel,
+            { event: 'group_member_joined', refId: 'j:' + order.id + ':' + req.parent.id, recipientKind: 'parent' })
             .catch((e) => console.warn('[group join push]', e.message));
         }
       } catch (e) { console.warn('[group join push prep]', e.message); }
@@ -1030,7 +1028,7 @@ router.post('/:id/my-proof', async (req, res) => {
  */
 async function notifyGroupSubmitted(orderId, totalStudentCount) {
   const r = await pool.query(
-    `SELECT m.parent_id, p.line_uid, p.line_login_channel_id,
+    `SELECT m.parent_id, p.line_uid, p.primary_venue_id,
             go.course_type, v.name AS venue_name
        FROM group_order_members m
        JOIN group_orders go ON go.id = m.group_order_id
@@ -1045,10 +1043,7 @@ async function notifyGroupSubmitted(orderId, totalStudentCount) {
   const liffUrl = liffBase ? liffBase + '/group/' + orderId : '';
 
   for (const row of r.rows) {
-    const ch = routing.channelForRecipient({
-      kind: 'parent',
-      loginChannelId: row.line_login_channel_id,
-    });
+    const ch = (await routing.resolveChannel({ kind: 'parent', venueId: row.primary_venue_id })).channel;
     if (!ch) continue;   // 路由查不到就跳過；pushGate 那層也會記錄原因
     try {
       await line.pushMessage(

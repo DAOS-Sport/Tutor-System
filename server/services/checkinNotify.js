@@ -29,18 +29,16 @@ const EVENT_PARENT = 'checkin_confirmed_parent';
 
 // 路由查不到時每個 login channel 只吵一次，避免整批簽到刷出一排相同錯誤。
 const _warnedRoute = new Set();
-function resolveChannel({ kind, venueId, loginChannelId }, who) {
-  const ch = routing.channelForRecipient({ kind, venueId, loginChannelId });
+async function resolveChannel({ kind, venueId }, who) {
+  const r = await routing.resolveChannel({ kind, venueId });
+  const ch = r && r.channel;
   if (!ch) {
     // 同一種缺法只吵一次，避免整批簽到刷出一排相同錯誤把真問題淹掉。
-    const key = kind + '|' + String(loginChannelId || process.env.LINE_LOGIN_CHANNEL_ID || '(未設)')
-      + '|' + String(venueId || '-');
+    const key = kind + '|' + String(venueId || '-');
     if (!_warnedRoute.has(key)) {
       _warnedRoute.add(key);
-      console.error('[checkinNotify] 找不到' + who + '的推播目的地（來源 Login channel='
-        + (loginChannelId || process.env.LINE_LOGIN_CHANNEL_ID || '未設')
-        + '、場館=' + (venueId || '-') + '），該類通知全部跳過。'
-        + '請在 services/lineRouting.js 的 PROVIDERS 補上對應。');
+      console.error('[checkinNotify] 找不到' + who + '的推播目的地（場館=' + (venueId || '-')
+        + '），該類通知全部跳過。請確認 services/lineRouting.js 的 STAFF_CHANNEL 有 token。');
     }
   }
   return ch;
@@ -97,7 +95,7 @@ async function notifyCheckin(sessionId, studentIds, db = pool) {
 
     // ── 教練 ──（教練自己簽的就不用通知他自己）
     if (r.coach_uid && r.checked_in_source !== 'coach') {
-      const ch = resolveChannel({ kind: 'coach', loginChannelId: r.coach_login_channel }, '教練');
+      const ch = await resolveChannel({ kind: 'coach' }, '教練');
       if (!ch) { out.skipped += 1; }
       else {
         try {
@@ -120,7 +118,7 @@ async function notifyCheckin(sessionId, studentIds, db = pool) {
 
     // ── 家長 ──
     if (r.parent_uid) {
-      const ch = resolveChannel({ kind: 'parent', venueId: r.parent_venue_id, loginChannelId: r.parent_login_channel }, '家長');
+      const ch = await resolveChannel({ kind: 'parent', venueId: r.parent_venue_id }, '家長');
       if (!ch) { out.skipped += 1; }
       else {
         try {
