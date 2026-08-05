@@ -364,6 +364,12 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS bio_rich_text TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS intro_review_status VARCHAR(20) NOT NULL DEFAULT 'draft'; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS pricing_multiplier NUMERIC(5,2) NOT NULL DEFAULT 1.00; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+-- LINE userId 是 per-provider 的：uid 從哪個 Login channel 發出來，就只能用同
+-- provider 的 Messaging channel 推回去。驗 id_token 時的 payload.aud 是唯一拿得到
+-- 來源的時機，由 services/lineIdentity.js 在登入時寫入，supply services/lineRouting.js
+-- 決定推播路徑。NULL＝沿用環境變數的現行 Login channel（與加欄位前行為相同）。
+DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS line_login_channel_id TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE parents ADD COLUMN IF NOT EXISTS line_login_channel_id TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 -- 「待分配」是系統 placeholder，不計入真實教練資料與業績。
 DO $$ BEGIN ALTER TABLE coaches ADD COLUMN IF NOT EXISTS is_placeholder BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 -- Task #53：is_active 手動覆寫旗標 — 後台勾啟用後 Ragic 同步不再覆蓋

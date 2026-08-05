@@ -16,6 +16,7 @@ const { signCoachToken } = require('../middlewares/coachAuth');
 const { signFlowToken, requireFlowToken, verifyPhoneRateLimit } = require('../middlewares/flowAuth');
 const ragic = require('../services/ragic');
 const { verifyLineIdToken } = require('../services/lineAuth');
+const { recordLoginChannel } = require('../services/lineIdentity');
 // 家長/學員 ↔ Ragic 同步語意集中於此（登入/綁定/註冊/刷新共用，避免漂移）。
 const parentSync = require('../services/parentSync');
 const { BindConflictError } = parentSync;
@@ -415,6 +416,14 @@ async function _verifyLineUid(req, res) {
       await captureParentLineProfile({ lineUid: profile.sub, displayName: profile.name });
     } catch (profileErr) {
       console.warn('[auth] LINE display-name cache skipped:', profileErr.code || profileErr.message);
+    }
+    // 記錄 uid 的來源 Login channel（profile.aud）。這是唯一拿得到它的時機 ——
+    // uid 本身看不出來源，錯過之後只能靠逐一打 API 猜。推播路由需要它。
+    // best-effort：寫入失敗絕不可擋住登入。
+    try {
+      await recordLoginChannel(profile.sub, profile.aud);
+    } catch (chErr) {
+      console.warn('[auth] 來源 channel 記錄略過：', chErr.message);
     }
     return profile.sub;
   } catch (err) {
