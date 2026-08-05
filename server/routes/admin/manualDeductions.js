@@ -16,6 +16,7 @@ const { pool } = require('../../models/db');
 const { validateRequestId, payloadFingerprint } = require('../../services/idempotency');
 const { syncStoredUsage, listLinkedEnrollmentIds } = require('../../services/usageSync');
 const { broadcastAdminEvent } = require('../../services/websocket');
+const { notifyCheckinSafely } = require('../../services/checkinNotify');
 const {
   requireAdminAuth,
   requireAdminRole,
@@ -411,6 +412,9 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
     // 與家長/教練簽到相同的後台即時事件（簽到驗證頁自動更新）；payload 形狀對齊
     // checkins.js 的廣播（含 checkin_id，缺了會被 CheckinPage 去重誤吞）。失敗不影響已扣課結果。
     for (const member of attendanceRoster) {
+      // 簽到通知（教練／家長）。fire-and-forget：簽到已 COMMIT，推播不該把它拖下水。
+      notifyCheckinSafely(courseSessionId, null);
+
       try {
         broadcastAdminEvent('checkin:created', {
           checkin_id: member.checkin_id,

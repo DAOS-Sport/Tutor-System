@@ -676,6 +676,60 @@ async function pushKeywordAlert(lineUserId, { venueId, keyword, chatRoomId, snip
   return pushMessage(lineUserId, messages, venueId);
 }
 
+// 台北時間格式化。不可用 toLocaleString —— 沒指定 timeZone 就吃執行環境的時區，
+// 這個專案已經因為同類問題出過「日期少一天」與「時間少 8 小時」兩個線上 bug。
+function twTime(input) {
+  const d = input instanceof Date ? input : new Date(input);
+  if (Number.isNaN(d.getTime())) return '';
+  const t = new Date(d.getTime() + 8 * 3600 * 1000);
+  const p = (n) => String(n).padStart(2, '0');
+  const w = ['日', '一', '二', '三', '四', '五', '六'][t.getUTCDay()];
+  return `${t.getUTCMonth() + 1}/${t.getUTCDate()}（${w}） ${p(t.getUTCHours())}:${p(t.getUTCMinutes())}`;
+}
+
+// 簽到確認 → 家長
+function checkinConfirmed({ studentName, coachName, venueName, checkedInAt, liffUrl }) {
+  return [{
+    type: 'flex', altText: `${studentName} 已完成簽到`,
+    contents: {
+      type: 'bubble',
+      header: flexHeader('✅ 已完成簽到', BRAND.teal),
+      body: {
+        type: 'box', layout: 'vertical', spacing: 'sm',
+        contents: [
+          { type: 'text', text: studentName, size: 'lg', weight: 'bold', wrap: true },
+          { type: 'text', text: `簽到時間：${twTime(checkedInAt)}`, size: 'sm', weight: 'bold' },
+          ...(coachName ? [{ type: 'text', text: `教練：${coachName}`, size: 'sm' }] : []),
+          ...(venueName ? [{ type: 'text', text: `場館：${venueName}`, size: 'sm' }] : []),
+          { type: 'text', text: '本堂課已計入上課紀錄。', size: 'xs', color: '#888888', wrap: true },
+        ],
+      },
+      ...(liffUrl ? { footer: { type: 'box', layout: 'vertical', contents: [flexButton('查看上課紀錄', liffUrl, BRAND.teal)] } } : {}),
+    },
+  }];
+}
+
+// 簽到確認 → 教練（家長自助簽到或櫃台補登時通知；教練自己簽的不再通知他自己）
+function checkinConfirmedToCoach({ studentName, venueName, checkedInAt, source }) {
+  const from = source === 'staff' ? '櫃台補登' : '家長自助簽到';
+  return [{
+    type: 'flex', altText: `${studentName} 已簽到（${from}）`,
+    contents: {
+      type: 'bubble',
+      header: flexHeader('📋 學員已簽到', BRAND.primary),
+      body: {
+        type: 'box', layout: 'vertical', spacing: 'sm',
+        contents: [
+          { type: 'text', text: studentName, size: 'lg', weight: 'bold', wrap: true },
+          { type: 'text', text: `簽到時間：${twTime(checkedInAt)}`, size: 'sm', weight: 'bold' },
+          ...(venueName ? [{ type: 'text', text: `場館：${venueName}`, size: 'sm' }] : []),
+          { type: 'text', text: `來源：${from}`, size: 'xs', color: '#888888' },
+        ],
+      },
+    },
+  }];
+}
+
 module.exports = {
   pushMessage,
   pushKeywordAlert,
@@ -699,6 +753,8 @@ module.exports = {
     mgmTrialTodayReminder,
     invoiceIssued,
     adminPasswordReset,
+    checkinConfirmed,
+    checkinConfirmedToCoach,
   },
 };
 

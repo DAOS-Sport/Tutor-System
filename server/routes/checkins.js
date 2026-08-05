@@ -21,6 +21,7 @@ const { requireParent } = require('../middlewares/parentAuth');
 const { broadcastAdminEvent } = require('../services/websocket');
 const { getFeatureFlag, flagAllowsPhone } = require('../services/featureFlags');
 const { syncStoredUsage } = require('../services/usageSync');
+const { notifyCheckinSafely } = require('../services/checkinNotify');
 
 /**
  * U13 免預約自助簽到 —— checkin_mode='self' 的課程期，家長不需先排課：
@@ -269,6 +270,9 @@ router.post('/self', requireParent, async (req, res) => {
     await syncStoredUsage(client, period, used);
     await client.query('COMMIT');
     for (const s of activeParticipants.rows) {
+      // 簽到通知（教練／家長）。fire-and-forget：簽到已 COMMIT，推播不該把它拖下水。
+      notifyCheckinSafely(sessionRow.id, null);
+
       try {
         broadcastAdminEvent('checkin:created', {
           // 合成唯一 key：缺 checkin_id 時 CheckinPage 去重會把第 2 位起的事件誤吞
@@ -407,6 +411,9 @@ router.post('/', requireParent, async (req, res) => {
 
     const row = ins.rows[0];
     const x = ctx.rows[0];
+    // 簽到通知（教練／家長）。fire-and-forget：簽到已 COMMIT，推播不該把它拖下水。
+    notifyCheckinSafely(sessionId, null);
+
     try {
       broadcastAdminEvent('checkin:created', {
         checkin_id: row.id,

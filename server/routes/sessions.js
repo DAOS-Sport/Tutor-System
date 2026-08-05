@@ -18,6 +18,7 @@ const { broadcastAdminEvent } = require('../services/websocket');
 const { getFeatureFlag, flagAllowsPhone } = require('../services/featureFlags');
 const { addCalendarDays, taipeiWeekStart } = require('../utils/dateTime');
 const { syncStoredUsage } = require('../services/usageSync');
+const { notifyCheckinSafely } = require('../services/checkinNotify');
 
 function todayWhereTaipei(columnSql = 'cs.scheduled_at') {
   return `(${columnSql} AT TIME ZONE 'Asia/Taipei')::date = (NOW() AT TIME ZONE 'Asia/Taipei')::date`;
@@ -388,6 +389,11 @@ router.post('/:id/checkins', requireCoach, async (req, res) => {
 
     const row = ins.rows[0];
     const s = stu.rows[0];
+    // 簽到通知（教練／家長）。fire-and-forget：簽到已 COMMIT，推播不該把它拖下水。
+    // 傳 null＝通知該堂全部已簽到的。共班分支是一次寫入整班，只傳這一位會漏掉
+    // 其他學員的家長；去重（refId＝checkin_records.id）保證不會重複發。
+    notifyCheckinSafely(req.params.id, null);
+
     try {
       broadcastAdminEvent('checkin:created', {
         checkin_id: row.id,
