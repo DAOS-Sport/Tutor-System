@@ -102,7 +102,8 @@ async function pushMessage(lineUserId, messages, venueId, opts = {}) {
 
   const id = await pushGate.claim({ ...meta, uid });
   if (!id) {
-    await pushGate.logSkipped({ ...meta, uid, reason: 'DUPLICATE' });
+    // 不再補寫一筆 skipped —— 佔位不成功正是因為同組合已經有一列了，那一列本身
+    // 就是紀錄。硬寫會撞到去重的唯一索引，噴出一行看起來很嚴重但其實無害的警告。
     return { sent: false, reason: 'DUPLICATE' };
   }
 
