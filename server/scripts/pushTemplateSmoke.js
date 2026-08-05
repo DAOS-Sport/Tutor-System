@@ -65,6 +65,30 @@ const SAMPLES = {
   try { token = line._getTokenForDiagnostics(VENUE); }
   catch (e) { console.error('取不到場館 ' + VENUE + ' 的 token：' + e.message); process.exit(1); }
 
+  // LINE 的 userId 是「每個官方帳號各自獨立」的 —— 同一個人在不同 OA 有不同的 U... ID。
+  // 用錯 channel 的話 19 則會全部回 400「Failed to send messages」，訊息還看不出原因。
+  // 先用唯讀的 profile 查詢確認好友關係，不是就直接停，並把正確的 channel 指出來。
+  const whoAmI = async (tk) => {
+    const r = await axios.get('https://api.line.me/v2/bot/profile/' + UID,
+      { headers: { Authorization: 'Bearer ' + tk }, timeout: 10000, validateStatus: () => true });
+    return r.status === 200 ? (r.data.displayName || '(無名)') : null;
+  };
+  const name = await whoAmI(token);
+  if (!name) {
+    console.error('這個 uid 不是場館 ' + VENUE + ' 官方帳號的好友（LINE 的 userId 每個帳號各自獨立）。');
+    let hint = null;
+    try {
+      const all = JSON.parse(process.env.LINE_MESSAGING_TOKENS || '{}');
+      for (const k of Object.keys(all)) {
+        if (await whoAmI(all[k])) { hint = k; break; }
+      }
+    } catch (_) { /* best-effort */ }
+    if (hint) console.error('這個 uid 屬於「' + hint + '」，請改用 --venue=' + hint);
+    else console.error('已設定的每個官方帳號都查不到這個 uid —— 請先加該帳號好友，或確認 uid 來源。');
+    process.exit(1);
+  }
+  console.log('收件者：' + name + '（' + UID + '）\n');
+
   const names = Object.keys(line.templates).filter((n) => !ONLY || n === ONLY);
   const missing = names.filter((n) => !SAMPLES[n]);
   if (missing.length) console.warn('（沒有假資料，將略過）：' + missing.join(', '));

@@ -485,7 +485,7 @@ function transferReviewed({ approved, courseInfo, note, liffUrl }) {
         type: 'box', layout: 'vertical', spacing: 'sm',
         contents: [
           { type: 'text', text: courseInfo, size: 'sm', weight: 'bold', wrap: true },
-          ...(note ? [{ type: 'text', text: `主管備註：${note}`, size: 'xs', color: '#666', wrap: true }] : []),
+          ...(note ? [{ type: 'text', text: `主管備註：${note}`, size: 'xs', color: '#666666', wrap: true }] : []),
           { type: 'text',
             text: approved ? '課程已轉至新學員，可前往「我的課程」查看。' : '若有疑問請聯繫場館。',
             size: 'xs', color: '#888888', wrap: true },
