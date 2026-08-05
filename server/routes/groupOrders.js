@@ -25,6 +25,7 @@ const line = require('../services/line');
 const promotions = require('../services/promotions');
 const { logGroupOrderAudit } = require('../services/groupOrderAudit');
 const { resolveUnitPrice } = require('../services/coursePricing');
+const routing = require('../services/lineRouting');
 
 // 家長端操作者標記：token 只含 id/phone，櫃檯亦以手機辨識家長。
 const parentActor = (req) => `家長 ${req.parent?.phone || req.parent?.id || 'unknown'}`;
@@ -856,7 +857,8 @@ router.post('/by-token/:token/join', async (req, res) => {
     // best-effort：LINE 推播通知團主「有人加入，可前往送審」（不阻塞回應；失敗只記 log）
     if (order.leader_parent_id && order.leader_parent_id !== req.parent.id) {
       try {
-        const ld = await pool.query(`SELECT line_uid FROM parents WHERE id = $1`, [order.leader_parent_id]);
+        const ld = await pool.query(
+          `SELECT line_uid, line_login_channel_id FROM parents WHERE id = $1`, [order.leader_parent_id]);
         const leaderUid = ld.rows[0]?.line_uid;
         if (leaderUid) {
           const total = totalStudents(loaded.members);
@@ -866,7 +868,11 @@ router.post('/by-token/:token/join', async (req, res) => {
             memberName: maskName(me?.parent_name || ''),
             total, min: order.min_students, max: order.max_students,
             reachedMin: total >= order.min_students, liffUrl,
-          }), order.venue_id).catch((e) => console.warn('[group join push]', e.message));
+          }), routing.channelForRecipient({
+            kind: 'parent',
+            loginChannelId: ld.rows[0]?.line_login_channel_id,
+          }), { event: 'group_member_joined', refId: 'j:' + order.id + ':' + req.parent.id, recipientKind: 'parent' })
+            .catch((e) => console.warn('[group join push]', e.message));
         }
       } catch (e) { console.warn('[group join push prep]', e.message); }
     }
@@ -1010,6 +1016,57 @@ router.post('/:id/my-proof', async (req, res) => {
   }
 });
 
+
+/**
+ * 團報送審完成 → 通知全團每個家庭。
+ *
+ * 每位家長各自依「自己的來源 provider」路由（services/lineRouting）—— 不可用
+ * group_orders.venue_id 當 channel：那是團購所屬場館，不是家長 uid 的歸屬，
+ * 拿它去查 token 會送出一整排 404。
+ *
+ * 去重用 refId = 'gs:<order_id>:<parent_id>'，同一團同一家長只會通知一次
+ * （送審→退回→再送審時，refId 相同故不重複打擾；要重送請走退回流程的通知）。
+ * 全程 best-effort：送審已經 COMMIT，推播失敗不該影響它。
+ */
+async function notifyGroupSubmitted(orderId, totalStudentCount) {
+  const r = await pool.query(
+    `SELECT m.parent_id, p.line_uid, p.line_login_channel_id,
+            go.course_type, v.name AS venue_name
+       FROM group_order_members m
+       JOIN group_orders go ON go.id = m.group_order_id
+       JOIN parents p ON p.id = m.parent_id
+       LEFT JOIN venues v ON v.id = go.venue_id
+      WHERE m.group_order_id = $1
+        AND p.line_uid IS NOT NULL AND p.line_uid <> ''`,
+    [orderId]);
+  if (!r.rowCount) return;
+
+  const liffBase = (process.env.LIFF_URL_PARENT || process.env.LIFF_URL || '').replace(/\/$/, '');
+  const liffUrl = liffBase ? liffBase + '/group/' + orderId : '';
+
+  for (const row of r.rows) {
+    const ch = routing.channelForRecipient({
+      kind: 'parent',
+      loginChannelId: row.line_login_channel_id,
+    });
+    if (!ch) continue;   // 路由查不到就跳過；pushGate 那層也會記錄原因
+    try {
+      await line.pushMessage(
+        row.line_uid,
+        line.templates.groupSubmitted({
+          total: totalStudentCount,
+          venueName: row.venue_name,
+          courseType: row.course_type ? '1 對 ' + row.course_type : null,
+          liffUrl,
+        }),
+        ch,
+        { event: 'group_submitted', refId: 'gs:' + orderId + ':' + row.parent_id, recipientKind: 'parent' });
+    } catch (e) {
+      console.warn('[group submit push] parent=' + row.parent_id + ' ' + e.message);
+    }
+  }
+}
+
 // ── POST /:id/submit 團主送審 ───────────────────────────────
 router.post('/:id/submit', async (req, res) => {
   const client = await pool.connect();
@@ -1082,6 +1139,10 @@ router.post('/:id/submit', async (req, res) => {
     await client.query('COMMIT');
     const loaded = await loadOrderWithMembers(pool, r.rows[0].id);
     res.json(shapeOrder(loaded.order, loaded.members, req.parent.id));
+
+    // 全團付款備齊、團主送審成功 → 通知每個家庭。
+    // 在回應之後才做，best-effort：送審已經 COMMIT，推播失敗不該影響它。
+    notifyGroupSubmitted(order.id, total).catch((e) => console.warn('[group submit push]', e.message));
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('[group-orders submit]', err);

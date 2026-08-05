@@ -685,6 +685,29 @@ function twTime(input) {
   return `${t.getUTCMonth() + 1}/${t.getUTCDate()}（${w}） ${p(t.getUTCHours())}:${p(t.getUTCMinutes())}`;
 }
 
+// 團報送審完成 → 通知全團家庭
+function groupSubmitted({ total, venueName, courseType, liffUrl }) {
+  return [{
+    type: 'flex', altText: '團報已送出審核',
+    contents: {
+      type: 'bubble',
+      header: flexHeader('📨 團報已送出審核', BRAND.primary),
+      body: {
+        type: 'box', layout: 'vertical', spacing: 'sm',
+        contents: [
+          { type: 'text', text: '全團付款資料已備齊，團主已送出審核。', size: 'sm', wrap: true },
+          ...(courseType ? [{ type: 'text', text: `組別：${courseType}`, size: 'sm' }] : []),
+          ...(venueName ? [{ type: 'text', text: `場館：${venueName}`, size: 'sm' }] : []),
+          { type: 'text', text: `學生數：${total} 位`, size: 'sm' },
+          { type: 'separator', margin: 'md' },
+          { type: 'text', text: '櫃檯核准後課程即自動開通，屆時會再通知您。', size: 'xs', color: '#888888', wrap: true },
+        ],
+      },
+      ...(liffUrl ? { footer: { type: 'box', layout: 'vertical', contents: [flexButton('查看團購狀態', liffUrl, BRAND.primary)] } } : {}),
+    },
+  }];
+}
+
 // 簽到確認 → 家長
 function checkinConfirmed({ studentName, coachName, venueName, checkedInAt, liffUrl }) {
   return [{
@@ -753,6 +776,7 @@ module.exports = {
     adminPasswordReset,
     checkinConfirmed,
     checkinConfirmedToCoach,
+    groupSubmitted,
   },
 };
 
