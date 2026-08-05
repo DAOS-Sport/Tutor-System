@@ -23,16 +23,19 @@
 
 /**
  * Login channel（＝provider 的入口）→ 該 provider 底下的推播目的地。
- *   coach    這個 provider 給教練用的 Messaging channel
+ *   coach    這個 provider 給教練用的 Messaging channel（內部員工帳號）
  *   venues   venue_id → Messaging channel，家長依主場館對應
- *   fallback 角色/場館查不到時的保底（沒有就填 null，寧可不送）
+ *
+ * 刻意「沒有」家長的保底值。家長只能走自己場館的官方帳號 —— dreams400 是
+ * 員工在用的內部窗口，把家長通知送進去是策略錯誤，寧可不送。
+ * 查不到就回 null，呼叫端記錄原因並跳過。
  */
 const PROVIDERS = {
   '2009958451': {
     label: 'LIFF 家長端＋教練端（現行）',
-    coach: 'dreams400',
-    venues: {},            // 這個 provider 底下沒有場館 OA
-    fallback: 'dreams400', // 所以家長也只能走內部帳號
+    coach: 'dreams400',    // 400_駿斯內部服務窗口：員工專用
+    venues: {},            // 這個 provider 底下沒有任何場館 OA
+                           // → 家長目前無目的地，一律不送（不會退到 400）
   },
 
   // ── 家長端遷移到場館 provider 後，把新的 Login channel id 填進來即可 ──
@@ -40,7 +43,6 @@ const PROVIDERS = {
   //   label: '場館 provider',
   //   coach: null,
   //   venues: { B: 'B', K: 'K', L: 'L', C: 'C' },
-  //   fallback: null,      // 查無場館就不送，不亂找
   // },
 };
 
@@ -62,15 +64,15 @@ function providerFor(loginChannelId) {
 function channelForRecipient(r) {
   const p = providerFor(r && r.loginChannelId);
   if (!p) return null;
-  if (r && r.kind === 'coach') return p.coach || p.fallback || null;
-  const byVenue = r && r.venueId ? p.venues[r.venueId] : null;
-  return byVenue || p.fallback || null;
+  if (r && r.kind === 'coach') return p.coach || null;
+  // 家長：只認自己主場館的帳號。沒有對應就是沒有 —— 不退回員工帳號。
+  return (r && r.venueId && p.venues[r.venueId]) || null;
 }
 
 // 相容舊呼叫：只問「現行 provider 對應哪個 channel」。
 function messagingChannelFor(loginChannelId) {
   const p = providerFor(loginChannelId);
-  return p ? (p.fallback || p.coach || null) : null;
+  return p ? (p.coach || null) : null;
 }
 
 /**
@@ -82,17 +84,17 @@ function selfCheck(getToken) {
   const cur = currentLoginChannel();
   for (const [login, p] of Object.entries(PROVIDERS)) {
     out.push('  Login ' + login + (login === cur ? ' (現行)' : '') + '  ' + p.label);
-    const targets = new Set([p.coach, p.fallback, ...Object.values(p.venues)].filter(Boolean));
+    const targets = new Set([p.coach, ...Object.values(p.venues)].filter(Boolean));
     for (const ch of targets) {
       let state;
       try { getToken(ch); state = 'token OK'; }
       catch (e) { state = '** 沒有 token：' + e.message + ' **'; }
       out.push('      → ' + String(ch).padEnd(12) + state);
     }
-    out.push('      教練 → ' + (p.coach || p.fallback || '（不送）'));
+    out.push('      教練 → ' + (p.coach || '（不送）'));
     out.push('      家長 → ' + (Object.keys(p.venues).length
       ? '依主場館 ' + JSON.stringify(p.venues)
-      : (p.fallback || '（不送）')));
+      : '（不送 —— 此 provider 底下沒有場館 OA，且家長不得走員工帳號）'));
   }
   if (cur && !PROVIDERS[cur]) {
     out.push('  ** 現行 LINE_LOGIN_CHANNEL_ID=' + cur + ' 不在路由表內 —— 所有推播都會被擋下'
