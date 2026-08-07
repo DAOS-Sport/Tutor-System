@@ -28,6 +28,7 @@ const SERVER = path.join(ROOT, 'server');
 const UNIT = [
   'tests/admin_group_order_filter_ui_test.js',
   'tests/course_tier_price_test.js',
+  'tests/checkin_label_test.js',
   'tests/force_trigger_outbox_cli_test.js',
   'tests/group_payment_proof_test.js',
   'tests/line_parent_bind_compat_test.js',

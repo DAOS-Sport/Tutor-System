@@ -5,5 +5,5 @@ export default defineConfig({
   plugins: [react()],
   base: '/admin/',
   build: { outDir: '../../server/public/admin', emptyOutDir: true },
-  server: { port: 3002, proxy: { '/api': 'http://localhost:3000' } }
+  server: { port: 3002, proxy: { '/api': 'http://localhost:3000' }, fs: { allow: ['..'] } }
 });

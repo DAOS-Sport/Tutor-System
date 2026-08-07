@@ -4,16 +4,19 @@ import { sessionsApi } from '../api/sessions';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import LoadingSpinner from '../components/LoadingSpinner';
-import { courseTypeLabel, formatTWDate, formatTWTime } from '../utils/format';
+import { courseTypeLabel, formatTWDate, formatTWTime, checkinLabel } from '../utils/format';
 import { promotionValueLabel } from '../utils/promotionLabel';
 
 // 報名階段。順序＝教練最需要注意的排前面：卡在待付款的，課永遠不會出現。
 // 只列教練該看到的三個狀態；cancelled / refunded 不列——那是已經結束的事，
 // 放在這裡只會讓教練誤以為還有待辦。
 const ENROLL_STAGES = [
-  { key: 'pending_payment', label: '待付款', icon: '⏳', chip: 'bg-amber-100 text-amber-800' },
+  // 「待對帳」不是「待付款」：家長多半已經轉帳了，卡的是櫃檯還沒對帳。
+  // 寫成待付款會讓教練誤以為要去催家長付錢。
+  { key: 'pending_payment', label: '待對帳', icon: '⏳', chip: 'bg-amber-100 text-amber-800' },
   { key: 'confirmed', label: '已確認', icon: '✅', chip: 'bg-emerald-100 text-emerald-700' },
-  { key: 'active', label: '上課中', icon: '📗', chip: 'bg-brand-teal/15 text-brand-teal' },
+  // 'active' 拿掉：正式庫那 9 筆全是 2026-05-03 同一秒的匯入批次且 coach_id 為 NULL，
+  // 被端點的 WHERE ae.coach_id = $1 濾掉後永遠不可能出現，留著只是誤導。
 ];
 
 
@@ -107,7 +110,7 @@ export default function CoachTodayPage() {
                 </div>
                 <div className="mt-2 flex items-center gap-2 text-xs">
                   <span className={`rounded-full px-2 py-0.5 ${s.checked_in ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
-                    {s.checked_in ? (s.checked_in_at ? '已簽到 ' + formatTWTime(s.checked_in_at) : '已簽到') : '未簽到'}
+                    {s.checked_in ? checkinLabel(s.scheduled_at, s.checked_in_at) : '未簽到'}
                   </span>
                   <span className="text-brand-teal">點選進入授課 →</span>
                 </div>

@@ -9,7 +9,7 @@
  *  GET   /api/admin/sessions/today           ?venueId=
  *  GET   /api/admin/sessions/verify-checkin  ?phone= &periodId=
  *  GET   /api/admin/sessions/cancelled
- *  POST  /api/admin/sessions/:id/revive      （主管權限）
+ *  POST  /api/admin/sessions/:id/revive      （admin / manager / staff）
  */
 const express = require('express');
 const { pool } = require('../../models/db');
@@ -346,7 +346,11 @@ router.get('/cancelled', requireAdminAuth, requireAdminRole('admin', 'manager', 
   }
 });
 
-router.post('/:id/revive', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
+// 2026-08-07 使用者明確同意解除本項凍結：櫃台需要能自行做扣課復活。
+// 只放寬角色，不動復活的判斷邏輯，也不動 DEDUCTION_REVIVAL_V2 的全量策略。
+// （GET /cancelled 本來就已開放 staff，前端路由與側邊選單也是 —— 原本只有這支擋著，
+//   造成櫃台打得開頁面、按下去卻 403 的不一致。）
+router.post('/:id/revive', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
   const reason = String(req.body?.reason || '').trim().slice(0, 1000);
   if (!reason) return res.status(400).json({ error: '請填寫歸還原因', code: 'REASON_REQUIRED' });
   const client = await pool.connect();

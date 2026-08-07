@@ -41,7 +41,9 @@ router.get('/coach/:coachId/enrollments', requireCoach, requireCoachOwner('coach
          FROM admin_enrollments ae
          LEFT JOIN admin_venues v ON v.id = ae.venue_id
         WHERE ae.coach_id = $1
-          AND ae.status::text IN ('pending_payment','confirmed','active')
+          -- 不含 'active'：那批 legacy 資料 coach_id 皆為 NULL，本來就被上面的
+          -- coach_id 條件濾掉，列在白名單裡只會讓人以為它會出現。
+          AND ae.status::text IN ('pending_payment','confirmed')
         ORDER BY
           -- 卡住的排前面：教練最需要知道的是「誰還沒完成」
           CASE ae.status::text WHEN 'pending_payment' THEN 0 ELSE 1 END,
@@ -49,7 +51,7 @@ router.get('/coach/:coachId/enrollments', requireCoach, requireCoachOwner('coach
         LIMIT 60`,
       [coachId]
     );
-    const counts = { pending_payment: 0, confirmed: 0, active: 0 };
+    const counts = { pending_payment: 0, confirmed: 0 };
     for (const row of r.rows) {
       if (counts[row.status] !== undefined) counts[row.status] += 1;
     }

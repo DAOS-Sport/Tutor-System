@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { promotionsApi } from '../api/promotions';
-import { resolveUnitPrice } from '../utils/coursePricing';
+import { resolveUnitPrice } from '../../../shared/coursePricing';
 
 /**
  * 純計算 hook：base + afterMultiplier，並 expose `applyPreview` 接後端試算結果。

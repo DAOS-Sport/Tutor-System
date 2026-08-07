@@ -1,6 +1,6 @@
 import React from 'react';
 import { formatTWD } from '../utils/format';
-import { resolveUnitPrice } from '../utils/coursePricing';
+import { resolveUnitPrice } from '../../../shared/coursePricing';
 
 export default function CoachCard({ coach, basePrice, tierPrices = null, onSelect, isTrial = false, trialPrice = null, sessionsPerPeriod = 6 }) {
   const isPlaceholder = !!coach.is_placeholder;

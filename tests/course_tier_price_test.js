@@ -14,7 +14,7 @@ let n = 0;
 const t = (name, fn) => { fn(); n += 1; console.log('  PASS  ' + name); };
 
 (async () => {
-  const cli = await import('../client/liff/src/utils/coursePricing.js');
+  const cli = await import('../client/shared/coursePricing.js');
 
   // ── tierKey：NUMERIC(5,2) 讀出來可能是 1.5 也可能是 "1.50"，兩者必須同 key ──
   t('tierKey 正規化', () => {
