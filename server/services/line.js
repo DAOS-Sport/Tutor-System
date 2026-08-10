@@ -843,3 +843,30 @@ module.exports = {
 
 // 供維運診斷用：只回「拿不拿得到」，呼叫端不得印出回傳值。
 module.exports._getTokenForDiagnostics = getToken;
+
+/**
+ * Token 覆蓋摘要 —— 給公開的 /health 用，**只回數量與布林，絕不回 token 或 key 名稱**。
+ *
+ * 存在的理由：部署環境有沒有吃到 LINE Secrets，從外面完全看不出來。
+ * 沒有這個摘要，「推播沒送出」有兩種完全不同的原因（開關沒開 vs 環境沒 token）
+ * 而兩種在外部表現一模一樣 —— 都是「什麼都沒發生」。
+ */
+function tokenSummary() {
+  let jsonKeys = [];
+  try {
+    jsonKeys = Object.keys(JSON.parse(process.env.LINE_MESSAGING_TOKENS || '{}'));
+  } catch (_) {
+    return { configuredCount: 0, staffChannel: false, malformedJson: true };
+  }
+  const envKeys = Object.keys(process.env)
+    .filter((k) => k.startsWith('LINE_MESSAGING_TOKEN_') && String(process.env[k] || '').trim());
+  const staff = process.env.LINE_STAFF_CHANNEL_KEY || 'dreams400';
+  let staffOk = false;
+  try { staffOk = Boolean(getToken(staff)); } catch (_) { staffOk = false; }
+  return {
+    configuredCount: new Set([...jsonKeys, ...envKeys]).size,
+    staffChannel: staffOk,
+    malformedJson: false,
+  };
+}
+module.exports.tokenSummary = tokenSummary;

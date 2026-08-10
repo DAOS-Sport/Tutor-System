@@ -110,4 +110,22 @@ async function logSkipped({ event, refId, uid, venueId, recipientKind, reason, d
   } catch (e) { console.warn('[pushGate] 寫入略過紀錄失敗：' + e.message); }
 }
 
-module.exports = { SETTING, DEFAULTS, EVENT_KEY, loadSettings, decide, claim, finish, logSkipped, isOn };
+/**
+ * 目前的閘門狀態 —— 給公開的 /health 用。
+ * 事件代號本身不是機密，而且「哪些事件開著」正是這裡最需要回答的問題。
+ */
+async function describe(db = pool) {
+  const s = await loadSettings(db);
+  const eventsOn = Object.keys(s)
+    .filter((k) => k.startsWith('push_event_') && isOn(s[k]))
+    .map((k) => k.slice('push_event_'.length))
+    .sort();
+  return {
+    enabled: isOn(s[SETTING.enabled]),
+    dryRun: isOn(s[SETTING.dryRun]),
+    maxPerHour: Number(s[SETTING.maxPerHour]),
+    eventsOn,
+  };
+}
+
+module.exports = { SETTING, DEFAULTS, EVENT_KEY, loadSettings, decide, claim, finish, logSkipped, isOn, describe };

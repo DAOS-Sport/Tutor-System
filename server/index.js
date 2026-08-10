@@ -130,11 +130,24 @@ app.get('/health', async (req, res) => {
     mail = { error: String(err.message || err).slice(0, 120) };
   }
 
+  // 推播診斷。要回答的是「為什麼教練沒收到」——那有兩個完全不同的原因
+  // （安全閥沒開 vs 部署環境沒吃到 LINE token），而兩者在外部表現一模一樣：
+  // 都是什麼都沒發生。分不出來就只能瞎猜。
+  let push = null;
+  try {
+    const gate = require('./services/pushGate');
+    const line = require('./services/line');
+    push = { ...(await gate.describe()), tokens: line.tokenSummary() };
+  } catch (err) {
+    push = { error: String(err.message || err).slice(0, 120) };
+  }
+
   res.json({
     status: 'ok',
     ts: now.toISOString(),
     build: BUILD_INFO,
     mail,
+    push,
     timezone: {
       application: process.env.TZ || TAIPEI_TIME_ZONE,
       database: dbTimeZone,

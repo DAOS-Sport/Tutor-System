@@ -16,6 +16,13 @@ const router = express.Router();
 const ALLOWED_KEYS = [
   'sessions_per_period', 'validity_days', 'expiry_notice_days',
   'refund_fee_rate', 'transfer_fee', 'default_session_minutes', 'multi_confirm_minutes',
+  // 推播安全閥（services/pushGate.js）。原本只能直接下 SQL 改 —— 那既容易打錯，
+  // 也讓「開推播」變成需要資料庫權限的動作。值一律 0/1（push_max_per_hour 除外）。
+  //
+  // ⚠️ push_dry_run 預設是 1。只開 push_enabled 而忘了把 dry_run 關掉的話，
+  // 閘門會放行但不送出 —— 看起來一切正常，實際上一則都沒發。這是最容易誤判的組合。
+  'push_enabled', 'push_dry_run', 'push_max_per_hour',
+  'push_event_checkin_confirmed_coach',
 ];
 
 async function readAll() {
