@@ -29,6 +29,7 @@ const UNIT = [
   'tests/admin_group_order_filter_ui_test.js',
   'tests/coach_checkin_removed_test.js',
   'tests/reconcile_email_test.js',
+  'tests/coach_session_date_range_test.js',
   'tests/course_tier_price_test.js',
   'tests/force_trigger_outbox_cli_test.js',
   'tests/group_payment_proof_test.js',
@@ -55,6 +56,7 @@ const UNIT = [
 
 // 需要真實 Postgres。多數含破壞性前置清理，只可對拋棄式測試庫執行。
 const DB = [
+  'tests/coach_session_date_range_db_test.js',
   'tests/parent_identity_closure_test.js',
   'tests/push_gate_test.js',
   'tests/ragic_incremental_sync_test.js',

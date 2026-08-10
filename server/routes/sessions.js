@@ -18,10 +18,8 @@ const router = express.Router();
 const { pool } = require('../models/db');
 const { requireCoach, requireCoachOwner } = require('../middlewares/coachAuth');
 const { addCalendarDays, taipeiWeekStart } = require('../utils/dateTime');
+const { todayWhere, historyRangeWhere, weekRangeWhere } = require('../utils/sessionDateSql');
 
-function todayWhereTaipei(columnSql = 'cs.scheduled_at') {
-  return `(${columnSql} AT TIME ZONE 'Asia/Taipei')::date = (NOW() AT TIME ZONE 'Asia/Taipei')::date`;
-}
 
 // 教練端唯讀：自己學生的報名狀態總覽。
 //
@@ -166,7 +164,7 @@ router.get('/coach/:coachId/today', requireCoach, requireCoachOwner('coachId'), 
        JOIN venues v ON v.id = cp.venue_id
        LEFT JOIN coaches rc ON rc.id = cs.reassigned_from_coach_id
        WHERE COALESCE(cs.coach_id, cp.coach_id) = $1
-         AND ${todayWhereTaipei('cs.scheduled_at')}
+         AND ${todayWhere('cs.scheduled_at')}
          AND cs.status IN ('confirmed', 'completed')
        ORDER BY cs.scheduled_at`,
       [req.params.coachId]
@@ -200,7 +198,7 @@ router.get('/coach/:coachId/week', requireCoach, requireCoachOwner('coachId'), a
        JOIN course_periods cp ON cs.course_period_id = cp.id
        LEFT JOIN coaches rc ON rc.id = cs.reassigned_from_coach_id
        WHERE COALESCE(cs.coach_id, cp.coach_id) = $1
-         AND cs.scheduled_at >= $2 AND cs.scheduled_at < $3
+         AND ${weekRangeWhere('cs.scheduled_at', '$2', '$3')}
          AND cs.status IN ('confirmed', 'completed', 'pending_group_confirm')
        ORDER BY cs.scheduled_at`,
       [req.params.coachId, fromD.toISOString(), toD.toISOString()]
@@ -245,10 +243,8 @@ router.get('/coach/:coachId/history', requireCoach, requireCoachOwner('coachId')
        JOIN venues v ON v.id = cp.venue_id
        LEFT JOIN coaches rc ON rc.id = cs.reassigned_from_coach_id
        WHERE COALESCE(cs.coach_id, cp.coach_id) = $1
-         AND (cs.scheduled_at AT TIME ZONE 'Asia/Taipei')::date < (NOW() AT TIME ZONE 'Asia/Taipei')::date
+         AND ${historyRangeWhere('cs.scheduled_at', '$2', '$3')}
          AND cs.status IN ('confirmed', 'completed')
-         AND ($2::date IS NULL OR (cs.scheduled_at AT TIME ZONE 'Asia/Taipei')::date >= $2::date)
-         AND ($3::date IS NULL OR (cs.scheduled_at AT TIME ZONE 'Asia/Taipei')::date <= $3::date)
          AND ($4::uuid IS NULL OR cp.id = $4::uuid)
          AND ($5 = 'all'
               OR ($5 = 'checked'   AND     EXISTS(SELECT 1 FROM checkin_records WHERE course_session_id = cs.id))
