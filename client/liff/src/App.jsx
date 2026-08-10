@@ -28,6 +28,7 @@ import CoachScheduleWeekPage from './pages/CoachScheduleWeekPage';
 import CoachProfilePage from './pages/CoachProfilePage';
 import CoachSessionPage from './pages/CoachSessionPage';
 import CoachHistoryPage from './pages/CoachHistoryPage';
+import CoachOrdersPage from './pages/CoachOrdersPage';
 import LessonPlanFormPage from './pages/LessonPlanFormPage';
 import SessionRecordFormPage from './pages/SessionRecordFormPage';
 import LearningHistoryPage from './pages/LearningHistoryPage';
@@ -164,6 +165,11 @@ export default function App() {
               </Route>
               <Route element={<AppLayout showBackButton title="授課入口" />}>
                 <Route path="/coach/session/:id" element={<CoachSessionPage />} />
+              </Route>
+              {/* 訂單紀錄：今日頁只預覽 5 筆，完整清單在這裡。比照家長端 /my-lessons —— 
+                  有返回鍵，但底部導覽保留（路徑需同步加進 AppLayout 的 TAB_PATHS）。 */}
+              <Route element={<AppLayout showBackButton title="訂單紀錄" />}>
+                <Route path="/coach/orders" element={<CoachOrdersPage />} />
               </Route>
               {/* 舊「學員」分頁已改為「授課記錄」；保留舊網址轉址避免書籤 404 */}
               <Route path="/coach/students" element={<Navigate to="/coach/history" replace />} />

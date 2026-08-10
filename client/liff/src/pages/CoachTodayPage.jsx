@@ -6,15 +6,7 @@ import { useToast } from '../context/ToastContext';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { courseTypeLabel, formatTWDate, formatTWTime } from '../utils/format';
 import { promotionValueLabel } from '../utils/promotionLabel';
-
-// 報名階段。順序＝教練最需要注意的排前面：卡在待付款的，課永遠不會出現。
-// 只列教練該看到的三個狀態；cancelled / refunded 不列——那是已經結束的事，
-// 放在這裡只會讓教練誤以為還有待辦。
-const ENROLL_STAGES = [
-  { key: 'pending_payment', label: '待付款', icon: '⏳', chip: 'bg-amber-100 text-amber-800' },
-  { key: 'confirmed', label: '已確認', icon: '✅', chip: 'bg-emerald-100 text-emerald-700' },
-  { key: 'active', label: '上課中', icon: '📗', chip: 'bg-brand-teal/15 text-brand-teal' },
-];
+import { EnrollmentRow, EnrollmentStats, ENROLL_PREVIEW } from '../components/coach/EnrollmentRow';
 
 
 export default function CoachTodayPage() {
@@ -118,50 +110,29 @@ export default function CoachTodayPage() {
       </section>
 
       {/* 學生報名狀態：教練原本只看得到「已經開通的課」，家長說「我報名了」
-          但課還沒出現時，他無從判斷是家長還沒付款、櫃檯還沒對帳、還是根本沒報。 */}
+          但課還沒出現時，他無從判斷是家長還沒付款、櫃檯還沒對帳、還是根本沒報。
+          這裡只預覽最需要注意的幾筆，完整清單在 /coach/orders。 */}
       {enroll && (enroll.items || []).length > 0 && (
         <section className="mb-5">
           <div className="mb-2 flex items-center justify-between">
             <h3 className="text-sm font-bold text-brand-primary">學生報名狀態</h3>
-            <span className="text-xs text-gray-500">共 {enroll.items.length} 筆</span>
+            {/* 「共 N 筆」與入口合成同一顆按鈕。兩個入口並存只會讓人猶豫該點哪個，
+                而且舊版那句「另有 N 筆，詳情請洽櫃檯」是死路——看不到就是看不到。 */}
+            <button
+              type="button"
+              onClick={() => navigate('/coach/orders')}
+              className="shrink-0 rounded-full bg-brand-primary/10 px-3 py-1 text-[11px] font-bold text-brand-primary active:opacity-60"
+            >
+              全部 {enroll.items.length} 筆 ›
+            </button>
           </div>
 
-          <div className="mb-2 flex flex-wrap gap-1.5">
-            {ENROLL_STAGES.map((st) => (
-              (enroll.counts?.[st.key] || 0) > 0 && (
-                <span key={st.key}
-                  className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-bold ${st.chip}`}>
-                  <span aria-hidden="true">{st.icon}</span>
-                  {st.label} {enroll.counts[st.key]}
-                </span>
-              )
+          <EnrollmentStats counts={enroll.counts} />
+
+          <div className="space-y-2">
+            {enroll.items.slice(0, ENROLL_PREVIEW).map((it) => (
+              <EnrollmentRow key={it.id} item={it} onClick={() => navigate('/coach/orders')} />
             ))}
-          </div>
-
-          <div className="space-y-1.5">
-            {enroll.items.slice(0, 8).map((it) => {
-              const st = ENROLL_STAGES.find((x) => x.key === it.status) || ENROLL_STAGES[0];
-              const students = Array.isArray(it.students) ? it.students.join('、') : (it.students || '—');
-              return (
-                <div key={it.id} className="flex items-center gap-2 rounded-xl border border-gray-100 bg-white px-3 py-2 shadow-sm">
-                  <span aria-hidden="true" className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-sm ${st.chip}`}>
-                    {st.icon}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-medium text-gray-800">{students}</div>
-                    <div className="truncate text-[11px] text-gray-500">
-                      {[it.parent_name, courseTypeLabel(it.course_type), it.venue_name].filter(Boolean).join('・')}
-                    </div>
-                  </div>
-                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${st.chip}`}>{st.label}</span>
-                </div>
-              );
-            })}
-            {enroll.items.length > 8 && (
-              <p className="pt-0.5 text-center text-[11px] text-gray-400">
-                另有 {enroll.items.length - 8} 筆，詳情請洽櫃檯
-              </p>
-            )}
           </div>
         </section>
       )}

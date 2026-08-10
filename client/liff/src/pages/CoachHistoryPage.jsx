@@ -106,12 +106,21 @@ export default function CoachHistoryPage() {
             className="block w-full min-w-0 box-border appearance-none rounded-lg border border-gray-300 px-3 py-2 text-sm"
           />
         </div>
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
           {STATUS_OPTIONS.map((o) => (
             <FilterChip key={o.key} active={status === o.key} onClick={() => setStatus(o.key)}>
               {o.label}
             </FilterChip>
           ))}
+          {/* 訂單紀錄入口。放在篩選列尾端而不是另開一個分頁：這一排就是「要看什麼」的
+              切換區，訂單也是一種「要看什麼」。ml-auto 在 flex-wrap 下仍會把它推到該行最右。 */}
+          <button
+            type="button"
+            onClick={() => navigate('/coach/orders')}
+            className="ml-auto shrink-0 rounded-full border border-brand-teal/40 bg-brand-teal/5 px-2.5 py-1 text-[11px] font-bold text-brand-teal active:opacity-60"
+          >
+            訂單紀錄 ›
+          </button>
         </div>
         {/* 學員篩選：自製下拉，達成「姓名靠左、堂數靠右」對齊 */}
         <div className="relative" ref={dropRef}>
