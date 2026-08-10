@@ -9,7 +9,7 @@ import { courseTypesApi } from '../api/courseTypes';
 import { parentsApi } from '../api/parents';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
-import { formatTWDate } from '../utils/format';
+import { formatTWDate, formatTWYMD } from '../utils/format';
 import { promotionValueLabel } from '../utils/promotionLabel';
 
 // 組別卡片的文案（title/subtitle/description）；單人價格改由後台「課程介紹維護」設定，於下方動態帶入。
@@ -95,54 +95,6 @@ export default function HomePage() {
 
       <IncompleteGroupOrdersBanner />
 
-      {/* 進行中優惠（取代原好友推薦 mgm 區塊；好友 mgm 功能已關閉）
-          橫向捲動而非垂直堆疊：四檔優惠垂直排開會佔滿整個首頁第一屏，把
-          「上課記錄/簽到」「試上課程」等真正的功能入口全部推到摺線以下 ——
-          首頁變成公佈欄，而不是入口。
-          卡片寬度刻意不滿版，露出下一張的邊：那是「還有更多」的唯一提示，
-          沒有它使用者不會知道可以滑。 */}
-      {promos === null ? (
-        <LoadingSpinner label="載入優惠中…" />
-      ) : (
-        promos.length > 0 && (
-          <section className="mb-5">
-            <div className="mb-2 flex items-baseline justify-between">
-              <h3 className="text-sm font-bold text-brand-primary">🔥 進行中優惠</h3>
-              {promos.length > 1 && (
-                <span className="text-[11px] text-gray-400">{promos.length} 檔・可左右滑動</span>
-              )}
-            </div>
-            {/* -mx-4 px-4：抵銷外層容器的左右內距，讓卡片一路捲到螢幕邊緣，
-                而不是在畫面中間就被切齊。snap 讓每次停在卡片邊界，不會停在半張。 */}
-            <div className="-mx-4 flex snap-x snap-mandatory gap-3 overflow-x-auto px-4 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-              {promos.map((p) => (
-                <div
-                  key={p.id}
-                  className={`${promos.length > 1 ? 'w-[74%]' : 'w-full'} shrink-0 snap-start rounded-xl border-l-4 border-brand-amber bg-amber-50 px-3.5 py-3`}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="line-clamp-2 min-w-0 text-xs font-bold leading-5 text-brand-amber">
-                      {p.title || p.name || '優惠活動'}
-                    </div>
-                    <div className="shrink-0 rounded-full bg-brand-amber px-2.5 py-1 text-[11px] font-black text-white">
-                      {promotionValue(p)}
-                    </div>
-                  </div>
-                  {/* 固定兩行。舊版用 min-h-36 硬撐高度，描述短的那幾檔會留下
-                      一大片空白，四張疊起來就是一整屏的空氣。 */}
-                  <p className="mt-1.5 line-clamp-2 text-[11px] leading-4 text-gray-600">
-                    {p.description || '活動詳情請洽櫃檯'}
-                  </p>
-                  <div className="mt-2 text-[10px] text-gray-500">
-                    至 {formatTWDate(p.expires_at)}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
-        )
-      )}
-
       {/* 上課記錄/簽到：整列橫幅、橘底黑字（已移除「課程轉讓」入口） */}
       <button
         type="button"
@@ -169,6 +121,61 @@ export default function HomePage() {
           </div>
           <span aria-hidden="true">›</span>
         </button>
+      )}
+
+      {/* 進行中優惠（取代原好友推薦 mgm 區塊；好友 mgm 功能已關閉）
+          位置在功能入口之下：家長開首頁是要簽到、看課、報名，不是看公告。
+          橫向捲動而非垂直堆疊：四檔優惠垂直排開會佔掉整整一屏，把下面的
+          「課程組別」擠到摺線以外。
+          卡片寬度刻意不滿版，露出下一張的邊：那是「還有更多」的唯一提示，
+          沒有它使用者不會知道可以滑。 */}
+      {promos === null ? (
+        <LoadingSpinner label="載入優惠中…" />
+      ) : (
+        promos.length > 0 && (
+          <section className="mb-5">
+            <div className="mb-2 flex items-baseline justify-between">
+              <h3 className="text-sm font-bold text-brand-primary">🔥 進行中優惠</h3>
+              {promos.length > 1 && (
+                <span className="text-[11px] text-gray-400">{promos.length} 檔・可左右滑動</span>
+              )}
+            </div>
+            {/* -mx-4 px-4：抵銷外層容器的左右內距，讓卡片一路捲到螢幕邊緣，
+                而不是在畫面中間就被切齊。snap 讓每次停在卡片邊界，不會停在半張。 */}
+            <div className="-mx-4 flex snap-x snap-mandatory gap-3 overflow-x-auto px-4 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              {promos.map((p) => (
+                <div
+                  key={p.id}
+                  className={`${promos.length > 1 ? 'w-[74%]' : 'w-full'} flex shrink-0 snap-start flex-col rounded-xl border-l-4 border-brand-amber bg-amber-50 px-3 py-2.5`}
+                >
+                  {/* 層級：標題 → 折扣 → 內容。
+                      標題吃品牌深藍而不是琥珀 —— 邊框、底色、折扣徽章原本全是琥珀，
+                      標題再一起就是一坨同色，看不出主從。琥珀只留給折扣，
+                      整張卡才會有一個明確的視覺焦點。 */}
+                  <div className="line-clamp-2 text-sm font-bold leading-5 text-brand-primary">
+                    {p.title || p.name || '優惠活動'}
+                  </div>
+                  <div className="mt-1">
+                    <span className="inline-block rounded-full bg-brand-amber px-2 py-0.5 text-[11px] font-black leading-4 text-white">
+                      {promotionValue(p)}
+                    </span>
+                  </div>
+                  {/* 固定兩行。舊版用 min-h-36 硬撐高度，描述短的那幾檔會留下
+                      一大片空白，四張疊起來就是一整屏的空氣。 */}
+                  <p className="mt-1.5 line-clamp-2 text-[11px] leading-4 text-gray-600">
+                    {p.description || '活動詳情請洽櫃檯'}
+                  </p>
+                  {/* mt-auto：橫排卡片高度由最長那張決定，把日期壓到底才對得齊，
+                      否則每張卡的日期各自浮在不同高度，看起來像沒對齊的表格。
+                      日期用短版不帶星期 —— 「（週三）」在這個尺寸只是噪音。 */}
+                  <div className="mt-auto pt-1.5 text-[10px] text-gray-500">
+                    至 {formatTWYMD(p.expires_at).replace(/-/g, '/')}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )
       )}
 
       <section>
