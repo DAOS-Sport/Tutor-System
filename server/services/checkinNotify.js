@@ -1,8 +1,9 @@
 /**
  * 簽到確認推播 —— 教練 + 家長。
  *
- * 三條簽到路徑（教練代簽 / 家長自助 / 櫃台補登）共用這裡，避免三份各自演化成
+ * 兩條簽到路徑（家長自助 / 櫃台補登）共用這裡，避免兩份各自演化成
  * 不同的文案與收訊者規則。
+ * （教練代簽原為第三條，已於 2026-08-10 完整移除；DB 仍有 'coach' 來源的歷史列。）
  *
  * ── 路由邊界（重要）──
  * uid 從哪個 provider 進來，就只能推回同一個 provider。收訊者的 channel 一律由
@@ -11,9 +12,10 @@
  * 路由查不到就直接記錄原因並跳過，絕不退而求其次試別的 channel。
  *
  * ── 收訊者規則 ──
- * 教練：只在「不是教練自己簽的」時通知。教練代簽時通知他自己是純噪音，而且共班
- *       一次寫入整班會變成一堂課發 N 則 —— 教練端 channel 全場館共用，每月只有
- *       3,000 則額度，禁不起這樣燒。
+ * 教練：checkin_records.checked_in_source = 'coach' 的列不通知。新資料不會再有這個
+ *       來源（代簽已移除），但本函式是以 sessionId 撈「該堂全部已簽到列」，
+ *       一堂舊課可能同時有歷史 coach 列與後來的 parent 列 —— 條件拿掉的話，
+ *       教練會收到「他自己當年簽的那筆」推播噪音。
  * 家長：一律通知（他要知道小孩到了、這堂課被計走了）。
  *
  * 兩者是「獨立的事件開關」，可以只開教練端。
@@ -94,6 +96,8 @@ async function notifyCheckin(sessionId, studentIds, db = pool) {
     const when = r.checked_in_at instanceof Date ? r.checked_in_at.toISOString() : String(r.checked_in_at);
 
     // ── 教練 ──（教練自己簽的就不用通知他自己）
+    // 'coach' 僅存在於歷史列（代簽已於 2026-08-10 移除）。這不是死碼 ——
+    // 見檔頭「收訊者規則」：舊課的歷史 coach 列會混在同一批被撈出來。
     if (r.coach_uid && r.checked_in_source !== 'coach') {
       const ch = await resolveChannel({ kind: 'coach' }, '教練');
       if (!ch) { out.skipped += 1; }

@@ -15,6 +15,7 @@
 4. **扣課復活全量開放**：`DEDUCTION_REVIVAL_V2` 維持 `allowed_phones='{}'`，不得縮回 canary。
 5. **`SHARED_CHECKIN_USAGE_V2` 維持全量**，不得縮窄。
 6. `services/usageSync.js` 為 used_sessions 鏡射唯一同步入口；相關鎖序（coach advisory → `FOR UPDATE OF cp`）不得改動。
+7. **教練端無簽到／扣堂路徑**（2026-08-10 Owner 指示，取代原「教練代簽」設計）：`POST /api/sessions/:id/checkins` 已整支刪除，`server/routes/sessions.js` 現為全唯讀。**不得以任何形式復活** —— 含新端點、feature flag、或把寫入邏輯搬到 `learn.js` / `slots.js` / `coaches.js` 等其他掛 `requireCoach` 的檔案。注意 `services/slots.js` 的 `cancelSession()` 會 `used_sessions - 1`，目前是死碼（`routes/slots.js` 未 import），**不得接進任何 requireCoach 端點**。DB 既有 `checked_in_source='coach'` 為歷史列，顯示端（`CoachSessionPage.jsx` 的 `checkinSourceLabel`、`admin/CheckinPage.jsx` 的教練徽章、`admin/checkins.js` 的 source 欄）必須保留該分支 —— 拿掉會把舊紀錄錯標成「家長簽到」，等於偽造歷史。迴歸鎖：`tests/coach_checkin_removed_test.js`。
 
 涉及檔案（改到即觸發詢問義務）：`server/routes/slots.js`、`server/services/slots.js`、`server/cron/index.js`、`server/routes/checkins.js`、`server/routes/sessions.js`、`server/routes/courses.js`（簽到欄位）、`server/routes/admin/manualDeductions.js`、`server/routes/admin/checkins.js`、`server/routes/admin/sessions.js`（cancelled/revive）、`server/services/usageSync.js`、`server/services/deductionRevival.js`、`server/bootstrap/coreSchema.js`（遷移與 feature flag seed 區塊）、對應 LIFF/admin 前端頁與 `tests/e2e/`（path_c、admin_manual_deduction、group_partner_checkin）。
 

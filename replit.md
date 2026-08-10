@@ -39,6 +39,7 @@
 - **一方簽到＝整組生效＋揭露簽到方全名**：團報期（`group_order_id` 非空）其他成員在上課記錄按鈕看到「已簽 · 簽到方家長姓名」（`/courses/lessons` 回 `checked_in_by_name`、`/mine` 與 `/:id` 回 `partner_checkin_name`，僅姓名不含電話/parent id；稱謂版 `partner_checkin_label` 保留相容）。後台簽到驗證列表回 `checked_in_by`（家長全名/教練/櫃檯）。
 - **櫃台手動扣課解除共享課期限制**：`SHARED_PERIOD_REQUIRES_CHECKIN` 409 移除，改為「整班簽到語意」——一筆 completed session＋整班 active roster（過濾 `students.is_active`，anchor 例外保留）各一筆 staff checkin＝整期共扣 1 堂；ledger 加 `roster_snapshot` JSONB；前端共享期只render一顆「扣除 1 堂（整班 N 位簽到）」按鈕。
 - **used_sessions 鏡射統一**：`services/usageSync.js`（自 checkins/sessions 抽取）為唯一同步入口，含 `listLinkedEnrollmentIds` 供扣課/衝正稽核對同團全部訂單各寫一筆；家長/教練逐堂簽到的計數改在 `FOR UPDATE OF cp` 之下，修並發舊值覆寫。WS `checkin:created` 事件一律帶 `checkin_id`（缺了會被 CheckinPage 去重誤吞）。
+- **教練端無簽到／扣堂路徑 🧊**（2026-08-10）：原 `POST /api/sessions/:id/checkins`（教練代簽）依 Owner 指示完整移除，含前端「代簽」按鈕、`sessionsApi.checkin` 與其 mock fallback。教練端現在只看得到簽到狀態（唯讀），簽到一律由家長自助或櫃檯補登。`checked_in_source='coach'` 僅存在於歷史資料，顯示端保留該分支以免舊紀錄被錯標。迴歸鎖 `tests/coach_checkin_removed_test.js` 以白名單方式斷言「教練 router 全部端點皆為 GET」。
 - **扣課復活全量開放**：`DEDUCTION_REVIVAL_V2` 原為單一手機 canary（清單 `GET /api/admin/sessions/cancelled` 與 `POST /:id/revive` 都以家長電話白名單過濾，非 canary 家長的手動扣課在 RevivePage 看不到也不能歸還——曾被誤判為「團報沒接上」）。bootstrap 已比照 SHARED_CHECKIN_USAGE_V2 冪等升級為全量（`allowed_phones='{}'`），部署重啟即生效，正式環境卡住的舊扣課單免資料遷移直接可歸還。
 
 ## 文件

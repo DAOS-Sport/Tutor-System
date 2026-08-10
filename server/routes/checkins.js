@@ -11,8 +11,8 @@
  *    - 寫入 checkin_records（UNIQUE: session+student → 重複時回傳既有 row，不報錯）
  *    - 廣播 admin WS 事件 'checkin:created'
  *    - 需要家長 JWT；驗證 student 屬於 req 的 parent
- *    - 課程須為 confirmed/completed 才可簽到（與教練端 POST /sessions/:id/checkins 一致；
- *      pending_group_confirm 等狀態回 409 SESSION_NOT_CHECKINABLE）
+ *    - 課程須為 confirmed/completed 才可簽到
+ *      （pending_group_confirm 等狀態回 409 SESSION_NOT_CHECKINABLE）
  */
 const express = require('express');
 const router = express.Router();
@@ -36,7 +36,7 @@ const { notifyCheckinSafely } = require('../services/checkinNotify');
  *  3. advisory lock 序列化同期並發，容量檢查與建堂之間無競態。
  *  4. 共班一堂＝一個 session，多位學員掛同一堂的多筆 checkin（不會一堂扣多堂）。
  *  5. 過渡保護（預約制→自助切換期，既有已排課堂/既有簽到照舊有效）：
- *     a. 同一期「今天」已有任何簽到（含預約課堂由家長/教練/櫃檯簽）→ 409，杜絕跨模式一天雙扣；
+ *     a. 同一期「今天」已有任何簽到（含預約課堂由家長/櫃檯簽，或舊制的教練代簽）→ 409，杜絕跨模式一天雙扣；
  *     b. 今天已排、未簽到的預約課堂 → 直接簽進該堂（reused_booked_session=true，不另建），
  *        預約課堂不會變成佔堂數的幽靈課堂。
  * 家長不可自行撤銷（營運規則）；誤點由櫃檯走 DELETE /api/admin/checkins/self-sessions/:id。

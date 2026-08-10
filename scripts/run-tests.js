@@ -27,6 +27,7 @@ const SERVER = path.join(ROOT, 'server');
 // 零外部相依：Ragic/LINE/物件儲存都是 stub 或純字串斷言，不碰 DB 也不出網路。
 const UNIT = [
   'tests/admin_group_order_filter_ui_test.js',
+  'tests/coach_checkin_removed_test.js',
   'tests/course_tier_price_test.js',
   'tests/force_trigger_outbox_cli_test.js',
   'tests/group_payment_proof_test.js',

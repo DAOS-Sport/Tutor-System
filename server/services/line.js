@@ -736,7 +736,7 @@ function checkinConfirmed({ studentName, coachName, venueName, checkedInAt, liff
   }];
 }
 
-// 簽到確認 → 教練（家長自助簽到或櫃台補登時通知；教練自己簽的不再通知他自己）
+// 簽到確認 → 教練（家長自助簽到或櫃台補登。教練代簽已移除，故只剩這兩種來源）
 function checkinConfirmedToCoach({ parentName, studentName, courseType, venueName, checkedInAt, source }) {
   const from = source === 'staff' ? '櫃台補登' : '家長自助簽到';
   // 教練要一眼看出「哪位家長、什麼課、誰要上」，所以主標是家長，學員放在組別下面。

@@ -404,7 +404,7 @@
         <tr><td><span class="m get">GET</span> <span class="path">/venues/</span></td><td class="muted">公開</td><td>filter is_active</td></tr>
         <tr><td><span class="m get">GET</span> <span class="path">/venues/:id</span></td><td class="muted">公開</td><td><span class="r w">🟡</span> 未 filter is_active · 曝停用場館收款帳戶（R9）</td></tr>
         <tr><td><span class="m get">GET</span> <span class="path">/sessions/coach/:coachId/(today|week)</span></td><td>requireCoach + Owner</td><td>coach_id 綁定✓</td></tr>
-        <tr><td><span class="m post">POST</span> <span class="path">/sessions/:id/checkins</span> · <span class="m get">GET</span> <span class="path">/:id</span></td><td>requireCoach</td><td>handler 比對 coach_id✓ · 簽到邏輯與 checkins.js 重複</td></tr>
+        <tr><td><span class="m get">GET</span> <span class="path">/:id</span></td><td>requireCoach</td><td>⚠️ 同列原有的 <code>POST /sessions/:id/checkins</code>（教練代簽）已於 2026-08-10 整支移除，教練端現為全唯讀</td></tr>
         <tr><td><span class="m get">GET/POST/PATCH/DEL</span> <span class="path">/slots/*</span>（教練）</td><td>requireCoach + Owner</td><td>ensureSlotOwner✓</td></tr>
         <tr><td><span class="m get">GET</span> <span class="path">/slots/period/:id</span> · <span class="m post">POST</span> <span class="path">/slots/:id/book</span></td><td>requireParent</td><td>enrollment ownership✓</td></tr>
         <tr><td><span class="m post">POST</span> <span class="path">/checkins/</span></td><td>requireParent</td><td>student.parent_id + 名單比對✓</td></tr>

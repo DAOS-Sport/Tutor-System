@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { sessionsApi } from '../api/sessions';
 import { useAuth } from '../context/AuthContext';
-import { useToast } from '../context/ToastContext';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { courseTypeLabel, formatTWDate, formatTWTime } from '../utils/format';
 
@@ -19,7 +18,7 @@ const SESSION_STATUS = {
   confirmed: {
     label: '已確認',
     cls: 'bg-green-100 text-green-700',
-    help: '可由家長自助簽到，教練也可協助代簽。',
+    help: '請家長於上課當日至系統完成簽到；教練端不提供代簽。',
   },
   completed: {
     label: '已完成',
@@ -38,18 +37,19 @@ const SESSION_STATUS = {
   },
 };
 
+// 簽到來源顯示。
+// ⚠️ 'coach' 分支僅供歷史紀錄：教練代簽已於 2026-08-10 移除，系統不會再產生此來源，
+//    但資料庫既有列仍是 'coach'。拿掉這個分支會把舊紀錄錯標成「家長簽到」。
 function checkinSourceLabel(source) {
-  return source === 'coach' ? '教練代簽' : '家長簽到';
+  return source === 'coach' ? '教練代簽（舊制）' : '家長簽到';
 }
 
 export default function CoachSessionPage() {
   const { id } = useParams();
   const { coach } = useAuth();
   const navigate = useNavigate();
-  const toast = useToast();
   const [session, setSession] = useState(null);
   const [error, setError] = useState(null);
-  const [checkinBusyId, setCheckinBusyId] = useState(null);
 
   useEffect(() => {
     if (!coach?.id || !id) return;
@@ -63,36 +63,6 @@ export default function CoachSessionPage() {
       });
     return () => { alive = false; };
   }, [coach?.id, id]);
-
-  async function checkinStudent(student) {
-    if (!student?.id || checkinBusyId) return;
-    setCheckinBusyId(student.id);
-    try {
-      const r = await sessionsApi.checkin(id, student.id);
-      setSession((prev) => {
-        if (!prev) return prev;
-        return {
-          ...prev,
-          students_detail: (prev.students_detail || []).map((s) => (
-            s.id === student.id
-              ? {
-                  ...s,
-                  checked_in: true,
-                  checkin_id: r.checkin_id,
-                  checked_in_at: r.checked_in_at,
-                  checked_in_source: r.source || s.checked_in_source || 'coach',
-                }
-              : s
-          )),
-        };
-      });
-      toast.success(`${student.name} 已簽到`);
-    } catch (err) {
-      toast.error(err?.response?.data?.error || '簽到失敗');
-    } finally {
-      setCheckinBusyId(null);
-    }
-  }
 
   if (!coach) return null;
   if (error) {
@@ -110,7 +80,6 @@ export default function CoachSessionPage() {
     cls: 'bg-gray-100 text-gray-600',
     help: '',
   };
-  const canCheckin = ['confirmed', 'completed'].includes(session.status);
   const canRecord = ['confirmed', 'completed'].includes(session.status);
   const students = Array.isArray(session.students_detail) && session.students_detail.length
     ? session.students_detail
@@ -163,14 +132,7 @@ export default function CoachSessionPage() {
                 {student.checked_in ? (
                   <span className="shrink-0 rounded-full bg-brand-green/15 px-2 py-1 text-[11px] font-bold text-brand-green">已簽</span>
                 ) : (
-                  <button
-                    type="button"
-                    disabled={!canCheckin || !student.id || checkinBusyId === student.id}
-                    onClick={() => checkinStudent(student)}
-                    className="shrink-0 rounded-lg bg-brand-primary px-3 py-1.5 text-xs font-bold text-white disabled:bg-gray-300"
-                  >
-                    {checkinBusyId === student.id ? '簽到中…' : '代簽'}
-                  </button>
+                  <span className="shrink-0 rounded-full bg-gray-100 px-2 py-1 text-[11px] font-medium text-gray-400">未簽到</span>
                 )}
               </div>
             </div>

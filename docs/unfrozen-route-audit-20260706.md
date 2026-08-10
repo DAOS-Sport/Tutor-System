@@ -487,7 +487,7 @@ None.
 | Method | Path | Source | Guard / note |
 | --- | --- | --- | --- |
 | GET | /api/sessions/:id | server/routes/sessions.js:178 | inline: requireCoach |
-| POST | /api/sessions/:id/checkins | server/routes/sessions.js:81 | inline: requireCoach |
+| ~~POST~~ | ~~/api/sessions/:id/checkins~~ | **已於 2026-08-10 移除（教練代簽）** | ~~inline: requireCoach~~ |
 | GET | /api/sessions/coach/:coachId/today | server/routes/sessions.js:17 | inline: requireCoach |
 | GET | /api/sessions/coach/:coachId/week | server/routes/sessions.js:49 | inline: requireCoach |
 

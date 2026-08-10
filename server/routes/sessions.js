@@ -1,7 +1,10 @@
 // ═══════════════════════════════════════════════════════════════════
 // 🧊 凍結（2026-07-16 使用者凍結令）：簽到／扣課政策 2026-07 版
-// 本檔凍結範圍：教練簽到（整班寫入、FOR UPDATE OF cp 鎖序、usageSync 同步）。
-// 修改凍結範圍前，必須先向使用者嚴格詢問並取得明確同意。
+// 本檔凍結範圍：教練簽到已於 2026-08-10 依 Owner 指示「完整移除」。
+//   原 POST /:id/checkins（教練代簽 / 整班寫入 / 扣堂）已整支刪除，本檔現為全唯讀。
+//   ⚠️ 不得以任何形式復活。教練端不應存在任何會寫入 checkin_records、
+//      設定 session_deducted、或呼叫 syncStoredUsage 的端點。
+//      要新增任何教練端寫入路徑前，必須先向使用者嚴格詢問並取得明確同意。
 // 政策與完整範圍清單：repo 根目錄 CLAUDE.md、replit.md「簽到／扣課政策」節。
 // ═══════════════════════════════════════════════════════════════════
 /**
@@ -14,11 +17,7 @@ const express = require('express');
 const router = express.Router();
 const { pool } = require('../models/db');
 const { requireCoach, requireCoachOwner } = require('../middlewares/coachAuth');
-const { broadcastAdminEvent } = require('../services/websocket');
-const { getFeatureFlag, flagAllowsPhone } = require('../services/featureFlags');
 const { addCalendarDays, taipeiWeekStart } = require('../utils/dateTime');
-const { syncStoredUsage } = require('../services/usageSync');
-const { notifyCheckinSafely } = require('../services/checkinNotify');
 
 function todayWhereTaipei(columnSql = 'cs.scheduled_at') {
   return `(${columnSql} AT TIME ZONE 'Asia/Taipei')::date = (NOW() AT TIME ZONE 'Asia/Taipei')::date`;
@@ -273,155 +272,6 @@ router.get('/coach/:coachId/history/periods', requireCoach, requireCoachOwner('c
   } catch (err) {
     console.error('[sessions] history periods failed:', err.message);
     res.status(500).json({ error: err.message });
-  }
-});
-
-router.post('/:id/checkins', requireCoach, async (req, res) => {
-  const studentId = String(req.body?.studentId || '').trim();
-  if (!studentId) return res.status(400).json({ error: 'studentId required' });
-
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-
-    const ctx = await client.query(
-      `SELECT cs.id AS session_id, cs.status::text AS session_status,
-              cp.id AS period_id, cp.venue_id, cp.course_type,
-              cp.admin_enrollment_id, cp.group_order_id, cp.enrollment_batch_id, cp.period_number,
-              COALESCE(cs.coach_id, cp.coach_id) AS coach_id,
-              c.name AS coach_name, v.name AS venue_name
-         FROM course_sessions cs
-         JOIN course_periods cp ON cp.id = cs.course_period_id
-         LEFT JOIN coaches c ON c.id = COALESCE(cs.coach_id, cp.coach_id)
-         LEFT JOIN venues v ON v.id = cp.venue_id
-        WHERE cs.id = $1
-        FOR UPDATE OF cp`,
-      [req.params.id]
-    );
-    // FOR UPDATE OF cp：與手動扣課／家長簽到共用 period 列鎖，序列化
-    // 「計數已出席堂數 → 寫回 used_sessions 鏡射」，避免並發舊值覆寫。
-    if (!ctx.rowCount) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ error: 'session not found' });
-    }
-    const session = ctx.rows[0];
-    if (String(session.coach_id) !== String(req.coach.id)) {
-      await client.query('ROLLBACK');
-      return res.status(403).json({ error: 'Forbidden' });
-    }
-    if (!['confirmed', 'completed'].includes(session.session_status)) {
-      await client.query('ROLLBACK');
-      return res.status(409).json({
-        error: session.session_status === 'pending_group_confirm'
-          ? '此課程仍在等待同組家長確認，暫不可簽到'
-          : '此課程狀態不可簽到',
-        code: 'SESSION_NOT_CHECKINABLE',
-      });
-    }
-
-    const stu = await client.query(
-      `SELECT s.id, s.name, p.id AS parent_id, p.name AS parent_name
-         FROM course_period_enrollments cpe
-         JOIN students s ON s.id = cpe.student_id
-         JOIN parents p ON p.id = s.parent_id
-        WHERE cpe.course_period_id = $1
-          AND cpe.status = 'active'
-          AND s.id = $2`,
-      [session.period_id, studentId]
-    );
-    if (!stu.rowCount) {
-      await client.query('ROLLBACK');
-      return res.status(403).json({ error: '該學員未在此課程名單中' });
-    }
-
-    const roster = await client.query(
-      `SELECT s.id, p.phone
-         FROM course_period_enrollments cpe
-         JOIN students s ON s.id = cpe.student_id
-         JOIN parents p ON p.id = s.parent_id
-        WHERE cpe.course_period_id = $1 AND cpe.status = 'active'
-          AND COALESCE(s.is_active, TRUE) = TRUE`,
-      [session.period_id]
-    );
-    const sharedFlag = await getFeatureFlag('SHARED_CHECKIN_USAGE_V2', client);
-    const sharedV2 = roster.rows.some((row) => flagAllowsPhone(sharedFlag, row.phone));
-    if (sharedV2) {
-      await client.query(
-        `INSERT INTO checkin_records
-           (course_session_id, student_id, checked_in_by_student_id,
-            checked_in_source, checked_in_by_coach_id)
-         SELECT $1, cpe.student_id, cpe.student_id, 'coach', $2
-           FROM course_period_enrollments cpe
-           JOIN students s ON s.id = cpe.student_id
-          WHERE cpe.course_period_id = $3 AND cpe.status = 'active'
-            AND COALESCE(s.is_active, TRUE) = TRUE
-         ON CONFLICT (course_session_id, student_id) DO NOTHING`,
-        [req.params.id, req.coach.id, session.period_id]
-      );
-    } else {
-      await client.query(
-        `INSERT INTO checkin_records
-           (course_session_id, student_id, checked_in_by_student_id,
-            checked_in_source, checked_in_by_coach_id)
-         VALUES ($1, $2, $2, 'coach', $3)
-         ON CONFLICT (course_session_id, student_id) DO NOTHING`,
-        [req.params.id, studentId, req.coach.id]
-      );
-    }
-    const ins = await client.query(
-      `SELECT id, checked_in_at, checked_in_source
-         FROM checkin_records WHERE course_session_id = $1 AND student_id = $2`,
-      [req.params.id, studentId]
-    );
-    const usedRes = await client.query(
-      `SELECT COUNT(DISTINCT cs.id)::int AS n
-         FROM course_sessions cs JOIN checkin_records cr ON cr.course_session_id = cs.id
-        WHERE cs.course_period_id = $1 AND cs.status::text NOT LIKE 'cancelled%'
-          AND cr.attendance_status = 'ATTENDED'`,
-      [session.period_id]
-    );
-    await client.query(
-      `UPDATE course_sessions SET session_deducted = TRUE, updated_at = NOW() WHERE id = $1`,
-      [req.params.id]
-    );
-    await syncStoredUsage(client, session, Number(usedRes.rows[0]?.n || 0));
-    await client.query('COMMIT');
-
-    const row = ins.rows[0];
-    const s = stu.rows[0];
-    // 簽到通知（教練／家長）。fire-and-forget：簽到已 COMMIT，推播不該把它拖下水。
-    // 傳 null＝通知該堂全部已簽到的。共班分支是一次寫入整班，只傳這一位會漏掉
-    // 其他學員的家長；去重（refId＝checkin_records.id）保證不會重複發。
-    notifyCheckinSafely(req.params.id, null);
-
-    try {
-      broadcastAdminEvent('checkin:created', {
-        checkin_id: row.id,
-        at: row.checked_in_at instanceof Date ? row.checked_in_at.toISOString() : String(row.checked_in_at),
-        session_id: req.params.id,
-        period_id: session.period_id,
-        venue_id: session.venue_id,
-        venue_name: session.venue_name || session.venue_id,
-        course_type: Number(session.course_type) || null,
-        coach: session.coach_name || '',
-        student: s.name || '',
-        source: row.checked_in_source || 'coach',
-      });
-    } catch (e) { console.warn('[sessions checkins] broadcast skipped:', e?.message); }
-
-    res.json({
-      ok: true,
-      checkin_id: row.id,
-      checked_in_at: row.checked_in_at,
-      source: row.checked_in_source || 'coach',
-      student: { id: s.id, name: s.name, parent_id: s.parent_id, parent_name: s.parent_name },
-    });
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    console.error('[sessions checkins]', err);
-    res.status(500).json({ error: 'checkin failed' });
-  } finally {
-    client.release();
   }
 });
 

@@ -376,7 +376,7 @@ None found.
 | GET | /api/referrals/by-token/:token | requireParent | server/routes/referrals.js:37 |
 | GET | /api/referrals/mine | requireParent | server/routes/referrals.js:54 |
 | GET | /api/sessions/:id | requireCoach | server/routes/sessions.js:178 |
-| POST | /api/sessions/:id/checkins | requireCoach | server/routes/sessions.js:81 |
+| ~~POST~~ | ~~/api/sessions/:id/checkins~~ | ~~requireCoach~~ | **已於 2026-08-10 移除（教練代簽）** |
 | GET | /api/sessions/coach/:coachId/today | requireCoach | server/routes/sessions.js:17 |
 | GET | /api/sessions/coach/:coachId/week | requireCoach | server/routes/sessions.js:49 |
 | POST | /api/slots | requireCoach | server/routes/slots.js:113 |
