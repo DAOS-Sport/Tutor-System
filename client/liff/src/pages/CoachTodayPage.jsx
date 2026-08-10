@@ -123,7 +123,7 @@ export default function CoachTodayPage() {
               onClick={() => navigate('/coach/orders')}
               className="shrink-0 rounded-full bg-brand-primary/10 px-3 py-1 text-[11px] font-bold text-brand-primary active:opacity-60"
             >
-              全部 {enroll.items.length} 筆 ›
+              全部 {enroll.total ?? enroll.items.length} 筆 ›
             </button>
           </div>
 

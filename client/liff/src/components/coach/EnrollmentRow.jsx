@@ -1,5 +1,11 @@
 import React from 'react';
-import { courseTypeLabel, paymentStatusLabel } from '../../utils/format';
+import {
+  courseTypeLabel,
+  paymentStatusLabel,
+  formatTWYMD,
+  formatTWTime,
+  taipeiCalendarDate,
+} from '../../utils/format';
 
 /**
  * 教練端「學生報名狀態」列 —— 今日頁（預覽 5 筆）與訂單紀錄頁（全部）共用。
@@ -9,12 +15,16 @@ import { courseTypeLabel, paymentStatusLabel } from '../../utils/format';
  * 右側狀態 chip。一列裡左右兩端同色、中間夾灰字，畫面上出現 3×N 個相同色塊，
  * 眼睛沒辦法用顏色定位任何東西 —— 只覺得花。
  * 現在改成 GroupStatusPage 成員列的作法：整列用「左側色軌 + 極淡底色」表達狀態，
- * 要處理的那幾筆會自己浮出來；右側只留一行狀態文字，不再是色塊。
+ * 要處理的那幾筆會自己浮出來；右側只留狀態文字，不再是色塊。
  *
  * ── 為什麼不用 emoji 當 icon ──
  * ⏳✅📗 在 iOS 與 Android 的 LINE 內建瀏覽器字形不同，大小與基線都會偏；
  * 顏色不受控（📗 是綠書，擺在青色底上兩種綠打架）；而且它們是 aria-hidden，
  * 對輔助技術等於空的。全站其他地方一律用 SVG 或純色票，這裡是孤例。
+ *
+ * ── 時間一律走 utils/format.js ──
+ * 這專案出過整站時區 bug（pg 的 DATE 被當成本地午夜、toISOString().slice() 把 UTC
+ * 瞬間當成本地時間）。這裡不自己算日期，全部用 format.js 既有的台北時區函式。
  */
 
 // 順序＝教練最需要注意的排前面：卡在待對帳的，課永遠不會出現。
@@ -44,14 +54,60 @@ export function stageOf(status) {
   return { key: status || 'unknown', label: paymentStatusLabel(status), rail: 'border-l-gray-300 bg-white', text: 'text-gray-500' };
 }
 
-export function EnrollmentRow({ item, onClick }) {
+// 台北日曆日差。用 format.js 的 taipeiCalendarDate（UTC 午夜容器，該檔註明必須
+// 搭配 UTC getter 使用）相減，不碰本地時區。
+function daysSinceTaipei(input) {
+  const from = taipeiCalendarDate(input);
+  const today = taipeiCalendarDate(new Date());
+  if (!from || !today) return null;
+  return Math.round((today.getTime() - from.getTime()) / 86400000);
+}
+
+// YYYY/MM/DD HH:mm（台北）。不用 formatTWDateTime —— 它會帶「（週四）」，
+// 在一列排 2～3 個時間點的密集清單裡，星期是純噪音。
+function fullDateTimeTaipei(input) {
+  const ymd = formatTWYMD(input);
+  if (!ymd) return '';
+  const hm = formatTWTime(input);
+  return hm ? `${ymd.replace(/-/g, '/')} ${hm}` : ymd.replace(/-/g, '/');
+}
+
+// MM/DD（台北）。非今年的補上年份 —— 訂單清單會跨年，只寫「08/09」看不出哪一年。
+function shortDateTaipei(input) {
+  const ymd = formatTWYMD(input);
+  if (!ymd) return '';
+  const [y, m, d] = ymd.split('-');
+  return y === formatTWYMD(new Date()).slice(0, 4) ? `${m}/${d}` : `${y}/${m}/${d}`;
+}
+
+/**
+ * 帳單的各項時間狀態。
+ * detailed=false（今日頁預覽）給日期，true（訂單紀錄頁）給日期＋時分。
+ */
+function timeline(item, detailed) {
+  const fmt = detailed ? fullDateTimeTaipei : shortDateTaipei;
+  const out = [];
+  const submitted = item.submitted_at || item.created_at;
+  if (submitted) out.push({ k: 'submitted', label: '報名', value: fmt(submitted) });
+  // 退回補件會把狀態打回 pending_payment。不顯示的話教練只看到「待對帳」，
+  // 不知道其實是家長要補件 —— 他會去催櫃檯，但卡的是家長。
+  if (item.returned_at) out.push({ k: 'returned', label: '退回補件', value: fmt(item.returned_at) });
+  if (item.invoice_issued_at) out.push({ k: 'reconciled', label: '對帳完成', value: fmt(item.invoice_issued_at) });
+  return out;
+}
+
+export function EnrollmentRow({ item, onClick, detailed = false }) {
   const st = stageOf(item.status);
   const students = Array.isArray(item.students) ? item.students.join('、') : (item.students || '—');
+  const rows = timeline(item, detailed);
+  const waited = st.key === 'pending_payment'
+    ? daysSinceTaipei(item.submitted_at || item.created_at)
+    : null;
   const Tag = onClick ? 'button' : 'div';
   return (
     <Tag
       {...(onClick ? { type: 'button', onClick } : {})}
-      className={`flex w-full items-center gap-3 rounded-xl border border-gray-100 border-l-4 px-3 py-2.5 text-left shadow-sm ${onClick ? 'active:opacity-75' : ''} ${st.rail}`}
+      className={`flex w-full items-start gap-3 rounded-xl border border-gray-100 border-l-4 px-3 py-2.5 text-left shadow-sm ${onClick ? 'active:opacity-75' : ''} ${st.rail}`}
     >
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
@@ -67,8 +123,25 @@ export function EnrollmentRow({ item, onClick }) {
           家長：{item.parent_name || '—'}
           {item.venue_name ? <span className="text-gray-400">{' · '}{item.venue_name}</span> : null}
         </div>
+        {rows.length > 0 && (
+          <div className={`mt-1 text-[10px] leading-4 text-gray-400 ${detailed ? '' : 'truncate'}`}>
+            {rows.map((r, i) => (
+              <span key={r.k} className={detailed ? 'mr-3 inline-block' : ''}>
+                {i > 0 && !detailed ? ' · ' : ''}
+                {r.label} <span className="tabular-nums text-gray-500">{r.value}</span>
+              </span>
+            ))}
+          </div>
+        )}
       </div>
-      <span className={`shrink-0 text-[11px] font-bold ${st.text}`}>{st.label}</span>
+      <div className="shrink-0 text-right">
+        <div className={`text-[11px] font-bold ${st.text}`}>{st.label}</div>
+        {waited !== null && (
+          <div className="mt-0.5 text-[10px] tabular-nums text-gray-400">
+            {waited <= 0 ? '今天送出' : `已等 ${waited} 天`}
+          </div>
+        )}
+      </div>
     </Tag>
   );
 }

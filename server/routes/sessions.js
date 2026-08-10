@@ -29,31 +29,63 @@ function todayWhereTaipei(columnSql = 'cs.scheduled_at') {
 // 但課還沒出現時，教練無從判斷是家長還沒付款、櫃檯還沒對帳、還是根本沒報。
 // 這裡把 admin_enrollments 的狀態依教練範圍攤開，讓他自己看得到。
 //
-// 只回狀態與姓名，不回金額／付款證明／發票等金流細節——教練不需要，也不該看到。
+// 回傳狀態、姓名與各階段時間戳；不回金額／付款證明／發票號碼——教練不需要，也不該看到。
+// invoice_issued_at 是「何時對帳完成」的時間點，不是金流細節，故納入。
+
+// 教練可見範圍。coach_id 是主要條件，但櫃檯手建的單可能只填了教練姓名而沒帶
+// coach_id（admin/enrollments.js 的 ensureSoloCoursePeriod 就為此做過反查容錯），
+// 那些單教練原本永遠看不到。這裡補上姓名回退，但**只在該姓名全平台唯一時才生效**——
+// 同名教練互相看到對方的訂單，比看不到更糟。
+const COACH_ENROLLMENT_SCOPE = `(
+          ae.coach_id = $1::uuid
+          OR (
+            ae.coach_id IS NULL
+            AND btrim(COALESCE(ae.coach, '')) <> ''
+            AND btrim(ae.coach) = (
+              SELECT btrim(c.name) FROM coaches c
+               WHERE c.id = $1::uuid
+                 AND (SELECT COUNT(*) FROM coaches c2 WHERE btrim(c2.name) = btrim(c.name)) = 1
+            )
+          )
+        )`;
+const COACH_ENROLLMENT_STATUSES = "('pending_payment','confirmed','active')";
+
 router.get('/coach/:coachId/enrollments', requireCoach, requireCoachOwner('coachId'), async (req, res) => {
   const { coachId } = req.params;
   try {
-    const r = await pool.query(
-      `SELECT ae.id, ae.status::text AS status, ae.parent_name, ae.students,
-              ae.course_type, ae.venue_id, v.name AS venue_name,
-              ae.total_sessions, ae.used_sessions,
-              ae.submitted_at, ae.created_at
-         FROM admin_enrollments ae
-         LEFT JOIN admin_venues v ON v.id = ae.venue_id
-        WHERE ae.coach_id = $1
-          AND ae.status::text IN ('pending_payment','confirmed','active')
-        ORDER BY
-          -- 卡住的排前面：教練最需要知道的是「誰還沒完成」
-          CASE ae.status::text WHEN 'pending_payment' THEN 0 ELSE 1 END,
-          COALESCE(ae.submitted_at, ae.created_at) DESC
-        LIMIT 60`,
-      [coachId]
-    );
+    // counts 另外用聚合查，不從 items 數出來：items 有 LIMIT，用它算會在超過上限時
+    // 靜靜地少報，而畫面上那個數字看起來一樣可信。
+    const [rowsRes, countRes] = await Promise.all([
+      pool.query(
+        `SELECT ae.id, ae.status::text AS status, ae.parent_name, ae.students,
+                ae.course_type, ae.venue_id, v.name AS venue_name,
+                ae.total_sessions, ae.used_sessions,
+                ae.submitted_at, ae.created_at, ae.updated_at,
+                ae.invoice_issued_at, ae.returned_at
+           FROM admin_enrollments ae
+           LEFT JOIN admin_venues v ON v.id = ae.venue_id
+          WHERE ${COACH_ENROLLMENT_SCOPE}
+            AND ae.status::text IN ${COACH_ENROLLMENT_STATUSES}
+          ORDER BY COALESCE(ae.submitted_at, ae.created_at) DESC
+          LIMIT 200`,
+        [coachId]
+      ),
+      pool.query(
+        `SELECT ae.status::text AS status, COUNT(*)::int AS n
+           FROM admin_enrollments ae
+          WHERE ${COACH_ENROLLMENT_SCOPE}
+            AND ae.status::text IN ${COACH_ENROLLMENT_STATUSES}
+          GROUP BY 1`,
+        [coachId]
+      ),
+    ]);
     const counts = { pending_payment: 0, confirmed: 0, active: 0 };
-    for (const row of r.rows) {
-      if (counts[row.status] !== undefined) counts[row.status] += 1;
+    let total = 0;
+    for (const row of countRes.rows) {
+      if (counts[row.status] !== undefined) counts[row.status] = row.n;
+      total += row.n;
     }
-    res.json({ counts, items: r.rows });
+    res.json({ counts, total, items: rowsRes.rows });
   } catch (err) {
     console.error('[sessions coach enrollments]', err.message);
     res.status(500).json({ error: '報名狀態載入失敗' });

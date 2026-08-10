@@ -84,7 +84,7 @@ export default function CoachOrdersPage() {
             </FilterChip>
           ))}
           <span className="ml-auto shrink-0 text-xs text-gray-500">
-            {data === null ? '載入中…' : `共 ${(data.items || []).length} 筆`}
+            {data === null ? '載入中…' : `共 ${data.total ?? (data.items || []).length} 筆`}
           </span>
         </div>
       </header>
@@ -102,7 +102,7 @@ export default function CoachOrdersPage() {
           <>
             <EnrollmentStats counts={data.counts} />
             <div className="space-y-2">
-              {items.map((it) => <EnrollmentRow key={it.id} item={it} />)}
+              {items.map((it) => <EnrollmentRow key={it.id} item={it} detailed />)}
             </div>
             {/* 教練看得到「卡住」，但處理是櫃檯的事 —— 講清楚下一步該找誰，
                 否則他只會看著待對帳乾等，或跑去催已經轉完帳的家長。 */}
