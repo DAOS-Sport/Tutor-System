@@ -120,13 +120,46 @@ await check('提醒事項與 CTA 文案', () => {
   assert.ok(text.includes(BASE.liffUrl), '純文字版也要有連結');
 });
 
-await check('不含發票圖片、不含家長報名網址（Owner 決定：圖片引導上系統看）', () => {
-  const { html, text } = templates.reconcileSuccess(BASE);
-  // /uploads/* 是完全公開無認證的路徑，發票圖連結轉寄出去等同發票外流。
+await check('圖片一律 cid: 內嵌，不得用外部網址或 /uploads 連結', () => {
+  const { html, text } = templates.reconcileSuccess({ ...BASE, guideImageCid: 'parent-guide', hasInvoiceAttachment: true });
+  const srcs = Array.from(html.matchAll(/<img[^>]*\bsrc="([^"]*)"/gi)).map((m) => m[1]);
+  assert.ok(srcs.length >= 1, '一張圖都沒解析到 —— 掃描失效，非真的通過');
+  srcs.forEach((src) => assert.ok(src.startsWith('cid:'),
+    '圖片 src=' + src + ' 不是 cid:。外部網址會被大多數郵件客戶端預設擋掉，變成一個破圖框。'));
+  // /uploads/* 是完全公開無認證的路徑（server/index.js），放連結等於任何拿到網址的人
+  // 都看得到發票。附件只跟著這封信走。
   assert.ok(!/\/uploads\//.test(html), 'html 出現 /uploads/ 連結');
-  assert.ok(!/<img/i.test(html), 'html 出現 <img>，本信不放圖');
-  assert.ok(!html.includes('報名網址'), 'html 仍有「報名網址」');
   assert.ok(!/\/uploads\//.test(text), 'text 出現 /uploads/ 連結');
+  assert.ok(!html.includes('報名網址'), 'html 仍有「家長報名網址」');
+});
+
+await check('有海報 → CTA 是海報，且不與按鈕並存', () => {
+  const { html } = templates.reconcileSuccess({ ...BASE, guideImageCid: 'parent-guide' });
+  assert.ok(html.includes('cid:parent-guide'), '沒有內嵌海報');
+  assert.ok(!html.includes('點擊登入家教系統'),
+    '海報與按鈕同時出現。兩個入口互相打架，而且按鈕那條路（從信箱點 liff.line.me）'
+    + '本來就不保證能自動登入 —— 海報教的才是走得通的路。');
+});
+
+await check('沒有海報 → 退回按鈕，信不會殘缺', () => {
+  const { html } = templates.reconcileSuccess({ ...BASE, guideImageCid: null });
+  assert.ok(html.includes('點擊登入家教系統'), '缺海報檔時應退回按鈕版');
+  assert.ok(html.includes(BASE.liffUrl), '按鈕應指向 LIFF URL');
+});
+
+await check('有發票附件 → 信裡要講；沒有 → 不可以說有', () => {
+  const withAtt = templates.reconcileSuccess({ ...BASE, hasInvoiceAttachment: true });
+  const without = templates.reconcileSuccess({ ...BASE, hasInvoiceAttachment: false });
+  assert.ok(withAtt.html.includes('發票影本已附於本信附件'), '有附件卻沒說明');
+  assert.ok(withAtt.text.includes('發票影本已附於本信附件'), '純文字版沒說明');
+  assert.ok(!without.html.includes('發票影本已附於本信附件'),
+    '沒附件卻說有 —— 家長會去翻一個不存在的附件，然後打電話問櫃檯');
+});
+
+await check('純文字版：有海報時必須寫出進入步驟（這些人看不到內嵌圖）', () => {
+  const { text } = templates.reconcileSuccess({ ...BASE, guideImageCid: 'parent-guide' });
+  assert.ok(text.includes('如何進入家教系統'), '純文字版沒有替代指引');
+  assert.ok(text.includes('圖文選單'), '沒寫出關鍵步驟（加官方帳號 → 圖文選單家教班）');
 });
 
 await check('HTML escape：家長姓名含標籤不會注入', () => {

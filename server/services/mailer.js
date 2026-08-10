@@ -21,6 +21,7 @@
  *   SMTP_SECURE=1        強制 TLS（port 465 會自動視為 secure）
  *   MAIL_DRY_RUN=1       即使設定完整也不真的送出
  *   MAIL_TEST_RECIPIENT  所有信改寄這裡
+ *   PARENT_GUIDE_IMAGE   使用說明海報路徑（預設 server/assets/parent_guide.png）
  */
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const SEND_TIMEOUT_MS = 15000;
@@ -73,7 +74,7 @@ function getTransport() {
  *   status ∈ sent | dry_run | skipped | failed
  *   絕不 throw。
  */
-async function sendMail({ to, subject, html, text }) {
+async function sendMail({ to, subject, html, text, attachments }) {
   const c = config();
   const original = String(to || '').trim();
   const result = { sent: false, dryRun: false, status: 'failed', reason: null, to: original, messageId: null };
@@ -107,6 +108,7 @@ async function sendMail({ to, subject, html, text }) {
       subject: subj,
       text: text || undefined,
       html: html || undefined,
+      attachments: (attachments && attachments.length) ? attachments : undefined,
     });
     return Object.assign(result, { sent: true, status: 'sent', messageId: info?.messageId || null });
   } catch (err) {

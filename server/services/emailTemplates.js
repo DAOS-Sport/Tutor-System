@@ -10,10 +10,16 @@
  * Gmail / Outlook 會剝掉 <style> 區塊與大部分現代 CSS。email HTML 必須退回
  * table 排版 + 屬性內嵌樣式，不能用 flex/grid/class。
  *
- * ── 為什麼不附發票圖 ──
- * Owner 決定：信裡只放發票號碼，圖片引導家長登入系統查看。
- * 這同時關掉一個資安缺口 —— /uploads/* 是完全公開無認證的路徑（server/index.js），
- * 發票圖連結一旦被轉寄出去，等同發票外流。
+ * ── 發票圖：附件，不是連結 ──
+ * Owner 決定櫃檯上傳的發票照片直接附在信裡。用附件而不是連結是刻意的：
+ * /uploads/* 是完全公開無認證的路徑（server/index.js），放連結等於任何拿到
+ * 網址的人都看得到發票；附件只跟著這封信走。
+ *
+ * ── CTA：使用說明海報，不是按鈕 ──
+ * Owner 決定把「點擊登入家教系統」按鈕換成使用說明海報。這其實比按鈕正確：
+ * liff.line.me 深連結只有在 LINE App 內開啟才會自動登入，從 Email 點會落在
+ * 一般瀏覽器，行為不保證。海報教的是「進場館官方帳號 → 圖文選單家教班」——
+ * 那是真正走得通的路。海報檔不存在時退回原本的按鈕，信不會因此殘缺。
  */
 const { formatRagicDate, formatTaipeiDateTime } = require('../utils/dateTime');
 
@@ -77,7 +83,8 @@ function row(label, value) {
  * 日期／發票號碼／金額合計）平鋪，各訂單差異（學員／項目／教練／期數）另列一表。
  * 只有一筆時就退化成 Owner 規格裡那張平鋪清單，不會多出一個空表。
  */
-function reconcileSuccess({ parentName, venueName, orders = [], invoiceNumber, totalAmount, liffUrl, issuedAt }) {
+function reconcileSuccess({ parentName, venueName, orders = [], invoiceNumber, totalAmount, liffUrl, issuedAt,
+                            guideImageCid = null, hasInvoiceAttachment = false }) {
   const list = Array.isArray(orders) ? orders.filter(Boolean) : [];
   const first = list[0] || {};
   const single = list.length === 1;
@@ -100,7 +107,7 @@ function reconcileSuccess({ parentName, venueName, orders = [], invoiceNumber, t
     rows.push(row('報名筆數', `${list.length} 筆（明細見下表）`));
     rows.push(row('費用合計', esc(money(totalAmount))));
   }
-  rows.push(row('發票號碼', `<span style="font-family:Menlo,Consolas,monospace;letter-spacing:1px;">${esc(invoiceNumber || '—')}</span>`));
+  rows.push(row('發票號碼', `<span style="font-family:Menlo,Consolas,monospace;letter-spacing:1px;">${esc(invoiceNumber || '—')}</span>`    + (hasInvoiceAttachment ? `<div style="margin-top:3px;color:${MUTED};font-size:11px;font-weight:normal;">發票影本已附於本信附件</div>` : '')));
 
   const detailTable = single ? '' : `
       <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:14px;border-collapse:collapse;">
@@ -116,19 +123,24 @@ function reconcileSuccess({ parentName, venueName, orders = [], invoiceNumber, t
         </tr>`).join('')}
       </table>`;
 
-  const cta = liffUrl ? `
+  // 海報優先。cid: 是 email 內嵌圖片的標準作法（附件掛 Content-ID，body 用 cid: 引用），
+  // 不走外部網址 —— 那會被大多數郵件客戶端預設擋掉，變成一個破圖框。
+  const cta = guideImageCid ? `
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:22px;">
+        <tr>
+          <td align="center" style="padding:0;">
+            <img src="cid:${esc(guideImageCid)}" alt="新家教系統使用說明" width="544"
+                 style="display:block;width:100%;max-width:544px;height:auto;border:0;border-radius:8px;">
+          </td>
+        </tr>
+      </table>` : (liffUrl ? `
       <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:26px;">
         <tr>
           <td align="center" style="background:${NAVY};border-radius:8px;padding:0;">
             <a href="${esc(liffUrl)}" style="display:block;padding:15px 20px;color:#ffffff;font-size:15px;font-weight:bold;text-decoration:none;">點擊登入家教系統</a>
           </td>
         </tr>
-        <tr>
-          <td align="center" style="padding-top:8px;color:${MUTED};font-size:11px;line-height:18px;">
-            發票圖片、課程進度與簽到紀錄，皆可於系統中查看。
-          </td>
-        </tr>
-      </table>` : '';
+      </table>` : '');
 
   const html = `<!doctype html>
 <html lang="zh-Hant">
@@ -213,10 +225,17 @@ function reconcileSuccess({ parentName, venueName, orders = [], invoiceNumber, t
   textLines.push(`發票號碼：${invoiceNumber || '—'}`);
   textLines.push('');
   textLines.push('【提醒事項】上課當日請務必至系統完成簽到。');
-  if (liffUrl) {
-    textLines.push('');
+  if (hasInvoiceAttachment) textLines.push('發票影本已附於本信附件。');
+  textLines.push('');
+  if (guideImageCid) {
+    // 純文字版看不到內嵌圖，要把海報上的步驟寫出來，否則這些人拿不到任何指引。
+    textLines.push('【如何進入家教系統】');
+    textLines.push('1. 於 LINE 搜尋並加入你所屬場館的官方帳號');
+    textLines.push('2. 點擊下方圖文選單的「家教班」');
+    textLines.push('3. 依指示完成註冊／登入，即可查看課程、報名與簽到');
+    textLines.push('（本信附有圖解說明，若無法顯示請洽現場櫃檯）');
+  } else if (liffUrl) {
     textLines.push(`點擊登入家教系統：${liffUrl}`);
-    textLines.push('發票圖片、課程進度與簽到紀錄，皆可於系統中查看。');
   }
   textLines.push('');
   textLines.push('本信件由系統自動發送，請勿直接回覆。如有任何問題，請洽各館櫃檯。');
