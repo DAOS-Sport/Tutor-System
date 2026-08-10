@@ -38,7 +38,8 @@ import {
 export const ENROLL_STAGES = [
   { key: 'pending_payment', label: '待對帳', rail: 'border-l-brand-amber bg-brand-amber/5', text: 'text-amber-700' },
   { key: 'confirmed', label: '已確認', rail: 'border-l-brand-green bg-brand-green/5', text: 'text-emerald-700' },
-  { key: 'active', label: '上課中', rail: 'border-l-brand-teal bg-brand-teal/5', text: 'text-teal-700' },
+  // 'active' 不列：後端已不回傳這個狀態（legacy 匯入批次，見 sessions.js）。
+  // 萬一哪天真的出現，stageOf 會退回 paymentStatusLabel 給出「進行中」，不會顯示錯的階段。
 ];
 
 // 今日頁預覽筆數。改這一個常數就好 —— 舊版把數字硬編在三個地方

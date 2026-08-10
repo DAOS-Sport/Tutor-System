@@ -131,6 +131,23 @@ export function paymentStatusLabel(status) {
   }[status] || status);
 }
 
+// 教練端卡片的簽到標籤。
+//
+// 自助簽到建立的 session，scheduled_at＝created_at＝checked_in_at 完全相同
+// （正式庫近 60 天實測 315/315），兩個都印會讓同一個數字在同一張卡上出現兩次，
+// 而且那個「課程時間」是假的 —— 教練沒排那個時間的課，那只是家長按下簽到的瞬間。
+// 預約制的課兩者平均差 192 分鐘，附上簽到時間才有資訊量。
+// 用「兩個時間是否接近」判斷而非 created_via：預約制若剛好準時簽到，同樣不必重複顯示。
+const CHECKIN_TIME_NOISE_MS = 2 * 60 * 1000;
+export function checkinLabel(scheduledAt, checkedInAt) {
+  if (!checkedInAt) return '已簽到';
+  const a = new Date(scheduledAt).getTime();
+  const b = new Date(checkedInAt).getTime();
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return '已簽到';
+  if (Math.abs(b - a) < CHECKIN_TIME_NOISE_MS) return '已簽到';
+  return '已簽到 ' + formatTWTime(checkedInAt);
+}
+
 export function paymentStatusColor(status) {
   return ({
     pending_payment: 'bg-brand-amber text-white',

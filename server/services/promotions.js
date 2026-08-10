@@ -87,6 +87,37 @@ async function getParentPeriodUses(db, promotionId, parentId) {
 /**
  * 列出 LIFF / R05 可見的「目前進行中」自動套用優惠（不含折價券需代碼者）。
  */
+/**
+ * 進行中優惠的顯示排序 —— 家長首頁與教練今日頁共用同一份。
+ *
+ * ── 為什麼一定要指定到底 ──
+ * 原本兩支查詢都只有 `ORDER BY end_date`。實務上同一波活動常常四檔同一天結束，
+ * 那些列之間就沒有任何決定性順序，Postgres 每次回的次序都可能不同 ——
+ * 畫面上就是「每次重新整理卡片就換位置」。最後那個 id 不是美觀考量，
+ * 是決定性的唯一保證。
+ *
+ * ── 排序 ──
+ *  1. 檔期晚的在前（end_date DESC）
+ *  2. 組別小的在前：1對1 → 1對2 → 1對3 → …
+ *     優先看 applicable_course_types；那欄常是 NULL（活動不限組別，或後台沒填），
+ *     所以退而從活動名稱解析（「家教1對2優惠中」這種命名慣例）。
+ *     兩者都取不到就排到最後（99），不會插隊到明確標了組別的活動前面。
+ *  3. id
+ *
+ * 名稱解析刻意要求「1」和數字之間有分隔字（對／V／x／×），不是抓「1 後面的數字」——
+ * 否則「滿1000折100」會被解析成組別 0 而排到最前面。
+ */
+function promoDisplayOrderSql(alias = 'p') {
+  return `ORDER BY ${alias}.end_date DESC,
+           COALESCE(
+             (SELECT MIN(t) FROM unnest(${alias}.applicable_course_types) AS t),
+             NULLIF(substring(${alias}.name from '1[[:space:]]*對[[:space:]]*([0-9]+)'), '')::int,
+             NULLIF(substring(${alias}.name from '1[[:space:]]*[vVxX×][[:space:]]*([0-9]+)'), '')::int,
+             99
+           ),
+           ${alias}.id`;
+}
+
 async function listActivePromotions() {
   // 起迄為 TIMESTAMPTZ → 直接以 NOW()（絕對時刻）判定是否在檔期內（含 23:59:59 端點）。
   const r = await pool.query(
@@ -101,7 +132,7 @@ async function listActivePromotions() {
         AND start_date <= NOW() AND end_date >= NOW()
         AND (max_uses IS NULL OR current_uses < max_uses)
         AND (platform_total_period_cap IS NULL OR current_period_uses < platform_total_period_cap)
-      ORDER BY end_date ASC`
+      ${promoDisplayOrderSql('promotions')}`
   );
   return r.rows;
 }
@@ -315,6 +346,7 @@ async function revertUsage({ adminEnrollmentId, groupOrderId, groupOrderMemberId
 
 module.exports = {
   listActivePromotions,
+  promoDisplayOrderSql,
   previewBestDiscount,
   recordUsage,
   revertUsage,

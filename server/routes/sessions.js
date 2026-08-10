@@ -19,6 +19,9 @@ const { pool } = require('../models/db');
 const { requireCoach, requireCoachOwner } = require('../middlewares/coachAuth');
 const { addCalendarDays, taipeiWeekStart } = require('../utils/dateTime');
 const { todayWhere, historyRangeWhere, weekRangeWhere } = require('../utils/sessionDateSql');
+// 與家長首頁共用同一份優惠排序：這張卡是教練用來回答家長「現在有什麼活動」的，
+// 兩邊看到的順序不一致，教練念的第一檔跟家長看到的第一檔就會對不上。
+const { promoDisplayOrderSql } = require('../services/promotions');
 
 
 // 教練端唯讀：自己學生的報名狀態總覽。
@@ -46,7 +49,10 @@ const COACH_ENROLLMENT_SCOPE = `(
             )
           )
         )`;
-const COACH_ENROLLMENT_STATUSES = "('pending_payment','confirmed','active')";
+// 不含 'active'：正式庫那批 legacy 資料是 2026-05-03 同一秒的匯入批次，
+// 列在教練可見清單裡只會讓人以為它會出現。本分支新增的「教練姓名回退」
+// 反而讓這些 coach_id 為 NULL 的舊列更可能浮出來，所以更該擋掉。
+const COACH_ENROLLMENT_STATUSES = "('pending_payment','confirmed')";
 
 router.get('/coach/:coachId/enrollments', requireCoach, requireCoachOwner('coachId'), async (req, res) => {
   const { coachId } = req.params;
@@ -77,7 +83,7 @@ router.get('/coach/:coachId/enrollments', requireCoach, requireCoachOwner('coach
         [coachId]
       ),
     ]);
-    const counts = { pending_payment: 0, confirmed: 0, active: 0 };
+    const counts = { pending_payment: 0, confirmed: 0 };
     let total = 0;
     for (const row of countRes.rows) {
       if (counts[row.status] !== undefined) counts[row.status] = row.n;
@@ -129,7 +135,7 @@ router.get('/coach/:coachId/promotions', requireCoach, requireCoachOwner('coachI
                WHERE cv.coach_id = $1 AND cv.venue_id = ANY(p.applicable_venue_ids)
             )
           )
-        ORDER BY p.end_date
+        ${promoDisplayOrderSql('p')}
         LIMIT 20`,
       [coachId]
     );

@@ -7,6 +7,7 @@ import { venuesApi } from '../api/venues';
 import { staffApi } from '../api/staff';
 import { customerParentsApi } from '../api/customers';
 import { courseTypesApi } from '../api/courseTypes';
+import { resolveUnitPrice } from '../../../shared/coursePricing';
 
 const SESSIONS_PER_PERIOD = 6; // 一期固定 6 堂；總堂數 > 6 後端自動拆單。
 const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
@@ -216,13 +217,30 @@ export default function ManualEnrollPage() {
   // 帶完仍可手動覆蓋，跟原價欄位的既有編輯行為一致。applyCourseType 是純套用邏輯，
   // 手動選（下方 <Sel> onChange）跟自動比對（下面 C-9 useEffect）都呼叫它，
   // 但只有「使用者親自選」才設 touched 旗標——自動帶入不能算「使用者已介入」。
-  function applyCourseType(v) {
-    const cfg = activeCourseTypes.find((c) => String(c.course_type) === String(v));
+  // 原價 = 課程需求管理的每期價格 × 該教練的修課係數。
+  // 若那個係數在課程需求管理已落定明價（tier_prices），以明價為準 ——
+  // 與家長端自助報名、團購、後台核准走的是同一套解析（shared/coursePricing）。
+  // 沒選教練時以係數 1.0 計，選了教練會重算（見下方 applyPriceForCoach）。
+  function basePriceFor(courseTypeValue, coachIdValue) {
+    const cfg = activeCourseTypes.find((c) => String(c.course_type) === String(courseTypeValue));
+    if (!cfg) return null;
+    const co = coaches.find((c) => c.id === coachIdValue);
+    const mult = Number(co?.multiplier ?? co?.pricing_multiplier ?? 1) || 1;
+    return resolveUnitPrice(cfg.base_price, mult, cfg.tier_prices);
+  }
+  // 帶出價格；折讓沿用現有值重算實收。帶完仍可手動覆蓋（與原本行為一致）。
+  function applyPrice(courseTypeValue, coachIdValue) {
+    const bp = basePriceFor(courseTypeValue, coachIdValue);
     setF((p) => ({
       ...p,
-      courseType: v,
-      ...(cfg ? { basePrice: String(cfg.base_price ?? ''), actual: String(Math.max(0, num(cfg.base_price) - num(p.allowance))) } : {}),
+      courseType: courseTypeValue,
+      ...(bp === null ? {} : { basePrice: String(bp), actual: String(Math.max(0, bp - num(p.allowance))) }),
     }));
+  }
+  function applyCourseType(v) { applyPrice(v, coachId); }
+  // 換教練＝換係數，價格要跟著重算；沒選組別就沒有價格可算。
+  function applyPriceForCoach(nextCoachId) {
+    if (f.courseType) applyPrice(f.courseType, nextCoachId);
   }
   function onCourseType(v) {
     courseTypeTouchedRef.current = true; // 使用者親自選過 → 之後學員數再變動不再自動覆蓋（見下方 C-9 useEffect）
@@ -464,7 +482,7 @@ export default function ManualEnrollPage() {
                     ) : coachId ? (
                       <div className="flex items-center justify-between rounded-xl border border-indigo-200 bg-indigo-50/40 px-3.5 py-2.5">
                         <div className="text-sm font-extrabold text-indigo-900">{coachName}{coaches.find((c) => c.id === coachId)?.is_senior ? ' ⭐' : ''}</div>
-                        <button type="button" onClick={() => setCoachId('')} className="text-slate-400 hover:text-slate-600"><Svg d={I.x} /></button>
+                        <button type="button" onClick={() => { setCoachId(''); applyPriceForCoach(''); }} className="text-slate-400 hover:text-slate-600"><Svg d={I.x} /></button>
                       </div>
                     ) : (
                       <SearchCombobox
@@ -472,7 +490,7 @@ export default function ManualEnrollPage() {
                         emptyText="查無符合的教練"
                         hintText="輸入姓名以搜尋本館教練…"
                         onSearch={(q) => coaches.filter((c) => c.name.toLowerCase().includes(q.toLowerCase()))}
-                        onPick={(c) => setCoachId(c.id)}
+                        onPick={(c) => { setCoachId(c.id); applyPriceForCoach(c.id); }}
                         renderOption={(c) => (
                           <div className="flex items-center gap-2"><span className="text-sm font-extrabold text-slate-800">{c.name}{c.is_senior ? ' ⭐' : ''}</span></div>
                         )}
