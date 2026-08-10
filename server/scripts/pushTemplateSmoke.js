@@ -13,6 +13,7 @@
  *   node scripts/pushTemplateSmoke.js --uid=U... --venue=B            # 演練
  *   node scripts/pushTemplateSmoke.js --uid=U... --venue=B --apply    # 真的送
  *   node scripts/pushTemplateSmoke.js --uid=U... --venue=B --apply --only=enrollmentSuccess
+ *   node scripts/pushTemplateSmoke.js --uid=U... --venue=dreams400 --apply --only=sessionReminder --role=coach
  */
 const axios = require('axios');
 const line = require('../services/line');
@@ -26,6 +27,9 @@ const APPLY = process.argv.includes('--apply');
 const UID = arg('uid');
 const VENUE = arg('venue');
 const ONLY = arg('only');
+// 有些樣板同一支要對教練與家長各出一種面貌（如 sessionReminder 的 role）。
+// 假資料只寫死一種的話，工具看起來涵蓋了全部樣板，實際上另一面從沒被看過。
+const ROLE = arg('role');
 
 if (!UID || !/^U[0-9a-f]{32}$/i.test(UID)) {
   console.error('必須提供合法的 --uid=U…（32 位十六進位）。這支腳本只會送給這一個人。');
@@ -102,8 +106,10 @@ const SAMPLES = {
   let ok = 0, fail = 0, skip = 0;
   for (const name of names) {
     if (!SAMPLES[name]) { skip += 1; continue; }
+    let sample = SAMPLES[name];
+    if (ROLE && Object.prototype.hasOwnProperty.call(sample, 'role')) sample = { ...sample, role: ROLE };
     let messages;
-    try { messages = line.templates[name](SAMPLES[name]); }
+    try { messages = line.templates[name](sample); }
     catch (e) { console.log('  ' + name.padEnd(24) + '模板組裝失敗：' + e.message); fail += 1; continue; }
 
     if (!APPLY) { console.log('  ' + name.padEnd(24) + '準備好了（' + (messages || []).length + ' 則）'); ok += 1; continue; }
