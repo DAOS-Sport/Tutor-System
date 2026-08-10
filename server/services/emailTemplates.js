@@ -123,24 +123,35 @@ function reconcileSuccess({ parentName, venueName, orders = [], invoiceNumber, t
         </tr>`).join('')}
       </table>`;
 
-  // 海報優先。cid: 是 email 內嵌圖片的標準作法（附件掛 Content-ID，body 用 cid: 引用），
+  // 按鈕在上、海報在下。兩者互補而不是二擇一：
+  //   按鈕 —— liff.line.me 深連結，在 LINE App 內開啟會自動登入，是最短路徑。
+  //   海報 —— 從一般瀏覽器點按鈕不保證能自動登入，這時就靠海報教的
+  //            「加入場館官方帳號 → 圖文選單『家教班』」那條路。
+  // cid: 是 email 內嵌圖片的標準作法（附件掛 Content-ID，body 用 cid: 引用），
   // 不走外部網址 —— 那會被大多數郵件客戶端預設擋掉，變成一個破圖框。
-  const cta = guideImageCid ? `
-      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:22px;">
-        <tr>
-          <td align="center" style="padding:0;">
-            <img src="cid:${esc(guideImageCid)}" alt="新家教系統使用說明" width="544"
-                 style="display:block;width:100%;max-width:544px;height:auto;border:0;border-radius:8px;">
-          </td>
-        </tr>
-      </table>` : (liffUrl ? `
+  const buttonBlock = liffUrl ? `
       <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:26px;">
         <tr>
           <td align="center" style="background:${NAVY};border-radius:8px;padding:0;">
             <a href="${esc(liffUrl)}" style="display:block;padding:15px 20px;color:#ffffff;font-size:15px;font-weight:bold;text-decoration:none;">點擊登入家教系統</a>
           </td>
         </tr>
-      </table>` : '');
+      </table>` : '';
+  const guideBlock = guideImageCid ? `
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:${liffUrl ? '16px' : '26px'};">
+        ${liffUrl ? `<tr>
+          <td align="center" style="padding-bottom:8px;color:${MUTED};font-size:11px;line-height:18px;">
+            無法直接登入嗎？依下圖步驟從場館官方帳號進入即可。
+          </td>
+        </tr>` : ''}
+        <tr>
+          <td align="center" style="padding:0;">
+            <img src="cid:${esc(guideImageCid)}" alt="新家教系統使用說明" width="544"
+                 style="display:block;width:100%;max-width:544px;height:auto;border:0;border-radius:8px;">
+          </td>
+        </tr>
+      </table>` : '';
+  const cta = buttonBlock + guideBlock;
 
   const html = `<!doctype html>
 <html lang="zh-Hant">
@@ -227,15 +238,19 @@ function reconcileSuccess({ parentName, venueName, orders = [], invoiceNumber, t
   textLines.push('【提醒事項】上課當日請務必至系統完成簽到。');
   if (hasInvoiceAttachment) textLines.push('發票影本已附於本信附件。');
   textLines.push('');
+  // 順序與 HTML 版一致：先給連結（最短路徑），再給備援步驟。
+  if (liffUrl) {
+    textLines.push(`點擊登入家教系統：${liffUrl}`);
+    textLines.push('（在 LINE App 內開啟可自動登入）');
+    textLines.push('');
+  }
   if (guideImageCid) {
     // 純文字版看不到內嵌圖，要把海報上的步驟寫出來，否則這些人拿不到任何指引。
-    textLines.push('【如何進入家教系統】');
+    textLines.push('【如何進入家教系統】無法直接登入時請改走這條');
     textLines.push('1. 於 LINE 搜尋並加入你所屬場館的官方帳號');
     textLines.push('2. 點擊下方圖文選單的「家教班」');
     textLines.push('3. 依指示完成註冊／登入，即可查看課程、報名與簽到');
     textLines.push('（本信附有圖解說明，若無法顯示請洽現場櫃檯）');
-  } else if (liffUrl) {
-    textLines.push(`點擊登入家教系統：${liffUrl}`);
   }
   textLines.push('');
   textLines.push('本信件由系統自動發送，請勿直接回覆。如有任何問題，請洽各館櫃檯。');
