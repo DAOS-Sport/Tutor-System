@@ -9,7 +9,8 @@ const assert = require('assert');
 const path = require('path');
 const mailer = require(path.join(__dirname, '..', 'server/services/mailer'));
 
-const KEYS = ['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM', 'SMTP_SECURE', 'MAIL_DRY_RUN', 'MAIL_TEST_RECIPIENT'];
+const KEYS = ['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM', 'SMTP_SECURE', 'MAIL_DRY_RUN', 'MAIL_TEST_RECIPIENT',
+  'Tutor_gmail', 'TUTOR_GMAIL', 'tutor_gmail'];
 function withEnv(vars, fn) {
   const old = {};
   KEYS.forEach((k) => { old[k] = process.env[k]; delete process.env[k]; });

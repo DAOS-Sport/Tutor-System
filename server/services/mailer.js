@@ -16,8 +16,10 @@
  * 與回傳值裡）。比照 LINE 推播的 LINE_PUSH_TEST_UID —— 在真的寄給家長之前，
  * 必須有一個能把全部流量收束到自己信箱的開關。
  *
- * 環境變數：
- *   SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASS / SMTP_FROM
+ * 環境變數（最少只要設一個密碼就能運作）：
+ *   SMTP_PASS 或 Tutor_gmail   Gmail 應用程式密碼（顯示時的空格會自動去掉）
+ *   SMTP_HOST / SMTP_PORT      未設時預設 smtp.gmail.com:587
+ *   SMTP_USER / SMTP_FROM      未設時預設 swim@dreamstake.com.tw
  *   SMTP_SECURE=1        強制 TLS（port 465 會自動視為 secure）
  *   MAIL_DRY_RUN=1       即使設定完整也不真的送出
  *   MAIL_TEST_RECIPIENT  所有信改寄這裡
@@ -26,14 +28,45 @@
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const SEND_TIMEOUT_MS = 15000;
 
+/**
+ * 密碼的來源名稱，依序取第一個有值的。
+ *
+ * `Tutor_gmail` 是這個專案在 Replit Secrets 裡既有的命名（Gmail 應用程式密碼）。
+ * 要求為了程式再開一組 SMTP_* 只是把設定成本轉嫁出去，而且多一份設定就多一個
+ * 「兩邊不一致」的地方 —— 實際上就發生過：Secrets 裡只有 Tutor_gmail，
+ * 程式卻只讀 SMTP_PASS，結果是「設定看起來有、mail.configured 卻是 false」。
+ * 環境變數名稱在 Linux 上區分大小寫，所以三種寫法都認。
+ */
+const PASS_KEYS = ['SMTP_PASS', 'Tutor_gmail', 'TUTOR_GMAIL', 'tutor_gmail'];
+
+// 寄件位址不是機密（它出現在每一封信的寄件人欄位），放預設值可以讓
+// 「只設一個密碼」就能運作。要換帳號時設 SMTP_USER 即可覆寫。
+const DEFAULT_SENDER = 'swim@dreamstake.com.tw';
+
+function firstEnv(keys) {
+  for (const k of keys) {
+    const v = String(process.env[k] || '').trim();
+    if (v) return v;
+  }
+  return '';
+}
+
 function config() {
+  // Gmail 顯示應用程式密碼時是四段有空格的，直接複製貼上會帶著空格 ——
+  // 那樣認證一定失敗，而錯誤訊息只會說 BadCredentials，看不出是空格的問題。
+  const pass = firstEnv(PASS_KEYS).replace(/\s+/g, '');
+  // 密碼來自 Gmail 應用程式密碼時，主機與埠必然是 Gmail 的，不需要再要求另外設。
+  const host = String(process.env.SMTP_HOST || '').trim() || (pass ? 'smtp.gmail.com' : '');
+  const user = String(process.env.SMTP_USER || '').trim()
+    || String(process.env.SMTP_FROM || '').trim()
+    || (pass ? DEFAULT_SENDER : '');
   const port = Number(process.env.SMTP_PORT || 587);
   return {
-    host: String(process.env.SMTP_HOST || '').trim(),
+    host,
     port,
-    user: String(process.env.SMTP_USER || '').trim(),
-    pass: String(process.env.SMTP_PASS || ''),
-    from: String(process.env.SMTP_FROM || process.env.SMTP_USER || '').trim(),
+    user,
+    pass,
+    from: String(process.env.SMTP_FROM || '').trim() || user,
     secure: String(process.env.SMTP_SECURE || '').trim() === '1' || port === 465,
     dryRun: String(process.env.MAIL_DRY_RUN || '').trim() === '1',
     testRecipient: String(process.env.MAIL_TEST_RECIPIENT || '').trim(),

@@ -32,7 +32,10 @@ function check(label, fn) {
   return Promise.resolve();
 }
 
-const MAIL_KEYS = ['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM', 'SMTP_SECURE', 'MAIL_DRY_RUN', 'MAIL_TEST_RECIPIENT'];
+const MAIL_KEYS = ['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM', 'SMTP_SECURE', 'MAIL_DRY_RUN', 'MAIL_TEST_RECIPIENT',
+  // 別名也要納入清理範圍，否則前一個案例設的密碼會漏到下一個案例，
+  // 讓「什麼都沒設」那項假性通過。
+  'Tutor_gmail', 'TUTOR_GMAIL', 'tutor_gmail'];
 async function withEnv(vars, fn) {
   const old = {};
   MAIL_KEYS.forEach((k) => { old[k] = process.env[k]; delete process.env[k]; });
@@ -181,6 +184,39 @@ await check('缺欄位不會爆，也不會印出 undefined / null', () => {
     assert.ok(!/\bnull\b/.test(s), name + ' 印出了 null');
   }
 });
+
+await check('只設 Tutor_gmail（專案既有命名）就足以視為已設定', () => withEnv({
+  Tutor_gmail: 'gyli vdqu qazn ydki',
+}, async () => {
+  assert.strictEqual(mailer.isConfigured(), true,
+    '只有 Tutor_gmail 時仍判為未設定 —— 那正是「Secrets 有值但 mail.configured=false」的成因');
+  const c = mailer.config();
+  assert.strictEqual(c.pass, 'gylivdquqaznydki',
+    'Gmail 顯示的應用程式密碼帶空格，沒去掉的話認證必定失敗（且錯誤訊息看不出原因）');
+  assert.strictEqual(c.host, 'smtp.gmail.com', '密碼來自 Gmail 別名時應自動用 Gmail 主機');
+  assert.ok(c.user.includes('@'), '應有預設寄件位址');
+  assert.strictEqual(c.from, c.user, 'from 未設時應等於 user');
+}));
+
+await check('SMTP_* 明確設定時優先於別名', () => withEnv({
+  Tutor_gmail: 'aaaa bbbb cccc dddd',
+  SMTP_PASS: 'explicit-pass',
+  SMTP_HOST: 'smtp.other.com',
+  SMTP_USER: 'other@example.com',
+}, async () => {
+  const c = mailer.config();
+  assert.strictEqual(c.pass, 'explicit-pass', 'SMTP_PASS 應優先於 Tutor_gmail');
+  assert.strictEqual(c.host, 'smtp.other.com');
+  assert.strictEqual(c.user, 'other@example.com');
+}));
+
+await check('什麼都沒設仍然是未設定（不可因為有預設值就誤判為已設定）', () => withEnv({}, async () => {
+  assert.strictEqual(mailer.isConfigured(), false,
+    '沒有任何密碼時必須是未設定 —— 主機與寄件位址的預設值不該讓它看起來像設好了');
+  const c = mailer.config();
+  assert.strictEqual(c.host, '', '沒密碼時不該填入預設主機');
+  assert.strictEqual(c.user, '', '沒密碼時不該填入預設寄件位址');
+}));
 
 await check('mailer：沒設定 SMTP → dry_run，且明確不是 sent', () => withEnv({}, async () => {
   const r = await mailer.sendMail({ to: 'a@b.com', subject: 'x', html: '<p>x</p>' });
