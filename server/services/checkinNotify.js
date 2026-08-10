@@ -82,6 +82,50 @@ async function loadCheckins(db, sessionId, studentIds) {
  * @param {string} sessionId course_sessions.id
  * @param {string[]} [studentIds] 只通知這些學員（省略＝該堂全部已簽到的）
  */
+/**
+ * 把該堂課的多筆簽到列彙整成「給教練的一則」。回 null＝這堂不該通知教練。
+ *
+ * ── 為什麼要彙整 ──
+ * 共班簽到是一次原子寫入整班（checkins.js 的 SHARED_CHECKIN_USAGE_V2 分支直接
+ * SELECT 整個 roster 做 INSERT），櫃檯手動扣課也是。逐列推播的話，一堂 1對3 的課
+ * 教練手機會連響三次，內容幾乎一樣。dreams400 是全場館共用、每月只有 3,000 則
+ * 額度 —— 這樣燒撐不住，而且通知一多就沒人看，真正要當下反應的那則會被淹掉。
+ *
+ * 抽成純函式是為了能單獨測：誰入選、家長怎麼標、學員怎麼併、時間取哪一個，
+ * 都不需要資料庫也不需要 LINE 就能驗。
+ */
+function buildCoachSummary(rows) {
+  // 'coach' 來源僅存在於歷史列（代簽已於 2026-08-10 移除）。見檔頭收訊者規則。
+  const usable = (rows || []).filter((r) => r && r.coach_uid && r.checked_in_source !== 'coach');
+  if (!usable.length) return null;
+  const first = usable[0];
+
+  const uniq = (xs) => Array.from(new Set(xs.map((x) => String(x || '').trim()).filter(Boolean)));
+  const students = uniq(usable.map((r) => r.student_name));
+  const parents = uniq(usable.map((r) => r.parent_name));
+
+  // 共班可能跨家庭。硬挑第一位家長當代表，會讓教練看到一個跟其他學員不相干的
+  // 名字，所以多於一位時改標數量。
+  const parentLabel = parents.length === 1 ? parents[0]
+    : (parents.length > 1 ? parents.length + ' 位家長' : null);
+
+  // 批次是原子寫入，時間本來就幾乎相同；取最早的，語意是「這堂課的簽到時間」。
+  const times = usable
+    .map((r) => new Date(r.checked_in_at))
+    .filter((d) => !Number.isNaN(d.getTime()));
+  const checkedInAt = times.length ? new Date(Math.min.apply(null, times.map((d) => d.getTime()))) : null;
+
+  return {
+    coachUid: first.coach_uid,
+    parentLabel,
+    studentNames: students,
+    courseType: first.course_type ? '1 對 ' + first.course_type : null,
+    venueName: first.venue_name || first.venue_id || null,
+    checkedInAt: checkedInAt ? checkedInAt.toISOString() : null,
+    source: first.checked_in_source,
+  };
+}
+
 async function notifyCheckin(sessionId, studentIds, db = pool) {
   const out = { coach: 0, parent: 0, skipped: 0, failed: 0 };
   let rows;
@@ -92,33 +136,35 @@ async function notifyCheckin(sessionId, studentIds, db = pool) {
     return out;
   }
 
+  // ── 教練：一堂課一則 ──
+  // refId 用 sessionId 而不是 checkin_id，讓去重索引把「一堂課」收斂成一則。
+  // 逐列推的話共班會一次發 N 則；而手動扣課那支是在 roster 迴圈裡呼叫，
+  // 沒有這層收斂會變成 N×N 次嘗試（去重擋掉大部分，但仍會送出 N 則）。
+  const summary = buildCoachSummary(rows);
+  if (summary) {
+    const ch = await resolveChannel({ kind: 'coach' }, '教練');
+    if (!ch) { out.skipped += 1; }
+    else {
+      try {
+        const res = await line.pushMessage(
+          summary.coachUid,
+          line.templates.checkinConfirmedToCoach({
+            parentName: summary.parentLabel,
+            studentNames: summary.studentNames,
+            courseType: summary.courseType,
+            venueName: summary.venueName,
+            checkedInAt: summary.checkedInAt,
+            source: summary.source,
+          }),
+          ch,
+          { event: EVENT_COACH, refId: 'cs:' + sessionId, recipientKind: 'coach' });
+        if (res && res.sent) out.coach += 1;
+      } catch (e) { out.failed += 1; console.warn('[checkinNotify] 教練推播失敗：' + e.message); }
+    }
+  }
+
   for (const r of rows) {
     const when = r.checked_in_at instanceof Date ? r.checked_in_at.toISOString() : String(r.checked_in_at);
-
-    // ── 教練 ──（教練自己簽的就不用通知他自己）
-    // 'coach' 僅存在於歷史列（代簽已於 2026-08-10 移除）。這不是死碼 ——
-    // 見檔頭「收訊者規則」：舊課的歷史 coach 列會混在同一批被撈出來。
-    if (r.coach_uid && r.checked_in_source !== 'coach') {
-      const ch = await resolveChannel({ kind: 'coach' }, '教練');
-      if (!ch) { out.skipped += 1; }
-      else {
-        try {
-          const res = await line.pushMessage(
-            r.coach_uid,
-            line.templates.checkinConfirmedToCoach({
-              parentName: r.parent_name,
-              studentName: r.student_name,
-              courseType: r.course_type ? '1 對 ' + r.course_type : null,
-              venueName: r.venue_name || r.venue_id,
-              checkedInAt: when,
-              source: r.checked_in_source,
-            }),
-            ch,
-            { event: EVENT_COACH, refId: 'c:' + r.checkin_id, recipientKind: 'coach' });
-          if (res && res.sent) out.coach += 1;
-        } catch (e) { out.failed += 1; console.warn('[checkinNotify] 教練推播失敗：' + e.message); }
-      }
-    }
 
     // ── 家長 ──
     if (r.parent_uid) {
@@ -152,4 +198,4 @@ function notifyCheckinSafely(sessionId, studentIds, db) {
     .catch((e) => console.warn('[checkinNotify] 未預期例外：' + e.message));
 }
 
-module.exports = { EVENT_COACH, EVENT_PARENT, notifyCheckin, notifyCheckinSafely };
+module.exports = { EVENT_COACH, EVENT_PARENT, notifyCheckin, notifyCheckinSafely, buildCoachSummary };

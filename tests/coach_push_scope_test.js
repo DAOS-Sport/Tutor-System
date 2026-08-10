@@ -135,13 +135,107 @@ check('教練樣板不用 emoji 當標題（跨平台字形不一致）', () => 
 
 check('必要欄位都在（家長、組別、時間、來源）', () => {
   const json = JSON.stringify(line.templates.checkinConfirmedToCoach({
-    parentName: '範例家長', studentName: '範例學員', courseType: '1 對 2',
+    parentName: '範例家長', studentNames: ['範例學員'], courseType: '1 對 2',
     venueName: '範例場館', checkedInAt: '2026-08-06T14:00:00+08:00', source: 'staff',
   }));
   ['範例家長', '1 對 2', '範例學員', '範例場館', '櫃台補登'].forEach((v) => {
     assert.ok(json.includes(v), '樣板少了「' + v + '」');
   });
   assert.ok(json.includes('簽到完成'), '標題不符');
+});
+
+// ── 一堂課一則 ──────────────────────────────────────────────────────────
+// 共班簽到與櫃檯手動扣課都是「一次原子寫入整班」。逐列推播的話一堂 1對3 的課
+// 教練手機會連響三次，內容幾乎一樣；dreams400 全場館共用、每月只有 3,000 則。
+const notify = require(path.join(ROOT, 'server/services/checkinNotify'));
+const row = (over) => Object.assign({
+  coach_uid: 'U0000000000000000000000000000000',
+  checked_in_source: 'parent',
+  student_name: '學員',
+  parent_name: '家長',
+  course_type: 3,
+  venue_name: '範例場館',
+  checked_in_at: '2026-08-06T06:00:00Z',
+  checkin_id: 'ck1',
+}, over);
+
+check('整班 N 列彙整成一則，學員全部列出', () => {
+  const s = notify.buildCoachSummary([
+    row({ student_name: '甲', checked_in_at: '2026-08-06T06:00:02Z' }),
+    row({ student_name: '乙', checked_in_at: '2026-08-06T06:00:00Z' }),
+    row({ student_name: '丙', checked_in_at: '2026-08-06T06:00:01Z' }),
+  ]);
+  assert.ok(s, '應產生摘要');
+  assert.deepStrictEqual(s.studentNames, ['甲', '乙', '丙'], '學員沒有全部列出');
+  // 批次是原子寫入，取最早的才是「這堂課的簽到時間」；取第一列會受查詢排序影響。
+  assert.strictEqual(s.checkedInAt, '2026-08-06T06:00:00.000Z', '時間應取最早，且不受輸入順序影響');
+});
+
+check('跨家庭共班不硬挑一位家長當代表', () => {
+  const s = notify.buildCoachSummary([
+    row({ student_name: '甲', parent_name: '王媽' }),
+    row({ student_name: '乙', parent_name: '李爸' }),
+  ]);
+  assert.strictEqual(s.parentLabel, '2 位家長',
+    '硬挑第一位家長會讓教練看到一個跟其他學員不相干的名字');
+});
+
+check('同一家庭多位學員仍顯示家長姓名', () => {
+  const s = notify.buildCoachSummary([
+    row({ student_name: '大寶', parent_name: '陳爸' }),
+    row({ student_name: '二寶', parent_name: '陳爸' }),
+  ]);
+  assert.strictEqual(s.parentLabel, '陳爸');
+});
+
+check('歷史 coach 來源列不納入（教練不該收到自己當年簽的那筆）', () => {
+  const s = notify.buildCoachSummary([
+    row({ student_name: '甲', checked_in_source: 'coach' }),
+    row({ student_name: '乙', checked_in_source: 'parent' }),
+  ]);
+  assert.deepStrictEqual(s.studentNames, ['乙'], 'coach 來源列應被排除');
+  const none = notify.buildCoachSummary([row({ checked_in_source: 'coach' })]);
+  assert.strictEqual(none, null, '整堂都是歷史 coach 列時不該通知');
+});
+
+check('沒有教練 uid → 不通知（而不是丟出例外）', () => {
+  assert.strictEqual(notify.buildCoachSummary([row({ coach_uid: null })]), null);
+  assert.strictEqual(notify.buildCoachSummary([]), null);
+  assert.strictEqual(notify.buildCoachSummary(null), null);
+});
+
+check('教練推播的 refId 以 session 為單位（去重索引才擋得住重複）', () => {
+  const src = stripComments(fs.readFileSync(path.join(ROOT, 'server/services/checkinNotify.js'), 'utf8'));
+  assert.ok(/refId:\s*'cs:'\s*\+\s*sessionId/.test(src),
+    '教練推播的 refId 不是 session 範圍 —— 用 checkin_id 的話一堂共班課會發 N 則');
+  // 彙整必須在逐列迴圈之外，否則收斂沒有意義。
+  const coachIdx = src.indexOf('buildCoachSummary(rows)');
+  const loopIdx = src.indexOf('for (const r of rows)');
+  assert.ok(coachIdx > 0 && loopIdx > 0 && coachIdx < loopIdx,
+    '教練彙整必須在逐列迴圈之前（之外）');
+});
+
+check('手動扣課不得在 roster 迴圈內呼叫通知', () => {
+  const src = stripComments(fs.readFileSync(path.join(ROOT, 'server/routes/admin/manualDeductions.js'), 'utf8'));
+  // 用縮排層級判斷，不用位置比較 —— 這支檔案有兩個 attendanceRoster 迴圈，
+  // 拿 indexOf 抓「第一個」會誤判成仍在迴圈內（實際踩過一次）。
+  const calls = src.match(/^([ 	]*)notifyCheckinSafely\(courseSessionId/gm) || [];
+  assert.strictEqual(calls.length, 1,
+    'notifyCheckinSafely 應該只被呼叫一次，實際 ' + calls.length + ' 次');
+  const indent = (calls[0].match(/^[ 	]*/) || [''])[0].length;
+  assert.strictEqual(indent, 4,
+    '縮排 ' + indent + ' 格，不在函式主體層級 —— 可能被放進了迴圈。'
+    + '這支本來就傳 null（＝通知整堂），放在迴圈裡等於 N×N 次推播嘗試。');
+});
+
+check('樣板：多位學員時附上人數，教練才能核對是不是全班都到', () => {
+  const json = JSON.stringify(line.templates.checkinConfirmedToCoach({
+    parentName: '2 位家長', studentNames: ['甲', '乙', '丙'],
+    courseType: '1 對 3', venueName: '範例場館',
+    checkedInAt: '2026-08-06T14:00:00+08:00', source: 'parent',
+  }));
+  assert.ok(json.includes('甲、乙、丙'), '學員沒有併成一行');
+  assert.ok(json.includes('3 位'), '沒有標出人數');
 });
 
 if (failures) {

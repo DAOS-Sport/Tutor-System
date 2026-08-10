@@ -753,10 +753,13 @@ function checkinConfirmed({ studentName, coachName, venueName, checkedInAt, liff
  * 不用警示橘黃與紅色 —— 那是「出事了」的顏色，簽到成功不是出事。
  * 標題不放 emoji：跨平台字形不一致，而且與品牌的幾何感衝突。
  */
-function checkinConfirmedToCoach({ parentName, studentName, courseType, venueName, checkedInAt, source }) {
+function checkinConfirmedToCoach({ parentName, studentNames, courseType, venueName, checkedInAt, source }) {
   const from = source === 'staff' ? '櫃台補登' : '家長自助簽到';
+  // 共班一次寫入整班，所以學員是清單而不是單一個。
+  const names = (Array.isArray(studentNames) ? studentNames : [studentNames])
+    .map((x) => String(x || '').trim()).filter(Boolean);
   // 教練要一眼看出「哪位家長、什麼課、誰要上」，所以主標是家長，其餘放在下方欄位。
-  const who = parentName || studentName || '家長';
+  const who = parentName || names[0] || '家長';
 
   // 標籤／值兩欄對齊。原本是「組別：1 對 2」這種字串串接，值的起點會隨標籤字數
   // 浮動，四五行疊起來就參差不齊。
@@ -799,7 +802,10 @@ function checkinConfirmedToCoach({ parentName, studentName, courseType, venueNam
             contents: [
               ...(courseType ? [kv('組別', courseType, true)] : []),
               // 沒有家長姓名時 who 已經退回學員名，這裡就不再重複一次。
-              ...(studentName && studentName !== who ? [kv('學員', studentName)] : []),
+              // 學員清單。人數多時附上數量 —— 教練要核對「是不是全班都到了」。
+              ...(names.length && !(names.length === 1 && names[0] === who)
+                ? [kv(names.length > 1 ? `學員（${names.length} 位）` : '學員', names.join('、'))]
+                : []),
               kv('簽到時間', twTime(checkedInAt)),
               ...(venueName ? [kv('場館', venueName)] : []),
               { type: 'separator', margin: 'lg', color: '#eceff3' },

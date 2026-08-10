@@ -411,10 +411,13 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
 
     // 與家長/教練簽到相同的後台即時事件（簽到驗證頁自動更新）；payload 形狀對齊
     // checkins.js 的廣播（含 checkin_id，缺了會被 CheckinPage 去重誤吞）。失敗不影響已扣課結果。
-    for (const member of attendanceRoster) {
-      // 簽到通知（教練／家長）。fire-and-forget：簽到已 COMMIT，推播不該把它拖下水。
-      notifyCheckinSafely(courseSessionId, null);
+    // 簽到通知（教練／家長）。fire-and-forget：扣課已 COMMIT，推播不該把它拖下水。
+    // 必須在 roster 迴圈「之外」：這支本來就傳 null（＝通知整堂），放在迴圈裡
+    // 等於一堂課呼叫 N 次、每次又處理 N 列 —— N×N 次推播嘗試。去重索引擋掉
+    // 大部分，但那是在補破網，不是設計。
+    notifyCheckinSafely(courseSessionId, null);
 
+    for (const member of attendanceRoster) {
       try {
         broadcastAdminEvent('checkin:created', {
           checkin_id: member.checkin_id,
