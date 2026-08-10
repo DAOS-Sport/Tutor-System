@@ -11,14 +11,12 @@ import DataTable from '../components/DataTable';
 import StatusBadge from '../components/StatusBadge';
 import ConfirmDialog from '../components/ConfirmDialog';
 import { useToast } from '../context/ToastContext';
-import { useAuth } from '../context/AuthContext';
 import { sessionsApi } from '../api/sessions';
 import { venuesApi } from '../api/venues';
 import { formatTWDate, formatTWDateTime } from '../utils/format';
 
 export default function RevivePage() {
   const toast = useToast();
-  const { isStaff } = useAuth();
   const [list, setList] = useState(null);
   const [venues, setVenues] = useState([]);
   const [target, setTarget] = useState(null);
@@ -86,7 +84,9 @@ export default function RevivePage() {
     },
     {
       key: 'actions', label: '操作', className: 'text-right',
-      render: (r) => (isStaff || r.refunded)
+      // 行政櫃檯也能歸還堂數（2026-08-10 使用者指示；後端 requireAdminRole 已一併放行）。
+      // 只保留 r.refunded：已歸還過的不該再出現按鈕。
+      render: (r) => r.refunded
         ? <span className="text-xs text-gray-400">—</span>
         : (
           <button
@@ -103,9 +103,7 @@ export default function RevivePage() {
     <div>
       <PageHeader
         title="扣課復活"
-        subtitle={isStaff
-          ? 'F-M05 · 櫃台僅供查詢，堂數歸還由主管處理'
-          : 'F-M05 · 主管權限。將已扣除但未實際上課的堂數歸還給家長'}
+        subtitle="F-M05 · 將已扣除但未實際上課的堂數歸還給家長（行政櫃檯與主管皆可操作）"
       />
       <DataTable columns={columns} rows={list} rowKey={(r) => r.id} empty="目前沒有需要處理的時段" />
 
