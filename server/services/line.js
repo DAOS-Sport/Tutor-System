@@ -258,6 +258,8 @@ function groupConfirmInvite({ initiatorName, coachName, scheduledAt, agreeUrl, r
 }
 
 // 上課前提醒
+// role='coach' 分支目前無人使用：cron 已不再把上課提醒推給教練
+// （Owner 決定教練端只留「家長簽到」）。保留分支以免日後要開回來時又得重寫。
 function sessionReminder({ coachName, venueName, scheduledAt, role }) {
   const title = role === 'coach' ? '即將上課提醒（教練）' : '📢 上課提醒';
   return [{
@@ -279,6 +281,9 @@ function sessionReminder({ coachName, venueName, scheduledAt, role }) {
 }
 
 // 自助取消通知（教練端）
+// ⚠️ 未接線：全 server 沒有任何呼叫點（2026-08-10 查證）。
+// Owner 決定教練端只保留「家長簽到」一種通知，預約／取消類不推，故不接。
+// 保留定義是為了不動到既有匯出介面；**要接線前請先問 Owner**。
 function selfCancelToCoach({ studentName, scheduledAt, cancelType }) {
   const isNormal = cancelType === 'normal';
   return [{
@@ -736,26 +741,71 @@ function checkinConfirmed({ studentName, coachName, venueName, checkedInAt, liff
   }];
 }
 
-// 簽到確認 → 教練（家長自助簽到或櫃台補登。教練代簽已移除，故只剩這兩種來源）
+/**
+ * 簽到確認 → 教練。**教練端唯一的推播事件。**
+ *
+ * Owner 決定：教練只收「家長簽到」一種通知；預約、提醒、取消類一律不推。
+ * 理由是教練端 channel（dreams400）全場館共用、每月只有 3,000 則額度，
+ * 而且通知一多就沒人看 —— 只留真正需要當下反應的那一種。
+ *
+ * ── 視覺 ──
+ * 取自 DAOS logo：深海藍底 + 草地綠／青碧綠兩道折線 + 白。
+ * 不用警示橘黃與紅色 —— 那是「出事了」的顏色，簽到成功不是出事。
+ * 標題不放 emoji：跨平台字形不一致，而且與品牌的幾何感衝突。
+ */
 function checkinConfirmedToCoach({ parentName, studentName, courseType, venueName, checkedInAt, source }) {
   const from = source === 'staff' ? '櫃台補登' : '家長自助簽到';
-  // 教練要一眼看出「哪位家長、什麼課、誰要上」，所以主標是家長，學員放在組別下面。
+  // 教練要一眼看出「哪位家長、什麼課、誰要上」，所以主標是家長，其餘放在下方欄位。
   const who = parentName || studentName || '家長';
+
+  // 標籤／值兩欄對齊。原本是「組別：1 對 2」這種字串串接，值的起點會隨標籤字數
+  // 浮動，四五行疊起來就參差不齊。
+  const kv = (label, value, strong = false) => ({
+    type: 'box', layout: 'baseline', spacing: 'sm',
+    contents: [
+      { type: 'text', text: label, size: 'sm', color: '#8a94a6', flex: 2 },
+      {
+        type: 'text', text: String(value), size: 'sm', flex: 5, wrap: true,
+        color: strong ? BRAND.primary : '#3a3a3a', weight: strong ? 'bold' : 'regular',
+      },
+    ],
+  });
+
   return [{
     type: 'flex', altText: `${who} 已簽到`,
     contents: {
       type: 'bubble',
-      header: flexHeader('📋 已簽到', BRAND.primary),
-      body: {
-        type: 'box', layout: 'vertical', spacing: 'sm',
+      header: {
+        type: 'box', layout: 'vertical', backgroundColor: BRAND.primary,
+        paddingStart: '18px', paddingEnd: '18px', paddingTop: '16px', paddingBottom: '16px',
         contents: [
-          { type: 'text', text: who, size: 'lg', weight: 'bold', wrap: true },
-          ...(courseType ? [{ type: 'text', text: `組別：${courseType}`, size: 'sm', weight: 'bold' }] : []),
-          // 沒有家長姓名時 who 已經退回學員名，這裡就不再重複一次。
-          ...(studentName && studentName !== who ? [{ type: 'text', text: `學員：${studentName}`, size: 'sm' }] : []),
-          { type: 'text', text: `簽到時間：${twTime(checkedInAt)}`, size: 'sm' },
-          ...(venueName ? [{ type: 'text', text: `場館：${venueName}`, size: 'sm' }] : []),
-          { type: 'text', text: `來源：${from}`, size: 'xs', color: '#888888' },
+          { type: 'text', text: '簽到完成', color: '#a9c8ff', size: 'xs', weight: 'bold' },
+          { type: 'text', text: who, color: BRAND.white, size: 'xl', weight: 'bold', wrap: true, margin: 'sm' },
+        ],
+      },
+      body: {
+        type: 'box', layout: 'vertical', paddingAll: '0px', spacing: 'none',
+        contents: [
+          // 品牌雙色線，對應 logo 的兩道折線（草地綠在前、青碧綠在後）。
+          {
+            type: 'box', layout: 'horizontal', height: '5px', spacing: 'none',
+            contents: [
+              { type: 'box', layout: 'vertical', flex: 2, backgroundColor: BRAND.green, contents: [{ type: 'filler' }] },
+              { type: 'box', layout: 'vertical', flex: 3, backgroundColor: BRAND.teal, contents: [{ type: 'filler' }] },
+            ],
+          },
+          {
+            type: 'box', layout: 'vertical', paddingAll: '18px', spacing: 'md',
+            contents: [
+              ...(courseType ? [kv('組別', courseType, true)] : []),
+              // 沒有家長姓名時 who 已經退回學員名，這裡就不再重複一次。
+              ...(studentName && studentName !== who ? [kv('學員', studentName)] : []),
+              kv('簽到時間', twTime(checkedInAt)),
+              ...(venueName ? [kv('場館', venueName)] : []),
+              { type: 'separator', margin: 'lg', color: '#eceff3' },
+              { type: 'text', text: from, size: 'xs', color: '#9aa3b0', margin: 'md' },
+            ],
+          },
         ],
       },
     },

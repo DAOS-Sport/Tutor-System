@@ -116,10 +116,10 @@ function initCronJobs() {
             WHERE cpe.course_period_id = $1 AND cpe.status='active' AND p.line_uid IS NOT NULL`,
           [s.period_id]
         );
-        const targets = [
-          ...(s.coach_uid ? [{ uid: s.coach_uid, role: 'coach' }] : []),
-          ...ps.rows.map((r) => ({ uid: r.line_uid, role: 'parent' })),
-        ];
+        // 教練不收上課提醒。Owner 決定教練端只保留「家長簽到」一種通知：
+        // dreams400 是全場館共用的 channel、每月只有 3,000 則額度，而且通知一多
+        // 就沒人看 —— 只留真正需要當下反應的那一種。
+        const targets = ps.rows.map((r) => ({ uid: r.line_uid, role: 'parent' }));
         const startStr = formatTaipeiDateTime(s.scheduled_at);
         for (const t of targets) {
           // claim send-right first：插入成功才推播，杜絕並發雙發
