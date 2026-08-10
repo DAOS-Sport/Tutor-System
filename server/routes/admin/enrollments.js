@@ -14,6 +14,7 @@ const express = require('express');
 const { randomUUID } = require('crypto');
 const { pool } = require('../../models/db');
 const { requireAdminAuth, requireAdminRole, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
+const { enqueueReconcileMail, deliverOutbox } = require('../../services/reconcileNotify');
 const ragicWriteback = require('../../services/ragicWriteback');
 const promotions = require('../../services/promotions');
 const { resolveParentLineDisplayName } = require('../../services/parentLineProfile');
@@ -1221,6 +1222,18 @@ router.post('/:id/reconcile', requireAdminAuth, requireAdminRole('admin', 'manag
     // 讀正式課期的缺口）。與上方團報橋以 group_order_id 守門互斥，不重複建。
     const reconcileCreatedStudentIds = (await ensureSoloCoursePeriod(client, cur.rows[0], total)) || [];
 
+    // 家長通知信排進 outbox（COMMIT 前，理由同 checkouts.js）。
+    // 這支是 legacy 單筆入口，等同 checkout 版 N=1 的退化情形。
+    const venueNameRow = await client.query(`SELECT name FROM admin_venues WHERE id = $1`, [cur.rows[0].venue_id]);
+    const mailOutboxId = await enqueueReconcileMail(client, {
+      refId: String(id),
+      orders: [cur.rows[0]],
+      invoice: { invoiceNumber, amount: cur.rows[0].final_price },
+      venueName: venueNameRow.rows[0]?.name || cur.rows[0].venue_id,
+      parentPhone: cur.rows[0].parent_phone,
+      parentName: cur.rows[0].parent_name,
+    });
+
     await client.query('COMMIT');
 
     // get-or-create 出來的新學員 → 即時回寫 Ragic（best-effort、fire-and-forget）；
@@ -1237,48 +1250,8 @@ router.post('/:id/reconcile', requireAdminAuth, requireAdminRole('admin', 'manag
       console.warn('[reconcile] backfill chat rooms failed:', e.message);
     }
 
-    // Task #39：推播 LINE Flex 發票通知給家長（含課程資訊）
-    try {
-      const line = require('../../services/line');
-      const enrollment = cur.rows[0];
-      const parentPhone = enrollment.parent_phone;
-      if (parentPhone) {
-        const parentRow = await pool.query(
-          `SELECT line_uid FROM parents WHERE phone = $1`, [parentPhone]
-        );
-        const lineUid = parentRow.rows[0]?.line_uid;
-        if (lineUid) {
-          const publicBase = (process.env.PUBLIC_BASE_URL || process.env.ADMIN_URL || '').replace(/\/$/, '');
-          const absoluteImageUrl = invoiceImageUrl.startsWith('http')
-            ? invoiceImageUrl
-            : `${publicBase}${invoiceImageUrl}`;
-          const liffUrl = process.env.LIFF_URL_PARENT || process.env.LIFF_URL || '';
-          // 查場館名稱
-          let venueName = enrollment.venue_id;
-          try {
-            const vRow = await pool.query(`SELECT name FROM admin_venues WHERE id = $1`, [enrollment.venue_id]);
-            if (vRow.rows[0]) venueName = vRow.rows[0].name;
-          } catch (_) { /* best-effort */ }
-          // 組別中文
-          const ctMap = { 1: '1 對 1', 2: '1 對 2', 3: '1 對 3' };
-          const courseTypeLabel = ctMap[enrollment.course_type] || `1 對 ${enrollment.course_type}`;
-          const messages = line.templates.invoiceIssued({
-            parentName: enrollment.parent_name,
-            invoiceNumber,
-            invoiceImageUrl: absoluteImageUrl,
-            invoiceUrl: invoiceUrl || null,
-            coachName: enrollment.coach,
-            venueName,
-            courseType: courseTypeLabel,
-            finalPrice: enrollment.final_price,
-            liffUrl,
-          });
-          await line.pushMessage(lineUid, messages, enrollment.venue_id);
-        }
-      }
-    } catch (e) {
-      console.warn('[reconcile] LINE push invoice failed:', e.message);
-    }
+    // 家長端改走 Email（Owner 決定：家長不用 LINE）。
+    await deliverOutbox([mailOutboxId]);
 
     res.json(await readEnrollment(id));
   } catch (err) {

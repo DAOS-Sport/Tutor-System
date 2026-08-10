@@ -1791,6 +1791,36 @@ CREATE UNIQUE INDEX IF NOT EXISTS uniq_push_log_dedupe
   ON line_push_log(event, ref_id, recipient_uid)
   WHERE ref_id IS NOT NULL AND status <> 'failed';
 
+-- ─── 家長信件 outbox（對帳成功通知）─────────────────────────────────────
+-- 為什麼要 outbox 而不是「COMMIT 後直接寄」：
+--  1. 不漏寄 —— 直接寄的話，COMMIT 成功但進程在寄信前掛掉，信永遠不會補；
+--     而且再打一次 API 會被「狀態非待對帳」的守門擋成 409，人工也救不回來。
+--     enqueue 在對帳交易內，COMMIT 了就一定留得住，之後可補寄。
+--  2. 不重寄 —— 唯一索引把「同一事件 + 同一業務主鍵 + 同一收件人」收斂成一封。
+--     現有的 LINE 對帳推播就是沒帶 refId，去重索引完全失效（只是因為總開關
+--     關著才沒出事），這裡不重蹈覆轍。
+-- status 分得很細：dry_run 是「沒寄出」不是「寄成功」，不可混為一談。
+CREATE TABLE IF NOT EXISTS mail_outbox (
+  id BIGSERIAL PRIMARY KEY,
+  kind TEXT NOT NULL,               -- 'reconcile_success'
+  ref_id TEXT NOT NULL,             -- 業務主鍵，如 checkout_id:family_key 或 enrollment_id
+  recipient TEXT NOT NULL DEFAULT '',
+  subject TEXT NOT NULL DEFAULT '',
+  payload JSONB,                    -- 補寄時重建信件用
+  status TEXT NOT NULL,             -- pending / sent / dry_run / skipped / failed
+  reason TEXT,
+  attempts INT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  sent_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_mail_outbox_created ON mail_outbox(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mail_outbox_pending ON mail_outbox(status, created_at) WHERE status = 'pending';
+-- failed 不納入去重，才能重試。
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_mail_outbox_dedupe
+  ON mail_outbox(kind, ref_id, recipient)
+  WHERE status <> 'failed';
+
 -- ─── Ragic 家長/學員識別鍵修復（P1.1 決策6/7，2026-07-07）──────────────────
 -- 根治「Ragic 端電話/ID 打錯或變更 → 本地孤兒列/誤合併」：parents/students 的
 -- upsert 改以 ragic_record_id 為主鍵（見 parentSync.js upsertLocalParent/

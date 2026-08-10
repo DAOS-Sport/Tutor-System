@@ -15,6 +15,7 @@ const {
   groupCheckoutFamilies,
   normalizeFamilyPhone,
 } = require('../../services/checkoutFamilies');
+const { enqueueReconcileMail, deliverOutbox } = require('../../services/reconcileNotify');
 const enrollmentRouter = require('./enrollments');
 
 const { getSettings, ensureGroupCoursePeriod, ensureSoloCoursePeriod } = enrollmentRouter._checkoutInternals;
@@ -230,6 +231,7 @@ router.get('/:checkoutId', requireAdminAuth, AMS, async (req, res) => {
 router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) => {
   const client = await pool.connect();
   const createdStudentIds = [];
+  const mailOutboxIds = [];
   try {
     await client.query('BEGIN');
     // 稽核操作者只能取自已驗證的後台 JWT；不可接受 client 自填的 by，
@@ -413,6 +415,24 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
       createdStudentIds.push(...ids);
     }
 
+    // 家長通知信排進 outbox —— 刻意在 COMMIT 之前：COMMIT 了就一定留得住，
+    // 之後進程掛掉還能補寄。enqueue 內部有 SAVEPOINT 保護，絕不會弄壞對帳。
+    for (const invoice of invoicePlans) {
+      const familyOrders = children.rows.filter((r0) => checkoutFamilyKey(r0) === invoice.familyKey);
+      if (!familyOrders.length) continue;
+      const venueRow = await client.query(`SELECT name FROM venues WHERE id = $1`, [familyOrders[0].venue_id]);
+      const mailId = await enqueueReconcileMail(client, {
+        // 去重鍵：同一張付款單的同一個家庭只會有一封。
+        refId: `${req.params.checkoutId}:${invoice.familyKey}`,
+        orders: familyOrders,
+        invoice,
+        venueName: venueRow.rows[0]?.name || familyOrders[0].venue_id,
+        parentPhone: invoice.family.parent_phone,
+        parentName: invoice.family.parent_name,
+      });
+      if (mailId) mailOutboxIds.push(mailId);
+    }
+
     await client.query('COMMIT');
 
     if (createdStudentIds.length) {
@@ -424,46 +444,10 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
     } catch (e) {
       console.warn('[checkout reconcile] backfill chat rooms failed:', e.message);
     }
-    const line = require('../../services/line');
-    for (const invoice of invoicePlans) {
-      try {
-        const familyOrders = children.rows.filter((row) => checkoutFamilyKey(row) === invoice.familyKey);
-        const first = familyOrders[0] || {};
-        const phone = normalizeFamilyPhone(invoice.family.parent_phone);
-        const parentQuery = phone
-          ? await pool.query(
-            `SELECT line_uid FROM parents
-              WHERE regexp_replace(COALESCE(phone, ''), '\\D', '', 'g') = $1
-                AND is_active = TRUE
-              ORDER BY updated_at DESC LIMIT 1`,
-            [phone]
-          )
-          : { rows: [] };
-        const lineUid = parentQuery.rows[0]?.line_uid;
-        if (!lineUid || !first.venue_id) continue;
-        const publicBase = (process.env.PUBLIC_BASE_URL || process.env.ADMIN_URL || '').replace(/\/$/, '');
-        const absoluteImageUrl = invoice.invoiceImageUrl.startsWith('http')
-          ? invoice.invoiceImageUrl
-          : `${publicBase}${invoice.invoiceImageUrl}`;
-        const liffUrl = process.env.LIFF_URL_PARENT || process.env.LIFF_URL || '';
-        const courseTypes = [...new Set(familyOrders.map((order) => order.course_type).filter(Boolean))];
-        const venue = await pool.query(`SELECT name FROM venues WHERE id = $1`, [first.venue_id]);
-        const messages = line.templates.invoiceIssued({
-          parentName: invoice.family.parent_name,
-          invoiceNumber: invoice.invoiceNumber,
-          invoiceImageUrl: absoluteImageUrl,
-          invoiceUrl: invoice.invoiceUrl,
-          coachName: familyOrders.length === 1 ? first.coach : `${familyOrders.length} 筆子訂單`,
-          venueName: venue.rows[0]?.name || first.venue_id,
-          courseType: courseTypes.length === 1 ? courseTypeLabel(courseTypes[0]) : `${courseTypes.length} 種組別`,
-          finalPrice: invoice.amount,
-          liffUrl,
-        });
-        await line.pushMessage(lineUid, messages, first.venue_id);
-      } catch (e) {
-        console.warn('[checkout reconcile] family LINE invoice push failed:', e.message);
-      }
-    }
+    // 家長端改走 Email（Owner 決定：家長不用 LINE）。
+    // 寄信失敗絕不能影響對帳 —— 已經 COMMIT 了。deliverOutbox 內部不會 throw，
+    // 沒寄成的留在 outbox 等 sweepPendingMail 補。
+    await deliverOutbox(mailOutboxIds);
 
     res.json(await readCheckout(pool, req.params.checkoutId));
   } catch (err) {
