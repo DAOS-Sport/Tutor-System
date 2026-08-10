@@ -116,6 +116,22 @@ async function sendMail({ to, subject, html, text, attachments }) {
   }
 }
 
+/**
+ * 可對外揭露的設定摘要 —— **只回布林，絕不回主機、帳號或位址**。
+ *
+ * 存在的理由：dry-run 是刻意設計成「不報錯」的（寄信失敗不能讓已收到錢的對帳
+ * 看起來像失敗），代價是「沒設定 SMTP」這件事從外面完全看不見 —— 對帳照樣成功、
+ * 畫面照樣正常，只是信永遠不會到。這個摘要把那個沉默狀態變成看得見的。
+ */
+function describe() {
+  const c = config();
+  return {
+    configured: isConfigured(),
+    dryRun: c.dryRun,
+    testRecipientSet: Boolean(c.testRecipient),
+  };
+}
+
 /** 供 /healthz 或人工檢查用；不寄信。 */
 async function verify() {
   if (!isConfigured()) return { ok: false, reason: 'SMTP_NOT_CONFIGURED' };
@@ -127,4 +143,4 @@ async function verify() {
   }
 }
 
-module.exports = { sendMail, isConfigured, verify, config, EMAIL_RE, __test__: { getTransport } };
+module.exports = { sendMail, isConfigured, verify, config, describe, EMAIL_RE, __test__: { getTransport } };

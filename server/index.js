@@ -108,10 +108,33 @@ app.get('/health', async (req, res) => {
   } catch (err) {
     console.warn('[health] DB timezone probe failed:', err.message);
   }
+  // 寄信診斷。放在公開的 /health 是刻意的：這裡要回答的問題是
+  // 「為什麼家長沒收到信」，而那個答案在沒有工具的情況下完全看不見 ——
+  // 對帳成功、畫面正常、沒有錯誤，信就是沒到。
+  // 只回布林與筆數；主機／帳號／收件位址一律不外露，reason 也不回
+  //（SMTP 的錯誤字串可能夾帶收件人 email）。
+  let mail = null;
+  try {
+    const mailer = require('./services/mailer');
+    const outbox = await pool.query(
+      `SELECT status, COUNT(*)::int AS n
+         FROM mail_outbox
+        WHERE created_at >= NOW() - INTERVAL '24 hours'
+        GROUP BY status`
+    );
+    const counts = {};
+    outbox.rows.forEach((r) => { counts[r.status] = r.n; });
+    mail = { ...mailer.describe(), outbox24h: counts };
+  } catch (err) {
+    // 表不存在或連線失敗都算「診斷不出來」，不要讓 /health 整支掛掉。
+    mail = { error: String(err.message || err).slice(0, 120) };
+  }
+
   res.json({
     status: 'ok',
     ts: now.toISOString(),
     build: BUILD_INFO,
+    mail,
     timezone: {
       application: process.env.TZ || TAIPEI_TIME_ZONE,
       database: dbTimeZone,
@@ -254,6 +277,20 @@ const PORT = process.env.PORT || 3000;
     assertSecretConfigured();
     await bootstrapAdmin();
     await bootstrapCore();
+    // 沒設定 SMTP 不擋開機（通知信不是核心流程），但一定要吼一聲 ——
+    // 否則會變成「上線好幾天才發現家長從來沒收到信」。
+    try {
+      const mailer = require('./services/mailer');
+      if (!mailer.isConfigured()) {
+        console.warn('[mailer] ⚠️ SMTP 未設定（缺 SMTP_HOST / SMTP_USER / SMTP_PASS / SMTP_FROM 其一）'
+          + ' —— 對帳成功通知信將只寫進 mail_outbox（status=dry_run），不會真的寄出。');
+      } else if (mailer.config().dryRun) {
+        console.warn('[mailer] ⚠️ MAIL_DRY_RUN=1 —— 設定完整但刻意不寄出。');
+      } else {
+        console.log('[mailer] SMTP 已設定，通知信會實際寄出'
+          + (mailer.config().testRecipient ? '（注意：MAIL_TEST_RECIPIENT 已設，所有信會轉寄到測試信箱）' : ''));
+      }
+    } catch (e) { console.warn('[mailer] 設定檢查失敗：' + e.message); }
   }
   let lastErr;
   for (let attempt = 1; attempt <= 3; attempt++) {
