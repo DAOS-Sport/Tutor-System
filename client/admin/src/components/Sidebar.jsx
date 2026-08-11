@@ -40,7 +40,7 @@ const NAV_GROUPS = [
       { to: '/reconcile',   label: '(F-M02) 待對帳清單', roles: ['admin', 'manager', 'staff'] },
       { to: '/enrollments', label: '(F-R02) 所有報名',   roles: ['admin', 'manager', 'staff'] },
       { to: '/group-orders', label: '團購審核',          roles: ['admin', 'manager', 'staff'] },
-      { to: '/refund',      label: '(F-R04) 退課處理',   roles: ['admin', 'manager'] },
+      { to: '/refund',      label: '(F-R04) 退課處理',   roles: ['admin', 'manager', 'staff'] },
       { to: '/transfers',   label: '(F-M04) 課程轉讓審核', roles: ['admin', 'manager'] },
     ],
   },

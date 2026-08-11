@@ -157,19 +157,18 @@ export default function App() {
 
             {/* ── 教練分頁 ── */}
             <Route element={<RequireCoach />}>
+              {/* 五個分頁都在這一組：無返回鍵、底部導覽高亮。
+                  /coach/orders 原本在下面的 showBackButton 群組，改成分頁後必須移上來——
+                  否則會「返回鍵與分頁高亮並存」，使用者不知道該按哪個。 */}
               <Route element={<AppLayout />}>
                 <Route path="/coach" element={<CoachTodayPage />} />
+                <Route path="/coach/orders" element={<CoachOrdersPage />} />
                 <Route path="/coach/schedule" element={<CoachScheduleWeekPage />} />
                 <Route path="/coach/history" element={<CoachHistoryPage />} />
                 <Route path="/coach/profile" element={<CoachProfilePage />} />
               </Route>
               <Route element={<AppLayout showBackButton title="授課入口" />}>
                 <Route path="/coach/session/:id" element={<CoachSessionPage />} />
-              </Route>
-              {/* 訂單紀錄：今日頁只預覽 5 筆，完整清單在這裡。比照家長端 /my-lessons —— 
-                  有返回鍵，但底部導覽保留（路徑需同步加進 AppLayout 的 TAB_PATHS）。 */}
-              <Route element={<AppLayout showBackButton title="訂單紀錄" />}>
-                <Route path="/coach/orders" element={<CoachOrdersPage />} />
               </Route>
               {/* 舊「學員」分頁已改為「授課記錄」；保留舊網址轉址避免書籤 404 */}
               <Route path="/coach/students" element={<Navigate to="/coach/history" replace />} />

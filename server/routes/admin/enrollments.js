@@ -1331,7 +1331,9 @@ async function computeRefundPreview(id) {
   return { enrollment, total, used, remainRatio, fee_rate, refund_amount };
 }
 
-router.get('/:id/refund-preview', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
+// 退費試算與執行都開放 staff（櫃檯）。兩支必須一起開 —— 只開 refund 不開 preview 的話
+// 櫃檯打得開頁面但看不到試算金額，等於功能沒開。
+router.get('/:id/refund-preview', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
   try {
     const preview = await computeRefundPreview(req.params.id);
     if (!preview) return res.status(404).json({ error: 'enrollment not found' });
@@ -1345,7 +1347,7 @@ router.get('/:id/refund-preview', requireAdminAuth, requireAdminRole('admin', 'm
   }
 });
 
-router.post('/:id/refund', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
+router.post('/:id/refund', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');

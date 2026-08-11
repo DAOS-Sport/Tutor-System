@@ -13,11 +13,14 @@ const PARENT_TABS = [
 ];
 
 // 教練端聊天功能已完整關閉（含路由封鎖，見 App.jsx），底部導覽不再顯示此分頁。
+// 五個分頁：報名記錄從首頁的「學生報名狀態」預覽獨立出來（原本只看得到前 5 筆），
+// 「授課記錄」把原本模稜兩可的「記錄」講清楚——它是課後填的授課內容，不是報名紀錄。
 const COACH_TABS = [
-  { to: '/coach',          label: '今日',   end: true,  icon: HomeIcon },
-  { to: '/coach/schedule', label: '排課',   end: false, icon: CalendarIcon },
-  { to: '/coach/history',  label: '記錄',   end: false, icon: UsersIcon },
-  { to: '/coach/profile',  label: '個人',   end: false, icon: UserIcon },
+  { to: '/coach',          label: '首頁',     end: true,  icon: HomeIcon },
+  { to: '/coach/orders',   label: '報名記錄', end: false, icon: ClipboardIcon },
+  { to: '/coach/schedule', label: '排課',     end: false, icon: CalendarIcon },
+  { to: '/coach/history',  label: '授課記錄', end: false, icon: UsersIcon },
+  { to: '/coach/profile',  label: '個人',     end: false, icon: UserIcon },
 ];
 
 const COL_MAP = { 3: 'grid-cols-3', 4: 'grid-cols-4', 5: 'grid-cols-5' };
@@ -46,7 +49,7 @@ export default function BottomNav() {
                 className="relative flex w-full flex-col items-center justify-center gap-1 py-3 text-xs text-gray-300"
               >
                 <Icon active={false} />
-                <span className="font-medium">{label}</span>
+                <span className="whitespace-nowrap font-medium">{label}</span>
                 <span className="pointer-events-none absolute right-1 top-1 rounded-full bg-brand-amber/15 px-1 text-[8px] font-bold leading-[1.5] text-brand-amber">敬請期待</span>
               </button>
             ) : (
@@ -62,7 +65,9 @@ export default function BottomNav() {
                 {({ isActive }) => (
                   <>
                     <Icon active={isActive} />
-                    <span className="font-medium">{label}</span>
+                    {/* 教練端「報名記錄／授課記錄」是四個字，390px 五欄下每欄 78px、
+                        四字 12px 約 48px 還有餘裕；nowrap 是防它被壓成兩行。 */}
+                    <span className="whitespace-nowrap font-medium">{label}</span>
                     {badge > 0 && (
                       <span
                         aria-label={`${badge} 筆待上傳付款資料`}
@@ -129,6 +134,19 @@ function UsersIcon({ active }) {
       <path d="M2 20c0-3 3-5 7-5s7 2 7 5" strokeLinecap="round" />
       <circle cx="17" cy="9" r="2.5" />
       <path d="M15 14c3 0 7 1.5 7 4" strokeLinecap="round" />
+    </svg>
+  );
+}
+// 報名記錄：夾板＝一份名單。刻意與 UsersIcon（授課記錄，畫的是人）分開，
+// 兩個分頁相鄰，圖示若都是人形在小尺寸下分不出來。
+// 註：這些 icon 必須用 function 宣告——COACH_TABS 在檔案上方就引用它們，
+// 靠 hoisting 才不會炸；寫成 const 會是 TDZ ReferenceError。
+function ClipboardIcon({ active }) {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={active ? 2.4 : 2}>
+      <path d="M9 4h6v3H9z" strokeLinejoin="round" />
+      <path d="M9 5.5H6.5A1.5 1.5 0 005 7v12.5A1.5 1.5 0 006.5 21h11a1.5 1.5 0 001.5-1.5V7a1.5 1.5 0 00-1.5-1.5H15" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M8.5 11.5h7M8.5 15.5h4.5" strokeLinecap="round" />
     </svg>
   );
 }

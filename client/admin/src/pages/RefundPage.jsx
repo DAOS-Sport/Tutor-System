@@ -115,7 +115,9 @@ export default function RefundPage() {
 
   return (
     <div>
-      <PageHeader title="退課處理" subtitle="F-R04 · 主管權限。退款 = 剩餘比例 × (1 − 手續費率)" />
+      {/* 副標不再寫「主管權限」——已開放櫃檯，留著會讓櫃檯以為自己不該按。
+          改成講清楚金額怎麼來：這是最常被問的一件事，而且金額不可手改。 */}
+      <PageHeader title="退課處理" subtitle="F-R04 · 退款 = 剩餘比例 × (1 − 手續費率)，金額由系統試算，不可手動更改" />
       <DataTable columns={columns} rows={list} rowKey={(r) => r.id} empty="目前沒有可退費的課程" />
 
       <ConfirmDialog

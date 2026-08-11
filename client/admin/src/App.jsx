@@ -77,7 +77,7 @@ export default function App() {
         <Route path="/manual-enroll" element={<RequireAuth roles={ALL}><ManualEnrollPage /></RequireAuth>} />
         <Route path="/reconcile"   element={<RequireAuth roles={['admin', 'manager', 'staff']}><ReconcilePage /></RequireAuth>} />
         <Route path="/enrollments" element={<RequireAuth roles={ALL}><EnrollmentsPage /></RequireAuth>} />
-        <Route path="/refund"      element={<RequireAuth roles={['admin', 'manager']}><RefundPage /></RequireAuth>} />
+        <Route path="/refund"      element={<RequireAuth roles={['admin', 'manager', 'staff']}><RefundPage /></RequireAuth>} />
         <Route path="/transfers"   element={<RequireAuth roles={['admin', 'manager']}><TransfersReviewPage /></RequireAuth>} />
 
         {/* 場館營運 */}

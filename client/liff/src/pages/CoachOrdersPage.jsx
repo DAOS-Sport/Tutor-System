@@ -6,19 +6,20 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import { EnrollmentRow, EnrollmentStats, ENROLL_STAGES } from '../components/coach/EnrollmentRow';
 
 /**
- * 教練端「訂單紀錄」—— 今日頁只預覽 5 筆，完整清單在這裡。
+ * 教練端「報名記錄」—— 底部導覽第二個分頁。
  *
- * 入口有兩個，都指向這裡：今日頁「學生報名狀態」的 header 按鈕、
- * 授課記錄頁篩選列尾端的「訂單紀錄 ›」。
+ * ── 為什麼獨立成分頁 ──
+ * 原本是首頁「學生報名狀態」的前 5 筆預覽 + 一個小入口。教練實際要判斷的是
+ * 「哪些還在上、哪些卡在對帳、哪些已經結束」，5 筆看不出全貌，所以拆出來。
  *
  * ── 刻意不顯示金額與發票號碼 ──
  * 教練端目前所有頁面都沒有暴露過金流資訊。教練需要判斷的是「這單卡在哪」，
  * 不是「收了多少」。要加回來只是多兩個欄位，但那是擴大可見範圍，需 Owner 決定。
  * 後端 GET /sessions/coach/:id/enrollments 本來就不 SELECT 金額（見該處註解）。
  *
- * ── 標題由 AppLayout 提供 ──
- * 路由掛在 <AppLayout showBackButton title="訂單紀錄">，頂欄已經有標題與返回鍵。
- * 頁面自己再放一個 h1 會變成同一個字出現兩次。
+ * ── 標題自己放 ──
+ * 改成分頁後路由掛在 <AppLayout />（無 showBackButton、無 title），
+ * 頂欄不再給標題，所以這裡要自己有 h1。
  */
 function FilterChip({ active, onClick, children }) {
   return (
@@ -77,15 +78,20 @@ export default function CoachOrdersPage() {
   return (
     <div className="pb-4">
       <header className="sticky top-0 z-10 border-b border-gray-100 bg-white px-4 py-2.5">
+        <div className="mb-2 flex items-baseline justify-between">
+          <h1 className="text-base font-bold text-brand-primary">報名記錄</h1>
+          <span className="shrink-0 text-xs text-gray-500">
+            {data === null ? '載入中…' : `共 ${data.total ?? (data.items || []).length} 筆`}
+          </span>
+        </div>
+        {/* 數字一律顯示，0 也顯示 —— 見下方 filters 的註解。
+            判斷用 f.n != null 而不是 f.n，否則 0 會被當成 falsy 而整個消失。 */}
         <div className="flex flex-wrap items-center gap-1.5">
           {filters.map((f) => (
             <FilterChip key={f.key} active={filter === f.key} onClick={() => setFilter(f.key)}>
-              {f.label}{f.n ? ` ${f.n}` : ''}
+              {f.label}{f.n != null ? ` ${f.n}` : ''}
             </FilterChip>
           ))}
-          <span className="ml-auto shrink-0 text-xs text-gray-500">
-            {data === null ? '載入中…' : `共 ${data.total ?? (data.items || []).length} 筆`}
-          </span>
         </div>
       </header>
 
