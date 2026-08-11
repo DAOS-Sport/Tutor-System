@@ -54,6 +54,70 @@ const COACH_ENROLLMENT_SCOPE = `(
 // 反而讓這些 coach_id 為 NULL 的舊列更可能浮出來，所以更該擋掉。
 const COACH_ENROLLMENT_STATUSES = "('pending_payment','confirmed')";
 
+/**
+ * 「一筆」＝一張訂單＝`(enrollment_batch_id, period_number)`，不是一列資料。
+ *
+ * ── 為什麼不能直接數資料列 ──
+ * admin_enrollments 的粒度是「學員 × 期」。一筆 1對2、一期、兩個小孩的訂單，
+ * 在資料庫裡是兩列（同 batch、同 checkout、同期），數列會報成「2 筆」。
+ * 2026-08-11 Owner 就是從報名成功信抓到這件事的（發票 DL02996195）。正式庫實測：
+ * 508 列 confirmed 其實只有 318 筆訂單，152 筆由多列組成、單筆最多 4 列。
+ *
+ * ── 為什麼不能只用 enrollment_batch_id ──
+ * 250 個 batch 裡有 45 個橫跨多期。只用 batch 會把第 1 期和第 2 期併成一筆，
+ * 而那正好毀掉一個真實情境：學生第 5、6 堂時報名下一期，那當下他應該同時出現在
+ * 「進行中」（第一期還剩一堂）與「剛報名待對帳」（第二期）。加上 period_number 才對。
+ *
+ * batch_key 用 COALESCE(...::text, id)：confirmed 上 enrollment_batch_id 實測從不為
+ * NULL，但這支也吃 pending_payment，退回自己的 id 等於「自成一筆」，不會整列消失。
+ */
+const COACH_ORDER_CTE = `
+  WITH scoped AS (
+    SELECT ae.id, ae.status::text AS status, ae.parent_name, ae.students,
+           ae.course_type, ae.venue_id, ae.total_sessions, ae.used_sessions,
+           ae.submitted_at, ae.created_at, ae.invoice_issued_at, ae.returned_at,
+           ae.period_number, ae.period_count, ae.group_order_id,
+           -- 原始 batch id 也要留著：下面的 periods CTE 要拿它跟 course_periods
+           -- 比對（batch_key 是 text，course_periods.enrollment_batch_id 是 uuid）。
+           ae.enrollment_batch_id,
+           COALESCE(ae.enrollment_batch_id::text, ae.id) AS batch_key
+      FROM admin_enrollments ae
+     WHERE ${COACH_ENROLLMENT_SCOPE}
+       AND ae.status::text IN ${COACH_ENROLLMENT_STATUSES}
+  ),
+  agg AS (
+    SELECT s.batch_key, s.period_number,
+           min(s.id)                                    AS id,
+           -- 同一筆訂單的各列 status 實測 0 筆不一致。真的出現時取字典序大的
+           -- （pending_payment > confirmed），偏向「還沒好」——寧可教練多看一眼，
+           -- 也不要把還沒對帳的那半當成已確認。
+           max(s.status)                                AS status,
+           min(s.course_type)                           AS course_type,
+           min(s.venue_id)                              AS venue_id,
+           -- 堂數在同筆內對不上的有 5 筆（usageSync 的鏡射缺口）。取 min(used) 與
+           -- max(total)＝「全員都上完才算已完成」。把還在上的課誤標成已完成，
+           -- 會讓教練以為不用再排課；反過來只是多顯示一列，無害得多。
+           -- max(total_sessions) 會略過 NULL：一列 6 一列 NULL 時該班就是 6 堂，
+           -- NULL 是資料缺口不是「無上限」。全為 NULL 才落到下面的 COALESCE。
+           min(COALESCE(s.used_sessions, 0))            AS used_sessions,
+           max(s.total_sessions)                        AS total_sessions,
+           min(s.period_count)                          AS period_count,
+           bool_or(s.group_order_id IS NOT NULL)        AS is_group,
+           count(*)::int                                AS row_count,
+           min(COALESCE(s.submitted_at, s.created_at))  AS submitted_at,
+           max(s.returned_at)                           AS returned_at,
+           max(s.invoice_issued_at)                     AS invoice_issued_at
+      FROM scoped s
+     GROUP BY 1, 2
+  ),
+  bucketed AS (
+    SELECT a.*,
+           CASE WHEN a.status = 'pending_payment' THEN 'pending_payment'
+                WHEN a.used_sessions >= COALESCE(a.total_sessions, 999) THEN 'completed'
+                ELSE 'in_progress' END AS bucket
+      FROM agg a
+  )`;
+
 router.get('/coach/:coachId/enrollments', requireCoach, requireCoachOwner('coachId'), async (req, res) => {
   const { coachId } = req.params;
   try {
@@ -61,32 +125,96 @@ router.get('/coach/:coachId/enrollments', requireCoach, requireCoachOwner('coach
     // 靜靜地少報，而畫面上那個數字看起來一樣可信。
     const [rowsRes, countRes] = await Promise.all([
       pool.query(
-        `SELECT ae.id, ae.status::text AS status, ae.parent_name, ae.students,
-                ae.course_type, ae.venue_id, v.name AS venue_name,
-                ae.total_sessions, ae.used_sessions,
-                ae.submitted_at, ae.created_at, ae.updated_at,
-                ae.invoice_issued_at, ae.returned_at
-           FROM admin_enrollments ae
-           LEFT JOIN admin_venues v ON v.id = ae.venue_id
-          WHERE ${COACH_ENROLLMENT_SCOPE}
-            AND ae.status::text IN ${COACH_ENROLLMENT_STATUSES}
-          ORDER BY COALESCE(ae.submitted_at, ae.created_at) DESC
+        `${COACH_ORDER_CTE},
+         names AS (
+           SELECT s.batch_key, s.period_number,
+                  array_agg(DISTINCT btrim(st)) AS students
+             FROM scoped s, unnest(s.students) AS st
+            WHERE btrim(st) <> ''
+            GROUP BY 1, 2
+         ),
+         payers AS (
+           SELECT s.batch_key, s.period_number,
+                  array_agg(DISTINCT btrim(s.parent_name)) AS parent_names
+             FROM scoped s
+            WHERE btrim(COALESCE(s.parent_name, '')) <> ''
+            GROUP BY 1, 2
+         ),
+         -- ── 班級名冊 ──
+         -- 訂單是收款單位，班（course_period）是上課單位，兩者不一樣。團報時
+         -- 每個家庭各自結帳 → 各自一筆訂單、各自一張發票（正式庫 8 個跨家庭團報
+         -- 全部如此），但共用同一個班。教練要看到整班有誰、各掛在哪位家長底下。
+         --
+         -- join key 三選一，不能只用 admin_enrollment_id：實測 359 筆訂單有 311 筆
+         -- 對得到班，只用直連會漏掉團報那一整類。三個條件與 usageSync.js 同一組。
+         periods AS (
+           SELECT DISTINCT s.batch_key, s.period_number, cp.id AS cp_id,
+                  cp.group_order_id AS cp_group
+             FROM scoped s
+             JOIN course_periods cp
+               ON cp.admin_enrollment_id = s.id
+               OR (cp.enrollment_batch_id = s.enrollment_batch_id AND cp.period_number = s.period_number)
+               OR (cp.group_order_id     = s.group_order_id      AND cp.period_number = s.period_number)
+         ),
+         -- 每位學生掛在自己的家長底下（students.parent_id 是 NOT NULL，實測 710/710
+         -- 都 join 得到）。這就是 Owner 說的「寄託的家長」。用訂單上的付款人的話，
+         -- 別的家庭的小孩會被掛到不相干的人底下。
+         roster AS (
+           SELECT DISTINCT p.batch_key, p.period_number,
+                  st.name AS student_name, par.id AS parent_id, par.name AS parent_name,
+                  COALESCE(go.leader_parent_id = par.id, FALSE) AS is_leader
+             FROM periods p
+             JOIN course_period_enrollments cpe
+               ON cpe.course_period_id = p.cp_id AND cpe.status = 'active'
+             JOIN students st  ON st.id  = cpe.student_id
+             JOIN parents  par ON par.id = st.parent_id
+             LEFT JOIN group_orders go ON go.id = p.cp_group
+         ),
+         fam AS (
+           SELECT batch_key, period_number, parent_id, parent_name,
+                  bool_or(is_leader) AS is_leader,
+                  array_agg(DISTINCT student_name) AS students
+             FROM roster GROUP BY 1, 2, 3, 4
+         ),
+         classes AS (
+           -- 每位學生只屬於一位家長，所以各家庭人數相加＝全班人數，不會重複計數。
+           SELECT batch_key, period_number,
+                  SUM(cardinality(students))::int AS class_size,
+                  json_agg(json_build_object(
+                    'parent_name', parent_name,
+                    'is_leader',   is_leader,
+                    'students',    students
+                  ) ORDER BY is_leader DESC, parent_name) AS families
+             FROM fam GROUP BY 1, 2
+         )
+         SELECT b.id, b.status, b.bucket, b.course_type, b.venue_id, v.name AS venue_name,
+                b.total_sessions, b.used_sessions, b.period_number, b.period_count,
+                b.is_group, b.row_count,
+                b.submitted_at, b.returned_at, b.invoice_issued_at,
+                COALESCE(n.students, '{}')     AS students,
+                COALESCE(p.parent_names, '{}') AS parent_names,
+                c.class_size, c.families
+           FROM bucketed b
+           LEFT JOIN admin_venues v ON v.id = b.venue_id
+           LEFT JOIN names   n ON n.batch_key = b.batch_key AND n.period_number = b.period_number
+           LEFT JOIN payers  p ON p.batch_key = b.batch_key AND p.period_number = b.period_number
+           LEFT JOIN classes c ON c.batch_key = b.batch_key AND c.period_number = b.period_number
+          ORDER BY b.submitted_at DESC
           LIMIT 200`,
         [coachId]
       ),
       pool.query(
-        `SELECT ae.status::text AS status, COUNT(*)::int AS n
-           FROM admin_enrollments ae
-          WHERE ${COACH_ENROLLMENT_SCOPE}
-            AND ae.status::text IN ${COACH_ENROLLMENT_STATUSES}
-          GROUP BY 1`,
+        `${COACH_ORDER_CTE}
+         SELECT bucket, COUNT(*)::int AS n FROM bucketed GROUP BY 1`,
         [coachId]
       ),
     ]);
-    const counts = { pending_payment: 0, confirmed: 0 };
+    // 四顆篩選鈕的來源。三個桶都先給 0 —— 少掉某個 key 會讓前端把它算成 undefined，
+    // 「全部」的加總就對不起來，而那個數字看起來一樣可信。
+    const counts = { in_progress: 0, completed: 0, pending_payment: 0 };
     let total = 0;
     for (const row of countRes.rows) {
-      if (counts[row.status] !== undefined) counts[row.status] = row.n;
+      if (counts[row.bucket] !== undefined) counts[row.bucket] = row.n;
       total += row.n;
     }
     res.json({ counts, total, items: rowsRes.rows });

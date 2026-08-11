@@ -3,7 +3,7 @@ import { sessionsApi } from '../api/sessions';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import LoadingSpinner from '../components/LoadingSpinner';
-import { EnrollmentRow, EnrollmentStats, ENROLL_STAGES } from '../components/coach/EnrollmentRow';
+import { EnrollmentRow, ENROLL_STAGES, bucketOf, countsFrom } from '../components/coach/EnrollmentRow';
 
 /**
  * 教練端「報名記錄」—— 底部導覽第二個分頁。
@@ -59,18 +59,25 @@ export default function CoachOrdersPage() {
   // 只列真的有資料的狀態。全給的話會出現永遠點不出東西的死 chip ——
   // 'active' 在整個 codebase 沒有任何寫入點（只有舊匯入資料才有），
   // 掛在那裡等於騙教練說「有這一類」。
+  // 四顆鈕固定都在，包含 0 筆的那些。
+  //
+  // 舊版會把 0 筆的 chip 藏起來，理由是「不要有永遠點不出東西的死 chip」。
+  // 但那是針對 'active' 那種根本不存在的狀態；這三個桶是真的分類，藏起來反而
+  // 讓「全部」的數字對不起來 —— 教練看到全部 33 但只有兩顆鈕加起來 32，
+  // 會以為系統漏了一筆。0 就顯示 0，那是有意義的資訊。
   const filters = useMemo(() => {
-    const c = data?.counts || {};
-    return [{ key: 'all', label: '全部', n: null }].concat(
-      ENROLL_STAGES
-        .filter((s) => (c[s.key] || 0) > 0)
-        .map((s) => ({ key: s.key, label: s.label, n: c[s.key] }))
+    const c = countsFrom(data);
+    const total = data?.total ?? (data?.items || []).length;
+    return [{ key: 'all', label: '全部', n: total }].concat(
+      ENROLL_STAGES.map((s) => ({ key: s.key, label: s.label, n: c[s.key] || 0 }))
     );
   }, [data]);
 
+  // 桶由後端算好（見 sessions.js 的 bucketed CTE）。這裡走 bucketOf 而不是直接
+  // 讀 item.bucket，是為了在「新前端 + 舊後端」的部署視窗內也能正確分類。
   const items = useMemo(() => {
     const all = data?.items || [];
-    return filter === 'all' ? all : all.filter((it) => it.status === filter);
+    return filter === 'all' ? all : all.filter((it) => bucketOf(it).key === filter);
   }, [data, filter]);
 
   if (!coach) return null;
@@ -106,15 +113,14 @@ export default function CoachOrdersPage() {
         )}
         {items.length > 0 && (
           <>
-            <EnrollmentStats counts={data.counts} />
             <div className="space-y-2">
               {items.map((it) => <EnrollmentRow key={it.id} item={it} detailed />)}
             </div>
             {/* 教練看得到「卡住」，但處理是櫃檯的事 —— 講清楚下一步該找誰，
                 否則他只會看著待對帳乾等，或跑去催已經轉完帳的家長。 */}
             <p className="pt-3 text-center text-[11px] leading-5 text-gray-400">
-              待對帳＝家長已送出報名、櫃檯尚未完成對帳。<br />
-              需要催辦或修改請洽櫃檯。
+              一筆＝一張訂單。同一期、同一班的兄弟姊妹算一筆；下一期是另一筆。<br />
+              剛報名待對帳＝家長已送出報名、櫃檯尚未完成對帳，需要催辦或修改請洽櫃檯。
             </p>
           </>
         )}
