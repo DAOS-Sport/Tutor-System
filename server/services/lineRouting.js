@@ -34,6 +34,61 @@ const VENUE_ENV_ALIAS = {
   C: ['SONGSHAN'],           // 松山國小
 };
 
+/**
+ * 各場館官方帳號的 basic ID。用途只有一個：產生 deep link
+ * （報名成功信的「點擊登入家教系統」按鈕）。
+ *
+ * ⚠️ 上面那段 provider 障礙（同一組 uid 對這四個 OA 實測 0/60）在這裡**不成立**。
+ * 推播是「我方 → 使用者」，得先認得對方的 uid，所以跨 provider 必死；
+ * deep link 是「使用者在自己的 LINE App 裡點開一個聊天視窗」，我方不需要
+ * 認得他，也不需要 token。所以推播打不通的館，這條路照樣走得通。
+ *
+ * 值來自 server/services/lineRouting.js 既有註解（舊系統 dream-dream 的資產），
+ * 尚未經 owner 逐一覆核。要換用 LINE_OA_ID_<場館代號或別名> 覆寫，例：
+ *   LINE_OA_ID_B=@xxxxxxx   或   LINE_OA_ID_NEWPEI=@xxxxxxx
+ */
+const VENUE_OA_ID = {
+  B: '@597kqtbz',   // 新北高中
+  K: '@703sndbg',   // 三重商工
+  L: '@642fcufc',   // 三民高中
+  C: '@318wjncz',   // 松山國小
+};
+
+// 深連結預設要幫家長帶入的訊息。家長只要按送出，官方帳號就會回登入入口。
+const OA_LOGIN_KEYWORD = process.env.LINE_OA_LOGIN_KEYWORD || '家教系統';
+
+// LINE basic ID 一律是 @ 開頭的英數與 . _ -。格式不合就當作沒設定 ——
+// 錯的 ID 會把家長帶到別人的帳號或死連結，寧可退回原本的 LIFF 連結。
+const OA_ID_RE = /^@[A-Za-z0-9_.-]+$/;
+
+/** 取某場館的 OA basic ID；沒有對應或格式不合回 null。env 覆寫優先。 */
+function venueOaId(venueId) {
+  const v = String(venueId || '').trim();
+  if (!v) return null;
+  const keys = [v, ...(VENUE_ENV_ALIAS[v] || [])];
+  for (const k of keys) {
+    const raw = String(process.env['LINE_OA_ID_' + k] || '').trim();
+    if (raw) return OA_ID_RE.test(raw) ? raw : null;   // 有設但設錯 → 不要偷偷用內建值蓋過去
+  }
+  const built = VENUE_OA_ID[v];
+  return built && OA_ID_RE.test(built) ? built : null;
+}
+
+/**
+ * 產生「開啟該館官方帳號、訊息欄預先帶入一段文字」的深連結。
+ *
+ * 注意：oaMessage 只會**帶入**文字，不會自動送出 —— 這是 LINE 官方的行為，
+ * 沒有任何參數可以繞過（已查證官方文件）。家長要自己按送出。所以信裡的
+ * 說明文字必須講清楚這一步，不然家長會以為按了沒反應。
+ *
+ * @returns {string|null} 該館沒有對應 OA 時回 null，呼叫端自行退回原連結
+ */
+function venueOaDeepLink(venueId, text = OA_LOGIN_KEYWORD) {
+  const id = venueOaId(venueId);
+  if (!id) return null;
+  return `https://line.me/R/oaMessage/${encodeURIComponent(id)}/?${encodeURIComponent(text)}`;
+}
+
 // 教練固定用這個；家長在場館推不到時也退回它。
 const STAFF_CHANNEL = process.env.LINE_STAFF_CHANNEL_KEY || 'dreams400';
 
@@ -108,6 +163,7 @@ function allowedLoginChannels() {
 }
 
 module.exports = {
-  VENUE_ENV_ALIAS, STAFF_CHANNEL, VENUE_FLAG,
+  VENUE_ENV_ALIAS, STAFF_CHANNEL, VENUE_FLAG, VENUE_OA_ID, OA_LOGIN_KEYWORD,
   loadVenueFlags, resolveChannel, selfCheck, allowedLoginChannels,
+  venueOaId, venueOaDeepLink,
 };

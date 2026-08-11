@@ -1230,6 +1230,7 @@ router.post('/:id/reconcile', requireAdminAuth, requireAdminRole('admin', 'manag
       refId: String(id),
       orders: [cur.rows[0]],
       invoice: { invoiceNumber, invoiceImageUrl, amount: cur.rows[0].final_price },
+      venueId: cur.rows[0].venue_id,
       venueName: venueNameRow.rows[0]?.name || cur.rows[0].venue_id,
       parentPhone: cur.rows[0].parent_phone,
       parentName: cur.rows[0].parent_name,

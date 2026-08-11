@@ -25,6 +25,7 @@ const { pool } = require('../models/db');
 const mailer = require('./mailer');
 const templates = require('./emailTemplates');
 const objectStore = require('./objectStorage');
+const { venueOaDeepLink, OA_LOGIN_KEYWORD } = require('./lineRouting');
 
 const GUIDE_CID = 'parent-guide';
 // 使用說明海報。放在 repo 內（非 /uploads），因為它是產品素材不是使用者上傳物。
@@ -114,6 +115,23 @@ function liffUrl() {
   return String(process.env.LIFF_URL_PARENT || process.env.LIFF_URL || '').trim();
 }
 
+/**
+ * 「點擊登入家教系統」按鈕要連去哪。
+ *
+ * 優先走該場館的 LINE 官方帳號深連結：家長點開就是該館的聊天室，
+ * 訊息欄已帶好關鍵字，按送出即可拿到登入入口。該館沒有對應 OA
+ * （目前 25 個場館裡只有 4 個有）時退回原本的 LIFF 連結 ——
+ * 這顆按鈕在任何情況下都不能變成死連結。
+ *
+ * 舊的 outbox 列沒有 venueId（本欄位 2026-08-12 才加），
+ * 補寄時自然落到 liff 那條，與改版前行為相同。
+ */
+function loginCta(venueId) {
+  const oa = venueOaDeepLink(venueId, OA_LOGIN_KEYWORD);
+  if (oa) return { loginUrl: oa, loginVia: 'oa', loginKeyword: OA_LOGIN_KEYWORD };
+  return { loginUrl: liffUrl(), loginVia: 'liff', loginKeyword: OA_LOGIN_KEYWORD };
+}
+
 // 只留寄信會用到的欄位。payload 是要落進 JSONB 的，不要把整列 admin_enrollments
 // （含付款證明路徑、發票圖路徑等）原封不動塞進去。
 function slimOrder(o) {
@@ -153,7 +171,7 @@ async function findParentEmail(db, rawPhone) {
  * 在對帳交易內排入一封信。永不 throw、永不讓交易 abort。
  * @returns {Promise<number|null>} outbox id（新排入才有；已存在或被跳過回 null）
  */
-async function enqueueReconcileMail(client, { refId, orders, invoice, venueName, parentPhone, parentName }) {
+async function enqueueReconcileMail(client, { refId, orders, invoice, venueId, venueName, parentPhone, parentName }) {
   try {
     await client.query('SAVEPOINT mail_enqueue');
   } catch (e) {
@@ -164,6 +182,9 @@ async function enqueueReconcileMail(client, { refId, orders, invoice, venueName,
     const list = (orders || []).filter(Boolean).map(slimOrder);
     const payload = {
       parentName: parentName || null,
+      // venueName 是給人看的（信裡的館別），venueId 是給機器用的（對場館 OA）。
+      // 兩個都要存：實際寄送在交易之外，補寄時得能重算同一條登入連結。
+      venueId: venueId || (orders || []).find((o) => o && o.venue_id)?.venue_id || null,
       venueName: venueName || null,
       invoiceNumber: invoice?.invoiceNumber || invoice?.invoice_number || null,
       // 發票照片路徑要存進 payload：實際寄送在交易之外，補寄時也要拿得到。
@@ -179,7 +200,7 @@ async function enqueueReconcileMail(client, { refId, orders, invoice, venueName,
       orders: list,
       invoiceNumber: payload.invoiceNumber,
       totalAmount: payload.totalAmount,
-      liffUrl: liffUrl(),
+      ...loginCta(payload.venueId),
       issuedAt: payload.issuedAt,
     });
 
@@ -226,7 +247,7 @@ async function deliverOutbox(ids) {
         orders: p.orders || [],
         invoiceNumber: p.invoiceNumber,
         totalAmount: p.totalAmount,
-        liffUrl: liffUrl(),
+        ...loginCta(p.venueId),
         issuedAt: p.issuedAt,
         guideImageCid: att.guideCid,
         hasInvoiceAttachment: att.hasInvoice,

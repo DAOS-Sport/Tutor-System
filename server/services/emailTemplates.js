@@ -83,8 +83,18 @@ function row(label, value) {
  * 日期／發票號碼／金額合計）平鋪，各訂單差異（學員／項目／教練／期數）另列一表。
  * 只有一筆時就退化成 Owner 規格裡那張平鋪清單，不會多出一個空表。
  */
+/**
+ * @param {string} [loginUrl] 登入按鈕的目的地。有場館 OA 時是 line.me 深連結
+ *   （開啟該館官方帳號並帶入關鍵字），否則退回 LIFF 連結。
+ * @param {'oa'|'liff'} [loginVia] 決定按鈕底下要寫哪一段說明 —— 兩條路徑
+ *   使用者要做的事完全不同（OA 要自己按送出），寫錯就等於沒寫。
+ * @param {string} [liffUrl] 舊參數名，等同 loginUrl。保留是為了既有呼叫端與測試。
+ */
 function reconcileSuccess({ parentName, venueName, orders = [], invoiceNumber, totalAmount, liffUrl, issuedAt,
+                            loginUrl, loginVia = 'liff', loginKeyword = '家教系統',
                             guideImageCid = null, hasInvoiceAttachment = false }) {
+  const ctaUrl = loginUrl || liffUrl || '';
+  const viaOa = ctaUrl ? loginVia === 'oa' : false;
   const list = Array.isArray(orders) ? orders.filter(Boolean) : [];
   const first = list[0] || {};
   const single = list.length === 1;
@@ -139,22 +149,33 @@ function reconcileSuccess({ parentName, venueName, orders = [], invoiceNumber, t
       </table>`;
 
   // 按鈕在上、海報在下。兩者互補而不是二擇一：
-  //   按鈕 —— liff.line.me 深連結，在 LINE App 內開啟會自動登入，是最短路徑。
+  //   按鈕 —— 走該館官方帳號的 oaMessage 深連結（viaOa），家長按送出就拿到登入入口；
+  //            該館沒有對應 OA 時退回 liff.line.me，在 LINE App 內開啟會自動登入。
   //   海報 —— 從一般瀏覽器點按鈕不保證能自動登入，這時就靠海報教的
   //            「加入場館官方帳號 → 圖文選單『家教班』」那條路。
   // cid: 是 email 內嵌圖片的標準作法（附件掛 Content-ID，body 用 cid: 引用），
   // 不走外部網址 —— 那會被大多數郵件客戶端預設擋掉，變成一個破圖框。
-  const buttonBlock = liffUrl ? `
+  const buttonBlock = ctaUrl ? `
       <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:26px;">
         <tr>
           <td align="center" style="background:${NAVY};border-radius:8px;padding:0;">
-            <a href="${esc(liffUrl)}" style="display:block;padding:15px 20px;color:#ffffff;font-size:15px;font-weight:bold;text-decoration:none;">點擊登入家教系統</a>
+            <a href="${esc(ctaUrl)}" style="display:block;padding:15px 20px;color:#ffffff;font-size:15px;font-weight:bold;text-decoration:none;">點擊登入家教系統</a>
+          </td>
+        </tr>
+      </table>` : '';
+  // oaMessage 只帶入文字、不會自動送出（LINE 的行為，無法繞過）。
+  // 少了這句，家長會停在一個「已經打好字但沒動靜」的畫面上。
+  const hintBlock = viaOa ? `
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:10px;">
+        <tr>
+          <td align="center" style="color:${MUTED};font-size:11px;line-height:18px;">
+            點擊後會開啟${venueName ? esc(venueName) : '本館'}的 LINE 官方帳號，訊息欄已為您帶好「${esc(loginKeyword)}」，<br>直接按送出即可取得登入入口。
           </td>
         </tr>
       </table>` : '';
   const guideBlock = guideImageCid ? `
-      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:${liffUrl ? '16px' : '26px'};">
-        ${liffUrl ? `<tr>
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:${ctaUrl ? '16px' : '26px'};">
+        ${ctaUrl && !viaOa ? `<tr>
           <td align="center" style="padding-bottom:8px;color:${MUTED};font-size:11px;line-height:18px;">
             無法直接登入嗎？依下圖步驟從場館官方帳號進入即可。
           </td>
@@ -166,7 +187,7 @@ function reconcileSuccess({ parentName, venueName, orders = [], invoiceNumber, t
           </td>
         </tr>
       </table>` : '';
-  const cta = buttonBlock + guideBlock;
+  const cta = buttonBlock + hintBlock + guideBlock;
 
   const html = `<!doctype html>
 <html lang="zh-Hant">
@@ -254,9 +275,11 @@ function reconcileSuccess({ parentName, venueName, orders = [], invoiceNumber, t
   if (hasInvoiceAttachment) textLines.push('發票影本已附於本信附件。');
   textLines.push('');
   // 順序與 HTML 版一致：先給連結（最短路徑），再給備援步驟。
-  if (liffUrl) {
-    textLines.push(`點擊登入家教系統：${liffUrl}`);
-    textLines.push('（在 LINE App 內開啟可自動登入）');
+  if (ctaUrl) {
+    textLines.push(`點擊登入家教系統：${ctaUrl}`);
+    textLines.push(viaOa
+      ? `（會開啟${venueName || '本館'}的 LINE 官方帳號並帶入「${loginKeyword}」，請按送出取得登入入口）`
+      : '（在 LINE App 內開啟可自動登入）');
     textLines.push('');
   }
   if (guideImageCid) {

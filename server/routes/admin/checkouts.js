@@ -426,6 +426,7 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
         refId: `${req.params.checkoutId}:${invoice.familyKey}`,
         orders: familyOrders,
         invoice,
+        venueId: familyOrders[0].venue_id,
         venueName: venueRow.rows[0]?.name || familyOrders[0].venue_id,
         parentPhone: invoice.family.parent_phone,
         parentName: invoice.family.parent_name,
