@@ -54,10 +54,8 @@ export const ENROLL_STAGES = [
   { key: 'completed',       label: '已完成',       rail: 'border-l-gray-300 bg-gray-50',          text: 'text-gray-500' },
 ];
 
-// 今日頁預覽筆數。改這一個常數就好 —— 舊版把數字硬編在三個地方
-// （slice、> N 判斷、length - N），改一個漏兩個就會出現
-// 「顯示 5 筆但寫『另有 length-8 筆』」這種對不起來的畫面。
-export const ENROLL_PREVIEW = 5;
+// 註：原本這裡有一個 ENROLL_PREVIEW = 5（首頁只預覽 5 筆用）。報名記錄獨立成
+// 分頁、首頁不再預覽之後就沒有消費者了，已移除。
 
 // 未知狀態不要靜默假裝成第一個階段（舊版 `find(...) || ENROLL_STAGES[0]` 會把
 // 任何沒列到的狀態顯示成「待付款」——那是憑空捏造，教練會照著去催家長）。

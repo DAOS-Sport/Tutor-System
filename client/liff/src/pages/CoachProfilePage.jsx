@@ -319,7 +319,8 @@ export default function CoachProfilePage() {
   );
 }
 
-export function CoachBanner({
+// 只在本檔使用（沒有其他檔案 import），不對外 export。
+function CoachBanner({
   coach,
   coachInitial,
   venueNames,
