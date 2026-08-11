@@ -162,9 +162,10 @@ export default function RefundPage() {
 
   return (
     <div>
-      {/* 副標不再寫「主管權限」——已開放櫃檯，留著會讓櫃檯以為自己不該按。
-          改成講清楚金額怎麼來：這是最常被問的一件事，而且金額不可手改。 */}
-      <PageHeader title="退課處理" subtitle="F-R04 · 退款 = 剩餘比例 × (1 − 手續費率)，金額由系統試算，不可手動更改" />
+      {/* 副標不寫「主管權限」——已開放櫃檯，留著會讓櫃檯以為自己不該按。
+          也不再寫「不可手動更改」——手續費率已可逐筆調整，那句話會讓人以為那格不能動。
+          現在講的是：公式、誰算的、哪一項可以動、動了會留痕。 */}
+      <PageHeader title="退課處理" subtitle="F-R04 · 退款 = 剩餘比例 × (1 − 手續費率)，金額一律由系統試算；手續費率可逐筆調整，調整會記入 audit log" />
       <DataTable columns={columns} rows={list} rowKey={(r) => r.id} empty="目前沒有可退費的課程" />
 
       <ConfirmDialog
