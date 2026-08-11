@@ -1,10 +1,13 @@
 import React, { useEffect, useRef, useState } from "react";
 import { coachesApi } from "../api/coaches";
+import { sessionsApi } from "../api/sessions";
 import { venuesApi } from "../api/venues";
 import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ToastContext";
 import LoadingSpinner from "../components/LoadingSpinner";
+import Collapsible from "../components/Collapsible";
 import { cleanVenueList } from "../utils/venues";
+import { promotionValueLabel } from "../utils/promotionLabel";
 
 /**
  * 版面調整重點（邏輯零變動）：
@@ -25,6 +28,13 @@ export default function CoachProfilePage() {
   const [showAdd, setShowAdd] = useState(false);
   const [venueMap, setVenueMap] = useState({}); // venue id → 名稱
   const [freshVenueIds, setFreshVenueIds] = useState(null); // 掛載時重抓，避免 localStorage 舊快取把多場館收斂成單一值
+  // 審核狀態與退回原因都以「伺服器最新值」為準，不是登入當下的快取。
+  // AuthContext 的自動 refresh 只跑家長端，教練這邊送出後橫幅永遠停在舊狀態。
+  const [reviewStatus, setReviewStatus] = useState(coach?.intro_review_status || "");
+  const [reviewNote, setReviewNote] = useState(coach?.intro_review_note || "");
+  const [bioOpen, setBioOpen] = useState(false);
+  const [mediaOpen, setMediaOpen] = useState(false);
+  const [promos, setPromos] = useState(null);
 
   useEffect(() => {
     if (!coach?.id) return;
@@ -34,15 +44,25 @@ export default function CoachProfilePage() {
       .listMedia(coach.id)
       .then((d) => alive && setMedia(d || []))
       .catch(() => alive && setMedia([]));
-    // 重新抓取教練完整 profile（含最新 venue_ids），不只信 AuthContext 的 localStorage 快取
+    // 重新抓取教練完整 profile。這支回傳的不只 venue_ids —— bio 與審核狀態同樣
+    // 是快取值，之前只取了場館，導致教練在別的裝置改過介紹後這裡還顯示舊文字。
     coachesApi
       .detail(coach.id)
       .then((c) => {
-        if (alive && c) setFreshVenueIds(cleanVenueList(c.venue_ids || c.venues || []));
+        if (!alive || !c) return;
+        setFreshVenueIds(cleanVenueList(c.venue_ids || c.venues || []));
+        if (c.bio_rich_text != null) setBio(c.bio_rich_text);
+        if (c.intro_review_status) setReviewStatus(c.intro_review_status);
+        setReviewNote(c.intro_review_note || "");
       })
       .catch(() => {
         /* 失敗則退回快取的 coach.venue_ids */
       });
+    // 進行中優惠（從首頁搬過來）。附加資訊，失敗就安靜不顯示。
+    sessionsApi
+      .promotionsByCoach(coach.id)
+      .then((d) => alive && setPromos(d?.promotions || []))
+      .catch(() => alive && setPromos([]));
     // 載入場館 id→名稱對照，讓「可教場館」顯示名稱而非代碼（B → 新北高中）
     venuesApi
       .list()
@@ -70,13 +90,13 @@ export default function CoachProfilePage() {
   // 優先用重抓到的最新陣列；失敗才退回快取，避免舊登入快取顯示不全。
   const venueIds = cleanVenueList(freshVenueIds || coach?.venue_ids || coach?.venues || []);
   const venueNames = venueIds.map((id) => venueMap[id] || id);
-  const introReviewStatusText = coach?.intro_review_status
+  const introReviewStatusText = reviewStatus
     ? {
         draft: "草稿",
         pending_review: "審核中",
         published: "已發布",
         rejected: "未通過",
-      }[coach.intro_review_status] || coach.intro_review_status
+      }[reviewStatus] || reviewStatus
     : "";
   const coachInitial = (coach?.name || "教").trim().slice(0, 1) || "教";
 
@@ -84,7 +104,13 @@ export default function CoachProfilePage() {
     if (savingBio) return;
     setSavingBio(true);
     try {
-      await coachesApi.updateBio(coach.id, bio);
+      // 回傳值含更新後的 intro_review_status（後端會寫成 pending_review）。
+      // 原本這裡把它丟掉，橫幅就停在登入時的舊狀態 —— 教練送出後看到「未通過」
+      // 還掛在那，會以為沒送成功而重複送。
+      const updated = await coachesApi.updateBio(coach.id, bio);
+      setReviewStatus(updated?.intro_review_status || "pending_review");
+      setReviewNote("");   // 重新送審後，上一輪的退回原因就不再適用
+      setBioOpen(false);
       toast.success("個人介紹已送出（待主管審核）");
     } catch (err) {
       toast.error(err?.response?.data?.error || "儲存失敗");
@@ -142,28 +168,65 @@ export default function CoachProfilePage() {
         introReviewStatusText={introReviewStatusText}
       />
 
-      <Section title="個人介紹（家長端可看）">
-        <textarea
-          value={bio}
-          onChange={(e) => setBio(e.target.value)}
-          rows={5}
-          maxLength={500}
-          placeholder="撰寫教學經歷、專長、教學風格…"
-          className="w-full rounded-lg border border-gray-300 p-3 text-base leading-relaxed focus:border-brand-teal focus:outline-none focus:ring-2 focus:ring-brand-teal/30"
-        />
-        <div className="mt-2 flex items-center justify-between">
-          <span className="text-[11px] text-gray-400">{bio.length} / 500</span>
-          <button
-            onClick={handleSaveBio}
-            disabled={savingBio}
-            className="rounded-lg bg-brand-primary px-5 py-2.5 text-sm font-bold leading-none text-white active:bg-brand-teal disabled:opacity-50"
-          >
-            {savingBio ? "送出中…" : "送出（待審核）"}
-          </button>
-        </div>
-      </Section>
+      {/* 兩塊預設收合。標題列右上角是「編輯 ✏」，展開後同一個位置變成「儲存」——
+          動作永遠在同一個地方，教練不用找。 */}
+      <div className="mb-3">
+        <Collapsible
+          title="個人介紹"
+          subtitle="家長端可看"
+          open={bioOpen}
+          onToggle={() => setBioOpen((o) => !o)}
+          accent
+          action={
+            <HeaderAction
+              open={bioOpen}
+              busy={savingBio}
+              onEdit={() => setBioOpen(true)}
+              onSave={handleSaveBio}
+              busyLabel="送出中…"
+            />
+          }
+        >
+          {/* 主管退回時一定要看得到原因，否則教練只知道「未通過」，不知道要改什麼。
+              資料本來就在 detail() 的回傳裡，admin 端也有顯示，只有教練端漏掉。 */}
+          {reviewStatus === "rejected" && reviewNote && (
+            <div className="mb-3 rounded-lg border border-brand-error/30 bg-brand-error/5 px-3 py-2">
+              <div className="text-[11px] font-bold text-brand-error">主管退回原因</div>
+              <div className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-gray-700">
+                {reviewNote}
+              </div>
+            </div>
+          )}
+          <textarea
+            value={bio}
+            onChange={(e) => setBio(e.target.value)}
+            rows={5}
+            maxLength={500}
+            placeholder="撰寫教學經歷、專長、教學風格…"
+            className="w-full rounded-lg border border-gray-300 p-3 text-base leading-relaxed focus:border-brand-teal focus:outline-none focus:ring-2 focus:ring-brand-teal/30"
+          />
+          <div className="mt-2 flex items-center justify-between">
+            <span className="text-[11px] text-gray-400">{bio.length} / 500</span>
+            <span className="text-[11px] text-gray-400">儲存後會送交主管審核</span>
+          </div>
+        </Collapsible>
+      </div>
 
-      <Section title={`介紹圖片（${media?.length ?? "…"}）`}>
+      <Collapsible
+        title="介紹圖片"
+        subtitle={`${media?.length ?? "…"} 張`}
+        open={mediaOpen}
+        onToggle={() => setMediaOpen((o) => !o)}
+        accent
+        action={
+          <HeaderAction
+            open={mediaOpen}
+            onEdit={() => setMediaOpen(true)}
+            onSave={() => setMediaOpen(false)}
+            saveLabel="完成"
+          />
+        }
+      >
         {media === null && <LoadingSpinner label="載入中…" />}
         {media && media.length === 0 && (
           <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 px-4 py-6 text-center text-xs text-gray-500">
@@ -219,7 +282,32 @@ export default function CoachProfilePage() {
         >
           ＋ 新增圖片
         </button>
-      </Section>
+      </Collapsible>
+
+      {/* 進行中優惠：從首頁搬過來。教練被家長問「現在有沒有活動」時答得出來，
+          但那不是每天早上要看的東西，放個人頁比較對。 */}
+      {promos && promos.length > 0 && (
+        <section className="mt-5">
+          <div className="mb-2 flex items-center justify-between">
+            <h3 className="text-sm font-bold text-brand-primary">進行中的優惠</h3>
+            <span className="text-xs text-gray-500">套用到你的課程</span>
+          </div>
+          <div className="space-y-1.5">
+            {promos.map((p) => (
+              <div key={p.id} className="rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="truncate text-sm font-bold text-amber-900">{p.name}</span>
+                  <span className="shrink-0 text-[11px] font-bold text-amber-800">{promotionValueLabel(p)}</span>
+                </div>
+                <div className="mt-0.5 flex items-center gap-2 text-[11px] text-amber-800/80">
+                  <span>至 {String(p.end_date).slice(0, 10)}</span>
+                  {p.coupon_code && <span className="rounded bg-amber-200 px-1.5 py-0.5 font-mono">{p.coupon_code}</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {showAdd && (
         <AddMediaModal
@@ -322,16 +410,34 @@ function InfoIcon({ className }) {
   );
 }
 
-function Section({ title, children }) {
+/**
+ * 折疊區塊標題列右上角的動作鈕：收合時是「編輯 ✏」，展開時是「儲存」。
+ *
+ * 兩個狀態共用同一個位置是刻意的 —— 動作固定在同一處，教練不用先找按鈕在哪。
+ * 這顆鈕在 Collapsible 的切換鈕「之外」（見該元件註解），所以點它不會連帶收合；
+ * 收合是由 onSave 自己決定要不要做。
+ */
+function HeaderAction({ open, busy, onEdit, onSave, saveLabel = "儲存", busyLabel }) {
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={onEdit}
+        className="shrink-0 rounded-lg px-2 py-1.5 text-xs font-bold text-brand-primary active:bg-brand-primary/10"
+      >
+        編輯 ✏
+      </button>
+    );
+  }
   return (
-    <section className="mb-5">
-      <h3 className="mb-1.5 px-1 text-[13px] font-semibold text-gray-500">
-        {title}
-      </h3>
-      <div className="rounded-xl border border-gray-200 bg-white p-3.5">
-        {children}
-      </div>
-    </section>
+    <button
+      type="button"
+      onClick={onSave}
+      disabled={busy}
+      className="shrink-0 rounded-lg bg-brand-primary px-3 py-1.5 text-xs font-bold leading-none text-white active:bg-brand-teal disabled:opacity-50"
+    >
+      {busy ? busyLabel || "處理中…" : saveLabel}
+    </button>
   );
 }
 
