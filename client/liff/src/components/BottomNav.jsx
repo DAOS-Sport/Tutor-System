@@ -16,7 +16,7 @@ const PARENT_TABS = [
 // 五個分頁：報名記錄從首頁的「學生報名狀態」預覽獨立出來（原本只看得到前 5 筆），
 // 「授課記錄」把原本模稜兩可的「記錄」講清楚——它是課後填的授課內容，不是報名記錄。
 const COACH_TABS = [
-  { to: '/coach',          label: '首頁',     end: true,  icon: HomeIcon },
+  { to: '/coach',          label: '首頁',     end: true,  icon: TodayIcon },
   { to: '/coach/orders',   label: '報名記錄', end: false, icon: ClipboardIcon },
   { to: '/coach/schedule', label: '排課',     end: false, icon: CalendarIcon },
   { to: '/coach/history',  label: '授課記錄', end: false, icon: UsersIcon },
@@ -141,6 +141,19 @@ function UsersIcon({ active }) {
 // 兩個分頁相鄰，圖示若都是人形在小尺寸下分不出來。
 // 註：這些 icon 必須用 function 宣告——COACH_TABS 在檔案上方就引用它們，
 // 靠 hoisting 才不會炸；寫成 const 會是 TDZ ReferenceError。
+// 教練端第一個分頁：那一頁的內容是「今日課程」，不是一般意義的首頁，
+// 所以用日曆而不是房子。**不要改 HomeIcon** —— 那支是家長端 `/` 在用的，
+// 兩邊共用一份，動它會連家長首頁一起變。
+function TodayIcon({ active }) {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={active ? 2.4 : 2}>
+      <rect x="3" y="5" width="18" height="16" rx="2" />
+      <path d="M3 10h18M8 3v4M16 3v4" strokeLinecap="round" />
+      {/* 今天：日曆格子裡填一個實心方塊，與隔壁純線條的「排課」日曆區分開 */}
+      <rect x="7" y="13" width="4.5" height="4" rx="1" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
 function ClipboardIcon({ active }) {
   return (
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={active ? 2.4 : 2}>
