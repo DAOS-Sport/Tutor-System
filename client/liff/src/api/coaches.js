@@ -8,6 +8,17 @@ export const coachesApi = {
   detail: (id) =>
     callApi(`/coaches/${id}`, { method: 'get', skipAuthRedirect: true }, () => mockDb.coach(id)),
 
+  // 教練自己的審核狀態與主管退回原因。需要登入，而且只拿得到自己的。
+  // 這幾個欄位原本混在公開的 /coaches/:id 裡，等於誰都讀得到主管的內部評語。
+  privateProfile: (id) =>
+    callApi(`/coaches/${id}/private`, { method: 'get' }, () => {
+      const c = mockDb.coach(id) || {};
+      return Promise.resolve({
+        intro_review_status: c.intro_review_status || null,
+        intro_review_note: c.intro_review_note || null,
+      });
+    }),
+
   // 教練端登入：手機 +（如可取得）LINE id_token 雙因素
   // 安全考量：id_token 走 header（X-Line-Id-Token）而非 query string，避免在 access log / proxy 留痕
   byPhone: (phone, idToken = null) =>

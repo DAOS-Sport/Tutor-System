@@ -63,10 +63,50 @@ function normalizeCoach(row) {
   };
 }
 
+/**
+ * 公開端點（GET /coaches、GET /coaches/:id）的欄位過濾。**白名單，不是黑名單。**
+ *
+ * ── 為什麼改成白名單（2026-08-11）──
+ * 原本寫成 `const { line_uid, staff_active, coach_profile_active, ...safe } = coach`
+ * ——只剝掉三個、其餘全放行。結果這兩支不需要登入的端點一次回出全體在職教練的
+ * 手機、Email、員工編號：實測正式站 165 位教練、165 支手機、138 個 Email、
+ * 165 個員工編號，未帶任何憑證即可取得。
+ *
+ * 更糟的是它會自己惡化：只要有人往 COACH_STAFF_PROFILE_SELECT 加一個欄位，
+ * 這裡就自動多洩一個。`intro_review_note`（主管寫的內部退回原因）就是這樣混進來的。
+ *
+ * 白名單反過來 fail-closed：新欄位預設不外露，要露必須有人明確加進這份清單。
+ *
+ * ── 清單依據 ──
+ * 掃過 client/liff 全部消費端（CoachListPage、RegisterPage、useEnrollmentBoot、
+ * CoachScheduleWeekPage、ReferralPage）實際讀到的欄位。admin 端走自己的
+ * 已認證 API，不吃這支。
+ *
+ * **不要**把下列加回來：phone / email / line_uid / ragic_*（個資與內部編號）、
+ * intro_review_note / intro_reviewed_by（主管內部評語）。
+ * 教練要看自己的退回原因，走下面那支需要登入的 GET /:id/private。
+ */
+const PUBLIC_COACH_FIELDS = [
+  'id',
+  'name',
+  'specialties',
+  'is_senior',
+  'pricing_multiplier',
+  'multiplier',          // pricing_multiplier 的別名，前端兩種都在讀
+  'bio',
+  'bio_rich_text',
+  'intro_review_status', // 只是「已發布／審核中」的狀態，不含評語內容
+  'venue_ids',
+  'venues',
+];
+
 function publicCoach(row) {
   const coach = normalizeCoach(row);
   if (!coach) return coach;
-  const { line_uid, staff_active, coach_profile_active, ...safe } = coach;
+  const safe = {};
+  for (const k of PUBLIC_COACH_FIELDS) {
+    if (coach[k] !== undefined) safe[k] = coach[k];
+  }
   return safe;
 }
 
@@ -311,6 +351,33 @@ router.get('/:id', async (req, res) => {
     if (!c) return res.status(404).json({ error: 'not found' });
     res.json(c);
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * 教練看自己的私有欄位。**需要登入，而且只能看自己的**（requireCoachOwner）。
+ *
+ * 為什麼另開一支：主管寫的退回原因（intro_review_note）本來混在公開的
+ * GET /coaches/:id 裡回出去，等於任何人都讀得到內部評語。公開端點已改成白名單
+ * 把它擋掉了，但教練自己「要改什麼」得看得到，所以搬到這裡。
+ *
+ * 只回審核相關的三個欄位。手機／Email 教練登入時本來就拿得到（by-phone /
+ * by-line-uid 的回傳），不必在這裡重複一份。
+ */
+router.get('/:id/private', requireCoach, requireCoachOwner('id'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT c.intro_review_status, c.intro_review_note,
+              c.intro_submitted_at, c.intro_reviewed_at
+         FROM coaches c
+        WHERE c.id = $1`,
+      [req.params.id]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json(r.rows[0]);
+  } catch (err) {
+    console.error('[coaches/:id/private]', err.message);
     res.status(500).json({ error: err.message });
   }
 });

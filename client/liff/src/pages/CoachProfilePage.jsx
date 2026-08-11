@@ -52,11 +52,21 @@ export default function CoachProfilePage() {
         if (!alive || !c) return;
         setFreshVenueIds(cleanVenueList(c.venue_ids || c.venues || []));
         if (c.bio_rich_text != null) setBio(c.bio_rich_text);
-        if (c.intro_review_status) setReviewStatus(c.intro_review_status);
-        setReviewNote(c.intro_review_note || "");
       })
       .catch(() => {
         /* 失敗則退回快取的 coach.venue_ids */
+      });
+    // 審核狀態與主管退回原因走「需要登入且只能看自己」的端點。
+    // 這幾個欄位不能放在公開的 /coaches/:id —— 那等於誰都讀得到主管的內部評語。
+    coachesApi
+      .privateProfile(coach.id)
+      .then((p) => {
+        if (!alive || !p) return;
+        if (p.intro_review_status) setReviewStatus(p.intro_review_status);
+        setReviewNote(p.intro_review_note || "");
+      })
+      .catch(() => {
+        /* 失敗則沿用登入時的快取狀態，不擋畫面 */
       });
     // 進行中優惠（從首頁搬過來）。附加資訊，失敗就安靜不顯示。
     sessionsApi
