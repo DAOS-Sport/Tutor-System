@@ -170,6 +170,13 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 app.use('/admin', express.static(path.join(PUBLIC_DIR, 'admin'), { setHeaders: noStoreHtml }));
 app.use('/liff', express.static(path.join(PUBLIC_DIR, 'liff'), { setHeaders: noStoreHtml }));
 
+// LINE 推播樣板用的品牌圖示（Flex 的 icon 只吃公開可達的 HTTPS 圖檔，沒有內建圖示集）。
+//
+// 為什麼另開一層而不是塞進 liff/：scripts/build-frontends.sh 每次建置都會
+// rm -rf 掉 admin/assets 與 liff/assets，資產擺那裡遲早被洗掉。
+// 快取放長：檔名固定、內容不變，而且 LINE 用戶端每則訊息都會去抓一次。
+app.use('/brand', express.static(path.join(PUBLIC_DIR, 'brand'), { maxAge: '7d' }));
+
 // 聊天室媒體上傳（Phase 4）／匯款證明：以 /uploads 對外。
 // 安全：強制 X-Content-Type-Options + 對非媒體型一律以 attachment 下載，避免同源 XSS / iframe sandbox 逃逸。
 const objectStore = require('./services/objectStorage');

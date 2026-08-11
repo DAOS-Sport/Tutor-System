@@ -14,7 +14,7 @@ const PARENT_TABS = [
 
 // 教練端聊天功能已完整關閉（含路由封鎖，見 App.jsx），底部導覽不再顯示此分頁。
 // 五個分頁：報名記錄從首頁的「學生報名狀態」預覽獨立出來（原本只看得到前 5 筆），
-// 「授課記錄」把原本模稜兩可的「記錄」講清楚——它是課後填的授課內容，不是報名紀錄。
+// 「授課記錄」把原本模稜兩可的「記錄」講清楚——它是課後填的授課內容，不是報名記錄。
 const COACH_TABS = [
   { to: '/coach',          label: '首頁',     end: true,  icon: HomeIcon },
   { to: '/coach/orders',   label: '報名記錄', end: false, icon: ClipboardIcon },

@@ -21,7 +21,7 @@
  * 一般瀏覽器，行為不保證。海報教的是「進場館官方帳號 → 圖文選單家教班」——
  * 那是真正走得通的路。海報檔不存在時退回原本的按鈕，信不會因此殘缺。
  */
-const { formatRagicDate, formatTaipeiDateTime } = require('../utils/dateTime');
+const { formatTaipeiDateTime } = require('../utils/dateTime');
 
 const NAVY = '#15316a';
 const TEAL = '#31aeab';
@@ -91,20 +91,35 @@ function reconcileSuccess({ parentName, venueName, orders = [], invoiceNumber, t
   const submitted = first.submitted_at || first.created_at;
 
   const subject = `【家教班報名成功通知】夢想體育-${venueName || '—'}（發票號碼：${invoiceNumber || '—'}）`;
+  // 信件內文的館別用全名。admin_venues 只存短名（「三重商工」），全名沒有欄位可放，
+  // 由程式固定組出來。啟用中的 5 個場館都是學校泳池，所以這個規則目前成立；
+  // 日後出現非泳池場地時，這裡是唯一要改的地方。
+  //
+  // 主旨行刻意維持短名 —— 主旨變長會在手機的信件列表被截斷，發票號碼就看不到了。
+  const venueFullName = venueName ? `夢想體育學院-${venueName}游泳池` : '—';
+  // 報名期數＝明細表裡出現的相異期次數，不是訂單筆數。
+  // 兄弟姊妹各一列但同屬一筆訂單、同一期，數列會說「2 筆」，與下方明細表的
+  // 期數欄對不起來（兩列都寫「第 1 期」）。periodCount 為 0 時退回列數，
+  // 避免髒資料讓這格變成「0 期」。
+  const periodCount = new Set(
+    list.map((o) => Number(o?.period_number)).filter(Number.isFinite)
+  ).size;
 
   const rows = [];
   if (single) {
     rows.push(row('狀態', esc(groupModeLabel(first.course_type))));
     rows.push(row('項目', esc(courseTypeLabel(first.course_type))));
   }
-  rows.push(row('館別', esc(venueName || '—')));
-  rows.push(row('報名日期', esc(submitted ? formatRagicDate(submitted) : '—')));
+  rows.push(row('館別', esc(venueFullName)));
+    // 加上時間：同一天報名多筆時，只有日期分不出先後。formatTaipeiDateTime 早就
+  // import 在本檔頂端，換個函式即可。
+  rows.push(row('報名日期', esc(submitted ? formatTaipeiDateTime(submitted) : '—')));
   if (single) {
     rows.push(row('教練名稱', esc(first.coach || '—')));
     rows.push(row('費用', esc(money(first.final_price))));
     rows.push(row('期數', esc(periodLabel(first))));
   } else {
-    rows.push(row('報名筆數', `${list.length} 筆（明細見下表）`));
+    rows.push(row('報名期數', `${periodCount || list.length} 期（明細見下表）`));
     rows.push(row('費用合計', esc(money(totalAmount))));
   }
   rows.push(row('發票號碼', `<span style="font-family:Menlo,Consolas,monospace;letter-spacing:1px;">${esc(invoiceNumber || '—')}</span>`    + (hasInvoiceAttachment ? `<div style="margin-top:3px;color:${MUTED};font-size:11px;font-weight:normal;">發票影本已附於本信附件</div>` : '')));
@@ -172,7 +187,7 @@ function reconcileSuccess({ parentName, venueName, orders = [], invoiceNumber, t
             親愛的 ${esc(parentName || '家長')} 家長，您好：
           </div>
           <div style="margin-top:8px;color:${INK};font-size:14px;line-height:24px;">
-            您的報名款項已完成對帳，課程已為您開通。以下為本次報名資訊：
+            您的報名已完成，課程已為您開通。以下為本次報名資訊：
           </div>
         </td></tr>
 
@@ -213,21 +228,21 @@ function reconcileSuccess({ parentName, venueName, orders = [], invoiceNumber, t
     '夢想體育學院｜家教班報名成功通知',
     '',
     `親愛的 ${parentName || '家長'} 家長，您好：`,
-    '您的報名款項已完成對帳，課程已為您開通。',
+    '您的報名已完成，課程已為您開通。以下為本次報名資訊：',
     '',
   ];
   if (single) {
     textLines.push(`狀態：${groupModeLabel(first.course_type)}`);
     textLines.push(`項目：${courseTypeLabel(first.course_type)}`);
   }
-  textLines.push(`館別：${venueName || '—'}`);
-  textLines.push(`報名日期：${submitted ? formatRagicDate(submitted) : '—'}`);
+  textLines.push(`館別：${venueFullName}`);
+  textLines.push(`報名日期：${submitted ? formatTaipeiDateTime(submitted) : '—'}`);
   if (single) {
     textLines.push(`教練名稱：${first.coach || '—'}`);
     textLines.push(`費用：${money(first.final_price)}`);
     textLines.push(`期數：${periodLabel(first)}`);
   } else {
-    textLines.push(`報名筆數：${list.length} 筆`);
+    textLines.push(`報名期數：${periodCount || list.length} 期`);
     textLines.push(`費用合計：${money(totalAmount)}`);
     list.forEach((o) => {
       textLines.push(`  - ${studentsOf(o) || '—'}｜${courseTypeLabel(o.course_type)}｜${o.coach || '—'}｜${periodLabel(o)}｜${money(o.final_price)}`);

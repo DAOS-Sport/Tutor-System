@@ -30,7 +30,7 @@ function StudentRecords({ data, selectedStudent }) {
   if (visibleRows.length === 0) return null;
   return (
     <div className="mt-3 border-t border-dashed border-gray-200 pt-3">
-      <div className="text-[11px] font-bold text-brand-primary">個別學員紀錄</div>
+      <div className="text-[11px] font-bold text-brand-primary">個別學員記錄</div>
       <div className="mt-2 space-y-2">
         {visibleRows.map(([name, rec]) => (
           <div key={name} className="rounded-lg bg-brand-teal/5 px-3 py-2">

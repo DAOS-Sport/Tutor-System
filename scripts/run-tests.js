@@ -29,6 +29,7 @@ const UNIT = [
   'tests/admin_group_order_filter_ui_test.js',
   'tests/admin_role_gate_consistency_test.js',
   'tests/coach_order_bucket_test.js',
+  'tests/liff_nav_consistency_test.js',
   'tests/coach_checkin_removed_test.js',
   'tests/reconcile_email_test.js',
   'tests/mail_describe_test.js',

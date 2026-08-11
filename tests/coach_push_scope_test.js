@@ -99,28 +99,32 @@ check('上課提醒不得再推給教練', () => {
 // ── 視覺鎖 ──
 const line = require(path.join(ROOT, 'server/services/line'));
 
-check('教練樣板色票＝品牌白名單（不得出現警示橘黃或紅）', () => {
+check('教練樣板色票＝白名單（不得出現警示橘黃或紅）', () => {
   const msgs = line.templates.checkinConfirmedToCoach({
-    parentName: '範例家長', studentName: '範例學員', courseType: '1 對 2',
+    studentNames: ['範例學員'], courseType: '1 對 2',
     venueName: '範例場館', checkedInAt: '2026-08-06T14:00:00+08:00', source: 'parent',
   });
   const json = JSON.stringify(msgs);
   const used = Array.from(new Set((json.match(/#[0-9a-fA-F]{6}/g) || []).map((c) => c.toLowerCase())));
   assert.ok(used.length >= 4, '只解析到 ' + used.length + ' 個色票 —— 掃描失效，非真的通過');
 
+  // 2026-08-11 Owner 給的新色盤。刻意與 BRAND 不同值：家長端樣板吃 BRAND，
+  // 改 BRAND 等於連家長端一起換版，那是另一個決定。
   const ALLOWED = [
-    '#15316a', // 深海藍（logo 底色）
-    '#31aeab', // 青碧綠（logo 折線）
-    '#97bf36', // 草地綠（logo 折線）
-    '#ffffff', // 白
-    '#a9c8ff', // 深藍上的次級文字
-    '#3a3a3a', '#8a94a6', '#9aa3b0', '#eceff3', // 中性灰階
+    '#183260', // 標題底（深藍）
+    '#4ade80', // 勾勾與「簽到完成」
+    '#8cb83e', // 雙色線前段
+    '#179ba2', // 雙色線後段
+    '#ffffff', // 標題文字
+    '#8c8c8c', '#333333', '#000000', '#aaaaaa', // 標籤／值／強調／頁尾
   ];
   const extra = used.filter((c) => !ALLOWED.includes(c));
   assert.deepStrictEqual(extra, [],
-    '出現非品牌色：' + extra.join(', ') + '。'
+    '出現非白名單色：' + extra.join(', ') + '。'
     + '橘黃與紅是「出事了」的顏色，簽到成功不是出事。');
-  assert.ok(!used.includes('#e8a020'), '出現警示橘黃 #e8a020');
+  for (const banned of ['#e8a020', '#dc2626', '#ef4444', '#e02020']) {
+    assert.ok(!used.includes(banned), '出現警示色 ' + banned);
+  }
 });
 
 check('教練樣板不用 emoji 當標題（跨平台字形不一致）', () => {
@@ -133,15 +137,80 @@ check('教練樣板不用 emoji 當標題（跨平台字形不一致）', () => 
     '標題含 emoji —— iOS / Android 的 LINE 內建字形不同，大小與基線都會偏');
 });
 
-check('必要欄位都在（家長、組別、時間、來源）', () => {
+check('必要欄位都在（學員、組別、場館、來源）', () => {
   const json = JSON.stringify(line.templates.checkinConfirmedToCoach({
-    parentName: '範例家長', studentNames: ['範例學員'], courseType: '1 對 2',
+    studentNames: ['範例學員'], courseType: '1 對 2',
     venueName: '範例場館', checkedInAt: '2026-08-06T14:00:00+08:00', source: 'staff',
   }));
-  ['範例家長', '1 對 2', '範例學員', '範例場館', '櫃台補登'].forEach((v) => {
+  ['1 對 2', '範例學員', '範例場館', '櫃台補登'].forEach((v) => {
     assert.ok(json.includes(v), '樣板少了「' + v + '」');
   });
   assert.ok(json.includes('簽到完成'), '標題不符');
+});
+
+// ── 2026-08-11 版面：主標＝學員名單，完全不顯示家長 ────────────────────────
+check('主標是學員名單，且位置在 header', () => {
+  const msg = line.templates.checkinConfirmedToCoach({
+    studentNames: ['甲', '乙', '丙'], courseType: '1 對 3',
+    venueName: '範例場館', checkedInAt: '2026-08-06T14:00:00+08:00', source: 'parent',
+  })[0];
+  const header = JSON.stringify(msg.contents.header);
+  assert.ok(header.includes('甲、乙、丙'),
+    '學員名單不在 header —— 教練當下要一眼看到「誰到了」');
+  assert.ok(header.includes('簽到完成'), 'header 少了「簽到完成」');
+});
+
+check('輸出不得含任何家長姓名（Owner 決定不顯示家長）', () => {
+  // 就算呼叫端誤傳 parentName 也不能洩漏出去。這是把決定鎖住的反迴歸測試 ——
+  // 「順手把家長加回去」只要一行，而且看起來很合理。
+  const json = JSON.stringify(line.templates.checkinConfirmedToCoach({
+    parentName: '不該出現的家長', studentNames: ['甲'], courseType: '1 對 1',
+    venueName: '範例場館', checkedInAt: '2026-08-06T14:00:00+08:00', source: 'parent',
+  }));
+  assert.ok(!json.includes('不該出現的家長'), '傳入的 parentName 被印進樣板了');
+  assert.ok(!/家長/.test(json.replace(/家長自助簽到/g, '')),
+    '樣板出現「家長」欄位（來源文案「家長自助簽到」除外）');
+});
+
+check('icon 是絕對 https 網址，且不是佔位字串', () => {
+  const msg = line.templates.checkinConfirmedToCoach({
+    studentNames: ['甲'], checkedInAt: '2026-08-06T14:00:00+08:00', source: 'parent',
+  })[0];
+  const icons = JSON.stringify(msg).match(/"url":"([^"]+)"/g) || [];
+  assert.strictEqual(icons.length, 1, '預期剛好一個圖檔網址，實際 ' + icons.length + ' 個');
+  const url = icons[0].slice(7, -1);
+  assert.ok(/^https:\/\//.test(url), 'icon 不是絕對 https 網址：' + url);
+  assert.ok(!/your-domain|example\.com|localhost/.test(url), 'icon 仍是佔位網址：' + url);
+  assert.ok(/\/brand\//.test(url),
+    'icon 不在 /brand/ 底下 —— 放 liff/ 會被 build-frontends.sh 的 rm -rf 洗掉');
+  // dev 網域是短暫的，而圖是 LINE 用戶端讀訊息當下才抓 —— 寫進去幾天後就變破圖
+  assert.ok(!/pike\.replit\.dev|\.repl\.co/.test(url),
+    'icon 指向 dev 網域，那個 host 是短暫的：' + url);
+});
+
+check('圖檔與靜態路由都真的存在（缺任一個就是破圖）', () => {
+  const png = path.join(ROOT, 'server/public/brand/check.png');
+  assert.ok(fs.existsSync(png), '找不到 ' + rel(png));
+  const buf = fs.readFileSync(png);
+  assert.ok(buf.slice(1, 4).toString() === 'PNG', '不是有效的 PNG');
+  assert.ok(buf.length < 1024 * 1024, 'PNG 超過 LINE 的 1MB 上限');
+  const idx = stripComments(fs.readFileSync(path.join(ROOT, 'server/index.js'), 'utf8'));
+  assert.ok(/app\.use\('\/brand',\s*express\.static/.test(idx),
+    'server/index.js 沒有掛 /brand 靜態路由 —— 圖檔存在但外面拿不到');
+});
+
+check('altText 有上限，長名單不會爆掉通知列', () => {
+  const many = Array.from({ length: 12 }, (_, i) => '學員姓名' + i);
+  const msg = line.templates.checkinConfirmedToCoach({
+    studentNames: many, checkedInAt: '2026-08-06T14:00:00+08:00', source: 'parent',
+  })[0];
+  assert.ok(msg.altText.length <= 400, 'altText 長度 ' + msg.altText.length + '，超過 LINE 的 400 字上限');
+  assert.ok(/等 12 位已簽到/.test(msg.altText),
+    '多人時 altText 沒有收斂成「第一位 等 N 位」：' + msg.altText);
+  const one = line.templates.checkinConfirmedToCoach({
+    studentNames: ['甲'], checkedInAt: '2026-08-06T14:00:00+08:00', source: 'parent',
+  })[0];
+  assert.strictEqual(one.altText, '甲 已簽到', '單人時 altText 不該加人數');
 });
 
 // ── 一堂課一則 ──────────────────────────────────────────────────────────
@@ -228,14 +297,17 @@ check('手動扣課不得在 roster 迴圈內呼叫通知', () => {
     + '這支本來就傳 null（＝通知整堂），放在迴圈裡等於 N×N 次推播嘗試。');
 });
 
-check('樣板：多位學員時附上人數，教練才能核對是不是全班都到', () => {
-  const json = JSON.stringify(line.templates.checkinConfirmedToCoach({
-    parentName: '2 位家長', studentNames: ['甲', '乙', '丙'],
+check('樣板：整班學員併成一行，人數只出現在 altText', () => {
+  const msg = line.templates.checkinConfirmedToCoach({
+    studentNames: ['甲', '乙', '丙'],
     courseType: '1 對 3', venueName: '範例場館',
     checkedInAt: '2026-08-06T14:00:00+08:00', source: 'parent',
-  }));
-  assert.ok(json.includes('甲、乙、丙'), '學員沒有併成一行');
-  assert.ok(json.includes('3 位'), '沒有標出人數');
+  })[0];
+  assert.ok(JSON.stringify(msg.contents).includes('甲、乙、丙'), '學員沒有併成一行');
+  // 新版不再標「（3 位）」—— 名字全列在主標，教練自己數得出來。
+  // 人數只保留在 altText（通知列看不到完整名單，需要一個量的提示）。
+  assert.ok(!/\d+ 位/.test(JSON.stringify(msg.contents)), '卡片內容仍在標人數');
+  assert.ok(/等 3 位/.test(msg.altText), 'altText 沒有帶人數');
 });
 
 if (failures) {

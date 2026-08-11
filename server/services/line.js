@@ -748,70 +748,112 @@ function checkinConfirmed({ studentName, coachName, venueName, checkedInAt, liff
  * 理由是教練端 channel（dreams400）全場館共用、每月只有 3,000 則額度，
  * 而且通知一多就沒人看 —— 只留真正需要當下反應的那一種。
  *
- * ── 視覺 ──
- * 取自 DAOS logo：深海藍底 + 草地綠／青碧綠兩道折線 + 白。
- * 不用警示橘黃與紅色 —— 那是「出事了」的顏色，簽到成功不是出事。
- * 標題不放 emoji：跨平台字形不一致，而且與品牌的幾何感衝突。
+ * ── 版面：2026-08-11 Owner 給的 Flex 稿 ──
+ * 主標是**學員名單**，不是家長姓名。教練當下要知道的是「誰到了」；家長是誰
+ * 進系統查得到，而共班跨家庭時硬挑一位家長當代表反而是誤導。
+ * body 因此只剩 組別／簽到時間／場館 三列，完全不顯示家長。
+ *
+ * ── 色盤刻意與 BRAND 分岔 ──
+ * 這裡的深藍 #183260、綠 #8CB83E／#179BA2 與 BRAND 的 #15316a／#97bf36／#31aeab
+ * 是不同的值。家長端所有樣板都吃 BRAND，改它等於連家長端一起換版 —— 那是另一個
+ * 決定。**不要「順手統一」回 BRAND**，會把這支的版面改掉。
+ * 沒有警示橘黃與紅：那是「出事了」的顏色，簽到成功不是出事。
+ * 標題不放 emoji：跨平台字形不一致，與品牌的幾何感也衝突。
  */
-function checkinConfirmedToCoach({ parentName, studentNames, courseType, venueName, checkedInAt, source }) {
+const COACH_CHECKIN_COLORS = {
+  navy:      '#183260',   // 標題底
+  check:     '#4ADE80',   // 勾勾與「簽到完成」
+  barGreen:  '#8CB83E',   // 雙色線前段
+  barTeal:   '#179BA2',   // 雙色線後段
+  label:     '#8C8C8C',
+  value:     '#333333',
+  strong:    '#000000',
+  footnote:  '#AAAAAA',
+};
+
+/**
+ * 品牌圖示的公開網址。
+ *
+ * 預設值硬寫已發布網域，不吃 REPLIT_DOMAINS —— dev 工作區的值是短暫的
+ * *.pike.replit.dev，而圖是 LINE 用戶端**在讀訊息當下**才去抓的：從 dev 送出的
+ * 測試推播會在幾天後變破圖。發布網域是穩定的，硬寫比較誠實。
+ * 要覆寫就設 LINE_ASSET_BASE。
+ */
+const LINE_ASSET_BASE = String(
+  process.env.LINE_ASSET_BASE || 'https://daos-tutoring-courses.replit.app'
+).replace(/\/+$/, '');
+
+function checkinConfirmedToCoach({ studentNames, courseType, venueName, checkedInAt, source }) {
+  const C = COACH_CHECKIN_COLORS;
   const from = source === 'staff' ? '櫃台補登' : '家長自助簽到';
   // 共班一次寫入整班，所以學員是清單而不是單一個。
   const names = (Array.isArray(studentNames) ? studentNames : [studentNames])
     .map((x) => String(x || '').trim()).filter(Boolean);
-  // 教練要一眼看出「哪位家長、什麼課、誰要上」，所以主標是家長，其餘放在下方欄位。
-  const who = parentName || names[0] || '家長';
+  const title = names.join('、') || '學員';
 
-  // 標籤／值兩欄對齊。原本是「組別：1 對 2」這種字串串接，值的起點會隨標籤字數
-  // 浮動，四五行疊起來就參差不齊。
+  // altText 是鎖定畫面／通知列看到的那一行，上限 400 字。整班名單串起來可能很長，
+  // 所以人多時只留第一位加人數 —— 教練滑開就看得到完整名單。
+  const altText = names.length > 1
+    ? `${names[0]} 等 ${names.length} 位已簽到`
+    : `${title} 已簽到`;
+
+  // 標籤／值兩欄對齊。字串串接（「組別：1 對 2」）的值起點會隨標籤字數浮動，
+  // 三四行疊起來就參差不齊。
   const kv = (label, value, strong = false) => ({
-    type: 'box', layout: 'baseline', spacing: 'sm',
+    type: 'box', layout: 'horizontal', margin: 'md',
     contents: [
-      { type: 'text', text: label, size: 'sm', color: '#8a94a6', flex: 2 },
+      { type: 'text', text: label, color: C.label, flex: 3 },
       {
-        type: 'text', text: String(value), size: 'sm', flex: 5, wrap: true,
-        color: strong ? BRAND.primary : '#3a3a3a', weight: strong ? 'bold' : 'regular',
+        type: 'text', text: String(value), flex: 7, wrap: true,
+        color: strong ? C.strong : C.value, ...(strong ? { weight: 'bold' } : {}),
       },
     ],
   });
 
   return [{
-    type: 'flex', altText: `${who} 已簽到`,
+    type: 'flex', altText: altText.slice(0, 400),
     contents: {
       type: 'bubble',
+      // paddingAll:'0px' 讓雙色線與標題底齊邊；padding 由內層的深藍盒自己給。
       header: {
-        type: 'box', layout: 'vertical', backgroundColor: BRAND.primary,
-        paddingStart: '18px', paddingEnd: '18px', paddingTop: '16px', paddingBottom: '16px',
+        type: 'box', layout: 'vertical', paddingAll: '0px',
         contents: [
-          { type: 'text', text: '簽到完成', color: '#a9c8ff', size: 'xs', weight: 'bold' },
-          { type: 'text', text: who, color: BRAND.white, size: 'xl', weight: 'bold', wrap: true, margin: 'sm' },
+          {
+            type: 'box', layout: 'vertical', backgroundColor: C.navy, paddingAll: '16px',
+            contents: [
+              {
+                type: 'box', layout: 'baseline', spacing: 'xs',
+                contents: [
+                  { type: 'icon', url: `${LINE_ASSET_BASE}/brand/check.png`, size: 'xs' },
+                  { type: 'text', text: '簽到完成', size: 'xs', weight: 'bold', color: C.check },
+                ],
+              },
+              {
+                type: 'text', text: title, weight: 'bold', size: 'md', color: '#FFFFFF',
+                margin: 'sm', wrap: true, lineSpacing: '3px',
+              },
+            ],
+          },
+          // 品牌雙色線，對應 logo 的兩道折線（綠在前、青在後）。
+          // 內部用 filler 而不是空白字元 —— xxs 文字約 11px，塞進 height:'4px'
+          // 的盒子會把它撐高；filler 是官方做法。
+          {
+            type: 'box', layout: 'horizontal', height: '4px',
+            contents: [
+              { type: 'box', layout: 'vertical', flex: 4, backgroundColor: C.barGreen, contents: [{ type: 'filler' }] },
+              { type: 'box', layout: 'vertical', flex: 6, backgroundColor: C.barTeal, contents: [{ type: 'filler' }] },
+            ],
+          },
         ],
       },
       body: {
-        type: 'box', layout: 'vertical', paddingAll: '0px', spacing: 'none',
+        type: 'box', layout: 'vertical',
         contents: [
-          // 品牌雙色線，對應 logo 的兩道折線（草地綠在前、青碧綠在後）。
-          {
-            type: 'box', layout: 'horizontal', height: '5px', spacing: 'none',
-            contents: [
-              { type: 'box', layout: 'vertical', flex: 2, backgroundColor: BRAND.green, contents: [{ type: 'filler' }] },
-              { type: 'box', layout: 'vertical', flex: 3, backgroundColor: BRAND.teal, contents: [{ type: 'filler' }] },
-            ],
-          },
-          {
-            type: 'box', layout: 'vertical', paddingAll: '18px', spacing: 'md',
-            contents: [
-              ...(courseType ? [kv('組別', courseType, true)] : []),
-              // 沒有家長姓名時 who 已經退回學員名，這裡就不再重複一次。
-              // 學員清單。人數多時附上數量 —— 教練要核對「是不是全班都到了」。
-              ...(names.length && !(names.length === 1 && names[0] === who)
-                ? [kv(names.length > 1 ? `學員（${names.length} 位）` : '學員', names.join('、'))]
-                : []),
-              kv('簽到時間', twTime(checkedInAt)),
-              ...(venueName ? [kv('場館', venueName)] : []),
-              { type: 'separator', margin: 'lg', color: '#eceff3' },
-              { type: 'text', text: from, size: 'xs', color: '#9aa3b0', margin: 'md' },
-            ],
-          },
+          ...(courseType ? [kv('組別', courseType, true)] : []),
+          kv('簽到時間', twTime(checkedInAt)),
+          ...(venueName ? [kv('場館', venueName)] : []),
+          { type: 'separator', margin: 'lg' },
+          { type: 'text', text: from, size: 'xs', color: C.footnote, margin: 'md' },
         ],
       },
     },

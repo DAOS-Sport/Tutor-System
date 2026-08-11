@@ -400,7 +400,7 @@ function RecordCard({ r, e, busy, onCheckin, onOpen }) {
             </div>
           )}
           {clickable && (
-            <div className="mt-2 text-xs font-medium text-brand-teal">📝 教練已上傳上課紀錄，點擊查看 ›</div>
+            <div className="mt-2 text-xs font-medium text-brand-teal">📝 教練已上傳上課記錄，點擊查看 ›</div>
           )}
         </div>
         <div className="shrink-0">{btn}</div>

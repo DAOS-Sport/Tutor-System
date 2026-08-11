@@ -109,7 +109,9 @@ await check('狀態欄：1 對 1 → 一對一', () => {
 await check('多筆訂單：出現明細表與費用合計，不硬湊成單一教練/項目', () => {
   const orders = [ORDER, { ...ORDER, id: 'E2', students: ['王小美'], course_type: 1, coach: '林教練', final_price: 6000 }];
   const { html, text } = templates.reconcileSuccess({ ...BASE, orders, totalAmount: 9375 });
-  assert.ok(html.includes('報名筆數'), '多筆應顯示報名筆數');
+  // Owner 2026-08-11 把這一格從「報名筆數 N 筆」改成「報名期數 N 期」——
+  // 數列會把同一筆訂單的兄弟姊妹算成兩筆。
+  assert.ok(html.includes('報名期數'), '多筆應顯示報名期數');
   assert.ok(html.includes('NT$ 9,375'), '應顯示費用合計');
   assert.ok(html.includes('王小美') && html.includes('林教練'), '明細表應列出每一筆');
   assert.ok(text.includes('王小美'), '純文字版也要有明細');
@@ -258,6 +260,73 @@ await check('mailer：設定不完整（只有 host）仍算未設定，不會�
   const r = await mailer.sendMail({ to: 'a@b.com', subject: 'x', html: 'x' });
   assert.strictEqual(r.status, 'dry_run', '未設定完整時應 dry-run，不該去連一個不存在的 SMTP');
 }));
+
+// ── Owner 2026-08-11 指定的四項文案／欄位修改 ──────────────────────────────
+// 這封信是家長對「我報了什麼」的唯一書面依據，寫錯就是對外講錯話，
+// 所以四項都各鎖一條，而且 HTML 與純文字兩版一起驗（只改一邊過去發生過）。
+const ORDERS_2 = [
+  { id: 'a', students: ['陳依凱'], course_type: 2, coach: '林芷瑩', final_price: 3375,
+    period_number: 1, period_count: 1, submitted_at: '2026-08-10T07:30:00Z' },
+  { id: 'b', students: ['陳依萍'], course_type: 2, coach: '林芷瑩', final_price: 3375,
+    period_number: 1, period_count: 1, submitted_at: '2026-08-10T07:30:00Z' },
+];
+const build2 = () => templates.reconcileSuccess({
+  parentName: '陳依凱', venueName: '三重商工', orders: ORDERS_2,
+  invoiceNumber: 'DL02996195', totalAmount: 6750,
+});
+
+await check('內文不再說「款項已完成對帳」（HTML＋純文字）', () => {
+  const { html, text } = build2();
+  for (const [name, s] of [['html', html], ['text', text]]) {
+    assert.ok(/您的報名已完成，課程已為您開通。以下為本次報名資訊：/.test(s), name + ' 沒有新文案');
+    assert.ok(!/款項已完成對帳/.test(s), name + ' 仍有舊文案');
+  }
+});
+
+await check('館別用全名（主旨維持短名，避免手機列表截斷）', () => {
+  const { html, text, subject } = build2();
+  assert.ok(/夢想體育學院-三重商工游泳池/.test(html), 'HTML 館別不是全名');
+  assert.ok(/夢想體育學院-三重商工游泳池/.test(text), '純文字館別不是全名');
+  assert.ok(!/夢想體育學院-.*游泳池/.test(subject),
+    '主旨也被改成全名了 —— 主旨變長會在手機信件列表被截斷，發票號碼就看不到');
+  const nameless = templates.reconcileSuccess({ orders: ORDERS_2, venueName: null });
+  assert.ok(!/undefined|null/.test(nameless.html), '缺館別時組出了 undefined/null');
+});
+
+await check('報名日期含時分（同日多筆才分得出先後）', () => {
+  const { html, text } = build2();
+  assert.ok(/2026\/08\/10 15:30/.test(html), 'HTML 日期沒有時分（或時區算錯）');
+  assert.ok(/2026\/08\/10 15:30/.test(text), '純文字日期沒有時分');
+});
+
+await check('「報名筆數 N 筆」改成「報名期數 N 期」，且值是相異期次數', () => {
+  const { html, text } = build2();
+  for (const [name, s] of [['html', html], ['text', text]]) {
+    assert.ok(/報名期數/.test(s), name + ' 沒有改成「報名期數」');
+    assert.ok(!/報名筆數/.test(s), name + ' 仍有「報名筆數」');
+  }
+  // 兩個小孩、都是第 1 期 → 1 期（不是 2 筆）。這正是 Owner 抓到的那封信。
+  assert.ok(/1 期（明細見下表）/.test(html),
+    '兩列同期卻沒算成 1 期 —— 那會與下方明細表的期數欄對不起來');
+  const twoPeriods = templates.reconcileSuccess({
+    venueName: '三重商工', invoiceNumber: 'X',
+    orders: [{ ...ORDERS_2[0], period_number: 1 }, { ...ORDERS_2[1], period_number: 2 }],
+  });
+  assert.ok(/2 期（明細見下表）/.test(twoPeriods.html), '跨兩期沒算成 2 期');
+  const dirty = templates.reconcileSuccess({
+    venueName: '三重商工', invoiceNumber: 'X',
+    orders: ORDERS_2.map((o) => ({ ...o, period_number: null })),
+  });
+  assert.ok(!/0 期/.test(dirty.html), '期次全為 NULL 時顯示了「0 期」');
+});
+
+await check('明細表仍列出每一位學員（併期不等於併人）', () => {
+  const { html, text } = build2();
+  for (const [name, s] of [['html', html], ['text', text]]) {
+    assert.ok(/陳依凱/.test(s) && /陳依萍/.test(s),
+      name + ' 少了學員 —— 家長要看到兩個小孩都在，期數併掉的是期不是人');
+  }
+});
 
 if (failures) {
   console.error('\nreconcile_email_test: ' + failures + ' failed');

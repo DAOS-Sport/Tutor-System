@@ -143,7 +143,7 @@ export default function SessionRecordFormPage() {
   async function copyPrev() {
     try {
       const prev = await learnApi.copyPrev(sessionId);
-      if (!prev) { toast.info('找不到前一堂的紀錄'); return; }
+      if (!prev) { toast.info('找不到前一堂的記錄'); return; }
       if (mode === 'individual') {
         setPerStudent((p) => ({
           ...p,
@@ -174,7 +174,7 @@ export default function SessionRecordFormPage() {
     setForm((f) => ({ ...f, media: f.media.filter((_, idx) => idx !== i) }));
   }
 
-  // 個別模式：把各學員內容合併成單一紀錄（以【學員名】分段）
+  // 個別模式：把各學員內容合併成單一記錄（以【學員名】分段）
   function composeFromStudents() {
     const out = { summary: '', highlights: '', improvements: '', homework: '', notes: '' };
     for (const k of Object.keys(out)) {

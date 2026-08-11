@@ -8,7 +8,7 @@ import {
 } from '../../utils/format';
 
 /**
- * 教練端「學生報名狀態」列 —— 今日頁（預覽 5 筆）與訂單紀錄頁（全部）共用。
+ * 教練端「學生報名狀態」列 —— 今日頁（預覽 5 筆）與訂單記錄頁（全部）共用。
  *
  * ── 為什麼狀態色只出現在左側色軌 ──
  * 舊版把同一組顏色同時塗在三個地方：上方統計 chip、卡內左側圓形 icon 底色、
@@ -135,7 +135,7 @@ function shortDateTaipei(input) {
 
 /**
  * 帳單的各項時間狀態。
- * detailed=false（今日頁預覽）給日期，true（訂單紀錄頁）給日期＋時分。
+ * detailed=false（今日頁預覽）給日期，true（訂單記錄頁）給日期＋時分。
  */
 function timeline(item, detailed) {
   const fmt = detailed ? fullDateTimeTaipei : shortDateTaipei;

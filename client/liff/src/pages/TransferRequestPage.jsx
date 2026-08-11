@@ -106,10 +106,10 @@ export default function TransferRequestPage() {
         </form>
       )}
 
-      <h3 className="mt-6 mb-2 text-sm font-bold text-brand-primary">我的申請紀錄</h3>
+      <h3 className="mt-6 mb-2 text-sm font-bold text-brand-primary">我的申請記錄</h3>
       {mine.length === 0 ? (
         <div className="rounded-xl border border-dashed border-gray-200 bg-white p-6 text-center text-xs text-gray-500">
-          尚無轉讓紀錄
+          尚無轉讓記錄
         </div>
       ) : (
         <div className="space-y-2">

@@ -149,7 +149,9 @@ async function notifyCheckin(sessionId, studentIds, db = pool) {
         const res = await line.pushMessage(
           summary.coachUid,
           line.templates.checkinConfirmedToCoach({
-            parentName: summary.parentLabel,
+            // 不再傳 parentName —— 2026-08-11 起樣板主標是學員名單，完全不顯示家長。
+            // summary.parentLabel 仍保留（見 buildCoachSummary），日後要加回家長欄時
+            // 那段「不硬挑第一位家長」的判斷還用得到。
             studentNames: summary.studentNames,
             courseType: summary.courseType,
             venueName: summary.venueName,

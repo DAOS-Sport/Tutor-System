@@ -51,7 +51,7 @@ export default function CoachOrdersPage() {
       .catch(() => {
         if (!alive) return;
         setData({ counts: {}, items: [] });
-        toast.error('訂單紀錄載入失敗');
+        toast.error('訂單記錄載入失敗');
       });
     return () => { alive = false; };
   }, [coach?.id, toast]);
@@ -107,7 +107,7 @@ export default function CoachOrdersPage() {
         {data !== null && items.length === 0 && (
           <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-6 text-center text-sm text-gray-500">
             {(data.items || []).length === 0
-              ? '目前沒有你名下的報名紀錄。'
+              ? '目前沒有你名下的報名記錄。'
               : '沒有符合這個狀態的訂單。'}
           </div>
         )}

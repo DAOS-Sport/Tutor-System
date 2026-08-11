@@ -207,7 +207,7 @@ export default function MyCoursesPage() {
     // 不再重複顯示「上傳付款資料」，避免家長誤以為要再次上傳。團報付款走另一條流程，不套用。
     const paymentSubmitted = !cp.group_order_id && !!cp.payment_proof_url && !!cp.transfer_last_5;
     // U13 雙軌簽到：checkin_mode='self'（免預約自助簽到）的進行中課程，
-    // 「預約劃課／上課簽到」換成「今日上課簽到」＋「查看上課紀錄」；
+    // 「預約劃課／上課簽到」換成「今日上課簽到」＋「查看上課記錄」；
     // 預約制（booking，預設）維持原樣。
     const isSelfMode = cp.checkin_mode === 'self';
     const baseActions = cp.lifecycle === 'active'
@@ -223,7 +223,7 @@ export default function MyCoursesPage() {
           disabled: !!cp.self_checked_in_today,
           onClick: () => setSelfCheckinTarget(cp),
         },
-        { label: '查看上課紀錄', onClick: () => navigate(`/my-lessons?period=${cp.course_period_id}`) },
+        { label: '查看上課記錄', onClick: () => navigate(`/my-lessons?period=${cp.course_period_id}`) },
       ] : [
         // 聯繫教練：依需求改為停用（灰掉、不可點）。
         { label: '聯繫教練', primary: true, disabled: true, onClick: () => {} },
@@ -251,7 +251,7 @@ export default function MyCoursesPage() {
         }]),
       ] : []);
 
-    // 試上單追加「續報」按鈕：active 直接附加；completed（原本無任何按鈕）給續報＋查看上課紀錄。
+    // 試上單追加「續報」按鈕：active 直接附加；completed（原本無任何按鈕）給續報＋查看上課記錄。
     const isTrialOrder = cp.order_kind === 'trial';
     const actions = !isTrialOrder
       ? baseActions
@@ -259,7 +259,7 @@ export default function MyCoursesPage() {
         ? [
           { label: '續報一般課程', primary: true, onClick: () => renewFromTrial(cp) },
           ...(cp.course_period_id
-            ? [{ label: '查看上課紀錄', onClick: () => navigate(`/my-lessons?period=${cp.course_period_id}`) }]
+            ? [{ label: '查看上課記錄', onClick: () => navigate(`/my-lessons?period=${cp.course_period_id}`) }]
             : []),
         ]
         : cp.lifecycle === 'active'

@@ -99,7 +99,7 @@ export default function ReferralPage() {
         {coaches.length === 0 && <div className="text-xs text-gray-500">目前場館沒有可推薦的教練。</div>}
       </div>
 
-      <h3 className="mb-2 text-sm font-bold text-brand-primary">我的推薦紀錄</h3>
+      <h3 className="mb-2 text-sm font-bold text-brand-primary">我的推薦記錄</h3>
       <div className="space-y-2">
         {mine.map((r) => (
           <div key={r.id} className="rounded-xl border border-gray-200 bg-white p-3">
