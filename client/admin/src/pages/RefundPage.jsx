@@ -26,6 +26,7 @@ export default function RefundPage() {
   const [category, setCategory] = useState('');   // 申請原因（下拉，必填）
   const [detail, setDetail] = useState('');       // 詳述原因（必填）
   const [feePct, setFeePct] = useState('');       // 手續費率，以「百分比字串」持有（輸入框就是這個單位）
+  const [feeOpen, setFeeOpen] = useState(false);  // 手續費率的下拉是否展開
   const [busy, setBusy] = useState(false);
   const previewReqRef = useRef(0);
 
@@ -197,21 +198,59 @@ export default function RefundPage() {
               </li>
               <li className="flex justify-between"><span className="text-gray-600">已使用堂數</span><span>{preview.used} / {preview.total}</span></li>
               <li className="flex justify-between"><span className="text-gray-600">剩餘比例</span><span>{(preview.remainRatio * 100).toFixed(1)}%</span></li>
-              {/* 手續費率可逐筆調整。下拉是常用值，也能直接打任意數字。
-                  改完會重新跟後端要一次試算 —— 金額永遠由後端算，前端不自己乘。 */}
+              {/* 手續費率可逐筆調整：下拉選常用值，或直接打任意數字。
+                  改完會重新跟後端要一次試算 —— 金額永遠由後端算，前端不自己乘。
+
+                  ── 為什麼不用 <input type="number" list=""> ──
+                  那個組合在 Chrome 會同時長出「數字微調鈕」與「datalist 箭頭」，
+                  兩個控制項擠在同一格；而且 datalist 的箭頭只有 hover 才出現，
+                  平常看起來就是普通輸入框，沒人知道可以下拉。
+                  改成自己畫的 combobox：箭頭永遠看得到，且照樣能輸入。 */}
               <li className="flex items-center justify-between gap-3">
                 <span className="text-gray-600">手續費率</span>
-                <span className="flex items-center gap-1">
-                  <input
-                    type="number" min="0" max="100" step="0.5" inputMode="decimal"
-                    value={feePct}
-                    onChange={(e) => reprice(e.target.value)}
-                    list="fee-rate-presets"
-                    className={`w-24 rounded-lg border px-2 py-1 text-right font-mono ${
-                      feePctInvalid ? 'border-brand-error bg-brand-error-soft' : 'border-gray-300'
-                    }`}
-                  />
+                <span className="relative flex items-center gap-1">
+                  <span className={`flex items-stretch overflow-hidden rounded-lg border ${
+                    feePctInvalid ? 'border-brand-error bg-brand-error-soft' : 'border-gray-300'
+                  }`}>
+                    <input
+                      type="text" inputMode="decimal" aria-label="手續費率（百分比）"
+                      value={feePct}
+                      onChange={(e) => reprice(e.target.value)}
+                      onFocus={() => setFeeOpen(false)}
+                      className="w-16 bg-transparent px-2 py-1 text-right font-mono outline-none"
+                    />
+                    <button
+                      type="button"
+                      aria-label="選擇常用手續費率"
+                      aria-expanded={feeOpen}
+                      onClick={() => setFeeOpen((v) => !v)}
+                      className="border-l border-gray-300 px-2 text-gray-500 hover:bg-gray-50"
+                    >
+                      <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+                        <path d="M1 3l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.6"
+                              strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    </button>
+                  </span>
                   <span className="text-gray-600">%</span>
+                  {feeOpen && (
+                    <ul className="absolute right-6 top-full z-20 mt-1 w-24 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg">
+                      {REFUND_FEE_RATE_PRESETS.map((r) => {
+                        const pct = Math.round(r * 1000) / 10;
+                        return (
+                          <li key={r}>
+                            <button
+                              type="button"
+                              onClick={() => { setFeeOpen(false); reprice(String(pct)); }}
+                              className="block w-full px-3 py-1.5 text-right font-mono text-sm hover:bg-gray-100"
+                            >
+                              {pct}%
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
                 </span>
               </li>
               {preview.default_fee_rate !== undefined
@@ -223,12 +262,6 @@ export default function RefundPage() {
               )}
               <li className="flex justify-between border-t border-gray-200 pt-2 font-bold text-brand-error-strong"><span>應退款金額</span><span className="font-mono">{formatTWD(preview.refund_amount)}</span></li>
             </ul>
-            <datalist id="fee-rate-presets">
-              {REFUND_FEE_RATE_PRESETS.map((r) => (
-                <option key={r} value={Math.round(r * 1000) / 10} />
-              ))}
-            </datalist>
-
             <div>
               <label className="mb-1 block text-sm font-medium text-gray-700" htmlFor="refund-category">
                 <span className="text-brand-error">*</span> 申請原因
