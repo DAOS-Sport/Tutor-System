@@ -107,7 +107,8 @@ export default function LoginPage() {
             <div className="mb-1 font-bold text-gray-700">Mock 測試帳號（密碼=帳號）</div>
             <ul className="list-disc pl-5">
               <li><b>admin</b> — 系統管理員（看得到全部功能）</li>
-              <li><b>staff</b> — 行政櫃檯（板橋館，無退課/系統設定）</li>
+              {/* 退課已於 2026-08-11 開放櫃檯，這行原本寫「無退課」會讓櫃檯以為自己不該按 */}
+              <li><b>staff</b> — 行政櫃檯（板橋館，可退課；無系統設定）</li>
             </ul>
           </div>
         ) : (

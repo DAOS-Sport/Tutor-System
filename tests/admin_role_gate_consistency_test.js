@@ -129,6 +129,14 @@ check('退課處理三層都含 staff（含後端 API）', () => {
   assert.ok(sub, '掃描失效：找不到 RefundPage 的 PageHeader subtitle');
   assert.ok(!/主管權限/.test(sub[1]),
     'RefundPage 副標仍寫「主管權限」，與實際權限不符：' + sub[1]);
+
+  // 登入頁的角色說明也會被櫃檯看到。它原本寫「無退課」，開放後沒同步就會讓
+  // 櫃檯以為自己不該按那顆鈕 —— 權限開了但沒人敢用，等於沒開。
+  const login = read('client/admin/src/pages/LoginPage.jsx');
+  const staffLine = login.split('\n').find((l) => /<b>staff<\/b>/.test(l));
+  assert.ok(staffLine, '掃描失效：找不到 LoginPage 的 staff 角色說明');
+  assert.ok(!/無退課/.test(staffLine),
+    'LoginPage 的 staff 說明仍寫「無退課」，與實際權限不符：' + staffLine.trim());
 });
 
 if (failed) { console.error('admin_role_gate_consistency_test: ' + failed + ' failed'); process.exit(1); }
