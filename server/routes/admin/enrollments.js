@@ -19,6 +19,7 @@ const ragicWriteback = require('../../services/ragicWriteback');
 const promotions = require('../../services/promotions');
 const { resolveParentLineDisplayName } = require('../../services/parentLineProfile');
 const { logGroupOrderAudit } = require('../../services/groupOrderAudit');
+const { REFUND_REASON_CODES, refundReasonLabel, normalizeFeeRate } = require('../../services/refundReasons');
 const {
   createCheckoutSession,
   readCheckout,
@@ -1263,11 +1264,19 @@ router.post('/:id/reconcile', requireAdminAuth, requireAdminRole('admin', 'manag
   }
 });
 
-async function computeRefundPreview(id) {
+/**
+ * @param {string} id
+ * @param {number|null} feeRateOverride 0–1 的比率。給了就用它算，沒給就用全域設定。
+ *   Owner 2026-08-12 決定手續費率可由櫃檯逐筆調整（下拉預設值＋可自填）。
+ *   偏離全域設定時，退費端點會把「原定 X% → 實用 Y%」寫進 audit log。
+ */
+async function computeRefundPreview(id, feeRateOverride = null) {
   const enrollment = await readEnrollment(id);
   if (!enrollment) return null;
   const settings = await getSettings();
-  const fee_rate = settings.refund_fee_rate ?? 0.1;
+  const default_fee_rate = settings.refund_fee_rate ?? 0.1;
+  const override = normalizeFeeRate(feeRateOverride);
+  const fee_rate = override === null ? default_fee_rate : override;
 
   // U12 家庭共班退費＝「整班整期」處理（營運規則：不會有單一小孩中途退出）。
   // 此報名若屬共用 period（同批同期多筆兄弟訂單、period 掛 enrollment_batch_id），
@@ -1312,7 +1321,7 @@ async function computeRefundPreview(id) {
           refund_amount: Math.round(Number(row.final_price) * remainRatio * (1 - fee_rate)),
         }));
         return {
-          enrollment, total, used, remainRatio, fee_rate,
+          enrollment, total, used, remainRatio, fee_rate, default_fee_rate,
           refund_amount: sibling_refunds.reduce((sum, row) => sum + row.refund_amount, 0),
           family_shared: true,
           course_period_id: sp.rows[0].id,
@@ -1328,14 +1337,17 @@ async function computeRefundPreview(id) {
   const used = enrollment.used_sessions || 0;
   const remainRatio = Math.max(0, (total - used) / total);
   const refund_amount = Math.round(enrollment.final_price * remainRatio * (1 - fee_rate));
-  return { enrollment, total, used, remainRatio, fee_rate, refund_amount };
+  // default_fee_rate 一併回傳：前端要能顯示「原定 10%」，也才能判斷這次有沒有被調過。
+  return { enrollment, total, used, remainRatio, fee_rate, default_fee_rate, refund_amount };
 }
 
 // 退費試算與執行都開放 staff（櫃檯）。兩支必須一起開 —— 只開 refund 不開 preview 的話
 // 櫃檯打得開頁面但看不到試算金額，等於功能沒開。
 router.get('/:id/refund-preview', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
   try {
-    const preview = await computeRefundPreview(req.params.id);
+    // ?fee_rate= 讓櫃檯調整手續費率後即時重算金額。不合法的值（非數字、負數、>1）
+    // 由 normalizeFeeRate 回 null，等同沒給 → 退回全域設定，不會算出負的退款。
+    const preview = await computeRefundPreview(req.params.id, req.query.fee_rate);
     if (!preview) return res.status(404).json({ error: 'enrollment not found' });
     if (!isVenueInScope(req, preview.enrollment.venue_id)) {
       return res.status(403).json({ error: '此報名不在您的場館範圍內' });
@@ -1352,14 +1364,46 @@ router.post('/:id/refund', requireAdminAuth, requireAdminRole('admin', 'manager'
   try {
     await client.query('BEGIN');
     const { id } = req.params;
-    const reason = (req.body && req.body.reason || '').trim();
-    if (!reason) {
+    const body = req.body || {};
+
+    // ── 申請原因：分類（必填、白名單）＋ 詳述（必填）──
+    // Owner 2026-08-12 對齊 Ragic 表單。分類讓退費原因可彙總，詳述保留現場細節。
+    // 舊呼叫端只送 reason 一個字串，仍然接受（否則部署期間新舊前端交錯會全部退不了）。
+    const category = String(body.reason_category || '').trim();
+    const detail = String(body.reason_detail || '').trim();
+    const legacyReason = String(body.reason || '').trim();
+
+    if (category) {
+      if (!REFUND_REASON_CODES.includes(category)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: '申請原因不在允許清單內' });
+      }
+      if (!detail) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: '詳述原因必填' });
+      }
+    } else if (!legacyReason) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ error: '退課理由必填' });
+      return res.status(400).json({ error: '請選擇申請原因並填寫詳述' });
     }
+
+    // 寫進 audit log 的那一行：分類與詳述併成人看得懂的一句，
+    // 之後要拆回來統計時 label 前綴是穩定的。
+    const reason = category ? `${refundReasonLabel(category)}｜${detail}` : legacyReason;
+
     const by = (req.body && req.body.by) || req.adminUser?.name || req.adminUser?.username || 'unknown';
 
-    const preview = await computeRefundPreview(id);
+    // ── 手續費率覆寫 ──
+    // 櫃檯可逐筆調整（Owner 決定：下拉預設值＋可自填）。這會直接改變退款金額，
+    // 所以偏離全域設定時一定要在 audit log 留下痕跡與操作者。
+    const feeOverride = normalizeFeeRate(body.fee_rate);
+    const preview = await computeRefundPreview(id, feeOverride);
+    // 手續費率被調過時，audit log 的 action 要看得出「原定多少、實際用多少」。
+    // 只比對 preview 回來的兩個值，不信任前端送的數字。
+    const pct = (r) => `${Math.round(Number(r) * 1000) / 10}%`;
+    const feeNote = preview && preview.fee_rate !== preview.default_fee_rate
+      ? `，手續費率 ${pct(preview.default_fee_rate)} → ${pct(preview.fee_rate)}（由 ${by} 調整）`
+      : '';
     if (!preview) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'enrollment not found' });
@@ -1404,7 +1448,7 @@ router.post('/:id/refund', requireAdminAuth, requireAdminRole('admin', 'manager'
           `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user, reason, refund_amount)
            VALUES ($1, $2, $3, $4, $5)`,
           [sib.id,
-           `退課（家庭共班整期退費，理由：${reason}，本筆退款 NT$ ${sib.refund_amount.toLocaleString()}，整期合計 NT$ ${appliedTotal.toLocaleString()}）`,
+           `退課（家庭共班整期退費，理由：${reason}，本筆退款 NT$ ${sib.refund_amount.toLocaleString()}，整期合計 NT$ ${appliedTotal.toLocaleString()}${feeNote}）`,
            by, reason, sib.refund_amount]
         );
       }
@@ -1450,7 +1494,7 @@ router.post('/:id/refund', requireAdminAuth, requireAdminRole('admin', 'manager'
     await client.query(
       `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user, reason, refund_amount)
        VALUES ($1, $2, $3, $4, $5)`,
-      [id, `退課（理由：${reason}，退款 NT$ ${preview.refund_amount.toLocaleString()}）`, by, reason, preview.refund_amount]
+      [id, `退課（理由：${reason}，退款 NT$ ${preview.refund_amount.toLocaleString()}${feeNote}）`, by, reason, preview.refund_amount]
     );
     await client.query('COMMIT');
 

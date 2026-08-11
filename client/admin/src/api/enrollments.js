@@ -38,11 +38,22 @@ export const enrollmentsApi = {
       () => mockDb.reconcile(id, by),
     ),
 
-  refundPreview: (id) =>
-    callApi(`/enrollments/${id}/refund-preview`, {}, () => mockDb.refundPreview(id)),
+  // feeRate（0–1）給了就用它重算金額；不給則用全域設定的手續費率。
+  refundPreview: (id, feeRate) =>
+    callApi(
+      `/enrollments/${id}/refund-preview`,
+      { params: feeRate === null || feeRate === undefined ? undefined : { fee_rate: feeRate } },
+      () => mockDb.refundPreview(id),
+    ),
 
-  refund: (id, reason, by) =>
-    callApi(`/enrollments/${id}/refund`, { method: 'post', data: { reason, by } }, () => mockDb.refundEnrollment(id, reason, by)),
+  // payload：{ reason_category, reason_detail, fee_rate, by }
+  // 後端仍接受舊的單一 reason 字串（部署期間新舊前端交錯時不會全部退不了）。
+  refund: (id, payload) =>
+    callApi(
+      `/enrollments/${id}/refund`,
+      { method: 'post', data: payload },
+      () => mockDb.refundEnrollment(id, payload.reason_detail || payload.reason, payload.by),
+    ),
 
   cancel: (id, { reason, by } = {}) =>
     callApi(`/enrollments/${id}/cancel`, { method: 'post', data: { reason, by } }, () => mockDb.cancelEnrollment(id, reason, by)),

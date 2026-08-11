@@ -25,7 +25,7 @@ const SECTIONS = [
           { label: '所有報名 (F-R02)', url: `${ADM}/enrollments`, note: '可篩狀態、場館、關鍵字', roles: '全部' },
           { label: '今日課程 (F-R01)', url: `${ADM}/sessions`, note: '今天課表依時段排序', roles: '全部' },
           { label: '簽到驗證 / 點名 (F-R03)', url: `${ADM}/checkin`, note: '輸入手機+期次確認簽到', roles: '全部' },
-          { label: '退課 (F-R04)', url: `${ADM}/refund`, note: '退費試算 → 確認 → 推播', roles: 'admin / manager / staff' },
+          { label: '退課 (F-R04)', url: `${ADM}/refund`, note: '選申請原因 → 填詳述 → 試算 → 確認（不發推播）', roles: 'admin / manager / staff' },
           { label: '(F-M05) 扣課復活', url: `${ADM}/revive`, note: '已取消時段一鍵復活', roles: 'admin / manager / staff' },
           { label: '課程轉讓審核', url: `${ADM}/transfers`, note: '審核家長提交的轉讓申請', roles: 'admin / manager' },
           { label: '優惠活動 (F-M07/F-A05)', url: `${ADM}/promotions`, note: '建立 / 上架 / 停用 / 複製優惠', roles: 'admin / manager' },

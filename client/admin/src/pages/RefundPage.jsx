@@ -12,6 +12,9 @@ import {
   formatTWD, courseTypeLabel,
   paymentStatusLabel, paymentStatusTone, formatTWDateTime,
 } from '../utils/format';
+// 與後端 server/services/refundReasons.js 是同一份清單的兩個鏡射，
+// tests/refund_reason_parity_test.js 會比對兩邊；改一邊沒改另一邊會紅。
+import { REFUND_REASONS, REFUND_FEE_RATE_PRESETS } from '../../../shared/refundReasons';
 
 export default function RefundPage() {
   const toast = useToast();
@@ -20,7 +23,9 @@ export default function RefundPage() {
   const [venues, setVenues] = useState([]);
   const [target, setTarget] = useState(null);
   const [preview, setPreview] = useState(null);
-  const [reason, setReason] = useState('');
+  const [category, setCategory] = useState('');   // 申請原因（下拉，必填）
+  const [detail, setDetail] = useState('');       // 詳述原因（必填）
+  const [feePct, setFeePct] = useState('');       // 手續費率，以「百分比字串」持有（輸入框就是這個單位）
   const [busy, setBusy] = useState(false);
   const previewReqRef = useRef(0);
 
@@ -43,7 +48,9 @@ export default function RefundPage() {
 
   async function openRefund(row) {
     setTarget(row);
-    setReason('');
+    setCategory('');
+    setDetail('');
+    setFeePct('');
     setPreview(null);
     const reqId = ++previewReqRef.current;
     try {
@@ -51,6 +58,8 @@ export default function RefundPage() {
       // 若使用者在 fetch 中又開了另一列、或關閉 modal，丟掉這次回應
       if (reqId !== previewReqRef.current) return;
       setPreview(p);
+      // 手續費率預帶全域設定值，讓櫃檯看得到「原本是多少」再決定要不要改
+      setFeePct(String(Math.round((p.fee_rate ?? 0) * 1000) / 10));
     } catch (e) {
       if (reqId !== previewReqRef.current) return;
       // 試算失敗：關閉 modal 並提示，避免卡在「試算中」的破損彈窗
@@ -59,6 +68,29 @@ export default function RefundPage() {
     }
   }
 
+  /**
+   * 改手續費率就重新跟後端要一次試算。
+   * **不在前端自己乘** —— 金額只能有一個計算來源，否則畫面顯示的和實際入帳的會分岔
+   * （這正是 shared/coursePricing 那段註解在講的同一類事故）。
+   */
+  async function reprice(nextPct) {
+    setFeePct(nextPct);
+    if (!target) return;
+    const pct = Number(nextPct);
+    if (nextPct === '' || !Number.isFinite(pct) || pct < 0 || pct > 100) return;
+    const reqId = ++previewReqRef.current;
+    try {
+      const p = await enrollmentsApi.refundPreview(target.id, Math.round(pct * 100) / 10000);
+      if (reqId !== previewReqRef.current) return;
+      setPreview(p);
+    } catch {
+      /* 重算失敗就維持上一次的試算結果，不要把已顯示的金額清掉 */
+    }
+  }
+
+  const feePctInvalid =
+    feePct !== '' && (!Number.isFinite(Number(feePct)) || Number(feePct) < 0 || Number(feePct) > 100);
+
   function closeRefund() {
     previewReqRef.current += 1; // 讓尚未回來的 preview 失效
     setTarget(null);
@@ -66,13 +98,27 @@ export default function RefundPage() {
   }
 
   async function doRefund() {
-    if (!reason.trim()) {
-      toast.warning('請填寫退課理由');
+    if (!category) {
+      toast.warning('請選擇申請原因');
+      return;
+    }
+    if (!detail.trim()) {
+      toast.warning('請填寫詳述原因');
+      return;
+    }
+    if (feePctInvalid) {
+      toast.warning('手續費率請填 0 到 100 之間的數字');
       return;
     }
     setBusy(true);
     try {
-      const res = await enrollmentsApi.refund(target.id, reason.trim(), user.name);
+      const res = await enrollmentsApi.refund(target.id, {
+        reason_category: category,
+        reason_detail: detail.trim(),
+        // 送出的是 0–1 的比率；後端會再夾限一次，前端擋的是手滑不是安全邊界
+        fee_rate: feePct === '' ? undefined : Math.round(Number(feePct) * 100) / 10000,
+        by: user.name,
+      });
       toast.success(res.family_shared
         ? `已完成整期退課（${(res.refunded_enrollment_ids || []).length} 筆子訂單一併退費），退款合計 ${formatTWD(res.refund_amount)}`
         : `已完成退課，退款 ${formatTWD(res.refund_amount)}`);
@@ -151,17 +197,66 @@ export default function RefundPage() {
               </li>
               <li className="flex justify-between"><span className="text-gray-600">已使用堂數</span><span>{preview.used} / {preview.total}</span></li>
               <li className="flex justify-between"><span className="text-gray-600">剩餘比例</span><span>{(preview.remainRatio * 100).toFixed(1)}%</span></li>
-              <li className="flex justify-between"><span className="text-gray-600">手續費率</span><span>{(preview.fee_rate * 100).toFixed(0)}%</span></li>
+              {/* 手續費率可逐筆調整。下拉是常用值，也能直接打任意數字。
+                  改完會重新跟後端要一次試算 —— 金額永遠由後端算，前端不自己乘。 */}
+              <li className="flex items-center justify-between gap-3">
+                <span className="text-gray-600">手續費率</span>
+                <span className="flex items-center gap-1">
+                  <input
+                    type="number" min="0" max="100" step="0.5" inputMode="decimal"
+                    value={feePct}
+                    onChange={(e) => reprice(e.target.value)}
+                    list="fee-rate-presets"
+                    className={`w-24 rounded-lg border px-2 py-1 text-right font-mono ${
+                      feePctInvalid ? 'border-brand-error bg-brand-error-soft' : 'border-gray-300'
+                    }`}
+                  />
+                  <span className="text-gray-600">%</span>
+                </span>
+              </li>
+              {preview.default_fee_rate !== undefined
+                && preview.fee_rate !== preview.default_fee_rate && (
+                <li className="text-xs text-amber-700">
+                  已調整（原定 {(preview.default_fee_rate * 100).toFixed(1)}%）——
+                  這筆調整會連同你的帳號記入 audit log
+                </li>
+              )}
               <li className="flex justify-between border-t border-gray-200 pt-2 font-bold text-brand-error-strong"><span>應退款金額</span><span className="font-mono">{formatTWD(preview.refund_amount)}</span></li>
             </ul>
+            <datalist id="fee-rate-presets">
+              {REFUND_FEE_RATE_PRESETS.map((r) => (
+                <option key={r} value={Math.round(r * 1000) / 10} />
+              ))}
+            </datalist>
+
             <div>
-              <label className="mb-1 block text-sm font-medium text-gray-700">退課理由（必填，會記入 audit log）</label>
-              <textarea
-                rows={3}
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
+              <label className="mb-1 block text-sm font-medium text-gray-700" htmlFor="refund-category">
+                <span className="text-brand-error">*</span> 申請原因
+              </label>
+              <select
+                id="refund-category"
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
                 className="w-full rounded-lg border border-gray-300 px-3 py-2"
-                placeholder="例：家長因搬家無法繼續上課"
+              >
+                <option value="">請選擇</option>
+                {REFUND_REASONS.map((r) => (
+                  <option key={r.code} value={r.code}>{r.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-700" htmlFor="refund-detail">
+                <span className="text-brand-error">*</span> 詳述原因
+                <span className="ml-1 font-normal text-gray-500">（會記入 audit log）</span>
+              </label>
+              <textarea
+                id="refund-detail"
+                rows={3}
+                value={detail}
+                onChange={(e) => setDetail(e.target.value)}
+                className="w-full rounded-lg border border-gray-300 px-3 py-2"
+                placeholder="例：家長 8/20 搬遷至台中，已與教練確認不再續期"
               />
             </div>
           </div>
