@@ -49,6 +49,7 @@ const UNIT = [
   'tests/object_storage_existence_test.js',
   'tests/piiMask_test.js',
   'tests/preflight_release_20260712_test.js',
+  'tests/public_api_exposure_test.js',
   'tests/public_coach_field_exposure_test.js',
   'tests/refund_reason_parity_test.js',
   'tests/session_note_visibility_test.js',

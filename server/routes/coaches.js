@@ -1,6 +1,6 @@
 /**
  * coaches API（教練主檔）
- * - GET  /api/coaches                            列表（公開：家長端選擇教練）
+ * - GET  /api/coaches                            列表（**須登入**：家長或教練 token）
  * - GET  /api/coaches/by-phone?phone=09xxxx      LIFF 教練端登入：回傳 coach 資訊 + JWT token
  * - GET  /api/coaches/:id                        單筆細節（公開：家長端選擇教練看 bio）
  * - PUT  /api/coaches/:id/bio                    教練自編 bio（須登入且本人）
@@ -15,6 +15,9 @@ const multer = require('multer');
 const router = express.Router();
 const { pool } = require('../models/db');
 const { signCoachToken, requireCoach, requireCoachOwner, byPhoneRateLimit, byLineUidRateLimit, logFailedLogin } = require('../middlewares/coachAuth');
+const jwt = require('jsonwebtoken');
+const { getSecret: getJwtSecret } = require('../middlewares/adminAuth');
+const guaiGuai = require('../middlewares/guaiGuai');
 const { verifyLineIdToken, isLineVerificationRequired } = require('../services/lineAuth');
 const { saveBuffer } = require('../services/objectStorage');
 const {
@@ -139,7 +142,38 @@ async function loadCoach(id) {
   return publicCoach(r.rows[0]) || null;
 }
 
-router.get('/', async (req, res) => {
+/**
+ * 教練清單需要登入（家長或教練皆可）。
+ *
+ * 為什麼從公開改成需登入：這支會一次吐出全部在職教練的姓名、任職場館、
+ * 資深標記、價格倍率與介紹審核狀態 —— 正式站實測 165 筆。任何人貼上網址
+ * 就能把全公司的教練名冊連同計價資訊抓走，而且可以定時抓來看人員異動。
+ * 早先那次修補只擋掉了電話與 Email（白名單），沒有處理「可以整包枚舉」這件事。
+ *
+ * 為什麼關掉不會弄壞前台：實際呼叫這支的兩個頁面（CoachListPage、ReferralPage）
+ * 都在 <RequireAuth> + <RequireParent> 底下，本來就登入後才進得去，
+ * 前端呼叫時已經帶著 token。未登入時會用到的是 GET /coaches/:id
+ * （推薦連結流程），那支維持開放 —— 它要 UUID 才查得到，不能枚舉。
+ */
+function requireParentOrCoach(req, res, next) {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return guaiGuai.deny(req, res, '教練清單需要登入後才能查看。');
+  try {
+    const payload = jwt.verify(token, getJwtSecret());
+    // 只認這兩種身分。admin token 走的是 /api/admin 底下那一整套（有場館範圍與稽核），
+    // 不從這裡開後門。
+    // 註：這行刻意不寫成萬用字元路徑 —— 行註解裡出現區塊註解的開頭符號，
+    // 會讓所有用正則剝註解的掃描工具從這裡吃掉後面一大段（本測試已踩過一次）。
+    if (payload.type !== 'parent' && payload.type !== 'coach') {
+      return guaiGuai.deny(req, res, '這個帳號沒有查看教練清單的權限。');
+    }
+    return next();
+  } catch {
+    return guaiGuai.deny(req, res, '登入已逾時，請重新登入。');
+  }
+}
+
+router.get('/', requireParentOrCoach, async (req, res) => {
   try {
     const venueIds = await resolveVenueFilterCandidates(req.query.venueId);
     const params = [];

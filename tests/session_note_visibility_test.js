@@ -31,8 +31,12 @@ function check(name, fn) {
   catch (e) { failed += 1; console.error('  FAIL ' + name + '\n       ' + e.message); }
 }
 
+// 順序很重要：先剝「行註解」再剝「區塊註解」。
+// 反過來的話，一句 // 註解裡只要出現區塊註解的開頭符號（例如寫路徑時的萬用字元），
+// 區塊規則就會從那裡一路吃到下一個結束符號，把中間的程式碼全部當成註解刪掉 ——
+// 而「不得包含 X」那類斷言就會因為 X 被吃掉而假性通過。
 function stripComments(src) {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+  return src.replace(/(^|[^:])\/\/[^\n]*/g, '$1').replace(/\/\*[\s\S]*?\*\//g, '');
 }
 const CODE = stripComments(SESSIONS_SRC);
 
