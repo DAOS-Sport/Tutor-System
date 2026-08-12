@@ -41,7 +41,7 @@ const UNIT = [
   'tests/checkin_label_test.js',
   'tests/force_trigger_outbox_cli_test.js',
   'tests/group_payment_proof_test.js',
-  'tests/line_missing_token_log_level_test.js',
+  'tests/line_single_push_channel_test.js',
   'tests/line_parent_bind_compat_test.js',
   'tests/object_storage_db_fallback_test.js',
   'tests/object_storage_driver_test.js',

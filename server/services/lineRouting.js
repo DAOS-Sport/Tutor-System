@@ -1,9 +1,16 @@
 /**
  * LINE 推播路由 —— 決定「這個人該用哪個官方帳號推」。
  *
- * ── 目標形狀 ──
- *   教練 → 固定走內部帳號 dreams400（@010aiefh）
- *   家長 → 走自己選的場館的官方帳號（primary_venue_id）；該館推不到就退回 dreams400
+ * ── 目前形狀：只有一個管道 ──
+ *   教練與家長都走內部帳號 dreams400（@010aiefh）。
+ *
+ * 2026-08-12 移除「家長走自己場館的官方帳號」那條路，連同各館開關
+ * （admin_settings 的 push_venue_channel_*）與各館 token。理由是它從來沒有
+ * 能用過，卻讓 25 個場館裡的 21 個每次被查到就噴一行 ERROR，把真問題淹掉。
+ * 要復活的話，前提是先解決下面那段 provider 障礙，不是把開關加回來。
+ *
+ * ⚠️ 這裡講的是**推播**（我方 → 使用者，需要 uid）。信件裡「開啟該館官方帳號」
+ * 的深連結是另一回事，不受 provider 障礙影響，見本檔下半的 venueOaDeepLink。
  *
  * ── 為什麼「推不到」是常態，而不是例外 ──
  * LINE 的 userId 是「每個 provider 各自獨立」的。本系統的 LIFF 掛在 Login channel
@@ -14,19 +21,13 @@
  * 屬於另一個 provider —— 它們是舊系統 dream-dream 的資產。同一組 uid 對它們
  * 實測 0/60，加好友也沒用，因為編號天生不同。
  *
- * 所以各館預設是「關」的：開了只會每則都 404。等該館的 provider 問題解決
- * （例如在 oshuoshuo 底下開該館的 Messaging channel，或家長改從該館 channel 登入），
- * 再用下面的開關逐館打開。用開關而不是「每次試試看」，是因為後者會讓每一則
- * 推播都先浪費一次必定失敗的 API 呼叫。
- *
- * ── 開關（admin_settings，value 1＝開）──
- *   push_venue_channel_<venue_id>   例：push_venue_channel_B
- * 未設定＝關＝該館家長退回 dreams400。
+ * 要讓各館能推，得先在 oshuoshuo 底下開該館的 Messaging channel，或讓家長改從
+ * 該館 channel 登入 —— 兩者都會動到現存所有 uid。在那之前，任何「逐館打開」的
+ * 開關都只是讓每一則推播先浪費一次必定失敗的 API 呼叫。
  */
-const { pool } = require('../models/db');
 
-// 場館代號 ↔ 館名別名。token 兩種設定法都吃：
-//   LINE_MESSAGING_TOKENS 的 key（可用場館代號或館名），或 LINE_MESSAGING_TOKEN_<名稱>
+// 場館代號 ↔ 館名別名。現在只剩 LINE_OA_ID_<別名> 與 LINE_LOGIN_ID_<別名> 在用；
+// 推播 token 的各館查表已移除。
 const VENUE_ENV_ALIAS = {
   B: ['NEWPEI', 'XINBEI'],   // 新北高中
   K: ['SANCHONG'],           // 三重商工
@@ -94,58 +95,23 @@ function venueOaDeepLink(venueId, text = OA_LOGIN_KEYWORD) {
   return `https://line.me/R/oaMessage/${encodeURIComponent(id)}/?${encodeURIComponent(text)}`;
 }
 
-// 教練固定用這個；家長在場館推不到時也退回它。
+// 全站唯一的推播管道。
 const STAFF_CHANNEL = process.env.LINE_STAFF_CHANNEL_KEY || 'dreams400';
-
-const VENUE_FLAG = (venueId) => 'push_venue_channel_' + venueId;
-
-// 開關讀 admin_settings（value 是 NUMERIC，1＝開），快取 60 秒 ——
-// 推播是熱路徑，但也不能久到「改了設定要等很久才生效」。
-let _cache = { at: 0, map: {} };
-async function loadVenueFlags(db = pool) {
-  const now = Date.now();
-  if (now - _cache.at < 60000) return _cache.map;
-  const map = {};
-  try {
-    const r = await db.query(
-      `SELECT key, value FROM admin_settings WHERE key LIKE 'push\\_venue\\_channel\\_%' ESCAPE '\\'`);
-    r.rows.forEach((x) => { map[String(x.key).replace('push_venue_channel_', '')] = Number(x.value) === 1; });
-  } catch (e) {
-    console.warn('[lineRouting] 讀取場館開關失敗，全部視為關閉：' + e.message);
-  }
-  _cache = { at: now, map };
-  return map;
-}
 
 /**
  * 決定收訊者的 Messaging channel。
+ *
+ * 2026-08-12 起一律回 STAFF_CHANNEL —— 「各館走各館官方帳號」那條路已移除，
+ * 理由見檔頭。簽章保持不變（十幾個呼叫端都在用 `.channel`），回傳的 reason
+ * 仍然分得出是教練還是家長、有沒有場館，line_push_log 的可追查性不受影響。
+ *
  * @param {'parent'|'coach'} kind
- * @param {string} [venueId] 家長的主場館（parents.primary_venue_id）
+ * @param {string} [venueId] 家長的主場館，現在只影響 reason 字串
  * @returns {Promise<{channel: string, reason: string}>}
  */
-async function resolveChannel({ kind, venueId }, db = pool) {
+async function resolveChannel({ kind, venueId }) {
   if (kind === 'coach') return { channel: STAFF_CHANNEL, reason: 'coach_fixed' };
-
-  if (venueId) {
-    const flags = await loadVenueFlags(db);
-    if (flags[venueId]) return { channel: venueId, reason: 'venue' };
-  }
-  // 場館沒開／沒有場館 → 退回能用的固定帳號
-  return { channel: STAFF_CHANNEL, reason: venueId ? 'venue_disabled_fallback' : 'no_venue_fallback' };
-}
-
-/** 維運自檢：印出每個場館目前會走哪個帳號，以及 token 在不在。 */
-async function selfCheck(getToken, db = pool) {
-  const out = [];
-  const flags = await loadVenueFlags(db);
-  const tok = (ch) => { try { getToken(ch); return 'token OK'; } catch (e) { return '** 無 token **'; } };
-  out.push('  教練  → ' + STAFF_CHANNEL + '   ' + tok(STAFF_CHANNEL));
-  for (const v of Object.keys(VENUE_ENV_ALIAS)) {
-    const on = !!flags[v];
-    out.push('  家長 ' + v + ' → ' + (on ? v + '   ' + tok(v) : STAFF_CHANNEL + '（該館開關未開，退回）   ' + tok(v) + '（該館 token 狀態）'));
-  }
-  out.push('  家長（無場館）→ ' + STAFF_CHANNEL);
-  return out;
+  return { channel: STAFF_CHANNEL, reason: venueId ? 'parent_venue_' + venueId : 'parent_no_venue' };
 }
 
 /**
@@ -168,7 +134,7 @@ function allowedLoginChannels() {
 }
 
 module.exports = {
-  VENUE_ENV_ALIAS, STAFF_CHANNEL, VENUE_FLAG, VENUE_OA_ID, OA_LOGIN_KEYWORD,
-  loadVenueFlags, resolveChannel, selfCheck, allowedLoginChannels,
+  VENUE_ENV_ALIAS, STAFF_CHANNEL, VENUE_OA_ID, OA_LOGIN_KEYWORD,
+  resolveChannel, allowedLoginChannels,
   venueOaId, venueOaDeepLink,
 };

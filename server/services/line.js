@@ -15,91 +15,76 @@ const BRAND = {
   white:    '#ffffff',
 };
 
-// 場館代號 ↔ 館名別名，與 lineRouting 共用同一份（兩份會漂移，實際已經漂過一次）。
-const { VENUE_ENV_ALIAS, STAFF_CHANNEL } = require('./lineRouting');
+const { STAFF_CHANNEL } = require('./lineRouting');
 
-// 已警告過的場館（避免 cron 迴圈裡每個收件人都刷一行相同的錯誤，把真正的問題淹掉）。
-const _warnedMissingToken = new Set();
+// 只警告一次（避免 cron 迴圈裡每個收件人都刷一行相同的錯誤，把真正的問題淹掉）。
+let _warnedMissingToken = false;
 
-function getToken(venueId) {
-  // (1) JSON 形式
+/**
+ * 取 LINE Messaging API 的 access token。
+ *
+ * 2026-08-12：移除「各場館各自一支 token」的機制。理由有二 ——
+ *   1. 四個場館 OA 屬於另一個 provider，uid 對不上（2026-08-05 實測 0/60），
+ *      就算 token 設好了也一則都送不出去。
+ *   2. 25 個場館裡只有 4 個有 OA，其餘 21 個每次被查到就噴一行 ERROR，
+ *      把真正的問題淹掉（scripts/lineTokenCheck.js 掃一輪就是 21 行）。
+ *
+ * 現在全站推播只走一個管道：STAFF_CHANNEL（dreams400），它與 LIFF Login
+ * 同 provider，uid 才對得上。設定方式兩種都吃，維持與既有 Secrets 相容：
+ *   LINE_MESSAGING_TOKENS 的 "dreams400" key，或 LINE_MESSAGING_TOKEN_dreams400
+ *
+ * 這裡缺 token 是真故障：所有推播都會死，所以必須大聲。
+ */
+function getToken() {
+  const clean = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+
   let tokens = {};
   try {
     tokens = JSON.parse(process.env.LINE_MESSAGING_TOKENS || '{}');
   } catch (e) {
-    throw new Error('LINE_MESSAGING_TOKENS 不是合法 JSON，所有場館推播都會失敗，請檢查 Replit Secrets');
+    throw new Error('LINE_MESSAGING_TOKENS 不是合法 JSON，所有推播都會失敗，請檢查 Replit Secrets');
   }
-  const clean = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
 
-  // 候選名稱：場館代號本身，加上該館的館名別名。
-  // 兩種設定方式的 key/變數名都可能用其中任一種寫法，全部試過才算沒有。
-  const names = [String(venueId), ...(VENUE_ENV_ALIAS[venueId] || [])];
-
-  // (1) JSON：key 可能是場館代號（"B"），也可能是館名（"Songshan"）。大小寫不敏感 ——
-  //     實際資料裡就是 "Songshan" 這種混合大小寫，硬要求全等會查不到。
+  // JSON 的 key 大小寫不敏感 —— 實際資料裡就有 "Songshan" 這種混合寫法。
   let token = null;
-  const wanted = new Set(names.map((n) => n.toLowerCase()));
+  const wanted = String(STAFF_CHANNEL).toLowerCase();
   for (const [k, v] of Object.entries(tokens)) {
-    if (wanted.has(String(k).toLowerCase())) { token = clean(v); if (token) break; }
+    if (String(k).toLowerCase() === wanted) { token = clean(v); if (token) break; }
   }
-
-  // (2) 獨立環境變數 LINE_MESSAGING_TOKEN_<場館代號 或 館名>
-  if (!token) {
-    for (const n of names) {
-      token = clean(process.env['LINE_MESSAGING_TOKEN_' + n]);
-      if (token) break;
-    }
-  }
+  if (!token) token = clean(process.env['LINE_MESSAGING_TOKEN_' + STAFF_CHANNEL]);
 
   if (!token) {
-    // 「場館沒有 token」分兩種，嚴重度差很多，不能一起噴 ERROR：
-    //
-    // (A) 設計狀態 —— venueId 是四個場館代號之一。那四個場館 OA 屬於另一個
-    //     provider，uid 對不上（2026-08-05 實測 0/60），所以各館 token 本來就
-    //     沒有設、各館推播開關也刻意是關的，推播一律改走 STAFF_CHANNEL。
-    //     舊的呼叫端多半直接把 venue_id 丟進來（新的走 lineRouting.resolveChannel），
-    //     落到這裡是預期內的。每次噴 ERROR 只會把真問題淹掉。
-    //
-    // (B) 真故障 —— STAFF_CHANNEL 或任何不是場館代號的 key 缺 token。
-    //     那會讓「所有」推播死掉，必須大聲、必須給完整診斷。
-    //
-    // 用 VENUE_ENV_ALIAS 的 key 當白名單來分類，而不是「看起來像場館代號就放過」：
-    // 新增場館一定要同時登記在那張表裡，漏登記的會落到 (B) 被吵醒，這是對的。
-    const byDesign = Object.prototype.hasOwnProperty.call(VENUE_ENV_ALIAS, String(venueId));
-    if (!_warnedMissingToken.has(venueId)) {
-      _warnedMissingToken.add(venueId);
-      if (byDesign) {
-        console.warn(
-          '[line] 場館 ' + venueId + ' 未設 Messaging token —— 這是設計狀態（該館 OA 屬於'
-          + '另一個 provider，uid 對不上），推播請改走 ' + STAFF_CHANNEL
-          + '。此訊息每個場館只出現一次。'
-        );
-      } else {
-        // 每個 key 只印一次完整診斷：講清楚「設了哪些、缺哪個、去哪裡補」。
-        const fromJson = Object.keys(tokens);
-        const fromEnv = Object.keys(process.env)
-          .filter((k) => k.startsWith('LINE_MESSAGING_TOKEN_'))
-          .map((k) => k.replace('LINE_MESSAGING_TOKEN_', ''));
-        console.error(
-          '[line] ' + venueId + ' 沒有 Messaging API token，走這個管道的 LINE 推播都會失敗。'
-          + ' LINE_MESSAGING_TOKENS 內的 key：' + (fromJson.length ? fromJson.join(', ') : '（空）')
-          + '；獨立變數 LINE_MESSAGING_TOKEN_*：' + (fromEnv.length ? fromEnv.join(', ') : '（無）')
-          + '。請設 LINE_MESSAGING_TOKEN_' + venueId + '，或在 LINE_MESSAGING_TOKENS 內加上 "' + venueId + '"。'
-        );
-      }
+    if (!_warnedMissingToken) {
+      _warnedMissingToken = true;
+      const fromJson = Object.keys(tokens);
+      const fromEnv = Object.keys(process.env)
+        .filter((k) => k.startsWith('LINE_MESSAGING_TOKEN_'))
+        .map((k) => k.replace('LINE_MESSAGING_TOKEN_', ''));
+      console.error(
+        '[line] 找不到 ' + STAFF_CHANNEL + ' 的 Messaging API token，所有 LINE 推播都會失敗。'
+        + ' LINE_MESSAGING_TOKENS 內的 key：' + (fromJson.length ? fromJson.join(', ') : '（空）')
+        + '；獨立變數 LINE_MESSAGING_TOKEN_*：' + (fromEnv.length ? fromEnv.join(', ') : '（無）')
+        + '。請設 LINE_MESSAGING_TOKEN_' + STAFF_CHANNEL
+        + '，或在 LINE_MESSAGING_TOKENS 內加上 "' + STAFF_CHANNEL + '"。'
+      );
     }
-    // 兩種情況都照樣 throw：呼叫端的行為完全不變，這裡只改「吵多大聲」。
-    throw new Error('No LINE token for venue: ' + venueId);
+    throw new Error('No LINE token for channel: ' + STAFF_CHANNEL);
   }
   return token;
 }
 
-async function pushMessage(lineUserId, messages, venueId, opts = {}) {
+/**
+ * @param {string} [venueIdForLog] 只寫進 line_push_log 供追查「這則是哪一館的」。
+ *   2026-08-12 起**不再用它決定 token** —— 全站只有一個推播管道（STAFF_CHANNEL）。
+ *   參數留著是因為十幾個呼叫端都在傳，改簽章的風險大於它帶來的好處；
+ *   名字改成 ForLog 是為了讓下一個人一眼看出它不再影響送到哪裡。
+ */
+async function pushMessage(lineUserId, messages, venueIdForLog, opts = {}) {
   const event = opts.event || 'legacy';
   const meta = {
     event,
     refId: opts.refId || null,
-    venueId: venueId || null,
+    venueId: venueIdForLog || null,
     recipientKind: opts.recipientKind || null,
   };
 
@@ -114,7 +99,7 @@ async function pushMessage(lineUserId, messages, venueId, opts = {}) {
   // 的紀錄，而那個組合之後就再也送不出去（被去重的唯一索引擋住）。
   let token;
   try {
-    token = getToken(venueId);
+    token = getToken();
   } catch (e) {
     await pushGate.logSkipped({ ...meta, uid, reason: 'NO_TOKEN:' + e.message });
     throw e;
@@ -931,10 +916,11 @@ function tokenSummary() {
   }
   const envKeys = Object.keys(process.env)
     .filter((k) => k.startsWith('LINE_MESSAGING_TOKEN_') && String(process.env[k] || '').trim());
-  const staff = process.env.LINE_STAFF_CHANNEL_KEY || 'dreams400';
   let staffOk = false;
-  try { staffOk = Boolean(getToken(staff)); } catch (_) { staffOk = false; }
+  try { staffOk = Boolean(getToken()); } catch (_) { staffOk = false; }
   return {
+    // configuredCount 現在只是「Secrets 有沒有吃到東西」的粗略訊號 ——
+    // 各館各自 token 已於 2026-08-12 移除，真正決定推播能不能送的只有 staffChannel。
     configuredCount: new Set([...jsonKeys, ...envKeys]).size,
     staffChannel: staffOk,
     malformedJson: false,

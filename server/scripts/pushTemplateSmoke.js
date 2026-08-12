@@ -10,14 +10,15 @@
  *     不是產品功能；把它掛進事件開關反而要為了測試去開總開關，更危險
  *
  * 用法：
- *   node scripts/pushTemplateSmoke.js --uid=U... --venue=B            # 演練
- *   node scripts/pushTemplateSmoke.js --uid=U... --venue=B --apply    # 真的送
- *   node scripts/pushTemplateSmoke.js --uid=U... --venue=B --apply --only=enrollmentSuccess
- *   node scripts/pushTemplateSmoke.js --uid=U... --venue=dreams400 --apply --only=sessionReminder --role=coach
+ *   node scripts/pushTemplateSmoke.js --uid=U...            # 演練
+ *   node scripts/pushTemplateSmoke.js --uid=U... --apply    # 真的送
+ *   node scripts/pushTemplateSmoke.js --uid=U... --apply --only=enrollmentSuccess
+ *   node scripts/pushTemplateSmoke.js --uid=U... --apply --only=sessionReminder --role=coach
  */
 const axios = require('axios');
 const line = require('../services/line');
 const { pool } = require('../models/db');
+const { STAFF_CHANNEL } = require('../services/lineRouting');
 
 const arg = (k, d = null) => {
   const hit = process.argv.find((a) => a.startsWith('--' + k + '='));
@@ -25,7 +26,6 @@ const arg = (k, d = null) => {
 };
 const APPLY = process.argv.includes('--apply');
 const UID = arg('uid');
-const VENUE = arg('venue');
 const ONLY = arg('only');
 // 有些樣板同一支要對教練與家長各出一種面貌（如 sessionReminder 的 role）。
 // 假資料只寫死一種的話，工具看起來涵蓋了全部樣板，實際上另一面從沒被看過。
@@ -35,7 +35,6 @@ if (!UID || !/^U[0-9a-f]{32}$/i.test(UID)) {
   console.error('必須提供合法的 --uid=U…（32 位十六進位）。這支腳本只會送給這一個人。');
   process.exit(1);
 }
-if (!VENUE) { console.error('必須提供 --venue=<場館代號>，決定用哪個官方帳號的 token 送。'); process.exit(1); }
 
 const LIFF = process.env.LIFF_URL_PARENT || process.env.LIFF_URL || 'https://example.invalid/liff';
 const AT = '2026-08-06T14:00:00+08:00';
@@ -68,9 +67,10 @@ const SAMPLES = {
 };
 
 (async () => {
+  // 2026-08-12：各館各自 token 已移除，全站只有一個推播管道，所以不再需要 --venue。
   let token;
-  try { token = line._getTokenForDiagnostics(VENUE); }
-  catch (e) { console.error('取不到場館 ' + VENUE + ' 的 token：' + e.message); process.exit(1); }
+  try { token = line._getTokenForDiagnostics(); }
+  catch (e) { console.error('取不到 ' + STAFF_CHANNEL + ' 的 token：' + e.message); process.exit(1); }
 
   // LINE 的 userId 是「每個官方帳號各自獨立」的 —— 同一個人在不同 OA 有不同的 U... ID。
   // 用錯 channel 的話 19 則會全部回 400「Failed to send messages」，訊息還看不出原因。
@@ -82,16 +82,8 @@ const SAMPLES = {
   };
   const name = await whoAmI(token);
   if (!name) {
-    console.error('這個 uid 不是場館 ' + VENUE + ' 官方帳號的好友（LINE 的 userId 每個帳號各自獨立）。');
-    let hint = null;
-    try {
-      const all = JSON.parse(process.env.LINE_MESSAGING_TOKENS || '{}');
-      for (const k of Object.keys(all)) {
-        if (await whoAmI(all[k])) { hint = k; break; }
-      }
-    } catch (_) { /* best-effort */ }
-    if (hint) console.error('這個 uid 屬於「' + hint + '」，請改用 --venue=' + hint);
-    else console.error('已設定的每個官方帳號都查不到這個 uid —— 請先加該帳號好友，或確認 uid 來源。');
+    console.error('這個 uid 不是 ' + STAFF_CHANNEL + ' 的好友（LINE 的 userId 每個官方帳號各自獨立）。');
+    console.error('請先用這支 LINE 加 ' + STAFF_CHANNEL + ' 好友，或確認 uid 是從本系統的 LIFF 取得的。');
     process.exit(1);
   }
   console.log('收件者：' + name + '（' + UID + '）\n');
@@ -101,7 +93,7 @@ const SAMPLES = {
   if (missing.length) console.warn('（沒有假資料，將略過）：' + missing.join(', '));
 
   console.log((APPLY ? '### 實際送出' : '### 演練（未送出，加 --apply 才會真的送）') +
-    '  →  ' + UID + '  透過場館 ' + VENUE + '\n');
+    '  →  ' + UID + '  透過 ' + STAFF_CHANNEL + '\n');
 
   let ok = 0, fail = 0, skip = 0;
   for (const name of names) {
@@ -132,7 +124,7 @@ const SAMPLES = {
       await pool.query(
         `INSERT INTO line_push_log (event, venue_id, recipient_uid, recipient_kind, ref_id, status, reason, http_status, duration_ms)
          VALUES ('template_smoke',$1,$2,'test',$3,$4,$5,$6,$7)`,
-        [VENUE, UID, name, status, reason ? String(reason).slice(0, 300) : null, http, Date.now() - t0]);
+        [STAFF_CHANNEL, UID, name, status, reason ? String(reason).slice(0, 300) : null, http, Date.now() - t0]);
     } catch (e) { console.warn('    （紀錄寫入失敗：' + e.message + '）'); }
 
     await new Promise((r) => setTimeout(r, 400));   // 別打太快
