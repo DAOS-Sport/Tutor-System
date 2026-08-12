@@ -34,8 +34,18 @@ const arg = (k) => {
 };
 const APPLY = process.argv.includes('--apply');
 const LIMIT = Number(arg('limit')) || null;
-// Ragic 有速率限制，而且這批要跑好幾百次。間隔太短會被擋，太長則跑不完。
-const GAP_MS = Number(arg('gap')) || 400;
+
+// 間隔的取捨：
+//   syncParentNow 每位家長是 2~3 次 HTTP（查既有 record → 必要時用手機查 → upsert），
+//   220 位約 660 次。250ms 對整趟只多約 55 秒，而總耗時由 Ragic 自己的回應時間主導 ——
+//   為了省這 55 秒去冒 429 的風險不划算。
+//   另一方面也不需要更保守：services/ragic.js 的傳輸層已經把 429 標成
+//   RAGIC_RATE_LIMITED 並做指數退避（500ms × 2^n + jitter，最多 3 次），
+//   這個間隔只是第二層保險。
+// 而且不猜死一個值：真的撞到 429 就把間隔加倍（上限 2s），讓它自我修正。
+const GAP_START_MS = Number(arg('gap')) || 250;
+const GAP_MAX_MS = 2000;
+let gapMs = GAP_START_MS;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const mask = (p) => String(p || '').replace(/^(\d{4})\d+(\d{2})$/, '$1****$2');
@@ -84,28 +94,52 @@ const mask = (p) => String(p || '').replace(/^(\d{4})\d+(\d{2})$/, '$1****$2');
     process.exit(0);
   }
 
-  const out = { ok: 0, failed: 0, errors: [] };
+  const out = { ok: 0, failed: 0, skipped: 0, rateLimited: 0, errors: [], durations: [] };
+  const t0all = Date.now();
   for (let i = 0; i < targets.length; i += 1) {
     const r = targets[i];
     const tag = '[' + (i + 1) + '/' + targets.length + '] ' + r.name + ' ' + mask(r.phone);
+    const t0 = Date.now();
     try {
       const ragicId = await writeback.syncParentNow(r.id);
+      const ms = Date.now() - t0;
+      out.durations.push(ms);
       if (ragicId) {
         out.ok += 1;
-        console.log(tag + ' → Z01#' + ragicId + (r.ragic_record_id ? '' : '（新建或以手機比對到）'));
+        console.log(tag + ' → Z01#' + ragicId
+          + (r.ragic_record_id ? '' : '（新建或以手機比對到）') + '  ' + ms + 'ms');
       } else {
         // syncParentNow 對停用／未綁 UID 的列會回 null 並自己 warn，不算失敗。
+        out.skipped += 1;
         console.log(tag + ' → 略過（見上一行原因）');
       }
     } catch (e) {
       out.failed += 1;
-      out.errors.push(r.name + '：' + e.message);
+      out.errors.push(r.name + '：' + (e.code ? e.code + ' ' : '') + e.message);
       console.warn(tag + ' → 失敗：' + e.message);
+      // 真的被限流才放慢，不用事先猜對一個間隔。
+      // 只認明確的限流訊號 —— 拿「任何錯誤都放慢」當保險會把欄位格式錯之類的
+      // 問題也拖成龜速，而那種錯慢慢打一樣是錯。
+      if (e.code === 'RAGIC_RATE_LIMITED' || /RAGIC_RETRY_EXHAUSTED/.test(String(e.code))) {
+        out.rateLimited += 1;
+        const next = Math.min(gapMs * 2, GAP_MAX_MS);
+        if (next !== gapMs) {
+          console.warn('  ↳ 撞到限流，間隔 ' + gapMs + 'ms → ' + next + 'ms');
+          gapMs = next;
+        }
+      }
     }
-    if (i < targets.length - 1) await sleep(GAP_MS);
+    if (i < targets.length - 1) await sleep(gapMs);
   }
 
-  console.log('\n完成：成功 ' + out.ok + ' / 失敗 ' + out.failed);
+  const avg = out.durations.length
+    ? Math.round(out.durations.reduce((a, b) => a + b, 0) / out.durations.length) : 0;
+  console.log('\n完成：成功 ' + out.ok + ' / 略過 ' + out.skipped + ' / 失敗 ' + out.failed);
+  console.log('每位平均 ' + avg + 'ms，總耗時 ' + Math.round((Date.now() - t0all) / 1000) + 's，'
+    + '結束時間隔 ' + gapMs + 'ms' + (out.rateLimited ? '（曾撞限流 ' + out.rateLimited + ' 次）' : '（全程未撞限流）'));
+  if (out.rateLimited === 0 && gapMs === GAP_START_MS && out.durations.length >= 5) {
+    console.log('提示：全程沒撞限流，下次可以用 --gap=100 更快，或維持現值求穩。');
+  }
   if (out.errors.length) {
     console.log('失敗清單（前 20 筆）：');
     out.errors.slice(0, 20).forEach((e) => console.log('  ' + e));
