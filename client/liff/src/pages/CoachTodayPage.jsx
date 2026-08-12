@@ -91,7 +91,10 @@ export default function CoachTodayPage() {
                     ⚠️ 整張卡本身就是一顆 <button>，這裡只能用 <span> 做出按鈕的樣子 ——
                     巢狀 button 是不合法的 HTML，React 也會警告。 */}
                 <div className="mt-1.5 flex items-center justify-end gap-2 text-xs">
-                  <span className={`rounded-full px-2 py-0.5 ${s.checked_in ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
+                  {/* 已簽到章比照家長端上課記錄那顆（MyLessonsPage 的 StatusSquare tone="attended"）：
+                      bg-brand-green/15 + text-brand-green。原本用的 emerald-100/700 是設計系統裡
+                      沒有的原生色，全 liff 只有教練端這兩顆簽到章在用，站在家長旁邊看是另一種綠。 */}
+                  <span className={`rounded-full px-2 py-0.5 font-medium ${s.checked_in ? 'bg-brand-green/15 text-brand-green' : 'bg-gray-100 text-gray-500'}`}>
                     {s.checked_in ? checkinLabel(s.scheduled_at, s.checked_in_at) : '未簽到'}
                   </span>
                   <span className="rounded-full bg-brand-teal/10 px-2.5 py-0.5 font-bold text-brand-teal">

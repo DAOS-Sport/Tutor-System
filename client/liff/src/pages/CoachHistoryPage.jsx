@@ -185,7 +185,9 @@ export default function CoachHistoryPage() {
                   學員：{(s.student_names || []).join('、') || '—'}
                 </div>
                 <div className="mt-2 flex items-center gap-2 text-xs">
-                  <span className={`rounded-full px-2 py-0.5 ${s.checked_in ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
+                  {/* 與首頁那顆同一組樣式（見 CoachTodayPage 的說明）。只改一邊的話，
+                      教練在自己的兩個分頁之間就會看到兩種綠。 */}
+                  <span className={`rounded-full px-2 py-0.5 font-medium ${s.checked_in ? 'bg-brand-green/15 text-brand-green' : 'bg-gray-100 text-gray-500'}`}>
                     {s.checked_in ? checkinLabel(s.scheduled_at, s.checked_in_at) : '未簽到'}
                   </span>
                   <span className="text-brand-teal">點選進入 →</span>
