@@ -17,7 +17,9 @@
 // （routes/parents.js 的 PATCH /me），沒有任何旗標擋著，行為已經被日常使用驗證過。
 //
 // ── 用法 ──
-//   node scripts/ragicParentBackfill.js                 # dry-run，只列要做什麼
+//   node scripts/ragicParentBackfill.js                 # dry-run，只列要做什麼（不打 Ragic）
+//   node scripts/ragicParentBackfill.js --diff          # 逐筆去 Ragic 比對，只讀不寫
+//   node scripts/ragicParentBackfill.js --diff --limit=20
 //   node scripts/ragicParentBackfill.js --limit=5 --apply
 //   node scripts/ragicParentBackfill.js --apply         # 全部
 //
@@ -33,6 +35,7 @@ const arg = (k) => {
   return hit ? hit.split('=').slice(1).join('=') : null;
 };
 const APPLY = process.argv.includes('--apply');
+const DIFF = process.argv.includes('--diff');
 const LIMIT = Number(arg('limit')) || null;
 
 // 間隔的取捨：
@@ -80,8 +83,64 @@ const mask = (p) => String(p || '').replace(/^(\d{4})\d+(\d{2})$/, '$1****$2');
     + (LIMIT ? '（本次只跑前 ' + targets.length + ' 位）' : ''));
   console.log('  本地無 ragic_record_id（會先以手機查重，查不到才新建）：' + willCreate);
   console.log('  已有 ragic_record_id（只更新欄位＋補寫 LINE UID）：' + (targets.length - willCreate));
-  console.log('模式：' + (APPLY ? '** 實際寫入 Ragic **' : 'dry-run（不寫任何東西）'));
+  console.log('模式：' + (APPLY ? '** 實際寫入 Ragic **' : (DIFF ? '--diff 逐筆比對（只讀）' : 'dry-run（不打 Ragic）')));
   console.log('');
+
+  // ── --diff：只讀不寫，逐筆去 Ragic 比對現況 ──
+  // 為什麼需要這個：dry-run 只看得到本地有什麼，看不到「Ragic 那邊到底缺什麼」。
+  // 而真正決定要不要動手的資訊是後者 —— 例如某人在本地沒有 ragic_record_id，
+  // 但 Ragic 上其實用同一支電話存在，那就只是補綁定，不是新建。
+  if (DIFF) {
+    const ragic = require('../services/ragic');
+    const stat = { onlyLocal: 0, uidMissing: 0, uidOther: 0, ok: 0, error: 0 };
+    console.log('逐筆比對中（只讀，不寫任何東西）…\n');
+    for (let i = 0; i < targets.length; i += 1) {
+      const r = targets[i];
+      const tag = String(i + 1).padStart(4) + '. ' + String(r.name).slice(0, 14).padEnd(16) + mask(r.phone).padEnd(12);
+      try {
+        // 與 _lookupZ01 同一套順序：先 UID，再電話。這樣看到的就是系統平常看到的。
+        let row = await ragic.getParentByLineUid(r.line_uid).catch(() => null);
+        let via = 'uid';
+        if (!row) { row = await ragic.getParentByPhone(r.phone).catch(() => null); via = 'phone'; }
+        if (!row) {
+          stat.onlyLocal += 1;
+          console.log(tag + 'Ragic 查無此人（UID 與電話都查不到）→ 會新建');
+        } else {
+          // 用 mapZ01Parent 讀 UID —— 那是 parentRefresh 判斷用的同一支對應函式。
+          // 不要自己去猜欄位名，也不要寫成「函式不存在就當空字串」：
+          // 那會讓每一筆都被歸進「UID 空」，看起來像一份很整齊的報告，其實全錯。
+          const remoteUid = String(ragic.mapZ01Parent(row).line_uid || '').trim();
+          const rid = row._ragicId || row.ragicId || '?';
+          if (!remoteUid) {
+            stat.uidMissing += 1;
+            console.log(tag + 'Z01#' + String(rid).padEnd(6) + '（以' + (via === 'uid' ? 'UID' : '電話') + '找到）UID 欄位是空的 → 會補寫 UID');
+          } else if (remoteUid !== r.line_uid) {
+            stat.uidOther += 1;
+            console.log(tag + 'Z01#' + String(rid).padEnd(6) + '⚠ UID 已綁到「別的帳號」→ 不會自動處理，需人工判斷');
+          } else {
+            stat.ok += 1;
+            console.log(tag + 'Z01#' + String(rid).padEnd(6) + 'UID 已一致 → 其實不用補（outbox 那筆已過期）');
+          }
+        }
+      } catch (e) {
+        stat.error += 1;
+        console.warn(tag + '比對失敗：' + e.message);
+      }
+      if (i < targets.length - 1) await sleep(gapMs);
+    }
+    console.log('\n── 比對結果 ──');
+    console.log('  Ragic 查無此人，會新建　　：' + stat.onlyLocal);
+    console.log('  有紀錄但 UID 空，會補寫　 ：' + stat.uidMissing);
+    console.log('  UID 已一致，其實不用補　　：' + stat.ok);
+    console.log('  ⚠ UID 綁到別人，需人工處理：' + stat.uidOther);
+    console.log('  比對失敗　　　　　　　　　：' + stat.error);
+    if (stat.uidOther) {
+      console.log('\n⚠ 「UID 綁到別人」代表兩支 LINE 搶同一支電話。--apply 遇到這種會被');
+      console.log('   syncParentProfileStrict 的衝突檢查擋下並記為失敗，不會覆蓋，但要人工釐清。');
+    }
+    await pool.end();
+    process.exit(0);
+  }
 
   if (!APPLY) {
     targets.slice(0, 20).forEach((r, i) => {

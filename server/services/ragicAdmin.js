@@ -1410,6 +1410,24 @@ async function _shadowPullH05Impl() {
   } catch (err) {
     return { synced: 0, error: `Ragic H05 全量查詢失敗：${err.message}` };
   }
+
+  // 「呼叫成功但回 0 筆」必須當成異常，不能當成「Ragic 上一個場館都沒有」。
+  //
+  // 不擋的話會連鎖出一個安靜的災難：presentCodes 為空 → 下面那句
+  // DELETE ... WHERE NOT (venue_code = ANY('{}')) 會把整張 shadow 清光
+  // （實測 'B' = ANY(ARRAY[]::text[]) 為 false，NOT false 為 true，全刪），
+  // 接著 _reconcileH05FromShadowImpl 讀到 0 筆，最後那個「不在 Ragic 就停用」
+  // 的迴圈會把所有沒有人工覆寫的 active 場館一次停掉 —— 目前正是營運中的
+  // 那 5 個（B/C/E/K/L）。而 log 只會印 venues=ok(5)，看起來像同步成功。
+  //
+  // 真的 0 筆代表公司沒有任何場館在履約，那是業務上不可能的狀態；
+  // 遠比「Ragic 欄位改名／篩選條件失效」不可能。所以這道守門不會誤擋。
+  if (!records.length) {
+    const msg = 'Ragic H05 回傳 0 筆場館 —— 視為異常並跳過本輪，'
+      + '不清空 shadow、不停用任何場館。請確認 H05 的「履約狀態」欄位與篩選條件是否被改動。';
+    console.error('[Ragic sync] ' + msg);
+    return _withFreshness({ synced: 0, skipped: true, error: msg }, freshness);
+  }
   const client = await pool.connect();
   let synced = 0;
   try {
