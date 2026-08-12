@@ -16,7 +16,7 @@ const BRAND = {
 };
 
 // 場館代號 ↔ 館名別名，與 lineRouting 共用同一份（兩份會漂移，實際已經漂過一次）。
-const { VENUE_ENV_ALIAS } = require('./lineRouting');
+const { VENUE_ENV_ALIAS, STAFF_CHANNEL } = require('./lineRouting');
 
 // 已警告過的場館（避免 cron 迴圈裡每個收件人都刷一行相同的錯誤，把真正的問題淹掉）。
 const _warnedMissingToken = new Set();
@@ -52,20 +52,43 @@ function getToken(venueId) {
   }
 
   if (!token) {
-    // 每個場館只印一次完整診斷：講清楚「設了哪些、缺哪個、去哪裡補」。
+    // 「場館沒有 token」分兩種，嚴重度差很多，不能一起噴 ERROR：
+    //
+    // (A) 設計狀態 —— venueId 是四個場館代號之一。那四個場館 OA 屬於另一個
+    //     provider，uid 對不上（2026-08-05 實測 0/60），所以各館 token 本來就
+    //     沒有設、各館推播開關也刻意是關的，推播一律改走 STAFF_CHANNEL。
+    //     舊的呼叫端多半直接把 venue_id 丟進來（新的走 lineRouting.resolveChannel），
+    //     落到這裡是預期內的。每次噴 ERROR 只會把真問題淹掉。
+    //
+    // (B) 真故障 —— STAFF_CHANNEL 或任何不是場館代號的 key 缺 token。
+    //     那會讓「所有」推播死掉，必須大聲、必須給完整診斷。
+    //
+    // 用 VENUE_ENV_ALIAS 的 key 當白名單來分類，而不是「看起來像場館代號就放過」：
+    // 新增場館一定要同時登記在那張表裡，漏登記的會落到 (B) 被吵醒，這是對的。
+    const byDesign = Object.prototype.hasOwnProperty.call(VENUE_ENV_ALIAS, String(venueId));
     if (!_warnedMissingToken.has(venueId)) {
       _warnedMissingToken.add(venueId);
-      const fromJson = Object.keys(tokens);
-      const fromEnv = Object.keys(process.env)
-        .filter((k) => k.startsWith('LINE_MESSAGING_TOKEN_'))
-        .map((k) => k.replace('LINE_MESSAGING_TOKEN_', ''));
-      console.error(
-        '[line] 場館 ' + venueId + ' 沒有 Messaging API token，該館所有 LINE 推播都會失敗。'
-        + ' LINE_MESSAGING_TOKENS 內的 key：' + (fromJson.length ? fromJson.join(', ') : '（空）')
-        + '；獨立變數 LINE_MESSAGING_TOKEN_*：' + (fromEnv.length ? fromEnv.join(', ') : '（無）')
-        + '。請設 LINE_MESSAGING_TOKEN_' + venueId + '，或在 LINE_MESSAGING_TOKENS 內加上 "' + venueId + '"。'
-      );
+      if (byDesign) {
+        console.warn(
+          '[line] 場館 ' + venueId + ' 未設 Messaging token —— 這是設計狀態（該館 OA 屬於'
+          + '另一個 provider，uid 對不上），推播請改走 ' + STAFF_CHANNEL
+          + '。此訊息每個場館只出現一次。'
+        );
+      } else {
+        // 每個 key 只印一次完整診斷：講清楚「設了哪些、缺哪個、去哪裡補」。
+        const fromJson = Object.keys(tokens);
+        const fromEnv = Object.keys(process.env)
+          .filter((k) => k.startsWith('LINE_MESSAGING_TOKEN_'))
+          .map((k) => k.replace('LINE_MESSAGING_TOKEN_', ''));
+        console.error(
+          '[line] ' + venueId + ' 沒有 Messaging API token，走這個管道的 LINE 推播都會失敗。'
+          + ' LINE_MESSAGING_TOKENS 內的 key：' + (fromJson.length ? fromJson.join(', ') : '（空）')
+          + '；獨立變數 LINE_MESSAGING_TOKEN_*：' + (fromEnv.length ? fromEnv.join(', ') : '（無）')
+          + '。請設 LINE_MESSAGING_TOKEN_' + venueId + '，或在 LINE_MESSAGING_TOKENS 內加上 "' + venueId + '"。'
+        );
+      }
     }
+    // 兩種情況都照樣 throw：呼叫端的行為完全不變，這裡只改「吵多大聲」。
     throw new Error('No LINE token for venue: ' + venueId);
   }
   return token;
