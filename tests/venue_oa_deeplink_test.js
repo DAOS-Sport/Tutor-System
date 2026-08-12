@@ -58,7 +58,9 @@ function buttonHref(html) {
 
 // ── 1. 對照表本身 ──────────────────────────────────────────────
 // 場館代號取自 admin_venues（2026-08-12 實查：B 新北高中 / K 三重商工 /
-// L 三民高中 / C 松山國小），OA ID 取自 lineRouting 的既有註解。
+// L 三民高中 / C 松山國小）。四組 OA ID 同日經 owner 逐一覆核確認無誤 ——
+// 所以下面那條 deepStrictEqual 是「已知正確答案」的比對，不是快照式的
+// 「現在長怎樣就記怎樣」。要改就是先問 owner，不是先改測試。
 const EXPECTED = { B: '@597kqtbz', K: '@703sndbg', L: '@642fcufc', C: '@318wjncz' };
 
 check('四個場館各自對到不同的 OA，一個都沒漏、也沒有兩館共用', () => {

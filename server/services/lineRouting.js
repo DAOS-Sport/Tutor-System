@@ -43,8 +43,9 @@ const VENUE_ENV_ALIAS = {
  * deep link 是「使用者在自己的 LINE App 裡點開一個聊天視窗」，我方不需要
  * 認得他，也不需要 token。所以推播打不通的館，這條路照樣走得通。
  *
- * 值來自 server/services/lineRouting.js 既有註解（舊系統 dream-dream 的資產），
- * 尚未經 owner 逐一覆核。要換用 LINE_OA_ID_<場館代號或別名> 覆寫，例：
+ * 這四組 ID 已於 2026-08-12 經 owner 逐一覆核確認無誤。改動前要再問一次 ——
+ * 錯的 ID 不會報錯，只會把家長靜靜帶到別人的官方帳號。
+ * 不改 code 的換法：LINE_OA_ID_<場館代號或別名>，例
  *   LINE_OA_ID_B=@xxxxxxx   或   LINE_OA_ID_NEWPEI=@xxxxxxx
  */
 const VENUE_OA_ID = {
