@@ -13,7 +13,7 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { sessionsApi } from '../api/sessions';
 import { venuesApi } from '../api/venues';
-import { courseTypeLabel, checkinStatusLabel, formatTWDateTime } from '../utils/format';
+import { courseTypeLabel, checkinStatusLabel, formatTWDateTime, sessionNoteSummary } from '../utils/format';
 import { exportSessionsCsv, exportSessionsXlsx } from '../utils/csvExport';
 
 const CHECKIN_TONE = { checked_in: 'green', not_yet: 'gray', absent: 'error' };
@@ -110,6 +110,24 @@ export default function SessionsPage() {
     {
       key: 'checkin_status', label: '簽到', className: 'text-center',
       render: (r) => <StatusBadge tone={CHECKIN_TONE[r.checkin_status] || 'gray'}>{checkinStatusLabel(r.checkin_status)}</StatusBadge>,
+    },
+    {
+      // 櫃檯反映：手動扣課與家長扣課的原因在畫面上完全看不到。這一格是摘要，
+      // 完整明細（每位學員各自的簽到人與時間）在點開的課程詳情裡。
+      key: 'note', label: '備註',
+      render: (r) => {
+        const n = sessionNoteSummary(r);
+        if (!n) return <span className="text-xs text-gray-300">—</span>;
+        return (
+          <div className="max-w-[220px] text-[11px] leading-tight">
+            <StatusBadge tone={n.tone}>{n.tag}</StatusBadge>
+            {n.text && (
+              // title 讓長原因滑過去看得到全文；表格內截斷避免把版面撐爛。
+              <div className="mt-0.5 truncate text-gray-600" title={n.text}>{n.text}</div>
+            )}
+          </div>
+        );
+      },
     },
     {
       key: 'backfill', label: '簽到時間', className: 'text-center',

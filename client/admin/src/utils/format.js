@@ -119,3 +119,45 @@ export function roleLabel(role) {
 export function checkinStatusLabel(s) {
   return ({ checked_in: '已簽到', absent: '未到', not_yet: '尚未開始' }[s] || s);
 }
+
+// checkin_records.checked_in_source 的三種值。認不得的值原樣顯示 ——
+// 印出英文比印出空白好：至少看得出「有東西但我們沒對應到」。
+export function checkinSourceLabel(s) {
+  return ({ parent: '家長自助', coach: '教練', staff: '櫃檯' }[s] || s || '—');
+}
+
+/**
+ * 一堂課的「備註」摘要，給表格那一格用（一行內講完）。
+ * 完整明細在課程詳情彈窗，這裡只回最該被看見的那一句。
+ *
+ * 優先序：已退回的手動扣課 > 手動扣課原因 > 簽到來源摘要。
+ * 手動扣課排在前面是因為它是人工介入、有自由文字原因，出問題時要先看它。
+ */
+export function sessionNoteSummary(s) {
+  if (!s) return null;
+  if (s.deduction_reason) {
+    // manual_lesson_deductions.status 的實際值是 APPLIED / REVERSED（正式庫實查
+    // 171 / 4）。用白名單逐一對應，不要寫成「不等於某個值就當作已退回」——
+    // 那種寫法在這裡曾經把 171 筆正常扣課全部標成已退回。
+    // 未知的新狀態原樣顯示在標籤上，讓它被看見，而不是被歸進某一邊。
+    const st = s.deduction_status;
+    const known = { APPLIED: null, REVERSED: '扣課已退回' };
+    const reverted = st === 'REVERSED';
+    const tag = st in known ? (known[st] || '手動扣課') : (st ? `手動扣課（${st}）` : '手動扣課');
+    return {
+      tone: reverted ? 'error' : 'amber',
+      tag,
+      text: reverted ? (s.deduction_reversal_reason || s.deduction_reason) : s.deduction_reason,
+    };
+  }
+  const rows = Array.isArray(s.checkin_details) ? s.checkin_details : [];
+  if (!rows.length) return null;
+  // 共班一次簽到會產生多列、來源相同，摘要時去重才不會變成「家長自助、家長自助」。
+  const sources = [...new Set(rows.map((r) => r.source).filter(Boolean))].map(checkinSourceLabel);
+  const by = [...new Set(rows.map((r) => r.by).filter(Boolean))];
+  return {
+    tone: 'gray',
+    tag: sources.join('／') || '簽到',
+    text: by.length ? by.join('、') : '',
+  };
+}

@@ -4,6 +4,7 @@ import {
   courseTypeLabel,
   paymentStatusLabel,
   checkinStatusLabel,
+  checkinSourceLabel,
   todayISO,
 } from './format';
 
@@ -99,9 +100,25 @@ export function exportEnrollmentsXlsx({ filenamePrefix, enrollments, venueName, 
 }
 
 // === 上課紀錄（sessions）共用列定義 =========================================
-export const SESSION_HEADERS = ['日期', '時間', '場館', '教練', '組別', '學員', '簽到狀態', '簽到時間'];
+export const SESSION_HEADERS = ['日期', '時間', '場館', '教練', '組別', '學員', '簽到狀態', '簽到時間', '簽到來源', '備註'];
 
 export function sessionToRow(s, venueName) {
+  // 備註在畫面上是摘要（一行），匯出則給完整內容 —— 匯出檔通常就是拿來查帳的，
+  // 在這裡截斷等於把最需要的東西丟掉。
+  const rows = Array.isArray(s.checkin_details) ? s.checkin_details : [];
+  const source = [...new Set(rows.map((r) => r.source).filter(Boolean))]
+    .map(checkinSourceLabel).join('／');
+  const note = [
+    s.deduction_reason
+      ? `手動扣課：${s.deduction_reason}${s.deducted_by ? `（${s.deducted_by}）` : ''}`
+      : '',
+    s.deduction_status === 'REVERSED'
+      ? `已退回${s.deduction_reversal_reason ? `：${s.deduction_reversal_reason}` : ''}`
+      : '',
+    rows.filter((r) => r.by).map((r) => `${r.student || '?'} 由 ${r.by} 簽到`).join('；'),
+    rows.filter((r) => r.reversal_reason).map((r) => `${r.student || '?'} 已註銷：${r.reversal_reason}`).join('；'),
+  ].filter(Boolean).join(' | ');
+
   return [
     s.date,
     `${s.start} – ${s.end}`,
@@ -111,6 +128,8 @@ export function sessionToRow(s, venueName) {
     (s.students || []).join('、'),
     checkinStatusLabel(s.checkin_status),
     s.checkin_at ? formatTWDateTime(s.checkin_at) : '',
+    source,
+    note,
   ];
 }
 

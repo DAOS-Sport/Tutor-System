@@ -39,7 +39,52 @@ const REAL_SESSIONS_SELECT = `
               THEN 'checked_in' ELSE 'not_yet' END AS checkin_status,
          (SELECT MIN(cr.checked_in_at) FROM checkin_records cr WHERE cr.course_session_id = cs.id AND cr.attendance_status = 'ATTENDED') AS checkin_at,
          NULL::timestamptz AS backfilled_at,
-         COALESCE(cp.is_experience_course, FALSE) AS is_experience_course
+         COALESCE(cp.is_experience_course, FALSE) AS is_experience_course,
+         -- ── 備註（櫃檯反映：手動扣課與家長扣課的原因在畫面上完全看不到）──
+         -- 手動扣課：manual_lesson_deductions 對 course_session_id 有 UNIQUE 索引，
+         -- 一堂課最多一筆，所以直接取值、不需要聚合。
+         (SELECT mld.reason FROM manual_lesson_deductions mld
+           WHERE mld.course_session_id = cs.id) AS deduction_reason,
+         (SELECT mld.deducted_by FROM manual_lesson_deductions mld
+           WHERE mld.course_session_id = cs.id) AS deducted_by,
+         (SELECT mld.created_at FROM manual_lesson_deductions mld
+           WHERE mld.course_session_id = cs.id) AS deducted_at,
+         (SELECT mld.status::text FROM manual_lesson_deductions mld
+           WHERE mld.course_session_id = cs.id) AS deduction_status,
+         (SELECT mld.reversal_reason FROM manual_lesson_deductions mld
+           WHERE mld.course_session_id = cs.id) AS deduction_reversal_reason,
+         -- 簽到來源：家長自助／教練／櫃檯。checkin_records 沒有自由文字備註欄，
+         -- 對「家長扣課」而言，能回答「誰按的、什麼時候、用哪個身分」就是備註本身。
+         -- 一堂課可能多位學員各一列，逐列列出（共班一次簽到會有多列）。
+         (SELECT json_agg(x ORDER BY x->>'at')
+            FROM (
+              SELECT json_build_object(
+                       'student', st.name,
+                       'source',  cr.checked_in_source::text,
+                       'at',      cr.checked_in_at,
+                       -- 「由誰簽的」要照來源的語意取，不能一路 COALESCE 下去。
+                       -- checked_in_by_student_id 在 staff 簽到時會等於該列自己的
+                       -- student_id（正式庫 300/300 都是），COALESCE 會把它當成
+                       -- 操作者，畫面就變成「由 張軒睿 簽到」—— 看起來像學員自己簽的。
+                       -- 櫃檯簽到的實際操作者不在這張表，在 manual_lesson_deductions
+                       -- 的 deducted_by，所以這裡回 NULL 讓 UI 只顯示「櫃檯」。
+                       'by', CASE
+                               WHEN cr.checked_in_by_parent_id IS NOT NULL THEN pb.name
+                               WHEN cr.checked_in_by_coach_id IS NOT NULL THEN cb.name
+                               WHEN cr.checked_in_by_student_id IS NOT NULL
+                                    AND cr.checked_in_by_student_id <> cr.student_id THEN sb.name
+                               ELSE NULL
+                             END,
+                       'status',  cr.attendance_status::text,
+                       'reversal_reason', cr.reversal_reason
+                     ) AS x
+                FROM checkin_records cr
+                LEFT JOIN students st ON st.id = cr.student_id
+                LEFT JOIN parents  pb ON pb.id = cr.checked_in_by_parent_id
+                LEFT JOIN coaches  cb ON cb.id = cr.checked_in_by_coach_id
+                LEFT JOIN students sb ON sb.id = cr.checked_in_by_student_id
+               WHERE cr.course_session_id = cs.id
+            ) q) AS checkin_details
     FROM course_sessions cs
     JOIN course_periods cp ON cp.id = cs.course_period_id
     LEFT JOIN coaches c ON c.id = COALESCE(cs.coach_id, cp.coach_id)`;
@@ -59,6 +104,14 @@ function rowToSession(r) {
     backfilled_at: r.backfilled_at || null,
     // 試上/單堂標記（course_periods.is_experience_course；舊示範表列固定 false）
     is_experience_course: !!r.is_experience_course,
+    // 備註：任何角色都看得到。手動扣課有自由文字原因；家長／教練自助簽到沒有
+    // 文字欄位，但「誰按的、什麼時候、用哪個身分」對櫃檯查帳就是備註本身。
+    deduction_reason: r.deduction_reason || null,
+    deducted_by: r.deducted_by || null,
+    deducted_at: r.deducted_at || null,
+    deduction_status: r.deduction_status || null,
+    deduction_reversal_reason: r.deduction_reversal_reason || null,
+    checkin_details: Array.isArray(r.checkin_details) ? r.checkin_details : [],
   };
 }
 
@@ -133,7 +186,11 @@ router.get('/', requireAdminAuth, async (req, res) => {
       UNION ALL
       SELECT ats.id::text AS id, ats.date::text AS date, ats.start_time, ats.end_time, ats.venue_id, ats.coach,
              to_json(ats.students) AS students, ats.course_type, ats.checkin_status::text AS checkin_status,
-             ats.checkin_at, ats.backfilled_at, FALSE AS is_experience_course
+             ats.checkin_at, ats.backfilled_at, FALSE AS is_experience_course,
+             -- 舊示範表沒有扣課／簽到明細可對，補 NULL 讓兩邊欄位數一致（UNION 的硬性要求）
+             NULL::text AS deduction_reason, NULL::text AS deducted_by,
+             NULL::timestamptz AS deducted_at, NULL::text AS deduction_status,
+             NULL::text AS deduction_reversal_reason, NULL::json AS checkin_details
         FROM admin_today_sessions ats
        WHERE ats.date >= $1::date AND ats.date <= $2::date
     ) t WHERE TRUE`;
@@ -162,7 +219,11 @@ router.get('/today', requireAdminAuth, async (req, res) => {
       UNION ALL
       SELECT ats.id::text AS id, ats.date::text AS date, ats.start_time, ats.end_time, ats.venue_id, ats.coach,
              to_json(ats.students) AS students, ats.course_type, ats.checkin_status::text AS checkin_status,
-             ats.checkin_at, ats.backfilled_at, FALSE AS is_experience_course
+             ats.checkin_at, ats.backfilled_at, FALSE AS is_experience_course,
+             -- 舊示範表沒有扣課／簽到明細可對，補 NULL 讓兩邊欄位數一致（UNION 的硬性要求）
+             NULL::text AS deduction_reason, NULL::text AS deducted_by,
+             NULL::timestamptz AS deducted_at, NULL::text AS deduction_status,
+             NULL::text AS deduction_reversal_reason, NULL::json AS checkin_details
         FROM admin_today_sessions ats
        WHERE ats.date = (NOW() AT TIME ZONE 'Asia/Taipei')::date
     ) t WHERE TRUE`;
