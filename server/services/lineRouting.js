@@ -56,7 +56,11 @@ const VENUE_OA_ID = {
 };
 
 // 深連結預設要幫家長帶入的訊息。家長只要按送出，官方帳號就會回登入入口。
-const OA_LOGIN_KEYWORD = process.env.LINE_OA_LOGIN_KEYWORD || '家教系統';
+//
+// ⚠️ 這個值必須與各館官方帳號那端設定的**自動回應觸發關鍵字逐字相同**。
+// 差一個字就是「家長按了送出、然後什麼都沒發生」—— 而且不會有任何錯誤，
+// 我方這端完全看不出來。要改的話兩邊要一起改。
+const OA_LOGIN_KEYWORD = process.env.LINE_OA_LOGIN_KEYWORD || '新家教系統登入';
 
 // LINE basic ID 一律是 @ 開頭的英數與 . _ -。格式不合就當作沒設定 ——
 // 錯的 ID 會把家長帶到別人的帳號或死連結，寧可退回原本的 LIFF 連結。

@@ -93,11 +93,16 @@ check('深連結是官方現行格式：https://line.me/R/ + percent-encoded ID'
   assert.ok(!/oaMessage\/@/.test(url), '@ 沒編碼，部分郵件客戶端會把網址切斷');
 });
 
-check('帶入的關鍵字是「家教系統」，且有 encode', () => {
+check('帶入的關鍵字是「新家教系統登入」，且有 encode', () => {
+  // 這是官方帳號那端自動回應的觸發字。錯一個字＝家長按了送出但沒有任何回應，
+  // 而且我方這端看不出來（訊息進的是對方的 OA，不是我們的 channel）。
+  // 所以這條是逐字比對，不是「有中文就好」。
   const url = routing.venueOaDeepLink('K');
   const q = url.split('/?')[1];
-  assert.strictEqual(decodeURIComponent(q), '家教系統',
-    '關鍵字必須解得回「家教系統」—— 這是官方帳號那端比對用的觸發字，錯一個字就沒有回應');
+  assert.strictEqual(decodeURIComponent(q), '新家教系統登入',
+    '關鍵字必須解得回「新家教系統登入」—— owner 2026-08-12 指定，與各館 OA 的自動回應設定一致');
+  assert.strictEqual(routing.OA_LOGIN_KEYWORD, '新家教系統登入',
+    '匯出的常數與實際帶入的字必須是同一個，否則信裡的說明文字會跟網址講不同的話');
   assert.ok(!/[一-鿿]/.test(url), '網址裡不得有未編碼的中文');
 });
 
@@ -141,6 +146,14 @@ check('有 OA 的場館：按鈕連到該館 OA，且附上「請按送出」', 
   assert.ok(b.html.includes('三重商工'), '說明文字要指名是哪一館的官方帳號');
   assert.ok(b.text.includes('請按送出取得登入入口'), '純文字版也要有，不能只改 HTML');
   assert.ok(b.text.includes(routing.venueOaDeepLink('K')), '純文字版的連結要跟按鈕同一條');
+
+  // 說明文字裡引述的關鍵字，必須就是網址真的帶進去的那個字。
+  // 兩者是分開傳的參數，很容易只改一邊 —— 那會變成信上寫「已帶好 A」、
+  // 實際輸入欄跳出 B，家長照著信上的字重打一次反而更亂。
+  const inUrl = decodeURIComponent(buttonHref(b.html).split('/?')[1]);
+  assert.ok(b.html.includes('「' + inUrl + '」'),
+    `說明文字沒有引述網址實際帶入的「${inUrl}」`);
+  assert.ok(b.text.includes('「' + inUrl + '」'), '純文字版同上');
 });
 
 check('四館各自連到自己的 OA，不會全部指到同一館', () => {

@@ -91,7 +91,7 @@ function row(label, value) {
  * @param {string} [liffUrl] 舊參數名，等同 loginUrl。保留是為了既有呼叫端與測試。
  */
 function reconcileSuccess({ parentName, venueName, orders = [], invoiceNumber, totalAmount, liffUrl, issuedAt,
-                            loginUrl, loginVia = 'liff', loginKeyword = '家教系統',
+                            loginUrl, loginVia = 'liff', loginKeyword = '新家教系統登入',
                             guideImageCid = null, hasInvoiceAttachment = false }) {
   const ctaUrl = loginUrl || liffUrl || '';
   const viaOa = ctaUrl ? loginVia === 'oa' : false;
