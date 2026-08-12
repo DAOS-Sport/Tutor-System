@@ -14,7 +14,7 @@
  *   1. 清單不得再出現逐筆 await 的迴圈
  *   2. 單筆與批次必須共用同一個組裝函式（分岔的症狀是「明細有、清單沒有」）
  *   3. 批次要防 join 扇出、要保持傳入順序
- *   4. status 多值過濾要真的走到 SQL，不是又回前端過濾
+ *   4. status 多值過濾要真的走到 SQL，而且 placeholder 不能少一個錢字號
  *
  * 形狀是否真的一致，另外用 DEV 實庫逐欄位比對過（8 筆、含 audit_logs 全等）。
  * 那需要資料庫，不放進 unit 層。
@@ -30,6 +30,10 @@ function stripComments(src) {
 }
 const API = stripComments(read('server/routes/admin/enrollments.js'));
 const PAGE = stripComments(read('client/admin/src/pages/RefundPage.jsx'));
+
+// 直接用字元碼組出錢字號。這支測試裡它同時是「要驗的東西」與「樣板語法」，
+// 混在一起很容易在編輯時被吃掉一個 —— 這次上線的 500 就是這樣來的。
+const S = String.fromCharCode(36);
 
 let failed = 0;
 function check(name, fn) {
@@ -50,7 +54,7 @@ check('批次讀取固定 2 次查詢，且兩次併發', () => {
   const body = fn.slice(0, fn.indexOf('\n}\n'));
   const queries = (body.match(/pool\.query\(/g) || []).length;
   assert.strictEqual(queries, 2,
-    `批次版有 ${queries} 次查詢，應該剛好 2 次（主表 + audit）。`
+    '批次版有 ' + queries + ' 次查詢，應該剛好 2 次（主表 + audit）。'
     + '多出來的通常是又在迴圈裡補查了什麼，那就是 N+1 換個地方長回來');
   assert.ok(/Promise\.all\(\[/.test(body), '兩次查詢應併發，不要一前一後');
   assert.ok(!/for \([^)]*\)\s*\{[^}]*await /.test(body), '批次版內部出現了 await 迴圈');
@@ -61,23 +65,21 @@ check('單筆與批次共用同一個組裝函式', () => {
   assert.ok(/function shapeEnrollment\(/.test(API), '找不到共用的 shapeEnrollment');
   const uses = (API.match(/shapeEnrollment\(/g) || []).length;
   assert.ok(uses >= 3,
-    `shapeEnrollment 只被引用 ${uses} 次（定義 1 + 單筆 1 + 批次 1 至少要 3）。`
+    'shapeEnrollment 只被引用 ' + uses + ' 次（定義 1 + 單筆 1 + 批次 1 至少要 3）。'
     + '有一邊自己組物件的話，清單與明細的欄位遲早分岔');
-  // 反向確認：不可以有第二處在手工拼那個物件。
-  // 用只屬於報名形狀的欄位當簽名 —— `id: row.id` 太寬，會誤中 sibling_refunds
-  // 之類不相關的物件（那不是重複組裝，是別的東西）。
+  // 反向確認：不可以有第二處在手工拼那個物件。用只屬於報名形狀的欄位當簽名——
+  // 「id: row.id」太寬，會誤中 sibling_refunds 之類不相關的物件。
   for (const sig of ['line_profile_state:', 'line_bound:', 'audit_logs:']) {
-    const n = (API.match(new RegExp(sig.replace(':', ':'), 'g')) || []).length;
+    const n = (API.split(sig).length - 1);
     assert.strictEqual(n, 1,
-      `「${sig}」出現 ${n} 次，應該只在 shapeEnrollment 出現 1 次。`
-      + '有第二處在手工組裝報名物件的話，清單與明細的欄位遲早分岔');
+      '「' + sig + '」出現 ' + n + ' 次，應該只在 shapeEnrollment 出現 1 次');
   }
 });
 
 check('SELECT 也共用一份（兩份 SQL 必然漂移）', () => {
   assert.ok(/const ENROLLMENT_SELECT = `/.test(API), '找不到共用的 ENROLLMENT_SELECT');
-  const selects = (API.match(/SELECT ae\.\*, au\.name AS created_by_name/g) || []).length;
-  assert.strictEqual(selects, 1, `SELECT ae.* 出現 ${selects} 次，應該只有 1 次`);
+  const selects = (API.split('SELECT ae.*, au.name AS created_by_name').length - 1);
+  assert.strictEqual(selects, 1, 'SELECT ae.* 出現 ' + selects + ' 次，應該只有 1 次');
 });
 
 // ── 3. 批次的兩個陷阱 ───────────────────────────────────────────
@@ -102,15 +104,34 @@ check('批次不解析 LINE 顯示名稱（否則變成對外部 API 的 N+1）'
     '批次版在解析 LINE 名稱 —— 那是對 LINE API 的 N+1 外部呼叫，清單刻意不做');
 });
 
-// ── 4. status 多值真的走到 SQL ──────────────────────────────────
+// ── 4. status 多值 + placeholder 完整性 ─────────────────────────
 check('status 支援逗號分隔多值，且在 SQL 過濾', () => {
-  assert.ok(/status::text = ANY\(\$\$\{args\.length\}::text\[\]\)|status::text = ANY\(\$\$\{/.test(API)
-    || /status::text = ANY\(/.test(API),
-    'status 多值沒有落到 SQL 的 ANY()');
+  // 這條原本留了一個「只要出現 ANY( 就算過」的寬鬆分支，
+  // 於是 placeholder 少一個錢字號（實際產出 "status = 1"）照樣通過，
+  // 上了正式站才被 500 抓到。改成逐字比對完整字串，不留退路。
+  assert.ok(API.includes('where.push(`status = ' + S + S + '{args.length}`)'),
+    '單值路徑的 placeholder 不對 —— 少一個錢字號會變成拿 enum 比整數，整支查詢 500');
+  assert.ok(API.includes('where.push(`status::text = ANY(' + S + S + '{args.length}::text[])`)'),
+    '多值路徑的 placeholder 不對');
   assert.ok(/\.split\(','\)/.test(API), 'status 沒有做逗號分隔解析');
   // 單值路徑要留著：其他頁面用 status=pending_payment 單值查詢。
   assert.ok(/statuses\.length === 1/.test(API),
     '單值路徑不見了 —— DashboardPage 與 EnrollmentsPage 都在用單一 status');
+});
+
+check('全檔沒有掉錢字號的 SQL placeholder（這次 500 的根因，通用防線）', () => {
+  // 樣板裡的 ${args.length} 前面一定要再有一個錢字號，否則插出來是數字而不是 $N。
+  // 這種錯不會在模組載入時被發現，只會在查詢執行時 500，值得一條全檔掃描。
+  const re = new RegExp('(.)\\' + S + '\\{(?:args\\.length|idx)\\}', 'g');
+  const bad = [];
+  let m;
+  while ((m = re.exec(API)) !== null) {
+    if (m[1] !== S) {
+      bad.push(API.slice(Math.max(0, m.index - 45), m.index + 22).replace(/\n/g, ' ').trim());
+    }
+  }
+  assert.deepStrictEqual(bad, [],
+    '有 SQL placeholder 少了錢字號：\n       ' + bad.join('\n       '));
 });
 
 check('退費頁改由後端過濾狀態，不再整包撈回來自己 filter', () => {
@@ -125,7 +146,7 @@ check('搜尋涵蓋編號／家長／電話／學員／教練／場館', () => {
   const fn = PAGE.slice(PAGE.indexOf('function matchesQuery'));
   const body = fn.slice(0, fn.indexOf('\n}\n'));
   for (const f of ['row.id', 'row.parent_name', 'row.parent_phone', 'row.coach', 'venueName(row.venue_id)', 'row.students']) {
-    assert.ok(body.includes(f), `搜尋沒有涵蓋 ${f}`);
+    assert.ok(body.includes(f), '搜尋沒有涵蓋 ' + f);
   }
 });
 
@@ -142,18 +163,18 @@ check('空字串不過濾（清空搜尋要看得到全部）', () => {
 });
 
 check('搜尋時同時顯示「符合幾筆」與「共幾筆」', () => {
-  assert.ok(/符合/.test(PAGE) && /共 \{list\.length\} 筆/.test(PAGE),
-    '只給符合筆數的話，查不到時分不出是「沒有這個人」還是「清單根本沒載到」');
+  assert.ok(PAGE.includes('符合'), '沒有顯示符合筆數');
+  assert.ok(PAGE.includes('{list.length} 筆'),
+    '沒有顯示總筆數 —— 只給符合筆數的話，查不到時分不出是「沒有這個人」還是「清單根本沒載到」');
   assert.ok(/rows=\{shown\}/.test(PAGE), '表格沒有吃過濾後的結果');
 });
 
 check('掃描沒有失效：把批次改回迴圈就要被抓到', () => {
   assert.ok(/readEnrollmentsByIds\(r\.rows\.map/.test(API), '基準比對不到，掃描已失效');
-  const mutated = API.replace('readEnrollmentsByIds(r.rows.map',
-    'XXX(r.rows.map');
+  const mutated = API.replace('readEnrollmentsByIds(r.rows.map', 'XXX(r.rows.map');
   assert.ok(!/readEnrollmentsByIds\(r\.rows\.map/.test(mutated),
     '突變後仍找得到，表示比對的不是真的那一段');
 });
 
-console.log(failed ? `\n${failed} 項失敗` : '\n全部通過');
+console.log(failed ? '\n' + failed + ' 項失敗' : '\n全部通過');
 process.exit(failed ? 1 : 0);

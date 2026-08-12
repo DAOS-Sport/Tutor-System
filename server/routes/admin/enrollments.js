@@ -845,10 +845,10 @@ router.get('/', requireAdminAuth, async (req, res) => {
     const args = [];
     if (statuses.length === 1) {
       args.push(statuses[0]);
-      where.push(`status = ${args.length}`);
+      where.push(`status = $${args.length}`);
     } else if (statuses.length > 1) {
       args.push(statuses);
-      where.push(`status::text = ANY(${args.length}::text[])`);
+      where.push(`status::text = ANY($${args.length}::text[])`);
     }
     if (scope) {
       args.push(scope);
