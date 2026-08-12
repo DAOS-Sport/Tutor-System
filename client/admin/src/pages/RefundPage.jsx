@@ -16,13 +16,10 @@ import {
 // tests/refund_reason_parity_test.js 會比對兩邊；改一邊沒改另一邊會紅。
 import { REFUND_REASONS, REFUND_FEE_RATE_PRESETS } from '../../../shared/refundReasons';
 
-// 這一頁看得到的狀態。以逗號串起來交給後端過濾，前端不再自己 .filter。
-const REFUND_STATUSES = ['active', 'confirmed', 'cancelled', 'refunded'];
-
 const onlyDigits = (v) => String(v || '').replace(/\D/g, '');
 
 /**
- * 搜尋比對。資料已經載入，所以在前端做 —— 即時、不用每個按鍵打一次 API。
+ * 搜尋比對。資料本來就整包載入了，所以在前端做 —— 即時、不用每個按鍵打一次 API。
  *
  * 電話另外比對「純數字」：櫃檯常直接從別處貼過來，帶著空白或破折號
  * （0912-345-678 / 0912 345 678）。只做字面比對的話那些都會查不到，
@@ -59,13 +56,11 @@ export default function RefundPage() {
   async function load() {
     try {
       const [data, vs] = await Promise.all([
-        // 狀態改由後端過濾（GET /enrollments 的 status 支援逗號分隔多值）。
-        // 以前是整包撈回來再在前端 .filter —— 多傳的那些列除了拖慢載入沒有任何用途。
-        // 含 refunded：已退費紀錄保留在清單中，供查看「退費時間」（操作欄顯示「已退費」）。
-        enrollmentsApi.list({ status: REFUND_STATUSES.join(',') }),
+        enrollmentsApi.list(),
         venuesApi.list(),
       ]);
-      setList(data);
+      // 含 refunded：已退費紀錄保留在清單中，供查看「退費時間」（操作欄顯示「已退費」）。
+      setList(data.filter((e) => ['active', 'confirmed', 'cancelled', 'refunded'].includes(e.status)));
       setVenues(vs);
     } catch (e) {
       // 載入失敗時跳出無限轉圈：顯示空清單 + toast 引導重新整理
@@ -195,9 +190,8 @@ export default function RefundPage() {
           也不再寫「不可手動更改」——手續費率已可逐筆調整，那句話會讓人以為那格不能動。
           現在講的是：公式、誰算的、哪一項可以動、動了會留痕。 */}
       <PageHeader title="退課處理" subtitle="F-R04 · 退款 = 剩餘比例 × (1 − 手續費率)，金額一律由系統試算；手續費率可逐筆調整，調整會記入 audit log" />
-
       <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-gray-200 bg-white p-3 shadow-sm">
-        <div className="relative flex-1 min-w-[240px]">
+        <div className="relative min-w-[240px] flex-1">
           <input
             type="search"
             value={query}
@@ -216,7 +210,9 @@ export default function RefundPage() {
         <div className="text-xs text-gray-500">
           {/* 搜尋時要同時給「找到幾筆」與「總共幾筆」——只給前者的話，
               查不到時分不出是「沒有這個人」還是「清單根本沒載到」。 */}
-          {query ? <>符合 <span className="font-bold text-brand-primary">{shown.length}</span> / 共 {list.length} 筆</> : <>共 {list.length} 筆</>}
+          {query
+            ? <>符合 <span className="font-bold text-brand-primary">{shown.length}</span> / 共 {list.length} 筆</>
+            : <>共 {list.length} 筆</>}
         </div>
       </div>
 
