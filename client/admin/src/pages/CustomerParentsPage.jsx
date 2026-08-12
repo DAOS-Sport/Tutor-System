@@ -22,6 +22,10 @@ export default function CustomerParentsPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [parents, setParents] = useState(null);
+  // 客服解除 LINE 綁定：unbinding = 目標家長；unbindReason 必填（會進稽核表）
+  const [unbinding, setUnbinding] = useState(null);
+  const [unbindReason, setUnbindReason] = useState('');
+  const [unbindBusy, setUnbindBusy] = useState(false);
   const [venues, setVenues] = useState([]);
   const [filters, setFilters] = useState(() => ({
     ...EMPTY_FILTERS,
@@ -99,6 +103,27 @@ export default function CustomerParentsPage() {
 
   if (!parents) return <LoadingSpinner fullPage />;
 
+  async function confirmUnbind() {
+    if (!unbinding) return;
+    const reason = unbindReason.trim();
+    if (!reason) { toast.warning('請填寫解除原因'); return; }
+    setUnbindBusy(true);
+    try {
+      const r = await customerParentsApi.unbindLine(unbinding.id, reason);
+      // Ragic 沒清成功時要用警告色而不是成功色 —— 那代表「換一支 LINE 重綁會被擋」，
+      // 客服現在就得知道，不能等家長綁不上再回報。
+      if (r?.ragic_cleared) toast.success(r.note || '已解除綁定');
+      else toast.warning(r?.note || '本地已解除，但 Ragic 的舊 UID 未清除');
+      setUnbinding(null);
+      setUnbindReason('');
+      await load();
+    } catch (e) {
+      toast.error(e?.response?.data?.error || '解除綁定失敗');
+    } finally {
+      setUnbindBusy(false);
+    }
+  }
+
   const columns = [
     { key: 'ragic', label: 'RAGIC / 系統 UID', render: (r) => (
       <div>
@@ -141,6 +166,13 @@ export default function CustomerParentsPage() {
     { key: 'actions', label: '操作', className: 'text-right', render: (r) => (
       <div className="space-x-2 whitespace-nowrap">
         <button className="text-xs font-medium text-brand-teal hover:underline" onClick={() => openEditor(r)}>編輯</button>
+        {r.line_bound && (
+          <button
+            className="text-xs font-medium text-brand-error hover:underline"
+            title="家長換手機／換 LINE 帳號時使用：清除綁定，下次開系統會走電話驗證重新綁定"
+            onClick={() => { setUnbinding(r); setUnbindReason(''); }}
+          >解除綁定</button>
+        )}
         {r.is_active ? (
           <button className="text-xs font-medium text-brand-amber hover:underline" onClick={() => setToggling(r)}>停用</button>
         ) : r.line_bound ? (
@@ -208,6 +240,40 @@ export default function CustomerParentsPage() {
           toggling.is_active
             ? <p>停用家長「<b>{toggling.name}</b>」後，該家長將無法以 LINE 登入。旗下學員資料仍保留，但請確認是否影響使用。</p>
             : <p>重新啟用家長「<b>{toggling.name}</b>」，恢復其 LINE 登入權限。</p>
+        )}
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        open={!!unbinding}
+        title="解除 LINE 綁定"
+        confirmLabel="確認解除"
+        tone="danger"
+        busy={unbindBusy}
+        confirmDisabled={!unbindReason.trim()}
+        onCancel={() => !unbindBusy && (setUnbinding(null), setUnbindReason(''))}
+        onConfirm={confirmUnbind}
+      >
+        {unbinding && (
+          <div className="space-y-3">
+            <p>
+              解除家長「<b>{unbinding.name}</b>」（{unbinding.phone}）的 LINE 綁定。
+            </p>
+            <ul className="list-disc space-y-1 pl-5 text-xs text-gray-600">
+              <li>家長下次開啟系統會被導回<b>電話驗證</b>，重新綁定後即可繼續使用</li>
+              <li>可以換成<b>不同的 LINE 帳號</b>綁定（Replit 與 Ragic 兩邊的舊 UID 都會清除）</li>
+              <li>學員、報名、上課紀錄<b>完全不動</b>，只解除「哪一支 LINE 能登入」</li>
+            </ul>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-gray-600">解除原因（必填，會寫入稽核紀錄）</span>
+              <textarea
+                rows={3}
+                value={unbindReason}
+                onChange={(e) => setUnbindReason(e.target.value)}
+                placeholder="例：家長換手機、原 LINE 帳號已停用，來電要求重新綁定"
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none"
+              />
+            </label>
+          </div>
         )}
       </ConfirmDialog>
     </div>

@@ -23,6 +23,11 @@ export const customerParentsApi = {
     callApi('/customer-parents', { method: 'post', data: body }, () => mockDb.createCustomerParent(body)),
   update: (id, patch) =>
     callApi(`/customer-parents/${id}`, { method: 'patch', data: patch }, () => mockDb.updateCustomerParent(id, patch)),
+  // 客服解除 LINE 綁定：清本地 line_uid + 清 Ragic Z01 的 UID 欄位。
+  // 家長下次開系統會被導回電話驗證重新綁定；學員與報名資料完全不動。
+  unbindLine: (id, reason) =>
+    callApi(`/customer-parents/${id}/unbind-line`, { method: 'post', data: { reason } },
+      () => ({ ok: true, ragic_cleared: true, note: '（demo）已解除' })),
 };
 
 // Z02 學員資料（含購買紀錄）

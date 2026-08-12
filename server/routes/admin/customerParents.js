@@ -7,7 +7,8 @@
  *   PATCH /api/admin/customer-parents/:id        → 更新家長業務欄位 + 子表學員（本地鏡像）
  *
  * 真相分工（設計討論定案，見 services/parentSync.js 註解）：
- *   - 登入身分欄（line_uid / is_active）：Replit 為權威 → 此處「永不」改 line_uid。
+ *   - 登入身分欄（line_uid / is_active）：Replit 為權威 → 一般編輯「永不」改 line_uid。
+ *     唯一例外是 POST /:id/unbind-line（客服解除綁定），見該端點上方說明。
  *   - 業務資料欄（name/gender/email/venue/identity/住家電話/地址/line_id）：Ragic 為權威，
  *     admin 編輯先寫本地鏡像（交易內標記 last_synced_at = NULL），提交後即時回寫 Ragic
  *     （services/ragicWriteback，best-effort）；失敗列保持待同步，由每日備份排程重試。
@@ -22,6 +23,9 @@ const { pool } = require('../../models/db');
 const { requireAdminAuth, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
 const { parseRocOrIso, maskId, maskBlood, looksMasked, wantReveal, auditReveal, diffChanges, writeStudentAudit, adminActorName } = require('./_customerShared');
 const ragicWriteback = require('../../services/ragicWriteback');
+const ragicWriter = require('../../services/ragicWriter');
+const ragic = require('../../services/ragic');
+const crypto = require('crypto');
 
 const router = express.Router();
 
@@ -146,6 +150,125 @@ router.post('/', requireAdminAuth, (req, res) => {
 });
 
 // PATCH /:id — 更新家長業務欄位 + 子表學員（單一交易）
+/**
+ * POST /api/admin/customer-parents/:id/unbind-line — 客服解除 LINE 綁定
+ *
+ * 用途：家長換手機／換 LINE 帳號／誤綁，需要讓他重新走一次電話驗證。
+ *
+ * ── 為什麼要清「兩邊」──
+ * 只清本地的話，家長確實會被導回電話驗證（登入只看本地 parents.line_uid，
+ * 見 auth.js 的 parent-line-login，2026-07-03 定案），但他若是用**另一支**
+ * LINE 重綁，寫回 Ragic 時會撞上 _assertNoZ01LineUidConflict：
+ * Z01 上還留著舊 UID → 判定「已綁定其他 LINE UID，拒絕覆蓋」→ 綁不完成。
+ * 所以 Ragic Z01 的 UID 欄位也要一起清掉。
+ *
+ * ── 為什麼 Ragic 那步是 best-effort ──
+ * 本地清除必須先成功並 COMMIT，否則「Ragic 清了、本地沒清」會變成
+ * 家長還登得進去、但下次同步就衝突。反過來（本地清了、Ragic 沒清）
+ * 只影響「換別支 LINE」這一種情況，而且回應會明講，客服看得到。
+ *
+ * 不動的東西：學員、報名、上課紀錄、家長的業務資料全部保留。
+ * 這個動作只解除「哪一支 LINE 可以登入這個帳號」。
+ */
+router.post('/:id/unbind-line', requireAdminAuth, async (req, res) => {
+  const reason = String(req.body?.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: '請填寫解除綁定的原因', code: 'REASON_REQUIRED' });
+  if (reason.length > 500) return res.status(400).json({ error: '原因過長（上限 500 字）', code: 'REASON_TOO_LONG' });
+
+  const actor = adminActorName(req);
+  const client = await pool.connect();
+  let parent;
+  try {
+    await client.query('BEGIN');
+    if (!(await parentInScope(client, req, req.params.id))) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: '找不到此家長' });
+    }
+    const cur = await client.query(
+      `SELECT id, name, phone, line_uid, ragic_record_id FROM parents WHERE id = $1 FOR UPDATE`,
+      [req.params.id]
+    );
+    parent = cur.rows[0];
+    if (!parent) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: '找不到此家長' });
+    }
+    if (!isRealLineUid(parent.line_uid)) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: '此家長目前沒有綁定 LINE，不需要解除',
+        code: 'NOT_BOUND',
+      });
+    }
+
+    const oldUid = parent.line_uid;
+    await client.query(
+      // last_synced_at 一併清成 NULL：讓下次同步視為「未同步過」，
+      // 不會拿舊鏡像去覆蓋家長重新驗證後填的東西。
+      `UPDATE parents SET line_uid = NULL, last_synced_at = NULL, updated_at = NOW() WHERE id = $1`,
+      [req.params.id]
+    );
+
+    // 稽核：只落雜湊，完整 UID 屬 PII，不進資料庫也不進 log。
+    // new_uid_hash 是 NOT NULL，這裡放一個看得懂的哨兵值，之後查表一眼認得出
+    // 「這筆是解除綁定，不是換綁」。
+    const sha = (v) => crypto.createHash('sha256').update(String(v)).digest('hex');
+    await client.query(
+      `INSERT INTO parent_line_uid_rebind_audit
+         (canonical_parent_id, ragic_record_id, old_uid_hash, new_uid_hash,
+          verification_method, initiated_by, reason, reason_code,
+          correlation_id, verified_at, committed_at)
+       VALUES ($1,$2,$3,$4,'ADMIN_BACKOFFICE',$5,$6,'ADMIN_UNBIND',gen_random_uuid(),NOW(),NOW())`,
+      [parent.id, parent.ragic_record_id || null, sha(oldUid), sha('ADMIN_UNBIND'), actor, reason]
+    );
+    await client.query('COMMIT');
+
+    // ── COMMIT 之後才動 Ragic（順序不可顛倒，理由見上方說明）──
+    let ragicCleared = false;
+    let ragicError = null;
+    if (parent.ragic_record_id) {
+      try {
+        await ragicWriter.writeField(
+          'Z01', parent.ragic_record_id, ragic.FIELD.Z01.LINE_UID, '',
+          actor, 'admin-unbind-line', { reason }
+        );
+        ragicCleared = true;
+      } catch (e) {
+        ragicError = e.message;
+        console.warn('[unbind-line] Ragic Z01 UID 清除失敗（本地已解除）:', parent.id, e.message);
+      }
+    } else {
+      ragicError = '此家長在 Ragic 沒有對應紀錄（ragic_record_id 為空）';
+    }
+
+    console.log(JSON.stringify({
+      event: 'admin_unbind_line',
+      parent_id: parent.id,
+      ragic_record_id: parent.ragic_record_id || null,
+      ragic_cleared: ragicCleared,
+      by: actor,
+      at: new Date().toISOString(),
+    }));
+
+    return res.json({
+      ok: true,
+      ragic_cleared: ragicCleared,
+      ragic_error: ragicError,
+      // 客服要據此決定「要不要請家長務必用原本那支 LINE」
+      note: ragicCleared
+        ? '已解除。家長下次開啟系統會走電話驗證重新綁定，可換用不同的 LINE 帳號。'
+        : 'Replit 端已解除，但 Ragic 上的舊 UID 沒清掉。家長若用「原本那支 LINE」重綁沒問題；'
+          + '若要換一支 LINE，會在寫回 Ragic 時被擋下，請先人工清掉 Z01 的 LINE UID 欄位。',
+    });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('[admin/customer-parents/unbind-line]', err);
+    return res.status(500).json({ error: '解除綁定失敗', code: 'UNBIND_FAILED' });
+  } finally {
+    client.release();
+  }
+});
+
 router.patch('/:id', requireAdminAuth, async (req, res) => {
   const b = req.body || {};
   // NOT NULL 前置驗證：清空 name/phone 直接 400（而非讓 23502 中斷整筆交易）
