@@ -16,6 +16,31 @@ import {
 // tests/refund_reason_parity_test.js 會比對兩邊；改一邊沒改另一邊會紅。
 import { REFUND_REASONS, REFUND_FEE_RATE_PRESETS } from '../../../shared/refundReasons';
 
+// 這一頁看得到的狀態。以逗號串起來交給後端過濾，前端不再自己 .filter。
+const REFUND_STATUSES = ['active', 'confirmed', 'cancelled', 'refunded'];
+
+const onlyDigits = (v) => String(v || '').replace(/\D/g, '');
+
+/**
+ * 搜尋比對。資料已經載入，所以在前端做 —— 即時、不用每個按鍵打一次 API。
+ *
+ * 電話另外比對「純數字」：櫃檯常直接從別處貼過來，帶著空白或破折號
+ * （0912-345-678 / 0912 345 678）。只做字面比對的話那些都會查不到，
+ * 而使用者只會看到「查無資料」，不會知道是格式問題。
+ */
+function matchesQuery(row, q, venueName) {
+  if (!q) return true;
+  const needle = q.trim().toLowerCase();
+  if (!needle) return true;
+  const digits = onlyDigits(needle);
+  if (digits && digits.length >= 3 && onlyDigits(row.parent_phone).includes(digits)) return true;
+  const haystack = [
+    row.id, row.parent_name, row.parent_phone, row.coach,
+    venueName(row.venue_id), ...(row.students || []),
+  ].filter(Boolean).join(' ').toLowerCase();
+  return haystack.includes(needle);
+}
+
 export default function RefundPage() {
   const toast = useToast();
   const { user } = useAuth();
@@ -28,16 +53,19 @@ export default function RefundPage() {
   const [feePct, setFeePct] = useState('');       // 手續費率，以「百分比字串」持有（輸入框就是這個單位）
   const [feeOpen, setFeeOpen] = useState(false);  // 手續費率的下拉是否展開
   const [busy, setBusy] = useState(false);
+  const [query, setQuery] = useState('');       // 搜尋字串（前端即時過濾，不重打 API）
   const previewReqRef = useRef(0);
 
   async function load() {
     try {
       const [data, vs] = await Promise.all([
-        enrollmentsApi.list(),
+        // 狀態改由後端過濾（GET /enrollments 的 status 支援逗號分隔多值）。
+        // 以前是整包撈回來再在前端 .filter —— 多傳的那些列除了拖慢載入沒有任何用途。
+        // 含 refunded：已退費紀錄保留在清單中，供查看「退費時間」（操作欄顯示「已退費」）。
+        enrollmentsApi.list({ status: REFUND_STATUSES.join(',') }),
         venuesApi.list(),
       ]);
-      // 含 refunded：已退費紀錄保留在清單中，供查看「退費時間」（操作欄顯示「已退費」）。
-      setList(data.filter((e) => ['active', 'confirmed', 'cancelled', 'refunded'].includes(e.status)));
+      setList(data);
       setVenues(vs);
     } catch (e) {
       // 載入失敗時跳出無限轉圈：顯示空清單 + toast 引導重新整理
@@ -134,6 +162,7 @@ export default function RefundPage() {
 
   if (!list) return <LoadingSpinner fullPage />;
   const venueName = (id) => venues.find((v) => v.id === id)?.name || id;
+  const shown = list.filter((r) => matchesQuery(r, query, venueName));
 
   const columns = [
     { key: 'id', label: '編號', render: (r) => <span className="font-mono text-xs">{r.id}</span> },
@@ -166,7 +195,37 @@ export default function RefundPage() {
           也不再寫「不可手動更改」——手續費率已可逐筆調整，那句話會讓人以為那格不能動。
           現在講的是：公式、誰算的、哪一項可以動、動了會留痕。 */}
       <PageHeader title="退課處理" subtitle="F-R04 · 退款 = 剩餘比例 × (1 − 手續費率)，金額一律由系統試算；手續費率可逐筆調整，調整會記入 audit log" />
-      <DataTable columns={columns} rows={list} rowKey={(r) => r.id} empty="目前沒有可退費的課程" />
+
+      <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-gray-200 bg-white p-3 shadow-sm">
+        <div className="relative flex-1 min-w-[240px]">
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="搜尋：編號 / 家長 / 電話 / 學員 / 教練 / 場館"
+            className="w-full rounded-md border border-gray-300 px-3 py-1.5 pr-16 text-sm focus:border-brand-teal focus:outline-none"
+          />
+          {query && (
+            <button
+              type="button"
+              onClick={() => setQuery('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded px-2 py-0.5 text-xs text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+            >清除</button>
+          )}
+        </div>
+        <div className="text-xs text-gray-500">
+          {/* 搜尋時要同時給「找到幾筆」與「總共幾筆」——只給前者的話，
+              查不到時分不出是「沒有這個人」還是「清單根本沒載到」。 */}
+          {query ? <>符合 <span className="font-bold text-brand-primary">{shown.length}</span> / 共 {list.length} 筆</> : <>共 {list.length} 筆</>}
+        </div>
+      </div>
+
+      <DataTable
+        columns={columns}
+        rows={shown}
+        rowKey={(r) => r.id}
+        empty={query ? `找不到符合「${query}」的資料` : '目前沒有可退費的課程'}
+      />
 
       <ConfirmDialog
         open={!!target}

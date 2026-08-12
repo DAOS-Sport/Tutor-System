@@ -447,38 +447,38 @@ function tsToString(d) {
   return new Date(d).toISOString();
 }
 
-async function readEnrollment(id, { resolveLineProfile = false } = {}) {
-  const e = await pool.query(
-    `SELECT ae.*, au.name AS created_by_name,
-            p.line_uid AS parent_line_uid,
-            plp.display_name AS line_display_name,
-            plp.source AS line_profile_source
-       FROM admin_enrollments ae
-       LEFT JOIN admin_users au ON au.id = ae.created_by
-       LEFT JOIN parents p ON p.is_active=TRUE
-         AND regexp_replace(COALESCE(p.phone,''),'\\D','','g') =
-             regexp_replace(COALESCE(ae.parent_phone,''),'\\D','','g')
-       LEFT JOIN parent_line_profiles plp ON plp.line_uid=p.line_uid
-      WHERE ae.id = $1`,
-    [id]
-  );
-  if (!e.rowCount) return null;
-  const a = await pool.query(
-    `SELECT at, action, by_user, reason, refund_amount FROM admin_enrollment_audit_logs
-     WHERE enrollment_id = $1 ORDER BY at ASC, id ASC`,
-    [id]
-  );
-  const row = e.rows[0];
-  let lineDisplayName = row.line_display_name || '';
-  let lineProfileState = lineDisplayName ? 'CACHED' : (row.parent_line_uid ? 'NOT_CACHED' : 'NOT_BOUND');
-  if (resolveLineProfile && row.parent_line_uid && !lineDisplayName) {
-    const profile = await resolveParentLineDisplayName({
-      lineUid: row.parent_line_uid,
-      venueId: row.venue_id,
-    });
-    lineDisplayName = profile.displayName || '';
-    lineProfileState = profile.state;
-  }
+// 清單與明細共用的 SELECT。兩邊各寫一份必然會漂移 —— 而漂移的症狀是
+// 「明細看得到某欄、清單看不到」，很難聯想到是兩段 SQL 不一樣。
+const ENROLLMENT_SELECT = `
+  SELECT ae.*, au.name AS created_by_name,
+         p.line_uid AS parent_line_uid,
+         plp.display_name AS line_display_name,
+         plp.source AS line_profile_source
+    FROM admin_enrollments ae
+    LEFT JOIN admin_users au ON au.id = ae.created_by
+    LEFT JOIN parents p ON p.is_active=TRUE
+      AND regexp_replace(COALESCE(p.phone,''),'\\D','','g') =
+          regexp_replace(COALESCE(ae.parent_phone,''),'\\D','','g')
+    LEFT JOIN parent_line_profiles plp ON plp.line_uid=p.line_uid`;
+
+const AUDIT_SELECT = `
+  SELECT enrollment_id, at, action, by_user, reason, refund_amount
+    FROM admin_enrollment_audit_logs`;
+
+function shapeAuditLog(x) {
+  return {
+    at: tsToString(x.at),
+    action: x.action,
+    by: x.by_user,
+    ...(x.reason ? { reason: x.reason } : {}),
+    ...(x.refund_amount != null ? { refund_amount: Number(x.refund_amount) } : {}),
+  };
+}
+
+// 單筆與批次共用同一個組裝函式。清單曾經是「for + await readEnrollment」的
+// N+1（正式庫 807 筆 → 1,614 次循序往返），改批次時如果各自組裝，
+// 清單與明細的欄位遲早會分岔。
+function shapeEnrollment(row, auditRows, { lineDisplayName, lineProfileState }) {
   return {
     id: row.id,
     parent_name: row.parent_name,
@@ -517,14 +517,69 @@ async function readEnrollment(id, { resolveLineProfile = false } = {}) {
     enrollment_batch_id: row.enrollment_batch_id || null,
     created_by: row.created_by || null,
     created_by_name: row.created_by_name || null,
-    audit_logs: a.rows.map((x) => ({
-      at: tsToString(x.at),
-      action: x.action,
-      by: x.by_user,
-      ...(x.reason ? { reason: x.reason } : {}),
-      ...(x.refund_amount != null ? { refund_amount: Number(x.refund_amount) } : {}),
-    })),
+    audit_logs: (auditRows || []).map(shapeAuditLog),
   };
+}
+
+function lineStateOf(row) {
+  const lineDisplayName = row.line_display_name || '';
+  return {
+    lineDisplayName,
+    lineProfileState: lineDisplayName ? 'CACHED' : (row.parent_line_uid ? 'NOT_CACHED' : 'NOT_BOUND'),
+  };
+}
+
+async function readEnrollment(id, { resolveLineProfile = false } = {}) {
+  const e = await pool.query(`${ENROLLMENT_SELECT} WHERE ae.id = $1`, [id]);
+  if (!e.rowCount) return null;
+  const a = await pool.query(
+    `${AUDIT_SELECT} WHERE enrollment_id = $1 ORDER BY at ASC, id ASC`, [id]);
+  const row = e.rows[0];
+  let { lineDisplayName, lineProfileState } = lineStateOf(row);
+  if (resolveLineProfile && row.parent_line_uid && !lineDisplayName) {
+    const profile = await resolveParentLineDisplayName({
+      lineUid: row.parent_line_uid,
+      venueId: row.venue_id,
+    });
+    lineDisplayName = profile.displayName || '';
+    lineProfileState = profile.state;
+  }
+  return shapeEnrollment(row, a.rows, { lineDisplayName, lineProfileState });
+}
+
+/**
+ * 批次讀取（清單專用）。固定 2 次查詢，與筆數無關。
+ *
+ * 取代原本的「先 SELECT id，再 for 迴圈逐筆 await readEnrollment」——
+ * 那是 2N 次循序往返，正式庫退費頁 807 筆就是 1,614 次，整頁載入要等很久。
+ *
+ * 不做 resolveLineProfile：那會對 LINE API 產生 N+1 的外部呼叫，
+ * 清單本來就刻意不解析（見 GET /:id 上方註解），這裡維持同樣的界線。
+ */
+async function readEnrollmentsByIds(ids) {
+  if (!ids || !ids.length) return [];
+  const [e, a] = await Promise.all([
+    pool.query(`${ENROLLMENT_SELECT} WHERE ae.id = ANY($1::text[])`, [ids]),
+    pool.query(`${AUDIT_SELECT} WHERE enrollment_id = ANY($1::text[]) ORDER BY at ASC, id ASC`, [ids]),
+  ]);
+  const auditByEnrollment = new Map();
+  for (const x of a.rows) {
+    if (!auditByEnrollment.has(x.enrollment_id)) auditByEnrollment.set(x.enrollment_id, []);
+    auditByEnrollment.get(x.enrollment_id).push(x);
+  }
+  // 以電話正規化 join parents，理論上可能一筆報名對到多位家長而讓列數膨脹
+  // （正式庫目前 0 組重複，但那是資料現況、不是保證）。單筆版取 rows[0] 天生
+  // 不會重複，批次版要自己防，否則畫面會冒出兩列一模一樣的報名。
+  const seen = new Set();
+  const byId = new Map();
+  for (const row of e.rows) {
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    byId.set(row.id, shapeEnrollment(row, auditByEnrollment.get(row.id), lineStateOf(row)));
+  }
+  // 依傳入的 id 順序回傳 —— 呼叫端已經排序過（submitted_at DESC），
+  // ANY() 不保證順序，照 e.rows 走會讓清單順序隨機漂。
+  return ids.map((id) => byId.get(id)).filter(Boolean);
 }
 
 /**
@@ -779,12 +834,22 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
 
 router.get('/', requireAdminAuth, async (req, res) => {
   try {
-    const { status, search } = req.query;
+    const { search } = req.query;
+    // status 支援逗號分隔的多狀態（退費頁要 active/confirmed/cancelled/refunded 四種）。
+    // 以前只吃單一值，前端只好整包撈回來自己過濾 —— 那正是整頁載入很慢的原因之一。
+    const statuses = String(req.query.status || '')
+      .split(',').map((s) => s.trim()).filter(Boolean);
     // Task #90：場館範圍 — staff/manager 鎖在自己所屬全部場館；admin 可帶 venueId 自由查
     const scope = getScopedVenueIds(req);
     const where = [];
     const args = [];
-    if (status) { args.push(status); where.push(`status = $${args.length}`); }
+    if (statuses.length === 1) {
+      args.push(statuses[0]);
+      where.push(`status = ${args.length}`);
+    } else if (statuses.length > 1) {
+      args.push(statuses);
+      where.push(`status::text = ANY(${args.length}::text[])`);
+    }
     if (scope) {
       args.push(scope);
       where.push(`venue_id = ANY($${args.length}::text[])`);
@@ -812,9 +877,9 @@ router.get('/', requireAdminAuth, async (req, res) => {
                  ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
                  ORDER BY submitted_at DESC`;
     const r = await pool.query(sql, args);
-    const out = [];
-    for (const row of r.rows) out.push(await readEnrollment(row.id));
-    res.json(out);
+    // 批次讀，固定 2 次查詢。原本是 for 迴圈逐筆 await readEnrollment，
+    // 也就是 2N 次循序往返 —— 退費頁 807 筆＝1,614 次。
+    res.json(await readEnrollmentsByIds(r.rows.map((x) => x.id)));
   } catch (err) {
     console.error('[admin/enrollments]', err);
     res.status(500).json({ error: 'list enrollments failed' });
@@ -1683,5 +1748,8 @@ router._checkoutInternals = {
   ensureSoloCoursePeriod,
 };
 router._lineProfileInternals = { readEnrollment };
+// 清單的批次讀取。露出來是為了能驗「批次與單筆的回傳形狀完全一致」——
+// 兩者分岔的症狀是「明細看得到某欄、清單看不到」，很難聯想到根因。
+router._listInternals = { readEnrollment, readEnrollmentsByIds };
 
 module.exports = router;
