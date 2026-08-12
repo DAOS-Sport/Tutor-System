@@ -27,21 +27,10 @@ const templates = require('./emailTemplates');
 const objectStore = require('./objectStorage');
 const { venueOaDeepLink, OA_LOGIN_KEYWORD } = require('./lineRouting');
 
-const GUIDE_CID = 'parent-guide';
-// 使用說明海報。放在 repo 內（非 /uploads），因為它是產品素材不是使用者上傳物。
-// 檔案不存在時整段跳過，信退回原本的按鈕版 —— 缺一個素材不該讓通知信發不出去。
-function guideImagePath() {
-  const override = String(process.env.PARENT_GUIDE_IMAGE || '').trim();
-  if (override) return override;
-  // 副檔名不寫死：素材可能是 png 也可能是 jpg，換一種格式不該讓海報安靜地消失。
-  const dir = path.join(__dirname, '..', 'assets');
-  for (const ext of ['png', 'jpg', 'jpeg', 'webp']) {
-    const p = path.join(dir, `parent_guide.${ext}`);
-    try { if (fs.existsSync(p)) return p; } catch (_) { /* 續試下一個 */ }
-  }
-  return path.join(dir, 'parent_guide.png');
-}
-
+// 2026-08-12 起不再附使用說明海報（server/assets/parent_guide.jpg，約 280KB）。
+// 它教的是「加入場館官方帳號 → 圖文選單『家教班』」，而信裡的登入按鈕現在
+// 就直接開該館官方帳號、關鍵字也打好了 —— 海報講的正是按鈕已經做完的事。
+// 素材檔本身留著（owner 只說信裡不要附，沒說要刪）。
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 
 /**
@@ -63,11 +52,11 @@ async function readUploadBuffer(url) {
 }
 
 /**
- * 組信件附件：櫃檯上傳的發票照片 + 內嵌的使用說明海報。
- * 任何一個讀不到都只是少一個附件，不影響信件本身寄出。
+ * 組信件附件：只剩櫃檯上傳的發票照片。
+ * 讀不到就只是少一個附件，不影響信件本身寄出。
  */
 async function buildAttachments({ invoiceImageUrl, invoiceNumber }) {
-  const out = { attachments: [], hasInvoice: false, guideCid: null, notes: [] };
+  const out = { attachments: [], hasInvoice: false, notes: [] };
 
   if (invoiceImageUrl) {
     try {
@@ -88,18 +77,6 @@ async function buildAttachments({ invoiceImageUrl, invoiceNumber }) {
       out.notes.push('INVOICE_IMAGE_READ_FAILED');
       console.warn('[reconcileNotify] 讀發票圖失敗（信照寄）：' + e.message);
     }
-  }
-
-  try {
-    const p = guideImagePath();
-    if (fs.existsSync(p)) {
-      out.attachments.push({ filename: path.basename(p), path: p, cid: GUIDE_CID });
-      out.guideCid = GUIDE_CID;
-    } else {
-      out.notes.push('GUIDE_IMAGE_MISSING');
-    }
-  } catch (e) {
-    out.notes.push('GUIDE_IMAGE_READ_FAILED');
   }
 
   return out;
@@ -249,7 +226,6 @@ async function deliverOutbox(ids) {
         totalAmount: p.totalAmount,
         ...loginCta(p.venueId),
         issuedAt: p.issuedAt,
-        guideImageCid: att.guideCid,
         hasInvoiceAttachment: att.hasInvoice,
       });
       const res = await mailer.sendMail({
@@ -303,10 +279,9 @@ async function sweepPendingMail({ limit = 20, olderThanMinutes = 5 } = {}) {
 
 module.exports = {
   KIND,
-  GUIDE_CID,
   enqueueReconcileMail,
   deliverOutbox,
   sweepPendingMail,
   buildAttachments,
-  __test__: { normalizePhone, slimOrder, liffUrl, readUploadBuffer, guideImagePath },
+  __test__: { normalizePhone, slimOrder, liffUrl, readUploadBuffer, loginCta },
 };

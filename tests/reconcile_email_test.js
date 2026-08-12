@@ -125,33 +125,41 @@ await check('提醒事項與 CTA 文案', () => {
   assert.ok(text.includes(BASE.liffUrl), '純文字版也要有連結');
 });
 
-await check('圖片一律 cid: 內嵌，不得用外部網址或 /uploads 連結', () => {
-  const { html, text } = templates.reconcileSuccess({ ...BASE, guideImageCid: 'parent-guide', hasInvoiceAttachment: true });
+await check('信裡完全沒有圖片；若日後加圖必須是 cid:，且不得有 /uploads 連結', () => {
+  const { html, text } = templates.reconcileSuccess({ ...BASE, hasInvoiceAttachment: true });
   const srcs = Array.from(html.matchAll(/<img[^>]*\bsrc="([^"]*)"/gi)).map((m) => m[1]);
-  assert.ok(srcs.length >= 1, '一張圖都沒解析到 —— 掃描失效，非真的通過');
-  srcs.forEach((src) => assert.ok(src.startsWith('cid:'),
-    '圖片 src=' + src + ' 不是 cid:。外部網址會被大多數郵件客戶端預設擋掉，變成一個破圖框。'));
-  // /uploads/* 是完全公開無認證的路徑（server/index.js），放連結等於任何拿到網址的人
-  // 都看得到發票。附件只跟著這封信走。
+  // 2026-08-12 起海報已移除，正常情況這裡就是 0 張。
+  assert.strictEqual(srcs.length, 0,
+    '信裡出現了圖片：' + srcs.join(', ') + '。海報已於 2026-08-12 移除，'
+    + '若是刻意加回來，請一併更新這條斷言');
+  // 下面兩條是安全邊界，與有沒有圖無關，必須永遠成立：
+  // /uploads/* 是完全公開無認證的路徑（server/index.js），放連結等於任何拿到
+  // 網址的人都看得到發票。附件只跟著這封信走。
   assert.ok(!/\/uploads\//.test(html), 'html 出現 /uploads/ 連結');
   assert.ok(!/\/uploads\//.test(text), 'text 出現 /uploads/ 連結');
   assert.ok(!html.includes('報名網址'), 'html 仍有「家長報名網址」');
+  // 外部網址的圖會被大多數郵件客戶端預設擋掉，變成破圖框；也會洩漏開信行為。
+  assert.ok(!/<img[^>]*src="https?:/i.test(html), '出現外部網址的圖片，必須改用 cid: 內嵌');
 });
 
-await check('有海報 → 登入按鈕在上、海報在下，兩者並存', () => {
-  const { html } = templates.reconcileSuccess({ ...BASE, guideImageCid: 'parent-guide' });
+await check('使用說明海報已移除：HTML 與純文字版都不得殘留', () => {
+  // 海報教的是「加入場館官方帳號 → 圖文選單」，而登入按鈕現在就直接開該館
+  // 官方帳號、關鍵字也打好了。兩邊只清一邊的話，純文字版會留下一句
+  //「本信附有圖解說明」指向一個不存在的附件。
+  const { html, text } = templates.reconcileSuccess({ ...BASE, hasInvoiceAttachment: true });
+  for (const needle of ['parent-guide', 'cid:', '圖解說明', '圖文選單', '如何進入家教系統', '依下圖']) {
+    assert.ok(!html.includes(needle), `HTML 仍殘留海報相關內容：${needle}`);
+    assert.ok(!text.includes(needle), `純文字版仍殘留海報相關內容：${needle}`);
+  }
+  // 掃描失效偵測：信本身要還是完整的，不能因為樣板整個壞掉而「什麼都找不到」。
+  assert.ok(html.length > 1000 && text.length > 200, '信的內容短得不合理，樣板可能壞了');
+  assert.ok(html.includes('點擊登入家教系統'), '海報拿掉了，登入按鈕更不能跟著不見');
+});
+
+await check('登入按鈕仍在，且是 CTA 區唯一的東西', () => {
+  const { html } = templates.reconcileSuccess({ ...BASE });
   assert.ok(html.includes('點擊登入家教系統'), '登入按鈕不見了');
-  assert.ok(html.includes('cid:parent-guide'), '沒有內嵌海報');
   assert.ok(html.includes(BASE.liffUrl), '按鈕沒有指向 LIFF URL');
-  // 順序有意義：按鈕是最短路徑，海報是它走不通時的備援。
-  assert.ok(html.indexOf('點擊登入家教系統') < html.indexOf('cid:parent-guide'),
-    '順序反了 —— 按鈕應在海報之上');
-});
-
-await check('沒有海報 → 退回按鈕，信不會殘缺', () => {
-  const { html } = templates.reconcileSuccess({ ...BASE, guideImageCid: null });
-  assert.ok(html.includes('點擊登入家教系統'), '缺海報檔時應退回按鈕版');
-  assert.ok(html.includes(BASE.liffUrl), '按鈕應指向 LIFF URL');
 });
 
 await check('有發票附件 → 信裡要講；沒有 → 不可以說有', () => {
@@ -163,13 +171,14 @@ await check('有發票附件 → 信裡要講；沒有 → 不可以說有', () 
     '沒附件卻說有 —— 家長會去翻一個不存在的附件，然後打電話問櫃檯');
 });
 
-await check('純文字版：連結與備援步驟都要給，且連結在前', () => {
-  const { text } = templates.reconcileSuccess({ ...BASE, guideImageCid: 'parent-guide' });
+await check('純文字版：登入連結要給，且在結尾聲明之前', () => {
+  const { text } = templates.reconcileSuccess({ ...BASE });
   assert.ok(text.includes(BASE.liffUrl), '純文字版少了直接登入的連結');
-  assert.ok(text.includes('如何進入家教系統'), '純文字版沒有替代指引');
-  assert.ok(text.includes('圖文選單'), '沒寫出關鍵步驟（加官方帳號 → 圖文選單家教班）');
-  assert.ok(text.indexOf(BASE.liffUrl) < text.indexOf('如何進入家教系統'),
-    '順序應與 HTML 版一致：連結在前、備援步驟在後');
+  assert.ok(text.includes('點擊登入家教系統：'), '純文字版少了連結的標籤');
+  const tail = '本信件由系統自動發送';
+  assert.ok(text.includes(tail), '結尾聲明不見了 —— 掃描失效');
+  assert.ok(text.indexOf(BASE.liffUrl) < text.indexOf(tail),
+    '連結被排到結尾聲明之後，家長會看不到');
 });
 
 await check('HTML escape：家長姓名含標籤不會注入', () => {

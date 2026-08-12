@@ -89,10 +89,15 @@ function row(label, value) {
  * @param {'oa'|'liff'} [loginVia] 決定按鈕底下要寫哪一段說明 —— 兩條路徑
  *   使用者要做的事完全不同（OA 要自己按送出），寫錯就等於沒寫。
  * @param {string} [liffUrl] 舊參數名，等同 loginUrl。保留是為了既有呼叫端與測試。
+ *
+ * 2026-08-12 移除使用說明海報（原本以 cid: 內嵌的 parent_guide.jpg）。
+ * 它教的是「加入場館官方帳號 → 圖文選單」，而登入按鈕現在就直接開該館的
+ * 官方帳號、還把關鍵字打好了 —— 海報講的正是按鈕已經做完的事，留著只是
+ * 讓信變長、附件變大。owner 決定拿掉。
  */
 function reconcileSuccess({ parentName, venueName, orders = [], invoiceNumber, totalAmount, liffUrl, issuedAt,
                             loginUrl, loginVia = 'liff', loginKeyword = '新家教系統登入',
-                            guideImageCid = null, hasInvoiceAttachment = false }) {
+                            hasInvoiceAttachment = false }) {
   const ctaUrl = loginUrl || liffUrl || '';
   const viaOa = ctaUrl ? loginVia === 'oa' : false;
   const list = Array.isArray(orders) ? orders.filter(Boolean) : [];
@@ -173,21 +178,7 @@ function reconcileSuccess({ parentName, venueName, orders = [], invoiceNumber, t
           </td>
         </tr>
       </table>` : '';
-  const guideBlock = guideImageCid ? `
-      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:${ctaUrl ? '16px' : '26px'};">
-        ${ctaUrl && !viaOa ? `<tr>
-          <td align="center" style="padding-bottom:8px;color:${MUTED};font-size:11px;line-height:18px;">
-            無法直接登入嗎？依下圖步驟從場館官方帳號進入即可。
-          </td>
-        </tr>` : ''}
-        <tr>
-          <td align="center" style="padding:0;">
-            <img src="cid:${esc(guideImageCid)}" alt="新家教系統使用說明" width="544"
-                 style="display:block;width:100%;max-width:544px;height:auto;border:0;border-radius:8px;">
-          </td>
-        </tr>
-      </table>` : '';
-  const cta = buttonBlock + hintBlock + guideBlock;
+  const cta = buttonBlock + hintBlock;
 
   const html = `<!doctype html>
 <html lang="zh-Hant">
@@ -281,14 +272,6 @@ function reconcileSuccess({ parentName, venueName, orders = [], invoiceNumber, t
       ? `（會開啟${venueName || '本館'}的 LINE 官方帳號並帶入「${loginKeyword}」，請按送出取得登入入口）`
       : '（在 LINE App 內開啟可自動登入）');
     textLines.push('');
-  }
-  if (guideImageCid) {
-    // 純文字版看不到內嵌圖，要把海報上的步驟寫出來，否則這些人拿不到任何指引。
-    textLines.push('【如何進入家教系統】無法直接登入時請改走這條');
-    textLines.push('1. 於 LINE 搜尋並加入你所屬場館的官方帳號');
-    textLines.push('2. 點擊下方圖文選單的「家教班」');
-    textLines.push('3. 依指示完成註冊／登入，即可查看課程、報名與簽到');
-    textLines.push('（本信附有圖解說明，若無法顯示請洽現場櫃檯）');
   }
   textLines.push('');
   textLines.push('本信件由系統自動發送，請勿直接回覆。如有任何問題，請洽各館櫃檯。');

@@ -44,7 +44,7 @@ function render(venueId, venueName, fallback = 'https://liff.line.me/2009958451-
   return templates.reconcileSuccess({
     parentName: '測試家長', venueName, orders: ORDERS,
     invoiceNumber: 'DL02996195', totalAmount: 3375,
-    issuedAt: '2026-08-10T07:30:00Z', guideImageCid: 'parent-guide',
+    issuedAt: '2026-08-10T07:30:00Z',
     ...cta(venueId, fallback),
   });
 }
@@ -174,7 +174,6 @@ check('沒有 OA 的場館：退回 LIFF，按鈕不會變成死連結', () => {
   assert.strictEqual(buttonHref(b.html), fallback, '沒有 OA 時應退回 LIFF 連結');
   assert.ok(!b.html.includes('直接按送出'),
     'LIFF 那條不需要按送出，出現這句是說明文字跟實際行為對不上');
-  assert.ok(b.html.includes('無法直接登入嗎'), 'LIFF 那條要保留原本的海報導引說明');
 });
 
 check('venue_id 是 null（舊 outbox 補寄）不會壞掉', () => {
@@ -188,13 +187,19 @@ check('連 LIFF 都沒設定時，整顆按鈕不出現（而不是連到空字�
   const b = templates.reconcileSuccess({
     parentName: '測試家長', venueName: '新竹科學園區', orders: ORDERS,
     invoiceNumber: 'DL02996195', totalAmount: 3375,
-    issuedAt: '2026-08-10T07:30:00Z', guideImageCid: 'parent-guide',
+    issuedAt: '2026-08-10T07:30:00Z',
     loginUrl: '', loginVia: 'liff',
   });
   assert.ok(!/點擊登入家教系統<\/a>/.test(b.html),
     '沒有可用連結時不該渲染按鈕 —— href="" 會讓家長點了跳到自己的信箱網域');
   assert.ok(!b.html.includes('直接按送出'), '沒有按鈕就不該有按鈕的說明文字');
-  assert.ok(b.html.includes('cid:parent-guide'), '按鈕沒了，海報導引更要在');
+  // 海報已於 2026-08-12 移除，所以這種情況信裡就是沒有登入入口。
+  // 但信本身仍必須完整寄出 —— 那才是這封信的主要內容。
+  // 註：單筆訂單走 single 分支（八欄平鋪），本來就不印學員姓名，
+  // 學員只出現在多筆訂單的明細表裡，所以這裡不能拿學員名當完整性依據。
+  for (const needle of ['DL02996195', '夢想體育學院-新竹科學園區游泳池', 'NT$ 3,375', '測試教練']) {
+    assert.ok(b.html.includes(needle), `沒有登入連結時信的正文仍要完整，但少了：${needle}`);
+  }
 });
 
 check('舊參數名 liffUrl 仍然有效（既有呼叫端與測試沒被打斷）', () => {
