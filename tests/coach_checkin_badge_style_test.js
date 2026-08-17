@@ -84,8 +84,8 @@ check('共用卡片 CoachRecordCard 的「已簽到」方塊用家長端同一�
 
 check('授課記錄確實走共用元件，沒有再自己寫一份簽到章', () => {
   const src = stripComments(read('pages/CoachHistoryPage.jsx'));
-  assert.ok(/<StatusChip tone="green">/.test(src),
-    '授課記錄沒有使用共用的綠色狀態標籤');
+  assert.ok(/<StatusBanner\s+tone="green"/.test(src),
+    '授課記錄沒有使用共用的綠色狀態 banner');
   assert.ok(!/s\.checked_in \? '[^']*(emerald|lime|green-)/.test(src),
     '頁面裡又出現硬寫的色票 —— 應該一律走 CoachRecordCard');
   // 簽到記錄是「呈現」不是「操作」：列表上不該出現看起來能按的簽到入口。

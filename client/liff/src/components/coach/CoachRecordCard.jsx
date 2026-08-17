@@ -78,6 +78,29 @@ export function StatusChip({ tone = 'gray', children }) {
   );
 }
 
+/**
+ * 正方形狀態 banner —— 授課記錄的「已簽到／未簽到」用。
+ *
+ * 為什麼這裡是正方形而報名記錄是小標籤：授課記錄一列只有一個狀態，
+ * 它就是那張卡的主角，要一眼看到；報名記錄的右欄還要放組別、團報與剩餘堂數，
+ * 塞一個正方形進去會把其他資訊擠掉。
+ *
+ * 尺寸刻意寫死 60×60：右欄固定 92px，正方形要能穩定置中且左右留白一致。
+ * 內距用 justify-center 讓文字垂直置中，不靠 padding 硬撐 —— 有無第二行
+ * 都不會讓方塊變形。
+ */
+export function StatusBanner({ tone = 'gray', label, sub }) {
+  return (
+    <div
+      style={{ width: 60, height: 60 }}
+      className={`flex shrink-0 flex-col items-center justify-center rounded-xl px-1 text-center leading-tight ${TONE[tone] || TONE.gray}`}
+    >
+      <span className="max-w-full truncate text-xs font-bold">{label}</span>
+      {sub && <span className="mt-0.5 max-w-full truncate text-[10px] font-medium tabular-nums opacity-75">{sub}</span>}
+    </div>
+  );
+}
+
 /** 剩餘／總堂數。教練最常掃的一個數字，所以放大。 */
 export function SessionCount({ remaining, total, tone = 'green' }) {
   const t = Number(total);

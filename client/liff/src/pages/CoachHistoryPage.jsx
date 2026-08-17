@@ -6,7 +6,7 @@ import { useToast } from '../context/ToastContext';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { formatTWDate, formatTWTime, todayTaipeiYMD, addDaysToTaipeiYMD, checkinLabel } from '../utils/format';
 import CoachRecordCard, {
-  StatusChip, TypeBadge, courseTitle, ratePercent, periodSummary,
+  StatusBanner, TypeBadge, courseTitle, ratePercent, periodSummary,
 } from '../components/coach/CoachRecordCard';
 
 const STATUS_OPTIONS = [
@@ -180,7 +180,7 @@ export default function CoachHistoryPage() {
                     {periodSummary(s.period_count, s.total_sessions) && (
                       <>
                         <span className="mx-1 text-gray-300">‧</span>
-                        <span className="text-gray-900">{periodSummary(s.period_count, s.total_sessions)}</span>
+                        <span className="whitespace-nowrap text-gray-900">{periodSummary(s.period_count, s.total_sessions)}</span>
                       </>
                     )}
                   </>
@@ -204,10 +204,16 @@ export default function CoachHistoryPage() {
                     <TypeBadge courseType={s.course_type} />
                     {/* 這裡只呈現「簽到記錄」，不做成看起來能按的按鈕。
                         簽到會扣課並推播給教練，有自己的流程與稽核，
-                        不該讓人以為在列表上點一下就能改。 */}
+                        不該讓人以為在列表上點一下就能改。
+                        時分拆到第二行：checkinLabel 會回「已簽到 11:58」，
+                        整串塞進 60px 寬會被截成「已簽到 1…」。 */}
                     {s.checked_in
-                      ? <StatusChip tone="green">{checkinLabel(s.scheduled_at, s.checked_in_at)}</StatusChip>
-                      : <StatusChip tone="gray">未簽到</StatusChip>}
+                      ? <StatusBanner
+                          tone="green"
+                          label="已簽到"
+                          sub={checkinLabel(s.scheduled_at, s.checked_in_at).replace('已簽到', '').trim() || null}
+                        />
+                      : <StatusBanner tone="gray" label="未簽到" />}
                   </>
                 }
                 footer={<span className="font-semibold text-brand-teal">點選進入 →</span>}

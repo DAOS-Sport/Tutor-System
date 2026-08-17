@@ -227,7 +227,9 @@ export function EnrollmentRow({ item, onClick, detailed = false, coachName = '',
           {periodSummary(item.period_count, item.total_sessions) && (
             <>
               <span className="mx-1 text-gray-300">‧</span>
-              <span className="text-gray-900">{periodSummary(item.period_count, item.total_sessions)}</span>
+              {/* 「一期 共 6 堂」是一段完整語意，被拆成兩行會讀成
+                  「…‧ 一期」換行「共 6 堂」，看起來像版壞掉。 */}
+              <span className="whitespace-nowrap text-gray-900">{periodSummary(item.period_count, item.total_sessions)}</span>
             </>
           )}
         </>
