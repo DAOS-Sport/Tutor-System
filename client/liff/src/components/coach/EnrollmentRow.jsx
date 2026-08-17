@@ -3,12 +3,11 @@ import {
   paymentStatusLabel,
   formatTWYMD,
   formatTWTime,
-  taipeiCalendarDate,
 } from '../../utils/format';
 // 與授課記錄共用同一套卡片外觀。兩頁各寫一份的話，改了一邊另一邊不會跟上，
 // 教練在自己的分頁之間會看到兩種排版。
 import CoachRecordCard, {
-  StatusSquare, TypeBadge, courseTitle, ratePercent, periodSummary,
+  StatusChip, SessionCount, TypeBadge, courseTitle, ratePercent, periodSummary,
 } from './CoachRecordCard';
 
 /**
@@ -109,14 +108,6 @@ export function countsFrom(data) {
   return { in_progress: c.confirmed || 0, completed: 0, pending_payment: c.pending_payment || 0 };
 }
 
-// 台北日曆日差。用 format.js 的 taipeiCalendarDate（UTC 午夜容器，該檔註明必須
-// 搭配 UTC getter 使用）相減，不碰本地時區。
-function daysSinceTaipei(input) {
-  const from = taipeiCalendarDate(input);
-  const today = taipeiCalendarDate(new Date());
-  if (!from || !today) return null;
-  return Math.round((today.getTime() - from.getTime()) / 86400000);
-}
 
 // YYYY/MM/DD HH:mm（台北）。不用 formatTWDateTime —— 它會帶「（週四）」，
 // 在一列排 2～3 個時間點的密集清單裡，星期是純噪音。
@@ -207,24 +198,19 @@ export function EnrollmentRow({ item, onClick, detailed = false, coachName = '',
   const payerLabel = payers.length === 1 ? payers[0]
     : (payers.length > 1 ? `${payers.length} 位家長` : '—');
   const rows = timeline(item, detailed);
-  const waited = st.key === 'pending_payment'
-    ? daysSinceTaipei(item.submitted_at || item.created_at)
-    : null;
   const classmates = detailed ? classRoster(item, studentList) : null;
-  // 剩餘堂數：卡片右側方塊要印「剩 8 / 共 12」。total 缺值時只印已用，
-  // 不要算出 NaN 或負數 —— 正式庫有 183 列 total_sessions 為 NULL。
+  // 剩餘堂數：教練最常掃的一個數字，所以在右欄放大顯示。
+  // total 缺值時整段不顯示，不要算出 NaN 或負數 —— 正式庫有 183 列
+  // total_sessions 為 NULL。
   const total = Number(item.total_sessions);
   const used = Number(item.used_sessions) || 0;
   const hasTotal = Number.isFinite(total) && total > 0;
   const remaining = hasTotal ? Math.max(0, total - used) : null;
 
-  // 方塊的配色沿用全站狀態語意（綠＝進行中、橘＝待處理、灰＝結束），
-  // 不跟著設計稿把「剛報名」改成綠 —— admin 端與家長端都是這套，
-  // 只有教練這一頁反過來的話，同一個人在不同畫面會學到兩套規則。
-  const squareTone = { in_progress: 'green', pending_payment: 'amber', completed: 'gray' }[st.key] || 'gray';
-  const squareBody = st.key === 'in_progress'
-    ? (remaining !== null ? `剩 ${remaining}/${total}` : `已上 ${used}`)
-    : (st.key === 'pending_payment' ? '待對帳' : (st.key === 'completed' ? '已結訓' : null));
+  // 配色沿用全站狀態語意（綠＝進行中、橘＝待處理、灰＝結束）。
+  // admin 端與家長端都是這套，只有教練這一頁反過來的話，
+  // 同一個人在不同畫面會學到兩套規則。
+  const tone = { in_progress: 'green', pending_payment: 'amber', completed: 'gray' }[st.key] || 'gray';
 
   return (
     <CoachRecordCard
@@ -234,7 +220,7 @@ export function EnrollmentRow({ item, onClick, detailed = false, coachName = '',
       rate={ratePercent(multiplier)}
       subject={
         <>
-          <span className="truncate">{students}</span>
+          <span>{students}</span>
           {studentList.length > 1 && (
             <span className="ml-1 text-[10px] font-normal tabular-nums text-gray-400">{studentList.length} 位</span>
           )}
@@ -264,23 +250,23 @@ export function EnrollmentRow({ item, onClick, detailed = false, coachName = '',
               ))}
             </div>
           )}
-          {waited !== null && (
-            <div className="mt-0.5 tabular-nums text-brand-amber">
-              {waited <= 0 ? '今天送出' : `已等 ${waited} 天`}
-            </div>
-          )}
           {classmates}
         </>
       }
-      badge={
-        <div className="flex items-center gap-1">
-          {item.is_group && (
-            <span className="rounded-md bg-brand-teal/10 px-1.5 py-0.5 text-[10px] font-semibold text-brand-teal">團報</span>
+      aside={
+        <>
+          <div className="flex items-center gap-1">
+            {item.is_group && (
+              <span className="whitespace-nowrap rounded-md bg-brand-teal/10 px-1.5 py-0.5 text-[10px] font-semibold text-brand-teal">團報</span>
+            )}
+            <TypeBadge courseType={item.course_type} />
+          </div>
+          <StatusChip tone={tone}>{st.label}</StatusChip>
+          {st.key === 'in_progress' && (
+            <SessionCount remaining={remaining} total={total} tone="green" />
           )}
-          <TypeBadge courseType={item.course_type} />
-        </div>
+        </>
       }
-      square={<StatusSquare tone={squareTone} label={st.label === '剛報名待對帳' ? '剛報名' : st.label} body={squareBody} />}
     />
   );
 }

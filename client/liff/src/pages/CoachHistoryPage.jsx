@@ -6,7 +6,7 @@ import { useToast } from '../context/ToastContext';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { formatTWDate, formatTWTime, todayTaipeiYMD, addDaysToTaipeiYMD, checkinLabel } from '../utils/format';
 import CoachRecordCard, {
-  StatusSquare, TypeBadge, CheckIcon, courseTitle, ratePercent, periodSummary,
+  StatusChip, TypeBadge, courseTitle, ratePercent, periodSummary,
 } from '../components/coach/CoachRecordCard';
 
 const STATUS_OPTIONS = [
@@ -199,12 +199,16 @@ export default function CoachHistoryPage() {
                     )}
                   </>
                 }
-                badge={<TypeBadge courseType={s.course_type} />}
-                square={
-                  s.checked_in
-                    ? <StatusSquare tone="green" icon={<CheckIcon />} label="已簽到"
-                        body={checkinLabel(s.scheduled_at, s.checked_in_at).replace('已簽到', '').trim() || null} />
-                    : <StatusSquare tone="primary" label="未簽到" body="點進去簽" />
+                aside={
+                  <>
+                    <TypeBadge courseType={s.course_type} />
+                    {/* 這裡只呈現「簽到記錄」，不做成看起來能按的按鈕。
+                        簽到會扣課並推播給教練，有自己的流程與稽核，
+                        不該讓人以為在列表上點一下就能改。 */}
+                    {s.checked_in
+                      ? <StatusChip tone="green">{checkinLabel(s.scheduled_at, s.checked_in_at)}</StatusChip>
+                      : <StatusChip tone="gray">未簽到</StatusChip>}
+                  </>
                 }
                 footer={<span className="font-semibold text-brand-teal">點選進入 →</span>}
               />
