@@ -40,41 +40,55 @@ export default function MonthGrid({ anchor, slots, onPickDate }) {
 
   return (
     <div>
-      <div className="grid grid-cols-7 gap-1 text-center text-[10px] font-bold text-gray-400">
-        {WEEKDAY_TC.map((w) => <div key={w} className="py-1">{w.slice(1)}</div>)}
+      {/* 與共用 DateTimePicker 同一套語彙：無框線、週末用品牌青、今天用細環、
+          數字在上小字在下。這裡的小字是可預約堂數 —— 教練掃月曆就是在找那個。 */}
+      <div className="grid grid-cols-7 text-center text-[11px] font-bold">
+        {WEEKDAY_TC.map((w, i) => (
+          <div key={w} className={`py-1.5 ${i === 0 || i === 6 ? 'text-brand-teal' : 'text-gray-400'}`}>{w.slice(1)}</div>
+        ))}
       </div>
-      <div className="grid grid-cols-7 gap-1">
-        {cells.map((d) => {
+      <div className="grid grid-cols-7 gap-y-1">
+        {cells.map((d, i) => {
           const inMonth = d >= monthStart && d < monthEnd;
           const isToday = sameYMD(d, today);
           const c = bucketsFor(d);
-          const total = c.available + c.booked + c.blocked;
+          const dow = i % 7;
+          // 一格只給一個數字。三種狀態互斥呈現：有空堂就報空堂數（教練要找的），
+          // 沒空堂但有預約就是「滿」，只剩封鎖就是「休」。
+          const sub = c.available > 0 ? String(c.available)
+            : c.booked > 0 ? '滿'
+              : c.blocked > 0 ? '休' : '';
+          const subTone = c.available > 0 ? 'text-brand-green'
+            : c.booked > 0 ? 'text-brand-teal' : 'text-gray-400';
           return (
             <button
               key={d.toISOString()}
+              type="button"
               onClick={() => onPickDate(d)}
-              className={`flex h-14 flex-col rounded-lg border p-1 text-left text-[11px] transition active:scale-95 ${
-                inMonth ? 'bg-white border-gray-200' : 'bg-gray-50 border-gray-100 opacity-60'
-              } ${isToday ? 'ring-2 ring-brand-teal' : ''}`}
+              className={`mx-auto flex h-12 w-11 flex-col items-center justify-center gap-0.5 rounded-lg transition active:scale-95 ${
+                isToday ? 'bg-brand-primary text-white'
+                  : c.available > 0 ? 'bg-brand-green/10 hover:bg-brand-green/20'
+                    : 'hover:bg-gray-100'
+              }`}
             >
-              <span className={`text-[11px] font-bold ${isToday ? 'text-brand-teal' : inMonth ? 'text-brand-primary' : 'text-gray-400'}`}>
+              <span className={`text-[13px] tabular-nums ${
+                isToday ? 'font-bold text-white'
+                  : !inMonth ? 'font-normal text-gray-300'
+                    : dow === 0 || dow === 6 ? 'font-bold text-brand-teal' : 'font-medium text-gray-700'
+              }`}>
                 {d.getUTCDate()}
               </span>
-              {total > 0 && (
-                <div className="mt-auto flex gap-0.5">
-                  {c.available > 0 && <span className="h-1 flex-1 rounded bg-brand-green" title={`可預約 ${c.available}`} />}
-                  {c.booked    > 0 && <span className="h-1 flex-1 rounded bg-brand-teal"  title={`已預約 ${c.booked}`} />}
-                  {c.blocked   > 0 && <span className="h-1 flex-1 rounded bg-gray-400"    title={`封鎖 ${c.blocked}`} />}
-                </div>
-              )}
+              <span className={`text-[10px] leading-none tabular-nums ${isToday ? 'text-white/80' : subTone}`}>
+                {sub || '\u00a0'}
+              </span>
             </button>
           );
         })}
       </div>
       <div className="mt-3 flex items-center justify-center gap-3 text-[10px] text-gray-500">
-        <span className="flex items-center gap-1"><span className="h-2 w-3 rounded bg-brand-green" />可預約</span>
-        <span className="flex items-center gap-1"><span className="h-2 w-3 rounded bg-brand-teal" />已預約</span>
-        <span className="flex items-center gap-1"><span className="h-2 w-3 rounded bg-gray-400" />封鎖</span>
+        <span className="flex items-center gap-1"><span className="h-2 w-3 rounded bg-brand-green" />數字＝可預約</span>
+        <span className="flex items-center gap-1"><span className="h-2 w-3 rounded bg-brand-teal" />滿＝已約完</span>
+        <span className="flex items-center gap-1"><span className="h-2 w-3 rounded bg-gray-400" />休＝已封鎖</span>
       </div>
     </div>
   );

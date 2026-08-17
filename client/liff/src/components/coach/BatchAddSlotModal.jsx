@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import DateTimePicker from '../../../../shared/DateTimePicker.jsx';
 import { slotsApi } from '../../api/slots';
 import { addDaysToTaipeiYMD, todayTaipeiYMD } from '../../utils/format';
 import { cleanVenueList } from '../../utils/venues';
@@ -96,12 +97,12 @@ export default function BatchAddSlotModal({ coachId, venueIds, venueNameMap, onC
         <form onSubmit={handleSubmit} className="space-y-3 text-sm">
           <div className="grid grid-cols-2 gap-3">
             <Field label="起始日期">
-              <input type="date" required value={from} onChange={(e) => setFrom(e.target.value)}
-                className="block w-full min-w-0 box-border appearance-none rounded-lg border border-gray-300 px-3 py-2" />
+              <DateTimePicker value={from} max={to || undefined} onChange={setFrom}
+                placeholder="起始日" className="min-w-0" />
             </Field>
             <Field label="結束日期">
-              <input type="date" required value={to} min={from} onChange={(e) => setTo(e.target.value)}
-                className="block w-full min-w-0 box-border appearance-none rounded-lg border border-gray-300 px-3 py-2" />
+              <DateTimePicker value={to} min={from || undefined} onChange={setTo}
+                placeholder="結束日" className="min-w-0" />
             </Field>
           </div>
 

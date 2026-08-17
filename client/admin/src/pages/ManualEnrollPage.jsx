@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import DateTimePicker from '../../../shared/DateTimePicker.jsx';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
@@ -37,6 +38,17 @@ function Label({ children }) {
   return <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-500">{children}</label>;
 }
 function Inp({ value, onChange, type = 'text', placeholder, disabled, className = '' }) {
+  // 生日這類日期欄位走共用選擇器（面板標題可點，直接跳年份 —— 用月份箭頭
+  // 從今年退到 2015 年要按 130 次）。其餘型別維持原生 input。
+  if (type === 'date') {
+    return (
+      <DateTimePicker
+        value={value} onChange={onChange} disabled={disabled}
+        placeholder={placeholder || '出生年月日'} clearable
+        className={className}
+      />
+    );
+  }
   return (
     <input
       type={type} value={value} disabled={disabled} placeholder={placeholder}

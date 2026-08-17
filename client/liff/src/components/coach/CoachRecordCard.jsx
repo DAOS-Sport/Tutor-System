@@ -108,13 +108,15 @@ export function SessionCount({ remaining, total, tone = 'green' }) {
   if (!Number.isFinite(t) || t <= 0 || !Number.isFinite(r)) return null;
   const color = TONE[tone] ? TONE[tone].split(' ').find((c) => c.startsWith('text-')) : 'text-gray-500';
   return (
-    // 字級與旁邊的狀態標籤（11px）維持同一個量級：只讓剩餘數大一階（14px）。
-    // 先前用 text-xl（20px）比整張卡的標題還大，右欄看起來像另一個區塊。
+    // 2026-08-17 owner：剩餘堂數再放大約 1.5 倍多（16px → 26px）。
+    // 這是教練最常掃的一個數字，刻意讓它比卡片標題（17px）還大 —— 右欄就是為它存在的。
+    // 「剩」與分母跟著等比長，整組才會讀成一個單位而不是一個大字配兩個小字。
+    // 右欄寬 104px：兩位數的「剩 12/24」約 78px，仍在框內。
     <div className={`flex items-baseline gap-0.5 tabular-nums ${color}`}>
-      <span className="text-[11px] font-medium opacity-70">剩</span>
-      <span className="text-base font-extrabold leading-none">{r}</span>
-      <span className="text-xs font-bold opacity-50">/</span>
-      <span className="text-xs font-bold opacity-70">{t}</span>
+      <span className="text-[12px] font-medium opacity-70">剩</span>
+      <span className="text-[26px] font-extrabold leading-none">{r}</span>
+      <span className="text-[15px] font-bold opacity-50">/</span>
+      <span className="text-[18px] font-bold opacity-70">{t}</span>
     </div>
   );
 }

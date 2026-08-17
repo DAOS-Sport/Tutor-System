@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import DateTimePicker from '../../../shared/DateTimePicker.jsx';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
@@ -300,6 +301,19 @@ export default function CourseTypesPage() {
   // 因此儲存/取消讀到的永遠是最新值（不依賴「按鈕一定先觸發 input blur」這種跨瀏覽器不一致行為）。
   // Esc 以進入編輯時的原值還原。type: text|number|select|datetime；dim＝唯讀灰階；cal＝日曆 icon。
   const ecell = ({ field, type = 'text', display, editValue, options, apply, placeholder, dim, cal }) => {
+    // datetime 不走「點擊即編輯」：共用選擇器是彈出面板，點面板內的日期會讓
+    // 觸發鈕失焦，剛好撞上下面那個「blur 就結束編輯」的生命週期 —— 面板會在
+    // 選到日期的同一瞬間關掉。選擇器本身就長得像控制項，直接常駐即可。
+    if (type === 'datetime') {
+      return (
+        <div className={`cell${dim ? ' is-dim' : ''}`}>
+          <DateTimePicker
+            mode="datetime" value={editValue || ''} disabled={dim}
+            onChange={apply} clearable placeholder={placeholder || '未設定'}
+          />
+        </div>
+      );
+    }
     const isEd = editCell === field && !dim;
     // 失焦：Esc 還原原值，否則保留已即時寫入的值；兩種情形都結束格子編輯。
     const onBlur = () => {

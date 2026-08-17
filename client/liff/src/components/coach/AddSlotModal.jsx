@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import DateTimePicker from '../../../../shared/DateTimePicker.jsx';
 import { slotsApi } from '../../api/slots';
 import { todayTaipeiYMD } from '../../utils/format';
 import { cleanVenueList } from '../../utils/venues';
@@ -32,8 +33,13 @@ export default function AddSlotModal({ coachId, venueIds, venueNameMap, onClose,
     }
   }, [cleanVenueIds, venueId]);
 
+  // 原本掛在時間輸入框的 onBlur。改用共用選擇器後沒有「離開欄位」這個時機，
+  // 改成 date/time 任一變動就重查 —— 比原本更早給回饋，而且不會因為使用者
+  // 直接按送出（從未 blur）而整個跳過衝突檢查。
+  useEffect(() => { checkConflict(); }, [date, time]); // eslint-disable-line react-hooks/exhaustive-deps
+
   async function checkConflict() {
-    if (!date || !time) return;
+    if (!date || !time) { setConflict(null); return; }
     const start = taipeiInputToIso(date, time);
     try {
       const r = await slotsApi.previewConflict({ coach_id: coachId, start_at: start, duration_minutes: DURATION_MINUTES });
@@ -74,12 +80,12 @@ export default function AddSlotModal({ coachId, venueIds, venueNameMap, onClose,
         </div>
         <form onSubmit={handleSubmit} className="space-y-3 text-sm">
           <Field label="日期">
-            <input type="date" required value={date} onChange={(e) => { setDate(e.target.value); setConflict(null); }}
-              className="block w-full min-w-0 box-border appearance-none rounded-lg border border-gray-300 px-3 py-2" />
+            <DateTimePicker value={date} onChange={(v) => { setDate(v); setConflict(null); }}
+              placeholder="選擇日期" className="min-w-0" />
           </Field>
           <Field label="開始時間">
-            <input type="time" required value={time} onChange={(e) => { setTime(e.target.value); setConflict(null); }}
-              onBlur={checkConflict} className="block w-full min-w-0 box-border appearance-none rounded-lg border border-gray-300 px-3 py-2" />
+            <DateTimePicker mode="time" value={time}
+              onChange={(v) => { setTime(v); setConflict(null); }} className="min-w-0" />
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="時長">

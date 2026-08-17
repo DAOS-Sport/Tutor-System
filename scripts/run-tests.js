@@ -37,6 +37,8 @@ const UNIT = [
   'tests/mail_describe_test.js',
   'tests/coach_session_date_range_test.js',
   'tests/coach_push_scope_test.js',
+  'tests/manual_deduction_backdate_test.js',
+  'tests/shared_datepicker_rollout_test.js',
   'tests/course_tier_price_test.js',
   'tests/checkin_label_test.js',
   'tests/force_trigger_outbox_cli_test.js',

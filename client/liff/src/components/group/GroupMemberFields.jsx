@@ -1,4 +1,8 @@
 import React, { useState } from 'react';
+import DateTimePicker from '../../../../shared/DateTimePicker.jsx';
+
+// 生日不可能在未來。釘 UTC+8 取「今天」，不吃瀏覽器時區。
+const todayTaipeiYMD = () => new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 
@@ -114,8 +118,9 @@ export default function GroupMemberFields({ value, onChange, maxStudents, error 
                     onChange={(e) => setNewAt(i, { id_number: e.target.value.toUpperCase() })}
                     placeholder="身分證字號（建議填，利於資料比對）" className={`${inputCls} uppercase`} />
                   <div className="flex gap-2">
-                    <input type="date" value={s.birth_date} onChange={(e) => setNewAt(i, { birth_date: e.target.value })}
-                      className={`${inputCls} flex-1`} />
+                    <DateTimePicker value={s.birth_date} max={todayTaipeiYMD()}
+                      onChange={(v) => setNewAt(i, { birth_date: v })}
+                      placeholder="出生年月日" className="flex-1" />
                     <select value={s.gender} onChange={(e) => setNewAt(i, { gender: e.target.value })}
                       className={`${inputCls} w-24`}>
                       <option value="生理男">生理男</option><option value="生理女">生理女</option><option value="不方便透漏">不方便透漏</option>

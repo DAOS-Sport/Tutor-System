@@ -284,17 +284,46 @@ check('教練推播的 refId 以 session 為單位（去重索引才擋得住重
     '教練彙整必須在逐列迴圈之前（之外）');
 });
 
-check('手動扣課不得在 roster 迴圈內呼叫通知', () => {
-  const src = stripComments(fs.readFileSync(path.join(ROOT, 'server/routes/admin/manualDeductions.js'), 'utf8'));
-  // 用縮排層級判斷，不用位置比較 —— 這支檔案有兩個 attendanceRoster 迴圈，
-  // 拿 indexOf 抓「第一個」會誤判成仍在迴圈內（實際踩過一次）。
-  const calls = src.match(/^([ 	]*)notifyCheckinSafely\(courseSessionId/gm) || [];
-  assert.strictEqual(calls.length, 1,
-    'notifyCheckinSafely 應該只被呼叫一次，實際 ' + calls.length + ' 次');
-  const indent = (calls[0].match(/^[ 	]*/) || [''])[0].length;
-  assert.strictEqual(indent, 4,
-    '縮排 ' + indent + ' 格，不在函式主體層級 —— 可能被放進了迴圈。'
-    + '這支本來就傳 null（＝通知整堂），放在迴圈裡等於 N×N 次推播嘗試。');
+// 2026-08-17 owner 決定（選項 B）：櫃台手動扣課一律不發推播給教練。
+// 理由是補扣會押過去的時間，推播取的是 MIN(checked_in_at)＝被回填的時間，
+// 教練在 8/17 收到「簽到時間 8/12 14:00」只會更混亂；那堂課本來就會出現在
+// 教練端的今日簽到與授課記錄。
+//
+// 這條測試取代了舊的「只能呼叫一次、不得在 roster 迴圈內」—— 那條是在防
+// N×N 次推播，現在整個能力都拿掉了，防的東西升級成「不准長回來」。
+check('手動扣課不得發任何簽到推播（2026-08-17 選項 B）', () => {
+  const raw = fs.readFileSync(path.join(ROOT, 'server/routes/admin/manualDeductions.js'), 'utf8');
+  const src = stripComments(raw);
+
+  // 掃描失效偵測：註解剝除若把整段程式吃掉（此專案踩過：`//` 註解裡有 `/*`），
+  // 下面的「找不到就通過」會變成無聲的假綠。先確認真的還在看一支活的路由檔。
+  assert.ok(/INSERT INTO manual_lesson_deductions/.test(src),
+    '剝除註解後找不到 ledger INSERT —— 掃描已失效，本測試的結論不可信');
+  assert.ok(/router\.post\(/.test(src), '剝除註解後找不到 POST 路由 —— 掃描已失效');
+
+  // 白名單式檢查：不是去黑名單某一種寫法，而是確認「這支檔案根本拿不到推播能力」。
+  // (1) 不得 require checkinNotify —— 連模組都沒引入，就沒有換個名字繞過去的空間。
+  const requires = [...src.matchAll(/require\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1]);
+  assert.ok(requires.length > 3, '解析到的 require 只有 ' + requires.length + ' 個 —— 掃描可能失效');
+  const notifyReq = requires.filter((r) => /checkinNotify/i.test(r));
+  assert.deepStrictEqual(notifyReq, [],
+    '不該再 require ' + notifyReq.join('、') + '：手動扣課不發推播');
+
+  // (2) 任何 notifyCheckin* 呼叫都不允許（含改名 import、動態取用）。
+  const calls = src.match(/notifyCheckin\w*\s*\(/g) || [];
+  assert.deepStrictEqual(calls, [],
+    '仍有推播呼叫：' + calls.join('、') + '。若要恢復，須先取得 owner 同意並更新檔頭紀錄');
+
+  // (3) 後台即時廣播必須留著 —— 那是簽到驗證頁刷新用的，不是通知。
+  //     一起拿掉的話畫面會停在舊資料，而且沒有人會發現。
+  assert.ok(/broadcastAdminEvent\(\s*'checkin:created'/.test(src),
+    '後台即時廣播被一起拿掉了：扣課政策只移除推播，不移除 WebSocket 廣播');
+
+  // 突變驗證：把推播塞回去，上面的斷言必須真的擋下來（否則這條是空轉的）。
+  const mutated = src.replace(/router\.post\(/, "const { notifyCheckinSafely } = require('../../services/checkinNotify');\nnotifyCheckinSafely(courseSessionId, null);\nrouter.post(");
+  const mutatedReqs = [...mutated.matchAll(/require\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1]);
+  assert.ok(mutatedReqs.some((r) => /checkinNotify/i.test(r)) && /notifyCheckin\w*\s*\(/.test(mutated),
+    '突變後仍偵測不到推播 —— 本測試的偵測邏輯無效');
 });
 
 check('樣板：整班學員併成一行，人數只出現在 altText', () => {

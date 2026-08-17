@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import DateTimePicker from '../../../shared/DateTimePicker.jsx';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import DataTable from '../components/DataTable';
@@ -202,21 +203,11 @@ export default function SessionsPage() {
         <div>
           <label className="mb-1 block text-xs font-medium text-gray-600">起訖日</label>
           <div className="flex items-center gap-1.5">
-            <input
-              type="date"
-              value={range.from}
-              max={range.to}
-              onChange={(e) => setRangeBound('from', e.target.value)}
-              className="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm focus:border-brand-teal focus:outline-none"
-            />
-            <span className="text-gray-400">~</span>
-            <input
-              type="date"
-              value={range.to}
-              min={range.from}
-              onChange={(e) => setRangeBound('to', e.target.value)}
-              className="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm focus:border-brand-teal focus:outline-none"
-            />
+            <DateTimePicker value={range.from} max={range.to || undefined}
+              onChange={(v) => setRangeBound('from', v)} className="w-[152px]" />
+            <span className="shrink-0 text-gray-400">~</span>
+            <DateTimePicker value={range.to} min={range.from || undefined}
+              onChange={(v) => setRangeBound('to', v)} className="w-[152px]" />
           </div>
         </div>
         <VenueMultiSelect
@@ -279,12 +270,8 @@ export default function SessionsPage() {
             </div>
             <label className="block">
               <span className="mb-1 block text-xs font-medium text-gray-600">簽到時間</span>
-              <input
-                type="datetime-local"
-                value={backfillAt}
-                onChange={(e) => setBackfillAt(e.target.value)}
-                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none"
-              />
+              <DateTimePicker mode="datetime" value={backfillAt} onChange={setBackfillAt}
+                placeholder="選擇簽到時間" />
             </label>
             <p className="text-[11px] text-gray-400">確認後系統會記錄此簽到時間，並記下你按下補簽到的當下時間。</p>
           </div>

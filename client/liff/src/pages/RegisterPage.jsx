@@ -1,6 +1,10 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import DateTimePicker from '../../../shared/DateTimePicker.jsx';
+
+// 生日不可能在未來。釘 UTC+8 取「今天」，不吃瀏覽器時區。
+const todayTaipeiYMD = () => new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { useFieldArray, useForm } from 'react-hook-form';
+import { Controller, useFieldArray, useForm } from 'react-hook-form';
 import liff from '@line/liff';
 import logoMark from '../assets/logo-mark.jpg';
 import { parentsApi } from '../api/parents';
@@ -570,10 +574,20 @@ export default function RegisterPage() {
                       </Field>
                       <div className="grid grid-cols-2 gap-2">
                         <Field label="出生年月日" required error={errors.students?.[idx]?.birth_date?.message}>
-                          <input
-                            type="date"
-                            {...register(`students.${idx}.birth_date`, { required: '請填寫出生年月日' })}
-                            className={fieldCls(!!errors.students?.[idx]?.birth_date)}
+                          {/* 非原生 input，改用 Controller 接進 react-hook-form；
+                              {...register} 那組 onChange/ref 對自繪元件無效。 */}
+                          <Controller
+                            control={control}
+                            name={`students.${idx}.birth_date`}
+                            rules={{ required: '請填寫出生年月日' }}
+                            render={({ field }) => (
+                              <DateTimePicker
+                                value={field.value || ''}
+                                max={todayTaipeiYMD()}
+                                onChange={field.onChange}
+                                placeholder="出生年月日"
+                              />
+                            )}
                           />
                         </Field>
                         <Field label="性別" required error={errors.students?.[idx]?.gender?.message}>

@@ -1,10 +1,13 @@
 // ═══════════════════════════════════════════════════════════════════
 // 🧊 凍結（2026-07-16 使用者凍結令）：簽到／扣課政策 2026-07 版
 // 本檔凍結範圍：簽到人欄位顯示、WS checkin_id 去重。
+// 2026-08-17：日期篩選框改用共用 DateTimePicker（owner「可以都換」）。
+// 純呈現元件替換，值格式 YYYY-MM-DD 不變，不觸及上述凍結範圍。
 // 修改凍結範圍前，必須先向使用者嚴格詢問並取得明確同意。
 // 政策與完整範圍清單：repo 根目錄 CLAUDE.md、replit.md「簽到／扣課政策」節。
 // ═══════════════════════════════════════════════════════════════════
 import React, { useEffect, useRef, useState } from 'react';
+import DateTimePicker from '../../../shared/DateTimePicker.jsx';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import StatusBadge from '../components/StatusBadge';
@@ -185,11 +188,10 @@ export default function CheckinPage() {
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-gray-600">日期（台北）</label>
-            <input
-              type="date"
+            <DateTimePicker
               value={date}
-              onChange={(e) => setDate(e.target.value)}
-              className="rounded-lg border border-gray-300 px-3 py-2 text-sm"
+              onChange={(v) => setDate(v)}
+              className="w-[168px]"
             />
           </div>
           <button

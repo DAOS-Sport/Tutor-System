@@ -3,6 +3,11 @@
 // 本檔全檔屬凍結範圍（整班簽到語意扣課；不得加回 SHARED_PERIOD_REQUIRES_CHECKIN 硬擋）。
 // 修改凍結範圍前，必須先向使用者嚴格詢問並取得明確同意。
 // 政策與完整範圍清單：repo 根目錄 CLAUDE.md、replit.md「簽到／扣課政策」節。
+//
+// ── 已取得同意的變更紀錄 ──
+// 2026-08-17 owner 明示同意（原話：「最需要決定的推撥給教練是不用 櫃台代扣都不用 B
+//   因為已經會出現在今日簽到那邊」）：本路由不再對教練發簽到推播。
+//   扣課、簽到、ledger、audit、後台即時廣播一律不動 —— 只拿掉推播那一步。
 // ═══════════════════════════════════════════════════════════════════
 /**
  * 手動扣課（F-R02 extension；獨立於 F-M05 扣課復活）
@@ -16,7 +21,7 @@ const { pool } = require('../../models/db');
 const { validateRequestId, payloadFingerprint } = require('../../services/idempotency');
 const { syncStoredUsage, listLinkedEnrollmentIds } = require('../../services/usageSync');
 const { broadcastAdminEvent } = require('../../services/websocket');
-const { notifyCheckinSafely } = require('../../services/checkinNotify');
+// checkinNotify 不再 require —— 手動扣課不發推播（見檔頭 2026-08-17 同意紀錄）。
 const {
   requireAdminAuth,
   requireAdminRole,
@@ -201,6 +206,13 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
   if (!reason) return res.status(400).json({ error: '請填寫扣課原因', code: 'REASON_REQUIRED' });
   if (Number.isNaN(occurredAt.getTime())) {
     return res.status(400).json({ error: '扣課時間格式不正確', code: 'OCCURRED_AT_INVALID' });
+  }
+  // 手動扣課的用途是「補登已經上完的課」，未來時間一定是打錯（最常見是年份多按一碼）。
+  // 放行的話會生出一筆日期在未來、狀態卻是 completed 的 course_session —— 排課、
+  // 授課記錄、統計全部會被它汙染，而且沒有任何畫面會提示那是錯的。
+  // 容許 5 分鐘：櫃台電腦時鐘略快不該被擋（前端 datetime-local 只到分，已先擋一次）。
+  if (body.occurred_at && occurredAt.getTime() > Date.now() + 5 * 60 * 1000) {
+    return res.status(400).json({ error: '扣課時間不能填未來時間', code: 'OCCURRED_AT_FUTURE' });
   }
   const fingerprint = payloadFingerprint({
     course_period_id: periodId,
@@ -411,11 +423,17 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
 
     // 與家長/教練簽到相同的後台即時事件（簽到驗證頁自動更新）；payload 形狀對齊
     // checkins.js 的廣播（含 checkin_id，缺了會被 CheckinPage 去重誤吞）。失敗不影響已扣課結果。
-    // 簽到通知（教練／家長）。fire-and-forget：扣課已 COMMIT，推播不該把它拖下水。
-    // 必須在 roster 迴圈「之外」：這支本來就傳 null（＝通知整堂），放在迴圈裡
-    // 等於一堂課呼叫 N 次、每次又處理 N 列 —— N×N 次推播嘗試。去重索引擋掉
-    // 大部分，但那是在補破網，不是設計。
-    notifyCheckinSafely(courseSessionId, null);
+    //
+    // ── 2026-08-17：手動扣課不再發推播（owner 決定，選項 B）──
+    // 原本這裡呼叫 notifyCheckinSafely(courseSessionId, null)，會發「簽到完成」
+    // 給教練。加入補扣時間之後那則通知會變成誤導：櫃檯在 8/17 補登一堂 8/12 的課，
+    // 教練當下收到「簽到時間 8/12 14:00」——因為推播取的是 MIN(checked_in_at)，
+    // 也就是回填的時間，不是操作時間。
+    // owner 的判斷是：櫃檯代扣一律不推播，教練本來就會在「今日簽到」與授課記錄裡
+    // 看到這筆，不需要再收一則會誤解時間的通知。
+    //
+    // 只拿掉這一支路由的推播。家長／教練自己簽到（checkins.js）那條完全不動。
+    // 後台即時廣播保留 —— 那是給簽到驗證頁刷新用的，不是通知。
 
     for (const member of attendanceRoster) {
       try {

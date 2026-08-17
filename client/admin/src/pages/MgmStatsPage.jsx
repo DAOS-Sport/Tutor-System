@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import DateTimePicker from '../../../shared/DateTimePicker.jsx';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import ExportMenu from '../components/ExportMenu';
@@ -84,8 +85,8 @@ export default function MgmStatsPage() {
 
       <section className="mb-5 rounded-xl border border-gray-200 bg-white p-4">
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-          <Filter label="開始日期" type="date" value={filters.from} onChange={(v) => setFilters((s) => ({ ...s, from: v }))} />
-          <Filter label="結束日期" type="date" value={filters.to} onChange={(v) => setFilters((s) => ({ ...s, to: v }))} />
+          <Filter label="開始日期" type="date" max={filters.to || undefined} value={filters.from} onChange={(v) => setFilters((s) => ({ ...s, from: v }))} />
+          <Filter label="結束日期" type="date" min={filters.from || undefined} value={filters.to} onChange={(v) => setFilters((s) => ({ ...s, to: v }))} />
           <Filter label="場館 ID（B / C / X）" value={filters.venueId} onChange={(v) => setFilters((s) => ({ ...s, venueId: v.toUpperCase() }))} />
           <Filter label="教練 UUID（選填）" value={filters.coachId} onChange={(v) => setFilters((s) => ({ ...s, coachId: v }))} />
         </div>
@@ -153,12 +154,17 @@ export default function MgmStatsPage() {
   );
 }
 
-function Filter({ label, value, onChange, type = 'text' }) {
+function Filter({ label, value, onChange, type = 'text', min, max }) {
+  // 日期走共用選擇器；其餘維持原生 input。包裝器分流比在每個呼叫端各改一次安全。
   return (
     <label className="block">
       <span className="mb-1 block text-xs font-medium text-gray-600">{label}</span>
-      <input type={type} value={value} onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none" />
+      {type === 'date' ? (
+        <DateTimePicker value={value} min={min} max={max} onChange={onChange} clearable placeholder="不限" />
+      ) : (
+        <input type={type} value={value} onChange={(e) => onChange(e.target.value)}
+          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none" />
+      )}
     </label>
   );
 }

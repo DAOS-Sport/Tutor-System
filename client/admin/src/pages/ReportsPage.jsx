@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import DateTimePicker from '../../../shared/DateTimePicker.jsx';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
@@ -91,13 +92,13 @@ export default function ReportsPage() {
       </div>
 
       <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
-        <input type="date" value={range.from}
-          onChange={(e) => setRange({ ...range, from: e.target.value })}
-          className="rounded border border-gray-300 px-2 py-1" />
+        <DateTimePicker value={range.from} max={range.to || undefined}
+          onChange={(v) => setRange({ ...range, from: v })}
+          placeholder="起日" className="w-[152px]" />
         <span>～</span>
-        <input type="date" value={range.to}
-          onChange={(e) => setRange({ ...range, to: e.target.value })}
-          className="rounded border border-gray-300 px-2 py-1" />
+        <DateTimePicker value={range.to} min={range.from || undefined}
+          onChange={(v) => setRange({ ...range, to: v })}
+          placeholder="迄日" className="w-[152px]" />
         <select value={venueId} onChange={(e) => setVenueId(e.target.value)}
           className="rounded border border-gray-300 px-2 py-1">
           <option value="">全部場館</option>

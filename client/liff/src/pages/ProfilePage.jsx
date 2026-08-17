@@ -1,4 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import DateTimePicker from '../../../shared/DateTimePicker.jsx';
+
+// 生日不可能在未來。釘 UTC+8 取「今天」，不吃瀏覽器時區。
+const todayTaipeiYMD = () => new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
 import { parentsApi } from '../api/parents';
 import { venuesApi } from '../api/venues';
 import { useAuth } from '../context/AuthContext';
@@ -324,7 +328,8 @@ export default function ProfilePage() {
                   <input className={fieldCls(studentErrors.id_number)} value={studentForm.id_number} onChange={(e) => setStudentField('id_number', e.target.value.toUpperCase())} />
                 </Field>
                 <Field label="出生年月日" required error={studentErrors.birth_date}>
-                  <input type="date" className={fieldCls(studentErrors.birth_date)} value={studentForm.birth_date} onChange={(e) => setStudentField('birth_date', e.target.value)} />
+                  <DateTimePicker value={studentForm.birth_date} max={todayTaipeiYMD()}
+                    onChange={(v) => setStudentField('birth_date', v)} placeholder="出生年月日" />
                 </Field>
                 <div className="grid grid-cols-2 gap-3">
                   <Field label="性別" optional>

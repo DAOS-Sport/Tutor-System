@@ -1,10 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
+import DateTimePicker from '../../../shared/DateTimePicker.jsx';
 import { useNavigate } from 'react-router-dom';
 import { sessionsApi } from '../api/sessions';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import LoadingSpinner from '../components/LoadingSpinner';
-import { formatTWDate, formatTWTime, todayTaipeiYMD, addDaysToTaipeiYMD, checkinLabel } from '../utils/format';
+import { formatTWDate, formatTWTime, checkinLabel } from '../utils/format';
 import CoachRecordCard, {
   StatusBanner, TypeBadge, courseTitle, ratePercent, periodSummary,
 } from '../components/coach/CoachRecordCard';
@@ -44,8 +45,14 @@ export default function CoachHistoryPage() {
   const { coach } = useAuth();
   const navigate = useNavigate();
   const toast = useToast();
-  const [from, setFrom] = useState(() => addDaysToTaipeiYMD(todayTaipeiYMD(), -30));
-  const [to, setTo] = useState(() => todayTaipeiYMD());
+  // 預設不設區間＝全部授課記錄。
+  //
+  // 原本預設「最近 30 天」，但櫃檯補扣課時可以回填更早的日期，那筆會落在
+  // 預設區間之外 —— 教練不會知道有這筆，除非他自己想到要改日期。
+  // 後端 historyRangeWhere 對 from/to 是 (參數 IS NULL OR …)，留空即不過濾。
+  // 兩個輸入框保留：要縮小範圍時仍然可用。
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
   const [status, setStatus] = useState('all');
   const [periodId, setPeriodId] = useState('');
   const [sessions, setSessions] = useState(null);
@@ -99,20 +106,22 @@ export default function CoachHistoryPage() {
           </span>
         </div>
         <div className="grid grid-cols-2 gap-2">
-          <input
-            type="date"
-            value={from}
-            max={to}
-            onChange={(e) => setFrom(e.target.value)}
-            className="block w-full min-w-0 box-border appearance-none rounded-lg border border-gray-300 px-3 py-2 text-sm"
-          />
-          <input
-            type="date"
-            value={to}
-            min={from}
-            onChange={(e) => setTo(e.target.value)}
-            className="block w-full min-w-0 box-border appearance-none rounded-lg border border-gray-300 px-3 py-2 text-sm"
-          />
+          <DateTimePicker value={from} max={to || undefined} onChange={setFrom}
+            placeholder="起日" className="min-w-0" />
+          <DateTimePicker value={to} min={from || undefined} onChange={setTo}
+            placeholder="迄日" className="min-w-0" />
+        </div>
+        {/* 兩個空的日期框看不出是「全部」還是「還沒選」，所以明講；
+            選過之後給一鍵清除，不然要按兩次日期選擇器才回得去。 */}
+        <div className="flex items-center justify-between text-[11px] text-gray-400">
+          <span>{from || to ? '已限定區間' : '顯示全部授課記錄'}</span>
+          {(from || to) && (
+            <button
+              type="button"
+              onClick={() => { setFrom(''); setTo(''); }}
+              className="rounded px-2 py-0.5 font-medium text-brand-teal active:bg-brand-teal/10"
+            >顯示全部</button>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           {STATUS_OPTIONS.map((o) => (

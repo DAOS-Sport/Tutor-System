@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import DateTimePicker from '../../../../shared/DateTimePicker.jsx';
 import { promotionsApi } from '../../api/promotions';
 import { courseTypesApi } from '../../api/courseTypes';
 import { venuesApi } from '../../api/venues';
@@ -382,16 +383,20 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
               <div>
                 <label className="mb-1 block text-xs text-gray-500">起始日 / 時間 ＊</label>
                 <div className="flex gap-2">
-                  <input type="date" className={fieldClass()} value={d.start_date} onChange={(e) => setD({ ...d, start_date: e.target.value })} />
-                  <input type="time" className="w-28 shrink-0 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none" value={d.start_time} onChange={(e) => setD({ ...d, start_time: e.target.value })} />
+                  <DateTimePicker value={d.start_date} max={d.end_date || undefined}
+                    onChange={(v) => setD({ ...d, start_date: v })} placeholder="起始日" className="flex-1" />
+                  <DateTimePicker mode="time" value={d.start_time || '00:00'}
+                    onChange={(v) => setD({ ...d, start_time: v })} className="shrink-0" />
                 </div>
                 <p className="mt-1 text-[11px] text-gray-400">預設 00:00（當日開始）</p>
               </div>
               <div>
                 <label className="mb-1 block text-xs text-gray-500">結束日 / 時間 <span className="text-brand-error">＊</span></label>
                 <div className="flex gap-2">
-                  <input type="date" className={fieldClass()} value={d.end_date} onChange={(e) => setD({ ...d, end_date: e.target.value })} required />
-                  <input type="time" className="w-28 shrink-0 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none" value={d.end_time} onChange={(e) => setD({ ...d, end_time: e.target.value })} />
+                  <DateTimePicker value={d.end_date} min={d.start_date || undefined}
+                    onChange={(v) => setD({ ...d, end_date: v })} placeholder="結束日" className="flex-1" />
+                  <DateTimePicker mode="time" value={d.end_time || '23:59'}
+                    onChange={(v) => setD({ ...d, end_time: v })} className="shrink-0" />
                 </div>
                 <p className="mt-1 text-[11px] text-gray-400">預設 23:59（當日結束，含整分）</p>
               </div>

@@ -1,4 +1,5 @@
 import React, { useId } from 'react';
+import DateTimePicker from '../../../shared/DateTimePicker.jsx';
 
 /**
  * 通用 FilterBar — 桌機優先，欄位橫向排列；窄螢幕自動換行
@@ -88,18 +89,21 @@ export default function FilterBar({ fields, values, onChange, onReset }) {
               <div key={f.key} className="min-w-[220px]">
                 <label className="mb-1 block text-xs font-medium text-gray-600">{f.label}</label>
                 <div className="flex items-center gap-1.5">
-                  <input
-                    id={id} type="date"
+                  <DateTimePicker
+                    id={id}
                     value={values?.[fromKey] ?? ''}
-                    onChange={(e) => set(fromKey, e.target.value)}
-                    className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm focus:border-brand-teal focus:outline-none"
+                    max={values?.[toKey] || undefined}
+                    onChange={(v) => set(fromKey, v)}
+                    clearable placeholder="起日"
+                    className="w-full"
                   />
-                  <span className="text-gray-400">–</span>
-                  <input
-                    type="date"
+                  <span className="shrink-0 text-gray-400">–</span>
+                  <DateTimePicker
                     value={values?.[toKey] ?? ''}
-                    onChange={(e) => set(toKey, e.target.value)}
-                    className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm focus:border-brand-teal focus:outline-none"
+                    min={values?.[fromKey] || undefined}
+                    onChange={(v) => set(toKey, v)}
+                    clearable placeholder="迄日"
+                    className="w-full"
                   />
                 </div>
               </div>
