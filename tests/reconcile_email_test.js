@@ -196,13 +196,16 @@ await check('缺欄位不會爆，也不會印出 undefined / null', () => {
   }
 });
 
+// 這裡用假的 16 碼假密碼，格式與 Gmail 應用程式密碼相同（4 組 4 碼、空格分隔）。
+// 這支測試要驗的是「帶空格的密碼會被去掉空格」，跟值是不是真的無關。
+// 曾經有人把正式站真的那組貼進來 —— 測試檔進版控，等於把 Secret 推上去。
 await check('只設 Tutor_gmail（專案既有命名）就足以視為已設定', () => withEnv({
-  Tutor_gmail: 'gyli vdqu qazn ydki',
+  Tutor_gmail: 'abcd efgh ijkl mnop',
 }, async () => {
   assert.strictEqual(mailer.isConfigured(), true,
     '只有 Tutor_gmail 時仍判為未設定 —— 那正是「Secrets 有值但 mail.configured=false」的成因');
   const c = mailer.config();
-  assert.strictEqual(c.pass, 'gylivdquqaznydki',
+  assert.strictEqual(c.pass, 'abcdefghijklmnop',
     'Gmail 顯示的應用程式密碼帶空格，沒去掉的話認證必定失敗（且錯誤訊息看不出原因）');
   assert.strictEqual(c.host, 'smtp.gmail.com', '密碼來自 Gmail 別名時應自動用 Gmail 主機');
   assert.ok(c.user.includes('@'), '應有預設寄件位址');
