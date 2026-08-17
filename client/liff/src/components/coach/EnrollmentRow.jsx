@@ -7,7 +7,7 @@ import {
 // 與授課記錄共用同一套卡片外觀。兩頁各寫一份的話，改了一邊另一邊不會跟上，
 // 教練在自己的分頁之間會看到兩種排版。
 import CoachRecordCard, {
-  StatusChip, SessionCount, TypeBadge, courseTitle, ratePercent, periodSummary,
+  StatusBlock, TypeBadge, courseTitle, ratePercent, periodSummary,
 } from './CoachRecordCard';
 
 /**
@@ -267,13 +267,17 @@ export function EnrollmentRow({ item, onClick, detailed = false, coachName = '',
             )}
             <TypeBadge courseType={item.course_type} />
           </div>
-          {/* 右欄只有 92px，「剛報名待對帳」六個字會把標籤撐到超出欄寬。
+          {/* 右欄只有 92px，「剛報名待對帳」六個字會把色塊撐到超出欄寬。
               篩選鈕那邊空間夠、維持完整字樣；卡片上縮成「待對帳」——
-              卡片本身就在報名記錄頁，「剛報名」那三個字是重複的脈絡。 */}
-          <StatusChip tone={tone}>{st.key === 'pending_payment' ? '待對帳' : st.label}</StatusChip>
-          {st.key === 'in_progress' && (
-            <SessionCount remaining={remaining} total={total} tone="green" />
-          )}
+              卡片本身就在報名記錄頁，「剛報名」那三個字是重複的脈絡。
+              堂數只在進行中顯示：待對帳還沒開課（total 多半是 NULL），
+              已完成剩 0 是廢話。 */}
+          <StatusBlock
+            tone={tone}
+            label={st.key === 'pending_payment' ? '待對帳' : st.label}
+            remaining={st.key === 'in_progress' ? remaining : null}
+            total={st.key === 'in_progress' ? total : null}
+          />
         </>
       }
     />

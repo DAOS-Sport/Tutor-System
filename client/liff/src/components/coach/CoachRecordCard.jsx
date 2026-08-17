@@ -64,21 +64,6 @@ const TONE = {
 };
 
 /**
- * 狀態標籤 —— 小的、有顏色的一條，掛在組別標籤下面。
- *
- * 刻意做成「標籤」而不是「按鈕」：簽到會扣課並推播給教練，對帳是櫃檯的職權，
- * 兩者都有各自的流程與稽核。讓列表上出現一顆看起來能按的方塊，
- * 只會讓人以為可以在這裡直接改狀態。
- */
-export function StatusChip({ tone = 'gray', children }) {
-  return (
-    <span className={`whitespace-nowrap rounded-md px-2 py-0.5 text-[11px] font-bold ${TONE[tone] || TONE.gray}`}>
-      {children}
-    </span>
-  );
-}
-
-/**
  * 正方形狀態 banner —— 授課記錄的「已簽到／未簽到」用。
  *
  * 為什麼這裡是正方形而報名記錄是小標籤：授課記錄一列只有一個狀態，
@@ -101,20 +86,34 @@ export function StatusBanner({ tone = 'gray', label, sub }) {
   );
 }
 
-/** 剩餘／總堂數。教練最常掃的一個數字，所以放大。 */
-export function SessionCount({ remaining, total, tone = 'green' }) {
+/**
+ * 狀態色塊 —— 報名記錄用。狀態與剩餘堂數合成一塊，佔滿右欄。
+ *
+ * 為什麼不是「標籤 + 一行數字」：那兩個是同一件事的兩半（這單在哪個階段、
+ * 還剩幾堂），拆成兩個浮在右邊的小元素時，視覺上像兩個不相干的碎片，
+ * 而且各自的邊界不一致，整欄看起來鬆散。
+ *
+ * 與授課記錄的 60×60 正方形 banner 是同一套語彙（同樣的圓角與色票），
+ * 只是這裡資訊有兩行、右欄要放組別與團報，所以做成滿寬的長方形。
+ */
+export function StatusBlock({ tone = 'gray', label, remaining, total }) {
   const t = Number(total);
   const r = Number(remaining);
-  if (!Number.isFinite(t) || t <= 0 || !Number.isFinite(r)) return null;
-  const color = TONE[tone] ? TONE[tone].split(' ').find((c) => c.startsWith('text-')) : 'text-gray-500';
+  const hasCount = Number.isFinite(t) && t > 0 && Number.isFinite(r);
   return (
-    // 字級與旁邊的狀態標籤（11px）維持同一個量級：只讓剩餘數大一階（14px）。
-    // 先前用 text-xl（20px）比整張卡的標題還大，右欄看起來像另一個區塊。
-    <div className={`flex items-baseline gap-0.5 tabular-nums ${color}`}>
-      <span className="text-[10px] font-medium opacity-70">剩</span>
-      <span className="text-sm font-extrabold leading-none">{r}</span>
-      <span className="text-[11px] font-bold opacity-50">/</span>
-      <span className="text-[11px] font-bold opacity-70">{t}</span>
+    <div
+      className={`flex w-full flex-col items-center justify-center rounded-xl px-1 py-1.5 text-center leading-tight ${TONE[tone] || TONE.gray}`}
+      style={{ minHeight: 52 }}
+    >
+      <span className="max-w-full truncate text-xs font-bold">{label}</span>
+      {hasCount && (
+        <span className="mt-0.5 flex items-baseline gap-0.5 tabular-nums">
+          <span className="text-[10px] font-medium opacity-70">剩</span>
+          <span className="text-sm font-extrabold leading-none">{r}</span>
+          <span className="text-[11px] font-bold opacity-50">/</span>
+          <span className="text-[11px] font-bold opacity-70">{t}</span>
+        </span>
+      )}
     </div>
   );
 }
