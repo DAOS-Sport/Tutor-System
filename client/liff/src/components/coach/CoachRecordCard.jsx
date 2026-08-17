@@ -133,11 +133,14 @@ export function TypeBadge({ courseType }) {
  * @param {node}   subject  第三行：對象 ‧ 期數堂數
  * @param {node}   meta     分隔線下方的小字（時間 ‧ 場館等）
  * @param {node}   aside    右欄內容（組別標籤、狀態標籤、堂數）
+ * @param {node}   extra    整卡寬的區塊（同班名冊等）。放在主列之後，
+ *                          不受右欄壓縮 —— 名冊塞在左欄時每行只剩不到一半寬度，
+ *                          「測試-學員1、測試-學員2」會被折成三行。
  * @param {node}   footer   底部一行（例如「點選進入 →」）
  * @param {func}   onClick  有值時整張卡可點；沒有就是純展示
  */
 export default function CoachRecordCard({
-  title, rate, subject, meta, aside, footer, onClick, tone = 'default',
+  title, rate, subject, meta, aside, extra, footer, onClick, tone = 'default',
 }) {
   const clickable = typeof onClick === 'function';
   const Tag = clickable ? 'button' : 'div';
@@ -166,6 +169,7 @@ export default function CoachRecordCard({
         {/* 右欄固定寬：不隨內容伸縮，卡片與卡片之間的右緣才會對齊。 */}
         <div className="flex w-[92px] shrink-0 flex-col items-end gap-1">{aside}</div>
       </div>
+      {extra}
       {footer && (
         <div className="mt-2 flex items-center justify-end border-t border-gray-100 pt-2 text-xs">{footer}</div>
       )}

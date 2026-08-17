@@ -169,12 +169,16 @@ function classRoster(item, ownStudents) {
   }
   if (size <= ownStudents.length) return null;
   return (
-    <div className="mt-1.5 rounded-lg bg-gray-50/80 px-2 py-1.5">
+    // 這一塊由 CoachRecordCard 的 extra 插在主列之後，所以是整卡寬。
+    // 放在左欄的話每行只剩不到一半寬度，「測試-學員1、測試-學員2」會被折成三行。
+    <div className="mt-2 rounded-lg bg-gray-50 px-2.5 py-2">
       <div className="text-[10px] font-bold text-gray-500">同班共 {size} 位</div>
-      <div className="mt-1 space-y-0.5">
+      <div className="mt-1 space-y-1">
         {families.map((f, i) => (
           <div key={`${f.parent_name}-${i}`} className="flex items-baseline gap-1.5 text-[11px] leading-4">
-            <span className="min-w-0 max-w-[45%] shrink-0 truncate text-gray-500">{f.parent_name}</span>
+            {/* 家長姓名給固定上限而不是 45%：整卡寬之後 45% 太寬，
+                學員那半會被壓掉。正式庫最長的家長名是「龔原瑯 (曼甄、謹郁)」。 */}
+            <span className="min-w-0 max-w-[38%] shrink-0 truncate text-gray-500">{f.parent_name}</span>
             {f.is_leader && (
               <span className="shrink-0 rounded bg-brand-teal/15 px-1 text-[9px] font-bold text-brand-teal">團主</span>
             )}
@@ -252,9 +256,9 @@ export function EnrollmentRow({ item, onClick, detailed = false, coachName = '',
               ))}
             </div>
           )}
-          {classmates}
         </>
       }
+      extra={classmates}
       aside={
         <>
           <div className="flex items-center gap-1">
