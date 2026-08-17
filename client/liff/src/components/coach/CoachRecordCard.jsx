@@ -101,8 +101,10 @@ export function StatusBlock({ tone = 'gray', label, remaining, total }) {
   const r = Number(remaining);
   const hasCount = Number.isFinite(t) && t > 0 && Number.isFinite(r);
   return (
+    // flex-1 讓色塊往下撐滿右欄剩餘高度 —— 卡片內容多的時候（同班名冊那種）
+    // 它會跟著長高，而不是縮在上面一小塊。minHeight 只是資訊少時的下限。
     <div
-      className={`flex w-full flex-col items-center justify-center rounded-xl px-1 py-1.5 text-center leading-tight ${TONE[tone] || TONE.gray}`}
+      className={`flex w-full flex-1 flex-col items-center justify-center rounded-xl px-1 py-2 text-center leading-tight ${TONE[tone] || TONE.gray}`}
       style={{ minHeight: 52 }}
     >
       <span className="max-w-full truncate text-xs font-bold">{label}</span>
@@ -157,7 +159,9 @@ export default function CoachRecordCard({
         clickable ? 'active:bg-gray-50' : ''
       }`}
     >
-      <div className="flex items-start justify-between gap-3">
+      {/* items-stretch：右欄要跟左欄一樣高，狀態色塊才能從上橫跨到下。
+          用 items-start 的話右欄只有內容高度，色塊會縮在上面一小塊。 */}
+      <div className="flex items-stretch justify-between gap-3">
         {/* min-w-0 是關鍵：沒有它，長學員名單會把右欄推出卡片外。 */}
         <div className="min-w-0 flex-1 space-y-0.5">
           <div className="truncate text-[15px] font-extrabold leading-tight text-brand-primary">{title}</div>
