@@ -267,7 +267,10 @@ export function EnrollmentRow({ item, onClick, detailed = false, coachName = '',
             )}
             <TypeBadge courseType={item.course_type} />
           </div>
-          <StatusChip tone={tone}>{st.label}</StatusChip>
+          {/* 右欄只有 92px，「剛報名待對帳」六個字會把標籤撐到超出欄寬。
+              篩選鈕那邊空間夠、維持完整字樣；卡片上縮成「待對帳」——
+              卡片本身就在報名記錄頁，「剛報名」那三個字是重複的脈絡。 */}
+          <StatusChip tone={tone}>{st.key === 'pending_payment' ? '待對帳' : st.label}</StatusChip>
           {st.key === 'in_progress' && (
             <SessionCount remaining={remaining} total={total} tone="green" />
           )}
