@@ -1,11 +1,15 @@
 import React from 'react';
 import {
-  courseTypeLabel,
   paymentStatusLabel,
   formatTWYMD,
   formatTWTime,
   taipeiCalendarDate,
 } from '../../utils/format';
+// 與授課記錄共用同一套卡片外觀。兩頁各寫一份的話，改了一邊另一邊不會跟上，
+// 教練在自己的分頁之間會看到兩種排版。
+import CoachRecordCard, {
+  StatusSquare, TypeBadge, courseTitle, ratePercent, periodSummary,
+} from './CoachRecordCard';
 
 /**
  * 教練端「學生報名狀態」列 —— 今日頁（預覽 5 筆）與訂單記錄頁（全部）共用。
@@ -191,7 +195,7 @@ function classRoster(item, ownStudents) {
   );
 }
 
-export function EnrollmentRow({ item, onClick, detailed = false }) {
+export function EnrollmentRow({ item, onClick, detailed = false, coachName = '', multiplier = null }) {
   const st = bucketOf(item);
   const studentList = Array.isArray(item.students) ? item.students.filter(Boolean) : [];
   const students = studentList.length ? studentList.join('、') : (item.students || '—');
@@ -207,59 +211,76 @@ export function EnrollmentRow({ item, onClick, detailed = false }) {
     ? daysSinceTaipei(item.submitted_at || item.created_at)
     : null;
   const classmates = detailed ? classRoster(item, studentList) : null;
-  const Tag = onClick ? 'button' : 'div';
+  // 剩餘堂數：卡片右側方塊要印「剩 8 / 共 12」。total 缺值時只印已用，
+  // 不要算出 NaN 或負數 —— 正式庫有 183 列 total_sessions 為 NULL。
+  const total = Number(item.total_sessions);
+  const used = Number(item.used_sessions) || 0;
+  const hasTotal = Number.isFinite(total) && total > 0;
+  const remaining = hasTotal ? Math.max(0, total - used) : null;
+
+  // 方塊的配色沿用全站狀態語意（綠＝進行中、橘＝待處理、灰＝結束），
+  // 不跟著設計稿把「剛報名」改成綠 —— admin 端與家長端都是這套，
+  // 只有教練這一頁反過來的話，同一個人在不同畫面會學到兩套規則。
+  const squareTone = { in_progress: 'green', pending_payment: 'amber', completed: 'gray' }[st.key] || 'gray';
+  const squareBody = st.key === 'in_progress'
+    ? (remaining !== null ? `剩 ${remaining}/${total}` : `已上 ${used}`)
+    : (st.key === 'pending_payment' ? '待對帳' : (st.key === 'completed' ? '已結訓' : null));
+
   return (
-    <Tag
-      {...(onClick ? { type: 'button', onClick } : {})}
-      className={`flex w-full items-start gap-3 rounded-xl border border-gray-100 border-l-4 px-3 py-2.5 text-left shadow-sm ${onClick ? 'active:opacity-75' : ''} ${st.rail}`}
-    >
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5">
-          <span className="truncate text-sm font-bold text-gray-900">{students}</span>
-          <span className="shrink-0 rounded-md bg-brand-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-brand-primary">
-            {courseTypeLabel(item.course_type)}
-          </span>
-          {/* 學員人數只在 >1 時顯示：一位學員時「1 位」是純噪音，而多位時
-              教練要能一眼核對「這張卡是不是整組都在」。 */}
+    <CoachRecordCard
+      onClick={onClick}
+      tone={st.key === 'completed' ? 'muted' : 'default'}
+      title={courseTitle(coachName, item.course_type)}
+      rate={ratePercent(multiplier)}
+      subject={
+        <>
+          <span className="truncate">{students}</span>
           {studentList.length > 1 && (
-            <span className="shrink-0 text-[10px] tabular-nums text-gray-400">{studentList.length} 位</span>
+            <span className="ml-1 text-[10px] font-normal tabular-nums text-gray-400">{studentList.length} 位</span>
           )}
+          {periodSummary(item.period_count, item.total_sessions) && (
+            <>
+              <span className="mx-1 text-gray-300">‧</span>
+              <span className="text-gray-900">{periodSummary(item.period_count, item.total_sessions)}</span>
+            </>
+          )}
+        </>
+      }
+      meta={
+        <>
+          {/* 欄位標籤不能省：舊版把家長、課別、場館用「・」等權串一行，
+              教練看到「(測試帳號)家長・1對2・新北高中」分不出第一段是誰。 */}
+          <div className="truncate">
+            家長：<span className="text-gray-500">{payerLabel}</span>
+            {item.venue_name ? <span className="text-gray-400">{' · '}{item.venue_name}</span> : null}
+          </div>
+          {rows.length > 0 && (
+            <div className={`mt-0.5 ${detailed ? '' : 'truncate'}`}>
+              {rows.map((r, i) => (
+                <span key={r.k} className={detailed ? 'mr-3 inline-block' : ''}>
+                  {i > 0 && !detailed ? ' · ' : ''}
+                  {r.label} <span className="tabular-nums text-gray-500">{r.value}</span>
+                </span>
+              ))}
+            </div>
+          )}
+          {waited !== null && (
+            <div className="mt-0.5 tabular-nums text-brand-amber">
+              {waited <= 0 ? '今天送出' : `已等 ${waited} 天`}
+            </div>
+          )}
+          {classmates}
+        </>
+      }
+      badge={
+        <div className="flex items-center gap-1">
           {item.is_group && (
-            <span className="shrink-0 rounded-md bg-brand-teal/10 px-1.5 py-0.5 text-[10px] font-medium text-brand-teal">團報</span>
+            <span className="rounded-md bg-brand-teal/10 px-1.5 py-0.5 text-[10px] font-semibold text-brand-teal">團報</span>
           )}
+          <TypeBadge courseType={item.course_type} />
         </div>
-        {/* 加欄位標籤：舊版把家長姓名、課別、場館用「・」等權串成一行，
-            教練看到「(測試帳號)家長・1對2・新北尚中」分不出第一段是家長還是學員；
-            而且整行 truncate，先被截掉的通常是最右邊的場館 —— 那正是他最需要的。 */}
-        <div className="mt-0.5 truncate text-[11px] text-gray-500">
-          家長：{payerLabel}
-          {item.venue_name ? <span className="text-gray-400">{' · '}{item.venue_name}</span> : null}
-        </div>
-        {rows.length > 0 && (
-          <div className={`mt-1 text-[10px] leading-4 text-gray-400 ${detailed ? '' : 'truncate'}`}>
-            {rows.map((r, i) => (
-              <span key={r.k} className={detailed ? 'mr-3 inline-block' : ''}>
-                {i > 0 && !detailed ? ' · ' : ''}
-                {r.label} <span className="tabular-nums text-gray-500">{r.value}</span>
-              </span>
-            ))}
-          </div>
-        )}
-        {classmates}
-      </div>
-      <div className="shrink-0 text-right">
-        <div className={`text-[11px] font-bold ${st.text}`}>{st.label}</div>
-        {waited !== null && (
-          <div className="mt-0.5 text-[10px] tabular-nums text-gray-400">
-            {waited <= 0 ? '今天送出' : `已等 ${waited} 天`}
-          </div>
-        )}
-      </div>
-    </Tag>
+      }
+      square={<StatusSquare tone={squareTone} label={st.label === '剛報名待對帳' ? '剛報名' : st.label} body={squareBody} />}
+    />
   );
 }
-
-/** 統計列：中性灰膠囊 + 狀態色數字。0 筆的階段不佔位，免得永遠掛著一個「上課中 0」。 */
-// 註：原本這裡還有一個 EnrollmentStats（三格統計卡）。Owner 決定「既然是篩選，
-// 就做一個最基本的『全部』」—— 篩選鈕本身帶數字就是統計，再放一排一模一樣的
-// 數字只是佔版面，而且兩處數字有機會不一致。

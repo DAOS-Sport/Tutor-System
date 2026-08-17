@@ -113,8 +113,19 @@ export default function CoachOrdersPage() {
         )}
         {items.length > 0 && (
           <>
-            <div className="space-y-2">
-              {items.map((it) => <EnrollmentRow key={it.id} item={it} detailed />)}
+            <div className="space-y-3">
+              {/* 課程名稱是「教練名_組別」，倍率是教練自己的加成 —— 兩者都不在
+                  訂單資料裡（後端刻意不回教練資訊給教練自己的清單），
+                  從登入態帶下去即可。 */}
+              {items.map((it) => (
+                <EnrollmentRow
+                  key={it.id}
+                  item={it}
+                  detailed
+                  coachName={coach?.name}
+                  multiplier={coach?.multiplier ?? coach?.pricing_multiplier}
+                />
+              ))}
             </div>
             {/* 教練看得到「卡住」，但處理是櫃檯的事 —— 講清楚下一步該找誰，
                 否則他只會看著待對帳乾等，或跑去催已經轉完帳的家長。 */}

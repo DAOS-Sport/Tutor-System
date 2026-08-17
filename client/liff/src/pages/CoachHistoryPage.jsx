@@ -4,7 +4,10 @@ import { sessionsApi } from '../api/sessions';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import LoadingSpinner from '../components/LoadingSpinner';
-import { courseTypeLabel, formatTWDate, formatTWTime, todayTaipeiYMD, addDaysToTaipeiYMD, checkinLabel } from '../utils/format';
+import { formatTWDate, formatTWTime, todayTaipeiYMD, addDaysToTaipeiYMD, checkinLabel } from '../utils/format';
+import CoachRecordCard, {
+  StatusSquare, TypeBadge, CheckIcon, courseTitle, ratePercent, periodSummary,
+} from '../components/coach/CoachRecordCard';
 
 const STATUS_OPTIONS = [
   { key: 'all', label: '全部' },
@@ -89,7 +92,12 @@ export default function CoachHistoryPage() {
   return (
     <div className="pb-4">
       <header className="sticky top-0 z-10 space-y-2 border-b border-gray-100 bg-white px-4 py-2.5">
-        <h1 className="text-base font-bold text-brand-primary">授課記錄</h1>
+        <div className="flex items-baseline justify-between">
+          <h1 className="text-base font-bold text-brand-primary">授課記錄</h1>
+          <span className="shrink-0 rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-semibold text-gray-500">
+            {sessions === null ? '載入中…' : `共 ${sessions.length} 筆`}
+          </span>
+        </div>
         <div className="grid grid-cols-2 gap-2">
           <input
             type="date"
@@ -159,40 +167,47 @@ export default function CoachHistoryPage() {
           </div>
         )}
         {sessions && sessions.length > 0 && (
-          <div className="space-y-2">
+          <div className="space-y-3">
             {sessions.map((s) => (
-              <button
+              <CoachRecordCard
                 key={s.id}
-                type="button"
                 onClick={() => navigate(`/coach/session/${s.id}`)}
-                className="w-full rounded-xl border border-brand-primary/15 bg-white p-3 text-left shadow-sm active:bg-brand-primary/5"
-              >
-                <div className="flex items-baseline justify-between gap-2">
-                  <div className="text-sm font-bold text-brand-primary">
+                title={courseTitle(coach?.name, s.course_type)}
+                rate={ratePercent(coach?.multiplier ?? coach?.pricing_multiplier)}
+                subject={
+                  <>
+                    <span>{(s.student_names || []).join('、') || '—'}</span>
+                    {periodSummary(s.period_count, s.total_sessions) && (
+                      <>
+                        <span className="mx-1 text-gray-300">‧</span>
+                        <span className="text-gray-900">{periodSummary(s.period_count, s.total_sessions)}</span>
+                      </>
+                    )}
+                  </>
+                }
+                meta={
+                  <>
                     {formatTWDate(s.scheduled_at)} {formatTWTime(s.scheduled_at)}
-                  </div>
-                  <span className="shrink-0 rounded-full bg-brand-teal/10 px-2 py-0.5 text-[10px] text-brand-teal">
-                    {courseTypeLabel(s.course_type)}
-                  </span>
-                </div>
-                <div className="mt-1 text-xs text-gray-500">{s.venue_name || s.venue_id}</div>
-                {s.original_coach_name && (
-                  <div className="mt-1 inline-block rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700">
-                    原授課教練：{s.original_coach_name}
-                  </div>
-                )}
-                <div className="mt-1 text-sm text-gray-800">
-                  學員：{(s.student_names || []).join('、') || '—'}
-                </div>
-                <div className="mt-2 flex items-center gap-2 text-xs">
-                  {/* 與首頁那顆同一組樣式（見 CoachTodayPage 的說明）。只改一邊的話，
-                      教練在自己的兩個分頁之間就會看到兩種綠。 */}
-                  <span className={`rounded-full px-2 py-0.5 font-medium ${s.checked_in ? 'bg-brand-green/15 text-brand-green' : 'bg-gray-100 text-gray-500'}`}>
-                    {s.checked_in ? checkinLabel(s.scheduled_at, s.checked_in_at) : '未簽到'}
-                  </span>
-                  <span className="text-brand-teal">點選進入 →</span>
-                </div>
-              </button>
+                    <span className="mx-1">‧</span>
+                    <span className="text-gray-500">{s.venue_name || s.venue_id}</span>
+                    {/* 代課要留在卡片上：教練看到不是自己開的課會先愣一下，
+                        沒有這行就得點進去才知道為什麼。 */}
+                    {s.original_coach_name && (
+                      <div className="mt-1 inline-block rounded-full bg-brand-amber/10 px-2 py-0.5 text-[10px] font-medium text-brand-amber">
+                        原授課教練：{s.original_coach_name}
+                      </div>
+                    )}
+                  </>
+                }
+                badge={<TypeBadge courseType={s.course_type} />}
+                square={
+                  s.checked_in
+                    ? <StatusSquare tone="green" icon={<CheckIcon />} label="已簽到"
+                        body={checkinLabel(s.scheduled_at, s.checked_in_at).replace('已簽到', '').trim() || null} />
+                    : <StatusSquare tone="primary" label="未簽到" body="點進去簽" />
+                }
+                footer={<span className="font-semibold text-brand-teal">點選進入 →</span>}
+              />
             ))}
           </div>
         )}

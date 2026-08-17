@@ -43,9 +43,10 @@ function stripComments(src) {
 // 家長端那顆章的權威定義。教練端要對齊的就是這一組值。
 const PARENT_ATTENDED_CLS = 'bg-brand-green/15 text-brand-green';
 
-// 教練端有簽到章的頁面。新增第三個頁面時要一起加進來，
-// 不然那頁可以偷偷用別的綠而沒人發現。
-const COACH_BADGE_PAGES = ['pages/CoachTodayPage.jsx', 'pages/CoachHistoryPage.jsx'];
+// 教練端「用三元式直接寫色票」的頁面。授課記錄已改走共用元件 CoachRecordCard，
+// 它的色票由下面那條單獨守 —— 分開守是因為兩者的失效方式不同：
+// 這裡是「有人在頁面裡硬寫了別的綠」，那裡是「共用元件的色票被改掉」。
+const COACH_BADGE_PAGES = ['pages/CoachTodayPage.jsx'];
 
 check('家長端「已出席」章仍是 bg-brand-green/15 + text-brand-green（基準沒被搬走）', () => {
   const src = read('pages/MyLessonsPage.jsx');
@@ -69,6 +70,25 @@ for (const rel of COACH_BADGE_PAGES) {
       `未簽到應維持中性灰，目前是 "${m[2]}"`);
   });
 }
+
+check('共用卡片 CoachRecordCard 的「已簽到」方塊用家長端同一組色票', () => {
+  // 授課記錄的簽到章 2026-08-17 改成共用元件的 StatusSquare tone="green"。
+  // 守的是同一件事：教練看到的綠必須就是家長端「已出席」那個綠。
+  const src = stripComments(read('components/coach/CoachRecordCard.jsx'));
+  const m = src.match(/green:\s*'([^']+)'/);
+  assert.ok(m, 'CoachRecordCard 找不到 green 色票 —— 掃描失效');
+  assert.ok(m[1].includes('bg-brand-green/15') && m[1].includes('text-brand-green'),
+    `green 色票是 "${m[1]}"，家長端是 "${PARENT_ATTENDED_CLS}"。`
+    + '兩端不一致的話，同一個人會在同一天看到兩種綠');
+});
+
+check('授課記錄確實走共用元件，沒有再自己寫一份簽到章', () => {
+  const src = stripComments(read('pages/CoachHistoryPage.jsx'));
+  assert.ok(/StatusSquare tone="green"/.test(src),
+    '授課記錄沒有使用共用的綠色方塊');
+  assert.ok(!/s\.checked_in \? '[^']*(emerald|lime|green-)/.test(src),
+    '頁面裡又出現硬寫的色票 —— 應該一律走 CoachRecordCard');
+});
 
 check('教練端簽到章不再使用 emerald（黑名單只是補刀，不是主要依據）', () => {
   for (const rel of COACH_BADGE_PAGES) {

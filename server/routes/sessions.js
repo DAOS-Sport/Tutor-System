@@ -358,6 +358,11 @@ router.get('/coach/:coachId/history', requireCoach, requireCoachOwner('coachId')
     const r = await pool.query(
       `SELECT cs.id, cs.scheduled_at, cs.duration_minutes, cs.status,
               cp.id AS course_period_id, cp.course_type,
+              -- 卡片要印「N 期 共 M 堂」。總堂數與期次在 course_periods，但「這張訂單
+              -- 總共幾期」只有 admin_enrollments 有（course_periods 沒有 period_count），
+              -- 所以用 cp.admin_enrollment_id 帶出來。對不回去時是 NULL，
+              -- 前端整段不顯示，不會印出「共 null 堂」。
+              cp.total_sessions, cp.period_number, ae.period_count,
               v.id AS venue_id, v.name AS venue_name,
               rc.name AS original_coach_name,
               COALESCE(
@@ -375,6 +380,7 @@ router.get('/coach/:coachId/history', requireCoach, requireCoachOwner('coachId')
        FROM course_sessions cs
        JOIN course_periods cp ON cs.course_period_id = cp.id
        JOIN venues v ON v.id = cp.venue_id
+       LEFT JOIN admin_enrollments ae ON ae.id = cp.admin_enrollment_id
        LEFT JOIN coaches rc ON rc.id = cs.reassigned_from_coach_id
        WHERE COALESCE(cs.coach_id, cp.coach_id) = $1
          AND ${historyRangeWhere('cs.scheduled_at', '$2', '$3')}
