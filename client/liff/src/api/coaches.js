@@ -69,6 +69,17 @@ export const coachesApi = {
       mockDb.addCoachMedia(id, { storage_url: `/uploads/mock-coach-${Date.now()}.jpg`, alt_text: alt }));
   },
 
+  // 大頭照：檔案已在前端裁成 1:1，這裡只負責送。
+  uploadAvatar: (id, file) => {
+    const form = new FormData();
+    form.append('file', file);
+    return callApi(`/coaches/${id}/avatar`, { method: 'post', data: form }, () =>
+      ({ id, avatar_url: `/uploads/mock-avatar-${Date.now()}.jpg` }));
+  },
+
+  removeAvatar: (id) =>
+    callApi(`/coaches/${id}/avatar`, { method: 'delete' }, () => ({ id, avatar_url: null })),
+
   reorderMedia: (id, ids) =>
     callApi(`/coaches/${id}/media/reorder`, { method: 'patch', data: { ids } }, () =>
       mockDb.reorderCoachMedia(id, ids)),

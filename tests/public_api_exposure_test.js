@@ -65,6 +65,42 @@ async function acheck(name, fn) {
   });
 
   // ── 2. 欄位白名單（更早那次修補，不可回退）──────────────────
+  check('每一支 /coaches 端點都要有守門（白名單式，不是逐條列舉）', () => {
+    // 2026-08-17：GET /:id/media 原本完全沒有 middleware，正式站實測未登入回 200。
+    // 8/11 鎖 /coaches 時漏掉它。改成掃「所有路由」，新增端點忘了掛守門也會被抓到。
+    // head 抓「整行」而不是抓到第一個右括號 —— requireCoachOwner('id') 自己就有括號，
+    // 用 [^)]* 會在它中間截斷，然後這條斷言會永遠是假紅。
+    const routes = [...COACHES.matchAll(/^router\.(get|post|patch|put|delete)\('([^']+)'([^\n]*)/gm)]
+      .map((m) => ({ verb: m[1], path: m[2], head: m[3] }));
+    assert.ok(routes.length >= 10, '只解析到 ' + routes.length + ' 條路由 —— 掃描已失效');
+
+    // 可以不需要登入的，只有這五條，每條都逐一查證過：
+    //   /login /login/line   登入本身
+    //   /by-phone            以手機查教練（登入前的查詢）—— byPhoneRateLimit 擋暴力枚舉
+    //   /by-line-uid         以 LINE uid 查教練 —— byLineUidRateLimit ＋ id_token 只收 header
+    //   /:id                 推薦連結在未登入時要用，且回傳已過 publicCoach 白名單
+    // 其餘一律要 requireCoach。新增端點忘了掛守門，這條就會紅。
+    const OPEN = new Set(['/login', '/login/line', '/:id', '/by-phone', '/by-line-uid']);
+    const naked = routes.filter((r) => !OPEN.has(r.path)
+      && !/requireCoach|requireParentOrCoach|requireAdmin/.test(r.head));
+    assert.deepStrictEqual(naked.map((r) => r.verb.toUpperCase() + ' ' + r.path), [],
+      '這些端點沒有任何守門 —— 未登入就打得到');
+
+    // /:id/media 現在必須是「須登入且本人」：主管審核走 admin/learn.js，
+    // 家長端從頭到尾沒有拿過 media，沒有第三種消費者。
+    // 免登入的兩支查詢端點必須真的掛著 rate limit，否則等於開放枚舉。
+    for (const [pathname, mw] of [['/by-phone', 'byPhoneRateLimit'], ['/by-line-uid', 'byLineUidRateLimit']]) {
+      const r = routes.find((x) => x.verb === 'get' && x.path === pathname);
+      assert.ok(r, '找不到 GET ' + pathname);
+      assert.ok(r.head.includes(mw), 'GET ' + pathname + ' 沒有 ' + mw + ' —— 免登入又沒限流＝可枚舉全公司教練');
+    }
+
+    const media = routes.find((r) => r.verb === 'get' && r.path === '/:id/media');
+    assert.ok(media, '找不到 GET /:id/media');
+    assert.ok(/requireCoach/.test(media.head) && /requireCoachOwner\('id'\)/.test(media.head),
+      'GET /:id/media 沒有 requireCoach + requireCoachOwner —— 任何人帶 coach id 就拿得到照片網址');
+  });
+
   check('publicCoach 仍是白名單，且不含任何聯絡方式', () => {
     assert.ok(/const PUBLIC_COACH_FIELDS = \[/.test(COACHES), '白名單常數不見了');
     const list = COACHES.slice(COACHES.indexOf('const PUBLIC_COACH_FIELDS = ['));

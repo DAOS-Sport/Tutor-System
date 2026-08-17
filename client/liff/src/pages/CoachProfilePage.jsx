@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import AvatarCropper from '../components/coach/AvatarCropper';
 import { coachesApi } from "../api/coaches";
 import { sessionsApi } from "../api/sessions";
 import { venuesApi } from "../api/venues";
@@ -19,6 +20,35 @@ import { promotionValueLabel } from "../utils/promotionLabel";
  * 6. 診斷 console.log 改成只在 DEV 跑（原本每次 render 都印）
  */
 
+// 家長端小卡的自介只有 line-clamp-2（見 components/CoachCard.jsx），約兩行。
+// 正式庫實測：212 位教練只有 8 位寫了自介，其中 3 位寫了 201～268 字 ——
+// 家長看得到的永遠只有前兩行，後面全被吃掉。上限訂在 40 字，並讓教練當場看到
+// 家長實際會看到的樣子，比寫一行「請簡短」有用。
+const AVATAR_MAX_BYTES = 5 * 1024 * 1024;
+
+// 40 是「軟」上限：超過只警告，不擋儲存（owner 2026-08-17）。
+// 家長端小卡是 line-clamp-2，超過的部分家長看不到 —— 但那是他自己的取捨，
+// 系統的責任是講清楚，不是替他決定。
+// BIO_HARD_MAX 才是真正擋下來的界線，那是防呆不是政策：正式庫最長 268 字，
+// 訂 500 讓既有資料都還能重新儲存。
+const BIO_MAX = 40;
+const BIO_HARD_MAX = 500;
+const BIO_SWEET_MIN = 20;
+
+function bioState(len) {
+  if (len > BIO_MAX) {
+    return {
+      tone: 'text-brand-amber font-bold',
+      label: `${len} / ${BIO_MAX}`,
+      warn: `超過 ${BIO_MAX} 字，家長端小卡只顯示兩行，多出來的會被截斷`,
+    };
+  }
+  if (len >= BIO_SWEET_MIN) {
+    return { tone: 'text-brand-green font-bold', label: `● 長度剛好 ${len} / ${BIO_MAX}`, warn: null };
+  }
+  return { tone: 'text-gray-400', label: `${len} / ${BIO_MAX}`, warn: null };
+}
+
 export default function CoachProfilePage() {
   const { coach } = useAuth();
   const toast = useToast();
@@ -33,12 +63,16 @@ export default function CoachProfilePage() {
   const [reviewStatus, setReviewStatus] = useState(coach?.intro_review_status || "");
   const [reviewNote, setReviewNote] = useState(coach?.intro_review_note || "");
   const [bioOpen, setBioOpen] = useState(false);
+  const [avatarUrl, setAvatarUrl] = useState("");
+  const [cropFile, setCropFile] = useState(null);
+  const [avatarBusy, setAvatarBusy] = useState(false);
   const [mediaOpen, setMediaOpen] = useState(false);
   const [promos, setPromos] = useState(null);
 
   useEffect(() => {
     if (!coach?.id) return;
     setBio(coach.bio_rich_text || coach.bio || "");
+    setAvatarUrl(coach.avatar_url || "");
     let alive = true;
     coachesApi
       .listMedia(coach.id)
@@ -52,6 +86,7 @@ export default function CoachProfilePage() {
         if (!alive || !c) return;
         setFreshVenueIds(cleanVenueList(c.venue_ids || c.venues || []));
         if (c.bio_rich_text != null) setBio(c.bio_rich_text);
+        if (c.avatar_url !== undefined) setAvatarUrl(c.avatar_url || "");
       })
       .catch(() => {
         /* 失敗則退回快取的 coach.venue_ids */
@@ -110,8 +145,60 @@ export default function CoachProfilePage() {
     : "";
   const coachInitial = (coach?.name || "教").trim().slice(0, 1) || "教";
 
+  const bioStatus = bioState(bio.length);
+
+  function pickAvatar(e) {
+    const f = e.target.files?.[0];
+    e.target.value = '';        // 同一個檔案再選一次也要能觸發 change
+    if (!f) return;
+    if (!['image/jpeg', 'image/png'].includes(f.type)) {
+      toast.error('只接受 JPG / PNG 圖片');
+      return;
+    }
+    // 這裡擋的是「原檔」大小。裁切後輸出固定 512×512 JPEG，一定遠小於上限，
+    // 但先擋住可以省掉把 20MB 讀進記憶體再裁的那段。
+    if (f.size > AVATAR_MAX_BYTES) {
+      toast.error('圖片請小於 5MB');
+      return;
+    }
+    setCropFile(f);
+  }
+
+  async function handleCropped(file) {
+    setCropFile(null);
+    setAvatarBusy(true);
+    try {
+      const r = await coachesApi.uploadAvatar(coach.id, file);
+      setAvatarUrl(r?.avatar_url || '');
+      toast.success('大頭照已更新');
+    } catch (err) {
+      toast.error(err?.response?.data?.error || '上傳失敗');
+    } finally {
+      setAvatarBusy(false);
+    }
+  }
+
+  async function handleRemoveAvatar() {
+    if (avatarBusy) return;
+    setAvatarBusy(true);
+    try {
+      await coachesApi.removeAvatar(coach.id);
+      setAvatarUrl('');
+      toast.success('已移除大頭照');
+    } catch (err) {
+      toast.error(err?.response?.data?.error || '移除失敗');
+    } finally {
+      setAvatarBusy(false);
+    }
+  }
+
   async function handleSaveBio() {
     if (savingBio) return;
+    // 超過 40 只是警告，照樣存得進去。這裡擋的是防呆上限。
+    if (bio.length > BIO_HARD_MAX) {
+      toast.error(`個人介紹最多 ${BIO_HARD_MAX} 字，目前 ${bio.length} 字`);
+      return;
+    }
     setSavingBio(true);
     try {
       // 回傳值含更新後的 intro_review_status（後端會寫成 pending_review）。
@@ -176,6 +263,7 @@ export default function CoachProfilePage() {
         coachInitial={coachInitial}
         venueNames={venueNames}
         introReviewStatusText={introReviewStatusText}
+        avatarUrl={avatarUrl}
       />
 
       {/* 兩塊預設收合。標題列右上角是「編輯 ✏」，展開後同一個位置變成「儲存」——
@@ -197,30 +285,67 @@ export default function CoachProfilePage() {
             />
           }
         >
-          {/* 主管退回時一定要看得到原因，否則教練只知道「未通過」，不知道要改什麼。
-              資料本來就在 detail() 的回傳裡，admin 端也有顯示，只有教練端漏掉。 */}
-          {reviewStatus === "rejected" && reviewNote && (
-            <div className="mb-3 rounded-lg border border-brand-error/30 bg-brand-error/5 px-3 py-2">
-              <div className="text-[11px] font-bold text-brand-error">主管退回原因</div>
-              <div className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-gray-700">
-                {reviewNote}
-              </div>
+          {/* 大頭照與自介同屬「家長會看到什麼」，放在一起編輯才不用兩處來回切。
+              這裡不再套自己的外框 —— 外層 Collapsible 已經有框了。 */}
+          <div className="mb-3 flex items-center gap-3 border-b border-gray-100 pb-3">
+            <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-full bg-brand-primary text-2xl font-bold text-white">
+          {avatarUrl
+            ? <img src={avatarUrl} alt="" className="h-full w-full object-cover" />
+            : coachInitial}
             </div>
-          )}
+            <div className="min-w-0 flex-1">
+          <div className="text-sm font-bold text-gray-800">大頭照</div>
+          <p className="mt-0.5 text-[11px] leading-4 text-gray-500">家長看到的圓形頭像，建議清晰的半身照</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <label className={`cursor-pointer rounded-lg border border-brand-teal px-3 py-1.5 text-xs font-bold text-brand-teal ${avatarBusy ? 'pointer-events-none opacity-50' : 'active:bg-brand-teal/10'}`}>
+              {avatarBusy ? '處理中…' : (avatarUrl ? '更換照片' : '上傳照片')}
+              <input type="file" accept="image/jpeg,image/png" className="hidden" onChange={pickAvatar} disabled={avatarBusy} />
+            </label>
+            {avatarUrl && (
+              <button type="button" onClick={handleRemoveAvatar} disabled={avatarBusy}
+                className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-500 disabled:opacity-50">
+                移除
+              </button>
+            )}
+          </div>
+            </div>
+          </div>
+          {/* 2026-08-17 owner 指示移除區塊內的「主管退回原因」。
+              代價要記著：教練現在只會從橫幅看到「介紹狀態：未通過」，看不到主管
+              寫了什麼要他改。資料仍在 detail() 的回傳裡（reviewNote），admin 端
+              也還看得到 —— 要放回來只是把這段補回去。 */}
           <textarea
             value={bio}
             onChange={(e) => setBio(e.target.value)}
-            rows={5}
-            maxLength={500}
-            placeholder="撰寫教學經歷、專長、教學風格…"
-            className="w-full rounded-lg border border-gray-300 p-3 text-base leading-relaxed focus:border-brand-teal focus:outline-none focus:ring-2 focus:ring-brand-teal/30"
+            rows={3}
+            maxLength={BIO_HARD_MAX}
+            placeholder="例：教學十年，專長自由式與蛙式，擅長帶零基礎與怕水的孩子。"
+            className={`w-full rounded-lg border p-3 text-base leading-relaxed focus:outline-none focus:ring-2 ${
+              bio.length > BIO_MAX
+                ? 'border-brand-amber focus:border-brand-amber focus:ring-brand-amber/30'
+                : 'border-gray-300 focus:border-brand-teal focus:ring-brand-teal/30'
+            }`}
           />
-          <div className="mt-2 flex items-center justify-between">
-            <span className="text-[11px] text-gray-400">{bio.length} / 500</span>
-            <span className="text-[11px] text-gray-400">儲存後會送交主管審核</span>
+          <div className="mt-2 flex items-center justify-between gap-2">
+            <span className={`text-[11px] ${bioStatus.tone}`}>{bioStatus.label}</span>
+            <span className="text-[11px] text-gray-400">儲存後送審</span>
           </div>
+          {bioStatus.warn && (
+            <p className="mt-1 flex items-start gap-1 text-[11px] font-bold leading-4 text-brand-amber">
+              <span aria-hidden="true">⚠</span>{bioStatus.warn}
+            </p>
+          )}
+
         </Collapsible>
       </div>
+
+      {cropFile && (
+        <AvatarCropper
+          file={cropFile}
+          onCancel={() => setCropFile(null)}
+          onConfirm={handleCropped}
+        />
+      )}
 
       <Collapsible
         title="介紹圖片"
@@ -335,15 +460,18 @@ function CoachBanner({
   coachInitial,
   venueNames,
   introReviewStatusText,
+  avatarUrl,
 }) {
   const multiplier = getMultiplier(coach);
   return (
     <div className="mb-5 w-full rounded-xl bg-gradient-to-br from-[#123e6f] via-[#0b6d82] to-[#17a085] p-4 text-white">
       <div className="flex items-center gap-3">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/25 bg-white/10">
-          <span className="text-[15px] font-bold leading-none">
-            {coachInitial}
-          </span>
+        <div className="relative h-10 w-10 shrink-0">
+          <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-full border border-white/25 bg-white/10">
+            {avatarUrl
+              ? <img src={avatarUrl} alt="" className="h-full w-full object-cover" />
+              : <span className="text-[15px] font-bold leading-none">{coachInitial}</span>}
+          </div>
         </div>
         <div className="min-w-0 flex-1">
           <div className="truncate text-[17px] font-bold leading-tight">

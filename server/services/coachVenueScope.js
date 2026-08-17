@@ -68,6 +68,11 @@ const COACH_STAFF_PROFILE_SELECT = `
   (COALESCE(s.multiplier, c.pricing_multiplier, 1.00) <> 1.00) AS is_senior,
   COALESCE(s.multiplier, c.pricing_multiplier, 1.00) AS pricing_multiplier,
   c.bio_rich_text,
+  -- 大頭照（相對路徑）。加進白名單 PUBLIC_COACH_FIELDS 還不夠：publicCoach 只複製
+  -- 「不是 undefined」的欄位，這裡沒 SELECT 的欄位在那邊就是 undefined，會被無聲
+  -- 跳過 —— 上傳成功、DB 有值、家長端永遠看不到。實測踩過。
+  -- 註：這整段是 JS 模板字串，註解裡不可以出現反引號，會把字串提前關掉。
+  c.avatar_url,
   c.intro_review_status,
   c.intro_review_note,
   c.intro_submitted_at,

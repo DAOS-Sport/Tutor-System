@@ -13,6 +13,7 @@ export default function CoachCard({ coach, basePrice, tierPrices = null, onSelec
     : Math.round(adjusted / Math.max(1, Number(sessionsPerPeriod) || 6));
   const displayPrice = isTrial ? trialUnit : adjusted;
   const initial = isPlaceholder ? '待' : (coach.name || '？').slice(0, 1);
+  const [avatarFailed, setAvatarFailed] = React.useState(false);
   const coefficientPct = Math.round((coach.multiplier ?? 1) * 100);
   const isAdjustedCoefficient = coefficientPct !== 100;
 
@@ -31,12 +32,23 @@ export default function CoachCard({ coach, basePrice, tierPrices = null, onSelec
       }`}
     >
       <div className="flex items-start gap-3">
+        {/* 有大頭照就畫照片，否則退回姓名首字。
+            onError 也要退回 —— 檔案若哪天讀不到（2026-07 就掉過一張介紹圖），
+            沒有 fallback 的話家長看到的是一個破圖框，比首字圓圈難看得多。 */}
         <div
-          className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-full text-xl font-bold ${
+          className={`flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-full text-xl font-bold ${
             isPlaceholder ? 'bg-brand-teal text-white' : coach.is_senior ? 'bg-brand-gold text-white' : 'bg-brand-primary text-white'
           }`}
         >
-          {initial}
+          {!isPlaceholder && coach.avatar_url && !avatarFailed ? (
+            <img
+              src={coach.avatar_url}
+              alt=""
+              loading="lazy"
+              onError={() => setAvatarFailed(true)}
+              className="h-full w-full object-cover"
+            />
+          ) : initial}
         </div>
 
         <div className="min-w-0 flex-1">

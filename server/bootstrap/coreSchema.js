@@ -1954,6 +1954,11 @@ CREATE TABLE IF NOT EXISTS ragic_h01_shadow (
   fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ALTER TABLE ragic_h01_shadow ADD COLUMN IF NOT EXISTS ragic_data_no TEXT;
+
+-- 2026-08-17 教練大頭照（owner 要求）。存的是相對路徑 /uploads/YYYY-MM/hash.jpg，
+-- 絕不存絕對網址 —— 寫死網域的話 dev 上傳的圖在正式站就是破圖（2026-07 已經因為
+-- 檔案落本機磁碟掉過一張，見 objectStorage.js 的 fail-closed 說明）。
+ALTER TABLE coaches ADD COLUMN IF NOT EXISTS avatar_url TEXT;
 CREATE INDEX IF NOT EXISTS idx_ragic_h01_shadow_fetched ON ragic_h01_shadow(fetched_at);
 CREATE INDEX IF NOT EXISTS idx_ragic_h01_shadow_data_no ON ragic_h01_shadow(ragic_data_no);
 

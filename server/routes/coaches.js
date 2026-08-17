@@ -7,6 +7,9 @@
  * - GET  /api/coaches/:id/media                  介紹媒體列表（公開）
  * - POST /api/coaches/:id/media                  新增介紹媒體（須登入且本人）
  * - POST /api/coaches/:id/media/upload           上傳圖片並新增介紹媒體（須登入且本人）
+ * - GET  /api/coaches/:id/media                  介紹圖片清單（須登入且本人）
+ * - POST /api/coaches/:id/avatar                 上傳大頭照（須登入且本人）
+ * - DELETE /api/coaches/:id/avatar               移除大頭照（須登入且本人）
  * - PATCH /api/coaches/:id/media/reorder         排序（須登入且本人）
  * - DELETE /api/coaches/:id/media/:mediaId       刪除（須登入且本人）
  */
@@ -98,6 +101,7 @@ const PUBLIC_COACH_FIELDS = [
   'multiplier',          // pricing_multiplier 的別名，前端兩種都在讀
   'bio',
   'bio_rich_text',
+  'avatar_url',          // 相對路徑；家長端小卡要畫，沒有就退回姓名首字
   'intro_review_status', // 只是「已發布／審核中」的狀態，不含評語內容
   'venue_ids',
   'venues',
@@ -416,8 +420,28 @@ router.get('/:id/private', requireCoach, requireCoachOwner('id'), async (req, re
   }
 });
 
+// 家長端小卡的自介只有 line-clamp-2（client/liff/src/components/CoachCard.jsx），
+// 約兩行、40 字 —— 但那是「建議」不是「規定」：前端超過 40 只給警語，照樣存得進去
+// （owner 2026-08-17）。後端如果還擋 40，畫面說可以存、送出卻被打回，那是最難查的
+// 那種不一致。
+//
+// 這裡擋的是防呆上限。正式庫現存最長 268 字，訂 500 讓既有資料重新儲存時不會卡住，
+// 同時擋掉整篇文章貼進來的情況。要改的話前端的 BIO_HARD_MAX 必須同步。
+const BIO_MAX = 500;
+
 router.put('/:id/bio', requireCoach, requireCoachOwner('id'), async (req, res) => {
   const { bio_rich_text } = req.body || {};
+  // 前端的 maxLength 只是引導，繞過去就沒了。上限必須在這裡也擋一次。
+  // 不做靜默截斷 —— 那是替教練決定砍掉哪一段，錯了他也不會知道。
+  const bio = typeof bio_rich_text === 'string' ? bio_rich_text : '';
+  if (bio.length > BIO_MAX) {
+    return res.status(400).json({
+      error: `個人介紹最多 ${BIO_MAX} 字（目前 ${bio.length} 字）`,
+      code: 'BIO_TOO_LONG',
+      max: BIO_MAX,
+      length: bio.length,
+    });
+  }
   try {
     const r = await pool.query(
       `UPDATE coaches SET bio_rich_text = $1,
@@ -425,7 +449,7 @@ router.put('/:id/bio', requireCoach, requireCoachOwner('id'), async (req, res) =
                          intro_submitted_at = NOW(),
                          updated_at = NOW()
        WHERE id = $2 RETURNING id, bio_rich_text, intro_review_status`,
-      [bio_rich_text || '', req.params.id]
+      [bio, req.params.id]   // 已在上面正規化過（非字串一律當空字串）
     );
     if (r.rows.length === 0) return res.status(404).json({ error: 'not found' });
     res.json(r.rows[0]);
@@ -434,7 +458,18 @@ router.put('/:id/bio', requireCoach, requireCoachOwner('id'), async (req, res) =
   }
 });
 
-router.get('/:id/media', async (req, res) => {
+/**
+ * 介紹圖片清單。
+ *
+ * 2026-08-17：補上權限。原本這支完全沒有 middleware —— 隔壁的 GET /coaches 與
+ * GET /coaches/:id 在 8/11 就改成白名單＋須登入了（那次外洩 165 位教練的手機與
+ * Email），這支漏掉。任何人帶一個 coach id 就拿得到照片網址，而 /uploads/* 本身
+ * 也不需要登入。
+ *
+ * 唯一的消費者是教練自己的個人頁（CoachProfilePage）。主管審核走的是
+ * admin/learn.js 的 /intros，不經過這裡。家長端從頭到尾沒有拿過 media。
+ */
+router.get('/:id/media', requireCoach, requireCoachOwner('id'), async (req, res) => {
   const r = await pool.query(
     `SELECT id, media_type, storage_url, alt_text, sort_order
      FROM coach_bio_media WHERE coach_id = $1 ORDER BY sort_order, created_at`,
@@ -456,6 +491,51 @@ router.post('/:id/media', requireCoach, requireCoachOwner('id'), async (req, res
     [req.params.id, media_type, storage_url, alt_text, max.rows[0].m + 1]
   );
   res.status(201).json(r.rows[0]);
+});
+
+/**
+ * 大頭照：上傳（multipart, field: file）與移除。
+ *
+ * 走的是與介紹圖片完全相同的一條路 —— multer memoryStorage → objectStorage.saveBuffer
+ * → 存「相對路徑」。這不是省事，是刻意的：
+ *   ・saveBuffer 在 production 只會落 bucket 或 PostgreSQL，本機磁碟被 fail closed 擋掉
+ *     （Autoscale 換實例就沒了；2026-07-13 那張介紹圖就是這樣變成 404 的）
+ *   ・存相對路徑，dev 與正式各自解析自己的網域，不可能交叉汙染
+ * 要改這裡之前先讀 server/services/objectStorage.js 的檔頭。
+ */
+router.post('/:id/avatar', requireCoach, requireCoachOwner('id'), mediaUpload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: '請選擇圖片' });
+    const saved = await saveBuffer({
+      buffer: req.file.buffer,
+      originalName: req.file.originalname,
+      mimeType: req.file.mimetype,
+    });
+    const r = await pool.query(
+      `UPDATE coaches SET avatar_url = $1, updated_at = NOW() WHERE id = $2 RETURNING id, avatar_url`,
+      [saved.url, req.params.id]
+    );
+    if (r.rows.length === 0) return res.status(404).json({ error: 'not found' });
+    res.status(201).json(r.rows[0]);
+  } catch (err) {
+    const status = Number(err.status) || 500;
+    console.error('[coaches/avatar]', err.message);
+    res.status(status).json({ error: err.message || '上傳失敗' });
+  }
+});
+
+router.delete('/:id/avatar', requireCoach, requireCoachOwner('id'), async (req, res) => {
+  try {
+    // 只清欄位，不刪 object —— 同一個 key 可能被別處引用，而且刪錯了救不回來。
+    const r = await pool.query(
+      `UPDATE coaches SET avatar_url = NULL, updated_at = NOW() WHERE id = $1 RETURNING id, avatar_url`,
+      [req.params.id]
+    );
+    if (r.rows.length === 0) return res.status(404).json({ error: 'not found' });
+    res.json(r.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // 上傳圖片檔（multipart, field: file）→ 存檔後直接建立 media 列並回傳
