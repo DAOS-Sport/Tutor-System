@@ -199,10 +199,9 @@ export default function CoachHistoryPage() {
                     )}
                   </>
                 }
-                titleBadges={<TypeBadge courseType={s.course_type} />}
-                tint={s.checked_in ? 'bg-brand-green/5' : null}
                 aside={
                   <>
+                    <TypeBadge courseType={s.course_type} />
                     {/* 這裡只呈現「簽到記錄」，不做成看起來能按的按鈕。
                         簽到會扣課並推播給教練，有自己的流程與稽核，
                         不該讓人以為在列表上點一下就能改。

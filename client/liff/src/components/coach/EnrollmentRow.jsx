@@ -7,7 +7,7 @@ import {
 // 與授課記錄共用同一套卡片外觀。兩頁各寫一份的話，改了一邊另一邊不會跟上，
 // 教練在自己的分頁之間會看到兩種排版。
 import CoachRecordCard, {
-  StatusBlock, TypeBadge, courseTitle, ratePercent, periodSummary,
+  StatusChip, SessionCount, TypeBadge, courseTitle, ratePercent, periodSummary,
 } from './CoachRecordCard';
 
 /**
@@ -164,7 +164,7 @@ function classRoster(item, ownStudents) {
   // 不能讓教練以為那就是全班。
   if (!families || !Number.isFinite(size)) {
     return item.bucket === 'pending_payment' ? (
-      <div className="mt-1.5 text-[10px] leading-4 text-gray-400">名單待對帳後確認</div>
+      <div className="mt-1.5 text-[11px] leading-4 text-gray-400">名單待對帳後確認</div>
     ) : null;
   }
   if (size <= ownStudents.length) return null;
@@ -172,15 +172,15 @@ function classRoster(item, ownStudents) {
     // 這一塊由 CoachRecordCard 的 extra 插在主列之後，所以是整卡寬。
     // 放在左欄的話每行只剩不到一半寬度，「測試-學員1、測試-學員2」會被折成三行。
     <div className="mt-2 rounded-lg bg-gray-50 px-2.5 py-2">
-      <div className="text-[10px] font-bold text-gray-500">同班共 {size} 位</div>
+      <div className="text-[11px] font-bold text-gray-500">同班共 {size} 位</div>
       <div className="mt-1 space-y-1">
         {families.map((f, i) => (
-          <div key={`${f.parent_name}-${i}`} className="flex items-baseline gap-1.5 text-[11px] leading-4">
+          <div key={`${f.parent_name}-${i}`} className="flex items-baseline gap-1.5 text-xs leading-5">
             {/* 家長姓名給固定上限而不是 45%：整卡寬之後 45% 太寬，
                 學員那半會被壓掉。正式庫最長的家長名是「龔原瑯 (曼甄、謹郁)」。 */}
             <span className="min-w-0 max-w-[38%] shrink-0 truncate text-gray-500">{f.parent_name}</span>
             {f.is_leader && (
-              <span className="shrink-0 rounded bg-brand-teal/15 px-1 text-[9px] font-bold text-brand-teal">團主</span>
+              <span className="shrink-0 rounded bg-brand-teal/15 px-1 text-[10px] font-bold text-brand-teal">團主</span>
             )}
             <span className="min-w-0 flex-1 text-gray-800">{(f.students || []).join('、')}</span>
           </div>
@@ -189,14 +189,6 @@ function classRoster(item, ownStudents) {
     </div>
   );
 }
-
-// 卡片底色：極淡的狀態色。一整頁都上滿色會變調色盤，狀態反而看不出來 ——
-// 這裡只給一點暗示，真正的顏色由右邊的色塊承擔。
-const TINT = {
-  in_progress: 'bg-brand-green/5',
-  pending_payment: 'bg-brand-amber/5',
-  completed: 'bg-gray-50/60',
-};
 
 export function EnrollmentRow({ item, onClick, detailed = false, coachName = '', multiplier = null }) {
   const st = bucketOf(item);
@@ -234,7 +226,7 @@ export function EnrollmentRow({ item, onClick, detailed = false, coachName = '',
         <>
           <span>{students}</span>
           {studentList.length > 1 && (
-            <span className="ml-1 text-[10px] font-normal tabular-nums text-gray-400">{studentList.length} 位</span>
+            <span className="ml-1 text-[11px] font-normal tabular-nums text-gray-400">{studentList.length} 位</span>
           )}
           {periodSummary(item.period_count, item.total_sessions) && (
             <>
@@ -267,28 +259,21 @@ export function EnrollmentRow({ item, onClick, detailed = false, coachName = '',
         </>
       }
       extra={classmates}
-      titleBadges={
-        <>
-          <TypeBadge courseType={item.course_type} />
-          {item.is_group && (
-            <span className="shrink-0 whitespace-nowrap rounded-md bg-brand-teal/10 px-1.5 py-0.5 text-[10px] font-semibold text-brand-teal">團報</span>
-          )}
-        </>
-      }
-      tint={TINT[st.key] || null}
       aside={
         <>
-          {/* 右欄只有 92px，「剛報名待對帳」六個字會把色塊撐到超出欄寬。
+          <div className="flex items-center gap-1">
+            {item.is_group && (
+              <span className="whitespace-nowrap rounded-md bg-brand-teal/10 px-1.5 py-0.5 text-[11px] font-semibold text-brand-teal">團報</span>
+            )}
+            <TypeBadge courseType={item.course_type} />
+          </div>
+          {/* 右欄只有 92px，「剛報名待對帳」六個字會把標籤撐到超出欄寬。
               篩選鈕那邊空間夠、維持完整字樣；卡片上縮成「待對帳」——
-              卡片本身就在報名記錄頁，「剛報名」那三個字是重複的脈絡。
-              堂數只在進行中顯示：待對帳還沒開課（total 多半是 NULL），
-              已完成剩 0 是廢話。 */}
-          <StatusBlock
-            tone={tone}
-            label={st.key === 'pending_payment' ? '待對帳' : st.label}
-            remaining={st.key === 'in_progress' ? remaining : null}
-            total={st.key === 'in_progress' ? total : null}
-          />
+              卡片本身就在報名記錄頁，「剛報名」那三個字是重複的脈絡。 */}
+          <StatusChip tone={tone}>{st.key === 'pending_payment' ? '待對帳' : st.label}</StatusChip>
+          {st.key === 'in_progress' && (
+            <SessionCount remaining={remaining} total={total} tone="green" />
+          )}
         </>
       }
     />
