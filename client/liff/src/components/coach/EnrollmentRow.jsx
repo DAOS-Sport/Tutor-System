@@ -190,6 +190,14 @@ function classRoster(item, ownStudents) {
   );
 }
 
+// 卡片底色：極淡的狀態色。一整頁都上滿色會變調色盤，狀態反而看不出來 ——
+// 這裡只給一點暗示，真正的顏色由右邊的色塊承擔。
+const TINT = {
+  in_progress: 'bg-brand-green/5',
+  pending_payment: 'bg-brand-amber/5',
+  completed: 'bg-gray-50/60',
+};
+
 export function EnrollmentRow({ item, onClick, detailed = false, coachName = '', multiplier = null }) {
   const st = bucketOf(item);
   const studentList = Array.isArray(item.students) ? item.students.filter(Boolean) : [];
@@ -259,14 +267,17 @@ export function EnrollmentRow({ item, onClick, detailed = false, coachName = '',
         </>
       }
       extra={classmates}
+      titleBadges={
+        <>
+          <TypeBadge courseType={item.course_type} />
+          {item.is_group && (
+            <span className="shrink-0 whitespace-nowrap rounded-md bg-brand-teal/10 px-1.5 py-0.5 text-[10px] font-semibold text-brand-teal">團報</span>
+          )}
+        </>
+      }
+      tint={TINT[st.key] || null}
       aside={
         <>
-          <div className="flex items-center gap-1">
-            {item.is_group && (
-              <span className="whitespace-nowrap rounded-md bg-brand-teal/10 px-1.5 py-0.5 text-[10px] font-semibold text-brand-teal">團報</span>
-            )}
-            <TypeBadge courseType={item.course_type} />
-          </div>
           {/* 右欄只有 92px，「剛報名待對帳」六個字會把色塊撐到超出欄寬。
               篩選鈕那邊空間夠、維持完整字樣；卡片上縮成「待對帳」——
               卡片本身就在報名記錄頁，「剛報名」那三個字是重複的脈絡。

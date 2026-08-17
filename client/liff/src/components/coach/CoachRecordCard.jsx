@@ -54,13 +54,20 @@ export function periodSummary(periodCount, totalSessions) {
   return null;
 }
 
+// 每個 tone 都帶「底色 + 文字色 + 邊框色」。邊框是刻意的：
+// 只有淡底的話，色塊與卡片白底之間沒有明確界線，看起來像一片糊掉的色斑；
+// 加一條看得見的硬邊界之後，它才成為一個獨立的方塊。
+//
+// ⚠️ 透明度只用 Tailwind 預設會產出的級距（/5 /10 /15 /20 /30…）。
+// 寫成 /[0.04] 這種任意值時 JIT 掃不到，class 不會被產出 ——
+// 畫面上什麼都不會發生，而且不會有任何錯誤訊息。這裡踩過一次。
 const TONE = {
   // 已簽到／進行中：與家長端「已出席」章同一組 brand-green。
   // 教練在自己的分頁與家長的畫面之間不該看到兩種綠。
-  green: 'bg-brand-green/15 text-brand-green',
-  amber: 'bg-brand-amber/15 text-brand-amber',
-  teal: 'bg-brand-teal/10 text-brand-teal',
-  gray: 'bg-gray-100 text-gray-500',
+  green: 'bg-brand-green/15 text-brand-green border-brand-green/40',
+  amber: 'bg-brand-amber/15 text-brand-amber border-brand-amber/40',
+  teal: 'bg-brand-teal/10 text-brand-teal border-brand-teal/40',
+  gray: 'bg-gray-100 text-gray-500 border-gray-300',
 };
 
 /**
@@ -78,7 +85,7 @@ export function StatusBanner({ tone = 'gray', label, sub }) {
   return (
     <div
       style={{ width: 60, height: 60 }}
-      className={`flex shrink-0 flex-col items-center justify-center rounded-xl px-1 text-center leading-tight ${TONE[tone] || TONE.gray}`}
+      className={`flex shrink-0 flex-col items-center justify-center rounded-xl border px-1 text-center leading-tight ${TONE[tone] || TONE.gray}`}
     >
       <span className="max-w-full truncate text-xs font-bold">{label}</span>
       {sub && <span className="mt-0.5 max-w-full truncate text-[10px] font-medium tabular-nums opacity-75">{sub}</span>}
@@ -104,7 +111,7 @@ export function StatusBlock({ tone = 'gray', label, remaining, total }) {
     // flex-1 讓色塊往下撐滿右欄剩餘高度 —— 卡片內容多的時候（同班名冊那種）
     // 它會跟著長高，而不是縮在上面一小塊。minHeight 只是資訊少時的下限。
     <div
-      className={`flex w-full flex-1 flex-col items-center justify-center rounded-xl px-1 py-2 text-center leading-tight ${TONE[tone] || TONE.gray}`}
+      className={`flex w-full flex-1 flex-col items-center justify-center rounded-xl border px-1 py-2 text-center leading-tight ${TONE[tone] || TONE.gray}`}
       style={{ minHeight: 52 }}
     >
       <span className="max-w-full truncate text-xs font-bold">{label}</span>
@@ -135,7 +142,11 @@ export function TypeBadge({ courseType }) {
  * @param {string} rate     倍率字串（ratePercent 產出），null 則不顯示
  * @param {node}   subject  第三行：對象 ‧ 期數堂數
  * @param {node}   meta     分隔線下方的小字（時間 ‧ 場館等）
- * @param {node}   aside    右欄內容（組別標籤、狀態標籤、堂數）
+ * @param {node}   titleBadges 與標題同一行的小標籤（組別、團報）。
+ *                          放在標題旁而不是右欄：右欄留給狀態色塊獨佔，
+ *                          它才有辦法從上撐到下；標籤擠在上面會把色塊往下推。
+ * @param {node}   aside    右欄內容（狀態色塊）
+ * @param {string} tint     卡片底色（極淡的狀態色）。null 則維持白底。
  * @param {node}   extra    整卡寬的區塊（同班名冊等）。放在主列之後，
  *                          不受右欄壓縮 —— 名冊塞在左欄時每行只剩不到一半寬度，
  *                          「測試-學員1、測試-學員2」會被折成三行。
@@ -143,13 +154,16 @@ export function TypeBadge({ courseType }) {
  * @param {func}   onClick  有值時整張卡可點；沒有就是純展示
  */
 export default function CoachRecordCard({
-  title, rate, subject, meta, aside, extra, footer, onClick, tone = 'default',
+  title, titleBadges, rate, subject, meta, aside, extra, footer, onClick,
+  tone = 'default', tint = null,
 }) {
   const clickable = typeof onClick === 'function';
   const Tag = clickable ? 'button' : 'div';
+  // 底色刻意極淡：一整頁卡片都上色會變成調色盤，狀態反而看不出來。
+  // 這裡只給「這張卡屬於哪一類」一點暗示，真正的顏色由右邊的色塊承擔。
   const toneCls = tone === 'muted'
     ? 'border-gray-200 bg-gray-50/60'
-    : 'border-gray-200/90 bg-white';
+    : `border-gray-200/90 ${tint || 'bg-white'}`;
   return (
     <Tag
       {...(clickable ? { type: 'button', onClick } : {})}
@@ -164,15 +178,20 @@ export default function CoachRecordCard({
       <div className="flex items-stretch justify-between gap-3">
         {/* min-w-0 是關鍵：沒有它，長學員名單會把右欄推出卡片外。 */}
         <div className="min-w-0 flex-1 space-y-0.5">
-          <div className="truncate text-[15px] font-extrabold leading-tight text-brand-primary">{title}</div>
+          <div className="flex items-center gap-1.5">
+            <span className="min-w-0 truncate text-[15px] font-extrabold leading-tight text-brand-primary">{title}</span>
+            {titleBadges}
+          </div>
           {rate && <div className="text-[11px] font-medium leading-tight text-gray-400">（{rate}）</div>}
           {subject && <div className="pt-0.5 text-xs font-bold leading-5 text-gray-700">{subject}</div>}
           {meta && (
             <div className="mt-1 border-t border-gray-100 pt-1 text-[11px] leading-4 text-gray-400">{meta}</div>
           )}
         </div>
-        {/* 右欄固定寬：不隨內容伸縮，卡片與卡片之間的右緣才會對齊。 */}
-        <div className="flex w-[92px] shrink-0 flex-col items-end gap-1">{aside}</div>
+        {/* 右欄固定寬：不隨內容伸縮，卡片與卡片之間的右緣才會對齊。
+            組別標籤搬到標題旁之後，這一欄只剩狀態，寬度收到 76px 即可，
+            左欄就多出空間給學員名單。 */}
+        <div className="flex w-[76px] shrink-0 flex-col items-center justify-center gap-1">{aside}</div>
       </div>
       {extra}
       {footer && (
