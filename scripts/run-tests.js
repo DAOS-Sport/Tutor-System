@@ -41,6 +41,8 @@ const UNIT = [
   'tests/shared_datepicker_rollout_test.js',
   'tests/coach_bio_limit_test.js',
   'tests/coach_avatar_test.js',
+  'tests/enrollment_success_push_test.js',
+  'tests/upload_error_test.js',
   'tests/course_tier_price_test.js',
   'tests/checkin_label_test.js',
   'tests/force_trigger_outbox_cli_test.js',

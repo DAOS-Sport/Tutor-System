@@ -98,5 +98,49 @@ check('預覽已移除，不得留下殘骸', () => {
     '家長端小卡已不是 line-clamp-2 —— 建議長度 40 是從兩行推算的，要跟著重算');
 });
 
+check('詳細介紹：與短簡介是兩個欄位，各自儲存', () => {
+  const api = stripComments(fs.readFileSync(API, 'utf8'));
+  const page = stripComments(fs.readFileSync(PAGE, 'utf8'));
+
+  // 兩個欄位不可以互相覆蓋 —— 它們在不同的摺疊區塊，只送其中一個是常態。
+  assert.ok(/bio_detail = COALESCE\(\$3, bio_detail\)/.test(api),
+    'bio_detail 沒有用 COALESCE —— 只儲存短簡介時會把詳細介紹清空');
+  assert.ok(/BIO_DETAIL_TOO_LONG/.test(api), '詳細介紹沒有長度守門');
+
+  // 前後端上限要一致，否則畫面說可以存、送出卻被打回。
+  const a = /const BIO_DETAIL_MAX = (\d+);/.exec(api);
+  const b = /const BIO_DETAIL_MAX = (\d+);/.exec(page);
+  assert.ok(a && b, '前後端沒有各自定義 BIO_DETAIL_MAX');
+  assert.strictEqual(a[1], b[1], '詳細介紹上限前後端不一致：' + a[1] + ' vs ' + b[1]);
+
+  // 展開時帶入短簡介只是畫面預設值，不可自動寫進 DB ——
+  // DB 為空代表「他還沒補充」，那個事實要留著。
+  assert.ok(/if \(!detail\.trim\(\) && bio\.trim\(\)\) setDetail\(bio\)/.test(page),
+    '展開詳細介紹時沒有帶入個人介紹當起點');
+});
+
+check('家長端詳細頁：優先顯示詳細介紹，退回短簡介', () => {
+  const modal = stripComments(fs.readFileSync(
+    path.join(ROOT, 'client/liff/src/components/CoachDetailModal.jsx'), 'utf8'));
+  assert.ok(/coach\.bio_detail\?\.trim\(\) \|\| coach\.bio\?\.trim\(\)/.test(modal),
+    '沒有「詳細介紹優先、退回短簡介」的順序');
+  assert.ok(/尚未填寫介紹/.test(modal), '兩段都空時沒有提示');
+});
+
+check('「看詳細介紹」只在家長真的看得到圖時出現', () => {
+  const card = stripComments(fs.readFileSync(
+    path.join(ROOT, 'client/liff/src/components/CoachCard.jsx'), 'utf8'));
+  assert.ok(/coach\.has_public_media/.test(card),
+    '沒有用 has_public_media 把關 —— 沒圖的教練也會出現按鈕，點開是空的');
+  assert.ok(/e\.stopPropagation\(\)/.test(card),
+    '沒有擋冒泡 —— 整張卡是一顆 button，點介紹會直接把教練選下去');
+
+  // 旗標必須把「未發布」算進去，否則按鈕會開出一個沒有照片的空詳細頁。
+  const scope = fs.readFileSync(path.join(ROOT, 'server/services/coachVenueScope.js'), 'utf8');
+  assert.ok(/intro_review_status = 'published'[\s\S]{0,140}coach_bio_media/.test(scope),
+    'has_public_media 沒有卡發布狀態');
+});
+
+
 if (failures) { console.error('\ncoach_bio_limit_test: ' + failures + ' failed'); process.exit(1); }
 console.log('coach_bio_limit_test: all passed');

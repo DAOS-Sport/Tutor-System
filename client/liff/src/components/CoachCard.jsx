@@ -2,7 +2,7 @@ import React from 'react';
 import { formatTWD } from '../utils/format';
 import { resolveUnitPrice } from '../../../shared/coursePricing';
 
-export default function CoachCard({ coach, basePrice, tierPrices = null, onSelect, isTrial = false, trialPrice = null, sessionsPerPeriod = 6 }) {
+export default function CoachCard({ coach, basePrice, tierPrices = null, onSelect, onDetail = null, isTrial = false, trialPrice = null, sessionsPerPeriod = 6 }) {
   const isPlaceholder = !!coach.is_placeholder;
   // 不可自己乘：課別對該加成級距若有落定明價，要以明價為準（與後端成交金額同源）。
   const adjusted = resolveUnitPrice(basePrice, coach.multiplier ?? coach.pricing_multiplier ?? 1, tierPrices);
@@ -53,7 +53,7 @@ export default function CoachCard({ coach, basePrice, tierPrices = null, onSelec
 
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <h3 className="text-base font-bold text-gray-900">{coach.name}</h3>
+            <h3 className="min-w-0 truncate text-base font-bold text-gray-900">{coach.name}</h3>
             {isPlaceholder && (
               <span className="rounded-full bg-brand-teal/10 px-2 py-0.5 text-xs font-bold text-brand-teal">稍後分派</span>
             )}
@@ -63,6 +63,22 @@ export default function CoachCard({ coach, basePrice, tierPrices = null, onSelec
                   <path d="M12 2l3 7h7l-5.5 4 2 7L12 16l-6.5 4 2-7L2 9h7z" />
                 </svg>
                 資深教練
+              </span>
+            )}
+
+            {/* 只有「家長真的看得到圖」時才出現 —— has_public_media 已經把
+                「未發布」算進去了，不然按鈕會開出一個沒有照片的空詳細頁。
+                整張卡本身是一顆 button，所以這裡必須擋冒泡；用 span+role 而不是
+                巢狀 button（button 裡包 button 是不合法的 HTML）。 */}
+            {!isPlaceholder && onDetail && coach.has_public_media && (
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={(e) => { e.stopPropagation(); onDetail(); }}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onDetail(); } }}
+                className="ml-auto shrink-0 cursor-pointer whitespace-nowrap rounded-full border border-brand-teal/40 bg-brand-teal/5 px-2.5 py-0.5 text-[11px] font-bold text-brand-teal active:bg-brand-teal/15"
+              >
+                看詳細介紹 ›
               </span>
             )}
           </div>
@@ -85,6 +101,7 @@ export default function CoachCard({ coach, basePrice, tierPrices = null, onSelec
           ) : coach.bio && (
             <p className="mt-2 line-clamp-2 text-xs text-gray-600">{coach.bio}</p>
           )}
+
         </div>
       </div>
 

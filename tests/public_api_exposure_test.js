@@ -95,10 +95,27 @@ async function acheck(name, fn) {
       assert.ok(r.head.includes(mw), 'GET ' + pathname + ' 沒有 ' + mw + ' —— 免登入又沒限流＝可枚舉全公司教練');
     }
 
+    // /:id/media 的權限在 8/18 從「教練本人」放寬成「登入者皆可，但未發布的看不到」——
+    // 因為家長端要做「看詳細介紹」。放寬的是身分，不是把鎖拿掉。實測四種狀態：
+    //   未登入 → 401
+    //   家長／別的教練 → 只看得到 published 的（draft／待審／退件 一律回 0 張）
+    //   本人 → 全部（含未發布的，那正是他要編輯的）
     const media = routes.find((r) => r.verb === 'get' && r.path === '/:id/media');
     assert.ok(media, '找不到 GET /:id/media');
-    assert.ok(/requireCoach/.test(media.head) && /requireCoachOwner\('id'\)/.test(media.head),
-      'GET /:id/media 沒有 requireCoach + requireCoachOwner —— 任何人帶 coach id 就拿得到照片網址');
+    assert.ok(/requireParentOrCoach/.test(media.head),
+      'GET /:id/media 沒有守門 —— 未登入就拿得到照片網址');
+
+    const mi = COACHES.indexOf("router.get('/:id/media'");
+    const mbody = COACHES.slice(mi, mi + 1600);
+    assert.ok(/intro_review_status !== 'published'/.test(mbody),
+      '沒有卡發布狀態 —— 主管還沒審過的照片會被家長看到');
+    assert.ok(/req\.coach && String\(req\.coach\.id\) === String\(req\.params\.id\)/.test(mbody),
+      '沒有本人判斷 —— 教練會看不到自己還沒發布的圖');
+    assert.ok(/return res\.json\(\[\]\)/.test(mbody),
+      '未發布時不是回空陣列 —— 回 403 等於告訴外面「這個 id 存在但沒發布」');
+    assert.ok(/req\.coach = \{ id: payload\.coachId/.test(COACHES),
+      'requireParentOrCoach 沒有掛上 req.coach —— 本人判斷會永遠 false')
+;
   });
 
   check('publicCoach 仍是白名單，且不含任何聯絡方式', () => {

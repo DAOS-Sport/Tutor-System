@@ -69,16 +69,33 @@ check('掃描本身有效（找得到 server 原始碼）', () => {
   assert.ok(SERVER_FILES.some((f) => /recipientKind/.test(f.code)), '找不到任何 recipientKind —— 掃描失效');
 });
 
-check('推給教練的事件＝白名單（只有家長簽到）', () => {
-  const ALLOWED = ['server/services/checkinNotify.js'];
+check('推給教練的事件＝白名單', () => {
+  // 教練端目前只有這兩種通知，各自都經過 owner 明示同意：
+  //   checkinNotify.js     家長簽到       （2026-08-05）
+  //   enrollmentNotify.js  報名成功／對帳通過（2026-08-18）
+  // 新增任何一種之前都要先問過 —— 教練不是行銷名單，多一種就多一分被關通知的風險。
+  const ALLOWED = [
+    'server/services/checkinNotify.js',
+    'server/services/enrollmentNotify.js',
+  ];
   const found = SERVER_FILES
     .filter((f) => /recipientKind:\s*'coach'/.test(f.code))
     .map((f) => f.file)
     .sort();
   assert.deepStrictEqual(found, ALLOWED.sort(),
-    '推給教練的檔案集合改變了。教練端只保留「家長簽到」一種通知 ——\n'
+    '推給教練的檔案集合改變了。\n'
     + '       新增任何教練推播前請先確認 Owner 要，並更新此白名單。\n'
     + '       實際：' + (found.join(', ') || '（無）'));
+});
+
+check('每一種教練推播都要有自己的事件開關（不可共用）', () => {
+  // 共用開關的話，owner 想只關掉其中一種就辦不到，只能連簽到一起關。
+  const events = SERVER_FILES
+    .filter((f) => /recipientKind:\s*'coach'/.test(f.code))
+    .flatMap((f) => [...f.code.matchAll(/const EVENT(?:_COACH)? = '([^']+)'/g)].map((m) => m[1]));
+  assert.ok(events.length >= 2, '只解析到 ' + events.length + ' 個事件代號 —— 掃描失效');
+  assert.strictEqual(new Set(events).size, events.length,
+    '兩種教練推播共用了同一個事件代號：' + events.join('、'));
 });
 
 check('上課提醒不得再推給教練', () => {

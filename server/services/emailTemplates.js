@@ -95,6 +95,9 @@ function row(label, value) {
  * 官方帳號、還把關鍵字打好了 —— 海報講的正是按鈕已經做完的事，留著只是
  * 讓信變長、附件變大。owner 決定拿掉。
  */
+// parentName 目前刻意不用於稱謂（2026-08-18 owner：一律「親愛的家長」）。
+// 參數保留是因為呼叫端 reconcileNotify.js 仍在傳，且 findParentEmail 的比對
+// 需要它 —— 拿掉會讓那條路徑一起改，為了一句稱謂不值得。
 function reconcileSuccess({ parentName, venueName, orders = [], invoiceNumber, totalAmount, liffUrl, issuedAt,
                             loginUrl, loginVia = 'liff', loginKeyword = '新家教系統登入',
                             hasInvoiceAttachment = false }) {
@@ -196,7 +199,7 @@ function reconcileSuccess({ parentName, venueName, orders = [], invoiceNumber, t
         <tr><td style="padding:26px 28px 0 28px;">
           <div style="color:${NAVY};font-size:19px;font-weight:bold;">家教班報名成功通知</div>
           <div style="margin-top:16px;color:${INK};font-size:14px;line-height:24px;">
-            親愛的 ${esc(parentName || '家長')} 家長，您好：
+            親愛的家長，您好：
           </div>
           <div style="margin-top:8px;color:${INK};font-size:14px;line-height:24px;">
             您的報名已完成，課程已為您開通。以下為本次報名資訊：
@@ -239,7 +242,7 @@ function reconcileSuccess({ parentName, venueName, orders = [], invoiceNumber, t
   const textLines = [
     '夢想體育學院｜家教班報名成功通知',
     '',
-    `親愛的 ${parentName || '家長'} 家長，您好：`,
+    '親愛的家長，您好：',
     '您的報名已完成，課程已為您開通。以下為本次報名資訊：',
     '',
   ];

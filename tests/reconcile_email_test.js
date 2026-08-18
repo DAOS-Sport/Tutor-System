@@ -181,10 +181,27 @@ await check('純文字版：登入連結要給，且在結尾聲明之前', () =
     '連結被排到結尾聲明之後，家長會看不到');
 });
 
-await check('HTML escape：家長姓名含標籤不會注入', () => {
-  const { html } = templates.reconcileSuccess({ ...BASE, parentName: '<script>alert(1)</script>' });
-  assert.ok(!html.includes('<script>alert(1)</script>'), '家長姓名沒有被 escape');
-  assert.ok(html.includes('&lt;script&gt;'), '應被 escape 成實體');
+await check('HTML escape：使用者可控欄位含標籤不會注入', () => {
+  const PAYLOAD = '<script>alert(1)</script>';
+
+  // 2026-08-18 起稱謂固定「親愛的家長」，parentName 不再進 HTML。
+  // 那條注入面消失了，但姓名也不該從別的縫漏出去 —— 兩件事都驗。
+  const byName = templates.reconcileSuccess({ ...BASE, parentName: PAYLOAD });
+  assert.ok(!byName.html.includes(PAYLOAD), '家長姓名原樣進了 HTML');
+  assert.ok(!/親愛的\s*&lt;script/.test(byName.html), '稱謂又把家長姓名帶進去了');
+
+  // 覆蓋不能因為稱謂改版而流失：改驗仍然會被渲染的使用者可控欄位。
+  // 場館名與學員名都來自 Ragic／家長填寫，是真正的注入來源。
+  for (const [label, payload] of [
+    ['場館名', { ...BASE, venueName: PAYLOAD }],
+    // 學員名只在「多筆訂單」的明細表裡渲染；單筆走 single 版面沒有那張表，
+    // 用一筆訂單測等於什麼都沒測（第一版就踩到，assert 直接紅）。
+    ['學員名', { ...BASE, orders: [BASE.orders[0], { ...BASE.orders[0], students: [PAYLOAD] }] }],
+  ]) {
+    const { html } = templates.reconcileSuccess(payload);
+    assert.ok(!html.includes(PAYLOAD), label + ' 沒有被 escape，原樣進了 HTML');
+    assert.ok(html.includes('&lt;script&gt;'), label + ' 應被 escape 成實體');
+  }
 });
 
 await check('缺欄位不會爆，也不會印出 undefined / null', () => {
@@ -347,3 +364,24 @@ if (failures) {
 console.log('reconcile_email_test: all passed');
 
 })();
+
+// ── 稱謂（2026-08-18 owner：一律「親愛的家長」，不帶名字）──
+// 這支樣板有 HTML 與純文字兩份，稱謂各寫一次。8/12 改四項時就漏改過純文字版一次，
+// 所以這裡兩份都驗 —— 只驗其中一邊等於沒驗。
+{
+  const out = templates.reconcileSuccess({
+    parentName: '王大明', venueName: '三重商工',
+    orders: [{ students: ['王小明'], course_type: 2, period_number: 1, total_sessions: 6 }],
+    invoiceNumber: 'DL00000001', totalAmount: 6900, issuedAt: '2026-08-18T10:00:00+08:00',
+  });
+  for (const [label, body] of [['HTML', out.html], ['純文字', out.text]]) {
+    assert.ok(/親愛的家長，您好：/.test(body), label + ' 版稱謂不是「親愛的家長」');
+    assert.ok(!/親愛的\s*王大明/.test(body), label + ' 版仍把家長姓名放進稱謂');
+    assert.ok(!/親愛的.{0,8}家長 家長/.test(body), label + ' 版出現重複的「家長」');
+  }
+  // 掃描失效偵測：兩份都必須是真的信件內容，不是空字串。
+  // 門檻只是「不是空字串」的下限。單筆訂單的純文字版實測 189 字元 ——
+  // 訂太高會變成假紅（我第一版寫 200 就踩到了）。
+  assert.ok(out.html.length > 500 && out.text.length > 100, '樣板輸出過短，上面的斷言不可信');
+  console.log('  ok   稱謂：HTML 與純文字兩版都是「親愛的家長」');
+}

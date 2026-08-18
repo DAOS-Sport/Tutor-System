@@ -22,6 +22,7 @@
  *                                        （供授課記錄媒體欄位使用，限 coach）
  */
 const express = require('express');
+const { singleUpload } = require('../middlewares/uploadError');
 const multer = require('multer');
 const { pool } = require('../models/db');
 const { requireCoach } = require('../middlewares/coachAuth');
@@ -33,6 +34,10 @@ const { formatPlainDate } = require('../utils/dateTime');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: ALLOWED_MAX_BYTES } });
+
+// multer 自己丟的錯（例如檔案過大）沒有 .status，不包的話會掉到全域
+// 錯誤處理變成 500 + 英文訊息。實測 6MB 頭像回 500 "File too large"。
+const uploadFile = singleUpload(upload, ALLOWED_MAX_BYTES);
 
 function handle(err, res, where) {
   if (err && err.status) return res.status(err.status).json({ error: err.message });
@@ -159,7 +164,7 @@ router.get('/history/:periodId', requireParent, async (req, res) => {
 });
 
 // ── 媒體上傳（教練上傳授課記錄附件） ───────────
-router.post('/uploads', requireCoach, upload.single('file'), async (req, res) => {
+router.post('/uploads', requireCoach, uploadFile, async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'file required' });
     const out = await saveBuffer({

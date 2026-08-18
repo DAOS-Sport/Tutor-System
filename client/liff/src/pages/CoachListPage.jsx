@@ -4,10 +4,12 @@ import { coachesApi } from '../api/coaches';
 import { coursesApi } from '../api/courses';
 import { venuesApi } from '../api/venues';
 import CoachCard from '../components/CoachCard';
+import CoachDetailModal from '../components/CoachDetailModal';
 import LoadingSpinner from '../components/LoadingSpinner';
 import PaymentDisclaimerModal from '../components/PaymentDisclaimerModal';
 import { useToast } from '../context/ToastContext';
-import { courseTypeLabel } from '../utils/format';
+import { courseTypeLabel, formatTWD } from '../utils/format';
+import { resolveUnitPrice } from '../../../shared/coursePricing';
 import { coachMatchesVenue } from '../utils/venues';
 
 export default function CoachListPage() {
@@ -22,6 +24,7 @@ export default function CoachListPage() {
   const [venue, setVenue] = useState(null);
   const [basePrice, setBasePrice] = useState(0);
   const [priceInfo, setPriceInfo] = useState(null); // base-price 完整回應（trial_price / sessions_per_period）
+  const [detailCoach, setDetailCoach] = useState(null);   // 「看詳細介紹」開啟的教練
   const [loadError, setLoadError] = useState(null);
   const [levelFilter, setLevelFilter] = useState('all'); // 'all' | 'senior' | 'regular'
   const [nameQuery, setNameQuery] = useState('');
@@ -172,10 +175,35 @@ export default function CoachListPage() {
               trialPrice={priceInfo?.trial_price}
               sessionsPerPeriod={priceInfo?.sessions_per_period}
               onSelect={() => handleCoachSelect(c)}
+              onDetail={() => setDetailCoach(c)}
             />
           ))}
         </div>
       )}
+
+      {detailCoach && (() => {
+        // 詳細頁底部的價格要與小卡一致 —— 兩邊各算一次遲早會分岔，所以用同一支
+        // resolveUnitPrice（課別對該加成級距若有明價，以明價為準）。
+        const adjusted = resolveUnitPrice(
+          basePrice,
+          detailCoach.multiplier ?? detailCoach.pricing_multiplier ?? 1,
+          priceInfo?.tier_prices
+        );
+        const per = Math.max(1, Number(priceInfo?.sessions_per_period) || 6);
+        const trialUnit = priceInfo?.trial_price > 0
+          ? Math.round(Number(priceInfo.trial_price))
+          : Math.round(adjusted / per);
+        return (
+          <CoachDetailModal
+            coach={detailCoach}
+            venueNames={venue?.name ? [venue.name] : []}
+            priceLabel={formatTWD(isTrial ? trialUnit : adjusted)}
+            priceNote={isTrial ? '試上 1 堂' : `${per} 堂`}
+            onClose={() => setDetailCoach(null)}
+            onSelect={() => { const c = detailCoach; setDetailCoach(null); handleCoachSelect(c); }}
+          />
+        );
+      })()}
 
       <PaymentDisclaimerModal
         open={!!pendingCoach}

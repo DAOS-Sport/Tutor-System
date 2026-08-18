@@ -5,18 +5,22 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { courseTypeLabel, formatTWDate, formatTWTime, checkinLabel } from '../utils/format';
+import { promotionValueLabel } from '../utils/promotionLabel';
 
 /**
  * 教練端首頁（底部導覽第一個分頁）。
  *
- * 只有兩塊：教練資訊卡 + 今日課程。報名狀態、優惠、快捷鍵都搬走了 ——
- * 教練早上開 app 要看的是「我今天幾點在哪帶誰」，其餘都是另外一件事。
+ * 三塊：教練資訊卡 + 進行中的優惠 + 今日課程。
+ * 教練早上開 app 要看的是「我今天幾點在哪帶誰」，優惠夾在中間是因為它會影響
+ * 家長的報名價，教練被問到時要答得出來 —— 埋在個人頁裡他不會每天去翻。
+ * 報名狀態與快捷鍵仍在別的分頁，沒有搬回來。
  */
 export default function CoachTodayPage() {
   const { coach } = useAuth();
   const navigate = useNavigate();
   const toast = useToast();
   const [sessions, setSessions] = useState(null);
+  const [promos, setPromos] = useState(null);
 
   useEffect(() => {
     if (!coach?.id) return;
@@ -24,6 +28,10 @@ export default function CoachTodayPage() {
     sessionsApi.todayByCoach(coach.id)
       .then((d) => alive && setSessions(d || []))
       .catch(() => { if (alive) { setSessions([]); toast.error('今日課程載入失敗'); } });
+    // 進行中優惠：附加資訊，失敗就安靜不顯示，不擋今日課程。
+    sessionsApi.promotionsByCoach(coach.id)
+      .then((d) => alive && setPromos(d?.promotions || []))
+      .catch(() => alive && setPromos([]));
     return () => { alive = false; };
   }, [coach?.id, toast]);
 
@@ -45,6 +53,29 @@ export default function CoachTodayPage() {
           )}
         </div>
       </section>
+
+      {promos && promos.length > 0 && (
+        <section className="mb-5">
+          <div className="mb-2 flex items-center justify-between">
+            <h3 className="text-sm font-bold text-brand-primary">進行中的優惠</h3>
+            <span className="text-xs text-gray-500">套用到你的課程</span>
+          </div>
+          <div className="space-y-1.5">
+            {promos.map((p) => (
+              <div key={p.id} className="rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="truncate text-sm font-bold text-amber-900">{p.name}</span>
+                  <span className="shrink-0 text-[11px] font-bold text-amber-800">{promotionValueLabel(p)}</span>
+                </div>
+                <div className="mt-0.5 flex items-center gap-2 text-[11px] text-amber-800/80">
+                  <span>至 {String(p.end_date).slice(0, 10)}</span>
+                  {p.coupon_code && <span className="rounded bg-amber-200 px-1.5 py-0.5 font-mono">{p.coupon_code}</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       <section className="mb-5">
         <div className="mb-2 flex items-center justify-between">

@@ -1,14 +1,13 @@
 import React, { useEffect, useRef, useState } from "react";
 import AvatarCropper from '../components/coach/AvatarCropper';
+import CoachDetailModal from '../components/CoachDetailModal';
 import { coachesApi } from "../api/coaches";
-import { sessionsApi } from "../api/sessions";
 import { venuesApi } from "../api/venues";
 import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ToastContext";
 import LoadingSpinner from "../components/LoadingSpinner";
 import Collapsible from "../components/Collapsible";
 import { cleanVenueList } from "../utils/venues";
-import { promotionValueLabel } from "../utils/promotionLabel";
 
 /**
  * 版面調整重點（邏輯零變動）：
@@ -33,6 +32,8 @@ const AVATAR_MAX_BYTES = 5 * 1024 * 1024;
 // 訂 500 讓既有資料都還能重新儲存。
 const BIO_MAX = 40;
 const BIO_HARD_MAX = 500;
+// 詳細介紹本來就要寫長的；這個上限只是擋整篇文章貼進來。
+const BIO_DETAIL_MAX = 2000;
 const BIO_SWEET_MIN = 20;
 
 function bioState(len) {
@@ -66,13 +67,16 @@ export default function CoachProfilePage() {
   const [avatarUrl, setAvatarUrl] = useState("");
   const [cropFile, setCropFile] = useState(null);
   const [avatarBusy, setAvatarBusy] = useState(false);
-  const [mediaOpen, setMediaOpen] = useState(false);
-  const [promos, setPromos] = useState(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [detail, setDetail] = useState("");
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [savingDetail, setSavingDetail] = useState(false);
 
   useEffect(() => {
     if (!coach?.id) return;
     setBio(coach.bio_rich_text || coach.bio || "");
     setAvatarUrl(coach.avatar_url || "");
+    setDetail(coach.bio_detail || "");
     let alive = true;
     coachesApi
       .listMedia(coach.id)
@@ -87,6 +91,7 @@ export default function CoachProfilePage() {
         setFreshVenueIds(cleanVenueList(c.venue_ids || c.venues || []));
         if (c.bio_rich_text != null) setBio(c.bio_rich_text);
         if (c.avatar_url !== undefined) setAvatarUrl(c.avatar_url || "");
+        if (c.bio_detail !== undefined) setDetail(c.bio_detail || "");
       })
       .catch(() => {
         /* 失敗則退回快取的 coach.venue_ids */
@@ -103,11 +108,6 @@ export default function CoachProfilePage() {
       .catch(() => {
         /* 失敗則沿用登入時的快取狀態，不擋畫面 */
       });
-    // 進行中優惠（從首頁搬過來）。附加資訊，失敗就安靜不顯示。
-    sessionsApi
-      .promotionsByCoach(coach.id)
-      .then((d) => alive && setPromos(d?.promotions || []))
-      .catch(() => alive && setPromos([]));
     // 載入場館 id→名稱對照，讓「可教場館」顯示名稱而非代碼（B → 新北高中）
     venuesApi
       .list()
@@ -146,6 +146,34 @@ export default function CoachProfilePage() {
   const coachInitial = (coach?.name || "教").trim().slice(0, 1) || "教";
 
   const bioStatus = bioState(bio.length);
+
+  // 展開時若還沒寫過詳細介紹，就把個人介紹的文字帶進來當起點 ——
+  // 教練不必從空白開始，也看得出兩者的關係。這只是畫面上的預設值，
+  // 沒按儲存就不會寫進 DB（DB 為空代表「他還沒補充」，那個事實要留著）。
+  function openDetail() {
+    if (!detail.trim() && bio.trim()) setDetail(bio);
+    setDetailOpen(true);
+  }
+
+  async function handleSaveDetail() {
+    if (savingDetail) return;
+    if (detail.length > BIO_DETAIL_MAX) {
+      toast.error(`詳細介紹最多 ${BIO_DETAIL_MAX} 字，目前 ${detail.length} 字`);
+      return;
+    }
+    setSavingDetail(true);
+    try {
+      const updated = await coachesApi.updateBio(coach.id, bio, detail);
+      setReviewStatus(updated?.intro_review_status || "pending_review");
+      setReviewNote("");
+      setDetailOpen(false);
+      toast.success("詳細介紹已送出（待主管審核）");
+    } catch (err) {
+      toast.error(err?.response?.data?.error || "儲存失敗");
+    } finally {
+      setSavingDetail(false);
+    }
+  }
 
   function pickAvatar(e) {
     const f = e.target.files?.[0];
@@ -347,102 +375,137 @@ export default function CoachProfilePage() {
         />
       )}
 
-      <Collapsible
-        title="介紹圖片"
-        subtitle={`${media?.length ?? "…"} 張`}
-        open={mediaOpen}
-        onToggle={() => setMediaOpen((o) => !o)}
-        accent
-        action={
-          <HeaderAction
-            open={mediaOpen}
-            onEdit={() => setMediaOpen(true)}
-            onSave={() => setMediaOpen(false)}
-            saveLabel="完成"
-          />
-        }
-      >
-        {media === null && <LoadingSpinner label="載入中…" />}
-        {media && media.length === 0 && (
-          <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 px-4 py-6 text-center text-xs text-gray-500">
-            尚未上傳圖片
-          </div>
-        )}
-        {media &&
-          media.map((m, i) => (
-            <div
-              key={m.id}
-              className="mb-2 flex items-center gap-2 rounded-lg border border-gray-200 p-2"
-            >
-              <img
-                src={m.storage_url}
-                alt={m.alt_text || ""}
-                className="h-14 w-14 flex-shrink-0 rounded-md object-cover"
-              />
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-xs font-medium text-gray-800">
-                  {m.alt_text || "（無說明）"}
-                </div>
-                <div className="truncate text-[10px] text-gray-400">
-                  {m.storage_url}
-                </div>
-              </div>
-              <div className="flex flex-col">
-                <button
-                  onClick={() => handleMove(i, -1)}
-                  disabled={i === 0}
-                  className="flex h-8 w-9 items-center justify-center rounded text-sm text-gray-500 disabled:opacity-30"
-                >
-                  ↑
-                </button>
-                <button
-                  onClick={() => handleMove(i, 1)}
-                  disabled={i === media.length - 1}
-                  className="flex h-8 w-9 items-center justify-center rounded text-sm text-gray-500 disabled:opacity-30"
-                >
-                  ↓
-                </button>
-              </div>
-              <button
-                onClick={() => handleDelete(m.id)}
-                className="flex h-10 w-9 items-center justify-center rounded text-sm text-brand-error"
-              >
-                刪
-              </button>
-            </div>
-          ))}
-        <button
-          onClick={() => setShowAdd(true)}
-          className="mt-2 w-full rounded-lg border border-dashed border-brand-primary/40 py-3 text-sm font-medium leading-none text-brand-primary"
+      {/* 詳細介紹：家長點小卡的「看詳細介紹」才會看到的長版說明。
+          與上面的個人介紹是兩個欄位 —— 那個只有 40 字、家長在小卡上只看得到兩行；
+          這個可以慢慢寫，讓家長好好端詳。 */}
+      <div className="mb-3">
+        <Collapsible
+          title="詳細介紹"
+          subtitle={[detail.trim() ? `${detail.length} 字` : "尚未補充",
+            media?.length ? `${media.length} 張` : null].filter(Boolean).join(" · ")}
+          open={detailOpen}
+          onToggle={() => (detailOpen ? setDetailOpen(false) : openDetail())}
+          accent
+          action={
+            <HeaderAction
+              open={detailOpen}
+              onEdit={openDetail}
+              onSave={handleSaveDetail}
+              busy={savingDetail}
+              busyLabel="送出中…"
+            />
+          }
         >
-          ＋ 新增圖片
-        </button>
-      </Collapsible>
+          <p className="mb-2 text-[11px] leading-5 text-gray-500">
+            家長點「看詳細介紹」才會看到這一段。第一次展開會先帶入上面的個人介紹，
+            你可以接著往下補充教學方式、適合的孩子、上課節奏等等。
+          </p>
+          <textarea
+            value={detail}
+            onChange={(e) => setDetail(e.target.value)}
+            rows={8}
+            maxLength={BIO_DETAIL_MAX}
+            placeholder="例：我帶課會先讓孩子在水裡放鬆，確認願意把臉放進水裡之後才開始練換氣…"
+            className="w-full rounded-lg border border-gray-300 p-3 text-base leading-relaxed focus:border-brand-teal focus:outline-none focus:ring-2 focus:ring-brand-teal/30"
+          />
+          <div className="mt-2 flex items-center justify-between gap-2">
+            <span className="text-[11px] text-gray-400">{detail.length} / {BIO_DETAIL_MAX}</span>
+            <span className="text-[11px] text-gray-400">儲存後送審</span>
+          </div>
 
-      {/* 進行中優惠：從首頁搬過來。教練被家長問「現在有沒有活動」時答得出來，
-          但那不是每天早上要看的東西，放個人頁比較對。 */}
-      {promos && promos.length > 0 && (
-        <section className="mt-5">
-          <div className="mb-2 flex items-center justify-between">
-            <h3 className="text-sm font-bold text-brand-primary">進行中的優惠</h3>
-            <span className="text-xs text-gray-500">套用到你的課程</span>
-          </div>
-          <div className="space-y-1.5">
-            {promos.map((p) => (
-              <div key={p.id} className="rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2">
-                <div className="flex items-baseline justify-between gap-2">
-                  <span className="truncate text-sm font-bold text-amber-900">{p.name}</span>
-                  <span className="shrink-0 text-[11px] font-bold text-amber-800">{promotionValueLabel(p)}</span>
-                </div>
-                <div className="mt-0.5 flex items-center gap-2 text-[11px] text-amber-800/80">
-                  <span>至 {String(p.end_date).slice(0, 10)}</span>
-                  {p.coupon_code && <span className="rounded bg-amber-200 px-1.5 py-0.5 font-mono">{p.coupon_code}</span>}
-                </div>
+          {/* 介紹圖片併進來（owner 2026-08-18）：這一整塊就是「家長點進去會看到什麼」，
+              文字與照片本來就要一起看、一起改。拆成兩個摺疊區的話，教練改完文字
+              還要再找一個區塊改照片，而預覽又只有一個。
+              注意兩者的儲存時機不同：文字要按「儲存」才送審，照片是上傳／刪除／
+              排序當下就即時寫進 DB（沿用原本的行為，沒有改）。 */}
+          <div className="mt-4 border-t border-gray-100 pt-3">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-sm font-bold text-gray-800">介紹圖片</span>
+              <span className="text-[11px] text-gray-400">
+                {media === null ? "載入中…" : `${media.length} 張 · 變更即時生效`}
+              </span>
+            </div>
+        {media === null && <LoadingSpinner label="載入中…" />}
+            {media && media.length === 0 && (
+              <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 px-4 py-6 text-center text-xs text-gray-500">
+                尚未上傳圖片
               </div>
-            ))}
+            )}
+            {media &&
+              media.map((m, i) => (
+                <div
+                  key={m.id}
+                  className="mb-2 flex items-center gap-2 rounded-lg border border-gray-200 p-2"
+                >
+                  <img
+                    src={m.storage_url}
+                    alt={m.alt_text || ""}
+                    className="h-14 w-14 flex-shrink-0 rounded-md object-cover"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-xs font-medium text-gray-800">
+                      {m.alt_text || "（無說明）"}
+                    </div>
+                    <div className="truncate text-[10px] text-gray-400">
+                      {m.storage_url}
+                    </div>
+                  </div>
+                  <div className="flex flex-col">
+                    <button
+                      onClick={() => handleMove(i, -1)}
+                      disabled={i === 0}
+                      className="flex h-8 w-9 items-center justify-center rounded text-sm text-gray-500 disabled:opacity-30"
+                    >
+                      ↑
+                    </button>
+                    <button
+                      onClick={() => handleMove(i, 1)}
+                      disabled={i === media.length - 1}
+                      className="flex h-8 w-9 items-center justify-center rounded text-sm text-gray-500 disabled:opacity-30"
+                    >
+                      ↓
+                    </button>
+                  </div>
+                  <button
+                    onClick={() => handleDelete(m.id)}
+                    className="flex h-10 w-9 items-center justify-center rounded text-sm text-brand-error"
+                  >
+                    刪
+                  </button>
+                </div>
+              ))}
+            <button
+              onClick={() => setShowAdd(true)}
+              className="mt-2 w-full rounded-lg border border-dashed border-brand-primary/40 py-3 text-sm font-medium leading-none text-brand-primary"
+            >
+              ＋ 新增圖片
+            </button>
           </div>
-        </section>
+
+          <button
+            type="button"
+            onClick={() => setPreviewOpen(true)}
+            className="mt-3 flex w-full items-center justify-between rounded-xl border border-brand-teal/40 bg-brand-teal/5 px-4 py-2.5 text-left active:bg-brand-teal/10"
+          >
+            <span className="min-w-0">
+              <span className="block text-sm font-bold text-brand-teal">預覽家長看到的樣子</span>
+              <span className="mt-0.5 block text-[11px] leading-4 text-gray-500">
+                審核通過後家長才看得到；這裡連未發布的圖也會顯示
+              </span>
+            </span>
+            <span className="shrink-0 text-brand-teal">›</span>
+          </button>
+        </Collapsible>
+      </div>
+
+      {previewOpen && (
+        <CoachDetailModal
+          coach={{ ...coach, bio, bio_detail: detail, avatar_url: avatarUrl }}
+          venueNames={venueNames}
+          onClose={() => setPreviewOpen(false)}
+        />
       )}
+
 
       {showAdd && (
         <AddMediaModal

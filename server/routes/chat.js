@@ -9,6 +9,7 @@
  *  POST  /rooms/:id/read                 { message_ids? }           標記已讀（未傳則整房未讀全標）
  */
 const express = require('express');
+const { singleUpload } = require('../middlewares/uploadError');
 const multer = require('multer');
 const { pool } = require('../models/db');
 const { requireLiffUser } = require('../middlewares/parentAuth');
@@ -20,6 +21,10 @@ const { notifyKeywordAlert } = require('./_chatNotify');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: ALLOWED_MAX_BYTES } });
+
+// multer 自己丟的錯（例如檔案過大）沒有 .status，不包的話會掉到全域
+// 錯誤處理變成 500 + 英文訊息。實測 6MB 頭像回 500 "File too large"。
+const uploadFile = singleUpload(upload, ALLOWED_MAX_BYTES);
 
 async function authzRoom(req, res, next) {
   const ok = await chatRooms.canAccess({
@@ -225,7 +230,7 @@ router.post('/rooms/:id/messages', requireLiffUser, authzRoom, async (req, res) 
   }
 });
 
-router.post('/rooms/:id/upload', requireLiffUser, authzRoom, upload.single('file'), async (req, res) => {
+router.post('/rooms/:id/upload', requireLiffUser, authzRoom, uploadFile, async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: '請選擇檔案' });
     const saved = await saveBuffer({

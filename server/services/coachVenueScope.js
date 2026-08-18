@@ -68,11 +68,17 @@ const COACH_STAFF_PROFILE_SELECT = `
   (COALESCE(s.multiplier, c.pricing_multiplier, 1.00) <> 1.00) AS is_senior,
   COALESCE(s.multiplier, c.pricing_multiplier, 1.00) AS pricing_multiplier,
   c.bio_rich_text,
+  c.bio_detail,
   -- 大頭照（相對路徑）。加進白名單 PUBLIC_COACH_FIELDS 還不夠：publicCoach 只複製
   -- 「不是 undefined」的欄位，這裡沒 SELECT 的欄位在那邊就是 undefined，會被無聲
   -- 跳過 —— 上傳成功、DB 有值、家長端永遠看不到。實測踩過。
   -- 註：這整段是 JS 模板字串，註解裡不可以出現反引號，會把字串提前關掉。
   c.avatar_url,
+  -- 家長端小卡要不要顯示「看詳細介紹」。語意刻意是「家長點下去會看到東西嗎」，
+  -- 不是單純的「有沒有圖」：未發布的圖家長拿不到（見 routes/coaches.js 的
+  -- /:id/media 分角色守門），旗標若只看有沒有圖，按鈕會開出一個空的詳細頁。
+  (c.intro_review_status = 'published'
+     AND EXISTS (SELECT 1 FROM coach_bio_media m WHERE m.coach_id = c.id)) AS has_public_media,
   c.intro_review_status,
   c.intro_review_note,
   c.intro_submitted_at,

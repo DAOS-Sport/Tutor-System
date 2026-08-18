@@ -14,6 +14,7 @@
  * - DELETE /api/coaches/:id/media/:mediaId       刪除（須登入且本人）
  */
 const express = require('express');
+const { singleUpload } = require('../middlewares/uploadError');
 const multer = require('multer');
 const router = express.Router();
 const { pool } = require('../models/db');
@@ -39,6 +40,11 @@ const mediaUpload = multer({
     cb(Object.assign(new Error('只接受 JPG / PNG 圖片'), { status: 400 }));
   },
 });
+
+// multer 自己丟的錯（例如檔案過大）沒有 .status，不包的話會掉到全域錯誤處理，
+// 變成 500 + 英文訊息。實測 2026-08-18：傳 6MB 頭像回 500 "File too large"。
+// fileFilter 自己丟的錯有帶 .status，本來就正確，不受影響。
+const uploadAvatar = singleUpload(mediaUpload, MEDIA_UPLOAD_MAX_BYTES);
 
 /**
  * 將 DB 欄位 pricing_multiplier 同時對外曝露為 multiplier，
@@ -101,7 +107,9 @@ const PUBLIC_COACH_FIELDS = [
   'multiplier',          // pricing_multiplier 的別名，前端兩種都在讀
   'bio',
   'bio_rich_text',
+  'bio_detail',          // 詳細介紹：家長點「看詳細介紹」才看得到
   'avatar_url',          // 相對路徑；家長端小卡要畫，沒有就退回姓名首字
+  'has_public_media',    // 有沒有「家長看得到的」介紹圖片 → 決定要不要顯示詳細介紹入口
   'intro_review_status', // 只是「已發布／審核中」的狀態，不含評語內容
   'venue_ids',
   'venues',
@@ -171,6 +179,11 @@ function requireParentOrCoach(req, res, next) {
     if (payload.type !== 'parent' && payload.type !== 'coach') {
       return guaiGuai.deny(req, res, '這個帳號沒有查看教練清單的權限。');
     }
+    // 把身分掛上去，讓下游分得出「本人」與「其他登入者」。
+    // 沒有這兩行的話 /:id/media 的本人判斷永遠是 false，教練會看不到自己
+    // 還沒發布的圖（那正是他要編輯的那些）。欄位名與 requireCoach 一致。
+    if (payload.type === 'coach') req.coach = { id: payload.coachId, phone: payload.phone };
+    else req.parent = { id: payload.parentId || payload.sub || null };
     return next();
   } catch {
     return guaiGuai.deny(req, res, '登入已逾時，請重新登入。');
@@ -429,8 +442,19 @@ router.get('/:id/private', requireCoach, requireCoachOwner('id'), async (req, re
 // 同時擋掉整篇文章貼進來的情況。要改的話前端的 BIO_HARD_MAX 必須同步。
 const BIO_MAX = 500;
 
+// 詳細介紹的防呆上限。它本來就是要寫長的（家長要「好好端詳」），
+// 這個數字只是擋整篇文章貼進來，不是建議長度。
+const BIO_DETAIL_MAX = 2000;
+
 router.put('/:id/bio', requireCoach, requireCoachOwner('id'), async (req, res) => {
-  const { bio_rich_text } = req.body || {};
+  const { bio_rich_text, bio_detail } = req.body || {};
+  const detail = typeof bio_detail === 'string' ? bio_detail : null;
+  if (detail !== null && detail.length > BIO_DETAIL_MAX) {
+    return res.status(400).json({
+      error: `詳細介紹最多 ${BIO_DETAIL_MAX} 字（目前 ${detail.length} 字）`,
+      code: 'BIO_DETAIL_TOO_LONG', max: BIO_DETAIL_MAX, length: detail.length,
+    });
+  }
   // 前端的 maxLength 只是引導，繞過去就沒了。上限必須在這裡也擋一次。
   // 不做靜默截斷 —— 那是替教練決定砍掉哪一段，錯了他也不會知道。
   const bio = typeof bio_rich_text === 'string' ? bio_rich_text : '';
@@ -444,12 +468,15 @@ router.put('/:id/bio', requireCoach, requireCoachOwner('id'), async (req, res) =
   }
   try {
     const r = await pool.query(
+      // bio_detail 用 COALESCE：呼叫端沒帶就維持原值。兩個欄位在不同的
+      // 摺疊區塊各自儲存，只送其中一個是常態。
       `UPDATE coaches SET bio_rich_text = $1,
+                         bio_detail = COALESCE($3, bio_detail),
                          intro_review_status = 'pending_review',
                          intro_submitted_at = NOW(),
                          updated_at = NOW()
-       WHERE id = $2 RETURNING id, bio_rich_text, intro_review_status`,
-      [bio, req.params.id]   // 已在上面正規化過（非字串一律當空字串）
+       WHERE id = $2 RETURNING id, bio_rich_text, bio_detail, intro_review_status`,
+      [bio, req.params.id, detail]   // bio 已在上面正規化過（非字串一律當空字串）
     );
     if (r.rows.length === 0) return res.status(404).json({ error: 'not found' });
     res.json(r.rows[0]);
@@ -461,21 +488,41 @@ router.put('/:id/bio', requireCoach, requireCoachOwner('id'), async (req, res) =
 /**
  * 介紹圖片清單。
  *
- * 2026-08-17：補上權限。原本這支完全沒有 middleware —— 隔壁的 GET /coaches 與
- * GET /coaches/:id 在 8/11 就改成白名單＋須登入了（那次外洩 165 位教練的手機與
- * Email），這支漏掉。任何人帶一個 coach id 就拿得到照片網址，而 /uploads/* 本身
- * 也不需要登入。
+ * ── 權限沿革 ──
+ * 8/11 前：完全沒有 middleware，任何人帶一個 coach id 就拿得到照片網址。
+ * 8/17：鎖成 requireCoach + 本人（當時家長端確實沒有任何地方在讀 media）。
+ * 8/18：家長端要做「看詳細介紹」，把介紹圖片給家長看 —— 這是 owner 決定的產品方向。
  *
- * 唯一的消費者是教練自己的個人頁（CoachProfilePage）。主管審核走的是
- * admin/learn.js 的 /intros，不經過這裡。家長端從頭到尾沒有拿過 media。
+ * 開放的方式不是把鎖拿掉，是分角色：
+ *   ・教練本人  → 看得到全部（含 draft / 待審 / 被退件的，他要編輯）
+ *   ・其他登入者（家長或別的教練）→ 只看得到「介紹已發布」的教練的圖
+ *   ・未登入   → 401
+ *
+ * 為什麼要卡 published：draft / pending_review / rejected 的圖是主管還沒審過的，
+ * 給家長看等於繞過審核流程。主管退件的理由裡就有「照片請換成教學中的實際畫面」。
  */
-router.get('/:id/media', requireCoach, requireCoachOwner('id'), async (req, res) => {
-  const r = await pool.query(
-    `SELECT id, media_type, storage_url, alt_text, sort_order
-     FROM coach_bio_media WHERE coach_id = $1 ORDER BY sort_order, created_at`,
-    [req.params.id]
-  );
-  res.json(r.rows);
+router.get('/:id/media', requireParentOrCoach, async (req, res) => {
+  try {
+    const isOwner = req.coach && String(req.coach.id) === String(req.params.id);
+    if (!isOwner) {
+      const c = await pool.query(
+        `SELECT intro_review_status FROM coaches
+          WHERE id = $1 AND is_active = TRUE AND COALESCE(is_placeholder, FALSE) = FALSE`,
+        [req.params.id]
+      );
+      // 查無此人或介紹未發布 → 一律回空陣列，不回 403。
+      // 回 403 等於告訴外面「這個 id 存在但沒發布」，是不必要的資訊。
+      if (c.rows[0]?.intro_review_status !== 'published') return res.json([]);
+    }
+    const r = await pool.query(
+      `SELECT id, media_type, storage_url, alt_text, sort_order
+       FROM coach_bio_media WHERE coach_id = $1 ORDER BY sort_order, created_at`,
+      [req.params.id]
+    );
+    res.json(r.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 router.post('/:id/media', requireCoach, requireCoachOwner('id'), async (req, res) => {
@@ -503,7 +550,7 @@ router.post('/:id/media', requireCoach, requireCoachOwner('id'), async (req, res
  *   ・存相對路徑，dev 與正式各自解析自己的網域，不可能交叉汙染
  * 要改這裡之前先讀 server/services/objectStorage.js 的檔頭。
  */
-router.post('/:id/avatar', requireCoach, requireCoachOwner('id'), mediaUpload.single('file'), async (req, res) => {
+router.post('/:id/avatar', requireCoach, requireCoachOwner('id'), uploadAvatar, async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: '請選擇圖片' });
     const saved = await saveBuffer({
@@ -539,7 +586,7 @@ router.delete('/:id/avatar', requireCoach, requireCoachOwner('id'), async (req, 
 });
 
 // 上傳圖片檔（multipart, field: file）→ 存檔後直接建立 media 列並回傳
-router.post('/:id/media/upload', requireCoach, requireCoachOwner('id'), mediaUpload.single('file'), async (req, res) => {
+router.post('/:id/media/upload', requireCoach, requireCoachOwner('id'), uploadAvatar, async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: '請選擇圖片' });
     const alt_text = (req.body?.alt_text || '').slice(0, 200);

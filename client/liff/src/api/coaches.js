@@ -48,9 +48,12 @@ export const coachesApi = {
     ),
 
   // 個人介紹文字
-  updateBio: (id, bio_rich_text) =>
-    callApi(`/coaches/${id}/bio`, { method: 'put', data: { bio_rich_text } }, () =>
-      mockDb.updateCoachBio(id, bio_rich_text)),
+  // bio_detail 省略時後端用 COALESCE 保留原值 —— 兩個欄位在不同摺疊區塊各自儲存。
+  updateBio: (id, bio_rich_text, bio_detail) =>
+    callApi(`/coaches/${id}/bio`, {
+      method: 'put',
+      data: bio_detail === undefined ? { bio_rich_text } : { bio_rich_text, bio_detail },
+    }, () => mockDb.updateCoachBio(id, bio_rich_text)),
 
   // 介紹媒體
   listMedia: (id) =>

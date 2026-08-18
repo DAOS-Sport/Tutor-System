@@ -868,11 +868,143 @@ function checkinConfirmedToCoach({ studentNames, courseType, venueName, checkedI
   }];
 }
 
+/**
+ * 報名成功 → 推播給「教練」（不是家長；家長走 Email）。
+ *
+ * 與 checkinConfirmedToCoach 是同一套視覺語彙（同色盤、同雙色線、同 kv 版型）——
+ * 同一個收訊者、同一個聊天室，長得一樣他就不用重新認。
+ *
+ * ── 刻意不放的東西 ──
+ * 金額、發票號碼、載具、匯款末五碼、折扣。教練端的訂單 API 本來就只選
+ * parent_name／students／course_type／venue／堂數／時間戳，一個金額欄位都沒回。
+ * 推播走同一條線，不在這裡開後門讓教練看到家庭的付款細節。
+ *
+ * ── periods 一定要由呼叫端「數」出來，不可以讀 admin_enrollments.period_count ──
+ * 2026-08-18 實測正式庫：69 個多期訂單的 period_count 全部與實際期數不符
+ * （單期的 269 個裡也有 6 個錯）。正確算法是 count(DISTINCT period_number)。
+ */
+// 一期＝六堂，是營運上的固定規則，不是每張訂單各自帶的數字。
+// 正式庫實測佐證：338 張訂單「各期堂數不一致」0 筆，眾數 6。
+// 仍然開放呼叫端覆寫（sessionsPerPeriod）—— 哪天出現非六堂的課別，
+// 改的是資料來源，不是這支樣板。
+const SESSIONS_PER_PERIOD = 6;
+
+function enrollmentSuccessToCoach({
+  studentNames, periods, sessionsPerPeriod = SESSIONS_PER_PERIOD,
+  courseType, venueName, parentLabel, isGroup, groupDone, groupCap,
+}) {
+  const C = COACH_CHECKIN_COLORS;
+  const names = (Array.isArray(studentNames) ? studentNames : [studentNames])
+    .map((x) => String(x || '').trim()).filter(Boolean);
+  const title = names.join('、') || '學員';
+
+  const n = Number(periods);
+  const periodText = Number.isFinite(n) && n > 0 ? n + ' 期' : null;
+  // 一期六堂是固定的，所以「每期 N 堂」永遠印得出來；不必再判斷有沒有值。
+  const per = Number(sessionsPerPeriod) > 0 ? Number(sessionsPerPeriod) : SESSIONS_PER_PERIOD;
+
+  // altText 是通知列那一行，上限 400 字。名單長時只留第一位加人數。
+  const who = names.length > 1 ? `${names[0]} 等 ${names.length} 位` : title;
+  const alt = [who, periodText ? '報名 ' + periodText : '報名成功', courseType || null,
+    isGroup ? '團報' : null].filter(Boolean).join(' · ');
+
+  const kv = (label, value, strong = false) => ({
+    type: 'box', layout: 'horizontal', margin: 'md',
+    contents: [
+      { type: 'text', text: label, color: C.label, flex: 3 },
+      {
+        type: 'text', text: String(value), flex: 7, wrap: true,
+        color: strong ? C.strong : C.value, ...(strong ? { weight: 'bold' } : {}),
+      },
+    ],
+  });
+
+  // 標題列：左邊「報名 N 期」，右邊團報徽章（只有團報才有）。
+  const headLine = {
+    type: 'box', layout: 'horizontal',
+    contents: [
+      {
+        type: 'box', layout: 'baseline', spacing: 'xs', flex: 0,
+        contents: [
+          { type: 'icon', url: `${LINE_ASSET_BASE}/brand/check.png`, size: 'xs' },
+          {
+            type: 'text', text: periodText ? '報名 ' + periodText : '報名成功',
+            size: 'xs', weight: 'bold', color: C.check,
+          },
+        ],
+      },
+      { type: 'filler' },
+      ...(isGroup ? [{
+        type: 'box', layout: 'vertical', flex: 0, backgroundColor: C.barTeal,
+        cornerRadius: '10px', paddingAll: '3px', paddingStart: '8px', paddingEnd: '8px',
+        contents: [{ type: 'text', text: '團報', size: 'xxs', color: '#FFFFFF', weight: 'bold' }],
+      }] : []),
+    ],
+  };
+
+  // 「共 N 堂」只在多期時出現 —— 單期講「共 6 堂」跟下面「每期 6 堂」是同一件事，
+  // 重複一次只是佔位置。
+  const totalChip = (Number.isFinite(n) && n > 1) ? [{
+    type: 'box', layout: 'vertical', flex: 0, margin: 'md',
+    backgroundColor: '#FFFFFF22', cornerRadius: '10px',
+    paddingAll: '3px', paddingStart: '9px', paddingEnd: '9px',
+    contents: [{ type: 'text', text: '共 ' + (n * per) + ' 堂', size: 'xxs', color: '#FFFFFF' }],
+  }] : [];
+
+  return [{
+    type: 'flex', altText: alt.slice(0, 400),
+    contents: {
+      type: 'bubble',
+      header: {
+        type: 'box', layout: 'vertical', paddingAll: '0px',
+        contents: [
+          {
+            type: 'box', layout: 'vertical', backgroundColor: C.navy, paddingAll: '16px',
+            contents: [
+              headLine,
+              {
+                type: 'text', text: title, weight: 'bold', size: 'md', color: '#FFFFFF',
+                margin: 'sm', wrap: true, lineSpacing: '3px',
+              },
+              ...totalChip,
+            ],
+          },
+          {
+            type: 'box', layout: 'horizontal', height: '4px',
+            contents: [
+              { type: 'box', layout: 'vertical', flex: 4, backgroundColor: C.barGreen, contents: [{ type: 'filler' }] },
+              { type: 'box', layout: 'vertical', flex: 6, backgroundColor: C.barTeal, contents: [{ type: 'filler' }] },
+            ],
+          },
+        ],
+      },
+      body: {
+        type: 'box', layout: 'vertical',
+        contents: [
+          ...(courseType ? [kv('組別', courseType, true)] : []),
+          ...(periodText ? [kv('期數', `${periodText}（每期 ${per} 堂，共 ${n * per} 堂）`)] : []),
+          ...(venueName ? [kv('場館', venueName)] : []),
+          ...(parentLabel ? [kv('家長', parentLabel)] : []),
+          // 團報一家一則（各家分開對帳，湊不齊）。帶上進度，教練才看得出
+          // 這幾則是同一個班陸續填滿，不是四個獨立的班。
+          ...(isGroup && Number(groupDone) > 0
+            ? [kv('同班', `已報 ${Number(groupDone)}${Number(groupCap) > 0 ? ' / ' + Number(groupCap) : ''} 位`)]
+            : []),
+          { type: 'separator', margin: 'lg' },
+          { type: 'text', text: '對帳完成，課程已開通', size: 'xs', color: C.footnote, margin: 'md' },
+        ],
+      },
+    },
+  }];
+}
+
 module.exports = {
   pushMessage,
   pushKeywordAlert,
   templates: {
     enrollmentSuccess,
+    enrollmentSuccessToCoach,
+    SESSIONS_PER_PERIOD,
     courseActivated,
     slotBooked,
     groupConfirmInvite,

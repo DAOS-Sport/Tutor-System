@@ -1959,6 +1959,13 @@ ALTER TABLE ragic_h01_shadow ADD COLUMN IF NOT EXISTS ragic_data_no TEXT;
 -- 絕不存絕對網址 —— 寫死網域的話 dev 上傳的圖在正式站就是破圖（2026-07 已經因為
 -- 檔案落本機磁碟掉過一張，見 objectStorage.js 的 fail-closed 說明）。
 ALTER TABLE coaches ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+
+-- 2026-08-18 詳細介紹（owner 要求）。與 bio_rich_text 是兩個不同用途：
+--   bio_rich_text  短，40 字，家長端小卡 line-clamp-2 只顯示兩行
+--   bio_detail     長，家長點「看詳細介紹」才看得到，教練可以慢慢寫
+-- 為空時前端會拿 bio_rich_text 當預設值讓教練接著編輯，但不自動寫進 DB ——
+-- 沒存過就是沒存過，displays 要看得出「他還沒補充」。
+ALTER TABLE coaches ADD COLUMN IF NOT EXISTS bio_detail TEXT;
 CREATE INDEX IF NOT EXISTS idx_ragic_h01_shadow_fetched ON ragic_h01_shadow(fetched_at);
 CREATE INDEX IF NOT EXISTS idx_ragic_h01_shadow_data_no ON ragic_h01_shadow(ragic_data_no);
 

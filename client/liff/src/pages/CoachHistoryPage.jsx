@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import DateTimePicker from '../../../shared/DateTimePicker.jsx';
+import DateRangeSheet from '../../../shared/DateRangeSheet.jsx';
 import { useNavigate } from 'react-router-dom';
 import { sessionsApi } from '../api/sessions';
 import { useAuth } from '../context/AuthContext';
@@ -9,6 +9,9 @@ import { formatTWDate, formatTWTime, checkinLabel } from '../utils/format';
 import CoachRecordCard, {
   StatusBanner, TypeBadge, courseTitle, ratePercent, periodSummary,
 } from '../components/coach/CoachRecordCard';
+
+// 授課記錄不會有未來的資料，選得到未來只會得到空清單。
+const todayTaipeiYMD = () => new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
 
 const STATUS_OPTIONS = [
   { key: 'all', label: '全部' },
@@ -105,24 +108,15 @@ export default function CoachHistoryPage() {
             {sessions === null ? '載入中…' : `共 ${sessions.length} 筆`}
           </span>
         </div>
-        <div className="grid grid-cols-2 gap-2">
-          <DateTimePicker value={from} max={to || undefined} onChange={setFrom}
-            placeholder="起日" className="min-w-0" />
-          <DateTimePicker value={to} min={from || undefined} onChange={setTo}
-            placeholder="迄日" className="min-w-0" />
-        </div>
-        {/* 兩個空的日期框看不出是「全部」還是「還沒選」，所以明講；
-            選過之後給一鍵清除，不然要按兩次日期選擇器才回得去。 */}
-        <div className="flex items-center justify-between text-[11px] text-gray-400">
-          <span>{from || to ? '已限定區間' : '顯示全部授課記錄'}</span>
-          {(from || to) && (
-            <button
-              type="button"
-              onClick={() => { setFrom(''); setTo(''); }}
-              className="rounded px-2 py-0.5 font-medium text-brand-teal active:bg-brand-teal/10"
-            >顯示全部</button>
-          )}
-        </div>
+        {/* 一個入口 → 底部月曆選區間（機票 App 那種）。
+            原本是兩個日期框並排，手機上每個只有半個螢幕寬，右邊那個會破版。 */}
+        <DateRangeSheet
+          from={from}
+          to={to}
+          max={todayTaipeiYMD()}
+          onChange={({ from: f, to: t }) => { setFrom(f); setTo(t); }}
+          label="區間"
+        />
         <div className="flex flex-wrap items-center gap-1.5">
           {STATUS_OPTIONS.map((o) => (
             <FilterChip key={o.key} active={status === o.key} onClick={() => setStatus(o.key)}>
