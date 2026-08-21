@@ -137,6 +137,10 @@ const FRESH = {
   // C-4：periodCount（期數）取代 totalSessions（堂數）直接輸入，畫面顯示「N 期 × 6 堂 = 總堂數」。
   // C-5：submittedAt 拿掉——不再讓使用者指定報名時間，送出時不帶這個欄位，後端自動用當下時間。
   // C-3/C-7/C-8：拔掉 className / workType / levelNote。
+  // 訂單類型：'standard'（一般報名）或 'trial'（試上）。
+  // 試上＝單堂體驗課，固定 1 堂、現場付費、價格取課程品項的 trial_price。
+  // 後端 admin/enrollments.js 會再強制一次（前端只是讓櫃檯看得到、少填錯）。
+  orderKind: 'standard',
   courseType: '', periodCount: 1,
   basePrice: '', allowance: '', actual: '', paymentMethod: '轉帳', paymentDetail: '',
   payer: '', taxId: '', carrier: '',
@@ -211,8 +215,17 @@ export default function ManualEnrollPage() {
   const venueName = (id) => venues.find((v) => v.id === id)?.name || id || '—';
   const coachName = useMemo(() => coaches.find((c) => c.id === coachId)?.name || '', [coaches, coachId]);
   // C-4：期數直接輸入，總堂數 = 期數 × 6（不再有「最後一期吃餘數」的情況，輸入保證是 6 的倍數）。
-  const numPeriods = Math.max(1, Number(f.periodCount) || 1);
-  const lessons = numPeriods * SESSIONS_PER_PERIOD;
+  const isTrial = f.orderKind === 'trial';
+  // 試上不走期數：固定 1 堂。後端也會強制（admin/enrollments.js 的 `sessions`），
+  // 這裡先算對，是為了讓畫面上的單價／總堂數不會顯示成 6 堂而誤導櫃檯。
+  const numPeriods = isTrial ? 1 : Math.max(1, Number(f.periodCount) || 1);
+  const lessons = isTrial ? 1 : numPeriods * SESSIONS_PER_PERIOD;
+  // 試上只列出「課程需求管理」裡有開放試上（trial_enabled）的品項 ——
+  // 後端是 fail-closed 擋下的，這裡先過濾，讓櫃檯不會選到才被退件。
+  const selectableCourseTypes = useMemo(
+    () => (isTrial ? activeCourseTypes.filter((c) => c.trial_enabled === true) : activeCourseTypes),
+    [activeCourseTypes, isTrial],
+  );
   const unitPrice = lessons > 0 ? Math.round((num(f.actual) / lessons) * 10) / 10 : 0;
 
   const studentNames = useMemo(() => {
@@ -233,16 +246,22 @@ export default function ManualEnrollPage() {
   // 若那個係數在課程需求管理已落定明價（tier_prices），以明價為準 ——
   // 與家長端自助報名、團購、後台核准走的是同一套解析（shared/coursePricing）。
   // 沒選教練時以係數 1.0 計，選了教練會重算（見下方 applyPriceForCoach）。
-  function basePriceFor(courseTypeValue, coachIdValue) {
+  function basePriceFor(courseTypeValue, coachIdValue, trialFlag = isTrial) {
     const cfg = activeCourseTypes.find((c) => String(c.course_type) === String(courseTypeValue));
     if (!cfg) return null;
+    // 試上是單堂固定價，取課程品項的 trial_price，**不乘教練係數** ——
+    // 與家長端 services/trialEnrollment.js 的 calculateTrialPrice 同一個來源與規則。
+    if (trialFlag) {
+      const tp = Number(cfg.trial_price);
+      return Number.isFinite(tp) && tp > 0 ? tp : null;
+    }
     const co = coaches.find((c) => c.id === coachIdValue);
     const mult = Number(co?.multiplier ?? co?.pricing_multiplier ?? 1) || 1;
     return resolveUnitPrice(cfg.base_price, mult, cfg.tier_prices);
   }
   // 帶出價格；折讓沿用現有值重算實收。帶完仍可手動覆蓋（與原本行為一致）。
-  function applyPrice(courseTypeValue, coachIdValue) {
-    const bp = basePriceFor(courseTypeValue, coachIdValue);
+  function applyPrice(courseTypeValue, coachIdValue, trialFlag = isTrial) {
+    const bp = basePriceFor(courseTypeValue, coachIdValue, trialFlag);
     setF((p) => ({
       ...p,
       courseType: courseTypeValue,
@@ -257,6 +276,25 @@ export default function ManualEnrollPage() {
   function onCourseType(v) {
     courseTypeTouchedRef.current = true; // 使用者親自選過 → 之後學員數再變動不再自動覆蓋（見下方 C-9 useEffect）
     applyCourseType(v);
+  }
+  // 切換訂單類型。價格要用「切換後」的類型重算，所以明確把 trial 旗標傳進去 ——
+  // basePriceFor 預設吃的是本次 render 的 isTrial，那是切換前的舊值。
+  function onOrderKind(v) {
+    const trial = v === 'trial';
+    const cfg = activeCourseTypes.find((c) => String(c.course_type) === String(f.courseType));
+    // 試上只能選有開放試上的品項；目前選的若沒開放就清掉，讓櫃檯重選。
+    const keepType = !trial || (cfg && cfg.trial_enabled === true);
+    const nextType = keepType ? f.courseType : '';
+    setF((p) => ({
+      ...p,
+      orderKind: v,
+      courseType: nextType,
+      periodCount: trial ? 1 : p.periodCount,
+      // 試上一律現場付費（後端會覆寫成 on_site，這裡讓畫面與之一致，不讓櫃檯以為能選轉帳）
+      paymentMethod: trial ? '現場付費' : (p.paymentMethod === '現場付費' ? '轉帳' : p.paymentMethod),
+      paymentDetail: trial ? '' : p.paymentDetail,
+    }));
+    if (nextType) applyPrice(nextType, coachId, trial);
   }
   // C-9：依目前選取的學員數，自動比對「課程需求管理」裡 min/max_students 涵蓋這個人數的組別，
   // 找到就套用（一併帶出價格）。只在使用者「還沒手動選過組別」時自動帶入，且只在人數真的
@@ -361,6 +399,7 @@ export default function ManualEnrollPage() {
         parent_name: parent.name, parent_phone: parent.phone, students: studentNames,
         venue_id: venueId, coach: coachName || '（待指派）', coach_id: coachId || null,
         course_type: Number(f.courseType), total_sessions: lessons,
+        order_kind: f.orderKind,
         original_price: num(f.basePrice), final_price: num(f.actual),
         allowance_amount: num(f.allowance), unit_price: unitPrice,
         payment_method: f.paymentMethod, transfer_last_5: last5,
@@ -510,13 +549,35 @@ export default function ManualEnrollPage() {
                     )}
                   </div>
                   <div>
+                    <Label>訂單類型 *</Label>
+                    <Sel value={f.orderKind} onChange={onOrderKind}>
+                      <option value="standard">一般報名</option>
+                      <option value="trial">試上（單堂體驗）</option>
+                    </Sel>
+                    {isTrial && (
+                      <p className="mt-1.5 text-[11px] font-semibold text-amber-600">
+                        固定 1 堂・現場付費，價格取自課程需求管理的試上價
+                      </p>
+                    )}
+                  </div>
+                  <div>
                     <Label>組別型態 *</Label>
-                    <Sel value={f.courseType} onChange={onCourseType} disabled={courseTypesLoading || activeCourseTypes.length === 0}>
-                      <option value="">{courseTypesLoading ? '載入中…' : (activeCourseTypes.length === 0 ? '尚無可用課程需求' : '請選擇組別')}</option>
-                      {activeCourseTypes.map((t) => (
-                        <option key={t.course_type} value={t.course_type}>{t.label}・NT$ {Number(t.base_price || 0).toLocaleString('en-US')}</option>
+                    <Sel value={f.courseType} onChange={onCourseType} disabled={courseTypesLoading || selectableCourseTypes.length === 0}>
+                      <option value="">{courseTypesLoading ? '載入中…' : (selectableCourseTypes.length === 0 ? (isTrial ? '沒有開放試上的品項' : '尚無可用課程需求') : '請選擇組別')}</option>
+                      {selectableCourseTypes.map((t) => (
+                        <option key={t.course_type} value={t.course_type}>
+                          {t.label}・NT$ {Number((isTrial ? t.trial_price : t.base_price) || 0).toLocaleString('en-US')}
+                          {isTrial ? '／堂' : ''}
+                        </option>
                       ))}
                     </Sel>
+                    {isTrial && !courseTypesLoading && selectableCourseTypes.length === 0 && (
+                      <p className="mt-1.5 text-[11px] font-semibold text-amber-600">
+                        目前沒有品項開放試上，請先至
+                        <Link to="/course-types" className="mx-1 underline hover:text-amber-700">課程需求管理</Link>
+                        開啟。
+                      </p>
+                    )}
                     {!courseTypesLoading && activeCourseTypes.length === 0 && (
                       <p className="mt-1.5 text-[11px] font-semibold text-amber-600">
                         尚未有任何啟用中的課程需求，請先至
@@ -526,9 +587,20 @@ export default function ManualEnrollPage() {
                     )}
                   </div>
                   <div>
-                    <Label>購買期數 *</Label>
-                    <Inp type="number" min="1" value={f.periodCount} onChange={upd('periodCount')} className="font-extrabold" />
-                    <p className="mt-1.5 text-[11px] font-semibold text-slate-500">{numPeriods} 期 × 6 堂 = {lessons} 堂</p>
+                    <Label>{isTrial ? '堂數' : '購買期數 *'}</Label>
+                    {isTrial ? (
+                      <>
+                        <div className="flex h-[42px] items-center rounded-xl border border-slate-200 bg-slate-100/70 px-3.5 text-sm font-extrabold text-slate-500">
+                          1 堂
+                        </div>
+                        <p className="mt-1.5 text-[11px] font-semibold text-slate-500">試上固定單堂，不拆期</p>
+                      </>
+                    ) : (
+                      <>
+                        <Inp type="number" min="1" value={f.periodCount} onChange={upd('periodCount')} className="font-extrabold" />
+                        <p className="mt-1.5 text-[11px] font-semibold text-slate-500">{numPeriods} 期 × 6 堂 = {lessons} 堂</p>
+                      </>
+                    )}
                   </div>
                   <div>
                     <Label>資料建立人</Label>
@@ -594,8 +666,13 @@ export default function ManualEnrollPage() {
                   )}
                   <div className="grid grid-cols-2 gap-4">
                     <div><Label>收付方式</Label>
-                      <Sel value={f.paymentMethod} onChange={upd('paymentMethod')}>
-                        <option value="轉帳">銀行轉帳</option><option value="現金">現金</option><option value="信用卡">信用卡</option><option value="LINE Pay">LINE Pay</option>
+                      {/* 試上一律現場付費：後端會覆寫成 on_site，這裡鎖住避免櫃檯以為能選轉帳。 */}
+                      <Sel value={f.paymentMethod} onChange={upd('paymentMethod')} disabled={isTrial}>
+                        {isTrial
+                          ? <option value="現場付費">現場付費</option>
+                          : <>
+                              <option value="轉帳">銀行轉帳</option><option value="現金">現金</option><option value="信用卡">信用卡</option><option value="LINE Pay">LINE Pay</option>
+                            </>}
                       </Sel>
                     </div>
                     <div>

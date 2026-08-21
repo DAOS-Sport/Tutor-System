@@ -29,6 +29,12 @@ const {
   payloadFingerprint,
   acquireRequestLock,
 } = require('../../services/idempotency');
+// 試上單次課的共用契約（與家長端 routes/enrollments.js 同一份，後端為權威來源）。
+const {
+  ORDER_KIND,
+  normalizeOrderKind,
+  normalizePaymentMethod,
+} = require('../../services/trialEnrollment');
 
 const router = express.Router();
 
@@ -562,6 +568,17 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
     ? b.students.map((s) => String(s || '').trim()).filter(Boolean) : [];
   const totalSessions = Number.parseInt(b.total_sessions, 10);
 
+  // 訂單類型。試上（order_kind='trial'）＝單堂體驗課，契約與家長端一致：
+  //   堂數固定 1、付款一律現場付費（on_site）。
+  // 後端強制覆寫而不是相信前端：櫃檯若誤填 6 堂，對帳時 admin/enrollments.js
+  // 的 `total = order_kind === 'trial' ? 1 : perPeriod * periodCount` 會算成 1，
+  // 但 admin_enrollments.total_sessions 已經寫成 6，兩邊對不起來。
+  // 付款方式存英文 'on_site'（不是中文「現金」）—— ReconcilePage 的
+  // 「試上・現場付費」徽章是比對 payment_method === 'on_site'。
+  const orderKind = normalizeOrderKind(b.order_kind);
+  const isTrial = orderKind === ORDER_KIND.TRIAL;
+  const sessions = isTrial ? 1 : totalSessions;
+
   if (!parentName || !parentPhone) return res.status(400).json({ error: '請填寫家長姓名與電話', code: 'PARENT_REQUIRED' });
   if (!venueId) return res.status(400).json({ error: '請選擇館別', code: 'VENUE_REQUIRED' });
   if (!coachName) return res.status(400).json({ error: '請填寫授課教練', code: 'COACH_REQUIRED' });
@@ -572,8 +589,10 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
   // 場館權限（manager/staff 只能建自己館；admin 全部）。
   if (!isVenueInScope(req, venueId)) return res.status(403).json({ error: '無此館別的建檔權限', code: 'VENUE_OUT_OF_SCOPE' });
 
-  // 付款：轉帳須有末 5 碼格式；現金可空。
-  const paymentMethod = String(b.payment_method || '').trim() || null;
+  // 付款：轉帳須有末 5 碼格式；現金可空。試上一律現場付費（後端覆寫前端值）。
+  const paymentMethod = isTrial
+    ? normalizePaymentMethod(b.payment_method, orderKind)
+    : (String(b.payment_method || '').trim() || null);
   const last5 = String(b.transfer_last_5 || '').trim();
   if (last5 && !/^\d{5}$/.test(last5)) return res.status(400).json({ error: '轉帳末 5 碼格式錯誤', code: 'TRANSFER_LAST5_INVALID' });
 
@@ -611,7 +630,9 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
     coach: coachName,
     coach_id: b.coach_id ? String(b.coach_id).trim() : null,
     course_type: courseType,
-    total_sessions: totalSessions,
+    order_kind: orderKind,
+    // 用強制後的堂數：試上不論前端送 1 還是 6，都是同一張單，重送要視為同一筆。
+    total_sessions: sessions,
     original_price: originalPrice,
     final_price: finalPrice,
     allowance_amount: allowanceTotal,
@@ -687,6 +708,23 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
       await client.query('ROLLBACK');
       return res.status(400).json({ error: '館別不存在', code: 'VENUE_NOT_FOUND' });
     }
+
+    // F-A07 試上開關：課程品項未開放試上時拒絕建單（fail-closed），與家長端
+    // routes/enrollments.js 同一條守門。櫃檯不給例外 —— 開放與否應該在
+    // 「課程需求管理」統一調整，而不是靠某個入口繞過。
+    if (isTrial) {
+      const cfg = await client.query(
+        `SELECT label, trial_enabled FROM course_type_configs WHERE course_type = $1`,
+        [courseType]
+      );
+      if (!cfg.rowCount || cfg.rows[0].trial_enabled !== true) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: `課程品項「${cfg.rows[0]?.label || courseType}」未開放試上，請先於「課程需求管理」開啟`,
+          code: 'TRIAL_NOT_ENABLED',
+        });
+      }
+    }
     // 教練：可帶 coach_id（active coaches）取代自由文字；否則僅存名稱（對帳時再反查）。
     let coachId = null;
     const rawCoachId = b.coach_id ? String(b.coach_id).trim() : '';
@@ -701,7 +739,8 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
     }
 
     // 嚴格拆期：N 堂 → ceil(N/6) 筆，最後一筆放餘數堂；原價/實收/折讓按堂數比例分攤、餘額補最後一筆。
-    const numPeriods = Math.ceil(totalSessions / SESSIONS_PER_PERIOD);
+    // 試上固定 1 堂 → numPeriods 必為 1，不會走到拆期分支。
+    const numPeriods = Math.ceil(sessions / SESSIONS_PER_PERIOD);
     const batchId = randomUUID();
     const enrollmentIds = [];
     let origAlloc = 0, finalAlloc = 0, allowAlloc = 0;
@@ -718,10 +757,10 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
 
     for (let i = 0; i < numPeriods; i += 1) {
       const isLast = i === numPeriods - 1;
-      const periodSessions = isLast ? (totalSessions - SESSIONS_PER_PERIOD * (numPeriods - 1)) : SESSIONS_PER_PERIOD;
-      const po = isLast ? (originalPrice - origAlloc)  : Math.round(originalPrice * periodSessions / totalSessions);
-      const pf = isLast ? (finalPrice - finalAlloc)    : Math.round(finalPrice * periodSessions / totalSessions);
-      const pa = isLast ? (allowanceTotal - allowAlloc) : Math.round(allowanceTotal * periodSessions / totalSessions);
+      const periodSessions = isLast ? (sessions - SESSIONS_PER_PERIOD * (numPeriods - 1)) : SESSIONS_PER_PERIOD;
+      const po = isLast ? (originalPrice - origAlloc)  : Math.round(originalPrice * periodSessions / sessions);
+      const pf = isLast ? (finalPrice - finalAlloc)    : Math.round(finalPrice * periodSessions / sessions);
+      const pa = isLast ? (allowanceTotal - allowAlloc) : Math.round(allowanceTotal * periodSessions / sessions);
       if (!isLast) { origAlloc += po; finalAlloc += pf; allowAlloc += pa; }
 
       const eid = genEnrollmentId();
@@ -732,15 +771,15 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
             original_price, final_price, transfer_last_5, status, submitted_at,
             total_sessions, used_sessions, period_count, period_number, enrollment_batch_id,
             checkout_id, payment_method, payer, class_name, allowance_amount, tax_id, level_note,
-            unit_price, work_type, full_sessions, carrier, sync_source, created_by)
+            unit_price, work_type, full_sessions, carrier, sync_source, created_by, order_kind)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending_payment',$12,
-                 $13,0,1,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,'replit',$27)`,
+                 $13,0,1,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,'replit',$27,$28)`,
         [
           eid, parentName, parentPhone, students, coachName, coachId, venueId, courseType,
           po, pf, last5 || null, submittedAt,
           periodSessions, i + 1, batchId, checkout.checkoutId,
           paymentMethod, payer, className, pa, taxId, levelNote,
-          unitPrice, workType, fullSessions, carrier, createdBy,
+          unitPrice, workType, fullSessions, carrier, createdBy, orderKind,
         ]
       );
       await client.query(
