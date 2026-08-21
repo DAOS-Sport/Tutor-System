@@ -398,17 +398,24 @@ async function ensureSoloCoursePeriod(client, enrollment, totalSessions) {
       const validityDays = enrollment.order_kind === 'trial'
         ? '30'
         : String(365 * (Number(enrollment.period_count) || 1));
+      // period_number 必須跟著報名單走。這欄是 NOT NULL DEFAULT 1，漏帶不會報錯，
+      // 只會讓第 2 期以後的課期全部被標成「第 1 期」（2026-08-21 盤點：51 筆）。
+      // 團報（L188）與兄弟共用（L373）兩條路徑本來就有帶，只有這條單人路徑漏了。
+      // 影響不只報表：course_periods 有 UNIQUE(enrollment_batch_id, period_number)，
+      // 而 usageSync／deductionRevival 也用 (batch, period_number) 反查訂單。
+      // 目前這條路徑不寫 enrollment_batch_id 所以還沒撞到，但值錯著就是個地雷。
       const ins = await client.query(
         `INSERT INTO course_periods
            (coach_id, venue_id, course_type, total_sessions, used_sessions,
-            expires_at, original_price, final_price, status, admin_enrollment_id, is_experience_course)
-         VALUES ($1,$2,$3,$4,0,(NOW() + ($5 || ' days')::interval)::date,$6,$7,'active',$8,$9)
+            expires_at, original_price, final_price, status, admin_enrollment_id, is_experience_course,
+            period_number)
+         VALUES ($1,$2,$3,$4,0,(NOW() + ($5 || ' days')::interval)::date,$6,$7,'active',$8,$9,$10)
          RETURNING id`,
         [
           coachId, enrollment.venue_id, enrollment.course_type, totalSessions,
           validityDays,
           Number(enrollment.original_price) || 0, Number(enrollment.final_price) || 0,
-          enrollment.id, enrollment.order_kind === 'trial',
+          enrollment.id, enrollment.order_kind === 'trial', periodNumber,
         ]
       );
       periodId = ins.rows[0]?.id || null;
