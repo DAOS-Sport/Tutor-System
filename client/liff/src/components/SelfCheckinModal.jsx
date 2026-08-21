@@ -18,7 +18,6 @@ import { checkinsApi } from '../api/checkins';
 export default function SelfCheckinModal({ course, onClose, onDone }) {
   const [info, setInfo] = useState(null);      // 伺服器最新狀態
   const [loadError, setLoadError] = useState(null);
-  const [selected, setSelected] = useState(new Set());
   const [busy, setBusy] = useState(false);
   const open = !!course;
 
@@ -39,8 +38,6 @@ export default function SelfCheckinModal({ course, onClose, onDone }) {
       .then((fresh) => {
         if (!alive) return;
         setInfo(fresh);
-        // 預設全選（共班多位小孩通常一起上課）
-        setSelected(new Set((fresh.students_detail || []).map((s) => s.id)));
       })
       .catch(() => {
         if (!alive) return;
@@ -66,21 +63,22 @@ export default function SelfCheckinModal({ course, onClose, onDone }) {
     return null;
   }, [info, remaining]);
 
-  function toggle(id) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  }
-
+  // 全班一起簽到，不再讓家長勾選誰有到。
+  //
+  // 原本這裡有一組 checkbox，但那是假的選擇：後端 checkins.js 在
+  // SHARED_CHECKIN_USAGE_V2 開啟時（正式站已全開、白名單為空＝全體適用）
+  // 會忽略送上來的 student_ids，改用該課期完整的 active 名單去建 checkin_records
+  //   `const activeParticipants = useSharedUsageV2 ? (完整 roster) : own`
+  // 理由寫在那支路由的註解：不能信任某一位家長送來的清單，去決定其他家庭
+  // 要不要被扣課。所以取消勾選在畫面上看起來有效，實際上完全沒作用 ——
+  // 這個 UI 一直在誤導家長。現在改成照實顯示：整組一起簽。
   async function submit() {
-    if (busy || !info || blocked || !selected.size) return;
+    if (busy || !info || blocked || !students.length) return;
     setBusy(true);
     try {
       const res = await checkinsApi.selfCheckin({
         coursePeriodId: info.course_period_id,
-        studentIds: [...selected],
+        studentIds: students.map((s) => s.id),
       });
       onDone?.({
         students: res.checked_in_students || [],
@@ -90,7 +88,7 @@ export default function SelfCheckinModal({ course, onClose, onDone }) {
       const code = e?.response?.data?.code;
       const serverMsg = e?.response?.data?.error;
       const msg = serverMsg
-        || (code ? '簽到未完成，請稍後再試' : '網路不穩定，請再按一次「確認簽到」（不會重複扣堂）');
+        || (code ? '簽到未完成，請稍後再試' : '網路不穩定，請再按一次「簽到」（不會重複扣堂）');
       onDone?.({ error: msg, refresh: !!code });
     } finally {
       setBusy(false);
@@ -122,20 +120,15 @@ export default function SelfCheckinModal({ course, onClose, onDone }) {
               <span className="text-gray-600">剩餘堂數</span>
               <span className="font-bold text-brand-primary">{remaining} / {info.total_sessions} 堂</span>
             </div>
-            <div className="mb-1 text-xs font-medium text-gray-500">今日上課學員（可取消勾選未到課者）</div>
+            <div className="mb-1 text-xs font-medium text-gray-500">上課學員</div>
             <div className="mb-4 space-y-1.5">
               {students.map((s) => (
-                <label key={s.id} className="flex items-center gap-2 rounded-xl border border-gray-200 px-3 py-2.5">
-                  <input
-                    type="checkbox"
-                    checked={selected.has(s.id)}
-                    onChange={() => toggle(s.id)}
-                    className="h-4 w-4 accent-brand-primary"
-                  />
+                <div key={s.id} className="rounded-xl border border-gray-200 px-3 py-2.5">
                   <span className="text-sm font-medium text-gray-800">{s.name}</span>
-                </label>
+                </div>
               ))}
             </div>
+
           </>
         )}
 
@@ -151,11 +144,11 @@ export default function SelfCheckinModal({ course, onClose, onDone }) {
           {!blocked && !loadError && (
             <button
               type="button"
-              disabled={busy || !info || !selected.size}
+              disabled={busy || !info || !students.length}
               onClick={submit}
               className="flex-1 rounded-xl bg-brand-primary py-2.5 text-sm font-bold text-white disabled:opacity-50"
             >
-              {busy ? '簽到中…' : `確認簽到（${selected.size} 位）`}
+              {busy ? '簽到中…' : '簽到'}
             </button>
           )}
         </div>
