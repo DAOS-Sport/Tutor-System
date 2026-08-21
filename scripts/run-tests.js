@@ -32,6 +32,7 @@ const UNIT = [
   'tests/liff_nav_consistency_test.js',
   'tests/coach_checkin_badge_style_test.js',
   'tests/coach_checkin_removed_test.js',
+  'tests/shared_class_checkin_contract_test.js',
   'tests/reconcile_email_test.js',
   'tests/venue_oa_deeplink_test.js',
   'tests/mail_describe_test.js',
