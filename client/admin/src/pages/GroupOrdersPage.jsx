@@ -9,8 +9,9 @@ import { formatTWDateTime } from '../utils/format';
 
 const courseLabel = (ct) => ({ 1: '一對一', 2: '一對二', 3: '一對三' }[ct] || `一對${ct}`);
 const STATUS = {
-  // forming 只會出現在「已收齊款」的團（後端清單就只放行這種），所以標籤直接寫已收齊款。
-  forming: { label: '揪團中·已收齊款', cls: 'bg-sky-100 text-sky-700' },
+  // forming 涵蓋所有進行中的團；收款進度另外用逐列的小字標，不塞進狀態徽章裡，
+  // 免得同一欄要同時表達「流程走到哪」跟「錢收到多少」兩件事。
+  forming: { label: '揪團中', cls: 'bg-sky-100 text-sky-700' },
   submitted: { label: '待審核', cls: 'bg-amber-100 text-amber-700' },
   approved: { label: '已核准', cls: 'bg-green-100 text-green-700' },
   rejected: { label: '已退回', cls: 'bg-red-100 text-red-700' },
@@ -202,10 +203,10 @@ export default function GroupOrdersPage() {
 
   return (
     <div>
-      <PageHeader title="團購審核" subtitle="家長發起的團購送審後在此核准／退回；核准後送待對帳清單，發票與開通在待對帳流程處理。「揪團中·已收齊款」是全團都付了款但還沒送審的團，可由櫃檯代為送審。" />
+      <PageHeader title="團購審核" subtitle="家長發起的團購送審後在此核准／退回；核准後送待對帳清單，發票與開通在待對帳流程處理。「揪團中」是還沒送審的團，可看到各團收了幾家的款；全團收齊的可由櫃檯代為送審。" />
 
       <div className="mb-4 flex gap-2">
-        {[['', '全部'], ['forming', '揪團中·已收齊款'], ['submitted', '待審核'], ['approved', '已核准'], ['rejected', '已退回']].map(([k, label]) => (
+        {[['', '全部'], ['forming', '揪團中'], ['submitted', '待審核'], ['approved', '已核准'], ['rejected', '已退回']].map(([k, label]) => (
           <button key={k || 'all'} type="button" onClick={() => setStatusFilter(k)}
             className={`rounded-full px-4 py-1.5 text-sm font-medium ${statusFilter === k ? 'bg-brand-primary text-white' : 'bg-white text-gray-600 border border-gray-200'}`}>
             {label}（{Array.isArray(allRows) ? (k === '' ? counts.all : counts[k] || 0) : '…'}）
@@ -320,7 +321,9 @@ export default function GroupOrdersPage() {
                   <td className="px-4 py-3">
                     {g.member_count}
                     {g.status === 'forming' && (
-                      <div className="text-[10px] font-bold text-sky-600">已收款 {g.paid_member_count}/{g.member_count}</div>
+                      <div className={`text-[10px] font-bold ${g.payment_ready ? 'text-sky-600' : 'text-amber-600'}`}>
+                        已收款 {g.paid_member_count}/{g.member_count}
+                      </div>
                     )}
                   </td>
                   <td className="px-4 py-3">{g.total_students} / {g.min_students}–{g.max_students}</td>
@@ -332,6 +335,9 @@ export default function GroupOrdersPage() {
                     <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${STATUS[g.status]?.cls || 'bg-gray-100 text-gray-500'}`}>
                       {STATUS[g.status]?.label || g.status}
                     </span>
+                    {g.can_submit && (
+                      <div className="mt-1 text-[10px] font-bold text-sky-600">已收齊款 · 可代送審</div>
+                    )}
                     {g.reviewed_at && (
                       <div className="mt-1 text-[10px] text-gray-400">{formatTWDateTime(g.reviewed_at)}{g.reviewed_by ? `・${g.reviewed_by}` : ''}</div>
                     )}

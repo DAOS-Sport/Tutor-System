@@ -132,7 +132,7 @@ const auditOf = async (id) => (await pool.query(
   assert.strictEqual(r.status, 409, 'B5: a second proxy submit must be rejected, got ' + r.status);
   console.log('✅ B5 重複代送審被擋');
 
-  // ── C：付款沒齊的團，既不進清單也不可代送審 ────────────────
+  // ── C：付款沒齊的團 —— 看得見，但不可代送審 ────────────────
   const c = await makeGroup({ courseType: 2, min: 2, max: 2, parents: [ps[0], ps[2]], lastPaidIdx: 1 });
   r = await api(`/api/admin/group-orders/${c.id}/submit`, { token: at, method: 'POST' });
   assert.strictEqual(r.status, 409, 'C: incomplete payment must block proxy submit, got ' + r.status);
@@ -141,7 +141,19 @@ const auditOf = async (id) => (await pool.query(
   assert.ok(r.data.pending_members[0].parent_name, 'C: counter staff need the real name to phone them');
   r = await api('/api/admin/group-orders?status=forming_ready', { token: at });
   assert.ok(!r.data.some((x) => x.id === c.id), 'C: a group with an unpaid member is not forming_ready');
-  console.log('✅ C 未收齊 → 不進清單、不可代送審、指名缺件家庭');
+
+  // 不可代送審，但必須看得見：櫃檯要掌握整條管線（誰只到 1 家、誰收了一半的錢），
+  // 所以進行中的團一律入列，收款進度標在列上。
+  r = await api('/api/admin/group-orders?status=forming', { token: at });
+  const cRow = r.data.find((x) => x.id === c.id);
+  assert.ok(cRow, 'C: an in-progress group must stay visible to the counter');
+  assert.strictEqual(cRow.member_count, 2, 'C: member_count');
+  assert.strictEqual(cRow.paid_member_count, 1, 'C: only one of the two families has paid');
+  assert.strictEqual(cRow.payment_ready, false, 'C: payment_ready must be false');
+  assert.strictEqual(cRow.can_submit, false, 'C: can_submit must be false');
+  r = await api('/api/admin/group-orders', { token: at });
+  assert.ok(r.data.some((x) => x.id === c.id), 'C: the default list must carry it as well');
+  console.log('✅ C 未收齊 → 看得到（收款 1/2）但不可代送審，且指名缺件家庭');
 
   console.log('\ne2e_auto_submit: ALL PASS');
 })()

@@ -102,7 +102,10 @@ router.get('/', requireAdminAuth, AMS, async (req, res) => {
     } else if (status) {
       params.push(status); where += ` AND go.status = $${params.length}`;
     } else {
-      where += ` AND (go.status IN ('submitted','approved','rejected') OR ${FORMING_READY_SQL})`;
+      // 揪團中的團全部收進來（不只已收齊款那些）：櫃檯要看得見整條管線 ——
+      // 哪一團只到 1 家、哪一團收了一半的錢、哪一團開了三週還沒動靜。
+      // 只有 cancelled 不列（那是終態，看了也不能做什麼）。
+      where += ` AND go.status IN ('forming','submitted','approved','rejected')`;
     }
     const vf = venueFilter(req, params);
     params = vf.params;

@@ -84,10 +84,14 @@ assert.ok(adminRoute.includes('櫃檯代為送審'),
 // ── 7. 後台看得到「揪團中·已收齊款」並且能動它 ────────────
 assert.ok(adminRoute.includes('FORMING_READY_SQL'), 'admin list must surface forming-but-fully-paid groups');
 assert.ok(adminRoute.includes("status === 'forming_ready'"), 'the forming_ready filter must be selectable');
-assert.ok(adminPage.includes("['forming', '揪團中·已收齊款']"), 'admin page must show the forming tab');
+assert.ok(adminPage.includes("['forming', '揪團中']"), 'admin page must show the forming tab');
+assert.ok(adminRoute.includes("go.status IN ('forming','submitted','approved','rejected')"),
+  'the default admin list must carry the whole forming pipeline, not just the fully-paid ones');
 assert.ok(adminPage.includes('代為送審（送進待審核）'), 'admin page must offer the proxy-submit action');
-assert.ok(adminPage.includes("forming: { label: '揪團中·已收齊款'"),
+assert.ok(adminPage.includes("forming: { label: '揪團中'"),
   'forming rows need their own badge, otherwise they render as a bare raw status string');
+assert.ok(adminPage.includes('已收款 {g.paid_member_count}/{g.member_count}'),
+  'the counter must see how many families have actually paid, not just how many joined');
 
 // ── 8. 家長端要說明「會自動送審」──────────────────────────
 // 不寫的話，家長看到「已上傳，待確認」還是不知道到底誰要按下一步。
