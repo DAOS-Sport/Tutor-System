@@ -20,6 +20,9 @@ const {
 const { createCheckoutSession } = require('../../services/checkouts');
 const { parseProofInput } = require('../../services/paymentProof');
 const { logGroupOrderAudit } = require('../../services/groupOrderAudit');
+const {
+  evaluateSubmitReadiness, markSubmitted, notifyGroupSubmitted,
+} = require('../../services/groupOrderSubmit');
 const line = require('../../services/line');
 const promotions = require('../../services/promotions');
 const { resolveUnitPrice } = require('../../services/coursePricing');
@@ -32,6 +35,20 @@ const {
 const router = express.Router();
 const AMS = requireAdminRole('admin', 'manager', 'staff');
 const GROUP_APPROVAL_OPERATION = 'approve_group_order_checkouts';
+
+// 「已收齊款」＝ 全部成員都備齊「轉帳末 5 碼 + 匯款證明」，且團裡至少有一個成員。
+// 與 services/groupOrderSubmit.evaluateSubmitReadiness 的 unpaid 條件同義；兩邊都是
+// 「缺末 5 碼或缺證明就算沒收齊」。清單過濾與 payment_ready 欄位共用這一份，
+// 免得出現「清單說收齊了、按下去卻說沒收齊」。
+const PAYMENT_READY_SQL = `(
+  EXISTS (SELECT 1 FROM group_order_members m WHERE m.group_order_id = go.id)
+  AND NOT EXISTS (
+    SELECT 1 FROM group_order_members m
+     WHERE m.group_order_id = go.id
+       AND (m.payment_proof_url IS NULL
+            OR NULLIF(TRIM(COALESCE(m.transfer_last_5, '')), '') IS NULL))
+)`;
+const FORMING_READY_SQL = `(go.status = 'forming' AND ${PAYMENT_READY_SQL})`;
 
 async function readApprovedGroupResult(client, groupOrderId, { idempotent = false } = {}) {
   const result = await client.query(
@@ -77,8 +94,16 @@ router.get('/', requireAdminAuth, AMS, async (req, res) => {
     const status = req.query.status ? String(req.query.status) : null;
     let params = [];
     let where = 'WHERE 1=1';
-    if (status) { params.push(status); where += ` AND go.status = $${params.length}`; }
-    else { where += ` AND go.status IN ('submitted','approved','rejected')`; }
+    if (status === 'forming_ready') {
+      // 虛擬狀態「揪團中·已收齊款」：家長都付了、團卻還沒送審。
+      // 舊版清單只收 submitted/approved/rejected，這種團在後台完全隱形 ——
+      // 錢已經進來卻沒有任何人在追（2026-08 有兩團分別卡了 3 天與 9 天才被發現）。
+      where += ` AND ${FORMING_READY_SQL}`;
+    } else if (status) {
+      params.push(status); where += ` AND go.status = $${params.length}`;
+    } else {
+      where += ` AND (go.status IN ('submitted','approved','rejected') OR ${FORMING_READY_SQL})`;
+    }
     const vf = venueFilter(req, params);
     params = vf.params;
 
@@ -88,12 +113,18 @@ router.get('/', requireAdminAuth, AMS, async (req, res) => {
               c.name AS coach_name,
               (SELECT COUNT(*) FROM group_order_members m WHERE m.group_order_id = go.id) AS member_count,
               (SELECT COALESCE(SUM(COALESCE(array_length(m.student_names,1),0)),0)
-                 FROM group_order_members m WHERE m.group_order_id = go.id) AS total_students
+                 FROM group_order_members m WHERE m.group_order_id = go.id) AS total_students,
+              (SELECT COUNT(*) FROM group_order_members m
+                WHERE m.group_order_id = go.id
+                  AND m.payment_proof_url IS NOT NULL
+                  AND NULLIF(TRIM(COALESCE(m.transfer_last_5, '')), '') IS NOT NULL) AS paid_member_count,
+              ${PAYMENT_READY_SQL} AS payment_ready
          FROM group_orders go
          JOIN parents p ON p.id = go.leader_parent_id
          LEFT JOIN coaches c ON c.id = go.coach_id
          ${where}${vf.clause}
-        ORDER BY (go.status='submitted') DESC, go.submitted_at DESC NULLS LAST, go.created_at DESC`,
+        ORDER BY (go.status='submitted') DESC, (go.status='forming') DESC,
+                 go.submitted_at DESC NULLS LAST, go.created_at DESC`,
       params
     );
     res.json(r.rows.map((go) => ({
@@ -110,6 +141,12 @@ router.get('/', requireAdminAuth, AMS, async (req, res) => {
       max_students: go.max_students,
       member_count: Number(go.member_count),
       total_students: Number(go.total_students),
+      paid_member_count: Number(go.paid_member_count),
+      payment_ready: !!go.payment_ready,
+      // can_submit 由後端算好給前端用，避免前端自己重算一次人數上下限而算歪。
+      can_submit: go.status === 'forming' && !!go.payment_ready
+        && Number(go.total_students) >= go.min_students
+        && Number(go.total_students) <= go.max_students,
       note: go.note || null,
       reject_reason: go.reject_reason || null,
       submitted_at: go.submitted_at,
@@ -197,6 +234,63 @@ router.get('/:id', requireAdminAuth, AMS, async (req, res) => {
   } catch (err) {
     console.error('[admin/group-orders GET /:id]', err);
     res.status(500).json({ error: '載入失敗' });
+  }
+});
+
+// ── POST /:id/submit 櫃檯代為送審（U15）─────────────────────
+// 送審本來是團主的動作，團主漏按整團就卡在 forming：核准端要求 status='submitted'，
+// 櫃檯即使看到也動不了，只能打電話求家長按一下。這支把「已收齊款、人數也到位」的團
+// 直接推進 submitted，之後完全走原本的核准流程，不新增任何終態。
+//
+// 條件與家長端送審共用 evaluateSubmitReadiness，一條都沒放寬 —— 櫃檯能代按，
+// 但不能代替「錢有沒有收到」這件事。
+router.post('/:id/submit', requireAdminAuth, AMS, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const o = await client.query(`SELECT * FROM group_orders WHERE id = $1 FOR UPDATE`, [req.params.id]);
+    if (!o.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: '找不到此團購' }); }
+    const order = o.rows[0];
+    if (!isVenueInScope(req, order.venue_id)) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: '無權審核此場館的團購' });
+    }
+    const readiness = await evaluateSubmitReadiness(client, order);
+    if (!readiness.ok) {
+      await client.query('ROLLBACK');
+      const msg = {
+        NOT_FORMING: '只有「揪團中」的團購可以代為送審',
+        BELOW_MIN: `尚未達成團最低人數（需 ${order.min_students} 人，目前 ${readiness.total} 人）`,
+        OVER_CAPACITY: `超過人數上限（最多 ${order.max_students} 人）`,
+        MISSING_PAYMENT_PROOF: '仍有家庭未備齊付款資料（轉帳末 5 碼 + 匯款證明）',
+      }[readiness.code] || '此團購目前無法送審';
+      return res.status(409).json({
+        error: msg,
+        code: readiness.code,
+        // 櫃檯要打電話催件，這裡不遮罩姓名（遮罩是給團主看其他家庭時用的）。
+        pending_members: readiness.unpaid.map((x) => ({ member_id: x.id, parent_name: x.parent_name })),
+      });
+    }
+    const submitted = await markSubmitted(client, order, {
+      action: `櫃檯代為送審（共 ${readiness.total} 位學生）`,
+      by: req.adminUser?.name || req.adminUser?.username || 'unknown',
+    });
+    if (!submitted) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '只有「揪團中」的團購可以代為送審', code: 'NOT_FORMING' });
+    }
+    await client.query('COMMIT');
+    res.json({ ok: true, status: 'submitted', total_students: readiness.total });
+
+    // 與家長端送審一致：通知全團。best-effort，推播失敗不影響已 COMMIT 的送審。
+    notifyGroupSubmitted(order.id, readiness.total)
+      .catch((e) => console.warn('[group admin submit push]', e.message));
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    console.error('[admin/group-orders submit]', err);
+    res.status(500).json({ error: '代為送審失敗' });
+  } finally {
+    client.release();
   }
 });
 

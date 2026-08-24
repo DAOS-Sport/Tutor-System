@@ -26,6 +26,9 @@ const promotions = require('../services/promotions');
 const { logGroupOrderAudit } = require('../services/groupOrderAudit');
 const { resolveUnitPrice } = require('../services/coursePricing');
 const routing = require('../services/lineRouting');
+const {
+  evaluateSubmitReadiness, isFullHouse, markSubmitted, notifyGroupSubmitted,
+} = require('../services/groupOrderSubmit');
 
 // 家長端操作者標記：token 只含 id/phone，櫃檯亦以手機辨識家長。
 const parentActor = (req) => `家長 ${req.parent?.phone || req.parent?.id || 'unknown'}`;
@@ -908,12 +911,13 @@ router.post('/:id/my-proof', async (req, res) => {
     // 鎖 group → member 的順序與 submit/cancel 一致。這樣雙擊、網路 retry 和
     // 櫃檯確認不會在「先讀後寫」的空窗互相覆蓋付款證明。
     await client.query('BEGIN');
-    const o = await client.query(`SELECT status FROM group_orders WHERE id = $1 FOR UPDATE`, [req.params.id]);
+    const o = await client.query(`SELECT * FROM group_orders WHERE id = $1 FOR UPDATE`, [req.params.id]);
     if (!o.rowCount) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: '找不到此團購' });
     }
-    if (!['forming', 'submitted'].includes(o.rows[0].status)) {
+    const order = o.rows[0];
+    if (!['forming', 'submitted'].includes(order.status)) {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '此團購狀態無法上傳付款資料', code: 'NOT_UPLOADABLE' });
     }
@@ -1000,11 +1004,32 @@ router.post('/:id/my-proof', async (req, res) => {
       action: `更新付款資料（${proofActions.join('、') || '無變更'}）`,
       by: parentActor(req),
     });
+    // 全團付款資料齊備且已滿團 → 系統自動送審，團主不必再按一次。
+    // 「最後一家上傳」是唯一會讓條件由不成立翻成成立的時點，所以判定放這裡；
+    // group 列在本交易開頭已 FOR UPDATE，判定與轉換同一交易，
+    // 兩家幾乎同時上傳也只會有一邊送出（markSubmitted 是條件式 UPDATE）。
+    let autoSubmittedTotal = 0;
+    if (order.status === 'forming') {
+      const readiness = await evaluateSubmitReadiness(client, order);
+      if (readiness.ok && isFullHouse(order, readiness.total)) {
+        const autoSubmitted = await markSubmitted(client, order, {
+          action: `全團付款資料齊備，系統自動送審（共 ${readiness.total} 位學生）`,
+          by: '系統自動',
+        });
+        if (autoSubmitted) autoSubmittedTotal = readiness.total;
+      }
+    }
     await client.query('COMMIT');
     committed = true;
     const loaded = await loadOrderWithMembers(pool, req.params.id);
     res.json(shapeOrder(loaded.order, loaded.members, req.parent.id,
       loaded.order.leader_parent_id === req.parent.id ? { join_token: loaded.order.join_token } : {}));
+
+    // 自動送審成功才通知，且在回應之後：推播失敗不該影響已 COMMIT 的送審。
+    if (autoSubmittedTotal) {
+      notifyGroupSubmitted(req.params.id, autoSubmittedTotal)
+        .catch((e) => console.warn('[group auto-submit push]', e.message));
+    }
   } catch (err) {
     if (!committed) await client.query('ROLLBACK').catch(() => {});
     console.error('[group-orders my-proof]', { code: err?.code || 'UNEXPECTED' });
@@ -1014,53 +1039,6 @@ router.post('/:id/my-proof', async (req, res) => {
   }
 });
 
-
-/**
- * 團報送審完成 → 通知全團每個家庭。
- *
- * 每位家長各自依「自己的來源 provider」路由（services/lineRouting）—— 不可用
- * group_orders.venue_id 當 channel：那是團購所屬場館，不是家長 uid 的歸屬，
- * 拿它去查 token 會送出一整排 404。
- *
- * 去重用 refId = 'gs:<order_id>:<parent_id>'，同一團同一家長只會通知一次
- * （送審→退回→再送審時，refId 相同故不重複打擾；要重送請走退回流程的通知）。
- * 全程 best-effort：送審已經 COMMIT，推播失敗不該影響它。
- */
-async function notifyGroupSubmitted(orderId, totalStudentCount) {
-  const r = await pool.query(
-    `SELECT m.parent_id, p.line_uid, p.primary_venue_id,
-            go.course_type, v.name AS venue_name
-       FROM group_order_members m
-       JOIN group_orders go ON go.id = m.group_order_id
-       JOIN parents p ON p.id = m.parent_id
-       LEFT JOIN venues v ON v.id = go.venue_id
-      WHERE m.group_order_id = $1
-        AND p.line_uid IS NOT NULL AND p.line_uid <> ''`,
-    [orderId]);
-  if (!r.rowCount) return;
-
-  const liffBase = (process.env.LIFF_URL_PARENT || process.env.LIFF_URL || '').replace(/\/$/, '');
-  const liffUrl = liffBase ? liffBase + '/group/' + orderId : '';
-
-  for (const row of r.rows) {
-    const ch = (await routing.resolveChannel({ kind: 'parent', venueId: row.primary_venue_id })).channel;
-    if (!ch) continue;   // 路由查不到就跳過；pushGate 那層也會記錄原因
-    try {
-      await line.pushMessage(
-        row.line_uid,
-        line.templates.groupSubmitted({
-          total: totalStudentCount,
-          venueName: row.venue_name,
-          courseType: row.course_type ? '1 對 ' + row.course_type : null,
-          liffUrl,
-        }),
-        ch,
-        { event: 'group_submitted', refId: 'gs:' + orderId + ':' + row.parent_id, recipientKind: 'parent' });
-    } catch (e) {
-      console.warn('[group submit push] parent=' + row.parent_id + ' ' + e.message);
-    }
-  }
-}
 
 // ── POST /:id/submit 團主送審 ───────────────────────────────
 router.post('/:id/submit', async (req, res) => {
@@ -1078,61 +1056,41 @@ router.post('/:id/submit', async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '此團購狀態無法送審', code: 'NOT_FORMING' });
     }
-    const cur = await client.query(
-      `SELECT COALESCE(SUM(COALESCE(array_length(student_names,1),0)),0) AS total
-         FROM group_order_members WHERE group_order_id = $1`,
-      [order.id]
-    );
-    const total = Number(cur.rows[0].total);
-    if (total < order.min_students) {
+    // 資格判定與狀態轉換都走 services/groupOrderSubmit —— 與「自動送審」、
+    // 「櫃檯代為送審」共用同一份條件，三條路徑不會各自漂移。
+    const readiness = await evaluateSubmitReadiness(client, order);
+    if (!readiness.ok) {
       await client.query('ROLLBACK');
-      return res.status(400).json({
-        error: `尚未達成團最低人數（需 ${order.min_students} 人，目前 ${total} 人）`,
-        code: 'BELOW_MIN',
-      });
-    }
-    if (total > order.max_students) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: `超過人數上限（最多 ${order.max_students} 人）`, code: 'OVER_CAPACITY' });
-    }
-    // 送審前置：每個家庭都要備齊「轉帳末 5 碼 + 匯款證明」才可送審（U14）。
-    // 與櫃檯核准端（admin/groupOrders.js 的 MISSING_PAYMENT_PROOF）同向但更嚴：
-    // 核准端維持「末 5 碼或證明擇一」以相容既有已送審單，送審端收緊擋住不完整的新單，
-    // 讓「不完整的團」在團主端就停下來，而不是送進後台才被退。
-    const unpaid = await client.query(
-      `SELECT m.id, p.name AS parent_name
-         FROM group_order_members m
-         JOIN parents p ON p.id = m.parent_id
-        WHERE m.group_order_id = $1
-          AND (m.payment_proof_url IS NULL
-               OR NULLIF(TRIM(COALESCE(m.transfer_last_5, '')), '') IS NULL)
-        ORDER BY m.is_leader DESC, m.joined_at ASC`,
-      [order.id]
-    );
-    if (unpaid.rowCount) {
-      await client.query('ROLLBACK');
+      if (readiness.code === 'BELOW_MIN') {
+        return res.status(400).json({
+          error: `尚未達成團最低人數（需 ${order.min_students} 人，目前 ${readiness.total} 人）`,
+          code: 'BELOW_MIN',
+        });
+      }
+      if (readiness.code === 'OVER_CAPACITY') {
+        return res.status(400).json({ error: `超過人數上限（最多 ${order.max_students} 人）`, code: 'OVER_CAPACITY' });
+      }
       return res.status(400).json({
         error: '仍有家庭未完成付款資料（需轉帳末 5 碼 + 匯款證明），請補齊後再送審',
         code: 'MISSING_PAYMENT_PROOF',
         // 姓名遮罩：團主看得到「誰還沒交」，但看不到其他家庭的完整個資。
-        pending_members: unpaid.rows.map((x) => ({
+        pending_members: readiness.unpaid.map((x) => ({
           member_id: x.id,
           parent_name: maskName(x.parent_name),
         })),
       });
     }
-    const r = await client.query(
-      `UPDATE group_orders SET status='submitted', submitted_at=NOW(), updated_at=NOW()
-        WHERE id=$1 RETURNING *`,
-      [order.id]
-    );
-    await logGroupOrderAudit(client, {
-      groupOrderId: order.id,
+    const total = readiness.total;
+    const submitted = await markSubmitted(client, order, {
       action: `團主送審（共 ${total} 位學生）`,
       by: parentActor(req),
     });
+    if (!submitted) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '此團購狀態無法送審', code: 'NOT_FORMING' });
+    }
     await client.query('COMMIT');
-    const loaded = await loadOrderWithMembers(pool, r.rows[0].id);
+    const loaded = await loadOrderWithMembers(pool, submitted.id);
     res.json(shapeOrder(loaded.order, loaded.members, req.parent.id));
 
     // 全團付款備齊、團主送審成功 → 通知每個家庭。

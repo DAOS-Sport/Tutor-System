@@ -474,6 +474,10 @@ export default function GroupStatusPage() {
               <div className="rounded-lg border border-brand-gold/40 bg-brand-gold/5 px-3 py-2 text-[12px] leading-5 text-brand-gold">
                 ⚠️ 送審後名單<strong>鎖定、不能再加人</strong>；全團都要備齊「轉帳末 5 碼 + 匯款證明」才能送審。
               </div>
+              {/* 自動送審條件與後端 services/groupOrderSubmit.isFullHouse 一致：滿團＋全員付款齊備。 */}
+              <div className="rounded-lg border border-brand-teal/40 bg-brand-teal/5 px-3 py-2 text-[12px] leading-5 text-brand-teal">
+                ✅ 收滿 {order.max_students} 人、且全團都回傳付款資料時，系統會<strong>自動送審</strong>，您不必再按一次。
+              </div>
               {/* 送審鈕已由上方 NextActionBlock 提供（人數達標＋全員付款齊備才顯示），此處只保留警語避免兩顆重複送審鈕。 */}
               {!reachedMin && (
                 <p className="px-1 text-[12px] text-gray-500">還差 {order.min_students - order.total_students} 人才能送審。</p>
@@ -552,17 +556,19 @@ function NextActionBlock({
       } else if (!allPaymentReady) {
         tone = 'gold';
         title = `人數已達標，還有 ${unpaidCount} 個家庭未交付款資料`;
-        body = `${(unpaidNames || []).join('、') || '部分家庭'} 尚未備齊「轉帳末 5 碼 + 匯款證明」。全部齊了才能送審，請提醒他們到本頁補齊。`;
+        body = `${(unpaidNames || []).join('、') || '部分家庭'} 尚未備齊「轉帳末 5 碼 + 匯款證明」。請提醒他們到本頁補齊；收滿 ${order.max_students} 人且全部回傳後系統會自動送審。`;
       } else {
         title = '全員付款資料已齊，可以送審';
-        body = '送審後名單鎖定，由櫃檯核對後開課。';
+        body = order.total_students < order.max_students
+          ? `目前 ${order.total_students} 人，還可以再收 ${order.max_students - order.total_students} 人。收滿會自動送審；不等了也可以現在就送出，送審後名單鎖定。`
+          : '送審後名單鎖定，由櫃檯核對後開課。';
         primary = { label: '送審並鎖定名單', onClick: onSubmit };
       }
     } else {
       title = selfPaymentReady ? '付款資料已送出' : '已加入，可先完成付款';
       body = selfPaymentReady
-        ? '等待人數達標、團主送審後由櫃檯核對開課。'
-        : '您已在團內，可先轉帳並在下方成員卡上傳付款資料，不必等團主送審。';
+        ? `等其他家庭回傳付款資料；收滿 ${order.max_students} 人且全團都回傳後會自動送審，再由櫃檯核對開課。`
+        : '您已在團內，可先轉帳並在下方成員卡上傳付款資料，不必等團主送審；全團回傳齊全就會自動送審。';
     }
   } else if (order.status === 'submitted') {
     tone = selfPaymentReady ? 'gold' : 'teal';

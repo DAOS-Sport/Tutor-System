@@ -4,6 +4,9 @@ import { callApi } from './client';
 export const groupOrdersApi = {
   list:    (status)        => callApi('/group-orders', { params: status ? { status } : {} }, () => []),
   get:     (id)            => callApi(`/group-orders/${id}`, {}, () => null),
+  // U15 櫃檯代為送審：團主漏按送審時，把「已收齊款、人數到位」的團推進待審核。
+  // 條件由後端守門（與家長端送審同一份），前端不重算。
+  submit:  (id)            => callApi(`/group-orders/${id}/submit`, { method: 'post' }, () => ({ ok: true })),
   approve: (id)            => {
     const requestId = `group-approve:${id}`;
     return callApi(`/group-orders/${id}/approve`, {

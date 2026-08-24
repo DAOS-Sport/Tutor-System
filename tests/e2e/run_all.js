@@ -23,6 +23,7 @@ const PATHS = [
   ['F-M02Scope', 'admin_checkout_scope_cancel.js'],
   ['EnrollmentIdempotency', 'enrollment_idempotency.js'],
   ['GroupProofPersistence', 'group_proof_persistence.js'],
+  ['GroupAutoSubmit', 'group_auto_submit.js'],
   ['ManualDeduction', 'admin_manual_deduction.js'],
   ['SessionsRegression', 'admin_sessions_regression.js'],
   ['FamilyShared', 'family_shared_period.js'],

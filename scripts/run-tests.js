@@ -48,6 +48,7 @@ const UNIT = [
   'tests/checkin_label_test.js',
   'tests/force_trigger_outbox_cli_test.js',
   'tests/group_payment_proof_test.js',
+  'tests/group_auto_submit_test.js',
   'tests/h05_empty_guard_test.js',
   'tests/line_single_push_channel_test.js',
   'tests/line_parent_bind_compat_test.js',

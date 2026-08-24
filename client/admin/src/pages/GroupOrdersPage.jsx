@@ -9,6 +9,8 @@ import { formatTWDateTime } from '../utils/format';
 
 const courseLabel = (ct) => ({ 1: '一對一', 2: '一對二', 3: '一對三' }[ct] || `一對${ct}`);
 const STATUS = {
+  // forming 只會出現在「已收齊款」的團（後端清單就只放行這種），所以標籤直接寫已收齊款。
+  forming: { label: '揪團中·已收齊款', cls: 'bg-sky-100 text-sky-700' },
   submitted: { label: '待審核', cls: 'bg-amber-100 text-amber-700' },
   approved: { label: '已核准', cls: 'bg-green-100 text-green-700' },
   rejected: { label: '已退回', cls: 'bg-red-100 text-red-700' },
@@ -69,7 +71,7 @@ export default function GroupOrdersPage() {
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const counts = useMemo(() => {
-    const c = { all: 0, submitted: 0, approved: 0, rejected: 0 };
+    const c = { all: 0, forming: 0, submitted: 0, approved: 0, rejected: 0 };
     if (Array.isArray(allRows)) {
       c.all = allRows.length;
       for (const r of allRows) c[r.status] = (c[r.status] || 0) + 1;
@@ -155,6 +157,22 @@ export default function GroupOrdersPage() {
     } finally { setBusy(false); }
   }
 
+  async function handleAdminSubmit() {
+    if (!detail) return;
+    setBusy(true);
+    try {
+      const r = await groupOrdersApi.submit(detail.id);
+      toast.success(`已代為送審（${r.total_students ?? ''} 位學生），請在「待審核」分頁核准`);
+      closeDetail();
+      load();
+    } catch (e) {
+      const data = e?.response?.data;
+      const pending = Array.isArray(data?.pending_members) ? data.pending_members : [];
+      const suffix = pending.length ? `：${pending.map((m) => m.parent_name).join('、')}` : '';
+      toast.error((data?.error || '代為送審失敗') + suffix, 5000);
+    } finally { setBusy(false); }
+  }
+
   async function handleReject() {
     if (!detail) return;
     if (!rejectReason.trim()) return toast.error('請填寫退回原因');
@@ -184,10 +202,10 @@ export default function GroupOrdersPage() {
 
   return (
     <div>
-      <PageHeader title="團購審核" subtitle="家長發起的團購送審後在此核准／退回；核准後送待對帳清單，發票與開通在待對帳流程處理。" />
+      <PageHeader title="團購審核" subtitle="家長發起的團購送審後在此核准／退回；核准後送待對帳清單，發票與開通在待對帳流程處理。「揪團中·已收齊款」是全團都付了款但還沒送審的團，可由櫃檯代為送審。" />
 
       <div className="mb-4 flex gap-2">
-        {[['', '全部'], ['submitted', '待審核'], ['approved', '已核准'], ['rejected', '已退回']].map(([k, label]) => (
+        {[['', '全部'], ['forming', '揪團中·已收齊款'], ['submitted', '待審核'], ['approved', '已核准'], ['rejected', '已退回']].map(([k, label]) => (
           <button key={k || 'all'} type="button" onClick={() => setStatusFilter(k)}
             className={`rounded-full px-4 py-1.5 text-sm font-medium ${statusFilter === k ? 'bg-brand-primary text-white' : 'bg-white text-gray-600 border border-gray-200'}`}>
             {label}（{Array.isArray(allRows) ? (k === '' ? counts.all : counts[k] || 0) : '…'}）
@@ -299,7 +317,12 @@ export default function GroupOrdersPage() {
                   <td className="px-4 py-3">{courseLabel(g.course_type)}</td>
                   <td className="px-4 py-3">{g.coach_name || '—'}</td>
                   <td className="px-4 py-3 text-xs">{venueName(g.venue_id)}</td>
-                  <td className="px-4 py-3">{g.member_count}</td>
+                  <td className="px-4 py-3">
+                    {g.member_count}
+                    {g.status === 'forming' && (
+                      <div className="text-[10px] font-bold text-sky-600">已收款 {g.paid_member_count}/{g.member_count}</div>
+                    )}
+                  </td>
                   <td className="px-4 py-3">{g.total_students} / {g.min_students}–{g.max_students}</td>
                   <td className="px-4 py-3 text-xs text-gray-600">
                     <div>{g.submitted_at ? formatTWDateTime(g.submitted_at) : '—'}</div>
@@ -421,6 +444,22 @@ export default function GroupOrdersPage() {
                   )}
                 </div>
 
+                {detail.status === 'forming' && (
+                  <div className="mt-4 border-t border-gray-100 pt-4">
+                    <p className="mb-2 text-xs leading-5 text-gray-500">
+                      此團尚未送審（家長端沒按送審）。滿團且全團回傳付款資料時系統會自動送審；
+                      未滿團就得由團主自己送出，或在這裡代為送出。送出後名單鎖定，接著走一般核准流程。
+                    </p>
+                    {(detail.members || []).some((m) => !m.payment_proof_url || !m.transfer_last_5) && (
+                      <p className="mb-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                        尚未備齊付款資料：
+                        {(detail.members || []).filter((m) => !m.payment_proof_url || !m.transfer_last_5).map((m) => m.parent_name).join('、')}
+                      </p>
+                    )}
+                    <button type="button" disabled={busy} onClick={handleAdminSubmit}
+                      className="w-full rounded-lg bg-brand-primary py-2.5 text-sm font-bold text-white disabled:opacity-50">代為送審（送進待審核）</button>
+                  </div>
+                )}
                 {detail.status === 'submitted' && (
                   <div className="mt-4 border-t border-gray-100 pt-4">
                     {/* U14 退回補件：與「退回」（終態）並列。多數退回其實只是付款資料沒齊，
