@@ -83,6 +83,8 @@ app.use('/api/learn',         require('./routes/learn'));        // 學習歷程
 app.use('/api/evaluations',   require('./routes/evaluations'));  // 期末評鑑
 app.use('/api/ragic-webhook', require('./routes/ragicWebhook'));  // Ragic webhook：只信 record id，必 re-fetch
 app.use('/api/admin',         require('./routes/admin'));
+// U16 整合 API：場館現場的外部前端（救生台等）查當下課表。服務金鑰 + 場館綁定，唯讀。
+app.use('/api/integrations', require('./routes/integrations'));
 
 // 舊 LINE Console 曾被文件指向無 `/api` 前綴的 callback。相容入口不接收 OAuth
 // code/state，也不會建立或綁定帳號；安全地丟棄 query 後回正式 LIFF bind 頁，

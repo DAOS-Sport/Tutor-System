@@ -24,6 +24,7 @@ const PATHS = [
   ['EnrollmentIdempotency', 'enrollment_idempotency.js'],
   ['GroupProofPersistence', 'group_proof_persistence.js'],
   ['GroupAutoSubmit', 'group_auto_submit.js'],
+  ['IntegrationSessions', 'integration_sessions.js'],
   ['ManualDeduction', 'admin_manual_deduction.js'],
   ['SessionsRegression', 'admin_sessions_regression.js'],
   ['FamilyShared', 'family_shared_period.js'],
