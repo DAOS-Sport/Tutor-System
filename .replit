@@ -111,7 +111,7 @@ outputType = "console"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "cd server && PORT=3999 npm start & PROXY_PORT=3002 PROXY_TARGET_PORT=3999 node /home/runner/workspace/scripts/port-proxy.js"
+args = "cd server && PORT=3999 npm start"
 waitForPort = 3999
 
 [postMerge]
