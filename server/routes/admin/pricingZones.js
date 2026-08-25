@@ -7,10 +7,17 @@
  *   PUT    /api/admin/pricing-zones/:id/venues → 設定「哪些場館吃這一區的費率」
  *   DELETE /api/admin/pricing-zones/:id        → 刪除（只允許沒有場館、且不是最後一區）
  *
- * ── 場館互斥是結構保證的 ──
+ * ── 場館互斥是結構保證的，而且已被佔用的不給搶 ──
  * venues.pricing_zone_id 是單一外鍵，一個場館只可能屬於一個定價區。
- * 所以「場館被 A 區勾走，就自動從 B 區消失」不是靠 UI 自律，是資料模型本身
- * 不允許同時存在兩處 —— 勾選＝搬過來，原本那一區自然就沒有它了。
+ *
+ * 在此之上再加一道：**已經屬於別區的場館，這裡直接擋，不給搬**。
+ * 早期版本是「勾選＝搬過來」，一個誤觸就會把新北高中從三蘆抽到松山 ——
+ * 那一刻該館的價目表整個換掉、家長端看到的金額跟著變，而畫面上不會有任何阻攔。
+ * 要換區必須分兩步：先到原本那一區取消勾選、存檔，再到新的一區勾選。
+ * 兩個刻意的動作，誤觸就做不到。
+ *
+ * 中間會有一小段「未分配」空窗（該館報名會失敗、家長端選不到），這是刻意的代價：
+ * 讓搬移這件事是看得見的，而不是一個沒人察覺的副作用。
  *
  * ── 為什麼容許「沒有定價區的場館」，而且不當成警告 ──
  * 因為對大多數場館來說，「沒有定價區」是正常狀態而不是錯誤：26 個場館裡只有
@@ -194,19 +201,42 @@ router.put('/:id/venues', requireAdminAuth, WRITE_ROLES, async (req, res) => {
     if (!z.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: '找不到此定價區' }); }
 
     if (ids.length) {
-      const exists = await client.query('SELECT id FROM venues WHERE id = ANY($1)', [ids]);
-      if (exists.rowCount !== ids.length) {
-        const found = new Set(exists.rows.map((x) => x.id));
+      // 一次做三件事：確認存在、取得目前歸屬、鎖住這幾列。
+      // ORDER BY id 是為了讓併發的兩個請求以相同順序取鎖，不會互相死鎖。
+      // 鎖住才擋得住競態：兩位管理員同時把同一個未分配場館指給不同區時，
+      // 沒有鎖的話兩邊都讀到 NULL、兩邊都寫入，後寫的無聲蓋掉前一個。
+      const cur = await client.query(
+        'SELECT id, name, pricing_zone_id FROM venues WHERE id = ANY($1) ORDER BY id FOR UPDATE', [ids]);
+      if (cur.rowCount !== ids.length) {
+        const found = new Set(cur.rows.map((x) => x.id));
         await client.query('ROLLBACK');
         return res.status(400).json({
           error: '有場館代號不存在：' + ids.filter((x) => !found.has(x)).join('、'),
           code: 'VENUE_NOT_FOUND',
         });
       }
-    }
-    // 勾選＝搬過來。原本屬於別區的場館會直接改掛到這一區，
-    // 別區下次載入自然就看不到它了 —— 這就是「被選了就從別區移除」。
-    if (ids.length) {
+
+      // 已屬於別區的一律擋。前端會把這些選項變成唯讀，但唯讀只是提示 ——
+      // 開著舊分頁、或直接打這支 API 一樣搬得走，所以真正的把關在這裡。
+      const taken = cur.rows.filter((v) => v.pricing_zone_id && Number(v.pricing_zone_id) !== id);
+      if (taken.length) {
+        const owners = await client.query(
+          'SELECT id, name FROM pricing_zones WHERE id = ANY($1)',
+          [[...new Set(taken.map((v) => Number(v.pricing_zone_id)))]]);
+        const nameOf = new Map(owners.rows.map((z) => [Number(z.id), z.name]));
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: taken.map((v) => `「${v.name}」目前屬於「${nameOf.get(Number(v.pricing_zone_id)) || '其他需求頁'}」`).join('；')
+            + '。要改到這一頁，請先到原本那一頁取消勾選並儲存。',
+          code: 'VENUE_OWNED_BY_OTHER_ZONE',
+          venues: taken.map((v) => ({
+            id: v.id, name: v.name,
+            zone_id: Number(v.pricing_zone_id),
+            zone_name: nameOf.get(Number(v.pricing_zone_id)) || null,
+          })),
+        });
+      }
+
       await client.query('UPDATE venues SET pricing_zone_id = $1, updated_at = NOW() WHERE id = ANY($2)', [id, ids]);
     }
     // 取消勾選的場館變成未分配。不擋下來的理由見檔頭。

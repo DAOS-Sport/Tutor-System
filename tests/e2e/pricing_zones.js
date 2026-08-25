@@ -72,22 +72,42 @@ async function api(p, { method = 'GET', body } = {}) {
   assert.strictEqual(r.data.name, ZONE_NAME + '2');
   console.log('  ok  改名成功（分頁名稱由使用者自訂）');
 
-  // ── 6. 核心：勾走一個場館，它必須離開原本那一區 ────────────
+  // ── 6. 核心：已被別區佔用的場館，不給搶 ────────────────────
+  //
+  // 早期版本是「勾選＝搬過來」，一個誤觸就把某館從三蘆抽到松山，該館的價目表
+  // 當場整個換掉、家長端金額跟著變，畫面上沒有任何阻攔。現在必須擋下來。
   const pick = await pool.query(
     `SELECT id, pricing_zone_id FROM venues WHERE pricing_zone_id IS NOT NULL AND pricing_zone_id <> $1
       ORDER BY id LIMIT 1`, [createdZoneId]);
-  assert.ok(pick.rowCount, '需要一個已屬於別區的場館來測搬移');
+  assert.ok(pick.rowCount, '需要一個已屬於別區的場館來測');
   const venueId = pick.rows[0].id;
   const originalZoneId = pick.rows[0].pricing_zone_id;
   restore = { venueId, originalZoneId };
 
   r = await api('/' + createdZoneId + '/venues', { method: 'PUT', body: { venue_ids: [venueId] } });
-  assert.strictEqual(r.status, 200, '設定場館失敗 → ' + JSON.stringify(r));
-  const after = await pool.query('SELECT pricing_zone_id FROM venues WHERE id = $1', [venueId]);
-  assert.strictEqual(after.rows[0].pricing_zone_id, createdZoneId, '場館必須搬到新區');
-  console.log(`  ok  場館 ${venueId} 從第 ${originalZoneId} 區搬到第 ${createdZoneId} 區`);
+  assert.strictEqual(r.status, 409, '已屬於別區的場館必須擋下 → ' + JSON.stringify(r));
+  assert.strictEqual(r.data.code, 'VENUE_OWNED_BY_OTHER_ZONE');
+  assert.ok(String(r.data.error || '').includes('取消勾選'),
+    '錯誤訊息要講得出下一步怎麼做，不然使用者只知道被擋、不知道怎麼辦');
+  const blocked = await pool.query('SELECT pricing_zone_id FROM venues WHERE id = $1', [venueId]);
+  assert.strictEqual(String(blocked.rows[0].pricing_zone_id), String(originalZoneId),
+    '被擋下之後場館的歸屬一個字都不能動 —— 半套的搬移比不搬更糟');
+  console.log(`  ok  場館 ${venueId} 已屬於第 ${originalZoneId} 區 → 擋下 409，歸屬未變`);
 
-  // 原本那一區的清單裡不可以再有它 —— 這就是「被選了就從別區移除」
+  // ── 6b. 兩段式換區：先在原本那一區放掉，再到新的一區勾 ──────
+  // 只證明「擋得住」而不證明「換得成」，等於做了一個永遠打不開的鎖。
+  const siblings = (await pool.query(
+    'SELECT id FROM venues WHERE pricing_zone_id = $1 AND id <> $2', [originalZoneId, venueId])).rows.map((x) => x.id);
+  r = await api('/' + originalZoneId + '/venues', { method: 'PUT', body: { venue_ids: siblings } });
+  assert.strictEqual(r.status, 200, '在原本那一區取消勾選失敗 → ' + JSON.stringify(r));
+
+  r = await api('/' + createdZoneId + '/venues', { method: 'PUT', body: { venue_ids: [venueId] } });
+  assert.strictEqual(r.status, 200, '放掉之後就該勾得起來 → ' + JSON.stringify(r));
+  const after = await pool.query('SELECT pricing_zone_id FROM venues WHERE id = $1', [venueId]);
+  assert.strictEqual(after.rows[0].pricing_zone_id, createdZoneId, '兩段式換區必須真的換過去');
+  console.log(`  ok  先放掉再勾 → 場館 ${venueId} 換到第 ${createdZoneId} 區（鎖打得開）`);
+
+  // 原本那一區的清單裡不可以再有它
   r = await api('');
   const oldZone = r.data.zones.find((z) => z.id === originalZoneId);
   assert.ok(oldZone, '原本那一區還在');

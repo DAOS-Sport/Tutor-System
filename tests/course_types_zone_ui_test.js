@@ -84,18 +84,27 @@ check('可買期數不做成設定項', () => {
   }
 });
 
-check('場館勾選的文案講「搬過來」，不是「建議避免重複」', () => {
+check('場館勾選的文案講「先取消勾選」，不是「建議避免重複」', () => {
   assert.ok(PAGE.includes('一個場館只會屬於一頁'), '必須明講互斥');
-  assert.ok(/勾選已在其他頁的場館，等於把它搬過來/.test(PAGE), '要說清楚勾選的後果是搬移');
+  assert.ok(/請先到原本那一頁取消勾選/.test(PAGE),
+    '要說清楚換區的做法是兩段式，不然使用者會一直找可以直接搬過去的按鈕');
+  assert.ok(!/等於把它搬過來/.test(PAGE),
+    '舊的「勾選＝搬過來」語意已移除；留著會讓文案跟實際行為（後端擋 409）互相矛盾');
   for (const bad of ['最新發布', '建議避免', '重複勾選']) {
     assert.ok(!PAGE.includes(bad),
       `「${bad}」這種說法代表同一場館可以同時屬於多頁，與資料模型不符`);
   }
 });
 
-check('已被其他頁使用的場館標出歸屬', () => {
-  assert.ok(PAGE.includes('在「{owner.name}」') || PAGE.includes('owner.name'),
-    '勾選清單要顯示這個場館目前屬於哪一頁，不然使用者不知道自己在搬東西');
+check('已被其他頁使用的場館：標出歸屬，而且不能勾', () => {
+  assert.ok(PAGE.includes('已屬於「{owner.name}」') || PAGE.includes('owner.name'),
+    '勾選清單要顯示這個場館目前屬於哪一頁');
+  // 唯讀是這次的重點。少了 disabled，使用者仍然勾得下去，只是改成按了才吃 409 ——
+  // 那是把「防呆」變成「事後報錯」，等於沒做。
+  assert.ok(/disabled=\{locked\}/.test(PAGE),
+    '已被佔用的場館 checkbox 必須 disabled，不能只靠後端擋');
+  assert.ok(/const locked = !!owner/.test(PAGE),
+    'locked 要直接由「有沒有別頁擁有它」推導，不要另外維護一份狀態');
 });
 
 check('不出現「未分配場館」這種常態性警告', () => {

@@ -761,28 +761,35 @@ export default function CourseTypesPage() {
                 </span>
               </div>
               <p className="mb-3 text-xs leading-5 text-gray-500">
-                勾選要套用此頁金額設定的場館。<strong>一個場館只會屬於一頁</strong> ——
-                勾選已在其他頁的場館，等於把它搬過來，原本那頁就不會再有它。
+                勾選要套用此頁金額設定的場館。<strong>一個場館只會屬於一頁</strong>，
+                已被其他頁選走的會變成灰色、不能勾。要把它改到這一頁，
+                請先到原本那一頁取消勾選並儲存 —— 這樣不會有人誤觸就把整個場館的價目表換掉。
               </p>
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
                 {(zoneData?.all_venues || []).map((v) => {
                   const checked = venueSel.includes(v.id);
+                  // 已經屬於別頁的場館：唯讀。後端也會擋（409 VENUE_OWNED_BY_OTHER_ZONE），
+                  // 這裡只是讓「不能勾」在按下去之前就看得出來。
                   const owner = (zoneData.zones || []).find(
                     (z) => z.id !== zoneId && (z.venues || []).some((x) => x.id === v.id));
+                  const locked = !!owner;
                   return (
                     <label key={v.id}
+                      title={locked ? `目前屬於「${owner.name}」，要改到這一頁請先到那一頁取消勾選` : undefined}
                       className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs ${
-                        checked
-                          ? 'border-brand-primary bg-brand-primary/5 font-bold text-brand-primary'
-                          : 'border-gray-200 bg-white text-gray-700'
+                        locked
+                          ? 'cursor-not-allowed border-gray-200 bg-gray-50 text-gray-400'
+                          : checked
+                            ? 'border-brand-primary bg-brand-primary/5 font-bold text-brand-primary'
+                            : 'border-gray-200 bg-white text-gray-700'
                       }`}>
-                      <input type="checkbox" checked={checked}
+                      <input type="checkbox" checked={checked} disabled={locked}
                         onChange={(e) => setVenueSel((cur) => (e.target.checked
                           ? [...cur, v.id]
                           : cur.filter((x) => x !== v.id)))} />
                       <span className="truncate">{v.name}</span>
-                      {owner && !checked && (
-                        <span className="ml-auto shrink-0 text-[10px] text-gray-400">在「{owner.name}」</span>
+                      {locked && (
+                        <span className="ml-auto shrink-0 text-[10px] text-gray-400">已屬於「{owner.name}」</span>
                       )}
                     </label>
                   );
