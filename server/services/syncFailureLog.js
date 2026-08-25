@@ -27,6 +27,9 @@ const TRANSIENT_CODES = new Set([
 // 資料本身不合法：重試永遠失敗，這些才是 Phase 2 隔離的對象
 const PERMANENT_CODES = new Set([
   'RAGIC_VALIDATION_ERROR',
+  // 身分證字號撞號：重試一萬次也不會變成沒撞號，得由人去合併或更正。
+  // 原本沒列進來，於是被歸成 unknown 而一直重試（正式庫累積 186 次 / 25 筆）。
+  'STUDENT_ID_NUMBER_EXISTS',
   'RAGIC_APPLICATION_ERROR',
   'RAGIC_UID_FIELD_SCHEMA_MISMATCH',
   'RAGIC_UID_DUPLICATE',
@@ -102,4 +105,34 @@ async function record(db, {
   }
 }
 
-module.exports = { classifyRagicError, sanitizeMessage, record, TRANSIENT_CODES, PERMANENT_CODES };
+/**
+ * 「這筆資料現在是不是卡住的」——Phase 2 隔離的判準。
+ *
+ * 判準刻意綁在資料本身的 updated_at 上：只有當「永久性失敗發生在該筆最後一次
+ * 異動之後」才算卡住。這讓隔離會自癒 —— 櫃檯把 Email 補上、把撞號的身分證改掉，
+ * updated_at 一變，這筆就自動脫離隔離、下一輪重新嘗試，不需要任何人去按重置。
+ * 沒有這個性質的隔離會變成另一種災難：資料修好了卻永遠不再同步。
+ *
+ * 回傳 SQL 片段而不是 id 清單：清單會在「查詢到執行」之間過期，
+ * 而且 157 筆展開成 IN (...) 會讓查詢計畫很難看。直接讓資料庫在同一句裡判斷。
+ *
+ * @param alias 來源資料表在該查詢裡的別名（需有 id 與 updated_at）
+ */
+function stuckExclusionSql(alias, formCode, entityKind) {
+  return `NOT EXISTS (
+    SELECT 1 FROM ragic_sync_failures f
+     WHERE f.form_code = '${formCode}'
+       AND f.entity_kind = '${entityKind}'
+       -- local_id 是 uuid，不是 text。寫成 id::text 會在執行期炸
+       -- 「operator does not exist: uuid = text」——語法檢查與單元測試都抓不到，
+       -- 只有真的對資料庫跑一次才會現形。
+       AND f.local_id = ${alias}.id
+       AND f.error_kind = 'permanent'
+       AND f.occurred_at >= ${alias}.updated_at
+  )`;
+}
+
+module.exports = {
+  classifyRagicError, sanitizeMessage, record, stuckExclusionSql,
+  TRANSIENT_CODES, PERMANENT_CODES,
+};

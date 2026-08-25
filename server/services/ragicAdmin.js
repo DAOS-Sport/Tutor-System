@@ -2224,6 +2224,24 @@ async function _backupParentsStudentsImpl() {
   let synced = 0;
   const errors = [];
 
+  // Phase 2 隔離：把「上次異動之後就一直失敗於資料問題」的列排除在本輪之外。
+  // 這些筆重試永遠不會成功（缺 Email、身分證撞號），卻每 10 分鐘各打一次 Ragic API
+  // —— 正式庫約 171 筆，等於一天兩萬多次註定失敗的請求；更糟的是讓這個任務永遠
+  // 顯示失敗，真的有新問題也被蓋掉。隔離會自癒：資料一修好 updated_at 就變，
+  // 下一輪自動重新嘗試。
+  const quarantined = await pool.query(
+    `SELECT
+       (SELECT COUNT(*) FROM parents p
+         WHERE p.is_active AND p.line_uid IS NOT NULL AND p.line_uid <> ''
+           AND (p.ragic_record_id IS NULL OR p.last_synced_at IS NULL)
+           AND NOT ${syncFailureLog.stuckExclusionSql('p', 'Z01_Z02_BACKUP', 'parent')}) AS parents,
+       (SELECT COUNT(*) FROM students s JOIN parents pp ON pp.id = s.parent_id
+         WHERE s.is_active AND pp.is_active AND pp.line_uid IS NOT NULL AND pp.line_uid <> ''
+           AND (s.ragic_record_id IS NULL OR s.last_synced_at IS NULL)
+           AND NOT ${syncFailureLog.stuckExclusionSql('s', 'Z01_Z02_BACKUP', 'student')}) AS students`
+  );
+  const stuckCount = Number(quarantined.rows[0].parents) + Number(quarantined.rows[0].students);
+
   // 政策：Z01 只收「已綁 LINE UID」的會員資料。未綁列（admin 手建/歷史殘留）絕不推上
   // Ragic Z01 —— 推了會在 01:30 pull 被分流進 Z03 佇列，形成「清了又長回來」的殘留循環。
   // `demo:` 哨兵 UID（bootstrap demo 帳號）視為本地測試資料，同樣不推。
@@ -2238,6 +2256,7 @@ async function _backupParentsStudentsImpl() {
         AND line_uid NOT LIKE 'demo:%'
         AND line_uid NOT LIKE 'DEMOTEST_%'
         AND (ragic_record_id IS NULL OR last_synced_at IS NULL)
+        AND ${syncFailureLog.stuckExclusionSql('parents', 'Z01_Z02_BACKUP', 'parent')}
       ORDER BY updated_at ASC LIMIT $1`,
     [BACKUP_BATCH_LIMIT]
   );
@@ -2274,6 +2293,7 @@ async function _backupParentsStudentsImpl() {
         AND p.line_uid NOT LIKE 'demo:%'
         AND p.line_uid NOT LIKE 'DEMOTEST_%'
         AND (s.ragic_record_id IS NULL OR s.last_synced_at IS NULL)
+        AND ${syncFailureLog.stuckExclusionSql('s', 'Z01_Z02_BACKUP', 'student')}
       ORDER BY s.updated_at ASC LIMIT $1`,
     [BACKUP_BATCH_LIMIT]
   );
@@ -2292,8 +2312,14 @@ async function _backupParentsStudentsImpl() {
     }
   }
 
-  return errors.length
-    ? { synced, error: `${errors.length} 筆同步失敗（詳見伺服器 log）：${errors[0]}` }
+  // 被隔離的不算本輪失敗 —— 它們是待人工處理的資料問題，不是同步壞掉。
+  // 混在一起的話這個任務永遠是紅的，紅到沒有人會再看它一眼。
+  const note = stuckCount ? `；另有 ${stuckCount} 筆因資料問題暫停重試（修正後自動恢復）` : '';
+  if (errors.length) {
+    return { synced, stuck: stuckCount, error: `${errors.length} 筆同步失敗（詳見伺服器 log）：${errors[0]}${note}` };
+  }
+  return stuckCount
+    ? { synced, stuck: stuckCount, note: `已同步 ${synced} 筆${note}` }
     : { synced };
 }
 
