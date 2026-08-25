@@ -29,17 +29,29 @@ function toApi(row) {
     bank_branch_name: row.bank_branch_name || '',
     account_holder: row.account_holder || '',
     account_number: row.account_number || '',
+    // 沒有這個欄位的呼叫端（例如單筆查詢）維持 undefined，前端只在清單頁用它。
+    ...(row.purchasable === undefined ? {} : { purchasable: !!row.purchasable }),
   };
 }
 
 router.get('/', async (_req, res) => {
   try {
     const r = await pool.query(
+      // purchasable：這個場館所屬的定價區，有沒有「啟用中且有價格」的課別。
+      // 沒有就代表營運端還沒把這一區設定完 —— 家長不該選得到，否則會用
+      // 抄來的佔位價下單。這裡只加旗標不過濾，因為同一支端點也給註冊頁、
+      // 教練班表等用途，那些場合不該因為還沒開賣就看不到場館。
       `SELECT v.id, v.name, v.full_address,
               COALESCE(NULLIF(av.bank_institution_name, ''), v.bank_institution_name) AS bank_institution_name,
               COALESCE(NULLIF(av.bank_branch_name, ''), v.bank_branch_name) AS bank_branch_name,
               COALESCE(NULLIF(av.account_holder, ''), v.account_holder) AS account_holder,
-              COALESCE(NULLIF(av.account_number, ''), v.account_number) AS account_number
+              COALESCE(NULLIF(av.account_number, ''), v.account_number) AS account_number,
+              EXISTS (
+                SELECT 1 FROM course_type_configs c
+                 WHERE c.pricing_zone_id = v.pricing_zone_id
+                   AND c.is_active = TRUE
+                   AND c.base_price > 0
+              ) AS purchasable
          FROM venues v
          LEFT JOIN admin_venues av ON av.id = v.id
         WHERE v.is_active = TRUE

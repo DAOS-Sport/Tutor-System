@@ -106,12 +106,17 @@ router.post('/', requireAdminAuth, WRITE_ROLES, async (req, res) => {
     }
     // 新區目前沒有任何課別設定；bootstrap 會在下次啟動補一套起點，
     // 但不必等重啟 —— 這裡直接複製一份，讓分頁一開就有東西可以編。
+    //
+    // 複製過來的一律 is_active = FALSE。這一條很重要：價格是從別區抄來的佔位值，
+    // 若跟著啟用，新開的區從建立那一刻就「可以賣」，而且賣的是別區的價 ——
+    // 家長在松山用三蘆的價下單，畫面上完全正常。營運端必須先把價格改對、
+    // 再逐項啟用，那個動作就是「這一區真的開賣了」的明確意思表示。
     await pool.query(
       `INSERT INTO course_type_configs
          (pricing_zone_id, course_type, label, min_students, max_students, sort_order,
-          base_price, trial_enabled, trial_price, tier_prices)
+          base_price, trial_enabled, trial_price, tier_prices, is_active)
        SELECT $1, c.course_type, c.label, c.min_students, c.max_students, c.sort_order,
-              c.base_price, c.trial_enabled, c.trial_price, c.tier_prices
+              c.base_price, c.trial_enabled, c.trial_price, c.tier_prices, FALSE
          FROM course_type_configs c
         WHERE c.pricing_zone_id = (SELECT id FROM pricing_zones WHERE id <> $1 ORDER BY sort_order, id LIMIT 1)
        ON CONFLICT (pricing_zone_id, course_type) DO NOTHING`,

@@ -18,7 +18,10 @@ export default function VenueSelectPage() {
     setLoadError(null);
     venuesApi
       .list()
-      .then((d) => alive && setVenues(d || []))
+      // 只留「該定價區已設定好品項與金額」的場館。沒設定完就出現在選單上，
+      // 家長點進去會用抄來的佔位價下單，而且畫面完全正常 —— 那是最難發現的錯。
+      // purchasable 是後端算的（該區有啟用中且有價格的課別），前端不自己判斷。
+      .then((d) => alive && setVenues((d || []).filter((v) => v.purchasable !== false)))
       .catch(() => {
         if (!alive) return;
         setLoadError('場館清單載入失敗');
@@ -44,6 +47,21 @@ export default function VenueSelectPage() {
     );
   }
   if (!venues) return <LoadingSpinner fullPage label="載入場館中…" />;
+  if (venues.length === 0) {
+    return (
+      <div className="px-4 py-8 text-center">
+        <div className="mb-2 text-sm font-bold text-gray-700">目前沒有開放報名的場館</div>
+        <p className="mb-4 text-xs leading-5 text-gray-500">
+          場館的課程與金額尚未設定完成，請稍後再試或聯繫櫃檯。
+        </p>
+        <button
+          type="button"
+          onClick={() => navigate('/', { replace: true })}
+          className="rounded-lg bg-brand-primary px-4 py-2 text-sm font-bold text-white"
+        >回首頁</button>
+      </div>
+    );
+  }
 
   return (
     <div className="px-4 py-4">

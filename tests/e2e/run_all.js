@@ -27,6 +27,8 @@ const PATHS = [
   ['IntegrationSessions', 'integration_sessions.js'],
   ['ZonePriceIsolation', 'zone_price_isolation.js'],
   ['PricingZones', 'pricing_zones.js'],
+  ['VenuePurchasable', 'venue_purchasable.js'],
+  ['ParentPriceMatch', 'parent_price_match.js'],
   ['ManualDeduction', 'admin_manual_deduction.js'],
   ['SessionsRegression', 'admin_sessions_regression.js'],
   ['FamilyShared', 'family_shared_period.js'],

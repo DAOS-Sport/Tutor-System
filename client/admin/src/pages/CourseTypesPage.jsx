@@ -719,7 +719,9 @@ export default function CourseTypesPage() {
             </div>
             <p className="text-xs leading-5 text-gray-500 sm:col-span-4">
               一期堂數決定報名怎麼拆期（1 期 = N 堂），例如三蘆 6 堂、松山 10 堂；建立後仍可修改。
-              建立後會自動帶入一套課別當起點，直接改價格即可。
+              建立後會自動帶入一套課別當起點，但<strong>預設全部停用</strong> ——
+              那些價格是從別區抄來的佔位值。改好價格再逐項啟用；在那之前，
+              勾進這一頁的場館在家長端不會出現，不會有人用錯的價下單。
             </p>
           </form>
         </div>
