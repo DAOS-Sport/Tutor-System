@@ -14,6 +14,7 @@ const { pool } = require(path.join(SERVER, 'models', 'db'));
 const BASE = process.env.BASE_URL || 'http://localhost:3000';
 const SECRET = process.env.JWT_SECRET;
 const created = [];
+const createdGroups = [];
 
 async function post(token, body) {
   const rid = 'zone-smoke-' + body.venue.id + '-' + Math.floor(Math.random() * 1e9).toString(36);
@@ -87,13 +88,51 @@ async function post(token, body) {
       `場館 ${v} 收了 ${got}，但該區設定是 ${expect[v].price} —— 這就是靜默錯價`);
   }
 
+
+  // ── 團報：同一課別、兩個區，每家應繳金額也必須各收各的 ──
+  // 團購走的是另一條建單路徑（POST /api/group-orders），設定讀取點也是另外兩處，
+  // 所以個人報名對了不代表團報對了，要各自驗。
+  for (const v of ['L', 'C']) {
+    const rid = 'zone-smoke-go-' + v + '-' + Math.floor(Math.random() * 1e9).toString(36);
+    const r = await fetch(BASE + '/api/group-orders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+      body: JSON.stringify({
+        course_type: 3,
+        venue_id: v,
+        coach_id: coachId,
+        student_ids: [parent.student_id],
+        period_count: 1,
+        note: rid,
+      }),
+    });
+    let data = null;
+    try { data = await r.json(); } catch { /* 空回應 */ }
+    assert.strictEqual(r.status, 201, `場館 ${v} 開團失敗 → ${r.status} ${JSON.stringify(data)}`);
+    const go = await pool.query(
+      `SELECT go.id, m.original_amount
+         FROM group_orders go JOIN group_order_members m ON m.group_order_id = go.id
+        WHERE go.note = $1`, [rid]);
+    assert.ok(go.rowCount, `場館 ${v} 沒有落地團購`);
+    createdGroups.push(go.rows[0].id);
+    const got = Math.round(Number(go.rows[0].original_amount));
+    console.log(`  ${v}（${expect[v].zone}）團報每家應繳 = ${got}，應為 ${expect[v].price}`);
+    assert.strictEqual(got, expect[v].price,
+      `團報在場館 ${v} 算成 ${got}，但該區設定是 ${expect[v].price}`);
+  }
+
   console.log('\nsmoke_zone_price: PASS（兩區各收各的價）');
 })()
   .catch((e) => { console.error('\n❌ FAILED:', e.message); process.exitCode = 1; })
   .finally(async () => {
     if (created.length) {
       await pool.query('DELETE FROM admin_enrollments WHERE id = ANY($1)', [created]);
-      console.log(`(已清除 ${created.length} 筆測試訂單)`);
     }
+    if (createdGroups.length) {
+      await pool.query('DELETE FROM group_order_audit_logs WHERE group_order_id = ANY($1)', [createdGroups]);
+      await pool.query('DELETE FROM group_order_members WHERE group_order_id = ANY($1)', [createdGroups]);
+      await pool.query('DELETE FROM group_orders WHERE id = ANY($1)', [createdGroups]);
+    }
+    console.log(`(已清除 ${created.length} 筆報名、${createdGroups.length} 筆團購)`);
     await pool.end();
   });

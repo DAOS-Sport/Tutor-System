@@ -29,6 +29,7 @@ const routing = require('../services/lineRouting');
 const {
   evaluateSubmitReadiness, isFullHouse, markSubmitted, notifyGroupSubmitted,
 } = require('../services/groupOrderSubmit');
+const { getCourseConfig, CourseConfigError } = require('../services/courseConfig');
 
 // 家長端操作者標記：token 只含 id/phone，櫃檯亦以手機辨識家長。
 const parentActor = (req) => `家長 ${req.parent?.phone || req.parent?.id || 'unknown'}`;
@@ -247,7 +248,9 @@ async function loadOrderWithMembers(client, orderId) {
             COALESCE(NULLIF(av.bank_institution_name, ''), v.bank_institution_name) AS bank_institution_name,
             COALESCE(NULLIF(av.bank_branch_name, ''), v.bank_branch_name) AS bank_branch_name
        FROM group_orders go
-       LEFT JOIN course_type_configs ctc ON ctc.course_type = go.course_type
+       LEFT JOIN course_type_configs ctc
+              ON ctc.course_type = go.course_type
+             AND ctc.pricing_zone_id = (SELECT pricing_zone_id FROM venues WHERE id = go.venue_id)
        LEFT JOIN coaches co ON co.id = go.coach_id
        LEFT JOIN venues v ON v.id = go.venue_id
        LEFT JOIN admin_venues av ON av.id = go.venue_id
@@ -512,24 +515,31 @@ router.post('/', async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    const cfg = await client.query(
-      `SELECT course_type, min_students, max_students, is_active, base_price, tier_prices
-         FROM course_type_configs WHERE course_type = $1`,
-      [courseType]
-    );
-    if (!cfg.rowCount || cfg.rows[0].is_active === false) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: '此課程需求不可用' });
-    }
-    // 團購人數上下限＝該課程組別（course_type_configs）的設定值（後台可改），再經全域夾擠：
-    //   min 至少 GROUP_MIN_FLOOR(2)、max 至多 GROUP_MAX_CEIL(6)。計數一律以「學生數」為準（一個家庭可帶多位）。
-    const { min_students, max_students } = effectiveBounds(cfg.rows[0].min_students, cfg.rows[0].max_students);
-
+    // F-A08：場館先驗、再讀價。價格與人數上下限都由「場館所屬的定價區」決定，
+    // 場館還沒確認就沒有「哪一區的設定」可言；原本的順序等於先取一份設定再驗場館。
     const vr = await client.query(`SELECT id, is_active FROM venues WHERE id = $1`, [venueId]);
     if (!vr.rowCount || vr.rows[0].is_active === false) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: '場館不存在或已停用' });
     }
+    let cfgRow;
+    try {
+      cfgRow = await getCourseConfig(client, { venueId, courseType });
+    } catch (err) {
+      if (err instanceof CourseConfigError) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: '此場館未開放此課程需求', code: err.code });
+      }
+      throw err;
+    }
+    if (cfgRow.is_active === false) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: '此課程需求不可用' });
+    }
+    // 團購人數上下限＝該課程組別（course_type_configs）的設定值（後台可改），再經全域夾擠：
+    //   min 至少 GROUP_MIN_FLOOR(2)、max 至多 GROUP_MAX_CEIL(6)。計數一律以「學生數」為準（一個家庭可帶多位）。
+    const { min_students, max_students } = effectiveBounds(cfgRow.min_students, cfgRow.max_students);
+
 
     let coachMultiplier = 1;
     if (coachId) {
@@ -559,7 +569,7 @@ router.post('/', async (req, res) => {
     // 之所以在發起時就鎖定：團購是先轉帳後審核，家長在 forming 階段就照畫面金額付款，
     // 折扣不能等到核准才算（那時錢已經匯出去了）。快照落地後，即使促銷被下架或改內容，
     // 本團金額也不會變 —— 保證「看到的 = 轉的 = 核准的」。
-    const perStudentAtCreate = resolveUnitPrice(cfg.rows[0].base_price, coachMultiplier, cfg.rows[0].tier_prices);
+    const perStudentAtCreate = resolveUnitPrice(cfgRow.base_price, coachMultiplier, cfgRow.tier_prices);
     const leaderOriginal = perStudentAtCreate * bound.names.length * periodCount;
     let promoId = null;
     let promoSnapshot = null;
@@ -611,7 +621,7 @@ router.post('/', async (req, res) => {
     const order = o.rows[0];
     // 團主自己那筆也走同一套「每家獨立計價」邏輯（order 需帶 base_price/multiplier 給 perStudentPrice）
     const leaderAmt = computeMemberAmount(
-      { ...order, base_price: cfg.rows[0].base_price, multiplier: coachMultiplier },
+      { ...order, base_price: cfgRow.base_price, multiplier: coachMultiplier },
       bound.names.length
     );
     const lm = await client.query(
@@ -796,7 +806,9 @@ router.post('/by-token/:token/join', async (req, res) => {
     const pr = await client.query(
       `SELECT ctc.base_price, ctc.tier_prices, COALESCE(co.pricing_multiplier, 1) AS multiplier
          FROM group_orders go
-         LEFT JOIN course_type_configs ctc ON ctc.course_type = go.course_type
+         LEFT JOIN course_type_configs ctc
+                ON ctc.course_type = go.course_type
+               AND ctc.pricing_zone_id = (SELECT pricing_zone_id FROM venues WHERE id = go.venue_id)
          LEFT JOIN coaches co ON co.id = go.coach_id
         WHERE go.id = $1`,
       [order.id]
