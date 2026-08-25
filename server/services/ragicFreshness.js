@@ -63,6 +63,22 @@ function getCanaryConfig(sheetCode, env = process.env) {
   };
 }
 
+/**
+ * 這張表的 canary 有沒有設定完整。
+ *
+ * 存在的理由是「未啟用」必須是一個能被看見的狀態。沒有它，未設定會一路
+ * 偽裝成「驗證未通過」：狀態頁紅字、每輪發警報、姓名品質掃描永遠中止 ——
+ * 正式庫就這樣累積了 12,366 次假故障而沒有人知道真正該做的是去設兩個環境變數。
+ */
+function isCanaryConfigured(sheetCode, env = process.env) {
+  try {
+    const c = getCanaryConfig(sheetCode, env);
+    return !!(c.recordId && c.nonceField);
+  } catch {
+    return false;
+  }
+}
+
 function assertCanaryConfigured(config) {
   if (!config.recordId || !config.nonceField) {
     const err = new Error(
@@ -183,7 +199,17 @@ async function runCanaryWriteReadProof({
       raw_records: records,
       records,
       freshness: {
-        freshness_verified: false,
+        // null＝「沒有驗證」，不是「驗了沒過」。
+        //
+        // 這兩件事的意義完全不同：沒過代表可能真的讀到過期資料（要警報、要中止）；
+        // 沒設定只是這個保護還沒啟用。原本一律記成 false，於是狀態頁顯示「未通過」、
+        // 每輪都發一次警報，而 canary 從 2026-07-07 上線起就沒設定過 ——
+        // 正式庫累積 12,366 次「未通過」、通過 0 次，全部都是這個誤判。
+        //
+        // 記成 null 之後：狀態頁可以顯示「未啟用」、警報不再誤觸，
+        // 而 hasRecentFreshPull() 要求 = TRUE，所以「不使用未驗證的 shadow」
+        // 這個 fail-closed 行為完全不變。
+        freshness_verified: null,
         freshness_latency_ms: 0,
         stale_retries: 0,
         canary_nonce: '',
@@ -277,6 +303,7 @@ module.exports = {
   DEFAULT_CANARY_ID,
   getCanaryConfig,
   assertCanaryConfigured,
+  isCanaryConfigured,
   makeRunId,
   makeNonce,
   getRecordId,

@@ -25,6 +25,11 @@ function statusBadge(s, inProgress) {
   return <span className={`${base} bg-gray-100 text-gray-500`}>—</span>;
 }
 
+// 「沒有驗」跟「驗了沒過」是兩件事，畫面上必須分得開。
+//
+// 兩者都顯示「未通過」的時候，一個只要設兩個環境變數就能解決的設定缺漏，
+// 看起來會跟「Ragic 讀到過期資料」這種真故障一模一樣 —— 於是沒有人知道
+// 該做什麼，紅字就一直掛在那裡。canary_configured === false 就是這個情況。
 function freshnessText(info) {
   if (info.freshness_verified === true) {
     const retry = info.stale_retries ? `，重試 ${info.stale_retries}` : '';
@@ -34,12 +39,15 @@ function freshnessText(info) {
     const retry = info.stale_retries ? `，重試 ${info.stale_retries}` : '';
     return `未通過${retry}`;
   }
+  if (info.canary_configured === false) return '未啟用';
   return '—';
 }
 
 function freshnessTone(info) {
   if (info.freshness_verified === true) return 'text-brand-green';
   if (info.freshness_verified === false || info.last_status === 'stale_read') return 'text-red-700';
+  // 未啟用是待辦，不是故障 —— 給琥珀色，跟真的讀到過期資料的紅色區隔開。
+  if (info.canary_configured === false) return 'text-amber-600';
   return 'text-gray-800';
 }
 
@@ -139,6 +147,17 @@ function FormCard({ job, info, onSync, syncing, isAdmin, envEnabled, onToggle, t
                 {info.stale_read_7d_count ?? 0}
               </dd>
             </div>
+            {info.canary_configured === false ? (
+              <div className="rounded-lg bg-amber-50 px-2.5 py-2 text-[11px] leading-5 text-amber-800">
+                尚未在 Ragic 建立 canary 記錄，因此每次同步都<strong>沒有驗證</strong>讀到的資料是不是最新的。
+                同步本身照常運作；受影響的是「姓名品質掃描」——它拒絕使用未經驗證的快照，所以會一直暫停。
+                <br />
+                設定方式：在 {String(info.form_code || '').split('_')[0]} 表建立一筆專用記錄，
+                把它的記錄編號與一個文字欄位編號填進{' '}
+                <code className="font-mono">RAGIC_CANARY_{String(info.form_code || '').split('_')[0]}_RECORD_ID</code>{' '}
+                與 <code className="font-mono">…_NONCE_FIELD_ID</code>。
+              </div>
+            ) : null}
             <div className="flex justify-between gap-3">
               <dt className="text-gray-500">7 日延遲趨勢</dt>
               <dd className="min-w-0 truncate text-right font-mono text-gray-800">

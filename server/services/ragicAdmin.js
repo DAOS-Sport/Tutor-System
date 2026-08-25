@@ -43,6 +43,8 @@ const {
 const cronLock = require('../cron/lock');
 // Phase 1 可觀測性（migration 040）：逐筆同步失敗落庫。純新增觀測，不改同步行為。
 const syncFailureLog = require('./syncFailureLog');
+// 只取設定探測函式：判斷 canary 有沒有設好，用來把「未啟用」跟「未通過」分開。
+const { isCanaryConfigured } = require('./ragicFreshness');
 
 function ragicEnabled() {
   return !!process.env.RAGIC_API_KEY && !!process.env.RAGIC_BASE_URL;
@@ -58,6 +60,10 @@ function _withFreshness(result = {}, freshness = {}) {
     freshness_latency_ms: freshness.freshness_latency_ms,
     stale_retries: freshness.stale_retries || 0,
     freshness_nonce: freshness.canary_nonce || freshness.freshness_nonce || null,
+    // 一起帶著走。這兩個 helper 是白名單複製，漏掉這個旗標的話，
+    // 「未設定就不要發警報」會不會生效，就取決於呼叫點剛好傳的是原始物件
+    // 還是複製過的 —— 那種正確性太脆，改成不管走哪一條都帶著。
+    canary_skipped: !!freshness.canary_skipped,
   };
 }
 
@@ -67,11 +73,16 @@ function _freshnessFromResult(result = {}) {
     freshness_latency_ms: result.freshness_latency_ms,
     stale_retries: result.stale_retries || 0,
     freshness_nonce: result.freshness_nonce || null,
+    canary_skipped: !!result.canary_skipped,
   };
 }
 
 async function _alertFreshnessIfNeeded(sheetCode, freshness, staleError = '') {
   if (!freshness) return;
+  // 未啟用（canary 沒設定）是一種設定狀態，不是事故 —— 每輪叫一次只會讓人把
+  // 這個警報整個靜音，真的讀到過期資料時反而沒人理。狀態頁會顯示「未啟用」，
+  // 那才是它該出現的地方。
+  if (freshness.canary_skipped) return;
   if (freshness.freshness_verified === false || staleError) {
     await _alertAdmins(
       `【Ragic stale_read】${sheetCode} canary 讀取新鮮度驗證失敗，已中止本輪、不寫入 shadow / 不進 apply / 不跑 ghost。${staleError || ''}`
@@ -4200,7 +4211,13 @@ function hasNoCjkCharacters(name) {
 async function _quarantineBadZ01NamesImpl() {
   if (!ragicEnabled()) return { synced: 0, skipped: true };
   if (!(await hasRecentFreshPull())) {
-    const msg = `Z01 quarantine/ghost 掃描缺少最近 ${FRESH_SHADOW_MAX_AGE_HOURS} 小時內的 freshness_verified pull，已中止，避免使用過期 shadow`;
+    // 訊息要讓看到的人知道下一步。原本只說「缺少 freshness_verified pull」，
+    // 而真正的原因是 Ragic canary 從未設定 —— 看的人無從得知要去設什麼。
+    const canaryUnset = !isCanaryConfigured('Z01');
+    const msg = canaryUnset
+      ? `Ragic 讀取新鮮度驗證尚未啟用（未設定 RAGIC_CANARY_Z01_RECORD_ID / _NONCE_FIELD_ID），`
+        + `因此不使用可能過期的 shadow，本掃描暫停。設定 canary 記錄後即會自動恢復。`
+      : `Z01 quarantine/ghost 掃描缺少最近 ${FRESH_SHADOW_MAX_AGE_HOURS} 小時內的 freshness_verified pull，已中止，避免使用過期 shadow`;
     await _alertAdmins(`【Ragic stale_read】${msg}`);
     return { synced: 0, stale_read: true, error: msg, freshness_verified: false, stale_retries: 0 };
   }
@@ -4280,15 +4297,19 @@ async function quarantineBadZ01Names(triggeredBy = 'cron') { return _singlefligh
 // 前者真的會把 Ragic 差異寫進 staging 區；後者只發一筆 where=eq 驗證端點可用，
 // last_count 通常 0—1，並非「同步多少筆資料」。前端依此切換 UI 文案。
 const FORM_META = {
-  staff:    { code: 'H01_STAFF',    label: 'H01 員工 + 教練 (admin_staff + coaches)', kind: 'sync',        impl: _syncStaffImpl,  env: 'RAGIC_FORM_H01' },
-  venues:   { code: 'H05_VENUES',   label: 'H05 場館 (venues)',                       kind: 'sync',        impl: _syncVenuesImpl, env: 'RAGIC_FORM_H05' },
+  // canary：這個任務做讀取新鮮度驗證時用哪一張表的 canary 記錄。
+  // 沒有這個欄位＝這個任務本來就不驗新鮮度，狀態頁不該對它顯示驗證結果。
+  // 有了它，「未設定所以沒驗」才能跟「驗了沒過」在畫面上分開 ——
+  // 這兩者原本都顯示「未通過」，於是一個純粹的設定缺漏被當成七週的同步故障。
+  staff:    { code: 'H01_STAFF',    label: 'H01 員工 + 教練 (admin_staff + coaches)', kind: 'sync',        impl: _syncStaffImpl,  env: 'RAGIC_FORM_H01', canary: 'H01' },
+  venues:   { code: 'H05_VENUES',   label: 'H05 場館 (venues)',                       kind: 'sync',        impl: _syncVenuesImpl, env: 'RAGIC_FORM_H05', canary: 'H05' },
   parents:  { code: 'Z01_PARENTS',  label: 'Z01 家長 (按請求查詢)',                   kind: 'healthcheck', impl: _pingZ01Impl,    env: 'RAGIC_FORM_Z01' },
   students: { code: 'Z02_STUDENTS', label: 'Z02 學員 (按請求查詢)',                   kind: 'healthcheck', impl: _pingZ02Impl,    env: 'RAGIC_FORM_Z02' },
   // 夜間同步鏈：backup（00:30 推）→ pull（01:30 拉，Ragic→Z03 分流）→ quarantine（01:45 掃描）。
   // 標籤依使用者指定：backup 維持原名；pull 明示「從 Ragic 拉到 Z03」以與 backup 區隔。
   backup:   { code: 'Z01_Z02_BACKUP', label: 'Z01/Z02 本地→Ragic 每日備份同步',       kind: 'sync',        impl: _backupParentsStudentsImpl, env: 'RAGIC_FORM_Z01' },
-  pull:     { code: 'Z01_Z02_PULL',   label: 'Ragic Z01 → Z03 每日拉回整理（完成者入 Z01 鏡像）', kind: 'sync', impl: _pullParentsStudentsImpl,   env: 'RAGIC_FORM_Z01' },
-  quarantine: { code: 'Z01_BAD_NAME_QUARANTINE', label: 'Z01 姓名品質掃描（Z03 追蹤）', kind: 'sync', impl: _quarantineBadZ01NamesImpl, env: 'RAGIC_FORM_Z01' },
+  pull:     { code: 'Z01_Z02_PULL',   label: 'Ragic Z01 → Z03 每日拉回整理（完成者入 Z01 鏡像）', kind: 'sync', impl: _pullParentsStudentsImpl,   env: 'RAGIC_FORM_Z01', canary: 'Z01' },
+  quarantine: { code: 'Z01_BAD_NAME_QUARANTINE', label: 'Z01 姓名品質掃描（Z03 追蹤）', kind: 'sync', impl: _quarantineBadZ01NamesImpl, env: 'RAGIC_FORM_Z01', canary: 'Z01' },
 };
 
 // 哪些 job 真的會打 Ragic HTTP（見上表 impl 實作）——quarantine 只讀本地
@@ -4613,6 +4634,9 @@ async function getSyncStatusSnapshot() {
       last_error:            latest.rows[0]?.error_message   || null,
       last_run_count:        latest.rows[0]?.synced_count ?? null,
       last_run_duration_ms:  latest.rows[0]?.duration_ms  ?? null,
+      // null＝這個任務不驗新鮮度（畫面不顯示這一列）；
+      // false＝要驗但 canary 沒設定，畫面要說「未啟用」而不是「未通過」。
+      canary_configured:     meta.canary ? isCanaryConfigured(meta.canary) : null,
       freshness_verified:    latest.rows[0]?.freshness_verified ?? null,
       freshness_latency_ms:  latest.rows[0]?.freshness_latency_ms ?? null,
       stale_retries:         latest.rows[0]?.stale_retries ?? 0,
