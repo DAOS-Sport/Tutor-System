@@ -241,6 +241,27 @@ function assertProductionStorageConfigured({
   return true;
 }
 
+/**
+ * 把 SDK 的失敗原因收斂成「可以安全寫進 log 的類別」。
+ *
+ * 白名單式：只有比對得到的樣態才給具體說法，其餘一律「未知」。反過來寫
+ * （預設回顯原文、遇到敏感樣態才遮蔽）遲早會漏，而這裡漏一次就是把憑證寫進 log。
+ * 回傳字串一律是本檔寫死的常數，永遠不含 raw 的任何片段。
+ */
+function classifyStorageFailure(raw) {
+  const r = String(raw || '');
+  if (/bucket name is needed|no bucket|bucket.*(not found|does not exist)/i.test(r)) {
+    return '尚未配置 bucket（在 Replit 專案開通 Object Storage，或設定 OBJECT_STORAGE_BUCKET_ID）';
+  }
+  if (/permission|denied|unauthor|forbidden|401|403/i.test(r)) {
+    return 'bucket 存在但沒有存取權限（檢查該 Repl 對此 bucket 的授權）';
+  }
+  if (/timeout|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|network/i.test(r)) {
+    return '連線不到儲存服務（暫時性網路問題，會自動重試）';
+  }
+  return '未知原因（詳見 Replit Object Storage 設定）';
+}
+
 async function assertProductionStorageReady({
   nodeEnv = process.env.NODE_ENV,
   actualDriver = activeDriver.name,
@@ -259,14 +280,23 @@ async function assertProductionStorageReady({
       throw err;
     }
   }
+  // 兩難：原始 SDK 錯誤可能夾帶憑證，所以不能直接回顯（object_storage_existence_test
+  // 就是在守這條線）；但整個吞掉的結果是啟動 log 只剩「bucket preflight failed」，
+  // 正式站因此降級到 PostgreSQL 跑了六週，沒有人知道原因其實只是「沒有配置 bucket」。
+  //
+  // 折衷：把原因**分類**成有限的幾種安全字串，只說類別與下一步，永遠不回顯原文。
   let result;
+  let raw = '';
   try {
     result = await listObjects();
-  } catch {
+    if (result && result.ok !== true && result.error) raw = String(result.error.message || result.error);
+  } catch (e) {
     result = null;
+    raw = String((e && e.message) || e);
   }
   if (!result || result.ok !== true) {
-    const err = new Error('production object storage bucket/credentials preflight failed');
+    const err = new Error('production object storage bucket/credentials preflight failed'
+      + `：${classifyStorageFailure(raw)}`);
     err.code = 'PRODUCTION_STORAGE_PREFLIGHT_FAILED';
     throw err;
   }

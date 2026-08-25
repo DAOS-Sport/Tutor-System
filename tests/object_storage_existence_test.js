@@ -76,6 +76,45 @@ async function main() {
       && !error.message.includes('credential detail'),
   );
 
+  // ── preflight 訊息：說得出原因，但永遠不回顯原文 ──────────────
+  //
+  // 兩個相反的失敗都要防：回顯原文會把憑證寫進 log；整個吞掉則讓正式站
+  // 降級到 PostgreSQL 跑了六週，沒人知道原因只是「沒有配置 bucket」。
+  // 分類字串是本檔寫死的常數，所以兩者可以同時成立。
+  const causeOf = async (listObjects) => {
+    try {
+      await objectStorage.assertProductionStorageReady({
+        nodeEnv: 'production', actualDriver: 'replit', listObjects,
+      });
+      throw new Error('preflight 應該要失敗');
+    } catch (e) { return e.message; }
+  };
+
+  assert.match(
+    await causeOf(async () => { throw new Error('A bucket name is needed to use Cloud Storage.'); }),
+    /尚未配置 bucket/,
+    '正式站實際遇到的就是這一種，訊息必須指向「去開通 bucket」',
+  );
+  assert.match(
+    await causeOf(async () => ({ ok: false, error: { message: 'permission denied' } })),
+    /沒有存取權限/,
+  );
+  assert.match(
+    await causeOf(async () => { throw new Error('ETIMEDOUT'); }),
+    /連線不到儲存服務/,
+  );
+  assert.match(
+    await causeOf(async () => ({ ok: false, error: { message: 'something unrecognised' } })),
+    /未知原因/,
+    '認不出來的一律歸為未知 —— 白名單式，不能反過來預設回顯',
+  );
+
+  // 最重要的一條：任何形式的原文都不得出現在訊息裡。
+  for (const secret of ['sk_live_LEAKME', 'hunter2', 'Bearer abc.def.ghi']) {
+    const msg = await causeOf(async () => { throw new Error(`auth failed with ${secret}`); });
+    assert.ok(!msg.includes(secret), `preflight 訊息洩漏了原文片段：${secret}`);
+  }
+
   console.log('object_storage_existence_test: PASS');
 }
 

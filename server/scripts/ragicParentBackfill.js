@@ -65,7 +65,11 @@ const mask = (p) => String(p || '').replace(/^(\d{4})\d+(\d{2})$/, '$1****$2');
   // 不在這裡自己判斷「Z01 上 UID 到底有沒有」—— 那要對每個人打一次 Ragic 讀取，
   // 幾百次的成本換不到什麼，syncParentNow 本來就會做正確的 resolve。
   const rows = (await pool.query(`
-    SELECT DISTINCT p.id, p.name, p.phone, p.ragic_record_id
+    -- line_uid 一定要選出來：--diff 整段都在拿 r.line_uid 跟 Ragic 上的值比。
+    -- 漏掉的話 remoteUid !== undefined 恆為真，每一筆有 UID 的都會被印成
+    -- 「⚠ 綁到別的帳號」—— 一份看起來很整齊、實際上全錯的報告，
+    -- 正是本檔下方註解在警告的那種錯，只是方向相反。
+    SELECT DISTINCT p.id, p.name, p.phone, p.line_uid, p.ragic_record_id
       FROM ragic_sync_outbox o
       JOIN identity_claims ic ON ic.id = o.claim_id
       JOIN parents p ON p.id = ic.canonical_parent_id
