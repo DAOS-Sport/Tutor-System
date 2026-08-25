@@ -18,6 +18,8 @@ const KEY = process.env.E2E_INTEGRATION_KEY || ('e2e' + 'k'.repeat(45));
 const BAD_KEY = 'b'.repeat(48);
 const VENUE = 'B';
 const OTHER_VENUE = 'C';
+const KILL_KEY = process.env.E2E_INTEGRATION_KILL_KEY || ('e2ekill' + 'x'.repeat(41));
+const KILL_VENUE = 'K';
 
 async function api(qs, { key } = {}) {
   const r = await fetch(`${BASE}/api/integrations/sessions${qs}`, {
@@ -125,6 +127,22 @@ async function makeSession({ minutesFromNow, status = 'confirmed', studentIds, i
   assert.ok(logs.rows.some((x) => x.severity === 'warning'),
     '認證失敗／越權必須留下 warning 等級的紀錄');
   console.log(`✅ 7 存取紀錄已寫入（${logs.rowCount} 筆，含 warning）`);
+
+  // ── 8. 場館即時停用（不必重新部署就能切斷）────────────────
+  await pool.query(
+    `INSERT INTO admin_settings (key, value) VALUES ($1, 0)
+       ON CONFLICT (key) DO UPDATE SET value = 0, updated_at = NOW()`,
+    [`integration_venue_enabled_${KILL_VENUE}`]);
+  try {
+    r = await api(`?venue_id=${KILL_VENUE}&window=60`, { key: KILL_KEY });
+    assert.strictEqual(r.status, 403, '停用的場館必須 403，got ' + r.status + ' ' + JSON.stringify(r.data));
+    assert.strictEqual(r.data.code, 'VENUE_DISABLED');
+    assert.ok(!r.data.sessions, '停用時不可以回任何課堂資料');
+  } finally {
+    await pool.query('DELETE FROM admin_settings WHERE key = $1',
+      [`integration_venue_enabled_${KILL_VENUE}`]);
+  }
+  console.log('✅ 8 場館可即時停用，停用時不吐任何資料');
 
   console.log('\ne2e_integration_sessions: ALL PASS');
 })()

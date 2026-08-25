@@ -22,7 +22,7 @@
  */
 const express = require('express');
 const { pool } = require('../models/db');
-const { requireIntegrationKey, logAccess } = require('../middlewares/integrationAuth');
+const { requireIntegrationKey, logAccess, isVenueEnabled } = require('../middlewares/integrationAuth');
 const { maskStudentName } = require('../utils/piiMask');
 
 const router = express.Router();
@@ -125,6 +125,16 @@ router.get('/sessions', requireIntegrationKey, async (req, res) => {
         details: { requested: venueId, allowed },
       });
       return res.status(403).json({ error: '此金鑰無權查詢該場館', code: 'VENUE_OUT_OF_SCOPE' });
+    }
+    // 場館層級的即時停用（admin_settings）。與金鑰分開是為了能在不重新部署的情況下切斷。
+    if (!await isVenueEnabled(venueId)) {
+      logAccess({
+        label: req.integration.label,
+        action: '整合 API 查詢已停用場館',
+        severity: 'warning',
+        details: { venue_id: venueId },
+      });
+      return res.status(403).json({ error: '此場館的現場查詢目前已停用', code: 'VENUE_DISABLED' });
     }
 
     let from;

@@ -120,6 +120,14 @@ check('越權場館回 403 並留下警告紀錄', () => {
   assert.ok(routeSource.includes("code: 'VENUE_OUT_OF_SCOPE'"));
   assert.ok(routeSource.includes("severity: 'warning'"), 'out-of-scope access must be auditable');
 });
+check('場館可即時停用，且停用檢查在查資料之前', () => {
+  // 金鑰在 Secrets 裡、改了要重新部署；真的要切斷時靠的是這個 DB 開關。
+  assert.ok(routeSource.includes("code: 'VENUE_DISABLED'"), 'a per-venue kill switch must exist');
+  const disabledAt = routeSource.indexOf('VENUE_DISABLED');
+  const queryAt = routeSource.indexOf('pool.query(SESSIONS_SQL');
+  assert.ok(disabledAt > 0 && queryAt > disabledAt,
+    'the kill switch must short-circuit before any data is read');
+});
 
 // ── 4. 金鑰設定 fail-closed ─────────────────────────────────
 const { loadKeys, sameKey } = authTest;

@@ -30,6 +30,7 @@ const { pool } = require('../models/db');
 const RL_WINDOW_MS = 5 * 60 * 1000;
 const RL_MAX = 60;                      // 每把金鑰 60 次 / 5 分鐘
 const AUDIT_THROTTLE_MS = 10 * 60 * 1000; // 成功查詢每把金鑰最多 10 分鐘記一筆
+const VENUE_FLAG_TTL_MS = 30 * 1000;      // 場館開關快取；現場頁面會定時刷新，不必每次打 DB
 
 let cached = null;   // { raw, parsed }
 
@@ -158,4 +159,41 @@ function requireIntegrationKey(req, res, next) {
   next();
 }
 
-module.exports = { requireIntegrationKey, logAccess, __test__: { loadKeys, sameKey } };
+/**
+ * 場館層級的即時開關：admin_settings 的 `integration_venue_enabled_<場館>`，0 = 停用。
+ *
+ * 為什麼要有這個，金鑰不是已經綁場館了嗎 —— 因為金鑰在 Replit Secrets 裡，
+ * 改了要重新部署才會生效。真的出事那天（某台平板遺失、某館金鑰外流），
+ * 你要的是 30 秒內切斷，不是排一次 Republish。這個開關在資料庫，改完最多 30 秒生效。
+ *
+ * 語意分工：**金鑰決定「誰能查」，這個開關決定「這個場館現在開不開」**。
+ * 未設定視為開啟 —— 整體仍然是 opt-in，因為沒發金鑰的場館本來就沒人查得到；
+ * 若這裡也預設關，會變成兩道都要開，運維上很容易踩到「明明配好了卻查不到」。
+ */
+const venueFlagCache = new Map(); // venueId → { enabled, at }
+async function isVenueEnabled(venueId) {
+  const now = Date.now();
+  const hit = venueFlagCache.get(venueId);
+  if (hit && now - hit.at < VENUE_FLAG_TTL_MS) return hit.enabled;
+  let enabled = true;
+  try {
+    const r = await pool.query(
+      'SELECT value FROM admin_settings WHERE key = $1',
+      [`integration_venue_enabled_${venueId}`]
+    );
+    if (r.rowCount) enabled = Number(r.rows[0].value) !== 0;
+  } catch (e) {
+    // 讀不到設定時維持上一次的判斷；沒有上一次就放行。
+    // 這裡刻意不 fail-closed：DB 一抖就讓全場館的救生台同時失效，
+    // 造成的營運中斷比「開關晚 30 秒生效」嚴重得多。真正的門禁是金鑰那一層。
+    console.warn('[integrationAuth] 場館開關讀取失敗:', e.message);
+    return hit ? hit.enabled : true;
+  }
+  venueFlagCache.set(venueId, { enabled, at: now });
+  return enabled;
+}
+
+module.exports = {
+  requireIntegrationKey, logAccess, isVenueEnabled,
+  __test__: { loadKeys, sameKey, venueFlagCache },
+};
