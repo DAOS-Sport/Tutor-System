@@ -26,6 +26,7 @@ const {
 const line = require('../../services/line');
 const promotions = require('../../services/promotions');
 const { resolveUnitPrice } = require('../../services/coursePricing');
+const { getCourseConfig, CourseConfigError } = require('../../services/courseConfig');
 const {
   validateRequestId,
   payloadFingerprint,
@@ -367,16 +368,29 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
       return res.status(409).json({ error: '只有「待審核」的團購可以核准', code: 'NOT_SUBMITTED' });
     }
 
-    // 課程基準價 + 教練倍率（與一般報名一致）
-    const cfg = await client.query(`SELECT base_price, tier_prices FROM course_type_configs WHERE course_type = $1`, [order.course_type]);
-    const basePrice = cfg.rowCount ? Number(cfg.rows[0].base_price) || 0 : 0;
+    // 課程基準價 + 教練倍率（與一般報名一致）。
+    // F-A08：價格取自「這個團所屬場館的定價區」，不是全公司一份。
+    let cfgRow;
+    try {
+      cfgRow = await getCourseConfig(client, { venueId: order.venue_id, courseType: order.course_type });
+    } catch (err) {
+      if (err instanceof CourseConfigError) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: '此團購所屬場館的定價區未設定此課程組別，無法核准（請先於「課程需求管理」補上）',
+          code: err.code,
+        });
+      }
+      throw err;
+    }
+    const basePrice = Number(cfgRow.base_price) || 0;
     let coachName = null;
     let multiplier = 1;
     if (order.coach_id) {
       const cr = await client.query(`SELECT name, pricing_multiplier FROM coaches WHERE id = $1`, [order.coach_id]);
       if (cr.rowCount) { coachName = cr.rows[0].name; multiplier = Number(cr.rows[0].pricing_multiplier) || 1; }
     }
-    const perStudent = resolveUnitPrice(basePrice, multiplier, cfg.rowCount ? cfg.rows[0].tier_prices : null);
+    const perStudent = resolveUnitPrice(basePrice, multiplier, cfgRow.tier_prices);
     // U9：一張團報訂單可購買多期；每位成員費用 = 單期價 × 學生數 × 期數。
     const periodCount = Number(order.period_count) || 1;
 

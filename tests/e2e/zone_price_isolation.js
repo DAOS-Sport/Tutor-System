@@ -15,6 +15,7 @@ const BASE = process.env.BASE_URL || 'http://localhost:3000';
 const SECRET = process.env.JWT_SECRET;
 const created = [];
 const createdGroups = [];
+const groupByVenue = {};
 
 async function post(token, body) {
   const rid = 'zone-smoke-' + body.venue.id + '-' + Math.floor(Math.random() * 1e9).toString(36);
@@ -115,10 +116,46 @@ async function post(token, body) {
         WHERE go.note = $1`, [rid]);
     assert.ok(go.rowCount, `場館 ${v} 沒有落地團購`);
     createdGroups.push(go.rows[0].id);
+    groupByVenue[v] = go.rows[0].id;
     const got = Math.round(Number(go.rows[0].original_amount));
     console.log(`  ${v}（${expect[v].zone}）團報每家應繳 = ${got}，應為 ${expect[v].price}`);
     assert.strictEqual(got, expect[v].price,
       `團報在場館 ${v} 算成 ${got}，但該區設定是 ${expect[v].price}`);
+  }
+
+
+  // ── 團購核准：核准會建立 admin_enrollments，那才是最終收費依據 ──
+  // 送審流程本身不是這支要驗的東西（另有 group_auto_submit 專門驗），
+  // 所以直接把團推成待審核並補上末 5 碼（核准端接受「末 5 碼或證明擇一」）。
+  const adminToken = jwt.sign(
+    { role: 'admin', sub: 'zone-smoke', username: 'zone-smoke', name: '定價區煙霧測試' },
+    SECRET, { expiresIn: '1h' });
+  for (const v of ['L', 'C']) {
+    const gid = groupByVenue[v];
+    await pool.query(
+      `UPDATE group_orders SET status = 'submitted', submitted_at = NOW() WHERE id = $1`, [gid]);
+    await pool.query(
+      `UPDATE group_order_members SET transfer_last_5 = '99999' WHERE group_order_id = $1`, [gid]);
+    const rid = 'zone-smoke-approve-' + v + '-' + Math.floor(Math.random() * 1e9).toString(36);
+    const r = await fetch(BASE + '/api/admin/group-orders/' + gid + '/approve', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer ' + adminToken,
+        'Idempotency-Key': rid,
+      },
+      body: JSON.stringify({ request_id: rid }),
+    });
+    let data = null;
+    try { data = await r.json(); } catch { /* 空回應 */ }
+    assert.strictEqual(r.status, 200, `場館 ${v} 核准失敗 → ${r.status} ${JSON.stringify(data)}`);
+    const ae = await pool.query(
+      `SELECT original_price FROM admin_enrollments WHERE group_order_id = $1 ORDER BY id LIMIT 1`, [gid]);
+    assert.ok(ae.rowCount, `場館 ${v} 核准後沒有建立報名`);
+    const got = Math.round(Number(ae.rows[0].original_price));
+    console.log(`  ${v}（${expect[v].zone}）核准後落地報名 = ${got}，應為 ${expect[v].price}`);
+    assert.strictEqual(got, expect[v].price,
+      `團購核准在場館 ${v} 建成 ${got}，但該區設定是 ${expect[v].price}`);
   }
 
   console.log('\nsmoke_zone_price: PASS（兩區各收各的價）');
@@ -129,6 +166,15 @@ async function post(token, body) {
       await pool.query('DELETE FROM admin_enrollments WHERE id = ANY($1)', [created]);
     }
     if (createdGroups.length) {
+      // 核准會連帶產生報名與 checkout，依相依順序刪；順序錯了會被外鍵擋住。
+      const ck = await pool.query(
+        'SELECT DISTINCT checkout_id FROM admin_enrollments WHERE group_order_id = ANY($1) AND checkout_id IS NOT NULL',
+        [createdGroups]);
+      await pool.query('DELETE FROM admin_enrollments WHERE group_order_id = ANY($1)', [createdGroups]);
+      const ckIds = ck.rows.map((x) => x.checkout_id);
+      if (ckIds.length) {
+        await pool.query('DELETE FROM checkout_sessions WHERE id = ANY($1)', [ckIds]).catch(() => {});
+      }
       await pool.query('DELETE FROM group_order_audit_logs WHERE group_order_id = ANY($1)', [createdGroups]);
       await pool.query('DELETE FROM group_order_members WHERE group_order_id = ANY($1)', [createdGroups]);
       await pool.query('DELETE FROM group_orders WHERE id = ANY($1)', [createdGroups]);

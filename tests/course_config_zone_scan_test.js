@@ -40,8 +40,6 @@ const EXEMPT = new Set([
 const KNOWN_UNZONED = {
   'server/routes/admin/courseIntros.js': 3,
   'server/routes/admin/courseTypes.js': 8,
-  'server/routes/admin/enrollments.js': 2,
-  'server/routes/admin/groupOrders.js': 1,
   'server/routes/courses.js': 2,
   'server/services/courseTypeSchedule.js': 2,
 };

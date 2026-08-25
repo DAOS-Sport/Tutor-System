@@ -13,6 +13,7 @@
 const express = require('express');
 const { randomUUID } = require('crypto');
 const { pool } = require('../../models/db');
+const { getCourseConfig, CourseConfigError } = require('../../services/courseConfig');
 const { requireAdminAuth, requireAdminRole, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
 const { enqueueReconcileMail, deliverOutbox } = require('../../services/reconcileNotify');
 const ragicWriteback = require('../../services/ragicWriteback');
@@ -308,11 +309,14 @@ async function ensureSoloCoursePeriod(client, enrollment, totalSessions) {
       [enrollment.enrollment_batch_id, periodNumber]
     );
     if (sib.rowCount > 1) {
-      const cfg = await client.query(
-        `SELECT max_students FROM course_type_configs WHERE course_type = $1`,
-        [enrollment.course_type]
-      );
-      if ((Number(cfg.rows[0]?.max_students) || 1) > 1) {
+      // F-A08：共班判定要用「這筆報名的場館所屬定價區」的設定。
+      // 這裡刻意不吞例外：課別被從該區刪掉時，靜默當成 1 人會把共用課期建成獨立課期，
+      // 之後簽到扣課全部錯位，而且完全看不出來。寧可讓對帳停下來、把設定補回去。
+      const cfgRow = await getCourseConfig(client, {
+        venueId: enrollment.venue_id,
+        courseType: enrollment.course_type,
+      });
+      if ((Number(cfgRow.max_students) || 1) > 1) {
         // 共用開通守門（比照團報）：本期全部兄弟訂單都 confirmed 才建共用 period。
         // reconcile 已先把本筆轉 confirmed，同一交易內查得到最新狀態。
         const waiting = sib.rows.filter((row) => row.status !== 'confirmed');
@@ -720,14 +724,17 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
     // routes/enrollments.js 同一條守門。櫃檯不給例外 —— 開放與否應該在
     // 「課程需求管理」統一調整，而不是靠某個入口繞過。
     if (isTrial) {
-      const cfg = await client.query(
-        `SELECT label, trial_enabled FROM course_type_configs WHERE course_type = $1`,
-        [courseType]
-      );
-      if (!cfg.rowCount || cfg.rows[0].trial_enabled !== true) {
+      // F-A08：試上開關依「場館所屬定價區」的設定，同一課別可以在某一區開、另一區不開。
+      let trialCfg = null;
+      try {
+        trialCfg = await getCourseConfig(client, { venueId, courseType });
+      } catch (err) {
+        if (!(err instanceof CourseConfigError)) throw err;
+      }
+      if (!trialCfg || trialCfg.trial_enabled !== true) {
         await client.query('ROLLBACK');
         return res.status(400).json({
-          error: `課程品項「${cfg.rows[0]?.label || courseType}」未開放試上，請先於「課程需求管理」開啟`,
+          error: `課程品項「${(trialCfg && trialCfg.label) || courseType}」在此館未開放試上，請先於「課程需求管理」開啟`,
           code: 'TRIAL_NOT_ENABLED',
         });
       }
