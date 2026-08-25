@@ -2377,7 +2377,26 @@ async function ensurePricingZones() {
   if (!def.rowCount) return;   // 理論上不會發生；沒有區就什麼都別動
   const zoneId = def.rows[0].id;
 
-  await pool.query('UPDATE venues SET pricing_zone_id = $1 WHERE pricing_zone_id IS NULL', [zoneId]);
+  // 只把「真的有在開課」的場館掛進預設區 —— 判準是有沒有 course_periods（實際開出的課期）。
+  //
+  // 為什麼不是全部掛進去：正式庫有 5 個啟用中的場館，但只有三個真的有課
+  //（新北高中 146、三重商工 175、三民高中 152 個課期）。松山國小與新竹科學園區
+  // 課期數都是 0。全掛進來的話，它們會繼承三蘆的價格而變成「可販售」，
+  // 家長就會在還沒開賣的館下單，收的是別區的價 —— 而松山正是要用另一套價目表的。
+  //
+  // 為什麼不把 admin_enrollments 也算進判準：松山國小有 7 筆歷史報名，
+  // 算進去它就會被拉進三蘆，正好破壞上面那件事。而拿掉它是安全的 ——
+  // 那些訂單只剩 1 筆待付款，且是單筆（同批兄弟數 1），對帳時不會走到
+  // 需要定價區的那段（admin/enrollments.js 的共班判定只在同批多筆時執行）。
+  //
+  // 沒掛到區的場館 pricing_zone_id 留 NULL：那不是錯誤狀態，是「還沒開賣」。
+  // /api/venues 會標 purchasable=false，家長端就不會列出它；
+  // 要開賣時在後台把它勾進某一個需求頁即可。
+  await pool.query(
+    `UPDATE venues v SET pricing_zone_id = $1
+      WHERE v.pricing_zone_id IS NULL
+        AND EXISTS (SELECT 1 FROM course_periods cp WHERE cp.venue_id = v.id)`,
+    [zoneId]);
   await pool.query(
     'UPDATE course_type_configs SET pricing_zone_id = $1 WHERE pricing_zone_id IS NULL', [zoneId]);
 

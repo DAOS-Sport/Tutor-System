@@ -101,12 +101,20 @@ async function api(p, { method = 'GET', body } = {}) {
   r = await api('/' + createdZoneId + '/venues', { method: 'PUT', body: { venue_ids: [] } });
   assert.strictEqual(r.status, 200);
   assert.strictEqual(r.data.unassigned.length, 1, '取消勾選的場館要被回報');
-  // 這個場館沒有任何課期，所以「沒有定價區」是正常狀態，不該產生警告。
-  // 26 個場館裡只有 3 個真的有家教課，其餘多半是勞務館；把每個都當警告
-  // 等於天天喊狼來了，真正該注意的那次反而會被當成雜訊。
-  assert.strictEqual(r.data.warning, null,
-    '沒在賣課的場館掉出定價區不是問題，不可以製造警告雜訊');
-  console.log('  ok  取消勾選沒課的場館 → 據實回報但不製造警告');
+  // 警告的規則是「這個場館真的有在開課，卻掉出定價區」才提醒 ——
+  // 多數場館（勞務館之類）沒有定價區是正常狀態，每個都警告等於天天喊狼來了。
+  // 所以這裡不寫死期望值，而是照規則推：有課期就該有警告，沒課期就不該有。
+  const hasCourses = (await pool.query(
+    'SELECT EXISTS (SELECT 1 FROM course_periods WHERE venue_id = $1) AS yes', [venueId])).rows[0].yes;
+  if (hasCourses) {
+    assert.ok(r.data.warning && r.data.warning.includes('報名會失敗'),
+      '有課在跑的場館掉出定價區，必須明確警告');
+    console.log('  ok  取消勾選「有課在跑」的場館 → 明確警告');
+  } else {
+    assert.strictEqual(r.data.warning, null,
+      '沒在賣課的場館掉出定價區不是問題，不可以製造警告雜訊');
+    console.log('  ok  取消勾選「沒課」的場館 → 據實回報但不製造警告');
+  }
 
   // ── 8. 還有場館時不可刪；空了才可刪 ───────────────────────
   await pool.query('UPDATE venues SET pricing_zone_id = $1 WHERE id = $2', [createdZoneId, venueId]);
