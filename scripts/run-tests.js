@@ -52,6 +52,7 @@ const UNIT = [
   'tests/integration_api_exposure_test.js',
   'tests/pricing_zone_schema_test.js',
   'tests/course_config_zone_test.js',
+  'tests/course_config_zone_scan_test.js',
   'tests/h05_empty_guard_test.js',
   'tests/line_single_push_channel_test.js',
   'tests/line_parent_bind_compat_test.js',
