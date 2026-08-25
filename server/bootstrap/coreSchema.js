@@ -2085,6 +2085,9 @@ CREATE TABLE IF NOT EXISTS pricing_zones (
 DO $$ BEGIN ALTER TABLE venues ADD COLUMN IF NOT EXISTS pricing_zone_id INTEGER REFERENCES pricing_zones(id); EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS pricing_zone_id INTEGER REFERENCES pricing_zones(id); EXCEPTION WHEN undefined_table THEN NULL; END $$;
 CREATE INDEX IF NOT EXISTS idx_venues_pricing_zone ON venues(pricing_zone_id);
+-- 課別設定的編輯軌跡要記在哪一區：分區後同一個 course_type 在每區各有一份設定，
+-- 不記區的話兩區的改價紀錄會混在同一條時間軸上，查不出到底誰改了誰的價。
+DO $$ BEGIN ALTER TABLE course_type_config_audit_logs ADD COLUMN IF NOT EXISTS pricing_zone_id INTEGER REFERENCES pricing_zones(id); EXCEPTION WHEN undefined_table THEN NULL; END $$;
 `;
 
 // 預設關鍵字清單（F-A07，可在後台增減 / 停用）

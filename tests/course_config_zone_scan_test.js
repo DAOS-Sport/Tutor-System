@@ -39,9 +39,6 @@ const EXEMPT = new Set([
 // 已知未改的語句數（相對 repo 根 → 筆數）。只能往下調。
 const KNOWN_UNZONED = {
   'server/routes/admin/courseIntros.js': 3,
-  'server/routes/admin/courseTypes.js': 8,
-  'server/routes/courses.js': 2,
-  'server/services/courseTypeSchedule.js': 2,
 };
 
 // 先剝行註解再剝區塊註解：反過來的話，行註解裡出現的區塊起始符號

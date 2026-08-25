@@ -414,18 +414,42 @@ router.get('/types', async (req, res) => {
   try {
     // 與後台「課程介紹維護」(/admin/course-intros) 同源：JOIN admin_course_intros，
     // 讓家長首頁組別卡片的標題 / 內文 / 封面圖 / 價格完全由後台維護、即時對上。
+    // F-A08：分區後同一課別在每區各有一列，直接查會出現重複卡片、而且不知道該顯示哪一區的價。
+    //   帶了 ?venue= → 就照那個場館所屬定價區的設定（家長已經選過場館的情境）
+    //   沒帶       → 每個課別收斂成一列，價格以「區間」呈現並標示 price_varies_by_zone
+    // 刻意不挑某一區當代表：首頁在選場館之前顯示某一區的價，家長選完場館被收另一個價，
+    // 那是最糟的一種錯 —— 畫面沒壞、錢卻不一樣。
+    const venueId = String(req.query.venue || '').trim();
+    let zoneId = null;
+    if (venueId) {
+      const vz = await pool.query('SELECT pricing_zone_id FROM venues WHERE id = $1', [venueId]);
+      zoneId = vz.rows[0]?.pricing_zone_id || null;
+      if (!zoneId) {
+        return res.status(400).json({ error: '此場館尚未設定定價區', code: 'VENUE_ZONE_MISSING' });
+      }
+    }
     const r = await pool.query(
-      `SELECT c.course_type, c.label, c.max_students, c.is_active, c.sort_order,
-              COALESCE(c.base_price, 0)::float8 AS base_price,
-              COALESCE(c.trial_enabled, FALSE)  AS trial_enabled,
-              c.trial_price::float8             AS trial_price,
-              COALESCE(i.title, c.label)        AS title,
-              COALESCE(i.body, '')              AS body,
-              COALESCE(i.image_url, '')         AS image_url
+      `SELECT c.course_type,
+              MIN(c.label)                                   AS label,
+              MAX(c.max_students)                            AS max_students,
+              BOOL_OR(c.is_active)                           AS is_active,
+              MIN(c.sort_order)                              AS sort_order,
+              COALESCE(MIN(c.base_price), 0)::float8         AS base_price,
+              COALESCE(MIN(c.base_price), 0)::float8         AS base_price_min,
+              COALESCE(MAX(c.base_price), 0)::float8         AS base_price_max,
+              (MIN(c.base_price) IS DISTINCT FROM MAX(c.base_price)) AS price_varies_by_zone,
+              BOOL_OR(COALESCE(c.trial_enabled, FALSE))      AS trial_enabled,
+              MIN(c.trial_price)::float8                     AS trial_price,
+              COALESCE(MIN(i.title), MIN(c.label))           AS title,
+              COALESCE(MIN(i.body), '')                      AS body,
+              COALESCE(MIN(i.image_url), '')                 AS image_url
          FROM course_type_configs c
          LEFT JOIN admin_course_intros i ON i.course_type = c.course_type
         WHERE c.is_active = TRUE
-        ORDER BY c.sort_order, c.course_type`
+          AND ($1::int IS NULL OR c.pricing_zone_id = $1)
+        GROUP BY c.course_type
+        ORDER BY MIN(c.sort_order), c.course_type`,
+      [zoneId]
     );
     res.json(r.rows);
   } catch (e) {
@@ -446,22 +470,35 @@ router.get('/base-price', async (req, res) => {
   if (!Number.isInteger(ct) || ct <= 0) {
     return res.status(400).json({ error: 'courseType is required (positive integer)' });
   }
+  // F-A08：這支是「要收多少錢」的試算，必須指名場館 —— 呼叫端（CoachListPage）
+  // 本來就已經選好場館了，所以要求它並不增加負擔，卻能杜絕拿到別區價格。
+  const venueId = String(req.query.venue || '').trim();
+  if (!venueId) {
+    return res.status(400).json({ error: 'venue is required', code: 'VENUE_REQUIRED' });
+  }
   try {
     const r = await pool.query(
       `SELECT c.course_type,
               c.base_price,
               c.tier_prices,
               COALESCE(c.trial_enabled, FALSE) AS trial_enabled,
-              COALESCE(c.trial_price,
-                       (SELECT value FROM admin_settings WHERE key = ('trial_price_course_' || c.course_type::text)),
-                       (SELECT value FROM admin_settings WHERE key = 'trial_price')) AS trial_price,
-              COALESCE((SELECT value FROM admin_settings WHERE key = 'sessions_per_period'), 6) AS sessions_per_period
-         FROM course_type_configs c
-        WHERE c.course_type = $1`,
-      [ct]
+              -- 試上價與一期堂數都改讀「該場館所屬定價區」的設定。
+              -- 原本這裡會退回全域 admin_settings 的 trial_price 與 sessions_per_period，
+              -- 分區後那等於讓松山吃到三蘆的值，而且是靜默的。
+              c.trial_price AS trial_price,
+              z.sessions_per_period AS sessions_per_period
+         FROM venues v
+         JOIN pricing_zones z ON z.id = v.pricing_zone_id
+         JOIN course_type_configs c
+              ON c.pricing_zone_id = z.id AND c.course_type = $1
+        WHERE v.id = $2`,
+      [ct, venueId]
     );
     if (r.rows.length === 0) {
-      return res.status(400).json({ error: `Unknown courseType: ${ct}` });
+      return res.status(400).json({
+        error: `此場館未開放課程組別 ${ct}`,
+        code: 'COURSE_TYPE_NOT_IN_ZONE',
+      });
     }
     res.json({
       course_type: r.rows[0].course_type,

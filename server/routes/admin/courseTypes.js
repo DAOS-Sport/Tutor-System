@@ -60,21 +60,33 @@ function diffChanges(before, after, fields) {
   }
   return Object.keys(out).length ? out : null;
 }
-async function writeCtAudit(db, courseType, action, byUser, changes, note) {
+async function writeCtAudit(db, courseType, zoneId, action, byUser, changes, note) {
   await db.query(
-    `INSERT INTO course_type_config_audit_logs (course_type, action, by_user, changes, note)
-     VALUES ($1, $2, $3, $4::jsonb, $5)`,
-    [courseType, action, byUser || 'unknown', changes ? JSON.stringify(changes) : null, note || null]
+    `INSERT INTO course_type_config_audit_logs (course_type, pricing_zone_id, action, by_user, changes, note)
+     VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
+    [courseType, zoneId, action, byUser || 'unknown', changes ? JSON.stringify(changes) : null, note || null]
   );
 }
+// F-A08：每一支都必須指名定價區。分區之後「一對三的設定」這句話不完整 ——
+// 少了區，讀會拿到別區的設定，寫會把別區的價一起蓋掉（UPDATE ... WHERE course_type=$1
+// 會命中每一區各一列）。所以缺就 400，不預設任何一區、也不取第一區。
+function zoneOf(req) {
+  const raw = req.query.zone !== undefined ? req.query.zone : (req.body || {}).pricing_zone_id;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+const ZONE_REQUIRED = { error: '請指定定價區（zone）', code: 'ZONE_REQUIRED' };
+
 const auditUser = (req) => req.adminUser?.name || req.adminUser?.username || 'unknown';
 
 router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
   try {
+    const zoneId = zoneOf(req);
+    if (!zoneId) return res.status(400).json(ZONE_REQUIRED);
     // 讀取前先套用「已到期」排程（保險：即使每日 cron 沒跑，下次讀取也會生效）。
     try { await applyDueScheduledCourseTypeChanges(pool); } catch (e) { console.warn('[course-types apply-due]', e.message); }
     const r = await pool.query(
-      `SELECT course_type, label, min_students, max_students,
+      `SELECT course_type, pricing_zone_id, label, min_students, max_students,
               base_price::float8 AS base_price, is_active, sort_order,
               trial_enabled, trial_price::float8 AS trial_price, tier_prices,
               created_at, updated_at, data_group,
@@ -85,7 +97,10 @@ router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'),
               effective_until::text AS effective_until,
               scheduled_effective_date, scheduled_effective_until, pending_changes,
               CURRENT_DATE::text AS current_date
-         FROM course_type_configs ORDER BY sort_order, course_type`
+         FROM course_type_configs
+        WHERE pricing_zone_id = $1
+        ORDER BY sort_order, course_type`,
+      [zoneId]
     );
     res.json(r.rows);
   } catch (err) {
@@ -102,6 +117,8 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
     // 僅做型別解析與安全預設（避免 NaN/NULL 寫入 NOT NULL 欄位）。
     const ct = parseInt(course_type, 10);
     if (isNaN(ct)) return res.status(400).json({ error: 'course_type 必須為整數' });
+    const zoneId = zoneOf(req);
+    if (!zoneId) return res.status(400).json(ZONE_REQUIRED);
     const lb = label == null ? '' : String(label).trim();
     // max_students NOT NULL：未填則沿用前台「最多＝編號」習慣預設為 ct；可為任意整數。
     const msParsed = parseInt(max_students, 10);
@@ -120,19 +137,25 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
     const tprc = normalizeTierPrices(tier_prices);
 
     await client.query('BEGIN');
-    const maxOrder = await client.query(`SELECT COALESCE(MAX(sort_order),0) AS m FROM course_type_configs`);
+    // 排序是「這一區之內」的排序，不是全公司共用一條序列。
+    const maxOrder = await client.query(
+      `SELECT COALESCE(MAX(sort_order),0) AS m FROM course_type_configs WHERE pricing_zone_id = $1`,
+      [zoneId]);
     const nextOrder = maxOrder.rows[0].m + 1;
+    // 課別字典先補：course_type_configs 對它有外鍵，字典沒有這個課別就插不進去。
+    await client.query(
+      'INSERT INTO course_types (course_type) VALUES ($1) ON CONFLICT DO NOTHING', [ct]);
 
     const r = await client.query(
-      `INSERT INTO course_type_configs (course_type, label, min_students, max_students, sort_order, base_price, data_group, trial_enabled, trial_price, tier_prices, effective_date, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,CURRENT_DATE,NOW())
-       ON CONFLICT (course_type) DO NOTHING
+      `INSERT INTO course_type_configs (pricing_zone_id, course_type, label, min_students, max_students, sort_order, base_price, data_group, trial_enabled, trial_price, tier_prices, effective_date, updated_at)
+       VALUES ($11,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,CURRENT_DATE,NOW())
+       ON CONFLICT (pricing_zone_id, course_type) DO NOTHING
        RETURNING *`,
-      [ct, lb, mn, ms, nextOrder, bp, dg, te, tp, tprc === null ? null : JSON.stringify(tprc)]
+      [ct, lb, mn, ms, nextOrder, bp, dg, te, tp, tprc === null ? null : JSON.stringify(tprc), zoneId]
     );
     if (!r.rowCount) {
       await client.query('ROLLBACK');
-      return res.status(409).json({ error: `課程需求 ${ct} 已存在` });
+      return res.status(409).json({ error: `課程需求 ${ct} 在此定價區已存在` });
     }
     // Task #67：同步建一筆預設介紹，title 取 label，body / image 留空
     await client.query(
@@ -141,7 +164,7 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
        ON CONFLICT (course_type) DO NOTHING`,
       [ct, lb]
     );
-    await writeCtAudit(client, ct, '新增', auditUser(req), {
+    await writeCtAudit(client, ct, zoneId, '新增', auditUser(req), {
       label: { before: null, after: lb },
       base_price: { before: null, after: bp },
       min_students: { before: null, after: mn },
@@ -167,12 +190,15 @@ router.patch('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, 
   try {
     const ct = parseInt(req.params.type, 10);
     if (isNaN(ct)) return res.status(400).json({ error: 'invalid type' });
+    const zoneId = zoneOf(req);
+    if (!zoneId) return res.status(400).json(ZONE_REQUIRED);
 
     await client.query('BEGIN');
-    const cur = await client.query(`SELECT * FROM course_type_configs WHERE course_type=$1`, [ct]);
+    const cur = await client.query(
+      `SELECT * FROM course_type_configs WHERE course_type = $1 AND pricing_zone_id = $2`, [ct, zoneId]);
     if (!cur.rowCount) {
       await client.query('ROLLBACK');
-      return res.status(404).json({ error: '找不到此課程需求' });
+      return res.status(404).json({ error: '此定價區沒有這個課程需求' });
     }
     const row = cur.rows[0];
     const p = req.body || {};
@@ -182,10 +208,11 @@ router.patch('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, 
     if (p.clear_schedule === true) {
       const r = await client.query(
         `UPDATE course_type_configs SET pending_changes=NULL, scheduled_effective_date=NULL,
-                scheduled_effective_until=NULL, updated_at=NOW() WHERE course_type=$1 RETURNING *`,
-        [ct]
+                scheduled_effective_until=NULL, updated_at=NOW()
+          WHERE course_type=$1 AND pricing_zone_id=$2 RETURNING *`,
+        [ct, zoneId]
       );
-      await writeCtAudit(client, ct, '取消排程', by, null, '取消既有排程');
+      await writeCtAudit(client, ct, zoneId, '取消排程', by, null, '取消既有排程');
       await client.query('COMMIT');
       return res.json(r.rows[0]);
     }
@@ -253,11 +280,11 @@ router.patch('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, 
         `UPDATE course_type_configs
             SET pending_changes = $2::jsonb, scheduled_effective_date = $3::timestamptz,
                 scheduled_effective_until = $4::timestamptz, updated_at = NOW()
-          WHERE course_type = $1 RETURNING *`,
-        [ct, JSON.stringify(next), scheduledAt, untilAt]
+          WHERE course_type = $1 AND pricing_zone_id = $5 RETURNING *`,
+        [ct, JSON.stringify(next), scheduledAt, untilAt, zoneId]
       );
       result = r.rows[0];
-      await writeCtAudit(client, ct, '編輯(排程)', by, diffChanges(row, next, EDITABLE_FIELDS),
+      await writeCtAudit(client, ct, zoneId, '編輯(排程)', by, diffChanges(row, next, EDITABLE_FIELDS),
         `排程生效 ${taipeiStr(scheduledAt)} ～ ${taipeiStr(untilAt)}`);
     } else {
       // 立即：套用到正式資料、清掉任何既有排程（含迄日）。effective_until 不在立即流程變動。
@@ -267,9 +294,9 @@ router.patch('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, 
                 trial_enabled=$8, trial_price=$9, tier_prices=$10::jsonb,
                 effective_date=CURRENT_DATE, scheduled_effective_date=NULL, scheduled_effective_until=NULL,
                 pending_changes=NULL, updated_at=NOW()
-          WHERE course_type=$1 RETURNING *`,
+          WHERE course_type=$1 AND pricing_zone_id=$11 RETURNING *`,
         [ct, label, max_students, is_active, base_price, min_students, data_group, trial_enabled, trial_price,
-         tier_prices === null ? null : JSON.stringify(tier_prices)]
+         tier_prices === null ? null : JSON.stringify(tier_prices), zoneId]
       );
       result = r.rows[0];
       // label 變更 → 同步未被覆寫的介紹 title
@@ -279,7 +306,7 @@ router.patch('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, 
           [ct, label]
         );
       }
-      await writeCtAudit(client, ct, '編輯(立即)', by, diffChanges(row, next, EDITABLE_FIELDS), null);
+      await writeCtAudit(client, ct, zoneId, '編輯(立即)', by, diffChanges(row, next, EDITABLE_FIELDS), null);
     }
     await client.query('COMMIT');
     res.json(result);
@@ -296,14 +323,23 @@ router.delete('/:type', requireAdminAuth, requireAdminRole('admin'), async (req,
   try {
     const ct = parseInt(req.params.type, 10);
     if (isNaN(ct)) return res.status(400).json({ error: 'invalid type' });
+    const zoneId = zoneOf(req);
+    if (!zoneId) return res.status(400).json(ZONE_REQUIRED);
+    // 報名記錄的檢查也要限定在這一區的場館：三蘆有一對三的報名，不該擋住
+    // 松山把自己那份一對三設定刪掉。
     const used = await pool.query(
-      `SELECT COUNT(*) AS n FROM course_periods WHERE course_type=$1`, [ct]
+      `SELECT COUNT(*) AS n
+         FROM course_periods cp JOIN venues v ON v.id = cp.venue_id
+        WHERE cp.course_type = $1 AND v.pricing_zone_id = $2`, [ct, zoneId]
     );
     if (parseInt(used.rows[0].n, 10) > 0) {
-      return res.status(409).json({ error: '此課程需求已有報名記錄，無法刪除；請改為停用' });
+      return res.status(409).json({ error: '此定價區的課程需求已有報名記錄，無法刪除；請改為停用' });
     }
-    // FK ON DELETE CASCADE → admin_course_intros 對應記錄會一起刪除
-    await pool.query(`DELETE FROM course_type_configs WHERE course_type=$1`, [ct]);
+    // 註：分區後 admin_course_intros 的外鍵改指 course_types（課別字典），
+    // 所以刪掉某一區的設定「不會」連帶刪掉課程介紹 —— 介紹是全公司一份，
+    // 本來就不該因為某一區停售而消失。
+    await pool.query(
+      `DELETE FROM course_type_configs WHERE course_type=$1 AND pricing_zone_id=$2`, [ct, zoneId]);
     res.json({ ok: true });
   } catch (err) {
     console.error('[admin/course-types DELETE]', err);
@@ -316,13 +352,17 @@ router.get('/:type/audit-logs', requireAdminAuth, AM, async (req, res) => {
   try {
     const ct = parseInt(req.params.type, 10);
     if (isNaN(ct)) return res.status(400).json({ error: 'invalid type' });
+    const zoneId = zoneOf(req);
+    if (!zoneId) return res.status(400).json(ZONE_REQUIRED);
+    // 只看這一區的改價紀錄。兩區的軌跡混在同一條時間軸上，等於查不出誰改了誰的價。
+    // 分區前寫入的舊紀錄沒有 pricing_zone_id，一併帶出來（它們本來就是全公司的）。
     const r = await pool.query(
       `SELECT id, at, action, by_user, changes, note
          FROM course_type_config_audit_logs
-        WHERE course_type = $1
+        WHERE course_type = $1 AND (pricing_zone_id = $2 OR pricing_zone_id IS NULL)
         ORDER BY at DESC, id DESC
         LIMIT 200`,
-      [ct]
+      [ct, zoneId]
     );
     res.json(r.rows);
   } catch (err) {

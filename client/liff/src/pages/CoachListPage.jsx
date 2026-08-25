@@ -40,7 +40,7 @@ export default function CoachListPage() {
     Promise.all([
       coachesApi.list({ venueId }),
       venuesApi.detail(venueId),
-      coursesApi.basePrice(courseType),
+      coursesApi.basePrice(courseType, venueId),
     ])
       .then(([cs, v, bp]) => {
         if (!alive) return;

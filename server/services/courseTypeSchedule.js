@@ -14,7 +14,7 @@ const EDITABLE = ['label', 'min_students', 'max_students', 'is_active', 'base_pr
 
 async function applyDueScheduledCourseTypeChanges(db = pool) {
   const due = await db.query(
-    `SELECT course_type, pending_changes
+    `SELECT course_type, pricing_zone_id, pending_changes
        FROM course_type_configs
       WHERE pending_changes IS NOT NULL
         AND scheduled_effective_date IS NOT NULL
@@ -44,10 +44,17 @@ async function applyDueScheduledCourseTypeChanges(db = pool) {
     sets.push('scheduled_effective_until = NULL');
     sets.push('pending_changes = NULL');
     sets.push('updated_at = NOW()');
+    // F-A08：只套用到「這一筆設定所屬的定價區」。少了這個條件，某一區排定的改價
+    // 會在生效時把所有區一起改掉 —— 而且是在無人操作的 cron 裡發生，最難察覺。
+    vals.push(row.pricing_zone_id);
     const r = await db.query(
-      `UPDATE course_type_configs SET ${sets.join(', ')} WHERE course_type = $1
+      `UPDATE course_type_configs SET ${sets.join(', ')}
+        WHERE course_type = $1 AND pricing_zone_id = $${vals.length}
         RETURNING effective_date, effective_until`, vals);
     // label 變更 → 同步未被覆寫的課程介紹 title（與 PATCH 立即生效行為一致）。
+    // 註：admin_course_intros 以 course_type 為鍵、全公司一份，不隨定價區分家。
+    // 兩區把同一課別取了不同名字時，介紹標題由最後編輯的那一區決定 —— 這是現行
+    // 設計的自然結果，不是漏改；真要分區顯示得另外做，不在這次範圍。
     if (pc.label !== undefined) {
       await db.query(
         `UPDATE admin_course_intros SET title=$2, updated_at=NOW() WHERE course_type=$1 AND title_overridden=FALSE`,
@@ -60,10 +67,11 @@ async function applyDueScheduledCourseTypeChanges(db = pool) {
       for (const k of EDITABLE) if (pc[k] !== undefined) changes[k] = { after: pc[k] };
       const eff = r.rows[0] || {};
       await db.query(
-        `INSERT INTO course_type_config_audit_logs (course_type, action, by_user, changes, note)
-         VALUES ($1, '排程套用', 'system', $2::jsonb, $3)`,
+        `INSERT INTO course_type_config_audit_logs (course_type, pricing_zone_id, action, by_user, changes, note)
+         VALUES ($1, $4, '排程套用', 'system', $2::jsonb, $3)`,
         [row.course_type, Object.keys(changes).length ? JSON.stringify(changes) : null,
-         `套用排程（生效 ${eff.effective_date || ''}${eff.effective_until ? ' ～ ' + eff.effective_until : ''}）`]
+         `套用排程（生效 ${eff.effective_date || ''}${eff.effective_until ? ' ～ ' + eff.effective_until : ''}）`,
+         row.pricing_zone_id]
       );
     } catch (e) { console.warn('[course-types apply audit]', e.message); }
     applied += 1;

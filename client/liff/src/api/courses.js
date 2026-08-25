@@ -2,8 +2,9 @@ import { callApi } from './client';
 import { mockDb } from './mock';
 
 export const coursesApi = {
-  basePrice: (courseType) =>
-    callApi('/courses/base-price', { method: 'get', params: { courseType } }, () => ({
+  // venue 是必填：價格依場館所屬定價區而定，少了它後端會回 400（而不是猜一個區）。
+  basePrice: (courseType, venue) =>
+    callApi('/courses/base-price', { method: 'get', params: { courseType, venue } }, () => ({
       course_type: courseType,
       original_price: mockDb.basePrice(courseType),
     })),
