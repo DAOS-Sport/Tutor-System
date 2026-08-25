@@ -3801,7 +3801,10 @@ async function completeZ03Registration({ z03, parent, students = [], lineUid, ac
   return { linked_existing: true, z03_updated: true, new_students: newStudents.length };
 }
 
-async function listZ03Records({ status = 'pending', q = '' } = {}) {
+// limit/offset：Z03 正式庫 2,261 筆，一次全撈的回應約 5 MB。
+// 前端本來就只顯示前 30 筆（visibleCount），卻要先把整包下載完 —— 傳輸量白白浪費，
+// 而且回應大到一定程度就可能被截斷或逾時，那種失敗看起來像是「資料少了幾筆」。
+async function listZ03Records({ status = 'pending', q = '', limit = null, offset = 0 } = {}) {
   const where = [];
   const vals = [];
   if (status && status !== 'all') {
@@ -3839,10 +3842,15 @@ async function listZ03Records({ status = 'pending', q = '' } = {}) {
     )`);
     where.push(`(${parts.join(' OR ')})`);
   }
+  let tail = '';
+  if (limit !== null && limit !== undefined) {
+    vals.push(limit); tail += ` LIMIT $${vals.length}`;
+    vals.push(offset); tail += ` OFFSET $${vals.length}`;
+  }
   const records = (await pool.query(
     `SELECT * FROM ragic_z03_records
        ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-      ORDER BY (status = 'pending') DESC, fetched_at DESC`,
+      ORDER BY (status = 'pending') DESC, fetched_at DESC${tail}`,
     vals
   )).rows;
   if (!records.length) return records;

@@ -6,8 +6,8 @@ export const ragicZ03Api = {
     const r = await http.get('/ragic-z03/stats', { skipAuthRedirect: true });
     return r.data;
   },
-  async list(status = 'pending', q = '') {
-    const params = { status };
+  async list(status = 'pending', q = '', paging = {}) {
+    const params = { status, ...paging };
     if (q) params.q = q;
     const r = await http.get('/ragic-z03', { params, skipAuthRedirect: true });
     return r.data;

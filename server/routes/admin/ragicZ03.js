@@ -11,6 +11,7 @@
  * 其餘（缺 UID 或任一必填缺失）一律進此佇列。櫃台只整理核心資料；UID 由家長登入自動綁定。
  */
 const express = require('express');
+const { parsePaging } = require('../../utils/paging');
 const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
 const ragicAdmin = require('../../services/ragicAdmin');
 const { pool } = require('../../models/db');
@@ -41,7 +42,9 @@ router.get('/', async (req, res) => {
   try {
     const status = req.query.status || 'pending';
     const q = req.query.q || '';
-    const items = await ragicAdmin.listZ03Records({ status, q });
+    // 沒帶 limit 就照舊全撈（既有呼叫端行為不變）；前端一律會帶。
+    const { limit, offset } = parsePaging(req);
+    const items = await ragicAdmin.listZ03Records({ status, q, limit, offset });
     res.json({ items });
   } catch (err) {
     console.error('[admin/ragic-z03]', err);

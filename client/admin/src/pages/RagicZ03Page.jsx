@@ -411,7 +411,11 @@ export default function RagicZ03Page() {
   const [queryInput, setQueryInput] = useState('');
   const [query, setQuery] = useState('');
   const [busyKey, setBusyKey] = useState('');
-  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  // 改成伺服器端分批：原本是一次把 2,261 筆（約 5 MB）全下載，再用 visibleCount
+  // 在前端慢慢揭露 —— 顯示是分批的，傳輸不是。回應大到一定程度就會逾時或被截斷，
+  // 而截斷最糟的是「看起來只是少了幾筆」，沒有任何錯誤訊息。
+  const [serverDone, setServerDone] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [stats, setStats] = useState(null);
   const [pendingDelete, setPendingDelete] = useState(null); // Z03 row 待確認永久刪除
   const [deleteBusy, setDeleteBusy] = useState(false);
@@ -433,10 +437,13 @@ export default function RagicZ03Page() {
   async function load() {
     setItems(null);
     setLoadError(false);
-    setVisibleCount(PAGE_SIZE);
+    setServerDone(false);
     try {
-      const r = await ragicZ03Api.list(status, query);
-      setItems(r.items || []);
+      const r = await ragicZ03Api.list(status, query, { limit: PAGE_SIZE, offset: 0 });
+      const rowsIn = r.items || [];
+      setItems(rowsIn);
+      // 「這批筆數 < 要求筆數」＝到底了。不必要後端回總數，回傳形狀維持不變。
+      setServerDone(rowsIn.length < PAGE_SIZE);
     } catch (e) {
       if (e?.response?.status === 401) {
         toast.error('登入逾期，請重新登入');
@@ -543,8 +550,28 @@ export default function RagicZ03Page() {
   }
 
   const rows = useMemo(() => (Array.isArray(items) ? items : []), [items]);
-  const visibleRows = useMemo(() => rows.slice(0, visibleCount), [rows, visibleCount]);
-  const hasMore = visibleCount < rows.length;
+  const visibleRows = rows;              // 載進來的就是要顯示的，不再前端二次截斷
+  const hasMore = !serverDone;
+
+  async function loadMore() {
+    if (loadingMore || serverDone) return;
+    setLoadingMore(true);
+    try {
+      const r = await ragicZ03Api.list(status, query, { limit: PAGE_SIZE, offset: rows.length });
+      const more = r.items || [];
+      // 併掉重複：這一頁可以就地編輯／解決，資料變動後 offset 會有位移，
+      // 同一筆有機會在兩批裡都出現。用 id 去重，畫面才不會冒出重複卡片。
+      setItems((prev) => {
+        const seen = new Set((prev || []).map((x) => x.id));
+        return [...(prev || []), ...more.filter((x) => !seen.has(x.id))];
+      });
+      if (more.length < PAGE_SIZE) setServerDone(true);
+    } catch (e) {
+      toast.error(e?.response?.data?.error || e?.message || '載入更多失敗');
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   return (
     <div>
@@ -586,7 +613,7 @@ export default function RagicZ03Page() {
       </div>
 
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-gray-500">
-        <span>共 {rows.length} 筆{hasMore ? `，目前顯示 ${visibleRows.length} 筆` : ''}</span>
+        <span>{hasMore ? `已載入 ${rows.length} 筆（還有更多）` : `共 ${rows.length} 筆`}</span>
         <button
           type="button"
           onClick={load}
@@ -618,15 +645,24 @@ export default function RagicZ03Page() {
               />
             ))}
           </div>
-          {hasMore ? (
+          {loadingMore ? (
+            <div className="mt-4 flex items-center justify-center gap-2 py-2 text-xs text-gray-400">
+              <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-brand-primary" />
+              載入中…（已載入 {rows.length} 筆）
+            </div>
+          ) : hasMore ? (
             <div className="mt-4 flex justify-center">
               <button
                 type="button"
-                onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
+                onClick={loadMore}
                 className="rounded border border-gray-300 bg-white px-4 py-1.5 text-xs font-bold text-gray-700 hover:bg-gray-50"
-              >載入更多（剩 {rows.length - visibleRows.length} 筆）</button>
+              >載入更多</button>
             </div>
-          ) : null}
+          ) : (
+            // 到底了一定要標出來：沒有這行，使用者永遠不知道是真的沒有了
+            // 還是還沒載完，只好一直往下捲。
+            <div className="mt-4 text-center text-xs text-gray-400">已經到底了 · 共 {rows.length} 筆</div>
+          )}
         </>
       )}
 
