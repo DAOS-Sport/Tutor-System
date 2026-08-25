@@ -101,9 +101,12 @@ async function api(p, { method = 'GET', body } = {}) {
   r = await api('/' + createdZoneId + '/venues', { method: 'PUT', body: { venue_ids: [] } });
   assert.strictEqual(r.status, 200);
   assert.strictEqual(r.data.unassigned.length, 1, '取消勾選的場館要被回報');
-  assert.ok(r.data.warning && r.data.warning.includes('無法報名'),
-    '未分配的場館無法報名，這件事必須明講而不是靜靜發生');
-  console.log('  ok  取消勾選 → 明確回報「此場館將無法報名」');
+  // 這個場館沒有任何課期，所以「沒有定價區」是正常狀態，不該產生警告。
+  // 26 個場館裡只有 3 個真的有家教課，其餘多半是勞務館；把每個都當警告
+  // 等於天天喊狼來了，真正該注意的那次反而會被當成雜訊。
+  assert.strictEqual(r.data.warning, null,
+    '沒在賣課的場館掉出定價區不是問題，不可以製造警告雜訊');
+  console.log('  ok  取消勾選沒課的場館 → 據實回報但不製造警告');
 
   // ── 8. 還有場館時不可刪；空了才可刪 ───────────────────────
   await pool.query('UPDATE venues SET pricing_zone_id = $1 WHERE id = $2', [createdZoneId, venueId]);

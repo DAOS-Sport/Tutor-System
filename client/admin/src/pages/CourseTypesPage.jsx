@@ -4,6 +4,7 @@ import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
 import { courseTypesApi } from '../api/courseTypes';
+import { pricingZonesApi } from '../api/pricingZones';
 import { formatTWDateTime, formatTWDateTimeSeconds, toTaipeiDateTimeInput, taipeiInputToDate } from '../utils/format';
 
 const autoLabel = (ct) => {
@@ -110,6 +111,15 @@ export default function CourseTypesPage() {
   const toast = useToast();
   const [rows, setRows] = useState(null);
   const [saving, setSaving] = useState(null);
+  // F-A08 定價區（＝上方分頁）。zoneId 沒決定之前不載入品項 ——
+  // 少了區的查詢後端會直接 400，這裡也不該送出去。
+  const [zoneData, setZoneData] = useState(null);   // { zones, all_venues, unassigned_with_courses }
+  const [zoneId, setZoneId] = useState(null);
+  const [venueOpen, setVenueOpen] = useState(false); // 場館區塊預設收合
+  const [venueSel, setVenueSel] = useState([]);      // 目前分頁勾選中的場館
+  const [zoneBusy, setZoneBusy] = useState(false);
+  const [showAddZone, setShowAddZone] = useState(false);
+  const [zoneForm, setZoneForm] = useState({ name: '', sessions_per_period: 6, period_count_min: 1, period_count_max: 6 });
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState({ course_type: '', label: '', min_students: '', max_students: '', base_price: '', data_group: '', trial_enabled: false, trial_price: '' });
   const [addErr, setAddErr] = useState('');
@@ -123,16 +133,77 @@ export default function CourseTypesPage() {
 
   const today = (rows && rows[0]?.current_date) ? fmtDate(rows[0].current_date) : fmtDate(new Date().toISOString());
 
-  async function load() {
+  async function load(zid = zoneId) {
+    if (!zid) return;
     try {
-      const data = await courseTypesApi.list();
+      const data = await courseTypesApi.list(zid);
       setRows(Array.isArray(data) ? data : []);
     } catch (e) {
       toast.error(e?.response?.data?.error || '載入失敗');
       setRows([]);
     }
   }
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const activeZone = zoneData?.zones?.find((z) => z.id === zoneId) || null;
+
+  async function loadZones(preferId = null) {
+    try {
+      const data = await pricingZonesApi.list();
+      setZoneData(data);
+      const zs = data?.zones || [];
+      const next = zs.find((z) => z.id === (preferId ?? zoneId)) || zs[0] || null;
+      setZoneId(next ? next.id : null);
+      setVenueSel(next ? (next.venues || []).map((v) => v.id) : []);
+      return next ? next.id : null;
+    } catch (e) {
+      toast.error(e?.response?.data?.error || '載入定價區失敗');
+      return null;
+    }
+  }
+  useEffect(() => { loadZones().then((id) => load(id)); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function switchZone(z) {
+    setZoneId(z.id);
+    setVenueSel((z.venues || []).map((v) => v.id));
+    setRows(null);
+    load(z.id);
+  }
+
+  async function saveVenues() {
+    if (!zoneId) return;
+    setZoneBusy(true);
+    try {
+      const r = await pricingZonesApi.setVenues(zoneId, venueSel);
+      // warning 只有在「有課在跑的場館掉出定價區」時才會有值 —— 沒賣課的場館
+      // 沒有定價區是正常狀態，不製造雜訊。
+      if (r?.warning) toast.error(r.warning, 6000);
+      else toast.success('已更新適用場館');
+      await loadZones(zoneId);
+    } catch (e) {
+      toast.error(e?.response?.data?.error || '設定場館失敗');
+    } finally { setZoneBusy(false); }
+  }
+
+  async function addZone(e) {
+    e.preventDefault();
+    if (!zoneForm.name.trim()) return toast.error('請輸入需求頁名稱');
+    setZoneBusy(true);
+    try {
+      const z = await pricingZonesApi.create({
+        name: zoneForm.name.trim(),
+        sessions_per_period: Number(zoneForm.sessions_per_period) || 6,
+        period_count_min: Number(zoneForm.period_count_min) || 1,
+        period_count_max: Number(zoneForm.period_count_max) || 6,
+      });
+      setShowAddZone(false);
+      setZoneForm({ name: '', sessions_per_period: 6, period_count_min: 1, period_count_max: 6 });
+      const id = await loadZones(z.id);
+      await load(id);
+      toast.success('已建立需求頁');
+    } catch (e2) {
+      toast.error(e2?.response?.data?.error || '建立失敗');
+    } finally { setZoneBusy(false); }
+  }
   // 級距清單載入失敗不擋整頁（只是少了加成價格欄位），維持與軌跡載入相同的容錯策略。
   useEffect(() => {
     courseTypesApi.coachMultipliers()
@@ -144,7 +215,7 @@ export default function CourseTypesPage() {
   async function toggleActive(row) {
     setSaving(row.course_type);
     try {
-      await courseTypesApi.update(row.course_type, { is_active: !row.is_active });
+      await courseTypesApi.update(zoneId, row.course_type, { is_active: !row.is_active });
       await load();
     } catch (e) {
       toast.error(e?.response?.data?.error || '更新失敗');
@@ -158,7 +229,7 @@ export default function CourseTypesPage() {
     const ct = parseInt(form.course_type, 10);
     if (isNaN(ct)) return setAddErr('課程編號必須為整數');
     try {
-      await courseTypesApi.create({
+      await courseTypesApi.create(zoneId, {
         course_type: ct,
         label: form.label,
         min_students: form.min_students,
@@ -211,7 +282,7 @@ export default function CourseTypesPage() {
     setActiveTab('basic');
     setEditCell(null);
     try {
-      const logs = await courseTypesApi.auditLogs(row.course_type);
+      const logs = await courseTypesApi.auditLogs(zoneId, row.course_type);
       setEditing((s) => (s && s.course_type === row.course_type ? { ...s, audit: Array.isArray(logs) ? logs : [] } : s));
     } catch {
       // 軌跡載入失敗不擋編輯；落定 audit=[] 讓「執行編輯軌跡」顯示「尚無編輯紀錄」而非永遠「載入中…」。
@@ -252,7 +323,7 @@ export default function CourseTypesPage() {
     }
     setSaving(editing.course_type);
     try {
-      await courseTypesApi.update(editing.course_type, patch);
+      await courseTypesApi.update(zoneId, editing.course_type, patch);
       toast.success(isFuture ? `已排程於 ${fmtDateTime(start)} 生效` : '已更新（立即生效）');
       setEditing(null);
       await load();
@@ -265,7 +336,7 @@ export default function CourseTypesPage() {
     if (!editing) return;
     setSaving(editing.course_type);
     try {
-      await courseTypesApi.update(editing.course_type, { clear_schedule: true });
+      await courseTypesApi.update(zoneId, editing.course_type, { clear_schedule: true });
       toast.success('已取消排程');
       setEditing(null);
       await load();
@@ -278,7 +349,7 @@ export default function CourseTypesPage() {
     if (!window.confirm(`確定刪除「${row.label}」嗎？（有報名記錄的類型無法刪除）`)) return;
     setSaving(row.course_type);
     try {
-      await courseTypesApi.remove(row.course_type);
+      await courseTypesApi.remove(zoneId, row.course_type);
       toast.success(`已刪除「${row.label}」`);
       await load();
     } catch (e) {
@@ -539,16 +610,147 @@ export default function CourseTypesPage() {
     <div>
       <PageHeader
         title="課程需求管理"
-        subtitle="F-A07 · 各品相的師生比與「每期價格（每人）」唯一來源（停用後 LIFF 報名頁不再顯示）"
+        subtitle="設定各場館套用的課程金額品項與限制規則。每期價格（每人）以本頁為唯一來源，課程介紹維護頁僅能讀取。"
         actions={
-          <button
-            onClick={() => { setShowAdd(true); setAddErr(''); }}
-            className="rounded-lg bg-brand-primary px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
-          >
-            + 新增課程需求
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setShowAddZone(true)}
+              className="rounded-lg border border-brand-primary px-4 py-2 text-sm font-semibold text-brand-primary hover:bg-brand-primary/5"
+            >
+              + 新增需求頁
+            </button>
+            <button
+              onClick={() => { setShowAdd(true); setAddErr(''); }}
+              disabled={!zoneId}
+              className="rounded-lg bg-brand-primary px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-40"
+            >
+              + 新增課程需求
+            </button>
+          </div>
         }
       />
+
+      {/* F-A08 需求頁分頁列：切頁＝切一整組價格設定。
+          一個場館只會屬於一頁，所以「這個場館收多少」永遠只有一個答案。 */}
+      <div className="mb-4 flex flex-wrap items-center gap-1 border-b border-gray-200">
+        {(zoneData?.zones || []).map((z) => (
+          <button
+            key={z.id}
+            type="button"
+            onClick={() => switchZone(z)}
+            className={`-mb-px rounded-t-lg border-b-2 px-4 py-2 text-sm ${
+              z.id === zoneId
+                ? 'border-brand-primary bg-white font-bold text-brand-primary'
+                : 'border-transparent text-gray-500 hover:bg-gray-50'
+            }`}
+          >
+            {z.name}
+            <span className={`ml-2 rounded-full px-1.5 py-0.5 text-[10px] ${
+              z.id === zoneId ? 'bg-brand-primary/10 text-brand-primary' : 'bg-gray-100 text-gray-500'
+            }`}>{(z.venues || []).length} 館</span>
+          </button>
+        ))}
+      </div>
+
+      {showAddZone && (
+        <div className="mb-6 rounded-xl border border-blue-200 bg-blue-50 p-5">
+          <div className="mb-3 font-semibold text-blue-800">新增需求設定頁</div>
+          <form onSubmit={addZone} className="grid grid-cols-1 gap-3 sm:grid-cols-4">
+            <div className="sm:col-span-2">
+              <label className="mb-1 block text-xs font-medium text-gray-600">名稱</label>
+              <input value={zoneForm.name} placeholder="例如：三蘆、松山"
+                onChange={(e) => setZoneForm((f) => ({ ...f, name: e.target.value }))}
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-600">一期幾堂</label>
+              <input type="number" value={zoneForm.sessions_per_period}
+                onChange={(e) => setZoneForm((f) => ({ ...f, sessions_per_period: e.target.value }))}
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-gray-600">最少期數</label>
+                <input type="number" value={zoneForm.period_count_min}
+                  onChange={(e) => setZoneForm((f) => ({ ...f, period_count_min: e.target.value }))}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-gray-600">最多期數</label>
+                <input type="number" value={zoneForm.period_count_max}
+                  onChange={(e) => setZoneForm((f) => ({ ...f, period_count_max: e.target.value }))}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" />
+              </div>
+            </div>
+            <div className="flex gap-2 sm:col-span-4">
+              <button type="submit" disabled={zoneBusy}
+                className="rounded-lg bg-brand-primary px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">建立</button>
+              <button type="button" onClick={() => setShowAddZone(false)}
+                className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-600">取消</button>
+            </div>
+            <p className="text-xs leading-5 text-gray-500 sm:col-span-4">
+              一期堂數決定報名怎麼拆期（1 期 = N 堂），例如三蘆 6 堂、松山 10 堂。
+              建立後會自動帶入一套課別當起點，直接改價格即可。
+            </p>
+          </form>
+        </div>
+      )}
+
+      {activeZone && (
+        <div className="mb-6 overflow-hidden rounded-xl border border-gray-200 bg-white">
+          <div className="flex cursor-pointer items-center justify-between bg-gray-50 px-4 py-3"
+            onClick={() => setVenueOpen((v) => !v)}>
+            <div className="min-w-0 text-sm">
+              <span className="font-bold text-gray-800">{activeZone.name}</span>
+              <span className="ml-2 text-xs text-gray-500">
+                （一期 {activeZone.sessions_per_period} 堂 · 可買 {activeZone.period_count_min}–{activeZone.period_count_max} 期
+                {(activeZone.venues || []).length
+                  ? ` · 套用：${activeZone.venues.map((v) => v.name).join('、')}`
+                  : ' · 尚未選擇場館'}）
+              </span>
+            </div>
+            <div className="flex shrink-0 items-center gap-2" onClick={(e) => e.stopPropagation()}>
+              <button type="button" disabled={zoneBusy} onClick={saveVenues}
+                className="rounded-lg bg-brand-green px-3 py-1.5 text-xs font-bold text-white disabled:opacity-50">
+                儲存場館設定
+              </button>
+              <span className="text-xs text-gray-400">{venueOpen ? '收合' : '展開'}</span>
+            </div>
+          </div>
+          {venueOpen && (
+            <div className="border-t border-gray-200 p-4">
+              <p className="mb-3 text-xs leading-5 text-gray-500">
+                勾選要套用此頁金額設定的場館。<strong>一個場館只會屬於一頁</strong> ——
+                勾選已在其他頁的場館，等於把它搬過來，原本那頁就不會再有它。
+              </p>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+                {(zoneData?.all_venues || []).map((v) => {
+                  const checked = venueSel.includes(v.id);
+                  const owner = (zoneData.zones || []).find(
+                    (z) => z.id !== zoneId && (z.venues || []).some((x) => x.id === v.id));
+                  return (
+                    <label key={v.id}
+                      className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs ${
+                        checked
+                          ? 'border-brand-primary bg-brand-primary/5 font-bold text-brand-primary'
+                          : 'border-gray-200 bg-white text-gray-700'
+                      }`}>
+                      <input type="checkbox" checked={checked}
+                        onChange={(e) => setVenueSel((cur) => (e.target.checked
+                          ? [...cur, v.id]
+                          : cur.filter((x) => x !== v.id)))} />
+                      <span className="truncate">{v.name}</span>
+                      {owner && !checked && (
+                        <span className="ml-auto shrink-0 text-[10px] text-gray-400">在「{owner.name}」</span>
+                      )}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {showAdd && (
         <div className="mb-6 rounded-xl border border-blue-200 bg-blue-50 p-5">

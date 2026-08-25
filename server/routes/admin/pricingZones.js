@@ -12,12 +12,15 @@
  * 所以「場館被 A 區勾走，就自動從 B 區消失」不是靠 UI 自律，是資料模型本身
  * 不允許同時存在兩處 —— 勾選＝搬過來，原本那一區自然就沒有它了。
  *
- * ── 為什麼容許「沒有定價區的場館」──
- * 因為讓它變成錯誤反而更糟：勾選 UI 上取消勾選是自然動作，若因此擋下來，
- * 使用者就沒辦法把場館從 A 區搬走再搬到 B 區。而沒有定價區的場館並不會
- * 靜默出錯 —— services/courseConfig 讀到就丟 VENUE_ZONE_MISSING，該場館的
- * 報名會明確失敗。所以這裡的作法是「允許，但一定要看得見」：
- * 清單端點會回 unassigned_venues，異動端點也會把剛變成未分配的場館回給前端。
+ * ── 為什麼容許「沒有定價區的場館」，而且不當成警告 ──
+ * 因為對大多數場館來說，「沒有定價區」是正常狀態而不是錯誤：26 個場館裡只有
+ * 三個真的有家教課期（新北高中 146、三重商工 175、三民高中 151），其餘多半是
+ * 勞務館，根本沒有這個品項。把「未分配 N 館」做成醒目提示，等於天天喊狼來了，
+ * 真正該注意的那次反而會被當成背景雜訊。
+ *
+ * 所以警告的條件收窄成「**這個場館真的有在賣課**，卻掉出定價區」——
+ * 那才是會壞事的情況（既有課期的報名會開始回 VENUE_ZONE_MISSING）。
+ * 沒賣課的場館沒有定價區，不需要任何提示。
  */
 const express = require('express');
 const { pool } = require('../../models/db');
@@ -38,9 +41,15 @@ function parsePositiveInt(raw, { min = 1, max, fallback = null }) {
   return n;
 }
 
-async function unassignedVenues(db) {
+// 只回「有課期、卻沒有定價區」的場館。沒賣課的場館不算問題，不要回。
+async function unassignedVenuesWithCourses(db, onlyIds = null) {
   const r = await db.query(
-    `SELECT id, name FROM venues WHERE pricing_zone_id IS NULL ORDER BY id`);
+    `SELECT v.id, v.name
+       FROM venues v
+      WHERE v.pricing_zone_id IS NULL
+        AND ($1::text[] IS NULL OR v.id = ANY($1))
+        AND EXISTS (SELECT 1 FROM course_periods cp WHERE cp.venue_id = v.id)
+      ORDER BY v.id`, [onlyIds]);
   return r.rows;
 }
 
@@ -63,7 +72,8 @@ router.get('/', requireAdminAuth, READ_ROLES, async (req, res) => {
       // 所有場館都列出來：勾選 UI 需要知道「這個場館現在在哪一區」才能顯示歸屬，
       // 也才做得到「勾了就從別區搬過來」。
       all_venues: names.rows,
-      unassigned_venues: await unassignedVenues(pool),
+      // 正常情況是空陣列。只有「有課期卻沒定價區」才列進來 —— 那是真的會壞事的狀況。
+      unassigned_with_courses: await unassignedVenuesWithCourses(pool),
     });
   } catch (err) {
     console.error('[admin/pricing-zones GET]', err);
@@ -194,20 +204,24 @@ router.put('/:id/venues', requireAdminAuth, WRITE_ROLES, async (req, res) => {
     if (ids.length) {
       await client.query('UPDATE venues SET pricing_zone_id = $1, updated_at = NOW() WHERE id = ANY($2)', [id, ids]);
     }
-    // 取消勾選的場館變成未分配。不擋下來的理由見檔頭；但一定要回報，
-    // 因為未分配的場館無法報名（courseConfig 會丟 VENUE_ZONE_MISSING）。
+    // 取消勾選的場館變成未分配。不擋下來的理由見檔頭。
     const orphanedRows = await client.query(
       `UPDATE venues SET pricing_zone_id = NULL, updated_at = NOW()
         WHERE pricing_zone_id = $1 AND NOT (id = ANY($2::text[]))
         RETURNING id, name`, [id, ids]);
+    // 只有「真的有在賣課」的場館掉出定價區才提醒 —— 那會讓既有課期的報名開始失敗。
+    // 沒賣課的場館（多數是勞務館）沒有定價區完全正常，提醒它只會製造雜訊。
+    const risky = orphanedRows.rowCount
+      ? await unassignedVenuesWithCourses(client, orphanedRows.rows.map((v) => v.id))
+      : [];
     await client.query('COMMIT');
     res.json({
       ok: true,
       zone_id: id,
       assigned: ids.length,
       unassigned: orphanedRows.rows,
-      warning: orphanedRows.rowCount
-        ? `${orphanedRows.rows.map((v) => v.name).join('、')} 目前沒有定價區，這些場館將無法報名，請盡快指派到其他定價區`
+      warning: risky.length
+        ? `${risky.map((v) => v.name).join('、')} 已有課程在跑，但現在沒有定價區，該館的報名會失敗，請指派到其他需求頁`
         : null,
     });
   } catch (err) {
