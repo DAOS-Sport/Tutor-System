@@ -136,6 +136,16 @@ CREATE TABLE IF NOT EXISTS students (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 課別字典（F-A08）：course_type 是全公司共用的課別編號。
+-- 分區之前它同時是 course_type_configs 的主鍵，所以三張表的外鍵都指著那裡；
+-- 分區之後「同一課別在不同區各有一份設定」，course_type 在 configs 裡不再唯一，
+-- 那些外鍵就失去可指的目標。把課別編號獨立成字典是語意上正確的位置：
+-- 團購訂單指的是「一對三這個課別」，不是「某一區的一對三價格設定」。
+CREATE TABLE IF NOT EXISTS course_types (
+  course_type INTEGER PRIMARY KEY,
+  created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS course_type_configs (
   course_type  INTEGER PRIMARY KEY,
   label        VARCHAR(50) NOT NULL,
@@ -200,7 +210,7 @@ EXCEPTION WHEN undefined_table THEN NULL; END $$;
 -- F-A07 編輯軌跡：每次 新增 / 編輯(立即) / 編輯(排程) / 取消排程 / 排程套用 各寫一筆（append-only）。
 CREATE TABLE IF NOT EXISTS course_type_config_audit_logs (
   id          BIGSERIAL PRIMARY KEY,
-  course_type INTEGER NOT NULL REFERENCES course_type_configs(course_type) ON DELETE CASCADE,
+  course_type INTEGER NOT NULL REFERENCES course_types(course_type) ON DELETE CASCADE,
   at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   action      TEXT NOT NULL,          -- 新增 / 編輯(立即) / 編輯(排程) / 取消排程 / 排程套用
   by_user     TEXT,                   -- 操作者（取自 req.adminUser；排程套用 = 'system'）
@@ -235,7 +245,7 @@ CREATE TABLE IF NOT EXISTS group_orders (
   id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   leader_parent_id UUID NOT NULL REFERENCES parents(id) ON DELETE CASCADE,
   venue_id         VARCHAR(10) NOT NULL REFERENCES venues(id) ON DELETE RESTRICT,
-  course_type      INTEGER NOT NULL REFERENCES course_type_configs(course_type) ON DELETE RESTRICT,
+  course_type      INTEGER NOT NULL REFERENCES course_types(course_type) ON DELETE RESTRICT,
   coach_id         UUID REFERENCES coaches(id) ON DELETE SET NULL,
   status           VARCHAR(20) NOT NULL DEFAULT 'forming',
   join_token       VARCHAR(64) NOT NULL UNIQUE,
@@ -2051,6 +2061,30 @@ CREATE TABLE IF NOT EXISTS job_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_job_runs_job_name ON job_runs(job_name, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_job_runs_status ON job_runs(status) WHERE status = 'running';
+
+-- ── 定價區（F-A08）─────────────────────────────────────────
+-- 為什麼是一張表、而不是在 venues 上加一個 region 字串：定價區是營運端「可以自己開的」。
+-- 現在是三蘆與松山，未來擴館（新莊、新店…）要能自行新增並命名，不該每開一個館就改一次程式。
+--
+-- 一期堂數與期數上下限也掛在這裡：松山一期 10 堂、三蘆 6 堂，而 admin_enrollments 的拆期
+-- 邏輯（1 期 = N 堂，超過就 ceil(總堂數/N) 拆單）直接吃這個值 —— 它跟著區走，不是全域。
+CREATE TABLE IF NOT EXISTS pricing_zones (
+  id                  SERIAL PRIMARY KEY,
+  name                VARCHAR(50) NOT NULL UNIQUE,
+  sessions_per_period INTEGER NOT NULL DEFAULT 6,
+  period_count_min    INTEGER NOT NULL DEFAULT 1,
+  period_count_max    INTEGER NOT NULL DEFAULT 6,
+  is_active           BOOLEAN NOT NULL DEFAULT TRUE,
+  sort_order          INTEGER NOT NULL DEFAULT 0,
+  created_at          TIMESTAMPTZ DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ DEFAULT NOW()
+);
+-- venues.pricing_zone_id 刻意保持可為 NULL：設成 NOT NULL 會讓「新增場館」在補上
+-- 選擇定價區的 UI 之前直接失敗。真正的守門在讀取端（services/courseConfig）——
+-- 場館沒有定價區就丟例外，不會靜默拿到別區的價。
+DO $$ BEGIN ALTER TABLE venues ADD COLUMN IF NOT EXISTS pricing_zone_id INTEGER REFERENCES pricing_zones(id); EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE course_type_configs ADD COLUMN IF NOT EXISTS pricing_zone_id INTEGER REFERENCES pricing_zones(id); EXCEPTION WHEN undefined_table THEN NULL; END $$;
+CREATE INDEX IF NOT EXISTS idx_venues_pricing_zone ON venues(pricing_zone_id);
 `;
 
 // 預設關鍵字清單（F-A07，可在後台增減 / 停用）
@@ -2313,6 +2347,82 @@ const DEFAULT_THRESHOLDS = [
   { metric: 'renew_rate',   min_value: 0.60, window_months: 3 },
 ];
 
+/**
+ * 定價區的資料搬遷（F-A08）。每次啟動都跑，全程 idempotent。
+ *
+ * 三個步驟，順序不能換：
+ *   1. 沒有任何定價區時建一個「三蘆」——只在表為空時建，之後改名不會被蓋回去
+ *   2. 把還沒有定價區的場館與課別設定回填到預設區
+ *   3. course_type_configs 主鍵由 (course_type) 換成 (pricing_zone_id, course_type)
+ *
+ * 第 3 步是關鍵：換完之後「同一個課別在不同區可以有不同價」才成立。
+ * 換主鍵前一定要先回填完 —— 主鍵欄位隱含 NOT NULL，有 NULL 就換不過去。
+ */
+async function ensurePricingZones() {
+  const zoneCount = await pool.query('SELECT COUNT(*)::int AS n FROM pricing_zones');
+  if (zoneCount.rows[0].n === 0) {
+    await pool.query(
+      `INSERT INTO pricing_zones (name, sessions_per_period, period_count_min, period_count_max, sort_order)
+       VALUES ('三蘆', 6, 1, 6, 1) ON CONFLICT (name) DO NOTHING`
+    );
+  }
+  // 預設區＝排序最前的啟用中定價區。既有場館與設定一律先掛在這裡，
+  // 行為與分區前完全相同；松山要移到自己的區是之後在後台做的事。
+  const def = await pool.query(
+    `SELECT id FROM pricing_zones WHERE is_active ORDER BY sort_order, id LIMIT 1`
+  );
+  if (!def.rowCount) return;   // 理論上不會發生；沒有區就什麼都別動
+  const zoneId = def.rows[0].id;
+
+  await pool.query('UPDATE venues SET pricing_zone_id = $1 WHERE pricing_zone_id IS NULL', [zoneId]);
+  await pool.query(
+    'UPDATE course_type_configs SET pricing_zone_id = $1 WHERE pricing_zone_id IS NULL', [zoneId]);
+
+  // 主鍵換過了沒？看現行 PK 有沒有含 pricing_zone_id，有就跳過（重啟不重做）。
+  const pk = await pool.query(`
+    SELECT a.attname
+      FROM pg_index i
+      JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+     WHERE i.indrelid = 'course_type_configs'::regclass AND i.indisprimary`);
+  const pkCols = pk.rows.map((r) => r.attname);
+  if (pkCols.includes('pricing_zone_id')) return;   // 已經換過，重啟不重做
+
+  // (a) 課別字典回填。來源刻意包含三張參照表，不只 configs ——
+  //     萬一有 config 已刪、訂單還在的歷史列，少收就會讓下面重建外鍵失敗。
+  await pool.query(`
+    INSERT INTO course_types (course_type)
+    SELECT course_type FROM course_type_configs WHERE course_type IS NOT NULL
+    UNION SELECT course_type FROM group_orders WHERE course_type IS NOT NULL
+    UNION SELECT course_type FROM admin_course_intros WHERE course_type IS NOT NULL
+    UNION SELECT course_type FROM course_type_config_audit_logs WHERE course_type IS NOT NULL
+    ON CONFLICT DO NOTHING`);
+
+  // (b) 三個外鍵改指字典表。它們原本指 course_type_configs(course_type)，
+  //     那個唯一性正是分區要打破的東西，所以必須改指，不能只是刪掉了事 ——
+  //     group_orders 有真實訂單，失去外鍵就等於允許塞不存在的課別。
+  await pool.query(`
+    ALTER TABLE admin_course_intros DROP CONSTRAINT IF EXISTS fk_admin_course_intros_course_type;
+    ALTER TABLE admin_course_intros ADD CONSTRAINT fk_admin_course_intros_course_type
+      FOREIGN KEY (course_type) REFERENCES course_types(course_type) ON DELETE CASCADE;
+    ALTER TABLE course_type_config_audit_logs
+      DROP CONSTRAINT IF EXISTS course_type_config_audit_logs_course_type_fkey;
+    ALTER TABLE course_type_config_audit_logs ADD CONSTRAINT course_type_config_audit_logs_course_type_fkey
+      FOREIGN KEY (course_type) REFERENCES course_types(course_type) ON DELETE CASCADE;
+    ALTER TABLE group_orders DROP CONSTRAINT IF EXISTS group_orders_course_type_fkey;
+    ALTER TABLE group_orders ADD CONSTRAINT group_orders_course_type_fkey
+      FOREIGN KEY (course_type) REFERENCES course_types(course_type) ON DELETE RESTRICT;`);
+
+  // (c) 換主鍵，並讓 configs 自己也指向字典。
+  await pool.query(`
+    ALTER TABLE course_type_configs ALTER COLUMN pricing_zone_id SET NOT NULL;
+    ALTER TABLE course_type_configs DROP CONSTRAINT IF EXISTS course_type_configs_pkey;
+    ALTER TABLE course_type_configs ADD PRIMARY KEY (pricing_zone_id, course_type);
+    ALTER TABLE course_type_configs DROP CONSTRAINT IF EXISTS course_type_configs_course_type_fkey;
+    ALTER TABLE course_type_configs ADD CONSTRAINT course_type_configs_course_type_fkey
+      FOREIGN KEY (course_type) REFERENCES course_types(course_type) ON DELETE CASCADE;`);
+  console.log('[core bootstrap] course_type_configs 主鍵已改為 (pricing_zone_id, course_type)');
+}
+
 async function seedCourseTypeConfigs() {
   // 商品品相＝乾淨的 1對1 ～ 1對6 系列（每張卡片＝一個師生比級距，max_students=編號、min_students=1）。
   // base_price 為每人每期單價佔位（沿用遞減趨勢），實際價格由後台「課程需求管理」(F-A07) 維護。
@@ -2324,14 +2434,25 @@ async function seedCourseTypeConfigs() {
     { course_type: 5, label: '1對5',   max_students: 5, min_students: 1, sort_order: 5, base_price: 3000 },
     { course_type: 6, label: '1對6',   max_students: 6, min_students: 1, sort_order: 6, base_price: 3000 },
   ];
+  // 課別字典先補齊：configs 對它有外鍵，字典沒有這個課別就插不進去。
   for (const d of defaults) {
-    await pool.query(
-      `INSERT INTO course_type_configs (course_type, label, max_students, min_students, sort_order, base_price)
-       VALUES ($1,$2,$3,$4,$5,$6)
-       ON CONFLICT (course_type) DO UPDATE SET base_price = EXCLUDED.base_price
-       WHERE course_type_configs.base_price = 0`,
-      [d.course_type, d.label, d.max_students, d.min_students, d.sort_order, d.base_price]
-    );
+    await pool.query('INSERT INTO course_types (course_type) VALUES ($1) ON CONFLICT DO NOTHING', [d.course_type]);
+  }
+  // 分區之後，「補預設值」只針對一筆設定都還沒有的定價區（新開的區給它一套起點）。
+  // 不對既有區逐筆 upsert 是刻意的：那會讓後台刪掉的課別在下次重啟時復活。
+  const emptyZones = await pool.query(`
+    SELECT z.id FROM pricing_zones z
+     WHERE NOT EXISTS (SELECT 1 FROM course_type_configs c WHERE c.pricing_zone_id = z.id)`);
+  for (const z of emptyZones.rows) {
+    for (const d of defaults) {
+      await pool.query(
+        `INSERT INTO course_type_configs
+           (pricing_zone_id, course_type, label, max_students, min_students, sort_order, base_price)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         ON CONFLICT (pricing_zone_id, course_type) DO NOTHING`,
+        [z.id, d.course_type, d.label, d.max_students, d.min_students, d.sort_order, d.base_price]
+      );
+    }
   }
   // 既有環境一次性升級：把舊的「1對4~6」團體班(min4/max6)拆成乾淨的「1對4」(min1/max4)。
   // 僅在仍為舊 seed 設定時才動，避免覆蓋後台已自訂的 label／人數。
@@ -2409,20 +2530,19 @@ async function ensureChatRoomsForActivePeriods() {
 
 // Task #67：等 course_type_configs 已存在所有 intros 對應的 course_type 後，加上 FK 與 cascade
 async function ensureCourseIntroFK() {
-  // 補齊缺失的 course_type_configs（避免 FK 失敗：例如歷史 intro 4 但沒對應 config）
+  // 課程介紹的外鍵改指課別字典（分區後 course_type 在 configs 裡不再唯一）。
+  // 補的也是字典，不再是「幫它生一筆價格設定」—— 價格屬於某一個定價區，
+  // 由介紹資料反推要塞進哪一區是沒有答案的，硬塞就是憑空捏造一筆價格。
   await pool.query(`
-    INSERT INTO course_type_configs (course_type, label, max_students, sort_order)
-    SELECT i.course_type, COALESCE(NULLIF(i.title, ''), '一對' || i.course_type), i.course_type, i.course_type
-      FROM admin_course_intros i
-      LEFT JOIN course_type_configs c ON c.course_type = i.course_type
-     WHERE c.course_type IS NULL
-    ON CONFLICT (course_type) DO NOTHING
+    INSERT INTO course_types (course_type)
+    SELECT DISTINCT i.course_type FROM admin_course_intros i WHERE i.course_type IS NOT NULL
+    ON CONFLICT DO NOTHING
   `);
   await pool.query(`
     DO $$ BEGIN
       ALTER TABLE admin_course_intros
         ADD CONSTRAINT fk_admin_course_intros_course_type
-        FOREIGN KEY (course_type) REFERENCES course_type_configs(course_type) ON DELETE CASCADE;
+        FOREIGN KEY (course_type) REFERENCES course_types(course_type) ON DELETE CASCADE;
     EXCEPTION WHEN duplicate_object THEN NULL; END $$;
   `);
 }
@@ -2436,6 +2556,8 @@ async function bootstrap() {
     await seedSlotsAndSessions();
     await seedKeywords();
     await seedTagsAndThresholds();
+    // 必須排在 seedCourseTypeConfigs 之前：後者要用換好的 (pricing_zone_id, course_type) 主鍵。
+    await ensurePricingZones();
     await seedCourseTypeConfigs();
     await ensureCourseIntroFK();
     await ensureChatRoomsForActivePeriods();
