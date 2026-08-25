@@ -98,7 +98,8 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
   useEffect(() => {
     let alive = true;
     // (5) 適用組別 ← 課程需求管理；失敗時退回 initial.applicable_course_types 推導出的選項
-    courseTypesApi.list()
+    // 促銷適用於全公司，不屬於任何定價區 —— 用不帶價格的選單端點。
+    courseTypesApi.options()
       .then((rows) => {
         if (!alive) return;
         const opts = (Array.isArray(rows) ? rows : [])

@@ -30,7 +30,7 @@ function check(name, fn) {
 
 check('API client 每一支都收定價區', () => {
   for (const sig of [
-    'list:   (zone)',
+    'list:   (zoneOrOpts)',
     'create: (zone, data)',
     'update: (zone, type, patch)',
     'remove: (zone, type)',
@@ -38,6 +38,13 @@ check('API client 每一支都收定價區', () => {
   ]) {
     assert.ok(API.includes(sig), `courseTypesApi 缺少帶區的簽名：${sig}`);
   }
+});
+
+check('選單用的 options 端點不帶價格', () => {
+  // 促銷這類「適用於全公司」的設定不屬於任何定價區，要它指定一區沒有意義；
+  // 但也不能讓它拿到某一區的價 —— 所以那支端點一個價格欄位都不回。
+  assert.ok(API.includes('options: ()'), 'courseTypesApi 需要 options()');
+  assert.ok(/course-types\/options/.test(API), 'options 走專用端點');
 });
 
 check('頁面所有 courseTypesApi 呼叫都把區傳進去', () => {

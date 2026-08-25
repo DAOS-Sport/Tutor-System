@@ -70,18 +70,51 @@ async function writeCtAudit(db, courseType, zoneId, action, byUser, changes, not
 // F-A08：每一支都必須指名定價區。分區之後「一對三的設定」這句話不完整 ——
 // 少了區，讀會拿到別區的設定，寫會把別區的價一起蓋掉（UPDATE ... WHERE course_type=$1
 // 會命中每一區各一列）。所以缺就 400，不預設任何一區、也不取第一區。
-function zoneOf(req) {
+// 可以直接給 zone，也可以給 venue 由場館推導 —— 呼叫端（例如手動建檔）手上有的
+// 通常是場館而不是定價區編號，讓它自己去查一次反而多一個會忘記帶的地方。
+async function zoneOf(req) {
   const raw = req.query.zone !== undefined ? req.query.zone : (req.body || {}).pricing_zone_id;
   const n = Number(raw);
-  return Number.isInteger(n) && n > 0 ? n : null;
+  if (Number.isInteger(n) && n > 0) return n;
+  const venue = String(req.query.venue || (req.body || {}).venue_id || '').trim();
+  if (!venue) return null;
+  const r = await pool.query('SELECT pricing_zone_id FROM venues WHERE id = $1', [venue]);
+  return r.rows[0]?.pricing_zone_id || null;
 }
-const ZONE_REQUIRED = { error: '請指定定價區（zone）', code: 'ZONE_REQUIRED' };
+const ZONE_REQUIRED = { error: '請指定定價區（zone 或 venue）', code: 'ZONE_REQUIRED' };
 
 const auditUser = (req) => req.adminUser?.name || req.adminUser?.username || 'unknown';
 
+/**
+ * GET /options —— 給「選單」用的課別清單，跨定價區彙總，**不含任何價格欄位**。
+ *
+ * 促銷設定那種畫面只需要「有哪些課別可以勾」，它適用於全公司、不屬於任何一區。
+ * 讓它去指定一個定價區是沒有意義的（要指哪一區？），但也不能讓它拿到某一區的價格
+ * —— 所以這支乾脆一個價格欄位都不回：拿不到價，就不可能顯示錯的價。
+ */
+router.get('/options', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+  try {
+    // zone-scan-exempt：刻意跨定價區彙總。豁免的前提是這支不回任何價格欄位，
+    // 掃描器會驗證這個前提（含 base_price / trial_price / tier_prices 就不給過）。
+    const r = await pool.query(
+      `SELECT course_type,
+              MIN(label)                 AS label,
+              BOOL_OR(is_active)         AS is_active,
+              MIN(sort_order)            AS sort_order
+         FROM course_type_configs
+        GROUP BY course_type
+        ORDER BY MIN(sort_order), course_type`
+    );
+    res.json(r.rows);
+  } catch (err) {
+    console.error('[admin/course-types options]', err);
+    res.status(500).json({ error: 'load failed' });
+  }
+});
+
 router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
   try {
-    const zoneId = zoneOf(req);
+    const zoneId = await zoneOf(req);
     if (!zoneId) return res.status(400).json(ZONE_REQUIRED);
     // 讀取前先套用「已到期」排程（保險：即使每日 cron 沒跑，下次讀取也會生效）。
     try { await applyDueScheduledCourseTypeChanges(pool); } catch (e) { console.warn('[course-types apply-due]', e.message); }
@@ -117,7 +150,7 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
     // 僅做型別解析與安全預設（避免 NaN/NULL 寫入 NOT NULL 欄位）。
     const ct = parseInt(course_type, 10);
     if (isNaN(ct)) return res.status(400).json({ error: 'course_type 必須為整數' });
-    const zoneId = zoneOf(req);
+    const zoneId = await zoneOf(req);
     if (!zoneId) return res.status(400).json(ZONE_REQUIRED);
     const lb = label == null ? '' : String(label).trim();
     // max_students NOT NULL：未填則沿用前台「最多＝編號」習慣預設為 ct；可為任意整數。
@@ -190,7 +223,7 @@ router.patch('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, 
   try {
     const ct = parseInt(req.params.type, 10);
     if (isNaN(ct)) return res.status(400).json({ error: 'invalid type' });
-    const zoneId = zoneOf(req);
+    const zoneId = await zoneOf(req);
     if (!zoneId) return res.status(400).json(ZONE_REQUIRED);
 
     await client.query('BEGIN');
@@ -323,7 +356,7 @@ router.delete('/:type', requireAdminAuth, requireAdminRole('admin'), async (req,
   try {
     const ct = parseInt(req.params.type, 10);
     if (isNaN(ct)) return res.status(400).json({ error: 'invalid type' });
-    const zoneId = zoneOf(req);
+    const zoneId = await zoneOf(req);
     if (!zoneId) return res.status(400).json(ZONE_REQUIRED);
     // 報名記錄的檢查也要限定在這一區的場館：三蘆有一對三的報名，不該擋住
     // 松山把自己那份一對三設定刪掉。
@@ -352,7 +385,7 @@ router.get('/:type/audit-logs', requireAdminAuth, AM, async (req, res) => {
   try {
     const ct = parseInt(req.params.type, 10);
     if (isNaN(ct)) return res.status(400).json({ error: 'invalid type' });
-    const zoneId = zoneOf(req);
+    const zoneId = await zoneOf(req);
     if (!zoneId) return res.status(400).json(ZONE_REQUIRED);
     // 只看這一區的改價紀錄。兩區的軌跡混在同一條時間軸上，等於查不出誰改了誰的價。
     // 分區前寫入的舊紀錄沒有 pricing_zone_id，一併帶出來（它們本來就是全公司的）。

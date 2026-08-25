@@ -15,6 +15,12 @@
  * 報 15 筆但實際是 21 筆。所以這版改成：**任何提到這張表的 SQL 都算**，
  * 前後各看 6 行找 pricing_zone_id。掃描器寧可誤報，不可漏報。
  *
+ * ── 具名豁免 ──
+ * 有些查詢是刻意跨定價區的，例如「給選單用的課別清單」——它適用於全公司，
+ * 要它指定一個定價區反而沒有意義。這種可以在附近加註 `zone-scan-exempt`。
+ * 但豁免要驗理由：**該查詢不得回傳任何價格欄位**（base_price／trial_price／
+ * tier_prices）。拿不到價，就不可能顯示錯的價；標了卻帶價格欄位，照樣算違規。
+ *
  * ── 為什麼是棘輪 ──
  * 舊查詢還沒改完，讓測試長期紅會訓練大家忽略失敗。所以用已知清單：
  * 冒出清單外的新違規會紅、清單上的改好卻沒調數字也會紅 —— 只能縮小。
@@ -57,13 +63,29 @@ function walk(dir, out = []) {
   return out;
 }
 
+// 價格欄位一旦出現，就不可能是「跨區彙總也無所謂」的查詢。
+const PRICE_COLUMNS = ['base_price', 'trial_price', 'tier_prices'];
+
 function scan(src) {
+  // 註解要留著才看得到豁免標記，所以標記先抽出來（用未剝註解的原文）。
+  const rawLines = src.split('\n');
   const lines = stripComments(src).split('\n');
   const found = [];
   for (let i = 0; i < lines.length; i += 1) {
     if (!lines[i].includes('course_type_configs')) continue;
     const window = lines.slice(Math.max(0, i - 6), i + 7).join(' ');
     if (window.includes('pricing_zone_id')) continue;
+    // 具名豁免：刻意跨定價區的查詢（例如只給選單用的課別清單）。
+    // 但豁免不是免死金牌 —— 必須真的不含價格欄位，否則照樣算違規。
+    const rawWindow = rawLines.slice(Math.max(0, i - 8), i + 9).join(' ');
+    if (rawWindow.includes('zone-scan-exempt')) {
+      const leaked = PRICE_COLUMNS.filter((c) => window.includes(c));
+      if (!leaked.length) continue;
+      console.error(`  FAIL 豁免無效：這支標了 zone-scan-exempt 卻回了 ${leaked.join('、')}`
+        + '（跨區查詢不得帶價格欄位）');
+      found.push({ line: i + 1, verb: 'EXEMPT-INVALID' });
+      continue;
+    }
     const w = window.toUpperCase();
     let verb = 'read';
     if (/UPDATE\s+COURSE_TYPE_CONFIGS/.test(w)) verb = 'UPDATE';
@@ -86,6 +108,10 @@ let failed = 0;
 const fail = (msg) => { failed += 1; console.error('  FAIL ' + msg); };
 
 for (const [file, found] of Object.entries(actual)) {
+  const invalid = found.filter((x) => x.verb === 'EXEMPT-INVALID');
+  if (invalid.length) {
+    fail(`${file}: ${invalid.length} 筆無效豁免（標了 zone-scan-exempt 卻回價格欄位）`);
+  }
   const allowed = KNOWN_UNZONED[file] || 0;
   if (found.length > allowed) {
     fail(`${file}: ${found.length} 筆未帶定價區（清單允許 ${allowed}）\n`

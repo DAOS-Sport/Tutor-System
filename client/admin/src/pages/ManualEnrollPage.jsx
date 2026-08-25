@@ -184,12 +184,18 @@ export default function ManualEnrollPage() {
   const [filed, setFiled] = useState([]);
 
   useEffect(() => { venuesApi.list().then((v) => setVenues(v || [])).catch(() => {}); }, []);
+  // 課程需求（含價格）依「已選館別」載入：價格由該場館所屬的定價區決定，
+  // 沒選館別就沒有「哪一區的價」可言，所以不先撈。換館別要重撈 —— 兩個館可能不同區。
   useEffect(() => {
-    courseTypesApi.list()
-      .then((d) => setCourseTypes(Array.isArray(d) ? d : []))
-      .catch(() => setCourseTypes([]))
-      .finally(() => setCourseTypesLoading(false));
-  }, []);
+    if (!venueId) { setCourseTypes([]); setCourseTypesLoading(false); return undefined; }
+    let alive = true;
+    setCourseTypesLoading(true);
+    courseTypesApi.list({ venue: venueId })
+      .then((d) => { if (alive) setCourseTypes(Array.isArray(d) ? d : []); })
+      .catch(() => { if (alive) setCourseTypes([]); })
+      .finally(() => { if (alive) setCourseTypesLoading(false); });
+    return () => { alive = false; };
+  }, [venueId]);
   useEffect(() => {
     if (isStaff && user?.venue_id) { setVenueId(user.venue_id); return; }
     if (parent?.primary_venue_id) setVenueId(parent.primary_venue_id);
@@ -235,7 +241,11 @@ export default function ManualEnrollPage() {
   }, [parent, pickedStudentIds, extraStudents]);
 
   // 金額：原價 − 折讓 = 實際；實際可手改（反推折讓）；單價 = 實際 / 堂數（唯讀）。
-  function onBase(v) { setF((p) => ({ ...p, basePrice: v, actual: String(Math.max(0, num(v) - num(p.allowance))) })); }
+  // 櫃檯自己改過原價 → 之後人頭數變動不再自動覆蓋（補登歷史單常常要填實際收的金額）。
+  function onBase(v) {
+    priceTouchedRef.current = true;
+    setF((p) => ({ ...p, basePrice: v, actual: String(Math.max(0, num(v) - num(p.allowance))) }));
+  }
   function onAllowance(v) { setF((p) => ({ ...p, allowance: v, actual: String(Math.max(0, num(p.basePrice) - num(v))) })); }
   function onActual(v) { setF((p) => ({ ...p, actual: v, allowance: String(Math.max(0, num(p.basePrice) - num(v))) })); }
   // 選組別 → 自動帶出「課程需求管理」設定的每期價格（原價），折讓沿用現有值重算實收；
@@ -260,8 +270,15 @@ export default function ManualEnrollPage() {
     return resolveUnitPrice(cfg.base_price, mult, cfg.tier_prices);
   }
   // 帶出價格；折讓沿用現有值重算實收。帶完仍可手動覆蓋（與原本行為一致）。
+  //
+  // 原價欄位是「這張單的總額」—— 後端 original_price 是照收的，不會再乘任何東西。
+  // 所以這裡要乘上人頭數：選了 2 位學員報一對二 → 3,750 × 2 = 7,500。
+  // 不乘的話櫃檯會照單價收，兩個人只收一個人的錢，而且畫面上完全看不出來。
   function applyPrice(courseTypeValue, coachIdValue, trialFlag = isTrial) {
-    const bp = basePriceFor(courseTypeValue, coachIdValue, trialFlag);
+    const unit = basePriceFor(courseTypeValue, coachIdValue, trialFlag);
+    const heads = Math.max(1, studentNames.length);
+    const bp = unit === null ? null : unit * heads;
+    priceTouchedRef.current = false;   // 自動帶入不算「櫃檯自己改過」
     setF((p) => ({
       ...p,
       courseType: courseTypeValue,
@@ -301,6 +318,7 @@ export default function ManualEnrollPage() {
   // 有變化時才重算（避免每次 render 都跑）。人數 0（還沒選學員）不自動帶。
   // 若多筆組別範圍重疊（DB 沒有唯一性約束擋這種狀況），取 activeCourseTypes 陣列中第一個符合的
   // （已依 course_type_configs.sort_order 排序，通常就是最合理的預設）。
+  const priceTouchedRef = useRef(false);
   const lastAutoMatchedCountRef = useRef(null);
   useEffect(() => {
     const n = studentNames.length;
@@ -313,6 +331,27 @@ export default function ManualEnrollPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [studentNames.length, activeCourseTypes]);
+  // 人頭數變了，總額要跟著變。C-9 只在「還沒手動選過組別」時才會重帶價格，
+  // 所以櫃檯若已自己選過組別，少了這段就會停在舊人數的金額。
+  const lastPricedCountRef = useRef(null);
+  useEffect(() => {
+    const n = studentNames.length;
+    if (!f.courseType || n === 0) return;
+    if (lastPricedCountRef.current === n) return;
+    lastPricedCountRef.current = n;
+    if (priceTouchedRef.current) return;
+    applyPrice(f.courseType, coachId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [studentNames.length, f.courseType, coachId, activeCourseTypes]);
+
+  // 畫面上把算式寫出來，金額才不是憑空冒出來的
+  const priceFormula = (() => {
+    const unit = f.courseType ? basePriceFor(f.courseType, coachId) : null;
+    const heads = studentNames.length;
+    if (unit === null || heads === 0) return '';
+    return `${unit.toLocaleString()} × ${heads} 人 = ${(unit * heads).toLocaleString()}`;
+  })();
+
   function preset(p) {
     const b = num(f.basePrice);
     if (b <= 0) { toast.error('請先輸入原始費用（原價）'); return; }
@@ -624,6 +663,12 @@ export default function ManualEnrollPage() {
                       <input type="number" value={f.basePrice} onChange={(e) => onBase(e.target.value)} placeholder="請輸入金額"
                         className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-8 pr-3 text-sm font-black text-slate-900 outline-none focus:border-emerald-500 focus:bg-white focus:ring-4 focus:ring-emerald-500/10" />
                     </div>
+                    {priceFormula && (
+                      <div className="mt-1 text-[11px] text-slate-500">
+                        {priceFormula}
+                        {priceTouchedRef.current && <span className="ml-1 text-amber-600">（已手動調整，不再自動重算）</span>}
+                      </div>
+                    )}
                   </div>
                   <div>
                     <Label>折讓金額</Label>
