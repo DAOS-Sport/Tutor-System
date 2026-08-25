@@ -496,6 +496,20 @@ async function readEnrollment(id, { resolveLineProfile = false } = {}) {
     lineDisplayName = profile.displayName || '';
     lineProfileState = profile.state;
   }
+  return shapeEnrollmentRow(row, {
+    lineDisplayName,
+    lineProfileState,
+    auditRows: a.rows,
+  });
+}
+
+/**
+ * 單列 → 前端物件。清單與詳情共用同一份，避免兩邊欄位漂移。
+ *
+ * auditRows 省略時不回 audit_logs：清單頁根本沒有用到它（只有詳情視窗會顯示），
+ * 但每一筆都去撈一次的話，1,100 筆就是 1,100 個查詢和一大包沒人看的 JSON。
+ */
+function shapeEnrollmentRow(row, { lineDisplayName = '', lineProfileState = 'NOT_BOUND', auditRows = null } = {}) {
   return {
     id: row.id,
     parent_name: row.parent_name,
@@ -534,13 +548,15 @@ async function readEnrollment(id, { resolveLineProfile = false } = {}) {
     enrollment_batch_id: row.enrollment_batch_id || null,
     created_by: row.created_by || null,
     created_by_name: row.created_by_name || null,
-    audit_logs: a.rows.map((x) => ({
-      at: tsToString(x.at),
-      action: x.action,
-      by: x.by_user,
-      ...(x.reason ? { reason: x.reason } : {}),
-      ...(x.refund_amount != null ? { refund_amount: Number(x.refund_amount) } : {}),
-    })),
+    ...(auditRows ? {
+      audit_logs: auditRows.map((x) => ({
+        at: tsToString(x.at),
+        action: x.action,
+        by: x.by_user,
+        ...(x.reason ? { reason: x.reason } : {}),
+        ...(x.refund_amount != null ? { refund_amount: Number(x.refund_amount) } : {}),
+      })),
+    } : {}),
   };
 }
 
@@ -837,37 +853,69 @@ router.get('/', requireAdminAuth, async (req, res) => {
     const scope = getScopedVenueIds(req);
     const where = [];
     const args = [];
-    if (status) { args.push(status); where.push(`status = $${args.length}`); }
+    if (status) { args.push(status); where.push(`ae.status = $${args.length}`); }
     if (scope) {
       args.push(scope);
-      where.push(`venue_id = ANY($${args.length}::text[])`);
+      where.push(`ae.venue_id = ANY($${args.length}::text[])`);
       // manager 可在自己場館範圍內再用 venueId 縮小
       if (req.query.venueId && scope.includes(String(req.query.venueId))) {
         args.push(String(req.query.venueId));
-        where.push(`venue_id = $${args.length}`);
+        where.push(`ae.venue_id = $${args.length}`);
       }
     } else if (req.query.venueId) {
       args.push(req.query.venueId);
-      where.push(`venue_id = $${args.length}`);
+      where.push(`ae.venue_id = $${args.length}`);
     }
     if (search) {
       args.push(`%${search.toLowerCase()}%`);
       const idx = args.length;
+      // 加了 JOIN 之後這些欄位必須指名 ae：admin_users 與 parents 都有 name 之類的同名欄，
+      // 不加前綴會變成「模稜兩可的欄位參照」而整支查詢失敗。
       where.push(`(
-        LOWER(parent_name) LIKE $${idx} OR
-        parent_phone LIKE $${idx} OR
-        LOWER(coach) LIKE $${idx} OR
-        LOWER(id) LIKE $${idx} OR
-        EXISTS (SELECT 1 FROM unnest(students) s WHERE LOWER(s) LIKE $${idx})
+        LOWER(ae.parent_name) LIKE $${idx} OR
+        ae.parent_phone LIKE $${idx} OR
+        LOWER(ae.coach) LIKE $${idx} OR
+        LOWER(ae.id) LIKE $${idx} OR
+        EXISTS (SELECT 1 FROM unnest(ae.students) s WHERE LOWER(s) LIKE $${idx})
       )`);
     }
-    const sql = `SELECT id FROM admin_enrollments
+    // 分頁（選填）。不帶就照舊回全部，避免既有呼叫端行為改變；
+    // 帶了才截斷，給之後的清單頁做無限捲動或分頁用。
+    const rawLimit = Number(req.query.limit);
+    const rawOffset = Number(req.query.offset);
+    const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 1000) : null;
+    const offset = Number.isInteger(rawOffset) && rawOffset > 0 ? rawOffset : 0;
+    let tail = '';
+    if (limit !== null) {
+      args.push(limit); tail += ` LIMIT $${args.length}`;
+      args.push(offset); tail += ` OFFSET $${args.length}`;
+    }
+
+    // 一次撈完，不再逐筆 readEnrollment。
+    // 原本是「先查 id 清單、再對每個 id 各打 2 次查詢」，而且是序列 await ——
+    // 正式庫 1,100 多筆就是一次開頁 2,200 個往返，超時與連線耗盡都由此而來。
+    // 這裡用同一組 JOIN 一次取完；audit_logs 不放進清單（只有詳情視窗會用）。
+    const sql = `SELECT ae.*, au.name AS created_by_name,
+                        p.line_uid AS parent_line_uid,
+                        plp.display_name AS line_display_name,
+                        plp.source AS line_profile_source
+                   FROM admin_enrollments ae
+                   LEFT JOIN admin_users au ON au.id = ae.created_by
+                   LEFT JOIN parents p ON p.is_active=TRUE
+                     AND regexp_replace(COALESCE(p.phone,''),'\\D','','g') =
+                         regexp_replace(COALESCE(ae.parent_phone,''),'\\D','','g')
+                   LEFT JOIN parent_line_profiles plp ON plp.line_uid=p.line_uid
                  ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-                 ORDER BY submitted_at DESC`;
+                 ORDER BY ae.submitted_at DESC${tail}`;
     const r = await pool.query(sql, args);
-    const out = [];
-    for (const row of r.rows) out.push(await readEnrollment(row.id));
-    res.json(out);
+    res.json(r.rows.map((row) => {
+      const name = row.line_display_name || '';
+      return shapeEnrollmentRow(row, {
+        lineDisplayName: name,
+        lineProfileState: name ? 'CACHED' : (row.parent_line_uid ? 'NOT_CACHED' : 'NOT_BOUND'),
+        // auditRows 不傳 → 清單不含 audit_logs
+      });
+    }));
   } catch (err) {
     console.error('[admin/enrollments]', err);
     res.status(500).json({ error: 'list enrollments failed' });
