@@ -20,6 +20,7 @@
 const express = require('express');
 const { formatPlainDate } = require('../../utils/dateTime');
 const { pool } = require('../../models/db');
+const { parsePaging, pagingSql } = require('../../utils/paging');
 const { requireAdminAuth, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
 const { parseRocOrIso, maskId, maskBlood, looksMasked, wantReveal, auditReveal, diffChanges, writeStudentAudit, adminActorName } = require('./_customerShared');
 const ragicWriteback = require('../../services/ragicWriteback');
@@ -104,14 +105,16 @@ router.get('/', requireAdminAuth, async (req, res) => {
     if (identity) { args.push(identity);     where.push(`p.identity = $${args.length}`); }
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
+    const paging = parsePaging(req, { defaultLimit: 500 });
     const r = await pool.query(
+      // 同樣把寫死的 500 換成可分頁；沒帶參數維持原行為。
       `SELECT ${PARENT_COLS}, COUNT(s.id) AS student_count
          FROM parents p
          LEFT JOIN students s ON s.parent_id = p.id
          ${whereSql}
          GROUP BY p.id
          ORDER BY p.updated_at DESC NULLS LAST, p.created_at DESC NULLS LAST
-         LIMIT 500`,
+         ${pagingSql(args, paging)}`,
       args
     );
     res.json(r.rows.map((row) => rowToParent(row, row.student_count)));

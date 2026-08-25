@@ -1,5 +1,6 @@
 const express = require('express');
 const { pool } = require('../../models/db');
+const { parsePaging, pagingSql } = require('../../utils/paging');
 const {
   requireAdminAuth,
   requireAdminRole,
@@ -196,17 +197,25 @@ router.get('/', requireAdminAuth, AMS, async (req, res) => {
       )`);
     }
 
+    const paging = parsePaging(req, { defaultLimit: 500 });
     const r = await pool.query(
       `SELECT cs.checkout_id
          FROM checkout_sessions cs
          LEFT JOIN parents p ON p.id = cs.parent_id
         ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
         ORDER BY cs.created_at DESC
-        LIMIT 500`,
+        ${pagingSql(params, paging)}`,
       params
     );
+    // 原本是「逐筆 await readCheckout」——500 筆就是 500 次序列往返，
+    // 跟所有報名那支同一種病。分頁之後每批只剩幾十筆，再用小併發把等待疊起來。
+    // 併發刻意壓在 8：連線池是共用的，開太大會排擠其他請求，反而更慢。
+    const ids = r.rows.map((row) => row.checkout_id);
     const out = [];
-    for (const row of r.rows) out.push(await readCheckout(pool, row.checkout_id));
+    for (let i = 0; i < ids.length; i += 8) {
+      const chunk = await Promise.all(ids.slice(i, i + 8).map((id) => readCheckout(pool, id)));
+      out.push(...chunk);
+    }
     res.json(out.filter(Boolean));
   } catch (err) {
     console.error('[admin/checkouts GET]', err);

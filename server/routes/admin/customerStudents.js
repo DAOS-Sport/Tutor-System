@@ -15,6 +15,7 @@
 const express = require('express');
 const { formatPlainDate } = require('../../utils/dateTime');
 const { pool } = require('../../models/db');
+const { parsePaging, pagingSql } = require('../../utils/paging');
 const { requireAdminAuth, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
 const { parseRocOrIso, courseTypeLabel, maskId, maskBlood, looksMasked, wantReveal, auditReveal, diffChanges, writeStudentAudit, adminActorName } = require('./_customerShared');
 const ragicWriteback = require('../../services/ragicWriteback');
@@ -69,13 +70,16 @@ router.get('/', requireAdminAuth, async (req, res) => {
     if (code)     { args.push(`%${code}%`); where.push(`(s.student_code ILIKE $${args.length} OR s.id_number ILIKE $${args.length})`); }
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
+    // 原本寫死 LIMIT 500，而學員已經 850 筆 —— 有 350 筆永遠看不到，
+    // 而且畫面上沒有任何跡象。沒帶參數時維持 500 以免舊呼叫端行為改變。
+    const paging = parsePaging(req, { defaultLimit: 500 });
     const reveal = wantReveal(req);
     const r = await pool.query(
       `SELECT ${STUDENT_SELECT}
          FROM students s LEFT JOIN parents p ON p.id = s.parent_id
          ${whereSql}
          ORDER BY s.is_active DESC, s.updated_at DESC NULLS LAST
-         LIMIT 500`,
+         ${pagingSql(args, paging)}`,
       args
     );
     if (reveal && r.rowCount) auditReveal(req, 'student-list', r.rowCount);
