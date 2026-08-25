@@ -26,6 +26,7 @@ const PATHS = [
   ['GroupAutoSubmit', 'group_auto_submit.js'],
   ['IntegrationSessions', 'integration_sessions.js'],
   ['ZonePriceIsolation', 'zone_price_isolation.js'],
+  ['PricingZones', 'pricing_zones.js'],
   ['ManualDeduction', 'admin_manual_deduction.js'],
   ['SessionsRegression', 'admin_sessions_regression.js'],
   ['FamilyShared', 'family_shared_period.js'],
