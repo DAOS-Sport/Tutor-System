@@ -120,7 +120,9 @@ export default function CourseTypesPage() {
   const [zoneBusy, setZoneBusy] = useState(false);
   const [zoneErr, setZoneErr] = useState('');       // 定價區載入失敗訊息（空＝正常）
   const [showAddZone, setShowAddZone] = useState(false);
-  const [zoneForm, setZoneForm] = useState({ name: '', sessions_per_period: 6, period_count_min: 1, period_count_max: 6 });
+  const [zoneForm, setZoneForm] = useState({ name: '', sessions_per_period: 6 });
+  // 現有需求頁的「一期幾堂」也要能改（原本只有新增時能填）。
+  const [zoneSessions, setZoneSessions] = useState('');
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState({ course_type: '', label: '', min_students: '', max_students: '', base_price: '', data_group: '', trial_enabled: false, trial_price: '' });
   const [addErr, setAddErr] = useState('');
@@ -158,6 +160,7 @@ export default function CourseTypesPage() {
       const next = zs.find((z) => z.id === (preferId ?? zoneId)) || zs[0] || null;
       setZoneId(next ? next.id : null);
       setVenueSel(next ? (next.venues || []).map((v) => v.id) : []);
+      setZoneSessions(next ? String(next.sessions_per_period ?? '') : '');
       return next ? next.id : null;
     } catch (e) {
       // 一定要把 rows 落定成 []，否則下面的 `if (!rows) return <LoadingSpinner />`
@@ -175,19 +178,30 @@ export default function CourseTypesPage() {
   function switchZone(z) {
     setZoneId(z.id);
     setVenueSel((z.venues || []).map((v) => v.id));
+    setZoneSessions(String(z.sessions_per_period ?? ''));
     setRows(null);
     load(z.id);
   }
 
   async function saveVenues() {
     if (!zoneId) return;
+    const spp = Number(zoneSessions);
+    if (!Number.isInteger(spp) || spp < 1) {
+      toast.error('一期堂數需為 1 以上的整數');
+      return;
+    }
     setZoneBusy(true);
     try {
+      // 先改一期堂數再存場館：堂數會影響報名怎麼拆期（1 期 = N 堂），
+      // 場館掛進來之後才用新的堂數計算，順序反過來會有一小段用到舊值。
+      if (activeZone && Number(activeZone.sessions_per_period) !== spp) {
+        await pricingZonesApi.update(zoneId, { sessions_per_period: spp });
+      }
       const r = await pricingZonesApi.setVenues(zoneId, venueSel);
       // warning 只有在「有課在跑的場館掉出定價區」時才會有值 —— 沒賣課的場館
       // 沒有定價區是正常狀態，不製造雜訊。
       if (r?.warning) toast.error(r.warning, 6000);
-      else toast.success('已更新適用場館');
+      else toast.success('已更新需求頁設定');
       await loadZones(zoneId);
     } catch (e) {
       toast.error(e?.response?.data?.error || '設定場館失敗');
@@ -199,14 +213,13 @@ export default function CourseTypesPage() {
     if (!zoneForm.name.trim()) return toast.error('請輸入需求頁名稱');
     setZoneBusy(true);
     try {
+      // 不送期數上下限：家長要買幾期由家長決定，不是需求頁的設定項。
       const z = await pricingZonesApi.create({
         name: zoneForm.name.trim(),
         sessions_per_period: Number(zoneForm.sessions_per_period) || 6,
-        period_count_min: Number(zoneForm.period_count_min) || 1,
-        period_count_max: Number(zoneForm.period_count_max) || 6,
       });
       setShowAddZone(false);
-      setZoneForm({ name: '', sessions_per_period: 6, period_count_min: 1, period_count_max: 6 });
+      setZoneForm({ name: '', sessions_per_period: 6 });
       const id = await loadZones(z.id);
       await load(id);
       toast.success('已建立需求頁');
@@ -698,20 +711,6 @@ export default function CourseTypesPage() {
                 onChange={(e) => setZoneForm((f) => ({ ...f, sessions_per_period: e.target.value }))}
                 className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" />
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="mb-1 block text-xs font-medium text-gray-600">最少期數</label>
-                <input type="number" value={zoneForm.period_count_min}
-                  onChange={(e) => setZoneForm((f) => ({ ...f, period_count_min: e.target.value }))}
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-medium text-gray-600">最多期數</label>
-                <input type="number" value={zoneForm.period_count_max}
-                  onChange={(e) => setZoneForm((f) => ({ ...f, period_count_max: e.target.value }))}
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" />
-              </div>
-            </div>
             <div className="flex gap-2 sm:col-span-4">
               <button type="submit" disabled={zoneBusy}
                 className="rounded-lg bg-brand-primary px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">建立</button>
@@ -719,7 +718,7 @@ export default function CourseTypesPage() {
                 className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-600">取消</button>
             </div>
             <p className="text-xs leading-5 text-gray-500 sm:col-span-4">
-              一期堂數決定報名怎麼拆期（1 期 = N 堂），例如三蘆 6 堂、松山 10 堂。
+              一期堂數決定報名怎麼拆期（1 期 = N 堂），例如三蘆 6 堂、松山 10 堂；建立後仍可修改。
               建立後會自動帶入一套課別當起點，直接改價格即可。
             </p>
           </form>
@@ -733,7 +732,7 @@ export default function CourseTypesPage() {
             <div className="min-w-0 text-sm">
               <span className="font-bold text-gray-800">{activeZone.name}</span>
               <span className="ml-2 text-xs text-gray-500">
-                （一期 {activeZone.sessions_per_period} 堂 · 可買 {activeZone.period_count_min}–{activeZone.period_count_max} 期
+                （一期 {activeZone.sessions_per_period} 堂
                 {(activeZone.venues || []).length
                   ? ` · 套用：${activeZone.venues.map((v) => v.name).join('、')}`
                   : ' · 尚未選擇場館'}）
@@ -749,6 +748,16 @@ export default function CourseTypesPage() {
           </div>
           {venueOpen && (
             <div className="border-t border-gray-200 p-4">
+              <div className="mb-4 flex flex-wrap items-center gap-3 rounded-lg bg-gray-50 px-3 py-2">
+                <label className="text-xs font-medium text-gray-700">一期堂數</label>
+                <input type="number" min="1" value={zoneSessions}
+                  onChange={(e) => setZoneSessions(e.target.value)}
+                  className="w-24 rounded-lg border border-gray-300 px-3 py-1.5 text-sm" />
+                <span className="text-xs leading-5 text-gray-500">
+                  堂。決定報名怎麼拆期（1 期 = N 堂）—— 三蘆 6 堂、松山 10 堂。
+                  改這個不會動到已成立的訂單，它們的堂數在下單當下就已經落地。
+                </span>
+              </div>
               <p className="mb-3 text-xs leading-5 text-gray-500">
                 勾選要套用此頁金額設定的場館。<strong>一個場館只會屬於一頁</strong> ——
                 勾選已在其他頁的場館，等於把它搬過來，原本那頁就不會再有它。

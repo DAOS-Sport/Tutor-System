@@ -61,11 +61,20 @@ check('分頁列存在，且切頁會重載品項', () => {
   assert.ok(/switchZone[\s\S]{0,220}load\(z\.id\)/.test(PAGE), '切頁必須重載該區的品項');
 });
 
-check('新增需求頁時要能填一期堂數', () => {
+check('一期堂數：新增時能填，既有的也能改', () => {
   // 三蘆 6 堂、松山 10 堂。少了這個欄位，松山的拆期會沿用 6 堂而算錯金額。
   assert.ok(PAGE.includes('sessions_per_period'), '新增需求頁必須能設定一期幾堂');
-  assert.ok(PAGE.includes('period_count_min') && PAGE.includes('period_count_max'),
-    '期數上下限也綁在需求頁上');
+  assert.ok(PAGE.includes('zoneSessions'), '既有需求頁也要能改一期堂數，不能只有新增時可填');
+  assert.ok(/pricingZonesApi\.update\(zoneId, \{ sessions_per_period/.test(PAGE),
+    '儲存時要把一期堂數寫回去');
+});
+
+check('可買期數不做成設定項', () => {
+  // 家長要買幾期由家長決定。這兩個欄位在後端也從來沒有被業務邏輯讀過，
+  // 放在畫面上只會讓人以為它有作用。
+  for (const dead of ['period_count_min', 'period_count_max']) {
+    assert.ok(!PAGE.includes(dead), `${dead} 不該出現在需求頁設定 UI`);
+  }
 });
 
 check('場館勾選的文案講「搬過來」，不是「建議避免重複」', () => {
