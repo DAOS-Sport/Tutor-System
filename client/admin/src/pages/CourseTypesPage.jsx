@@ -118,6 +118,7 @@ export default function CourseTypesPage() {
   const [venueOpen, setVenueOpen] = useState(false); // 場館區塊預設收合
   const [venueSel, setVenueSel] = useState([]);      // 目前分頁勾選中的場館
   const [zoneBusy, setZoneBusy] = useState(false);
+  const [zoneErr, setZoneErr] = useState('');       // 定價區載入失敗訊息（空＝正常）
   const [showAddZone, setShowAddZone] = useState(false);
   const [zoneForm, setZoneForm] = useState({ name: '', sessions_per_period: 6, period_count_min: 1, period_count_max: 6 });
   const [showAdd, setShowAdd] = useState(false);
@@ -151,12 +152,21 @@ export default function CourseTypesPage() {
       const data = await pricingZonesApi.list();
       setZoneData(data);
       const zs = data?.zones || [];
+      setZoneErr('');
+      // 理論上 bootstrap 會保證至少一區；真的變成零區時也要讓畫面收斂，不能停在轉圈。
+      if (!zs.length) setRows([]);
       const next = zs.find((z) => z.id === (preferId ?? zoneId)) || zs[0] || null;
       setZoneId(next ? next.id : null);
       setVenueSel(next ? (next.venues || []).map((v) => v.id) : []);
       return next ? next.id : null;
     } catch (e) {
-      toast.error(e?.response?.data?.error || '載入定價區失敗');
+      // 一定要把 rows 落定成 []，否則下面的 `if (!rows) return <LoadingSpinner />`
+      // 會讓整頁停在「載入中…」轉到天荒地老 —— toast 三秒後消失，畫面卻再也不會變。
+      // 同一類錯誤這個檔案已經踩過一次（見編輯軌跡的 audit=[] 註解）。
+      const msg = e?.response?.data?.error || '載入定價區失敗';
+      setZoneErr(msg);
+      setRows([]);
+      toast.error(msg);
       return null;
     }
   }
@@ -357,6 +367,26 @@ export default function CourseTypesPage() {
     } finally { setSaving(null); }
   }
 
+  if (zoneErr) {
+    return (
+      <div>
+        <PageHeader title="課程需求管理" subtitle="設定各場館套用的課程金額品項與限制規則。" />
+        <div className="rounded-xl border border-red-200 bg-red-50 p-6">
+          <div className="mb-2 text-sm font-bold text-red-700">無法載入需求頁設定</div>
+          <p className="mb-3 text-xs leading-6 text-red-700">{zoneErr}</p>
+          <p className="mb-4 text-xs leading-6 text-gray-600">
+            若訊息是「伺服器上找不到這支 API」，代表前端已更新、但伺服器還在跑舊版程式。
+            這種情況重新整理頁面不會有幫助，要重新啟動或重新發布伺服器。
+          </p>
+          <button
+            type="button"
+            onClick={() => { setZoneErr(''); setRows(null); loadZones().then((id) => load(id)); }}
+            className="rounded-lg bg-brand-primary px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
+          >重新載入</button>
+        </div>
+      </div>
+    );
+  }
   if (!rows) return <LoadingSpinner fullPage />;
 
   const inputCls = 'w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary';

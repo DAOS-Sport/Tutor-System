@@ -57,11 +57,16 @@ http.interceptors.response.use(
     // Task #88：把後端兜底 404「admin endpoint not found」改寫成可定位的友善訊息。
     // 6 個後台頁的 catch 都是 `toast.error(e.response.data.error || e.message)`，
     // 改寫 response.data.error 即可全頁面套用，不需要逐頁改。
-    // 最常見成因 = 使用者瀏覽器卡在舊版 SPA bundle，所以提示「請重新整理頁面」。
+    // 成因有兩種，症狀完全一樣，但解法相反：
+    //   (1) 瀏覽器卡在舊版 SPA bundle  → 重新整理就好
+    //   (2) 伺服器還在跑舊版程式（新路由已在磁碟上、但沒重啟）→ 重新整理無效，要重啟／重新發布
+    // 只寫 (1) 會讓人在 (2) 的情況下一直重新整理，永遠等不到好。所以兩種都要講。
     if (err?.response?.status === 404 && err?.response?.data?.error === 'admin endpoint not found') {
       const path = err?.response?.data?.path || err?.config?.url || '(unknown)';
       try {
-        err.response.data.error = `頁面版本可能過舊，請重新整理後再試（${path}）`;
+        err.response.data.error =
+          `伺服器上找不到這支 API（${path}）。請先重新整理頁面；`
+          + '若重新整理後仍相同，代表伺服器尚未套用新版程式，需要重新啟動或重新發布。';
         // eslint-disable-next-line no-console
         console.warn(
           '[admin api 404]',
