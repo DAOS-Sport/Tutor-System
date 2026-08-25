@@ -104,8 +104,12 @@ async function finish({ id, status, reason, httpStatus, durationMs, db = pool })
 async function logSkipped({ event, refId, uid, venueId, recipientKind, reason, db = pool }) {
   try {
     await db.query(
+      // 同一次略過重複記錄沒有任何價值，撞唯一索引是預期內的 —— 上面的 claim()
+      // 本來就這樣寫。漏了這一行的後果只是每次重複請求都吐一行假錯誤到 log，
+      // 讓真的寫入失敗淹在裡面。
       `INSERT INTO line_push_log (event, venue_id, recipient_uid, recipient_kind, ref_id, status, reason)
-       VALUES ($1,$2,$3,$4,$5,'skipped',$6)`,
+       VALUES ($1,$2,$3,$4,$5,'skipped',$6)
+       ON CONFLICT DO NOTHING`,
       [event, venueId || null, uid || null, recipientKind || null, refId || null, reason]);
   } catch (e) { console.warn('[pushGate] 寫入略過紀錄失敗：' + e.message); }
 }

@@ -349,6 +349,17 @@ async function refreshAfterStudentWrite(req, parent, {
       phone: parent.phone,
       minStudents,
       preservePending: true,
+      // 這是「寫入之後回頭確認鏡像收斂」，不是身分閘門 —— 該擋的在更前面就擋過了
+      // （auth middleware 認過身分，parentForStrictStudentSync 也比對過 Z01 的 UID）。
+      // 用嚴格模式的後果是：Z01 的 UID 欄位還空著的家長，Ragic 與本地都已經寫成功了，
+      // 卻在最後一步收到 502，畫面顯示「編輯失敗」。他會再按一次，於是又寫一遍。
+      // 而那個欄位空著不是暫時的 —— 負責回寫的 outbox cron 被 RAGIC_PARENT_OUTBOX
+      // （預設 false）擋著從未執行，299 筆 pending 全部 attempts=0，
+      // 所以對這些家長而言「編輯學員」是永久失敗。
+      //
+      // 寬鬆模式只放行「Z01 UID 空白」這一種；Z01 上是**別人的** UID 仍然照擋，
+      // 那才是真的兩支 LINE 搶同一支電話。/me/sync 早就是這樣處理的，這裡對齊。
+      strictUidMatch: false,
       reason,
     });
     if (expectedStudent && !ragicStudentMatchesExpected(

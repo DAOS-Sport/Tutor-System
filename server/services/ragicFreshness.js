@@ -79,6 +79,15 @@ function isCanaryConfigured(sheetCode, env = process.env) {
   }
 }
 
+const _lastWarnAt = new Map();
+function _warnOncePerHour(key, msg) {
+  const now = Date.now();
+  const prev = _lastWarnAt.get(key) || 0;
+  if (now - prev < 3600_000) return;
+  _lastWarnAt.set(key, now);
+  console.warn(msg);
+}
+
 function assertCanaryConfigured(config) {
   if (!config.recordId || !config.nonceField) {
     const err = new Error(
@@ -187,7 +196,10 @@ async function runCanaryWriteReadProof({
     if (config.requireConfigured) {
       assertCanaryConfigured(config); // 仍會 throw，語意不變
     }
-    console.warn(
+    // 每輪都印的話，一天約 288 行 —— 而它講的是一個從上線起就沒變過的設定狀態，
+    // 不是新發生的事。狀態頁已經把「未啟用」標得很清楚，log 這邊留個低頻的痕跡就夠。
+    // 一小時一次：既不會淹掉真正的錯誤，也不會讓人以為這個訊息消失了。
+    _warnOncePerHour(config.sheetCode,
       `[ragicFreshness] ${config.sheetCode} canary 未設定，略過 write-read proof，直接 fetch snapshot。` +
       `如需 freshness 保護請設 RAGIC_CANARY_${config.sheetCode}_RECORD_ID / _NONCE_FIELD_ID 與 RAGIC_FRESHNESS_REQUIRE_CANARY=1`
     );

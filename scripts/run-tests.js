@@ -41,6 +41,7 @@ const UNIT = [
   'tests/manual_deduction_backdate_test.js',
   'tests/shared_datepicker_rollout_test.js',
   'tests/coach_bio_limit_test.js',
+  'tests/db_client_error_guard_test.js',
   'tests/coach_avatar_test.js',
   'tests/enrollment_success_push_test.js',
   'tests/upload_error_test.js',
