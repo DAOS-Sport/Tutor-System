@@ -24,6 +24,7 @@ const {
 } = require('../services/idempotency');
 const { requireParent } = require('../middlewares/parentAuth');
 const { resolveUnitPrice } = require('../services/coursePricing');
+const { getCourseConfig, CourseConfigError } = require('../services/courseConfig');
 const {
   createCheckoutSession,
   refreshCheckoutTotal,
@@ -261,21 +262,54 @@ router.post('/', async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'invalid course_type' });
     }
-    const cfgRes = await client.query(
-      `SELECT base_price, is_active, max_students, trial_enabled, trial_price, tier_prices FROM course_type_configs WHERE course_type = $1`,
-      [courseTypeNum]
+    // F-A08：場館驗證移到讀價之前。價格由「場館所屬的定價區」決定，場館還沒確認，
+    // 「哪一區的價」這件事就沒有答案 —— 順序反過來就等於先猜一個價再驗場館。
+    // Task #84：FOR SHARE 鎖此 venue row，避免「停用 commit 與 enrollment INSERT」
+    // 並發時讓一筆新報名漏進來。（這是本交易第一個鎖，前移不改變鎖序。）
+    const venueId = p.venue && p.venue.id ? String(p.venue.id) : '';
+    const vr = await client.query(
+      `SELECT id, is_active FROM venues WHERE id = $1 FOR SHARE`,
+      [venueId]
     );
-    if (cfgRes.rowCount && cfgRes.rows[0].is_active === false) {
+    if (!vr.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'venue not found' });
+    }
+    // Task #84：場館停用後拒絕新報名（已售出課程不受影響）
+    if (vr.rows[0].is_active === false) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: '該場館已停用，目前無法接受新報名，請選擇其他場館',
+        code: 'VENUE_INACTIVE',
+      });
+    }
+    // 讀價一律走 services/courseConfig：場館 → 定價區 → 該區的課別設定。
+    // 查不到就丟例外，不會退回別區的設定 —— 分區之後 `WHERE course_type = $1`
+    // 會每區回一列，取 rows[0] 就是靜默收錯價。
+    let cfg;
+    try {
+      cfg = await getCourseConfig(client, { venueId, courseType: courseTypeNum });
+    } catch (err) {
+      if (err instanceof CourseConfigError) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: '此場館尚未開放此課程組別，請洽櫃檯',
+          code: err.code,
+        });
+      }
+      throw err;
+    }
+    if (cfg.is_active === false) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: '此課程組別已停用，無法報名', code: 'COURSE_TYPE_INACTIVE' });
     }
-    const basePrice = cfgRes.rowCount ? Number(cfgRes.rows[0].base_price) || 0 : 0;
+    const basePrice = Number(cfg.base_price) || 0;
     if (basePrice <= 0) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: '此課程組別尚未設定價格，請洽櫃檯', code: 'PRICE_NOT_CONFIGURED' });
     }
     // F-A07 試上開關：品項未開啟試上（trial_enabled=FALSE）時拒絕試上下單（fail-closed）。
-    if (isTrial && !(cfgRes.rowCount && cfgRes.rows[0].trial_enabled === true)) {
+    if (isTrial && cfg.trial_enabled !== true) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: '此課程組別未開放試上，請洽櫃檯', code: 'TRIAL_NOT_ENABLED' });
     }
@@ -296,28 +330,8 @@ router.post('/', async (req, res) => {
     }
     const multiplier = Number(cr.rows[0].pricing_multiplier) || 1;
     const coachName = cr.rows[0].name;
-    // 場館必須存在
-    const venueId = p.venue && p.venue.id ? String(p.venue.id) : '';
-    // Task #84：FOR SHARE 鎖此 venue row，避免「停用 commit 與 enrollment INSERT」
-    // 並發時讓一筆新報名漏進來。
-    const vr = await client.query(
-      `SELECT id, is_active FROM venues WHERE id = $1 FOR SHARE`,
-      [venueId]
-    );
-    if (!vr.rowCount) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'venue not found' });
-    }
-    // Task #84：場館停用後拒絕新報名（已售出課程不受影響）
-    if (vr.rows[0].is_active === false) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({
-        error: '該場館已停用，目前無法接受新報名，請選擇其他場館',
-        code: 'VENUE_INACTIVE',
-      });
-    }
     // U10：費用 = 單期單生價(base×倍率) × 學生數 × 期數（server-authoritative，忽略 client 金額）。
-    const unitPrice = resolveUnitPrice(basePrice, multiplier, cfgRes.rows[0] && cfgRes.rows[0].tier_prices);
+    const unitPrice = resolveUnitPrice(basePrice, multiplier, cfg.tier_prices);
     const studentCount = Array.isArray(p.students) ? p.students.length : 0;
     const periodCount = (() => {
       const n = parseInt(p.period_count, 10);
@@ -332,7 +346,7 @@ router.post('/', async (req, res) => {
     // 試上不受此限（2026-07-16 起開放多學員／多堂）：每位學員各自開通獨立 1 堂體驗
     // 課期（不共班，見 admin/enrollments.js ensureSoloCoursePeriod 對 trial 的排除），
     // 課型人數上限對試上無意義。
-    const maxStudents = cfgRes.rowCount ? (Number(cfgRes.rows[0].max_students) || 1) : 1;
+    const maxStudents = Number(cfg.max_students) || 1;
     if (!isTrial && maxStudents > 1 && studentCount > maxStudents) {
       await client.query('ROLLBACK');
       return res.status(400).json({
@@ -376,7 +390,7 @@ router.post('/', async (req, res) => {
           courseType: courseTypeNum,
           settings,
           // F-A07 為試上價唯一主來源；admin_settings 舊鍵僅為過渡 fallback。
-          configTrialPrice: cfgRes.rowCount ? cfgRes.rows[0].trial_price : null,
+          configTrialPrice: cfg.trial_price,
         })
       : null;
     if (isTrial && trialPrice <= 0) {

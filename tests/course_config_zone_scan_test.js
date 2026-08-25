@@ -44,7 +44,6 @@ const KNOWN_UNZONED = {
   'server/routes/admin/courseTypes.js': 4,
   'server/routes/admin/groupOrders.js': 1,
   'server/routes/admin/enrollments.js': 2,
-  'server/routes/enrollments.js': 1,
   'server/routes/courses.js': 2,
   'server/routes/groupOrders.js': 1,
 };
