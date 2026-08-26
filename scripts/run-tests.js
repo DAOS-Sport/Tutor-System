@@ -77,6 +77,10 @@ const UNIT = [
   // 底部按鈕永久不可達（其中手動扣課那個是 overflow-hidden，內容直接被裁掉），
   // 而唯一的出路是重整整頁 —— 那種壞法不會有人回報成 bug。
   'tests/mobile_modal_test.js',
+  // 救生員動線上的可點元素，手機上都要有 44px 命中區（桌機維持原密度）。
+  // 第一版的解析器遇到屬性裡的箭頭函式就把標籤切斷，掃出 16 個假陽性 ——
+  // 所以測試自己有一條在盯「抓不到 className 的比例」。
+  'tests/mobile_touch_target_test.js',
   // 學員的隔離區自癒判準要跟著家長的 updated_at 走：櫃檯補的是 parents.email，
   // 而 students.updated_at 一動也不動 —— 沒有這條，Email 補完之後那批學員會
   // 永遠留在隔離區、再也不會被推上 Ragic，而且完全沒有錯誤訊息。
