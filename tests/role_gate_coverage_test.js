@@ -52,7 +52,12 @@ function filesWithHardcodedGate() {
     for (const f of fs.readdirSync(path.join(ROOT, dir))) {
       if (!f.endsWith('.js')) continue;
       const rel = dir + '/' + f;
-      const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+      // 先把區塊註解整段拿掉再掃。只排除 // 開頭的行不夠 ——
+      // JSDoc 裡提到 requireAdminRole(...) 會被算成一次真正的呼叫，
+      // 於是「解釋為什麼這裡不用寫死閘門」的註解本身就讓測試變紅。
+      // 拿錯的清單去改，比不改更糟。
+      const src = fs.readFileSync(path.join(ROOT, rel), 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '');
       // 只算真正的呼叫，不算 import 與註解
       const calls = src.split('\n').filter((l) =>
         /requireAdminRole\(/.test(l) && !/^\s*\/\//.test(l));

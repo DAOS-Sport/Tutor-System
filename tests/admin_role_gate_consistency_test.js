@@ -32,7 +32,11 @@ function check(name, fn) {
   catch (e) { failed += 1; console.error('  FAIL ' + name + '\n       ' + e.message); }
 }
 
-const ROLES = ['admin', 'manager', 'staff'];
+// 能登入後台的角色，由共用常數推導。原本寫死三個，開放救生員之後
+// 這裡不跟著改的話，「ALL 的內容變了」那條會紅，但紅的理由會被誤讀成
+// App.jsx 改壞了 —— 實際上是這份測試自己過期。
+const { BACKOFFICE_ROLES } = require(path.join(ROOT, 'server/constants/roles.js'));
+const ROLES = [...BACKOFFICE_ROLES];
 const norm = (list) => Array.from(new Set(list)).sort().join(',');
 
 /** 把 roles={ALL} / roles={['a','b']} 這種寫法解析成陣列。ALL 是 App.jsx 的常數。 */
@@ -50,15 +54,18 @@ function parseRoles(expr, allValue) {
 const sidebarSrc = read('client/admin/src/components/Sidebar.jsx');
 const sidebar = new Map();
 {
-  const re = /\{\s*to:\s*'([^']+)'\s*,[^}]*?roles:\s*(\[[^\]]*\])/g;
+  const re = /\{\s*to:\s*'([^']+)'\s*,[^}]*?roles:\s*(\[[^\]]*\]|ALL)/g;
   let m;
+  // Sidebar 也用 ALL 了（與 App.jsx 同一個常數），parseRoles 會把它展開。
   while ((m = re.exec(sidebarSrc))) sidebar.set(m[1], parseRoles(m[2], ROLES));
 }
 
 // ── 來源二：App.jsx ────────────────────────────────────────────────────────
 const appSrc = read('client/admin/src/App.jsx');
-const allMatch = appSrc.match(/const\s+ALL\s*=\s*(\[[^\]]*\])/);
-const ALL = allMatch ? parseRoles(allMatch[1], ROLES) : null;
+// ALL 現在是推導出來的（const ALL = BACKOFFICE_ROLES），不再是字面陣列。
+const allMatch = appSrc.match(/const\s+ALL\s*=\s*(\[[^\]]*\]|BACKOFFICE_ROLES)\s*;/);
+const ALL = !allMatch ? null
+  : (allMatch[1] === 'BACKOFFICE_ROLES' ? [...BACKOFFICE_ROLES] : parseRoles(allMatch[1], ROLES));
 
 const routeRoles = new Map();   // path → roles（有 RequireAuth 才收）
 const routePaths = new Set();   // 所有 <Route path>，用來判斷「路由存不存在」

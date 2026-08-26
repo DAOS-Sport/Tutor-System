@@ -71,6 +71,8 @@ const UNIT = [
   'tests/promotion_order_test.js',
   'tests/ragic_canary_state_test.js',
   'tests/lifeguard_login_test.js',
+  'tests/frontend_backoffice_gate_test.js',
+  'tests/role_conflict_test.js',
   'tests/role_derive_test.js',
   'tests/staff_multi_role_test.js',
   'tests/admin_api_gate_coverage_test.js',
@@ -95,6 +97,9 @@ const UNIT = [
 
 // 需要真實 Postgres。多數含破壞性前置清理，只可對拋棄式測試庫執行。
 const DB = [
+  // 端到端：自己 spawn 一台 server、自己建 smoke_ 帳號、try/finally 清乾淨。
+  // 不破壞既有資料，但需要真實 DATABASE_URL，所以歸在這一層而不是 unit。
+  'tests/permission_smoke_test.js',
   'tests/coach_session_date_range_db_test.js',
   'tests/parent_identity_closure_test.js',
   'tests/push_gate_test.js',
