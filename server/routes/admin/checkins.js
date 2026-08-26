@@ -27,7 +27,7 @@ function todayInTaipei() {
   return fmt.format(new Date()); // YYYY-MM-DD
 }
 
-router.get('/', requireAdminAuth, async (req, res) => {
+router.get('/', requireAdminAuth, requireResource('checkin'), async (req, res) => {
   try {
     const date = String(req.query.date || '').trim() || todayInTaipei();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'date format YYYY-MM-DD required' });

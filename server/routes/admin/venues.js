@@ -11,7 +11,7 @@ const express = require('express');
 const { pool } = require('../../models/db');
 const { requireAdminAuth } = require('../../middlewares/adminAuth');
 // F-A06：權限改由「角色權限管理」的設定決定。
-const { requireResource } = require('../../middlewares/requireResource');
+const { requireResource, requireAnyBackoffice } = require('../../middlewares/requireResource');
 const {
   syncVenuesFromRagic,
   diffVenuesFromRagic, applyVenueSync, VENUE_SYNC_FIELDS, ragicEnabled,
@@ -53,7 +53,7 @@ function rowToVenuePublic(r) {
   };
 }
 
-router.get('/', requireAdminAuth, async (req, res) => {
+router.get('/', requireAdminAuth, requireAnyBackoffice(), async (req, res) => {
   try {
     // Task #54：場館同步改走「立即同步 Ragic」按鈕的兩階段 dry-run + confirm 流程；
     // 列表載入不再 auto-kickoff 寫入，避免在使用者確認前就動到 DB（覆寫保護仍會被

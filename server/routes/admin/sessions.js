@@ -142,7 +142,7 @@ function rowToCancelled(r) {
  *  - 範圍最大 31 天；前端週課表視角用，條列也可呼叫
  *  - staff 角色強制 venue_id = 自己場館（忽略 client 傳入的 venueIds）
  */
-router.get('/', requireAdminAuth, async (req, res) => {
+router.get('/', requireAdminAuth, requireResource('sessions'), async (req, res) => {
   try {
     const { from, to } = req.query;
     if (!from || !to || !/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
@@ -209,7 +209,7 @@ router.get('/', requireAdminAuth, async (req, res) => {
   }
 });
 
-router.get('/today', requireAdminAuth, async (req, res) => {
+router.get('/today', requireAdminAuth, requireResource('dashboard'), async (req, res) => {
   try {
     // Task #90：staff/manager 鎖在自己所屬場館集合；admin 可選 venueId 縮小
     // U13 修正：主資料源改讀真實課堂＋UNION 舊表（見 range 端點說明）。
@@ -246,7 +246,7 @@ router.get('/today', requireAdminAuth, async (req, res) => {
   }
 });
 
-router.get('/verify-checkin', requireAdminAuth, async (req, res) => {
+router.get('/verify-checkin', requireAdminAuth, requireResource('checkin'), async (req, res) => {
   try {
     const { phone, periodId } = req.query;
     if (!phone && !periodId) return res.json({ found: false });
@@ -330,7 +330,7 @@ router.get('/verify-checkin', requireAdminAuth, async (req, res) => {
 // U13 修正：主資料源改讀「真實已扣堂取消」課堂（course_sessions.status='cancelled_penalty'，
 // 即逾時取消堂數已扣者），UNION 舊示範表 admin_cancelled_sessions 向後相容——舊版只讀
 // 示範表，真實取消永遠不會出現（正式環境只看得到當年測試殘留）。
-router.get('/cancelled', requireAdminAuth, requireResource('sessions'), async (req, res) => {
+router.get('/cancelled', requireAdminAuth, requireResource('revive'), async (req, res) => {
   try {
     const scope = getScopedVenueIds(req);
     const revivalFlag = await getFeatureFlag('DEDUCTION_REVIVAL_V2');
@@ -413,7 +413,7 @@ router.get('/cancelled', requireAdminAuth, requireResource('sessions'), async (r
 // 只放寬角色，不動復活的判斷邏輯，也不動 DEDUCTION_REVIVAL_V2 的全量策略。
 // （GET /cancelled 本來就已開放 staff，前端路由與側邊選單也是 —— 原本只有這支擋著，
 //   造成櫃台打得開頁面、按下去卻 403 的不一致。）
-router.post('/:id/revive', requireAdminAuth, requireResource('sessions'), async (req, res) => {
+router.post('/:id/revive', requireAdminAuth, requireResource('revive'), async (req, res) => {
   const reason = String(req.body?.reason || '').trim().slice(0, 1000);
   if (!reason) return res.status(400).json({ error: '請填寫歸還原因', code: 'REASON_REQUIRED' });
   const client = await pool.connect();
@@ -529,7 +529,7 @@ router.post('/:id/revive', requireAdminAuth, requireResource('sessions'), async 
  *  - checkin_at：操作者選擇的「簽到時間」（datetime-local / ISO 字串）
  *  - backfilled_at = NOW()：補簽到按鈕被按下的當下時間，供管理端查看
  */
-router.post('/:id/backfill-checkin', requireAdminAuth, async (req, res) => {
+router.post('/:id/backfill-checkin', requireAdminAuth, requireResource('sessions'), async (req, res) => {
   try {
     const { id } = req.params;
     const raw = req.body?.checkin_at;
@@ -636,7 +636,7 @@ router.post('/:id/backfill-checkin', requireAdminAuth, async (req, res) => {
  *  - 將 admin_enrollments.experience_checked_in_at 設為 NOW()
  *  - 若該 enrollment 對應 referral_records，發放 9 折券給推薦方並推 LINE Flex
  */
-router.post('/checkin', requireAdminAuth, async (req, res) => {
+router.post('/checkin', requireAdminAuth, requireResource('checkin'), async (req, res) => {
   const enrollmentId = String(req.body?.enrollmentId || '').trim();
   if (!enrollmentId) return res.status(400).json({ error: 'enrollmentId required' });
   try {

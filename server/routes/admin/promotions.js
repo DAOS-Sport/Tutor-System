@@ -288,9 +288,13 @@ router.delete('/:id', requireResource('promotions'), async (req, res) => {
   }
 });
 
-async function transition(req, res, fromStatuses, toStatus, action, requiredRoles) {
-  const role = req.adminUser.role;
-  if (!requiredRoles.includes(role)) return res.status(403).json({ error: '權限不足' });
+async function transition(req, res, fromStatuses, toStatus, action) {
+  // 權限由路由上的 requireResource('promotions') 負責，這裡不再自己檢查。
+  //
+  // 原本是把 ['admin','manager'] 當參數傳進來比對 req.adminUser.role。
+  // 那樣有三個問題：管理員在 F-A06 把「優惠活動」開給行政櫃檯之後這五個動作
+  // 仍然 403；只看單一 role，身兼數職的人其他身分不算；而且閘門藏在 helper 的
+  // 參數裡，掃描工具看不見 —— 漏掉一支也不會有人發現。
   const cur = await pool.query(`SELECT status FROM promotions WHERE id = $1`, [req.params.id]);
   if (!cur.rowCount) return res.status(404).json({ error: 'not found' });
   if (!fromStatuses.includes(cur.rows[0].status)) {
@@ -317,14 +321,14 @@ async function transition(req, res, fromStatuses, toStatus, action, requiredRole
 }
 
 // 改版：直接上架（draft→active）。set reviewed_at/reviewed_by（由 transition 內 toStatus==='active' 自動處理）。
-router.post('/:id/activate', (req, res) => transition(req, res, ['draft', 'rejected'], 'active', 'activate', ['admin', 'manager']).catch((e) => { console.error(e); res.status(500).json({ error: 'activate failed' }); }));
-router.post('/:id/submit',  (req, res) => transition(req, res, ['draft', 'rejected'], 'pending_review', 'submit',  ['admin', 'manager']).catch((e) => { console.error(e); res.status(500).json({ error: 'submit failed' }); }));
-router.post('/:id/approve', (req, res) => transition(req, res, ['pending_review'],  'active',         'approve', ['admin', 'manager']).catch((e) => { console.error(e); res.status(500).json({ error: 'approve failed' }); }));
-router.post('/:id/reject',  (req, res) => {
+router.post('/:id/activate', requireResource('promotions'), (req, res) => transition(req, res, ['draft', 'rejected'], 'active', 'activate').catch((e) => { console.error(e); res.status(500).json({ error: 'activate failed' }); }));
+router.post('/:id/submit',  requireResource('promotions'), (req, res) => transition(req, res, ['draft', 'rejected'], 'pending_review', 'submit').catch((e) => { console.error(e); res.status(500).json({ error: 'submit failed' }); }));
+router.post('/:id/approve', requireResource('promotions'), (req, res) => transition(req, res, ['pending_review'],  'active',         'approve').catch((e) => { console.error(e); res.status(500).json({ error: 'approve failed' }); }));
+router.post('/:id/reject',  requireResource('promotions'), (req, res) => {
   const note = (req.body && req.body.note ? String(req.body.note).trim() : '');
   if (!note) return res.status(400).json({ error: '退回時必須填寫退回原因' });
-  return transition(req, res, ['pending_review'], 'rejected', 'reject', ['admin', 'manager']).catch((e) => { console.error(e); res.status(500).json({ error: 'reject failed' }); });
+  return transition(req, res, ['pending_review'], 'rejected', 'reject').catch((e) => { console.error(e); res.status(500).json({ error: 'reject failed' }); });
 });
-router.post('/:id/archive', (req, res) => transition(req, res, ['draft', 'pending_review', 'active', 'rejected'], 'archived', 'archive', ['admin', 'manager']).catch((e) => { console.error(e); res.status(500).json({ error: 'archive failed' }); }));
+router.post('/:id/archive', requireResource('promotions'), (req, res) => transition(req, res, ['draft', 'pending_review', 'active', 'rejected'], 'archived', 'archive').catch((e) => { console.error(e); res.status(500).json({ error: 'archive failed' }); }));
 
 module.exports = router;

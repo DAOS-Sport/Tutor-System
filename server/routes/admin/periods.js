@@ -26,7 +26,7 @@ const MODE_LABEL = { booking: '預約制', self: '自助簽到' };
  *  進行中（active）課程期逐列：場館/教練/學員/組別/期別/堂數使用/模式。
  *  staff 可檢視（場館範圍內）；切換僅 admin/manager（見 PATCH/bulk）。
  */
-router.get('/checkin-modes', requireAdminAuth, async (req, res) => {
+router.get('/checkin-modes', requireAdminAuth, requireResource('checkin-modes'), async (req, res) => {
   try {
     const where = [`cp.status = 'active'`];
     const args = [];

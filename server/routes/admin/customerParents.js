@@ -22,6 +22,8 @@ const { formatPlainDate } = require('../../utils/dateTime');
 const { pool } = require('../../models/db');
 const { parsePaging, pagingSql } = require('../../utils/paging');
 const { requireAdminAuth, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定。
+const { requireResource } = require('../../middlewares/requireResource');
 const { parseRocOrIso, maskId, maskBlood, looksMasked, wantReveal, auditReveal, diffChanges, writeStudentAudit, adminActorName } = require('./_customerShared');
 const ragicWriteback = require('../../services/ragicWriteback');
 const ragicWriter = require('../../services/ragicWriter');
@@ -88,7 +90,7 @@ async function parentInScope(client, req, id) {
 }
 
 // GET / — 家長清單（+ 學員數）
-router.get('/', requireAdminAuth, async (req, res) => {
+router.get('/', requireAdminAuth, requireResource('customer-parents'), async (req, res) => {
   try {
     const { status = 'all', venueId = '', name = '', phone = '', identity = '' } = req.query;
     const where = [];
@@ -125,7 +127,7 @@ router.get('/', requireAdminAuth, async (req, res) => {
 });
 
 // GET /:id — 家長 + 旗下學員
-router.get('/:id', requireAdminAuth, async (req, res) => {
+router.get('/:id', requireAdminAuth, requireResource('customer-parents'), async (req, res) => {
   try {
     const p = await pool.query(`SELECT ${PARENT_COLS} FROM parents p WHERE p.id = $1`, [req.params.id]);
     if (!p.rowCount || !isVenueInScope(req, p.rows[0].primary_venue_id)) {
@@ -145,7 +147,7 @@ router.get('/:id', requireAdminAuth, async (req, res) => {
 // 本地鏡像是「登入真相鏡像」，手建列必然未綁 UID → 進了鏡像就是殘留、推上 Ragic 就是
 // 未綁資料進 Z01（夜間 pull 又分流進 Z03，清不完的循環）。正確流程：櫃台在 Ragic Z01
 // 建檔 → 客戶 LINE 註冊綁定 → 下一輪 pull（或註冊當下刷新）自動進本地鏡像。
-router.post('/', requireAdminAuth, (req, res) => {
+router.post('/', requireAdminAuth, requireResource('customer-parents'), (req, res) => {
   res.status(410).json({
     error: '手動新增家長已停用：請於 Ragic Z01 建檔，客戶完成 LINE 註冊綁定後會自動進入本系統',
     code: 'PARENT_CREATE_VIA_RAGIC',
@@ -173,7 +175,7 @@ router.post('/', requireAdminAuth, (req, res) => {
  * 不動的東西：學員、報名、上課紀錄、家長的業務資料全部保留。
  * 這個動作只解除「哪一支 LINE 可以登入這個帳號」。
  */
-router.post('/:id/unbind-line', requireAdminAuth, async (req, res) => {
+router.post('/:id/unbind-line', requireAdminAuth, requireResource('customer-parents'), async (req, res) => {
   const reason = String(req.body?.reason || '').trim();
   if (!reason) return res.status(400).json({ error: '請填寫解除綁定的原因', code: 'REASON_REQUIRED' });
   if (reason.length > 500) return res.status(400).json({ error: '原因過長（上限 500 字）', code: 'REASON_TOO_LONG' });
@@ -272,7 +274,7 @@ router.post('/:id/unbind-line', requireAdminAuth, async (req, res) => {
   }
 });
 
-router.patch('/:id', requireAdminAuth, async (req, res) => {
+router.patch('/:id', requireAdminAuth, requireResource('customer-parents'), async (req, res) => {
   const b = req.body || {};
   // NOT NULL 前置驗證：清空 name/phone 直接 400（而非讓 23502 中斷整筆交易）
   if (b.name !== undefined && !String(b.name).trim())   return res.status(400).json({ error: '家長姓名不可為空', code: 'INPUT_INVALID' });

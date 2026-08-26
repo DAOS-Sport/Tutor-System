@@ -17,6 +17,8 @@ const { formatPlainDate } = require('../../utils/dateTime');
 const { pool } = require('../../models/db');
 const { parsePaging, pagingSql } = require('../../utils/paging');
 const { requireAdminAuth, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定。
+const { requireResource } = require('../../middlewares/requireResource');
 const { parseRocOrIso, courseTypeLabel, maskId, maskBlood, looksMasked, wantReveal, auditReveal, diffChanges, writeStudentAudit, adminActorName } = require('./_customerShared');
 const ragicWriteback = require('../../services/ragicWriteback');
 
@@ -55,7 +57,7 @@ function rowToStudent(r, reveal) {
 }
 
 // GET / — 學員清單（含家長 join）
-router.get('/', requireAdminAuth, async (req, res) => {
+router.get('/', requireAdminAuth, requireResource('customer-students'), async (req, res) => {
   try {
     const { name = '', gender = '', code = '', parentId = '' } = req.query;
     const where = [];
@@ -91,7 +93,7 @@ router.get('/', requireAdminAuth, async (req, res) => {
 });
 
 // GET /:id — 學員 + 家長 + 購買紀錄
-router.get('/:id', requireAdminAuth, async (req, res) => {
+router.get('/:id', requireAdminAuth, requireResource('customer-students'), async (req, res) => {
   try {
     const r = await pool.query(
       `SELECT ${STUDENT_SELECT} FROM students s LEFT JOIN parents p ON p.id = s.parent_id WHERE s.id = $1`,
@@ -111,7 +113,7 @@ router.get('/:id', requireAdminAuth, async (req, res) => {
 });
 
 // GET /:id/audit-logs — 學員編輯紀錄（家長自己改 / 櫃檯 / 管理員改，含 before/after diff）
-router.get('/:id/audit-logs', requireAdminAuth, async (req, res) => {
+router.get('/:id/audit-logs', requireAdminAuth, requireResource('customer-students'), async (req, res) => {
   try {
     const own = await pool.query(
       `SELECT p.primary_venue_id AS v FROM students s LEFT JOIN parents p ON p.id = s.parent_id WHERE s.id = $1`,
@@ -158,7 +160,7 @@ async function loadPurchases(studentId) {
 }
 
 // PATCH /:id — 更新學員業務欄位（本地鏡像）
-router.patch('/:id', requireAdminAuth, async (req, res) => {
+router.patch('/:id', requireAdminAuth, requireResource('customer-students'), async (req, res) => {
   const b = req.body || {};
   if (b.name !== undefined && !String(b.name).trim()) return res.status(400).json({ error: '學員姓名不可為空', code: 'INPUT_INVALID' });
   try {
