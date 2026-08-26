@@ -84,6 +84,60 @@ check('認不得的資源代號一律拒絕（fail-closed）', () => {
     '未知的 key 必須拒絕，不能因為查不到就放行');
 });
 
+// ── 第二層：個別人員例外 ────────────────────────────────────
+//
+// 例外的判定順序錯了會直接變成權限漏洞，而症狀是「某個人多了/少了一頁」——
+// 不會有人主動回報「我好像多看得到東西」。所以這幾條盯得比較死。
+
+check('例外壓在角色之上（否則收回權限永遠做不到）', () => {
+  const svc = read('server/services/rolePermissions.js');
+  const m = svc.match(/async function canUserAccess[\s\S]*?\n}/);
+  assert.ok(m, '找不到 canUserAccess');
+  const body = m[0];
+  const iOverride = body.indexOf('ov.has(resourceKey)');
+  const iRole = body.indexOf('canAccess(role');
+  assert.ok(iOverride > 0 && iRole > 0, '判定裡缺少例外或角色其中一段');
+  assert.ok(iOverride < iRole,
+    '角色檢查排在例外之前，會讓「單獨收回」失效 —— 那正是例外最常見的用途');
+});
+
+check('admin 仍在最前面（不可被例外鎖住）', () => {
+  const svc = read('server/services/rolePermissions.js');
+  const m = svc.match(/async function canUserAccess[\s\S]*?\n}/);
+  assert.ok(/if \(role === 'admin'\) return true;/.test(m[0]),
+    '管理員必須在任何例外之前放行，否則有人能把管理員鎖在門外');
+});
+
+check('例外是布林，不是「有列＝允許」', () => {
+  const schema = read('server/bootstrap/coreSchema.js');
+  const m = schema.match(/CREATE TABLE IF NOT EXISTS user_permission_overrides[\s\S]*?\)/);
+  assert.ok(m, '找不到 user_permission_overrides 的定義');
+  assert.ok(/allowed\s+BOOLEAN NOT NULL/.test(m[0]),
+    '沒有布林欄位就表達不了「單獨收回」，只能開通');
+});
+
+check('閘門有把登入帳號帶進判定（否則例外形同虛設）', () => {
+  const mw = read('server/middlewares/requireResource.js');
+  assert.ok(/userId: req\.adminUser\.sub/.test(mw),
+    '只傳角色的話，為某個人單獨設定的權限完全不會生效');
+  assert.ok(!/canAccess\(role,/.test(mw),
+    '還在用只看角色的 canAccess，例外不會套用');
+});
+
+check('/mine 回實際生效的清單，不是角色預設', () => {
+  const r = read('server/routes/admin/rolePermissions.js');
+  assert.ok(/effectiveResources\(/.test(r),
+    '選單若只反映角色預設，被單獨收回的人仍會看到入口，點進去才吃 403');
+});
+
+check('例外的寫入限管理員本人', () => {
+  const r = read('server/routes/admin/rolePermissions.js');
+  const m = r.match(/router\.put\('\/users\/:userId'[^\n]*/);
+  assert.ok(m, '找不到 PUT /users/:userId');
+  assert.ok(/requireAdminRole\('admin'\)/.test(m[0]),
+    '否則被授權的人可以替自己開通任何頁面');
+});
+
 console.log(failures ? `\n${failures} FAILED` : '\nrole_permissions: ALL PASS');
 process.exitCode = failures ? 1 : 0;
 
