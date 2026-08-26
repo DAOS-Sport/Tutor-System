@@ -33,7 +33,7 @@ const router = express.Router();
 
 // 可指派的身份清單。原本寫死四個、漏了救生員，於是「篩選選得到、編輯存不了」——
 // normalizeRoleFilter 早就認得 lifeguard，這裡卻會回 400「角色不合法」。
-const { ASSIGNABLE_ROLES: VALID_ROLES } = require('../../constants/roles');
+const { ASSIGNABLE_ROLES: VALID_ROLES, highestRole } = require('../../constants/roles');
 const MULTIPLIER_MIN = 1.00;
 const MULTIPLIER_MAX = 1.50;
 
@@ -312,6 +312,11 @@ function rowToStaff(r) {
     is_coach_profile: isDualRoleCoach,
     coach_profile_status: coachProfileStatus,
     known_roles: knownRoles,
+    // 後台手動指派的身分（可多選）。與 Ragic 的旗標取聯集才是實際權限 ——
+    // 畫面上 Ragic 來的那幾個會鎖住，因為寫回去下次同步也會被蓋掉。
+    manual_roles: Array.isArray(r.manual_roles) && r.manual_roles.length
+      ? r.manual_roles
+      : (r.role ? [r.role] : []),
     // Workstream A：Ragic 來源的獨立身份旗標（唯讀，不影響 admin_staff.role 本身）
     is_coach: isCoachFlag,
     is_counter: isCounterFlag,
@@ -345,6 +350,9 @@ function rowToStaff(r) {
 
 const STAFF_SELECT = `
   SELECT s.*,
+         COALESCE(ARRAY(
+           SELECT sr.role FROM admin_staff_roles sr WHERE sr.staff_id = s.id ORDER BY sr.role
+         ), '{}') AS manual_roles,
          c.id AS coach_id,
          c.is_active AS coach_active,
          c.bio_rich_text AS coach_bio,
@@ -880,6 +888,25 @@ router.patch('/:id', requireAdminAuth, requireResource('staff'), async (req, res
     if (patch.role && !VALID_ROLES.includes(patch.role)) {
       return res.status(400).json({ error: '角色不合法' });
     }
+    // 多選身分。admin_staff.role 仍保留為「代表值」（登入與既有查詢都靠它），
+    // 取這次選取集合中優先序最高的那一個；完整集合另外存進 admin_staff_roles。
+    let manualRoles = null;
+    if (patch.roles !== undefined) {
+      if (!Array.isArray(patch.roles)) {
+        return res.status(400).json({ error: 'roles 必須是陣列', code: 'ROLES_INVALID' });
+      }
+      manualRoles = [...new Set(patch.roles.map((r) => String(r).trim()).filter(Boolean))];
+      const bad = manualRoles.filter((r) => !VALID_ROLES.includes(r));
+      if (bad.length) {
+        return res.status(400).json({ error: '角色不合法：' + bad.join('、'), code: 'ROLE_INVALID' });
+      }
+      if (!manualRoles.length) {
+        return res.status(400).json({ error: '至少要選一個角色', code: 'ROLES_REQUIRED' });
+      }
+      // 代表值：優先序由 constants/roles 的陣列順序定義，與 Ragic 推導同一套 ——
+      // 兩邊各寫一份的話，同一個人在同步與手動存檔會算出不同的主要角色。
+      patch.role = highestRole(manualRoles) || manualRoles[0];
+    }
     // Multiplier 範圍校驗：只要這次請求會讓 coach.pricing_multiplier 生效就檢查。
     // 觸發條件（涵蓋所有教練生效路徑，含序列攻擊：先存壞值 → 再啟用 coach_active）：
     //   1) patch.role === 'coach'
@@ -1073,6 +1100,17 @@ router.patch('/:id', requireAdminAuth, requireResource('staff'), async (req, res
             );
           }
         }
+      }
+    }
+    // 多選身分：整組取代。前端送來的就是畫面上的完整勾選狀態，
+    // 逐項 diff 只會多一種不同步的可能。
+    if (manualRoles) {
+      await client.query('DELETE FROM admin_staff_roles WHERE staff_id = $1', [id]);
+      for (const r of manualRoles) {
+        await client.query(
+          `INSERT INTO admin_staff_roles (staff_id, role, updated_by)
+           VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+          [id, r, req.adminUser?.name || req.adminUser?.username || 'admin']);
       }
     }
     await client.query('COMMIT');

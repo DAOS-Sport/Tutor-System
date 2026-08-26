@@ -2414,6 +2414,44 @@ async function ensureUserPermissionOverrides() {
   // 灌東西進去等於系統先幫人做了決定，而這個功能的重點正好相反。
 }
 
+/**
+ * 員工的「手動指派身分」（F-A06）。
+ *
+ * ── 為什麼不直接寫 is_counter / is_coach / is_lifeguard ──
+ * 那三個旗標是 Ragic H01 的權威欄位，本系統只讀不寫（見 ragicSchema 的政策註記）。
+ * 寫進去下一次同步就被蓋回來，而且是無聲的 —— 管理員會以為存好了。
+ *
+ * ── 為什麼不擴充 admin_staff.role ──
+ * 那是單值欄位，登入、既有查詢、CHECK constraint 都靠它。改成陣列的話
+ * 要動的地方太多，而且 role 仍需要一個「代表值」給登入用。
+ * 所以這裡只存「額外手動加上的身分」，admin_staff.role 保留為其中優先序最高者。
+ *
+ * 最終權限 = Ragic 推導的身分 ∪ 這張表的手動身分。
+ */
+async function ensureStaffManualRoles() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS admin_staff_roles (
+      staff_id    TEXT NOT NULL,
+      role        TEXT NOT NULL,
+      updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_by  TEXT,
+      PRIMARY KEY (staff_id, role)
+    );
+    CREATE INDEX IF NOT EXISTS idx_admin_staff_roles_staff ON admin_staff_roles(staff_id);
+  `);
+
+  // 初始灌入：把每個人現有的 admin_staff.role 當成一筆手動身分，
+  // 這樣「多選」的起始狀態就等於現在畫面上顯示的那一個，不會有人打開發現空的。
+  // 只在整張表還沒有任何資料時做一次。
+  const has = await pool.query('SELECT 1 FROM admin_staff_roles LIMIT 1');
+  if (has.rowCount) return;
+  const r = await pool.query(
+    `INSERT INTO admin_staff_roles (staff_id, role, updated_by)
+     SELECT id, role, 'bootstrap' FROM admin_staff WHERE role IS NOT NULL
+     ON CONFLICT DO NOTHING`);
+  console.log(`[core bootstrap] admin_staff_roles 初始灌入 ${r.rowCount} 筆（沿用現有的單一角色）`);
+}
+
 async function ensureRolePermissions() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS role_permissions (
@@ -2686,6 +2724,7 @@ async function bootstrap() {
     await seedTagsAndThresholds();
     // 必須排在 seedCourseTypeConfigs 之前：後者要用換好的 (pricing_zone_id, course_type) 主鍵。
     await ensureStaffRoleCheck();
+    await ensureStaffManualRoles();
     await ensureRolePermissions();
     await ensureUserPermissionOverrides();
     await ensurePricingZones();

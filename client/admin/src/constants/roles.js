@@ -6,6 +6,7 @@
  * 那個測試存在的理由很具體：這五個角色原本散在五個檔案、互相矛盾，
  * 而「篩選選得到、編輯存不了」這種症狀不會有人主動回報。
  */
+// 陣列順序即優先序（高 → 低）。身兼數職時的「代表值」取最高者。
 export const ROLES = [
   { key: 'admin',     label: '系統管理員', backoffice: true  },
   { key: 'manager',   label: '場館主管',   backoffice: true  },
@@ -26,3 +27,9 @@ export function roleLabel(key) {
   return ROLE_LABELS[key] || String(key || '');
 }
 
+
+/** 一組身分裡優先序最高的那一個。給「代表值」用，不是權限判定。 */
+export function highestRole(list) {
+  const set = new Set((list || []).map(String));
+  return ROLES.map((r) => r.key).find((k) => set.has(k)) || null;
+}

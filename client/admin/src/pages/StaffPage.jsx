@@ -401,7 +401,15 @@ export default function StaffPage() {
           venue_ids: venueIds,
           venue_id: venueIds[0] || null,
         };
-        if (editing.role !== 'coach') patch.coach_active = !!editing.coach_active;
+        // 多選身分：整組送出，後端會據此重算 admin_staff.role 的代表值。
+        // 沒有 roles（例如只切換啟用狀態的快捷操作）就不送，維持原本的部分更新語意。
+        const pickedRoles = Array.isArray(editing.roles) && editing.roles.length
+          ? editing.roles
+          : (Array.isArray(editing.manual_roles) && editing.manual_roles.length
+            ? editing.manual_roles
+            : (editing.role ? [editing.role] : []));
+        if (pickedRoles.length) patch.roles = pickedRoles;
+        if (!pickedRoles.includes('coach')) patch.coach_active = !!editing.coach_active;
         // Task #91：若編輯彈窗動過 coach_profile，連同 bio / specialties / email 一起送
         if (editing.coach_profile && coachIdentityOn) {
           patch.coach_profile = {

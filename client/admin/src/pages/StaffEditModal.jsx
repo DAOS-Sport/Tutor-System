@@ -1,7 +1,7 @@
 import React from 'react';
 // 角色清單的唯一來源。原本這裡寫死四個、漏了救生員，
 // 於是外層篩選選得到救生員、進來編輯卻指派不了。
-import { ROLE_OPTIONS } from '../constants/roles.js';
+import { ROLES, highestRole } from '../constants/roles.js';
 
 /** Task #90：場館多選 chip — 已停用場館仍顯示但加註，避免下拉「莫名消失」。
  *  Task #95：disabled 模式（Ragic 來源員工）— 只顯示已選場館，不可點選。 */
@@ -235,7 +235,23 @@ function SpecialtyChipsField({ value, onChange }) {
 export default function StaffEditModal({ editing, setEditing, venues, busy, onSave, multiplierMin, multiplierMax }) {
   if (!editing) return null;
   const isNew = !!editing.isNew;
-  const showCoachPane = editing.role === 'coach' || editing.coach_active || editing.has_coach_profile;
+  // 目前勾選的身分。優先吃 roles（多選）；沒有就退回單一 role 加上
+  // Ragic 認定的那幾個，讓舊資料打開時不會是空的。
+  const selectedRoles = React.useMemo(() => {
+    const base = Array.isArray(editing.roles) && editing.roles.length
+      ? editing.roles
+      : (Array.isArray(editing.manual_roles) && editing.manual_roles.length
+        ? editing.manual_roles
+        : (editing.role ? [editing.role] : []));
+    const set = new Set(base);
+    if (editing.is_counter) set.add('staff');
+    if (editing.is_coach) set.add('coach');
+    if (editing.is_lifeguard) set.add('lifeguard');
+    return [...set];
+  }, [editing.roles, editing.manual_roles, editing.role,
+      editing.is_counter, editing.is_coach, editing.is_lifeguard]);
+
+  const showCoachPane = selectedRoles.includes('coach') || editing.coach_active || editing.has_coach_profile;
   // Task #95（Ragic 權威政策）：來自 Ragic 的員工，姓名/手機/場館 唯讀 — 修改請洽 HR 至 Ragic 更新，
   // 系統同步會自動帶回（場館由「部門」欄位自動套用）。後端 PATCH 亦會忽略這些欄位（雙重防護）。
   const ragicLocked = !isNew && !!editing.ragic_locked;
@@ -323,14 +339,46 @@ export default function StaffEditModal({ editing, setEditing, venues, busy, onSa
               </div>
               <div>
                 <label className="mb-1 block text-sm font-medium text-gray-700">角色</label>
-                <select
-                  value={editing.role || 'staff'}
-                  onChange={(e) => setEditing({ ...editing, role: e.target.value })}
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2"
-                >
-                  {ROLE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                </select>
-                <p className="mt-1 text-xs text-gray-500">變更角色會同步調整其登入後可見的選單與權限。</p>
+                {/* 多選：一個人可以同時是好幾種身分（教練兼救生員、櫃檯兼救生員…）。
+                    實際權限是所有身分各自被允許的頁面取聯集，不是只看其中一個。
+                    Ragic 認定的身分鎖住不給取消 —— is_counter / is_coach / is_lifeguard
+                    是 H01 的權威欄位，本系統只讀不寫，這裡取消了下次同步也會回來，
+                    而那種「存了又變回去」最讓人不信任系統。 */}
+                <div className="space-y-1.5 rounded-lg border border-gray-300 p-3">
+                  {ROLES.map((r) => {
+                    const lockedBy =
+                      (r.key === 'staff' && editing.is_counter) ? '行政櫃台'
+                        : (r.key === 'coach' && editing.is_coach) ? '教練'
+                          : (r.key === 'lifeguard' && editing.is_lifeguard) ? '救生員／守望員'
+                            : null;
+                    const checked = lockedBy ? true : selectedRoles.includes(r.key);
+                    return (
+                      <label key={r.key}
+                        className={`flex items-center gap-2 text-sm ${lockedBy ? 'text-gray-500' : 'text-gray-800'}`}
+                        title={lockedBy ? `Ragic 應徵職務為「${lockedBy}」，此身分由人事資料決定` : undefined}>
+                        <input type="checkbox" checked={checked} disabled={!!lockedBy}
+                          onChange={(e) => {
+                            const next = e.target.checked
+                              ? [...new Set([...selectedRoles, r.key])]
+                              : selectedRoles.filter((k) => k !== r.key);
+                            setEditing({ ...editing, roles: next, role: highestRole(next) || r.key });
+                          }} />
+                        <span>{r.label}</span>
+                        {lockedBy && <span className="text-[10px] text-gray-400">（Ragic 認定，不可取消）</span>}
+                        {!r.backoffice && !lockedBy && (
+                          <span className="text-[10px] text-amber-600">尚未開放登入後台</span>
+                        )}
+                      </label>
+                    );
+                  })}
+                </div>
+                <p className="mt-1 text-xs text-gray-500">
+                  可複選。實際看得到的頁面 = 所有身分各自被允許的頁面之和，
+                  細項在「(F-A06) 角色權限管理」設定。
+                  {selectedRoles.length > 1 && (
+                    <> 目前主要角色顯示為「{ROLES.find((r) => r.key === highestRole(selectedRoles))?.label}」。</>
+                  )}
+                </p>
               </div>
               <div>
                 <label className="mb-1 block text-sm font-medium text-gray-700">所屬場館{ragicLocked ? '（由 Ragic 部門自動同步）' : '（可複選）'}</label>
@@ -343,12 +391,12 @@ export default function StaffEditModal({ editing, setEditing, venues, busy, onSa
                 <p className="mt-1 text-xs text-gray-500">
                   {ragicLocked
                     ? '場館清單依 Ragic「部門」欄位自動套用（即權限可見範圍），調整請洽 HR 修改 Ragic 部門。'
-                    : (editing.role === 'admin'
+                    : (selectedRoles.includes('admin')
                         ? '系統管理員可不指定場館（看全部）。'
                         : '主管 / 行政 / 教練：勾選的場館清單就是其權限可見範圍。')}
                 </p>
               </div>
-              {!isNew && editing.role !== 'coach' && (
+              {!isNew && !selectedRoles.includes('coach') && (
                 <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
                   <label className="flex items-center gap-2 text-sm font-medium text-gray-800">
                     <input

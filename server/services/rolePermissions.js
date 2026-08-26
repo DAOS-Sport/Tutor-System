@@ -46,16 +46,24 @@ async function _load() {
   // 14 位教練兼救生員仍然看不到，因為他們的 role 是 coach。
   // 而那種錯不會有人回報成 bug，只會變成「這個系統怪怪的」。
   const idq = await pool.query(`
-    SELECT u.id AS user_id, s.role, s.is_counter, s.is_coach, s.is_lifeguard
+    SELECT u.id AS user_id, s.role, s.is_counter, s.is_coach, s.is_lifeguard,
+           COALESCE(ARRAY(
+             SELECT r.role FROM admin_staff_roles r WHERE r.staff_id = s.id
+           ), '{}') AS manual_roles
       FROM admin_users u
       JOIN admin_staff s ON s.id = u.staff_id`);
   const im = new Map();
   for (const row of idq.rows) {
     const set = new Set();
     if (row.role) set.add(row.role);
+    // Ragic 推導的身分（唯讀，來自 H01 應徵職務）
     if (row.is_counter) set.add('staff');
     if (row.is_coach) set.add('coach');
     if (row.is_lifeguard) set.add('lifeguard');
+    // 後台手動指派的身分。與 Ragic 取聯集而不是取代 ——
+    // Ragic 說他是救生員就是救生員，管理員只能再加，不能在這裡否認，
+    // 否認了下次同步也會回來，那種「存了又變回去」最讓人不信任系統。
+    for (const r of row.manual_roles || []) if (r) set.add(r);
     im.set(String(row.user_id), set);
   }
 

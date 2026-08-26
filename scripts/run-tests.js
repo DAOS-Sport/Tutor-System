@@ -71,6 +71,7 @@ const UNIT = [
   'tests/promotion_order_test.js',
   'tests/ragic_canary_state_test.js',
   'tests/role_derive_test.js',
+  'tests/staff_multi_role_test.js',
   'tests/role_gate_coverage_test.js',
   'tests/role_permissions_test.js',
   'tests/base_price_venue_test.js',

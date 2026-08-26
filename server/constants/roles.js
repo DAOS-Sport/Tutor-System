@@ -18,6 +18,9 @@
  */
 'use strict';
 
+// 陣列順序即優先序（高 → 低）。一個人身兼數職時，admin_staff.role 這個
+// 「代表值」取其中最高的那一個 —— 登入與既有查詢都靠它，必須是單值。
+// 實際權限不看代表值，而是所有身分取聯集（見 services/rolePermissions）。
 const ROLES = Object.freeze([
   { key: 'admin',     label: '系統管理員', backoffice: true  },
   { key: 'manager',   label: '場館主管',   backoffice: true  },
@@ -30,9 +33,15 @@ const ASSIGNABLE_ROLES = Object.freeze(ROLES.map((r) => r.key));
 const BACKOFFICE_ROLES = Object.freeze(ROLES.filter((r) => r.backoffice).map((r) => r.key));
 const ROLE_LABELS = Object.freeze(Object.fromEntries(ROLES.map((r) => [r.key, r.label])));
 
+/** 一組身分裡優先序最高的那一個。給「代表值」用，不是權限判定。 */
+function highestRole(list) {
+  const set = new Set((list || []).map(String));
+  return ASSIGNABLE_ROLES.find((r) => set.has(r)) || null;
+}
+
 function roleLabel(key) {
   return ROLE_LABELS[key] || String(key || '');
 }
 
-module.exports = { ROLES, ASSIGNABLE_ROLES, BACKOFFICE_ROLES, ROLE_LABELS, roleLabel };
+module.exports = { ROLES, ASSIGNABLE_ROLES, BACKOFFICE_ROLES, ROLE_LABELS, roleLabel, highestRole };
 
