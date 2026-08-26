@@ -55,11 +55,16 @@ check('救生員可以被指派（這是這次要修的）', () => {
     '缺這個，篩選選得到但編輯存不了，後端會回 400「角色不合法」');
 });
 
-check('救生員還不能登入後台（第 1 期不放寬權限）', () => {
-  assert.ok(!be.BACKOFFICE_ROLES.includes('lifeguard'),
-    '把救生員放進後台角色等於發權限給 54 位在職人員；那要在 F-A06 第 2 期明確處理');
-  assert.deepStrictEqual([...be.BACKOFFICE_ROLES], ['admin', 'manager', 'staff'],
-    '後台角色在第 1 期必須維持原樣');
+check('救生員可登入後台，教練永遠不可', () => {
+  // 2026-08-26 使用者決定：救生員與櫃檯走同一個後台入口，
+  // 看得到什麼由 F-A06 控制。教練則是走專屬 LIFF，永遠不進後台 ——
+  // 那不是「還沒開放」，是設計上就不會有。
+  assert.ok(be.BACKOFFICE_ROLES.includes('lifeguard'), '救生員要能登入後台');
+  assert.ok(!be.BACKOFFICE_ROLES.includes('coach'),
+    '教練若能登入後台，等於繞過 LIFF 那套身分；這條界線不該被無意改掉');
+  assert.deepStrictEqual([...be.BACKOFFICE_ROLES],
+    ['admin', 'manager', 'staff', 'lifeguard'],
+    '可登入後台的角色變動會直接改變誰進得來，不該是無意的');
 });
 
 check('沒有別的檔案再自己寫一份角色清單', () => {

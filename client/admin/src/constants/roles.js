@@ -15,7 +15,7 @@ export const ROLES = [
   { key: 'manager',   label: '場館主管',   backoffice: true,  portal: 'admin' },
   { key: 'staff',     label: '行政櫃檯',   backoffice: true,  portal: 'admin' },
   { key: 'coach',     label: '教練',       backoffice: false, portal: 'liff'  },
-  { key: 'lifeguard', label: '救生員',     backoffice: false, portal: 'admin' },
+  { key: 'lifeguard', label: '救生員',     backoffice: true,  portal: 'admin' },
 ];
 
 /** 可以指派給員工的身份（編輯視窗的下拉）。 */

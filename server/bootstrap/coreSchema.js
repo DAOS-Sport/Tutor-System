@@ -2440,16 +2440,16 @@ async function ensureStaffManualRoles() {
     CREATE INDEX IF NOT EXISTS idx_admin_staff_roles_staff ON admin_staff_roles(staff_id);
   `);
 
-  // 初始灌入：把每個人現有的 admin_staff.role 當成一筆手動身分，
-  // 這樣「多選」的起始狀態就等於現在畫面上顯示的那一個，不會有人打開發現空的。
-  // 只在整張表還沒有任何資料時做一次。
-  const has = await pool.query('SELECT 1 FROM admin_staff_roles LIMIT 1');
-  if (has.rowCount) return;
-  const r = await pool.query(
-    `INSERT INTO admin_staff_roles (staff_id, role, updated_by)
-     SELECT id, role, 'bootstrap' FROM admin_staff WHERE role IS NOT NULL
-     ON CONFLICT DO NOTHING`);
-  console.log(`[core bootstrap] admin_staff_roles 初始灌入 ${r.rowCount} 筆（沿用現有的單一角色）`);
+  // 刻意不灌初始值。
+  //
+  // 一度灌過「每個人現有的 admin_staff.role」，想讓多選畫面一打開就有東西。
+  // 那是錯的：這張表的語意是「管理員額外手動加上的身分」，把推導出來的值
+  // 塞進來，等於把它變成永久的。實測踩到的情形是——某位員工的 role 當時
+  // 還是保底值 'staff'，救生員身分修正後，那筆「手動 staff」仍留在表裡，
+  // 權限聯集就把整套櫃檯權限加了回去，而畫面上完全看不出來。
+  //
+  // 不灌也不會讓畫面空：rowToStaff 在沒有手動身分時會回退成 [role]，
+  // 編輯視窗照樣顯示他目前的角色。
 }
 
 async function ensureRolePermissions() {
@@ -2488,6 +2488,33 @@ async function ensureRolePermissions() {
     rows.flat()
   );
   console.log(`[core bootstrap] role_permissions 初始灌入 ${rows.length} 筆（沿用原本寫死的矩陣，行為不變）`);
+}
+
+/**
+ * admin_users.role 的 CHECK 要允許所有「能登入後台」的角色。
+ *
+ * 這裡刻意用 BACKOFFICE_ROLES 而不是 ASSIGNABLE_ROLES：admin_users 存的是
+ * 登入帳號，而教練走 LIFF、永遠不會有後台帳號。把 coach 放進來只會讓一個
+ * 不可能出現的值通過檢查。
+ *
+ * 為什麼會漏掉：admin_staff 與 admin_users 是兩張表、各有一個 CHECK。
+ * 先前放寬救生員時只改了前者，於是「員工可以是救生員」但「救生員登入時
+ * 建不出帳號」—— 症狀是登入回 500，而錯誤訊息只說違反 check constraint，
+ * 看不出是哪一個角色卡住。靜態檢查抓不到，只有真的跑一次登入才會現形。
+ */
+async function ensureAdminUserRoleCheck() {
+  const { BACKOFFICE_ROLES } = require('../constants/roles');
+  const cur = await pool.query(`
+    SELECT pg_get_constraintdef(con.oid) AS def
+      FROM pg_constraint con JOIN pg_class rel ON rel.oid = con.conrelid
+     WHERE rel.relname = 'admin_users' AND con.conname = 'admin_users_role_check'`);
+  const list = BACKOFFICE_ROLES.map((r) => `'${r}'`).join(', ');
+  if (cur.rowCount && BACKOFFICE_ROLES.every((r) => cur.rows[0].def.includes(`'${r}'`))) return;
+  await pool.query(`
+    ALTER TABLE admin_users DROP CONSTRAINT IF EXISTS admin_users_role_check;
+    ALTER TABLE admin_users ADD CONSTRAINT admin_users_role_check
+      CHECK (role = ANY (ARRAY[${list}]::text[]));`);
+  console.log('[core bootstrap] admin_users.role CHECK 已放寬為：' + list);
 }
 
 async function ensureStaffRoleCheck() {
@@ -2724,6 +2751,7 @@ async function bootstrap() {
     await seedTagsAndThresholds();
     // 必須排在 seedCourseTypeConfigs 之前：後者要用換好的 (pricing_zone_id, course_type) 主鍵。
     await ensureStaffRoleCheck();
+    await ensureAdminUserRoleCheck();
     await ensureStaffManualRoles();
     await ensureRolePermissions();
     await ensureUserPermissionOverrides();

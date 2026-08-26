@@ -70,6 +70,7 @@ const UNIT = [
   'tests/promotion_label_test.js',
   'tests/promotion_order_test.js',
   'tests/ragic_canary_state_test.js',
+  'tests/lifeguard_login_test.js',
   'tests/role_derive_test.js',
   'tests/staff_multi_role_test.js',
   'tests/admin_api_gate_coverage_test.js',

@@ -10,6 +10,8 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const { pool } = require('../../models/db');
 const { signToken, requireAdminAuth, BACKOFFICE_ROLES } = require('../../middlewares/adminAuth');
+// 身分優先序的唯一來源；登入時用它決定 JWT 上的代表角色。
+const { highestRole } = require('../../constants/roles');
 const {
   cleanVenueList,
   ADMIN_USER_VENUE_IDS_SELECT,
@@ -49,6 +51,14 @@ function _effectiveLoginUser(u) {
     if (staffRole === 'manager' || currentRole === 'manager') return { ...u, role: 'manager' };
     if (u.is_counter || (staffRole === 'staff' && !u.is_coach && !u.is_lifeguard)) {
       return { ...u, role: 'staff' };
+    }
+    // 救生員：與櫃檯走同一套後台登入，看得到什麼由 F-A06 決定。
+    //
+    // 必須排在櫃檯之後 —— 「櫃檯兼救生員」的人實際在做櫃檯的事，
+    // 排在前面會把他降級成救生員，他隔天就打不開對帳單了。
+    // 這裡的順序必須與 constants/roles 的優先序一致。
+    if (u.is_lifeguard || staffRole === 'lifeguard') {
+      return { ...u, role: 'lifeguard' };
     }
     return null;
   }
@@ -121,6 +131,11 @@ async function _counterStaffDefaultLogin(username, password) {
           s.role IN ('admin', 'manager')
           OR u.role IN ('admin', 'manager')
           OR COALESCE(s.is_counter, FALSE) = TRUE
+          -- 救生員與櫃檯用同一個後台入口。原本這裡明文排除他們
+          -- （... AND is_lifeguard = FALSE），因為當年沒有 lifeguard 這個角色值，
+          -- 放進來只會被算成「行政櫃檯」而拿到整套櫃檯權限。
+          -- 現在角色分得開、頁面權限也由 F-A06 控制，才解除。
+          OR COALESCE(s.is_lifeguard, FALSE) = TRUE
           OR (s.role = 'staff'
               AND COALESCE(s.is_coach, FALSE) = FALSE
               AND COALESCE(s.is_lifeguard, FALSE) = FALSE)
@@ -143,9 +158,15 @@ async function _counterStaffDefaultLogin(username, password) {
   }
 
   const userId = staff.login_user_id || `U_${staff.id}`;
-  const loginRole = staff.role === 'admin' || staff.user_role === 'admin'
-    ? 'admin'
-    : (staff.role === 'manager' || staff.user_role === 'manager' ? 'manager' : 'staff');
+  // 取這個人所有後台身分裡優先序最高的那一個。
+  //
+  // 原本是「不是 admin 也不是 manager 就一律 staff」。開放救生員登入之後，
+  // 那一行會直接把 52 位救生員變成行政櫃檯 —— 拿到客戶資料、對帳、退款的
+  // 全部權限，而且畫面上完全看不出來。這是這次改動最危險的一處。
+  const identities = [staff.role, staff.user_role];
+  if (staff.is_counter) identities.push('staff');
+  if (staff.is_lifeguard) identities.push('lifeguard');
+  const loginRole = highestRole(identities.filter((r) => BACKOFFICE_ROLES.includes(r))) || 'staff';
   const hash = await bcrypt.hash(phone, 10);
   const upsert = await pool.query(
     `INSERT INTO admin_users
