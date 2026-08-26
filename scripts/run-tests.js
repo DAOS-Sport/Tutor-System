@@ -73,6 +73,17 @@ const UNIT = [
   'tests/lifeguard_login_test.js',
   'tests/frontend_backoffice_gate_test.js',
   'tests/role_conflict_test.js',
+  // 每個 modal 都要有高度上限與可捲的內層。原本 7 個彈窗在 375px 上
+  // 底部按鈕永久不可達（其中手動扣課那個是 overflow-hidden，內容直接被裁掉），
+  // 而唯一的出路是重整整頁 —— 那種壞法不會有人回報成 bug。
+  'tests/mobile_modal_test.js',
+  // 學員的隔離區自癒判準要跟著家長的 updated_at 走：櫃檯補的是 parents.email，
+  // 而 students.updated_at 一動也不動 —— 沒有這條，Email 補完之後那批學員會
+  // 永遠留在隔離區、再也不會被推上 Ragic，而且完全沒有錯誤訊息。
+  'tests/ragic_backup_quarantine_selfheal_test.js',
+  // 檔案搬回 bucket 的安全性質：預設 dry-run、驗證通過才寫帳本、
+  // 刪除是獨立旗標且刪前重驗。這支腳本會動到 334 MB 的正式資料。
+  'tests/uploaded_files_bucket_migration_test.js',
   'tests/role_derive_test.js',
   'tests/staff_multi_role_test.js',
   'tests/admin_api_gate_coverage_test.js',
