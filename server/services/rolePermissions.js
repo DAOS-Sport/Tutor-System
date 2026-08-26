@@ -10,7 +10,7 @@
 
 const { pool } = require('../models/db');
 const { RESOURCE_KEYS, isResourceKey } = require('../constants/adminResources');
-const { ROLES } = require('../constants/roles');
+const { ROLES, PORTAL_ADMIN_ROLES } = require('../constants/roles');
 
 const CACHE_MS = 15_000;
 let cache = null;
@@ -55,7 +55,6 @@ async function _load() {
   const im = new Map();
   for (const row of idq.rows) {
     const set = new Set();
-    if (row.role) set.add(row.role);
     // Ragic 推導的身分（唯讀，來自 H01 應徵職務）
     if (row.is_counter) set.add('staff');
     if (row.is_coach) set.add('coach');
@@ -64,6 +63,19 @@ async function _load() {
     // Ragic 說他是救生員就是救生員，管理員只能再加，不能在這裡否認，
     // 否認了下次同步也會回來，那種「存了又變回去」最讓人不信任系統。
     for (const r of row.manual_roles || []) if (r) set.add(r);
+    // admin_staff.role 是「代表值」，最後才加，而且要過濾。
+    //
+    // 這個欄位有 CHECK constraint、一定要有值，所以純教練與純救生員都落在
+    // 保底值 'staff' —— 原本這裡是無條件 set.add(row.role)，於是那些人的
+    // 身分聯集裡憑空多一個「行政櫃檯」，拿到客戶資料、對帳、退款的全部權限，
+    // 而且畫面上完全看不出來（他們的徽章顯示的是救生員）。
+    //
+    // 判準與 auth.js 的 _usableRole、staff.js 的 rowToStaff 一致 ——
+    // 三個地方各寫一套的話，同一個人在列表上、登入時、算權限時會是不同身分。
+    if (row.role && (row.role === 'admin' || row.role === 'manager'
+        || row.is_counter || (!row.is_coach && !row.is_lifeguard))) {
+      set.add(row.role);
+    }
     im.set(String(row.user_id), set);
   }
 
@@ -82,9 +94,21 @@ async function _load() {
  */
 async function _rolesOf(user) {
   await _load();
+  const out = new Set();
   const fromDb = user && user.userId && identityCache.get(String(user.userId));
-  if (fromDb && fromDb.size) return fromDb;
-  return new Set(user && user.role ? [user.role] : []);
+  if (fromDb) for (const r of fromDb) out.add(r);
+  // token 上的角色也算一個身分，不是「查不到才用」的後備。
+  //
+  // 原本是「資料庫查得到就整組取代」。於是當 admin_users.role = 'admin'
+  // 但 admin_staff.role 已被改成 'manager' 時，這裡算出 {manager} ——
+  // 而 requireAdminRole、getScopedVenueIds、前端 can()、RequireAuth 這四個
+  // 地方全都認 token 上的 admin。症狀是：側邊選單畫出全部 34 個入口、
+  // 每一頁點進去都 403，但那個人偏偏改得動角色權限設定本身。
+  //
+  // 這裡採用 token 是安全的：它由 auth.js 的 _effectiveLoginUser 產生，
+  // 而那裡已經用 _usableRole 濾掉了保底值。
+  if (user && user.role) out.add(String(user.role));
+  return out;
 }
 
 /** 某個登入帳號的例外：Map(resource_key → boolean)。 */
@@ -96,6 +120,10 @@ async function _overridesFor(userId) {
 async function canAccess(role, resourceKey) {
   if (role === 'admin') return true;
   if (!isResourceKey(resourceKey)) return false;   // 認不得的鍵一律拒絕
+  // 不走後台的身分（教練）一律不發後台權限。舊資料裡可能還留著 coach 的列，
+  // 那些列現在寫不進去了，但已經存在的仍會被身分聯集讀到 —— 在這裡一併擋掉，
+  // 才不用去猜資料庫裡還有沒有殘留。
+  if (!PORTAL_ADMIN_ROLES.includes(role)) return false;
   const m = await _load();
   return !!(m.get(role) && m.get(role).has(resourceKey));
 }
@@ -146,8 +174,10 @@ async function allowedResources(role) {
 async function getMatrix() {
   const m = await _load();
   const out = {};
-  for (const r of ROLES) {
-    out[r.key] = r.key === 'admin' ? [...RESOURCE_KEYS] : [...(m.get(r.key) || [])];
+  // 只列會用到後台的身分。原本走 ROLES 全集，於是矩陣多出一個 coach 欄 ——
+  // API 送給前端時又把它濾掉，結果是「設定得了、看不見、卻會生效」。
+  for (const key of PORTAL_ADMIN_ROLES) {
+    out[key] = key === 'admin' ? [...RESOURCE_KEYS] : [...(m.get(key) || [])];
   }
   return out;
 }
@@ -162,7 +192,11 @@ async function setRolePermissions(role, resourceKeys, actor = 'admin') {
     err.code = 'ADMIN_ROLE_IMMUTABLE';
     throw err;
   }
-  if (!ROLES.some((r) => r.key === role)) {
+  // 驗證用 PORTAL_ADMIN_ROLES 而不是 ROLES 全集：畫面上沒有 coach 這一欄，
+  // 但 PUT /api/admin/role-permissions/coach 原本是一支開著的 API。
+  // 寫進去的列沒有任何畫面看得到、也刪不掉，卻會經由身分聯集實際發給
+  // 「教練兼救生員」這種同時有後台帳號的人。
+  if (!PORTAL_ADMIN_ROLES.includes(role)) {
     const err = new Error(`未知的角色：${role}`);
     err.code = 'UNKNOWN_ROLE';
     throw err;
