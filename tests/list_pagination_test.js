@@ -172,15 +172,42 @@ for (const [name, file] of Object.entries(PAGES)) {
     assert.ok(/\blimit\b/.test(call) && /\boffset\b/.test(call), 'fetchPage 沒有把 limit/offset 往後端送');
   });
 
-  check(`${name}：沒有任何一處還在全量載入（每個 enrollmentsApi.list 都要帶 limit）`, () => {
-    const calls = listCallArgs(src);
-    assert.ok(calls.length > 0, `${name} 找不到 enrollmentsApi.list 呼叫`);
-    calls.forEach((argsText, i) => {
-      assert.ok(
-        /\blimit\b/.test(argsText),
-        `第 ${i + 1} 處 enrollmentsApi.list 沒有帶 limit → 會整包撈回來：${argsText.slice(0, 120)}`,
-      );
-    });
+  check(`${name}：手機分批、桌機全量 —— 兩邊都要，而且是同一個斷點`, () => {
+    // 使用者的決定：手機分批載入（避免 1,100 筆撞上 axios 的 10 秒 timeout），
+    // 桌機維持原本「一次顯示全部」（他明確要求桌機零變動）。
+    //
+    // 這一條原本寫的是「每個 enrollmentsApi.list 都要帶 limit」。加上桌機全量
+    // 之後那個判準就與現實不符了 —— 桌機那條路刻意不帶 limit，而測試照樣綠，
+    // 等於它已經不在守任何東西。判準要跟著決定走，不是跟著程式碼走。
+    assert.ok(/useIsDesktop/.test(src),
+      `${name} 沒有用 useIsDesktop：兩邊的行為分不開，不是手機沒分批就是桌機被改掉`);
+    const at = src.indexOf('useInfiniteList(');
+    const call = balanced(src, src.indexOf('(', at), '(', ')');
+    assert.ok(/pageSize:\s*isDesktop\s*\?\s*null\s*:\s*\d+/.test(call),
+      `${name} 的 pageSize 不是 isDesktop ? null : N。`
+      + '桌機必須是 null（全量），不能改用一個很大的 limit —— '
+      + '後端把 limit 夾在 1000，而正式庫有 1,100 多筆，那會靜默少掉一批：'
+      + '畫面看起來是好的，只是少了幾筆，沒有任何錯誤訊息。');
+    assert.ok(/isDesktop/.test(call.slice(call.indexOf('['), call.indexOf(']') + 1))
+      || /\[[^\]]*isDesktop[^\]]*\]/.test(call),
+      `${name} 的 deps 沒有帶 isDesktop：轉螢幕方向或改視窗大小時不會重載`);
+  });
+
+  check(`${name}：全量那條路真的不帶 limit`, () => {
+    // 桌機走 pageSize=null 時 hook 傳進來的 limit 是 undefined。
+    // fetchPage 若無條件寫 `limit,`，axios 雖然會省略 undefined 參數，
+    // 但那是靠框架行為兜著；顯式判斷才看得出這是刻意的。
+    const at = src.indexOf('useInfiniteList(');
+    const call = balanced(src, src.indexOf('(', at), '(', ')');
+    assert.ok(/\.\.\.\(\s*limit\s*\?/.test(call),
+      `${name} 的 fetchPage 沒有顯式處理「沒有 limit」的情況`);
+  });
+
+  check(`${name}：桌機不掛無限捲動的頁尾`, () => {
+    // 桌機一次顯示全部，就沒有下一批可載，哨兵（IntersectionObserver）
+    // 也不該掛上去 —— 掛了會多出一行「已經到底了」，那就是桌機的變化。
+    assert.ok(/\{!isDesktop && [\s\S]{0,200}?<ListFooter/.test(src),
+      `${name} 的 ListFooter 沒有用 !isDesktop 擋住，桌機會多出一行頁尾`);
   });
 }
 

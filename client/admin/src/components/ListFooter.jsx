@@ -8,7 +8,7 @@ import React from 'react';
  *
  * 失敗時刻意只擋住這一批（顯示重試），不把整頁清空：已經看到的資料還是有用的。
  */
-export default function ListFooter({ loading, done, error, count, onRetry, sentinelRef, unit = '筆' }) {
+export default function ListFooter({ loading, done, error, count, onRetry, onLoadMore, sentinelRef, unit = '筆' }) {
   if (error) {
     return (
       <div className="flex flex-col items-center gap-2 py-6 text-center">
@@ -38,6 +38,22 @@ export default function ListFooter({ loading, done, error, count, onRetry, senti
       </div>
     );
   }
-  // 還沒到底、也不在載入中：放哨兵，捲到這裡就載下一批。
-  return <div ref={sentinelRef} className="py-6 text-center text-xs text-gray-300">往下捲載入更多…</div>;
+  // 還沒到底、也不在載入中：放哨兵，捲到這裡就自動載下一批。
+  //
+  // 哨兵同時是一顆可點的按鈕，不是純文字。IntersectionObserver 正常時使用者
+  // 根本不會看到它（rootMargin 提前 300px 觸發）；但只要 IO 因為任何原因沒作用
+  // ——舊瀏覽器、內嵌 WebView、或像我們測試用的模擬視窗那樣整個失效——
+  // 純文字的哨兵會讓人永遠卡在第一批，而且畫面上完全看不出哪裡不對：
+  // 它看起來就只是「資料只有這麼多」。有一顆按鈕，最差也只是多點一下。
+  return (
+    <div ref={sentinelRef} className="py-4 text-center">
+      <button
+        type="button"
+        onClick={onLoadMore || onRetry}
+        className="min-h-[44px] rounded-lg border border-gray-300 px-4 py-2 text-xs text-gray-500 hover:bg-gray-50 md:min-h-0"
+      >
+        載入更多（已載入 {count} {unit}）
+      </button>
+    </div>
+  );
 }

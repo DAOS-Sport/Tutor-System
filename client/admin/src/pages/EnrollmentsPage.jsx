@@ -6,6 +6,7 @@ import ListFooter from '../components/ListFooter';
 import StatusBadge from '../components/StatusBadge';
 import FilterBar from '../components/FilterBar';
 import useInfiniteList from '../hooks/useInfiniteList';
+import useIsDesktop from '../hooks/useIsDesktop';
 import { useAuth } from '../context/AuthContext';
 import { enrollmentsApi } from '../api/enrollments';
 import { venuesApi } from '../api/venues';
@@ -45,11 +46,20 @@ export default function EnrollmentsPage() {
   //
   // 改成分批載入：正式庫這張表已破千，整包回應在手機網路上會撞到 axios 的 10 秒逾時，
   // 而逾時的結果是整頁載不出來，不是「慢一點」。
+  // 手機分批、桌機全量。斷點與 Tailwind 的 md: 同一個 768px。
+  const isDesktop = useIsDesktop();
+
   const {
     items: list, setItems: setList, loading, done, error, loadMore, sentinelRef,
   } = useInfiniteList(
-    ({ limit, offset }) => enrollmentsApi.list({ ...filters, limit, offset }),
-    [filters],
+    ({ limit, offset }) => enrollmentsApi.list({
+      ...filters,
+      ...(limit ? { limit } : {}),   // 全量模式不帶 limit
+      offset,
+    }),
+    [filters, isDesktop],
+    // 手機分批 50 筆；桌機 pageSize=null＝全量，維持原本「一次顯示全部」。
+    { pageSize: isDesktop ? null : 50 },
   );
 
   /**
@@ -169,7 +179,10 @@ export default function EnrollmentsPage() {
 
       {/* 清單空的時候 DataTable 已經有空狀態，頁尾再說一次「沒有資料」是重複；
           還在載、載失敗、或還有下一批時才需要它。 */}
-      {list && !(done && !error && list.length === 0) && (
+      {/* 桌機不掛頁尾：使用者要求桌機維持「一次顯示全部」，那就沒有下一批可載，
+          而頁尾的哨兵（IntersectionObserver）也不該掛上去。載入中的轉圈在
+          items === null 那一段本來就有，桌機看到的仍然是原本那個。 */}
+      {!isDesktop && list && !(done && !error && list.length === 0) && (
         <ListFooter
           loading={loading}
           done={done}

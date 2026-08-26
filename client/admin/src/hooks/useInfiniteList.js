@@ -22,7 +22,16 @@ import { useCallback, useEffect, useRef, useState } from 'react';
  * @param fetchPage  ({ limit, offset }) => Promise<Array>
  * @param deps       篩選條件；變動即重載
  */
+/**
+ * pageSize = null（或 0）＝ 全量模式：不帶 limit、一次撈完、撈完就是到底。
+ *
+ * 為什麼需要這個模式：使用者要求桌機維持「一次顯示全部」。而「傳一個很大的
+ * limit」做不到 —— 後端把 limit 夾在 1000（enrollments.js 的 clamp），
+ * 正式庫有 1,100 多筆，那會靜默少掉一批：畫面看起來是好的，只是少了幾筆，
+ * 沒有任何錯誤訊息。那正是這個 hook 開頭註解說要避免的事。
+ */
 export default function useInfiniteList(fetchPage, deps = [], { pageSize = 50 } = {}) {
+  const paged = pageSize != null && pageSize > 0;
   const [items, setItems] = useState(null);   // null＝第一批還沒回來
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState(false);
@@ -43,11 +52,14 @@ export default function useInfiniteList(fetchPage, deps = [], { pageSize = 50 } 
     const myReq = reqIdRef.current;
     const myOffset = offsetRef.current;
     try {
-      const batch = await fetchRef.current({ limit: pageSize, offset: myOffset });
+      const batch = await fetchRef.current(
+        paged ? { limit: pageSize, offset: myOffset } : { offset: 0 },
+      );
       if (myReq !== reqIdRef.current) return;   // 篩選已經換過，這批作廢
       const rows = Array.isArray(batch) ? batch : [];
       offsetRef.current = myOffset + rows.length;
-      if (rows.length < pageSize) { doneRef.current = true; setDone(true); }
+      // 全量模式一批就是全部，撈完直接標到底 —— 否則哨兵會一直想載下一批。
+      if (!paged || rows.length < pageSize) { doneRef.current = true; setDone(true); }
       setItems((cur) => (cur === null ? rows : [...cur, ...rows]));
     } catch (e) {
       if (myReq !== reqIdRef.current) return;
@@ -57,7 +69,7 @@ export default function useInfiniteList(fetchPage, deps = [], { pageSize = 50 } 
     } finally {
       if (myReq === reqIdRef.current) { loadingRef.current = false; setLoading(false); }
     }
-  }, [pageSize]);
+  }, [pageSize, paged]);
 
   // 篩選變動 → 全部重來
   useEffect(() => {

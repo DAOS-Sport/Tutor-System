@@ -6,6 +6,7 @@ import ListFooter from '../components/ListFooter';
 import StatusBadge from '../components/StatusBadge';
 import ConfirmDialog from '../components/ConfirmDialog';
 import useInfiniteList from '../hooks/useInfiniteList';
+import useIsDesktop from '../hooks/useIsDesktop';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import { enrollmentsApi } from '../api/enrollments';
@@ -76,15 +77,20 @@ export default function RefundPage() {
     return () => clearTimeout(t);
   }, [query]);
 
+  // 手機分批、桌機全量。斷點與 Tailwind 的 md: 同一個 768px。
+  const isDesktop = useIsDesktop();
+
   const {
     items, loading, done, error, loadMore, sentinelRef,
   } = useInfiniteList(
     ({ limit, offset }) => enrollmentsApi.list({
       ...(searchTerm ? { search: searchTerm } : {}),
-      limit,
+      ...(limit ? { limit } : {}),   // 全量模式不帶 limit
       offset,
     }),
-    [searchTerm, reloadKey],
+    [searchTerm, reloadKey, isDesktop],
+    // 手機分批 50 筆；桌機 pageSize=null＝全量，維持原本「一次顯示全部」。
+    { pageSize: isDesktop ? null : 50 },
   );
 
   // 後端的 status 參數一次只吃一個值，而這一頁要看四種狀態，所以狀態仍在前端篩。
@@ -265,7 +271,10 @@ export default function RefundPage() {
 
       {/* 清單是空的時候 DataTable 自己已經有空狀態，這裡再說一次「沒有資料」
           會變成同一件事講兩遍；只有還在載、載失敗、或還有下一批時才需要頁尾。 */}
-      {!(done && !error && list.length === 0) && (
+      {/* 桌機不掛頁尾：使用者要求桌機維持「一次顯示全部」，那就沒有下一批可載，
+          而頁尾的哨兵（IntersectionObserver）也不該掛上去。載入中的轉圈在
+          items === null 那一段本來就有，桌機看到的仍然是原本那個。 */}
+      {!isDesktop && !(done && !error && list.length === 0) && (
         <ListFooter
           loading={loading}
           done={done}
