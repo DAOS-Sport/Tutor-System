@@ -196,7 +196,7 @@ export default function CheckinPage() {
           </div>
           <button
             onClick={reload}
-            className="rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100"
+            className="min-h-[44px] rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 md:min-h-0"
           >
             重新整理
           </button>
@@ -211,7 +211,7 @@ export default function CheckinPage() {
             <input
               type="tel" placeholder="09xxxxxxxx" value={phone}
               onChange={(e) => setPhone(e.target.value.trim())}
-              className="w-32 rounded-md border border-gray-300 px-2 py-1.5 text-sm"
+              className="min-h-[44px] w-32 rounded-md border border-gray-300 px-2 py-1.5 text-sm md:min-h-0"
             />
           </div>
           <div>
@@ -219,19 +219,19 @@ export default function CheckinPage() {
             <input
               type="text" placeholder="CP1001" value={periodId}
               onChange={(e) => setPeriodId(e.target.value.trim())}
-              className="w-28 rounded-md border border-gray-300 px-2 py-1.5 text-sm"
+              className="min-h-[44px] w-28 rounded-md border border-gray-300 px-2 py-1.5 text-sm md:min-h-0"
             />
           </div>
           <button
             type="submit" disabled={busy}
-            className="rounded-md bg-brand-teal px-3 py-1.5 text-sm font-bold text-white hover:bg-brand-primary disabled:opacity-50"
+            className="min-h-[44px] rounded-md bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary disabled:opacity-50 md:min-h-0 md:px-3 md:py-1.5"
           >
             {busy ? '查詢中…' : '核對'}
           </button>
           {(result || phone || periodId) && (
             <button
               type="button" onClick={clearLookup}
-              className="rounded-md border border-gray-300 px-2 py-1.5 text-xs text-gray-600 hover:bg-white"
+              className="min-h-[44px] rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-white md:min-h-0 md:px-2 md:py-1.5 md:text-xs"
             >清除</button>
           )}
         </form>
@@ -250,17 +250,31 @@ export default function CheckinPage() {
         ) : list.length === 0 ? (
           <div className="py-12 text-center text-sm text-gray-400">尚無報到紀錄</div>
         ) : (
+          // 手機 6 欄分三行，桌機仍是 12 欄一行。
+          // 375px 上這一列原本會爆版：main 的 p-4 之後只剩 311px 給 grid，
+          // 扣掉 5 個 gap-2 是 271px、每欄 45px。CSS Grid 的 item 預設
+          // min-width:auto、不會縮到 min-content 以下，而「自助」徽章
+          // （px-2.5 + 兩個中文字）min-content 就 44px、撤銷鈕加報名編號
+          // 要 106px —— 三個沒有 truncate 的欄位加起來把 grid 撐到 400px 上下，
+          // 塞在 311px 的盒子裡，結果是整頁橫向捲動，主清單讀不了。
+          //
+          // 用 span 而不是 display:contents 換版：DOM 順序不變，
+          // 桌機的欄位順序完全照舊，也不必賭瀏覽器對 contents 的支援。
+          // 手機 6 欄的配置（每欄約 45px）：
+          // 第一行 時間2 + 學員4
+          // 第二行 組別4 + 場館2
+          // 第三行 來源2 + 動作4     ← 徽章拿到 98px，不會再被擠爆
           <ul className="divide-y divide-gray-100">
             {list.map((r) => (
-              <li key={r.checkin_id} className="grid grid-cols-12 items-center gap-2 px-4 py-3 text-sm">
+              <li key={r.checkin_id} className="grid grid-cols-6 items-center gap-x-2 gap-y-1.5 px-4 py-3 text-sm md:grid-cols-12 md:gap-y-2">
                 <span className="col-span-2 font-mono text-brand-primary">{formatHM(r.at)}</span>
-                <span className="col-span-2 truncate">
+                <span className="col-span-4 truncate md:col-span-2">
                   <b>{r.student || '—'}</b>
                   {r.checked_in_by && (
                     <span className="block truncate text-xs text-gray-400">簽到人：{r.checked_in_by}</span>
                   )}
                 </span>
-                <span className="col-span-3 truncate text-gray-600">
+                <span className="col-span-4 truncate text-gray-600 md:col-span-3">
                   {r.course_type ? courseTypeLabel(r.course_type) : '—'}
                   {r.is_experience_course && (
                     <span className="ml-1 rounded-full bg-teal-50 px-1.5 py-0.5 text-[11px] font-bold text-teal-700">試上</span>
@@ -268,14 +282,17 @@ export default function CheckinPage() {
                   {r.coach ? <span className="ml-1 text-gray-400">· {r.coach}</span> : null}
                 </span>
                 <span className="col-span-2 truncate text-gray-500">{r.venue_name || r.venue_id}</span>
-                <span className="col-span-1">{sourceBadge(r)}</span>
-                <span className="col-span-2 flex items-center justify-end gap-2">
+                <span className="col-span-2 md:col-span-1">{sourceBadge(r)}</span>
+                <span className="col-span-4 flex items-center justify-end gap-2 md:col-span-2">
                   {r.session_created_via === 'self_checkin' && r.session_id && (
+                    // 手機上放大到 44px：這是破壞性操作（整堂 attendance 標成
+                    // REVERSED），而救生員多半是濕手在池畔按。桌機維持原本的
+                    // 密度 —— 桌機使用者一次要看很多列，拉高會讓每頁看到的資料變少。
                     <button
                       type="button"
                       disabled={revokingId === r.checkin_id}
                       onClick={() => revokeSelf(r)}
-                      className="rounded-md border border-brand-error px-2 py-1 text-xs font-bold text-brand-error hover:bg-brand-error-soft disabled:opacity-50"
+                      className="min-h-[44px] rounded-md border border-brand-error px-3 py-2 text-sm font-bold text-brand-error hover:bg-brand-error-soft disabled:opacity-50 md:min-h-0 md:px-2 md:py-1 md:text-xs"
                     >
                       {revokingId === r.checkin_id ? '撤銷中…' : '撤銷'}
                     </button>
@@ -297,7 +314,9 @@ export default function CheckinPage() {
               {paymentStatusLabel(result.enrollment.status)}
             </StatusBadge>
           </div>
-          <dl className="grid grid-cols-2 gap-3 text-sm">
+          {/* 375px 上外層 p-6 之後只剩 277px，兩欄各 133px，
+              而「家長姓名（0912345678）」一項就要 180px。 */}
+          <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
             <div><dt className="text-gray-500">報名編號</dt><dd className="font-mono">{result.enrollment.id}</dd></div>
             <div><dt className="text-gray-500">家長</dt><dd>{result.enrollment.parent_name}（{result.enrollment.parent_phone}）</dd></div>
             <div><dt className="text-gray-500">學員</dt><dd>{result.enrollment.students.join('、')}</dd></div>

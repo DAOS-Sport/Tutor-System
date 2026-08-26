@@ -144,8 +144,9 @@ export default function SessionsPage() {
         : r.checkin_status === 'checked_in'
           ? <span className="text-xs text-gray-300">—</span>
           : (
+            // 救生員在這一頁唯一的動作鈕，原本只有 26px 高。
             <button type="button" onClick={(e) => { e.stopPropagation(); openBackfill(r); }}
-              className="rounded-md bg-brand-amber px-2.5 py-1 text-xs font-bold text-white hover:opacity-90">
+              className="min-h-[44px] rounded-md bg-brand-amber px-3 py-2 text-sm font-bold text-white hover:opacity-90 md:min-h-0 md:px-2.5 md:py-1 md:text-xs">
               補簽到
             </button>
           ),
@@ -202,12 +203,16 @@ export default function SessionsPage() {
       <div className="mb-4 flex flex-wrap items-end gap-3 rounded-lg border border-gray-200 bg-white p-3 shadow-sm">
         <div>
           <label className="mb-1 block text-xs font-medium text-gray-600">起訖日</label>
-          <div className="flex items-center gap-1.5">
+{/* 外層那一列有 flex-wrap，這一層原本沒有：
+              152 + 152 + 「~」12 + 兩個 gap-1.5 共 12 = 328px，
+              而外層 p-3 之後 375px 只剩 301px —— 溢出 27px，整頁橫向捲動。
+              兩個 picker 改成 flex-1 min-w-0，窄螢幕自己縮，桌機由 sm:w-[152px] 定住。 */}
+          <div className="flex flex-wrap items-center gap-1.5">
             <DateTimePicker value={range.from} max={range.to || undefined}
-              onChange={(v) => setRangeBound('from', v)} className="w-[152px]" />
+              onChange={(v) => setRangeBound('from', v)} className="min-w-0 flex-1 sm:w-[152px] sm:flex-none" />
             <span className="shrink-0 text-gray-400">~</span>
             <DateTimePicker value={range.to} min={range.from || undefined}
-              onChange={(v) => setRangeBound('to', v)} className="w-[152px]" />
+              onChange={(v) => setRangeBound('to', v)} className="min-w-0 flex-1 sm:w-[152px] sm:flex-none" />
           </div>
         </div>
         <VenueMultiSelect

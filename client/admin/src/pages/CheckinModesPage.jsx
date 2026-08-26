@@ -122,7 +122,7 @@ export default function CheckinModesPage() {
           type="button"
           disabled={switchingId === r.id}
           onClick={() => switchMode(r)}
-          className={`rounded-md px-3 py-1.5 text-xs font-bold text-white disabled:opacity-50 ${
+          className={`min-h-[44px] rounded-md px-3 py-2 text-sm font-bold text-white disabled:opacity-50 md:min-h-0 md:py-1.5 md:text-xs ${
             r.checkin_mode === 'self' ? 'bg-gray-500 hover:bg-gray-600' : 'bg-amber-500 hover:bg-amber-600'
           }`}
         >
@@ -166,14 +166,14 @@ export default function CheckinModesPage() {
             <button
               type="button"
               onClick={() => setBulk({ venueId, mode: 'self' })}
-              className="rounded-lg bg-amber-500 px-3 py-2 text-xs font-bold text-white hover:bg-amber-600"
+              className="min-h-[44px] rounded-lg bg-amber-500 px-3 py-2 text-sm font-bold text-white hover:bg-amber-600 md:min-h-0 md:text-xs"
             >
               整館改為自助簽到
             </button>
             <button
               type="button"
               onClick={() => setBulk({ venueId, mode: 'booking' })}
-              className="rounded-lg bg-gray-500 px-3 py-2 text-xs font-bold text-white hover:bg-gray-600"
+              className="min-h-[44px] rounded-lg bg-gray-500 px-3 py-2 text-sm font-bold text-white hover:bg-gray-600 md:min-h-0 md:text-xs"
             >
               整館改回預約制
             </button>
