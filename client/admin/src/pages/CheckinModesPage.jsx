@@ -154,7 +154,7 @@ export default function CheckinModesPage() {
           onChange={(e) => setSearch(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') { setList(null); load(); } }}
           placeholder="搜尋教練 / 學員（Enter）"
-          className="w-56 rounded-lg border border-gray-300 px-3 py-2 text-sm"
+          className="min-h-[44px] w-56 rounded-lg border border-gray-300 px-3 py-2 md:min-h-0 text-sm"
         />
         {list && (
           <span className="text-xs text-gray-500">

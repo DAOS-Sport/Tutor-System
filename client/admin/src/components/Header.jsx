@@ -52,7 +52,7 @@ export default function Header({ onOpenNav }) {
           <button
             type="button"
             onClick={() => setOpenPwd(true)}
-            className="rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100"
+            className="min-h-[44px] rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 md:min-h-0"
             title="修改自己的後台登入密碼"
           >
             個人設定
@@ -61,7 +61,7 @@ export default function Header({ onOpenNav }) {
         <button
           type="button"
           onClick={onLogout}
-          className="rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100"
+          className="min-h-[44px] rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 md:min-h-0"
         >
           登出
         </button>

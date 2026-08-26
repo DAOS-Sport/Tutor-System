@@ -187,7 +187,7 @@ export default function SessionsPage() {
                   key={v}
                   type="button"
                   onClick={() => switchView(v)}
-                  className={`px-3 py-1.5 ${view === v ? 'bg-brand-primary text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+                  className={`min-h-[44px] px-3 py-1.5 md:min-h-0 ${view === v ? 'bg-brand-primary text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
                 >{label}</button>
               ))}
             </div>

@@ -228,7 +228,7 @@ export default function DateTimePicker({
         type="button"
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
-        className={`flex w-full items-center justify-between gap-2 rounded-lg border px-3 py-2 text-left text-sm transition ${
+        className={`flex min-h-[44px] w-full items-center justify-between gap-2 rounded-lg border px-3 py-2 text-left text-sm transition md:min-h-0 ${
           open ? 'border-brand-teal ring-2 ring-brand-teal/20' : 'border-gray-300 hover:border-gray-400'
         } ${disabled ? 'cursor-not-allowed bg-gray-50 text-gray-400' : 'bg-white'}`}
       >
@@ -262,19 +262,19 @@ export default function DateTimePicker({
         >
           <div className="mb-2 flex items-center justify-between">
             <button type="button" onClick={() => shiftMonth(-1)} disabled={prevBlocked || pickingMonth} aria-label="上個月"
-              className="rounded-lg p-1.5 text-gray-500 hover:bg-gray-100 disabled:cursor-not-allowed disabled:text-gray-200 disabled:hover:bg-transparent">
+              className="min-h-[44px] min-w-[44px] rounded-lg p-1.5 text-gray-500 hover:bg-gray-100 md:min-h-0 md:min-w-0 disabled:cursor-not-allowed disabled:text-gray-200 disabled:hover:bg-transparent">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4"><path d="m15 18-6-6 6-6" /></svg>
             </button>
             {/* 標題可點＝年月快速跳轉。生日這種要回到 2015 年的欄位，
                 只靠上下月箭頭要按超過 100 次。 */}
             <button type="button" onClick={() => setPickingMonth((v) => !v)}
-              className="flex items-center gap-1 rounded-lg px-2 py-1 text-sm font-bold text-brand-primary hover:bg-gray-100">
+              className="flex min-h-[44px] items-center gap-1 rounded-lg px-2 py-1 text-sm md:min-h-0 font-bold text-brand-primary hover:bg-gray-100">
               {viewY} 年 {viewMo} 月
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
                 className={`h-3 w-3 text-gray-400 transition ${pickingMonth ? 'rotate-180' : ''}`}><path d="m6 9 6 6 6-6" /></svg>
             </button>
             <button type="button" onClick={() => shiftMonth(1)} disabled={nextBlocked || pickingMonth} aria-label="下個月"
-              className="rounded-lg p-1.5 text-gray-500 hover:bg-gray-100 disabled:cursor-not-allowed disabled:text-gray-200 disabled:hover:bg-transparent">
+              className="min-h-[44px] min-w-[44px] rounded-lg p-1.5 text-gray-500 hover:bg-gray-100 md:min-h-0 md:min-w-0 disabled:cursor-not-allowed disabled:text-gray-200 disabled:hover:bg-transparent">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4"><path d="m9 18 6-6-6-6" /></svg>
             </button>
           </div>
@@ -284,7 +284,7 @@ export default function DateTimePicker({
               <select
                 aria-label="年份" value={viewY}
                 onChange={(e) => setViewY(Number(e.target.value))}
-                className="mb-2 w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm font-mono tabular-nums focus:border-brand-teal focus:outline-none"
+                className="mb-2 min-h-[44px] w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm font-mono md:min-h-0 tabular-nums focus:border-brand-teal focus:outline-none"
               >
                 {Array.from({ length: yearTo - yearFrom + 1 }, (_, i) => yearTo - i).map((y) => (
                   <option key={y} value={y}>{y} 年</option>
@@ -298,7 +298,7 @@ export default function DateTimePicker({
                   return (
                     <button key={m} type="button" disabled={blocked}
                       onClick={() => { setViewMo(mo); setPickingMonth(false); }}
-                      className={`rounded-lg py-2 text-[13px] transition ${
+                      className={`min-h-[44px] rounded-lg py-2 text-[13px] transition md:min-h-0 ${
                         mo === viewMo ? 'bg-brand-primary font-bold text-white'
                           : blocked ? 'cursor-not-allowed text-gray-200'
                             : 'font-medium text-gray-700 hover:bg-gray-100'
@@ -325,7 +325,7 @@ export default function DateTimePicker({
                   const blocked = (!!maxDay && k > maxDay) || (!!minDay && k < minDay);
                   return (
                     <button key={k} type="button" disabled={blocked} onClick={() => pickDay(d)}
-                      className={`mx-auto flex h-9 w-9 items-center justify-center rounded-lg text-[13px] tabular-nums transition ${
+                      className={`mx-auto flex h-11 w-11 items-center justify-center md:h-9 md:w-9 rounded-lg text-[13px] tabular-nums transition ${
                         isSel ? 'bg-brand-primary font-bold text-white'
                           : blocked ? 'cursor-not-allowed font-normal text-gray-200'
                             : isToday ? 'font-bold text-brand-teal ring-1 ring-brand-teal/40 hover:bg-brand-teal/10'
@@ -348,7 +348,7 @@ export default function DateTimePicker({
                 onPick={emit}
               />
               <button type="button" onClick={() => setOpen(false)}
-                className="ml-auto rounded-lg bg-brand-primary px-3 py-1.5 text-xs font-bold text-white hover:bg-brand-primary/90">完成</button>
+                className="ml-auto min-h-[44px] rounded-lg bg-brand-primary px-3 py-1.5 md:min-h-0 text-xs font-bold text-white hover:bg-brand-primary/90">完成</button>
             </div>
           )}
         </div>

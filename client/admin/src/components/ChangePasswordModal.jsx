@@ -74,7 +74,7 @@ export default function ChangePasswordModal({ open, onClose, initialUsername = '
             <span className="mb-1 block text-xs font-medium text-gray-600">新帳號</span>
             <input type="text" value={username} onChange={(e) => setUsername(e.target.value.trim())}
               autoComplete="username"
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none" />
+              className="min-h-[44px] w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none md:min-h-0" />
             {cleanUsername && !usernameOk && (
               <span className="mt-1 block text-xs text-brand-error">帳號需為 2–40 碼，可使用英文、數字、._@-</span>
             )}
@@ -86,13 +86,13 @@ export default function ChangePasswordModal({ open, onClose, initialUsername = '
             <span className="mb-1 block text-xs font-medium text-gray-600">舊密碼</span>
             <input type={inputType} value={oldPwd} onChange={(e) => setOldPwd(e.target.value)}
               autoComplete="current-password"
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none" />
+              className="min-h-[44px] w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none md:min-h-0" />
           </label>
           <label className="block">
             <span className="mb-1 block text-xs font-medium text-gray-600">新密碼</span>
             <input type={inputType} value={newPwd} onChange={(e) => setNewPwd(e.target.value)}
               autoComplete="new-password"
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none" />
+              className="min-h-[44px] w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none md:min-h-0" />
             {newPwd && !lenOk && (
               <span className="mt-1 block text-xs text-brand-error">至少 4 個字元</span>
             )}
@@ -104,12 +104,12 @@ export default function ChangePasswordModal({ open, onClose, initialUsername = '
             <span className="mb-1 block text-xs font-medium text-gray-600">確認新密碼</span>
             <input type={inputType} value={confirm} onChange={(e) => setConfirm(e.target.value)}
               autoComplete="new-password"
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none" />
+              className="min-h-[44px] w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none md:min-h-0" />
             {confirm && !matchOk && (
               <span className="mt-1 block text-xs text-brand-error">兩次輸入的新密碼不一致</span>
             )}
           </label>
-          <label className="flex items-center gap-2 text-xs text-gray-600">
+          <label className="flex min-h-[44px] items-center gap-2 text-xs text-gray-600 md:min-h-0">
             <input type="checkbox" checked={show} onChange={(e) => setShow(e.target.checked)} />
             顯示密碼（明碼）
           </label>
@@ -117,11 +117,11 @@ export default function ChangePasswordModal({ open, onClose, initialUsername = '
 
         <div className="flex shrink-0 justify-end gap-3 px-6 pb-6 pt-6">
           <button type="button" onClick={onClose} disabled={busy}
-            className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50">
+            className="min-h-[44px] rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50 md:min-h-0">
             取消
           </button>
           <button type="button" onClick={submit} disabled={!canSubmit}
-            className="rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary disabled:opacity-50">
+            className="min-h-[44px] rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary disabled:opacity-50 md:min-h-0">
             {busy ? '處理中…' : '更新密碼'}
           </button>
         </div>
