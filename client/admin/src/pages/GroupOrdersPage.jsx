@@ -436,7 +436,7 @@ export default function GroupOrdersPage() {
                     <p className="text-xs text-gray-400">尚無紀錄（此團購建立於操作紀錄功能上線前）</p>
                   ) : (
                     <ul className="space-y-1 text-xs text-gray-600">
-                      {detail.audit_logs.map((a, i) => (
+                      {(detail.audit_logs || []).map((a, i) => (
                         <li key={i} className="flex gap-2">
                           <span className="w-32 shrink-0 font-mono text-gray-400">{formatTWDateTime(a.at)}</span>
                           <span className="flex-1">

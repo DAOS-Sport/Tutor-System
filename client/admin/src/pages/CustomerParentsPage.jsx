@@ -116,7 +116,11 @@ export default function CustomerParentsPage() {
       else toast.warning(r?.note || '本地已解除，但 Ragic 的舊 UID 未清除');
       setUnbinding(null);
       setUnbindReason('');
-      await load();
+      // 這個元件裡的函式叫 reload（:45），不叫 load。
+      // 寫錯之後 ReferenceError 被下面同一個 try 的 catch 吃掉，於是
+      // API 明明已經解綁成功，畫面卻跳「解除綁定失敗」、清單也不重載，
+      // 那一列還顯示「已綁定」—— 櫃檯會以為沒成功而再按一次。
+      await reload();
     } catch (e) {
       toast.error(e?.response?.data?.error || '解除綁定失敗');
     } finally {

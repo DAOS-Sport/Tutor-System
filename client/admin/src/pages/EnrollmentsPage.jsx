@@ -152,7 +152,7 @@ export default function EnrollmentsPage() {
               <div className="mt-4 rounded-xl border border-blue-100 bg-blue-50 p-3">
                 <div className="mb-1 text-xs font-bold text-blue-700">📱 附加家長手機（多組家庭）</div>
                 <div className="flex flex-wrap gap-2">
-                  {detail.extra_parent_phones.map((p) => (
+                  {(detail.extra_parent_phones || []).map((p) => (
                     <span key={p} className="rounded-full bg-blue-100 px-2 py-0.5 font-mono text-xs text-blue-800">{p}</span>
                   ))}
                 </div>
@@ -212,10 +212,22 @@ export default function EnrollmentsPage() {
               </div>
             )}
 
+            {/* audit_logs 只有詳情 API 才有，清單 API 刻意不回
+                （server/routes/admin/enrollments.js:918 的註解說明了原因）。
+                openDetail 先 setDetail(row) 讓彈窗立刻出現，等詳情回來才補上 ——
+                那個空窗期裡 detail.audit_logs 是 undefined，直接 .map() 會丟
+                TypeError，被 ErrorBoundary 接住之後整頁變成「頁面發生錯誤」。
+                mock 模式的假資料每一筆都自帶 audit_logs，所以開發時看不到。 */}
             <div className="mt-5">
               <div className="mb-2 text-sm font-bold text-gray-700">操作紀錄</div>
               <ul className="space-y-1 text-xs text-gray-600">
-                {detail.audit_logs.map((a, i) => (
+                {!detail.audit_logs && (
+                  <li className="text-gray-400">載入中…</li>
+                )}
+                {detail.audit_logs && detail.audit_logs.length === 0 && (
+                  <li className="text-gray-400">尚無操作紀錄</li>
+                )}
+                {(detail.audit_logs || []).map((a, i) => (
                   <li key={i} className="flex gap-3">
                     <span className="w-36 shrink-0 font-mono text-gray-400">{formatTWDateTimeSeconds(a.at)}</span>
                     <span className="flex-1">{a.action}</span>
