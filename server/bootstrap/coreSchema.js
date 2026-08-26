@@ -2464,10 +2464,32 @@ async function ensureRolePermissions() {
     CREATE INDEX IF NOT EXISTS idx_role_permissions_role ON role_permissions(role);
   `);
 
-  // 只在「一列都還沒有」時灌初始值。灌完之後權威就是這張表 ——
+  // 只灌一次初始值。灌完之後權威就是這張表 ——
   // 管理員在後台調過的設定，不該被下一次部署默默改回程式碼裡的預設。
+  //
+  // 判斷「灌過了沒」用的是一個明確的旗標，不是「表裡有沒有列」。
+  // 用列數會 fail-open：setRolePermissions 是 DELETE 再 INSERT，送空陣列
+  // 就只剩 DELETE。可編輯的只有 manager / staff / lifeguard 三欄，出事時
+  // 管理員很可能就是全部取消勾選先把門關上 —— 表變空，下次部署這裡判定
+  // 「還沒初始化」，把整份預設矩陣灌回去，權限自己打開，而且沒有任何紀錄。
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS schema_seed_marks (
+      mark_key   text PRIMARY KEY,
+      marked_at  timestamptz NOT NULL DEFAULT now()
+    );
+  `);
+  const MARK = 'role_permissions_seeded';
+  const seeded = await pool.query(
+    'SELECT 1 FROM schema_seed_marks WHERE mark_key = $1', [MARK]);
+  if (seeded.rowCount) return;
+  // 舊環境沒有旗標但表裡已經有列（這次改動之前就灌過了）：補記旗標後結束，
+  // 不要重灌。
   const existing = await pool.query('SELECT 1 FROM role_permissions LIMIT 1');
-  if (existing.rowCount) return;
+  if (existing.rowCount) {
+    await pool.query(
+      'INSERT INTO schema_seed_marks (mark_key) VALUES ($1) ON CONFLICT DO NOTHING', [MARK]);
+    return;
+  }
 
   const { ADMIN_RESOURCES } = require('../constants/adminResources');
   const { BACKOFFICE_ROLES } = require('../constants/roles');
@@ -2480,13 +2502,19 @@ async function ensureRolePermissions() {
       rows.push([role, res.key]);
     }
   }
-  if (!rows.length) return;
+  if (!rows.length) {
+    await pool.query(
+      'INSERT INTO schema_seed_marks (mark_key) VALUES ($1) ON CONFLICT DO NOTHING', [MARK]);
+    return;
+  }
   const values = rows.map((_, i) => `($${i * 2 + 1}, $${i * 2 + 2}, 'bootstrap')`).join(', ');
   await pool.query(
     `INSERT INTO role_permissions (role, resource_key, updated_by) VALUES ${values}
      ON CONFLICT DO NOTHING`,
     rows.flat()
   );
+  await pool.query(
+    'INSERT INTO schema_seed_marks (mark_key) VALUES ($1) ON CONFLICT DO NOTHING', [MARK]);
   console.log(`[core bootstrap] role_permissions 初始灌入 ${rows.length} 筆（沿用原本寫死的矩陣，行為不變）`);
 }
 

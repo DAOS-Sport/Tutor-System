@@ -27,9 +27,10 @@
 // 教練是 liff：他有專屬的教練入口，永遠不會進後台，列在權限表裡只會讓那一欄
 // 永遠是空的、還讓人以為漏設了什麼。
 //
-// backoffice 是另一件事：現在能不能登入後台。救生員 portal 是 admin
-// （之後要給帳號，所以現在就要能先設定權限），但 backoffice 仍是 false ——
-// 開放登入是獨立的決定，不該是「加進權限表」的副作用。
+// backoffice 是另一件事：現在能不能登入後台。
+// 這兩件事分開，是為了讓「加進權限表」不會順手發出登入權限。
+// 2026-08-26 使用者決定開放救生員：backoffice 由 false 翻為 true，
+// 與櫃檯走同一個後台入口，看得到什麼交給 F-A06 逐頁勾選。
 const ROLES = Object.freeze([
   { key: 'admin',     label: '系統管理員', backoffice: true,  portal: 'admin' },
   { key: 'manager',   label: '場館主管',   backoffice: true,  portal: 'admin' },
