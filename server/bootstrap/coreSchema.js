@@ -2371,6 +2371,55 @@ const DEFAULT_THRESHOLDS = [
  * 放寬 CHECK 不會改變任何人現有的權限：能不能登入後台由 BACKOFFICE_ROLES 決定，
  * 而 lifeguard 不在其中。這一步只是讓「指派救生員」這件事變得可能。
  */
+/**
+ * F-A06 角色權限：哪個角色看得到哪些頁面。
+ *
+ * ── 為什麼是「有列＝允許」而不是布林欄位 ──
+ * 缺列一律視為拒絕（fail-closed）。新增一個後台頁面時，它預設對所有非管理員
+ * 關閉，要由管理員明確打開 —— 反過來（預設開放、要記得關）遲早會漏。
+ *
+ * ── 為什麼 admin 不進這張表 ──
+ * 系統管理員永遠全開，而且不可調整。把它做成可編輯的，代表有人可以在畫面上
+ * 把自己鎖在門外，而解鎖的唯一入口正好也被鎖住了。
+ */
+async function ensureRolePermissions() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS role_permissions (
+      role          TEXT NOT NULL,
+      resource_key  TEXT NOT NULL,
+      updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_by    TEXT,
+      PRIMARY KEY (role, resource_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_role_permissions_role ON role_permissions(role);
+  `);
+
+  // 只在「一列都還沒有」時灌初始值。灌完之後權威就是這張表 ——
+  // 管理員在後台調過的設定，不該被下一次部署默默改回程式碼裡的預設。
+  const existing = await pool.query('SELECT 1 FROM role_permissions LIMIT 1');
+  if (existing.rowCount) return;
+
+  const { ADMIN_RESOURCES } = require('../constants/adminResources');
+  const { BACKOFFICE_ROLES } = require('../constants/roles');
+  const rows = [];
+  for (const res of ADMIN_RESOURCES) {
+    // defaultRoles 為空＝原本「所有登入者皆可見」，灌給每個後台角色。
+    const roles = res.defaultRoles.length ? res.defaultRoles : [...BACKOFFICE_ROLES];
+    for (const role of roles) {
+      if (role === 'admin') continue;   // admin 永遠全開，不入表
+      rows.push([role, res.key]);
+    }
+  }
+  if (!rows.length) return;
+  const values = rows.map((_, i) => `($${i * 2 + 1}, $${i * 2 + 2}, 'bootstrap')`).join(', ');
+  await pool.query(
+    `INSERT INTO role_permissions (role, resource_key, updated_by) VALUES ${values}
+     ON CONFLICT DO NOTHING`,
+    rows.flat()
+  );
+  console.log(`[core bootstrap] role_permissions 初始灌入 ${rows.length} 筆（沿用原本寫死的矩陣，行為不變）`);
+}
+
 async function ensureStaffRoleCheck() {
   const cur = await pool.query(`
     SELECT pg_get_constraintdef(con.oid) AS def
@@ -2605,6 +2654,7 @@ async function bootstrap() {
     await seedTagsAndThresholds();
     // 必須排在 seedCourseTypeConfigs 之前：後者要用換好的 (pricing_zone_id, course_type) 主鍵。
     await ensureStaffRoleCheck();
+    await ensureRolePermissions();
     await ensurePricingZones();
     await seedCourseTypeConfigs();
     await ensureCourseIntroFK();

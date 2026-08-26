@@ -1,6 +1,7 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { usePermissions } from '../context/PermissionContext';
 import { USE_MOCK } from '../api/client';
 
 // 每個項目的 roles 控制可見性。空陣列表示所有登入者皆可見。
@@ -18,6 +19,7 @@ const NAV_GROUPS = [
     items: [
       { to: '/settings',      label: '(F-A01) 全域系統設定', roles: ['admin'] },
       { to: '/staff',         label: '(F-A02) 員工帳號管理', roles: ['admin'] },
+      { to: '/role-permissions', label: '(F-A06) 角色權限管理', roles: ['admin'] },
       // Task #91：F-C-Admin 教練資料已合併進員工帳號管理，sidebar 入口下架
       { to: '/venues',        label: '(F-A03) 場館設定',     roles: ['admin'] },
       { to: '/course-intros', label: '(F-A04/F-M06) 課程介紹', roles: ['admin', 'manager'] },
@@ -87,13 +89,20 @@ const NAV_GROUPS = [
   },
 ];
 
-function canSee(item, role) {
-  if (!item.roles || item.roles.length === 0) return true;
-  return item.roles.includes(role);
+// F-A06：選單依角色權限設定顯示。
+// item.roles 只在「權限還沒載到」時當後備 —— 直接放行會讓非管理員在載入的
+// 那半秒看到整份選單，那比慢半秒糟得多。
+function canSee(item, role, allowed, can) {
+  if (allowed === null) {
+    if (!item.roles || item.roles.length === 0) return true;
+    return item.roles.includes(role);
+  }
+  return can(item.to.replace(/^\//, ''));
 }
 
 export default function Sidebar() {
   const { role } = useAuth();
+  const { allowed, can } = usePermissions();
 
   return (
     <aside className="hidden w-64 shrink-0 flex-col bg-brand-primary text-white md:flex">
@@ -102,7 +111,7 @@ export default function Sidebar() {
       </div>
       <nav className="flex-1 overflow-y-auto px-3 py-4">
         {NAV_GROUPS.map((group) => {
-          const visible = group.items.filter((it) => canSee(it, role));
+          const visible = group.items.filter((it) => canSee(it, role, allowed, can));
           if (visible.length === 0) return null;
           return (
             <div key={group.title} className="mb-4">

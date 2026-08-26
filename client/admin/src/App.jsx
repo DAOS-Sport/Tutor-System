@@ -6,6 +6,7 @@ import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
 import SettingsPage from './pages/SettingsPage';
 import StaffPage from './pages/StaffPage';
+import RolePermissionsPage from './pages/RolePermissionsPage';
 import CoachesRedirect from './pages/CoachesRedirect';
 import VenuesPage from './pages/VenuesPage';
 import CourseIntrosPage from './pages/CourseIntrosPage';
@@ -59,6 +60,7 @@ export default function App() {
         {/* 系統設定（admin only） */}
         <Route path="/settings"      element={<RequireAuth roles={['admin']}><SettingsPage /></RequireAuth>} />
         <Route path="/staff"         element={<RequireAuth roles={['admin']}><StaffPage /></RequireAuth>} />
+        <Route path="/role-permissions" element={<RequireAuth roles={['admin']}><RolePermissionsPage /></RequireAuth>} />
         {/* Task #91：F-C-Admin 已合併進員工帳號管理，舊路徑保留 redirect + toast */}
         <Route path="/coaches"       element={<CoachesRedirect />} />
         <Route path="/venues"        element={<RequireAuth roles={['admin']}><VenuesPage /></RequireAuth>} />
