@@ -51,7 +51,7 @@ export default function VenueMultiSelect({
         type="button"
         disabled={disabled}
         onClick={() => setOpen((o) => !o)}
-        className="min-w-[160px] rounded-md border border-gray-300 bg-white px-3 py-1.5 text-left text-sm hover:border-brand-teal disabled:bg-gray-50 disabled:text-gray-400"
+        className="min-h-[44px] min-w-[160px] rounded-md border border-gray-300 bg-white px-3 py-1.5 text-left text-sm md:min-h-0 hover:border-brand-teal disabled:bg-gray-50 disabled:text-gray-400"
       >
         {summary}
         <span className="ml-2 text-gray-400">▾</span>

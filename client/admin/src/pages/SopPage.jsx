@@ -564,9 +564,13 @@ export default function SopPage() {
   const section = SECTIONS.find((s) => s.id === active);
 
   return (
-    <div className="p-6">
+    // main 本身已經有 p-4；這裡再疊一層 p-6，375px 上兩邊共吃掉 80px，
+    // 內容只剩 295px，右側正文因此撐破容器。
+    <div className="p-0 md:p-6">
       <PageHeader title="系統操作 SOP" subtitle="完整流程說明 · 所有角色通用參考手冊" />
-      <div className="flex gap-6">
+      {/* 左側目錄在手機上是 hidden，但 flex row 仍會把正文夾在原本的欄寬裡。
+          改成手機直向、md 以上才並排，正文才拿得到整個寬度。 */}
+      <div className="flex flex-col gap-6 md:flex-row">
         {/* 左側目錄 */}
         <aside className="hidden w-52 shrink-0 md:block">
           <nav className="sticky top-4 space-y-1 rounded-xl border border-gray-200 bg-white p-3">

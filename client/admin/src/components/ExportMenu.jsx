@@ -38,7 +38,7 @@ export default function ExportMenu({ disabled, onExportCsv, onExportXlsx, label 
         aria-expanded={open}
         /* px-4 py-2 text-sm 實高約 36px。手機上這顆與下面兩個選項擠在一起，
            36px 的命中區在池畔濕手操作時很容易點成隔壁項；md 以上是滑鼠，維持原密度。 */
-        className="inline-flex min-h-[44px] items-center justify-center rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary disabled:cursor-not-allowed disabled:opacity-50 md:min-h-0"
+        className="inline-flex min-h-[44px] items-center justify-center whitespace-nowrap rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary disabled:cursor-not-allowed disabled:opacity-50 md:min-h-0"
       >
         {label} <span aria-hidden>▾</span>
       </button>
