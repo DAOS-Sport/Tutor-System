@@ -4,6 +4,7 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import StatusBadge from '../components/StatusBadge';
 import ConfirmDialog from '../components/ConfirmDialog';
 import { useAuth } from '../context/AuthContext';
+import { usePermissions } from '../context/PermissionContext';
 import { useToast } from '../context/ToastContext';
 import { promotionsApi } from '../api/promotions';
 import { formatTWDateTime } from '../utils/format';
@@ -55,6 +56,7 @@ function fmtDiscount(p) {
 
 export default function PromotionsPage() {
   const { role } = useAuth();
+  const { can } = usePermissions();
   const toast = useToast();
   const [allList, setAllList] = useState(null);
   const [filterStatus, setFilterStatus] = useState('');
@@ -84,7 +86,10 @@ export default function PromotionsPage() {
   }, [allList]);
 
   // 優惠活動：manager 比照 admin（建立 / 上架 / 停用 / 刪除 / 複製皆可）
-  const canManage = role === 'admin' || role === 'manager';
+  // 跟後端同一份設定。後端已改成 requireResource('promotions')，
+  // 這裡若還寫死 admin/manager，管理員把「優惠活動」開給櫃檯之後，
+  // API 會放行、畫面上按鈕卻全部不見 —— 變成一個沒有解釋的唯讀頁。
+  const canManage = can('promotions');
 
   const [actionBusy, setActionBusy] = useState(false);
   async function doAction(p, action, note) {
