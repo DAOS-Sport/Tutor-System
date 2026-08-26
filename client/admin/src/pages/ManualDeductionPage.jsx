@@ -75,7 +75,7 @@ function ResultModal({ data, onClose }) {
   if (!data) return null;
   return (
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-4"
+      className="fixed inset-0 z-40 flex items-end justify-center bg-black/40 md:items-center md:px-4"
       onClick={(e) => e.target === e.currentTarget && onClose()}
       role="dialog"
       aria-modal="true"
@@ -86,8 +86,19 @@ function ResultModal({ data, onClose }) {
           被 items-center 置中後上下同時溢出視窗，而 overflow-hidden 又把溢出的部分
           直接裁掉，375×812 上「關閉視窗」跟一半的欄位對照表根本畫不出來，也捲不到。
           overflow-hidden 要留著（彩色標頭要吃圓角），改為配上 90dvh + 中段內捲，
-          寫法對齊 ReconcilePage.jsx:372。 */}
-      <div className="flex max-h-[90dvh] w-full max-w-lg flex-col overflow-hidden rounded-2xl bg-white shadow-xl">
+          寫法對齊 ReconcilePage.jsx:372。
+
+          另外，原本在 375px 上這張卡是置中的：即使高度收好了，底部的「關閉視窗」
+          仍停在螢幕垂直中線附近，而扣課是櫃檯單手拿手機在做的事，拇指構不到。
+          改成 md 以下貼底升起的面板（滿版、上緣圓角、85dvh），md 以上原封不動
+          回到 items-center + max-w-lg + rounded-2xl + 90dvh。 */}
+      <div className="flex max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-2xl bg-white shadow-xl pb-[env(safe-area-inset-bottom)] md:max-h-[90dvh] md:max-w-lg md:rounded-2xl">
+        {/* grabber：行動裝置上「這個可以往下拉」的通用暗示，桌機沒有這個手勢所以 md:hidden。
+            這支的面板頂端是彩色標頭，所以底色跟著標頭走、grabber 改用白色半透明；
+            其餘彈窗頂端是白底，用規格指定的 bg-gray-300。 */}
+        <div className="shrink-0 bg-brand-green pt-2 md:hidden" aria-hidden="true">
+          <div className="mx-auto h-1 w-10 rounded-full bg-white/50" />
+        </div>
         <div className="flex shrink-0 items-start justify-between gap-3 bg-brand-green px-5 py-4 text-white">
           <div className="min-w-0">
             <h3 className="text-base font-bold leading-tight">{data.idempotent ? '已確認原操作（未重複扣除）' : '扣課成功'}</h3>

@@ -132,13 +132,22 @@ export default function TransfersReviewPage() {
       )}
 
       {reviewing && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 md:items-center md:p-4"
           onClick={() => !busy && setReviewing(null)}>
           {/* 家長名稱 + 手機號那行在 375px 上會折成兩三行，加上 textarea 與按鈕列，
               手機鍵盤彈出後（拒絕轉讓時原因必填，一定會彈）可視高度剩不到一半。
               原本沒有 max-h 也不能捲，「送出」被壓在鍵盤下方，轉讓案就卡在這裡。
-              同 ReconcilePage.jsx:372 的寫法。 */}
-          <div className="flex max-h-[90dvh] w-full max-w-md flex-col rounded-xl bg-white p-5" onClick={(e) => e.stopPropagation()}>
+              同 ReconcilePage.jsx:372 的寫法。
+
+              另外原本在 375px 上這張卡是置中的：鍵盤沒彈出時「送出」停在螢幕垂直中線
+              附近、單手拿手機的拇指構不到；鍵盤一彈出來又被往上推得更遠。改成 md 以下
+              貼底升起的面板 —— 面板本來就貼著鍵盤上緣，按鈕永遠落在拇指區。
+              md 以上原封不動回到 items-center + max-w-md + rounded-xl + 90dvh。
+              pb 用 calc 疊上安全區：貼底後面板下緣會壓在 iPhone 的 home indicator 底下；
+              桌機上 env() 求值為 0，等同原本的 p-5。 */}
+          <div className="flex max-h-[85dvh] w-full flex-col rounded-t-2xl bg-white p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] md:max-h-[90dvh] md:max-w-md md:rounded-xl" onClick={(e) => e.stopPropagation()}>
+            {/* grabber：行動裝置上「這個可以往下拉」的通用暗示，桌機沒有這個手勢所以 md:hidden。 */}
+            <div className="mx-auto -mt-2 mb-3 h-1 w-10 shrink-0 rounded-full bg-gray-300 md:hidden" aria-hidden="true" />
             <h3 className="text-base font-bold text-brand-primary mb-2 shrink-0">
               {reviewing.action === 'approve' ? '核准轉讓' : '拒絕轉讓'}
             </h3>

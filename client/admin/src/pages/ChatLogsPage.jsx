@@ -125,9 +125,17 @@ export default function ChatLogsPage() {
       )}
 
       {selected && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4" onClick={() => setSelected(null)}>
-          <div onClick={(e) => e.stopPropagation()} className="flex h-[80vh] w-full max-w-2xl flex-col rounded-xl bg-white shadow-xl">
-            <header className="flex items-center justify-between border-b px-4 py-3">
+        <div className="fixed inset-0 z-40 flex items-end justify-center bg-black/40 md:items-center md:p-4" onClick={() => setSelected(null)}>
+          {/* 原本在 375px 會發生什麼：這張聊天記錄卡置中、被 p-4 夾成 343 寬，
+              而且高度寫死 80vh —— iOS Safari 的 vh 含收合中的網址列，實際可見區更矮，
+              「匯出 JSON / 關閉」那一列會被推到網址列底下；就算沒被推掉，置中之後
+              整張卡的下緣也只到螢幕四分之三處，單手拿手機時拇指構不到頂端那兩顆鈕。
+              改成 md 以下貼底升起的面板：滿版、上緣圓角、85dvh（dvh 才是真的可見區）。
+              md 以上原封不動回到 items-center + max-w-2xl + rounded-xl + 80dvh（桌機同值）。 */}
+          <div onClick={(e) => e.stopPropagation()} className="flex h-[85dvh] w-full flex-col rounded-t-2xl bg-white shadow-xl pb-[env(safe-area-inset-bottom)] md:h-[80dvh] md:max-w-2xl md:rounded-xl">
+            {/* grabber：行動裝置上「這個可以往下拉」的通用暗示，桌機沒有這個手勢所以 md:hidden。 */}
+            <div className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-gray-300 md:hidden" aria-hidden="true" />
+            <header className="flex shrink-0 items-center justify-between border-b px-4 py-3">
               <div>
                 <div className="text-sm font-bold text-brand-primary">{selected.coach?.name} ↔ {(selected.student_names || []).join('、')}</div>
                 <div className="text-xs text-gray-500">{selected.venue?.name} · {COURSE_LABEL[selected.course_type]}</div>

@@ -173,127 +173,145 @@ export default function EditEnrollmentModal({ enrollment, onClose, onSaved }) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 md:items-center md:px-4"
       onClick={(ev) => ev.target === ev.currentTarget && onClose()}
       role="dialog"
       aria-modal="true"
       aria-label="編輯報名資料"
     >
-      <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl max-h-[90vh] overflow-y-auto">
-        <div className="mb-4 flex items-center justify-between">
-          <h3 className="font-bold text-brand-primary">編輯報名資料 — {enrollment.id}</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
+      {/* 原本在 375px 會發生什麼：面板置中、被 px-4 夾成 343 寬，表單有十幾個欄位，
+          雙欄 grid 在手機上仍維持 grid-cols-2、每格只剩約 150px。面板吃滿 90vh 之後
+          「取消 / 儲存變更」落在整段表單的最尾端，要一路捲到底才看得到；再加上編輯時
+          鍵盤一定會彈出來，可視高度砍半，而 vh 在 iOS Safari 上含收合中的網址列，
+          那一排按鈕會被壓到看不見。
+          改成 md 以下貼底升起的面板：滿版、上緣圓角、85dvh。
+          面板本身原本就是捲軸（p-6 + overflow-y-auto），改成 flex-col 後把 p-6 與
+          overflow-y-auto 搬進中段那層，grabber 才不會跟著內容捲走；桌機的內距、
+          捲軸位置與可捲範圍完全一致。
+          md 以上原封不動回到 items-center + max-w-lg + rounded-2xl + 90dvh（桌機同 90vh）。 */}
+      <div className="flex max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-2xl bg-white shadow-xl pb-[env(safe-area-inset-bottom)] md:max-h-[90dvh] md:max-w-lg md:rounded-2xl">
+        {/* grabber：行動裝置上「這個可以往下拉」的通用暗示，桌機沒有這個手勢所以 md:hidden。 */}
+        <div className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-gray-300 md:hidden" aria-hidden="true" />
+        <div className="flex-1 overflow-y-auto p-6">
+          <div className="mb-4 flex items-center justify-between">
+            <h3 className="font-bold text-brand-primary">編輯報名資料 — {enrollment.id}</h3>
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
+          </div>
+
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="家長姓名 *">
+                <Input value={parentName} onChange={setParentName} placeholder="如：張媽媽" />
+                {errors.parentName && <p className="mt-0.5 text-[11px] text-red-500">{errors.parentName}</p>}
+              </Field>
+              <Field label="家長手機 *">
+                <Input value={parentPhone} onChange={setParentPhone} placeholder="0912345678" />
+                {errors.parentPhone && <p className="mt-0.5 text-[11px] text-red-500">{errors.parentPhone}</p>}
+              </Field>
+            </div>
+
+            <Field label="學員姓名 *" hint="多位學員請以頓號（、）或逗號分隔">
+              <Input
+                value={students}
+                onChange={setStudents}
+                placeholder="如：張小明、張小美"
+              />
+              {errors.students && <p className="mt-0.5 text-[11px] text-red-500">{errors.students}</p>}
+            </Field>
+
+            <Field label="報名場館 *" hint="變更場館後教練選項會重新載入">
+              <Select value={venueId} onChange={handleVenueChange}>
+                <option value="">請選擇場館</option>
+                {venues.map((v) => (
+                  <option key={v.id} value={v.id}>{v.name}</option>
+                ))}
+              </Select>
+              {errors.venueId && <p className="mt-0.5 text-[11px] text-red-500">{errors.venueId}</p>}
+            </Field>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="教練 *" hint={!venueId ? '請先選擇場館' : (coachesLoading ? '載入中…' : `本場館 ${coaches.length} 位在職教練`)}>
+                <Select value={coachId} onChange={setCoachId} disabled={!venueId || coachesLoading}>
+                  <option value="">{venueId ? '請選擇教練' : '—'}</option>
+                  {coaches.map((c) => (
+                    <option key={c.id} value={c.id} disabled={c._inactive}>
+                      {c.name}{c.is_senior ? ' ⭐' : ''}
+                    </option>
+                  ))}
+                </Select>
+                {errors.coachId && <p className="mt-0.5 text-[11px] text-red-500">{errors.coachId}</p>}
+              </Field>
+              <Field label="組別">
+                <Select value={courseType} onChange={setCourseType}>
+                  {COURSE_TYPES.map((t) => (
+                    <option key={t.value} value={t.value}>{t.label}</option>
+                  ))}
+                </Select>
+              </Field>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="原價（NT$）*">
+                <Input type="number" value={originalPrice} onChange={setOriginalPrice} placeholder="11700" />
+                {errors.originalPrice && <p className="mt-0.5 text-[11px] text-red-500">{errors.originalPrice}</p>}
+              </Field>
+              <Field label="應收金額（NT$）*">
+                <Input type="number" value={finalPrice} onChange={setFinalPrice} placeholder="11115" />
+                {errors.finalPrice && <p className="mt-0.5 text-[11px] text-red-500">{errors.finalPrice}</p>}
+              </Field>
+            </div>
+
+            <Field label="轉帳末 5 碼">
+              <Input value={transferLast5} onChange={setTransferLast5} placeholder="12345" className="font-mono" />
+            </Field>
+
+            <div className="rounded-xl border border-blue-100 bg-blue-50 p-4">
+              <div className="mb-2 text-xs font-bold text-blue-700">📱 附加家長手機（多組家庭）</div>
+              <p className="mb-2 text-[11px] text-blue-600">
+                1 對 2 / 1 對 3 等多個家庭同組時，在這裡加入其他家庭的手機號碼，讓他們登入 LIFF 也能查看本報名資訊。
+                每行填一組。
+              </p>
+              <textarea
+                value={extraPhones}
+                onChange={(ev) => setExtraPhones(ev.target.value)}
+                rows={3}
+                placeholder={'0922333444\n0933555666'}
+                className="w-full rounded-lg border border-blue-200 px-3 py-2 text-sm font-mono outline-none focus:border-brand-teal"
+              />
+            </div>
+
+            <Field label="備注">
+              <textarea
+                value={notes}
+                onChange={(ev) => setNotes(ev.target.value)}
+                rows={2}
+                placeholder="如：家長要求特定時段、付款方式說明等..."
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-brand-teal"
+              />
+            </Field>
+
+            {/* 原本在 375px 會發生什麼：這排按鈕在表單最尾端，鍵盤彈出後幾乎不可能捲到。
+                sticky bottom-0 讓它在捲動時就釘在面板下緣（＝拇指區）；md:static 把它
+                原樣放回文件流，桌機仍是捲到底才出現的那一列。按鈕留在 <form> 裡面，
+                type="submit" 的行為不變。 */}
+            <div className="sticky bottom-0 flex justify-end gap-3 bg-white pb-3 pt-2 md:static md:bg-transparent md:pb-0">
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+              >
+                取消
+              </button>
+              <button
+                type="submit"
+                disabled={busy}
+                className="rounded-lg bg-brand-primary px-5 py-2 text-sm font-bold text-white hover:bg-brand-teal disabled:opacity-50"
+              >
+                {busy ? '儲存中…' : '儲存變更'}
+              </button>
+            </div>
+          </form>
         </div>
-
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="家長姓名 *">
-              <Input value={parentName} onChange={setParentName} placeholder="如：張媽媽" />
-              {errors.parentName && <p className="mt-0.5 text-[11px] text-red-500">{errors.parentName}</p>}
-            </Field>
-            <Field label="家長手機 *">
-              <Input value={parentPhone} onChange={setParentPhone} placeholder="0912345678" />
-              {errors.parentPhone && <p className="mt-0.5 text-[11px] text-red-500">{errors.parentPhone}</p>}
-            </Field>
-          </div>
-
-          <Field label="學員姓名 *" hint="多位學員請以頓號（、）或逗號分隔">
-            <Input
-              value={students}
-              onChange={setStudents}
-              placeholder="如：張小明、張小美"
-            />
-            {errors.students && <p className="mt-0.5 text-[11px] text-red-500">{errors.students}</p>}
-          </Field>
-
-          <Field label="報名場館 *" hint="變更場館後教練選項會重新載入">
-            <Select value={venueId} onChange={handleVenueChange}>
-              <option value="">請選擇場館</option>
-              {venues.map((v) => (
-                <option key={v.id} value={v.id}>{v.name}</option>
-              ))}
-            </Select>
-            {errors.venueId && <p className="mt-0.5 text-[11px] text-red-500">{errors.venueId}</p>}
-          </Field>
-
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="教練 *" hint={!venueId ? '請先選擇場館' : (coachesLoading ? '載入中…' : `本場館 ${coaches.length} 位在職教練`)}>
-              <Select value={coachId} onChange={setCoachId} disabled={!venueId || coachesLoading}>
-                <option value="">{venueId ? '請選擇教練' : '—'}</option>
-                {coaches.map((c) => (
-                  <option key={c.id} value={c.id} disabled={c._inactive}>
-                    {c.name}{c.is_senior ? ' ⭐' : ''}
-                  </option>
-                ))}
-              </Select>
-              {errors.coachId && <p className="mt-0.5 text-[11px] text-red-500">{errors.coachId}</p>}
-            </Field>
-            <Field label="組別">
-              <Select value={courseType} onChange={setCourseType}>
-                {COURSE_TYPES.map((t) => (
-                  <option key={t.value} value={t.value}>{t.label}</option>
-                ))}
-              </Select>
-            </Field>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="原價（NT$）*">
-              <Input type="number" value={originalPrice} onChange={setOriginalPrice} placeholder="11700" />
-              {errors.originalPrice && <p className="mt-0.5 text-[11px] text-red-500">{errors.originalPrice}</p>}
-            </Field>
-            <Field label="應收金額（NT$）*">
-              <Input type="number" value={finalPrice} onChange={setFinalPrice} placeholder="11115" />
-              {errors.finalPrice && <p className="mt-0.5 text-[11px] text-red-500">{errors.finalPrice}</p>}
-            </Field>
-          </div>
-
-          <Field label="轉帳末 5 碼">
-            <Input value={transferLast5} onChange={setTransferLast5} placeholder="12345" className="font-mono" />
-          </Field>
-
-          <div className="rounded-xl border border-blue-100 bg-blue-50 p-4">
-            <div className="mb-2 text-xs font-bold text-blue-700">📱 附加家長手機（多組家庭）</div>
-            <p className="mb-2 text-[11px] text-blue-600">
-              1 對 2 / 1 對 3 等多個家庭同組時，在這裡加入其他家庭的手機號碼，讓他們登入 LIFF 也能查看本報名資訊。
-              每行填一組。
-            </p>
-            <textarea
-              value={extraPhones}
-              onChange={(ev) => setExtraPhones(ev.target.value)}
-              rows={3}
-              placeholder={'0922333444\n0933555666'}
-              className="w-full rounded-lg border border-blue-200 px-3 py-2 text-sm font-mono outline-none focus:border-brand-teal"
-            />
-          </div>
-
-          <Field label="備注">
-            <textarea
-              value={notes}
-              onChange={(ev) => setNotes(ev.target.value)}
-              rows={2}
-              placeholder="如：家長要求特定時段、付款方式說明等..."
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-brand-teal"
-            />
-          </Field>
-
-          <div className="flex justify-end gap-3 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
-            >
-              取消
-            </button>
-            <button
-              type="submit"
-              disabled={busy}
-              className="rounded-lg bg-brand-primary px-5 py-2 text-sm font-bold text-white hover:bg-brand-teal disabled:opacity-50"
-            >
-              {busy ? '儲存中…' : '儲存變更'}
-            </button>
-          </div>
-        </form>
       </div>
     </div>
   );

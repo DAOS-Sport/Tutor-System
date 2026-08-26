@@ -1,4 +1,5 @@
 import React from 'react';
+import Sheet from './Sheet';
 import StatusBadge from './StatusBadge';
 import { courseTypeLabel, checkinStatusLabel, formatTWDateTime, checkinSourceLabel } from '../utils/format';
 
@@ -7,19 +8,36 @@ const CHECKIN_TONE = { checked_in: 'green', not_yet: 'gray', absent: 'error' };
 export default function SessionDetailModal({ session, venueName, onClose }) {
   if (!session) return null;
   return (
-    <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/40 px-4" onClick={onClose}>
-      {/* 這張卡的高度完全跟著資料走：學員多、有手動扣課原因、又有多筆簽到明細時，
-          在 375×812 上輕鬆超過一個螢幕。原本沒有高度上限也沒有內捲，底部的「關閉」
-          會被推出畫面，而背景 modal 是 fixed，頁面也捲不動。
-          同 ReconcilePage.jsx:372 的寫法：90dvh + flex-col，dl 自己捲，頭尾釘住。 */}
-      <div className="flex w-full max-w-md flex-col rounded-lg bg-white shadow-xl" style={{ maxHeight: '90dvh' }} onClick={(e) => e.stopPropagation()}>
-        <div className="flex shrink-0 items-center justify-between border-b border-gray-200 px-4 py-3">
+    // 原本在 375px 會發生什麼：這張卡置中浮在畫面正中央，底部那顆「關閉」落在螢幕
+    // 垂直中線附近 —— 單手拿手機時拇指構不到，要換手或把手機往下滑。而且置中卡片
+    // 沒有「往下滑可以關掉」的暗示，唯一的出路是瞄準右上角那顆 ✕。
+    // 改成 md 以下貼底升起的面板（Sheet），md 以上完全維持原本的置中 max-w-md + rounded-lg。
+    <Sheet
+      z="z-30"
+      maxWidth="md:max-w-md"
+      desktopRounded="md:rounded-lg"
+      label="課程詳情"
+      onClose={onClose}
+      header={(
+        <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
           <h3 className="text-base font-semibold text-brand-primary">課程詳情</h3>
           {/* 純文字 ✕ 的實際命中區只有字高（約 20px），手指按不準。
               手機放大到 44px；桌機是滑鼠、維持原本的緊密度。 */}
           <button onClick={onClose} aria-label="關閉" className="-mr-2 flex h-11 w-11 items-center justify-center text-gray-400 hover:text-gray-600 md:-mr-0 md:h-auto md:w-auto">✕</button>
         </div>
-        <dl className="flex-1 space-y-3 overflow-y-auto px-4 py-4 text-sm">
+      )}
+      footer={(
+        <div className="flex justify-end border-t border-gray-100 px-4 py-3">
+          {/* px-4 py-1.5 text-sm 實高約 32px，低於手指可靠命中的 44px；
+              救生員站在池畔單手操作，按不到就是按不到。桌機列表密度不動。 */}
+          <button
+            onClick={onClose}
+            className="inline-flex min-h-[44px] items-center justify-center rounded-md border border-gray-300 bg-white px-4 py-1.5 text-sm hover:bg-gray-50 md:min-h-0"
+          >關閉</button>
+        </div>
+      )}
+    >
+      <dl className="space-y-3 px-4 py-4 text-sm">
           <Row k="日期" v={<span className="font-mono">{session.date}</span>} />
           <Row k="時段" v={<span className="font-mono">{session.start} – {session.end}</span>} />
           <Row k="場館" v={venueName ? venueName(session.venue_id) : session.venue_id} />
@@ -85,17 +103,8 @@ export default function SessionDetailModal({ session, venueName, onClose }) {
               </div>
             } />
           )}
-        </dl>
-        <div className="flex shrink-0 justify-end border-t border-gray-100 px-4 py-3">
-          {/* px-4 py-1.5 text-sm 實高約 32px，低於手指可靠命中的 44px；
-              救生員站在池畔單手操作，按不到就是按不到。桌機列表密度不動。 */}
-          <button
-            onClick={onClose}
-            className="inline-flex min-h-[44px] items-center justify-center rounded-md border border-gray-300 bg-white px-4 py-1.5 text-sm hover:bg-gray-50 md:min-h-0"
-          >關閉</button>
-        </div>
-      </div>
-    </div>
+      </dl>
+    </Sheet>
   );
 }
 

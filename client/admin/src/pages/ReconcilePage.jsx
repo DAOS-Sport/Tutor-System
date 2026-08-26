@@ -365,11 +365,19 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
 
   return (
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-4"
+      className="fixed inset-0 z-40 flex items-end justify-center bg-black/40 md:items-center md:px-4"
       onClick={(e) => e.target === e.currentTarget && !busy && onCancel()}
       role="dialog" aria-modal="true" aria-label="對帳通過 — 輸入發票資訊"
     >
-      <div className={`flex w-full ${multiFamily ? 'max-w-3xl' : 'max-w-lg'} flex-col rounded-2xl bg-white shadow-xl`} style={{ maxHeight: '90dvh' }}>
+      {/* 原本在 375px 會發生什麼：面板置中浮在畫面中央，底部那排「取消 / 確認通過」
+          停在螢幕垂直中線附近。櫃檯對帳是一手拿手機、一手比對匯款單，能用的只有拇指，
+          中線以上的按鈕每次都要換手。多家庭時面板更高、按鈕又被往上推得更遠。
+          改成 md 以下貼底升起的面板：滿版、上緣圓角、85dvh，主要動作留在拇指區。
+          md 以上完全不動 —— 一樣是 items-center + max-w-3xl/lg + rounded-2xl + 90dvh。
+          maxHeight 從 inline style 改成 class，因為 inline style 沒辦法分斷點。 */}
+      <div className={`flex max-h-[85dvh] w-full flex-col rounded-t-2xl bg-white shadow-xl pb-[env(safe-area-inset-bottom)] md:max-h-[90dvh] md:rounded-2xl ${multiFamily ? 'md:max-w-3xl' : 'md:max-w-lg'}`}>
+        {/* grabber：行動裝置上「這個可以往下拉」的通用暗示，桌機沒有這個手勢所以 md:hidden。 */}
+        <div className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-gray-300 md:hidden" aria-hidden="true" />
         {/* ── 固定 Header ── */}
         <div className="shrink-0 border-b border-gray-100 px-6 pt-5 pb-4">
           <h3 className="text-lg font-bold text-brand-primary">對帳通過 — 輸入發票資訊</h3>

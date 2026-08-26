@@ -256,36 +256,54 @@ export default function StaffEditModal({ editing, setEditing, venues, busy, onSa
   // 系統同步會自動帶回（場館由「部門」欄位自動套用）。後端 PATCH 亦會忽略這些欄位（雙重防護）。
   const ragicLocked = !isNew && !!editing.ragic_locked;
 
+  // 同一組「取消 / 儲存」在兩個位置呈現：桌機在 header 那一列（原樣），手機在面板
+  // 底部的動作列。抽成變數是為了不讓兩邊的 disabled/label 條件各寫一份而走鐘。
+  const actionButtons = (
+    <>
+      <button
+        onClick={() => setEditing(null)}
+        className="rounded-lg border border-gray-300 px-4 py-1.5 text-sm text-gray-700 hover:bg-gray-100"
+        disabled={busy}
+      >
+        取消
+      </button>
+      <button
+        onClick={onSave}
+        disabled={busy}
+        className="rounded-lg bg-brand-teal px-4 py-1.5 text-sm font-bold text-white hover:bg-brand-primary disabled:opacity-50"
+      >
+        {busy ? '儲存中…' : (isNew ? '建立' : '儲存')}
+      </button>
+    </>
+  );
+
   return (
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-4"
+      className="fixed inset-0 z-40 flex items-end justify-center bg-black/40 md:items-center md:px-4"
       onClick={(e) => e.target === e.currentTarget && setEditing(null)}
       role="dialog"
       aria-modal="true"
       aria-label={isNew ? '新建員工' : '編輯員工'}
     >
-      <div className="w-full max-w-4xl rounded-2xl bg-white shadow-xl max-h-[92vh] overflow-hidden flex flex-col">
+      {/* 原本在 375px 會發生什麼：這是全站最長的表單（雙欄 grid 在手機上塌成單欄，
+          十幾個欄位一路往下），置中之後上下同時貼近視窗邊緣；而「取消 / 儲存」擺在
+          最上面那條 header 裡，等於主要動作永遠釘在螢幕頂端 —— 單手拿手機時要一路
+          往上捲、再換手才按得到。而且 92vh 在 iOS Safari 上含收合中的網址列，
+          實際比可見區高一截，header 那排按鈕會被推到網址列底下。
+          改成 md 以下貼底升起的面板（滿版、上緣圓角、85dvh），並把同一組按鈕在手機上
+          改由面板底部那條 bar 呈現（header 裡的那組 hidden md:flex 收起來，兩邊共用
+          同一批 React 元素，不是複製一份行為）。
+          md 以上完全不動：items-center + max-w-4xl + rounded-2xl + 92dvh（桌機同 92vh），
+          按鈕照舊在 header 那一列。 */}
+      <div className="flex max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-2xl bg-white shadow-xl pb-[env(safe-area-inset-bottom)] md:max-h-[92dvh] md:max-w-4xl md:rounded-2xl">
+        {/* grabber：行動裝置上「這個可以往下拉」的通用暗示，桌機沒有這個手勢所以 md:hidden。 */}
+        <div className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-gray-300 md:hidden" aria-hidden="true" />
         {/* Header — 標題 + 取消/儲存 */}
-        <div className="flex items-center justify-between gap-3 border-b border-gray-200 bg-white px-6 py-4">
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-gray-200 bg-white px-6 py-4">
           <h3 className="text-lg font-bold text-brand-primary">
             {isNew ? '新建員工' : `編輯員工 — ${editing.name}`}
           </h3>
-          <div className="flex gap-2">
-            <button
-              onClick={() => setEditing(null)}
-              className="rounded-lg border border-gray-300 px-4 py-1.5 text-sm text-gray-700 hover:bg-gray-100"
-              disabled={busy}
-            >
-              取消
-            </button>
-            <button
-              onClick={onSave}
-              disabled={busy}
-              className="rounded-lg bg-brand-teal px-4 py-1.5 text-sm font-bold text-white hover:bg-brand-primary disabled:opacity-50"
-            >
-              {busy ? '儲存中…' : (isNew ? '建立' : '儲存')}
-            </button>
-          </div>
+          <div className="hidden gap-2 md:flex">{actionButtons}</div>
         </div>
 
         {/* Body — 雙欄 grid */}
@@ -434,7 +452,7 @@ export default function StaffEditModal({ editing, setEditing, venues, busy, onSa
         </div>
 
         {/* Footer — 啟用此帳號（橫跨整列） */}
-        <div className="border-t border-gray-200 bg-gray-50 px-6 py-3">
+        <div className="shrink-0 border-t border-gray-200 bg-gray-50 px-6 py-3">
           <label className="flex items-center gap-2 text-sm">
             <input
               type="checkbox"
@@ -443,6 +461,12 @@ export default function StaffEditModal({ editing, setEditing, venues, busy, onSa
             />
             <span>啟用此帳號（取消勾選會立即停用其後台 login 與 LIFF 身分）</span>
           </label>
+        </div>
+        {/* 手機專用動作列：原本「取消 / 儲存」只存在於面板最上緣，貼底面板高 85dvh 時
+            它會落在螢幕頂端，單手拿手機的拇指構不到。桌機用 md:hidden 整條移除，
+            按鈕仍只在 header 出現一次。 */}
+        <div className="flex shrink-0 justify-end gap-2 border-t border-gray-200 bg-white px-6 py-3 md:hidden">
+          {actionButtons}
         </div>
       </div>
     </div>

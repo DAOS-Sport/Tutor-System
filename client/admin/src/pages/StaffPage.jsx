@@ -694,14 +694,23 @@ export default function StaffPage() {
       </ConfirmDialog>
 
       {createdHint && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 md:items-center md:px-4"
           onClick={(e) => e.target === e.currentTarget && setCreatedHint(null)}
           role="dialog" aria-modal="true">
           {/* 這張卡帶著新員工的預設帳密 —— 關掉就再也看不到，是全站最不能被裁掉的內容。
               原本沒有 max-h 也不能捲：375×812 上長名字換行、加上帳密框與整段說明就會
               超出視窗，帳號密碼那一格剛好落在下緣外，而背景是 fixed，頁面捲不動。
-              52 位救生員建帳號時每個人都會看到這張卡。同 ReconcilePage.jsx:372 的寫法。 */}
-          <div className="flex max-h-[90dvh] w-full max-w-md flex-col rounded-2xl bg-white p-6 shadow-xl">
+              52 位救生員建帳號時每個人都會看到這張卡。同 ReconcilePage.jsx:372 的寫法。
+
+              再一件原本在 375px 會發生的事：卡片置中，底部那顆「我知道了」落在螢幕
+              垂直中線附近，單手拿手機時拇指構不到；而這張卡又是必須先抄下帳密才能關的，
+              手上通常還拿著別的東西。改成 md 以下貼底升起的面板（滿版、上緣圓角、85dvh），
+              md 以上原封不動回到 items-center + max-w-md + rounded-2xl + 90dvh。
+              pb 用 calc 疊上安全區：貼底之後面板下緣會壓在 iPhone 的 home indicator 底下；
+              桌機與沒有 indicator 的裝置上 env() 求值為 0，等同原本的 p-6。 */}
+          <div className="flex max-h-[85dvh] w-full flex-col rounded-t-2xl bg-white p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] shadow-xl md:max-h-[90dvh] md:max-w-md md:rounded-2xl">
+            {/* grabber：行動裝置上「這個可以往下拉」的通用暗示，桌機沒有這個手勢所以 md:hidden。 */}
+            <div className="mx-auto -mt-2 mb-3 h-1 w-10 shrink-0 rounded-full bg-gray-300 md:hidden" aria-hidden="true" />
             <h3 className="mb-3 shrink-0 text-lg font-bold text-brand-green">✓ 員工已建立</h3>
             <div className="flex-1 overflow-y-auto">
               <p className="mb-2 text-sm text-gray-700">

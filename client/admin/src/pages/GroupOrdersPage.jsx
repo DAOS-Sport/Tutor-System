@@ -354,191 +354,204 @@ export default function GroupOrdersPage() {
       )}
 
       {detailId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={closeDetail}>
-          <div className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-5" onClick={(e) => e.stopPropagation()}>
-            {!detail ? (
-              <LoadingSpinner label="載入詳情…" />
-            ) : (
-              <>
-                <div className="mb-3 flex items-center justify-between">
-                  <h2 className="text-lg font-bold text-brand-primary">
-                    {courseLabel(detail.course_type)} 團購
-                    {detail.period_count > 1 && <span className="ml-2 text-sm font-bold text-amber-600">· {detail.period_count} 期</span>}
-                  </h2>
-                  <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${STATUS[detail.status]?.cls || 'bg-gray-100 text-gray-500'}`}>
-                    {STATUS[detail.status]?.label || detail.status}
-                  </span>
-                </div>
-                <div className="mb-2 rounded-lg bg-gray-50 px-3 py-2">
-                  <span className="text-xs text-gray-500">序號：</span>
-                  <span className="select-all font-mono text-xs font-bold text-gray-700">{detail.id}</span>
-                </div>
-                <div className="mb-3 grid grid-cols-2 gap-2 text-sm text-gray-600">
-                  <div>團主：<span className="font-medium text-gray-800">{detail.leader_name}</span></div>
-                  <div>電話：{detail.leader_phone}</div>
-                  <div>教練：{detail.coach_name || '—'}</div>
-                  <div>開團人數：{detail.min_students}–{detail.max_students}</div>
-                  <div>場館：{venueName(detail.venue_id)}</div>
-                  <div>開團時間：{formatTWDateTime(detail.created_at)}</div>
-                  <div>送審時間：{detail.submitted_at ? formatTWDateTime(detail.submitted_at) : '—'}</div>
-                  <div>審核：{detail.reviewed_at ? `${formatTWDateTime(detail.reviewed_at)}${detail.reviewed_by ? `・${detail.reviewed_by}` : ''}` : '—'}</div>
-                </div>
-                {detail.note && <p className="mb-3 rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-500">備註：{detail.note}</p>}
-                {detail.status === 'rejected' && detail.reject_reason && (
-                  <p className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">退回原因：{detail.reject_reason}</p>
-                )}
-
-                <h3 className="mb-2 text-sm font-bold text-gray-700">成員（{detail.members?.length} 個家庭）</h3>
-                <div className="space-y-2">
-                  {(detail.members || []).map((m) => (
-                    <div key={m.id} className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
-                      <div className="flex items-center justify-between">
-                        <div className="text-sm font-medium text-gray-800">
-                          {m.parent_name} {m.is_leader && <span className="ml-1 rounded bg-brand-primary/10 px-1.5 py-0.5 text-[10px] font-bold text-brand-primary">團主</span>}
-                        </div>
-                        <div className="text-xs text-gray-400">{m.parent_phone}</div>
-                      </div>
-                      <div className="mt-1 text-xs text-gray-500">學生：{(m.student_names || []).join('、') || '—'}</div>
-                      <div className="mt-1 text-xs text-gray-400">
-                        加入：{formatTWDateTime(m.joined_at)}
-                        {m.proof_uploaded_at && <>・上傳付款資料：{formatTWDateTime(m.proof_uploaded_at)}</>}
-                      </div>
-                      <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
-                        <span className="text-gray-500">末 5 碼：<span className="font-mono font-bold text-gray-700">{m.transfer_last_5 || '—'}</span></span>
-                        <span className="text-gray-500">載具：<span className="font-mono font-bold text-indigo-700">{m.carrier || '—'}</span></span>
-                        <span className={m.payment_confirmed ? 'font-bold text-green-600' : 'font-bold text-amber-600'}>
-                          {m.payment_confirmed ? '帳款已確認' : '待確認'}
-                        </span>
-                      </div>
-                      {m.payment_proof_url ? (
-                        <div className="mt-2 flex items-center gap-2">
-                          <ImageLightbox
-                            src={m.payment_proof_url}
-                            alt={`${m.parent_name || '成員'} 匯款證明`}
-                            label={`${m.parent_name || '成員'} 匯款證明`}
-                            thumbnailClassName="h-14 w-14"
-                          />
-                          <span className="text-xs font-bold text-slate-600">匯款證明</span>
-                        </div>
-                      ) : m.transfer_last_5 ? (
-                        // 末 5 碼或匯款證明擇一即可核准（與後端守門一致）；有末 5 碼可直接查帳。
-                        <div className="mt-1 text-xs text-slate-500">未上傳匯款證明（已填末 5 碼，可查帳）</div>
-                      ) : (
-                        <div className="mt-1 text-xs text-red-500">缺付款資料（末 5 碼或匯款證明）</div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-
-                <div className="mt-4">
-                  <h3 className="mb-2 text-sm font-bold text-gray-700">操作紀錄</h3>
-                  {(detail.audit_logs || []).length === 0 ? (
-                    <p className="text-xs text-gray-400">尚無紀錄（此團購建立於操作紀錄功能上線前）</p>
-                  ) : (
-                    <ul className="space-y-1 text-xs text-gray-600">
-                      {(detail.audit_logs || []).map((a, i) => (
-                        <li key={i} className="flex gap-2">
-                          <span className="w-32 shrink-0 font-mono text-gray-400">{formatTWDateTime(a.at)}</span>
-                          <span className="flex-1">
-                            {a.action}
-                            {a.reason && <span className="text-gray-400">（{a.reason}）</span>}
-                          </span>
-                          <span className="shrink-0 text-gray-500">— {a.by}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-
-                {detail.status === 'forming' && (
-                  <div className="mt-4 border-t border-gray-100 pt-4">
-                    <p className="mb-2 text-xs leading-5 text-gray-500">
-                      此團尚未送審（家長端沒按送審）。滿團且全團回傳付款資料時系統會自動送審；
-                      未滿團就得由團主自己送出，或在這裡代為送出。送出後名單鎖定，接著走一般核准流程。
-                    </p>
-                    {(detail.members || []).some((m) => !m.payment_proof_url || !m.transfer_last_5) && (
-                      <p className="mb-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
-                        尚未備齊付款資料：
-                        {(detail.members || []).filter((m) => !m.payment_proof_url || !m.transfer_last_5).map((m) => m.parent_name).join('、')}
-                      </p>
-                    )}
-                    <button type="button" disabled={busy} onClick={handleAdminSubmit}
-                      className="w-full rounded-lg bg-brand-primary py-2.5 text-sm font-bold text-white disabled:opacity-50">代為送審（送進待審核）</button>
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 md:items-center md:p-4" onClick={closeDetail}>
+          {/* 原本在 375px 會發生什麼：團購詳情置中、被 p-4 夾成 343 寬，內容是成員名單
+              ＋每人的匯款證明縮圖＋操作紀錄＋一整組審核按鈕，面板直接吃滿 85vh，
+              上下兩端都貼著視窗邊緣；核准／退回那組按鈕在最尾端，要一路捲到底，
+              而 vh 在 iOS Safari 上含收合中的網址列，實際可見區更矮、又再被壓掉一截。
+              改成 md 以下貼底升起的面板：滿版、上緣圓角、85dvh。
+              面板本身原本就是捲軸（p-5 + overflow-y-auto），改成 flex-col 後把 p-5 與
+              overflow-y-auto 搬進中段那層，grabber 才不會跟著內容捲走；桌機的內距、
+              捲軸位置與可捲範圍完全一致。
+              md 以上原封不動回到 items-center + max-w-lg + rounded-2xl + 85dvh（桌機同 85vh）。 */}
+          <div className="flex max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-2xl bg-white pb-[env(safe-area-inset-bottom)] md:max-w-lg md:rounded-2xl" onClick={(e) => e.stopPropagation()}>
+            {/* grabber：行動裝置上「這個可以往下拉」的通用暗示，桌機沒有這個手勢所以 md:hidden。 */}
+            <div className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-gray-300 md:hidden" aria-hidden="true" />
+            <div className="flex-1 overflow-y-auto p-5">
+              {!detail ? (
+                <LoadingSpinner label="載入詳情…" />
+              ) : (
+                <>
+                  <div className="mb-3 flex items-center justify-between">
+                    <h2 className="text-lg font-bold text-brand-primary">
+                      {courseLabel(detail.course_type)} 團購
+                      {detail.period_count > 1 && <span className="ml-2 text-sm font-bold text-amber-600">· {detail.period_count} 期</span>}
+                    </h2>
+                    <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${STATUS[detail.status]?.cls || 'bg-gray-100 text-gray-500'}`}>
+                      {STATUS[detail.status]?.label || detail.status}
+                    </span>
                   </div>
-                )}
-                {detail.status === 'submitted' && (
-                  <div className="mt-4 border-t border-gray-100 pt-4">
-                    {/* U14 退回補件：與「退回」（終態）並列。多數退回其實只是付款資料沒齊，
-                        用終態退回會讓家長無路可走，只能重新發起整個團。 */}
-                    {returning ? (
-                      <div>
-                        <p className="mb-2 text-xs font-bold text-amber-700">退回補件（團購回到「揪團中」，家長可補齊後重新送審）</p>
-                        <textarea value={returnReason} onChange={(e) => setReturnReason(e.target.value)}
-                          rows={2} placeholder="退回原因（必填，家長會收到 LINE 通知看到這段文字）"
-                          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none" />
-                        <div className="mt-2 rounded-lg bg-gray-50 px-3 py-2">
-                          <p className="mb-1 text-[11px] font-bold text-gray-600">要清空付款資料供重填的家庭（選填）</p>
-                          <p className="mb-2 text-[11px] leading-snug text-gray-400">
-                            家長端的轉帳末 5 碼一旦送出就鎖定、自己改不了。若退回原因是末 5 碼或證明填錯，請勾選該家庭。已確認帳款的家庭不會被清空。
-                          </p>
-                          <div className="space-y-1">
-                            {(detail.members || []).filter((m) => !m.payment_confirmed).map((m) => (
-                              <label key={m.id} className="flex items-center gap-2 text-xs text-gray-700">
-                                <input
-                                  type="checkbox"
-                                  checked={resetIds.includes(m.id)}
-                                  onChange={(e) => setResetIds(e.target.checked
-                                    ? [...resetIds, m.id]
-                                    : resetIds.filter((x) => x !== m.id))}
-                                />
-                                <span>{m.parent_name}{m.is_leader ? '（團主）' : ''} — {m.transfer_last_5 ? `末5碼 ${m.transfer_last_5}` : '未填末5碼'}／{m.payment_proof_url ? '有證明' : '無證明'}</span>
-                              </label>
-                            ))}
-                            {!(detail.members || []).some((m) => !m.payment_confirmed) && (
-                              <p className="text-[11px] text-gray-400">所有家庭都已確認帳款，無可清空對象。</p>
-                            )}
+                  <div className="mb-2 rounded-lg bg-gray-50 px-3 py-2">
+                    <span className="text-xs text-gray-500">序號：</span>
+                    <span className="select-all font-mono text-xs font-bold text-gray-700">{detail.id}</span>
+                  </div>
+                  <div className="mb-3 grid grid-cols-2 gap-2 text-sm text-gray-600">
+                    <div>團主：<span className="font-medium text-gray-800">{detail.leader_name}</span></div>
+                    <div>電話：{detail.leader_phone}</div>
+                    <div>教練：{detail.coach_name || '—'}</div>
+                    <div>開團人數：{detail.min_students}–{detail.max_students}</div>
+                    <div>場館：{venueName(detail.venue_id)}</div>
+                    <div>開團時間：{formatTWDateTime(detail.created_at)}</div>
+                    <div>送審時間：{detail.submitted_at ? formatTWDateTime(detail.submitted_at) : '—'}</div>
+                    <div>審核：{detail.reviewed_at ? `${formatTWDateTime(detail.reviewed_at)}${detail.reviewed_by ? `・${detail.reviewed_by}` : ''}` : '—'}</div>
+                  </div>
+                  {detail.note && <p className="mb-3 rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-500">備註：{detail.note}</p>}
+                  {detail.status === 'rejected' && detail.reject_reason && (
+                    <p className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">退回原因：{detail.reject_reason}</p>
+                  )}
+
+                  <h3 className="mb-2 text-sm font-bold text-gray-700">成員（{detail.members?.length} 個家庭）</h3>
+                  <div className="space-y-2">
+                    {(detail.members || []).map((m) => (
+                      <div key={m.id} className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
+                        <div className="flex items-center justify-between">
+                          <div className="text-sm font-medium text-gray-800">
+                            {m.parent_name} {m.is_leader && <span className="ml-1 rounded bg-brand-primary/10 px-1.5 py-0.5 text-[10px] font-bold text-brand-primary">團主</span>}
+                          </div>
+                          <div className="text-xs text-gray-400">{m.parent_phone}</div>
+                        </div>
+                        <div className="mt-1 text-xs text-gray-500">學生：{(m.student_names || []).join('、') || '—'}</div>
+                        <div className="mt-1 text-xs text-gray-400">
+                          加入：{formatTWDateTime(m.joined_at)}
+                          {m.proof_uploaded_at && <>・上傳付款資料：{formatTWDateTime(m.proof_uploaded_at)}</>}
+                        </div>
+                        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+                          <span className="text-gray-500">末 5 碼：<span className="font-mono font-bold text-gray-700">{m.transfer_last_5 || '—'}</span></span>
+                          <span className="text-gray-500">載具：<span className="font-mono font-bold text-indigo-700">{m.carrier || '—'}</span></span>
+                          <span className={m.payment_confirmed ? 'font-bold text-green-600' : 'font-bold text-amber-600'}>
+                            {m.payment_confirmed ? '帳款已確認' : '待確認'}
+                          </span>
+                        </div>
+                        {m.payment_proof_url ? (
+                          <div className="mt-2 flex items-center gap-2">
+                            <ImageLightbox
+                              src={m.payment_proof_url}
+                              alt={`${m.parent_name || '成員'} 匯款證明`}
+                              label={`${m.parent_name || '成員'} 匯款證明`}
+                              thumbnailClassName="h-14 w-14"
+                            />
+                            <span className="text-xs font-bold text-slate-600">匯款證明</span>
+                          </div>
+                        ) : m.transfer_last_5 ? (
+                          // 末 5 碼或匯款證明擇一即可核准（與後端守門一致）；有末 5 碼可直接查帳。
+                          <div className="mt-1 text-xs text-slate-500">未上傳匯款證明（已填末 5 碼，可查帳）</div>
+                        ) : (
+                          <div className="mt-1 text-xs text-red-500">缺付款資料（末 5 碼或匯款證明）</div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="mt-4">
+                    <h3 className="mb-2 text-sm font-bold text-gray-700">操作紀錄</h3>
+                    {(detail.audit_logs || []).length === 0 ? (
+                      <p className="text-xs text-gray-400">尚無紀錄（此團購建立於操作紀錄功能上線前）</p>
+                    ) : (
+                      <ul className="space-y-1 text-xs text-gray-600">
+                        {(detail.audit_logs || []).map((a, i) => (
+                          <li key={i} className="flex gap-2">
+                            <span className="w-32 shrink-0 font-mono text-gray-400">{formatTWDateTime(a.at)}</span>
+                            <span className="flex-1">
+                              {a.action}
+                              {a.reason && <span className="text-gray-400">（{a.reason}）</span>}
+                            </span>
+                            <span className="shrink-0 text-gray-500">— {a.by}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+
+                  {detail.status === 'forming' && (
+                    <div className="mt-4 border-t border-gray-100 pt-4">
+                      <p className="mb-2 text-xs leading-5 text-gray-500">
+                        此團尚未送審（家長端沒按送審）。滿團且全團回傳付款資料時系統會自動送審；
+                        未滿團就得由團主自己送出，或在這裡代為送出。送出後名單鎖定，接著走一般核准流程。
+                      </p>
+                      {(detail.members || []).some((m) => !m.payment_proof_url || !m.transfer_last_5) && (
+                        <p className="mb-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                          尚未備齊付款資料：
+                          {(detail.members || []).filter((m) => !m.payment_proof_url || !m.transfer_last_5).map((m) => m.parent_name).join('、')}
+                        </p>
+                      )}
+                      <button type="button" disabled={busy} onClick={handleAdminSubmit}
+                        className="w-full rounded-lg bg-brand-primary py-2.5 text-sm font-bold text-white disabled:opacity-50">代為送審（送進待審核）</button>
+                    </div>
+                  )}
+                  {detail.status === 'submitted' && (
+                    <div className="mt-4 border-t border-gray-100 pt-4">
+                      {/* U14 退回補件：與「退回」（終態）並列。多數退回其實只是付款資料沒齊，
+                          用終態退回會讓家長無路可走，只能重新發起整個團。 */}
+                      {returning ? (
+                        <div>
+                          <p className="mb-2 text-xs font-bold text-amber-700">退回補件（團購回到「揪團中」，家長可補齊後重新送審）</p>
+                          <textarea value={returnReason} onChange={(e) => setReturnReason(e.target.value)}
+                            rows={2} placeholder="退回原因（必填，家長會收到 LINE 通知看到這段文字）"
+                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none" />
+                          <div className="mt-2 rounded-lg bg-gray-50 px-3 py-2">
+                            <p className="mb-1 text-[11px] font-bold text-gray-600">要清空付款資料供重填的家庭（選填）</p>
+                            <p className="mb-2 text-[11px] leading-snug text-gray-400">
+                              家長端的轉帳末 5 碼一旦送出就鎖定、自己改不了。若退回原因是末 5 碼或證明填錯，請勾選該家庭。已確認帳款的家庭不會被清空。
+                            </p>
+                            <div className="space-y-1">
+                              {(detail.members || []).filter((m) => !m.payment_confirmed).map((m) => (
+                                <label key={m.id} className="flex items-center gap-2 text-xs text-gray-700">
+                                  <input
+                                    type="checkbox"
+                                    checked={resetIds.includes(m.id)}
+                                    onChange={(e) => setResetIds(e.target.checked
+                                      ? [...resetIds, m.id]
+                                      : resetIds.filter((x) => x !== m.id))}
+                                  />
+                                  <span>{m.parent_name}{m.is_leader ? '（團主）' : ''} — {m.transfer_last_5 ? `末5碼 ${m.transfer_last_5}` : '未填末5碼'}／{m.payment_proof_url ? '有證明' : '無證明'}</span>
+                                </label>
+                              ))}
+                              {!(detail.members || []).some((m) => !m.payment_confirmed) && (
+                                <p className="text-[11px] text-gray-400">所有家庭都已確認帳款，無可清空對象。</p>
+                              )}
+                            </div>
+                          </div>
+                          <div className="mt-2 flex gap-2">
+                            <button type="button" disabled={busy} onClick={handleReturnForFix}
+                              className="flex-1 rounded-lg bg-amber-500 py-2.5 text-sm font-bold text-white disabled:opacity-50">確認退回補件</button>
+                            <button type="button" disabled={busy} onClick={() => { setReturning(false); setResetIds([]); }}
+                              className="flex-1 rounded-lg border border-gray-300 py-2.5 text-sm font-bold text-gray-600">取消</button>
                           </div>
                         </div>
-                        <div className="mt-2 flex gap-2">
-                          <button type="button" disabled={busy} onClick={handleReturnForFix}
-                            className="flex-1 rounded-lg bg-amber-500 py-2.5 text-sm font-bold text-white disabled:opacity-50">確認退回補件</button>
-                          <button type="button" disabled={busy} onClick={() => { setReturning(false); setResetIds([]); }}
-                            className="flex-1 rounded-lg border border-gray-300 py-2.5 text-sm font-bold text-gray-600">取消</button>
+                      ) : !rejecting ? (
+                        <div className="space-y-2">
+                          <button type="button" disabled={busy} onClick={handleApprove}
+                            className="w-full rounded-lg bg-brand-green py-2.5 text-sm font-bold text-white disabled:opacity-50">核准後送待對帳</button>
+                          <div className="flex gap-2">
+                            <button type="button" disabled={busy} onClick={() => setReturning(true)}
+                              className="flex-1 rounded-lg border border-amber-400 py-2.5 text-sm font-bold text-amber-600">退回補件（可續作）</button>
+                            <button type="button" disabled={busy} onClick={() => setRejecting(true)}
+                              className="flex-1 rounded-lg border border-red-300 py-2.5 text-sm font-bold text-red-500">退回（終止）</button>
+                          </div>
                         </div>
-                      </div>
-                    ) : !rejecting ? (
-                      <div className="space-y-2">
-                        <button type="button" disabled={busy} onClick={handleApprove}
-                          className="w-full rounded-lg bg-brand-green py-2.5 text-sm font-bold text-white disabled:opacity-50">核准後送待對帳</button>
-                        <div className="flex gap-2">
-                          <button type="button" disabled={busy} onClick={() => setReturning(true)}
-                            className="flex-1 rounded-lg border border-amber-400 py-2.5 text-sm font-bold text-amber-600">退回補件（可續作）</button>
-                          <button type="button" disabled={busy} onClick={() => setRejecting(true)}
-                            className="flex-1 rounded-lg border border-red-300 py-2.5 text-sm font-bold text-red-500">退回（終止）</button>
+                      ) : (
+                        <div>
+                          <textarea value={rejectReason} onChange={(e) => setRejectReason(e.target.value)}
+                            rows={2} placeholder="退回原因（必填）"
+                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none" />
+                          <div className="mt-2 flex gap-2">
+                            <button type="button" disabled={busy} onClick={handleReject}
+                              className="flex-1 rounded-lg bg-red-500 py-2.5 text-sm font-bold text-white disabled:opacity-50">確認退回</button>
+                            <button type="button" disabled={busy} onClick={() => setRejecting(false)}
+                              className="flex-1 rounded-lg border border-gray-300 py-2.5 text-sm font-bold text-gray-600">取消</button>
+                          </div>
                         </div>
-                      </div>
-                    ) : (
-                      <div>
-                        <textarea value={rejectReason} onChange={(e) => setRejectReason(e.target.value)}
-                          rows={2} placeholder="退回原因（必填）"
-                          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none" />
-                        <div className="mt-2 flex gap-2">
-                          <button type="button" disabled={busy} onClick={handleReject}
-                            className="flex-1 rounded-lg bg-red-500 py-2.5 text-sm font-bold text-white disabled:opacity-50">確認退回</button>
-                          <button type="button" disabled={busy} onClick={() => setRejecting(false)}
-                            className="flex-1 rounded-lg border border-gray-300 py-2.5 text-sm font-bold text-gray-600">取消</button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-                {detail.status === 'rejected' && detail.reject_reason && (
-                  <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">退回原因：{detail.reject_reason}</p>
-                )}
-                <button type="button" onClick={closeDetail}
-                  className="mt-4 w-full rounded-lg bg-gray-100 py-2 text-sm font-bold text-gray-600">關閉</button>
-              </>
-            )}
+                      )}
+                    </div>
+                  )}
+                  {detail.status === 'rejected' && detail.reject_reason && (
+                    <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">退回原因：{detail.reject_reason}</p>
+                  )}
+                  <button type="button" onClick={closeDetail}
+                    className="mt-4 w-full rounded-lg bg-gray-100 py-2 text-sm font-bold text-gray-600">關閉</button>
+                </>
+              )}
+            </div>
           </div>
         </div>
       )}

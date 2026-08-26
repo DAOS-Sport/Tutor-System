@@ -53,15 +53,23 @@ export default function ChangePasswordModal({ open, onClose, initialUsername = '
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 md:items-center md:px-4"
       onClick={(e) => e.target === e.currentTarget && !busy && onClose?.()}
       role="dialog" aria-modal="true" aria-label="修改密碼"
     >
       {/* 四個輸入框加上各自的錯誤提示，內容高度就逼近 812；手機鍵盤一彈出來
           可視高度再砍掉約一半，原本沒有高度上限也不能捲，「更新密碼」直接被壓在
           鍵盤底下。這支正是 52 位救生員第一次登入必經的畫面，不能只在桌機能用。
-          同 ReconcilePage.jsx:372 的寫法。 */}
-      <div className="flex w-full max-w-md flex-col rounded-2xl bg-white shadow-xl" style={{ maxHeight: '90dvh' }}>
+          同 ReconcilePage.jsx:372 的寫法。
+
+          還有一件原本在 375px 會發生的事：面板置中，鍵盤沒彈出時「更新密碼 / 略過」
+          落在螢幕垂直中線附近，單手握手機的拇指構不到；鍵盤一彈出來，可視區被壓成
+          上半截，按鈕又被推到更上面。改成 md 以下貼底升起的面板 —— 面板本來就貼著
+          鍵盤上緣，按鈕永遠在拇指區。md 以上維持置中 max-w-md + rounded-2xl + 90dvh。
+          maxHeight 從 inline style 換成 class，因為 inline style 分不出斷點。 */}
+      <div className="flex max-h-[85dvh] w-full flex-col rounded-t-2xl bg-white shadow-xl pb-[env(safe-area-inset-bottom)] md:max-h-[90dvh] md:max-w-md md:rounded-2xl">
+        {/* grabber：行動裝置上「這個可以往下拉」的通用暗示，桌機沒有這個手勢所以 md:hidden。 */}
+        <div className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-gray-300 md:hidden" aria-hidden="true" />
         <div className="shrink-0 px-6 pt-6">
           <h3 className="mb-1 text-lg font-bold text-brand-primary">修改帳號密碼</h3>
           <p className="text-xs text-gray-500">

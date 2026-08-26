@@ -266,200 +266,216 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
   }
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-4" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
-        <h3 className="mb-1 text-lg font-bold text-brand-primary">
-          {isEdit ? `${readOnly ? '檢視' : '檢視 / 編輯'}：${initial.name}` : '新增優惠活動'}
-          {readOnly && <span className="ml-2 rounded-full bg-gray-200 px-2 py-0.5 text-xs text-gray-600">唯讀</span>}
-        </h3>
-        <p className="mb-5 text-xs text-gray-400">由上而下依序設定：基本資訊 → 折扣內容 → 適用條件 → 檔期與限量 → 領取方式。</p>
+    <div className="fixed inset-0 z-40 flex items-end justify-center bg-black/40 md:items-center md:px-4" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      {/* 原本在 375px 會發生什麼：這是全站最長的表單（五個 section：基本資訊 → 折扣內容
+          → 適用條件 → 檔期與限量 → 領取方式），置中之後上下都貼著視窗邊緣，
+          而「取消 / 建立草稿」在整份表單的最尾端，要捲過全部五段才看得到。
+          90vh 在 iOS Safari 上又含收合中的網址列，實際可見區更矮，那一排會再沉一截。
+          改成 md 以下貼底升起的面板：滿版、上緣圓角、85dvh。
+          面板本身原本就是捲軸（p-6 + overflow-y-auto），改成 flex-col 後把 p-6 與
+          overflow-y-auto 搬進中段那層，grabber 才不會跟著內容捲走；桌機的內距、
+          捲軸位置與可捲範圍完全一致。
+          md 以上原封不動回到 items-center + max-w-4xl + rounded-2xl + 90dvh（桌機同 90vh）。 */}
+      <div className="flex max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-2xl bg-white shadow-xl pb-[env(safe-area-inset-bottom)] md:max-h-[90dvh] md:max-w-4xl md:rounded-2xl">
+        {/* grabber：行動裝置上「這個可以往下拉」的通用暗示，桌機沒有這個手勢所以 md:hidden。 */}
+        <div className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-gray-300 md:hidden" aria-hidden="true" />
+        <div className="flex-1 overflow-y-auto p-6">
+          <h3 className="mb-1 text-lg font-bold text-brand-primary">
+            {isEdit ? `${readOnly ? '檢視' : '檢視 / 編輯'}：${initial.name}` : '新增優惠活動'}
+            {readOnly && <span className="ml-2 rounded-full bg-gray-200 px-2 py-0.5 text-xs text-gray-600">唯讀</span>}
+          </h3>
+          <p className="mb-5 text-xs text-gray-400">由上而下依序設定：基本資訊 → 折扣內容 → 適用條件 → 檔期與限量 → 領取方式。</p>
 
-        {!readOnly && overlapWarnings.length > 0 && (
-          <div className="mb-4 space-y-1 rounded-lg border border-brand-amber bg-amber-50 p-3 text-xs text-amber-800">
-            {overlapWarnings.map((w) => (
-              <div key={w.id}>
-                ⚠️ {w.scope} 於 {w.start}~{w.end} 已有進行中優惠「{w.name}」，請避免重複放利。
-              </div>
-            ))}
-          </div>
-        )}
-
-        <fieldset disabled={readOnly} className={`space-y-5 ${readOnly ? 'opacity-90' : ''}`}>
-
-          {/* ① 基本資訊 */}
-          <section>
-            <h4 className="mb-2 flex items-center gap-2 text-[13px] font-bold text-brand-primary"><span>基本資訊</span><span className="h-px flex-1 bg-gray-100" /></h4>
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <div className="md:col-span-2">
-                <label className="mb-1 block text-xs text-gray-500">名稱</label>
-                <input className={fieldClass()} value={d.name} onChange={(e) => setD({ ...d, name: e.target.value })} />
-              </div>
-              <div className="md:col-span-2">
-                <label className="mb-1 block text-xs text-gray-500">說明（家長端會看到）</label>
-                <textarea className={fieldClass()} rows={2} value={d.description} onChange={(e) => setD({ ...d, description: e.target.value })} />
-              </div>
+          {!readOnly && overlapWarnings.length > 0 && (
+            <div className="mb-4 space-y-1 rounded-lg border border-brand-amber bg-amber-50 p-3 text-xs text-amber-800">
+              {overlapWarnings.map((w) => (
+                <div key={w.id}>
+                  ⚠️ {w.scope} 於 {w.start}~{w.end} 已有進行中優惠「{w.name}」，請避免重複放利。
+                </div>
+              ))}
             </div>
-          </section>
-
-          {/* ② 折扣內容 */}
-          <section>
-            <h4 className="mb-2 flex items-center gap-2 text-[13px] font-bold text-brand-primary"><span>折扣內容</span><span className="h-px flex-1 bg-gray-100" /></h4>
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <div>
-                <label className="mb-1 block text-xs text-gray-500">類型</label>
-                <select className={fieldClass()} value={d.type} onChange={(e) => setD({ ...d, type: e.target.value })}>
-                  <option value="PERCENTAGE">折數 (PERCENTAGE)</option>
-                  <option value="FIXED_AMOUNT">固定折抵 (FIXED_AMOUNT)</option>
-                </select>
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-gray-500">折扣值 {d.type === 'PERCENTAGE' ? '(0~1，如 0.9 = 9折)' : '(整數，元)'}</label>
-                <input className={fieldClass()} value={d.discount_value} onChange={(e) => setD({ ...d, discount_value: e.target.value })} />
-              </div>
-            </div>
-          </section>
-
-          {/* ③ 適用條件（由上而下逐步鎖定範圍） */}
-          <section>
-            <h4 className="mb-2 flex items-center gap-2 text-[13px] font-bold text-brand-primary"><span>適用條件</span><span className="h-px flex-1 bg-gray-100" /></h4>
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <div>
-                <label className="mb-1 block text-xs text-gray-500">門檻類型</label>
-                <select className={fieldClass()} value={d.min_threshold_type} onChange={(e) => setD({ ...d, min_threshold_type: e.target.value })}>
-                  <option value="">無門檻</option>
-                  <option value="PERIOD_COUNT">一次購買期數 ≥</option>
-                </select>
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-gray-500">門檻數值</label>
-                <input className={fieldClass()} value={d.min_threshold_value} onChange={(e) => setD({ ...d, min_threshold_value: e.target.value })} disabled={!d.min_threshold_type} />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-gray-500">適用組別</label>
-                <div className="flex flex-wrap gap-2">
-                  {courseTypeOpts === null ? (
-                    <span className="text-xs text-gray-400">載入中…</span>
-                  ) : courseTypeOpts.length === 0 ? (
-                    <span className="text-xs text-gray-400">（無可用組別）</span>
-                  ) : courseTypeOpts.map((ct) => (
-                    <button key={ct.value} type="button" onClick={() => setD({ ...d, applicable_course_types: toggle(d.applicable_course_types, ct.value) })}
-                      className={`rounded-full border px-3 py-1 text-xs ${hasValue(d.applicable_course_types, ct.value) ? 'border-brand-teal bg-brand-teal text-white' : 'border-gray-300 bg-white text-gray-500'}`}>{ct.label}</button>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-gray-500">適用場館</label>
-                <div className="flex flex-wrap gap-2">
-                  {venueOpts === null ? (
-                    <span className="text-xs text-gray-400">載入中…</span>
-                  ) : venueOpts.length === 0 ? (
-                    <span className="text-xs text-gray-400">（無可用場館）</span>
-                  ) : venueOpts.map((v) => (
-                    <button key={v.value} type="button" onClick={() => setD({ ...d, applicable_venue_ids: toggle(d.applicable_venue_ids, v.value) })}
-                      className={`rounded-full border px-3 py-1 text-xs ${hasValue(d.applicable_venue_ids, v.value) ? 'border-brand-teal bg-brand-teal text-white' : 'border-gray-300 bg-white text-gray-500'}`}>{v.label}</button>
-                  ))}
-                </div>
-              </div>
-              <div className="md:col-span-2">
-                <label className="mb-1 block text-xs text-gray-500">適用教練加成（％）<span className="ml-1 text-gray-400">（不選 = 全部教練）</span></label>
-                <div className="flex flex-wrap gap-2">
-                  {coachMultiplierOpts === null ? (
-                    <span className="text-xs text-gray-400">載入中…</span>
-                  ) : coachMultiplierOpts.length === 0 ? (
-                    <span className="text-xs text-gray-400">（無可用教練加成）</span>
-                  ) : coachMultiplierOpts.map((m) => (
-                    <button key={m.value} type="button" onClick={() => setD({ ...d, applicable_coach_multipliers: toggle(d.applicable_coach_multipliers, m.value) })}
-                      className={`rounded-full border px-3 py-1 text-xs ${hasValue(d.applicable_coach_multipliers, m.value) ? 'border-brand-teal bg-brand-teal text-white' : 'border-gray-300 bg-white text-gray-500'}`}>{m.label}</button>
-                  ))}
-                </div>
-                <p className="mt-1 text-[11px] leading-snug text-gray-400">依教練加成％限定此優惠適用對象；此優惠只會套用在被勾選加成的教練課程上。</p>
-              </div>
-            </div>
-          </section>
-
-          {/* ④ 檔期與限量 */}
-          <section>
-            <h4 className="mb-2 flex items-center gap-2 text-[13px] font-bold text-brand-primary"><span>檔期與限量</span><span className="h-px flex-1 bg-gray-100" /></h4>
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <div>
-                <label className="mb-1 block text-xs text-gray-500">起始日 / 時間 ＊</label>
-                <div className="flex gap-2">
-                  <DateTimePicker value={d.start_date} max={d.end_date || undefined}
-                    onChange={(v) => setD({ ...d, start_date: v })} placeholder="起始日" className="flex-1" />
-                  <DateTimePicker mode="time" value={d.start_time || '00:00'}
-                    onChange={(v) => setD({ ...d, start_time: v })} className="shrink-0" />
-                </div>
-                <p className="mt-1 text-[11px] text-gray-400">預設 00:00（當日開始）</p>
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-gray-500">結束日 / 時間 <span className="text-brand-error">＊</span></label>
-                <div className="flex gap-2">
-                  <DateTimePicker value={d.end_date} min={d.start_date || undefined}
-                    onChange={(v) => setD({ ...d, end_date: v })} placeholder="結束日" className="flex-1" />
-                  <DateTimePicker mode="time" value={d.end_time || '23:59'}
-                    onChange={(v) => setD({ ...d, end_time: v })} className="shrink-0" />
-                </div>
-                <p className="mt-1 text-[11px] text-gray-400">預設 23:59（當日結束，含整分）</p>
-              </div>
-              <div className="md:col-span-2">
-                <label className="mb-1 block text-xs text-gray-500">總使用次數上限（全部家長合計，空白 = 不限）</label>
-                <input className={fieldClass()} value={d.max_uses} onChange={(e) => setD({ ...d, max_uses: e.target.value })} />
-                <p className="mt-1 text-[11px] leading-snug text-gray-400">整個活動可被兌換的「總」次數（所有家長共用，每成立一筆報名 +1），非每人可用次數；達上限後即自動停止套用、不再顯示。</p>
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-gray-500">平台總期數上限（空白 = 不限）</label>
-                <input className={fieldClass()} value={d.platform_total_period_cap} onChange={(e) => setD({ ...d, platform_total_period_cap: e.target.value })} />
-                <p className="mt-1 text-[11px] leading-snug text-gray-400">所有家長合計可折抵的購買期數；一筆 N 期報名會消耗 N。</p>
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-gray-500">每位家長期數上限（空白 = 不限）</label>
-                <input className={fieldClass()} value={d.parent_period_cap} onChange={(e) => setD({ ...d, parent_period_cap: e.target.value })} />
-                <p className="mt-1 text-[11px] leading-snug text-gray-400">同一家長在此優惠下可折抵的累計購買期數。</p>
-              </div>
-            </div>
-          </section>
-
-          {/* ⑤ 領取方式 */}
-          <section>
-            <h4 className="mb-2 flex items-center gap-2 text-[13px] font-bold text-brand-primary"><span>領取方式</span><span className="h-px flex-1 bg-gray-100" /></h4>
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <div className="md:col-span-2">
-                <label className="mb-1 block text-xs text-gray-500">折價券代碼（空白 = 自動套用，不需代碼）</label>
-                <div className="flex gap-2">
-                  <input className={fieldClass()} value={d.coupon_code} onChange={(e) => setD({ ...d, coupon_code: e.target.value.toUpperCase() })} disabled={d.generate_coupon_code} placeholder="自訂代碼或勾選下方自動產生" />
-                </div>
-                {!isEdit && (
-                  <label className="mt-1 inline-flex items-center gap-1 text-xs text-gray-500">
-                    <input type="checkbox" checked={d.generate_coupon_code} onChange={(e) => setD({ ...d, generate_coupon_code: e.target.checked, coupon_code: '' })} />
-                    建立時自動產生隨機代碼
-                  </label>
-                )}
-              </div>
-              <div className="md:col-span-2">
-                <label className="inline-flex items-center gap-2 text-sm text-gray-700">
-                  <input type="checkbox" checked={d.show_on_parent_home} onChange={(e) => setD({ ...d, show_on_parent_home: e.target.checked })} />
-                  顯示在家長首頁
-                </label>
-                <p className="mt-1 text-[11px] leading-snug text-gray-400">關閉時此優惠不會出現在家長首頁橫幅（主管專屬 / 特定族群優惠可搭配折扣碼，不公開曝光）。有折扣碼的優惠本就不會顯示在首頁。</p>
-              </div>
-              <div className="md:col-span-2">
-                <label className="inline-flex items-center gap-2 text-sm text-gray-700">
-                  <input type="checkbox" checked={d.applicable_to_group_orders} onChange={(e) => setD({ ...d, applicable_to_group_orders: e.target.checked })} />
-                  可套用於團購
-                </label>
-                <p className="mt-1 text-[11px] leading-snug text-gray-400">預設關閉。開啟後，團主發起團購時可套用此優惠，折扣會「各家獨立計算」並在加入當下鎖定金額（家長看到的金額＝轉帳金額＝核准金額）。名額於加入時扣除，取消團購時自動回沖。</p>
-              </div>
-            </div>
-          </section>
-
-        </fieldset>
-        <div className="mt-6 flex justify-end gap-2">
-          <button onClick={onClose} className="rounded-lg border border-gray-300 px-4 py-2 text-sm">{readOnly ? '關閉' : '取消'}</button>
-          {!readOnly && (
-            <button onClick={save} disabled={busy} className="rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary disabled:opacity-50">
-              {busy ? '儲存中…' : isEdit ? '儲存' : '建立草稿'}
-            </button>
           )}
+
+          <fieldset disabled={readOnly} className={`space-y-5 ${readOnly ? 'opacity-90' : ''}`}>
+
+            {/* ① 基本資訊 */}
+            <section>
+              <h4 className="mb-2 flex items-center gap-2 text-[13px] font-bold text-brand-primary"><span>基本資訊</span><span className="h-px flex-1 bg-gray-100" /></h4>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <div className="md:col-span-2">
+                  <label className="mb-1 block text-xs text-gray-500">名稱</label>
+                  <input className={fieldClass()} value={d.name} onChange={(e) => setD({ ...d, name: e.target.value })} />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="mb-1 block text-xs text-gray-500">說明（家長端會看到）</label>
+                  <textarea className={fieldClass()} rows={2} value={d.description} onChange={(e) => setD({ ...d, description: e.target.value })} />
+                </div>
+              </div>
+            </section>
+
+            {/* ② 折扣內容 */}
+            <section>
+              <h4 className="mb-2 flex items-center gap-2 text-[13px] font-bold text-brand-primary"><span>折扣內容</span><span className="h-px flex-1 bg-gray-100" /></h4>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-xs text-gray-500">類型</label>
+                  <select className={fieldClass()} value={d.type} onChange={(e) => setD({ ...d, type: e.target.value })}>
+                    <option value="PERCENTAGE">折數 (PERCENTAGE)</option>
+                    <option value="FIXED_AMOUNT">固定折抵 (FIXED_AMOUNT)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-gray-500">折扣值 {d.type === 'PERCENTAGE' ? '(0~1，如 0.9 = 9折)' : '(整數，元)'}</label>
+                  <input className={fieldClass()} value={d.discount_value} onChange={(e) => setD({ ...d, discount_value: e.target.value })} />
+                </div>
+              </div>
+            </section>
+
+            {/* ③ 適用條件（由上而下逐步鎖定範圍） */}
+            <section>
+              <h4 className="mb-2 flex items-center gap-2 text-[13px] font-bold text-brand-primary"><span>適用條件</span><span className="h-px flex-1 bg-gray-100" /></h4>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-xs text-gray-500">門檻類型</label>
+                  <select className={fieldClass()} value={d.min_threshold_type} onChange={(e) => setD({ ...d, min_threshold_type: e.target.value })}>
+                    <option value="">無門檻</option>
+                    <option value="PERIOD_COUNT">一次購買期數 ≥</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-gray-500">門檻數值</label>
+                  <input className={fieldClass()} value={d.min_threshold_value} onChange={(e) => setD({ ...d, min_threshold_value: e.target.value })} disabled={!d.min_threshold_type} />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-gray-500">適用組別</label>
+                  <div className="flex flex-wrap gap-2">
+                    {courseTypeOpts === null ? (
+                      <span className="text-xs text-gray-400">載入中…</span>
+                    ) : courseTypeOpts.length === 0 ? (
+                      <span className="text-xs text-gray-400">（無可用組別）</span>
+                    ) : courseTypeOpts.map((ct) => (
+                      <button key={ct.value} type="button" onClick={() => setD({ ...d, applicable_course_types: toggle(d.applicable_course_types, ct.value) })}
+                        className={`rounded-full border px-3 py-1 text-xs ${hasValue(d.applicable_course_types, ct.value) ? 'border-brand-teal bg-brand-teal text-white' : 'border-gray-300 bg-white text-gray-500'}`}>{ct.label}</button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-gray-500">適用場館</label>
+                  <div className="flex flex-wrap gap-2">
+                    {venueOpts === null ? (
+                      <span className="text-xs text-gray-400">載入中…</span>
+                    ) : venueOpts.length === 0 ? (
+                      <span className="text-xs text-gray-400">（無可用場館）</span>
+                    ) : venueOpts.map((v) => (
+                      <button key={v.value} type="button" onClick={() => setD({ ...d, applicable_venue_ids: toggle(d.applicable_venue_ids, v.value) })}
+                        className={`rounded-full border px-3 py-1 text-xs ${hasValue(d.applicable_venue_ids, v.value) ? 'border-brand-teal bg-brand-teal text-white' : 'border-gray-300 bg-white text-gray-500'}`}>{v.label}</button>
+                    ))}
+                  </div>
+                </div>
+                <div className="md:col-span-2">
+                  <label className="mb-1 block text-xs text-gray-500">適用教練加成（％）<span className="ml-1 text-gray-400">（不選 = 全部教練）</span></label>
+                  <div className="flex flex-wrap gap-2">
+                    {coachMultiplierOpts === null ? (
+                      <span className="text-xs text-gray-400">載入中…</span>
+                    ) : coachMultiplierOpts.length === 0 ? (
+                      <span className="text-xs text-gray-400">（無可用教練加成）</span>
+                    ) : coachMultiplierOpts.map((m) => (
+                      <button key={m.value} type="button" onClick={() => setD({ ...d, applicable_coach_multipliers: toggle(d.applicable_coach_multipliers, m.value) })}
+                        className={`rounded-full border px-3 py-1 text-xs ${hasValue(d.applicable_coach_multipliers, m.value) ? 'border-brand-teal bg-brand-teal text-white' : 'border-gray-300 bg-white text-gray-500'}`}>{m.label}</button>
+                    ))}
+                  </div>
+                  <p className="mt-1 text-[11px] leading-snug text-gray-400">依教練加成％限定此優惠適用對象；此優惠只會套用在被勾選加成的教練課程上。</p>
+                </div>
+              </div>
+            </section>
+
+            {/* ④ 檔期與限量 */}
+            <section>
+              <h4 className="mb-2 flex items-center gap-2 text-[13px] font-bold text-brand-primary"><span>檔期與限量</span><span className="h-px flex-1 bg-gray-100" /></h4>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-xs text-gray-500">起始日 / 時間 ＊</label>
+                  <div className="flex gap-2">
+                    <DateTimePicker value={d.start_date} max={d.end_date || undefined}
+                      onChange={(v) => setD({ ...d, start_date: v })} placeholder="起始日" className="flex-1" />
+                    <DateTimePicker mode="time" value={d.start_time || '00:00'}
+                      onChange={(v) => setD({ ...d, start_time: v })} className="shrink-0" />
+                  </div>
+                  <p className="mt-1 text-[11px] text-gray-400">預設 00:00（當日開始）</p>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-gray-500">結束日 / 時間 <span className="text-brand-error">＊</span></label>
+                  <div className="flex gap-2">
+                    <DateTimePicker value={d.end_date} min={d.start_date || undefined}
+                      onChange={(v) => setD({ ...d, end_date: v })} placeholder="結束日" className="flex-1" />
+                    <DateTimePicker mode="time" value={d.end_time || '23:59'}
+                      onChange={(v) => setD({ ...d, end_time: v })} className="shrink-0" />
+                  </div>
+                  <p className="mt-1 text-[11px] text-gray-400">預設 23:59（當日結束，含整分）</p>
+                </div>
+                <div className="md:col-span-2">
+                  <label className="mb-1 block text-xs text-gray-500">總使用次數上限（全部家長合計，空白 = 不限）</label>
+                  <input className={fieldClass()} value={d.max_uses} onChange={(e) => setD({ ...d, max_uses: e.target.value })} />
+                  <p className="mt-1 text-[11px] leading-snug text-gray-400">整個活動可被兌換的「總」次數（所有家長共用，每成立一筆報名 +1），非每人可用次數；達上限後即自動停止套用、不再顯示。</p>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-gray-500">平台總期數上限（空白 = 不限）</label>
+                  <input className={fieldClass()} value={d.platform_total_period_cap} onChange={(e) => setD({ ...d, platform_total_period_cap: e.target.value })} />
+                  <p className="mt-1 text-[11px] leading-snug text-gray-400">所有家長合計可折抵的購買期數；一筆 N 期報名會消耗 N。</p>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-gray-500">每位家長期數上限（空白 = 不限）</label>
+                  <input className={fieldClass()} value={d.parent_period_cap} onChange={(e) => setD({ ...d, parent_period_cap: e.target.value })} />
+                  <p className="mt-1 text-[11px] leading-snug text-gray-400">同一家長在此優惠下可折抵的累計購買期數。</p>
+                </div>
+              </div>
+            </section>
+
+            {/* ⑤ 領取方式 */}
+            <section>
+              <h4 className="mb-2 flex items-center gap-2 text-[13px] font-bold text-brand-primary"><span>領取方式</span><span className="h-px flex-1 bg-gray-100" /></h4>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <div className="md:col-span-2">
+                  <label className="mb-1 block text-xs text-gray-500">折價券代碼（空白 = 自動套用，不需代碼）</label>
+                  <div className="flex gap-2">
+                    <input className={fieldClass()} value={d.coupon_code} onChange={(e) => setD({ ...d, coupon_code: e.target.value.toUpperCase() })} disabled={d.generate_coupon_code} placeholder="自訂代碼或勾選下方自動產生" />
+                  </div>
+                  {!isEdit && (
+                    <label className="mt-1 inline-flex items-center gap-1 text-xs text-gray-500">
+                      <input type="checkbox" checked={d.generate_coupon_code} onChange={(e) => setD({ ...d, generate_coupon_code: e.target.checked, coupon_code: '' })} />
+                      建立時自動產生隨機代碼
+                    </label>
+                  )}
+                </div>
+                <div className="md:col-span-2">
+                  <label className="inline-flex items-center gap-2 text-sm text-gray-700">
+                    <input type="checkbox" checked={d.show_on_parent_home} onChange={(e) => setD({ ...d, show_on_parent_home: e.target.checked })} />
+                    顯示在家長首頁
+                  </label>
+                  <p className="mt-1 text-[11px] leading-snug text-gray-400">關閉時此優惠不會出現在家長首頁橫幅（主管專屬 / 特定族群優惠可搭配折扣碼，不公開曝光）。有折扣碼的優惠本就不會顯示在首頁。</p>
+                </div>
+                <div className="md:col-span-2">
+                  <label className="inline-flex items-center gap-2 text-sm text-gray-700">
+                    <input type="checkbox" checked={d.applicable_to_group_orders} onChange={(e) => setD({ ...d, applicable_to_group_orders: e.target.checked })} />
+                    可套用於團購
+                  </label>
+                  <p className="mt-1 text-[11px] leading-snug text-gray-400">預設關閉。開啟後，團主發起團購時可套用此優惠，折扣會「各家獨立計算」並在加入當下鎖定金額（家長看到的金額＝轉帳金額＝核准金額）。名額於加入時扣除，取消團購時自動回沖。</p>
+                </div>
+              </div>
+            </section>
+
+          </fieldset>
+          {/* 原本在 375px 會發生什麼：這排按鈕在五段表單的最尾端，中途想儲存得先捲到底。
+              sticky bottom-0 讓它在捲動時就釘在面板下緣（＝拇指區）；
+              md:static 把它原樣放回文件流，桌機仍是捲到底才出現的那一列。 */}
+          <div className="sticky bottom-0 mt-6 flex justify-end gap-2 bg-white pb-3 md:static md:bg-transparent md:pb-0">
+            <button onClick={onClose} className="rounded-lg border border-gray-300 px-4 py-2 text-sm">{readOnly ? '關閉' : '取消'}</button>
+            {!readOnly && (
+              <button onClick={save} disabled={busy} className="rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary disabled:opacity-50">
+                {busy ? '儲存中…' : isEdit ? '儲存' : '建立草稿'}
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>
