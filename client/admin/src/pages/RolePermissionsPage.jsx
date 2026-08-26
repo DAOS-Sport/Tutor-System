@@ -143,21 +143,23 @@ export default function RolePermissionsPage() {
 
       {tab === 'role' && (<>
       {/* 表頭吸頂，捲到下面幾組時還看得到自己在勾哪個角色。
-          寬度是量出來調的：原本 max-w-4xl（896px）配上「頁面」欄不限寬，
-          實測那一欄自己吃掉 526px（59%），四個角色欄只剩 92px 一格；
-          右邊還空著 105px 沒用到。現在把「頁面」欄壓到 42%，角色欄的
-          可點區域從 92px 變成約 150px —— 大 60%，而且列高沒有增加，
-          捲動距離不變。奇數列淡底色是用來對行的：34 個頁面 × 4 欄，
+          寬度不設上限：先前限在 max-w-5xl（1024px），在 1687px 的螢幕上
+          整張表擠在左邊、右側空掉一大片，很不協調。
+          角色欄改成固定 w-40（160px）而不是百分比 —— 百分比會讓「頁面」欄
+          隨視窗一起變胖（1383px 內容區時它會吃到 580px 去放一行標籤），
+          而真正需要寬度的是要點的那四格。固定寬之後視窗愈寬，
+          多出來的空間全部給「頁面」欄，勾選區維持在舒適的 160px。
+          奇數列淡底色是用來對行的：34 個頁面 × 4 欄，
           沒有橫向參考線很容易勾到隔壁那一列。 */}
-      <div className="mb-4 max-w-5xl overflow-x-auto rounded-xl border border-gray-200 bg-white">
+      <div className="mb-4 overflow-x-auto rounded-xl border border-gray-200 bg-white">
         <table className="w-full min-w-[600px] text-sm">
           <thead className="sticky top-0 z-10 bg-gray-50 shadow-[0_1px_0_rgba(0,0,0,0.06)]">
             <tr>
-              <th className="w-[42%] px-3 py-2.5 text-left text-xs font-bold tracking-wide text-gray-500">頁面</th>
+              <th className="px-4 py-3 text-left text-[13px] font-bold tracking-wide text-gray-500">頁面</th>
               {data.roles.map((r) => (
-                <th key={r.key} className="w-[14.5%] px-1 py-2.5 text-center text-xs font-bold text-gray-600">
+                <th key={r.key} className="w-40 px-2 py-3 text-center text-[13px] font-bold text-gray-700">
                   <div className="leading-tight">{r.label}</div>
-                  <div className="mt-0.5 text-[10px] font-normal text-gray-400">
+                  <div className="mt-0.5 text-[11px] font-normal text-gray-400">
                     {r.immutable
                       ? '全開'
                       : (draft[r.key] || new Set()).size + ' / ' + data.resources.length}
@@ -170,7 +172,7 @@ export default function RolePermissionsPage() {
             {groups.map((g) => (
               <React.Fragment key={g.title}>
                 <tr className="bg-gray-100/80">
-                  <td className="px-3 py-1.5 text-xs font-bold text-gray-700">{g.title}</td>
+                  <td className="px-4 py-2 text-[13px] font-bold tracking-wide text-gray-700">{g.title}</td>
                   {data.roles.map((r) => {
                     const s = draft[r.key] || new Set();
                     const all = g.items.every((it) => s.has(it.key));
@@ -191,9 +193,11 @@ export default function RolePermissionsPage() {
                   <tr key={it.key} className="border-t border-gray-100 odd:bg-gray-50/50 hover:bg-brand-primary/5">
                     {/* 路徑收進同一行：原本佔第二行，34 個頁面就多出 34 行高度，
                         捲動距離變長、對照欄位更容易看錯行。 */}
-                    <td className="px-3 py-1.5">
-                      <span className="text-gray-800">{it.label}</span>
-                      <span className="ml-2 font-mono text-[10px] text-gray-400">{it.path}</span>
+                    {/* 路徑用 11px 而不是 10px：它是拿來核對「這一列是不是我要的頁面」的，
+                        10px 的等寬數字在一般螢幕上要湊近看。 */}
+                    <td className="px-4 py-2">
+                      <span className="text-[14px] text-gray-800">{it.label}</span>
+                      <span className="ml-2 font-mono text-[11px] text-gray-400">{it.path}</span>
                     </td>
                     {data.roles.map((r) => {
                       const checked = r.immutable || (draft[r.key] || new Set()).has(it.key);

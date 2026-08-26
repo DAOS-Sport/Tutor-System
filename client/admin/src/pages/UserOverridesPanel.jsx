@@ -24,6 +24,7 @@ export default function UserOverridesPanel({ resources, groups }) {
   const toast = useToast();
   const { reload: reloadMine } = usePermissions();
   const [users, setUsers] = useState(null);
+  const [q, setQ] = useState('');
   const [selected, setSelected] = useState(null);
   const [detail, setDetail] = useState(null);
   const [draft, setDraft] = useState({});     // { resource_key: FOLLOW|GRANT|REVOKE }
@@ -84,16 +85,63 @@ export default function UserOverridesPanel({ resources, groups }) {
     }
   }
 
+  /**
+   * 模糊搜尋。比對姓名、登入帳號（＝員工編號）、角色、以及停用狀態。
+   *
+   * 為什麼是「每個詞都要中」而不是整串比對：櫃檯記得的往往是片段組合
+   * ——「柏彥 admin」「1305 主管」——而不是完整字串。整串比對這兩種都查不到。
+   * 大小寫與前後空白一律正規化：員工編號有時被記成小寫，貼上來也常帶空白。
+   */
+  const filtered = (() => {
+    if (!users) return [];
+    const terms = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (!terms.length) return users;
+    return users.filter((u) => {
+      const hay = [
+        u.name, u.username, u.role,
+        u.is_active === false ? '已停用 停用 disabled' : '啟用中',
+        u.override_count > 0 ? '例外' : '',
+      ].join(' ').toLowerCase();
+      return terms.every((t) => hay.includes(t));
+    });
+  })();
+
   if (!users) return <LoadingSpinner />;
 
   return (
     <div className="grid gap-4 lg:grid-cols-[260px_1fr]">
       <div className="rounded-xl border border-gray-200 bg-white">
-        <div className="border-b border-gray-100 px-4 py-3 text-xs font-bold text-gray-500">
-          有後台登入帳號的人（{users.length}）
+        <div className="border-b border-gray-100 px-4 py-3">
+          <div className="mb-2 text-xs font-bold text-gray-500">
+            有後台登入帳號的人（{q.trim() ? filtered.length + ' / ' + users.length : users.length}）
+          </div>
+          <div className="relative">
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="搜尋姓名 / 員工編號 / 角色"
+              className="min-h-[44px] w-full rounded-lg border border-gray-300 py-2 pl-8 pr-9 text-sm focus:border-brand-teal focus:outline-none md:min-h-0"
+            />
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 strokeWidth="2" strokeLinecap="round"
+                 className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400">
+              <circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+            {q && (
+              <button type="button" onClick={() => setQ('')} aria-label="清除搜尋"
+                className="absolute right-1 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full text-gray-400 hover:bg-gray-100 hover:text-gray-600">
+                ✕
+              </button>
+            )}
+          </div>
         </div>
         <ul className="max-h-[560px] overflow-y-auto">
-          {users.map((u) => (
+          {filtered.length === 0 && (
+            <li className="px-4 py-8 text-center text-xs text-gray-400">
+              找不到符合「{q.trim()}」的人
+            </li>
+          )}
+          {filtered.map((u) => (
             <li key={u.id}>
               <button type="button" onClick={() => pick(u.id)}
                 className={`flex w-full items-center justify-between px-4 py-2.5 text-left text-sm hover:bg-gray-50 ${
