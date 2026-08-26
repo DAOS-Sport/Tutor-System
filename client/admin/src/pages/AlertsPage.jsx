@@ -126,20 +126,26 @@ export default function AlertsPage() {
 
       {editing && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4" onClick={() => setEditing(null)}>
-          <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md rounded-xl bg-white p-5 shadow-xl">
-            <h3 className="mb-3 text-base font-bold text-brand-primary">處理警示</h3>
-            <label className="mb-2 block text-xs font-bold text-gray-600">處理結果（review_note）</label>
-            <textarea rows={4} value={editing.note} onChange={(e) => setEditing({ ...editing, note: e.target.value.slice(0, 500) })}
-              placeholder="補充判定理由 / 已聯絡家長 / 教練回報… (最多 500 字)"
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none" />
-            <label className="mb-2 mt-3 block text-xs font-bold text-gray-600">狀態</label>
-            <select value={editing.status} onChange={(e) => setEditing({ ...editing, status: e.target.value })}
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
-              {NEXT_STATUS_OPTIONS.map((s) => (
-                <option key={s.v} value={s.v}>{s.label}</option>
-              ))}
-            </select>
-            <div className="mt-4 flex justify-end gap-2">
+          {/* 500 字的 textarea 展開後加上狀態下拉，在 375×812 上已經接近滿版；
+              手機鍵盤一彈出來可視高度只剩約 400px，原本沒有 max-h 也不能捲，
+              「儲存 / 取消」被推到畫面外，處理中的警示只能放棄重整。
+              同 ReconcilePage.jsx:372 的寫法。 */}
+          <div onClick={(e) => e.stopPropagation()} className="flex max-h-[90dvh] w-full max-w-md flex-col rounded-xl bg-white p-5 shadow-xl">
+            <h3 className="mb-3 shrink-0 text-base font-bold text-brand-primary">處理警示</h3>
+            <div className="flex-1 overflow-y-auto">
+              <label className="mb-2 block text-xs font-bold text-gray-600">處理結果（review_note）</label>
+              <textarea rows={4} value={editing.note} onChange={(e) => setEditing({ ...editing, note: e.target.value.slice(0, 500) })}
+                placeholder="補充判定理由 / 已聯絡家長 / 教練回報… (最多 500 字)"
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none" />
+              <label className="mb-2 mt-3 block text-xs font-bold text-gray-600">狀態</label>
+              <select value={editing.status} onChange={(e) => setEditing({ ...editing, status: e.target.value })}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+                {NEXT_STATUS_OPTIONS.map((s) => (
+                  <option key={s.v} value={s.v}>{s.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="mt-4 flex shrink-0 justify-end gap-2">
               <button type="button" onClick={() => setEditing(null)} className="rounded-md bg-gray-200 px-3 py-2 text-xs font-bold text-gray-700">取消</button>
               <button type="button" onClick={submitReview} className="rounded-md bg-brand-primary px-3 py-2 text-xs font-bold text-white hover:opacity-90">儲存</button>
             </div>

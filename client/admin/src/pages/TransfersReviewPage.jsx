@@ -134,17 +134,23 @@ export default function TransfersReviewPage() {
       {reviewing && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
           onClick={() => !busy && setReviewing(null)}>
-          <div className="w-full max-w-md rounded-xl bg-white p-5" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-base font-bold text-brand-primary mb-2">
+          {/* 家長名稱 + 手機號那行在 375px 上會折成兩三行，加上 textarea 與按鈕列，
+              手機鍵盤彈出後（拒絕轉讓時原因必填，一定會彈）可視高度剩不到一半。
+              原本沒有 max-h 也不能捲，「送出」被壓在鍵盤下方，轉讓案就卡在這裡。
+              同 ReconcilePage.jsx:372 的寫法。 */}
+          <div className="flex max-h-[90dvh] w-full max-w-md flex-col rounded-xl bg-white p-5" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-base font-bold text-brand-primary mb-2 shrink-0">
               {reviewing.action === 'approve' ? '核准轉讓' : '拒絕轉讓'}
             </h3>
-            <p className="text-xs text-gray-500 mb-3">
-              {reviewing.row.from_parent_name} → {reviewing.row.to_phone}・{reviewing.row.sessions_remaining} 堂
-            </p>
-            <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={3} maxLength={200}
-              placeholder={reviewing.action === 'reject' ? '拒絕原因（必填）' : '備註（選填）'}
-              className="w-full rounded-lg border border-gray-300 p-2 text-sm" />
-            <div className="mt-3 flex justify-end gap-2">
+            <div className="flex-1 overflow-y-auto">
+              <p className="text-xs text-gray-500 mb-3">
+                {reviewing.row.from_parent_name} → {reviewing.row.to_phone}・{reviewing.row.sessions_remaining} 堂
+              </p>
+              <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={3} maxLength={200}
+                placeholder={reviewing.action === 'reject' ? '拒絕原因（必填）' : '備註（選填）'}
+                className="w-full rounded-lg border border-gray-300 p-2 text-sm" />
+            </div>
+            <div className="mt-3 flex shrink-0 justify-end gap-2">
               <button onClick={() => setReviewing(null)} disabled={busy}
                 className="rounded-md border border-gray-300 px-3 py-1.5 text-sm">取消</button>
               <button onClick={submitReview} disabled={busy}

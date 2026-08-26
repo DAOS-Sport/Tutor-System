@@ -128,6 +128,48 @@ export default function DateTimePicker({
     return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
   }, [open]);
 
+  // 面板座標。改成 fixed + 實測值，是為了兩件原本各自會壞的事：
+  //   1. 原本 `absolute left-0 w-[292px]`：面板固定 292px 又貼齊觸發鈕左緣，
+  //      觸發鈕只要不在最左邊就爆版。SessionsPage 的「迄日」起點約 x=176，
+  //      右緣算到 468px，375px 螢幕上切掉 93 px —— 右下角那顆「完成」整顆在畫面外，
+  //      而面板本身沒有捲動，使用者只能重整頁面。
+  //   2. absolute 會被任何 overflow-y-auto 祖先裁掉。modal 內層補上可捲動之後
+  //      （ConfirmDialog 正好被 SessionsPage 拿來包這支選擇器）面板會被切一半。
+  // fixed 不吃祖先的 overflow，座標自己夾在視窗內；桌機的觸發鈕碰不到夾擠邊界，
+  // 算出來就是原本的 left / top+8，所以桌機視覺與行為維持不變。
+  const [panel, setPanel] = useState(null);
+  useEffect(() => {
+    if (!open) { setPanel(null); return undefined; }
+    const place = () => {
+      const r = boxRef.current?.getBoundingClientRect();
+      if (!r) return;
+      const M = 8;              // 與視窗邊緣的最小留白
+      const GAP = 8;            // 觸發鈕與面板的距離（等同原本的 mt-2）
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const w = Math.min(292, vw - M * 2);   // 桌機維持 292；窄到放不下才縮
+      const below = vh - r.bottom - GAP - M;
+      const above = r.top - GAP - M;
+      // 812 高的手機上，長在頁面下半部的觸發鈕往下展開會把日曆推出畫面底部，
+      // 「完成」一樣按不到。下方不夠就翻到上方，兩邊都不夠取較寬的一側，
+      // 再用 maxHeight + 內捲兜底（與 modal 用的是同一招）。
+      const flip = below < 300 && above > below;
+      setPanel({
+        left: Math.min(Math.max(M, r.left), Math.max(M, vw - w - M)),
+        top: flip ? undefined : r.bottom + GAP,
+        bottom: flip ? vh - r.top + GAP : undefined,
+        width: w,
+        maxHeight: Math.max(200, flip ? above : below),
+      });
+    };
+    place();
+    // fixed 不會自己黏著觸發鈕，捲動與轉向都要重算。
+    // 第三參數 true＝捕獲階段，這樣祖先容器（modal 內層）的捲動也收得到。
+    window.addEventListener('scroll', place, true);
+    window.addEventListener('resize', place);
+    return () => { window.removeEventListener('scroll', place, true); window.removeEventListener('resize', place); };
+  }, [open]);
+
   const minDay = minP ? dayKey(minP.y, minP.mo, minP.d) : null;
   const maxDay = maxP ? dayKey(maxP.y, maxP.mo, maxP.d) : null;
   const todayKey = dayKey(today.y, today.mo, today.d);
@@ -211,8 +253,13 @@ export default function DateTimePicker({
         </span>
       </button>
 
-      {open && (
-        <div className="absolute left-0 top-full z-30 mt-2 w-[292px] rounded-xl border border-gray-200 bg-white p-3 shadow-lg">
+      {/* panel 要等 effect 量完才有值：先畫再修正會在 375px 上看到面板從畫面外
+          彈回來的那一幀。寧可晚一個 frame 出現。 */}
+      {open && panel && (
+        <div
+          className="fixed z-30 overflow-y-auto overscroll-contain rounded-xl border border-gray-200 bg-white p-3 shadow-lg"
+          style={panel}
+        >
           <div className="mb-2 flex items-center justify-between">
             <button type="button" onClick={() => shiftMonth(-1)} disabled={prevBlocked || pickingMonth} aria-label="上個月"
               className="rounded-lg p-1.5 text-gray-500 hover:bg-gray-100 disabled:cursor-not-allowed disabled:text-gray-200 disabled:hover:bg-transparent">

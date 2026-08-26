@@ -697,21 +697,27 @@ export default function StaffPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
           onClick={(e) => e.target === e.currentTarget && setCreatedHint(null)}
           role="dialog" aria-modal="true">
-          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
-            <h3 className="mb-3 text-lg font-bold text-brand-green">✓ 員工已建立</h3>
-            <p className="mb-2 text-sm text-gray-700">
-              已為 <span className="font-bold">{createdHint.name}</span>（編號 <span className="font-mono">{createdHint.id}</span>）
-              建立後台登入帳號與教練資料（若為教練）。
-            </p>
-            <div className="my-3 rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm">
-              <div className="font-medium text-amber-900">預設登入資訊</div>
-              <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-amber-900">
-                <span>帳號</span><span className="font-mono">{createdHint.username}</span>
-                <span>密碼</span><span className="font-mono">{createdHint.password}</span>
+          {/* 這張卡帶著新員工的預設帳密 —— 關掉就再也看不到，是全站最不能被裁掉的內容。
+              原本沒有 max-h 也不能捲：375×812 上長名字換行、加上帳密框與整段說明就會
+              超出視窗，帳號密碼那一格剛好落在下緣外，而背景是 fixed，頁面捲不動。
+              52 位救生員建帳號時每個人都會看到這張卡。同 ReconcilePage.jsx:372 的寫法。 */}
+          <div className="flex max-h-[90dvh] w-full max-w-md flex-col rounded-2xl bg-white p-6 shadow-xl">
+            <h3 className="mb-3 shrink-0 text-lg font-bold text-brand-green">✓ 員工已建立</h3>
+            <div className="flex-1 overflow-y-auto">
+              <p className="mb-2 text-sm text-gray-700">
+                已為 <span className="font-bold">{createdHint.name}</span>（編號 <span className="font-mono">{createdHint.id}</span>）
+                建立後台登入帳號與教練資料（若為教練）。
+              </p>
+              <div className="my-3 rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm">
+                <div className="font-medium text-amber-900">預設登入資訊</div>
+                <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-amber-900">
+                  <span>帳號</span><span className="font-mono">{createdHint.username}</span>
+                  <span>密碼</span><span className="font-mono">{createdHint.password}</span>
+                </div>
+                <p className="mt-2 text-xs text-amber-800">請通知該員工首次登入後立即修改密碼。</p>
               </div>
-              <p className="mt-2 text-xs text-amber-800">請通知該員工首次登入後立即修改密碼。</p>
             </div>
-            <div className="flex justify-end">
+            <div className="flex shrink-0 justify-end pt-4">
               <button onClick={() => setCreatedHint(null)}
                 className="rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary">
                 知道了

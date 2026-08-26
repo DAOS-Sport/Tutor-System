@@ -36,7 +36,9 @@ export default function ExportMenu({ disabled, onExportCsv, onExportXlsx, label 
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="menu"
         aria-expanded={open}
-        className="rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary disabled:cursor-not-allowed disabled:opacity-50"
+        /* px-4 py-2 text-sm 實高約 36px。手機上這顆與下面兩個選項擠在一起，
+           36px 的命中區在池畔濕手操作時很容易點成隔壁項；md 以上是滑鼠，維持原密度。 */
+        className="inline-flex min-h-[44px] items-center justify-center rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary disabled:cursor-not-allowed disabled:opacity-50 md:min-h-0"
       >
         {label} <span aria-hidden>▾</span>
       </button>
@@ -49,7 +51,9 @@ export default function ExportMenu({ disabled, onExportCsv, onExportXlsx, label 
             type="button"
             role="menuitem"
             onClick={() => pick(onExportCsv)}
-            className="block w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
+            /* 兩個選項各約 36px、上下相黏，手機上點 CSV 很容易落到 XLSX。
+               44px 是可靠命中的下限；桌機不動。 */
+            className="flex min-h-[44px] w-full items-center px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 md:min-h-0"
           >
             CSV
           </button>
@@ -57,7 +61,7 @@ export default function ExportMenu({ disabled, onExportCsv, onExportXlsx, label 
             type="button"
             role="menuitem"
             onClick={() => pick(onExportXlsx)}
-            className="block w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
+            className="flex min-h-[44px] w-full items-center px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 md:min-h-0"
           >
             XLSX
           </button>

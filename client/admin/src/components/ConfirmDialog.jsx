@@ -41,10 +41,17 @@ export default function ConfirmDialog({
       aria-modal="true"
       aria-label={typeof title === 'string' ? title : '確認對話框'}
     >
-      <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
-        {title && <h3 className="mb-3 text-lg font-bold text-brand-primary">{title}</h3>}
-        <div className="mb-5 text-sm text-gray-700">{children}</div>
-        <div className="flex justify-end gap-3">
+      {/* children 由 14 個呼叫端塞任意內容（StaffPage 的硬刪確認就有整段 Ragic 說明、
+          RefundPage 更長）。原本面板沒有高度上限：375×812 上內容一超過視窗就同時
+          溢出上下兩緣，而 body 的捲動已被上面的 effect 鎖掉 —— 「確認 / 取消」被推到
+          畫面外，整頁不能捲，只能重整。
+          寫法對齊 ReconcilePage.jsx:372（全站唯一原本就寫對的）：外層 flex-col + 90dvh，
+          中段自己捲，頭尾 shrink-0 釘住。dvh 不是 vh：iOS Safari 的 100vh 把收合中的
+          網址列也算進去，用 vh 會比實際可見區高一截，按鈕照樣被壓在網址列底下。 */}
+      <div className="flex w-full max-w-md flex-col rounded-2xl bg-white shadow-xl" style={{ maxHeight: '90dvh' }}>
+        {title && <h3 className="shrink-0 px-6 pt-6 text-lg font-bold text-brand-primary">{title}</h3>}
+        <div className={`flex-1 overflow-y-auto px-6 text-sm text-gray-700 ${title ? 'pt-3' : 'pt-6'}`}>{children}</div>
+        <div className="flex shrink-0 justify-end gap-3 px-6 pb-6 pt-5">
           <button
             ref={cancelRef}
             type="button"

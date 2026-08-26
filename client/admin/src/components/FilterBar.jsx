@@ -13,6 +13,12 @@ import DateTimePicker from '../../../shared/DateTimePicker.jsx';
  * values:   { [key]: string }
  * onChange: (next) => void
  */
+// 三種輸入控制項（select / combo / input）原本都是 `px-2 py-1.5 text-sm`，實高約 34px。
+// 375px 上這排欄位會 flex-wrap 折成好幾列、上下相黏，34px 的命中區用手指（池畔還是濕的）
+// 點不準，很容易落到隔壁列的欄位。md 以下拉到 44px；桌機使用者一次要掃很多列，
+// 拉高會讓每頁看到的資料變少，所以 md 以上用 min-h-0 退回原本的密度。
+const CONTROL_CLS = 'w-full min-h-[44px] rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm focus:border-brand-teal focus:outline-none md:min-h-0';
+
 export default function FilterBar({ fields, values, onChange, onReset }) {
   const baseId = useId();
   function set(key, v) {
@@ -35,7 +41,7 @@ export default function FilterBar({ fields, values, onChange, onReset }) {
                   id={id}
                   value={v}
                   onChange={(e) => set(f.key, e.target.value)}
-                  className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm focus:border-brand-teal focus:outline-none"
+                  className={CONTROL_CLS}
                 >
                   {f.options.map((o) => (
                     <option key={o.value} value={o.value}>{o.label}</option>
@@ -56,7 +62,7 @@ export default function FilterBar({ fields, values, onChange, onReset }) {
                   value={v}
                   onChange={(e) => set(f.key, e.target.value)}
                   placeholder={f.placeholder || '可輸入或選擇'}
-                  className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm focus:border-brand-teal focus:outline-none"
+                  className={CONTROL_CLS}
                 />
                 <datalist id={listId}>
                   {(f.options || []).map((o) => (
@@ -76,7 +82,7 @@ export default function FilterBar({ fields, values, onChange, onReset }) {
                   value={v}
                   onChange={(e) => set(f.key, e.target.value)}
                   placeholder={f.placeholder || ''}
-                  className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm focus:border-brand-teal focus:outline-none"
+                  className={CONTROL_CLS}
                 />
               </div>
             );
@@ -141,7 +147,9 @@ export default function FilterBar({ fields, values, onChange, onReset }) {
               type="button"
               onClick={onReset}
               disabled={empty}
-              className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 hover:border-brand-teal hover:text-brand-teal disabled:opacity-40"
+              /* py-1.5 text-xs 只有約 30px，是這一排裡最小的一顆，
+                 手機上排在折行後的最末端更難按。與上面的欄位一起拉到 44px。 */
+              className="inline-flex min-h-[44px] items-center justify-center rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 hover:border-brand-teal hover:text-brand-teal disabled:opacity-40 md:min-h-0"
             >
               重設
             </button>
