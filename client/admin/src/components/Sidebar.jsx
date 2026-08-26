@@ -3,9 +3,15 @@ import { NavLink } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { usePermissions } from '../context/PermissionContext';
 import { USE_MOCK } from '../api/client';
+// 能登入後台的角色。與 App.jsx 的 ALL 同一個來源 ——
+// 兩邊各寫一份的話，放寬其中一邊（例如開放救生員）另一邊就會落後，
+// 症狀是「路由進得去但選單沒有入口」，而那不會有人回報成 bug。
+import { BACKOFFICE_ROLES } from '../constants/roles.js';
 
 // 每個項目的 roles 控制可見性。空陣列表示所有登入者皆可見。
 // 顯示格式為「(代碼) 中文」，無代碼者僅顯示中文。
+const ALL = BACKOFFICE_ROLES;
+
 const NAV_GROUPS = [
   {
     title: '營運總覽',
@@ -30,17 +36,17 @@ const NAV_GROUPS = [
   {
     title: '客戶資料管理',
     items: [
-      { to: '/customer-parents',  label: '(Z01) 家長 & 學員關係',       roles: ['admin', 'manager', 'staff'] },
-      { to: '/customer-students', label: '(Z02) 學員資料（含購買紀錄）', roles: ['admin', 'manager', 'staff'] },
+      { to: '/customer-parents',  label: '(Z01) 家長 & 學員關係',       roles: ALL },
+      { to: '/customer-students', label: '(Z02) 學員資料（含購買紀錄）', roles: ALL },
       { to: '/ragic-z03',         label: '(Z03) 舊系統資料整理',        roles: ['admin', 'manager', 'staff'] },
     ],
   },
   {
     title: '報名與對帳',
     items: [
-      { to: '/manual-enroll', label: '手動建檔',          roles: ['admin', 'manager', 'staff'] },
+      { to: '/manual-enroll', label: '手動建檔',          roles: ALL },
       { to: '/reconcile',   label: '(F-M02) 待對帳清單', roles: ['admin', 'manager', 'staff'] },
-      { to: '/enrollments', label: '(F-R02) 所有報名',   roles: ['admin', 'manager', 'staff'] },
+      { to: '/enrollments', label: '(F-R02) 所有報名',   roles: ALL },
       { to: '/group-orders', label: '團購審核',          roles: ['admin', 'manager', 'staff'] },
       { to: '/refund',      label: '(F-R04) 退課處理',   roles: ['admin', 'manager', 'staff'] },
       { to: '/transfers',   label: '(F-M04) 課程轉讓審核', roles: ['admin', 'manager'] },
@@ -49,9 +55,9 @@ const NAV_GROUPS = [
   {
     title: '場館營運',
     items: [
-      { to: '/sessions', label: '(F-R01) 上課紀錄查詢', roles: ['admin', 'manager', 'staff'] },
-      { to: '/checkin',  label: '(F-R03) 簽到驗證', roles: ['admin', 'manager', 'staff'] },
-      { to: '/checkin-modes', label: '簽到模式管理', roles: ['admin', 'manager', 'staff'] },
+      { to: '/sessions', label: '(F-R01) 上課紀錄查詢', roles: ALL },
+      { to: '/checkin',  label: '(F-R03) 簽到驗證', roles: ALL },
+      { to: '/checkin-modes', label: '簽到模式管理', roles: ALL },
       { to: '/manual-deduction', label: '手動扣課', roles: ['admin', 'manager', 'staff'] },
       { to: '/revive',   label: '(F-M05) 扣課復活', roles: ['admin', 'manager', 'staff'] },
     ],
@@ -68,7 +74,7 @@ const NAV_GROUPS = [
     title: '行銷與優惠',
     items: [
       { to: '/promotions',         label: '(F-M07/F-A05) 優惠活動', roles: ['admin', 'manager'] },
-      { to: '/promotions-active',  label: '(F-R05) 進行中優惠',     roles: ['admin', 'manager', 'staff'] },
+      { to: '/promotions-active',  label: '(F-R05) 進行中優惠',     roles: ALL },
       { to: '/mgm-stats',          label: '(F-M10) MGM 推薦統計',   roles: ['admin', 'manager'] },
     ],
   },
@@ -100,12 +106,35 @@ function canSee(item, role, allowed, can) {
   return can(item.to.replace(/^\//, ''));
 }
 
-export default function Sidebar() {
+/**
+ * 側邊選單。桌機是固定的一欄，手機是從左側滑出的抽屜。
+ *
+ * 原本是 hidden ... md:flex —— 768px 以下整個消失，而全站沒有任何替代入口。
+ * 桌機使用者不會發現，因為他們永遠在 md 以上。但救生員幾乎一定是用手機
+ * （他們在池畔，不會坐在辦公桌前），登入後被導到 /dashboard 就再也去不了
+ * 任何其他頁面 —— 包含他唯一要用的簽到頁 —— 除非手打網址。
+ *
+ * 開關用 hidden/flex 而不是 translate 滑入：實測 translate-x-0 進了 class 清單，
+ * computed transform 卻仍是 -256px（Tailwind 的 translate 工具類沒有蓋過去）。
+ * 滑入動畫只是好看，選單打不開是功能壞掉 —— 用原本 `hidden ... md:flex` 的
+ * 同一套機制最穩，md: 的斷點覆蓋在整個專案裡到處都在用，行為是確定的。
+ *
+ * 同一個元件兩種型態，不維護兩份選單（維護兩份的話，遲早只有一份會被更新）。
+ */
+export default function Sidebar({ open = false, onClose }) {
   const { role } = useAuth();
   const { allowed, can } = usePermissions();
 
   return (
-    <aside className="hidden w-64 shrink-0 flex-col bg-brand-primary text-white md:flex">
+    <>
+    {/* 手機才有的遮罩。點它關閉，這是行動裝置上大家預期的行為。 */}
+    {open && (
+      <div className="fixed inset-0 z-30 bg-black/40 md:hidden"
+           onClick={onClose} aria-hidden="true" />
+    )}
+    <aside
+      onClick={() => onClose && onClose()}
+      className={`${open ? 'flex' : 'hidden'} fixed inset-y-0 left-0 z-40 w-64 shrink-0 flex-col overflow-y-auto bg-brand-primary text-white md:static md:z-auto md:flex`}>
       <div className="flex h-16 items-center justify-center border-b border-white/10 px-4">
         <span className="text-lg font-bold tracking-wide">DAOS 後台</span>
       </div>
@@ -153,5 +182,6 @@ export default function Sidebar() {
         </div>
       </div>
     </aside>
+    </>
   );
 }

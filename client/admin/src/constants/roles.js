@@ -9,7 +9,8 @@
 // 陣列順序即優先序（高 → 低）。身兼數職時的「代表值」取最高者。
 // portal＝這個身分用哪個入口。'liff' 的不會出現在 F-A06 權限表 ——
 // 教練有專屬入口，後台頁面對他沒有意義。
-// backoffice 是另一件事：現在能不能登入後台（救生員 portal=admin 但尚未開放）。
+// backoffice 是另一件事：現在能不能登入後台。
+// 2026-08-26 起救生員與櫃檯走同一個後台入口，看得到什麼由 F-A06 決定。
 export const ROLES = [
   { key: 'admin',     label: '系統管理員', backoffice: true,  portal: 'admin' },
   { key: 'manager',   label: '場館主管',   backoffice: true,  portal: 'admin' },
@@ -17,6 +18,11 @@ export const ROLES = [
   { key: 'coach',     label: '教練',       backoffice: false, portal: 'liff'  },
   { key: 'lifeguard', label: '救生員',     backoffice: true,  portal: 'admin' },
 ];
+
+/** 能登入後台的身分。路由守衛的後備判定要用它，不要再手寫一份 ——
+ *  App.jsx 原本寫死 ['admin','manager','staff']，開放救生員之後那一行
+ *  會讓救生員在權限載入完成前看到「沒有權限存取此頁面」。 */
+export const BACKOFFICE_ROLES = ROLES.filter((r) => r.backoffice).map((r) => r.key);
 
 /** 可以指派給員工的身份（編輯視窗的下拉）。 */
 export const ROLE_OPTIONS = ROLES.map((r) => ({ value: r.key, label: r.label }));

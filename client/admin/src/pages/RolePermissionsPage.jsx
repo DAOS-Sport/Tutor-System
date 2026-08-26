@@ -142,15 +142,20 @@ export default function RolePermissionsPage() {
       )}
 
       {tab === 'role' && (<>
-      {/* 限寬：角色只有五欄，讓表格橫跨整個寬螢幕只會讓每一格離標題很遠，
-          勾錯行的機率反而變高。表頭吸頂，捲到下面幾組時還看得到自己在勾哪個角色。 */}
-      <div className="mb-4 max-w-4xl overflow-x-auto rounded-xl border border-gray-200 bg-white">
+      {/* 表頭吸頂，捲到下面幾組時還看得到自己在勾哪個角色。
+          寬度是量出來調的：原本 max-w-4xl（896px）配上「頁面」欄不限寬，
+          實測那一欄自己吃掉 526px（59%），四個角色欄只剩 92px 一格；
+          右邊還空著 105px 沒用到。現在把「頁面」欄壓到 42%，角色欄的
+          可點區域從 92px 變成約 150px —— 大 60%，而且列高沒有增加，
+          捲動距離不變。奇數列淡底色是用來對行的：34 個頁面 × 4 欄，
+          沒有橫向參考線很容易勾到隔壁那一列。 */}
+      <div className="mb-4 max-w-5xl overflow-x-auto rounded-xl border border-gray-200 bg-white">
         <table className="w-full min-w-[600px] text-sm">
           <thead className="sticky top-0 z-10 bg-gray-50 shadow-[0_1px_0_rgba(0,0,0,0.06)]">
             <tr>
-              <th className="px-3 py-2.5 text-left text-xs font-bold tracking-wide text-gray-500">頁面</th>
+              <th className="w-[42%] px-3 py-2.5 text-left text-xs font-bold tracking-wide text-gray-500">頁面</th>
               {data.roles.map((r) => (
-                <th key={r.key} className="w-[92px] px-1 py-2.5 text-center text-xs font-bold text-gray-600">
+                <th key={r.key} className="w-[14.5%] px-1 py-2.5 text-center text-xs font-bold text-gray-600">
                   <div className="leading-tight">{r.label}</div>
                   <div className="mt-0.5 text-[10px] font-normal text-gray-400">
                     {r.immutable
@@ -183,7 +188,7 @@ export default function RolePermissionsPage() {
                   })}
                 </tr>
                 {g.items.map((it) => (
-                  <tr key={it.key} className="border-t border-gray-100 hover:bg-brand-primary/5">
+                  <tr key={it.key} className="border-t border-gray-100 odd:bg-gray-50/50 hover:bg-brand-primary/5">
                     {/* 路徑收進同一行：原本佔第二行，34 個頁面就多出 34 行高度，
                         捲動距離變長、對照欄位更容易看錯行。 */}
                     <td className="px-3 py-1.5">

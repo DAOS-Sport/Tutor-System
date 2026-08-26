@@ -40,10 +40,17 @@ import RagicZ03Page from './pages/RagicZ03Page';
 import CustomerParentsPage from './pages/CustomerParentsPage';
 import CustomerStudentsPage from './pages/CustomerStudentsPage';
 import MockBanner from './components/MockBanner';
+import { BACKOFFICE_ROLES } from './constants/roles.js';
 
 // 後台登入角色須與 server/middlewares/adminAuth.js 的共用裁判一致。
 // manager 仍由 API 依 venue_ids 限制可見場館，並非取得 admin 全館權限。
-const ALL = ['admin', 'manager', 'staff'];
+//
+// 由 ROLES 推導，不要手寫。原本寫死成三個、漏了 lifeguard，而 RequireAuth
+// 在權限還沒載到時就是退回這個陣列判定 —— 於是救生員每次重新整理都會先閃
+// 一次「沒有權限存取此頁面」；權限 API 只要失敗一次（載不到就不會再重試），
+// 他就被永久鎖在整個後台外面。/sessions /checkin /checkin-modes 三頁也吃
+// 這個常數，正好是救生員的主要工作畫面。
+const ALL = BACKOFFICE_ROLES;
 
 export default function App() {
   return (
