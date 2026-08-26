@@ -33,9 +33,13 @@ const router = express.Router();
 
 // 可指派的身份清單。原本寫死四個、漏了救生員，於是「篩選選得到、編輯存不了」——
 // normalizeRoleFilter 早就認得 lifeguard，這裡卻會回 400「角色不合法」。
-const { ASSIGNABLE_ROLES: VALID_ROLES, highestRole } = require('../../constants/roles');
+const { ASSIGNABLE_ROLES: VALID_ROLES, BACKOFFICE_ROLES, highestRole } = require('../../constants/roles');
 const MULTIPLIER_MIN = 1.00;
 const MULTIPLIER_MAX = 1.50;
+
+// 「誰能發出 admin 身分」的守衛。抽在 services/adminGrantGuard.js，
+// 那裡是純模組，測試 require 得動，才驗得到行為而不只是長相。
+const { adminGrantBlocked } = require('../../services/adminGrantGuard');
 
 function quoteIdent(name) {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(String(name || ''))) {
@@ -821,6 +825,10 @@ router.post('/', requireAdminAuth, requireResource('staff'), async (req, res) =>
     if (!name) return res.status(400).json({ error: '姓名必填' });
     if (!phone) return res.status(400).json({ error: '手機必填，預設密碼會使用手機號碼' });
     if (!VALID_ROLES.includes(role)) return res.status(400).json({ error: '角色不合法' });
+    {
+      const blocked = adminGrantBlocked(req, [role]);
+      if (blocked) return res.status(403).json(blocked);
+    }
     if (role === 'coach') {
       if (Number.isNaN(multiplier) || multiplier < MULTIPLIER_MIN || multiplier > MULTIPLIER_MAX) {
         return res.status(400).json({ error: `修課係數需在 ${MULTIPLIER_MIN.toFixed(2)}–${MULTIPLIER_MAX.toFixed(2)} 之間` });
@@ -838,7 +846,15 @@ router.post('/', requireAdminAuth, requireResource('staff'), async (req, res) =>
 
     const pwdHash = await bcrypt.hash(phone, 10);
     const userId = `U_${id}`;
-    const loginRole = role === 'coach' ? 'staff' : role;
+    // 登入帳號的角色。與 auth.js 的登入裁決用同一套優先序，不要再手寫映射 ——
+    // 原本是 role === 'coach' ? 'staff' : role，那是第三套算法（另外兩套在
+    // constants/roles 的 highestRole 與 auth.js 的 _effectiveLoginUser）。
+    //
+    // 純教練沒有任何後台身分，但 admin_users.role 有 CHECK constraint、必須有值，
+    // 所以仍然落在 'staff'。真正防止他因此拿到櫃檯權限的是讀取端 ——
+    // auth.js 的 _usableRole 與 rolePermissions.js 的身分過濾都會認出
+    // 「這個 staff 只是保底值」。這個欄位本身擋不住，也不該由它來擋。
+    const loginRole = highestRole([role].filter((r) => BACKOFFICE_ROLES.includes(r))) || 'staff';
 
     await client.query('BEGIN');
     await client.query(
@@ -906,6 +922,15 @@ router.patch('/:id', requireAdminAuth, requireResource('staff'), async (req, res
       // 代表值：優先序由 constants/roles 的陣列順序定義，與 Ragic 推導同一套 ——
       // 兩邊各寫一份的話，同一個人在同步與手動存檔會算出不同的主要角色。
       patch.role = highestRole(manualRoles) || manualRoles[0];
+    }
+    // 發出 admin、或動到一個現在就是 admin 的人，都要求呼叫者本身是 admin。
+    {
+      const blocked = adminGrantBlocked(req, [
+        patch.role,
+        ...(manualRoles || []),
+        cur.rows[0] && cur.rows[0].role,
+      ]);
+      if (blocked) return res.status(403).json(blocked);
     }
     // Multiplier 範圍校驗：只要這次請求會讓 coach.pricing_multiplier 生效就檢查。
     // 觸發條件（涵蓋所有教練生效路徑，含序列攻擊：先存壞值 → 再啟用 coach_active）：
@@ -995,7 +1020,11 @@ router.patch('/:id', requireAdminAuth, requireResource('staff'), async (req, res
        merged.is_senior, merged.multiplier, merged.active, activeChanged]
     );
 
-    const loginRole = merged.role === 'coach' ? 'staff' : merged.role;
+    // 同上，但這裡還要把這次送出的多選身分算進去：
+    // 「教練兼救生員」的代表值是 coach（優先序上 coach 在 lifeguard 之前），
+    // 舊寫法會把他的登入帳號記成 'staff' —— 一個他其實沒有的身分。
+    const loginRole = highestRole([merged.role, ...(manualRoles || [])]
+      .filter((r) => BACKOFFICE_ROLES.includes(r))) || 'staff';
     await client.query(
       `UPDATE admin_users
           SET name = $2,
@@ -1183,7 +1212,7 @@ router.post('/:id/reset-password', requireAdminAuth, requireResource('staff'), a
   try {
     const { id } = req.params;
     const staffRes = await pool.query(
-      `SELECT s.id, s.name, s.venue_id, s.phone, c.line_uid AS coach_line_uid
+      `SELECT s.id, s.name, s.role, s.venue_id, s.phone, c.line_uid AS coach_line_uid
          FROM admin_staff s
          LEFT JOIN coaches c ON c.ragic_employee_id = s.id
         WHERE s.id = $1`,
@@ -1191,6 +1220,11 @@ router.post('/:id/reset-password', requireAdminAuth, requireResource('staff'), a
     );
     const staff = staffRes.rows[0];
     if (!staff) return res.status(404).json({ error: '找不到該員工' });
+    // 重設密碼等於取得那個帳號 —— 對象是系統管理員時，呼叫者本身要是管理員。
+    {
+      const blocked = adminGrantBlocked(req, [staff.role]);
+      if (blocked) return res.status(403).json(blocked);
+    }
 
     const userRes = await pool.query(
       `SELECT id, line_uid FROM admin_users WHERE staff_id = $1`,
