@@ -517,6 +517,7 @@ function _staffPayloadFromRagicRow(r, resolveVenues) {
   const roleStr = Array.isArray(role) ? role.join(',') : (role || '');
   const roleText = `${roleStr},${r?.['職稱'] || ''}`;
   const isAdmin = H01.ROLE_MATCH.ADMIN.test(roleText);
+  const isManager = H01.ROLE_MATCH.MANAGER.test(roleText);
   const isCoach = roleText.includes(H01.ROLE_MATCH.COACH);
   const isCounter = H01.ROLE_MATCH.COUNTER.test(roleText);
   const isLifeguard = H01.ROLE_MATCH.LIFEGUARD.test(roleText);
@@ -532,10 +533,11 @@ function _staffPayloadFromRagicRow(r, resolveVenues) {
   // 最後的 'staff' 保底維持不動：那代表「Ragic 上看不出身分」，
   // 改動它會波及 36 位沒有任何旗標的一般員工，不在這次範圍內。
   const roleVal = isAdmin ? 'admin'
-    : isCounter ? 'staff'
-      : isCoach ? 'coach'
-        : isLifeguard ? 'lifeguard'
-          : 'staff';
+    : isManager ? 'manager'
+      : isCounter ? 'staff'
+        : isCoach ? 'coach'
+          : isLifeguard ? 'lifeguard'
+            : 'staff';
   return {
     id,
     name,
@@ -1128,6 +1130,7 @@ async function _reconcileH01FromShadowImpl() {
       const roleStr = Array.isArray(role) ? role.join(',') : (role || '');
       const roleText = `${roleStr},${r['職稱'] || ''}`;
       const isAdmin = H01.ROLE_MATCH.ADMIN.test(roleText);
+      const isManager = H01.ROLE_MATCH.MANAGER.test(roleText);
       const isCoach = roleText.includes(H01.ROLE_MATCH.COACH);
       const isCounter = H01.ROLE_MATCH.COUNTER.test(roleText);
       const isLifeguard = H01.ROLE_MATCH.LIFEGUARD.test(roleText);
@@ -1147,10 +1150,11 @@ async function _reconcileH01FromShadowImpl() {
   // 最後的 'staff' 保底維持不動：那代表「Ragic 上看不出身分」，
   // 改動它會波及 36 位沒有任何旗標的一般員工，不在這次範圍內。
   const roleVal = isAdmin ? 'admin'
-    : isCounter ? 'staff'
-      : isCoach ? 'coach'
-        : isLifeguard ? 'lifeguard'
-          : 'staff';
+    : isManager ? 'manager'
+      : isCounter ? 'staff'
+        : isCoach ? 'coach'
+          : isLifeguard ? 'lifeguard'
+            : 'staff';
       const isActive = (r['在職狀態'] || r['3000945']) === '在職';
       // Task #90：解析 Ragic H01 多場館欄位（主場館 + 支援場館），合併為陣列
       // Task #95：立即 resolve 成 venue 代碼再比對 / 入 payload（見上方註解）
@@ -1681,7 +1685,7 @@ async function _applyStaffChange(row, client) {
 	         role = CASE
 	                    WHEN role = 'manager' THEN 'manager'
 	                    WHEN $11::text = 'admin' THEN 'admin'
-	                    WHEN $11::text IN ('coach', 'lifeguard') THEN $11::text
+	                    WHEN $11::text IN ('coach', 'lifeguard', 'manager') THEN $11::text
 	                    ELSE role
 	                  END,
 	         active = CASE WHEN active_overridden_at IS NULL THEN $4 ELSE active END,
@@ -2073,7 +2077,7 @@ async function mergeStagedStaffChange(stagingId, targetEntityId, byUserId) {
 	         role = CASE
 	                    WHEN role = 'manager' THEN 'manager'
 	                    WHEN $10::text = 'admin' THEN 'admin'
-	                    WHEN $10::text IN ('coach', 'lifeguard') THEN $10::text
+	                    WHEN $10::text IN ('coach', 'lifeguard', 'manager') THEN $10::text
 	                    ELSE role
 	                  END,
 	         active = CASE WHEN active_overridden_at IS NULL THEN $4 ELSE active END,

@@ -35,16 +35,31 @@ check('推導含 lifeguard，且兩處都改到', () => {
   assert.strictEqual(n, 2, `只找到 ${n} 處（同步與 apply 各需要一處）`);
 });
 
-check('優先序是 admin > 櫃檯 > 教練 > 救生員', () => {
-  const m = SRC.match(/const roleVal = isAdmin \? 'admin'[\s\S]{0,200}?;/);
+check('優先序是 admin > 主管 > 櫃檯 > 教練 > 救生員', () => {
+  const m = SRC.match(/const roleVal = isAdmin \? 'admin'[\s\S]{0,260}?;/);
   assert.ok(m, '找不到 roleVal 的推導');
   const body = m[0];
-  const iCounter = body.indexOf("isCounter ? 'staff'");
-  const iCoach = body.indexOf("isCoach ? 'coach'");
-  const iGuard = body.indexOf("isLifeguard ? 'lifeguard'");
-  assert.ok(iCounter > 0 && iCoach > iCounter && iGuard > iCoach,
+  const i = {
+    manager: body.indexOf("isManager ? 'manager'"),
+    counter: body.indexOf("isCounter ? 'staff'"),
+    coach: body.indexOf("isCoach ? 'coach'"),
+    guard: body.indexOf("isLifeguard ? 'lifeguard'"),
+  };
+  for (const [k, v] of Object.entries(i)) assert.ok(v > 0, `推導裡缺少 ${k}`);
+  assert.ok(i.manager < i.counter && i.counter < i.coach && i.coach < i.guard,
     '順序不對。櫃檯要排在救生員之前 —— 兼任兩者的人實際在做櫃檯的事，'
     + '而櫃檯是這幾個身分裡唯一需要後台權限的');
+});
+
+check('主管職推得出 manager（這是「同步永遠產生不出 manager」的修法）', () => {
+  const schema = require('fs').readFileSync(
+    require('path').resolve(__dirname, '../server/config/ragicSchema.js'), 'utf8');
+  assert.ok(/MANAGER:\s*\/主管職\//.test(schema),
+    '缺少 MANAGER 比對規則，主管會落到 staff 保底值');
+  assert.ok(!/MANAGER:\s*\/主管\//.test(schema),
+    '比對寫成 /主管/ 會連「非主管」之類的描述也命中');
+  const n = (SRC.match(/const isManager = H01\.ROLE_MATCH\.MANAGER\.test\(roleText\);/g) || []).length;
+  assert.strictEqual(n, 2, `isManager 只算了 ${n} 處（同步與 apply 各需要一處）`);
 });
 
 check('保底值仍是 staff（這次不動一般員工）', () => {
@@ -60,9 +75,15 @@ check('寫入規則兩處都排除 manager', () => {
     + '漏掉的那條會把人工指派的場館主管默默降成櫃檯');
 });
 
-check('寫入規則兩處都能寫 coach / lifeguard', () => {
-  const n = (SRC.match(/IN \('coach', 'lifeguard'\) THEN \$\d+::text/g) || []).length;
-  assert.strictEqual(n, 2, `只找到 ${n} 處；少一處的話那條路徑仍修不好救生員`);
+check('寫入規則兩處都能寫 coach / lifeguard / manager', () => {
+  const n = (SRC.match(/IN \('coach', 'lifeguard', 'manager'\) THEN \$\d+::text/g) || []).length;
+  assert.strictEqual(n, 2, `只找到 ${n} 處；少一處的話那條路徑仍修不好`);
+  // manager 能被寫入，但 WHEN role='manager' 那條仍排在最前面，
+  // 所以人工指派的主管不會被任何 Ragic 值蓋掉。
+  for (const c of SRC.match(/role = CASE[\s\S]{0,360}?END,/g) || []) {
+    assert.ok(c.indexOf("WHEN role = 'manager'") < c.indexOf("IN ('coach'"),
+      '保護 manager 的那條必須排在最前面，否則人工指派會被覆蓋');
+  }
 });
 
 check('算出 staff 時不覆蓋本地值', () => {

@@ -192,6 +192,11 @@ const H01 = {
   // 角色關鍵字（roleText = 應徵職務 + 職稱 的字串化）
   ROLE_MATCH: {
     ADMIN: /系統管理員|管理員|admin/i,
+    // 「主管職」是 應徵職務 的十個選項之一。少了這一條，主管會落到最後的
+    // 保底 'staff'（行政櫃檯）—— 這就是「同步永遠產生不出 manager」的原因。
+    // 刻意不寫成 /主管/：那會連「主管職」以外的字串也命中，例如職稱欄位裡
+    // 出現「非主管」之類的描述時會誤判。
+    MANAGER: /主管職/,
     COACH: '教練',
     COUNTER: /櫃檯|櫃台|行政|counter|front\s*desk/i,
     // 救生員（Workstream A）：與 COACH/COUNTER 同層獨立比對，非互斥判斷——
