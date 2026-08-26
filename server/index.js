@@ -144,12 +144,26 @@ app.get('/health', async (req, res) => {
     push = { error: String(err.message || err).slice(0, 120) };
   }
 
+  // 儲存診斷。要回答的是「上傳的照片到底存在哪」——而那個答案在外面完全看不見：
+  // bucket 沒開通時系統會安靜地退回用 PostgreSQL，功能一切正常，
+  // 只有資料庫慢慢被 334 MB 的圖檔撐大。正式站就這樣跑了六週沒有人發現。
+  //
+  // 只回 driver 名稱（replit / db / local 三種之一），不回 bucket id、
+  // 不回憑證、不回錯誤原文 —— 與 mail / push 兩區同一個原則。
+  let storage = null;
+  try {
+    storage = { driver: require('./services/objectStorage').driverName };
+  } catch (err) {
+    storage = { error: String(err.message || err).slice(0, 120) };
+  }
+
   res.json({
     status: 'ok',
     ts: now.toISOString(),
     build: BUILD_INFO,
     mail,
     push,
+    storage,
     timezone: {
       application: process.env.TZ || TAIPEI_TIME_ZONE,
       database: dbTimeZone,
