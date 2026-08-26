@@ -5,6 +5,7 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import DataTable from '../components/DataTable';
 import StatusBadge from '../components/StatusBadge';
 import VenueMultiSelect from '../components/VenueMultiSelect';
+import FilterBar from '../components/FilterBar';
 import { rangeForPreset } from '../components/DateRangeSelect';
 import WeekGridView from '../components/WeekGridView';
 import SessionDetailModal from '../components/SessionDetailModal';
@@ -200,19 +201,34 @@ export default function SessionsPage() {
         }
       />
 
-      <div className="mb-4 flex flex-wrap items-end gap-3 rounded-lg border border-gray-200 bg-white p-3 shadow-sm">
-        <div>
+      {/* 收編進共用 FilterBar：這一列原本自己手搓，外框那串 class
+          （mb-4 / rounded-lg / border-gray-200 / bg-white / p-3 / shadow-sm，
+          md 以上 flex flex-wrap items-end gap-3）與 FilterBar 逐字相同，
+          所以只要把內容原樣放進 children slot，桌機的盒模型完全沒動：
+          FilterBar 是「外框 div + 內層 flex div」兩層，這裡原本是一層 div
+          同時當外框與 flex 容器 —— 內層是塊級、寬度撐滿外框內容區，
+          md 以上 md:mt-0 不帶邊界，兩種寫法算出來的版位一模一樣。
+
+          原本在 375px 會發生什麼：三個欄位各自為政地折行，右緣分別停在
+          304 / 189 / 346，看起來像被啃過一口。起訖日那組是 flex-1 撐滿、
+          場館那顆是 min-w-[160px] 內容寬、右邊的統計文字又被 ml-auto 推到最右。
+          收編後手機是收合的單欄滿版（左右各切齊一條線），桌機不變。 */}
+      <FilterBar activeCount={venueIds.length}>
+        <div className="w-full md:w-auto">
           <label className="mb-1 block text-xs font-medium text-gray-600">起訖日</label>
 {/* 外層那一列有 flex-wrap，這一層原本沒有：
               152 + 152 + 「~」12 + 兩個 gap-1.5 共 12 = 328px，
               而外層 p-3 之後 375px 只剩 301px —— 溢出 27px，整頁橫向捲動。
-              兩個 picker 改成 flex-1 min-w-0，窄螢幕自己縮，桌機由 sm:w-[152px] 定住。 */}
+              兩個 picker 改成 flex-1 min-w-0，窄螢幕自己縮，桌機由 md:w-[152px] 定住。
+              斷點從 sm: 換成 md:：收合／單欄的切換點是 md，留在 sm 的話
+              640–767px 之間會變成「已經是單欄格線、picker 卻還被釘在 152px」的半殘狀態。
+              md 以上（桌機）兩種寫法算出來的寬度相同，sm: 的規則在 ≥768px 本來就也生效。 */}
           <div className="flex flex-wrap items-center gap-1.5">
             <DateTimePicker value={range.from} max={range.to || undefined}
-              onChange={(v) => setRangeBound('from', v)} className="min-w-0 flex-1 sm:w-[152px] sm:flex-none" />
+              onChange={(v) => setRangeBound('from', v)} className="min-w-0 flex-1 md:w-[152px] md:flex-none" />
             <span className="shrink-0 text-gray-400">~</span>
             <DateTimePicker value={range.to} min={range.from || undefined}
-              onChange={(v) => setRangeBound('to', v)} className="min-w-0 flex-1 sm:w-[152px] sm:flex-none" />
+              onChange={(v) => setRangeBound('to', v)} className="min-w-0 flex-1 md:w-[152px] md:flex-none" />
           </div>
         </div>
         <VenueMultiSelect
@@ -224,11 +240,13 @@ export default function SessionsPage() {
           disabled={isStaff && myVenueIds.length <= 1}
           label={isStaff ? '場館（限所屬）' : '場館'}
         />
-        <div className="ml-auto text-xs text-gray-500">
+        {/* ml-auto 只留給桌機。手機的單欄格線裡，ml-auto 會讓這格縮成
+            fit-content 並被推到右緣 —— 正好破壞剛切齊的左右邊線。 */}
+        <div className="w-full text-xs text-gray-500 md:ml-auto md:w-auto">
           {range.from} ~ {range.to}（{range.days} 天）
           {list && <span className="ml-2 text-gray-400">共 {list.length} 筆</span>}
         </div>
-      </div>
+      </FilterBar>
 
       {tooLong && view === 'week' && (
         <div className="mb-3 rounded-md border border-brand-amber/40 bg-brand-amber/10 px-3 py-2 text-sm text-brand-amber">

@@ -139,12 +139,23 @@ export default function CheckinModesPage() {
         subtitle="🔵 預約制＝先預約劃課再簽到（現行流程）；🟠 自助簽到＝免預約，家長上課當下簽到（每日限一次、以購買堂數為上限，誤點由櫃檯於「簽到驗證」頁撤銷）"
       />
 
+      {/* 就地處理，不收編 FilterBar：這一列右半的「整館改為自助簽到 / 整館改回預約制」
+          是會實際改資料的批次操作（而且只在選了單一場館時才出現），不是篩選條件。
+          包進 FilterBar 會被收進「篩選」摺疊列後面 —— 把破壞性動作藏在一個叫「篩選」
+          的東西底下不是好主意。這一列也沒有 FilterBar 的卡片外框（無 border / bg /
+          shadow / padding），套上去桌機會憑空多一張卡。只補同一套手機規則。
+
+          原本在 375px 會發生什麼：main 的 p-4 之後只剩 343px。場館下拉是內容寬
+          （跟著場館名字浮動）、模式下拉約 96px、搜尋框是死的 w-56(224px)，
+          三個右緣全不一樣；再加上兩顆整館按鈕（各約 120px）被 ml-auto 推到右邊，
+          折行後最後一列還會靠右對齊 —— 同一塊區域裡左右緣同時有四五個位置。
+          手機改成一格一列、批次按鈕自成一列平分寬度。 */}
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <select value={venueId} onChange={(e) => setVenueId(e.target.value)} className="rounded-lg border border-gray-300 px-3 py-2 text-sm">
+        <select value={venueId} onChange={(e) => setVenueId(e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm md:w-auto">
           <option value="">全部場館</option>
           {venues.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
         </select>
-        <select value={modeFilter} onChange={(e) => setModeFilter(e.target.value)} className="rounded-lg border border-gray-300 px-3 py-2 text-sm">
+        <select value={modeFilter} onChange={(e) => setModeFilter(e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm md:w-auto">
           <option value="">全部模式</option>
           <option value="booking">預約制</option>
           <option value="self">自助簽到</option>
@@ -154,26 +165,30 @@ export default function CheckinModesPage() {
           onChange={(e) => setSearch(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') { setList(null); load(); } }}
           placeholder="搜尋教練 / 學員（Enter）"
-          className="min-h-[44px] w-56 rounded-lg border border-gray-300 px-3 py-2 md:min-h-0 text-sm"
+          className="min-h-[44px] w-full rounded-lg border border-gray-300 px-3 py-2 md:min-h-0 md:w-56 text-sm"
         />
         {list && (
-          <span className="text-xs text-gray-500">
+          <span className="w-full text-xs text-gray-500 md:w-auto">
             預約制 {counts.booking} 期・自助簽到 {counts.self} 期
           </span>
         )}
         {canManage && venueId && (
-          <div className="ml-auto flex gap-2">
+          /* ml-auto 只留給桌機：手機上這一格已經是滿版，ml-auto 會讓它縮成
+             fit-content 再被推到右緣，反而製造出新的參差右緣。
+             兩顆按鈕手機平分一列（flex-1），md 以上 flex-initial 回到
+             flex: 0 1 auto，也就是原本沒寫任何 flex 宣告時的值。 */
+          <div className="flex w-full gap-2 md:ml-auto md:w-auto">
             <button
               type="button"
               onClick={() => setBulk({ venueId, mode: 'self' })}
-              className="min-h-[44px] rounded-lg bg-amber-500 px-3 py-2 text-sm font-bold text-white hover:bg-amber-600 md:min-h-0 md:text-xs"
+              className="min-h-[44px] flex-1 rounded-lg bg-amber-500 px-3 py-2 text-sm font-bold text-white hover:bg-amber-600 md:min-h-0 md:flex-initial md:text-xs"
             >
               整館改為自助簽到
             </button>
             <button
               type="button"
               onClick={() => setBulk({ venueId, mode: 'booking' })}
-              className="min-h-[44px] rounded-lg bg-gray-500 px-3 py-2 text-sm font-bold text-white hover:bg-gray-600 md:min-h-0 md:text-xs"
+              className="min-h-[44px] flex-1 rounded-lg bg-gray-500 px-3 py-2 text-sm font-bold text-white hover:bg-gray-600 md:min-h-0 md:flex-initial md:text-xs"
             >
               整館改回預約制
             </button>

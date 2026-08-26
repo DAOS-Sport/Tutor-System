@@ -289,19 +289,35 @@ export default function RagicStagingPage() {
         </div>
       ) : null}
 
+      {/* 就地處理，不收編 FilterBar：這一列尾端的「全選 pending」是批次選取動作
+          （後面接的是批次通過），不是篩選條件；而前段的狀態 pill 同時兼作各狀態的
+          筆數看板，收進摺疊列之後手機上就再也看不到「還有幾筆待審」。
+          這一列也沒有卡片外框，套 FilterBar 桌機會憑空多一張卡。只補手機規則。
+
+          原本在 375px 會發生什麼：main 的 p-4 之後只剩 343px。五顆狀態 pill
+          各自帶括號筆數（約 70–100px）自然折成兩三列，接著那根 h-5 w-px 的
+          垂直分隔線常常單獨落在一列的行首 —— 一條 1px 的線孤零零掛在那裡，
+          看起來像渲染壞掉。再來是內容寬的來源下拉、死的 w-40(160px) 搜尋框、
+          兩顆內容寬按鈕，右緣散在四五個位置。
+          另外整列的可點元素都是 px-3 py-1 text-xs（約 24–26px 高），
+          手指點不準；手機一律補 min-h-[44px]，md 以上 min-h-0 回到原本密度。 */}
       <div className="mb-4 flex flex-wrap items-center gap-2">
+        {/* pill 維持自然折行不強制滿版：五顆各自撐滿會變成五列，把下面的資料
+            整個推出首屏，比參差的右緣更糟。 */}
         {['all', 'pending', 'approved', 'rejected', 'auto_resolved'].map(s => (
           <button
             key={s}
             onClick={() => setFilterStatus(s)}
-            className={`rounded px-3 py-1 text-xs font-bold ${filterStatus === s ? 'bg-brand-primary text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+            className={`min-h-[44px] rounded px-3 py-1 text-xs font-bold md:min-h-0 ${filterStatus === s ? 'bg-brand-primary text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
           >{s === 'all' ? '全部' : (STATUS_LABEL[s]?.text || s)}（{Array.isArray(allItems) ? (s === 'all' ? counts.all : counts[s] || 0) : '…'}）</button>
         ))}
-        <span className="mx-2 h-5 w-px bg-gray-300" />
+        {/* 手機藏起來：下面每一格都已經是獨立一列，垂直分隔線失去意義又會落單。
+            md 以上 block 與原本 <span> 當 flex item 被塊級化的結果相同。 */}
+        <span className="mx-2 hidden h-5 w-px bg-gray-300 md:block" />
         <select
           value={filterForm}
           onChange={(e) => setFilterForm(e.target.value)}
-          className="rounded border border-gray-300 bg-white px-2 py-1 text-xs"
+          className="min-h-[44px] w-full rounded border border-gray-300 bg-white px-2 py-1 text-xs md:min-h-0 md:w-auto"
         >
           <option value="">所有來源</option>
           <option value="H01_STAFF">H01 員工</option>
@@ -313,11 +329,13 @@ export default function RagicStagingPage() {
           onChange={(e) => setSearch(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') load(); }}
           placeholder="搜尋 ID / 內容…"
-          className="w-40 rounded border border-gray-300 px-2 py-1 text-xs"
+          className="min-h-[44px] w-full rounded border border-gray-300 px-2 py-1 text-xs md:min-h-0 md:w-40"
         />
-        <button onClick={load} className="rounded border border-gray-300 px-3 py-1 text-xs hover:bg-gray-50">搜尋</button>
+        {/* 兩顆按鈕手機平分同一列；md 以上 flex-initial = flex: 0 1 auto，
+            正是原本沒有任何 flex 宣告時的值。 */}
+        <button onClick={load} className="min-h-[44px] flex-1 rounded border border-gray-300 px-3 py-1 text-xs hover:bg-gray-50 md:min-h-0 md:flex-initial">搜尋</button>
         {filterStatus === 'pending' && items && pendingCount > 0 ? (
-          <button onClick={toggleAll} className="rounded border border-gray-300 px-3 py-1 text-xs hover:bg-gray-50">
+          <button onClick={toggleAll} className="min-h-[44px] flex-1 rounded border border-gray-300 px-3 py-1 text-xs hover:bg-gray-50 md:min-h-0 md:flex-initial">
             {selected.size === pendingCount ? '取消全選' : '全選 pending'}
           </button>
         ) : null}

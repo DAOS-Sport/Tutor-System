@@ -51,13 +51,18 @@ export default function VenueMultiSelect({
         type="button"
         disabled={disabled}
         onClick={() => setOpen((o) => !o)}
-        className="min-h-[44px] min-w-[160px] rounded-md border border-gray-300 bg-white px-3 py-1.5 text-left text-sm md:min-h-0 hover:border-brand-teal disabled:bg-gray-50 disabled:text-gray-400"
+        /* 原本在 375px：這顆是 <button>（inline-block、內容寬），只有 min-w-[160px]
+           當下限，所以寬度隨場館名長短浮動，右緣跟隔壁的日期欄對不齊。
+           手機改成撐滿整格；md 以上 w-auto 就是原本的 width:auto，桌機沒動。 */
+        className="min-h-[44px] w-full min-w-[160px] rounded-md border border-gray-300 bg-white px-3 py-1.5 text-left text-sm md:min-h-0 md:w-auto hover:border-brand-teal disabled:bg-gray-50 disabled:text-gray-400"
       >
         {summary}
         <span className="ml-2 text-gray-400">▾</span>
       </button>
       {open && !disabled && (
-        <div className="absolute left-0 top-full z-20 mt-1 max-h-72 w-64 overflow-auto rounded-md border border-gray-200 bg-white shadow-lg">
+        /* 觸發鈕在手機上已經撐滿整格，面板留在 w-64（256px）會比觸發鈕窄一截、
+           左靠著浮在半空中。手機跟著撐滿，md 以上 w-64 原封不動。 */
+        <div className="absolute left-0 top-full z-20 mt-1 max-h-72 w-full overflow-auto rounded-md border border-gray-200 bg-white shadow-lg md:w-64">
           <button
             type="button"
             onClick={() => onChange([])}

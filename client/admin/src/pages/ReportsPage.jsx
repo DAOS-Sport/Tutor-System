@@ -91,24 +91,38 @@ export default function ReportsPage() {
         ))}
       </div>
 
+      {/* 就地處理，不收編 FilterBar：這一列右端的 ExportMenu 是匯出動作、不是篩選，
+          而且上面那一列的 TABS 是檢視切換 —— 兩者都不該被收進「篩選」摺疊列。
+          這一列也沒有卡片外框（無 border / bg / shadow / padding），套 FilterBar
+          桌機會憑空多一張卡。只補同一套手機規則。
+
+          原本在 375px 會發生什麼：main 的 p-4 之後只剩 343px。兩個日期各是死的
+          w-[152px]，152 + 「～」約 14 + 152 + 兩個 gap-2 共 16 = 334px ——
+          剛好卡在溢出邊緣，場館與教練下拉（各自內容寬、text-xs 只有約 24px 高）
+          被擠到下一列、再和匯出鈕搶位置，右緣散成三四個。
+          手機改成一格一列；「～」自己佔一列並置中，當作兩個日期之間的分隔。
+          另外兩個下拉在手機補 min-h-[44px]（原本 py-1 + text-xs 只有約 24px，
+          手指點不準），md 以上 min-h-0 回到原本的密度。 */}
       <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
         <DateTimePicker value={range.from} max={range.to || undefined}
           onChange={(v) => setRange({ ...range, from: v })}
-          placeholder="起日" className="w-[152px]" />
-        <span>～</span>
+          placeholder="起日" className="w-full md:w-[152px]" />
+        <span className="w-full text-center md:w-auto">～</span>
         <DateTimePicker value={range.to} min={range.from || undefined}
           onChange={(v) => setRange({ ...range, to: v })}
-          placeholder="迄日" className="w-[152px]" />
+          placeholder="迄日" className="w-full md:w-[152px]" />
         <select value={venueId} onChange={(e) => setVenueId(e.target.value)}
-          className="rounded border border-gray-300 px-2 py-1">
+          className="min-h-[44px] w-full rounded border border-gray-300 px-2 py-1 md:min-h-0 md:w-auto">
           <option value="">全部場館</option>
           {venues.map((v) => <option key={v.id} value={v.id}>{v.name || v.id}</option>)}
         </select>
         <select value={coachId} onChange={(e) => setCoachId(e.target.value)}
-          className="rounded border border-gray-300 px-2 py-1">
+          className="min-h-[44px] w-full rounded border border-gray-300 px-2 py-1 md:min-h-0 md:w-auto">
           <option value="">全部教練</option>
           {coaches.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
+        {/* 匯出是動作不是篩選，保持原樣：ml-auto 讓它在手機上自成一列靠右、
+            在桌機上頂到最右端，兩邊都是原本的行為。 */}
         <div className="ml-auto">
           <ExportMenu disabled={!data} onExportCsv={exportCsv} onExportXlsx={exportXlsx} />
         </div>

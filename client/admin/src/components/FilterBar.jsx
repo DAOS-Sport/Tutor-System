@@ -12,6 +12,24 @@ import DateTimePicker from '../../../shared/DateTimePicker.jsx';
  *   - type='dateRange' → 起訖日期選擇器；值存在 `${key}From` / `${key}To`
  * values:   { [key]: string }
  * onChange: (next) => void
+ *
+ * 以下四個都是後加的、且全部有預設值 —— 既有呼叫端（客戶學員 / 客戶家長 /
+ * 員工 / 對帳）一個字都不用改，渲染結果與加參數前完全相同：
+ *
+ * children:      自訂控制項 slot。頁面上已經手搓好、而且「桌機一個像素都不能動」
+ *                的控制項（VenueMultiSelect、帶清除鈕的搜尋框、狀態 pill…）沒辦法
+ *                硬塞進上面那套 fields DSL —— fields 的 CONTROL_CLS 是
+ *                `rounded-md px-2 py-1.5`、而且一定會在上面長一個 <label>，
+ *                換過去桌機的圓角、內距與列高就變了。所以改成讓頁面把原本的
+ *                JSX 原封不動放進來，只借這支元件的「手機收合 + 單欄滿版」。
+ * className:     外框卡片。預設是原本那張卡；內距不同的頁面（所有報名是 p-4）
+ *                或根本沒有卡片外框的頁面可以整串換掉。
+ * rowClassName:  md 以上的排列方式。預設 items-end；已經是 items-center 的頁面
+ *                改這個就能保住桌機的對齊基準（select 與 input 的實高不一定相同，
+ *                items-end / items-center 換過去可能差一兩個像素）。
+ *                手機端的 `grid grid-cols-1 gap-3` 不開放覆寫 —— 那正是要統一的東西。
+ * activeCount:   手機收合列上那顆徽章的數字。預設從 values 推；children-only 的
+ *                頁面沒有 values 可推，就自己算好傳進來。
  */
 // 三種輸入控制項（select / combo / input）原本都是 `px-2 py-1.5 text-sm`，實高約 34px。
 // 375px 上這排欄位會 flex-wrap 折成好幾列、上下相黏，34px 的命中區用手指（池畔還是濕的）
@@ -19,7 +37,21 @@ import DateTimePicker from '../../../shared/DateTimePicker.jsx';
 // 拉高會讓每頁看到的資料變少，所以 md 以上用 min-h-0 退回原本的密度。
 const CONTROL_CLS = 'w-full min-h-[44px] rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm focus:border-brand-teal focus:outline-none md:min-h-0';
 
-export default function FilterBar({ fields, values, onChange, onReset }) {
+// 抽成常數只是為了讓 className / rowClassName 的預設值就是「今天長的樣子」，
+// 既有 4 個呼叫端不傳這兩個參數時，輸出的 class 字串與加參數前逐字相同。
+const CARD_CLS = 'mb-4 rounded-lg border border-gray-200 bg-white p-3 shadow-sm';
+const ROW_CLS = 'md:flex md:flex-wrap md:items-end';
+
+export default function FilterBar({
+  fields = [],
+  values,
+  onChange,
+  onReset,
+  className = CARD_CLS,
+  rowClassName = ROW_CLS,
+  activeCount: activeCountProp,
+  children,
+}) {
   const baseId = useId();
   // 手機上預設收起來。展開狀態只影響 md 以下 —— md 以上這個 class 被
   // md:grid 蓋過去，桌機永遠是展開的橫排。
@@ -28,10 +60,11 @@ export default function FilterBar({ fields, values, onChange, onReset }) {
     onChange({ ...values, [key]: v });
   }
   const empty = Object.values(values || {}).every((v) => v === '' || v == null);
-  const activeCount = Object.values(values || {}).filter((v) => v !== '' && v != null).length;
+  const derivedCount = Object.values(values || {}).filter((v) => v !== '' && v != null).length;
+  const activeCount = activeCountProp == null ? derivedCount : activeCountProp;
 
   return (
-    <div className="mb-4 rounded-lg border border-gray-200 bg-white p-3 shadow-sm">
+    <div className={className}>
       {/* 手機才有的收合列。
           原本這一排在 375px 上是 flex-wrap 橫排：每個欄位保留自己的
           min-w-[140~220px] 再換行，排出來左右參差不齊，看起來像壞掉。
@@ -62,7 +95,7 @@ export default function FilterBar({ fields, values, onChange, onReset }) {
 
       {/* 手機展開時是單欄滿版（左右各切齊一條線，不再有鋸齒）；
           md 以上回到原本的 flex 橫排，桌機一個像素都沒動。 */}
-      <div className={`${open ? 'mt-3 grid' : 'hidden'} grid-cols-1 gap-3 md:mt-0 md:flex md:flex-wrap md:items-end`}>
+      <div className={`${open ? 'mt-3 grid' : 'hidden'} grid-cols-1 gap-3 md:mt-0 ${rowClassName}`}>
         {fields.map((f) => {
           const id = `${baseId}-${f.key}`;
           const v = values?.[f.key] ?? '';
@@ -174,6 +207,10 @@ export default function FilterBar({ fields, values, onChange, onReset }) {
           }
           return null;
         })}
+
+        {/* 自訂 slot：與上面 fields 產出的欄位排在同一列（桌機）／同一個單欄格線（手機）。
+            擺在 fields 之後、重設鈕之前，重設鈕維持在最末端。 */}
+        {children}
 
         {onReset && (
           <div className="w-full md:w-auto">
