@@ -2303,7 +2303,8 @@ async function _backupParentsStudentsImpl() {
        (SELECT COUNT(*) FROM students s JOIN parents pp ON pp.id = s.parent_id
          WHERE s.is_active AND pp.is_active AND pp.line_uid IS NOT NULL AND pp.line_uid <> ''
            AND (s.ragic_record_id IS NULL OR s.last_synced_at IS NULL)
-           AND NOT ${syncFailureLog.stuckExclusionSql('s', 'Z01_Z02_BACKUP', 'student')}) AS students`
+           AND NOT ${syncFailureLog.stuckExclusionSql('s', 'Z01_Z02_BACKUP', 'student',
+             'GREATEST(s.updated_at, pp.updated_at)')}) AS students`
   );
   const stuckCount = Number(quarantined.rows[0].parents) + Number(quarantined.rows[0].students);
 
@@ -2358,7 +2359,8 @@ async function _backupParentsStudentsImpl() {
         AND p.line_uid NOT LIKE 'demo:%'
         AND p.line_uid NOT LIKE 'DEMOTEST_%'
         AND (s.ragic_record_id IS NULL OR s.last_synced_at IS NULL)
-        AND ${syncFailureLog.stuckExclusionSql('s', 'Z01_Z02_BACKUP', 'student')}
+        AND ${syncFailureLog.stuckExclusionSql('s', 'Z01_Z02_BACKUP', 'student',
+          'GREATEST(s.updated_at, p.updated_at)')}
       ORDER BY s.updated_at ASC LIMIT $1`,
     [BACKUP_BATCH_LIMIT]
   );

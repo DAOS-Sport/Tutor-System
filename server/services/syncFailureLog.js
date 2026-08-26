@@ -117,8 +117,22 @@ async function record(db, {
  * 而且 157 筆展開成 IN (...) 會讓查詢計畫很難看。直接讓資料庫在同一句裡判斷。
  *
  * @param alias 來源資料表在該查詢裡的別名（需有 id 與 updated_at）
+ * @param freshnessExpr 自訂「這筆資料最後一次異動」的 SQL 運算式，預設 `alias.updated_at`。
+ *
+ *   為什麼需要這個參數：學員送去 Ragic 的 payload **內嵌家長欄位**
+ *   （ragic.js 的 FIELD.Z02.PARENT_EMAIL / 家長姓名、電話、性別、身分、館別）。
+ *   所以學員會因為「家長缺 Email」而失敗 —— 正式庫 90 筆隔離學員裡有 69 筆
+ *   （橫跨 55 位家長）是這個原因。
+ *
+ *   但櫃檯補的是 parents.email，動到的是 parents.updated_at；students.updated_at
+ *   完全沒變（parents/students 兩張表都沒有任何 trigger，updated_at 只由應用層
+ *   明寫的 SQL 設定）。只看 students.updated_at 的話，這 69 筆會**永遠**留在隔離區：
+ *   資料明明修好了，卻再也不會被推上 Ragic —— 正是本模組上面那段註解說要避免的
+ *   「另一種災難」。學員的判準因此必須取
+ *   GREATEST(學員自己的 updated_at, 家長的 updated_at)。
  */
-function stuckExclusionSql(alias, formCode, entityKind) {
+function stuckExclusionSql(alias, formCode, entityKind, freshnessExpr = null) {
+  const lastChangedAt = freshnessExpr || `${alias}.updated_at`;
   return `NOT EXISTS (
     SELECT 1 FROM ragic_sync_failures f
      WHERE f.form_code = '${formCode}'
@@ -128,7 +142,7 @@ function stuckExclusionSql(alias, formCode, entityKind) {
        -- 只有真的對資料庫跑一次才會現形。
        AND f.local_id = ${alias}.id
        AND f.error_kind = 'permanent'
-       AND f.occurred_at >= ${alias}.updated_at
+       AND f.occurred_at >= ${lastChangedAt}
   )`;
 }
 
