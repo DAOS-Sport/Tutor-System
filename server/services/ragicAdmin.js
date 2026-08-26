@@ -520,7 +520,22 @@ function _staffPayloadFromRagicRow(r, resolveVenues) {
   const isCoach = roleText.includes(H01.ROLE_MATCH.COACH);
   const isCounter = H01.ROLE_MATCH.COUNTER.test(roleText);
   const isLifeguard = H01.ROLE_MATCH.LIFEGUARD.test(roleText);
-  const roleVal = isAdmin ? 'admin' : (isCounter ? 'staff' : (isCoach ? 'coach' : 'staff'));
+  // 身分優先序：admin > 櫃檯 > 教練 > 救生員。
+  //
+  // 櫃檯排在救生員之前，是因為「櫃檯兼救生員」的人實際在做櫃檯的事，
+  // 而櫃檯是這幾個身分裡唯一需要後台權限的。
+  //
+  // 舊版少了 lifeguard 這一支 —— 不是漏寫，是當時 admin_staff.role 的 CHECK
+  // 根本沒有這個值可以填，於是救生員只能落到最後的保底 'staff'（行政櫃檯）。
+  // 正式庫因此有 51 位在職救生員被記成櫃檯。F-A06 第 1 期把值補上了，這裡才修得動。
+  //
+  // 最後的 'staff' 保底維持不動：那代表「Ragic 上看不出身分」，
+  // 改動它會波及 36 位沒有任何旗標的一般員工，不在這次範圍內。
+  const roleVal = isAdmin ? 'admin'
+    : isCounter ? 'staff'
+      : isCoach ? 'coach'
+        : isLifeguard ? 'lifeguard'
+          : 'staff';
   return {
     id,
     name,
@@ -1120,7 +1135,22 @@ async function _reconcileH01FromShadowImpl() {
       // DB enum 欄位的三元運算式吃掉任一個信號——roleVal 僅作為 admin_staff.role 這個
       // CHECK constraint 欄位的保底值（fallback），三個真正的身份判斷改走各自獨立的
       // is_coach / is_counter / is_lifeguard（見下方 payload），互不覆蓋。
-      const roleVal = isAdmin ? 'admin' : (isCounter ? 'staff' : (isCoach ? 'coach' : 'staff'));
+      // 身分優先序：admin > 櫃檯 > 教練 > 救生員。
+  //
+  // 櫃檯排在救生員之前，是因為「櫃檯兼救生員」的人實際在做櫃檯的事，
+  // 而櫃檯是這幾個身分裡唯一需要後台權限的。
+  //
+  // 舊版少了 lifeguard 這一支 —— 不是漏寫，是當時 admin_staff.role 的 CHECK
+  // 根本沒有這個值可以填，於是救生員只能落到最後的保底 'staff'（行政櫃檯）。
+  // 正式庫因此有 51 位在職救生員被記成櫃檯。F-A06 第 1 期把值補上了，這裡才修得動。
+  //
+  // 最後的 'staff' 保底維持不動：那代表「Ragic 上看不出身分」，
+  // 改動它會波及 36 位沒有任何旗標的一般員工，不在這次範圍內。
+  const roleVal = isAdmin ? 'admin'
+    : isCounter ? 'staff'
+      : isCoach ? 'coach'
+        : isLifeguard ? 'lifeguard'
+          : 'staff';
       const isActive = (r['在職狀態'] || r['3000945']) === '在職';
       // Task #90：解析 Ragic H01 多場館欄位（主場館 + 支援場館），合併為陣列
       // Task #95：立即 resolve 成 venue 代碼再比對 / 入 payload（見上方註解）
@@ -1640,7 +1670,20 @@ async function _applyStaffChange(row, client) {
     await client.query(
 	      `UPDATE admin_staff SET
 	         id = $1, name = $2, phone = $3,
-	         role = CASE WHEN $11::text = 'admin' THEN 'admin' ELSE role END,
+	         -- 誰是權威，逐一講清楚：
+	         --   manager  只有人工指派得出來（同步永遠算不出這個值），所以一律不碰。
+	         --            莊柏彥就是這種：Ragic 應徵職務寫「行政櫃台」，但後台設成場館主管。
+	         --   admin    Ragic 說是管理員就升上去，維持原行為。
+	         --   coach /  Ragic 是這兩個身分的權威（來自應徵職務／職稱），覆蓋本地值。
+	         --   lifeguard 這一條就是修「51 位在職救生員被記成行政櫃檯」的地方。
+	         --   staff    刻意不覆蓋 —— 它同時是「櫃檯」和「認不出身分」的保底值，
+	         --            拿它去蓋本地資料，會把人工設定默默降級成櫃檯。
+	         role = CASE
+	                    WHEN role = 'manager' THEN 'manager'
+	                    WHEN $11::text = 'admin' THEN 'admin'
+	                    WHEN $11::text IN ('coach', 'lifeguard') THEN $11::text
+	                    ELSE role
+	                  END,
 	         active = CASE WHEN active_overridden_at IS NULL THEN $4 ELSE active END,
          -- A0/A0.5/救生員：is_coach / is_counter / is_lifeguard 皆為 Ragic 來源、唯讀信號
          -- （比照 role 的性質，但各自獨立追蹤、不互相覆蓋），每次 apply 一律以 Ragic 這次
@@ -2025,7 +2068,14 @@ async function mergeStagedStaffChange(stagingId, targetEntityId, byUserId) {
 	    await client.query(
 	      `UPDATE admin_staff SET
 	         id = $1, name = $2, phone = $3,
-	         role = CASE WHEN $10::text = 'admin' THEN 'admin' ELSE role END,
+	         -- 與同步 apply 同一套規則（見上方 $11 那處的說明）：manager 不碰、
+	         -- admin 照升、coach/lifeguard 以 Ragic 為權威、算出 staff 時不覆蓋。
+	         role = CASE
+	                    WHEN role = 'manager' THEN 'manager'
+	                    WHEN $10::text = 'admin' THEN 'admin'
+	                    WHEN $10::text IN ('coach', 'lifeguard') THEN $10::text
+	                    ELSE role
+	                  END,
 	         active = CASE WHEN active_overridden_at IS NULL THEN $4 ELSE active END,
 	         is_coach = $5, is_counter = $6, is_lifeguard = $7,
 	         ragic_record_id = COALESCE($8, ragic_record_id),
