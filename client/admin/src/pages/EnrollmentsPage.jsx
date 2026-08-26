@@ -2,7 +2,10 @@ import React, { useEffect, useMemo, useState } from 'react';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import DataTable from '../components/DataTable';
+import ListFooter from '../components/ListFooter';
 import StatusBadge from '../components/StatusBadge';
+import FilterBar from '../components/FilterBar';
+import useInfiniteList from '../hooks/useInfiniteList';
 import { useAuth } from '../context/AuthContext';
 import { enrollmentsApi } from '../api/enrollments';
 import { venuesApi } from '../api/venues';
@@ -28,23 +31,61 @@ export default function EnrollmentsPage() {
   const { isStaff, isAdmin, isManager } = useAuth();
   const toast = useToast();
   const [filters, setFilters] = useState({ status: '', search: '' });
-  const [list, setList] = useState(null);
   const [venues, setVenues] = useState([]);
   const [detail, setDetail] = useState(null);
   const [editing, setEditing] = useState(null);
+  const [exporting, setExporting] = useState(false);
 
   const canEdit = isAdmin || isManager || isStaff;
 
   useEffect(() => { venuesApi.list().then(setVenues); }, []);
 
-  useEffect(() => {
-    let alive = true;
-    setList(null);
-    // Task #90 修正：多場館櫃檯不再鎖單一主場館。不帶 venueId → 後端依 venue_ids scope
-    // 列出「所屬全部場館」的報名（原本 isStaff 帶 user.venue_id 只會看到主場館＝新北）。
-    enrollmentsApi.list({ ...filters }).then((d) => { if (alive) setList(d); });
-    return () => { alive = false; };
-  }, [filters]);
+  // Task #90 修正：多場館櫃檯不再鎖單一主場館。不帶 venueId → 後端依 venue_ids scope
+  // 列出「所屬全部場館」的報名（原本 isStaff 帶 user.venue_id 只會看到主場館＝新北）。
+  //
+  // 改成分批載入：正式庫這張表已破千，整包回應在手機網路上會撞到 axios 的 10 秒逾時，
+  // 而逾時的結果是整頁載不出來，不是「慢一點」。
+  const {
+    items: list, setItems: setList, loading, done, error, loadMore, sentinelRef,
+  } = useInfiniteList(
+    ({ limit, offset }) => enrollmentsApi.list({ ...filters, limit, offset }),
+    [filters],
+  );
+
+  /**
+   * 匯出一定要拿「整份」，不能拿畫面上已經捲到的那幾批。
+   * 分批之後直接匯出 list 會少資料，而匯出的檔案打開來完全正常 ——
+   * 沒有任何跡象顯示它是殘缺的，這種錯不會有人回報。
+   * 這裡照樣分批抓（而不是一次不帶 limit），每次請求都很小，不會撞逾時。
+   */
+  async function fetchAllForExport() {
+    const PAGE = 200;   // 後端上限 1000；抓小一點換每次請求都穩
+    const all = [];
+    for (let offset = 0; ; offset += PAGE) {
+      // eslint-disable-next-line no-await-in-loop
+      const batch = await enrollmentsApi.list({ ...filters, limit: PAGE, offset });
+      const rows = Array.isArray(batch) ? batch : [];
+      all.push(...rows);
+      // 保險絲：後端若因故永遠回滿頁，這裡不能變成無限迴圈
+      if (rows.length < PAGE || all.length >= 20000) return all;
+    }
+  }
+
+  async function runExport(kind) {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const all = await fetchAllForExport();
+      if (all.length === 0) { toast.error('沒有可匯出的資料'); return; }
+      const args = { filenamePrefix: 'enrollments', enrollments: all, venueName: (id) => venueMap[id] || id };
+      if (kind === 'csv') exportEnrollmentsCsv(args); else exportEnrollmentsXlsx(args);
+      toast.success(`已匯出 ${all.length} 筆報名資料 (${kind === 'csv' ? 'CSV' : 'XLSX'})`);
+    } catch (e) {
+      toast.error(e?.response?.data?.error || '匯出失敗，請稍後再試');
+    } finally {
+      setExporting(false);
+    }
+  }
 
   const venueMap = useMemo(() => Object.fromEntries(venues.map((v) => [v.id, v.name])), [venues]);
 
@@ -79,42 +120,65 @@ export default function EnrollmentsPage() {
     <div>
       <PageHeader
         title="所有報名"
-        subtitle={`F-R02 · 共 ${list?.length ?? '—'} 筆${isStaff ? '（限您管轄的場館）' : ''}`}
+        /* 分批載入之後不能再一律寫「共」：還沒捲到底時那個數字只是「目前載到幾筆」，
+           寫成「共」會讓人以為總數就這麼多，而少掉的部分沒有任何跡象。 */
+        subtitle={`F-R02 · ${list == null ? '共 — 筆' : `${done ? '共' : '已載入'} ${list.length} 筆`}${isStaff ? '（限您管轄的場館）' : ''}`}
         actions={
           <ExportMenu
-            disabled={!list || list.length === 0}
-            onExportCsv={() => {
-              if (!list || list.length === 0) { toast.error('沒有可匯出的資料'); return; }
-              exportEnrollmentsCsv({ filenamePrefix: 'enrollments', enrollments: list, venueName: (id) => venueMap[id] || id });
-              toast.success(`已匯出 ${list.length} 筆報名資料 (CSV)`);
-            }}
-            onExportXlsx={() => {
-              if (!list || list.length === 0) { toast.error('沒有可匯出的資料'); return; }
-              exportEnrollmentsXlsx({ filenamePrefix: 'enrollments', enrollments: list, venueName: (id) => venueMap[id] || id });
-              toast.success(`已匯出 ${list.length} 筆報名資料 (XLSX)`);
-            }}
+            disabled={!list || list.length === 0 || exporting}
+            onExportCsv={() => runExport('csv')}
+            onExportXlsx={() => runExport('xlsx')}
           />
         }
       />
 
-      <div className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+      {/* 收編進共用 FilterBar。兩個控制項本身一個字都沒改（rounded-lg / px-3 py-2 /
+          text-sm 與 FilterBar 內建的 rounded-md / px-2 py-1.5 不同，硬換過去桌機的
+          圓角與列高就變了），所以走 children slot，只借手機收合與單欄滿版。
+          className 換掉是因為這張卡是 p-4 不是 FilterBar 預設的 p-3；
+          rowClassName 換掉是因為原本是 items-center —— select 與 input 的實高
+          未必逐像素相同，改成 items-end 有機會差一兩個像素。
+
+          原本在 375px 會發生什麼：卡片 p-4 後只剩 311px，搜尋框自己帶
+          min-w-[240px] + flex-1，狀態下拉是內容寬（約 96px），兩者塞不進同一列
+          就折行，於是上排一顆短下拉、下排一條長輸入框，右緣差了一百多像素。 */}
+      <FilterBar
+        className="mb-4 rounded-lg border border-gray-200 bg-white p-4 shadow-sm"
+        rowClassName="md:flex md:flex-wrap md:items-center"
+        activeCount={[filters.status, filters.search].filter(Boolean).length}
+      >
         <select
           value={filters.status}
           onChange={(e) => setFilters({ ...filters, status: e.target.value })}
-          className="rounded-lg border border-gray-300 px-3 py-2 text-sm"
+          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm md:w-auto"
         >
           {STATUS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
+        {/* flex-1 與 min-w-[240px] 都要押在 md: —— flex-1 會把 flex-basis 設成 0%，
+            在手機那一格會蓋掉 w-full；min-w-[240px] 則是 375px 上折行的元兇之一。 */}
         <input
           type="text"
           placeholder="搜尋家長 / 手機 / 教練 / 學員 / 編號"
           value={filters.search}
           onChange={(e) => setFilters({ ...filters, search: e.target.value })}
-          className="flex-1 min-w-[240px] rounded-lg border border-gray-300 px-3 py-2 text-sm"
+          className="w-full min-w-0 rounded-lg border border-gray-300 px-3 py-2 text-sm md:w-auto md:min-w-[240px] md:flex-1"
         />
-      </div>
+      </FilterBar>
 
       {!list ? <LoadingSpinner /> : <DataTable columns={columns} rows={list} rowKey={(r) => r.id} empty="沒有符合條件的資料" />}
+
+      {/* 清單空的時候 DataTable 已經有空狀態，頁尾再說一次「沒有資料」是重複；
+          還在載、載失敗、或還有下一批時才需要它。 */}
+      {list && !(done && !error && list.length === 0) && (
+        <ListFooter
+          loading={loading}
+          done={done}
+          error={error}
+          count={list.length}
+          onRetry={loadMore}
+          sentinelRef={sentinelRef}
+        />
+      )}
 
       {detail && !editing && (
         <div

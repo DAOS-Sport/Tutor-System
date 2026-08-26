@@ -873,11 +873,16 @@ router.get('/', requireAdminAuth, requireAnyResource('enrollments', 'refund', 'r
       const idx = args.length;
       // 加了 JOIN 之後這些欄位必須指名 ae：admin_users 與 parents 都有 name 之類的同名欄，
       // 不加前綴會變成「模稜兩可的欄位參照」而整支查詢失敗。
+      // 場館比對的是「名稱」而不是 ae.venue_id：venue_id 存的是 'AA'/'B' 這種代碼，
+      // 使用者打的一定是「士林國小」。退費頁的搜尋原本在前端做、比對的是場館名稱，
+      // 改成後端查詢之後若少了這一條，那個既有能力會安靜消失 —— 而畫面只會說「找不到」。
+      // venues.id 是 primary key，LEFT JOIN 不會讓 ae 的列數變多。
       where.push(`(
         LOWER(ae.parent_name) LIKE $${idx} OR
         ae.parent_phone LIKE $${idx} OR
         LOWER(ae.coach) LIKE $${idx} OR
         LOWER(ae.id) LIKE $${idx} OR
+        LOWER(COALESCE(v.name,'')) LIKE $${idx} OR
         EXISTS (SELECT 1 FROM unnest(ae.students) s WHERE LOWER(s) LIKE $${idx})
       )`);
     }
@@ -907,6 +912,7 @@ router.get('/', requireAdminAuth, requireAnyResource('enrollments', 'refund', 'r
                      AND regexp_replace(COALESCE(p.phone,''),'\\D','','g') =
                          regexp_replace(COALESCE(ae.parent_phone,''),'\\D','','g')
                    LEFT JOIN parent_line_profiles plp ON plp.line_uid=p.line_uid
+                   LEFT JOIN venues v ON v.id = ae.venue_id
                  ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
                  ORDER BY ae.submitted_at DESC${tail}`;
     const r = await pool.query(sql, args);

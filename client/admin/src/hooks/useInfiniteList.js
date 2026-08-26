@@ -85,5 +85,7 @@ export default function useInfiniteList(fetchPage, deps = [], { pageSize = 50 } 
     io.observe(node);
   }, [loadMore]);
 
-  return { items, loading, done, error, loadMore, sentinelRef, count: items ? items.length : 0 };
+  // setItems 對外開放，是為了「就地更新一筆」——編輯完一列要把新值換回清單，
+  // 若改成重新載入，使用者已經捲到的位置與後面幾批都會被丟掉。
+  return { items, setItems, loading, done, error, loadMore, sentinelRef, count: items ? items.length : 0 };
 }

@@ -85,6 +85,9 @@ const UNIT = [
   // 而全域覆寫 Tailwind 工具類最容易漏 —— max-width 寫成 768 就與 md: 重疊
   // 一個像素，桌機的 text-xs 跟著變大，而那種重疊看不出來、只有量了才知道。
   'tests/mobile_type_floor_test.js',
+  // 橫排工具列要嘛收編 FilterBar、要嘛自帶手機規則。判準是「配對」：
+  // 只有 w-full 而沒有對應的 md: 還原，等於為了手機把桌機也改掉了。
+  'tests/filter_bar_adoption_test.js',
   // 救生員動線上的可點元素，手機上都要有 44px 命中區（桌機維持原密度）。
   // 第一版的解析器遇到屬性裡的箭頭函式就把標籤切斷，掃出 16 個假陽性 ——
   // 所以測試自己有一條在盯「抓不到 className 的比例」。
@@ -94,6 +97,9 @@ const UNIT = [
   // 的資料當詳情 API 用（.map on undefined → ErrorBoundary → 整頁掛掉，
   // 而 mock 資料補齊了欄位，開發時看不到）。專案沒有 eslint。
   'tests/frontend_undefined_call_test.js',
+  // 清單分批載入。全量載入的壞法只在正式庫（破千筆）才會撞到 axios 的 10 秒逾時，
+  // 開發機 151 筆怎麼點都是好的 —— 所以只能靠測試盯著 limit 有沒有被拿掉。
+  'tests/list_pagination_test.js',
   // 學員的隔離區自癒判準要跟著家長的 updated_at 走：櫃檯補的是 parents.email，
   // 而 students.updated_at 一動也不動 —— 沒有這條，Email 補完之後那批學員會
   // 永遠留在隔離區、再也不會被推上 Ragic，而且完全沒有錯誤訊息。

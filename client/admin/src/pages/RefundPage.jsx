@@ -1,9 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import DataTable from '../components/DataTable';
+import ListFooter from '../components/ListFooter';
 import StatusBadge from '../components/StatusBadge';
 import ConfirmDialog from '../components/ConfirmDialog';
+import useInfiniteList from '../hooks/useInfiniteList';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import { enrollmentsApi } from '../api/enrollments';
@@ -18,30 +20,33 @@ import { REFUND_REASONS, REFUND_FEE_RATE_PRESETS } from '../../../shared/refundR
 
 const onlyDigits = (v) => String(v || '').replace(/\D/g, '');
 
+// 含 refunded：已退費紀錄保留在清單中，供查看「退費時間」（操作欄顯示「已退費」）。
+const REFUNDABLE_STATUSES = ['active', 'confirmed', 'cancelled', 'refunded'];
+
 /**
- * 搜尋比對。資料本來就整包載入了，所以在前端做 —— 即時、不用每個按鍵打一次 API。
+ * 搜尋字串 → 後端的 search 參數。
  *
- * 電話另外比對「純數字」：櫃檯常直接從別處貼過來，帶著空白或破折號
- * （0912-345-678 / 0912 345 678）。只做字面比對的話那些都會查不到，
- * 而使用者只會看到「查無資料」，不會知道是格式問題。
+ * ── 為什麼搜尋一定要走後端 ──
+ * 清單改成分批載入之後，前端過濾只看得到「已經捲下來的那幾批」。這一頁的主要用法
+ * 是櫃檯接到電話當場查一筆，若那筆還沒被載進來，畫面會回「找不到符合…的資料」——
+ * 一個看起來很肯定、實際上是錯的答案。這比慢還糟，所以比對交給後端做。
+ *
+ * ── 為什麼要先壓成純數字 ──
+ * 櫃檯常直接把電話從別處貼過來，帶著空白或破折號（0912-345-678）。
+ * 資料庫存的是純數字，原樣送過去一筆也比不到。整串都是電話樣式時才壓，
+ * 夾雜文字（「王小明 0912」）不壓，否則姓名會被毀掉。
  */
-function matchesQuery(row, q, venueName) {
-  if (!q) return true;
-  const needle = q.trim().toLowerCase();
-  if (!needle) return true;
-  const digits = onlyDigits(needle);
-  if (digits && digits.length >= 3 && onlyDigits(row.parent_phone).includes(digits)) return true;
-  const haystack = [
-    row.id, row.parent_name, row.parent_phone, row.coach,
-    venueName(row.venue_id), ...(row.students || []),
-  ].filter(Boolean).join(' ').toLowerCase();
-  return haystack.includes(needle);
+function toServerSearch(q) {
+  const s = String(q || '').trim();
+  if (!s) return '';
+  const digits = onlyDigits(s);
+  if (digits.length >= 3 && /^[\d\s()+-]+$/.test(s)) return digits;
+  return s;
 }
 
 export default function RefundPage() {
   const toast = useToast();
   const { user } = useAuth();
-  const [list, setList] = useState(null);
   const [venues, setVenues] = useState([]);
   const [target, setTarget] = useState(null);
   const [preview, setPreview] = useState(null);
@@ -50,25 +55,45 @@ export default function RefundPage() {
   const [feePct, setFeePct] = useState('');       // 手續費率，以「百分比字串」持有（輸入框就是這個單位）
   const [feeOpen, setFeeOpen] = useState(false);  // 手續費率的下拉是否展開
   const [busy, setBusy] = useState(false);
-  const [query, setQuery] = useState('');       // 搜尋字串（前端即時過濾，不重打 API）
+  const [query, setQuery] = useState('');       // 搜尋字串（送到後端查，見 toServerSearch）
+  const [searchTerm, setSearchTerm] = useState('');  // 去抖後真正送出的那一份
+  const [reloadKey, setReloadKey] = useState(0);     // 退費成功後重新拉第一批
   const previewReqRef = useRef(0);
 
-  async function load() {
-    try {
-      const [data, vs] = await Promise.all([
-        enrollmentsApi.list(),
-        venuesApi.list(),
-      ]);
-      // 含 refunded：已退費紀錄保留在清單中，供查看「退費時間」（操作欄顯示「已退費」）。
-      setList(data.filter((e) => ['active', 'confirmed', 'cancelled', 'refunded'].includes(e.status)));
-      setVenues(vs);
-    } catch (e) {
-      // 載入失敗時跳出無限轉圈：顯示空清單 + toast 引導重新整理
-      toast.error(e?.response?.data?.error || '載入報名清單失敗，請重新整理頁面');
-      setList([]);
-    }
-  }
-  useEffect(() => { load(); }, []);
+  // 場館清單獨立載入：它只是把 venue_id 翻成名字，失敗時退回顯示代碼即可，
+  // 不該連帶讓整張報名清單變成空的。
+  useEffect(() => {
+    let alive = true;
+    venuesApi.list()
+      .then((vs) => { if (alive) setVenues(vs); })
+      .catch(() => { if (alive) toast.warning('場館名稱載入失敗，清單會顯示場館代碼'); });
+    return () => { alive = false; };
+  }, []);
+
+  // 去抖：不去抖的話每按一個鍵就打一次後端，而且慢的那次可能後回來覆蓋掉新的。
+  useEffect(() => {
+    const t = setTimeout(() => setSearchTerm(toServerSearch(query)), 300);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  const {
+    items, loading, done, error, loadMore, sentinelRef,
+  } = useInfiniteList(
+    ({ limit, offset }) => enrollmentsApi.list({
+      ...(searchTerm ? { search: searchTerm } : {}),
+      limit,
+      offset,
+    }),
+    [searchTerm, reloadKey],
+  );
+
+  // 後端的 status 參數一次只吃一個值，而這一頁要看四種狀態，所以狀態仍在前端篩。
+  // 這不會讓「到底了」誤判：useInfiniteList 判斷用的是後端這一批回了幾筆，
+  // 不是畫面上留下幾筆。
+  const list = useMemo(
+    () => (items || []).filter((e) => REFUNDABLE_STATUSES.includes(e.status)),
+    [items],
+  );
 
   async function openRefund(row) {
     setTarget(row);
@@ -147,7 +172,7 @@ export default function RefundPage() {
         ? `已完成整期退課（${(res.refunded_enrollment_ids || []).length} 筆子訂單一併退費），退款合計 ${formatTWD(res.refund_amount)}`
         : `已完成退課，退款 ${formatTWD(res.refund_amount)}`);
       closeRefund();
-      await load();
+      setReloadKey((k) => k + 1);
     } catch (e) {
       toast.error(e?.response?.data?.error || '退課失敗，請稍後再試');
     } finally {
@@ -155,9 +180,11 @@ export default function RefundPage() {
     }
   }
 
-  if (!list) return <LoadingSpinner fullPage />;
+  // items === null 代表第一批還沒回來（錯誤時會是 []，才不會卡在轉圈）
+  if (items === null) return <LoadingSpinner fullPage />;
   const venueName = (id) => venues.find((v) => v.id === id)?.name || id;
-  const shown = list.filter((r) => matchesQuery(r, query, venueName));
+  // 過濾已經由後端做完，這裡不再二次篩 —— 前端篩只看得到已載入的批次，會答錯。
+  const shown = list;
 
   const columns = [
     { key: 'id', label: '編號', render: (r) => <span className="font-mono text-xs">{r.id}</span> },
@@ -191,7 +218,20 @@ export default function RefundPage() {
           現在講的是：公式、誰算的、哪一項可以動、動了會留痕。 */}
       <PageHeader title="退課處理" subtitle="F-R04 · 退款 = 剩餘比例 × (1 − 手續費率)，金額一律由系統試算；手續費率可逐筆調整，調整會記入 audit log" />
       <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-gray-200 bg-white p-3 shadow-sm">
-        <div className="relative min-w-[240px] flex-1">
+        {/* 就地處理，不收編 FilterBar：整列只有一個搜尋框，而且它就是本頁的主要動作
+            （櫃檯打電話進來時邊聽邊查）。把唯一的欄位收進「篩選」摺疊列，等於每次
+            都多一次點擊才查得到，收編的成本大於收益。這裡只補上同一套手機規則。
+
+            原本在 375px 會發生什麼：卡片 p-3 後只剩 351px，搜尋框是
+            min-w-[240px] + flex-1、右邊那段「符合 N / 共 M 筆」約 90px，
+            240 + 90 + gap-3 剛好擠得進同一列 —— 於是搜尋框被壓到 249px，
+            再扣掉 pr-16（給「清除」鈕留的 64px），真正看得到的字只剩約 170px，
+            長一點的關鍵字打進去就整段看不到頭尾。
+            改成手機一格一列：搜尋框獨佔一整列，筆數掉到下一列、左緣切齊。
+
+            flex-1 必須押在 md: —— flex-basis 會被設成 0%，優先於 width，
+            留在無前綴會讓 w-full 在手機上失效、又擠回同一列。 */}
+        <div className="relative w-full md:w-auto md:min-w-[240px] md:flex-1">
           <input
             type="search"
             value={query}
@@ -207,7 +247,7 @@ export default function RefundPage() {
             >清除</button>
           )}
         </div>
-        <div className="text-xs text-gray-500">
+        <div className="w-full text-xs text-gray-500 md:w-auto">
           {/* 搜尋時要同時給「找到幾筆」與「總共幾筆」——只給前者的話，
               查不到時分不出是「沒有這個人」還是「清單根本沒載到」。 */}
           {query
@@ -222,6 +262,19 @@ export default function RefundPage() {
         rowKey={(r) => r.id}
         empty={query ? `找不到符合「${query}」的資料` : '目前沒有可退費的課程'}
       />
+
+      {/* 清單是空的時候 DataTable 自己已經有空狀態，這裡再說一次「沒有資料」
+          會變成同一件事講兩遍；只有還在載、載失敗、或還有下一批時才需要頁尾。 */}
+      {!(done && !error && list.length === 0) && (
+        <ListFooter
+          loading={loading}
+          done={done}
+          error={error}
+          count={list.length}
+          onRetry={loadMore}
+          sentinelRef={sentinelRef}
+        />
+      )}
 
       <ConfirmDialog
         open={!!target}
