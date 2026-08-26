@@ -2382,6 +2382,38 @@ const DEFAULT_THRESHOLDS = [
  * 系統管理員永遠全開，而且不可調整。把它做成可編輯的，代表有人可以在畫面上
  * 把自己鎖在門外，而解鎖的唯一入口正好也被鎖住了。
  */
+/**
+ * F-A06 第二層：個別人員的權限例外。
+ *
+ * ── 為什麼掛在登入帳號而不是員工 ──
+ * 有帳號才有權限可談。員工有 426 位、能登入後台的只有十幾個，把例外掛在員工上
+ * 等於維護一張大部分是空的表。而且 token 裡本來就有 admin_users.id（sub），
+ * 掛在這裡不必改 token、既有登入不必重來。
+ *
+ * ── 為什麼 allowed 是布林而不是「有列＝允許」──
+ * 角色層可以用「有列＝允許」，因為它是從零開始描述。但例外是相對角色的差異，
+ * 有兩個方向：角色沒有、這個人要有（開通）；角色有、這個人不要（收回）。
+ * 只有「有列＝允許」的話表達不了收回，而收回正是例外最常見的用途 ——
+ * 例如某位櫃檯暫時不該碰退款。
+ *
+ * 判定順序：admin 全開 → 個人例外 → 角色預設 → 拒絕。
+ */
+async function ensureUserPermissionOverrides() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_permission_overrides (
+      user_id       TEXT NOT NULL,
+      resource_key  TEXT NOT NULL,
+      allowed       BOOLEAN NOT NULL,
+      updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_by    TEXT,
+      PRIMARY KEY (user_id, resource_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_perm_overrides_user ON user_permission_overrides(user_id);
+  `);
+  // 這張表刻意不灌初始值：沒有例外才是正常狀態。
+  // 灌東西進去等於系統先幫人做了決定，而這個功能的重點正好相反。
+}
+
 async function ensureRolePermissions() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS role_permissions (
@@ -2655,6 +2687,7 @@ async function bootstrap() {
     // 必須排在 seedCourseTypeConfigs 之前：後者要用換好的 (pricing_zone_id, course_type) 主鍵。
     await ensureStaffRoleCheck();
     await ensureRolePermissions();
+    await ensureUserPermissionOverrides();
     await ensurePricingZones();
     await seedCourseTypeConfigs();
     await ensureCourseIntroFK();

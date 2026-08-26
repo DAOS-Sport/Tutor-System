@@ -14,9 +14,10 @@ const { ROLES } = require('../constants/roles');
 
 const CACHE_MS = 15_000;
 let cache = null;
+let overrideCache = null;
 let cachedAt = 0;
 
-function invalidate() { cache = null; cachedAt = 0; }
+function invalidate() { cache = null; overrideCache = null; cachedAt = 0; }
 
 /** 回 { role: Set(resource_key) }。admin 不在裡面 —— 它走 canAccess 的捷徑。 */
 async function _load() {
@@ -28,9 +29,24 @@ async function _load() {
     if (!m.has(row.role)) m.set(row.role, new Set());
     m.get(row.role).add(row.resource_key);
   }
+  // 個人例外跟角色設定一起載、一起失效。分開載會出現「角色已更新、例外還是舊的」
+  // 這種半新半舊的判定，而那種錯只會在特定組合下出現，極難重現。
+  const o = await pool.query('SELECT user_id, resource_key, allowed FROM user_permission_overrides');
+  const om = new Map();
+  for (const row of o.rows) {
+    if (!om.has(row.user_id)) om.set(row.user_id, new Map());
+    om.get(row.user_id).set(row.resource_key, !!row.allowed);
+  }
   cache = m;
+  overrideCache = om;
   cachedAt = now;
   return m;
+}
+
+/** 某個登入帳號的例外：Map(resource_key → boolean)。 */
+async function _overridesFor(userId) {
+  await _load();
+  return (userId && overrideCache.get(String(userId))) || new Map();
 }
 
 async function canAccess(role, resourceKey) {
@@ -38,6 +54,34 @@ async function canAccess(role, resourceKey) {
   if (!isResourceKey(resourceKey)) return false;   // 認不得的鍵一律拒絕
   const m = await _load();
   return !!(m.get(role) && m.get(role).has(resourceKey));
+}
+
+/**
+ * 含個人例外的判定。這是後端閘門實際使用的入口。
+ *
+ * 順序：admin 全開 → 個人例外 → 角色預設 → 拒絕。
+ * 個人例外壓在角色之上是刻意的 —— 例外存在的意義就是「這個人跟他的角色不一樣」，
+ * 反過來讓角色蓋掉例外的話，收回某個人的權限就永遠做不到。
+ */
+async function canUserAccess(user, resourceKey) {
+  const role = user && user.role;
+  if (role === 'admin') return true;
+  if (!isResourceKey(resourceKey)) return false;
+  const ov = await _overridesFor(user && user.userId);
+  if (ov.has(resourceKey)) return ov.get(resourceKey);
+  return canAccess(role, resourceKey);
+}
+
+/** 某個登入帳號實際看得到的頁面（角色預設套上個人例外）。 */
+async function effectiveResources(user) {
+  const role = user && user.role;
+  if (role === 'admin') return [...RESOURCE_KEYS];
+  const ov = await _overridesFor(user && user.userId);
+  const base = new Set(await allowedResources(role));
+  for (const [k, allowed] of ov) {
+    if (allowed) base.add(k); else base.delete(k);
+  }
+  return RESOURCE_KEYS.filter((k) => base.has(k));
 }
 
 /** 某個角色看得到的所有頁面（給選單用）。 */
@@ -103,5 +147,58 @@ async function setRolePermissions(role, resourceKeys, actor = 'admin') {
   return { role, count: keys.length };
 }
 
-module.exports = { canAccess, allowedResources, getMatrix, setRolePermissions, invalidate };
+/** 某個登入帳號目前設定的例外（給後台編輯用）。 */
+async function getUserOverrides(userId) {
+  const ov = await _overridesFor(userId);
+  return Object.fromEntries(ov);
+}
+
+/**
+ * 覆寫某個登入帳號的例外。傳 { resource_key: true|false }；
+ * 沒列出來的就是「沒有例外，跟著角色走」。
+ */
+async function setUserOverrides(userId, overrides, actor = 'admin') {
+  const uid = String(userId || '').trim();
+  if (!uid) {
+    const err = new Error('缺少帳號代號');
+    err.code = 'USER_REQUIRED';
+    throw err;
+  }
+  const entries = Object.entries(overrides || {});
+  const bad = entries.map(([k]) => k).filter((k) => !isResourceKey(k));
+  if (bad.length) {
+    const err = new Error(`未知的頁面代號：${bad.join('、')}`);
+    err.code = 'UNKNOWN_RESOURCE';
+    throw err;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM user_permission_overrides WHERE user_id = $1', [uid]);
+    if (entries.length) {
+      const values = entries.map((_, i) => `($1, $${i * 2 + 2}, $${i * 2 + 3}, $${entries.length * 2 + 2})`).join(', ');
+      const args = [uid];
+      for (const [k, v] of entries) args.push(k, !!v);
+      args.push(actor);
+      await client.query(
+        `INSERT INTO user_permission_overrides (user_id, resource_key, allowed, updated_by) VALUES ${values}`,
+        args
+      );
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+  invalidate();
+  return { user_id: uid, count: entries.length };
+}
+
+module.exports = {
+  canAccess, canUserAccess, allowedResources, effectiveResources,
+  getMatrix, setRolePermissions, getUserOverrides, setUserOverrides, invalidate,
+};
 

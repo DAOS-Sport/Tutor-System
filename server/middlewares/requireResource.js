@@ -18,7 +18,7 @@
  */
 'use strict';
 
-const { canAccess } = require('../services/rolePermissions');
+const { canUserAccess } = require('../services/rolePermissions');
 const { isResourceKey } = require('../constants/adminResources');
 
 function deny(res) {
@@ -42,8 +42,11 @@ function requireResource(resourceKey) {
   return async (req, res, next) => {
     const role = req.adminUser?.role;
     if (!role) return res.status(401).json({ error: 'Unauthenticated' });
+    // 帶上 sub（admin_users.id）才套得到個人例外；只給角色的話，
+    // 在 F-A06 為某個人單獨開通或收回的設定會完全沒有作用。
+    const who = { role, userId: req.adminUser.sub };
     try {
-      if (await canAccess(role, resourceKey)) return next();
+      if (await canUserAccess(who, resourceKey)) return next();
       return deny(res);
     } catch (err) {
       // 讀不到設定時一律拒絕。放行會在資料庫抖一下的時候把整個後台敞開，
@@ -79,9 +82,10 @@ function requireAnyResource(...resourceKeys) {
   return async (req, res, next) => {
     const role = req.adminUser?.role;
     if (!role) return res.status(401).json({ error: 'Unauthenticated' });
+    const who = { role, userId: req.adminUser.sub };
     try {
       for (const k of resourceKeys) {
-        if (await canAccess(role, k)) return next();
+        if (await canUserAccess(who, k)) return next();
       }
       return deny(res);
     } catch (err) {

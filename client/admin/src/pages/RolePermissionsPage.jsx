@@ -4,6 +4,7 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
 import { rolePermissionsApi } from '../api/rolePermissions';
 import { usePermissions } from '../context/PermissionContext';
+import UserOverridesPanel from './UserOverridesPanel';
 
 /**
  * F-A06 角色權限管理
@@ -19,6 +20,7 @@ export default function RolePermissionsPage() {
   const [draft, setDraft] = useState({});
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState('');
+  const [tab, setTab] = useState('role');
 
   async function load() {
     setLoadError('');
@@ -103,6 +105,18 @@ export default function RolePermissionsPage() {
       <PageHeader title="(F-A06) 角色權限管理"
         subtitle="勾選各角色看得到哪些頁面。未勾選的頁面不會出現在該角色的選單裡，也無法直接開啟。" />
 
+      {/* 兩層：先依角色定調，再針對特定人員開例外。 */}
+      <div className="mb-4 flex gap-1 border-b border-gray-200">
+        {[['role', '依角色'], ['user', '個別人員例外']].map(([k, label]) => (
+          <button key={k} type="button" onClick={() => setTab(k)}
+            className={`-mb-px border-b-2 px-4 py-2 text-sm ${
+              tab === k ? 'border-brand-primary font-bold text-brand-primary'
+                        : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+            {label}
+          </button>
+        ))}
+      </div>
+
       {loadError && (
         <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-5">
           <div className="mb-2 text-sm font-bold text-red-700">無法載入角色權限</div>
@@ -118,13 +132,16 @@ export default function RolePermissionsPage() {
         </div>
       )}
 
-      {nonBackoffice.length > 0 && (
+      {tab === 'user' && <UserOverridesPanel resources={data.resources} groups={groups} />}
+
+      {tab === 'role' && nonBackoffice.length > 0 && (
         <p className="mb-4 rounded-lg bg-amber-50 px-4 py-3 text-xs leading-6 text-amber-800">
           <strong>{nonBackoffice.map((r) => r.label).join('、')}</strong>
           目前還不能登入後台，在這裡勾選的設定會先存起來，等開放登入後才會生效。
         </p>
       )}
 
+      {tab === 'role' && (<>
       <div className="mb-4 overflow-x-auto rounded-xl border border-gray-200 bg-white">
         <table className="w-full min-w-[720px] text-sm">
           <thead className="bg-gray-50">
@@ -199,6 +216,7 @@ export default function RolePermissionsPage() {
             : '沒有未儲存的變更'}
         </span>
       </div>
+      </>)}
     </div>
   );
 }
