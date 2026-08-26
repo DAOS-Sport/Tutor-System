@@ -73,6 +73,7 @@ const UNIT = [
   'tests/role_gate_coverage_test.js',
   'tests/role_permissions_test.js',
   'tests/base_price_venue_test.js',
+  'tests/z01_uid_naming_test.js',
   'tests/role_source_of_truth_test.js',
   'tests/ragic_data_no_visibility_test.js',
   'tests/ragic_freshness_test.js',

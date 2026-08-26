@@ -731,7 +731,22 @@ function toFieldIdPayload(data, nameToFid, formLabel) {
 
 // Z01：依手機查詢家長（用 Ragic 的 where 語法做精確過濾，Field ID 1001100）
 async function getParentByPhone(phone) {
-  const data = await query(process.env.RAGIC_FORM_Z01, { where: `${FIELD.Z01.PHONE},eq,${phone}` });
+  // naming: 'EID' —— 讓回應的 key 是數字欄位 ID 而不是中文欄位名。
+  //
+  // 少了它，回應長成 { '家教系統uid': 'Uxxx' }，而 getTrueRagicLineUid 只讀
+  // record[1006846]（刻意只認數字 ID，不 fallback 中文名，避免 schema drift 誤認）。
+  // 兩者對不上的結果是：這支函式拿回來的每一筆，line_uid 都是空字串。
+  //
+  // 後果不只是 log 上那句「Z01 LINE UID 尚未回寫」（實測 479/479 其實都寫好了），
+  // 而是所有依賴 mapped.line_uid 的判斷全部失效 —— 包含「這支電話已綁到別的
+  // LINE 帳號」那道衝突檢查，它從上線起就沒有擋過任何一次。
+  //
+  // shadow/pull 路徑本來就帶 EID（ragic_z01_shadow 有 1,369 筆數字 key），
+  // 也就是同一個讀取器在那邊一直是正常的。錯的只有這兩支直接查詢。
+  const data = await query(process.env.RAGIC_FORM_Z01, {
+    where: `${FIELD.Z01.PHONE},eq,${phone}`,
+    naming: 'EID',
+  });
   const records = Object.values(data);
   return records[0] || null;
 }
@@ -743,8 +758,11 @@ async function getParentByPhone(phone) {
  */
 async function getParentByLineUid(lineUid) {
   if (!lineUid) return null;
+  // naming: 'EID'：理由同 getParentByPhone —— 不帶的話 record[1006846] 永遠
+  // undefined，這支函式明明是「用 UID 查」，回來的物件卻讀不出 UID。
   const data = await query(process.env.RAGIC_FORM_Z01, {
     where: `${Z01_LINE_UID_FIELD},eq,${lineUid}`,
+    naming: 'EID',
   });
   const records = Object.values(data);
   return records[0] || null;
