@@ -374,7 +374,7 @@ export default function StaffEditModal({ editing, setEditing, venues, busy, onSa
                 </div>
                 <p className="mt-1 text-xs text-gray-500">
                   可複選。實際看得到的頁面 = 所有身分各自被允許的頁面之和，
-                  細項在「(F-A06) 角色權限管理」設定。
+                  細項在「角色權限管理」設定。
                   {selectedRoles.length > 1 && (
                     <> 目前主要角色顯示為「{ROLES.find((r) => r.key === highestRole(selectedRoles))?.label}」。</>
                   )}

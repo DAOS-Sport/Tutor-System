@@ -20,7 +20,7 @@ const ADMIN_RESOURCES = Object.freeze([
   // 【系統設定】
   { key: 'settings',            group: '系統設定',        path: '/settings',             label: '(F-A01) 全域系統設定',              defaultRoles: ['admin'] },
   { key: 'staff',               group: '系統設定',        path: '/staff',                label: '(F-A02) 員工帳號管理',              defaultRoles: ['admin'] },
-  { key: 'role-permissions',    group: '系統設定',        path: '/role-permissions',     label: '(F-A06) 角色權限管理',              defaultRoles: ['admin'] },
+  { key: 'role-permissions',    group: '系統設定',        path: '/role-permissions',     label: '角色權限管理',              defaultRoles: ['admin'] },
   { key: 'venues',              group: '系統設定',        path: '/venues',               label: '(F-A03) 場館設定',                defaultRoles: ['admin'] },
   { key: 'course-intros',       group: '系統設定',        path: '/course-intros',        label: '(F-A04/F-M06) 課程介紹',          defaultRoles: ['admin', 'manager'] },
   { key: 'course-types',        group: '系統設定',        path: '/course-types',         label: '課程需求管理',                      defaultRoles: ['admin'] },

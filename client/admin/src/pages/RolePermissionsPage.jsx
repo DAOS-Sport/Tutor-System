@@ -102,7 +102,7 @@ export default function RolePermissionsPage() {
 
   return (
     <div>
-      <PageHeader title="(F-A06) 角色權限管理"
+      <PageHeader title="角色權限管理"
         subtitle="勾選各角色看得到哪些頁面。未勾選的頁面不會出現在該角色的選單裡，也無法直接開啟。" />
 
       {/* 兩層：先依角色定調，再針對特定人員開例外。 */}

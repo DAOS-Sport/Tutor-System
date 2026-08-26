@@ -25,7 +25,7 @@ const NAV_GROUPS = [
     items: [
       { to: '/settings',      label: '(F-A01) 全域系統設定', roles: ['admin'] },
       { to: '/staff',         label: '(F-A02) 員工帳號管理', roles: ['admin'] },
-      { to: '/role-permissions', label: '(F-A06) 角色權限管理', roles: ['admin'] },
+      { to: '/role-permissions', label: '角色權限管理', roles: ['admin'] },
       // Task #91：F-C-Admin 教練資料已合併進員工帳號管理，sidebar 入口下架
       { to: '/venues',        label: '(F-A03) 場館設定',     roles: ['admin'] },
       { to: '/course-intros', label: '(F-A04/F-M06) 課程介紹', roles: ['admin', 'manager'] },
