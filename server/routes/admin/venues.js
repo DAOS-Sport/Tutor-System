@@ -9,7 +9,9 @@
  */
 const express = require('express');
 const { pool } = require('../../models/db');
-const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
+const { requireAdminAuth } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定。
+const { requireResource } = require('../../middlewares/requireResource');
 const {
   syncVenuesFromRagic,
   diffVenuesFromRagic, applyVenueSync, VENUE_SYNC_FIELDS, ragicEnabled,
@@ -69,7 +71,7 @@ router.get('/', requireAdminAuth, async (req, res) => {
 // 立刻回 202，實際同步在背景跑並寫入 ragic_sync_log；不再讓這個 HTTP request
 // 卡在 freshness-canary 重試 + 全表拉取的耗時上（docs/ragic_sync_audit.md §1）。
 // _singleflight（services/ragicAdmin.js）仍會把重複觸發合併成同一個背景 Promise。
-router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.post('/sync', requireAdminAuth, requireResource('venues'), async (req, res) => {
   const alreadyRunning = isJobRunning('venues');
   setImmediate(async () => {
     try {
@@ -89,7 +91,7 @@ router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, re
 });
 
 // Task #54：兩階段同步 — 預設 dry-run；body.confirm=true 時依 selections 寫入。
-router.post('/sync-ragic', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.post('/sync-ragic', requireAdminAuth, requireResource('venues'), async (req, res) => {
   try {
     if (!ragicEnabled()) {
       return res.status(502).json({ error: 'Ragic 未設定 (RAGIC_API_KEY / RAGIC_BASE_URL)' });
@@ -110,7 +112,7 @@ router.post('/sync-ragic', requireAdminAuth, requireAdminRole('admin'), async (r
 
 // Task #84：場館啟用 / 停用 — 同步寫 admin_venues + venues，並標記 is_active_overridden_at
 // 已售出 (admin_enrollments) 的課程一律不取消；只阻擋未來的新報名 (server/routes/enrollments.js)。
-router.patch('/:id/active', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.patch('/:id/active', requireAdminAuth, requireResource('venues'), async (req, res) => {
   const { id } = req.params;
   // 強制要求 is_active 為明確 boolean — 避免 payload 漏欄位被當成「停用」誤觸發
   if (!req.body || typeof req.body.is_active !== 'boolean') {
@@ -156,7 +158,7 @@ router.patch('/:id/active', requireAdminAuth, requireAdminRole('admin'), async (
   }
 });
 
-router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.patch('/:id', requireAdminAuth, requireResource('venues'), async (req, res) => {
   try {
     const { id } = req.params;
     const patch = req.body || {};

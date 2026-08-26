@@ -1,12 +1,9 @@
 const express = require('express');
 const { pool } = require('../../models/db');
 const { parsePaging, pagingSql } = require('../../utils/paging');
-const {
-  requireAdminAuth,
-  requireAdminRole,
-  getScopedVenueIds,
-  isVenueInScope,
-} = require('../../middlewares/adminAuth');
+const { requireAdminAuth, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定，不再寫死角色清單。
+const { requireResource } = require('../../middlewares/requireResource');
 const ragicWriteback = require('../../services/ragicWriteback');
 const promotions = require('../../services/promotions');
 const { logGroupOrderAudit } = require('../../services/groupOrderAudit');
@@ -22,7 +19,7 @@ const enrollmentRouter = require('./enrollments');
 const { getSettings, ensureGroupCoursePeriod, ensureSoloCoursePeriod } = enrollmentRouter._checkoutInternals;
 
 const router = express.Router();
-const AMS = requireAdminRole('admin', 'manager', 'staff');
+const AMS = requireResource('reconcile');
 const INVOICE_RE = /^[A-Z]{2}\d{8}$/;
 const CANCEL_REASON_MAX_LENGTH = 500;
 

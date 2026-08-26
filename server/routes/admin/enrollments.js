@@ -14,7 +14,9 @@ const express = require('express');
 const { randomUUID } = require('crypto');
 const { pool } = require('../../models/db');
 const { getCourseConfig, CourseConfigError } = require('../../services/courseConfig');
-const { requireAdminAuth, requireAdminRole, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
+const { requireAdminAuth, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定，不再寫死角色清單。
+const { requireResource, requireAnyResource } = require('../../middlewares/requireResource');
 const { enqueueReconcileMail, deliverOutbox } = require('../../services/reconcileNotify');
 const ragicWriteback = require('../../services/ragicWriteback');
 const promotions = require('../../services/promotions');
@@ -576,7 +578,7 @@ function shapeEnrollmentRow(row, { lineDisplayName = '', lineProfileState = 'NOT
  *    - 本路由「不寫 Ragic」。報名回寫 Ragic Z01/Z02 連結表 + webhook 雙向同步為 Phase 3/4，
  *      屆時於 COMMIT 後依 external_order_no/ragic_record_id 接上（見 011 migration 橋接欄）。
  */
-router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.post('/', requireAdminAuth, requireAnyResource('manual-enroll', 'enrollments'), async (req, res) => {
   const b = req.body || {};
   const requestCheck = validateRequestId(b.request_id || req.get('Idempotency-Key'));
   if (requestCheck.error) {
@@ -846,7 +848,7 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
   }
 });
 
-router.get('/', requireAdminAuth, async (req, res) => {
+router.get('/', requireAdminAuth, requireAnyResource('enrollments', 'refund', 'reconcile', 'manual-enroll'), async (req, res) => {
   try {
     const { status, search } = req.query;
     // Task #90：場館範圍 — staff/manager 鎖在自己所屬全部場館；admin 可帶 venueId 自由查
@@ -923,7 +925,7 @@ router.get('/', requireAdminAuth, async (req, res) => {
 });
 
 // 明細才 best-effort 取 LINE display name；清單絕不會對 LINE API 產生 N+1 calls。
-router.get('/:id', requireAdminAuth, async (req, res) => {
+router.get('/:id', requireAdminAuth, requireAnyResource('enrollments', 'refund', 'reconcile'), async (req, res) => {
   try {
     const basic = await readEnrollment(req.params.id);
     if (!basic) return res.status(404).json({ error: '報名不存在' });
@@ -942,7 +944,7 @@ router.get('/:id', requireAdminAuth, async (req, res) => {
  *             extra_parent_phones[], notes
  * 不可在 cancelled / refunded 狀態下修改（業務資料已結案）。
  */
-router.patch('/:id', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.patch('/:id', requireAdminAuth, requireResource('enrollments'), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -1181,7 +1183,7 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin', 'manager', 'sta
 });
 
 // 對帳改由「行政櫃檯(staff)」處理（原僅 admin/manager）。退費(F-R04) 不在此調整範圍。
-router.post('/:id/reconcile', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.post('/:id/reconcile', requireAdminAuth, requireResource('reconcile'), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -1445,7 +1447,7 @@ async function computeRefundPreview(id, feeRateOverride = null) {
 
 // 退費試算與執行都開放 staff（櫃檯）。兩支必須一起開 —— 只開 refund 不開 preview 的話
 // 櫃檯打得開頁面但看不到試算金額，等於功能沒開。
-router.get('/:id/refund-preview', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.get('/:id/refund-preview', requireAdminAuth, requireResource('refund'), async (req, res) => {
   try {
     // ?fee_rate= 讓櫃檯調整手續費率後即時重算金額。不合法的值（非數字、負數、>1）
     // 由 normalizeFeeRate 回 null，等同沒給 → 退回全域設定，不會算出負的退款。
@@ -1461,7 +1463,7 @@ router.get('/:id/refund-preview', requireAdminAuth, requireAdminRole('admin', 'm
   }
 });
 
-router.post('/:id/refund', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.post('/:id/refund', requireAdminAuth, requireResource('refund'), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -1615,7 +1617,7 @@ router.post('/:id/refund', requireAdminAuth, requireAdminRole('admin', 'manager'
  * POST /api/admin/enrollments/:id/cancel  — F-M02 待對帳清單的「取消」操作
  * 僅能取消仍在待對帳（pending_payment）狀態的報名；已對帳/已退費/已取消不可重複取消。
  */
-router.post('/:id/cancel', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.post('/:id/cancel', requireAdminAuth, requireResource('reconcile'), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -1695,7 +1697,7 @@ router.post('/:id/cancel', requireAdminAuth, requireAdminRole('admin', 'manager'
 // 是鎖死的（PAYMENT_LOCKED），不清空家長改不了。
 // 付款資料屬 checkout 層級（見 courses.js payment-proof 的 updateEnrollmentWhere），
 // 故有 checkout_id 時一併把該 checkout 的付款欄位與狀態退回。
-router.post('/:id/return-for-fix', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.post('/:id/return-for-fix', requireAdminAuth, requireResource('reconcile'), async (req, res) => {
   const reason = (req.body && typeof req.body.reason === 'string') ? req.body.reason.trim() : '';
   if (!reason) return res.status(400).json({ error: '請填寫退回原因', code: 'REASON_REQUIRED' });
   const by = req.adminUser?.name || req.adminUser?.username || 'unknown';

@@ -31,12 +31,15 @@
  */
 const express = require('express');
 const { pool } = require('../../models/db');
-const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
+const { requireAdminAuth } = require('../../middlewares/adminAuth');
+const { requireResource } = require('../../middlewares/requireResource');
 const { listZones } = require('../../services/courseConfig');
 
 const router = express.Router();
-const READ_ROLES = requireAdminRole('admin', 'manager', 'staff');
-const WRITE_ROLES = requireAdminRole('admin');
+// F-A06：定價區是「課程需求管理」這一頁的後端，讀寫都跟著它的權限走。
+// 讀取原本開給 admin/manager/staff，但那一頁在選單裡是管理員專屬 ——
+// 也就是櫃檯看不到選單卻打得進 API。改成同一份設定之後這個洞就沒了。
+const PAGE = requireResource('course-types');
 
 const MAX_SESSIONS_PER_PERIOD = 60;   // 一期 60 堂已經遠超實務，超過就是填錯
 const MAX_PERIOD_COUNT = 24;
@@ -61,7 +64,7 @@ async function unassignedVenuesWithCourses(db, onlyIds = null) {
 }
 
 // ── GET / 分頁列 ────────────────────────────────────────────
-router.get('/', requireAdminAuth, READ_ROLES, async (req, res) => {
+router.get('/', requireAdminAuth, PAGE, async (req, res) => {
   try {
     const zones = await listZones(pool);
     const names = await pool.query('SELECT id, name, is_active FROM venues ORDER BY id');
@@ -89,7 +92,7 @@ router.get('/', requireAdminAuth, READ_ROLES, async (req, res) => {
 });
 
 // ── POST / 新增 ─────────────────────────────────────────────
-router.post('/', requireAdminAuth, WRITE_ROLES, async (req, res) => {
+router.post('/', requireAdminAuth, PAGE, async (req, res) => {
   try {
     const name = String(req.body?.name || '').trim().slice(0, 50);
     if (!name) return res.status(400).json({ error: '請填寫定價區名稱', code: 'NAME_REQUIRED' });
@@ -136,7 +139,7 @@ router.post('/', requireAdminAuth, WRITE_ROLES, async (req, res) => {
 });
 
 // ── PATCH /:id 改名與設定 ───────────────────────────────────
-router.patch('/:id', requireAdminAuth, WRITE_ROLES, async (req, res) => {
+router.patch('/:id', requireAdminAuth, PAGE, async (req, res) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) return res.status(400).json({ error: 'invalid id' });
@@ -186,7 +189,7 @@ router.patch('/:id', requireAdminAuth, WRITE_ROLES, async (req, res) => {
 });
 
 // ── PUT /:id/venues 設定哪些場館吃這一區的費率 ──────────────
-router.put('/:id/venues', requireAdminAuth, WRITE_ROLES, async (req, res) => {
+router.put('/:id/venues', requireAdminAuth, PAGE, async (req, res) => {
   const client = await pool.connect();
   try {
     const id = Number(req.params.id);
@@ -269,7 +272,7 @@ router.put('/:id/venues', requireAdminAuth, WRITE_ROLES, async (req, res) => {
 });
 
 // ── DELETE /:id ─────────────────────────────────────────────
-router.delete('/:id', requireAdminAuth, WRITE_ROLES, async (req, res) => {
+router.delete('/:id', requireAdminAuth, PAGE, async (req, res) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) return res.status(400).json({ error: 'invalid id' });

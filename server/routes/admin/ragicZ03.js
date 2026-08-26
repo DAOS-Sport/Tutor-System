@@ -13,13 +13,17 @@
 const express = require('express');
 const { parsePaging } = require('../../utils/paging');
 const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定。
+// 保留 requireAdminRole('admin') 的地方＝頁面看得到、但這個動作仍限管理員；
+// 頁面層級的權限表達不了「看得到但不能做」，硬塞會讓主管突然拿到刪除權。
+const { requireResource } = require('../../middlewares/requireResource');
 const ragicAdmin = require('../../services/ragicAdmin');
 const { pool } = require('../../models/db');
 
 const router = express.Router();
 
 router.use(requireAdminAuth);
-router.use(requireAdminRole('admin', 'manager', 'staff'));
+router.use(requireResource('ragic-z03'));
 
 router.get('/stats', async (req, res) => {
   try {

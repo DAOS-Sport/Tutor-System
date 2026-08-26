@@ -13,6 +13,8 @@ const express = require('express');
 const router = express.Router();
 
 const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定。
+const { requireResource } = require('../../middlewares/requireResource');
 const { ADMIN_RESOURCES } = require('../../constants/adminResources');
 const { ROLES } = require('../../constants/roles');
 const svc = require('../../services/rolePermissions');
@@ -28,7 +30,7 @@ router.get('/mine', requireAdminAuth, async (req, res) => {
   }
 });
 
-router.get('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.get('/', requireAdminAuth, requireResource('role-permissions'), async (req, res) => {
   try {
     res.json({
       resources: ADMIN_RESOURCES.map((r) => ({
@@ -46,6 +48,10 @@ router.get('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =>
   }
 });
 
+// 寫入一律限管理員本人，不看設定表。
+// 只用 requireResource 的話會開出一條提權路徑：管理員把這一頁勾給主管，
+// 主管就能把任何權限發給自己，包含再把管理員的頁面拿走。
+// 讀取（GET /）可以跟著設定走，讓被授權的人看得到現況；能改的只有管理員。
 router.put('/:role', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
   try {
     const keys = req.body?.resource_keys;

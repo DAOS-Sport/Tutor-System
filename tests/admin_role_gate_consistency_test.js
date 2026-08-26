@@ -7,7 +7,11 @@
  *
  *   1. Sidebar.jsx   NAV_GROUPS[].items[].roles  → 選單看不看得到
  *   2. App.jsx       <RequireAuth roles={...}>   → 路由進不進得去
- *   3. server/routes requireAdminRole(...)       → API 打不打得通
+ *   3. server/routes requireResource('<頁面>')    → API 打不打得通
+ *
+ * F-A06 之後第三層改讀「角色權限管理」的設定表，不再寫死角色。前兩層仍保留
+ * roles 陣列，但只在權限還沒載到時當後備，所以它們之間的一致性仍然要驗 ——
+ * 後備值不一致的話，每次重整都會閃一下錯的選單。
  *
  * 2026-08-11「退課處理開放櫃檯」的六層改動遺失後才被發現三層已經對不齊，
  * 而當時沒有任何東西會告訴你。這支測試補上那個告警。
@@ -107,36 +111,31 @@ check('Sidebar 與 App.jsx 的角色完全一致', () => {
 });
 
 // ── 退課處理：連後端一起驗（Owner 2026-08-11 指定開放櫃檯）────────────────
-check('退課處理三層都含 staff（含後端 API）', () => {
+//
+// F-A06 之後這一層的驗法變了：權限是資料，不是程式碼。所以能驗的是「接線」——
+// 退課那兩支 API 有沒有綁到 refund 這個頁面資源，以及 refund 的初始設定含不含
+// 櫃檯。管理員事後在後台把它關掉是合法操作，測試不該（也不能）阻止。
+//
+// 這裡刻意不驗 enrollments：退課頁打的是 /enrollments/:id/refund*，
+// 但那兩支服務的是「退課處理」這一頁。整個檔案綁一個資源會讓管理員
+// 關掉「所有報名」時，退課頁莫名其妙壞掉。
+check('退課處理：API 綁在 refund 資源上，且初始設定含櫃檯', () => {
   const api = read('server/routes/admin/enrollments.js');
   const anchors = [
-    ['GET /:id/refund-preview', /router\.get\('\/:id\/refund-preview',\s*requireAdminAuth,\s*requireAdminRole\(([^)]*)\)/],
-    ['POST /:id/refund', /router\.post\('\/:id\/refund',\s*requireAdminAuth,\s*requireAdminRole\(([^)]*)\)/],
+    ['GET /:id/refund-preview', /router\.get\('\/:id\/refund-preview',\s*requireAdminAuth,\s*requireResource\('([^']*)'\)/],
+    ['POST /:id/refund', /router\.post\('\/:id\/refund',\s*requireAdminAuth,\s*requireResource\('([^']*)'\)/],
   ];
   for (const [label, re] of anchors) {
     const m = api.match(re);
-    assert.ok(m, '掃描失效：找不到 ' + label + ' 的 requireAdminRole');
-    assert.ok(parseRoles(m[1], ROLES).includes('staff'),
-      label + ' 沒開放 staff —— 櫃檯打得開頁面但 API 會回 403');
+    assert.ok(m, '掃描失效：找不到 ' + label + ' 的 requireResource');
+    assert.strictEqual(m[1], 'refund',
+      label + ' 綁在「' + m[1] + '」而不是 refund —— 關掉那一頁會讓退課跟著壞');
   }
-  assert.ok((sidebar.get('/refund') || []).includes('staff'), 'Sidebar 沒開放 staff');
-  assert.ok((routeRoles.get('/refund') || []).includes('staff'), 'App.jsx 路由沒開放 staff');
-
-  // 文案：只取 subtitle 屬性的「值」來驗，不掃整個檔案 —— 掃全文的話，
-  // 說明為什麼要拿掉這四個字的註解本身就會讓測試失敗（這個坑踩過兩次）。
-  const refundSrc = read('client/admin/src/pages/RefundPage.jsx');
-  const sub = refundSrc.match(/<PageHeader\s+title="退課處理"\s+subtitle="([^"]*)"/);
-  assert.ok(sub, '掃描失效：找不到 RefundPage 的 PageHeader subtitle');
-  assert.ok(!/主管權限/.test(sub[1]),
-    'RefundPage 副標仍寫「主管權限」，與實際權限不符：' + sub[1]);
-
-  // 登入頁的角色說明也會被櫃檯看到。它原本寫「無退課」，開放後沒同步就會讓
-  // 櫃檯以為自己不該按那顆鈕 —— 權限開了但沒人敢用，等於沒開。
-  const login = read('client/admin/src/pages/LoginPage.jsx');
-  const staffLine = login.split('\n').find((l) => /<b>staff<\/b>/.test(l));
-  assert.ok(staffLine, '掃描失效：找不到 LoginPage 的 staff 角色說明');
-  assert.ok(!/無退課/.test(staffLine),
-    'LoginPage 的 staff 說明仍寫「無退課」，與實際權限不符：' + staffLine.trim());
+  const { ADMIN_RESOURCES } = require(path.join(ROOT, 'server/constants/adminResources'));
+  const refund = ADMIN_RESOURCES.find((r) => r.key === 'refund');
+  assert.ok(refund, '資源清單裡沒有 refund');
+  assert.ok(refund.defaultRoles.includes('staff'),
+    'refund 的初始設定不含櫃檯，與 2026-08-11 的決定不符');
 });
 
 if (failed) { console.error('admin_role_gate_consistency_test: ' + failed + ' failed'); process.exit(1); }

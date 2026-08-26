@@ -6,7 +6,9 @@
  */
 const express = require('express');
 const { pool } = require('../../models/db');
-const { requireAdminAuth, requireAdminRole, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
+const { requireAdminAuth, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定，不再寫死角色清單。
+const { requireResource } = require('../../middlewares/requireResource');
 
 async function assertTransferInScope(req, transferId) {
   const r = await pool.query(
@@ -27,7 +29,7 @@ const line = require('../../services/line');
 
 const router = express.Router();
 
-router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
+router.get('/', requireAdminAuth, requireResource('transfers'), async (req, res) => {
   try {
     // Task #90：staff/manager 鎖自己所屬全部場館
     const scope = getScopedVenueIds(req);
@@ -60,7 +62,7 @@ async function notifyBoth(rec, approved, note) {
   } catch (e) { console.warn('[transfers] notify lookup failed:', e.message); }
 }
 
-router.post('/:id/approve', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
+router.post('/:id/approve', requireAdminAuth, requireResource('transfers'), async (req, res) => {
   try {
     const scope = await assertTransferInScope(req, req.params.id);
     if (!scope.ok) return res.status(scope.status).json({ error: scope.error });
@@ -70,7 +72,7 @@ router.post('/:id/approve', requireAdminAuth, requireAdminRole('admin', 'manager
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
-router.post('/:id/reject', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
+router.post('/:id/reject', requireAdminAuth, requireResource('transfers'), async (req, res) => {
   if (!req.body?.note) return res.status(400).json({ error: '拒絕原因必填' });
   try {
     const scope = await assertTransferInScope(req, req.params.id);

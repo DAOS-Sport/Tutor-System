@@ -65,5 +65,31 @@ function requireAnyBackoffice() {
   };
 }
 
-module.exports = { requireResource, requireAnyBackoffice };
+/**
+ * 多個頁面共用的端點：只要其中任何一個頁面用得到，就放行。
+ *
+ * 例：報名清單同時被「所有報名」「退課處理」「待對帳」三頁使用。
+ * 綁死在其中一個資源上，另外兩頁會在管理員取消勾選那一個時莫名壞掉 ——
+ * 而症狀是「退課頁打不開」，沒有人會聯想到是「所有報名」被關掉。
+ */
+function requireAnyResource(...resourceKeys) {
+  for (const k of resourceKeys) {
+    if (!isResourceKey(k)) throw new Error(`requireAnyResource: 未知的資源代號「${k}」`);
+  }
+  return async (req, res, next) => {
+    const role = req.adminUser?.role;
+    if (!role) return res.status(401).json({ error: 'Unauthenticated' });
+    try {
+      for (const k of resourceKeys) {
+        if (await canAccess(role, k)) return next();
+      }
+      return deny(res);
+    } catch (err) {
+      console.error('[requireAnyResource] 權限查詢失敗，一律拒絕：', err.message);
+      return deny(res);
+    }
+  };
+}
+
+module.exports = { requireResource, requireAnyResource, requireAnyBackoffice };
 

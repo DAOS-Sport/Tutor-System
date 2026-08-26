@@ -23,6 +23,10 @@
 const express = require('express');
 const { pool } = require('../../models/db');
 const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定。
+// 保留 requireAdminRole('admin') 的地方＝頁面看得到、但這個動作仍限管理員；
+// 頁面層級的權限表達不了「看得到但不能做」，硬塞會讓主管突然拿到刪除權。
+const { requireResource } = require('../../middlewares/requireResource');
 const evals = require('../../services/evaluations');
 
 const router = express.Router();
@@ -38,7 +42,7 @@ function sendError(res, label, e) {
 }
 
 // ── 標籤庫 ───────────────────────────────
-router.get('/tags', requireAdminRole('admin', 'manager'), wrap(async (_req, res) => {
+router.get('/tags', requireResource('tags'), wrap(async (_req, res) => {
   const cats = await pool.query(`SELECT * FROM tag_categories ORDER BY sort_order, name`);
   const tags = await pool.query(
     `SELECT * FROM tag_library ORDER BY category_id, sort_order, label`
@@ -46,7 +50,7 @@ router.get('/tags', requireAdminRole('admin', 'manager'), wrap(async (_req, res)
   res.json({ categories: cats.rows, tags: tags.rows });
 }));
 
-router.post('/tag-categories', requireAdminRole('admin', 'manager'), wrap(async (req, res) => {
+router.post('/tag-categories', requireResource('tags'), wrap(async (req, res) => {
   const { name, sort_order } = req.body || {};
   if (!name) return res.status(400).json({ error: 'name required' });
   try {
@@ -61,12 +65,12 @@ router.post('/tag-categories', requireAdminRole('admin', 'manager'), wrap(async 
   }
 }));
 
-router.delete('/tag-categories/:id', requireAdminRole('admin'), wrap(async (req, res) => {
+router.delete('/tag-categories/:id', requireResource('tags'), requireAdminRole('admin'), wrap(async (req, res) => {
   await pool.query(`DELETE FROM tag_categories WHERE id = $1`, [req.params.id]);
   res.json({ ok: true });
 }));
 
-router.post('/tags', requireAdminRole('admin', 'manager'), wrap(async (req, res) => {
+router.post('/tags', requireResource('tags'), wrap(async (req, res) => {
   const { category_id, label, text_template, sort_order } = req.body || {};
   if (!category_id || !label || !text_template)
     return res.status(400).json({ error: 'category_id / label / text_template required' });
@@ -83,7 +87,7 @@ router.post('/tags', requireAdminRole('admin', 'manager'), wrap(async (req, res)
   }
 }));
 
-router.patch('/tags/:id', requireAdminRole('admin', 'manager'), wrap(async (req, res) => {
+router.patch('/tags/:id', requireResource('tags'), wrap(async (req, res) => {
   const sets = [];
   const args = [];
   for (const k of ['label', 'text_template', 'is_active', 'sort_order']) {
@@ -101,30 +105,30 @@ router.patch('/tags/:id', requireAdminRole('admin', 'manager'), wrap(async (req,
   res.json(r.rows[0] || null);
 }));
 
-router.delete('/tags/:id', requireAdminRole('admin', 'manager'), wrap(async (req, res) => {
+router.delete('/tags/:id', requireResource('tags'), wrap(async (req, res) => {
   await pool.query(`DELETE FROM tag_library WHERE id = $1`, [req.params.id]);
   res.json({ ok: true });
 }));
 
 // ── 考核報表 (F-M09) ────────────────────────
-router.get('/coach-eval', requireAdminRole('admin', 'manager'), wrap(async (req, res) => {
+router.get('/coach-eval', requireResource('coach-eval'), wrap(async (req, res) => {
   // 注意：listAllCoachReports 內部依各 metric 的 window_months 取窗口，
   // 不再接受 from/to 參數（避免雙重時間過濾造成混淆）。
   const list = await evals.listAllCoachReports();
   res.json(list);
 }));
 
-router.get('/coach-eval/:coachId', requireAdminRole('admin', 'manager'), wrap(async (req, res) => {
+router.get('/coach-eval/:coachId', requireResource('coach-eval'), wrap(async (req, res) => {
   const data = await evals.coachReport(req.params.coachId, { from: req.query.from, to: req.query.to });
   res.json(data);
 }));
 
 // ── 門檻 (F-A09) ────────────────────────────
-router.get('/thresholds', requireAdminRole('admin', 'manager'), wrap(async (_req, res) => {
+router.get('/thresholds', requireResource('eval-threshold'), wrap(async (_req, res) => {
   res.json(await evals.thresholds());
 }));
 
-router.put('/thresholds', requireAdminRole('admin'), wrap(async (req, res) => {
+router.put('/thresholds', requireResource('eval-threshold'), wrap(async (req, res) => {
   const { metric, min_value, window_months, is_active } = req.body || {};
   if (!metric || min_value === undefined)
     return res.status(400).json({ error: 'metric / min_value required' });
@@ -149,7 +153,7 @@ router.put('/thresholds', requireAdminRole('admin'), wrap(async (req, res) => {
 }));
 
 // ── 教練介紹送審 (F-C06) ────────────────────
-router.get('/intros', requireAdminRole('admin', 'manager'), wrap(async (req, res) => {
+router.get('/intros', requireResource('coach-intros-review'), wrap(async (req, res) => {
   const status = req.query.status || 'pending_review';
   const where = status === 'all'
     ? `WHERE is_active = TRUE AND COALESCE(is_placeholder, FALSE) = FALSE`
@@ -166,7 +170,7 @@ router.get('/intros', requireAdminRole('admin', 'manager'), wrap(async (req, res
   res.json(r.rows);
 }));
 
-router.post('/intros/:coachId/approve', requireAdminRole('admin', 'manager'), wrap(async (req, res) => {
+router.post('/intros/:coachId/approve', requireResource('coach-intros-review'), wrap(async (req, res) => {
   const r = await pool.query(
     `UPDATE coaches SET intro_review_status = 'published',
                        intro_reviewed_at = NOW(),
@@ -179,7 +183,7 @@ router.post('/intros/:coachId/approve', requireAdminRole('admin', 'manager'), wr
   res.json(r.rows[0]);
 }));
 
-router.post('/intros/:coachId/reject', requireAdminRole('admin', 'manager'), wrap(async (req, res) => {
+router.post('/intros/:coachId/reject', requireResource('coach-intros-review'), wrap(async (req, res) => {
   const note = String(req.body?.note || '').slice(0, 500);
   if (!note) return res.status(400).json({ error: 'note required' });
   const r = await pool.query(

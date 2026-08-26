@@ -13,7 +13,9 @@
  */
 const express = require('express');
 const { pool } = require('../../models/db');
-const { requireAdminAuth, requireAdminRole, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
+const { requireAdminAuth, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定，不再寫死角色清單。
+const { requireResource } = require('../../middlewares/requireResource');
 const { reverseLessonDeduction } = require('../../services/deductionRevival');
 const { getFeatureFlag } = require('../../services/featureFlags');
 const { formatPlainDate } = require('../../utils/dateTime');
@@ -328,7 +330,7 @@ router.get('/verify-checkin', requireAdminAuth, async (req, res) => {
 // U13 修正：主資料源改讀「真實已扣堂取消」課堂（course_sessions.status='cancelled_penalty'，
 // 即逾時取消堂數已扣者），UNION 舊示範表 admin_cancelled_sessions 向後相容——舊版只讀
 // 示範表，真實取消永遠不會出現（正式環境只看得到當年測試殘留）。
-router.get('/cancelled', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.get('/cancelled', requireAdminAuth, requireResource('sessions'), async (req, res) => {
   try {
     const scope = getScopedVenueIds(req);
     const revivalFlag = await getFeatureFlag('DEDUCTION_REVIVAL_V2');
@@ -411,7 +413,7 @@ router.get('/cancelled', requireAdminAuth, requireAdminRole('admin', 'manager', 
 // 只放寬角色，不動復活的判斷邏輯，也不動 DEDUCTION_REVIVAL_V2 的全量策略。
 // （GET /cancelled 本來就已開放 staff，前端路由與側邊選單也是 —— 原本只有這支擋著，
 //   造成櫃台打得開頁面、按下去卻 403 的不一致。）
-router.post('/:id/revive', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.post('/:id/revive', requireAdminAuth, requireResource('sessions'), async (req, res) => {
   const reason = String(req.body?.reason || '').trim().slice(0, 1000);
   if (!reason) return res.status(400).json({ error: '請填寫歸還原因', code: 'REASON_REQUIRED' });
   const client = await pool.connect();

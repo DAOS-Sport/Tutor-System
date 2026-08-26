@@ -14,9 +14,9 @@
 const express = require('express');
 const { randomUUID } = require('crypto');
 const { pool } = require('../../models/db');
-const {
-  requireAdminAuth, requireAdminRole, getScopedVenueIds, isVenueInScope,
-} = require('../../middlewares/adminAuth');
+const { requireAdminAuth, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定，不再寫死角色清單。
+const { requireResource } = require('../../middlewares/requireResource');
 const { createCheckoutSession } = require('../../services/checkouts');
 const { parseProofInput } = require('../../services/paymentProof');
 const { logGroupOrderAudit } = require('../../services/groupOrderAudit');
@@ -34,7 +34,7 @@ const {
 } = require('../../services/idempotency');
 
 const router = express.Router();
-const AMS = requireAdminRole('admin', 'manager', 'staff');
+const AMS = requireResource('group-orders');
 const GROUP_APPROVAL_OPERATION = 'approve_group_order_checkouts';
 
 // 「已收齊款」＝ 全部成員都備齊「轉帳末 5 碼 + 匯款證明」，且團裡至少有一個成員。

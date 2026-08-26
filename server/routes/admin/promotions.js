@@ -18,7 +18,9 @@
 const express = require('express');
 const crypto = require('crypto');
 const { pool } = require('../../models/db');
-const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
+const { requireAdminAuth } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定。
+const { requireResource } = require('../../middlewares/requireResource');
 
 const router = express.Router();
 router.use(requireAdminAuth);
@@ -96,7 +98,7 @@ async function audit(client, promotionId, action, byUser, note) {
   );
 }
 
-router.get('/', requireAdminRole('admin', 'manager'), async (req, res) => {
+router.get('/', requireResource('promotions'), async (req, res) => {
   try {
     const { status, q } = req.query;
     const where = [];
@@ -114,7 +116,7 @@ router.get('/', requireAdminRole('admin', 'manager'), async (req, res) => {
   }
 });
 
-router.get('/active', requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.get('/active', requireResource('promotions-active'), async (req, res) => {
   try {
     const r = await pool.query(
       `SELECT ${PROMO_FIELDS} FROM promotions
@@ -131,7 +133,7 @@ router.get('/active', requireAdminRole('admin', 'manager', 'staff'), async (req,
 });
 
 // 表單「適用教練加成（％）」選項來源：目前 active 教練的相異加成值（存 pricing_multiplier）。
-router.get('/coach-multipliers', requireAdminRole('admin', 'manager'), async (req, res) => {
+router.get('/coach-multipliers', requireResource('promotions'), async (req, res) => {
   try {
     const r = await pool.query(
       `SELECT DISTINCT pricing_multiplier AS multiplier
@@ -146,7 +148,7 @@ router.get('/coach-multipliers', requireAdminRole('admin', 'manager'), async (re
   }
 });
 
-router.get('/:id', requireAdminRole('admin', 'manager'), async (req, res) => {
+router.get('/:id', requireResource('promotions'), async (req, res) => {
   try {
     const r = await pool.query(`SELECT ${PROMO_FIELDS} FROM promotions WHERE id = $1`, [req.params.id]);
     if (!r.rowCount) return res.status(404).json({ error: 'not found' });
@@ -168,7 +170,7 @@ router.get('/:id', requireAdminRole('admin', 'manager'), async (req, res) => {
   }
 });
 
-router.post('/', requireAdminRole('admin', 'manager'), async (req, res) => {
+router.post('/', requireResource('promotions'), async (req, res) => {
   try {
     const p = req.body || {};
     const errs = validatePayload(p);
@@ -210,7 +212,7 @@ router.post('/', requireAdminRole('admin', 'manager'), async (req, res) => {
   }
 });
 
-router.patch('/:id', requireAdminRole('admin', 'manager'), async (req, res) => {
+router.patch('/:id', requireResource('promotions'), async (req, res) => {
   try {
     const cur = await pool.query(`SELECT * FROM promotions WHERE id = $1`, [req.params.id]);
     if (!cur.rowCount) return res.status(404).json({ error: 'not found' });
@@ -262,7 +264,7 @@ router.patch('/:id', requireAdminRole('admin', 'manager'), async (req, res) => {
 
 // 刪除：無 promotion_usages 才可硬刪；有使用紀錄則回 409，請改用「停用」。
 // （FK promotion_usages.promotion_id 為 ON DELETE RESTRICT，已使用者本就無法硬刪。）
-router.delete('/:id', requireAdminRole('admin', 'manager'), async (req, res) => {
+router.delete('/:id', requireResource('promotions'), async (req, res) => {
   try {
     const cur = await pool.query(`SELECT id FROM promotions WHERE id = $1`, [req.params.id]);
     if (!cur.rowCount) return res.status(404).json({ error: 'not found' });

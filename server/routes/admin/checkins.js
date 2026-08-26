@@ -13,7 +13,9 @@
  */
 const express = require('express');
 const { pool } = require('../../models/db');
-const { requireAdminAuth, requireAdminRole, getScopedVenueIds } = require('../../middlewares/adminAuth');
+const { requireAdminAuth, getScopedVenueIds } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定，不再寫死角色清單。
+const { requireResource } = require('../../middlewares/requireResource');
 const { reverseLessonDeduction } = require('../../services/deductionRevival');
 
 const router = express.Router();
@@ -134,7 +136,7 @@ router.get('/', requireAdminAuth, async (req, res) => {
  *  - 教練已寫上課紀錄（session_records）→ 409 擋下，避免默默孤兒化教學紀錄。
  *  - audit 掛 period anchor 報名單，堂數依有效 attendance distinct session 即時回算。
  */
-router.delete('/self-sessions/:sessionId', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.delete('/self-sessions/:sessionId', requireAdminAuth, requireResource('checkin'), async (req, res) => {
   const reason = String(req.body?.reason || '').trim().slice(0, 1000);
   if (!reason) return res.status(400).json({ error: '請填寫撤銷原因', code: 'REASON_REQUIRED' });
   const client = await pool.connect();

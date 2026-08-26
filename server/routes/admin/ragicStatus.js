@@ -24,7 +24,9 @@
  */
 const express = require('express');
 const ragicAdmin = require('../../services/ragicAdmin');
-const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
+const { requireAdminAuth } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定。
+const { requireResource } = require('../../middlewares/requireResource');
 
 const router = express.Router();
 
@@ -50,7 +52,7 @@ function nextCronRunAt(now = new Date()) {
   return next.toISOString();
 }
 
-router.get('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.get('/', requireAdminAuth, requireResource('ragic-status'), async (req, res) => {
   try {
     const env = ragicAdmin.getRagicEnvFlags();
     const missing = Object.entries(env).filter(([, v]) => !v).map(([k]) => k);
@@ -85,7 +87,7 @@ router.get('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =>
 //   其餘原因原本只在 Replit console，事後無法還原、無法統計。
 //   本端點純唯讀 SELECT，不觸發任何同步，不改任何狀態。
 //   message 在寫入時已去識別化（syncFailureLog.sanitizeMessage），不含個資。
-router.get('/sync-failures', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
+router.get('/sync-failures', requireAdminAuth, requireResource('ragic-status'), async (req, res) => {
   const days = Math.min(Math.max(Number(req.query.days) || 7, 1), 90);
   const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 500);
   try {
@@ -133,7 +135,7 @@ router.get('/sync-failures', requireAdminAuth, requireAdminRole('admin', 'manage
   }
 });
 
-router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.post('/sync', requireAdminAuth, requireResource('ragic-status'), async (req, res) => {
   // 用與 GET 相同的判定（必須 6 個 RAGIC_* env 全到位）作為單一真相來源
   const env = ragicAdmin.getRagicEnvFlags();
   const missing = Object.entries(env).filter(([, v]) => !v).map(([k]) => k);
@@ -179,14 +181,14 @@ router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, re
 
 // Compatibility endpoint retained so older admin builds fail closed. Source
 // records, claims, parents and students are never deleted by reconciliation.
-router.post('/purge-ghosts', requireAdminAuth, requireAdminRole('admin'), (req, res) => {
+router.post('/purge-ghosts', requireAdminAuth, requireResource('ragic-status'), (req, res) => {
   res.status(410).json({
     error: '破壞性 reconcile 已停用；Ragic blank-UID source 必須保留在 Z03 resolved/pending/manual-review 之一。',
     code: 'DESTRUCTIVE_RECONCILE_DISABLED',
   });
 });
 
-router.post('/toggle', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.post('/toggle', requireAdminAuth, requireResource('ragic-status'), async (req, res) => {
   const job = String(req.body?.job || '');
   const enabled = !!req.body?.enabled;
   if (!ALL_JOBS.includes(job)) {

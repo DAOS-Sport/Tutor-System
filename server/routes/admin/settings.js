@@ -9,7 +9,9 @@
  */
 const express = require('express');
 const { pool } = require('../../models/db');
-const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
+const { requireAdminAuth } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定，不再寫死角色清單。
+const { requireResource } = require('../../middlewares/requireResource');
 
 const router = express.Router();
 
@@ -34,7 +36,7 @@ async function readAll() {
 
 // 系統設定僅 admin 可讀（含手續費率、轉讓費等規則性數字）。內部 API（例如
 // enrollments router 計算退款）以服務內部 helper 直接讀 DB，不經這條路由。
-router.get('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.get('/', requireAdminAuth, requireResource('settings'), async (req, res) => {
   try {
     res.json(await readAll());
   } catch (err) {
@@ -43,7 +45,7 @@ router.get('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =>
   }
 });
 
-router.patch('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.patch('/', requireAdminAuth, requireResource('settings'), async (req, res) => {
   try {
     const patch = req.body || {};
     for (const [k, v] of Object.entries(patch)) {

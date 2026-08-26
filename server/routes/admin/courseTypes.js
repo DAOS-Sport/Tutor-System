@@ -9,12 +9,14 @@
  */
 const express = require('express');
 const { pool } = require('../../models/db');
-const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
+const { requireAdminAuth } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定。
+const { requireResource, requireAnyBackoffice } = require('../../middlewares/requireResource');
 const { applyDueScheduledCourseTypeChanges } = require('../../services/courseTypeSchedule');
 const { normalizeTierPrices } = require('../../services/coursePricing');
 
 const router = express.Router();
-const AM = requireAdminRole('admin', 'manager');
+// 稽核紀錄屬於「課程需求管理」這一頁，跟著它的權限走。
 
 const EDITABLE_FIELDS = ['label', 'min_students', 'max_students', 'is_active', 'base_price', 'data_group', 'trial_enabled', 'trial_price', 'tier_prices'];
 const pad2 = (n) => String(n).padStart(2, '0');
@@ -92,7 +94,7 @@ const auditUser = (req) => req.adminUser?.name || req.adminUser?.username || 'un
  * 讓它去指定一個定價區是沒有意義的（要指哪一區？），但也不能讓它拿到某一區的價格
  * —— 所以這支乾脆一個價格欄位都不回：拿不到價，就不可能顯示錯的價。
  */
-router.get('/options', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.get('/options', requireAdminAuth, requireAnyBackoffice(), async (req, res) => {
   try {
     // zone-scan-exempt：刻意跨定價區彙總。豁免的前提是這支不回任何價格欄位，
     // 掃描器會驗證這個前提（含 base_price / trial_price / tier_prices 就不給過）。
@@ -112,7 +114,7 @@ router.get('/options', requireAdminAuth, requireAdminRole('admin', 'manager', 's
   }
 });
 
-router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.get('/', requireAdminAuth, requireResource('course-types'), async (req, res) => {
   try {
     const zoneId = await zoneOf(req);
     if (!zoneId) return res.status(400).json(ZONE_REQUIRED);
@@ -142,7 +144,7 @@ router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'),
   }
 });
 
-router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.post('/', requireAdminAuth, requireResource('course-types'), async (req, res) => {
   const client = await pool.connect();
   try {
     const { course_type, label, max_students, min_students, base_price, data_group, trial_enabled, trial_price, tier_prices } = req.body || {};
@@ -218,7 +220,7 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
   }
 });
 
-router.patch('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.patch('/:type', requireAdminAuth, requireResource('course-types'), async (req, res) => {
   const client = await pool.connect();
   try {
     const ct = parseInt(req.params.type, 10);
@@ -352,7 +354,7 @@ router.patch('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, 
   }
 });
 
-router.delete('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.delete('/:type', requireAdminAuth, requireResource('course-types'), async (req, res) => {
   try {
     const ct = parseInt(req.params.type, 10);
     if (isNaN(ct)) return res.status(400).json({ error: 'invalid type' });
@@ -381,7 +383,7 @@ router.delete('/:type', requireAdminAuth, requireAdminRole('admin'), async (req,
 });
 
 // 編輯軌跡：某品項的變更歷史（時間 DESC）。
-router.get('/:type/audit-logs', requireAdminAuth, AM, async (req, res) => {
+router.get('/:type/audit-logs', requireAdminAuth, requireResource('course-types'), async (req, res) => {
   try {
     const ct = parseInt(req.params.type, 10);
     if (isNaN(ct)) return res.status(400).json({ error: 'invalid type' });

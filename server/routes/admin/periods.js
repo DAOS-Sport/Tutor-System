@@ -10,7 +10,9 @@
  */
 const express = require('express');
 const { pool } = require('../../models/db');
-const { requireAdminAuth, requireAdminRole, getScopedVenueIds } = require('../../middlewares/adminAuth');
+const { requireAdminAuth, getScopedVenueIds } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定。
+const { requireResource } = require('../../middlewares/requireResource');
 const chatRooms = require('../../services/chatRooms');
 
 const router = express.Router();
@@ -92,7 +94,7 @@ router.get('/checkin-modes', requireAdminAuth, async (req, res) => {
  * 讓「誰在何時把哪期切成什麼模式」在報名審計紀錄可查。
  *  PATCH /api/admin/periods/:id/checkin-mode  { mode: 'booking' | 'self' }
  */
-router.patch('/:id/checkin-mode', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
+router.patch('/:id/checkin-mode', requireAdminAuth, requireResource('checkin-modes'), async (req, res) => {
   const mode = String(req.body?.mode || '').trim();
   if (!CHECKIN_MODES.includes(mode)) {
     return res.status(400).json({ error: 'mode 必須為 booking 或 self', code: 'MODE_INVALID' });
@@ -144,7 +146,7 @@ router.patch('/:id/checkin-mode', requireAdminAuth, requireAdminRole('admin', 'm
  * 整館批次切換（進行中期別全切）。回傳實際變更筆數；逐期 audit 同單期切換。
  *  POST /api/admin/periods/checkin-mode/bulk  { venue_id, mode }
  */
-router.post('/checkin-mode/bulk', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
+router.post('/checkin-mode/bulk', requireAdminAuth, requireResource('checkin-modes'), async (req, res) => {
   const venueId = String(req.body?.venue_id || '').trim();
   const mode = String(req.body?.mode || '').trim();
   if (!venueId) return res.status(400).json({ error: '請指定場館', code: 'VENUE_REQUIRED' });
@@ -185,7 +187,7 @@ router.post('/checkin-mode/bulk', requireAdminAuth, requireAdminRole('admin', 'm
   }
 });
 
-router.post('/:id/activate', requireAdminAuth, requireAdminRole('admin', 'manager'), async (req, res) => {
+router.post('/:id/activate', requireAdminAuth, requireResource('checkin-modes'), async (req, res) => {
   try {
     const owns = await pool.query(
       `SELECT id, venue_id, status FROM course_periods WHERE id = $1`, [req.params.id]

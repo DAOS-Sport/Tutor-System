@@ -18,7 +18,9 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const { pool } = require('../../models/db');
-const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
+const { requireAdminAuth } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定。
+const { requireResource, requireAnyBackoffice } = require('../../middlewares/requireResource');
 const { syncStaffFromRagic, kickoffSyncStaffAsync, isJobRunning } = require('../../services/ragicAdmin');
 const lineService = require('../../services/line');
 const {
@@ -534,7 +536,7 @@ async function ensureCoachRow(client, staffRow, opts = {}) {
   return coachId;
 }
 
-router.get('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.get('/', requireAdminAuth, requireResource('staff'), async (req, res) => {
   try {
     // 不再阻塞：背景觸發 Ragic 同步（10 分鐘節流），下一次 GET 就會看到新資料
     kickoffSyncStaffAsync();
@@ -583,7 +585,7 @@ router.get('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =>
 // 立刻回 202，實際同步在背景跑並寫入 ragic_sync_log；不再讓這個 HTTP request
 // 卡在 freshness-canary 重試 + 全表拉取的耗時上（docs/ragic_sync_audit.md §1）。
 // _singleflight（services/ragicAdmin.js）仍會把重複觸發合併成同一個背景 Promise。
-router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.post('/sync', requireAdminAuth, requireResource('staff'), async (req, res) => {
   const alreadyRunning = isJobRunning('staff');
   setImmediate(async () => {
     try {
@@ -602,7 +604,7 @@ router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, re
   });
 });
 
-router.delete('/bulk', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.delete('/bulk', requireAdminAuth, requireResource('staff'), async (req, res) => {
   const staffIds = normalizeStaffIds(req.body?.staff_ids);
   if (!staffIds.length) return res.status(400).json({ error: 'staff_ids 不能為空' });
 
@@ -713,7 +715,7 @@ router.delete('/bulk', requireAdminAuth, requireAdminRole('admin'), async (req, 
  */
 router.get('/coaches',
   requireAdminAuth,
-  requireAdminRole('admin', 'manager', 'staff'),
+  requireAnyBackoffice(),
   async (req, res) => {
     try {
       const { venueId, status = 'active' } = req.query;
@@ -768,7 +770,7 @@ router.get('/coaches',
 /**
  * Task #91：單筆員工詳細（給編輯彈窗 prefetch 完整 coach_profile + bio_media）
  */
-router.get('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.get('/:id', requireAdminAuth, requireResource('staff'), async (req, res) => {
   try {
     const r = await pool.query(`${STAFF_SELECT} WHERE s.id = $1`, [req.params.id]);
     if (!r.rowCount) return res.status(404).json({ error: 'staff not found' });
@@ -790,7 +792,7 @@ router.get('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, res)
 });
 
 // Task #81：新建員工（admin_staff + admin_users + 可選 coaches，一個 transaction）
-router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.post('/', requireAdminAuth, requireResource('staff'), async (req, res) => {
   const client = await pool.connect();
   try {
     const body = req.body || {};
@@ -864,7 +866,7 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
   }
 });
 
-router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.patch('/:id', requireAdminAuth, requireResource('staff'), async (req, res) => {
   const client = await pool.connect();
   try {
     const { id } = req.params;
@@ -1095,7 +1097,7 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
 //
 // 解綁後該教練回到「未綁定」狀態，下次用 LINE 登入走姓名 fallback 即可重新綁上。
 // 限 admin；寫 critical 等級 audit（這是身分綁定變更，必須可追查是誰解的）。
-router.post('/:id/unbind-line', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.post('/:id/unbind-line', requireAdminAuth, requireResource('staff'), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -1139,7 +1141,7 @@ router.post('/:id/unbind-line', requireAdminAuth, requireAdminRole('admin'), asy
   }
 });
 
-router.post('/:id/reset-password', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.post('/:id/reset-password', requireAdminAuth, requireResource('staff'), async (req, res) => {
   try {
     const { id } = req.params;
     const staffRes = await pool.query(

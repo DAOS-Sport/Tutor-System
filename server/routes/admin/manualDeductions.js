@@ -22,12 +22,9 @@ const { validateRequestId, payloadFingerprint } = require('../../services/idempo
 const { syncStoredUsage, listLinkedEnrollmentIds } = require('../../services/usageSync');
 const { broadcastAdminEvent } = require('../../services/websocket');
 // checkinNotify 不再 require —— 手動扣課不發推播（見檔頭 2026-08-17 同意紀錄）。
-const {
-  requireAdminAuth,
-  requireAdminRole,
-  getScopedVenueIds,
-  isVenueInScope,
-} = require('../../middlewares/adminAuth');
+const { requireAdminAuth, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定，不再寫死角色清單。
+const { requireResource } = require('../../middlewares/requireResource');
 
 const router = express.Router();
 const STRICT_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -77,7 +74,7 @@ async function readDeduction(client, periodId, id) {
  * GET /api/admin/manual-deductions?search=<報名單號/家長/學員/電話>
  * 只回可扣的 active course_period，且場館裁判與所有其他 admin route 共用。
  */
-router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.get('/', requireAdminAuth, requireResource('manual-deduction'), async (req, res) => {
   try {
     const q = text(req.query.search || req.query.q, 120);
     if (q.length < 2) return res.json([]);
@@ -188,7 +185,7 @@ router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'),
  * POST /api/admin/manual-deductions
  * { course_period_id, student_id, reason, request_id, occurred_at? }
  */
-router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.post('/', requireAdminAuth, requireResource('manual-deduction'), async (req, res) => {
   const body = req.body || {};
   const periodId = text(body.course_period_id, 64);
   const studentId = text(body.student_id, 64);

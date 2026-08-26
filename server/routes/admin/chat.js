@@ -14,7 +14,9 @@
  */
 const express = require('express');
 const { pool } = require('../../models/db');
-const { requireAdminAuth, requireAdminRole, getScopedVenueIds } = require('../../middlewares/adminAuth');
+const { requireAdminAuth, getScopedVenueIds } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定。
+const { requireResource } = require('../../middlewares/requireResource');
 const chatRooms = require('../../services/chatRooms');
 const { invalidateCache } = require('../../services/keywordScanner');
 
@@ -39,7 +41,7 @@ function scopedVenueIdsForChat(req) {
   return scope;
 }
 
-router.get('/rooms', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.get('/rooms', requireAdminAuth, requireResource('chat-logs'), async (req, res) => {
   try {
     const list = await chatRooms.listRoomsForAdmin({
       venueIds: scopedVenueIdsForChat(req),
@@ -52,7 +54,7 @@ router.get('/rooms', requireAdminAuth, requireAdminRole('admin', 'manager', 'sta
   }
 });
 
-router.get('/rooms/:id/messages', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.get('/rooms/:id/messages', requireAdminAuth, requireResource('chat-logs'), async (req, res) => {
   try {
     const meta = await chatRooms.getRoomMeta(req.params.id);
     if (!meta) return res.status(404).json({ error: 'not found' });
@@ -79,7 +81,7 @@ router.get('/rooms/:id/messages', requireAdminAuth, requireAdminRole('admin', 'm
 });
 
 // ── 關鍵字管理 (F-A07，admin only) ─────────
-router.get('/keywords', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.get('/keywords', requireAdminAuth, requireResource('keywords'), async (req, res) => {
   try {
     const r = await pool.query(
       `SELECT id, keyword, category, is_active, created_at
@@ -92,7 +94,7 @@ router.get('/keywords', requireAdminAuth, requireAdminRole('admin'), async (req,
   }
 });
 
-router.post('/keywords', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.post('/keywords', requireAdminAuth, requireResource('keywords'), async (req, res) => {
   try {
     const keyword = String(req.body?.keyword || '').trim();
     const category = String(req.body?.category || '其他').trim() || '其他';
@@ -112,7 +114,7 @@ router.post('/keywords', requireAdminAuth, requireAdminRole('admin'), async (req
   }
 });
 
-router.patch('/keywords/:id', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.patch('/keywords/:id', requireAdminAuth, requireResource('keywords'), async (req, res) => {
   try {
     const fields = [];
     const args = [];
@@ -143,7 +145,7 @@ router.patch('/keywords/:id', requireAdminAuth, requireAdminRole('admin'), async
   }
 });
 
-router.delete('/keywords/:id', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.delete('/keywords/:id', requireAdminAuth, requireResource('keywords'), async (req, res) => {
   try {
     const r = await pool.query(`DELETE FROM keyword_list WHERE id = $1`, [req.params.id]);
     invalidateCache();
@@ -155,7 +157,7 @@ router.delete('/keywords/:id', requireAdminAuth, requireAdminRole('admin'), asyn
 });
 
 // ── 警示清單（僅 admin / manager 可見；staff 不應看到關鍵字命中） ──
-router.get('/alerts', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.get('/alerts', requireAdminAuth, requireResource('alerts'), async (req, res) => {
   try {
     const status = req.query.status;
     const args = [];
@@ -194,7 +196,7 @@ router.get('/alerts', requireAdminAuth, requireAdminRole('admin', 'manager', 'st
   }
 });
 
-router.patch('/alerts/:id', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.patch('/alerts/:id', requireAdminAuth, requireResource('alerts'), async (req, res) => {
   try {
     const status = String(req.body?.status || '').trim();
     if (!['pending', 'reviewed', 'no_issue', 'resolved'].includes(status)) {
