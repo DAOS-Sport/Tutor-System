@@ -81,6 +81,11 @@ const UNIT = [
   // 第一版的解析器遇到屬性裡的箭頭函式就把標籤切斷，掃出 16 個假陽性 ——
   // 所以測試自己有一條在盯「抓不到 className 的比例」。
   'tests/mobile_touch_target_test.js',
+  // 兩類「安靜壞掉」的前端錯誤：呼叫檔案裡不存在的函式（ReferenceError 被
+  // try/catch 吃掉，症狀是「動作其實成功了，畫面卻說失敗」），以及把清單 API
+  // 的資料當詳情 API 用（.map on undefined → ErrorBoundary → 整頁掛掉，
+  // 而 mock 資料補齊了欄位，開發時看不到）。專案沒有 eslint。
+  'tests/frontend_undefined_call_test.js',
   // 學員的隔離區自癒判準要跟著家長的 updated_at 走：櫃檯補的是 parents.email，
   // 而 students.updated_at 一動也不動 —— 沒有這條，Email 補完之後那批學員會
   // 永遠留在隔離區、再也不會被推上 Ragic，而且完全沒有錯誤訊息。
