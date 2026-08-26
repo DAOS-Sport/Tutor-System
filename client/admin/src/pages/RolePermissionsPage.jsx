@@ -135,24 +135,26 @@ export default function RolePermissionsPage() {
       {tab === 'user' && <UserOverridesPanel resources={data.resources} groups={groups} />}
 
       {tab === 'role' && nonBackoffice.length > 0 && (
-        <p className="mb-4 rounded-lg bg-amber-50 px-4 py-3 text-xs leading-6 text-amber-800">
+        <p className="mb-4 max-w-4xl rounded-lg bg-amber-50 px-4 py-2.5 text-xs leading-6 text-amber-800">
           <strong>{nonBackoffice.map((r) => r.label).join('、')}</strong>
           目前還不能登入後台，在這裡勾選的設定會先存起來，等開放登入後才會生效。
         </p>
       )}
 
       {tab === 'role' && (<>
-      <div className="mb-4 overflow-x-auto rounded-xl border border-gray-200 bg-white">
-        <table className="w-full min-w-[720px] text-sm">
-          <thead className="bg-gray-50">
+      {/* 限寬：角色只有五欄，讓表格橫跨整個寬螢幕只會讓每一格離標題很遠，
+          勾錯行的機率反而變高。表頭吸頂，捲到下面幾組時還看得到自己在勾哪個角色。 */}
+      <div className="mb-4 max-w-4xl overflow-x-auto rounded-xl border border-gray-200 bg-white">
+        <table className="w-full min-w-[600px] text-sm">
+          <thead className="sticky top-0 z-10 bg-gray-50 shadow-[0_1px_0_rgba(0,0,0,0.06)]">
             <tr>
-              <th className="px-4 py-3 text-left text-xs font-bold tracking-wide text-gray-500">頁面</th>
+              <th className="px-3 py-2.5 text-left text-xs font-bold tracking-wide text-gray-500">頁面</th>
               {data.roles.map((r) => (
-                <th key={r.key} className="px-3 py-3 text-center text-xs font-bold text-gray-600">
-                  <div>{r.label}</div>
+                <th key={r.key} className="w-[92px] px-1 py-2.5 text-center text-xs font-bold text-gray-600">
+                  <div className="leading-tight">{r.label}</div>
                   <div className="mt-0.5 text-[10px] font-normal text-gray-400">
                     {r.immutable
-                      ? '全開・不可調整'
+                      ? '全開'
                       : (draft[r.key] || new Set()).size + ' / ' + data.resources.length}
                   </div>
                 </th>
@@ -162,17 +164,17 @@ export default function RolePermissionsPage() {
           <tbody>
             {groups.map((g) => (
               <React.Fragment key={g.title}>
-                <tr className="bg-gray-50/70">
-                  <td className="px-4 py-2 text-xs font-bold text-gray-600">{g.title}</td>
+                <tr className="bg-gray-100/80">
+                  <td className="px-3 py-1.5 text-xs font-bold text-gray-700">{g.title}</td>
                   {data.roles.map((r) => {
                     const s = draft[r.key] || new Set();
                     const all = g.items.every((it) => s.has(it.key));
                     return (
-                      <td key={r.key} className="px-3 py-2 text-center">
+                      <td key={r.key} className="px-1 py-1.5 text-center">
                         {r.immutable ? <span className="text-[10px] text-gray-300">—</span> : (
                           <button type="button"
                             onClick={() => toggleGroup(r.key, g.items, !all)}
-                            className="text-[10px] font-medium text-brand-primary hover:underline">
+                            className="rounded px-1.5 py-0.5 text-[10px] font-medium text-brand-primary hover:bg-brand-primary/10">
                             {all ? '全不選' : '全選'}
                           </button>
                         )}
@@ -181,19 +183,28 @@ export default function RolePermissionsPage() {
                   })}
                 </tr>
                 {g.items.map((it) => (
-                  <tr key={it.key} className="border-t border-gray-100 hover:bg-gray-50">
-                    <td className="px-4 py-2">
-                      <div className="text-gray-800">{it.label}</div>
-                      <div className="font-mono text-[10px] text-gray-400">{it.path}</div>
+                  <tr key={it.key} className="border-t border-gray-100 hover:bg-brand-primary/5">
+                    {/* 路徑收進同一行：原本佔第二行，34 個頁面就多出 34 行高度，
+                        捲動距離變長、對照欄位更容易看錯行。 */}
+                    <td className="px-3 py-1.5">
+                      <span className="text-gray-800">{it.label}</span>
+                      <span className="ml-2 font-mono text-[10px] text-gray-400">{it.path}</span>
                     </td>
                     {data.roles.map((r) => {
                       const checked = r.immutable || (draft[r.key] || new Set()).has(it.key);
                       return (
-                        <td key={r.key} className="px-3 py-2 text-center">
-                          <input type="checkbox" checked={checked} disabled={r.immutable}
-                            onChange={() => toggle(r.key, it.key)}
-                            className={r.immutable ? 'cursor-not-allowed opacity-40' : 'cursor-pointer'}
-                            title={r.immutable ? '系統管理員永遠可見全部頁面' : undefined} />
+                        <td key={r.key} className="p-0 text-center">
+                          {/* 整格都是點擊區。原本只有 13px 的勾選框可以點，
+                              在 34 × 5 的格子裡要精準命中很累，也容易勾錯隔壁欄。 */}
+                          <label
+                            className={`flex h-full w-full items-center justify-center py-1.5 ${
+                              r.immutable ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+                            title={r.immutable ? '系統管理員永遠可見全部頁面'
+                              : `${r.label}：${it.label}`}>
+                            <input type="checkbox" checked={checked} disabled={r.immutable}
+                              onChange={() => toggle(r.key, it.key)}
+                              className={`h-4 w-4 ${r.immutable ? 'opacity-30' : 'cursor-pointer'}`} />
+                          </label>
                         </td>
                       );
                     })}
