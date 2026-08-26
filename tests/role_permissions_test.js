@@ -95,7 +95,7 @@ check('例外壓在角色之上（否則收回權限永遠做不到）', () => {
   assert.ok(m, '找不到 canUserAccess');
   const body = m[0];
   const iOverride = body.indexOf('ov.has(resourceKey)');
-  const iRole = body.indexOf('canAccess(role');
+  const iRole = body.indexOf('await canAccess(r, resourceKey)');
   assert.ok(iOverride > 0 && iRole > 0, '判定裡缺少例外或角色其中一段');
   assert.ok(iOverride < iRole,
     '角色檢查排在例外之前，會讓「單獨收回」失效 —— 那正是例外最常見的用途');
@@ -104,8 +104,23 @@ check('例外壓在角色之上（否則收回權限永遠做不到）', () => {
 check('admin 仍在最前面（不可被例外鎖住）', () => {
   const svc = read('server/services/rolePermissions.js');
   const m = svc.match(/async function canUserAccess[\s\S]*?\n}/);
-  assert.ok(/if \(role === 'admin'\) return true;/.test(m[0]),
+  const b = m[0];
+  const iAdmin = b.indexOf("roles.has('admin')");
+  const iOv = b.indexOf('ov.has(resourceKey)');
+  assert.ok(iAdmin > 0, '找不到 admin 的捷徑');
+  assert.ok(iAdmin < iOv,
     '管理員必須在任何例外之前放行，否則有人能把管理員鎖在門外');
+});
+
+check('複數身分取聯集（教練兼救生員要看得到兩邊）', () => {
+  const svc = read('server/services/rolePermissions.js');
+  const m = svc.match(/async function canUserAccess[\s\S]*?\n}/);
+  assert.ok(/for \(const r of roles\)/.test(m[0]),
+    '只看單一 role 的話，把某頁開給救生員之後，14 位教練兼救生員仍然看不到 ——'
+    + ' 而那不會被回報成 bug，只會變成「這系統怪怪的」');
+  const eff = svc.match(/async function effectiveResources[\s\S]*?\n}/);
+  assert.ok(/for \(const r of roles\)/.test(eff[0]),
+    '選單也要取聯集，否則畫面與實際權限對不上');
 });
 
 check('例外是布林，不是「有列＝允許」', () => {

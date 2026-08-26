@@ -15,9 +15,10 @@ const { ROLES } = require('../constants/roles');
 const CACHE_MS = 15_000;
 let cache = null;
 let overrideCache = null;
+let identityCache = null;
 let cachedAt = 0;
 
-function invalidate() { cache = null; overrideCache = null; cachedAt = 0; }
+function invalidate() { cache = null; overrideCache = null; identityCache = null; cachedAt = 0; }
 
 /** 回 { role: Set(resource_key) }。admin 不在裡面 —— 它走 canAccess 的捷徑。 */
 async function _load() {
@@ -37,10 +38,45 @@ async function _load() {
     if (!om.has(row.user_id)) om.set(row.user_id, new Map());
     om.get(row.user_id).set(row.resource_key, !!row.allowed);
   }
+  // 一個人可以同時是好幾種身分：教練兼救生員、櫃檯兼救生員、主管兼櫃檯。
+  // admin_staff.role 只存得下「優先序最高的那一個」，其餘身分在 is_coach /
+  // is_counter / is_lifeguard 這三個旗標裡。
+  //
+  // 權限必須取聯集，不能只看 role —— 否則把「簽到驗證」開給救生員之後，
+  // 14 位教練兼救生員仍然看不到，因為他們的 role 是 coach。
+  // 而那種錯不會有人回報成 bug，只會變成「這個系統怪怪的」。
+  const idq = await pool.query(`
+    SELECT u.id AS user_id, s.role, s.is_counter, s.is_coach, s.is_lifeguard
+      FROM admin_users u
+      JOIN admin_staff s ON s.id = u.staff_id`);
+  const im = new Map();
+  for (const row of idq.rows) {
+    const set = new Set();
+    if (row.role) set.add(row.role);
+    if (row.is_counter) set.add('staff');
+    if (row.is_coach) set.add('coach');
+    if (row.is_lifeguard) set.add('lifeguard');
+    im.set(String(row.user_id), set);
+  }
+
   cache = m;
   overrideCache = om;
+  identityCache = im;
   cachedAt = now;
   return m;
+}
+
+/**
+ * 這個登入帳號的全部身分。
+ *
+ * 查不到就退回 token 上的單一角色 —— 有些帳號沒有連到 admin_staff
+ * （內建的系統帳號、測試帳號）。那種情況沿用舊行為，不會突然少掉權限。
+ */
+async function _rolesOf(user) {
+  await _load();
+  const fromDb = user && user.userId && identityCache.get(String(user.userId));
+  if (fromDb && fromDb.size) return fromDb;
+  return new Set(user && user.role ? [user.role] : []);
 }
 
 /** 某個登入帳號的例外：Map(resource_key → boolean)。 */
@@ -64,20 +100,26 @@ async function canAccess(role, resourceKey) {
  * 反過來讓角色蓋掉例外的話，收回某個人的權限就永遠做不到。
  */
 async function canUserAccess(user, resourceKey) {
-  const role = user && user.role;
-  if (role === 'admin') return true;
   if (!isResourceKey(resourceKey)) return false;
+  const roles = await _rolesOf(user);
+  if (roles.has('admin')) return true;
+  // 個人例外仍然壓在角色之上，且對整個人生效（不分身分）——
+  // 「這個人不該碰退款」不會因為他多了一個身分就失效。
   const ov = await _overridesFor(user && user.userId);
   if (ov.has(resourceKey)) return ov.get(resourceKey);
-  return canAccess(role, resourceKey);
+  for (const r of roles) {
+    if (await canAccess(r, resourceKey)) return true;
+  }
+  return false;
 }
 
 /** 某個登入帳號實際看得到的頁面（角色預設套上個人例外）。 */
 async function effectiveResources(user) {
-  const role = user && user.role;
-  if (role === 'admin') return [...RESOURCE_KEYS];
+  const roles = await _rolesOf(user);
+  if (roles.has('admin')) return [...RESOURCE_KEYS];
   const ov = await _overridesFor(user && user.userId);
-  const base = new Set(await allowedResources(role));
+  const base = new Set();
+  for (const r of roles) for (const k of await allowedResources(r)) base.add(k);
   for (const [k, allowed] of ov) {
     if (allowed) base.add(k); else base.delete(k);
   }
@@ -198,7 +240,7 @@ async function setUserOverrides(userId, overrides, actor = 'admin') {
 }
 
 module.exports = {
-  canAccess, canUserAccess, allowedResources, effectiveResources,
+  canAccess, canUserAccess, allowedResources, effectiveResources, rolesOf: _rolesOf,
   getMatrix, setRolePermissions, getUserOverrides, setUserOverrides, invalidate,
 };
 
