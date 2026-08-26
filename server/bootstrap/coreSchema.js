@@ -2361,6 +2361,31 @@ const DEFAULT_THRESHOLDS = [
  * 第 3 步是關鍵：換完之後「同一個課別在不同區可以有不同價」才成立。
  * 換主鍵前一定要先回填完 —— 主鍵欄位隱含 NOT NULL，有 NULL 就換不過去。
  */
+/**
+ * admin_staff.role 的 CHECK 要允許 lifeguard。
+ *
+ * 舊限制只允許 admin/manager/staff/coach，於是救生員這個身份在畫面上看得到、
+ * 在篩選裡選得到，卻永遠存不進去。正式庫有 54 位在職救生員的 role 因此被迫
+ * 落在 'staff'（行政櫃檯）—— 那不是他們的身份，只是沒有別的值可以填。
+ *
+ * 放寬 CHECK 不會改變任何人現有的權限：能不能登入後台由 BACKOFFICE_ROLES 決定，
+ * 而 lifeguard 不在其中。這一步只是讓「指派救生員」這件事變得可能。
+ */
+async function ensureStaffRoleCheck() {
+  const cur = await pool.query(`
+    SELECT pg_get_constraintdef(con.oid) AS def
+      FROM pg_constraint con JOIN pg_class rel ON rel.oid = con.conrelid
+     WHERE rel.relname = 'admin_staff' AND con.conname = 'admin_staff_role_check'`);
+  if (cur.rowCount && /lifeguard/.test(cur.rows[0].def)) return;   // 已經放寬過
+  const { ASSIGNABLE_ROLES } = require('../constants/roles');
+  const list = ASSIGNABLE_ROLES.map((r) => `'${r}'`).join(', ');
+  await pool.query(`
+    ALTER TABLE admin_staff DROP CONSTRAINT IF EXISTS admin_staff_role_check;
+    ALTER TABLE admin_staff ADD CONSTRAINT admin_staff_role_check
+      CHECK (role = ANY (ARRAY[${list}]::text[]));`);
+  console.log('[core bootstrap] admin_staff.role CHECK 已放寬為：' + list);
+}
+
 async function ensurePricingZones() {
   const zoneCount = await pool.query('SELECT COUNT(*)::int AS n FROM pricing_zones');
   if (zoneCount.rows[0].n === 0) {
@@ -2579,6 +2604,7 @@ async function bootstrap() {
     await seedKeywords();
     await seedTagsAndThresholds();
     // 必須排在 seedCourseTypeConfigs 之前：後者要用換好的 (pricing_zone_id, course_type) 主鍵。
+    await ensureStaffRoleCheck();
     await ensurePricingZones();
     await seedCourseTypeConfigs();
     await ensureCourseIntroFK();

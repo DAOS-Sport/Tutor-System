@@ -1,4 +1,7 @@
 import React from 'react';
+// 角色清單的唯一來源。原本這裡寫死四個、漏了救生員，
+// 於是外層篩選選得到救生員、進來編輯卻指派不了。
+import { ROLE_OPTIONS } from '../constants/roles.js';
 
 /** Task #90：場館多選 chip — 已停用場館仍顯示但加註，避免下拉「莫名消失」。
  *  Task #95：disabled 模式（Ragic 來源員工）— 只顯示已選場館，不可點選。 */
@@ -44,12 +47,6 @@ function VenueChipsField({ value, venues, onChange, disabled = false }) {
   );
 }
 
-const ROLE_OPTIONS = [
-  { value: 'admin',   label: '系統管理員' },
-  { value: 'manager', label: '主管' },
-  { value: 'staff',   label: '行政櫃檯' },
-  { value: 'coach',   label: '教練' },
-];
 
 const INTRO_STATUS_LABEL = {
   draft: { tone: 'bg-gray-100 text-gray-700', text: '草稿' },

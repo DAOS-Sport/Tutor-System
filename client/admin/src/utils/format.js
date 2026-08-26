@@ -106,15 +106,12 @@ export function paymentStatusTone(status) {
   }[status] || 'gray');
 }
 
-export function roleLabel(role) {
-  return ({
-    admin: '系統管理員',
-    manager: '場館主管',
-    staff: '行政櫃檯',
-    coach: '教練',
-    lifeguard: '救生員',
-  }[role] || role);
-}
+// 保留這個匯出（呼叫點很多），標籤本身改由 constants/roles 提供 ——
+// 避免同一個 manager 在徽章上叫「場館主管」、在下拉裡叫「主管」。
+// 副檔名不能省：這個檔案除了 Vite 之外，也被 tests/taipei_input_test.js 與
+// tests/session_note_visibility_test.js 直接用 Node 載入，而 Node 的 ESM
+// 解析器不會自動補 .js（Vite 會）。省略的話那兩個測試會 ERR_MODULE_NOT_FOUND。
+export { roleLabel } from '../constants/roles.js';
 
 export function checkinStatusLabel(s) {
   return ({ checked_in: '已簽到', absent: '未到', not_yet: '尚未開始' }[s] || s);

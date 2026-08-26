@@ -16,7 +16,10 @@ const IS_PROD = process.env.NODE_ENV === 'production';
 const DEV_FALLBACK_SECRET = '__DEV_ONLY_admin_jwt_fallback__';
 // 後台共用角色裁判。所有受保護的 admin route 都必須先通過 requireAdminAuth，
 // 場館範圍再由 getScopedVenueIds / isVenueInScope 統一判定；manager 不是全館 admin。
-const BACKOFFICE_ROLES = Object.freeze(['admin', 'manager', 'staff']);
+// 改讀 constants/roles 的單一來源。內容此刻仍是 admin/manager/staff —— 這一步
+// 只是消除重複定義，不放寬任何權限。要讓救生員能登入後台是 F-A06 第 2 期的事，
+// 屆時把 roles.js 裡該角色的 backoffice 改成 true 即可，不必再改這裡。
+const { BACKOFFICE_ROLES } = require('../constants/roles');
 
 let warnedFallback = false;
 function getSecret() {

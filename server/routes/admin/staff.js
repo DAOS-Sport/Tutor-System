@@ -29,7 +29,9 @@ const {
 
 const router = express.Router();
 
-const VALID_ROLES = ['admin', 'manager', 'staff', 'coach'];
+// 可指派的身份清單。原本寫死四個、漏了救生員，於是「篩選選得到、編輯存不了」——
+// normalizeRoleFilter 早就認得 lifeguard，這裡卻會回 400「角色不合法」。
+const { ASSIGNABLE_ROLES: VALID_ROLES } = require('../../constants/roles');
 const MULTIPLIER_MIN = 1.00;
 const MULTIPLIER_MAX = 1.50;
 
