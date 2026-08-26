@@ -7,12 +7,15 @@
  * 而「篩選選得到、編輯存不了」這種症狀不會有人主動回報。
  */
 // 陣列順序即優先序（高 → 低）。身兼數職時的「代表值」取最高者。
+// portal＝這個身分用哪個入口。'liff' 的不會出現在 F-A06 權限表 ——
+// 教練有專屬入口，後台頁面對他沒有意義。
+// backoffice 是另一件事：現在能不能登入後台（救生員 portal=admin 但尚未開放）。
 export const ROLES = [
-  { key: 'admin',     label: '系統管理員', backoffice: true  },
-  { key: 'manager',   label: '場館主管',   backoffice: true  },
-  { key: 'staff',     label: '行政櫃檯',   backoffice: true  },
-  { key: 'coach',     label: '教練',       backoffice: false },
-  { key: 'lifeguard', label: '救生員',     backoffice: false },
+  { key: 'admin',     label: '系統管理員', backoffice: true,  portal: 'admin' },
+  { key: 'manager',   label: '場館主管',   backoffice: true,  portal: 'admin' },
+  { key: 'staff',     label: '行政櫃檯',   backoffice: true,  portal: 'admin' },
+  { key: 'coach',     label: '教練',       backoffice: false, portal: 'liff'  },
+  { key: 'lifeguard', label: '救生員',     backoffice: false, portal: 'admin' },
 ];
 
 /** 可以指派給員工的身份（編輯視窗的下拉）。 */

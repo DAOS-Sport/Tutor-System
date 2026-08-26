@@ -32,9 +32,11 @@ function check(label, fn) {
 function parseFrontendRoles(src) {
   const block = src.slice(src.indexOf('export const ROLES'), src.indexOf('];', src.indexOf('export const ROLES')));
   const out = [];
-  const re = /key:\s*'([a-z_]+)'\s*,\s*label:\s*'([^']+)'\s*,\s*backoffice:\s*(true|false)/g;
+  const re = /key:\s*'([a-z_]+)'\s*,\s*label:\s*'([^']+)'\s*,\s*backoffice:\s*(true|false)\s*,\s*portal:\s*'([a-z]+)'/g;
   let m;
-  while ((m = re.exec(block))) out.push({ key: m[1], label: m[2], backoffice: m[3] === 'true' });
+  while ((m = re.exec(block))) {
+    out.push({ key: m[1], label: m[2], backoffice: m[3] === 'true', portal: m[4] });
+  }
   return out;
 }
 const fe = parseFrontendRoles(feSrc);
@@ -88,6 +90,20 @@ check('沒有別的檔案再自己寫一份角色清單', () => {
     '這些地方又寫了一份角色清單，請改用 constants/roles： ' + offenders.join(' ; '));
 });
 
+
+check('教練不出現在權限表，但仍可被指派', () => {
+  // 教練有專屬的 LIFF 入口，永遠不會進後台。列在 F-A06 裡那一欄永遠是空的，
+  // 還會讓人以為自己漏設了什麼。但「指派某人為教練」仍然有意義（LIFF 身分、
+  // 教練檔案），所以它必須留在可指派清單裡 —— 兩件事不能混為一談。
+  assert.ok(!be.PORTAL_ADMIN_ROLES.includes('coach'), '教練不該出現在權限表');
+  assert.ok(be.ASSIGNABLE_ROLES.includes('coach'), '教練仍必須可以指派');
+  assert.deepStrictEqual([...be.PORTAL_ADMIN_ROLES],
+    ['admin', 'manager', 'staff', 'lifeguard'],
+    '權限表的欄位變了 —— 那會直接改變後台畫面，不該是無意的');
+  const rp = fs.readFileSync(
+    path.resolve(__dirname, '../server/routes/admin/rolePermissions.js'), 'utf8');
+  assert.ok(/portal === 'admin'/.test(rp), 'F-A06 的 API 沒有依 portal 過濾');
+});
 
 console.log(failures ? `\n${failures} FAILED` : '\nrole_source_of_truth: ALL PASS');
 process.exitCode = failures ? 1 : 0;

@@ -41,7 +41,9 @@ router.get('/', requireAdminAuth, requireResource('role-permissions'), async (re
         key: r.key, group: r.group, path: r.path, label: r.label,
       })),
       // immutable 讓前端知道那一欄要畫成鎖住的，而不是可以勾卻存不了。
-      roles: ROLES.map((r) => ({
+      // 只列會用到後台的身分。教練走 LIFF，列出來那一欄永遠是空的，
+      // 還會讓人以為自己漏設了什麼。
+      roles: ROLES.filter((r) => r.portal === 'admin').map((r) => ({
         key: r.key, label: r.label, backoffice: r.backoffice, immutable: r.key === 'admin',
       })),
       matrix: await svc.getMatrix(),
