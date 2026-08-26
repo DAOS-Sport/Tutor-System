@@ -126,3 +126,6 @@ VITE_LIFF_ID_COACH = "2009958451-Xz4tru4a"
 LIFF_URL_PARENT = "https://liff.line.me/2009958451-NmGZ4135"
 LIFF_URL_COACH = "https://liff.line.me/2009958451-Xz4tru4a"
 RAGIC_BASE_URL = "https://ap7.ragic.com"
+
+[objectStorage]
+defaultBucketID = "replit-objstore-17a0c2c2-935b-4a85-aa0b-4ba6350ed0c0"
