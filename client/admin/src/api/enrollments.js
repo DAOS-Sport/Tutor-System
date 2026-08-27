@@ -5,6 +5,10 @@ export const enrollmentsApi = {
   list: (filters = {}) =>
     callApi('/enrollments', { params: filters }, () => mockDb.enrollments(filters)),
 
+  // 首頁的計數。刻意不走 list()：首頁要的是兩個整數，不是 1,140 筆列。
+  stats: (filters = {}) =>
+    callApi('/enrollments/stats', { params: filters }, () => mockDb.enrollmentStats(filters)),
+
   detail: (id) =>
     callApi(`/enrollments/${id}`, {}, () => mockDb.enrollmentDetail(id)),
 

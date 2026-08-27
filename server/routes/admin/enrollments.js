@@ -931,6 +931,48 @@ router.get('/', requireAdminAuth, requireAnyResource('enrollments', 'refund', 'r
 });
 
 // 明細才 best-effort 取 LINE display name；清單絕不會對 LINE API 產生 N+1 calls。
+/**
+ * 儀表板的計數。只回兩個整數，不回列。
+ *
+ * 為什麼要有這支：首頁只要四個數字，原本卻用 enrollmentsApi.list({}) 把正式庫
+ * 1,140 筆（含 4 個 LEFT JOIN 與 students 陣列）整包送進瀏覽器，只為了
+ * .filter(...).length 算出 768。付出一次全表掃描加上幾 MB 傳輸，換回兩個整數；
+ * 連線一慢，第一個看到轉圈或超時的就是登入後的首頁。
+ *
+ * 場館範圍走跟清單同一套 getScopedVenueIds：staff / manager 看到的計數必須只含
+ * 自己的場館。少了這一段，首頁就會變成一道「越權看到全公司數字」的縫 —— 而且
+ * 是最不容易被發現的那種，因為畫面上只是一個數字，沒有任何列可以讓人察覺不對。
+ *
+ * 註冊位置必須在 '/:id' 之前：Express 依序比對，排在後面的話 'stats' 會被當成 id。
+ */
+router.get('/stats', requireAdminAuth, requireAnyResource('enrollments', 'refund', 'reconcile', 'manual-enroll'), async (req, res) => {
+  try {
+    const scope = getScopedVenueIds(req);
+    const where = [];
+    const args = [];
+    if (scope) {
+      args.push(scope);
+      where.push(`ae.venue_id = ANY($${args.length}::text[])`);
+      if (req.query.venueId && scope.includes(String(req.query.venueId))) {
+        args.push(String(req.query.venueId));
+        where.push(`ae.venue_id = $${args.length}`);
+      }
+    } else if (req.query.venueId) {
+      args.push(req.query.venueId);
+      where.push(`ae.venue_id = $${args.length}`);
+    }
+    const r = await pool.query(
+      `SELECT (COUNT(*) FILTER (WHERE ae.status = 'pending_payment'))::int AS pending,
+              (COUNT(*) FILTER (WHERE ae.status IN ('active','confirmed')))::int AS active
+         FROM admin_enrollments ae
+       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}`, args);
+    res.json({ pending: r.rows[0].pending, active: r.rows[0].active });
+  } catch (err) {
+    console.error('[admin/enrollments/stats]', err);
+    res.status(500).json({ error: 'enrollment stats failed' });
+  }
+});
+
 router.get('/:id', requireAdminAuth, requireAnyResource('enrollments', 'refund', 'reconcile'), async (req, res) => {
   try {
     const basic = await readEnrollment(req.params.id);

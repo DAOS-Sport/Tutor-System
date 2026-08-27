@@ -118,7 +118,29 @@ function directChildTags(src, te, end) {
   return tags;
 }
 
-const CAP = /max-h-\[|max-h-(?:screen|full|\d)|maxHeight|\bh-\[\d|height:/;
+/**
+ * 這個標籤上有沒有「手機也吃得到」的高度上限。
+ *
+ * 為什麼不能用一條正則帶過：`md:max-h-[90dvh]` 只在 768 以上生效，手機那一段
+ * 照樣沒有上限。原本的 CAP 正則不分前綴，於是把手機上限刪掉、只留 md: 那個，
+ * 這條測試照樣是綠的 —— 而 375px 上面板已經溢出視窗了。
+ *
+ * 試過用 lookbehind `(?<!:)` 擋前綴，擋不住：`md:max-h-[90dvh]` 裡的 `h-[9`
+ * 前面是 `-` 不是 `:`，`\bh-\[\d` 那一支照樣中。所以改成逐個 class token 判斷 ——
+ * 「帶斷點前綴的不算」變成結構上成立，而不是靠正則邊界剛好對上。
+ *
+ * 實測全站 18 個 modal 沒有任何一個只靠斷點前綴上限，所以這個收緊零成本。
+ */
+function hasMobileCap(tag) {
+  if (/maxHeight|height:/.test(tag)) return true;          // inline style 不分斷點
+  for (const tok of tag.split(/[\s"'`{}]+/)) {
+    if (tok.includes(':')) continue;                        // md:… / hover:… → 手機不適用
+    if (/^max-h-\[/.test(tok)) return true;
+    if (/^max-h-(?:screen|full|\d)/.test(tok)) return true;
+    if (/^h-\[\d/.test(tok)) return true;
+  }
+  return false;
+}
 const SCROLL = /overflow-y-auto|overflow-auto|overflow-y-scroll/;
 
 /** 掃出所有「看起來是 modal」的背景層。 */
@@ -144,7 +166,7 @@ function collectModals() {
         key: rel + '#' + n,
         rel,
         line: src.slice(0, b.open).split('\n').length,
-        hasCap: kids.some((t) => CAP.test(t)),
+        hasCap: kids.some(hasMobileCap),
         hasScroll: SCROLL.test(src.slice(b.te + 1, b.end)),
         usesDvh: kids.some((t) => /dvh/.test(t)),
       });
@@ -154,16 +176,44 @@ function collectModals() {
   return found;
 }
 
+/**
+ * <Sheet> 的使用處。Sheet.jsx 自己的定義不算 —— 那是元件，不是使用。
+ *
+ * 為什麼要數這個：下面「掃描沒失效」原本寫的是 modals.length >= 15，
+ * 用意是好的（掃描壞掉要紅），但它同時把 Sheet 重構整個鎖死了：每把一個原生
+ * modal 換成 <Sheet>，原生計數就少一個，重構做到第四個這條就會紅 —— 而那是
+ * 重構成功的樣子，不是壞掉的樣子。一條會因為「你把事情做對了」而變紅的測試，
+ * 結局一定是被人改成 >= 2 然後徹底失去意義。
+ *
+ * 掃描到底還有沒有效，靠的是下面那個對照組（必須從原生掃描裡撈得到）；
+ * 這個數字管的是另一件事：彈窗總量沒有無聲蒸發。
+ */
+function countSheetUsages() {
+  let n = 0;
+  for (const file of walk(SCAN_DIR)) {
+    if (file.endsWith('Sheet.jsx')) continue;
+    n += (fs.readFileSync(file, 'utf8').match(/<Sheet[\s>]/g) || []).length;
+  }
+  return n;
+}
+
 const modals = collectModals();
+const sheetUsages = countSheetUsages();
+const surfaces = modals.length + sheetUsages;
 
 check('掃描本身沒失效', () => {
-  assert.ok(modals.length >= 15,
-    '只掃到 ' + modals.length + ' 個 modal —— 標籤配對或判斷條件已失效，'
-    + '這條測試會變成無聲的假綠。');
-  const ref = modals.find((m) => m.rel.endsWith('pages/ReconcilePage.jsx'));
-  assert.ok(ref, '找不到對照組 ReconcilePage —— 掃描已失效');
+  assert.ok(surfaces >= 15,
+    '只掃到 ' + surfaces + ' 個彈窗面（原生 ' + modals.length + ' + Sheet ' + sheetUsages
+    + '）—— 標籤配對或判斷條件已失效，這條測試會變成無聲的假綠。');
+  // 對照組必須從「原生掃描」撈得到：這才證明上面那組正則還看得懂 JSX。
+  // 光看 surfaces 是不夠的 —— 原生掃描全壞掉、Sheet 使用處有 20 個的話，
+  // surfaces 照樣過關，而真正在守門的那條規則已經瞎了。
+  // 優先用 Sheet.jsx 當對照組：它是重構的終點，ReconcilePage 有一天會被換掉。
+  const ref = modals.find((m) => m.rel.endsWith('components/Sheet.jsx'))
+    || modals.find((m) => m.rel.endsWith('pages/ReconcilePage.jsx'));
+  assert.ok(ref, '對照組（Sheet.jsx / ReconcilePage）兩個都撈不到 —— 原生掃描已失效');
   assert.ok(ref.hasCap && ref.hasScroll && ref.usesDvh,
-    '對照組 ReconcilePage 自己都不符合判準，代表判準寫錯了，不是它壞了');
+    '對照組 ' + ref.rel + ' 自己都不符合判準，代表判準寫錯了，不是它壞了');
 });
 
 check('每個 modal 的面板都要有高度上限 + 可捲內層', () => {
@@ -200,7 +250,8 @@ if (vhOnly.length) {
   for (const m of vhOnly) console.log('       - ' + m.rel + ':' + m.line);
 }
 
-console.log('\n掃到 ' + modals.length + ' 個 modal，豁免 ' + Object.keys(ALLOW).length + ' 個');
+console.log('\n掃到 ' + modals.length + ' 個原生 modal + '
+  + sheetUsages + ' 個 <Sheet> 使用處，豁免 ' + Object.keys(ALLOW).length + ' 個');
 if (failures) console.error('\nmobile_modal_test: ' + failures + ' failed');
 else console.log('mobile_modal_test: all passed');
 process.exitCode = failures ? 1 : 0;

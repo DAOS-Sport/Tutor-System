@@ -767,6 +767,16 @@ export const mockDb = {
     };
   },
 
+  // 走跟 enrollments() 同一份資料再數，不另外寫一組假數字：
+  // 兩邊各自維護的話，mock 的首頁數字會跟 mock 的清單對不起來。
+  enrollmentStats(filters = {}) {
+    const rows = this.enrollments(filters);
+    return {
+      pending: rows.filter((e) => e.status === 'pending_payment').length,
+      active: rows.filter((e) => e.status === 'active' || e.status === 'confirmed').length,
+    };
+  },
+
   enrollments({ status, search, venueId } = {}) {
     let list = ENROLLMENTS.map((e) => ({ ...e, audit_logs: e.audit_logs.map((a) => ({ ...a })) }));
     if (status) list = list.filter((e) => e.status === status);

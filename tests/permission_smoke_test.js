@@ -535,6 +535,65 @@ async function main() {
         assert.notStrictEqual(r2.status, 403, '開通了還是被擋，代表該角色被硬性封死而非照設定走');
       });
     }
+    // ── 8.5 首頁計數 ───────────────────────────────────────────────────
+    section('[8.5] 首頁計數：/enrollments/stats 必須跟清單自己數出來的一模一樣');
+    // 首頁原本用 enrollmentsApi.list({}) 把整份清單拉回前端，再 .filter().length
+    // 數出兩個數字。正式庫 1,140 筆（含 4 個 LEFT JOIN 與 students 陣列），
+    // 換回兩個整數。改成後端計數之後，這裡要釘住的是「換了做法，答案不能變」。
+    //
+    // 判準刻意選「跟清單比」而不是「跟寫死的數字比」：清單那條路徑的場館範圍
+    // 是既有且被信任的行為，拿它當真值，等於同時驗了計數的正確性與場館隔離。
+    // stats 若漏掉 scope，staff 會數到全公司而清單只回自己場館 —— 兩邊立刻對不上。
+    // 這種漏法在畫面上只是一個數字，沒有任何一列可以讓人察覺不對，靠人看是看不出來的。
+    const statsSeen = {};
+    let compared = 0;
+    for (const key of ['admin', 'manager', 'staff']) {
+      if (!tokens[key]) continue;
+      const statsR = await request(port, 'GET', '/api/admin/enrollments/stats', { token: tokens[key] });
+      const listR = await request(port, 'GET', '/api/admin/enrollments', { token: tokens[key] });
+      if (statsR.status === 403 && listR.status === 403) continue;   // 這個角色本來就不該看報名
+      compared++;
+      statsSeen[key] = statsR.body;
+      check(`${key}：stats 的數字與清單自己數出來的一致`, () => {
+        assert.strictEqual(statsR.status, 200, `stats 回 HTTP ${statsR.status}`);
+        assert.strictEqual(listR.status, 200, `list 回 HTTP ${listR.status}`);
+        const rows = listR.body;
+        assert.ok(Array.isArray(rows), '清單回的不是陣列，無法當真值');
+        const want = {
+          pending: rows.filter((e) => e.status === 'pending_payment').length,
+          active: rows.filter((e) => e.status === 'active' || e.status === 'confirmed').length,
+        };
+        assert.deepStrictEqual(
+          { pending: statsR.body && statsR.body.pending, active: statsR.body && statsR.body.active },
+          want,
+          `stats 回 ${JSON.stringify(statsR.body)}，但清單 ${rows.length} 筆數出來是 ${JSON.stringify(want)}`
+        );
+      });
+    }
+    check('至少比對到兩個角色（比不到就代表上面整段是空轉的假綠）', () => {
+      assert.ok(compared >= 2, `只比對到 ${compared} 個角色`);
+    });
+    check('有範圍的角色不可能數到比 admin 多', () => {
+      const a = statsSeen.admin;
+      assert.ok(a, 'admin 沒有拿到 stats，無法當上界');
+      const over = Object.keys(statsSeen).filter((k) => k !== 'admin'
+        && (statsSeen[k].pending > a.pending || statsSeen[k].active > a.active));
+      assert.deepStrictEqual(over, [], `這些角色數到的比 admin 還多：${over.join('、')}`);
+    });
+    // 誠實記一筆：dev 庫如果所有報名都落在同一個場館，上面那條等式就分辨不出
+    // 「scope 有生效」與「scope 是空的」。不裝作驗過了。
+    {
+      const a = statsSeen.admin;
+      const scoped = Object.keys(statsSeen).filter((k) => k !== 'admin');
+      const same = a && scoped.every((k) => statsSeen[k].active === a.active
+        && statsSeen[k].pending === a.pending);
+      if (same && scoped.length) {
+        note('注意：本輪 dev 資料裡有範圍的角色與 admin 數字相同，'
+          + '這條無法分辨「場館範圍有生效」與「範圍是空的」——'
+          + '場館隔離本身由 [6][7] 的資源權限負責。');
+      }
+    }
+
   } finally {
     // ── 收尾：先關伺服器，再刪資料。兩段各自 try/catch，
     //    任何一段出錯都不可以蓋掉上面真正的失敗原因。

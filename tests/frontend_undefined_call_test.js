@@ -176,5 +176,66 @@ check('豁免清單每一項都還成立，而且寫得出理由', () => {
   }
 });
 
+check('後端保證是陣列的欄位，不可以在無人察覺的情況下不再保證', () => {
+  // 這條守的是「契約」那一半。前端 61 處屬性鏈陣列操作裡，絕大多數之所以安全，
+  // 靠的是 shapeEnrollmentRow 無條件把欄位補成陣列：
+  //     students: row.students || []
+  // 只要有人把那個 `|| []` 拿掉（欄位在 DB 是 nullable），前端 r.students.join('、')
+  // 立刻整頁 ErrorBoundary，而且是在正式站才會遇到 null 的那幾筆上才發生。
+  const src = fs.readFileSync(path.join(ROOT, 'server/routes/admin/enrollments.js'), 'utf8');
+  const i = src.indexOf('function shapeEnrollmentRow');
+  assert.ok(i > 0, '找不到 shapeEnrollmentRow —— 掃描已失效');
+  const body = src.slice(i, src.indexOf('\n}', i));
+  const guaranteed = new Set(
+    [...body.matchAll(/(\w+):\s*row\.\w+\s*\|\|\s*\[\]/g)].map((m) => m[1])
+  );
+  for (const f of ['students', 'extra_parent_phones']) {
+    assert.ok(guaranteed.has(f),
+      f + ' 不再被無條件補成陣列。前端有多處直接 .join()/.map() 它，'
+      + '拿掉這個保證等於把那些地方全部變成未爆彈：\n       '
+      + '要嘛把 `' + f + ': row.' + f + ' || []` 加回來，'
+      + '要嘛把每一個使用處都改成有防護的寫法。');
+  }
+});
+
+check('後端「不保證」的欄位，前端每一處都必須有防護', () => {
+  // 契約的另一半。audit_logs 只有詳情 API 才回，清單 API 刻意不回
+  // （enrollments.js 的註解寫了原因）。而彈窗會先用清單那一筆 render，
+  // 那個空窗期裡它就是 undefined —— 2026-08-26 正式站整頁掛掉就是這樣來的。
+  const src = fs.readFileSync(path.join(ROOT, 'server/routes/admin/enrollments.js'), 'utf8');
+  const i = src.indexOf('function shapeEnrollmentRow');
+  const body = src.slice(i, src.indexOf('\n}', i));
+  const unconditional = new RegExp('audit_logs:\\s*\\w+\\.\\w+\\s*\\|\\|\\s*\\[\\]');
+  assert.ok(!unconditional.test(body),
+    'audit_logs 現在變成無條件保證了 —— 那這條規則要重寫，不是放著不管');
+
+  const bad = [];
+  for (const f of FILES) {
+    const jsx = blankComments(fs.readFileSync(f, 'utf8'));
+    for (const m of jsx.matchAll(/([A-Za-z_$][\w$]*)\.audit_logs\b(?!\s*\|\|)/g)) {
+      const owner = m[1];
+      const tail = jsx.slice(m.index, m.index + 40);
+      if (/audit_logs\?\./.test(tail)) continue;
+      // 這兩種寫法本身就是防護，不是「一次未防護的使用」：
+      //     {!detail.audit_logs && (載入中…)}
+      //     {detail.audit_logs && detail.audit_logs.length === 0 && (…)}
+      // 把它們算成違規的話，正確的程式碼永遠無法通過這條 —— 而一條無法通過的
+      // 規則最後一定被人整條刪掉。
+      if (jsx[m.index - 1] === '!') continue;                      // !X.audit_logs
+      if (/^\.audit_logs\s*&&/.test(jsx.slice(m.index + owner.length))) continue;  // X.audit_logs &&                    // X.audit_logs?.map
+      if (/\(\s*$/.test(jsx.slice(Math.max(0, m.index - 2), m.index))) continue;  // (X.audit_logs || [])
+      const line = lineOf(jsx, m.index);
+      const ctx = jsx.slice(Math.max(0, m.index - 220), m.index);
+      const guarded = new RegExp(owner + '\\.audit_logs\\s*(?:&&|\\?)').test(ctx)
+        || new RegExp('!' + owner + '\\.audit_logs').test(ctx)
+        || new RegExp('Array\\.isArray\\(\\s*' + owner + '\\.audit_logs').test(ctx);
+      if (!guarded) bad.push(rel(f) + ':' + line + ' -> ' + owner + '.audit_logs');
+    }
+  }
+  assert.deepStrictEqual(bad, [],
+    'audit_logs 在清單回應裡不存在，這些地方沒有防護：\n       ' + bad.join('\n       ')
+    + '\n       改法：(X.audit_logs || []).map(...) 或 X.audit_logs?.map(...)');
+});
+
 console.log(failures ? '\n' + failures + ' FAILED' : '\nfrontend_undefined_call: ALL PASS');
 process.exitCode = failures ? 1 : 0;

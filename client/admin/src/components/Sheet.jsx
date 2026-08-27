@@ -12,11 +12,12 @@ import React, { useEffect, useRef } from 'react';
  * 改成：md 以下貼齊底部、上緣圓角、寬度滿版，主要動作留在拇指區；md 以上完全維持
  * 原本的置中彈窗（`md:items-center` + `md:rounded-*` + `md:max-w-*`），桌機不動。
  *
- * 為什麼還是有 15 個彈窗沒有改用這支元件、而是各自就地寫 class：
- * tests/mobile_modal_test.js 靠掃描原始碼裡的 `fixed inset-0` 字面值來數彈窗，
- * 並且斷言掃到的數量 >= 15。把 overlay 全部收斂進這支元件，那些字面值就會從
- * 各檔案消失、數量掉到個位數，那條測試會直接變紅。所以既有彈窗維持就地寫法，
- * 由 tests/mobile_sheet_test.js 逐檔盯住寫法正確；新的彈窗請直接用這支元件。
+ * 遷移狀態：既有彈窗正在陸續換過來，新的彈窗一律直接用這支元件。
+ * （這裡原本寫著「不要遷移」，理由是 tests/mobile_modal_test.js 斷言
+ *   `fixed inset-0` 的出現次數 >= 15，收斂進元件會讓那個數字掉到個位數而變紅。
+ *   那條判準已經改成數「原生 modal + <Sheet> 使用處」的總和，不再懲罰重構。
+ *   一條會因為你把事情做對了而變紅的測試，等於是在付錢請大家不要整理程式碼。）
+ * 還沒換過來的彈窗由 tests/mobile_sheet_test.js 逐檔盯住就地寫法是否正確。
  *
  * 安全區：貼底之後面板下緣會壓在 iPhone 的 home indicator 底下（812 的 SE 沒有，
  * 但 844/852 那批有 34px）。`pb-[env(safe-area-inset-bottom)]` 在桌機與無 indicator

@@ -26,6 +26,11 @@ const SERVER = path.join(ROOT, 'server');
 
 // 零外部相依：Ragic/LINE/物件儲存都是 stub 或純字串斷言，不碰 DB 也不出網路。
 const UNIT = [
+  'tests/error_boundary_test.js',
+  // 測試套件本身的體檢。放第一個：它抓的是「其他測試有沒有在說謊」，
+  // 而 manual_deduction_backdate 就這樣瞎了一段時間 —— 指向的元件早已搬走、
+  // 每次 ENOENT，但檔尾沒有 exitCode，runner 一直記成 PASS。
+  'tests/test_suite_integrity_test.js',
   'tests/admin_group_order_filter_ui_test.js',
   'tests/admin_role_gate_consistency_test.js',
   'tests/coach_order_bucket_test.js',

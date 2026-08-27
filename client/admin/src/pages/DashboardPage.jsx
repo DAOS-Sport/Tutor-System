@@ -29,25 +29,29 @@ export default function DashboardPage() {
       // 統計「所屬全部場館」（原本 isStaff 帶 user.venue_id 只會統計到主場館＝新北）。
       // Task #68：改 allSettled，單支 API 失敗（如 Neon DB 連線暫斷）不會讓整頁白屏；
       // 失敗的格子改顯示 '—'。
-      const [pendingR, allR, sessionsR] = await Promise.allSettled([
-        enrollmentsApi.list({ status: 'pending_payment' }),
-        enrollmentsApi.list({}),
+      //
+      // 這裡原本打三支：pending 清單、全部清單、今日課堂。中間那支是
+      // enrollmentsApi.list({})，把正式庫 1,140 筆（含 4 個 LEFT JOIN 與 students
+      // 陣列）整包拉進瀏覽器，只為了在前端 .filter() 數出 768 這個數字。
+      // 改走 /enrollments/stats：同樣兩個數字在資料庫裡數完，回來的是兩個整數。
+      // 順帶把三支併成兩支 —— pending 本來也是拉整份清單只取 .length。
+      const [countsR, sessionsR] = await Promise.allSettled([
+        enrollmentsApi.stats(),
         sessionsApi.today(),
       ]);
       if (!alive) return;
-      const pending = pendingR.status === 'fulfilled' ? pendingR.value : null;
-      const all = allR.status === 'fulfilled' ? allR.value : null;
+      const counts = countsR.status === 'fulfilled' ? countsR.value : null;
       const sessions = sessionsR.status === 'fulfilled' ? sessionsR.value : null;
       setStats({
-        pending: pending ? pending.length : '—',
-        active: all
-          ? all.filter((e) => e.status === 'active' || e.status === 'confirmed').length
-          : '—',
+        // 用 counts ? 而不是 counts.pending ?：計數是 0 的時候要顯示 0，不是 '—'。
+        // 「今天沒有待付款」與「這格算不出來」是兩件事，混在一起會讓櫃檯以為系統壞了。
+        pending: counts ? counts.pending : '—',
+        active: counts ? counts.active : '—',
         sessionsToday: sessions ? sessions.length : '—',
         sessionsCheckedIn: sessions
           ? sessions.filter((s) => s.checkin_status === 'checked_in').length
           : '—',
-        hasError: !pending || !all || !sessions,
+        hasError: !counts || !sessions,
       });
     })();
     return () => { alive = false; };
