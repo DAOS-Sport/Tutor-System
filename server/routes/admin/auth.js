@@ -22,12 +22,11 @@ const router = express.Router();
 // Task #68：per-IP 登入速率限制（5 次 / 5 分鐘 → 429），與 LIFF 家長 / 教練同策略,
 // 抑制弱密碼暴搜（後台帳號名單固定，破解風險高）。
 const _attempts = new Map(); // ip → [ts...]
-const WINDOW_MS = 5 * 60 * 1000;
-const MAX_ATTEMPTS = 5;
-// 已超限時不再累加 —— 原本 push 在判斷之前，使用者每按一次登入都把冷卻
-// 往後推 5 分鐘，於是持續重試就永遠解不開。
+// 上限與時間窗由 middlewares/rateLimit 統一決定（預設 30 次 / 5 分鐘，可用
+// RATE_LIMIT_MAX、RATE_LIMIT_WINDOW_MS 調整）。舊值是 5 次 —— 配上「所有人
+// 共用一個桶」的 bug，那是 2026-08-26 全公司鎖死的直接原因。
 function _rateLimited(ip) {
-  return hit(_attempts, ip, { windowMs: WINDOW_MS, max: MAX_ATTEMPTS });
+  return hit(_attempts, ip, { label: 'admin/auth/login' });
 }
 
 const { rateLimitEnabled, clientIp, hit, reset } = require('../../middlewares/rateLimit');
@@ -242,8 +241,10 @@ router.post('/login', async (req, res) => {
     // 的反向代理後面那是代理位址，對所有人都一樣。於是「5 分鐘 5 次」變成
     // 「整個系統 5 分鐘 5 次」，2026-08-26 全公司因此一起鎖死。
     // 專案裡其他七個限流點本來就是先讀 x-forwarded-for，只有這裡漏了。
+    // clientIp 認不出用戶時回 null，hit() 會直接放行並記一次警告 ——
+    // 這正是這次事故的教訓：識別失敗時不可以把所有人併成同一個計數桶。
     const ip = clientIp(req);
-    if (rateLimitEnabled() && _rateLimited(ip)) {
+    if (_rateLimited(ip)) {
       console.warn('[admin/auth/login] rate-limited ip=', ip);
       return res.status(429).json({ error: '嘗試次數過多，請稍後再試', code: 'RATE_LIMITED' });
     }

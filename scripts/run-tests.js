@@ -74,6 +74,7 @@ const UNIT = [
   'tests/session_note_visibility_test.js',
   'tests/promotion_label_test.js',
   'tests/promotion_order_test.js',
+  'tests/rate_limit_test.js',
   'tests/ragic_canary_state_test.js',
   'tests/lifeguard_login_test.js',
   'tests/frontend_backoffice_gate_test.js',
