@@ -63,6 +63,7 @@ function requireFlowToken(req, res, next) {
  */
 const ATTEMPTS = new Map(); // "ip:lineUid" -> { count, windowStart }
 const WINDOW_MS = 5 * 60 * 1000;
+const { rateLimitEnabled } = require('./rateLimit');
 const MAX_ATTEMPTS = 5;
 
 function verifyPhoneRateLimit(req, res, next) {
@@ -76,7 +77,7 @@ function verifyPhoneRateLimit(req, res, next) {
     return next();
   }
   rec.count += 1;
-  if (rec.count > MAX_ATTEMPTS) {
+  if (rateLimitEnabled() && rec.count > MAX_ATTEMPTS) {
     console.warn(`[flowAuth] verify-phone rate-limited: ip=${ip} uidTail=***${uid.slice(-4)} attempts=${rec.count}`);
     return res.status(429).json({ error: '嘗試次數過多，請 5 分鐘後再試', code: 'RATE_LIMITED' });
   }

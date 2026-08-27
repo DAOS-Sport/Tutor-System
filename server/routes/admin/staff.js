@@ -291,21 +291,11 @@ function rowToStaff(r) {
   const isCounterFlag = !!r.is_counter;
   const isCoachFlag = !!r.is_coach;
   const isLifeguardFlag = !!r.is_lifeguard;
-  // 後台在 F-A02 手動勾的身分（admin_staff_roles）。刻意讀原始值，不用下面那個
-  // manual_roles —— 它有「空就退回 [r.role]」的 fallback，而純救生員的 r.role 是
-  // CHECK constraint 的保底值 'staff'，套了 fallback 會讓他被誤判成「明確指派過櫃檯」，
-  // 正好把上面那段註解在防的 bug 又放回來。
-  const assignedRoles = Array.isArray(r.manual_roles) ? r.manual_roles.filter(Boolean) : [];
   const includeImpliedRole = ['admin', 'manager'].includes(r.role) || isCounterFlag || (!isCoachFlag && !isLifeguardFlag);
   const knownRoles = Array.from(new Set([
     ...(includeImpliedRole ? [r.role] : []),
     ...(hasCoachProfile ? ['coach'] : []),
     ...(isLifeguardFlag ? ['lifeguard'] : []),
-    // 手動指派的身分也要算進來。少了這一段，管理員在編輯視窗勾了「救生員」、資料也
-    // 確實寫進 admin_staff_roles，但清單那排徽章從頭到尾沒看過那張表 —— 畫面毫無變化，
-    // 看起來就是「勾了沒有存到」。登入（auth.js）與權限（rolePermissions.js）早就讀
-    // 這張表了，只有這條路徑漏掉，所以症狀是「權限有生效但畫面不認」。
-    ...assignedRoles,
   ]));
   // Task #90：venue_ids 是真實多場館清單；venue_id 維持作為「第一筆」相容
   const venueIds = cleanVenueList(r.venue_ids);
@@ -326,9 +316,6 @@ function rowToStaff(r) {
     is_coach_profile: isDualRoleCoach,
     coach_profile_status: coachProfileStatus,
     known_roles: knownRoles,
-    // 原始的手動指派清單（沒有 fallback）。前端要靠它分辨「管理員真的勾過 staff」
-    // 與「role 只是保底值」—— 兩者在 manual_roles 裡長得一模一樣。
-    assigned_roles: assignedRoles,
     // 後台手動指派的身分（可多選）。與 Ragic 的旗標取聯集才是實際權限 ——
     // 畫面上 Ragic 來的那幾個會鎖住，因為寫回去下次同步也會被蓋掉。
     manual_roles: Array.isArray(r.manual_roles) && r.manual_roles.length
@@ -1311,4 +1298,3 @@ router.post('/:id/reset-password', requireAdminAuth, requireResource('staff'), a
 });
 
 module.exports = router;
-module.exports._rowToStaff = rowToStaff;   // 供測試直接驗行為，不用起整個 router

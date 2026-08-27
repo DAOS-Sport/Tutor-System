@@ -34,6 +34,8 @@ const session = require('../services/coachPortalSession');
 const itAlert = require('../services/itAlert');
 const { cleanVenueList, COACH_STAFF_PROFILE_SELECT } = require('../services/coachVenueScope');
 
+const { rateLimitEnabled } = require('../middlewares/rateLimit');
+
 const router = express.Router();
 
 const FRONTEND_PATH = '/liff/coach-portal';
@@ -249,7 +251,7 @@ router.post('/auth/exchange', async (req, res) => {
 // ─────────────────────────────────────────────────────────────
 router.post('/link-by-name', async (req, res) => {
   const ip = clientIp(req);
-  if (_rateLimited(ip)) {
+  if (rateLimitEnabled() && _rateLimited(ip)) {
     return res.status(429).json({ error: '嘗試次數過多，請稍後再試', code: 'RATE_LIMITED' });
   }
   try {

@@ -30,6 +30,7 @@ const {
   evaluateSubmitReadiness, isFullHouse, markSubmitted, notifyGroupSubmitted,
 } = require('../services/groupOrderSubmit');
 const { getCourseConfig, CourseConfigError } = require('../services/courseConfig');
+const { rateLimitEnabled } = require('../middlewares/rateLimit');
 
 // 家長端操作者標記：token 只含 id/phone，櫃檯亦以手機辨識家長。
 const parentActor = (req) => `家長 ${req.parent?.phone || req.parent?.id || 'unknown'}`;
@@ -92,7 +93,7 @@ function makeRateLimiter(max, label) {
       return next();
     }
     rec.count += 1;
-    if (rec.count > max) {
+    if (rateLimitEnabled() && rec.count > max) {
       console.warn(`[group-orders] rate-limited ${label}: ip=${ip} attempts=${rec.count}`);
       return res.status(429).json({ error: '查詢次數過多，請 5 分鐘後再試', code: 'RATE_LIMITED' });
     }

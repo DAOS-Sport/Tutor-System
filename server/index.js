@@ -18,6 +18,10 @@ const { pool } = require('./models/db');
 const { formatTaipeiDateTime, TAIPEI_TIME_ZONE } = require('./utils/dateTime');
 
 const app = express();
+// Replit Autoscale 在反向代理後面。沒有這一行，req.ip 拿到的是代理位址而不是
+// 使用者的 —— 2026-08-26 後台登入限流因此把所有人算成同一個人，全公司一起鎖死。
+// 目前限流已預設關閉，但 req.ip 仍被其他地方使用（稽核、log），必須是對的。
+app.set('trust proxy', 1);
 const server = http.createServer(app);
 
 // build 版本：優先讀 build 腳本產生的 build-info.json，退而求其次讀 git，最後 unknown。

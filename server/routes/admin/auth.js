@@ -24,14 +24,13 @@ const router = express.Router();
 const _attempts = new Map(); // ip → [ts...]
 const WINDOW_MS = 5 * 60 * 1000;
 const MAX_ATTEMPTS = 5;
+// 已超限時不再累加 —— 原本 push 在判斷之前，使用者每按一次登入都把冷卻
+// 往後推 5 分鐘，於是持續重試就永遠解不開。
 function _rateLimited(ip) {
-  const now = Date.now();
-  const arr = (_attempts.get(ip) || []).filter((t) => now - t < WINDOW_MS);
-  arr.push(now);
-  _attempts.set(ip, arr);
-  if (_attempts.size > 5000) _attempts.clear();
-  return arr.length > MAX_ATTEMPTS;
+  return hit(_attempts, ip, { windowMs: WINDOW_MS, max: MAX_ATTEMPTS });
 }
+
+const { rateLimitEnabled, clientIp, hit, reset } = require('../../middlewares/rateLimit');
 
 const BACKOFFICE_ROLE_SET = new Set(BACKOFFICE_ROLES);
 function _backofficeRole(value) {
@@ -239,10 +238,14 @@ async function _counterStaffDefaultLogin(username, password) {
 
 router.post('/login', async (req, res) => {
   try {
-    const ip = req.ip || req.socket?.remoteAddress || 'unknown';
-    if (_rateLimited(ip)) {
+    // 取真實用戶 IP。原本只讀 req.ip，而 app 沒有設 trust proxy —— 在 Replit
+    // 的反向代理後面那是代理位址，對所有人都一樣。於是「5 分鐘 5 次」變成
+    // 「整個系統 5 分鐘 5 次」，2026-08-26 全公司因此一起鎖死。
+    // 專案裡其他七個限流點本來就是先讀 x-forwarded-for，只有這裡漏了。
+    const ip = clientIp(req);
+    if (rateLimitEnabled() && _rateLimited(ip)) {
       console.warn('[admin/auth/login] rate-limited ip=', ip);
-      return res.status(429).json({ error: '嘗試次數過多，請稍後再試' });
+      return res.status(429).json({ error: '嘗試次數過多，請稍後再試', code: 'RATE_LIMITED' });
     }
     const { username, password } = req.body || {};
     if (!username || !password) {
@@ -267,6 +270,7 @@ router.post('/login', async (req, res) => {
       if (!staffLogin) return res.json(null);
       const payload = await _issueLogin(staffLogin, password);
       if (!payload) return res.json(null);
+      reset(_attempts, ip);   // 成功就清零：正常使用不該累積額度
       return res.json(payload);
     }
     const ok = await bcrypt.compare(String(password), u.password_hash);
@@ -276,6 +280,7 @@ router.post('/login', async (req, res) => {
       return res.status(403).json({ error: '此帳號已停用，請聯絡系統管理員' });
     }
 
+    reset(_attempts, ip);   // 同上
     const payload = await _issueLogin(u, password);
     if (!payload) return res.json(null);
     res.json(payload);
