@@ -28,3 +28,10 @@ server/build-info.json
 
 # Phase 0 診斷輸出與資料清理備份：含正式資料快照，不入版控
 reports/
+
+# 走查／修補用的暫存腳本，不進版控
+commit.sh
+/walk.js
+/probe*.js
+/patch*.py
+/mut*.py
