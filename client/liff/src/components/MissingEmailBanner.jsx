@@ -1,6 +1,7 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { needsEmailPrompt } from '../utils/needsEmail';
 
 /**
  * 首頁「請補上 Email」提醒橫幅。
@@ -15,14 +16,14 @@ import { useAuth } from '../context/AuthContext';
  * 只做一個指路的橫幅 —— 讓 57 個家庭自己兩秒鐘解決，
  * 而不是讓櫃檯一家一家打電話。
  *
- * 沒缺 Email 就不顯示（回傳 null），與其他橫幅一致。
+ * 判斷條件見 utils/needsEmail：證據不足就不提醒（沒 email 這個 key 時不亮），
+ * 因為誤報的代價是五百多個資料完整的家庭每天看到假警報。
  */
 export default function MissingEmailBanner() {
   const navigate = useNavigate();
   const { parent } = useAuth();
 
-  if (!parent) return null;
-  if (String(parent.email || '').trim()) return null;
+  if (!needsEmailPrompt(parent)) return null;
 
   return (
     <section className="mb-5">
