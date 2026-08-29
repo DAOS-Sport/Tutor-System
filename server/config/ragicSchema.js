@@ -82,14 +82,18 @@ const STABILITY_FLAGS = Object.freeze({
   get EXISTING_USER_LOCAL_FASTPATH() { return envFlag('EXISTING_USER_LOCAL_FASTPATH', true); },
   get PARENT_IDENTITY_RESOLVER_V2() { return envFlag('PARENT_IDENTITY_RESOLVER_V2', false); },
   get PARENT_LOCAL_FIRST() { return envFlag('PARENT_LOCAL_FIRST', true); },
-  // 2026-08-29 改為預設啟用。
+  // 預設 false 是刻意的 fail-closed：這支 worker 會寫進 Ragic（外部系統），
+  // 必須有人明確打開，不該因為部署就自己開始動。tests/ragic_parent_outbox_flag_test
+  // 在守這條線。
   //
-  // 關著的後果是：註冊走 local-first（建本地 + 排進 outbox）之後，寫回 Ragic 的
-  // 唯一途徑就沒人執行 —— 從 07/14 起累積 300+ 筆 pending、attempts 全是 0，
-  // 而家長每次開 App 都看到「Ragic Z01 查無剛寫入的會員資料」。
-  // 有些人之所以有 Ragic 編號，是靠另一條直接寫入的備援路徑補上的；
-  // 備援沒跑到就整筆漏掉。入口關著，後面做什麼都沒用。
-  get RAGIC_PARENT_OUTBOX() { return envFlag('RAGIC_PARENT_OUTBOX', true); },
+  // 但關著的代價要寫清楚：註冊走 local-first（建本地 + 排進 outbox），
+  // 寫回 Ragic 的唯一途徑就是這支 worker。它沒開 → 從 07/14 起累積 300+ 筆
+  // pending、attempts 全是 0，家長每次開 App 都看到「Ragic Z01 查無剛寫入的
+  // 會員資料」。有些人有 Ragic 編號，是靠另一條直接寫入的備援補上的；
+  // 備援沒跑到就整筆漏 —— 所以症狀是「有時成功有時失敗」而不是全壞。
+  //
+  // 要啟用：在部署環境設 RAGIC_PARENT_OUTBOX=1（不需要改這裡）。
+  get RAGIC_PARENT_OUTBOX() { return envFlag('RAGIC_PARENT_OUTBOX', false); },
   get LEGACY_CLAIM_AUTO_CREATE() { return envFlag('LEGACY_CLAIM_AUTO_CREATE', false); },
   get DESTRUCTIVE_RECONCILE_ENABLED() { return envFlag('DESTRUCTIVE_RECONCILE_ENABLED', false); },
   get PASSED_NOT_ON_FILE_ENABLED() { return envFlag('PASSED_NOT_ON_FILE_ENABLED', false); },
