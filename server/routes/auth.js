@@ -711,7 +711,12 @@ router.post('/bind', requireFlowToken, async (req, res) => {
         const duplicateUidCorrelationId = crypto.randomUUID();
         await createParentIdentityBackofficeTask({
           phone,
-          sourceRecordIds: sourceIds,
+          // sourceIds 在這個 scope 不存在（它宣告在 _registerParentCore 裡），
+          // 引用它會拋 ReferenceError → 500，而且這張「請後台協助」的工單
+          // 根本不會被建立 —— 換手機／換 LINE 想找回帳號的家長就這樣卡住，
+          // 而沒有任何人知道他們卡住了。
+          // 這裡手上有的來源就是這支電話對到的那筆 Z01。
+          sourceRecordIds: [mapped.ragic_record_id].filter(Boolean),
           reasonCode: 'MULTIPLE_UID_SOURCE_NO_WINNER',
           suggestedAction: 'Review source links/student evidence, select one primary Z01, and retain the others as aliases.',
           correlationId: duplicateUidCorrelationId,

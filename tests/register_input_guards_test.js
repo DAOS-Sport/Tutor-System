@@ -74,6 +74,19 @@ t('S2 verify-phone 的 z03_pending 分支不引用未宣告的 studentName', () 
     + '卡在註冊第一關，畫面只顯示「查詢失敗」');
 });
 
+// ── 2b. /bind 不可以再引用不存在的 sourceIds ────────────────────────────
+t('S3b bind 的 uid_conflict 分支不引用未宣告的 sourceIds', () => {
+  const src = stripComments(read('server/routes/auth.js'));
+  const i = src.indexOf("router.post('/bind'");
+  assert.ok(i > 0, '找不到 bind 路由');
+  const body = src.slice(i, src.indexOf("router.post('/parent-bind-phone'", i));
+  assert.ok(/MULTIPLE_UID_SOURCE_NO_WINNER/.test(body), '抓錯區塊：這段裡應該有 uid_conflict 分支');
+  assert.ok(!/\bsourceIds\b/.test(body),
+    'sourceIds 宣告在 _registerParentCore 裡，這個 scope 沒有。引用它會拋 ReferenceError，'
+    + '換手機／換 LINE 想找回帳號的家長會拿到 500，而且那張「請後台協助」的工單'
+    + '根本不會被建立 —— 沒有人知道他們卡住了');
+});
+
 // ── 3. body 解析失敗要帶 code ───────────────────────────────────────────
 t('JSON 解析失敗 / 內容過大 的回應帶得出 code', () => {
   const src = stripComments(read('server/index.js'));
