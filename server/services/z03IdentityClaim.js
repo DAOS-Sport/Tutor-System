@@ -101,6 +101,12 @@ function _classifyConstraint(err) {
     uq_parents_ragic_record_id: 'DATA_RECONCILIATION_PENDING',
     uq_students_ragic_record_id: 'DATA_RECONCILIATION_PENDING',
     uq_identity_claims_active_source: 'DATA_RECONCILIATION_PENDING',
+    // 新戶註冊實際會撞到的是這條 5 欄唯一索引
+    // (purpose, student_name_normalized, source_system, source_table, source_record_id)，
+    // 它原本不在表上，於是同一家人重送註冊時拿到的是兜底的 LOCAL_LINK_FAILED ——
+    // 那個碼帶 retryable:false / loginAllowed:false，對家長是一條死路。
+    // 歸到 DATA_RECONCILIATION_PENDING 才會走人工複核，而不是把人擋在門外。
+    identity_claims_purpose_source_system_source_table_source_r_key: 'DATA_RECONCILIATION_PENDING',
   };
   return byConstraint[err.constraint] || 'LOCAL_LINK_FAILED';
 }
@@ -213,6 +219,16 @@ async function registerNewParentLocalFirst({
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     if (err instanceof Z03ClaimError) throw err;
+    // 這是新戶註冊唯一的寫入交易。原本直接把 err 換成 LOCAL_LINK_FAILED 丟出去，
+    // 家長看到「註冊失敗」，而後台一行線索都沒有 —— 家長回報「填一填就跳掉」
+    // 查了好幾週查不出來，正是因為原因在這裡被丟掉了。
+    // 不記 err.detail：pg 會把欄位值放進去（電話、身分證），那是個資。
+    console.error('[registerNewParentLocalFirst] 交易失敗（已回滾）：',
+      'code=' + (err?.code || '-'),
+      'constraint=' + (err?.constraint || '-'),
+      'table=' + (err?.table || '-'),
+      'column=' + (err?.column || '-'),
+      '|', err?.message);
     throw new Z03ClaimError(_classifyConstraint(err), '本地新會員 transaction 失敗', 409, {
       constraint: err.constraint || null,
     });
@@ -1079,5 +1095,6 @@ module.exports = {
   __test__: {
     safeDate: _safeDate,
     lineUidHash: _lineUidHash,
+    classifyConstraint: _classifyConstraint,
   },
 };
