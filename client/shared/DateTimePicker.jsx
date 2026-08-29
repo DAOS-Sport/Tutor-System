@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { shouldCloseOnOutsidePointer } from './outsideClose.js';
 
 /**
  * 共用日期／時間選擇器（取代原生 <input type="date|time|datetime-local">）
@@ -121,11 +122,18 @@ export default function DateTimePicker({
 
   useEffect(() => {
     if (!open) return undefined;
-    const onDown = (e) => { if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false); };
+    // pointerdown 而不是 mousedown：它跟著真實的指標輸入走。
+    // LINE 的內建瀏覽器把原生 <select>（面板裡的年份）開成系統對話框，
+    // 對話框關閉時 WebView 會補送一顆 mousedown，target 是 document/body，
+    // 舊寫法會把它當成「點到面板外面」而關掉面板 —— 家長回報的
+    // 「註冊填生日、填完月份就跳掉」對得上這條路徑（桌機重現不出來，
+    // 因為桌機的 select 是行內下拉，不會有系統對話框）。
+    // 判斷條件見 outsideClose.js，那裡有測試守著。
+    const onDown = (e) => { if (shouldCloseOnOutsidePointer(boxRef.current, e.target)) setOpen(false); };
     const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
-    document.addEventListener('mousedown', onDown);
+    document.addEventListener('pointerdown', onDown);
     document.addEventListener('keydown', onKey);
-    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
+    return () => { document.removeEventListener('pointerdown', onDown); document.removeEventListener('keydown', onKey); };
   }, [open]);
 
   // 面板座標。改成 fixed + 實測值，是為了兩件原本各自會壞的事：
