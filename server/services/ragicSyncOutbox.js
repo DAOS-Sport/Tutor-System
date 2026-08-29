@@ -538,7 +538,17 @@ async function processClaimedRagicSyncOutboxJob(job, {
       // intentionally rejected by getTrueRagicLineUid().
       let remote = await _findRemoteByTrueUid(parent.line_uid);
       let recordId = remote?._ragicId || remote?.ragicId || null;
-      if (!remote) {
+
+      // 查重找不到，不代表這個人不在 Ragic —— 只代表那筆記錄上還沒有 UID。
+      // 本地若已經知道 ragic_record_id，就直接用它，不要建第二筆。
+      // 少了這一步，這批人會在 Ragic 產生重複的 Z01，而重複的身分資料
+      // 比「沒同步到」難收拾得多：對帳、Z02 學員、後續綁定都會分岔。
+      if (!remote && parent.ragic_record_id) {
+        recordId = String(parent.ragic_record_id);
+        console.log('[ragic-outbox] 查重未命中但本地已有 Z01#' + recordId + '，改為補寫 UID 而不新建');
+      }
+
+      if (!remote && !recordId) {
         const ref = job.payload_reference || {};
         const created = await ragic.createParentWithStudentsInRagic({
           parent: { ...(ref.parent || {}), phone: parent.phone, name: parent.name },

@@ -82,7 +82,14 @@ const STABILITY_FLAGS = Object.freeze({
   get EXISTING_USER_LOCAL_FASTPATH() { return envFlag('EXISTING_USER_LOCAL_FASTPATH', true); },
   get PARENT_IDENTITY_RESOLVER_V2() { return envFlag('PARENT_IDENTITY_RESOLVER_V2', false); },
   get PARENT_LOCAL_FIRST() { return envFlag('PARENT_LOCAL_FIRST', true); },
-  get RAGIC_PARENT_OUTBOX() { return envFlag('RAGIC_PARENT_OUTBOX', false); },
+  // 2026-08-29 改為預設啟用。
+  //
+  // 關著的後果是：註冊走 local-first（建本地 + 排進 outbox）之後，寫回 Ragic 的
+  // 唯一途徑就沒人執行 —— 從 07/14 起累積 300+ 筆 pending、attempts 全是 0，
+  // 而家長每次開 App 都看到「Ragic Z01 查無剛寫入的會員資料」。
+  // 有些人之所以有 Ragic 編號，是靠另一條直接寫入的備援路徑補上的；
+  // 備援沒跑到就整筆漏掉。入口關著，後面做什麼都沒用。
+  get RAGIC_PARENT_OUTBOX() { return envFlag('RAGIC_PARENT_OUTBOX', true); },
   get LEGACY_CLAIM_AUTO_CREATE() { return envFlag('LEGACY_CLAIM_AUTO_CREATE', false); },
   get DESTRUCTIVE_RECONCILE_ENABLED() { return envFlag('DESTRUCTIVE_RECONCILE_ENABLED', false); },
   get PASSED_NOT_ON_FILE_ENABLED() { return envFlag('PASSED_NOT_ON_FILE_ENABLED', false); },
