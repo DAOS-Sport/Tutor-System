@@ -61,6 +61,9 @@ app.use((req, res, next) => _jsonParser(req, res, (err) => {
 }));
 app.use(express.urlencoded({ extended: true }));
 
+const { rejectNulBytes } = require('./middlewares/rejectNulBytes');
+app.use(rejectNulBytes);
+
 // ── Routes ──────────────────────────────────
 // ── MCP Server（Claude Desktop / Claude.ai 工作區遠端操控）────────────
 const { createMcpRouter } = require('./mcp');
@@ -290,10 +293,13 @@ app.use((err, req, res, next) => {
     (err instanceof SyntaxError && 'body' in err);
   if (isBodyParse) {
     const tooLarge = err.type === 'entity.too.large';
+    // 一定要帶 code：前端是靠 code 決定顯示什麼訊息的，
+    // 沒有 code 的錯誤在畫面上就變成一片空白或籠統的「資料載入失敗」。
     return res.status(tooLarge ? 413 : 400).json({
       error: tooLarge
         ? '上傳內容過大，請縮小後再試。'
         : '請求內容格式錯誤（JSON 解析失敗）；多半是頁面版本過舊，請重新整理頁面後再試。',
+      code: tooLarge ? 'PAYLOAD_TOO_LARGE' : 'BAD_JSON',
     });
   }
   console.error('[unhandled]', req.method, req.originalUrl, err.message);

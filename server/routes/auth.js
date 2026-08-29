@@ -530,9 +530,13 @@ router.post('/verify-phone', requireFlowToken, verifyPhoneRateLimit, async (req,
       multipleZ03Families = true;
     }
     if (z03ByPhone || multipleZ03Families) {
-      const newToken = signFlowToken({
-        lineUid, phone, attempts: 0, studentName: normalizeStudentName(studentName),
-      });
+      // S2 只驗電話，學員姓名要到 S3 才問 —— 這裡不可能知道它。
+      // 原本這行寫 studentName: normalizeStudentName(studentName)，而 studentName
+      // 在這個 scope 從未宣告，於是只要電話命中 Z03 待處理記錄就必定拋
+      // ReferenceError → 500「查詢失敗」。命中這條分支的正是「註冊到一半沒完成」
+      // 的那群人（正式站 873 支電話），他們會卡在第一關而且看不出原因。
+      // 與下面 Ragic 命中的分支一致：只帶 phone，姓名交給 S3 驗證後再寫進 token。
+      const newToken = signFlowToken({ lineUid, phone, attempts: 0 });
       return respond(200, { status: 'found', reason: 'z03_pending', flow_token: newToken });
     }
 
@@ -1100,6 +1104,15 @@ async function _registerParentCore(req, res, resolveLineUid) {
       }
       if (!ISO_DATE_RE.test(birthDate) || Number.isNaN(new Date(`${birthDate}T00:00:00+08:00`).getTime())) {
         return res.status(400).json({ error: `第 ${i + 1} 位學員出生年月日格式錯誤`, code: 'STUDENT_BIRTH_DATE_INVALID' });
+      }
+      // 還沒出生的學員不存在。原本只驗格式，所以 2119-01-01 會被原封不動收下 ——
+      // 手滑把年份打成 21xx 沒有任何提示，錯誤要等到分齡分班或保險資料才被發現。
+      // 在入口擋住比事後對帳便宜太多。
+      if (new Date(`${birthDate}T00:00:00+08:00`).getTime() > Date.now()) {
+        return res.status(400).json({
+          error: `第 ${i + 1} 位學員出生年月日不可以是未來日期`,
+          code: 'STUDENT_BIRTH_DATE_INVALID',
+        });
       }
       const studentGender = String(s.gender || '').trim();
       if (!studentGender) {

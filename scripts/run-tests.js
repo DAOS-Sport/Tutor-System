@@ -77,6 +77,7 @@ const UNIT = [
   'tests/parent_missing_email_test.js',
   'tests/missing_email_banner_test.js',
   'tests/identity_claim_constraint_test.js',
+  'tests/register_input_guards_test.js',
   'tests/rate_limit_test.js',
   'tests/ragic_canary_state_test.js',
   'tests/lifeguard_login_test.js',
