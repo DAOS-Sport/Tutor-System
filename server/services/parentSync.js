@@ -194,6 +194,33 @@ async function hardDeleteStudentIfSafe(client, studentId) {
  *    已於稍早寫回 Ragic，這裡讀回的就是合併後的權威狀態，可以覆蓋。
  *  - venuesMap：見 _resolveVenueId 說明，批次同步用。
  */
+/**
+ * 建檔缺 Email 的統一提醒。
+ *
+ * 為什麼放在這裡：系統有十二處會建立本地家長（註冊表單、手機綁定、Z03 認領、
+ * Ragic 拉回、備份同步、後台建檔…），但 Email 必填只有註冊表單那一道在擋
+ * （auth.js 的 EMAIL_REQUIRED）。其餘每一條都是直接拿 Ragic 的資料建檔，
+ * Ragic 上沒有 Email 就跟著沒有 —— 一棟十二個門的房子只有一個門口在驗證。
+ *
+ * 而 Ragic 的 Z01「(報)Email」是必填欄，所以這些人之後：
+ *   寫不回 Ragic（RAGIC_VALIDATION_ERROR）、加不了學員（Z01_INCOMPLETE）、
+ *   每次開 App 都看到「Ragic Z01 查無剛寫入的會員資料」。
+ * 2026-08-29 盤點：555 位在職家長裡有 59 位如此，佔 10.6%，牽連 75 位學員。
+ *
+ * 這裡刻意「不擋」：Ragic 上本來就沒 Email 的舊生若被擋，等於綁不了帳號 ——
+ * 那是把資料品質問題換成一個新的停擺。改成留下明確痕跡，讓它可以被追，
+ * 而不是安靜地累積到某天有人問「為什麼這家永遠同步失敗」。
+ */
+function _warnMissingEmail(parent, source) {
+  if (String(parent?.email || '').trim()) return;
+  const ph = String(parent?.phone || '');
+  console.warn(
+    `[parent-upsert] 建檔缺 Email：${ph.slice(0, 4)}****${ph.slice(-2)}`
+    + `（來源 ${source}${parent?.ragic_record_id ? `，Z01#${parent.ragic_record_id}` : '，尚未建檔'}）`
+    + ' —— 此家長無法寫回 Ragic、無法新增學員，需請櫃檯補齊 Email。'
+  );
+}
+
 async function upsertLocalParent(client, mapped, lineUid, { reactivate = true, venuesMap = null, overwriteLineUid = false, preservePending = true } = {}) {
   const name  = mapped.name  || '未命名家長';
   const phone = normalizePhone(mapped.phone);
@@ -255,6 +282,7 @@ async function upsertLocalParent(client, mapped, lineUid, { reactivate = true, v
       }
       throw err;
     }
+    _warnMissingEmail(parent, 'insert');
   } else {
     parent = (await client.query(
       `UPDATE parents SET
