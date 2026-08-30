@@ -96,6 +96,19 @@ export default function DateTimePicker({
   const [open, setOpen] = useState(false);
   const [pickingMonth, setPickingMonth] = useState(false);
   const boxRef = useRef(null);
+  const yearListRef = useRef(null);
+
+  // 年份清單可能有一百項。展開年月面板時把目前選到的年份捲到中間，
+  // 否則使用者一打開看到的是清單頂端，還要自己捲很久才找得到。
+  useEffect(() => {
+    if (!pickingMonth) return;
+    const list = yearListRef.current;
+    if (!list) return;
+    const target = list.querySelector('[data-year="' + viewY + '"]');
+    if (target && typeof target.scrollIntoView === 'function') {
+      target.scrollIntoView({ block: 'center' });
+    }
+  }, [pickingMonth]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const parsed = parse(value, mode);
   const minP = parse(min, mode);
@@ -289,15 +302,31 @@ export default function DateTimePicker({
 
           {pickingMonth ? (
             <div>
-              <select
-                aria-label="年份" value={viewY}
-                onChange={(e) => setViewY(Number(e.target.value))}
-                className="mb-2 min-h-[44px] w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm font-mono md:min-h-0 tabular-nums focus:border-brand-teal focus:outline-none"
+              {/* 年份不用原生 <select>：它在 LINE 內建瀏覽器開的是系統對話框，
+                  對話框關閉時 WebView 補送的滑鼠事件會被判成「點到面板外面」，
+                  面板就自己關掉 —— 家長回報的「生日填完月份就跳掉」就是這個。
+                  改成面板內的按鈕，沒有對話框可言。
+                  清單很長（生日欄位是 100 年），所以可捲動＋開啟時把目前年份捲到中間。 */}
+              <div
+                ref={yearListRef}
+                role="group"
+                aria-label="年份"
+                className="mb-2 max-h-52 overflow-y-auto overscroll-contain rounded-lg border border-gray-300 p-1"
               >
-                {Array.from({ length: yearTo - yearFrom + 1 }, (_, i) => yearTo - i).map((y) => (
-                  <option key={y} value={y}>{y} 年</option>
-                ))}
-              </select>
+                <div className="grid grid-cols-4 gap-1">
+                  {Array.from({ length: yearTo - yearFrom + 1 }, (_, i) => yearTo - i).map((y) => (
+                    <button
+                      key={y} type="button"
+                      data-year={y}
+                      onClick={() => setViewY(y)}
+                      className={`min-h-[44px] md:min-h-0 rounded-md py-1.5 font-mono text-[13px] tabular-nums transition ${
+                        y === viewY ? 'bg-brand-primary font-bold text-white'
+                          : 'font-medium text-gray-700 hover:bg-gray-100'
+                      }`}
+                    >{y}</button>
+                  ))}
+                </div>
+              </div>
               <div className="grid grid-cols-3 gap-1">
                 {MONTHS.map((m, i) => {
                   const mo = i + 1;

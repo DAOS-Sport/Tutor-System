@@ -1,22 +1,36 @@
 /**
- * 日期選擇器「什麼時候該關閉」的判斷。
+ * 日期選擇器：什麼時候該關閉、以及面板裡不可以有原生 <select>。
  *
- * 家長回報：註冊填生日、填完月份，畫面就跳掉。桌機 Chrome 與 375px 手機模擬
- * 都重現不出來 —— 差別在原生 <select>（面板裡選年份那個）：桌機開行內下拉，
- * LINE 內建瀏覽器開的是系統對話框，而對話框關閉時 WebView 會補送一顆
- * mousedown，target 是 document/body 或已被移除的節點。
+ * 家長回報：註冊／新增學員填生日，填完月份畫面就跳掉。桌機 Chrome 與 375px
+ * 手機模擬都重現不出來 —— 差別在原生 <select>（面板裡選年份那個）：
+ * 桌機開行內下拉，LINE 內建瀏覽器（Android WebView / iOS WKWebView）開的是
+ * **系統對話框**，而對話框關閉時 WebView 會補送一顆 mousedown，
+ * target 是 document/body 或已被移除的節點。
  * 舊寫法只問 contains()，這種事件一律被判成「點到外面」→ 面板關掉。
  *
- * 這支測試釘住的是：那類事件不可以關閉面板，而真正的外部點擊仍然要關。
+ * 兩層防護，這裡都釘住：
+ *   1. 事件層：改用 pointerdown，且忽略沒有真正目標的事件
+ *   2. 源頭：年份不再用原生 <select>，沒有對話框可言
  *
- * ⚠️ 誠實記一筆：LINE 內建瀏覽器我沒有辦法在這裡跑，所以「這就是家長遇到的
- * 那個 bug」仍然是假設，不是已證實。這裡證實的是「這條路徑本來會誤關，現在不會」。
+ * ⚠️ 誠實記一筆：LINE 內建瀏覽器沒辦法在這裡跑，所以「這就是家長遇到的那個
+ * bug」仍是假設。這裡證實的是「這條路徑本來會誤關，現在不會」。
  */
 const assert = require('assert');
 const path = require('path');
+const fs = require('fs');
 
 let n = 0;
 const t = (name, fn) => { fn(); n += 1; console.log('  PASS  ' + name); };
+
+const PICKER = path.resolve(__dirname, '../client/shared/DateTimePicker.jsx');
+
+/** 去掉 JSX 註解與 JS 註解。說明文字裡就寫著 <select>，不濾掉的話斷言永遠通過。 */
+function stripComments(src) {
+  return src
+    .replace(/\{\/\*[\s\S]*?\*\/\}/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n]*/g, '');
+}
 
 // 夠用的假 DOM：只要有 contains / isConnected / ownerDocument 就測得動
 function makeDom() {
@@ -32,10 +46,10 @@ function makeDom() {
   doc.body = mk('body');
   doc.documentElement = mk('html');
   const box = mk('box');
-  const 面板內的年份select = mk('select');
+  const 面板內的元素 = mk('inner');
   const 面板外的按鈕 = mk('other');
-  box.children.push(面板內的年份select);
-  return { doc, box, 面板內的年份select, 面板外的按鈕, mk };
+  box.children.push(面板內的元素);
+  return { doc, box, 面板內的元素, 面板外的按鈕, mk };
 }
 
 (async () => {
@@ -44,7 +58,7 @@ function makeDom() {
 
   t('點面板裡面：不關', () => {
     const d = makeDom();
-    assert.strictEqual(shouldCloseOnOutsidePointer(d.box, d.面板內的年份select), false);
+    assert.strictEqual(shouldCloseOnOutsidePointer(d.box, d.面板內的元素), false);
     assert.strictEqual(shouldCloseOnOutsidePointer(d.box, d.box), false);
   });
 
@@ -64,8 +78,7 @@ function makeDom() {
 
   t('target 已從 DOM 移除：不關', () => {
     const d = makeDom();
-    const 剛被卸載的節點 = d.mk('stale', false);
-    assert.strictEqual(shouldCloseOnOutsidePointer(d.box, 剛被卸載的節點), false,
+    assert.strictEqual(shouldCloseOnOutsidePointer(d.box, d.mk('stale', false)), false,
       'React 剛卸載掉的節點，或 WebView 補送的事件 —— 都不是使用者的操作');
   });
 
@@ -77,12 +90,24 @@ function makeDom() {
   });
 
   t('選擇器用 pointerdown 而不是 mousedown', () => {
-    const fs = require('fs');
-    const src = fs.readFileSync(path.resolve(__dirname, '../client/shared/DateTimePicker.jsx'), 'utf8')
-      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    const src = stripComments(fs.readFileSync(PICKER, 'utf8'));
     assert.ok(/addEventListener\('pointerdown'/.test(src), '要掛 pointerdown');
     assert.ok(!/addEventListener\('mousedown'/.test(src),
       'mousedown 會收到 WebView 在系統對話框關閉後補送的事件');
+  });
+
+  t('年月面板裡沒有原生 <select>（那是系統對話框的來源）', () => {
+    const src = stripComments(fs.readFileSync(PICKER, 'utf8'));
+    const i = src.indexOf('pickingMonth ? (');
+    assert.ok(i > 0, '找不到年月選擇區塊');
+    const j = src.indexOf(') : (', i);
+    assert.ok(j > i, '找不到年月區塊的結尾');
+    const 年月區塊 = src.slice(i, j);
+    assert.ok(!/<select/.test(年月區塊),
+      '年份用原生 <select> 的話，LINE 內建瀏覽器會開系統對話框；'
+      + '對話框關閉時 WebView 補送的事件會把面板關掉 —— 那就是家長遇到的'
+      + '「生日填完月份就跳掉」。改成面板內的按鈕，才沒有對話框可言');
+    assert.ok(/data-year=/.test(年月區塊), '年份應該是一排可點的按鈕');
   });
 
   console.log('\n' + n + ' 個測試全數通過');
