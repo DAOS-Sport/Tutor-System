@@ -62,15 +62,40 @@ function initCronJobs() {
   // Local-first Z03 claims commit before Ragic. This worker is the only path
   // that writes the claimed LINE UID back; it never resolves or creates an
   // identity, and failed writes remain retryable/blocked in the outbox.
-  scheduleTaipei('*/5 * * * *', async () => {
+  //
+  // ── 2026-08-30：從「每 5 分鐘」改成夜間一次批次（使用者決策）──
+  // 理由：Ragic 對這套系統只是備份，白天沒有必要為了它整天打外部 API；
+  // 日間那些呼叫還會跟 00:30 的全量備份、01:30 的拉回搶同一把 ragic_sync 鎖
+  // （備份最近很常拿不到鎖）。
+  //
+  // 排在 00:30 備份「之前」：新家長先進 Ragic，備份再收尾，
+  // 01:30 拉回時才拿得到完整資料。
+  //
+  // 代價（明說，不要事後才發現）：家長註冊完，Ragic 上要等到當晚才看得到，
+  // 櫃檯當天查 Ragic 會查不到新戶——要即時看得到，請改看後台。
+  // 註冊本身不受影響：它一直都是本地先寫、佇列後補，從來不等這個排程。
+  scheduleTaipei('10 0 * * *', async () => {
     if (!ragicAdmin.ragicEnabled() || !process.env.RAGIC_FORM_Z01 || !STABILITY_FLAGS.RAGIC_PARENT_OUTBOX) return;
-    try {
-      const r = await processRagicSyncOutbox({ limit: 20 });
-      if (r.processed) {
-        console.log(`[Cron/RagicOutbox] processed=${r.processed} synced=${r.synced} retryable=${r.retryable} blocked=${r.blocked}`);
+    // 一次把佇列排空。原本每 5 分鐘 20 筆是夠的；改成一天一次之後若還是只做
+    // 20 筆，累積量會永遠追不上（正式站曾經積到 295 筆）。分批跑到沒東西為止，
+    // 上限 60 輪＝1200 筆，避免單筆壞資料造成無窮迴圈。
+    const total = { processed: 0, synced: 0, retryable: 0, blocked: 0 };
+    for (let round = 0; round < 60; round += 1) {
+      let r;
+      try {
+        r = await processRagicSyncOutbox({ limit: 20 });
+      } catch (err) {
+        console.warn('[Cron/RagicOutbox] failed:', err.code || err.message);
+        break;
       }
-    } catch (err) {
-      console.warn('[Cron/RagicOutbox] failed:', err.code || err.message);
+      if (!r || !r.processed) break;
+      total.processed += r.processed || 0;
+      total.synced    += r.synced || 0;
+      total.retryable += r.retryable || 0;
+      total.blocked   += r.blocked || 0;
+    }
+    if (total.processed) {
+      console.log(`[Cron/RagicOutbox] 夜間批次 processed=${total.processed} synced=${total.synced} retryable=${total.retryable} blocked=${total.blocked}`);
     }
   });
 
