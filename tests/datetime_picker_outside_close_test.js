@@ -89,11 +89,19 @@ function makeDom() {
     assert.strictEqual(shouldCloseOnOutsidePointer(d.box, undefined), false);
   });
 
-  t('選擇器用 pointerdown 而不是 mousedown', () => {
+  t('關閉面板是掛在 pointerdown，不是 mousedown', () => {
     const src = stripComments(fs.readFileSync(PICKER, 'utf8'));
-    assert.ok(/addEventListener\('pointerdown'/.test(src), '要掛 pointerdown');
-    assert.ok(!/addEventListener\('mousedown'/.test(src),
-      'mousedown 會收到 WebView 在系統對話框關閉後補送的事件');
+    // 只看「負責關閉面板」的那個 effect。檔案別處可以有 mousedown ——
+    // 診斷浮層就被動監聽它，為的正是驗證 WebView 到底有沒有補送那顆事件；
+    // 那是觀察，不是行為。這條斷言要管的是行為。
+    const i = src.indexOf('shouldCloseOnOutsidePointer(boxRef.current');
+    assert.ok(i > 0, '找不到外部點擊關閉的處理');
+    const 區塊 = src.slice(Math.max(0, i - 400), i + 900);
+    assert.ok(/addEventListener\('pointerdown', onDown\)/.test(區塊),
+      '關閉面板要掛 pointerdown');
+    assert.ok(!/addEventListener\('mousedown', onDown/.test(區塊),
+      '用 mousedown 關面板會收到 WebView 在系統對話框關閉後補送的事件 —— '
+      + '那正是家長遇到的「填完月份就跳掉」');
   });
 
   t('年月面板裡沒有原生 <select>（那是系統對話框的來源）', () => {

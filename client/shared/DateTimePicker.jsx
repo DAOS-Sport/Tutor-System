@@ -25,6 +25,31 @@ const WEEKDAY = ['日', '一', '二', '三', '四', '五', '六'];
 const MONTHS = ['1 月', '2 月', '3 月', '4 月', '5 月', '6 月', '7 月', '8 月', '9 月', '10 月', '11 月', '12 月'];
 const pad2 = (n) => String(n).padStart(2, '0');
 
+// 診斷模式：只有網址帶 ?pickerdebug=1 才啟用。沒帶就完全不做事。
+// 用途見檔案底部的浮層：家長回報「填完月份就跳掉」在桌機重現不出來，
+// 需要現場的事件紀錄才能確定是什麼把面板關掉的。
+const PICKER_DEBUG = (() => {
+  try {
+    return typeof window !== 'undefined' && /[?&]pickerdebug=1/.test(window.location.search || '');
+  } catch { return false; }
+})();
+
+function describeTarget(t) {
+  try {
+    if (t == null) return String(t);
+    if (typeof t !== 'object') return typeof t;
+    if (typeof document !== 'undefined') {
+      if (t === document) return 'document';
+      if (t === document.body) return 'body';
+      if (t === document.documentElement) return 'html';
+    }
+    const tag = (t.tagName || t.nodeName || '?').toLowerCase();
+    const cls = String(t.className || '').split(/\s+/).filter(Boolean).slice(0, 2).join('.');
+    const conn = t.isConnected === false ? ' 已移除' : '';
+    return tag + (cls ? '.' + cls : '') + conn;
+  } catch { return '(讀不到)'; }
+}
+
 const RE = {
   date: /^(\d{4})-(\d{2})-(\d{2})$/,
   datetime: /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/,
@@ -97,6 +122,26 @@ export default function DateTimePicker({
   const [pickingMonth, setPickingMonth] = useState(false);
   const boxRef = useRef(null);
   const yearListRef = useRef(null);
+  const [debugLog, setDebugLog] = useState([]);
+  const note = (line) => {
+    if (!PICKER_DEBUG) return;
+    setDebugLog((prev) => [...prev.slice(-11), line]);
+  };
+
+  // 診斷用：mousedown 已經不再拿來關面板了，但還是被動記下來 ——
+  // 「WebView 在原生 select 對話框關閉後補送一顆 target=body 的 mousedown」
+  // 是目前對「填完月份就跳掉」的假設，這裡就是要驗證它到底有沒有發生。
+  useEffect(() => {
+    if (!PICKER_DEBUG || !open) return undefined;
+    const onMouse = (e) => note('mousedown ← ' + describeTarget(e.target));
+    const onPointer = (e) => note('pointerdown ← ' + describeTarget(e.target));
+    document.addEventListener('mousedown', onMouse, true);
+    document.addEventListener('pointerdown', onPointer, true);
+    return () => {
+      document.removeEventListener('mousedown', onMouse, true);
+      document.removeEventListener('pointerdown', onPointer, true);
+    };
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 年份清單可能有一百項。展開年月面板時把目前選到的年份捲到中間，
   // 否則使用者一打開看到的是清單頂端，還要自己捲很久才找得到。
@@ -142,8 +187,13 @@ export default function DateTimePicker({
     // 「註冊填生日、填完月份就跳掉」對得上這條路徑（桌機重現不出來，
     // 因為桌機的 select 是行內下拉，不會有系統對話框）。
     // 判斷條件見 outsideClose.js，那裡有測試守著。
-    const onDown = (e) => { if (shouldCloseOnOutsidePointer(boxRef.current, e.target)) setOpen(false); };
-    const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
+    const onDown = (e) => {
+      if (shouldCloseOnOutsidePointer(boxRef.current, e.target)) {
+        note('★ 判定為點到外面 → 關閉（' + describeTarget(e.target) + '）');
+        setOpen(false);
+      }
+    };
+    const onKey = (e) => { if (e.key === 'Escape') { note('★ Esc → 關閉'); setOpen(false); } };
     document.addEventListener('pointerdown', onDown);
     document.addEventListener('keydown', onKey);
     return () => { document.removeEventListener('pointerdown', onDown); document.removeEventListener('keydown', onKey); };
@@ -218,6 +268,7 @@ export default function DateTimePicker({
   const yearTo = maxP ? maxP.y : today.y + 5;
 
   function pickDay(d) {
+    note('選了日：' + viewY + '/' + viewMo + '/' + d);
     emit({ ...(parsed || { hh: 0, mi: 0 }), y: viewY, mo: viewMo, d });
     if (mode === 'date') setOpen(false);   // 純日期選完就沒別的事了
   }
@@ -274,6 +325,16 @@ export default function DateTimePicker({
         </span>
       </button>
 
+      {PICKER_DEBUG && debugLog.length > 0 && (
+        <div className="fixed inset-x-1 bottom-1 z-50 max-h-44 overflow-y-auto rounded-lg bg-black/85 p-2 text-[10px] leading-4 text-lime-300"
+             style={{ fontFamily: 'monospace' }}>
+          <div className="mb-1 font-bold text-white">
+            選擇器診斷（面板 {open ? '開' : '關'}）— 截圖給工程師
+          </div>
+          {debugLog.map((l, i) => <div key={i}>{l}</div>)}
+        </div>
+      )}
+
       {/* panel 要等 effect 量完才有值：先畫再修正會在 375px 上看到面板從畫面外
           彈回來的那一幀。寧可晚一個 frame 出現。 */}
       {open && panel && (
@@ -318,7 +379,7 @@ export default function DateTimePicker({
                     <button
                       key={y} type="button"
                       data-year={y}
-                      onClick={() => setViewY(y)}
+                      onClick={() => { note('選了年：' + y); setViewY(y); }}
                       className={`min-h-[44px] md:min-h-0 rounded-md py-1.5 font-mono text-[13px] tabular-nums transition ${
                         y === viewY ? 'bg-brand-primary font-bold text-white'
                           : 'font-medium text-gray-700 hover:bg-gray-100'
@@ -334,7 +395,7 @@ export default function DateTimePicker({
                     || (!!minDay && dayKey(viewY, mo, daysInMonth(viewY, mo)) < minDay);
                   return (
                     <button key={m} type="button" disabled={blocked}
-                      onClick={() => { setViewMo(mo); setPickingMonth(false); }}
+                      onClick={() => { note('選了月：' + mo); setViewMo(mo); setPickingMonth(false); }}
                       className={`min-h-[44px] rounded-lg py-2 text-[13px] transition md:min-h-0 ${
                         mo === viewMo ? 'bg-brand-primary font-bold text-white'
                           : blocked ? 'cursor-not-allowed text-gray-200'
