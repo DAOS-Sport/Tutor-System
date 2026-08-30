@@ -2768,6 +2768,35 @@ async function ensureCourseIntroFK() {
   `);
 }
 
+/**
+ * 前端診斷回報。
+ *
+ * 家長回報「註冊填生日就跳掉」查不到任何東西，是因為畫面在送出前就壞了，
+ * 伺服器端沒收到請求。八月有 71 人登入後從未完成建檔（24%），全部沒有痕跡。
+ * 這張表就是把那段空白補起來。
+ *
+ * 保留 30 天：這是拿來查現行問題的，不是稽核紀錄，沒有長期保存的理由，
+ * 而且它是對外開放端點寫入的，必須有上界。
+ */
+async function ensureClientDiagnostics() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS client_diagnostics (
+      id          BIGSERIAL PRIMARY KEY,
+      kind        TEXT NOT NULL,
+      reason      TEXT,
+      path        TEXT,
+      user_agent  TEXT,
+      events      JSONB NOT NULL DEFAULT '[]'::jsonb,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_client_diag_created ON client_diagnostics(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_client_diag_kind    ON client_diagnostics(kind, created_at DESC);
+  `);
+  await pool.query(
+    `DELETE FROM client_diagnostics WHERE created_at < NOW() - INTERVAL '30 days'`
+  ).catch(() => {});
+}
+
 async function bootstrap() {
   try {
     await ensureSchema();
@@ -2787,6 +2816,7 @@ async function bootstrap() {
     await seedCourseTypeConfigs();
     await ensureCourseIntroFK();
     await ensureChatRoomsForActivePeriods();
+    await ensureClientDiagnostics();
     console.log('[core bootstrap] ready');
   } catch (err) {
     console.error('[core bootstrap] FAILED:', err.message);

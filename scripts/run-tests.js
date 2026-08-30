@@ -80,6 +80,7 @@ const UNIT = [
   'tests/register_input_guards_test.js',
   'tests/datetime_picker_outside_close_test.js',
   'tests/ragic_outbox_nightly_test.js',
+  'tests/client_diagnostics_test.js',
   'tests/rate_limit_test.js',
   'tests/ragic_canary_state_test.js',
   'tests/lifeguard_login_test.js',

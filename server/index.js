@@ -92,6 +92,8 @@ app.use('/api/ragic-webhook', require('./routes/ragicWebhook'));  // Ragic webho
 app.use('/api/admin',         require('./routes/admin'));
 // U16 整合 API：場館現場的外部前端（救生台等）查當下課表。服務金鑰 + 場館綁定，唯讀。
 app.use('/api/integrations', require('./routes/integrations'));
+// 前端診斷回報：家長端畫面壞在送出之前時，唯一留得下證據的通道。
+app.use('/api/diagnostics', require('./routes/diagnostics'));
 
 // 舊 LINE Console 曾被文件指向無 `/api` 前綴的 callback。相容入口不接收 OAuth
 // code/state，也不會建立或綁定帳號；安全地丟棄 query 後回正式 LIFF bind 頁，

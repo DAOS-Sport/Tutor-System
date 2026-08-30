@@ -34,6 +34,41 @@ const PICKER_DEBUG = (() => {
   } catch { return false; }
 })();
 
+// 一次頁面載入最多回報 3 筆。診斷不該變成另一個問題。
+let _reportsLeft = 3;
+
+/**
+ * 把「面板異常關閉」的現場送回伺服器。
+ *
+ * 為什麼要這個：家長回報「註冊填生日就跳掉」，查了好幾週查不到任何東西 ——
+ * 畫面在送出前就壞了，伺服器端沒收到請求，當然沒有 log。
+ * 八月有 71 人登入 LINE 之後從未完成建檔（24%），全部沒有痕跡。
+ *
+ * 只送「發生了什麼」（事件分類、目標元素的標籤名），
+ * 不送使用者填了什麼 —— 沒有姓名、沒有生日、沒有電話。
+ * 失敗一律安靜：診斷回報自己出錯，絕不可以影響正在註冊的家長。
+ */
+function reportPickerAnomaly(kind, reason, events) {
+  if (_reportsLeft <= 0) return;
+  _reportsLeft -= 1;
+  try {
+    const payload = JSON.stringify({
+      kind,
+      reason: String(reason || '').slice(0, 60),
+      path: (typeof window !== 'undefined' && window.location.pathname) || '',
+      events: (events || []).slice(-20),
+    });
+    const url = '/api/diagnostics/client';
+    // sendBeacon 在頁面被關掉時仍送得出去 —— 而「畫面跳掉」正是這種情境。
+    if (typeof navigator !== 'undefined' && navigator.sendBeacon) {
+      navigator.sendBeacon(url, new Blob([payload], { type: 'application/json' }));
+      return;
+    }
+    fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: payload, keepalive: true }).catch(() => {});
+  } catch { /* 診斷失敗不影響任何事 */ }
+}
+
 function describeTarget(t) {
   try {
     if (t == null) return String(t);
@@ -123,16 +158,22 @@ export default function DateTimePicker({
   const boxRef = useRef(null);
   const yearListRef = useRef(null);
   const [debugLog, setDebugLog] = useState([]);
+  // 事件軌跡一律收集（記憶體裡，上限 20 筆）。只有偵測到異常時才會送出去；
+  // 只有加了 ?pickerdebug=1 才會畫在畫面上。
+  const trailRef = useRef([]);
+  const pickedRef = useRef(false);    // 這次開啟有沒有真的選到日期
+  const engagedRef = useRef(false);   // 有沒有選過年或月（＝正在填，不是隨手點開）
+  const wasOpenRef = useRef(false);
   const note = (line) => {
-    if (!PICKER_DEBUG) return;
-    setDebugLog((prev) => [...prev.slice(-11), line]);
+    trailRef.current = [...trailRef.current.slice(-19), line];
+    if (PICKER_DEBUG) setDebugLog((prev) => [...prev.slice(-11), line]);
   };
 
   // 診斷用：mousedown 已經不再拿來關面板了，但還是被動記下來 ——
   // 「WebView 在原生 select 對話框關閉後補送一顆 target=body 的 mousedown」
   // 是目前對「填完月份就跳掉」的假設，這裡就是要驗證它到底有沒有發生。
   useEffect(() => {
-    if (!PICKER_DEBUG || !open) return undefined;
+    if (!open) return undefined;
     const onMouse = (e) => note('mousedown ← ' + describeTarget(e.target));
     const onPointer = (e) => note('pointerdown ← ' + describeTarget(e.target));
     document.addEventListener('mousedown', onMouse, true);
@@ -191,6 +232,10 @@ export default function DateTimePicker({
       if (shouldCloseOnOutsidePointer(boxRef.current, e.target)) {
         note('★ 判定為點到外面 → 關閉（' + describeTarget(e.target) + '）');
         setOpen(false);
+      } else if (!boxRef.current || !boxRef.current.contains(e.target)) {
+        // 守門把它攔下來了。這一筆很重要：如果家長的現場真的會出現
+        // target=body / 已移除節點的事件，這裡就是唯一的證據。
+        note('守門攔下（' + describeTarget(e.target) + '）');
       }
     };
     const onKey = (e) => { if (e.key === 'Escape') { note('★ Esc → 關閉'); setOpen(false); } };
@@ -241,6 +286,34 @@ export default function DateTimePicker({
     return () => { window.removeEventListener('scroll', place, true); window.removeEventListener('resize', place); };
   }, [open]);
 
+  // 異常偵測。回報條件刻意收得很窄：使用者「已經選過年或月」，
+  // 面板卻在還沒選到日期時關掉 —— 那正是家長描述的「填完月份就跳掉」。
+  // 正常人選完月份後直接取消是很少見的，所以這個訊號雜訊低。
+  useEffect(() => {
+    if (wasOpenRef.current && !open) {
+      if (engagedRef.current && !pickedRef.current) {
+        reportPickerAnomaly('picker_closed_without_pick',
+          '選過年或月之後，面板在未選到日期前關閉', trailRef.current);
+      }
+      pickedRef.current = false;
+      engagedRef.current = false;
+      trailRef.current = [];
+    }
+    wasOpenRef.current = open;
+  }, [open]);
+
+  // 點了欄位但面板始終沒出現（量測 effect 沒跑完 / 被祖先裁掉等）。
+  // 對使用者來說就是「點了沒反應」，一樣填不了生日。
+  useEffect(() => {
+    if (!open) return undefined;
+    const t = setTimeout(() => {
+      if (!panel) {
+        reportPickerAnomaly('picker_panel_never_shown', '面板開啟後 2 秒仍未定位', trailRef.current);
+      }
+    }, 2000);
+    return () => clearTimeout(t);
+  }, [open, panel]);
+
   const minDay = minP ? dayKey(minP.y, minP.mo, minP.d) : null;
   const maxDay = maxP ? dayKey(maxP.y, maxP.mo, maxP.d) : null;
   const todayKey = dayKey(today.y, today.mo, today.d);
@@ -268,6 +341,7 @@ export default function DateTimePicker({
   const yearTo = maxP ? maxP.y : today.y + 5;
 
   function pickDay(d) {
+    pickedRef.current = true;
     note('選了日：' + viewY + '/' + viewMo + '/' + d);
     emit({ ...(parsed || { hh: 0, mi: 0 }), y: viewY, mo: viewMo, d });
     if (mode === 'date') setOpen(false);   // 純日期選完就沒別的事了
@@ -379,7 +453,7 @@ export default function DateTimePicker({
                     <button
                       key={y} type="button"
                       data-year={y}
-                      onClick={() => { note('選了年：' + y); setViewY(y); }}
+                      onClick={() => { engagedRef.current = true; note('選了年：' + y); setViewY(y); }}
                       className={`min-h-[44px] md:min-h-0 rounded-md py-1.5 font-mono text-[13px] tabular-nums transition ${
                         y === viewY ? 'bg-brand-primary font-bold text-white'
                           : 'font-medium text-gray-700 hover:bg-gray-100'
@@ -395,7 +469,7 @@ export default function DateTimePicker({
                     || (!!minDay && dayKey(viewY, mo, daysInMonth(viewY, mo)) < minDay);
                   return (
                     <button key={m} type="button" disabled={blocked}
-                      onClick={() => { note('選了月：' + mo); setViewMo(mo); setPickingMonth(false); }}
+                      onClick={() => { engagedRef.current = true; note('選了月：' + mo); setViewMo(mo); setPickingMonth(false); }}
                       className={`min-h-[44px] rounded-lg py-2 text-[13px] transition md:min-h-0 ${
                         mo === viewMo ? 'bg-brand-primary font-bold text-white'
                           : blocked ? 'cursor-not-allowed text-gray-200'
