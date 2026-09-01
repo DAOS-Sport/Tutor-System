@@ -139,6 +139,17 @@ function timeline(item, detailed) {
   // 不知道其實是家長要補件 —— 他會去催櫃檯，但卡的是家長。
   if (item.returned_at) out.push({ k: 'returned', label: '退回補件', value: fmt(item.returned_at) });
   if (item.invoice_issued_at) out.push({ k: 'reconciled', label: '對帳完成', value: fmt(item.invoice_issued_at) });
+  // 2026-09-01 需求：對帳完成時間下面要有課程期限（後端算好，釘在當天 23:59）。
+  // 剩餘天數一併帶出來 —— 只寫日期的話，教練還要自己心算「還剩多久」，
+  // 而那正是這個欄位存在的理由。
+  if (item.course_expires_at) {
+    const left = item.days_left;
+    const suffix = left === null || left === undefined ? ''
+      : left < 0 ? '（已過期）'
+        : left === 0 ? '（今天到期）'
+          : `（剩 ${left} 天）`;
+    out.push({ k: 'expires', label: '課程期限', value: fmt(item.course_expires_at) + suffix });
+  }
   return out;
 }
 

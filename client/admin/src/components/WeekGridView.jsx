@@ -16,11 +16,16 @@ import { courseTypeLabel } from '../utils/format';
  */
 
 const DOW = ['日', '一', '二', '三', '四', '五', '六'];
-const TONE = {
-  1: 'border-brand-teal/40 bg-brand-teal/10 text-brand-teal',
-  2: 'border-brand-amber/40 bg-brand-amber/10 text-brand-amber',
-  3: 'border-brand-green/40 bg-brand-green/10 text-brand-green',
-};
+// 2026-09-01 需求：週課表改成依「場館」上色，並在表格上方標圖例。
+// 原本是依組別（1/2/3 人班）上色 —— 但週課表最多同時看 3 個場館，
+// 使用者在這個畫面要分辨的是「哪一堂在哪一館」，不是幾人班（那個格子裡有寫）。
+// 順序必須與 SessionsPage 的 VENUE_SWATCH 一致，兩邊都用 venueOrder 的索引取色。
+const VENUE_TONE = [
+  'border-brand-teal/40 bg-brand-teal/10 text-brand-teal',
+  'border-brand-amber/40 bg-brand-amber/10 text-brand-amber',
+  'border-brand-green/40 bg-brand-green/10 text-brand-green',
+];
+const FALLBACK_TONE = 'border-gray-300 bg-gray-50 text-gray-700';
 
 // Task #55：以「分鐘」為單位處理；half-hour grid 用 30 分鐘 slot
 function parseMinutes(t) {
@@ -44,8 +49,14 @@ function dateAdd(iso, days) {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
 }
 
-export default function WeekGridView({ sessions, from, to, venues, onSelect }) {
+export default function WeekGridView({ sessions, from, to, venues, venueOrder = [], onSelect }) {
   const venueName = (id) => venues.find((v) => v.id === id)?.name || id;
+  // venueOrder 由呼叫端決定（＝圖例的順序）。不在清單裡的場館用灰色，
+  // 而不是硬塞一個顏色 —— 圖例上沒有的顏色出現在格子裡，比沒有顏色更糟。
+  const toneOf = (venueId) => {
+    const i = venueOrder.indexOf(venueId);
+    return i >= 0 ? (VENUE_TONE[i] || FALLBACK_TONE) : FALLBACK_TONE;
+  };
 
   const { slots, weeks } = useMemo(() => {
     let minM = 9 * 60; let maxM = 21 * 60;
@@ -135,7 +146,7 @@ export default function WeekGridView({ sessions, from, to, venues, onSelect }) {
                             key={s.id}
                             type="button"
                             onClick={() => onSelect && onSelect(s)}
-                            className={`w-full rounded border px-1.5 py-1 text-left text-[11px] leading-tight ${TONE[s.course_type] || 'border-gray-300 bg-gray-50 text-gray-700'}`}
+                            className={`w-full rounded border px-1.5 py-1 text-left text-[11px] leading-tight ${toneOf(s.venue_id)}`}
                             title={`${s.start}-${s.end} ${venueName(s.venue_id)} ${s.coach}`}
                           >
                             <div className="font-semibold">{s.coach}・{courseTypeLabel(s.course_type)}</div>

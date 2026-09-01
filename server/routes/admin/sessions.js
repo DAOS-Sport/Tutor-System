@@ -200,7 +200,11 @@ router.get('/', requireAdminAuth, requireResource('sessions'), async (req, res) 
       args.push(venueIds);
       sql += ` AND t.venue_id = ANY($${args.length}::text[])`;
     }
-    sql += ` ORDER BY t.date, t.start_time`;
+    // 2026-09-01 需求：最新的排最上面，往下排到最舊。
+    // 救生員開這頁十之八九是要看剛剛那幾堂，升冪會把他要的東西推到最底。
+    // 這支 range API 只有 SessionsPage 在用（已確認唯一呼叫端）；
+    // 週課表依日期分桶，不受排序影響。
+    sql += ` ORDER BY t.date DESC, t.start_time DESC`;
     const r = await pool.query(sql, args);
     res.json(r.rows.map(rowToSession));
   } catch (err) {

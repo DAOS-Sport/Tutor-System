@@ -71,6 +71,51 @@ const COACH_ENROLLMENT_STATUSES = "('pending_payment','confirmed')";
  * batch_key 用 COALESCE(...::text, id)：confirmed 上 enrollment_batch_id 實測從不為
  * NULL，但這支也吃 pending_payment，退回自己的 id 等於「自成一筆」，不會整列消失。
  */
+/**
+ * 課程期限：對帳完成那一天 + 有效天數，時間釘在當天 23:59（台北）。
+ *
+ * 2026-09-01 需求：每筆報名要看得到期限，後台自動算剩餘天數。
+ *
+ * 釘 23:59 而不是「同一時刻」，是因為期限是講給人聽的日期概念 ——
+ * 早上十點對帳完成的單，期限應該是那天整天結束，不是隔年早上十點。
+ *
+ * 全程用 UTC 分量做日期運算再扣回時區偏移：直接 new Date(...) 取本地分量的話，
+ * 伺服器時區設錯就整批偏一天，而且沒有任何跡象。
+ */
+function courseExpiryAt(invoiceIssuedAt, validityDays) {
+  if (!invoiceIssuedAt) return null;
+  const days = Number(validityDays);
+  if (!Number.isFinite(days) || days <= 0) return null;
+  const taipei = new Date(new Date(invoiceIssuedAt).getTime() + 8 * 3600 * 1000);
+  const end = Date.UTC(
+    taipei.getUTCFullYear(), taipei.getUTCMonth(), taipei.getUTCDate() + days, 23, 59, 0
+  );
+  return new Date(end - 8 * 3600 * 1000);
+}
+
+/** 距離期限還剩幾天（不足一天算一天；已過期為負數）。 */
+function daysLeftUntil(expiresAt, now = new Date()) {
+  if (!expiresAt) return null;
+  return Math.ceil((expiresAt.getTime() - now.getTime()) / 86400000);
+}
+
+/** 課程有效天數。設定不存在時退回 bootstrap 的預設 365，不讓期限整批消失。 */
+const DEFAULT_VALIDITY_DAYS = 365;
+async function readValidityDays() {
+  try {
+    const r = await pool.query(`SELECT value FROM admin_settings WHERE key = 'validity_days'`);
+    const v = Number(r.rows[0]?.value);
+    return Number.isFinite(v) && v > 0 ? v : DEFAULT_VALIDITY_DAYS;
+  } catch {
+    return DEFAULT_VALIDITY_DAYS;
+  }
+}
+
+// 需求：首頁要顯示「3 個月內即將到期的組數」。
+// 92 天而不是「三個月」：跨月天數不固定，用月份算會讓同樣的說法在不同季節
+// 得到不同結果（2→4 月只有 89 天，7→9 月有 92 天）。
+const EXPIRING_SOON_DAYS = 92;
+
 const COACH_ORDER_CTE = `
   WITH scoped AS (
     SELECT ae.id, ae.status::text AS status, ae.parent_name, ae.students,
@@ -217,7 +262,34 @@ router.get('/coach/:coachId/enrollments', requireCoach, requireCoachOwner('coach
       if (counts[row.bucket] !== undefined) counts[row.bucket] = row.n;
       total += row.n;
     }
-    res.json({ counts, total, items: rowsRes.rows });
+    // 期限與剩餘天數在這裡算，不寫進 SQL：validity_days 是後台可調的設定，
+    // 放進 CTE 就得多帶一個參數穿過三層 CTE，錯位的代價遠大於這點迴圈成本。
+    const validityDays = await readValidityDays();
+    const now = new Date();
+    const items = rowsRes.rows.map((row) => {
+      const expiresAt = courseExpiryAt(row.invoice_issued_at, validityDays);
+      return {
+        ...row,
+        course_expires_at: expiresAt ? expiresAt.toISOString() : null,
+        days_left: daysLeftUntil(expiresAt, now),
+      };
+    });
+    // 只算「還在上的」：已完成的課期滿了本來就該過期，待對帳的還沒有期限可言。
+    // 把它們算進來，教練首頁會冒出一堆他根本不需要處理的數字。
+    const expiringItems = items
+      .filter((it) => it.bucket === 'in_progress'
+        && it.days_left !== null && it.days_left <= EXPIRING_SOON_DAYS)
+      .sort((a, b) => a.days_left - b.days_left);
+    res.json({
+      counts,
+      total,
+      items,
+      expiring: {
+        within_days: EXPIRING_SOON_DAYS,
+        count: expiringItems.length,
+        items: expiringItems,
+      },
+    });
   } catch (err) {
     console.error('[sessions coach enrollments]', err.message);
     res.status(500).json({ error: '報名狀態載入失敗' });

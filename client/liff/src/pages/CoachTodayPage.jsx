@@ -21,6 +21,9 @@ export default function CoachTodayPage() {
   const toast = useToast();
   const [sessions, setSessions] = useState(null);
   const [promos, setPromos] = useState(null);
+  // 2026-09-01 需求：首頁要顯示 3 個月內即將到期的組數與清單。
+  const [expiring, setExpiring] = useState(null);
+  const [expandExpiring, setExpandExpiring] = useState(false);
 
   useEffect(() => {
     if (!coach?.id) return;
@@ -28,6 +31,11 @@ export default function CoachTodayPage() {
     sessionsApi.todayByCoach(coach.id)
       .then((d) => alive && setSessions(d || []))
       .catch(() => { if (alive) { setSessions([]); toast.error('今日課程載入失敗'); } });
+    // 即將到期：附加資訊，失敗就安靜不顯示，不擋今日課程 ——
+    // 這一塊是提醒，不是教練今天上課必須看到的東西。
+    sessionsApi.enrollmentsByCoach(coach.id)
+      .then((d) => alive && setExpiring(d?.expiring || { count: 0, items: [] }))
+      .catch(() => { if (alive) setExpiring({ count: 0, items: [] }); });
     // 進行中優惠：附加資訊，失敗就安靜不顯示，不擋今日課程。
     sessionsApi.promotionsByCoach(coach.id)
       .then((d) => alive && setPromos(d?.promotions || []))
@@ -74,6 +82,57 @@ export default function CoachTodayPage() {
               </div>
             ))}
           </div>
+        </section>
+      )}
+
+      {/* 2026-09-01 需求：教練排卡下方、今日課程上方，顯示 3 個月內即將到期的組數。
+          0 組就整塊不出現 —— 常態是 0，天天顯示「0 組」只會讓人學會忽略它，
+          等真的有的時候也一起被忽略掉。 */}
+      {expiring && expiring.count > 0 && (
+        <section className="mb-5">
+          <button
+            type="button"
+            onClick={() => setExpandExpiring((v) => !v)}
+            className="flex w-full items-center justify-between gap-3 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-left active:opacity-80"
+          >
+            <div className="min-w-0">
+              <div className="text-sm font-bold text-amber-900">
+                3 個月內即將到期 {expiring.count} 組
+              </div>
+              <div className="mt-0.5 text-xs leading-5 text-amber-800">請提醒家長進行授課</div>
+            </div>
+            <span className="shrink-0 text-amber-700">{expandExpiring ? '收合' : '查看'}</span>
+          </button>
+
+          {expandExpiring && (
+            <div className="mt-2 space-y-2">
+              {expiring.items.map((it) => (
+                <div key={it.id} className="rounded-xl border border-gray-200 bg-white p-3">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <div className="min-w-0 text-sm font-bold text-gray-900">
+                      {(it.students || []).join('、') || '（無學員資料）'}
+                    </div>
+                    <div className={`shrink-0 text-xs font-bold ${
+                      it.days_left <= 0 ? 'text-brand-error' : 'text-amber-700'}`}>
+                      {it.days_left < 0 ? '已過期'
+                        : it.days_left === 0 ? '今天到期' : `剩 ${it.days_left} 天`}
+                    </div>
+                  </div>
+                  {/* 「是哪一筆報名」要看得出來：組別、場館、期別、堂數缺一不可 ——
+                      同一位學員可能有多期，只寫姓名教練找不到是哪一張單。 */}
+                  <div className="mt-1 text-[11px] leading-5 text-gray-500">
+                    {courseTypeLabel(it.course_type)}
+                    {it.venue_name ? `・${it.venue_name}` : ''}
+                    {it.period_number ? `・第 ${it.period_number} 期` : ''}
+                    {it.total_sessions ? `・${it.used_sessions ?? 0}/${it.total_sessions} 堂` : ''}
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-gray-400">
+                    期限 {formatPlainDate(it.course_expires_at)} 23:59
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </section>
       )}
 
