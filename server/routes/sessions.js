@@ -72,23 +72,30 @@ const COACH_ENROLLMENT_STATUSES = "('pending_payment','confirmed')";
  * NULL，但這支也吃 pending_payment，退回自己的 id 等於「自成一筆」，不會整列消失。
  */
 /**
- * 課程期限：對帳完成那一天 + 有效天數，時間釘在當天 23:59（台北）。
+ * 課程期限：對帳完成時間的「一年後」，時間釘在那一天的 23:59（台北）。
  *
- * 2026-09-01 需求：每筆報名要看得到期限，後台自動算剩餘天數。
+ * 2026-09-01 需求（使用者明確指定「期限是這個時間的一年後」）。
+ *
+ * 用日曆年（同月同日的隔年）而不是 365 天：使用者說的是「一年後」，
+ * 而閏年會讓 365 天比一年少一天 —— 8/7 對帳的單期限會變成隔年 8/6，
+ * 家長會覺得少一天，而且看不出為什麼。
  *
  * 釘 23:59 而不是「同一時刻」，是因為期限是講給人聽的日期概念 ——
  * 早上十點對帳完成的單，期限應該是那天整天結束，不是隔年早上十點。
  *
+ * 2/29 對帳的單，隔年沒有 2/29，Date.UTC 會滾到 3/1 —— 刻意不夾回 2/28：
+ * 期限往後一天對家長無害，往前一天則是憑空少了一天權益。
+ *
  * 全程用 UTC 分量做日期運算再扣回時區偏移：直接 new Date(...) 取本地分量的話，
  * 伺服器時區設錯就整批偏一天，而且沒有任何跡象。
  */
-function courseExpiryAt(invoiceIssuedAt, validityDays) {
+function courseExpiryAt(invoiceIssuedAt) {
   if (!invoiceIssuedAt) return null;
-  const days = Number(validityDays);
-  if (!Number.isFinite(days) || days <= 0) return null;
-  const taipei = new Date(new Date(invoiceIssuedAt).getTime() + 8 * 3600 * 1000);
+  const at = new Date(invoiceIssuedAt);
+  if (Number.isNaN(at.getTime())) return null;
+  const taipei = new Date(at.getTime() + 8 * 3600 * 1000);
   const end = Date.UTC(
-    taipei.getUTCFullYear(), taipei.getUTCMonth(), taipei.getUTCDate() + days, 23, 59, 0
+    taipei.getUTCFullYear() + 1, taipei.getUTCMonth(), taipei.getUTCDate(), 23, 59, 0
   );
   return new Date(end - 8 * 3600 * 1000);
 }
@@ -97,18 +104,6 @@ function courseExpiryAt(invoiceIssuedAt, validityDays) {
 function daysLeftUntil(expiresAt, now = new Date()) {
   if (!expiresAt) return null;
   return Math.ceil((expiresAt.getTime() - now.getTime()) / 86400000);
-}
-
-/** 課程有效天數。設定不存在時退回 bootstrap 的預設 365，不讓期限整批消失。 */
-const DEFAULT_VALIDITY_DAYS = 365;
-async function readValidityDays() {
-  try {
-    const r = await pool.query(`SELECT value FROM admin_settings WHERE key = 'validity_days'`);
-    const v = Number(r.rows[0]?.value);
-    return Number.isFinite(v) && v > 0 ? v : DEFAULT_VALIDITY_DAYS;
-  } catch {
-    return DEFAULT_VALIDITY_DAYS;
-  }
 }
 
 // 需求：首頁要顯示「3 個月內即將到期的組數」。
@@ -262,12 +257,11 @@ router.get('/coach/:coachId/enrollments', requireCoach, requireCoachOwner('coach
       if (counts[row.bucket] !== undefined) counts[row.bucket] = row.n;
       total += row.n;
     }
-    // 期限與剩餘天數在這裡算，不寫進 SQL：validity_days 是後台可調的設定，
-    // 放進 CTE 就得多帶一個參數穿過三層 CTE，錯位的代價遠大於這點迴圈成本。
-    const validityDays = await readValidityDays();
+    // 期限與剩餘天數在這裡算，不寫進 SQL：日期運算要釘台北時區與日曆年，
+    // 在 JS 裡看得懂也測得到；塞進三層 CTE 只會讓下一個人不敢動它。
     const now = new Date();
     const items = rowsRes.rows.map((row) => {
-      const expiresAt = courseExpiryAt(row.invoice_issued_at, validityDays);
+      const expiresAt = courseExpiryAt(row.invoice_issued_at);
       return {
         ...row,
         course_expires_at: expiresAt ? expiresAt.toISOString() : null,
@@ -570,3 +564,6 @@ router.get('/:id', requireCoach, async (req, res) => {
 });
 
 module.exports = router;
+// 期限與剩餘天數是純日期運算，錯了不會有任何人立刻發現（家長要到隔年才知道
+// 自己少了一天）。匯出來做真行為測試，而不是用 regex 掃原始碼。
+module.exports.__test__ = { courseExpiryAt, daysLeftUntil, EXPIRING_SOON_DAYS };

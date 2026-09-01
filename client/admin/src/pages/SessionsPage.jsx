@@ -305,12 +305,12 @@ export default function SessionsPage() {
             <span className="shrink-0 text-gray-400">~</span>
             <DateTimePicker value={draft.to} min={draft.from || undefined}
               onChange={(v) => setRangeBound('to', v)} className="min-w-0 flex-1 md:w-[152px] md:flex-none" />
-            {/* 2026-09-01 需求：結束日右邊一顆小長方形「當日」。
+            {/* 2026-09-01 需求：結束日右邊一顆小長方形「當天」。
                 shrink-0 是必要的：不加的話 375px 上它會被兩個 picker 擠成一條。 */}
             <button
               type="button" onClick={jumpToday} title="查今天"
               className="min-h-[44px] shrink-0 rounded-md border border-gray-300 bg-white px-3 text-sm font-medium text-gray-700 hover:border-brand-teal hover:text-brand-teal md:min-h-0 md:py-1.5"
-            >當日</button>
+            >當天</button>
           </div>
         </div>
 

@@ -52,9 +52,9 @@ t('A1 排序：最新的在最上面', () => {
     '起訖日查詢要由新到舊；升冪會把救生員最想看的那幾堂推到最底');
 });
 
-t('A2／C2 起訖日旁邊有「當日」快捷', () => {
+t('A2／C2 起訖日旁邊有「當天」快捷', () => {
   const src = strip(read(SESSIONS_PAGE));
-  assert.ok(/>當日</.test(src), '沒有「當日」按鈕');
+  assert.ok(/>當天</.test(src), '沒有「當天」按鈕');
   assert.ok(/function jumpToday\(\)/.test(src), '「當日」要真的跳到今天');
 });
 
@@ -127,11 +127,14 @@ t('D3 週課表依場館上色，且有圖例', () => {
 });
 
 // ── E. 教練端 ───────────────────────────────────────────────────────────
-t('E1 課程期限：對帳完成日 + 有效天數，釘在 23:59', () => {
+t('E1 課程期限：對帳完成時間的一年後，釘在 23:59', () => {
   const src = strip(read(SESSIONS_API));
   const i = src.indexOf('function courseExpiryAt');
   assert.ok(i > 0, '後端沒有算課程期限');
   const body = src.slice(i, src.indexOf('\n}', i));
+  assert.ok(/getUTCFullYear\(\) \+ 1/.test(body),
+    '期限要是「一年後」的同月同日；用 365 天會在閏年少一天，家長會覺得被少算');
+  assert.ok(!/validityDays|validity_days/.test(body), '不該再吃 validity_days 設定');
   assert.ok(/23, 59/.test(body), '期限沒有釘在 23:59');
   assert.ok(/8 \* 3600 \* 1000/.test(body), '沒有釘台北時區 —— 伺服器時區設錯會整批偏一天');
   assert.ok(/course_expires_at/.test(src) && /days_left/.test(src), '回應要帶期限與剩餘天數');
