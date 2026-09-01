@@ -63,6 +63,9 @@ export default function SessionsPage() {
   const dirty = draft.from !== applied.from || draft.to !== applied.to || draftVenue !== appliedVenue;
   const [list, setList] = useState(null);
   const [venues, setVenues] = useState([]);
+  // 有上課紀錄的館別（後端算，已套場館權限）。null = 還沒載到，這時先照舊全列，
+  // 免得按鈕先跳出一整排再縮成三顆。
+  const [venueOptions, setVenueOptions] = useState(null);
   const [detail, setDetail] = useState(null);
   // 補簽到：backfilling = 目前要補簽到的時段列；backfillAt = datetime-local 字串
   const [backfilling, setBackfilling] = useState(null);
@@ -73,12 +76,14 @@ export default function SessionsPage() {
     setList(null);
     // 一律走 /sessions range API：依起訖日 + 場館過濾。未選場館＝全部（後端 scope 處理），
     // 選了一館則在自己場館範圍內縮小（後端會與 scope 取交集，越權 id 自動濾掉）。
-    const [data, vs] = await Promise.all([
+    const [data, vs, vo] = await Promise.all([
       sessionsApi.range({ from: applied.from, to: applied.to, venueIds: appliedVenue ? [appliedVenue] : [] }),
       venuesApi.list(),
+      sessionsApi.venueOptions(),
     ]);
     setList(data);
     setVenues(vs);
+    setVenueOptions(vo);
   }
   // 只在「開頁」與「按下查詢（applied 變動）」時載入。
   // 條件本身（draft）改動不再觸發查詢 —— 那正是這次要拿掉的動態篩選。
@@ -87,10 +92,32 @@ export default function SessionsPage() {
   const venueName = (id) => venues.find((v) => v.id === id)?.name || id;
   // 需求說「新北、三重、三民、松山…或直接列出啟用中的讓他們自己點」——
   // 選後者：寫死館名的話新開一館就得改程式，而且停用的館會一直留在畫面上。
-  const selectableVenues = useMemo(
-    () => (isStaff ? venues.filter((v) => myVenueIds.includes(v.id)) : venues),
-    [venues, isStaff, myVenueIds]
-  );
+  //
+  // 2026-09-01 追加：啟用中的館別有二十幾個，真的開過課的只有三個，
+  // 篩選列變成一面沒有用的按鈕牆。這裡再收斂成「有上課紀錄的館別」。
+  const selectableVenues = useMemo(() => {
+    const scoped = isStaff ? venues.filter((v) => myVenueIds.includes(v.id)) : venues;
+    if (!venueOptions) return scoped;
+    const byId = new Map(scoped.map((v) => [v.id, v]));
+    // 停用之後歷史紀錄還在的館，venuesApi.list() 不會回（那支只給啟用中的），
+    // 這裡補進來，否則那批紀錄查得到卻篩不到。
+    for (const o of venueOptions) {
+      if (byId.has(o.id)) continue;
+      if (isStaff && !myVenueIds.includes(o.id)) continue;
+      byId.set(o.id, o);
+    }
+    const keep = new Set(venueOptions.map((v) => v.id));
+    // 目前選中的那一館一定留著。少了它，畫面會變成「選了一個看不見的東西」，
+    // 使用者只會覺得篩選壞了。
+    if (draftVenue) keep.add(draftVenue);
+    if (appliedVenue) keep.add(appliedVenue);
+    const out = [...byId.values()]
+      .filter((v) => keep.has(v.id))
+      .sort((a, b) => String(a.id).localeCompare(String(b.id)));
+    // 一顆都不剩就退回原本的清單：空的篩選列比長的篩選列更難用，
+    // 而且那多半代表選項還沒算出來，不該讓使用者卡在沒得選的畫面。
+    return out.length ? out : scoped;
+  }, [venues, venueOptions, isStaff, myVenueIds, draftVenue, appliedVenue]);
 
   function setRangeBound(which, value) {
     if (!value) return;

@@ -83,6 +83,7 @@ const UNIT = [
   'tests/client_diagnostics_test.js',
   'tests/sessions_requirements_2026_09_test.js',
   'tests/course_expiry_test.js',
+  'tests/sessions_venue_options_test.js',
   'tests/rate_limit_test.js',
   'tests/ragic_canary_state_test.js',
   'tests/lifeguard_login_test.js',

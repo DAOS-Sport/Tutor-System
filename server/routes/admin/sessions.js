@@ -213,6 +213,57 @@ router.get('/', requireAdminAuth, requireResource('sessions'), async (req, res) 
   }
 });
 
+// 2026-09-01 需求：上課紀錄的篩選列只列「有上課紀錄的館別」，不要把整張場館表倒出來。
+//
+// 為什麼另開一支，不在 /api/venues 過濾：那支同時餵註冊頁與教練班表，
+// 那些地方不能因為「這館還沒開過課」就選不到場館。
+//
+// 刻意不設時間窗：使用者可以往回查任何一段 92 天。用滾動視窗的話，
+// 半年前那批課的場館會從選項裡消失 —— 紀錄還在卻篩不到，比多幾顆按鈕糟得多。
+//
+// 刻意不看 venues.is_active：場館停用之後歷史紀錄還在，選項留著才查得回來。
+// 名字用 LEFT JOIN 補，join 不到就退回 id，至少不會變成空白按鈕。
+router.get('/venue-options', requireAdminAuth, requireResource('sessions'), async (req, res) => {
+  try {
+    const args = [];
+    let scopeSql = '';
+    // 場館權限與 range 那支同一套：staff / manager 只拿得到自己的館。
+    const scope = getScopedVenueIds(req);
+    if (scope) {
+      args.push(scope);
+      // 只有一個參數，直接寫 PLACEHOLDER 而不用 args.length 內插 ——
+      // 這裡原本寫成兩個錢字號的樣板字串，被工具的 replace() 當成跳脫序列吃掉一個，
+      // 變成 ANY(1::text[]) 而整支端點 500。少一個字元、語法還合法，只有真的打過去才看得出來。
+      scopeSql = ' AND u.id = ANY($1::text[])';
+    }
+    const r = await pool.query(
+      // 取消的課不算「有上課紀錄」—— range 那支也把 cancelled 濾掉了，
+      // 兩邊判準不一致的話會出現「選得到但查出來是空的」。
+      `WITH used AS (
+         SELECT DISTINCT cp.venue_id AS id
+           FROM course_sessions cs
+           JOIN course_periods cp ON cp.id = cs.course_period_id
+          WHERE cp.venue_id IS NOT NULL
+            AND cs.status::text NOT LIKE 'cancelled%'
+          UNION
+         SELECT DISTINCT ats.venue_id AS id
+           FROM admin_today_sessions ats
+          WHERE ats.venue_id IS NOT NULL
+       )
+       SELECT u.id, COALESCE(NULLIF(v.name, ''), u.id) AS name
+         FROM used u
+         LEFT JOIN venues v ON v.id = u.id
+        WHERE TRUE${scopeSql}
+        ORDER BY u.id`,
+      args
+    );
+    res.json(r.rows);
+  } catch (err) {
+    console.error('[admin/sessions.venue-options]', err);
+    res.status(500).json({ error: 'load venue options failed' });
+  }
+});
+
 router.get('/today', requireAdminAuth, requireResource('dashboard'), async (req, res) => {
   try {
     // Task #90：staff/manager 鎖在自己所屬場館集合；admin 可選 venueId 縮小
