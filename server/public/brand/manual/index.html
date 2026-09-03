@@ -1,0 +1,1448 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<style>*{box-sizing:border-box}html,body{margin:0}img{max-width:100%}</style>
+</head>
+<body>
+<title>櫃台家教操作手冊</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&family=IBM+Plex+Mono:wght@500;600&display=swap">
+
+<style>
+/* ══════════════════════════════════════════════════════
+   明亮版。刻意只做淺色一套 —— 櫃台在燈光下看紙本或螢幕，
+   暗色版沒有用處。所有顏色都寫死，不靠外面的主題。
+   ══════════════════════════════════════════════════════ */
+:root{
+  --sky:#eaf4ff;        /* 天空藍底 */
+  --sky-2:#d5e9ff;
+  --paper:#ffffff;
+  --ground:#f7fbff;
+  --ink:#17233c;
+  --ink-2:#4a5876;
+  --ink-3:#7c8aa8;
+  --line:#dbe6f5;
+
+  --blue:#1a63c8;       --blue-soft:#e3eeff;
+  --teal:#12958f;       --teal-soft:#ddf5f3;
+  --grass:#4e9b1a;      --grass-soft:#e9f7dc;
+  --sun:#c8790a;        --sun-soft:#fff2d9;
+  --rose:#d02f2f;       --rose-soft:#ffe9e9;
+
+  --r:14px;
+  /* 等寬字必須接中文後備字型：IBM Plex Mono 沒有中文字，
+     中文會掉到 monospace 通用字族，在沒有中文等寬字的機器上顯示成空框。 */
+  --mono:"IBM Plex Mono",ui-monospace,"Noto Sans TC","PingFang TC","Microsoft JhengHei",monospace;
+  --shadow:0 1px 2px rgba(23,35,60,.04), 0 10px 30px -18px rgba(23,35,60,.3);
+}
+
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0; background:var(--ground); color:var(--ink);
+  font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+  font-size:16.5px; line-height:1.8; letter-spacing:.015em;
+  -webkit-font-smoothing:antialiased;
+}
+h1,h2,h3{margin:0; text-wrap:balance; font-weight:900; line-height:1.3}
+code,.mono{font-family:var(--mono); font-variant-numeric:tabular-nums}
+a{color:var(--blue)}
+:focus-visible{outline:3px solid var(--teal); outline-offset:3px; border-radius:6px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+.wrap{max-width:1300px; margin:0 auto; padding:0 22px 110px}
+/* 目錄搬到吸頂列之後，這裡就是單純的一欄閱讀區。
+   限寬是必要的：不限的話中文一行會到七十幾個字，眼睛回行會找不到位置。
+   截圖仍然吃得到 1040px，比原本有側欄時還寬。 */
+.grid{display:block}
+main{max-width:1040px; margin:0 auto}
+
+/* ── 抬頭 ── */
+.masthead{
+  background:linear-gradient(170deg,var(--sky) 0%, var(--sky-2) 55%, var(--ground) 100%);
+  border-bottom:1px solid var(--line);
+}
+.masthead .wrap{padding-top:52px; padding-bottom:46px}
+.kicker{
+  display:inline-block; font-size:12.5px; font-weight:700; letter-spacing:.14em;
+  color:var(--blue); background:var(--paper); border:1px solid var(--line);
+  padding:5px 14px; border-radius:999px;
+}
+h1{font-size:clamp(34px,5.4vw,54px); margin:18px 0 0; color:var(--blue)}
+.standfirst{margin:16px 0 0; max-width:22em; font-size:19px; color:var(--ink-2); line-height:1.85}
+.bigrule{display:flex; flex-wrap:wrap; gap:12px; margin-top:26px}
+.bigrule div{
+  background:var(--paper); border:2px solid var(--line); border-radius:var(--r);
+  padding:12px 18px; font-size:15px; font-weight:700; color:var(--ink); box-shadow:var(--shadow);
+}
+.bigrule b{color:var(--blue)}
+
+/* ── 側欄 ── */
+.rail{position:sticky; top:20px; padding-top:44px}
+@media (max-width:980px){ .rail{position:static; padding-top:26px} }
+.rail h4{
+  font-size:13px; letter-spacing:.1em; color:var(--ink-3); font-weight:700; margin:0;
+}
+.toc{list-style:none; margin:12px 0 0; padding:0; display:flex; flex-direction:column; gap:3px}
+.toc a{
+  display:grid; grid-template-columns:30px 1fr; gap:8px; align-items:center;
+  padding:9px 12px; border-radius:10px; text-decoration:none; color:var(--ink-2);
+  font-size:15px; font-weight:500; background:var(--paper); border:1px solid var(--line);
+  transition:border-color .15s, color .15s;
+}
+.toc a:hover{border-color:var(--blue); color:var(--blue)}
+.toc .n{
+  font-family:var(--mono); font-size:13px; font-weight:600;
+  color:var(--paper); background:var(--blue); border-radius:7px; text-align:center; padding:1px 0;
+}
+.railbox{
+  margin-top:26px; padding:16px 18px; border-radius:var(--r);
+  background:var(--rose-soft); border:2px solid var(--rose);
+}
+.railbox h4{color:var(--rose); font-size:15px; letter-spacing:0}
+.railbox ul{margin:12px 0 0; padding-left:18px; font-size:14.5px; line-height:1.75; color:var(--ink)}
+.railbox li+li{margin-top:10px}
+
+/* ── 吸頂目錄 ── */
+.topnav{
+  position:sticky; top:0; z-index:50;
+  background:rgba(255,255,255,.94); backdrop-filter:blur(10px);
+  border-bottom:2px solid var(--line);
+}
+.topnav-in{
+  max-width:1300px; margin:0 auto; padding:0 22px;
+  display:flex; align-items:center; gap:14px;
+}
+.topnav-lb{
+  flex:none; font-size:12.5px; font-weight:700; letter-spacing:.12em; color:var(--ink-3);
+}
+@media (max-width:700px){ .topnav-lb{display:none} }
+.topnav-links{
+  display:flex; gap:6px; overflow-x:auto; padding:9px 0;
+  /* 捲動時最後一顆會被容器硬切。加個淡出，讀者才知道右邊還有東西。 */
+  -webkit-mask-image:linear-gradient(to right,#000 calc(100% - 22px),transparent);
+          mask-image:linear-gradient(to right,#000 calc(100% - 22px),transparent);
+  scrollbar-width:thin; -webkit-overflow-scrolling:touch;
+}
+.topnav-links::-webkit-scrollbar{height:5px}
+.topnav-links::-webkit-scrollbar-thumb{background:var(--line); border-radius:9px}
+.topnav a{
+  flex:none; display:inline-flex; align-items:center; gap:7px;
+  padding:7px 14px; border-radius:999px; text-decoration:none;
+  font-size:14.5px; font-weight:500; color:var(--ink-2);
+  background:var(--paper); border:1.5px solid var(--line);
+  transition:border-color .15s, color .15s, background .15s;
+}
+.topnav a b{
+  font-family:var(--mono); font-size:12.5px; font-weight:600;
+  background:var(--blue-soft); color:var(--blue);
+  border-radius:6px; padding:0 6px; line-height:1.55;
+}
+.topnav a:hover{border-color:var(--blue); color:var(--blue)}
+.topnav a[aria-current="true"]{
+  background:var(--blue); border-color:var(--blue); color:var(--paper); font-weight:700;
+}
+.topnav a[aria-current="true"] b{background:rgba(255,255,255,.22); color:var(--paper)}
+
+/* ── 搜尋 ── */
+.topnav-in{position:relative}
+.search{flex:none; position:relative; display:flex; align-items:center}
+.search input{
+  width:250px; max-width:38vw; padding:8px 34px 8px 14px;
+  border:1.5px solid var(--line); border-radius:999px; background:var(--paper);
+  font-family:inherit; font-size:14.5px; font-weight:500; line-height:1.5;
+  color:var(--ink); outline:none;
+  transition:border-color .15s, width .15s;
+}
+.search input::placeholder{color:var(--ink-3)}
+.search input:focus{border-color:var(--blue); width:330px}
+.search input::-webkit-search-cancel-button{cursor:pointer}
+.search kbd{
+  position:absolute; right:11px; pointer-events:none;
+  font:600 11.5px/1 var(--mono); color:var(--ink-3);
+  border:1.5px solid var(--line); border-radius:5px; padding:3px 6px; background:var(--ground);
+}
+.search input:focus + kbd{display:none}
+@media (max-width:640px){ .search input{width:150px; padding-right:14px} .search kbd{display:none} }
+
+.qres{
+  position:absolute; z-index:60; left:0; right:0; top:100%;
+  max-height:66vh; overflow-y:auto;
+  background:var(--paper); border-bottom:2px solid var(--line);
+  box-shadow:0 18px 40px -22px rgba(23,35,60,.5);
+}
+.qres-in{max-width:1300px; margin:0 auto; padding:10px 22px 16px}
+.qres .hint{font-size:13.5px; color:var(--ink-3); padding:8px 2px}
+.qres button{
+  display:block; width:100%; text-align:left; cursor:pointer;
+  background:var(--paper); border:1.5px solid var(--line); border-radius:10px;
+  padding:11px 14px; margin-top:7px; font:inherit; color:var(--ink);
+}
+.qres button:hover,.qres button[data-on="1"]{border-color:var(--blue); background:var(--blue-soft)}
+.qres .where{
+  display:inline-block; font-size:12px; font-weight:700; color:var(--blue);
+  background:var(--blue-soft); border-radius:999px; padding:2px 10px; margin-bottom:5px;
+}
+.qres button[data-on="1"] .where{background:var(--paper)}
+.qres .snip{font-size:15px; line-height:1.65; color:var(--ink-2)}
+.qres mark{background:#ffe27a; color:var(--ink); border-radius:3px; padding:0 2px}
+
+/* 跳過去之後閃一下，讓人知道停在哪 */
+@keyframes hitflash{
+  0%{box-shadow:0 0 0 0 rgba(26,99,200,.45); background:var(--blue-soft)}
+  100%{box-shadow:0 0 0 14px rgba(26,99,200,0); background:transparent}
+}
+.hitflash{animation:hitflash 1.5s ease-out; border-radius:10px}
+@media (prefers-reduced-motion:reduce){ .hitflash{animation:none; outline:3px solid var(--blue); outline-offset:4px} }
+
+/* ── 一進來就要看到的四件事 ── */
+.dangerband{
+  margin-top:26px; padding:20px 24px; border-radius:var(--r);
+  background:var(--rose-soft); border:2px solid var(--rose);
+}
+.dangerband h4{margin:0; font-size:17px; font-weight:900; color:var(--rose); font-family:inherit}
+.dangerband ul{
+  margin:14px 0 0; padding:0; list-style:none;
+  display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:10px 26px;
+}
+.dangerband li{font-size:15.5px; line-height:1.65; color:var(--ink)}
+.dangerband li b{
+  display:inline-block; margin-right:8px; padding:1px 9px; border-radius:7px;
+  background:var(--rose); color:var(--paper); font-size:14.5px;
+}
+
+/* ── 章 ── */
+.chapter{padding-top:52px; scroll-margin-top:72px}
+.chapter>.badge{
+  display:inline-flex; align-items:center; gap:9px;
+  background:var(--blue); color:var(--paper); border-radius:999px;
+  padding:6px 18px 6px 8px; font-size:15px; font-weight:700;
+}
+.chapter>.badge span{
+  background:var(--paper); color:var(--blue); border-radius:999px;
+  width:26px; height:26px; display:grid; place-items:center;
+  font-family:var(--mono); font-size:14px;
+}
+.chapter>h2{font-size:clamp(27px,3.6vw,38px); margin:14px 0 0; color:var(--ink)}
+/* 中文行長用 em 不能用 ch：ch 以數字寬度計，一個中文字約等於 2ch，
+   46ch 實際只有 23 個字，整段會被切得很碎。 */
+.chapter>.lede{margin:12px 0 0; max-width:34em; font-size:19px; color:var(--ink-2)}
+
+/* 什麼時候用 */
+.when{
+  margin:26px 0 0; background:var(--paper); border:2px solid var(--line);
+  border-radius:var(--r); padding:20px 22px; box-shadow:var(--shadow);
+}
+.when h3{font-size:16px; color:var(--ink-3); letter-spacing:.06em; font-weight:700}
+.when ul{margin:12px 0 0; padding:0; list-style:none; display:flex; flex-direction:column; gap:9px}
+.when li{
+  padding-left:26px; position:relative; font-size:17px; color:var(--ink);
+}
+.when li::before{
+  content:"「"; position:absolute; left:2px; top:0; color:var(--teal); font-weight:900; font-size:20px;
+}
+.when .go{
+  margin-top:18px; padding-top:16px; border-top:2px dashed var(--line);
+  font-size:17px; font-weight:700;
+}
+.when .go em{font-style:normal; color:var(--ink-3); font-weight:500; margin-right:8px}
+
+/* ── 步驟 ── */
+.steps{list-style:none; counter-reset:s; margin:30px 0 0; padding:0; display:flex; flex-direction:column; gap:15px}
+.steps>li{
+  counter-increment:s;
+  display:grid; grid-template-columns:52px minmax(0,1fr); gap:18px; align-items:start;
+  background:var(--paper); border:2px solid var(--line); border-radius:var(--r);
+  padding:20px 22px; box-shadow:var(--shadow);
+}
+.steps>li::before{
+  content:counter(s);
+  width:44px; height:44px; border-radius:12px; display:grid; place-items:center;
+  background:var(--blue-soft); color:var(--blue);
+  font-size:22px; font-weight:900; font-family:var(--mono);
+}
+/* ::before 佔掉第一欄之後，剩下的子元素會被自動排版輪流塞進兩欄，
+   造成內文跑進 52px 寬的數字欄（手機上變成一行一個字）。全部鎖在第二欄。 */
+.steps>li>*{grid-column:2; min-width:0}
+.steps h3{font-size:19px; color:var(--ink); margin:0 0 8px}
+.steps p{margin:0 0 10px; color:var(--ink-2); font-size:16.5px}
+.steps p:last-child{margin-bottom:0}
+.steps .say{color:var(--ink); font-weight:500}
+
+/* ── 標籤元件 ── */
+.btn{
+  display:inline-block; padding:2px 11px; border-radius:8px; font-size:15px; font-weight:700;
+  background:var(--blue); color:var(--paper); white-space:nowrap;
+}
+.btn.warn{background:var(--sun)}
+.btn.danger{background:var(--rose)}
+.btn.go{background:var(--grass)}
+.nav{
+  display:inline-block; padding:2px 10px; border-radius:8px; font-size:15px; font-weight:700;
+  background:var(--blue-soft); color:var(--blue); white-space:nowrap;
+}
+.field{
+  display:inline-block; padding:1px 9px; border-radius:7px; font-size:15px;
+  font-family:var(--mono); font-weight:600;
+  background:var(--teal-soft); color:var(--teal);
+}
+
+/* ── 提示框 ── */
+.note{
+  border-radius:var(--r); padding:18px 20px; margin:20px 0 0; font-size:16.5px;
+  border:2px solid var(--line); background:var(--paper);
+}
+.note b.h{
+  display:inline-block; font-size:15px; font-weight:900; margin-bottom:8px;
+  padding:2px 12px; border-radius:999px; color:var(--paper);
+}
+.note p{margin:0; color:var(--ink)}
+.note p+p{margin-top:9px}
+.note.stop{background:var(--rose-soft); border-color:var(--rose)}
+.note.stop b.h{background:var(--rose)}
+.note.care{background:var(--sun-soft); border-color:var(--sun)}
+.note.care b.h{background:var(--sun)}
+.note.ok{background:var(--grass-soft); border-color:var(--grass)}
+.note.ok b.h{background:var(--grass)}
+.note.tip{background:var(--blue-soft); border-color:var(--blue)}
+.note.tip b.h{background:var(--blue)}
+
+/* ── 螢幕示意圖 ── */
+.screen{
+  margin:22px 0 0; border:2px solid var(--line); border-radius:var(--r);
+  background:var(--paper); overflow:hidden; box-shadow:var(--shadow);
+}
+.screen .bar{
+  background:var(--blue); color:var(--paper); padding:11px 18px;
+  font-size:15.5px; font-weight:700; display:flex; align-items:center; gap:10px;
+}
+.screen .bar i{
+  width:9px; height:9px; border-radius:50%; background:rgba(255,255,255,.55); flex:none;
+}
+.screen .body{padding:18px; display:flex; flex-direction:column; gap:11px; background:var(--ground)}
+.srow{
+  display:grid; grid-template-columns:130px minmax(0,1fr); gap:14px; align-items:center;
+  background:var(--paper); border:1.5px solid var(--line); border-radius:10px; padding:11px 14px;
+  position:relative;
+}
+@media (max-width:560px){ .srow{grid-template-columns:1fr; gap:5px} }
+.srow .lbl{font-size:14.5px; font-weight:700; color:var(--ink-2)}
+.srow .val{font-size:15px; color:var(--ink-3)}
+.srow.free{display:block}
+.srow.hit{border:3px solid var(--rose); box-shadow:0 0 0 4px var(--rose-soft)}
+.srow .mark{
+  position:absolute; top:-13px; right:12px; background:var(--rose); color:var(--paper);
+  font-size:12.5px; font-weight:900; padding:2px 10px; border-radius:999px; letter-spacing:.05em;
+}
+.uibtn{
+  display:inline-block; padding:7px 18px; border-radius:9px; font-size:15px; font-weight:700;
+  background:var(--blue); color:var(--paper);
+}
+.uibtn.grey{background:var(--paper); color:var(--ink-2); border:1.5px solid var(--line)}
+.uibtn.warn{background:var(--sun)} .uibtn.danger{background:var(--rose)}
+.screen figcaption{
+  padding:11px 18px; font-size:14px; color:var(--ink-3);
+  background:var(--paper); border-top:1.5px solid var(--line);
+}
+.screen figcaption b{color:var(--rose)}
+
+/* ── 表格 ── */
+.scroll{overflow-x:auto; margin:22px 0 0}
+table{width:100%; border-collapse:collapse; font-size:16px; background:var(--paper);
+  border:2px solid var(--line); border-radius:var(--r); overflow:hidden}
+th,td{padding:13px 16px; text-align:left; vertical-align:top; border-bottom:1.5px solid var(--line)}
+th{background:var(--blue-soft); color:var(--blue); font-size:14.5px; font-weight:700; letter-spacing:.04em}
+tbody tr:last-child td{border-bottom:0}
+td.msg{font-family:var(--mono); font-size:14px; color:var(--rose); font-weight:600; width:42%}
+
+/* ── 照片位 ── */
+.shot{
+  margin:22px 0 0; border:3px dashed var(--blue); border-radius:var(--r);
+  padding:18px 20px; background:var(--blue-soft);
+}
+.shot .tag{
+  display:inline-block; font-family:var(--mono); font-size:13px; font-weight:600;
+  color:var(--paper); background:var(--blue); padding:3px 12px; border-radius:999px;
+}
+.shot p{margin:10px 0 0; font-size:16px; color:var(--ink)}
+.shot .want{margin-top:7px; font-size:15px; color:var(--ink-2)}
+
+footer{
+  margin-top:80px; padding:24px 26px; background:var(--paper);
+  border:2px solid var(--line); border-radius:var(--r); font-size:15.5px; color:var(--ink-2);
+}
+footer p{margin:0 0 10px; max-width:60ch}
+footer p:last-child{margin-bottom:0}
+
+@media (max-width:600px){
+  /* 手機上 52px 的數字欄太浪費，改成單欄，數字縮小貼在上面 */
+  .steps>li{grid-template-columns:1fr; gap:10px; padding:16px 16px}
+  .steps>li>*{grid-column:1}
+  .steps>li::before{width:34px; height:34px; font-size:17px; border-radius:10px}
+  .when,.note{padding:15px 16px}
+  body{font-size:16px}
+}
+
+
+
+/* ── 家長端的手機畫面並排 ── */
+.phones{
+  margin:26px 0 0; display:grid; gap:20px;
+  /* 固定三欄：auto-fit 在寬螢幕會排成 5+1，最後一張落單很難看。 */
+  grid-template-columns:repeat(3,1fr);
+}
+.phone{
+  margin:0; border:2px solid var(--line); border-radius:var(--r);
+  background:var(--paper); overflow:hidden; box-shadow:var(--shadow);
+  display:flex; flex-direction:column;
+}
+.phone img{
+  display:block; width:100%; height:auto;
+  border-bottom:1.5px solid var(--line); background:var(--ground);
+}
+.phone figcaption{padding:13px 15px; font-size:14.5px; line-height:1.7; color:var(--ink-2)}
+.phone figcaption b{display:block; font-size:16px; color:var(--ink); margin-bottom:3px}
+@media (max-width:820px){ .phones{grid-template-columns:repeat(2,1fr)} }
+@media (max-width:520px){ .phones{grid-template-columns:1fr} }
+@media print{ .phone{break-inside:avoid} }
+
+/* ── 真實截圖 ── */
+.photo{
+  margin:24px 0 0; border:2px solid var(--line); border-radius:var(--r);
+  background:var(--paper); overflow:hidden; box-shadow:var(--shadow);
+}
+.photo img{
+  display:block; width:100%; height:auto; border-bottom:1.5px solid var(--line);
+  background:var(--ground);
+}
+.photo figcaption{padding:13px 18px; font-size:15px; color:var(--ink-2); line-height:1.7}
+.photo figcaption b{color:var(--rose); margin-right:4px}
+@media print{ .photo{break-inside:avoid} }
+
+@media print{
+  body{background:#fff}
+  .rail{display:none}
+  .grid{grid-template-columns:1fr}
+  .steps>li,.screen,.note{break-inside:avoid}
+  .chapter{page-break-before:always}
+}
+</style>
+
+<header class="masthead">
+  <div class="wrap">
+    <span class="kicker">夢想體育學院 · 家教系統</span>
+    <h1>櫃台操作手冊</h1>
+    <p class="standfirst">
+      家長站在你面前，你要按哪裡？<br>
+      這本手冊一次講一件事，照著做就好。
+    </p>
+    <div class="bigrule">
+      <div>紅色框框 <b>＝ 你要按的地方</b></div>
+      <div>紅色警告 <b>＝ 按下去收不回來</b></div>
+      <div>不確定就 <b>先不要按</b>，問主管</div>
+    </div>
+  </div>
+</header>
+
+<nav class="topnav" aria-label="章節目錄">
+  <div class="topnav-in">
+    <span class="topnav-lb">目錄</span>
+    <div class="topnav-links">
+      <a href="#map" data-t="map">畫面在哪</a>
+      <a href="#parent" data-t="parent">家長端</a>
+      <a href="#c1" data-t="c1"><b>1</b>建訂單</a>
+      <a href="#c2" data-t="c2"><b>2</b>兩家一起</a>
+      <a href="#c3" data-t="c3"><b>3</b>對帳</a>
+      <a href="#c4" data-t="c4"><b>4</b>退課</a>
+      <a href="#c5" data-t="c5"><b>5</b>忘記簽到</a>
+      <a href="#c6" data-t="c6"><b>6</b>扣錯課</a>
+      <a href="#c7" data-t="c7"><b>7</b>查紀錄</a>
+      <a href="#quick" data-t="quick"><b>★</b>速查表</a>
+    </div>
+    <div class="search">
+      <input id="q" type="search" placeholder="搜尋…例如「補簽到」「末 5 碼」" autocomplete="off"
+             aria-label="搜尋手冊內容" aria-expanded="false" aria-controls="qr">
+      <kbd>/</kbd>
+    </div>
+  </div>
+  <div id="qr" class="qres" role="listbox" hidden></div>
+</nav>
+
+<div class="wrap" style="padding-bottom:0">
+  <div class="dangerband">
+    <h4>這四件事按下去就回不來</h4>
+    <ul>
+      <li><b>對帳通過</b>家長馬上收到發票，收不回來。</li>
+      <li><b>補簽到</b>同時會扣一堂課。不要再去手動扣課。</li>
+      <li><b>退回原因</b>你打的字，家長會在 LINE 上看到。</li>
+      <li><b>退課退費</b>你按下去就完成了，沒有人會再確認一次。</li>
+    </ul>
+  </div>
+</div>
+
+<div class="wrap">
+<div class="grid">
+
+
+  <main>
+
+  <section class="chapter" id="map" style="padding-top:40px">
+    <h2 style="font-size:26px">先認識你的畫面</h2>
+    <p class="lede">後台畫面左邊那排就是你所有的工作。這本書的七章，就是這七個地方。（選單很長，下面把它剪成上下兩半並排。）</p>
+    <figure class="photo"><img src="img/01-sidebar.webp" width="1632" height="1416" loading="lazy" alt="櫃台帳號登入後看到的選單。紅框標出這本手冊每一章要去的地方。"><figcaption><b>照片 01</b>　櫃台帳號登入後看到的選單。紅框標出這本手冊每一章要去的地方。</figcaption></figure>
+  </section>
+
+  <section class="chapter" id="parent">
+    <div class="badge"><span>◎</span>家長端</div>
+    <h2>家長那邊看到什麼</h2>
+    <p class="lede">家長打電話來說「我找不到」的時候，你要能講出他該按哪裡。這一章就是他手機裡的畫面。</p>
+
+    <div class="note tip">
+      <b class="h">先記住最下面那一排</b>
+      <p>家長的畫面<b>最下面</b>永遠有四個鍵，由左到右是：</p>
+      <p><b>首頁</b>　<b>我的課程</b>　<b>聊天</b>　<b>個人</b></p>
+      <p>你可以直接跟他說「你按最下面<b>左邊數來第二個</b>」，比說名字快。</p>
+    </div>
+
+    <div class="phones">
+      <figure class="phone"><img src="img/p1-home.webp" width="720" height="1548" loading="lazy" alt="首頁"><figcaption><b>首頁</b>一進來就看到。上面會有紅點提醒「有幾筆訂單還沒處理」。要報名也是從這裡開始。</figcaption></figure>
+
+      <figure class="phone"><img src="img/p2-courses.webp" width="720" height="1558" loading="lazy" alt="我的課程"><figcaption><b>我的課程</b>家長問「我還剩幾堂」看這裡。上面有三個分頁：全部、進行中、待審核。每張課卡都寫「剩 X / 總 Y」。</figcaption></figure>
+
+      <figure class="phone"><img src="img/p7-status.webp" width="720" height="1558" loading="lazy" alt="訂單狀態"><figcaption><b>訂單狀態</b>還沒對帳的訂單長這樣。上面寫「待繳款／待櫃台確認」，有應繳金額和轉帳資訊。</figcaption></figure>
+
+      <figure class="phone"><img src="img/p4-venue.webp" width="720" height="1558" loading="lazy" alt="選場館"><figcaption><b>選場館</b>報名的第一步。列出所有可以上課的場館和地址。</figcaption></figure>
+
+      <figure class="phone"><img src="img/p5-coaches.webp" width="720" height="1558" loading="lazy" alt="選教練"><figcaption><b>選教練</b>報名的第二步。金色徽章是「資深教練」，費用不一樣。</figcaption></figure>
+
+      <figure class="phone"><img src="img/p3-profile.webp" width="720" height="1558" loading="lazy" alt="個人"><figcaption><b>個人</b>家長改自己的名字、電話、Email 的地方。</figcaption></figure>
+
+    </div>
+
+    <h2 style="font-size:23px;margin:44px 0 0">家長這樣問，你這樣講</h2>
+    <div class="scroll">
+    <table>
+      <thead><tr><th style="width:38%">家長說</th><th>你告訴他</th></tr></thead>
+      <tbody>
+        <tr><td>「我不知道剩幾堂」</td>
+            <td>按最下面<b>左邊數來第二個「我的課程」</b>，每張卡上面就寫剩幾堂。</td></tr>
+        <tr><td>「我錢轉了，怎麼還不能上課」</td>
+            <td>那是<b>還沒對帳</b>。請他把<b>轉帳的最後 5 個數字</b>給你，你去第 3 章對帳。</td></tr>
+        <tr><td>「我要報名，從哪裡開始」</td>
+            <td>按最下面<b>最左邊「首頁」</b>，然後選場館 → 選教練 → 填資料。</td></tr>
+        <tr><td>「教練怎麼有金色的」</td>
+            <td>金色是<b>資深教練</b>，費用比較高，會多做學習歷程。</td></tr>
+        <tr><td>「我要改電話／Email」</td>
+            <td>按最下面<b>最右邊「個人」</b>，再按編輯資料。</td></tr>
+        <tr><td>「我朋友要一起上」</td>
+            <td>請他在報名時開團，把連結傳給朋友。細節看第 2 章。</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <div class="note care">
+      <b class="h">你看不到他的畫面</b>
+      <p>後台<b>沒有「以家長身分檢視」的功能</b>，你看不到他手機上長怎樣。</p>
+      <p>所以描述位置的時候，講<b>「最下面那排的第幾個」</b>最不會錯，不要說「右上角那個小圖示」。</p>
+    </div>
+  </section>
+
+  <!-- ═════════ 1 ═════════ -->
+  <section class="chapter" id="c1">
+    <div class="badge"><span>1</span>幫家長建訂單</div>
+    <h2>家長要報名</h2>
+    <p class="lede">家長可以自己在 LINE 裡報名。他弄不出來的時候，你幫他建。</p>
+
+    <div class="when">
+      <h3>什麼時候用</h3>
+      <ul>
+        <li>我想報名，可是手機上一直弄不好。」</li>
+        <li>我不會用 LINE，你幫我用好不好。」</li>
+      </ul>
+      <p class="go"><em>去這裡 →</em><span class="nav">報名與對帳 → 手動建檔</span></p>
+    </div>
+
+    <div class="note tip">
+      <b class="h">先知道這件事</b>
+      <p>訂單建好之後，還<b>不算報名成功</b>。</p>
+      <p>它會變成「待對帳」，意思是：<b>錢還沒對好</b>。</p>
+      <p>等家長轉帳、你去對帳（第 3 章），課程才會真的開通。</p>
+    </div>
+
+    <h2 style="font-size:23px;margin:44px 0 0">家長自己報名的話</h2>
+    <p style="margin:10px 0 0;color:var(--ink-2)">
+      他在 LINE 裡照順序點：場館 → 教練 → 一對幾 → 填小孩資料 → 看到金額 → 複製銀行帳號 → 送出。
+    </p>
+    <div class="note ok">
+      <b class="h">你這時候不用做事</b>
+      <p>等他轉帳，然後把<b>轉帳的最後 5 個數字</b>告訴你。</p>
+      <p>接著就跳到第 3 章。</p>
+    </div>
+
+    <h2 style="font-size:23px;margin:48px 0 0">你幫他建的話</h2>
+    <p style="margin:10px 0 0;color:var(--ink-2)">
+      畫面上有三張卡片，從上往下填。三張都填完才送得出去。
+    </p>
+
+    <ol class="steps">
+      <li>
+        <h3>第一張卡：先找到家長</h3>
+        <p>在上面搜尋家長的名字。找到就點他。</p>
+        <p>找不到就自己新增。<b>名字和手機一定要填</b>，有星號的就是一定要填。</p>
+        <p>填完按 <span class="btn">建立並連結</span>。</p>
+        <div class="note care">
+          <b class="h">注意看這一行字</b>
+          <p>如果畫面出現「已連結家長（暫存，僅本筆報名使用；不建檔）」，</p>
+          <p>代表這位家長<b>沒有被存進系統</b>，下次還要重打一次。</p>
+          <p>是常來的家長，就要按 <span class="btn">建立並連結</span> 把他存起來。</p>
+        </div>
+      </li>
+      <li>
+        <h3>第一張卡：再選小孩</h3>
+        <p>這位家長以前的小孩會列出來，直接勾。</p>
+        <p>是新的小孩，按 <span class="btn">新增至此家長</span>。</p>
+        <p>只是這一次臨時要用的名字，打在「或臨時名單」那格，名字中間用「、」隔開。</p>
+      </li>
+      <li>
+        <h3>第二張卡：選課</h3>
+        <p>照順序選：在哪個場館 → 哪一位教練 → 一對幾 → 總共幾堂。</p>
+        <div class="note care">
+          <b class="h">「一對幾」點不到怎麼辦</b>
+          <p>代表這個組合還沒被建起來。</p>
+          <p>你自己弄不了，要<b>請管理員去「課程需求管理」建好</b>，你這邊才會出現。</p>
+        </div>
+      </li>
+      <li>
+        <h3>第三張卡：填錢</h3>
+        <p><b>先填原價</b>。沒填原價，打折的按鈕會按不下去。</p>
+        <p>要打折就按 <span class="btn">免收</span>、<span class="btn">9折</span> 或 <span class="btn">95折</span>。</p>
+        <p>轉帳的最後 5 個數字要填，<b>剛好 5 個數字</b>，多一個少一個都不行。</p>
+        <p>統編（8 個數字）和載具（像 <code>/ABC1234</code>）沒有就空著。</p>
+      </li>
+      <li>
+        <h3>送出</h3>
+        <p>成功會看到：「已建檔 N 張訂單（待對帳）」。</p>
+        <p>接下來就跳到第 3 章去對帳。</p>
+      </li>
+    </ol>
+
+    <figure class="screen">
+      <div class="bar"><i></i>手動建檔</div>
+      <div class="body">
+        <div class="srow"><span class="lbl">卡片 1</span><span class="val">家長姓名 ＊　　行動電話 ＊</span></div>
+        <div class="srow hit"><span class="mark">按這裡</span><span class="lbl">　</span><span class="val"><span class="uibtn">建立並連結</span>　把家長存進系統</span></div>
+        <div class="srow"><span class="lbl">　</span><span class="val">小孩：勾既有的　／　<span class="uibtn grey">新增至此家長</span>　／　臨時名單</span></div>
+        <div class="srow"><span class="lbl">卡片 2</span><span class="val">場館　→　教練　→　一對幾　→　總堂數</span></div>
+        <div class="srow hit"><span class="mark">先填這格</span><span class="lbl">卡片 3</span><span class="val">原始費用（原價）　←　沒填，下面的折扣按不動</span></div>
+        <div class="srow"><span class="lbl">　</span><span class="val"><span class="uibtn grey">免收</span> <span class="uibtn grey">9折</span> <span class="uibtn grey">95折</span></span></div>
+        <div class="srow hit"><span class="mark">剛好 5 個數字</span><span class="lbl">　</span><span class="val">轉帳末 5 碼</span></div>
+      </div>
+      <figcaption>示意圖 · <b>紅框</b>是你要注意的地方。實際畫面請看照片。</figcaption>
+    </figure>
+
+    <div class="scroll">
+    <table>
+      <thead><tr><th>系統跳出這句話</th><th>意思是</th></tr></thead>
+      <tbody>
+        <tr><td class="msg">請先輸入原始費用（原價）</td><td>原價還沒填，先填原價再打折。</td></tr>
+        <tr><td class="msg">家長姓名與電話必填</td><td>第一張卡有星號的沒填完。</td></tr>
+        <tr><td class="msg">請先連結家長 (Z01)</td><td>只填了小孩，忘記把家長掛上去。</td></tr>
+        <tr><td class="msg">請選擇或填寫至少一位學員</td><td>一個小孩都沒選。</td></tr>
+        <tr><td class="msg">請選擇報名館別／請選擇授課教練</td><td>第二張卡的選單還沒選。</td></tr>
+        <tr><td class="msg">請選擇組別型態（需先於「課程需求管理」建立）</td><td>這個組合沒建過，要找管理員。</td></tr>
+        <tr><td class="msg">請填寫有效的總堂數／金額不正確</td><td>堂數或金額打錯了。</td></tr>
+        <tr><td class="msg">轉帳末 5 碼需為 5 位數字</td><td>不是 5 個數字，或打到英文字。</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <figure class="photo"><img src="img/02-manual-enroll.webp" width="1500" height="1052" loading="lazy" alt="手動建檔。紅框：把家長存進系統的按鈕、以及一定要先填的原價。"><figcaption><b>照片 02</b>　手動建檔。紅框：把家長存進系統的按鈕、以及一定要先填的原價。</figcaption></figure>
+</section>
+
+  <!-- ═════════ 2 ═════════ -->
+  <section class="chapter" id="c2">
+    <div class="badge"><span>2</span>兩家一起上課</div>
+    <h2>兩個家庭合開一張單</h2>
+    <p class="lede">一對二、一對三常常是兩三家人合請一個教練。這叫「團購」。</p>
+
+    <div class="when">
+      <h3>什麼時候用</h3>
+      <ul>
+        <li>我們兩家小孩要一起上，可以嗎？」</li>
+        <li>我朋友那家錢已經給了，怎麼還沒過？」</li>
+      </ul>
+      <p class="go"><em>去這裡 →</em><span class="nav">報名與對帳 → 團購審核</span></p>
+    </div>
+
+    <div class="note tip">
+      <b class="h">團是家長自己揪的</b>
+      <p>家長會自己在 LINE 上開團、找人加入。</p>
+      <p>你的工作只有一件：<b>看一看，然後決定過還是不過</b>。</p>
+      <p>發票和開課<b>都不在這一頁</b>，那是第 3 章的事。</p>
+    </div>
+
+    <ol class="steps">
+      <li>
+        <h3>先看這團在哪一區</h3>
+        <p><b>揪團中</b>＝還在收人收錢，家長還沒送來給你審。</p>
+        <p><b>待審核</b>＝在等你按。</p>
+        <p>按 <span class="btn">檢視</span> 可以看這團有哪些人。</p>
+      </li>
+      <li>
+        <h3>錢收齊了，但家長沒送來</h3>
+        <p>在「揪團中」找到那一團，按 <span class="btn">代為送審（送進待審核）</span>。</p>
+        <p>這只是幫他送過來排隊，<b>還沒有通過</b>。</p>
+      </li>
+      <li>
+        <h3>決定要不要過</h3>
+        <p>沒問題 → <span class="btn go">核准後送待對帳</span></p>
+        <p>有東西要補、之後還能再送 → <span class="btn warn">退回補件（可續作）</span></p>
+        <p>這團不做了 → <span class="btn danger">退回（終止）</span></p>
+        <div class="note stop">
+          <b class="h">退回的原因，家長看得到</b>
+          <p>兩種退回都要打原因。你打的那段字，<b>會原封不動出現在家長的 LINE 上</b>。</p>
+          <p>要寫家長看得懂、知道怎麼補的話。</p>
+          <p>好的例子：「請補上第二位小朋友的身分證字號」</p>
+          <p>不好的例子：「資料不全」、「Z02 缺」</p>
+        </div>
+      </li>
+    </ol>
+
+    <div class="note care">
+      <b class="h">兩個家庭 ＝ 要開兩張發票</b>
+      <p>這團過了以後，到第 3 章對帳的時候，畫面會跳出一行字：</p>
+      <p>「此付款單包含 2 個不同家庭，需分別開立 2 張發票」</p>
+      <p>那時候你要<b>一個家庭填一組發票</b>，兩組都填完才送得出去。</p>
+    </div>
+
+    <figure class="screen">
+      <div class="bar"><i></i>團購審核</div>
+      <div class="body">
+        <div class="srow"><span class="lbl">揪團中</span><span class="val">還在收錢　·　看得到收了幾家</span></div>
+        <div class="srow hit"><span class="mark">收齊了按這裡</span><span class="lbl">　</span><span class="val"><span class="uibtn">代為送審（送進待審核）</span></span></div>
+        <div class="srow"><span class="lbl">待審核</span><span class="val">在等你決定</span></div>
+        <div class="srow free">
+          <span class="uibtn" style="background:var(--grass)">核准後送待對帳</span>
+          <span class="uibtn warn">退回補件（可續作）</span>
+          <span class="uibtn danger">退回（終止）</span>
+        </div>
+        <div class="srow hit"><span class="mark">家長會看到這段字</span><span class="lbl">退回原因</span><span class="val">一定要填</span></div>
+      </div>
+      <figcaption>示意圖 · <b>紅框</b>是你要按、要填的地方。</figcaption>
+    </figure>
+
+    <figure class="photo"><img src="img/03-group-orders.webp" width="1500" height="1052" loading="lazy" alt="團購審核。紅框：兩個分頁 ——「揪團中」還在收錢，「待審核」在等你決定。"><figcaption><b>照片 03</b>　團購審核。紅框：兩個分頁 ——「揪團中」還在收錢，「待審核」在等你決定。</figcaption></figure>
+<figure class="photo"><img src="img/04-group-detail.webp" width="1500" height="1052" loading="lazy" alt="團購的成員明細。紅框：這一團有 2 個家庭，第二個家庭要另外開一張發票。（測試資料）"><figcaption><b>照片 04</b>　團購的成員明細。紅框：這一團有 2 個家庭，第二個家庭要另外開一張發票。（測試資料）</figcaption></figure>
+    </section>
+
+  <!-- ═════════ 3 ═════════ -->
+  <section class="chapter" id="c3">
+    <div class="badge"><span>3</span>收到錢，對帳</div>
+    <h2>對帳</h2>
+    <p class="lede">這是櫃台最重要的一關。你按下去，課程就開通了，家長馬上收到發票。</p>
+
+    <div class="when">
+      <h3>什麼時候用</h3>
+      <ul>
+        <li>錢我轉了，最後五碼是 12345。」</li>
+        <li>我付錢好幾天了，怎麼還不能上課？」</li>
+      </ul>
+      <p class="go"><em>去這裡 →</em><span class="nav">報名與對帳 → (F-M02) 待對帳清單</span></p>
+    </div>
+
+    <div class="note stop">
+      <b class="h">按下去之前先想三秒</b>
+      <p>你按 <span class="btn">對帳通過</span> 的那一秒，系統同時做四件事：</p>
+      <p>① 課程開通　② 開教練跟家長的聊天室　③ 發票傳到家長 LINE　④ 寫進紀錄</p>
+      <p><b>這四件事都收不回來。</b>錢沒對清楚就先不要按。</p>
+    </div>
+
+    <ol class="steps">
+      <li>
+        <h3>找到那一張單</h3>
+        <p>每張單上面會寫：單號、家長名字（或「2 個家庭」）、要收多少錢、最後 5 碼。</p>
+        <p>用這四個確認你找對人了。</p>
+      </li>
+      <li>
+        <h3>核對錢</h3>
+        <p>拿銀行實際收到的錢，跟畫面上的<b>金額</b>和<b>最後 5 碼</b>比。</p>
+        <p>兩個都一樣 → 往下走。</p>
+        <p>有一個不一樣 → 停，看下面那個紅框。</p>
+      </li>
+      <li>
+        <h3>對不起來的話</h3>
+        <p>按 <span class="btn warn">退回補件</span>，打上原因，例如：</p>
+        <p class="say">「轉帳末 5 碼與帳戶紀錄不符，請重新確認後填寫」</p>
+        <p>家長會收到通知，可以自己重填。</p>
+        <div class="note stop">
+          <b class="h">不要硬著頭皮按通過</b>
+          <p>按了通過，課就開了、發票就寄出去了。</p>
+          <p>之後要收回來很麻煩，還要跟家長解釋。</p>
+        </div>
+      </li>
+      <li>
+        <h3>對得起來，就按對帳通過，然後填發票</h3>
+        <p><b>發票號碼</b>：兩個英文字 + 八個數字，長得像 <code>AA00000000</code>。</p>
+        <p><b>發票照片</b>：手機拍的就可以，一張不要超過 5MB。</p>
+        <p><b>載具</b>：有就填，長得像 <code>/ABC+123</code>。沒有就空著。</p>
+        <div class="note ok">
+          <b class="h">跳出「轉檔處理中」不用怕</b>
+          <p>如果看到「原始圖片已保存，預覽轉檔處理中」，這是<b>正常的</b>。</p>
+          <p>照片已經存好了，你可以繼續按下去。</p>
+        </div>
+        <div class="note care">
+          <b class="h">如果是兩個家庭</b>
+          <p>畫面會寫「此付款單包含 2 個不同家庭，需分別開立 2 張發票」。</p>
+          <p>要<b>兩組都填完</b>才送得出去。系統會分別寄給兩位家長。</p>
+          <p><b>兩組的發票號碼不能填一樣</b>，填重複系統會擋下來。</p>
+        </div>
+      </li>
+      <li>
+        <h3>送出，完成</h3>
+        <p>會看到：「對帳通過，發票 ○○ 已記錄並推播家長」。</p>
+        <p>家長的 LINE 會收到發票照片、發票號碼，還有一顆可以直接看課程的按鈕。</p>
+      </li>
+    </ol>
+
+    <figure class="screen">
+      <div class="bar"><i></i>待對帳清單 → 對帳通過</div>
+      <div class="body">
+        <div class="srow hit"><span class="mark">先比這兩個</span><span class="lbl">這張單</span><span class="val">應收 ＄6,000　·　末 5 碼 12345</span></div>
+        <div class="srow"><span class="lbl">發票號碼</span><span class="val">AA00000000　←　兩英文 ＋ 八數字</span></div>
+        <div class="srow"><span class="lbl">發票照片</span><span class="val">手機拍的就可以，一張 5MB 以內</span></div>
+        <div class="srow"><span class="lbl">載具</span><span class="val">/ABC+123　（沒有就空著）</span></div>
+        <div class="srow free">
+          <span class="uibtn" style="background:var(--grass)">對帳通過</span>
+          <span class="uibtn warn">退回補件</span>
+          <span class="uibtn grey">取消</span>
+        </div>
+      </div>
+      <figcaption>示意圖 · 錢和末 5 碼<b>都對上</b>才能按對帳通過。</figcaption>
+    </figure>
+
+    <div class="note tip">
+      <b class="h">還有第三個按鈕：取消</b>
+      <p><b>退回補件</b>＝ 家長補一補還能再來。</p>
+      <p><b>取消</b>＝ 這張單作廢，不要了。</p>
+      <p>家長重複下單、或說不報了，才用取消。也要打原因。</p>
+    </div>
+
+    <figure class="photo"><img src="img/05-reconcile.webp" width="1500" height="1052" loading="lazy" alt="待對帳清單。紅框：先拿銀行入帳跟這一欄的末 5 碼比對，對上了才按對帳通過。"><figcaption><b>照片 05</b>　待對帳清單。紅框：先拿銀行入帳跟這一欄的末 5 碼比對，對上了才按對帳通過。</figcaption></figure>
+<figure class="photo"><img src="img/06-reconcile-invoice.webp" width="1500" height="1052" loading="lazy" alt="按下「對帳通過」之後要填的發票欄位。紅框：發票號碼格式、照片、載具。"><figcaption><b>照片 06</b>　按下「對帳通過」之後要填的發票欄位。紅框：發票號碼格式、照片、載具。</figcaption></figure>
+<figure class="screen">
+      <div class="bar"><i></i>待對帳清單 → 對帳通過（兩個家庭）</div>
+      <div class="body">
+        <div class="srow"><span class="lbl">這張單</span><span class="val">單號 ／ <b>2 個家庭</b> ／ 應收 ＄12,000，末 5 碼 42204</span></div>
+        <div class="srow hit"><span class="mark">看到這行就是兩張發票</span><span class="lbl">　</span><span class="val">此付款單包含 <b>2</b> 個不同家庭，需分別開立 <b>2</b> 張發票。</span></div>
+        <div class="srow"><span class="lbl">家庭 1</span><span class="val">發票號碼　·　發票照片　·　載具</span></div>
+        <div class="srow"><span class="lbl">家庭 2</span><span class="val">發票號碼　·　發票照片　·　載具</span></div>
+        <div class="srow hit"><span class="mark">兩組不能填一樣</span><span class="lbl">　</span><span class="val">不同家庭不可填寫相同的發票號碼。</span></div>
+        <div class="srow free"><span class="uibtn" style="background:var(--grass)">對帳通過</span>　<span style="font-size:15px;color:var(--ink-3)">兩組都填完才按得下去</span></div>
+      </div>
+      <figcaption>示意圖 · 測試環境沒有跨家庭的付款單，拍不到實機畫面。上面的字是系統實際會顯示的文案。</figcaption>
+    </figure>
+    </section>
+
+  <!-- ═════════ 4 ═════════ -->
+  <section class="chapter" id="c4">
+    <div class="badge"><span>4</span>家長要退課</div>
+    <h2>退課</h2>
+    <p class="lede">錢要退多少，<b>系統會自己算</b>。你只要選原因、寫清楚為什麼。</p>
+
+    <div class="when">
+      <h3>什麼時候用</h3>
+      <ul>
+        <li>我們要搬家了，剩下的課不上了。」</li>
+        <li>小孩生病，這期上不完。」</li>
+        <li>你們一直沒幫我排到教練，我要退。」</li>
+      </ul>
+      <p class="go"><em>去這裡 →</em><span class="nav">報名與對帳 → (F-R04) 退課處理</span></p>
+    </div>
+
+    <ol class="steps">
+      <li>
+        <h3>找到那筆報名</h3>
+        <p>搜尋框可以打：編號、家長名字、電話、小孩名字、教練、場館。哪一個都行。</p>
+      </li>
+      <li>
+        <h3>選原因（五個選一個）</h3>
+        <p style="line-height:2.3">
+          公司因素 - 未媒合到教練<br>
+          公司因素 - 場地因素<br>
+          個人因素 - 生病／生理<br>
+          個人因素 - 一般正常退費<br>
+          其他
+        </p>
+        <div class="note care">
+          <b class="h">選對很重要</b>
+          <p>「公司因素」＝ 我們這邊沒做好。</p>
+          <p>「個人因素」＝ 家長自己的狀況。</p>
+          <p>這兩個在月底報表上是完全不同的兩件事，不要隨便選。</p>
+        </div>
+      </li>
+      <li>
+        <h3>寫清楚發生什麼事</h3>
+        <p>把事情寫具體，例如：</p>
+        <p class="say">「家長 8/20 搬遷至台中，已與教練確認不再續期」</p>
+        <p>不要只寫「退費」兩個字。以後有人要查，看的就是你寫的這段。</p>
+      </li>
+      <li>
+        <h3>看一下手續費</h3>
+        <p>下拉有 0%、5%、10%、15%、20%。也可以自己打數字。</p>
+        <div class="note care">
+          <b class="h">你改了，系統會記下來</b>
+          <p>只要跟預設的不一樣，系統會寫進紀錄：</p>
+          <p class="say">「原定 10% → 實際 0%（由王小明調整）」</p>
+          <p>這不是在抓你。是以後對帳的人要看得懂為什麼這筆不一樣。</p>
+          <p>所以<b>改了就順手在上面的原因裡寫一句為什麼</b>。</p>
+        </div>
+      </li>
+      <li>
+        <h3>按退課退費</h3>
+        <p>按 <span class="btn danger">退課退費</span>，就完成了。</p>
+        <div class="note stop">
+          <b class="h">沒有人會再確認一次</b>
+          <p>你按下去就是最後一步，主管不會再看一遍。</p>
+          <p>不確定就先別按，去問。</p>
+        </div>
+      </li>
+    </ol>
+
+    <figure class="screen">
+      <div class="bar"><i></i>退課處理</div>
+      <div class="body">
+        <div class="srow"><span class="lbl">搜尋</span><span class="val">編號 / 家長 / 電話 / 學員 / 教練 / 場館</span></div>
+        <div class="srow hit"><span class="mark">五選一</span><span class="lbl">申請原因</span><span class="val">公司因素…　／　個人因素…　／　其他</span></div>
+        <div class="srow hit"><span class="mark">寫具體</span><span class="lbl">詳述原因</span><span class="val">家長 8/20 搬遷至台中…</span></div>
+        <div class="srow"><span class="lbl">手續費率</span><span class="val">0% · 5% · 10% · 15% · 20%（可自己打）</span></div>
+        <div class="srow"><span class="lbl">退款金額</span><span class="val">系統自己算，你不用填</span></div>
+        <div class="srow free"><span class="uibtn danger">退課退費</span></div>
+      </div>
+      <figcaption>示意圖 · 金額<b>系統算</b>，你只要把原因寫好。</figcaption>
+    </figure>
+
+    <figure class="photo"><img src="img/08-refund.webp" width="1500" height="1052" loading="lazy" alt="退課處理。紅框：申請原因五選一、詳述原因、手續費率。金額是系統算的，你不用填。"><figcaption><b>照片 08</b>　退課處理。紅框：申請原因五選一、詳述原因、手續費率。金額是系統算的，你不用填。</figcaption></figure>
+</section>
+
+  <!-- ═════════ 5 ═════════ -->
+  <section class="chapter" id="c5">
+    <div class="badge"><span>5</span>忘記簽到</div>
+    <h2>補簽到 和 手動扣課</h2>
+    <p class="lede">這一章最容易做錯。做錯的話，家長會被扣兩堂課。</p>
+
+    <div class="note stop">
+      <b class="h">最重要的一句話</b>
+      <p><b>「補簽到」按下去的同時，就已經扣掉一堂課了。</b></p>
+      <p>補完簽到，<b>不要</b>再去「手動扣課」。</p>
+      <p>這兩個是<b>二選一</b>，不是做完一個再做另一個。</p>
+    </div>
+
+    <div class="note tip">
+      <b class="h">怎麼分辨要用哪一個</b>
+      <p>先問自己一句：<b>系統的課表上，找不找得到這一堂？</b></p>
+      <p>找得到 → 用<b>補簽到</b></p>
+      <p>找不到 → 用<b>手動扣課</b></p>
+    </div>
+
+    <div class="scroll">
+    <table>
+      <thead><tr><th>狀況</th><th>用哪一個</th><th>去哪一頁</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>課表上有這一堂，只是忘記簽到</td>
+          <td><b>補簽到</b></td>
+          <td><span class="nav">(F-R01) 上課紀錄查詢</span></td>
+        </tr>
+        <tr>
+          <td>系統裡根本沒有這一堂<br><span style="color:var(--ink-3);font-size:14.5px">（補課、臨時加的、很久以前的）</span></td>
+          <td><b>手動扣課</b></td>
+          <td><span class="nav">場館營運 → 手動扣課</span></td>
+        </tr>
+        <tr>
+          <td>家長自己按到簽到，按錯了</td>
+          <td><b>撤銷自助簽到</b></td>
+          <td><span class="nav">(F-R03) 簽到驗證</span></td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <h2 style="font-size:23px;margin:48px 0 0">A · 補簽到</h2>
+    <p style="margin:10px 0 0;color:var(--ink-2)">課表上找得到那一堂的時候用這個。</p>
+    <ol class="steps">
+      <li>
+        <h3>先把那一堂找出來</h3>
+        <p>去 <span class="nav">(F-R01) 上課紀錄查詢</span>，設好日期，按 <span class="btn">查詢</span>。</p>
+        <p>怎麼查看第 7 章。</p>
+      </li>
+      <li>
+        <h3>按那一列的補簽到</h3>
+        <p>會跳出一個小視窗，裡面已經幫你填好那堂課原本的時間。</p>
+        <p>小孩其實是別的時間到的，就改掉。</p>
+        <p>要填「現在」的話，按 <span class="btn">重設為現在</span>。</p>
+      </li>
+      <li>
+        <h3>按確認補簽到</h3>
+        <p>做完那一列會馬上變成：有簽到時間、簽到欄寫「已簽到」、備註欄寫「櫃檯」。</p>
+        <p><b>這一刻課已經扣掉了。不要再去手動扣課。</b></p>
+      </li>
+    </ol>
+
+    <figure class="screen">
+      <div class="bar"><i></i>上課紀錄查詢 → 補簽到</div>
+      <div class="body">
+        <div class="srow"><span class="lbl">那一列</span><span class="val">2026-08-11　·　王教練　·　1 對 2　·　尚未簽到</span></div>
+        <div class="srow hit"><span class="mark">按這裡</span><span class="lbl">　</span><span class="val"><span class="uibtn">補簽到</span></span></div>
+        <div class="srow"><span class="lbl">簽到時間</span><span class="val">2026/08/11 16:00　<span class="uibtn grey">重設為現在</span></span></div>
+        <div class="srow hit"><span class="mark">按完就扣一堂</span><span class="lbl">　</span><span class="val"><span class="uibtn">確認補簽到</span></span></div>
+      </div>
+      <figcaption>示意圖 · 按下 <b>確認補簽到</b>，簽到和扣課<b>一起完成</b>。</figcaption>
+    </figure>
+
+    <h2 style="font-size:23px;margin:48px 0 0">B · 手動扣課</h2>
+    <p style="margin:10px 0 0;color:var(--ink-2)">系統裡根本沒有那一堂的時候用這個。</p>
+    <ol class="steps">
+      <li>
+        <h3>搜尋</h3>
+        <p><b>至少要打 2 個字</b>。可以打報名單號、家長名字、家長手機、或小孩名字。</p>
+        <p>系統只會列出還在上、而且還有剩堂數的課。</p>
+      </li>
+      <li>
+        <h3>寫扣課原因</h3>
+        <p>一定要寫。寫清楚為什麼要扣，例如：</p>
+        <p class="say">「經家長確認，補登 2026/07/12 已完成的課程」</p>
+        <div class="note stop">
+          <b class="h">寫下去就改不掉了</b>
+          <p>這段字是<b>不能修改</b>的紀錄。一次寫對。</p>
+        </div>
+      </li>
+      <li>
+        <h3>確認上課時間</h3>
+        <p>畫面會把兩個時間放在一起給你看：</p>
+        <p>① 這堂課<b>實際上是哪天上的</b>　② 你<b>現在</b>操作的時間</p>
+        <p>補很久以前的課，記得把①改成當初那一天，不要留成今天。</p>
+      </li>
+      <li>
+        <h3>送出</h3>
+        <p>一次扣 1 堂。</p>
+        <p>教練<b>不會</b>收到通知，這是故意的，因為那堂課本來就會出現在他的今日簽到裡。</p>
+      </li>
+    </ol>
+
+    <figure class="screen">
+      <div class="bar"><i></i>手動扣課</div>
+      <div class="body">
+        <div class="srow hit"><span class="mark">至少 2 個字</span><span class="lbl">搜尋</span><span class="val">報名單號 / 家長姓名或手機 / 學員姓名</span></div>
+        <div class="srow"><span class="lbl">選課期</span><span class="val">只會出現「還在上、還有剩堂數」的</span></div>
+        <div class="srow hit"><span class="mark">一定要寫，改不掉</span><span class="lbl">扣課原因</span><span class="val">經家長確認，補登 7/12 已完成的課程</span></div>
+        <div class="srow hit"><span class="mark">補舊課要改</span><span class="lbl">上課時間</span><span class="val">實際上課那一天　（不是今天）</span></div>
+        <div class="srow free"><span class="uibtn">確認扣課</span>　<span style="font-size:15px;color:var(--ink-3)">一次扣 1 堂</span></div>
+      </div>
+      <figcaption>示意圖 · <b>紅框</b>三格是最常出錯的地方。</figcaption>
+    </figure>
+
+    <div class="scroll">
+    <table>
+      <thead><tr><th>系統跳出這句話</th><th>意思是</th></tr></thead>
+      <tbody>
+        <tr><td class="msg">請輸入至少 2 個字元</td><td>搜尋打太短，多打幾個字。</td></tr>
+        <tr><td class="msg">查無可手動扣課的進行中課期</td><td>這個人沒有在上的課，或那堂課不在你的場館。</td></tr>
+        <tr><td class="msg">請先填寫扣課原因</td><td>原因忘了寫。</td></tr>
+        <tr><td class="msg">此課期已無剩餘堂數，不能扣成負數</td><td>課已經上完了。要續課，不是扣課。</td></tr>
+        <tr><td class="msg">請確認上課時間</td><td>時間沒填，或填的格式不對。</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <h2 style="font-size:23px;margin:48px 0 0">C · 家長自己按錯簽到</h2>
+    <p style="margin:10px 0 0;color:var(--ink-2)">
+      去 <span class="nav">(F-R03) 簽到驗證</span>。畫面中間是今天報到的名單。
+    </p>
+    <p style="margin:10px 0 0;color:var(--ink-2)">
+      右上角可以用<b>家長手機</b>（<code>09xxxxxxxx</code>）或<b>報名編號</b>（像 <code>CP1001</code>）確認是哪一位。
+    </p>
+    <div class="note ok">
+      <b class="h">撤銷之後課會自己還回去</b>
+      <p>填好原因、撤銷之後，會看到「已撤銷自助簽到，堂數已歸還」。</p>
+      <p>課<b>已經還回去了</b>，不用再跑第 6 章。</p>
+    </div>
+
+    <figure class="photo"><img src="img/09-backfill.webp" width="1500" height="1052" loading="lazy" alt="補簽到的視窗。紅框：時間預設帶課堂時間可以改，按下確認就同時完成簽到與扣課。"><figcaption><b>照片 09</b>　補簽到的視窗。紅框：時間預設帶課堂時間可以改，按下確認就同時完成簽到與扣課。</figcaption></figure>
+<figure class="photo"><img src="img/10-manual-deduction.webp" width="1500" height="1052" loading="lazy" alt="手動扣課。紅框：搜尋至少要打 2 個字。"><figcaption><b>照片 10</b>　手動扣課。紅框：搜尋至少要打 2 個字。</figcaption></figure>
+<figure class="photo"><img src="img/11-checkin.webp" width="1500" height="1052" loading="lazy" alt="簽到驗證。紅框：右上角可以用家長手機號碼把人找出來。"><figcaption><b>照片 11</b>　簽到驗證。紅框：右上角可以用家長手機號碼把人找出來。</figcaption></figure>
+</section>
+
+  <!-- ═════════ 6 ═════════ -->
+  <section class="chapter" id="c6">
+    <div class="badge"><span>6</span>扣錯課，還回去</div>
+    <h2>扣課復活</h2>
+    <p class="lede">扣了課，但小孩其實沒來上。這一頁把那一堂還回去。</p>
+
+    <div class="when">
+      <h3>什麼時候用</h3>
+      <ul>
+        <li>我小孩今天根本沒去，怎麼被扣一堂？」</li>
+        <li>你剛剛補簽到按到別人了。</li>
+        <li>手動扣課扣到錯的課期了。</li>
+      </ul>
+      <p class="go"><em>去這裡 →</em><span class="nav">場館營運 → (F-M05) 扣課復活</span></p>
+    </div>
+
+    <ol class="steps">
+      <li>
+        <h3>在清單裡找到那一堂</h3>
+        <p>這一頁列的就是「已經扣掉，但其實沒上到」的課。</p>
+        <p>上面有日期、時間、家長、教練、小孩、場館，用這些找。</p>
+        <p>你只看得到<b>自己場館</b>的課。</p>
+      </li>
+      <li>
+        <h3>寫歸還原因</h3>
+        <p>一定要寫。寫清楚一點，例如：</p>
+        <p class="say">「7/12 學員發燒未到，櫃台誤按補簽到」</p>
+        <div class="note care">
+          <b class="h">這段字以後會被翻出來看</b>
+          <p>還回去之後，系統會永久記下三件事：<b>什麼時候還的、誰還的、為什麼還</b>。</p>
+          <p>月底對帳，或家長來問堂數的時候，看的就是這三格。</p>
+          <p>只寫「更正」兩個字，等於什麼都沒寫。</p>
+        </div>
+      </li>
+      <li>
+        <h3>按歸還堂數</h3>
+        <p>會看到「已將課堂 ○○ 歸還 1 堂」。</p>
+        <div class="note ok">
+          <b class="h">按兩下不會多還</b>
+          <p>網路慢的時候不小心按了兩下也沒關係。</p>
+          <p>系統保證<b>同一堂只還一次</b>。</p>
+        </div>
+      </li>
+    </ol>
+
+    <figure class="screen">
+      <div class="bar"><i></i>扣課復活</div>
+      <div class="body">
+        <div class="srow"><span class="lbl">清單</span><span class="val">2026-08-11 16:00　·　陳媽媽　·　王教練　·　小明</span></div>
+        <div class="srow hit"><span class="mark">寫具體一點</span><span class="lbl">歸還原因</span><span class="val">7/12 學員發燒未到，櫃台誤按補簽到</span></div>
+        <div class="srow hit"><span class="mark">按這裡</span><span class="lbl">　</span><span class="val"><span class="uibtn">歸還堂數</span>　一次還 1 堂</span></div>
+      </div>
+      <figcaption>示意圖 · 要還兩堂，就<b>分兩次做</b>，沒有一次還多堂的功能。</figcaption>
+    </figure>
+
+    <figure class="photo"><img src="img/12-revive.webp" width="1500" height="1052" loading="lazy" alt="扣課復活。紅框：歸還原因一定要寫，按確認歸還一次還 1 堂。"><figcaption><b>照片 12</b>　扣課復活。紅框：歸還原因一定要寫，按確認歸還一次還 1 堂。</figcaption></figure>
+</section>
+
+  <!-- ═════════ 7 ═════════ -->
+  <section class="chapter" id="c7">
+    <div class="badge"><span>7</span>查上了幾堂</div>
+    <h2>查詢上課紀錄</h2>
+    <p class="lede">家長問「我這個月上幾堂了」，就查這裡。補簽到也在這一頁做。</p>
+
+    <div class="when">
+      <h3>什麼時候用</h3>
+      <ul>
+        <li>我這個月到底上了幾堂？」</li>
+        <li>上禮拜三那天，誰有來？」</li>
+        <li>我沒有簽到啊，怎麼被扣了？」</li>
+      </ul>
+      <p class="go"><em>去這裡 →</em><span class="nav">場館營運 → (F-R01) 上課紀錄查詢</span></p>
+    </div>
+
+    <ol class="steps">
+      <li>
+        <h3>設日期</h3>
+        <p>一次最多查 <b>三個月</b>。</p>
+        <p>只想看今天，按右邊那顆 <span class="btn">當天</span>，它會直接查好，不用再按查詢。</p>
+      </li>
+      <li>
+        <h3>選場館</h3>
+        <p>一次只能選<b>一個</b>場館。要看全部就選「全部場館」。</p>
+        <div class="note tip">
+          <b class="h">找不到某個場館？</b>
+          <p>清單裡<b>只會出現真的有上過課的場館</b>。</p>
+          <p>沒看到某一館，代表那一館從來沒開過課，不是系統壞掉。</p>
+        </div>
+      </li>
+      <li>
+        <h3>按查詢</h3>
+        <p>改了日期或場館，畫面<b>不會自己重查</b>。</p>
+        <div class="note care">
+          <b class="h">看到橘色就是還沒查</b>
+          <p>條件改過以後，<span class="btn warn">查詢</span> 這顆會變成<b>橘色</b>，</p>
+          <p>下面出現一行字：「條件已修改，按『查詢』套用」。</p>
+          <p>看到橘色，代表<b>你眼前的結果還是舊的</b>。要按下去才算數。</p>
+        </div>
+      </li>
+      <li>
+        <h3>看結果</h3>
+        <p><b>最新的在最上面</b>，往下越來越舊。</p>
+        <p>欄位從左到右是：<br>
+        日期 · 簽到時間 · 教練 · 組別 · 學員名單 · 簽到 · 備註 · 補簽到 · 場館</p>
+        <div class="note tip">
+          <b class="h">家長說「我沒簽到」的時候，先看備註欄</b>
+          <p>備註欄會寫：是誰按的簽到、或者為什麼被手動扣課。</p>
+          <p>答案通常就在那一格。</p>
+        </div>
+      </li>
+      <li>
+        <h3>換看法、或存下來</h3>
+        <p>右上角可以切 <span class="btn">條列</span> 和 <span class="btn">週課表</span>。</p>
+        <p>週課表一次只能看 31 天，太長會被擋。</p>
+        <p>要存檔按 <span class="btn">匯出</span>，可以存 CSV 或 Excel。</p>
+      </li>
+    </ol>
+
+    <figure class="screen">
+      <div class="bar"><i></i>上課紀錄查詢</div>
+      <div class="body">
+        <div class="srow"><span class="lbl">起訖日</span><span class="val">2026/07/01 ～ 2026/09/01　<span class="uibtn grey">當天</span>　最多三個月</span></div>
+        <div class="srow"><span class="lbl">場館</span><span class="val"><span class="uibtn">全部場館</span> <span class="uibtn grey">新北高中</span> <span class="uibtn grey">三重商工</span>　只列有上過課的</span></div>
+        <div class="srow hit"><span class="mark">橘色 ＝ 還沒查</span><span class="lbl">　</span><span class="val"><span class="uibtn warn">查詢</span>　條件已修改，按「查詢」套用</span></div>
+        <div class="srow"><span class="lbl">結果</span><span class="val">最新的在最上面</span></div>
+        <div class="srow hit"><span class="mark">先看這一欄</span><span class="lbl">備註</span><span class="val">誰按的簽到　·　為什麼被扣課</span></div>
+      </div>
+      <figcaption>示意圖 · <b>查詢鈕是橘色</b>的時候，畫面上的結果還是舊條件的。</figcaption>
+    </figure>
+
+    <figure class="photo"><img src="img/13-sessions.webp" width="1500" height="1052" loading="lazy" alt="上課紀錄查詢。紅框：當天快捷鍵、改條件後一定要按的查詢鈕、以及看誰簽的備註欄。"><figcaption><b>照片 13</b>　上課紀錄查詢。紅框：當天快捷鍵、改條件後一定要按的查詢鈕、以及看誰簽的備註欄。</figcaption></figure>
+</section>
+
+  <!-- ═════════ 對照表 ═════════ -->
+  <section class="chapter" id="quick">
+    <div class="badge"><span>★</span>一句話找頁面</div>
+    <h2>家長說這句，你開這頁</h2>
+    <p class="lede">來不及翻手冊的時候，看這張表。</p>
+
+    <div class="scroll">
+    <table>
+      <thead><tr><th style="width:40%">家長或教練說</th><th style="width:36%">開這一頁</th><th>第幾章</th></tr></thead>
+      <tbody>
+        <tr><td>「我想報名，手機弄不好」</td><td><span class="nav">手動建檔</span></td><td>1</td></tr>
+        <tr><td>「我們兩家要一起上」</td><td><span class="nav">團購審核</span></td><td>2</td></tr>
+        <tr><td>「錢轉了，末五碼 12345」</td><td><span class="nav">(F-M02) 待對帳清單</span></td><td>3</td></tr>
+        <tr><td>「金額跟末五碼對不起來」</td><td><span class="nav">(F-M02)</span> → <span class="btn warn">退回補件</span></td><td>3</td></tr>
+        <tr><td>「我要退課」</td><td><span class="nav">(F-R04) 退課處理</span></td><td>4</td></tr>
+        <tr><td>「昨天有來，忘記簽到」</td><td><span class="nav">(F-R01)</span> → <span class="btn">補簽到</span></td><td>5A</td></tr>
+        <tr><td>「補的那堂系統裡沒有」</td><td><span class="nav">手動扣課</span></td><td>5B</td></tr>
+        <tr><td>「他自己按錯簽到了」</td><td><span class="nav">(F-R03) 簽到驗證</span></td><td>5C</td></tr>
+        <tr><td>「今天沒去，怎麼被扣一堂」</td><td><span class="nav">(F-M05) 扣課復活</span></td><td>6</td></tr>
+        <tr><td>「我這個月上幾堂了」</td><td><span class="nav">(F-R01) 上課紀錄查詢</span></td><td>7</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    </section>
+
+  <footer>
+    <p>
+      這本手冊照 2026 年 9 月的系統畫面寫。上面的按鈕名稱、跳出來的句子，都跟系統上一模一樣。
+    </p>
+    <p>
+      系統改版之後，如果畫面跟這本書不一樣，<b>以畫面為準</b>，然後告訴管理員來更新這本書。
+    </p>
+    <p>
+      另外：後台裡本來就有一頁「系統操作 SOP」。那一頁關於<b>扣課復活</b>和<b>退費怎麼算</b>的說明是舊的，
+      跟現在的系統不一樣。請以本手冊第 4 章和第 6 章為準。
+    </p>
+  </footer>
+
+  </main>
+</div>
+</div>
+
+<script>
+// 捲到哪一章，上面就亮哪一顆，並把它捲進可視範圍。
+// 純導覽用，壞了頁面照樣能讀，所以整段包在 try 裡。
+(function () {
+  try {
+    var bar = document.querySelector('.topnav-links');
+    var links = Array.prototype.slice.call(document.querySelectorAll('.topnav a'));
+    if (!bar || !links.length) return;
+    var map = {};
+    links.forEach(function (a) { map[a.getAttribute('data-t')] = a; });
+    var secs = links.map(function (a) { return document.getElementById(a.getAttribute('data-t')); })
+                    .filter(Boolean);
+    if (!secs.length) return;
+    var cur = null;
+    function mark(id) {
+      if (id === cur) return;
+      cur = id;
+      links.forEach(function (a) {
+        if (a.getAttribute('data-t') === id) a.setAttribute('aria-current', 'true');
+        else a.removeAttribute('aria-current');
+      });
+      var a = map[id];
+      if (!a) return;
+      // 只有那一顆跑出可視範圍時才捲，否則每次都跳一下很吵
+      var br = bar.getBoundingClientRect(), ar = a.getBoundingClientRect();
+      if (ar.left < br.left + 8 || ar.right > br.right - 8) {
+        bar.scrollTo({ left: a.offsetLeft - bar.clientWidth / 2 + a.offsetWidth / 2, behavior: 'smooth' });
+      }
+    }
+    // 取「已經跨過吸頂列下緣的最後一章」。比用交集比例穩：
+    // 長章節用比例判斷會在捲動中忽亮忽暗。
+    function onScroll() {
+      var line = 96, best = secs[0];
+      for (var i = 0; i < secs.length; i++) {
+        if (secs[i].getBoundingClientRect().top <= line) best = secs[i];
+      }
+      if (best) mark(best.id);
+    }
+    var tick = false;
+    addEventListener('scroll', function () {
+      if (tick) return;
+      tick = true;
+      requestAnimationFrame(function () { tick = false; onScroll(); });
+    }, { passive: true });
+    onScroll();
+  } catch (e) {}
+})();
+</script>
+
+<script>
+// 手冊搜尋。索引在載入時從畫面本身建起來 —— 之後內容改了不用另外維護一份資料。
+(function () {
+  try {
+    var input = document.getElementById('q');
+    var panel = document.getElementById('qr');
+    if (!input || !panel) return;
+
+    // 中文沒有詞界，一律去掉空白做子字串比對；英數轉小寫。
+    var norm = function (t) { return (t || '').replace(/\s+/g, '').toLowerCase(); };
+
+    var KINDS = [
+      // 章節上方那顆藍色標籤放的是白話章名（「扣錯課，還回去」），
+      // 新人會搜的正是那組字，一定要進索引 —— h2 用的是系統名稱（「扣課復活」）。
+      ['.chapter > .badge', 3], ['.chapter > h2', 3], ['.steps h3', 3],
+      ['.when li', 2], ['.dangerband li', 2], ['.facts div', 2],
+      ['.steps p', 1], ['.note p', 1], ['table tbody tr', 1],
+      ['.chapter > .lede', 1], ['figcaption', 0],
+    ];
+    var idx = [];
+    KINDS.forEach(function (pair) {
+      document.querySelectorAll(pair[0]).forEach(function (el) {
+        var raw = (el.textContent || '').replace(/\s+/g, ' ').trim();
+        if (raw.length < 2 || raw.length > 260) return;
+        var sec = el.closest('section[id]');
+        idx.push({
+          el: el, raw: raw, key: norm(raw), weight: pair[1],
+          where: sec ? (sec.querySelector('h2') || {}).textContent || '手冊' : '手冊',
+        });
+      });
+    });
+
+    var cur = -1, shown = [];
+
+    function esc(t) { var d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
+
+    /* 取命中位置前後各 34 個字當摘要，並把命中的字標起來。
+       用 norm 後的位置回推原文位置：兩者只差空白，逐字對照即可。 */
+    function snippet(raw, key, q) {
+      var at = key.indexOf(q);
+      if (at < 0) return esc(raw.slice(0, 80));
+      var seen = 0, from = 0, to = raw.length;
+      for (var i = 0; i < raw.length; i++) {
+        if (!/\s/.test(raw[i])) {
+          if (seen === at) from = i;
+          if (seen === at + q.length - 1) { to = i + 1; break; }
+          seen++;
+        }
+      }
+      var a = Math.max(0, from - 34), b = Math.min(raw.length, to + 34);
+      return (a > 0 ? '…' : '') + esc(raw.slice(a, from))
+        + '<mark>' + esc(raw.slice(from, to)) + '</mark>'
+        + esc(raw.slice(to, b)) + (b < raw.length ? '…' : '');
+    }
+
+    function close() {
+      panel.hidden = true; panel.innerHTML = '';
+      input.setAttribute('aria-expanded', 'false'); shown = []; cur = -1;
+    }
+
+    function run() {
+      var q = norm(input.value);
+      if (q.length < 1) return close();
+      var hits = [];
+      for (var i = 0; i < idx.length; i++) {
+        var at = idx[i].key.indexOf(q);
+        if (at < 0) continue;
+        hits.push({ it: idx[i], score: idx[i].weight * 100 - at });
+        if (hits.length > 400) break;
+      }
+      hits.sort(function (a, b) { return b.score - a.score; });
+      shown = hits.slice(0, 14).map(function (h) { return h.it; });
+      cur = -1;
+
+      var html = '<div class="qres-in">';
+      if (!shown.length) {
+        html += '<p class="hint">找不到「' + esc(input.value.trim()) + '」。試試看短一點的字，例如「補簽」「發票」「退課」。</p>';
+      } else {
+        html += '<p class="hint">找到 ' + hits.length + ' 筆'
+             + (hits.length > 14 ? '，顯示最相關的 14 筆' : '') + '　·　按 Enter 跳過去</p>';
+        shown.forEach(function (it, n) {
+          html += '<button type="button" data-n="' + n + '">'
+               + '<span class="where">' + esc(it.where) + '</span>'
+               + '<span class="snip">' + snippet(it.raw, it.key, q) + '</span></button>';
+        });
+      }
+      panel.innerHTML = html + '</div>';
+      panel.hidden = false;
+      input.setAttribute('aria-expanded', 'true');
+    }
+
+    function go(n) {
+      var it = shown[n];
+      if (!it) return;
+      close();
+      input.blur();
+      // 捲到目標。sticky 列高約 56，留 96 才不會被蓋住。
+      var y = it.el.getBoundingClientRect().top + scrollY - 96;
+      scrollTo({ top: y, behavior: 'smooth' });
+      var t = it.el.closest('li,tr,.note,figure,section') || it.el;
+      t.classList.remove('hitflash');
+      void t.offsetWidth;
+      t.classList.add('hitflash');
+      setTimeout(function () { t.classList.remove('hitflash'); }, 2000);
+    }
+
+    function mark(n) {
+      var bs = panel.querySelectorAll('button');
+      for (var i = 0; i < bs.length; i++) bs[i].removeAttribute('data-on');
+      if (n >= 0 && bs[n]) { bs[n].setAttribute('data-on', '1'); bs[n].scrollIntoView({ block: 'nearest' }); }
+    }
+
+    var timer;
+    input.addEventListener('input', function () { clearTimeout(timer); timer = setTimeout(run, 90); });
+    input.addEventListener('focus', function () { if (input.value) run(); });
+
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { input.value = ''; close(); input.blur(); return; }
+      if (!shown.length) return;
+      if (e.key === 'ArrowDown') { e.preventDefault(); cur = (cur + 1) % shown.length; mark(cur); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); cur = (cur - 1 + shown.length) % shown.length; mark(cur); }
+      else if (e.key === 'Enter') { e.preventDefault(); go(cur < 0 ? 0 : cur); }
+    });
+
+    panel.addEventListener('click', function (e) {
+      var b = e.target.closest('button[data-n]');
+      if (b) go(+b.getAttribute('data-n'));
+    });
+
+    // 點別的地方就收起來
+    document.addEventListener('click', function (e) {
+      if (!panel.hidden && !panel.contains(e.target) && e.target !== input) close();
+    });
+
+    // 「/」快速跳到搜尋框（在輸入中不攔）
+    document.addEventListener('keydown', function (e) {
+      var t = e.target.tagName;
+      if (e.key === '/' && t !== 'INPUT' && t !== 'TEXTAREA') { e.preventDefault(); input.focus(); }
+    });
+  } catch (e) {}
+})();
+</script>
+
+</body>
+</html>

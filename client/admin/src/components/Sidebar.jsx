@@ -91,6 +91,8 @@ const NAV_GROUPS = [
     title: '說明文件',
     items: [
       { to: '/sop', label: '系統操作 SOP', roles: [] },
+      // 跟 SOP 一樣不設角色限制：櫃台、救生員、新人都要看得到。
+      { to: '/sop/manual', label: '櫃台手冊', roles: [] },
     ],
   },
 ];
@@ -103,7 +105,10 @@ function canSee(item, role, allowed, can) {
     if (!item.roles || item.roles.length === 0) return true;
     return item.roles.includes(role);
   }
-  return can(item.to.replace(/^\//, ''));
+  // 只取路徑第一段，跟 RequireAuth 的判定一致。
+  // 兩邊本來不一樣（這裡用完整路徑、那裡用第一段），單層路徑看不出來，
+  // 一有子路徑（/sop/manual）就會變成「頁面進得去、選單卻不顯示」。
+  return can(item.to.replace(/^\//, '').split('/')[0]);
 }
 
 /**
