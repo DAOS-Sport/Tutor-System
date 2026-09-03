@@ -113,9 +113,7 @@ export default function App() {
         <Route path="/eval-threshold"      element={<RequireAuth roles={['admin']}><EvalThresholdPage /></RequireAuth>} />
         <Route path="/coach-intros-review"  element={<RequireAuth roles={['admin', 'manager']}><CoachIntrosReviewPage /></RequireAuth>} />
         <Route path="/sop" element={<SopPage />} />
-        {/* 掛在 /sop 底下：RequireAuth 取路徑第一段當權限 key，
-            所以櫃台手冊沿用 sop 的權限，不必再開一個新的資源鍵。 */}
-        <Route path="/sop/manual" element={<CounterManualPage />} />
+        <Route path="/counter-manual" element={<CounterManualPage />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/dashboard" replace />} />

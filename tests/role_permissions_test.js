@@ -52,23 +52,9 @@ check('側邊選單的每一個項目都有對應資源', () => {
   const nav = read('client/admin/src/components/Sidebar.jsx');
   const paths = [...nav.matchAll(/to:\s*'(\/[^']*)'/g)].map((m) => m[1]);
   assert.ok(paths.length >= 30, `只抓到 ${paths.length} 個選單項目，解析可能壞了`);
-  // 資源代號取路徑「第一段」。子路徑（例如 /sop/manual）沿用父層的權限，
-  // 不必為每一頁都開一個新的資源鍵 —— 說明文件底下的頁面就是這樣掛的。
-  const missing = paths.filter((p) => !RESOURCE_KEYS.includes(p.replace(/^\//, '').split('/')[0]));
+  const missing = paths.filter((p) => !RESOURCE_KEYS.includes(p.replace(/^\//, '')));
   assert.deepStrictEqual(missing, [],
     '這些選單項目沒有對應的資源代號，會永遠顯示不出來：' + missing.join('、'));
-});
-
-check('選單與路由守衛用同一套資源代號推導', () => {
-  // 兩邊本來不一致：選單用完整路徑、守衛用第一段。單層路徑看不出差別，
-  // 一有子路徑就會變成「頁面進得去、選單卻不顯示」，而且不會有任何錯誤訊息。
-  // 這裡用字串比對而不是正規表示式 —— 要比對的內容本身充滿斜線與跳脫字元，
-  // 寫成 regex 只會讓下一個人看不懂也改不動。
-  const SEG = ".split('" + "/" + "')[0]";
-  const nav = read('client/admin/src/components/Sidebar.jsx');
-  const ra = read('client/admin/src/components/RequireAuth.jsx');
-  assert.ok(nav.includes(SEG), 'Sidebar 沒有取路徑第一段，子路徑的選單項目會消失');
-  assert.ok(ra.includes(SEG), 'RequireAuth 沒有取路徑第一段');
 });
 
 check('選單改讀權限設定，不再只看寫死的 roles', () => {

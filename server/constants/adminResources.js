@@ -57,6 +57,7 @@ const ADMIN_RESOURCES = Object.freeze([
   { key: 'coach-intros-review', group: '學習歷程',        path: '/coach-intros-review',  label: '(F-C06) 教練介紹送審',              defaultRoles: ['admin', 'manager'] },
   // 【說明文件】
   { key: 'sop',                 group: '說明文件',        path: '/sop',                  label: '系統操作 SOP',                    defaultRoles: [] },
+  { key: 'counter-manual',      group: '說明文件',        path: '/counter-manual',       label: '櫃台手冊',                        defaultRoles: [] },
 ].map(Object.freeze));
 
 const RESOURCE_KEYS = Object.freeze(ADMIN_RESOURCES.map((r) => r.key));
