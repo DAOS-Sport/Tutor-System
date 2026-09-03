@@ -64,7 +64,24 @@ function requireFlowToken(req, res, next) {
 const ATTEMPTS = new Map(); // "ip:lineUid" -> { count, windowStart }
 const WINDOW_MS = 5 * 60 * 1000;
 const { rateLimitEnabled } = require('./rateLimit');
-const MAX_ATTEMPTS = 5;
+/**
+ * 同一個 UID 在時間窗內的上限。
+ *
+ * 2026-09-03 使用者指定改成 15。原本 5 次太緊：這一步只是「判斷這支電話在不在」，
+ * 不是輸入密碼，家長打錯、改格式（09xx / +8869xx）、或前一次沒送出就重按，
+ * 三五下就被鎖五分鐘，而畫面上只會說「嘗試次數過多」。
+ *
+ * 計數的鍵是 IP＋UID（見上面說明），所以「同一個 UID」在同一個網路下是 15 次；
+ * 換網路會拿到新的桶 —— 這個方向是刻意的，寧可對正常家長寬鬆，
+ * 因為這個端點本來就不會洩漏任何學員資料（防的是列舉，不是盜用）。
+ *
+ * 要調整不必改程式：設 VERIFY_PHONE_MAX。
+ */
+const DEFAULT_MAX_ATTEMPTS = 15;
+function maxAttempts() {
+  const n = Number(process.env.VERIFY_PHONE_MAX);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_MAX_ATTEMPTS;
+}
 
 function verifyPhoneRateLimit(req, res, next) {
   const ip = (req.headers['x-forwarded-for']?.split(',')[0] || req.ip || 'unknown').trim();
@@ -77,7 +94,7 @@ function verifyPhoneRateLimit(req, res, next) {
     return next();
   }
   rec.count += 1;
-  if (rateLimitEnabled() && rec.count > MAX_ATTEMPTS) {
+  if (rateLimitEnabled() && rec.count > maxAttempts()) {
     console.warn(`[flowAuth] verify-phone rate-limited: ip=${ip} uidTail=***${uid.slice(-4)} attempts=${rec.count}`);
     return res.status(429).json({ error: '嘗試次數過多，請 5 分鐘後再試', code: 'RATE_LIMITED' });
   }
@@ -85,3 +102,6 @@ function verifyPhoneRateLimit(req, res, next) {
 }
 
 module.exports = { signFlowToken, requireFlowToken, verifyPhoneRateLimit, FLOW_TTL_SECONDS };
+// 上限是純設定值，錯了不會有人立刻發現（症狀是「家長說他被鎖住」，
+// 而那時候已經無從查起）。匯出來讓測試真的打滿 15 次驗行為，不是掃原始碼。
+module.exports.__test__ = { maxAttempts, ATTEMPTS, DEFAULT_MAX_ATTEMPTS };

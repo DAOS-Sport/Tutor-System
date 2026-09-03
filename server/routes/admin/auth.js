@@ -25,7 +25,26 @@ const _attempts = new Map(); // ip → [ts...]
 // 上限與時間窗由 middlewares/rateLimit 統一決定（預設 30 次 / 5 分鐘，可用
 // RATE_LIMIT_MAX、RATE_LIMIT_WINDOW_MS 調整）。舊值是 5 次 —— 配上「所有人
 // 共用一個桶」的 bug，那是 2026-08-26 全公司鎖死的直接原因。
+/**
+ * 2026-09-03 使用者指定：後台登入不限流。
+ *
+ * 理由是營運面的：後台是內部帳號、人就在現場，被 429 鎖住的代價是整班停擺 ——
+ * 2026-08-26 已經真的發生過一次全公司登不進來。
+ *
+ * 代價要講清楚：這確實少了一層擋逐一試密碼的防護。抵銷它的不是這裡，
+ * 而是「預設密碼必須改掉」—— 後台帳號的初始密碼是 10 碼手機號，
+ * must_change_credentials 已經有強制改密碼的機制，那才是真正該守的那道。
+ *
+ * 整段計數程式刻意留著：設 ADMIN_LOGIN_RATE_LIMIT=1 就恢復原本的行為
+ * （上限與時間窗仍由 RATE_LIMIT_MAX / RATE_LIMIT_WINDOW_MS 決定）。
+ * 出事時能用一個環境變數擋回去，比事後改程式再部署快得多。
+ */
+function adminLoginRateLimitOn() {
+  return /^(1|true|yes|on)$/i.test(String(process.env.ADMIN_LOGIN_RATE_LIMIT ?? '').trim());
+}
+
 function _rateLimited(ip) {
+  if (!adminLoginRateLimitOn()) return false;
   return hit(_attempts, ip, { label: 'admin/auth/login' });
 }
 
