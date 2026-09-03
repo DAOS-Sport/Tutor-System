@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useAuth } from '../context/AuthContext';
+import { usePermissions } from '../context/PermissionContext';
 import { enrollmentsApi } from '../api/enrollments';
 import { sessionsApi } from '../api/sessions';
 import { roleLabel } from '../utils/format';
@@ -20,9 +21,18 @@ function StatCard({ label, value, hint, to }) {
 
 export default function DashboardPage() {
   const { user, isStaff } = useAuth();
+  const { allowed, can } = usePermissions();
   const [stats, setStats] = useState(null);
 
+  // 與 /enrollments/stats 的後端 guard 對齊：
+  //   requireAnyResource('enrollments', 'refund', 'reconcile', 'manual-enroll')
+  // 救生員一項都沒有 —— 不對齊的話他每天打開後台第一眼就是「部分統計暫時無法載入，
+  // 請稍後再重新整理」，而那不是暫時的，是永久的：他永遠不會有那個權限。
+  // 一個每天都出現、而且永遠不會好的錯誤提示，會讓人學會忽略所有錯誤提示。
+  const canEnrollStats = can('enrollments') || can('refund') || can('reconcile') || can('manual-enroll');
+
   useEffect(() => {
+    if (allowed === null) return;   // 權限還沒載到就打，會先吃一次必然的 403
     let alive = true;
     (async () => {
       // Task #90 修正：多場館櫃檯不再鎖單一主場館。不帶 venueId → 後端依 venue_ids scope
@@ -36,8 +46,9 @@ export default function DashboardPage() {
       // 改走 /enrollments/stats：同樣兩個數字在資料庫裡數完，回來的是兩個整數。
       // 順帶把三支併成兩支 —— pending 本來也是拉整份清單只取 .length。
       const [countsR, sessionsR] = await Promise.allSettled([
-        enrollmentsApi.stats(),
-        sessionsApi.today(),
+        // 沒權限就不要打 —— 打了一定 403，只是換來一行永遠不會好的錯誤提示。
+        canEnrollStats ? enrollmentsApi.stats() : Promise.resolve(null),
+        sessionsApi.today(),   // guard 是 requireResource('dashboard')，進得來就一定有
       ]);
       if (!alive) return;
       const counts = countsR.status === 'fulfilled' ? countsR.value : null;
@@ -51,11 +62,12 @@ export default function DashboardPage() {
         sessionsCheckedIn: sessions
           ? sessions.filter((s) => s.checkin_status === 'checked_in').length
           : '—',
-        hasError: !counts || !sessions,
+        // 沒權限而沒去打的，不算「載入失敗」。
+        hasError: (canEnrollStats && !counts) || !sessions,
       });
     })();
     return () => { alive = false; };
-  }, [user, isStaff]);
+  }, [user, isStaff, allowed, canEnrollStats]);
 
   return (
     <div>
@@ -73,10 +85,22 @@ export default function DashboardPage() {
             </div>
           )}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <StatCard label="待對帳報名" value={stats.pending} hint="點擊前往對帳" to="/reconcile" />
-            <StatCard label="進行中課程" value={stats.active} hint="confirmed + active" to="/enrollments" />
-            <StatCard label="今日課程" value={stats.sessionsToday} hint="所有時段" to="/sessions" />
-            <StatCard label="已簽到" value={stats.sessionsCheckedIn} hint="於今日課程中" to="/sessions" />
+            {/* 算不出來的格子不要顯示；連不過去的地方不要給連結 ——
+                救生員原本會看到「待對帳報名 —，點擊前往對帳」，點下去被 RequireAuth 擋。
+                有權限的角色（admin / 主管 / 櫃檯）四格全在，行為與先前完全相同。 */}
+            {canEnrollStats && (
+              <>
+                <StatCard label="待對帳報名" value={stats.pending}
+                  hint={can('reconcile') ? '點擊前往對帳' : undefined}
+                  to={can('reconcile') ? '/reconcile' : undefined} />
+                <StatCard label="進行中課程" value={stats.active} hint="confirmed + active"
+                  to={can('enrollments') ? '/enrollments' : undefined} />
+              </>
+            )}
+            <StatCard label="今日課程" value={stats.sessionsToday} hint="所有時段"
+              to={can('sessions') ? '/sessions' : undefined} />
+            <StatCard label="已簽到" value={stats.sessionsCheckedIn} hint="於今日課程中"
+              to={can('sessions') ? '/sessions' : undefined} />
           </div>
         </>
       )}

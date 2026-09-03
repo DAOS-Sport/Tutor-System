@@ -72,7 +72,11 @@ function roleBadges(row) {
   // 只顯示其真正的身分；反之（is_counter===true，或完全沒有任何具體身分信號）維持原本
   // 顯示「行政櫃檯」的行為不變（一般泛用員工不受影響）。
   const hasOtherIdentity = !!row.is_coach || !!row.is_lifeguard;
-  const suppressStaffBadge = row.is_counter !== true && hasOtherIdentity;
+  // 這個抑制擋的是「role 只是 CHECK constraint 的保底值」，不是「管理員真的勾過櫃檯」。
+  // assigned_roles 是後端回的原始手動指派清單（沒有 fallback），有 staff 就代表真的勾過。
+  const assignedRoles = Array.isArray(row.assigned_roles) ? row.assigned_roles : [];
+  const suppressStaffBadge = row.is_counter !== true && hasOtherIdentity
+    && !assignedRoles.includes('staff');
 
   const badges = [];
   if (!(row.role === 'staff' && suppressStaffBadge)) {

@@ -88,7 +88,14 @@ function withCoachProfile(row) {
     has_coach_profile: hasCoachProfile,
     is_coach_profile: hasCoachProfile && row.role !== 'coach',
     coach_profile_status: coachProfileStatus,
-    known_roles: Array.from(new Set([row.role, ...(hasCoachProfile ? ['coach'] : [])])),
+    // 形狀要跟後端一致，含手動指派的身分。mock 少一個欄位的下場已經發生過一次：
+    // 假資料每筆都自帶 audit_logs，於是清單 API 不回它造成的正式站崩潰，開發時看不到。
+    known_roles: Array.from(new Set([
+      row.role,
+      ...(hasCoachProfile ? ['coach'] : []),
+      ...(Array.isArray(row.manual_roles) ? row.manual_roles.filter(Boolean) : []),
+    ])),
+    assigned_roles: Array.isArray(row.manual_roles) ? row.manual_roles.filter(Boolean) : [],
     coach_id: coach?.id || null,
     coach_active: coach ? !!coach.is_active : false,
     line_uid: coach?.line_uid || row.line_uid || null,

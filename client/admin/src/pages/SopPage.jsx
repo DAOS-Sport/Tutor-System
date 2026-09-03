@@ -599,7 +599,7 @@ export default function SopPage() {
           <select
             value={active}
             onChange={(e) => setActive(e.target.value)}
-            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary"
+            className="min-h-[44px] w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-primary md:min-h-0"
           >
             {SECTIONS.map((s) => (
               <option key={s.id} value={s.id}>
@@ -641,7 +641,7 @@ export default function SopPage() {
                   onClick={() =>
                     setActive(SECTIONS[SECTIONS.findIndex((s) => s.id === active) + 1].id)
                   }
-                  className="ml-auto rounded-lg bg-brand-primary px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
+                  className="ml-auto min-h-[44px] rounded-lg bg-brand-primary px-4 py-2 text-sm font-semibold text-white hover:opacity-90 md:min-h-0"
                 >
                   下一章 →
                 </button>
