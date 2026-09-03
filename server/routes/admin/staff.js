@@ -291,11 +291,22 @@ function rowToStaff(r) {
   const isCounterFlag = !!r.is_counter;
   const isCoachFlag = !!r.is_coach;
   const isLifeguardFlag = !!r.is_lifeguard;
+  // 後台在 F-A02 手動勾的身分（admin_staff_roles）。刻意讀原始值，不用下面那個
+  // manual_roles —— 它有「空就退回 [r.role]」的 fallback，而純救生員的 r.role 是
+  // CHECK constraint 的保底值 'staff'，套了 fallback 會讓他被誤判成「明確指派過櫃檯」。
+  const assignedRoles = Array.isArray(r.manual_roles) ? r.manual_roles.filter(Boolean) : [];
   const includeImpliedRole = ['admin', 'manager'].includes(r.role) || isCounterFlag || (!isCoachFlag && !isLifeguardFlag);
   const knownRoles = Array.from(new Set([
     ...(includeImpliedRole ? [r.role] : []),
     ...(hasCoachProfile ? ['coach'] : []),
     ...(isLifeguardFlag ? ['lifeguard'] : []),
+    // 手動指派的身分也要算進來。少了這一段，管理員勾了「救生員」、資料確實寫進
+    // admin_staff_roles，但清單那排徽章從頭到尾沒看過那張表 —— 畫面毫無變化，
+    // 看起來就是「勾了沒存到」。登入與權限早就讀這張表了，只有這條路徑漏掉。
+    //
+    // 2026-08-27：這段被 488ec43（登入限流修正）連同測試一起誤刪過一次 ——
+    // 那個 commit 的訊息完全沒提徽章，是帶著舊工作區提交造成的覆蓋。重貼。
+    ...assignedRoles,
   ]));
   // Task #90：venue_ids 是真實多場館清單；venue_id 維持作為「第一筆」相容
   const venueIds = cleanVenueList(r.venue_ids);
@@ -316,6 +327,9 @@ function rowToStaff(r) {
     is_coach_profile: isDualRoleCoach,
     coach_profile_status: coachProfileStatus,
     known_roles: knownRoles,
+    // 原始的手動指派清單（沒有 fallback）。前端要靠它分辨「管理員真的勾過 staff」
+    // 與「role 只是保底值」—— 兩者在 manual_roles 裡長得一模一樣。
+    assigned_roles: assignedRoles,
     // 後台手動指派的身分（可多選）。與 Ragic 的旗標取聯集才是實際權限 ——
     // 畫面上 Ragic 來的那幾個會鎖住，因為寫回去下次同步也會被蓋掉。
     manual_roles: Array.isArray(r.manual_roles) && r.manual_roles.length
@@ -1168,18 +1182,32 @@ router.post('/:id/unbind-line', requireAdminAuth, requireResource('staff'), asyn
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // 第一步只做「這是誰」的判斷，不上鎖。
+    //
+    // 原本這裡是 LEFT JOIN 加 FOR UPDATE OF c，但 Postgres 不允許鎖 outer join
+    // 可為 null 的那一側（0A000: FOR UPDATE cannot be applied to the nullable
+    // side of an outer join）。錯誤發生在跑 SQL 的當下，連下面那三個判斷都還沒
+    // 執行到，所以不管傳什麼 id 一律 500 —— 這支端點從上線起沒有成功過一次。
     const r = await client.query(
-      `SELECT s.id, s.name, c.id AS coach_id, c.line_uid
+      `SELECT s.id, s.name, c.id AS coach_id
          FROM admin_staff s
          LEFT JOIN coaches c ON c.ragic_employee_id = s.id
-        WHERE s.id = $1
-        FOR UPDATE OF c`,
+        WHERE s.id = $1`,
       [req.params.id]
     );
     const row = r.rows[0];
     if (!row) { await client.query('ROLLBACK'); return res.status(404).json({ error: '找不到該員工' }); }
     if (!row.coach_id) { await client.query('ROLLBACK'); return res.status(400).json({ error: '該員工沒有教練資料', code: 'NOT_A_COACH' }); }
-    const previous = String(row.line_uid || '').trim();
+
+    // 第二步才鎖 coaches 那一列（這時候已經確定它存在，是 inner 的語意）。
+    // line_uid 一律以「鎖住之後讀到的值」為準，不用上面那次未上鎖的讀 ——
+    // 兩個管理員同時按解綁時，後到的那個才會正確地拿到 NOT_BOUND，
+    // 而不是兩邊都以為自己是先到的、都寫一筆 audit。
+    const locked = await client.query(
+      `SELECT line_uid FROM coaches WHERE id = $1 FOR UPDATE`,
+      [row.coach_id]
+    );
+    const previous = String(locked.rows[0]?.line_uid || '').trim();
     if (!previous) { await client.query('ROLLBACK'); return res.status(400).json({ error: '該教練目前沒有綁定 LINE', code: 'NOT_BOUND' }); }
 
     await client.query(`UPDATE coaches SET line_uid = NULL, updated_at = NOW() WHERE id = $1`, [row.coach_id]);
@@ -1298,3 +1326,4 @@ router.post('/:id/reset-password', requireAdminAuth, requireResource('staff'), a
 });
 
 module.exports = router;
+module.exports._rowToStaff = rowToStaff;   // 供測試直接驗行為，不用起整個 router
