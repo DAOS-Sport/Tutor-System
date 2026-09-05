@@ -163,6 +163,14 @@ export default function DateTimePicker({
   const trailRef = useRef([]);
   const pickedRef = useRef(false);    // 這次開啟有沒有真的選到日期
   const engagedRef = useRef(false);   // 有沒有選過年或月（＝正在填，不是隨手點開）
+  // iOS 的 App 內建瀏覽器（LINE / Instagram / IG）在點擊後會補送一顆「模擬點擊」，
+  // 座標停在剛才被點的位置。選完「月」會把月份格換成日期格、面板高度與位置一變，
+  // 那顆遲來的點擊就落到了觸發鈕上，把面板 toggle 關掉 —— 家長看到的「填完月份就跳掉」。
+  // 診斷留證 client_diagnostics 連續 16 筆全 iOS、全『選完月就關』，桌機/Android 不會犯。
+  // 這裡記下選年/月的時間，之後極短窗內把「會關閉面板」的觸發吃掉。
+  const lastGridPickAt = useRef(0);
+  const GRID_ECHO_MS = 500;   // 模擬點擊實測落在 ~300-350ms，取 500 有餘裕又不擋真人操作
+  const withinGridEcho = () => Date.now() - lastGridPickAt.current < GRID_ECHO_MS;
   const wasOpenRef = useRef(false);
   const note = (line) => {
     trailRef.current = [...trailRef.current.slice(-19), line];
@@ -229,6 +237,11 @@ export default function DateTimePicker({
     // 因為桌機的 select 是行內下拉，不會有系統對話框）。
     // 判斷條件見 outsideClose.js，那裡有測試守著。
     const onDown = (e) => {
+      if (withinGridEcho()) {
+        note('守門：剛選過年/月 <' + GRID_ECHO_MS + 'ms，忽略這顆 pointerdown（iOS 模擬事件）');
+        reportPickerAnomaly('picker_guard_swallowed', '剛選年/月後短窗內擋下外點關閉', trailRef.current);
+        return;
+      }
       if (shouldCloseOnOutsidePointer(boxRef.current, e.target)) {
         note('★ 判定為點到外面 → 關閉（' + describeTarget(e.target) + '）');
         setOpen(false);
@@ -373,7 +386,16 @@ export default function DateTimePicker({
         id={id}
         type="button"
         disabled={disabled}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          // 剛選過年/月的極短窗內，觸發鈕收到的「點擊」幾乎一定是 iOS 補送的模擬事件，
+          // 不是使用者真的想收合面板（他正盯著日期格找日子）。吃掉它。
+          if (open && withinGridEcho()) {
+            note('★ 擋下觸發鈕關閉（剛選過年/月 <' + GRID_ECHO_MS + 'ms，iOS 模擬點擊）');
+            reportPickerAnomaly('picker_guard_swallowed', '剛選年/月後短窗內擋下觸發鈕關閉', trailRef.current);
+            return;
+          }
+          setOpen((v) => !v);
+        }}
         className={`flex min-h-[44px] w-full items-center justify-between gap-2 rounded-lg border px-3 py-2 text-left text-sm transition md:min-h-0 ${
           open ? 'border-brand-teal ring-2 ring-brand-teal/20' : 'border-gray-300 hover:border-gray-400'
         } ${disabled ? 'cursor-not-allowed bg-gray-50 text-gray-400' : 'bg-white'}`}
@@ -453,7 +475,7 @@ export default function DateTimePicker({
                     <button
                       key={y} type="button"
                       data-year={y}
-                      onClick={() => { engagedRef.current = true; note('選了年：' + y); setViewY(y); }}
+                      onClick={() => { engagedRef.current = true; lastGridPickAt.current = Date.now(); note('選了年：' + y); setViewY(y); }}
                       className={`min-h-[44px] md:min-h-0 rounded-md py-1.5 font-mono text-[13px] tabular-nums transition ${
                         y === viewY ? 'bg-brand-primary font-bold text-white'
                           : 'font-medium text-gray-700 hover:bg-gray-100'
@@ -469,7 +491,7 @@ export default function DateTimePicker({
                     || (!!minDay && dayKey(viewY, mo, daysInMonth(viewY, mo)) < minDay);
                   return (
                     <button key={m} type="button" disabled={blocked}
-                      onClick={() => { engagedRef.current = true; note('選了月：' + mo); setViewMo(mo); setPickingMonth(false); }}
+                      onClick={() => { engagedRef.current = true; lastGridPickAt.current = Date.now(); note('選了月：' + mo); setViewMo(mo); setPickingMonth(false); }}
                       className={`min-h-[44px] rounded-lg py-2 text-[13px] transition md:min-h-0 ${
                         mo === viewMo ? 'bg-brand-primary font-bold text-white'
                           : blocked ? 'cursor-not-allowed text-gray-200'
