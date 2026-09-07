@@ -275,7 +275,7 @@ export default function RegisterPage() {
       line_id: data.line_id || null,
       home_address: data.home_address || null,
     };
-    const cleanStudents = data.students.map((s) => ({
+    const cleanStudents = (Array.isArray(data.students) ? data.students : []).map((s) => ({
       name: (s.name || '').trim(),
       id_number: (s.id_number || '').toUpperCase(),
       birth_date: s.birth_date || '',

@@ -387,6 +387,8 @@ router.post('/', async (req, res) => {
     const trialPrice = isTrial
       ? calculateTrialPrice({
           basePrice: unitPrice,
+          // 2026-09-07：試上價乘教練係數。權威值來自 DB coaches.pricing_multiplier，不信前端。
+          multiplier,
           courseType: courseTypeNum,
           settings,
           // F-A07 為試上價唯一主來源；admin_settings 舊鍵僅為過渡 fallback。

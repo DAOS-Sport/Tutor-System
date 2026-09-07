@@ -73,7 +73,7 @@ async function call(base, method, path, token, body, headers = {}) {
 
   try {
     const reference = await pg.query(
-      `SELECT c.id AS coach_id, v.id AS venue_id
+      `SELECT c.id AS coach_id, v.id AS venue_id, COALESCE(c.pricing_multiplier, 1)::float8 AS coach_multiplier
          FROM coaches c CROSS JOIN venues v
         WHERE c.is_active = TRUE
           AND COALESCE(c.is_placeholder, FALSE) = FALSE
@@ -82,7 +82,9 @@ async function call(base, method, path, token, body, headers = {}) {
         LIMIT 1`
     );
     if (!reference.rowCount) throw new Error('test database needs one active non-placeholder coach and venue');
-    const { coach_id: coachId, venue_id: venueId } = reference.rows[0];
+    const { coach_id: coachId, venue_id: venueId, coach_multiplier: coachMultiplier } = reference.rows[0];
+    // 2026-09-07：試上價 = F-A07 trial_price × 教練係數（規格改變）。
+    const EXPECTED_TRIAL = Math.round(TRIAL_PRICE * (Number(coachMultiplier) || 1));
     const adminActor = (await pg.query(
       `SELECT id, username, name FROM admin_users WHERE is_active = TRUE ORDER BY created_at, id LIMIT 1`
     )).rows[0];
@@ -140,8 +142,8 @@ async function call(base, method, path, token, body, headers = {}) {
     )).rows[0];
     assert(orderRow.order_kind === 'trial' && orderRow.payment_method === 'on_site' && orderRow.total_sessions === 1,
       `訂單為試上/現場付費/1 堂（${orderRow.order_kind}/${orderRow.payment_method}/${orderRow.total_sessions}）`);
-    assert(orderRow.original_price === TRIAL_PRICE && orderRow.final_price === TRIAL_PRICE,
-      `價格快照＝F-A07 trial_price ${TRIAL_PRICE}（實際 ${orderRow.original_price}/${orderRow.final_price}）`);
+    assert(Number(orderRow.original_price) === EXPECTED_TRIAL && Number(orderRow.final_price) === EXPECTED_TRIAL,
+      `價格快照＝F-A07 trial_price ${TRIAL_PRICE} × 係數 ${coachMultiplier} = ${EXPECTED_TRIAL}（實際 ${orderRow.original_price}/${orderRow.final_price}）`);
     assert(orderRow.status === 'pending_payment', `初始 status=pending_payment（${orderRow.status}）`);
 
     step('F-M02 checkout 對帳：發票必填、total=1、自動開通 1 堂試上課期');

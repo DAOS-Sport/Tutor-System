@@ -7,6 +7,11 @@
  * 若營運端設定了 `trial_price` 或 `trial_price_course_<N>`，會優先使用該值；
  * 未設定時才以既有每期價格除以 sessions_per_period 計算，避免把任意前端金額
  * 當成權威值。
+ *
+ * 2026-09-07 規格改變（使用者決定）：試上價**要乘教練係數**。原本固定價不吃係數，
+ * 家長看到「係數 120% / 試上 NT$1,200」會覺得金額不對。固定價與 admin_settings 舊鍵
+ * 都乘；推算退路的 basePrice 上游已含係數，不再重乘。前端 CoachCard /
+ * useEnrollmentPricing 用同一條規則，畫面價＝成交價。
  */
 const ORDER_KIND = Object.freeze({
   STANDARD: 'standard',
@@ -38,15 +43,16 @@ function positiveMoney(value) {
   return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
 }
 
-function calculateTrialPrice({ basePrice, courseType, settings = {}, configTrialPrice = null } = {}) {
+function calculateTrialPrice({ basePrice, courseType, settings = {}, configTrialPrice = null, multiplier = 1 } = {}) {
+  const m = Number.isFinite(Number(multiplier)) && Number(multiplier) > 0 ? Number(multiplier) : 1;
   // F-A07 為品項價格唯一來源：course_type_configs.trial_price 優先；
   // 未設定時退回舊 admin_settings 鍵（過渡相容），最後才以每期價推算。
   const fromConfig = positiveMoney(configTrialPrice);
-  if (fromConfig) return fromConfig;
+  if (fromConfig) return Math.round(fromConfig * m);
 
   const courseSpecific = positiveMoney(settings[`trial_price_course_${courseType}`]);
   const configured = courseSpecific || positiveMoney(settings.trial_price);
-  if (configured) return configured;
+  if (configured) return Math.round(configured * m);
 
   const perPeriod = positiveMoney(basePrice);
   const sessions = Math.max(1, Math.trunc(Number(settings.sessions_per_period) || 6));

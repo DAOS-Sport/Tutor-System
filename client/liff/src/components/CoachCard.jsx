@@ -7,9 +7,11 @@ export default function CoachCard({ coach, basePrice, tierPrices = null, onSelec
   // 不可自己乘：課別對該加成級距若有落定明價，要以明價為準（與後端成交金額同源）。
   const adjusted = resolveUnitPrice(basePrice, coach.multiplier ?? coach.pricing_multiplier ?? 1, tierPrices);
   // 試上單堂顯示價（與後端 calculateTrialPrice 同語意）：
-  // F-A07 trial_price 有設＝每人固定價（不吃教練係數）；未設＝單期價×係數 ÷ 每期堂數推算。
+  // F-A07 trial_price 有設＝每人固定價 × 教練係數（2026-09-07 規格改變，與後端同規則）；
+  // 未設＝單期價×係數 ÷ 每期堂數推算（adjusted 已含係數）。
+  const trialMul = Number(coach.multiplier ?? coach.pricing_multiplier ?? 1) > 0 ? Number(coach.multiplier ?? coach.pricing_multiplier ?? 1) : 1;
   const trialUnit = trialPrice != null && Number(trialPrice) > 0
-    ? Math.round(Number(trialPrice))
+    ? Math.round(Number(trialPrice) * trialMul)
     : Math.round(adjusted / Math.max(1, Number(sessionsPerPeriod) || 6));
   const displayPrice = isTrial ? trialUnit : adjusted;
   const initial = isPlaceholder ? '待' : (coach.name || '？').slice(0, 1);

@@ -85,7 +85,11 @@ function initCronJobs() {
       try {
         r = await processRagicSyncOutbox({ limit: 20 });
       } catch (err) {
-        console.warn('[Cron/RagicOutbox] failed:', err.code || err.message);
+        // 批次層才會到這裡（每筆錯誤已在 _markFailureOrQuarantine 隔離）。把 pg 的 where/table
+        // 一起印：2026-09-07 之前只有 "failed: 22P02" 一行，追了 45 天。
+        console.warn('[Cron/RagicOutbox] failed:', err.code || err.message,
+          err.where ? '| where=' + err.where : '', err.table ? '| table=' + err.table : '',
+          err.detail ? '| detail=' + String(err.detail).slice(0, 200) : '');
         break;
       }
       if (!r || !r.processed) break;

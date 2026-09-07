@@ -362,6 +362,41 @@ async function readbackRagicSyncOutboxJob({
   };
 }
 
+/**
+ * _markFailure 的護欄。
+ *
+ * 2026-09-07 正式站有 2 筆 CREATE_Z01_PARENT 卡在 processing、attempts 56/45、
+ * last_error_code 全空：每晚被 _claimNextJob 的 15 分鐘 stale 回收重新認領，
+ * 進了每筆 catch → _markFailure 自己在交易裡拋 22P02 → 整個交易 rollback（所以錯誤碼永遠空白）
+ * → 錯誤從 catch 裡再往上炸 → cron 迴圈 break → 當晚其他所有 pending 一筆都沒處理。
+ * 一筆壞資料把整條佇列拖住了 45 天，而 log 只有一行 "failed: 22P02"。
+ *
+ * 這裡做兩件事，都只在 _markFailure 失敗時才發生，正常路徑零改動：
+ *   1. 把 Postgres 錯誤的 where/table/column/detail 整段印出來 —— 讓毒資料自報家門，
+ *      不用再靠人猜是哪一句。
+ *   2. 用一句只碰 text/timestamp 欄位、不做任何轉型的最小 UPDATE 把該列隔離成 blocked，
+ *      它就不會再被 stale 回收、也不會再拖垮同批。
+ * 隔離 UPDATE 也失敗時（資料庫真的掛了）才把錯誤往上丟 —— 那不是這條要處理的事。
+ */
+async function _markFailureOrQuarantine(job, err, { markFailure = _markFailure, db = pool } = {}) {
+  try {
+    return await markFailure(job, err);
+  } catch (dbErr) {
+    const code = String(dbErr?.code || 'UNKNOWN');
+    console.error('[ragic-outbox] _markFailure 本身失敗，隔離該筆 job=%s op=%s code=%s\n  message=%s\n  where=%s\n  table=%s column=%s\n  detail=%s',
+      job?.id, job?.operation, code, dbErr?.message,
+      dbErr?.where || '-', dbErr?.table || '-', dbErr?.column || '-', String(dbErr?.detail || '-').slice(0, 300));
+    const quarantineCode = 'DB_' + code;
+    await db.query(
+      `UPDATE ragic_sync_outbox
+          SET state='blocked_data_conflict', last_error_code=$2, sanitized_error=$3, updated_at=NOW()
+        WHERE id=$1`,
+      [job.id, quarantineCode, JSON.stringify({ code: quarantineCode, from: 'markFailure', origin: String(err?.code || err?.message || '').slice(0, 80) })]
+    );
+    return { outboxState: 'blocked_data_conflict', claimState: 'SYNC_BLOCKED_DATA_CONFLICT', code: quarantineCode, quarantined: true };
+  }
+}
+
 async function _markFailure(job, err) {
   const failure = classifySyncFailure(err, Number(job.attempts), Number(job.max_attempts));
   const delaySeconds = Math.min(3600, 30 * (2 ** Math.max(0, Number(job.attempts) - 1)));
@@ -564,7 +599,7 @@ async function processClaimedRagicSyncOutboxJob(job, {
     metadata.after_state = 'synced';
     return { ...metadata, outcome: 'synced', final_job_state: 'synced' };
   } catch (err) {
-    const failure = await _markFailure(job, err);
+    const failure = await _markFailureOrQuarantine(job, err);
     metadata.after_state = failure.outboxState;
     return {
       ...metadata,
@@ -662,3 +697,4 @@ module.exports = {
   _findRemoteByTrueUid,
   _claimExactJob,
 };
+module.exports._markFailureOrQuarantine = _markFailureOrQuarantine;   // 供測試注入會炸的 markFailure

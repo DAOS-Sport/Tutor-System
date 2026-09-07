@@ -30,10 +30,12 @@ export default function useEnrollmentPricing(bootData, {
   const trialUnitPrice = useMemo(() => {
     if (unitPrice == null) return null;
     const configured = Number(bootData?.trialPrice);
+    // 2026-09-07：試上固定價要乘教練係數（與後端 calculateTrialPrice 同規則）。
+    const m = Number(bootData?.coach?.multiplier) > 0 ? Number(bootData.coach.multiplier) : 1;
     return Number.isFinite(configured) && configured > 0
-      ? Math.round(configured)
+      ? Math.round(configured * m)
       : Math.round(unitPrice / sessionsPerPeriod);
-  }, [bootData?.trialPrice, sessionsPerPeriod, unitPrice]);
+  }, [bootData?.trialPrice, bootData?.coach?.multiplier, sessionsPerPeriod, unitPrice]);
   const qty = Math.max(1, studentCount) * Math.max(1, periodCount);
   const subtotal = unitPrice == null ? null : (isTrial ? trialUnitPrice : unitPrice) * qty;
 
