@@ -607,6 +607,13 @@ async function processClaimedRagicSyncOutboxJob(job, {
         metadata.http_status = _httpStatusFromWriterResult(created);
         recordId = created.ragicRecordId;
       }
+      // A prior create may have committed only the parent before a timeout.
+      // Never mark its registration synced without confirming all requested students.
+      if (remote) {
+        const ref = job.payload_reference || {};
+        const students = Array.isArray(ref.students) ? ref.students : [];
+        if (students.length) await ragic.syncParentStudentsStrict({ parent, students, ragicRecordId: recordId });
+      }
       _assertReadback({ row: await reader(recordId), targetRecordId: recordId, expectedUid: parent.line_uid });
       metadata.readback_verified = true;
       await _markCreateSuccess(job, recordId);

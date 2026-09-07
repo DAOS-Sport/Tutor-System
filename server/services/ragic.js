@@ -1048,35 +1048,7 @@ function _toPhysGender(g) {
 // 組 Z02 學員主檔 payload。
 //
 // 為什麼學員要寫 Z02 而非 Z01 子表：
-//   Z01 的「項次/學員」子表（stid 1001119）是「依家長手機(報行動電話)自動連動帶出的 Z02 清單」，
-//   屬 Ragic linked-records，**無法**用 dotted key 直接 POST 寫入（POST 會回 SUCCESS 但靜默丟棄，
-//   兩步法 record-path POST 則回「館別為必填」INVALID）。真正的學員主檔是 Z02，
-//   只要在 Z02 建一筆「(報)行動電話 = 家長手機」的紀錄，Z01 項次子表就會自動帶出該學員。
-//
-// Z02 的學員編號由 Ragic 自動產生；(報)身分 / 血型仍按既有必填規則。
-//   - 新生無編號時省略欄位；不得以身分證頂替，也不覆寫既有 Ragic 編號。
-//   - (報)身分：家長身分，預設「一般身分」。
-//   - 血型：未填以「不清楚」placeholder（Ragic 接受的選項值）。
-async function _buildZ02RegistrationPayload({ parent, student }) {
-  const idnum = student.id_number ? String(student.id_number).toUpperCase() : '';
-  const birth = formatRagicDate(student.birth_date);
-  return {
-    [FIELD.Z02.NAME]:            student.name || '',
-    [FIELD.Z02.STUDENT_STATUS]:  '01.一般生',                    // 學員身分（學生類別）
-    [FIELD.Z02.GENDER]:          _toPhysGender(student.gender),  // 學(性別)
-    [FIELD.Z02.BIRTH_DATE]:      birth,
-    [FIELD.Z02.ID_NUMBER]:       idnum,
-    ...(String(student.student_code || '').trim() ? { [FIELD.Z02.STUDENT_CODE]: student.student_code } : {}),
-    [FIELD.Z02.BLOOD_TYPE]:      student.blood_type || '不清楚', // Z02 必填，缺則「不清楚」
-    [FIELD.Z02.VENUE]:           await venueLabel(parent.primary_venue_id),
-    [FIELD.Z02.PARENT_PHONE]:    parent.phone || '',             // ★ Z01↔Z02 連結鍵
-    [FIELD.Z02.PARENT_NAME]:     parent.name || '',
-    [FIELD.Z02.PARENT_GENDER]:   _toPhysGender(parent.gender),
-    [FIELD.Z02.PARENT_IDENTITY]: parent.identity || '一般身分',  // (報)身分 必填
-    [FIELD.Z02.PARENT_EMAIL]:    parent.email || '',
-  };
-}
-
+// Z01 is the source sheet; its student-code formula runs before Z02 readback.
 async function createParentWithStudentsInRagic({ parent, students = [], lineUid }) {
   if (!parent || !parent.phone) throw new Error('parent.phone 必填');
   lineUid = _assertRealLineUidForZ01(lineUid, 'createParentWithStudentsInRagic');
@@ -1095,7 +1067,7 @@ async function createParentWithStudentsInRagic({ parent, students = [], lineUid 
   if (parent.gender) payload[FIELD.Z01.GENDER] = _toPhysGender(parent.gender);
   if (parent.email)  payload[FIELD.Z01.EMAIL]  = parent.email;
 
-  // 1) 建 Z01 家長主檔（不再帶 dotted 子表，子表寫不進去，見 _buildZ02RegistrationPayload 註解）
+  // Create parent, then append source rows; retries reconcile confirmed identities.
   const data = await ragicWriter.createRecord(
     'Z01',
     payload,
@@ -1111,13 +1083,11 @@ async function createParentWithStudentsInRagic({ parent, students = [], lineUid 
     ragicRecordId = firstKey || null;
   }
 
-  // 2) 學員逐筆寫 Z02（見 _writeStudentsToZ02）。某筆失敗 → helper 已回滾「本次新建」的
-  //    Z02 學員，這裡再補刪剛建的 Z01 家長，讓使用者可乾淨重試。
   let studentRecordIds = [];
   try {
-    ({ studentRecordIds } = await _writeStudentsToZ02({ parent, students }));
+    ({ studentRecordIds } = await syncParentStudentsStrict({ parent: { ...parent, line_uid: lineUid }, students, ragicRecordId }));
   } catch (err) {
-    if (ragicRecordId) await _bestEffortDelete(process.env.RAGIC_FORM_Z01, [ragicRecordId]);
+    // A timed-out append may have committed: preserve the parent for reconciliation.
     _cacheInvalidate('z01:');
     throw err;
   }
@@ -1125,71 +1095,76 @@ async function createParentWithStudentsInRagic({ parent, students = [], lineUid 
   return { ragicRecordId, studentRecordIds, raw: data };
 }
 
-// 學員逐筆寫 Z02 學員主檔（依家長手機自動連動回 Z01 項次子表）。
-// 身分證字號是 Z02 唯一鍵。若該號已存在：
-//   · 同一位學員的孤兒紀錄（姓名相符、未綁定別的家長手機）→ 重新連結（更新而非新建）。
-//   · 被「別的學員」占用 → 丟 STUDENT_ID_NUMBER_EXISTS，caller 回 409 明確訊息。
-// 補償：中途失敗 → 回滾刪除「本次新建」的 Z02 學員後 rethrow。
-// （只刪本次新建，避免誤刪我們只是「更新」的既有他人/孤兒紀錄；
-//   caller 若同時新建了 Z01 家長，需在自己的 catch 補刪該筆 Z01。）
-async function _writeStudentsToZ02({ parent, students = [] }) {
-  const studentRecordIds = [];
-  const createdStudentIds = [];
-  try {
-    for (const s of students) {
-      if (!s || !s.name) continue;
-      const idnum = s.id_number ? String(s.id_number).toUpperCase() : '';
-      let targetRecordId = null;
-      if (idnum) {
-        const existing = await getStudentByIdNumber(idnum).catch(() => null);
-        if (existing) {
-          const exName  = String(existing[FIELD.Z02.NAME] || '').trim();
-          const exPhone = String(existing[FIELD.Z02.PARENT_PHONE] || '').trim();
-          const sameStudent = !!exName && exName === String(s.name || '').trim();
-          const unboundOrSameParent = !exPhone || exPhone === parent.phone;
-          if (sameStudent && unboundOrSameParent) {
-            targetRecordId = existing._ragicId || existing.ragicId || null;  // 重新連結孤兒
-          } else {
-            const e = new Error(`身分證字號 ${idnum} 已被其他學員使用`);
-            e.code = 'STUDENT_ID_NUMBER_EXISTS';
-            e.idNumber = idnum;
-            throw e;
-          }
-        }
-      }
-      const z02raw = await upsertStudentStrict(await _buildZ02RegistrationPayload({ parent, student: s }), targetRecordId);
-      const newId = z02raw?.ragicId || z02raw?._ragicId || null;
-      studentRecordIds.push(newId);
-      if (!targetRecordId) createdStudentIds.push(newId);
-    }
-  } catch (err) {
-    await _bestEffortDelete(process.env.RAGIC_FORM_Z02, createdStudentIds);
-    _cacheInvalidate('z02:');
-    throw err;
+// Z01 owns the student subtable; Z02 is generated from it. Never synthesize its code.
+// Leave confirmed/uncertain upstream writes in place: retry reconciles by identity.
+async function syncParentStudentsStrict({ parent, students = [], ragicRecordId }) {
+  if (!ragicRecordId) throw Object.assign(new Error('缺少家長同步連結'), { code: 'PARENT_RAGIC_RECORD_REQUIRED' });
+  const before = await getParentRecordByRagicId(ragicRecordId);
+  if (!before) throw Object.assign(new Error('無法確認家長資料'), { code: 'RAGIC_UNCONFIRMED_WRITE' });
+  const phone = String(parent.phone || '').trim();
+  if (!phone || String(before[FIELD.Z01.PHONE] || '').trim() !== phone) {
+    throw Object.assign(new Error('家長資料不符，請核對'), { code: 'STUDENT_ID_NUMBER_EXISTS' });
   }
-  return { studentRecordIds, createdStudentIds };
+  const remoteUid = String(before[FIELD.Z01.LINE_UID] || '').trim();
+  if (remoteUid && remoteUid !== String(parent.line_uid || '').trim()) {
+    throw Object.assign(new Error('家長帳號不符，請核對'), { code: 'PARENT_LINE_UID_MISMATCH' });
+  }
+  const list = students.filter(Boolean);
+  const seen = new Set(); const payload = {}; const ids = [];
+  const sourceRows = parseZ01Students(before);
+  for (const student of list) {
+    const id = String(student.id_number || '').trim().toUpperCase();
+    if (!id || !String(student.name || '').trim() || !student.birth_date || !student.gender) {
+      throw Object.assign(new Error('請補齊學員姓名、生日、性別與身分證字號'), { code: 'RAGIC_VALIDATION_ERROR' });
+    }
+    if (seen.has(id)) throw Object.assign(new Error('學員身分資料重複，請核對'), { code: 'STUDENT_ID_NUMBER_EXISTS' });
+    seen.add(id);
+    const matches = sourceRows.filter(row => row.id_number === id);
+    const remote = await getStudentByIdNumber(id);
+    if (matches.length > 1 || (remote && (
+      String(remote[FIELD.Z02.NAME] || '').trim() !== String(student.name).trim() ||
+      String(remote[FIELD.Z02.PARENT_PHONE] || '').trim() !== phone
+    ))) throw Object.assign(new Error('學員已連結其他資料，請核對'), { code: 'STUDENT_ID_NUMBER_EXISTS' });
+    if (matches.length) {
+      if (matches[0].name !== String(student.name).trim()) throw Object.assign(new Error('學員姓名不符，請核對'), { code: 'STUDENT_ID_NUMBER_EXISTS' });
+    } else {
+      // Existing Z02 without this source row needs review, never create a duplicate.
+      if (remote) throw Object.assign(new Error('學員來源連結需核對'), { code: 'STUDENT_ID_NUMBER_EXISTS' });
+      Object.assign(payload, buildZ01StudentPayload(student, -(ids.length + 1), true));
+    }
+    ids.push(id);
+  }
+  if (Object.keys(payload).length) {
+    await ragicWriter.postFormPath(_recordPath(process.env.RAGIC_FORM_Z01, ragicRecordId), payload, {
+      actor: 'system', source: 'syncParentStudentsStrict',
+      params: { doFormula: true, doDefaultValue: true, doValidation: true, checkLock: true, notification: false, doWorkflow: false },
+    });
+    _cacheInvalidate('z01:'); _cacheInvalidate('z02:');
+  }
+  const after = await getParentRecordByRagicId(ragicRecordId);
+  const rows = parseZ01Students(after); const studentRecordIds = []; const studentCodes = [];
+  for (const id of ids) {
+    const source = rows.filter(row => row.id_number === id);
+    const remote = await getStudentByIdNumber(id);
+    const recordId = remote?._ragicId || remote?.ragicId;
+    const code = String(remote?.[FIELD.Z02.STUDENT_CODE] || '').trim();
+    if (source.length !== 1 || !source[0].student_code || !recordId || !code || code !== source[0].student_code ||
+        String(remote[FIELD.Z02.PARENT_PHONE] || '').trim() !== phone ||
+        String(remote[FIELD.Z02.NAME] || '').trim() !== source[0].name) {
+      throw Object.assign(new Error('學員寫入尚未確認，請稍後重試'), { code: 'RAGIC_UNCONFIRMED_WRITE' });
+    }
+    studentRecordIds.push(String(recordId)); studentCodes.push(code);
+  }
+  return { studentRecordIds, studentCodes };
 }
 
-/**
- * 註冊路徑的「找到就更新」（found→update）：電話已存在 Z01、且該筆尚未綁任何 LINE UID
- * （= 未開通，Z03 清洗池）時，在既有 record 上完成開通，永不新建第二筆同號記錄。
- *   1) 先把「全新」學員寫入 Z02（caller 已把既有家庭學員濾掉——既有學員一律不動，
- *      避免表單註冊預設值覆蓋 Ragic 真實資料）。
- *   2) 再對既有 Z01 一次 partial PATCH：
- *      · LINE UID 一律回寫 —— 這是「開通」的提交點，刻意放最後一步：若前面學員寫入失敗，
- *        不會留下「已綁 UID 但註冊其實沒完成」的半套狀態。
- *      · 家長姓名僅在 caller 判定既有值為電話佔位時覆蓋（nameToWrite 非空才寫）。
- *      · Email／性別／館別只補 Ragic 空缺（含「待補登」placeholder），不清掉既有非空值。
- *   補償：PATCH 失敗 → 回滾「本次新建」的 Z02 學員後 rethrow（既有列本函式不曾動過），
- *   讓重試乾淨——含無身分證字號、無法靠冪等鍵去重的學員。
- * caller（auth.js 註冊路由）負責：認領驗證、佔位姓名判斷、本地同步與 Z03 畢業標記。
- */
+// Append new source rows before committing registration UID; retain them on uncertain outcomes.
 async function completeParentOnRegisterInRagic({ existing, parent, students = [], lineUid, nameToWrite = '' }) {
   const ragicRecordId = existing?.ragic_record_id;
   if (!ragicRecordId) throw new Error('existing.ragic_record_id 必填');
   lineUid = _assertRealLineUidForZ01(lineUid, 'completeParentOnRegisterInRagic');
 
-  const { studentRecordIds, createdStudentIds } = await _writeStudentsToZ02({ parent, students });
+  const { studentRecordIds } = await syncParentStudentsStrict({ parent: { ...parent, line_uid: lineUid }, students, ragicRecordId });
 
   const payload = { [FIELD.Z01.LINE_UID]: lineUid };
   if (nameToWrite) payload[FIELD.Z01.PARENT_NAME] = nameToWrite;
@@ -1205,46 +1180,23 @@ async function completeParentOnRegisterInRagic({ existing, parent, students = []
   try {
     raw = await upsertParentStrict(payload, ragicRecordId);
   } catch (err) {
-    await _bestEffortDelete(process.env.RAGIC_FORM_Z02, createdStudentIds);
+    // Preserve source rows; retry reconciles them before the UID commit.
     _cacheInvalidate('z02:');
     throw err;
   }
   return { ragicRecordId, studentRecordIds, raw };
 }
 
-/**
- * 在「既有家長」的 Z01 record 上補掛新學員到學員子表格（團購加入流程用）。
- * createParentWithStudentsInRagic 是「建新家長」；本函式則是 POST 到既有 record，
- * 以扁平 dotted key 從 startIndex 起追加子表格列（startIndex 應為目前子表格列數，
- * 由 caller 先 query 既有列數算出，避免覆蓋既有列）。
- * 失敗時拋錯，由 caller 決定容錯（團購加入採 best-effort，不阻擋本地加入）。
- */
+// Append verified source rows; never use row count as an upstream row id.
 async function addStudentsToParentInRagic({ ragicRecordId, startIndex = 0, students = [] }) {
   if (!ragicRecordId) throw new Error('ragicRecordId 必填');
   const list = (students || []).filter((s) => s && s.name);
   if (!list.length) return { added: 0 };
 
-  const payload = {};
-  list.forEach((s, i) => {
-    const prefix = `${Z01_STUDENTS_SUBTABLE_ID}_${startIndex + i}_`;
-    payload[`${prefix}${FIELD.Z01_STUDENT.NAME}`] = s.name;
-    // 與 _buildZ02RegistrationPayload 對齊：Ragic 日期欄位吃 yyyy/MM/dd，ISO 的 '-' 需轉 '/'，
-    // 否則會被當無效值 INVALID（見 createParentWithStudentsInRagic 旁註解）。
-    if (s.birth_date) payload[`${prefix}${FIELD.Z01_STUDENT.BIRTH_DATE}`] = formatRagicDate(s.birth_date);
-    if (s.gender)     payload[`${prefix}${FIELD.Z01_STUDENT.GENDER}`]     = _toPhysGender(s.gender);
-    if (s.id_number)  payload[`${prefix}${FIELD.Z01_STUDENT.ID_NUMBER}`]  = String(s.id_number).toUpperCase();
-    if (s.blood_type) payload[`${prefix}${FIELD.Z01_STUDENT.BLOOD_TYPE}`] = s.blood_type;
-  });
-
-  const data = await ragicWriter.writeFields(
-    'Z01',
-    ragicRecordId,
-    payload,
-    'system',
-    'addStudentsToParentInRagic'
-  );
-  _cacheInvalidate('z01:');
-  return { added: list.length, raw: data };
+  const remote = await getParentRecordByRagicId(ragicRecordId);
+  if (!remote) throw Object.assign(new Error('無法確認家長資料'), { code: 'RAGIC_UNCONFIRMED_WRITE' });
+  const result = await syncParentStudentsStrict({ parent: mapZ01Parent(remote), students: list, ragicRecordId });
+  return { added: result.studentRecordIds.length, ...result };
 }
 
 async function resolveParentRagicRecord(parent) {
@@ -1333,17 +1285,17 @@ async function syncParentProfileStrict(parent, payloadByFieldId) {
   return String(ragicRecordId);
 }
 
-function buildZ01StudentPayload(student, rowIndex) {
-  const prefix = `${Z01_STUDENTS_SUBTABLE_ID}_${rowIndex}_`;
+function buildZ01StudentPayload(student, rowIndex, isNew = false) {
+  if (!/^-?\d+$/.test(String(rowIndex))) throw new Error('Invalid Ragic subtable row id');
   const payload = {};
-  payload[`${prefix}${FIELD.Z01_STUDENT.NAME}`] = student.name || '';
-  // 與 _buildZ02RegistrationPayload 對齊：Ragic 日期欄位吃 yyyy/MM/dd，ISO 的 '-' 需轉 '/'，
-  // 否則會被當無效值 INVALID（見 createParentWithStudentsInRagic 旁註解）。
-  if (student.birth_date) payload[`${prefix}${FIELD.Z01_STUDENT.BIRTH_DATE}`] = formatRagicDate(student.birth_date);
-  if (student.gender) payload[`${prefix}${FIELD.Z01_STUDENT.GENDER}`] = _toPhysGender(student.gender);
-  if (student.id_number) payload[`${prefix}${FIELD.Z01_STUDENT.ID_NUMBER}`] = String(student.id_number).toUpperCase();
-  if (student.blood_type) payload[`${prefix}${FIELD.Z01_STUDENT.BLOOD_TYPE}`] = student.blood_type;
-  if (student.student_code) payload[`${prefix}${FIELD.Z01_STUDENT.STUDENT_CODE}`] = student.student_code;
+  const put = (field, value) => { payload[`${field}_${rowIndex}`] = value; };
+  put(FIELD.Z01_STUDENT.NAME, student.name || '');
+  if (student.birth_date) put(FIELD.Z01_STUDENT.BIRTH_DATE, formatRagicDate(student.birth_date));
+  if (student.gender) put(FIELD.Z01_STUDENT.GENDER, _toPhysGender(student.gender));
+  if (student.id_number) put(FIELD.Z01_STUDENT.ID_NUMBER, String(student.id_number).trim().toUpperCase());
+  if (student.blood_type || isNew) put(FIELD.Z01_STUDENT.BLOOD_TYPE, student.blood_type || '不清楚');
+  if (isNew) put(FIELD.Z02.STUDENT_STATUS, '01.一般生');
+  // 1001132 is calculated by Ragic's source-sheet formula; never overwrite it.
   return payload;
 }
 
@@ -1377,7 +1329,7 @@ async function updateStudentInParentSubtable({ ragicRecordId, student }) {
   if (rowIndex == null) {
     // 子表格找不到對應列（學員尚未寫進 Z01、或無 id_number/編號 可比對）→ 視為新列附加，
     // 索引取目前列數（與新增流程 buildZ01StudentPayload(startIndex) 一致），避免整筆編輯被擋掉。
-    rowIndex = (parseZ01Students(z01Record) || []).length;
+    throw Object.assign(new Error('學員來源列不存在，請重新同步'), { code: 'RAGIC_UNCONFIRMED_WRITE' });
     console.log('[student-sync] Z01 子表格：無對應列 → 附加新列', { ragicRecordId, rowIndex, student: maskName(student?.name) });
   } else {
     console.log('[student-sync] Z01 子表格：比對到既有列 → 更新', { ragicRecordId, rowIndex, student: maskName(student?.name) });
@@ -1392,14 +1344,14 @@ async function updateStudentInParentSubtable({ ragicRecordId, student }) {
 
 // Z02：依身分證字號查詢學員（必須用 where=<fid>,eq,... 才能精確過濾）
 async function getStudentByIdNumber(idNumber) {
-  const data = await query(process.env.RAGIC_FORM_Z02, { where: `${FIELD.Z02.ID_NUMBER},eq,${idNumber}` });
+  const data = await query(process.env.RAGIC_FORM_Z02, { naming: 'EID', where: `${FIELD.Z02.ID_NUMBER},eq,${idNumber}` });
   const records = Object.values(data);
   return records[0] || null;
 }
 
 async function getStudentRecordByRagicId(ragicRecordId) {
   if (!ragicRecordId) return null;
-  const data = await query(_recordPath(process.env.RAGIC_FORM_Z02, ragicRecordId));
+  const data = await query(_recordPath(process.env.RAGIC_FORM_Z02, ragicRecordId), { naming: 'EID' });
   if (!data || typeof data !== 'object') return null;
   if (data._ragicId || data[FIELD.Z02.NAME] || data['學員姓名']) return data;
   return Object.values(data)[0] || null;
@@ -1417,7 +1369,7 @@ async function getStudentsByParentPhone(phone) {
 
 async function getStudentByCode(studentCode) {
   if (!studentCode) return null;
-  const data = await query(process.env.RAGIC_FORM_Z02, { where: `${FIELD.Z02.STUDENT_CODE},eq,${studentCode}` });
+  const data = await query(process.env.RAGIC_FORM_Z02, { naming: 'EID', where: `${FIELD.Z02.STUDENT_CODE},eq,${studentCode}` });
   return Object.values(data)[0] || null;
 }
 
@@ -1480,8 +1432,8 @@ async function upsertZ02ForParentStudent({ parent, student }) {
   let z02Record = null;
   let matchedBy = null;
   if (student.ragic_record_id) {
-    z02Record = await getStudentRecordByRagicId(student.ragic_record_id).catch(() => null);
-    if (!z02Record) z02Record = { _ragicId: student.ragic_record_id };
+    z02Record = await getStudentRecordByRagicId(student.ragic_record_id);
+    if (!z02Record) throw Object.assign(new Error('既有學員連結無法確認'), { code: 'RAGIC_UNCONFIRMED_WRITE' });
     matchedBy = 'ragic_record_id';
   } else if (student.student_code) {
     z02Record = await getStudentByCode(student.student_code);
@@ -1498,7 +1450,7 @@ async function upsertZ02ForParentStudent({ parent, student }) {
   const targetIdNumber = student.id_number ? String(student.id_number).toUpperCase() : '';
   const recordId = z02Record?._ragicId || z02Record?.ragicId || null;
   if (targetIdNumber) {
-    const existingByTargetId = await getStudentByIdNumber(targetIdNumber).catch(() => null);
+    const existingByTargetId = await getStudentByIdNumber(targetIdNumber);
     const existingTargetRecordId = existingByTargetId?._ragicId || existingByTargetId?.ragicId || null;
     if (existingByTargetId && (!recordId || String(existingTargetRecordId || '') !== String(recordId))) {
       const e = new Error(`身分證字號 ${targetIdNumber} 已被其他學員使用`);
@@ -1532,33 +1484,19 @@ async function upsertZ02ForParentStudent({ parent, student }) {
   }
   // 只有 Ragic 端尚無此學員時才算「首次建立」→ 設一次身分類別「01.一般生」；
   //   既有紀錄一律不碰「學員身分」欄（避免覆蓋身分類別）。
-  const setIdentity = !z02Record;
+  if (!z02Record) return (await createStudentZ01Z02Strict({ parent, student })).z02;
+  const setIdentity = false;
   const payload = await buildZ02StudentPayload({ parent, student, setIdentity });
   const raw = await upsertStudentStrict(payload, z02Record?._ragicId || null);
   return { ragicRecordId: z02Record?._ragicId || raw.ragicId || raw._ragicId || null, raw };
 }
 
-// 註：Z01 的「項次/學員」子表是「依家長手機由 Z02 自動連動帶出」的 linked-records，
-// dotted-key 直寫常被 Ragic 靜默丟棄、或回 INVALID（子表必填欄如 學員編號/學性別/身分證字號）。
-// 真正落地靠 Z02（upsertZ02ForParentStudent）；故子表寫入一律 best-effort（失敗只記 log 不擋），
-// 與註冊流程 createParentWithStudentsInRagic「不再帶 dotted 子表」一致。
-async function createStudentZ01Z02Strict({ parent, student, startIndex = 0 }) {
+// New students must be created through Z01, then confirmed in generated Z02.
+async function createStudentZ01Z02Strict({ parent, student }) {
   const lineUid = _assertRealLineUidForZ01(parent?.line_uid, 'createStudentZ01Z02Strict');
   const ragicRecordId = await resolveParentRagicRecord(parent);
-  const existing = await getParentRecordByRagicId(ragicRecordId).catch(() => null);
-  if (existing) _assertNoZ01LineUidConflict(existing, lineUid, 'createStudentZ01Z02Strict');
-  await upsertParentStrict({ [FIELD.Z01.LINE_UID]: lineUid }, ragicRecordId);
-  try {
-    await postRagicStrict(
-      _recordPath(process.env.RAGIC_FORM_Z01, ragicRecordId),
-      buildZ01StudentPayload(student, startIndex)
-    );
-    _cacheInvalidate('z01:');
-  } catch (err) {
-    console.warn('[student-sync] Z01 子表寫入略過（非致命，靠 Z02 連動帶出）:', err.message);
-  }
-  const z02 = await upsertZ02ForParentStudent({ parent, student });
-  return { z01: null, z02, parentRagicRecordId: ragicRecordId };
+  const result = await syncParentStudentsStrict({ parent: { ...parent, line_uid: lineUid }, students: [student], ragicRecordId });
+  return { z01: null, z02: { ragicRecordId: result.studentRecordIds[0], studentCode: result.studentCodes[0] }, parentRagicRecordId: ragicRecordId };
 }
 
 async function updateStudentZ01Z02Strict({ parent, student }) {
@@ -1652,6 +1590,7 @@ module.exports = {
   parseZ01StudentsRaw,
   mapZ02Student,
   createParentWithStudentsInRagic,
+  syncParentStudentsStrict,
   completeParentOnRegisterInRagic,
   addStudentsToParentInRagic,
   resolveParentRagicRecord,

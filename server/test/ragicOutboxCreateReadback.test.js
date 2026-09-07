@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const path = require('node:path');
 const { test } = require('node:test');
 const field = '1006846';
-function fixture({ remoteUid = '', mismatch = false } = {}) {
+function fixture({ remoteUid = '', mismatch = false, studentFailure = false } = {}) {
   const calls = []; const uid = 'U' + 'a'.repeat(32);
   const parent = { id: 'p', line_uid: uid, ragic_record_id: '42', email: 'current@example.test' };
   const query = async (sql) => {
@@ -16,7 +16,7 @@ function fixture({ remoteUid = '', mismatch = false } = {}) {
     return { rows: [], rowCount: 1 };
   };
   const pool = { query, connect: async () => ({ query, release() {} }) };
-  const ragic = { fetchPage: async () => ({ rows: [] }) };
+  const ragic = { fetchPage: async () => ({ rows: [] }), syncParentStudentsStrict: async () => { if (studentFailure) throw Object.assign(new Error('unconfirmed child'), { code: 'RAGIC_UNCONFIRMED_WRITE' }); } };
   const mod = { exports: {} };
   const file = process.env.OUTBOX_SOURCE || path.join(__dirname, '../services/ragicSyncOutbox.js');
   vm.runInNewContext(fs.readFileSync(file, 'utf8'), {
@@ -32,7 +32,7 @@ function fixture({ remoteUid = '', mismatch = false } = {}) {
     },
   });
   let writes = 0;
-  return { calls, run: () => mod.exports.processClaimedRagicSyncOutboxJob({ id: 'j', claim_id: 'c', operation: 'CREATE_Z01_PARENT', attempts: 1, max_attempts: 8 }, {
+  return { calls, run: () => mod.exports.processClaimedRagicSyncOutboxJob({ id: 'j', claim_id: 'c', operation: 'CREATE_Z01_PARENT', attempts: 1, max_attempts: 8, payload_reference: { students: [{ name: 'child' }] } }, {
     writer: async patch => { writes++; assert.equal(patch[field], uid); if (!mismatch) remoteUid = uid; },
     reader: async () => ({ _ragicId: '42', [field]: remoteUid }),
   }), writes: () => writes };
@@ -48,4 +48,9 @@ test('conflicting UID is never overwritten or marked synced', async () => {
 test('unconfirmed write stays blocked', async () => {
   const f = fixture({ mismatch: true }); const r = await f.run();
   assert.equal(f.writes(), 1); assert.equal(r.outcome, 'blocked'); assert.equal(r.error_code, 'RAGIC_UNCONFIRMED_WRITE');
+});
+
+test('existing parent is not synced while its requested student remains unconfirmed', async () => {
+  const f = fixture({ remoteUid: 'U' + 'a'.repeat(32), studentFailure: true });
+  const r = await f.run(); assert.equal(r.outcome, 'blocked'); assert.equal(r.error_code, 'RAGIC_UNCONFIRMED_WRITE');
 });

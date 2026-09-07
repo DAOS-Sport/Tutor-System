@@ -7,7 +7,7 @@ const vm = require('node:vm');
 const { FIELD } = require('../services/ragic');
 const source = fs.readFileSync(path.join(__dirname, '../services/ragic.js'), 'utf8');
 
-for (const name of ['_buildZ02RegistrationPayload', 'buildZ02StudentPayload']) {
+for (const name of ['buildZ02StudentPayload']) {
   test(name + ' leaves new student numbers to Ragic and preserves known numbers', async () => {
     const start = source.indexOf('async function ' + name + '(');
     assert.ok(start >= 0);

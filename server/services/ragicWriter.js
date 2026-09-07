@@ -130,6 +130,8 @@ function _blockedFields(sheet) {
 function _payloadFieldId(key) {
   const s = String(key || '');
   if (/^\d+$/.test(s)) return s;
+  const rowField = s.match(/^(\d+)_(-?[1-9]\d*|0)$/);
+  if (rowField) return rowField[1];
   const m = s.match(/^\d+_\d+_(\d+)$/);
   return m ? m[1] : null;
 }
@@ -357,8 +359,12 @@ function createWriter(deps = {}) {
     let oldValue = entry.oldValue;
     try {
       oldValue = await _readOldValues(http, formPath, payload, { ...meta, recordKey });
-      const res = await http.post(_withApi(formPath), payload, {
+      // Ragic's fieldId_rowId syntax is form data, not flat JSON (silently ignored).
+      const subtableForm = Object.keys(payload).some(key => /^\d+_-?\d+$/.test(key));
+      const body = subtableForm ? new URLSearchParams(Object.entries(payload).map(([k, v]) => [k, String(v)])).toString() : payload;
+      const res = await http.post(_withApi(formPath), body, {
         params: _apiParams(meta.params || {}, meta.options || {}),
+        ...(subtableForm ? { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } } : {}),
       });
       _assertWriteOk(res.data);
       await audit({ ...entry, oldValue, status: 'success', reason: null }).catch(() => {});
