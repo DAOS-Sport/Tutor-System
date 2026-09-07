@@ -2261,6 +2261,7 @@ async function _backupStudentToRagic(row) {
   const student = {
     name: row.name, id_number: row.id_number, birth_date: row.birth_date,
     gender: row.gender, blood_type: row.blood_type, student_code: row.student_code,
+    ragic_record_id: row.ragic_record_id,
   };
   let sync;
   if (row.ragic_record_id) {
@@ -4385,6 +4386,7 @@ const LIVE_PROBE_FORMS = {
 const LIVE_PROBE_TTL_MS = Number(process.env.RAGIC_STATUS_PROBE_TTL_MS) || 60000;
 let _liveProbeCache = null;
 let _liveProbeCacheAt = 0;
+let _liveProbeInFlight = null;
 
 // ── 每個 Ragic sync job 可由 admin 在「Ragic 連線狀態」頁手動開關 ──
 // 存 admin_settings（key=ragic_sync_enabled_<job>，value 1/0；NUMERIC 欄位不能存布林/字串）。
@@ -4590,13 +4592,25 @@ function getRagicEnvFlags() {
 
 async function getLiveRagicProbeSnapshot() {
   if (_liveProbeCache && Date.now() - _liveProbeCacheAt < LIVE_PROBE_TTL_MS) {
-    return { ..._liveProbeCache, cached: true };
+    return { ..._liveProbeCache, cached: true, pending: false };
   }
+  // Share one refresh across polling clients; external API latency must not hide local status.
+  if (!_liveProbeInFlight) {
+    _liveProbeInFlight = _refreshLiveRagicProbeSnapshot().catch((err) => {
+      _liveProbeCache = { ok: false, checked_at: new Date().toISOString(), error: err.message, forms: {} };
+      _liveProbeCacheAt = Date.now();
+    }).finally(() => { _liveProbeInFlight = null; });
+  }
+  return { ...(_liveProbeCache || { ok: false, checked_at: null, forms: {} }),
+    cached: !!_liveProbeCache, pending: true };
+}
+
+async function _refreshLiveRagicProbeSnapshot() {
   const checkedAt = new Date();
   const env = getRagicEnvFlags();
   const canProbe = env.RAGIC_API_KEY && env.RAGIC_BASE_URL;
   const forms = {};
-  await Promise.all(Object.entries(LIVE_PROBE_FORMS).map(async ([key, meta]) => {
+  for (const [key, meta] of Object.entries(LIVE_PROBE_FORMS)) {
     const formPath = process.env[meta.env] || (meta.env === 'RAGIC_FORM_H23' ? FORMS.H23 : '');
     const base = {
       label: meta.label,
@@ -4606,11 +4620,11 @@ async function getLiveRagicProbeSnapshot() {
     };
     if (!canProbe) {
       forms[key] = { ...base, status: 'skipped', ok: false, error: 'RAGIC_API_KEY / RAGIC_BASE_URL 未完整設定' };
-      return;
+      continue;
     }
     if (!formPath) {
       forms[key] = { ...base, status: 'missing_env', ok: false, error: `${meta.env} 未設定` };
-      return;
+      continue;
     }
     try {
       // Status UI waits 10s; bulk-sync retry policy must not block this read-only probe.
@@ -4631,7 +4645,7 @@ async function getLiveRagicProbeSnapshot() {
         error: err.message || String(err),
       };
     }
-  }));
+  }
   const snapshot = {
     checked_at: checkedAt.toISOString(),
     cached: false,

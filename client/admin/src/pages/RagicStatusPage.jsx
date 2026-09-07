@@ -233,7 +233,9 @@ function LiveProbePanel({ probe }) {
             直接用 Ragic API 對各表單讀取 1 筆，避免只看本地同步紀錄造成假同步。
           </div>
         </div>
-        {probe.ok
+        {probe.pending
+          ? <span className="w-fit rounded bg-amber-100 px-2 py-0.5 text-xs font-bold text-amber-800">連線檢查中…</span>
+          : probe.ok
           ? <span className="w-fit rounded bg-brand-green/15 px-2 py-0.5 text-xs font-bold text-brand-green">全部可讀</span>
           : <span className="w-fit rounded bg-amber-100 px-2 py-0.5 text-xs font-bold text-amber-800">需確認</span>}
       </div>
