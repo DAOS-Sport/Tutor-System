@@ -22,7 +22,7 @@ const ragicWriteback = require('../../services/ragicWriteback');
 const promotions = require('../../services/promotions');
 const { resolveParentLineDisplayName } = require('../../services/parentLineProfile');
 const { logGroupOrderAudit } = require('../../services/groupOrderAudit');
-const { REFUND_REASON_CODES, refundReasonLabel, normalizeFeeRate } = require('../../services/refundReasons');
+const { REFUND_REASON_CODES, refundReasonLabel, normalizeFeeRate, calculateRefundAmounts } = require('../../services/refundReasons');
 const {
   createCheckoutSession,
   readCheckout,
@@ -1422,7 +1422,7 @@ router.post('/:id/reconcile', requireAdminAuth, requireResource('reconcile'), as
  *   Owner 2026-08-12 決定手續費率可由櫃檯逐筆調整（下拉預設值＋可自填）。
  *   偏離全域設定時，退費端點會把「原定 X% → 實用 Y%」寫進 audit log。
  */
-async function computeRefundPreview(id, feeRateOverride = null) {
+async function computeRefundPreview(id, feeRateOverride = null, feeAmountOverride = null) {
   const enrollment = await readEnrollment(id);
   if (!enrollment) return null;
   const settings = await getSettings();
@@ -1467,14 +1467,11 @@ async function computeRefundPreview(id, feeRateOverride = null) {
         const total = sp.rows[0].total_sessions || settings.sessions_per_period || 6;
         const used = sp.rows[0].used_sessions || 0;
         const remainRatio = Math.max(0, (total - used) / total);
-        const sibling_refunds = siblings.rows.map((row) => ({
-          id: row.id,
-          final_price: Number(row.final_price) || 0,
-          refund_amount: Math.round(Number(row.final_price) * remainRatio * (1 - fee_rate)),
-        }));
+        const amounts = calculateRefundAmounts(siblings.rows, remainRatio, default_fee_rate, feeRateOverride, feeAmountOverride);
+        const { sibling_refunds } = amounts;
         return {
           enrollment, total, used, remainRatio, fee_rate, default_fee_rate,
-          refund_amount: sibling_refunds.reduce((sum, row) => sum + row.refund_amount, 0),
+          ...amounts,
           family_shared: true,
           course_period_id: sp.rows[0].id,
           sibling_refunds,
@@ -1488,26 +1485,25 @@ async function computeRefundPreview(id, feeRateOverride = null) {
   const total = enrollment.total_sessions || settings.sessions_per_period || 6;
   const used = enrollment.used_sessions || 0;
   const remainRatio = Math.max(0, (total - used) / total);
-  const refund_amount = Math.round(enrollment.final_price * remainRatio * (1 - fee_rate));
+  const amounts = calculateRefundAmounts([enrollment], remainRatio, default_fee_rate, feeRateOverride, feeAmountOverride);
   // default_fee_rate 一併回傳：前端要能顯示「原定 10%」，也才能判斷這次有沒有被調過。
-  return { enrollment, total, used, remainRatio, fee_rate, default_fee_rate, refund_amount };
+  return { enrollment, total, used, remainRatio, fee_rate, default_fee_rate, ...amounts };
 }
 
 // 退費試算與執行都開放 staff（櫃檯）。兩支必須一起開 —— 只開 refund 不開 preview 的話
 // 櫃檯打得開頁面但看不到試算金額，等於功能沒開。
 router.get('/:id/refund-preview', requireAdminAuth, requireResource('refund'), async (req, res) => {
   try {
-    // ?fee_rate= 讓櫃檯調整手續費率後即時重算金額。不合法的值（非數字、負數、>1）
-    // 由 normalizeFeeRate 回 null，等同沒給 → 退回全域設定，不會算出負的退款。
-    const preview = await computeRefundPreview(req.params.id, req.query.fee_rate);
+    // 試算與執行共用同一個手續費驗證及金額計算。
+    const preview = await computeRefundPreview(req.params.id, req.query.fee_rate, req.query.fee_amount);
     if (!preview) return res.status(404).json({ error: 'enrollment not found' });
     if (!isVenueInScope(req, preview.enrollment.venue_id)) {
       return res.status(403).json({ error: '此報名不在您的場館範圍內' });
     }
     res.json(preview);
   } catch (err) {
-    console.error('[admin/enrollments/:id/refund-preview]', err);
-    res.status(500).json({ error: 'preview failed' });
+    if (err.status !== 400) console.error('[admin/enrollments/:id/refund-preview]', err);
+    res.status(err.status === 400 ? 400 : 500).json({ error: err.status === 400 ? err.message : 'preview failed' });
   }
 });
 
@@ -1543,17 +1539,18 @@ router.post('/:id/refund', requireAdminAuth, requireResource('refund'), async (r
     // 之後要拆回來統計時 label 前綴是穩定的。
     const reason = category ? `${refundReasonLabel(category)}｜${detail}` : legacyReason;
 
-    const by = (req.body && req.body.by) || req.adminUser?.name || req.adminUser?.username || 'unknown';
+    const by = req.adminUser?.name || req.adminUser?.username || 'unknown';
 
     // ── 手續費率覆寫 ──
     // 櫃檯可逐筆調整（Owner 決定：下拉預設值＋可自填）。這會直接改變退款金額，
     // 所以偏離全域設定時一定要在 audit log 留下痕跡與操作者。
-    const feeOverride = normalizeFeeRate(body.fee_rate);
-    const preview = await computeRefundPreview(id, feeOverride);
+    const preview = await computeRefundPreview(id, body.fee_rate, body.fee_amount);
     // 手續費率被調過時，audit log 的 action 要看得出「原定多少、實際用多少」。
     // 只比對 preview 回來的兩個值，不信任前端送的數字。
     const pct = (r) => `${Math.round(Number(r) * 1000) / 10}%`;
-    const feeNote = preview && preview.fee_rate !== preview.default_fee_rate
+    const feeNote = preview?.fee_mode === 'amount'
+      ? `，固定手續費 ${preview.fee_amount} 元（整期一次，由 ${by} 調整）`
+      : preview && preview.fee_rate !== preview.default_fee_rate
       ? `，手續費率 ${pct(preview.default_fee_rate)} → ${pct(preview.fee_rate)}（由 ${by} 調整）`
       : '';
     if (!preview) {
@@ -1569,6 +1566,10 @@ router.post('/:id/refund', requireAdminAuth, requireResource('refund'), async (r
       return res.status(400).json({ error: `狀態 ${preview.enrollment.status} 的報名不可退費` });
     }
 
+    if (body.expected_refund_amount !== undefined && body.expected_refund_amount !== preview.refund_amount) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '退款金額已變動，請重新試算後確認' });
+    }
     if (preview.family_shared) {
       // U12 家庭共班：退費一律「整班整期」——本期全部兄弟訂單同交易一起退，
       // 共用 period 轉 refunded、未來未上課的課堂取消並釋出教練時段。
@@ -1587,6 +1588,10 @@ router.post('/:id/refund', requireAdminAuth, requireResource('refund'), async (r
       if (!refundable.size) {
         await client.query('ROLLBACK');
         return res.status(400).json({ error: '本期兄弟訂單皆已退費/取消，無可退項目' });
+      }
+      if (refundable.size !== preview.sibling_ids.length) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: '本期訂單已變動，請重新試算後確認' });
       }
       const applied = preview.sibling_refunds.filter((row) => refundable.has(row.id));
       const appliedTotal = applied.reduce((sum, row) => sum + row.refund_amount, 0);
@@ -1637,10 +1642,14 @@ router.post('/:id/refund', requireAdminAuth, requireResource('refund'), async (r
       });
     }
 
-    await client.query(
-      `UPDATE admin_enrollments SET status = 'refunded', refund_amount = $2, refunded_at = NOW(), updated_at = NOW() WHERE id = $1`,
+    const refunded = await client.query(
+      `UPDATE admin_enrollments SET status = 'refunded', refund_amount = $2, refunded_at = NOW(), updated_at = NOW() WHERE id = $1 AND status NOT IN ('refunded','cancelled') RETURNING id`,
       [id, preview.refund_amount]
     );
+    if (!refunded.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '訂單已退費或取消，請重新整理' });
+    }
     // 退費即釋放此報名占用的優惠用量（同交易內，以 admin_enrollment_id 冪等；無 usage 則 no-op）。
     await promotions.revertUsage({ adminEnrollmentId: id }, client);
     await client.query(
@@ -1654,8 +1663,8 @@ router.post('/:id/refund', requireAdminAuth, requireResource('refund'), async (r
     res.json({ ...updated, refund_amount: preview.refund_amount });
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('[admin/enrollments/:id/refund]', err);
-    res.status(500).json({ error: 'refund failed' });
+    if (err.status !== 400) console.error('[admin/enrollments/:id/refund]', err);
+    res.status(err.status === 400 ? 400 : 500).json({ error: err.status === 400 ? err.message : 'refund failed' });
   } finally {
     client.release();
   }

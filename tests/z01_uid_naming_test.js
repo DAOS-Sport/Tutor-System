@@ -50,7 +50,7 @@ function bodyOf(src, name) {
 
 const NAMING_RE = /naming:\s*'EID'/;
 
-for (const fn of ['getParentByPhone', 'getParentByLineUid']) {
+for (const fn of ['getParentByPhone', 'getParentByLineUid', 'getParentRecordByRagicId']) {
   check(fn + ' 的 query() 參數帶 EID 格式', () => {
     const body = bodyOf(ragicSrc, fn);
     const k = body.indexOf('query(');

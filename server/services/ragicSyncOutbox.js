@@ -580,13 +580,26 @@ async function processClaimedRagicSyncOutboxJob(job, {
       // 比「沒同步到」難收拾得多：對帳、Z02 學員、後續綁定都會分岔。
       if (!remote && parent.ragic_record_id) {
         recordId = String(parent.ragic_record_id);
-        console.log('[ragic-outbox] 查重未命中但本地已有 Z01#' + recordId + '，改為補寫 UID 而不新建');
+        remote = await reader(recordId);
+        if (!remote || _recordIdOf(remote) !== recordId) {
+          throw Object.assign(new Error('Linked Ragic parent could not be confirmed'), { code: 'RAGIC_UNCONFIRMED_WRITE' });
+        }
       }
 
+      if (remote) {
+        const currentUid = getTrueRagicLineUid(remote);
+        if (currentUid && currentUid !== parent.line_uid) {
+          throw Object.assign(new Error('Ragic parent belongs to another LINE account'), { code: 'PARENT_LINE_UID_MISMATCH' });
+        }
+        if (!currentUid) {
+          await writer({ [RAGIC_Z01_FIELDS.PARENT_SYSTEM_LINE_UID]: parent.line_uid }, recordId, { includeResponseMetadata: true });
+          metadata.write_performed = true;
+        }
+      }
       if (!remote && !recordId) {
         const ref = job.payload_reference || {};
         const created = await ragic.createParentWithStudentsInRagic({
-          parent: { ...(ref.parent || {}), phone: parent.phone, name: parent.name },
+          parent: { ...(ref.parent || {}), ...parent },
           students: Array.isArray(ref.students) ? ref.students : [],
           lineUid: parent.line_uid,
         });
@@ -594,6 +607,8 @@ async function processClaimedRagicSyncOutboxJob(job, {
         metadata.http_status = _httpStatusFromWriterResult(created);
         recordId = created.ragicRecordId;
       }
+      _assertReadback({ row: await reader(recordId), targetRecordId: recordId, expectedUid: parent.line_uid });
+      metadata.readback_verified = true;
       await _markCreateSuccess(job, recordId);
     }
     metadata.after_state = 'synced';

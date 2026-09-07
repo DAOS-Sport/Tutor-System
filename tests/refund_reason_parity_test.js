@@ -102,8 +102,8 @@ function check(name, fn) {
     assert.ok(/REFUND_REASON_CODES\.includes\(category\)/.test(src),
       '後端沒有用白名單驗證 category —— 前端傳什麼就吃什麼');
     assert.ok(/詳述原因必填/.test(src), '後端沒有擋空的詳述原因');
-    assert.ok(/normalizeFeeRate\(body\.fee_rate\)/.test(src),
-      '後端沒有正規化前端送來的 fee_rate —— 那個值直接決定退款金額');
+    assert.ok(/computeRefundPreview\(id, body\.fee_rate, body\.fee_amount\)/.test(src),
+      '後端未將原始手續費送入共用驗證與試算');
   });
 
   check('手續費率被調整時，audit log 記得下原值、新值與操作者', () => {

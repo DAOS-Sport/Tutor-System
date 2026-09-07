@@ -43,10 +43,10 @@ export const enrollmentsApi = {
     ),
 
   // feeRate（0–1）給了就用它重算金額；不給則用全域設定的手續費率。
-  refundPreview: (id, feeRate) =>
+  refundPreview: (id, feeRate, feeAmount) =>
     callApi(
       `/enrollments/${id}/refund-preview`,
-      { params: feeRate === null || feeRate === undefined ? undefined : { fee_rate: feeRate } },
+      { params: feeAmount !== undefined ? { fee_amount: feeAmount } : feeRate === null || feeRate === undefined ? undefined : { fee_rate: feeRate } },
       () => mockDb.refundPreview(id),
     ),
 

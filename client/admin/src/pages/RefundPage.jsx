@@ -53,7 +53,10 @@ export default function RefundPage() {
   const [preview, setPreview] = useState(null);
   const [category, setCategory] = useState('');   // 申請原因（下拉，必填）
   const [detail, setDetail] = useState('');       // 詳述原因（必填）
-  const [feePct, setFeePct] = useState('');       // 手續費率，以「百分比字串」持有（輸入框就是這個單位）
+  const [feePct, setFeePct] = useState('');
+  const [feeMode, setFeeMode] = useState('rate');
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [previewError, setPreviewError] = useState('');
   const [feeOpen, setFeeOpen] = useState(false);  // 手續費率的下拉是否展開
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState('');       // 搜尋字串（送到後端查，見 toServerSearch）
@@ -106,6 +109,9 @@ export default function RefundPage() {
     setCategory('');
     setDetail('');
     setFeePct('');
+    setFeeMode('rate');
+    setPreviewBusy(true);
+    setPreviewError('');
     setPreview(null);
     const reqId = ++previewReqRef.current;
     try {
@@ -114,7 +120,8 @@ export default function RefundPage() {
       if (reqId !== previewReqRef.current) return;
       setPreview(p);
       // 手續費率預帶全域設定值，讓櫃檯看得到「原本是多少」再決定要不要改
-      setFeePct(String(Math.round((p.fee_rate ?? 0) * 1000) / 10));
+      setFeePct(String(Math.round((p.fee_rate ?? 0) * 10000) / 100));
+      setPreviewBusy(false);
     } catch (e) {
       if (reqId !== previewReqRef.current) return;
       // 試算失敗：關閉 modal 並提示，避免卡在「試算中」的破損彈窗
@@ -128,23 +135,35 @@ export default function RefundPage() {
    * **不在前端自己乘** —— 金額只能有一個計算來源，否則畫面顯示的和實際入帳的會分岔
    * （這正是 shared/coursePricing 那段註解在講的同一類事故）。
    */
-  async function reprice(nextPct) {
+  async function reprice(nextPct, mode = feeMode) {
     setFeePct(nextPct);
-    if (!target) return;
-    const pct = Number(nextPct);
-    if (nextPct === '' || !Number.isFinite(pct) || pct < 0 || pct > 100) return;
+    setFeeMode(mode);
     const reqId = ++previewReqRef.current;
+    setPreviewError('');
+    setPreviewBusy(false);
+    const value = Number(nextPct);
+    if (!target || !nextPct.trim() || !Number.isFinite(value) || value < 0 ||
+        (mode === 'rate' ? value > 100 : !Number.isSafeInteger(value))) {
+      setPreviewError(mode === 'rate' ? '請輸入 0 到 100 的百分比' : '請輸入非負整數金額');
+      return;
+    }
+    setPreviewBusy(true);
     try {
-      const p = await enrollmentsApi.refundPreview(target.id, Math.round(pct * 100) / 10000);
+      const p = await enrollmentsApi.refundPreview(target.id,
+        mode === 'rate' ? Math.round(value * 100) / 10000 : undefined,
+        mode === 'amount' ? value : undefined);
       if (reqId !== previewReqRef.current) return;
       setPreview(p);
-    } catch {
-      /* 重算失敗就維持上一次的試算結果，不要把已顯示的金額清掉 */
+    } catch (e) {
+      if (reqId !== previewReqRef.current) return;
+      setPreviewError(e?.response?.data?.error || '重新試算失敗，請重新輸入後再確認');
+    } finally {
+      if (reqId === previewReqRef.current) setPreviewBusy(false);
     }
   }
 
-  const feePctInvalid =
-    feePct !== '' && (!Number.isFinite(Number(feePct)) || Number(feePct) < 0 || Number(feePct) > 100);
+  const feePctInvalid = !feePct.trim() || !Number.isFinite(Number(feePct)) || Number(feePct) < 0 ||
+    (feeMode === 'rate' ? Number(feePct) > 100 : !Number.isSafeInteger(Number(feePct)));
 
   function closeRefund() {
     previewReqRef.current += 1; // 讓尚未回來的 preview 失效
@@ -153,6 +172,7 @@ export default function RefundPage() {
   }
 
   async function doRefund() {
+    if (busy || previewBusy || previewError || !preview) return;
     if (!category) {
       toast.warning('請選擇申請原因');
       return;
@@ -162,7 +182,7 @@ export default function RefundPage() {
       return;
     }
     if (feePctInvalid) {
-      toast.warning('手續費率請填 0 到 100 之間的數字');
+      toast.warning('請輸入有效的手續費');
       return;
     }
     setBusy(true);
@@ -171,7 +191,9 @@ export default function RefundPage() {
         reason_category: category,
         reason_detail: detail.trim(),
         // 送出的是 0–1 的比率；後端會再夾限一次，前端擋的是手滑不是安全邊界
-        fee_rate: feePct === '' ? undefined : Math.round(Number(feePct) * 100) / 10000,
+        fee_rate: feeMode === 'rate' ? Math.round(Number(feePct) * 100) / 10000 : undefined,
+        fee_amount: feeMode === 'amount' ? Number(feePct) : undefined,
+        expected_refund_amount: preview.refund_amount,
         by: user.name,
       });
       toast.success(res.family_shared
@@ -181,6 +203,7 @@ export default function RefundPage() {
       setReloadKey((k) => k + 1);
     } catch (e) {
       toast.error(e?.response?.data?.error || '退課失敗，請稍後再試');
+      if (e?.response?.status === 409) await reprice(feePct);
     } finally {
       setBusy(false);
     }
@@ -222,7 +245,7 @@ export default function RefundPage() {
       {/* 副標不寫「主管權限」——已開放櫃檯，留著會讓櫃檯以為自己不該按。
           也不再寫「不可手動更改」——手續費率已可逐筆調整，那句話會讓人以為那格不能動。
           現在講的是：公式、誰算的、哪一項可以動、動了會留痕。 */}
-      <PageHeader title="退課處理" subtitle="F-R04 · 退款 = 剩餘比例 × (1 − 手續費率)，金額一律由系統試算；手續費率可逐筆調整，調整會記入 audit log" />
+      <PageHeader title="退課處理" subtitle="手續費可選百分比或固定金額；固定金額按整期收取一次，退款由系統試算並保留調整紀錄" />
       <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-gray-200 bg-white p-3 shadow-sm">
         {/* 就地處理，不收編 FilterBar：整列只有一個搜尋框，而且它就是本頁的主要動作
             （櫃檯打電話進來時邊聽邊查）。把唯一的欄位收進「篩選」摺疊列，等於每次
@@ -293,6 +316,7 @@ export default function RefundPage() {
         onCancel={closeRefund}
         onConfirm={doRefund}
         busy={busy}
+        confirmDisabled={previewBusy || !!previewError || feePctInvalid || !preview}
       >
         {!preview ? (
           <div className="py-4"><LoadingSpinner label="計算退款中…" /></div>
@@ -325,13 +349,19 @@ export default function RefundPage() {
                   平常看起來就是普通輸入框，沒人知道可以下拉。
                   改成自己畫的 combobox：箭頭永遠看得到，且照樣能輸入。 */}
               <li className="flex items-center justify-between gap-3">
-                <span className="text-gray-600">手續費率</span>
+                <label className="text-gray-600">手續費
+                  <select aria-label="手續費計算方式" value={feeMode} disabled={busy}
+                    onChange={(e) => { setFeeOpen(false); reprice('0', e.target.value); }}
+                    className="ml-2 rounded border border-gray-300 p-1">
+                    <option value="rate">百分比</option><option value="amount">固定金額（整期一次）</option>
+                  </select>
+                </label>
                 <span className="relative flex items-center gap-1">
                   <span className={`flex items-stretch overflow-hidden rounded-lg border ${
                     feePctInvalid ? 'border-brand-error bg-brand-error-soft' : 'border-gray-300'
                   }`}>
                     <input
-                      type="text" inputMode="decimal" aria-label="手續費率（百分比）"
+                      type="text" inputMode="decimal" aria-label={feeMode === 'rate' ? '手續費率（百分比）' : '固定手續費（整數元）'} disabled={busy}
                       value={feePct}
                       onChange={(e) => reprice(e.target.value)}
                       onFocus={() => setFeeOpen(false)}
@@ -339,7 +369,7 @@ export default function RefundPage() {
                     />
                     <button
                       type="button"
-                      aria-label="選擇常用手續費率"
+                      aria-label="選擇常用手續費率" disabled={busy || feeMode !== 'rate'}
                       aria-expanded={feeOpen}
                       onClick={() => setFeeOpen((v) => !v)}
                       className="border-l border-gray-300 px-2 text-gray-500 hover:bg-gray-50"
@@ -350,8 +380,8 @@ export default function RefundPage() {
                       </svg>
                     </button>
                   </span>
-                  <span className="text-gray-600">%</span>
-                  {feeOpen && (
+                  <span className="text-gray-600">{feeMode === 'rate' ? '%' : '元'}</span>
+                  {feeOpen && feeMode === 'rate' && (
                     <ul className="absolute right-6 top-full z-20 mt-1 w-24 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg">
                       {REFUND_FEE_RATE_PRESETS.map((r) => {
                         const pct = Math.round(r * 1000) / 10;
@@ -378,7 +408,8 @@ export default function RefundPage() {
                   這筆調整會連同你的帳號記入 audit log
                 </li>
               )}
-              <li className="flex justify-between border-t border-gray-200 pt-2 font-bold text-brand-error-strong"><span>應退款金額</span><span className="font-mono">{formatTWD(preview.refund_amount)}</span></li>
+              <li aria-live="polite" className="text-sm text-brand-error-strong">{previewBusy ? '重新試算中…' : previewError}</li>
+              <li className="flex justify-between border-t border-gray-200 pt-2 font-bold text-brand-error-strong"><span>應退款金額</span><span className="font-mono">{previewBusy || previewError ? '—' : formatTWD(preview.refund_amount)}</span></li>
             </ul>
             <div>
               <label className="mb-1 block text-sm font-medium text-gray-700" htmlFor="refund-category">

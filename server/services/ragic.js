@@ -1349,7 +1349,7 @@ function buildZ01StudentPayload(student, rowIndex) {
 
 async function getParentRecordByRagicId(ragicRecordId) {
   if (!ragicRecordId) return null;
-  const data = await query(_recordPath(process.env.RAGIC_FORM_Z01, ragicRecordId));
+  const data = await query(_recordPath(process.env.RAGIC_FORM_Z01, ragicRecordId), { naming: 'EID' });
   if (!data || typeof data !== 'object') return null;
   if (data._ragicId || data[FIELD.Z01.PHONE] || data['家長姓名']) return data;
   return Object.values(data)[0] || null;
