@@ -151,6 +151,7 @@ const UNIT = [
 
 // 需要真實 Postgres。多數含破壞性前置清理，只可對拋棄式測試庫執行。
 const DB = [
+  'tests/course_schedule_concurrency_test.js',
   'tests/bootstrap_clean_database_test.js',
   // 2026-09-07 從 UNIT 搬來：這三支用 fetch 打 TEST_BASE（預設 http://localhost:3001）的活伺服器，
   // 伺服器沒起就 'fetch failed'。放在零外部相依的 unit 層等於每次都紅、而且紅得跟程式無關。

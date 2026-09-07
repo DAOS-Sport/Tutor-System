@@ -14,7 +14,9 @@ const EDITABLE = ['label', 'min_students', 'max_students', 'is_active', 'base_pr
 
 async function applyDueScheduledCourseTypeChanges(db = pool) {
   const due = await db.query(
-    `SELECT course_type, pricing_zone_id, pending_changes
+    `SELECT course_type, pricing_zone_id, pending_changes,
+            scheduled_effective_date::text AS scheduled_effective_date,
+            scheduled_effective_until::text AS scheduled_effective_until
        FROM course_type_configs
       WHERE pending_changes IS NOT NULL
         AND scheduled_effective_date IS NOT NULL
@@ -47,10 +49,17 @@ async function applyDueScheduledCourseTypeChanges(db = pool) {
     // F-A08：只套用到「這一筆設定所屬的定價區」。少了這個條件，某一區排定的改價
     // 會在生效時把所有區一起改掉 —— 而且是在無人操作的 cron 裡發生，最難察覺。
     vals.push(row.pricing_zone_id);
+    const zoneParam = vals.length;
+    // Only consume the schedule we read; a concurrent edit or worker wins without being overwritten.
+    vals.push(JSON.stringify(pc), row.scheduled_effective_date, row.scheduled_effective_until);
     const r = await db.query(
       `UPDATE course_type_configs SET ${sets.join(', ')}
-        WHERE course_type = $1 AND pricing_zone_id = $${vals.length}
+        WHERE course_type = $1 AND pricing_zone_id = $${zoneParam}
+          AND pending_changes = $${zoneParam + 1}::jsonb
+          AND scheduled_effective_date = $${zoneParam + 2}::timestamptz
+          AND scheduled_effective_until IS NOT DISTINCT FROM $${zoneParam + 3}::timestamptz
         RETURNING effective_date, effective_until`, vals);
+    if (!r.rowCount) continue;
     // label 變更 → 同步未被覆寫的課程介紹 title（與 PATCH 立即生效行為一致）。
     // 註：admin_course_intros 以 course_type 為鍵、全公司一份，不隨定價區分家。
     // 兩區把同一課別取了不同名字時，介紹標題由最後編輯的那一區決定 —— 這是現行
