@@ -18,6 +18,15 @@ const src = strip(fs.readFileSync(path.join(ROOT, 'server/routes/diagnostics.js'
 let n = 0;
 const t = (name, fn) => { fn(); n += 1; console.log('  PASS  ' + name); };
 
+t('every diagnostic emitted by the picker is accepted by the backend', () => {
+  const picker = fs.readFileSync(path.join(ROOT, 'client/shared/DateTimePicker.jsx'), 'utf8');
+  const emitted = [...picker.matchAll(/reportPickerAnomaly\('([^']+)'/g)].map(m => m[1]);
+  const kinds = src.match(/const KINDS = new Set\(\[([\s\S]*?)\]\)/);
+  assert.ok(kinds && emitted.length > 0);
+  const allowed = [...kinds[1].matchAll(/'([^']+)'/g)].map(m => m[1]);
+  assert.deepStrictEqual([...new Set(emitted)].filter(kind => !allowed.includes(kind)), []);
+});
+
 t('kind 走白名單，不是照單全收', () => {
   assert.ok(/const KINDS = new Set\(\[/.test(src), '缺少 kind 白名單');
   assert.ok(/KINDS\.has\(kind\)/.test(src), '沒有檢查白名單');
@@ -76,4 +85,3 @@ t('前端只送分類，不送使用者填的內容', () => {
 });
 
 console.log('\n' + n + ' 個測試全數通過');
-

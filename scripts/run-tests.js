@@ -26,6 +26,7 @@ const SERVER = path.join(ROOT, 'server');
 
 // 零外部相依：Ragic/LINE/物件儲存都是 stub 或純字串斷言，不碰 DB 也不出網路。
 const UNIT = [
+  'tests/pii_mask_unicode_test.js',
   'tests/outbox_poison_guard_test.js',
   'tests/trial_price_multiplier_test.js',
   'tests/staff_badge_manual_roles_test.js',
@@ -150,6 +151,7 @@ const UNIT = [
 
 // 需要真實 Postgres。多數含破壞性前置清理，只可對拋棄式測試庫執行。
 const DB = [
+  'tests/bootstrap_clean_database_test.js',
   // 2026-09-07 從 UNIT 搬來：這三支用 fetch 打 TEST_BASE（預設 http://localhost:3001）的活伺服器，
   // 伺服器沒起就 'fetch failed'。放在零外部相依的 unit 層等於每次都紅、而且紅得跟程式無關。
   'tests/rate_limit_policy_test.js',

@@ -89,6 +89,7 @@ function _requestOptions(params = {}, options = {}) {
   return {
     params: _apiParams(params, options),
     headers,
+    ...(Number.isFinite(options.timeout) && options.timeout > 0 ? { timeout: options.timeout } : {}),
   };
 }
 
@@ -297,9 +298,9 @@ async function fetchPage(formPath, {
   return { rows, durationMs, count: rows.length };
 }
 
-async function probeForm(formPath, params = {}) {
+async function probeForm(formPath, params = {}, options = {}) {
   const started = Date.now();
-  const data = await query(formPath, { limit: 1, ...params });
+  const data = await query(formPath, { limit: 1, ...params }, options);
   let count = 0;
   if (Array.isArray(data)) {
     count = data.length;
@@ -1052,8 +1053,8 @@ function _toPhysGender(g) {
 //   兩步法 record-path POST 則回「館別為必填」INVALID）。真正的學員主檔是 Z02，
 //   只要在 Z02 建一筆「(報)行動電話 = 家長手機」的紀錄，Z01 項次子表就會自動帶出該學員。
 //
-// Z02 必填欄位（缺一會 INVALID 202、整筆寫不進去）：學員編號 / (報)身分 / 血型。
-//   - 學員編號：新生無編號 → 以身分證字號頂替（與既有真實紀錄一致）。
+// Z02 的學員編號由 Ragic 自動產生；(報)身分 / 血型仍按既有必填規則。
+//   - 新生無編號時省略欄位；不得以身分證頂替，也不覆寫既有 Ragic 編號。
 //   - (報)身分：家長身分，預設「一般身分」。
 //   - 血型：未填以「不清楚」placeholder（Ragic 接受的選項值）。
 async function _buildZ02RegistrationPayload({ parent, student }) {
@@ -1065,7 +1066,7 @@ async function _buildZ02RegistrationPayload({ parent, student }) {
     [FIELD.Z02.GENDER]:          _toPhysGender(student.gender),  // 學(性別)
     [FIELD.Z02.BIRTH_DATE]:      birth,
     [FIELD.Z02.ID_NUMBER]:       idnum,
-    [FIELD.Z02.STUDENT_CODE]:    student.student_code || idnum,  // 學員編號（缺則用身分證）
+    ...(String(student.student_code || '').trim() ? { [FIELD.Z02.STUDENT_CODE]: student.student_code } : {}),
     [FIELD.Z02.BLOOD_TYPE]:      student.blood_type || '不清楚', // Z02 必填，缺則「不清楚」
     [FIELD.Z02.VENUE]:           await venueLabel(parent.primary_venue_id),
     [FIELD.Z02.PARENT_PHONE]:    parent.phone || '',             // ★ Z01↔Z02 連結鍵
@@ -1449,7 +1450,7 @@ async function upsertStudentStrict(studentData, ragicRecordId = null) {
 
 async function buildZ02StudentPayload({ parent, student, setIdentity = false }) {
   // Z02 必填欄位（缺一會 INVALID 202、整筆寫不進去），與 _buildZ02RegistrationPayload 對齊：
-  //   - 學員編號：新生無編號 → 以身分證字號頂替（與既有真實紀錄一致）
+  //   - 學員編號由 Ragic 產生；本地已有編號才傳送，空值不覆寫。
   //   - 血型：未填以「不清楚」placeholder（Ragic 接受的選項值）
   //   - (報)身分：家長身分，預設「一般身分」
   const idnum = student.id_number ? String(student.id_number).toUpperCase() : '';
@@ -1461,7 +1462,7 @@ async function buildZ02StudentPayload({ parent, student, setIdentity = false }) 
     [FIELD.Z02.GENDER]: _toPhysGender(student.gender),
     [FIELD.Z02.BIRTH_DATE]: formatRagicDate(student.birth_date),
     [FIELD.Z02.ID_NUMBER]: idnum,
-    [FIELD.Z02.STUDENT_CODE]: student.student_code || idnum, // 學員編號 必填，缺則用身分證
+    ...(String(student.student_code || '').trim() ? { [FIELD.Z02.STUDENT_CODE]: student.student_code } : {}),
     [FIELD.Z02.BLOOD_TYPE]: student.blood_type || '不清楚',  // Z02 必填
     [FIELD.Z02.VENUE]: await venueLabel(parent.primary_venue_id),  // 送名稱而非代碼
     [FIELD.Z02.PARENT_PHONE]: parent.phone || '',
@@ -1533,7 +1534,6 @@ async function upsertZ02ForParentStudent({ parent, student }) {
   //   既有紀錄一律不碰「學員身分」欄（避免覆蓋身分類別）。
   const setIdentity = !z02Record;
   const payload = await buildZ02StudentPayload({ parent, student, setIdentity });
-  if (student.student_code) payload[FIELD.Z02.STUDENT_CODE] = student.student_code;
   const raw = await upsertStudentStrict(payload, z02Record?._ragicId || null);
   return { ragicRecordId: z02Record?._ragicId || raw.ragicId || raw._ragicId || null, raw };
 }

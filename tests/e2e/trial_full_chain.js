@@ -272,7 +272,7 @@ async function call(base, method, path, token, body, headers = {}) {
     assert(multi.status === 201, `2 學員 × 2 堂試上建單成功（${multi.status} ${multi.data?.code || multi.data?.error || ''}）`);
     assert(multi.data.order_count === 4 && (multi.data.enrollment_ids || []).length === 4,
       `拆 4 筆子訂單（order_count=${multi.data.order_count}）`);
-    assert(Number(multi.data.final_price) === TRIAL_PRICE * 4,
+    assert(Number(multi.data.final_price) === EXPECTED_TRIAL * 4,
       `總額＝試上單堂價 × 2 學員 × 2 堂（${multi.data.final_price}）`);
     const childRows = await pg.query(
       `SELECT original_price::float8 AS original_price, final_price::float8 AS final_price,
@@ -282,7 +282,7 @@ async function call(base, method, path, token, body, headers = {}) {
     );
     assert(childRows.rowCount === 4
       && childRows.rows.every((r) => r.order_kind === 'trial' && r.total_sessions === 1
-        && r.original_price === TRIAL_PRICE && r.final_price === TRIAL_PRICE),
+        && r.original_price === EXPECTED_TRIAL && r.final_price === EXPECTED_TRIAL),
       '每筆子訂單＝1 堂、單價快照 F-A07 試上價');
 
     step('多學員 × 多堂：對帳一次通過 → 逐筆開通獨立 1 堂體驗課期');

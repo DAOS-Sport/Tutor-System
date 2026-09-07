@@ -28,6 +28,7 @@ const BUCKET = new Map();
 const RATE = { max: 20, windowMs: 5 * 60 * 1000 };
 
 const KINDS = new Set([
+  'picker_guard_swallowed',       // 年/月選擇後的模擬點擊已被守門攔下
   'picker_closed_without_pick',   // 面板自己關掉，使用者還沒選到日期
   'picker_panel_never_shown',     // 點了欄位但面板始終沒出現
 ]);
@@ -65,4 +66,3 @@ router.post('/client', async (req, res) => {
 });
 
 module.exports = router;
-

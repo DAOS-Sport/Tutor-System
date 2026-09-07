@@ -4613,7 +4613,8 @@ async function getLiveRagicProbeSnapshot() {
       return;
     }
     try {
-      const probe = await ragic.probeForm(formPath);
+      // Status UI waits 10s; bulk-sync retry policy must not block this read-only probe.
+      const probe = await ragic.probeForm(formPath, {}, { timeout: 4000, maxRetries: 0 });
       forms[key] = {
         ...base,
         status: probe.ok ? 'ok' : 'empty',

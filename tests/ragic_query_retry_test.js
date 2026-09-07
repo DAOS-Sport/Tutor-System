@@ -15,6 +15,7 @@ process.env.RAGIC_API_KEY = process.env.RAGIC_API_KEY || 'stub';
 process.env.RAGIC_FORM_H01 = process.env.RAGIC_FORM_H01 || '/h01';
 
 let callCount = 0;
+let lastOptions;
 let behavior = null; // function(callIndex) -> {throw: err} | {resolve: data}
 
 const origLoad = Module._load;
@@ -22,7 +23,8 @@ Module._load = function (req, parent) {
   if (req === 'axios' && parent && parent.id && parent.id.endsWith('services/ragic.js')) {
     return {
       create: () => ({
-        get: async () => {
+        get: async (_url, options) => {
+          lastOptions = options;
           callCount += 1;
           const outcome = behavior(callCount);
           if (outcome.throw) throw outcome.throw;
@@ -110,6 +112,12 @@ async function testRateLimitIsRetried() {
 }
 
 (async () => {
+  callCount = 0;
+  behavior = () => ({ throw: timeoutError() });
+  await assert.rejects(ragic.probeForm('/h01', {}, { timeout: 4000, maxRetries: 0 }),
+    (err) => err.code === 'RAGIC_TIMEOUT' && err.retryCount === 0);
+  assert.strictEqual(callCount, 1, 'status probe must not retry past the UI deadline');
+  assert.strictEqual(lastOptions.timeout, 4000, 'probe deadline must reach the HTTP client');
   await testRetriesTransientErrorThenSucceeds();
   await testNonRetryableFailsImmediately();
   await testRetryExhaustionReportsCorrectCode();

@@ -107,7 +107,7 @@ function createMcpServer() {
       }
       const updated = replace_all
         ? original.split(old_string).join(new_string)
-        : original.replace(old_string, new_string);
+        : original.replace(old_string, () => new_string);
       await fs.promises.writeFile(abs, updated, 'utf8');
       return { content: [{ type: 'text', text: `已修改 ${toRelative(abs)}（替換 ${replace_all ? count : 1} 處）` }] };
     },

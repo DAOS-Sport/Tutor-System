@@ -612,6 +612,73 @@ DO $$ BEGIN
   ALTER TABLE coach_personal_tags ADD COLUMN IF NOT EXISTS category_id UUID REFERENCES tag_categories(id) ON DELETE SET NULL;
 EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
+-- 新庫先建 session_records，避免下方舊庫升級區因 undefined_table 整段回滾。
+-- 授課記錄（F-C05）：每堂課一筆，draft → submitted；submitted 之後改寫入 versions
+CREATE TABLE IF NOT EXISTS session_records (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  course_session_id UUID NOT NULL REFERENCES course_sessions(id) ON DELETE CASCADE,
+  course_period_id UUID NOT NULL REFERENCES course_periods(id) ON DELETE CASCADE,
+  coach_id UUID NOT NULL REFERENCES coaches(id) ON DELETE RESTRICT,
+  summary TEXT NOT NULL DEFAULT '',         -- 上課摘要
+  highlights TEXT NOT NULL DEFAULT '',      -- 表現亮點
+  improvements TEXT NOT NULL DEFAULT '',    -- 待加強
+  homework TEXT NOT NULL DEFAULT '',        -- 回家練習
+  notes TEXT NOT NULL DEFAULT '',           -- 備註（給家長的提醒）
+  status VARCHAR(10) NOT NULL DEFAULT 'draft', -- draft | submitted
+  media JSONB NOT NULL DEFAULT '[]'::jsonb, -- [{ url, mime, name, size }]
+  student_records JSONB NOT NULL DEFAULT '{}'::jsonb, -- { mode, records: { studentName: fields } }
+  submitted_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(course_session_id)
+);
+
+-- 團購升級會引用 promotions；新庫也必須先建立它。
+CREATE TABLE IF NOT EXISTS promotions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name VARCHAR(100) NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  type VARCHAR(20) NOT NULL CHECK (type IN ('PERCENTAGE','FIXED_AMOUNT')),
+  discount_value NUMERIC(10,4) NOT NULL,             -- PERCENTAGE: 0..1（0.9 = 9折）；FIXED_AMOUNT: 整數元
+  min_threshold_type VARCHAR(20) CHECK (min_threshold_type IN ('PERIOD_COUNT')),
+  min_threshold_value INTEGER,
+  applicable_course_types INTEGER[],                 -- NULL = 全組別
+  applicable_venue_ids VARCHAR(10)[],                -- NULL = 全場館
+  applicable_coach_multipliers NUMERIC(5,2)[],       -- NULL = 不限教練加成（存 coaches.pricing_multiplier 值，如 1.30）
+  show_on_parent_home BOOLEAN NOT NULL DEFAULT TRUE, -- 是否顯示在家長首頁
+  coupon_code VARCHAR(40) UNIQUE,                    -- NULL = 自動套用；有值 = 需輸入代碼
+  start_date TIMESTAMPTZ NOT NULL,                   -- 起始時刻（台灣時間；預設當日 00:00）
+  end_date TIMESTAMPTZ NOT NULL,                      -- 結束時刻（台灣時間；預設當日 23:59:59）
+  max_uses INTEGER,
+  current_uses INTEGER NOT NULL DEFAULT 0,
+  platform_total_period_cap INTEGER,
+  parent_period_cap INTEGER,
+  current_period_uses INTEGER NOT NULL DEFAULT 0,
+  status VARCHAR(20) NOT NULL DEFAULT 'draft'
+    CHECK (status IN ('draft','pending_review','active','rejected','archived')),
+  review_note TEXT,
+  created_by TEXT REFERENCES admin_users(id) ON DELETE SET NULL,
+  reviewed_by TEXT REFERENCES admin_users(id) ON DELETE SET NULL,
+  reviewed_at TIMESTAMPTZ,
+  submitted_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CHECK (end_date >= start_date)
+);
+
+-- promotion_usages：每次套用紀錄；資料隔離供日後對帳。
+CREATE TABLE IF NOT EXISTS promotion_usages (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  promotion_id UUID NOT NULL REFERENCES promotions(id) ON DELETE RESTRICT,
+  parent_id UUID REFERENCES parents(id) ON DELETE SET NULL,
+  course_period_id UUID REFERENCES course_periods(id) ON DELETE CASCADE,
+  original_price INTEGER NOT NULL,
+  discount_amount INTEGER NOT NULL,
+  final_price INTEGER NOT NULL,
+  used_periods INTEGER NOT NULL DEFAULT 1,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- ── 升級舊版（001_initial_schema.sql 已建立、欄位不同）── 與 005 migration 一致
 DO $$ BEGIN
   ALTER TABLE session_records ADD COLUMN IF NOT EXISTS course_period_id UUID REFERENCES course_periods(id) ON DELETE CASCADE;
@@ -1079,25 +1146,7 @@ CREATE TABLE IF NOT EXISTS lesson_plans (
   UNIQUE(course_period_id)
 );
 
--- 授課記錄（F-C05）：每堂課一筆，draft → submitted；submitted 之後改寫入 versions
-CREATE TABLE IF NOT EXISTS session_records (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  course_session_id UUID NOT NULL REFERENCES course_sessions(id) ON DELETE CASCADE,
-  course_period_id UUID NOT NULL REFERENCES course_periods(id) ON DELETE CASCADE,
-  coach_id UUID NOT NULL REFERENCES coaches(id) ON DELETE RESTRICT,
-  summary TEXT NOT NULL DEFAULT '',         -- 上課摘要
-  highlights TEXT NOT NULL DEFAULT '',      -- 表現亮點
-  improvements TEXT NOT NULL DEFAULT '',    -- 待加強
-  homework TEXT NOT NULL DEFAULT '',        -- 回家練習
-  notes TEXT NOT NULL DEFAULT '',           -- 備註（給家長的提醒）
-  status VARCHAR(10) NOT NULL DEFAULT 'draft', -- draft | submitted
-  media JSONB NOT NULL DEFAULT '[]'::jsonb, -- [{ url, mime, name, size }]
-  student_records JSONB NOT NULL DEFAULT '{}'::jsonb, -- { mode, records: { studentName: fields } }
-  submitted_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE(course_session_id)
-);
+
 CREATE INDEX IF NOT EXISTS idx_records_period ON session_records(course_period_id);
 
 CREATE TABLE IF NOT EXISTS session_record_versions (
@@ -1394,6 +1443,8 @@ ALTER TABLE ragic_z03_students ADD COLUMN IF NOT EXISTS reason_code TEXT;
 ALTER TABLE ragic_z03_students ADD COLUMN IF NOT EXISTS present_in_latest_payload BOOLEAN NOT NULL DEFAULT TRUE;
 ALTER TABLE ragic_z03_students ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 ALTER TABLE ragic_z03_students ADD COLUMN IF NOT EXISTS canonical_student_id UUID REFERENCES students(id) ON DELETE SET NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_ragic_z03_student_source_row
+  ON ragic_z03_students(z03_record_id, source_row_key);
 ALTER TABLE ragic_sync_outbox ADD COLUMN IF NOT EXISTS target_record_id TEXT;
 ALTER TABLE ragic_sync_outbox ADD COLUMN IF NOT EXISTS field_id TEXT;
 
@@ -1571,37 +1622,7 @@ EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
 -- ── Phase 6 (上)：優惠活動 + 折價券 + 套用紀錄 ────────────────────────
 -- F-M07 主管建立 → F-A05 管理員核准 → 進入 active；LIFF 購課讀 active 自動比對 / 折價券代碼。
-CREATE TABLE IF NOT EXISTS promotions (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  name VARCHAR(100) NOT NULL,
-  description TEXT NOT NULL DEFAULT '',
-  type VARCHAR(20) NOT NULL CHECK (type IN ('PERCENTAGE','FIXED_AMOUNT')),
-  discount_value NUMERIC(10,4) NOT NULL,             -- PERCENTAGE: 0..1（0.9 = 9折）；FIXED_AMOUNT: 整數元
-  min_threshold_type VARCHAR(20) CHECK (min_threshold_type IN ('PERIOD_COUNT')),
-  min_threshold_value INTEGER,
-  applicable_course_types INTEGER[],                 -- NULL = 全組別
-  applicable_venue_ids VARCHAR(10)[],                -- NULL = 全場館
-  applicable_coach_multipliers NUMERIC(5,2)[],       -- NULL = 不限教練加成（存 coaches.pricing_multiplier 值，如 1.30）
-  show_on_parent_home BOOLEAN NOT NULL DEFAULT TRUE, -- 是否顯示在家長首頁
-  coupon_code VARCHAR(40) UNIQUE,                    -- NULL = 自動套用；有值 = 需輸入代碼
-  start_date TIMESTAMPTZ NOT NULL,                   -- 起始時刻（台灣時間；預設當日 00:00）
-  end_date TIMESTAMPTZ NOT NULL,                      -- 結束時刻（台灣時間；預設當日 23:59:59）
-  max_uses INTEGER,
-  current_uses INTEGER NOT NULL DEFAULT 0,
-  platform_total_period_cap INTEGER,
-  parent_period_cap INTEGER,
-  current_period_uses INTEGER NOT NULL DEFAULT 0,
-  status VARCHAR(20) NOT NULL DEFAULT 'draft'
-    CHECK (status IN ('draft','pending_review','active','rejected','archived')),
-  review_note TEXT,
-  created_by TEXT REFERENCES admin_users(id) ON DELETE SET NULL,
-  reviewed_by TEXT REFERENCES admin_users(id) ON DELETE SET NULL,
-  reviewed_at TIMESTAMPTZ,
-  submitted_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CHECK (end_date >= start_date)
-);
+
 CREATE INDEX IF NOT EXISTS idx_promotions_active_dates
   ON promotions(status, start_date, end_date);
 CREATE INDEX IF NOT EXISTS idx_promotions_coupon
@@ -1622,18 +1643,7 @@ DO $$ BEGIN
   END IF;
 EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
--- promotion_usages：每次套用紀錄；資料隔離供日後對帳。
-CREATE TABLE IF NOT EXISTS promotion_usages (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  promotion_id UUID NOT NULL REFERENCES promotions(id) ON DELETE RESTRICT,
-  parent_id UUID REFERENCES parents(id) ON DELETE SET NULL,
-  course_period_id UUID REFERENCES course_periods(id) ON DELETE CASCADE,
-  original_price INTEGER NOT NULL,
-  discount_amount INTEGER NOT NULL,
-  final_price INTEGER NOT NULL,
-  used_periods INTEGER NOT NULL DEFAULT 1,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+
 CREATE INDEX IF NOT EXISTS idx_promo_usages_promo ON promotion_usages(promotion_id);
 CREATE INDEX IF NOT EXISTS idx_promo_usages_parent ON promotion_usages(parent_id);
 DO $$ BEGIN ALTER TABLE promotion_usages ADD COLUMN IF NOT EXISTS used_periods INTEGER NOT NULL DEFAULT 1; EXCEPTION WHEN undefined_table THEN NULL; END $$;
