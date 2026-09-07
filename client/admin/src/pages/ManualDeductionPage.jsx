@@ -47,17 +47,6 @@ const WarnIcon = () => (
   </svg>
 );
 
-// 稿子裡「寫入欄位稽核對照」的那幾行。刻意用資料表欄位原名而不是中文別名：
-// 這塊是給日後查帳的人對照資料庫用的，翻成中文反而對不回去。
-function ContractRow({ label, value, tone = 'green' }) {
-  return (
-    <div className="flex items-baseline justify-between gap-3">
-      <span className="shrink-0 text-gray-400">{label}</span>
-      <span className={`truncate font-bold ${tone === 'amber' ? 'text-brand-amber' : tone === 'teal' ? 'text-brand-teal' : 'text-brand-green'}`}>{value}</span>
-    </div>
-  );
-}
-
 /**
  * 扣課成功後的結果視窗：把「哪個時間寫進哪個欄位」攤開來。
  * 補扣最容易被誤解的就是這件事 —— 上課時間被押到過去，但「誰在什麼時候按的」
@@ -104,8 +93,8 @@ function ResultModal({ data, onClose }) {
             <h3 className="text-base font-bold leading-tight">{data.idempotent ? '已確認原操作（未重複扣除）' : '扣課成功'}</h3>
             <p className="mt-0.5 text-xs text-white/85">
               {data.idempotent
-                ? '這組請求先前已完成，系統回傳同一筆紀錄'
-                : '已寫入上課紀錄、簽到、餘額與不可覆寫的稽核紀錄'}
+                ? '這次操作先前已完成，沒有再次扣課'
+                : '已更新上課紀錄、出席與剩餘堂數'}
             </p>
           </div>
           <button type="button" onClick={onClose} aria-label="關閉" className="shrink-0 rounded p-1 text-white/80 hover:bg-white/15 hover:text-white">
@@ -123,20 +112,10 @@ function ResultModal({ data, onClose }) {
             )}
           </div>
 
-          <div>
-            <div className="mb-2 text-xs font-bold text-gray-800">寫入欄位對照</div>
-            <div className="space-y-1.5 overflow-x-auto rounded-lg bg-brand-primary p-3 font-mono text-[11px]">
-              <ContractRow label="course_sessions.scheduled_at" value={data.scheduledAtText} />
-              <ContractRow label="checkin_records.checked_in_at" value={data.scheduledAtText} />
-              <div className="mt-1 space-y-1.5 border-t border-white/15 pt-1.5">
-                <ContractRow label="course_sessions.completed_at" value={`${data.completedAtText}（當下）`} tone="amber" />
-                <ContractRow label="manual_lesson_deductions.created_at" value={`${data.completedAtText}（當下）`} tone="amber" />
-              </div>
-              <div className="mt-1 border-t border-white/15 pt-1.5">
-                <ContractRow label="request_id" value={data.requestId || '—'} tone="teal" />
-              </div>
-            </div>
-          </div>
+          <dl className="space-y-2 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm">
+            <div className="flex justify-between gap-3"><dt className="text-gray-500">上課時間</dt><dd>{data.scheduledAtText}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-gray-500">實際操作時間</dt><dd>{data.completedAtText}</dd></div>
+          </dl>
 
           <p className="flex items-start gap-2 rounded-lg border border-brand-teal/30 bg-brand-teal/5 p-2.5 text-[11px] leading-5 text-gray-700">
             <span className="mt-0.5 text-brand-teal"><InfoIcon /></span>
@@ -468,17 +447,17 @@ export default function ManualDeductionPage() {
             {/* 刻意不寫「近期紀錄」：這張表是本頁這次開著時送出的那幾筆，
                 不是去資料庫查歷史（目前沒有列表 API）。寫成「近期」會讓櫃台
                 以為重新整理後還在，然後懷疑資料掉了。 */}
-            <span className="text-[11px] text-gray-400">只顯示本頁本次送出的；完整稽核在資料庫，不可覆寫</span>
+            <span className="text-[11px] text-gray-400">僅顯示本次操作；重新整理後可到「上課紀錄查詢」查看</span>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full min-w-[720px] border-collapse text-left text-xs">
               <thead>
                 <tr className="border-b border-gray-200 bg-gray-50 text-gray-600">
-                  <th className="p-2.5 font-bold">紀錄 ID</th>
+                  <th className="p-2.5 font-bold">紀錄編號</th>
                   <th className="p-2.5 font-bold">學員</th>
                   <th className="p-2.5 font-bold">扣課原因</th>
-                  <th className="p-2.5 font-bold">上課時間<span className="ml-1 font-mono font-normal text-gray-400">scheduled_at</span></th>
-                  <th className="p-2.5 font-bold">實際操作時間<span className="ml-1 font-mono font-normal text-gray-400">created_at</span></th>
+                  <th className="p-2.5 font-bold">上課時間</th>
+                  <th className="p-2.5 font-bold">實際操作時間</th>
                   <th className="p-2.5 font-bold">標籤</th>
                 </tr>
               </thead>

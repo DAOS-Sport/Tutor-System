@@ -1,3 +1,4 @@
+import { humanizeApiError } from '../../../shared/userMessage.js';
 import axios from 'axios';
 import liff from '@line/liff';
 
@@ -99,6 +100,7 @@ http.interceptors.request.use((config) => {
 http.interceptors.response.use(
   (res) => res,
   async (err) => {
+    humanizeApiError(err);
     if (err?.response?.status !== 401) return Promise.reject(err);
     const config = err.config || {};
 

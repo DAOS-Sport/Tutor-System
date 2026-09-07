@@ -426,7 +426,7 @@ export default function RegisterPage() {
         {demoMode && (
           <div className="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs leading-5 text-amber-800">
             🧪 <b>Demo 測試註冊</b>（模擬全新未註冊用戶）。送出會<b>真的建立測試資料</b>，
-            line_uid 以 <code>DEMOTEST_</code> 標記，方便事後依此前綴清除。
+            系統會標記為測試資料，供管理員後續整理。
             請填一個<b>尚未在系統內的手機號</b>，以免撞到既有資料而被導去「手機綁定」。
           </div>
         )}

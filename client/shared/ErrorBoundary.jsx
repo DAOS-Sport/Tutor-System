@@ -122,7 +122,7 @@ export default class ErrorBoundary extends React.Component {
           頁面發生錯誤
         </h1>
         <p style={{ fontSize: '13px', color: '#666', marginTop: '8px', maxWidth: '340px', lineHeight: 1.6 }}>
-          載入時出了點問題。請點下方重新載入；若持續發生，把下面這塊一起截圖或複製回報。
+          載入時出了點問題。請點下方重新載入；若持續發生，請複製回報資訊交給管理員。
         </p>
 
         <div style={{ display: 'flex', gap: '10px', marginTop: '20px', flexWrap: 'wrap', justifyContent: 'center' }}>
@@ -150,7 +150,7 @@ export default class ErrorBoundary extends React.Component {
           </div>
           <div>{stamp()}</div>
           <div style={{ marginTop: '6px', color: '#8a4b4b', whiteSpace: 'pre-wrap' }}>
-            {(this.state.error && (this.state.error.message || String(this.state.error))) || '(no message)'}
+            畫面暫時無法顯示。請重新載入；若仍無法使用，請將回報資訊交給管理員。
           </div>
         </div>
       </div>
