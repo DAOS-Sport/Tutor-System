@@ -49,7 +49,7 @@ function parentFormFrom(parent) {
     // 身分欄位已從 UI 移除：沿用既有值，未設定時預設「一般身分」。
     identity: parent?.identity || '一般身分',
     gender: normalizeGender(parent?.gender),
-    email: parent?.email || '',
+    email: String(parent?.email || '').trim().toLowerCase() === 'example@gmail.com' ? '' : (parent?.email || ''),
     home_phone: parent?.home_phone || '',
     line_id: parent?.line_id || '',
     home_address: parent?.home_address || '',
@@ -245,6 +245,13 @@ export default function ProfilePage() {
         <div className="mt-1 text-xs opacity-90">{profile.phone}</div>
         {profile.email && <div className="text-xs opacity-90">{profile.email}</div>}
       </div>
+
+      {String(profile.email || '').trim().toLowerCase() === 'example@gmail.com' && (
+        <div role="status" className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          目前信箱為暫用資料，無法接收通知。請更新為您自己的 Email。
+          <button type="button" className="ml-2 font-bold underline" onClick={() => { setEditOpen(true); setParentOpen(true); }}>更新信箱</button>
+        </div>
+      )}
 
       {/* 編輯資料：橫條 → 點擊展開「家長資料 / 學員資料」兩個子橫條 → 各自再點擊往下展開內容 */}
       <div className="mb-4">

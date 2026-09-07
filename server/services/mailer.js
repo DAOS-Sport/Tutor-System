@@ -127,6 +127,11 @@ async function sendMail({ to, subject, html, text, attachments }) {
     result.to = target;
   }
 
+  // 使用者指定的遷移暫用地址不是收件人；不可寄出付款或學員資訊。
+  if ([original, target].some((address) => String(address).trim().toLowerCase() === 'example@gmail.com')) {
+    return Object.assign(result, { status: 'skipped', reason: 'PLACEHOLDER_RECIPIENT' });
+  }
+
   if (!isConfigured()) {
     return Object.assign(result, { status: 'dry_run', dryRun: true, reason: 'SMTP_NOT_CONFIGURED' });
   }
