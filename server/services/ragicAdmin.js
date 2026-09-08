@@ -202,7 +202,7 @@ function _syncErrorMessage(err, context = {}) {
   } else {
     parts.push(err?.message || String(err || '同步失敗'));
   }
-  return parts.filter(Boolean).join(' — ');
+  return syncFailureLog.sanitizeMessage(parts.filter(Boolean).join(' — '));
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1473,6 +1473,11 @@ async function _shadowPullH05Impl() {
     console.error('[Ragic sync] ' + msg);
     return _withFreshness({ synced: 0, skipped: true, error: msg }, freshness);
   }
+  try {
+    _validatedVenueMap(records);
+  } catch (err) {
+    return _withFreshness({ synced: 0, error: err.message }, freshness);
+  }
   const client = await pool.connect();
   let synced = 0;
   try {
@@ -1522,63 +1527,40 @@ async function _reconcileH05FromShadowImpl() {
     } finally {
       client0.release();
     }
-    const ragicMap = new Map();
-    for (const r of records) {
-      const v = _mapRagicVenue(r);
-      if (v) ragicMap.set(v.code, v);
-    }
+    const ragicMap = _validatedVenueMap(records);
     const dbRows = (await pool.query(`SELECT * FROM admin_venues`)).rows;
     const dbMap = new Map(dbRows.map(r => [r.id, r]));
     let staged = 0;
     let failed = 0;
     const venueErrors = [];
 
-    for (const [code, rv] of ragicMap) {
-     try {
+    const changes = [...ragicMap].map(([code, rv]) => {
       const cur = dbMap.get(code);
-      const payload = { code, ...rv, is_active: true };
-      if (!cur) {
-        await pool.query(
-          `INSERT INTO admin_venues (id, name, address, is_active)
-           VALUES ($1, $2, $3, TRUE)
-           ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, address=EXCLUDED.address, is_active=TRUE`,
-          [code, rv.name || '', rv.address || '']
-        );
-        staged++;
-        continue;
+      const changed = !cur || ['name', 'address'].some(f => cur[`${f}_overridden_at`] == null && (cur[f] || '') !== (rv[f] || ''))
+        || (cur.is_active_overridden_at == null && !cur.is_active);
+      return { entity_id: code, payload_json: rv, change_type: 'update', changed };
+    });
+    for (const row of dbRows) {
+      if (row.is_active && row.is_active_overridden_at == null && !ragicMap.has(row.id)) {
+        changes.push({ entity_id: row.id, change_type: 'deactivate', changed: true });
       }
-      const diff = {};
-      // Task #66：銀行欄位 (bank_*, account_*) 為系統內部欄位，不從 Ragic 同步
-      // 只 stage name / address / is_active
-      for (const f of ['name', 'address']) {
-        if (cur[`${f}_overridden_at`] != null) continue;
-        const from = cur[f] || '';
-        const to = rv[f] || '';
-        if (from !== to) diff[f] = { from, to };
-      }
-      if (cur.is_active_overridden_at == null && !cur.is_active) {
-        diff.is_active = { from: false, to: true };
-      }
-      if (Object.keys(diff).length > 0) {
-        if ('name' in diff) await pool.query(`UPDATE admin_venues SET name=$1 WHERE id=$2 AND name_overridden_at IS NULL`, [rv.name || '', code]);
-        if ('address' in diff) await pool.query(`UPDATE admin_venues SET address=$1 WHERE id=$2 AND address_overridden_at IS NULL`, [rv.address || '', code]);
-        if ('is_active' in diff) await pool.query(`UPDATE admin_venues SET is_active=TRUE WHERE id=$1 AND is_active_overridden_at IS NULL`, [code]);
-        staged++;
-      }
-     } catch (err) {
-      // 嫌疑4 CONFIRMED 修復：單筆壞資料不再中止整批（原本 function-level try 會讓
-      // 一筆毒資料炸掉整輪、回 {synced:0} 掩蓋已完成的進度）。
-      failed++;
-      venueErrors.push(`場館 ${code}：${err.message}`);
-      console.warn('[Ragic sync] venue per-record failed (code=%s): %s', code, err.message);
-     }
     }
-
-    // 不在 Ragic 但 active 中 + 未 override → 直接停用（無 staging）
-    for (const r of dbRows) {
-      if (!r.is_active || r.is_active_overridden_at != null || ragicMap.has(r.id)) continue;
-      await pool.query(`UPDATE admin_venues SET is_active=FALSE WHERE id=$1 AND is_active_overridden_at IS NULL`, [r.id]);
-      staged++;
+    for (const change of changes) {
+      let client;
+      try {
+        client = await pool.connect();
+        await client.query('BEGIN');
+        await _applyVenueChange(change, client);
+        await client.query('COMMIT');
+        if (change.changed) staged++;
+      } catch (err) {
+        if (client) await client.query('ROLLBACK').catch(() => {});
+        failed++;
+        venueErrors.push(`場館 ${change.entity_id}：${err.message}`);
+        console.warn('[Ragic sync] venue per-record failed (code=%s): %s', change.entity_id, err.message);
+      } finally {
+        if (client) client.release();
+      }
     }
     if (failed > 0) {
       return {
@@ -1895,6 +1877,17 @@ async function _applyCoachChange(row, client) {
   );
 }
 
+async function _mirrorVenueFromAdmin(client, code) {
+  // Copy the final values after override guards, never the incoming Ragic values.
+  await client.query(
+    `INSERT INTO venues (id, name, full_address, is_active)
+     SELECT id, name, address, is_active FROM admin_venues WHERE id=$1
+     ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name,
+       full_address=EXCLUDED.full_address, is_active=EXCLUDED.is_active, updated_at=NOW()`,
+    [code]
+  );
+}
+
 async function _applyVenueChange(row, client) {
   const p = row.payload_json || {};
   const code = row.entity_id;
@@ -1904,10 +1897,7 @@ async function _applyVenueChange(row, client) {
          WHERE id = $1 AND is_active_overridden_at IS NULL`,
       [code]
     );
-    await client.query(
-      `UPDATE venues SET is_active = FALSE, updated_at = NOW() WHERE id = $1`,
-      [code]
-    );
+    await _mirrorVenueFromAdmin(client, code);
     return;
   }
   // Task #66：銀行欄位 / line_token 為系統內部欄位，apply 也不從 Ragic 寫入
@@ -1924,16 +1914,7 @@ async function _applyVenueChange(row, client) {
        last_synced_at = NOW()`,
     [code, p.name || code, p.address || '']
   );
-  await client.query(
-    `INSERT INTO venues (id, name, full_address, is_active)
-     VALUES ($1, $2, $3, TRUE)
-     ON CONFLICT (id) DO UPDATE SET
-       name = EXCLUDED.name,
-       full_address = COALESCE(NULLIF(venues.full_address, ''), EXCLUDED.full_address),
-       is_active = TRUE,
-       updated_at = NOW()`,
-    [code, p.name || code, p.address || '']
-  );
+  await _mirrorVenueFromAdmin(client, code);
 }
 
 // P1.1「熊韋程 staff 事故」防線：待審核區出現 staff「新增」提案時，檢查是否跟既有
@@ -2910,7 +2891,7 @@ async function _syncCanonicalZ01Record(client, z01Row, mapped, venuesMap) {
   );
 
   // Exact normalized name inside this canonical family only. National ID is
-  // retained in the source mirror but never used as a match/merge key here.
+  // copied into a blank local field, never used as a match/merge key here.
   const rawStudentRows = ragic.parseZ01StudentsRaw(z01Row);
   const studentIssues = [];
   for (const raw of rawStudentRows) {
@@ -2954,17 +2935,18 @@ async function _syncCanonicalZ01Record(client, z01Row, mapped, venuesMap) {
            gender = COALESCE(NULLIF($4,''), gender),
            blood_type = COALESCE(NULLIF($5,''), blood_type),
            student_code = COALESCE(NULLIF($6,''), student_code),
+           id_number = COALESCE(NULLIF(id_number,''), NULLIF($7,'')),
            is_active = TRUE, last_synced_at = NOW(), updated_at = NOW()
          WHERE id = $1 RETURNING *`,
-        [student.id, s.name, birthDate, ragic.normalizeGender(s.gender), s.blood_type || '', s.student_code || '']
+        [student.id, s.name, birthDate, ragic.normalizeGender(s.gender), s.blood_type || '', s.student_code || '', String(s.id_number || '').trim().toUpperCase()]
       )).rows[0];
     } else {
       student = (await client.query(
         `INSERT INTO students
-           (parent_id, name, birth_date, gender, blood_type, student_code, is_active, last_synced_at)
-         VALUES ($1,$2,$3::date,NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),TRUE,NOW())
+           (parent_id, name, birth_date, gender, blood_type, student_code, id_number, is_active, last_synced_at)
+         VALUES ($1,$2,$3::date,NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),NULLIF($7,''),TRUE,NOW())
          RETURNING *`,
-        [parent.id, s.name, birthDate, ragic.normalizeGender(s.gender), s.blood_type || '', s.student_code || '']
+        [parent.id, s.name, birthDate, ragic.normalizeGender(s.gender), s.blood_type || '', s.student_code || '', String(s.id_number || '').trim().toUpperCase()]
       )).rows[0];
       existingStudents.push(student);
     }
@@ -4903,6 +4885,20 @@ function _mapRagicVenue(r) {
   };
 }
 
+function _validatedVenueMap(records) {
+  const mapped = new Map();
+  for (const row of records || []) {
+    if (ragic.isCanaryRecord(row, 'H05')) continue;
+    const venue = row && _mapRagicVenue(row);
+    if (!venue || mapped.has(venue.code)) {
+      throw new Error('H05 場館代碼缺漏或重複，已保留既有資料，請核對來源欄位');
+    }
+    mapped.set(venue.code, venue);
+  }
+  if (!mapped.size) throw new Error('H05 無有效場館資料，已中止同步並保留既有場館');
+  return mapped;
+}
+
 /**
  * dry-run：撈 H05 + 比對 admin_venues，回傳 {added, updated, removed}。
  * - added：Ragic 有但 DB 沒有（或 DB is_active=false）→ 第二階段會 INSERT / 重新啟用
@@ -4917,11 +4913,7 @@ async function diffVenuesFromRagic() {
   if (pull.stale_read) throw new Error(pull.error || 'Ragic H05 stale_read');
   await _alertFreshnessIfNeeded('H05', pull.freshness);
   const records = pull.records || [];
-  const ragicMap = new Map();
-  for (const r of records) {
-    const v = _mapRagicVenue(r);
-    if (v) ragicMap.set(v.code, v);
-  }
+  const ragicMap = _validatedVenueMap(records);
   const dbRows = (await pool.query(`SELECT * FROM admin_venues`)).rows;
   const dbMap = new Map(dbRows.map(r => [r.id, r]));
 
@@ -4967,11 +4959,7 @@ async function applyVenueSync(selections = {}) {
   if (pull.stale_read) throw new Error(pull.error || 'Ragic H05 stale_read');
   await _alertFreshnessIfNeeded('H05', pull.freshness);
   const records = pull.records || [];
-  const ragicMap = new Map();
-  for (const r of records) {
-    const v = _mapRagicVenue(r);
-    if (v) ragicMap.set(v.code, v);
-  }
+  const ragicMap = _validatedVenueMap(records);
 
   // Atomic：所有 add / update / remove + 跨表 mirror 寫入包在同一筆 transaction，
   // 避免中途失敗導致 admin_venues vs venues 兩表分歧或部分套用。
@@ -5005,15 +4993,7 @@ async function applyVenueSync(selections = {}) {
              WHERE id = $1`,
           [code, rv.name, rv.address, rv.bank_institution_name, rv.bank_branch_name, rv.account_holder, rv.account_number]
         );
-        await client.query(
-          `INSERT INTO venues (id, name, full_address, is_active)
-           VALUES ($1,$2,$3,TRUE)
-           ON CONFLICT (id) DO UPDATE SET
-             name = EXCLUDED.name,
-             full_address = COALESCE(NULLIF(venues.full_address, ''), EXCLUDED.full_address),
-             is_active = TRUE, updated_at = NOW()`,
-          [code, rv.name, rv.address]
-        );
+        await _mirrorVenueFromAdmin(client, code);
       } else {
         await client.query(
           `INSERT INTO admin_venues (id, code, name, address, line_token,
@@ -5022,14 +5002,7 @@ async function applyVenueSync(selections = {}) {
            VALUES ($1,$1,$2,$3,'',$4,$5,$6,$7,TRUE,NOW())`,
           [code, rv.name, rv.address, rv.bank_institution_name, rv.bank_branch_name, rv.account_holder, rv.account_number]
         );
-        await client.query(
-          `INSERT INTO venues (id, name, full_address, is_active)
-           VALUES ($1,$2,$3,TRUE)
-           ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name,
-             full_address = COALESCE(NULLIF(venues.full_address, ''), EXCLUDED.full_address),
-             is_active = TRUE, updated_at = NOW()`,
-          [code, rv.name, rv.address]
-        );
+        await _mirrorVenueFromAdmin(client, code);
       }
       addedCount += 1;
     }
@@ -5059,13 +5032,7 @@ async function applyVenueSync(selections = {}) {
         vals
       );
       if (touchesNameOrAddr) {
-        await client.query(
-          `UPDATE venues SET name = $2,
-             full_address = COALESCE(NULLIF($3, ''), full_address),
-             updated_at = NOW()
-             WHERE id = $1`,
-          [code, rv.name, rv.address]
-        );
+        await _mirrorVenueFromAdmin(client, code);
       }
       updatedCount += 1;
     }
@@ -5079,10 +5046,7 @@ async function applyVenueSync(selections = {}) {
            WHERE id = $1`,
         [code]
       );
-      await client.query(
-        `UPDATE venues SET is_active = FALSE, updated_at = NOW() WHERE id = $1`,
-        [code]
-      );
+      await _mirrorVenueFromAdmin(client, code);
       removedCount += 1;
     }
 

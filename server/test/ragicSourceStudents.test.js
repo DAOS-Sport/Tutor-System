@@ -9,7 +9,7 @@ function extract(start, end) { return source.slice(source.indexOf(start), source
 function fixture({ timeout=false, missingCode=false, conflict=false, readError=false }={}) {
   const F=schema.FIELD; const rows=[];let writes=0; let remote=null;
   const parent={phone:'test-phone',line_uid:'Utest'};
-  const student={name:'test-child',id_number:'TEST-ID',birth_date:'2020-01-01',gender:'female'};
+  const student={name:'test-child',id_number:'A123456789',birth_date:'2020-01-01',gender:'female'};
   const ctx={ FIELD:F, process:{env:{RAGIC_FORM_Z01:'/source'}},
     _recordPath:(p,id)=>`${p}/${id}`, _cacheInvalidate:()=>{},
     _toPhysGender:()=> '生理女',formatRagicDate:s=>s.replaceAll('-','/'),

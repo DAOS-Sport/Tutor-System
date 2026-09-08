@@ -50,7 +50,7 @@ function sanitizeMessage(input, maxLen = 500) {
     .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, '<email>')          // email
     .replace(/\b09\d{8}\b/g, '<phone>')                        // 台灣手機
     .replace(/\b0\d{1,2}-?\d{6,8}\b/g, '<phone>')              // 市話
-    .replace(/\b[A-Z]\d{9}\b/g, '<id>')                        // 身分證
+    .replace(/\b[A-Z]\d{8,}\b/gi, '<id>')                     // 身分證及輸入長度錯誤的字號
     .replace(/\bU[0-9a-f]{32}\b/gi, '<line_uid>');             // LINE UID
   return s.length > maxLen ? `${s.slice(0, maxLen)}…` : s;
 }

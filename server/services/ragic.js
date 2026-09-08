@@ -1114,9 +1114,10 @@ async function syncParentStudentsStrict({ parent, students = [], ragicRecordId }
   const sourceRows = parseZ01Students(before);
   for (const student of list) {
     const id = String(student.id_number || '').trim().toUpperCase();
-    if (!id || !String(student.name || '').trim() || !student.birth_date || !student.gender) {
-      throw Object.assign(new Error('請補齊學員姓名、生日、性別與身分證字號'), { code: 'RAGIC_VALIDATION_ERROR' });
-    }
+    const missing = [['姓名', student.name], ['生日', student.birth_date], ['性別', student.gender], ['身分證字號', id]]
+      .filter(([, value]) => !String(value || '').trim()).map(([label]) => label);
+    if (missing.length) throw Object.assign(new Error('請補齊學員：' + missing.join('、')), { code: 'RAGIC_VALIDATION_ERROR' });
+    if (!/^[A-Z]\d{9}$/.test(id)) throw Object.assign(new Error('學員身分證字號格式錯誤，請核對英文字母與 9 碼數字'), { code: 'RAGIC_VALIDATION_ERROR' });
     if (seen.has(id)) throw Object.assign(new Error('學員身分資料重複，請核對'), { code: 'STUDENT_ID_NUMBER_EXISTS' });
     seen.add(id);
     const matches = sourceRows.filter(row => row.id_number === id);

@@ -19,6 +19,8 @@ const { STAFF_CHANNEL } = require('./lineRouting');
 
 // 只警告一次（避免 cron 迴圈裡每個收件人都刷一行相同的錯誤，把真正的問題淹掉）。
 let _warnedMissingToken = false;
+// Retry after a minute so a quota increase or month rollover is picked up.
+let _quotaBlocked = { token: null, until: 0 };
 
 /**
  * 取 LINE Messaging API 的 access token。
@@ -118,6 +120,10 @@ async function pushMessage(lineUserId, messages, venueIdForLog, opts = {}) {
   }
 
   const t0 = Date.now();
+  if (_quotaBlocked.token === token && t0 < _quotaBlocked.until) {
+    await pushGate.finish({ id, status: 'failed', reason: 'MONTHLY_QUOTA_EXHAUSTED' });
+    return { sent: false, reason: 'MONTHLY_QUOTA_EXHAUSTED' };
+  }
   try {
     const r = await axios.post('https://api.line.me/v2/bot/message/push', {
       to: uid,
@@ -137,10 +143,15 @@ async function pushMessage(lineUserId, messages, venueIdForLog, opts = {}) {
       return { sent: true };
     }
     const body = (() => { try { return JSON.stringify(r.data); } catch (_) { return String(r.data); } })();
-    await pushGate.finish({ id, status: 'failed', httpStatus: r.status, durationMs: ms, reason: body.slice(0, 300) });
-    throw new Error('LINE push failed: HTTP ' + r.status + ' ' + body.slice(0, 200));
+    if (r.status === 429 && r.data?.message === 'You have reached your monthly limit.') {
+      _quotaBlocked = { token, until: Date.now() + 60_000 };
+      await pushGate.finish({ id, status: 'failed', httpStatus: 429, durationMs: ms, reason: 'MONTHLY_QUOTA_EXHAUSTED' });
+      console.warn('[line] 本月推播額度已用盡；通知未送達，暫停嘗試 60 秒。請至 LINE 官方帳號確認額度。');
+      return { sent: false, reason: 'MONTHLY_QUOTA_EXHAUSTED' };
+    }
+    throw Object.assign(new Error('LINE push failed: HTTP ' + r.status + ' ' + body.slice(0, 200)), { httpStatus: r.status });
   } catch (e) {
-    await pushGate.finish({ id, status: 'failed', reason: String(e.message).slice(0, 300), durationMs: Date.now() - t0 });
+    await pushGate.finish({ id, status: 'failed', httpStatus: e.httpStatus, reason: String(e.message).slice(0, 300), durationMs: Date.now() - t0 });
     throw e;
   }
 }
@@ -1056,6 +1067,7 @@ function tokenSummary() {
     configuredCount: new Set([...jsonKeys, ...envKeys]).size,
     staffChannel: staffOk,
     malformedJson: false,
+    monthlyQuotaBlockedUntil: _quotaBlocked.until > Date.now() ? new Date(_quotaBlocked.until).toISOString() : null,
   };
 }
 module.exports.tokenSummary = tokenSummary;

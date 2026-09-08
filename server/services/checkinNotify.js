@@ -161,6 +161,8 @@ async function notifyCheckin(sessionId, studentIds, db = pool) {
           ch,
           { event: EVENT_COACH, refId: 'cs:' + sessionId, recipientKind: 'coach' });
         if (res && res.sent) out.coach += 1;
+        else if (res?.reason === 'MONTHLY_QUOTA_EXHAUSTED') out.failed += 1;
+        else out.skipped += 1;
       } catch (e) { out.failed += 1; console.warn('[checkinNotify] 教練推播失敗：' + e.message); }
     }
   }
@@ -186,6 +188,8 @@ async function notifyCheckin(sessionId, studentIds, db = pool) {
             ch,
             { event: EVENT_PARENT, refId: 'p:' + r.checkin_id, recipientKind: 'parent' });
           if (res && res.sent) out.parent += 1;
+          else if (res?.reason === 'MONTHLY_QUOTA_EXHAUSTED') out.failed += 1;
+          else out.skipped += 1;
         } catch (e) { out.failed += 1; console.warn('[checkinNotify] 家長推播失敗：' + e.message); }
       }
     }

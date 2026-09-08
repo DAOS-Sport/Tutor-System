@@ -402,14 +402,14 @@ function initCronJobs() {
     let sTag = 'skipped';
     try {
       const s = await ragicAdmin.syncStaffFromRagic();
-      sTag = `ok(${s.synced ?? 0})`;
+      sTag = s.error ? `err(${s.error})` : s.skipped ? 'skipped' : `ok(${s.synced ?? 0})`;
     } catch (e) {
       sTag = `err(${e.message})`;
     }
     let vTag = 'skipped';
     try {
       const v = await ragicAdmin.syncVenuesFromRagic();
-      vTag = `ok(${v.synced ?? 0})`;
+      vTag = v.error ? `err(${v.error})` : v.skipped ? 'skipped' : `ok(${v.synced ?? 0})`;
     } catch (e) {
       vTag = `err(${e.message})`;
     }
