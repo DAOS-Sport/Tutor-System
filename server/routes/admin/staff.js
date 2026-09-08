@@ -21,7 +21,7 @@ const { pool } = require('../../models/db');
 const { requireAdminAuth } = require('../../middlewares/adminAuth');
 // F-A06：權限改由「角色權限管理」的設定決定。
 const { requireResource, requireAnyBackoffice } = require('../../middlewares/requireResource');
-const { syncStaffFromRagic, kickoffSyncStaffAsync, isJobRunning } = require('../../services/ragicAdmin');
+const { syncStaffFromRagic, isJobRunning } = require('../../services/ragicAdmin');
 const lineService = require('../../services/line');
 const {
   cleanVenueList,
@@ -564,8 +564,7 @@ async function ensureCoachRow(client, staffRow, opts = {}) {
 
 router.get('/', requireAdminAuth, requireResource('staff'), async (req, res) => {
   try {
-    // 不再阻塞：背景觸發 Ragic 同步（10 分鐘節流），下一次 GET 就會看到新資料
-    kickoffSyncStaffAsync();
+    // 列表只讀本地資料；自動同步統一每日 03:30，手動同步仍由專用入口觸發。
 
     const { status, venueId, role, name, phone, senior } = req.query;
     const roleFilter = normalizeRoleFilter(role);

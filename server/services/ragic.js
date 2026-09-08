@@ -401,7 +401,7 @@ async function getRecordByRagicId(formPath, ragicRecordId, params = {}, options 
 async function _writeCanaryNonce(sheetCode, config, nonce) {
   try {
     await ragicWriter.writeField(sheetCode, config.recordId, config.nonceField, nonce, 'system', 'freshness-canary', {
-      params: { doFormula: 'true', notification: 'false' },
+      params: { doFormula: 'false', doWorkflow: 'false', notification: 'false' },
     });
   } catch (err) {
     throw _normalizeRagicError(err);

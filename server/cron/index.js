@@ -65,11 +65,11 @@ function initCronJobs() {
   //
   // ── 2026-08-30：從「每 5 分鐘」改成夜間一次批次（使用者決策）──
   // 理由：Ragic 對這套系統只是備份，白天沒有必要為了它整天打外部 API；
-  // 日間那些呼叫還會跟 00:30 的全量備份、01:30 的拉回搶同一把 ragic_sync 鎖
+  // 日間那些呼叫還會跟 00:30 的全量備份、02:30 的拉回搶同一把 ragic_sync 鎖
   // （備份最近很常拿不到鎖）。
   //
   // 排在 00:30 備份「之前」：新家長先進 Ragic，備份再收尾，
-  // 01:30 拉回時才拿得到完整資料。
+  // 02:30 拉回時才拿得到完整資料。
   //
   // 代價（明說，不要事後才發現）：家長註冊完，Ragic 上要等到當晚才看得到，
   // 櫃檯當天查 Ragic 會查不到新戶——要即時看得到，請改看後台。
@@ -388,14 +388,14 @@ function initCronJobs() {
     }
   });
 
-  // ── 每 10 分鐘：Ragic H01 / H05 同步（Task #53 — 從 GET 移走的阻塞 sync）──
+  // ── 每日 03:30（台北）：Ragic H01 / H05 同步（Task #53 — 從 GET 移走的阻塞 sync）──
   // 後台任何 GET 列表只純讀 DB；資料新鮮度由本 cron 維護，外加 GET 時 fire-and-forget
   // (kickoffSync*Async)，下一次 GET 就能拿到最新。
   // 刻意循序（非 Promise.allSettled）：兩者都會走全量 Ragic 查詢 + freshness canary
   // 重試，同時對 Ragic 打開兩條連線只會互相拖慢、更容易撞 timeout。比照
   // routes/admin/ragicStatus.js「同步全部」既有的循序設計（見該檔案註解），
   // 讓「同一時間對 Ragic 帳號只有一個 in-flight 請求」這條規則在 cron 這邊也成立。
-  scheduleTaipei('*/10 * * * *', async () => {
+  scheduleTaipei('30 3 * * *', async () => {
     if (!ragicAdmin.ragicEnabled()) return;
     // Task #91：教練資料已合併進員工帳號（H01 員工 API 就涵蓋姓名 / 手機 / 在職），
     // 不再單獨同步 coaches；教練特有欄位（簡介 / 專長 / 介紹圖）由後台手動編輯。
@@ -428,10 +428,10 @@ function initCronJobs() {
     }
   });
 
-  // ═══ 夜間 Z01/Z02 同步鏈（順序有意義，#1 成功才跑 #2/#3）═══════════════
+  // ═══ 夜間 Z01/Z02 同步鏈（推在拉之前；備份結果目前僅記錄觀測）═══════════════
   //   #1 00:30 本地 → Ragic 回寫（推）
-  //   #2 01:30 Ragic Z01/Z02 → 本地 + Z03 分流（拉）——僅在 #1 成功後執行
-  //   #3 01:45 Z01 姓名品質掃描（→ Z03/quarantine 追蹤）——同樣受 #1 閘門保護
+  //   #2 02:30 Ragic Z01/Z02 → 本地 + Z03 分流（拉）——保留尚待回寫的本地資料
+  //   #3 02:45 Z01 姓名品質掃描（→ Z03/quarantine 追蹤）——另需通過新鮮度檢查
   // 為什麼推在拉之前：本地白天的異動（櫃檯建檔、家長編修、即時同步失敗的列）要先
   // 上到 Ragic，拉回來的才是「合併後的權威狀態」；順序顛倒（舊行為：01:00 拉、02:00 推）
   // 會把 Ragic 的舊值灌回本地/Z03——本地已修好的佔位姓名又進 Z03 佇列（堵塞 Z03），
@@ -440,7 +440,7 @@ function initCronJobs() {
   // ── #1 每日凌晨 00:30（台北）：本地 parents/students → Ragic Z01/Z02 回寫 ──
   // 補「即時寫回失敗後從未重試」的缺口；_backupParentsStudentsImpl 每輪處理
   // ragic_record_id IS NULL 或 last_synced_at IS NULL 的待同步列。
-  // 成功與否寫進 ragic_sync_log（form_code=Z01_Z02_BACKUP），#2/#3 以此為閘門。
+  // 成功與否寫進 ragic_sync_log（form_code=Z01_Z02_BACKUP）；hasRecentBackupSuccess 目前只觀測、不阻擋。
   scheduleTaipei('30 0 * * *', async () => {
     if (!ragicAdmin.ragicEnabled()) return;
     try {
@@ -451,12 +451,11 @@ function initCronJobs() {
     }
   }, { timezone: 'Asia/Taipei' });
 
-  // ── #2 每日凌晨 01:30（台北）：Ragic Z01/Z02 → 本地 parents/students 全量拉回 ──
+  // ── #2 每日凌晨 02:30（台北）：Ragic Z01/Z02 → 本地 parents/students 全量拉回 ──
   // 含 Z03 分流（佔位電話姓名 + 未綁定 → 本地 ragic_z03_records，不進 parents）。
-  // 閘門：#1（00:30 回寫）3 小時內沒有成功紀錄 → 跳過本輪，避免把本地已修正、
-  // 尚未推上去的舊 Ragic 狀態灌回 Z03。reactivate:false（不復活本地已軟刪的家長）；
+  // 備份檢查目前只觀測；拉回仍須保留 pending 回寫。reactivate:false（不復活本地已軟刪的家長）；
   // 逐筆 try/catch，單筆壞資料不中斷整輪。
-  scheduleTaipei('30 1 * * *', async () => {
+  scheduleTaipei('30 2 * * *', async () => {
     if (!ragicAdmin.ragicEnabled()) return;
     try {
       if (!(await ragicAdmin.hasRecentBackupSuccess(3))) {
@@ -470,12 +469,11 @@ function initCronJobs() {
     }
   }, { timezone: 'Asia/Taipei' });
 
-  // ── #3 每日凌晨 01:45（台北）：Z01 家長姓名資料品質偵測（Z01↔Z03 機制，暫僅本地追蹤）──
-  // 排在 #2 拉回之後 15 分鐘，避免同時整包打 Ragic Z01；同受 #1 閘門保護（掃到的是
-  // 未合併本地修正的舊狀態就沒有意義）。目前只掃「姓名疑似為電話號碼」的記錄並寫進
+  // ── #3 每日凌晨 02:45（台北）：Z01 家長姓名資料品質偵測（Z01↔Z03 機制，暫僅本地追蹤）──
+  // 排在 #2 拉回之後 15 分鐘；仍需當輪拉回通過新鮮度檢查。目前只掃「姓名疑似為電話號碼」的記錄並寫進
   // 本地 ragic_z01_quarantine 追蹤表；實際推送到 Ragic 端 Z03 表單，卡在該表單欄位
   // 定義尚未確認，見 ragicAdmin.js 內 TODO。
-  scheduleTaipei('45 1 * * *', async () => {
+  scheduleTaipei('45 2 * * *', async () => {
     if (!ragicAdmin.ragicEnabled()) return;
     try {
       if (!(await ragicAdmin.hasRecentBackupSuccess(3))) {

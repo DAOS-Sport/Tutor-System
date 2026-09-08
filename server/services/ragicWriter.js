@@ -353,6 +353,14 @@ function createWriter(deps = {}) {
     };
     try {
       _validatePayload(code, payload);
+      const canaryField = String(_canaryFieldFor(code));
+      const baseFields = _baseWritableFields()[code] || new Set();
+      if (canaryField && !baseFields.has(canaryField) && Object.keys(payload).some(key => _payloadFieldId(key) === canaryField)
+          && String(recordKey || '') !== String(process.env[`RAGIC_CANARY_${code}_RECORD_ID`] || '')) {
+        const err = new Error('Canary nonce field is restricted to its dedicated record');
+        err.code = 'RAGIC_CANARY_RECORD_MISMATCH';
+        throw err;
+      }
     } catch (err) {
       return reject(entry, err);
     }

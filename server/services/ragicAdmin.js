@@ -2648,7 +2648,7 @@ async function _fetchZ01ByFieldId({ incremental = false, watermark = null } = {}
     err.code = 'RAGIC_Z01_EID_BOUNDARY_MISMATCH';
     throw err;
   }
-  return records;
+  return ragic.filterCanaryRecords(records, 'Z01');
 }
 
 async function _shadowPullZ01Impl({ incremental = false, watermark = null } = {}) {

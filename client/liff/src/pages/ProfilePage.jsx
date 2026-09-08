@@ -10,6 +10,7 @@ import { useToast } from '../context/ToastContext';
 import { formatPlainDate, normalizeGender } from '../utils/format';
 // Collapsible 原本定義在本檔案底部，教練端個人頁要用同一個外觀，已抽到共用元件。
 import Collapsible from '../components/Collapsible';
+import ConfirmModal from '../components/ConfirmModal';
 
 const BLOOD_TYPE_OPTIONS = ['A', 'B', 'O', 'AB', '不清楚'];
 const emptyStudent = { name: '', id_number: '', birth_date: '', gender: '生理男', blood_type: '不清楚' };
@@ -97,6 +98,7 @@ export default function ProfilePage() {
   const [studentForm, setStudentForm] = useState(emptyStudent);
   const [editingId, setEditingId] = useState(null);
   const [busy, setBusy] = useState('');
+  const [validationNotice, setValidationNotice] = useState('');
   const [venues, setVenues] = useState([]);
   const [parentErrors, setParentErrors] = useState({});
   const [studentErrors, setStudentErrors] = useState({});
@@ -154,7 +156,7 @@ export default function ProfilePage() {
     const errs = validateParent(parentForm);
     if (Object.keys(errs).length) {
       setParentErrors(errs);
-      toast.error('請完成標示 ＊ 的必填欄位');
+      setValidationNotice('填好的內容都還在，請補齊或修正紅框欄位後再儲存。');
       return;
     }
     setParentErrors({});
@@ -164,7 +166,8 @@ export default function ProfilePage() {
       updateAuth(data);
       toast.success('家長資料已更新');
     } catch (err) {
-      toast.error(syncErrMsg(err));
+      if (['FIELD_REQUIRED', 'Z01_INCOMPLETE'].includes(err?.response?.data?.code)) setValidationNotice(syncErrMsg(err));
+      else toast.error(syncErrMsg(err));
     } finally {
       setBusy('');
     }
@@ -193,7 +196,7 @@ export default function ProfilePage() {
     const errs = validateStudent(studentForm);
     if (Object.keys(errs).length) {
       setStudentErrors(errs);
-      toast.error('請完成標示 ＊ 的必填欄位');
+      setValidationNotice('填好的內容都還在，請補齊或修正紅框欄位後再儲存。');
       return;
     }
     setStudentErrors({});
@@ -222,7 +225,8 @@ export default function ProfilePage() {
         toast.success(editingId ? '學員資料已更新' : '學員已新增');
       }
     } catch (err) {
-      toast.error(syncErrMsg(err, 'student'));
+      if (['FIELD_REQUIRED', 'Z01_INCOMPLETE'].includes(err?.response?.data?.code)) setValidationNotice(syncErrMsg(err, 'student'));
+      else toast.error(syncErrMsg(err, 'student'));
       if (err?.response?.data?.code === 'Z01_INCOMPLETE') {
         setEditOpen(true);
         setParentOpen(true);
@@ -367,6 +371,12 @@ export default function ProfilePage() {
           </div>
         </Collapsible>
       </div>
+
+      <ConfirmModal open={!!validationNotice} title="還差一點點，請確認資料"
+        confirmLabel="返回填寫" cancelLabel="關閉"
+        onConfirm={() => setValidationNotice('')} onCancel={() => setValidationNotice('')}>
+        {validationNotice}
+      </ConfirmModal>
 
       <p className="px-1 pb-2 text-[11px] text-gray-400">
         本系統保留師生對話記錄供場館管理使用。
