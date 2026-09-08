@@ -43,8 +43,6 @@ const {
 const cronLock = require('../cron/lock');
 // Phase 1 可觀測性（migration 040）：逐筆同步失敗落庫。純新增觀測，不改同步行為。
 const syncFailureLog = require('./syncFailureLog');
-// 只取設定探測函式：判斷 canary 有沒有設好，用來把「未啟用」跟「未通過」分開。
-const { isCanaryConfigured } = require('./ragicFreshness');
 
 function ragicEnabled() {
   return !!process.env.RAGIC_API_KEY && !!process.env.RAGIC_BASE_URL;
@@ -1450,7 +1448,7 @@ async function _shadowPullH05Impl() {
       await _alertFreshnessIfNeeded('H05', freshness, pull.error);
       return _withFreshness({ synced: 0, stale_read: true, error: pull.error }, freshness);
     }
-    records = pull.records || [];
+    records = pull.raw_records || pull.records || [];
     await _alertFreshnessIfNeeded('H05', freshness);
   } catch (err) {
     return { synced: 0, error: `Ragic H05 全量查詢失敗：${err.message}` };
@@ -1500,6 +1498,8 @@ async function _shadowPullH05Impl() {
       `DELETE FROM ragic_h05_shadow WHERE NOT (venue_code = ANY($1::text[]))`,
       [presentCodes]
     );
+    const persisted = await client.query('SELECT COUNT(*)::int AS n FROM ragic_h05_shadow');
+    if (persisted.rows[0].n !== records.length) throw new Error('H05 source/shadow count mismatch');
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
@@ -1508,12 +1508,12 @@ async function _shadowPullH05Impl() {
   } finally {
     client.release();
   }
-  return _withFreshness({ synced }, freshness);
+  return _withFreshness({ synced, source_count: records.length, shadow_count: synced }, freshness);
 }
 
 async function _readShadowH05(client) {
   const r = await client.query(`SELECT raw_data FROM ragic_h05_shadow`);
-  return r.rows.map((row) => row.raw_data).filter((row) => !ragic.isCanaryRecord(row, 'H05'));
+  return r.rows.map((row) => row.raw_data).filter((row) => !ragic.isCanaryRecord(row, 'H05') && row['營運性質'] !== '內勤單位');
 }
 
 // 既有 diff/staging 邏輯，資料來源改讀 ragic_h05_shadow（由 _shadowPullH05Impl
@@ -1588,7 +1588,7 @@ async function _syncVenuesImpl() {
     );
   }
   const reconciled = await _reconcileH05FromShadowImpl();
-  return _withFreshness(reconciled, _freshnessFromResult(shadowResult));
+  return _withFreshness({ ...reconciled, source_count: shadowResult.source_count, shadow_count: shadowResult.shadow_count }, _freshnessFromResult(shadowResult));
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -2605,50 +2605,10 @@ async function _resolveZ03IfPending(client, ragicRecordId, currentRawName) {
 // Phase 5：incremental=true 時走 ragic.getAllParentsChangedSinceWithFreshness（只抓
 // watermark 之後有變更的列，見該函式與 _shadowPullH01Impl 頂部註解，理由相同）。
 async function _fetchZ01ByFieldId({ incremental = false, watermark = null } = {}) {
-  const pageSize = Number(process.env.RAGIC_PAGE_SIZE) || 200;
-  const maxPages = Number(process.env.RAGIC_MAX_PAGES) || 50;
-  const where = incremental && watermark
-    ? `109,gte,${ragic.formatRagicDateTime(new Date(watermark))}`
-    : undefined;
-  const records = [];
-  let naturalEnd = false;
-  let firstPageIds = [];
-  for (let page = 0; page < maxPages; page++) {
-    const result = await ragic.fetchPage(FORMS.Z01, {
-      limit: pageSize,
-      offset: page * pageSize,
-      where,
-      order: '109,ASC',
-      naming: 'EID',
-    });
-    if (page === 0) firstPageIds = result.rows.map((row) => String(row._ragicId || '')).filter(Boolean);
-    records.push(...result.rows);
-    if (result.count < pageSize) {
-      naturalEnd = true;
-      break;
-    }
-  }
-  if (!naturalEnd) {
-    const err = new Error('naming=EID fetch reached page limit');
-    err.code = 'RAGIC_Z01_EID_TRUNCATED';
-    throw err;
-  }
-  const boundary = await ragic.fetchPage(FORMS.Z01, {
-    limit: pageSize,
-    offset: 0,
-    where,
-    order: '109,ASC',
-    naming: 'EID',
-  });
-  const allIds = new Set(records.map((row) => String(row._ragicId || '')).filter(Boolean));
-  const boundaryMismatch = boundary.rows.some((row) => !allIds.has(String(row._ragicId || '')))
-    || firstPageIds.some((id) => !allIds.has(id));
-  if (boundaryMismatch) {
-    const err = new Error('naming=EID boundary recheck mismatch');
-    err.code = 'RAGIC_Z01_EID_BOUNDARY_MISMATCH';
-    throw err;
-  }
-  return ragic.filterCanaryRecords(records, 'Z01');
+  const params = { naming: 'EID', order: '109,ASC' };
+  if (incremental && watermark) params.where = `109,gte,${ragic.formatRagicDateTime(new Date(watermark))}`;
+  const snapshot = await ragic.queryAllPagedWithIntegrityAndFreshness('Z01', FORMS.Z01, params, 3);
+  return snapshot.records;
 }
 
 async function _shadowPullZ01Impl({ incremental = false, watermark = null } = {}) {
@@ -2689,6 +2649,12 @@ async function _shadowPullZ01Impl({ incremental = false, watermark = null } = {}
     return _withFreshness({ synced: 0, error: `${err.code || 'RAGIC_Z01_EID_FETCH_FAILED'}: ${err.message}` }, freshness);
   }
 
+  let studentsSnapshot;
+  try {
+    studentsSnapshot = await ragic.queryAllPagedWithIntegrityAndFreshness('Z02', process.env.RAGIC_FORM_Z02, { naming: 'EID' }, 3);
+  } catch (err) {
+    return { synced: 0, error: `Z02 source capture failed: ${err.code || err.message}` };
+  }
   const client = await pool.connect();
   let synced = 0;
   try {
@@ -2734,6 +2700,23 @@ async function _shadowPullZ01Impl({ incremental = false, watermark = null } = {}
         [presentIds]
       );
     }
+    if (!useIncremental) {
+      const persisted = await client.query('SELECT COUNT(*)::int AS n FROM ragic_z01_shadow WHERE present_in_latest_pull');
+      if (persisted.rows[0].n !== presentIds.length) throw new Error('Z01 source/shadow count mismatch');
+    }
+    await client.query('UPDATE ragic_z02_shadow SET present_in_latest_pull = FALSE');
+    for (const row of studentsSnapshot.records) {
+      await client.query(
+        `INSERT INTO ragic_z02_shadow (ragic_record_id, raw_data, fetched_at, last_seen_at, missing_since, present_in_latest_pull)
+         VALUES ($1, $2::jsonb, NOW(), NOW(), NULL, TRUE)
+         ON CONFLICT (ragic_record_id) DO UPDATE SET raw_data = EXCLUDED.raw_data, fetched_at = NOW(),
+           last_seen_at = NOW(), missing_since = NULL, present_in_latest_pull = TRUE`,
+        [String(row._ragicId), JSON.stringify(row)]
+      );
+    }
+    await client.query('UPDATE ragic_z02_shadow SET missing_since = COALESCE(missing_since, NOW()) WHERE NOT present_in_latest_pull');
+    const studentCount = await client.query('SELECT COUNT(*)::int AS n FROM ragic_z02_shadow WHERE present_in_latest_pull');
+    if (studentCount.rows[0].n !== studentsSnapshot.records.length) throw new Error('Z02 source/shadow count mismatch');
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
@@ -2742,7 +2725,8 @@ async function _shadowPullZ01Impl({ incremental = false, watermark = null } = {}
   } finally {
     client.release();
   }
-  return _withFreshness({ synced, incremental: useIncremental }, freshness);
+  return _withFreshness({ synced, source_count: integrity.records.length, shadow_count: synced,
+    z02_source_count: studentsSnapshot.records.length, z02_shadow_count: studentsSnapshot.records.length, incremental: useIncremental }, freshness);
 }
 
 async function _readShadowZ01(client) {
@@ -3493,7 +3477,8 @@ async function _pullParentsStudentsImpl(triggeredBy = 'cron') {
     );
   }
   const reconciled = await _reconcileZ01FromShadowImpl();
-  const combined = { ...reconciled, incremental: useIncremental };
+  const combined = { ...reconciled, source_count: shadowResult.source_count, shadow_count: shadowResult.shadow_count,
+    z02_source_count: shadowResult.z02_source_count, z02_shadow_count: shadowResult.z02_shadow_count, incremental: useIncremental };
   if (!combined.error && !combined.partial && !shadowResult.stale_read) {
     await setSyncWatermark(FORM_META.pull.code, runStartedAt).catch((err) => {
       console.warn('[Ragic sync] Z01 watermark 寫入失敗（不影響本輪同步結果）:', err.message);
@@ -4249,16 +4234,9 @@ function hasNoCjkCharacters(name) {
 // 偵測 + 維護本地追蹤表（不依賴 Z03，可獨立跑）。目前只掃 Tier 1（純數字姓名）。
 async function _quarantineBadZ01NamesImpl() {
   if (!ragicEnabled()) return { synced: 0, skipped: true };
-  if (!(await hasRecentFreshPull())) {
-    // 訊息要讓看到的人知道下一步。原本只說「缺少 freshness_verified pull」，
-    // 而真正的原因是 Ragic canary 從未設定 —— 看的人無從得知要去設什麼。
-    const canaryUnset = !isCanaryConfigured('Z01');
-    const msg = canaryUnset
-      ? `Ragic 讀取新鮮度驗證尚未啟用（未設定 RAGIC_CANARY_Z01_RECORD_ID / _NONCE_FIELD_ID），`
-        + `因此不使用可能過期的 shadow，本掃描暫停。設定 canary 記錄後即會自動恢復。`
-      : `Z01 quarantine/ghost 掃描缺少最近 ${FRESH_SHADOW_MAX_AGE_HOURS} 小時內的 freshness_verified pull，已中止，避免使用過期 shadow`;
-    await _alertAdmins(`【Ragic stale_read】${msg}`);
-    return { synced: 0, stale_read: true, error: msg, freshness_verified: false, stale_retries: 0 };
+  if (!(await hasRecentSuccessfulPull())) {
+    const msg = `缺少最近 ${FRESH_SHADOW_MAX_AGE_HOURS} 小時內成功完成的 Z01 拉回，請先完成同步再執行資料品質掃描。`;
+    return { synced: 0, skipped: true, error: msg };
   }
   // P1.1 決策9：改讀 ragic_z01_shadow（由當晚 #2 pull 的 _shadowPullZ01Impl 維護），
   // 不再獨立重打一次 Ragic 全量查詢——同一份快照給多個消費者用，減少對 Ragic 的
@@ -4340,15 +4318,15 @@ const FORM_META = {
   // 沒有這個欄位＝這個任務本來就不驗新鮮度，狀態頁不該對它顯示驗證結果。
   // 有了它，「未設定所以沒驗」才能跟「驗了沒過」在畫面上分開 ——
   // 這兩者原本都顯示「未通過」，於是一個純粹的設定缺漏被當成七週的同步故障。
-  staff:    { code: 'H01_STAFF',    label: 'H01 員工 + 教練 (admin_staff + coaches)', kind: 'sync',        impl: _syncStaffImpl,  env: 'RAGIC_FORM_H01', canary: 'H01' },
-  venues:   { code: 'H05_VENUES',   label: 'H05 場館 (venues)',                       kind: 'sync',        impl: _syncVenuesImpl, env: 'RAGIC_FORM_H05', canary: 'H05' },
+  staff:    { code: 'H01_STAFF',    label: 'H01 員工 + 教練 (admin_staff + coaches)', kind: 'sync',        impl: _syncStaffImpl,  env: 'RAGIC_FORM_H01' },
+  venues:   { code: 'H05_VENUES',   label: 'H05 場館 (venues)',                       kind: 'sync',        impl: _syncVenuesImpl, env: 'RAGIC_FORM_H05' },
   parents:  { code: 'Z01_PARENTS',  label: 'Z01 家長 (按請求查詢)',                   kind: 'healthcheck', impl: _pingZ01Impl,    env: 'RAGIC_FORM_Z01' },
   students: { code: 'Z02_STUDENTS', label: 'Z02 學員 (按請求查詢)',                   kind: 'healthcheck', impl: _pingZ02Impl,    env: 'RAGIC_FORM_Z02' },
-  // 夜間同步鏈：backup（00:30 推）→ pull（01:30 拉，Ragic→Z03 分流）→ quarantine（01:45 掃描）。
+  // 夜間同步鏈：backup（00:30 推）→ pull（02:30 拉，Ragic→Z03 分流）→ quarantine（02:45 掃描）。
   // 標籤依使用者指定：backup 維持原名；pull 明示「從 Ragic 拉到 Z03」以與 backup 區隔。
   backup:   { code: 'Z01_Z02_BACKUP', label: 'Z01/Z02 本地→Ragic 每日備份同步',       kind: 'sync',        impl: _backupParentsStudentsImpl, env: 'RAGIC_FORM_Z01' },
-  pull:     { code: 'Z01_Z02_PULL',   label: 'Ragic Z01 → Z03 每日拉回整理（完成者入 Z01 鏡像）', kind: 'sync', impl: _pullParentsStudentsImpl,   env: 'RAGIC_FORM_Z01', canary: 'Z01' },
-  quarantine: { code: 'Z01_BAD_NAME_QUARANTINE', label: 'Z01 姓名品質掃描（Z03 追蹤）', kind: 'sync', impl: _quarantineBadZ01NamesImpl, env: 'RAGIC_FORM_Z01', canary: 'Z01' },
+  pull:     { code: 'Z01_Z02_PULL',   label: 'Ragic Z01 → Z03 每日拉回整理（完成者入 Z01 鏡像）', kind: 'sync', impl: _pullParentsStudentsImpl,   env: 'RAGIC_FORM_Z01' },
+  quarantine: { code: 'Z01_BAD_NAME_QUARANTINE', label: 'Z01 姓名品質掃描（Z03 追蹤）', kind: 'sync', impl: _quarantineBadZ01NamesImpl, env: 'RAGIC_FORM_Z01' },
 };
 
 // 哪些 job 真的會打 Ragic HTTP（見上表 impl 實作）——quarantine 只讀本地
@@ -4445,12 +4423,11 @@ async function hasRecentBackupSuccess(windowHours = 3) {
   return true;
 }
 
-async function hasRecentFreshPull(windowHours = FRESH_SHADOW_MAX_AGE_HOURS) {
+async function hasRecentSuccessfulPull(windowHours = FRESH_SHADOW_MAX_AGE_HOURS) {
   const r = await pool.query(
     `SELECT 1 FROM ragic_sync_log
       WHERE form_code = 'Z01_Z02_PULL'
         AND status = 'ok'
-        AND freshness_verified = TRUE
         AND created_at >= NOW() - ($1 || ' hours')::interval
       LIMIT 1`,
     [windowHours]
@@ -4689,7 +4666,7 @@ async function getSyncStatusSnapshot() {
       last_run_duration_ms:  latest.rows[0]?.duration_ms  ?? null,
       // null＝這個任務不驗新鮮度（畫面不顯示這一列）；
       // false＝要驗但 canary 沒設定，畫面要說「未啟用」而不是「未通過」。
-      canary_configured:     meta.canary ? isCanaryConfigured(meta.canary) : null,
+      canary_configured:     null, // Canary retired; historical log fields remain readable.
       freshness_verified:    latest.rows[0]?.freshness_verified ?? null,
       freshness_latency_ms:  latest.rows[0]?.freshness_latency_ms ?? null,
       stale_retries:         latest.rows[0]?.stale_retries ?? 0,
@@ -5085,7 +5062,7 @@ module.exports = {
   reingestZ01Record,
   quarantineBadZ01Names,
   hasRecentBackupSuccess,
-  hasRecentFreshPull,
+  hasRecentSuccessfulPull,
   isPlaceholderParentName,
   hasNoCjkCharacters,
   getRagicJobNames,

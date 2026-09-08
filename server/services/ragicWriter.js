@@ -97,23 +97,10 @@ function _baseWritableFields() {
   };
 }
 
-function _canaryFieldFor(sheet) {
-  const prefix = `RAGIC_CANARY_${String(sheet || '').toUpperCase()}`;
-  return (
-    process.env[`${prefix}_NONCE_FIELD_ID`] ||
-    process.env[`${prefix}_FIELD_ID`] ||
-    process.env.RAGIC_CANARY_NONCE_FIELD_ID ||
-    process.env.RAGIC_CANARY_FIELD_ID ||
-    ''
-  );
-}
-
 function _writableFields(sheet) {
   const code = String(sheet || '').toUpperCase();
   const all = _baseWritableFields();
   const fields = all[code] || new Set();
-  const canaryField = _canaryFieldFor(code);
-  if (canaryField) fields.add(String(canaryField));
   return fields;
 }
 
@@ -353,14 +340,6 @@ function createWriter(deps = {}) {
     };
     try {
       _validatePayload(code, payload);
-      const canaryField = String(_canaryFieldFor(code));
-      const baseFields = _baseWritableFields()[code] || new Set();
-      if (canaryField && !baseFields.has(canaryField) && Object.keys(payload).some(key => _payloadFieldId(key) === canaryField)
-          && String(recordKey || '') !== String(process.env[`RAGIC_CANARY_${code}_RECORD_ID`] || '')) {
-        const err = new Error('Canary nonce field is restricted to its dedicated record');
-        err.code = 'RAGIC_CANARY_RECORD_MISMATCH';
-        throw err;
-      }
     } catch (err) {
       return reject(entry, err);
     }

@@ -1961,6 +1961,9 @@ ALTER TABLE ragic_z01_shadow ADD COLUMN IF NOT EXISTS missing_since TIMESTAMPTZ;
 ALTER TABLE ragic_z01_shadow ADD COLUMN IF NOT EXISTS present_in_latest_pull BOOLEAN NOT NULL DEFAULT TRUE;
 CREATE INDEX IF NOT EXISTS idx_ragic_z01_shadow_fetched ON ragic_z01_shadow(fetched_at);
 
+-- Preserve the independent student source, including rows absent from a parent subtable.
+CREATE TABLE IF NOT EXISTS ragic_z02_shadow (LIKE ragic_z01_shadow INCLUDING ALL);
+
 -- H01（員工）/H05（場館）影子表：同一套「無腦 pull → 從 shadow 清洗」分工，補上
 -- 決策9「所有 RAGIC 的同步都用影子表格式」原本沒收斂到的兩個表單（見 ragicAdmin.js
 -- _shadowPullH01Impl/_reconcileH01FromShadowImpl、_shadowPullH05Impl/

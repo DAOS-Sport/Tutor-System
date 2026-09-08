@@ -133,7 +133,6 @@ function getCanaryNonce(record, config) {
 function isCanaryRecord(record, sheetCode, env = process.env) {
   const config = typeof sheetCode === 'object' ? sheetCode : getCanaryConfig(sheetCode, env);
   if (!record || typeof record !== 'object') return false;
-  if (['姓名', '部門名稱', '家長姓名', '學員姓名'].some(key => record[key] === DEFAULT_CANARY_ID)) return true;
   const recordId = getRecordId(record);
   if (config.recordId && recordId && String(recordId) === String(config.recordId)) return true;
   const ident = _readField(record, [

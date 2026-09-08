@@ -12,10 +12,8 @@
 const axios = require('axios');
 const { pool } = require('../models/db');
 const {
-  getCanaryConfig,
   filterCanaryRecords,
   isCanaryRecord,
-  runCanaryWriteReadProof,
 } = require('./ragicFreshness');
 const ragicWriter = require('./ragicWriter');
 const { maskName, maskPhone } = require('../utils/piiMask');
@@ -343,51 +341,47 @@ async function queryAllPaged(formPath, params = {}, concurrency = 1, options = {
   return merged;
 }
 
-// P1.1 決策4：完整性告警閘門專用分頁抓取。與 queryAllPaged 的差異：
-//   (a) 迴圈若是因為撞到 RAGIC_MAX_PAGES 才停（而非遇到自然的短頁/空頁），
-//       視為「可能截斷」——這是唯一能不靠 Ragic 回報總數、就 100% 確定判斷出來的
-//       不完整訊號（嫌疑2/(A) 10k 上限靜默截斷）。
-//   (b) 邊界複查：整輪拉完後重抓第一頁，確認每筆仍在 merged 內——用來抓「拉取過程中
-//       Ragic 端有記錄被刪除/插入，導致 offset 分頁位移、漏掉正在推移中的記錄」這類
-//       並發修改風險（嫌疑2/(B) 無穩定排序鍵）。這只是取樣式複查，非數學上的完整證明
-//       （Ragic 未提供可獨立核對的「總筆數」端點），但足以攔下「offset 分頁在拉取
-//       當下發生位移」這個具體風險，比完全不做複查安全。
-// 回傳 { records, truncated, boundaryMismatch }，由 caller 決定是否 hard-fail。
+// Complete paginated read followed by a second lightweight ID scan.
+// A failed check, missing ID, duplicate page or page limit cannot become a successful snapshot.
 async function queryAllPagedWithIntegrity(formPath, params = {}, concurrency = 1, options = {}) {
-  const merged = {};
-  let page = 0;
-  let reachedNaturalEnd = false;
-  while (page < RAGIC_MAX_PAGES) {
-    const batchSize = Math.min(concurrency, RAGIC_MAX_PAGES - page);
-    const offsets = Array.from({ length: batchSize }, (_, i) => (page + i) * RAGIC_PAGE_SIZE);
-    const pages = await Promise.all(
-      offsets.map((offset) => query(formPath, { ...params, limit: RAGIC_PAGE_SIZE, offset }, options))
-    );
-    for (const pageData of pages) {
-      if (!pageData || typeof pageData !== 'object') { reachedNaturalEnd = true; break; }
-      const keys = Object.keys(pageData);
-      if (keys.length === 0) { reachedNaturalEnd = true; break; }
-      Object.assign(merged, pageData);
-      if (keys.length < RAGIC_PAGE_SIZE) { reachedNaturalEnd = true; break; }
-    }
-    page += batchSize;
-    if (reachedNaturalEnd) break;
-  }
-  const truncated = !reachedNaturalEnd;
-
-  let boundaryMismatch = false;
-  if (!truncated) {
-    try {
-      const firstPage = await query(formPath, { ...params, limit: RAGIC_PAGE_SIZE, offset: 0 }, options);
-      for (const id of Object.keys(firstPage || {})) {
-        if (!(id in merged)) { boundaryMismatch = true; break; }
+  // Two complete ID scans detect omitted/duplicate pages; errors never count as an empty page.
+  async function scan(extra = {}) {
+    const merged = {};
+    let naturalEnd = false;
+    let duplicate = false;
+    for (let page = 0; page < RAGIC_MAX_PAGES;) {
+      const size = Math.min(concurrency, RAGIC_MAX_PAGES - page);
+      const pages = await Promise.all(Array.from({ length: size }, (_, i) =>
+        query(formPath, { ...params, ...extra, limit: RAGIC_PAGE_SIZE, offset: (page + i) * RAGIC_PAGE_SIZE }, { ...options, noCache: true })));
+      for (const data of pages) {
+        if (!data || typeof data !== 'object' || Array.isArray(data)) {
+          throw Object.assign(new Error('Ragic returned an invalid page'), { code: 'RAGIC_INVALID_PAGE' });
+        }
+        const entries = Object.entries(data);
+        for (const [id, row] of entries) {
+          if (!row || typeof row !== 'object' || String(row._ragicId ?? '') !== id) {
+            throw Object.assign(new Error('Ragic returned a record without a matching ID'), { code: 'RAGIC_INVALID_RECORD_ID' });
+          }
+          if (Object.hasOwn(merged, id)) duplicate = true;
+          merged[id] = row;
+        }
+        if (entries.length < RAGIC_PAGE_SIZE) { naturalEnd = true; break; }
       }
-    } catch (err) {
-      console.warn('[Ragic] 完整性邊界複查失敗（不視為 truncated，僅記錄）:', err.message);
+      page += size;
+      if (naturalEnd) break;
     }
+    return { merged, truncated: !naturalEnd, duplicate };
   }
-
-  return { records: Object.values(merged), truncated, boundaryMismatch };
+  const first = await scan();
+  if (first.truncated || first.duplicate) {
+    return { records: Object.values(first.merged), truncated: first.truncated, boundaryMismatch: first.duplicate };
+  }
+  // The second scan needs IDs only; exclude subtables to keep traffic low.
+  const second = await scan({ subtables: 0, fetchDomainIds: '109' });
+  const ids = Object.keys(first.merged);
+  const mismatch = second.duplicate || ids.length !== Object.keys(second.merged).length
+    || ids.some(id => !Object.hasOwn(second.merged, id));
+  return { records: Object.values(first.merged), truncated: second.truncated, boundaryMismatch: mismatch };
 }
 
 async function getRecordByRagicId(formPath, ragicRecordId, params = {}, options = {}) {
@@ -398,78 +392,20 @@ async function getRecordByRagicId(formPath, ragicRecordId, params = {}, options 
   return Object.values(data)[0] || null;
 }
 
-async function _writeCanaryNonce(sheetCode, config, nonce) {
-  try {
-    await ragicWriter.writeField(sheetCode, config.recordId, config.nonceField, nonce, 'system', 'freshness-canary', {
-      params: { doFormula: 'false', doWorkflow: 'false', notification: 'false' },
-    });
-  } catch (err) {
-    throw _normalizeRagicError(err);
-  }
-}
-
-async function _fetchCanaryRecord(formPath, config, options = {}) {
-  return getRecordByRagicId(
-    formPath,
-    config.recordId,
-    { ignoreFixedFilter: process.env.RAGIC_IGNORE_FIXED_FILTER === 'false' ? undefined : 'true' },
-    { ...options, noCache: true }
-  );
-}
-
+// Compatibility names retained for existing callers; synchronization no longer writes a Canary.
 async function queryAllPagedWithFreshness(sheetCode, formPath, params = {}, concurrency = 1) {
-  const config = getCanaryConfig(sheetCode);
-  const result = await runCanaryWriteReadProof({
-    sheetCode,
-    config,
-    writeNonce: (nonce, cfg) => _writeCanaryNonce(sheetCode, cfg, nonce),
-    fetchCanary: (opts) => _fetchCanaryRecord(formPath, config, opts),
-    fetchSnapshot: async (opts) => Object.values(await queryAllPaged(
-      formPath,
-      _freshReadParams(params),
-      concurrency,
-      opts
-    )),
-  });
-  if (result.stale_read) return result;
-  const rawRecords = result.raw_records || result.records || [];
-  return { ...result, raw_records: rawRecords, records: filterCanaryRecords(rawRecords, config) };
+  return queryAllPagedWithIntegrityAndFreshness(sheetCode, formPath, params, concurrency);
 }
 
 async function queryAllPagedWithIntegrityAndFreshness(sheetCode, formPath, params = {}, concurrency = 1) {
-  const config = getCanaryConfig(sheetCode);
-  const result = await runCanaryWriteReadProof({
-    sheetCode,
-    config,
-    writeNonce: (nonce, cfg) => _writeCanaryNonce(sheetCode, cfg, nonce),
-    fetchCanary: (opts) => _fetchCanaryRecord(formPath, config, opts),
-    fetchSnapshot: async (opts) => queryAllPagedWithIntegrity(
-      formPath,
-      _freshReadParams(params),
-      concurrency,
-      opts
-    ),
-  });
-  if (result.stale_read) {
-    return {
-      records: [],
-      truncated: false,
-      boundaryMismatch: false,
-      stale_read: true,
-      error: result.error,
-      freshness: result.freshness,
-    };
+  const snapshot = await queryAllPagedWithIntegrity(formPath, _freshReadParams(params), concurrency, { noCache: true });
+  if (snapshot.truncated || snapshot.boundaryMismatch || (!snapshot.records.length && !params.where)) {
+    throw Object.assign(new Error(`Ragic ${sheetCode} source ID verification failed`), { code: 'RAGIC_SOURCE_SET_INCOMPLETE' });
   }
-  const snapshot = result.snapshot || {};
-  const rawRecords = snapshot.records || result.raw_records || result.records || [];
-  return {
-    ...snapshot,
-    raw_records: rawRecords,
-    records: filterCanaryRecords(rawRecords, config),
-    freshness: result.freshness,
-    stale_read: false,
-  };
+  return { ...snapshot, raw_records: snapshot.records, records: filterCanaryRecords(snapshot.records, sheetCode),
+    integrity_verified: true, source_count: snapshot.records.length, freshness: {}, stale_read: false };
 }
+
 
 // ─────────────────────────────────────────────────────────────
 // 簡易 in-process TTL 快取，避免高併發打爆 Ragic（不引入 Redis）

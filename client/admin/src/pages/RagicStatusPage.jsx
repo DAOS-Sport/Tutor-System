@@ -26,32 +26,6 @@ function statusBadge(s, inProgress) {
   return <span className={`${base} bg-gray-100 text-gray-500`}>—</span>;
 }
 
-// 「沒有驗」跟「驗了沒過」是兩件事，畫面上必須分得開。
-//
-// 兩者都顯示「未通過」的時候，一個只要設兩個環境變數就能解決的設定缺漏，
-// 看起來會跟「Ragic 讀到過期資料」這種真故障一模一樣 —— 於是沒有人知道
-// 該做什麼，紅字就一直掛在那裡。canary_configured === false 就是這個情況。
-function freshnessText(info) {
-  if (info.freshness_verified === true) {
-    const retry = info.stale_retries ? `，重試 ${info.stale_retries}` : '';
-    return `已驗證 ${info.freshness_latency_ms ?? '—'} ms${retry}`;
-  }
-  if (info.freshness_verified === false || info.last_status === 'stale_read') {
-    const retry = info.stale_retries ? `，重試 ${info.stale_retries}` : '';
-    return `未通過${retry}`;
-  }
-  if (info.canary_configured === false) return '未啟用';
-  return '—';
-}
-
-function freshnessTone(info) {
-  if (info.freshness_verified === true) return 'text-brand-green';
-  if (info.freshness_verified === false || info.last_status === 'stale_read') return 'text-red-700';
-  // 未啟用是待辦，不是故障 —— 給琥珀色，跟真的讀到過期資料的紅色區隔開。
-  if (info.canary_configured === false) return 'text-amber-600';
-  return 'text-gray-800';
-}
-
 function ToggleSwitch({ checked, disabled, onChange, title }) {
   return (
     <button
@@ -136,32 +110,6 @@ function FormCard({ job, info, onSync, syncing, isAdmin, envEnabled, onToggle, t
           <dt className="text-gray-500">耗時</dt>
           <dd className="text-gray-800">{info.last_duration_ms != null ? `${info.last_duration_ms} ms` : '—'}</dd>
         </div>
-        {!isPing ? (
-          <>
-            <div className="flex justify-between">
-              <dt className="text-gray-500">讀取新鮮度</dt>
-              <dd className={`text-right font-mono ${freshnessTone(info)}`}>{freshnessText(info)}</dd>
-            </div>
-            <div className="flex justify-between">
-              <dt className="text-gray-500">7 日讀取舊資料</dt>
-              <dd className={info.stale_read_7d_count ? 'font-mono text-red-700' : 'font-mono text-gray-800'}>
-                {info.stale_read_7d_count ?? 0}
-              </dd>
-            </div>
-            {info.canary_configured === false ? (
-              <div className="rounded-lg bg-amber-50 px-2.5 py-2 text-[11px] leading-5 text-amber-800">
-                尚未設定資料更新驗證。同步可繼續執行，但姓名品質檢查會暫停。
-                請聯絡系統管理員完成驗證設定。
-              </div>
-            ) : null}
-            <div className="flex justify-between gap-3">
-              <dt className="text-gray-500">7 日延遲趨勢</dt>
-              <dd className="min-w-0 truncate text-right font-mono text-gray-800">
-                {(info.freshness_7d || []).filter((x) => x.latency_ms != null).slice(-6).map((x) => `${x.latency_ms}ms`).join(' / ') || '—'}
-              </dd>
-            </div>
-          </>
-        ) : null}
       </dl>
       {info.last_error ? (
         /^unmatched_staff_warning=/.test(info.last_error) ? (
