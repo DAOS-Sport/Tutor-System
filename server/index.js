@@ -313,6 +313,36 @@ initWebSocket(server);
 
 const PORT = process.env.PORT || 3000;
 
+// BEGIN graceful shutdown
+let shuttingDown = false;
+function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log('[shutdown] draining requests:', signal);
+  const deadline = setTimeout(() => {
+    console.error('[shutdown] drain exceeded 15 seconds');
+    process.exit(1);
+  }, 15000);
+  for (const task of require('node-cron').getTasks().values()) task.stop();
+  server.close(async (err) => {
+    try {
+      if (err && err.code !== 'ERR_SERVER_NOT_RUNNING') throw err;
+      await pool.end();
+      clearTimeout(deadline);
+      console.log('[shutdown] complete');
+      process.exit(0);
+    } catch (error) {
+      console.error('[shutdown] failed:', error.code || error.message);
+      process.exit(1);
+    }
+  });
+  server.closeIdleConnections?.();
+}
+process.once('SIGTERM', () => shutdown('SIGTERM'));
+process.once('SIGINT', () => shutdown('SIGINT'));
+// END graceful shutdown
+
+
 // 啟動順序：
 // 1) production 必須有 JWT_SECRET（assertSecretConfigured 會 throw 讓 process exit）
 // 2) 先完成 admin/core 的 additive schema bootstrap；任何失敗都不接受流量

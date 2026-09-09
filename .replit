@@ -7,7 +7,7 @@ channel = "stable-24_05"
 [deployment]
 # 明確標示 production，避免依賴 Replit runtime 是否自動注入 NODE_ENV；
 # auth/storage 等安全分支都以此判斷。
-run = ["bash", "-c", "cd server && NODE_ENV=production npm start"]
+run = ["bash", "-c", "cd server && NODE_ENV=production exec node index.js"]
 deploymentTarget = "autoscale"
 # 部署 build 一律走唯一的 build 腳本（含版本戳記 + 清 stale assets + build-info.json），
 # 消除先前「inline 指令 vs scripts/build-frontends.sh」兩套 build 漂移導致舊碼上線的風險。

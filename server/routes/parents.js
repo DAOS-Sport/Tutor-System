@@ -424,7 +424,15 @@ router.get('/me', requireParent, async (req, res) => {
 router.post('/me/sync', requireParent, async (req, res) => {
   try {
     const meRow = await pool.query(
-      `SELECT id, phone, line_uid, last_synced_at FROM parents WHERE id = $1`,
+      `SELECT p.id, p.phone, p.line_uid, p.last_synced_at,
+              EXISTS (
+                SELECT 1 FROM ragic_sync_outbox o
+                JOIN identity_claims c ON c.id = o.claim_id
+                WHERE p.ragic_record_id IS NULL AND c.canonical_parent_id = p.id
+                  AND o.operation = 'CREATE_Z01_PARENT'
+                  AND o.state IN ('pending', 'processing')
+              ) AS registration_pending
+         FROM parents p WHERE p.id = $1`,
       [req.parent.id]
     );
     if (!meRow.rowCount) return res.status(404).json({ error: '找不到家長帳號' });
@@ -433,8 +441,8 @@ router.post('/me/sync', requireParent, async (req, res) => {
     const last = p.last_synced_at ? new Date(p.last_synced_at).getTime() : 0;
     const fresh = last > 0 && (Date.now() - last) < SYNC_THROTTLE_MS;
 
-    let syncStatus = fresh ? 'fresh' : 'synced';
-    if (!fresh && p.line_uid && !String(p.line_uid).startsWith('demo:')) {
+    let syncStatus = p.registration_pending ? 'pending_ragic' : (fresh ? 'fresh' : 'synced');
+    if (!p.registration_pending && !fresh && p.line_uid && !String(p.line_uid).startsWith('demo:')) {
       try {
         await refreshParentMirrorFromRagic({
           lineUid: p.line_uid,

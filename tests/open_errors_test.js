@@ -1,0 +1,23 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
+const root=path.resolve(__dirname,'..');
+const picker=fs.readFileSync(path.join(root,'client/shared/DateTimePicker.jsx'),'utf8');
+const trigger=picker.match(/onClick=\{\(\) => (setOpen\(true\))\}/)[1];
+let opened=true;
+vm.runInNewContext("(()=>{"+trigger+"})()",{open:true,withinGridEcho:()=>false,note:()=>{},reportPickerAnomaly:()=>{},setOpen:v=>{opened=typeof v==='function'?v(opened):v;}});
+assert.equal(opened,true,'open picker must survive a delayed trigger click after year/month selection');
+const parents=fs.readFileSync(path.join(root,'server/routes/parents.js'),'utf8');
+const start=parents.indexOf("router.post('/me/sync'");
+const end=parents.indexOf('\n});',start)+4;
+let handler,calls=0,warnings=0;
+const local={id:'parent-fixture',phone:'0999999999',line_uid:'U-fixture',last_synced_at:null,registration_pending:true};
+vm.runInNewContext(parents.slice(start,end),{router:{post:(url,auth,fn)=>{handler=fn}},requireParent:()=>{},pool:{query:async()=>({rowCount:1,rows:[local]})},SYNC_THROTTLE_MS:300000,refreshParentMirrorFromRagic:async()=>{calls++;throw Object.assign(new Error('missing'),{code:'RAGIC_REFRESH_NOT_FOUND'})},loadMe:async()=>({id:local.id,students:[{id:'student-fixture'}]}),console:{warn:()=>warnings++,error:()=>{}},Date});
+(async()=>{
+ const response={status(){return this},json(data){this.data=data;return this}};
+ await handler({parent:{id:local.id}},response);
+ assert.equal(calls,0,'queued new registration must not query a Ragic record that is not created yet');
+ assert.equal(warnings,0);assert.equal(response.data.sync_status,'pending_ragic');assert.equal(response.data.students.length,1);
+ local.registration_pending=false;
+ await handler({parent:{id:local.id}},response);
+ assert.equal(calls,1,'unexpected missing record must still be checked');assert.equal(warnings,1);assert.equal(response.data.sync_status,'not_found_in_ragic');
+ console.log('PASS delayed picker click, queued registration, and genuine missing source');
+})().catch(e=>{console.error(e);process.exit(1)});

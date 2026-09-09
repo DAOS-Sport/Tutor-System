@@ -161,6 +161,7 @@ export default function DateTimePicker({
   // 事件軌跡一律收集（記憶體裡，上限 20 筆）。只有偵測到異常時才會送出去；
   // 只有加了 ?pickerdebug=1 才會畫在畫面上。
   const trailRef = useRef([]);
+  const cancelledRef = useRef(false);
   const pickedRef = useRef(false);    // 這次開啟有沒有真的選到日期
   const engagedRef = useRef(false);   // 有沒有選過年或月（＝正在填，不是隨手點開）
   // iOS 的 App 內建瀏覽器（LINE / Instagram / IG）在點擊後會補送一顆「模擬點擊」，
@@ -237,12 +238,9 @@ export default function DateTimePicker({
     // 因為桌機的 select 是行內下拉，不會有系統對話框）。
     // 判斷條件見 outsideClose.js，那裡有測試守著。
     const onDown = (e) => {
-      if (withinGridEcho()) {
-        note('守門：剛選過年/月 <' + GRID_ECHO_MS + 'ms，忽略這顆 pointerdown（iOS 模擬事件）');
-        reportPickerAnomaly('picker_guard_swallowed', '剛選年/月後短窗內擋下外點關閉', trailRef.current);
-        return;
-      }
       if (shouldCloseOnOutsidePointer(boxRef.current, e.target)) {
+        if (withinGridEcho()) return;
+        cancelledRef.current = true;
         note('★ 判定為點到外面 → 關閉（' + describeTarget(e.target) + '）');
         setOpen(false);
       } else if (!boxRef.current || !boxRef.current.contains(e.target)) {
@@ -251,7 +249,7 @@ export default function DateTimePicker({
         note('守門攔下（' + describeTarget(e.target) + '）');
       }
     };
-    const onKey = (e) => { if (e.key === 'Escape') { note('★ Esc → 關閉'); setOpen(false); } };
+    const onKey = (e) => { if (e.key === 'Escape') { note('★ Esc → 關閉'); cancelledRef.current = true; setOpen(false); } };
     document.addEventListener('pointerdown', onDown);
     document.addEventListener('keydown', onKey);
     return () => { document.removeEventListener('pointerdown', onDown); document.removeEventListener('keydown', onKey); };
@@ -304,10 +302,11 @@ export default function DateTimePicker({
   // 正常人選完月份後直接取消是很少見的，所以這個訊號雜訊低。
   useEffect(() => {
     if (wasOpenRef.current && !open) {
-      if (engagedRef.current && !pickedRef.current) {
+      if (engagedRef.current && !pickedRef.current && !cancelledRef.current) {
         reportPickerAnomaly('picker_closed_without_pick',
           '選過年或月之後，面板在未選到日期前關閉', trailRef.current);
       }
+      cancelledRef.current = false;
       pickedRef.current = false;
       engagedRef.current = false;
       trailRef.current = [];
@@ -386,16 +385,9 @@ export default function DateTimePicker({
         id={id}
         type="button"
         disabled={disabled}
-        onClick={() => {
-          // 剛選過年/月的極短窗內，觸發鈕收到的「點擊」幾乎一定是 iOS 補送的模擬事件，
-          // 不是使用者真的想收合面板（他正盯著日期格找日子）。吃掉它。
-          if (open && withinGridEcho()) {
-            note('★ 擋下觸發鈕關閉（剛選過年/月 <' + GRID_ECHO_MS + 'ms，iOS 模擬點擊）');
-            reportPickerAnomaly('picker_guard_swallowed', '剛選年/月後短窗內擋下觸發鈕關閉', trailRef.current);
-            return;
-          }
-          setOpen((v) => !v);
-        }}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        onClick={() => setOpen(true)}
         className={`flex min-h-[44px] w-full items-center justify-between gap-2 rounded-lg border px-3 py-2 text-left text-sm transition md:min-h-0 ${
           open ? 'border-brand-teal ring-2 ring-brand-teal/20' : 'border-gray-300 hover:border-gray-400'
         } ${disabled ? 'cursor-not-allowed bg-gray-50 text-gray-400' : 'bg-white'}`}
@@ -436,8 +428,14 @@ export default function DateTimePicker({
       {open && panel && (
         <div
           className="fixed z-30 overflow-y-auto overscroll-contain rounded-xl border border-gray-200 bg-white p-3 shadow-lg"
+          role="dialog"
+          aria-label="選擇日期"
           style={panel}
         >
+          <div className="mb-1 flex justify-end">
+            <button type="button" onClick={() => { cancelledRef.current = true; setOpen(false); }}
+              className="min-h-[44px] rounded-lg px-3 text-sm text-gray-600 hover:bg-gray-100">關閉</button>
+          </div>
           <div className="mb-2 flex items-center justify-between">
             <button type="button" onClick={() => shiftMonth(-1)} disabled={prevBlocked || pickingMonth} aria-label="上個月"
               className="min-h-[44px] min-w-[44px] rounded-lg p-1.5 text-gray-500 hover:bg-gray-100 md:min-h-0 md:min-w-0 disabled:cursor-not-allowed disabled:text-gray-200 disabled:hover:bg-transparent">

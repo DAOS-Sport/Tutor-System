@@ -145,6 +145,8 @@ export default function ProfilePage() {
     [profile]
   );
 
+  const incompleteStudent = students.find((student) => Object.keys(validateStudent(student)).length > 0 || !normalizeGender(student.gender));
+
   function updateAuth(nextProfile) {
     setProfile(nextProfile);
     setParentForm(parentFormFrom(nextProfile));
@@ -250,6 +252,13 @@ export default function ProfilePage() {
         {profile.email && <div className="text-xs opacity-90">{profile.email}</div>}
       </div>
 
+      {incompleteStudent && (
+        <div role="status" className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          部分學員資料尚未完整或需要修正，不影響您既有的課程與權益。請將學員資訊填寫正確；如無法修改，請聯絡櫃台協助。
+          <button type="button" className="ml-2 font-bold underline" onClick={() => { setEditOpen(true); setStudentOpen(true); editStudent(incompleteStudent); }}>補填學員資料</button>
+        </div>
+      )}
+
       {String(profile.email || '').trim().toLowerCase() === 'example@gmail.com' && (
         <div role="status" className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
           目前信箱為暫用資料，無法接收通知。請更新為您自己的 Email。
@@ -317,7 +326,7 @@ export default function ProfilePage() {
                   <div key={s.id} className="rounded-lg border border-gray-100 p-3">
                     <div className="flex items-start justify-between gap-2">
                       <div>
-                        <div className="text-sm font-bold text-gray-900">{s.name}</div>
+                        <div className="text-sm font-bold text-gray-900">{String(s.name || '').trim() || '待補姓名'}</div>
                         <div className="text-xs text-gray-500">{s.id_number}</div>
                         <div className="mt-0.5 text-xs text-gray-500">{formatPlainDate(s.birth_date)}・{normalizeGender(s.gender) || '未指定'}{s.blood_type ? `・${s.blood_type}` : ''}</div>
                       </div>

@@ -128,18 +128,10 @@ function makeDom() {
       '選月時沒有記下 lastGridPickAt —— 而「選完月就跳掉」正是要擋的那一下');
   });
 
-  t('觸發鈕在剛選過年/月的極短窗內不可被關閉（iOS 模擬點擊落在觸發鈕上）', () => {
+  t('觸發欄位只開啟；延遲點擊不會關閉', () => {
     const src = stripComments(fs.readFileSync(PICKER, 'utf8'));
-    // 生日是 date 模式，沒有「完成」鈕；date 模式下唯一「不留 note」的關閉路徑
-    // 就是觸發鈕的 toggle。診斷連續 16 筆全在「選了月」後戛然而止、無任何後續 note，
-    // 由排除法就是這顆 toggle 被 iOS 補送的模擬點擊打到。這條守它不被拿掉。
-    const i = src.indexOf('setOpen((v) => !v)');
-    assert.ok(i > 0, '找不到觸發鈕的 toggle');
-    const 區塊 = src.slice(Math.max(0, i - 300), i + 30);
-    assert.ok(/withinGridEcho\(\)/.test(區塊),
-      '觸發鈕的 toggle 沒有 withinGridEcho 防護 —— 家長「填完月份就跳掉」會回歸');
-    assert.ok(/return;/.test(區塊),
-      '防護命中時要 return（吞掉那顆模擬點擊），不能還是往下 setOpen');
+    assert.ok(!src.includes('setOpen((v) => !v)'));
+    assert.ok(src.includes('onClick={() => setOpen(true)}'));
   });
 
   t('外部點擊關閉也套同一道防護（保險）', () => {
