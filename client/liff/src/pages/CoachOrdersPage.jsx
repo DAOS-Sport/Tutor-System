@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { sessionsApi } from '../api/sessions';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
@@ -42,6 +43,12 @@ export default function CoachOrdersPage() {
   const toast = useToast();
   const [data, setData] = useState(null);
   const [filter, setFilter] = useState('all');
+  const [searchParams] = useSearchParams();
+  const selectedId = searchParams.get('enrollment');
+
+  useEffect(() => {
+    if (selectedId && data) document.getElementById(`enrollment-${selectedId}`)?.scrollIntoView({ block: 'center' });
+  }, [data, selectedId]);
 
   useEffect(() => {
     if (!coach?.id) return undefined;
@@ -118,13 +125,15 @@ export default function CoachOrdersPage() {
                   訂單資料裡（後端刻意不回教練資訊給教練自己的清單），
                   從登入態帶下去即可。 */}
               {items.map((it) => (
+                <div key={it.id} id={`enrollment-${it.id}`} className={selectedId === it.id ? 'scroll-mt-28 rounded-xl ring-2 ring-brand-teal' : ''}>
+                  {selectedId === it.id && <p className="px-3 pt-2 text-xs font-bold text-brand-teal">此次查看的報名</p>}
                 <EnrollmentRow
-                  key={it.id}
                   item={it}
                   detailed
                   coachName={coach?.name}
                   multiplier={coach?.multiplier ?? coach?.pricing_multiplier}
                 />
+                </div>
               ))}
             </div>
             {/* 教練看得到「卡住」，但處理是櫃檯的事 —— 講清楚下一步該找誰，

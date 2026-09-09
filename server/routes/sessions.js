@@ -239,8 +239,7 @@ router.get('/coach/:coachId/enrollments', requireCoach, requireCoachOwner('coach
            LEFT JOIN names   n ON n.batch_key = b.batch_key AND n.period_number = b.period_number
            LEFT JOIN payers  p ON p.batch_key = b.batch_key AND p.period_number = b.period_number
            LEFT JOIN classes c ON c.batch_key = b.batch_key AND c.period_number = b.period_number
-          ORDER BY b.submitted_at DESC
-          LIMIT 200`,
+          ORDER BY b.submitted_at DESC`,
         [coachId]
       ),
       pool.query(

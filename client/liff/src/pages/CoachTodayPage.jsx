@@ -4,7 +4,7 @@ import { sessionsApi } from '../api/sessions';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import LoadingSpinner from '../components/LoadingSpinner';
-import { courseTypeLabel, formatTWDate, formatTWTime, checkinLabel } from '../utils/format';
+import { courseTypeLabel, formatTWDate, formatTWTime, formatPlainDate, checkinLabel } from '../utils/format';
 import { promotionValueLabel } from '../utils/promotionLabel';
 
 /**
@@ -24,6 +24,7 @@ export default function CoachTodayPage() {
   // 2026-09-01 需求：首頁要顯示 3 個月內即將到期的組數與清單。
   const [expiring, setExpiring] = useState(null);
   const [expandExpiring, setExpandExpiring] = useState(false);
+  const [expiryError, setExpiryError] = useState(false);
 
   useEffect(() => {
     if (!coach?.id) return;
@@ -31,11 +32,11 @@ export default function CoachTodayPage() {
     sessionsApi.todayByCoach(coach.id)
       .then((d) => alive && setSessions(d || []))
       .catch(() => { if (alive) { setSessions([]); toast.error('今日課程載入失敗'); } });
-    // 即將到期：附加資訊，失敗就安靜不顯示，不擋今日課程 ——
-    // 這一塊是提醒，不是教練今天上課必須看到的東西。
+    setExpiryError(false);
+    setExpiring(null);
     sessionsApi.enrollmentsByCoach(coach.id)
       .then((d) => alive && setExpiring(d?.expiring || { count: 0, items: [] }))
-      .catch(() => { if (alive) setExpiring({ count: 0, items: [] }); });
+      .catch(() => { if (alive) setExpiryError(true); });
     // 進行中優惠：附加資訊，失敗就安靜不顯示，不擋今日課程。
     sessionsApi.promotionsByCoach(coach.id)
       .then((d) => alive && setPromos(d?.promotions || []))
@@ -85,14 +86,18 @@ export default function CoachTodayPage() {
         </section>
       )}
 
-      {/* 2026-09-01 需求：教練排卡下方、今日課程上方，顯示 3 個月內即將到期的組數。
-          0 組就整塊不出現 —— 常態是 0，天天顯示「0 組」只會讓人學會忽略它，
-          等真的有的時候也一起被忽略掉。 */}
-      {expiring && expiring.count > 0 && (
+      {/* 到期提醒：0 組與載入失敗分開呈現，不能把讀取失敗誤報為沒有到期課程。 */}
+      {expiryError && (
+        <p role="alert" className="mb-5 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+          到期提醒暫時無法載入，請重新整理。
+        </p>
+      )}
+      {expiring && (
         <section className="mb-5">
           <button
             type="button"
             onClick={() => setExpandExpiring((v) => !v)}
+            aria-expanded={expandExpiring}
             className="flex w-full items-center justify-between gap-3 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-left active:opacity-80"
           >
             <div className="min-w-0">
@@ -106,8 +111,11 @@ export default function CoachTodayPage() {
 
           {expandExpiring && (
             <div className="mt-2 space-y-2">
+              {expiring.items.length === 0 && <p className="p-3 text-sm text-gray-500">目前沒有 3 個月內到期的報名。</p>}
               {expiring.items.map((it) => (
-                <div key={it.id} className="rounded-xl border border-gray-200 bg-white p-3">
+                <button key={it.id} type="button"
+                  onClick={() => navigate(`/coach/orders?enrollment=${encodeURIComponent(it.id)}`)}
+                  className="w-full rounded-xl border border-gray-200 bg-white p-3 text-left active:bg-gray-50">
                   <div className="flex items-baseline justify-between gap-2">
                     <div className="min-w-0 text-sm font-bold text-gray-900">
                       {(it.students || []).join('、') || '（無學員資料）'}
@@ -129,7 +137,8 @@ export default function CoachTodayPage() {
                   <div className="mt-0.5 text-[11px] text-gray-400">
                     期限 {formatPlainDate(it.course_expires_at)} 23:59
                   </div>
-                </div>
+                  <div className="mt-2 text-xs font-medium text-brand-teal">查看這筆報名 →</div>
+                </button>
               ))}
             </div>
           )}

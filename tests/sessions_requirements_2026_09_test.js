@@ -54,7 +54,7 @@ t('A1 排序：最新的在最上面', () => {
 
 t('A2／C2 起訖日旁邊有「當天」快捷', () => {
   const src = strip(read(SESSIONS_PAGE));
-  assert.ok(/>當天</.test(src), '沒有「當天」按鈕');
+  assert.ok(src.includes("'當日' : '當'"), '救生員要顯示「當日」，其他角色顯示「當」');
   assert.ok(/function jumpToday\(\)/.test(src), '「當日」要真的跳到今天');
 });
 
@@ -100,7 +100,7 @@ t('D1 靜態篩選：條件改動不再自動查', () => {
   assert.ok(/function runQuery\(\)/.test(src), '沒有查詢動作');
   assert.ok(/>查詢</.test(src), '沒有查詢按鈕');
   // 不用 [^]]* —— 在 JS 正則裡那會被解析成「任一字元 + 零個以上的 ]」，不是「非 ]」。
-  const at = src.indexOf('useEffect(() => { load();');
+  const at = src.indexOf('useEffect(() => {\n    load();');
   assert.ok(at > 0, '找不到載入的 effect');
   // indexOf(');') 會停在 load(); 那個括號上，取不到依賴陣列 —— 直接取一段窗口。
   const dep = src.slice(at, at + 200);
@@ -112,18 +112,16 @@ t('D1 靜態篩選：條件改動不再自動查', () => {
 t('D2 查詢後收起展開中的下拉', () => {
   const src = strip(read(SESSIONS_PAGE));
   const i = src.indexOf('function runQuery()');
-  const body = src.slice(i, i + 700);
-  assert.ok(/blur\(\)/.test(body), '查詢後沒有把展開中的面板收起來');
+  const body = src.slice(i, src.indexOf('\n  }', i));
+  assert.ok(/setQueryVersion/.test(body) && /FilterBar key=\{queryVersion\}/.test(src), '查詢必須重建篩選區，收起手機篩選及日期面板');
 });
 
 t('D3 週課表依場館上色，且有圖例', () => {
   const page = strip(read(SESSIONS_PAGE));
   const grid = strip(read(WEEK_GRID));
   assert.ok(/場館顏色/.test(page), '表格上方沒有場館顏色圖例');
-  assert.ok(/VENUE_SWATCH/.test(page) && /VENUE_TONE/.test(grid), '兩邊要各有一組色票');
-  assert.ok(/toneOf\(s\.venue_id\)/.test(grid), '格子要依場館取色，不是依組別');
-  assert.ok(/venueOrder/.test(page) && /venueOrder/.test(grid),
-    '圖例與格子必須共用同一個順序，否則圖例會說謊');
+  assert.ok(page.includes("../utils/venueColors.mjs") && grid.includes("../utils/venueColors.mjs"), '圖例與格子必須共用固定館別色碼');
+  assert.ok(/venueColor\(s\.venue_id\)/.test(grid), '格子必須按固定場館 id 取色');
 });
 
 // ── E. 教練端 ───────────────────────────────────────────────────────────
@@ -160,8 +158,8 @@ t('E2 首頁：3 個月內即將到期的組數、清單與警語', () => {
   for (const field of ['course_type', 'venue_name', 'period_number']) {
     assert.ok(new RegExp(field).test(page), '清單要標出 ' + field + '，否則認不出是哪一筆');
   }
-  const i = page.indexOf('expiring && expiring.count > 0');
-  assert.ok(i > 0, '0 組時應該整塊不顯示');
+  const i = page.indexOf('expiring && (');
+  assert.ok(i > 0, '載入成功必須顯示組數，包括 0 組');
   // 比對標題本身，不能用純文字「今日課程」—— 檔案上方的錯誤提示也含這四個字。
   const j = page.indexOf('>今日課程<');
   assert.ok(i < j, '需求指定要在今日課程「上方」');

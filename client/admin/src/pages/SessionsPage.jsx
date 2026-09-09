@@ -1,11 +1,10 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import DateTimePicker from '../../../shared/DateTimePicker.jsx';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import DataTable from '../components/DataTable';
 import StatusBadge from '../components/StatusBadge';
 import FilterBar from '../components/FilterBar';
-import { rangeForPreset } from '../components/DateRangeSelect';
 import WeekGridView from '../components/WeekGridView';
 import SessionDetailModal from '../components/SessionDetailModal';
 import ExportMenu from '../components/ExportMenu';
@@ -14,25 +13,18 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { sessionsApi } from '../api/sessions';
 import { venuesApi } from '../api/venues';
-import { courseTypeLabel, checkinStatusLabel, formatTWDateTime, sessionNoteSummary,
+import { courseTypeLabel, checkinStatusLabel, formatTWDateTime, formatHM, sessionNoteSummary,
   taipeiInputToDate, todayISO } from '../utils/format';
 import { exportSessionsCsv, exportSessionsXlsx } from '../utils/csvExport';
+import { venueColor } from '../utils/venueColors.mjs';
 
 const CHECKIN_TONE = { checked_in: 'green', not_yet: 'gray', absent: 'error' };
-const MAX_VENUES_GRID = 3;
+const QUICK_VENUES = { B: '新北', K: '三重', L: '三民', C: '松山' };
 
 // 2026-09-01 需求：起訖日最長三個月。
 // 用 92 天而不是「月份相減」：跨月份的天數不固定（2 月到 4 月只有 89 天，
 // 7 月到 9 月有 92 天），用月份算會讓同樣「三個月」在不同季節得到不同上限。
 const MAX_RANGE_DAYS = 92;
-
-// 圖例的色塊。順序必須與 WeekGridView 的 VENUE_TONE 一致 ——
-// 兩邊都用「場館在 venueOrder 裡的索引」取色，錯開的話圖例會說謊。
-const VENUE_SWATCH = [
-  'border-brand-teal/50 bg-brand-teal/30',
-  'border-brand-amber/50 bg-brand-amber/30',
-  'border-brand-green/50 bg-brand-green/30',
-];
 
 function daysBetween(from, to) {
   return Math.round((new Date(to + 'T00:00:00Z') - new Date(from + 'T00:00:00Z')) / 86400000) + 1;
@@ -46,7 +38,7 @@ function initialRange() {
 }
 
 export default function SessionsPage() {
-  const { isStaff, venueIds: myVenueIds } = useAuth();
+  const { isAdmin, role, venueIds: myVenueIds } = useAuth();
   const toast = useToast();
   const [view, setView] = useState('list'); // 'list' | 'week'
 
@@ -58,14 +50,14 @@ export default function SessionsPage() {
   const [applied, setApplied] = useState(() => initialRange());
   // Task #90 修正：staff 預設帶「所屬全部場館」而非單一主場館，並可在自己場館間縮小。
   // 2026-09-01 需求：場館改單選。null = 全部場館（後端 scope 仍會限制 staff 的範圍）。
-  const [draftVenue, setDraftVenue] = useState(() => (isStaff && myVenueIds.length === 1 ? myVenueIds[0] : null));
-  const [appliedVenue, setAppliedVenue] = useState(() => (isStaff && myVenueIds.length === 1 ? myVenueIds[0] : null));
+  const [draftVenue, setDraftVenue] = useState(() => (!isAdmin && myVenueIds.length === 1 ? myVenueIds[0] : null));
+  const [appliedVenue, setAppliedVenue] = useState(() => (!isAdmin && myVenueIds.length === 1 ? myVenueIds[0] : null));
+  const [queryVersion, setQueryVersion] = useState(0);
   const dirty = draft.from !== applied.from || draft.to !== applied.to || draftVenue !== appliedVenue;
   const [list, setList] = useState(null);
   const [venues, setVenues] = useState([]);
-  // 有上課紀錄的館別（後端算，已套場館權限）。null = 還沒載到，這時先照舊全列，
-  // 免得按鈕先跳出一整排再縮成三顆。
-  const [venueOptions, setVenueOptions] = useState(null);
+  const [loadError, setLoadError] = useState(false);
+  const requestId = useRef(0);
   const [detail, setDetail] = useState(null);
   // 補簽到：backfilling = 目前要補簽到的時段列；backfillAt = datetime-local 字串
   const [backfilling, setBackfilling] = useState(null);
@@ -73,89 +65,71 @@ export default function SessionsPage() {
   const [backfillBusy, setBackfillBusy] = useState(false);
 
   async function load() {
+    const request = ++requestId.current;
     setList(null);
+    setLoadError(false);
     // 一律走 /sessions range API：依起訖日 + 場館過濾。未選場館＝全部（後端 scope 處理），
     // 選了一館則在自己場館範圍內縮小（後端會與 scope 取交集，越權 id 自動濾掉）。
-    const [data, vs, vo] = await Promise.all([
-      sessionsApi.range({ from: applied.from, to: applied.to, venueIds: appliedVenue ? [appliedVenue] : [] }),
-      venuesApi.list(),
-      sessionsApi.venueOptions(),
-    ]);
-    setList(data);
-    setVenues(vs);
-    setVenueOptions(vo);
+    try {
+      const [data, vs] = await Promise.all([
+        sessionsApi.range({ from: applied.from, to: applied.to, venueIds: appliedVenue ? [appliedVenue] : [] }),
+        venuesApi.list(),
+      ]);
+      if (request !== requestId.current) return;
+      setList(data);
+      setVenues(vs);
+    } catch {
+      if (request === requestId.current) setLoadError(true);
+    }
   }
   // 只在「開頁」與「按下查詢（applied 變動）」時載入。
   // 條件本身（draft）改動不再觸發查詢 —— 那正是這次要拿掉的動態篩選。
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [applied.from, applied.to, appliedVenue, isStaff]);
+  useEffect(() => {
+    load();
+    return () => { requestId.current += 1; };
+  }, [applied.from, applied.to, appliedVenue, isAdmin, queryVersion]);
 
   const venueName = (id) => venues.find((v) => v.id === id)?.name || id;
-  // 需求說「新北、三重、三民、松山…或直接列出啟用中的讓他們自己點」——
-  // 選後者：寫死館名的話新開一館就得改程式，而且停用的館會一直留在畫面上。
-  //
-  // 2026-09-01 追加：啟用中的館別有二十幾個，真的開過課的只有三個，
-  // 篩選列變成一面沒有用的按鈕牆。這裡再收斂成「有上課紀錄的館別」。
-  const selectableVenues = useMemo(() => {
-    const scoped = isStaff ? venues.filter((v) => myVenueIds.includes(v.id)) : venues;
-    if (!venueOptions) return scoped;
-    const byId = new Map(scoped.map((v) => [v.id, v]));
-    // 停用之後歷史紀錄還在的館，venuesApi.list() 不會回（那支只給啟用中的），
-    // 這裡補進來，否則那批紀錄查得到卻篩不到。
-    for (const o of venueOptions) {
-      if (byId.has(o.id)) continue;
-      if (isStaff && !myVenueIds.includes(o.id)) continue;
-      byId.set(o.id, o);
-    }
-    const keep = new Set(venueOptions.map((v) => v.id));
-    // 目前選中的那一館一定留著。少了它，畫面會變成「選了一個看不見的東西」，
-    // 使用者只會覺得篩選壞了。
-    if (draftVenue) keep.add(draftVenue);
-    if (appliedVenue) keep.add(appliedVenue);
-    const out = [...byId.values()]
-      .filter((v) => keep.has(v.id))
-      .sort((a, b) => String(a.id).localeCompare(String(b.id)));
-    // 一顆都不剩就退回原本的清單：空的篩選列比長的篩選列更難用，
-    // 而且那多半代表選項還沒算出來，不該讓使用者卡在沒得選的畫面。
-    return out.length ? out : scoped;
-  }, [venues, venueOptions, isStaff, myVenueIds, draftVenue, appliedVenue]);
+  // 按本次指定列出新北／三重／三民／松山；只顯示啟用且有權限的館。
+  const selectableVenues = Object.keys(QUICK_VENUES)
+    .map((id) => venues.find((v) => v.id === id && v.is_active !== false))
+    .filter((v) => v && (isAdmin || myVenueIds.includes(v.id)));
 
   function setRangeBound(which, value) {
     if (!value) return;
     const next = { ...draft, [which]: value };
-    if (next.from && next.to && next.to < next.from) {
-      toast.warning('結束日不得早於開始日');
-      return;
-    }
     const days = daysBetween(next.from, next.to);
-    if (days > MAX_RANGE_DAYS) {
-      toast.warning(`起訖日最長三個月（${MAX_RANGE_DAYS} 天），目前是 ${days} 天`);
-      return;
-    }
+    // 編輯時允許暫時跨越上限，才能移到過去或未來的區間；只在查詢時驗證。
     setDraft({ ...next, days });
   }
 
-  // 2026-09-01 需求：「當日」快捷。設好日期並直接查 ——
-  // 這顆按鈕的意思本來就是「我要看今天」，再要求按一次查詢只是多一步。
+  // 當日也是篩選條件，與其他條件一樣按「查詢」才套用。
   function jumpToday() {
     const r = initialRange();
     setDraft(r);
-    setApplied(r);
   }
 
   // 2026-09-01 需求：條件下完後手動查詢。
   function runQuery() {
-    if (draft.days > MAX_RANGE_DAYS) {
+    const days = daysBetween(draft.from, draft.to);
+    if (!Number.isFinite(days) || days < 1) {
+      toast.warning('請選擇有效起訖日，結束日不得早於開始日');
+      return;
+    }
+    if (days > MAX_RANGE_DAYS) {
       toast.warning(`起訖日最長三個月（${MAX_RANGE_DAYS} 天）`);
       return;
     }
-    if (view === 'week' && draft.days > 31) {
+    if (view === 'week' && days > 31) {
       toast.warning('週課表上限 31 天，請改選較短範圍');
       return;
     }
     // 查詢完之後把展開中的下拉／面板收起來（需求：查詢完下拉要自動隱藏）。
     if (typeof document !== 'undefined' && document.activeElement?.blur) document.activeElement.blur();
-    setApplied(draft);
+    setApplied({ ...draft, days });
     setAppliedVenue(draftVenue);
+    // 原生 React key 重建篩選區：收起手機篩選、日期面板，並讓相同條件也能重查。
+    setQueryVersion((n) => n + 1);
   }
 
   function doExport(kind) {
@@ -198,7 +172,7 @@ export default function SessionsPage() {
       // 排定時段在課程詳情裡看得到；這一頁要回答的是「他到底簽了沒、幾點簽的」。
       key: 'checkin_at', label: '簽到時間',
       render: (r) => (r.checkin_at
-        ? <span className="font-mono text-brand-primary">{formatTWDateTime(r.checkin_at)}</span>
+        ? <span className="font-mono text-brand-primary" title={formatTWDateTime(r.checkin_at)}>{formatHM(r.checkin_at)} 簽到</span>
         : <span className="text-xs text-gray-300">尚未簽到</span>),
     },
     { key: 'coach', label: '教練' },
@@ -273,7 +247,7 @@ export default function SessionsPage() {
   const legendVenues = useMemo(() => {
     if (!list) return [];
     const ids = [...new Set(list.map((r) => r.venue_id))].filter(Boolean);
-    return ids.slice(0, MAX_VENUES_GRID).map((id, i) => ({ id, name: venueName(id), idx: i }));
+    return ids.map((id) => ({ id, name: venueName(id) }));
   }, [list, venues]);
 
   return (
@@ -314,7 +288,7 @@ export default function SessionsPage() {
           304 / 189 / 346，看起來像被啃過一口。起訖日那組是 flex-1 撐滿、
           場館那顆是 min-w-[160px] 內容寬、右邊的統計文字又被 ml-auto 推到最右。
           收編後手機是收合的單欄滿版（左右各切齊一條線），桌機不變。 */}
-      <FilterBar activeCount={appliedVenue ? 1 : 0}>
+      <FilterBar key={queryVersion} activeCount={appliedVenue ? 1 : 0}>
         <div className="w-full md:w-auto">
           <label className="mb-1 block text-xs font-medium text-gray-600">
             起訖日<span className="ml-1 font-normal text-gray-400">（最長三個月）</span>
@@ -335,9 +309,9 @@ export default function SessionsPage() {
             {/* 2026-09-01 需求：結束日右邊一顆小長方形「當天」。
                 shrink-0 是必要的：不加的話 375px 上它會被兩個 picker 擠成一條。 */}
             <button
-              type="button" onClick={jumpToday} title="查今天"
+              type="button" onClick={jumpToday} title="起訖日設為當日，按查詢套用"
               className="min-h-[44px] shrink-0 rounded-md border border-gray-300 bg-white px-3 text-sm font-medium text-gray-700 hover:border-brand-teal hover:text-brand-teal md:min-h-0 md:py-1.5"
-            >當天</button>
+            >{role === 'lifeguard' ? '當日' : '當'}</button>
           </div>
         </div>
 
@@ -346,19 +320,20 @@ export default function SessionsPage() {
             救生員要看的是自己場館那一份。全部場館仍然留著當退路。 */}
         <div className="w-full md:w-auto">
           <label className="mb-1 block text-xs font-medium text-gray-600">
-            {isStaff ? '場館（限所屬）' : '場館'}
+            {!isAdmin ? '場館（限所屬）' : '場館'}
           </label>
-          <div className="flex flex-wrap gap-1.5">
+          <div className="grid w-fit grid-cols-4 gap-1.5">
             {[{ id: null, name: '全部場館' }, ...selectableVenues].map((v) => {
               const on = draftVenue === v.id;
               return (
                 <button
                   key={v.id || '__all__'} type="button"
                   onClick={() => setDraftVenue(v.id)}
-                  className={`min-h-[44px] rounded-md border px-3 text-sm font-medium md:min-h-0 md:py-1.5 ${
+                  aria-pressed={on} title={v.name}
+                  className={`min-h-[44px] min-w-[44px] rounded-md border px-2 text-sm font-medium ${!v.id ? 'col-span-4 justify-self-start px-3 md:min-h-0 md:py-1.5' : ''} ${
                     on ? 'border-brand-primary bg-brand-primary text-white'
                        : 'border-gray-300 bg-white text-gray-700 hover:border-brand-teal hover:text-brand-teal'}`}
-                >{v.name}</button>
+                >{QUICK_VENUES[v.id] || v.name}</button>
               );
             })}
           </div>
@@ -390,7 +365,11 @@ export default function SessionsPage() {
         </div>
       )}
 
-      {!list ? (
+      {loadError ? (
+        <div role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+          上課紀錄載入失敗，請稍後按「查詢」重試。
+        </div>
+      ) : !list ? (
         <LoadingSpinner fullPage />
       ) : view === 'week' && !tooLong ? (
         <>
@@ -400,7 +379,7 @@ export default function SessionsPage() {
               <span className="font-medium text-gray-600">場館顏色：</span>
               {legendVenues.map((v) => (
                 <span key={v.id} className="inline-flex items-center gap-1">
-                  <span className={`inline-block h-3 w-3 rounded-sm border ${VENUE_SWATCH[v.idx]}`} />
+                  <span className="inline-block h-3 w-3 rounded-sm border border-black/15" style={{ backgroundColor: venueColor(v.id) }} />
                   {v.name}
                 </span>
               ))}
@@ -411,7 +390,6 @@ export default function SessionsPage() {
             from={applied.from}
             to={applied.to}
             venues={venues}
-            venueOrder={legendVenues.map((v) => v.id)}
             onSelect={(s) => setDetail(s)}
           />
         </>

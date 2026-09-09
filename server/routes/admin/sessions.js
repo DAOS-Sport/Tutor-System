@@ -169,7 +169,7 @@ router.get('/', requireAdminAuth, requireResource('sessions'), async (req, res) 
         const want = String(req.query.venueIds).split(',').map((s) => s.trim()).filter(Boolean);
         const allowed = new Set(scope);
         const filtered = want.filter((v) => allowed.has(v));
-        if (filtered.length) venueIds = filtered;
+        venueIds = filtered.length ? filtered : ['__no_venue__'];
       }
     } else if (req.query.venueIds) {
       const raw = String(req.query.venueIds);
