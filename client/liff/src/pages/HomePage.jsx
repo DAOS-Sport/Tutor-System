@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import CourseCard from '../components/CourseCard';
+import GuideEntry from '../components/GuideEntry';
 import PendingPaymentBanner from '../components/PendingPaymentBanner';
 import IncompleteGroupOrdersBanner from '../components/IncompleteGroupOrdersBanner';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -93,11 +94,14 @@ export default function HomePage() {
 
       <PendingPaymentBanner />
 
+      <GuideEntry role="parent" />
+
       <IncompleteGroupOrdersBanner />
 
       {/* 上課記錄/簽到：整列橫幅、橘底黑字（已移除「課程轉讓」入口） */}
       <button
         type="button"
+        data-tour-checkin
         onClick={() => navigate('/my-courses')}
         className="mb-5 flex w-full items-center justify-between rounded-2xl bg-brand-amber p-4 text-left text-black active:opacity-90"
       >

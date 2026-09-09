@@ -55,6 +55,7 @@ export default function BottomNav() {
             ) : (
               <NavLink
                 to={to}
+                data-tour-nav={to}
                 end={end}
                 className={({ isActive }) =>
                   `relative flex flex-col items-center justify-center gap-1 py-3 text-xs ${

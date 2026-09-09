@@ -1,0 +1,19 @@
+{
+  "status": "PASS",
+  "accounts": [
+    {
+      "role": "coach",
+      "repeatedClaimsShow": false,
+      "clientAccountRejected": 400,
+      "firstShownUnchanged": true
+    },
+    {
+      "role": "parent",
+      "repeatedClaimsShow": false,
+      "clientAccountRejected": 400,
+      "firstShownUnchanged": true
+    }
+  ],
+  "anonymous": 401,
+  "productionPublished": false
+}

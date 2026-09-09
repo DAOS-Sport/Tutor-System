@@ -94,6 +94,7 @@ app.use('/api/admin',         require('./routes/admin'));
 app.use('/api/integrations', require('./routes/integrations'));
 // 前端診斷回報：家長端畫面壞在送出之前時，唯一留得下證據的通道。
 app.use('/api/diagnostics', require('./routes/diagnostics'));
+app.use('/api/onboarding', require('./routes/onboarding'));
 
 // 舊 LINE Console 曾被文件指向無 `/api` 前綴的 callback。相容入口不接收 OAuth
 // code/state，也不會建立或綁定帳號；安全地丟棄 query 後回正式 LIFF bind 頁，
@@ -355,6 +356,7 @@ process.once('SIGINT', () => shutdown('SIGINT'));
     assertSecretConfigured();
     await bootstrapAdmin();
     await bootstrapCore();
+    await require('./models/db').pool.query(require('./services/featureTour').SCHEMA_SQL);
     // 沒設定 SMTP 不擋開機（通知信不是核心流程），但一定要吼一聲 ——
     // 否則會變成「上線好幾天才發現家長從來沒收到信」。
     try {

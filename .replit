@@ -111,7 +111,7 @@ outputType = "console"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "cd server && PORT=3999 npm start"
+args = "cd server && PORT=3999 DEMO_SEED=off npm start"
 waitForPort = 3999
 
 [postMerge]

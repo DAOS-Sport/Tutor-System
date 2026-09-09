@@ -5,6 +5,8 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import { ToastProvider } from './context/ToastContext';
 import { PendingPaymentsProvider } from './context/PendingPaymentsContext';
 import MockBanner from './components/MockBanner';
+import GuideTour from './components/GuideTour';
+import GuidePage from './pages/GuidePage';
 
 import LoginPage from './pages/LoginPage';
 import DemoLoginPage from './pages/DemoLoginPage';
@@ -98,6 +100,7 @@ export default function App() {
             <Route element={<RequireParent />}>
               <Route element={<AppLayout />}>
                 <Route path="/" element={<HomePage />} />
+                <Route path="/guide" element={<GuidePage />} />
                 <Route path="/my-courses" element={<MyCoursesPage />} />
                 <Route path="/chat" element={<ChatListPage />} />
                 <Route path="/profile" element={<ProfilePage />} />
@@ -166,6 +169,7 @@ export default function App() {
                 <Route path="/coach/schedule" element={<CoachScheduleWeekPage />} />
                 <Route path="/coach/history" element={<CoachHistoryPage />} />
                 <Route path="/coach/profile" element={<CoachProfilePage />} />
+                <Route path="/coach/guide" element={<GuidePage />} />
               </Route>
               <Route element={<AppLayout showBackButton title="授課入口" />}>
                 <Route path="/coach/session/:id" element={<CoachSessionPage />} />
@@ -183,6 +187,7 @@ export default function App() {
 
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        <GuideTour />
         </PendingPaymentsProvider>
       </AuthProvider>
     </ToastProvider>

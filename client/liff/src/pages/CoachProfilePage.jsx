@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import AvatarCropper from '../components/coach/AvatarCropper';
+import GuideEntry from '../components/GuideEntry';
 import CoachDetailModal from '../components/CoachDetailModal';
 import { coachesApi } from "../api/coaches";
 import { venuesApi } from "../api/venues";
@@ -497,6 +498,8 @@ export default function CoachProfilePage() {
           </button>
         </Collapsible>
       </div>
+
+      <GuideEntry role="coach" />
 
       {previewOpen && (
         <CoachDetailModal
