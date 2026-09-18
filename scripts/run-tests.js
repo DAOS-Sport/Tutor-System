@@ -26,6 +26,14 @@ const SERVER = path.join(ROOT, 'server');
 
 // 零外部相依：Ragic/LINE/物件儲存都是 stub 或純字串斷言，不碰 DB 也不出網路。
 const UNIT = [
+  'tests/demo_seed_production_guard_test.js',
+  'tests/error_boundary_taipei_test.js',
+  'tests/graceful_shutdown_test.js',
+  'tests/open_errors_test.js',
+  'tests/profile_information_notice_test.js',
+  'tests/sync_hardening_test.js',
+  'tests/tutoring_feed_test.js',
+  'tests/weekly_filters_2026_09_test.js',
   'tests/pii_mask_unicode_test.js',
   'tests/outbox_poison_guard_test.js',
   'tests/trial_price_multiplier_test.js',
@@ -151,6 +159,12 @@ const UNIT = [
 
 // 需要真實 Postgres。多數含破壞性前置清理，只可對拋棄式測試庫執行。
 const DB = [
+  'tests/refund_entitlement_db_test.js',
+  'tests/ragic_webhook_inbox_db_test.js',
+  'tests/student_audit_isolated_test.js',
+  'tests/tutor_consistency_repair_db_test.js',
+  'tests/checkout_peak_isolated_test.js',
+  'tests/feature_tour_db_test.js',
   'tests/course_schedule_concurrency_test.js',
   'tests/bootstrap_clean_database_test.js',
   // 2026-09-07 從 UNIT 搬來：這三支用 fetch 打 TEST_BASE（預設 http://localhost:3001）的活伺服器，
@@ -204,12 +218,20 @@ function assertNoUnclassified() {
 
 /** 逐支 spawn，cwd 固定為 server/（與 tests/README.md 的手動跑法一致）。 */
 function runFiles(files, extraEnv) {
+  const rootCwd = new Set([
+    'tests/error_boundary_taipei_test.js',
+    'tests/profile_information_notice_test.js',
+    'tests/sync_hardening_test.js',
+    'tests/ragic_canary_state_test.js',
+  ]);
   const results = [];
   for (const f of files) {
-    const r = spawnSync('node', [path.join(ROOT, f)], {
-      cwd: SERVER,
+    const isolatedEnv = f === 'tests/student_audit_isolated_test.js' ? { STUDENT_AUDIT_ISOLATED: '1' }
+      : f === 'tests/ragic_webhook_inbox_db_test.js' ? { RAGIC_INBOX_TEST_DATABASE_URL: extraEnv?.DATABASE_URL } : {};
+    const r = spawnSync(process.execPath, [path.join(ROOT, f)], {
+      cwd: rootCwd.has(f) ? ROOT : SERVER,
       stdio: 'inherit',
-      env: { ...process.env, ...extraEnv },
+      env: { ...process.env, ...extraEnv, ...isolatedEnv },
     });
     results.push({ f, ok: r.status === 0 });
   }
@@ -228,7 +250,7 @@ const tier = process.argv[2] || 'unit';
 if (tier === 'unit') {
   assertNoUnclassified();
   // server/ 內建的 node:test 單元測試（原本的 npm test 內容）
-  const nodeTest = spawnSync('node', ['--test', 'test/'], { cwd: SERVER, stdio: 'inherit' });
+  const nodeTest = spawnSync(process.execPath, ['--test', 'test/'], { cwd: SERVER, stdio: 'inherit' });
   const ok = report(runFiles(UNIT), 'unit') && nodeTest.status === 0;
   if (nodeTest.status !== 0) console.log('   FAIL  server/test（node --test）');
   process.exit(ok ? 0 : 1);
@@ -250,7 +272,7 @@ if (tier === 'db') {
 }
 
 if (tier === 'e2e') {
-  const r = spawnSync('node', [path.join(ROOT, 'tests/e2e/run_all.js')], {
+  const r = spawnSync(process.execPath, [path.join(ROOT, 'tests/e2e/run_all.js')], {
     cwd: ROOT, stdio: 'inherit',
   });
   process.exit(r.status === 0 ? 0 : 1);

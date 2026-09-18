@@ -343,8 +343,8 @@ router.patch('/:id', requireAdminAuth, requireResource('customer-parents'), asyn
         const blood = looksMasked(s.blood_type) ? undefined : s.blood_type;
         if (s.id) {
           const hit = await client.query(
-            `SELECT id, name, gender, birth_date, id_number, blood_type, student_code
-               FROM students WHERE id = $1 AND parent_id = $2`,
+            `SELECT id, name, gender, birth_date, id_number, blood_type, student_code, is_active
+               FROM students WHERE id = $1 AND parent_id = $2 FOR UPDATE`,
             [s.id, req.params.id]
           );
           if (hit.rowCount) {
@@ -355,15 +355,14 @@ router.patch('/:id', requireAdminAuth, requireResource('customer-parents'), asyn
                      id_number  = CASE WHEN $5::boolean THEN NULLIF($6,'')  ELSE id_number  END,
                      blood_type = CASE WHEN $7::boolean THEN NULLIF($8,'')  ELSE blood_type END,
                      student_code=NULLIF($9,''), is_active=$10, last_synced_at=NULL, updated_at=NOW() WHERE id=$1
-               RETURNING name, gender, birth_date, id_number, blood_type, student_code`,
+               RETURNING name, gender, birth_date, id_number, blood_type, student_code, is_active`,
               [s.id, s.name || '', s.gender || '', bd,
                idNum !== undefined, idNum || '', blood !== undefined, blood || '',
                s.student_code || '', s.is_active !== false]
             );
             touchedStudentIds.push(s.id);
-            const changes = diffChanges(before, upd.rows[0], ['name', 'gender', 'birth_date', 'id_number', 'blood_type', 'student_code']);
-            await writeStudentAudit(client, s.id, 'edit', { byUser: adminActorName(req), byRole: req.adminUser?.role, changes })
-              .catch((err) => console.warn('[student-audit] 家長頁編輯學員稽核寫入失敗:', err.message));
+            const changes = diffChanges(before, upd.rows[0], ['name', 'gender', 'birth_date', 'id_number', 'blood_type', 'student_code', 'is_active']);
+            await writeStudentAudit(client, s.id, 'edit', { byUser: adminActorName(req), byRole: req.adminUser?.role, changes, note: 'admin-parent-student-edit' });
             continue;
           }
         }
@@ -377,8 +376,7 @@ router.patch('/:id', requireAdminAuth, requireResource('customer-parents'), asyn
            s.student_code || '', s.is_active !== false]
         );
         touchedStudentIds.push(ins.rows[0].id); // 新列 last_synced_at 預設 NULL（待同步）
-        await writeStudentAudit(client, ins.rows[0].id, 'create', { byUser: adminActorName(req), byRole: req.adminUser?.role })
-          .catch((err) => console.warn('[student-audit] 家長頁新增學員稽核寫入失敗:', err.message));
+        await writeStudentAudit(client, ins.rows[0].id, 'create', { byUser: adminActorName(req), byRole: req.adminUser?.role, note: 'admin-parent-student-create' });
       }
     }
 

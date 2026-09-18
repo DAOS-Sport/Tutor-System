@@ -504,6 +504,11 @@ async function processClaimedRagicSyncOutboxJob(job, {
     readback_verified: false,
   };
   try {
+    // A crashed worker can leave a stale processing lease. Reclaim it for
+    // quarantine, but never issue an extra upstream write beyond the budget.
+    if (Number(job.attempts) > Number(job.max_attempts)) {
+      throw Object.assign(new Error('Outbox retry budget exhausted'), { code: 'RAGIC_RETRY_EXHAUSTED' });
+    }
     if (!['BIND_Z01_LINE_UID', 'REBIND_Z01_LINE_UID', 'CREATE_Z01_PARENT'].includes(job.operation)) {
       const err = new Error('unsupported outbox operation');
       err.code = 'RAGIC_OUTBOX_OPERATION_UNSUPPORTED';

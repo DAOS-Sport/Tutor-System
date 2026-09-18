@@ -16,6 +16,7 @@
  */
 const crypto = require('crypto');
 const { pool } = require('../models/db');
+const { writeStudentAudit, diffChanges } = require('./studentAudit');
 const ragic = require('./ragic');
 const { maskName, maskPhone } = require('../utils/piiMask');
 const { normalizePhone, normalizeStudentName } = require('./identityNormalizer');
@@ -391,15 +392,22 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
       if (ragicId && spActive) {
         const freed = await client.query(
           `UPDATE students SET ragic_record_id = NULL, updated_at = NOW()
-            WHERE ragic_record_id = $1 AND parent_id <> $2`,
+            WHERE ragic_record_id = $1 AND parent_id <> $2 RETURNING id`,
           [ragicId, parentId]
         );
+        for (const row of freed.rows) {
+          await writeStudentAudit(client, row.id, 'edit', {
+            byUser: 'ragic:parent-sync', byRole: 'system',
+            changes: { ragic_record_id: { before: ragicId, after: null } }, note: 'ragic-link-reconciliation',
+          });
+        }
         if (freed.rowCount) {
           console.warn('[parent-sync] 學員 ragic_record_id=%s 原掛在其他家長名下，已解除舊佔用（移轉到 parent=%s）', ragicId, parentId);
         }
       }
       if (matched) {
-        await client.query(
+        const before = (await client.query('SELECT * FROM students WHERE id = $1 FOR UPDATE', [matched.id])).rows[0];
+        const updated = await client.query(
           `UPDATE students SET
              -- 背景批次可保留待同步本地編輯；嚴格刷新則以 Ragic 回讀值覆蓋，消除鏡射漂移。
              name        = CASE WHEN $9::boolean AND last_synced_at IS NULL THEN name        ELSE $2 END,
@@ -412,10 +420,11 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
              is_active   = CASE WHEN is_active = FALSE THEN is_active ELSE TRUE END,
              last_synced_at = CASE WHEN $9::boolean AND last_synced_at IS NULL THEN last_synced_at ELSE NOW() END,
              updated_at  = NOW()
-           WHERE id = $1`,
+           WHERE id = $1 RETURNING *`,
           [matched.id, s.name, s.birth_date || null, ragic.normalizeGender(s.gender),
            idNum || '', s.blood_type || '', s.student_code || '', ragicId || '', preservePending]
         );
+        await writeStudentAudit(client, matched.id, 'edit', { byUser: 'ragic:parent-sync', byRole: 'system', changes: diffChanges(before, updated.rows[0]), note: 'ragic-student-mirror' });
       } else {
         const inserted = await client.query(
           `INSERT INTO students
@@ -425,6 +434,7 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
           [parentId, s.name, s.birth_date || null, ragic.normalizeGender(s.gender),
            idNum || '', s.blood_type || '', s.student_code || '', ragicId || '']
         );
+        await writeStudentAudit(client, inserted.rows[0].id, 'create', { byUser: 'ragic:parent-sync', byRole: 'system', note: 'ragic-student-mirror' });
         if (existingStudents) existingStudents.push({
           id: inserted.rows[0].id,
           name: s.name,

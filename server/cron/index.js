@@ -59,6 +59,17 @@ function initCronJobs() {
     }
   });
 
+  // Only pending webhook projections are refetched; no upstream business writes.
+  scheduleTaipei('* * * * *', async () => {
+    if (!ragicAdmin.ragicEnabled()) return;
+    try {
+      const result = await ragicAdmin.retryRagicWebhooks({ limit: 20 });
+      if (result.failed) console.warn('[Cron/RagicWebhook] pending/blocked:', result.failed);
+    } catch (err) {
+      console.warn('[Cron/RagicWebhook] worker failed:', err.code || 'RAGIC_WEBHOOK_FAILED');
+    }
+  });
+
   // Local-first Z03 claims commit before Ragic. This worker is the only path
   // that writes the claimed LINE UID back; it never resolves or creates an
   // identity, and failed writes remain retryable/blocked in the outbox.

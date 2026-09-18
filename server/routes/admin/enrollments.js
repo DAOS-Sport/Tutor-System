@@ -13,6 +13,7 @@
 const express = require('express');
 const { randomUUID } = require('crypto');
 const { pool } = require('../../models/db');
+const { writeStudentAudit, adminActorName } = require('../../services/studentAudit');
 const { getCourseConfig, CourseConfigError } = require('../../services/courseConfig');
 const { requireAdminAuth, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
 // F-A06：權限改由「角色權限管理」的設定決定，不再寫死角色清單。
@@ -23,6 +24,7 @@ const promotions = require('../../services/promotions');
 const { resolveParentLineDisplayName } = require('../../services/parentLineProfile');
 const { logGroupOrderAudit } = require('../../services/groupOrderAudit');
 const { REFUND_REASON_CODES, refundReasonLabel, normalizeFeeRate, calculateRefundAmounts } = require('../../services/refundReasons');
+const { lockRefundPeriods, revokeRefundedPeriods, lockEnrollmentOperation } = require('../../services/courseEntitlements');
 const {
   createCheckoutSession,
   readCheckout,
@@ -67,8 +69,8 @@ function genEnrollmentId() {
   return `E${ts}${rand}`;
 }
 
-async function getSettings() {
-  const r = await pool.query(`SELECT key, value FROM admin_settings`);
+async function getSettings(db = pool) {
+  const r = await db.query(`SELECT key, value FROM admin_settings`);
   const out = {};
   for (const row of r.rows) out[row.key] = Number(row.value);
   return out;
@@ -257,7 +259,7 @@ async function ensureGroupCoursePeriod(client, enrollment, totalSessions) {
  */
 // 回傳本次「新建」的本地學員 id 陣列（新列 last_synced_at 預設 NULL＝待同步），
 // 供 caller 在交易 COMMIT 後即時回寫 Ragic（best-effort；失敗由每日備份排程重試）。
-async function ensureSoloCoursePeriod(client, enrollment, totalSessions) {
+async function ensureSoloCoursePeriod(client, enrollment, totalSessions, auditActor = { byUser: 'system:enrollment-reconcile', byRole: 'system' }) {
   const createdStudentIds = [];
   if (enrollment.group_order_id) return createdStudentIds; // 團報 → 交給 ensureGroupCoursePeriod
 
@@ -446,6 +448,7 @@ async function ensureSoloCoursePeriod(client, enrollment, totalSessions) {
         [parentId, name]
       );
       sid = si.rows[0].id;
+      await writeStudentAudit(client, sid, 'create', { ...auditActor, note: 'enrollment-reconcile-student-create' });
       createdStudentIds.push(sid);
     }
     await client.query(
@@ -466,8 +469,8 @@ function tsToString(d) {
   return new Date(d).toISOString();
 }
 
-async function readEnrollment(id, { resolveLineProfile = false } = {}) {
-  const e = await pool.query(
+async function readEnrollment(id, { resolveLineProfile = false, db = pool } = {}) {
+  const e = await db.query(
     `SELECT ae.*, au.name AS created_by_name,
             p.line_uid AS parent_line_uid,
             plp.display_name AS line_display_name,
@@ -482,7 +485,7 @@ async function readEnrollment(id, { resolveLineProfile = false } = {}) {
     [id]
   );
   if (!e.rowCount) return null;
-  const a = await pool.query(
+  const a = await db.query(
     `SELECT at, action, by_user, reason, refund_amount FROM admin_enrollment_audit_logs
      WHERE enrollment_id = $1 ORDER BY at ASC, id ASC`,
     [id]
@@ -591,7 +594,10 @@ router.post('/', requireAdminAuth, requireAnyResource('manual-enroll', 'enrollme
   const parentName  = String(b.parent_name || '').trim();
   const parentPhone = String(b.parent_phone || '').trim();
   const venueId     = String(b.venue_id || '').trim();
-  const coachName   = String(b.coach || '').trim();
+  let coachName = typeof b.coach === 'string' ? b.coach.trim() : '';
+  if (!coachName || coachName === '[object Object]') {
+    return res.status(400).json({ error: '教練名稱必須是有效文字', code: 'COACH_NAME_INVALID' });
+  }
   const courseType  = Number(b.course_type);
   const students    = Array.isArray(b.students)
     ? b.students.map((s) => String(s || '').trim()).filter(Boolean) : [];
@@ -766,8 +772,13 @@ router.post('/', requireAdminAuth, requireAnyResource('manual-enroll', 'enrollme
         await client.query('ROLLBACK');
         return res.status(400).json({ error: 'coach_id 格式不正確', code: 'COACH_ID_INVALID' });
       }
-      const cr = await client.query(`SELECT id FROM coaches WHERE id = $1`, [rawCoachId]);
-      if (cr.rowCount) coachId = rawCoachId;
+      const cr = await client.query(`SELECT id, name FROM coaches WHERE id = $1 AND is_active = TRUE`, [rawCoachId]);
+      if (!cr.rowCount) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: '教練不存在或已停用', code: 'COACH_ID_INVALID' });
+      }
+      coachId = rawCoachId;
+      coachName = cr.rows[0].name;
     }
 
     // 嚴格拆期：N 堂 → ceil(N/6) 筆，最後一筆放餘數堂；原價/實收/折讓按堂數比例分攤、餘額補最後一筆。
@@ -998,6 +1009,7 @@ router.patch('/:id', requireAdminAuth, requireResource('enrollments'), async (re
     await client.query('BEGIN');
     const { id } = req.params;
     const body = req.body || {};
+    await lockEnrollmentOperation(client, id);
     const cur = await client.query(`SELECT * FROM admin_enrollments WHERE id = $1 FOR UPDATE`, [id]);
     if (!cur.rowCount) {
       await client.query('ROLLBACK');
@@ -1069,7 +1081,11 @@ router.patch('/:id', requireAdminAuth, requireResource('enrollments'), async (re
       }
     } else if (body.coach !== undefined) {
       // 向後相容：純文字編輯（不指定 coach_id）
-      coachName = String(body.coach).trim();
+      if (typeof body.coach !== 'string' || body.coach.trim() === '[object Object]') {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: '教練名稱必須是有效文字', code: 'COACH_NAME_INVALID' });
+      }
+      coachName = body.coach.trim();
     }
 
     if (!parentName) { await client.query('ROLLBACK'); return res.status(400).json({ error: '家長姓名必填' }); }
@@ -1257,6 +1273,7 @@ router.post('/:id/reconcile', requireAdminAuth, requireResource('reconcile'), as
       return res.status(400).json({ error: '發票照片必填' });
     }
 
+    await lockEnrollmentOperation(client, id);
     const cur = await client.query(`SELECT * FROM admin_enrollments WHERE id = $1 FOR UPDATE`, [id]);
     if (!cur.rowCount) {
       await client.query('ROLLBACK');
@@ -1372,7 +1389,7 @@ router.post('/:id/reconcile', requireAdminAuth, requireResource('reconcile'), as
     await ensureGroupCoursePeriod(client, cur.rows[0], total);
     // U11 一般報名橋：非團報對帳通過也自動開通 course_period（補回家長/教練/聊天室/學習歷程
     // 讀正式課期的缺口）。與上方團報橋以 group_order_id 守門互斥，不重複建。
-    const reconcileCreatedStudentIds = (await ensureSoloCoursePeriod(client, cur.rows[0], total)) || [];
+    const reconcileCreatedStudentIds = (await ensureSoloCoursePeriod(client, cur.rows[0], total, { byUser: adminActorName(req), byRole: req.adminUser?.role })) || [];
 
     // 家長通知信排進 outbox（COMMIT 前，理由同 checkouts.js）。
     // 這支是 legacy 單筆入口，等同 checkout 版 N=1 的退化情形。
@@ -1422,10 +1439,10 @@ router.post('/:id/reconcile', requireAdminAuth, requireResource('reconcile'), as
  *   Owner 2026-08-12 決定手續費率可由櫃檯逐筆調整（下拉預設值＋可自填）。
  *   偏離全域設定時，退費端點會把「原定 X% → 實用 Y%」寫進 audit log。
  */
-async function computeRefundPreview(id, feeRateOverride = null, feeAmountOverride = null) {
-  const enrollment = await readEnrollment(id);
+async function computeRefundPreview(id, feeRateOverride = null, feeAmountOverride = null, db = pool) {
+  const enrollment = await readEnrollment(id, { db });
   if (!enrollment) return null;
-  const settings = await getSettings();
+  const settings = await getSettings(db);
   const default_fee_rate = settings.refund_fee_rate ?? 0.1;
   const override = normalizeFeeRate(feeRateOverride);
   const fee_rate = override === null ? default_fee_rate : override;
@@ -1439,7 +1456,7 @@ async function computeRefundPreview(id, feeRateOverride = null, feeAmountOverrid
   // 目前查詢會自然落空 fallthrough，但為避免未來 trial period 也寫 batch id 時誤入整批退費，
   // 明確以 order_kind 排除（試上一律走下方單筆比例公式）。
   if (!enrollment.group_order_id && enrollment.enrollment_batch_id && enrollment.order_kind !== 'trial') {
-    const sp = await pool.query(
+    const sp = await db.query(
       `SELECT cp.id, cp.total_sessions,
               (SELECT COUNT(DISTINCT cs.id)::int
                  FROM course_sessions cs
@@ -1453,7 +1470,7 @@ async function computeRefundPreview(id, feeRateOverride = null, feeAmountOverrid
       [enrollment.enrollment_batch_id, enrollment.period_number || 1]
     );
     if (sp.rowCount) {
-      const siblings = await pool.query(
+      const siblings = await db.query(
         `SELECT id, final_price::float8 AS final_price
            FROM admin_enrollments
           WHERE enrollment_batch_id = $1 AND COALESCE(period_number, 1) = $2
@@ -1482,8 +1499,18 @@ async function computeRefundPreview(id, feeRateOverride = null, feeAmountOverrid
     }
   }
 
-  const total = enrollment.total_sessions || settings.sessions_per_period || 6;
-  const used = enrollment.used_sessions || 0;
+  const realUsage = await db.query(
+    `SELECT cp.total_sessions, COUNT(DISTINCT cs.id) FILTER (
+        WHERE cs.status::text NOT LIKE 'cancelled%' AND cr.attendance_status = 'ATTENDED')::int AS used_sessions
+       FROM course_periods cp
+       LEFT JOIN course_sessions cs ON cs.course_period_id = cp.id
+       LEFT JOIN checkin_records cr ON cr.course_session_id = cs.id
+      WHERE cp.admin_enrollment_id = $1
+         OR ($2::uuid IS NOT NULL AND cp.group_order_id = $2 AND COALESCE(cp.period_number,1) = $3)
+      GROUP BY cp.id`, [id, enrollment.group_order_id || null, enrollment.period_number || 1]);
+  if (realUsage.rowCount > 1) throw Object.assign(new Error('報名對應多筆課程權益，請先人工核對'), { status: 409, code: 'REFUND_PERIOD_AMBIGUOUS' });
+  const total = realUsage.rows[0]?.total_sessions || enrollment.total_sessions || settings.sessions_per_period || 6;
+  const used = realUsage.rows[0]?.used_sessions ?? enrollment.used_sessions ?? 0;
   const remainRatio = Math.max(0, (total - used) / total);
   const amounts = calculateRefundAmounts([enrollment], remainRatio, default_fee_rate, feeRateOverride, feeAmountOverride);
   // default_fee_rate 一併回傳：前端要能顯示「原定 10%」，也才能判斷這次有沒有被調過。
@@ -1503,7 +1530,7 @@ router.get('/:id/refund-preview', requireAdminAuth, requireResource('refund'), a
     res.json(preview);
   } catch (err) {
     if (err.status !== 400) console.error('[admin/enrollments/:id/refund-preview]', err);
-    res.status(err.status === 400 ? 400 : 500).json({ error: err.status === 400 ? err.message : 'preview failed' });
+    res.status([400, 409].includes(err.status) ? err.status : 500).json({ error: [400, 409].includes(err.status) ? err.message : 'preview failed', ...(err.status === 409 ? { code: err.code } : {}) });
   }
 });
 
@@ -1544,7 +1571,8 @@ router.post('/:id/refund', requireAdminAuth, requireResource('refund'), async (r
     // ── 手續費率覆寫 ──
     // 櫃檯可逐筆調整（Owner 決定：下拉預設值＋可自填）。這會直接改變退款金額，
     // 所以偏離全域設定時一定要在 audit log 留下痕跡與操作者。
-    const preview = await computeRefundPreview(id, body.fee_rate, body.fee_amount);
+    const refundPeriods = await lockRefundPeriods(client, id);
+    const preview = await computeRefundPreview(id, body.fee_rate, body.fee_amount, client);
     // 手續費率被調過時，audit log 的 action 要看得出「原定多少、實際用多少」。
     // 只比對 preview 回來的兩個值，不信任前端送的數字。
     const pct = (r) => `${Math.round(Number(r) * 1000) / 10}%`;
@@ -1597,8 +1625,8 @@ router.post('/:id/refund', requireAdminAuth, requireResource('refund'), async (r
       const appliedTotal = applied.reduce((sum, row) => sum + row.refund_amount, 0);
       for (const sib of applied) {
         await client.query(
-          `UPDATE admin_enrollments SET status = 'refunded', refund_amount = $2, refunded_at = NOW(), updated_at = NOW() WHERE id = $1`,
-          [sib.id, sib.refund_amount]
+          `UPDATE admin_enrollments SET status = 'refunded', refund_amount = $2, used_sessions = $3, refunded_at = NOW(), updated_at = NOW() WHERE id = $1`,
+          [sib.id, sib.refund_amount, preview.used]
         );
         await promotions.revertUsage({ adminEnrollmentId: sib.id }, client);
         await client.query(
@@ -1609,27 +1637,7 @@ router.post('/:id/refund', requireAdminAuth, requireResource('refund'), async (r
            by, reason, sib.refund_amount]
         );
       }
-      // 釋出未來已排課堂占用的教練時段，再取消課堂（已上完的課保留紀錄）。
-      await client.query(
-        `UPDATE coach_availability_slots
-            SET status = 'available', booked_session_id = NULL, updated_at = NOW()
-          WHERE booked_session_id IN (
-            SELECT id FROM course_sessions
-             WHERE course_period_id = $1 AND scheduled_at > NOW()
-               AND status IN ('confirmed','pending_group_confirm'))`,
-        [preview.course_period_id]
-      );
-      await client.query(
-        `UPDATE course_sessions
-            SET status = 'cancelled_normal', cancelled_at = NOW(), updated_at = NOW()
-          WHERE course_period_id = $1 AND scheduled_at > NOW()
-            AND status IN ('confirmed','pending_group_confirm')`,
-        [preview.course_period_id]
-      );
-      await client.query(
-        `UPDATE course_periods SET status = 'refunded', updated_at = NOW() WHERE id = $1`,
-        [preview.course_period_id]
-      );
+      await revokeRefundedPeriods(client, refundPeriods);
       await client.query('COMMIT');
 
       const updated = await readEnrollment(id);
@@ -1643,14 +1651,15 @@ router.post('/:id/refund', requireAdminAuth, requireResource('refund'), async (r
     }
 
     const refunded = await client.query(
-      `UPDATE admin_enrollments SET status = 'refunded', refund_amount = $2, refunded_at = NOW(), updated_at = NOW() WHERE id = $1 AND status NOT IN ('refunded','cancelled') RETURNING id`,
-      [id, preview.refund_amount]
+      `UPDATE admin_enrollments SET status = 'refunded', refund_amount = $2, used_sessions = $3, refunded_at = NOW(), updated_at = NOW() WHERE id = $1 AND status NOT IN ('refunded','cancelled') RETURNING id`,
+      [id, preview.refund_amount, preview.used]
     );
     if (!refunded.rowCount) {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '訂單已退費或取消，請重新整理' });
     }
     // 退費即釋放此報名占用的優惠用量（同交易內，以 admin_enrollment_id 冪等；無 usage 則 no-op）。
+    await revokeRefundedPeriods(client, refundPeriods);
     await promotions.revertUsage({ adminEnrollmentId: id }, client);
     await client.query(
       `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user, reason, refund_amount)
@@ -1664,7 +1673,7 @@ router.post('/:id/refund', requireAdminAuth, requireResource('refund'), async (r
   } catch (err) {
     await client.query('ROLLBACK');
     if (err.status !== 400) console.error('[admin/enrollments/:id/refund]', err);
-    res.status(err.status === 400 ? 400 : 500).json({ error: err.status === 400 ? err.message : 'refund failed' });
+    res.status([400, 409].includes(err.status) ? err.status : 500).json({ error: [400, 409].includes(err.status) ? err.message : 'refund failed', ...(err.status === 409 ? { code: err.code } : {}) });
   } finally {
     client.release();
   }

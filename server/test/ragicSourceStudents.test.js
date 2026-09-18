@@ -27,7 +27,7 @@ function fixture({ timeout=false, missingCode=false, conflict=false, readError=f
     }},
   };
   vm.createContext(ctx);
-  vm.runInContext(extract('function buildZ01StudentPayload(', 'async function getParentRecordByRagicId')+extract('async function syncParentStudentsStrict(', '// Append new source rows'),ctx);
+  vm.runInContext(extract('function buildZ01StudentPayload(', 'async function getParentRecordByRagicId')+extract('function validateNewSourceStudent(', '// Append new source rows'),ctx);
   return {run:()=>ctx.syncParentStudentsStrict({parent,students:[student],ragicRecordId:'42'}),writes:()=>writes,student};
 }
 test('source append calculates upstream code and retry does not append twice',async()=>{
@@ -43,8 +43,11 @@ test('foreign identity and failed duplicate checks never create',async()=>{
 test('missing identity never appends an undeduplicatable row',async()=>{const f=fixture();f.student.id_number='';await assert.rejects(f.run(),{code:'RAGIC_VALIDATION_ERROR'});assert.equal(f.writes(),0);});
 
 test('writer sends row fields as form data and retains field allowlist',async()=>{
+ const previousForm=process.env.RAGIC_FORM_Z01; process.env.RAGIC_FORM_Z01='/test/z01';
  const {createWriter}=require('../services/ragicWriter');let calls=0;
  const writer=createWriter({http:{post:async(url,body,options)=>{calls++;assert.equal(options.headers['Content-Type'],'application/x-www-form-urlencoded');assert.equal(new URLSearchParams(body).get('1001115_-1'),'test-child');return {data:{status:'SUCCESS'}};}},audit:async()=>{},alert:async()=>{}});
+ try {
  await writer.postFormPath(process.env.RAGIC_FORM_Z01,{'1001115_-1':'test-child'},{skipOldRead:true});
  await assert.rejects(writer.postFormPath(process.env.RAGIC_FORM_Z01,{'99999999_-1':'bad'},{skipOldRead:true}));assert.equal(calls,1);
+ } finally { if(previousForm===undefined)delete process.env.RAGIC_FORM_Z01;else process.env.RAGIC_FORM_Z01=previousForm; }
 });

@@ -988,6 +988,15 @@ function _toPhysGender(g) {
 async function createParentWithStudentsInRagic({ parent, students = [], lineUid }) {
   if (!parent || !parent.phone) throw new Error('parent.phone 必填');
   lineUid = _assertRealLineUidForZ01(lineUid, 'createParentWithStudentsInRagic');
+  // Validate the entire requested family before creating an upstream parent.
+  // Missing business fields require correction, never fabricated placeholders.
+  const seenStudentIds = new Set();
+  for (const student of students) {
+    const id = validateNewSourceStudent(student);
+    if (seenStudentIds.has(id)) throw Object.assign(new Error('學員身分資料重複，請核對'), { code: 'STUDENT_ID_NUMBER_EXISTS' });
+    seenStudentIds.add(id);
+    if (await getStudentByIdNumber(id)) throw Object.assign(new Error('學員已有來源資料，請核對既有家庭'), { code: 'STUDENT_ID_NUMBER_EXISTS' });
+  }
 
   const payload = {
     [FIELD.Z01.PARENT_NAME]:   parent.name || '',
@@ -1033,6 +1042,15 @@ async function createParentWithStudentsInRagic({ parent, students = [], lineUid 
 
 // Z01 owns the student subtable; Z02 is generated from it. Never synthesize its code.
 // Leave confirmed/uncertain upstream writes in place: retry reconciles by identity.
+function validateNewSourceStudent(student = {}) {
+  const id = String(student?.id_number || '').trim().toUpperCase();
+  const missing = [['姓名', student?.name], ['生日', student?.birth_date], ['性別', student?.gender], ['身分證字號', id]]
+    .filter(([, value]) => !String(value || '').trim()).map(([label]) => label);
+  if (missing.length) throw Object.assign(new Error('請補齊學員：' + missing.join('、')), { code: 'RAGIC_VALIDATION_ERROR' });
+  if (!/^[A-Z]\d{9}$/.test(id)) throw Object.assign(new Error('學員身分證字號格式錯誤，請核對英文字母與 9 碼數字'), { code: 'RAGIC_VALIDATION_ERROR' });
+  return id;
+}
+
 async function syncParentStudentsStrict({ parent, students = [], ragicRecordId }) {
   if (!ragicRecordId) throw Object.assign(new Error('缺少家長同步連結'), { code: 'PARENT_RAGIC_RECORD_REQUIRED' });
   const before = await getParentRecordByRagicId(ragicRecordId);
@@ -1049,11 +1067,7 @@ async function syncParentStudentsStrict({ parent, students = [], ragicRecordId }
   const seen = new Set(); const payload = {}; const ids = [];
   const sourceRows = parseZ01Students(before);
   for (const student of list) {
-    const id = String(student.id_number || '').trim().toUpperCase();
-    const missing = [['姓名', student.name], ['生日', student.birth_date], ['性別', student.gender], ['身分證字號', id]]
-      .filter(([, value]) => !String(value || '').trim()).map(([label]) => label);
-    if (missing.length) throw Object.assign(new Error('請補齊學員：' + missing.join('、')), { code: 'RAGIC_VALIDATION_ERROR' });
-    if (!/^[A-Z]\d{9}$/.test(id)) throw Object.assign(new Error('學員身分證字號格式錯誤，請核對英文字母與 9 碼數字'), { code: 'RAGIC_VALIDATION_ERROR' });
+    const id = validateNewSourceStudent(student);
     if (seen.has(id)) throw Object.assign(new Error('學員身分資料重複，請核對'), { code: 'STUDENT_ID_NUMBER_EXISTS' });
     seen.add(id);
     const matches = sourceRows.filter(row => row.id_number === id);
@@ -1203,7 +1217,7 @@ async function syncParentProfileStrict(parent, payloadByFieldId) {
   };
   let ragicRecordId = parent?.ragic_record_id || null;
   if (ragicRecordId) {
-    const existing = await getParentRecordByRagicId(ragicRecordId).catch(() => null);
+    const existing = await getParentRecordByRagicId(ragicRecordId);
     if (!existing) {
       console.warn('[parent-sync] 本地 ragic_record_id 在 Ragic 查無，改以手機重新定位', {
         staleId: String(ragicRecordId), phone: maskPhone(parent?.phone),
@@ -1215,7 +1229,7 @@ async function syncParentProfileStrict(parent, payloadByFieldId) {
   }
   if (!ragicRecordId) {
     ragicRecordId = await resolveParentRagicRecord({ ...parent, ragic_record_id: null });
-    const existing = await getParentRecordByRagicId(ragicRecordId).catch(() => null);
+    const existing = await getParentRecordByRagicId(ragicRecordId);
     if (existing) _assertNoZ01LineUidConflict(existing, lineUid, 'syncParentProfileStrict');
   }
   await upsertParentStrict(payloadByFieldId, ragicRecordId);
@@ -1283,6 +1297,7 @@ async function updateStudentInParentSubtable({ ragicRecordId, student }) {
 async function getStudentByIdNumber(idNumber) {
   const data = await query(process.env.RAGIC_FORM_Z02, { naming: 'EID', where: `${FIELD.Z02.ID_NUMBER},eq,${idNumber}` });
   const records = Object.values(data);
+  if (records.length > 1) throw Object.assign(new Error('學員身分對應多筆來源，請人工核對'), { code: 'STUDENT_ID_NUMBER_EXISTS' });
   return records[0] || null;
 }
 
@@ -1307,7 +1322,9 @@ async function getStudentsByParentPhone(phone) {
 async function getStudentByCode(studentCode) {
   if (!studentCode) return null;
   const data = await query(process.env.RAGIC_FORM_Z02, { naming: 'EID', where: `${FIELD.Z02.STUDENT_CODE},eq,${studentCode}` });
-  return Object.values(data)[0] || null;
+  const records = Object.values(data);
+  if (records.length > 1) throw Object.assign(new Error('學員編號對應多筆來源，請人工核對'), { code: 'STUDENT_ID_NUMBER_EXISTS' });
+  return records[0] || null;
 }
 
 // Z02：回寫學員資料（key 可用中文欄位名或 Field ID，內部統一翻譯成 Field ID）
@@ -1424,8 +1441,9 @@ async function upsertZ02ForParentStudent({ parent, student }) {
   if (!z02Record) return (await createStudentZ01Z02Strict({ parent, student })).z02;
   const setIdentity = false;
   const payload = await buildZ02StudentPayload({ parent, student, setIdentity });
-  const raw = await upsertStudentStrict(payload, z02Record?._ragicId || null);
-  return { ragicRecordId: z02Record?._ragicId || raw.ragicId || raw._ragicId || null, raw };
+  if (!recordId) throw Object.assign(new Error('既有學員來源缺少 record id'), { code: 'RAGIC_UNCONFIRMED_WRITE' });
+  const raw = await upsertStudentStrict(payload, recordId);
+  return { ragicRecordId: recordId, raw };
 }
 
 // New students must be created through Z01, then confirmed in generated Z02.
@@ -1439,7 +1457,7 @@ async function createStudentZ01Z02Strict({ parent, student }) {
 async function updateStudentZ01Z02Strict({ parent, student }) {
   const lineUid = _assertRealLineUidForZ01(parent?.line_uid, 'updateStudentZ01Z02Strict');
   const ragicRecordId = await resolveParentRagicRecord(parent);
-  const existing = await getParentRecordByRagicId(ragicRecordId).catch(() => null);
+  const existing = await getParentRecordByRagicId(ragicRecordId);
   if (existing) _assertNoZ01LineUidConflict(existing, lineUid, 'updateStudentZ01Z02Strict');
   await upsertParentStrict({ [FIELD.Z01.LINE_UID]: lineUid }, ragicRecordId);
   try {
@@ -1473,7 +1491,7 @@ async function updateStudentFromZ03Strict({ parent, student }) {
 async function deactivateStudentZ02Strict({ parent, student }) {
   const lineUid = _assertRealLineUidForZ01(parent?.line_uid, 'deactivateStudentZ02Strict');
   const ragicRecordId = await resolveParentRagicRecord(parent);
-  const existing = await getParentRecordByRagicId(ragicRecordId).catch(() => null);
+  const existing = await getParentRecordByRagicId(ragicRecordId);
   if (existing) _assertNoZ01LineUidConflict(existing, lineUid, 'deactivateStudentZ02Strict');
   await upsertParentStrict({ [FIELD.Z01.LINE_UID]: lineUid }, ragicRecordId);
   const z02 = await upsertZ02ForParentStudent({ parent, student });

@@ -17,6 +17,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const { pool } = require('../models/db');
+const { writeStudentAudit, parentActor: studentAuditParentActor } = require('../services/studentAudit');
 const { parseProofInput } = require('../services/paymentProof');
 const { requireParent, optionalParent } = require('../middlewares/parentAuth');
 const { maskName, maskNames } = require('../utils/piiMask');
@@ -180,6 +181,7 @@ async function resolveBoundStudents(client, parentId, studentIds, newStudents) {
        RETURNING id, name`,
       [parentId, s.name, s.birth_date || null, s.gender || '', s.id_number || '', s.blood_type || '']
     );
+    await writeStudentAudit(client, ins.rows[0].id, 'create', studentAuditParentActor(parentId, 'group-order-student-create'));
     ids.push(ins.rows[0].id);
     names.push(ins.rows[0].name);
     createdForRagic.push({ ...s, id: ins.rows[0].id }); // 新列 last_synced_at 預設 NULL（待同步）

@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const { pool } = require('../models/db');
+const { writeStudentAudit, parentActor } = require('./studentAudit');
 const ragic = require('./ragic');
 const parentSync = require('./parentSync');
 const { getTrueRagicLineUid } = require('../config/ragicSchema');
@@ -86,6 +87,7 @@ async function _insertOrReuseStudent(client, parentId, studentInput) {
      studentInput?.gender || '', String(studentInput?.id_number || '').trim().toUpperCase(),
      studentInput?.blood_type || '', studentInput?.student_code || '']
   )).rows[0];
+  await writeStudentAudit(client, student.id, 'create', parentActor(parentId, 'identity-registration-append'));
   return { student, appended: true };
 }
 
@@ -184,6 +186,7 @@ async function registerNewParentLocalFirst({
           [parent.id, sourceStudent.name, _safeDate(sourceStudent.birth_date), sourceStudent.gender || '',
            sourceStudent.id_number || '', sourceStudent.blood_type || '', sourceStudent.student_code || '']
         )).rows[0];
+        await writeStudentAudit(client, student.id, 'create', parentActor(parent.id, 'new-parent-registration'));
         localStudents.push(student);
       }
       linkedStudents.push(student);
@@ -776,6 +779,7 @@ async function claimZ03Identity({
           `INSERT INTO students (parent_id,name,is_active) VALUES ($1,$2,TRUE) RETURNING *`,
           [parent.id, studentName]
         )).rows[0];
+        if (!studentRows[0]) await writeStudentAudit(client, student.id, 'create', parentActor(parent.id, 'legacy-claim-local-identity'));
         await client.query(
           `UPDATE ragic_z03_students SET canonical_student_id=$2
             WHERE id=ANY($1::bigint[])`,
@@ -957,6 +961,7 @@ async function claimZ03Identity({
         [parent.id, matchedChild.name_raw, _safeDate(matchedChild.birth_date_raw),
          matchedChild.gender_raw || '', matchedChild.blood_type_raw || '', matchedChild.student_code_raw || '']
       )).rows[0];
+      await writeStudentAudit(client, student.id, 'create', parentActor(parent.id, 'legacy-claim-source-mirror'));
     }
 
     const claim = (await client.query(

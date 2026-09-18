@@ -1963,6 +1963,9 @@ CREATE INDEX IF NOT EXISTS idx_ragic_z01_shadow_fetched ON ragic_z01_shadow(fetc
 
 -- Preserve the independent student source, including rows absent from a parent subtable.
 CREATE TABLE IF NOT EXISTS ragic_z02_shadow (LIKE ragic_z01_shadow INCLUDING ALL);
+ALTER TABLE ragic_z02_shadow ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;
+ALTER TABLE ragic_z02_shadow ADD COLUMN IF NOT EXISTS missing_since TIMESTAMPTZ;
+ALTER TABLE ragic_z02_shadow ADD COLUMN IF NOT EXISTS present_in_latest_pull BOOLEAN NOT NULL DEFAULT TRUE;
 
 -- H01（員工）/H05（場館）影子表：同一套「無腦 pull → 從 shadow 清洗」分工，補上
 -- 決策9「所有 RAGIC 的同步都用影子表格式」原本沒收斂到的兩個表單（見 ragicAdmin.js
@@ -2011,6 +2014,23 @@ CREATE TABLE IF NOT EXISTS ragic_h23_shadow (
 );
 CREATE INDEX IF NOT EXISTS idx_ragic_h23_shadow_fetched ON ragic_h23_shadow(fetched_at);
 CREATE INDEX IF NOT EXISTS idx_ragic_h23_shadow_staff ON ragic_h23_shadow(staff_emp_id, staff_name);
+
+CREATE TABLE IF NOT EXISTS ragic_webhook_inbox (
+  sheet_code TEXT NOT NULL,
+  ragic_record_id TEXT NOT NULL,
+  event_type TEXT,
+  revision BIGINT NOT NULL DEFAULT 1,
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','retryable','completed','blocked')),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 8,
+  last_error_code TEXT,
+  next_retry_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  completed_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (sheet_code,ragic_record_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ragic_webhook_inbox_pending
+  ON ragic_webhook_inbox(next_retry_at) WHERE state IN ('pending','retryable');
 
 CREATE TABLE IF NOT EXISTS ragic_webhook_log (
   id BIGSERIAL PRIMARY KEY,
@@ -2235,10 +2255,23 @@ async function seedVenuesCoachesParents() {
         [parentId, s.name]
       );
       if (exist.rows.length === 0) {
-        await pool.query(
-          `INSERT INTO students (parent_id, name, birth_date) VALUES ($1, $2, $3)`,
-          [parentId, s.name, s.birth]
-        );
+        const seedClient = await pool.connect();
+        try {
+          await seedClient.query('BEGIN');
+          const inserted = await seedClient.query(
+            `INSERT INTO students (parent_id, name, birth_date) VALUES ($1, $2, $3) RETURNING id`,
+            [parentId, s.name, s.birth]
+          );
+          await require('../services/studentAudit').writeStudentAudit(seedClient, inserted.rows[0].id, 'create', {
+            byUser: 'system:demo-seed', byRole: 'system', note: 'demo-student-seed',
+          });
+          await seedClient.query('COMMIT');
+        } catch (err) {
+          await seedClient.query('ROLLBACK').catch(() => {});
+          throw err;
+        } finally {
+          seedClient.release();
+        }
       }
     }
   }

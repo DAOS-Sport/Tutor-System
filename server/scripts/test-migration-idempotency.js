@@ -78,6 +78,7 @@ async function main() {
       );
       CREATE TABLE admin_enrollments (
         id TEXT PRIMARY KEY,
+        status TEXT NOT NULL DEFAULT 'confirmed',
         group_order_id UUID,
         enrollment_batch_id UUID,
         period_number INTEGER NOT NULL DEFAULT 1,

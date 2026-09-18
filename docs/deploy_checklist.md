@@ -57,8 +57,12 @@
 ## 6. 備份策略
 - 腳本：`scripts/backup_db.sh`
 - 排程：建議在 Replit Scheduled Deployments 設每日 03:00（台北）執行一次
-- 保留期：本地 30 天由 `scripts/backup_db.sh` 自行刪除；遠端（Object Storage）保留期由 bucket lifecycle policy 控制（建議 30~90 天），腳本端不主動刪除遠端
-- 還原步驟：`pg_restore -d $DATABASE_URL <下載的 .sql.gz>`（先解壓 `gunzip`）
+- 格式：`pg_dump --format=plain --no-owner --no-privileges | gzip`，產物是 `.sql.gz` 純 SQL，使用 `psql` 還原。
+- 保留期：本機暫存於成功上傳後刪除；上傳失敗時保留並顯示檔案路徑。遠端保留期由 bucket lifecycle policy 控制（建議 30~90 天），腳本不主動刪除遠端。
+- 還原前先下載指定備份、驗證來源／檔案雜湊，準備 PostgreSQL 相容版本的獨立空資料庫，保留現行資料庫作回復來源。
+- 還原指令：`RESTORE_DATABASE_URL='<隔離空資料庫連線>' bash scripts/restore_db.sh '<下載的.sql.gz>' --confirm-database '<隔離資料庫名稱>'`。不得填現行正式資料庫；helper 會核對實際 DB 名稱、拒絕非空目標，並以 `psql -X --single-transaction -v ON_ERROR_STOP=1` 執行，任一 SQL 失敗全數回滾。
+- 還原後核對表／筆數、外鍵／索引、序列、自訂函式及應用唯讀查詢。Object Storage 附件需另外確認，資料庫還原不代表附件內容已還原。
+- 切換正式連線屬獨立發布步驟：先停止業務寫入、保存切換前備份，再依核准時窗切換；回復時停寫並切回保留的原資料庫，避免兩邊同時接收寫入。
 
 ## 7. 監控與告警（建議）
 - [ ] Workflow / Deployment logs 接 Replit 內建 alerting

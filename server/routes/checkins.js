@@ -22,6 +22,7 @@ const { broadcastAdminEvent } = require('../services/websocket');
 const { getFeatureFlag, flagAllowsPhone } = require('../services/featureFlags');
 const { syncStoredUsage } = require('../services/usageSync');
 const { notifyCheckinSafely } = require('../services/checkinNotify');
+const { assertCourseEntitlement } = require('../services/courseEntitlements');
 
 /**
  * U13 免預約自助簽到 —— checkin_mode='self' 的課程期，家長不需先排課：
@@ -88,6 +89,11 @@ router.post('/self', requireParent, async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '此課程期已到期，請洽櫃檯', code: 'PERIOD_EXPIRED' });
     }
+    const entitledStudents = await assertCourseEntitlement(client, periodId);
+    if (studentIds.some(id => !entitledStudents.includes(id))) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '所選學員已退費或權益停用', code: 'STUDENT_ENTITLEMENT_INACTIVE' });
+    }
 
     // 請求中的學員必須屬於本家長且在本期 active 名單中（防越權／防誤選）。
     // v2 對共享課期的實際 attendance 會由後端重新取得完整 active roster，不能
@@ -114,10 +120,11 @@ router.post('/self', requireParent, async (req, res) => {
            JOIN students s ON s.id = cpe.student_id
           WHERE cpe.course_period_id = $1
             AND cpe.status = 'active'
+            AND cpe.student_id = ANY($2::uuid[])
             AND COALESCE(s.is_active, TRUE) = TRUE
           ORDER BY s.id
           FOR SHARE OF cpe, s`,
-        [periodId]
+        [periodId, entitledStudents]
       )
       : own;
     if (!activeParticipants.rowCount) {
@@ -304,6 +311,7 @@ router.post('/self', requireParent, async (req, res) => {
     });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
+    if (err.status === 409) return res.status(409).json({ error: err.message, code: err.code });
     console.error('[checkins/self POST]', err);
     res.status(500).json({ error: '簽到失敗，請稍後再試或洽櫃檯', code: 'SELF_CHECKIN_FAILED' });
   } finally {
@@ -343,7 +351,7 @@ router.post('/', requireParent, async (req, res) => {
         WHERE cs.id = $1
           AND EXISTS (
                 SELECT 1 FROM course_period_enrollments cpe
-                 WHERE cpe.course_period_id = cp.id AND cpe.student_id = $2
+                 WHERE cpe.course_period_id = cp.id AND cpe.student_id = $2 AND cpe.status = 'active'
               )
         FOR UPDATE OF cp`,
       [sessionId, studentId]
@@ -355,7 +363,9 @@ router.post('/', requireParent, async (req, res) => {
       return res.status(403).json({ error: '該學員未在此課程名單中' });
     }
 
-    const sessionStatus = ctx.rows[0].session_status;
+    const entitledStudents = await assertCourseEntitlement(client, ctx.rows[0].period_id, studentId);
+    const freshSession = await client.query('SELECT status FROM course_sessions WHERE id = $1 FOR UPDATE', [sessionId]);
+    const sessionStatus = freshSession.rows[0]?.status;
     if (!['confirmed', 'completed'].includes(sessionStatus)) {
       await client.query('ROLLBACK');
       return res.status(409).json({
@@ -376,9 +386,10 @@ router.post('/', requireParent, async (req, res) => {
            FROM course_period_enrollments cpe
            JOIN students s ON s.id = cpe.student_id
           WHERE cpe.course_period_id = $3 AND cpe.status = 'active'
+            AND cpe.student_id = ANY($4::uuid[])
             AND COALESCE(s.is_active, TRUE) = TRUE
          ON CONFLICT (course_session_id, student_id) DO NOTHING`,
-        [sessionId, req.parent.id, ctx.rows[0].period_id]
+        [sessionId, req.parent.id, ctx.rows[0].period_id, entitledStudents]
       );
     } else {
       await client.query(
@@ -403,7 +414,8 @@ router.post('/', requireParent, async (req, res) => {
       [ctx.rows[0].period_id]
     );
     await client.query(
-      `UPDATE course_sessions SET session_deducted = TRUE, updated_at = NOW() WHERE id = $1`,
+      `UPDATE course_sessions SET status = 'completed', completed_at = COALESCE(completed_at, NOW()),
+        session_deducted = TRUE, updated_at = NOW() WHERE id = $1`,
       [sessionId]
     );
     await syncStoredUsage(client, { ...ctx.rows[0], id: ctx.rows[0].period_id }, Number(usedRes.rows[0]?.n || 0));
@@ -432,6 +444,7 @@ router.post('/', requireParent, async (req, res) => {
     res.json({ ok: true, checkin_id: row.id, checked_in_at: row.checked_in_at, source: row.checked_in_source || 'parent' });
   } catch (err) {
     await client.query('ROLLBACK');
+    if (err.status === 409) return res.status(409).json({ error: err.message, code: err.code });
     console.error('[checkins POST]', err);
     res.status(500).json({ error: 'checkin failed' });
   } finally {
