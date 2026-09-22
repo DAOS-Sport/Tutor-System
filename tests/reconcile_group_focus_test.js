@@ -206,8 +206,28 @@ const t = (name, fn) => { fn(); passed += 1; console.log('PASS ' + name); };
     });
   });
 
+  t('聚焦的團全部對完帳後仍有出口（不會永久空白）', () => {
+    // 覆核抓到的死路：對完最後一張之後 list 裡就沒有這個 group id，
+    // groupFocusInfo 變 null；橫幅若跟著消失、過濾卻還在，表格會永久空白。
+    const o3 = build(LIST);
+    return o3.settle().then(() => {
+      findButton(parentCell(o3, LIST[0]), '同團').props.onClick();
+      o3.render();
+      assert.equal(table(o3).rows.length, 2, '先確認有聚焦成功');
+      // 模擬：這一團的付款單都對完了，重新載入後 list 裡沒有它們
+      o3.slots[0] = LIST.filter((r) => String(r.group_order?.id || '') !== GROUP_ID);
+      o3.render();
+      assert.equal(table(o3).rows.length, 0, 'fixture 應該讓表格空掉');
+      const back = findButton(o3.tree, '顯示全部');
+      assert.ok(back, '沒有「顯示全部」＝櫃檯被困住，只能重新整理');
+      assert.match(words(o3.tree), /都已經對帳完了/, '應該說明為什麼是空的');
+      back.props.onClick(); o3.render();
+      assert.equal(table(o3).rows.length, 3, '按下去要回到全部');
+    });
+  });
+
   // 上一條是非同步的，等它跑完再收尾
   await new Promise((r) => setImmediate(r));
   console.log(`\n${passed} 個測試全數通過`);
-  if (passed < 7) process.exitCode = 1;
+  if (passed < 8) process.exitCode = 1;
 })().catch((e) => { console.error(e); process.exitCode = 1; });

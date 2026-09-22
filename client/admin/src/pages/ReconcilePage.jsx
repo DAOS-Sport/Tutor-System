@@ -883,13 +883,17 @@ export default function ReconcilePage() {
         }
       />
       <FilterBar fields={filterFields} values={filters} onChange={setFilters} onReset={() => setFilters(EMPTY_FILTERS)} />
-      {groupFocusInfo && (
+      {/* 條件是 groupFocus 而不是 groupFocusInfo：把該團最後一張對帳完之後，
+          list 裡就再也找不到這個 group id，groupFocusInfo 會變 null。若橫幅跟著消失，
+          過濾條件卻還在，表格會永久空白而且沒有出口。 */}
+      {groupFocus && (
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-indigo-300 bg-indigo-50 px-4 py-2">
           <div className="text-sm text-indigo-900">
-            只顯示這一團的付款單・同團 <b>{groupFocusInfo.checkout_count}</b> 家
+            {!groupFocusInfo && '這一團的付款單都已經對帳完了。'}
+            {groupFocusInfo && <>只顯示這一團的付款單・同團 <b>{groupFocusInfo.checkout_count}</b> 家</>}
             {/* 清單只載入「待對帳」的，同團已經對完的那幾家不在畫面上。講清楚，
                 不然櫃檯會以為這團只有這幾家。 */}
-            {groupFocusInfo.checkout_count > groupFocusInfo.pending_checkout_count && (
+            {groupFocusInfo && groupFocusInfo.checkout_count > groupFocusInfo.pending_checkout_count && (
               <span className="ml-1 text-indigo-700">
                 （其中 {groupFocusInfo.checkout_count - groupFocusInfo.pending_checkout_count} 家已不在待對帳清單）
               </span>
