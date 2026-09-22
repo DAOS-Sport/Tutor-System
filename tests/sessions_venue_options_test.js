@@ -69,11 +69,22 @@ async function expectedIds() {
     for (const v of r.body) assert.ok(v.name && String(v.name).trim(), v.id + ' 沒有名字');
   });
 
+  // 不用「選項數 < 場館數」來證明收斂 —— 那是在斷言資料長相，換一份 fixture 就紅。
+  // 直接找出「啟用中但一堂課都沒有」的館，斷言它們一個都沒被列進來；這才是程式行為。
   await t('選項是「上課紀錄的館」而不是「整張場館表」', async () => {
-    const all = (await pool.query(`SELECT count(*)::int AS n FROM venues WHERE is_active`)).rows[0].n;
+    const idle = (await pool.query(
+      `SELECT v.id FROM venues v
+        WHERE v.is_active
+          AND NOT EXISTS (SELECT 1 FROM course_sessions cs
+                            JOIN course_periods cp ON cp.id = cs.course_period_id
+                           WHERE cp.venue_id = v.id AND cs.status::text NOT LIKE 'cancelled%')
+          AND NOT EXISTS (SELECT 1 FROM admin_today_sessions ats WHERE ats.venue_id = v.id)
+        ORDER BY v.id`)).rows.map((v) => v.id);
     const r = await get('/api/admin/sessions/venue-options', adminToken);
-    assert.ok(r.body.length < all,
-      `選項 ${r.body.length} 個、啟用中場館 ${all} 個 —— 沒有收斂就等於這個需求沒做到`);
+    const got = new Set(r.body.map((v) => v.id));
+    const leaked = idle.filter((id) => got.has(id));
+    assert.deepStrictEqual(leaked, [], '這些館沒有任何上課紀錄卻被列進選項：' + leaked.join(', '));
+    if (!idle.length) console.log('  （這份資料裡沒有「啟用但無課」的館，本條斷言為真空通過）');
   });
 
   await t('沒有 token 進不來（這支跟 range 同一個 requireResource）', async () => {
@@ -100,18 +111,32 @@ async function expectedIds() {
     assert.ok(want.size > 1, '至少要有兩個有課的館，這條斷言才證明得了「越權的被濾掉」');
   });
 
+  // 這條需要一個「啟用但沒課」的館。環境裡剛好有就用現成的，沒有就自己建一個
+  // 拋棄式的再刪掉 —— 不要讓斷言的成立與否取決於這份資料剛好長什麼樣。
   await t('綁到沒課的館 → 回空陣列，不是整張表', async () => {
-    const empty = (await pool.query(
+    const existing = (await pool.query(
       `SELECT id FROM venues WHERE is_active AND id <> ALL($1::text[]) LIMIT 1`,
       [[...want]]
     )).rows[0];
-    assert.ok(empty, 'dev 上要有一個「啟用但沒課」的館，這條斷言才有意義');
-    const token = signToken({
-      id: 'TEST_SCOPED2', username: 'test_scoped2', role: SCOPED_ROLE, venue_ids: [empty.id],
-    });
-    const r = await get('/api/admin/sessions/venue-options', token);
-    assert.strictEqual(r.status, 200, '狀態碼 ' + r.status);
-    assert.deepStrictEqual(r.body, []);
+    const TEMP_ID = 'ZZIDLE';
+    let temp = false;
+    if (!existing) {
+      await pool.query(
+        `INSERT INTO venues(id, name, is_active) VALUES ($1, $2, TRUE)
+         ON CONFLICT (id) DO UPDATE SET is_active = TRUE`, [TEMP_ID, '測試用空館']);
+      temp = true;
+    }
+    const venueId = existing ? existing.id : TEMP_ID;
+    try {
+      const token = signToken({
+        id: 'TEST_SCOPED2', username: 'test_scoped2', role: SCOPED_ROLE, venue_ids: [venueId],
+      });
+      const r = await get('/api/admin/sessions/venue-options', token);
+      assert.strictEqual(r.status, 200, '狀態碼 ' + r.status);
+      assert.deepStrictEqual(r.body, []);
+    } finally {
+      if (temp) await pool.query('DELETE FROM venues WHERE id = $1', [TEMP_ID]);
+    }
   });
 
   await t('選項裡的每一館，用它去查 range 都真的查得到東西（判準一致）', async () => {

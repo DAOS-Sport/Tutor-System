@@ -34,6 +34,8 @@ const UNIT = [
   'tests/sync_hardening_test.js',
   'tests/tutoring_feed_test.js',
   'tests/weekly_filters_2026_09_test.js',
+  'tests/coach_home_layout_test.js',
+  'tests/reconcile_group_focus_test.js',
   'tests/pii_mask_unicode_test.js',
   'tests/outbox_poison_guard_test.js',
   'tests/trial_price_multiplier_test.js',
@@ -160,6 +162,10 @@ const UNIT = [
 // 需要真實 Postgres。多數含破壞性前置清理，只可對拋棄式測試庫執行。
 const DB = [
   'tests/refund_entitlement_db_test.js',
+  'tests/course_entitlement_is_active_db_test.js',
+  'tests/counter_entitlement_routes_db_test.js',
+  'tests/expiry_reminder_scope_db_test.js',
+  'tests/reconcile_group_link_db_test.js',
   'tests/ragic_webhook_inbox_db_test.js',
   'tests/student_audit_isolated_test.js',
   'tests/tutor_consistency_repair_db_test.js',
