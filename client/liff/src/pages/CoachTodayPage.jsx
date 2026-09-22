@@ -15,6 +15,22 @@ import { promotionValueLabel } from '../utils/promotionLabel';
  * 家長的報名價，教練被問到時要答得出來 —— 埋在個人頁裡他不會每天去翻。
  * 報名狀態與快捷鍵仍在別的分頁，沒有搬回來。
  */
+/**
+ * 剩餘天數徽章的文字與配色。
+ *
+ * 顏色只分三級，刻意不做漸層：教練一眼要分出「要立刻打電話」跟「先知道一下」。
+ * 一個月是營運上的分界 —— 六堂課的期別，剩不到一個月才開始需要催進度。
+ * 色票一律走設計系統的 brand-*，不引入原生 orange/red（全 liff 已經有過
+ * emerald 孤例的教訓，見 tests/coach_checkin_badge_style_test.js）。
+ */
+const EXPIRY_URGENT_DAYS = 30;
+function expiryBadge(daysLeft) {
+  if (daysLeft == null) return { text: '—', cls: 'bg-gray-100 text-gray-500' };
+  if (daysLeft < 0) return { text: '已過期', cls: 'bg-brand-error text-white' };
+  if (daysLeft === 0) return { text: '今天到期', cls: 'bg-brand-error text-white' };
+  if (daysLeft <= EXPIRY_URGENT_DAYS) return { text: `剩 ${daysLeft} 天`, cls: 'bg-brand-amber/15 text-brand-amber' };
+  return { text: `剩 ${daysLeft} 天`, cls: 'bg-brand-green/15 text-brand-green' };
+}
 export default function CoachTodayPage() {
   const { coach } = useAuth();
   const navigate = useNavigate();
@@ -52,8 +68,13 @@ export default function CoachTodayPage() {
       <section className="relative mb-5 overflow-hidden rounded-2xl bg-gradient-to-br from-brand-primary to-brand-teal p-4 text-white shadow-md">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-xs opacity-90">{coach.name} 教練</p>
-            <h2 className="mt-1 text-lg font-bold">{todayLabel}</h2>
+            <p className="flex items-center gap-1.5 text-xs opacity-90">
+              <span className="truncate">{coach.name} 教練</span>
+              {/* 綠點＝「這是你本人的帳號」。教練在排課總表會看到一整排別人的名字，
+                  首頁這顆點是他確認自己登入對帳號的唯一線索。 */}
+              <span aria-hidden="true" className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-brand-green" />
+            </p>
+            <h2 className="mt-1 text-2xl font-bold tracking-tight">{todayLabel}</h2>
           </div>
           {coach.is_senior && (
             <span className="flex shrink-0 items-center gap-1 rounded-xl border border-white/25 bg-white/15 px-2.5 py-1 text-[11px] font-bold tracking-wider shadow-inner backdrop-blur-sm">
@@ -94,52 +115,71 @@ export default function CoachTodayPage() {
       )}
       {expiring && (
         <section className="mb-5">
-          <button
-            type="button"
-            onClick={() => setExpandExpiring((v) => !v)}
-            aria-expanded={expandExpiring}
-            className="flex w-full items-center justify-between gap-3 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-left active:opacity-80"
-          >
-            <div className="min-w-0">
-              <div className="text-sm font-bold text-amber-900">
-                3 個月內即將到期 {expiring.count} 組
-              </div>
-              <div className="mt-0.5 text-xs leading-5 text-amber-800">請提醒家長進行授課</div>
-            </div>
-            <span className="shrink-0 text-amber-700">{expandExpiring ? '收合' : '查看'}</span>
-          </button>
+          <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4">
+            <button
+              type="button"
+              onClick={() => setExpandExpiring((v) => !v)}
+              aria-expanded={expandExpiring}
+              className="flex w-full items-center justify-between gap-3 text-left active:opacity-80"
+            >
+              <span className="flex min-w-0 items-center gap-2">
+                <span className="text-sm font-bold text-amber-900">即將到期通知</span>
+                <span className="shrink-0 rounded-full bg-amber-200 px-2 py-0.5 text-[11px] font-bold text-amber-900">
+                  {expiring.count} 組
+                </span>
+              </span>
+              <span className="flex shrink-0 items-center gap-1 text-xs text-amber-700">
+                {expandExpiring ? '收合' : '查看'}
+                <svg viewBox="0 0 12 12" aria-hidden="true"
+                  className={`h-3 w-3 transition-transform ${expandExpiring ? '' : 'rotate-180'}`}>
+                  <path d="M2 8L6 4l4 4" fill="none" stroke="currentColor"
+                    strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </span>
+            </button>
+
+            {/* 這顆紅藥丸是「要做什麼」的提示，不是另一顆按鈕 —— 上面那顆已經負責
+                展開／收合，再放一顆同義的按鈕只會讓人猶豫該按哪個。收合時也看得到，
+                因為它才是這張卡存在的理由。 */}
+            <p className="mt-3">
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-brand-error px-3 py-1.5 text-xs font-bold text-white shadow-sm">
+                <span aria-hidden="true">⚠</span>請提醒家長進行授課
+              </span>
+            </p>
+          </div>
 
           {expandExpiring && (
             <div className="mt-2 space-y-2">
               {expiring.items.length === 0 && <p className="p-3 text-sm text-gray-500">目前沒有 3 個月內到期的報名。</p>}
-              {expiring.items.map((it) => (
-                <button key={it.id} type="button"
-                  onClick={() => navigate(`/coach/orders?enrollment=${encodeURIComponent(it.id)}`)}
-                  className="w-full rounded-xl border border-gray-200 bg-white p-3 text-left active:bg-gray-50">
-                  <div className="flex items-baseline justify-between gap-2">
-                    <div className="min-w-0 text-sm font-bold text-gray-900">
-                      {(it.students || []).join('、') || '（無學員資料）'}
+              {expiring.items.map((it) => {
+                const badge = expiryBadge(it.days_left);
+                return (
+                  <button key={it.id} type="button"
+                    onClick={() => navigate(`/coach/orders?enrollment=${encodeURIComponent(it.id)}`)}
+                    className="w-full rounded-xl border border-gray-200 bg-white p-3 text-left shadow-sm active:bg-gray-50">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 text-sm font-bold text-gray-900">
+                        {(it.students || []).join('、') || '（無學員資料）'}
+                      </div>
+                      <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-bold ${badge.cls}`}>
+                        {badge.text}
+                      </span>
                     </div>
-                    <div className={`shrink-0 text-xs font-bold ${
-                      it.days_left <= 0 ? 'text-brand-error' : 'text-amber-700'}`}>
-                      {it.days_left < 0 ? '已過期'
-                        : it.days_left === 0 ? '今天到期' : `剩 ${it.days_left} 天`}
+                    {/* 「是哪一筆報名」要看得出來：組別、場館、期別、堂數缺一不可 ——
+                        同一位學員可能有多期，只寫姓名教練找不到是哪一張單。 */}
+                    <div className="mt-1 text-[11px] leading-5 text-gray-500">
+                      {courseTypeLabel(it.course_type)}
+                      {it.venue_name ? `・${it.venue_name}` : ''}
+                      {it.period_number ? `・第 ${it.period_number} 期` : ''}
+                      {it.total_sessions ? `・${it.used_sessions ?? 0}/${it.total_sessions} 堂` : ''}
                     </div>
-                  </div>
-                  {/* 「是哪一筆報名」要看得出來：組別、場館、期別、堂數缺一不可 ——
-                      同一位學員可能有多期，只寫姓名教練找不到是哪一張單。 */}
-                  <div className="mt-1 text-[11px] leading-5 text-gray-500">
-                    {courseTypeLabel(it.course_type)}
-                    {it.venue_name ? `・${it.venue_name}` : ''}
-                    {it.period_number ? `・第 ${it.period_number} 期` : ''}
-                    {it.total_sessions ? `・${it.used_sessions ?? 0}/${it.total_sessions} 堂` : ''}
-                  </div>
-                  <div className="mt-0.5 text-[11px] text-gray-400">
-                    期限 {formatPlainDate(it.course_expires_at)} 23:59
-                  </div>
-                  <div className="mt-2 text-xs font-medium text-brand-teal">查看這筆報名 →</div>
-                </button>
-              ))}
+                    <div className="mt-0.5 text-[11px] text-gray-400">
+                      期限 {formatPlainDate(it.course_expires_at)} 23:59
+                    </div>
+                    <div className="mt-2 text-xs font-medium text-brand-teal">查看這筆報名 →</div>
+                  </button>
+                );
+              })}
             </div>
           )}
         </section>
