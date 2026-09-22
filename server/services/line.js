@@ -808,13 +808,16 @@ function checkinConfirmedToCoach({ studentNames, courseType, venueName, checkedI
   // 共班一次寫入整班，所以學員是清單而不是單一個。
   const names = (Array.isArray(studentNames) ? studentNames : [studentNames])
     .map((x) => String(x || '').trim()).filter(Boolean);
-  const title = names.join('、') || '學員';
+  // 標題固定文案（2026-09-22 Owner 指定）。原本是把學員名單當標題，改成固定抬頭、
+  // 學員改列進內文欄位 —— 教練在聊天室列表一眼就知道是哪一類通知，不必先認名字。
+  // 註：這裡刻意用 emoji，與 tests/coach_push_scope_test.js 原本「標題不用 emoji」
+  // 的設計鎖相反，是 Owner 當面改的決定；該測試已改成正面斷言指定文案。
+  const NOTIFY_TITLE = '🔔學員簽到通知🔔';
+  const studentLabel = names.join('、') || '—';
 
-  // altText 是鎖定畫面／通知列看到的那一行，上限 400 字。整班名單串起來可能很長，
-  // 所以人多時只留第一位加人數 —— 教練滑開就看得到完整名單。
-  const altText = names.length > 1
-    ? `${names[0]} 等 ${names.length} 位已簽到`
-    : `${title} 已簽到`;
+  // altText 是鎖定畫面／通知列看到的那一行（上限 400 字）。跟標題一致，
+  // 教練不用滑開就知道這是簽到通知；是誰簽的滑開第一欄就看得到。
+  const altText = NOTIFY_TITLE;
 
   // 標籤／值兩欄對齊。字串串接（「組別：1 對 2」）的值起點會隨標籤字數浮動，
   // 三四行疊起來就參差不齊。
@@ -848,7 +851,7 @@ function checkinConfirmedToCoach({ studentNames, courseType, venueName, checkedI
                 ],
               },
               {
-                type: 'text', text: title, weight: 'bold', size: 'md', color: '#FFFFFF',
+                type: 'text', text: NOTIFY_TITLE, weight: 'bold', size: 'md', color: '#FFFFFF',
                 margin: 'sm', wrap: true, lineSpacing: '3px',
               },
             ],
@@ -868,7 +871,8 @@ function checkinConfirmedToCoach({ studentNames, courseType, venueName, checkedI
       body: {
         type: 'box', layout: 'vertical',
         contents: [
-          ...(courseType ? [kv('組別', courseType, true)] : []),
+          kv('學員', studentLabel, true),
+          ...(courseType ? [kv('組別', courseType)] : []),
           kv('簽到時間', twTime(checkedInAt)),
           ...(venueName ? [kv('場館', venueName)] : []),
           { type: 'separator', margin: 'lg' },
