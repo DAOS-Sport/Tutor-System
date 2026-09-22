@@ -66,14 +66,25 @@ async function lockRefundPeriods(client, enrollmentId) {
   return periods;
 }
 
-async function assertCourseEntitlement(client, periodId, studentId = null) {
+async function assertCourseEntitlement(client, periodId, studentId = null, options = {}) {
   const period = (await client.query('SELECT * FROM course_periods WHERE id = $1 FOR UPDATE', [periodId])).rows[0];
   if (!period || period.status !== 'active' || period.entitlement_state !== 'ACTIVE') {
     throw conflict('PERIOD_ENTITLEMENT_INACTIVE', '此課程期已停用或退費，無法簽到或扣課');
   }
   const linked = await linkedEnrollments(client, period);
+  // 解析不到來源報名就沒有任何退費狀態可查。原本這裡會因為 closed.length === 0
+  // 而一路放行（fail-open），等於 Issue #4 想堵的情境完全沒有防線。
+  if (!linked.length) {
+    throw conflict('ENROLLMENT_SOURCE_UNRESOLVED', '找不到此課程期的來源報名，無法確認退費狀態，請先人工核對');
+  }
   const closed = linked.filter(row => ['refunded', 'cancelled'].includes(row.status));
   if (!period.group_order_id && closed.length) {
+    // 家庭共班（enrollment_batch_id）的 admin_enrollments.students 只有姓名、沒有
+    // student UUID，無法把「哪一筆報名退了」對應到「哪一個學員」。部分退款時不能
+    // 靠姓名猜，也不該把還在付費的兄弟一起擋成「你已退費」——回可辨識的人工覆核碼。
+    if (period.enrollment_batch_id && closed.length < linked.length) {
+      throw conflict('REFUND_IDENTITY_REVIEW_REQUIRED', '同批家庭共班有部分退費訂單，無法自動判定個別學員權益，請先人工核對');
+    }
     throw conflict('ENROLLMENT_ENTITLEMENT_INACTIVE', '來源報名已退費或取消，請先核對課程權益');
   }
   let studentIds = null;
@@ -88,12 +99,34 @@ async function assertCourseEntitlement(client, periodId, studentId = null) {
       throw conflict('REFUND_IDENTITY_REVIEW_REQUIRED', '同一家長有部分退費訂單，請先核對學員權益');
     }
   }
-  const roster = (await client.query(
-    `SELECT cpe.student_id FROM course_period_enrollments cpe
+  // 名單一律排除停用學員：原本這裡 JOIN 了 students 卻不看 is_active，造成
+  // 「守門放行、最終寫入過濾」的相反語意——跨家庭共享課期會回 201 成功，
+  // 出席卻寫給別人家小孩，或一筆都沒寫。
+  // 唯一例外是呼叫端明確指名的 studentId：櫃檯手動扣課對停用學員補登出席是
+  // 既有且刻意的行為（見 admin/manualDeductions.js 的 attendanceRoster 註解），
+  // 需要嚴格語意的呼叫端請傳 { requireActiveStudent: true }。
+  const rosterRows = (await client.query(
+    `SELECT cpe.student_id, COALESCE(s.is_active, TRUE) AS is_active
+       FROM course_period_enrollments cpe
        JOIN students s ON s.id = cpe.student_id
       WHERE cpe.course_period_id = $1 AND cpe.status = 'active'
         AND ($2::uuid[] IS NULL OR cpe.student_id = ANY($2::uuid[]))`, [periodId, studentIds]
-  )).rows.map(row => row.student_id);
+  )).rows;
+  const named = studentId == null ? null : String(studentId);
+  // 例外的條件是「名單裡已經沒有任何未停用的學員」，不是「名單只有一人」。
+  // 為什麼：admin/manualDeductions.js 的 attendanceRoster 與前端
+  // ManualDeductionPage.jsx 的 anchor fallback 都刻意保留「全員停用時仍以名單
+  // 第一位補登」的語意 —— 停用學員的補登要留下出席紀錄，否則扣課會變成無出席
+  // 的幽靈 session。用「只有一人」當條件會讓「全員停用的共享課期」被擋掉，
+  // 那是對共享課期單獨加的硬擋，踩到凍結令第 3 條。
+  // 只要名單裡還有一位未停用的學員，例外就不成立 —— 那正是「出席寫給別人家
+  // 小孩」的入口（慧娟案）。需要嚴格語意的呼叫端傳 { requireActiveStudent: true }。
+  const hasActive = rosterRows.some(row => row.is_active);
+  const namedInRoster = named !== null && rosterRows.some(row => String(row.student_id) === named);
+  const keepNamedInactive = namedInRoster && !hasActive && options.requireActiveStudent !== true;
+  const roster = rosterRows
+    .filter(row => row.is_active || (keepNamedInactive && String(row.student_id) === named))
+    .map(row => row.student_id);
   if (!roster.length || (studentId && !roster.includes(studentId))) {
     throw conflict('STUDENT_ENTITLEMENT_INACTIVE', '學員已退費或不在有效課程名單中');
   }

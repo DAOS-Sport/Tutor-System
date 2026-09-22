@@ -90,7 +90,15 @@ router.post('/self', requireParent, async (req, res) => {
       return res.status(409).json({ error: '此課程期已到期，請洽櫃檯', code: 'PERIOD_EXPIRED' });
     }
     const entitledStudents = await assertCourseEntitlement(client, periodId);
-    if (studentIds.some(id => !entitledStudents.includes(id))) {
+    // 2026-09-22（凍結檔改動，已取得 Owner 同意）：這裡原本是「送上來的名單有任何
+    // 一位不在有效名單就整批 409」。前端 SelfCheckinModal 已刻意移除勾選框，一律送出
+    // 這位家長在本期的全部學員 —— 正式庫 45% 的家長有 2 個以上小孩、54% 的 active
+    // 課期是「同一家長多個小孩在同一期」，所以只要其中一個孩子被停學，整家每天都
+    // 簽不進去。改成把不合格的濾掉；全部都不合格才擋。
+    // 附帶效果：下面的 own 吃收斂後的名單，回傳的 checked_in_students 就不會再
+    // 誤報那位沒被寫入出席的停學學員。
+    const eligibleIds = studentIds.filter((id) => entitledStudents.includes(id));
+    if (!eligibleIds.length) {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '所選學員已退費或權益停用', code: 'STUDENT_ENTITLEMENT_INACTIVE' });
     }
@@ -104,9 +112,11 @@ router.post('/self', requireParent, async (req, res) => {
          JOIN course_period_enrollments cpe
            ON cpe.course_period_id = $2 AND cpe.student_id = s.id AND cpe.status = 'active'
         WHERE s.id = ANY($1::uuid[]) AND s.parent_id = $3`,
-      [studentIds, periodId, req.parent.id]
+      [eligibleIds, periodId, req.parent.id]
     );
-    if (own.rowCount !== studentIds.length) {
+    // 比對的是收斂後的名單：別家的學員 id 若仍在有效名單裡會活過收斂，
+    // 在這裡才被 own 濾掉 → 403，越權防線不變。
+    if (own.rowCount !== eligibleIds.length) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: '所選學員不在此課程名單中', code: 'STUDENT_NOT_IN_PERIOD' });
     }
@@ -363,7 +373,12 @@ router.post('/', requireParent, async (req, res) => {
       return res.status(403).json({ error: '該學員未在此課程名單中' });
     }
 
-    const entitledStudents = await assertCourseEntitlement(client, ctx.rows[0].period_id, studentId);
+    // 2026-09-22（凍結檔改動，已取得擁有者同意）：這條路徑一定指名單一學員，
+    // 停用學員必須在守門就被擋。原本會放行 → 寫入依 is_active 過濾成 0 筆 →
+    // COMMIT 之後才讀 ins.rows[0] 撞 undefined 拋 500，結果是「堂數扣了、
+    // 出席沒有、家長看到錯誤」。迴歸鎖：tests/course_entitlement_is_active_db_test.js。
+    const entitledStudents = await assertCourseEntitlement(
+      client, ctx.rows[0].period_id, studentId, { requireActiveStudent: true });
     const freshSession = await client.query('SELECT status FROM course_sessions WHERE id = $1 FOR UPDATE', [sessionId]);
     const sessionStatus = freshSession.rows[0]?.status;
     if (!['confirmed', 'completed'].includes(sessionStatus)) {
