@@ -577,6 +577,9 @@ export default function ReconcilePage() {
   const [venues, setVenues] = useState([]);
   const [confirming, setConfirming] = useState(null);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
+  // 團購對帳：核准時每個家庭一張 checkout，同團的會散在清單各處。
+  // 點「同團」就把畫面收斂到那一團，方便一起核對帳款。空字串＝沒有聚焦。
+  const [groupFocus, setGroupFocus] = useState('');
   const [cancelling, setCancelling] = useState(null);
   // U14 退回補件：與「取消付款單」並存。多數退回其實只是付款資料填錯，
   // 用取消會讓家長得從頭報名一次。
@@ -653,6 +656,7 @@ export default function ReconcilePage() {
     const last5Q = filters.last5.trim();
     const venueQ = filters.venueId;
     return list.filter((r) => {
+      if (groupFocus && String(r.group_order?.id || '') !== groupFocus) return false;
       // submitted_at 是帶 Z 的 UTC 時刻，直接 slice 拿到的是 UTC 日期 —— 台北 00:00~08:00
       // 送出的單會被歸到前一天，日期篩選就會漏單。先轉台北日期再比。
       const submittedYMD = r.submitted_at ? toTaipeiDateTimeInput(r.submitted_at).slice(0, 10) : '';
@@ -670,7 +674,7 @@ export default function ReconcilePage() {
       if (filters.orderKind === 'standard' && isTrialCheckout(r)) return false;
       return true;
     });
-  }, [list, filters]);
+  }, [list, filters, groupFocus]);
 
   async function handleCancelConfirm() {
     if (!cancelling) return;
@@ -727,6 +731,13 @@ export default function ReconcilePage() {
     }))
   ));
 
+  // 聚焦中那一團的摘要。從清單任一筆拿即可 —— 同團每張付款單帶的是同一份。
+  const groupFocusInfo = useMemo(() => {
+    if (!groupFocus) return null;
+    const hit = (list || []).find((r) => String(r.group_order?.id || '') === groupFocus);
+    return hit ? hit.group_order : null;
+  }, [list, groupFocus]);
+
   const columns = [
     {
       key: 'checkout_id',
@@ -767,6 +778,19 @@ export default function ReconcilePage() {
             <span className="mt-1 inline-flex rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-700">
               {r.family_count} 張家庭發票
             </span>
+          )}
+          {/* 團購核准時是「每個家庭一張 checkout」，同團的會散在清單各處，櫃檯很難
+              知道它們是同一團。只有「已核准」而且不只一家才給入口 —— 一家的團點下去
+              畫面不會變，等於騙人按。 */}
+          {r.group_order?.status === 'approved' && r.group_order.checkout_count > 1 && (
+            <button
+              type="button"
+              onClick={() => setGroupFocus(r.group_order.id)}
+              title={'只顯示這一團的付款單（同團 ' + r.group_order.checkout_count + ' 家）'}
+              className="mt-1 inline-flex items-center gap-1 rounded-full border border-indigo-300 bg-indigo-50 px-2 py-0.5 text-[11px] font-bold text-indigo-700 hover:bg-indigo-100"
+            >
+              團購・同團 {r.group_order.checkout_count} 家 →
+            </button>
           )}
         </div>
       ),
@@ -859,6 +883,27 @@ export default function ReconcilePage() {
         }
       />
       <FilterBar fields={filterFields} values={filters} onChange={setFilters} onReset={() => setFilters(EMPTY_FILTERS)} />
+      {groupFocusInfo && (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-indigo-300 bg-indigo-50 px-4 py-2">
+          <div className="text-sm text-indigo-900">
+            只顯示這一團的付款單・同團 <b>{groupFocusInfo.checkout_count}</b> 家
+            {/* 清單只載入「待對帳」的，同團已經對完的那幾家不在畫面上。講清楚，
+                不然櫃檯會以為這團只有這幾家。 */}
+            {groupFocusInfo.checkout_count > groupFocusInfo.pending_checkout_count && (
+              <span className="ml-1 text-indigo-700">
+                （其中 {groupFocusInfo.checkout_count - groupFocusInfo.pending_checkout_count} 家已不在待對帳清單）
+              </span>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => setGroupFocus('')}
+            className="rounded-full border border-indigo-300 bg-white px-3 py-1 text-xs font-bold text-indigo-700 hover:bg-indigo-100"
+          >
+            顯示全部
+          </button>
+        </div>
+      )}
       <DataTable columns={columns} rows={filteredList} rowKey={(r) => r.checkout_id} empty="目前沒有符合條件的待對帳付款單" />
       {confirming && (
         <InvoiceModal
