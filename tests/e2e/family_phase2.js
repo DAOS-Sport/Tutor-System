@@ -141,7 +141,7 @@ const hex32 = () => randomUUID().replace(/-/g, '');
 
     // 1
     const dadOrder = track(await enroll(dad));
-    assert(dadOrder.status === 201, `1. 爸爸替媽媽的孩子報名 201，實際 ${dadOrder.status} ${JSON.stringify(dadOrder.data)}`);
+    assert(dadOrder.status === 201, `1. 爸爸替媽媽的孩子報名 201，實際 ${dadOrder.status}${dadOrder.status >= 400 ? ' ' + JSON.stringify(dadOrder.data) : ''}`);
     const orderRow = (await pg.query(
       `SELECT parent_phone, student_ids::text[] AS student_ids FROM admin_enrollments WHERE id = $1`,
       [dadOrder.data.enrollment_ids[0]])).rows[0];
@@ -157,7 +157,7 @@ const hex32 = () => randomUUID().replace(/-/g, '');
     const reconciled = await call(route.base, 'POST', `/api/admin/checkouts/${dadOrder.data.checkout_id}/reconcile`, {
       token: adminToken, body: { invoice_number: 'FM12345678', invoice_image_url: '/uploads/e2e-family-invoice.png' },
     });
-    assert(reconciled.status === 200, `3. 對帳 200，實際 ${reconciled.status} ${JSON.stringify(reconciled.data)}`);
+    assert(reconciled.status === 200, `3. 對帳 200，實際 ${reconciled.status}${reconciled.status >= 400 ? ' ' + JSON.stringify(reconciled.data) : ''}`);
     const bound = (await pg.query(
       `SELECT cpe.student_id FROM course_periods cp JOIN course_period_enrollments cpe ON cpe.course_period_id = cp.id
         WHERE cp.admin_enrollment_id = $1`, [dadOrder.data.enrollment_ids[0]])).rows.map((r) => r.student_id);
@@ -175,7 +175,7 @@ const hex32 = () => randomUUID().replace(/-/g, '');
     const momGroup = await call(route.base, 'POST', '/api/group-orders', {
       token: token(mom), body: { venue_id: venueId, course_type: courseType, coach_id: coachId, student_ids: [kid.id], period_count: 1 },
     });
-    assert(momGroup.status === 201, `5. 媽媽開團 201，實際 ${momGroup.status} ${JSON.stringify(momGroup.data)}`);
+    assert(momGroup.status === 201, `5. 媽媽開團 201，實際 ${momGroup.status}${momGroup.status >= 400 ? ' ' + JSON.stringify(momGroup.data) : ''}`);
     created.groups.push(momGroup.data.id);
     const joinToken = momGroup.data.join_token;
     const invite = await call(route.base, 'GET', `/api/group-orders/by-token/${joinToken}`, { token: token(dad) });
@@ -190,7 +190,7 @@ const hex32 = () => randomUUID().replace(/-/g, '');
     const strangerJoin = await call(route.base, 'POST', `/api/group-orders/by-token/${joinToken}/join`, {
       token: token(stranger), body: { student_ids: [strangerKid.id] },
     });
-    assert(strangerJoin.status === 201, `5. 陌生人照常可以參團，實際 ${strangerJoin.status} ${JSON.stringify(strangerJoin.data)}`);
+    assert(strangerJoin.status === 201, `5. 陌生人照常可以參團，實際 ${strangerJoin.status}${strangerJoin.status >= 400 ? ' ' + JSON.stringify(strangerJoin.data) : ''}`);
 
     // 6
     const dadGroup = await call(route.base, 'POST', '/api/group-orders', {
@@ -198,7 +198,7 @@ const hex32 = () => randomUUID().replace(/-/g, '');
       body: { venue_id: venueId, course_type: courseType, coach_id: coachId, period_count: 1,
         new_students: [{ name: kid.name, id_number: kid.id_number, birth_date: kid.birth_date }] },
     });
-    assert(dadGroup.status === 201, `6. 爸爸開團 201，實際 ${dadGroup.status} ${JSON.stringify(dadGroup.data)}`);
+    assert(dadGroup.status === 201, `6. 爸爸開團 201，實際 ${dadGroup.status}${dadGroup.status >= 400 ? ' ' + JSON.stringify(dadGroup.data) : ''}`);
     created.groups.push(dadGroup.data.id);
     const leaderRow = (await pg.query(
       `SELECT student_ids::text[] AS student_ids FROM group_order_members WHERE group_order_id = $1 AND parent_id = $2`,
@@ -216,7 +216,7 @@ const hex32 = () => randomUUID().replace(/-/g, '');
       [`家庭上限測試${suffix}`, [courseType]])).rows[0].id;
     created.promotions.push(promo);
     const momPromo = track(await enroll(mom));
-    assert(momPromo.status === 201, `7. 媽媽報名 201，實際 ${momPromo.status} ${JSON.stringify(momPromo.data)}`);
+    assert(momPromo.status === 201, `7. 媽媽報名 201，實際 ${momPromo.status}${momPromo.status >= 400 ? ' ' + JSON.stringify(momPromo.data) : ''}`);
     const momUse = (await pg.query(`SELECT COUNT(*)::int AS n FROM promotion_usages WHERE promotion_id = $1 AND parent_id = $2`, [promo, mom.id])).rows[0].n;
     assert(momUse === 1, `7. 媽媽自動套用了優惠，實際使用 ${momUse} 次`);
     const dadPromo = track(await enroll(dad));
