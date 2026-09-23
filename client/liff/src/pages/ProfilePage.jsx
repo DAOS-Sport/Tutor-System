@@ -122,7 +122,7 @@ export default function ProfilePage() {
     setParentErrors((e) => (e[key] ? { ...e, [key]: undefined } : e));
   }
   function setStudentField(key, value) {
-    if (key === 'id_number' || key === 'birth_date') setDupApply(null);
+    if (key === 'id_number' || key === 'birth_date' || key === 'name') setDupApply(null);
     setStudentForm((p) => ({ ...p, [key]: value }));
     setStudentErrors((e) => (e[key] ? { ...e, [key]: undefined } : e));
   }
@@ -255,7 +255,7 @@ export default function ProfilePage() {
     } catch (err) {
       const data = err?.response?.data;
       if (data?.code === 'STUDENT_ID_DUPLICATED' && data?.can_apply_family && !editingId) {
-        setDupApply({ id_number: studentForm.id_number, birth_date: studentForm.birth_date });
+        setDupApply({ student_name: studentForm.name, parent_phone: '' });
         return;
       }
       if (['FIELD_REQUIRED', 'Z01_INCOMPLETE'].includes(err?.response?.data?.code)) setValidationNotice(syncErrMsg(err, 'student'));
@@ -303,7 +303,7 @@ export default function ProfilePage() {
           你登記的孩子跟另一個家長帳號是同一人。如果你們是一家人，可以申請合併到同一個家庭。
           <button type="button" className="ml-2 font-bold underline" onClick={() => {
             const dup = students.find((st) => st.id === profile.family.duplicates[0].student_id);
-            openFamilyApply({ id_number: dup?.id_number || '', birth_date: formatPlainDate(dup?.birth_date) || '' });
+            openFamilyApply({ student_name: dup?.name || profile.family.duplicates[0].name || '', parent_phone: '' });
           }}>申請合併</button>
         </div>
       )}
@@ -419,7 +419,7 @@ export default function ProfilePage() {
                 </div>
                 {dupApply && (
                   <div role="status" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">
-                    這位孩子已經登記在另一個家長帳號下。如果你們是一家人，可以申請加入同一個家庭，櫃台確認後就能一起查看、繳費、簽到。
+                    這個身分證已經登記在另一個家長帳號下，但名字對不上。名字打錯的話，改正後再新增一次就會直接綁定；如果你們是一家人，也可以申請加入同一個家庭，對方家長同意後就能一起查看、繳費、簽到。
                     <button type="button" className="mt-2 block rounded-lg bg-brand-primary px-3 py-2 text-xs font-bold text-white"
                       onClick={() => { const draft = dupApply; resetStudentForm(); setDupApply(null); openFamilyApply(draft); }}>
                       申請加入家庭

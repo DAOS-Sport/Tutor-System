@@ -133,12 +133,60 @@ async function createFamily(c, { ownerParentId, ownerRelationship = null, name =
   };
 }
 
+// ── 準備中的家庭（擁有者 2026-09-23）──────────────────────────────────────
+// 還沒有家庭的家長按「邀請家人加入」時，只先建一個「沒有成員的家庭」放連結；有人用連結加入時才正式成立，
+// 邀請人當擁有者。只按了按鈕不會變成一人家庭 —— 擁有者不能自己退出，一人家庭會讓他之後加入不了配偶的家庭。
+// 準備中的家庭沒有任何 active 成員，所以家長端、後台、資料範圍都看不到它（都從成員資格找家庭）。
+async function pendingFamilyOf(c, parentId, { create = false, actor = null } = {}) {
+  if (create) await c.query(`SELECT pg_advisory_xact_lock(hashtext('family_pending:' || $1))`, [String(parentId)]);
+  const r = await c.query(
+    `SELECT f.id FROM families f
+      WHERE f.owner_parent_id = $1 AND f.status = 'active'
+        AND NOT EXISTS (SELECT 1 FROM family_members m WHERE m.family_id = f.id AND m.status = 'active')
+      ORDER BY f.created_at DESC LIMIT 1`,
+    [parentId]
+  );
+  if (r.rowCount || !create) return r.rows[0]?.id || null;
+  const f = await c.query(
+    `INSERT INTO families (owner_parent_id, created_by, status) VALUES ($1, $2, 'active') RETURNING id`,
+    [parentId, actor]
+  );
+  await audit(c, f.rows[0].id, 'family_prepared', actor, parentId, {});
+  return f.rows[0].id;
+}
+
+// 準備中的家庭正式成立：邀請人（families.owner_parent_id）以他目前的 LINE 成為擁有者
+async function activatePendingFamily(c, family, { actor, ownerRelationship = null }) {
+  if (ownerRelationship) requireRelationship(ownerRelationship, '擁有者的關係');
+  const ownerId = family.owner_parent_id;
+  if (!ownerId) throw new FamilyError('INVITE_INVALID', '邀請連結無效，請向邀請您的家人或櫃台索取新的連結', 404);
+  if (await activeMembership(c, ownerId, { lock: true })) {
+    throw new FamilyError('ALREADY_IN_FAMILY', '這位家長已經在另一個家庭裡，請先移出');
+  }
+  const uid = boundLineUid(await loadParent(c, ownerId));
+  await insertMember(c, { familyId: family.id, parentId: ownerId, role: 'owner', relationship: ownerRelationship, actor, uid });
+  await audit(c, family.id, 'family_created', actor, ownerId, { owner_relationship: ownerRelationship, via: 'pending' });
+}
+
+// 這位家長所在的家庭；還沒有的話，先用他準備中的家庭（有邀請連結在等），都沒有才新建 —— 他當擁有者。
+// 核准申請、新增學員綁定、櫃台添加成員、家庭建議都走這裡，免得同一個人同時有準備中和正式兩個家庭。
+async function familyIdForParent(c, parentId, { actor, ownerRelationship = null } = {}) {
+  const m = await activeMembership(c, parentId, { lock: true });
+  if (m) return m.family_id;
+  const pendingId = await pendingFamilyOf(c, parentId);
+  if (pendingId) {
+    await activatePendingFamily(c, await lockFamily(c, pendingId), { actor, ownerRelationship });
+    return pendingId;
+  }
+  return (await createFamily(c, { ownerParentId: parentId, ownerRelationship, actor })).result.id;
+}
+
 async function addMember(c, { familyId, parentId, relationship, actor }) {
   // 關係選填（櫃台用手機＋姓名加成員時不問關係，之後可以在成員列表補）；有填就要是合法值
   relationship = relationship || null;
   if (relationship) requireRelationship(relationship);
   const family = await lockFamily(c, familyId);
-  if (family.status !== 'active') throw new FamilyError('FAMILY_FROZEN', '這個家庭已凍結，請先解除凍結');
+  if (family.status !== 'active') throw new FamilyError('FAMILY_FROZEN', '這個家庭目前停用中，請聯絡櫃台');
   const parent = await loadParent(c, parentId);
   const uid = boundLineUid(parent);
   const existing = await activeMembership(c, parentId, { lock: true });
@@ -175,7 +223,9 @@ async function setRelationship(c, { familyId, parentId, relationship, actor }) {
   return { result: { ok: true }, notices: [] };
 }
 
-async function revokeMember(c, { familyId, parentId, actor, reason = null, self = false }) {
+// by：'counter'（櫃台）、'owner'（擁有者在個人頁解綁加入的家人）、'self'（成員自己退出）。
+// 擁有者（原本辦理學員的那位）不能被解綁，只能編輯（擁有者 2026-09-23）。
+async function revokeMember(c, { familyId, parentId, actor, reason = null, self = false, by = self ? 'self' : 'counter' }) {
   await lockFamily(c, familyId);
   const m = await c.query(
     `SELECT role, line_uid FROM family_members WHERE family_id = $1 AND parent_id = $2 AND status = 'active' FOR UPDATE`,
@@ -183,9 +233,9 @@ async function revokeMember(c, { familyId, parentId, actor, reason = null, self 
   );
   if (!m.rowCount) throw new FamilyError('MEMBER_NOT_FOUND', '這位家長不在這個家庭裡', 404);
   if (m.rows[0].role === 'owner') {
-    throw new FamilyError('OWNER_CANNOT_LEAVE', self
-      ? '擁有者不能自己退出，請聯絡櫃台先轉移擁有者'
-      : '擁有者不能直接移除，請先轉移擁有者');
+    throw new FamilyError('OWNER_CANNOT_LEAVE', by === 'self'
+      ? '擁有者不能自己退出，請聯絡櫃台'
+      : '擁有者不能解綁，只能編輯');
   }
   const parent = await loadParent(c, parentId);
   // 解綁 userId：清成 NULL（UNIQUE 才放得開，之後可以加入別的家庭），稽核只留雜湊
@@ -194,14 +244,19 @@ async function revokeMember(c, { familyId, parentId, actor, reason = null, self 
       WHERE family_id = $1 AND parent_id = $2 AND status = 'active'`,
     [familyId, parentId, actor, reason]
   );
-  const auditId = await audit(c, familyId, self ? 'member_left' : 'member_revoked', actor, parentId, {
+  const action = { self: 'member_left', owner: 'member_revoked_by_owner' }[by] || 'member_revoked';
+  const auditId = await audit(c, familyId, action, actor, parentId, {
     reason, uid_hash: m.rows[0].line_uid ? uidHash(m.rows[0].line_uid) : null,
   });
+  const how = { self: '退出', owner: '被擁有者解綁，離開' }[by] || '被櫃台移出';
   return {
     result: { ok: true },
     notices: [
-      familyNotice(familyId, `${parent.name || '一位家人'}已${self ? '退出' : '被櫃台移出'}您的家庭，之後不能再查看家中孩子的課程。如有疑問請聯絡櫃台。`, `fam:${auditId}`),
-      parentNotice(parentId, self ? '您已退出家庭。' : '您已被移出家庭，如有疑問請聯絡櫃台。', `fam:${auditId}:${parentId}`),
+      familyNotice(familyId, `${parent.name || '一位家人'}已${how}您的家庭，之後不能再查看家中孩子的課程。如有疑問請聯絡櫃台。`, `fam:${auditId}`),
+      parentNotice(parentId, {
+        self: '您已退出家庭。',
+        owner: '您已被家庭擁有者解綁，之後只看得到自己名下的資料。如有疑問請聯絡擁有者或櫃台。',
+      }[by] || '您已被移出家庭，如有疑問請聯絡櫃台。', `fam:${auditId}:${parentId}`),
     ],
   };
 }
@@ -222,19 +277,6 @@ async function transferOwner(c, { familyId, newOwnerParentId, actor }) {
   return { result: { ok: true }, notices: [familyNotice(familyId, '櫃台已變更您家庭的擁有者。如有疑問請聯絡櫃台。', `fam:${auditId}`)] };
 }
 
-async function setFrozen(c, { familyId, frozen, actor, reason = null }) {
-  const family = await lockFamily(c, familyId);
-  const next = frozen ? 'frozen' : 'active';
-  if (family.status === next) return { result: { ok: true, unchanged: true }, notices: [] };
-  await c.query(`UPDATE families SET status = $2, updated_at = NOW() WHERE id = $1`, [familyId, next]);
-  const auditId = await audit(c, familyId, frozen ? 'family_frozen' : 'family_unfrozen', actor, null, { reason });
-  return {
-    result: { ok: true },
-    notices: [familyNotice(familyId, frozen
-      ? '櫃台已暫停您家庭的共用功能，家人暫時無法查看彼此孩子的資料。如有疑問請聯絡櫃台。'
-      : '您家庭的共用功能已恢復。', `fam:${auditId}`)],
-  };
-}
 
 // 「這份資料身上有沒有課」（§9 的 periods）：已開通的課期，加上還沒開通的訂單（對帳時會依
 // student_ids 綁到這份）與沒取消的團購。只看課期的話，有未對帳訂單的那份會被停用，對帳後課就
@@ -286,15 +328,7 @@ async function approveRequest(c, { requestId, actor, actorRole }) {
   if (!target || !target.active) throw new FamilyError('TARGET_GONE', '申請的孩子資料已停用或不存在，請改用退回');
   const notices = [];
 
-  let ownerMembership = await activeMembership(c, target.parentId, { lock: true });
-  let familyId;
-  if (ownerMembership) {
-    familyId = ownerMembership.family_id;
-  } else {
-    const created = await createFamily(c, { ownerParentId: target.parentId, actor });
-    familyId = created.result.id;
-    notices.push(...created.notices);
-  }
+  const familyId = await familyIdForParent(c, target.parentId, { actor });
   const applicantMembership = await activeMembership(c, req.applicant_parent_id, { lock: true });
   if (applicantMembership && applicantMembership.family_id !== familyId) {
     throw new FamilyError('ALREADY_IN_FAMILY', '申請人已經在另一個家庭裡，請先移出再核准');
@@ -353,14 +387,7 @@ async function applySuggestion(c, { studentAId, studentBId, memberRelationship, 
   }
   const memberId = ownerId === a.parentId ? b.parentId : a.parentId;
   const notices = [];
-  const ownerMembership = await activeMembership(c, ownerId, { lock: true });
-  let familyId;
-  if (ownerMembership) familyId = ownerMembership.family_id;
-  else {
-    const created = await createFamily(c, { ownerParentId: ownerId, ownerRelationship, actor });
-    familyId = created.result.id;
-    notices.push(...created.notices);
-  }
+  const familyId = await familyIdForParent(c, ownerId, { actor, ownerRelationship });
   const memberMembership = await activeMembership(c, memberId, { lock: true });
   if (memberMembership && memberMembership.family_id !== familyId) {
     throw new FamilyError('ALREADY_IN_FAMILY', '另一位家長已經在別的家庭裡，請先移出');
@@ -379,7 +406,7 @@ async function applySuggestion(c, { studentAId, studentBId, memberRelationship, 
 async function addPendingMember(c, { familyId, phone, relationship, actor }) {
   requireRelationship(relationship);
   const family = await lockFamily(c, familyId);
-  if (family.status !== 'active') throw new FamilyError('FAMILY_FROZEN', '這個家庭已凍結，請先解除凍結');
+  if (family.status !== 'active') throw new FamilyError('FAMILY_FROZEN', '這個家庭目前停用中，請聯絡櫃台');
   const canonical = normalizePhone(phone);
   if (!/^09\d{8}$/.test(canonical)) throw new FamilyError('PHONE_INVALID', '請輸入 09 開頭的 10 碼手機', 400);
   const existing = await c.query(`SELECT id FROM parents WHERE phone = $1 AND COALESCE(is_active, TRUE) = TRUE LIMIT 1`, [canonical]);
@@ -460,11 +487,8 @@ async function claimPendingForParent(c, { parentId, phone }) {
 async function linkByStudent(c, { parentId, studentId, actor }) {
   const target = await studentCopy(c, studentId);
   if (!target || !target.active) throw new FamilyError('TARGET_GONE', '這位孩子的資料已停用，請聯絡櫃台', 409);
-  let familyId = (await activeMembership(c, target.parentId, { lock: true }))?.family_id || null;
-  if (!familyId) {
-    // 建立家庭的通知是「櫃台已為您建立」，這裡不適用；對方會收到下面「某某已加入您的家庭」
-    familyId = (await createFamily(c, { ownerParentId: target.parentId, actor })).result.id;
-  }
+  // 建立家庭的通知是「櫃台已為您建立」，這裡不適用；對方會收到「某某已加入您的家庭」
+  const familyId = await familyIdForParent(c, target.parentId, { actor });
   const added = await addMember(c, { familyId, parentId, relationship: null, actor });
   const decisions = await resolveNewMemberDuplicates(c, { parentId, familyId, actor });
   await audit(c, familyId, 'member_linked_by_student', actor, parentId, { student_id: studentId, decisions });
@@ -514,7 +538,7 @@ async function createInvite(c, { familyId, relationship = null, actor }) {
   relationship = relationship || null;
   if (relationship) requireRelationship(relationship);
   const family = await lockFamily(c, familyId);
-  if (family.status !== 'active') throw new FamilyError('FAMILY_FROZEN', '這個家庭已凍結，請先解除凍結');
+  if (family.status !== 'active') throw new FamilyError('FAMILY_FROZEN', '這個家庭目前停用中，請聯絡櫃台');
   const open = await c.query(
     `SELECT COUNT(*)::int AS n FROM family_invites
       WHERE family_id = $1 AND used_at IS NULL AND revoked_at IS NULL AND expires_at > NOW()`,
@@ -558,6 +582,22 @@ async function acceptInvite(c, { token, parentId, relationship = null }) {
   const problem = inviteProblem(inv);
   if (problem) throw problem;
   const actor = `parent:${parentId}:invite`;
+  const family = await lockFamily(c, inv.family_id);
+  if (String(family.owner_parent_id) === String(parentId)) {
+    throw new FamilyError('INVITE_SELF', '這是您自己產生的邀請連結，請傳給家人使用', 409);
+  }
+  const active = await c.query(`SELECT 1 FROM family_members WHERE family_id = $1 AND status = 'active' LIMIT 1`, [family.id]);
+  if (!active.rowCount) {
+    // 準備中的家庭（邀請人當時還沒有家庭）→ 第一位家人加入時成立，邀請人當擁有者
+    try {
+      await activatePendingFamily(c, family, { actor });
+    } catch (err) {
+      if (!(err instanceof FamilyError)) throw err;
+      throw new FamilyError('INVITE_OWNER_UNAVAILABLE', err.code === 'ALREADY_IN_FAMILY'
+        ? '邀請您的家人已經加入別的家庭，這個連結不能用了，請向他索取新的連結'
+        : '邀請您的家人目前無法使用家庭功能（LINE 綁定失效），請他重新登入後再產生新的連結', 410);
+    }
+  }
   const added = await addMember(c, {
     familyId: inv.family_id, parentId, relationship: relationship || inv.relationship || null, actor,
   });
@@ -575,7 +615,6 @@ module.exports = {
   setRelationship,
   revokeMember,
   transferOwner,
-  setFrozen,
   approveRequest,
   rejectRequest,
   applySuggestion,
@@ -583,6 +622,8 @@ module.exports = {
   removePendingMember,
   claimPendingForParent,
   activeMembership,
+  pendingFamilyOf,
+  familyIdForParent,
   resolveNewMemberDuplicates,
   linkByStudent,
   createInvite,

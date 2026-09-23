@@ -68,6 +68,9 @@ export default function FamilyJoinPage() {
   );
 
   if (preview.error) return <Notice icon="🔗" title="無法使用這個邀請" body={preview.error} />;
+  if (preview.own_invite) {
+    return <Notice icon="🔗" title="這是您自己產生的邀請連結" body="請把連結傳給家人，由家人用 LINE 打開加入。" action={{ to: '/profile', label: '回個人頁' }} />;
+  }
   if (preview.already_member) {
     return <Notice icon="👨‍👩‍👧" title="您已經在這個家庭裡了" action={{ to: '/profile', label: '查看我的家庭' }} />;
   }
@@ -77,9 +80,6 @@ export default function FamilyJoinPage() {
         body="一個帳號同一時間只能在一個家庭。要加入這個家庭，請先到個人頁退出目前的家庭（擁有者請洽櫃台）。"
         action={{ to: '/profile', label: '前往個人頁' }} />
     );
-  }
-  if (preview.family_frozen) {
-    return <Notice icon="⏸️" title="這個家庭目前暫停共用" body="請聯絡櫃台協助。" />;
   }
 
   return (

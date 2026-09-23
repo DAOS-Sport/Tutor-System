@@ -4,15 +4,15 @@
 //
 // 守的契約（以案例家庭為原型：媽媽報名、孩子在 Ragic 掛媽媽；爸爸重複登記了同一個孩子）：
 //   1. 開關開、還沒家庭 → 爸爸只看得到自己；個人頁提示「有重複的孩子」
-//   2. 申請：生日不符 → 422 通用訊息、不洩漏資料、記次數
-//   3. 申請：相符 → 201 審核中，帶上爸爸那份重複學員；媽媽收到通知
+//   2. 申請（孩子名字＋對方家長手機）：不符 → 422 通用訊息、不洩漏資料、記次數
+//   3. 申請：相符 → 201 等對方同意，帶上爸爸那份重複學員；媽媽收到通知
 //   4. 同時只能一筆審核中
 //   5. 櫃台核准 → 建家庭（擁有者媽媽）、爸爸加入、重複學員依 §9 停用並留學員稽核
 //   6. 核准後：爸爸的範圍含媽媽；個人頁看得到媽媽名下的孩子（唯讀）
 //   7. 家人的付款單看得到；陌生人仍 403
 //   8. 家人的期末評鑑看得到
 //   9. 擁有者不能自己退出；成員被移出 → 立刻只剩自己、付款單 403
-//  10. 凍結 → 全家只剩自己；解凍恢復
+//  10. 擁有者在個人頁解綁加入的家人（凍結功能已拿掉，擁有者 2026-09-23）；擁有者本人不能被解綁；成員不能解綁
 //  11. 預先登記手機 → 對方註冊後自動加入，重複的孩子依 §9 處理
 //  12. 開關關閉 → 就算有家庭也只剩自己
 //  13. 申請次數：24 小時 5 次上限（含不符的）
@@ -29,6 +29,9 @@
 //  22. 新增學員：身分證＋姓名對得上家人帳號下的孩子 → 直接綁進那個家庭（不另建學員、不碰 Ragic）；
 //      姓名不對、開關關閉照舊擋（擁有者 2026-09-23：「有打學生姓名跟身分證字號就好，就給過」）
 //  23. 核准申請、櫃台添加成員：新成員名下「其他」重複的孩子也一起依 §9 處理（跟邀請加入一致）
+//  24. 申請由對方家長在個人頁同意／拒絕；對方在家庭裡但不是擁有者時由擁有者；旁人、申請人自己、一般成員都不能決定
+//  25. 準備中的家庭：只產生邀請不會變成一人家庭（之後照樣能綁進配偶的家庭）；自己的連結不能用；
+//      邀請人已加入別的家庭 → 那條連結失效；後台看得到準備中的連結
 //
 // 不起 HTTP server、不碰 Ragic、LINE 推播以 stub 攔截；所有資料 try/finally 自己刪乾淨。
 const assert = require('node:assert/strict');
@@ -158,7 +161,7 @@ async function addStudent(parentId, { name, idNumber, birth, ragic = false }) {
     const suggestions = handler('admin/families', 'get', '/suggestions');
     const byParent = handler('admin/families', 'get', '/by-parent/:parentId');
     const revoke = handler('admin/families', 'post', '/:id/members/:parentId/revoke');
-    const freeze = handler('admin/families', 'post', '/:id/freeze');
+    const ownerRevoke = handler('family', 'post', '/members/:parentId/revoke');
     const checkoutGet = handler('checkout', 'get', '/:checkoutId');
 
     process.env.FAMILY_ACCOUNTS_V1 = 'all';
@@ -174,19 +177,22 @@ async function addStudent(parentId, { name, idNumber, birth, ragic = false }) {
         '家庭建議要列出這一對');
     });
 
-    await t('2. 生日不符 → 422 通用訊息，不洩漏、記次數', async () => {
-      const r = await call(createRequest, { parent: dad, body: { id_number: kidId, birth_date: '2019-01-01', relationship: 'father' } });
+    await t('2. 孩子名字或對方手機不符 → 422 通用訊息，不洩漏、記次數', async () => {
+      const r = await call(createRequest, { parent: dad, body: { student_name: '別的孩子', parent_phone: mom.phone, relationship: 'father' } });
       assert.equal(r.status, 422);
       assert.equal(r.body.code, 'FAMILY_REQUEST_NOT_MATCHED');
       assert.deepEqual(Object.keys(r.body).sort(), ['code', 'error']);
+      const r2 = await call(createRequest, { parent: dad, body: { student_name: '測試孩子', parent_phone: phone(), relationship: 'father' } });
+      assert.equal(r2.status, 422, '手機不對一樣是通用訊息');
+      assert.equal(r2.body.error, r.body.error, '名字錯、手機錯回同一句，不透露哪個對');
       const n = (await pool.query('SELECT COUNT(*)::int n FROM family_join_attempts WHERE parent_id=$1 AND matched=FALSE', [dad.id])).rows[0].n;
-      assert.equal(n, 1);
+      assert.equal(n, 2);
     });
 
     let requestId;
-    await t('3. 相符 → 201 審核中、帶上重複學員；媽媽收到通知', async () => {
+    await t('3. 名字＋對方手機相符 → 201 等對方同意、帶上重複學員；媽媽收到通知', async () => {
       pushes.length = 0;
-      const r = await call(createRequest, { parent: dad, body: { id_number: kidId.toLowerCase(), birth_date: '2019-12-10', relationship: 'father' } });
+      const r = await call(createRequest, { parent: dad, body: { student_name: ' 測試孩子 ', parent_phone: mom.phone, relationship: 'father' } });
       assert.equal(r.status, 201, JSON.stringify(r.body));
       requestId = r.body.request.id;
       const row = (await pool.query('SELECT * FROM family_join_requests WHERE id=$1', [requestId])).rows[0];
@@ -198,7 +204,7 @@ async function addStudent(parentId, { name, idNumber, birth, ragic = false }) {
     });
 
     await t('4. 同時只能一筆審核中', async () => {
-      const r = await call(createRequest, { parent: dad, body: { id_number: kidId, birth_date: '2019-12-10', relationship: 'father' } });
+      const r = await call(createRequest, { parent: dad, body: { student_name: '測試孩子', parent_phone: mom.phone, relationship: 'father' } });
       assert.equal(r.status, 409);
       assert.equal(r.body.code, 'FAMILY_REQUEST_PENDING');
     });
@@ -264,11 +270,31 @@ async function addStudent(parentId, { name, idNumber, birth, ragic = false }) {
       assert.equal((await familyScope.scopeFor(dad)).parentIds.length, 2);
     });
 
-    await t('10. 凍結 → 全家只剩自己；解凍恢復', async () => {
-      assert.equal((await call(freeze, { adminUser: ADMIN, params: { id: familyId }, body: { frozen: true } })).status, 200);
-      assert.deepEqual((await familyScope.scopeFor(dad)).parentIds, [dad.id]);
-      assert.deepEqual((await familyScope.scopeFor(mom)).parentIds, [mom.id]);
-      assert.equal((await call(freeze, { adminUser: ADMIN, params: { id: familyId }, body: { frozen: false } })).status, 200);
+    await t('10. 擁有者在個人頁解綁加入的家人；擁有者本人不能被解綁；成員不能解綁別人', async () => {
+      const notOwner = await call(ownerRevoke, { parent: dad, params: { parentId: mom.id } });
+      assert.equal(notOwner.status, 403);
+      assert.equal(notOwner.body.code, 'OWNER_ONLY');
+      const self = await call(ownerRevoke, { parent: mom, params: { parentId: mom.id } });
+      assert.equal(self.status, 409);
+      assert.equal(self.body.code, 'OWNER_CANNOT_LEAVE', '擁有者（原本辦理學員的那位）不能被解綁，只能編輯');
+      const outsider = await call(ownerRevoke, { parent: mom, params: { parentId: stranger.id } });
+      assert.equal(outsider.status, 404, '不在家裡的人解綁不了');
+      pushes.length = 0;
+      const ok = await call(ownerRevoke, { parent: mom, params: { parentId: dad.id } });
+      assert.equal(ok.status, 200, JSON.stringify(ok.body));
+      assert.deepEqual((await familyScope.scopeFor(dad)).parentIds, [dad.id], '被解綁的人立刻只剩自己');
+      assert.equal((await pool.query(`SELECT line_uid FROM family_members WHERE parent_id=$1 ORDER BY revoked_at DESC NULLS LAST LIMIT 1`, [dad.id])).rows[0].line_uid, null);
+      const last = (await pool.query(
+        `SELECT action FROM family_audit_logs WHERE family_id=$1 ORDER BY created_at DESC, id DESC LIMIT 1`, [familyId])).rows[0];
+      assert.equal(last.action, 'member_revoked_by_owner');
+      assert.ok(pushes.some((p) => p.uid === dad.line_uid && /擁有者解綁/.test(p.text)), '被解綁的人收到通知');
+      // 重新加回來，給後面的測試用
+      const back = await pool.connect();
+      try {
+        await back.query('BEGIN');
+        await familyAdmin.addMember(back, { familyId, parentId: dad.id, relationship: 'father', actor: 'test' });
+        await back.query('COMMIT');
+      } finally { back.release(); }
       assert.equal((await familyScope.scopeFor(mom)).parentIds.length, 2);
     });
 
@@ -310,10 +336,10 @@ async function addStudent(parentId, { name, idNumber, birth, ragic = false }) {
 
     await t('13. 申請次數：24 小時 5 次上限（含不符的）', async () => {
       for (let i = 0; i < 5; i += 1) {
-        const r = await call(createRequest, { parent: stranger, body: { id_number: idNo('1'), birth_date: '2019-01-01', relationship: 'guardian' } });
+        const r = await call(createRequest, { parent: stranger, body: { student_name: '不存在的孩子', parent_phone: phone(), relationship: 'guardian' } });
         assert.equal(r.status, 422);
       }
-      const blocked = await call(createRequest, { parent: stranger, body: { id_number: kidId, birth_date: '2019-12-10', relationship: 'guardian' } });
+      const blocked = await call(createRequest, { parent: stranger, body: { student_name: '測試孩子', parent_phone: mom.phone, relationship: 'guardian' } });
       assert.equal(blocked.status, 429);
       assert.equal(blocked.body.code, 'FAMILY_REQUEST_TOO_MANY');
     });
@@ -479,7 +505,13 @@ async function addStudent(parentId, { name, idNumber, birth, ragic = false }) {
       const pv = await call(preview, { parent: guest, params: { token } });
       assert.equal(pv.status, 200, JSON.stringify(pv.body));
       assert.equal(pv.body.owner_name, host.name);
-      assert.equal(pv.body.member_count, 1, '沒有家庭的家長產生邀請時先建家庭（自己一人）');
+      assert.equal(pv.body.member_count, 1, '準備中的家庭：邀請人算一位');
+      assert.equal((await pool.query(`SELECT 1 FROM family_members WHERE parent_id=$1 AND status='active'`, [host.id])).rowCount, 0,
+        '還沒人加入前不成立家庭（只按產生不會變成一人家庭）');
+      const hostView = await call(byParent, { adminUser: ADMIN, params: { parentId: host.id } });
+      assert.equal(hostView.body.family, null);
+      assert.deepEqual(hostView.body.invites.map((i) => i.id), [made.body.invite.id], '後台看得到準備中的連結');
+      assert.ok(hostView.body.pending_family_id, '後台作廢要用的準備中家庭 id');
       const ok = await call(accept, { parent: guest, params: { token }, body: { relationship: 'grandmother' } });
       assert.equal(ok.status, 200, JSON.stringify(ok.body));
       const row = (await pool.query(
@@ -487,6 +519,8 @@ async function addStudent(parentId, { name, idNumber, birth, ragic = false }) {
       assert.equal(row.line_uid, guest.line_uid, '綁定的是受邀者當下的 LINE');
       assert.equal(row.relationship, 'grandmother');
       assert.equal(row.family_id, ok.body.family_id);
+      assert.equal((await pool.query(`SELECT role FROM family_members WHERE parent_id=$1 AND status='active'`, [host.id])).rows[0].role, 'owner',
+        '第一位家人加入時成立，邀請人當擁有者');
       const reuse = await call(accept, { parent: late, params: { token }, body: { relationship: 'guardian' } });
       assert.equal(reuse.status, 410);
       assert.equal(reuse.body.code, 'INVITE_USED', '只能用一次');
@@ -507,7 +541,7 @@ async function addStudent(parentId, { name, idNumber, birth, ragic = false }) {
       assert.equal(off.body.code, 'FAMILY_DISABLED', '開關關閉時邀請頁不能用');
     });
 
-    await t('21. 家長自己邀請：沒有家庭先建、自己當擁有者；成員不能邀；上限 5 條；審核中的申請擋住', async () => {
+    await t('21. 家長自己邀請：沒有家庭先放準備中的家庭、有人加入才成立；成員不能邀；上限 5 條；審核中的申請擋住', async () => {
       const create = handler('family', 'post', '/invites');
       const revoke = handler('family', 'post', '/invites/:id/revoke');
       const accept = handler('family', 'post', '/invites/:token/accept');
@@ -520,19 +554,22 @@ async function addStudent(parentId, { name, idNumber, birth, ragic = false }) {
       const pushesBefore = pushes.length;
       const made = await call(create, { parent: host });
       assert.equal(made.status, 201, JSON.stringify(made.body));
-      const own = (await pool.query(
-        `SELECT family_id, role, line_uid FROM family_members WHERE parent_id=$1 AND status='active'`, [host.id])).rows[0];
-      assert.equal(own.role, 'owner', '產生邀請時建家庭、自己當擁有者');
-      assert.equal(own.line_uid, host.line_uid);
-      assert.equal(pushes.length, pushesBefore, '自己建的家庭不發「櫃台已為您建立」');
+      assert.equal((await pool.query(`SELECT 1 FROM family_members WHERE parent_id=$1 AND status='active'`, [host.id])).rowCount, 0,
+        '只產生連結不會變成一人家庭');
+      assert.equal(pushes.length, pushesBefore, '產生連結不發通知');
       const block = await familyProfile.familyBlock(host);
-      assert.equal(block.family.role, 'owner');
+      assert.equal(block.family, null);
       assert.equal(block.can_invite, true);
       assert.deepEqual(block.invites.map((i) => i.id), [made.body.invite.id], '個人頁看得到還能用的連結');
+      const pendingFamilyId = (await pool.query('SELECT family_id FROM family_invites WHERE id=$1', [made.body.invite.id])).rows[0].family_id;
       const token = String(made.body.invite.url).split('/family/join/')[1];
       const joined = await call(accept, { parent: guest, params: { token }, body: { relationship: 'father' } });
       assert.equal(joined.status, 200, JSON.stringify(joined.body));
-      assert.equal(joined.body.family_id, own.family_id);
+      assert.equal(joined.body.family_id, pendingFamilyId);
+      const own = (await pool.query(
+        `SELECT family_id, role, line_uid FROM family_members WHERE parent_id=$1 AND status='active'`, [host.id])).rows[0];
+      assert.equal(own.role, 'owner', '家人加入時成立，邀請人當擁有者');
+      assert.equal(own.line_uid, host.line_uid);
       assert.deepEqual((await familyProfile.familyBlock(host)).invites, [], '用掉的連結不再列出');
       // 成員（不是擁有者）不能邀、不能作廢，個人頁也不顯示邀請
       const denied = await call(create, { parent: guest });
@@ -649,6 +686,81 @@ async function addStudent(parentId, { name, idNumber, birth, ragic = false }) {
       assert.equal((await pool.query('SELECT is_active FROM students WHERE id = $1', [d2C])).rows[0].is_active, false,
         '櫃台添加成員也合併重複的孩子');
     });
+
+    await t('24. 申請由對方家長在個人頁同意／拒絕；非擁有者由擁有者決定；旁人、申請人、一般成員都不能決定', async () => {
+      const approveP = handler('family', 'post', '/requests/:id/approve');
+      const rejectP = handler('family', 'post', '/requests/:id/reject');
+      const a = await addParent('測試同意甲');
+      const b = await addParent('測試申請乙');
+      const c = await addParent('測試旁人丙');
+      const d = await addParent('測試申請丁');
+      const e = await addParent('測試申請戊');
+      await addStudent(a.id, { name: '同意小寶', idNumber: idNo('1'), birth: '2018-01-01', ragic: true });
+      const bKid = await addStudent(b.id, { name: '乙家小妹', idNumber: idNo('2'), birth: '2020-02-02', ragic: true });
+      const req1 = await call(createRequest, { parent: b, body: { student_name: '小寶', parent_phone: a.phone, relationship: 'mother' } });
+      assert.equal(req1.status, 201, JSON.stringify(req1.body));
+      const rid = req1.body.request.id;
+      assert.deepEqual((await familyProfile.familyBlock(a)).incoming_requests.map((x) => x.id), [rid], '對方家長的個人頁看得到');
+      assert.equal((await familyProfile.familyBlock(b)).join_request.status, 'pending');
+      assert.equal((await call(approveP, { parent: c, params: { id: rid } })).status, 404, '旁人不能同意');
+      assert.equal((await call(approveP, { parent: b, params: { id: rid } })).status, 404, '申請人不能自己同意');
+      const ok = await call(approveP, { parent: a, params: { id: rid } });
+      assert.equal(ok.status, 200, JSON.stringify(ok.body));
+      const fam = (await pool.query(`SELECT family_id, role FROM family_members WHERE parent_id=$1 AND status='active'`, [a.id])).rows[0];
+      assert.equal(fam.role, 'owner', '同意後成立家庭，對方家長當擁有者');
+      assert.equal((await pool.query(`SELECT family_id FROM family_members WHERE parent_id=$1 AND status='active'`, [b.id])).rows[0].family_id, fam.family_id);
+      assert.deepEqual((await familyProfile.familyBlock(a)).incoming_requests, [], '處理完就不再列出');
+      // 丁申請乙（一般成員）的孩子 → 由擁有者甲決定；乙不能決定
+      const req2 = await call(createRequest, { parent: d, body: { student_name: '乙家小妹', parent_phone: b.phone, relationship: 'grandmother' } });
+      assert.equal(req2.status, 201, JSON.stringify(req2.body));
+      assert.deepEqual((await familyProfile.familyBlock(b)).incoming_requests, [], '一般成員不處理申請');
+      assert.deepEqual((await familyProfile.familyBlock(a)).incoming_requests.map((x) => x.id), [req2.body.request.id], '擁有者看得到家人孩子的申請');
+      assert.equal((await call(approveP, { parent: b, params: { id: req2.body.request.id } })).status, 404, '一般成員不能同意');
+      const rj = await call(rejectP, { parent: a, params: { id: req2.body.request.id }, body: {} });
+      assert.equal(rj.status, 200, JSON.stringify(rj.body));
+      const jr = (await familyProfile.familyBlock(d)).join_request;
+      assert.equal(jr.status, 'rejected');
+      assert.equal(jr.reject_reason, '對方家長未同意', '沒填原因時用預設說法');
+      assert.equal((await pool.query('SELECT 1 FROM family_members WHERE parent_id=$1', [d.id])).rowCount, 0);
+      // 櫃台照樣能核准（備援）
+      const req3 = await call(createRequest, { parent: e, body: { student_name: '乙家小妹', parent_phone: b.phone, relationship: 'guardian' } });
+      assert.equal(req3.status, 201, JSON.stringify(req3.body));
+      const counter = await call(approve, { adminUser: ADMIN, params: { id: req3.body.request.id } });
+      assert.equal(counter.status, 200, JSON.stringify(counter.body));
+      assert.equal((await pool.query(`SELECT family_id FROM family_members WHERE parent_id=$1 AND status='active'`, [e.id])).rows[0].family_id,
+        fam.family_id, '加入的是乙所在的家庭');
+      assert.ok(bKid);
+    });
+
+    await t('25. 準備中的家庭：只產生邀請不會變成一人家庭，之後照樣能綁進配偶的家庭；自己的連結不能用；邀請人已加入別的家庭 → 連結失效', async () => {
+      const create = handler('family', 'post', '/invites');
+      const accept = handler('family', 'post', '/invites/:token/accept');
+      const preview = handler('family', 'get', '/invites/:token');
+      const addStudentRoute = handler('parents', 'post', '/me/students');
+      const wife = await addParent('測試配偶媽媽');
+      const husband = await addParent('測試先按邀請的爸爸');
+      const late = await addParent('測試晚到的家人');
+      const kidNo = idNo('2');
+      await addStudent(wife.id, { name: '配偶小孩', idNumber: kidNo, birth: '2019-06-06', ragic: true });
+      const made = await call(create, { parent: husband });
+      assert.equal(made.status, 201, JSON.stringify(made.body));
+      const token = String(made.body.invite.url).split('/family/join/')[1];
+      const mine = await call(preview, { parent: husband, params: { token } });
+      assert.equal(mine.body.own_invite, true, '預覽認得是自己的連結');
+      const selfAccept = await call(accept, { parent: husband, params: { token }, body: {} });
+      assert.equal(selfAccept.body.code, 'INVITE_SELF');
+      // 爸爸新增配偶名下的孩子（身分證＋名字對得上）→ 直接綁進媽媽的家庭，不會被自己的邀請卡住
+      const bound = await call(addStudentRoute, {
+        parent: { ...husband, lineUid: husband.line_uid }, body: { name: '配偶小孩', id_number: kidNo, birth_date: '2019-06-06' } });
+      assert.equal(bound.status, 200, JSON.stringify(bound.body));
+      const m = (await pool.query(`SELECT role, family_id FROM family_members WHERE parent_id=$1 AND status='active'`, [husband.id])).rows[0];
+      assert.equal(m.role, 'member', '爸爸成了媽媽家庭的成員');
+      assert.equal((await pool.query(`SELECT role FROM family_members WHERE parent_id=$1 AND status='active'`, [wife.id])).rows[0].role, 'owner');
+      const stale = await call(accept, { parent: late, params: { token }, body: {} });
+      assert.equal(stale.status, 410, JSON.stringify(stale.body));
+      assert.equal(stale.body.code, 'INVITE_OWNER_UNAVAILABLE', '邀請人已經加入別的家庭，他之前的連結不能用');
+      assert.equal((await pool.query('SELECT 1 FROM family_members WHERE parent_id=$1', [late.id])).rowCount, 0);
+    });
   } catch (err) {
     failed = true;
     console.error('FAIL', err && err.stack ? err.stack : err);
@@ -673,5 +785,5 @@ async function addStudent(parentId, { name, idNumber, birth, ragic = false }) {
     console.error(`family_accounts_db_test: FAILED（${passed} 項通過後中斷）`);
     process.exit(1);
   }
-  console.log(`family_accounts_db_test: ${passed}/23 PASS`);
+  console.log(`family_accounts_db_test: ${passed}/25 PASS`);
 })();

@@ -146,18 +146,38 @@ async function familyBlock(parent, db = pool) {
     [parent.id]
   )).rowCount > 0;
 
-  // 邀請家人（擁有者 2026-09-23）：擁有者（家庭沒凍結），或還沒有家庭的家長（產生邀請時會建家庭）；
+  // 邀請家人（擁有者 2026-09-23）：擁有者，或還沒有家庭的家長（連結先放在準備中的家庭，有人加入才成立）；
   // 還有一筆申請在審核中的不行（跟 POST /api/family/invites 的 409 一致）
   const canInvite = fam
     ? fam.role === 'owner' && fam.family_status === 'active'
     : !rebindRequired && joinRequest?.status !== 'pending';
-  const invites = fam && fam.role === 'owner'
+  const inviteFamilyId = fam
+    ? (fam.role === 'owner' ? fam.family_id : null)
+    : (canInvite ? await familyAdmin.pendingFamilyOf(db, parent.id) : null);
+  const invites = inviteFamilyId
     ? (await db.query(
       `SELECT * FROM family_invites
         WHERE family_id = $1 AND used_at IS NULL AND revoked_at IS NULL AND expires_at > NOW()
         ORDER BY created_at DESC`,
-      [fam.family_id]
+      [inviteFamilyId]
     )).rows.map(familyAdmin.shapeInvite)
+    : [];
+
+  // 等我同意的申請（擁有者 2026-09-23：對方家長同意才生效）：我是擁有者 → 家裡任何人的孩子被申請；
+  // 我還沒有家庭 → 我名下的孩子被申請。一般成員不處理（由擁有者同意）。
+  const decideFor = fam
+    ? (fam.role === 'owner' && fam.family_status === 'active' ? scope.parentIds : [])
+    : (rebindRequired ? [] : [parent.id]);
+  const incoming = decideFor.length
+    ? (await db.query(
+      `SELECT r.id, r.relationship, r.note, r.created_at, ap.name AS applicant_name, s.name AS student_name
+         FROM family_join_requests r
+         JOIN students s ON s.id = r.target_student_id
+         JOIN parents ap ON ap.id = r.applicant_parent_id
+        WHERE r.status = 'pending' AND s.parent_id::text = ANY($1::text[])
+        ORDER BY r.created_at ASC`,
+      [decideFor.map(String)]
+    )).rows.map((x) => ({ ...x, relationship_label: relationshipLabel(x.relationship) }))
     : [];
 
   return {
@@ -167,6 +187,7 @@ async function familyBlock(parent, db = pool) {
     rebind_required: rebindRequired,
     can_invite: canInvite,
     invites,
+    incoming_requests: incoming,
   };
 }
 

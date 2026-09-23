@@ -179,7 +179,6 @@ export default function CustomerParentsPage() {
           <div className="font-medium text-gray-700">{r.family.owner_name || '—'}的家庭・{r.family.size} 人</div>
           <div className="space-x-1">
             {r.family.role === 'owner' && <span className="text-gray-400">擁有者</span>}
-            {r.family.status === 'frozen' && <StatusBadge tone="errorSoft">已凍結</StatusBadge>}
             {!r.family.line_bound && <StatusBadge tone="amber">LINE 需重新綁定</StatusBadge>}
           </div>
         </div>

@@ -42,6 +42,8 @@ const state = {
       duplicate_plan: { action: 'deactivate', studentId: 's-uuid-mock-dup', keepId: 's-uuid-201' },
     },
   ],
+  // 還沒有家庭的家長，邀請連結先放在準備中的家庭（有人加入才成立）
+  pending: {},
   suggestions: [
     {
       a: { student_id: 's-uuid-202', name: '林小寶', parent_id: 'p-uuid-002', parent_name: '戴凱莉', parent_phone: '0935141499', in_ragic: true, periods: 1, birth_date: '2018-05-12' },
@@ -52,6 +54,10 @@ const state = {
   ],
 };
 
+function pendingOf(parentId) {
+  if (!state.pending[parentId]) state.pending[parentId] = { id: `pend-fam-${parentId}`, invites: [] };
+  return state.pending[parentId];
+}
 function familyIdOf(parentId) {
   return Object.values(state.families).find((f) => f.members.some((m) => m.parent_id === parentId))?.id || null;
 }
@@ -89,7 +95,10 @@ export const familyMock = {
   },
   byParent(parentId) {
     const id = familyIdOf(parentId);
-    return { family: id ? view(state.families[id]) : null };
+    if (id) return { family: view(state.families[id]) };
+    // 還沒有家庭：邀請連結放在準備中的家庭（有人加入才成立）
+    const pend = pendingOf(parentId);
+    return { family: null, pending_family_id: pend.id, invites: pend.invites };
   },
   create(ownerParentId, ownerRelationship) {
     if (!PEOPLE[ownerParentId]?.line_uid) fail('LINE_NOT_BOUND', `${PEOPLE[ownerParentId]?.name || '這位家長'}還沒綁定 LINE，請先完成 LINE 綁定再加入家庭`);
@@ -136,12 +145,6 @@ export const familyMock = {
     log(fam, 'owner_transferred', parentId);
     return { ok: true };
   },
-  freeze(familyId, frozen) {
-    const fam = state.families[familyId];
-    fam.status = frozen ? 'frozen' : 'active';
-    log(fam, frozen ? 'family_frozen' : 'family_unfrozen', null);
-    return { ok: true };
-  },
   addPending(familyId, phone, relationship) {
     const fam = state.families[familyId];
     if (Object.values(PEOPLE).some((p) => p.phone === phone)) fail('PARENT_EXISTS', '這支手機已經註冊過，請直接用「加入成員」');
@@ -176,21 +179,20 @@ export const familyMock = {
     return familyMock.addMember(fid, { parentId: hit.parent_id, relationship: null });
   },
   createInvite(parentId, relationship) {
-    let fid = familyIdOf(parentId);
-    if (!fid) fid = familyMock.create(parentId, null).result.id;
-    const fam = state.families[fid];
+    const fid = familyIdOf(parentId);
+    const fam = fid ? state.families[fid] : pendingOf(parentId);
     const invite = {
       id: `inv-${Date.now()}`, url: `/liff/family/join/mock${Date.now().toString(16)}`, relationship: relationship || null,
       created_at: now(), expires_at: new Date(Date.now() + 7 * 86400000).toISOString(), created_by: 'admin:示範櫃台',
     };
     fam.invites = [invite, ...(fam.invites || [])];
-    log(fam, 'invite_created', null);
+    if (fid) log(fam, 'invite_created', null);
     return { ok: true, invite };
   },
   revokeInvite(familyId, inviteId) {
-    const fam = state.families[familyId];
+    const fam = state.families[familyId] || Object.values(state.pending).find((p) => p.id === familyId);
     fam.invites = (fam.invites || []).filter((i) => i.id !== inviteId);
-    log(fam, 'invite_revoked', null);
+    if (fam.logs) log(fam, 'invite_revoked', null);
     return { ok: true };
   },
   suggestions() { return { items: state.suggestions }; },

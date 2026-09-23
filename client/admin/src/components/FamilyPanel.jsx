@@ -15,7 +15,10 @@ const ACTION_LABELS = {
   member_added: '加入成員',
   member_rebound: '重新綁定 LINE',
   member_revoked: '櫃台解綁成員',
+  member_revoked_by_owner: '擁有者解綁成員',
   member_left: '成員自己退出',
+  member_linked_by_student: '新增學員時綁定（身分證＋姓名相符）',
+  family_prepared: '準備邀請連結（還沒成立）',
   relationship_changed: '修改關係',
   owner_transferred: '轉移擁有者',
   family_frozen: '凍結家庭',
@@ -48,17 +51,36 @@ function copyText(text) {
   return Promise.resolve();
 }
 
-function InviteSection({ parentId, family, busy, act }) {
+// 平常只顯示按鈕，點了才展開、產生連結（擁有者 2026-09-23：「按鈕式，點下去才打開，平常按鈕顯示」）。
+// 還沒有家庭時，連結放在準備中的家庭（familyId＝pending_family_id），有人加入才成立。
+function InviteSection({ parentId, familyId, invites, hasFamily, busy, act }) {
+  const [open, setOpen] = useState(false);
   const [copiedId, setCopiedId] = useState(null);
-  const invites = family?.invites || [];
+  const list = invites || [];
+  const create = () => act({ run: () => familiesApi.createInvite(parentId), ok: '已產生邀請連結，複製後傳給家人' });
+  if (!open) {
+    return (
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" disabled={busy}
+          onClick={async () => { setOpen(true); if (!list.length) await create(); }}
+          className="rounded border border-brand-primary px-3 py-1 font-semibold text-brand-primary hover:bg-brand-primary/5 disabled:opacity-50">
+          邀請家人加入
+        </button>
+        {list.length > 0 && <span className="text-gray-400">有 {list.length} 條還沒用的連結</span>}
+      </div>
+    );
+  }
   return (
     <div className="rounded border border-teal-200 bg-teal-50/50 p-3">
-      <div className="mb-1 font-bold text-gray-700">邀請家人加入</div>
+      <div className="mb-1 flex items-center justify-between">
+        <span className="font-bold text-gray-700">邀請家人加入</span>
+        <button type="button" onClick={() => setOpen(false)} className="text-gray-400 hover:underline">收起</button>
+      </div>
       <p className="mb-2 text-gray-500">
         產生連結傳給家人（LINE 訊息貼上即可）。對方用 LINE 打開、登入後按「加入家庭」，就會綁定他的 LINE。
-        連結只能用一次、7 天內有效；傳錯人可以直接作廢。{!family && '產生連結時會以這位家長為擁有者建立家庭。'}
+        連結只能用一次、7 天內有效；傳錯人可以直接作廢。{!hasFamily && '有人用連結加入時，才會以這位家長為擁有者成立家庭。'}
       </p>
-      {invites.map((inv) => (
+      {list.map((inv) => (
         <div key={inv.id} className="mb-2 flex flex-wrap items-center gap-2">
           <input readOnly value={fullUrl(inv.url)} onFocus={(e) => e.target.select()}
             className={`${inputCls} w-full font-mono md:w-[28rem]`} />
@@ -67,14 +89,13 @@ function InviteSection({ parentId, family, busy, act }) {
             {copiedId === inv.id ? '已複製 ✓' : '複製'}
           </button>
           <span className="text-gray-400">有效到 {formatTWDateTime(inv.expires_at)}</span>
-          <button type="button" disabled={busy} className="font-semibold text-brand-error hover:underline disabled:opacity-50"
-            onClick={() => act({ run: () => familiesApi.revokeInvite(family.id, inv.id), ok: '已作廢邀請連結' })}>作廢</button>
+          <button type="button" disabled={busy || !familyId} className="font-semibold text-brand-error hover:underline disabled:opacity-50"
+            onClick={() => act({ run: () => familiesApi.revokeInvite(familyId, inv.id), ok: '已作廢邀請連結' })}>作廢</button>
         </div>
       ))}
-      <button type="button" disabled={busy}
-        onClick={() => act({ run: () => familiesApi.createInvite(parentId), ok: '已產生邀請連結，複製後傳給家人' })}
-        className="rounded bg-brand-primary px-3 py-1 font-semibold text-white hover:bg-brand-teal disabled:opacity-50">
-        產生邀請連結
+      <button type="button" disabled={busy} onClick={create}
+        className="rounded border border-brand-primary px-3 py-1 font-semibold text-brand-primary hover:bg-brand-primary/5 disabled:opacity-50">
+        {list.length ? '再產生一條' : '產生邀請連結'}
       </button>
     </div>
   );
@@ -168,7 +189,6 @@ export default function FamilyPanel({ parent }) {
   const [revoking, setRevoking] = useState(null); // member
   const [revokeReason, setRevokeReason] = useState('');
   const [transferTo, setTransferTo] = useState(null); // member
-  const [freezing, setFreezing] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
 
   async function load() {
@@ -213,8 +233,9 @@ export default function FamilyPanel({ parent }) {
 
         {data && !family && !loadError && (
           <div className="space-y-2">
-            <p className="text-gray-600">這位家長還沒有家庭。邀請或添加第一位家人時，會以這位家長為擁有者建立家庭；之後全家可以一起查看孩子的課程、繳費、簽到。</p>
-            <InviteSection parentId={parent.id} family={null} busy={busy} act={act} />
+            <p className="text-gray-600">這位家長還沒有家庭。添加第一位家人、或有人用邀請連結加入時，會以這位家長為擁有者成立家庭；之後全家可以一起查看孩子的課程、繳費、簽到。</p>
+            <InviteSection parentId={parent.id} familyId={data.pending_family_id || null} invites={data.invites}
+              hasFamily={false} busy={busy} act={act} />
             <AddMemberForm parentId={parent.id} busy={busy} act={act} />
           </div>
         )}
@@ -222,19 +243,9 @@ export default function FamilyPanel({ parent }) {
         {family && (
           <>
             <div className="flex flex-wrap items-center gap-2">
-              <StatusBadge tone={family.status === 'frozen' ? 'errorSoft' : 'green'}>{family.status === 'frozen' ? '已凍結' : '使用中'}</StatusBadge>
               <span className="text-gray-600">{members.length} 人</span>
               <span className="text-gray-400">建立：{formatTWDateTime(family.created_at)}{family.created_by ? `・${family.created_by}` : ''}</span>
-              {isAdmin && (
-                <button type="button" disabled={busy} onClick={() => setFreezing(true)}
-                  className={`ml-auto rounded border px-2 py-1 font-semibold ${family.status === 'frozen' ? 'border-brand-green text-brand-green' : 'border-brand-error text-brand-error'} disabled:opacity-50`}>
-                  {family.status === 'frozen' ? '解除凍結' : '凍結家庭'}
-                </button>
-              )}
             </div>
-            {family.status === 'frozen' && (
-              <p className="rounded bg-brand-error-soft px-3 py-2 text-brand-error-strong">凍結中：全家暫時只能看到自己名下的資料。</p>
-            )}
 
             <div className="overflow-x-auto">
               <table className="w-full border-collapse text-left">
@@ -281,7 +292,7 @@ export default function FamilyPanel({ parent }) {
               </table>
             </div>
 
-            <InviteSection parentId={parent.id} family={family} busy={busy} act={act} />
+            <InviteSection parentId={parent.id} familyId={family.id} invites={family.invites} hasFamily busy={busy} act={act} />
             <AddMemberForm parentId={parent.id} busy={busy} act={act} />
 
             <div className="rounded border border-gray-200 bg-gray-50 p-3">
@@ -379,23 +390,6 @@ export default function FamilyPanel({ parent }) {
         }}
       >
         {transferTo && <p>把擁有者改成「<b>{transferTo.name}</b>」。原擁有者會變成一般成員，之後可以被解綁。</p>}
-      </ConfirmDialog>
-
-      <ConfirmDialog
-        open={freezing}
-        title={family?.status === 'frozen' ? '解除凍結' : '凍結家庭'}
-        confirmLabel={family?.status === 'frozen' ? '確認解除' : '確認凍結'}
-        tone={family?.status === 'frozen' ? 'primary' : 'danger'}
-        busy={busy}
-        onCancel={() => !busy && setFreezing(false)}
-        onConfirm={async () => {
-          const next = family?.status !== 'frozen';
-          if (await act({ run: () => familiesApi.freeze(family.id, next), ok: next ? '已凍結家庭' : '已解除凍結' })) setFreezing(false);
-        }}
-      >
-        <p>{family?.status === 'frozen'
-          ? '恢復家人之間互相查看、繳費、簽到。'
-          : '凍結後全家暫時只能看到自己名下的資料（有爭議時使用）。資料不會刪除，隨時可以解除。'}</p>
       </ConfirmDialog>
     </div>
   );

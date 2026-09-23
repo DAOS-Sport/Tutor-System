@@ -3,19 +3,19 @@
  *
  * 權限：沿用「(Z01) 家長 & 學員關係」的 customer-parents（新資源鍵在既有庫預設全部拒絕，見 rolePermissions）。
  * 場館範圍：manager／staff 只能處理擁有者 primary_venue_id 在自己範圍內的家庭（比照 customerParents，範圍外回 404）。
- * 轉移擁有者、凍結／解除凍結限 admin。
+ * 轉移擁有者限 admin。凍結功能已拿掉（擁有者 2026-09-23：「不要有凍結，功能改成解綁」）。
  *
- *  GET  /by-parent/:parentId               這位家長所在的家庭（成員、預先登記、最近異動）；沒有回 { family: null }
+ *  GET  /by-parent/:parentId               這位家長所在的家庭（成員、預先登記、最近異動）；
+ *                                          沒有家庭回 { family: null, pending_family_id, invites }（準備中的邀請連結）
  *  POST /                                  建立家庭 { owner_parent_id, owner_relationship?, name? }
  *  GET  /lookup?phone=&name=               櫃台加成員前查帳號：姓名對得上才回 LINE UID
- *  POST /by-parent/:parentId/members       Z01 視窗「添加成員」{ phone, name }：沒有家庭就先以這位家長為擁有者建立
- *  POST /by-parent/:parentId/invites       產生邀請連結 { relationship? }：沒有家庭就先以這位家長為擁有者建立
+ *  POST /by-parent/:parentId/members       Z01 視窗「添加成員」{ phone, name }：沒有家庭就以這位家長為擁有者成立
+ *  POST /by-parent/:parentId/invites       產生邀請連結 { relationship? }：沒有家庭就先放在準備中的家庭，有人加入才成立
  *  POST /:id/invites/:inviteId/revoke      作廢邀請連結
  *  POST /:id/members                       加入成員 { phone＋name | parent_id, relationship? }
  *  PATCH /:id/members/:parentId            改關係 { relationship }
- *  POST /:id/members/:parentId/revoke      移出成員 { reason? }
+ *  POST /:id/members/:parentId/revoke      解綁成員 { reason? }（擁有者不能解綁）
  *  POST /:id/transfer-owner                轉移擁有者 { parent_id }（admin）
- *  POST /:id/freeze                        凍結／解除 { frozen, reason? }（admin）
  *  POST /:id/pending-members               預先登記家人手機 { phone, relationship }（第二階段）
  *  POST /:id/pending-members/:pid/remove   取消預先登記
  *  GET  /suggestions                       同一身分證掛在不同帳號、還沒合併的孩子
@@ -105,7 +105,17 @@ router.get('/by-parent/:parentId', async (req, res) => {
       `SELECT fm.family_id FROM family_members fm WHERE fm.parent_id = $1 AND fm.status = 'active' LIMIT 1`,
       [req.params.parentId]
     );
-    if (!m.rowCount) return res.json({ family: null });
+    if (!m.rowCount) {
+      // 還沒有家庭：列出準備中的邀請連結（有人用連結加入時才成立家庭）
+      const pendingId = await familyAdmin.pendingFamilyOf(pool, req.params.parentId);
+      const open = pendingId ? (await pool.query(
+        `SELECT * FROM family_invites
+          WHERE family_id = $1 AND used_at IS NULL AND revoked_at IS NULL AND expires_at > NOW()
+          ORDER BY created_at DESC`,
+        [pendingId]
+      )).rows : [];
+      return res.json({ family: null, pending_family_id: pendingId, invites: open.map(shapeInvite) });
+    }
     const familyId = m.rows[0].family_id;
     const f = await pool.query(`SELECT id, name, status, owner_parent_id, created_at, created_by FROM families WHERE id = $1`, [familyId]);
     const members = await pool.query(
@@ -237,21 +247,16 @@ router.post('/:id/members', async (req, res) => {
 });
 
 // Z01 編輯視窗的「邀請家人加入」（擁有者 2026-09-23）：產生一次性的邀請連結；
-// 這位家長還沒有家庭時，先以他為擁有者建立（同一個交易）。
+// 這位家長還沒有家庭時，連結先放在準備中的家庭，有人用連結加入時才以他為擁有者成立。
 router.post('/by-parent/:parentId/invites', async (req, res) => {
   const ownerId = String(req.params.parentId || '');
   if (!(await parentInScope(req, ownerId))) return notFound(res);
   let invite = null;
   const client = await pool.connect();
-  let notices = [];
   try {
     await client.query('BEGIN');
-    let familyId = (await familyAdmin.activeMembership(client, ownerId, { lock: true }))?.family_id || null;
-    if (!familyId) {
-      const created = await familyAdmin.createFamily(client, { ownerParentId: ownerId, actor: actorOf(req) });
-      familyId = created.result.id;
-      notices = created.notices;
-    }
+    const familyId = (await familyAdmin.activeMembership(client, ownerId, { lock: true }))?.family_id
+      || await familyAdmin.pendingFamilyOf(client, ownerId, { create: true, actor: actorOf(req) });
     invite = (await familyAdmin.createInvite(client, {
       familyId, relationship: req.body?.relationship || null, actor: actorOf(req),
     })).result;
@@ -263,7 +268,6 @@ router.post('/by-parent/:parentId/invites', async (req, res) => {
   }
   client.release();
   res.json({ ok: true, invite: shapeInvite(invite) });
-  familyNotify.sendNotices(notices).catch(() => {});
 });
 
 router.post('/:id/invites/:inviteId/revoke', async (req, res) => {
@@ -275,7 +279,7 @@ router.post('/:id/invites/:inviteId/revoke', async (req, res) => {
 });
 
 // Z01 編輯視窗的「添加成員」（擁有者 2026-09-23）：這位家長還沒有家庭時，
-// 加第一位成員就以他為擁有者建立家庭 —— 建立與加入在同一個交易，不會留下只有一個人的空家庭。
+// 加第一位成員就以他為擁有者成立家庭（有準備中的家庭就用那個）—— 成立與加入在同一個交易，不會留下一人家庭。
 router.post('/by-parent/:parentId/members', async (req, res) => {
   const ownerId = String(req.params.parentId || '');
   if (!(await parentInScope(req, ownerId))) return notFound(res);
@@ -283,19 +287,12 @@ router.post('/by-parent/:parentId/members', async (req, res) => {
   if (!parentId) return;
   if (parentId === ownerId) return res.status(400).json({ error: '不能把這位家長加成自己的家人', code: 'SELF_MEMBER' });
   await run(res, async (c) => {
-    const notices = [];
-    let familyId = (await familyAdmin.activeMembership(c, ownerId, { lock: true }))?.family_id || null;
-    if (!familyId) {
-      const created = await familyAdmin.createFamily(c, { ownerParentId: ownerId, actor: actorOf(req) });
-      familyId = created.result.id;
-      notices.push(...created.notices);
-    }
+    const familyId = await familyAdmin.familyIdForParent(c, ownerId, { actor: actorOf(req) });
     const added = await familyAdmin.addMember(c, {
       familyId, parentId, relationship: req.body?.relationship || null, actor: actorOf(req),
     });
-    notices.push(...added.notices);
     const decisions = await familyAdmin.resolveNewMemberDuplicates(c, { parentId, familyId, actor: actorOf(req) });
-    return { result: { family_id: familyId, ...added.result, decisions }, notices };
+    return { result: { family_id: familyId, ...added.result, decisions }, notices: added.notices };
   }, '加入成員失敗');
 });
 
@@ -319,14 +316,6 @@ router.post('/:id/transfer-owner', requireAdminRole('admin'), async (req, res) =
   await run(res, (c) => familyAdmin.transferOwner(c, {
     familyId: req.params.id, newOwnerParentId: String(req.body?.parent_id || ''), actor: actorOf(req),
   }), '轉移擁有者失敗');
-});
-
-router.post('/:id/freeze', requireAdminRole('admin'), async (req, res) => {
-  if (!(await familyInScope(req, req.params.id))) return notFound(res);
-  await run(res, (c) => familyAdmin.setFrozen(c, {
-    familyId: req.params.id, frozen: req.body?.frozen !== false, actor: actorOf(req),
-    reason: String(req.body?.reason || '').trim().slice(0, 200) || null,
-  }), '變更凍結狀態失敗');
 });
 
 router.post('/:id/pending-members', async (req, res) => {

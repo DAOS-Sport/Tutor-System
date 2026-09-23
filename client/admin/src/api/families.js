@@ -2,7 +2,7 @@ import { callApi } from './client';
 import { familyMock } from './familyMock';
 
 // 家庭帳號（規格 docs/family_accounts_spec_2026-09-23.md §7、§14）：Z01 頁的家庭區塊與申請審核。
-// 後端 /api/admin/families；權限沿用 Z01 頁（customer-parents），轉移擁有者與凍結限 admin。
+// 後端 /api/admin/families；權限沿用 Z01 頁（customer-parents），轉移擁有者限 admin。凍結功能已拿掉（擁有者 2026-09-23）。
 export const RELATIONSHIP_OPTIONS = [
   { value: 'father', label: '爸爸' },
   { value: 'mother', label: '媽媽' },
@@ -48,9 +48,6 @@ export const familiesApi = {
   transferOwner: (familyId, parentId) =>
     callApi(`/families/${familyId}/transfer-owner`, { method: 'post', data: { parent_id: parentId } },
       () => familyMock.transferOwner(familyId, parentId)),
-  freeze: (familyId, frozen, reason) =>
-    callApi(`/families/${familyId}/freeze`, { method: 'post', data: { frozen, reason } },
-      () => familyMock.freeze(familyId, frozen)),
   addPending: (familyId, phone, relationship) =>
     callApi(`/families/${familyId}/pending-members`, { method: 'post', data: { phone, relationship } },
       () => familyMock.addPending(familyId, phone, relationship)),
