@@ -16,6 +16,7 @@ const { randomUUID } = require('crypto');
 const { pool } = require('../models/db');
 const promotions = require('../services/promotions');
 const referrals = require('../services/referrals');
+const familyScope = require('../services/familyScope');
 const { parseProofInput } = require('../services/paymentProof');
 const {
   validateRequestId,
@@ -369,10 +370,12 @@ router.post('/', async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: '學員資料重複，請重新選擇', code: 'DUPLICATE_STUDENT' });
     }
+    // 家庭帳號（第二階段，決策 4）：可以替家人名下的孩子報名；購買人仍是下單的人（parentRow）
+    const familyIds = (await familyScope.actingParentIds(req)).map(String);
     const studentRows = await client.query(
       `SELECT id, name FROM students
-        WHERE parent_id = $1 AND id = ANY($2::uuid[]) AND COALESCE(is_active, TRUE) = TRUE`,
-      [parentRow.id, submittedStudentIds]
+        WHERE parent_id::text = ANY($1::text[]) AND id = ANY($2::uuid[]) AND COALESCE(is_active, TRUE) = TRUE`,
+      [familyIds, submittedStudentIds]
     );
     if (studentRows.rowCount !== studentCount) {
       await client.query('ROLLBACK');
@@ -568,8 +571,8 @@ router.post('/', async (req, res) => {
              (id, parent_name, parent_phone, students, coach, coach_id, venue_id, course_type,
               original_price, final_price, transfer_last_5, payment_proof_url, status, submitted_at,
               period_count, period_number, enrollment_batch_id, checkout_id, carrier, payment_method,
-              order_kind, total_sessions, used_sessions)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending_payment',$13,1,$14,$15,$16,$17,$18,$19,$20,0)`,
+              order_kind, total_sessions, used_sessions, student_ids)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending_payment',$13,1,$14,$15,$16,$17,$18,$19,$20,0,$21)`,
           [
             eid, parentRow.name, parentRow.phone, [student.name],
             coachName, coachId, venueId, Number(p.course_type),
@@ -577,6 +580,7 @@ router.post('/', async (req, res) => {
             paymentProofUrl, submittedAt, period, batchId, checkout.checkoutId,
             p.carrier ? String(p.carrier).trim().slice(0, 64) : null,
             paymentMethod, orderKind, isTrial ? 1 : 6,
+            [student.id],
           ]
         );
         await client.query(

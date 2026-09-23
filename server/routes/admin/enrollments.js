@@ -303,7 +303,7 @@ async function ensureSoloCoursePeriod(client, enrollment, totalSessions, auditAc
   let siblingRows = null; // 非 null＝共用 period 模式（含本筆在內、本期全部有效兄弟訂單）
   if (enrollment.enrollment_batch_id && enrollment.order_kind !== 'trial') {
     const sib = await client.query(
-      `SELECT id, students, status, original_price, final_price
+      `SELECT id, students, student_ids, status, original_price, final_price
          FROM admin_enrollments
         WHERE enrollment_batch_id = $1
           AND period_number = $2
@@ -431,11 +431,28 @@ async function ensureSoloCoursePeriod(client, enrollment, totalSessions, auditAc
   }
   if (!periodId) return createdStudentIds;
 
-  // get-or-create 學員（以 parent_id + name）→ 綁進 course_period_enrollments。
-  // 共用 period 模式：綁「本期全部兄弟訂單」的學員（每筆家長端子訂單只有 1 位）。
-  const names = siblingRows
-    ? [...new Set(siblingRows.flatMap((row) => row.students || []).filter(Boolean))]
-    : (enrollment.students || []).filter(Boolean);
+  // 綁學員進 course_period_enrollments。共用 period 模式：綁「本期全部兄弟訂單」的學員。
+  // 新訂單記有實際學員 id（admin_enrollments.student_ids，家庭帳號時可能是家人名下的孩子）→ 直接用；
+  // 舊訂單沒有 id → 沿用（parent_id + name）get-or-create。
+  const orderRows = siblingRows || [enrollment];
+  const knownIds = [...new Set(orderRows.flatMap((row) => (Array.isArray(row.student_ids) ? row.student_ids : [])).map(String))];
+  if (knownIds.length) {
+    const existing = await client.query(`SELECT id FROM students WHERE id = ANY($1::uuid[])`, [knownIds]);
+    for (const row of existing.rows) {
+      await client.query(
+        `INSERT INTO course_period_enrollments (course_period_id, student_id, status)
+         VALUES ($1, $2, 'active') ON CONFLICT (course_period_id, student_id) DO NOTHING`,
+        [periodId, row.id]
+      );
+    }
+    if (existing.rowCount !== knownIds.length) {
+      console.warn('[reconcile/solo] 訂單記載的學員有已不存在者，略過：', enrollment.id);
+    }
+  }
+  const names = [...new Set(orderRows
+    .filter((row) => !(Array.isArray(row.student_ids) && row.student_ids.length))
+    .flatMap((row) => row.students || [])
+    .filter(Boolean))];
   for (const name of names) {
     const se = await client.query(
       `SELECT id FROM students WHERE parent_id = $1 AND name = $2 LIMIT 1`,
