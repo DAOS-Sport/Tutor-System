@@ -78,6 +78,7 @@ app.use('/api/venues',        require('./routes/venues'));
 app.use('/api/coaches',       require('./routes/coaches'));
 app.use('/api/coach-portal',  require('./routes/coachPortal')); // 教練端 LINE OAuth 登入模組（與家長端分離）
 app.use('/api/parents',       require('./routes/parents'));
+app.use('/api/family',        require('./routes/family'));       // 家庭帳號：家長端申請合併、退出
 app.use('/api/courses',       require('./routes/courses'));
 app.use('/api/slots',         require('./routes/slots'));        // coach_availability_slots
 app.use('/api/sessions',      require('./routes/sessions'));     // course_sessions

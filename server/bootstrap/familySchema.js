@@ -47,6 +47,11 @@ ALTER TABLE families ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'acti
 ALTER TABLE families ADD COLUMN IF NOT EXISTS created_by TEXT;
 ${addCheck('families', 'families_status_check', "status IN ('active','frozen')")}
 
+-- 010 留下的欄位：已不使用（單一真相是 family_members），但 customerParents 的清單還會 SELECT
+-- p.family_id —— 乾淨庫沒有這欄會 42703。正式庫已有，這兩句是 no-op。
+ALTER TABLE parents  ADD COLUMN IF NOT EXISTS family_id UUID REFERENCES families(id) ON DELETE SET NULL;
+ALTER TABLE students ADD COLUMN IF NOT EXISTS family_id UUID REFERENCES families(id) ON DELETE SET NULL;
+
 CREATE TABLE IF NOT EXISTS family_members (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   family_id   UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE,

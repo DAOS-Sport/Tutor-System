@@ -26,6 +26,7 @@ const PUSH_DEFAULTS = {
   push_dry_run: '1',
   push_max_per_hour: '50',
   push_event_checkin_confirmed_coach: '0',
+  push_event_family_changed: '0',
 };
 
 const PUSH_TOGGLES = [
@@ -35,6 +36,8 @@ const PUSH_TOGGLES = [
     hint: '⚠️ 預設是「開」。總開關打開但這個沒關掉的話，line_push_log 會照常寫紀錄，看起來一切正常，但一則都不會送出' },
   { key: 'push_event_checkin_confirmed_coach', label: '家長簽到 → 通知教練',
     hint: '教練端目前唯一的推播事件（走 dreams400）' },
+  { key: 'push_event_family_changed', label: '家庭異動 → 通知家庭成員',
+    hint: '建立家庭、家人加入／移出、合併申請送出與審核結果' },
 ];
 const PUSH_NUMBERS = [
   { key: 'push_max_per_hour', label: '每小時送出上限', type: 'number', min: 0, max: 1000,

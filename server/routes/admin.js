@@ -44,6 +44,7 @@ router.use('/ragic-staging', require('./admin/ragicStaging')); // Task #66 Ragic
 router.use('/ragic-z03',     require('./admin/ragicZ03'));     // Z03 舊系統壞姓名人工整理表
 router.use('/customer-parents',  require('./admin/customerParents'));  // 客戶資料管理 Z01 家長&學員關係
 router.use('/customer-students', require('./admin/customerStudents')); // 客戶資料管理 Z02 學員資料（含購買紀錄）
+router.use('/families',          require('./admin/families'));         // 家庭帳號（Z01 頁的家庭區塊與申請審核）
 
 // 兜底：呼叫到沒實作的路徑時，明確回 404 而不是被前面的 401 吞掉
 router.all('*', (req, res) => {

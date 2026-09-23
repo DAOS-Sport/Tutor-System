@@ -25,6 +25,8 @@ const ALLOWED_KEYS = [
   // 閘門會放行但不送出 —— 看起來一切正常，實際上一則都沒發。這是最容易誤判的組合。
   'push_enabled', 'push_dry_run', 'push_max_per_hour',
   'push_event_checkin_confirmed_coach',
+  // 家庭帳號的異動通知（services/familyNotify.js）
+  'push_event_family_changed',
 ];
 
 async function readAll() {
