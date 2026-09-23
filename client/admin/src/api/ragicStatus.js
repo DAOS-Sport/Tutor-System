@@ -49,8 +49,4 @@ export const ragicStatusApi = {
     );
     return r.data;
   },
-  async purgeGhosts() {
-    const r = await http.post('/ragic-status/purge-ghosts', {}, { skipAuthRedirect: true });
-    return r.data;
-  },
 };

@@ -89,16 +89,21 @@ check('quarantine 退役：不在狀態頁、不能手動觸發、排程經閘�
 // ── 3. 頁面：原本的卡片，只改必要處 ─────────────────────────────────────────
 const page = read('client/admin/src/pages/RagicStatusPage.jsx');
 check('維持原本的卡片版面', () => {
-  for (const needle of ['function FormCard(', '<LiveProbePanel probe={data.live_probe} />', '單獨同步此表', '發送連線 Ping', '⚠ 資料維護']) {
+  for (const needle of ['function FormCard(', '<LiveProbePanel probe={data.live_probe} />', '單獨同步此表', '發送連線 Ping']) {
     assert.ok(page.includes(needle), `少了 ${needle}`);
   }
 });
 check('管理員操作都還在', () => {
-  for (const needle of ["runSync('all')", 'onSync(job)', 'onToggle(job, next)', 'ragicStatusApi.purgeGhosts()',
-    '<WebhookInboxPanel canRetry={isAdmin}']) {
+  for (const needle of ["runSync('all')", 'onSync(job)', 'onToggle(job, next)', '<WebhookInboxPanel canRetry={isAdmin}']) {
     assert.ok(page.includes(needle), `少了 ${needle}`);
   }
   assert.ok(read('client/admin/src/components/WebhookInboxPanel.jsx').includes('ragicStatusApi.retryWebhook(item)'));
+});
+check('「資料維護／清除錯誤載入資料」按鈕已移除（後端一律 410，按了只會失敗）', () => {
+  assert.ok(!page.includes('purgeGhosts') && !page.includes('資料維護'), '頁面不該再有清除按鈕');
+  assert.ok(!read('client/admin/src/api/ragicStatus.js').includes('purge-ghosts'), 'API 用戶端不該再呼叫 purge-ghosts');
+  const purgeRoute = /router\.post\('\/purge-ghosts'[\s\S]*?\n\}\);/.exec(routeSrc);
+  assert.ok(purgeRoute && purgeRoute[0].includes('res.status(410)'), '後端端點保留且維持 410，舊版前端才會安全失敗');
 });
 check('頁面不再寫死排程時間，改用後端 schedules', () => {
   for (const stale of ['每 10 分鐘', '01:00', '02:00', 'cron_schedule', 'next_cron_run_at']) {
