@@ -2,7 +2,8 @@
  * Ragic 連線健康檢查 (Task #65) — admin only
  *
  *  GET  /api/admin/ragic-status
- *    → { enabled, env, missing_env, cron_schedule, forms{...}, now }
+ *    → { enabled, env, missing_env, schedules{ jobs, background }, forms{...}, now }
+ *    schedules 來自 constants/ragicJobSchedules.js（與 cron/index.js 由測試比對）。
  *    `enabled` 為「6 個 RAGIC_* env 全到位」才為 true（光有 API_KEY+BASE_URL 不算齊全）
  *    forms[job].admin_enabled 是 admin 手動開關（見下方 /toggle），與上面全域 env `enabled` 是兩件事：
  *    env 沒設定 = 系統整體連不上 Ragic；admin_enabled=false = 這個 job 被人工暫停，其餘 job 不受影響。
@@ -19,11 +20,13 @@
  * 同步覆蓋：
  *   staff / venues     — 真實 bulk sync（H01/H05）
  *   parents / students — 對 Z01/Z02 發一次 where=eq 健康檢查 ping
- *   backup             — 本地 parents/students → Ragic Z01/Z02（補寫回缺口；cron 02:00）
- *   pull               — Ragic Z01/Z02 → 本地 parents/students 全量同步（補讀回缺口；cron 01:00）
+ *   backup             — 本地 parents/students → Ragic Z01/Z02（補寫回缺口）
+ *   pull               — Ragic Z01/Z02 → 本地 parents/students 全量同步（補讀回缺口）
+ *   各自的排程時間見 constants/ragicJobSchedules.js。
  */
 const express = require('express');
 const ragicAdmin = require('../../services/ragicAdmin');
+const { RAGIC_JOB_SCHEDULES, RAGIC_BACKGROUND_SCHEDULES } = require('../../constants/ragicJobSchedules');
 const { requireAdminAuth } = require('../../middlewares/adminAuth');
 // F-A06：權限改由「角色權限管理」的設定決定。
 const { requireResource } = require('../../middlewares/requireResource');
@@ -42,16 +45,6 @@ const JOB_RUNNERS = {
 };
 const ALL_JOBS = Object.keys(JOB_RUNNERS);
 
-function nextCronRunAt(now = new Date()) {
-  // schedule = '*/10 * * * *' → 下一個 :00 :10 :20 :30 :40 :50
-  const next = new Date(now.getTime());
-  next.setSeconds(0, 0);
-  const m = next.getMinutes();
-  const add = 10 - (m % 10);
-  next.setMinutes(m + add);
-  return next.toISOString();
-}
-
 router.get('/', requireAdminAuth, requireResource('ragic-status'), async (req, res) => {
   try {
     const env = ragicAdmin.getRagicEnvFlags();
@@ -64,16 +57,15 @@ router.get('/', requireAdminAuth, requireResource('ragic-status'), async (req, r
       error: err.message || String(err),
       forms: {},
     }));
-    const now = new Date();
     res.json({
       enabled,
       env,
       missing_env: missing,
       live_probe: liveProbe,
-      cron_schedule: '*/10 * * * *',
-      next_cron_run_at: nextCronRunAt(now),
+      // 以前回傳寫死的「每 10 分鐘」排程字串，但系統從來沒有每 10 分鐘的 Ragic 排程。
+      schedules: { jobs: RAGIC_JOB_SCHEDULES, background: RAGIC_BACKGROUND_SCHEDULES },
       forms,
-      now: now.toISOString(),
+      now: new Date().toISOString(),
     });
   } catch (err) {
     console.error('[admin/ragic-status]', err);
@@ -113,6 +105,13 @@ router.get('/sync-failures', requireAdminAuth, requireResource('ragic-status'), 
           WHERE occurred_at >= NOW() - $1::interval
           ORDER BY occurred_at DESC LIMIT $2`, [since, limit]),
     ]);
+    // 狀態頁用：每個 job 各有幾筆資料、因為什麼原因寫不過去（permanent＝資料本身要修，重試沒用）
+    const byJobCode = await pool.query(
+      `SELECT job_name, COALESCE(error_code,'(null)') AS error_code, error_kind,
+              count(DISTINCT local_id)::int AS distinct_records
+         FROM ragic_sync_failures
+        WHERE occurred_at >= NOW() - $1::interval
+        GROUP BY 1,2,3 ORDER BY 4 DESC`, [since]);
     // 反覆失敗的同一筆資料 = Phase 2 隔離（quarantine）的候選
     const repeat = await pool.query(
       `SELECT local_id, entity_kind, count(*)::int AS failures,
@@ -125,6 +124,7 @@ router.get('/sync-failures', requireAdminAuth, requireResource('ragic-status'), 
       window_days: days,
       summary: summary.rows,
       by_error_code: byCode.rows,
+      by_job_code: byJobCode.rows,
       repeat_permanent_failures: repeat.rows,
       recent: recent.rows,
       note: 'message 已去識別化；permanent 表示資料本身不合法，重試永遠失敗。',

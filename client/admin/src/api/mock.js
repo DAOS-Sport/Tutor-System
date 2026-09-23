@@ -370,14 +370,22 @@ const CANCELLED_SESSIONS = [
 // 真實的 ragicStatusApi 直連後端、刻意不吃 mock（這頁只反映線上即時同步狀態），
 // 因此 demo / VITE_USE_MOCK 模式下原本「連開都開不了」。此處補一份假快照，
 // 讓這頁在無後端時也能開，並讓「立即同步」按出「同步中 → 成功」動畫（5 秒輪詢驅動）。
-function _ragicNextCron(now = new Date()) {
-  // 對齊 server/routes/admin/ragicStatus.js 的 '*/10 * * * *'
-  const next = new Date(now.getTime());
-  next.setSeconds(0, 0);
-  const m = next.getMinutes();
-  next.setMinutes(m + (10 - (m % 10)));
-  return next.toISOString();
-}
+// 排程對照表抄自 server/constants/ragicJobSchedules.js（demo 用，真實模式一律以後端回傳為準）。
+const RAGIC_MOCK_SCHEDULES = {
+  jobs: {
+    backup:     { name: '家長與學員寫回 Ragic', sheet: 'Z01／Z02', direction: 'out',   cron: '30 0 * * *', text: '每天 00:30' },
+    pull:       { name: '從 Ragic 拉回家長與學員', sheet: 'Z01／Z02', direction: 'in', cron: '30 2 * * *', text: '每天 02:30' },
+    quarantine: { name: '家長姓名檢查',       sheet: 'Z01',      direction: 'check', cron: '45 2 * * *', text: '每天 02:45' },
+    staff:      { name: '員工與教練',         sheet: 'H01',      direction: 'in',    cron: '30 3 * * *', text: '每天 03:30' },
+    venues:     { name: '場館',               sheet: 'H05',      direction: 'in',    cron: '30 3 * * *', text: '每天 03:30' },
+    parents:    { name: '家長表連線測試',     sheet: 'Z01',      direction: 'check', cron: null,         text: '手動' },
+    students:   { name: '學員表連線測試',     sheet: 'Z02',      direction: 'check', cron: null,         text: '手動' },
+  },
+  background: [
+    { key: 'outbox',  name: '新註冊家長寫入 Ragic', cron: '10 0 * * *', text: '每天 00:10' },
+    { key: 'webhook', name: 'Ragic 即時通知重試',   cron: '* * * * *',  text: '每分鐘' },
+  ],
+};
 const RAGIC_MOCK_ENV = {
   RAGIC_API_KEY: true, RAGIC_BASE_URL: true,
   RAGIC_FORM_H01: true, RAGIC_FORM_H05: true,
@@ -429,12 +437,15 @@ const RAGIC_MOCK_FORMS = {
     last_success_at: new Date(Date.now() - 6 * 60000).toISOString(),
     last_count: 0, last_duration_ms: 610,
   },
+  // 比照正式站常態：每晚有寫回幾筆，但少數資料不完整的學員一直寫不進 Ragic → 整體記為 error。
   backup: {
     form_code: 'Z01_Z02_BACKUP', label: 'Z01/Z02 本地→Ragic 每日備份同步', kind: 'sync',
     admin_enabled: true,
-    in_progress: false, last_status: 'ok', last_triggered_by: 'cron', last_error: null,
+    in_progress: false, last_status: 'error', last_triggered_by: 'cron',
+    last_error: '61 筆同步失敗（詳見伺服器 log）：localId=00000000-0000-0000-0000-000000000000 — RAGIC_VALIDATION_ERROR: 請補齊學員：生日',
     last_run_at: new Date(Date.now() - 5 * 3600000).toISOString(),
-    last_success_at: new Date(Date.now() - 5 * 3600000).toISOString(),
+    last_run_count: 7,
+    last_success_at: new Date(Date.now() - 78 * 86400000).toISOString(),
     last_count: 2, last_duration_ms: 980,
   },
   pull: {
@@ -444,6 +455,14 @@ const RAGIC_MOCK_FORMS = {
     last_run_at: new Date(Date.now() - 6 * 3600000).toISOString(),
     last_success_at: new Date(Date.now() - 6 * 3600000).toISOString(),
     last_count: 118, last_duration_ms: 15400,
+  },
+  quarantine: {
+    form_code: 'Z01_BAD_NAME_QUARANTINE', label: 'Z01 姓名品質掃描（Z03 追蹤）', kind: 'sync',
+    admin_enabled: true,
+    in_progress: false, last_status: 'ok', last_triggered_by: 'cron', last_error: null,
+    last_run_at: new Date(Date.now() - 5.75 * 3600000).toISOString(),
+    last_success_at: new Date(Date.now() - 5.75 * 3600000).toISOString(),
+    last_count: 1, last_duration_ms: 106,
   },
 };
 
@@ -599,8 +618,7 @@ export const mockDb = {
         ...RAGIC_MOCK_LIVE_PROBE,
         cached: true,
       })),
-      cron_schedule: '*/10 * * * *',
-      next_cron_run_at: _ragicNextCron(now),
+      schedules: JSON.parse(JSON.stringify(RAGIC_MOCK_SCHEDULES)),
       // 深拷貝：避免頁面拿到 module 內部物件而被後續 setTimeout 變更「偷改」既有 render
       forms: JSON.parse(JSON.stringify(RAGIC_MOCK_FORMS)),
       now: now.toISOString(),
@@ -628,6 +646,23 @@ export const mockDb = {
     return {
       ok: true, accepted: true, queued_jobs: jobs,
       message: '（demo）已排入背景同步，狀態會自動更新…',
+    };
+  },
+  // GET /ragic-status/sync-failures 的 demo 版（數字比照 2026-09-23 正式站）
+  ragicSyncFailures() {
+    return {
+      window_days: 2,
+      summary: [{ error_kind: 'permanent', entity_kind: 'student', n: 122, distinct_records: 61, latest: new Date().toISOString() }],
+      by_error_code: [
+        { error_code: 'STUDENT_ID_NUMBER_EXISTS', n: 62, distinct_records: 31 },
+        { error_code: 'RAGIC_VALIDATION_ERROR', n: 60, distinct_records: 30 },
+      ],
+      by_job_code: [
+        { job_name: 'backup', error_code: 'STUDENT_ID_NUMBER_EXISTS', error_kind: 'permanent', distinct_records: 31 },
+        { job_name: 'backup', error_code: 'RAGIC_VALIDATION_ERROR', error_kind: 'permanent', distinct_records: 30 },
+      ],
+      repeat_permanent_failures: [],
+      recent: [],
     };
   },
   // POST /ragic-status/toggle 的 demo 版：就地改 admin_enabled，下一次 ragicStatus() 反映。

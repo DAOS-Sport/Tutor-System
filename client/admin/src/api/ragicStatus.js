@@ -18,6 +18,12 @@ export const ragicStatusApi = {
     const r = await http.get('/ragic-status', { skipAuthRedirect: true });
     return r.data;
   },
+  // 逐筆寫回失敗的統計（唯讀）。用來把「61 筆同步失敗…」這種原始訊息換成看得懂的分類。
+  async syncFailures(days = 2) {
+    if (USE_MOCK) return mockDb.ragicSyncFailures();
+    const r = await http.get('/ragic-status/sync-failures', { params: { days, limit: 1 }, skipAuthRedirect: true });
+    return r.data;
+  },
   async sync(form = 'all') {
     if (USE_MOCK) return mockDb.ragicSync(form);
     // 注意：body 必須是物件（{}）。傳 null 會被 axios 序列化成字面 "null"，
