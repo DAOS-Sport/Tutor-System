@@ -387,7 +387,7 @@ const RAGIC_MOCK_SCHEDULES = {
 };
 const RAGIC_MOCK_ENV = {
   RAGIC_API_KEY: true, RAGIC_BASE_URL: true,
-  RAGIC_FORM_H01: true, RAGIC_FORM_H05: true,
+  RAGIC_FORM_H01: true, RAGIC_FORM_H23: true, RAGIC_FORM_H05: true,
   RAGIC_FORM_Z01: true, RAGIC_FORM_Z02: true,
 };
 const RAGIC_MOCK_LIVE_PROBE = {
@@ -396,6 +396,7 @@ const RAGIC_MOCK_LIVE_PROBE = {
   checked_at: new Date(Date.now() - 30000).toISOString(),
   forms: {
     h01: { label: 'H01 員工 API', env: 'RAGIC_FORM_H01', configured: true, status: 'ok', ok: true, empty: false, record_count: 1, duration_ms: 420 },
+    h23: { label: 'H23 新生/基本資料 API', env: 'RAGIC_FORM_H23', configured: true, status: 'ok', ok: true, empty: false, record_count: 1, duration_ms: 304 },
     h05: { label: 'H05 場館 API', env: 'RAGIC_FORM_H05', configured: true, status: 'ok', ok: true, empty: false, record_count: 1, duration_ms: 380 },
     z01: { label: 'Z01 家長 API', env: 'RAGIC_FORM_Z01', configured: true, status: 'ok', ok: true, empty: false, record_count: 1, duration_ms: 510 },
     z02: { label: 'Z02 學員 API', env: 'RAGIC_FORM_Z02', configured: true, status: 'ok', ok: true, empty: false, record_count: 1, duration_ms: 490 },

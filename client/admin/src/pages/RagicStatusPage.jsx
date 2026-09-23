@@ -14,6 +14,10 @@ import { jobState, reasonText, summarizeFailures } from '../utils/ragicStatusVie
 //   - HTTP 401 → 確認是 token 失效 → 呼叫 logout()，AuthContext 清狀態，RequireAuth 導回 /login
 //   - HTTP 500 / timeout / 其他 → toast + 重試按鈕，不觸碰 session
 
+// 已退役的工作：與 server/services/ragicAdmin.js 的 RETIRED_JOBS 一致（測試比對）。
+// 新版後端本來就不回傳；前端再擋一次，舊版後端（例如還沒重啟的預覽環境）也不會把它畫出來。
+const RETIRED_JOBS = ['quarantine'];
+
 function fmtDate(ts) {
   return ts ? formatTWDateTime(ts) : '—';
 }
@@ -208,21 +212,20 @@ function LiveProbePanel({ probe }) {
       {probe.error ? (
         <div className="mt-3 rounded bg-red-50 px-2 py-1.5 text-xs text-red-700">{probe.error}</div>
       ) : null}
-      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+      {/* auto-fit：欄數跟著寬度與表單數量走，寬螢幕 5 張排成一列，不會剩一張孤零零掉到下一列 */}
+      <div className="mt-3 grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(11rem,1fr))]">
         {Object.entries(forms).map(([key, item]) => (
-          <div key={key} className="rounded border border-gray-200 bg-gray-50 p-3">
+          <div key={key} className="rounded border border-gray-200 bg-gray-50 px-3 py-2">
             <div className="flex items-center justify-between gap-2">
               <div className="min-w-0 text-xs font-bold text-gray-800">{item.label || key}</div>
               {probeBadge(item.status)}
             </div>
-            <div className="mt-2 space-y-1 text-[11px] text-gray-500">
-              <div className="font-mono">{item.env}</div>
-              <div>
-                筆數：<span className="font-mono text-gray-700">{item.record_count ?? '—'}</span>
-                {item.duration_ms != null ? (
-                  <span> · 耗時：<span className="font-mono text-gray-700">{item.duration_ms} ms</span></span>
-                ) : null}
-              </div>
+            <div className="mt-1 text-[11px] text-gray-500">
+              <span className="font-mono">{item.env}</span>
+              {' · '}筆數 <span className="font-mono text-gray-700">{item.record_count ?? '—'}</span>
+              {item.duration_ms != null ? (
+                <span> · <span className="font-mono text-gray-700">{item.duration_ms} ms</span></span>
+              ) : null}
               {item.error ? <div className="text-red-700">{item.error}</div> : null}
             </div>
           </div>
@@ -380,9 +383,10 @@ export default function RagicStatusPage() {
             ? <span className="rounded bg-brand-green/15 px-2 py-0.5 text-xs font-bold text-brand-green">已啟用</span>
             : <span className="rounded bg-red-100 px-2 py-0.5 text-xs font-bold text-red-700">未啟用</span>}
         </div>
-        <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
+        {/* 依內容寬度排成一行一行的小標籤，不用固定欄數的格子（7 項排 3 欄會剩 1 項獨佔一列） */}
+        <div className="mt-3 flex flex-wrap gap-2 text-xs">
           {Object.entries(env).map(([k, v]) => (
-            <div key={k} className={`flex items-center justify-between rounded border px-2 py-1 ${v ? 'border-gray-200 text-gray-700' : 'border-red-200 bg-red-50 text-red-700'}`}>
+            <div key={k} className={`flex items-center gap-2 rounded border px-2 py-1 ${v ? 'border-gray-200 text-gray-700' : 'border-red-200 bg-red-50 text-red-700'}`}>
               <span className="font-mono">{k}</span>
               <span>{v ? '已設定' : '未設定'}</span>
             </div>
@@ -399,7 +403,7 @@ export default function RagicStatusPage() {
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {Object.entries(forms).map(([job, info]) => (
+        {Object.entries(forms).filter(([job]) => !RETIRED_JOBS.includes(job)).map(([job, info]) => (
           <FormCard
             key={job}
             job={job}

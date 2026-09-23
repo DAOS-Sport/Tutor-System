@@ -108,6 +108,18 @@ check('頁面不再寫死排程時間，改用後端 schedules', () => {
   assert.ok(page.includes("sched('pull')") && page.includes("sched('backup')"), '說明要用實際排程');
   assert.ok(!/<PageHeader[^>]*description=/.test(page), 'PageHeader 不吃 description，錯的說明也不要留');
 });
+check('前端也擋掉退役工作，清單與後端 RETIRED_JOBS 一致（舊版後端也不會畫出來）', () => {
+  const server = /const RETIRED_JOBS = new Set\(\[([^\]]*)\]\);/.exec(adminSrc)[1];
+  const client = /const RETIRED_JOBS = \[([^\]]*)\];/.exec(page)[1];
+  const norm = (s) => s.split(',').map((x) => x.trim().replace(/['"]/g, '')).filter(Boolean).sort();
+  assert.deepEqual(norm(client), norm(server));
+  assert.ok(page.includes('.filter(([job]) => !RETIRED_JOBS.includes(job))'), '卡片清單要過濾退役工作');
+});
+check('不再用固定欄數的格子：連線驗證自動排欄、設定改成一行一行的小標籤', () => {
+  assert.ok(page.includes('[grid-template-columns:repeat(auto-fit,minmax(11rem,1fr))]'));
+  assert.ok(!page.includes('grid gap-2 sm:grid-cols-2 lg:grid-cols-4'), '固定 4 欄時 5 張會剩 1 張掉到下一列');
+  assert.ok(!page.includes('grid grid-cols-2 gap-2 text-xs sm:grid-cols-3'), '固定 3 欄時 7 項會剩 1 項獨佔一列');
+});
 check('「部分完成」走共用判斷，並列出原因', () => {
   assert.ok(page.includes("jobState({ last_status: 'error' }, issues).key === 'partial'"));
   assert.ok(page.includes('reasonText(r.code)'));
