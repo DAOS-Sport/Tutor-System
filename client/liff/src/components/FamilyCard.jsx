@@ -170,7 +170,7 @@ export default function FamilyCard({ block, applyDraft, setApplyDraft, onChanged
       <ConfirmModal open={leaving} title="退出家庭？" confirmLabel="確定退出" cancelLabel="返回" tone="danger" busy={busy}
         onCancel={() => !busy && setLeaving(false)}
         onConfirm={async () => { await run(() => familyApi.leave(), '已退出家庭'); setLeaving(false); }}>
-        退出後您只看得到自己名下的資料，家人也看不到您名下的孩子。孩子的課程與付款紀錄不受影響；之後要再加入需要重新申請。
+        退出後您只看得到自己名下的資料，家人也看不到您名下的孩子。孩子的課程與付款記錄不受影響；之後要再加入需要重新申請。
       </ConfirmModal>
       <ConfirmModal open={cancelling} title="取消申請？" confirmLabel="取消申請" cancelLabel="返回" busy={busy}
         onCancel={() => !busy && setCancelling(false)}

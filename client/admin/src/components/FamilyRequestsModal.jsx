@@ -66,20 +66,24 @@ export default function FamilyRequestsModal({ onClose }) {
   ];
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-center overflow-y-auto bg-black/50 p-3 md:p-8">
-      <div className="h-fit w-full max-w-4xl overflow-hidden rounded-lg border border-gray-400 bg-white shadow-2xl">
-        <div className="flex items-center justify-between border-b border-gray-300 bg-gray-100 px-4 py-2.5">
+    // 手機（md 以下）貼底升起、上緣圓角、85dvh；桌機置中、90dvh。頭尾固定，中段捲動（比照 ReconcilePage 發票視窗）。
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 md:items-center md:px-4"
+      onClick={(e) => e.target === e.currentTarget && !busy && onClose()}
+      role="dialog" aria-modal="true" aria-label="家庭申請與建議">
+      <div className="flex max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-2xl bg-white shadow-2xl pb-[env(safe-area-inset-bottom)] md:max-h-[90dvh] md:max-w-4xl md:rounded-2xl">
+        <div className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-gray-300 md:hidden" aria-hidden="true" />
+        <div className="flex shrink-0 items-center justify-between border-b border-gray-300 bg-gray-100 px-4 py-2.5">
           <h2 className="text-base font-bold text-brand-primary">家庭申請與建議</h2>
           <button type="button" onClick={onClose} className="p-1 text-gray-400 hover:text-gray-600">✕</button>
         </div>
-        <div className="flex border-b border-gray-300 bg-gray-50 text-xs">
+        <div className="flex shrink-0 border-b border-gray-300 bg-gray-50 text-xs">
           {tabs.map(([k, t]) => (
             <button key={k} type="button" onClick={() => setTab(k)}
               className={`border-r border-gray-300 px-4 py-2 font-bold ${tab === k ? 'bg-white text-brand-primary' : 'text-gray-500 hover:bg-white/60'}`}>{t}</button>
           ))}
         </div>
 
-        <div className="space-y-3 p-4 text-xs">
+        <div className="flex-1 space-y-3 overflow-y-auto p-4 text-xs">
           {tab === 'requests' && (
             <>
               <p className="text-gray-500">家長從個人頁送出的合併申請（已經比對過孩子的身分證字號與生日）。核准後申請人加入孩子所屬家長的家庭；對方還沒有家庭就自動建立，由孩子的所屬家長當擁有者。</p>
