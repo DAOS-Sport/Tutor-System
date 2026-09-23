@@ -62,6 +62,71 @@ router.get('/invites/:token', async (req, res) => {
   }
 });
 
+// 家長自己邀請家人（擁有者 2026-09-23）。只限家庭的擁有者 —— 孩子的資料由擁有者決定分享給誰；
+// 還沒有家庭的家長產生邀請時先建家庭、自己當擁有者。一般成員不能再邀別人。
+router.post('/invites', async (req, res) => {
+  const scope = await familyScope.forRequest(req);
+  if (!scope.enabled) return fail(res, 404, 'FAMILY_DISABLED', '家庭功能尚未開放');
+  if (scope.family && scope.family.role !== 'owner') {
+    return fail(res, 403, 'OWNER_ONLY', '只有家庭的擁有者可以邀請家人，請聯絡擁有者或櫃台');
+  }
+  const actor = `parent:${req.parent.id}`;
+  const client = await pool.connect();
+  let invite;
+  try {
+    await client.query('BEGIN');
+    let familyId = scope.family?.family_id || null;
+    if (!familyId) {
+      // 還有一筆「申請加入別人家庭」在審核中 → 不能同時自己開家庭（核准時會衝突）
+      const pendingReq = await client.query(
+        `SELECT 1 FROM family_join_requests WHERE applicant_parent_id = $1 AND status = 'pending' LIMIT 1`, [req.parent.id]);
+      if (pendingReq.rowCount) {
+        await client.query('ROLLBACK');
+        client.release();
+        return fail(res, 409, 'FAMILY_REQUEST_PENDING', '您有一筆加入家庭的申請正在審核中，請先取消申請再邀請家人');
+      }
+      // 沒有「有效的」家庭，但還有成員列（LINE 換過、綁定失效）→ 先請櫃台重新綁定，不另開新家庭
+      if (await familyAdmin.activeMembership(client, req.parent.id, { lock: true })) {
+        await client.query('ROLLBACK');
+        client.release();
+        return fail(res, 409, 'REBIND_REQUIRED', '您的 LINE 帳號換過了，請先請櫃台重新綁定家庭');
+      }
+      familyId = (await familyAdmin.createFamily(client, { ownerParentId: req.parent.id, actor })).result.id;
+    }
+    invite = (await familyAdmin.createInvite(client, { familyId, actor })).result;
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    client.release();
+    if (err instanceof familyAdmin.FamilyError) return fail(res, err.status, err.code, err.message);
+    console.error('[family POST /invites]', err.code || err.message);
+    return fail(res, 500, 'FAMILY_INVITE_FAILED', '產生邀請連結失敗，請稍後再試');
+  }
+  client.release();
+  res.status(201).json({ ok: true, invite: familyAdmin.shapeInvite(invite) });
+});
+
+router.post('/invites/:id/revoke', async (req, res) => {
+  const scope = await familyScope.forRequest(req);
+  if (!scope.enabled || !scope.family) return fail(res, 404, 'NOT_IN_FAMILY', '您目前不在任何家庭裡');
+  if (scope.family.role !== 'owner') return fail(res, 403, 'OWNER_ONLY', '只有家庭的擁有者可以作廢邀請');
+  if (!/^[0-9a-f-]{36}$/i.test(String(req.params.id || ''))) return fail(res, 404, 'INVITE_NOT_FOUND', '找不到這個邀請');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await familyAdmin.revokeInvite(client, { familyId: scope.family.family_id, inviteId: req.params.id, actor: `parent:${req.parent.id}` });
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    client.release();
+    if (err instanceof familyAdmin.FamilyError) return fail(res, err.status, err.code, err.message);
+    console.error('[family POST /invites/:id/revoke]', err.code || err.message);
+    return fail(res, 500, 'FAMILY_INVITE_FAILED', '作廢失敗，請稍後再試');
+  }
+  client.release();
+  res.json({ ok: true });
+});
+
 router.post('/invites/:token/accept', async (req, res) => {
   const scope = await familyScope.forRequest(req);
   if (!scope.enabled) return fail(res, 404, 'FAMILY_DISABLED', '家庭功能尚未開放');

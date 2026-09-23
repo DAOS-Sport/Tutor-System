@@ -7,6 +7,7 @@ const REL = {
 };
 
 let joinRequest = null;
+let invites = [];
 
 function mode() {
   try { return localStorage.getItem('mock.family') || ''; } catch { return ''; }
@@ -31,6 +32,8 @@ export const familyMock = {
         join_request: null,
         duplicates: [],
         rebind_required: false,
+        can_invite: false, // 示範帳號在這個家庭是成員，不是擁有者
+        invites: [],
       };
     }
     const firstKid = (parent?.students || [])[0];
@@ -39,6 +42,8 @@ export const familyMock = {
       join_request: joinRequest,
       duplicates: firstKid && !joinRequest ? [{ student_id: firstKid.id, name: firstKid.name }] : [],
       rebind_required: false,
+      can_invite: true,
+      invites,
     };
   },
   createRequest(data) {
@@ -54,10 +59,17 @@ export const familyMock = {
     return { ok: true, request: joinRequest };
   },
   cancelRequest() { joinRequest = null; return { ok: true }; },
+  createInvite() {
+    const inv = { id: `inv-${Date.now()}`, url: `/liff/family/join/mock${Date.now().toString(16)}`,
+      created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 7 * 86400000).toISOString() };
+    invites = [inv, ...invites];
+    return { ok: true, invite: inv };
+  },
+  revokeInvite(id) { invites = invites.filter((i) => i.id !== id); return { ok: true }; },
   invitePreview(token) {
     if (String(token).startsWith('bad')) {
       const err = new Error('invalid');
-      err.response = { status: 410, data: { error: '這個邀請連結已經過期，請向櫃台索取新的連結', code: 'INVITE_EXPIRED' } };
+      err.response = { status: 410, data: { error: '這個邀請連結已經過期，請向邀請您的家人或櫃台索取新的連結', code: 'INVITE_EXPIRED' } };
       throw err;
     }
     return { owner_name: '王媽媽', member_count: 1, relationship: null, expires_at: new Date(Date.now() + 6 * 86400000).toISOString(),

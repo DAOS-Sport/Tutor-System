@@ -8,7 +8,7 @@ import { setAfterAuth } from '../utils/afterAuth';
 import { formatTWDateTime } from '../utils/format';
 
 /**
- * 家庭邀請連結（/family/join/:token）—— 櫃台在後台產生、傳給家人（擁有者 2026-09-23）。
+ * 家庭邀請連結（/family/join/:token）—— 櫃台在後台、或家庭擁有者在個人頁產生，傳給家人（擁有者 2026-09-23）。
  * 在 LINE 裡打開會自動登入；沒登入就先記住這一頁再去登入（還沒註冊的人註冊完也會回來）。
  * 按「加入家庭」後綁定的是這位家長當下的 LINE userId；連結只能用一次。
  */
@@ -34,10 +34,10 @@ export default function FamilyJoinPage() {
     familyApi.invitePreview(token)
       .then((d) => {
         if (!alive) return;
-        setPreview(d || { error: '邀請連結無效，請向櫃台索取新的連結' });
+        setPreview(d || { error: '邀請連結無效，請向邀請您的家人或櫃台索取新的連結' });
         if (d?.relationship) setRelationship(d.relationship);
       })
-      .catch((err) => { if (alive) setPreview({ error: err?.response?.data?.error || '邀請連結無效，請向櫃台索取新的連結' }); });
+      .catch((err) => { if (alive) setPreview({ error: err?.response?.data?.error || '邀請連結無效，請向邀請您的家人或櫃台索取新的連結' }); });
     return () => { alive = false; };
   }, [token, authedParent, navigate]);
 

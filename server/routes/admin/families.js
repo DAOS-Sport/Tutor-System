@@ -37,17 +37,8 @@ const { normalizePhone } = require('../../services/identityNormalizer');
 
 const LINE_UID_RE = /^U[0-9a-f]{32}$/i;
 
-// 邀請連結：家長端 LIFF 網址（跟推播裡的連結同一個來源）＋ /family/join/<token>。
-// 沒設定 LIFF 網址時回相對路徑，後台畫面自己補上網域。
-function inviteUrl(token) {
-  const base = String(process.env.LIFF_URL_PARENT || process.env.LIFF_URL || '').trim().replace(/\/+$/, '');
-  return base ? `${base}/family/join/${token}` : `/liff/family/join/${token}`;
-}
-const shapeInvite = (row) => ({
-  id: row.id, url: inviteUrl(row.token), relationship: row.relationship,
-  relationship_label: row.relationship ? relationshipLabel(row.relationship) : null,
-  created_at: row.created_at, expires_at: row.expires_at, created_by: row.created_by,
-});
+// 邀請連結的網址與回傳格式跟家長端共用（familyAdmin.shapeInvite）
+const { shapeInvite } = familyAdmin;
 
 const router = express.Router();
 router.use(requireAdminAuth, requireResource('customer-parents'));

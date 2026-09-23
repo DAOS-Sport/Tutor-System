@@ -24,6 +24,8 @@
 //  18. 沒綁 LINE 的家長不能加入家庭（LINE_NOT_BOUND）
 //  19. 櫃台添加成員：手機＋姓名，姓名對得上才帶出 UID；沒有家庭就先建立（擁有者 2026-09-23）
 //  20. 邀請連結：產生、加入（綁 LINE）、單次、作廢、過期、開關關閉
+//  21. 家長自己邀請（個人頁）：沒有家庭 → 產生時建家庭、自己當擁有者；成員不能邀也不能作廢；
+//      同時可用 5 條上限；作廢別家的連結無效；有審核中的申請不能邀（個人頁也不顯示）
 //
 // 不起 HTTP server、不碰 Ragic、LINE 推播以 stub 攔截；所有資料 try/finally 自己刪乾淨。
 const assert = require('node:assert/strict');
@@ -501,6 +503,75 @@ async function addStudent(parentId, { name, idNumber, birth, ragic = false }) {
       process.env.FAMILY_ACCOUNTS_V1 = 'all';
       assert.equal(off.body.code, 'FAMILY_DISABLED', '開關關閉時邀請頁不能用');
     });
+
+    await t('21. 家長自己邀請：沒有家庭先建、自己當擁有者；成員不能邀；上限 5 條；審核中的申請擋住', async () => {
+      const create = handler('family', 'post', '/invites');
+      const revoke = handler('family', 'post', '/invites/:id/revoke');
+      const accept = handler('family', 'post', '/invites/:token/accept');
+      const host = await addParent('測試自己邀請');
+      const guest = await addParent('測試被家長邀請');
+      const before = await familyProfile.familyBlock(host);
+      assert.equal(before.family, null);
+      assert.equal(before.can_invite, true, '還沒有家庭的家長可以邀請');
+      assert.deepEqual(before.invites, []);
+      const pushesBefore = pushes.length;
+      const made = await call(create, { parent: host });
+      assert.equal(made.status, 201, JSON.stringify(made.body));
+      const own = (await pool.query(
+        `SELECT family_id, role, line_uid FROM family_members WHERE parent_id=$1 AND status='active'`, [host.id])).rows[0];
+      assert.equal(own.role, 'owner', '產生邀請時建家庭、自己當擁有者');
+      assert.equal(own.line_uid, host.line_uid);
+      assert.equal(pushes.length, pushesBefore, '自己建的家庭不發「櫃台已為您建立」');
+      const block = await familyProfile.familyBlock(host);
+      assert.equal(block.family.role, 'owner');
+      assert.equal(block.can_invite, true);
+      assert.deepEqual(block.invites.map((i) => i.id), [made.body.invite.id], '個人頁看得到還能用的連結');
+      const token = String(made.body.invite.url).split('/family/join/')[1];
+      const joined = await call(accept, { parent: guest, params: { token }, body: { relationship: 'father' } });
+      assert.equal(joined.status, 200, JSON.stringify(joined.body));
+      assert.equal(joined.body.family_id, own.family_id);
+      assert.deepEqual((await familyProfile.familyBlock(host)).invites, [], '用掉的連結不再列出');
+      // 成員（不是擁有者）不能邀、不能作廢，個人頁也不顯示邀請
+      const denied = await call(create, { parent: guest });
+      assert.equal(denied.status, 403);
+      assert.equal(denied.body.code, 'OWNER_ONLY');
+      const guestBlock = await familyProfile.familyBlock(guest);
+      assert.equal(guestBlock.can_invite, false);
+      assert.deepEqual(guestBlock.invites, []);
+      // 同時可用 5 條（用掉的不算）
+      const open = [];
+      for (let i = 0; i < 5; i += 1) {
+        const r = await call(create, { parent: host });
+        assert.equal(r.status, 201, JSON.stringify(r.body));
+        open.push(r.body.invite.id);
+      }
+      const over = await call(create, { parent: host });
+      assert.equal(over.status, 429);
+      assert.equal(over.body.code, 'INVITE_LIMIT');
+      const notOwner = await call(revoke, { parent: guest, params: { id: open[0] } });
+      assert.equal(notOwner.status, 403);
+      assert.equal(notOwner.body.code, 'OWNER_ONLY');
+      const rv = await call(revoke, { parent: host, params: { id: open[0] } });
+      assert.equal(rv.status, 200, JSON.stringify(rv.body));
+      assert.equal((await call(create, { parent: host })).status, 201, '作廢一條就能再產生');
+      // 別的家庭的連結作廢不了
+      const other = await addParent('測試別家擁有者');
+      const otherInv = await call(create, { parent: other });
+      assert.equal(otherInv.status, 201, JSON.stringify(otherInv.body));
+      const cross = await call(revoke, { parent: host, params: { id: otherInv.body.invite.id } });
+      assert.equal(cross.status, 404);
+      assert.equal((await pool.query('SELECT revoked_at FROM family_invites WHERE id=$1', [otherInv.body.invite.id])).rows[0].revoked_at, null);
+      // 有一筆申請在審核中 → 不能自己開家庭，個人頁也不顯示邀請
+      const applicant = await addParent('測試審核中的人');
+      await pool.query(
+        `INSERT INTO family_join_requests (applicant_parent_id, target_student_id, relationship, status)
+         VALUES ($1, $2, 'father', 'pending')`, [applicant.id, kidA]);
+      assert.equal((await familyProfile.familyBlock(applicant)).can_invite, false);
+      const blocked = await call(create, { parent: applicant });
+      assert.equal(blocked.status, 409);
+      assert.equal(blocked.body.code, 'FAMILY_REQUEST_PENDING');
+      assert.equal((await pool.query('SELECT 1 FROM family_members WHERE parent_id=$1', [applicant.id])).rowCount, 0, '不會建出家庭');
+    });
   } catch (err) {
     failed = true;
     console.error('FAIL', err && err.stack ? err.stack : err);
@@ -525,5 +596,5 @@ async function addStudent(parentId, { name, idNumber, birth, ragic = false }) {
     console.error(`family_accounts_db_test: FAILED（${passed} 項通過後中斷）`);
     process.exit(1);
   }
-  console.log(`family_accounts_db_test: ${passed}/20 PASS`);
+  console.log(`family_accounts_db_test: ${passed}/21 PASS`);
 })();

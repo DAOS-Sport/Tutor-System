@@ -474,11 +474,35 @@ async function resolveNewMemberDuplicates(c, { parentId, familyId, actor }) {
 // ── 邀請連結（擁有者 2026-09-23）──────────────────────────────────────────
 // 櫃台產生、傳給家人；家人用 LINE 打開、登入後按「加入家庭」→ 綁定他當下的 LINE userId。
 // 只能用一次、7 天有效、櫃台可作廢。連結等同鑰匙，所以一定單次、會過期，加入後通知全家。
+// 邀請連結網址：家長端 LIFF 網址（跟推播連結同一個來源）＋ /family/join/<token>；
+// 沒設定 LIFF 網址時回相對路徑，畫面自己補網域。後台與家長端共用。
+function inviteUrl(token) {
+  const base = String(process.env.LIFF_URL_PARENT || process.env.LIFF_URL || '').trim().replace(/\/+$/, '');
+  return base ? `${base}/family/join/${token}` : `/liff/family/join/${token}`;
+}
+function shapeInvite(row) {
+  return {
+    id: row.id, url: inviteUrl(row.token), relationship: row.relationship,
+    relationship_label: row.relationship ? relationshipLabel(row.relationship) : null,
+    created_at: row.created_at, expires_at: row.expires_at, created_by: row.created_by,
+  };
+}
+// 一個家庭同時最多幾條還能用的連結（防止濫發；用掉、作廢、過期的不算）
+const MAX_OPEN_INVITES = 5;
+
 async function createInvite(c, { familyId, relationship = null, actor }) {
   relationship = relationship || null;
   if (relationship) requireRelationship(relationship);
   const family = await lockFamily(c, familyId);
   if (family.status !== 'active') throw new FamilyError('FAMILY_FROZEN', '這個家庭已凍結，請先解除凍結');
+  const open = await c.query(
+    `SELECT COUNT(*)::int AS n FROM family_invites
+      WHERE family_id = $1 AND used_at IS NULL AND revoked_at IS NULL AND expires_at > NOW()`,
+    [familyId]
+  );
+  if (open.rows[0].n >= MAX_OPEN_INVITES) {
+    throw new FamilyError('INVITE_LIMIT', `這個家庭已經有 ${MAX_OPEN_INVITES} 條還沒用的邀請連結，請先作廢不用的再產生`, 429);
+  }
   const token = crypto.randomBytes(16).toString('hex');
   const r = await c.query(
     `INSERT INTO family_invites (family_id, token, relationship, created_by) VALUES ($1, $2, $3, $4) RETURNING *`,
@@ -501,10 +525,10 @@ async function revokeInvite(c, { familyId, inviteId, actor }) {
 
 // 邀請目前能不能用；不能用時回原因（給預覽頁與加入時共用）
 function inviteProblem(inv) {
-  if (!inv) return new FamilyError('INVITE_INVALID', '邀請連結無效，請向櫃台索取新的連結', 404);
-  if (inv.revoked_at) return new FamilyError('INVITE_REVOKED', '這個邀請連結已經作廢，請向櫃台索取新的連結', 410);
-  if (inv.used_at) return new FamilyError('INVITE_USED', '這個邀請連結已經有人用過了，請向櫃台索取新的連結', 410);
-  if (new Date(inv.expires_at).getTime() < Date.now()) return new FamilyError('INVITE_EXPIRED', '這個邀請連結已經過期，請向櫃台索取新的連結', 410);
+  if (!inv) return new FamilyError('INVITE_INVALID', '邀請連結無效，請向邀請您的家人或櫃台索取新的連結', 404);
+  if (inv.revoked_at) return new FamilyError('INVITE_REVOKED', '這個邀請連結已經作廢，請向邀請您的家人或櫃台索取新的連結', 410);
+  if (inv.used_at) return new FamilyError('INVITE_USED', '這個邀請連結已經有人用過了，請向邀請您的家人或櫃台索取新的連結', 410);
+  if (new Date(inv.expires_at).getTime() < Date.now()) return new FamilyError('INVITE_EXPIRED', '這個邀請連結已經過期，請向邀請您的家人或櫃台索取新的連結', 410);
   return null;
 }
 
@@ -543,6 +567,9 @@ module.exports = {
   revokeInvite,
   acceptInvite,
   inviteProblem,
+  inviteUrl,
+  shapeInvite,
+  MAX_OPEN_INVITES,
   // 測試用
   _applyDuplicateRule: applyDuplicateRule,
 };

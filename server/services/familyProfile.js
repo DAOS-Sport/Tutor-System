@@ -146,11 +146,27 @@ async function familyBlock(parent, db = pool) {
     [parent.id]
   )).rowCount > 0;
 
+  // 邀請家人（擁有者 2026-09-23）：擁有者（家庭沒凍結），或還沒有家庭的家長（產生邀請時會建家庭）；
+  // 還有一筆申請在審核中的不行（跟 POST /api/family/invites 的 409 一致）
+  const canInvite = fam
+    ? fam.role === 'owner' && fam.family_status === 'active'
+    : !rebindRequired && joinRequest?.status !== 'pending';
+  const invites = fam && fam.role === 'owner'
+    ? (await db.query(
+      `SELECT * FROM family_invites
+        WHERE family_id = $1 AND used_at IS NULL AND revoked_at IS NULL AND expires_at > NOW()
+        ORDER BY created_at DESC`,
+      [fam.family_id]
+    )).rows.map(familyAdmin.shapeInvite)
+    : [];
+
   return {
     family,
     join_request: joinRequest,
     duplicates: dup.rows,
     rebind_required: rebindRequired,
+    can_invite: canInvite,
+    invites,
   };
 }
 

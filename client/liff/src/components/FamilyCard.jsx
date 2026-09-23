@@ -11,6 +11,90 @@ import { formatPlainDate, formatTWDateTime, todayTaipeiYMD } from '../utils/form
 const inputCls = 'w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-brand-primary';
 const TW_ID_RE = /^[A-Z][12]\d{8}$/;
 
+// 邀請家人加入（擁有者 2026-09-23）：擁有者，或還沒有家庭的家長（產生時會建家庭、自己當擁有者）。
+// 連結可以直接用 LINE 傳，或複製；只能用一次、7 天有效、可作廢。
+const fullUrl = (url) => (String(url || '').startsWith('/') ? `${window.location.origin}${url}` : url);
+
+function copyText(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text);
+  } catch { /* 落到下面（LINE 內建瀏覽器常沒有 clipboard API） */ }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand('copy');
+  document.body.removeChild(ta);
+  return Promise.resolve();
+}
+
+function InviteBox({ hasFamily, invites, onChanged }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const [copiedId, setCopiedId] = useState(null);
+
+  async function create() {
+    setBusy(true);
+    try {
+      await familyApi.createInvite();
+      toast.success('已產生邀請連結，傳給家人就可以加入');
+      await onChanged();
+    } catch (err) {
+      toast.error(err?.response?.data?.error || '產生邀請連結失敗，請稍後再試', 4200);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function revoke(id) {
+    setBusy(true);
+    try {
+      await familyApi.revokeInvite(id);
+      toast.success('已作廢這個邀請連結');
+      await onChanged();
+    } catch (err) {
+      toast.error(err?.response?.data?.error || '作廢失敗，請稍後再試');
+    } finally {
+      setBusy(false);
+    }
+  }
+  const shareHref = (inv) => `https://line.me/R/share?text=${encodeURIComponent(
+    `邀請你加入我們的家庭，一起查看孩子的課程、幫忙繳費與簽到：${fullUrl(inv.url)}`)}`;
+
+  return (
+    <div className="mt-3 rounded-lg border border-brand-teal/30 bg-brand-teal/5 p-3 text-xs">
+      <div className="font-bold text-gray-800">邀請家人加入</div>
+      <p className="mt-1 leading-5 text-gray-600">
+        {hasFamily
+          ? '產生連結傳給爸爸、媽媽或爺爺奶奶，對方用 LINE 打開、按「加入家庭」就完成。'
+          : '產生連結傳給家人，您會成為這個家庭的擁有者；對方用 LINE 打開、按「加入家庭」就完成。'}
+        連結只能用一次、7 天內有效。
+      </p>
+      {(invites || []).map((inv) => (
+        <div key={inv.id} className="mt-2 rounded-lg border border-gray-200 bg-white p-2">
+          <div className="break-all font-mono text-[11px] text-gray-600">{fullUrl(inv.url)}</div>
+          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+            <a href={shareHref(inv)} target="_blank" rel="noopener noreferrer"
+              className="rounded-lg bg-[#06C755] px-3 py-1.5 font-bold text-white">用 LINE 傳送</a>
+            <button type="button" onClick={() => copyText(fullUrl(inv.url)).then(() => setCopiedId(inv.id)).catch(() => setCopiedId(null))}
+              className="rounded-lg border border-gray-200 px-3 py-1.5 font-medium text-gray-700">
+              {copiedId === inv.id ? '已複製 ✓' : '複製連結'}
+            </button>
+            <button type="button" disabled={busy} onClick={() => revoke(inv.id)}
+              className="px-1 py-1.5 font-medium text-brand-error disabled:opacity-60">作廢</button>
+          </div>
+          <div className="mt-1 text-[11px] text-gray-400">有效到 {formatTWDateTime(inv.expires_at)}</div>
+        </div>
+      ))}
+      <button type="button" disabled={busy} onClick={create}
+        className="mt-2 rounded-lg bg-brand-primary px-3 py-2 font-bold text-white disabled:opacity-60">
+        {busy ? '產生中…' : '產生邀請連結'}
+      </button>
+    </div>
+  );
+}
+
 export default function FamilyCard({ block, applyDraft, setApplyDraft, onChanged }) {
   const toast = useToast();
   const [relationship, setRelationship] = useState('');
@@ -106,6 +190,7 @@ export default function FamilyCard({ block, applyDraft, setApplyDraft, onChanged
           <p className="text-[11px] leading-5 text-gray-400">
             家人可以一起查看孩子的課程、幫忙繳費、簽到與預約。孩子的基本資料由所屬的家長維護。
           </p>
+          {block.can_invite && <InviteBox hasFamily invites={block.invites} onChanged={onChanged} />}
           {family.role === 'owner' ? (
             <p className="text-[11px] text-gray-400">您是這個家庭的擁有者；要退出或調整成員請洽櫃台。</p>
           ) : (
@@ -126,6 +211,8 @@ export default function FamilyCard({ block, applyDraft, setApplyDraft, onChanged
           {request?.status === 'rejected' && (
             <p className="rounded-lg bg-brand-error/5 p-2.5 text-brand-error">上次的申請未通過：{request.reject_reason}</p>
           )}
+          {block.can_invite && <InviteBox hasFamily={false} invites={block.invites} onChanged={onChanged} />}
+          <p className="pt-1 font-bold text-gray-800">或申請加入家人的家庭</p>
           <p className="leading-5">孩子的另一位家長或爺爺奶奶已經有帳號的話，可以申請加入同一個家庭。櫃台確認後，就能一起查看、繳費、簽到。</p>
           {!applyDraft && (
             <button type="button" onClick={() => setApplyDraft({ id_number: '', birth_date: '' })}

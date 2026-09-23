@@ -21,7 +21,12 @@ export const familyApi = {
     callApi(`/family/requests/${id}`, { method: 'delete' }, () => familyMock.cancelRequest(id)),
   leave: () =>
     callApi('/family/leave', { method: 'post' }, () => familyMock.leave()),
-  // 邀請連結（櫃台產生）：預覽誰邀請、加入
+  // 家長自己邀請家人（只限擁有者；還沒有家庭的家長會先建立、成為擁有者）
+  createInvite: () =>
+    callApi('/family/invites', { method: 'post' }, () => familyMock.createInvite()),
+  revokeInvite: (id) =>
+    callApi(`/family/invites/${id}/revoke`, { method: 'post' }, () => familyMock.revokeInvite(id)),
+  // 邀請連結（櫃台或擁有者產生）：預覽誰邀請、加入
   invitePreview: (token) =>
     callApi(`/family/invites/${encodeURIComponent(token)}`, {}, () => familyMock.invitePreview(token)),
   acceptInvite: (token, relationship) =>
