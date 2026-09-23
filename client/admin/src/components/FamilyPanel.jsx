@@ -37,15 +37,78 @@ function RelationshipSelect({ value, onChange, disabled, allowEmpty = false }) {
   );
 }
 
+// 添加成員（擁有者 2026-09-23）：櫃台只填手機、姓名；系統用手機找帳號、核對姓名，
+// 對得上才帶出 LINE UID 並允許添加（防手機打錯一碼把陌生人加進家庭）。後端會再核對一次。
+function AddMemberForm({ parentId, busy, act }) {
+  const [phone, setPhone] = useState('');
+  const [name, setName] = useState('');
+  const [lookup, setLookup] = useState(null); // null | { loading } | { error } | 查詢結果
+
+  useEffect(() => {
+    if (phone.length !== 10 || name.trim().length < 2) { setLookup(null); return undefined; }
+    let alive = true;
+    setLookup({ loading: true });
+    const t = setTimeout(() => {
+      familiesApi.lookup(phone, name.trim())
+        .then((r) => { if (alive) setLookup(r || { found: false }); })
+        .catch((err) => { if (alive) setLookup({ error: err?.response?.data?.error || '查詢失敗' }); });
+    }, 400);
+    return () => { alive = false; clearTimeout(t); };
+  }, [phone, name]);
+
+  const ready = !!(lookup?.name_matches && lookup.line_bound && !lookup.in_family);
+  let hint = null;
+  let tone = 'text-brand-error';
+  if (lookup?.loading) { hint = '查詢中…'; tone = 'text-gray-500'; }
+  else if (lookup?.error) hint = lookup.error;
+  else if (lookup && !lookup.found) hint = '找不到這支手機的家長帳號（還沒註冊的話，可以用下面的「預先登記」）';
+  else if (lookup?.multiple) hint = '這支手機對應到多個帳號，請洽管理員';
+  else if (lookup?.name_matches === false) hint = `手機號碼跟姓名對不上（帳號上的姓名是「${lookup.name_hint}」）`;
+  else if (lookup?.name_matches && !lookup.line_bound) hint = `${lookup.name} 還沒綁定 LINE，請對方先用 LINE 登入綁定`;
+  else if (lookup?.name_matches && lookup.in_family) hint = `${lookup.name} 已經在「${lookup.in_family.owner_name || ''}的家庭」裡，要先從那個家庭解綁`;
+  else if (ready) { hint = `✓ 找到 ${lookup.name}`; tone = 'text-brand-green'; }
+
+  return (
+    <div className="rounded border border-gray-200 bg-gray-50 p-3">
+      <div className="mb-2 font-bold text-gray-700">添加成員</div>
+      <div className="grid gap-2 md:grid-cols-3">
+        <label className="block">
+          <span className="mb-0.5 block text-gray-500">手機</span>
+          <input className={`${inputCls} w-full font-mono`} value={phone} placeholder="09xxxxxxxx" disabled={busy}
+            onChange={(e) => setPhone(e.target.value.replace(/[^\d]/g, '').slice(0, 10))} />
+        </label>
+        <label className="block">
+          <span className="mb-0.5 block text-gray-500">姓名</span>
+          <input className={`${inputCls} w-full`} value={name} placeholder="家人的姓名" disabled={busy}
+            onChange={(e) => setName(e.target.value.slice(0, 40))} />
+        </label>
+        <label className="block">
+          <span className="mb-0.5 block text-gray-500">LINE UID（系統自動帶入）</span>
+          <input className={`${inputCls} w-full bg-gray-100 font-mono text-gray-600`} value={ready ? lookup.line_uid : ''} readOnly
+            placeholder="輸入手機與姓名後自動帶入" />
+        </label>
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <button type="button" disabled={!ready || busy}
+          onClick={async () => {
+            if (await act({ run: () => familiesApi.addMemberForParent(parentId, { phone, name: name.trim() }), ok: '已添加成員' })) {
+              setPhone(''); setName(''); setLookup(null);
+            }
+          }}
+          className="rounded bg-brand-primary px-3 py-1 font-semibold text-white hover:bg-brand-teal disabled:opacity-50">添加</button>
+        {hint && <span className={tone}>{hint}</span>}
+      </div>
+      <p className="mt-1 text-gray-400">對方要先用 LINE 註冊並綁定。添加後會用 LINE 通知全家；關係可以之後在成員列表補。</p>
+    </div>
+  );
+}
+
 export default function FamilyPanel({ parent }) {
   const toast = useToast();
   const { isAdmin } = useAuth();
   const [data, setData] = useState(null); // { family } | null（載入中）
   const [loadError, setLoadError] = useState('');
   const [busy, setBusy] = useState(false);
-  const [ownerRel, setOwnerRel] = useState('');
-  const [addPhone, setAddPhone] = useState('');
-  const [addRel, setAddRel] = useState('');
   const [pendPhone, setPendPhone] = useState('');
   const [pendRel, setPendRel] = useState('');
   const [revoking, setRevoking] = useState(null); // member
@@ -96,16 +159,8 @@ export default function FamilyPanel({ parent }) {
 
         {data && !family && !loadError && (
           <div className="space-y-2">
-            <p className="text-gray-600">這位家長還沒有家庭。建立後可以把爸爸、媽媽、爺爺奶奶等家人加進來，一起查看孩子的課程、繳費、簽到。</p>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-gray-500">這位家長是孩子的</span>
-              <RelationshipSelect value={ownerRel} onChange={setOwnerRel} disabled={busy} allowEmpty />
-              <button type="button" disabled={busy}
-                onClick={() => act({ run: () => familiesApi.create(parent.id, ownerRel), ok: '已建立家庭' })}
-                className="rounded bg-brand-primary px-3 py-1 font-semibold text-white hover:bg-brand-teal disabled:opacity-50">
-                以這位家長為擁有者建立家庭
-              </button>
-            </div>
+            <p className="text-gray-600">這位家長還沒有家庭。添加第一位成員時，會以這位家長為擁有者建立家庭；之後全家可以一起查看孩子的課程、繳費、簽到。</p>
+            <AddMemberForm parentId={parent.id} busy={busy} act={act} />
           </div>
         )}
 
@@ -153,7 +208,7 @@ export default function FamilyPanel({ parent }) {
                       <td className="space-x-2 whitespace-nowrap p-2">
                         {!m.line_bound && (
                           <button type="button" disabled={busy} className="font-semibold text-brand-teal hover:underline disabled:opacity-50"
-                            onClick={() => act({ run: () => familiesApi.addMember(family.id, { parentId: m.parent_id, relationship: m.relationship || 'guardian' }), ok: '已重新綁定' })}>
+                            onClick={() => act({ run: () => familiesApi.addMember(family.id, { parentId: m.parent_id, relationship: m.relationship || null }), ok: '已重新綁定' })}>
                             重新綁定</button>
                         )}
                         {m.role !== 'owner' && (
@@ -171,22 +226,7 @@ export default function FamilyPanel({ parent }) {
               </table>
             </div>
 
-            <div className="rounded border border-gray-200 bg-gray-50 p-3">
-              <div className="mb-2 font-bold text-gray-700">加入成員（對方已經註冊）</div>
-              <div className="flex flex-wrap items-center gap-2">
-                <input className={`${inputCls} w-36 font-mono`} value={addPhone} placeholder="09xxxxxxxx"
-                  onChange={(e) => setAddPhone(e.target.value.replace(/[^\d]/g, '').slice(0, 10))} />
-                <RelationshipSelect value={addRel} onChange={setAddRel} disabled={busy} />
-                <button type="button" disabled={busy || addPhone.length !== 10 || !addRel}
-                  onClick={async () => {
-                    if (await act({ run: () => familiesApi.addMember(family.id, { phone: addPhone, relationship: addRel }), ok: '已加入成員' })) {
-                      setAddPhone(''); setAddRel('');
-                    }
-                  }}
-                  className="rounded bg-brand-primary px-3 py-1 font-semibold text-white hover:bg-brand-teal disabled:opacity-50">加入</button>
-              </div>
-              <p className="mt-1 text-gray-400">對方要先用 LINE 註冊並綁定；加入後會用 LINE 通知全家。</p>
-            </div>
+            <AddMemberForm parentId={parent.id} busy={busy} act={act} />
 
             <div className="rounded border border-gray-200 bg-gray-50 p-3">
               <div className="mb-2 font-bold text-gray-700">預先登記（對方還沒註冊）</div>

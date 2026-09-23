@@ -19,6 +19,14 @@ export const familiesApi = {
   create: (ownerParentId, ownerRelationship) =>
     callApi('/families', { method: 'post', data: { owner_parent_id: ownerParentId, owner_relationship: ownerRelationship || null } },
       () => familyMock.create(ownerParentId, ownerRelationship)),
+  // 櫃台添加成員前查帳號：手機＋姓名；姓名對得上才回 LINE UID
+  lookup: (phone, name) =>
+    callApi(`/families/lookup?phone=${encodeURIComponent(phone)}&name=${encodeURIComponent(name)}`, {},
+      () => familyMock.lookup(phone, name)),
+  // Z01 視窗的「添加成員」：這位家長還沒有家庭時，後端會先以他為擁有者建立（同一個交易）
+  addMemberForParent: (parentId, { phone, name }) =>
+    callApi(`/families/by-parent/${parentId}/members`, { method: 'post', data: { phone, name } },
+      () => familyMock.addMemberForParent(parentId, { phone, name })),
   // phone 或 parent_id 擇一；已是成員但 LINE 換過 → 後端視為重新綁定
   addMember: (familyId, { phone, parentId, relationship }) =>
     callApi(`/families/${familyId}/members`, { method: 'post', data: { phone, parent_id: parentId, relationship } },

@@ -58,7 +58,20 @@ function ownerParentFor(a, b) {
   return inRagic.length === 1 ? inRagic[0].parentId : null;
 }
 
+/**
+ * 櫃台用「手機＋姓名」加成員時的姓名核對（擁有者 2026-09-23）：防手機打錯一碼把陌生人加進家庭。
+ * 帳號上的姓名常帶備註（例：「家瑜-(Yuki…)」），所以輸入的姓名（去空白、至少 2 個字）
+ * 只要包含在帳號姓名裡就算相符。
+ */
+function nameMatches(accountName, input) {
+  const norm = (s) => String(s || '').replace(/[\s\u3000]/g, '').toLowerCase();
+  const a = norm(accountName);
+  const b = norm(input);
+  return b.length >= 2 && a.includes(b);
+}
+
 module.exports = {
+  nameMatches,
   RELATIONSHIP_LABELS,
   relationshipLabel,
   isRelationship,

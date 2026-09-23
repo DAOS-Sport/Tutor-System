@@ -22,6 +22,7 @@
 //  16. 預先登記的認領（A 最簡單版）：孩子身分證對、生日不對 → 不加入；沒綁 LINE → 不加入
 //  17. 重複學員：沒開課但有未對帳訂單的那份不能被停用
 //  18. 沒綁 LINE 的家長不能加入家庭（LINE_NOT_BOUND）
+//  19. 櫃台添加成員：手機＋姓名，姓名對得上才帶出 UID；沒有家庭就先建立（擁有者 2026-09-23）
 //
 // 不起 HTTP server、不碰 Ragic、LINE 推播以 stub 攔截；所有資料 try/finally 自己刪乾淨。
 const assert = require('node:assert/strict');
@@ -427,6 +428,34 @@ async function addStudent(parentId, { name, idNumber, birth, ragic = false }) {
       assert.equal(r.status, 409, JSON.stringify(r.body));
       assert.equal(r.body.code, 'LINE_NOT_BOUND');
     });
+
+    await t('19. 櫃台添加成員：手機＋姓名，姓名對得上才帶出 UID；沒有家庭就先建立', async () => {
+      const lookup = handler('admin/families', 'get', '/lookup');
+      const addForParent = handler('admin/families', 'post', '/by-parent/:parentId/members');
+      const owner = await addParent('測試新家長');
+      const aunt = await addParent('測試姑姑-(小名)');
+      const none = await call(lookup, { adminUser: ADMIN, query: { phone: phone(), name: '任何人' } });
+      assert.equal(none.body.found, false);
+      const miss = await call(lookup, { adminUser: ADMIN, query: { phone: aunt.phone, name: '別人名字' } });
+      assert.equal(miss.body.name_matches, false);
+      assert.ok(!('line_uid' in miss.body), '姓名對不上不回 UID');
+      const hit = await call(lookup, { adminUser: ADMIN, query: { phone: aunt.phone, name: '測試姑姑' } });
+      assert.equal(hit.body.name_matches, true, '帳號姓名帶備註也認得出來');
+      assert.equal(hit.body.line_uid, aunt.line_uid, 'UID 由系統帶入');
+      const wrong = await call(addForParent, { adminUser: ADMIN, params: { parentId: owner.id }, body: { phone: aunt.phone, name: '別人名字' } });
+      assert.equal(wrong.status, 409);
+      assert.equal(wrong.body.code, 'NAME_MISMATCH', '伺服器端也要核對姓名');
+      assert.equal((await pool.query('SELECT 1 FROM family_members WHERE parent_id = ANY($1::uuid[])', [[owner.id, aunt.id]])).rowCount, 0,
+        '姓名不對就不會建出空家庭');
+      const ok = await call(addForParent, { adminUser: ADMIN, params: { parentId: owner.id }, body: { phone: aunt.phone, name: '測試姑姑' } });
+      assert.equal(ok.status, 200, JSON.stringify(ok.body));
+      const rows = (await pool.query(
+        `SELECT parent_id, role, relationship, line_uid FROM family_members WHERE family_id=$1 AND status='active'`, [ok.body.result.family_id])).rows;
+      assert.deepEqual(rows.map((x) => [x.parent_id, x.role]).sort(), [[aunt.id, 'member'], [owner.id, 'owner']].sort());
+      const auntRow = rows.find((x) => x.parent_id === aunt.id);
+      assert.equal(auntRow.relationship, null, '關係選填，之後在成員列表補');
+      assert.equal(auntRow.line_uid, aunt.line_uid);
+    });
   } catch (err) {
     failed = true;
     console.error('FAIL', err && err.stack ? err.stack : err);
@@ -451,5 +480,5 @@ async function addStudent(parentId, { name, idNumber, birth, ragic = false }) {
     console.error(`family_accounts_db_test: FAILED（${passed} 項通過後中斷）`);
     process.exit(1);
   }
-  console.log(`family_accounts_db_test: ${passed}/18 PASS`);
+  console.log(`family_accounts_db_test: ${passed}/19 PASS`);
 })();

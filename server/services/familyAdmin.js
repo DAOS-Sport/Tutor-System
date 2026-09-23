@@ -134,7 +134,9 @@ async function createFamily(c, { ownerParentId, ownerRelationship = null, name =
 }
 
 async function addMember(c, { familyId, parentId, relationship, actor }) {
-  requireRelationship(relationship);
+  // 關係選填（櫃台用手機＋姓名加成員時不問關係，之後可以在成員列表補）；有填就要是合法值
+  relationship = relationship || null;
+  if (relationship) requireRelationship(relationship);
   const family = await lockFamily(c, familyId);
   if (family.status !== 'active') throw new FamilyError('FAMILY_FROZEN', '這個家庭已凍結，請先解除凍結');
   const parent = await loadParent(c, parentId);

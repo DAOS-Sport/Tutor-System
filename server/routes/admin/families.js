@@ -7,7 +7,9 @@
  *
  *  GET  /by-parent/:parentId               這位家長所在的家庭（成員、預先登記、最近異動）；沒有回 { family: null }
  *  POST /                                  建立家庭 { owner_parent_id, owner_relationship?, name? }
- *  POST /:id/members                       加入成員 { phone | parent_id, relationship }
+ *  GET  /lookup?phone=&name=               櫃台加成員前查帳號：姓名對得上才回 LINE UID
+ *  POST /by-parent/:parentId/members       Z01 視窗「添加成員」{ phone, name }：沒有家庭就先以這位家長為擁有者建立
+ *  POST /:id/members                       加入成員 { phone＋name | parent_id, relationship? }
  *  PATCH /:id/members/:parentId            改關係 { relationship }
  *  POST /:id/members/:parentId/revoke      移出成員 { reason? }
  *  POST /:id/transfer-owner                轉移擁有者 { parent_id }（admin）
@@ -27,8 +29,11 @@ const { requireResource } = require('../../middlewares/requireResource');
 const { adminActorName } = require('../../services/studentAudit');
 const familyAdmin = require('../../services/familyAdmin');
 const familyNotify = require('../../services/familyNotify');
-const { relationshipLabel, resolveDuplicate, ownerParentFor } = require('../../services/familyRules');
+const { relationshipLabel, resolveDuplicate, ownerParentFor, nameMatches } = require('../../services/familyRules');
+const { maskName } = require('../../utils/piiMask');
 const { normalizePhone } = require('../../services/identityNormalizer');
+
+const LINE_UID_RE = /^U[0-9a-f]{32}$/i;
 
 const router = express.Router();
 router.use(requireAdminAuth, requireResource('customer-parents'));
@@ -134,6 +139,38 @@ router.get('/by-parent/:parentId', async (req, res) => {
   }
 });
 
+// ── 櫃台加成員前查帳號（擁有者 2026-09-23：只要手機、姓名，UID 由系統帶）──────────
+// 姓名對不上時只回遮罩過的姓名提示，不回 UID —— 只知道手機的人查不到別人的 UID。
+router.get('/lookup', async (req, res) => {
+  const phone = normalizePhone(req.query.phone);
+  const name = String(req.query.name || '').trim();
+  if (!/^09\d{8}$/.test(phone) || name.length < 2) {
+    return res.status(400).json({ error: '請輸入 09 開頭的 10 碼手機與至少 2 個字的姓名', code: 'LOOKUP_INPUT_INVALID' });
+  }
+  try {
+    const p = await pool.query(
+      `SELECT p.id, p.name, p.line_uid,
+              (SELECT jsonb_build_object('family_id', fm.family_id, 'owner_name', op.name)
+                 FROM family_members fm JOIN families f ON f.id = fm.family_id
+                 LEFT JOIN parents op ON op.id = f.owner_parent_id
+                WHERE fm.parent_id = p.id AND fm.status = 'active' LIMIT 1) AS in_family
+         FROM parents p WHERE p.phone = $1 AND COALESCE(p.is_active, TRUE) = TRUE LIMIT 2`,
+      [phone]
+    );
+    if (!p.rowCount) return res.json({ found: false });
+    if (p.rowCount > 1) return res.json({ found: true, multiple: true });
+    const row = p.rows[0];
+    if (!nameMatches(row.name, name)) return res.json({ found: true, name_matches: false, name_hint: maskName(row.name) });
+    const bound = LINE_UID_RE.test(String(row.line_uid || ''));
+    res.json({
+      found: true, name_matches: true, parent_id: row.id, name: row.name,
+      line_uid: bound ? row.line_uid : null, line_bound: bound, in_family: row.in_family || null,
+    });
+  } catch (err) {
+    sendError(res, err, '查詢失敗');
+  }
+});
+
 // ── 建立與成員 ────────────────────────────────────────────────────────────
 router.post('/', async (req, res) => {
   const ownerId = String(req.body?.owner_parent_id || '');
@@ -146,24 +183,64 @@ router.post('/', async (req, res) => {
   }), '建立家庭失敗');
 });
 
-router.post('/:id/members', async (req, res) => {
-  if (!(await familyInScope(req, req.params.id))) return notFound(res);
+// 要加的是誰：parent_id（成員列表上的「重新綁定」），或手機＋姓名（櫃台「添加成員」）。
+// 用手機一定要附姓名，伺服器端再核對一次（畫面上的查詢只是方便，不能當成把關）。
+// 回傳 parent id；有錯就直接回應並回傳 null。
+async function resolveMember(req, res) {
   let parentId = String(req.body?.parent_id || '');
   if (!parentId && req.body?.phone) {
+    const name = String(req.body?.name || '').trim();
+    if (name.length < 2) { res.status(400).json({ error: '請輸入家人的姓名', code: 'NAME_REQUIRED' }); return null; }
     const phone = normalizePhone(req.body.phone);
     const p = await pool.query(
-      `SELECT id FROM parents WHERE phone = $1 AND COALESCE(is_active, TRUE) = TRUE LIMIT 2`,
+      `SELECT id, name FROM parents WHERE phone = $1 AND COALESCE(is_active, TRUE) = TRUE LIMIT 2`,
       [phone]
     );
     if (p.rowCount !== 1) {
-      return res.status(404).json({ error: p.rowCount ? '這支手機對應到多個帳號，請改用家長清單指定' : '找不到這支手機的家長帳號（還沒註冊的話，可以用「預先登記」）', code: 'PARENT_NOT_FOUND' });
+      res.status(404).json({ error: p.rowCount ? '這支手機對應到多個帳號，請改用家長清單指定' : '找不到這支手機的家長帳號（還沒註冊的話，可以用「預先登記」）', code: 'PARENT_NOT_FOUND' });
+      return null;
+    }
+    if (!nameMatches(p.rows[0].name, name)) {
+      res.status(409).json({ error: '手機號碼跟姓名對不上，請再確認', code: 'NAME_MISMATCH' });
+      return null;
     }
     parentId = p.rows[0].id;
   }
-  if (!UUID_RE.test(parentId)) return res.status(400).json({ error: '請輸入家人的手機', code: 'PARENT_REQUIRED' });
+  if (!UUID_RE.test(parentId)) { res.status(400).json({ error: '請輸入家人的手機與姓名', code: 'PARENT_REQUIRED' }); return null; }
+  return parentId;
+}
+
+router.post('/:id/members', async (req, res) => {
+  if (!(await familyInScope(req, req.params.id))) return notFound(res);
+  const parentId = await resolveMember(req, res);
+  if (!parentId) return;
   await run(res, (c) => familyAdmin.addMember(c, {
     familyId: req.params.id, parentId, relationship: req.body?.relationship, actor: actorOf(req),
   }), '加入成員失敗');
+});
+
+// Z01 編輯視窗的「添加成員」（擁有者 2026-09-23）：這位家長還沒有家庭時，
+// 加第一位成員就以他為擁有者建立家庭 —— 建立與加入在同一個交易，不會留下只有一個人的空家庭。
+router.post('/by-parent/:parentId/members', async (req, res) => {
+  const ownerId = String(req.params.parentId || '');
+  if (!(await parentInScope(req, ownerId))) return notFound(res);
+  const parentId = await resolveMember(req, res);
+  if (!parentId) return;
+  if (parentId === ownerId) return res.status(400).json({ error: '不能把這位家長加成自己的家人', code: 'SELF_MEMBER' });
+  await run(res, async (c) => {
+    const notices = [];
+    let familyId = (await familyAdmin.activeMembership(c, ownerId, { lock: true }))?.family_id || null;
+    if (!familyId) {
+      const created = await familyAdmin.createFamily(c, { ownerParentId: ownerId, actor: actorOf(req) });
+      familyId = created.result.id;
+      notices.push(...created.notices);
+    }
+    const added = await familyAdmin.addMember(c, {
+      familyId, parentId, relationship: req.body?.relationship || null, actor: actorOf(req),
+    });
+    notices.push(...added.notices);
+    return { result: { family_id: familyId, ...added.result }, notices };
+  }, '加入成員失敗');
 });
 
 router.patch('/:id/members/:parentId', async (req, res) => {

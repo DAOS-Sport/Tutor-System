@@ -153,6 +153,26 @@ export const familyMock = {
     log(fam, 'pending_member_removed', null);
     return { ok: true };
   },
+  lookup(phone, name) {
+    const pid = Object.keys(PEOPLE).find((k) => PEOPLE[k].phone === phone);
+    if (!pid) return { found: false };
+    const p = PEOPLE[pid];
+    const norm = (s) => String(s || '').replace(/s/g, '');
+    if (norm(name).length < 2 || !norm(p.name).includes(norm(name))) return { found: true, name_matches: false, name_hint: `${p.name.slice(0, 1)}○${p.name.slice(-1)}` };
+    const fid = familyIdOf(pid);
+    return {
+      found: true, name_matches: true, parent_id: pid, name: p.name, line_uid: p.line_uid, line_bound: !!p.line_uid,
+      in_family: fid ? { family_id: fid, owner_name: PEOPLE[state.families[fid].owner_parent_id]?.name || null } : null,
+    };
+  },
+  addMemberForParent(parentId, { phone, name }) {
+    const hit = familyMock.lookup(phone, name);
+    if (!hit.found) fail('PARENT_NOT_FOUND', '找不到這支手機的家長帳號（還沒註冊的話，可以用「預先登記」）');
+    if (!hit.name_matches) fail('NAME_MISMATCH', '手機號碼跟姓名對不上，請再確認');
+    let fid = familyIdOf(parentId);
+    if (!fid) fid = familyMock.create(parentId, null).result.id;
+    return familyMock.addMember(fid, { parentId: hit.parent_id, relationship: null });
+  },
   suggestions() { return { items: state.suggestions }; },
   applySuggestion(body) {
     state.suggestions = state.suggestions.filter((s) => s.a.student_id !== body.student_a_id);
