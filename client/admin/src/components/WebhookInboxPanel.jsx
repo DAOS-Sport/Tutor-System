@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { ragicStatusApi } from '../api/ragicStatus';
+import { formatTWDateTime } from '../utils/format';
+import { attemptOutcome } from '../utils/ragicStatusView.mjs';
 
 const LABELS = { pending: '處理中', retryable: '等待重試', blocked: '需要人工處理', completed: '已完成' };
 const TONE = {
@@ -8,13 +10,22 @@ const TONE = {
   blocked: 'bg-red-100 text-red-700',
   completed: 'bg-brand-green/15 text-brand-green',
 };
+const OUTCOME_TONE = {
+  green: 'bg-brand-green/15 text-brand-green',
+  amber: 'bg-amber-100 text-amber-800',
+  red: 'bg-red-100 text-red-700',
+  gray: 'bg-gray-100 text-gray-600',
+};
 const SHEET_NAMES = { H01: '員工', H05: '場館', Z01: '家長', Z02: '學員' };
 
-// Ragic Webhook 收件匣：Ragic 資料一改就通知系統更新；這裡看處理結果，必要時重新排入。
-// onSummary 把各狀態筆數回報給頁面頂端的總覽。
-export default function WebhookInboxPanel({ canRetry, onSummary }) {
+// Ragic Webhook：Ragic 資料一改就通知系統更新。這裡看兩件事——
+//   最近收到的請求（含被拒的，分辨「Ragic 沒送」還是「送了被擋」）與處理結果（收件匣）。
+// onSummary 把收件匣各狀態筆數、onAttempts 把最近的請求回報給頁面頂端的總覽／需要處理。
+export default function WebhookInboxPanel({ canRetry, onSummary, onAttempts }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
+  const [attempts, setAttempts] = useState(null);
+  const [attemptsError, setAttemptsError] = useState(false);
   const [busy, setBusy] = useState('');
   async function load() {
     try {
@@ -24,6 +35,14 @@ export default function WebhookInboxPanel({ canRetry, onSummary }) {
       if (onSummary) onSummary(next.summary || []);
     } catch {
       setError('通知處理狀態讀取失敗，請稍後重新整理。');
+    }
+    try {
+      const next = await ragicStatusApi.webhookAttempts();
+      setAttempts(next);
+      setAttemptsError(false);
+      if (onAttempts) onAttempts(next.recent || []);
+    } catch {
+      setAttemptsError(true);
     }
   }
   useEffect(() => { load(); const timer = setInterval(load, 30000); return () => clearInterval(timer); }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -36,23 +55,52 @@ export default function WebhookInboxPanel({ canRetry, onSummary }) {
   }
   const summary = data?.summary || [];
   const items = data?.items || [];
+  const recent = attempts?.recent || [];
   return (
     <section className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
       <h2 className="text-sm font-bold text-gray-800">即時通知（Ragic Webhook）</h2>
       <p className="mt-1 text-xs text-gray-500">
         Ragic 的資料一改就會通知系統更新。暫時失敗會自動重試；重試 8 次仍失敗的，修正資料或連線後按「重新排入」。
       </p>
-      {error && <p role="alert" className="mt-2 text-xs text-red-700">{error}</p>}
-      {!data && !error && <p className="mt-2 text-xs text-gray-500">讀取中…</p>}
+
+      <h3 className="mt-3 text-xs font-bold text-gray-700">最近收到的請求</h3>
+      {attemptsError ? (
+        <p className="mt-1 text-xs text-gray-500">請求紀錄讀取失敗，請稍後重新整理。</p>
+      ) : !attempts ? (
+        <p className="mt-1 text-xs text-gray-500">讀取中…</p>
+      ) : recent.length === 0 ? (
+        <p className="mt-1 text-xs text-gray-500">
+          還沒收到任何請求。如果剛在 Ragic 改過資料，代表 Ragic 沒有送出，請檢查 Ragic 表單的 Webhook 網址。
+        </p>
+      ) : (
+        <ul className="mt-1 divide-y divide-gray-100 border-y border-gray-100">
+          {recent.map((a, i) => {
+            const o = attemptOutcome(a.outcome);
+            return (
+              <li key={`${a.received_at}-${i}`} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5 text-xs text-gray-600">
+                <span>{formatTWDateTime(a.received_at)}</span>
+                <span>{SHEET_NAMES[a.sheet_code] || a.sheet_code || '—'}（{a.sheet_code || '—'}）</span>
+                <span className={`rounded px-2 py-0.5 font-bold ${OUTCOME_TONE[o.tone]}`}>{o.text}</span>
+                {a.id_count ? <span>{a.id_count} 筆</span> : null}
+                {o.rejected && a.content_type ? <span className="text-[11px] text-gray-400">格式：{a.content_type}</span> : null}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      <h3 className="mt-3 text-xs font-bold text-gray-700">處理結果</h3>
+      {error && <p role="alert" className="mt-1 text-xs text-red-700">{error}</p>}
+      {!data && !error && <p className="mt-1 text-xs text-gray-500">讀取中…</p>}
       {data && (
-        <div className="mt-3 flex flex-wrap gap-2">
+        <div className="mt-1 flex flex-wrap gap-2">
           {summary.length
             ? summary.map((row) => (
               <span key={row.state} className={`rounded px-2 py-0.5 text-xs font-bold ${TONE[row.state] || 'bg-gray-100 text-gray-700'}`}>
                 {LABELS[row.state] || row.state} {row.count}
               </span>
             ))
-            : <span className="text-xs text-gray-500">尚未收到任何通知</span>}
+            : <span className="text-xs text-gray-500">還沒有需要處理的通知</span>}
         </div>
       )}
       {items.length > 0 && (

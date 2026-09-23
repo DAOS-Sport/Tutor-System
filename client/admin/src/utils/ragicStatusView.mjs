@@ -43,6 +43,19 @@ export function jobState(info, issues) {
   return { key: 'none', tone: 'gray', text: '尚無紀錄' };
 }
 
+// Ragic 打進來的請求結果（ragic_webhook_attempts.outcome）→ 白話
+export const ATTEMPT_OUTCOMES = {
+  ok:                 { tone: 'green', text: '成功', rejected: false },
+  unavailable:        { tone: 'amber', text: '暫時失敗，會自動重試', rejected: false },
+  unauthorized:       { tone: 'red',   text: '被拒：網址裡的密碼不符', rejected: true },
+  invalid_payload:    { tone: 'red',   text: '被拒：內容看不懂', rejected: true },
+  method_not_allowed: { tone: 'red',   text: '被拒：不是用 POST 送的', rejected: true },
+};
+
+export function attemptOutcome(outcome) {
+  return ATTEMPT_OUTCOMES[outcome] || { tone: 'gray', text: '其他', rejected: false };
+}
+
 // '30 2 * * *' → 150（分鐘）；不是「每天固定時間」的格式回 null
 export function cronToMinutes(cron) {
   const m = /^(\d+) (\d+) \* \* \*$/.exec(cron || '');

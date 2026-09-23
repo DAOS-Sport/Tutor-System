@@ -153,6 +153,7 @@ const UNIT = [
   'tests/ragic_query_retry_test.js',
   'tests/ragic_writer_test.js',
   'tests/ragic_status_page_test.js',
+  'tests/ragic_webhook_intake_test.js',
   'tests/reconcile_payment_proof_visibility_test.js',
   'tests/sync_failure_log_test.js',
   'tests/taipei_input_test.js',

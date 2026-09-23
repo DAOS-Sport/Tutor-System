@@ -145,6 +145,22 @@ router.get('/webhook-inbox', requireAdminAuth, requireResource('ragic-status'), 
   } catch (err) { res.status(500).json({ error: 'WEBHOOK_INBOX_UNAVAILABLE' }); }
 });
 
+// Ragic 打進來的每一次請求（含被拒的，見 services/ragicWebhookAttempts.js）。唯讀。
+router.get('/webhook-attempts', requireAdminAuth, requireResource('ragic-status'), async (req, res) => {
+  try {
+    const { pool } = require('../../models/db');
+    const recent = await pool.query(
+      `SELECT received_at, method, sheet_code, status, outcome, content_type, body_kind, id_count
+         FROM ragic_webhook_attempts ORDER BY received_at DESC LIMIT 10`);
+    const summary = await pool.query(
+      `SELECT outcome, count(*)::int AS count, max(received_at) AS latest
+         FROM ragic_webhook_attempts WHERE received_at >= NOW() - INTERVAL '7 days' GROUP BY 1`);
+    res.json({ recent: recent.rows, summary: summary.rows });
+  } catch (err) {
+    res.status(500).json({ error: 'WEBHOOK_ATTEMPTS_UNAVAILABLE' });
+  }
+});
+
 router.post('/webhook-inbox/retry', requireAdminAuth, requireResource('ragic-status'), async (req, res) => {
   const code = String(req.body?.sheet_code || '').toUpperCase();
   const id = String(req.body?.ragic_record_id ?? '');

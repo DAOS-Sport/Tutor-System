@@ -43,6 +43,10 @@ function noStoreHtml(res, filePath) {
 }
 
 app.use(cors({ origin: process.env.LIFF_URL_PARENT || process.env.LIFF_URL || '*' }));
+// Ragic webhook 必須掛在全域 body parser 之前：Ragic 沒保證 Content-Type，下面的 json／urlencoded
+// parser 只要遇到不是 application/json 的請求就會解析錯或不解析，整批通知被 400 擋掉又不留紀錄。
+// 這支路由自己讀原始文字再解析（只信 record id，一律回 Ragic re-fetch）。
+app.use('/api/ragic-webhook', require('./routes/ragicWebhook'));
 // express.json() 預設 strict：axios 的 `post(url, null)` 會把 body 序列化成字面字串 "null"，
 // strict 模式視為非法 JSON → 400（前端 Ragic「立即同步 / 核准」按鈕送 null body，
 // 每次點擊都在抵達路由前就 400 —— 正是「連不上 Ragic / 同步失敗」的真因）。
@@ -88,7 +92,6 @@ app.use('/api/transfers',     require('./routes/transfers'));
 app.use('/api/chat',          require('./routes/chat'));
 app.use('/api/learn',         require('./routes/learn'));        // 學習歷程
 app.use('/api/evaluations',   require('./routes/evaluations'));  // 期末評鑑
-app.use('/api/ragic-webhook', require('./routes/ragicWebhook'));  // Ragic webhook：只信 record id，必 re-fetch
 app.use('/api/admin',         require('./routes/admin'));
 // U16 整合 API：場館現場的外部前端（救生台等）查當下課表。服務金鑰 + 場館綁定，唯讀。
 app.use('/api/integrations', require('./routes/integrations'));

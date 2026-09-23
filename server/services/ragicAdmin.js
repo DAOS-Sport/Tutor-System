@@ -4696,19 +4696,8 @@ async function getSyncStatusSnapshot() {
   return out;
 }
 
-function _extractWebhookRecordIds(body) {
-  if (Array.isArray(body)) return [...new Set(body.map((v) => String(v?._ragicId ?? v?.ragicId ?? v?.id ?? v ?? '').trim()).filter(Boolean))];
-  const out = [];
-  const add = (v) => {
-    const s = String(v ?? '').trim();
-    if (s) out.push(s);
-  };
-  for (const item of (Array.isArray(body?.data) ? body.data : [])) {
-    add(item?._ragicId ?? item?.ragicId ?? item?.id);
-  }
-  add(body?._ragicId ?? body?.ragicId ?? body?.id ?? body?.nodeId ?? body?.recordId);
-  return [...new Set(out)];
-}
+// 已搬到 services/ragicWebhookBody.js（純函式，連同原始文字解析一起測）
+const { extractWebhookRecordIds: _extractWebhookRecordIds } = require('./ragicWebhookBody');
 
 function _webhookFormPath(sheetCode) {
   const code = String(sheetCode || '').trim().toUpperCase();

@@ -7,7 +7,7 @@ import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import { ragicStatusApi } from '../api/ragicStatus';
 import { formatTWDateTime } from '../utils/format';
-import { buildTimeline, jobState, reasonText, summarizeFailures } from '../utils/ragicStatusView.mjs';
+import { attemptOutcome, buildTimeline, jobState, reasonText, summarizeFailures } from '../utils/ragicStatusView.mjs';
 
 // Task #70 邊緣案例處理準則：
 // skipAuthRedirect=true 讓 axios interceptor 不跳轉，改由頁面自己決定：
@@ -270,6 +270,7 @@ export default function RagicStatusPage() {
   const [failures, setFailures] = useState(null);
   const [failuresError, setFailuresError] = useState(false);
   const [inboxSummary, setInboxSummary] = useState(null);
+  const [recentAttempts, setRecentAttempts] = useState(null);
 
   // Task #83：POST /sync 改 202 fire-and-forget，後端執行狀態由 GET status 的
   // forms[].in_progress 決定。前端不再用 local `busy` state 推導 spinner。
@@ -422,9 +423,14 @@ export default function RagicStatusPage() {
         : { tone: 'green', value: '沒有', note: '近兩天沒有寫不進去的資料' };
 
   const inboxCount = (state) => (inboxSummary || []).find((r) => r.state === state)?.count || 0;
+  // 最近一次 Ragic 打進來的請求若被拒（密碼、格式、方法），總覽直接標紅
+  const latestAttempt = (recentAttempts || [])[0] || null;
+  const latestRejected = latestAttempt && attemptOutcome(latestAttempt.outcome).rejected;
   const webhookTile = inboxSummary == null
     ? { tone: 'gray', value: '讀取中…' }
-    : inboxCount('blocked')
+    : latestRejected
+      ? { tone: 'red', value: '最近的請求被拒', note: '見下方「即時通知」' }
+      : inboxCount('blocked')
       ? { tone: 'red', value: `${inboxCount('blocked')} 筆要人工處理` }
       : inboxCount('retryable')
         ? { tone: 'amber', value: `${inboxCount('retryable')} 筆等待重試` }
@@ -460,6 +466,12 @@ export default function RagicStatusPage() {
   }
   if (inboxCount('blocked')) {
     attention.push({ tone: 'red', text: `${inboxCount('blocked')} 筆 Ragic 即時通知需要人工處理，見下方「即時通知」。` });
+  }
+  if (latestRejected) {
+    attention.push({
+      tone: 'red',
+      text: `Ragic 最近一次通知${attemptOutcome(latestAttempt.outcome).text}（${fmtDate(latestAttempt.received_at)}）。請核對 Ragic 表單的 Webhook 網址設定，見下方「即時通知」。`,
+    });
   }
   if (!missing.length && !probeWaiting && !probe.ok && badProbeForms.length) {
     attention.push({
@@ -535,7 +547,7 @@ export default function RagicStatusPage() {
         </ul>
       </section>
 
-      <WebhookInboxPanel canRetry={isAdmin} onSummary={setInboxSummary} />
+      <WebhookInboxPanel canRetry={isAdmin} onSummary={setInboxSummary} onAttempts={setRecentAttempts} />
 
       <ConnectionDetails data={data} />
 

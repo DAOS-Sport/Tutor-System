@@ -648,6 +648,17 @@ export const mockDb = {
       message: '（demo）已排入背景同步，狀態會自動更新…',
     };
   },
+  // GET /ragic-status/webhook-attempts 的 demo 版：一筆被拒、一筆成功
+  ragicWebhookAttempts() {
+    const t = Date.now();
+    return {
+      recent: [
+        { received_at: new Date(t - 2 * 60000).toISOString(), method: 'POST', sheet_code: 'Z01', status: 200, outcome: 'ok', content_type: 'text/plain', body_kind: 'array', id_count: 1 },
+        { received_at: new Date(t - 40 * 60000).toISOString(), method: 'POST', sheet_code: 'Z02', status: 401, outcome: 'unauthorized', content_type: 'application/json', body_kind: null, id_count: null },
+      ],
+      summary: [{ outcome: 'ok', count: 1 }, { outcome: 'unauthorized', count: 1 }],
+    };
+  },
   // GET /ragic-status/sync-failures 的 demo 版（數字比照 2026-09-23 正式站）
   ragicSyncFailures() {
     return {

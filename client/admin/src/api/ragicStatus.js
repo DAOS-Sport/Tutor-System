@@ -9,6 +9,11 @@ export const ragicStatusApi = {
     if (USE_MOCK) return { summary: [], items: [] };
     return (await http.get('/ragic-status/webhook-inbox', { skipAuthRedirect: true })).data;
   },
+  // Ragic 打進來的每一次請求（含被拒的），用來分辨「沒送」還是「送了被擋」
+  async webhookAttempts() {
+    if (USE_MOCK) return mockDb.ragicWebhookAttempts();
+    return (await http.get('/ragic-status/webhook-attempts', { skipAuthRedirect: true })).data;
+  },
   async retryWebhook({ sheet_code, ragic_record_id }) {
     if (USE_MOCK) throw new Error('模擬模式不執行重試');
     return (await http.post('/ragic-status/webhook-inbox/retry', { sheet_code, ragic_record_id }, { skipAuthRedirect: true })).data;

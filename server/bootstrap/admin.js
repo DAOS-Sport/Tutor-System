@@ -373,6 +373,25 @@ async function ensureSchema() {
           WHERE sv.staff_id = s.id AND sv.venue_id = s.venue_id
        )
   `);
+
+  // Ragic Webhook 每一次請求的紀錄（含被拒的），見 services/ragicWebhookAttempts.js。
+  // 2026-09-23 發布後在 Ragic 改資料卻「沒進來」，被拒的請求又不留痕跡，分不出沒送還是被擋。
+  // 不存密碼與內容本身。發布前要先在 dev 庫建好，否則下次 Publish 會提議 DROP。
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ragic_webhook_attempts (
+      id           BIGSERIAL PRIMARY KEY,
+      received_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      method       TEXT NOT NULL,
+      sheet_code   TEXT,
+      status       INTEGER NOT NULL,
+      outcome      TEXT NOT NULL,
+      content_type TEXT,
+      body_kind    TEXT,
+      body_bytes   INTEGER,
+      id_count     INTEGER,
+      user_agent   TEXT
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_ragic_webhook_attempts_received ON ragic_webhook_attempts(received_at DESC)`);
 }
 
 async function seedIfEmpty() {
