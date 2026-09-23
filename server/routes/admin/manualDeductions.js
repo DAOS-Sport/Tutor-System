@@ -17,6 +17,7 @@
  * admin audit；course_periods/admin_enrollments 的 used_sessions 只同步作相容顯示。
  */
 const express = require('express');
+const { assertCourseEntitlement } = require('../../services/courseEntitlements');
 const { pool } = require('../../models/db');
 const { validateRequestId, payloadFingerprint } = require('../../services/idempotency');
 const { syncStoredUsage, listLinkedEnrollmentIds } = require('../../services/usageSync');
@@ -313,14 +314,16 @@ router.post('/', requireAdminAuth, requireResource('manual-deduction'), async (r
     // 手動扣課建立的 completed session 為整班 active 名單各寫一筆出席紀錄——
     // 整期共扣 1 堂、每位成員都拿到該堂出席，與家長/教練/自助簽到四路資料契約一致，
     // 因此不再擋共享課期（原 SHARED_PERIOD_REQUIRES_CHECKIN 409 已移除）。
+    const entitledStudents = await assertCourseEntitlement(client, periodId, studentId);
     const rosterRes = await client.query(
       `SELECT s.id, s.name, COALESCE(s.is_active, TRUE) AS is_active
          FROM course_period_enrollments cpe
          JOIN students s ON s.id = cpe.student_id
         WHERE cpe.course_period_id = $1 AND cpe.status = 'active'
+          AND cpe.student_id = ANY($2::uuid[])
         ORDER BY s.name
         FOR SHARE OF cpe`,
-      [periodId]
+      [periodId, entitledStudents]
     );
     const anchor = rosterRes.rows.find((r) => String(r.id) === String(studentId));
     if (!anchor) {
@@ -477,6 +480,7 @@ router.post('/', requireAdminAuth, requireResource('manual-deduction'), async (r
       } catch { /* fall through to the explicit conflict */ }
       return res.status(409).json({ error: '重複扣課請求，請重新整理後確認堂數', code: 'IDEMPOTENCY_CONFLICT' });
     }
+    if (err.status === 409) return res.status(409).json({ error: err.message, code: err.code });
     console.error('[admin/manual-deductions create]', { code: err?.code || 'UNEXPECTED' });
     res.status(500).json({ error: '手動扣課失敗，尚未扣除堂數', code: 'MANUAL_DEDUCTION_FAILED' });
   } finally {

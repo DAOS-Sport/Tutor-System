@@ -218,6 +218,19 @@ function shapeCheckout(row) {
   }
   const venues = [...venueById.values()].sort((a, b) => a.venue_id.localeCompare(b.venue_id));
   const fallbackVenueIds = parseJsonArray(row.venue_ids).map((id) => String(id)).filter(Boolean);
+  // 團購摘要：查不到團就是 null，前端據此決定要不要顯示「同團」入口。
+  // 家數與待對帳數一律轉成數字 —— jsonb_build_object 出來的是字串型別時，
+  // 前端 `count > 1` 會變成字串比較，2 家的團就不會顯示入口。
+  const groupRaw = row.group_order && typeof row.group_order === 'object'
+    ? row.group_order
+    : (typeof row.group_order === 'string' ? JSON.parse(row.group_order || 'null') : null);
+  const groupOrder = groupRaw && groupRaw.id ? {
+    id: String(groupRaw.id),
+    status: groupRaw.status || null,
+    reviewed_at: groupRaw.reviewed_at || null,
+    checkout_count: Number(groupRaw.checkout_count) || 0,
+    pending_checkout_count: Number(groupRaw.pending_checkout_count) || 0,
+  } : null;
   return {
     checkout_id: row.checkout_id,
     parent_id: row.parent_id || null,
@@ -243,6 +256,7 @@ function shapeCheckout(row) {
     venues,
     order_count: Number(row.order_count) || subOrders.length,
     sub_orders: subOrders,
+    group_order: groupOrder,
     invoice_families: invoiceFamilies,
     family_count: invoiceFamilies.length,
     requires_separate_invoices: invoiceFamilies.length > 1,
@@ -333,6 +347,39 @@ async function readCheckout(clientOrPool, checkoutId) {
                    ))
                  )
             ), '[]'::jsonb) AS uploaded_payment_proof_urls,
+            -- 團購對帳用的小摘要（2026-09-22 需求）：核准團購時「每個家庭一張 checkout」
+            -- （見 routes/admin/groupOrders.js 的 approve），櫃檯在待對帳清單會看到
+            -- 散開的 N 筆，很難知道它們是同一團。這裡把「哪一團、審核到哪、同團共幾家、
+            -- 其中還有幾家沒對完帳」一次帶出來。
+            --
+            -- 家數用 DISTINCT checkout 算，不是算 admin_enrollments —— 一個家庭可能有
+            -- 多筆子訂單（多位學員／多期），用子訂單數會把 2 家講成 5 家。
+            -- 只有真的掛在 group_orders 上的才回，查不到團就回 NULL（不自己編）。
+            (
+              SELECT jsonb_build_object(
+                       'id', go.id,
+                       'status', go.status,
+                       'reviewed_at', go.reviewed_at,
+                       'checkout_count', (
+                         SELECT COUNT(DISTINCT ae_g.checkout_id)::int
+                           FROM admin_enrollments ae_g
+                          WHERE ae_g.group_order_id = go.id
+                            AND ae_g.checkout_id IS NOT NULL),
+                       'pending_checkout_count', (
+                         SELECT COUNT(DISTINCT ae_p.checkout_id)::int
+                           FROM admin_enrollments ae_p
+                           JOIN checkout_sessions cs_p ON cs_p.checkout_id = ae_p.checkout_id
+                          WHERE ae_p.group_order_id = go.id
+                            AND cs_p.payment_status IN ('pending_payment', 'pending_reconcile'))
+                     )
+                FROM group_orders go
+               WHERE go.id = (
+                 SELECT ae_first.group_order_id
+                   FROM admin_enrollments ae_first
+                  WHERE ae_first.checkout_id = cs.checkout_id
+                    AND ae_first.group_order_id IS NOT NULL
+                  LIMIT 1)
+            ) AS group_order,
             COALESCE(jsonb_agg(DISTINCT to_jsonb(ae.venue_id)) FILTER (WHERE ae.venue_id IS NOT NULL), '[]'::jsonb) AS venue_ids,
             COALESCE(
               jsonb_agg(

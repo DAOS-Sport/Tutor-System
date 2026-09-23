@@ -15,7 +15,7 @@ const referrals = require('../services/referrals');
 const ragic = require('../services/ragic');
 const ragicWriteback = require('../services/ragicWriteback');
 const { refreshParentMirrorFromRagic, ParentRefreshError, assertZ01Complete } = require('../services/parentRefresh');
-const { diffChanges, writeStudentAudit } = require('./admin/_customerShared');
+const { diffChanges, writeStudentAudit, parentActor } = require('../services/studentAudit');
 const { formatPlainDate } = require('../utils/dateTime');
 
 const router = express.Router();
@@ -263,14 +263,25 @@ async function persistStudentMirrorAfterRagic({ parentId, studentId = null, stud
       if (existing.rowCount) savedId = existing.rows[0].id;
     }
 
+    const before = savedId ? (await client.query(
+      'SELECT * FROM students WHERE id = $1 AND parent_id = $2 FOR UPDATE', [savedId, parentId]
+    )).rows[0] : null;
+    if (savedId && !before) throw new Error('STUDENT_MIRROR_OWNERSHIP_CHANGED');
+
     if (z02Id) {
-      await client.query(
+      const released = await client.query(
         `UPDATE students
             SET ragic_record_id = NULL, updated_at = NOW()
           WHERE ragic_record_id = $1
-            AND ($2::uuid IS NULL OR id <> $2::uuid)`,
+            AND ($2::uuid IS NULL OR id <> $2::uuid) RETURNING id`,
         [z02Id, savedId || null]
       );
+      for (const row of released.rows) {
+        await writeStudentAudit(client, row.id, 'edit', {
+          byUser: 'system:ragic-link-reconciliation', byRole: 'system',
+          changes: { ragic_record_id: { before: z02Id, after: null } }, note: 'release-ragic-link-after-parent-write',
+        });
+      }
     }
 
     if (savedId) {
@@ -299,6 +310,12 @@ async function persistStudentMirrorAfterRagic({ parentId, studentId = null, stud
       );
       savedId = inserted.rows[0]?.id || null;
     }
+
+    const after = savedId ? (await client.query('SELECT * FROM students WHERE id = $1', [savedId])).rows[0] : null;
+    if (!after) throw new Error('STUDENT_MIRROR_WRITE_MISSING');
+    await writeStudentAudit(client, savedId, before ? 'edit' : 'create', {
+      ...parentActor(parentId, 'parent-student-mirror'), changes: diffChanges(before, after),
+    });
 
     if (parentRagicId) {
       await client.query(
@@ -576,11 +593,7 @@ router.post('/me/students', requireParent, async (req, res) => {
         return res.status(409).json({ error: '此身分證字號已有學員資料', code: 'STUDENT_ID_DUPLICATED' });
       }
       if (!dupDemo.rowCount) {
-        await pool.query(
-          `INSERT INTO students (parent_id, name, id_number, birth_date, gender, blood_type)
-           VALUES ($1,$2,$3,$4,$5,NULLIF($6,''))`,
-          [req.parent.id, s.name, s.id_number, s.birth_date, s.gender || null, s.blood_type || '']
-        );
+        await persistStudentMirrorAfterRagic({ parentId: req.parent.id, student: s });
       }
       return res.status(201).json(await loadMe(req.parent.id));
     }
@@ -649,11 +662,6 @@ router.post('/me/students', requireParent, async (req, res) => {
       studentId: fallbackStudentId,
       sync,
     });
-    const saved = (me?.students || []).find((row) => String(row.id_number || '').toUpperCase() === s.id_number);
-    if (saved && !mergedExisting) {
-      writeStudentAudit(pool, saved.id, 'create', { byUser: parent.name, byRole: 'parent' })
-        .catch((err) => console.warn('[student-audit] 家長新增稽核寫入失敗:', err.message));
-    }
     res.status(mergedExisting ? 200 : 201).json(me);
   } catch (err) {
     console.error('[student-sync] 新增學員 失敗', { code: err.code, msg: err.message });
@@ -689,14 +697,9 @@ router.patch('/me/students/:id', requireParent, async (req, res) => {
       });
     }
 
-    // demo 帳號：學員直接改本地，不進 Ragic。
+    // Demo uses the same atomic local mutation/audit path without Ragic writes.
     if (isDemoParent(parent, req.parent.lineUid)) {
-      await pool.query(
-        `UPDATE students SET name = $2, id_number = $3, birth_date = $4,
-                gender = $5, blood_type = NULLIF($6,''), updated_at = NOW()
-          WHERE id = $1`,
-        [req.params.id, s.name, s.id_number, s.birth_date, s.gender || null, s.blood_type || '']
-      );
+      await persistStudentMirrorAfterRagic({ parentId: req.parent.id, studentId: req.params.id, student: s });
       return res.json(await loadMe(req.parent.id));
     }
 
@@ -731,11 +734,6 @@ router.patch('/me/students/:id', requireParent, async (req, res) => {
       sync,
     });
 
-    // 稽核：家長自己改學員資料，記錄實際變動欄位（不含身分證/血型以外的敏感值以外的判斷，
-    // 這裡沿用既有欄位白名單）。best-effort：稽核寫入失敗不擋家長編輯本身。
-    const studentChanges = diffChanges(before, s, ['name', 'id_number', 'birth_date', 'gender', 'blood_type']);
-    writeStudentAudit(pool, req.params.id, 'edit', { byUser: parent.name, byRole: 'parent', changes: studentChanges })
-      .catch((err) => console.warn('[student-audit] 家長編輯稽核寫入失敗:', err.message));
     res.json(me);
   } catch (err) {
     console.error('[student-sync] 編輯學員 失敗', { code: err.code, msg: err.message });
@@ -803,6 +801,7 @@ router.post('/', async (req, res) => {
          RETURNING id, name, id_number, birth_date, gender`,
         [parent.id, s.name.trim(), String(s.id_number).toUpperCase(), s.birth_date, s.gender || null]
       );
+      await writeStudentAudit(client, sIns.rows[0].id, 'create', { byUser: 'legacy-development-registration', byRole: 'system', note: 'unauthenticated-development-only' });
       studentRows.push(sIns.rows[0]);
     }
     await client.query('COMMIT');

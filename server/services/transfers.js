@@ -6,6 +6,7 @@
  *   approve：以 transaction 將原 enrollment 標 transferred_out + 新建轉入學員 enrollment
  */
 const { pool } = require('../models/db');
+const { writeStudentAudit } = require('./studentAudit');
 const ragicWriteback = require('./ragicWriteback');
 
 async function listMine(parentId) {
@@ -100,7 +101,7 @@ async function createRequest({ parentId, periodId, fromStudentId, toPhone, toStu
   }
 }
 
-async function approve({ id, adminUserId, note }) {
+async function approve({ id, adminUserId, adminRole = 'staff', note }) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -140,6 +141,7 @@ async function approve({ id, adminUserId, note }) {
           [toParentId, sName]
         );
         toStudentId = sIns.rows[0].id;
+        await writeStudentAudit(client, toStudentId, 'create', { byUser: adminUserId, byRole: adminRole, note: 'transfer-approval' });
         createdToStudent = true;
       }
     }

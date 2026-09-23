@@ -135,6 +135,32 @@ router.get('/sync-failures', requireAdminAuth, requireResource('ragic-status'), 
   }
 });
 
+router.get('/webhook-inbox', requireAdminAuth, requireResource('ragic-status'), async (req, res) => {
+  try {
+    const { pool } = require('../../models/db');
+    const summary = await pool.query(`SELECT state,COUNT(*)::int AS count FROM ragic_webhook_inbox GROUP BY state`);
+    const pending = await pool.query(`SELECT sheet_code,ragic_record_id,state,attempts,max_attempts,last_error_code,next_retry_at,updated_at
+      FROM ragic_webhook_inbox WHERE state <> 'completed' ORDER BY updated_at DESC LIMIT 100`);
+    res.json({ summary: summary.rows, items: pending.rows });
+  } catch (err) { res.status(500).json({ error: 'WEBHOOK_INBOX_UNAVAILABLE' }); }
+});
+
+router.post('/webhook-inbox/retry', requireAdminAuth, requireResource('ragic-status'), async (req, res) => {
+  const code = String(req.body?.sheet_code || '').toUpperCase();
+  const id = String(req.body?.ragic_record_id ?? '');
+  if (!['H01','H05','Z01','Z02'].includes(code) || !/^\d+$/.test(id)) {
+    return res.status(400).json({ error: 'INVALID_WEBHOOK_SELECTOR' });
+  }
+  try {
+    const { pool } = require('../../models/db');
+    const r = await pool.query(`UPDATE ragic_webhook_inbox SET state='pending',attempts=0,
+      next_retry_at=NOW(),revision=revision+1,updated_at=NOW()
+      WHERE sheet_code=$1 AND ragic_record_id=$2 AND state IN ('retryable','blocked') RETURNING ragic_record_id`, [code,id]);
+    if (!r.rowCount) return res.status(409).json({ error: 'WEBHOOK_NOT_RETRYABLE' });
+    res.status(202).json({ ok: true, state: 'pending' });
+  } catch (err) { res.status(500).json({ error: 'WEBHOOK_RETRY_FAILED' }); }
+});
+
 router.post('/sync', requireAdminAuth, requireResource('ragic-status'), async (req, res) => {
   // 用與 GET 相同的判定（必須 6 個 RAGIC_* env 全到位）作為單一真相來源
   const env = ragicAdmin.getRagicEnvFlags();

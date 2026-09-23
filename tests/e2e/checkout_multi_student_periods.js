@@ -1,6 +1,8 @@
 // Checkout multi-student × multi-period: 2 students × 4 periods must create 8
 // single-student, single-period child orders under one checkout.
+const { randomUUID } = require('crypto');
 const { Client } = require('../../server/node_modules/pg');
+const { signParentToken } = require('../../server/middlewares/parentAuth');
 const { call, assert, step } = require('./_lib');
 
 (async () => {
@@ -9,26 +11,61 @@ const { call, assert, step } = require('./_lib');
   const pg = new Client({ connectionString: process.env.DATABASE_URL });
   await pg.connect();
   const cleanup = { checkoutId: null, enrollmentIds: [] };
+  // 夾具全部自建：demo-login 要伺服器開 ALLOW_DEMO_LOGIN 又要預先種 demo 家長，
+  // 全新庫兩者都沒有。一對二在本區每人每期 6000 → 2 生 × 4 期 = 48000。
+  const suffix = randomUUID().replace(/-/g, '').slice(0, 8);
+  const digits = String(parseInt(suffix, 16)).padStart(10, '0').slice(-8);
+  const venueId = `MS${suffix.slice(0, 6).toUpperCase()}`;
+  const parentId = randomUUID();
+  const coachId = randomUUID();
+  const staffId = `E2E-2X4-${suffix}`;
+  let zoneId = null;
 
   try {
-    const login = await call('POST', '/api/auth/demo-login', {
-      body: { username: 'custom', password: 'custom' },
-    });
-    assert(login.status === 200, `parent demo login 200，實際 ${login.status}`);
-    const parent = login.data.parent || login.data;
-    const token = login.data.token || parent.token;
-    const students = (parent.students || []).filter((s) => s.is_active !== false).slice(0, 2);
-    assert(students.length === 2, 'demo parent 有 2 位可用學員');
+    zoneId = (await pg.query(
+      `INSERT INTO pricing_zones (name, sessions_per_period, sort_order) VALUES ($1, 6, 996) RETURNING id`,
+      [`2x4測試區${suffix}`]
+    )).rows[0].id;
+    await pg.query(
+      `INSERT INTO venues (id, name, is_active, pricing_zone_id) VALUES ($1, $2, TRUE, $3)`,
+      [venueId, `2x4測試館${suffix}`, zoneId]
+    );
+    await pg.query(
+      `INSERT INTO course_type_configs
+         (pricing_zone_id, course_type, label, min_students, max_students, sort_order, base_price, is_active)
+       VALUES ($1, 2, '一對二', 1, 2, 2, 6000, TRUE)`,
+      [zoneId]
+    );
+    // 家長端教練清單以 admin_staff（在職＋館別）為準，coaches 是 app 端檔案，兩列都要。
+    await pg.query(
+      `INSERT INTO admin_staff (id, name, role, venue_id, phone, multiplier, active, is_coach)
+       VALUES ($1, $2, 'coach', $3, $4, 1.00, TRUE, TRUE)`,
+      [staffId, `2x4教練${suffix}`, venueId, `05${digits}`]
+    );
+    await pg.query(
+      `INSERT INTO coaches (id, name, phone, ragic_employee_id, is_active, pricing_multiplier)
+       VALUES ($1, $2, $3, $4, TRUE, 1.00)`,
+      [coachId, `2x4教練${suffix}`, `05${digits}`, staffId]
+    );
+    await pg.query(
+      `INSERT INTO parents (id, name, phone, line_uid, is_active) VALUES ($1, $2, $3, $4, TRUE)`,
+      [parentId, `2x4家長${suffix}`, `09${digits}`, `U2x4${suffix}`]
+    );
+    const students = (await pg.query(
+      `INSERT INTO students (parent_id, name) VALUES ($1, $2), ($1, $3) RETURNING id, name`,
+      [parentId, `2x4大寶${suffix}`, `2x4二寶${suffix}`]
+    )).rows;
+    const token = signParentToken({ parentId, phone: `09${digits}`, lineUid: `U2x4${suffix}` });
 
-    const coaches = await call('GET', '/api/coaches', { token, query: { venueId: 'B' } });
-    assert(coaches.status === 200 && Array.isArray(coaches.data) && coaches.data.length > 0, 'B 場館有可用教練');
+    const coaches = await call('GET', '/api/coaches', { token, query: { venueId } });
+    assert(coaches.status === 200 && Array.isArray(coaches.data) && coaches.data.length > 0, '測試場館有可用教練');
     const coach = coaches.data.find((c) => Number(c.multiplier || c.pricing_multiplier || 1) === 1) || coaches.data[0];
 
     const created = await call('POST', '/api/enrollments', {
       token,
       body: {
         coach: { id: coach.id, name: coach.name },
-        venue: { id: 'B', name: '新北高中' },
+        venue: { id: venueId, name: `2x4測試館${suffix}` },
         course_type: 2,
         students: students.map((s) => ({ id: s.id, name: s.name })),
         period_count: 4,
@@ -82,6 +119,14 @@ const { call, assert, step } = require('./_lib');
       await pg.query(`DELETE FROM request_idempotency_ledger WHERE result_entity_id=$1`, [cleanup.checkoutId]).catch(() => {});
       await pg.query(`DELETE FROM checkout_sessions WHERE checkout_id=$1`, [cleanup.checkoutId]).catch(() => {});
     }
+    await pg.query(`DELETE FROM request_idempotency_ledger WHERE actor_id = $1`, [parentId]).catch(() => {});
+    await pg.query(`DELETE FROM students WHERE parent_id = $1`, [parentId]).catch(() => {});
+    await pg.query(`DELETE FROM parents WHERE id = $1`, [parentId]).catch(() => {});
+    await pg.query(`DELETE FROM coaches WHERE id = $1`, [coachId]).catch(() => {});
+    await pg.query(`DELETE FROM admin_staff WHERE id = $1`, [staffId]).catch(() => {});
+    await pg.query(`DELETE FROM course_type_configs WHERE pricing_zone_id = $1`, [zoneId]).catch(() => {});
+    await pg.query(`DELETE FROM venues WHERE id = $1`, [venueId]).catch(() => {});
+    await pg.query(`DELETE FROM pricing_zones WHERE id = $1`, [zoneId]).catch(() => {});
     await pg.end();
   }
 

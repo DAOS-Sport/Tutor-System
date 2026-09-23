@@ -3,8 +3,12 @@
 // 驗 transfer.status='approved' + 原 enrollment.status='transferred_out'
 const { Client } = require('../../server/node_modules/pg');
 const { call, assert, step, loginAdmin } = require('./_lib');
+const { withAdminAccount } = require('./_accounts');
 
-(async () => {
+// 全新 bootstrap 沒有 manager 帳號：由 withAdminAccount 自建（已存在就沿用）。
+const MANAGER = { username: process.env.ADMIN_USERNAME || 'manager', password: process.env.ADMIN_PASSWORD || 'manager', role: 'manager', venueId: 'B' };
+
+async function main() {
   step('Path H: 課程轉讓');
 
   const pg = new Client({ connectionString: process.env.DATABASE_URL });
@@ -20,7 +24,7 @@ const { call, assert, step, loginAdmin } = require('./_lib');
   ).catch((e) => { console.log('  ⚠ query failed:', e.message); return { rowCount: 0 }; });
   if (!cur.rowCount) {
     console.log('  ⚠ 無 active enrollment，跳過轉讓寫入測試（驗 GET 仍要可達）');
-    const token = await loginAdmin(process.env.ADMIN_USERNAME || 'manager', process.env.ADMIN_PASSWORD || 'manager');
+    const token = await loginAdmin(MANAGER.username, MANAGER.password);
     const r = await call('GET', '/api/admin/transfers', { token, query: { status: 'pending' } });
     assert(r.status === 200, `GET admin/transfers 200，實際 ${r.status}`);
     await pg.end();
@@ -41,7 +45,7 @@ const { call, assert, step, loginAdmin } = require('./_lib');
     );
     tid = ins.rows[0].id;
 
-    const token = await loginAdmin(process.env.ADMIN_USERNAME || 'manager', process.env.ADMIN_PASSWORD || 'manager');
+    const token = await loginAdmin(MANAGER.username, MANAGER.password);
     const r = await call('POST', `/api/admin/transfers/${tid}/approve`, {
       token, body: { review_note: 'e2e approve' },
     });
@@ -73,4 +77,6 @@ const { call, assert, step, loginAdmin } = require('./_lib');
     await pg.end();
   }
   step('done');
-})().catch((e) => { console.error(e); process.exit(1); });
+}
+
+withAdminAccount(MANAGER, main).catch((e) => { console.error(e); process.exit(1); });

@@ -8,7 +8,7 @@ const { listLinkedEnrollmentIds } = require('./usageSync');
 
 /**
  * Reverse one lesson usage event without deleting attendance history.
- * The caller owns the transaction. Lock order is course_session -> course_period,
+ * The caller owns the transaction. Lock order is course_period -> course_session,
  * then attendance/ledger updates, so concurrent retries serialize safely.
  */
 async function reverseLessonDeduction(client, {
@@ -26,6 +26,8 @@ async function reverseLessonDeduction(client, {
     throw err;
   }
 
+  await client.query(`SELECT id FROM course_periods
+    WHERE id = (SELECT course_period_id FROM course_sessions WHERE id = $1) FOR UPDATE`, [sessionId]);
   const sr = await client.query(
     `SELECT cs.id, cs.course_period_id, cs.status::text AS status, cs.created_via,
             cp.venue_id, cp.admin_enrollment_id, cp.group_order_id,
@@ -43,7 +45,6 @@ async function reverseLessonDeduction(client, {
     throw err;
   }
   const session = sr.rows[0];
-  await client.query(`SELECT id FROM course_periods WHERE id = $1 FOR UPDATE`, [session.course_period_id]);
 
   if (allowCreatedVia && session.created_via !== allowCreatedVia) {
     const err = new Error('此課堂不可由這個入口撤銷');
@@ -141,7 +142,7 @@ async function reverseLessonDeduction(client, {
   );
   // 稽核對「共享此 period 的全部訂單」各寫一筆（與手動扣課的 audit 同一組匹配條件；
   // usageSync.listLinkedEnrollmentIds），否則團報非 anchor 成員的稽核只見扣課、不見衝正。
-  const linkedEnrollmentIds = await listLinkedEnrollmentIds(client, session);
+  const linkedEnrollmentIds = await listLinkedEnrollmentIds(client, session, { includeClosed: true });
   for (const enrollmentId of linkedEnrollmentIds) {
     await client.query(
       `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user)

@@ -17,6 +17,7 @@
  * 全部端點皆要求教練 JWT。寫入端點額外驗證 body.coach_id (或 slot.coach_id) 與 token coachId 一致。
  */
 const express = require('express');
+const { assertCourseEntitlement } = require('../services/courseEntitlements');
 const router = express.Router();
 const { pool } = require('../models/db');
 const { detectConflict, createSlot, batchCreateSlots, bookSlot1v1 } = require('../services/slots');
@@ -286,19 +287,21 @@ router.post('/:id/book', requireParent, async (req, res) => {
     // 2) 取課程期
     const cpRes = await client.query(
       `SELECT id, coach_id, venue_id, course_type, status, total_sessions
-         FROM course_periods WHERE id = $1`,
+         FROM course_periods WHERE id = $1 FOR UPDATE`,
       [coursePeriodId]
     );
     if (!cpRes.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: '課程期不存在' }); }
     const cp = cpRes.rows[0];
 
     // 3) 驗證家長擁有此課程期（名下任一在籍學員屬於此期）
+    const entitledStudents = await assertCourseEntitlement(client, coursePeriodId);
     const own = await client.query(
       `SELECT 1 FROM course_period_enrollments cpe
          JOIN students s ON s.id = cpe.student_id
         WHERE cpe.course_period_id = $1 AND s.parent_id = $2 AND cpe.status = 'active'
+          AND cpe.student_id = ANY($3::uuid[])
         LIMIT 1`,
-      [coursePeriodId, req.parent.id]
+      [coursePeriodId, req.parent.id, entitledStudents]
     );
     if (!own.rowCount) { await client.query('ROLLBACK'); return res.status(403).json({ error: '無權預約此課程期' }); }
 
@@ -335,6 +338,7 @@ router.post('/:id/book', requireParent, async (req, res) => {
     res.status(201).json({ session });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
+    if (err.status === 409) return res.status(409).json({ error: err.message, code: err.code });
     // bookSlot* 在槽位已被搶走時 throw（'此時段已被預約或不存在'）→ 視為 409
     if (/已被預約|不存在/.test(err.message || '')) {
       return res.status(409).json({ error: '此時段已被預約，請改選其他時段', code: 'SLOT_TAKEN' });

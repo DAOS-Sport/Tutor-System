@@ -8,6 +8,7 @@
  *   - 未設目標 / 無 token / 推播失敗 → 只記 log，絕不 throw 給呼叫端（不擋登入流程）。
  */
 const axios = require('axios');
+const { randomUUID } = require('node:crypto');
 
 const PUSH_URL = 'https://api.line.me/v2/bot/message/push';
 const TIMEOUT = Number(process.env.OUTBOUND_HTTP_TIMEOUT_MS) || 8000;
@@ -29,7 +30,7 @@ function isConfigured() {
 
 /**
  * 推播「教練登入查無對應」給 IT。
- * @returns {Promise<boolean>} 是否實際送出（未設定 / 失敗 → false，但不會 throw）
+ * @returns {Promise<boolean>} LINE 是否已受理（不代表裝置已送達）；未設定 / 失敗為 false。
  */
 async function pushCoachUnbound({ lineUid, displayName, name }) {
   const to = target();
@@ -47,17 +48,32 @@ async function pushCoachUnbound({ lineUid, displayName, name }) {
     `輸入姓名：${name || '(未輸入)'}\n` +
     `LINE UID：${lineUid || '(無)'}\n` +
     '請至 Ragic H01 確認該員工「個人LINE ID / 姓名」是否正確，或協助手動綁定。';
-  try {
-    await axios.post(
-      PUSH_URL,
-      { to, messages: [{ type: 'text', text }] },
-      { headers: { Authorization: `Bearer ${token}` }, timeout: TIMEOUT, validateStatus: () => true }
-    );
-    return true;
-  } catch (e) {
-    console.warn('[itAlert] 推播失敗（已忽略）:', e.message);
-    return false;
+  // One logical alert, one retry key from the first attempt. A timeout can occur
+  // after LINE accepted the request, so never retry it with a new key.
+  const retryKey = randomUUID();
+  const payload = { to, messages: [{ type: 'text', text }] };
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    let status = null;
+    let code = 'HTTP_FAILURE';
+    try {
+      const response = await axios.post(PUSH_URL, payload, {
+        headers: { Authorization: `Bearer ${token}`, 'X-Line-Retry-Key': retryKey },
+        timeout: TIMEOUT, validateStatus: () => true,
+      });
+      status = response.status;
+      if (status >= 200 && status < 300) return true;
+      if (status === 409 && response.headers?.['x-line-accepted-request-id']) return true;
+    } catch (e) {
+      // Axios errors may contain the token, recipient and message. Keep only a
+      // fixed classification; never serialize the request or provider body.
+      code = ['ECONNABORTED', 'ETIMEDOUT'].includes(e.code) ? 'TIMEOUT' : 'NETWORK_ERROR';
+    }
+    const retryable = status === null || (status >= 500 && status < 600);
+    console.warn('[itAlert] 推播失敗:', { code, status, attempt, retryable });
+    if (!retryable || attempt === 3) return false;
+    await new Promise(resolve => setTimeout(resolve, 250 * (2 ** (attempt - 1))));
   }
+  return false;
 }
 
 module.exports = { pushCoachUnbound, isConfigured };

@@ -25,6 +25,9 @@ const { Client } = require('../server/node_modules/pg');
       const r=await pool.query("SELECT column_default FROM information_schema.columns WHERE table_name='course_periods' AND column_name='checkin_mode'");
       require('assert').equal(r.rows.length,1);
       require('assert').match(r.rows[0].column_default,/self/);
+      // admin/checkins.js 無條件讀這欄，不能只靠第一次體驗簽到時的懶惰補建（e2e 整輪會被 path_b 的夾具 ALTER 蓋掉）。
+      const ex=await pool.query("SELECT 1 FROM information_schema.columns WHERE table_name='admin_enrollments' AND column_name='experience_checked_in_at'");
+      require('assert').equal(ex.rows.length,1);
       // The Ragic Z03 upsert must be usable without a separate manual migration.
       await pool.query("EXPLAIN INSERT INTO ragic_z03_students (z03_record_id, source_row_key, name_raw) VALUES (NULL, 'bootstrap-probe', 'probe') ON CONFLICT (z03_record_id, source_row_key) DO NOTHING");
       await pool.end();

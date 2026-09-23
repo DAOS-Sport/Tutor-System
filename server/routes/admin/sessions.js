@@ -12,6 +12,8 @@
  *  POST  /api/admin/sessions/:id/revive      （admin / manager / staff）
  */
 const express = require('express');
+const { assertCourseEntitlement } = require('../../services/courseEntitlements');
+const { syncStoredUsage } = require('../../services/usageSync');
 const { pool } = require('../../models/db');
 const { requireAdminAuth, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
 // F-A06：權限改由「角色權限管理」的設定決定，不再寫死角色清單。
@@ -585,7 +587,9 @@ router.post('/:id/revive', requireAdminAuth, requireResource('revive'), async (r
  *  - backfilled_at = NOW()：補簽到按鈕被按下的當下時間，供管理端查看
  */
 router.post('/:id/backfill-checkin', requireAdminAuth, requireResource('sessions'), async (req, res) => {
+  const client = await pool.connect();
   try {
+    await client.query('BEGIN');
     const { id } = req.params;
     const raw = req.body?.checkin_at;
     const dt = raw ? new Date(raw) : null;
@@ -596,12 +600,12 @@ router.post('/:id/backfill-checkin', requireAdminAuth, requireResource('sessions
     // 對該堂課的本期全部 active 學員補 checkin_records（來源 'staff'、時間＝操作者選擇），
     // 已簽過的學員不重複。堂數計算與全系統同一真相。找不到真實課堂時，退回舊示範表
     // 路徑（向後相容既有 demo 資料，不影響新流程）。
-    const real = await pool.query(
+    const real = await client.query(
       `SELECT cs.id, cs.status::text AS status, cp.id AS period_id, cp.venue_id,
               cp.admin_enrollment_id, cp.group_order_id, cp.enrollment_batch_id,
               cp.period_number
          FROM course_sessions cs JOIN course_periods cp ON cp.id = cs.course_period_id
-        WHERE cs.id::text = $1`,
+        WHERE cs.id::text = $1 FOR UPDATE OF cp`,
       [id]
     );
     if (real.rowCount) {
@@ -612,16 +616,22 @@ router.post('/:id/backfill-checkin', requireAdminAuth, requireResource('sessions
       if (row.status.startsWith('cancelled')) {
         return res.status(400).json({ error: '已取消的課堂不可補簽到' });
       }
-      await pool.query(
+      const entitledStudents = await assertCourseEntitlement(client, row.period_id);
+      const freshSession = await client.query('SELECT status FROM course_sessions WHERE id = $1 FOR UPDATE', [id]);
+      if (!['confirmed', 'completed'].includes(freshSession.rows[0]?.status)) {
+        return res.status(409).json({ error: '此課堂狀態不可補簽到', code: 'SESSION_NOT_CHECKINABLE' });
+      }
+      await client.query(
         `INSERT INTO checkin_records
            (course_session_id, student_id, checked_in_by_student_id, checked_in_source, checked_in_at)
          SELECT $1, cpe.student_id, cpe.student_id, 'staff', $2
            FROM course_period_enrollments cpe
           WHERE cpe.course_period_id = $3 AND cpe.status = 'active'
+            AND cpe.student_id = ANY($4::uuid[])
          ON CONFLICT (course_session_id, student_id) DO NOTHING`,
-        [id, dt.toISOString(), row.period_id]
+        [id, dt.toISOString(), row.period_id, entitledStudents]
       );
-      await pool.query(
+      await client.query(
         `UPDATE course_sessions
             SET status = 'completed', completed_at = COALESCE(completed_at, NOW()),
                 session_deducted = TRUE, updated_at = NOW()
@@ -631,7 +641,7 @@ router.post('/:id/backfill-checkin', requireAdminAuth, requireResource('sessions
       // Shared attendance consumes one lesson per distinct session, regardless
       // of the number of active students added above. Recompute instead of
       // incrementing so retries and concurrent double-clicks stay idempotent.
-      const usage = await pool.query(
+      const usage = await client.query(
         `SELECT COUNT(DISTINCT cs.id)::int AS used
            FROM course_sessions cs
           WHERE cs.course_period_id = $1
@@ -644,20 +654,8 @@ router.post('/:id/backfill-checkin', requireAdminAuth, requireResource('sessions
         [row.period_id]
       );
       const used = Number(usage.rows[0]?.used || 0);
-      await pool.query(
-        `UPDATE course_periods SET used_sessions = $2, updated_at = NOW() WHERE id = $1`,
-        [row.period_id, used]
-      );
-      await pool.query(
-        `UPDATE admin_enrollments ae
-            SET used_sessions = $1, updated_at = NOW()
-          WHERE ($2::text IS NOT NULL AND ae.id = $2)
-             OR ($3::uuid IS NOT NULL AND ae.group_order_id = $3
-                 AND ae.period_number = COALESCE($5, ae.period_number))
-             OR ($4::uuid IS NOT NULL AND ae.enrollment_batch_id = $4
-                 AND ae.period_number = COALESCE($5, ae.period_number))`,
-        [used, row.admin_enrollment_id, row.group_order_id, row.enrollment_batch_id, row.period_number]
-      );
+      await syncStoredUsage(client, { ...row, id: row.period_id }, used);
+      await client.query('COMMIT');
       return res.json({
         id,
         checkin_status: 'checked_in',
@@ -666,22 +664,27 @@ router.post('/:id/backfill-checkin', requireAdminAuth, requireResource('sessions
       });
     }
 
-    const cur = await pool.query(`SELECT venue_id FROM admin_today_sessions WHERE id = $1`, [id]);
+    const cur = await client.query(`SELECT venue_id FROM admin_today_sessions WHERE id = $1`, [id]);
     if (!cur.rowCount) return res.status(404).json({ error: '找不到此時段' });
     if (!isVenueInScope(req, cur.rows[0].venue_id)) {
       return res.status(403).json({ error: '此時段不在您的場館範圍內' });
     }
-    const r = await pool.query(
+    const r = await client.query(
       `UPDATE admin_today_sessions
           SET checkin_status = 'checked_in', checkin_at = $2, backfilled_at = NOW()
         WHERE id = $1
         RETURNING *`,
       [id, dt.toISOString()]
     );
+    await client.query('COMMIT');
     res.json(rowToSession(r.rows[0]));
   } catch (err) {
+    if (err.status === 409) return res.status(409).json({ error: err.message, code: err.code });
     console.error('[admin/sessions/:id/backfill-checkin]', err);
     res.status(500).json({ error: 'backfill checkin failed' });
+  } finally {
+    await client.query('ROLLBACK').catch(() => {});
+    client.release();
   }
 });
 
@@ -696,10 +699,13 @@ router.post('/checkin', requireAdminAuth, requireResource('checkin'), async (req
   if (!enrollmentId) return res.status(400).json({ error: 'enrollmentId required' });
   try {
     const e = await pool.query(
-      `SELECT id, venue_id FROM admin_enrollments WHERE id = $1`,
+      `SELECT id, venue_id, status FROM admin_enrollments WHERE id = $1`,
       [enrollmentId]
     );
     if (!e.rowCount) return res.status(404).json({ error: 'enrollment not found' });
+    if (['refunded', 'cancelled'].includes(e.rows[0].status)) {
+      return res.status(409).json({ error: '報名已退費或取消，無法簽到', code: 'ENROLLMENT_ENTITLEMENT_INACTIVE' });
+    }
     // Task #90：簽到場館須在當前 admin 所屬場館清單內
     const scope = getScopedVenueIds(req);
     if (scope && !scope.includes(e.rows[0].venue_id)) {
@@ -709,11 +715,12 @@ router.post('/checkin', requireAdminAuth, requireResource('checkin'), async (req
       `ALTER TABLE admin_enrollments
          ADD COLUMN IF NOT EXISTS experience_checked_in_at TIMESTAMPTZ`
     );
-    await pool.query(
+    const marked = await pool.query(
       `UPDATE admin_enrollments SET experience_checked_in_at = COALESCE(experience_checked_in_at, NOW())
-        WHERE id = $1`,
+        WHERE id = $1 AND status NOT IN ('refunded','cancelled') AND experience_checked_in_at IS NULL RETURNING id`,
       [enrollmentId]
     );
+    if (!marked.rowCount) return res.status(409).json({ error: '報名已簽到或狀態已變動，請重新整理', code: 'ENROLLMENT_CHECKIN_UNCHANGED' });
     const by = req.adminUser?.name || req.adminUser?.username || 'unknown';
     await pool.query(
       `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user)

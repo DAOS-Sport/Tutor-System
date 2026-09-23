@@ -94,20 +94,33 @@ async function post(base, token, body, { headerKey = body?.request_id } = {}) {
   let adminActorId = null;
   let adminRequestKey = null;
   let triggerInstalled = false;
-  let trialCfgOrig = null; // F-A07 trial gate fixture（course_type=1 原值，finally 還原）
+  // 自建定價區／場館／教練／課別設定，不借用資料庫裡現成的第一位教練：
+  // TRIAL50 只適用係數 1.00 的教練，借到別的係數就會變成 COUPON_INVALID。
+  const venueId = `EI${suffix.slice(0, 6).toUpperCase()}`;
+  const coachId = randomUUID();
+  let zoneId = null;
 
   try {
-    const reference = await pg.query(
-      `SELECT c.id AS coach_id, v.id AS venue_id
-         FROM coaches c CROSS JOIN venues v
-        WHERE c.is_active = TRUE
-          AND COALESCE(c.is_placeholder, FALSE) = FALSE
-          AND v.is_active = TRUE
-        ORDER BY c.created_at, v.id
-        LIMIT 1`
+    zoneId = (await pg.query(
+      `INSERT INTO pricing_zones (name, sessions_per_period, sort_order) VALUES ($1, 6, 997) RETURNING id`,
+      [`E2E idempotency zone ${suffix}`]
+    )).rows[0].id;
+    await pg.query(
+      `INSERT INTO venues (id, name, is_active, pricing_zone_id) VALUES ($1, $2, TRUE, $3)`,
+      [venueId, `E2E idempotency venue ${suffix}`, zoneId]
     );
-    if (!reference.rowCount) throw new Error('test database needs one active non-placeholder coach and venue');
-    const { coach_id: coachId, venue_id: venueId } = reference.rows[0];
+    await pg.query(
+      `INSERT INTO coaches (id, name, phone, ragic_employee_id, is_active, pricing_multiplier)
+       VALUES ($1, $2, $3, $4, TRUE, 1.00)`,
+      [coachId, `E2E idempotency coach ${suffix}`, `06${String(parseInt(suffix.slice(0, 8), 16)).padStart(8, '0').slice(-8)}`, `E2E-IDEM-${suffix}`]
+    );
+    // F-A07 試上開關：trial 建單需 course_type=1 開啟 trial_enabled（TRIAL_NOT_ENABLED gate）。
+    await pg.query(
+      `INSERT INTO course_type_configs
+         (pricing_zone_id, course_type, label, min_students, max_students, sort_order, base_price, is_active, trial_enabled)
+       VALUES ($1, 1, 'E2E 一對一', 1, 1, 1, 6000, TRUE, TRUE)`,
+      [zoneId]
+    );
     const adminActor = (await pg.query(
       `SELECT id, username, name FROM admin_users WHERE is_active = TRUE ORDER BY created_at, id LIMIT 1`
     )).rows[0];
@@ -121,15 +134,6 @@ async function post(base, token, body, { headerKey = body?.request_id } = {}) {
     assert(autoPromotions.rowCount === 0, 'isolated test DB has no active automatic promotion that could mutate shared quota');
     const existingTrial50 = await pg.query(`SELECT id FROM promotions WHERE UPPER(coupon_code) = 'TRIAL50'`);
     assert(existingTrial50.rowCount === 0, 'isolated test DB has no pre-existing TRIAL50 configuration');
-
-    // F-A07 試上開關：trial 建單需 course_type=1 開啟 trial_enabled（TRIAL_NOT_ENABLED gate）。
-    // 測試自備 fixture、finally 還原，不依賴環境現值。
-    trialCfgOrig = (await pg.query(
-      `SELECT trial_enabled, trial_price FROM course_type_configs WHERE course_type = 1`
-    )).rows[0] || null;
-    if (trialCfgOrig) {
-      await pg.query(`UPDATE course_type_configs SET trial_enabled = TRUE WHERE course_type = 1`);
-    }
 
     await pg.query(
       `INSERT INTO parents (id, phone, name, is_active)
@@ -414,14 +418,12 @@ async function post(base, token, body, { headerKey = body?.request_id } = {}) {
     }
     await pg.query(`DELETE FROM checkout_sessions WHERE parent_id = $1`, [parentId]).catch(() => {});
     if (promotionId) await pg.query(`DELETE FROM promotions WHERE id = $1`, [promotionId]).catch(() => {});
-    if (trialCfgOrig) {
-      await pg.query(
-        `UPDATE course_type_configs SET trial_enabled = $1, trial_price = $2 WHERE course_type = 1`,
-        [trialCfgOrig.trial_enabled, trialCfgOrig.trial_price]
-      ).catch(() => {});
-    }
     await pg.query(`DELETE FROM students WHERE id = $1`, [studentId]).catch(() => {});
     await pg.query(`DELETE FROM parents WHERE id = ANY($1::uuid[])`, [[parentId, referrerId]]).catch(() => {});
+    await pg.query(`DELETE FROM coaches WHERE id = $1`, [coachId]).catch(() => {});
+    await pg.query(`DELETE FROM course_type_configs WHERE pricing_zone_id = $1`, [zoneId]).catch(() => {});
+    await pg.query(`DELETE FROM venues WHERE id = $1`, [venueId]).catch(() => {});
+    await pg.query(`DELETE FROM pricing_zones WHERE id = $1`, [zoneId]).catch(() => {});
     await pg.end().catch(() => {});
     await route.close().catch(() => {});
   }

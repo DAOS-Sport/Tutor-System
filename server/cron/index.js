@@ -59,6 +59,17 @@ function initCronJobs() {
     }
   });
 
+  // Only pending webhook projections are refetched; no upstream business writes.
+  scheduleTaipei('* * * * *', async () => {
+    if (!ragicAdmin.ragicEnabled()) return;
+    try {
+      const result = await ragicAdmin.retryRagicWebhooks({ limit: 20 });
+      if (result.failed) console.warn('[Cron/RagicWebhook] pending/blocked:', result.failed);
+    } catch (err) {
+      console.warn('[Cron/RagicWebhook] worker failed:', err.code || 'RAGIC_WEBHOOK_FAILED');
+    }
+  });
+
   // Local-first Z03 claims commit before Ragic. This worker is the only path
   // that writes the claimed LINE UID back; it never resolves or creates an
   // identity, and failed writes remain retryable/blocked in the outbox.
@@ -179,6 +190,19 @@ function initCronJobs() {
   // ── 每天 09:00：堂數快到期提醒 (F-S05) ────
   scheduleTaipei('0 9 * * *', async () => {
     try {
+      // 2026-09-22（凍結檔改動，已取得 Owner 同意）兩件事：
+      //
+      // 1. 只提醒「還有堂數沒上完」的課期。原本只看 status='active'，但
+      //    course_periods.status 不會因為堂數用完就自動變 completed —— 正式庫
+      //    591 個課期只有 1 筆是 completed，而 142 個是 active 但堂數已用完。
+      //    少了這個條件，這 142 筆裡有 134 筆會在未來踩到觸發日，發出「快到期了」
+      //    給已經上完的家長。教練端首頁的到期卡片早就有同樣的判斷
+      //    （routes/sessions.js 的 bucket：used >= total 即 completed），這裡補齊。
+      //
+      // 2. 觸發條件從「剛好等於第 N 天」改成「N 天內」。原本的等號比對只要 cron
+      //    當天沒跑（重啟、部署、當機），那個課期就永遠不會收到提醒，不會補。
+      //    改成區間之後靠 notification_log 的 UNIQUE(kind, ref_id, recipient_uid)
+      //    去重，同一期同一位家長仍然只會收到一次。
       const r = await pool.query(
         `SELECT cp.id, cp.venue_id, cp.expires_at, cp.course_type,
                 (cp.total_sessions - cp.used_sessions) AS remaining,
@@ -186,9 +210,12 @@ function initCronJobs() {
            FROM course_periods cp
            JOIN coaches co ON co.id = cp.coach_id
           WHERE cp.status = 'active'
-            AND cp.expires_at = CURRENT_DATE + (
+            AND (cp.total_sessions - cp.used_sessions) > 0
+            AND cp.expires_at >= CURRENT_DATE
+            AND cp.expires_at <= CURRENT_DATE + (
               SELECT COALESCE((SELECT value::INTEGER FROM admin_settings WHERE key='expiry_notice_days'), 60)
-            )`
+            )
+          ORDER BY cp.expires_at`
       );
       for (const cp of r.rows) {
         const ps = await pool.query(

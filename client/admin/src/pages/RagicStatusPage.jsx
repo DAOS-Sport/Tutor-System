@@ -1,5 +1,6 @@
 import { toUserMessage } from '../../../shared/userMessage.js';
 import React, { useEffect, useState } from 'react';
+import WebhookInboxPanel from '../components/WebhookInboxPanel';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
@@ -334,6 +335,7 @@ export default function RagicStatusPage() {
       )}
 
       <LiveProbePanel probe={data.live_probe} />
+      <WebhookInboxPanel canRetry={isAdmin} />
 
       <div className="mb-6 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
         <div className="flex items-center justify-between">

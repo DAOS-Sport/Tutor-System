@@ -19,10 +19,12 @@ router.post('/:sheetCode', async (req, res) => {
   if (!_authorized(req)) return res.status(401).json({ error: 'unauthorized ragic webhook' });
   try {
     const result = await ragicAdmin.handleRagicWebhook(req.params.sheetCode, req.body);
-    res.json({ ok: true, ...result });
+    if (!result.ok) res.set('Retry-After', '30');
+    res.status(result.ok ? 200 : 503).json(result);
   } catch (err) {
     console.error('[ragic-webhook]', req.params.sheetCode, err.message);
-    res.status(400).json({ error: err.message || 'ragic webhook failed' });
+    const invalid = err.code === 'RAGIC_WEBHOOK_INVALID';
+    res.status(invalid ? 400 : 503).json({ ok: false, error: invalid ? err.message : 'RAGIC_WEBHOOK_UNAVAILABLE' });
   }
 });
 

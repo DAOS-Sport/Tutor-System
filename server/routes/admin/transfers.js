@@ -66,7 +66,7 @@ router.post('/:id/approve', requireAdminAuth, requireResource('transfers'), asyn
   try {
     const scope = await assertTransferInScope(req, req.params.id);
     if (!scope.ok) return res.status(scope.status).json({ error: scope.error });
-    const r = await transfers.approve({ id: req.params.id, adminUserId: req.adminUser.sub, note: req.body?.note });
+    const r = await transfers.approve({ id: req.params.id, adminUserId: req.adminUser.sub, adminRole: req.adminUser.role, note: req.body?.note });
     notifyBoth(r, true, req.body?.note);
     res.json(r);
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }

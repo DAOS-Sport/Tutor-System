@@ -85,7 +85,8 @@ const click = (owner, label) => {
     '../utils/promotionLabel': { promotionValueLabel: () => '' },
   });
   await home.settle();
-  click(home, '3 個月內即將到期'); // Regression: missing formatPlainDate used to throw here.
+  // 2026-09-22 改版：標題從「3 個月內即將到期 N 組」改成「即將到期通知」＋組數徽章。
+  click(home, '即將到期通知'); // Regression: missing formatPlainDate used to throw here.
   assert.match(words(home.tree), /2026-09-19/);
   assert.match(words(home.tree), /請提醒家長進行授課/);
   click(home, '查看這筆報名');

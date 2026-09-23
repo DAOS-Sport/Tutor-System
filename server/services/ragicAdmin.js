@@ -19,6 +19,7 @@
  * 用於 GET 列表時觸發背景刷新（不阻塞回應）。實際排程由 server/cron 跑。
  */
 const { pool } = require('../models/db');
+const { writeStudentAudit, diffChanges } = require('./studentAudit');
 const ragic = require('./ragic');
 const parentSync = require('./parentSync');
 const line = require('./line');
@@ -2910,6 +2911,7 @@ async function _syncCanonicalZ01Record(client, z01Row, mapped, venuesMap) {
       continue;
     }
     let student = matches[0] || null;
+    const beforeStudent = student;
     const birthDate = /^\d{4}-\d{2}-\d{2}$/.test(String(s.birth_date || '')) ? s.birth_date : null;
     if (student) {
       student = (await client.query(
@@ -2934,6 +2936,10 @@ async function _syncCanonicalZ01Record(client, z01Row, mapped, venuesMap) {
       )).rows[0];
       existingStudents.push(student);
     }
+    await writeStudentAudit(client, student.id, beforeStudent ? 'edit' : 'create', {
+      byUser: 'ragic:canonical-z01-sync', byRole: 'system',
+      changes: diffChanges(beforeStudent, student), note: 'ragic-canonical-family-import',
+    });
     syncedStudentIds.push(student.id);
   }
   if (syncedStudentIds.length === 1) {
@@ -4691,16 +4697,16 @@ async function getSyncStatusSnapshot() {
 }
 
 function _extractWebhookRecordIds(body) {
-  if (Array.isArray(body)) return body.map((v) => String(v || '').trim()).filter(Boolean);
+  if (Array.isArray(body)) return [...new Set(body.map((v) => String(v?._ragicId ?? v?.ragicId ?? v?.id ?? v ?? '').trim()).filter(Boolean))];
   const out = [];
   const add = (v) => {
-    const s = String(v || '').trim();
+    const s = String(v ?? '').trim();
     if (s) out.push(s);
   };
   for (const item of (Array.isArray(body?.data) ? body.data : [])) {
-    add(item?._ragicId || item?.ragicId || item?.id);
+    add(item?._ragicId ?? item?.ragicId ?? item?.id);
   }
-  add(body?._ragicId || body?.ragicId || body?.id || body?.nodeId || body?.recordId);
+  add(body?._ragicId ?? body?.ragicId ?? body?.id ?? body?.nodeId ?? body?.recordId);
   return [...new Set(out)];
 }
 
@@ -4720,9 +4726,10 @@ async function _deleteWebhookShadow(client, sheetCode, ragicRecordId) {
         WHERE ragic_record_id = $1 OR raw_data->>'_ragicId' = $1 OR raw_data->>'ragicId' = $1`,
       [ragicRecordId]
     );
-  } else if (sheetCode === 'Z01') {
+  } else if (sheetCode === 'Z01' || sheetCode === 'Z02') {
+    const table = sheetCode === 'Z01' ? 'ragic_z01_shadow' : 'ragic_z02_shadow';
     await client.query(
-      `UPDATE ragic_z01_shadow
+      `UPDATE ${table}
           SET present_in_latest_pull=FALSE,
               missing_since=COALESCE(missing_since,NOW())
         WHERE ragic_record_id=$1`,
@@ -4754,19 +4761,21 @@ async function _upsertWebhookShadow(client, sheetCode, row) {
     );
     return true;
   }
-  if (sheetCode === 'Z01') {
+  if (sheetCode === 'Z01' || sheetCode === 'Z02') {
     if (!rid) return false;
+    const table = sheetCode === 'Z01' ? 'ragic_z01_shadow' : 'ragic_z02_shadow';
     await client.query(
-      `INSERT INTO ragic_z01_shadow (ragic_record_id, raw_data, fetched_at)
-       VALUES ($1, $2::jsonb, NOW())
-       ON CONFLICT (ragic_record_id) DO UPDATE SET raw_data = EXCLUDED.raw_data, fetched_at = NOW()`,
+      `INSERT INTO ${table} (ragic_record_id, raw_data, fetched_at, last_seen_at, present_in_latest_pull)
+       VALUES ($1, $2::jsonb, NOW(), NOW(), TRUE)
+       ON CONFLICT (ragic_record_id) DO UPDATE SET raw_data = EXCLUDED.raw_data, fetched_at = NOW(),
+         last_seen_at=NOW(), present_in_latest_pull=TRUE, missing_since=NULL`,
       [rid, JSON.stringify(row)]
     );
     return true;
   }
   if (sheetCode === 'H05') {
     const v = _mapRagicVenue(row);
-    if (!v?.code) return false;
+    if (!v?.code) throw Object.assign(new Error('Webhook venue identity missing'), { code: 'RAGIC_WEBHOOK_ID_MISMATCH' });
     await client.query(
       `INSERT INTO ragic_h05_shadow (venue_code, raw_data, fetched_at)
        VALUES ($1, $2::jsonb, NOW())
@@ -4778,62 +4787,55 @@ async function _upsertWebhookShadow(client, sheetCode, row) {
   return false;
 }
 
+async function _projectWebhookRecord(client, job) {
+  const code = job.sheet_code;
+  const id = job.ragic_record_id;
+  const formPath = _webhookFormPath(code);
+  if (!formPath) throw Object.assign(new Error('Webhook form is not configured'), { code: 'RAGIC_WEBHOOK_CONFIG_MISSING' });
+  const t0 = Date.now();
+  const record = await ragic.getRecordByRagicId(formPath, id,
+    { ignoreFixedFilter: process.env.RAGIC_IGNORE_FIXED_FILTER === 'false' ? undefined : 'true' },
+    { noCache: true });
+  let shadowUpdated = false;
+  if (record) {
+    if (String(record._ragicId ?? record.ragicId ?? '') !== id) {
+      throw Object.assign(new Error('Webhook source identity mismatch'), { code: 'RAGIC_WEBHOOK_ID_MISMATCH' });
+    }
+    shadowUpdated = await _upsertWebhookShadow(client, code, record);
+  } else {
+    await _deleteWebhookShadow(client, code, id);
+  }
+  await client.query(
+    `INSERT INTO ragic_webhook_log
+       (sheet_code,ragic_record_id,event_type,refetched,latency_ms,error_message)
+     VALUES ($1,$2,$3,$4,$5,NULL)`,
+    [code,id,job.event_type,Boolean(record),Date.now()-t0]);
+  return { refetched: Boolean(record), shadow_updated: shadowUpdated };
+}
+
+async function retryRagicWebhooks(options = {}) {
+  return require('./ragicWebhookInbox').processInbox({ ...options, db: pool, project: _projectWebhookRecord });
+}
+
 async function handleRagicWebhook(sheetCode, body = {}) {
   const code = String(sheetCode || '').trim().toUpperCase();
-  const formPath = _webhookFormPath(code);
-  if (!formPath) throw new Error(`unsupported Ragic webhook sheet: ${sheetCode}`);
   const ids = _extractWebhookRecordIds(body);
-  if (!ids.length) throw new Error('webhook payload 未包含 record id');
-  const eventType = String(body?.eventType || body?.event_type || '').trim();
-  const items = [];
-  for (const id of ids) {
-    const t0 = Date.now();
-    let refetched = false;
-    let shadowUpdated = false;
-    let error = null;
-    const client = await pool.connect();
-    try {
-      const record = await ragic.getRecordByRagicId(
-        formPath,
-        id,
-        { ignoreFixedFilter: process.env.RAGIC_IGNORE_FIXED_FILTER === 'false' ? undefined : 'true' },
-        { noCache: true }
-      );
-      await client.query('BEGIN');
-      if (record) {
-        refetched = true;
-        shadowUpdated = await _upsertWebhookShadow(client, code, record);
-      } else {
-        await _deleteWebhookShadow(client, code, id);
-      }
-      await client.query(
-        `INSERT INTO ragic_webhook_log
-           (sheet_code, ragic_record_id, event_type, refetched, latency_ms, error_message)
-         VALUES ($1,$2,$3,$4,$5,$6)`,
-        [code, id, eventType || null, refetched, Date.now() - t0, null]
-      );
-      await client.query('COMMIT');
-      items.push({ id, refetched, shadow_updated: shadowUpdated, latency_ms: Date.now() - t0 });
-    } catch (err) {
-      error = err.message || String(err);
-      await client.query('ROLLBACK').catch(() => {});
-      await pool.query(
-        `INSERT INTO ragic_webhook_log
-           (sheet_code, ragic_record_id, event_type, refetched, latency_ms, error_message)
-         VALUES ($1,$2,$3,FALSE,$4,$5)`,
-        [code, id, eventType || null, Date.now() - t0, error]
-      ).catch(() => {});
-      items.push({ id, refetched: false, shadow_updated: false, latency_ms: Date.now() - t0, error });
-    } finally {
-      client.release();
-    }
+  const invalid = (message) => Object.assign(new Error(message), { code: 'RAGIC_WEBHOOK_INVALID' });
+  if (!['H01','H05','Z01','Z02'].includes(code)) throw invalid('unsupported Ragic webhook sheet');
+  if (!_webhookFormPath(code)) throw Object.assign(new Error('Webhook form is not configured'), { code: 'RAGIC_WEBHOOK_CONFIG_MISSING' });
+  if (!ids.length || ids.length > 100 || ids.some(id => !/^\d+$/.test(id))) {
+    throw invalid('webhook payload requires 1-100 numeric record ids');
   }
+  const eventType = String(body?.eventType || body?.event_type || '').trim().slice(0, 100);
+  const inbox = require('./ragicWebhookInbox');
+  await inbox.enqueue(pool, code, ids, eventType);
+  await retryRagicWebhooks({ sheetCode: code, ids, limit: ids.length });
+  const items = await inbox.getStates(pool, code, ids);
+  const failed = items.filter(item => item.state !== 'completed').length;
   return {
-    sheet_code: code,
-    event_type: eventType || null,
-    count: items.length,
-    refetched: items.filter((i) => i.refetched).length,
-    items,
+    ok: failed === 0 && items.length === ids.length,
+    sheet_code: code, event_type: eventType || null, count: ids.length,
+    completed: items.length - failed, failed, durable: true, items,
   };
 }
 
@@ -5076,6 +5078,7 @@ module.exports = {
   getSyncWatermark,
   setSyncWatermark,
   handleRagicWebhook,
+  retryRagicWebhooks,
   // Z03 人工整理表
   listZ03Records,
   findZ03RecordByPhone,

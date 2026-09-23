@@ -434,7 +434,7 @@ export default function DateTimePicker({
         >
           <div className="mb-1 flex justify-end">
             <button type="button" onClick={() => { cancelledRef.current = true; setOpen(false); }}
-              className="min-h-[44px] rounded-lg px-3 text-sm text-gray-600 hover:bg-gray-100">關閉</button>
+              className="min-h-[44px] rounded-lg px-3 text-sm text-gray-600 hover:bg-gray-100 md:min-h-0">關閉</button>
           </div>
           <div className="mb-2 flex items-center justify-between">
             <button type="button" onClick={() => shiftMonth(-1)} disabled={prevBlocked || pickingMonth} aria-label="上個月"

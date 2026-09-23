@@ -144,14 +144,61 @@ check('教練樣板色票＝白名單（不得出現警示橘黃或紅）', () =
   }
 });
 
-check('教練樣板不用 emoji 當標題（跨平台字形不一致）', () => {
-  const msgs = line.templates.checkinConfirmedToCoach({
-    parentName: '範例家長', courseType: '1 對 2', checkedInAt: '2026-08-06T14:00:00+08:00', source: 'parent',
-  });
-  const header = JSON.stringify(msgs[0].contents.header);
-  // 常見於舊版樣板的裝飾性 emoji
-  assert.ok(!/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(header),
-    '標題含 emoji —— iOS / Android 的 LINE 內建字形不同，大小與基線都會偏');
+// ── 2026-09-22 Owner 改版：標題＝固定文案，學員改列進內文第一欄 ──────────────
+// 原本這裡鎖的是「標題不用 emoji」（理由：iOS/Android 的 LINE 內建字形不同，
+// 大小與基線會偏）與「主標＝學員名單」。兩條都被 Owner 當面推翻了，所以改成
+// 正面斷言新規格 —— 比「不准出現 X」強，下次有人改動會直接紅。
+const NOTIFY_TITLE = '🔔學員簽到通知🔔';
+
+check('標題是固定文案，且在 header', () => {
+  const msg = line.templates.checkinConfirmedToCoach({
+    studentNames: ['甲', '乙', '丙'], courseType: '1 對 3',
+    venueName: '範例場館', checkedInAt: '2026-08-06T14:00:00+08:00', source: 'parent',
+  })[0];
+  const header = JSON.stringify(msg.contents.header);
+  assert.ok(header.includes(NOTIFY_TITLE), 'header 少了固定標題「' + NOTIFY_TITLE + '」');
+  assert.ok(header.includes('簽到完成'), 'header 少了「簽到完成」');
+  assert.ok(!header.includes('甲、乙、丙'),
+    '學員名單還在 header —— 改版後它應該在內文第一欄，不是標題');
+});
+
+check('altText 與標題一致（通知列看到的就是這一行）', () => {
+  for (const names of [['甲'], ['甲', '乙', '丙']]) {
+    const msg = line.templates.checkinConfirmedToCoach({
+      studentNames: names, courseType: '1 對 ' + names.length,
+      venueName: '範例場館', checkedInAt: '2026-08-06T14:00:00+08:00', source: 'parent',
+    })[0];
+    assert.strictEqual(msg.altText, NOTIFY_TITLE,
+      names.length + ' 位時 altText 不是固定文案：' + msg.altText);
+  }
+});
+
+check('內文四欄依序是 學員／組別／簽到時間／場館', () => {
+  const msg = line.templates.checkinConfirmedToCoach({
+    studentNames: ['甲', '乙'], courseType: '1 對 2',
+    venueName: '範例場館', checkedInAt: '2026-08-06T14:00:00+08:00', source: 'parent',
+  })[0];
+  // 獨立重算：直接把 body 裡每個 kv 盒的第一個 text 當標籤抓出來，
+  // 不依賴被測程式的任何旗標。
+  const labels = msg.contents.body.contents
+    .filter((b) => b.type === 'box' && Array.isArray(b.contents))
+    .map((b) => b.contents[0] && b.contents[0].text)
+    .filter(Boolean);
+  assert.deepStrictEqual(labels, ['學員', '組別', '簽到時間', '場館'],
+    '欄位或順序不符，實際：' + labels.join(' / '));
+  const studentRow = msg.contents.body.contents
+    .find((b) => b.type === 'box' && b.contents && b.contents[0] && b.contents[0].text === '學員');
+  assert.strictEqual(studentRow.contents[1].text, '甲、乙', '學員欄的值不是完整名單');
+});
+
+check('標題以外不放裝飾性 emoji', () => {
+  const msg = line.templates.checkinConfirmedToCoach({
+    studentNames: ['甲'], courseType: '1 對 1',
+    venueName: '範例場館', checkedInAt: '2026-08-06T14:00:00+08:00', source: 'staff',
+  })[0];
+  const body = JSON.stringify(msg.contents.body);
+  assert.ok(!/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(body),
+    '內文含 emoji —— iOS / Android 的 LINE 內建字形不同，大小與基線都會偏');
 });
 
 check('必要欄位都在（學員、組別、場館、來源）', () => {
@@ -165,17 +212,6 @@ check('必要欄位都在（學員、組別、場館、來源）', () => {
   assert.ok(json.includes('簽到完成'), '標題不符');
 });
 
-// ── 2026-08-11 版面：主標＝學員名單，完全不顯示家長 ────────────────────────
-check('主標是學員名單，且位置在 header', () => {
-  const msg = line.templates.checkinConfirmedToCoach({
-    studentNames: ['甲', '乙', '丙'], courseType: '1 對 3',
-    venueName: '範例場館', checkedInAt: '2026-08-06T14:00:00+08:00', source: 'parent',
-  })[0];
-  const header = JSON.stringify(msg.contents.header);
-  assert.ok(header.includes('甲、乙、丙'),
-    '學員名單不在 header —— 教練當下要一眼看到「誰到了」');
-  assert.ok(header.includes('簽到完成'), 'header 少了「簽到完成」');
-});
 
 check('輸出不得含任何家長姓名（Owner 決定不顯示家長）', () => {
   // 就算呼叫端誤傳 parentName 也不能洩漏出去。這是把決定鎖住的反迴歸測試 ——
@@ -216,18 +252,15 @@ check('圖檔與靜態路由都真的存在（缺任一個就是破圖）', () =
     'server/index.js 沒有掛 /brand 靜態路由 —— 圖檔存在但外面拿不到');
 });
 
-check('altText 有上限，長名單不會爆掉通知列', () => {
+check('altText 不隨名單長度變動（改版後是固定文案）', () => {
   const many = Array.from({ length: 12 }, (_, i) => '學員姓名' + i);
   const msg = line.templates.checkinConfirmedToCoach({
     studentNames: many, checkedInAt: '2026-08-06T14:00:00+08:00', source: 'parent',
   })[0];
   assert.ok(msg.altText.length <= 400, 'altText 長度 ' + msg.altText.length + '，超過 LINE 的 400 字上限');
-  assert.ok(/等 12 位已簽到/.test(msg.altText),
-    '多人時 altText 沒有收斂成「第一位 等 N 位」：' + msg.altText);
-  const one = line.templates.checkinConfirmedToCoach({
-    studentNames: ['甲'], checkedInAt: '2026-08-06T14:00:00+08:00', source: 'parent',
-  })[0];
-  assert.strictEqual(one.altText, '甲 已簽到', '單人時 altText 不該加人數');
+  assert.strictEqual(msg.altText, '🔔學員簽到通知🔔', '12 人時 altText 不是固定文案：' + msg.altText);
+  // 名單再長也不會進 altText，但一定要完整留在卡片裡。
+  assert.ok(JSON.stringify(msg.contents).includes(many.join('、')), '卡片裡的學員名單不完整');
 });
 
 // ── 一堂課一則 ──────────────────────────────────────────────────────────
@@ -343,17 +376,17 @@ check('手動扣課不得發任何簽到推播（2026-08-17 選項 B）', () => 
     '突變後仍偵測不到推播 —— 本測試的偵測邏輯無效');
 });
 
-check('樣板：整班學員併成一行，人數只出現在 altText', () => {
+check('樣板：整班學員併成一行，放在內文「學員」欄', () => {
   const msg = line.templates.checkinConfirmedToCoach({
     studentNames: ['甲', '乙', '丙'],
     courseType: '1 對 3', venueName: '範例場館',
     checkedInAt: '2026-08-06T14:00:00+08:00', source: 'parent',
   })[0];
   assert.ok(JSON.stringify(msg.contents).includes('甲、乙、丙'), '學員沒有併成一行');
-  // 新版不再標「（3 位）」—— 名字全列在主標，教練自己數得出來。
-  // 人數只保留在 altText（通知列看不到完整名單，需要一個量的提示）。
+  // 不標「（3 位）」—— 名字全列出來，教練自己數得出來。
   assert.ok(!/\d+ 位/.test(JSON.stringify(msg.contents)), '卡片內容仍在標人數');
-  assert.ok(/等 3 位/.test(msg.altText), 'altText 沒有帶人數');
+  // 人數也不再出現在 altText（改版後 altText 是固定文案）。
+  assert.ok(!/\d+ 位/.test(msg.altText), 'altText 仍在標人數：' + msg.altText);
 });
 
 if (failures) {
