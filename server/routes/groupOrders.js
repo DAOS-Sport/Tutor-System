@@ -122,12 +122,14 @@ function cleanNewStudents(arr) {
 
 /**
  * 在交易內把「加入者本次選的學員」解析成綁定後的 { ids, names, createdForRagic }：
- *  - studentIds：限定為 req.parent 名下既有學員（驗證擁有權，避免綁別人的小孩）
- *  - newStudents：在本地 students 建檔（綁到 parentId），收集新 id/name；
+ *  - studentIds：限定為 req.parent 名下（家庭帳號開啟時＝同家庭）既有學員（驗證擁有權，避免綁別人的小孩）
+ *  - newStudents：在本地 students 建檔（綁到 parentId＝操作者，決策 7），收集新 id/name；
+ *    去重範圍是整個家庭：家人名下已有同一個孩子就沿用，不再多建一份；
  *    回傳 createdForRagic（含本地 id）供交易提交後 best-effort 即時回寫 Ragic Z01/Z02。
  * 任一學員姓名都會進 names（供顯示），ids 收集既有 + 新建。
  */
-async function resolveBoundStudents(client, parentId, studentIds, newStudents) {
+async function resolveBoundStudents(client, parentId, studentIds, newStudents, familyIds = [parentId]) {
+  const scopeIds = [...new Set([parentId, ...(familyIds || [])].filter(Boolean).map(String))];
   const ids = [];
   const names = [];
   const createdForRagic = [];
@@ -138,8 +140,8 @@ async function resolveBoundStudents(client, parentId, studentIds, newStudents) {
   if (wantIds.length) {
     const r = await client.query(
       `SELECT id, name FROM students
-        WHERE parent_id = $1 AND id = ANY($2::uuid[]) AND COALESCE(is_active, TRUE) = TRUE`,
-      [parentId, wantIds]
+        WHERE parent_id::text = ANY($1::text[]) AND id = ANY($2::uuid[]) AND COALESCE(is_active, TRUE) = TRUE`,
+      [scopeIds, wantIds]
     );
     if (r.rowCount !== wantIds.length) {
       const err = new Error('所選學員不存在或不屬於您');
@@ -150,25 +152,25 @@ async function resolveBoundStudents(client, parentId, studentIds, newStudents) {
   }
 
   for (const s of newStudents || []) {
-    // 同 parent 下以 id_number 或 name+birth 去重，避免重複建檔
+    // 同家庭（沒有家庭＝同 parent）以 id_number 或 name+birth 去重，避免重複建檔
     let matched = null;
     if (s.id_number) {
       const m = await client.query(
         `SELECT id, name FROM students
-          WHERE parent_id = $1 AND id_number = $2 AND COALESCE(is_active, TRUE) = TRUE
+          WHERE parent_id::text = ANY($1::text[]) AND id_number = $2 AND COALESCE(is_active, TRUE) = TRUE
           LIMIT 1`,
-        [parentId, s.id_number]
+        [scopeIds, s.id_number]
       );
       matched = m.rows[0] || null;
     }
     if (!matched) {
       const m = await client.query(
         `SELECT id, name FROM students
-          WHERE parent_id = $1 AND name = $2
+          WHERE parent_id::text = ANY($1::text[]) AND name = $2
             AND ($3::date IS NULL OR birth_date = $3::date)
             AND COALESCE(is_active, TRUE) = TRUE
           LIMIT 1`,
-        [parentId, s.name, s.birth_date || null]
+        [scopeIds, s.name, s.birth_date || null]
       );
       matched = m.rows[0] || null;
     }
@@ -356,11 +358,15 @@ router.get('/by-token/:token', previewRateLimit, optionalParent, async (req, res
     if (!o.rowCount) return res.status(404).json({ error: '邀請碼無效' });
     const loaded = await loadOrderWithMembers(pool, o.rows[0].id);
     const viewerId = req.parent?.id || null;
+    const viewerFamily = viewerId ? (await familyScope.actingParentIds(req)).map(String) : [];
     const alreadyMember = viewerId ? loaded.members.some((m) => m.parent_id === viewerId) : false;
+    // 家人已在團內：一樣不能加入（決策 6），前端顯示「您的家人已加入此團」
+    const familyJoined = !alreadyMember && loaded.members.some((m) => viewerFamily.includes(String(m.parent_id)));
     res.json(shapeOrder(loaded.order, loaded.members, viewerId, {
-      already_member: alreadyMember,
-      joinable: loaded.order.status === 'forming' && !alreadyMember,
-    }));
+      already_member: alreadyMember || familyJoined,
+      family_member_joined: familyJoined,
+      joinable: loaded.order.status === 'forming' && !alreadyMember && !familyJoined,
+    }, viewerFamily));
   } catch (err) {
     console.error('[group-orders GET /by-token]', err);
     res.status(500).json({ error: '載入失敗' });
@@ -556,7 +562,7 @@ router.post('/', async (req, res) => {
 
     let bound;
     try {
-      bound = await resolveBoundStudents(client, req.parent.id, studentIds, newStudents);
+      bound = await resolveBoundStudents(client, req.parent.id, studentIds, newStudents, await familyScope.actingParentIds(req));
     } catch (e) {
       await client.query('ROLLBACK');
       return res.status(e.code === 'STUDENT_NOT_OWNED' ? 403 : 400).json({ error: e.message, code: e.code });
@@ -776,15 +782,27 @@ router.post('/by-token/:token/join', async (req, res) => {
       return res.status(409).json({ error: '此團購已不在揪團中，無法加入', code: 'NOT_FORMING' });
     }
 
+    // 決策 6：同一個家庭在同一團只算一戶 —— 家人已經在團裡，就不能再用另一個帳號加入（不會拿到第二份優惠）
+    const joinFamilyIds = (await familyScope.actingParentIds(req)).map(String);
     const dup = await client.query(
-      `SELECT 1 FROM group_order_members WHERE group_order_id = $1 AND parent_id = $2`,
-      [order.id, req.parent.id]
+      `SELECT parent_id FROM group_order_members WHERE group_order_id = $1 AND parent_id::text = ANY($2::text[])`,
+      [order.id, joinFamilyIds]
     );
-    if (dup.rowCount) { await client.query('ROLLBACK'); return res.status(409).json({ error: '您已加入此團購', code: 'ALREADY_MEMBER' }); }
+    if (dup.rows.some((row) => String(row.parent_id) === String(req.parent.id))) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '您已加入此團購', code: 'ALREADY_MEMBER' });
+    }
+    if (dup.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: '您的家人已經參加這個團。同一個家庭在同一團只算一戶，不能再用另一個帳號加入；要幫家人上傳付款，請到「我的團購」操作。',
+        code: 'FAMILY_ALREADY_MEMBER',
+      });
+    }
 
     let bound;
     try {
-      bound = await resolveBoundStudents(client, req.parent.id, studentIds, newStudents);
+      bound = await resolveBoundStudents(client, req.parent.id, studentIds, newStudents, joinFamilyIds);
     } catch (e) {
       await client.query('ROLLBACK');
       return res.status(e.code === 'STUDENT_NOT_OWNED' ? 403 : 400).json({ error: e.message, code: e.code });

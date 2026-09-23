@@ -11,6 +11,7 @@
  *               platform_total_period_cap, parent_period_cap, current_period_uses
  */
 const { pool } = require('../models/db');
+const familyScope = require('./familyScope');
 
 // start_date / end_date 為 TIMESTAMPTZ（絕對時刻）→ 直接比當前時刻，含端點（迄日已存至 23:59:59）。
 function isWithinWindow(p, now = Date.now()) {
@@ -73,15 +74,25 @@ function quotaError(message, code = 'COUPON_EXHAUSTED') {
   return err;
 }
 
+// 「每位家長上限」（parent_period_cap）以家庭計（規格 §5 第二階段：優惠資格以家庭為單位）：
+// 同家庭的人合計，換一個家人的帳號不會多一份額度。沒有家庭或開關沒開 → 就是本人，行為不變。
+// 私人券（eligible_parent_id）維持個人，不經過這裡。
 async function getParentPeriodUses(db, promotionId, parentId) {
-  if (!parentId) return 0;
+  if (!parentId) return { used: 0, familyWide: false };
+  const ids = await familyScope.parentIdsFor(parentId, db);
   const r = await db.query(
     `SELECT COALESCE(SUM(used_periods), 0)::int AS used_periods
        FROM promotion_usages
-      WHERE promotion_id = $1 AND parent_id = $2`,
-    [promotionId, parentId]
+      WHERE promotion_id = $1 AND parent_id::text = ANY($2::text[])`,
+    [promotionId, ids]
   );
-  return Number(r.rows[0]?.used_periods) || 0;
+  return { used: Number(r.rows[0]?.used_periods) || 0, familyWide: ids.length > 1 };
+}
+
+function parentCapMessage(familyWide) {
+  return familyWide
+    ? '您的家庭已達到該優惠活動的使用上限（同一家庭合併計算）'
+    : '您已達到該優惠活動的個人使用上限';
 }
 
 /**
@@ -170,9 +181,9 @@ async function previewBestDiscount({ originalPrice, courseType, venueId, periodC
       throw quotaError('該活動優惠總額度已達上限');
     }
     if (p.parent_period_cap != null && parentId) {
-      const usedPeriods = await getParentPeriodUses(pool, p.id, parentId);
-      if (usedPeriods + requestPeriods > Number(p.parent_period_cap)) {
-        throw quotaError('您已達到該優惠活動的個人使用上限');
+      const { used, familyWide } = await getParentPeriodUses(pool, p.id, parentId);
+      if (used + requestPeriods > Number(p.parent_period_cap)) {
+        throw quotaError(parentCapMessage(familyWide));
       }
     }
     if (!matchScope(p, { courseType, venueId, periodCount, coachMultiplier, isGroupOrder })) {
@@ -199,8 +210,8 @@ async function previewBestDiscount({ originalPrice, courseType, venueId, periodC
     if (!matchScope(p, { courseType, venueId, periodCount, coachMultiplier, isGroupOrder })) continue;
     if (!hasPlatformPeriodCapacity(p, requestPeriods)) continue;
     if (p.parent_period_cap != null && parentId) {
-      const usedPeriods = await getParentPeriodUses(pool, p.id, parentId);
-      if (usedPeriods + requestPeriods > Number(p.parent_period_cap)) continue;
+      const { used } = await getParentPeriodUses(pool, p.id, parentId);
+      if (used + requestPeriods > Number(p.parent_period_cap)) continue;
     }
     const d = computeDiscount(p, op);
     if (d > bestDiscount) { best = p; bestDiscount = d; }
@@ -271,9 +282,9 @@ async function recordUsage({
     if (!parentId) {
       const err = new Error('此折價券需綁定家長使用'); err.code = 'COUPON_OUT_OF_SCOPE'; throw err;
     }
-    const parentUsedPeriods = await getParentPeriodUses(db, promotionId, parentId);
+    const { used: parentUsedPeriods, familyWide } = await getParentPeriodUses(db, promotionId, parentId);
     if (parentUsedPeriods + usedPeriods > Number(row.parent_period_cap)) {
-      throw quotaError('您已達到該優惠活動的個人使用上限');
+      throw quotaError(parentCapMessage(familyWide));
     }
   }
   if (row.eligible_parent_id && row.eligible_parent_id !== parentId) {

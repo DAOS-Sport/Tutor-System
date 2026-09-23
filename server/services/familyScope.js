@@ -59,6 +59,14 @@ async function scopeFor(parent, db = pool) {
   return { enabled: true, family, parentIds, phones };
 }
 
+// 只有 parent id（沒有請求可用，例如優惠額度、推薦獎勵）：先查手機，再依同樣規則算範圍
+async function parentIdsFor(parentId, db = pool) {
+  if (!parentId) return [];
+  const r = await db.query(`SELECT id, phone FROM parents WHERE id::text = $1`, [String(parentId)]);
+  if (!r.rowCount) return [String(parentId)];
+  return (await scopeFor(r.rows[0], db)).parentIds.map(String);
+}
+
 // 同一個請求只算一次（路由裡多處呼叫也只查一次 DB）
 function forRequest(req, db = pool) {
   if (!req._familyScopePromise) req._familyScopePromise = scopeFor(req.parent, db);
@@ -114,6 +122,7 @@ module.exports = {
   isEnabledFor,
   familyOf,
   scopeFor,
+  parentIdsFor,
   forRequest,
   actingParentIds,
   actingPhones,

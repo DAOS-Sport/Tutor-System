@@ -185,10 +185,23 @@ async function setFrozen(c, { familyId, frozen, actor, reason = null }) {
   };
 }
 
+// 「這份資料身上有沒有課」（§9 的 periods）：已開通的課期，加上還沒開通的訂單（對帳時會依
+// student_ids 綁到這份）與沒取消的團購。只看課期的話，有未對帳訂單的那份會被停用，對帳後課就
+// 掛在停用的資料上。後台預覽（建議清單、申請清單）也用這段，預覽和實際處理才不會說法不一。
+// alias 只接程式內的固定字串。
+function courseLoadSql(alias) {
+  return `((SELECT COUNT(*)::int FROM course_period_enrollments e WHERE e.student_id = ${alias}.id)
+     + (SELECT COUNT(*)::int FROM admin_enrollments ae
+         WHERE ${alias}.id = ANY(ae.student_ids) AND ae.status NOT IN ('cancelled','refunded'))
+     + (SELECT COUNT(*)::int FROM group_order_members gm
+          JOIN group_orders go ON go.id = gm.group_order_id
+         WHERE ${alias}.id = ANY(gm.student_ids) AND go.status <> 'cancelled'))`;
+}
+
 async function studentCopy(c, studentId) {
   const r = await c.query(
     `SELECT s.id, s.parent_id, s.name, s.is_active, (s.ragic_record_id IS NOT NULL) AS in_ragic,
-            (SELECT COUNT(*)::int FROM course_period_enrollments e WHERE e.student_id = s.id) AS periods
+            ${courseLoadSql('s')} AS periods
        FROM students s WHERE s.id = $1`,
     [studentId]
   );
@@ -382,6 +395,7 @@ async function claimPendingForParent(c, { parentId, phone }) {
 }
 
 module.exports = {
+  courseLoadSql,
   FamilyError,
   createFamily,
   addMember,

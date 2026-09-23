@@ -417,12 +417,14 @@ router.post('/', async (req, res) => {
       // 讓同一 (referee, coach) 的並發報名序列化；後到的交易會 block 到前一筆 COMMIT，
       // 於 READ COMMITTED 下重讀時 status 已變 'trial_paid' → 命中 0 列 → 被拒（COUPON_OUT_OF_SCOPE），
       // 消除「一次推薦兌多筆 5 折」的並發雙折。
+      // 家庭帳號（§5 第二階段）：新客資格以家庭計 —— 推薦人是自己的家人就不算新客
       const refCheck = await client.query(
         `SELECT id FROM referral_records
           WHERE referee_parent_id = $1 AND coach_id = $2
             AND status IN ('pending','registered')
+            AND referrer_parent_id::text <> ALL($3::text[])
           FOR UPDATE`,
-        [parentRow.id, coachId]
+        [parentRow.id, coachId, familyIds]
       );
       if (!refCheck.rowCount) {
         await client.query('ROLLBACK');

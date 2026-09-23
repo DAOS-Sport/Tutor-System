@@ -214,10 +214,10 @@ router.get('/suggestions', async (req, res) => {
     const r = await pool.query(
       `SELECT a.id AS a_id, a.name AS a_name, a.parent_id AS a_parent_id, pa.name AS a_parent_name, pa.phone AS a_parent_phone,
               pa.primary_venue_id AS a_venue, (a.ragic_record_id IS NOT NULL) AS a_in_ragic, a.birth_date AS a_birth,
-              (SELECT COUNT(*)::int FROM course_period_enrollments e WHERE e.student_id = a.id) AS a_periods,
+              ${familyAdmin.courseLoadSql('a')} AS a_periods,
               b.id AS b_id, b.name AS b_name, b.parent_id AS b_parent_id, pb.name AS b_parent_name, pb.phone AS b_parent_phone,
               pb.primary_venue_id AS b_venue, (b.ragic_record_id IS NOT NULL) AS b_in_ragic, b.birth_date AS b_birth,
-              (SELECT COUNT(*)::int FROM course_period_enrollments e WHERE e.student_id = b.id) AS b_periods
+              ${familyAdmin.courseLoadSql('b')} AS b_periods
          FROM students a
          JOIN students b ON b.id_number = a.id_number AND b.parent_id <> a.parent_id AND a.id < b.id
          JOIN parents pa ON pa.id = a.parent_id
@@ -277,11 +277,11 @@ router.get('/requests', async (req, res) => {
               ap.id AS applicant_id, ap.name AS applicant_name, ap.phone AS applicant_phone,
               t.id AS target_id, t.name AS target_name, t.birth_date AS target_birth,
               (t.ragic_record_id IS NOT NULL) AS target_in_ragic,
-              (SELECT COUNT(*)::int FROM course_period_enrollments e WHERE e.student_id = t.id) AS target_periods,
+              ${familyAdmin.courseLoadSql('t')} AS target_periods,
               op.id AS owner_id, op.name AS owner_name, op.phone AS owner_phone, op.primary_venue_id AS owner_venue,
               d.id AS dup_id, d.name AS dup_name, d.birth_date AS dup_birth,
               (d.ragic_record_id IS NOT NULL) AS dup_in_ragic,
-              (SELECT COUNT(*)::int FROM course_period_enrollments e WHERE e.student_id = d.id) AS dup_periods
+              ${familyAdmin.courseLoadSql('d')} AS dup_periods
          FROM family_join_requests r
          JOIN parents ap ON ap.id = r.applicant_parent_id
          JOIN students t ON t.id = r.target_student_id
