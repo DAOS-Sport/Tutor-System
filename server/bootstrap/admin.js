@@ -281,6 +281,9 @@ async function ensureSchema() {
   await pool.query(`ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS extra_parent_phones TEXT[] NOT NULL DEFAULT '{}'`);
   // 後台備注欄
   await pool.query(`ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS notes TEXT`);
+  // 體驗課簽到時間：admin/checkins.js 的簽到清單無條件讀這欄，原本只在第一次體驗簽到時
+  // 由 admin/sessions.js 補建，全新庫在那之前 GET /api/admin/checkins 會 500（42703）。
+  await pool.query(`ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS experience_checked_in_at TIMESTAMPTZ`);
 
   // Task #53：admin_users 增加 is_active + 覆寫旗標（停用 admin login）
   await pool.query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE`);
