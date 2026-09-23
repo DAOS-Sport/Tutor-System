@@ -17,7 +17,8 @@ function render(student) {
     if (name.includes('ToastContext')) return {useToast:()=>({})};
     if (name.includes('utils/format')) return {formatPlainDate:v=>v||'', normalizeGender:v=>v||''};
     if (name.includes('Collapsible')) return ({children})=>React.createElement('div',null,children);
-    if (name.includes('ConfirmModal') || name.includes('DateTimePicker')) return ()=>null;
+    // FamilyCard（家庭帳號卡片）有自己的資料來源，這支只驗學員提示，一樣換成空元件
+    if (name.includes('ConfirmModal') || name.includes('DateTimePicker') || name.includes('FamilyCard')) return ()=>null;
     if (name.includes('api/')) return {};
     throw new Error(name);
   }});
