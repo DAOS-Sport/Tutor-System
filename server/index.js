@@ -360,6 +360,8 @@ process.once('SIGINT', () => shutdown('SIGINT'));
     await bootstrapAdmin();
     await bootstrapCore();
     await require('./models/db').pool.query(require('./services/featureTour').SCHEMA_SQL);
+    // 家庭帳號資料表：要參照 parents／students，所以排在 core 之後
+    await require('./bootstrap/familySchema').bootstrap();
     // 沒設定 SMTP 不擋開機（通知信不是核心流程），但一定要吼一聲 ——
     // 否則會變成「上線好幾天才發現家長從來沒收到信」。
     try {
