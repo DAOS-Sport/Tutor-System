@@ -23,6 +23,7 @@ const { getFeatureFlag, flagAllowsPhone } = require('../services/featureFlags');
 const { syncStoredUsage } = require('../services/usageSync');
 const { notifyCheckinSafely } = require('../services/checkinNotify');
 const { assertCourseEntitlement } = require('../services/courseEntitlements');
+const familyScope = require('../services/familyScope');
 
 /**
  * U13 免預約自助簽到 —— checkin_mode='self' 的課程期，家長不需先排課：
@@ -103,7 +104,8 @@ router.post('/self', requireParent, async (req, res) => {
       return res.status(409).json({ error: '所選學員已退費或權益停用', code: 'STUDENT_ENTITLEMENT_INACTIVE' });
     }
 
-    // 請求中的學員必須屬於本家長且在本期 active 名單中（防越權／防誤選）。
+    // 請求中的學員必須屬於本家長（家庭帳號：全家，凍結檔改動、擁有者 2026-09-23 同意）且在本期 active 名單中（防越權／防誤選）。
+    // 簽到人（checked_in_by_parent_id）仍記實際操作的家長。
     // v2 對共享課期的實際 attendance 會由後端重新取得完整 active roster，不能
     // 信任某一位家長送來的清單來決定其他家庭是否扣課。
     const own = await client.query(
@@ -111,8 +113,8 @@ router.post('/self', requireParent, async (req, res) => {
          FROM students s
          JOIN course_period_enrollments cpe
            ON cpe.course_period_id = $2 AND cpe.student_id = s.id AND cpe.status = 'active'
-        WHERE s.id = ANY($1::uuid[]) AND s.parent_id = $3`,
-      [eligibleIds, periodId, req.parent.id]
+        WHERE s.id = ANY($1::uuid[]) AND s.parent_id::text = ANY($3::text[])`,
+      [eligibleIds, periodId, (await familyScope.actingParentIds(req)).map(String)]
     );
     // 比對的是收斂後的名單：別家的學員 id 若仍在有效名單裡會活過收斂，
     // 在這裡才被 own 濾掉 → 403，越權防線不變。
@@ -337,10 +339,10 @@ router.post('/', requireParent, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    // 驗證 student 屬於該 parent
+    // 驗證 student 屬於該 parent（家庭帳號：全家；簽到人仍記實際操作的家長）
     const own = await client.query(
-      `SELECT 1 FROM students WHERE id = $1 AND parent_id = $2`,
-      [studentId, req.parent.id]
+      `SELECT 1 FROM students WHERE id = $1 AND parent_id::text = ANY($2::text[])`,
+      [studentId, (await familyScope.actingParentIds(req)).map(String)]
     );
     if (!own.rowCount) {
       await client.query('ROLLBACK');

@@ -18,6 +18,7 @@
  */
 const express = require('express');
 const { assertCourseEntitlement } = require('../services/courseEntitlements');
+const familyScope = require('../services/familyScope');
 const router = express.Router();
 const { pool } = require('../models/db');
 const { detectConflict, createSlot, batchCreateSlots, bookSlot1v1 } = require('../services/slots');
@@ -216,10 +217,10 @@ router.get('/period/:coursePeriodId', requireParent, async (req, res) => {
       `SELECT 1 FROM course_period_enrollments cpe
          JOIN students s ON s.id = cpe.student_id
         WHERE cpe.course_period_id = $1
-          AND s.parent_id = $2
+          AND s.parent_id::text = ANY($2::text[])  -- 家庭帳號：全家的孩子（凍結檔改動）
           AND cpe.status = 'active'
         LIMIT 1`,
-      [coursePeriodId, req.parent.id]
+      [coursePeriodId, (await familyScope.actingParentIds(req)).map(String)]
     );
     if (!own.rowCount) return res.status(403).json({ error: '無權檢視此課程期' });
     if (period.status !== 'active') {
@@ -298,10 +299,10 @@ router.post('/:id/book', requireParent, async (req, res) => {
     const own = await client.query(
       `SELECT 1 FROM course_period_enrollments cpe
          JOIN students s ON s.id = cpe.student_id
-        WHERE cpe.course_period_id = $1 AND s.parent_id = $2 AND cpe.status = 'active'
+        WHERE cpe.course_period_id = $1 AND s.parent_id::text = ANY($2::text[]) AND cpe.status = 'active'
           AND cpe.student_id = ANY($3::uuid[])
         LIMIT 1`,
-      [coursePeriodId, req.parent.id, entitledStudents]
+      [coursePeriodId, (await familyScope.actingParentIds(req)).map(String), entitledStudents]
     );
     if (!own.rowCount) { await client.query('ROLLBACK'); return res.status(403).json({ error: '無權預約此課程期' }); }
 

@@ -14,15 +14,18 @@ const { requireParent } = require('../middlewares/parentAuth');
 const { parseProofInput } = require('../services/paymentProof');
 const { partnerCheckinLabel } = require('../services/groupPartner');
 const promotions = require('../services/promotions');
+const familyScope = require('../services/familyScope');
 
 const router = express.Router();
 
 router.get('/lessons', requireParent, async (req, res) => {
   try {
     // F-S07 篩選：from / to (日期) / coachId / courseType (1對1=group, 1對2..)
-    const args = [req.parent.id];
+    // 家庭帳號（凍結檔改動，擁有者 2026-09-23 同意）：孩子在全家名下；沒有家庭或開關沒開＝只有本人
+    const familyIds = (await familyScope.actingParentIds(req)).map(String);
+    const args = [familyIds];
     const conds = [
-      `s.parent_id = $1`,
+      `s.parent_id::text = ANY($1::text[])`,
       `cpe.status = 'active'`,
       `cs.status IN ('confirmed','completed','pending_group_confirm')`,
     ];
@@ -82,7 +85,7 @@ router.get('/lessons', requireParent, async (req, res) => {
             WHERE cp.group_order_id IS NOT NULL
               AND cr2.course_session_id = cs.id
               AND cr2.attendance_status = 'ATTENDED'
-              AND cr2.checked_in_by_parent_id <> $1
+              AND NOT (cr2.checked_in_by_parent_id::text = ANY($1::text[]))  -- 家人簽的不算夥伴
             ORDER BY cr2.checked_in_at
             LIMIT 1
          ) pc ON true
@@ -106,7 +109,7 @@ router.get('/lessons', requireParent, async (req, res) => {
       } = row;
       const ownByCoach = !!row.checkin_id && !ownAuthor;
       const showPartner = !!partnerParentId && !ownByCoach
-        && (!row.checkin_id || String(ownAuthor) !== String(req.parent.id));
+        && (!row.checkin_id || !familyIds.includes(String(ownAuthor)));
       return {
         ...rest,
         checked_in_by_name: showPartner ? (partnerName || null) : null,
@@ -126,7 +129,10 @@ router.get('/lessons', requireParent, async (req, res) => {
  */
 router.get('/mine', requireParent, async (req, res) => {
   try {
-    const phone = req.parent.phone;
+    // 家庭帳號（凍結檔改動）：購買人是全家任一人（extra_parent_phones 照舊）；孩子清單、今日夥伴簽到以全家計
+    const scope = await familyScope.forRequest(req);
+    const phones = scope.phones.map(String);
+    const familyIds = scope.parentIds.map(String);
     const r = await pool.query(
               `SELECT admin_enrollments.id, parent_name, parent_phone, students,
                       coach, coach_id, venue_id, v.name AS venue_name, course_type,
@@ -165,7 +171,7 @@ router.get('/mine', requireParent, async (req, res) => {
                           JOIN students s ON s.id = cpe.student_id
                          WHERE cpe.course_period_id = cper.id
                            AND cpe.status = 'active'
-                           AND s.parent_id = $2
+                           AND s.parent_id::text = ANY($2::text[])
                       ) AS students_detail,
                       -- 已用堂數＝該共享 period 下有有效出席的「堂數」（DISTINCT session）。
                       -- 不限本家庭，因家庭共班／團報共用同一堂數池；同堂多位小孩仍只算一堂。
@@ -196,7 +202,7 @@ router.get('/mine', requireParent, async (req, res) => {
                              WHERE cs4.course_period_id = cp.id
                                AND cs4.status::text NOT LIKE 'cancelled%'
                                AND cr4.attendance_status = 'ATTENDED'
-                               AND cr4.checked_in_by_parent_id <> $2
+                               AND NOT (cr4.checked_in_by_parent_id::text = ANY($2::text[]))
                                AND (cr4.checked_in_at AT TIME ZONE 'Asia/Taipei')::date =
                                    (NOW() AT TIME ZONE 'Asia/Taipei')::date
                              ORDER BY cr4.checked_in_at
@@ -219,9 +225,9 @@ router.get('/mine', requireParent, async (req, res) => {
                                WHERE cp2.admin_enrollment_id = admin_enrollments.id
                                ORDER BY cp2.created_at LIMIT 1))
                  ) cper ON true
-                WHERE parent_phone = $1 OR $1 = ANY(extra_parent_phones)
+                WHERE parent_phone = ANY($1::text[]) OR extra_parent_phones && $1::text[]
                 ORDER BY submitted_at DESC`,
-      [phone, req.parent.id]
+      [phones, familyIds]
     );
     // admin_enrollments.status 為 DB 內部狀態（pending_payment/confirmed/cancelled/refunded），
     // 前端課程狀態詞彙為 pending_payment/active/completed/refunded（見 utils/format、mock）。
@@ -520,6 +526,10 @@ router.get('/base-price', async (req, res) => {
 //    含轉帳帳號（venue）、應繳金額、證明狀態，供「送出後等候畫面」顯示。
 router.get('/:id', requireParent, async (req, res) => {
   try {
+    // 家庭帳號（凍結檔改動）：同 /mine
+    const scope = await familyScope.forRequest(req);
+    const phones = scope.phones.map(String);
+    const familyIds = scope.parentIds.map(String);
     const r = await pool.query(
       `SELECT e.id, e.parent_phone, e.extra_parent_phones, e.students, e.coach, e.course_type,
               e.original_price, e.final_price, e.transfer_last_5, e.status, e.payment_proof_url,
@@ -557,7 +567,7 @@ router.get('/:id', requireParent, async (req, res) => {
                   JOIN students s ON s.id = cpe.student_id
                  WHERE cpe.course_period_id = cper.id
                    AND cpe.status = 'active'
-                   AND s.parent_id = $2
+                   AND s.parent_id::text = ANY($2::text[])
               ) AS students_detail,
               v.id AS venue_id, v.name AS venue_name,
               -- 匯款帳戶以 admin_venues（F-A03 場館設定，各館各自維護）為準；
@@ -585,7 +595,7 @@ router.get('/:id', requireParent, async (req, res) => {
                      WHERE cs4.course_period_id = cp.id
                        AND cs4.status::text NOT LIKE 'cancelled%'
                        AND cr4.attendance_status = 'ATTENDED'
-                       AND cr4.checked_in_by_parent_id <> $2
+                       AND NOT (cr4.checked_in_by_parent_id::text = ANY($2::text[]))
                        AND (cr4.checked_in_at AT TIME ZONE 'Asia/Taipei')::date =
                            (NOW() AT TIME ZONE 'Asia/Taipei')::date
                      ORDER BY cr4.checked_in_at
@@ -609,12 +619,11 @@ router.get('/:id', requireParent, async (req, res) => {
                        ORDER BY cp2.created_at LIMIT 1))
          ) cper ON true
         WHERE e.id = $1`,
-      [req.params.id, req.parent.id]
+      [req.params.id, familyIds]
     );
     if (!r.rowCount) return res.status(404).json({ error: '找不到此報名' });
     const row = r.rows[0];
-    const phone = req.parent.phone;
-    const owns = row.parent_phone === phone || (row.extra_parent_phones || []).includes(phone);
+    const owns = phones.includes(row.parent_phone) || (row.extra_parent_phones || []).some((p) => phones.includes(p));
     if (!owns) return res.status(403).json({ error: '無權檢視此報名' });
     const ownStudents = Array.isArray(row.students_detail) ? row.students_detail : [];
     const canAccessPeriod = !!row.course_period_id && ownStudents.length > 0;
@@ -725,8 +734,9 @@ router.post('/:id/payment-proof', requireParent, async (req, res) => {
         code: 'CHECKOUT_CHANGED_RETRY',
       });
     }
-    const phone = req.parent.phone;
-    if (!(row.parent_phone === phone || (row.extra_parent_phones || []).includes(phone))) {
+    // 家庭帳號（凍結檔改動）：家人可以替家人的訂單填付款資料（決策：成員可以付款）
+    const phones = (await familyScope.actingPhones(req)).map(String);
+    if (!(phones.includes(row.parent_phone) || (row.extra_parent_phones || []).some((p) => phones.includes(p)))) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: '無權操作此報名' });
     }
@@ -818,7 +828,11 @@ router.post('/:id/cancel', requireParent, async (req, res) => {
       return res.status(404).json({ error: '找不到此報名' });
     }
     const row = r.rows[0];
-    const owns = row.parent_phone === req.parent.phone || (row.extra_parent_phones || []).includes(req.parent.phone);
+    // 家庭帳號（凍結檔改動）：購買人本人，或家庭擁有者（取消家人的未付款訂單）；一般成員不能取消別人的單
+    let owns = row.parent_phone === req.parent.phone || (row.extra_parent_phones || []).includes(req.parent.phone);
+    if (!owns && await familyScope.isFamilyOwner(req)) {
+      owns = (await familyScope.actingPhones(req)).map(String).includes(row.parent_phone);
+    }
     if (!owns) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: '無權取消此報名' });
