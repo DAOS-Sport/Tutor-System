@@ -6,11 +6,15 @@
 // 5) archive → 驗 status=archived
 const { Client } = require('../../server/node_modules/pg');
 const { call, assert, step, loginAdmin } = require('./_lib');
+const { withAdminAccount } = require('./_accounts');
 
-(async () => {
+// 全新 bootstrap 沒有 manager 帳號：由 withAdminAccount 自建（已存在就沿用）。
+const MANAGER = { username: 'manager', password: process.env.ADMIN_PASSWORD || 'manager', role: 'manager', venueId: 'B' };
+
+async function main() {
   step('Path E: 優惠生命週期 + 角色授權');
   const adminToken = await loginAdmin('admin', process.env.ADMIN_ADMIN_PASSWORD || 'admin');
-  const managerToken = await loginAdmin('manager', process.env.ADMIN_PASSWORD || 'manager');
+  const managerToken = await loginAdmin(MANAGER.username, MANAGER.password);
   const staffToken = await loginAdmin('staff', process.env.ADMIN_STAFF_PASSWORD || 'staff');
 
   const today = new Date().toISOString().slice(0, 10);
@@ -67,4 +71,6 @@ const { call, assert, step, loginAdmin } = require('./_lib');
     await pg.end();
   }
   step('done');
-})().catch((e) => { console.error(e); process.exit(1); });
+}
+
+withAdminAccount(MANAGER, main).catch((e) => { console.error(e); process.exit(1); });
