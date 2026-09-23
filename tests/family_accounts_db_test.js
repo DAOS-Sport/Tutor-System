@@ -26,6 +26,9 @@
 //  20. 邀請連結：產生、加入（綁 LINE）、單次、作廢、過期、開關關閉
 //  21. 家長自己邀請（個人頁）：沒有家庭 → 產生時建家庭、自己當擁有者；成員不能邀也不能作廢；
 //      同時可用 5 條上限；作廢別家的連結無效；有審核中的申請不能邀（個人頁也不顯示）
+//  22. 新增學員：身分證＋姓名對得上家人帳號下的孩子 → 直接綁進那個家庭（不另建學員、不碰 Ragic）；
+//      姓名不對、開關關閉照舊擋（擁有者 2026-09-23：「有打學生姓名跟身分證字號就好，就給過」）
+//  23. 核准申請、櫃台添加成員：新成員名下「其他」重複的孩子也一起依 §9 處理（跟邀請加入一致）
 //
 // 不起 HTTP server、不碰 Ragic、LINE 推播以 stub 攔截；所有資料 try/finally 自己刪乾淨。
 const assert = require('node:assert/strict');
@@ -575,6 +578,77 @@ async function addStudent(parentId, { name, idNumber, birth, ragic = false }) {
       assert.equal(blocked.body.code, 'FAMILY_REQUEST_PENDING');
       assert.equal((await pool.query('SELECT 1 FROM family_members WHERE parent_id=$1', [applicant.id])).rowCount, 0, '不會建出家庭');
     });
+
+    await t('22. 新增學員：身分證＋姓名對得上家人帳號下的孩子 → 直接綁進那個家庭，不另建學員；姓名不對、開關關閉照舊擋', async () => {
+      const addStudentRoute = handler('parents', 'post', '/me/students');
+      const m = await addParent('測試綁定媽媽');
+      const d = await addParent('測試綁定爸爸');
+      const kidNo = idNo('2');
+      const brotherNo = idNo('1');
+      const mKid = await addStudent(m.id, { name: '黃測妹', idNumber: kidNo, birth: '2019-12-10', ragic: true });
+      await addStudent(m.id, { name: '黃測哥', idNumber: brotherNo, birth: '2018-08-16', ragic: true });
+      const dDup = await addStudent(d.id, { name: '黃測哥', idNumber: brotherNo, birth: '2026-08-16' }); // 生日打錯、沒進 Ragic
+      const asDad = { ...d, lineUid: d.line_uid };
+      const body = { name: '黃測妹', id_number: kidNo, birth_date: '2019-12-10', gender: '女' };
+      const countKid = async () => (await pool.query('SELECT COUNT(*)::int AS n FROM students WHERE id_number = $1', [kidNo])).rows[0].n;
+      const before = await countKid();
+      const wrong = await call(addStudentRoute, { parent: asDad, body: { ...body, name: '別人的名字' } });
+      assert.equal(wrong.status, 409, JSON.stringify(wrong.body));
+      assert.equal(wrong.body.code, 'STUDENT_ID_DUPLICATED', '姓名對不上照舊擋');
+      assert.equal((await pool.query('SELECT 1 FROM family_members WHERE parent_id = $1', [d.id])).rowCount, 0);
+      const ok = await call(addStudentRoute, { parent: asDad, body });
+      assert.equal(ok.status, 200, JSON.stringify(ok.body));
+      assert.equal(ok.body.family_linked && ok.body.family_linked.student_name, '黃測妹');
+      assert.equal(ok.body.family_linked.owner_name, m.name);
+      const rows = (await pool.query(
+        `SELECT fm.parent_id, fm.role, fm.line_uid FROM family_members fm
+          WHERE fm.status = 'active'
+            AND fm.family_id = (SELECT family_id FROM family_members WHERE parent_id = $1 AND status = 'active')`, [d.id])).rows;
+      assert.deepEqual(rows.map((x) => [x.parent_id, x.role]).sort(), [[d.id, 'member'], [m.id, 'owner']].sort(), '孩子的家長當擁有者、爸爸加入');
+      assert.equal(rows.find((x) => x.parent_id === d.id).line_uid, d.line_uid, '綁定爸爸當下的 LINE');
+      assert.equal(await countKid(), before, '沒有另建一份學員');
+      assert.equal((await pool.query('SELECT is_active FROM students WHERE id = $1', [dDup])).rows[0].is_active, false,
+        '爸爸名下生日打錯的哥哥依 §9 停用');
+      assert.ok(((ok.body.family && ok.body.family.family && ok.body.family.family.students) || []).some((k) => k.id === mKid),
+        '回傳的個人頁資料裡，家庭區塊看得到妹妹');
+      const again = await call(addStudentRoute, { parent: asDad, body });
+      assert.equal(again.body.code, 'STUDENT_IN_FAMILY', '再新增一次 → 已在家庭中');
+      const x = await addParent('測試開關關閉');
+      delete process.env.FAMILY_ACCOUNTS_V1;
+      const off = await call(addStudentRoute, {
+        parent: { ...x, lineUid: x.line_uid }, body: { name: '黃測哥', id_number: brotherNo, birth_date: '2018-08-16' } });
+      process.env.FAMILY_ACCOUNTS_V1 = 'all';
+      assert.equal(off.body.code, 'STUDENT_ID_DUPLICATED', '開關關閉照舊擋');
+      assert.equal((await pool.query('SELECT 1 FROM family_members WHERE parent_id = $1', [x.id])).rowCount, 0, '開關關閉不綁');
+    });
+
+    await t('23. 核准申請、櫃台添加成員：新成員名下其他重複的孩子也一起依 §9 處理', async () => {
+      const approveRoute = handler('admin/families', 'post', '/requests/:id/approve');
+      const addForParent = handler('admin/families', 'post', '/by-parent/:parentId/members');
+      const m = await addParent('測試核准媽媽');
+      const d = await addParent('測試核准爸爸');
+      const a = idNo('2');
+      const b = idNo('1');
+      const mA = await addStudent(m.id, { name: '核准甲', idNumber: a, birth: '2019-12-10', ragic: true });
+      await addStudent(m.id, { name: '核准乙', idNumber: b, birth: '2018-08-16', ragic: true });
+      const dB = await addStudent(d.id, { name: '核准乙', idNumber: b, birth: '2026-08-16' });
+      const r = await pool.query(
+        `INSERT INTO family_join_requests (applicant_parent_id, target_student_id, relationship, status)
+         VALUES ($1, $2, 'father', 'pending') RETURNING id`, [d.id, mA]);
+      const ok = await call(approveRoute, { adminUser: ADMIN, params: { id: r.rows[0].id }, body: {} });
+      assert.equal(ok.status, 200, JSON.stringify(ok.body));
+      assert.equal((await pool.query('SELECT is_active FROM students WHERE id = $1', [dB])).rows[0].is_active, false,
+        '申請單上沒寫到的重複（乙）也一起停用');
+      const m2 = await addParent('測試添加媽媽');
+      const d2 = await addParent('測試添加爸爸');
+      const c3 = idNo('1');
+      await addStudent(m2.id, { name: '添加丙', idNumber: c3, birth: '2017-01-01', ragic: true });
+      const d2C = await addStudent(d2.id, { name: '添加丙', idNumber: c3, birth: '2017-01-01' });
+      const added = await call(addForParent, { adminUser: ADMIN, params: { parentId: m2.id }, body: { phone: d2.phone, name: d2.name } });
+      assert.equal(added.status, 200, JSON.stringify(added.body));
+      assert.equal((await pool.query('SELECT is_active FROM students WHERE id = $1', [d2C])).rows[0].is_active, false,
+        '櫃台添加成員也合併重複的孩子');
+    });
   } catch (err) {
     failed = true;
     console.error('FAIL', err && err.stack ? err.stack : err);
@@ -599,5 +673,5 @@ async function addStudent(parentId, { name, idNumber, birth, ragic = false }) {
     console.error(`family_accounts_db_test: FAILED（${passed} 項通過後中斷）`);
     process.exit(1);
   }
-  console.log(`family_accounts_db_test: ${passed}/21 PASS`);
+  console.log(`family_accounts_db_test: ${passed}/23 PASS`);
 })();

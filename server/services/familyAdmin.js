@@ -311,11 +311,14 @@ async function approveRequest(c, { requestId, actor, actorRole }) {
       duplicate = await applyDuplicateRule(c, { a: target, b: dup, familyId, actor, actorRole });
     }
   }
+  // 申請人名下「其他」跟家人重複的孩子也一起依 §9 處理（跟邀請加入一致；例：爸爸申請的是予澄，
+  // 他名下還有一份生日打錯的宇弘）。上面處理過的那份已經停用，這裡不會再算一次。
+  const others = await resolveNewMemberDuplicates(c, { parentId: req.applicant_parent_id, familyId, actor });
   await c.query(
     `UPDATE family_join_requests SET status = 'approved', reviewed_by = $2, reviewed_at = NOW() WHERE id = $1`,
     [requestId, actor]
   );
-  const auditId = await audit(c, familyId, 'request_approved', actor, req.applicant_parent_id, { request_id: requestId, duplicate });
+  const auditId = await audit(c, familyId, 'request_approved', actor, req.applicant_parent_id, { request_id: requestId, duplicate, others });
   notices.push(parentNotice(req.applicant_parent_id,
     '您的家庭申請已通過！現在可以一起查看孩子的課程、幫忙繳費與簽到。', `fam:${auditId}:${req.applicant_parent_id}`));
   return { result: { family_id: familyId, duplicate }, notices };
@@ -451,6 +454,23 @@ async function claimPendingForParent(c, { parentId, phone }) {
 }
 
 // 新成員名下的孩子如果跟家裡孩子同一人（同身分證），依 §9 處理（預先登記認領、邀請連結共用）
+// 新增學員時，身分證＋姓名都對得上別的帳號的孩子（擁有者 2026-09-23：「有打學生姓名跟身分證字號就好，就給過，
+// 不然他一直卡住」）→ 直接加入那位孩子所在的家庭；還沒有家庭就以孩子的家長為擁有者建立。
+// 不另建一份學員、不碰 Ragic；新成員名下重複的孩子依 §9 處理。
+async function linkByStudent(c, { parentId, studentId, actor }) {
+  const target = await studentCopy(c, studentId);
+  if (!target || !target.active) throw new FamilyError('TARGET_GONE', '這位孩子的資料已停用，請聯絡櫃台', 409);
+  let familyId = (await activeMembership(c, target.parentId, { lock: true }))?.family_id || null;
+  if (!familyId) {
+    // 建立家庭的通知是「櫃台已為您建立」，這裡不適用；對方會收到下面「某某已加入您的家庭」
+    familyId = (await createFamily(c, { ownerParentId: target.parentId, actor })).result.id;
+  }
+  const added = await addMember(c, { familyId, parentId, relationship: null, actor });
+  const decisions = await resolveNewMemberDuplicates(c, { parentId, familyId, actor });
+  await audit(c, familyId, 'member_linked_by_student', actor, parentId, { student_id: studentId, decisions });
+  return { result: { family_id: familyId, owner_parent_id: target.parentId, decisions }, notices: added.notices };
+}
+
 async function resolveNewMemberDuplicates(c, { parentId, familyId, actor }) {
   const dups = await c.query(
     `SELECT mine.id AS mine_id, other.id AS other_id
@@ -563,6 +583,8 @@ module.exports = {
   removePendingMember,
   claimPendingForParent,
   activeMembership,
+  resolveNewMemberDuplicates,
+  linkByStudent,
   createInvite,
   revokeInvite,
   acceptInvite,

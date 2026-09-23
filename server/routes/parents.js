@@ -19,6 +19,9 @@ const { diffChanges, writeStudentAudit, parentActor } = require('../services/stu
 const { formatPlainDate } = require('../utils/dateTime');
 const familyProfile = require('../services/familyProfile');
 const familyScope = require('../services/familyScope');
+const familyAdmin = require('../services/familyAdmin');
+const familyNotify = require('../services/familyNotify');
+const { nameMatches } = require('../services/familyRules');
 
 const router = express.Router();
 
@@ -586,6 +589,37 @@ router.patch('/me', requireParent, async (req, res) => {
   }
 });
 
+// 新增學員時身分證＋姓名對得上家人帳號下的孩子 → 綁進那個家庭（見 familyAdmin.linkByStudent）。
+// 回傳跟新增成功一樣的完整 profile，多一個 family_linked 讓畫面說明「已綁定」。
+async function linkToExistingChild(req, res, student) {
+  const c = await pool.connect();
+  let out;
+  try {
+    await c.query('BEGIN');
+    out = await familyAdmin.linkByStudent(c, { parentId: req.parent.id, studentId: student.id, actor: `parent:${req.parent.id}:student` });
+    await c.query('COMMIT');
+  } catch (err) {
+    await c.query('ROLLBACK').catch(() => {});
+    c.release();
+    if (!(err instanceof familyAdmin.FamilyError)) throw err;
+    console.warn('[student-sync] 綁定家人的孩子失敗', { code: err.code });
+    return res.status(409).json({
+      error: err.code === 'ALREADY_IN_FAMILY'
+        ? '這位孩子登記在另一位家長的帳號下，但您已經在別的家庭裡，請聯絡櫃台協助。'
+        : '這位孩子登記在另一位家長的帳號下，目前無法自動綁定，請聯絡櫃台協助。',
+      code: 'FAMILY_LINK_FAILED',
+      reason: err.code,
+    });
+  }
+  c.release();
+  familyNotify.sendNotices(out.notices).catch(() => {});
+  const owner = (await pool.query('SELECT name FROM parents WHERE id = $1', [out.result.owner_parent_id])).rows[0];
+  return res.json({
+    ...(await loadMe(req.parent.id)),
+    family_linked: { student_name: student.name, owner_name: owner?.name || null },
+  });
+}
+
 router.post('/me/students', requireParent, async (req, res) => {
   const s = cleanStudentInput(req.body || {});
   if (!s.name || !s.birth_date || !ISO_DATE.test(s.birth_date) || !TW_ID.test(s.id_number)) {
@@ -608,6 +642,47 @@ router.post('/me/students', requireParent, async (req, res) => {
       return res.status(201).json(await loadMe(req.parent.id));
     }
 
+    // 身分證查重放在 Ragic 相關檢查之前：綁到家人帳號下的孩子不需要碰 Ragic。
+    // 排序：自己名下的優先 → 有效的 → 在 Ragic 的 → 早建的（原本 LIMIT 1 沒排序，同一身分證有兩份時結果不固定）
+    const dupRows = (await pool.query(
+      `SELECT id, parent_id, is_active, name, id_number, birth_date, gender, blood_type, student_code, ragic_record_id
+         FROM students
+        WHERE id_number = $1
+        ORDER BY (parent_id::text = $2) DESC, COALESCE(is_active, TRUE) DESC,
+                 (ragic_record_id IS NOT NULL) DESC, created_at ASC`,
+      [s.id_number, String(req.parent.id)]
+    )).rows;
+    const own = dupRows.find((r) => String(r.parent_id) === String(req.parent.id)) || null;
+    const others = dupRows.filter((r) => String(r.parent_id) !== String(req.parent.id));
+    if (others.length && !(own && own.is_active !== false)) {
+      // 家庭帳號（規格 §8、§14）：已在同一家庭 → 直接說明
+      const scope = await familyScope.forRequest(req);
+      const activeOthers = others.filter((r) => r.is_active !== false);
+      if (scope.enabled && activeOthers.some((r) => scope.parentIds.map(String).includes(String(r.parent_id)))) {
+        return res.status(409).json({
+          error: '這位孩子已在您的家庭中，不需要再新增。',
+          code: 'STUDENT_IN_FAMILY',
+        });
+      }
+      // 擁有者 2026-09-23：身分證＋姓名都對得上 → 直接綁到那位孩子的家庭（不另建學員、不碰 Ragic）
+      const match = scope.enabled ? activeOthers.find((r) => nameMatches(r.name, s.name)) : null;
+      if (match) return linkToExistingChild(req, res, match);
+      // 對不上 → 前端改顯示「申請加入家庭」
+      if (!own) {
+        return res.status(409).json({
+          error: '此身分證字號已有學員資料，請確認後再試；若需協助請聯絡客服。',
+          code: 'STUDENT_ID_DUPLICATED',
+          can_apply_family: scope.enabled,
+        });
+      }
+    }
+    if (own && own.is_active === false) {
+      return res.status(409).json({
+        error: '此學員曾由櫃台停用或移除，請聯絡客服協助恢復或重新建檔。',
+        code: 'STUDENT_INACTIVE_CONTACT_COUNTER',
+      });
+    }
+
     // 場館可能在家長註冊後被停用/改代碼（五大場館重構期間風險最高）；不先擋，
     // 交給 Ragic 才會回一個含糊的 502「資料暫時無法完成同步」，使用者無從得知是館別問題。
     await assertVenueExists(parent.primary_venue_id);
@@ -619,41 +694,12 @@ router.post('/me/students', requireParent, async (req, res) => {
         [req.parent.id]
       )).rows[0]?.n || 0
     );
-    const dup = await pool.query(
-      `SELECT id, parent_id, is_active, name, id_number, birth_date, gender, blood_type, student_code, ragic_record_id
-         FROM students
-        WHERE id_number = $1
-        LIMIT 1`,
-      [s.id_number]
-    );
     let expectedMin = activeCount + 1;
     let mergedExisting = false;
     let sync = null;
     let fallbackStudentId = null;
-    if (dup.rowCount) {
-      const existing = dup.rows[0];
-      if (String(existing.parent_id) !== String(req.parent.id)) {
-        // 家庭帳號（規格 §8、§14）：已在同一家庭 → 直接說明；不在 → 前端改顯示「申請加入家庭」
-        const scope = await familyScope.forRequest(req);
-        if (scope.enabled && scope.parentIds.map(String).includes(String(existing.parent_id))) {
-          return res.status(409).json({
-            error: '這位孩子已在您的家庭中，不需要再新增。',
-            code: 'STUDENT_IN_FAMILY',
-          });
-        }
-        return res.status(409).json({
-          error: '此身分證字號已有學員資料，請確認後再試；若需協助請聯絡客服。',
-          code: 'STUDENT_ID_DUPLICATED',
-          can_apply_family: scope.enabled,
-        });
-      }
-      if (existing.is_active === false) {
-        return res.status(409).json({
-          error: '此學員曾由櫃台停用或移除，請聯絡客服協助恢復或重新建檔。',
-          code: 'STUDENT_INACTIVE_CONTACT_COUNTER',
-        });
-      }
-
+    if (own) {
+      const existing = own;
       mergedExisting = true;
       fallbackStudentId = existing.id;
       expectedMin = activeCount;

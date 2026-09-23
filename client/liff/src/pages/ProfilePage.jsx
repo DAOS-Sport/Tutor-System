@@ -69,6 +69,7 @@ function syncErrMsg(e, context = 'parent') {
     STUDENT_ID_DUPLICATED: '此身分證字號已有學員資料，請確認後再試；若需協助請聯絡客服。',
     STUDENT_ID_NUMBER_EXISTS: '此身分證字號已有學員資料，請確認後再試；若需協助請聯絡客服。',
     STUDENT_IN_FAMILY: '這位孩子已在您的家庭中，不需要再新增。',
+    FAMILY_LINK_FAILED: e?.response?.data?.error || '這位孩子登記在另一位家長的帳號下，目前無法自動綁定，請聯絡櫃台協助。',
     Z01_INCOMPLETE: context === 'student'
       ? '請先完成上方「家長資料」的必填欄位（＊），才能新增學員。'
       : '會員資料尚未完整，請完成必填欄位後再儲存。',
@@ -241,7 +242,12 @@ export default function ProfilePage() {
         updateAuth({ ...profile, students: nextStudents });
       }
       resetStudentForm();
-      if (result?.sync_status === 'refresh_pending') {
+      if (result?.family_linked) {
+        // 擁有者 2026-09-23：身分證＋姓名對得上家人帳號下的孩子 → 後端已綁進同一個家庭（不另建學員）
+        const { student_name: kid, owner_name: owner } = result.family_linked;
+        toast.success(`${kid}已登記在${owner || '家人'}的帳號，已幫您綁定到同一個家庭，可以一起查看課程、繳費與簽到。`, 5200);
+        setFamilyOpen(true);
+      } else if (result?.sync_status === 'refresh_pending') {
         toast.warning('學員資料已送出，系統正在同步；若畫面未更新請稍後重新整理。', 4200);
       } else {
         toast.success(editingId ? '學員資料已更新' : '學員已新增');

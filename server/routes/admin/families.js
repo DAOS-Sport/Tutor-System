@@ -226,9 +226,14 @@ router.post('/:id/members', async (req, res) => {
   if (!(await familyInScope(req, req.params.id))) return notFound(res);
   const parentId = await resolveMember(req, res);
   if (!parentId) return;
-  await run(res, (c) => familyAdmin.addMember(c, {
-    familyId: req.params.id, parentId, relationship: req.body?.relationship, actor: actorOf(req),
-  }), '加入成員失敗');
+  await run(res, async (c) => {
+    const added = await familyAdmin.addMember(c, {
+      familyId: req.params.id, parentId, relationship: req.body?.relationship, actor: actorOf(req),
+    });
+    // 新成員名下跟家人重複的孩子依 §9 處理（跟邀請加入、核准申請一致）
+    const decisions = await familyAdmin.resolveNewMemberDuplicates(c, { parentId, familyId: req.params.id, actor: actorOf(req) });
+    return { result: { ...added.result, decisions }, notices: added.notices };
+  }, '加入成員失敗');
 });
 
 // Z01 編輯視窗的「邀請家人加入」（擁有者 2026-09-23）：產生一次性的邀請連結；
@@ -289,7 +294,8 @@ router.post('/by-parent/:parentId/members', async (req, res) => {
       familyId, parentId, relationship: req.body?.relationship || null, actor: actorOf(req),
     });
     notices.push(...added.notices);
-    return { result: { family_id: familyId, ...added.result }, notices };
+    const decisions = await familyAdmin.resolveNewMemberDuplicates(c, { parentId, familyId, actor: actorOf(req) });
+    return { result: { family_id: familyId, ...added.result, decisions }, notices };
   }, '加入成員失敗');
 });
 
