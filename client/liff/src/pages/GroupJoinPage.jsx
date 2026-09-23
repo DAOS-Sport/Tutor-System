@@ -46,8 +46,9 @@ export default function GroupJoinPage() {
   }, [token]);
 
   // 已是團員 → 直接導去團購狀態頁（取代舊版「查看團購狀態」連結）。
+  // 家人已在團內（family_member_joined）不跳轉：留在這頁說明為什麼不能加入（規格 §8、決策 6）。
   useEffect(() => {
-    if (preview && preview.already_member) {
+    if (preview && preview.already_member && !preview.family_member_joined) {
       navigate(`/group/${preview.id}`, { replace: true });
     }
   }, [preview, navigate]);
@@ -59,6 +60,17 @@ export default function GroupJoinPage() {
         <div className="mb-3 text-sm text-brand-error">邀請碼無效或團購不存在</div>
         <button type="button" onClick={() => navigate('/', { replace: true })}
           className="rounded-lg bg-brand-primary px-4 py-2 text-sm font-bold text-white">回首頁</button>
+      </div>
+    );
+  }
+  if (preview.family_member_joined) {
+    return (
+      <div className="px-4 py-10 text-center">
+        <div className="mb-3 text-3xl">👨‍👩‍👧</div>
+        <h3 className="text-sm font-bold text-gray-700">您的家人已加入此團</h3>
+        <p className="mt-1 text-xs leading-5 text-gray-500">同一個家庭在同一團只算一戶，不能再用另一個帳號加入。要幫家人付款或查看進度，可以到團購狀態頁。</p>
+        <button type="button" onClick={() => navigate(`/group/${preview.id}`, { replace: true })}
+          className="mt-4 rounded-lg bg-brand-primary px-4 py-2 text-sm font-bold text-white">查看團購狀態</button>
       </div>
     );
   }

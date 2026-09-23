@@ -11,6 +11,7 @@ import { formatPlainDate, normalizeGender } from '../utils/format';
 // Collapsible 原本定義在本檔案底部，教練端個人頁要用同一個外觀，已抽到共用元件。
 import Collapsible from '../components/Collapsible';
 import ConfirmModal from '../components/ConfirmModal';
+import FamilyCard from '../components/FamilyCard';
 
 const BLOOD_TYPE_OPTIONS = ['A', 'B', 'O', 'AB', '不清楚'];
 const emptyStudent = { name: '', id_number: '', birth_date: '', gender: '生理男', blood_type: '不清楚' };
@@ -67,6 +68,7 @@ function syncErrMsg(e, context = 'parent') {
     STUDENT_INACTIVE_CONTACT_COUNTER: '此學員曾由櫃台停用或移除，請聯絡客服協助恢復或重新建檔。',
     STUDENT_ID_DUPLICATED: '此身分證字號已有學員資料，請確認後再試；若需協助請聯絡客服。',
     STUDENT_ID_NUMBER_EXISTS: '此身分證字號已有學員資料，請確認後再試；若需協助請聯絡客服。',
+    STUDENT_IN_FAMILY: '這位孩子已在您的家庭中，不需要再新增。',
     Z01_INCOMPLETE: context === 'student'
       ? '請先完成上方「家長資料」的必填欄位（＊），才能新增學員。'
       : '會員資料尚未完整，請完成必填欄位後再儲存。',
@@ -106,6 +108,10 @@ export default function ProfilePage() {
   const [editOpen, setEditOpen] = useState(false);
   const [parentOpen, setParentOpen] = useState(false);
   const [studentOpen, setStudentOpen] = useState(false);
+  // 家庭帳號（規格 §8、§14）：申請表單的內容（null＝沒打開）。頂端重複提示、新增學員被擋時會帶資料打開。
+  const [applyDraft, setApplyDraft] = useState(null);
+  // 新增學員時身分證已在別的帳號 → 不顯示紅字，改成說明＋「申請加入家庭」
+  const [dupApply, setDupApply] = useState(null);
 
   // 改值時即時清掉該欄的紅框
   function setParentField(key, value) {
@@ -113,6 +119,7 @@ export default function ProfilePage() {
     setParentErrors((e) => (e[key] ? { ...e, [key]: undefined } : e));
   }
   function setStudentField(key, value) {
+    if (key === 'id_number' || key === 'birth_date') setDupApply(null);
     setStudentForm((p) => ({ ...p, [key]: value }));
     setStudentErrors((e) => (e[key] ? { ...e, [key]: undefined } : e));
   }
@@ -146,6 +153,16 @@ export default function ProfilePage() {
   );
 
   const incompleteStudent = students.find((student) => Object.keys(validateStudent(student)).length > 0 || !normalizeGender(student.gender));
+
+  // 打開家庭申請表單並捲到卡片
+  function openFamilyApply(draft) {
+    setApplyDraft(draft);
+    setTimeout(() => document.getElementById('family-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0);
+  }
+
+  async function reloadProfile() {
+    try { updateAuth(await parentsApi.me()); } catch { /* 下次進頁面會再讀 */ }
+  }
 
   function updateAuth(nextProfile) {
     setProfile(nextProfile);
@@ -227,6 +244,11 @@ export default function ProfilePage() {
         toast.success(editingId ? '學員資料已更新' : '學員已新增');
       }
     } catch (err) {
+      const data = err?.response?.data;
+      if (data?.code === 'STUDENT_ID_DUPLICATED' && data?.can_apply_family && !editingId) {
+        setDupApply({ id_number: studentForm.id_number, birth_date: studentForm.birth_date });
+        return;
+      }
       if (['FIELD_REQUIRED', 'Z01_INCOMPLETE'].includes(err?.response?.data?.code)) setValidationNotice(syncErrMsg(err, 'student'));
       else toast.error(syncErrMsg(err, 'student'));
       if (err?.response?.data?.code === 'Z01_INCOMPLETE') {
@@ -265,6 +287,21 @@ export default function ProfilePage() {
           <button type="button" className="ml-2 font-bold underline" onClick={() => { setEditOpen(true); setParentOpen(true); }}>更新信箱</button>
         </div>
       )}
+
+      {profile.family && !profile.family.family && profile.family.join_request?.status !== 'pending'
+        && (profile.family.duplicates || []).length > 0 && (
+        <div role="status" className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          你登記的孩子跟另一個家長帳號是同一人。如果你們是一家人，可以申請合併到同一個家庭。
+          <button type="button" className="ml-2 font-bold underline" onClick={() => {
+            const dup = students.find((st) => st.id === profile.family.duplicates[0].student_id);
+            openFamilyApply({ id_number: dup?.id_number || '', birth_date: formatPlainDate(dup?.birth_date) || '' });
+          }}>申請合併</button>
+        </div>
+      )}
+
+      <div id="family-card">
+        <FamilyCard block={profile.family || null} applyDraft={applyDraft} setApplyDraft={setApplyDraft} onChanged={reloadProfile} />
+      </div>
 
       {/* 編輯資料：橫條 → 點擊展開「家長資料 / 學員資料」兩個子橫條 → 各自再點擊往下展開內容 */}
       <div className="mb-4">
@@ -375,6 +412,15 @@ export default function ProfilePage() {
                     <button type="button" onClick={resetStudentForm} className="rounded-lg border border-gray-200 px-4 py-2.5 text-sm font-medium text-gray-700">取消</button>
                   )}
                 </div>
+                {dupApply && (
+                  <div role="status" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">
+                    這位孩子已經登記在另一個家長帳號下。如果你們是一家人，可以申請加入同一個家庭，櫃台確認後就能一起查看、繳費、簽到。
+                    <button type="button" className="mt-2 block rounded-lg bg-brand-primary px-3 py-2 text-xs font-bold text-white"
+                      onClick={() => { const draft = dupApply; resetStudentForm(); setDupApply(null); openFamilyApply(draft); }}>
+                      申請加入家庭
+                    </button>
+                  </div>
+                )}
               </form>
             </Collapsible>
           </div>

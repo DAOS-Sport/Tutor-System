@@ -1,6 +1,7 @@
 // Centralized Mock dataset for Phase 1 (no backend wiring yet).
 // All API modules under client/liff/src/api/ pull from here when
 // VITE_USE_MOCK !== "false" or when backend returns 501.
+import { familyMock } from './familyMock';
 import { cleanVenueList, cleanVenueValue } from '../utils/venues';
 
 const VENUES = [
@@ -283,7 +284,11 @@ export const mockDb = {
     PARENTS[parent.phone] = parent;
     return JSON.parse(JSON.stringify(parent));
   },
-  me: () => JSON.parse(JSON.stringify(currentMockParent())),
+  // 家庭帳號：附上 family 區塊（familyMock，預覽用）
+  me: () => {
+    const p = JSON.parse(JSON.stringify(currentMockParent()));
+    return { ...p, family: familyMock.blockFor(p) };
+  },
   updateMe: (data) => {
     const p = currentMockParent();
     Object.assign(p, {

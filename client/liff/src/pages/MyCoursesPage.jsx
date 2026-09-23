@@ -273,6 +273,7 @@ export default function MyCoursesPage() {
         key={cp.id}
         variant="period"
         period={cp}
+        purchaser={cp.parent_phone && parent?.phone && cp.parent_phone !== parent.phone ? (cp.parent_name || '家人') : null}
         onClick={cp.lifecycle === 'active' ? undefined : () => navigateForCard(cp)}
         actions={actions}
       />
