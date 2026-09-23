@@ -1,3 +1,4 @@
+import { familyMock } from './familyMock';
 // Centralized mock dataset for Admin Phase 3.
 // 所有 admin API 模組在 mock 模式或後端 501 時，從這裡讀寫。
 
@@ -501,8 +502,10 @@ const CUSTOMER_PURCHASES = {
 export const mockDb = {
   // ── 客戶資料管理 ───────────────────────────────────────────
   customerParents(filters = {}) {
-    const { status = 'all', venueId = '', name = '', phone = '', identity = '' } = filters;
+    const { status = 'all', venueId = '', name = '', phone = '', identity = '', hasFamily = '' } = filters;
     return CUSTOMER_PARENTS.filter((p) => {
+      if (hasFamily === 'yes' && !familyMock.summaryFor(p.id)) return false;
+      if (hasFamily === 'no' && familyMock.summaryFor(p.id)) return false;
       if (status === 'active' && !p.is_active) return false;
       if (status === 'inactive' && p.is_active) return false;
       if (venueId && p.primary_venue_id !== venueId) return false;
@@ -512,6 +515,7 @@ export const mockDb = {
       return true;
     }).map((p) => ({
       ...p, line_bound: !!p.line_uid,
+      family: familyMock.summaryFor(p.id),
       student_count: CUSTOMER_STUDENTS.filter((s) => s.parent_id === p.id).length,
     }));
   },

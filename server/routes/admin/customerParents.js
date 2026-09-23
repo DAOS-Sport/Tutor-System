@@ -36,6 +36,20 @@ const PARENT_COLS = `p.id, p.line_uid, p.phone, p.name, p.gender, p.email,
   p.primary_venue_id, p.identity, p.home_phone, p.home_address, p.line_id,
   p.ragic_record_id, p.is_active, p.last_synced_at, p.family_id`;
 
+// 清單「家庭」欄（規格 §7）：擁有者姓名、人數、狀態、這位家長在家庭裡的 LINE 綁定是否有效。
+// 用純量子查詢（不是 JOIN）：清單有 GROUP BY p.id，子查詢只依賴 p 的欄位。
+const FAMILY_SUMMARY_SQL = `(
+  SELECT jsonb_build_object(
+           'id', fm.family_id, 'role', fm.role, 'relationship', fm.relationship, 'status', f.status,
+           'owner_name', op.name,
+           'size', (SELECT COUNT(*) FROM family_members x WHERE x.family_id = fm.family_id AND x.status = 'active'),
+           'line_bound', (fm.line_uid IS NOT NULL AND fm.line_uid = p.line_uid))
+    FROM family_members fm
+    JOIN families f ON f.id = fm.family_id
+    LEFT JOIN parents op ON op.id = f.owner_parent_id
+   WHERE fm.parent_id = p.id AND fm.status = 'active'
+   LIMIT 1)`;
+
 function rowToParent(r, studentCount = 0) {
   return {
     id: r.id,
@@ -54,6 +68,7 @@ function rowToParent(r, studentCount = 0) {
     is_active: r.is_active !== false,
     last_synced_at: r.last_synced_at || null,
     family_id: r.family_id || null,
+    family: r.family || null,
     student_count: Number(studentCount) || 0,
   };
 }
@@ -92,7 +107,7 @@ async function parentInScope(client, req, id) {
 // GET / — 家長清單（+ 學員數）
 router.get('/', requireAdminAuth, requireResource('customer-parents'), async (req, res) => {
   try {
-    const { status = 'all', venueId = '', name = '', phone = '', identity = '' } = req.query;
+    const { status = 'all', venueId = '', name = '', phone = '', identity = '', hasFamily = '' } = req.query;
     const where = [];
     const args = [];
     where.push(`COALESCE(p.name, '') <> 'ZZ-CANARY'`);
@@ -104,13 +119,16 @@ router.get('/', requireAdminAuth, requireResource('customer-parents'), async (re
     if (venueId)  { args.push(venueId);     where.push(`p.primary_venue_id = $${args.length}`); }
     if (name)     { args.push(`%${name}%`);  where.push(`p.name ILIKE $${args.length}`); }
     if (phone)    { args.push(`%${phone}%`); where.push(`p.phone ILIKE $${args.length}`); }
-    if (identity) { args.push(identity);     where.push(`p.identity = $${args.length}`); }
+    if (identity) { args.push(identity);     where.push(`p.identity = ${args.length}`); }
+    // 家庭帳號（規格 §7）：篩選有無家庭
+    if (hasFamily === 'yes') where.push(`EXISTS (SELECT 1 FROM family_members fm WHERE fm.parent_id = p.id AND fm.status = 'active')`);
+    if (hasFamily === 'no')  where.push(`NOT EXISTS (SELECT 1 FROM family_members fm WHERE fm.parent_id = p.id AND fm.status = 'active')`);
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
     const paging = parsePaging(req, { defaultLimit: 500 });
     const r = await pool.query(
       // 同樣把寫死的 500 換成可分頁；沒帶參數維持原行為。
-      `SELECT ${PARENT_COLS}, COUNT(s.id) AS student_count
+      `SELECT ${PARENT_COLS}, COUNT(s.id) AS student_count, ${FAMILY_SUMMARY_SQL} AS family
          FROM parents p
          LEFT JOIN students s ON s.parent_id = p.id
          ${whereSql}

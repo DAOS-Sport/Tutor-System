@@ -7,14 +7,16 @@ import StatusBadge from '../components/StatusBadge';
 import FilterBar from '../components/FilterBar';
 import ConfirmDialog from '../components/ConfirmDialog';
 import RagicZ01Modal from './RagicZ01Modal';
+import FamilyRequestsModal from '../components/FamilyRequestsModal';
 import { useToast } from '../context/ToastContext';
 import { customerParentsApi } from '../api/customers';
+import { familiesApi } from '../api/families';
 import { venuesApi } from '../api/venues';
 import { formatTWDateTime } from '../utils/format';
 
 // 預設只看啟用中：active 鏡像政策上只收「已綁 LINE UID」的登入會員，
 // 歷史未綁殘留列都已停用，預設不再攤在清單裡（要查可切「全部／已停用」）。
-const EMPTY_FILTERS = { status: 'active', venueId: '', name: '', identity: '', phone: '' };
+const EMPTY_FILTERS = { status: 'active', venueId: '', name: '', identity: '', phone: '', hasFamily: '' };
 const IDENTITY_TONE = { '教練/員工': 'green', '行政櫃檯': 'gold' };
 
 export default function CustomerParentsPage() {
@@ -37,8 +39,18 @@ export default function CustomerParentsPage() {
   const [busy, setBusy] = useState(false);
   const [toggling, setToggling] = useState(null);  // parent pending activate/deactivate confirm
   const [toggleBusy, setToggleBusy] = useState(false);
+  // 家庭帳號（規格 §7）：「家庭申請與建議」視窗與待處理數
+  const [showFamilyRequests, setShowFamilyRequests] = useState(false);
+  const [familyTodo, setFamilyTodo] = useState(null); // { requests, suggestions }
 
   useEffect(() => { venuesApi.list().then(setVenues).catch(() => setVenues([])); }, []);
+
+  function loadFamilyTodo() {
+    Promise.all([familiesApi.requests('pending'), familiesApi.suggestions()])
+      .then(([r, s]) => setFamilyTodo({ requests: (r?.items || []).length, suggestions: (s?.items || []).length }))
+      .catch(() => setFamilyTodo(null));
+  }
+  useEffect(() => { loadFamilyTodo(); }, []);
 
   const venueMap = useMemo(() => Object.fromEntries(venues.map((v) => [v.id, v.name])), [venues]);
 
@@ -161,6 +173,18 @@ export default function CustomerParentsPage() {
         </button>
       ) : <span className="text-gray-300">—</span>
     ) },
+    { key: 'family', label: '家庭', render: (r) => (
+      r.family ? (
+        <div className="whitespace-nowrap text-xs">
+          <div className="font-medium text-gray-700">{r.family.owner_name || '—'}的家庭・{r.family.size} 人</div>
+          <div className="space-x-1">
+            {r.family.role === 'owner' && <span className="text-gray-400">擁有者</span>}
+            {r.family.status === 'frozen' && <StatusBadge tone="errorSoft">已凍結</StatusBadge>}
+            {!r.family.line_bound && <StatusBadge tone="amber">LINE 需重新綁定</StatusBadge>}
+          </div>
+        </div>
+      ) : <span className="text-gray-300">—</span>
+    ) },
     { key: 'active', label: '狀態', className: 'text-center', render: (r) => (
       <StatusBadge tone={r.is_active ? 'green' : 'errorSoft'}>{r.is_active ? '啟用中' : '已停用'}</StatusBadge>
     ) },
@@ -198,6 +222,8 @@ export default function CustomerParentsPage() {
       { value: '', label: '全部' }, { value: '一般身份', label: '一般身份' },
       { value: '教練/員工', label: '教練 / 員工' }, { value: '行政櫃檯', label: '行政櫃檯' }] },
     { key: 'phone', label: '電話', type: 'input', placeholder: '末 4 碼或全號' },
+    { key: 'hasFamily', label: '家庭', type: 'select', options: [
+      { value: '', label: '全部' }, { value: 'yes', label: '有家庭' }, { value: 'no', label: '沒有家庭' }] },
   ];
 
   return (
@@ -207,6 +233,17 @@ export default function CustomerParentsPage() {
         subtitle="F-A02C · 客戶登入真相鏡像；點「編輯」進入仿 Ragic 表單格線（含學員子表）。客服可於此查綁定、改綁、停用。"
         actions={(
           <div className="flex gap-2">
+            <button type="button" onClick={() => setShowFamilyRequests(true)}
+              className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-bold text-gray-700 hover:border-brand-teal">
+              家庭申請與建議
+              {familyTodo && familyTodo.requests + familyTodo.suggestions > 0 && (
+                <span className="ml-2 rounded-full bg-brand-amber px-2 py-0.5 text-xs text-white">
+                  {familyTodo.requests > 0 ? `申請 ${familyTodo.requests}` : ''}
+                  {familyTodo.requests > 0 && familyTodo.suggestions > 0 ? '・' : ''}
+                  {familyTodo.suggestions > 0 ? `建議 ${familyTodo.suggestions}` : ''}
+                </span>
+              )}
+            </button>
             <button type="button" onClick={() => setReveal((v) => !v)}
               className={`rounded-lg px-4 py-2 text-sm font-bold ${reveal ? 'bg-brand-error-soft text-brand-error-strong' : 'border border-gray-300 text-gray-600 hover:border-brand-teal'}`}>
               {reveal ? '🙈 遮蔽個資' : '👁 顯示個資'}
@@ -219,6 +256,10 @@ export default function CustomerParentsPage() {
       <FilterBar fields={filterFields} values={filters} onChange={setFilters} onReset={() => setFilters(EMPTY_FILTERS)} />
       <DataTable columns={columns} rows={parents} rowKey={(r) => r.id} empty="沒有符合條件的家長帳號" />
 
+      {showFamilyRequests && (
+        <FamilyRequestsModal onClose={() => { setShowFamilyRequests(false); loadFamilyTodo(); reload(); }} />
+      )}
+
       {editing && (
         <RagicZ01Modal
           isNew={!!editing.isNew}
@@ -226,7 +267,8 @@ export default function CustomerParentsPage() {
           students={editing.students}
           venues={venues}
           busy={busy}
-          onClose={() => setEditing(null)}
+          // 家庭區塊的變更是即時生效的，關窗時重載清單讓「家庭」欄跟上
+          onClose={() => { setEditing(null); reload(); }}
           onSave={handleSave}
         />
       )}
@@ -266,6 +308,7 @@ export default function CustomerParentsPage() {
               <li>家長下次開啟系統會被導回<b>電話驗證</b>，重新綁定後即可繼續使用</li>
               <li>可以換成<b>不同的 LINE 帳號</b>綁定（Replit 與 Ragic 兩邊的舊 UID 都會清除）</li>
               <li>學員、報名、上課紀錄<b>完全不動</b>，只解除「哪一支 LINE 能登入」</li>
+              <li>若這位家長在家庭裡，家庭身分會跟著失效：用<b>同一支 LINE</b> 重綁會自動恢復；換一支 LINE 要在編輯視窗的家庭區塊按「重新綁定」</li>
             </ul>
             <label className="block">
               <span className="mb-1 block text-xs font-medium text-gray-600">解除原因（必填，會寫入稽核紀錄）</span>
