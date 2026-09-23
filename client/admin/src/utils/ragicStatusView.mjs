@@ -56,28 +56,3 @@ export function attemptOutcome(outcome) {
   return ATTEMPT_OUTCOMES[outcome] || { tone: 'gray', text: '其他', rejected: false };
 }
 
-// '30 2 * * *' → 150（分鐘）；不是「每天固定時間」的格式回 null
-export function cronToMinutes(cron) {
-  const m = /^(\d+) (\d+) \* \* \*$/.exec(cron || '');
-  return m ? Number(m[2]) * 60 + Number(m[1]) : null;
-}
-
-export function hhmm(minutes) {
-  return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
-}
-
-// 說明區的時間軸：每天固定時間的排程依時間排序，同一時間合併；其他（如每分鐘）另列
-export function buildTimeline(schedules) {
-  const entries = [...(schedules?.background || []), ...Object.values(schedules?.jobs || {})];
-  const byTime = new Map();
-  for (const s of entries) {
-    const minutes = cronToMinutes(s.cron);
-    if (minutes == null) continue;
-    if (!byTime.has(minutes)) byTime.set(minutes, []);
-    byTime.get(minutes).push(s.name);
-  }
-  return {
-    daily: [...byTime.entries()].sort((a, b) => a[0] - b[0]).map(([minutes, names]) => ({ time: hhmm(minutes), names })),
-    frequent: entries.filter((s) => s.cron && cronToMinutes(s.cron) == null),
-  };
-}

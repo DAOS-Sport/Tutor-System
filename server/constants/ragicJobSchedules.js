@@ -13,8 +13,8 @@
 const RAGIC_JOB_SCHEDULES = {
   backup:     { name: '家長與學員寫回 Ragic', sheet: 'Z01／Z02', direction: 'out',   cron: '30 0 * * *', text: '每天 00:30', runner: 'backupParentsStudentsToRagic' },
   pull:       { name: '從 Ragic 拉回家長與學員', sheet: 'Z01／Z02', direction: 'in', cron: '30 2 * * *', text: '每天 02:30', runner: 'pullParentsStudentsFromRagic' },
-  quarantine: { name: '家長姓名檢查',       sheet: 'Z01',      direction: 'check', cron: '45 2 * * *', text: '每天 02:45', runner: 'quarantineBadZ01Names' },
-  staff:      { name: '員工與教練',         sheet: 'H01',      direction: 'in',    cron: '30 3 * * *', text: '每天 03:30', runner: 'syncStaffFromRagic' },
+  // quarantine（02:45 姓名檢查）2026-09-23 退役：cron 仍會呼叫，但 ragicAdmin.RETIRED_JOBS 一律跳過
+  staff:     { name: '員工與教練',         sheet: 'H01',      direction: 'in',    cron: '30 3 * * *', text: '每天 03:30', runner: 'syncStaffFromRagic' },
   venues:     { name: '場館',               sheet: 'H05',      direction: 'in',    cron: '30 3 * * *', text: '每天 03:30', runner: 'syncVenuesFromRagic' },
   parents:    { name: '家長表連線測試',     sheet: 'Z01',      direction: 'check', cron: null,         text: '手動',       runner: null },
   students:   { name: '學員表連線測試',     sheet: 'Z02',      direction: 'check', cron: null,         text: '手動',       runner: null },

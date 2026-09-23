@@ -41,16 +41,25 @@ const JOB_RUNNERS = {
   students: ragicAdmin.pingStudentsFromRagic,
   backup:   ragicAdmin.backupParentsStudentsToRagic,
   pull:     ragicAdmin.pullParentsStudentsFromRagic,
-  quarantine: ragicAdmin.quarantineBadZ01Names,
+  // quarantine（Z01 姓名品質掃描）2026-09-23 退役：不再顯示、不能手動觸發，見 ragicAdmin.RETIRED_JOBS
 };
 const ALL_JOBS = Object.keys(JOB_RUNNERS);
+
+// 狀態頁只列還在用的工作（getSyncStatusSnapshot 依 FORM_META 列出全部，含已退役的）
+async function activeJobSnapshot() {
+  const forms = await ragicAdmin.getSyncStatusSnapshot();
+  for (const job of Object.keys(forms)) {
+    if (!JOB_RUNNERS[job]) delete forms[job];
+  }
+  return forms;
+}
 
 router.get('/', requireAdminAuth, requireResource('ragic-status'), async (req, res) => {
   try {
     const env = ragicAdmin.getRagicEnvFlags();
     const missing = Object.entries(env).filter(([, v]) => !v).map(([k]) => k);
     const enabled = missing.length === 0;
-    const forms = await ragicAdmin.getSyncStatusSnapshot();
+    const forms = await activeJobSnapshot();
     const liveProbe = await ragicAdmin.getLiveRagicProbeSnapshot().catch((err) => ({
       ok: false,
       checked_at: new Date().toISOString(),
@@ -196,7 +205,7 @@ router.post('/sync', requireAdminAuth, requireResource('ragic-status'), async (r
   // 推導 UI 狀態（spinner / 完成 / 錯誤），不再阻塞 HTTP request。
   // single-flight mutex（services/ragicAdmin.js _singleflight）會自動把
   // 重複觸發合併成同一個 Promise，避免 cron + 手動雙擊打爆 Ragic。
-  // form=all 不能同時把所有全表 job 丟出去：backup / pull / quarantine 有業務順序，
+  // form=all 不能同時把所有全表 job 丟出去：backup / pull 有業務順序，
   // 並行會讓 Ragic 同時處理多個大查詢/寫入，現場看起來就是「同步很久」。
   // 單一 job 仍照原行為背景執行；全部同步改在同一背景工作中依 ALL_JOBS 順序跑。
   const alreadyRunningJobs = jobs.filter((j) => ragicAdmin.isJobRunning(j));
@@ -238,7 +247,7 @@ router.post('/toggle', requireAdminAuth, requireResource('ragic-status'), async 
   }
   try {
     await ragicAdmin.setJobEnabled(job, enabled);
-    const forms = await ragicAdmin.getSyncStatusSnapshot();
+    const forms = await activeJobSnapshot();
     res.json({ ok: true, job, enabled, forms });
   } catch (err) {
     console.error('[admin/ragic-status toggle]', err);

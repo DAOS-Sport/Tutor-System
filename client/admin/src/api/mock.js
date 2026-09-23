@@ -375,8 +375,7 @@ const RAGIC_MOCK_SCHEDULES = {
   jobs: {
     backup:     { name: '家長與學員寫回 Ragic', sheet: 'Z01／Z02', direction: 'out',   cron: '30 0 * * *', text: '每天 00:30' },
     pull:       { name: '從 Ragic 拉回家長與學員', sheet: 'Z01／Z02', direction: 'in', cron: '30 2 * * *', text: '每天 02:30' },
-    quarantine: { name: '家長姓名檢查',       sheet: 'Z01',      direction: 'check', cron: '45 2 * * *', text: '每天 02:45' },
-    staff:      { name: '員工與教練',         sheet: 'H01',      direction: 'in',    cron: '30 3 * * *', text: '每天 03:30' },
+    staff:     { name: '員工與教練',         sheet: 'H01',      direction: 'in',    cron: '30 3 * * *', text: '每天 03:30' },
     venues:     { name: '場館',               sheet: 'H05',      direction: 'in',    cron: '30 3 * * *', text: '每天 03:30' },
     parents:    { name: '家長表連線測試',     sheet: 'Z01',      direction: 'check', cron: null,         text: '手動' },
     students:   { name: '學員表連線測試',     sheet: 'Z02',      direction: 'check', cron: null,         text: '手動' },
@@ -455,14 +454,6 @@ const RAGIC_MOCK_FORMS = {
     last_run_at: new Date(Date.now() - 6 * 3600000).toISOString(),
     last_success_at: new Date(Date.now() - 6 * 3600000).toISOString(),
     last_count: 118, last_duration_ms: 15400,
-  },
-  quarantine: {
-    form_code: 'Z01_BAD_NAME_QUARANTINE', label: 'Z01 姓名品質掃描（Z03 追蹤）', kind: 'sync',
-    admin_enabled: true,
-    in_progress: false, last_status: 'ok', last_triggered_by: 'cron', last_error: null,
-    last_run_at: new Date(Date.now() - 5.75 * 3600000).toISOString(),
-    last_success_at: new Date(Date.now() - 5.75 * 3600000).toISOString(),
-    last_count: 1, last_duration_ms: 106,
   },
 };
 

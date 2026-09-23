@@ -4359,7 +4359,14 @@ let _liveProbeInFlight = null;
 // 缺該 key 一律視為「啟用」，維持既有行為，不需要額外 migration/seed。
 function _toggleKey(jobName) { return `ragic_sync_enabled_${jobName}`; }
 
+// 已退役的工作：排程（cron/index.js 照舊呼叫）與手動觸發都在 _runWithLog 一律跳過、記一筆 skipped，
+// 狀態頁也不再顯示。要恢復就把它移出這個集合。
+//   quarantine（Z01 姓名品質掃描）：2026-09-23 擁有者確認不需要。它只寫本地 ragic_z01_quarantine
+//   追蹤表，沒有任何畫面在讀；推送 Ragic Z03 表單已於 2026-07-07 決定不做（見 _quarantineBadZ01NamesImpl）。
+const RETIRED_JOBS = new Set(['quarantine']);
+
 async function isJobEnabled(jobName) {
+  if (RETIRED_JOBS.has(jobName)) return false;
   const r = await pool.query(`SELECT value FROM admin_settings WHERE key = $1`, [_toggleKey(jobName)]);
   return r.rows.length ? Number(r.rows[0].value) !== 0 : true;
 }
@@ -4405,7 +4412,9 @@ async function getJobToggles() {
   );
   const byKey = new Map(r.rows.map((row) => [row.key, Number(row.value) !== 0]));
   const out = {};
-  for (const j of jobs) out[j] = byKey.has(_toggleKey(j)) ? byKey.get(_toggleKey(j)) : true;
+  for (const j of jobs) {
+    out[j] = RETIRED_JOBS.has(j) ? false : (byKey.has(_toggleKey(j)) ? byKey.get(_toggleKey(j)) : true);
+  }
   return out;
 }
 
@@ -5041,6 +5050,7 @@ module.exports = {
   getRagicEnvFlags,
   getLiveRagicProbeSnapshot,
   getSyncStatusSnapshot,
+  RETIRED_JOBS,
   pingParentsFromRagic,
   pingStudentsFromRagic,
   backupParentsStudentsToRagic,
