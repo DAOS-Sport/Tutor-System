@@ -9,6 +9,8 @@
  *  POST /                                  建立家庭 { owner_parent_id, owner_relationship?, name? }
  *  GET  /lookup?phone=&name=               櫃台加成員前查帳號：姓名對得上才回 LINE UID
  *  POST /by-parent/:parentId/members       Z01 視窗「添加成員」{ phone, name }：沒有家庭就先以這位家長為擁有者建立
+ *  POST /by-parent/:parentId/invites       產生邀請連結 { relationship? }：沒有家庭就先以這位家長為擁有者建立
+ *  POST /:id/invites/:inviteId/revoke      作廢邀請連結
  *  POST /:id/members                       加入成員 { phone＋name | parent_id, relationship? }
  *  PATCH /:id/members/:parentId            改關係 { relationship }
  *  POST /:id/members/:parentId/revoke      移出成員 { reason? }
@@ -34,6 +36,18 @@ const { maskName } = require('../../utils/piiMask');
 const { normalizePhone } = require('../../services/identityNormalizer');
 
 const LINE_UID_RE = /^U[0-9a-f]{32}$/i;
+
+// 邀請連結：家長端 LIFF 網址（跟推播裡的連結同一個來源）＋ /family/join/<token>。
+// 沒設定 LIFF 網址時回相對路徑，後台畫面自己補上網域。
+function inviteUrl(token) {
+  const base = String(process.env.LIFF_URL_PARENT || process.env.LIFF_URL || '').trim().replace(/\/+$/, '');
+  return base ? `${base}/family/join/${token}` : `/liff/family/join/${token}`;
+}
+const shapeInvite = (row) => ({
+  id: row.id, url: inviteUrl(row.token), relationship: row.relationship,
+  relationship_label: row.relationship ? relationshipLabel(row.relationship) : null,
+  created_at: row.created_at, expires_at: row.expires_at, created_by: row.created_by,
+});
 
 const router = express.Router();
 router.use(requireAdminAuth, requireResource('customer-parents'));
@@ -120,6 +134,12 @@ router.get('/by-parent/:parentId', async (req, res) => {
         ORDER BY created_at DESC`,
       [familyId]
     );
+    const invites = await pool.query(
+      `SELECT * FROM family_invites
+        WHERE family_id = $1 AND used_at IS NULL AND revoked_at IS NULL AND expires_at > NOW()
+        ORDER BY created_at DESC`,
+      [familyId]
+    );
     const logs = await pool.query(
       `SELECT l.id, l.action, l.actor, l.target_parent_id, p.name AS target_name, l.detail, l.created_at
          FROM family_audit_logs l LEFT JOIN parents p ON p.id = l.target_parent_id
@@ -131,6 +151,7 @@ router.get('/by-parent/:parentId', async (req, res) => {
         ...f.rows[0],
         members: members.rows.map((row) => ({ ...row, relationship_label: relationshipLabel(row.relationship) })),
         pending_members: pending.rows.map((row) => ({ ...row, relationship_label: relationshipLabel(row.relationship) })),
+        invites: invites.rows.map(shapeInvite),
         logs: logs.rows,
       },
     });
@@ -217,6 +238,44 @@ router.post('/:id/members', async (req, res) => {
   await run(res, (c) => familyAdmin.addMember(c, {
     familyId: req.params.id, parentId, relationship: req.body?.relationship, actor: actorOf(req),
   }), '加入成員失敗');
+});
+
+// Z01 編輯視窗的「邀請家人加入」（擁有者 2026-09-23）：產生一次性的邀請連結；
+// 這位家長還沒有家庭時，先以他為擁有者建立（同一個交易）。
+router.post('/by-parent/:parentId/invites', async (req, res) => {
+  const ownerId = String(req.params.parentId || '');
+  if (!(await parentInScope(req, ownerId))) return notFound(res);
+  let invite = null;
+  const client = await pool.connect();
+  let notices = [];
+  try {
+    await client.query('BEGIN');
+    let familyId = (await familyAdmin.activeMembership(client, ownerId, { lock: true }))?.family_id || null;
+    if (!familyId) {
+      const created = await familyAdmin.createFamily(client, { ownerParentId: ownerId, actor: actorOf(req) });
+      familyId = created.result.id;
+      notices = created.notices;
+    }
+    invite = (await familyAdmin.createInvite(client, {
+      familyId, relationship: req.body?.relationship || null, actor: actorOf(req),
+    })).result;
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    client.release();
+    return sendError(res, err, '產生邀請連結失敗');
+  }
+  client.release();
+  res.json({ ok: true, invite: shapeInvite(invite) });
+  familyNotify.sendNotices(notices).catch(() => {});
+});
+
+router.post('/:id/invites/:inviteId/revoke', async (req, res) => {
+  if (!(await familyInScope(req, req.params.id))) return notFound(res);
+  if (!UUID_RE.test(String(req.params.inviteId || ''))) return notFound(res);
+  await run(res, (c) => familyAdmin.revokeInvite(c, {
+    familyId: req.params.id, inviteId: req.params.inviteId, actor: actorOf(req),
+  }), '作廢邀請失敗');
 });
 
 // Z01 編輯視窗的「添加成員」（擁有者 2026-09-23）：這位家長還沒有家庭時，

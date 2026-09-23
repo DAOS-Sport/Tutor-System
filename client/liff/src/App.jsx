@@ -40,6 +40,7 @@ import TransferRequestPage from './pages/TransferRequestPage';
 import MyLessonsPage from './pages/MyLessonsPage';
 import GroupCreatePage from './pages/GroupCreatePage';
 import GroupJoinPage from './pages/GroupJoinPage';
+import FamilyJoinPage from './pages/FamilyJoinPage';
 import GroupStatusPage from './pages/GroupStatusPage';
 import SlotBookingPage from './pages/SlotBookingPage';
 import TrialSelectPage from './pages/TrialSelectPage';
@@ -93,6 +94,11 @@ export default function App() {
           {/* 公開：團購加入連結（免登入先看狀態 / 電話查詢；加入時才要求登入） */}
           <Route element={<AppLayout showBackButton title="加入團購" />}>
             <Route path="/group/join/:token" element={<GroupJoinPage />} />
+          </Route>
+
+          {/* 家庭邀請連結（櫃台產生）：沒登入時頁面自己記住返回路徑再去登入，註冊完也會回來 */}
+          <Route element={<AppLayout showBackButton title="加入家庭" />}>
+            <Route path="/family/join/:token" element={<FamilyJoinPage />} />
           </Route>
 
           <Route element={<RequireAuth />}>

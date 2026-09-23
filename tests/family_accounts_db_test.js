@@ -23,6 +23,7 @@
 //  17. 重複學員：沒開課但有未對帳訂單的那份不能被停用
 //  18. 沒綁 LINE 的家長不能加入家庭（LINE_NOT_BOUND）
 //  19. 櫃台添加成員：手機＋姓名，姓名對得上才帶出 UID；沒有家庭就先建立（擁有者 2026-09-23）
+//  20. 邀請連結：產生、加入（綁 LINE）、單次、作廢、過期、開關關閉
 //
 // 不起 HTTP server、不碰 Ragic、LINE 推播以 stub 攔截；所有資料 try/finally 自己刪乾淨。
 const assert = require('node:assert/strict');
@@ -456,6 +457,50 @@ async function addStudent(parentId, { name, idNumber, birth, ragic = false }) {
       assert.equal(auntRow.relationship, null, '關係選填，之後在成員列表補');
       assert.equal(auntRow.line_uid, aunt.line_uid);
     });
+
+    await t('20. 邀請連結：櫃台產生 → 家人加入並綁定他的 LINE；只能用一次，作廢、過期、開關關閉都不能用', async () => {
+      const createInv = handler('admin/families', 'post', '/by-parent/:parentId/invites');
+      const revokeInv = handler('admin/families', 'post', '/:id/invites/:inviteId/revoke');
+      const preview = handler('family', 'get', '/invites/:token');
+      const accept = handler('family', 'post', '/invites/:token/accept');
+      const host = await addParent('測試邀請家長');
+      const guest = await addParent('測試受邀家人');
+      const late = await addParent('測試晚到的人');
+      const tokenOf = (r) => String(r.body.invite.url).split('/family/join/')[1];
+      const made = await call(createInv, { adminUser: ADMIN, params: { parentId: host.id }, body: {} });
+      assert.equal(made.status, 200, JSON.stringify(made.body));
+      const token = tokenOf(made);
+      assert.match(token, /^[0-9a-f]{32}$/, '32 碼亂數');
+      const pv = await call(preview, { parent: guest, params: { token } });
+      assert.equal(pv.status, 200, JSON.stringify(pv.body));
+      assert.equal(pv.body.owner_name, host.name);
+      assert.equal(pv.body.member_count, 1, '沒有家庭的家長產生邀請時先建家庭（自己一人）');
+      const ok = await call(accept, { parent: guest, params: { token }, body: { relationship: 'grandmother' } });
+      assert.equal(ok.status, 200, JSON.stringify(ok.body));
+      const row = (await pool.query(
+        `SELECT line_uid, relationship, family_id FROM family_members WHERE parent_id=$1 AND status='active'`, [guest.id])).rows[0];
+      assert.equal(row.line_uid, guest.line_uid, '綁定的是受邀者當下的 LINE');
+      assert.equal(row.relationship, 'grandmother');
+      assert.equal(row.family_id, ok.body.family_id);
+      const reuse = await call(accept, { parent: late, params: { token }, body: { relationship: 'guardian' } });
+      assert.equal(reuse.status, 410);
+      assert.equal(reuse.body.code, 'INVITE_USED', '只能用一次');
+      const made2 = await call(createInv, { adminUser: ADMIN, params: { parentId: host.id }, body: {} });
+      const rv = await call(revokeInv, { adminUser: ADMIN, params: { id: ok.body.family_id, inviteId: made2.body.invite.id } });
+      assert.equal(rv.status, 200, JSON.stringify(rv.body));
+      const afterRevoke = await call(accept, { parent: late, params: { token: tokenOf(made2) }, body: { relationship: 'guardian' } });
+      assert.equal(afterRevoke.body.code, 'INVITE_REVOKED');
+      const made3 = await call(createInv, { adminUser: ADMIN, params: { parentId: host.id }, body: {} });
+      await pool.query(`UPDATE family_invites SET expires_at = NOW() - INTERVAL '1 minute' WHERE id = $1`, [made3.body.invite.id]);
+      const expired = await call(accept, { parent: late, params: { token: tokenOf(made3) }, body: {} });
+      assert.equal(expired.body.code, 'INVITE_EXPIRED');
+      assert.equal((await call(preview, { parent: late, params: { token: 'f'.repeat(32) } })).status, 404);
+      assert.equal((await pool.query(`SELECT 1 FROM family_members WHERE parent_id=$1`, [late.id])).rowCount, 0, '晚到的人一個都沒加進去');
+      delete process.env.FAMILY_ACCOUNTS_V1;
+      const off = await call(preview, { parent: late, params: { token: tokenOf(made3) } });
+      process.env.FAMILY_ACCOUNTS_V1 = 'all';
+      assert.equal(off.body.code, 'FAMILY_DISABLED', '開關關閉時邀請頁不能用');
+    });
   } catch (err) {
     failed = true;
     console.error('FAIL', err && err.stack ? err.stack : err);
@@ -480,5 +525,5 @@ async function addStudent(parentId, { name, idNumber, birth, ragic = false }) {
     console.error(`family_accounts_db_test: FAILED（${passed} 項通過後中斷）`);
     process.exit(1);
   }
-  console.log(`family_accounts_db_test: ${passed}/19 PASS`);
+  console.log(`family_accounts_db_test: ${passed}/20 PASS`);
 })();

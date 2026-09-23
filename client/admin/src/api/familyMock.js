@@ -24,6 +24,7 @@ const state = {
       pending_members: [
         { id: 'pend-1', phone_canonical: '0911000333', relationship: 'grandmother', created_at: '2026-09-23T02:05:00Z', expires_at: '2026-10-23T02:05:00Z' },
       ],
+      invites: [],
       logs: [
         { id: 2, action: 'pending_member_added', actor: 'admin:示範櫃台', target_parent_id: null, detail: { phone_tail: '0333', relationship: 'grandmother' }, created_at: '2026-09-23T02:05:00Z' },
         { id: 1, action: 'family_created', actor: 'admin:示範櫃台', target_parent_id: 'p-uuid-001', detail: {}, created_at: '2026-09-23T02:00:00Z' },
@@ -65,6 +66,7 @@ function view(fam) {
       relationship_label: REL[m.relationship] || '家人', active_students: 1,
     })),
     pending_members: fam.pending_members.map((p) => ({ ...p, relationship_label: REL[p.relationship] || '家人' })),
+    invites: fam.invites || [],
     logs: fam.logs.map((l) => ({ ...l, target_name: PEOPLE[l.target_parent_id]?.name || null })),
   };
 }
@@ -95,7 +97,7 @@ export const familyMock = {
     state.families[id] = {
       id, name: null, status: 'active', owner_parent_id: ownerParentId, created_at: now(), created_by: 'admin:示範櫃台',
       members: [{ parent_id: ownerParentId, role: 'owner', relationship: ownerRelationship || null, line_bound: true, linked_at: now(), linked_by: 'admin:示範櫃台' }],
-      pending_members: [], logs: [],
+      pending_members: [], invites: [], logs: [],
     };
     log(state.families[id], 'family_created', ownerParentId);
     return { ok: true, result: { id } };
@@ -172,6 +174,24 @@ export const familyMock = {
     let fid = familyIdOf(parentId);
     if (!fid) fid = familyMock.create(parentId, null).result.id;
     return familyMock.addMember(fid, { parentId: hit.parent_id, relationship: null });
+  },
+  createInvite(parentId, relationship) {
+    let fid = familyIdOf(parentId);
+    if (!fid) fid = familyMock.create(parentId, null).result.id;
+    const fam = state.families[fid];
+    const invite = {
+      id: `inv-${Date.now()}`, url: `/liff/family/join/mock${Date.now().toString(16)}`, relationship: relationship || null,
+      created_at: now(), expires_at: new Date(Date.now() + 7 * 86400000).toISOString(), created_by: 'admin:示範櫃台',
+    };
+    fam.invites = [invite, ...(fam.invites || [])];
+    log(fam, 'invite_created', null);
+    return { ok: true, invite };
+  },
+  revokeInvite(familyId, inviteId) {
+    const fam = state.families[familyId];
+    fam.invites = (fam.invites || []).filter((i) => i.id !== inviteId);
+    log(fam, 'invite_revoked', null);
+    return { ok: true };
   },
   suggestions() { return { items: state.suggestions }; },
   applySuggestion(body) {

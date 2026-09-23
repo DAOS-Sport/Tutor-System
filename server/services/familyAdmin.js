@@ -446,7 +446,12 @@ async function claimPendingForParent(c, { parentId, phone }) {
     `UPDATE family_pending_members SET claimed_parent_id = $2, claimed_at = NOW() WHERE id = $1`,
     [pending.id, parentId]
   );
-  // 新帳號名下的孩子如果跟家裡孩子同一人（同身分證），依 §9 處理
+  const decisions = await resolveNewMemberDuplicates(c, { parentId, familyId: pending.family_id, actor });
+  return { result: { family_id: pending.family_id, decisions }, notices: added.notices };
+}
+
+// 新成員名下的孩子如果跟家裡孩子同一人（同身分證），依 §9 處理（預先登記認領、邀請連結共用）
+async function resolveNewMemberDuplicates(c, { parentId, familyId, actor }) {
   const dups = await c.query(
     `SELECT mine.id AS mine_id, other.id AS other_id
        FROM students mine
@@ -454,16 +459,68 @@ async function claimPendingForParent(c, { parentId, phone }) {
        JOIN family_members fm ON fm.parent_id = other.parent_id AND fm.family_id = $2 AND fm.status = 'active'
       WHERE mine.parent_id = $1 AND COALESCE(mine.is_active, TRUE) AND COALESCE(other.is_active, TRUE)
         AND NULLIF(mine.id_number, '') IS NOT NULL`,
-    [parentId, pending.family_id]
+    [parentId, familyId]
   );
   const decisions = [];
   for (const d of dups.rows) {
     decisions.push(await applyDuplicateRule(c, {
       a: await studentCopy(c, d.other_id), b: await studentCopy(c, d.mine_id),
-      familyId: pending.family_id, actor, actorRole: 'system',
+      familyId, actor, actorRole: 'system',
     }));
   }
-  return { result: { family_id: pending.family_id, decisions }, notices: added.notices };
+  return decisions;
+}
+
+// ── 邀請連結（擁有者 2026-09-23）──────────────────────────────────────────
+// 櫃台產生、傳給家人；家人用 LINE 打開、登入後按「加入家庭」→ 綁定他當下的 LINE userId。
+// 只能用一次、7 天有效、櫃台可作廢。連結等同鑰匙，所以一定單次、會過期，加入後通知全家。
+async function createInvite(c, { familyId, relationship = null, actor }) {
+  relationship = relationship || null;
+  if (relationship) requireRelationship(relationship);
+  const family = await lockFamily(c, familyId);
+  if (family.status !== 'active') throw new FamilyError('FAMILY_FROZEN', '這個家庭已凍結，請先解除凍結');
+  const token = crypto.randomBytes(16).toString('hex');
+  const r = await c.query(
+    `INSERT INTO family_invites (family_id, token, relationship, created_by) VALUES ($1, $2, $3, $4) RETURNING *`,
+    [familyId, token, relationship, actor]
+  );
+  await audit(c, familyId, 'invite_created', actor, null, { invite_id: r.rows[0].id, relationship });
+  return { result: r.rows[0], notices: [] };
+}
+
+async function revokeInvite(c, { familyId, inviteId, actor }) {
+  const r = await c.query(
+    `UPDATE family_invites SET revoked_at = NOW(), revoked_by = $3
+      WHERE id = $1 AND family_id = $2 AND used_at IS NULL AND revoked_at IS NULL RETURNING id`,
+    [inviteId, familyId, actor]
+  );
+  if (!r.rowCount) throw new FamilyError('INVITE_NOT_FOUND', '找不到這個邀請，或已經使用／作廢', 404);
+  await audit(c, familyId, 'invite_revoked', actor, null, { invite_id: inviteId });
+  return { result: { ok: true }, notices: [] };
+}
+
+// 邀請目前能不能用；不能用時回原因（給預覽頁與加入時共用）
+function inviteProblem(inv) {
+  if (!inv) return new FamilyError('INVITE_INVALID', '邀請連結無效，請向櫃台索取新的連結', 404);
+  if (inv.revoked_at) return new FamilyError('INVITE_REVOKED', '這個邀請連結已經作廢，請向櫃台索取新的連結', 410);
+  if (inv.used_at) return new FamilyError('INVITE_USED', '這個邀請連結已經有人用過了，請向櫃台索取新的連結', 410);
+  if (new Date(inv.expires_at).getTime() < Date.now()) return new FamilyError('INVITE_EXPIRED', '這個邀請連結已經過期，請向櫃台索取新的連結', 410);
+  return null;
+}
+
+async function acceptInvite(c, { token, parentId, relationship = null }) {
+  const r = await c.query(`SELECT * FROM family_invites WHERE token = $1 FOR UPDATE`, [String(token || '')]);
+  const inv = r.rows[0] || null;
+  const problem = inviteProblem(inv);
+  if (problem) throw problem;
+  const actor = `parent:${parentId}:invite`;
+  const added = await addMember(c, {
+    familyId: inv.family_id, parentId, relationship: relationship || inv.relationship || null, actor,
+  });
+  await c.query(`UPDATE family_invites SET used_by_parent_id = $2, used_at = NOW() WHERE id = $1`, [inv.id, parentId]);
+  await audit(c, inv.family_id, 'invite_accepted', actor, parentId, { invite_id: inv.id });
+  const decisions = await resolveNewMemberDuplicates(c, { parentId, familyId: inv.family_id, actor });
+  return { result: { family_id: inv.family_id, decisions }, notices: added.notices };
 }
 
 module.exports = {
@@ -482,6 +539,10 @@ module.exports = {
   removePendingMember,
   claimPendingForParent,
   activeMembership,
+  createInvite,
+  revokeInvite,
+  acceptInvite,
+  inviteProblem,
   // 測試用
   _applyDuplicateRule: applyDuplicateRule,
 };

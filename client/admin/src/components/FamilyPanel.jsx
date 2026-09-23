@@ -24,7 +24,61 @@ const ACTION_LABELS = {
   pending_member_removed: '取消預先登記',
   duplicate_resolved: '處理重複學員',
   request_approved: '核准合併申請',
+  invite_created: '產生邀請連結',
+  invite_revoked: '作廢邀請連結',
+  invite_accepted: '家人用邀請連結加入',
 };
+
+// 邀請連結（擁有者 2026-09-23）：櫃台產生、傳給家人；家人用 LINE 打開、登入後按「加入家庭」就綁定他的 LINE。
+// 伺服器沒設定 LIFF 網址時回相對路徑，這裡補上目前網域。
+const fullUrl = (url) => (String(url || '').startsWith('/') ? `${window.location.origin}${url}` : url);
+
+function copyText(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text);
+  } catch { /* 落到下面 */ }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand('copy');
+  document.body.removeChild(ta);
+  return Promise.resolve();
+}
+
+function InviteSection({ parentId, family, busy, act }) {
+  const [copiedId, setCopiedId] = useState(null);
+  const invites = family?.invites || [];
+  return (
+    <div className="rounded border border-teal-200 bg-teal-50/50 p-3">
+      <div className="mb-1 font-bold text-gray-700">邀請家人加入</div>
+      <p className="mb-2 text-gray-500">
+        產生連結傳給家人（LINE 訊息貼上即可）。對方用 LINE 打開、登入後按「加入家庭」，就會綁定他的 LINE。
+        連結只能用一次、7 天內有效；傳錯人可以直接作廢。{!family && '產生連結時會以這位家長為擁有者建立家庭。'}
+      </p>
+      {invites.map((inv) => (
+        <div key={inv.id} className="mb-2 flex flex-wrap items-center gap-2">
+          <input readOnly value={fullUrl(inv.url)} onFocus={(e) => e.target.select()}
+            className={`${inputCls} w-full font-mono md:w-[28rem]`} />
+          <button type="button" className="rounded border border-brand-primary px-2 py-1 font-semibold text-brand-primary"
+            onClick={() => copyText(fullUrl(inv.url)).then(() => setCopiedId(inv.id)).catch(() => setCopiedId(null))}>
+            {copiedId === inv.id ? '已複製 ✓' : '複製'}
+          </button>
+          <span className="text-gray-400">有效到 {formatTWDateTime(inv.expires_at)}</span>
+          <button type="button" disabled={busy} className="font-semibold text-brand-error hover:underline disabled:opacity-50"
+            onClick={() => act({ run: () => familiesApi.revokeInvite(family.id, inv.id), ok: '已作廢邀請連結' })}>作廢</button>
+        </div>
+      ))}
+      <button type="button" disabled={busy}
+        onClick={() => act({ run: () => familiesApi.createInvite(parentId), ok: '已產生邀請連結，複製後傳給家人' })}
+        className="rounded bg-brand-primary px-3 py-1 font-semibold text-white hover:bg-brand-teal disabled:opacity-50">
+        產生邀請連結
+      </button>
+    </div>
+  );
+}
 
 const inputCls = 'rounded border border-gray-300 px-2 py-1 text-xs focus:border-brand-teal focus:outline-none';
 
@@ -70,7 +124,7 @@ function AddMemberForm({ parentId, busy, act }) {
 
   return (
     <div className="rounded border border-gray-200 bg-gray-50 p-3">
-      <div className="mb-2 font-bold text-gray-700">添加成員</div>
+      <div className="mb-2 font-bold text-gray-700">直接添加（家人在現場、已經註冊）</div>
       <div className="grid gap-2 md:grid-cols-3">
         <label className="block">
           <span className="mb-0.5 block text-gray-500">手機</span>
@@ -159,7 +213,8 @@ export default function FamilyPanel({ parent }) {
 
         {data && !family && !loadError && (
           <div className="space-y-2">
-            <p className="text-gray-600">這位家長還沒有家庭。添加第一位成員時，會以這位家長為擁有者建立家庭；之後全家可以一起查看孩子的課程、繳費、簽到。</p>
+            <p className="text-gray-600">這位家長還沒有家庭。邀請或添加第一位家人時，會以這位家長為擁有者建立家庭；之後全家可以一起查看孩子的課程、繳費、簽到。</p>
+            <InviteSection parentId={parent.id} family={null} busy={busy} act={act} />
             <AddMemberForm parentId={parent.id} busy={busy} act={act} />
           </div>
         )}
@@ -226,6 +281,7 @@ export default function FamilyPanel({ parent }) {
               </table>
             </div>
 
+            <InviteSection parentId={parent.id} family={family} busy={busy} act={act} />
             <AddMemberForm parentId={parent.id} busy={busy} act={act} />
 
             <div className="rounded border border-gray-200 bg-gray-50 p-3">

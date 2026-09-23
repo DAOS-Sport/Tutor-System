@@ -21,4 +21,10 @@ export const familyApi = {
     callApi(`/family/requests/${id}`, { method: 'delete' }, () => familyMock.cancelRequest(id)),
   leave: () =>
     callApi('/family/leave', { method: 'post' }, () => familyMock.leave()),
+  // 邀請連結（櫃台產生）：預覽誰邀請、加入
+  invitePreview: (token) =>
+    callApi(`/family/invites/${encodeURIComponent(token)}`, {}, () => familyMock.invitePreview(token)),
+  acceptInvite: (token, relationship) =>
+    callApi(`/family/invites/${encodeURIComponent(token)}/accept`, { method: 'post', data: { relationship } },
+      () => familyMock.acceptInvite(token, relationship)),
 };

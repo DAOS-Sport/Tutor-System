@@ -28,6 +28,63 @@ function fail(res, status, code, error) {
   return res.status(status).json({ error, code });
 }
 
+// ── 邀請連結（擁有者 2026-09-23）──────────────────────────────────────────
+// 預覽：誰邀請、家裡幾個人；連結不能用時回原因。需要登入（LIFF 在 LINE 裡打開會自動登入）。
+router.get('/invites/:token', async (req, res) => {
+  const scope = await familyScope.forRequest(req);
+  if (!scope.enabled) return fail(res, 404, 'FAMILY_DISABLED', '家庭功能尚未開放');
+  try {
+    const r = await pool.query(
+      `SELECT i.*, f.status AS family_status, op.name AS owner_name,
+              (SELECT COUNT(*)::int FROM family_members m WHERE m.family_id = i.family_id AND m.status = 'active') AS member_count,
+              EXISTS (SELECT 1 FROM family_members m WHERE m.family_id = i.family_id AND m.status = 'active' AND m.parent_id = $2) AS already_member
+         FROM family_invites i
+         JOIN families f ON f.id = i.family_id
+         LEFT JOIN parents op ON op.id = f.owner_parent_id
+        WHERE i.token = $1`,
+      [String(req.params.token || ''), req.parent.id]
+    );
+    const inv = r.rows[0] || null;
+    const problem = familyAdmin.inviteProblem(inv);
+    if (problem) return fail(res, problem.status, problem.code, problem.message);
+    res.json({
+      owner_name: inv.owner_name || null,
+      member_count: inv.member_count,
+      relationship: inv.relationship,
+      expires_at: inv.expires_at,
+      already_member: inv.already_member,
+      in_other_family: !!scope.family && !inv.already_member,
+      family_frozen: inv.family_status !== 'active',
+    });
+  } catch (err) {
+    console.error('[family GET /invites/:token]', err.code || err.message);
+    fail(res, 500, 'FAMILY_INVITE_FAILED', '讀取邀請失敗，請稍後再試');
+  }
+});
+
+router.post('/invites/:token/accept', async (req, res) => {
+  const scope = await familyScope.forRequest(req);
+  if (!scope.enabled) return fail(res, 404, 'FAMILY_DISABLED', '家庭功能尚未開放');
+  const relationship = String(req.body?.relationship || '').trim() || null;
+  if (relationship && !isRelationship(relationship)) return fail(res, 400, 'RELATIONSHIP_INVALID', '請選擇您和孩子的關係');
+  const client = await pool.connect();
+  let out;
+  try {
+    await client.query('BEGIN');
+    out = await familyAdmin.acceptInvite(client, { token: req.params.token, parentId: req.parent.id, relationship });
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    client.release();
+    if (err instanceof familyAdmin.FamilyError) return fail(res, err.status, err.code, err.message);
+    console.error('[family POST /invites/:token/accept]', err.code || err.message);
+    return fail(res, 500, 'FAMILY_INVITE_FAILED', '加入家庭失敗，請稍後再試');
+  }
+  client.release();
+  res.json({ ok: true, family_id: out.result.family_id });
+  familyNotify.sendNotices(out.notices).catch(() => {});
+});
+
 router.post('/requests', async (req, res) => {
   const scope = await familyScope.forRequest(req);
   if (!scope.enabled) return fail(res, 404, 'FAMILY_DISABLED', '家庭功能尚未開放');

@@ -23,6 +23,13 @@ export const familiesApi = {
   lookup: (phone, name) =>
     callApi(`/families/lookup?phone=${encodeURIComponent(phone)}&name=${encodeURIComponent(name)}`, {},
       () => familyMock.lookup(phone, name)),
+  // 邀請連結：只能用一次、7 天有效。這位家長還沒有家庭時，後端會先以他為擁有者建立
+  createInvite: (parentId, relationship = null) =>
+    callApi(`/families/by-parent/${parentId}/invites`, { method: 'post', data: { relationship } },
+      () => familyMock.createInvite(parentId, relationship)),
+  revokeInvite: (familyId, inviteId) =>
+    callApi(`/families/${familyId}/invites/${inviteId}/revoke`, { method: 'post' },
+      () => familyMock.revokeInvite(familyId, inviteId)),
   // Z01 視窗的「添加成員」：這位家長還沒有家庭時，後端會先以他為擁有者建立（同一個交易）
   addMemberForParent: (parentId, { phone, name }) =>
     callApi(`/families/by-parent/${parentId}/members`, { method: 'post', data: { phone, name } },

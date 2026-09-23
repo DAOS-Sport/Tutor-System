@@ -54,6 +54,19 @@ export const familyMock = {
     return { ok: true, request: joinRequest };
   },
   cancelRequest() { joinRequest = null; return { ok: true }; },
+  invitePreview(token) {
+    if (String(token).startsWith('bad')) {
+      const err = new Error('invalid');
+      err.response = { status: 410, data: { error: '這個邀請連結已經過期，請向櫃台索取新的連結', code: 'INVITE_EXPIRED' } };
+      throw err;
+    }
+    return { owner_name: '王媽媽', member_count: 1, relationship: null, expires_at: new Date(Date.now() + 6 * 86400000).toISOString(),
+      already_member: mode() === 'member', in_other_family: false, family_frozen: false };
+  },
+  acceptInvite() {
+    try { localStorage.setItem('mock.family', 'member'); } catch { /* 預覽用，忽略 */ }
+    return { ok: true, family_id: 'fam-mock' };
+  },
   leave() {
     try { localStorage.removeItem('mock.family'); } catch { /* 預覽用，忽略 */ }
     return { ok: true };

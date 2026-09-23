@@ -121,6 +121,23 @@ CREATE TABLE IF NOT EXISTS family_join_attempts (
 );
 CREATE INDEX IF NOT EXISTS idx_family_join_attempts_parent ON family_join_attempts(parent_id, created_at DESC);
 
+-- 邀請連結（擁有者 2026-09-23）：櫃台產生、傳給家人；家人用 LINE 打開、登入後按「加入家庭」。
+-- 只能用一次、7 天有效、可作廢；token 是 32 碼亂數（比照團購 join_token）。
+CREATE TABLE IF NOT EXISTS family_invites (
+  id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  family_id         UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+  token             TEXT NOT NULL UNIQUE,
+  relationship      TEXT,
+  created_by        TEXT,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at        TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '7 days'),
+  used_by_parent_id UUID REFERENCES parents(id) ON DELETE SET NULL,
+  used_at           TIMESTAMPTZ,
+  revoked_at        TIMESTAMPTZ,
+  revoked_by        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_family_invites_family ON family_invites(family_id, created_at DESC);
+
 -- 第二階段：櫃台先登記家人手機，對方註冊時自動加入家庭
 CREATE TABLE IF NOT EXISTS family_pending_members (
   id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
