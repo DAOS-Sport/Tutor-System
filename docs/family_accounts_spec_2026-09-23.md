@@ -22,10 +22,14 @@ Ragic 掛在媽媽名下，實際繳費與帶孩子簽到的是爸爸。
 | # | 決策 |
 |---|---|
 | 1 | 家庭成員**可以幫孩子簽到**（同意凍結令相關變更，範圍見 §5） |
-| 2 | 通知**發給全家** |
+| 2 | 通知**發給全家**（例外見決策 8） |
 | 3 | 一個帳號**同一時間只屬於一個家庭** |
 | 4 | **第二階段要做**：成員可以自己下單 |
 | — | 成員（例如爸爸）可以幫家裡既有的訂單**付款** |
+| 5 | 成員**可以預約課堂**，前提是教練先開放時段（現行流程本來就是教練開時段、家長選） |
+| 6 | 第二階段成員**可以開團、參團**；同一家庭在同一團**只算一戶**，不能邀自己家人湊團，不會拿到第二份團購優惠 |
+| 7 | 成員新增的孩子**掛在成員自己名下**（Ragic 家長＝該成員），全家都看得到；成員也可以把**自己**新增為學員 |
+| 8 | **發票 Email 只寄報名者**；**簽到通知只發給簽到的人**；其餘通知照決策 2 發全家 |
 
 **設計原則**
 
@@ -59,13 +63,14 @@ Ragic 掛在媽媽名下，實際繳費與帶孩子簽到的是爸爸。
 | 與教練的課程聊天室 | ✓ | ✓ | 一 |
 | 期末評鑑（查看、填寫） | ✓ | ✓ | 一 |
 | **幫孩子簽到** | ✓ | ✓ | 一 |
-| 預約課堂 | ✓ | ✓（**待確認**：視同簽到的一部分） | 一 |
-| **幫已存在的訂單／付款單付款**（上傳匯款證明、填後五碼） | ✓ | ✓ | 一 |
+| 預約課堂（只能選教練已開放的時段） | ✓ | ✓ | 一 |
+| **幫已存在的訂單／付款單／團購付款**（上傳匯款證明、填後五碼） | ✓ | ✓ | 一 |
 | 取消訂單／付款單 | ✓ | 僅自己下的 | 一 |
 | 自己下新訂單 | ✓ | ✓ | **二** |
-| 團購開團／參團 | ✓ | ✗（**待確認**，第二階段再評估） | 二 |
+| 團購開團／參團（同一家庭同一團只算一戶） | ✓ | ✓ | **二** |
+| 團購送審、取消團 | 僅團主 | 僅團主 | — |
 | 改孩子資料（會寫回 Ragic） | 僅孩子的所屬家長 | 僅孩子的所屬家長 | — |
-| 新增孩子 | 加在自己名下（**待確認**，見 §13） | 同左 | — |
+| 新增孩子，或把自己新增為學員 | 加在自己名下，全家可見 | 同左 | 一 |
 | 轉讓堂數 | 僅購買人 | 僅購買人 | — |
 | 改自己的個人資料 | 本人 | 本人 | — |
 | 推薦（MGM）獎勵 | 個人 | 個人 | — |
@@ -140,7 +145,8 @@ familyOf(client, parentId)         → { familyId, role, relationship } | null
 | `checkout.js` POST /:checkoutId/cancel | 同上 | 下單人或擁有者 |
 | `uploads.js` POST /payment-proof | 本人的付款單 | 全家的付款單 |
 | ⛔ `checkins.js` POST /self、POST / | 學員屬於本人 | 學員 ∈ 全家（凍結政策 2「一方簽到＝整組生效、揭露簽到方全名」維持；簽到方記實際操作的成員） |
-| ⛔ `slots.js` GET /period/:coursePeriodId、POST /:id/book | 學員屬於本人 | 學員 ∈ 全家（**待確認**，見 §2；凍結政策 1 不變） |
+| ⛔ `slots.js` GET /period/:coursePeriodId、POST /:id/book | 學員屬於本人 | 學員 ∈ 全家；仍只能選教練已開放的時段（現行規則，決策 5）；凍結政策 1「即時 confirmed、不走同組確認」不變 |
+| `groupOrders.js` GET /mine、GET /:id、POST /:id/my-proof | 本人在團內 | 全家任一人在團內即可查看、幫忙上傳付款資料（決策「成員可以付款」） |
 | `learn.js` GET /history/:periodId | 學員屬於本人 | 學員 ∈ 全家 |
 | `evaluations.js` GET /mine、GET /:id、POST /:id/submit | 本人 | 全家 |
 | `chat.js` 全部 7 支（GET /rooms、GET /period/:coursePeriodId/room、GET /rooms/:id、messages 讀寫、upload、read） | `chatRooms.listRoomsForParent`、`chatRooms.canAccess`、`chat.js` 內的課期檢查：孩子的 `parent_id`＝本人 | 孩子 ∈ 全家；即時連線（`websocket.js` 經 `canAccess`）自動跟著生效；訊息以實際發話的成員具名 |
@@ -150,14 +156,14 @@ familyOf(client, parentId)         → { familyId, role, relationship } | null
 | 路由 | 理由 |
 |---|---|
 | `parents.js` PATCH /me、POST /me/sync | 本人資料 |
-| `parents.js` POST /me/students | 加在本人名下；字號若已在同家庭 → 提示「這位孩子已在您的家庭中」 |
+| `parents.js` POST /me/students | 加在本人名下、全家可見（決策 7）；也能新增自己為學員（現行只檢查姓名、生日、身分證格式，沒有年齡限制）；字號若已在同家庭 → 提示「這位孩子已在您的家庭中」 |
 | `parents.js` PATCH /me/students/:id | 只有所屬家長能改（會寫回 Ragic） |
 | `parents.js` DELETE /me/students/:id | 已固定回 405「請洽櫃臺」 |
 | `transfers.js` 3 支 | 轉讓維持只限本人（§2） |
 | `referrals.js` 2 支 | 推薦是個人的 |
 | `onboarding.js` POST /claim | 功能導覽（feature tour）領取，與家庭無關 |
 | `coaches.js` 2 支 | 教練公開資料，沒有擁有權 |
-| `groupOrders.js` 12 支 | 第一階段不動，第二階段再評估 |
+| `groupOrders.js` 草稿 3 支、POST /by-token/:token/lookup-phone、POST /:id/submit、POST /:id/cancel | 草稿是個人的；送審與取消團只限團主 |
 | `enrollments.js` POST /、`checkout.js` POST /route | 第二階段 |
 
 ### 第二階段
@@ -166,6 +172,7 @@ familyOf(client, parentId)         → { familyId, role, relationship } | null
 |---|---|
 | `enrollments.js` POST / | 學員 ∈ 全家；訂單購買人＝下單的成員 |
 | `checkout.js` POST /route | 同上 |
+| `groupOrders.js` POST /（開團）、POST /by-token/:token/join（參團）、GET /by-token/:token（邀請頁） | 學員 ∈ 全家；參團時現行「本人已在團內」（`ALREADY_MEMBER`）擴大為「家人已在團內」→ 擋下，一家在同一團只算一戶，不會拿到第二份優惠（決策 6）；邀請頁的「已加入」判斷一併擴大到全家 |
 | `parents.js` POST /（註冊）與 auth 註冊流程 | 手機命中 `family_pending_members` → 註冊免填孩子、自動加入家庭 |
 | 優惠 `services/promotions.js`、`services/referrals.js`、`enrollments.js` 的 TRIAL50 | 新客／試上資格以**家庭**為單位；私人券（`eligible_parent_id`）維持個人；櫃台連結家庭**不算推薦**；同家庭互推不給獎勵 |
 
@@ -176,7 +183,7 @@ familyOf(client, parentId)         → { familyId, role, relationship } | null
 > 家教的購買紀錄**不會寫回 Ragic**（`ragicWriteback` 只回寫家長與學員基本資料），
 > 所以成員下單不影響 Ragic。
 
-## 6. 通知（決策 2：發給全家）
+## 6. 通知（決策 2 發全家；決策 8 的例外）
 
 推播只有一個出口 `line.pushMessage`，全部呼叫點逐一決定：
 
@@ -185,11 +192,11 @@ familyOf(client, parentId)         → { familyId, role, relationship } | null
 | ⛔ `cron/index.js` L135（每小時整點） | 上課前 1 小時提醒 | 全家 |
 | ⛔ `cron/index.js` L191（每天 09:00） | 堂數快到期提醒 | 全家 |
 | ⛔ `cron/index.js` L299（每小時 :05） | 期末評鑑邀請與提醒 | 全家 |
-| `services/checkinNotify.js`（家長段） | 簽到完成通知 | 全家（含團報夥伴的家庭） |
+| `services/checkinNotify.js`（家長段） | 簽到完成通知 | **只發給簽到的人**（`checkin_records.checked_in_by_parent_id`，決策 8）。櫃台補登沒有簽到的家長、以及同組其他家庭的孩子 → 照舊發給該孩子的所屬家長 |
 | `routes/learn.js`（兩處） | 課程計畫、上課紀錄發布 | 全家 |
 | `routes/admin/enrollments.js`（退回補件） | 報名被退回補件 | 全家（成員也能補傳付款證明） |
 | `services/enrollmentNotify.js` | 報名成功（只推教練） | 不變 |
-| `services/reconcileNotify.js`（**Email**，由 `admin/checkouts.js`、`admin/enrollments.js` 排入） | 對帳成功、發票 | 不變：寄給購買人（**待確認**，見 §13） |
+| `services/reconcileNotify.js`（**Email**，由 `admin/checkouts.js`、`admin/enrollments.js` 排入） | 對帳成功、發票 | 不變：只寄報名者（決策 8） |
 | ⛔ `cron/index.js` L255（每天 09:30）、`services/referrals.js` | 推薦（MGM）相關 | 不變（個人） |
 | `routes/groupOrders.js`、`services/groupOrderSubmit.js`、`routes/admin/groupOrders.js` | 團購 | 不變（依參與人） |
 | `routes/transfers.js`、`routes/admin/transfers.js` | 轉讓 | 不變（當事人） |
@@ -199,16 +206,25 @@ familyOf(client, parentId)         → { familyId, role, relationship } | null
   改成全家後每位收件人各佔一筆，不會重複推。其他通知是事件觸發、一次性，逐一發給全家即可。
 - **推播量會增加**（每個家庭多 1～3 人），受既有的每小時上限與 LINE 月額度保護；
   上線前先估算月用量（見 §12）。
+- 家長端簽到推播（事件 `checkin_confirmed_parent`）目前在正式環境是**關的**：`/health`
+  顯示只開了 `checkin_confirmed_coach`。收件人規則改好之後，何時打開另外決定。
 
-## 7. 後台
+## 7. 後台（櫃台在哪裡分家庭）
 
-- 「(Z01) 家長 & 學員關係」家長詳細頁新增「家庭」區塊：建立家庭（以此家長為擁有者）、
-  依手機搜尋既有帳號加入成員、設定關係、移除成員、轉移擁有者、凍結家庭、異動紀錄。
+全部在左側選單「**客戶資料管理 →（Z01）家長 & 學員關係**」這一頁（`CustomerParentsPage.jsx`）
+完成，不另開選單項目，權限沿用這一頁：
+
+1. **家長清單**：新增「家庭」欄（例如「媽媽的家庭・3 人」），篩選列加「有無家庭」。
+2. **家長編輯視窗**（清單右邊的「編輯」，`RagicZ01Modal.jsx`）：現在的
+   「Family ID（家庭組・背景預留）」那一行換成「家庭」區塊——建立家庭（以此家長為擁有者）、
+   用手機搜尋既有帳號加入成員並選關係、移除成員、轉移擁有者、凍結家庭、異動紀錄。
+3. **「家庭建議」按鈕**（頁面上方，顯示待處理數，目前 24）：列出「同一個身分證字號掛在
+   不同帳號」的孩子。點一筆 → 確認視窗預填擁有者（Ragic 上的家長）、成員、關係，以及要停用的
+   重複學員 → 櫃台確認後才建立。系統只建議，不自動建立。
+
 - 新端點 `/api/admin/families`：`requireAdminAuth` ＋ `requireResource('customer-parents')`；
   比照 `customerParents.js`，manager／staff 只能處理擁有者 `primary_venue_id` 在自己範圍內的家庭；
   轉移擁有者與凍結限 admin。
-- 「家庭建議」清單：系統列出「同一個身分證字號掛在不同帳號」的孩子（目前 24 位），
-  櫃台點進去確認後一鍵建立家庭。系統只建議，不自動建立。
 - 每次異動寫 `family_audit_logs`，並用 LINE 通知家庭所有成員。
 
 ## 8. 家長端（LIFF）
@@ -216,6 +232,8 @@ familyOf(client, parentId)         → { familyId, role, relationship } | null
 - 個人頁「我的家庭」：成員與關係；孩子依所屬家長分組。
 - 我的課程、帳單：全家的，標示購買人。
 - 簽到：全家的孩子都有簽到鈕。
+- 預約：全家的孩子都能選教練已開放的時段。
+- 團購（第二階段）：家人已在團內時，邀請頁顯示「您的家人已加入此團」，不再給加入鈕。
 - 「身分證字號已存在」紅字改為引導：「這位孩子已登記在另一個家庭帳號下。如果是同一個家庭，
   請聯絡櫃台協助連結。」（併入紅字修改工作）
 
@@ -238,7 +256,9 @@ familyOf(client, parentId)         → { familyId, role, relationship } | null
 - **資料庫層**：§5「要改」的每支路由各一組「成員可以」與「非家庭成員仍被擋」；
   聊天室另測即時連線加入房間（`canAccess`）。
 - **e2e**：成員簽到仍是整組生效（凍結政策 2）、櫃台手動扣課不受影響（凍結政策 3）、
-  成員上傳付款證明（訂單與付款單兩條路）、移除後立即失效。
+  成員上傳付款證明（訂單、付款單、團購三條路）、移除後立即失效。
+- **通知收件人**：成員簽到 → 只有簽到的成員收到；櫃台補登、同組其他家庭 → 照舊發給孩子的所屬家長。
+- **第二階段**：家人已在團內時參團被擋；非家人照常可參團。
 - **變異測試**：每一個「∈ 全家」條件拿掉，對應測試必須轉紅。
 - 一律在 Replit 工作區（LF、Node 20.20）執行；本機 CRLF 會誤判原始碼比對類測試。
 
@@ -253,18 +273,20 @@ familyOf(client, parentId)         → { familyId, role, relationship } | null
 
 | 風險 | 處理 |
 |---|---|
-| 修改凍結檔（checkins.js、slots.js、courses.js、cron/index.js） | 決策 1、2 同意的是「簽到」與「通知」；courses.js 的可見範圍與 slots.js 的預約屬延伸，實作前把 ⛔ 檔的每處修改再列一次給擁有者確認；必須附凍結政策 1、2、3 的迴歸測試 |
+| 修改凍結檔（checkins.js、slots.js、courses.js、cron/index.js） | 決策 1、2、5 已同意簽到、通知、預約；courses.js 只改可見範圍，不動簽到欄位。實作前仍把 ⛔ 檔的每處修改列給擁有者確認；必須附凍結政策 1、2、3 的迴歸測試 |
 | 盤點遺漏（helper 參數、`req.liffUser`、服務層） | 實作第一步重掃服務層；變異測試兜底 |
 | 推播量增加、LINE 月額度與費用 | 上線前以現有家庭規模估算；既有每小時上限與額度保護 |
 | 帳單隱私（匯款截圖、統編） | 依決策全家可見；家庭必須由櫃台確認建立 |
 | 擁有者帳號被盜 | 櫃台可凍結家庭、轉移擁有者；成員異動都會通知全家 |
 | 一人一家（決策 3）遇到跨多家的祖父母 | 第一版由櫃台個別處理 |
 
-## 13. 待確認
+## 13. 已定案與解讀
 
-1. 成員能不能**預約課堂**（目前規劃：可以，視同簽到）。
-2. 第二階段成員能不能**開團／參團**（目前規劃：不行）。
-3. 成員新增的孩子掛在**成員自己名下**（目前規劃），還是一律掛到**擁有者名下**
-   （Ragic 上一家的孩子就會集中在同一位家長底下）。
-4. 對帳成功的**發票 Email** 是否也寄全家（目前規劃：只寄購買人；決策 2 談的是 LINE 推播，
-   帳單明細全家本來就能在 LIFF 看到）。
+第一版的四題已由擁有者回覆（2026-09-23，見決策 5～8）。以下兩點是依回覆做的解讀，
+實作前如有不同再修正：
+
+1. **團購「同一家庭同一團只算一戶」**：家人已在團內（團主或已參團），另一位家人再用邀請連結
+   參團會被擋下，改由已在團內的那位處理。現行團購參團後不能再加孩子，所以家人要一起報，
+   就由同一位一次把孩子選齊（第二階段成員可以選全家的孩子）。
+2. **「簽到通知只發給簽到的人」只管自己家的孩子**：同組其他家庭的孩子，照舊通知那個孩子的
+   所屬家長；櫃台補登沒有簽到的家長，也照舊通知孩子的所屬家長。
