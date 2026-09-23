@@ -676,6 +676,15 @@ export default function ReconcilePage() {
     });
   }, [list, filters, groupFocus]);
 
+  // 聚焦中那一團的摘要。從清單任一筆拿即可 —— 同團每張付款單帶的是同一份。
+  // 必須放在下面 `if (!list) return` 之前：hook 數量每次 render 都要一樣，放在後面的話
+  // 清單載入前後 hook 數不同，React 丟 #310，整頁變成「頁面發生錯誤」（2026-09-23 正式站）。
+  const groupFocusInfo = useMemo(() => {
+    if (!groupFocus) return null;
+    const hit = (list || []).find((r) => String(r.group_order?.id || '') === groupFocus);
+    return hit ? hit.group_order : null;
+  }, [list, groupFocus]);
+
   async function handleCancelConfirm() {
     if (!cancelling) return;
     const reason = cancelReason.trim();
@@ -730,13 +739,6 @@ export default function ReconcilePage() {
       payment_proof_url: checkout.payment_proof_url || order.payment_proof_url,
     }))
   ));
-
-  // 聚焦中那一團的摘要。從清單任一筆拿即可 —— 同團每張付款單帶的是同一份。
-  const groupFocusInfo = useMemo(() => {
-    if (!groupFocus) return null;
-    const hit = (list || []).find((r) => String(r.group_order?.id || '') === groupFocus);
-    return hit ? hit.group_order : null;
-  }, [list, groupFocus]);
 
   const columns = [
     {
