@@ -1817,10 +1817,14 @@ router.post('/:id/return-for-fix', requireAdminAuth, requireResource('reconcile'
     );
 
     const p = await client.query(
-      `SELECT line_uid FROM parents WHERE phone = $1 AND line_uid IS NOT NULL LIMIT 1`,
+      `SELECT id FROM parents WHERE phone = $1 AND line_uid IS NOT NULL LIMIT 1`,
       [row.parent_phone]
     );
-    notify = { uid: p.rows[0]?.line_uid || null, venueId: row.venue_id, enrollmentId: row.id };
+    // 發給全家（家庭帳號，規格 §6：成員也能補傳付款證明）；開關沒開＝原本的家長
+    const recipients = p.rowCount
+      ? await require('../../services/familyScope').familyRecipients([p.rows[0].id], client)
+      : [];
+    notify = { uids: recipients.map((x) => x.line_uid).filter(Boolean), venueId: row.venue_id, enrollmentId: row.id };
 
     await client.query('COMMIT');
     res.json(await readEnrollment(row.id));
@@ -1834,15 +1838,17 @@ router.post('/:id/return-for-fix', requireAdminAuth, requireResource('reconcile'
 
   // best-effort 通知家長（交易外；失敗只記 log，不影響已落地的退回結果）
   // line 沿用本檔既有的 lazy require 慣例（見 reconcile 內），不動模組載入順序。
-  if (notify && notify.uid) {
+  if (notify && notify.uids && notify.uids.length) {
     const line = require('../../services/line');
     const liffUrl = `${process.env.LIFF_URL_PARENT || process.env.LIFF_URL || 'https://liff.line.me/-'}/enroll-status/${notify.enrollmentId}`;
-    line.pushMessage(notify.uid, line.templates.returnedForFix({
-      title: '您的報名已退回補件',
-      reason,
-      hint: '原本的轉帳末 5 碼與匯款證明已清空，請重新填寫並上傳。',
-      liffUrl,
-    }), notify.venueId).catch((e) => console.warn('[enrollment return-for-fix push]', e.message));
+    for (const uid of notify.uids) {
+      line.pushMessage(uid, line.templates.returnedForFix({
+        title: '您的報名已退回補件',
+        reason,
+        hint: '原本的轉帳末 5 碼與匯款證明已清空，請重新填寫並上傳。',
+        liffUrl,
+      }), notify.venueId).catch((e) => console.warn('[enrollment return-for-fix push]', e.message));
+    }
   }
 });
 

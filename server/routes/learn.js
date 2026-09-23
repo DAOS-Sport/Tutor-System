@@ -182,15 +182,16 @@ router.post('/uploads', requireCoach, uploadFile, async (req, res) => {
 async function notifyPlanPublished(periodId) {
   const r = await pool.query(
     `SELECT cp.venue_id, co.name AS coach_name,
-            ARRAY(SELECT DISTINCT pa.line_uid FROM course_period_enrollments e
+            ARRAY(SELECT DISTINCT s.parent_id::text FROM course_period_enrollments e
                     JOIN students s ON s.id = e.student_id
-                    JOIN parents pa ON pa.id = s.parent_id
-                   WHERE e.course_period_id = cp.id AND e.status = 'active' AND pa.line_uid IS NOT NULL) AS uids
+                   WHERE e.course_period_id = cp.id AND e.status = 'active') AS parent_ids
        FROM course_periods cp JOIN coaches co ON co.id = cp.coach_id WHERE cp.id = $1`,
     [periodId]
   );
   if (!r.rowCount) return;
-  const { venue_id, coach_name, uids } = r.rows[0];
+  const { venue_id, coach_name } = r.rows[0];
+  // 發給全家（家庭帳號，規格 §6）；開關沒開＝原本的家長
+  const uids = (await familyScope.familyRecipients(r.rows[0].parent_ids)).map((x) => x.line_uid).filter(Boolean);
   if (!uids || uids.length === 0) return;
   const liffUrl = (process.env.LIFF_URL_PARENT || process.env.LIFF_URL || 'https://liff.line.me/-') + `/history/${periodId}`;
   const msg = line.templates.coursePlanPublished({ coachName: coach_name, liffUrl });
@@ -203,16 +204,17 @@ async function notifyPlanPublished(periodId) {
 async function notifyRecordSubmitted(sessionId) {
   const r = await pool.query(
     `SELECT cp.venue_id, cp.id AS period_id, co.name AS coach_name, cs.scheduled_at,
-            ARRAY(SELECT DISTINCT pa.line_uid FROM course_period_enrollments e
+            ARRAY(SELECT DISTINCT s.parent_id::text FROM course_period_enrollments e
                     JOIN students s ON s.id = e.student_id
-                    JOIN parents pa ON pa.id = s.parent_id
-                   WHERE e.course_period_id = cp.id AND e.status = 'active' AND pa.line_uid IS NOT NULL) AS uids
+                   WHERE e.course_period_id = cp.id AND e.status = 'active') AS parent_ids
        FROM course_sessions cs JOIN course_periods cp ON cp.id = cs.course_period_id
        LEFT JOIN coaches co ON co.id = COALESCE(cs.coach_id, cp.coach_id) WHERE cs.id = $1`,
     [sessionId]
   );
   if (!r.rowCount) return;
   const row = r.rows[0];
+  // 發給全家（家庭帳號，規格 §6）；開關沒開＝原本的家長
+  row.uids = (await familyScope.familyRecipients(row.parent_ids)).map((x) => x.line_uid).filter(Boolean);
   if (!row.uids || row.uids.length === 0) return;
   const [, month, day] = formatPlainDate(row.scheduled_at).split('-');
   const dateStr = `${Number(month)}/${Number(day)}`;

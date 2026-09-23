@@ -79,6 +79,36 @@ async function isFamilyOwner(req, db = pool) {
   return !!(scope.family && scope.family.family_status === 'active' && scope.family.role === 'owner');
 }
 
+/**
+ * 通知收件人擴大到全家（規格 §6、決策 2）：給「孩子的所屬家長」id 清單，回傳
+ * [{ parent_id, line_uid }]，含原本的家長，再加上他們所在家庭（未凍結）的 active 成員。
+ * 開關依「收件人」的手機判斷：試點時只有名單內的家人會多收到。
+ */
+async function familyRecipients(parentIds, db = pool) {
+  const ids = [...new Set((parentIds || []).filter(Boolean).map(String))];
+  if (!ids.length) return [];
+  const base = (await db.query(
+    `SELECT id AS parent_id, line_uid FROM parents WHERE id::text = ANY($1::text[])`,
+    [ids]
+  )).rows;
+  const flag = await getFeatureFlag(FLAG_KEY, db);
+  if (!flag.enabled) return base;
+  const extra = (await db.query(
+    `SELECT DISTINCT p.id AS parent_id, p.line_uid, p.phone
+       FROM family_members fm1
+       JOIN families f ON f.id = fm1.family_id AND f.status = 'active'
+       JOIN family_members fm2 ON fm2.family_id = fm1.family_id AND fm2.status = 'active'
+       JOIN parents p ON p.id = fm2.parent_id AND COALESCE(p.is_active, TRUE) = TRUE
+      WHERE fm1.status = 'active' AND fm1.parent_id::text = ANY($1::text[])`,
+    [ids]
+  )).rows.filter((row) => flagAllowsPhone(flag, row.phone));
+  const out = new Map(base.map((row) => [String(row.parent_id), row]));
+  for (const row of extra) {
+    if (!out.has(String(row.parent_id))) out.set(String(row.parent_id), { parent_id: row.parent_id, line_uid: row.line_uid });
+  }
+  return [...out.values()];
+}
+
 module.exports = {
   FLAG_KEY,
   isEnabledFor,
@@ -88,4 +118,5 @@ module.exports = {
   actingParentIds,
   actingPhones,
   isFamilyOwner,
+  familyRecipients,
 };

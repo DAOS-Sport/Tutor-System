@@ -56,10 +56,12 @@ async function loadCheckins(db, sessionId, studentIds) {
   const r = await db.query(
     `SELECT cr.id AS checkin_id, cr.checked_in_at, cr.checked_in_source,
             s.name AS student_name,
-            p.line_uid AS parent_uid,
+            -- 決策 8：簽到通知只發給簽到的人。簽到者是孩子的家長本人或同一家庭（未凍結）的成員 → 發給簽到者；
+            -- 櫃台補登（沒有簽到家長）、團報夥伴幫忙簽到的他家孩子 → 照舊發給孩子的所屬家長。
+            CASE WHEN fam.same_family THEN ap.line_uid ELSE p.line_uid END AS parent_uid,
             p.name AS parent_name,
             cp.course_type AS course_type,
-            p.primary_venue_id AS parent_venue_id,
+            CASE WHEN fam.same_family THEN ap.primary_venue_id ELSE p.primary_venue_id END AS parent_venue_id,
             p.line_login_channel_id AS parent_login_channel,
             co.name AS coach_name, co.line_uid AS coach_uid,
             co.line_login_channel_id AS coach_login_channel,
@@ -69,6 +71,15 @@ async function loadCheckins(db, sessionId, studentIds) {
        JOIN course_periods cp ON cp.id = cs.course_period_id
        JOIN students s ON s.id = cr.student_id
        LEFT JOIN parents p ON p.id = s.parent_id
+       LEFT JOIN parents ap ON ap.id = cr.checked_in_by_parent_id
+       LEFT JOIN LATERAL (
+         SELECT ap.id = s.parent_id OR EXISTS (
+                  SELECT 1 FROM family_members f1
+                    JOIN families ff ON ff.id = f1.family_id AND ff.status = 'active'
+                    JOIN family_members f2 ON f2.family_id = f1.family_id AND f2.status = 'active'
+                   WHERE f1.parent_id = ap.id AND f1.status = 'active' AND f2.parent_id = s.parent_id
+                ) AS same_family
+       ) fam ON ap.id IS NOT NULL
        LEFT JOIN coaches co ON co.id = COALESCE(cs.coach_id, cp.coach_id)
        LEFT JOIN venues v ON v.id = cp.venue_id
       WHERE cr.course_session_id = $1
