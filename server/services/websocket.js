@@ -133,7 +133,7 @@ function initWebSocket(server) {
       return ws.close(4003, 'Unsupported token type');
     }
 
-    const ok = await canAccess({ roomId, role, userId, venueId }).catch(() => false);
+    const ok = await canAccess({ roomId, role, userId, venueId, phone: payload.phone }).catch(() => false);
     if (!ok) return ws.close(4003, 'Forbidden');
 
     ws.userType = role;

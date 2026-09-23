@@ -135,16 +135,17 @@ async function _hydrate(rows, viewer) {
   });
 }
 
-async function listRoomsForParent(parentId) {
+// parentIds：家庭帳號時是全家的家長 id（家人孩子的聊天室也看得到，規格 §5）；未讀數仍以本人計
+async function listRoomsForParent(parentId, parentIds = [parentId]) {
   const r = await pool.query(`
     ${ROOM_BASE_SELECT}
     WHERE EXISTS (
       SELECT 1 FROM course_period_enrollments e
       JOIN students s ON s.id = e.student_id
-      WHERE e.course_period_id = cp.id AND e.status = 'active' AND s.parent_id = $1
+      WHERE e.course_period_id = cp.id AND e.status = 'active' AND s.parent_id::text = ANY($1::text[])
     )
     ${ROOM_RECENCY_ORDER}
-  `, [parentId]);
+  `, [parentIds.map(String)]);
   return _hydrate(r.rows, { type: 'parent', id: parentId });
 }
 
@@ -176,7 +177,8 @@ async function listRoomsForAdmin({ search, venueId, venueIds } = {}) {
   return _hydrate(r.rows, { type: 'admin', id: null });
 }
 
-async function canAccess({ roomId, role, userId, venueId } = {}) {
+// phone：家長的手機（家庭帳號開關可依手機試點）；舊呼叫端不帶也能用
+async function canAccess({ roomId, role, userId, venueId, phone } = {}) {
   if (!roomId) return false;
   if (role === 'admin') {
     const r = await pool.query(`SELECT 1 FROM chat_rooms WHERE id = $1`, [roomId]);
@@ -200,11 +202,14 @@ async function canAccess({ roomId, role, userId, venueId } = {}) {
     return r.rowCount > 0;
   }
   if (role === 'parent') {
+    // 家人孩子的課程聊天室也能進（HTTP 與 websocket 都走這裡，規格 §5）
+    const { parentIds } = await require('./familyScope').scopeFor({ id: userId, phone });
     const r = await pool.query(
       `SELECT 1 FROM chat_rooms cr
          JOIN course_period_enrollments e ON e.course_period_id = cr.course_period_id
          JOIN students s ON s.id = e.student_id
-        WHERE cr.id = $1 AND e.status = 'active' AND s.parent_id = $2`, [roomId, userId]);
+        WHERE cr.id = $1 AND e.status = 'active' AND s.parent_id::text = ANY($2::text[])`,
+      [roomId, parentIds.map(String)]);
     return r.rowCount > 0;
   }
   return false;

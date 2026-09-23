@@ -28,6 +28,7 @@ const { pool } = require('../models/db');
 const { requireCoach } = require('../middlewares/coachAuth');
 const { requireParent } = require('../middlewares/parentAuth');
 const learning = require('../services/learning');
+const familyScope = require('../services/familyScope');
 const { saveBuffer, ALLOWED_MAX_BYTES } = require('../services/objectStorage');
 const line = require('../services/line');
 const { formatPlainDate } = require('../utils/dateTime');
@@ -153,9 +154,10 @@ router.get('/history/:periodId', requireParent, async (req, res) => {
     const guard = await pool.query(
       `SELECT 1 FROM course_period_enrollments e
        JOIN students s ON s.id = e.student_id
-       WHERE e.course_period_id = $1 AND s.parent_id = $2
+       WHERE e.course_period_id = $1 AND s.parent_id::text = ANY($2::text[])
          AND e.status IN ('active','transferred_out') LIMIT 1`,
-      [req.params.periodId, req.parent.id]
+      // 家人的孩子也看得到上課紀錄（家庭帳號，規格 §5）
+      [req.params.periodId, (await familyScope.actingParentIds(req)).map(String)]
     );
     if (!guard.rowCount) return res.status(403).json({ error: 'Forbidden' });
     const data = await learning.listLearningHistory(req.params.periodId);

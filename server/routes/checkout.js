@@ -2,6 +2,7 @@ const express = require('express');
 const { pool } = require('../models/db');
 const { requireParent } = require('../middlewares/parentAuth');
 const { parseProofInput } = require('../services/paymentProof');
+const familyScope = require('../services/familyScope');
 const {
   validateRequestId,
   payloadFingerprint,
@@ -22,12 +23,15 @@ router.use(requireParent);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CHECKOUT_ROUTE_OPERATION = 'route_checkout_session';
 
-function ownsCheckout(checkout, parent) {
+// 付款單屬於誰：下單的家長，或單內任一訂單的購買人／附加家長手機。
+// scope（家庭帳號，規格 §5）有給時，把「本人」擴大成全家；沒給＝只看本人（原本行為）。
+function ownsCheckout(checkout, parent, scope = null) {
   if (!checkout) return false;
-  if (checkout.parent_id && checkout.parent_id === parent.id) return true;
-  const phone = parent.phone;
+  const parentIds = scope?.parentIds || [parent.id];
+  const phones = scope?.phones || [parent.phone];
+  if (checkout.parent_id && parentIds.includes(checkout.parent_id)) return true;
   return (checkout.sub_orders || []).some((o) => (
-    o.parent_phone === phone || (o.extra_parent_phones || []).includes(phone)
+    phones.includes(o.parent_phone) || (o.extra_parent_phones || []).some((p) => phones.includes(p))
   ));
 }
 
@@ -222,7 +226,10 @@ router.get('/:checkoutId', async (req, res) => {
     if (!UUID_RE.test(checkoutId)) return res.status(404).json({ error: '找不到此付款單' });
     const checkout = await readCheckout(pool, checkoutId);
     if (!checkout) return res.status(404).json({ error: '找不到此付款單' });
-    if (!ownsCheckout(checkout, req.parent)) return res.status(403).json({ error: '無權檢視此付款單' });
+    // 家人的付款單也看得到（規格 §5 第一階段）
+    if (!ownsCheckout(checkout, req.parent, await familyScope.forRequest(req))) {
+      return res.status(403).json({ error: '無權檢視此付款單' });
+    }
     res.json(checkout);
   } catch (err) {
     console.error('[checkout GET]', err);
@@ -253,7 +260,8 @@ router.post('/:checkoutId/payment-proof', async (req, res) => {
       return res.status(404).json({ error: '找不到此付款單' });
     }
     const checkout = await readCheckout(client, checkoutId);
-    if (!ownsCheckout(checkout, req.parent)) {
+    // 家人可以幫忙付款（決策：成員可以幫既有訂單付款，規格 §2）
+    if (!ownsCheckout(checkout, req.parent, await familyScope.forRequest(req))) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: '無權操作此付款單' });
     }
@@ -309,11 +317,12 @@ router.post('/:checkoutId/payment-proof', async (req, res) => {
                 jsonb_build_array(jsonb_build_object(
                   'at', NOW(),
                   'action', CASE WHEN $6 THEN 'payment_proof_cleared' ELSE 'payment_submitted' END,
-                  'by', 'parent'
+                  'by', 'parent',
+                  'parent_id', $8::text
                 )),
               updated_at = NOW()
         WHERE checkout_id = $1`,
-      [checkoutId, nextLast5, nextProofUrl, nextCarrier, nextStatus, proofInput.clear, nextParentNote]
+      [checkoutId, nextLast5, nextProofUrl, nextCarrier, nextStatus, proofInput.clear, nextParentNote, req.parent.id]
     );
     await client.query(
       `UPDATE admin_enrollments
@@ -361,7 +370,10 @@ router.post('/:checkoutId/cancel', async (req, res) => {
       [checkoutId]
     );
     const checkout = await readCheckout(client, checkoutId);
-    if (!ownsCheckout(checkout, req.parent)) {
+    // 取消只限下單的人，或家庭擁有者（規格 §2：成員只能取消自己下的）
+    const scope = await familyScope.forRequest(req);
+    const isOwner = scope.family?.role === 'owner' && scope.family.family_status === 'active';
+    if (!ownsCheckout(checkout, req.parent) && !(isOwner && ownsCheckout(checkout, req.parent, scope))) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: '無權取消此付款單' });
     }

@@ -47,27 +47,32 @@ async function ensureInvitation(periodId) {
   return created;
 }
 
-async function listForParent(parentId) {
+// parentIds：單一家長 id，或家庭帳號的全家 id 陣列（家人可以看、可以代填，規格 §5）
+function _ids(parentIds) {
+  return (Array.isArray(parentIds) ? parentIds : [parentIds]).filter(Boolean).map(String);
+}
+
+async function listForParent(parentIds) {
   const r = await pool.query(
     `SELECT ce.*, co.name AS coach_name, cp.venue_id, cp.course_type
        FROM course_evaluations ce
        JOIN coaches co ON co.id = ce.coach_id
        JOIN course_periods cp ON cp.id = ce.course_period_id
-      WHERE ce.parent_id = $1
+      WHERE ce.parent_id::text = ANY($1::text[])
       ORDER BY ce.invited_at DESC`,
-    [parentId]
+    [_ids(parentIds)]
   );
   return r.rows;
 }
 
-async function getMine(evalId, parentId) {
+async function getMine(evalId, parentIds) {
   const r = await pool.query(
     `SELECT ce.*, co.name AS coach_name, cp.venue_id
        FROM course_evaluations ce
        JOIN coaches co ON co.id = ce.coach_id
        JOIN course_periods cp ON cp.id = ce.course_period_id
-      WHERE ce.id = $1 AND ce.parent_id = $2`,
-    [evalId, parentId]
+      WHERE ce.id = $1 AND ce.parent_id::text = ANY($2::text[])`,
+    [evalId, _ids(parentIds)]
   );
   return r.rows[0] || null;
 }
