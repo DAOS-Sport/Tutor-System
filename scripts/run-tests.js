@@ -127,6 +127,7 @@ const UNIT = [
   // 的資料當詳情 API 用（.map on undefined → ErrorBoundary → 整頁掛掉，
   // 而 mock 資料補齊了欄位，開發時看不到）。專案沒有 eslint。
   'tests/frontend_undefined_call_test.js',
+  'tests/react_hooks_order_test.js',
   // 清單分批載入。全量載入的壞法只在正式庫（破千筆）才會撞到 axios 的 10 秒逾時，
   // 開發機 151 筆怎麼點都是好的 —— 所以只能靠測試盯著 limit 有沒有被拿掉。
   'tests/list_pagination_test.js',
