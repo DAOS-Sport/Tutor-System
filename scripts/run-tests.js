@@ -164,6 +164,7 @@ const UNIT = [
 
 // 需要真實 Postgres。多數含破壞性前置清理，只可對拋棄式測試庫執行。
 const DB = [
+  'tests/family_accounts_db_test.js',
   'tests/refund_entitlement_db_test.js',
   'tests/course_entitlement_is_active_db_test.js',
   'tests/counter_entitlement_routes_db_test.js',
