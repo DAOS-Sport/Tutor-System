@@ -548,6 +548,9 @@ async function addStudent(parentId, { name, idNumber, birth, ragic = false }) {
       const over = await call(create, { parent: host });
       assert.equal(over.status, 429);
       assert.equal(over.body.code, 'INVITE_LIMIT');
+      const hostOpen = (await familyProfile.familyBlock(host)).invites;
+      assert.equal(hostOpen.length, 5, '擁有者看得到 5 條');
+      assert.deepEqual((await familyProfile.familyBlock(guest)).invites, [], '成員看不到擁有者的連結');
       const notOwner = await call(revoke, { parent: guest, params: { id: open[0] } });
       assert.equal(notOwner.status, 403);
       assert.equal(notOwner.body.code, 'OWNER_ONLY');
