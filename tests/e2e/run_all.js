@@ -38,6 +38,7 @@ const PATHS = [
   ['TrialFullChain', 'trial_full_chain.js'],
   ['Flex18', 'flex_templates_verify.js'],
   ['FamilyPhase2', 'family_phase2.js'],
+  ['FamilyFrozenRoutes', 'family_frozen_routes.js'],
 ];
 
 const results = [];
