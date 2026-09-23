@@ -151,7 +151,11 @@ t('E2 首頁：3 個月內即將到期的組數、清單與警語', () => {
     '即將到期只該算進行中的 —— 已完成與待對帳算進來只是噪音');
 
   const page = strip(read(COACH_TODAY));
-  assert.ok(/3 個月內即將到期/.test(page), '首頁沒有顯示組數');
+  // 2026-09-22 擁有者依設計稿改版：標題改「即將到期通知」，組數移到旁邊的藥丸徽章
+  // （版面細節由 coach_home_layout_test 用真元件驗，那支同時鎖「舊標題不得再出現」）。
+  // 這裡守的是需求本身：組數要顯示，而且是後端算好的 expiring.count，不是前端自己數清單。
+  assert.ok(/即將到期通知/.test(page), '首頁沒有到期通知的標題');
+  assert.ok(/\{expiring\.count\}\s*組/.test(page), '首頁沒有顯示組數');
   assert.ok(/請提醒家長進行授課/.test(page), '缺少指定的警語');
   assert.ok(/expiring\.items\.map/.test(page), '沒有列出清單');
   // 「點進去要看得出是哪一筆報名」：光有姓名不夠，同一位學員可能有多期。
