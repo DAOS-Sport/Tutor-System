@@ -17,6 +17,8 @@ const ragicWriteback = require('../services/ragicWriteback');
 const { refreshParentMirrorFromRagic, ParentRefreshError, assertZ01Complete } = require('../services/parentRefresh');
 const { diffChanges, writeStudentAudit, parentActor } = require('../services/studentAudit');
 const { formatPlainDate } = require('../utils/dateTime');
+const familyProfile = require('../services/familyProfile');
+const familyScope = require('../services/familyScope');
 
 const router = express.Router();
 
@@ -107,12 +109,20 @@ async function loadMe(parentId) {
       ORDER BY created_at ASC`,
     [parentId]
   );
+  // 家庭區塊（家庭帳號，規格 §8）：開關沒開＝null。讀不到也不能讓個人頁整頁壞掉。
+  let family = null;
+  try {
+    family = await familyProfile.familyBlock({ id: pr.rows[0].id, phone: pr.rows[0].phone });
+  } catch (err) {
+    console.warn('[parents.me] family block unavailable:', err.code || err.message);
+  }
   return {
     ...pr.rows[0],
     students: sr.rows.map((student) => ({
       ...student,
       birth_date: formatPlainDate(student.birth_date),
     })),
+    family,
   };
 }
 
@@ -623,9 +633,18 @@ router.post('/me/students', requireParent, async (req, res) => {
     if (dup.rowCount) {
       const existing = dup.rows[0];
       if (String(existing.parent_id) !== String(req.parent.id)) {
+        // 家庭帳號（規格 §8、§14）：已在同一家庭 → 直接說明；不在 → 前端改顯示「申請加入家庭」
+        const scope = await familyScope.forRequest(req);
+        if (scope.enabled && scope.parentIds.map(String).includes(String(existing.parent_id))) {
+          return res.status(409).json({
+            error: '這位孩子已在您的家庭中，不需要再新增。',
+            code: 'STUDENT_IN_FAMILY',
+          });
+        }
         return res.status(409).json({
           error: '此身分證字號已有學員資料，請確認後再試；若需協助請聯絡客服。',
           code: 'STUDENT_ID_DUPLICATED',
+          can_apply_family: scope.enabled,
         });
       }
       if (existing.is_active === false) {
