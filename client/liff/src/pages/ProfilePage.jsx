@@ -108,7 +108,9 @@ export default function ProfilePage() {
   const [editOpen, setEditOpen] = useState(false);
   const [parentOpen, setParentOpen] = useState(false);
   const [studentOpen, setStudentOpen] = useState(false);
-  // 家庭帳號（規格 §8、§14）：申請表單的內容（null＝沒打開）。頂端重複提示、新增學員被擋時會帶資料打開。
+  // 家庭帳號（規格 §8、§14）：「我的家庭」折疊列（在編輯資料下方）＋申請表單的內容（null＝沒打開）。
+  // 頂端重複提示、新增學員被擋時會展開折疊列並帶資料打開表單。
+  const [familyOpen, setFamilyOpen] = useState(false);
   const [applyDraft, setApplyDraft] = useState(null);
   // 新增學員時身分證已在別的帳號 → 不顯示紅字，改成說明＋「申請加入家庭」
   const [dupApply, setDupApply] = useState(null);
@@ -154,8 +156,9 @@ export default function ProfilePage() {
 
   const incompleteStudent = students.find((student) => Object.keys(validateStudent(student)).length > 0 || !normalizeGender(student.gender));
 
-  // 打開家庭申請表單並捲到卡片
+  // 展開「我的家庭」、打開申請表單並捲過去
   function openFamilyApply(draft) {
+    setFamilyOpen(true);
     setApplyDraft(draft);
     setTimeout(() => document.getElementById('family-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0);
   }
@@ -299,10 +302,6 @@ export default function ProfilePage() {
         </div>
       )}
 
-      <div id="family-card">
-        <FamilyCard block={profile.family || null} applyDraft={applyDraft} setApplyDraft={setApplyDraft} onChanged={reloadProfile} />
-      </div>
-
       {/* 編輯資料：橫條 → 點擊展開「家長資料 / 學員資料」兩個子橫條 → 各自再點擊往下展開內容 */}
       <div className="mb-4">
         <Collapsible title="編輯資料" open={editOpen} onToggle={() => setEditOpen((o) => !o)} accent>
@@ -425,6 +424,12 @@ export default function ProfilePage() {
             </Collapsible>
           </div>
         </Collapsible>
+      </div>
+
+      {/* 我的家庭：同樣是折疊列，放在編輯資料下方（功能沒開時整列不出現） */}
+      <div id="family-card">
+        <FamilyCard block={profile.family || null} open={familyOpen} onToggle={() => setFamilyOpen((o) => !o)}
+          applyDraft={applyDraft} setApplyDraft={setApplyDraft} onChanged={reloadProfile} />
       </div>
 
       <ConfirmModal open={!!validationNotice} title="還差一點點，請確認資料"

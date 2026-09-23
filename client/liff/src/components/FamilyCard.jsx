@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import DateTimePicker from '../../../shared/DateTimePicker.jsx';
 import ConfirmModal from './ConfirmModal';
+import Collapsible from './Collapsible';
 import { useToast } from '../context/ToastContext';
 import { familyApi, RELATIONSHIP_OPTIONS } from '../api/family';
 import { formatPlainDate, formatTWDateTime, todayTaipeiYMD } from '../utils/format';
@@ -63,39 +64,38 @@ function InviteBox({ hasFamily, invites, onChanged }) {
     `邀請你加入我們的家庭，一起查看孩子的課程、幫忙繳費與簽到：${fullUrl(inv.url)}`)}`;
 
   return (
-    <div className="mt-3 rounded-lg border border-brand-teal/30 bg-brand-teal/5 p-3 text-xs">
-      <div className="font-bold text-gray-800">邀請家人加入</div>
-      <p className="mt-1 leading-5 text-gray-600">
-        {hasFamily
-          ? '產生連結傳給爸爸、媽媽或爺爺奶奶，對方用 LINE 打開、按「加入家庭」就完成。'
-          : '產生連結傳給家人，您會成為這個家庭的擁有者；對方用 LINE 打開、按「加入家庭」就完成。'}
-        連結只能用一次、7 天內有效。
+    <div className="rounded-lg border border-brand-teal/30 bg-brand-teal/5 p-2.5 text-[11px]">
+      <div className="text-xs font-bold text-gray-800">邀請家人加入</div>
+      <p className="mt-0.5 leading-4 text-gray-500">
+        傳連結給家人，用 LINE 打開就能加入（限用一次、7 天有效）。{hasFamily ? '' : '您會成為家庭擁有者。'}
       </p>
       {(invites || []).map((inv) => (
         <div key={inv.id} className="mt-2 rounded-lg border border-gray-200 bg-white p-2">
-          <div className="break-all font-mono text-[11px] text-gray-600">{fullUrl(inv.url)}</div>
-          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+          <div className="break-all font-mono text-gray-500">{fullUrl(inv.url)}</div>
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
             <a href={shareHref(inv)} target="_blank" rel="noopener noreferrer"
-              className="rounded-lg bg-[#06C755] px-3 py-1.5 font-bold text-white">用 LINE 傳送</a>
+              className="rounded-lg bg-[#06C755] px-2.5 py-1 font-bold text-white">用 LINE 傳送</a>
             <button type="button" onClick={() => copyText(fullUrl(inv.url)).then(() => setCopiedId(inv.id)).catch(() => setCopiedId(null))}
-              className="rounded-lg border border-gray-200 px-3 py-1.5 font-medium text-gray-700">
+              className="rounded-lg border border-gray-200 px-2.5 py-1 font-medium text-gray-700">
               {copiedId === inv.id ? '已複製 ✓' : '複製連結'}
             </button>
             <button type="button" disabled={busy} onClick={() => revoke(inv.id)}
-              className="px-1 py-1.5 font-medium text-brand-error disabled:opacity-60">作廢</button>
+              className="px-1 py-1 font-medium text-brand-error disabled:opacity-60">作廢</button>
+            <span className="ml-auto text-gray-400">有效到 {formatTWDateTime(inv.expires_at)}</span>
           </div>
-          <div className="mt-1 text-[11px] text-gray-400">有效到 {formatTWDateTime(inv.expires_at)}</div>
         </div>
       ))}
       <button type="button" disabled={busy} onClick={create}
-        className="mt-2 rounded-lg bg-brand-primary px-3 py-2 font-bold text-white disabled:opacity-60">
+        className="mt-2 rounded-lg bg-brand-primary px-3 py-1.5 text-xs font-bold text-white disabled:opacity-60">
         {busy ? '產生中…' : '產生邀請連結'}
       </button>
     </div>
   );
 }
 
-export default function FamilyCard({ block, applyDraft, setApplyDraft, onChanged }) {
+// 外觀跟「編輯資料」一樣是橫條式折疊（擁有者 2026-09-23：放在編輯資料下方、字小一點）；
+// 開關由個人頁控制，因為頂端「申請合併」、新增學員被擋時的「申請加入家庭」要能直接打開它。
+export default function FamilyCard({ block, open, onToggle, applyDraft, setApplyDraft, onChanged }) {
   const toast = useToast();
   const [relationship, setRelationship] = useState('');
   const [note, setNote] = useState('');
@@ -150,109 +150,114 @@ export default function FamilyCard({ block, applyDraft, setApplyDraft, onChanged
     g.kids.push(kid);
   }
 
+  // 收合時標題旁的狀態
+  const subtitle = family ? `共 ${(family.members || []).length} 人`
+    : pending ? '審核中'
+      : rebindRequired ? '需重新綁定' : '';
+
   return (
-    <section className="mb-4 rounded-xl border border-gray-200 bg-white p-4">
-      <h3 className="text-sm font-bold text-gray-900">我的家庭</h3>
-
-      {rebindRequired && (
-        <p className="mt-2 rounded-lg bg-amber-50 p-2.5 text-xs leading-5 text-amber-900">
-          您的 LINE 帳號換過了，家庭需要櫃台重新綁定後才會恢復。請聯絡櫃台協助。
-        </p>
-      )}
-
-      {family ? (
-        <div className="mt-2 space-y-3">
-          {family.status === 'frozen' && (
-            <p className="rounded-lg bg-gray-100 p-2.5 text-xs text-gray-700">家庭共用功能暫停中，目前只看得到自己名下的資料。如有疑問請聯絡櫃台。</p>
+    <div className="mb-4">
+      <Collapsible title="我的家庭" subtitle={subtitle} open={open} onToggle={onToggle} accent>
+        <div className="space-y-2.5 text-[11px] leading-4 text-gray-600">
+          {rebindRequired && (
+            <p className="rounded-lg bg-amber-50 p-2 text-amber-900">LINE 帳號換過了，請洽櫃台重新綁定家庭。</p>
           )}
-          <div className="flex flex-wrap gap-1.5">
-            {(family.members || []).map((m) => (
-              <span key={m.parent_id} className="rounded-full bg-brand-primary/10 px-2.5 py-1 text-xs font-medium text-brand-primary">
-                {m.name}（{m.relationship_label}）{m.role === 'owner' ? '・擁有者' : ''}{m.is_self ? '・我' : ''}
-              </span>
-            ))}
-          </div>
-          {groups.length > 0 && (
-            <div className="space-y-1.5">
-              <div className="text-xs font-bold text-gray-600">家人名下的孩子</div>
-              {groups.map((g) => (
-                <div key={g.owner} className="rounded-lg border border-gray-100 p-2.5 text-xs text-gray-700">
-                  <div className="text-gray-500">{g.name}（{g.rel}）名下</div>
-                  {g.kids.map((k) => (
-                    <div key={k.id} className="mt-0.5 font-medium text-gray-900">
-                      {k.name}<span className="ml-1 font-normal text-gray-500">{formatPlainDate(k.birth_date)}</span>
+
+          {family ? (
+            <>
+              {family.status === 'frozen' && (
+                <p className="rounded-lg bg-gray-100 p-2 text-gray-700">家庭共用暫停中，目前只看得到自己名下的資料。</p>
+              )}
+              <div className="flex flex-wrap gap-1">
+                {(family.members || []).map((m) => (
+                  <span key={m.parent_id} className="rounded-full bg-brand-primary/10 px-2 py-0.5 font-medium text-brand-primary">
+                    {m.name}（{m.relationship_label}）{m.role === 'owner' ? '・擁有者' : ''}{m.is_self ? '・我' : ''}
+                  </span>
+                ))}
+              </div>
+              {groups.length > 0 && (
+                <div className="space-y-1">
+                  <div className="font-bold text-gray-600">家人名下的孩子</div>
+                  {groups.map((g) => (
+                    <div key={g.owner} className="rounded-lg border border-gray-100 p-2">
+                      <div className="text-gray-400">{g.name}（{g.rel}）名下</div>
+                      {g.kids.map((k) => (
+                        <div key={k.id} className="mt-0.5 font-medium text-gray-900">
+                          {k.name}<span className="ml-1 font-normal text-gray-500">{formatPlainDate(k.birth_date)}</span>
+                        </div>
+                      ))}
                     </div>
                   ))}
                 </div>
-              ))}
-            </div>
-          )}
-          <p className="text-[11px] leading-5 text-gray-400">
-            家人可以一起查看孩子的課程、幫忙繳費、簽到與預約。孩子的基本資料由所屬的家長維護。
-          </p>
-          {block.can_invite && <InviteBox hasFamily invites={block.invites} onChanged={onChanged} />}
-          {family.role === 'owner' ? (
-            <p className="text-[11px] text-gray-400">您是這個家庭的擁有者；要退出或調整成員請洽櫃台。</p>
+              )}
+              <p className="text-gray-400">家人可一起看課程、繳費、簽到與預約；孩子資料由所屬家長維護。</p>
+              {block.can_invite && <InviteBox hasFamily invites={block.invites} onChanged={onChanged} />}
+              {family.role === 'owner' ? (
+                <p className="text-gray-400">您是擁有者；退出或調整成員請洽櫃台。</p>
+              ) : (
+                <button type="button" disabled={busy} onClick={() => setLeaving(true)}
+                  className="rounded-lg border border-gray-200 px-3 py-1.5 font-medium text-gray-600 disabled:opacity-60">退出家庭</button>
+              )}
+            </>
+          ) : pending ? (
+            <>
+              <p className="rounded-lg bg-brand-teal/10 p-2 text-gray-700">
+                <b>審核中</b>：以「{pending.relationship_label}」申請加入「{pending.target_student_name}」的家庭（{formatTWDateTime(pending.created_at)}），確認後會用 LINE 通知您。
+              </p>
+              <button type="button" disabled={busy} onClick={() => setCancelling(true)}
+                className="rounded-lg border border-gray-200 px-3 py-1.5 font-medium text-gray-600 disabled:opacity-60">取消申請</button>
+            </>
           ) : (
-            <button type="button" disabled={busy} onClick={() => setLeaving(true)}
-              className="rounded-lg border border-gray-200 px-3 py-2 text-xs font-medium text-gray-600 disabled:opacity-60">退出家庭</button>
+            <>
+              {request?.status === 'rejected' && (
+                <p className="rounded-lg bg-brand-error/5 p-2 text-brand-error">上次申請未通過：{request.reject_reason}</p>
+              )}
+              {block.can_invite && <InviteBox hasFamily={false} invites={block.invites} onChanged={onChanged} />}
+              <div>
+                <div className="text-xs font-bold text-gray-800">或申請加入家人的家庭</div>
+                <p className="mt-0.5 text-gray-500">家人已有帳號的話可以申請加入，櫃台確認後生效。</p>
+              </div>
+              {!applyDraft && (
+                <button type="button" onClick={() => setApplyDraft({ id_number: '', birth_date: '' })}
+                  className="rounded-lg bg-brand-primary px-3 py-1.5 text-xs font-bold text-white">申請加入家庭</button>
+              )}
+            </>
           )}
         </div>
-      ) : pending ? (
-        <div className="mt-2 space-y-2 text-xs text-gray-700">
-          <p className="rounded-lg bg-brand-teal/10 p-2.5 leading-5">
-            <b>審核中</b>：您以「{pending.relationship_label}」申請加入「{pending.target_student_name}」的家庭（{formatTWDateTime(pending.created_at)} 送出）。櫃台確認後會用 LINE 通知您。
-          </p>
-          <button type="button" disabled={busy} onClick={() => setCancelling(true)}
-            className="rounded-lg border border-gray-200 px-3 py-2 font-medium text-gray-600 disabled:opacity-60">取消申請</button>
-        </div>
-      ) : (
-        <div className="mt-2 space-y-2 text-xs text-gray-600">
-          {request?.status === 'rejected' && (
-            <p className="rounded-lg bg-brand-error/5 p-2.5 text-brand-error">上次的申請未通過：{request.reject_reason}</p>
-          )}
-          {block.can_invite && <InviteBox hasFamily={false} invites={block.invites} onChanged={onChanged} />}
-          <p className="pt-1 font-bold text-gray-800">或申請加入家人的家庭</p>
-          <p className="leading-5">孩子的另一位家長或爺爺奶奶已經有帳號的話，可以申請加入同一個家庭。櫃台確認後，就能一起查看、繳費、簽到。</p>
-          {!applyDraft && (
-            <button type="button" onClick={() => setApplyDraft({ id_number: '', birth_date: '' })}
-              className="rounded-lg bg-brand-primary px-3 py-2 text-xs font-bold text-white">申請加入家庭</button>
-          )}
-        </div>
-      )}
 
-      {applyDraft && !family && !pending && (
-        <form className="mt-3 grid gap-3 border-t border-gray-100 pt-3" onSubmit={submit} noValidate>
-          <p className="text-[11px] leading-5 text-gray-500">請填家裡其中一位孩子的身分證字號與生日，系統會找到孩子所屬的家長，再由櫃台確認。</p>
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium text-gray-600">孩子的身分證字號</span>
-            <input className={inputCls} value={applyDraft.id_number}
-              onChange={(e) => setApplyDraft({ ...applyDraft, id_number: e.target.value.toUpperCase() })} />
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium text-gray-600">孩子的生日</span>
-            <DateTimePicker value={applyDraft.birth_date} max={todayTaipeiYMD()} placeholder="出生年月日"
-              onChange={(v) => setApplyDraft({ ...applyDraft, birth_date: v })} />
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium text-gray-600">您是孩子的</span>
-            <select className={inputCls} value={relationship} onChange={(e) => setRelationship(e.target.value)}>
-              <option value="">請選擇</option>
-              {RELATIONSHIP_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </select>
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium text-gray-600">備註<span className="ml-1 font-normal text-gray-400">（選填）</span></span>
-            <input className={inputCls} value={note} maxLength={200} onChange={(e) => setNote(e.target.value)} placeholder="例：我是孩子的阿姨，平常負責接送" />
-          </label>
-          <div className="flex gap-2">
-            <button type="submit" disabled={!canSubmit} className="flex-1 rounded-lg bg-brand-primary py-2.5 text-sm font-bold text-white disabled:opacity-60">
-              {busy ? '送出中...' : '送出申請'}
-            </button>
-            <button type="button" onClick={() => setApplyDraft(null)} className="rounded-lg border border-gray-200 px-4 py-2.5 text-sm font-medium text-gray-700">取消</button>
-          </div>
-        </form>
-      )}
+        {applyDraft && !family && !pending && (
+          <form className="mt-3 grid gap-3 border-t border-gray-100 pt-3" onSubmit={submit} noValidate>
+            <p className="text-[11px] leading-4 text-gray-500">填一位孩子的身分證字號與生日，櫃台確認後就會加入。</p>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-gray-600">孩子的身分證字號</span>
+              <input className={inputCls} value={applyDraft.id_number}
+                onChange={(e) => setApplyDraft({ ...applyDraft, id_number: e.target.value.toUpperCase() })} />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-gray-600">孩子的生日</span>
+              <DateTimePicker value={applyDraft.birth_date} max={todayTaipeiYMD()} placeholder="出生年月日"
+                onChange={(v) => setApplyDraft({ ...applyDraft, birth_date: v })} />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-gray-600">您是孩子的</span>
+              <select className={inputCls} value={relationship} onChange={(e) => setRelationship(e.target.value)}>
+                <option value="">請選擇</option>
+                {RELATIONSHIP_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-gray-600">備註<span className="ml-1 font-normal text-gray-400">（選填）</span></span>
+              <input className={inputCls} value={note} maxLength={200} onChange={(e) => setNote(e.target.value)} placeholder="例：我是孩子的阿姨，平常負責接送" />
+            </label>
+            <div className="flex gap-2">
+              <button type="submit" disabled={!canSubmit} className="flex-1 rounded-lg bg-brand-primary py-2.5 text-sm font-bold text-white disabled:opacity-60">
+                {busy ? '送出中...' : '送出申請'}
+              </button>
+              <button type="button" onClick={() => setApplyDraft(null)} className="rounded-lg border border-gray-200 px-4 py-2.5 text-sm font-medium text-gray-700">取消</button>
+            </div>
+          </form>
+        )}
+      </Collapsible>
 
       <ConfirmModal open={leaving} title="退出家庭？" confirmLabel="確定退出" cancelLabel="返回" tone="danger" busy={busy}
         onCancel={() => !busy && setLeaving(false)}
@@ -264,6 +269,6 @@ export default function FamilyCard({ block, applyDraft, setApplyDraft, onChanged
         onConfirm={async () => { await run(() => familyApi.cancelRequest(pending.id), '已取消申請'); setCancelling(false); }}>
         取消後可以再重新申請。
       </ConfirmModal>
-    </section>
+    </div>
   );
 }
