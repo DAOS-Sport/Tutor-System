@@ -742,6 +742,10 @@ async function addStudent(parentId, { name, idNumber, birth, ragic = false }) {
       const late = await addParent('測試晚到的家人');
       const kidNo = idNo('2');
       await addStudent(wife.id, { name: '配偶小孩', idNumber: kidNo, birth: '2019-06-06', ragic: true });
+      const grandma = await addParent('測試媽媽邀的奶奶');
+      const wifeInv = await call(create, { parent: wife }); // 媽媽也先產生了一條（準備中的家庭）
+      assert.equal(wifeInv.status, 201, JSON.stringify(wifeInv.body));
+      const wifePending = (await pool.query('SELECT family_id FROM family_invites WHERE id=$1', [wifeInv.body.invite.id])).rows[0].family_id;
       const made = await call(create, { parent: husband });
       assert.equal(made.status, 201, JSON.stringify(made.body));
       const token = String(made.body.invite.url).split('/family/join/')[1];
@@ -756,6 +760,11 @@ async function addStudent(parentId, { name, idNumber, birth, ragic = false }) {
       const m = (await pool.query(`SELECT role, family_id FROM family_members WHERE parent_id=$1 AND status='active'`, [husband.id])).rows[0];
       assert.equal(m.role, 'member', '爸爸成了媽媽家庭的成員');
       assert.equal((await pool.query(`SELECT role FROM family_members WHERE parent_id=$1 AND status='active'`, [wife.id])).rows[0].role, 'owner');
+      assert.equal(m.family_id, wifePending, '沿用媽媽準備中的家庭，不另開一個');
+      const wifeToken = String(wifeInv.body.invite.url).split('/family/join/')[1];
+      const viaWife = await call(accept, { parent: grandma, params: { token: wifeToken }, body: { relationship: 'grandmother' } });
+      assert.equal(viaWife.status, 200, JSON.stringify(viaWife.body));
+      assert.equal(viaWife.body.family_id, wifePending, '媽媽之前發的連結照樣加到同一個家庭');
       const stale = await call(accept, { parent: late, params: { token }, body: {} });
       assert.equal(stale.status, 410, JSON.stringify(stale.body));
       assert.equal(stale.body.code, 'INVITE_OWNER_UNAVAILABLE', '邀請人已經加入別的家庭，他之前的連結不能用');
