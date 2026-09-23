@@ -19,6 +19,7 @@ const crypto = require('crypto');
 const { pool } = require('../models/db');
 const { writeStudentAudit, parentActor: studentAuditParentActor } = require('../services/studentAudit');
 const { parseProofInput } = require('../services/paymentProof');
+const familyScope = require('../services/familyScope');
 const { requireParent, optionalParent } = require('../middlewares/parentAuth');
 const { maskName, maskNames } = require('../utils/piiMask');
 const ragicWriteback = require('../services/ragicWriteback');
@@ -305,7 +306,9 @@ function totalStudents(members) {
 }
 
 // 對外整形整張團購單（含成員，依 viewerParentId 決定遮罩）
-function shapeOrder(order, members, viewerParentId, extra = {}) {
+// familyParentIds：家庭帳號時的全家家長 id；家人那一戶跟自己一樣不遮罩（規格 §5，全家看得到彼此的訂單）
+function shapeOrder(order, members, viewerParentId, extra = {}, familyParentIds = null) {
+  const mine = (pid) => pid === viewerParentId || (Array.isArray(familyParentIds) && familyParentIds.includes(pid));
   const total = totalStudents(members);
   const periodCount = order.period_count || 1;
   const perStudent = perStudentPrice(order);
@@ -336,7 +339,7 @@ function shapeOrder(order, members, viewerParentId, extra = {}) {
     reject_reason: order.reject_reason || null,
     submitted_at: order.submitted_at,
     created_at: order.created_at,
-    members: members.map((m) => shapeMember(m, m.parent_id === viewerParentId, perStudent, periodCount)),
+    members: members.map((m) => shapeMember(m, mine(m.parent_id), perStudent, periodCount)),
     ...extra,
   };
 }
@@ -702,9 +705,10 @@ router.get('/mine', async (req, res) => {
               (SELECT COALESCE(SUM(COALESCE(array_length(m.student_names,1),0)),0)
                  FROM group_order_members m WHERE m.group_order_id = go.id) AS total_students
          FROM group_orders go
-        WHERE go.id IN (SELECT group_order_id FROM group_order_members WHERE parent_id = $1)
+        WHERE go.id IN (SELECT group_order_id FROM group_order_members WHERE parent_id::text = ANY($1::text[]))
         ORDER BY go.created_at DESC`,
-      [req.parent.id]
+      // 家人參與的團也列出（規格 §5）；團主身分與邀請碼仍只給團主本人
+      [(await familyScope.actingParentIds(req)).map(String)]
     );
     res.json(r.rows.map((go) => ({
       id: go.id,
@@ -732,11 +736,12 @@ router.get('/:id', async (req, res) => {
   try {
     const loaded = await loadOrderWithMembers(pool, req.params.id);
     if (!loaded) return res.status(404).json({ error: '找不到此團購' });
-    const isMember = loaded.members.some((m) => m.parent_id === req.parent.id);
+    const familyIds = await familyScope.actingParentIds(req);
+    const isMember = loaded.members.some((m) => familyIds.includes(m.parent_id));
     if (!isMember) return res.status(403).json({ error: '無權檢視此團購' });
     const isLeader = loaded.order.leader_parent_id === req.parent.id;
     res.json(shapeOrder(loaded.order, loaded.members, req.parent.id,
-      isLeader ? { join_token: loaded.order.join_token } : {}));
+      isLeader ? { join_token: loaded.order.join_token } : {}, familyIds));
   } catch (err) {
     console.error('[group-orders GET /:id]', err);
     res.status(500).json({ error: '載入失敗' });
@@ -936,12 +941,16 @@ router.post('/:id/my-proof', async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '此團購狀態無法上傳付款資料', code: 'NOT_UPLOADABLE' });
     }
+    // 家人可以幫忙付款（規格 §2）：自己在團內就付自己那一戶，否則付家人那一戶
+    const familyIds = await familyScope.actingParentIds(req);
     const m = await client.query(
       `SELECT id, payment_confirmed, transfer_last_5, carrier, payment_proof_url
          FROM group_order_members
-        WHERE group_order_id = $1 AND parent_id = $2
+        WHERE group_order_id = $1 AND parent_id::text = ANY($2::text[])
+        ORDER BY (parent_id::text = $3) DESC, id
+        LIMIT 1
         FOR UPDATE`,
-      [req.params.id, req.parent.id]
+      [req.params.id, familyIds.map(String), String(req.parent.id)]
     );
     if (!m.rowCount) {
       await client.query('ROLLBACK');
@@ -958,7 +967,7 @@ router.post('/:id/my-proof', async (req, res) => {
       const loaded = await loadOrderWithMembers(pool, req.params.id);
       return res.json({
         ...shapeOrder(loaded.order, loaded.members, req.parent.id,
-          loaded.order.leader_parent_id === req.parent.id ? { join_token: loaded.order.join_token } : {}),
+          loaded.order.leader_parent_id === req.parent.id ? { join_token: loaded.order.join_token } : {}, familyIds),
         idempotent: true,
       });
     }
@@ -1038,7 +1047,7 @@ router.post('/:id/my-proof', async (req, res) => {
     committed = true;
     const loaded = await loadOrderWithMembers(pool, req.params.id);
     res.json(shapeOrder(loaded.order, loaded.members, req.parent.id,
-      loaded.order.leader_parent_id === req.parent.id ? { join_token: loaded.order.join_token } : {}));
+      loaded.order.leader_parent_id === req.parent.id ? { join_token: loaded.order.join_token } : {}, familyIds));
 
     // 自動送審成功才通知，且在回應之後：推播失敗不該影響已 COMMIT 的送審。
     if (autoSubmittedTotal) {
