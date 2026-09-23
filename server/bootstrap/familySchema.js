@@ -7,8 +7,9 @@
  *
  * 必須在 bootstrapCore 之後跑（要參照 parents／students；bootstrapAdmin 比 core 早，放不進去）。
  * 開機失敗會拒絕接流量，所以每一句都要可重跑、約束一律先查再加。
- * 刻意不拿掉 010 的 UNIQUE(line_uid)：新設計不用 line_uid（一律 NULL，UNIQUE 允許多個 NULL），
- * 拿掉反而會讓 Replit 發布對話框多出一個 DROP。
+ * 成員的唯一鍵是 LINE userId（擁有者 2026-09-23 定案，跟主帳號 parents.line_uid 同一套）：
+ * 沿用 010 的 family_members.line_uid UNIQUE —— active 成員記著當下綁定的 userId，解綁（移除／退出）
+ * 時清成 NULL（UNIQUE 允許多個 NULL），同一支 LINE 之後才能加入別的家庭。
  * 發布前要先在 dev 庫跑過，否則下次發布會把正式庫改回 dev 的樣子。
  */
 const { pool } = require('../models/db');
@@ -71,6 +72,8 @@ ALTER TABLE family_members ADD COLUMN IF NOT EXISTS note TEXT;
 ${addCheck('family_members', 'family_members_role_check', "role IN ('owner','member')")}
 ${addCheck('family_members', 'family_members_status_check', "status IN ('active','revoked')")}
 ${addCheck('family_members', 'family_members_relationship_check', `relationship IS NULL OR relationship IN (${relationshipList})`)}
+-- active ⇔ 有綁 userId：active 一定記著 userId，解綁後一定清空（UNIQUE 才放得開）
+${addCheck('family_members', 'family_members_line_uid_bound_check', "(status = 'active') = (line_uid IS NOT NULL)")}
 CREATE INDEX IF NOT EXISTS idx_family_members_family ON family_members(family_id);
 -- 決策 3：一個帳號同一時間只屬於一個家庭（退出後可以再加入別的家庭，所以只鎖 active）
 CREATE UNIQUE INDEX IF NOT EXISTS uq_family_members_active_parent

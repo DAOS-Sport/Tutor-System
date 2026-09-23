@@ -6,7 +6,15 @@
  *
  * 原則（§14）：一個孩子只有一份資料、掛在 Ragic 上的家長底下；其他家人一律透過家庭、由櫃台核准。
  * 重複學員的處理一律走 familyRules.resolveDuplicate：保留 Ragic 那份、絕不搬課程。
+ *
+ * 成員的唯一鍵是 LINE userId（擁有者決定，2026-09-23；跟主帳號 parents.line_uid 同一套）：
+ * - 加入時記下這位家長「當下綁定的」userId（family_members.line_uid，UNIQUE）；沒綁 LINE 不能加入。
+ * - 移除／退出＝解綁那個 userId：清成 NULL，稽核只記雜湊（比照 customerParents 的解除綁定）。
+ *   孩子、訂單、上課紀錄都不動 —— 解綁只解除「哪一支 LINE 可以在這個家庭裡操作」。
+ * - 主帳號的 LINE 被解綁或換綁後，家庭裡記的 userId 對不上 → 在家庭裡的身分自動失效
+ *   （familyScope 只認對得上的）；同一支 LINE 重綁就恢復，換一支 LINE 要櫃台再「加入」一次（＝重新綁定）。
  */
+const crypto = require('crypto');
 const { relationshipLabel, isRelationship, resolveDuplicate, ownerParentFor } = require('./familyRules');
 const { writeStudentAudit } = require('./studentAudit');
 const { normalizePhone } = require('./identityNormalizer');
@@ -39,6 +47,13 @@ async function activeMembership(c, parentId, { lock = false } = {}) {
   return r.rows[0] || null;
 }
 
+// 成員列記的 userId 還對得上主帳號目前綁定的 LINE
+async function isBoundMember(c, membership) {
+  if (!membership?.line_uid) return false;
+  const r = await c.query(`SELECT 1 FROM parents WHERE id = $1 AND line_uid = $2`, [membership.parent_id, membership.line_uid]);
+  return r.rowCount > 0;
+}
+
 async function loadParent(c, parentId) {
   const r = await c.query(
     `SELECT id, name, phone, line_uid, primary_venue_id, is_active FROM parents WHERE id = $1`,
@@ -52,6 +67,35 @@ async function lockFamily(c, familyId) {
   const r = await c.query(`SELECT * FROM families WHERE id = $1 FOR UPDATE`, [familyId]);
   if (!r.rowCount) throw new FamilyError('FAMILY_NOT_FOUND', '找不到這個家庭', 404);
   return r.rows[0];
+}
+
+const LINE_UID_RE = /^U[0-9a-f]{32}$/i;
+const uidHash = (uid) => crypto.createHash('sha256').update(String(uid)).digest('hex');
+
+// 這位家長目前綁定的 LINE userId；沒綁（或是 demo 哨兵值）就不能加入家庭
+function boundLineUid(parent) {
+  const uid = String(parent?.line_uid || '');
+  if (!LINE_UID_RE.test(uid)) {
+    throw new FamilyError('LINE_NOT_BOUND', `${parent?.name || '這位家長'}還沒綁定 LINE，請先完成 LINE 綁定再加入家庭`);
+  }
+  return uid;
+}
+
+// family_members.line_uid 是 UNIQUE：同一支 LINE 已經綁在別的家庭就擋下
+async function insertMember(c, { familyId, parentId, role, relationship, actor, uid }) {
+  await c.query('SAVEPOINT family_member_insert');
+  try {
+    await c.query(
+      `INSERT INTO family_members (family_id, parent_id, line_uid, role, status, relationship, linked_by, linked_at)
+       VALUES ($1, $2, $3, $4, 'active', $5, $6, NOW())`,
+      [familyId, parentId, uid, role, relationship, actor]
+    );
+    await c.query('RELEASE SAVEPOINT family_member_insert');
+  } catch (err) {
+    await c.query('ROLLBACK TO SAVEPOINT family_member_insert').catch(() => {});
+    if (err.code === '23505') throw new FamilyError('LINE_IN_OTHER_FAMILY', '這個 LINE 帳號已經綁定在另一個家庭，請先解綁');
+    throw err;
+  }
 }
 
 function requireRelationship(rel, field = '關係') {
@@ -69,6 +113,7 @@ function parentNotice(parentId, text, refKey) {
 async function createFamily(c, { ownerParentId, ownerRelationship = null, name = null, actor }) {
   if (ownerRelationship) requireRelationship(ownerRelationship, '擁有者的關係');
   const owner = await loadParent(c, ownerParentId);
+  const uid = boundLineUid(owner);
   if (await activeMembership(c, ownerParentId, { lock: true })) {
     throw new FamilyError('ALREADY_IN_FAMILY', '這位家長已經在另一個家庭裡，請先移出');
   }
@@ -77,11 +122,7 @@ async function createFamily(c, { ownerParentId, ownerRelationship = null, name =
     [ownerParentId, name, actor]
   );
   const family = f.rows[0];
-  await c.query(
-    `INSERT INTO family_members (family_id, parent_id, role, status, relationship, linked_by, linked_at)
-     VALUES ($1, $2, 'owner', 'active', $3, $4, NOW())`,
-    [family.id, ownerParentId, ownerRelationship, actor]
-  );
+  await insertMember(c, { familyId: family.id, parentId: ownerParentId, role: 'owner', relationship: ownerRelationship, actor, uid });
   const auditId = await audit(c, family.id, 'family_created', actor, ownerParentId, { owner_relationship: ownerRelationship });
   return {
     result: family,
@@ -97,15 +138,20 @@ async function addMember(c, { familyId, parentId, relationship, actor }) {
   const family = await lockFamily(c, familyId);
   if (family.status !== 'active') throw new FamilyError('FAMILY_FROZEN', '這個家庭已凍結，請先解除凍結');
   const parent = await loadParent(c, parentId);
+  const uid = boundLineUid(parent);
   const existing = await activeMembership(c, parentId, { lock: true });
-  if (existing && existing.family_id === familyId) throw new FamilyError('ALREADY_MEMBER', '這位家長已經是這個家庭的成員');
-  if (existing) throw new FamilyError('ALREADY_IN_FAMILY', '這位家長已經在另一個家庭裡，請先移出');
-  await c.query(
-    `INSERT INTO family_members (family_id, parent_id, role, status, relationship, linked_by, linked_at)
-     VALUES ($1, $2, 'member', 'active', $3, $4, NOW())`,
-    [familyId, parentId, relationship, actor]
-  );
-  const auditId = await audit(c, familyId, 'member_added', actor, parentId, { relationship });
+  if (existing && existing.family_id !== familyId) throw new FamilyError('ALREADY_IN_FAMILY', '這位家長已經在另一個家庭裡，請先移出');
+  if (existing && existing.line_uid === uid) throw new FamilyError('ALREADY_MEMBER', '這位家長已經是這個家庭的成員');
+  if (existing) {
+    // 已是成員，但主帳號換了 LINE：櫃台再加一次＝重新綁定到目前這支 LINE
+    await c.query(`UPDATE family_members SET line_uid = $2, linked_by = $3, linked_at = NOW() WHERE id = $1`, [existing.id, uid, actor]);
+    await audit(c, familyId, 'member_rebound', actor, parentId, {
+      old_uid_hash: existing.line_uid ? uidHash(existing.line_uid) : null, new_uid_hash: uidHash(uid),
+    });
+    return { result: { family_id: familyId, parent_id: parentId, rebound: true }, notices: [] };
+  }
+  await insertMember(c, { familyId, parentId, role: 'member', relationship, actor, uid });
+  const auditId = await audit(c, familyId, 'member_added', actor, parentId, { relationship, uid_hash: uidHash(uid) });
   return {
     result: { family_id: familyId, parent_id: parentId },
     notices: [familyNotice(familyId,
@@ -130,7 +176,7 @@ async function setRelationship(c, { familyId, parentId, relationship, actor }) {
 async function revokeMember(c, { familyId, parentId, actor, reason = null, self = false }) {
   await lockFamily(c, familyId);
   const m = await c.query(
-    `SELECT role FROM family_members WHERE family_id = $1 AND parent_id = $2 AND status = 'active' FOR UPDATE`,
+    `SELECT role, line_uid FROM family_members WHERE family_id = $1 AND parent_id = $2 AND status = 'active' FOR UPDATE`,
     [familyId, parentId]
   );
   if (!m.rowCount) throw new FamilyError('MEMBER_NOT_FOUND', '這位家長不在這個家庭裡', 404);
@@ -140,12 +186,15 @@ async function revokeMember(c, { familyId, parentId, actor, reason = null, self 
       : '擁有者不能直接移除，請先轉移擁有者');
   }
   const parent = await loadParent(c, parentId);
+  // 解綁 userId：清成 NULL（UNIQUE 才放得開，之後可以加入別的家庭），稽核只留雜湊
   await c.query(
-    `UPDATE family_members SET status = 'revoked', revoked_by = $3, revoked_at = NOW(), note = COALESCE($4, note)
+    `UPDATE family_members SET status = 'revoked', line_uid = NULL, revoked_by = $3, revoked_at = NOW(), note = COALESCE($4, note)
       WHERE family_id = $1 AND parent_id = $2 AND status = 'active'`,
     [familyId, parentId, actor, reason]
   );
-  const auditId = await audit(c, familyId, self ? 'member_left' : 'member_revoked', actor, parentId, { reason });
+  const auditId = await audit(c, familyId, self ? 'member_left' : 'member_revoked', actor, parentId, {
+    reason, uid_hash: m.rows[0].line_uid ? uidHash(m.rows[0].line_uid) : null,
+  });
   return {
     result: { ok: true },
     notices: [
@@ -248,7 +297,7 @@ async function approveRequest(c, { requestId, actor, actorRole }) {
   if (applicantMembership && applicantMembership.family_id !== familyId) {
     throw new FamilyError('ALREADY_IN_FAMILY', '申請人已經在另一個家庭裡，請先移出再核准');
   }
-  if (!applicantMembership) {
+  if (!applicantMembership || !(await isBoundMember(c, applicantMembership))) {
     const added = await addMember(c, { familyId, parentId: req.applicant_parent_id, relationship: req.relationship, actor });
     notices.push(...added.notices);
   }
@@ -311,7 +360,7 @@ async function applySuggestion(c, { studentAId, studentBId, memberRelationship, 
   if (memberMembership && memberMembership.family_id !== familyId) {
     throw new FamilyError('ALREADY_IN_FAMILY', '另一位家長已經在別的家庭裡，請先移出');
   }
-  if (!memberMembership) {
+  if (!memberMembership || !(await isBoundMember(c, memberMembership))) {
     const added = await addMember(c, { familyId, parentId: memberId, relationship: memberRelationship, actor });
     notices.push(...added.notices);
   }
@@ -353,7 +402,11 @@ async function removePendingMember(c, { familyId, pendingId, actor }) {
   return { result: { ok: true }, notices: [] };
 }
 
-// 註冊完成後呼叫：手機命中未過期的預先登記 → 自動加入；新帳號名下與家中孩子同一人的，依 §9 處理
+// 預先登記的認領（A 最簡單版，擁有者 2026-09-23 定案）：
+//   手機命中未過期的預先登記，而且這位家長名下有一位孩子的「身分證＋生日」跟家裡某位孩子相同，才加入。
+//   註冊本來就要填孩子（含身分證、生日），所以通常不用多做任何事；不相符就不加入、也不另外提示，
+//   要加入請走合併申請。註冊不驗證手機所有權，只憑手機加入等於知道號碼就能進別人家（櫃台打錯一碼也是）。
+//   加入時綁的是這位家長目前的 LINE userId；沒綁 LINE 就先不處理（之後綁好再開個人頁會再試）。
 async function claimPendingForParent(c, { parentId, phone }) {
   const canonical = normalizePhone(phone);
   if (!canonical) return null;
@@ -369,6 +422,23 @@ async function claimPendingForParent(c, { parentId, phone }) {
   if (await activeMembership(c, parentId, { lock: true })) return null;
   const family = await lockFamily(c, pending.family_id);
   if (family.status !== 'active') return null;
+  const me = await loadParent(c, parentId);
+  if (!LINE_UID_RE.test(String(me.line_uid || ''))) return null;
+  const proof = await c.query(
+    `SELECT 1
+       FROM students mine
+       JOIN students other
+         ON UPPER(other.id_number) = UPPER(mine.id_number)
+        AND other.birth_date = mine.birth_date
+        AND other.parent_id <> mine.parent_id
+        AND COALESCE(other.is_active, TRUE)
+       JOIN family_members fm ON fm.parent_id = other.parent_id AND fm.family_id = $2 AND fm.status = 'active'
+      WHERE mine.parent_id = $1 AND COALESCE(mine.is_active, TRUE)
+        AND NULLIF(mine.id_number, '') IS NOT NULL AND mine.birth_date IS NOT NULL
+      LIMIT 1`,
+    [parentId, pending.family_id]
+  );
+  if (!proof.rowCount) return null;
   const added = await addMember(c, { familyId: pending.family_id, parentId, relationship: pending.relationship, actor });
   await c.query(
     `UPDATE family_pending_members SET claimed_parent_id = $2, claimed_at = NOW() WHERE id = $1`,

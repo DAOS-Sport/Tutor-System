@@ -141,7 +141,11 @@ const FAMILY = {
     const b = await scope.actingPhones(req, db);
     assert.deepEqual([...a].sort(), ['p-dad', 'p-mom']);
     assert.equal(b.length, 2);
-    assert.equal(db.calls.filter((c) => c.includes('JOIN parents p')).length, 1);
+    // 成員展開（SELECT p.id, p.phone）與家庭查詢各只跑一次；userId 綁定的判斷在 familyOf 的 SQL 裡，
+    // 這個假 DB 不模擬（DB 層測試第 14 項驗）
+    assert.equal(db.calls.filter((c) => c.includes('SELECT p.id, p.phone')).length, 1);
+    assert.equal(db.calls.filter((c) => c.includes('JOIN families f ON f.id = fm.family_id')).length, 1);
+    assert.ok(db.calls.some((c) => c.includes('p.line_uid = fm.line_uid')), '家庭查詢要比對 userId 綁定');
     assert.equal(await scope.isFamilyOwner(req, db), true);
     assert.equal(await scope.isFamilyOwner({ parent: DAD }, fakeDb(FAMILY)), false);
   });

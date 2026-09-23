@@ -99,7 +99,10 @@ router.get('/by-parent/:parentId', async (req, res) => {
     const familyId = m.rows[0].family_id;
     const f = await pool.query(`SELECT id, name, status, owner_parent_id, created_at, created_by FROM families WHERE id = $1`, [familyId]);
     const members = await pool.query(
+      // line_bound：家庭記的 userId 還等於主帳號目前的 LINE（換過 LINE → false，櫃台再「加入」一次＝重新綁定）。
+      // userId 本身不回傳。
       `SELECT fm.parent_id, p.name, p.phone, fm.role, fm.relationship, fm.linked_at, fm.linked_by,
+              (fm.line_uid IS NOT NULL AND p.line_uid = fm.line_uid) AS line_bound,
               (SELECT COUNT(*)::int FROM students s WHERE s.parent_id = p.id AND COALESCE(s.is_active, TRUE)) AS active_students
          FROM family_members fm JOIN parents p ON p.id = fm.parent_id
         WHERE fm.family_id = $1 AND fm.status = 'active'

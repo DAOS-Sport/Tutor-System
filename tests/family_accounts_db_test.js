@@ -16,6 +16,12 @@
 //  11. 預先登記手機 → 對方註冊後自動加入，重複的孩子依 §9 處理
 //  12. 開關關閉 → 就算有家庭也只剩自己
 //  13. 申請次數：24 小時 5 次上限（含不符的）
+//  14. 成員以 LINE userId 綁定：主帳號解綁 LINE → 自己只剩自己、個人頁提示重新綁定；同一支 LINE 重綁恢復；
+//      換一支 LINE → 櫃台再加一次＝重新綁定；資料範圍不看別人的綁定（爸爸換 LINE，媽媽照樣看得到他的孩子）
+//  15. 移除＝解綁 userId：清成 NULL、稽核只留雜湊；同一支 LINE 之後可以加入別的家庭
+//  16. 預先登記的認領（A 最簡單版）：孩子身分證對、生日不對 → 不加入；沒綁 LINE → 不加入
+//  17. 重複學員：沒開課但有未對帳訂單的那份不能被停用
+//  18. 沒綁 LINE 的家長不能加入家庭（LINE_NOT_BOUND）
 //
 // 不起 HTTP server、不碰 Ragic、LINE 推播以 stub 攔截；所有資料 try/finally 自己刪乾淨。
 const assert = require('node:assert/strict');
@@ -99,6 +105,8 @@ async function addStudent(parentId, { name, idNumber, birth, ragic = false }) {
   let failed = false;
   try {
     await familySchema.bootstrap(pool); // 可重跑
+    // 第二階段的訂單學員 id（bootstrap/admin.js ensureSchema 同一句；這支測試只跑 familySchema）
+    await pool.query('ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS student_ids UUID[]');
 
     const venue = (await pool.query('SELECT id FROM admin_venues WHERE COALESCE(is_active, TRUE) ORDER BY id LIMIT 1')).rows[0];
     const coach = (await pool.query('SELECT id FROM coaches WHERE COALESCE(is_active, TRUE) ORDER BY id LIMIT 1')).rows[0];
@@ -266,8 +274,9 @@ async function addStudent(parentId, { name, idNumber, birth, ragic = false }) {
         await c.query('COMMIT');
       } finally { c.release(); }
       // 奶奶註冊：照常要填孩子 → 她填了同一個孩子（沒進 Ragic、沒有課）
-      const grandma = { id: randomUUID(), phone: grandmaPhone, name: '測試奶奶' };
-      await pool.query('INSERT INTO parents(id, phone, name, is_active) VALUES ($1,$2,$3,TRUE)', [grandma.id, grandma.phone, grandma.name]);
+      const grandma = { id: randomUUID(), phone: grandmaPhone, name: '測試奶奶', line_uid: lineUid() };
+      await pool.query('INSERT INTO parents(id, phone, name, line_uid, is_active) VALUES ($1,$2,$3,$4,TRUE)',
+        [grandma.id, grandma.phone, grandma.name, grandma.line_uid]);
       parents.push(grandma.id);
       const grandmaDup = await addStudent(grandma.id, { name: '測試孩子', idNumber: kidId, birth: '2019-12-10' });
       const c2 = await pool.connect();
@@ -301,6 +310,123 @@ async function addStudent(parentId, { name, idNumber, birth, ragic = false }) {
       assert.equal(blocked.status, 429);
       assert.equal(blocked.body.code, 'FAMILY_REQUEST_TOO_MANY');
     });
+
+    const tx = async (fn) => {
+      const c = await pool.connect();
+      try {
+        await c.query('BEGIN');
+        const out = await fn(c);
+        await c.query('COMMIT');
+        return out;
+      } catch (e) {
+        await c.query('ROLLBACK').catch(() => {});
+        throw e;
+      } finally { c.release(); }
+    };
+
+    await t('14. 成員以 LINE userId 綁定：主帳號解綁／換綁 LINE 的效果', async () => {
+      const row = (await pool.query(`SELECT line_uid FROM family_members WHERE parent_id=$1 AND status='active'`, [dad.id])).rows[0];
+      assert.equal(row.line_uid, dad.line_uid, '加入時記下當下綁定的 userId');
+      // 櫃台解除爸爸主帳號的 LINE（customerParents unbind-line 的效果）
+      await pool.query('UPDATE parents SET line_uid = NULL WHERE id=$1', [dad.id]);
+      assert.deepEqual((await familyScope.scopeFor(dad)).parentIds, [dad.id], '解綁後爸爸只剩自己');
+      assert.equal((await familyProfile.familyBlock(dad)).rebind_required, true, '個人頁提示請櫃台重新綁定');
+      assert.ok((await familyScope.scopeFor(mom)).parentIds.includes(dad.id), '資料範圍不看別人的綁定：媽媽照樣看得到爸爸名下的孩子');
+      const rec = await familyScope.familyRecipients([mom.id]);
+      assert.ok(!rec.some((r) => r.parent_id === dad.id), '綁定失效的家人不收家庭通知');
+      // 同一支 LINE 重綁 → 自動恢復
+      await pool.query('UPDATE parents SET line_uid = $2 WHERE id=$1', [dad.id, dad.line_uid]);
+      assert.equal((await familyScope.scopeFor(dad)).parentIds.length, 3, '同一支 LINE 重綁就恢復（爸爸、媽媽、奶奶）');
+      // 換一支 LINE → 失效，櫃台再加一次＝重新綁定
+      const newUid = lineUid();
+      await pool.query('UPDATE parents SET line_uid = $2 WHERE id=$1', [dad.id, newUid]);
+      assert.deepEqual((await familyScope.scopeFor(dad)).parentIds, [dad.id]);
+      const rebound = await tx((c) => familyAdmin.addMember(c, { familyId, parentId: dad.id, relationship: 'father', actor: 'test' }));
+      assert.equal(rebound.result.rebound, true);
+      assert.equal((await familyScope.scopeFor(dad)).parentIds.length, 3, '重新綁定後恢復');
+      const log = (await pool.query(
+        `SELECT detail FROM family_audit_logs WHERE family_id=$1 AND action='member_rebound' ORDER BY id DESC LIMIT 1`, [familyId])).rows[0];
+      assert.ok(log && /^[0-9a-f]{64}$/.test(log.detail.new_uid_hash), '稽核記雜湊');
+      assert.ok(!JSON.stringify(log.detail).includes(newUid), '稽核不存 userId 原文');
+      dad.line_uid = newUid;
+    });
+
+    await t('15. 移除＝解綁 userId：清成 NULL、稽核只留雜湊；之後可以加入別的家庭', async () => {
+      const r = await call(revoke, { adminUser: ADMIN, params: { id: familyId, parentId: dad.id }, body: { reason: '測試解綁' } });
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      const row = (await pool.query(
+        `SELECT status, line_uid FROM family_members WHERE parent_id=$1 ORDER BY revoked_at DESC NULLS LAST LIMIT 1`, [dad.id])).rows[0];
+      assert.equal(row.status, 'revoked');
+      assert.equal(row.line_uid, null, '解綁後 userId 清空');
+      const log = (await pool.query(
+        `SELECT detail FROM family_audit_logs WHERE family_id=$1 AND action='member_revoked' ORDER BY id DESC LIMIT 1`, [familyId])).rows[0];
+      assert.match(log.detail.uid_hash, /^[0-9a-f]{64}$/);
+      assert.ok(!JSON.stringify(log.detail).includes(dad.line_uid));
+      // 同一支 LINE 可以自己當擁有者開一個家庭（UNIQUE 放開了）
+      const own = await tx((c) => familyAdmin.createFamily(c, { ownerParentId: dad.id, actor: 'test' }));
+      assert.ok(own.result.id);
+      // 收尾：把那個家庭拆掉，爸爸回到原家庭（給後面的測試用）
+      await pool.query('DELETE FROM families WHERE id=$1', [own.result.id]);
+      await tx((c) => familyAdmin.addMember(c, { familyId, parentId: dad.id, relationship: 'father', actor: 'test' }));
+      assert.equal((await familyScope.scopeFor(dad)).parentIds.length, 3);
+    });
+
+    await t('16. 預先登記的認領（A）：生日不對、沒綁 LINE → 不加入', async () => {
+      const addPending = (p) => tx((c) => familyAdmin.addPendingMember(c, { familyId, phone: p, relationship: 'guardian', actor: 'test' }));
+      const claim = (who) => tx((c) => familyAdmin.claimPendingForParent(c, { parentId: who.id, phone: who.phone }));
+      // 身分證對、生日不對
+      const auntPhone = phone();
+      await addPending(auntPhone);
+      const aunt = { id: randomUUID(), phone: auntPhone, name: '測試阿姨', line_uid: lineUid() };
+      await pool.query('INSERT INTO parents(id, phone, name, line_uid, is_active) VALUES ($1,$2,$3,$4,TRUE)', [aunt.id, aunt.phone, aunt.name, aunt.line_uid]);
+      parents.push(aunt.id);
+      await addStudent(aunt.id, { name: '測試孩子', idNumber: kidId, birth: '2019-12-11' });
+      assert.equal(await claim(aunt), null, '生日不對不加入');
+      assert.equal((await pool.query(`SELECT 1 FROM family_members WHERE parent_id=$1`, [aunt.id])).rowCount, 0);
+      // 資料完全對，但還沒綁 LINE
+      const uncPhone = phone();
+      await addPending(uncPhone);
+      const uncle = { id: randomUUID(), phone: uncPhone, name: '測試舅舅' };
+      await pool.query('INSERT INTO parents(id, phone, name, is_active) VALUES ($1,$2,$3,TRUE)', [uncle.id, uncle.phone, uncle.name]);
+      parents.push(uncle.id);
+      await addStudent(uncle.id, { name: '測試孩子', idNumber: kidId, birth: '2019-12-10' });
+      assert.equal(await claim(uncle), null, '沒綁 LINE 不加入');
+      // 綁好 LINE、開個人頁 → 自動認領（個人頁是認領入口）
+      await pool.query('UPDATE parents SET line_uid=$2 WHERE id=$1', [uncle.id, lineUid()]);
+      const block = await familyProfile.familyBlock(uncle);
+      assert.equal(block.family && block.family.id, familyId, '綁好 LINE 後打開個人頁就加入');
+    });
+
+    await t('17. 重複學員：沒開課但有未對帳訂單的那份不能被停用', async () => {
+      const p1 = await addParent('重複測試甲');
+      const p2 = await addParent('重複測試乙');
+      const dupId = idNo('1');
+      const ragicCopy = await addStudent(p1.id, { name: '重複孩子', idNumber: dupId, birth: '2018-05-05', ragic: true });
+      const orderCopy = await addStudent(p2.id, { name: '重複孩子', idNumber: dupId, birth: '2018-05-05' });
+      const eid2 = 'fam-test-' + randomUUID();
+      created.enrollments.push(eid2);
+      await pool.query(
+        `INSERT INTO admin_enrollments
+           (id,status,parent_name,parent_phone,coach,coach_id,students,venue_id,course_type,
+            original_price,final_price,period_number,total_sessions,used_sessions,submitted_at,student_ids)
+         VALUES ($1,'pending_payment',$2,$3,'測試教練',$4,$5,$6,1,1000,1000,1,6,0,NOW(),$7)`,
+        [eid2, p2.name, p2.phone, coach.id, ['重複孩子'], venue.id, [orderCopy]]);
+      const out = await tx((c) => familyAdmin.applySuggestion(c, {
+        studentAId: ragicCopy, studentBId: orderCopy, memberRelationship: 'mother', actor: 'test', actorRole: 'admin' }));
+      assert.notEqual(out.result.duplicate.action, 'deactivate', JSON.stringify(out.result.duplicate));
+      assert.equal((await pool.query('SELECT is_active FROM students WHERE id=$1', [orderCopy])).rows[0].is_active, true,
+        '有未對帳訂單的那份要留著（對帳時會綁到它）');
+    });
+
+    await t('18. 沒綁 LINE 的家長不能加入家庭', async () => {
+      const noLine = { id: randomUUID(), phone: phone(), name: '沒綁LINE' };
+      await pool.query('INSERT INTO parents(id, phone, name, is_active) VALUES ($1,$2,$3,TRUE)', [noLine.id, noLine.phone, noLine.name]);
+      parents.push(noLine.id);
+      const addMemberRoute = handler('admin/families', 'post', '/:id/members');
+      const r = await call(addMemberRoute, { adminUser: ADMIN, params: { id: familyId }, body: { parent_id: noLine.id, relationship: 'guardian' } });
+      assert.equal(r.status, 409, JSON.stringify(r.body));
+      assert.equal(r.body.code, 'LINE_NOT_BOUND');
+    });
   } catch (err) {
     failed = true;
     console.error('FAIL', err && err.stack ? err.stack : err);
@@ -325,5 +451,5 @@ async function addStudent(parentId, { name, idNumber, birth, ragic = false }) {
     console.error(`family_accounts_db_test: FAILED（${passed} 項通過後中斷）`);
     process.exit(1);
   }
-  console.log(`family_accounts_db_test: ${passed}/13 PASS`);
+  console.log(`family_accounts_db_test: ${passed}/18 PASS`);
 })();

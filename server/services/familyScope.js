@@ -7,6 +7,12 @@
  * - 家庭被凍結時，所有成員（含擁有者）都只剩自己。
  *
  * 路由改動一律透過這裡，不在各處自己拼 family 的 SQL。
+ *
+ * 成員以 LINE userId 綁定（family_members.line_uid，見 familyAdmin 開頭）：
+ * - 「我能不能以家庭身分操作」只認 userId 還對得上主帳號目前 LINE 的那一列；主帳號的 LINE 被解綁
+ *   或換綁 → 自動只剩自己。
+ * - 家庭的資料範圍（有哪些家長的孩子、訂單）照 active 成員列算，不看其他人的綁定狀態 ——
+ *   媽媽換了 LINE，爸爸照樣看得到孩子；資料屬於帳號，userId 只決定誰能進來操作。
  */
 const { pool } = require('../models/db');
 const { getFeatureFlag, flagAllowsPhone } = require('./featureFlags');
@@ -19,13 +25,14 @@ async function isEnabledFor(parent, db = pool) {
   return flagAllowsPhone(flag, parent.phone);
 }
 
-// 這位家長目前所屬的家庭（只看 active 成員資格）；沒有回 null
+// 這位家長目前所屬的家庭：active 成員資格，而且記的 userId 等於主帳號目前綁定的 LINE；沒有回 null
 async function familyOf(parentId, db = pool) {
   const r = await db.query(
     `SELECT fm.family_id, fm.role, fm.relationship,
             f.status AS family_status, f.owner_parent_id, f.name AS family_name
        FROM family_members fm
        JOIN families f ON f.id = fm.family_id
+       JOIN parents p ON p.id = fm.parent_id AND p.line_uid = fm.line_uid
       WHERE fm.parent_id = $1 AND fm.status = 'active'
       LIMIT 1`,
     [parentId]
@@ -89,7 +96,8 @@ async function isFamilyOwner(req, db = pool) {
 
 /**
  * 通知收件人擴大到全家（規格 §6、決策 2）：給「孩子的所屬家長」id 清單，回傳
- * [{ parent_id, line_uid }]，含原本的家長，再加上他們所在家庭（未凍結）的 active 成員。
+ * [{ parent_id, line_uid }]，含原本的家長，再加上他們所在家庭（未凍結）的 active 成員
+ * （只算 userId 還對得上的：換過 LINE、還沒重新綁定的家人不發）。
  * 開關依「收件人」的手機判斷：試點時只有名單內的家人會多收到。
  */
 async function familyRecipients(parentIds, db = pool) {
@@ -107,6 +115,7 @@ async function familyRecipients(parentIds, db = pool) {
        JOIN families f ON f.id = fm1.family_id AND f.status = 'active'
        JOIN family_members fm2 ON fm2.family_id = fm1.family_id AND fm2.status = 'active'
        JOIN parents p ON p.id = fm2.parent_id AND COALESCE(p.is_active, TRUE) = TRUE
+                     AND p.line_uid = fm2.line_uid
       WHERE fm1.status = 'active' AND fm1.parent_id::text = ANY($1::text[])`,
     [ids]
   )).rows.filter((row) => flagAllowsPhone(flag, row.phone));
