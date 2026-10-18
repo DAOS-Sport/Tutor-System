@@ -1,10 +1,12 @@
 import * as XLSX from 'xlsx';
+import { buildSessionXlsxReport } from './sessionXlsxReport.mjs';
+import { SESSION_HEADERS, sessionToRow } from './sessionReportRows.mjs';
+import { hasSessionCheckin } from './sessionExportSummary.mjs';
+export { SESSION_HEADERS, sessionToRow } from './sessionReportRows.mjs';
 import {
   formatTWDateTime,
   courseTypeLabel,
   paymentStatusLabel,
-  checkinStatusLabel,
-  checkinSourceLabel,
   todayISO,
 } from './format';
 
@@ -100,45 +102,47 @@ export function exportEnrollmentsXlsx({ filenamePrefix, enrollments, venueName, 
 }
 
 // === 上課紀錄（sessions）共用列定義 =========================================
-export const SESSION_HEADERS = ['日期', '時間', '場館', '教練', '組別', '學員', '簽到狀態', '簽到時間', '簽到來源', '備註'];
-
-export function sessionToRow(s, venueName) {
-  // 備註在畫面上是摘要（一行），匯出則給完整內容 —— 匯出檔通常就是拿來查帳的，
-  // 在這裡截斷等於把最需要的東西丟掉。
-  const rows = Array.isArray(s.checkin_details) ? s.checkin_details : [];
-  const source = [...new Set(rows.map((r) => r.source).filter(Boolean))]
-    .map(checkinSourceLabel).join('／');
-  const note = [
-    s.deduction_reason
-      ? `手動扣課：${s.deduction_reason}${s.deducted_by ? `（${s.deducted_by}）` : ''}`
-      : '',
-    s.deduction_status === 'REVERSED'
-      ? `已退回${s.deduction_reversal_reason ? `：${s.deduction_reversal_reason}` : ''}`
-      : '',
-    rows.filter((r) => r.by).map((r) => `${r.student || '?'} 由 ${r.by} 簽到`).join('；'),
-    rows.filter((r) => r.reversal_reason).map((r) => `${r.student || '?'} 已註銷：${r.reversal_reason}`).join('；'),
-  ].filter(Boolean).join(' | ');
-
-  return [
-    s.date,
-    `${s.start} – ${s.end}`,
-    venueName ? venueName(s.venue_id) : s.venue_id,
-    s.coach,
-    courseTypeLabel(s.course_type),
-    (s.students || []).join('、'),
-    checkinStatusLabel(s.checkin_status),
-    s.checkin_at ? formatTWDateTime(s.checkin_at) : '',
-    source,
-    note,
-  ];
+function checkedInExportRows(sessions, venueName) {
+  const signedSessions = (sessions || []).filter(hasSessionCheckin);
+  if (signedSessions.length === 0) {
+    const error = new Error('查詢範圍沒有已簽到的上課紀錄可匯出');
+    error.code = 'SESSION_EXPORT_NO_CHECKINS';
+    throw error;
+  }
+  const rows = signedSessions.map((session) => sessionToRow(session, venueName));
+  const checkinIndex = SESSION_HEADERS.indexOf('簽到時間');
+  if (rows.some((row) => typeof row[checkinIndex] !== 'string' || row[checkinIndex].trim() === '')) {
+    const error = new Error('簽到資料與匯出明細不一致，請重新查詢後再試');
+    error.code = 'SESSION_EXPORT_DETAIL_RECONCILIATION_FAILED';
+    throw error;
+  }
+  return { signedSessions, rows };
 }
 
 export function exportSessionsCsv({ filenamePrefix = 'sessions', sessions, venueName }) {
-  const rows = sessions.map((s) => sessionToRow(s, venueName));
+  const { rows } = checkedInExportRows(sessions, venueName);
   downloadCsv(`${filenamePrefix}_${todayISO()}.csv`, rowsToCsv(SESSION_HEADERS, rows));
 }
 
-export function exportSessionsXlsx({ filenamePrefix = 'sessions', sessions, venueName, sheetName = '上課紀錄' }) {
-  const rows = sessions.map((s) => sessionToRow(s, venueName));
-  downloadXlsx(`${filenamePrefix}_${todayISO()}.xlsx`, SESSION_HEADERS, rows, sheetName);
+export function exportSessionsXlsx({ filenamePrefix = 'sessions', sessions, venueName, venues, coefficientCategories, sheetName = '上課紀錄' }) {
+  const { signedSessions, rows } = checkedInExportRows(sessions, venueName);
+  const report = buildSessionXlsxReport(XLSX, {
+    headers: SESSION_HEADERS,
+    detailRows: rows,
+    sessions: signedSessions,
+    venueName,
+    venues,
+    coefficientCategories,
+    sheetName,
+  });
+  const blob = new Blob([report.bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `${filenamePrefix}_${todayISO()}.xlsx`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+  return report.summary.counts;
 }

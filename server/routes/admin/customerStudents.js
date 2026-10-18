@@ -17,6 +17,8 @@ const { formatPlainDate } = require('../../utils/dateTime');
 const { pool } = require('../../models/db');
 const { parsePaging, pagingSql } = require('../../utils/paging');
 const { requireAdminAuth, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定。
+const { requireResource } = require('../../middlewares/requireResource');
 const { parseRocOrIso, courseTypeLabel, maskId, maskBlood, looksMasked, wantReveal, auditReveal, diffChanges, writeStudentAudit, adminActorName } = require('./_customerShared');
 const ragicWriteback = require('../../services/ragicWriteback');
 
@@ -55,7 +57,7 @@ function rowToStudent(r, reveal) {
 }
 
 // GET / — 學員清單（含家長 join）
-router.get('/', requireAdminAuth, async (req, res) => {
+router.get('/', requireAdminAuth, requireResource('customer-students'), async (req, res) => {
   try {
     const { name = '', gender = '', code = '', parentId = '' } = req.query;
     const where = [];
@@ -91,7 +93,7 @@ router.get('/', requireAdminAuth, async (req, res) => {
 });
 
 // GET /:id — 學員 + 家長 + 購買紀錄
-router.get('/:id', requireAdminAuth, async (req, res) => {
+router.get('/:id', requireAdminAuth, requireResource('customer-students'), async (req, res) => {
   try {
     const r = await pool.query(
       `SELECT ${STUDENT_SELECT} FROM students s LEFT JOIN parents p ON p.id = s.parent_id WHERE s.id = $1`,
@@ -111,7 +113,7 @@ router.get('/:id', requireAdminAuth, async (req, res) => {
 });
 
 // GET /:id/audit-logs — 學員編輯紀錄（家長自己改 / 櫃檯 / 管理員改，含 before/after diff）
-router.get('/:id/audit-logs', requireAdminAuth, async (req, res) => {
+router.get('/:id/audit-logs', requireAdminAuth, requireResource('customer-students'), async (req, res) => {
   try {
     const own = await pool.query(
       `SELECT p.primary_venue_id AS v FROM students s LEFT JOIN parents p ON p.id = s.parent_id WHERE s.id = $1`,
@@ -158,18 +160,21 @@ async function loadPurchases(studentId) {
 }
 
 // PATCH /:id — 更新學員業務欄位（本地鏡像）
-router.patch('/:id', requireAdminAuth, async (req, res) => {
+router.patch('/:id', requireAdminAuth, requireResource('customer-students'), async (req, res) => {
   const b = req.body || {};
   if (b.name !== undefined && !String(b.name).trim()) return res.status(400).json({ error: '學員姓名不可為空', code: 'INPUT_INVALID' });
+  const client = await pool.connect();
   try {
+    await client.query('BEGIN');
     // 權限：學員所屬家長場館需落在操作者範圍；順便撈稽核 diff 要用的目前值。
-    const own = await pool.query(
+    const own = await client.query(
       `SELECT p.primary_venue_id AS v, p.line_uid AS parent_line_uid,
-              s.name, s.gender, s.id_number, s.blood_type, s.student_code, s.birth_date
-         FROM students s LEFT JOIN parents p ON p.id = s.parent_id WHERE s.id = $1`,
+              s.name, s.gender, s.id_number, s.blood_type, s.student_code, s.birth_date, s.is_active
+         FROM students s LEFT JOIN parents p ON p.id = s.parent_id WHERE s.id = $1 FOR UPDATE OF s`,
       [req.params.id]
     );
     if (!own.rowCount || !isVenueInScope(req, own.rows[0].v)) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ error: '找不到此學員' });
     }
     const before = own.rows[0];
@@ -188,33 +193,40 @@ router.patch('/:id', requireAdminAuth, async (req, res) => {
     if (b.birth_date !== undefined) { args.push(parseRocOrIso(b.birth_date)); sets.push(`birth_date = $${args.length}::date`); }
     if (typeof b.is_active === 'boolean') { args.push(b.is_active); sets.push(`is_active = $${args.length}`); }
     if (b.is_active === true && !isRealLineUid(own.rows[0].parent_line_uid)) {
+      await client.query('ROLLBACK');
       return res.status(409).json({
         error: '此學員所屬家長尚未綁定真實 LINE，無法啟用',
         code: 'PARENT_UNBOUND_CANNOT_ACTIVATE_STUDENT',
       });
     }
-    if (!sets.length) return res.status(400).json({ error: '沒有可更新的欄位' });
+    if (!sets.length) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: '沒有可更新的欄位' });
+    }
     args.push(req.params.id);
     // 先標記待同步（last_synced_at = NULL），下方即時回寫成功才蓋回 NOW()；
     // 失敗保持 NULL，由每日備份排程（ragicAdmin.backupParentsStudentsToRagic）重試。
-    const r = await pool.query(
+    const r = await client.query(
       `UPDATE students SET ${sets.join(', ')}, last_synced_at = NULL, updated_at = NOW() WHERE id = $${args.length}
        RETURNING id, parent_id, name, id_number, gender, birth_date, blood_type,
                  student_code, ragic_record_id, is_active, last_synced_at`,
       args
     );
-    if (!r.rowCount) return res.status(404).json({ error: '找不到此學員' });
+    if (!r.rowCount) throw new Error('STUDENT_WRITE_MISSING');
     // Option A 寫回 Ragic：即時回寫（best-effort、fire-and-forget，不擋本地更新）。
+    const changes = diffChanges(before, r.rows[0], ['name', 'gender', 'id_number', 'blood_type', 'student_code', 'birth_date', 'is_active']);
+    await writeStudentAudit(client, req.params.id, 'edit', { byUser: adminActorName(req), byRole: req.adminUser?.role, changes, note: 'admin-student-edit' });
+    await client.query('COMMIT');
     ragicWriteback.scheduleWriteback({ studentIds: [req.params.id], reason: 'admin-student-patch' });
-    const changes = diffChanges(before, r.rows[0], ['name', 'gender', 'id_number', 'blood_type', 'student_code', 'birth_date']);
-    writeStudentAudit(pool, req.params.id, 'edit', { byUser: adminActorName(req), byRole: req.adminUser?.role, changes })
-      .catch((err) => console.warn('[student-audit] 管理員編輯稽核寫入失敗:', err.message));
     res.json(rowToStudent(r.rows[0], wantReveal(req)));
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     if (err.code === '23505') return res.status(409).json({ error: '身分證字號或 Ragic 連結重複', code: 'UNIQUE_CONFLICT' });
     if (err.code === '23502') return res.status(400).json({ error: '學員姓名不可為空', code: 'INPUT_INVALID' });
     console.error('[admin/customer-students] patch', err);
     res.status(500).json({ error: '更新學員失敗' });
+  } finally {
+    client.release();
   }
 });
 

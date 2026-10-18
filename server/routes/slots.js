@@ -17,6 +17,8 @@
  * 全部端點皆要求教練 JWT。寫入端點額外驗證 body.coach_id (或 slot.coach_id) 與 token coachId 一致。
  */
 const express = require('express');
+const { assertCourseEntitlement } = require('../services/courseEntitlements');
+const familyScope = require('../services/familyScope');
 const router = express.Router();
 const { pool } = require('../models/db');
 const { detectConflict, createSlot, batchCreateSlots, bookSlot1v1 } = require('../services/slots');
@@ -215,10 +217,10 @@ router.get('/period/:coursePeriodId', requireParent, async (req, res) => {
       `SELECT 1 FROM course_period_enrollments cpe
          JOIN students s ON s.id = cpe.student_id
         WHERE cpe.course_period_id = $1
-          AND s.parent_id = $2
+          AND s.parent_id::text = ANY($2::text[])  -- 家庭帳號：全家的孩子（凍結檔改動）
           AND cpe.status = 'active'
         LIMIT 1`,
-      [coursePeriodId, req.parent.id]
+      [coursePeriodId, (await familyScope.actingParentIds(req)).map(String)]
     );
     if (!own.rowCount) return res.status(403).json({ error: '無權檢視此課程期' });
     if (period.status !== 'active') {
@@ -274,7 +276,8 @@ router.post('/:id/book', requireParent, async (req, res) => {
 
     // 1) 取槽位（拿 coach_id/venue_id 供上鎖與一致性檢查）
     const slotRes = await client.query(
-      `SELECT id, coach_id, venue_id, status FROM coach_availability_slots WHERE id = $1`,
+      `SELECT id, coach_id, venue_id, status, (start_at > NOW()) AS is_future
+         FROM coach_availability_slots WHERE id = $1`,
       [slotId]
     );
     if (!slotRes.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: '時段不存在' }); }
@@ -285,20 +288,23 @@ router.post('/:id/book', requireParent, async (req, res) => {
 
     // 2) 取課程期
     const cpRes = await client.query(
-      `SELECT id, coach_id, venue_id, course_type, status, total_sessions
-         FROM course_periods WHERE id = $1`,
+      `SELECT id, coach_id, venue_id, course_type, status, total_sessions,
+              (expires_at >= (NOW() AT TIME ZONE 'Asia/Taipei')::date) AS not_expired
+         FROM course_periods WHERE id = $1 FOR UPDATE`,
       [coursePeriodId]
     );
     if (!cpRes.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ error: '課程期不存在' }); }
     const cp = cpRes.rows[0];
 
     // 3) 驗證家長擁有此課程期（名下任一在籍學員屬於此期）
+    const entitledStudents = await assertCourseEntitlement(client, coursePeriodId);
     const own = await client.query(
       `SELECT 1 FROM course_period_enrollments cpe
          JOIN students s ON s.id = cpe.student_id
-        WHERE cpe.course_period_id = $1 AND s.parent_id = $2 AND cpe.status = 'active'
+        WHERE cpe.course_period_id = $1 AND s.parent_id::text = ANY($2::text[]) AND cpe.status = 'active'
+          AND cpe.student_id = ANY($3::uuid[])
         LIMIT 1`,
-      [coursePeriodId, req.parent.id]
+      [coursePeriodId, (await familyScope.actingParentIds(req)).map(String), entitledStudents]
     );
     if (!own.rowCount) { await client.query('ROLLBACK'); return res.status(403).json({ error: '無權預約此課程期' }); }
 
@@ -307,6 +313,11 @@ router.post('/:id/book', requireParent, async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '此課程期尚未開通或已結束', code: 'PERIOD_NOT_ACTIVE' });
     }
+    // 課期已過期不可再預約（D18／GitHub #13）：判準與自助簽到相同（checkins.js，到期日當天仍可）。
+    if (!cp.not_expired) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '此課程期已到期，請洽櫃檯', code: 'PERIOD_EXPIRED' });
+    }
     if (slot.coach_id !== cp.coach_id || String(slot.venue_id) !== String(cp.venue_id)) {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '此時段與課程期的教練或場館不符', code: 'SLOT_MISMATCH' });
@@ -314,6 +325,12 @@ router.post('/:id/book', requireParent, async (req, res) => {
     if (slot.status !== 'available') {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '此時段已被預約或不可選', code: 'SLOT_UNAVAILABLE' });
+    }
+    // 時段已開始或已過去不可預約（D18／GitHub #13）：正式庫有大量過去時段仍是 available，
+    // 從舊頁面或直接呼叫會建出日期在過去的「已確認」課堂。以資料庫時間比對，不信任端時鐘。
+    if (!slot.is_future) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '此時段已過，請改選其他時段', code: 'SLOT_IN_PAST' });
     }
     // 容量：已排（未取消）堂數不得超過已購買 total_sessions
     const used = await client.query(
@@ -335,6 +352,7 @@ router.post('/:id/book', requireParent, async (req, res) => {
     res.status(201).json({ session });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
+    if (err.status === 409) return res.status(409).json({ error: err.message, code: err.code });
     // bookSlot* 在槽位已被搶走時 throw（'此時段已被預約或不存在'）→ 視為 409
     if (/已被預約|不存在/.test(err.message || '')) {
       return res.status(409).json({ error: '此時段已被預約，請改選其他時段', code: 'SLOT_TAKEN' });

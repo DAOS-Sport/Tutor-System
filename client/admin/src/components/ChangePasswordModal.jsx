@@ -53,22 +53,36 @@ export default function ChangePasswordModal({ open, onClose, initialUsername = '
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 md:items-center md:px-4"
       onClick={(e) => e.target === e.currentTarget && !busy && onClose?.()}
       role="dialog" aria-modal="true" aria-label="修改密碼"
     >
-      <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
-        <h3 className="mb-1 text-lg font-bold text-brand-primary">修改帳號密碼</h3>
-        <p className="mb-4 text-xs text-gray-500">
-          {requireCredentialChange ? '目前仍使用預設帳密，建議改成自己的帳號與密碼；可先略過，不影響後台使用。' : '可更新登入帳號，並輸入舊密碼與新密碼。'}
-        </p>
+      {/* 四個輸入框加上各自的錯誤提示，內容高度就逼近 812；手機鍵盤一彈出來
+          可視高度再砍掉約一半，原本沒有高度上限也不能捲，「更新密碼」直接被壓在
+          鍵盤底下。這支正是 52 位救生員第一次登入必經的畫面，不能只在桌機能用。
+          同 ReconcilePage.jsx:372 的寫法。
 
-        <div className="space-y-3">
+          還有一件原本在 375px 會發生的事：面板置中，鍵盤沒彈出時「更新密碼 / 略過」
+          落在螢幕垂直中線附近，單手握手機的拇指構不到；鍵盤一彈出來，可視區被壓成
+          上半截，按鈕又被推到更上面。改成 md 以下貼底升起的面板 —— 面板本來就貼著
+          鍵盤上緣，按鈕永遠在拇指區。md 以上維持置中 max-w-md + rounded-2xl + 90dvh。
+          maxHeight 從 inline style 換成 class，因為 inline style 分不出斷點。 */}
+      <div className="flex max-h-[85dvh] w-full flex-col rounded-t-2xl bg-white shadow-xl pb-[env(safe-area-inset-bottom)] md:max-h-[90dvh] md:max-w-md md:rounded-2xl">
+        {/* grabber：行動裝置上「這個可以往下拉」的通用暗示，桌機沒有這個手勢所以 md:hidden。 */}
+        <div className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-gray-300 md:hidden" aria-hidden="true" />
+        <div className="shrink-0 px-6 pt-6">
+          <h3 className="mb-1 text-lg font-bold text-brand-primary">修改帳號密碼</h3>
+          <p className="text-xs text-gray-500">
+            {requireCredentialChange ? '目前仍使用預設帳密，建議改成自己的帳號與密碼；可先略過，不影響後台使用。' : '可更新登入帳號，並輸入舊密碼與新密碼。'}
+          </p>
+        </div>
+
+        <div className="flex-1 space-y-3 overflow-y-auto px-6 pt-4">
           <label className="block">
             <span className="mb-1 block text-xs font-medium text-gray-600">新帳號</span>
             <input type="text" value={username} onChange={(e) => setUsername(e.target.value.trim())}
               autoComplete="username"
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none" />
+              className="min-h-[44px] w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none md:min-h-0" />
             {cleanUsername && !usernameOk && (
               <span className="mt-1 block text-xs text-brand-error">帳號需為 2–40 碼，可使用英文、數字、._@-</span>
             )}
@@ -80,13 +94,13 @@ export default function ChangePasswordModal({ open, onClose, initialUsername = '
             <span className="mb-1 block text-xs font-medium text-gray-600">舊密碼</span>
             <input type={inputType} value={oldPwd} onChange={(e) => setOldPwd(e.target.value)}
               autoComplete="current-password"
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none" />
+              className="min-h-[44px] w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none md:min-h-0" />
           </label>
           <label className="block">
             <span className="mb-1 block text-xs font-medium text-gray-600">新密碼</span>
             <input type={inputType} value={newPwd} onChange={(e) => setNewPwd(e.target.value)}
               autoComplete="new-password"
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none" />
+              className="min-h-[44px] w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none md:min-h-0" />
             {newPwd && !lenOk && (
               <span className="mt-1 block text-xs text-brand-error">至少 4 個字元</span>
             )}
@@ -98,24 +112,24 @@ export default function ChangePasswordModal({ open, onClose, initialUsername = '
             <span className="mb-1 block text-xs font-medium text-gray-600">確認新密碼</span>
             <input type={inputType} value={confirm} onChange={(e) => setConfirm(e.target.value)}
               autoComplete="new-password"
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none" />
+              className="min-h-[44px] w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none md:min-h-0" />
             {confirm && !matchOk && (
               <span className="mt-1 block text-xs text-brand-error">兩次輸入的新密碼不一致</span>
             )}
           </label>
-          <label className="flex items-center gap-2 text-xs text-gray-600">
+          <label className="flex min-h-[44px] items-center gap-2 text-xs text-gray-600 md:min-h-0">
             <input type="checkbox" checked={show} onChange={(e) => setShow(e.target.checked)} />
             顯示密碼（明碼）
           </label>
         </div>
 
-        <div className="mt-6 flex justify-end gap-3">
+        <div className="flex shrink-0 justify-end gap-3 px-6 pb-6 pt-6">
           <button type="button" onClick={onClose} disabled={busy}
-            className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50">
+            className="min-h-[44px] rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50 md:min-h-0">
             取消
           </button>
           <button type="button" onClick={submit} disabled={!canSubmit}
-            className="rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary disabled:opacity-50">
+            className="min-h-[44px] rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary disabled:opacity-50 md:min-h-0">
             {busy ? '處理中…' : '更新密碼'}
           </button>
         </div>

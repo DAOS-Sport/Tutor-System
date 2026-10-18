@@ -1,12 +1,12 @@
-import { callApi } from './client';
+import { callApi, USE_MOCK } from './client';
 import { mockDb } from './mock';
 
 export const coachesApi = {
   list: ({ venueId } = {}) =>
-    callApi('/coaches', { method: 'get', params: { venueId }, skipAuthRedirect: true }, () => mockDb.coaches({ venueId })),
+    callApi('/coaches', { method: 'get', params: { venueId }, skipAuthRedirect: true }, USE_MOCK ? () => mockDb.coaches({ venueId }) : undefined),
 
   detail: (id) =>
-    callApi(`/coaches/${id}`, { method: 'get', skipAuthRedirect: true }, () => mockDb.coach(id)),
+    callApi(`/coaches/${id}`, { method: 'get', skipAuthRedirect: true }, USE_MOCK ? () => mockDb.coach(id) : undefined),
 
   // 教練自己的審核狀態與主管退回原因。需要登入，而且只拿得到自己的。
   // 這幾個欄位原本混在公開的 /coaches/:id 裡，等於誰都讀得到主管的內部評語。

@@ -1,3 +1,4 @@
+import { useCoachGuideDemo } from '../utils/coachGuideDemo';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
@@ -22,7 +23,9 @@ const BLANK_STUDENT = () => ({ summary: '', highlights: '', improvements: '', ho
 
 export default function SessionRecordFormPage() {
   const { sessionId } = useParams();
-  const { coach } = useAuth();
+  const guide = useCoachGuideDemo();
+  const { coach: signedInCoach } = useAuth();
+  const coach = guide?.coach || signedInCoach;
   const navigate = useNavigate();
   const toast = useToast();
   const [form, setForm] = useState(EMPTY);
@@ -31,7 +34,7 @@ export default function SessionRecordFormPage() {
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [newPersonal, setNewPersonal] = useState('');
+  const [newPersonal, setNewPersonal] = useState(guide ? 'DEMO 常用文案' : '');
   // U8：整班 / 個別填寫
   const [students, setStudents] = useState([]);
   const [mode, setMode] = useState('class'); // 'class' | 'individual'
@@ -39,6 +42,12 @@ export default function SessionRecordFormPage() {
   const [activeStudent, setActiveStudent] = useState('');
 
   useEffect(() => {
+    if (guide) {
+      setForm({ ...EMPTY, ...guide.record }); setTags(guide.tags);
+      const names = guide.session.student_names; setStudents(names);
+      setPerStudent(Object.fromEntries(names.map(name => [name, Object.fromEntries(FIELDS.map(field => [field.key, `DEMO ${field.label}`]))])));
+      setActiveStudent(names[0]); setMode(guide.view === 'individual' ? 'individual' : 'class'); setLoaded(true); return;
+    }
     if (!coach?.id || !sessionId) return;
     let alive = true;
     Promise.all([learnApi.getRecord(sessionId), learnApi.tags(), sessionsApi.detail(sessionId).catch(() => null)])
@@ -68,7 +77,7 @@ export default function SessionRecordFormPage() {
       .catch((e) => alive && toast.error(e?.response?.data?.error || '載入失敗'))
       .finally(() => alive && setLoaded(true));
     return () => { alive = false; };
-  }, [coach?.id, sessionId]); // eslint-disable-line
+  }, [coach?.id, sessionId, guide]); // eslint-disable-line
 
   const isGroup = students.length > 1;
 
@@ -85,6 +94,7 @@ export default function SessionRecordFormPage() {
   }, [tags, activeField]);
 
   async function addPersonal() {
+    if (guide) return;
     const text = newPersonal.trim();
     if (!text) return;
     const f = FIELDS.find((x) => x.key === activeField);
@@ -101,6 +111,7 @@ export default function SessionRecordFormPage() {
   }
 
   async function removePersonal(t) {
+    if (guide) return;
     if (!confirm(`刪除個人標籤「${t.label}」？`)) return;
     try {
       await learnApi.removePersonalTag(t.id);
@@ -141,6 +152,7 @@ export default function SessionRecordFormPage() {
   }
 
   async function copyPrev() {
+    if (guide) return;
     try {
       const prev = await learnApi.copyPrev(sessionId);
       if (!prev) { toast.info('找不到前一堂的記錄'); return; }
@@ -160,6 +172,7 @@ export default function SessionRecordFormPage() {
   }
 
   async function uploadFile(e) {
+    if (guide) return;
     const file = e.target.files?.[0];
     if (!file) return;
     setUploading(true);
@@ -171,6 +184,7 @@ export default function SessionRecordFormPage() {
   }
 
   function removeMedia(i) {
+    if (guide) return;
     setForm((f) => ({ ...f, media: f.media.filter((_, idx) => idx !== i) }));
   }
 
@@ -188,6 +202,7 @@ export default function SessionRecordFormPage() {
   }
 
   async function save(submit = false) {
+    if (guide) return;
     setBusy(true);
     try {
       const payload = mode === 'individual'
@@ -213,7 +228,7 @@ export default function SessionRecordFormPage() {
   const submitted = form.status === 'submitted';
 
   return (
-    <div className="mx-auto max-w-md px-4 py-3 pb-28">
+    <div data-coach-guide="record-overview" className="mx-auto max-w-md px-4 py-3 pb-28">
       <button onClick={() => navigate(-1)} className="mb-3 text-sm text-brand-teal active:opacity-60">‹ 返回</button>
 
       <header className="sticky top-0 z-10 -mx-4 mb-3 flex items-center justify-between border-b border-gray-100 bg-white/95 px-4 py-2 backdrop-blur">
@@ -221,7 +236,7 @@ export default function SessionRecordFormPage() {
           <h1 className="text-xl font-bold text-brand-primary">授課記錄</h1>
           <p className="mt-1 text-xs text-gray-500">F-C05 / 點擊標籤即帶入文案</p>
         </div>
-        <button onClick={copyPrev} className="rounded-full bg-brand-teal/10 px-3 py-1.5 text-xs font-bold text-brand-teal">
+        <button disabled={!!guide} onClick={copyPrev} className="rounded-full bg-brand-teal/10 px-3 py-1.5 text-xs font-bold text-brand-teal">
           複製前一堂
         </button>
       </header>
@@ -272,6 +287,7 @@ export default function SessionRecordFormPage() {
               {f.label}{mode === 'individual' && <span className="ml-1 text-brand-teal">· {activeStudent}</span>}
             </label>
             <textarea
+              readOnly={!!guide}
               value={getFieldVal(f.key)}
               onFocus={() => setActiveField(f.key)}
               onChange={(e) => setFieldVal(f.key, e.target.value)}
@@ -302,16 +318,16 @@ export default function SessionRecordFormPage() {
             {personalForActive.map((t) => (
               <span key={t.id} className="inline-flex items-center gap-1 rounded-full bg-brand-gold/10 px-2.5 py-1 text-xs">
                 <button type="button" onClick={() => applyTag(t)} className="font-bold text-brand-gold">+ {t.label}</button>
-                <button type="button" onClick={() => removePersonal(t)} className="text-[10px] text-red-500" aria-label="刪除">×</button>
+                <button type="button" disabled={!!guide} onClick={() => removePersonal(t)} className="text-[10px] text-red-500" aria-label="刪除">×</button>
               </span>
             ))}
             {personalForActive.length === 0 && <p className="text-[11px] text-gray-400">尚無個人標籤</p>}
           </div>
           <div className="mt-2 flex gap-2">
-            <input value={newPersonal} onChange={(e) => setNewPersonal(e.target.value)}
+            <input readOnly={!!guide} value={newPersonal} onChange={(e) => setNewPersonal(e.target.value)}
                    placeholder="新增個人常用文案…" maxLength={120}
                    className="flex-1 rounded border border-gray-200 px-2 py-1 text-xs" />
-            <button type="button" onClick={addPersonal} disabled={!newPersonal.trim()}
+            <button type="button" onClick={addPersonal} disabled={!!guide || !newPersonal.trim()}
                     className="rounded bg-brand-gold px-3 py-1 text-xs font-bold text-white disabled:opacity-50">＋</button>
           </div>
         </div>
@@ -325,24 +341,24 @@ export default function SessionRecordFormPage() {
         <h3 className="text-xs font-bold text-brand-primary">媒體附件</h3>
         <label className="mt-2 inline-block rounded bg-brand-primary/10 px-3 py-1.5 text-xs font-bold text-brand-primary active:opacity-80">
           {uploading ? '上傳中…' : '＋ 新增照片 / 影片'}
-          <input type="file" accept="image/*,video/*" disabled={uploading} onChange={uploadFile} className="hidden" />
+          <input type="file" accept="image/*,video/*" disabled={!!guide || uploading} onChange={uploadFile} className="hidden" />
         </label>
         <ul className="mt-2 space-y-1 text-xs">
           {form.media?.map((m, i) => (
             <li key={i} className="flex items-center justify-between rounded bg-gray-50 px-2 py-1.5">
               <a href={m.url} target="_blank" rel="noreferrer" className="truncate text-brand-teal">{m.name || m.url.slice(-30)}</a>
-              <button onClick={() => removeMedia(i)} className="ml-2 text-red-500">×</button>
+              <button disabled={!!guide} onClick={() => removeMedia(i)} className="ml-2 text-red-500">×</button>
             </li>
           ))}
         </ul>
       </section>
 
       <div className="fixed inset-x-0 bottom-0 z-20 mx-auto flex max-w-md gap-2 border-t border-gray-200 bg-white px-4 pb-[calc(env(safe-area-inset-bottom)+12px)] pt-3">
-        <button disabled={busy} onClick={() => save(false)}
+        <button disabled={busy || !!guide} onClick={() => save(false)}
           className="flex-1 rounded-xl border border-brand-teal py-3 text-sm font-bold text-brand-teal disabled:opacity-50">
           儲存草稿
         </button>
-        <button disabled={busy} onClick={() => save(true)}
+        <button disabled={busy || !!guide} onClick={() => save(true)}
           className="flex-1 rounded-xl bg-brand-primary py-3 text-sm font-bold text-white disabled:opacity-50">
           {submitted ? '更新版本' : '送出給家長'}
         </button>

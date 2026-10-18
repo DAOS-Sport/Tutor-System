@@ -12,17 +12,26 @@ const express = require('express');
 const { pool } = require('../models/db');
 const { requireParent } = require('../middlewares/parentAuth');
 const { parseProofInput } = require('../services/paymentProof');
+const {
+  parseInvoiceIdentityInput,
+  resolveInvoiceIdentity,
+} = require('../services/invoiceIdentity');
 const { partnerCheckinLabel } = require('../services/groupPartner');
 const promotions = require('../services/promotions');
+const familyScope = require('../services/familyScope');
+const { purchaseTodaySql } = require('../services/parentPurchaseCheckin');
+const { requiredStandardStudentCount } = require('../services/enrollmentRules');
 
 const router = express.Router();
 
 router.get('/lessons', requireParent, async (req, res) => {
   try {
     // F-S07 篩選：from / to (日期) / coachId / courseType (1對1=group, 1對2..)
-    const args = [req.parent.id];
+    // 家庭帳號（凍結檔改動，擁有者 2026-09-23 同意）：孩子在全家名下；沒有家庭或開關沒開＝只有本人
+    const familyIds = (await familyScope.actingParentIds(req)).map(String);
+    const args = [familyIds];
     const conds = [
-      `s.parent_id = $1`,
+      `s.parent_id::text = ANY($1::text[])`,
       `cpe.status = 'active'`,
       `cs.status IN ('confirmed','completed','pending_group_confirm')`,
     ];
@@ -82,7 +91,7 @@ router.get('/lessons', requireParent, async (req, res) => {
             WHERE cp.group_order_id IS NOT NULL
               AND cr2.course_session_id = cs.id
               AND cr2.attendance_status = 'ATTENDED'
-              AND cr2.checked_in_by_parent_id <> $1
+              AND NOT (cr2.checked_in_by_parent_id::text = ANY($1::text[]))  -- 家人簽的不算夥伴
             ORDER BY cr2.checked_in_at
             LIMIT 1
          ) pc ON true
@@ -106,7 +115,7 @@ router.get('/lessons', requireParent, async (req, res) => {
       } = row;
       const ownByCoach = !!row.checkin_id && !ownAuthor;
       const showPartner = !!partnerParentId && !ownByCoach
-        && (!row.checkin_id || String(ownAuthor) !== String(req.parent.id));
+        && (!row.checkin_id || !familyIds.includes(String(ownAuthor)));
       return {
         ...rest,
         checked_in_by_name: showPartner ? (partnerName || null) : null,
@@ -126,7 +135,10 @@ router.get('/lessons', requireParent, async (req, res) => {
  */
 router.get('/mine', requireParent, async (req, res) => {
   try {
-    const phone = req.parent.phone;
+    // 家庭帳號（凍結檔改動）：購買人是全家任一人（extra_parent_phones 照舊）；孩子清單、今日夥伴簽到以全家計
+    const scope = await familyScope.forRequest(req);
+    const phones = scope.phones.map(String);
+    const familyIds = scope.parentIds.map(String);
     const r = await pool.query(
               `SELECT admin_enrollments.id, parent_name, parent_phone, students,
                       coach, coach_id, venue_id, v.name AS venue_name, course_type,
@@ -165,7 +177,7 @@ router.get('/mine', requireParent, async (req, res) => {
                           JOIN students s ON s.id = cpe.student_id
                          WHERE cpe.course_period_id = cper.id
                            AND cpe.status = 'active'
-                           AND s.parent_id = $2
+                           AND s.parent_id::text = ANY($2::text[])
                       ) AS students_detail,
                       -- 已用堂數＝該共享 period 下有有效出席的「堂數」（DISTINCT session）。
                       -- 不限本家庭，因家庭共班／團報共用同一堂數池；同堂多位小孩仍只算一堂。
@@ -183,11 +195,7 @@ router.get('/mine', requireParent, async (req, res) => {
                  LEFT JOIN LATERAL (
                    SELECT cp.id, cp.total_sessions, cp.expires_at, cp.checkin_mode,
                           co.pricing_multiplier, co.is_senior,
-                          EXISTS (SELECT 1 FROM course_sessions cs3
-                                   WHERE cs3.course_period_id = cp.id
-                                     AND cs3.created_via = 'self_checkin'
-                                     AND cs3.self_checkin_date = (NOW() AT TIME ZONE 'Asia/Taipei')::date
-                                     AND cs3.status NOT IN ('cancelled_normal','cancelled_penalty')) AS self_checked_in_today,
+                          ${purchaseTodaySql('cp', 'checkin_ae')} AS self_checked_in_today,
                           CASE WHEN cp.group_order_id IS NOT NULL THEN (
                             SELECT jsonb_build_object('name', p4.name, 'gender', p4.gender)
                               FROM course_sessions cs4
@@ -195,8 +203,9 @@ router.get('/mine', requireParent, async (req, res) => {
                               JOIN parents p4 ON p4.id = cr4.checked_in_by_parent_id
                              WHERE cs4.course_period_id = cp.id
                                AND cs4.status::text NOT LIKE 'cancelled%'
+                               AND (cs4.scheduled_at AT TIME ZONE 'Asia/Taipei')::date = (NOW() AT TIME ZONE 'Asia/Taipei')::date
                                AND cr4.attendance_status = 'ATTENDED'
-                               AND cr4.checked_in_by_parent_id <> $2
+                               AND NOT (cr4.checked_in_by_parent_id::text = ANY($2::text[]))
                                AND (cr4.checked_in_at AT TIME ZONE 'Asia/Taipei')::date =
                                    (NOW() AT TIME ZONE 'Asia/Taipei')::date
                              ORDER BY cr4.checked_in_at
@@ -204,6 +213,7 @@ router.get('/mine', requireParent, async (req, res) => {
                           ) END AS today_partner_checkin
                      FROM course_periods cp
                      LEFT JOIN coaches co ON co.id = cp.coach_id
+                     LEFT JOIN admin_enrollments checkin_ae ON checkin_ae.id = cp.admin_enrollment_id
                     WHERE cp.id = COALESCE(
                             (SELECT cp2.id FROM course_periods cp2
                                WHERE admin_enrollments.group_order_id IS NOT NULL
@@ -219,9 +229,9 @@ router.get('/mine', requireParent, async (req, res) => {
                                WHERE cp2.admin_enrollment_id = admin_enrollments.id
                                ORDER BY cp2.created_at LIMIT 1))
                  ) cper ON true
-                WHERE parent_phone = $1 OR $1 = ANY(extra_parent_phones)
+                WHERE parent_phone = ANY($1::text[]) OR extra_parent_phones && $1::text[]
                 ORDER BY submitted_at DESC`,
-      [phone, req.parent.id]
+      [phones, familyIds]
     );
     // admin_enrollments.status 為 DB 內部狀態（pending_payment/confirmed/cancelled/refunded），
     // 前端課程狀態詞彙為 pending_payment/active/completed/refunded（見 utils/format、mock）。
@@ -486,12 +496,12 @@ router.get('/base-price', async (req, res) => {
               -- 原本這裡會退回全域 admin_settings 的 trial_price 與 sessions_per_period，
               -- 分區後那等於讓松山吃到三蘆的值，而且是靜默的。
               c.trial_price AS trial_price,
-              z.sessions_per_period AS sessions_per_period
+              z.sessions_per_period AS sessions_per_period, z.period_count_min, z.period_count_max
          FROM venues v
          JOIN pricing_zones z ON z.id = v.pricing_zone_id
          JOIN course_type_configs c
               ON c.pricing_zone_id = z.id AND c.course_type = $1
-        WHERE v.id = $2`,
+        WHERE v.id = $2 AND c.is_active = TRUE AND z.is_active = TRUE AND v.is_active IS NOT FALSE`,
       [ct, venueId]
     );
     if (r.rows.length === 0) {
@@ -499,6 +509,10 @@ router.get('/base-price', async (req, res) => {
         error: `此場館未開放課程組別 ${ct}`,
         code: 'COURSE_TYPE_NOT_IN_ZONE',
       });
+    }
+    const terms = require('../services/coursePricing').coursePeriodTerms(r.rows[0]);
+    if (!terms || r.rows[0].base_price == null || !Number.isFinite(Number(r.rows[0].base_price)) || Number(r.rows[0].base_price) < 0) {
+      return res.status(409).json({ error: '課程價格或定價區堂數尚未設定', code: 'PRICE_NOT_CONFIGURED' });
     }
     res.json({
       course_type: r.rows[0].course_type,
@@ -508,7 +522,8 @@ router.get('/base-price', async (req, res) => {
       tier_prices: r.rows[0].tier_prices || null,
       trial_enabled: r.rows[0].trial_enabled === true,
       trial_price: r.rows[0].trial_price == null ? null : Number(r.rows[0].trial_price),
-      sessions_per_period: Math.max(1, Number(r.rows[0].sessions_per_period) || 6),
+      sessions_per_period: terms.sessionsPerPeriod,
+      period_count_min: terms.minimumPeriods, period_count_max: terms.maximumPeriods,
     });
   } catch (e) {
     console.error('[courses/base-price]', e);
@@ -520,13 +535,17 @@ router.get('/base-price', async (req, res) => {
 //    含轉帳帳號（venue）、應繳金額、證明狀態，供「送出後等候畫面」顯示。
 router.get('/:id', requireParent, async (req, res) => {
   try {
+    // 家庭帳號（凍結檔改動）：同 /mine
+    const scope = await familyScope.forRequest(req);
+    const phones = scope.phones.map(String);
+    const familyIds = scope.parentIds.map(String);
     const r = await pool.query(
       `SELECT e.id, e.parent_phone, e.extra_parent_phones, e.students, e.coach, e.course_type,
               e.original_price, e.final_price, e.transfer_last_5, e.status, e.payment_proof_url,
               e.payment_method, e.order_kind,
               e.period_count, e.enrollment_batch_id, e.checkout_id,
               e.invoice_number, e.invoice_image_url, e.submitted_at, e.group_order_id,
-              e.total_sessions, e.used_sessions, e.is_group_shared, e.carrier,
+              e.total_sessions, e.used_sessions, e.is_group_shared, e.carrier, e.tax_id,
               -- 與 /mine 相同：團報走 group_order_id（共用）、家庭共班走
               -- enrollment_batch_id+period_number（共用）、其餘走 admin_enrollment_id。
               -- 解析收斂在下方 LATERAL cper，一次算好供各欄位共用。
@@ -557,7 +576,7 @@ router.get('/:id', requireParent, async (req, res) => {
                   JOIN students s ON s.id = cpe.student_id
                  WHERE cpe.course_period_id = cper.id
                    AND cpe.status = 'active'
-                   AND s.parent_id = $2
+                   AND s.parent_id::text = ANY($2::text[])
               ) AS students_detail,
               v.id AS venue_id, v.name AS venue_name,
               -- 匯款帳戶以 admin_venues（F-A03 場館設定，各館各自維護）為準；
@@ -572,11 +591,7 @@ router.get('/:id', requireParent, async (req, res) => {
          LEFT JOIN LATERAL (
            SELECT cp.id, cp.expires_at, cp.total_sessions, cp.checkin_mode,
                   co.pricing_multiplier, co.is_senior,
-                  EXISTS (SELECT 1 FROM course_sessions cs3
-                           WHERE cs3.course_period_id = cp.id
-                             AND cs3.created_via = 'self_checkin'
-                             AND cs3.self_checkin_date = (NOW() AT TIME ZONE 'Asia/Taipei')::date
-                             AND cs3.status NOT IN ('cancelled_normal','cancelled_penalty')) AS self_checked_in_today,
+                  ${purchaseTodaySql('cp', 'checkin_ae')} AS self_checked_in_today,
                   CASE WHEN cp.group_order_id IS NOT NULL THEN (
                     SELECT jsonb_build_object('name', p4.name, 'gender', p4.gender)
                       FROM course_sessions cs4
@@ -584,8 +599,9 @@ router.get('/:id', requireParent, async (req, res) => {
                       JOIN parents p4 ON p4.id = cr4.checked_in_by_parent_id
                      WHERE cs4.course_period_id = cp.id
                        AND cs4.status::text NOT LIKE 'cancelled%'
+                       AND (cs4.scheduled_at AT TIME ZONE 'Asia/Taipei')::date = (NOW() AT TIME ZONE 'Asia/Taipei')::date
                        AND cr4.attendance_status = 'ATTENDED'
-                       AND cr4.checked_in_by_parent_id <> $2
+                       AND NOT (cr4.checked_in_by_parent_id::text = ANY($2::text[]))
                        AND (cr4.checked_in_at AT TIME ZONE 'Asia/Taipei')::date =
                            (NOW() AT TIME ZONE 'Asia/Taipei')::date
                      ORDER BY cr4.checked_in_at
@@ -593,6 +609,7 @@ router.get('/:id', requireParent, async (req, res) => {
                   ) END AS today_partner_checkin
              FROM course_periods cp
              LEFT JOIN coaches co ON co.id = cp.coach_id
+             LEFT JOIN admin_enrollments checkin_ae ON checkin_ae.id = cp.admin_enrollment_id
             WHERE cp.id = COALESCE(
                     (SELECT cp2.id FROM course_periods cp2
                        WHERE e.group_order_id IS NOT NULL
@@ -609,12 +626,11 @@ router.get('/:id', requireParent, async (req, res) => {
                        ORDER BY cp2.created_at LIMIT 1))
          ) cper ON true
         WHERE e.id = $1`,
-      [req.params.id, req.parent.id]
+      [req.params.id, familyIds]
     );
     if (!r.rowCount) return res.status(404).json({ error: '找不到此報名' });
     const row = r.rows[0];
-    const phone = req.parent.phone;
-    const owns = row.parent_phone === phone || (row.extra_parent_phones || []).includes(phone);
+    const owns = phones.includes(row.parent_phone) || (row.extra_parent_phones || []).some((p) => phones.includes(p));
     if (!owns) return res.status(403).json({ error: '無權檢視此報名' });
     const ownStudents = Array.isArray(row.students_detail) ? row.students_detail : [];
     const canAccessPeriod = !!row.course_period_id && ownStudents.length > 0;
@@ -648,6 +664,7 @@ router.get('/:id', requireParent, async (req, res) => {
       final_price: Number(row.final_price),
       transfer_last_5: row.transfer_last_5 || '',
       carrier: row.carrier || '',
+      tax_id: row.tax_id || '',
       payment_method: row.payment_method || 'bank_transfer',
       order_kind: row.order_kind || 'standard',
       payment_status: row.status,
@@ -687,8 +704,10 @@ router.get('/:id', requireParent, async (req, res) => {
 // ── POST /:id/payment-proof 事後填寫付款資料（限本人、限待對帳）──
 router.post('/:id/payment-proof', requireParent, async (req, res) => {
   const last5 = typeof req.body?.transfer_last_5 === 'string' ? req.body.transfer_last_5.trim() : '';
-  // 載具（選填）：電子發票手機條碼載具，trim + 上限長度，空字串視為未填。
-  const carrier = typeof req.body?.carrier === 'string' ? req.body.carrier.trim().slice(0, 64) : '';
+  const identityInput = parseInvoiceIdentityInput(req.body);
+  if (identityInput.error) {
+    return res.status(400).json({ error: identityInput.error, code: identityInput.code });
+  }
   if (last5 && !/^\d{5}$/.test(last5)) {
     return res.status(400).json({ error: '轉帳末 5 碼需為 5 位數字', code: 'TRANSFER_LAST5_INVALID' });
   }
@@ -713,7 +732,7 @@ router.post('/:id/payment-proof', requireParent, async (req, res) => {
     }
     const r = await client.query(
       `SELECT parent_phone, extra_parent_phones, status, payment_proof_url, transfer_last_5,
-              carrier, checkout_id, payment_method
+              carrier, tax_id, checkout_id, payment_method
          FROM admin_enrollments WHERE id = $1 FOR UPDATE`,
       [req.params.id]
     );
@@ -725,8 +744,9 @@ router.post('/:id/payment-proof', requireParent, async (req, res) => {
         code: 'CHECKOUT_CHANGED_RETRY',
       });
     }
-    const phone = req.parent.phone;
-    if (!(row.parent_phone === phone || (row.extra_parent_phones || []).includes(phone))) {
+    // 家庭帳號（凍結檔改動）：家人可以替家人的訂單填付款資料（決策：成員可以付款）
+    const phones = (await familyScope.actingPhones(req)).map(String);
+    if (!(phones.includes(row.parent_phone) || (row.extra_parent_phones || []).some((p) => phones.includes(p)))) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: '無權操作此報名' });
     }
@@ -757,8 +777,17 @@ router.post('/:id/payment-proof', requireParent, async (req, res) => {
       ? null
       : proofInput.supplied ? proofInput.value : row.payment_proof_url;
     const nextLast5 = last5 || row.transfer_last_5 || null;
-    const nextCarrier = carrier || row.carrier || null;
-    if (!proofInput.clear && !nextProof && !nextLast5 && !nextCarrier) {
+    const resolvedIdentity = resolveInvoiceIdentity(identityInput.value, {
+      carrier: row.carrier,
+      taxId: row.tax_id,
+    });
+    if (resolvedIdentity.error) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: resolvedIdentity.error, code: resolvedIdentity.code });
+    }
+    const nextCarrier = resolvedIdentity.value.carrier;
+    const nextTaxId = resolvedIdentity.value.taxId;
+    if (!proofInput.clear && !nextProof && !nextLast5 && !nextCarrier && !nextTaxId) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: '請填寫轉帳末 5 碼或上傳匯款／轉帳證明', code: 'PAYMENT_INFO_REQUIRED' });
     }
@@ -771,9 +800,10 @@ router.post('/:id/payment-proof', requireParent, async (req, res) => {
           SET payment_proof_url = $2,
               transfer_last_5 = $3,
               carrier = $4,
+              tax_id = $5,
               updated_at = NOW()
         WHERE ${updateEnrollmentWhere}`,
-      [row.checkout_id || req.params.id, nextProof, nextLast5, nextCarrier]
+      [row.checkout_id || req.params.id, nextProof, nextLast5, nextCarrier, nextTaxId]
     );
     if (row.checkout_id) {
       const nextStatus = nextProof || nextLast5 ? 'pending_reconcile' : 'pending_payment';
@@ -802,23 +832,56 @@ router.post('/:id/payment-proof', requireParent, async (req, res) => {
 
 // ── POST /:id/cancel 家長取消未完成一般報名（限本人、限待對帳）──
 // 團報單需回團購狀態頁由團主取消，避免單一家庭取消破壞已送審名單。
+// 整組報名（一對二～四、試上；D18／GitHub #13）：一筆子訂單＝一位學員的一期。只取消其中一位，
+// 對帳會把同期剩下的人開成人數不足的課期（一對三變兩人班、甚至單人課），因此同批同期的
+// 兄弟訂單一起取消。先不加鎖讀出批號，再依 id 順序一次鎖住同批同期全部列（含本筆）：
+// 家長端「我的課程」會並發逐筆取消同一張付款單，鎖序一致才不會互等死結；
+// 後到的請求看到本筆已被一起取消，回成功（already_cancelled），不回「已進入處理流程」。
 router.post('/:id/cancel', requireParent, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const r = await client.query(
-      `SELECT id, parent_phone, extra_parent_phones, status, group_order_id, checkout_id
+    const head = await client.query(
+      `SELECT enrollment_batch_id, period_number, course_type, order_kind, group_order_id
          FROM admin_enrollments
-        WHERE id = $1
-        FOR UPDATE`,
+        WHERE id = $1`,
       [req.params.id]
     );
-    if (!r.rowCount) {
+    if (!head.rowCount) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: '找不到此報名' });
     }
-    const row = r.rows[0];
-    const owns = row.parent_phone === req.parent.phone || (row.extra_parent_phones || []).includes(req.parent.phone);
+    const h = head.rows[0];
+    const wholeGroup = !h.group_order_id && !!h.enrollment_batch_id
+      && requiredStandardStudentCount({ courseType: h.course_type, orderKind: h.order_kind || 'standard' }) != null;
+    const r = wholeGroup
+      ? await client.query(
+        `SELECT id, parent_phone, extra_parent_phones, status, group_order_id, checkout_id
+           FROM admin_enrollments
+          WHERE enrollment_batch_id = $1
+            AND period_number IS NOT DISTINCT FROM $2
+            AND group_order_id IS NULL
+          ORDER BY id
+          FOR UPDATE`,
+        [h.enrollment_batch_id, h.period_number]
+      )
+      : await client.query(
+        `SELECT id, parent_phone, extra_parent_phones, status, group_order_id, checkout_id
+           FROM admin_enrollments
+          WHERE id = $1
+          FOR UPDATE`,
+        [req.params.id]
+      );
+    const row = r.rows.find((x) => x.id === req.params.id);
+    if (!row) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: '找不到此報名' });
+    }
+    // 家庭帳號（凍結檔改動）：購買人本人，或家庭擁有者（取消家人的未付款訂單）；一般成員不能取消別人的單
+    let owns = row.parent_phone === req.parent.phone || (row.extra_parent_phones || []).includes(req.parent.phone);
+    if (!owns && await familyScope.isFamilyOwner(req)) {
+      owns = (await familyScope.actingPhones(req)).map(String).includes(row.parent_phone);
+    }
     if (!owns) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: '無權取消此報名' });
@@ -827,47 +890,70 @@ router.post('/:id/cancel', requireParent, async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '團報請至團購狀態頁處理取消', code: 'GROUP_ORDER_CANCEL_REQUIRED' });
     }
+    if (wholeGroup && row.status === 'cancelled') {
+      await client.query('ROLLBACK');
+      return res.json({ ok: true, already_cancelled: true, cancelled_ids: [] });
+    }
+    // 被點的那一筆本身必須是待付款：已退費／已對帳的單不能拿來觸發同期一起取消
+    // （否則會回空成功，或點 A 卻取消掉待付款的兄弟 B）。
     if (row.status !== 'pending_payment') {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '此報名已進入處理流程，無法由家長取消', code: 'NOT_PENDING' });
     }
-    await client.query(
-      `UPDATE admin_enrollments
-          SET status = 'cancelled', updated_at = NOW()
-        WHERE id = $1`,
-      [row.id]
-    );
-    if (row.checkout_id) {
+    const targets = wholeGroup
+      ? r.rows.filter((x) => !['cancelled', 'refunded'].includes(x.status))
+      : [row];
+    // 縱深防禦：同批同期理應是同一位購買人一次送出的單；萬一混到別的家長的單，
+    // 不替別人取消，整筆擋下交櫃檯處理。
+    if (targets.some((x) => x.parent_phone !== row.parent_phone)) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '此報名與其他家長的訂單同批，請洽櫃檯取消', code: 'BATCH_MIXED_BUYERS' });
+    }
+    if (targets.some((x) => x.status !== 'pending_payment')) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '此報名已進入處理流程，無法由家長取消', code: 'NOT_PENDING' });
+    }
+    for (const t of targets) {
+      await client.query(
+        `UPDATE admin_enrollments
+            SET status = 'cancelled', updated_at = NOW()
+          WHERE id = $1`,
+        [t.id]
+      );
+    }
+    for (const checkoutId of [...new Set(targets.map((t) => t.checkout_id).filter(Boolean))]) {
       await client.query(
         `UPDATE checkout_sessions
             SET payment_status = CASE
                   WHEN NOT EXISTS (
                     SELECT 1 FROM admin_enrollments
-                     WHERE checkout_id = $1 AND id <> $2 AND status <> 'cancelled'
+                     WHERE checkout_id = $1 AND status <> 'cancelled'
                   ) THEN 'cancelled'
                   ELSE payment_status
                 END,
                 current_route_state = CASE
                   WHEN NOT EXISTS (
                     SELECT 1 FROM admin_enrollments
-                     WHERE checkout_id = $1 AND id <> $2 AND status <> 'cancelled'
+                     WHERE checkout_id = $1 AND status <> 'cancelled'
                   ) THEN 'cancelled'
                   ELSE current_route_state
                 END,
                 updated_at = NOW()
           WHERE checkout_id = $1`,
-        [row.checkout_id, row.id]
+        [checkoutId]
       );
     }
-    // 取消即釋放此報名占用的優惠用量（同交易內，以 admin_enrollment_id 冪等；無 usage 則 no-op）。
-    await promotions.revertUsage({ adminEnrollmentId: row.id }, client);
-    await client.query(
-      `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user, reason)
-       VALUES ($1, '家長取消未完成報名', 'parent', '家長於 LIFF 取消')`,
-      [row.id]
-    );
+    for (const t of targets) {
+      // 取消即釋放此報名占用的優惠用量（同交易內，以 admin_enrollment_id 冪等；無 usage 則 no-op）。
+      await promotions.revertUsage({ adminEnrollmentId: t.id }, client);
+      await client.query(
+        `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user, reason)
+         VALUES ($1, $2, 'parent', '家長於 LIFF 取消')`,
+        [t.id, t.id === row.id ? '家長取消未完成報名' : '家長取消未完成報名（整組同期一起取消）']
+      );
+    }
     await client.query('COMMIT');
-    res.json({ ok: true });
+    res.json({ ok: true, cancelled_ids: targets.map((t) => t.id) });
   } catch (e) {
     await client.query('ROLLBACK');
     console.error('[courses/:id/cancel]', e);

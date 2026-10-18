@@ -42,17 +42,17 @@ BEGIN
   ------------------------------------------------------------------
   -- B. demo 帳號底層記錄
   ------------------------------------------------------------------
-  -- 家長1（0912345678）
+  -- 家長1（0900796878）
   INSERT INTO parents (phone, name, primary_venue_id)
-  SELECT '0912345678', '(測試帳號)家長', v_venue
-  WHERE NOT EXISTS (SELECT 1 FROM parents WHERE phone = '0912345678');
-  SELECT id INTO v_p1 FROM parents WHERE phone = '0912345678';
+  SELECT '0900796878', '(測試帳號)家長', v_venue
+  WHERE NOT EXISTS (SELECT 1 FROM parents WHERE phone = '0900796878');
+  SELECT id INTO v_p1 FROM parents WHERE phone = '0900796878';
 
-  -- 家長2（0922222222）
+  -- 家長2（0900637854）
   INSERT INTO parents (phone, name, primary_venue_id)
-  SELECT '0922222222', '(測試帳號)家長2', v_venue
-  WHERE NOT EXISTS (SELECT 1 FROM parents WHERE phone = '0922222222');
-  SELECT id INTO v_p2 FROM parents WHERE phone = '0922222222';
+  SELECT '0900637854', '(測試帳號)家長2', v_venue
+  WHERE NOT EXISTS (SELECT 1 FROM parents WHERE phone = '0900637854');
+  SELECT id INTO v_p2 FROM parents WHERE phone = '0900637854';
 
   -- 學員（家長1：測試-學員1 / 測試-學員2）
   INSERT INTO students (parent_id, name, birth_date)
@@ -72,13 +72,13 @@ BEGIN
 
   -- 教練1（coaches）
   INSERT INTO coaches (ragic_employee_id, name, phone, pricing_multiplier, is_active)
-  SELECT v_coach1_eid, '(測試帳號)教練', '0900000000', 1.00, TRUE
+  SELECT v_coach1_eid, '(測試帳號)教練', '0900215261', 1.00, TRUE
   WHERE NOT EXISTS (SELECT 1 FROM coaches WHERE ragic_employee_id = v_coach1_eid);
   SELECT id INTO v_coach1 FROM coaches WHERE ragic_employee_id = v_coach1_eid;
 
   -- 教練2（coaches）
   INSERT INTO coaches (ragic_employee_id, name, phone, pricing_multiplier, is_active)
-  SELECT v_coach2_eid, '(測試帳號)教練2', '0900000001', 1.00, TRUE
+  SELECT v_coach2_eid, '(測試帳號)教練2', '0900221010', 1.00, TRUE
   WHERE NOT EXISTS (SELECT 1 FROM coaches WHERE ragic_employee_id = v_coach2_eid);
   SELECT id INTO v_coach2 FROM coaches WHERE ragic_employee_id = v_coach2_eid;
 
@@ -96,10 +96,10 @@ BEGIN
 
   -- admin_staff（id = ragic_employee_id；後台「換教練」下拉 INNER JOIN coaches 需要）
   INSERT INTO admin_staff (id, name, role, venue_id, phone, multiplier, active, ragic_record_id)
-  SELECT v_coach1_eid, '(測試帳號)教練', 'coach', v_venue, '0900000000', 1.00, TRUE, v_coach1_eid
+  SELECT v_coach1_eid, '(測試帳號)教練', 'coach', v_venue, '0900215261', 1.00, TRUE, v_coach1_eid
   WHERE NOT EXISTS (SELECT 1 FROM admin_staff WHERE id = v_coach1_eid);
   INSERT INTO admin_staff (id, name, role, venue_id, phone, multiplier, active, ragic_record_id)
-  SELECT v_coach2_eid, '(測試帳號)教練2', 'coach', v_venue, '0900000001', 1.00, TRUE, v_coach2_eid
+  SELECT v_coach2_eid, '(測試帳號)教練2', 'coach', v_venue, '0900221010', 1.00, TRUE, v_coach2_eid
   WHERE NOT EXISTS (SELECT 1 FROM admin_staff WHERE id = v_coach2_eid);
 
   -- admin_staff_venues（員工↔場館中間表）

@@ -16,6 +16,7 @@
  */
 const crypto = require('crypto');
 const { pool } = require('../models/db');
+const { writeStudentAudit, diffChanges } = require('./studentAudit');
 const ragic = require('./ragic');
 const { maskName, maskPhone } = require('../utils/piiMask');
 const { normalizePhone, normalizeStudentName } = require('./identityNormalizer');
@@ -194,6 +195,33 @@ async function hardDeleteStudentIfSafe(client, studentId) {
  *    已於稍早寫回 Ragic，這裡讀回的就是合併後的權威狀態，可以覆蓋。
  *  - venuesMap：見 _resolveVenueId 說明，批次同步用。
  */
+/**
+ * 建檔缺 Email 的統一提醒。
+ *
+ * 為什麼放在這裡：系統有十二處會建立本地家長（註冊表單、手機綁定、Z03 認領、
+ * Ragic 拉回、備份同步、後台建檔…），但 Email 必填只有註冊表單那一道在擋
+ * （auth.js 的 EMAIL_REQUIRED）。其餘每一條都是直接拿 Ragic 的資料建檔，
+ * Ragic 上沒有 Email 就跟著沒有 —— 一棟十二個門的房子只有一個門口在驗證。
+ *
+ * 而 Ragic 的 Z01「(報)Email」是必填欄，所以這些人之後：
+ *   寫不回 Ragic（RAGIC_VALIDATION_ERROR）、加不了學員（Z01_INCOMPLETE）、
+ *   每次開 App 都看到「Ragic Z01 查無剛寫入的會員資料」。
+ * 2026-08-29 盤點：555 位在職家長裡有 59 位如此，佔 10.6%，牽連 75 位學員。
+ *
+ * 這裡刻意「不擋」：Ragic 上本來就沒 Email 的舊生若被擋，等於綁不了帳號 ——
+ * 那是把資料品質問題換成一個新的停擺。改成留下明確痕跡，讓它可以被追，
+ * 而不是安靜地累積到某天有人問「為什麼這家永遠同步失敗」。
+ */
+function _warnMissingEmail(parent, source) {
+  if (String(parent?.email || '').trim()) return;
+  const ph = String(parent?.phone || '');
+  console.warn(
+    `[parent-upsert] 建檔缺 Email：${ph.slice(0, 4)}****${ph.slice(-2)}`
+    + `（來源 ${source}${parent?.ragic_record_id ? `，Z01#${parent.ragic_record_id}` : '，尚未建檔'}）`
+    + ' —— 此家長無法寫回 Ragic、無法新增學員，需請櫃檯補齊 Email。'
+  );
+}
+
 async function upsertLocalParent(client, mapped, lineUid, { reactivate = true, venuesMap = null, overwriteLineUid = false, preservePending = true } = {}) {
   const name  = mapped.name  || '未命名家長';
   const phone = normalizePhone(mapped.phone);
@@ -250,13 +278,18 @@ async function upsertLocalParent(client, mapped, lineUid, { reactivate = true, v
          ragicRecordId, mapped.identity || '', mapped.home_phone || '', mapped.home_address || '', mapped.line_id || '']
       )).rows[0];
     } catch (err) {
+      if (err.code === '23505' && err.constraint === 'uq_parents_phone_canonical_active') {
+        throw new BindConflictError('PHONE_AMBIGUOUS', 'canonical phone 已由另一個 parent 使用');
+      }
       if (err.code === '23505' && err.constraint === 'uq_parents_ragic_record_id') {
         throw new BindConflictError('DATA_RECONCILIATION_PENDING', 'Ragic source id 已存在但缺少安全 source link');
       }
       throw err;
     }
+    _warnMissingEmail(parent, 'insert');
   } else {
-    parent = (await client.query(
+    try {
+      parent = (await client.query(
       `UPDATE parents SET
          name=CASE WHEN $13::boolean AND last_synced_at IS NULL THEN name ELSE COALESCE(NULLIF($2,''),name) END,
          line_uid=CASE WHEN $12::boolean THEN NULLIF($3,'') ELSE COALESCE(line_uid,NULLIF($3,'')) END,
@@ -275,7 +308,13 @@ async function upsertLocalParent(client, mapped, lineUid, { reactivate = true, v
       [parent.id, name, lineUidForWrite, venueId, ragic.normalizeGender(mapped.gender), mapped.email || '',
        mapped.identity || '', mapped.home_phone || '', mapped.home_address || '', mapped.line_id || '',
        ragicRecordId, overwriteLineUid, preservePending, reactivate]
-    )).rows[0];
+      )).rows[0];
+    } catch (err) {
+      if (err.code === '23505' && err.constraint === 'uq_parents_phone_canonical_active') {
+        throw new BindConflictError('PHONE_AMBIGUOUS', 'canonical phone 已由另一個 parent 使用');
+      }
+      throw err;
+    }
   }
   return parent;
 }
@@ -363,15 +402,22 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
       if (ragicId && spActive) {
         const freed = await client.query(
           `UPDATE students SET ragic_record_id = NULL, updated_at = NOW()
-            WHERE ragic_record_id = $1 AND parent_id <> $2`,
+            WHERE ragic_record_id = $1 AND parent_id <> $2 RETURNING id`,
           [ragicId, parentId]
         );
+        for (const row of freed.rows) {
+          await writeStudentAudit(client, row.id, 'edit', {
+            byUser: 'ragic:parent-sync', byRole: 'system',
+            changes: { ragic_record_id: { before: ragicId, after: null } }, note: 'ragic-link-reconciliation',
+          });
+        }
         if (freed.rowCount) {
           console.warn('[parent-sync] 學員 ragic_record_id=%s 原掛在其他家長名下，已解除舊佔用（移轉到 parent=%s）', ragicId, parentId);
         }
       }
       if (matched) {
-        await client.query(
+        const before = (await client.query('SELECT * FROM students WHERE id = $1 FOR UPDATE', [matched.id])).rows[0];
+        const updated = await client.query(
           `UPDATE students SET
              -- 背景批次可保留待同步本地編輯；嚴格刷新則以 Ragic 回讀值覆蓋，消除鏡射漂移。
              name        = CASE WHEN $9::boolean AND last_synced_at IS NULL THEN name        ELSE $2 END,
@@ -384,10 +430,11 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
              is_active   = CASE WHEN is_active = FALSE THEN is_active ELSE TRUE END,
              last_synced_at = CASE WHEN $9::boolean AND last_synced_at IS NULL THEN last_synced_at ELSE NOW() END,
              updated_at  = NOW()
-           WHERE id = $1`,
+           WHERE id = $1 RETURNING *`,
           [matched.id, s.name, s.birth_date || null, ragic.normalizeGender(s.gender),
            idNum || '', s.blood_type || '', s.student_code || '', ragicId || '', preservePending]
         );
+        await writeStudentAudit(client, matched.id, 'edit', { byUser: 'ragic:parent-sync', byRole: 'system', changes: diffChanges(before, updated.rows[0]), note: 'ragic-student-mirror' });
       } else {
         const inserted = await client.query(
           `INSERT INTO students
@@ -397,6 +444,7 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
           [parentId, s.name, s.birth_date || null, ragic.normalizeGender(s.gender),
            idNum || '', s.blood_type || '', s.student_code || '', ragicId || '']
         );
+        await writeStudentAudit(client, inserted.rows[0].id, 'create', { byUser: 'ragic:parent-sync', byRole: 'system', note: 'ragic-student-mirror' });
         if (existingStudents) existingStudents.push({
           id: inserted.rows[0].id,
           name: s.name,

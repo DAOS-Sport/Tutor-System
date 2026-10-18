@@ -54,6 +54,9 @@ const COACH_VENUE_IDS_SELECT = `COALESCE(
 // Requires outer aliases:
 //   c = coaches
 //   s = admin_staff, joined by s.id = c.ragic_employee_id
+const COACH_PRICING_MULTIPLIER_SQL = 'COALESCE(s.multiplier, c.pricing_multiplier)';
+
+// Requires the same c / s aliases as COACH_PRICING_MULTIPLIER_SQL.
 // Coach app-facing identity fields are sourced from F-A02 admin_staff first.
 const COACH_STAFF_PROFILE_SELECT = `
   c.id,
@@ -65,8 +68,8 @@ const COACH_STAFF_PROFILE_SELECT = `
   c.specialties,
   -- H23/Ragic 課程係數是分類的唯一真相：倍率不是 1 即為資深教練。
   -- 不讀歷史 is_senior，避免倍率已同步但布林欄位仍停在舊值時家長端分類錯誤。
-  (COALESCE(s.multiplier, c.pricing_multiplier, 1.00) <> 1.00) AS is_senior,
-  COALESCE(s.multiplier, c.pricing_multiplier, 1.00) AS pricing_multiplier,
+  (${COACH_PRICING_MULTIPLIER_SQL} <> 1.00) AS is_senior,
+  ${COACH_PRICING_MULTIPLIER_SQL} AS pricing_multiplier,
   c.bio_rich_text,
   c.bio_detail,
   -- 大頭照（相對路徑）。加進白名單 PUBLIC_COACH_FIELDS 還不夠：publicCoach 只複製
@@ -146,6 +149,7 @@ module.exports = {
   cleanVenueList,
   COACH_VENUE_SOURCE_SQL,
   COACH_VENUE_IDS_SELECT,
+  COACH_PRICING_MULTIPLIER_SQL,
   COACH_STAFF_PROFILE_SELECT,
   STAFF_VENUE_SOURCE_SQL,
   STAFF_VENUE_IDS_SELECT,

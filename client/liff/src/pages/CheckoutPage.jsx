@@ -1,11 +1,19 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { checkoutApi } from '../api/checkout';
+import { useGuideDemo } from '../utils/guideDemo';
 import { enrollmentsApi } from '../api/enrollments';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
 import { courseTypeLabel, formatTWD, formatTWYMD } from '../utils/format';
 import { isPaymentProofCandidate, PAYMENT_PROOF_ACCEPT } from '../utils/paymentProofImage';
+import {
+  invoiceTypeFor,
+  isValidTaiwanTaxId,
+  isValidInvoiceCarrier,
+  MAX_CARRIER_LENGTH,
+  normalizeTaxIdInput,
+} from '../utils/invoiceIdentity.mjs';
 
 function formatInvoiceId(id) {
   const cleanId = String(id || '').replace(/-/g, '').toUpperCase();
@@ -111,16 +119,19 @@ function SectionTitle({ children }) {
 }
 
 export default function CheckoutPage() {
+  const guide = useGuideDemo();
   const { checkoutId } = useParams();
   const navigate = useNavigate();
   const toast = useToast();
   const proofInputRef = useRef(null);
   const copyResetTimerRef = useRef(null);
 
-  const [checkout, setCheckout] = useState(undefined);
+  const [checkout, setCheckout] = useState(() => guide?.checkout);
   const [proofBusy, setProofBusy] = useState(false);
   const [transferLast5, setTransferLast5] = useState('');
   const [carrier, setCarrier] = useState('');
+  const [taxId, setTaxId] = useState('');
+  const invoiceType = invoiceTypeFor({ carrier, taxId });
   const [parentNote, setParentNote] = useState('');
   const [proofFile, setProofFile] = useState(null);
   const [proofPreview, setProofPreview] = useState('');
@@ -128,24 +139,37 @@ export default function CheckoutPage() {
   const [copied, setCopied] = useState(false);
 
   const load = useCallback(() => {
+    if (guide) { setCheckout(guide.checkout); return () => {}; }
     let alive = true;
     checkoutApi.get(checkoutId)
       .then((d) => alive && setCheckout(d || null))
       .catch(() => alive && setCheckout(null));
     return () => { alive = false; };
-  }, [checkoutId]);
+  }, [checkoutId, guide?.checkout]);
 
   useEffect(() => load(), [load]);
 
   useEffect(() => {
+    if (!guide) return;
+    setTransferLast5('DEMO'); setParentNote('DEMO');
+    setCarrier(guide.view === 'carrier' ? 'DEMO' : '');
+    setTaxId(guide.view === 'tax_id' ? 'DEMO' : '');
+  }, [guide?.index, checkout?.checkout_id]);
+
+  useEffect(() => {
+    if (guide) return;
     if (checkout) {
+      const savedTaxId = checkout.tax_id || checkout.invoice_families?.[0]?.tax_id || '';
+      const savedCarrier = checkout.carrier || checkout.invoice_families?.[0]?.carrier
+        || localStorage.getItem('daos_invoice_carrier') || '';
       setTransferLast5(checkout.transfer_last_5 || '');
-      setCarrier(checkout.carrier || localStorage.getItem('daos_invoice_carrier') || '');
+      setCarrier(savedTaxId ? '' : savedCarrier);
+      setTaxId(savedTaxId);
       setParentNote(checkout.parent_note || '');
       setProofFile(null);
       setProofPreview('');
     }
-  }, [checkout?.checkout_id, checkout?.transfer_last_5, checkout?.has_payment_proof, checkout?.carrier, checkout?.parent_note]);
+  }, [checkout?.checkout_id, checkout?.transfer_last_5, checkout?.has_payment_proof, checkout?.carrier, checkout?.tax_id, checkout?.parent_note]);
 
   useEffect(() => () => {
     if (copyResetTimerRef.current) clearTimeout(copyResetTimerRef.current);
@@ -194,7 +218,9 @@ export default function CheckoutPage() {
   const paymentLocked = canUpload && checkout.has_payment_proof && !!checkout.transfer_last_5;
   const showPaymentForm = canUpload && !paymentLocked;
   const validLast5 = /^\d{5}$/.test(transferLast5.trim());
-  const submitDisabled = proofBusy || !validLast5 || (!proofFile && !checkout.has_payment_proof);
+  const validTaxId = invoiceType !== 'tax_id' || isValidTaiwanTaxId(taxId);
+  const validCarrier = invoiceType !== 'carrier' || isValidInvoiceCarrier(carrier);
+  const submitDisabled = proofBusy || !validLast5 || !validTaxId || !validCarrier || (!proofFile && !checkout.has_payment_proof);
   const meta = getCheckoutStatusMeta(
     checkout.payment_status,
     checkout.has_payment_proof,
@@ -208,6 +234,7 @@ export default function CheckoutPage() {
       : '課程報名';
 
   async function handleCopy(text) {
+    if (guide) return;
     if (!text) {
       toast.warning('目前無匯款帳號資料，請聯繫場館櫃檯');
       return;
@@ -236,6 +263,7 @@ export default function CheckoutPage() {
   }
 
   function handleFileChange(file) {
+    if (guide) return;
     if (!file) return;
     if (!isPaymentProofCandidate(file)) {
       toast.warning('請上傳 JPG、PNG、WebP、HEIC、HEIF 或 AVIF 圖片');
@@ -254,12 +282,17 @@ export default function CheckoutPage() {
 
   async function handleSubmitPayment(e) {
     e.preventDefault();
+    if (guide) return;
     if (!validLast5) {
       toast.warning('請填寫匯出卡片的末 5 碼');
       return;
     }
     if (!proofFile && !checkout.has_payment_proof) {
       toast.warning('請上傳匯款／轉帳憑證截圖');
+      return;
+    }
+    if (!validTaxId) {
+      toast.warning('請輸入有效的 8 碼統一編號');
       return;
     }
 
@@ -278,11 +311,12 @@ export default function CheckoutPage() {
       await checkoutApi.uploadProof(checkout.checkout_id, {
         transfer_last_5: transferLast5.trim(),
         payment_proof_url: uploadedUrl || undefined,
-        carrier: carrier.trim() || undefined,
+        carrier: invoiceType === 'carrier' ? carrier.trim() : '',
+        tax_id: invoiceType === 'tax_id' ? taxId.trim() : '',
         parent_note: parentNote.trim() || undefined,
       });
 
-      if (carrier.trim()) localStorage.setItem('daos_invoice_carrier', carrier.trim());
+      if (invoiceType === 'carrier' && carrier.trim()) localStorage.setItem('daos_invoice_carrier', carrier.trim());
       else localStorage.removeItem('daos_invoice_carrier');
 
       toast.success('付款證明已送出，櫃檯將儘速審核');
@@ -297,6 +331,7 @@ export default function CheckoutPage() {
   }
 
   async function handleCancelCheckout() {
+    if (guide) return;
     if (cancelBusy) return;
     if (!window.confirm('確定要取消此筆課程報名與付款單嗎？')) return;
     setCancelBusy(true);
@@ -373,7 +408,7 @@ export default function CheckoutPage() {
           <div className="flex items-baseline justify-between gap-3 py-4">
             <span className="text-xs font-medium text-slate-500">應繳總金額</span>
             <span className="shrink-0 text-2xl font-black tracking-tight text-slate-900">
-              {formatTWD(checkout.total_amount)}
+              {guide ? 'DEMO 金額（非報價）' : formatTWD(checkout.total_amount)}
             </span>
           </div>
           <div className="flex items-center justify-between gap-3 border-t border-slate-100 pt-3 font-mono text-[10px] text-slate-400">
@@ -436,7 +471,7 @@ export default function CheckoutPage() {
           </div>
         </section>
 
-        {!isOnSite && <section className="rounded-xl border border-slate-100 bg-white p-5 shadow-sm">
+        {!isOnSite && <section data-guide-bank className="rounded-xl border border-slate-100 bg-white p-5 shadow-sm">
           <div className="mb-3 flex items-center gap-1.5 border-b border-slate-50 pb-2">
             <span className="h-3 w-1 rounded-full bg-brand-green" />
             <h3 className="text-xs font-bold tracking-wider text-slate-800">轉帳匯款資訊</h3>
@@ -520,7 +555,7 @@ export default function CheckoutPage() {
               <span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400">
                 上傳轉帳證明截圖 <span className="text-brand-error">*</span>
               </span>
-              <label className="flex cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50/50 p-4 text-center transition hover:border-brand-green/70 hover:bg-white">
+              <label data-guide-proof className="flex cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50/50 p-4 text-center transition hover:border-brand-green/70 hover:bg-white">
                 <div className="flex h-8 w-8 items-center justify-center rounded-full bg-brand-green/15 text-brand-primary">
                   <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.6-4.6a2 2 0 0 1 2.8 0L16 16m-2-2 1.6-1.6a2 2 0 0 1 2.8 0L20 14m-6-6h.01M6 20h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2z" />
@@ -549,23 +584,49 @@ export default function CheckoutPage() {
               )}
             </div>
 
-            <div>
-              <label className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400" htmlFor="checkout-carrier">
-                電子發票載具條碼 <span className="font-normal text-slate-400">(選填)</span>
-              </label>
-              <input
-                id="checkout-carrier"
-                type="text"
-                placeholder="例如 /ABC+123"
-                value={carrier}
-                disabled={proofBusy}
-                onChange={(e) => setCarrier(e.target.value.slice(0, 64))}
-                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold transition focus:border-brand-primary focus:outline-none focus:ring-1 focus:ring-brand-green/30 disabled:bg-slate-50"
-              />
-              <p className="mt-1 text-[9px] font-medium leading-normal text-slate-400">
-                發票將於櫃檯核對款項無誤後，自動開立至載具中。
+            <fieldset className="rounded-xl border border-slate-200 p-3">
+              <legend className="px-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                發票資訊 <span className="font-normal text-slate-400">(選填)</span>
+              </legend>
+                <div>
+                  <label className="mb-1 block text-[10px] font-bold text-slate-500" htmlFor="checkout-carrier">載具</label>
+                  <input
+                    id="checkout-carrier"
+                    type="text"
+                    placeholder="例如 /ABC+123"
+                    value={carrier}
+                    disabled={proofBusy || !!taxId.trim()}
+                    maxLength={MAX_CARRIER_LENGTH + 1}
+                    aria-invalid={!validCarrier}
+                    onChange={(e) => setCarrier(e.target.value)}
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold transition focus:border-brand-primary focus:outline-none focus:ring-1 focus:ring-brand-green/30 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                  />
+                  {!validCarrier && <p className="mt-1 text-[10px] text-brand-error">載具識別碼不得超過 {MAX_CARRIER_LENGTH} 字元</p>}
+                </div>
+                <div className="mt-3">
+                  <label className="mb-1 block text-[10px] font-bold text-slate-500" htmlFor="checkout-tax-id">統一編號</label>
+                  <input
+                    id="checkout-tax-id"
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={8}
+                    placeholder="請輸入 8 碼統一編號"
+                    value={taxId}
+                    disabled={proofBusy}
+                    onChange={(e) => {
+                      const nextTaxId = normalizeTaxIdInput(e.target.value);
+                      setTaxId(nextTaxId);
+                      if (nextTaxId) setCarrier('');
+                    }}
+                    aria-invalid={taxId.length > 0 && !validTaxId}
+                    className={`w-full rounded-xl border px-3 py-2 text-xs font-semibold tracking-widest transition focus:outline-none focus:ring-1 disabled:bg-slate-50 ${taxId.length > 0 && !validTaxId ? 'border-brand-error focus:ring-brand-error/30' : 'border-slate-200 focus:border-brand-primary focus:ring-brand-green/30'}`}
+                  />
+                  {taxId.length > 0 && !validTaxId && <p className="mt-1 text-[9px] font-medium text-brand-error">統一編號格式或檢查碼錯誤</p>}
+                </div>
+              <p className="mt-2 text-[9px] font-medium leading-normal text-slate-400">
+                填寫統一編號後將停用載具；兩者都不填也可以。
               </p>
-            </div>
+            </fieldset>
 
             <div>
               <label className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400" htmlFor="checkout-note">
@@ -584,7 +645,7 @@ export default function CheckoutPage() {
             </div>
 
             <button
-              type="submit"
+              data-guide-payment-submit type="submit"
               disabled={submitDisabled}
               className={`flex w-full items-center justify-center rounded-xl py-2.5 text-xs font-bold text-white transition active:scale-[0.98] ${
                 submitDisabled ? 'cursor-not-allowed bg-brand-primary/35' : 'bg-brand-primary hover:bg-brand-primary/90'

@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "runId": "preview-purchased-coefficient-20260930-v1",
+  "indexRawByteSha256": {
+    "admin": "f01eaae161f539bbeb8855850ed49c7b091640e4030735b5379cdd1dcb528296",
+    "liff": "ca004841aebba01dbe9d6f16dbae566f2398c7347e34c8d8ea6d30cb6fb5044c"
+  },
+  "sourceCanonicalLfSha256": {
+    "server/bootstrap/admin.js": "a41774c875de30b260e135a84add1de2049e6e4a7220c268f810d18e91d9c8cd",
+    "server/bootstrap/coreSchema.js": "caa691cad1ee2a3b0c65973bfdeb4bea0998f204a1e3fa4914d2e6c1df6be58c",
+    "server/routes/enrollments.js": "9dc8689cab72c6df1255c565c1e3afcd6719bc50ee2ded242ea79957b5c905e4",
+    "server/routes/groupOrders.js": "1526bbf7da01f3011cd3f1a394837c50e204f2f5a845ac7a67d6799a4d6215ab",
+    "server/routes/admin/enrollments.js": "74838301b02b6c788c97fe78719adfea1535803bfbd889fe6bd1d153b1879f01",
+    "server/routes/admin/groupOrders.js": "fdda0630eade5d697a49017f52ff05a3227a46bc1e6ff97253d73f24379d554d",
+    "server/routes/admin/sessions.js": "53b35034f0f17edf43a3a1a5973145e2063594c387724aa857ce6c8c1c03cd17",
+    "db/migrations/068_purchased_pricing_snapshot.sql": "29d688712617998e89dc241f6f4925d06f9b36a2bbc7f112b93930a78249cba7",
+    "client/admin/src/utils/sessionExportSummary.mjs": "32a76ed17f60e2c69bb0e748dd880f2ef79412e4c5c6651178fed066a954dfb7",
+    "client/admin/src/utils/sessionXlsxReport.mjs": "65aa0a8c8094376dd6b012cc56f902ed5fa758ec4a84c4d2500d29e8f8437611",
+    "client/admin/src/utils/sessionPivotXlsx.mjs": "a0c9814ec7d8321283868090586f81bfae65e09db7852a04415253b0e010a0ae",
+    "client/admin/src/utils/csvExport.js": "83a5b10ba10a0ece3d2a322b30dd63b2c4397a0e99f8de7ce93b88077b04eea2",
+    "client/admin/src/pages/SessionsPage.jsx": "1682d63d8dd2d066cf3dea7d573e19795f495204e7e8ee1837b0465bb41f0f00",
+    "client/admin/src/api/sessions.js": "74dcd761ee2958c07bd4fd424f6fd6dc56185a1de990ce16ed0a8113dd08b4f3",
+    "client/admin/src/components/ExportMenu.jsx": "c8e557dbc0aa2c17c0b3dac20ff9f2e3166fd285aa194d23ff92108b9e8effa0"
+  },
+  "sourceCanonicalization": "UTF-8 text; CRLF and lone CR become LF; trimEnd; append exactly one LF",
+  "status": "CANDIDATE_PENDING_EXACT_TARGET_TEST"
+}

@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "runId": "preview-route-guide-closeout-20260930-v1",
+  "indexRawByteSha256": {
+    "admin": "3ce3114c0b42e230d61529c0b4829609a3f1d06c0a812fcf470b91889222e22c",
+    "liff": "ca004841aebba01dbe9d6f16dbae566f2398c7347e34c8d8ea6d30cb6fb5044c"
+  },
+  "sourceCanonicalLfSha256": {
+    "client/admin/src/pages/RagicStatusPage.jsx": "10d8aca9047cea5d9223cd2e4263e646c2fe24a2af6f122ef310d963b2bafdcf",
+    "client/liff/src/components/GuideLesson.jsx": "8473e268ed1b8ad7fb4897e4177e8eb6593de75649bfa03b52bb8b6d18a748e1",
+    "client/liff/src/pages/GuidePage.jsx": "39a1c415c6f56fcba41d2af0b0df5467ec94cac68da137cd077e21e4397a1b7b"
+  },
+  "sourceCanonicalization": "UTF-8 text; CRLF and lone CR become LF; trimEnd; append exactly one LF",
+  "status": "REVIEWED_SOURCE_READBACK_BUILD_PENDING"
+}

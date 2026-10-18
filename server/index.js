@@ -18,6 +18,10 @@ const { pool } = require('./models/db');
 const { formatTaipeiDateTime, TAIPEI_TIME_ZONE } = require('./utils/dateTime');
 
 const app = express();
+// Replit Autoscale 在反向代理後面。沒有這一行，req.ip 拿到的是代理位址而不是
+// 使用者的 —— 2026-08-26 後台登入限流因此把所有人算成同一個人，全公司一起鎖死。
+// 目前限流已預設關閉，但 req.ip 仍被其他地方使用（稽核、log），必須是對的。
+app.set('trust proxy', 1);
 const server = http.createServer(app);
 
 // build 版本：優先讀 build 腳本產生的 build-info.json，退而求其次讀 git，最後 unknown。
@@ -39,6 +43,10 @@ function noStoreHtml(res, filePath) {
 }
 
 app.use(cors({ origin: process.env.LIFF_URL_PARENT || process.env.LIFF_URL || '*' }));
+// Ragic webhook 必須掛在全域 body parser 之前：Ragic 沒保證 Content-Type，下面的 json／urlencoded
+// parser 只要遇到不是 application/json 的請求就會解析錯或不解析，整批通知被 400 擋掉又不留紀錄。
+// 這支路由自己讀原始文字再解析（只信 record id，一律回 Ragic re-fetch）。
+app.use('/api/ragic-webhook', require('./routes/ragicWebhook'));
 // express.json() 預設 strict：axios 的 `post(url, null)` 會把 body 序列化成字面字串 "null"，
 // strict 模式視為非法 JSON → 400（前端 Ragic「立即同步 / 核准」按鈕送 null body，
 // 每次點擊都在抵達路由前就 400 —— 正是「連不上 Ragic / 同步失敗」的真因）。
@@ -57,6 +65,9 @@ app.use((req, res, next) => _jsonParser(req, res, (err) => {
 }));
 app.use(express.urlencoded({ extended: true }));
 
+const { rejectNulBytes } = require('./middlewares/rejectNulBytes');
+app.use(rejectNulBytes);
+
 // ── Routes ──────────────────────────────────
 // ── MCP Server（Claude Desktop / Claude.ai 工作區遠端操控）────────────
 const { createMcpRouter } = require('./mcp');
@@ -67,6 +78,7 @@ app.use('/api/venues',        require('./routes/venues'));
 app.use('/api/coaches',       require('./routes/coaches'));
 app.use('/api/coach-portal',  require('./routes/coachPortal')); // 教練端 LINE OAuth 登入模組（與家長端分離）
 app.use('/api/parents',       require('./routes/parents'));
+app.use('/api/family',        require('./routes/family'));       // 家庭帳號：家長端申請合併、退出
 app.use('/api/courses',       require('./routes/courses'));
 app.use('/api/slots',         require('./routes/slots'));        // coach_availability_slots
 app.use('/api/sessions',      require('./routes/sessions'));     // course_sessions
@@ -81,10 +93,12 @@ app.use('/api/transfers',     require('./routes/transfers'));
 app.use('/api/chat',          require('./routes/chat'));
 app.use('/api/learn',         require('./routes/learn'));        // 學習歷程
 app.use('/api/evaluations',   require('./routes/evaluations'));  // 期末評鑑
-app.use('/api/ragic-webhook', require('./routes/ragicWebhook'));  // Ragic webhook：只信 record id，必 re-fetch
 app.use('/api/admin',         require('./routes/admin'));
 // U16 整合 API：場館現場的外部前端（救生台等）查當下課表。服務金鑰 + 場館綁定，唯讀。
 app.use('/api/integrations', require('./routes/integrations'));
+// 前端診斷回報：家長端畫面壞在送出之前時，唯一留得下證據的通道。
+app.use('/api/diagnostics', require('./routes/diagnostics'));
+app.use('/api/onboarding', require('./routes/onboarding'));
 
 // 舊 LINE Console 曾被文件指向無 `/api` 前綴的 callback。相容入口不接收 OAuth
 // code/state，也不會建立或綁定帳號；安全地丟棄 query 後回正式 LIFF bind 頁，
@@ -144,12 +158,26 @@ app.get('/health', async (req, res) => {
     push = { error: String(err.message || err).slice(0, 120) };
   }
 
+  // 儲存診斷。要回答的是「上傳的照片到底存在哪」——而那個答案在外面完全看不見：
+  // bucket 沒開通時系統會安靜地退回用 PostgreSQL，功能一切正常，
+  // 只有資料庫慢慢被 334 MB 的圖檔撐大。正式站就這樣跑了六週沒有人發現。
+  //
+  // 只回 driver 名稱（replit / db / local 三種之一），不回 bucket id、
+  // 不回憑證、不回錯誤原文 —— 與 mail / push 兩區同一個原則。
+  let storage = null;
+  try {
+    storage = { driver: require('./services/objectStorage').driverName };
+  } catch (err) {
+    storage = { error: String(err.message || err).slice(0, 120) };
+  }
+
   res.json({
     status: 'ok',
     ts: now.toISOString(),
     build: BUILD_INFO,
     mail,
     push,
+    storage,
     timezone: {
       application: process.env.TZ || TAIPEI_TIME_ZONE,
       database: dbTimeZone,
@@ -272,10 +300,13 @@ app.use((err, req, res, next) => {
     (err instanceof SyntaxError && 'body' in err);
   if (isBodyParse) {
     const tooLarge = err.type === 'entity.too.large';
+    // 一定要帶 code：前端是靠 code 決定顯示什麼訊息的，
+    // 沒有 code 的錯誤在畫面上就變成一片空白或籠統的「資料載入失敗」。
     return res.status(tooLarge ? 413 : 400).json({
       error: tooLarge
         ? '上傳內容過大，請縮小後再試。'
         : '請求內容格式錯誤（JSON 解析失敗）；多半是頁面版本過舊，請重新整理頁面後再試。',
+      code: tooLarge ? 'PAYLOAD_TOO_LARGE' : 'BAD_JSON',
     });
   }
   console.error('[unhandled]', req.method, req.originalUrl, err.message);
@@ -286,6 +317,36 @@ app.use((err, req, res, next) => {
 initWebSocket(server);
 
 const PORT = process.env.PORT || 3000;
+
+// BEGIN graceful shutdown
+let shuttingDown = false;
+function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log('[shutdown] draining requests:', signal);
+  const deadline = setTimeout(() => {
+    console.error('[shutdown] drain exceeded 15 seconds');
+    process.exit(1);
+  }, 15000);
+  for (const task of require('node-cron').getTasks().values()) task.stop();
+  server.close(async (err) => {
+    try {
+      if (err && err.code !== 'ERR_SERVER_NOT_RUNNING') throw err;
+      await pool.end();
+      clearTimeout(deadline);
+      console.log('[shutdown] complete');
+      process.exit(0);
+    } catch (error) {
+      console.error('[shutdown] failed:', error.code || error.message);
+      process.exit(1);
+    }
+  });
+  server.closeIdleConnections?.();
+}
+process.once('SIGTERM', () => shutdown('SIGTERM'));
+process.once('SIGINT', () => shutdown('SIGINT'));
+// END graceful shutdown
+
 
 // 啟動順序：
 // 1) production 必須有 JWT_SECRET（assertSecretConfigured 會 throw 讓 process exit）
@@ -299,6 +360,9 @@ const PORT = process.env.PORT || 3000;
     assertSecretConfigured();
     await bootstrapAdmin();
     await bootstrapCore();
+    await require('./models/db').pool.query(require('./services/featureTour').SCHEMA_SQL);
+    // 家庭帳號資料表：要參照 parents／students，所以排在 core 之後
+    await require('./bootstrap/familySchema').bootstrap();
     // 沒設定 SMTP 不擋開機（通知信不是核心流程），但一定要吼一聲 ——
     // 否則會變成「上線好幾天才發現家長從來沒收到信」。
     try {

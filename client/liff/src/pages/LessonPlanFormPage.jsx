@@ -1,3 +1,4 @@
+import { useCoachGuideDemo } from '../utils/coachGuideDemo';
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
@@ -17,7 +18,9 @@ const EMPTY = { goals: '', expected_outcomes: '', learning_plan: '', initial_ass
 
 export default function LessonPlanFormPage() {
   const { periodId } = useParams();
-  const { coach } = useAuth();
+  const guide = useCoachGuideDemo();
+  const { coach: signedInCoach } = useAuth();
+  const coach = guide?.coach || signedInCoach;
   const navigate = useNavigate();
   const toast = useToast();
   const [form, setForm] = useState(EMPTY);
@@ -25,6 +28,7 @@ export default function LessonPlanFormPage() {
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
+    if (guide) { setForm({ ...EMPTY, ...guide.plan }); setLoaded(true); return; }
     if (!coach?.id || !periodId) return;
     let alive = true;
     learnApi.getPlan(periodId)
@@ -32,11 +36,12 @@ export default function LessonPlanFormPage() {
       .catch((e) => alive && toast.error(e?.response?.data?.error || '載入失敗'))
       .finally(() => alive && setLoaded(true));
     return () => { alive = false; };
-  }, [coach?.id, periodId]); // eslint-disable-line
+  }, [coach?.id, periodId, guide]); // eslint-disable-line
 
   function setField(k, v) { setForm((f) => ({ ...f, [k]: v })); }
 
   async function handleSave(publish = false) {
+    if (guide) return;
     setBusy(true);
     try {
       await learnApi.savePlan(periodId, form);
@@ -57,7 +62,7 @@ export default function LessonPlanFormPage() {
   const published = form.status === 'published';
 
   return (
-    <div className="px-4 py-4">
+    <div data-coach-guide="plan-overview" className="px-4 py-4">
       <button onClick={() => navigate(-1)} className="mb-3 text-sm text-brand-teal active:opacity-60">‹ 返回</button>
 
       <header className="mb-4">
@@ -75,6 +80,7 @@ export default function LessonPlanFormPage() {
           <div key={f.key}>
             <label className="text-xs font-bold text-brand-primary">{f.label}</label>
             <textarea
+              readOnly={!!guide}
               value={form[f.key] || ''}
               onChange={(e) => setField(f.key, e.target.value)}
               placeholder={f.placeholder}
@@ -89,7 +95,8 @@ export default function LessonPlanFormPage() {
       <div className="sticky bottom-0 -mx-4 mt-6 flex gap-2 border-t border-gray-200 bg-white px-4 py-3">
         <button
           type="button"
-          disabled={busy}
+          disabled={busy || !!guide}
+         
           onClick={() => handleSave(false)}
           className="flex-1 rounded-xl border border-brand-teal py-3 text-sm font-bold text-brand-teal active:opacity-90 disabled:opacity-50"
         >
@@ -97,7 +104,8 @@ export default function LessonPlanFormPage() {
         </button>
         <button
           type="button"
-          disabled={busy}
+          disabled={busy || !!guide}
+         
           onClick={() => handleSave(true)}
           className="flex-1 rounded-xl bg-brand-primary py-3 text-sm font-bold text-white active:opacity-90 disabled:opacity-50"
         >

@@ -7,6 +7,7 @@
  */
 const assert = require('assert');
 const path = require('path');
+const { randomUUID } = require('crypto');
 const SERVER = path.resolve(__dirname, '../../server');
 const jwt = require(path.join(SERVER, 'node_modules', 'jsonwebtoken'));
 const { pool } = require(path.join(SERVER, 'models', 'db'));
@@ -16,6 +17,13 @@ const SECRET = process.env.JWT_SECRET;
 const created = [];
 const createdGroups = [];
 const groupByVenue = {};
+// 兩個定價區、各一個場館、同一課別不同價，全部自建（原本借 dev 庫的 L / C 館）。
+const suffix = randomUUID().replace(/-/g, '').slice(0, 6).toUpperCase();
+const VENUES = [`ZPA${suffix}`, `ZPB${suffix}`];
+const ZONE_PRICES = [4500, 5400];
+const zoneIds = [];
+const parentId = randomUUID();
+const coachId = randomUUID();
 
 async function post(token, body) {
   const rid = 'zone-smoke-' + body.venue.id + '-' + Math.floor(Math.random() * 1e9).toString(36);
@@ -36,23 +44,40 @@ async function post(token, body) {
 (async () => {
   assert.ok(SECRET, 'JWT_SECRET must be set');
 
-  // 找一個有學員的家長、一個 1.00 倍率的在職教練
-  const pr = await pool.query(`
-    SELECT p.id, p.phone, s.id AS student_id, s.name AS student_name
-      FROM parents p JOIN students s ON s.parent_id = p.id
-     WHERE p.is_active = TRUE LIMIT 1`);
-  assert.ok(pr.rowCount, 'dev DB 需要至少一組家長+學員');
+  // 夾具：兩區兩館、一組家長＋學員、一位 1.00 倍率的在職教練
+  for (let i = 0; i < VENUES.length; i += 1) {
+    const zoneId = (await pool.query(
+      `INSERT INTO pricing_zones (name, sessions_per_period, sort_order) VALUES ($1, 6, 993) RETURNING id`,
+      [`定價區隔離${suffix}-${i}`])).rows[0].id;
+    zoneIds.push(zoneId);
+    await pool.query(
+      `INSERT INTO venues (id, name, is_active, pricing_zone_id) VALUES ($1, $2, TRUE, $3)`,
+      [VENUES[i], `定價區隔離館${suffix}-${i}`, zoneId]);
+    await pool.query(
+      `INSERT INTO course_type_configs
+         (pricing_zone_id, course_type, label, min_students, max_students, sort_order, base_price, is_active)
+       VALUES ($1, 3, '一對三', 1, 3, 3, $2, TRUE)`,
+      [zoneId, ZONE_PRICES[i]]);
+  }
+  const digits = String(parseInt(suffix, 16)).padStart(10, '0').slice(-8);
+  await pool.query(
+    `INSERT INTO coaches (id, name, phone, ragic_employee_id, is_active, pricing_multiplier)
+     VALUES ($1, $2, $3, $4, TRUE, 1.00)`,
+    [coachId, `定價區隔離教練${suffix}`, `02${digits}`, `E2E-ZONE-${suffix}`]);
+  await pool.query(
+    `INSERT INTO parents (id, name, phone, is_active) VALUES ($1, $2, $3, TRUE)`,
+    [parentId, `定價區隔離家長${suffix}`, `09${digits}`]);
+  const pr = await pool.query(
+    `INSERT INTO students (parent_id, name) VALUES ($1, $2)
+     RETURNING parent_id AS id, $3::text AS phone, id AS student_id, name AS student_name`,
+    [parentId, `定價區隔離學員${suffix}`, `09${digits}`]);
   const parent = pr.rows[0];
-  const co = await pool.query(
-    `SELECT id FROM coaches WHERE is_active = TRUE AND pricing_multiplier = 1.00 LIMIT 1`);
-  assert.ok(co.rowCount, 'dev DB 需要一位 1.00 倍率的在職教練');
-  const coachId = co.rows[0].id;
 
   const token = jwt.sign({ type: 'parent', parentId: parent.id, phone: parent.phone }, SECRET, { expiresIn: '1h' });
 
   // 兩區同一課別的設定價（期望值直接從 DB 讀，不寫死）
   const expect = {};
-  for (const v of ['L', 'C']) {
+  for (const v of VENUES) {
     const r = await pool.query(`
       SELECT z.name AS zone, c.base_price
         FROM venues v JOIN pricing_zones z ON z.id = v.pricing_zone_id
@@ -61,9 +86,10 @@ async function post(token, body) {
     assert.ok(r.rowCount, `場館 ${v} 查不到一對三設定`);
     expect[v] = { zone: r.rows[0].zone, price: Math.round(Number(r.rows[0].base_price)) };
   }
-  assert.notStrictEqual(expect.L.price, expect.C.price,
+  const [L, C] = VENUES.map((v) => expect[v]);
+  assert.notStrictEqual(L.price, C.price,
     '兩區價格必須先不同，否則這支測試證明不了任何事');
-  console.log(`  設定：一對三 @${expect.L.zone}=${expect.L.price}／期  @${expect.C.zone}=${expect.C.price}／期`);
+  console.log(`  設定：一對三 @${L.zone}=${L.price}／期  @${C.zone}=${C.price}／期`);
 
   const body = {
     coach: { id: coachId },
@@ -74,7 +100,7 @@ async function post(token, body) {
     payment_method: 'bank_transfer',
   };
 
-  for (const v of ['L', 'C']) {
+  for (const v of VENUES) {
     const res = await post(token, { ...body, venue: { id: v } });
     assert.strictEqual(res.status, 201, `場館 ${v} 報名失敗 → ${JSON.stringify(res)}`);
     const row = await pool.query(
@@ -93,7 +119,7 @@ async function post(token, body) {
   // ── 團報：同一課別、兩個區，每家應繳金額也必須各收各的 ──
   // 團購走的是另一條建單路徑（POST /api/group-orders），設定讀取點也是另外兩處，
   // 所以個人報名對了不代表團報對了，要各自驗。
-  for (const v of ['L', 'C']) {
+  for (const v of VENUES) {
     const rid = 'zone-smoke-go-' + v + '-' + Math.floor(Math.random() * 1e9).toString(36);
     const r = await fetch(BASE + '/api/group-orders', {
       method: 'POST',
@@ -130,7 +156,7 @@ async function post(token, body) {
   const adminToken = jwt.sign(
     { role: 'admin', sub: 'zone-smoke', username: 'zone-smoke', name: '定價區煙霧測試' },
     SECRET, { expiresIn: '1h' });
-  for (const v of ['L', 'C']) {
+  for (const v of VENUES) {
     const gid = groupByVenue[v];
     await pool.query(
       `UPDATE group_orders SET status = 'submitted', submitted_at = NOW() WHERE id = $1`, [gid]);
@@ -179,6 +205,15 @@ async function post(token, body) {
       await pool.query('DELETE FROM group_order_members WHERE group_order_id = ANY($1)', [createdGroups]);
       await pool.query('DELETE FROM group_orders WHERE id = ANY($1)', [createdGroups]);
     }
+    // 自建夾具：checkout 與冪等紀錄掛在測試家長身上，先清掉再刪家長、教練、場館、定價區。
+    await pool.query('DELETE FROM checkout_sessions WHERE parent_id = $1', [parentId]).catch(() => {});
+    await pool.query('DELETE FROM request_idempotency_ledger WHERE actor_id = $1', [parentId]).catch(() => {});
+    await pool.query('DELETE FROM students WHERE parent_id = $1', [parentId]).catch(() => {});
+    await pool.query('DELETE FROM parents WHERE id = $1', [parentId]).catch(() => {});
+    await pool.query('DELETE FROM coaches WHERE id = $1', [coachId]).catch(() => {});
+    await pool.query('DELETE FROM course_type_configs WHERE pricing_zone_id = ANY($1::int[])', [zoneIds]).catch(() => {});
+    await pool.query('DELETE FROM venues WHERE id = ANY($1::text[])', [VENUES]).catch(() => {});
+    await pool.query('DELETE FROM pricing_zones WHERE id = ANY($1::int[])', [zoneIds]).catch(() => {});
     console.log(`(已清除 ${created.length} 筆報名、${createdGroups.length} 筆團購)`);
     await pool.end();
   });

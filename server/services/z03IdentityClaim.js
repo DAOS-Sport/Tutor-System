@@ -2,8 +2,10 @@
 
 const crypto = require('crypto');
 const { pool } = require('../models/db');
+const { writeStudentAudit, parentActor } = require('./studentAudit');
 const ragic = require('./ragic');
 const parentSync = require('./parentSync');
+const { BindConflictError } = parentSync;
 const { getTrueRagicLineUid } = require('../config/ragicSchema');
 const { normalizePhone, normalizeStudentName, isCanonicalMobilePhone } = require('./identityNormalizer');
 const { resolveMultipleSourceCandidate } = require('./parentIdentityResolver');
@@ -86,6 +88,7 @@ async function _insertOrReuseStudent(client, parentId, studentInput) {
      studentInput?.gender || '', String(studentInput?.id_number || '').trim().toUpperCase(),
      studentInput?.blood_type || '', studentInput?.student_code || '']
   )).rows[0];
+  await writeStudentAudit(client, student.id, 'create', parentActor(parentId, 'identity-registration-append'));
   return { student, appended: true };
 }
 
@@ -94,13 +97,21 @@ function _payloadHash(value) {
 }
 
 function _classifyConstraint(err) {
+  if (err?.code === 'PHONE_AMBIGUOUS') return 'PHONE_AMBIGUOUS';
   if (err?.code !== '23505') return 'LOCAL_LINK_FAILED';
   const byConstraint = {
+    uq_parents_phone_canonical_active: 'PHONE_AMBIGUOUS',
     parents_phone_key: 'DATA_RECONCILIATION_PENDING',
     parents_line_uid_key: 'ACCOUNT_RECOVERY_REQUIRED',
     uq_parents_ragic_record_id: 'DATA_RECONCILIATION_PENDING',
     uq_students_ragic_record_id: 'DATA_RECONCILIATION_PENDING',
     uq_identity_claims_active_source: 'DATA_RECONCILIATION_PENDING',
+    // 新戶註冊實際會撞到的是這條 5 欄唯一索引
+    // (purpose, student_name_normalized, source_system, source_table, source_record_id)，
+    // 它原本不在表上，於是同一家人重送註冊時拿到的是兜底的 LOCAL_LINK_FAILED ——
+    // 那個碼帶 retryable:false / loginAllowed:false，對家長是一條死路。
+    // 歸到 DATA_RECONCILIATION_PENDING 才會走人工複核，而不是把人擋在門外。
+    identity_claims_purpose_source_system_source_table_source_r_key: 'DATA_RECONCILIATION_PENDING',
   };
   return byConstraint[err.constraint] || 'LOCAL_LINK_FAILED';
 }
@@ -178,6 +189,7 @@ async function registerNewParentLocalFirst({
           [parent.id, sourceStudent.name, _safeDate(sourceStudent.birth_date), sourceStudent.gender || '',
            sourceStudent.id_number || '', sourceStudent.blood_type || '', sourceStudent.student_code || '']
         )).rows[0];
+        await writeStudentAudit(client, student.id, 'create', parentActor(parent.id, 'new-parent-registration'));
         localStudents.push(student);
       }
       linkedStudents.push(student);
@@ -213,6 +225,16 @@ async function registerNewParentLocalFirst({
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     if (err instanceof Z03ClaimError) throw err;
+    // 這是新戶註冊唯一的寫入交易。原本直接把 err 換成 LOCAL_LINK_FAILED 丟出去，
+    // 家長看到「註冊失敗」，而後台一行線索都沒有 —— 家長回報「填一填就跳掉」
+    // 查了好幾週查不出來，正是因為原因在這裡被丟掉了。
+    // 不記 err.detail：pg 會把欄位值放進去（電話、身分證），那是個資。
+    console.error('[registerNewParentLocalFirst] 交易失敗（已回滾）：',
+      'code=' + (err?.code || '-'),
+      'constraint=' + (err?.constraint || '-'),
+      'table=' + (err?.table || '-'),
+      'column=' + (err?.column || '-'),
+      '|', err?.message);
     throw new Z03ClaimError(_classifyConstraint(err), '本地新會員 transaction 失敗', 409, {
       constraint: err.constraint || null,
     });
@@ -330,6 +352,9 @@ async function completeTrueUidRegistration({
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     if (err instanceof Z03ClaimError) throw err;
+    if (err instanceof BindConflictError && err.code === 'PHONE_AMBIGUOUS') {
+      throw new Z03ClaimError('PHONE_AMBIGUOUS', err.message, 409);
+    }
     if (err.code === 'ACCOUNT_RECOVERY_REQUIRED') {
       throw new Z03ClaimError('ACCOUNT_RECOVERY_REQUIRED', err.message, 409);
     }
@@ -760,6 +785,7 @@ async function claimZ03Identity({
           `INSERT INTO students (parent_id,name,is_active) VALUES ($1,$2,TRUE) RETURNING *`,
           [parent.id, studentName]
         )).rows[0];
+        if (!studentRows[0]) await writeStudentAudit(client, student.id, 'create', parentActor(parent.id, 'legacy-claim-local-identity'));
         await client.query(
           `UPDATE ragic_z03_students SET canonical_student_id=$2
             WHERE id=ANY($1::bigint[])`,
@@ -941,6 +967,7 @@ async function claimZ03Identity({
         [parent.id, matchedChild.name_raw, _safeDate(matchedChild.birth_date_raw),
          matchedChild.gender_raw || '', matchedChild.blood_type_raw || '', matchedChild.student_code_raw || '']
       )).rows[0];
+      await writeStudentAudit(client, student.id, 'create', parentActor(parent.id, 'legacy-claim-source-mirror'));
     }
 
     const claim = (await client.query(
@@ -1059,6 +1086,9 @@ async function claimZ03Identity({
       });
     }
     if (err instanceof Z03ClaimError) throw err;
+    if (err.code === '23505' && err.constraint === 'uq_parents_phone_canonical_active') {
+      throw new Z03ClaimError('PHONE_AMBIGUOUS', 'canonical phone 已由另一個 parent 使用', 409);
+    }
     if (err.code === '23505' && err.constraint === 'parents_line_uid_key') {
       throw new Z03ClaimError('PHONE_BOUND_TO_OTHER_UID', 'LINE UID unique constraint conflict', 409);
     }
@@ -1079,5 +1109,6 @@ module.exports = {
   __test__: {
     safeDate: _safeDate,
     lineUidHash: _lineUidHash,
+    classifyConstraint: _classifyConstraint,
   },
 };

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import CourseCard from '../components/CourseCard';
+import GuideEntry from '../components/GuideEntry';
 import PendingPaymentBanner from '../components/PendingPaymentBanner';
 import IncompleteGroupOrdersBanner from '../components/IncompleteGroupOrdersBanner';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -12,14 +13,14 @@ import { useToast } from '../context/ToastContext';
 import { formatTWDate, formatTWYMD } from '../utils/format';
 import { promotionValueLabel } from '../utils/promotionLabel';
 
-// 組別卡片的文案（title/subtitle/description）；單人價格改由後台「課程介紹維護」設定，於下方動態帶入。
+// 組別卡片的文案（title/subtitle/description）；文案可補缺；報價須選定場館後讀課程需求管理。
 const COURSE_TYPES = [
-  { type: 1, title: '1 對 1 個別教學', subtitle: '一位學員專屬教練', description: '完全客製化進度，最高效率提升技術。', basePrice: 9000 },
-  { type: 2, title: '1 對 2 雙人班', subtitle: '與好友共學', description: '兩位學員共享教練，互相切磋學習。', basePrice: 6000 },
-  { type: 3, title: '1 對 3 小團班', subtitle: '小組同訓', description: '三位學員精緻小班，氣氛輕鬆活潑。', basePrice: 4500 },
-  { type: 4, title: '1 對 4 團體班', subtitle: '4 人共學', description: '多人團體課，依單人價計費、人數越多越划算。', basePrice: 3000 },
-  { type: 5, title: '1 對 5 團體班', subtitle: '5 人共學', description: '多人團體課，依單人價計費、人數越多越划算。', basePrice: 3000 },
-  { type: 6, title: '1 對 6 團體班', subtitle: '6 人共學', description: '多人團體課，依單人價計費、人數越多越划算。', basePrice: 3000 },
+  { type: 1, title: '1 對 1 個別教學', subtitle: '一位學員專屬教練', description: '完全客製化進度，最高效率提升技術。' },
+  { type: 2, title: '1 對 2 雙人班', subtitle: '與好友共學', description: '兩位學員共享教練，互相切磋學習。' },
+  { type: 3, title: '1 對 3 小團班', subtitle: '小組同訓', description: '三位學員精緻小班，氣氛輕鬆活潑。' },
+  { type: 4, title: '1 對 4 團體班', subtitle: '4 人共學', description: '多人團體課，依單人價計費、人數越多越划算。' },
+  { type: 5, title: '1 對 5 團體班', subtitle: '5 人共學', description: '多人團體課，依單人價計費、人數越多越划算。' },
+  { type: 6, title: '1 對 6 團體班', subtitle: '6 人共學', description: '多人團體課，依單人價計費、人數越多越划算。' },
 ];
 const TYPE_META = Object.fromEntries(COURSE_TYPES.map((t) => [t.type, t]));
 
@@ -32,6 +33,7 @@ export default function HomePage() {
   const toast = useToast();
   const [promos, setPromos] = useState(null);
   const [types, setTypes] = useState(null);
+  const [typesError, setTypesError] = useState('');
 
   useEffect(() => {
     let alive = true;
@@ -44,11 +46,16 @@ export default function HomePage() {
         setPromos([]);
         toast.error('優惠資訊載入失敗');
       });
-    // 組別與單人價格（由後台維護）；載入失敗時沿用本地預設，不阻擋首頁
+    // 啟用品項取中央來源；載入失敗或空清單都不得補出可購買的預設品項。
     courseTypesApi
       .listActive()
-      .then((d) => alive && setTypes(Array.isArray(d) ? d : null))
-      .catch(() => alive && setTypes(null));
+      .then((d) => {
+        if (!Array.isArray(d)) throw new Error('課程資料格式不正確');
+        if (alive) { setTypes(d); setTypesError(''); }
+      })
+      .catch(() => {
+        if (alive) { setTypes([]); setTypesError('課程資訊載入失敗，請稍後再試或洽櫃檯'); }
+      });
     return () => {
       alive = false;
     };
@@ -61,11 +68,10 @@ export default function HomePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 組別卡片：完全以後台「課程介紹維護」(/admin/course-intros) 為單一真實來源——
-  // 啟用中的組別、標題、內文、封面圖、單人價格皆取自後台，與管理端即時對上。
-  // 僅在 API 尚未載入 / 失敗時，才退回本地預設文案，確保首頁永遠有內容。
+  // 啟用品項、介紹取 API；本地只補文案。首頁尚未選場館，不能把跨區
+  // 目錄資料當成該場館的報價或一期堂數。價格於選館後才顯示。
   const courseCards = useMemo(() => {
-    if (!Array.isArray(types) || types.length === 0) return COURSE_TYPES;
+    if (!Array.isArray(types)) return [];
     return types
       .slice()
       .sort((a, b) => (a.sort_order - b.sort_order) || (a.course_type - b.course_type))
@@ -77,7 +83,6 @@ export default function HomePage() {
           title: t.title || meta.title || t.label,
           subtitle: Number(t.max_students) > 1 ? `每組最多 ${t.max_students} 人` : (meta.subtitle || ''),
           description: body || meta.description || '',
-          basePrice: Number(t.base_price ?? meta.basePrice ?? 0),
           imageUrl: t.image_url || '',
         };
       });
@@ -93,11 +98,14 @@ export default function HomePage() {
 
       <PendingPaymentBanner />
 
+      <GuideEntry role="parent" />
+
       <IncompleteGroupOrdersBanner />
 
       {/* 上課記錄/簽到：整列橫幅、橘底黑字（已移除「課程轉讓」入口） */}
       <button
         type="button"
+        data-tour-checkin
         onClick={() => navigate('/my-courses')}
         className="mb-5 flex w-full items-center justify-between rounded-2xl bg-brand-amber p-4 text-left text-black active:opacity-90"
       >
@@ -180,6 +188,11 @@ export default function HomePage() {
 
       <section>
         <h3 className="mb-3 text-sm font-bold text-brand-primary">課程組別</h3>
+        {types === null && <LoadingSpinner label="載入課程中…" />}
+        {typesError && <p role="alert" className="text-sm text-brand-error">{typesError}</p>}
+        {types !== null && !typesError && courseCards.length === 0 && (
+          <p className="text-sm text-gray-500">目前暫無開放報名的課程</p>
+        )}
         <div className="space-y-3">
           {courseCards.map((t) => (
             <CourseCard

@@ -29,11 +29,11 @@ async function syncStoredUsage(client, period, used) {
   await client.query(
     `UPDATE admin_enrollments ae
         SET used_sessions = $5, updated_at = NOW()
-      WHERE ae.id = $1
+      WHERE ae.status NOT IN ('refunded','cancelled') AND (ae.id = $1
          OR ($2::uuid IS NOT NULL AND ae.group_order_id = $2::uuid
              AND COALESCE(ae.period_number, 1) = COALESCE($4::int, 1))
          OR ($3::uuid IS NOT NULL AND ae.enrollment_batch_id = $3::uuid
-             AND COALESCE(ae.period_number, 1) = COALESCE($4::int, 1))`,
+             AND COALESCE(ae.period_number, 1) = COALESCE($4::int, 1)))`,
     [period.admin_enrollment_id || '', period.group_order_id || null,
      period.enrollment_batch_id || null, period.period_number || 1, used]
   );
@@ -43,17 +43,17 @@ async function syncStoredUsage(client, period, used) {
  * 列出共享此 period 的全部 admin_enrollments id（與 syncStoredUsage 同一組匹配條件），
  * 供稽核紀錄（admin_enrollment_audit_logs）對每筆訂單各寫一筆。
  */
-async function listLinkedEnrollmentIds(client, period) {
+async function listLinkedEnrollmentIds(client, period, { includeClosed = false } = {}) {
   const r = await client.query(
     `SELECT ae.id
        FROM admin_enrollments ae
-      WHERE ae.id = $1
+      WHERE ($5::boolean OR ae.status NOT IN ('refunded','cancelled')) AND (ae.id = $1
          OR ($2::uuid IS NOT NULL AND ae.group_order_id = $2::uuid
              AND COALESCE(ae.period_number, 1) = COALESCE($4::int, 1))
          OR ($3::uuid IS NOT NULL AND ae.enrollment_batch_id = $3::uuid
-             AND COALESCE(ae.period_number, 1) = COALESCE($4::int, 1))`,
+             AND COALESCE(ae.period_number, 1) = COALESCE($4::int, 1)))`,
     [period.admin_enrollment_id || '', period.group_order_id || null,
-     period.enrollment_batch_id || null, period.period_number || 1]
+     period.enrollment_batch_id || null, period.period_number || 1, includeClosed]
   );
   return r.rows.map((row) => row.id);
 }

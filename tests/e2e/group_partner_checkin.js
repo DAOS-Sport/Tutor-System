@@ -92,6 +92,8 @@ async function call(base, method, path, { token, body } = {}) {
   let periodId = null;
   let studentA = null;
   let studentB = null;
+  let zoneId = null;
+  let courseTypeCreated = false;
 
   try {
     await pg.query(`INSERT INTO venues (id, name, is_active) VALUES ($1, $2, TRUE)`, [venueId, `團報測試館${suffix}`]);
@@ -115,11 +117,21 @@ async function call(base, method, path, { token, body } = {}) {
     );
     studentA = students.rows.find((row) => row.parent_id === parentA).id;
     studentB = students.rows.find((row) => row.parent_id === parentB).id;
+    // 夾具（不涉簽到／扣課政策）：course_type_configs 主鍵已是 (pricing_zone_id, course_type)，
+    // 設定要掛在定價區上（自建一個），課別編號要先進 course_types 字典（configs 有外鍵）。
+    zoneId = (await pg.query(
+      `INSERT INTO pricing_zones (name, sessions_per_period, sort_order) VALUES ($1, 6, 995) RETURNING id`,
+      [`團報測試區${suffix}`]
+    )).rows[0].id;
+    courseTypeCreated = (await pg.query(
+      `INSERT INTO course_types (course_type) VALUES ($1) ON CONFLICT DO NOTHING RETURNING course_type`,
+      [CT]
+    )).rowCount > 0;
     await pg.query(
       `INSERT INTO course_type_configs
-         (course_type, label, min_students, max_students, sort_order, base_price, is_active)
-       VALUES ($1, '團報一對二測試', 2, 2, 995, 4500, TRUE)`,
-      [CT]
+         (pricing_zone_id, course_type, label, min_students, max_students, sort_order, base_price, is_active)
+       VALUES ($2, $1, '團報一對二測試', 2, 2, 995, 4500, TRUE)`,
+      [CT, zoneId]
     );
     await pg.query(
       `INSERT INTO admin_enrollments
@@ -254,8 +266,10 @@ async function call(base, method, path, { token, body } = {}) {
     await pg.query(`DELETE FROM parents WHERE id IN ($1, $2)`, [parentA, parentB]).catch(() => {});
     await pg.query(`DELETE FROM coach_venues WHERE coach_id = $1`, [coachId]).catch(() => {});
     await pg.query(`DELETE FROM coaches WHERE id = $1`, [coachId]).catch(() => {});
-    await pg.query(`DELETE FROM course_type_configs WHERE course_type = $1`, [CT]).catch(() => {});
+    await pg.query(`DELETE FROM course_type_configs WHERE pricing_zone_id = $1`, [zoneId]).catch(() => {});
     await pg.query(`DELETE FROM venues WHERE id = $1`, [venueId]).catch(() => {});
+    await pg.query(`DELETE FROM pricing_zones WHERE id = $1`, [zoneId]).catch(() => {});
+    if (courseTypeCreated) await pg.query(`DELETE FROM course_types WHERE course_type = $1`, [CT]).catch(() => {});
     await route.close().catch(() => {});
     await pg.end().catch(() => {});
     if (previousFlag === undefined) delete process.env.SHARED_CHECKIN_USAGE_V2;

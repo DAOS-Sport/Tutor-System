@@ -16,14 +16,22 @@ const { randomUUID } = require('crypto');
 const { pool } = require('../models/db');
 const promotions = require('../services/promotions');
 const referrals = require('../services/referrals');
+const familyScope = require('../services/familyScope');
+const {
+  validateStandardStudentCount,
+  validateStandardCourseCapacity,
+  calculateEnrollmentSubtotal,
+  allocateEnrollmentDiscount,
+} = require('../services/enrollmentRules');
 const { parseProofInput } = require('../services/paymentProof');
+const { parseInvoiceIdentityInput } = require('../services/invoiceIdentity');
 const {
   validateRequestId,
   payloadFingerprint,
   acquireRequestLock,
 } = require('../services/idempotency');
 const { requireParent } = require('../middlewares/parentAuth');
-const { resolveUnitPrice } = require('../services/coursePricing');
+const { resolveCurrentUnitPrice, coursePeriodTerms, coursePeriodCount } = require('../services/coursePricing');
 const { getCourseConfig, CourseConfigError } = require('../services/courseConfig');
 const {
   createCheckoutSession,
@@ -46,10 +54,10 @@ function fingerprintEnrollmentPayload(payload) {
   const p = payload || {};
   const orderKind = normalizeOrderKind(p.order_kind);
   const paymentMethod = normalizePaymentMethod(p.payment_method, orderKind);
-  const parsedPeriods = parseInt(p.period_count, 10);
-  const periodCount = Number.isInteger(parsedPeriods)
-    ? Math.min(6, Math.max(1, parsedPeriods))
-    : 1;
+  const parsedPeriods = p.period_count == null || p.period_count === '' ? 1 : Number(p.period_count);
+  const periodCount = typeof p.period_count !== 'boolean' && Number.isSafeInteger(parsedPeriods)
+    ? parsedPeriods
+    : { invalid_period_count: p.period_count };
   const studentIds = Array.isArray(p.students)
     ? p.students.map((student) => String(student?.id || '').trim()).filter(Boolean).sort()
     : [];
@@ -64,7 +72,8 @@ function fingerprintEnrollmentPayload(payload) {
     coupon_code: String(p.promotion?.coupon_code || '').trim().toUpperCase() || null,
     transfer_last_5: String(p.transfer_last_5 || '').trim() || null,
     payment_proof_url: String(p.payment_proof_url || '').trim() || null,
-    carrier: String(p.carrier || '').trim().slice(0, 64) || null,
+    carrier: String(p.carrier || '').trim() || null,
+    tax_id: String(p.tax_id || '').trim() || null,
   };
 }
 
@@ -101,6 +110,10 @@ function genEnrollmentId() {
 
 router.post('/', async (req, res) => {
   const p = req.body || {};
+  const identityInput = parseInvoiceIdentityInput(p);
+  if (identityInput.error) {
+    return res.status(400).json({ error: identityInput.error, code: identityInput.code });
+  }
   const requestCheck = validateRequestId(p.request_id || req.get('Idempotency-Key'));
   if (requestCheck.error) {
     return res.status(requestCheck.status).json({ error: requestCheck.error, code: requestCheck.code });
@@ -299,12 +312,12 @@ router.post('/', async (req, res) => {
       }
       throw err;
     }
-    if (cfg.is_active === false) {
+    if (cfg.is_active === false || cfg.zone.is_active === false) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: '此課程組別已停用，無法報名', code: 'COURSE_TYPE_INACTIVE' });
     }
-    const basePrice = Number(cfg.base_price) || 0;
-    if (basePrice <= 0) {
+    const basePrice = Number(cfg.base_price);
+    if (cfg.base_price == null || !Number.isFinite(basePrice) || basePrice < 0) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: '此課程組別尚未設定價格，請洽櫃檯', code: 'PRICE_NOT_CONFIGURED' });
     }
@@ -321,33 +334,79 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'invalid coach id' });
     }
     const cr = await client.query(
-      `SELECT name, pricing_multiplier FROM coaches WHERE id = $1 AND is_active = TRUE`,
+      `SELECT c.name, COALESCE(s.multiplier, c.pricing_multiplier) AS pricing_multiplier
+           FROM coaches c LEFT JOIN admin_staff s ON s.id = c.ragic_employee_id
+          WHERE c.id = $1 AND c.is_active = TRUE`,
       [coachId]
     );
     if (!cr.rowCount) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'coach not found or inactive' });
     }
-    const multiplier = Number(cr.rows[0].pricing_multiplier) || 1;
+    const multiplier = Number(cr.rows[0].pricing_multiplier);
+    if (cr.rows[0].pricing_multiplier == null || !Number.isFinite(multiplier) || multiplier <= 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '教練修課係數尚未設定', code: 'COACH_MULTIPLIER_UNAVAILABLE' });
+    }
     const coachName = cr.rows[0].name;
     // U10：費用 = 單期單生價(base×倍率) × 學生數 × 期數（server-authoritative，忽略 client 金額）。
-    const unitPrice = resolveUnitPrice(basePrice, multiplier, cfg.tier_prices);
+    const unitPrice = resolveCurrentUnitPrice(basePrice, multiplier, cfg.tier_prices);
+    // 一般課才使用 unitPrice；試上實際使用下方 trialPrice。普通課級距明價即使異常，
+    // 也不可在有效 trial_price 尚未解析前誤擋試上。
+    // 中央 base/tier/trial 明確設定的 0 元均為合法免費價；NULL 與負值不可當成免費。
+    // 零金額仍循待付款／櫃檯對帳流程，不在報價時自動開通。
+    if (!isTrial && (unitPrice === null || !Number.isFinite(unitPrice) || unitPrice < 0 || unitPrice > Number.MAX_SAFE_INTEGER)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: '此課程組別價格設定無法安全計算，請洽櫃檯',
+        code: 'PRICE_CALCULATION_INVALID',
+      });
+    }
     const studentCount = Array.isArray(p.students) ? p.students.length : 0;
-    const periodCount = (() => {
-      const n = parseInt(p.period_count, 10);
-      return Number.isInteger(n) ? Math.min(6, Math.max(1, n)) : 1;
-    })();
+    const terms = coursePeriodTerms(cfg);
+    const periodCount = isTrial
+      ? coursePeriodCount(p.period_count, { minimumPeriods: 1, maximumPeriods: 6 })
+      : coursePeriodCount(p.period_count, terms);
+    if (!terms || periodCount === null) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: '期數或定價區堂數設定不正確', code: 'PURCHASE_PERIOD_INVALID' });
+    }
     if (studentCount < 1) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: '請選擇至少一位學生' });
     }
-    // U12 家庭共班：一對二以上＝同堂共學，單次報名學員數不得超過課型人數上限
-    // （超額的班放不下，開通也會壞掉）。一對一不設限——多位小孩＝各自獨立的一對一課。
-    // 試上不受此限（2026-07-16 起開放多學員／多堂）：每位學員各自開通獨立 1 堂體驗
-    // 課期（不共班，見 admin/enrollments.js ensureSoloCoursePeriod 對 trial 的排除），
-    // 課型人數上限對試上無意義。
+    // U12 家庭共班：一般整組一對二／三／四必須一次送齊精確人數；不足會在
+    // 對帳時誤開成單人 period，超額則班級放不下。跨家庭分次加入走 groupOrders，
+    // 不會經過此路由，因此不受這個「單次整組」守門影響。
+    // 一對一不設限——多位小孩＝各自獨立的一對一課。
+    // 試上比照正式課（使用者 2026-10-14）：一樣要一次選滿人數；訂單仍每人每堂一筆，
+    // 對帳時同批同堂開成同一個共用體驗課期（admin/enrollments.js ensureSoloCoursePeriod）。
     const maxStudents = Number(cfg.max_students) || 1;
-    if (!isTrial && maxStudents > 1 && studentCount > maxStudents) {
+    const standardCapacity = validateStandardCourseCapacity({
+      courseType: courseTypeNum,
+      orderKind,
+      maxStudents,
+    });
+    if (!standardCapacity.ok) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: `此課程組別人數設定不一致（課型需 ${standardCapacity.expected} 位、目前上限 ${standardCapacity.configured} 位），請洽櫃檯`,
+        code: 'COURSE_CAPACITY_CONFIG_MISMATCH',
+      });
+    }
+    const standardCount = validateStandardStudentCount({
+      courseType: courseTypeNum,
+      orderKind,
+      studentCount,
+    });
+    if (!standardCount.ok) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: `此課程為一對${standardCount.expected}，一般整組報名須一次選擇 ${standardCount.expected} 位不同有效學員；跨家庭請使用團體報名`,
+        code: 'STUDENT_COUNT_MUST_MATCH_COURSE_TYPE',
+      });
+    }
+    if (maxStudents > 1 && studentCount > maxStudents) {
       await client.query('ROLLBACK');
       return res.status(400).json({
         error: `此課程為一對${maxStudents}，單次報名最多 ${maxStudents} 位學員；人數更多請分次報名或使用團體報名`,
@@ -369,36 +428,38 @@ router.post('/', async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: '學員資料重複，請重新選擇', code: 'DUPLICATE_STUDENT' });
     }
+    // 家庭帳號（第二階段，決策 4）：可以替家人名下的孩子報名；購買人仍是下單的人（parentRow）
+    const familyIds = (await familyScope.actingParentIds(req)).map(String);
     const studentRows = await client.query(
       `SELECT id, name FROM students
-        WHERE parent_id = $1 AND id = ANY($2::uuid[]) AND COALESCE(is_active, TRUE) = TRUE`,
-      [parentRow.id, submittedStudentIds]
+        WHERE parent_id::text = ANY($1::text[]) AND id = ANY($2::uuid[]) AND COALESCE(is_active, TRUE) = TRUE`,
+      [familyIds, submittedStudentIds]
     );
     if (studentRows.rowCount !== studentCount) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: '所選學員不存在、已停用或不屬於您', code: 'STUDENT_NOT_AVAILABLE' });
     }
-    const settingsRows = await client.query(
-      `SELECT key, value FROM admin_settings
-        WHERE key IN ('sessions_per_period', 'trial_price', $1)`,
-      [`trial_price_course_${courseTypeNum}`]
-    );
-    const settings = Object.fromEntries(settingsRows.rows.map((row) => [row.key, row.value]));
-    const trialPrice = isTrial
-      ? calculateTrialPrice({
-          basePrice: unitPrice,
-          courseType: courseTypeNum,
-          settings,
-          // F-A07 為試上價唯一主來源；admin_settings 舊鍵僅為過渡 fallback。
-          configTrialPrice: cfg.trial_price,
-        })
-      : null;
-    if (isTrial && trialPrice <= 0) {
+    const trialPrice = isTrial ? calculateTrialPrice({
+      basePrice: cfg.base_price, tierPrices: cfg.tier_prices, multiplier,
+      configTrialPrice: cfg.trial_price, sessionsPerPeriod: terms.sessionsPerPeriod,
+    }) : null;
+    if (isTrial && (trialPrice === null || !Number.isSafeInteger(trialPrice) || trialPrice < 0)) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: '試上課程價格尚未設定，請洽櫃檯', code: 'TRIAL_PRICE_NOT_CONFIGURED' });
     }
     // 試上總額 = 試上單堂價（每人）× 學員數 × 堂數（試上語意下 period_count＝堂數）。
-    const original = (isTrial ? trialPrice : unitPrice) * studentCount * periodCount;
+    const original = calculateEnrollmentSubtotal({
+      unitPrice: isTrial ? trialPrice : unitPrice,
+      studentCount,
+      periodCount,
+    });
+    if (original == null) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: '本次報名總額無法安全計算，請洽櫃檯',
+        code: 'PRICE_CALCULATION_INVALID',
+      });
+    }
     const couponCode = p.promotion && p.promotion.coupon_code ? String(p.promotion.coupon_code).trim() : null;
 
     if (isTrial && couponCode) {
@@ -412,12 +473,14 @@ router.post('/', async (req, res) => {
       // 讓同一 (referee, coach) 的並發報名序列化；後到的交易會 block 到前一筆 COMMIT，
       // 於 READ COMMITTED 下重讀時 status 已變 'trial_paid' → 命中 0 列 → 被拒（COUPON_OUT_OF_SCOPE），
       // 消除「一次推薦兌多筆 5 折」的並發雙折。
+      // 家庭帳號（§5 第二階段）：新客資格以家庭計 —— 推薦人是自己的家人就不算新客
       const refCheck = await client.query(
         `SELECT id FROM referral_records
           WHERE referee_parent_id = $1 AND coach_id = $2
             AND status IN ('pending','registered')
+            AND referrer_parent_id::text <> ALL($3::text[])
           FOR UPDATE`,
-        [parentRow.id, coachId]
+        [parentRow.id, coachId, familyIds]
       );
       if (!refCheck.rowCount) {
         await client.query('ROLLBACK');
@@ -494,7 +557,7 @@ router.post('/', async (req, res) => {
       totalAmount: preview.finalPrice,
       transferLast5: last5 || null,
       paymentProofUrl,
-      carrier: p.carrier ? String(p.carrier).trim().slice(0, 64) : null,
+      carrier: identityInput.value.carrier || null,
       requestId: idempotencyKey,
       by: parentRow.phone,
       paymentMethod,
@@ -549,32 +612,40 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // 折扣按比例分攤到每一筆「單生單期」子訂單，餘數補最後一筆，
-    // 使所有子訂單 final_price 加總嚴格等於 preview.finalPrice / checkout total_amount。
-    let discountAllocated = 0;
+    // 折扣以非負整數安全分攤到每一筆「單生單期」子訂單；商數平均分配，
+    // 餘數逐筆加 1，避免四筆折 2 元時最後一筆得到 -1 元折抵、反而高於原價。
+    const discountAllocations = allocateEnrollmentDiscount({
+      totalDiscount,
+      orderCount: childOrderCount,
+      perOrderOriginal: perChildOriginal,
+    });
+    if (!discountAllocations) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: '本次優惠金額無法安全分攤，請洽櫃檯',
+        code: 'PRICE_CALCULATION_INVALID',
+      });
+    }
     let orderIndex = 0;
     for (const student of selectedStudents) {
       for (let period = 1; period <= periodCount; period += 1) {
-        const d = (orderIndex < childOrderCount - 1)
-          ? Math.round(totalDiscount / childOrderCount)
-          : (totalDiscount - discountAllocated);
-        if (orderIndex < childOrderCount - 1) discountAllocated += d;
-        const finalThis = Math.max(0, perChildOriginal - d);
+        const d = discountAllocations[orderIndex];
+        const finalThis = perChildOriginal - d;
         const eid = enrollmentIds[orderIndex];
         await client.query(
           `INSERT INTO admin_enrollments
              (id, parent_name, parent_phone, students, coach, coach_id, venue_id, course_type,
               original_price, final_price, transfer_last_5, payment_proof_url, status, submitted_at,
-              period_count, period_number, enrollment_batch_id, checkout_id, carrier, payment_method,
-              order_kind, total_sessions, used_sessions)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending_payment',$13,1,$14,$15,$16,$17,$18,$19,$20,0)`,
+              period_count, period_number, enrollment_batch_id, checkout_id, carrier, tax_id, payment_method,
+              order_kind, total_sessions, used_sessions, student_ids, purchased_pricing_multiplier)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending_payment',$13,1,$14,$15,$16,$17,$18,$19,$20,$21,0,$22,$23)`,
           [
             eid, parentRow.name, parentRow.phone, [student.name],
             coachName, coachId, venueId, Number(p.course_type),
             perChildOriginal, finalThis, last5 || null,
             paymentProofUrl, submittedAt, period, batchId, checkout.checkoutId,
-            p.carrier ? String(p.carrier).trim().slice(0, 64) : null,
-            paymentMethod, orderKind, isTrial ? 1 : 6,
+            identityInput.value.carrier || null, identityInput.value.taxId,
+            paymentMethod, orderKind, isTrial ? 1 : terms.sessionsPerPeriod, [student.id], multiplier,
           ]
         );
         await client.query(
@@ -637,13 +708,15 @@ router.post('/', async (req, res) => {
       venue: p.venue,
       course_type: Number(p.course_type),
       students: p.students,
-      total_sessions: isTrial ? 1 : 6,
+      total_sessions: isTrial ? 1 : terms.sessionsPerPeriod,
       used_sessions: 0,
       original_price: preview.originalPrice, // 費用明細顯示整筆（N 期）總額
       final_price: checkoutTotalAmount,
       payment_status: 'pending_payment',
       transfer_last_5: last5 || null,
       payment_proof_url: paymentProofUrl,
+      carrier: identityInput.value.carrier || null,
+      tax_id: identityInput.value.taxId,
       payment_method: paymentMethod,
       order_kind: orderKind,
       ...instruction,

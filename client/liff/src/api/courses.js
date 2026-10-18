@@ -1,13 +1,16 @@
-import { callApi } from './client';
+import { callApi, USE_MOCK } from './client';
 import { mockDb } from './mock';
 
 export const coursesApi = {
   // venue 是必填：價格依場館所屬定價區而定，少了它後端會回 400（而不是猜一個區）。
   basePrice: (courseType, venue) =>
-    callApi('/courses/base-price', { method: 'get', params: { courseType, venue } }, () => ({
+    callApi('/courses/base-price', { method: 'get', params: { courseType, venue } }, USE_MOCK ? () => ({
       course_type: courseType,
       original_price: mockDb.basePrice(courseType),
-    })),
+      pricing_zone_id: 'MOCK_ONLY', sessions_per_period: 6,
+      period_count_min: 1, period_count_max: 6,
+      tier_prices: null, trial_enabled: true, trial_price: null,
+    }) : undefined),
 
   myCourses: (parentId) =>
     callApi('/courses/mine', { method: 'get', params: { parentId } }, () => mockDb.myCourses(parentId)),

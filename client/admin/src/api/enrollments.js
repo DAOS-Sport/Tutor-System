@@ -5,6 +5,10 @@ export const enrollmentsApi = {
   list: (filters = {}) =>
     callApi('/enrollments', { params: filters }, () => mockDb.enrollments(filters)),
 
+  // 首頁的計數。刻意不走 list()：首頁要的是兩個整數，不是 1,140 筆列。
+  stats: (filters = {}) =>
+    callApi('/enrollments/stats', { params: filters }, () => mockDb.enrollmentStats(filters)),
+
   detail: (id) =>
     callApi(`/enrollments/${id}`, {}, () => mockDb.enrollmentDetail(id)),
 
@@ -39,10 +43,10 @@ export const enrollmentsApi = {
     ),
 
   // feeRate（0–1）給了就用它重算金額；不給則用全域設定的手續費率。
-  refundPreview: (id, feeRate) =>
+  refundPreview: (id, feeRate, feeAmount) =>
     callApi(
       `/enrollments/${id}/refund-preview`,
-      { params: feeRate === null || feeRate === undefined ? undefined : { fee_rate: feeRate } },
+      { params: feeAmount !== undefined ? { fee_amount: feeAmount } : feeRate === null || feeRate === undefined ? undefined : { fee_rate: feeRate } },
       () => mockDb.refundPreview(id),
     ),
 

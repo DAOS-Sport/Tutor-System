@@ -20,3 +20,14 @@
 涉及檔案（改到即觸發詢問義務）：`server/routes/slots.js`、`server/services/slots.js`、`server/cron/index.js`、`server/routes/checkins.js`、`server/routes/sessions.js`、`server/routes/courses.js`（簽到欄位）、`server/routes/admin/manualDeductions.js`、`server/routes/admin/checkins.js`、`server/routes/admin/sessions.js`（cancelled/revive）、`server/services/usageSync.js`、`server/services/deductionRevival.js`、`server/bootstrap/coreSchema.js`（遷移與 feature flag seed 區塊）、對應 LIFF/admin 前端頁與 `tests/e2e/`（path_c、admin_manual_deduction、group_partner_checkin）。
 
 ⚠️ `PROMPT_NEXT_SESSION.md` 為 2026-07-12 的舊交接文件，其中與上述衝突的指令（如「共享課期拒絕」e2e）已被本政策取代，不得依其回滾行為。
+
+## 🧊 手動建檔凍結令（2026-10-15 起，由專案擁有者下達）
+
+**櫃台「手動建檔」整條路線完全凍結，任何 agent 不得擅自修改。**
+要改凍結範圍內的任何程式（含重構、改註解以外的寫法、調整驗證或金額規則），必須**先向使用者列出要改什麼與為什麼，取得明確同意後才能動手**。沒有同意＝不改。
+
+凍結範圍：
+1. `server/routes/admin/enrollments.js` 中 `// 🧊 BEGIN 手動建檔凍結區` 與 `// 🧊 END 手動建檔凍結區` 之間的 `POST /api/admin/enrollments` 整支路由（含其說明註解）。
+2. `client/admin/src/pages/ManualEnrollPage.jsx` 整個檔案。
+
+迴歸鎖：`tests/manual_enroll_frozen_test.js` 比對上述兩處的內容指紋，改到即紅燈。取得同意並完成修改後，才可在同一次變更中更新該測試的指紋，並在測試檔頭記下同意日期與內容。

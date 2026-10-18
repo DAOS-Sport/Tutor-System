@@ -9,6 +9,7 @@
  */
 const assert = require('assert');
 const path = require('path');
+const { randomUUID } = require('crypto');
 
 // 這支不走 _lib.loginAdmin：它不打登入端點（免踩後台登入限流），改用同一組
 // JWT_SECRET 直接簽 token。相依模組都裝在 server/ 底下，故以絕對路徑取用。
@@ -20,7 +21,9 @@ const BASE = process.env.BASE_URL || 'http://localhost:3000';
 const MARK = 'AUTOSUBMIT_E2E';
 const SECRET = process.env.JWT_SECRET;
 const PROOF = '/uploads/2026-08/aaaaaaaaaaaaaaaaaaaaaaaa.jpg';
-const COACH = '933fe307-d0cf-4169-9731-e8c9407bb7cf';
+// 教練與家長都自建（不借用 dev 庫的真實教練與家長），finally 一併刪除。
+const COACH = randomUUID();
+const createdParentIds = [];
 
 const parentToken = (p) => jwt.sign({ type: 'parent', parentId: p.id, phone: p.phone }, SECRET, { expiresIn: '1h' });
 const adminToken = () => jwt.sign(
@@ -67,10 +70,19 @@ const auditOf = async (id) => (await pool.query(
   const health = await api('/health');
   assert.strictEqual(health.status, 200, 'server must be up on ' + BASE);
 
-  const ps = (await pool.query(
-    `SELECT id, phone, name FROM parents
-      WHERE is_active = TRUE AND phone IS NOT NULL ORDER BY created_at DESC LIMIT 5`)).rows;
-  assert.ok(ps.length >= 4, 'need at least 4 parents in the dev DB');
+  const tag = Date.now().toString().slice(-8);
+  await pool.query(
+    `INSERT INTO coaches (id, name, phone, ragic_employee_id, is_active, pricing_multiplier)
+     VALUES ($1, $2, $3, $4, TRUE, 1.00)`,
+    [COACH, `E2E送審教練${tag}`, `04${tag}`, `E2E-AUTOSUBMIT-${tag}`]);
+  const ps = [];
+  for (let i = 0; i < 4; i += 1) {
+    const p = (await pool.query(
+      `INSERT INTO parents (id, name, phone, is_active) VALUES ($1, $2, $3, TRUE) RETURNING id, phone, name`,
+      [randomUUID(), `E2E送審家長${i + 1}`, `09${String(Number(tag) + i).padStart(8, '0').slice(-8)}`])).rows[0];
+    createdParentIds.push(p.id);
+    ps.push(p);
+  }
 
   // ── A：滿團（1v2，2/2）最後一家補齊 → 必須自動送審 ─────────
   const a = await makeGroup({ courseType: 2, min: 2, max: 2, parents: [ps[0], ps[1]], lastPaidIdx: 1 });
@@ -166,5 +178,7 @@ const auditOf = async (id) => (await pool.query(
       await pool.query('DELETE FROM group_orders WHERE id = ANY($1)', [ids]);
       console.log(`(已清除 ${ids.length} 筆測試團購)`);
     }
+    await pool.query('DELETE FROM parents WHERE id = ANY($1::uuid[])', [createdParentIds]).catch(() => {});
+    await pool.query('DELETE FROM coaches WHERE id = $1', [COACH]).catch(() => {});
     await pool.end();
   });

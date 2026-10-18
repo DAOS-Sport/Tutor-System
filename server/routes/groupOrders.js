@@ -17,19 +17,26 @@
 const express = require('express');
 const crypto = require('crypto');
 const { pool } = require('../models/db');
+const { writeStudentAudit, parentActor: studentAuditParentActor } = require('../services/studentAudit');
 const { parseProofInput } = require('../services/paymentProof');
+const {
+  parseInvoiceIdentityInput,
+  resolveInvoiceIdentity,
+} = require('../services/invoiceIdentity');
+const familyScope = require('../services/familyScope');
 const { requireParent, optionalParent } = require('../middlewares/parentAuth');
 const { maskName, maskNames } = require('../utils/piiMask');
 const ragicWriteback = require('../services/ragicWriteback');
 const line = require('../services/line');
 const promotions = require('../services/promotions');
 const { logGroupOrderAudit } = require('../services/groupOrderAudit');
-const { resolveUnitPrice } = require('../services/coursePricing');
+const { resolveUnitPrice, resolveCurrentUnitPrice, coursePeriodTerms, coursePeriodCount } = require('../services/coursePricing');
 const routing = require('../services/lineRouting');
 const {
-  evaluateSubmitReadiness, isFullHouse, markSubmitted, notifyGroupSubmitted,
+  evaluateSubmitReadiness, isFullHouse, markSubmitted, notifyGroupSubmitted, requiredGroupSize,
 } = require('../services/groupOrderSubmit');
 const { getCourseConfig, CourseConfigError } = require('../services/courseConfig');
+const { rateLimitEnabled } = require('../middlewares/rateLimit');
 
 // 家長端操作者標記：token 只含 id/phone，櫃檯亦以手機辨識家長。
 const parentActor = (req) => `家長 ${req.parent?.phone || req.parent?.id || 'unknown'}`;
@@ -39,16 +46,19 @@ const router = express.Router();
 // 台灣手機格式（與 auth.js 一致）
 const TW_PHONE_RE = /^09\d{8}$/;
 
-// 團購人數上下限改依「課程組別」(course_type_configs.min/max_students)，於發起時讀取落地。
-// 此常數僅作為「草稿暫存陣列」的防呆絕對上限（避免存進過大內容）；非業務上限。
 // 草稿暫存陣列的防呆絕對上限（避免存進過大內容）；非業務上限，放寬到 20 以容納較大的團報設定。
 const DRAFT_MAX_STUDENTS = 20;
-// 團報人數上下限「以課程組別設定（course_type_configs.min/max）為唯一來源」：
-// 不再做全域 [2,6] 硬性夾擠，後台設多少就是多少（資料一致性）。僅保留結構性防呆：>=1 且 min<=max。
-function effectiveBounds(cfgMin, cfgMax) {
-  const max = Math.max(1, Number(cfgMax) || 1);
-  const min = Math.min(max, Math.max(1, Number(cfgMin) || 1));
-  return { min_students: min, max_students: max };
+// 團報人數＝組別（使用者 2026-10-14：一對三＝3 人、一對六＝6 人，不要 min／max）。
+// 發起時仍把 min／max_students 落地（欄位 NOT NULL、舊畫面與報表會讀），兩者都存組別人數；
+// 判斷一律走 services/groupOrderSubmit.requiredGroupSize，舊團存的 2–3 不再放寬。
+function fixedGroupBounds(courseType) {
+  const size = requiredGroupSize({ course_type: courseType });
+  return { min_students: size, max_students: size };
+}
+// 對外回傳的人數一律＝組別，舊團也一樣，畫面不再出現「需 2–3 人」。
+function groupSizeFields(order) {
+  const size = requiredGroupSize(order);
+  return { min_students: size, max_students: size };
 }
 // U9：複數期數——一張團報訂單可一次購買 1–6 期（名單鎖定不變）。
 const PERIOD_COUNT_MIN = 1;
@@ -56,19 +66,22 @@ const PERIOD_COUNT_MAX = 6;
 
 // 將任意輸入正規化為合法期數（落在 [MIN,MAX]，非整數退回 1）。
 function normalizePeriodCount(v) {
-  const n = parseInt(v, 10);
-  if (!Number.isInteger(n)) return 1;
-  return Math.min(PERIOD_COUNT_MAX, Math.max(PERIOD_COUNT_MIN, n));
+  if (typeof v === 'boolean') return null;
+  const n = v == null || v === '' ? 1 : Number(v);
+  return Number.isSafeInteger(n) ? n : null; // actual zone limits are checked with the configuration
 }
 
 // 同一筆 upload 在網路 retry / 雙擊時，第二個請求在 row lock 之後會看到第一個
 // 請求的結果；只要每個已送欄位都相同，就回成功而不再寫入或報 PAYMENT_LOCKED。
-function isSamePaymentPayload(member, { value: proof, last5, carrier, clear = false, supplied = false }) {
-  const hasInput = Boolean(supplied || last5 || carrier);
+function isSamePaymentPayload(member, { value: proof, last5, invoiceIdentity, clear = false, supplied = false }) {
+  const hasInput = Boolean(supplied || last5 || invoiceIdentity.supplied);
   if (!hasInput) return false;
   return (clear ? member.payment_proof_url == null : (!proof || member.payment_proof_url === proof))
     && (!last5 || member.transfer_last_5 === last5)
-    && (!carrier || member.carrier === carrier);
+    && (!invoiceIdentity.supplied || (
+      (member.carrier || null) === invoiceIdentity.carrier
+      && (member.tax_id || null) === invoiceIdentity.taxId
+    ));
 }
 
 function genJoinToken() {
@@ -92,7 +105,7 @@ function makeRateLimiter(max, label) {
       return next();
     }
     rec.count += 1;
-    if (rec.count > max) {
+    if (rateLimitEnabled() && rec.count > max) {
       console.warn(`[group-orders] rate-limited ${label}: ip=${ip} attempts=${rec.count}`);
       return res.status(429).json({ error: '查詢次數過多，請 5 分鐘後再試', code: 'RATE_LIMITED' });
     }
@@ -119,12 +132,14 @@ function cleanNewStudents(arr) {
 
 /**
  * 在交易內把「加入者本次選的學員」解析成綁定後的 { ids, names, createdForRagic }：
- *  - studentIds：限定為 req.parent 名下既有學員（驗證擁有權，避免綁別人的小孩）
- *  - newStudents：在本地 students 建檔（綁到 parentId），收集新 id/name；
+ *  - studentIds：限定為 req.parent 名下（家庭帳號開啟時＝同家庭）既有學員（驗證擁有權，避免綁別人的小孩）
+ *  - newStudents：在本地 students 建檔（綁到 parentId＝操作者，決策 7），收集新 id/name；
+ *    去重範圍是整個家庭：家人名下已有同一個孩子就沿用，不再多建一份；
  *    回傳 createdForRagic（含本地 id）供交易提交後 best-effort 即時回寫 Ragic Z01/Z02。
  * 任一學員姓名都會進 names（供顯示），ids 收集既有 + 新建。
  */
-async function resolveBoundStudents(client, parentId, studentIds, newStudents) {
+async function resolveBoundStudents(client, parentId, studentIds, newStudents, familyIds = [parentId]) {
+  const scopeIds = [...new Set([parentId, ...(familyIds || [])].filter(Boolean).map(String))];
   const ids = [];
   const names = [];
   const createdForRagic = [];
@@ -135,8 +150,8 @@ async function resolveBoundStudents(client, parentId, studentIds, newStudents) {
   if (wantIds.length) {
     const r = await client.query(
       `SELECT id, name FROM students
-        WHERE parent_id = $1 AND id = ANY($2::uuid[]) AND COALESCE(is_active, TRUE) = TRUE`,
-      [parentId, wantIds]
+        WHERE parent_id::text = ANY($1::text[]) AND id = ANY($2::uuid[]) AND COALESCE(is_active, TRUE) = TRUE`,
+      [scopeIds, wantIds]
     );
     if (r.rowCount !== wantIds.length) {
       const err = new Error('所選學員不存在或不屬於您');
@@ -147,25 +162,25 @@ async function resolveBoundStudents(client, parentId, studentIds, newStudents) {
   }
 
   for (const s of newStudents || []) {
-    // 同 parent 下以 id_number 或 name+birth 去重，避免重複建檔
+    // 同家庭（沒有家庭＝同 parent）以 id_number 或 name+birth 去重，避免重複建檔
     let matched = null;
     if (s.id_number) {
       const m = await client.query(
         `SELECT id, name FROM students
-          WHERE parent_id = $1 AND id_number = $2 AND COALESCE(is_active, TRUE) = TRUE
+          WHERE parent_id::text = ANY($1::text[]) AND id_number = $2 AND COALESCE(is_active, TRUE) = TRUE
           LIMIT 1`,
-        [parentId, s.id_number]
+        [scopeIds, s.id_number]
       );
       matched = m.rows[0] || null;
     }
     if (!matched) {
       const m = await client.query(
         `SELECT id, name FROM students
-          WHERE parent_id = $1 AND name = $2
+          WHERE parent_id::text = ANY($1::text[]) AND name = $2
             AND ($3::date IS NULL OR birth_date = $3::date)
             AND COALESCE(is_active, TRUE) = TRUE
           LIMIT 1`,
-        [parentId, s.name, s.birth_date || null]
+        [scopeIds, s.name, s.birth_date || null]
       );
       matched = m.rows[0] || null;
     }
@@ -179,6 +194,7 @@ async function resolveBoundStudents(client, parentId, studentIds, newStudents) {
        RETURNING id, name`,
       [parentId, s.name, s.birth_date || null, s.gender || '', s.id_number || '', s.blood_type || '']
     );
+    await writeStudentAudit(client, ins.rows[0].id, 'create', studentAuditParentActor(parentId, 'group-order-student-create'));
     ids.push(ins.rows[0].id);
     names.push(ins.rows[0].name);
     createdForRagic.push({ ...s, id: ins.rows[0].id }); // 新列 last_synced_at 預設 NULL（待同步）
@@ -223,6 +239,7 @@ function shapeMember(m, isSelf, perStudent, periodCount) {
     discount_amount: Number(m.discount_amount) || 0,
     transfer_last_5: isSelf ? (m.transfer_last_5 || '') : '',
     carrier: isSelf ? (m.carrier || '') : '',
+    tax_id: isSelf ? (m.tax_id || '') : '',
     has_payment_proof: !!m.payment_proof_url,
     // 送審守門用：末 5 碼 + 匯款證明「皆備」才算付款資料完成。
     // 只回布林，不外露他家的實際末 5 碼／證明網址（transfer_last_5 仍僅 isSelf 可見）。
@@ -269,8 +286,16 @@ async function loadOrderWithMembers(client, orderId) {
   return { order: o.rows[0], members: ms.rows };
 }
 
-// 單期單生價（四捨五入），供每家金額計算；order 須帶 base_price/multiplier（loadOrderWithMembers 附帶）。
+// 單期單生價（四捨五入），供每家金額計算。新團一律使用建立時已解析並保存的
+// purchased_unit_price；只有升級前的舊團沒有快照時，才維持原本的動態顯示/核准行為。
 function perStudentPrice(order) {
+  if (order.purchased_unit_price !== null && order.purchased_unit_price !== undefined) {
+    const snapshot = Number(order.purchased_unit_price);
+    if (Number.isFinite(snapshot) && snapshot >= 0) return snapshot;
+    const err = new Error('團購購買價快照無效，請洽櫃檯核對');
+    err.code = 'GROUP_PRICING_SNAPSHOT_INVALID';
+    throw err;
+  }
   return resolveUnitPrice(order.base_price, order.multiplier, order.tier_prices);
 }
 
@@ -302,7 +327,9 @@ function totalStudents(members) {
 }
 
 // 對外整形整張團購單（含成員，依 viewerParentId 決定遮罩）
-function shapeOrder(order, members, viewerParentId, extra = {}) {
+// familyParentIds：家庭帳號時的全家家長 id；家人那一戶跟自己一樣不遮罩（規格 §5，全家看得到彼此的訂單）
+function shapeOrder(order, members, viewerParentId, extra = {}, familyParentIds = null) {
+  const mine = (pid) => pid === viewerParentId || (Array.isArray(familyParentIds) && familyParentIds.includes(pid));
   const total = totalStudents(members);
   const periodCount = order.period_count || 1;
   const perStudent = perStudentPrice(order);
@@ -322,8 +349,7 @@ function shapeOrder(order, members, viewerParentId, extra = {}) {
     coach_id: order.coach_id,
     coach_name: order.coach_name || '',
     period_count: periodCount,
-    min_students: order.min_students,
-    max_students: order.max_students,
+    ...groupSizeFields(order),
     note: order.note || null,
     total_students: total,
     member_count: members.length,
@@ -333,7 +359,7 @@ function shapeOrder(order, members, viewerParentId, extra = {}) {
     reject_reason: order.reject_reason || null,
     submitted_at: order.submitted_at,
     created_at: order.created_at,
-    members: members.map((m) => shapeMember(m, m.parent_id === viewerParentId, perStudent, periodCount)),
+    members: members.map((m) => shapeMember(m, mine(m.parent_id), perStudent, periodCount)),
     ...extra,
   };
 }
@@ -350,11 +376,15 @@ router.get('/by-token/:token', previewRateLimit, optionalParent, async (req, res
     if (!o.rowCount) return res.status(404).json({ error: '邀請碼無效' });
     const loaded = await loadOrderWithMembers(pool, o.rows[0].id);
     const viewerId = req.parent?.id || null;
+    const viewerFamily = viewerId ? (await familyScope.actingParentIds(req)).map(String) : [];
     const alreadyMember = viewerId ? loaded.members.some((m) => m.parent_id === viewerId) : false;
+    // 家人已在團內：一樣不能加入（決策 6），前端顯示「您的家人已加入此團」
+    const familyJoined = !alreadyMember && loaded.members.some((m) => viewerFamily.includes(String(m.parent_id)));
     res.json(shapeOrder(loaded.order, loaded.members, viewerId, {
-      already_member: alreadyMember,
-      joinable: loaded.order.status === 'forming' && !alreadyMember,
-    }));
+      already_member: alreadyMember || familyJoined,
+      family_member_joined: familyJoined,
+      joinable: loaded.order.status === 'forming' && !alreadyMember && !familyJoined,
+    }, viewerFamily));
   } catch (err) {
     console.error('[group-orders GET /by-token]', err);
     res.status(500).json({ error: '載入失敗' });
@@ -517,10 +547,10 @@ router.post('/', async (req, res) => {
 
     // F-A08：場館先驗、再讀價。價格與人數上下限都由「場館所屬的定價區」決定，
     // 場館還沒確認就沒有「哪一區的設定」可言；原本的順序等於先取一份設定再驗場館。
-    const vr = await client.query(`SELECT id, is_active FROM venues WHERE id = $1`, [venueId]);
+    const vr = await client.query(`SELECT id, is_active FROM venues WHERE id = $1 FOR SHARE`, [venueId]);
     if (!vr.rowCount || vr.rows[0].is_active === false) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ error: '場館不存在或已停用' });
+      return res.status(400).json({ error: '場館不存在或已停用', code: 'VENUE_NOT_AVAILABLE' });
     }
     let cfgRow;
     try {
@@ -532,25 +562,39 @@ router.post('/', async (req, res) => {
       }
       throw err;
     }
-    if (cfgRow.is_active === false) {
+    if (cfgRow.is_active === false || cfgRow.zone.is_active === false) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: '此課程需求不可用' });
     }
-    // 團購人數上下限＝該課程組別（course_type_configs）的設定值（後台可改），再經全域夾擠：
-    //   min 至少 GROUP_MIN_FLOOR(2)、max 至多 GROUP_MAX_CEIL(6)。計數一律以「學生數」為準（一個家庭可帶多位）。
-    const { min_students, max_students } = effectiveBounds(cfgRow.min_students, cfgRow.max_students);
+    // 團購人數＝組別人數；計數一律以「學生數」為準（一個家庭可帶多位）。
+    const { min_students, max_students } = fixedGroupBounds(courseType);
 
 
-    let coachMultiplier = 1;
+    const terms = coursePeriodTerms(cfgRow);
+    if (!terms || periodCount === null || coursePeriodCount(periodCount, terms) === null) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: '期數或定價區堂數設定不正確', code: 'PURCHASE_PERIOD_INVALID' });
+    }
+    let coachMultiplier = null;
     if (coachId) {
-      const cr = await client.query(`SELECT id, pricing_multiplier FROM coaches WHERE id = $1`, [coachId]);
+      const cr = await client.query(`SELECT c.id, c.is_active, COALESCE(s.multiplier, c.pricing_multiplier) AS pricing_multiplier
+        FROM coaches c LEFT JOIN admin_staff s ON s.id = c.ragic_employee_id WHERE c.id = $1`, [coachId]);
       if (!cr.rowCount) { await client.query('ROLLBACK'); return res.status(400).json({ error: '教練不存在' }); }
-      coachMultiplier = Number(cr.rows[0].pricing_multiplier) || 1;
+      // 教練需在職，與個人報名同一條件（D18／GitHub #13）。
+      if (cr.rows[0].is_active === false) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: '此教練已停用，請改選其他教練', code: 'COACH_INACTIVE' });
+      }
+      if (cr.rows[0].pricing_multiplier != null) coachMultiplier = Number(cr.rows[0].pricing_multiplier);
+    }
+    if (!Number.isFinite(coachMultiplier) || coachMultiplier <= 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '請選擇已設定修課係數的教練', code: 'COACH_MULTIPLIER_UNAVAILABLE' });
     }
 
     let bound;
     try {
-      bound = await resolveBoundStudents(client, req.parent.id, studentIds, newStudents);
+      bound = await resolveBoundStudents(client, req.parent.id, studentIds, newStudents, await familyScope.actingParentIds(req));
     } catch (e) {
       await client.query('ROLLBACK');
       return res.status(e.code === 'STUDENT_NOT_OWNED' ? 403 : 400).json({ error: e.message, code: e.code });
@@ -569,7 +613,11 @@ router.post('/', async (req, res) => {
     // 之所以在發起時就鎖定：團購是先轉帳後審核，家長在 forming 階段就照畫面金額付款，
     // 折扣不能等到核准才算（那時錢已經匯出去了）。快照落地後，即使促銷被下架或改內容，
     // 本團金額也不會變 —— 保證「看到的 = 轉的 = 核准的」。
-    const perStudentAtCreate = resolveUnitPrice(cfgRow.base_price, coachMultiplier, cfgRow.tier_prices);
+    const perStudentAtCreate = resolveCurrentUnitPrice(cfgRow.base_price, coachMultiplier, cfgRow.tier_prices);
+    if (perStudentAtCreate === null || !Number.isSafeInteger(perStudentAtCreate * bound.names.length * periodCount)) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '課程價格設定無法安全計算', code: 'PRICE_CALCULATION_INVALID' });
+    }
     const leaderOriginal = perStudentAtCreate * bound.names.length * periodCount;
     let promoId = null;
     let promoSnapshot = null;
@@ -612,18 +660,16 @@ router.post('/', async (req, res) => {
     const o = await client.query(
       `INSERT INTO group_orders
          (leader_parent_id, venue_id, course_type, coach_id, status, join_token,
-          min_students, max_students, note, period_count, promotion_id, promotion_snapshot)
-       VALUES ($1,$2,$3,$4,'forming',$5,$6,$7,$8,$9,$10,$11::jsonb)
+          min_students, max_students, note, period_count, promotion_id, promotion_snapshot,
+          purchased_pricing_multiplier, purchased_unit_price, purchased_sessions_per_period)
+       VALUES ($1,$2,$3,$4,'forming',$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14)
        RETURNING *`,
       [req.parent.id, venueId, courseType, coachId, token, min_students, max_students, note, periodCount,
-       promoId, promoSnapshot ? JSON.stringify(promoSnapshot) : null]
+       promoId, promoSnapshot ? JSON.stringify(promoSnapshot) : null, coachMultiplier, perStudentAtCreate, terms.sessionsPerPeriod]
     );
     const order = o.rows[0];
-    // 團主自己那筆也走同一套「每家獨立計價」邏輯（order 需帶 base_price/multiplier 給 perStudentPrice）
-    const leaderAmt = computeMemberAmount(
-      { ...order, base_price: cfgRow.base_price, multiplier: coachMultiplier },
-      bound.names.length
-    );
+    // 團主及之後加入者都從同一張團的購買價快照計價；教練日後調價不改既有團。
+    const leaderAmt = computeMemberAmount(order, bound.names.length);
     const lm = await client.query(
       `INSERT INTO group_order_members
          (group_order_id, parent_id, student_names, student_ids, payment_proof_url, proof_uploaded_at, is_leader, status,
@@ -699,9 +745,10 @@ router.get('/mine', async (req, res) => {
               (SELECT COALESCE(SUM(COALESCE(array_length(m.student_names,1),0)),0)
                  FROM group_order_members m WHERE m.group_order_id = go.id) AS total_students
          FROM group_orders go
-        WHERE go.id IN (SELECT group_order_id FROM group_order_members WHERE parent_id = $1)
+        WHERE go.id IN (SELECT group_order_id FROM group_order_members WHERE parent_id::text = ANY($1::text[]))
         ORDER BY go.created_at DESC`,
-      [req.parent.id]
+      // 家人參與的團也列出（規格 §5）；團主身分與邀請碼仍只給團主本人
+      [(await familyScope.actingParentIds(req)).map(String)]
     );
     res.json(r.rows.map((go) => ({
       id: go.id,
@@ -710,8 +757,7 @@ router.get('/mine', async (req, res) => {
       course_type: go.course_type,
       coach_id: go.coach_id,
       period_count: go.period_count || 1,
-      min_students: go.min_students,
-      max_students: go.max_students,
+      ...groupSizeFields(go),
       member_count: Number(go.member_count),
       total_students: Number(go.total_students),
       is_leader: go.leader_parent_id === req.parent.id,
@@ -729,11 +775,12 @@ router.get('/:id', async (req, res) => {
   try {
     const loaded = await loadOrderWithMembers(pool, req.params.id);
     if (!loaded) return res.status(404).json({ error: '找不到此團購' });
-    const isMember = loaded.members.some((m) => m.parent_id === req.parent.id);
+    const familyIds = await familyScope.actingParentIds(req);
+    const isMember = loaded.members.some((m) => familyIds.includes(m.parent_id));
     if (!isMember) return res.status(403).json({ error: '無權檢視此團購' });
     const isLeader = loaded.order.leader_parent_id === req.parent.id;
     res.json(shapeOrder(loaded.order, loaded.members, req.parent.id,
-      isLeader ? { join_token: loaded.order.join_token } : {}));
+      isLeader ? { join_token: loaded.order.join_token } : {}, familyIds));
   } catch (err) {
     console.error('[group-orders GET /:id]', err);
     res.status(500).json({ error: '載入失敗' });
@@ -768,15 +815,58 @@ router.post('/by-token/:token/join', async (req, res) => {
       return res.status(409).json({ error: '此團購已不在揪團中，無法加入', code: 'NOT_FORMING' });
     }
 
-    const dup = await client.query(
-      `SELECT 1 FROM group_order_members WHERE group_order_id = $1 AND parent_id = $2`,
-      [order.id, req.parent.id]
+    const venue = await client.query(
+      `SELECT id, is_active FROM venues WHERE id = $1 FOR SHARE`, [order.venue_id]
     );
-    if (dup.rowCount) { await client.query('ROLLBACK'); return res.status(409).json({ error: '您已加入此團購', code: 'ALREADY_MEMBER' }); }
+    if (!venue.rowCount || venue.rows[0].is_active === false) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: '場館不存在或已停用', code: 'VENUE_NOT_AVAILABLE' });
+    }
+
+    // 加入時重查組別與教練（D18／GitHub #13）：發起後組別被停用、定價區不再提供，或教練離職，
+    // 就不再接受新家庭加入（與個人報名同一套條件）。已在團內的家庭與後台核准流程不受影響。
+    try {
+      const cfgNow = await getCourseConfig(client, { venueId: order.venue_id, courseType: order.course_type });
+      if (cfgNow.is_active === false || cfgNow.zone.is_active === false) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: '此課程組別已停用，無法再加入，請洽櫃檯', code: 'COURSE_TYPE_INACTIVE' });
+      }
+    } catch (err) {
+      if (err instanceof CourseConfigError) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: '此場館已不提供此課程組別，無法再加入，請洽櫃檯', code: err.code });
+      }
+      throw err;
+    }
+    if (order.coach_id) {
+      const coachNow = await client.query(`SELECT is_active FROM coaches WHERE id = $1`, [order.coach_id]);
+      if (!coachNow.rowCount || coachNow.rows[0].is_active === false) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: '此團的教練已停用，無法再加入，請洽櫃檯', code: 'COACH_INACTIVE' });
+      }
+    }
+
+    // 決策 6：同一個家庭在同一團只算一戶 —— 家人已經在團裡，就不能再用另一個帳號加入（不會拿到第二份優惠）
+    const joinFamilyIds = (await familyScope.actingParentIds(req)).map(String);
+    const dup = await client.query(
+      `SELECT parent_id FROM group_order_members WHERE group_order_id = $1 AND parent_id::text = ANY($2::text[])`,
+      [order.id, joinFamilyIds]
+    );
+    if (dup.rows.some((row) => String(row.parent_id) === String(req.parent.id))) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '您已加入此團購', code: 'ALREADY_MEMBER' });
+    }
+    if (dup.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: '您的家人已經參加這個團。同一個家庭在同一團只算一戶，不能再用另一個帳號加入；要幫家人上傳付款，請到「我的團購」操作。',
+        code: 'FAMILY_ALREADY_MEMBER',
+      });
+    }
 
     let bound;
     try {
-      bound = await resolveBoundStudents(client, req.parent.id, studentIds, newStudents);
+      bound = await resolveBoundStudents(client, req.parent.id, studentIds, newStudents, joinFamilyIds);
     } catch (e) {
       await client.query('ROLLBACK');
       return res.status(e.code === 'STUDENT_NOT_OWNED' ? 403 : 400).json({ error: e.message, code: e.code });
@@ -793,30 +883,32 @@ router.post('/by-token/:token/join', async (req, res) => {
       [order.id]
     );
     const curTotal = Number(cur.rows[0].total);
-    if (curTotal + bound.names.length > order.max_students) {
+    const groupSize = requiredGroupSize(order);
+    if (curTotal + bound.names.length > groupSize) {
       await client.query('ROLLBACK');
       return res.status(409).json({
-        error: `加入後將超過人數上限（最多 ${order.max_students} 人，目前 ${curTotal} 人）`,
+        error: `加入後將超過人數（此團需 ${groupSize} 人，目前 ${curTotal} 人）`,
         code: 'OVER_CAPACITY',
       });
     }
 
-    // U14：依團購鎖定的促銷快照，替「這一家」獨立算折扣並落地金額。
-    // 需要 base_price / multiplier 才能算單生價，故補查（order 是 group_orders 原始列，不含這兩欄）。
-    const pr = await client.query(
-      `SELECT ctc.base_price, ctc.tier_prices, COALESCE(co.pricing_multiplier, 1) AS multiplier
-         FROM group_orders go
-         LEFT JOIN course_type_configs ctc
-                ON ctc.course_type = go.course_type
-               AND ctc.pricing_zone_id = (SELECT pricing_zone_id FROM venues WHERE id = go.venue_id)
-         LEFT JOIN coaches co ON co.id = go.coach_id
-        WHERE go.id = $1`,
-      [order.id]
-    );
-    const joinAmt = computeMemberAmount(
-      { ...order, base_price: pr.rows[0]?.base_price, multiplier: pr.rows[0]?.multiplier, tier_prices: pr.rows[0]?.tier_prices },
-      bound.names.length
-    );
+    // U14：新團沿用建立時已保存的單生單期價；舊團沒有快照時才查現行設定，
+    // 僅維持既有相容行為，且不因此產生可信的購買係數快照。
+    let pricingOrder = order;
+    if (order.purchased_unit_price === null || order.purchased_unit_price === undefined) {
+      const pr = await client.query(
+        `SELECT ctc.base_price, ctc.tier_prices, COALESCE(co.pricing_multiplier, 1) AS multiplier
+           FROM group_orders go
+           LEFT JOIN course_type_configs ctc
+                  ON ctc.course_type = go.course_type
+                 AND ctc.pricing_zone_id = (SELECT pricing_zone_id FROM venues WHERE id = go.venue_id)
+           LEFT JOIN coaches co ON co.id = go.coach_id
+          WHERE go.id = $1`,
+        [order.id]
+      );
+      pricingOrder = { ...order, base_price: pr.rows[0]?.base_price, multiplier: pr.rows[0]?.multiplier, tier_prices: pr.rows[0]?.tier_prices };
+    }
+    const joinAmt = computeMemberAmount(pricingOrder, bound.names.length);
     const jm = await client.query(
       `INSERT INTO group_order_members
          (group_order_id, parent_id, student_names, student_ids, payment_proof_url, proof_uploaded_at, is_leader, status,
@@ -881,8 +973,8 @@ router.post('/by-token/:token/join', async (req, res) => {
           const liffUrl = (process.env.LIFF_URL_PARENT || process.env.LIFF_URL || 'https://liff.line.me/-') + `/group/${order.id}`;
           line.pushMessage(leaderUid, line.templates.groupMemberJoined({
             memberName: maskName(me?.parent_name || ''),
-            total, min: order.min_students, max: order.max_students,
-            reachedMin: total >= order.min_students, liffUrl,
+            total, min: requiredGroupSize(order), max: requiredGroupSize(order),
+            reachedMin: total >= requiredGroupSize(order), liffUrl,
           }), (await routing.resolveChannel({ kind: 'parent', venueId: order.venue_id })).channel,
             { event: 'group_member_joined', refId: 'j:' + order.id + ':' + req.parent.id, recipientKind: 'parent' })
             .catch((e) => console.warn('[group join push]', e.message));
@@ -892,6 +984,9 @@ router.post('/by-token/:token/join', async (req, res) => {
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('[group-orders join]', err);
+    if (err?.code === 'GROUP_PRICING_SNAPSHOT_INVALID') {
+      return res.status(409).json({ error: err.message, code: err.code });
+    }
     res.status(500).json({ error: '加入失敗' });
   } finally {
     client.release();
@@ -909,12 +1004,15 @@ router.post('/:id/my-proof', async (req, res) => {
   }
   const proof = proofInput.value;
   const last5 = String(req.body?.transfer_last_5 || '').trim();
-  const carrier = typeof req.body?.carrier === 'string' ? req.body.carrier.trim().slice(0, 64) : '';
+  const identityInput = parseInvoiceIdentityInput(req.body);
+  if (identityInput.error) {
+    return res.status(400).json({ error: identityInput.error, code: identityInput.code });
+  }
   if (last5 && !/^\d{5}$/.test(last5)) {
     return res.status(400).json({ error: '轉帳末 5 碼需為 5 位數字', code: 'TRANSFER_LAST5_INVALID' });
   }
-  if (!proofInput.supplied && !last5 && !carrier) {
-    return res.status(400).json({ error: '請填寫轉帳末 5 碼、載具或上傳匯款／轉帳證明', code: 'PAYMENT_INFO_REQUIRED' });
+  if (!proofInput.supplied && !last5 && !identityInput.value.carrier && !identityInput.value.taxId) {
+    return res.status(400).json({ error: '請填寫轉帳末 5 碼、發票資訊或上傳匯款／轉帳證明', code: 'PAYMENT_INFO_REQUIRED' });
   }
 
   const client = await pool.connect();
@@ -933,29 +1031,42 @@ router.post('/:id/my-proof', async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '此團購狀態無法上傳付款資料', code: 'NOT_UPLOADABLE' });
     }
+    // 家人可以幫忙付款（規格 §2）：自己在團內就付自己那一戶，否則付家人那一戶
+    const familyIds = await familyScope.actingParentIds(req);
     const m = await client.query(
-      `SELECT id, payment_confirmed, transfer_last_5, carrier, payment_proof_url
+      `SELECT id, payment_confirmed, transfer_last_5, carrier, tax_id, payment_proof_url
          FROM group_order_members
-        WHERE group_order_id = $1 AND parent_id = $2
+        WHERE group_order_id = $1 AND parent_id::text = ANY($2::text[])
+        ORDER BY (parent_id::text = $3) DESC, id
+        LIMIT 1
         FOR UPDATE`,
-      [req.params.id, req.parent.id]
+      [req.params.id, familyIds.map(String), String(req.parent.id)]
     );
     if (!m.rowCount) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: '您不是此團購的成員' });
     }
     const member = m.rows[0];
+    const resolvedIdentity = resolveInvoiceIdentity(identityInput.value, {
+      carrier: member.carrier,
+      taxId: member.tax_id,
+    });
+    if (resolvedIdentity.error) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: resolvedIdentity.error, code: resolvedIdentity.code });
+    }
+    const invoiceIdentity = { ...resolvedIdentity.value, supplied: identityInput.value.supplied };
 
     // 先辨識同 payload retry：第一筆已寫完後，第二筆安全地回目前資料，
     // 不會被已確認／已鎖定狀態誤判成失敗，也不會更新 proof_uploaded_at。
-    const idempotent = isSamePaymentPayload(member, { ...proofInput, last5, carrier });
+    const idempotent = isSamePaymentPayload(member, { ...proofInput, last5, invoiceIdentity });
     if (idempotent) {
       await client.query('COMMIT');
       committed = true;
       const loaded = await loadOrderWithMembers(pool, req.params.id);
       return res.json({
         ...shapeOrder(loaded.order, loaded.members, req.parent.id,
-          loaded.order.leader_parent_id === req.parent.id ? { join_token: loaded.order.join_token } : {}),
+          loaded.order.leader_parent_id === req.parent.id ? { join_token: loaded.order.join_token } : {}, familyIds),
         idempotent: true,
       });
     }
@@ -965,10 +1076,11 @@ router.post('/:id/my-proof', async (req, res) => {
       return res.status(409).json({ error: '櫃檯已確認您的帳款，如需更換請聯繫櫃檯', code: 'ALREADY_CONFIRMED' });
     }
     // 末碼＋證明皆已送出 → 鎖定唯讀，成員不可自行重編（需聯繫櫃檯）。
-    const completingMissingCarrier = carrier && !member.carrier
+    const completingMissingInvoiceIdentity = (invoiceIdentity.carrier || invoiceIdentity.taxId)
+      && !member.carrier && !member.tax_id
       && (!last5 || last5 === member.transfer_last_5)
       && !proofInput.supplied;
-    if (member.transfer_last_5 && member.payment_proof_url && !proofInput.clear && !completingMissingCarrier) {
+    if (member.transfer_last_5 && member.payment_proof_url && !proofInput.clear && !completingMissingInvoiceIdentity) {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '付款資料已送出，如需更改請聯繫櫃檯', code: 'PAYMENT_LOCKED' });
     }
@@ -983,9 +1095,15 @@ router.post('/:id/my-proof', async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '轉帳末 5 碼已送出，如需更換請聯繫櫃檯', code: 'TRANSFER_LAST5_LOCKED' });
     }
-    if (carrier && member.carrier && member.carrier !== carrier) {
+    if (identityInput.value.supplied && member.carrier
+        && (invoiceIdentity.carrier !== member.carrier || invoiceIdentity.taxId !== (member.tax_id || null))) {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '發票載具已送出，如需更換請聯繫櫃檯', code: 'CARRIER_LOCKED' });
+    }
+    if (identityInput.value.supplied && member.tax_id
+        && (invoiceIdentity.carrier !== (member.carrier || null) || invoiceIdentity.taxId !== member.tax_id)) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '統一編號已送出，如需更換請聯繫櫃檯', code: 'TAX_ID_LOCKED' });
     }
 
     await client.query(
@@ -1001,16 +1119,19 @@ router.post('/:id/my-proof', async (req, res) => {
                 ELSE proof_uploaded_at
               END,
               transfer_last_5 = COALESCE($3, transfer_last_5),
-              carrier = COALESCE($6, carrier)
+              carrier = $6,
+              tax_id = $7
         WHERE id = $1`,
-      [member.id, proof, last5 || null, proofInput.clear, proofInput.supplied, carrier || null]
+      [member.id, proof, last5 || null, proofInput.clear, proofInput.supplied,
+        invoiceIdentity.carrier, invoiceIdentity.taxId]
     );
     // 冪等重送已在前面提早 return，走到這裡必有實際變更。
     const proofActions = [];
     if (proofInput.clear) proofActions.push('刪除匯款證明');
     else if (proofInput.supplied) proofActions.push('上傳匯款證明');
     if (last5) proofActions.push(`填寫轉帳末 5 碼 ${last5}`);
-    if (carrier) proofActions.push('填寫電子發票載具');
+    if (invoiceIdentity.carrier) proofActions.push('填寫電子發票載具');
+    if (invoiceIdentity.taxId) proofActions.push('填寫統一編號');
     await logGroupOrderAudit(client, {
       groupOrderId: req.params.id,
       action: `更新付款資料（${proofActions.join('、') || '無變更'}）`,
@@ -1035,7 +1156,7 @@ router.post('/:id/my-proof', async (req, res) => {
     committed = true;
     const loaded = await loadOrderWithMembers(pool, req.params.id);
     res.json(shapeOrder(loaded.order, loaded.members, req.parent.id,
-      loaded.order.leader_parent_id === req.parent.id ? { join_token: loaded.order.join_token } : {}));
+      loaded.order.leader_parent_id === req.parent.id ? { join_token: loaded.order.join_token } : {}, familyIds));
 
     // 自動送審成功才通知，且在回應之後：推播失敗不該影響已 COMMIT 的送審。
     if (autoSubmittedTotal) {
@@ -1075,12 +1196,12 @@ router.post('/:id/submit', async (req, res) => {
       await client.query('ROLLBACK');
       if (readiness.code === 'BELOW_MIN') {
         return res.status(400).json({
-          error: `尚未達成團最低人數（需 ${order.min_students} 人，目前 ${readiness.total} 人）`,
+          error: `人數未滿，不能送審（此團需 ${readiness.required} 人，目前 ${readiness.total} 人）`,
           code: 'BELOW_MIN',
         });
       }
       if (readiness.code === 'OVER_CAPACITY') {
-        return res.status(400).json({ error: `超過人數上限（最多 ${order.max_students} 人）`, code: 'OVER_CAPACITY' });
+        return res.status(400).json({ error: `超過此團人數（需 ${readiness.required} 人，目前 ${readiness.total} 人）`, code: 'OVER_CAPACITY' });
       }
       return res.status(400).json({
         error: '仍有家庭未完成付款資料（需轉帳末 5 碼 + 匯款證明），請補齊後再送審',
@@ -1148,6 +1269,6 @@ router.post('/:id/cancel', async (req, res) => {
 });
 
 // 純函式只供不連 DB 的 regression test 使用；路由對外行為不受影響。
-router.__test__ = { parseProofInput, isSamePaymentPayload };
+router.__test__ = { parseProofInput, isSamePaymentPayload, resolveBoundStudents };
 
 module.exports = router;

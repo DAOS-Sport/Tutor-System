@@ -19,6 +19,8 @@ const { STAFF_CHANNEL } = require('./lineRouting');
 
 // 只警告一次（避免 cron 迴圈裡每個收件人都刷一行相同的錯誤，把真正的問題淹掉）。
 let _warnedMissingToken = false;
+// Retry after a minute so a quota increase or month rollover is picked up.
+let _quotaBlocked = { token: null, until: 0 };
 
 /**
  * 取 LINE Messaging API 的 access token。
@@ -80,6 +82,7 @@ function getToken() {
  *   名字改成 ForLog 是為了讓下一個人一眼看出它不再影響送到哪裡。
  */
 async function pushMessage(lineUserId, messages, venueIdForLog, opts = {}) {
+  if (process.env.PREVIEW_SAFE_MODE === '1') return { sent: false, reason: 'PREVIEW_SAFE_MODE' };
   const event = opts.event || 'legacy';
   const meta = {
     event,
@@ -118,6 +121,10 @@ async function pushMessage(lineUserId, messages, venueIdForLog, opts = {}) {
   }
 
   const t0 = Date.now();
+  if (_quotaBlocked.token === token && t0 < _quotaBlocked.until) {
+    await pushGate.finish({ id, status: 'failed', reason: 'MONTHLY_QUOTA_EXHAUSTED' });
+    return { sent: false, reason: 'MONTHLY_QUOTA_EXHAUSTED' };
+  }
   try {
     const r = await axios.post('https://api.line.me/v2/bot/message/push', {
       to: uid,
@@ -137,10 +144,15 @@ async function pushMessage(lineUserId, messages, venueIdForLog, opts = {}) {
       return { sent: true };
     }
     const body = (() => { try { return JSON.stringify(r.data); } catch (_) { return String(r.data); } })();
-    await pushGate.finish({ id, status: 'failed', httpStatus: r.status, durationMs: ms, reason: body.slice(0, 300) });
-    throw new Error('LINE push failed: HTTP ' + r.status + ' ' + body.slice(0, 200));
+    if (r.status === 429 && r.data?.message === 'You have reached your monthly limit.') {
+      _quotaBlocked = { token, until: Date.now() + 60_000 };
+      await pushGate.finish({ id, status: 'failed', httpStatus: 429, durationMs: ms, reason: 'MONTHLY_QUOTA_EXHAUSTED' });
+      console.warn('[line] 本月推播額度已用盡；通知未送達，暫停嘗試 60 秒。請至 LINE 官方帳號確認額度。');
+      return { sent: false, reason: 'MONTHLY_QUOTA_EXHAUSTED' };
+    }
+    throw Object.assign(new Error('LINE push failed: HTTP ' + r.status + ' ' + body.slice(0, 200)), { httpStatus: r.status });
   } catch (e) {
-    await pushGate.finish({ id, status: 'failed', reason: String(e.message).slice(0, 300), durationMs: Date.now() - t0 });
+    await pushGate.finish({ id, status: 'failed', httpStatus: e.httpStatus, reason: String(e.message).slice(0, 300), durationMs: Date.now() - t0 });
     throw e;
   }
 }
@@ -384,8 +396,8 @@ function groupMemberJoined({ memberName, total, min, max, reachedMin, liffUrl })
         type: 'box', layout: 'vertical', spacing: 'sm',
         contents: [
           { type: 'text', text: `${memberName || '一位家長'} 已加入您發起的團購。`, size: 'sm', wrap: true },
-          { type: 'text', text: `目前共 ${total} 人（開團需 ${min}–${max} 人）`, size: 'xs', color: '#888888', wrap: true },
-          { type: 'text', text: reachedMin ? '已達開團人數，可送出審核！' : '達到下限後即可送出審核。',
+          { type: 'text', text: `目前共 ${total} 人（開團需 ${min === max ? max : min + '–' + max} 人）`, size: 'xs', color: '#888888', wrap: true },
+          { type: 'text', text: reachedMin ? '已達開團人數，可送出審核！' : '人數到齊後即可送出審核。',
             size: 'xs', color: reachedMin ? BRAND.green : '#888888', wrap: true },
         ],
       },
@@ -797,13 +809,16 @@ function checkinConfirmedToCoach({ studentNames, courseType, venueName, checkedI
   // 共班一次寫入整班，所以學員是清單而不是單一個。
   const names = (Array.isArray(studentNames) ? studentNames : [studentNames])
     .map((x) => String(x || '').trim()).filter(Boolean);
-  const title = names.join('、') || '學員';
+  // 標題固定文案（2026-09-22 Owner 指定）。原本是把學員名單當標題，改成固定抬頭、
+  // 學員改列進內文欄位 —— 教練在聊天室列表一眼就知道是哪一類通知，不必先認名字。
+  // 註：這裡刻意用 emoji，與 tests/coach_push_scope_test.js 原本「標題不用 emoji」
+  // 的設計鎖相反，是 Owner 當面改的決定；該測試已改成正面斷言指定文案。
+  const NOTIFY_TITLE = '🔔學員簽到通知🔔';
+  const studentLabel = names.join('、') || '—';
 
-  // altText 是鎖定畫面／通知列看到的那一行，上限 400 字。整班名單串起來可能很長，
-  // 所以人多時只留第一位加人數 —— 教練滑開就看得到完整名單。
-  const altText = names.length > 1
-    ? `${names[0]} 等 ${names.length} 位已簽到`
-    : `${title} 已簽到`;
+  // altText 是鎖定畫面／通知列看到的那一行（上限 400 字）。跟標題一致，
+  // 教練不用滑開就知道這是簽到通知；是誰簽的滑開第一欄就看得到。
+  const altText = NOTIFY_TITLE;
 
   // 標籤／值兩欄對齊。字串串接（「組別：1 對 2」）的值起點會隨標籤字數浮動，
   // 三四行疊起來就參差不齊。
@@ -837,7 +852,7 @@ function checkinConfirmedToCoach({ studentNames, courseType, venueName, checkedI
                 ],
               },
               {
-                type: 'text', text: title, weight: 'bold', size: 'md', color: '#FFFFFF',
+                type: 'text', text: NOTIFY_TITLE, weight: 'bold', size: 'md', color: '#FFFFFF',
                 margin: 'sm', wrap: true, lineSpacing: '3px',
               },
             ],
@@ -857,7 +872,8 @@ function checkinConfirmedToCoach({ studentNames, courseType, venueName, checkedI
       body: {
         type: 'box', layout: 'vertical',
         contents: [
-          ...(courseType ? [kv('組別', courseType, true)] : []),
+          kv('學員', studentLabel, true),
+          ...(courseType ? [kv('組別', courseType)] : []),
           kv('簽到時間', twTime(checkedInAt)),
           ...(venueName ? [kv('場館', venueName)] : []),
           { type: 'separator', margin: 'lg' },
@@ -1056,6 +1072,7 @@ function tokenSummary() {
     configuredCount: new Set([...jsonKeys, ...envKeys]).size,
     staffChannel: staffOk,
     malformedJson: false,
+    monthlyQuotaBlockedUntil: _quotaBlocked.until > Date.now() ? new Date(_quotaBlocked.until).toISOString() : null,
   };
 }
 module.exports.tokenSummary = tokenSummary;

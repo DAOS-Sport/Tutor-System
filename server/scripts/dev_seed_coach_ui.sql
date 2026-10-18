@@ -242,43 +242,43 @@ BEGIN
      original_price, final_price, status, submitted_at, total_sessions, used_sessions,
      enrollment_batch_id, period_number, period_count, invoice_issued_at)
   VALUES
-    ('ESEED-ONGOING-1', '(測試帳號)家長', '0912345678', ARRAY['測試-學員1'],
+    ('ESEED-ONGOING-1', '(測試帳號)家長', '0900796878', ARRAY['測試-學員1'],
      '(測試帳號)教練', v_coach, v_venue, 2, 3300, 3300, 'confirmed',
      NOW() - INTERVAL '10 days', 6, 2,
      '5eedb001-0000-4000-8000-00000000b001', 1, 1, NOW() - INTERVAL '9 days'),
-    ('ESEED-ONGOING-2', '(測試帳號)家長', '0912345678', ARRAY['測試-學員2'],
+    ('ESEED-ONGOING-2', '(測試帳號)家長', '0900796878', ARRAY['測試-學員2'],
      '(測試帳號)教練', v_coach, v_venue, 2, 3300, 3300, 'confirmed',
      NOW() - INTERVAL '10 days', 6, 2,
      '5eedb001-0000-4000-8000-00000000b001', 1, 1, NOW() - INTERVAL '9 days'),
 
   -- (b) 已完成：堂數上完（每一列都要 used >= total，因為 used 取 min）
-    ('ESEED-DONE-1', '(測試帳號)家長', '0912345678', ARRAY['測試-學員1'],
+    ('ESEED-DONE-1', '(測試帳號)家長', '0900796878', ARRAY['測試-學員1'],
      '(測試帳號)教練', v_coach, v_venue, 1, 9000, 9000, 'confirmed',
      NOW() - INTERVAL '90 days', 6, 6,
      '5eedb002-0000-4000-8000-00000000b002', 1, 1, NOW() - INTERVAL '89 days'),
 
   -- (c) 剛報名待對帳：沒有 course_period（實際流程就是對帳後才建），
   --     卡片上會顯示「名單待對帳後確認」
-    ('ESEED-PENDING-1', '(測試帳號)家長2', '0922222222', ARRAY['測試-學員A'],
+    ('ESEED-PENDING-1', '(測試帳號)家長2', '0900637854', ARRAY['測試-學員A'],
      '(測試帳號)教練', v_coach, v_venue, 1, 9000, 9000, 'pending_payment',
      NOW() - INTERVAL '2 days', NULL, NULL,
      '5eedb003-0000-4000-8000-00000000b003', 1, 1, NULL),
 
   -- (d) 跨家庭團報：兩個家庭各自 batch（各自結帳），但指向同一個 group_order。
   --     教練端會看到兩張卡，每張都列出同班 4 位與兩位家長、團主標記。
-    ('ESEED-GROUP-A1', '(測試帳號)家長', '0912345678', ARRAY['測試-學員1'],
+    ('ESEED-GROUP-A1', '(測試帳號)家長', '0900796878', ARRAY['測試-學員1'],
      '(測試帳號)教練', v_coach, v_venue, 4, 3000, 3000, 'confirmed',
      NOW() - INTERVAL '5 days', 6, 1,
      '5eedb004-0000-4000-8000-00000000b004', 1, 1, NOW() - INTERVAL '4 days'),
-    ('ESEED-GROUP-A2', '(測試帳號)家長', '0912345678', ARRAY['測試-學員2'],
+    ('ESEED-GROUP-A2', '(測試帳號)家長', '0900796878', ARRAY['測試-學員2'],
      '(測試帳號)教練', v_coach, v_venue, 4, 3000, 3000, 'confirmed',
      NOW() - INTERVAL '5 days', 6, 1,
      '5eedb004-0000-4000-8000-00000000b004', 1, 1, NOW() - INTERVAL '4 days'),
-    ('ESEED-GROUP-B1', '(測試帳號)家長2', '0922222222', ARRAY['測試-學員A'],
+    ('ESEED-GROUP-B1', '(測試帳號)家長2', '0900637854', ARRAY['測試-學員A'],
      '(測試帳號)教練', v_coach, v_venue, 4, 3000, 3000, 'confirmed',
      NOW() - INTERVAL '5 days', 6, 1,
      '5eedb005-0000-4000-8000-00000000b005', 1, 1, NOW() - INTERVAL '4 days'),
-    ('ESEED-GROUP-B2', '(測試帳號)家長2', '0922222222', ARRAY['測試-學員B'],
+    ('ESEED-GROUP-B2', '(測試帳號)家長2', '0900637854', ARRAY['測試-學員B'],
      '(測試帳號)教練', v_coach, v_venue, 4, 3000, 3000, 'confirmed',
      NOW() - INTERVAL '5 days', 6, 1,
      '5eedb005-0000-4000-8000-00000000b005', 1, 1, NOW() - INTERVAL '4 days')

@@ -36,7 +36,13 @@ const PATHS = [
   ['CheckoutFamilyInvoices', 'checkout_family_invoices.js'],
   ['GroupPartnerCheckin', 'group_partner_checkin.js'],
   ['TrialFullChain', 'trial_full_chain.js'],
+  ['Rules20261014', 'rules_20261014_group_trial.js'],
+  ['RulesD18b', 'rules_20261015_d18_remaining.js'],
+  ['CourseTypesReadonly', 'course_types_counter_readonly.js'],
+  ['RulesD18', 'rules_20261014_d18_booking_cancel.js'],
   ['Flex18', 'flex_templates_verify.js'],
+  ['FamilyPhase2', 'family_phase2.js'],
+  ['FamilyFrozenRoutes', 'family_frozen_routes.js'],
 ];
 
 const results = [];

@@ -23,6 +23,9 @@ const SECRET = process.env.JWT_SECRET;
 const ZONE_NAME = '__e2e_purchasable__';
 let zoneId = null;
 let movedVenue = null;   // { id, originalZoneId }
+// 搬的是測試自建、原本就可販售的場館（自己的來源區＋一項啟用中且有價的課別），不動真實場館。
+const SOURCE_VENUE = `VP${Date.now().toString(36).toUpperCase()}`;
+let sourceZoneId = null;
 
 const adminToken = () => jwt.sign(
   { role: 'admin', sub: 'purch-e2e', username: 'purch-e2e', name: '可販售 E2E' }, SECRET, { expiresIn: '1h' });
@@ -59,16 +62,28 @@ const venueRow = async (id) => (await api(`/api/venues`)).data.find((v) => v.id 
   console.log(`  ok  新區帶入 ${copied.rows[0].n} 個課別，啟用中 0 個`);
 
   // ── 2. 把一個場館搬進來 → 家長端就不該看到它 ───────────────
-  const pick = await pool.query(
-    `SELECT id, pricing_zone_id FROM venues
-      WHERE is_active AND pricing_zone_id IS NOT NULL AND pricing_zone_id <> $1
-      ORDER BY id LIMIT 1`, [zoneId]);
-  assert.ok(pick.rowCount, '需要一個啟用中的場館來測');
-  movedVenue = { id: pick.rows[0].id, originalZoneId: pick.rows[0].pricing_zone_id };
+  sourceZoneId = (await pool.query(
+    `INSERT INTO pricing_zones (name, sessions_per_period, sort_order) VALUES ($1, 6, 999) RETURNING id`,
+    [`__e2e_purchasable_src_${SOURCE_VENUE}__`])).rows[0].id;
+  await pool.query(
+    `INSERT INTO course_type_configs
+       (pricing_zone_id, course_type, label, min_students, max_students, sort_order, base_price, is_active)
+     VALUES ($1, 1, '一對一', 1, 1, 1, 6000, TRUE)`, [sourceZoneId]);
+  await pool.query(
+    `INSERT INTO venues (id, name, is_active, pricing_zone_id) VALUES ($1, $2, TRUE, $3)`,
+    [SOURCE_VENUE, `可販售測試館${SOURCE_VENUE}`, sourceZoneId]);
+  movedVenue = { id: SOURCE_VENUE, originalZoneId: sourceZoneId };
 
   const before = await venueRow(movedVenue.id);
   assert.ok(before, `場館 ${movedVenue.id} 原本應該出現在清單裡`);
   assert.strictEqual(before.purchasable, true, '搬移前該場館本來是可販售的');
+
+  // 已屬於別區的場館不能直接搶（d4d209a 起回 409 VENUE_OWNED_BY_OTHER_ZONE），
+  // 照後台流程先在原區取消勾選並儲存，再勾進新區。
+  r = await api(`/api/admin/pricing-zones/${sourceZoneId}/venues`, {
+    method: 'PUT', token: t, body: { venue_ids: [] },
+  });
+  assert.strictEqual(r.status, 200, '原區取消勾選失敗 → ' + JSON.stringify(r));
 
   r = await api(`/api/admin/pricing-zones/${zoneId}/venues`, {
     method: 'PUT', token: t, body: { venue_ids: [movedVenue.id] },
@@ -104,15 +119,16 @@ const venueRow = async (id) => (await api(`/api/venues`)).data.find((v) => v.id 
 })()
   .catch((e) => { console.error('\n❌ FAILED:', e.message); process.exitCode = 1; })
   .finally(async () => {
-    if (movedVenue) {
-      await pool.query('UPDATE venues SET pricing_zone_id = $1 WHERE id = $2',
-        [movedVenue.originalZoneId, movedVenue.id]);
-    }
+    await pool.query('DELETE FROM venues WHERE id = $1', [SOURCE_VENUE]);
     if (zoneId) {
       await pool.query('DELETE FROM course_type_configs WHERE pricing_zone_id = $1', [zoneId]);
       await pool.query('DELETE FROM pricing_zones WHERE id = $1', [zoneId]);
     }
+    if (sourceZoneId) {
+      await pool.query('DELETE FROM course_type_configs WHERE pricing_zone_id = $1', [sourceZoneId]);
+      await pool.query('DELETE FROM pricing_zones WHERE id = $1', [sourceZoneId]);
+    }
     await pool.query('DELETE FROM pricing_zones WHERE name = $1', [ZONE_NAME]).catch(() => {});
-    console.log('(已還原場館歸屬並刪除測試定價區)');
+    console.log('(已刪除測試場館與測試定價區)');
     await pool.end();
   });

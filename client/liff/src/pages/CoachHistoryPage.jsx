@@ -1,3 +1,4 @@
+import { useCoachGuideDemo } from '../utils/coachGuideDemo';
 import React, { useEffect, useRef, useState } from 'react';
 import DateRangeSheet from '../../../shared/DateRangeSheet.jsx';
 import { useNavigate } from 'react-router-dom';
@@ -45,7 +46,9 @@ function remainingText(p) {
 }
 
 export default function CoachHistoryPage() {
-  const { coach } = useAuth();
+  const guide = useCoachGuideDemo();
+  const { coach: signedInCoach } = useAuth();
+  const coach = guide?.coach || signedInCoach;
   const navigate = useNavigate();
   const toast = useToast();
   // 預設不設區間＝全部授課記錄。
@@ -65,16 +68,18 @@ export default function CoachHistoryPage() {
 
   // 學員下拉：載入教練名下每一期課程
   useEffect(() => {
+    if (guide) { setPeriods(guide.periods); setDropOpen(guide.view === 'students'); return; }
     if (!coach?.id) return;
     let alive = true;
     sessionsApi.historyPeriodsByCoach(coach.id)
       .then((d) => alive && setPeriods(d || []))
       .catch(() => { if (alive) setPeriods([]); });
     return () => { alive = false; };
-  }, [coach?.id]);
+  }, [coach?.id, guide]);
 
   // 場次清單：任一篩選條件變動即重查（sessions 先設 null 顯示載入中）
   useEffect(() => {
+    if (guide) { setSessions(guide.sessions); return; }
     if (!coach?.id) return;
     let alive = true;
     setSessions(null);
@@ -82,7 +87,7 @@ export default function CoachHistoryPage() {
       .then((d) => alive && setSessions(d || []))
       .catch(() => { if (alive) { setSessions([]); toast.error('授課記錄載入失敗'); } });
     return () => { alive = false; };
-  }, [coach?.id, from, to, status, periodId, toast]);
+  }, [coach?.id, from, to, status, periodId, toast, guide]);
 
   // 點下拉面板外面即關閉
   useEffect(() => {
@@ -100,7 +105,7 @@ export default function CoachHistoryPage() {
   const dropLabel = selectedPeriod ? periodLabel(selectedPeriod) : '全部學員';
 
   return (
-    <div className="pb-4">
+    <div data-coach-guide="history-overview" className="pb-4">
       <header className="sticky top-0 z-10 space-y-2 border-b border-gray-100 bg-white px-4 py-2.5">
         <div className="flex items-baseline justify-between">
           <h1 className="text-base font-bold text-brand-primary">授課記錄</h1>
@@ -110,13 +115,13 @@ export default function CoachHistoryPage() {
         </div>
         {/* 一個入口 → 底部月曆選區間（機票 App 那種）。
             原本是兩個日期框並排，手機上每個只有半個螢幕寬，右邊那個會破版。 */}
-        <DateRangeSheet
+        <div><DateRangeSheet
           from={from}
           to={to}
           max={todayTaipeiYMD()}
           onChange={({ from: f, to: t }) => { setFrom(f); setTo(t); }}
           label="區間"
-        />
+        /></div>
         <div className="flex flex-wrap items-center gap-1.5">
           {STATUS_OPTIONS.map((o) => (
             <FilterChip key={o.key} active={status === o.key} onClick={() => setStatus(o.key)}>

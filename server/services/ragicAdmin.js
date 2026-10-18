@@ -19,6 +19,7 @@
  * 用於 GET 列表時觸發背景刷新（不阻塞回應）。實際排程由 server/cron 跑。
  */
 const { pool } = require('../models/db');
+const { writeStudentAudit, diffChanges } = require('./studentAudit');
 const ragic = require('./ragic');
 const parentSync = require('./parentSync');
 const line = require('./line');
@@ -43,8 +44,6 @@ const {
 const cronLock = require('../cron/lock');
 // Phase 1 可觀測性（migration 040）：逐筆同步失敗落庫。純新增觀測，不改同步行為。
 const syncFailureLog = require('./syncFailureLog');
-// 只取設定探測函式：判斷 canary 有沒有設好，用來把「未啟用」跟「未通過」分開。
-const { isCanaryConfigured } = require('./ragicFreshness');
 
 function ragicEnabled() {
   return !!process.env.RAGIC_API_KEY && !!process.env.RAGIC_BASE_URL;
@@ -202,7 +201,7 @@ function _syncErrorMessage(err, context = {}) {
   } else {
     parts.push(err?.message || String(err || '同步失敗'));
   }
-  return parts.filter(Boolean).join(' — ');
+  return syncFailureLog.sanitizeMessage(parts.filter(Boolean).join(' — '));
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -517,10 +516,27 @@ function _staffPayloadFromRagicRow(r, resolveVenues) {
   const roleStr = Array.isArray(role) ? role.join(',') : (role || '');
   const roleText = `${roleStr},${r?.['職稱'] || ''}`;
   const isAdmin = H01.ROLE_MATCH.ADMIN.test(roleText);
+  const isManager = H01.ROLE_MATCH.MANAGER.test(roleText);
   const isCoach = roleText.includes(H01.ROLE_MATCH.COACH);
   const isCounter = H01.ROLE_MATCH.COUNTER.test(roleText);
   const isLifeguard = H01.ROLE_MATCH.LIFEGUARD.test(roleText);
-  const roleVal = isAdmin ? 'admin' : (isCounter ? 'staff' : (isCoach ? 'coach' : 'staff'));
+  // 身分優先序：admin > 櫃檯 > 教練 > 救生員。
+  //
+  // 櫃檯排在救生員之前，是因為「櫃檯兼救生員」的人實際在做櫃檯的事，
+  // 而櫃檯是這幾個身分裡唯一需要後台權限的。
+  //
+  // 舊版少了 lifeguard 這一支 —— 不是漏寫，是當時 admin_staff.role 的 CHECK
+  // 根本沒有這個值可以填，於是救生員只能落到最後的保底 'staff'（行政櫃檯）。
+  // 正式庫因此有 51 位在職救生員被記成櫃檯。F-A06 第 1 期把值補上了，這裡才修得動。
+  //
+  // 最後的 'staff' 保底維持不動：那代表「Ragic 上看不出身分」，
+  // 改動它會波及 36 位沒有任何旗標的一般員工，不在這次範圍內。
+  const roleVal = isAdmin ? 'admin'
+    : isManager ? 'manager'
+      : isCounter ? 'staff'
+        : isCoach ? 'coach'
+          : isLifeguard ? 'lifeguard'
+            : 'staff';
   return {
     id,
     name,
@@ -1113,6 +1129,7 @@ async function _reconcileH01FromShadowImpl() {
       const roleStr = Array.isArray(role) ? role.join(',') : (role || '');
       const roleText = `${roleStr},${r['職稱'] || ''}`;
       const isAdmin = H01.ROLE_MATCH.ADMIN.test(roleText);
+      const isManager = H01.ROLE_MATCH.MANAGER.test(roleText);
       const isCoach = roleText.includes(H01.ROLE_MATCH.COACH);
       const isCounter = H01.ROLE_MATCH.COUNTER.test(roleText);
       const isLifeguard = H01.ROLE_MATCH.LIFEGUARD.test(roleText);
@@ -1120,7 +1137,23 @@ async function _reconcileH01FromShadowImpl() {
       // DB enum 欄位的三元運算式吃掉任一個信號——roleVal 僅作為 admin_staff.role 這個
       // CHECK constraint 欄位的保底值（fallback），三個真正的身份判斷改走各自獨立的
       // is_coach / is_counter / is_lifeguard（見下方 payload），互不覆蓋。
-      const roleVal = isAdmin ? 'admin' : (isCounter ? 'staff' : (isCoach ? 'coach' : 'staff'));
+      // 身分優先序：admin > 櫃檯 > 教練 > 救生員。
+  //
+  // 櫃檯排在救生員之前，是因為「櫃檯兼救生員」的人實際在做櫃檯的事，
+  // 而櫃檯是這幾個身分裡唯一需要後台權限的。
+  //
+  // 舊版少了 lifeguard 這一支 —— 不是漏寫，是當時 admin_staff.role 的 CHECK
+  // 根本沒有這個值可以填，於是救生員只能落到最後的保底 'staff'（行政櫃檯）。
+  // 正式庫因此有 51 位在職救生員被記成櫃檯。F-A06 第 1 期把值補上了，這裡才修得動。
+  //
+  // 最後的 'staff' 保底維持不動：那代表「Ragic 上看不出身分」，
+  // 改動它會波及 36 位沒有任何旗標的一般員工，不在這次範圍內。
+  const roleVal = isAdmin ? 'admin'
+    : isManager ? 'manager'
+      : isCounter ? 'staff'
+        : isCoach ? 'coach'
+          : isLifeguard ? 'lifeguard'
+            : 'staff';
       const isActive = (r['在職狀態'] || r['3000945']) === '在職';
       // Task #90：解析 Ragic H01 多場館欄位（主場館 + 支援場館），合併為陣列
       // Task #95：立即 resolve 成 venue 代碼再比對 / 入 payload（見上方註解）
@@ -1416,7 +1449,7 @@ async function _shadowPullH05Impl() {
       await _alertFreshnessIfNeeded('H05', freshness, pull.error);
       return _withFreshness({ synced: 0, stale_read: true, error: pull.error }, freshness);
     }
-    records = pull.records || [];
+    records = pull.raw_records || pull.records || [];
     await _alertFreshnessIfNeeded('H05', freshness);
   } catch (err) {
     return { synced: 0, error: `Ragic H05 全量查詢失敗：${err.message}` };
@@ -1438,6 +1471,11 @@ async function _shadowPullH05Impl() {
       + '不清空 shadow、不停用任何場館。請確認 H05 的「履約狀態」欄位與篩選條件是否被改動。';
     console.error('[Ragic sync] ' + msg);
     return _withFreshness({ synced: 0, skipped: true, error: msg }, freshness);
+  }
+  try {
+    _validatedVenueMap(records);
+  } catch (err) {
+    return _withFreshness({ synced: 0, error: err.message }, freshness);
   }
   const client = await pool.connect();
   let synced = 0;
@@ -1461,6 +1499,8 @@ async function _shadowPullH05Impl() {
       `DELETE FROM ragic_h05_shadow WHERE NOT (venue_code = ANY($1::text[]))`,
       [presentCodes]
     );
+    const persisted = await client.query('SELECT COUNT(*)::int AS n FROM ragic_h05_shadow');
+    if (persisted.rows[0].n !== records.length) throw new Error('H05 source/shadow count mismatch');
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
@@ -1469,12 +1509,12 @@ async function _shadowPullH05Impl() {
   } finally {
     client.release();
   }
-  return _withFreshness({ synced }, freshness);
+  return _withFreshness({ synced, source_count: records.length, shadow_count: synced }, freshness);
 }
 
 async function _readShadowH05(client) {
   const r = await client.query(`SELECT raw_data FROM ragic_h05_shadow`);
-  return r.rows.map((row) => row.raw_data).filter((row) => !ragic.isCanaryRecord(row, 'H05'));
+  return r.rows.map((row) => row.raw_data).filter((row) => !ragic.isCanaryRecord(row, 'H05') && row['營運性質'] !== '內勤單位');
 }
 
 // 既有 diff/staging 邏輯，資料來源改讀 ragic_h05_shadow（由 _shadowPullH05Impl
@@ -1488,63 +1528,40 @@ async function _reconcileH05FromShadowImpl() {
     } finally {
       client0.release();
     }
-    const ragicMap = new Map();
-    for (const r of records) {
-      const v = _mapRagicVenue(r);
-      if (v) ragicMap.set(v.code, v);
-    }
+    const ragicMap = _validatedVenueMap(records);
     const dbRows = (await pool.query(`SELECT * FROM admin_venues`)).rows;
     const dbMap = new Map(dbRows.map(r => [r.id, r]));
     let staged = 0;
     let failed = 0;
     const venueErrors = [];
 
-    for (const [code, rv] of ragicMap) {
-     try {
+    const changes = [...ragicMap].map(([code, rv]) => {
       const cur = dbMap.get(code);
-      const payload = { code, ...rv, is_active: true };
-      if (!cur) {
-        await pool.query(
-          `INSERT INTO admin_venues (id, name, address, is_active)
-           VALUES ($1, $2, $3, TRUE)
-           ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, address=EXCLUDED.address, is_active=TRUE`,
-          [code, rv.name || '', rv.address || '']
-        );
-        staged++;
-        continue;
+      const changed = !cur || ['name', 'address'].some(f => cur[`${f}_overridden_at`] == null && (cur[f] || '') !== (rv[f] || ''))
+        || (cur.is_active_overridden_at == null && !cur.is_active);
+      return { entity_id: code, payload_json: rv, change_type: 'update', changed };
+    });
+    for (const row of dbRows) {
+      if (row.is_active && row.is_active_overridden_at == null && !ragicMap.has(row.id)) {
+        changes.push({ entity_id: row.id, change_type: 'deactivate', changed: true });
       }
-      const diff = {};
-      // Task #66：銀行欄位 (bank_*, account_*) 為系統內部欄位，不從 Ragic 同步
-      // 只 stage name / address / is_active
-      for (const f of ['name', 'address']) {
-        if (cur[`${f}_overridden_at`] != null) continue;
-        const from = cur[f] || '';
-        const to = rv[f] || '';
-        if (from !== to) diff[f] = { from, to };
-      }
-      if (cur.is_active_overridden_at == null && !cur.is_active) {
-        diff.is_active = { from: false, to: true };
-      }
-      if (Object.keys(diff).length > 0) {
-        if ('name' in diff) await pool.query(`UPDATE admin_venues SET name=$1 WHERE id=$2 AND name_overridden_at IS NULL`, [rv.name || '', code]);
-        if ('address' in diff) await pool.query(`UPDATE admin_venues SET address=$1 WHERE id=$2 AND address_overridden_at IS NULL`, [rv.address || '', code]);
-        if ('is_active' in diff) await pool.query(`UPDATE admin_venues SET is_active=TRUE WHERE id=$1 AND is_active_overridden_at IS NULL`, [code]);
-        staged++;
-      }
-     } catch (err) {
-      // 嫌疑4 CONFIRMED 修復：單筆壞資料不再中止整批（原本 function-level try 會讓
-      // 一筆毒資料炸掉整輪、回 {synced:0} 掩蓋已完成的進度）。
-      failed++;
-      venueErrors.push(`場館 ${code}：${err.message}`);
-      console.warn('[Ragic sync] venue per-record failed (code=%s): %s', code, err.message);
-     }
     }
-
-    // 不在 Ragic 但 active 中 + 未 override → 直接停用（無 staging）
-    for (const r of dbRows) {
-      if (!r.is_active || r.is_active_overridden_at != null || ragicMap.has(r.id)) continue;
-      await pool.query(`UPDATE admin_venues SET is_active=FALSE WHERE id=$1 AND is_active_overridden_at IS NULL`, [r.id]);
-      staged++;
+    for (const change of changes) {
+      let client;
+      try {
+        client = await pool.connect();
+        await client.query('BEGIN');
+        await _applyVenueChange(change, client);
+        await client.query('COMMIT');
+        if (change.changed) staged++;
+      } catch (err) {
+        if (client) await client.query('ROLLBACK').catch(() => {});
+        failed++;
+        venueErrors.push(`場館 ${change.entity_id}：${err.message}`);
+        console.warn('[Ragic sync] venue per-record failed (code=%s): %s', change.entity_id, err.message);
+      } finally {
+        if (client) client.release();
+      }
     }
     if (failed > 0) {
       return {
@@ -1572,7 +1589,7 @@ async function _syncVenuesImpl() {
     );
   }
   const reconciled = await _reconcileH05FromShadowImpl();
-  return _withFreshness(reconciled, _freshnessFromResult(shadowResult));
+  return _withFreshness({ ...reconciled, source_count: shadowResult.source_count, shadow_count: shadowResult.shadow_count }, _freshnessFromResult(shadowResult));
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1640,7 +1657,20 @@ async function _applyStaffChange(row, client) {
     await client.query(
 	      `UPDATE admin_staff SET
 	         id = $1, name = $2, phone = $3,
-	         role = CASE WHEN $11::text = 'admin' THEN 'admin' ELSE role END,
+	         -- 誰是權威，逐一講清楚：
+	         --   manager  只有人工指派得出來（同步永遠算不出這個值），所以一律不碰。
+	         --            莊柏彥就是這種：Ragic 應徵職務寫「行政櫃台」，但後台設成場館主管。
+	         --   admin    Ragic 說是管理員就升上去，維持原行為。
+	         --   coach /  Ragic 是這兩個身分的權威（來自應徵職務／職稱），覆蓋本地值。
+	         --   lifeguard 這一條就是修「51 位在職救生員被記成行政櫃檯」的地方。
+	         --   staff    刻意不覆蓋 —— 它同時是「櫃檯」和「認不出身分」的保底值，
+	         --            拿它去蓋本地資料，會把人工設定默默降級成櫃檯。
+	         role = CASE
+	                    WHEN role = 'manager' THEN 'manager'
+	                    WHEN $11::text = 'admin' THEN 'admin'
+	                    WHEN $11::text IN ('coach', 'lifeguard', 'manager') THEN $11::text
+	                    ELSE role
+	                  END,
 	         active = CASE WHEN active_overridden_at IS NULL THEN $4 ELSE active END,
          -- A0/A0.5/救生員：is_coach / is_counter / is_lifeguard 皆為 Ragic 來源、唯讀信號
          -- （比照 role 的性質，但各自獨立追蹤、不互相覆蓋），每次 apply 一律以 Ragic 這次
@@ -1848,6 +1878,17 @@ async function _applyCoachChange(row, client) {
   );
 }
 
+async function _mirrorVenueFromAdmin(client, code) {
+  // Copy the final values after override guards, never the incoming Ragic values.
+  await client.query(
+    `INSERT INTO venues (id, name, full_address, is_active)
+     SELECT id, name, address, is_active FROM admin_venues WHERE id=$1
+     ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name,
+       full_address=EXCLUDED.full_address, is_active=EXCLUDED.is_active, updated_at=NOW()`,
+    [code]
+  );
+}
+
 async function _applyVenueChange(row, client) {
   const p = row.payload_json || {};
   const code = row.entity_id;
@@ -1857,10 +1898,7 @@ async function _applyVenueChange(row, client) {
          WHERE id = $1 AND is_active_overridden_at IS NULL`,
       [code]
     );
-    await client.query(
-      `UPDATE venues SET is_active = FALSE, updated_at = NOW() WHERE id = $1`,
-      [code]
-    );
+    await _mirrorVenueFromAdmin(client, code);
     return;
   }
   // Task #66：銀行欄位 / line_token 為系統內部欄位，apply 也不從 Ragic 寫入
@@ -1877,16 +1915,7 @@ async function _applyVenueChange(row, client) {
        last_synced_at = NOW()`,
     [code, p.name || code, p.address || '']
   );
-  await client.query(
-    `INSERT INTO venues (id, name, full_address, is_active)
-     VALUES ($1, $2, $3, TRUE)
-     ON CONFLICT (id) DO UPDATE SET
-       name = EXCLUDED.name,
-       full_address = COALESCE(NULLIF(venues.full_address, ''), EXCLUDED.full_address),
-       is_active = TRUE,
-       updated_at = NOW()`,
-    [code, p.name || code, p.address || '']
-  );
+  await _mirrorVenueFromAdmin(client, code);
 }
 
 // P1.1「熊韋程 staff 事故」防線：待審核區出現 staff「新增」提案時，檢查是否跟既有
@@ -2025,7 +2054,14 @@ async function mergeStagedStaffChange(stagingId, targetEntityId, byUserId) {
 	    await client.query(
 	      `UPDATE admin_staff SET
 	         id = $1, name = $2, phone = $3,
-	         role = CASE WHEN $10::text = 'admin' THEN 'admin' ELSE role END,
+	         -- 與同步 apply 同一套規則（見上方 $11 那處的說明）：manager 不碰、
+	         -- admin 照升、coach/lifeguard 以 Ragic 為權威、算出 staff 時不覆蓋。
+	         role = CASE
+	                    WHEN role = 'manager' THEN 'manager'
+	                    WHEN $10::text = 'admin' THEN 'admin'
+	                    WHEN $10::text IN ('coach', 'lifeguard', 'manager') THEN $10::text
+	                    ELSE role
+	                  END,
 	         active = CASE WHEN active_overridden_at IS NULL THEN $4 ELSE active END,
 	         is_coach = $5, is_counter = $6, is_lifeguard = $7,
 	         ragic_record_id = COALESCE($8, ragic_record_id),
@@ -2207,6 +2243,7 @@ async function _backupStudentToRagic(row) {
   const student = {
     name: row.name, id_number: row.id_number, birth_date: row.birth_date,
     gender: row.gender, blood_type: row.blood_type, student_code: row.student_code,
+    ragic_record_id: row.ragic_record_id,
   };
   let sync;
   if (row.ragic_record_id) {
@@ -2249,7 +2286,8 @@ async function _backupParentsStudentsImpl() {
        (SELECT COUNT(*) FROM students s JOIN parents pp ON pp.id = s.parent_id
          WHERE s.is_active AND pp.is_active AND pp.line_uid IS NOT NULL AND pp.line_uid <> ''
            AND (s.ragic_record_id IS NULL OR s.last_synced_at IS NULL)
-           AND NOT ${syncFailureLog.stuckExclusionSql('s', 'Z01_Z02_BACKUP', 'student')}) AS students`
+           AND NOT ${syncFailureLog.stuckExclusionSql('s', 'Z01_Z02_BACKUP', 'student',
+             'GREATEST(s.updated_at, pp.updated_at)')}) AS students`
   );
   const stuckCount = Number(quarantined.rows[0].parents) + Number(quarantined.rows[0].students);
 
@@ -2304,7 +2342,8 @@ async function _backupParentsStudentsImpl() {
         AND p.line_uid NOT LIKE 'demo:%'
         AND p.line_uid NOT LIKE 'DEMOTEST_%'
         AND (s.ragic_record_id IS NULL OR s.last_synced_at IS NULL)
-        AND ${syncFailureLog.stuckExclusionSql('s', 'Z01_Z02_BACKUP', 'student')}
+        AND ${syncFailureLog.stuckExclusionSql('s', 'Z01_Z02_BACKUP', 'student',
+          'GREATEST(s.updated_at, p.updated_at)')}
       ORDER BY s.updated_at ASC LIMIT $1`,
     [BACKUP_BATCH_LIMIT]
   );
@@ -2404,6 +2443,14 @@ async function _upsertZ03Record(client, ragicRecordId, mapped, z01Row, options =
     err.code = 'Z03_TRUE_LINE_UID_PRESENT';
     throw err;
   }
+  const archivePolicy = require('./z03ReviewArchive');
+  const reviewed = (await client.query(`SELECT z.*,
+    EXISTS(SELECT 1 FROM identity_claims c WHERE c.source_system='RAGIC' AND c.source_table='Z01' AND c.source_record_id=z.z01_ragic_record_id) AS has_claim
+    FROM ragic_z03_records z
+    WHERE z01_ragic_record_id=$1 AND status='resolved' AND reason_code=ANY($2::text[]) FOR UPDATE OF z`,
+  [ragicRecordId, [archivePolicy.REASON, archivePolicy.AWAITING_LOGIN_REASON]])).rows[0];
+  if (reviewed) reviewed.students = (await client.query(
+    'SELECT * FROM ragic_z03_students WHERE z03_record_id=$1 ORDER BY id', [reviewed.id])).rows;
 
   // Historical tombstones previously made fetched source records disappear.
   // Keep the audit row, but surface it as manual_review instead of silently
@@ -2537,6 +2584,16 @@ async function _upsertZ03Record(client, ragicRecordId, mapped, z01Row, options =
        sourceRowKey, normalizedName, classification, studentReason]
     );
   }
+  if (reviewed) {
+    const latest = await _loadZ03RecordById(z03Id, client);
+    if (reviewed.has_claim || reviewed.last_error_code || reviewed.canonical_parent_id
+        || reviewed.claim_state !== 'UNRESOLVED' || tomb.rowCount
+        || (options.reasonCode && options.reasonCode !== 'TRUE_LINE_UID_EMPTY')
+        || archivePolicy.sourceFingerprint(reviewed) !== archivePolicy.sourceFingerprint(latest)) {
+      await client.query(`UPDATE ragic_z03_records SET status='pending', classification='PENDING_Z03',
+        reason_code='SOURCE_CHANGED_AFTER_REVIEW' WHERE id=$1`, [z03Id]);
+    }
+  }
   if (!validMobile) {
     await createParentIdentityBackofficeTask({
       client,
@@ -2567,50 +2624,10 @@ async function _resolveZ03IfPending(client, ragicRecordId, currentRawName) {
 // Phase 5：incremental=true 時走 ragic.getAllParentsChangedSinceWithFreshness（只抓
 // watermark 之後有變更的列，見該函式與 _shadowPullH01Impl 頂部註解，理由相同）。
 async function _fetchZ01ByFieldId({ incremental = false, watermark = null } = {}) {
-  const pageSize = Number(process.env.RAGIC_PAGE_SIZE) || 200;
-  const maxPages = Number(process.env.RAGIC_MAX_PAGES) || 50;
-  const where = incremental && watermark
-    ? `109,gte,${ragic.formatRagicDateTime(new Date(watermark))}`
-    : undefined;
-  const records = [];
-  let naturalEnd = false;
-  let firstPageIds = [];
-  for (let page = 0; page < maxPages; page++) {
-    const result = await ragic.fetchPage(FORMS.Z01, {
-      limit: pageSize,
-      offset: page * pageSize,
-      where,
-      order: '109,ASC',
-      naming: 'EID',
-    });
-    if (page === 0) firstPageIds = result.rows.map((row) => String(row._ragicId || '')).filter(Boolean);
-    records.push(...result.rows);
-    if (result.count < pageSize) {
-      naturalEnd = true;
-      break;
-    }
-  }
-  if (!naturalEnd) {
-    const err = new Error('naming=EID fetch reached page limit');
-    err.code = 'RAGIC_Z01_EID_TRUNCATED';
-    throw err;
-  }
-  const boundary = await ragic.fetchPage(FORMS.Z01, {
-    limit: pageSize,
-    offset: 0,
-    where,
-    order: '109,ASC',
-    naming: 'EID',
-  });
-  const allIds = new Set(records.map((row) => String(row._ragicId || '')).filter(Boolean));
-  const boundaryMismatch = boundary.rows.some((row) => !allIds.has(String(row._ragicId || '')))
-    || firstPageIds.some((id) => !allIds.has(id));
-  if (boundaryMismatch) {
-    const err = new Error('naming=EID boundary recheck mismatch');
-    err.code = 'RAGIC_Z01_EID_BOUNDARY_MISMATCH';
-    throw err;
-  }
-  return records;
+  const params = { naming: 'EID', order: '109,ASC' };
+  if (incremental && watermark) params.where = `109,gte,${ragic.formatRagicDateTime(new Date(watermark))}`;
+  const snapshot = await ragic.queryAllPagedWithIntegrityAndFreshness('Z01', FORMS.Z01, params, 3);
+  return snapshot.records;
 }
 
 async function _shadowPullZ01Impl({ incremental = false, watermark = null } = {}) {
@@ -2651,6 +2668,12 @@ async function _shadowPullZ01Impl({ incremental = false, watermark = null } = {}
     return _withFreshness({ synced: 0, error: `${err.code || 'RAGIC_Z01_EID_FETCH_FAILED'}: ${err.message}` }, freshness);
   }
 
+  let studentsSnapshot;
+  try {
+    studentsSnapshot = await ragic.queryAllPagedWithIntegrityAndFreshness('Z02', process.env.RAGIC_FORM_Z02, { naming: 'EID' }, 3);
+  } catch (err) {
+    return { synced: 0, error: `Z02 source capture failed: ${err.code || err.message}` };
+  }
   const client = await pool.connect();
   let synced = 0;
   try {
@@ -2696,6 +2719,23 @@ async function _shadowPullZ01Impl({ incremental = false, watermark = null } = {}
         [presentIds]
       );
     }
+    if (!useIncremental) {
+      const persisted = await client.query('SELECT COUNT(*)::int AS n FROM ragic_z01_shadow WHERE present_in_latest_pull');
+      if (persisted.rows[0].n !== presentIds.length) throw new Error('Z01 source/shadow count mismatch');
+    }
+    await client.query('UPDATE ragic_z02_shadow SET present_in_latest_pull = FALSE');
+    for (const row of studentsSnapshot.records) {
+      await client.query(
+        `INSERT INTO ragic_z02_shadow (ragic_record_id, raw_data, fetched_at, last_seen_at, missing_since, present_in_latest_pull)
+         VALUES ($1, $2::jsonb, NOW(), NOW(), NULL, TRUE)
+         ON CONFLICT (ragic_record_id) DO UPDATE SET raw_data = EXCLUDED.raw_data, fetched_at = NOW(),
+           last_seen_at = NOW(), missing_since = NULL, present_in_latest_pull = TRUE`,
+        [String(row._ragicId), JSON.stringify(row)]
+      );
+    }
+    await client.query('UPDATE ragic_z02_shadow SET missing_since = COALESCE(missing_since, NOW()) WHERE NOT present_in_latest_pull');
+    const studentCount = await client.query('SELECT COUNT(*)::int AS n FROM ragic_z02_shadow WHERE present_in_latest_pull');
+    if (studentCount.rows[0].n !== studentsSnapshot.records.length) throw new Error('Z02 source/shadow count mismatch');
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
@@ -2704,7 +2744,8 @@ async function _shadowPullZ01Impl({ incremental = false, watermark = null } = {}
   } finally {
     client.release();
   }
-  return _withFreshness({ synced, incremental: useIncremental }, freshness);
+  return _withFreshness({ synced, source_count: integrity.records.length, shadow_count: synced,
+    z02_source_count: studentsSnapshot.records.length, z02_shadow_count: studentsSnapshot.records.length, incremental: useIncremental }, freshness);
 }
 
 async function _readShadowZ01(client) {
@@ -2853,7 +2894,7 @@ async function _syncCanonicalZ01Record(client, z01Row, mapped, venuesMap) {
   );
 
   // Exact normalized name inside this canonical family only. National ID is
-  // retained in the source mirror but never used as a match/merge key here.
+  // copied into a blank local field, never used as a match/merge key here.
   const rawStudentRows = ragic.parseZ01StudentsRaw(z01Row);
   const studentIssues = [];
   for (const raw of rawStudentRows) {
@@ -2888,6 +2929,7 @@ async function _syncCanonicalZ01Record(client, z01Row, mapped, venuesMap) {
       continue;
     }
     let student = matches[0] || null;
+    const beforeStudent = student;
     const birthDate = /^\d{4}-\d{2}-\d{2}$/.test(String(s.birth_date || '')) ? s.birth_date : null;
     if (student) {
       student = (await client.query(
@@ -2897,20 +2939,25 @@ async function _syncCanonicalZ01Record(client, z01Row, mapped, venuesMap) {
            gender = COALESCE(NULLIF($4,''), gender),
            blood_type = COALESCE(NULLIF($5,''), blood_type),
            student_code = COALESCE(NULLIF($6,''), student_code),
+           id_number = COALESCE(NULLIF(id_number,''), NULLIF($7,'')),
            is_active = TRUE, last_synced_at = NOW(), updated_at = NOW()
          WHERE id = $1 RETURNING *`,
-        [student.id, s.name, birthDate, ragic.normalizeGender(s.gender), s.blood_type || '', s.student_code || '']
+        [student.id, s.name, birthDate, ragic.normalizeGender(s.gender), s.blood_type || '', s.student_code || '', String(s.id_number || '').trim().toUpperCase()]
       )).rows[0];
     } else {
       student = (await client.query(
         `INSERT INTO students
-           (parent_id, name, birth_date, gender, blood_type, student_code, is_active, last_synced_at)
-         VALUES ($1,$2,$3::date,NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),TRUE,NOW())
+           (parent_id, name, birth_date, gender, blood_type, student_code, id_number, is_active, last_synced_at)
+         VALUES ($1,$2,$3::date,NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),NULLIF($7,''),TRUE,NOW())
          RETURNING *`,
-        [parent.id, s.name, birthDate, ragic.normalizeGender(s.gender), s.blood_type || '', s.student_code || '']
+        [parent.id, s.name, birthDate, ragic.normalizeGender(s.gender), s.blood_type || '', s.student_code || '', String(s.id_number || '').trim().toUpperCase()]
       )).rows[0];
       existingStudents.push(student);
     }
+    await writeStudentAudit(client, student.id, beforeStudent ? 'edit' : 'create', {
+      byUser: 'ragic:canonical-z01-sync', byRole: 'system',
+      changes: diffChanges(beforeStudent, student), note: 'ragic-canonical-family-import',
+    });
     syncedStudentIds.push(student.id);
   }
   if (syncedStudentIds.length === 1) {
@@ -3454,7 +3501,8 @@ async function _pullParentsStudentsImpl(triggeredBy = 'cron') {
     );
   }
   const reconciled = await _reconcileZ01FromShadowImpl();
-  const combined = { ...reconciled, incremental: useIncremental };
+  const combined = { ...reconciled, source_count: shadowResult.source_count, shadow_count: shadowResult.shadow_count,
+    z02_source_count: shadowResult.z02_source_count, z02_shadow_count: shadowResult.z02_shadow_count, incremental: useIncremental };
   if (!combined.error && !combined.partial && !shadowResult.stale_read) {
     await setSyncWatermark(FORM_META.pull.code, runStartedAt).catch((err) => {
       console.warn('[Ragic sync] Z01 watermark 寫入失敗（不影響本輪同步結果）:', err.message);
@@ -3614,6 +3662,8 @@ async function findZ03RecordByPhone(phone) {
   const r = await pool.query(
     `SELECT * FROM ragic_z03_records
       WHERE (status = 'pending'
+        OR (status = 'resolved' AND reason_code = 'REVIEWED_OPTIONAL_CONTACT_GAPS')
+        OR (status = 'resolved' AND reason_code = 'REVIEWED_AWAITING_PARENT_LOGIN')
         OR (status = 'manual_review' AND reason_code = 'AMBIGUOUS_STUDENT_MATCH'))
         AND (phone_canonical = $1
           OR phone = $2
@@ -4178,7 +4228,7 @@ async function markPlaceholderNameResolved(ragicRecordId, fixedName) {
 // Z01 家長姓名資料品質偵測（Z01↔Z03 機制的可先做部分）
 //
 // 背景：2026-06-30 匯入的舊系統學生資料批次，511 筆 Z01 記錄裡有 433 筆（85%）的
-// 「家長姓名」欄位其實是電話號碼（例如姓名欄=行動電話欄=「0926332176」），不是真實姓名。
+// 「家長姓名」欄位其實是電話號碼（例如姓名欄=行動電話欄=「0900024167」），不是真實姓名。
 // Z03（另一新表單，供人工整理新舊資料用）與「壞姓名寫進 Z03、家長改對名字後回頭清理」
 // 這兩塊，卡在 Z03 表單是否已建好、實際欄位 ID 尚未確認，暫緩實作（見下方 TODO）。
 // 這裡先做「偵測 + 本地追蹤」，不依賴 Z03 就能先跑：可以先掌握目前還有多少筆爛資料、
@@ -4187,9 +4237,9 @@ async function markPlaceholderNameResolved(ragicRecordId, fixedName) {
 
 // 佔位電話姓名偵測（＝「拿電話號碼頂替姓名」的孤兒資料，觸發進 Z03 清洗、且不可當畢業姓名）。
 // 兩條規則（皆先去除常見電話格式符號 空白/-/()/．後再判斷）：
-//   Tier 1：整串是純數字（任何長度）→ 幾乎可以肯定是佔位電話（已知真實案例：「0926332176」）。
+//   Tier 1：整串是純數字（任何長度）→ 幾乎可以肯定是佔位電話（已知真實案例：「0900024167」）。
 //   Tier 1b：去符號後長度落在電話號碼區間（8–11 碼）且「數字佔過半」→ 視同佔位電話
-//            （涵蓋電話字串誤黏一兩個字、或夾雜非標準分隔字元的情形，如「0926332176王」）。
+//            （涵蓋電話字串誤黏一兩個字、或夾雜非標準分隔字元的情形，如「0900024167王」）。
 //            真實中文/英文姓名極少同時「8–11 字長」又「過半是數字」，誤判率仍低。
 // 兩條都不中 → 視為正常姓名（含短姓名、英文名如「Mandy」），照常同步、可當畢業姓名。
 function isPlaceholderParentName(name) {
@@ -4210,16 +4260,9 @@ function hasNoCjkCharacters(name) {
 // 偵測 + 維護本地追蹤表（不依賴 Z03，可獨立跑）。目前只掃 Tier 1（純數字姓名）。
 async function _quarantineBadZ01NamesImpl() {
   if (!ragicEnabled()) return { synced: 0, skipped: true };
-  if (!(await hasRecentFreshPull())) {
-    // 訊息要讓看到的人知道下一步。原本只說「缺少 freshness_verified pull」，
-    // 而真正的原因是 Ragic canary 從未設定 —— 看的人無從得知要去設什麼。
-    const canaryUnset = !isCanaryConfigured('Z01');
-    const msg = canaryUnset
-      ? `Ragic 讀取新鮮度驗證尚未啟用（未設定 RAGIC_CANARY_Z01_RECORD_ID / _NONCE_FIELD_ID），`
-        + `因此不使用可能過期的 shadow，本掃描暫停。設定 canary 記錄後即會自動恢復。`
-      : `Z01 quarantine/ghost 掃描缺少最近 ${FRESH_SHADOW_MAX_AGE_HOURS} 小時內的 freshness_verified pull，已中止，避免使用過期 shadow`;
-    await _alertAdmins(`【Ragic stale_read】${msg}`);
-    return { synced: 0, stale_read: true, error: msg, freshness_verified: false, stale_retries: 0 };
+  if (!(await hasRecentSuccessfulPull())) {
+    const msg = `缺少最近 ${FRESH_SHADOW_MAX_AGE_HOURS} 小時內成功完成的 Z01 拉回，請先完成同步再執行資料品質掃描。`;
+    return { synced: 0, skipped: true, error: msg };
   }
   // P1.1 決策9：改讀 ragic_z01_shadow（由當晚 #2 pull 的 _shadowPullZ01Impl 維護），
   // 不再獨立重打一次 Ragic 全量查詢——同一份快照給多個消費者用，減少對 Ragic 的
@@ -4301,15 +4344,15 @@ const FORM_META = {
   // 沒有這個欄位＝這個任務本來就不驗新鮮度，狀態頁不該對它顯示驗證結果。
   // 有了它，「未設定所以沒驗」才能跟「驗了沒過」在畫面上分開 ——
   // 這兩者原本都顯示「未通過」，於是一個純粹的設定缺漏被當成七週的同步故障。
-  staff:    { code: 'H01_STAFF',    label: 'H01 員工 + 教練 (admin_staff + coaches)', kind: 'sync',        impl: _syncStaffImpl,  env: 'RAGIC_FORM_H01', canary: 'H01' },
-  venues:   { code: 'H05_VENUES',   label: 'H05 場館 (venues)',                       kind: 'sync',        impl: _syncVenuesImpl, env: 'RAGIC_FORM_H05', canary: 'H05' },
+  staff:    { code: 'H01_STAFF',    label: 'H01 員工 + 教練 (admin_staff + coaches)', kind: 'sync',        impl: _syncStaffImpl,  env: 'RAGIC_FORM_H01' },
+  venues:   { code: 'H05_VENUES',   label: 'H05 場館 (venues)',                       kind: 'sync',        impl: _syncVenuesImpl, env: 'RAGIC_FORM_H05' },
   parents:  { code: 'Z01_PARENTS',  label: 'Z01 家長 (按請求查詢)',                   kind: 'healthcheck', impl: _pingZ01Impl,    env: 'RAGIC_FORM_Z01' },
   students: { code: 'Z02_STUDENTS', label: 'Z02 學員 (按請求查詢)',                   kind: 'healthcheck', impl: _pingZ02Impl,    env: 'RAGIC_FORM_Z02' },
-  // 夜間同步鏈：backup（00:30 推）→ pull（01:30 拉，Ragic→Z03 分流）→ quarantine（01:45 掃描）。
+  // 夜間同步鏈：backup（00:30 推）→ pull（02:30 拉，Ragic→Z03 分流）→ quarantine（02:45 掃描）。
   // 標籤依使用者指定：backup 維持原名；pull 明示「從 Ragic 拉到 Z03」以與 backup 區隔。
   backup:   { code: 'Z01_Z02_BACKUP', label: 'Z01/Z02 本地→Ragic 每日備份同步',       kind: 'sync',        impl: _backupParentsStudentsImpl, env: 'RAGIC_FORM_Z01' },
-  pull:     { code: 'Z01_Z02_PULL',   label: 'Ragic Z01 → Z03 每日拉回整理（完成者入 Z01 鏡像）', kind: 'sync', impl: _pullParentsStudentsImpl,   env: 'RAGIC_FORM_Z01', canary: 'Z01' },
-  quarantine: { code: 'Z01_BAD_NAME_QUARANTINE', label: 'Z01 姓名品質掃描（Z03 追蹤）', kind: 'sync', impl: _quarantineBadZ01NamesImpl, env: 'RAGIC_FORM_Z01', canary: 'Z01' },
+  pull:     { code: 'Z01_Z02_PULL',   label: 'Ragic Z01 → Z03 每日拉回整理（完成者入 Z01 鏡像）', kind: 'sync', impl: _pullParentsStudentsImpl,   env: 'RAGIC_FORM_Z01' },
+  quarantine: { code: 'Z01_BAD_NAME_QUARANTINE', label: 'Z01 姓名品質掃描（Z03 追蹤）', kind: 'sync', impl: _quarantineBadZ01NamesImpl, env: 'RAGIC_FORM_Z01' },
 };
 
 // 哪些 job 真的會打 Ragic HTTP（見上表 impl 實作）——quarantine 只讀本地
@@ -4329,13 +4372,21 @@ const LIVE_PROBE_FORMS = {
 const LIVE_PROBE_TTL_MS = Number(process.env.RAGIC_STATUS_PROBE_TTL_MS) || 60000;
 let _liveProbeCache = null;
 let _liveProbeCacheAt = 0;
+let _liveProbeInFlight = null;
 
 // ── 每個 Ragic sync job 可由 admin 在「Ragic 連線狀態」頁手動開關 ──
 // 存 admin_settings（key=ragic_sync_enabled_<job>，value 1/0；NUMERIC 欄位不能存布林/字串）。
 // 缺該 key 一律視為「啟用」，維持既有行為，不需要額外 migration/seed。
 function _toggleKey(jobName) { return `ragic_sync_enabled_${jobName}`; }
 
+// 已退役的工作：排程（cron/index.js 照舊呼叫）與手動觸發都在 _runWithLog 一律跳過、記一筆 skipped，
+// 狀態頁也不再顯示。要恢復就把它移出這個集合。
+//   quarantine（Z01 姓名品質掃描）：2026-09-23 擁有者確認不需要。它只寫本地 ragic_z01_quarantine
+//   追蹤表，沒有任何畫面在讀；推送 Ragic Z03 表單已於 2026-07-07 決定不做（見 _quarantineBadZ01NamesImpl）。
+const RETIRED_JOBS = new Set(['quarantine']);
+
 async function isJobEnabled(jobName) {
+  if (RETIRED_JOBS.has(jobName)) return false;
   const r = await pool.query(`SELECT value FROM admin_settings WHERE key = $1`, [_toggleKey(jobName)]);
   return r.rows.length ? Number(r.rows[0].value) !== 0 : true;
 }
@@ -4381,7 +4432,9 @@ async function getJobToggles() {
   );
   const byKey = new Map(r.rows.map((row) => [row.key, Number(row.value) !== 0]));
   const out = {};
-  for (const j of jobs) out[j] = byKey.has(_toggleKey(j)) ? byKey.get(_toggleKey(j)) : true;
+  for (const j of jobs) {
+    out[j] = RETIRED_JOBS.has(j) ? false : (byKey.has(_toggleKey(j)) ? byKey.get(_toggleKey(j)) : true);
+  }
   return out;
 }
 
@@ -4405,12 +4458,11 @@ async function hasRecentBackupSuccess(windowHours = 3) {
   return true;
 }
 
-async function hasRecentFreshPull(windowHours = FRESH_SHADOW_MAX_AGE_HOURS) {
+async function hasRecentSuccessfulPull(windowHours = FRESH_SHADOW_MAX_AGE_HOURS) {
   const r = await pool.query(
     `SELECT 1 FROM ragic_sync_log
       WHERE form_code = 'Z01_Z02_PULL'
         AND status = 'ok'
-        AND freshness_verified = TRUE
         AND created_at >= NOW() - ($1 || ' hours')::interval
       LIMIT 1`,
     [windowHours]
@@ -4534,13 +4586,25 @@ function getRagicEnvFlags() {
 
 async function getLiveRagicProbeSnapshot() {
   if (_liveProbeCache && Date.now() - _liveProbeCacheAt < LIVE_PROBE_TTL_MS) {
-    return { ..._liveProbeCache, cached: true };
+    return { ..._liveProbeCache, cached: true, pending: false };
   }
+  // Share one refresh across polling clients; external API latency must not hide local status.
+  if (!_liveProbeInFlight) {
+    _liveProbeInFlight = _refreshLiveRagicProbeSnapshot().catch((err) => {
+      _liveProbeCache = { ok: false, checked_at: new Date().toISOString(), error: err.message, forms: {} };
+      _liveProbeCacheAt = Date.now();
+    }).finally(() => { _liveProbeInFlight = null; });
+  }
+  return { ...(_liveProbeCache || { ok: false, checked_at: null, forms: {} }),
+    cached: !!_liveProbeCache, pending: true };
+}
+
+async function _refreshLiveRagicProbeSnapshot() {
   const checkedAt = new Date();
   const env = getRagicEnvFlags();
   const canProbe = env.RAGIC_API_KEY && env.RAGIC_BASE_URL;
   const forms = {};
-  await Promise.all(Object.entries(LIVE_PROBE_FORMS).map(async ([key, meta]) => {
+  for (const [key, meta] of Object.entries(LIVE_PROBE_FORMS)) {
     const formPath = process.env[meta.env] || (meta.env === 'RAGIC_FORM_H23' ? FORMS.H23 : '');
     const base = {
       label: meta.label,
@@ -4550,14 +4614,15 @@ async function getLiveRagicProbeSnapshot() {
     };
     if (!canProbe) {
       forms[key] = { ...base, status: 'skipped', ok: false, error: 'RAGIC_API_KEY / RAGIC_BASE_URL 未完整設定' };
-      return;
+      continue;
     }
     if (!formPath) {
       forms[key] = { ...base, status: 'missing_env', ok: false, error: `${meta.env} 未設定` };
-      return;
+      continue;
     }
     try {
-      const probe = await ragic.probeForm(formPath);
+      // Status UI waits 10s; bulk-sync retry policy must not block this read-only probe.
+      const probe = await ragic.probeForm(formPath, {}, { timeout: 4000, maxRetries: 0 });
       forms[key] = {
         ...base,
         status: probe.ok ? 'ok' : 'empty',
@@ -4574,7 +4639,7 @@ async function getLiveRagicProbeSnapshot() {
         error: err.message || String(err),
       };
     }
-  }));
+  }
   const snapshot = {
     checked_at: checkedAt.toISOString(),
     cached: false,
@@ -4636,7 +4701,7 @@ async function getSyncStatusSnapshot() {
       last_run_duration_ms:  latest.rows[0]?.duration_ms  ?? null,
       // null＝這個任務不驗新鮮度（畫面不顯示這一列）；
       // false＝要驗但 canary 沒設定，畫面要說「未啟用」而不是「未通過」。
-      canary_configured:     meta.canary ? isCanaryConfigured(meta.canary) : null,
+      canary_configured:     null, // Canary retired; historical log fields remain readable.
       freshness_verified:    latest.rows[0]?.freshness_verified ?? null,
       freshness_latency_ms:  latest.rows[0]?.freshness_latency_ms ?? null,
       stale_retries:         latest.rows[0]?.stale_retries ?? 0,
@@ -4660,19 +4725,8 @@ async function getSyncStatusSnapshot() {
   return out;
 }
 
-function _extractWebhookRecordIds(body) {
-  if (Array.isArray(body)) return body.map((v) => String(v || '').trim()).filter(Boolean);
-  const out = [];
-  const add = (v) => {
-    const s = String(v || '').trim();
-    if (s) out.push(s);
-  };
-  for (const item of (Array.isArray(body?.data) ? body.data : [])) {
-    add(item?._ragicId || item?.ragicId || item?.id);
-  }
-  add(body?._ragicId || body?.ragicId || body?.id || body?.nodeId || body?.recordId);
-  return [...new Set(out)];
-}
+// 已搬到 services/ragicWebhookBody.js（純函式，連同原始文字解析一起測）
+const { extractWebhookRecordIds: _extractWebhookRecordIds } = require('./ragicWebhookBody');
 
 function _webhookFormPath(sheetCode) {
   const code = String(sheetCode || '').trim().toUpperCase();
@@ -4690,9 +4744,10 @@ async function _deleteWebhookShadow(client, sheetCode, ragicRecordId) {
         WHERE ragic_record_id = $1 OR raw_data->>'_ragicId' = $1 OR raw_data->>'ragicId' = $1`,
       [ragicRecordId]
     );
-  } else if (sheetCode === 'Z01') {
+  } else if (sheetCode === 'Z01' || sheetCode === 'Z02') {
+    const table = sheetCode === 'Z01' ? 'ragic_z01_shadow' : 'ragic_z02_shadow';
     await client.query(
-      `UPDATE ragic_z01_shadow
+      `UPDATE ${table}
           SET present_in_latest_pull=FALSE,
               missing_since=COALESCE(missing_since,NOW())
         WHERE ragic_record_id=$1`,
@@ -4724,19 +4779,21 @@ async function _upsertWebhookShadow(client, sheetCode, row) {
     );
     return true;
   }
-  if (sheetCode === 'Z01') {
+  if (sheetCode === 'Z01' || sheetCode === 'Z02') {
     if (!rid) return false;
+    const table = sheetCode === 'Z01' ? 'ragic_z01_shadow' : 'ragic_z02_shadow';
     await client.query(
-      `INSERT INTO ragic_z01_shadow (ragic_record_id, raw_data, fetched_at)
-       VALUES ($1, $2::jsonb, NOW())
-       ON CONFLICT (ragic_record_id) DO UPDATE SET raw_data = EXCLUDED.raw_data, fetched_at = NOW()`,
+      `INSERT INTO ${table} (ragic_record_id, raw_data, fetched_at, last_seen_at, present_in_latest_pull)
+       VALUES ($1, $2::jsonb, NOW(), NOW(), TRUE)
+       ON CONFLICT (ragic_record_id) DO UPDATE SET raw_data = EXCLUDED.raw_data, fetched_at = NOW(),
+         last_seen_at=NOW(), present_in_latest_pull=TRUE, missing_since=NULL`,
       [rid, JSON.stringify(row)]
     );
     return true;
   }
   if (sheetCode === 'H05') {
     const v = _mapRagicVenue(row);
-    if (!v?.code) return false;
+    if (!v?.code) throw Object.assign(new Error('Webhook venue identity missing'), { code: 'RAGIC_WEBHOOK_ID_MISMATCH' });
     await client.query(
       `INSERT INTO ragic_h05_shadow (venue_code, raw_data, fetched_at)
        VALUES ($1, $2::jsonb, NOW())
@@ -4748,62 +4805,55 @@ async function _upsertWebhookShadow(client, sheetCode, row) {
   return false;
 }
 
+async function _projectWebhookRecord(client, job) {
+  const code = job.sheet_code;
+  const id = job.ragic_record_id;
+  const formPath = _webhookFormPath(code);
+  if (!formPath) throw Object.assign(new Error('Webhook form is not configured'), { code: 'RAGIC_WEBHOOK_CONFIG_MISSING' });
+  const t0 = Date.now();
+  const record = await ragic.getRecordByRagicId(formPath, id,
+    { ignoreFixedFilter: process.env.RAGIC_IGNORE_FIXED_FILTER === 'false' ? undefined : 'true' },
+    { noCache: true });
+  let shadowUpdated = false;
+  if (record) {
+    if (String(record._ragicId ?? record.ragicId ?? '') !== id) {
+      throw Object.assign(new Error('Webhook source identity mismatch'), { code: 'RAGIC_WEBHOOK_ID_MISMATCH' });
+    }
+    shadowUpdated = await _upsertWebhookShadow(client, code, record);
+  } else {
+    await _deleteWebhookShadow(client, code, id);
+  }
+  await client.query(
+    `INSERT INTO ragic_webhook_log
+       (sheet_code,ragic_record_id,event_type,refetched,latency_ms,error_message)
+     VALUES ($1,$2,$3,$4,$5,NULL)`,
+    [code,id,job.event_type,Boolean(record),Date.now()-t0]);
+  return { refetched: Boolean(record), shadow_updated: shadowUpdated };
+}
+
+async function retryRagicWebhooks(options = {}) {
+  return require('./ragicWebhookInbox').processInbox({ ...options, db: pool, project: _projectWebhookRecord });
+}
+
 async function handleRagicWebhook(sheetCode, body = {}) {
   const code = String(sheetCode || '').trim().toUpperCase();
-  const formPath = _webhookFormPath(code);
-  if (!formPath) throw new Error(`unsupported Ragic webhook sheet: ${sheetCode}`);
   const ids = _extractWebhookRecordIds(body);
-  if (!ids.length) throw new Error('webhook payload 未包含 record id');
-  const eventType = String(body?.eventType || body?.event_type || '').trim();
-  const items = [];
-  for (const id of ids) {
-    const t0 = Date.now();
-    let refetched = false;
-    let shadowUpdated = false;
-    let error = null;
-    const client = await pool.connect();
-    try {
-      const record = await ragic.getRecordByRagicId(
-        formPath,
-        id,
-        { ignoreFixedFilter: process.env.RAGIC_IGNORE_FIXED_FILTER === 'false' ? undefined : 'true' },
-        { noCache: true }
-      );
-      await client.query('BEGIN');
-      if (record) {
-        refetched = true;
-        shadowUpdated = await _upsertWebhookShadow(client, code, record);
-      } else {
-        await _deleteWebhookShadow(client, code, id);
-      }
-      await client.query(
-        `INSERT INTO ragic_webhook_log
-           (sheet_code, ragic_record_id, event_type, refetched, latency_ms, error_message)
-         VALUES ($1,$2,$3,$4,$5,$6)`,
-        [code, id, eventType || null, refetched, Date.now() - t0, null]
-      );
-      await client.query('COMMIT');
-      items.push({ id, refetched, shadow_updated: shadowUpdated, latency_ms: Date.now() - t0 });
-    } catch (err) {
-      error = err.message || String(err);
-      await client.query('ROLLBACK').catch(() => {});
-      await pool.query(
-        `INSERT INTO ragic_webhook_log
-           (sheet_code, ragic_record_id, event_type, refetched, latency_ms, error_message)
-         VALUES ($1,$2,$3,FALSE,$4,$5)`,
-        [code, id, eventType || null, Date.now() - t0, error]
-      ).catch(() => {});
-      items.push({ id, refetched: false, shadow_updated: false, latency_ms: Date.now() - t0, error });
-    } finally {
-      client.release();
-    }
+  const invalid = (message) => Object.assign(new Error(message), { code: 'RAGIC_WEBHOOK_INVALID' });
+  if (!['H01','H05','Z01','Z02'].includes(code)) throw invalid('unsupported Ragic webhook sheet');
+  if (!_webhookFormPath(code)) throw Object.assign(new Error('Webhook form is not configured'), { code: 'RAGIC_WEBHOOK_CONFIG_MISSING' });
+  if (!ids.length || ids.length > 100 || ids.some(id => !/^\d+$/.test(id))) {
+    throw invalid('webhook payload requires 1-100 numeric record ids');
   }
+  const eventType = String(body?.eventType || body?.event_type || '').trim().slice(0, 100);
+  const inbox = require('./ragicWebhookInbox');
+  await inbox.enqueue(pool, code, ids, eventType);
+  await retryRagicWebhooks({ sheetCode: code, ids, limit: ids.length });
+  const items = await inbox.getStates(pool, code, ids);
+  const failed = items.filter(item => item.state !== 'completed').length;
   return {
-    sheet_code: code,
-    event_type: eventType || null,
-    count: items.length,
-    refetched: items.filter((i) => i.refetched).length,
-    items,
+    ok: failed === 0 && items.length === ids.length,
+    sheet_code: code, event_type: eventType || null, count: ids.length,
+    completed: items.length - failed, failed, durable: true, items,
   };
 }
 
@@ -4832,6 +4882,20 @@ function _mapRagicVenue(r) {
   };
 }
 
+function _validatedVenueMap(records) {
+  const mapped = new Map();
+  for (const row of records || []) {
+    if (ragic.isCanaryRecord(row, 'H05')) continue;
+    const venue = row && _mapRagicVenue(row);
+    if (!venue || mapped.has(venue.code)) {
+      throw new Error('H05 場館代碼缺漏或重複，已保留既有資料，請核對來源欄位');
+    }
+    mapped.set(venue.code, venue);
+  }
+  if (!mapped.size) throw new Error('H05 無有效場館資料，已中止同步並保留既有場館');
+  return mapped;
+}
+
 /**
  * dry-run：撈 H05 + 比對 admin_venues，回傳 {added, updated, removed}。
  * - added：Ragic 有但 DB 沒有（或 DB is_active=false）→ 第二階段會 INSERT / 重新啟用
@@ -4846,11 +4910,7 @@ async function diffVenuesFromRagic() {
   if (pull.stale_read) throw new Error(pull.error || 'Ragic H05 stale_read');
   await _alertFreshnessIfNeeded('H05', pull.freshness);
   const records = pull.records || [];
-  const ragicMap = new Map();
-  for (const r of records) {
-    const v = _mapRagicVenue(r);
-    if (v) ragicMap.set(v.code, v);
-  }
+  const ragicMap = _validatedVenueMap(records);
   const dbRows = (await pool.query(`SELECT * FROM admin_venues`)).rows;
   const dbMap = new Map(dbRows.map(r => [r.id, r]));
 
@@ -4896,11 +4956,7 @@ async function applyVenueSync(selections = {}) {
   if (pull.stale_read) throw new Error(pull.error || 'Ragic H05 stale_read');
   await _alertFreshnessIfNeeded('H05', pull.freshness);
   const records = pull.records || [];
-  const ragicMap = new Map();
-  for (const r of records) {
-    const v = _mapRagicVenue(r);
-    if (v) ragicMap.set(v.code, v);
-  }
+  const ragicMap = _validatedVenueMap(records);
 
   // Atomic：所有 add / update / remove + 跨表 mirror 寫入包在同一筆 transaction，
   // 避免中途失敗導致 admin_venues vs venues 兩表分歧或部分套用。
@@ -4934,15 +4990,7 @@ async function applyVenueSync(selections = {}) {
              WHERE id = $1`,
           [code, rv.name, rv.address, rv.bank_institution_name, rv.bank_branch_name, rv.account_holder, rv.account_number]
         );
-        await client.query(
-          `INSERT INTO venues (id, name, full_address, is_active)
-           VALUES ($1,$2,$3,TRUE)
-           ON CONFLICT (id) DO UPDATE SET
-             name = EXCLUDED.name,
-             full_address = COALESCE(NULLIF(venues.full_address, ''), EXCLUDED.full_address),
-             is_active = TRUE, updated_at = NOW()`,
-          [code, rv.name, rv.address]
-        );
+        await _mirrorVenueFromAdmin(client, code);
       } else {
         await client.query(
           `INSERT INTO admin_venues (id, code, name, address, line_token,
@@ -4951,14 +4999,7 @@ async function applyVenueSync(selections = {}) {
            VALUES ($1,$1,$2,$3,'',$4,$5,$6,$7,TRUE,NOW())`,
           [code, rv.name, rv.address, rv.bank_institution_name, rv.bank_branch_name, rv.account_holder, rv.account_number]
         );
-        await client.query(
-          `INSERT INTO venues (id, name, full_address, is_active)
-           VALUES ($1,$2,$3,TRUE)
-           ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name,
-             full_address = COALESCE(NULLIF(venues.full_address, ''), EXCLUDED.full_address),
-             is_active = TRUE, updated_at = NOW()`,
-          [code, rv.name, rv.address]
-        );
+        await _mirrorVenueFromAdmin(client, code);
       }
       addedCount += 1;
     }
@@ -4988,13 +5029,7 @@ async function applyVenueSync(selections = {}) {
         vals
       );
       if (touchesNameOrAddr) {
-        await client.query(
-          `UPDATE venues SET name = $2,
-             full_address = COALESCE(NULLIF($3, ''), full_address),
-             updated_at = NOW()
-             WHERE id = $1`,
-          [code, rv.name, rv.address]
-        );
+        await _mirrorVenueFromAdmin(client, code);
       }
       updatedCount += 1;
     }
@@ -5008,10 +5043,7 @@ async function applyVenueSync(selections = {}) {
            WHERE id = $1`,
         [code]
       );
-      await client.query(
-        `UPDATE venues SET is_active = FALSE, updated_at = NOW() WHERE id = $1`,
-        [code]
-      );
+      await _mirrorVenueFromAdmin(client, code);
       removedCount += 1;
     }
 
@@ -5038,6 +5070,7 @@ module.exports = {
   getRagicEnvFlags,
   getLiveRagicProbeSnapshot,
   getSyncStatusSnapshot,
+  RETIRED_JOBS,
   pingParentsFromRagic,
   pingStudentsFromRagic,
   backupParentsStudentsToRagic,
@@ -5050,7 +5083,7 @@ module.exports = {
   reingestZ01Record,
   quarantineBadZ01Names,
   hasRecentBackupSuccess,
-  hasRecentFreshPull,
+  hasRecentSuccessfulPull,
   isPlaceholderParentName,
   hasNoCjkCharacters,
   getRagicJobNames,
@@ -5064,6 +5097,7 @@ module.exports = {
   getSyncWatermark,
   setSyncWatermark,
   handleRagicWebhook,
+  retryRagicWebhooks,
   // Z03 人工整理表
   listZ03Records,
   findZ03RecordByPhone,

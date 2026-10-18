@@ -125,21 +125,36 @@ export default function AlertsPage() {
       )}
 
       {editing && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4" onClick={() => setEditing(null)}>
-          <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md rounded-xl bg-white p-5 shadow-xl">
-            <h3 className="mb-3 text-base font-bold text-brand-primary">處理警示</h3>
-            <label className="mb-2 block text-xs font-bold text-gray-600">處理結果（review_note）</label>
-            <textarea rows={4} value={editing.note} onChange={(e) => setEditing({ ...editing, note: e.target.value.slice(0, 500) })}
-              placeholder="補充判定理由 / 已聯絡家長 / 教練回報… (最多 500 字)"
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none" />
-            <label className="mb-2 mt-3 block text-xs font-bold text-gray-600">狀態</label>
-            <select value={editing.status} onChange={(e) => setEditing({ ...editing, status: e.target.value })}
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
-              {NEXT_STATUS_OPTIONS.map((s) => (
-                <option key={s.v} value={s.v}>{s.label}</option>
-              ))}
-            </select>
-            <div className="mt-4 flex justify-end gap-2">
+        <div className="fixed inset-0 z-40 flex items-end justify-center bg-black/40 md:items-center md:p-4" onClick={() => setEditing(null)}>
+          {/* 500 字的 textarea 展開後加上狀態下拉，在 375×812 上已經接近滿版；
+              手機鍵盤一彈出來可視高度只剩約 400px，原本沒有 max-h 也不能捲，
+              「儲存 / 取消」被推到畫面外，處理中的警示只能放棄重整。
+              同 ReconcilePage.jsx:372 的寫法。
+
+              另外原本在 375px 上這張卡是置中的：鍵盤沒彈出時「儲存」停在螢幕垂直中線
+              附近，單手拿手機的拇指構不到；鍵盤一彈出來又被往上推。改成 md 以下貼底
+              升起的面板 —— 面板貼著鍵盤上緣，按鈕永遠在拇指區。md 以上原封不動回到
+              items-center + max-w-md + rounded-xl + 90dvh。
+              pb 用 calc 疊上安全區：貼底後下緣會壓在 iPhone 的 home indicator 底下；
+              桌機上 env() 求值為 0，等同原本的 p-5。 */}
+          <div onClick={(e) => e.stopPropagation()} className="flex max-h-[85dvh] w-full flex-col rounded-t-2xl bg-white p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] shadow-xl md:max-h-[90dvh] md:max-w-md md:rounded-xl">
+            {/* grabber：行動裝置上「這個可以往下拉」的通用暗示，桌機沒有這個手勢所以 md:hidden。 */}
+            <div className="mx-auto -mt-2 mb-3 h-1 w-10 shrink-0 rounded-full bg-gray-300 md:hidden" aria-hidden="true" />
+            <h3 className="mb-3 shrink-0 text-base font-bold text-brand-primary">處理警示</h3>
+            <div className="flex-1 overflow-y-auto">
+              <label className="mb-2 block text-xs font-bold text-gray-600">處理結果（review_note）</label>
+              <textarea rows={4} value={editing.note} onChange={(e) => setEditing({ ...editing, note: e.target.value.slice(0, 500) })}
+                placeholder="補充判定理由 / 已聯絡家長 / 教練回報… (最多 500 字)"
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none" />
+              <label className="mb-2 mt-3 block text-xs font-bold text-gray-600">狀態</label>
+              <select value={editing.status} onChange={(e) => setEditing({ ...editing, status: e.target.value })}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+                {NEXT_STATUS_OPTIONS.map((s) => (
+                  <option key={s.v} value={s.v}>{s.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="mt-4 flex shrink-0 justify-end gap-2">
               <button type="button" onClick={() => setEditing(null)} className="rounded-md bg-gray-200 px-3 py-2 text-xs font-bold text-gray-700">取消</button>
               <button type="button" onClick={submitReview} className="rounded-md bg-brand-primary px-3 py-2 text-xs font-bold text-white hover:opacity-90">儲存</button>
             </div>

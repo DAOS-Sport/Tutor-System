@@ -1,12 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { groupOrdersApi } from '../api/groupOrders';
+import { coursesApi } from '../api/courses';
+import { coursePeriodOptions, isCoursePeriodCount } from '../../../shared/coursePricing';
+import { useGuideDemo, demoStudent } from '../utils/guideDemo';
 import GroupMemberFields, { memberFieldsReady, memberFieldsPayload } from '../components/group/GroupMemberFields';
 import { useToast } from '../context/ToastContext';
 import { courseTypeLabel } from '../utils/format';
 
-// 期數可選範圍（與後端 PERIOD_COUNT_MAX 一致）。
-const PERIOD_OPTIONS = [1, 2, 3, 4, 5, 6];
 
 // 把目前表單狀態整理成「草稿暫存」用的 payload（後端會再做白名單 / 大小過濾）。
 function buildDraftPayload({ courseType, venueId, coachId, fields, note, periodCount }) {
@@ -14,7 +15,7 @@ function buildDraftPayload({ courseType, venueId, coachId, fields, note, periodC
     course_type: courseType,
     venue_id: venueId || undefined,
     coach_id: coachId || undefined,
-    period_count: periodCount || 1,
+    period_count: periodCount,
     student_ids: fields.studentIds || [],
     new_students: fields.newStudents || [],
     proof_url: fields.proofUrl || undefined,
@@ -38,6 +39,7 @@ function draftHasContent(fields, note) {
  * 填到一半會自動暫存到後端草稿（group_order_drafts），重整 / 換裝置回來可還原。
  */
 export default function GroupCreatePage() {
+  const guide = useGuideDemo();
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const toast = useToast();
@@ -50,17 +52,42 @@ export default function GroupCreatePage() {
   const carriedStudentIds = (params.get('students') || '').split(',').map((s) => s.trim()).filter(Boolean);
   const hasCarried = carriedPeriod > 0 || carriedStudentIds.length > 0;
 
-  const [fields, setFields] = useState({ studentIds: carriedStudentIds, newStudents: [], proofUrl: '' });
+  const [fields, setFields] = useState({ studentIds: carriedStudentIds, newStudents: guide ? [demoStudent] : [], proofUrl: '' });
   const [submitting, setSubmitting] = useState(false);
   const [createError, setCreateError] = useState('');
-  const [note, setNote] = useState('');
+  const [note, setNote] = useState(guide ? 'DEMO' : '');
   // U14：團購折價券。空白＝不輸入（後端仍會嘗試自動套用有勾選「可用於團購」的促銷）。
   const [couponCode, setCouponCode] = useState('');
-  const [periodCount, setPeriodCount] = useState(carriedPeriod >= 1 && carriedPeriod <= 6 ? carriedPeriod : 1);
+  const [periodCount, setPeriodCount] = useState(Number.isSafeInteger(carriedPeriod) && carriedPeriod > 0 ? carriedPeriod : null);
+  const [priceConfig, setPriceConfig] = useState(() => guide?.bootData ? {
+    period_count_min: guide.bootData.periodCountMin, period_count_max: guide.bootData.periodCountMax,
+  } : null);
+  const [pricingError, setPricingError] = useState('');
+  const [draftReady, setDraftReady] = useState(!!guide || hasCarried);
+  const periodOptions = coursePeriodOptions(priceConfig?.period_count_min, priceConfig?.period_count_max);
+  const validPeriodCount = isCoursePeriodCount(periodCount, priceConfig?.period_count_min, priceConfig?.period_count_max);
 
   // 草稿自動暫存控制：hydrated 後才開始存；lastSaved 去重，避免重複 PUT。
   const hydratedRef = useRef(false);
   const lastSavedRef = useRef(null);
+
+  useEffect(() => {
+    if (guide || !venueId || courseType === 1) return undefined;
+    let alive = true;
+    coursesApi.basePrice(courseType, venueId).then((data) => {
+      if (!alive) return;
+      if (!coursePeriodOptions(data?.period_count_min, data?.period_count_max).length) throw new Error('需求頁期數範圍未設定');
+      setPriceConfig(data); setPricingError('');
+    }).catch(() => { if (alive) { setPriceConfig(null); setPricingError('課程需求資料載入失敗，請稍後再試'); } });
+    return () => { alive = false; };
+  }, [venueId, courseType, guide]);
+
+  useEffect(() => {
+    // A restored draft/carried value remains visible even if current bounds changed.
+    if (periodOptions.length && draftReady) {
+      setPeriodCount((value) => value == null ? Number(priceConfig.period_count_min) : value);
+    }
+  }, [priceConfig, draftReady]);
 
   // 一對一（1V1）不開放團購：即使有人直接帶 ?courseType=1 進來也導回報名頁，
   // 與 EnrollmentPage 拔掉發起鈕的邏輯一致。
@@ -77,7 +104,7 @@ export default function GroupCreatePage() {
 
   // 進頁面載入草稿並還原（1V1 不載入，因為會被導走）。URL 有帶入值時跳過還原（帶值優先）。
   useEffect(() => {
-    if (courseType === 1) return;
+    if (guide || courseType === 1) return;
     if (hasCarried) { hydratedRef.current = true; return; }
     let alive = true;
     (async () => {
@@ -94,8 +121,8 @@ export default function GroupCreatePage() {
             proofUrl: d.proof_url || '',
           });
           if (d.note) setNote(d.note);
-          const restoredPeriod = PERIOD_OPTIONS.includes(Number(d.period_count)) ? Number(d.period_count) : 1;
-          if (restoredPeriod !== 1) setPeriodCount(restoredPeriod);
+          const restoredPeriod = Number.isSafeInteger(Number(d.period_count)) && Number(d.period_count) > 0 ? Number(d.period_count) : null;
+          setPeriodCount(restoredPeriod);
           // 還原值即視為「已存」，避免還原後立刻又被 autosave 回存一次
           lastSavedRef.current = JSON.stringify(buildDraftPayload({
             courseType,
@@ -108,7 +135,7 @@ export default function GroupCreatePage() {
           toast.info?.('已還原上次未填完的團報內容');
         }
       } catch { /* 草稿載入失敗不阻擋發起流程 */ }
-      finally { if (alive) hydratedRef.current = true; }
+      finally { if (alive) { hydratedRef.current = true; setDraftReady(true); } }
     })();
     return () => { alive = false; };
     // 僅在進頁面時跑一次（venue/coach/courseType 由 URL 固定）
@@ -117,8 +144,8 @@ export default function GroupCreatePage() {
 
   // 表單變動 → debounce 自動暫存草稿（hydrated 後才啟動，去重避免重複 PUT）。
   useEffect(() => {
-    if (!hydratedRef.current || courseType === 1) return;
-    if (!draftHasContent(fields, note)) return;
+    if (guide || !hydratedRef.current || courseType === 1) return;
+    if (!draftHasContent(fields, note) || !Number.isSafeInteger(periodCount) || periodCount < 1) return;
     const payload = buildDraftPayload({ courseType, venueId, coachId, fields, note, periodCount });
     const key = JSON.stringify(payload);
     if (key === lastSavedRef.current) return;
@@ -130,9 +157,10 @@ export default function GroupCreatePage() {
     return () => clearTimeout(t);
   }, [fields, note, courseType, venueId, coachId, periodCount]);
 
-  const canSubmit = !!venueId && memberFieldsReady(fields) && !submitting;
+  const canSubmit = !!venueId && validPeriodCount && memberFieldsReady(fields) && !submitting;
 
   async function handleCreate() {
+    if (guide) return;
     if (!canSubmit) return;
     setCreateError('');
     setSubmitting(true);
@@ -165,17 +193,22 @@ export default function GroupCreatePage() {
         <h2 className="text-sm font-bold text-brand-primary">發起 {courseTypeLabel(courseType)} 團購</h2>
       </div>
 
-      <GroupMemberFields
+      <div data-guide-group-fields><GroupMemberFields
         value={fields}
         onChange={(next) => { setCreateError(''); setFields(next); }}
         maxStudents={courseType}
         error={createError}
-      />
+      /></div>
 
-      <div className="mt-3 rounded-xl border border-gray-200 bg-white p-3">
+      <div data-guide-group-options className="mt-3 rounded-xl border border-gray-200 bg-white p-3">
         <label className="mb-1 block text-xs font-medium text-gray-600">購買期數</label>
+        {pricingError && <p role="alert" className="mb-2 text-xs text-brand-error">{pricingError}</p>}
+        {!pricingError && periodOptions.length === 0 && <p className="mb-2 text-xs text-gray-500">載入需求頁期數範圍…</p>}
+        {periodCount != null && periodOptions.length > 0 && !validPeriodCount && (
+          <p role="alert" className="mb-2 text-xs text-brand-error">已保存 {periodCount} 期；目前需求頁範圍為 {priceConfig.period_count_min}–{priceConfig.period_count_max} 期，請核對後重新選擇。</p>
+        )}
         <div className="flex flex-wrap gap-2">
-          {PERIOD_OPTIONS.map((n) => (
+          {periodOptions.map((n) => (
             <button
               key={n}
               type="button"
@@ -221,7 +254,7 @@ export default function GroupCreatePage() {
       <button
         type="button"
         disabled={!canSubmit}
-        onClick={handleCreate}
+        data-guide-group-create onClick={handleCreate}
         className="mt-4 w-full rounded-lg bg-brand-primary py-3.5 text-base font-bold text-white active:bg-brand-teal disabled:bg-gray-300"
       >
         {submitting ? '建立中…' : '建立團購'}
@@ -229,3 +262,4 @@ export default function GroupCreatePage() {
     </div>
   );
 }
+

@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { checkoutApi } from '../api/checkout';
 import { enrollmentsApi } from '../api/enrollments';
 import LoadingSpinner from '../components/LoadingSpinner';
+import { useGuideDemo, demoStudents } from '../utils/guideDemo';
 import StudentMultiSelect from '../components/enroll/StudentMultiSelect';
 import PriceBreakdown from '../components/enroll/PriceBreakdown';
 import ErrorBlock from '../components/enroll/ErrorBlock';
@@ -11,6 +12,7 @@ import useEnrollmentPricing from '../hooks/useEnrollmentPricing';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { resolveRouteInstruction } from '../utils/routeInstruction';
+import { coursePeriodOptions, isCoursePeriodCount } from '../../../shared/coursePricing';
 
 function createSubmitRequestId() {
   try {
@@ -19,7 +21,11 @@ function createSubmitRequestId() {
   return `enroll-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+// 人數未選滿提示用的中文數字（index＝組別人數）。
+const STUDENT_COUNT_WORDS = ['', '一', '兩', '三', '四', '五', '六'];
+
 export default function EnrollmentPage() {
+  const guide = useGuideDemo();
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const { parent } = useAuth();
@@ -33,31 +39,44 @@ export default function EnrollmentPage() {
   const initialTrial = params.get('trial') === '1';
   // 續報掛券入口：?coupon=CODE 直接預填並套用既有折價券（試上模式不吃券，會被下方 effect 清除）。
   const initialCoupon = (params.get('coupon') || '').trim().toUpperCase();
+  const guideStudents = guide ? demoStudents(initialCourseType) : null;
 
   // 組別由顧客在首頁「商品」選好後帶進來（?courseType=N），報名頁不再重複讓人選，避免誤導。
   const [courseType] = useState(initialCourseType);
-  const [periodCount, setPeriodCount] = useState(1);
+  const [periodCount, setPeriodCount] = useState(initialTrial ? 1 : null);
   const [isTrial, setIsTrial] = useState(initialTrial);
   const [paymentMethod, setPaymentMethod] = useState(initialTrial ? 'on_site' : 'bank_transfer');
-  const [selectedSelfStudents, setSelectedSelfStudents] = useState([]);
+  const [selectedSelfStudents, setSelectedSelfStudents] = useState(() => guideStudents?.map((student) => student.id) || []);
   const [submitting, setSubmitting] = useState(false);
-  const [couponInput, setCouponInput] = useState(initialCoupon);
+  const [couponInput, setCouponInput] = useState(guide ? 'DEMO' : initialCoupon);
   const [activeCoupon, setActiveCoupon] = useState(initialTrial ? '' : initialCoupon);
 
   // 推薦折扣（TRIAL50）已停用（2026-07 全站優惠清除）：不再自動套用 pendingCoupon，
   // 並主動清掉既有使用者瀏覽器內殘留的 daos.pendingCoupon，避免套到已刪除的券而報「折價券無效」。
   useEffect(() => {
+    if (guide) return;
     try { localStorage.removeItem('daos.pendingCoupon'); } catch { /* noop */ }
   }, []);
 
   const onBootError = useCallback((m) => toast.error(m), [toast]);
   const { bootData, bootError } = useEnrollmentBoot({
-    coachId, venueId, courseType, onError: onBootError,
+    coachId, venueId, courseType, onError: onBootError, demoData: guide?.bootData || null,
   });
 
   // F-A07 試上開關：此品項未開放試上（trial_enabled=false）→ 隱藏試上入口；
   // 若經 ?trial=1 深連結進來則強制切回一般報名並提示（後端另有 TRIAL_NOT_ENABLED fail-closed）。
   const trialEnabled = bootData ? bootData.trialEnabled === true : false;
+  const periodOptions = isTrial ? [1, 2, 3, 4, 5, 6]
+    : coursePeriodOptions(bootData?.periodCountMin, bootData?.periodCountMax);
+  useEffect(() => {
+    if (!bootData) return;
+    if (isTrial) {
+      setPeriodCount((value) => Number.isSafeInteger(value) && value >= 1 && value <= 6 ? value : 1);
+    } else if (periodOptions.length) {
+      setPeriodCount((value) => isCoursePeriodCount(value, bootData.periodCountMin, bootData.periodCountMax)
+        ? value : Number(bootData.periodCountMin));
+    }
+  }, [bootData, isTrial]);
   useEffect(() => {
     if (bootData && isTrial && bootData.trialEnabled !== true) {
       setIsTrial(false);
@@ -68,7 +87,7 @@ export default function EnrollmentPage() {
 
   // 切換組別時重置學員選擇
   useEffect(() => {
-    setSelectedSelfStudents([]);
+    setSelectedSelfStudents(guide ? demoStudents(courseType).map((student) => student.id) : []);
   }, [courseType]);
 
   // 試上（2026-07-16 起開放多學員／多堂）：切換時保留學員與期數/堂數選擇讓流程順暢，
@@ -88,10 +107,10 @@ export default function EnrollmentPage() {
   }, [isTrial]);
 
   // 1對N 須剛好湊滿 N 位（min=max=courseType）；同組多家庭請改走團購（GroupCreate）。
-  // 試上：1 位起、可多位（每位各自開通獨立 1 堂體驗課期），上限＝名下有效學員數。
-  const activeStudentCount = (parent.students || []).filter((s) => s?.is_active !== false).length;
-  const maxStudents = isTrial ? Math.max(1, activeStudentCount) : courseType;
-  const minStudents = isTrial ? 1 : courseType;
+  // 試上比照正式課（2026-10-14）：一樣要選滿 N 位，同批學員開成同一班一起上課、一起簽到。
+  const enrollmentStudents = guide ? demoStudents(courseType) : (parent.students || []).filter((s) => s?.is_active !== false);
+  const maxStudents = courseType;
+  const minStudents = courseType;
   const totalSelected = selectedSelfStudents.length;
   const pricingStudentCount = Math.max(totalSelected, minStudents);
 
@@ -115,8 +134,8 @@ export default function EnrollmentPage() {
   // U4：移除「帶出他人學員」流程後，報名只能選自己名下的學員（同組改走 U5–U8 團購）。
   const allSelectedStudents = selectedSelfStudents
     .map((sid) => {
-      const s = parent.students.find((x) => x.id === sid);
-      return s ? { ...s, _ownerName: parent.name } : null;
+      const s = enrollmentStudents.find((x) => x.id === sid);
+      return s ? { ...s, _ownerName: guide ? 'DEMO 家長' : parent.name } : null;
     })
     .filter(Boolean);
   // 防 stale ID：所有勾選 ID 都要解析得到，否則送出鈕不亮
@@ -129,8 +148,14 @@ export default function EnrollmentPage() {
     totalSelected <= maxStudents &&
     selectionResolved &&
     !submitting &&
+    periodOptions.includes(periodCount) &&
     !pricing.previewLoading &&
     !pricing.previewError;
+  // 1對多人數未選滿時送出鈕反灰：在鈕下方說明原因，並指向下方的「發起團購」。
+  // 試上不能團購，只提示要選滿。
+  const studentShortageHint = courseType > 1 && totalSelected < minStudents
+    ? '請確實選滿' + (STUDENT_COUNT_WORDS[courseType] || String(courseType)) + '位學生' + (isTrial ? '' : '，或是與他人發起團購')
+    : '';
 
   function toggleSelf(sid) {
     setSelectedSelfStudents((prev) => {
@@ -144,6 +169,8 @@ export default function EnrollmentPage() {
   }
 
   async function handleConfirmSubmit() {
+    if (guide) return;
+    if (!canSubmit || !periodOptions.includes(periodCount)) return;
     if (submitLockRef.current || submitting) return;
     submitLockRef.current = true;
     setSubmitting(true);
@@ -218,7 +245,7 @@ export default function EnrollmentPage() {
           <div className="rounded-lg border border-brand-teal bg-brand-teal/10 px-3 py-2 text-center text-sm font-bold text-brand-primary">
             試上單次課
           </div>
-          <p className="mt-2 text-xs leading-relaxed text-gray-500">試上以每人每堂計價，可一次為多位學員、多堂下單；一律現場付費。</p>
+          <p className="mt-2 text-xs leading-relaxed text-gray-500">試上以每人每堂計價，須選滿組別人數、同班一起上，可一次買多堂；一律現場付費。</p>
         </div>
       )}
       {trialEnabled && !(initialTrial && isTrial) && (
@@ -248,33 +275,33 @@ export default function EnrollmentPage() {
               試上單次課
             </button>
           </div>
-          {isTrial && <p className="mt-2 text-xs leading-relaxed text-gray-500">試上以每人每堂計價，可一次為多位學員、多堂下單；一律現場付費。</p>}
+          {isTrial && <p className="mt-2 text-xs leading-relaxed text-gray-500">試上以每人每堂計價，須選滿組別人數、同班一起上，可一次買多堂；一律現場付費。</p>}
         </div>
       )}
 
       {/* 購買期數（下拉；費用會隨期數變動）；試上語意為「堂數」——每位學員 N 堂 */}
       <div className="mt-2 rounded-xl border border-gray-200 bg-white p-3">
         <label className="mb-1 block text-xs font-medium text-gray-600">{isTrial ? '購買堂數（每位學員）' : '購買期數'}</label>
-        <select
+        <select data-guide-period
           value={periodCount}
           onChange={(e) => setPeriodCount(Number(e.target.value))}
           className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm font-bold text-gray-800 focus:border-brand-teal focus:outline-none"
         >
-          {[1, 2, 3, 4, 5, 6].map((n) => (
+          {periodOptions.map((n) => (
             <option key={n} value={n}>{n} {isTrial ? '堂' : '期'}</option>
           ))}
         </select>
       </div>
 
-      <StudentMultiSelect
+      <div data-guide-students><StudentMultiSelect
         parent={parent}
         selectedSelfStudents={selectedSelfStudents}
         minStudents={minStudents}
         maxStudents={maxStudents}
         onToggle={toggleSelf}
-      />
+      /></div>
 
-      <PriceBreakdown pricing={pricing} multiplier={coach.multiplier} isSenior={coach.is_senior} />
+      <div data-guide-price><PriceBreakdown pricing={pricing} multiplier={coach.multiplier ?? coach.pricing_multiplier} isSenior={coach.is_senior} /></div>
 
       {isTrial && (
         <div className="mt-2 rounded-xl border border-gray-200 bg-white p-3">
@@ -326,6 +353,9 @@ export default function EnrollmentPage() {
       >
         {submitting ? '送出中…' : isTrial && paymentMethod === 'on_site' ? '確認試上現場付費' : '下一步：填寫轉帳資料'}
       </button>
+      {studentShortageHint && (
+        <p role="status" className="mt-1.5 text-center text-xs font-medium text-brand-error">{studentShortageHint}</p>
+      )}
 
       {/* 發起團購：移到最下面、移除上方行銷文案；帶入已選的組別/期數/學員。1V1 不開團。 */}
       {!isTrial && courseType !== 1 && (

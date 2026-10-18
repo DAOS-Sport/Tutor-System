@@ -1,54 +1,66 @@
-import React, { useEffect, useState } from 'react';
-import PageHeader from '../components/PageHeader';
-import LoadingSpinner from '../components/LoadingSpinner';
-import { useToast } from '../context/ToastContext';
-import { useAuth } from '../context/AuthContext';
-import { ragicStatusApi } from '../api/ragicStatus';
-import { formatTWDateTime } from '../utils/format';
+import { toUserMessage } from "../../../shared/userMessage.js";
+import React, { useEffect, useRef, useState } from "react";
+import WebhookInboxPanel from "../components/WebhookInboxPanel";
+import PageHeader from "../components/PageHeader";
+import LoadingSpinner from "../components/LoadingSpinner";
+import { useToast } from "../context/ToastContext";
+import { useAuth } from "../context/AuthContext";
+import { ragicStatusApi } from "../api/ragicStatus";
+import { formatTWDateTime } from "../utils/format";
+import {
+  jobState,
+  reasonText,
+  summarizeFailures,
+} from "../utils/ragicStatusView.mjs";
 
 // Task #70 邊緣案例處理準則：
 // skipAuthRedirect=true 讓 axios interceptor 不跳轉，改由頁面自己決定：
 //   - HTTP 401 → 確認是 token 失效 → 呼叫 logout()，AuthContext 清狀態，RequireAuth 導回 /login
 //   - HTTP 500 / timeout / 其他 → toast + 重試按鈕，不觸碰 session
 
+// 已退役的工作：與 server/services/ragicAdmin.js 的 RETIRED_JOBS 一致（測試比對）。
+// 新版後端本來就不回傳；前端再擋一次，舊版後端（例如還沒重啟的預覽環境）也不會把它畫出來。
+const RETIRED_JOBS = ["quarantine"];
+
 function fmtDate(ts) {
-  return ts ? formatTWDateTime(ts) : '—';
+  return ts ? formatTWDateTime(ts) : "—";
 }
 
-function statusBadge(s, inProgress) {
-  const base = 'inline-block rounded px-2 py-0.5 text-xs font-bold';
-  if (inProgress)      return <span className={`${base} bg-brand-teal/15 text-brand-teal`}>同步中…</span>;
-  if (s === 'ok')      return <span className={`${base} bg-brand-green/15 text-brand-green`}>成功</span>;
-  if (s === 'stale_read') return <span className={`${base} bg-red-100 text-red-700`}>舊快照</span>;
-  if (s === 'error')   return <span className={`${base} bg-red-100 text-red-700`}>失敗</span>;
-  if (s === 'skipped') return <span className={`${base} bg-gray-200 text-gray-600`}>未執行</span>;
+// 「部分完成」：上次失敗的原因全是資料本身的問題（例如每晚寫回 Ragic 時，少數學員缺生日、
+// 身分證和其他帳號重複），其他資料照常處理——不能跟整個壞掉的「失敗」共用同一個紅燈。
+// 判斷邏輯在 utils/ragicStatusView.mjs（有單元測試）。
+function isPartial(info, issues) {
+  return (
+    info.last_status === "error" &&
+    jobState({ last_status: "error" }, issues).key === "partial"
+  );
+}
+
+function statusBadge(info, issues, inProgress) {
+  const base =
+    "inline-block whitespace-nowrap rounded px-2 py-0.5 text-xs font-bold";
+  const s = info.last_status;
+  if (inProgress)
+    return (
+      <span className={`${base} bg-brand-teal/15 text-brand-teal`}>
+        同步中…
+      </span>
+    );
+  if (s === "ok")
+    return (
+      <span className={`${base} bg-brand-green/15 text-brand-green`}>成功</span>
+    );
+  if (s === "stale_read")
+    return <span className={`${base} bg-red-100 text-red-700`}>舊快照</span>;
+  if (isPartial(info, issues))
+    return (
+      <span className={`${base} bg-amber-100 text-amber-800`}>部分完成</span>
+    );
+  if (s === "error")
+    return <span className={`${base} bg-red-100 text-red-700`}>失敗</span>;
+  if (s === "skipped")
+    return <span className={`${base} bg-gray-200 text-gray-600`}>未執行</span>;
   return <span className={`${base} bg-gray-100 text-gray-500`}>—</span>;
-}
-
-// 「沒有驗」跟「驗了沒過」是兩件事，畫面上必須分得開。
-//
-// 兩者都顯示「未通過」的時候，一個只要設兩個環境變數就能解決的設定缺漏，
-// 看起來會跟「Ragic 讀到過期資料」這種真故障一模一樣 —— 於是沒有人知道
-// 該做什麼，紅字就一直掛在那裡。canary_configured === false 就是這個情況。
-function freshnessText(info) {
-  if (info.freshness_verified === true) {
-    const retry = info.stale_retries ? `，重試 ${info.stale_retries}` : '';
-    return `已驗證 ${info.freshness_latency_ms ?? '—'} ms${retry}`;
-  }
-  if (info.freshness_verified === false || info.last_status === 'stale_read') {
-    const retry = info.stale_retries ? `，重試 ${info.stale_retries}` : '';
-    return `未通過${retry}`;
-  }
-  if (info.canary_configured === false) return '未啟用';
-  return '—';
-}
-
-function freshnessTone(info) {
-  if (info.freshness_verified === true) return 'text-brand-green';
-  if (info.freshness_verified === false || info.last_status === 'stale_read') return 'text-red-700';
-  // 未啟用是待辦，不是故障 —— 給琥珀色，跟真的讀到過期資料的紅色區隔開。
-  if (info.canary_configured === false) return 'text-amber-600';
-  return 'text-gray-800';
 }
 
 function ToggleSwitch({ checked, disabled, onChange, title }) {
@@ -61,48 +73,66 @@ function ToggleSwitch({ checked, disabled, onChange, title }) {
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition disabled:cursor-not-allowed disabled:opacity-50 ${
-        checked ? 'bg-brand-teal' : 'bg-gray-300'
+        checked ? "bg-brand-teal" : "bg-gray-300"
       }`}
     >
       <span
         className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${
-          checked ? 'translate-x-[18px]' : 'translate-x-0.5'
+          checked ? "translate-x-[18px]" : "translate-x-0.5"
         }`}
       />
     </button>
   );
 }
 
-function FormCard({ job, info, onSync, syncing, isAdmin, envEnabled, onToggle, toggling }) {
+function FormCard({
+  job,
+  info,
+  schedule,
+  issues,
+  onSync,
+  syncing,
+  isAdmin,
+  envEnabled,
+  onToggle,
+  toggling,
+}) {
   const inProgress = !!info.in_progress || syncing;
   const adminEnabled = info.admin_enabled !== false;
   const canRun = envEnabled && adminEnabled;
+  const partial = isPartial(info, issues);
   // Task #94：kind 區分「全表 bulk sync」與「連線 ping (healthcheck)」。
   // 後者不會真的把 Ragic 全表寫進 staging—只是發一筆 where=eq 驗證端點，
   // 文案 / 按鈕 / 統計欄都要改才不會誤導 admin。
-  const isPing = info.kind === 'healthcheck';
+  const isPing = info.kind === "healthcheck";
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
           <div className="flex items-center gap-1.5">
             <div className="text-sm font-bold text-gray-800">{info.label}</div>
             {isPing ? (
-              <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">健康檢查</span>
+              <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">
+                健康檢查
+              </span>
             ) : (
-              <span className="rounded bg-brand-teal/15 px-1.5 py-0.5 text-[10px] font-bold text-brand-teal">全表同步</span>
+              <span className="rounded bg-brand-teal/15 px-1.5 py-0.5 text-[10px] font-bold text-brand-teal">
+                全表同步
+              </span>
             )}
           </div>
-          <div className="mt-0.5 text-xs text-gray-500">form_code: {info.form_code}</div>
+          <div className="mt-0.5 text-xs text-gray-500">
+            form_code: {info.form_code}
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          {statusBadge(info.last_status, inProgress)}
+        <div className="flex shrink-0 items-center gap-2">
+          {statusBadge(info, issues, inProgress)}
           {isAdmin ? (
             <ToggleSwitch
               checked={adminEnabled}
               disabled={toggling}
               onChange={(next) => onToggle(job, next)}
-              title={adminEnabled ? '點擊關閉此排程/手動同步' : '點擊重新開啟'}
+              title={adminEnabled ? "點擊關閉此排程/手動同步" : "點擊重新開啟"}
             />
           ) : null}
         </div>
@@ -114,10 +144,18 @@ function FormCard({ job, info, onSync, syncing, isAdmin, envEnabled, onToggle, t
       ) : null}
       <dl className="mt-3 space-y-1.5 text-xs">
         <div className="flex justify-between">
+          <dt className="text-gray-500">排程</dt>
+          <dd className="text-gray-800">{schedule?.text || "—"}</dd>
+        </div>
+        <div className="flex justify-between">
           <dt className="text-gray-500">最後一次執行</dt>
           <dd className="text-gray-800">
             {fmtDate(info.last_run_at)}
-            {info.last_triggered_by ? <span className="ml-1 text-gray-400">({info.last_triggered_by})</span> : null}
+            {info.last_triggered_by ? (
+              <span className="ml-1 text-gray-400">
+                ({info.last_triggered_by})
+              </span>
+            ) : null}
           </dd>
         </div>
         <div className="flex justify-between">
@@ -125,56 +163,50 @@ function FormCard({ job, info, onSync, syncing, isAdmin, envEnabled, onToggle, t
           <dd className="text-gray-800">{fmtDate(info.last_success_at)}</dd>
         </div>
         <div className="flex justify-between">
-          <dt className="text-gray-500">{isPing ? '上次回應筆數' : '最後成功筆數'}</dt>
+          <dt className="text-gray-500">
+            {isPing ? "上次回應筆數" : "最後成功筆數"}
+          </dt>
           <dd className="text-gray-800">
-            {info.last_count ?? '—'}
-            {isPing ? <span className="ml-1 text-[10px] text-gray-400">(ping 通常 0)</span> : null}
+            {info.last_count ?? "—"}
+            {isPing ? (
+              <span className="ml-1 text-[10px] text-gray-400">
+                (ping 通常 0)
+              </span>
+            ) : null}
           </dd>
         </div>
         <div className="flex justify-between">
           <dt className="text-gray-500">耗時</dt>
-          <dd className="text-gray-800">{info.last_duration_ms != null ? `${info.last_duration_ms} ms` : '—'}</dd>
+          <dd className="text-gray-800">
+            {info.last_duration_ms != null
+              ? `${info.last_duration_ms} ms`
+              : "—"}
+          </dd>
         </div>
-        {!isPing ? (
-          <>
-            <div className="flex justify-between">
-              <dt className="text-gray-500">讀取新鮮度</dt>
-              <dd className={`text-right font-mono ${freshnessTone(info)}`}>{freshnessText(info)}</dd>
-            </div>
-            <div className="flex justify-between">
-              <dt className="text-gray-500">7 日 stale_read</dt>
-              <dd className={info.stale_read_7d_count ? 'font-mono text-red-700' : 'font-mono text-gray-800'}>
-                {info.stale_read_7d_count ?? 0}
-              </dd>
-            </div>
-            {info.canary_configured === false ? (
-              <div className="rounded-lg bg-amber-50 px-2.5 py-2 text-[11px] leading-5 text-amber-800">
-                尚未在 Ragic 建立 canary 記錄，因此每次同步都<strong>沒有驗證</strong>讀到的資料是不是最新的。
-                同步本身照常運作；受影響的是「姓名品質掃描」——它拒絕使用未經驗證的快照，所以會一直暫停。
-                <br />
-                設定方式：在 {String(info.form_code || '').split('_')[0]} 表建立一筆專用記錄，
-                把它的記錄編號與一個文字欄位編號填進{' '}
-                <code className="font-mono">RAGIC_CANARY_{String(info.form_code || '').split('_')[0]}_RECORD_ID</code>{' '}
-                與 <code className="font-mono">…_NONCE_FIELD_ID</code>。
-              </div>
-            ) : null}
-            <div className="flex justify-between gap-3">
-              <dt className="text-gray-500">7 日延遲趨勢</dt>
-              <dd className="min-w-0 truncate text-right font-mono text-gray-800">
-                {(info.freshness_7d || []).filter((x) => x.latency_ms != null).slice(-6).map((x) => `${x.latency_ms}ms`).join(' / ') || '—'}
-              </dd>
-            </div>
-          </>
-        ) : null}
       </dl>
       {info.last_error ? (
         /^unmatched_staff_warning=/.test(info.last_error) ? (
           <div className="mt-2 rounded bg-amber-50 px-2 py-1.5 text-xs text-amber-700">
-            提醒：{info.last_error}（H23 係數表部分員工未對應，不影響主同步）
+            提醒：部分員工尚未對應，請核對員工資料；其他資料同步不受影響。
+          </div>
+        ) : partial ? (
+          <div className="mt-2 rounded bg-amber-50 px-2 py-1.5 text-xs text-amber-800">
+            {issues.permanent} 筆資料寫不進 Ragic：
+            {issues.reasons
+              .map((r) => `${reasonText(r.code)} ${r.count} 筆`)
+              .join("；")}
+            。 其他資料照常處理
+            {info.last_run_count != null
+              ? `（上次 ${info.last_run_count} 筆）`
+              : ""}
+            。
           </div>
         ) : (
           <div className="mt-2 rounded bg-red-50 px-2 py-1.5 text-xs text-red-700">
-            錯誤：{info.last_error}
+            {toUserMessage(
+              info.last_error,
+              "同步未完成，請確認必要資料是否齊全；若持續失敗，請聯絡管理員。",
+            )}
           </div>
         )
       ) : null}
@@ -183,12 +215,22 @@ function FormCard({ job, info, onSync, syncing, isAdmin, envEnabled, onToggle, t
           type="button"
           disabled={syncing || !canRun}
           onClick={() => onSync(job)}
-          title={!envEnabled ? 'Ragic 未設定，無法觸發' : (!adminEnabled ? '已手動關閉，請先開啟開關' : '')}
+          title={
+            !envEnabled
+              ? "Ragic 未設定，無法觸發"
+              : !adminEnabled
+                ? "已手動關閉，請先開啟開關"
+                : ""
+          }
           className="mt-3 w-full rounded bg-brand-teal px-3 py-1.5 text-xs font-bold text-white transition hover:bg-brand-primary disabled:cursor-not-allowed disabled:opacity-50"
         >
           {syncing
-            ? (isPing ? '檢查中…' : '同步中…')
-            : (isPing ? '發送連線 Ping' : '單獨同步此表')}
+            ? isPing
+              ? "檢查中…"
+              : "同步中…"
+            : isPing
+              ? "發送連線 Ping"
+              : "單獨同步此表"}
         </button>
       ) : null}
     </div>
@@ -199,8 +241,12 @@ function FormCard({ job, info, onSync, syncing, isAdmin, envEnabled, onToggle, t
 function LoadError({ onRetry }) {
   return (
     <div className="rounded-lg border border-dashed border-red-200 bg-red-50 p-8 text-center">
-      <div className="text-sm font-bold text-red-700">無法取得 Ragic 連線狀態</div>
-      <div className="mt-1 text-xs text-red-500">後端暫時無法回應，請稍後重試。</div>
+      <div className="text-sm font-bold text-red-700">
+        無法取得 Ragic 連線狀態
+      </div>
+      <div className="mt-1 text-xs text-red-500">
+        後端暫時無法回應，請稍後重試。
+      </div>
       <button
         type="button"
         onClick={onRetry}
@@ -213,11 +259,21 @@ function LoadError({ onRetry }) {
 }
 
 function probeBadge(status) {
-  const base = 'rounded px-2 py-0.5 text-xs font-bold';
-  if (status === 'ok') return <span className={`${base} bg-brand-green/15 text-brand-green`}>API 可讀</span>;
-  if (status === 'empty') return <span className={`${base} bg-amber-100 text-amber-800`}>回 0 筆</span>;
-  if (status === 'missing_env') return <span className={`${base} bg-red-100 text-red-700`}>缺設定</span>;
-  if (status === 'skipped') return <span className={`${base} bg-gray-200 text-gray-600`}>未檢查</span>;
+  const base = "rounded px-2 py-0.5 text-xs font-bold";
+  if (status === "ok")
+    return (
+      <span className={`${base} bg-brand-green/15 text-brand-green`}>
+        API 可讀
+      </span>
+    );
+  if (status === "empty")
+    return (
+      <span className={`${base} bg-amber-100 text-amber-800`}>回 0 筆</span>
+    );
+  if (status === "missing_env")
+    return <span className={`${base} bg-red-100 text-red-700`}>缺設定</span>;
+  if (status === "skipped")
+    return <span className={`${base} bg-gray-200 text-gray-600`}>未檢查</span>;
   return <span className={`${base} bg-red-100 text-red-700`}>失敗</span>;
 }
 
@@ -228,41 +284,70 @@ function LiveProbePanel({ probe }) {
     <div className="mb-6 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <div className="text-sm font-bold text-gray-800">即時 Ragic API 驗證</div>
+          <div className="text-sm font-bold text-gray-800">
+            即時 Ragic API 驗證
+          </div>
           <div className="mt-0.5 text-xs text-gray-500">
             直接用 Ragic API 對各表單讀取 1 筆，避免只看本地同步紀錄造成假同步。
           </div>
         </div>
-        {probe.ok
-          ? <span className="w-fit rounded bg-brand-green/15 px-2 py-0.5 text-xs font-bold text-brand-green">全部可讀</span>
-          : <span className="w-fit rounded bg-amber-100 px-2 py-0.5 text-xs font-bold text-amber-800">需確認</span>}
+        {probe.pending ? (
+          <span className="w-fit rounded bg-amber-100 px-2 py-0.5 text-xs font-bold text-amber-800">
+            連線檢查中…
+          </span>
+        ) : probe.ok ? (
+          <span className="w-fit rounded bg-brand-green/15 px-2 py-0.5 text-xs font-bold text-brand-green">
+            全部可讀
+          </span>
+        ) : (
+          <span className="w-fit rounded bg-amber-100 px-2 py-0.5 text-xs font-bold text-amber-800">
+            需確認
+          </span>
+        )}
       </div>
       {probe.error ? (
-        <div className="mt-3 rounded bg-red-50 px-2 py-1.5 text-xs text-red-700">{probe.error}</div>
+        <div className="mt-3 rounded bg-red-50 px-2 py-1.5 text-xs text-red-700">
+          {probe.error}
+        </div>
       ) : null}
-      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+      {/* auto-fit：欄數跟著寬度與表單數量走，寬螢幕 5 張排成一列，不會剩一張孤零零掉到下一列 */}
+      <div className="mt-3 grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(11rem,1fr))]">
         {Object.entries(forms).map(([key, item]) => (
-          <div key={key} className="rounded border border-gray-200 bg-gray-50 p-3">
+          <div
+            key={key}
+            className="rounded border border-gray-200 bg-gray-50 px-3 py-2"
+          >
             <div className="flex items-center justify-between gap-2">
-              <div className="min-w-0 text-xs font-bold text-gray-800">{item.label || key}</div>
+              <div className="min-w-0 text-xs font-bold text-gray-800">
+                {item.label || key}
+              </div>
               {probeBadge(item.status)}
             </div>
-            <div className="mt-2 space-y-1 text-[11px] text-gray-500">
-              <div className="font-mono">{item.env}</div>
-              <div>
-                筆數：<span className="font-mono text-gray-700">{item.record_count ?? '—'}</span>
-                {item.duration_ms != null ? (
-                  <span> · 耗時：<span className="font-mono text-gray-700">{item.duration_ms} ms</span></span>
-                ) : null}
-              </div>
-              {item.error ? <div className="text-red-700">{item.error}</div> : null}
+            <div className="mt-1 text-[11px] text-gray-500">
+              <span className="font-mono">{item.env}</span>
+              {" · "}筆數{" "}
+              <span className="font-mono text-gray-700">
+                {item.record_count ?? "—"}
+              </span>
+              {item.duration_ms != null ? (
+                <span>
+                  {" "}
+                  ·{" "}
+                  <span className="font-mono text-gray-700">
+                    {item.duration_ms} ms
+                  </span>
+                </span>
+              ) : null}
+              {item.error ? (
+                <div className="text-red-700">{item.error}</div>
+              ) : null}
             </div>
           </div>
         ))}
       </div>
       <div className="mt-2 text-[11px] text-gray-500">
         檢查時間：{fmtDate(probe.checked_at)}
-        {probe.cached ? ' · 使用最近快取結果' : null}
+        {probe.cached ? " · 使用最近快取結果" : null}
       </div>
     </div>
   );
@@ -273,6 +358,9 @@ export default function RagicStatusPage() {
   const { isAdmin, logout } = useAuth();
   const [data, setData] = useState(null);
   const [loadError, setLoadError] = useState(false);
+  // 寫不進 Ragic 的資料統計（唯讀），用來判斷卡片是「部分完成」還是真的「失敗」；讀不到就照舊顯示
+  const [failures, setFailures] = useState(null);
+  const [failuresError, setFailuresError] = useState(false);
 
   // Task #83：POST /sync 改 202 fire-and-forget，後端執行狀態由 GET status 的
   // forms[].in_progress 決定。前端不再用 local `busy` state 推導 spinner。
@@ -287,74 +375,99 @@ export default function RagicStatusPage() {
       setLoadError(false);
     } catch (e) {
       if (e?.response?.status === 401) {
-        toast.error('登入逾期，請重新登入');
+        toast.error("登入逾期，請重新登入");
         logout();
         return;
       }
       if (!silent) {
-        const msg = e?.response?.data?.error || e?.message || '載入失敗';
+        const msg = e?.response?.data?.error || e?.message || "載入失敗";
         toast.error(`Ragic 連線狀態：${msg}`);
         setLoadError(true);
       }
       // silent polling 失敗：保留舊資料，不打擾使用者
     }
   }
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  async function loadFailures() {
+    try {
+      setFailures(await ragicStatusApi.syncFailures(2, 50));
+      setFailuresError(false);
+    } catch {
+      setFailuresError(true);
+    }
+  }
+  useEffect(() => {
+    load();
+    loadFailures();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Task #83：5 秒輪詢 — 任何一個 job in_progress 時持續刷新，
   // 完成後也再多 poll 一輪確保拿到 last_run_at / last_status 更新。
-  const anyInProgress = !!data && Object.values(data.forms || {}).some((f) => f.in_progress);
+  const anyInProgress =
+    !!data && Object.values(data.forms || {}).some((f) => f.in_progress);
   useEffect(() => {
     if (!data) return undefined;
-    const id = setInterval(() => { load({ silent: true }); }, 5000);
+    const id = setInterval(() => {
+      load({ silent: true });
+    }, 5000);
     return () => clearInterval(id);
   }, [data == null, anyInProgress]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 有工作剛跑完（執行中 → 結束）才重抓失敗統計，不跟著 5 秒輪詢一直查
+  const wasInProgress = useRef(false);
+  useEffect(() => {
+    if (wasInProgress.current && !anyInProgress) loadFailures();
+    wasInProgress.current = anyInProgress;
+  }, [anyInProgress]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function runSync(job) {
     try {
       await ragicStatusApi.sync(job);
-      toast.info(job === 'all' ? '已排入背景同步全部，狀態會自動更新…' : `已排入背景同步 ${job}…`);
+      toast.info(
+        job === "all"
+          ? "已排入背景同步全部，狀態會自動更新…"
+          : `已排入背景同步 ${job}…`,
+      );
       // 立刻 fetch 一次拿到 in_progress=true，後續由 5 秒 polling 接手
       load({ silent: true });
     } catch (e) {
-      toast.error(e?.response?.data?.error || e?.message || '同步觸發失敗');
+      toast.error(e?.response?.data?.error || e?.message || "同步觸發失敗");
     }
   }
 
-  const [purging, setPurging] = useState(false);
-  async function runPurgeGhosts() {
-    if (!window.confirm('確定要清除所有無 LINE UID 的 ghost 家長、Z03 佇列、quarantine 名單嗎？\n\n有業務紀錄（課程/報到）的記錄不會被刪除。\n\n此操作不可復原。')) return;
-    setPurging(true);
-    try {
-      const result = await ragicStatusApi.purgeGhosts();
-      toast.success(result.message || '清除完成');
-    } catch (e) {
-      toast.error(e?.response?.data?.error || e?.message || '清除失敗');
-    } finally {
-      setPurging(false);
-    }
-  }
+  // 「清除錯誤載入資料」按鈕已移除（2026-09-23）：後端 POST /purge-ghosts 早已停用、
+  // 一律回 410（破壞性 reconcile 不再允許），按了只會失敗。後端端點保留，讓舊版前端安全失敗。
 
   const [togglingJob, setTogglingJob] = useState(null);
   async function runToggle(job, enabled) {
     setTogglingJob(job);
     try {
       const next = await ragicStatusApi.toggle(job, enabled);
-      toast.info(enabled ? `已開啟 ${job}` : `已關閉 ${job}（cron 與手動同步都會被擋下）`);
-      setData((prev) => (prev ? { ...prev, forms: next.forms || prev.forms } : prev));
+      toast.info(
+        enabled
+          ? `已開啟 ${job}`
+          : `已關閉 ${job}（cron 與手動同步都會被擋下）`,
+      );
+      setData((prev) =>
+        prev ? { ...prev, forms: next.forms || prev.forms } : prev,
+      );
     } catch (e) {
-      toast.error(e?.response?.data?.error || e?.message || '開關切換失敗');
+      toast.error(e?.response?.data?.error || e?.message || "開關切換失敗");
     } finally {
       setTogglingJob(null);
     }
   }
 
-  if (!data && !loadError) return <LoadingSpinner />;
+  if (!data && !loadError)
+    return (
+      <div>
+        <LoadingSpinner />
+      </div>
+    );
 
   if (loadError) {
     return (
       <div>
-        <PageHeader title="Ragic 連線狀態" description="檢視 H01 / H05 同步是否正常運作。" />
+        <PageHeader title="Ragic 連線狀態" />
         <LoadError onRetry={load} />
       </div>
     );
@@ -363,102 +476,211 @@ export default function RagicStatusPage() {
   const env = data.env || {};
   const missing = data.missing_env || [];
   const forms = data.forms || {};
+  const issuesByJob = summarizeFailures(failures);
+  // 排程時間一律用後端 schedules（constants/ragicJobSchedules.js，與 cron/index.js 由測試比對），不寫死
+  const sched = (job) => data.schedules?.jobs?.[job]?.text || "—";
+  const background = (key) =>
+    (data.schedules?.background || []).find((b) => b.key === key)?.text || "—";
 
   return (
     <div>
       <PageHeader
         title="Ragic 連線狀態"
-        description="檢視 H01 / H05 同步是否正常運作。Cron 每 10 分鐘自動同步一次；admin 也可手動立即同步。"
-        actions={isAdmin ? (
-          <button
-            type="button"
-            disabled={anyInProgress || !data.enabled}
-            onClick={() => runSync('all')}
-            className="rounded bg-brand-primary px-4 py-2 text-sm font-bold text-white shadow-sm transition hover:bg-brand-teal disabled:opacity-50"
-          >
-            {anyInProgress ? '同步中…' : '立即同步全部'}
-          </button>
-        ) : null}
+        actions={
+          isAdmin ? (
+            <button
+              type="button"
+              disabled={anyInProgress || !data.enabled}
+              onClick={() => runSync("all")}
+              className="rounded bg-brand-primary px-4 py-2 text-sm font-bold text-white shadow-sm transition hover:bg-brand-teal disabled:opacity-50"
+            >
+              {anyInProgress ? "同步中…" : "立即同步全部"}
+            </button>
+          ) : null
+        }
       />
 
       {data.simulated && (
-        <div role="alert" className="mb-4 rounded-lg border-2 border-red-500 bg-red-50 p-3 text-sm font-bold text-red-700">
-          ⚠️ SIMULATED — 本頁為模擬（mock）資料，非真實 Ragic 同步狀態；下方綠燈不代表已同步。
+        <div
+          role="alert"
+          className="mb-4 rounded-lg border-2 border-red-500 bg-red-50 p-3 text-sm font-bold text-red-700"
+        >
+          ⚠️ SIMULATED — 本頁為模擬（mock）資料，非真實 Ragic
+          同步狀態；下方綠燈不代表已同步。
         </div>
       )}
 
       <LiveProbePanel probe={data.live_probe} />
+      <WebhookInboxPanel canRetry={isAdmin} />
 
       <div className="mb-6 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
         <div className="flex items-center justify-between">
           <div className="text-sm font-bold text-gray-800">連線設定</div>
-          {data.enabled
-            ? <span className="rounded bg-brand-green/15 px-2 py-0.5 text-xs font-bold text-brand-green">已啟用</span>
-            : <span className="rounded bg-red-100 px-2 py-0.5 text-xs font-bold text-red-700">未啟用</span>}
+          {data.enabled ? (
+            <span className="rounded bg-brand-green/15 px-2 py-0.5 text-xs font-bold text-brand-green">
+              已啟用
+            </span>
+          ) : (
+            <span className="rounded bg-red-100 px-2 py-0.5 text-xs font-bold text-red-700">
+              未啟用
+            </span>
+          )}
         </div>
-        <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
+        {/* 依內容寬度排成一行一行的小標籤，不用固定欄數的格子（7 項排 3 欄會剩 1 項獨佔一列） */}
+        <div className="mt-3 flex flex-wrap gap-2 text-xs">
           {Object.entries(env).map(([k, v]) => (
-            <div key={k} className={`flex items-center justify-between rounded border px-2 py-1 ${v ? 'border-gray-200 text-gray-700' : 'border-red-200 bg-red-50 text-red-700'}`}>
+            <div
+              key={k}
+              className={`flex items-center gap-2 rounded border px-2 py-1 ${v ? "border-gray-200 text-gray-700" : "border-red-200 bg-red-50 text-red-700"}`}
+            >
               <span className="font-mono">{k}</span>
-              <span>{v ? '已設定' : '未設定'}</span>
+              <span>{v ? "已設定" : "未設定"}</span>
             </div>
           ))}
         </div>
         {missing.length > 0 ? (
           <div className="mt-2 text-xs text-red-700">
-            缺少：{missing.join(', ')} — 請在 Replit Secrets 補齊後重啟。
+            缺少：{missing.join(", ")} — 請在 Replit Secrets 補齊後重啟。
           </div>
         ) : null}
         <div className="mt-2 text-[11px] text-gray-500">
-          Cron 排程：<span className="font-mono">{data.cron_schedule}</span>（每 10 分鐘）
-          ・狀態抓取時間：{fmtDate(data.now)}
-          {data.next_cron_run_at ? <> ・下次 cron 預定：{fmtDate(data.next_cron_run_at)}</> : null}
+          狀態抓取時間：{fmtDate(data.now)}（各項排程時間見下方卡片）
         </div>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {Object.entries(forms).map(([job, info]) => (
-          <FormCard
-            key={job}
-            job={job}
-            info={info}
-            onSync={runSync}
-            syncing={!!info.in_progress}
-            isAdmin={isAdmin}
-            envEnabled={!!data.enabled}
-            onToggle={runToggle}
-            toggling={togglingJob === job}
-          />
-        ))}
+        {Object.entries(forms)
+          .filter(([job]) => !RETIRED_JOBS.includes(job))
+          .map(([job, info]) => (
+            <FormCard
+              key={job}
+              job={job}
+              info={info}
+              schedule={data.schedules?.jobs?.[job]}
+              issues={issuesByJob[job]}
+              onSync={runSync}
+              syncing={!!info.in_progress}
+              isAdmin={isAdmin}
+              envEnabled={!!data.enabled}
+              onToggle={runToggle}
+              toggling={togglingJob === job}
+            />
+          ))}
       </div>
+
+      <section
+        aria-label="同步失敗明細"
+        className="mt-6 rounded-lg border border-gray-200 bg-white p-4 shadow-sm"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-bold text-gray-800">
+            同步失敗明細（唯讀）
+          </h2>
+          <button
+            type="button"
+            onClick={loadFailures}
+            className="rounded border border-gray-300 px-3 py-2 text-xs"
+          >
+            重新讀取明細
+          </button>
+        </div>
+        <p className="mt-2 text-xs text-gray-500">
+          最近 2 天、最多 50
+          筆失敗事件；同一筆資料可能重複出現。這是本地既存紀錄，不會重新同步，也不代表本次執行的完整失敗清單。
+        </p>
+        {failuresError ? (
+          <p role="alert" className="mt-3 text-sm text-red-700">
+            明細讀取失敗，不能判定沒有失敗資料。請重新讀取。
+          </p>
+        ) : !failures ? (
+          <p className="mt-3 text-sm text-gray-500">讀取明細中…</p>
+        ) : !failures.recent?.length ? (
+          <p className="mt-3 text-sm text-gray-600">
+            此查詢區間沒有逐筆失敗紀錄；工作仍可能在處理資料前就失敗，請核對工作日誌。
+          </p>
+        ) : (
+          <div className="mt-3 overflow-x-auto">
+            <table className="min-w-full text-left text-xs">
+              <thead>
+                <tr>
+                  {[
+                    "時間（台北）",
+                    "工作",
+                    "資料類型／編號",
+                    "錯誤代碼",
+                    "分類",
+                    "原因",
+                  ].map((label) => (
+                    <th key={label} className="whitespace-nowrap border-b p-2">
+                      {label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {failures.recent.map((row, i) => (
+                  <tr key={`${row.occurred_at}-${row.local_id}-${i}`}>
+                    <td className="whitespace-nowrap border-b p-2">
+                      {fmtDate(row.occurred_at)}
+                    </td>
+                    <td className="border-b p-2">{row.job_name || "—"}</td>
+                    <td className="max-w-64 break-all border-b p-2">
+                      {row.entity_kind || "—"} / {row.local_id || "—"}
+                    </td>
+                    <td className="break-all border-b p-2 font-mono">
+                      {row.error_code || "未提供"}
+                    </td>
+                    <td className="whitespace-nowrap border-b p-2">
+                      {row.error_kind === "permanent"
+                        ? "資料需修正"
+                        : row.error_kind === "transient"
+                          ? "暫時性錯誤"
+                          : "待判定"}
+                    </td>
+                    <td className="min-w-48 max-w-lg break-words border-b p-2">
+                      {row.message || "未提供原因"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
 
       <div className="mt-6 rounded-lg bg-gray-50 p-4 text-xs text-gray-600">
         <div className="font-bold text-gray-700">說明</div>
         <ul className="mt-1 list-disc space-y-1 pl-4">
-          <li>「最後一次成功」是最近一筆 status=ok 的紀錄；「最後一次執行」可能是失敗或略過。</li>
-          <li>H01 員工（含教練 1:1 同步）與 H05 場館為定期 <span className="font-bold">全表同步</span>（差異會進待審核區）；Z01 家長 / Z02 學員的 parents/students 卡片是「按請求查詢」<span className="font-bold">健康檢查 Ping</span>，不會抓全表——全表同步改由下方 pull（01:00 Ragic→本地）與 backup（02:00 本地→Ragic）兩張卡片負責，方向相反。</li>
-          <li>每次執行會寫一筆 <span className="font-mono">ragic_sync_log</span>，可由 SQL 查詢歷史趨勢。</li>
-          <li>卡片右上角開關可個別暫停某個 job：關閉後該 job 的 cron 排程與「單獨同步此表」按鈕都不會執行，直到重新開啟。</li>
+          <li>
+            「最後一次成功」是最近一筆 status=ok
+            的紀錄；「最後一次執行」可能是失敗或略過。
+          </li>
+          <li>
+            H01 員工（含教練 1:1 同步）與 H05 場館為定期{" "}
+            <span className="font-bold">全表同步</span>（{sched("staff")}
+            ，差異會進待審核區）；Z01 家長 / Z02 學員的 parents/students
+            卡片是「按請求查詢」<span className="font-bold">健康檢查 Ping</span>
+            ，不會抓全表——全表同步由下方「拉回」（{sched("pull")}
+            ，Ragic→本地）與「備份」（{sched("backup")}
+            ，本地→Ragic）兩張卡片負責，方向相反。
+          </li>
+          <li>
+            「部分完成」：上次執行時只有個別資料有問題（例如學員缺生日、身分證和其他帳號重複），其他資料照常處理。
+          </li>
+          <li>
+            新註冊的家長{background("outbox")} 寫入 Ragic；Ragic
+            即時通知處理失敗時{background("webhook")}重試。
+          </li>
+          <li>
+            每次執行會寫一筆 <span className="font-mono">ragic_sync_log</span>
+            ，可由 SQL 查詢歷史趨勢。
+          </li>
+          <li>
+            卡片右上角開關可個別暫停某個 job：關閉後該 job 的 cron
+            排程與「單獨同步此表」按鈕都不會執行，直到重新開啟。
+          </li>
         </ul>
       </div>
-
-      {isAdmin && (
-        <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-4">
-          <div className="mb-2 text-sm font-bold text-red-700">⚠ 資料維護</div>
-          <p className="mb-3 text-xs text-red-600">
-            清除所有「無 LINE UID」的 ghost 家長記錄、Z03 待處理佇列、quarantine 名單。
-            有業務紀錄（課程 / 報到 / 轉讓）的記錄不受影響。此操作不可復原，請確認後再執行。
-          </p>
-          <button
-            type="button"
-            disabled={purging}
-            onClick={runPurgeGhosts}
-            className="rounded bg-red-600 px-4 py-2 text-sm font-bold text-white shadow-sm transition hover:bg-red-700 disabled:opacity-50"
-          >
-            {purging ? '清除中…' : '清除錯誤載入資料（Ghost / Z03 / Quarantine）'}
-          </button>
-        </div>
-      )}
     </div>
   );
 }

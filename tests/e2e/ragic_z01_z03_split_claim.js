@@ -127,7 +127,7 @@ async function testSplitAndIdempotentZ03() {
     id: sourceIds.claim,
     phone: `+886${phones.claim.slice(1)}`,
     students: [
-      { name: '王 小明', birth: '2015/03/02', gender: '生理男', nationalId: 'A123456789', studentCode: 'S-1' },
+      { name: '王 小明', birth: '2015/03/02', gender: '生理男', nationalId: 'A132702114', studentCode: 'S-1' },
       { name: '', birth: '', gender: '' },
     ],
   });

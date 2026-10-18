@@ -6,6 +6,7 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
 import { courseTypeLabel, formatTWD } from '../utils/format';
 import { isPaymentProofCandidate, PAYMENT_PROOF_ACCEPT } from '../utils/paymentProofImage';
+import { invoiceTypeFor, isValidInvoiceCarrier, isValidTaiwanTaxId, MAX_CARRIER_LENGTH, normalizeTaxIdInput } from '../utils/invoiceIdentity.mjs';
 
 /**
  * 報名狀態頁（U10）— 一般報名「送出後的審核等候畫面」。
@@ -29,6 +30,8 @@ export default function EnrollStatusPage() {
   const [proofBusy, setProofBusy] = useState(false);
   const [transferLast5, setTransferLast5] = useState('');
   const [carrier, setCarrier] = useState('');
+  const [taxId, setTaxId] = useState('');
+  const [invoiceType, setInvoiceType] = useState('none');
   const [proofFile, setProofFile] = useState(null);
   const [cancelBusy, setCancelBusy] = useState(false);
   const proofInputRef = useRef(null);
@@ -45,11 +48,14 @@ export default function EnrollStatusPage() {
   useEffect(() => {
     if (enr) {
       setTransferLast5(enr.transfer_last_5 || '');
-      // 載具：優先用報名已存值，否則帶入瀏覽器快取（上次填過的載具），免重複輸入。
-      setCarrier(enr.carrier || localStorage.getItem('daos_invoice_carrier') || '');
+      const savedCarrier = enr.carrier || localStorage.getItem('daos_invoice_carrier') || '';
+      const savedTaxId = enr.tax_id || '';
+      setCarrier(savedCarrier);
+      setTaxId(savedTaxId);
+      setInvoiceType(invoiceTypeFor({ carrier: savedCarrier, taxId: savedTaxId }));
       setProofFile(null);
     }
-  }, [enr?.id, enr?.transfer_last_5, enr?.has_payment_proof, enr?.carrier]);
+  }, [enr?.id, enr?.transfer_last_5, enr?.has_payment_proof, enr?.carrier, enr?.tax_id]);
 
   if (enr === undefined) return <LoadingSpinner fullPage label="載入報名狀態…" />;
   if (enr === null) {
@@ -68,6 +74,8 @@ export default function EnrollStatusPage() {
   // 末碼＋證明都送出後即唯讀（移除家長自行重編入口）；需更改請聯繫櫃檯。
   // 用 AND（兩者皆備＝已送出）避免半填狀態被鎖死而無法補齊。
   const paymentLocked = canUpload && enr.has_payment_proof && !!enr.transfer_last_5;
+  const validTaxId = invoiceType !== 'tax_id' || isValidTaiwanTaxId(taxId);
+  const validCarrier = invoiceType !== 'carrier' || isValidInvoiceCarrier(carrier);
 
   async function copyAccount() {
     if (!v.account_number) {
@@ -98,6 +106,8 @@ export default function EnrollStatusPage() {
   async function handleConfirmPayment() {
     if (!/^\d{5}$/.test(transferLast5.trim())) return toast.error('請先填寫 5 位數字的轉帳末碼');
     if (!proofFile && !enr.has_payment_proof) return toast.error('請選擇匯款／轉帳證明');
+    if (!validTaxId) return toast.error('請輸入有效的 8 碼統一編號');
+    if (!validCarrier) return toast.error(`載具識別碼不得超過 ${MAX_CARRIER_LENGTH} 字元`);
     setProofBusy(true);
     // 末碼與證明「解耦」：末碼只是 5 位數字、不經 object storage，必須保證能獨立落地。
     // 先前把 uploadProof 綁在「圖片上傳成功之後」，一旦上傳失敗整個送出中止，家長打的
@@ -120,10 +130,11 @@ export default function EnrollStatusPage() {
       await coursesApi.uploadProof(id, {
         transfer_last_5: transferLast5.trim(),
         payment_proof_url: url || undefined,
-        carrier: carrier.trim() || undefined,
+        carrier: invoiceType === 'carrier' ? carrier.trim() : '',
+        tax_id: invoiceType === 'tax_id' ? taxId.trim() : '',
       });
-      // 載具快取：記住本次填寫，下次報名/付款自動帶入（純前端 localStorage）。
-      if (carrier.trim()) localStorage.setItem('daos_invoice_carrier', carrier.trim());
+      if (invoiceType === 'carrier' && carrier.trim()) localStorage.setItem('daos_invoice_carrier', carrier.trim());
+      else localStorage.removeItem('daos_invoice_carrier');
       if (uploadFailed) {
         // 末碼已存，留著 proofFile 讓家長可直接重試上傳證明。
         toast.error('末碼已送出，但證明圖片上傳失敗，請稍後於本頁重新上傳證明');
@@ -242,7 +253,7 @@ export default function EnrollStatusPage() {
             </button>
             <button
               type="button"
-              disabled={proofBusy || !/^\d{5}$/.test(transferLast5.trim()) || (!proofFile && !enr.has_payment_proof)}
+              disabled={proofBusy || !/^\d{5}$/.test(transferLast5.trim()) || !validTaxId || !validCarrier || (!proofFile && !enr.has_payment_proof)}
               onClick={handleConfirmPayment}
               className="mt-2 w-full rounded-lg bg-brand-primary py-2.5 text-sm font-bold text-white disabled:bg-gray-300"
             >
@@ -252,23 +263,51 @@ export default function EnrollStatusPage() {
         )}
       </div>
 
-      {/* 載具（電子發票，選填）：隨付款資料一起送出，櫃檯開發票時產生條碼掃描。 */}
       <div className="mt-4 rounded-xl border border-gray-200 bg-white p-3">
-        <h3 className="mb-1 text-xs font-bold text-gray-600">載具（電子發票，選填）</h3>
+        <h3 className="mb-2 text-xs font-bold text-gray-600">發票資訊（選填）</h3>
         {canUpload && !paymentLocked ? (
           <>
-            <input
-              type="text"
-              value={carrier}
-              disabled={proofBusy}
-              onChange={(e) => setCarrier(e.target.value.slice(0, 64))}
-              className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-mono focus:border-brand-teal focus:outline-none disabled:bg-gray-50"
-              placeholder="手機條碼載具，例如 /ABC+123"
-            />
-            <p className="mt-1 text-[11px] text-gray-400">將與上方付款資料一起送出；可留空。</p>
+            <div className="grid grid-cols-3 gap-2">
+              {[
+                ['none', '不填'],
+                ['carrier', '載具'],
+                ['tax_id', '統一編號'],
+              ].map(([value, label]) => (
+                <label key={value} className={`cursor-pointer rounded-lg border px-2 py-2 text-center text-xs font-bold ${invoiceType === value ? 'border-brand-teal bg-brand-teal/10 text-brand-teal' : 'border-gray-200 text-gray-500'}`}>
+                  <input type="radio" name="enroll-invoice-type" value={value} checked={invoiceType === value}
+                    disabled={proofBusy} onChange={() => {
+                      setInvoiceType(value);
+                      if (value !== 'carrier') setCarrier('');
+                      if (value !== 'tax_id') setTaxId('');
+                    }} className="sr-only" />
+                  {label}
+                </label>
+              ))}
+            </div>
+            {invoiceType === 'carrier' && (
+              <>
+                <input type="text" value={carrier} disabled={proofBusy}
+                  maxLength={MAX_CARRIER_LENGTH + 1} aria-invalid={!validCarrier}
+                  onChange={(e) => setCarrier(e.target.value)}
+                  className="mt-2 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-mono focus:border-brand-teal focus:outline-none disabled:bg-gray-50"
+                  placeholder="電子發票載具識別碼，例如 /ABC+123" />
+                {!validCarrier && <p className="mt-1 text-[11px] text-brand-error">載具識別碼不得超過 {MAX_CARRIER_LENGTH} 字元</p>}
+              </>
+            )}
+            {invoiceType === 'tax_id' && (
+              <>
+                <input type="text" inputMode="numeric" maxLength={8} value={taxId} disabled={proofBusy}
+                  onChange={(e) => setTaxId(normalizeTaxIdInput(e.target.value))}
+                  aria-invalid={taxId.length > 0 && !validTaxId}
+                  className={`mt-2 w-full rounded-lg border px-3 py-2 text-sm font-mono tracking-widest focus:outline-none disabled:bg-gray-50 ${taxId.length > 0 && !validTaxId ? 'border-brand-error' : 'border-gray-300 focus:border-brand-teal'}`}
+                  placeholder="8 碼統一編號" />
+                {taxId.length > 0 && !validTaxId && <p className="mt-1 text-[11px] text-brand-error">統一編號格式或檢查碼錯誤</p>}
+              </>
+            )}
+            <p className="mt-1 text-[11px] text-gray-400">電子發票載具與統一編號只能擇一；兩者都不填也可以。</p>
           </>
         ) : (
-          <p className="mt-1 text-sm text-gray-700">{carrier || '—'}</p>
+          <p className="mt-1 text-sm text-gray-700">{taxId ? `統一編號 ${taxId}` : carrier ? `電子發票載具 ${carrier}` : '—'}</p>
         )}
       </div>
 

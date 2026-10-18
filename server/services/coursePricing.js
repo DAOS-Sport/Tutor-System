@@ -61,4 +61,43 @@ function normalizeTierPrices(input) {
   return Object.keys(out).length ? out : null;
 }
 
-module.exports = { tierKey, explicitTierPrice, resolveUnitPrice, normalizeTierPrices };
+// Current quotes must distinguish explicit zero from missing/invalid configuration.
+function configuredNonNegative(value) {
+  if (value === null || value === undefined || typeof value === 'boolean'
+      || (typeof value === 'string' && !value.trim())) return null;
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+function resolveCurrentUnitPrice(basePrice, multiplier, tierPrices) {
+  const base = configuredNonNegative(basePrice), m = Number(multiplier);
+  if (base === null || !Number.isFinite(m) || m <= 0) return null;
+  const price = resolveUnitPrice(base, m, tierPrices);
+  return Number.isSafeInteger(price) && price >= 0 ? price : null;
+}
+function resolveTrialUnitPrice({ basePrice, multiplier, tierPrices, trialPrice, sessionsPerPeriod } = {}) {
+  const sessions = Number(sessionsPerPeriod), m = Number(multiplier);
+  const periodPrice = resolveCurrentUnitPrice(basePrice, m, tierPrices);
+  if (periodPrice === null || !Number.isSafeInteger(sessions) || sessions <= 0) return null;
+  const explicit = trialPrice !== null && trialPrice !== undefined
+    && !(typeof trialPrice === 'string' && !trialPrice.trim());
+  const configured = explicit ? configuredNonNegative(trialPrice) : null;
+  if (explicit && configured === null) return null;
+  const price = Math.round(explicit ? configured * m : periodPrice / sessions);
+  return Number.isSafeInteger(price) && price >= 0 ? price : null;
+}
+function coursePeriodTerms(config) {
+  const zone = config?.zone || config || {};
+  const sessionsPerPeriod = Number(zone.sessions_per_period);
+  const minimumPeriods = Number(zone.period_count_min), maximumPeriods = Number(zone.period_count_max);
+  if (![sessionsPerPeriod, minimumPeriods, maximumPeriods].every(n => Number.isSafeInteger(n) && n > 0)
+      || minimumPeriods > maximumPeriods) return null;
+  return { sessionsPerPeriod, minimumPeriods, maximumPeriods };
+}
+function coursePeriodCount(raw, terms) {
+  if (typeof raw === 'boolean') return null;
+  const value = raw === undefined || raw === null || raw === '' ? 1 : Number(raw);
+  return terms && Number.isSafeInteger(value) && value >= terms.minimumPeriods && value <= terms.maximumPeriods ? value : null;
+}
+
+module.exports = { tierKey, explicitTierPrice, resolveUnitPrice, normalizeTierPrices,
+  configuredNonNegative, resolveCurrentUnitPrice, resolveTrialUnitPrice, coursePeriodTerms, coursePeriodCount };

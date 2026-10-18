@@ -12,6 +12,7 @@ import { staffApi } from '../api/staff';
 import { venuesApi } from '../api/venues';
 import { ragicStatusApi } from '../api/ragicStatus';
 import { roleLabel } from '../utils/format';
+import { ROLE_FILTER_OPTIONS } from '../constants/roles.js';
 
 const EMPTY_FILTERS = { status: 'all', venueId: '', name: '', role: '', phone: '', senior: '' };
 const ROLE_TONE = { admin: 'primary', manager: 'teal', staff: 'gold', coach: 'green', lifeguard: 'amber' };
@@ -71,7 +72,11 @@ function roleBadges(row) {
   // 只顯示其真正的身分；反之（is_counter===true，或完全沒有任何具體身分信號）維持原本
   // 顯示「行政櫃檯」的行為不變（一般泛用員工不受影響）。
   const hasOtherIdentity = !!row.is_coach || !!row.is_lifeguard;
-  const suppressStaffBadge = row.is_counter !== true && hasOtherIdentity;
+  // 這個抑制擋的是「role 只是 CHECK constraint 的保底值」，不是「管理員真的勾過櫃檯」。
+  // assigned_roles 是後端回的原始手動指派清單（沒有 fallback），有 staff 就代表真的勾過。
+  const assignedRoles = Array.isArray(row.assigned_roles) ? row.assigned_roles : [];
+  const suppressStaffBadge = row.is_counter !== true && hasOtherIdentity
+    && !assignedRoles.includes('staff');
 
   const badges = [];
   if (!(row.role === 'staff' && suppressStaffBadge)) {
@@ -400,7 +405,15 @@ export default function StaffPage() {
           venue_ids: venueIds,
           venue_id: venueIds[0] || null,
         };
-        if (editing.role !== 'coach') patch.coach_active = !!editing.coach_active;
+        // 多選身分：整組送出，後端會據此重算 admin_staff.role 的代表值。
+        // 沒有 roles（例如只切換啟用狀態的快捷操作）就不送，維持原本的部分更新語意。
+        const pickedRoles = Array.isArray(editing.roles) && editing.roles.length
+          ? editing.roles
+          : (Array.isArray(editing.manual_roles) && editing.manual_roles.length
+            ? editing.manual_roles
+            : (editing.role ? [editing.role] : []));
+        if (pickedRoles.length) patch.roles = pickedRoles;
+        if (!pickedRoles.includes('coach')) patch.coach_active = !!editing.coach_active;
         // Task #91：若編輯彈窗動過 coach_profile，連同 bio / specialties / email 一起送
         if (editing.coach_profile && coachIdentityOn) {
           patch.coach_profile = {
@@ -585,10 +598,7 @@ export default function StaffPage() {
       options: venues.map((v) => ({ value: v.id, label: `${v.id} ${v.name}` })), placeholder: '可輸入或選擇' },
     { key: 'name', label: '姓名', type: 'combo',
       options: (staff || []).map((s) => ({ value: s.name, label: s.name })), placeholder: '可輸入或選擇' },
-    { key: 'role', label: '角色', type: 'select', options: [
-        { value: '', label: '全部' }, { value: 'admin', label: '系統管理員' },
-        { value: 'manager', label: '主管' }, { value: 'staff', label: '行政櫃檯' },
-        { value: 'coach', label: '教練' }, { value: 'lifeguard', label: '救生員' }] },
+    { key: 'role', label: '角色', type: 'select', options: ROLE_FILTER_OPTIONS },
     { key: 'phone', label: '電話', type: 'input', placeholder: '末 4 碼或全號' },
     { key: 'senior', label: '資深', type: 'radio', options: [
         { value: '', label: '不限' }, { value: 'yes', label: '是' }, { value: 'no', label: '否' }] },
@@ -688,24 +698,39 @@ export default function StaffPage() {
       </ConfirmDialog>
 
       {createdHint && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 md:items-center md:px-4"
           onClick={(e) => e.target === e.currentTarget && setCreatedHint(null)}
           role="dialog" aria-modal="true">
-          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
-            <h3 className="mb-3 text-lg font-bold text-brand-green">✓ 員工已建立</h3>
-            <p className="mb-2 text-sm text-gray-700">
-              已為 <span className="font-bold">{createdHint.name}</span>（編號 <span className="font-mono">{createdHint.id}</span>）
-              建立後台登入帳號與教練資料（若為教練）。
-            </p>
-            <div className="my-3 rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm">
-              <div className="font-medium text-amber-900">預設登入資訊</div>
-              <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-amber-900">
-                <span>帳號</span><span className="font-mono">{createdHint.username}</span>
-                <span>密碼</span><span className="font-mono">{createdHint.password}</span>
+          {/* 這張卡帶著新員工的預設帳密 —— 關掉就再也看不到，是全站最不能被裁掉的內容。
+              原本沒有 max-h 也不能捲：375×812 上長名字換行、加上帳密框與整段說明就會
+              超出視窗，帳號密碼那一格剛好落在下緣外，而背景是 fixed，頁面捲不動。
+              52 位救生員建帳號時每個人都會看到這張卡。同 ReconcilePage.jsx:372 的寫法。
+
+              再一件原本在 375px 會發生的事：卡片置中，底部那顆「我知道了」落在螢幕
+              垂直中線附近，單手拿手機時拇指構不到；而這張卡又是必須先抄下帳密才能關的，
+              手上通常還拿著別的東西。改成 md 以下貼底升起的面板（滿版、上緣圓角、85dvh），
+              md 以上原封不動回到 items-center + max-w-md + rounded-2xl + 90dvh。
+              pb 用 calc 疊上安全區：貼底之後面板下緣會壓在 iPhone 的 home indicator 底下；
+              桌機與沒有 indicator 的裝置上 env() 求值為 0，等同原本的 p-6。 */}
+          <div className="flex max-h-[85dvh] w-full flex-col rounded-t-2xl bg-white p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] shadow-xl md:max-h-[90dvh] md:max-w-md md:rounded-2xl">
+            {/* grabber：行動裝置上「這個可以往下拉」的通用暗示，桌機沒有這個手勢所以 md:hidden。 */}
+            <div className="mx-auto -mt-2 mb-3 h-1 w-10 shrink-0 rounded-full bg-gray-300 md:hidden" aria-hidden="true" />
+            <h3 className="mb-3 shrink-0 text-lg font-bold text-brand-green">✓ 員工已建立</h3>
+            <div className="flex-1 overflow-y-auto">
+              <p className="mb-2 text-sm text-gray-700">
+                已為 <span className="font-bold">{createdHint.name}</span>（編號 <span className="font-mono">{createdHint.id}</span>）
+                建立後台登入帳號與教練資料（若為教練）。
+              </p>
+              <div className="my-3 rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm">
+                <div className="font-medium text-amber-900">預設登入資訊</div>
+                <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-amber-900">
+                  <span>帳號</span><span className="font-mono">{createdHint.username}</span>
+                  <span>密碼</span><span className="font-mono">{createdHint.password}</span>
+                </div>
+                <p className="mt-2 text-xs text-amber-800">請通知該員工首次登入後立即修改密碼。</p>
               </div>
-              <p className="mt-2 text-xs text-amber-800">請通知該員工首次登入後立即修改密碼。</p>
             </div>
-            <div className="flex justify-end">
+            <div className="flex shrink-0 justify-end pt-4">
               <button onClick={() => setCreatedHint(null)}
                 className="rounded-lg bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary">
                 知道了

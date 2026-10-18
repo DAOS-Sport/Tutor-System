@@ -1,6 +1,7 @@
 // Centralized Mock dataset for Phase 1 (no backend wiring yet).
 // All API modules under client/liff/src/api/ pull from here when
 // VITE_USE_MOCK !== "false" or when backend returns 501.
+import { familyMock } from './familyMock';
 import { cleanVenueList, cleanVenueValue } from '../utils/venues';
 
 const VENUES = [
@@ -17,15 +18,15 @@ const VENUES = [
 
 // 教練：phone 是教練端登入欄位（與 admin bootstrap DEFAULT_STAFF 對齊）
 const COACHES = [
-  { id: 'C001', name: '王志強', phone: '0911000001', venues: ['B', 'C'], is_senior: true,  multiplier: 1.3,
+  { id: 'C001', name: '王志強', phone: '0900660770', venues: ['B', 'C'], is_senior: true,  multiplier: 1.3,
     bio: '前國家代表隊選手，10 年青少年訓練經驗。專長：基本動作矯正與比賽節奏培養。', tags: ['含學習歷程服務', '比賽輔導'], avatar: null },
-  { id: 'C002', name: '林佳穎', phone: '0911000002', venues: ['B'], is_senior: true,  multiplier: 1.5,
+  { id: 'C002', name: '林佳穎', phone: '0900662684', venues: ['B'], is_senior: true,  multiplier: 1.5,
     bio: '英國 LTA Level 3 認證教練，擅長 6-12 歲基礎培訓。', tags: ['含學習歷程服務', '兒童專家'], avatar: null },
-  { id: 'C003', name: '張嘉豪', phone: '0911000003', venues: ['B', 'C', 'X'], is_senior: false, multiplier: 1.0,
+  { id: 'C003', name: '張嘉豪', phone: '0900484236', venues: ['B', 'C', 'X'], is_senior: false, multiplier: 1.0,
     bio: '熱情活潑、耐心十足，新進教練。', tags: [], avatar: null },
-  { id: 'C004', name: '黃詩涵', phone: '0911000004', venues: ['C', 'X'], is_senior: false, multiplier: 1.1,
+  { id: 'C004', name: '黃詩涵', phone: '0900988813', venues: ['C', 'X'], is_senior: false, multiplier: 1.1,
     bio: '具備 5 年場館團體班經驗，授課風格輕鬆。', tags: [], avatar: null },
-  { id: 'S001', name: '小林櫃檯', phone: '0933000001', venues: ['B'], is_senior: false, multiplier: 1.0,
+  { id: 'S001', name: '小林櫃檯', phone: '0900999607', venues: ['B'], is_senior: false, multiplier: 1.0,
     bio: '兼任行政櫃檯與基礎課程教練，熟悉現場接待與初階訓練流程。', tags: ['兼任櫃檯'], avatar: null },
 ];
 
@@ -50,14 +51,14 @@ function venueMatches(values, selectedVenue) {
 }
 
 const PARENTS = {
-  '0912345678': { id: 'P0001', name: '張媽媽', phone: '0912345678', gender: '女', email: 'mama.chang@example.com',
+  '0900796878': { id: 'P0001', name: '張媽媽', phone: '0900796878', gender: '女', email: 'mama.chang@example.com',
     primary_venue_id: 'B', students: [
-      { id: 'S0001', name: '張小明', id_number: 'A123456789', birth_date: '2015-03-12', gender: '男' },
+      { id: 'S0001', name: '張小明', id_number: 'A132702114', birth_date: '2015-03-12', gender: '男' },
       { id: 'S0002', name: '張小美', id_number: 'A223456788', birth_date: '2017-08-05', gender: '女' }] },
-  '0922333444': { id: 'P0002', name: '李爸爸', phone: '0922333444', gender: '男', email: 'lee.papa@example.com',
+  '0900932354': { id: 'P0002', name: '李爸爸', phone: '0900932354', gender: '男', email: 'lee.papa@example.com',
     primary_venue_id: 'B', students: [
       { id: 'S0010', name: '李小龍', id_number: 'A187654321', birth_date: '2014-11-30', gender: '男' }] },
-  '0933555777': { id: 'P0003', name: '陳媽媽', phone: '0933555777', gender: '女', email: '',
+  '0900549610': { id: 'P0003', name: '陳媽媽', phone: '0900549610', gender: '女', email: '',
     primary_venue_id: 'C', students: [
       { id: 'S0020', name: '陳小米', id_number: 'A287777111', birth_date: '2016-02-20', gender: '女' }] },
 };
@@ -69,7 +70,7 @@ function currentMockParent() {
     const phone = u?.data?.phone;
     if (phone && PARENTS[phone]) return PARENTS[phone];
   } catch { /* noop */ }
-  return PARENTS['0912345678'];
+  return PARENTS['0900796878'];
 }
 
 const COURSE_PERIODS = [
@@ -283,7 +284,11 @@ export const mockDb = {
     PARENTS[parent.phone] = parent;
     return JSON.parse(JSON.stringify(parent));
   },
-  me: () => JSON.parse(JSON.stringify(currentMockParent())),
+  // 家庭帳號：附上 family 區塊（familyMock，預覽用）
+  me: () => {
+    const p = JSON.parse(JSON.stringify(currentMockParent()));
+    return { ...p, family: familyMock.blockFor(p) };
+  },
   updateMe: (data) => {
     const p = currentMockParent();
     Object.assign(p, {

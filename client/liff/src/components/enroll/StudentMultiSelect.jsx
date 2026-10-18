@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Section, StudentRow } from './EnrollmentParts';
+import { useGuideDemo, demoStudents } from '../../utils/guideDemo';
 
 /**
  * 報名「選擇學員」——可展開的下拉勾選清單（複選）。
@@ -15,8 +16,9 @@ export default function StudentMultiSelect({
   onToggle,
 }) {
   const navigate = useNavigate();
-  const [open, setOpen] = useState(false);
-  const activeStudents = (parent.students || []).filter((s) => s?.is_active !== false);
+  const guide = useGuideDemo();
+  const [open, setOpen] = useState(!!guide);
+  const activeStudents = (guide ? demoStudents(maxStudents) : (parent.students || [])).filter((s) => s?.is_active !== false);
   const selectedNames = activeStudents
     .filter((s) => selectedSelfStudents.includes(s.id))
     .map((s) => s.name);
@@ -66,3 +68,4 @@ export default function StudentMultiSelect({
     </Section>
   );
 }
+

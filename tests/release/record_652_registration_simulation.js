@@ -75,7 +75,7 @@ async function cleanup() {
   assert.ok(subtable && typeof subtable === 'object', 'record 652 student subtable shape required');
   for (const row of Object.values(subtable)) {
     row['1001115'] = studentName;
-    row['1001118'] = 'A123456789';
+    row['1001118'] = 'A132702114';
     row['1001132'] = 'SIM652001';
     row['1004090'] = phone;
   }
@@ -122,7 +122,7 @@ async function cleanup() {
           gender: '生理女', primary_venue_id: venue.id,
         },
         students: [{
-          name: studentName, id_number: 'A123456789', birth_date: '2019-10-14',
+          name: studentName, id_number: 'A132702114', birth_date: '2019-10-14',
           gender: '生理男', blood_type: '不清楚',
         }],
       }),

@@ -35,3 +35,58 @@ export function resolveUnitPrice(basePrice, multiplier, tierPrices) {
   if (explicit !== null) return explicit;
   return Math.round((Number(basePrice) || 0) * (Number(multiplier) || 1));
 }
+
+// A missing coefficient is unknown, not the standard tier.
+export function resolvePricingMultiplier(primary, alternate) {
+  const raw = primary ?? alternate;
+  if (raw == null || String(raw).trim() === '') return null;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+export function resolveCurrentUnitPrice(basePrice, multiplier, tierPrices) {
+  if (basePrice == null || String(basePrice).trim() === '' || !Number.isFinite(Number(basePrice)) || Number(basePrice) < 0
+      || resolvePricingMultiplier(multiplier) == null) return null;
+  const value = resolveUnitPrice(basePrice, multiplier, tierPrices);
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+export function hasCoursePeriodBounds(minimum, maximum) {
+  return minimum != null && maximum != null
+    && Number.isSafeInteger(Number(minimum)) && Number(minimum) > 0
+    && Number.isSafeInteger(Number(maximum)) && Number(maximum) >= Number(minimum);
+}
+
+export function isCoursePeriodCount(value, minimum, maximum) {
+  return hasCoursePeriodBounds(minimum, maximum) && Number.isSafeInteger(Number(value))
+    && Number(value) >= Number(minimum) && Number(value) <= Number(maximum);
+}
+
+export function coursePeriodOptions(minimum, maximum) {
+  if (!hasCoursePeriodBounds(minimum, maximum)) return [];
+  return Array.from({ length: Number(maximum) - Number(minimum) + 1 }, (_, index) => Number(minimum) + index);
+}
+
+// New quotes require a venue's complete central pricing data; missing is not free.
+export function hasCoursePricing(basePrice, sessionsPerPeriod) {
+  return basePrice != null && String(basePrice).trim() !== ''
+    && Number.isFinite(Number(basePrice)) && Number(basePrice) >= 0
+    && Number.isSafeInteger(Number(sessionsPerPeriod)) && Number(sessionsPerPeriod) > 0;
+}
+
+// Explicit zero is a configured free trial. Only null/blank derives from the
+// central per-period tier price and that pricing zone's sessions per period.
+export function resolveTrialUnitPrice(basePrice, multiplier, tierPrices, trialPrice, sessionsPerPeriod) {
+  if (!hasCoursePricing(basePrice, sessionsPerPeriod)) return null;
+  const m = Number(multiplier);
+  if (!Number.isFinite(m) || m <= 0) return null;
+  if (trialPrice != null && String(trialPrice).trim() !== '') {
+    const configured = Number(trialPrice);
+    const value = Math.round(configured * m);
+    return Number.isFinite(configured) && configured >= 0 && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  }
+  const periodPrice = resolveCurrentUnitPrice(basePrice, m, tierPrices);
+  if (periodPrice == null) return null;
+  const value = Math.round(periodPrice / Number(sessionsPerPeriod));
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}

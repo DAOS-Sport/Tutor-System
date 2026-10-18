@@ -10,6 +10,8 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const { pool } = require('../../models/db');
 const { signToken, requireAdminAuth, BACKOFFICE_ROLES } = require('../../middlewares/adminAuth');
+// 身分優先序的唯一來源；登入時用它決定 JWT 上的代表角色。
+const { highestRole } = require('../../constants/roles');
 const {
   cleanVenueList,
   ADMIN_USER_VENUE_IDS_SELECT,
@@ -20,16 +22,33 @@ const router = express.Router();
 // Task #68：per-IP 登入速率限制（5 次 / 5 分鐘 → 429），與 LIFF 家長 / 教練同策略,
 // 抑制弱密碼暴搜（後台帳號名單固定，破解風險高）。
 const _attempts = new Map(); // ip → [ts...]
-const WINDOW_MS = 5 * 60 * 1000;
-const MAX_ATTEMPTS = 5;
-function _rateLimited(ip) {
-  const now = Date.now();
-  const arr = (_attempts.get(ip) || []).filter((t) => now - t < WINDOW_MS);
-  arr.push(now);
-  _attempts.set(ip, arr);
-  if (_attempts.size > 5000) _attempts.clear();
-  return arr.length > MAX_ATTEMPTS;
+// 上限與時間窗由 middlewares/rateLimit 統一決定（預設 30 次 / 5 分鐘，可用
+// RATE_LIMIT_MAX、RATE_LIMIT_WINDOW_MS 調整）。舊值是 5 次 —— 配上「所有人
+// 共用一個桶」的 bug，那是 2026-08-26 全公司鎖死的直接原因。
+/**
+ * 2026-09-03 使用者指定：後台登入不限流。
+ *
+ * 理由是營運面的：後台是內部帳號、人就在現場，被 429 鎖住的代價是整班停擺 ——
+ * 2026-08-26 已經真的發生過一次全公司登不進來。
+ *
+ * 代價要講清楚：這確實少了一層擋逐一試密碼的防護。抵銷它的不是這裡，
+ * 而是「預設密碼必須改掉」—— 後台帳號的初始密碼是 10 碼手機號，
+ * must_change_credentials 已經有強制改密碼的機制，那才是真正該守的那道。
+ *
+ * 整段計數程式刻意留著：設 ADMIN_LOGIN_RATE_LIMIT=1 就恢復原本的行為
+ * （上限與時間窗仍由 RATE_LIMIT_MAX / RATE_LIMIT_WINDOW_MS 決定）。
+ * 出事時能用一個環境變數擋回去，比事後改程式再部署快得多。
+ */
+function adminLoginRateLimitOn() {
+  return /^(1|true|yes|on)$/i.test(String(process.env.ADMIN_LOGIN_RATE_LIMIT ?? '').trim());
 }
+
+function _rateLimited(ip) {
+  if (!adminLoginRateLimitOn()) return false;
+  return hit(_attempts, ip, { label: 'admin/auth/login' });
+}
+
+const { rateLimitEnabled, clientIp, hit, reset } = require('../../middlewares/rateLimit');
 
 const BACKOFFICE_ROLE_SET = new Set(BACKOFFICE_ROLES);
 function _backofficeRole(value) {
@@ -37,22 +56,60 @@ function _backofficeRole(value) {
   return BACKOFFICE_ROLE_SET.has(role) ? role : null;
 }
 
+/**
+ * 一個「代表值」欄位是否能當成真正的身分。
+ *
+ * admin_staff.role 有 CHECK constraint，一定要有值；純教練落在保底值 'staff'。
+ * admin_users.role 同理 —— staff.js:841/:998 把教練的登入帳號也記成 'staff'。
+ * 直接採用這兩個欄位，教練登入後就會拿到整套櫃檯權限（客戶資料、對帳、退款），
+ * 而且畫面上完全看不出來。
+ *
+ * 判準與 routes/admin/staff.js 的 rowToStaff 一致（那裡決定徽章要不要顯示
+ * 「行政櫃檯」）—— 兩邊各寫一套的話，同一個人在列表上和登入時會被當成不同身分。
+ */
+function _usableRole(u, value) {
+  const role = String(value || '').trim();
+  if (!BACKOFFICE_ROLE_SET.has(role)) return null;
+  if (role === 'admin' || role === 'manager') return role;
+  if (u.is_counter || (!u.is_coach && !u.is_lifeguard)) return role;
+  return null;
+}
+
+/**
+ * 這次登入要用哪一個角色 —— 取這個人所有後台身分裡優先序最高的那一個。
+ *
+ * 身分有四個來源：
+ *   admin_staff_roles        管理員在 F-A02 手動勾選的完整集合（多選身分）
+ *   is_counter / is_lifeguard  Ragic 認定的身分（唯讀）
+ *   admin_staff.role         代表值，要過 _usableRole
+ *   admin_users.role         上次登入算出來的，同樣要過 _usableRole
+ *
+ * 原本是四段手寫的 if，**完全沒有讀 admin_staff_roles**。後果是「編輯員工」
+ * 的多選身分對登入毫無作用：管理員幫一位教練加上救生員身分，存檔成功、
+ * 畫面正確、權限聯集也算得到，但那個人登入時看到的是「帳號或密碼錯誤」。
+ *
+ * 手動勾選的身分不套 _usableRole —— 那是管理員明確指定的，不是推導出來的保底值。
+ *
+ * 用 highestRole 而不是自己排一套順序：同一套優先序另外還有三個地方在用
+ * （F-A02 存檔、Ragic 同步、_counterStaffDefaultLogin）。順帶保住原本那條規則 ——
+ * staff 排在 lifeguard 前面，所以「櫃檯兼救生員」仍然是櫃檯，他隔天才打得開對帳單。
+ */
 function _effectiveLoginUser(u) {
   if (!u) return null;
   const staffId = String(u.staff_id || '').trim();
-  const staffRole = String(u.staff_role || '').trim();
-  const currentRole = _backofficeRole(u.role);
-  if (staffId) {
-    if (staffRole === 'admin' || currentRole === 'admin') return { ...u, role: 'admin' };
-    // 主管與櫃檯一樣受 venue_ids 範圍限制；不可因登入裁判漏掉 manager
-    // 而退回單館欄位或把 manager 提升成全館 admin。
-    if (staffRole === 'manager' || currentRole === 'manager') return { ...u, role: 'manager' };
-    if (u.is_counter || (staffRole === 'staff' && !u.is_coach && !u.is_lifeguard)) {
-      return { ...u, role: 'staff' };
-    }
-    return null;
+  if (!staffId) {
+    // 沒有連到 admin_staff 的內建系統帳號：只有 admin_users.role 可依據。
+    const currentRole = _backofficeRole(u.role);
+    return currentRole ? { ...u, role: currentRole } : null;
   }
-  return currentRole ? { ...u, role: currentRole } : null;
+  const identities = (Array.isArray(u.manual_roles) ? u.manual_roles : [])
+    .map((r) => String(r || '').trim());
+  if (u.is_counter) identities.push('staff');
+  if (u.is_lifeguard) identities.push('lifeguard');
+  identities.push(_usableRole(u, u.staff_role));
+  identities.push(_usableRole(u, u.role));
+  const role = highestRole(identities.filter((r) => BACKOFFICE_ROLE_SET.has(r)));
+  return role ? { ...u, role } : null;
 }
 
 function _loginPayload(u, password, token) {
@@ -110,6 +167,8 @@ async function _counterStaffDefaultLogin(username, password) {
   const r = await pool.query(
     `SELECT s.id, s.name, s.phone, s.venue_id, s.active, s.role,
             s.is_counter, s.is_coach, s.is_lifeguard,
+            COALESCE(ARRAY(SELECT r.role FROM admin_staff_roles r
+                            WHERE r.staff_id = s.id), '{}') AS manual_roles,
             u.id AS login_user_id, u.role AS user_role, u.credentials_changed_at,
             ${ADMIN_USER_VENUE_IDS_SELECT} AS venue_ids
        FROM admin_staff s
@@ -121,12 +180,22 @@ async function _counterStaffDefaultLogin(username, password) {
           s.role IN ('admin', 'manager')
           OR u.role IN ('admin', 'manager')
           OR COALESCE(s.is_counter, FALSE) = TRUE
+          -- 救生員與櫃檯用同一個後台入口。原本這裡明文排除他們
+          -- （... AND is_lifeguard = FALSE），因為當年沒有 lifeguard 這個角色值，
+          -- 放進來只會被算成「行政櫃檯」而拿到整套櫃檯權限。
+          -- 現在角色分得開、頁面權限也由 F-A06 控制，才解除。
+          OR COALESCE(s.is_lifeguard, FALSE) = TRUE
+          -- 管理員在 F-A02 手動勾的後台身分也算數。少了這一條，
+          -- 「教練兼救生員」存得進去、權限算得到，但登入時被這個 WHERE 濾掉。
+          OR EXISTS (SELECT 1 FROM admin_staff_roles r
+                      WHERE r.staff_id = s.id
+                        AND r.role = ANY ($3::text[]))
           OR (s.role = 'staff'
               AND COALESCE(s.is_coach, FALSE) = FALSE
               AND COALESCE(s.is_lifeguard, FALSE) = FALSE)
         )
       LIMIT 1`,
-    [staffId, phone]
+    [staffId, phone, [...BACKOFFICE_ROLES]]
   );
   const staff = r.rows[0];
   if (!staff) return null;
@@ -143,9 +212,18 @@ async function _counterStaffDefaultLogin(username, password) {
   }
 
   const userId = staff.login_user_id || `U_${staff.id}`;
-  const loginRole = staff.role === 'admin' || staff.user_role === 'admin'
-    ? 'admin'
-    : (staff.role === 'manager' || staff.user_role === 'manager' ? 'manager' : 'staff');
+  // 取這個人所有後台身分裡優先序最高的那一個。
+  //
+  // 原本是「不是 admin 也不是 manager 就一律 staff」。開放救生員登入之後，
+  // 那一行會直接把 52 位救生員變成行政櫃檯 —— 拿到客戶資料、對帳、退款的
+  // 全部權限，而且畫面上完全看不出來。這是這次改動最危險的一處。
+  const identities = (Array.isArray(staff.manual_roles) ? staff.manual_roles : [])
+    .map((r) => String(r || '').trim());
+  if (staff.is_counter) identities.push('staff');
+  if (staff.is_lifeguard) identities.push('lifeguard');
+  identities.push(_usableRole(staff, staff.role));
+  identities.push(_usableRole(staff, staff.user_role));
+  const loginRole = highestRole(identities.filter((r) => BACKOFFICE_ROLES.includes(r))) || 'staff';
   const hash = await bcrypt.hash(phone, 10);
   const upsert = await pool.query(
     `INSERT INTO admin_users
@@ -164,11 +242,13 @@ async function _counterStaffDefaultLogin(username, password) {
      RETURNING id, username, password_hash, name, role, venue_id, is_active,
                staff_id, $8::text AS staff_phone, NULL::timestamptz AS credentials_changed_at,
                $9::text[] AS venue_ids, $10::text AS staff_role,
-               $11::boolean AS is_counter, $12::boolean AS is_coach, $13::boolean AS is_lifeguard`,
+               $11::boolean AS is_counter, $12::boolean AS is_coach, $13::boolean AS is_lifeguard,
+               $14::text[] AS manual_roles`,
     [
       userId, staff.id, hash, staff.name, staff.venue_id || null, staff.id, loginRole,
       phone, cleanVenueList(staff.venue_ids), staff.role,
       !!staff.is_counter, !!staff.is_coach, !!staff.is_lifeguard,
+      Array.isArray(staff.manual_roles) ? staff.manual_roles : [],
     ]
   );
   return upsert.rows[0] || null;
@@ -176,10 +256,16 @@ async function _counterStaffDefaultLogin(username, password) {
 
 router.post('/login', async (req, res) => {
   try {
-    const ip = req.ip || req.socket?.remoteAddress || 'unknown';
+    // 取真實用戶 IP。原本只讀 req.ip，而 app 沒有設 trust proxy —— 在 Replit
+    // 的反向代理後面那是代理位址，對所有人都一樣。於是「5 分鐘 5 次」變成
+    // 「整個系統 5 分鐘 5 次」，2026-08-26 全公司因此一起鎖死。
+    // 專案裡其他七個限流點本來就是先讀 x-forwarded-for，只有這裡漏了。
+    // clientIp 認不出用戶時回 null，hit() 會直接放行並記一次警告 ——
+    // 這正是這次事故的教訓：識別失敗時不可以把所有人併成同一個計數桶。
+    const ip = clientIp(req);
     if (_rateLimited(ip)) {
       console.warn('[admin/auth/login] rate-limited ip=', ip);
-      return res.status(429).json({ error: '嘗試次數過多，請稍後再試' });
+      return res.status(429).json({ error: '嘗試次數過多，請稍後再試', code: 'RATE_LIMITED' });
     }
     const { username, password } = req.body || {};
     if (!username || !password) {
@@ -189,6 +275,9 @@ router.post('/login', async (req, res) => {
       `SELECT u.id, u.username, u.password_hash, u.name, u.role, u.venue_id, u.is_active,
               u.staff_id, s.phone AS staff_phone, s.role AS staff_role,
               s.is_counter, s.is_coach, s.is_lifeguard, u.credentials_changed_at,
+              -- 手動指派的身分。沒有這個，F-A02 的多選身分對登入完全無效。
+              COALESCE(ARRAY(SELECT r.role FROM admin_staff_roles r
+                              WHERE r.staff_id = s.id), '{}') AS manual_roles,
               ${ADMIN_USER_VENUE_IDS_SELECT} AS venue_ids
          FROM admin_users u
          LEFT JOIN admin_staff s ON s.id = u.staff_id
@@ -201,6 +290,7 @@ router.post('/login', async (req, res) => {
       if (!staffLogin) return res.json(null);
       const payload = await _issueLogin(staffLogin, password);
       if (!payload) return res.json(null);
+      reset(_attempts, ip);   // 成功就清零：正常使用不該累積額度
       return res.json(payload);
     }
     const ok = await bcrypt.compare(String(password), u.password_hash);
@@ -210,6 +300,7 @@ router.post('/login', async (req, res) => {
       return res.status(403).json({ error: '此帳號已停用，請聯絡系統管理員' });
     }
 
+    reset(_attempts, ip);   // 同上
     const payload = await _issueLogin(u, password);
     if (!payload) return res.json(null);
     res.json(payload);
@@ -278,3 +369,7 @@ router.post('/change-password', requireAdminAuth, async (req, res) => {
 });
 
 module.exports = router;
+// 供測試直接呼叫。這段邏輯決定「誰進得來、進來是什麼身分」，
+// 用讀原始碼比對字串的方式驗很脆弱 —— 換個寫法測試就紅，而真的算錯時
+// 反而可能照樣綠。tests/lifeguard_login_test.js 直接餵身分組合驗結果。
+module.exports._effectiveLoginUser = _effectiveLoginUser;

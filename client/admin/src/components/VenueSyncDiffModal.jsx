@@ -88,9 +88,20 @@ export default function VenueSyncDiffModal({ diff, onCancel, onConfirm }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="max-h-[90vh] w-full max-w-3xl overflow-hidden rounded-xl bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 md:items-center md:p-4">
+      {/* 原本在 375px 會發生什麼：面板置中、寬度被 p-4 夾成 343，而三段差異清單（新增／
+          更動／移除）各自都可能十幾筆，內層固定 65vh 的捲動區把「確認套用」推到螢幕
+          垂直中線下方一點點，但整張卡置中之後那排按鈕仍然落在拇指構不到的位置；
+          而且 vh 在 iOS Safari 上含收合中的網址列，實際可見區比 90vh 更矮，
+          overflow-hidden 會直接把按鈕那一列裁掉。
+          改成 md 以下貼底升起的面板：滿版、上緣圓角、85dvh，內層改吃 flex-1 讓它自己
+          撐滿剩下的高度（不再是寫死的 65vh，否則在矮螢幕上仍會擠掉頁尾）。
+          md 以上用 md:block 把 flex 收回去、md:max-h-[65vh] 把內層的固定高度接回來，
+          版面回到一模一樣的 items-center + max-w-3xl + rounded-xl（90vh→90dvh，桌機同值）。 */}
+      <div className="flex max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-2xl bg-white shadow-xl pb-[env(safe-area-inset-bottom)] md:block md:max-h-[90dvh] md:max-w-3xl md:rounded-xl md:pb-0">
+        {/* grabber：行動裝置上「這個可以往下拉」的通用暗示，桌機沒有這個手勢所以 md:hidden。 */}
+        <div className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-gray-300 md:hidden" aria-hidden="true" />
+        <div className="flex shrink-0 items-center justify-between border-b border-gray-200 px-6 py-4">
           <div>
             <div className="text-base font-bold text-gray-900">Ragic 場館同步差異</div>
             <div className="text-xs text-gray-500">勾選要套用的變動，按下「確認套用」後才會實際寫入。</div>
@@ -98,7 +109,7 @@ export default function VenueSyncDiffModal({ diff, onCancel, onConfirm }) {
           <button onClick={onCancel} className="text-gray-400 hover:text-gray-600">✕</button>
         </div>
 
-        <div className="max-h-[65vh] space-y-4 overflow-y-auto px-6 py-5">
+        <div className="flex-1 space-y-4 overflow-y-auto px-6 py-5 md:max-h-[65vh] md:flex-none">
           {empty && (
             <div className="rounded-lg border border-gray-200 bg-gray-50 p-6 text-center text-sm text-gray-500">
               目前所有場館已同步，無變動。
@@ -175,7 +186,7 @@ export default function VenueSyncDiffModal({ diff, onCancel, onConfirm }) {
           )}
         </div>
 
-        <div className="flex items-center justify-between border-t border-gray-200 bg-gray-50 px-6 py-3">
+        <div className="flex shrink-0 items-center justify-between border-t border-gray-200 bg-gray-50 px-6 py-3">
           <div className="text-sm text-gray-500">
             {empty ? '無可套用項目' : `已勾選 ${totalSelected} 項`}
           </div>

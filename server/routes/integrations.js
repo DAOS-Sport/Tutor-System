@@ -26,6 +26,7 @@ const { requireIntegrationKey, logAccess, isVenueEnabled } = require('../middlew
 const { maskStudentName } = require('../utils/piiMask');
 
 const router = express.Router();
+router.use('/reconciliation', require('./reconciliation'));
 
 const DEFAULT_WINDOW_MIN = 90;
 const MAX_WINDOW_MIN = 480;     // 8 小時，一個班表的長度；再長就不是「現在」了

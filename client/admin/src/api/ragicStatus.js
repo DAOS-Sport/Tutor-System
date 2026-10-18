@@ -5,9 +5,28 @@ import { mockDb } from './mock';
 // 行為（401/500/timeout 由頁面自己處理，不把使用者踢回登入）。為了讓 demo / mock 模式
 // 也能開這頁並試「立即同步」按鈕，這裡直接以 USE_MOCK 分支接 mockDb，real 模式維持原樣。
 export const ragicStatusApi = {
+  async webhookInbox() {
+    if (USE_MOCK) return { summary: [], items: [] };
+    return (await http.get('/ragic-status/webhook-inbox', { skipAuthRedirect: true })).data;
+  },
+  // Ragic 打進來的每一次請求（含被拒的），用來分辨「沒送」還是「送了被擋」
+  async webhookAttempts() {
+    if (USE_MOCK) return mockDb.ragicWebhookAttempts();
+    return (await http.get('/ragic-status/webhook-attempts', { skipAuthRedirect: true })).data;
+  },
+  async retryWebhook({ sheet_code, ragic_record_id }) {
+    if (USE_MOCK) throw new Error('模擬模式不執行重試');
+    return (await http.post('/ragic-status/webhook-inbox/retry', { sheet_code, ragic_record_id }, { skipAuthRedirect: true })).data;
+  },
   async get() {
     if (USE_MOCK) return mockDb.ragicStatus();
     const r = await http.get('/ragic-status', { skipAuthRedirect: true });
+    return r.data;
+  },
+  // 逐筆寫回失敗的統計（唯讀）。用來把「61 筆同步失敗…」這種原始訊息換成看得懂的分類。
+  async syncFailures(days = 2, limit = 1) {
+    if (USE_MOCK) return mockDb.ragicSyncFailures();
+    const r = await http.get('/ragic-status/sync-failures', { params: { days, limit }, skipAuthRedirect: true });
     return r.data;
   },
   async sync(form = 'all') {
@@ -28,10 +47,6 @@ export const ragicStatusApi = {
       { job, enabled },
       { skipAuthRedirect: true }
     );
-    return r.data;
-  },
-  async purgeGhosts() {
-    const r = await http.post('/ragic-status/purge-ghosts', {}, { skipAuthRedirect: true });
     return r.data;
   },
 };

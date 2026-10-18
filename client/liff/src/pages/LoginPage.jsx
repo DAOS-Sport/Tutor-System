@@ -424,7 +424,7 @@ export default function LoginPage() {
           {USE_MOCK && (
             <div className="pt-4 text-center text-xs leading-5 text-gray-400">
               試用帳號（mock）
-              <br />家長：0912345678
+              <br />家長：0900796878
             </div>
           )}
         </form>

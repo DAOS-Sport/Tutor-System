@@ -1,12 +1,9 @@
 const express = require('express');
 const { pool } = require('../../models/db');
 const { parsePaging, pagingSql } = require('../../utils/paging');
-const {
-  requireAdminAuth,
-  requireAdminRole,
-  getScopedVenueIds,
-  isVenueInScope,
-} = require('../../middlewares/adminAuth');
+const { requireAdminAuth, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定，不再寫死角色清單。
+const { requireResource } = require('../../middlewares/requireResource');
 const ragicWriteback = require('../../services/ragicWriteback');
 const promotions = require('../../services/promotions');
 const { logGroupOrderAudit } = require('../../services/groupOrderAudit');
@@ -17,12 +14,37 @@ const {
   normalizeFamilyPhone,
 } = require('../../services/checkoutFamilies');
 const { enqueueReconcileMail, deliverOutbox } = require('../../services/reconcileNotify');
+const { isValidTaiwanTaxId, validateCarrier } = require('../../services/invoiceIdentity');
 const enrollmentRouter = require('./enrollments');
 
 const { getSettings, ensureGroupCoursePeriod, ensureSoloCoursePeriod } = enrollmentRouter._checkoutInternals;
 
 const router = express.Router();
-const AMS = requireAdminRole('admin', 'manager', 'staff');
+
+const CIVIL_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+function validCivilDate(value) {
+  const m = CIVIL_DATE_RE.exec(String(value || ''));
+  if (!m) return false;
+  const [, y, mo, d] = m.map(Number);
+  const date = new Date(Date.UTC(y, mo - 1, d));
+  return date.getUTCFullYear() === y && date.getUTCMonth() === mo - 1 && date.getUTCDate() === d;
+}
+function addCalendarMonths(value, count) {
+  const [year, month, day] = value.split('-').map(Number);
+  const index = year * 12 + month - 1 + count;
+  const targetYear = Math.floor(index / 12);
+  const targetMonth = index % 12 + 1;
+  const lastDay = new Date(Date.UTC(targetYear, targetMonth, 0)).getUTCDate();
+  return `${targetYear}-${String(targetMonth).padStart(2, '0')}-${String(Math.min(day, lastDay)).padStart(2, '0')}`;
+}
+
+function submittedDateError(from, to) {
+  if ((from && !validCivilDate(from)) || (to && !validCivilDate(to))) return '報名日期格式必須是有效的 YYYY-MM-DD';
+  if (from && to && to < from) return '迄日不可早於起日';
+  if (from && to && to > addCalendarMonths(from, 3)) return '報名日期範圍不可超過起日起三個曆月';
+  return null;
+}
+const AMS = requireResource('reconcile');
 const INVOICE_RE = /^[A-Z]{2}\d{8}$/;
 const CANCEL_REASON_MAX_LENGTH = 500;
 
@@ -36,9 +58,19 @@ function normalizeInvoiceEntry(source, family, fallbackCarrier = '', { familyReq
   const invoiceUrl = String(source?.invoice_url || '').trim();
   const buyerName = String(source?.buyer_name || '').trim() || family.parent_name || null;
   const taxId = String(source?.tax_id || '').trim() || family.tax_id || null;
-  const carrier = typeof source?.carrier === 'string'
-    ? source.carrier.trim().slice(0, 64)
-    : String(fallbackCarrier || family.carrier || '').trim().slice(0, 64);
+  if (source?.carrier != null && typeof source.carrier !== 'string') {
+    return { error: '電子發票載具必須是文字或空值', code: 'INVOICE_IDENTITY_TYPE_INVALID' };
+  }
+  const carrierResult = validateCarrier(typeof source?.carrier === 'string'
+    ? source.carrier : taxId ? '' : (fallbackCarrier || family.carrier || ''));
+  if (carrierResult.error) return carrierResult;
+  const carrier = carrierResult.value;
+  if (taxId && carrier) {
+    return { error: '統一編號與電子發票載具只能擇一填寫', code: 'INVOICE_IDENTITY_CONFLICT' };
+  }
+  if (taxId && !isValidTaiwanTaxId(taxId)) {
+    return { error: '統一編號格式或檢查碼錯誤', code: 'TAX_ID_INVALID' };
+  }
   if (!invoiceNumber) {
     return {
       error: familyRequired ? '每個家庭的發票號碼皆為必填' : '發票號碼必填',
@@ -163,9 +195,20 @@ function scopedCheckoutWhere(req, params) {
 }
 
 router.get('/', requireAdminAuth, AMS, async (req, res) => {
+  const submittedFrom = String(req.query.submittedFrom || '');
+  const submittedTo = String(req.query.submittedTo || '');
+  const submittedDateProblem = submittedDateError(submittedFrom, submittedTo);
+  if (submittedDateProblem) return res.status(400).json({ error: submittedDateProblem, code: 'DATE_RANGE_INVALID' });
   try {
     const params = [];
     const where = scopedCheckoutWhere(req, params);
+
+    if (submittedFrom || submittedTo) {
+      const bounds = [];
+      if (submittedFrom) { params.push(submittedFrom); bounds.push(`(ae_date.submitted_at AT TIME ZONE 'Asia/Taipei')::date >= $${params.length}::date`); }
+      if (submittedTo) { params.push(submittedTo); bounds.push(`(ae_date.submitted_at AT TIME ZONE 'Asia/Taipei')::date <= $${params.length}::date`); }
+      where.push(`EXISTS (SELECT 1 FROM admin_enrollments ae_date WHERE ae_date.checkout_id=cs.checkout_id AND ${bounds.join(' AND ')})`);
+    }
 
     const status = req.query.status ? String(req.query.status) : '';
     if (status === 'pending') {
@@ -287,8 +330,6 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
     const invoicePlans = Array.isArray(invoiceResult.value) ? invoiceResult.value : [invoiceResult.value];
     const invoiceByFamily = new Map(invoicePlans.map((plan) => [plan.familyKey, plan]));
 
-    const settings = await getSettings();
-    const perPeriod = settings.sessions_per_period || 6;
     const groupPaymentMarked = new Set();
     const rowsToOpen = [];
     for (const row of children.rows) {
@@ -297,7 +338,11 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
       // 試上是明確的一次課；不可因 checkout 批次對帳被通用每期堂數放大成 6 堂。
       const total = row.order_kind === 'trial'
         ? 1
-        : (Number(row.total_sessions) || perPeriod * (Number(row.period_count) || 1));
+        : Number(row.total_sessions);
+      if (!Number.isSafeInteger(total) || total <= 0) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: '原訂單堂數缺失，請先核對成交資料', code: 'PURCHASE_SESSION_SNAPSHOT_MISSING' });
+      }
       await client.query(
         `UPDATE admin_enrollments
             SET status = 'confirmed',

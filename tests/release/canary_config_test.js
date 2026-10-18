@@ -21,9 +21,9 @@ try {
   process.env.PARENT_IDENTITY_RESOLVER_V2 = 'true';
   process.env.PARENT_IDENTITY_CANARY_PHASE = 'allowlist';
   process.env.PARENT_IDENTITY_CANARY_LINE_UID_HASHES = __test__.sha256('Uinternal');
-  process.env.PARENT_IDENTITY_CANARY_PHONES = '0912345678';
+  process.env.PARENT_IDENTITY_CANARY_PHONES = '0900796878';
   assert.strictEqual(evaluateParentIdentityCanary({ lineUid: 'Uinternal' }).allowed, true);
-  assert.strictEqual(evaluateParentIdentityCanary({ phone: '0912-345-678' }).allowed, true);
+  assert.strictEqual(evaluateParentIdentityCanary({ phone: '0900-796-878' }).allowed, true);
   assert.strictEqual(evaluateParentIdentityCanary({ sourceRecordIds: ['149'] }).allowed, true);
   assert.strictEqual(evaluateParentIdentityCanary({ sourceRecordIds: ['6504'] }).allowed, true);
   assert.strictEqual(evaluateParentIdentityCanary({ sourceRecordIds: ['6786'] }).allowed, true);

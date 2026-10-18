@@ -170,15 +170,25 @@ export default function CheckinPage() {
       <PageHeader title="簽到驗證" subtitle="F-R03 · 即時報到名單為主視覺；右上角保留家長手機 / 報名編號核對" />
 
       {/* 篩選列 + 右上角查詢區 */}
+      {/* 就地處理，不收編 FilterBar：這一列的右半是「家長手機 / 報名編號」核對表單，
+          那是櫃檯當場要用的查詢動作、不是篩選條件。整列包進 FilterBar 會把它一起
+          收進「篩選」摺疊列後面，標籤與內容對不上，而且核對時每次都要多展開一次。
+          所以只把同一套手機規則就地套上。 */}
       <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+        {/* 原本在 375px 會發生什麼：這組三個控制項各自為政地折行 ——
+            場館下拉是內容寬（跟著場館名字長短浮動，約 110–150px）、
+            日期是死的 w-[168px]、「重新整理」是內容寬約 96px，
+            三個右緣停在三個不同的位置，看起來像被啃過。
+            手機改成一格一列、左右各切齊一條線；md 以上全部 w-auto / w-[168px]
+            回到原值，桌機的橫排完全沒動。 */}
         <div className="flex flex-wrap items-end gap-3">
-          <div>
+          <div className="w-full md:w-auto">
             <label className="mb-1 block text-xs font-medium text-gray-600">場館</label>
             <select
               value={venueId}
               onChange={(e) => setVenueId(e.target.value)}
               disabled={isStaff && myVenues.length <= 1}
-              className="rounded-lg border border-gray-300 px-3 py-2 text-sm disabled:bg-gray-100"
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm disabled:bg-gray-100 md:w-auto"
             >
               <option value="">{isStaff ? '全部（我的場館）' : '全部場館'}</option>
               {myVenues.map((v) => (
@@ -186,17 +196,17 @@ export default function CheckinPage() {
               ))}
             </select>
           </div>
-          <div>
+          <div className="w-full md:w-auto">
             <label className="mb-1 block text-xs font-medium text-gray-600">日期（台北）</label>
             <DateTimePicker
               value={date}
               onChange={(v) => setDate(v)}
-              className="w-[168px]"
+              className="w-full md:w-[168px]"
             />
           </div>
           <button
             onClick={reload}
-            className="rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100"
+            className="min-h-[44px] w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 md:min-h-0 md:w-auto"
           >
             重新整理
           </button>
@@ -205,33 +215,39 @@ export default function CheckinPage() {
           )}
         </div>
 
+        {/* 核對表單同樣就地補規則。原本在 375px：手機 w-32(128) + 編號 w-28(112)
+            擠在同一列、右邊空出 80px，兩顆按鈕再折到下一列各自內容寬 ——
+            四個元素四個右緣。這裡不強推「一格一列」（四列會把主清單壓到摺疊線以下），
+            改成同列平分：兩個欄位各半、兩顆按鈕各半，右緣一次對齊。
+            flex-1 一律配 md:flex-initial 復原成 flex: 0 1 auto（flex 的初始值），
+            md 以上與原本沒有任何 flex 宣告時完全等價；寬度也用 md: 押回 w-32 / w-28。 */}
         <form onSubmit={onLookup} className="flex flex-wrap items-end gap-2 rounded-lg border border-gray-200 bg-gray-50 p-2">
-          <div>
+          <div className="flex-1 md:flex-initial">
             <label className="mb-0.5 block text-[11px] font-medium text-gray-600">家長手機</label>
             <input
               type="tel" placeholder="09xxxxxxxx" value={phone}
               onChange={(e) => setPhone(e.target.value.trim())}
-              className="w-32 rounded-md border border-gray-300 px-2 py-1.5 text-sm"
+              className="min-h-[44px] w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm md:min-h-0 md:w-32"
             />
           </div>
-          <div>
+          <div className="flex-1 md:flex-initial">
             <label className="mb-0.5 block text-[11px] font-medium text-gray-600">報名編號</label>
             <input
               type="text" placeholder="CP1001" value={periodId}
               onChange={(e) => setPeriodId(e.target.value.trim())}
-              className="w-28 rounded-md border border-gray-300 px-2 py-1.5 text-sm"
+              className="min-h-[44px] w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm md:min-h-0 md:w-28"
             />
           </div>
           <button
             type="submit" disabled={busy}
-            className="rounded-md bg-brand-teal px-3 py-1.5 text-sm font-bold text-white hover:bg-brand-primary disabled:opacity-50"
+            className="min-h-[44px] flex-1 rounded-md bg-brand-teal px-4 py-2 text-sm font-bold text-white hover:bg-brand-primary disabled:opacity-50 md:min-h-0 md:flex-initial md:px-3 md:py-1.5"
           >
             {busy ? '查詢中…' : '核對'}
           </button>
           {(result || phone || periodId) && (
             <button
               type="button" onClick={clearLookup}
-              className="rounded-md border border-gray-300 px-2 py-1.5 text-xs text-gray-600 hover:bg-white"
+              className="min-h-[44px] flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-white md:min-h-0 md:flex-initial md:px-2 md:py-1.5 md:text-xs"
             >清除</button>
           )}
         </form>
@@ -250,17 +266,31 @@ export default function CheckinPage() {
         ) : list.length === 0 ? (
           <div className="py-12 text-center text-sm text-gray-400">尚無報到紀錄</div>
         ) : (
+          // 手機 6 欄分三行，桌機仍是 12 欄一行。
+          // 375px 上這一列原本會爆版：main 的 p-4 之後只剩 311px 給 grid，
+          // 扣掉 5 個 gap-2 是 271px、每欄 45px。CSS Grid 的 item 預設
+          // min-width:auto、不會縮到 min-content 以下，而「自助」徽章
+          // （px-2.5 + 兩個中文字）min-content 就 44px、撤銷鈕加報名編號
+          // 要 106px —— 三個沒有 truncate 的欄位加起來把 grid 撐到 400px 上下，
+          // 塞在 311px 的盒子裡，結果是整頁橫向捲動，主清單讀不了。
+          //
+          // 用 span 而不是 display:contents 換版：DOM 順序不變，
+          // 桌機的欄位順序完全照舊，也不必賭瀏覽器對 contents 的支援。
+          // 手機 6 欄的配置（每欄約 45px）：
+          // 第一行 時間2 + 學員4
+          // 第二行 組別4 + 場館2
+          // 第三行 來源2 + 動作4     ← 徽章拿到 98px，不會再被擠爆
           <ul className="divide-y divide-gray-100">
             {list.map((r) => (
-              <li key={r.checkin_id} className="grid grid-cols-12 items-center gap-2 px-4 py-3 text-sm">
+              <li key={r.checkin_id} className="grid grid-cols-6 items-center gap-x-2 gap-y-1.5 px-4 py-3 text-sm md:grid-cols-12 md:gap-y-2">
                 <span className="col-span-2 font-mono text-brand-primary">{formatHM(r.at)}</span>
-                <span className="col-span-2 truncate">
+                <span className="col-span-4 truncate md:col-span-2">
                   <b>{r.student || '—'}</b>
                   {r.checked_in_by && (
                     <span className="block truncate text-xs text-gray-400">簽到人：{r.checked_in_by}</span>
                   )}
                 </span>
-                <span className="col-span-3 truncate text-gray-600">
+                <span className="col-span-4 truncate text-gray-600 md:col-span-3">
                   {r.course_type ? courseTypeLabel(r.course_type) : '—'}
                   {r.is_experience_course && (
                     <span className="ml-1 rounded-full bg-teal-50 px-1.5 py-0.5 text-[11px] font-bold text-teal-700">試上</span>
@@ -268,14 +298,17 @@ export default function CheckinPage() {
                   {r.coach ? <span className="ml-1 text-gray-400">· {r.coach}</span> : null}
                 </span>
                 <span className="col-span-2 truncate text-gray-500">{r.venue_name || r.venue_id}</span>
-                <span className="col-span-1">{sourceBadge(r)}</span>
-                <span className="col-span-2 flex items-center justify-end gap-2">
+                <span className="col-span-2 md:col-span-1">{sourceBadge(r)}</span>
+                <span className="col-span-4 flex items-center justify-end gap-2 md:col-span-2">
                   {r.session_created_via === 'self_checkin' && r.session_id && (
+                    // 手機上放大到 44px：這是破壞性操作（整堂 attendance 標成
+                    // REVERSED），而救生員多半是濕手在池畔按。桌機維持原本的
+                    // 密度 —— 桌機使用者一次要看很多列，拉高會讓每頁看到的資料變少。
                     <button
                       type="button"
                       disabled={revokingId === r.checkin_id}
                       onClick={() => revokeSelf(r)}
-                      className="rounded-md border border-brand-error px-2 py-1 text-xs font-bold text-brand-error hover:bg-brand-error-soft disabled:opacity-50"
+                      className="min-h-[44px] rounded-md border border-brand-error px-3 py-2 text-sm font-bold text-brand-error hover:bg-brand-error-soft disabled:opacity-50 md:min-h-0 md:px-2 md:py-1 md:text-xs"
                     >
                       {revokingId === r.checkin_id ? '撤銷中…' : '撤銷'}
                     </button>
@@ -297,7 +330,9 @@ export default function CheckinPage() {
               {paymentStatusLabel(result.enrollment.status)}
             </StatusBadge>
           </div>
-          <dl className="grid grid-cols-2 gap-3 text-sm">
+          {/* 375px 上外層 p-6 之後只剩 277px，兩欄各 133px，
+              而「家長姓名（0900796878）」一項就要 180px。 */}
+          <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
             <div><dt className="text-gray-500">報名編號</dt><dd className="font-mono">{result.enrollment.id}</dd></div>
             <div><dt className="text-gray-500">家長</dt><dd>{result.enrollment.parent_name}（{result.enrollment.parent_phone}）</dd></div>
             <div><dt className="text-gray-500">學員</dt><dd>{result.enrollment.students.join('、')}</dd></div>

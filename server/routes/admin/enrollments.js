@@ -13,14 +13,20 @@
 const express = require('express');
 const { randomUUID } = require('crypto');
 const { pool } = require('../../models/db');
+const { writeStudentAudit, adminActorName } = require('../../services/studentAudit');
 const { getCourseConfig, CourseConfigError } = require('../../services/courseConfig');
-const { requireAdminAuth, requireAdminRole, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
+const { requireAdminAuth, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定，不再寫死角色清單。
+const { requireResource, requireAnyResource } = require('../../middlewares/requireResource');
 const { enqueueReconcileMail, deliverOutbox } = require('../../services/reconcileNotify');
 const ragicWriteback = require('../../services/ragicWriteback');
 const promotions = require('../../services/promotions');
 const { resolveParentLineDisplayName } = require('../../services/parentLineProfile');
 const { logGroupOrderAudit } = require('../../services/groupOrderAudit');
-const { REFUND_REASON_CODES, refundReasonLabel, normalizeFeeRate } = require('../../services/refundReasons');
+const { parseInvoiceIdentityInput } = require('../../services/invoiceIdentity');
+const { resolveCurrentUnitPrice, resolveTrialUnitPrice, coursePeriodTerms, coursePeriodCount } = require('../../services/coursePricing');
+const { REFUND_REASON_CODES, refundReasonLabel, normalizeFeeRate, calculateRefundAmounts } = require('../../services/refundReasons');
+const { lockRefundPeriods, revokeRefundedPeriods, lockEnrollmentOperation } = require('../../services/courseEntitlements');
 const {
   createCheckoutSession,
   readCheckout,
@@ -43,6 +49,19 @@ const router = express.Router();
 const SESSIONS_PER_PERIOD = 6;
 const ADMIN_ENROLLMENT_OPERATION = 'admin_create_enrollment_checkout';
 
+// A shared period can only carry a purchase coefficient when every source
+// order has the same explicit snapshot.  Missing/mixed legacy evidence stays
+// NULL; amounts and the coach's current profile are intentionally ignored.
+function commonPurchasedMultiplier(rows) {
+  const values = (rows || []).map((row) => {
+    if (row?.purchased_pricing_multiplier === null || row?.purchased_pricing_multiplier === undefined) return null;
+    const value = Number(row.purchased_pricing_multiplier);
+    return Number.isFinite(value) && value > 0 ? Number(value.toFixed(2)) : null;
+  });
+  if (!values.length || values.some((value) => value === null)) return null;
+  return values.every((value) => value === values[0]) ? values[0] : null;
+}
+
 function adminEnrollmentResponse(checkout, { idempotent = false } = {}) {
   const orders = checkout?.sub_orders || [];
   const enrollmentIds = orders.map((order) => order.id).filter(Boolean);
@@ -54,6 +73,7 @@ function adminEnrollmentResponse(checkout, { idempotent = false } = {}) {
     count: enrollmentIds.length,
     enrollment_ids: enrollmentIds,
     status: orders[0]?.status || 'pending_payment',
+    purchased_pricing_multiplier: commonPurchasedMultiplier(orders),
     idempotent,
   };
 }
@@ -65,8 +85,8 @@ function genEnrollmentId() {
   return `E${ts}${rand}`;
 }
 
-async function getSettings() {
-  const r = await pool.query(`SELECT key, value FROM admin_settings`);
+async function getSettings(db = pool) {
+  const r = await db.query(`SELECT key, value FROM admin_settings`);
   const out = {};
   for (const row of r.rows) out[row.key] = Number(row.value);
   return out;
@@ -104,7 +124,7 @@ async function ensureGroupCoursePeriod(client, enrollment, totalSessions) {
   // reconcile 會先把本筆 admin_enrollments.status 更新為 confirmed，再呼叫此函式；
   // 同一交易內查詢能看到本筆最新狀態，因此可用來當該期開通守門。
   const groupEnrollments = await client.query(
-    `SELECT id, status, final_price, checkout_id, enrollment_batch_id
+    `SELECT id, status, original_price, final_price, checkout_id, enrollment_batch_id, purchased_pricing_multiplier
        FROM admin_enrollments
       WHERE group_order_id = $1 AND period_number = $2
       ORDER BY submitted_at, id`,
@@ -164,8 +184,10 @@ async function ensureGroupCoursePeriod(client, enrollment, totalSessions) {
 
   // 共用 period 的金額＝整團所有成員報名費用總和（period 為班級層級，金額僅供參考；
   // 實際逐筆收款仍在各 admin_enrollments）。在建立前算好，ON CONFLICT 時不影響既有值。
+  const groupOriginalPrice = confirmed.reduce((sum, row) => sum + (Number(row.original_price) || 0), 0);
   const groupTotalPrice = confirmed.reduce((sum, row) => sum + (Number(row.final_price) || 0), 0)
     || (Number(enrollment.final_price) || 0);
+  const purchasedMultiplier = commonPurchasedMultiplier(confirmed);
 
   // 同一團採 transaction-scoped advisory lock 序列化（鎖 key 刻意不含期數）。這避免依賴
   // `ON CONFLICT (group_order_id, period_number)` 推斷特定 index：某些舊 production
@@ -188,14 +210,15 @@ async function ensureGroupCoursePeriod(client, enrollment, totalSessions) {
     const ins = await client.query(
       `INSERT INTO course_periods
          (coach_id, venue_id, course_type, total_sessions, used_sessions,
-          expires_at, original_price, final_price, status, admin_enrollment_id, group_order_id, period_number)
-       VALUES ($1,$2,$3,$4,0,(NOW() + ($5 || ' days')::interval)::date,$6,$6,'active',$7,$8,$9)
+          expires_at, original_price, final_price, status, admin_enrollment_id, group_order_id, period_number,
+          purchased_pricing_multiplier)
+       VALUES ($1,$2,$3,$4,0,(NOW() + ($5 || ' days')::interval)::date,$6,$11,'active',$7,$8,$9,$10)
        ON CONFLICT DO NOTHING
        RETURNING id`,
       [
         enrollment.coach_id, enrollment.venue_id, enrollment.course_type, totalSessions,
         String(365 * (Number(enrollment.period_count) || 1)),
-        groupTotalPrice, enrollment.id, groupOrderId, periodNumber,
+        groupOriginalPrice, enrollment.id, groupOrderId, periodNumber, purchasedMultiplier, groupTotalPrice,
       ]
     );
     periodId = ins.rows[0]?.id || null;
@@ -255,7 +278,7 @@ async function ensureGroupCoursePeriod(client, enrollment, totalSessions) {
  */
 // 回傳本次「新建」的本地學員 id 陣列（新列 last_synced_at 預設 NULL＝待同步），
 // 供 caller 在交易 COMMIT 後即時回寫 Ragic（best-effort；失敗由每日備份排程重試）。
-async function ensureSoloCoursePeriod(client, enrollment, totalSessions) {
+async function ensureSoloCoursePeriod(client, enrollment, totalSessions, auditActor = { byUser: 'system:enrollment-reconcile', byRole: 'system' }) {
   const createdStudentIds = [];
   if (enrollment.group_order_id) return createdStudentIds; // 團報 → 交給 ensureGroupCoursePeriod
 
@@ -295,11 +318,14 @@ async function ensureSoloCoursePeriod(client, enrollment, totalSessions) {
 
   // U12 家庭共班判定：同批（enrollment_batch_id）同期（period_number）存在多筆兄弟訂單，
   // 且課型為一對二以上 → 走「共用 period」模式；否則維持原「每筆一 period」行為。
+  // 試上比照正式課（使用者 2026-10-14）：家長端試上訂單每人每堂一筆、period_number＝第幾堂，
+  // 同批同堂的兄弟訂單同樣開成一個共用體驗課期（一起上、一起簽到、教練計 1 堂）。
   const periodNumber = Number(enrollment.period_number) || 1;
+  const isTrialOrder = enrollment.order_kind === 'trial';
   let siblingRows = null; // 非 null＝共用 period 模式（含本筆在內、本期全部有效兄弟訂單）
-  if (enrollment.enrollment_batch_id && enrollment.order_kind !== 'trial') {
+  if (enrollment.enrollment_batch_id) {
     const sib = await client.query(
-      `SELECT id, students, status, original_price, final_price
+      `SELECT id, students, student_ids, status, original_price, final_price, purchased_pricing_multiplier
          FROM admin_enrollments
         WHERE enrollment_batch_id = $1
           AND period_number = $2
@@ -373,18 +399,21 @@ async function ensureSoloCoursePeriod(client, enrollment, totalSessions) {
       // 逐筆收款／發票仍在各 admin_enrollments）。堂數＝每期堂數，全班共用。
       const originalSum = siblingRows.reduce((sum, row) => sum + (Number(row.original_price) || 0), 0);
       const finalSum = siblingRows.reduce((sum, row) => sum + (Number(row.final_price) || 0), 0);
+      const purchasedMultiplier = commonPurchasedMultiplier(siblingRows);
+      // 試上共用課期沿用單人試上的契約：體驗標記＋效期 30 天（政策 2026-07-16）。
       const ins = await client.query(
         `INSERT INTO course_periods
            (coach_id, venue_id, course_type, total_sessions, used_sessions,
             expires_at, original_price, final_price, status, admin_enrollment_id,
-            enrollment_batch_id, period_number)
-         VALUES ($1,$2,$3,$4,0,(NOW() + ($5 || ' days')::interval)::date,$6,$7,'active',$8,$9,$10)
+            enrollment_batch_id, period_number, purchased_pricing_multiplier, is_experience_course)
+         VALUES ($1,$2,$3,$4,0,(NOW() + ($5 || ' days')::interval)::date,$6,$7,'active',$8,$9,$10,$11,$12)
          RETURNING id`,
         [
           coachId, enrollment.venue_id, enrollment.course_type, totalSessions,
-          String(365 * (Number(enrollment.period_count) || 1)),
+          isTrialOrder ? '30' : String(365 * (Number(enrollment.period_count) || 1)),
           originalSum, finalSum,
-          siblingRows[0].id, enrollment.enrollment_batch_id, periodNumber,
+          siblingRows[0].id, enrollment.enrollment_batch_id, periodNumber, purchasedMultiplier,
+          isTrialOrder,
         ]
       );
       periodId = ins.rows[0]?.id || null;
@@ -412,14 +441,15 @@ async function ensureSoloCoursePeriod(client, enrollment, totalSessions) {
         `INSERT INTO course_periods
            (coach_id, venue_id, course_type, total_sessions, used_sessions,
             expires_at, original_price, final_price, status, admin_enrollment_id, is_experience_course,
-            period_number)
-         VALUES ($1,$2,$3,$4,0,(NOW() + ($5 || ' days')::interval)::date,$6,$7,'active',$8,$9,$10)
+            period_number, purchased_pricing_multiplier)
+         VALUES ($1,$2,$3,$4,0,(NOW() + ($5 || ' days')::interval)::date,$6,$7,'active',$8,$9,$10,$11)
          RETURNING id`,
         [
           coachId, enrollment.venue_id, enrollment.course_type, totalSessions,
           validityDays,
           Number(enrollment.original_price) || 0, Number(enrollment.final_price) || 0,
           enrollment.id, enrollment.order_kind === 'trial', periodNumber,
+          commonPurchasedMultiplier([enrollment]),
         ]
       );
       periodId = ins.rows[0]?.id || null;
@@ -427,11 +457,28 @@ async function ensureSoloCoursePeriod(client, enrollment, totalSessions) {
   }
   if (!periodId) return createdStudentIds;
 
-  // get-or-create 學員（以 parent_id + name）→ 綁進 course_period_enrollments。
-  // 共用 period 模式：綁「本期全部兄弟訂單」的學員（每筆家長端子訂單只有 1 位）。
-  const names = siblingRows
-    ? [...new Set(siblingRows.flatMap((row) => row.students || []).filter(Boolean))]
-    : (enrollment.students || []).filter(Boolean);
+  // 綁學員進 course_period_enrollments。共用 period 模式：綁「本期全部兄弟訂單」的學員。
+  // 新訂單記有實際學員 id（admin_enrollments.student_ids，家庭帳號時可能是家人名下的孩子）→ 直接用；
+  // 舊訂單沒有 id → 沿用（parent_id + name）get-or-create。
+  const orderRows = siblingRows || [enrollment];
+  const knownIds = [...new Set(orderRows.flatMap((row) => (Array.isArray(row.student_ids) ? row.student_ids : [])).map(String))];
+  if (knownIds.length) {
+    const existing = await client.query(`SELECT id FROM students WHERE id = ANY($1::uuid[])`, [knownIds]);
+    for (const row of existing.rows) {
+      await client.query(
+        `INSERT INTO course_period_enrollments (course_period_id, student_id, status)
+         VALUES ($1, $2, 'active') ON CONFLICT (course_period_id, student_id) DO NOTHING`,
+        [periodId, row.id]
+      );
+    }
+    if (existing.rowCount !== knownIds.length) {
+      console.warn('[reconcile/solo] 訂單記載的學員有已不存在者，略過：', enrollment.id);
+    }
+  }
+  const names = [...new Set(orderRows
+    .filter((row) => !(Array.isArray(row.student_ids) && row.student_ids.length))
+    .flatMap((row) => row.students || [])
+    .filter(Boolean))];
   for (const name of names) {
     const se = await client.query(
       `SELECT id FROM students WHERE parent_id = $1 AND name = $2 LIMIT 1`,
@@ -444,6 +491,7 @@ async function ensureSoloCoursePeriod(client, enrollment, totalSessions) {
         [parentId, name]
       );
       sid = si.rows[0].id;
+      await writeStudentAudit(client, sid, 'create', { ...auditActor, note: 'enrollment-reconcile-student-create' });
       createdStudentIds.push(sid);
     }
     await client.query(
@@ -464,8 +512,8 @@ function tsToString(d) {
   return new Date(d).toISOString();
 }
 
-async function readEnrollment(id, { resolveLineProfile = false } = {}) {
-  const e = await pool.query(
+async function readEnrollment(id, { resolveLineProfile = false, db = pool } = {}) {
+  const e = await db.query(
     `SELECT ae.*, au.name AS created_by_name,
             p.line_uid AS parent_line_uid,
             plp.display_name AS line_display_name,
@@ -480,7 +528,7 @@ async function readEnrollment(id, { resolveLineProfile = false } = {}) {
     [id]
   );
   if (!e.rowCount) return null;
-  const a = await pool.query(
+  const a = await db.query(
     `SELECT at, action, by_user, reason, refund_amount FROM admin_enrollment_audit_logs
      WHERE enrollment_id = $1 ORDER BY at ASC, id ASC`,
     [id]
@@ -560,6 +608,7 @@ function shapeEnrollmentRow(row, { lineDisplayName = '', lineProfileState = 'NOT
   };
 }
 
+// 🧊 BEGIN 手動建檔凍結區（2026-10-15 使用者凍結令，見根目錄 CLAUDE.md）：改之前必須先取得擁有者明確同意。
 /**
  * POST /api/admin/enrollments  — 櫃檯手動建檔（建立報名）
  *
@@ -576,7 +625,7 @@ function shapeEnrollmentRow(row, { lineDisplayName = '', lineProfileState = 'NOT
  *    - 本路由「不寫 Ragic」。報名回寫 Ragic Z01/Z02 連結表 + webhook 雙向同步為 Phase 3/4，
  *      屆時於 COMMIT 後依 external_order_no/ragic_record_id 接上（見 011 migration 橋接欄）。
  */
-router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.post('/', requireAdminAuth, requireAnyResource('manual-enroll', 'enrollments'), async (req, res) => {
   const b = req.body || {};
   const requestCheck = validateRequestId(b.request_id || req.get('Idempotency-Key'));
   if (requestCheck.error) {
@@ -589,7 +638,10 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
   const parentName  = String(b.parent_name || '').trim();
   const parentPhone = String(b.parent_phone || '').trim();
   const venueId     = String(b.venue_id || '').trim();
-  const coachName   = String(b.coach || '').trim();
+  let coachName = typeof b.coach === 'string' ? b.coach.trim() : '';
+  if (!coachName || coachName === '[object Object]') {
+    return res.status(400).json({ error: '教練名稱必須是有效文字', code: 'COACH_NAME_INVALID' });
+  }
   const courseType  = Number(b.course_type);
   const students    = Array.isArray(b.students)
     ? b.students.map((s) => String(s || '').trim()).filter(Boolean) : [];
@@ -605,6 +657,27 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
   const orderKind = normalizeOrderKind(b.order_kind);
   const isTrial = orderKind === ORDER_KIND.TRIAL;
   const sessions = isTrial ? 1 : totalSessions;
+  let sessionsPerPeriod = SESSIONS_PER_PERIOD; // legacy manual/import contract only
+
+  // 新櫃檯表單明示整筆期數與計價模式；舊入口仍保留原有手動總額契約。
+  // purchase_multiplier 是本單選擇，purchased_pricing_multiplier 仍是後端產生的快照。
+  const hasPurchasePricing = ['purchase_multiplier', 'purchase_period_count', 'pricing_mode']
+    .some((key) => Object.prototype.hasOwnProperty.call(b, key));
+  const purchasePeriods = hasPurchasePricing ? Number(b.purchase_period_count) : null;
+  const pricingMode = hasPurchasePricing ? b.pricing_mode : null;
+  const hasMultiplierSelection = b.purchase_multiplier !== undefined;
+  const multiplierSelection = hasMultiplierSelection ? Number(b.purchase_multiplier) : null;
+  if (hasPurchasePricing && (!['automatic', 'manual'].includes(pricingMode)
+      || !['number', 'string'].includes(typeof b.purchase_period_count)
+      || !Number.isSafeInteger(purchasePeriods) || purchasePeriods < 1
+      || (isTrial && purchasePeriods !== 1))) {
+    return res.status(400).json({ error: '請填寫整數期數，堂數必須與期數一致', code: 'PURCHASE_PERIOD_INVALID' });
+  }
+  if (hasPurchasePricing && ((!isTrial && !hasMultiplierSelection)
+       || (hasMultiplierSelection && (!['number', 'string'].includes(typeof b.purchase_multiplier)
+         || !Number.isFinite(multiplierSelection) || multiplierSelection <= 0)))) {
+    return res.status(400).json({ error: '請選擇有效的本單修課係數', code: 'PURCHASE_MULTIPLIER_INVALID' });
+  }
 
   if (!parentName || !parentPhone) return res.status(400).json({ error: '請填寫家長姓名與電話', code: 'PARENT_REQUIRED' });
   if (!venueId) return res.status(400).json({ error: '請選擇館別', code: 'VENUE_REQUIRED' });
@@ -638,10 +711,17 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
   const unitPrice = Number.isFinite(unitPriceRaw) ? unitPriceRaw : null;
   const payer      = String(b.payer || '').trim() || null;       // 收款人
   const className  = String(b.class_name || '').trim() || null;  // 班級名稱
-  const taxId      = String(b.tax_id || '').trim() || null;      // 統一編號
+  const invoiceIdentity = parseInvoiceIdentityInput(b);
+  if (invoiceIdentity.error) {
+    return res.status(400).json({ error: invoiceIdentity.error, code: invoiceIdentity.code });
+  }
+  const taxId      = invoiceIdentity.value.taxId;      // 統一編號
   const levelNote  = String(b.level_note || '').trim() || null;  // 程度說明
   const workType   = String(b.work_type || '').trim() || null;   // 作業型態
-  const carrier    = String(b.carrier || '').trim() || null;     // 載具
+  const carrier    = invoiceIdentity.value.carrier || null;     // 載具
+  if (taxId && carrier) {
+    return res.status(400).json({ error: '統一編號與電子發票載具只能擇一填寫', code: 'INVOICE_IDENTITY_CONFLICT' });
+  }
   const fullSessionsRaw = b.full_sessions != null && b.full_sessions !== '' ? Number.parseInt(b.full_sessions, 10) : null;
   const fullSessions = Number.isInteger(fullSessionsRaw) ? fullSessionsRaw : null;
   const submittedAt = b.submitted_at ? new Date(b.submitted_at) : new Date();
@@ -674,6 +754,11 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
     full_sessions: fullSessions,
     carrier,
     submitted_at: b.submitted_at ? submittedAt.toISOString() : null,
+    ...(hasPurchasePricing ? {
+      purchase_multiplier: multiplierSelection,
+      purchase_period_count: purchasePeriods,
+      pricing_mode: pricingMode,
+    } : {}),
   });
 
   const client = await pool.connect();
@@ -757,6 +842,7 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
     }
     // 教練：可帶 coach_id（active coaches）取代自由文字；否則僅存名稱（對帳時再反查）。
     let coachId = null;
+    let purchasedMultiplier = null;
     const rawCoachId = b.coach_id ? String(b.coach_id).trim() : '';
     if (rawCoachId) {
       const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -764,13 +850,77 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
         await client.query('ROLLBACK');
         return res.status(400).json({ error: 'coach_id 格式不正確', code: 'COACH_ID_INVALID' });
       }
-      const cr = await client.query(`SELECT id FROM coaches WHERE id = $1`, [rawCoachId]);
-      if (cr.rowCount) coachId = rawCoachId;
+      // New pricing payloads use the same staff-first current value as /staff/coaches.
+      // Legacy callers keep their existing coaches-only snapshot contract.
+      const coachSql = hasPurchasePricing
+        ? `SELECT c.id, c.name, COALESCE(s.multiplier, c.pricing_multiplier) AS pricing_multiplier
+             FROM coaches c
+             LEFT JOIN admin_staff s ON s.id = c.ragic_employee_id
+            WHERE c.id = $1 AND c.is_active = TRUE`
+        : `SELECT id, name, pricing_multiplier FROM coaches WHERE id = $1 AND is_active = TRUE`;
+      const cr = await client.query(coachSql, [rawCoachId]);
+      if (!cr.rowCount) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: '教練不存在或已停用', code: 'COACH_ID_INVALID' });
+      }
+      coachId = rawCoachId;
+      coachName = cr.rows[0].name;
+      const authoritativeMultiplier = Number(cr.rows[0].pricing_multiplier);
+      purchasedMultiplier = Number.isFinite(authoritativeMultiplier) && authoritativeMultiplier > 0
+        ? authoritativeMultiplier
+        : null;
+      if (hasPurchasePricing && purchasedMultiplier === null) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: '教練修課係數尚未設定', code: 'COACH_MULTIPLIER_UNAVAILABLE' });
+      }
+      if (hasPurchasePricing && hasMultiplierSelection) {
+        const allowed = [1, 1.2, 1.5, purchasedMultiplier].filter((value) => value !== null);
+        if (!allowed.includes(multiplierSelection)) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: '本單修課係數只可選1.00、1.20、1.50或教練目前值', code: 'PURCHASE_MULTIPLIER_INVALID' });
+        }
+        purchasedMultiplier = multiplierSelection;
+      }
     }
 
-    // 嚴格拆期：N 堂 → ceil(N/6) 筆，最後一筆放餘數堂；原價/實收/折讓按堂數比例分攤、餘額補最後一筆。
+    if (hasPurchasePricing) {
+      if (!coachId) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: '請選擇本館授課教練後再設定修課係數', code: 'COACH_ID_REQUIRED' });
+      }
+      let cfg;
+      try { cfg = await getCourseConfig(client, { venueId, courseType }); }
+      catch (error) {
+        if (!(error instanceof CourseConfigError)) throw error;
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: '本館課程價格已變更，請重新選擇課程需求', code: 'PURCHASE_PRICING_CHANGED' });
+      }
+      if (cfg.is_active !== true || cfg.zone.is_active === false || (isTrial && cfg.trial_enabled !== true)) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: '本館課程需求已停用，請重新選擇', code: 'PURCHASE_PRICING_CHANGED' });
+      }
+      const terms = coursePeriodTerms(cfg);
+      if (!terms || (!isTrial && (coursePeriodCount(purchasePeriods, terms) === null
+          || sessions !== purchasePeriods * terms.sessionsPerPeriod))) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: '期數與本館每期堂數不符', code: 'PURCHASE_PERIOD_INVALID' });
+      }
+      sessionsPerPeriod = terms.sessionsPerPeriod;
+      const price = isTrial
+        ? resolveTrialUnitPrice({ basePrice: cfg.base_price, multiplier: purchasedMultiplier, tierPrices: cfg.tier_prices,
+            trialPrice: cfg.trial_price, sessionsPerPeriod })
+        : resolveCurrentUnitPrice(cfg.base_price, purchasedMultiplier, cfg.tier_prices);
+      const expectedTotal = price * students.length * purchasePeriods;
+      if (price === null || !Number.isFinite(price) || price < 0 || !Number.isSafeInteger(expectedTotal)
+          || (pricingMode === 'automatic' && originalPrice !== expectedTotal)) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: '金額與每人每期價格 × 人數 × 期數不符，請重新帶入價格', code: 'PURCHASE_PRICING_CHANGED' });
+      }
+    }
+
+    // 依本單每期堂數拆期（新版取 zone，舊匯入沿原六堂），原價／實收／折讓尾差補最後一筆。
     // 試上固定 1 堂 → numPeriods 必為 1，不會走到拆期分支。
-    const numPeriods = Math.ceil(sessions / SESSIONS_PER_PERIOD);
+    const numPeriods = Math.ceil(sessions / sessionsPerPeriod);
     const batchId = randomUUID();
     const enrollmentIds = [];
     let origAlloc = 0, finalAlloc = 0, allowAlloc = 0;
@@ -782,12 +932,15 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
       transferLast5: last5 || null,
       carrier,
       by: byUser,
+      // Standard manual orders retain the checkout service's bank-transfer contract.
+      paymentMethod: isTrial ? paymentMethod : 'bank_transfer',
+      orderKind,
       requestFingerprint: fingerprint,
     });
 
     for (let i = 0; i < numPeriods; i += 1) {
       const isLast = i === numPeriods - 1;
-      const periodSessions = isLast ? (sessions - SESSIONS_PER_PERIOD * (numPeriods - 1)) : SESSIONS_PER_PERIOD;
+      const periodSessions = isLast ? (sessions - sessionsPerPeriod * (numPeriods - 1)) : sessionsPerPeriod;
       const po = isLast ? (originalPrice - origAlloc)  : Math.round(originalPrice * periodSessions / sessions);
       const pf = isLast ? (finalPrice - finalAlloc)    : Math.round(finalPrice * periodSessions / sessions);
       const pa = isLast ? (allowanceTotal - allowAlloc) : Math.round(allowanceTotal * periodSessions / sessions);
@@ -800,22 +953,24 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
            (id, parent_name, parent_phone, students, coach, coach_id, venue_id, course_type,
             original_price, final_price, transfer_last_5, status, submitted_at,
             total_sessions, used_sessions, period_count, period_number, enrollment_batch_id,
-            checkout_id, payment_method, payer, class_name, allowance_amount, tax_id, level_note,
-            unit_price, work_type, full_sessions, carrier, sync_source, created_by, order_kind)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending_payment',$12,
-                 $13,0,1,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,'replit',$27,$28)`,
+             checkout_id, payment_method, payer, class_name, allowance_amount, tax_id, level_note,
+             unit_price, work_type, full_sessions, carrier, sync_source, created_by, order_kind,
+             purchased_pricing_multiplier)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending_payment',$12,
+                  $13,0,1,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,'replit',$27,$28,$29)`,
         [
           eid, parentName, parentPhone, students, coachName, coachId, venueId, courseType,
           po, pf, last5 || null, submittedAt,
           periodSessions, i + 1, batchId, checkout.checkoutId,
           paymentMethod, payer, className, pa, taxId, levelNote,
-          unitPrice, workType, fullSessions, carrier, createdBy, orderKind,
+          unitPrice, workType, fullSessions, carrier, createdBy, orderKind, purchasedMultiplier,
         ]
       );
       await client.query(
         `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user)
          VALUES ($1, $2, $3)`,
-        [eid, numPeriods > 1 ? `櫃檯手動建檔（第 ${i + 1}/${numPeriods} 期）` : '櫃檯手動建檔', byUser]
+        [eid, (numPeriods > 1 ? `櫃檯手動建檔（第 ${i + 1}/${numPeriods} 期）` : '櫃檯手動建檔')
+          + (hasPurchasePricing && !isTrial ? `；購入修課係數 ${purchasedMultiplier.toFixed(2)}` : ''), byUser]
       );
     }
 
@@ -836,6 +991,7 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
       count: numPeriods,
       enrollment_ids: enrollmentIds,
       status: 'pending_payment',
+      purchased_pricing_multiplier: purchasedMultiplier,
     });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
@@ -845,8 +1001,9 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
     client.release();
   }
 });
+// 🧊 END 手動建檔凍結區
 
-router.get('/', requireAdminAuth, async (req, res) => {
+router.get('/', requireAdminAuth, requireAnyResource('enrollments', 'refund', 'reconcile', 'manual-enroll'), async (req, res) => {
   try {
     const { status, search } = req.query;
     // Task #90：場館範圍 — staff/manager 鎖在自己所屬全部場館；admin 可帶 venueId 自由查
@@ -871,11 +1028,16 @@ router.get('/', requireAdminAuth, async (req, res) => {
       const idx = args.length;
       // 加了 JOIN 之後這些欄位必須指名 ae：admin_users 與 parents 都有 name 之類的同名欄，
       // 不加前綴會變成「模稜兩可的欄位參照」而整支查詢失敗。
+      // 場館比對的是「名稱」而不是 ae.venue_id：venue_id 存的是 'AA'/'B' 這種代碼，
+      // 使用者打的一定是「士林國小」。退費頁的搜尋原本在前端做、比對的是場館名稱，
+      // 改成後端查詢之後若少了這一條，那個既有能力會安靜消失 —— 而畫面只會說「找不到」。
+      // venues.id 是 primary key，LEFT JOIN 不會讓 ae 的列數變多。
       where.push(`(
         LOWER(ae.parent_name) LIKE $${idx} OR
         ae.parent_phone LIKE $${idx} OR
         LOWER(ae.coach) LIKE $${idx} OR
         LOWER(ae.id) LIKE $${idx} OR
+        LOWER(COALESCE(v.name,'')) LIKE $${idx} OR
         EXISTS (SELECT 1 FROM unnest(ae.students) s WHERE LOWER(s) LIKE $${idx})
       )`);
     }
@@ -905,6 +1067,7 @@ router.get('/', requireAdminAuth, async (req, res) => {
                      AND regexp_replace(COALESCE(p.phone,''),'\\D','','g') =
                          regexp_replace(COALESCE(ae.parent_phone,''),'\\D','','g')
                    LEFT JOIN parent_line_profiles plp ON plp.line_uid=p.line_uid
+                   LEFT JOIN venues v ON v.id = ae.venue_id
                  ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
                  ORDER BY ae.submitted_at DESC${tail}`;
     const r = await pool.query(sql, args);
@@ -923,7 +1086,49 @@ router.get('/', requireAdminAuth, async (req, res) => {
 });
 
 // 明細才 best-effort 取 LINE display name；清單絕不會對 LINE API 產生 N+1 calls。
-router.get('/:id', requireAdminAuth, async (req, res) => {
+/**
+ * 儀表板的計數。只回兩個整數，不回列。
+ *
+ * 為什麼要有這支：首頁只要四個數字，原本卻用 enrollmentsApi.list({}) 把正式庫
+ * 1,140 筆（含 4 個 LEFT JOIN 與 students 陣列）整包送進瀏覽器，只為了
+ * .filter(...).length 算出 768。付出一次全表掃描加上幾 MB 傳輸，換回兩個整數；
+ * 連線一慢，第一個看到轉圈或超時的就是登入後的首頁。
+ *
+ * 場館範圍走跟清單同一套 getScopedVenueIds：staff / manager 看到的計數必須只含
+ * 自己的場館。少了這一段，首頁就會變成一道「越權看到全公司數字」的縫 —— 而且
+ * 是最不容易被發現的那種，因為畫面上只是一個數字，沒有任何列可以讓人察覺不對。
+ *
+ * 註冊位置必須在 '/:id' 之前：Express 依序比對，排在後面的話 'stats' 會被當成 id。
+ */
+router.get('/stats', requireAdminAuth, requireAnyResource('enrollments', 'refund', 'reconcile', 'manual-enroll'), async (req, res) => {
+  try {
+    const scope = getScopedVenueIds(req);
+    const where = [];
+    const args = [];
+    if (scope) {
+      args.push(scope);
+      where.push(`ae.venue_id = ANY($${args.length}::text[])`);
+      if (req.query.venueId && scope.includes(String(req.query.venueId))) {
+        args.push(String(req.query.venueId));
+        where.push(`ae.venue_id = $${args.length}`);
+      }
+    } else if (req.query.venueId) {
+      args.push(req.query.venueId);
+      where.push(`ae.venue_id = $${args.length}`);
+    }
+    const r = await pool.query(
+      `SELECT (COUNT(*) FILTER (WHERE ae.status = 'pending_payment'))::int AS pending,
+              (COUNT(*) FILTER (WHERE ae.status IN ('active','confirmed')))::int AS active
+         FROM admin_enrollments ae
+       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}`, args);
+    res.json({ pending: r.rows[0].pending, active: r.rows[0].active });
+  } catch (err) {
+    console.error('[admin/enrollments/stats]', err);
+    res.status(500).json({ error: 'enrollment stats failed' });
+  }
+});
+
+router.get('/:id', requireAdminAuth, requireAnyResource('enrollments', 'refund', 'reconcile'), async (req, res) => {
   try {
     const basic = await readEnrollment(req.params.id);
     if (!basic) return res.status(404).json({ error: '報名不存在' });
@@ -942,12 +1147,13 @@ router.get('/:id', requireAdminAuth, async (req, res) => {
  *             extra_parent_phones[], notes
  * 不可在 cancelled / refunded 狀態下修改（業務資料已結案）。
  */
-router.patch('/:id', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.patch('/:id', requireAdminAuth, requireResource('enrollments'), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const { id } = req.params;
     const body = req.body || {};
+    await lockEnrollmentOperation(client, id);
     const cur = await client.query(`SELECT * FROM admin_enrollments WHERE id = $1 FOR UPDATE`, [id]);
     if (!cur.rowCount) {
       await client.query('ROLLBACK');
@@ -1019,7 +1225,11 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin', 'manager', 'sta
       }
     } else if (body.coach !== undefined) {
       // 向後相容：純文字編輯（不指定 coach_id）
-      coachName = String(body.coach).trim();
+      if (typeof body.coach !== 'string' || body.coach.trim() === '[object Object]') {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: '教練名稱必須是有效文字', code: 'COACH_NAME_INVALID' });
+      }
+      coachName = body.coach.trim();
     }
 
     if (!parentName) { await client.query('ROLLBACK'); return res.status(400).json({ error: '家長姓名必填' }); }
@@ -1181,7 +1391,7 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin', 'manager', 'sta
 });
 
 // 對帳改由「行政櫃檯(staff)」處理（原僅 admin/manager）。退費(F-R04) 不在此調整範圍。
-router.post('/:id/reconcile', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.post('/:id/reconcile', requireAdminAuth, requireResource('reconcile'), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -1207,6 +1417,7 @@ router.post('/:id/reconcile', requireAdminAuth, requireAdminRole('admin', 'manag
       return res.status(400).json({ error: '發票照片必填' });
     }
 
+    await lockEnrollmentOperation(client, id);
     const cur = await client.query(`SELECT * FROM admin_enrollments WHERE id = $1 FOR UPDATE`, [id]);
     if (!cur.rowCount) {
       await client.query('ROLLBACK');
@@ -1221,12 +1432,12 @@ router.post('/:id/reconcile', requireAdminAuth, requireAdminRole('admin', 'manag
       return res.status(400).json({ error: '此筆狀態非待對帳' });
     }
 
-    const settings = await getSettings();
-    const perPeriod = settings.sessions_per_period || 6;
-    // U9：一張報名可購買多期 → 總堂數 = 每期堂數 × 期數（一般報名 period_count 預設 1，行為不變）。
-    const periodCount = Number(cur.rows[0].period_count) || 1;
-    // 試上為明確單次課，不得在對帳時被既有「每期 N 堂」邏輯放大成完整一期。
-    const total = cur.rows[0].order_kind === 'trial' ? 1 : (perPeriod * periodCount);
+    // Sold session counts are transaction snapshots, never current zone quotations.
+    const total = cur.rows[0].order_kind === 'trial' ? 1 : Number(cur.rows[0].total_sessions);
+    if (!Number.isSafeInteger(total) || total <= 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '原訂單堂數缺失，請先核對成交資料', code: 'PURCHASE_SESSION_SNAPSHOT_MISSING' });
+    }
 
     await client.query(
       `UPDATE admin_enrollments
@@ -1322,7 +1533,7 @@ router.post('/:id/reconcile', requireAdminAuth, requireAdminRole('admin', 'manag
     await ensureGroupCoursePeriod(client, cur.rows[0], total);
     // U11 一般報名橋：非團報對帳通過也自動開通 course_period（補回家長/教練/聊天室/學習歷程
     // 讀正式課期的缺口）。與上方團報橋以 group_order_id 守門互斥，不重複建。
-    const reconcileCreatedStudentIds = (await ensureSoloCoursePeriod(client, cur.rows[0], total)) || [];
+    const reconcileCreatedStudentIds = (await ensureSoloCoursePeriod(client, cur.rows[0], total, { byUser: adminActorName(req), byRole: req.adminUser?.role })) || [];
 
     // 家長通知信排進 outbox（COMMIT 前，理由同 checkouts.js）。
     // 這支是 legacy 單筆入口，等同 checkout 版 N=1 的退化情形。
@@ -1372,10 +1583,10 @@ router.post('/:id/reconcile', requireAdminAuth, requireAdminRole('admin', 'manag
  *   Owner 2026-08-12 決定手續費率可由櫃檯逐筆調整（下拉預設值＋可自填）。
  *   偏離全域設定時，退費端點會把「原定 X% → 實用 Y%」寫進 audit log。
  */
-async function computeRefundPreview(id, feeRateOverride = null) {
-  const enrollment = await readEnrollment(id);
+async function computeRefundPreview(id, feeRateOverride = null, feeAmountOverride = null, db = pool) {
+  const enrollment = await readEnrollment(id, { db });
   if (!enrollment) return null;
-  const settings = await getSettings();
+  const settings = await getSettings(db);
   const default_fee_rate = settings.refund_fee_rate ?? 0.1;
   const override = normalizeFeeRate(feeRateOverride);
   const fee_rate = override === null ? default_fee_rate : override;
@@ -1385,11 +1596,10 @@ async function computeRefundPreview(id, feeRateOverride = null) {
   // 預覽與退費都以本期「全部兄弟訂單」為單位：
   //   - 已用堂數＝共用 period 有簽到的堂（DISTINCT session，班級層級，同堂多孩不重複計）
   //   - 退款＝各兄弟訂單 final_price 按同一剩餘比例逐筆計算後加總（逐筆入庫，帳能對回發票）
-  // 試上單防禦：試上訂單也帶 enrollment_batch_id，但其 period 由 solo 分支建立（不寫 batch id）。
-  // 目前查詢會自然落空 fallthrough，但為避免未來 trial period 也寫 batch id 時誤入整批退費，
-  // 明確以 order_kind 排除（試上一律走下方單筆比例公式）。
-  if (!enrollment.group_order_id && enrollment.enrollment_batch_id && enrollment.order_kind !== 'trial') {
-    const sp = await pool.query(
+  // 試上比照正式課（使用者 2026-10-14）：同批同堂的試上共用課期（period 掛 batch id）同樣整班整期退。
+  // 2026-10-14 以前的試上是每人一張課期、不掛 batch id，下方查詢自然落空，仍走單筆比例公式。
+  if (!enrollment.group_order_id && enrollment.enrollment_batch_id) {
+    const sp = await db.query(
       `SELECT cp.id, cp.total_sessions,
               (SELECT COUNT(DISTINCT cs.id)::int
                  FROM course_sessions cs
@@ -1403,7 +1613,7 @@ async function computeRefundPreview(id, feeRateOverride = null) {
       [enrollment.enrollment_batch_id, enrollment.period_number || 1]
     );
     if (sp.rowCount) {
-      const siblings = await pool.query(
+      const siblings = await db.query(
         `SELECT id, final_price::float8 AS final_price
            FROM admin_enrollments
           WHERE enrollment_batch_id = $1 AND COALESCE(period_number, 1) = $2
@@ -1417,14 +1627,11 @@ async function computeRefundPreview(id, feeRateOverride = null) {
         const total = sp.rows[0].total_sessions || settings.sessions_per_period || 6;
         const used = sp.rows[0].used_sessions || 0;
         const remainRatio = Math.max(0, (total - used) / total);
-        const sibling_refunds = siblings.rows.map((row) => ({
-          id: row.id,
-          final_price: Number(row.final_price) || 0,
-          refund_amount: Math.round(Number(row.final_price) * remainRatio * (1 - fee_rate)),
-        }));
+        const amounts = calculateRefundAmounts(siblings.rows, remainRatio, default_fee_rate, feeRateOverride, feeAmountOverride);
+        const { sibling_refunds } = amounts;
         return {
           enrollment, total, used, remainRatio, fee_rate, default_fee_rate,
-          refund_amount: sibling_refunds.reduce((sum, row) => sum + row.refund_amount, 0),
+          ...amounts,
           family_shared: true,
           course_period_id: sp.rows[0].id,
           sibling_refunds,
@@ -1435,33 +1642,95 @@ async function computeRefundPreview(id, feeRateOverride = null) {
     }
   }
 
-  const total = enrollment.total_sessions || settings.sessions_per_period || 6;
-  const used = enrollment.used_sessions || 0;
+  // 團報整團一起退（使用者 2026-10-14：團報沒有單一家退費，要退就整團一起退，之後再各自個別報名）。
+  // 以「同團同期」（group_order_id＋period_number）全部有效訂單為單位，比照上方家庭共班整期退：
+  //   - 已用堂數＝團報共用 period 有出席的堂（DISTINCT session，同堂多人不重複計）
+  //   - 已付款的家庭各自按同一剩餘比例算退款（逐筆入庫，帳能對回各家發票）
+  //   - 尚未付款（pending_payment）的家庭沒有款項可退，退費時一併改為取消
+  // 多期團報每期各自一批訂單，這裡只退本期（與家庭共班「整班整期」一致）。
+  // 只剩本筆一張有效訂單（其他家已退／已取消）時走下方原單筆公式，結果相同。
+  if (enrollment.group_order_id && enrollment.status !== 'pending_payment') {
+    const groupPeriodNumber = enrollment.period_number || 1;
+    const members = await db.query(
+      `SELECT id, status, parent_name, final_price::float8 AS final_price
+         FROM admin_enrollments
+        WHERE group_order_id = $1 AND COALESCE(period_number, 1) = $2
+          AND status NOT IN ('cancelled','refunded')
+        ORDER BY submitted_at, id`,
+      [enrollment.group_order_id, groupPeriodNumber]
+    );
+    if (members.rowCount > 1) {
+      const gp = await db.query(
+        `SELECT cp.id, cp.total_sessions,
+                (SELECT COUNT(DISTINCT cs.id)::int
+                   FROM course_sessions cs
+                   JOIN checkin_records cr ON cr.course_session_id = cs.id
+                  WHERE cs.course_period_id = cp.id
+                    AND cs.status::text NOT LIKE 'cancelled%'
+                    AND cr.attendance_status = 'ATTENDED') AS used_sessions
+           FROM course_periods cp
+          WHERE cp.group_order_id = $1 AND COALESCE(cp.period_number, 1) = $2`,
+        [enrollment.group_order_id, groupPeriodNumber]
+      );
+      if (gp.rowCount > 1) throw Object.assign(new Error('報名對應多筆課程權益，請先人工核對'), { status: 409, code: 'REFUND_PERIOD_AMBIGUOUS' });
+      const total = gp.rows[0]?.total_sessions || enrollment.total_sessions || settings.sessions_per_period || 6;
+      const used = gp.rows[0]?.used_sessions ?? enrollment.used_sessions ?? 0;
+      const remainRatio = Math.max(0, (total - used) / total);
+      const paid = members.rows.filter((row) => row.status !== 'pending_payment');
+      const unpaid = members.rows.filter((row) => row.status === 'pending_payment');
+      const amounts = calculateRefundAmounts(paid, remainRatio, default_fee_rate, feeRateOverride, feeAmountOverride);
+      const parentNames = new Map(members.rows.map((row) => [row.id, row.parent_name || '']));
+      const siblingRefunds = amounts.sibling_refunds.map((row) => ({ ...row, parent_name: parentNames.get(row.id) }));
+      return {
+        enrollment, total, used, remainRatio, fee_rate, default_fee_rate,
+        ...amounts,
+        group_shared: true,
+        course_period_id: gp.rows[0]?.id || null,
+        sibling_refunds: siblingRefunds,
+        sibling_ids: siblingRefunds.map((row) => row.id),
+        cancel_ids: unpaid.map((row) => row.id),
+        cancel_members: unpaid.map((row) => ({ id: row.id, parent_name: row.parent_name || '' })),
+        batch_final_price: siblingRefunds.reduce((sum, row) => sum + row.final_price, 0),
+      };
+    }
+  }
+
+  const realUsage = await db.query(
+    `SELECT cp.total_sessions, COUNT(DISTINCT cs.id) FILTER (
+        WHERE cs.status::text NOT LIKE 'cancelled%' AND cr.attendance_status = 'ATTENDED')::int AS used_sessions
+       FROM course_periods cp
+       LEFT JOIN course_sessions cs ON cs.course_period_id = cp.id
+       LEFT JOIN checkin_records cr ON cr.course_session_id = cs.id
+      WHERE cp.admin_enrollment_id = $1
+         OR ($2::uuid IS NOT NULL AND cp.group_order_id = $2 AND COALESCE(cp.period_number,1) = $3)
+      GROUP BY cp.id`, [id, enrollment.group_order_id || null, enrollment.period_number || 1]);
+  if (realUsage.rowCount > 1) throw Object.assign(new Error('報名對應多筆課程權益，請先人工核對'), { status: 409, code: 'REFUND_PERIOD_AMBIGUOUS' });
+  const total = realUsage.rows[0]?.total_sessions || enrollment.total_sessions || settings.sessions_per_period || 6;
+  const used = realUsage.rows[0]?.used_sessions ?? enrollment.used_sessions ?? 0;
   const remainRatio = Math.max(0, (total - used) / total);
-  const refund_amount = Math.round(enrollment.final_price * remainRatio * (1 - fee_rate));
+  const amounts = calculateRefundAmounts([enrollment], remainRatio, default_fee_rate, feeRateOverride, feeAmountOverride);
   // default_fee_rate 一併回傳：前端要能顯示「原定 10%」，也才能判斷這次有沒有被調過。
-  return { enrollment, total, used, remainRatio, fee_rate, default_fee_rate, refund_amount };
+  return { enrollment, total, used, remainRatio, fee_rate, default_fee_rate, ...amounts };
 }
 
 // 退費試算與執行都開放 staff（櫃檯）。兩支必須一起開 —— 只開 refund 不開 preview 的話
 // 櫃檯打得開頁面但看不到試算金額，等於功能沒開。
-router.get('/:id/refund-preview', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.get('/:id/refund-preview', requireAdminAuth, requireResource('refund'), async (req, res) => {
   try {
-    // ?fee_rate= 讓櫃檯調整手續費率後即時重算金額。不合法的值（非數字、負數、>1）
-    // 由 normalizeFeeRate 回 null，等同沒給 → 退回全域設定，不會算出負的退款。
-    const preview = await computeRefundPreview(req.params.id, req.query.fee_rate);
+    // 試算與執行共用同一個手續費驗證及金額計算。
+    const preview = await computeRefundPreview(req.params.id, req.query.fee_rate, req.query.fee_amount);
     if (!preview) return res.status(404).json({ error: 'enrollment not found' });
     if (!isVenueInScope(req, preview.enrollment.venue_id)) {
       return res.status(403).json({ error: '此報名不在您的場館範圍內' });
     }
     res.json(preview);
   } catch (err) {
-    console.error('[admin/enrollments/:id/refund-preview]', err);
-    res.status(500).json({ error: 'preview failed' });
+    if (err.status !== 400) console.error('[admin/enrollments/:id/refund-preview]', err);
+    res.status([400, 409].includes(err.status) ? err.status : 500).json({ error: [400, 409].includes(err.status) ? err.message : 'preview failed', ...(err.status === 409 ? { code: err.code } : {}) });
   }
 });
 
-router.post('/:id/refund', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.post('/:id/refund', requireAdminAuth, requireResource('refund'), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -1493,17 +1762,19 @@ router.post('/:id/refund', requireAdminAuth, requireAdminRole('admin', 'manager'
     // 之後要拆回來統計時 label 前綴是穩定的。
     const reason = category ? `${refundReasonLabel(category)}｜${detail}` : legacyReason;
 
-    const by = (req.body && req.body.by) || req.adminUser?.name || req.adminUser?.username || 'unknown';
+    const by = req.adminUser?.name || req.adminUser?.username || 'unknown';
 
     // ── 手續費率覆寫 ──
     // 櫃檯可逐筆調整（Owner 決定：下拉預設值＋可自填）。這會直接改變退款金額，
     // 所以偏離全域設定時一定要在 audit log 留下痕跡與操作者。
-    const feeOverride = normalizeFeeRate(body.fee_rate);
-    const preview = await computeRefundPreview(id, feeOverride);
+    const refundPeriods = await lockRefundPeriods(client, id);
+    const preview = await computeRefundPreview(id, body.fee_rate, body.fee_amount, client);
     // 手續費率被調過時，audit log 的 action 要看得出「原定多少、實際用多少」。
     // 只比對 preview 回來的兩個值，不信任前端送的數字。
     const pct = (r) => `${Math.round(Number(r) * 1000) / 10}%`;
-    const feeNote = preview && preview.fee_rate !== preview.default_fee_rate
+    const feeNote = preview?.fee_mode === 'amount'
+      ? `，固定手續費 ${preview.fee_amount} 元（整期一次，由 ${by} 調整）`
+      : preview && preview.fee_rate !== preview.default_fee_rate
       ? `，手續費率 ${pct(preview.default_fee_rate)} → ${pct(preview.fee_rate)}（由 ${by} 調整）`
       : '';
     if (!preview) {
@@ -1519,6 +1790,10 @@ router.post('/:id/refund', requireAdminAuth, requireAdminRole('admin', 'manager'
       return res.status(400).json({ error: `狀態 ${preview.enrollment.status} 的報名不可退費` });
     }
 
+    if (body.expected_refund_amount !== undefined && body.expected_refund_amount !== preview.refund_amount) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '退款金額已變動，請重新試算後確認' });
+    }
     if (preview.family_shared) {
       // U12 家庭共班：退費一律「整班整期」——本期全部兄弟訂單同交易一起退，
       // 共用 period 轉 refunded、未來未上課的課堂取消並釋出教練時段。
@@ -1538,12 +1813,16 @@ router.post('/:id/refund', requireAdminAuth, requireAdminRole('admin', 'manager'
         await client.query('ROLLBACK');
         return res.status(400).json({ error: '本期兄弟訂單皆已退費/取消，無可退項目' });
       }
+      if (refundable.size !== preview.sibling_ids.length) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: '本期訂單已變動，請重新試算後確認' });
+      }
       const applied = preview.sibling_refunds.filter((row) => refundable.has(row.id));
       const appliedTotal = applied.reduce((sum, row) => sum + row.refund_amount, 0);
       for (const sib of applied) {
         await client.query(
-          `UPDATE admin_enrollments SET status = 'refunded', refund_amount = $2, refunded_at = NOW(), updated_at = NOW() WHERE id = $1`,
-          [sib.id, sib.refund_amount]
+          `UPDATE admin_enrollments SET status = 'refunded', refund_amount = $2, used_sessions = $3, refunded_at = NOW(), updated_at = NOW() WHERE id = $1`,
+          [sib.id, sib.refund_amount, preview.used]
         );
         await promotions.revertUsage({ adminEnrollmentId: sib.id }, client);
         await client.query(
@@ -1554,27 +1833,7 @@ router.post('/:id/refund', requireAdminAuth, requireAdminRole('admin', 'manager'
            by, reason, sib.refund_amount]
         );
       }
-      // 釋出未來已排課堂占用的教練時段，再取消課堂（已上完的課保留紀錄）。
-      await client.query(
-        `UPDATE coach_availability_slots
-            SET status = 'available', booked_session_id = NULL, updated_at = NOW()
-          WHERE booked_session_id IN (
-            SELECT id FROM course_sessions
-             WHERE course_period_id = $1 AND scheduled_at > NOW()
-               AND status IN ('confirmed','pending_group_confirm'))`,
-        [preview.course_period_id]
-      );
-      await client.query(
-        `UPDATE course_sessions
-            SET status = 'cancelled_normal', cancelled_at = NOW(), updated_at = NOW()
-          WHERE course_period_id = $1 AND scheduled_at > NOW()
-            AND status IN ('confirmed','pending_group_confirm')`,
-        [preview.course_period_id]
-      );
-      await client.query(
-        `UPDATE course_periods SET status = 'refunded', updated_at = NOW() WHERE id = $1`,
-        [preview.course_period_id]
-      );
+      await revokeRefundedPeriods(client, refundPeriods);
       await client.query('COMMIT');
 
       const updated = await readEnrollment(id);
@@ -1587,11 +1846,101 @@ router.post('/:id/refund', requireAdminAuth, requireAdminRole('admin', 'manager'
       });
     }
 
-    await client.query(
-      `UPDATE admin_enrollments SET status = 'refunded', refund_amount = $2, refunded_at = NOW(), updated_at = NOW() WHERE id = $1`,
-      [id, preview.refund_amount]
+    if (preview.group_shared) {
+      // 團報整團一起退（使用者 2026-10-14）：同團同期全部有效訂單同一交易處理——
+      // 已付款→退費（各自金額）、未付款→取消。FOR UPDATE 鎖住整批，並發重複退費會等前一筆
+      // COMMIT；試算後名單有任何變動（有人已退／已取消／新加入／付款狀態改變）一律 409 請櫃檯重算。
+      const groupPeriodNumber = preview.enrollment.period_number || 1;
+      const expectedIds = [...preview.sibling_ids, ...preview.cancel_ids];
+      const locked = await client.query(
+        `SELECT id, status, checkout_id FROM admin_enrollments WHERE id = ANY($1::text[]) FOR UPDATE`,
+        [expectedIds]
+      );
+      const current = await client.query(
+        `SELECT id FROM admin_enrollments
+          WHERE group_order_id = $1 AND COALESCE(period_number, 1) = $2
+            AND status NOT IN ('cancelled','refunded')`,
+        [preview.enrollment.group_order_id, groupPeriodNumber]
+      );
+      const lockedById = new Map(locked.rows.map((row) => [row.id, row]));
+      const unchanged = locked.rowCount === expectedIds.length
+        && current.rowCount === expectedIds.length
+        && preview.sibling_ids.every((sid) => {
+          const row = lockedById.get(sid);
+          return row && !['refunded', 'cancelled', 'pending_payment'].includes(row.status);
+        })
+        && preview.cancel_ids.every((cid) => lockedById.get(cid)?.status === 'pending_payment');
+      if (!unchanged) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: '本團訂單已變動，請重新試算後確認' });
+      }
+      const groupTotal = preview.sibling_refunds.reduce((sum, row) => sum + row.refund_amount, 0);
+      for (const sib of preview.sibling_refunds) {
+        await client.query(
+          `UPDATE admin_enrollments SET status = 'refunded', refund_amount = $2, used_sessions = $3, refunded_at = NOW(), updated_at = NOW() WHERE id = $1`,
+          [sib.id, sib.refund_amount, preview.used]
+        );
+        await promotions.revertUsage({ adminEnrollmentId: sib.id }, client);
+        await client.query(
+          `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user, reason, refund_amount)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [sib.id,
+           `退課（團報整團退費，理由：${reason}，本筆退款 NT$ ${sib.refund_amount.toLocaleString()}，全團合計 NT$ ${groupTotal.toLocaleString()}${feeNote}）`,
+           by, reason, sib.refund_amount]
+        );
+      }
+      for (const cid of preview.cancel_ids) {
+        await client.query(`UPDATE admin_enrollments SET status = 'cancelled', updated_at = NOW() WHERE id = $1`, [cid]);
+        // 與 POST /:id/cancel 相同：付款單底下已無有效訂單時，付款單一併轉取消。
+        const checkoutId = lockedById.get(cid)?.checkout_id;
+        if (checkoutId) {
+          await client.query(
+            `UPDATE checkout_sessions cs
+                SET payment_status = CASE
+                      WHEN NOT EXISTS (
+                        SELECT 1 FROM admin_enrollments ae
+                         WHERE ae.checkout_id = cs.checkout_id AND ae.id <> $2 AND ae.status <> 'cancelled'
+                      ) THEN 'cancelled' ELSE cs.payment_status END,
+                    current_route_state = CASE
+                      WHEN NOT EXISTS (
+                        SELECT 1 FROM admin_enrollments ae
+                         WHERE ae.checkout_id = cs.checkout_id AND ae.id <> $2 AND ae.status <> 'cancelled'
+                      ) THEN 'cancelled' ELSE cs.current_route_state END,
+                    updated_at = NOW()
+              WHERE cs.checkout_id = $1`,
+            [checkoutId, cid]
+          );
+        }
+        await client.query(
+          `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user, reason)
+           VALUES ($1, $2, $3, $4)`,
+          [cid, `取消報名（團報整團退費時尚未付款，理由：${reason}）`, by, reason]
+        );
+      }
+      await revokeRefundedPeriods(client, refundPeriods);
+      await client.query('COMMIT');
+
+      const updated = await readEnrollment(id);
+      return res.json({
+        ...updated,
+        refund_amount: groupTotal,
+        group_shared: true,
+        refunded_enrollment_ids: preview.sibling_ids,
+        cancelled_enrollment_ids: preview.cancel_ids,
+        sibling_refunds: preview.sibling_refunds,
+      });
+    }
+
+    const refunded = await client.query(
+      `UPDATE admin_enrollments SET status = 'refunded', refund_amount = $2, used_sessions = $3, refunded_at = NOW(), updated_at = NOW() WHERE id = $1 AND status NOT IN ('refunded','cancelled') RETURNING id`,
+      [id, preview.refund_amount, preview.used]
     );
+    if (!refunded.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '訂單已退費或取消，請重新整理' });
+    }
     // 退費即釋放此報名占用的優惠用量（同交易內，以 admin_enrollment_id 冪等；無 usage 則 no-op）。
+    await revokeRefundedPeriods(client, refundPeriods);
     await promotions.revertUsage({ adminEnrollmentId: id }, client);
     await client.query(
       `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user, reason, refund_amount)
@@ -1604,8 +1953,8 @@ router.post('/:id/refund', requireAdminAuth, requireAdminRole('admin', 'manager'
     res.json({ ...updated, refund_amount: preview.refund_amount });
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('[admin/enrollments/:id/refund]', err);
-    res.status(500).json({ error: 'refund failed' });
+    if (err.status !== 400) console.error('[admin/enrollments/:id/refund]', err);
+    res.status([400, 409].includes(err.status) ? err.status : 500).json({ error: [400, 409].includes(err.status) ? err.message : 'refund failed', ...(err.status === 409 ? { code: err.code } : {}) });
   } finally {
     client.release();
   }
@@ -1615,7 +1964,7 @@ router.post('/:id/refund', requireAdminAuth, requireAdminRole('admin', 'manager'
  * POST /api/admin/enrollments/:id/cancel  — F-M02 待對帳清單的「取消」操作
  * 僅能取消仍在待對帳（pending_payment）狀態的報名；已對帳/已退費/已取消不可重複取消。
  */
-router.post('/:id/cancel', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.post('/:id/cancel', requireAdminAuth, requireResource('reconcile'), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -1695,7 +2044,7 @@ router.post('/:id/cancel', requireAdminAuth, requireAdminRole('admin', 'manager'
 // 是鎖死的（PAYMENT_LOCKED），不清空家長改不了。
 // 付款資料屬 checkout 層級（見 courses.js payment-proof 的 updateEnrollmentWhere），
 // 故有 checkout_id 時一併把該 checkout 的付款欄位與狀態退回。
-router.post('/:id/return-for-fix', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.post('/:id/return-for-fix', requireAdminAuth, requireResource('reconcile'), async (req, res) => {
   const reason = (req.body && typeof req.body.reason === 'string') ? req.body.reason.trim() : '';
   if (!reason) return res.status(400).json({ error: '請填寫退回原因', code: 'REASON_REQUIRED' });
   const by = req.adminUser?.name || req.adminUser?.username || 'unknown';
@@ -1749,10 +2098,14 @@ router.post('/:id/return-for-fix', requireAdminAuth, requireAdminRole('admin', '
     );
 
     const p = await client.query(
-      `SELECT line_uid FROM parents WHERE phone = $1 AND line_uid IS NOT NULL LIMIT 1`,
+      `SELECT id FROM parents WHERE phone = $1 AND line_uid IS NOT NULL LIMIT 1`,
       [row.parent_phone]
     );
-    notify = { uid: p.rows[0]?.line_uid || null, venueId: row.venue_id, enrollmentId: row.id };
+    // 發給全家（家庭帳號，規格 §6：成員也能補傳付款證明）；開關沒開＝原本的家長
+    const recipients = p.rowCount
+      ? await require('../../services/familyScope').familyRecipients([p.rows[0].id], client)
+      : [];
+    notify = { uids: recipients.map((x) => x.line_uid).filter(Boolean), venueId: row.venue_id, enrollmentId: row.id };
 
     await client.query('COMMIT');
     res.json(await readEnrollment(row.id));
@@ -1766,15 +2119,17 @@ router.post('/:id/return-for-fix', requireAdminAuth, requireAdminRole('admin', '
 
   // best-effort 通知家長（交易外；失敗只記 log，不影響已落地的退回結果）
   // line 沿用本檔既有的 lazy require 慣例（見 reconcile 內），不動模組載入順序。
-  if (notify && notify.uid) {
+  if (notify && notify.uids && notify.uids.length) {
     const line = require('../../services/line');
     const liffUrl = `${process.env.LIFF_URL_PARENT || process.env.LIFF_URL || 'https://liff.line.me/-'}/enroll-status/${notify.enrollmentId}`;
-    line.pushMessage(notify.uid, line.templates.returnedForFix({
-      title: '您的報名已退回補件',
-      reason,
-      hint: '原本的轉帳末 5 碼與匯款證明已清空，請重新填寫並上傳。',
-      liffUrl,
-    }), notify.venueId).catch((e) => console.warn('[enrollment return-for-fix push]', e.message));
+    for (const uid of notify.uids) {
+      line.pushMessage(uid, line.templates.returnedForFix({
+        title: '您的報名已退回補件',
+        reason,
+        hint: '原本的轉帳末 5 碼與匯款證明已清空，請重新填寫並上傳。',
+        liffUrl,
+      }), notify.venueId).catch((e) => console.warn('[enrollment return-for-fix push]', e.message));
+    }
   }
 });
 

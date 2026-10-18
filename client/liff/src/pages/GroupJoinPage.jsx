@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { groupOrdersApi } from '../api/groupOrders';
+import { useGuideDemo, demoGroup, demoStudent } from '../utils/guideDemo';
 import GroupMemberFields, { memberFieldsReady, memberFieldsPayload } from '../components/group/GroupMemberFields';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useAuth } from '../context/AuthContext';
@@ -26,18 +27,20 @@ function JoinIcon() {
 }
 
 export default function GroupJoinPage() {
+  const guide = useGuideDemo();
   const { token } = useParams();
   const navigate = useNavigate();
   const toast = useToast();
   const { isAuthed, role } = useAuth();
   const authedParent = isAuthed && role === 'parent';
 
-  const [preview, setPreview] = useState(undefined); // undefined=loading, null=error
-  const [fields, setFields] = useState({ studentIds: [], newStudents: [], proofUrl: '' });
+  const [preview, setPreview] = useState(() => guide ? demoGroup(guide, true) : undefined); // undefined=loading, null=error
+  const [fields, setFields] = useState({ studentIds: [], newStudents: guide ? [demoStudent] : [], proofUrl: '' });
   const [joining, setJoining] = useState(false);
   const [joinError, setJoinError] = useState('');
 
   useEffect(() => {
+    if (guide) { setPreview(demoGroup(guide, true)); return; }
     let alive = true;
     groupOrdersApi.preview(token)
       .then((d) => alive && setPreview(d || null))
@@ -46,8 +49,9 @@ export default function GroupJoinPage() {
   }, [token]);
 
   // 已是團員 → 直接導去團購狀態頁（取代舊版「查看團購狀態」連結）。
+  // 家人已在團內（family_member_joined）不跳轉：留在這頁說明為什麼不能加入（規格 §8、決策 6）。
   useEffect(() => {
-    if (preview && preview.already_member) {
+    if (preview && preview.already_member && !preview.family_member_joined) {
       navigate(`/group/${preview.id}`, { replace: true });
     }
   }, [preview, navigate]);
@@ -59,6 +63,17 @@ export default function GroupJoinPage() {
         <div className="mb-3 text-sm text-brand-error">邀請碼無效或團購不存在</div>
         <button type="button" onClick={() => navigate('/', { replace: true })}
           className="rounded-lg bg-brand-primary px-4 py-2 text-sm font-bold text-white">回首頁</button>
+      </div>
+    );
+  }
+  if (preview.family_member_joined) {
+    return (
+      <div className="px-4 py-10 text-center">
+        <div className="mb-3 text-3xl">👨‍👩‍👧</div>
+        <h3 className="text-sm font-bold text-gray-700">您的家人已加入此團</h3>
+        <p className="mt-1 text-xs leading-5 text-gray-500">同一個家庭在同一團只算一戶，不能再用另一個帳號加入。要幫家人付款或查看進度，可以到團購狀態頁。</p>
+        <button type="button" onClick={() => navigate(`/group/${preview.id}`, { replace: true })}
+          className="mt-4 rounded-lg bg-brand-primary px-4 py-2 text-sm font-bold text-white">查看團購狀態</button>
       </div>
     );
   }
@@ -80,6 +95,7 @@ export default function GroupJoinPage() {
   }
 
   function goLoginAndJoin() {
+    if (guide) return;
     setAfterAuth(`/group/join/${token}`);
     navigate('/login', { state: { from: { pathname: `/group/join/${token}` } } });
   }
@@ -87,6 +103,7 @@ export default function GroupJoinPage() {
   const canJoin = authedParent && memberFieldsReady(fields) && !joining;
 
   async function handleJoin() {
+    if (guide) return;
     if (!canJoin) return;
     setJoinError('');
     setJoining(true);
@@ -112,7 +129,7 @@ export default function GroupJoinPage() {
       <div className="mb-4 rounded-xl border border-brand-teal/30 bg-brand-teal/5 p-3">
         <h2 className="text-sm font-bold text-brand-primary">{courseTypeLabel(preview.course_type)} 團購</h2>
         <p className="mt-1 text-xs text-gray-600">
-          目前 <span className="font-bold">{preview.total_students}</span> 人，需 {preview.min_students}–{preview.max_students} 人成團
+          目前 <span className="font-bold">{preview.total_students}</span> 人，需 {preview.max_students} 人成團
         </p>
         <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-gray-100">
           <div className={`h-full rounded-full ${reachedMin ? 'bg-brand-green' : 'bg-brand-gold'}`}
@@ -151,12 +168,12 @@ export default function GroupJoinPage() {
         </div>
       ) : authedParent ? (
         <>
-          <GroupMemberFields
+          <div data-guide-group-join><GroupMemberFields
             value={fields}
             onChange={(next) => { setJoinError(''); setFields(next); }}
             maxStudents={Math.max(0, (preview.max_students || 0) - (preview.total_students || 0))}
             error={joinError}
-          />
+          /></div>
           <button
             type="button"
             disabled={!canJoin}

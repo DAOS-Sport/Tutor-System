@@ -14,6 +14,7 @@ const multer = require('multer');
 const { pool } = require('../models/db');
 const { requireLiffUser } = require('../middlewares/parentAuth');
 const chatRooms = require('../services/chatRooms');
+const familyScope = require('../services/familyScope');
 const { saveBuffer, ALLOWED_MAX_BYTES } = require('../services/objectStorage');
 const { scanAndAlert } = require('../services/keywordScanner');
 const { broadcastMessage, broadcastRead } = require('../services/websocket');
@@ -31,6 +32,7 @@ async function authzRoom(req, res, next) {
     roomId: req.params.id,
     role: req.liffUser.type,
     userId: req.liffUser.id,
+    phone: req.liffUser.phone,
   });
   if (!ok) return res.status(403).json({ error: '無權限存取此聊天室' });
   next();
@@ -85,10 +87,16 @@ async function withSenderDisplayNames(roomId, rows) {
   }));
 }
 
+// 家長端的家庭範圍（家庭帳號，規格 §5）；教練回空陣列
+async function liffParentIds(req) {
+  if (req.liffUser?.type !== 'parent') return [];
+  return (await familyScope.scopeFor({ id: req.liffUser.id, phone: req.liffUser.phone })).parentIds;
+}
+
 router.get('/rooms', requireLiffUser, async (req, res) => {
   try {
     const list = req.liffUser.type === 'parent'
-      ? await chatRooms.listRoomsForParent(req.liffUser.id)
+      ? await chatRooms.listRoomsForParent(req.liffUser.id, await liffParentIds(req))
       : await chatRooms.listRoomsForCoach(req.liffUser.id);
     res.json(list);
   } catch (err) {
@@ -116,8 +124,8 @@ router.get('/period/:coursePeriodId/room', requireLiffUser, async (req, res) => 
           JOIN students s ON s.id = e.student_id
          WHERE e.course_period_id = $1
            AND e.status = 'active'
-           AND s.parent_id = $2`,
-        [periodId, req.liffUser.id]
+           AND s.parent_id::text = ANY($2::text[])`,
+        [periodId, (await liffParentIds(req)).map(String)]
       );
       allowed = own.rowCount > 0;
     }

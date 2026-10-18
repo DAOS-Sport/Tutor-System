@@ -19,10 +19,13 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 async function resolveCoachMultiplier(coachId, clientMultiplier) {
   if (coachId && UUID_RE.test(String(coachId))) {
     try {
-      const r = await pool.query(`SELECT pricing_multiplier FROM coaches WHERE id = $1`, [String(coachId)]);
-      if (r.rowCount && r.rows[0].pricing_multiplier != null) return Number(r.rows[0].pricing_multiplier);
+      const r = await pool.query(`SELECT COALESCE(s.multiplier, c.pricing_multiplier) AS pricing_multiplier
+        FROM coaches c LEFT JOIN admin_staff s ON s.id = c.ragic_employee_id WHERE c.id = $1`, [String(coachId)]);
+      const value = r.rows[0]?.pricing_multiplier == null ? null : Number(r.rows[0].pricing_multiplier);
+      return Number.isFinite(value) && value > 0 ? value : null;
     } catch (err) {
       console.warn('[preview resolveCoachMultiplier]', err.message);
+      return null;
     }
   }
   return clientMultiplier != null ? Number(clientMultiplier) : null;
@@ -56,10 +59,13 @@ router.get('/', async (req, res) => {
 router.post('/preview', optionalParent, async (req, res) => {
   try {
     const { originalPrice, courseType, venueId, periodCount, couponCode, coachMultiplier, coachId } = req.body || {};
-    if (!originalPrice || !courseType) {
+    if (originalPrice === null || originalPrice === undefined || originalPrice === '' || !Number.isFinite(Number(originalPrice)) || Number(originalPrice) < 0 || !courseType) {
       return res.status(400).json({ error: 'originalPrice / courseType 必填' });
     }
     const effectiveMultiplier = await resolveCoachMultiplier(coachId, coachMultiplier);
+    if (coachId && (!Number.isFinite(effectiveMultiplier) || effectiveMultiplier <= 0)) {
+      return res.status(409).json({ error: '教練修課係數尚未設定', code: 'COACH_MULTIPLIER_UNAVAILABLE' });
+    }
     const r = await promotions.previewBestDiscount({
       originalPrice: Number(originalPrice),
       courseType: Number(courseType),

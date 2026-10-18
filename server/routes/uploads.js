@@ -12,6 +12,7 @@ const multer = require('multer');
 const { requireParent } = require('../middlewares/parentAuth');
 const { processReceiptImage } = require('../services/receiptImage');
 const { pool } = require('../models/db');
+const familyScope = require('../services/familyScope');
 
 const router = express.Router();
 const PROOF_MAX_BYTES = 5 * 1024 * 1024;
@@ -41,35 +42,39 @@ async function resolveOwnedTarget(req) {
     throw error;
   }
 
+  // 家人可以幫忙付款（規格 §2）：本人擴大成全家（開關沒開或沒有家庭時就是只有本人）
+  const scope = await familyScope.forRequest(req);
+  const parentIds = scope.parentIds.map(String);
+  const phones = scope.phones;
   let owned = false;
   if (targetType === 'checkout') {
     const result = await pool.query(
       `SELECT 1 FROM checkout_sessions cs
         WHERE cs.checkout_id::text = $1
           AND (
-            cs.parent_id = $2
+            cs.parent_id::text = ANY($2::text[])
             OR EXISTS (
               SELECT 1 FROM admin_enrollments ae
                WHERE ae.checkout_id = cs.checkout_id
-                 AND (ae.parent_phone = $3 OR $3 = ANY(COALESCE(ae.extra_parent_phones, '{}')))
+                 AND (ae.parent_phone = ANY($3::text[]) OR COALESCE(ae.extra_parent_phones, '{}') && $3::text[])
             )
           )`,
-      [targetId, req.parent.id, req.parent.phone],
+      [targetId, parentIds, phones],
     );
     owned = result.rowCount > 0;
   } else if (targetType === 'enrollment') {
     const result = await pool.query(
       `SELECT 1 FROM admin_enrollments
         WHERE id = $1
-          AND (parent_phone = $2 OR $2 = ANY(COALESCE(extra_parent_phones, '{}')))`,
-      [targetId, req.parent.phone],
+          AND (parent_phone = ANY($2::text[]) OR COALESCE(extra_parent_phones, '{}') && $2::text[])`,
+      [targetId, phones],
     );
     owned = result.rowCount > 0;
   } else {
     const result = await pool.query(
       `SELECT 1 FROM group_order_members
-        WHERE group_order_id::text = $1 AND parent_id = $2`,
-      [targetId, req.parent.id],
+        WHERE group_order_id::text = $1 AND parent_id::text = ANY($2::text[])`,
+      [targetId, parentIds],
     );
     owned = result.rowCount > 0;
   }

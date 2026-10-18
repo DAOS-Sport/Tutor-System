@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { shouldCloseOnOutsidePointer } from './outsideClose.js';
 
 /**
  * 共用日期／時間選擇器（取代原生 <input type="date|time|datetime-local">）
@@ -23,6 +24,66 @@ import React, { useEffect, useRef, useState } from 'react';
 const WEEKDAY = ['日', '一', '二', '三', '四', '五', '六'];
 const MONTHS = ['1 月', '2 月', '3 月', '4 月', '5 月', '6 月', '7 月', '8 月', '9 月', '10 月', '11 月', '12 月'];
 const pad2 = (n) => String(n).padStart(2, '0');
+
+// 診斷模式：只有網址帶 ?pickerdebug=1 才啟用。沒帶就完全不做事。
+// 用途見檔案底部的浮層：家長回報「填完月份就跳掉」在桌機重現不出來，
+// 需要現場的事件紀錄才能確定是什麼把面板關掉的。
+const PICKER_DEBUG = (() => {
+  try {
+    return typeof window !== 'undefined' && /[?&]pickerdebug=1/.test(window.location.search || '');
+  } catch { return false; }
+})();
+
+// 一次頁面載入最多回報 3 筆。診斷不該變成另一個問題。
+let _reportsLeft = 3;
+
+/**
+ * 把「面板異常關閉」的現場送回伺服器。
+ *
+ * 為什麼要這個：家長回報「註冊填生日就跳掉」，查了好幾週查不到任何東西 ——
+ * 畫面在送出前就壞了，伺服器端沒收到請求，當然沒有 log。
+ * 八月有 71 人登入 LINE 之後從未完成建檔（24%），全部沒有痕跡。
+ *
+ * 只送「發生了什麼」（事件分類、目標元素的標籤名），
+ * 不送使用者填了什麼 —— 沒有姓名、沒有生日、沒有電話。
+ * 失敗一律安靜：診斷回報自己出錯，絕不可以影響正在註冊的家長。
+ */
+function reportPickerAnomaly(kind, reason, events) {
+  if (_reportsLeft <= 0) return;
+  _reportsLeft -= 1;
+  try {
+    const payload = JSON.stringify({
+      kind,
+      reason: String(reason || '').slice(0, 60),
+      path: (typeof window !== 'undefined' && window.location.pathname) || '',
+      events: (events || []).slice(-20),
+    });
+    const url = '/api/diagnostics/client';
+    // sendBeacon 在頁面被關掉時仍送得出去 —— 而「畫面跳掉」正是這種情境。
+    if (typeof navigator !== 'undefined' && navigator.sendBeacon) {
+      navigator.sendBeacon(url, new Blob([payload], { type: 'application/json' }));
+      return;
+    }
+    fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: payload, keepalive: true }).catch(() => {});
+  } catch { /* 診斷失敗不影響任何事 */ }
+}
+
+function describeTarget(t) {
+  try {
+    if (t == null) return String(t);
+    if (typeof t !== 'object') return typeof t;
+    if (typeof document !== 'undefined') {
+      if (t === document) return 'document';
+      if (t === document.body) return 'body';
+      if (t === document.documentElement) return 'html';
+    }
+    const tag = (t.tagName || t.nodeName || '?').toLowerCase();
+    const cls = String(t.className || '').split(/\s+/).filter(Boolean).slice(0, 2).join('.');
+    const conn = t.isConnected === false ? ' 已移除' : '';
+    return tag + (cls ? '.' + cls : '') + conn;
+  } catch { return '(讀不到)'; }
+}
 
 const RE = {
   date: /^(\d{4})-(\d{2})-(\d{2})$/,
@@ -95,6 +156,54 @@ export default function DateTimePicker({
   const [open, setOpen] = useState(false);
   const [pickingMonth, setPickingMonth] = useState(false);
   const boxRef = useRef(null);
+  const yearListRef = useRef(null);
+  const [debugLog, setDebugLog] = useState([]);
+  // 事件軌跡一律收集（記憶體裡，上限 20 筆）。只有偵測到異常時才會送出去；
+  // 只有加了 ?pickerdebug=1 才會畫在畫面上。
+  const trailRef = useRef([]);
+  const cancelledRef = useRef(false);
+  const pickedRef = useRef(false);    // 這次開啟有沒有真的選到日期
+  const engagedRef = useRef(false);   // 有沒有選過年或月（＝正在填，不是隨手點開）
+  // iOS 的 App 內建瀏覽器（LINE / Instagram / IG）在點擊後會補送一顆「模擬點擊」，
+  // 座標停在剛才被點的位置。選完「月」會把月份格換成日期格、面板高度與位置一變，
+  // 那顆遲來的點擊就落到了觸發鈕上，把面板 toggle 關掉 —— 家長看到的「填完月份就跳掉」。
+  // 診斷留證 client_diagnostics 連續 16 筆全 iOS、全『選完月就關』，桌機/Android 不會犯。
+  // 這裡記下選年/月的時間，之後極短窗內把「會關閉面板」的觸發吃掉。
+  const lastGridPickAt = useRef(0);
+  const GRID_ECHO_MS = 500;   // 模擬點擊實測落在 ~300-350ms，取 500 有餘裕又不擋真人操作
+  const withinGridEcho = () => Date.now() - lastGridPickAt.current < GRID_ECHO_MS;
+  const wasOpenRef = useRef(false);
+  const note = (line) => {
+    trailRef.current = [...trailRef.current.slice(-19), line];
+    if (PICKER_DEBUG) setDebugLog((prev) => [...prev.slice(-11), line]);
+  };
+
+  // 診斷用：mousedown 已經不再拿來關面板了，但還是被動記下來 ——
+  // 「WebView 在原生 select 對話框關閉後補送一顆 target=body 的 mousedown」
+  // 是目前對「填完月份就跳掉」的假設，這裡就是要驗證它到底有沒有發生。
+  useEffect(() => {
+    if (!open) return undefined;
+    const onMouse = (e) => note('mousedown ← ' + describeTarget(e.target));
+    const onPointer = (e) => note('pointerdown ← ' + describeTarget(e.target));
+    document.addEventListener('mousedown', onMouse, true);
+    document.addEventListener('pointerdown', onPointer, true);
+    return () => {
+      document.removeEventListener('mousedown', onMouse, true);
+      document.removeEventListener('pointerdown', onPointer, true);
+    };
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 年份清單可能有一百項。展開年月面板時把目前選到的年份捲到中間，
+  // 否則使用者一打開看到的是清單頂端，還要自己捲很久才找得到。
+  useEffect(() => {
+    if (!pickingMonth) return;
+    const list = yearListRef.current;
+    if (!list) return;
+    const target = list.querySelector('[data-year="' + viewY + '"]');
+    if (target && typeof target.scrollIntoView === 'function') {
+      target.scrollIntoView({ block: 'center' });
+    }
+  }, [pickingMonth]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const parsed = parse(value, mode);
   const minP = parse(min, mode);
@@ -121,12 +230,101 @@ export default function DateTimePicker({
 
   useEffect(() => {
     if (!open) return undefined;
-    const onDown = (e) => { if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false); };
-    const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
-    document.addEventListener('mousedown', onDown);
+    // pointerdown 而不是 mousedown：它跟著真實的指標輸入走。
+    // LINE 的內建瀏覽器把原生 <select>（面板裡的年份）開成系統對話框，
+    // 對話框關閉時 WebView 會補送一顆 mousedown，target 是 document/body，
+    // 舊寫法會把它當成「點到面板外面」而關掉面板 —— 家長回報的
+    // 「註冊填生日、填完月份就跳掉」對得上這條路徑（桌機重現不出來，
+    // 因為桌機的 select 是行內下拉，不會有系統對話框）。
+    // 判斷條件見 outsideClose.js，那裡有測試守著。
+    const onDown = (e) => {
+      if (shouldCloseOnOutsidePointer(boxRef.current, e.target)) {
+        if (withinGridEcho()) return;
+        cancelledRef.current = true;
+        note('★ 判定為點到外面 → 關閉（' + describeTarget(e.target) + '）');
+        setOpen(false);
+      } else if (!boxRef.current || !boxRef.current.contains(e.target)) {
+        // 守門把它攔下來了。這一筆很重要：如果家長的現場真的會出現
+        // target=body / 已移除節點的事件，這裡就是唯一的證據。
+        note('守門攔下（' + describeTarget(e.target) + '）');
+      }
+    };
+    const onKey = (e) => { if (e.key === 'Escape') { note('★ Esc → 關閉'); cancelledRef.current = true; setOpen(false); } };
+    document.addEventListener('pointerdown', onDown);
     document.addEventListener('keydown', onKey);
-    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
+    return () => { document.removeEventListener('pointerdown', onDown); document.removeEventListener('keydown', onKey); };
   }, [open]);
+
+  // 面板座標。改成 fixed + 實測值，是為了兩件原本各自會壞的事：
+  //   1. 原本 `absolute left-0 w-[292px]`：面板固定 292px 又貼齊觸發鈕左緣，
+  //      觸發鈕只要不在最左邊就爆版。SessionsPage 的「迄日」起點約 x=176，
+  //      右緣算到 468px，375px 螢幕上切掉 93 px —— 右下角那顆「完成」整顆在畫面外，
+  //      而面板本身沒有捲動，使用者只能重整頁面。
+  //   2. absolute 會被任何 overflow-y-auto 祖先裁掉。modal 內層補上可捲動之後
+  //      （ConfirmDialog 正好被 SessionsPage 拿來包這支選擇器）面板會被切一半。
+  // fixed 不吃祖先的 overflow，座標自己夾在視窗內；桌機的觸發鈕碰不到夾擠邊界，
+  // 算出來就是原本的 left / top+8，所以桌機視覺與行為維持不變。
+  const [panel, setPanel] = useState(null);
+  useEffect(() => {
+    if (!open) { setPanel(null); return undefined; }
+    const place = () => {
+      const r = boxRef.current?.getBoundingClientRect();
+      if (!r) return;
+      const M = 8;              // 與視窗邊緣的最小留白
+      const GAP = 8;            // 觸發鈕與面板的距離（等同原本的 mt-2）
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const w = Math.min(292, vw - M * 2);   // 桌機維持 292；窄到放不下才縮
+      const below = vh - r.bottom - GAP - M;
+      const above = r.top - GAP - M;
+      // 812 高的手機上，長在頁面下半部的觸發鈕往下展開會把日曆推出畫面底部，
+      // 「完成」一樣按不到。下方不夠就翻到上方，兩邊都不夠取較寬的一側，
+      // 再用 maxHeight + 內捲兜底（與 modal 用的是同一招）。
+      const flip = below < 300 && above > below;
+      setPanel({
+        left: Math.min(Math.max(M, r.left), Math.max(M, vw - w - M)),
+        top: flip ? undefined : r.bottom + GAP,
+        bottom: flip ? vh - r.top + GAP : undefined,
+        width: w,
+        maxHeight: Math.max(200, flip ? above : below),
+      });
+    };
+    place();
+    // fixed 不會自己黏著觸發鈕，捲動與轉向都要重算。
+    // 第三參數 true＝捕獲階段，這樣祖先容器（modal 內層）的捲動也收得到。
+    window.addEventListener('scroll', place, true);
+    window.addEventListener('resize', place);
+    return () => { window.removeEventListener('scroll', place, true); window.removeEventListener('resize', place); };
+  }, [open]);
+
+  // 異常偵測。回報條件刻意收得很窄：使用者「已經選過年或月」，
+  // 面板卻在還沒選到日期時關掉 —— 那正是家長描述的「填完月份就跳掉」。
+  // 正常人選完月份後直接取消是很少見的，所以這個訊號雜訊低。
+  useEffect(() => {
+    if (wasOpenRef.current && !open) {
+      if (engagedRef.current && !pickedRef.current && !cancelledRef.current) {
+        reportPickerAnomaly('picker_closed_without_pick',
+          '選過年或月之後，面板在未選到日期前關閉', trailRef.current);
+      }
+      cancelledRef.current = false;
+      pickedRef.current = false;
+      engagedRef.current = false;
+      trailRef.current = [];
+    }
+    wasOpenRef.current = open;
+  }, [open]);
+
+  // 點了欄位但面板始終沒出現（量測 effect 沒跑完 / 被祖先裁掉等）。
+  // 對使用者來說就是「點了沒反應」，一樣填不了生日。
+  useEffect(() => {
+    if (!open) return undefined;
+    const t = setTimeout(() => {
+      if (!panel) {
+        reportPickerAnomaly('picker_panel_never_shown', '面板開啟後 2 秒仍未定位', trailRef.current);
+      }
+    }, 2000);
+    return () => clearTimeout(t);
+  }, [open, panel]);
 
   const minDay = minP ? dayKey(minP.y, minP.mo, minP.d) : null;
   const maxDay = maxP ? dayKey(maxP.y, maxP.mo, maxP.d) : null;
@@ -155,6 +353,8 @@ export default function DateTimePicker({
   const yearTo = maxP ? maxP.y : today.y + 5;
 
   function pickDay(d) {
+    pickedRef.current = true;
+    note('選了日：' + viewY + '/' + viewMo + '/' + d);
     emit({ ...(parsed || { hh: 0, mi: 0 }), y: viewY, mo: viewMo, d });
     if (mode === 'date') setOpen(false);   // 純日期選完就沒別的事了
   }
@@ -185,8 +385,10 @@ export default function DateTimePicker({
         id={id}
         type="button"
         disabled={disabled}
-        onClick={() => setOpen((v) => !v)}
-        className={`flex w-full items-center justify-between gap-2 rounded-lg border px-3 py-2 text-left text-sm transition ${
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        onClick={() => setOpen(true)}
+        className={`flex min-h-[44px] w-full items-center justify-between gap-2 rounded-lg border px-3 py-2 text-left text-sm transition md:min-h-0 ${
           open ? 'border-brand-teal ring-2 ring-brand-teal/20' : 'border-gray-300 hover:border-gray-400'
         } ${disabled ? 'cursor-not-allowed bg-gray-50 text-gray-400' : 'bg-white'}`}
       >
@@ -211,38 +413,75 @@ export default function DateTimePicker({
         </span>
       </button>
 
-      {open && (
-        <div className="absolute left-0 top-full z-30 mt-2 w-[292px] rounded-xl border border-gray-200 bg-white p-3 shadow-lg">
+      {PICKER_DEBUG && debugLog.length > 0 && (
+        <div className="fixed inset-x-1 bottom-1 z-50 max-h-44 overflow-y-auto rounded-lg bg-black/85 p-2 text-[10px] leading-4 text-lime-300"
+             style={{ fontFamily: 'monospace' }}>
+          <div className="mb-1 font-bold text-white">
+            選擇器診斷（面板 {open ? '開' : '關'}）— 截圖給工程師
+          </div>
+          {debugLog.map((l, i) => <div key={i}>{l}</div>)}
+        </div>
+      )}
+
+      {/* panel 要等 effect 量完才有值：先畫再修正會在 375px 上看到面板從畫面外
+          彈回來的那一幀。寧可晚一個 frame 出現。 */}
+      {open && panel && (
+        <div
+          className="fixed z-30 overflow-y-auto overscroll-contain rounded-xl border border-gray-200 bg-white p-3 shadow-lg"
+          role="dialog"
+          aria-label="選擇日期"
+          style={panel}
+        >
+          <div className="mb-1 flex justify-end">
+            <button type="button" onClick={() => { cancelledRef.current = true; setOpen(false); }}
+              className="min-h-[44px] rounded-lg px-3 text-sm text-gray-600 hover:bg-gray-100 md:min-h-0">關閉</button>
+          </div>
           <div className="mb-2 flex items-center justify-between">
             <button type="button" onClick={() => shiftMonth(-1)} disabled={prevBlocked || pickingMonth} aria-label="上個月"
-              className="rounded-lg p-1.5 text-gray-500 hover:bg-gray-100 disabled:cursor-not-allowed disabled:text-gray-200 disabled:hover:bg-transparent">
+              className="min-h-[44px] min-w-[44px] rounded-lg p-1.5 text-gray-500 hover:bg-gray-100 md:min-h-0 md:min-w-0 disabled:cursor-not-allowed disabled:text-gray-200 disabled:hover:bg-transparent">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4"><path d="m15 18-6-6 6-6" /></svg>
             </button>
             {/* 標題可點＝年月快速跳轉。生日這種要回到 2015 年的欄位，
                 只靠上下月箭頭要按超過 100 次。 */}
             <button type="button" onClick={() => setPickingMonth((v) => !v)}
-              className="flex items-center gap-1 rounded-lg px-2 py-1 text-sm font-bold text-brand-primary hover:bg-gray-100">
+              className="flex min-h-[44px] items-center gap-1 rounded-lg px-2 py-1 text-sm md:min-h-0 font-bold text-brand-primary hover:bg-gray-100">
               {viewY} 年 {viewMo} 月
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
                 className={`h-3 w-3 text-gray-400 transition ${pickingMonth ? 'rotate-180' : ''}`}><path d="m6 9 6 6 6-6" /></svg>
             </button>
             <button type="button" onClick={() => shiftMonth(1)} disabled={nextBlocked || pickingMonth} aria-label="下個月"
-              className="rounded-lg p-1.5 text-gray-500 hover:bg-gray-100 disabled:cursor-not-allowed disabled:text-gray-200 disabled:hover:bg-transparent">
+              className="min-h-[44px] min-w-[44px] rounded-lg p-1.5 text-gray-500 hover:bg-gray-100 md:min-h-0 md:min-w-0 disabled:cursor-not-allowed disabled:text-gray-200 disabled:hover:bg-transparent">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4"><path d="m9 18 6-6-6-6" /></svg>
             </button>
           </div>
 
           {pickingMonth ? (
             <div>
-              <select
-                aria-label="年份" value={viewY}
-                onChange={(e) => setViewY(Number(e.target.value))}
-                className="mb-2 w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm font-mono tabular-nums focus:border-brand-teal focus:outline-none"
+              {/* 年份不用原生 <select>：它在 LINE 內建瀏覽器開的是系統對話框，
+                  對話框關閉時 WebView 補送的滑鼠事件會被判成「點到面板外面」，
+                  面板就自己關掉 —— 家長回報的「生日填完月份就跳掉」就是這個。
+                  改成面板內的按鈕，沒有對話框可言。
+                  清單很長（生日欄位是 100 年），所以可捲動＋開啟時把目前年份捲到中間。 */}
+              <div
+                ref={yearListRef}
+                role="group"
+                aria-label="年份"
+                className="mb-2 max-h-52 overflow-y-auto overscroll-contain rounded-lg border border-gray-300 p-1"
               >
-                {Array.from({ length: yearTo - yearFrom + 1 }, (_, i) => yearTo - i).map((y) => (
-                  <option key={y} value={y}>{y} 年</option>
-                ))}
-              </select>
+                <div className="grid grid-cols-4 gap-1">
+                  {Array.from({ length: yearTo - yearFrom + 1 }, (_, i) => yearTo - i).map((y) => (
+                    <button
+                      key={y} type="button"
+                      data-year={y}
+                      onClick={() => { engagedRef.current = true; lastGridPickAt.current = Date.now(); note('選了年：' + y); setViewY(y); }}
+                      className={`min-h-[44px] md:min-h-0 rounded-md py-1.5 font-mono text-[13px] tabular-nums transition ${
+                        y === viewY ? 'bg-brand-primary font-bold text-white'
+                          : 'font-medium text-gray-700 hover:bg-gray-100'
+                      }`}
+                    >{y}</button>
+                  ))}
+                </div>
+              </div>
               <div className="grid grid-cols-3 gap-1">
                 {MONTHS.map((m, i) => {
                   const mo = i + 1;
@@ -250,8 +489,8 @@ export default function DateTimePicker({
                     || (!!minDay && dayKey(viewY, mo, daysInMonth(viewY, mo)) < minDay);
                   return (
                     <button key={m} type="button" disabled={blocked}
-                      onClick={() => { setViewMo(mo); setPickingMonth(false); }}
-                      className={`rounded-lg py-2 text-[13px] transition ${
+                      onClick={() => { engagedRef.current = true; lastGridPickAt.current = Date.now(); note('選了月：' + mo); setViewMo(mo); setPickingMonth(false); }}
+                      className={`min-h-[44px] rounded-lg py-2 text-[13px] transition md:min-h-0 ${
                         mo === viewMo ? 'bg-brand-primary font-bold text-white'
                           : blocked ? 'cursor-not-allowed text-gray-200'
                             : 'font-medium text-gray-700 hover:bg-gray-100'
@@ -278,7 +517,7 @@ export default function DateTimePicker({
                   const blocked = (!!maxDay && k > maxDay) || (!!minDay && k < minDay);
                   return (
                     <button key={k} type="button" disabled={blocked} onClick={() => pickDay(d)}
-                      className={`mx-auto flex h-9 w-9 items-center justify-center rounded-lg text-[13px] tabular-nums transition ${
+                      className={`mx-auto flex h-11 w-11 items-center justify-center md:h-9 md:w-9 rounded-lg text-[13px] tabular-nums transition ${
                         isSel ? 'bg-brand-primary font-bold text-white'
                           : blocked ? 'cursor-not-allowed font-normal text-gray-200'
                             : isToday ? 'font-bold text-brand-teal ring-1 ring-brand-teal/40 hover:bg-brand-teal/10'
@@ -301,7 +540,7 @@ export default function DateTimePicker({
                 onPick={emit}
               />
               <button type="button" onClick={() => setOpen(false)}
-                className="ml-auto rounded-lg bg-brand-primary px-3 py-1.5 text-xs font-bold text-white hover:bg-brand-primary/90">完成</button>
+                className="ml-auto min-h-[44px] rounded-lg bg-brand-primary px-3 py-1.5 md:min-h-0 text-xs font-bold text-white hover:bg-brand-primary/90">完成</button>
             </div>
           )}
         </div>

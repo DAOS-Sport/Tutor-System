@@ -146,7 +146,7 @@ async function refreshParentMirrorFromRagic({
     throw new ParentRefreshError(err.code || 'RAGIC_REFRESH_FAILED', `重新讀取 Ragic Z01 失敗：${err.message}`, 502);
   }
   if (!z01Row) {
-    throw new ParentRefreshError('RAGIC_REFRESH_NOT_FOUND', 'Ragic Z01 查無剛寫入的會員資料', 502);
+    throw new ParentRefreshError('RAGIC_REFRESH_NOT_FOUND', 'Ragic Z01 查無對應的會員資料', 502);
   }
 
   const mapped = ragic.mapZ01Parent(z01Row);

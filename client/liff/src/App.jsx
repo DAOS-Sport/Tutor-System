@@ -5,6 +5,8 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import { ToastProvider } from './context/ToastContext';
 import { PendingPaymentsProvider } from './context/PendingPaymentsContext';
 import MockBanner from './components/MockBanner';
+import GuideTour from './components/GuideTour';
+import GuidePage from './pages/GuidePage';
 
 import LoginPage from './pages/LoginPage';
 import DemoLoginPage from './pages/DemoLoginPage';
@@ -38,6 +40,7 @@ import TransferRequestPage from './pages/TransferRequestPage';
 import MyLessonsPage from './pages/MyLessonsPage';
 import GroupCreatePage from './pages/GroupCreatePage';
 import GroupJoinPage from './pages/GroupJoinPage';
+import FamilyJoinPage from './pages/FamilyJoinPage';
 import GroupStatusPage from './pages/GroupStatusPage';
 import SlotBookingPage from './pages/SlotBookingPage';
 import TrialSelectPage from './pages/TrialSelectPage';
@@ -93,11 +96,17 @@ export default function App() {
             <Route path="/group/join/:token" element={<GroupJoinPage />} />
           </Route>
 
+          {/* 家庭邀請連結（櫃台產生）：沒登入時頁面自己記住返回路徑再去登入，註冊完也會回來 */}
+          <Route element={<AppLayout showBackButton title="加入家庭" />}>
+            <Route path="/family/join/:token" element={<FamilyJoinPage />} />
+          </Route>
+
           <Route element={<RequireAuth />}>
             {/* ── 家長分頁 ── */}
             <Route element={<RequireParent />}>
               <Route element={<AppLayout />}>
                 <Route path="/" element={<HomePage />} />
+                <Route path="/guide" element={<GuidePage />} />
                 <Route path="/my-courses" element={<MyCoursesPage />} />
                 <Route path="/chat" element={<ChatListPage />} />
                 <Route path="/profile" element={<ProfilePage />} />
@@ -166,6 +175,7 @@ export default function App() {
                 <Route path="/coach/schedule" element={<CoachScheduleWeekPage />} />
                 <Route path="/coach/history" element={<CoachHistoryPage />} />
                 <Route path="/coach/profile" element={<CoachProfilePage />} />
+                <Route path="/coach/guide" element={<GuidePage />} />
               </Route>
               <Route element={<AppLayout showBackButton title="授課入口" />}>
                 <Route path="/coach/session/:id" element={<CoachSessionPage />} />
@@ -183,6 +193,7 @@ export default function App() {
 
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        <GuideTour />
         </PendingPaymentsProvider>
       </AuthProvider>
     </ToastProvider>

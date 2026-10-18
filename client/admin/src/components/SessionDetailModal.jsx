@@ -1,4 +1,5 @@
 import React from 'react';
+import Sheet from './Sheet';
 import StatusBadge from './StatusBadge';
 import { courseTypeLabel, checkinStatusLabel, formatTWDateTime, checkinSourceLabel } from '../utils/format';
 
@@ -6,20 +7,53 @@ const CHECKIN_TONE = { checked_in: 'green', not_yet: 'gray', absent: 'error' };
 
 export default function SessionDetailModal({ session, venueName, onClose }) {
   if (!session) return null;
+  const deductions = session.deduction_details?.length ? session.deduction_details
+    : session.deduction_reason ? [{reason:session.deduction_reason,by:session.deducted_by,at:session.deducted_at,
+      status:session.deduction_status,reversal_reason:session.deduction_reversal_reason}] : [];
   return (
-    <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/40 px-4" onClick={onClose}>
-      <div className="w-full max-w-md rounded-lg bg-white shadow-xl" onClick={(e) => e.stopPropagation()}>
+    // 原本在 375px 會發生什麼：這張卡置中浮在畫面正中央，底部那顆「關閉」落在螢幕
+    // 垂直中線附近 —— 單手拿手機時拇指構不到，要換手或把手機往下滑。而且置中卡片
+    // 沒有「往下滑可以關掉」的暗示，唯一的出路是瞄準右上角那顆 ✕。
+    // 改成 md 以下貼底升起的面板（Sheet），md 以上完全維持原本的置中 max-w-md + rounded-lg。
+    <Sheet
+      z="z-30"
+      maxWidth="md:max-w-md"
+      desktopRounded="md:rounded-lg"
+      label="課程詳情"
+      onClose={onClose}
+      header={(
         <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
           <h3 className="text-base font-semibold text-brand-primary">課程詳情</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">✕</button>
+          {/* 純文字 ✕ 的實際命中區只有字高（約 20px），手指按不準。
+              手機放大到 44px；桌機是滑鼠、維持原本的緊密度。 */}
+          <button onClick={onClose} aria-label="關閉" className="-mr-2 flex h-11 w-11 items-center justify-center text-gray-400 hover:text-gray-600 md:-mr-0 md:h-auto md:w-auto">✕</button>
         </div>
-        <dl className="space-y-3 px-4 py-4 text-sm">
+      )}
+      footer={(
+        <div className="flex justify-end border-t border-gray-100 px-4 py-3">
+          {/* px-4 py-1.5 text-sm 實高約 32px，低於手指可靠命中的 44px；
+              救生員站在池畔單手操作，按不到就是按不到。桌機列表密度不動。 */}
+          <button
+            onClick={onClose}
+            className="inline-flex min-h-[44px] items-center justify-center rounded-md border border-gray-300 bg-white px-4 py-1.5 text-sm hover:bg-gray-50 md:min-h-0"
+          >關閉</button>
+        </div>
+      )}
+    >
+      <dl className="space-y-3 px-4 py-4 text-sm">
+          {session.transaction_no && <Row k="交易序號" v={session.transaction_no} />}
+          {session.lesson_no
+            ? <Row k="堂號" v={session.lesson_no} />
+            : session.transaction_period && <Row k="交易期號" v={session.transaction_period} />}
           <Row k="日期" v={<span className="font-mono">{session.date}</span>} />
           <Row k="時段" v={<span className="font-mono">{session.start} – {session.end}</span>} />
           <Row k="場館" v={venueName ? venueName(session.venue_id) : session.venue_id} />
           <Row k="教練" v={session.coach} />
           <Row k="組別" v={<StatusBadge tone="teal">{courseTypeLabel(session.course_type)}</StatusBadge>} />
           <Row k="學員" v={(session.students || []).join('、')} />
+          {session.whole_class_policy && <Row k="整班核消" v={
+            session.whole_class_consumed ? '全班已核消，教練核薪計 1 堂' : '尚無有效簽到，不計核薪堂數'
+          } />}
           <Row k="簽到" v={
             <StatusBadge tone={CHECKIN_TONE[session.checkin_status] || 'gray'}>
               {checkinStatusLabel(session.checkin_status)}
@@ -33,29 +67,29 @@ export default function SessionDetailModal({ session, venueName, onClose }) {
                 手動扣課 → manual_lesson_deductions 有自由文字原因
                 自助簽到 → checkin_records 沒有文字欄位，但有來源與簽到人
               兩者不是二擇一：一堂課可能先被家長簽到、後來又被櫃檯手動處理。 */}
-          {session.deduction_reason && (
-            <Row k="手動扣課" v={
+          {deductions.map((deduction,index) => (
+            <Row key={index} k="手動扣課" v={
               <div className="space-y-1">
-                <div className="whitespace-pre-wrap break-words text-gray-800">{session.deduction_reason}</div>
+                <div className="whitespace-pre-wrap break-words text-gray-800">{deduction.reason}</div>
                 <div className="text-[11px] text-gray-500">
-                  {session.deducted_by && <span>操作者：{session.deducted_by}</span>}
-                  {session.deducted_at && <span className="ml-2 font-mono">{formatTWDateTime(session.deducted_at)}</span>}
+                  {deduction.by && <span>操作者：{deduction.by}</span>}
+                  {deduction.at && <span className="ml-2 font-mono">{formatTWDateTime(deduction.at)}</span>}
                 </div>
                 {/* 狀態實際值是 APPLIED / REVERSED，只有 REVERSED 才是退回。 */}
-                {session.deduction_status === 'REVERSED' && (
+                {deduction.status === 'REVERSED' && (
                   <div className="rounded bg-brand-error-soft px-2 py-1 text-[11px] text-brand-error-strong">
                     此筆已退回
-                    {session.deduction_reversal_reason ? `：${session.deduction_reversal_reason}` : ''}
+                    {deduction.reversal_reason ? `：${deduction.reversal_reason}` : ''}
                   </div>
                 )}
-                {session.deduction_status && !['APPLIED', 'REVERSED'].includes(session.deduction_status) && (
+                {deduction.status && !['APPLIED', 'REVERSED'].includes(deduction.status) && (
                   <div className="rounded bg-gray-100 px-2 py-1 text-[11px] text-gray-600">
-                    狀態：{session.deduction_status}
+                    狀態：{deduction.status}
                   </div>
                 )}
               </div>
             } />
-          )}
+          ))}
 
           {Array.isArray(session.checkin_details) && session.checkin_details.length > 0 && (
             <Row k="簽到明細" v={
@@ -79,15 +113,8 @@ export default function SessionDetailModal({ session, venueName, onClose }) {
               </div>
             } />
           )}
-        </dl>
-        <div className="flex justify-end border-t border-gray-100 px-4 py-3">
-          <button
-            onClick={onClose}
-            className="rounded-md border border-gray-300 bg-white px-4 py-1.5 text-sm hover:bg-gray-50"
-          >關閉</button>
-        </div>
-      </div>
-    </div>
+      </dl>
+    </Sheet>
   );
 }
 

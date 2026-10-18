@@ -1,4 +1,4 @@
-import { callApi } from './client';
+import { callApi, USE_MOCK } from './client';
 import { mockDb } from './mock';
 
 function qs(params) {
@@ -22,7 +22,7 @@ export const staffApi = {
     }),
   // Task #91：教練 lookup（取代已 410 的 /admin/coaches?venueId=）
   coachesByVenue: (venueId, status = 'active') =>
-    callApi(`/staff/coaches${qs({ venueId, status })}`, {}, () => {
+    callApi(`/staff/coaches${qs({ venueId, status })}`, {}, USE_MOCK ? () => {
       const list = mockDb.staff().filter((s) => s.role === 'coach');
       return list.map((s) => ({
         id: s.coach_id || s.id, ragic_employee_id: s.id, name: s.name, phone: s.phone,
@@ -30,7 +30,7 @@ export const staffApi = {
         multiplier: Number(s.multiplier || 1), is_active: !!s.active,
         venue_ids: s.venue_ids || (s.venue_id ? [s.venue_id] : []),
       }));
-    }),
+    } : undefined),
   create: (body) =>
     callApi(`/staff`, { method: 'post', data: body }, () => mockDb.createStaff?.(body) || {
       ...body,

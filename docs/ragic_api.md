@@ -126,14 +126,14 @@ GET https://ap7.ragic.com/xinsheng/general-information/6?api&where=1001100,eq,09
 
 ### 依身分證字號查詢學員
 ```
-GET https://ap7.ragic.com/xinsheng/general-information/11?api&where=1001118,eq,A123456789
+GET https://ap7.ragic.com/xinsheng/general-information/11?api&where=1001118,eq,A132702114
 ```
 
 ### 新建家長記錄（回寫）
 ```
 POST https://ap7.ragic.com/xinsheng/general-information/6?api
 Content-Type: application/json
-Body: {"1001101": "王小明", "1001100": "0912345678", ...}
+Body: {"1001101": "王小明", "1001100": "0900796878", ...}
 ```
 > 寫回時建議直接用「Field ID」當 key（如上例），可避免中文鍵名因為網頁版重命名而失效。
 
@@ -400,7 +400,7 @@ GET https://ap7.ragic.com/xinsheng/general-information/11?api&def=1
 
 | 中文欄位 | Field ID | 型別 | 系統 DB 欄位 | 備註 |
 |---|---|---|---|---|
-| 學員編號 | `1001132` | D | `students.student_code` | `noDup` 自動編號（如 `A231842157`）|
+| 學員編號 | `1001132` | D | `students.student_code` | `noDup` 自動編號（如 `A254465532`）|
 | 學員身分 | `1002178` | L |  | 選項：`01.一般生` / `02. 免費生` / `03. 教職員` / `04. 特約` |
 | 學員姓名 | `1001115` | D | `students.name` | Title field |
 | 學(性別) | `1001117` | L | `students.gender` | 選項：`生理男` / `生理女` / `不方便透漏` |
@@ -516,7 +516,7 @@ Ragic 主表 + 子表格在一次 POST 內建立時，子表格欄位 key 使用
 ```json
 {
   "1001101": "張媽媽",
-  "1001100": "0912345678",
+  "1001100": "0900796878",
   "1006846": "Uxxxxxxxxxxxxxxx",
   "1001119_0_1001115": "張小明",
   "1001119_0_1001116": "2015/03/12",

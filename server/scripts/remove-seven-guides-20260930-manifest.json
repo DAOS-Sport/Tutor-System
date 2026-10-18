@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "runId": "remove-seven-guides-20260930-build",
+  "sourceCanonicalization": "LF trimEnd newline",
+  "sourceCanonicalLfSha256": {
+    "client/liff/src/pages/GuidePage.jsx": "4cbbf71dc14b84d2017a0236eba856383cb242b7664f758b69e72433ef64b942"
+  },
+  "indexRawByteSha256": {
+    "liff": "934aa08ca3876d87eb360643e797ec95cc5d5e13a86259b7c7cf546725833c19"
+  }
+}

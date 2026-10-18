@@ -14,7 +14,7 @@ const { pool } = require('../models/db');
 const COACH2 = {
   ragic_employee_id: '0605066',     // 排序需 > coach1(0605065)，確保 demo 'coach' 仍取到 coach1
   name: '(測試帳號)教練2',           // demo 'coach2' 以此名稱精準比對
-  phone: '0900000001',              // 與 coach1(0900000000) 不衝突
+  phone: '0900221010',              // 與 coach1(0900215261) 不衝突
 };
 
 // 額外掛上的測試場館：後台「轉換教練」以 coachId 改派時會驗證教練屬於目標場館，

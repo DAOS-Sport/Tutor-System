@@ -9,12 +9,14 @@
  */
 const express = require('express');
 const { pool } = require('../../models/db');
-const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
+const { requireAdminAuth } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定。
+const { requireResource, requireAnyResource, requireAnyBackoffice } = require('../../middlewares/requireResource');
 const { applyDueScheduledCourseTypeChanges } = require('../../services/courseTypeSchedule');
 const { normalizeTierPrices } = require('../../services/coursePricing');
 
 const router = express.Router();
-const AM = requireAdminRole('admin', 'manager');
+// 稽核紀錄屬於「課程需求管理」這一頁，跟著它的權限走。
 
 const EDITABLE_FIELDS = ['label', 'min_students', 'max_students', 'is_active', 'base_price', 'data_group', 'trial_enabled', 'trial_price', 'tier_prices'];
 const pad2 = (n) => String(n).padStart(2, '0');
@@ -92,7 +94,7 @@ const auditUser = (req) => req.adminUser?.name || req.adminUser?.username || 'un
  * 讓它去指定一個定價區是沒有意義的（要指哪一區？），但也不能讓它拿到某一區的價格
  * —— 所以這支乾脆一個價格欄位都不回：拿不到價，就不可能顯示錯的價。
  */
-router.get('/options', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.get('/options', requireAdminAuth, requireAnyBackoffice(), async (req, res) => {
   try {
     // zone-scan-exempt：刻意跨定價區彙總。豁免的前提是這支不回任何價格欄位，
     // 掃描器會驗證這個前提（含 base_price / trial_price / tier_prices 就不給過）。
@@ -112,27 +114,31 @@ router.get('/options', requireAdminAuth, requireAdminRole('admin', 'manager', 's
   }
 });
 
-router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+// 讀取與「手動建檔」共用（2026-10-14）：櫃台／主管建檔要讀本館課別與價格，但不該能改。
+// 只綁 course-types 的話，管理員把「課程需求管理」關給櫃台，手動建檔頁的組別下拉就整個空掉。
+// 與手動建檔 POST（admin/enrollments.js）同一組資源；新增、修改、刪除、異動紀錄仍只認 course-types。
+router.get('/', requireAdminAuth, requireAnyResource('course-types', 'manual-enroll', 'enrollments'), async (req, res) => {
   try {
     const zoneId = await zoneOf(req);
     if (!zoneId) return res.status(400).json(ZONE_REQUIRED);
     // 讀取前先套用「已到期」排程（保險：即使每日 cron 沒跑，下次讀取也會生效）。
     try { await applyDueScheduledCourseTypeChanges(pool); } catch (e) { console.warn('[course-types apply-due]', e.message); }
     const r = await pool.query(
-      `SELECT course_type, pricing_zone_id, label, min_students, max_students,
-              base_price::float8 AS base_price, is_active, sort_order,
-              trial_enabled, trial_price::float8 AS trial_price, tier_prices,
-              created_at, updated_at, data_group,
+      `SELECT c.course_type, c.pricing_zone_id, c.label, c.min_students, c.max_students,
+              c.base_price::float8 AS base_price, c.is_active, c.sort_order,
+              c.trial_enabled, c.trial_price::float8 AS trial_price, c.tier_prices,
+              c.created_at, c.updated_at, c.data_group,
+              z.sessions_per_period, z.period_count_min, z.period_count_max,
               -- DATE 欄位一律轉字串再出去。pg 會把 DATE 解析成「本地午夜」的 Date 物件，
               -- JSON 序列化成 UTC 之後就退回前一天（實測：DB 2026-08-04 → 前端顯示 2026/08/03）。
               -- DATE 本來就沒有時區，回字串才是正確表示。
-              effective_date::text AS effective_date,
-              effective_until::text AS effective_until,
-              scheduled_effective_date, scheduled_effective_until, pending_changes,
+              c.effective_date::text AS effective_date,
+              c.effective_until::text AS effective_until,
+              c.scheduled_effective_date, c.scheduled_effective_until, c.pending_changes,
               CURRENT_DATE::text AS current_date
-         FROM course_type_configs
-        WHERE pricing_zone_id = $1
-        ORDER BY sort_order, course_type`,
+         FROM course_type_configs c JOIN pricing_zones z ON z.id = c.pricing_zone_id
+        WHERE c.pricing_zone_id = $1
+        ORDER BY c.sort_order, c.course_type`,
       [zoneId]
     );
     res.json(r.rows);
@@ -142,10 +148,10 @@ router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'),
   }
 });
 
-router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.post('/', requireAdminAuth, requireResource('course-types'), async (req, res) => {
   const client = await pool.connect();
   try {
-    const { course_type, label, max_students, min_students, base_price, data_group, trial_enabled, trial_price, tier_prices } = req.body || {};
+    const { course_type, label, base_price, data_group, trial_enabled, trial_price, tier_prices } = req.body || {};
     // 依需求「拿掉所有驗證」：除主鍵 course_type 仍需可解析為整數外，其餘欄位不檢查範圍/長度/大小關係，
     // 僅做型別解析與安全預設（避免 NaN/NULL 寫入 NOT NULL 欄位）。
     const ct = parseInt(course_type, 10);
@@ -153,12 +159,10 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
     const zoneId = await zoneOf(req);
     if (!zoneId) return res.status(400).json(ZONE_REQUIRED);
     const lb = label == null ? '' : String(label).trim();
-    // max_students NOT NULL：未填則沿用前台「最多＝編號」習慣預設為 ct；可為任意整數。
-    const msParsed = parseInt(max_students, 10);
-    const ms = isNaN(msParsed) ? ct : msParsed;
-    // min_students 未填預設 1；可為任意整數。
-    const mnParsed = parseInt(min_students, 10);
-    const mn = isNaN(mnParsed) ? 1 : mnParsed;
+    // 人數＝組別（使用者 2026-10-14：一對三＝3 人、一對六＝6 人，不要 min／max）：
+    // 兩欄（NOT NULL，舊報表與團報會讀）都存組別人數，不再接受自訂。
+    const ms = ct;
+    const mn = ct;
     const bpParsed = Number(base_price);
     const bp = Number.isFinite(bpParsed) ? bpParsed : 0;
     const dg = data_group == null ? null : (String(data_group).trim() || null);
@@ -218,7 +222,7 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
   }
 });
 
-router.patch('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.patch('/:type', requireAdminAuth, requireResource('course-types'), async (req, res) => {
   const client = await pool.connect();
   try {
     const ct = parseInt(req.params.type, 10);
@@ -253,16 +257,9 @@ router.patch('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, 
     // 合併出「下一版值」（未提供者沿用現值）。依需求「拿掉所有驗證」：不再檢查長度/範圍/大小關係，
     // 僅保留型別解析——數字無法解析時沿用現值，避免寫入 NaN/NULL 破壞 NOT NULL 欄位。
     let label = p.label !== undefined ? String(p.label).trim() : row.label;
-    let max_students = row.max_students;
-    if (p.max_students !== undefined) {
-      const ms = parseInt(p.max_students, 10);
-      if (!isNaN(ms)) max_students = ms;
-    }
-    let min_students = row.min_students;
-    if (p.min_students !== undefined) {
-      const mn = parseInt(p.min_students, 10);
-      if (!isNaN(mn)) min_students = mn;
-    }
+    // 人數＝組別（2026-10-14）：不接受自訂 min／max；舊列（例如一對三存 2–3）在下次編輯時一併改成組別人數，差異照常寫進稽核。
+    const max_students = ct;
+    const min_students = ct;
     const is_active = p.is_active !== undefined ? Boolean(p.is_active) : row.is_active;
     let base_price = Number(row.base_price);
     if (p.base_price !== undefined) {
@@ -352,7 +349,7 @@ router.patch('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, 
   }
 });
 
-router.delete('/:type', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.delete('/:type', requireAdminAuth, requireResource('course-types'), async (req, res) => {
   try {
     const ct = parseInt(req.params.type, 10);
     if (isNaN(ct)) return res.status(400).json({ error: 'invalid type' });
@@ -381,7 +378,7 @@ router.delete('/:type', requireAdminAuth, requireAdminRole('admin'), async (req,
 });
 
 // 編輯軌跡：某品項的變更歷史（時間 DESC）。
-router.get('/:type/audit-logs', requireAdminAuth, AM, async (req, res) => {
+router.get('/:type/audit-logs', requireAdminAuth, requireResource('course-types'), async (req, res) => {
   try {
     const ct = parseInt(req.params.type, 10);
     if (isNaN(ct)) return res.status(400).json({ error: 'invalid type' });

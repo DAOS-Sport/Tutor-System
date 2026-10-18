@@ -1,3 +1,4 @@
+import { toUserMessage } from '../../../shared/userMessage.js';
 import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
 
 const ToastContext = createContext(null);
@@ -19,6 +20,7 @@ export function ToastProvider({ children }) {
 
   const push = useCallback(
     (message, type = 'info', duration = 2400) => {
+      message = toUserMessage(message, type === 'success' ? '操作已完成。' : undefined);
       const id = ++_seq;
       setItems((arr) => [...arr, { id, message, type }]);
       if (duration > 0) setTimeout(() => remove(id), duration);

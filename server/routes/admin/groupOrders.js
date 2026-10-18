@@ -14,14 +14,15 @@
 const express = require('express');
 const { randomUUID } = require('crypto');
 const { pool } = require('../../models/db');
-const {
-  requireAdminAuth, requireAdminRole, getScopedVenueIds, isVenueInScope,
-} = require('../../middlewares/adminAuth');
+const { requireAdminAuth, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定，不再寫死角色清單。
+const { requireResource } = require('../../middlewares/requireResource');
 const { createCheckoutSession } = require('../../services/checkouts');
 const { parseProofInput } = require('../../services/paymentProof');
+const { isValidTaiwanTaxId } = require('../../services/invoiceIdentity');
 const { logGroupOrderAudit } = require('../../services/groupOrderAudit');
 const {
-  evaluateSubmitReadiness, markSubmitted, notifyGroupSubmitted,
+  evaluateSubmitReadiness, markSubmitted, notifyGroupSubmitted, requiredGroupSize,
 } = require('../../services/groupOrderSubmit');
 const line = require('../../services/line');
 const promotions = require('../../services/promotions');
@@ -34,7 +35,7 @@ const {
 } = require('../../services/idempotency');
 
 const router = express.Router();
-const AMS = requireAdminRole('admin', 'manager', 'staff');
+const AMS = requireResource('group-orders');
 const GROUP_APPROVAL_OPERATION = 'approve_group_order_checkouts';
 
 // 「已收齊款」＝ 全部成員都備齊「轉帳末 5 碼 + 匯款證明」，且團裡至少有一個成員。
@@ -141,16 +142,16 @@ router.get('/', requireAdminAuth, AMS, async (req, res) => {
       period_count: go.period_count || 1,
       leader_name: go.leader_name,
       leader_phone: go.leader_phone,
-      min_students: go.min_students,
-      max_students: go.max_students,
+      // 人數＝組別（2026-10-14）：舊團落地的 min／max 不再對外，一律回組別人數。
+      min_students: requiredGroupSize(go),
+      max_students: requiredGroupSize(go),
       member_count: Number(go.member_count),
       total_students: Number(go.total_students),
       paid_member_count: Number(go.paid_member_count),
       payment_ready: !!go.payment_ready,
       // can_submit 由後端算好給前端用，避免前端自己重算一次人數上下限而算歪。
       can_submit: go.status === 'forming' && !!go.payment_ready
-        && Number(go.total_students) >= go.min_students
-        && Number(go.total_students) <= go.max_students,
+        && Number(go.total_students) === requiredGroupSize(go),
       note: go.note || null,
       reject_reason: go.reject_reason || null,
       submitted_at: go.submitted_at,
@@ -204,8 +205,8 @@ router.get('/:id', requireAdminAuth, AMS, async (req, res) => {
       period_count: order.period_count || 1,
       leader_name: order.leader_name,
       leader_phone: order.leader_phone,
-      min_students: order.min_students,
-      max_students: order.max_students,
+      min_students: requiredGroupSize(order),
+      max_students: requiredGroupSize(order),
       note: order.note || null,
       reject_reason: order.reject_reason || null,
       submitted_at: order.submitted_at,
@@ -222,6 +223,7 @@ router.get('/:id', requireAdminAuth, AMS, async (req, res) => {
         student_count: (m.student_names || []).length,
         transfer_last_5: m.transfer_last_5 || null,
         carrier: m.carrier || null,
+        tax_id: m.tax_id || null,
         payment_proof_url: m.payment_proof_url || null,
         proof_uploaded_at: m.proof_uploaded_at || null,
         payment_confirmed: !!m.payment_confirmed,
@@ -264,8 +266,8 @@ router.post('/:id/submit', requireAdminAuth, AMS, async (req, res) => {
       await client.query('ROLLBACK');
       const msg = {
         NOT_FORMING: '只有「揪團中」的團購可以代為送審',
-        BELOW_MIN: `尚未達成團最低人數（需 ${order.min_students} 人，目前 ${readiness.total} 人）`,
-        OVER_CAPACITY: `超過人數上限（最多 ${order.max_students} 人）`,
+        BELOW_MIN: `人數未滿，不能送審（此團需 ${readiness.required} 人，目前 ${readiness.total} 人）`,
+        OVER_CAPACITY: `超過此團人數（需 ${readiness.required} 人，目前 ${readiness.total} 人）`,
         MISSING_PAYMENT_PROOF: '仍有家庭未備齊付款資料（轉帳末 5 碼 + 匯款證明）',
       }[readiness.code] || '此團購目前無法送審';
       return res.status(409).json({
@@ -367,6 +369,21 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '只有「待審核」的團購可以核准', code: 'NOT_SUBMITTED' });
     }
+    // 人數＝組別防呆（使用者 2026-10-14：兩個人沒辦法上一對三）。送審端已擋，
+    // 這裡再核一次，避免規則上線前已送審、人數不對的團被核准。
+    const headcount = Number((await client.query(
+      `SELECT COALESCE(SUM(COALESCE(array_length(student_names,1),0)),0) AS total
+         FROM group_order_members WHERE group_order_id = $1`,
+      [order.id]
+    )).rows[0].total);
+    const requiredSize = requiredGroupSize(order);
+    if (headcount !== requiredSize) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: `此團需 ${requiredSize} 人、目前 ${headcount} 人，人數不對不能核准（請退回補件或取消）`,
+        code: 'GROUP_SIZE_MISMATCH',
+      });
+    }
 
     // 課程基準價 + 教練倍率（與一般報名一致）。
     // F-A08：價格取自「這個團所屬場館的定價區」，不是全公司一份。
@@ -390,9 +407,39 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
       const cr = await client.query(`SELECT name, pricing_multiplier FROM coaches WHERE id = $1`, [order.coach_id]);
       if (cr.rowCount) { coachName = cr.rows[0].name; multiplier = Number(cr.rows[0].pricing_multiplier) || 1; }
     }
-    const perStudent = resolveUnitPrice(basePrice, multiplier, cfgRow.tier_prices);
+    // 新團的單生單期價與係數都在發起時鎖定。核准時教練可能已調價，不能把
+    // 現行倍率套回已付款的團；只有舊團沒有快照時才維持既有 fallback 計價。
+    const purchasedUnitPrice = order.purchased_unit_price == null ? null : Number(order.purchased_unit_price);
+    const purchasedMultiplier = order.purchased_pricing_multiplier == null
+      ? null
+      : Number(order.purchased_pricing_multiplier);
+    if ((order.purchased_unit_price != null && (!Number.isFinite(purchasedUnitPrice) || purchasedUnitPrice < 0))
+        || (order.purchased_pricing_multiplier != null && (!Number.isFinite(purchasedMultiplier) || purchasedMultiplier <= 0))) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '團購購買價快照無效，請先核對原訂單', code: 'GROUP_PRICING_SNAPSHOT_INVALID' });
+    }
+    const perStudent = Number.isFinite(purchasedUnitPrice) && purchasedUnitPrice >= 0
+      ? purchasedUnitPrice
+      : resolveUnitPrice(basePrice, multiplier, cfgRow.tier_prices);
     // U9：一張團報訂單可購買多期；每位成員費用 = 單期價 × 學生數 × 期數。
     const periodCount = Number(order.period_count) || 1;
+    // Approval is atomic. Existing children under submitted indicate a legacy partial result;
+    // creating another set would duplicate sold transactions, so preserve them and fail closed.
+    const priorChildren = await client.query('SELECT id FROM admin_enrollments WHERE group_order_id = $1 LIMIT 1', [order.id]);
+    if (priorChildren.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '團購已有子訂單，請先核對既有核准結果', code: 'GROUP_APPROVAL_PARTIAL_RESULT' });
+    }
+    const priorPeriods = await client.query('SELECT total_sessions FROM course_periods WHERE group_order_id = $1', [order.id]);
+    const priorSessionValues = [...new Set(priorPeriods.rows.map(row => Number(row.total_sessions)))];
+    // Old NULL groups use an existing sold period if present; otherwise retain the fixed-six contract.
+    const purchasedSessions = order.purchased_sessions_per_period == null
+      ? (priorSessionValues[0] ?? 6) : Number(order.purchased_sessions_per_period);
+    if (!Number.isSafeInteger(purchasedSessions) || purchasedSessions <= 0
+        || priorSessionValues.some(n => !Number.isSafeInteger(n) || n !== purchasedSessions)) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '團購成交堂數快照無效或與既有課期衝突', code: 'GROUP_SESSION_SNAPSHOT_INVALID' });
+    }
 
     const ms = await client.query(
       `SELECT m.*, p.name AS parent_name, p.phone AS parent_phone
@@ -400,6 +447,18 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
         WHERE m.group_order_id = $1`,
       [order.id]
     );
+    const invalidInvoiceIdentity = ms.rows.find((member) => (
+      (member.carrier && member.tax_id)
+      || (member.tax_id && !isValidTaiwanTaxId(member.tax_id))
+    ));
+    if (invalidInvoiceIdentity) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: '團報成員的統編／載具資料不一致，請先由家長或櫃檯修正',
+        code: 'GROUP_INVOICE_IDENTITY_INVALID',
+        member_id: invalidInvoiceIdentity.id,
+      });
+    }
 
     // 家長端 my-proof 允許「轉帳末 5 碼」或「匯款證明」擇一送出（櫃檯憑末 5 碼即可查帳），
     // 核准守門必須採同一標準：兩者皆缺才擋，避免只填末 5 碼的家庭永遠無法成團。
@@ -467,7 +526,7 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
       const fallback = perStudent * count * periodCount;
       if (m.final_amount == null) return { original: fallback, final: fallback, discount: 0 };
       return {
-        original: Number(m.original_amount) || fallback,
+        original: m.original_amount == null ? fallback : Number(m.original_amount),
         final: Number(m.final_amount),
         discount: Number(m.discount_amount) || 0,
       };
@@ -480,7 +539,7 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
       // 仍保有 enrollment_batch_id 的全域 unique constraint；共用同一 batch 會令第二個
       // 家庭核准失敗。開課守門改以 group_order + 期數查所有 checkout，不再依賴共用 batch。
       const memberBatchId = randomUUID();
-      // 訂單依期數拆分：每位成員的 N 期各自一筆（period_count=1，6 堂），各自付款/對帳。
+      // 訂單依期數拆分：每位成員的 N 期各自一筆，堂數取成交快照，各自付款／對帳。
       // U14：單期金額由「該家落地總額 ÷ 期數」推回，確保 N 期加總 = 家長實際轉帳金額
       // （最後一期補足餘數，避免整數除法造成尾差）。
       const amt = memberAmount(m, count);
@@ -512,12 +571,14 @@ router.post('/:id/approve', requireAdminAuth, AMS, async (req, res) => {
           `INSERT INTO admin_enrollments
              (id, parent_name, parent_phone, students, coach, coach_id, venue_id, course_type,
               original_price, final_price, transfer_last_5, payment_proof_url, status, submitted_at,
-              group_order_id, is_group_shared, period_count, period_number, enrollment_batch_id, checkout_id, carrier)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending_payment',NOW(),$13,TRUE,1,$14,$15,$16,$17)`,
+              group_order_id, is_group_shared, period_count, period_number, enrollment_batch_id, checkout_id, carrier, tax_id,
+              purchased_pricing_multiplier, total_sessions)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending_payment',NOW(),$13,TRUE,1,$14,$15,$16,$17,$18,$19,$20)`,
           [
             eid, m.parent_name, m.parent_phone, names, coachName, order.coach_id,
             order.venue_id, order.course_type, rowOriginal, rowFinal, m.transfer_last_5 || null, proofByMemberId.get(m.id) || null,
-            order.id, j, memberBatchId, checkout.checkoutId, m.carrier || null,
+            order.id, j, memberBatchId, checkout.checkoutId, m.carrier || null, m.tax_id || null,
+            Number.isFinite(purchasedMultiplier) && purchasedMultiplier > 0 ? purchasedMultiplier : null, purchasedSessions,
           ]
         );
         await client.query(

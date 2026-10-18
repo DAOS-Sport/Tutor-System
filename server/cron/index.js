@@ -20,11 +20,17 @@ const { processRagicSyncOutbox } = require('../services/ragicSyncOutbox');
 const { verifyRagicZ01UidSchemaFreshness } = require('../services/ragicSchemaFreshness');
 const { STABILITY_FLAGS } = require('../config/ragicSchema');
 const { applyDueScheduledCourseTypeChanges } = require('../services/courseTypeSchedule');
+// 每日排程「時段認領＋補跑」（2026-10-14，GitHub #10）：autoscale 多台不重複、縮到 0 台錯過的會補。
+const slots = require('./slots');
 
 // 對家長推播的 LIFF base URL；新版用 LIFF_URL_PARENT，舊版 LIFF_URL 為 fallback
 const LIFF_URL = process.env.LIFF_URL_PARENT || process.env.LIFF_URL || 'https://liff.line.me/-';
 
 function initCronJobs() {
+  if (process.env.PREVIEW_SAFE_MODE === '1') {
+    console.info('[Cron] event=preview_safe_mode_schedules_disabled');
+    return;
+  }
   const ragicConfigured = ragicAdmin.ragicEnabled();
   const ragicZ01Configured = ragicConfigured && Boolean(process.env.RAGIC_FORM_Z01);
   const outboxFlagEnabled = STABILITY_FLAGS.RAGIC_PARENT_OUTBOX;
@@ -59,20 +65,61 @@ function initCronJobs() {
     }
   });
 
+  // Only pending webhook projections are refetched; no upstream business writes.
+  scheduleTaipei('* * * * *', async () => {
+    if (!ragicAdmin.ragicEnabled()) return;
+    try {
+      const result = await ragicAdmin.retryRagicWebhooks({ limit: 20 });
+      if (result.failed) console.warn('[Cron/RagicWebhook] pending/blocked:', result.failed);
+    } catch (err) {
+      console.warn('[Cron/RagicWebhook] worker failed:', err.code || 'RAGIC_WEBHOOK_FAILED');
+    }
+  });
+
   // Local-first Z03 claims commit before Ragic. This worker is the only path
   // that writes the claimed LINE UID back; it never resolves or creates an
   // identity, and failed writes remain retryable/blocked in the outbox.
-  scheduleTaipei('*/5 * * * *', async () => {
-    if (!ragicAdmin.ragicEnabled() || !process.env.RAGIC_FORM_Z01 || !STABILITY_FLAGS.RAGIC_PARENT_OUTBOX) return;
-    try {
-      const r = await processRagicSyncOutbox({ limit: 20 });
-      if (r.processed) {
-        console.log(`[Cron/RagicOutbox] processed=${r.processed} synced=${r.synced} retryable=${r.retryable} blocked=${r.blocked}`);
+  //
+  // ── 2026-08-30：從「每 5 分鐘」改成夜間一次批次（使用者決策）──
+  // 理由：Ragic 對這套系統只是備份，白天沒有必要為了它整天打外部 API；
+  // 日間那些呼叫還會跟 00:30 的全量備份、02:30 的拉回搶同一把 ragic_sync 鎖
+  // （備份最近很常拿不到鎖）。
+  //
+  // 排在 00:30 備份「之前」：新家長先進 Ragic，備份再收尾，
+  // 02:30 拉回時才拿得到完整資料。
+  //
+  // 代價（明說，不要事後才發現）：家長註冊完，Ragic 上要等到當晚才看得到，
+  // 櫃檯當天查 Ragic 會查不到新戶——要即時看得到，請改看後台。
+  // 註冊本身不受影響：它一直都是本地先寫、佇列後補，從來不等這個排程。
+  scheduleTaipei('10 0 * * *', slots.daily('ragic_outbox_nightly', '00:10', async () => {
+    if (!ragicAdmin.ragicEnabled() || !process.env.RAGIC_FORM_Z01 || !STABILITY_FLAGS.RAGIC_PARENT_OUTBOX) return { skipped: 'disabled' };
+    // 一次把佇列排空。原本每 5 分鐘 20 筆是夠的；改成一天一次之後若還是只做
+    // 20 筆，累積量會永遠追不上（正式站曾經積到 295 筆）。分批跑到沒東西為止，
+    // 上限 60 輪＝1200 筆，避免單筆壞資料造成無窮迴圈。
+    const total = { processed: 0, synced: 0, retryable: 0, blocked: 0 };
+    for (let round = 0; round < 60; round += 1) {
+      let r;
+      try {
+        r = await processRagicSyncOutbox({ limit: 20 });
+      } catch (err) {
+        // 批次層才會到這裡（每筆錯誤已在 _markFailureOrQuarantine 隔離）。把 pg 的 where/table
+        // 一起印：2026-09-07 之前只有 "failed: 22P02" 一行，追了 45 天。
+        console.warn('[Cron/RagicOutbox] failed:', err.code || err.message,
+          err.where ? '| where=' + err.where : '', err.table ? '| table=' + err.table : '',
+          err.detail ? '| detail=' + String(err.detail).slice(0, 200) : '');
+        break;
       }
-    } catch (err) {
-      console.warn('[Cron/RagicOutbox] failed:', err.code || err.message);
+      if (!r || !r.processed) break;
+      total.processed += r.processed || 0;
+      total.synced    += r.synced || 0;
+      total.retryable += r.retryable || 0;
+      total.blocked   += r.blocked || 0;
     }
-  });
+    if (total.processed) {
+      console.log(`[Cron/RagicOutbox] 夜間批次 processed=${total.processed} synced=${total.synced} retryable=${total.retryable} blocked=${total.blocked}`);
+    }
+    return total;
+  }));
 
   // ── 每 5 分鐘：補 active period 的 chat_room（防漂移；spec F-S09）──
   // 任何「直接 UPDATE course_periods.status='active'」或 race condition 都會被這個排程兜底。
@@ -148,8 +195,21 @@ function initCronJobs() {
   });
 
   // ── 每天 09:00：堂數快到期提醒 (F-S05) ────
-  scheduleTaipei('0 9 * * *', async () => {
+  scheduleTaipei('0 9 * * *', slots.daily('expiry_reminder', '09:00', async () => {
     try {
+      // 2026-09-22（凍結檔改動，已取得 Owner 同意）兩件事：
+      //
+      // 1. 只提醒「還有堂數沒上完」的課期。原本只看 status='active'，但
+      //    course_periods.status 不會因為堂數用完就自動變 completed —— 正式庫
+      //    591 個課期只有 1 筆是 completed，而 142 個是 active 但堂數已用完。
+      //    少了這個條件，這 142 筆裡有 134 筆會在未來踩到觸發日，發出「快到期了」
+      //    給已經上完的家長。教練端首頁的到期卡片早就有同樣的判斷
+      //    （routes/sessions.js 的 bucket：used >= total 即 completed），這裡補齊。
+      //
+      // 2. 觸發條件從「剛好等於第 N 天」改成「N 天內」。原本的等號比對只要 cron
+      //    當天沒跑（重啟、部署、當機），那個課期就永遠不會收到提醒，不會補。
+      //    改成區間之後靠 notification_log 的 UNIQUE(kind, ref_id, recipient_uid)
+      //    去重，同一期同一位家長仍然只會收到一次。
       const r = await pool.query(
         `SELECT cp.id, cp.venue_id, cp.expires_at, cp.course_type,
                 (cp.total_sessions - cp.used_sessions) AS remaining,
@@ -157,9 +217,12 @@ function initCronJobs() {
            FROM course_periods cp
            JOIN coaches co ON co.id = cp.coach_id
           WHERE cp.status = 'active'
-            AND cp.expires_at = CURRENT_DATE + (
+            AND (cp.total_sessions - cp.used_sessions) > 0
+            AND cp.expires_at >= CURRENT_DATE
+            AND cp.expires_at <= CURRENT_DATE + (
               SELECT COALESCE((SELECT value::INTEGER FROM admin_settings WHERE key='expiry_notice_days'), 60)
-            )`
+            )
+          ORDER BY cp.expires_at`
       );
       for (const cp of r.rows) {
         const ps = await pool.query(
@@ -190,13 +253,14 @@ function initCronJobs() {
           }
         }
       }
-    } catch (e) { console.warn('[Cron/expiry] failed:', e.message); }
-  });
+      return { candidates: r.rows.length };
+    } catch (e) { console.warn('[Cron/expiry] failed:', e.message); throw e; }
+  }, { catchUp: 'same_day' }));
 
   // ── 每天 09:30：MGM 體驗課當日提醒 (F-S10) ────
   // 抓今天即將上 trial 的 referral_records（status=trial_paid 且該 enrollment 對應 session 在今天）
   // → 推播給推薦方家長，提醒簽到後可獲獎勵。
-  scheduleTaipei('30 9 * * *', async () => {
+  scheduleTaipei('30 9 * * *', slots.daily('mgm_trial_today', '09:30', async () => {
     try {
       const r = await pool.query(
         `SELECT rr.id, rr.referrer_parent_id, rp.line_uid AS referrer_uid,
@@ -233,8 +297,9 @@ function initCronJobs() {
             .catch(() => {});
         }
       }
-    } catch (e) { console.warn('[Cron/mgm-trial] failed:', e.message); }
-  });
+      return { candidates: r.rows.length };
+    } catch (e) { console.warn('[Cron/mgm-trial] failed:', e.message); throw e; }
+  }, { catchUp: 'same_day' }));
 
   // ── 每小時 :05：期末評鑑邀請 + 7 天提醒 ────────
   // 不限定 10:00，避免下午/晚上才上完課當天的期別錯過觸發。
@@ -309,14 +374,14 @@ function initCronJobs() {
 
   // ── 每天 10:30：考核門檻不達標偵測 → 通知主管 (F-A09) ────────
   // 同月、同教練、同 metric 不重複（資料庫 UNIQUE 兜底）；推 LINE 給管理層 admin_users.line_uid。
-  scheduleTaipei('30 10 * * *', async () => {
+  scheduleTaipei('30 10 * * *', slots.daily('eval_threshold_alert', '10:30', async () => {
     try {
       const created = await evaluations.detectBelowThreshold();
       if (created.length) {
         console.warn(`[Cron/eval-threshold] flagged ${created.length} below-threshold metric(s)`);
       }
       const pending = await evaluations.listPendingAlerts();
-      if (!pending.length) return;
+      if (!pending.length) return { flagged: created.length, pending: 0 };
       // 收件人：admin / manager 且設定了 line_uid；每位主管帶自己的 venue_id
       // （pushMessage 需要 venueId 解析 channel token；無 venue 的 admin 用任一啟用場館兜底）。
       const mgrs = await pool.query(
@@ -354,38 +419,45 @@ function initCronJobs() {
           console.warn(`[Cron/eval-threshold] alert ${a.id} undelivered; will retry next run`);
         }
       }
+      return { flagged: created.length, pending: pending.length };
     } catch (e) {
       console.warn('[Cron/eval-threshold] failed:', e.message);
+      throw e;
     }
-  });
+  }, { catchUp: 'same_day' }));
 
-  // ── 每 10 分鐘：Ragic H01 / H05 同步（Task #53 — 從 GET 移走的阻塞 sync）──
+  // ── 每日 03:30（台北）：Ragic H01 / H05 同步（Task #53 — 從 GET 移走的阻塞 sync）──
   // 後台任何 GET 列表只純讀 DB；資料新鮮度由本 cron 維護，外加 GET 時 fire-and-forget
   // (kickoffSync*Async)，下一次 GET 就能拿到最新。
   // 刻意循序（非 Promise.allSettled）：兩者都會走全量 Ragic 查詢 + freshness canary
   // 重試，同時對 Ragic 打開兩條連線只會互相拖慢、更容易撞 timeout。比照
   // routes/admin/ragicStatus.js「同步全部」既有的循序設計（見該檔案註解），
   // 讓「同一時間對 Ragic 帳號只有一個 in-flight 請求」這條規則在 cron 這邊也成立。
-  scheduleTaipei('*/10 * * * *', async () => {
-    if (!ragicAdmin.ragicEnabled()) return;
+  scheduleTaipei('30 3 * * *', slots.daily('ragic_staff_venues', '03:30', async () => {
+    if (!ragicAdmin.ragicEnabled()) return { skipped: 'ragic_disabled' };
+    let lockBusy = false;
     // Task #91：教練資料已合併進員工帳號（H01 員工 API 就涵蓋姓名 / 手機 / 在職），
     // 不再單獨同步 coaches；教練特有欄位（簡介 / 專長 / 介紹圖）由後台手動編輯。
     let sTag = 'skipped';
     try {
       const s = await ragicAdmin.syncStaffFromRagic();
-      sTag = `ok(${s.synced ?? 0})`;
+      lockBusy = lockBusy || Boolean(s?.locked_by_other_ragic_job);
+      sTag = s.error ? `err(${s.error})` : s.skipped ? 'skipped' : `ok(${s.synced ?? 0})`;
     } catch (e) {
       sTag = `err(${e.message})`;
     }
     let vTag = 'skipped';
     try {
       const v = await ragicAdmin.syncVenuesFromRagic();
-      vTag = `ok(${v.synced ?? 0})`;
+      lockBusy = lockBusy || Boolean(v?.locked_by_other_ragic_job);
+      vTag = v.error ? `err(${v.error})` : v.skipped ? 'skipped' : `ok(${v.synced ?? 0})`;
     } catch (e) {
       vTag = `err(${e.message})`;
     }
     console.log(`[Cron/Ragic] staff=${sTag} venues=${vTag}`);
-  });
+    // Ragic 鎖被別的工作占用＝這次沒有真的同步，記成 retry 讓補跑檢查再試。
+    return { staff: sTag, venues: vTag, retry: lockBusy };
+  }));
 
   // ── 每 5 分鐘：套用「課程需求 (F-A07)」到期排程 ──
   //   scheduled_effective_date <= 現在（含日期＋時間）且有 pending_changes 的列 → 套用成正式資料。
@@ -399,10 +471,10 @@ function initCronJobs() {
     }
   });
 
-  // ═══ 夜間 Z01/Z02 同步鏈（順序有意義，#1 成功才跑 #2/#3）═══════════════
+  // ═══ 夜間 Z01/Z02 同步鏈（推在拉之前；備份結果目前僅記錄觀測）═══════════════
   //   #1 00:30 本地 → Ragic 回寫（推）
-  //   #2 01:30 Ragic Z01/Z02 → 本地 + Z03 分流（拉）——僅在 #1 成功後執行
-  //   #3 01:45 Z01 姓名品質掃描（→ Z03/quarantine 追蹤）——同樣受 #1 閘門保護
+  //   #2 02:30 Ragic Z01/Z02 → 本地 + Z03 分流（拉）——保留尚待回寫的本地資料
+  //   #3 02:45 Z01 姓名品質掃描（→ Z03/quarantine 追蹤）——另需通過新鮮度檢查
   // 為什麼推在拉之前：本地白天的異動（櫃檯建檔、家長編修、即時同步失敗的列）要先
   // 上到 Ragic，拉回來的才是「合併後的權威狀態」；順序顛倒（舊行為：01:00 拉、02:00 推）
   // 會把 Ragic 的舊值灌回本地/Z03——本地已修好的佔位姓名又進 Z03 佇列（堵塞 Z03），
@@ -411,54 +483,65 @@ function initCronJobs() {
   // ── #1 每日凌晨 00:30（台北）：本地 parents/students → Ragic Z01/Z02 回寫 ──
   // 補「即時寫回失敗後從未重試」的缺口；_backupParentsStudentsImpl 每輪處理
   // ragic_record_id IS NULL 或 last_synced_at IS NULL 的待同步列。
-  // 成功與否寫進 ragic_sync_log（form_code=Z01_Z02_BACKUP），#2/#3 以此為閘門。
-  scheduleTaipei('30 0 * * *', async () => {
-    if (!ragicAdmin.ragicEnabled()) return;
+  // 成功與否寫進 ragic_sync_log（form_code=Z01_Z02_BACKUP）；hasRecentBackupSuccess 目前只觀測、不阻擋。
+  scheduleTaipei('30 0 * * *', slots.daily('ragic_backup', '00:30', async () => {
+    if (!ragicAdmin.ragicEnabled()) return { skipped: 'ragic_disabled' };
     try {
       const r = await ragicAdmin.backupParentsStudentsToRagic('cron');
       console.log(`[Cron/RagicBackup#1] synced=${r?.synced ?? 0}${r?.error ? ` error=${r.error}` : ''}`);
+      return { synced: r?.synced ?? 0, error: r?.error || null, retry: Boolean(r?.locked_by_other_ragic_job) };
     } catch (e) {
       console.warn('[Cron/RagicBackup#1] failed:', e.message);
+      throw e;
     }
-  }, { timezone: 'Asia/Taipei' });
+  }), { timezone: 'Asia/Taipei' });
 
-  // ── #2 每日凌晨 01:30（台北）：Ragic Z01/Z02 → 本地 parents/students 全量拉回 ──
+  // ── #2 每日凌晨 02:30（台北）：Ragic Z01/Z02 → 本地 parents/students 全量拉回 ──
   // 含 Z03 分流（佔位電話姓名 + 未綁定 → 本地 ragic_z03_records，不進 parents）。
-  // 閘門：#1（00:30 回寫）3 小時內沒有成功紀錄 → 跳過本輪，避免把本地已修正、
-  // 尚未推上去的舊 Ragic 狀態灌回 Z03。reactivate:false（不復活本地已軟刪的家長）；
+  // 備份檢查目前只觀測；拉回仍須保留 pending 回寫。reactivate:false（不復活本地已軟刪的家長）；
   // 逐筆 try/catch，單筆壞資料不中斷整輪。
-  scheduleTaipei('30 1 * * *', async () => {
-    if (!ragicAdmin.ragicEnabled()) return;
+  scheduleTaipei('30 2 * * *', slots.daily('ragic_pull', '02:30', async () => {
+    if (!ragicAdmin.ragicEnabled()) return { skipped: 'ragic_disabled' };
     try {
       if (!(await ragicAdmin.hasRecentBackupSuccess(3))) {
         console.warn('[Cron/RagicPull#2] 跳過：#1（00:30 本地→Ragic 回寫）近 3 小時內無成功紀錄，先修復回寫再拉回，避免堵塞 Z03');
-        return;
+        return { skipped: 'no_recent_backup_success' };
       }
       const r = await ragicAdmin.pullParentsStudentsFromRagic('cron');
       console.log(`[Cron/RagicPull#2] synced=${r?.synced ?? 0}${r?.error ? ` error=${r.error}` : ''}`);
+      return { synced: r?.synced ?? 0, error: r?.error || null, retry: Boolean(r?.locked_by_other_ragic_job) };
     } catch (e) {
       console.warn('[Cron/RagicPull#2] failed:', e.message);
+      throw e;
     }
-  }, { timezone: 'Asia/Taipei' });
+  }), { timezone: 'Asia/Taipei' });
 
-  // ── #3 每日凌晨 01:45（台北）：Z01 家長姓名資料品質偵測（Z01↔Z03 機制，暫僅本地追蹤）──
-  // 排在 #2 拉回之後 15 分鐘，避免同時整包打 Ragic Z01；同受 #1 閘門保護（掃到的是
-  // 未合併本地修正的舊狀態就沒有意義）。目前只掃「姓名疑似為電話號碼」的記錄並寫進
+  // ── #3 每日凌晨 02:45（台北）：Z01 家長姓名資料品質偵測（Z01↔Z03 機制，暫僅本地追蹤）──
+  // 排在 #2 拉回之後 15 分鐘；仍需當輪拉回通過新鮮度檢查。目前只掃「姓名疑似為電話號碼」的記錄並寫進
   // 本地 ragic_z01_quarantine 追蹤表；實際推送到 Ragic 端 Z03 表單，卡在該表單欄位
   // 定義尚未確認，見 ragicAdmin.js 內 TODO。
-  scheduleTaipei('45 1 * * *', async () => {
-    if (!ragicAdmin.ragicEnabled()) return;
+  scheduleTaipei('45 2 * * *', slots.daily('ragic_quarantine', '02:45', async () => {
+    if (!ragicAdmin.ragicEnabled()) return { skipped: 'ragic_disabled' };
     try {
       if (!(await ragicAdmin.hasRecentBackupSuccess(3))) {
         console.warn('[Cron/RagicQuarantine#3] 跳過：#1（00:30 本地→Ragic 回寫）近 3 小時內無成功紀錄');
-        return;
+        return { skipped: 'no_recent_backup_success' };
       }
       const r = await ragicAdmin.quarantineBadZ01Names('cron');
       console.log(`[Cron/RagicQuarantine#3] tracked=${r?.synced ?? 0}${r?.note ? ` note=${r.note}` : ''}${r?.error ? ` error=${r.error}` : ''}`);
+      return { tracked: r?.synced ?? 0, error: r?.error || null, retry: Boolean(r?.locked_by_other_ragic_job) };
     } catch (e) {
       console.warn('[Cron/RagicQuarantine#3] failed:', e.message);
+      throw e;
     }
-  }, { timezone: 'Asia/Taipei' });
+  }), { timezone: 'Asia/Taipei' });
+
+  // ── 每日排程補跑檢查（2026-10-14，GitHub #10）──
+  // 每 5 分鐘＋服務啟動後 1 分鐘：上面 8 支每日排程若「最近一個應執行時段」沒有任何
+  // instance 認領（例如 00:30 時沒有機器在線），就補跑一次。依登記順序執行，
+  // 夜間 Ragic 鏈（回寫佇列 → 備份 → 拉回 → 姓名掃描）的先後不變。
+  scheduleTaipei('*/5 * * * *', () => slots.runMissedDailySlots());
+  slots.scheduleStartupCatchUp();
 
   console.log('[Cron] All cron jobs initialized');
 }

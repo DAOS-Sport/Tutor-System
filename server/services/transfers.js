@@ -6,6 +6,7 @@
  *   approve：以 transaction 將原 enrollment 標 transferred_out + 新建轉入學員 enrollment
  */
 const { pool } = require('../models/db');
+const { writeStudentAudit } = require('./studentAudit');
 const ragicWriteback = require('./ragicWriteback');
 
 async function listMine(parentId) {
@@ -57,16 +58,22 @@ async function createRequest({ parentId, periodId, fromStudentId, toPhone, toStu
     await client.query('BEGIN');
     // 驗證 enrollment 屬於該家長
     const en = await client.query(
+      // FOR UPDATE OF cpe：同一學員、同一課期的申請排隊處理，下面的「已有審核中申請」檢查才是原子的
+      // （transfer_records 沒有對應的唯一索引；D18／GitHub #13）。
       `SELECT cpe.id, cp.id AS period_id,
-              (cp.total_sessions - cp.used_sessions) AS remaining
+              (cp.total_sessions - cp.used_sessions) AS remaining,
+              (cp.expires_at >= (NOW() AT TIME ZONE 'Asia/Taipei')::date) AS not_expired
          FROM course_period_enrollments cpe
          JOIN course_periods cp ON cp.id = cpe.course_period_id
          JOIN students s ON s.id = cpe.student_id
         WHERE cp.id = $1 AND s.id = $2 AND s.parent_id = $3
-          AND cpe.status = 'active' AND cp.status = 'active'`,
+          AND cpe.status = 'active' AND cp.status = 'active'
+        FOR UPDATE OF cpe`,
       [periodId, fromStudentId, parentId]
     );
     if (!en.rowCount) throw Object.assign(new Error('找不到可轉讓的課程'), { status: 400 });
+    // 課期已過期不可轉讓（判準與自助簽到、預約相同：到期日當天仍可）。
+    if (!en.rows[0].not_expired) throw Object.assign(new Error('此課程已到期，無法轉讓'), { status: 409, code: 'PERIOD_EXPIRED' });
     const remaining = en.rows[0].remaining;
     if (remaining <= 0) throw Object.assign(new Error('此課程剩餘堂數為 0，無法轉讓'), { status: 400 });
 
@@ -100,7 +107,7 @@ async function createRequest({ parentId, periodId, fromStudentId, toPhone, toStu
   }
 }
 
-async function approve({ id, adminUserId, note }) {
+async function approve({ id, adminUserId, adminRole = 'staff', note }) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -140,6 +147,7 @@ async function approve({ id, adminUserId, note }) {
           [toParentId, sName]
         );
         toStudentId = sIns.rows[0].id;
+        await writeStudentAudit(client, toStudentId, 'create', { byUser: adminUserId, byRole: adminRole, note: 'transfer-approval' });
         createdToStudent = true;
       }
     }

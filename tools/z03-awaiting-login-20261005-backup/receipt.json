@@ -1,0 +1,32 @@
+{
+  "status": "SOURCE_SEAMS_APPLIED",
+  "formal_data_changed": false,
+  "workflow_changed": false,
+  "files": [
+    {
+      "path": "server/services/z03ReviewArchive.js",
+      "before": "8c61de976f826ac0818184c84a61845557d019ff6fe18cf49dcdb5cb81f70ed1",
+      "after": "e8e7d596b94bfdc7a91572261e91c4dc2f98a350f052c20a51363ede64a4b0a5"
+    },
+    {
+      "path": "server/routes/admin/ragicZ03.js",
+      "before": "691d82e3ad1fa7ff6ccda1a5e701b5391329b1f182b967e9576d7b3aabe68029",
+      "after": "34a2ea62794ad86aeca0338ea241bdff5bf97180741fed84c99d8a7d52fe671a"
+    },
+    {
+      "path": "server/services/ragicAdmin.js",
+      "before": "72a0faa852ae6197d12ad86a4436eb388376b823ed9bbd04b3cac5bcf0c41a8d",
+      "after": "c41a197f4386cfeb868b424ee743fee881e334d275e797e89e9823892bada97e"
+    },
+    {
+      "path": "client/admin/src/api/ragicZ03.js",
+      "before": "d03c0e804246b71eac31fe0a5ef11354fcbf4d8b95e9ef86bc590507ee731309",
+      "after": "e58aea07923108d25ade27a9533a68eaac71e224d89e4e470216833943dd9979"
+    },
+    {
+      "path": "client/admin/src/pages/RagicZ03Page.jsx",
+      "before": "da18d2082c3cf74dcd4c1370ec1a301cad6a9681a3f14b15fc353d612a48eb43",
+      "after": "00173672e2093f9cf7e6f74e75f7c0efb7b829e9150486021835038e30d21bf9"
+    }
+  ]
+}

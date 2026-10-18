@@ -1,3 +1,4 @@
+import { useCoachGuideDemo } from '../utils/coachGuideDemo';
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { sessionsApi } from '../api/sessions';
@@ -46,12 +47,15 @@ function checkinSourceLabel(source) {
 
 export default function CoachSessionPage() {
   const { id } = useParams();
-  const { coach } = useAuth();
+  const guide = useCoachGuideDemo();
+  const { coach: signedInCoach } = useAuth();
+  const coach = guide?.coach || signedInCoach;
   const navigate = useNavigate();
   const [session, setSession] = useState(null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    if (guide) { setSession(guide.session); setError(null); return; }
     if (!coach?.id || !id) return;
     let alive = true;
     sessionsApi.detail(id)
@@ -62,7 +66,7 @@ export default function CoachSessionPage() {
         setError(status === 403 ? '此課程不屬於您' : status === 404 ? '查無此課程' : '載入失敗');
       });
     return () => { alive = false; };
-  }, [coach?.id, id]);
+  }, [coach?.id, id, guide]);
 
   if (!coach) return null;
   if (error) {
@@ -86,7 +90,7 @@ export default function CoachSessionPage() {
     : (session.student_names || []).map((name) => ({ name, checked_in: false }));
 
   return (
-    <div className="px-4 py-4">
+    <div data-coach-guide="session-overview" className="px-4 py-4">
       <button onClick={() => navigate(-1)} className="mb-3 text-sm text-brand-teal active:opacity-60">‹ 返回今日課程</button>
 
       <section className="rounded-2xl bg-gradient-to-br from-brand-primary to-brand-teal p-4 text-white shadow-md">

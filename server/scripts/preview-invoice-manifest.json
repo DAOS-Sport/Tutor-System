@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "runId": "preview-invoice-058-20260930-v1",
+  "sources": {
+    "server/routes/enrollments.js": "dcfb9673b2514f839cee7e53a061ec44a10666d14a72ba3f55ed733fcc0f44cf",
+    "server/routes/checkout.js": "ae9e06a41a30269f149ac1d65aedd843de0ff517fec92b677b0d7399510d2c57",
+    "server/services/checkouts.js": "23bd1bb52faf930f13014eda0eff1ace35ca135722a722ffdcc153eaa9a69a35",
+    "server/routes/groupOrders.js": "ac04ddcaa4ff200dcf69644b5a0724983db1428b130d2dbf98d9bb1b96e15b4c",
+    "server/routes/admin/enrollments.js": "fe16ec15418c35f71469e30494834f0c84c86c5e7fb15aa118dd63d47d58d3fd",
+    "server/routes/admin/checkouts.js": "69f2d9120730836a68557cd8096d53077b055052c77e50f8f5716fcd20f77b0f",
+    "client/liff/src/pages/CheckoutPage.jsx": "b40113acb53e0729325645ac5484dd2ce05197286d2f305ec8155fcf6f7d59b7",
+    "client/liff/src/pages/EnrollStatusPage.jsx": "e9984a6281e9e3f015d9d2d083d6eafcedab075ad97ac522afafb4383cd67733",
+    "client/liff/src/pages/GroupStatusPage.jsx": "afbe197085dd39182e5171aedd63b7bc228eae555eb2a6a838371b3edd47d721",
+    "server/routes/courses.js": "17d55335aee09fa63e7ae5b25d965e9d809310380d7e911b9a238fccfc90b4f2",
+    "server/services/enrollmentRules.js": "6b9abf1d078268f16a9151a8f50baca1b3b33e36a56942f9bcdc7398336cb6c3",
+    "server/services/invoiceIdentity.js": "123e2592678df9b2437cda27a2083a1d9cef2c97afc591fe21a68c016bd7859a",
+    "client/liff/src/utils/invoiceIdentity.mjs": "9972de661a7a14c44da7fb6d4894a38099e3dfe423c559884905ff135827a5b4",
+    "db/migrations/058_group_order_member_tax_id.sql": "b2192f6fcc3fbfc711eae01e464100b543596ad2759b9ab4535eafed96329b3f",
+    "server/routes/admin/groupOrders.js": "23a3e3a9db21647385d0df548e61c6bce3cab11fef478cf48ba2b8a638f7bc45"
+  },
+  "indexHashes": {
+    "admin": "8a664e83b093c1b6c1911c625ce73f1ad221c72719b318c8f75a95ad10590783",
+    "liff": "15a57d725c0a10da318d0f500143cc2fb1a8530327dc7d5246aa2da19227165b"
+  },
+  "publicBuildAllowlist": [
+    "VITE_LIFF_ID_PARENT",
+    "VITE_LIFF_ID_COACH",
+    "VITE_LIFF_ID",
+    "VITE_SUPPORT_LINE_COACH",
+    "VITE_SUPPORT_LINE_PARENT",
+    "VITE_USE_MOCK"
+  ]
+}

@@ -30,7 +30,7 @@ cd server && npm start &
 # 預備：env 內提供測試帳號
 export ADMIN_USERNAME=admin
 export ADMIN_PASSWORD=...
-export PARENT_PHONE=0900000000
+export PARENT_PHONE=0900215261
 export BASE_URL=http://localhost:3000
 
 # 1. 全部 E2E

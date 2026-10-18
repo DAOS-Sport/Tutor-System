@@ -81,6 +81,6 @@ CREATE TABLE IF NOT EXISTS application_feature_flags (
 
 INSERT INTO application_feature_flags (key, enabled, allowed_phones)
 VALUES
-  ('SHARED_CHECKIN_USAGE_V2', TRUE, ARRAY['0982252694']::text[]),
-  ('DEDUCTION_REVIVAL_V2', TRUE, ARRAY['0982252694']::text[])
+  ('SHARED_CHECKIN_USAGE_V2', TRUE, ARRAY['0900652594']::text[]),
+  ('DEDUCTION_REVIVAL_V2', TRUE, ARRAY['0900652594']::text[])
 ON CONFLICT (key) DO NOTHING;

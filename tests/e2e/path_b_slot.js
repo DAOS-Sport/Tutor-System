@@ -8,10 +8,14 @@
 const { Client } = require('../../server/node_modules/pg');
 const { call, assert, step, loginAdmin } = require('./_lib');
 const slots = require('../../server/services/slots');
+const { withAdminAccount } = require('./_accounts');
 
-(async () => {
+// 全新 bootstrap 沒有 manager 帳號：由 withAdminAccount 自建（已存在就沿用）。
+const MANAGER = { username: process.env.ADMIN_USERNAME || 'manager', password: process.env.ADMIN_PASSWORD || 'manager', role: 'manager', venueId: 'B' };
+
+async function main() {
   step('Path B: 教練開槽 → 1v1 預約 → 簽到 → used+1');
-  const token = await loginAdmin(process.env.ADMIN_USERNAME || 'manager', process.env.ADMIN_PASSWORD || 'manager');
+  const token = await loginAdmin(MANAGER.username, MANAGER.password);
   const today = new Date().toISOString().slice(0, 10);
   const pg = new Client({ connectionString: process.env.DATABASE_URL });
   await pg.connect();
@@ -106,4 +110,6 @@ const slots = require('../../server/services/slots');
     await pg.end();
   }
   step('done');
-})().catch((e) => { console.error(e); process.exit(1); });
+}
+
+withAdminAccount(MANAGER, main).catch((e) => { console.error(e); process.exit(1); });

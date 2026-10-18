@@ -1,5 +1,7 @@
+import { useCoachGuideDemo } from '../utils/coachGuideDemo';
 import React, { useEffect, useRef, useState } from "react";
 import AvatarCropper from '../components/coach/AvatarCropper';
+import GuideEntry from '../components/GuideEntry';
 import CoachDetailModal from '../components/CoachDetailModal';
 import { coachesApi } from "../api/coaches";
 import { venuesApi } from "../api/venues";
@@ -51,7 +53,9 @@ function bioState(len) {
 }
 
 export default function CoachProfilePage() {
-  const { coach } = useAuth();
+  const guide = useCoachGuideDemo();
+  const { coach: signedInCoach } = useAuth();
+  const coach = guide?.coach || signedInCoach;
   const toast = useToast();
   const [bio, setBio] = useState("");
   const [savingBio, setSavingBio] = useState(false);
@@ -73,6 +77,13 @@ export default function CoachProfilePage() {
   const [savingDetail, setSavingDetail] = useState(false);
 
   useEffect(() => {
+    if (guide) {
+      setBio(guide.coach.bio_rich_text); setAvatarUrl(guide.coach.avatar_url); setDetail(guide.coach.bio_detail);
+      setMedia(guide.media); setFreshVenueIds(guide.coach.venue_ids); setVenueMap(guide.venueMap);
+      setReviewStatus(guide.coach.intro_review_status); setReviewNote('');
+      setBioOpen(guide.view === 'bio'); setDetailOpen(['detail', 'add-media', 'preview'].includes(guide.view));
+      setShowAdd(guide.view === 'add-media'); setPreviewOpen(guide.view === 'preview'); setCropFile(null); return;
+    }
     if (!coach?.id) return;
     setBio(coach.bio_rich_text || coach.bio || "");
     setAvatarUrl(coach.avatar_url || "");
@@ -121,7 +132,7 @@ export default function CoachProfilePage() {
     return () => {
       alive = false;
     };
-  }, [coach?.id]);
+  }, [coach?.id, guide]);
 
   // [可教場館診斷] 只在 DEV 印，避免 production 每次 render 都輸出
   if (import.meta.env?.DEV) {
@@ -156,6 +167,7 @@ export default function CoachProfilePage() {
   }
 
   async function handleSaveDetail() {
+    if (guide) return;
     if (savingDetail) return;
     if (detail.length > BIO_DETAIL_MAX) {
       toast.error(`詳細介紹最多 ${BIO_DETAIL_MAX} 字，目前 ${detail.length} 字`);
@@ -176,6 +188,7 @@ export default function CoachProfilePage() {
   }
 
   function pickAvatar(e) {
+    if (guide) return;
     const f = e.target.files?.[0];
     e.target.value = '';        // 同一個檔案再選一次也要能觸發 change
     if (!f) return;
@@ -193,6 +206,7 @@ export default function CoachProfilePage() {
   }
 
   async function handleCropped(file) {
+    if (guide) return;
     setCropFile(null);
     setAvatarBusy(true);
     try {
@@ -207,6 +221,7 @@ export default function CoachProfilePage() {
   }
 
   async function handleRemoveAvatar() {
+    if (guide) return;
     if (avatarBusy) return;
     setAvatarBusy(true);
     try {
@@ -221,6 +236,7 @@ export default function CoachProfilePage() {
   }
 
   async function handleSaveBio() {
+    if (guide) return;
     if (savingBio) return;
     // 超過 40 只是警告，照樣存得進去。這裡擋的是防呆上限。
     if (bio.length > BIO_HARD_MAX) {
@@ -245,6 +261,7 @@ export default function CoachProfilePage() {
   }
 
   async function handleAddMedia({ file, alt_text }) {
+    if (guide) return;
     try {
       const created = await coachesApi.uploadMedia(coach.id, file, alt_text);
       setMedia((prev) => [...(prev || []), created]);
@@ -256,6 +273,7 @@ export default function CoachProfilePage() {
   }
 
   async function handleMove(idx, dir) {
+    if (guide) return;
     const list = [...(media || [])];
     const target = idx + dir;
     if (target < 0 || target >= list.length) return;
@@ -272,6 +290,7 @@ export default function CoachProfilePage() {
   }
 
   async function handleDelete(id) {
+    if (guide) return;
     if (!confirm("確認刪除此圖片？")) return;
     try {
       await coachesApi.deleteMedia(coach.id, id);
@@ -285,14 +304,14 @@ export default function CoachProfilePage() {
   if (!coach) return null;
 
   return (
-    <div className="mx-auto w-full max-w-md px-4 pt-4 pb-6">
-      <CoachBanner
+    <div data-coach-guide="profile-bio-overview" className="mx-auto w-full max-w-md px-4 pt-4 pb-6">
+      <div><CoachBanner
         coach={coach}
         coachInitial={coachInitial}
         venueNames={venueNames}
         introReviewStatusText={introReviewStatusText}
         avatarUrl={avatarUrl}
-      />
+      /></div>
 
       {/* 兩塊預設收合。標題列右上角是「編輯 ✏」，展開後同一個位置變成「儲存」——
           動作永遠在同一個地方，教練不用找。 */}
@@ -306,7 +325,7 @@ export default function CoachProfilePage() {
           action={
             <HeaderAction
               open={bioOpen}
-              busy={savingBio}
+              busy={savingBio || !!guide}
               onEdit={() => setBioOpen(true)}
               onSave={handleSaveBio}
               busyLabel="送出中…"
@@ -327,10 +346,10 @@ export default function CoachProfilePage() {
           <div className="mt-2 flex flex-wrap gap-2">
             <label className={`cursor-pointer rounded-lg border border-brand-teal px-3 py-1.5 text-xs font-bold text-brand-teal ${avatarBusy ? 'pointer-events-none opacity-50' : 'active:bg-brand-teal/10'}`}>
               {avatarBusy ? '處理中…' : (avatarUrl ? '更換照片' : '上傳照片')}
-              <input type="file" accept="image/jpeg,image/png" className="hidden" onChange={pickAvatar} disabled={avatarBusy} />
+              <input type="file" accept="image/jpeg,image/png" className="hidden" onChange={pickAvatar} disabled={avatarBusy || !!guide} />
             </label>
             {avatarUrl && (
-              <button type="button" onClick={handleRemoveAvatar} disabled={avatarBusy}
+              <button type="button" onClick={handleRemoveAvatar} disabled={avatarBusy || !!guide}
                 className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-500 disabled:opacity-50">
                 移除
               </button>
@@ -343,6 +362,7 @@ export default function CoachProfilePage() {
               寫了什麼要他改。資料仍在 detail() 的回傳裡（reviewNote），admin 端
               也還看得到 —— 要放回來只是把這段補回去。 */}
           <textarea
+            readOnly={!!guide}
             value={bio}
             onChange={(e) => setBio(e.target.value)}
             rows={3}
@@ -378,7 +398,7 @@ export default function CoachProfilePage() {
       {/* 詳細介紹：家長點小卡的「看詳細介紹」才會看到的長版說明。
           與上面的個人介紹是兩個欄位 —— 那個只有 40 字、家長在小卡上只看得到兩行；
           這個可以慢慢寫，讓家長好好端詳。 */}
-      <div className="mb-3">
+      <div data-coach-guide="profile-detail" className="mb-3">
         <Collapsible
           title="詳細介紹"
           subtitle={[detail.trim() ? `${detail.length} 字` : "尚未補充",
@@ -391,7 +411,7 @@ export default function CoachProfilePage() {
               open={detailOpen}
               onEdit={openDetail}
               onSave={handleSaveDetail}
-              busy={savingDetail}
+              busy={savingDetail || !!guide}
               busyLabel="送出中…"
             />
           }
@@ -401,6 +421,7 @@ export default function CoachProfilePage() {
             你可以接著往下補充教學方式、適合的孩子、上課節奏等等。
           </p>
           <textarea
+            readOnly={!!guide}
             value={detail}
             onChange={(e) => setDetail(e.target.value)}
             rows={8}
@@ -453,20 +474,21 @@ export default function CoachProfilePage() {
                   <div className="flex flex-col">
                     <button
                       onClick={() => handleMove(i, -1)}
-                      disabled={i === 0}
+                      disabled={!!guide || i === 0}
                       className="flex h-8 w-9 items-center justify-center rounded text-sm text-gray-500 disabled:opacity-30"
                     >
                       ↑
                     </button>
                     <button
                       onClick={() => handleMove(i, 1)}
-                      disabled={i === media.length - 1}
+                      disabled={!!guide || i === media.length - 1}
                       className="flex h-8 w-9 items-center justify-center rounded text-sm text-gray-500 disabled:opacity-30"
                     >
                       ↓
                     </button>
                   </div>
                   <button
+                    disabled={!!guide}
                     onClick={() => handleDelete(m.id)}
                     className="flex h-10 w-9 items-center justify-center rounded text-sm text-brand-error"
                   >
@@ -484,7 +506,9 @@ export default function CoachProfilePage() {
 
           <button
             type="button"
-            onClick={() => setPreviewOpen(true)}
+           
+            disabled={!!guide}
+            onClick={() => { if (!guide) setPreviewOpen(true); }}
             className="mt-3 flex w-full items-center justify-between rounded-xl border border-brand-teal/40 bg-brand-teal/5 px-4 py-2.5 text-left active:bg-brand-teal/10"
           >
             <span className="min-w-0">
@@ -498,6 +522,8 @@ export default function CoachProfilePage() {
         </Collapsible>
       </div>
 
+      <GuideEntry role="coach" />
+
       {previewOpen && (
         <CoachDetailModal
           coach={{ ...coach, bio, bio_detail: detail, avatar_url: avatarUrl }}
@@ -509,6 +535,7 @@ export default function CoachProfilePage() {
 
       {showAdd && (
         <AddMediaModal
+          guide={guide}
           onClose={() => setShowAdd(false)}
           onSubmit={handleAddMedia}
         />
@@ -643,15 +670,16 @@ function HeaderAction({ open, busy, onEdit, onSave, saveLabel = "儲存", busyLa
   );
 }
 
-function AddMediaModal({ onClose, onSubmit }) {
+function AddMediaModal({ guide, onClose, onSubmit }) {
   const toast = useToast();
   const fileRef = useRef(null);
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState(null);
-  const [alt, setAlt] = useState("");
+  const [alt, setAlt] = useState(guide ? 'DEMO 圖片說明' : "");
   const [busy, setBusy] = useState(false);
 
   function handleFile(f) {
+    if (guide) return;
     if (!f) return;
     if (!["image/jpeg", "image/png"].includes(f.type)) { toast.error("只接受 JPG / PNG 圖片"); return; }
     if (f.size > 5 * 1024 * 1024) { toast.error("圖片大小不得超過 5MB"); return; }
@@ -660,6 +688,7 @@ function AddMediaModal({ onClose, onSubmit }) {
   }
 
   async function submit() {
+    if (guide) return;
     if (!file || busy) return;
     setBusy(true);
     await onSubmit({ file, alt_text: alt });
@@ -672,6 +701,7 @@ function AddMediaModal({ onClose, onSubmit }) {
       onClick={() => !busy && onClose()}
     >
       <div
+        data-coach-guide="profile-add-modal"
         className="mx-auto w-full max-w-md rounded-t-2xl bg-white p-4 pb-[calc(1.25rem+env(safe-area-inset-bottom))]"
         onClick={(e) => e.stopPropagation()}
       >
@@ -693,7 +723,7 @@ function AddMediaModal({ onClose, onSubmit }) {
             </span>
             <div
               className={`relative flex min-h-32 flex-col items-center justify-center rounded-xl border-2 border-dashed p-4 transition ${file ? "border-brand-teal bg-brand-teal/5" : "border-gray-300"}`}
-              onClick={() => !file && fileRef.current?.click()}
+              onClick={() => !guide && !file && fileRef.current?.click()}
             >
               {preview ? (
                 <>
@@ -710,7 +740,7 @@ function AddMediaModal({ onClose, onSubmit }) {
                   <div>點此選擇圖片</div>
                 </div>
               )}
-              <input ref={fileRef} type="file" accept="image/jpeg,image/png" className="hidden"
+              <input disabled={!!guide} ref={fileRef} type="file" accept="image/jpeg,image/png" className="hidden"
                 onChange={(e) => handleFile(e.target.files?.[0])} />
             </div>
           </div>
@@ -720,6 +750,7 @@ function AddMediaModal({ onClose, onSubmit }) {
             </span>
             <input
               type="text"
+              readOnly={!!guide}
               value={alt}
               onChange={(e) => setAlt(e.target.value)}
               maxLength={50}
@@ -728,7 +759,7 @@ function AddMediaModal({ onClose, onSubmit }) {
           </label>
           <button
             type="button"
-            disabled={!file || busy}
+            disabled={!!guide || !file || busy}
             onClick={submit}
             className="w-full rounded-lg bg-brand-primary py-3 font-bold text-white active:bg-brand-teal disabled:opacity-50"
           >

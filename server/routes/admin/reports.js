@@ -10,11 +10,13 @@
  */
 const express = require('express');
 const { pool } = require('../../models/db');
-const { requireAdminAuth, requireAdminRole, getScopedVenueIds } = require('../../middlewares/adminAuth');
+const { requireAdminAuth, getScopedVenueIds } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定，不再寫死角色清單。
+const { requireResource } = require('../../middlewares/requireResource');
 const { formatPlainDate, taipeiToday } = require('../../utils/dateTime');
 
 const router = express.Router();
-router.use(requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'));
+router.use(requireAdminAuth, requireResource('reports'));
 
 function parseRange(q) {
   const to = q.to || taipeiToday();

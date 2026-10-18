@@ -72,7 +72,7 @@ const ROW = {
   student_names: ['林育睿', '何劼丞', '江睿芸'],
   checkin_status: 'checked_in', checkin_at: '2026-08-25T06:03:00Z',
   // 就算上游哪天多 SELECT 了這些，shapeSession 也不可以把它們帶出去
-  deduction_reason: '櫃檯補扣', deducted_by: '吳承融', parent_phone: '0922107211',
+  deduction_reason: '櫃檯補扣', deducted_by: '吳承融', parent_phone: '0900513604',
 };
 
 check('回傳鍵集合完全等於白名單（多一個就紅）', () => {

@@ -362,6 +362,41 @@ async function readbackRagicSyncOutboxJob({
   };
 }
 
+/**
+ * _markFailure 的護欄。
+ *
+ * 2026-09-07 正式站有 2 筆 CREATE_Z01_PARENT 卡在 processing、attempts 56/45、
+ * last_error_code 全空：每晚被 _claimNextJob 的 15 分鐘 stale 回收重新認領，
+ * 進了每筆 catch → _markFailure 自己在交易裡拋 22P02 → 整個交易 rollback（所以錯誤碼永遠空白）
+ * → 錯誤從 catch 裡再往上炸 → cron 迴圈 break → 當晚其他所有 pending 一筆都沒處理。
+ * 一筆壞資料把整條佇列拖住了 45 天，而 log 只有一行 "failed: 22P02"。
+ *
+ * 這裡做兩件事，都只在 _markFailure 失敗時才發生，正常路徑零改動：
+ *   1. 把 Postgres 錯誤的 where/table/column/detail 整段印出來 —— 讓毒資料自報家門，
+ *      不用再靠人猜是哪一句。
+ *   2. 用一句只碰 text/timestamp 欄位、不做任何轉型的最小 UPDATE 把該列隔離成 blocked，
+ *      它就不會再被 stale 回收、也不會再拖垮同批。
+ * 隔離 UPDATE 也失敗時（資料庫真的掛了）才把錯誤往上丟 —— 那不是這條要處理的事。
+ */
+async function _markFailureOrQuarantine(job, err, { markFailure = _markFailure, db = pool } = {}) {
+  try {
+    return await markFailure(job, err);
+  } catch (dbErr) {
+    const code = String(dbErr?.code || 'UNKNOWN');
+    console.error('[ragic-outbox] _markFailure 本身失敗，隔離該筆 job=%s op=%s code=%s\n  message=%s\n  where=%s\n  table=%s column=%s\n  detail=%s',
+      job?.id, job?.operation, code, dbErr?.message,
+      dbErr?.where || '-', dbErr?.table || '-', dbErr?.column || '-', String(dbErr?.detail || '-').slice(0, 300));
+    const quarantineCode = 'DB_' + code;
+    await db.query(
+      `UPDATE ragic_sync_outbox
+          SET state='blocked_data_conflict', last_error_code=$2, sanitized_error=$3, updated_at=NOW()
+        WHERE id=$1`,
+      [job.id, quarantineCode, JSON.stringify({ code: quarantineCode, from: 'markFailure', origin: String(err?.code || err?.message || '').slice(0, 80) })]
+    );
+    return { outboxState: 'blocked_data_conflict', claimState: 'SYNC_BLOCKED_DATA_CONFLICT', code: quarantineCode, quarantined: true };
+  }
+}
+
 async function _markFailure(job, err) {
   const failure = classifySyncFailure(err, Number(job.attempts), Number(job.max_attempts));
   const delaySeconds = Math.min(3600, 30 * (2 ** Math.max(0, Number(job.attempts) - 1)));
@@ -469,6 +504,11 @@ async function processClaimedRagicSyncOutboxJob(job, {
     readback_verified: false,
   };
   try {
+    // A crashed worker can leave a stale processing lease. Reclaim it for
+    // quarantine, but never issue an extra upstream write beyond the budget.
+    if (Number(job.attempts) > Number(job.max_attempts)) {
+      throw Object.assign(new Error('Outbox retry budget exhausted'), { code: 'RAGIC_RETRY_EXHAUSTED' });
+    }
     if (!['BIND_Z01_LINE_UID', 'REBIND_Z01_LINE_UID', 'CREATE_Z01_PARENT'].includes(job.operation)) {
       const err = new Error('unsupported outbox operation');
       err.code = 'RAGIC_OUTBOX_OPERATION_UNSUPPORTED';
@@ -538,10 +578,33 @@ async function processClaimedRagicSyncOutboxJob(job, {
       // intentionally rejected by getTrueRagicLineUid().
       let remote = await _findRemoteByTrueUid(parent.line_uid);
       let recordId = remote?._ragicId || remote?.ragicId || null;
-      if (!remote) {
+
+      // 查重找不到，不代表這個人不在 Ragic —— 只代表那筆記錄上還沒有 UID。
+      // 本地若已經知道 ragic_record_id，就直接用它，不要建第二筆。
+      // 少了這一步，這批人會在 Ragic 產生重複的 Z01，而重複的身分資料
+      // 比「沒同步到」難收拾得多：對帳、Z02 學員、後續綁定都會分岔。
+      if (!remote && parent.ragic_record_id) {
+        recordId = String(parent.ragic_record_id);
+        remote = await reader(recordId);
+        if (!remote || _recordIdOf(remote) !== recordId) {
+          throw Object.assign(new Error('Linked Ragic parent could not be confirmed'), { code: 'RAGIC_UNCONFIRMED_WRITE' });
+        }
+      }
+
+      if (remote) {
+        const currentUid = getTrueRagicLineUid(remote);
+        if (currentUid && currentUid !== parent.line_uid) {
+          throw Object.assign(new Error('Ragic parent belongs to another LINE account'), { code: 'PARENT_LINE_UID_MISMATCH' });
+        }
+        if (!currentUid) {
+          await writer({ [RAGIC_Z01_FIELDS.PARENT_SYSTEM_LINE_UID]: parent.line_uid }, recordId, { includeResponseMetadata: true });
+          metadata.write_performed = true;
+        }
+      }
+      if (!remote && !recordId) {
         const ref = job.payload_reference || {};
         const created = await ragic.createParentWithStudentsInRagic({
-          parent: { ...(ref.parent || {}), phone: parent.phone, name: parent.name },
+          parent: { ...(ref.parent || {}), ...parent },
           students: Array.isArray(ref.students) ? ref.students : [],
           lineUid: parent.line_uid,
         });
@@ -549,12 +612,21 @@ async function processClaimedRagicSyncOutboxJob(job, {
         metadata.http_status = _httpStatusFromWriterResult(created);
         recordId = created.ragicRecordId;
       }
+      // A prior create may have committed only the parent before a timeout.
+      // Never mark its registration synced without confirming all requested students.
+      if (remote) {
+        const ref = job.payload_reference || {};
+        const students = Array.isArray(ref.students) ? ref.students : [];
+        if (students.length) await ragic.syncParentStudentsStrict({ parent, students, ragicRecordId: recordId });
+      }
+      _assertReadback({ row: await reader(recordId), targetRecordId: recordId, expectedUid: parent.line_uid });
+      metadata.readback_verified = true;
       await _markCreateSuccess(job, recordId);
     }
     metadata.after_state = 'synced';
     return { ...metadata, outcome: 'synced', final_job_state: 'synced' };
   } catch (err) {
-    const failure = await _markFailure(job, err);
+    const failure = await _markFailureOrQuarantine(job, err);
     metadata.after_state = failure.outboxState;
     return {
       ...metadata,
@@ -652,3 +724,4 @@ module.exports = {
   _findRemoteByTrueUid,
   _claimExactJob,
 };
+module.exports._markFailureOrQuarantine = _markFailureOrQuarantine;   // 供測試注入會炸的 markFailure

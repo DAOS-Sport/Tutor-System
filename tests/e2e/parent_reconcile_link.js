@@ -64,11 +64,18 @@ async function call(base, method, path, { token, body } = {}) {
   const enrollmentIds = [];
   let checkoutId = null;
   let batchId = null;
+  let zoneId = null;
+  let courseTypeCreated = false;
 
   try {
+    // 課別設定依定價區讀取：自建定價區並把測試場館掛上去，不依賴種子。
+    zoneId = (await pg.query(
+      `INSERT INTO pricing_zones (name, sessions_per_period, sort_order) VALUES ($1, 6, 998) RETURNING id`,
+      [`對帳串接區${suffix}`]
+    )).rows[0].id;
     await pg.query(
-      `INSERT INTO venues (id, name, is_active) VALUES ($1, $2, TRUE)`,
-      [venueId, `對帳串接館${suffix}`]
+      `INSERT INTO venues (id, name, is_active, pricing_zone_id) VALUES ($1, $2, TRUE, $3)`,
+      [venueId, `對帳串接館${suffix}`, zoneId]
     );
     await pg.query(
       `INSERT INTO coaches (id, name, phone, ragic_employee_id, is_active, pricing_multiplier)
@@ -87,11 +94,15 @@ async function call(base, method, path, { token, body } = {}) {
        RETURNING id, name`,
       [parentId, `對帳大寶${suffix}`, `對帳二寶${suffix}`]
     );
+    courseTypeCreated = (await pg.query(
+      `INSERT INTO course_types (course_type) VALUES ($1) ON CONFLICT DO NOTHING RETURNING course_type`,
+      [courseType]
+    )).rowCount > 0;
     await pg.query(
       `INSERT INTO course_type_configs
-         (course_type, label, min_students, max_students, sort_order, base_price, is_active)
-       VALUES ($1, '對帳一對二測試', 1, 2, 998, 4500, TRUE)`,
-      [courseType]
+         (pricing_zone_id, course_type, label, min_students, max_students, sort_order, base_price, is_active)
+       VALUES ($2, $1, '對帳一對二測試', 1, 2, 998, 4500, TRUE)`,
+      [courseType, zoneId]
     );
 
     const parentToken = signParentToken({
@@ -232,8 +243,10 @@ async function call(base, method, path, { token, body } = {}) {
     await pg.query(`DELETE FROM parents WHERE id = $1`, [parentId]).catch(() => {});
     await pg.query(`DELETE FROM coach_venues WHERE coach_id = $1`, [coachId]).catch(() => {});
     await pg.query(`DELETE FROM coaches WHERE id = $1`, [coachId]).catch(() => {});
-    await pg.query(`DELETE FROM course_type_configs WHERE course_type = $1`, [courseType]).catch(() => {});
+    await pg.query(`DELETE FROM course_type_configs WHERE pricing_zone_id = $1`, [zoneId]).catch(() => {});
     await pg.query(`DELETE FROM venues WHERE id = $1`, [venueId]).catch(() => {});
+    await pg.query(`DELETE FROM pricing_zones WHERE id = $1`, [zoneId]).catch(() => {});
+    if (courseTypeCreated) await pg.query(`DELETE FROM course_types WHERE course_type = $1`, [courseType]).catch(() => {});
     await route.close().catch(() => {});
     await pg.end().catch(() => {});
   }

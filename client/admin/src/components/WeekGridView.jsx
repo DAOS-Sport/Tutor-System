@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { courseTypeLabel } from '../utils/format';
+import { venueColor } from '../utils/venueColors.mjs';
 
 /**
  * 週課表視角
@@ -16,11 +17,6 @@ import { courseTypeLabel } from '../utils/format';
  */
 
 const DOW = ['日', '一', '二', '三', '四', '五', '六'];
-const TONE = {
-  1: 'border-brand-teal/40 bg-brand-teal/10 text-brand-teal',
-  2: 'border-brand-amber/40 bg-brand-amber/10 text-brand-amber',
-  3: 'border-brand-green/40 bg-brand-green/10 text-brand-green',
-};
 
 // Task #55：以「分鐘」為單位處理；half-hour grid 用 30 分鐘 slot
 function parseMinutes(t) {
@@ -135,11 +131,12 @@ export default function WeekGridView({ sessions, from, to, venues, onSelect }) {
                             key={s.id}
                             type="button"
                             onClick={() => onSelect && onSelect(s)}
-                            className={`w-full rounded border px-1.5 py-1 text-left text-[11px] leading-tight ${TONE[s.course_type] || 'border-gray-300 bg-gray-50 text-gray-700'}`}
+                            className="w-full rounded border border-black/15 px-1.5 py-1 text-left text-[11px] leading-tight text-gray-950"
+                            style={{ backgroundColor: venueColor(s.venue_id) }}
                             title={`${s.start}-${s.end} ${venueName(s.venue_id)} ${s.coach}`}
                           >
                             <div className="font-semibold">{s.coach}・{courseTypeLabel(s.course_type)}</div>
-                            <div className="truncate text-gray-600">{(s.students || []).join('、')}</div>
+                            <div className="truncate">{(s.students || []).join('、')}</div>
                           </button>
                         ))}
                       </div>

@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "runId": "preview-fr01-layout-20260930-v1",
+  "indexRawByteSha256": {
+    "admin": "47dbc73fa11e1cb62d68b0aeea308efcb0ab5d6830dc2f690bfe78e9b4025fbb",
+    "liff": "ca004841aebba01dbe9d6f16dbae566f2398c7347e34c8d8ea6d30cb6fb5044c"
+  },
+  "sourceCanonicalLfSha256": {
+    "client/admin/src/pages/SessionsPage.jsx": "df15c0a59af44148b4f6319360a1f7f31927d1a4abcd35119f4f8eb0763c6896"
+  },
+  "sourceCanonicalization": "UTF-8 text; CRLF and lone CR become LF; trimEnd; append exactly one LF",
+  "status": "REVIEWED_SOURCE_READBACK_BUILD_PENDING"
+}

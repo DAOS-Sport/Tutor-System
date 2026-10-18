@@ -49,12 +49,12 @@ const DEFAULT_VENUES = [
 ];
 
 const DEFAULT_STAFF = [
-  { id: 'C001', name: '王志強', role: 'coach',   venue_id: 'B', phone: '0911000001', is_senior: true,  multiplier: 1.30, active: true },
-  { id: 'C002', name: '林佳穎', role: 'coach',   venue_id: 'B', phone: '0911000002', is_senior: true,  multiplier: 1.50, active: true },
-  { id: 'C003', name: '張嘉豪', role: 'coach',   venue_id: 'C', phone: '0911000003', is_senior: false, multiplier: 1.00, active: true },
-  { id: 'C004', name: '黃詩涵', role: 'coach',   venue_id: 'X', phone: '0911000004', is_senior: false, multiplier: 1.10, active: true },
-  { id: 'M001', name: '王主管', role: 'manager', venue_id: 'B', phone: '0922000001', is_senior: false, multiplier: 1.00, active: true },
-  { id: 'S001', name: '小林櫃檯', role: 'staff', venue_id: 'B', phone: '0933000001', is_senior: false, multiplier: 1.00, active: true },
+  { id: 'C001', name: '王志強', role: 'coach',   venue_id: 'B', phone: '0900660770', is_senior: true,  multiplier: 1.30, active: true },
+  { id: 'C002', name: '林佳穎', role: 'coach',   venue_id: 'B', phone: '0900662684', is_senior: true,  multiplier: 1.50, active: true },
+  { id: 'C003', name: '張嘉豪', role: 'coach',   venue_id: 'C', phone: '0900484236', is_senior: false, multiplier: 1.00, active: true },
+  { id: 'C004', name: '黃詩涵', role: 'coach',   venue_id: 'X', phone: '0900988813', is_senior: false, multiplier: 1.10, active: true },
+  { id: 'M001', name: '王主管', role: 'manager', venue_id: 'B', phone: '0900403619', is_senior: false, multiplier: 1.00, active: true },
+  { id: 'S001', name: '小林櫃檯', role: 'staff', venue_id: 'B', phone: '0900999607', is_senior: false, multiplier: 1.00, active: true },
 ];
 
 const DEFAULT_SETTINGS = {
@@ -76,41 +76,41 @@ const DEFAULT_COURSE_INTROS = [
 // 報名 + audit log seed（與 mock.js 同步）
 const DEFAULT_ENROLLMENTS = [
   // ===== 待對帳 8 筆 =====
-  { id: 'CP1001', parent_name: '張媽媽', parent_phone: '0912345678', students: ['張小明'],
+  { id: 'CP1001', parent_name: '張媽媽', parent_phone: '0900796878', students: ['張小明'],
     coach: '王志強', venue_id: 'B', course_type: 1, original_price: 11700, final_price: 11115,
     transfer_last_5: '12345', status: 'pending_payment', submitted_at: relDays(0, 9, 30),
     audit_logs: [{ at: relDays(0, 9, 30), action: '家長送出報名', by: '張媽媽' }] },
-  { id: 'CP1002', parent_name: '李爸爸', parent_phone: '0922333444', students: ['李小龍', '張小美'],
+  { id: 'CP1002', parent_name: '李爸爸', parent_phone: '0900932354', students: ['李小龍', '張小美'],
     coach: '林佳穎', venue_id: 'B', course_type: 2, original_price: 9000, final_price: 8550,
     transfer_last_5: '67890', status: 'pending_payment', submitted_at: relDays(0, 10, 15),
     audit_logs: [{ at: relDays(0, 10, 15), action: '家長送出報名', by: '李爸爸' }] },
-  { id: 'CP1006', parent_name: '吳爸爸', parent_phone: '0955123456', students: ['吳大寶'],
+  { id: 'CP1006', parent_name: '吳爸爸', parent_phone: '0900316937', students: ['吳大寶'],
     coach: '王志強', venue_id: 'B', course_type: 1, original_price: 11700, final_price: 11115,
     transfer_last_5: '33344', status: 'pending_payment', submitted_at: relDays(-1, 14, 20),
     audit_logs: [{ at: relDays(-1, 14, 20), action: '家長送出報名', by: '吳爸爸' }] },
-  { id: 'CP1007', parent_name: '林媽媽', parent_phone: '0966234567', students: ['林小綠', '林小紅'],
+  { id: 'CP1007', parent_name: '林媽媽', parent_phone: '0900496827', students: ['林小綠', '林小紅'],
     coach: '張嘉豪', venue_id: 'C', course_type: 2, original_price: 6000, final_price: 5700,
     transfer_last_5: '55566', status: 'pending_payment', submitted_at: relDays(-1, 11, 5),
     audit_logs: [{ at: relDays(-1, 11, 5), action: '家長送出報名', by: '林媽媽' }] },
-  { id: 'CP1008', parent_name: '蔡媽媽', parent_phone: '0977345678', students: ['蔡安安', '蔡平平', '蔡靜靜'],
+  { id: 'CP1008', parent_name: '蔡媽媽', parent_phone: '0900283931', students: ['蔡安安', '蔡平平', '蔡靜靜'],
     coach: '黃詩涵', venue_id: 'X', course_type: 3, original_price: 4950, final_price: 4702,
     transfer_last_5: '77788', status: 'pending_payment', submitted_at: relDays(-2, 9, 0),
     audit_logs: [{ at: relDays(-2, 9, 0), action: '家長送出報名', by: '蔡媽媽' }] },
-  { id: 'CP1009', parent_name: '謝爸爸', parent_phone: '0988456789', students: ['謝小恩'],
+  { id: 'CP1009', parent_name: '謝爸爸', parent_phone: '0900526401', students: ['謝小恩'],
     coach: '林佳穎', venue_id: 'B', course_type: 1, original_price: 13500, final_price: 12825,
     transfer_last_5: '88899', status: 'pending_payment', submitted_at: relDays(-2, 16, 30),
     audit_logs: [{ at: relDays(-2, 16, 30), action: '家長送出報名', by: '謝爸爸' }] },
-  { id: 'CP1010', parent_name: '黃媽媽', parent_phone: '0999567890', students: ['黃小傑'],
+  { id: 'CP1010', parent_name: '黃媽媽', parent_phone: '0900267623', students: ['黃小傑'],
     coach: '張嘉豪', venue_id: 'C', course_type: 1, original_price: 9000, final_price: 8550,
     transfer_last_5: '00011', status: 'pending_payment', submitted_at: relDays(-3, 13, 0),
     audit_logs: [{ at: relDays(-3, 13, 0), action: '家長送出報名', by: '黃媽媽' }] },
-  { id: 'CP1011', parent_name: '楊媽媽', parent_phone: '0911678901', students: ['楊小綺', '王小華'],
+  { id: 'CP1011', parent_name: '楊媽媽', parent_phone: '0900166548', students: ['楊小綺', '王小華'],
     coach: '王志強', venue_id: 'B', course_type: 2, original_price: 7800, final_price: 7410,
     transfer_last_5: '22233', status: 'pending_payment', submitted_at: relDays(-3, 17, 45),
     audit_logs: [{ at: relDays(-3, 17, 45), action: '家長送出報名', by: '楊媽媽' }] },
 
   // ===== 已對帳尚未開課 3 筆 =====
-  { id: 'CP1003', parent_name: '陳媽媽', parent_phone: '0933555777', students: ['陳小米'],
+  { id: 'CP1003', parent_name: '陳媽媽', parent_phone: '0900549610', students: ['陳小米'],
     coach: '張嘉豪', venue_id: 'C', course_type: 1, original_price: 9000, final_price: 8550,
     transfer_last_5: '24680', status: 'confirmed', submitted_at: relDays(-4, 14, 0),
     total_sessions: 6, used_sessions: 1,
@@ -118,7 +118,7 @@ const DEFAULT_ENROLLMENTS = [
       { at: relDays(-4, 14, 0), action: '家長送出報名', by: '陳媽媽' },
       { at: relDays(-4, 15, 20), action: '對帳通過', by: '王主管' },
     ] },
-  { id: 'CP1012', parent_name: '蘇爸爸', parent_phone: '0922789012', students: ['蘇小明'],
+  { id: 'CP1012', parent_name: '蘇爸爸', parent_phone: '0900427255', students: ['蘇小明'],
     coach: '林佳穎', venue_id: 'B', course_type: 1, original_price: 13500, final_price: 12825,
     transfer_last_5: '44455', status: 'confirmed', submitted_at: relDays(-5, 10, 30),
     total_sessions: 6, used_sessions: 0,
@@ -126,7 +126,7 @@ const DEFAULT_ENROLLMENTS = [
       { at: relDays(-5, 10, 30), action: '家長送出報名', by: '蘇爸爸' },
       { at: relDays(-5, 11, 0), action: '對帳通過', by: '王主管' },
     ] },
-  { id: 'CP1013', parent_name: '鄭媽媽', parent_phone: '0933890123', students: ['鄭小俠', '鄭小俐'],
+  { id: 'CP1013', parent_name: '鄭媽媽', parent_phone: '0900059724', students: ['鄭小俠', '鄭小俐'],
     coach: '黃詩涵', venue_id: 'X', course_type: 2, original_price: 6600, final_price: 6270,
     transfer_last_5: '66677', status: 'confirmed', submitted_at: relDays(-6, 9, 15),
     total_sessions: 6, used_sessions: 0,
@@ -136,7 +136,7 @@ const DEFAULT_ENROLLMENTS = [
     ] },
 
   // ===== 進行中 7 筆 =====
-  { id: 'CP1004', parent_name: '張媽媽', parent_phone: '0912345678', students: ['張小明'],
+  { id: 'CP1004', parent_name: '張媽媽', parent_phone: '0900796878', students: ['張小明'],
     coach: '王志強', venue_id: 'B', course_type: 1, original_price: 11700, final_price: 11115,
     transfer_last_5: '99999', status: 'active', submitted_at: relDays(-22, 9, 0),
     total_sessions: 6, used_sessions: 3,
@@ -144,7 +144,7 @@ const DEFAULT_ENROLLMENTS = [
       { at: relDays(-22, 9, 0), action: '家長送出報名', by: '張媽媽' },
       { at: relDays(-22, 11, 0), action: '對帳通過', by: '王主管' },
     ] },
-  { id: 'CP1014', parent_name: '王媽媽', parent_phone: '0944901234', students: ['王小皓'],
+  { id: 'CP1014', parent_name: '王媽媽', parent_phone: '0900502386', students: ['王小皓'],
     coach: '林佳穎', venue_id: 'B', course_type: 1, original_price: 13500, final_price: 12825,
     transfer_last_5: '11000', status: 'active', submitted_at: relDays(-30, 9, 0),
     total_sessions: 6, used_sessions: 5,
@@ -152,7 +152,7 @@ const DEFAULT_ENROLLMENTS = [
       { at: relDays(-30, 9, 0), action: '家長送出報名', by: '王媽媽' },
       { at: relDays(-30, 10, 0), action: '對帳通過', by: '王主管' },
     ] },
-  { id: 'CP1015', parent_name: '陳爸爸', parent_phone: '0955012345', students: ['陳小宇'],
+  { id: 'CP1015', parent_name: '陳爸爸', parent_phone: '0900115363', students: ['陳小宇'],
     coach: '張嘉豪', venue_id: 'C', course_type: 1, original_price: 9000, final_price: 8550,
     transfer_last_5: '22000', status: 'active', submitted_at: relDays(-15, 14, 0),
     total_sessions: 6, used_sessions: 2,
@@ -160,7 +160,7 @@ const DEFAULT_ENROLLMENTS = [
       { at: relDays(-15, 14, 0), action: '家長送出報名', by: '陳爸爸' },
       { at: relDays(-15, 15, 0), action: '對帳通過', by: '王主管' },
     ] },
-  { id: 'CP1016', parent_name: '林爸爸', parent_phone: '0966123456', students: ['林小杰', '林小妤'],
+  { id: 'CP1016', parent_name: '林爸爸', parent_phone: '0900892637', students: ['林小杰', '林小妤'],
     coach: '王志強', venue_id: 'B', course_type: 2, original_price: 7800, final_price: 7410,
     transfer_last_5: '33000', status: 'active', submitted_at: relDays(-18, 16, 0),
     total_sessions: 6, used_sessions: 4,
@@ -168,7 +168,7 @@ const DEFAULT_ENROLLMENTS = [
       { at: relDays(-18, 16, 0), action: '家長送出報名', by: '林爸爸' },
       { at: relDays(-18, 17, 0), action: '對帳通過', by: '王主管' },
     ] },
-  { id: 'CP1017', parent_name: '徐媽媽', parent_phone: '0977234567', students: ['徐小柔'],
+  { id: 'CP1017', parent_name: '徐媽媽', parent_phone: '0900784634', students: ['徐小柔'],
     coach: '黃詩涵', venue_id: 'X', course_type: 1, original_price: 9900, final_price: 9405,
     transfer_last_5: '44000', status: 'active', submitted_at: relDays(-25, 10, 0),
     total_sessions: 6, used_sessions: 1,
@@ -176,7 +176,7 @@ const DEFAULT_ENROLLMENTS = [
       { at: relDays(-25, 10, 0), action: '家長送出報名', by: '徐媽媽' },
       { at: relDays(-25, 11, 0), action: '對帳通過', by: '王主管' },
     ] },
-  { id: 'CP1018', parent_name: '高媽媽', parent_phone: '0988345678', students: ['高小琳'],
+  { id: 'CP1018', parent_name: '高媽媽', parent_phone: '0900624742', students: ['高小琳'],
     coach: '林佳穎', venue_id: 'B', course_type: 1, original_price: 13500, final_price: 12825,
     transfer_last_5: '55000', status: 'active', submitted_at: relDays(-12, 9, 0),
     total_sessions: 6, used_sessions: 0,
@@ -184,7 +184,7 @@ const DEFAULT_ENROLLMENTS = [
       { at: relDays(-12, 9, 0), action: '家長送出報名', by: '高媽媽' },
       { at: relDays(-12, 10, 0), action: '對帳通過', by: '王主管' },
     ] },
-  { id: 'CP1022', parent_name: '游爸爸', parent_phone: '0944789012', students: ['游小薇', '小婷', '小芯'],
+  { id: 'CP1022', parent_name: '游爸爸', parent_phone: '0900802389', students: ['游小薇', '小婷', '小芯'],
     coach: '黃詩涵', venue_id: 'X', course_type: 3, original_price: 4950, final_price: 4702,
     transfer_last_5: '99000', status: 'active', submitted_at: relDays(-20, 11, 0),
     total_sessions: 6, used_sessions: 3,
@@ -192,7 +192,7 @@ const DEFAULT_ENROLLMENTS = [
       { at: relDays(-20, 11, 0), action: '家長送出報名', by: '游爸爸' },
       { at: relDays(-20, 12, 0), action: '對帳通過', by: '王主管' },
     ] },
-  { id: 'CP1023', parent_name: '宋媽媽', parent_phone: '0955890123', students: ['宋小芳'],
+  { id: 'CP1023', parent_name: '宋媽媽', parent_phone: '0900289622', students: ['宋小芳'],
     coach: '張嘉豪', venue_id: 'C', course_type: 1, original_price: 9000, final_price: 8550,
     transfer_last_5: '12300', status: 'active', submitted_at: relDays(-8, 9, 0),
     total_sessions: 6, used_sessions: 1,
@@ -200,7 +200,7 @@ const DEFAULT_ENROLLMENTS = [
       { at: relDays(-8, 9, 0), action: '家長送出報名', by: '宋媽媽' },
       { at: relDays(-8, 10, 30), action: '對帳通過', by: '王主管' },
     ] },
-  { id: 'CP1024', parent_name: '紀媽媽', parent_phone: '0966901234', students: ['紀小美', '紀小華'],
+  { id: 'CP1024', parent_name: '紀媽媽', parent_phone: '0900128929', students: ['紀小美', '紀小華'],
     coach: '王志強', venue_id: 'B', course_type: 2, original_price: 7800, final_price: 7410,
     transfer_last_5: '45600', status: 'active', submitted_at: relDays(-5, 16, 0),
     total_sessions: 6, used_sessions: 0,
@@ -210,7 +210,7 @@ const DEFAULT_ENROLLMENTS = [
     ] },
 
   // ===== 取消 / 退費 4 筆 =====
-  { id: 'CP1005', parent_name: '陳媽媽', parent_phone: '0933555777', students: ['陳小米'],
+  { id: 'CP1005', parent_name: '陳媽媽', parent_phone: '0900549610', students: ['陳小米'],
     coach: '黃詩涵', venue_id: 'X', course_type: 3, original_price: 4950, final_price: 4702,
     transfer_last_5: '11122', status: 'cancelled', submitted_at: relDays(-45, 8, 30),
     total_sessions: 6, used_sessions: 0,
@@ -219,7 +219,7 @@ const DEFAULT_ENROLLMENTS = [
       { at: relDays(-45, 10, 0), action: '對帳通過', by: '王主管' },
       { at: relDays(-7, 16, 0), action: '主管取消', by: '王主管' },
     ] },
-  { id: 'CP1019', parent_name: '何爸爸', parent_phone: '0911456789', students: ['何小晴'],
+  { id: 'CP1019', parent_name: '何爸爸', parent_phone: '0900586610', students: ['何小晴'],
     coach: '王志強', venue_id: 'B', course_type: 1, original_price: 11700, final_price: 11115,
     transfer_last_5: '66000', status: 'refunded', submitted_at: relDays(-50, 11, 0),
     total_sessions: 6, used_sessions: 2, refund_amount: 6669,
@@ -228,7 +228,7 @@ const DEFAULT_ENROLLMENTS = [
       { at: relDays(-50, 12, 0), action: '對帳通過', by: '王主管' },
       { at: relDays(-10, 14, 30), action: '退課（理由：搬家無法繼續上課，退款 NT$ 6,669）', by: '王主管', reason: '搬家無法繼續上課', refund_amount: 6669 },
     ] },
-  { id: 'CP1020', parent_name: '葉媽媽', parent_phone: '0922567890', students: ['葉小晨'],
+  { id: 'CP1020', parent_name: '葉媽媽', parent_phone: '0900714593', students: ['葉小晨'],
     coach: '張嘉豪', venue_id: 'C', course_type: 1, original_price: 9000, final_price: 8550,
     transfer_last_5: '77000', status: 'refunded', submitted_at: relDays(-60, 10, 0),
     total_sessions: 6, used_sessions: 4, refund_amount: 2565,
@@ -237,7 +237,7 @@ const DEFAULT_ENROLLMENTS = [
       { at: relDays(-60, 11, 0), action: '對帳通過', by: '王主管' },
       { at: relDays(-15, 15, 0), action: '退課（理由：時間衝突，退款 NT$ 2,565）', by: '王主管', reason: '時間衝突', refund_amount: 2565 },
     ] },
-  { id: 'CP1021', parent_name: '邱媽媽', parent_phone: '0933678901', students: ['邱小宸'],
+  { id: 'CP1021', parent_name: '邱媽媽', parent_phone: '0900741279', students: ['邱小宸'],
     coach: '林佳穎', venue_id: 'B', course_type: 1, original_price: 13500, final_price: 12825,
     transfer_last_5: '88000', status: 'cancelled', submitted_at: relDays(-35, 13, 0),
     total_sessions: 6, used_sessions: 0,
@@ -281,6 +281,14 @@ async function ensureSchema() {
   await pool.query(`ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS extra_parent_phones TEXT[] NOT NULL DEFAULT '{}'`);
   // 後台備注欄
   await pool.query(`ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS notes TEXT`);
+  // 體驗課簽到時間：admin/checkins.js 的簽到清單無條件讀這欄，原本只在第一次體驗簽到時
+  // 由 admin/sessions.js 補建，全新庫在那之前 GET /api/admin/checkins 會 500（42703）。
+  await pool.query(`ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS experience_checked_in_at TIMESTAMPTZ`);
+  // 家長端報名記下「實際學員 id」：對帳開通時直接用，不再靠（購買人＋姓名）比對。家庭帳號下，
+  // 爸爸幫媽媽名下的孩子報名時，舊的姓名比對會在爸爸名下多建一個同名孩子（規格第二階段）。
+  await pool.query(`ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS student_ids UUID[]`);
+  // F-R01：保存實際下單時使用的教練定價係數；舊單不猜值，維持 NULL。
+  await pool.query(`ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS purchased_pricing_multiplier NUMERIC(5,2)`);
 
   // Task #53：admin_users 增加 is_active + 覆寫旗標（停用 admin login）
   await pool.query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE`);
@@ -370,6 +378,25 @@ async function ensureSchema() {
           WHERE sv.staff_id = s.id AND sv.venue_id = s.venue_id
        )
   `);
+
+  // Ragic Webhook 每一次請求的紀錄（含被拒的），見 services/ragicWebhookAttempts.js。
+  // 2026-09-23 發布後在 Ragic 改資料卻「沒進來」，被拒的請求又不留痕跡，分不出沒送還是被擋。
+  // 不存密碼與內容本身。發布前要先在 dev 庫建好，否則下次 Publish 會提議 DROP。
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ragic_webhook_attempts (
+      id           BIGSERIAL PRIMARY KEY,
+      received_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      method       TEXT NOT NULL,
+      sheet_code   TEXT,
+      status       INTEGER NOT NULL,
+      outcome      TEXT NOT NULL,
+      content_type TEXT,
+      body_kind    TEXT,
+      body_bytes   INTEGER,
+      id_count     INTEGER,
+      user_agent   TEXT
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_ragic_webhook_attempts_received ON ragic_webhook_attempts(received_at DESC)`);
 }
 
 async function seedIfEmpty() {

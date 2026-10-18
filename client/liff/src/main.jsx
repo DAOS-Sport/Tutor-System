@@ -3,7 +3,8 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import liff from '@line/liff';
 import App from './App';
-import ErrorBoundary from './components/ErrorBoundary';
+// 與後台共用同一份，見 client/shared/ErrorBoundary.jsx 的說明。
+import ErrorBoundary from '../../shared/ErrorBoundary.jsx';
 import './index.css';
 
 const LIFF_ID_PARENT = import.meta.env.VITE_LIFF_ID_PARENT || import.meta.env.VITE_LIFF_ID;
@@ -67,7 +68,7 @@ function normalizeCoachLanding() {
 
 function mount() {
   ReactDOM.createRoot(document.getElementById('root')).render(
-    <ErrorBoundary>
+    <ErrorBoundary app={isCoachPath() ? '教練端' : '家長端'}>
       <BrowserRouter basename="/liff">
         <App />
       </BrowserRouter>

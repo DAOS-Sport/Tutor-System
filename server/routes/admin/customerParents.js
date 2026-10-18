@@ -22,6 +22,8 @@ const { formatPlainDate } = require('../../utils/dateTime');
 const { pool } = require('../../models/db');
 const { parsePaging, pagingSql } = require('../../utils/paging');
 const { requireAdminAuth, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定。
+const { requireResource } = require('../../middlewares/requireResource');
 const { parseRocOrIso, maskId, maskBlood, looksMasked, wantReveal, auditReveal, diffChanges, writeStudentAudit, adminActorName } = require('./_customerShared');
 const ragicWriteback = require('../../services/ragicWriteback');
 const ragicWriter = require('../../services/ragicWriter');
@@ -33,6 +35,20 @@ const router = express.Router();
 const PARENT_COLS = `p.id, p.line_uid, p.phone, p.name, p.gender, p.email,
   p.primary_venue_id, p.identity, p.home_phone, p.home_address, p.line_id,
   p.ragic_record_id, p.is_active, p.last_synced_at, p.family_id`;
+
+// 清單「家庭」欄（規格 §7）：擁有者姓名、人數、狀態、這位家長在家庭裡的 LINE 綁定是否有效。
+// 用純量子查詢（不是 JOIN）：清單有 GROUP BY p.id，子查詢只依賴 p 的欄位。
+const FAMILY_SUMMARY_SQL = `(
+  SELECT jsonb_build_object(
+           'id', fm.family_id, 'role', fm.role, 'relationship', fm.relationship, 'status', f.status,
+           'owner_name', op.name,
+           'size', (SELECT COUNT(*) FROM family_members x WHERE x.family_id = fm.family_id AND x.status = 'active'),
+           'line_bound', (fm.line_uid IS NOT NULL AND fm.line_uid = p.line_uid))
+    FROM family_members fm
+    JOIN families f ON f.id = fm.family_id
+    LEFT JOIN parents op ON op.id = f.owner_parent_id
+   WHERE fm.parent_id = p.id AND fm.status = 'active'
+   LIMIT 1)`;
 
 function rowToParent(r, studentCount = 0) {
   return {
@@ -52,6 +68,7 @@ function rowToParent(r, studentCount = 0) {
     is_active: r.is_active !== false,
     last_synced_at: r.last_synced_at || null,
     family_id: r.family_id || null,
+    family: r.family || null,
     student_count: Number(studentCount) || 0,
   };
 }
@@ -88,9 +105,9 @@ async function parentInScope(client, req, id) {
 }
 
 // GET / — 家長清單（+ 學員數）
-router.get('/', requireAdminAuth, async (req, res) => {
+router.get('/', requireAdminAuth, requireResource('customer-parents'), async (req, res) => {
   try {
-    const { status = 'all', venueId = '', name = '', phone = '', identity = '' } = req.query;
+    const { status = 'all', venueId = '', name = '', phone = '', identity = '', hasFamily = '' } = req.query;
     const where = [];
     const args = [];
     where.push(`COALESCE(p.name, '') <> 'ZZ-CANARY'`);
@@ -102,13 +119,16 @@ router.get('/', requireAdminAuth, async (req, res) => {
     if (venueId)  { args.push(venueId);     where.push(`p.primary_venue_id = $${args.length}`); }
     if (name)     { args.push(`%${name}%`);  where.push(`p.name ILIKE $${args.length}`); }
     if (phone)    { args.push(`%${phone}%`); where.push(`p.phone ILIKE $${args.length}`); }
-    if (identity) { args.push(identity);     where.push(`p.identity = $${args.length}`); }
+    if (identity) { args.push(identity);     where.push(`p.identity = ${args.length}`); }
+    // 家庭帳號（規格 §7）：篩選有無家庭
+    if (hasFamily === 'yes') where.push(`EXISTS (SELECT 1 FROM family_members fm WHERE fm.parent_id = p.id AND fm.status = 'active')`);
+    if (hasFamily === 'no')  where.push(`NOT EXISTS (SELECT 1 FROM family_members fm WHERE fm.parent_id = p.id AND fm.status = 'active')`);
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
     const paging = parsePaging(req, { defaultLimit: 500 });
     const r = await pool.query(
       // 同樣把寫死的 500 換成可分頁；沒帶參數維持原行為。
-      `SELECT ${PARENT_COLS}, COUNT(s.id) AS student_count
+      `SELECT ${PARENT_COLS}, COUNT(s.id) AS student_count, ${FAMILY_SUMMARY_SQL} AS family
          FROM parents p
          LEFT JOIN students s ON s.parent_id = p.id
          ${whereSql}
@@ -125,7 +145,7 @@ router.get('/', requireAdminAuth, async (req, res) => {
 });
 
 // GET /:id — 家長 + 旗下學員
-router.get('/:id', requireAdminAuth, async (req, res) => {
+router.get('/:id', requireAdminAuth, requireResource('customer-parents'), async (req, res) => {
   try {
     const p = await pool.query(`SELECT ${PARENT_COLS} FROM parents p WHERE p.id = $1`, [req.params.id]);
     if (!p.rowCount || !isVenueInScope(req, p.rows[0].primary_venue_id)) {
@@ -145,7 +165,7 @@ router.get('/:id', requireAdminAuth, async (req, res) => {
 // 本地鏡像是「登入真相鏡像」，手建列必然未綁 UID → 進了鏡像就是殘留、推上 Ragic 就是
 // 未綁資料進 Z01（夜間 pull 又分流進 Z03，清不完的循環）。正確流程：櫃台在 Ragic Z01
 // 建檔 → 客戶 LINE 註冊綁定 → 下一輪 pull（或註冊當下刷新）自動進本地鏡像。
-router.post('/', requireAdminAuth, (req, res) => {
+router.post('/', requireAdminAuth, requireResource('customer-parents'), (req, res) => {
   res.status(410).json({
     error: '手動新增家長已停用：請於 Ragic Z01 建檔，客戶完成 LINE 註冊綁定後會自動進入本系統',
     code: 'PARENT_CREATE_VIA_RAGIC',
@@ -173,7 +193,7 @@ router.post('/', requireAdminAuth, (req, res) => {
  * 不動的東西：學員、報名、上課紀錄、家長的業務資料全部保留。
  * 這個動作只解除「哪一支 LINE 可以登入這個帳號」。
  */
-router.post('/:id/unbind-line', requireAdminAuth, async (req, res) => {
+router.post('/:id/unbind-line', requireAdminAuth, requireResource('customer-parents'), async (req, res) => {
   const reason = String(req.body?.reason || '').trim();
   if (!reason) return res.status(400).json({ error: '請填寫解除綁定的原因', code: 'REASON_REQUIRED' });
   if (reason.length > 500) return res.status(400).json({ error: '原因過長（上限 500 字）', code: 'REASON_TOO_LONG' });
@@ -272,7 +292,7 @@ router.post('/:id/unbind-line', requireAdminAuth, async (req, res) => {
   }
 });
 
-router.patch('/:id', requireAdminAuth, async (req, res) => {
+router.patch('/:id', requireAdminAuth, requireResource('customer-parents'), async (req, res) => {
   const b = req.body || {};
   // NOT NULL 前置驗證：清空 name/phone 直接 400（而非讓 23502 中斷整筆交易）
   if (b.name !== undefined && !String(b.name).trim())   return res.status(400).json({ error: '家長姓名不可為空', code: 'INPUT_INVALID' });
@@ -341,8 +361,8 @@ router.patch('/:id', requireAdminAuth, async (req, res) => {
         const blood = looksMasked(s.blood_type) ? undefined : s.blood_type;
         if (s.id) {
           const hit = await client.query(
-            `SELECT id, name, gender, birth_date, id_number, blood_type, student_code
-               FROM students WHERE id = $1 AND parent_id = $2`,
+            `SELECT id, name, gender, birth_date, id_number, blood_type, student_code, is_active
+               FROM students WHERE id = $1 AND parent_id = $2 FOR UPDATE`,
             [s.id, req.params.id]
           );
           if (hit.rowCount) {
@@ -353,15 +373,14 @@ router.patch('/:id', requireAdminAuth, async (req, res) => {
                      id_number  = CASE WHEN $5::boolean THEN NULLIF($6,'')  ELSE id_number  END,
                      blood_type = CASE WHEN $7::boolean THEN NULLIF($8,'')  ELSE blood_type END,
                      student_code=NULLIF($9,''), is_active=$10, last_synced_at=NULL, updated_at=NOW() WHERE id=$1
-               RETURNING name, gender, birth_date, id_number, blood_type, student_code`,
+               RETURNING name, gender, birth_date, id_number, blood_type, student_code, is_active`,
               [s.id, s.name || '', s.gender || '', bd,
                idNum !== undefined, idNum || '', blood !== undefined, blood || '',
                s.student_code || '', s.is_active !== false]
             );
             touchedStudentIds.push(s.id);
-            const changes = diffChanges(before, upd.rows[0], ['name', 'gender', 'birth_date', 'id_number', 'blood_type', 'student_code']);
-            await writeStudentAudit(client, s.id, 'edit', { byUser: adminActorName(req), byRole: req.adminUser?.role, changes })
-              .catch((err) => console.warn('[student-audit] 家長頁編輯學員稽核寫入失敗:', err.message));
+            const changes = diffChanges(before, upd.rows[0], ['name', 'gender', 'birth_date', 'id_number', 'blood_type', 'student_code', 'is_active']);
+            await writeStudentAudit(client, s.id, 'edit', { byUser: adminActorName(req), byRole: req.adminUser?.role, changes, note: 'admin-parent-student-edit' });
             continue;
           }
         }
@@ -375,8 +394,7 @@ router.patch('/:id', requireAdminAuth, async (req, res) => {
            s.student_code || '', s.is_active !== false]
         );
         touchedStudentIds.push(ins.rows[0].id); // 新列 last_synced_at 預設 NULL（待同步）
-        await writeStudentAudit(client, ins.rows[0].id, 'create', { byUser: adminActorName(req), byRole: req.adminUser?.role })
-          .catch((err) => console.warn('[student-audit] 家長頁新增學員稽核寫入失敗:', err.message));
+        await writeStudentAudit(client, ins.rows[0].id, 'create', { byUser: adminActorName(req), byRole: req.adminUser?.role, note: 'admin-parent-student-create' });
       }
     }
 
@@ -395,6 +413,9 @@ router.patch('/:id', requireAdminAuth, async (req, res) => {
     res.json({ ...rowToParent(p.rows[0]), students: kids.rows.map((k) => rowToStudent(k, reveal)) });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
+    if (err.code === '23505' && err.constraint === 'uq_parents_phone_canonical_active') {
+      return res.status(409).json({ error: '此行動電話已被其他家長使用', code: 'PHONE_AMBIGUOUS' });
+    }
     if (err.code === '23505') {
       const msg = /phone/.test(err.detail || '') ? '此行動電話已被其他家長使用' : '唯一值衝突（電話 / 身分證 / Ragic 連結重複）';
       return res.status(409).json({ error: msg, code: 'UNIQUE_CONFLICT' });

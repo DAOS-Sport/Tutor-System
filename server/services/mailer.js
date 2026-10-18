@@ -19,7 +19,7 @@
  * 環境變數（最少只要設一個密碼就能運作）：
  *   SMTP_PASS 或 Tutor_gmail   Gmail 應用程式密碼（顯示時的空格會自動去掉）
  *   SMTP_HOST / SMTP_PORT      未設時預設 smtp.gmail.com:587
- *   SMTP_USER / SMTP_FROM      未設時預設 swim@dreamstake.com.tw
+ *   SMTP_USER / SMTP_FROM      未設時預設 user206e89bc@example.com
  *   SMTP_SECURE=1        強制 TLS（port 465 會自動視為 secure）
  *   MAIL_DRY_RUN=1       即使設定完整也不真的送出
  *   MAIL_TEST_RECIPIENT  所有信改寄這裡
@@ -41,7 +41,7 @@ const PASS_KEYS = ['SMTP_PASS', 'Tutor_gmail', 'TUTOR_GMAIL', 'tutor_gmail'];
 
 // 寄件位址不是機密（它出現在每一封信的寄件人欄位），放預設值可以讓
 // 「只設一個密碼」就能運作。要換帳號時設 SMTP_USER 即可覆寫。
-const DEFAULT_SENDER = 'swim@dreamstake.com.tw';
+const DEFAULT_SENDER = 'user206e89bc@example.com';
 
 function firstEnv(keys) {
   for (const k of keys) {
@@ -108,6 +108,7 @@ function getTransport() {
  *   絕不 throw。
  */
 async function sendMail({ to, subject, html, text, attachments }) {
+  if (process.env.PREVIEW_SAFE_MODE === '1') return { sent: false, dryRun: true, status: 'dry_run', reason: 'PREVIEW_SAFE_MODE', to: null, messageId: null };
   const c = config();
   const original = String(to || '').trim();
   const result = { sent: false, dryRun: false, status: 'failed', reason: null, to: original, messageId: null };
@@ -125,6 +126,11 @@ async function sendMail({ to, subject, html, text, attachments }) {
     target = c.testRecipient;
     subj = `[原收件人 ${original}] ${subject}`;
     result.to = target;
+  }
+
+  // 使用者指定的遷移暫用地址不是收件人；不可寄出付款或學員資訊。
+  if ([original, target].some((address) => String(address).trim().toLowerCase() === 'user41f6f1e4@example.com')) {
+    return Object.assign(result, { status: 'skipped', reason: 'PLACEHOLDER_RECIPIENT' });
   }
 
   if (!isConfigured()) {
@@ -167,6 +173,7 @@ function describe() {
 
 /** 供 /healthz 或人工檢查用；不寄信。 */
 async function verify() {
+  if (process.env.PREVIEW_SAFE_MODE === '1') return { ok: false, reason: 'PREVIEW_SAFE_MODE' };
   if (!isConfigured()) return { ok: false, reason: 'SMTP_NOT_CONFIGURED' };
   try {
     await getTransport().verify();

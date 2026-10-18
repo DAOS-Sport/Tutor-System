@@ -69,10 +69,21 @@ async function call(base, method, path, { token, body } = {}) {
   const batchIds = [];
   const allEnrollmentIds = [];
   const checkoutIds = [];
+  let zoneId = null;
+  let createdCourseTypes = [];
 
   try {
     // ── 隔離種子資料 ─────────────────────────────────────────────
-    await pg.query(`INSERT INTO venues (id, name, is_active) VALUES ($1, $2, TRUE)`, [venueId, `e2e館${suffix}`]);
+    // 課別設定依定價區讀取（services/courseConfig）：場館要掛區、設定要帶區，
+    // 課別編號要先在 course_types 字典裡（configs 有外鍵）。一律自建，不依賴種子。
+    zoneId = (await pg.query(
+      `INSERT INTO pricing_zones (name, sessions_per_period, sort_order) VALUES ($1, 6, 990) RETURNING id`,
+      [`e2e區${suffix}`]
+    )).rows[0].id;
+    await pg.query(
+      `INSERT INTO venues (id, name, is_active, pricing_zone_id) VALUES ($1, $2, TRUE, $3)`,
+      [venueId, `e2e館${suffix}`, zoneId]
+    );
     await pg.query(
       `INSERT INTO coaches (id, name, phone, ragic_employee_id, is_active, pricing_multiplier)
        VALUES ($1, $2, $3, $4, TRUE, 1.00)`,
@@ -92,12 +103,17 @@ async function call(base, method, path, { token, body } = {}) {
       );
       studentIds.push(r.rows[0].id);
     }
+    createdCourseTypes = (await pg.query(
+      `INSERT INTO course_types (course_type) SELECT unnest($1::int[])
+       ON CONFLICT DO NOTHING RETURNING course_type`,
+      [[CT_GROUP, CT_SOLO, CT_PAIR]]
+    )).rows.map((row) => row.course_type);
     await pg.query(
-      `INSERT INTO course_type_configs (course_type, label, min_students, max_students, sort_order, base_price, is_active)
-       VALUES ($1, 'e2e一對三', 1, 3, 990, 3000, TRUE),
-              ($2, 'e2e一對一', 1, 1, 991, 9000, TRUE),
-              ($3, 'e2e一對二', 1, 2, 992, 4500, TRUE)`,
-      [CT_GROUP, CT_SOLO, CT_PAIR]
+      `INSERT INTO course_type_configs (pricing_zone_id, course_type, label, min_students, max_students, sort_order, base_price, is_active)
+       VALUES ($4, $1, 'e2e一對三', 1, 3, 990, 3000, TRUE),
+              ($4, $2, 'e2e一對一', 1, 1, 991, 9000, TRUE),
+              ($4, $3, 'e2e一對二', 1, 2, 992, 4500, TRUE)`,
+      [CT_GROUP, CT_SOLO, CT_PAIR, zoneId]
     );
 
     const parentRow = await pg.query(`SELECT phone, line_uid FROM parents WHERE id = $1`, [parentId]);
@@ -308,20 +324,22 @@ async function call(base, method, path, { token, body } = {}) {
     await pg.query(`UPDATE coach_availability_slots SET booked_session_id = NULL WHERE coach_id = $1`, [coachId]).catch(() => {});
     await pg.query(`DELETE FROM course_sessions WHERE course_period_id IN (SELECT id FROM course_periods WHERE enrollment_batch_id = ANY($1::uuid[]) OR admin_enrollment_id = ANY($2::text[]))`, [batchIds.filter(Boolean), allEnrollmentIds]).catch(() => {});
     await pg.query(`DELETE FROM coach_availability_slots WHERE coach_id = $1`, [coachId]).catch(() => {});
-    await pg.query(`DELETE FROM checkout_invoices WHERE checkout_id = ANY($1::text[])`, [checkoutIds]).catch(() => {});
+    await pg.query(`DELETE FROM checkout_invoices WHERE checkout_id = ANY($1::uuid[])`, [checkoutIds]).catch(() => {});
     await pg.query(
       `DELETE FROM course_periods WHERE enrollment_batch_id = ANY($1::uuid[]) OR admin_enrollment_id = ANY($2::text[])`,
       [batchIds.filter(Boolean), allEnrollmentIds]
     ).catch(() => {});
     await pg.query(`DELETE FROM admin_enrollments WHERE id = ANY($1::text[])`, [allEnrollmentIds]).catch(() => {});
-    await pg.query(`DELETE FROM checkout_sessions WHERE checkout_id = ANY($1::text[])`, [checkoutIds]).catch(() => {});
+    await pg.query(`DELETE FROM checkout_sessions WHERE checkout_id = ANY($1::uuid[])`, [checkoutIds]).catch(() => {});
     await pg.query(`DELETE FROM request_idempotency_ledger WHERE actor_id = $1`, [parentId]).catch(() => {});
     await pg.query(`DELETE FROM students WHERE parent_id = $1`, [parentId]).catch(() => {});
     await pg.query(`DELETE FROM parents WHERE id = $1`, [parentId]).catch(() => {});
     await pg.query(`DELETE FROM coach_venues WHERE coach_id = $1`, [coachId]).catch(() => {});
     await pg.query(`DELETE FROM coaches WHERE id = $1`, [coachId]).catch(() => {});
-    await pg.query(`DELETE FROM course_type_configs WHERE course_type IN ($1, $2, $3)`, [CT_GROUP, CT_SOLO, CT_PAIR]).catch(() => {});
+    await pg.query(`DELETE FROM course_type_configs WHERE pricing_zone_id = $1`, [zoneId]).catch(() => {});
     await pg.query(`DELETE FROM venues WHERE id = $1`, [venueId]).catch(() => {});
+    await pg.query(`DELETE FROM pricing_zones WHERE id = $1`, [zoneId]).catch(() => {});
+    await pg.query(`DELETE FROM course_types WHERE course_type = ANY($1::int[])`, [createdCourseTypes]).catch(() => {});
     await route.close().catch(() => {});
     await pg.end().catch(() => {});
   }

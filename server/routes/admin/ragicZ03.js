@@ -13,13 +13,28 @@
 const express = require('express');
 const { parsePaging } = require('../../utils/paging');
 const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定。
+// 保留 requireAdminRole('admin') 的地方＝頁面看得到、但這個動作仍限管理員；
+// 頁面層級的權限表達不了「看得到但不能做」，硬塞會讓主管突然拿到刪除權。
+const { requireResource } = require('../../middlewares/requireResource');
 const ragicAdmin = require('../../services/ragicAdmin');
 const { pool } = require('../../models/db');
+const reviewArchive = require('../../services/z03ReviewArchive').createArchiveService(pool);
 
 const router = express.Router();
 
 router.use(requireAdminAuth);
-router.use(requireAdminRole('admin', 'manager', 'staff'));
+router.use(requireResource('ragic-z03'));
+
+// Review metadata only: never invoke Ragic, activation, registration or push.
+router.get('/review-archive/preview', requireAdminRole('admin'), async (req, res) => {
+  try { res.json(await reviewArchive.preview(req.query?.policy)); }
+  catch (err) { res.status(err.status || 500).json({ error: err.status ? err.message : '核對預覽失敗，未改動資料' }); }
+});
+router.post('/review-archive', requireAdminRole('admin'), async (req, res) => {
+  try { res.json(await reviewArchive.apply(req.body?.items, req.adminUser?.sub, req.body?.policy)); }
+  catch (err) { res.status(err.status || 500).json({ error: err.status ? err.message : '歸檔失敗，請重新預覽' }); }
+});
 
 router.get('/stats', async (req, res) => {
   try {

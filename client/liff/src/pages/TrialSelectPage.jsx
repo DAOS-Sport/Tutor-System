@@ -45,6 +45,7 @@ export default function TrialSelectPage() {
       <div className="space-y-3">
         {types.map((t) => (
           <button
+            data-guide-trial-item
             key={t.course_type}
             type="button"
             onClick={() => navigate(`/venue?courseType=${t.course_type}&trial=1`)}
@@ -72,3 +73,4 @@ export default function TrialSelectPage() {
     </div>
   );
 }
+

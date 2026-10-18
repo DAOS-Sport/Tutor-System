@@ -19,6 +19,17 @@ const routing = require('./lineRouting');
 const { logGroupOrderAudit } = require('./groupOrderAudit');
 
 /**
+ * 團報人數＝組別（使用者 2026-10-14：一對三就是 3 人、一對六就是 6 人，不要 min／max）。
+ * 以 group_orders.course_type 為準；舊團發起時落地的 min／max_students（例如一對三存 2–3）
+ * 不再放寬人數。course_type 缺漏的異常列才退回 max_students。
+ */
+function requiredGroupSize(order) {
+  const size = Number(order && order.course_type);
+  if (Number.isInteger(size) && size >= 1) return size;
+  return Math.max(1, Number(order && order.max_students) || 1);
+}
+
+/**
  * 讀取送審資格。
  *
  * 回傳 { ok, code, total, unpaid }：
@@ -37,11 +48,12 @@ async function evaluateSubmitReadiness(client, order) {
     [order.id]
   );
   const total = Number(cur.rows[0].total);
-  if (total < order.min_students) {
-    return { ok: false, code: 'BELOW_MIN', total, unpaid: [] };
+  const required = requiredGroupSize(order);
+  if (total < required) {
+    return { ok: false, code: 'BELOW_MIN', total, required, unpaid: [] };
   }
-  if (total > order.max_students) {
-    return { ok: false, code: 'OVER_CAPACITY', total, unpaid: [] };
+  if (total > required) {
+    return { ok: false, code: 'OVER_CAPACITY', total, required, unpaid: [] };
   }
   // 「付款齊備」在送審端比後台核准端嚴：核准端維持「末 5 碼或證明擇一」以相容既有
   // 已送審單，送審端要求兩者都有，把不完整的團擋在家長端而不是送進後台才被退。
@@ -62,19 +74,13 @@ async function evaluateSubmitReadiness(client, order) {
 }
 
 /**
- * 自動送審的額外門檻：必須滿團（人數達 max_students）。
+ * 自動送審的額外門檻：必須滿團（人數＝組別）。
  *
- * 用 max 而不是 min 是刻意的 —— 送審會鎖名單（加入端要求 status='forming'），
- * 一對三（min 2 / max 3）若在第 2 家付完款當下就自動送出，第 3 家永遠加不進來。
- * 現況佐證：已送審／已核准的 35 個團有 31 個是滿團送出，一對三有 8/9 團收滿 3 人；
- * 且六種組別裡有四種本來就是 min == max（1/1、2/2、4/4、5/5），滿團門檻對它們
- * 與「全員付款齊備」完全等價。
- *
- * 未滿團但全員已付款的（一對三 2/3、一對六 5/6）不自動送：團主在 LIFF 仍可自己按
- * 送審決定提早成團，櫃檯也看得到（後台「揪團中·已收齊款」分頁可代為送審）。
+ * 2026-10-14 起人數一律＝組別（不再有「一對三 2 人提早成團」），送審資格本身就要求滿團，
+ * 這裡與 evaluateSubmitReadiness 用同一個 requiredGroupSize，保留函式只為自動送審路徑的語意。
  */
 function isFullHouse(order, total) {
-  return Number(total) >= Number(order.max_students);
+  return Number(total) >= requiredGroupSize(order);
 }
 
 /**
@@ -142,4 +148,4 @@ async function notifyGroupSubmitted(orderId, totalStudentCount) {
   }
 }
 
-module.exports = { evaluateSubmitReadiness, isFullHouse, markSubmitted, notifyGroupSubmitted };
+module.exports = { evaluateSubmitReadiness, isFullHouse, markSubmitted, notifyGroupSubmitted, requiredGroupSize };

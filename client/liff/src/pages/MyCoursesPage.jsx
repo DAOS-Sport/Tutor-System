@@ -17,6 +17,7 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { usePendingPayments } from '../context/PendingPaymentsContext';
 import { courseTypeLabel } from '../utils/format';
+import { useGuideDemo } from '../utils/guideDemo';
 
 // 三分頁：
 //  - all：全部（預設）→ lifecycle !== 'closed' 的報名 + 可見團報
@@ -37,12 +38,13 @@ const GROUP_STATUS_LABEL = {
 };
 
 export default function MyCoursesPage() {
+  const guide = useGuideDemo();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { parent } = useAuth();
   const toast = useToast();
   const { refresh: refreshPendingPayments } = usePendingPayments();
-  const [courses, setCourses] = useState(null);
+  const [courses, setCourses] = useState(() => guide?.courses || null);
   const [groupOrders, setGroupOrders] = useState([]);
   // 支援自首頁「尚未上傳付款資料」橫幅帶入 ?tab=review 直接落在待審核分頁。
   const initialTab = TABS.some((t) => t.key === searchParams.get('tab'))
@@ -57,6 +59,12 @@ export default function MyCoursesPage() {
   const [selfCheckinTarget, setSelfCheckinTarget] = useState(null);
 
   function load() {
+    if (guide) {
+      setLoadError(null);
+      setCourses(guide.courses || []);
+      setGroupOrders([]);
+      return () => {};
+    }
     setLoadError(null);
     setCourses(null);
     setGroupOrders([]);
@@ -82,6 +90,13 @@ export default function MyCoursesPage() {
     return load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [parent.id]);
+
+  useEffect(() => {
+    if (!guide) return;
+    setCourses(guide.courses || []);
+    setGroupOrders([]);
+    setTab(guide.view === 'review' ? 'review' : guide.view === 'active' ? 'active' : 'all');
+  }, [guide?.index]);
 
   // 各分頁的報名卡片資料來源。
   const allCourses = useMemo(
@@ -114,6 +129,7 @@ export default function MyCoursesPage() {
   }), [allCourses, activeCourses, pendingCourses, visibleGroupOrders, reviewGroupOrders]);
 
   async function openPaymentTarget(cp) {
+    if (guide) return;
     if (!cp) return;
     if (cp.checkout_id) {
       setPaymentTarget(`/checkout/${cp.checkout_id}`);
@@ -163,6 +179,7 @@ export default function MyCoursesPage() {
   }
 
   async function cancelPendingCourse(cp) {
+    if (guide) return;
     if (!cp?.id || cancellingId) return;
     const ok = window.confirm('確定取消這筆未完成報名？取消後若要上課需重新報名。');
     if (!ok) return;
@@ -269,13 +286,16 @@ export default function MyCoursesPage() {
     // 進行中課程：卡片本體不再導向詳細頁（/course/:id），改由下方三個按鈕操作；
     // 其餘狀態（已結束無按鈕、待處理）保留點卡片進入對應頁面，避免無路可點。
     return (
+      <div data-guide-course-card>
       <CourseCard
         key={cp.id}
         variant="period"
         period={cp}
+        purchaser={cp.parent_phone && parent?.phone && cp.parent_phone !== parent.phone ? (cp.parent_name || '家人') : null}
         onClick={cp.lifecycle === 'active' ? undefined : () => navigateForCard(cp)}
         actions={actions}
       />
+      </div>
     );
   }
 
@@ -285,7 +305,7 @@ export default function MyCoursesPage() {
     <div className="px-4 py-4">
       <h1 className="mb-3 text-base font-bold text-brand-primary">我的課程</h1>
 
-      <div className="mb-4 -mx-1 flex gap-1.5 overflow-x-auto px-1 pb-1">
+      <div data-guide-course-tabs className="mb-4 -mx-1 flex gap-1.5 overflow-x-auto px-1 pb-1">
         {TABS.map((t) => (
           <button
             key={t.key}

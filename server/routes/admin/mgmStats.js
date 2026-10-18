@@ -5,10 +5,12 @@
  */
 const express = require('express');
 const { pool } = require('../../models/db');
-const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
+const { requireAdminAuth } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定，不再寫死角色清單。
+const { requireResource } = require('../../middlewares/requireResource');
 
 const router = express.Router();
-router.use(requireAdminAuth, requireAdminRole('admin', 'manager'));
+router.use(requireAdminAuth, requireResource('mgm-stats'));
 
 function isISO(d) { return /^\d{4}-\d{2}-\d{2}$/.test(String(d || '')); }
 

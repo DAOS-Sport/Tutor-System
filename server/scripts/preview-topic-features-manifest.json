@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "runId": "preview-topic-features-20260930-v1",
+  "indexRawByteSha256": {
+    "admin": "5b63c73278ccf31d0b8b300b38be6a97d5d813db619b0f42af9c56eabeeaed5c",
+    "liff": "4cbf9db3f505510524f3d3c9e94deaeb727ceb72d5d88928cfdb83d30d9a00ef"
+  },
+  "sourceCanonicalLfSha256": {
+    "client/liff/src/utils/parentTopicTours.mjs": "a0a84ff3a490c18b1eb65536e6a48538a012c5ccc55ccfffbb9f9e160d25e5e1",
+    "client/liff/src/components/TopicFeatureTour.jsx": "79c0e5618dc70faf8d62783ba68dca7f6198409c94a7d96ec102f22e49bc9fcd",
+    "client/liff/src/pages/GuidePage.jsx": "2eb532e84bce01214a945364c93c9eaa82f79391d4689ea56718e09d72331602",
+    "client/liff/src/components/GuideTour.jsx": "2fc7d1cd45d5ef89da5337b130afc800635d775e369fb720bbf348704d49f239"
+  },
+  "sourceCanonicalization": "UTF-8 text; CRLF and lone CR become LF; trimEnd; append exactly one LF",
+  "status": "REVIEWED_SOURCE_READBACK_BUILD_PENDING"
+}

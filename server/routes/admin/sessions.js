@@ -12,11 +12,20 @@
  *  POST  /api/admin/sessions/:id/revive      （admin / manager / staff）
  */
 const express = require('express');
+const { assertCourseEntitlement } = require('../../services/courseEntitlements');
+const { syncStoredUsage } = require('../../services/usageSync');
 const { pool } = require('../../models/db');
-const { requireAdminAuth, requireAdminRole, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
+const { requireAdminAuth, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定，不再寫死角色清單。
+const { requireResource } = require('../../middlewares/requireResource');
 const { reverseLessonDeduction } = require('../../services/deductionRevival');
 const { getFeatureFlag } = require('../../services/featureFlags');
 const { formatPlainDate } = require('../../utils/dateTime');
+const { normalizeSessionDateRange } = require('../../utils/sessionDateRange');
+const { enrichSessionCoefficients } = require('../../services/sessionCoefficientEnrichment');
+const { mergeSessionRecords } = require('../../services/sessionRecordMerge');
+const { attachCanonicalLessons } = require('../../services/canonicalLessons');
+const { loadClassScope, numberLessons } = require('../../services/lessonSequence');
 
 const router = express.Router();
 
@@ -40,6 +49,12 @@ const REAL_SESSIONS_SELECT = `
          (SELECT MIN(cr.checked_in_at) FROM checkin_records cr WHERE cr.course_session_id = cs.id AND cr.attendance_status = 'ATTENDED') AS checkin_at,
          NULL::timestamptz AS backfilled_at,
          COALESCE(cp.is_experience_course, FALSE) AS is_experience_course,
+         cp.purchased_pricing_multiplier AS coach_pricing_multiplier,
+         (SELECT (to_jsonb(mld)->>'lesson_pricing_multiplier')::numeric
+            FROM manual_lesson_deductions mld WHERE mld.course_session_id = cs.id) AS manual_lesson_pricing_multiplier,
+         (SELECT (to_jsonb(mld)->>'coach_original_pricing_multiplier')::numeric
+            FROM manual_lesson_deductions mld WHERE mld.course_session_id = cs.id) AS coach_original_pricing_multiplier,
+         cp.id::text AS coefficient_period_id,
          -- ── 備註（櫃檯反映：手動扣課與家長扣課的原因在畫面上完全看不到）──
          -- 手動扣課：manual_lesson_deductions 對 course_session_id 有 UNIQUE 索引，
          -- 一堂課最多一筆，所以直接取值、不需要聚合。
@@ -59,6 +74,9 @@ const REAL_SESSIONS_SELECT = `
          (SELECT json_agg(x ORDER BY x->>'at')
             FROM (
               SELECT json_build_object(
+                       'id', to_jsonb(cr)->>'id',
+                       'session_id', cr.course_session_id::text,
+                       'student_id', cr.student_id::text,
                        'student', st.name,
                        'source',  cr.checked_in_source::text,
                        'at',      cr.checked_in_at,
@@ -84,14 +102,63 @@ const REAL_SESSIONS_SELECT = `
                 LEFT JOIN coaches  cb ON cb.id = cr.checked_in_by_coach_id
                 LEFT JOIN students sb ON sb.id = cr.checked_in_by_student_id
                WHERE cr.course_session_id = cs.id
-            ) q) AS checkin_details
+            ) q) AS checkin_details,
+         -- Read-side identity for historical per-student periods. Dates of
+         -- individual sign-ins are evidence, never an approximate booked-slot key.
+         json_build_object(
+           'period_id', cp.id::text,
+           'purchase_kind', CASE
+             WHEN COALESCE(to_jsonb(cp)->>'group_order_id',to_jsonb(ae)->>'group_order_id') IS NOT NULL THEN 'group'
+             WHEN COALESCE(to_jsonb(cp)->>'enrollment_batch_id',to_jsonb(ae)->>'enrollment_batch_id') IS NOT NULL THEN 'batch'
+             WHEN to_jsonb(cp)->>'admin_enrollment_id' IS NOT NULL THEN 'order'
+             ELSE 'period' END,
+           'purchase_id', COALESCE(to_jsonb(cp)->>'group_order_id',to_jsonb(ae)->>'group_order_id',
+             to_jsonb(cp)->>'enrollment_batch_id',to_jsonb(ae)->>'enrollment_batch_id',
+             to_jsonb(cp)->>'admin_enrollment_id',cp.id::text),
+           'period_number', COALESCE((to_jsonb(ae)->>'period_number')::int,(to_jsonb(cp)->>'period_number')::int),
+           -- Same checkout batch can also buy independent one-to-one lessons.
+           -- Only a group purchase or a configured shared course crosses periods.
+           'shared_purchase', CASE
+             WHEN COALESCE(to_jsonb(cp)->>'group_order_id',to_jsonb(ae)->>'group_order_id') IS NOT NULL THEN TRUE
+             ELSE COALESCE((SELECT cfg.max_students FROM venues v
+               JOIN course_type_configs cfg ON cfg.pricing_zone_id=v.pricing_zone_id AND cfg.course_type=cp.course_type
+               WHERE v.id=cp.venue_id),0)>1 END,
+           'total_sessions', cp.total_sessions,
+           'coach_id', COALESCE(cs.coach_id,cp.coach_id)::text,
+           'scheduled_at',cs.scheduled_at,'duration_minutes',COALESCE(cs.duration_minutes,60),
+           'availability_slot_id',to_jsonb(cs)->>'availability_slot_id',
+           'created_via',to_jsonb(cs)->>'created_via','self_checkin_date',to_jsonb(cs)->>'self_checkin_date',
+           'students',COALESCE((SELECT json_agg(json_build_object('id',st.id::text,'name',st.name))
+             FROM course_period_enrollments ce JOIN students st ON st.id=ce.student_id
+             WHERE ce.course_period_id=cp.id AND ce.status='active'),'[]'::json)
+         ) AS report_identity
     FROM course_sessions cs
     JOIN course_periods cp ON cp.id = cs.course_period_id
-    LEFT JOIN coaches c ON c.id = COALESCE(cs.coach_id, cp.coach_id)`;
+    LEFT JOIN coaches c ON c.id = COALESCE(cs.coach_id, cp.coach_id)
+    LEFT JOIN admin_enrollments ae ON ae.id = cp.admin_enrollment_id`;
 
 function rowToSession(r) {
   return {
     id: r.id,
+    transaction_no: r.transaction_no || '',
+    transaction_period: r.transaction_period || '',
+    merged_session_ids: r.merged_session_ids || [r.id],
+    merged_period_ids: r.merged_period_ids || [],
+    merge_method: r.merge_method || null,
+    canonical_lesson_id: r.canonical_lesson_id || null,
+    whole_class_consumed: r.whole_class_consumed === true,
+    payroll_lesson_count: r.payroll_lesson_count ?? (r.checkin_status === 'checked_in' ? 1 : 0),
+    // 堂次：同一購買依完整歷史編號；超過購買堂數的簽到保留但不計教練堂數（checkin_at 為 null）。
+    lesson_seq: r.lesson_seq ?? null,
+    lesson_capacity: r.lesson_capacity ?? null,
+    // 堂號：交易序號-期-堂（共班先填滿前一期；一對一用課期自己的期號）。超過購買堂數的為 null。
+    lesson_no: r.lesson_no || null,
+    lesson_period_number: r.lesson_period_number ?? null,
+    lesson_period_seq: r.lesson_period_seq ?? null,
+    lesson_over_cap: r.lesson_over_cap === true,
+    over_cap_checkin_at: r.over_cap_checkin_at || null,
+    lesson_cap_notes: Array.isArray(r.lesson_cap_notes) ? r.lesson_cap_notes : [],
+    whole_class_policy: r.whole_class_policy || null,
     date: formatPlainDate(r.date),
     start: r.start_time,
     end: r.end_time,
@@ -104,6 +171,12 @@ function rowToSession(r) {
     backfilled_at: r.backfilled_at || null,
     // 試上/單堂標記（course_periods.is_experience_course；舊示範表列固定 false）
     is_experience_course: !!r.is_experience_course,
+    // FR01：快照優先；舊訂單由購入原價、價格歷史及精確訂單單位分類。
+    // 目前任課教練調價不會覆寫當時購入係數。
+    coach_pricing_multiplier: r.coach_pricing_multiplier == null ? null : Number(r.coach_pricing_multiplier),
+    coach_original_pricing_multiplier: r.coach_original_pricing_multiplier == null ? null : Number(r.coach_original_pricing_multiplier),
+    coefficient_classification_source: r.coefficient_classification_source || null,
+    coefficient_classification_reason: r.coefficient_classification_reason || null,
     // 備註：任何角色都看得到。手動扣課有自由文字原因；家長／教練自助簽到沒有
     // 文字欄位，但「誰按的、什麼時候、用哪個身分」對櫃檯查帳就是備註本身。
     deduction_reason: r.deduction_reason || null,
@@ -112,6 +185,7 @@ function rowToSession(r) {
     deduction_status: r.deduction_status || null,
     deduction_reversal_reason: r.deduction_reversal_reason || null,
     checkin_details: Array.isArray(r.checkin_details) ? r.checkin_details : [],
+    deduction_details: Array.isArray(r.deduction_details) ? r.deduction_details : [],
   };
 }
 
@@ -140,21 +214,11 @@ function rowToCancelled(r) {
  *  - 範圍最大 31 天；前端週課表視角用，條列也可呼叫
  *  - staff 角色強制 venue_id = 自己場館（忽略 client 傳入的 venueIds）
  */
-router.get('/', requireAdminAuth, async (req, res) => {
+router.get('/', requireAdminAuth, requireResource('sessions'), async (req, res) => {
   try {
-    const { from, to } = req.query;
-    if (!from || !to || !/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
-      return res.status(400).json({ error: 'from / to (YYYY-MM-DD) required' });
-    }
-    const fromD = new Date(from + 'T00:00:00Z');
-    const toD = new Date(to + 'T00:00:00Z');
-    if (isNaN(fromD) || isNaN(toD) || toD < fromD) {
-      return res.status(400).json({ error: 'invalid date range' });
-    }
-    // Task #55：上限改為較寬鬆的 92 天（防呆，避免一次拉一年）；前端負責週課表
-    // 在 > 31 天時禁用 grid，後端不再硬擋條列模式的合理跨月查詢。
-    const days = Math.round((toD - fromD) / 86400000) + 1;
-    if (days > 92) return res.status(400).json({ error: 'range max 92 days' });
+    const range = normalizeSessionDateRange(req.query.from, req.query.to);
+    if (!range) return res.status(400).json({ error: '迄日須在起日前後三個曆月內，且日期必須有效' });
+    const { from, to } = range;
 
     // Task #90：staff / manager 鎖在自己所屬全部場館；admin 可帶 venueIds 自由查
     let venueIds;
@@ -167,7 +231,7 @@ router.get('/', requireAdminAuth, async (req, res) => {
         const want = String(req.query.venueIds).split(',').map((s) => s.trim()).filter(Boolean);
         const allowed = new Set(scope);
         const filtered = want.filter((v) => allowed.has(v));
-        if (filtered.length) venueIds = filtered;
+        venueIds = filtered.length ? filtered : ['__no_venue__'];
       }
     } else if (req.query.venueIds) {
       const raw = String(req.query.venueIds);
@@ -186,11 +250,15 @@ router.get('/', requireAdminAuth, async (req, res) => {
       UNION ALL
       SELECT ats.id::text AS id, ats.date::text AS date, ats.start_time, ats.end_time, ats.venue_id, ats.coach,
              to_json(ats.students) AS students, ats.course_type, ats.checkin_status::text AS checkin_status,
-             ats.checkin_at, ats.backfilled_at, FALSE AS is_experience_course,
+              ats.checkin_at, ats.backfilled_at, FALSE AS is_experience_course,
+              NULL::numeric AS coach_pricing_multiplier,
+              NULL::numeric AS manual_lesson_pricing_multiplier,
+              NULL::numeric AS coach_original_pricing_multiplier,
+              NULL::text AS coefficient_period_id,
              -- 舊示範表沒有扣課／簽到明細可對，補 NULL 讓兩邊欄位數一致（UNION 的硬性要求）
              NULL::text AS deduction_reason, NULL::text AS deducted_by,
              NULL::timestamptz AS deducted_at, NULL::text AS deduction_status,
-             NULL::text AS deduction_reversal_reason, NULL::json AS checkin_details
+             NULL::text AS deduction_reversal_reason, NULL::json AS checkin_details, NULL::json AS report_identity
         FROM admin_today_sessions ats
        WHERE ats.date >= $1::date AND ats.date <= $2::date
     ) t WHERE TRUE`;
@@ -198,16 +266,82 @@ router.get('/', requireAdminAuth, async (req, res) => {
       args.push(venueIds);
       sql += ` AND t.venue_id = ANY($${args.length}::text[])`;
     }
-    sql += ` ORDER BY t.date, t.start_time`;
+    // 2026-09-01 需求：最新的排最上面，往下排到最舊。
+    // 救生員開這頁十之八九是要看剛剛那幾堂，升冪會把他要的東西推到最底。
+    // 這支 range API 只有 SessionsPage 在用（已確認唯一呼叫端）；
+    // 週課表依日期分桶，不受排序影響。
+    sql += ` ORDER BY t.date DESC, t.start_time DESC`;
     const r = await pool.query(sql, args);
-    res.json(r.rows.map(rowToSession));
+    // 堂次與購買堂數上限要用同一購買的完整歷史來數，不能只看查詢區間（否則區間從中途開始會重編）。
+    // 區間列與歷史列一起併堂、編號後，只回傳含區間內課堂的那些堂。
+    const rangeIds = new Set(r.rows.map((row) => row.id));
+    const classScope = await loadClassScope(pool, REAL_SESSIONS_SELECT, r.rows);
+    const historyIds = new Set(classScope.history.map((row) => row.id));
+    const source = r.rows.filter((row) => !historyIds.has(row.id)).concat(classScope.history);
+    const inRange = (lesson) => (lesson.merged_session_ids || [lesson.id]).some((id) => rangeIds.has(id));
+    const lessons = numberLessons(
+      mergeSessionRecords(await attachCanonicalLessons(await enrichSessionCoefficients(source, pool), pool)),
+      classScope.capacities, inRange, classScope.periodCaps).filter(inRange);
+    res.json(lessons.map(rowToSession)
+      .sort((a,b) => b.date.localeCompare(a.date) || String(b.start).localeCompare(String(a.start)) || String(a.id).localeCompare(String(b.id))));
   } catch (err) {
     console.error('[admin/sessions]', err);
     res.status(500).json({ error: 'load sessions failed' });
   }
 });
 
-router.get('/today', requireAdminAuth, async (req, res) => {
+// 2026-09-01 需求：上課紀錄的篩選列只列「有上課紀錄的館別」，不要把整張場館表倒出來。
+//
+// 為什麼另開一支，不在 /api/venues 過濾：那支同時餵註冊頁與教練班表，
+// 那些地方不能因為「這館還沒開過課」就選不到場館。
+//
+// 刻意不設時間窗：使用者可以往回查任何一段 92 天。用滾動視窗的話，
+// 半年前那批課的場館會從選項裡消失 —— 紀錄還在卻篩不到，比多幾顆按鈕糟得多。
+//
+// 刻意不看 venues.is_active：場館停用之後歷史紀錄還在，選項留著才查得回來。
+// 名字用 LEFT JOIN 補，join 不到就退回 id，至少不會變成空白按鈕。
+router.get('/venue-options', requireAdminAuth, requireResource('sessions'), async (req, res) => {
+  try {
+    const args = [];
+    let scopeSql = '';
+    // 場館權限與 range 那支同一套：staff / manager 只拿得到自己的館。
+    const scope = getScopedVenueIds(req);
+    if (scope) {
+      args.push(scope);
+      // 只有一個參數，直接寫 PLACEHOLDER 而不用 args.length 內插 ——
+      // 這裡原本寫成兩個錢字號的樣板字串，被工具的 replace() 當成跳脫序列吃掉一個，
+      // 變成 ANY(1::text[]) 而整支端點 500。少一個字元、語法還合法，只有真的打過去才看得出來。
+      scopeSql = ' AND u.id = ANY($1::text[])';
+    }
+    const r = await pool.query(
+      // 取消的課不算「有上課紀錄」—— range 那支也把 cancelled 濾掉了，
+      // 兩邊判準不一致的話會出現「選得到但查出來是空的」。
+      `WITH used AS (
+         SELECT DISTINCT cp.venue_id AS id
+           FROM course_sessions cs
+           JOIN course_periods cp ON cp.id = cs.course_period_id
+          WHERE cp.venue_id IS NOT NULL
+            AND cs.status::text NOT LIKE 'cancelled%'
+          UNION
+         SELECT DISTINCT ats.venue_id AS id
+           FROM admin_today_sessions ats
+          WHERE ats.venue_id IS NOT NULL
+       )
+       SELECT u.id, COALESCE(NULLIF(v.name, ''), u.id) AS name
+         FROM used u
+         LEFT JOIN venues v ON v.id = u.id
+        WHERE TRUE${scopeSql}
+        ORDER BY u.id`,
+      args
+    );
+    res.json(r.rows);
+  } catch (err) {
+    console.error('[admin/sessions.venue-options]', err);
+    res.status(500).json({ error: 'load venue options failed' });
+  }
+});
+
+router.get('/today', requireAdminAuth, requireResource('dashboard'), async (req, res) => {
   try {
     // Task #90：staff/manager 鎖在自己所屬場館集合；admin 可選 venueId 縮小
     // U13 修正：主資料源改讀真實課堂＋UNION 舊表（見 range 端點說明）。
@@ -219,11 +353,15 @@ router.get('/today', requireAdminAuth, async (req, res) => {
       UNION ALL
       SELECT ats.id::text AS id, ats.date::text AS date, ats.start_time, ats.end_time, ats.venue_id, ats.coach,
              to_json(ats.students) AS students, ats.course_type, ats.checkin_status::text AS checkin_status,
-             ats.checkin_at, ats.backfilled_at, FALSE AS is_experience_course,
+              ats.checkin_at, ats.backfilled_at, FALSE AS is_experience_course,
+              NULL::numeric AS coach_pricing_multiplier,
+              NULL::numeric AS manual_lesson_pricing_multiplier,
+              NULL::numeric AS coach_original_pricing_multiplier,
+              NULL::text AS coefficient_period_id,
              -- 舊示範表沒有扣課／簽到明細可對，補 NULL 讓兩邊欄位數一致（UNION 的硬性要求）
              NULL::text AS deduction_reason, NULL::text AS deducted_by,
              NULL::timestamptz AS deducted_at, NULL::text AS deduction_status,
-             NULL::text AS deduction_reversal_reason, NULL::json AS checkin_details
+             NULL::text AS deduction_reversal_reason, NULL::json AS checkin_details, NULL::json AS report_identity
         FROM admin_today_sessions ats
        WHERE ats.date = (NOW() AT TIME ZONE 'Asia/Taipei')::date
     ) t WHERE TRUE`;
@@ -237,14 +375,15 @@ router.get('/today', requireAdminAuth, async (req, res) => {
     }
     sql += ` ORDER BY t.start_time`;
     const r = await pool.query(sql, args);
-    res.json(r.rows.map(rowToSession));
+    res.json(mergeSessionRecords(await attachCanonicalLessons(await enrichSessionCoefficients(r.rows, pool),pool)).map(rowToSession)
+      .sort((a,b) => String(a.start).localeCompare(String(b.start)) || String(a.id).localeCompare(String(b.id))));
   } catch (err) {
     console.error('[admin/sessions/today]', err);
     res.status(500).json({ error: 'load today sessions failed' });
   }
 });
 
-router.get('/verify-checkin', requireAdminAuth, async (req, res) => {
+router.get('/verify-checkin', requireAdminAuth, requireResource('checkin'), async (req, res) => {
   try {
     const { phone, periodId } = req.query;
     if (!phone && !periodId) return res.json({ found: false });
@@ -328,7 +467,7 @@ router.get('/verify-checkin', requireAdminAuth, async (req, res) => {
 // U13 修正：主資料源改讀「真實已扣堂取消」課堂（course_sessions.status='cancelled_penalty'，
 // 即逾時取消堂數已扣者），UNION 舊示範表 admin_cancelled_sessions 向後相容——舊版只讀
 // 示範表，真實取消永遠不會出現（正式環境只看得到當年測試殘留）。
-router.get('/cancelled', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.get('/cancelled', requireAdminAuth, requireResource('revive'), async (req, res) => {
   try {
     const scope = getScopedVenueIds(req);
     const revivalFlag = await getFeatureFlag('DEDUCTION_REVIVAL_V2');
@@ -411,7 +550,7 @@ router.get('/cancelled', requireAdminAuth, requireAdminRole('admin', 'manager', 
 // 只放寬角色，不動復活的判斷邏輯，也不動 DEDUCTION_REVIVAL_V2 的全量策略。
 // （GET /cancelled 本來就已開放 staff，前端路由與側邊選單也是 —— 原本只有這支擋著，
 //   造成櫃台打得開頁面、按下去卻 403 的不一致。）
-router.post('/:id/revive', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.post('/:id/revive', requireAdminAuth, requireResource('revive'), async (req, res) => {
   const reason = String(req.body?.reason || '').trim().slice(0, 1000);
   if (!reason) return res.status(400).json({ error: '請填寫歸還原因', code: 'REASON_REQUIRED' });
   const client = await pool.connect();
@@ -527,8 +666,10 @@ router.post('/:id/revive', requireAdminAuth, requireAdminRole('admin', 'manager'
  *  - checkin_at：操作者選擇的「簽到時間」（datetime-local / ISO 字串）
  *  - backfilled_at = NOW()：補簽到按鈕被按下的當下時間，供管理端查看
  */
-router.post('/:id/backfill-checkin', requireAdminAuth, async (req, res) => {
+router.post('/:id/backfill-checkin', requireAdminAuth, requireResource('sessions'), async (req, res) => {
+  const client = await pool.connect();
   try {
+    await client.query('BEGIN');
     const { id } = req.params;
     const raw = req.body?.checkin_at;
     const dt = raw ? new Date(raw) : null;
@@ -539,12 +680,12 @@ router.post('/:id/backfill-checkin', requireAdminAuth, async (req, res) => {
     // 對該堂課的本期全部 active 學員補 checkin_records（來源 'staff'、時間＝操作者選擇），
     // 已簽過的學員不重複。堂數計算與全系統同一真相。找不到真實課堂時，退回舊示範表
     // 路徑（向後相容既有 demo 資料，不影響新流程）。
-    const real = await pool.query(
+    const real = await client.query(
       `SELECT cs.id, cs.status::text AS status, cp.id AS period_id, cp.venue_id,
               cp.admin_enrollment_id, cp.group_order_id, cp.enrollment_batch_id,
               cp.period_number
          FROM course_sessions cs JOIN course_periods cp ON cp.id = cs.course_period_id
-        WHERE cs.id::text = $1`,
+        WHERE cs.id::text = $1 FOR UPDATE OF cp`,
       [id]
     );
     if (real.rowCount) {
@@ -555,16 +696,22 @@ router.post('/:id/backfill-checkin', requireAdminAuth, async (req, res) => {
       if (row.status.startsWith('cancelled')) {
         return res.status(400).json({ error: '已取消的課堂不可補簽到' });
       }
-      await pool.query(
+      const entitledStudents = await assertCourseEntitlement(client, row.period_id);
+      const freshSession = await client.query('SELECT status FROM course_sessions WHERE id = $1 FOR UPDATE', [id]);
+      if (!['confirmed', 'completed'].includes(freshSession.rows[0]?.status)) {
+        return res.status(409).json({ error: '此課堂狀態不可補簽到', code: 'SESSION_NOT_CHECKINABLE' });
+      }
+      await client.query(
         `INSERT INTO checkin_records
            (course_session_id, student_id, checked_in_by_student_id, checked_in_source, checked_in_at)
          SELECT $1, cpe.student_id, cpe.student_id, 'staff', $2
            FROM course_period_enrollments cpe
           WHERE cpe.course_period_id = $3 AND cpe.status = 'active'
+            AND cpe.student_id = ANY($4::uuid[])
          ON CONFLICT (course_session_id, student_id) DO NOTHING`,
-        [id, dt.toISOString(), row.period_id]
+        [id, dt.toISOString(), row.period_id, entitledStudents]
       );
-      await pool.query(
+      await client.query(
         `UPDATE course_sessions
             SET status = 'completed', completed_at = COALESCE(completed_at, NOW()),
                 session_deducted = TRUE, updated_at = NOW()
@@ -574,7 +721,7 @@ router.post('/:id/backfill-checkin', requireAdminAuth, async (req, res) => {
       // Shared attendance consumes one lesson per distinct session, regardless
       // of the number of active students added above. Recompute instead of
       // incrementing so retries and concurrent double-clicks stay idempotent.
-      const usage = await pool.query(
+      const usage = await client.query(
         `SELECT COUNT(DISTINCT cs.id)::int AS used
            FROM course_sessions cs
           WHERE cs.course_period_id = $1
@@ -587,20 +734,8 @@ router.post('/:id/backfill-checkin', requireAdminAuth, async (req, res) => {
         [row.period_id]
       );
       const used = Number(usage.rows[0]?.used || 0);
-      await pool.query(
-        `UPDATE course_periods SET used_sessions = $2, updated_at = NOW() WHERE id = $1`,
-        [row.period_id, used]
-      );
-      await pool.query(
-        `UPDATE admin_enrollments ae
-            SET used_sessions = $1, updated_at = NOW()
-          WHERE ($2::text IS NOT NULL AND ae.id = $2)
-             OR ($3::uuid IS NOT NULL AND ae.group_order_id = $3
-                 AND ae.period_number = COALESCE($5, ae.period_number))
-             OR ($4::uuid IS NOT NULL AND ae.enrollment_batch_id = $4
-                 AND ae.period_number = COALESCE($5, ae.period_number))`,
-        [used, row.admin_enrollment_id, row.group_order_id, row.enrollment_batch_id, row.period_number]
-      );
+      await syncStoredUsage(client, { ...row, id: row.period_id }, used);
+      await client.query('COMMIT');
       return res.json({
         id,
         checkin_status: 'checked_in',
@@ -609,22 +744,27 @@ router.post('/:id/backfill-checkin', requireAdminAuth, async (req, res) => {
       });
     }
 
-    const cur = await pool.query(`SELECT venue_id FROM admin_today_sessions WHERE id = $1`, [id]);
+    const cur = await client.query(`SELECT venue_id FROM admin_today_sessions WHERE id = $1`, [id]);
     if (!cur.rowCount) return res.status(404).json({ error: '找不到此時段' });
     if (!isVenueInScope(req, cur.rows[0].venue_id)) {
       return res.status(403).json({ error: '此時段不在您的場館範圍內' });
     }
-    const r = await pool.query(
+    const r = await client.query(
       `UPDATE admin_today_sessions
           SET checkin_status = 'checked_in', checkin_at = $2, backfilled_at = NOW()
         WHERE id = $1
         RETURNING *`,
       [id, dt.toISOString()]
     );
+    await client.query('COMMIT');
     res.json(rowToSession(r.rows[0]));
   } catch (err) {
+    if (err.status === 409) return res.status(409).json({ error: err.message, code: err.code });
     console.error('[admin/sessions/:id/backfill-checkin]', err);
     res.status(500).json({ error: 'backfill checkin failed' });
+  } finally {
+    await client.query('ROLLBACK').catch(() => {});
+    client.release();
   }
 });
 
@@ -634,15 +774,18 @@ router.post('/:id/backfill-checkin', requireAdminAuth, async (req, res) => {
  *  - 將 admin_enrollments.experience_checked_in_at 設為 NOW()
  *  - 若該 enrollment 對應 referral_records，發放 9 折券給推薦方並推 LINE Flex
  */
-router.post('/checkin', requireAdminAuth, async (req, res) => {
+router.post('/checkin', requireAdminAuth, requireResource('checkin'), async (req, res) => {
   const enrollmentId = String(req.body?.enrollmentId || '').trim();
   if (!enrollmentId) return res.status(400).json({ error: 'enrollmentId required' });
   try {
     const e = await pool.query(
-      `SELECT id, venue_id FROM admin_enrollments WHERE id = $1`,
+      `SELECT id, venue_id, status FROM admin_enrollments WHERE id = $1`,
       [enrollmentId]
     );
     if (!e.rowCount) return res.status(404).json({ error: 'enrollment not found' });
+    if (['refunded', 'cancelled'].includes(e.rows[0].status)) {
+      return res.status(409).json({ error: '報名已退費或取消，無法簽到', code: 'ENROLLMENT_ENTITLEMENT_INACTIVE' });
+    }
     // Task #90：簽到場館須在當前 admin 所屬場館清單內
     const scope = getScopedVenueIds(req);
     if (scope && !scope.includes(e.rows[0].venue_id)) {
@@ -652,11 +795,12 @@ router.post('/checkin', requireAdminAuth, async (req, res) => {
       `ALTER TABLE admin_enrollments
          ADD COLUMN IF NOT EXISTS experience_checked_in_at TIMESTAMPTZ`
     );
-    await pool.query(
+    const marked = await pool.query(
       `UPDATE admin_enrollments SET experience_checked_in_at = COALESCE(experience_checked_in_at, NOW())
-        WHERE id = $1`,
+        WHERE id = $1 AND status NOT IN ('refunded','cancelled') AND experience_checked_in_at IS NULL RETURNING id`,
       [enrollmentId]
     );
+    if (!marked.rowCount) return res.status(409).json({ error: '報名已簽到或狀態已變動，請重新整理', code: 'ENROLLMENT_CHECKIN_UNCHANGED' });
     const by = req.adminUser?.name || req.adminUser?.username || 'unknown';
     await pool.query(
       `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user)
@@ -697,6 +841,54 @@ router.post('/checkin', requireAdminAuth, async (req, res) => {
   } catch (err) {
     console.error('[admin/sessions/checkin]', err);
     res.status(500).json({ error: 'checkin failed' });
+  }
+});
+
+// FR01 匯出用的係數類別：保留所有現行啟用類別，另加入本次日期範圍內
+// course_periods 的可信購買快照。這讓已購 1.2 在教練改成 1.5 後仍有自己的欄；
+// 沒有快照的歷史課堂仍維持未分類，不從現任教練或金額回推。
+router.get('/coefficient-categories', requireAdminAuth, requireResource('sessions'), async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    const hasRange = from !== undefined || to !== undefined;
+    if (hasRange && (!/^\d{4}-\d{2}-\d{2}$/.test(String(from || '')) || !/^\d{4}-\d{2}-\d{2}$/.test(String(to || '')))) {
+      return res.status(400).json({ error: 'from / to (YYYY-MM-DD) required together' });
+    }
+    const args = hasRange ? [from, to] : [];
+    const rangeSql = hasRange
+      ? `AND (cs.scheduled_at AT TIME ZONE 'Asia/Taipei')::date BETWEEN $1::date AND $2::date`
+      : '';
+    const result = await pool.query(
+      `WITH coefficient_sources AS (
+         SELECT COALESCE(s.multiplier, c.pricing_multiplier, 1.00)::numeric AS multiplier
+           FROM admin_staff s
+           JOIN coaches c ON c.ragic_employee_id = s.id
+          WHERE s.active = TRUE
+            AND c.is_active = TRUE
+            AND COALESCE(s.multiplier, c.pricing_multiplier, 1.00) > 0
+         UNION
+         SELECT cp.purchased_pricing_multiplier::numeric AS multiplier
+           FROM course_periods cp
+           JOIN course_sessions cs ON cs.course_period_id = cp.id
+          WHERE cp.purchased_pricing_multiplier IS NOT NULL
+            AND cp.purchased_pricing_multiplier > 0
+            ${rangeSql}
+         UNION
+         SELECT (to_jsonb(d)->>'lesson_pricing_multiplier')::numeric AS multiplier
+           FROM manual_lesson_deductions d
+           JOIN course_sessions cs ON cs.id = d.course_session_id
+          WHERE (to_jsonb(d)->>'lesson_pricing_multiplier')::numeric > 0
+            ${rangeSql}
+       )
+       SELECT DISTINCT multiplier
+         FROM coefficient_sources
+        ORDER BY multiplier ASC`
+      , args
+    );
+    res.json(result.rows.map((row) => ({ multiplier: Number(row.multiplier) })));
+  } catch (err) {
+    console.error('[admin/sessions.coefficient-categories]', err);
+    res.status(500).json({ error: 'load coefficient categories failed' });
   }
 });
 

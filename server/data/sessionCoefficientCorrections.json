@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "source": "User confirmation in the FR01 report review, 2026-10-05",
+  "corrections": [
+    {
+      "period_key": "0a93617947bd275d5eb59459b67e1777",
+      "expected": { "venue_id": "B", "course_type": 3, "order_original": 9405 },
+      "multiplier": 1,
+      "source": "user_confirmed",
+      "reason": "User confirmed that this purchase used ordinary pricing before the coach coefficient changed."
+    },
+    {
+      "period_key": "65544d59bab143f447e68a42aebe290f",
+      "expected": { "venue_id": "L", "course_type": 1, "order_original": 6555 },
+      "multiplier": 1,
+      "source": "user_confirmed",
+      "reason": "User confirmed that this purchase used ordinary pricing before the coach coefficient changed."
+    }
+  ]
+}

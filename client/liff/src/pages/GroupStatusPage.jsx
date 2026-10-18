@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { useGuideDemo, demoGroup } from '../utils/guideDemo';
 import liff from '@line/liff';
 import { groupOrdersApi } from '../api/groupOrders';
 import { enrollmentsApi } from '../api/enrollments';
@@ -8,6 +9,7 @@ import ConfirmModal from '../components/ConfirmModal';
 import { useToast } from '../context/ToastContext';
 import { courseTypeLabel } from '../utils/format';
 import { isPaymentProofCandidate, PAYMENT_PROOF_ACCEPT } from '../utils/paymentProofImage';
+import { invoiceTypeFor, isValidInvoiceCarrier, isValidTaiwanTaxId, MAX_CARRIER_LENGTH, normalizeTaxIdInput } from '../utils/invoiceIdentity.mjs';
 
 const money = (n) => `NT$ ${Number(n || 0).toLocaleString()}`;
 
@@ -31,16 +33,19 @@ const STATUS_META = {
 };
 
 export default function GroupStatusPage() {
+  const guide = useGuideDemo();
   const { id } = useParams();
   const navigate = useNavigate();
   const toast = useToast();
 
-  const [order, setOrder] = useState(undefined); // undefined=loading, null=error
+  const [order, setOrder] = useState(() => guide ? demoGroup(guide) : undefined); // undefined=loading, null=error
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState(null); // 'submit' | 'cancel' | null
   const [proofBusy, setProofBusy] = useState(false);
   const [transferLast5, setTransferLast5] = useState('');
   const [carrier, setCarrier] = useState('');
+  const [taxId, setTaxId] = useState('');
+  const [invoiceType, setInvoiceType] = useState('none');
   const [proofFile, setProofFile] = useState(null);
   const [lineName, setLineName] = useState('');
   const proofInputRef = useRef(null);
@@ -50,6 +55,7 @@ export default function GroupStatusPage() {
 
   // 取家長的 LINE 顯示名稱，組分享訊息用（在 LINE 內才拿得到；dev/瀏覽器時靜默略過）
   useEffect(() => {
+    if (guide) return;
     let alive = true;
     (async () => {
       try {
@@ -63,29 +69,42 @@ export default function GroupStatusPage() {
   }, []);
 
   const load = useCallback(() => {
+    if (guide) { setOrder(demoGroup(guide)); return () => {}; }
     let alive = true;
     groupOrdersApi.get(id)
       .then((d) => alive && setOrder(d || null))
       .catch(() => alive && setOrder(null));
     return () => { alive = false; };
-  }, [id]);
+  }, [id, guide?.index]);
 
   useEffect(() => load(), [load]);
   // 只在「伺服器已存的末碼」有值且變動時回填（例如曾送出過或送出成功後）；
   // 不清空使用者輸入中的末碼／已選檔案，避免揪團中每 6 秒輪詢把填到一半的內容洗掉。
   const selfSavedLast5 = ((order?.members || []).find((m) => m.is_self)?.transfer_last_5) || '';
   const selfSavedCarrier = ((order?.members || []).find((m) => m.is_self)?.carrier) || '';
+  const selfSavedTaxId = ((order?.members || []).find((m) => m.is_self)?.tax_id) || '';
   useEffect(() => {
     if (selfSavedLast5) setTransferLast5(selfSavedLast5);
   }, [order?.id, selfSavedLast5]);
   useEffect(() => {
-    if (selfSavedCarrier) setCarrier(selfSavedCarrier);
-    else if (order?.id) setCarrier((current) => current || localStorage.getItem('daos_invoice_carrier') || '');
-  }, [order?.id, selfSavedCarrier]);
+    if (guide) return;
+    const savedCarrier = selfSavedCarrier || (!selfSavedTaxId ? localStorage.getItem('daos_invoice_carrier') || '' : '');
+    setCarrier(savedCarrier);
+    setTaxId(selfSavedTaxId);
+    if (order?.id) setInvoiceType(invoiceTypeFor({ carrier: savedCarrier, taxId: selfSavedTaxId }));
+  }, [order?.id, selfSavedCarrier, selfSavedTaxId]);
+
+  useEffect(() => {
+    if (!guide) return;
+    setTransferLast5('DEMO');
+    setInvoiceType(['carrier', 'tax_id'].includes(guide.view) ? guide.view : 'none');
+    setCarrier(guide.view === 'carrier' ? 'DEMO' : '');
+    setTaxId(guide.view === 'tax_id' ? 'DEMO' : '');
+  }, [guide?.index, order?.id]);
 
   // 揪團中自動輪詢，讓團主在頁面上即時看到新加入的成員/學生（不必手動重整）
   useEffect(() => {
-    if (order?.status !== 'forming') return undefined;
+    if (guide || order?.status !== 'forming') return undefined;
     const t = setInterval(() => {
       groupOrdersApi.get(id).then((d) => d && setOrder(d)).catch(() => {});
     }, 6000);
@@ -121,6 +140,8 @@ export default function GroupStatusPage() {
   const v = order.venue || {};
   const joinUrl = order.is_leader ? buildJoinUrl(order.join_token) : null;
   const canCancelGroup = order.is_leader && ['forming', 'submitted'].includes(order.status);
+  const validTaxId = invoiceType !== 'tax_id' || isValidTaiwanTaxId(taxId);
+  const validCarrier = invoiceType !== 'carrier' || isValidInvoiceCarrier(carrier);
 
   // 分享訊息：{家長LINE名稱}邀請您一同來參加{教練名稱}的{幾V幾}家教班\n加入連結👉{LIFF連結}
   function buildInviteMessage() {
@@ -131,6 +152,7 @@ export default function GroupStatusPage() {
   }
 
   async function shareInvite() {
+    if (guide) return;
     const message = buildInviteMessage();
     // 1) 手機原生分享面板（Web Share API）——「按下去自動分享」最貼近的體驗
     if (navigator.share) {
@@ -157,6 +179,7 @@ export default function GroupStatusPage() {
   }
 
   async function copyAccount() {
+    if (guide) return;
     try {
       await navigator.clipboard.writeText(v.account_number || '');
       toast.success('已複製帳號！');
@@ -167,6 +190,7 @@ export default function GroupStatusPage() {
 
   // U10：成員上傳自己的轉帳證明（先傳檔取得 URL，再記到本團我的那筆 member）
   function selectProofFile(file) {
+    if (guide) return;
     if (!file) return;
     if (!isPaymentProofCandidate(file)) {
       toast.error('請上傳 JPG、PNG、WebP、HEIC、HEIF 或 AVIF 圖片');
@@ -181,8 +205,11 @@ export default function GroupStatusPage() {
   }
 
   async function handleConfirmPayment(m) {
+    if (guide) return;
     if (!/^\d{5}$/.test(transferLast5.trim())) return toast.error('請先填寫 5 位數字的轉帳末碼');
     if (!proofFile && !m?.has_payment_proof) return toast.error('請選擇匯款／轉帳證明');
+    if (!validTaxId) return toast.error('請輸入有效的 8 碼統一編號');
+    if (!validCarrier) return toast.error(`載具識別碼不得超過 ${MAX_CARRIER_LENGTH} 字元`);
     setProofBusy(true);
     // 末碼與證明「解耦」：圖片上傳失敗也要先把末碼存下供櫃檯對帳（同 EnrollStatusPage 修正）。
     let url = uploadedProofUrlRef.current;
@@ -204,9 +231,11 @@ export default function GroupStatusPage() {
       const updated = await groupOrdersApi.uploadMyProof(id, {
         transfer_last_5: transferLast5.trim(),
         payment_proof_url: url || undefined,
-        carrier: carrier.trim() || undefined,
+        carrier: invoiceType === 'carrier' ? carrier.trim() : '',
+        tax_id: invoiceType === 'tax_id' ? taxId.trim() : '',
       });
-      if (carrier.trim()) localStorage.setItem('daos_invoice_carrier', carrier.trim());
+      if (invoiceType === 'carrier' && carrier.trim()) localStorage.setItem('daos_invoice_carrier', carrier.trim());
+      else localStorage.removeItem('daos_invoice_carrier');
       if (updated) setOrder(updated); else load();
       if (uploadFailed) {
         // 末碼已存，留著 proofFile 讓成員可直接重試上傳證明。
@@ -224,6 +253,7 @@ export default function GroupStatusPage() {
   }
 
   async function doAction(kind) {
+    if (guide) return;
     setBusy(true);
     try {
       if (kind === 'submit') {
@@ -265,7 +295,7 @@ export default function GroupStatusPage() {
         </div>
         <p className="mt-2 text-sm text-gray-700">
           目前 <span className="font-bold text-brand-primary">{order.total_students}</span> 人
-          <span className="text-gray-400">（開團需 {order.min_students}–{order.max_students} 人）</span>
+          <span className="text-gray-400">（開團需 {order.max_students} 人）</span>
         </p>
         <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-gray-100">
           <div className={`h-full rounded-full transition-all ${reachedMin ? 'bg-brand-green' : 'bg-brand-gold'}`}
@@ -280,7 +310,7 @@ export default function GroupStatusPage() {
       {order.is_leader && order.status === 'forming' && joinUrl && (
         <div className="mb-4 rounded-xl border border-brand-teal/30 bg-brand-teal/5 p-3">
           <label className="mb-1 block text-xs font-medium text-gray-600">邀請其他學員加入</label>
-          <button type="button" onClick={shareInvite}
+          <button type="button" data-guide-group-share onClick={shareInvite}
             className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-brand-teal px-3 py-2.5 text-sm font-bold text-white active:bg-brand-primary">
             <span aria-hidden>📤</span> 分享邀請
           </button>
@@ -351,7 +381,7 @@ export default function GroupStatusPage() {
                     {m.discount_amount > 0 && (
                       <div className="text-[11px] text-gray-400 line-through">{money(m.original_amount)}</div>
                     )}
-                    <div className="text-xs font-bold text-gray-700">{money(m.amount_due)}</div>
+                    <div className="text-xs font-bold text-gray-700">{guide ? 'DEMO 金額（非報價）' : money(m.amount_due)}</div>
                     {m.discount_amount > 0 && (
                       <div className="text-[11px] font-medium text-brand-green">已折 {money(m.discount_amount)}</div>
                     )}
@@ -361,7 +391,7 @@ export default function GroupStatusPage() {
 
                 {/* 自己這筆：揪團中(forming)即可先轉帳並上傳付款資料，送審後(submitted)仍可補；櫃檯確認前皆可 */}
                 {m.is_self && !m.payment_confirmed && ['forming', 'submitted'].includes(order.status) && (
-                  <div className="mt-2 space-y-2">
+                  <div data-guide-group-proof className="mt-2 space-y-2">
                     <input
                       type="tel"
                       inputMode="numeric"
@@ -372,31 +402,61 @@ export default function GroupStatusPage() {
                       className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-mono focus:border-brand-teal focus:outline-none"
                       placeholder="轉帳末 5 碼"
                     />
-                    <div>
-                      <label className="mb-1 block text-[11px] font-medium text-gray-500" htmlFor={`group-carrier-${m.id}`}>
-                        電子發票載具條碼（選填）
-                      </label>
-                      <input
-                        id={`group-carrier-${m.id}`}
-                        type="text"
-                        value={carrier}
-                        disabled={proofBusy || !!m.carrier}
-                        onChange={(e) => setCarrier(e.target.value.slice(0, 64))}
-                        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-mono focus:border-brand-teal focus:outline-none disabled:bg-gray-100"
-                        placeholder="可直接刷入，例如 /ABC+123"
-                      />
-                    </div>
+                    <fieldset data-guide-group-invoice className="rounded-lg border border-gray-200 bg-white p-2">
+                      <legend className="px-1 text-[11px] font-medium text-gray-500">發票資訊（選填）</legend>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        {[
+                          ['none', '不填'],
+                          ['carrier', '載具'],
+                          ['tax_id', '統一編號'],
+                        ].map(([value, label]) => (
+                          <label key={value} className={`cursor-pointer rounded-md border px-1 py-1.5 text-center text-[11px] font-bold ${invoiceType === value ? 'border-brand-teal bg-brand-teal/10 text-brand-teal' : 'border-gray-200 text-gray-500'}`}>
+                            <input type="radio" name={`group-invoice-type-${m.id}`} value={value}
+                              checked={invoiceType === value} disabled={proofBusy || !!m.carrier || !!m.tax_id}
+                              onChange={() => {
+                                setInvoiceType(value);
+                                if (value !== 'carrier') setCarrier('');
+                                if (value !== 'tax_id') setTaxId('');
+                              }} className="sr-only" />
+                            {label}
+                          </label>
+                        ))}
+                      </div>
+                      {invoiceType === 'carrier' && (
+                        <>
+                          <input data-guide-group-carrier id={`group-carrier-${m.id}`} type="text" value={carrier}
+                            disabled={proofBusy || !!m.carrier || !!m.tax_id}
+                            maxLength={MAX_CARRIER_LENGTH + 1} aria-invalid={!validCarrier}
+                            onChange={(e) => setCarrier(e.target.value)}
+                            className="mt-2 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-mono focus:border-brand-teal focus:outline-none disabled:bg-gray-100"
+                            placeholder="電子發票載具識別碼，例如 /ABC+123" />
+                          {!validCarrier && <p className="mt-1 text-[11px] text-brand-error">載具識別碼不得超過 {MAX_CARRIER_LENGTH} 字元</p>}
+                        </>
+                      )}
+                      {invoiceType === 'tax_id' && (
+                        <>
+                          <input data-guide-group-tax-id id={`group-tax-id-${m.id}`} type="text" inputMode="numeric" maxLength={8}
+                            value={taxId} disabled={proofBusy || !!m.carrier || !!m.tax_id}
+                            onChange={(e) => setTaxId(normalizeTaxIdInput(e.target.value))}
+                            aria-invalid={taxId.length > 0 && !validTaxId}
+                            className={`mt-2 w-full rounded-lg border bg-white px-3 py-2 text-xs font-mono tracking-widest focus:outline-none disabled:bg-gray-100 ${taxId.length > 0 && !validTaxId ? 'border-brand-error' : 'border-gray-300 focus:border-brand-teal'}`}
+                            placeholder="8 碼統一編號" />
+                          {taxId.length > 0 && !validTaxId && <p className="mt-1 text-[11px] text-brand-error">統一編號格式或檢查碼錯誤</p>}
+                        </>
+                      )}
+                      <p className="mt-1 text-[10px] text-gray-400">電子發票載具與統一編號只能擇一；兩者都不填也可以。</p>
+                    </fieldset>
                     {paymentLocked ? (
                       <>
                         <p className="text-[11px] text-gray-400">付款資料已送出，需更改請聯繫櫃檯。</p>
-                        {!m.carrier && (
+                        {!m.carrier && !m.tax_id && (
                           <button
                             type="button"
-                            disabled={proofBusy || !carrier.trim()}
+                            disabled={proofBusy || !validCarrier || (invoiceType === 'carrier' ? !carrier.trim() : invoiceType === 'tax_id' ? !validTaxId || !taxId.trim() : true)}
                             onClick={() => handleConfirmPayment(m)}
                             className="w-full rounded-lg bg-brand-primary px-3 py-2 text-xs font-bold text-white disabled:bg-gray-300"
                           >
-                            {proofBusy ? '儲存中…' : '補存電子發票載具'}
+                            {proofBusy ? '儲存中…' : '補存發票資訊'}
                           </button>
                         )}
                       </>
@@ -420,7 +480,7 @@ export default function GroupStatusPage() {
                         </button>
                         <button
                           type="button"
-                          disabled={proofBusy || !/^\d{5}$/.test(transferLast5.trim()) || (!proofFile && !m.has_payment_proof)}
+                          disabled={proofBusy || !/^\d{5}$/.test(transferLast5.trim()) || !validTaxId || !validCarrier || (!proofFile && !m.has_payment_proof)}
                           onClick={() => handleConfirmPayment(m)}
                           className="w-full rounded-lg bg-brand-primary px-3 py-2 text-xs font-bold text-white disabled:bg-gray-300"
                         >
@@ -452,7 +512,7 @@ export default function GroupStatusPage() {
       )}
 
       {/* 下一步行動模組：移到取消團購上方 */}
-      <NextActionBlock
+      <div data-guide-group-submit><NextActionBlock
         order={order}
         reachedMin={reachedMin}
         allPaymentConfirmed={allPaymentConfirmed}
@@ -464,7 +524,7 @@ export default function GroupStatusPage() {
         unpaidNames={unpaidMembers.map((m) => m.parent_name).filter(Boolean)}
         onGoCourses={() => navigate('/my-courses')}
         onSubmit={() => setConfirm('submit')}
-      />
+      /></div>
 
       {(order.is_leader && order.status === 'forming') || canCancelGroup ? (
         <div className="mt-4 space-y-2">

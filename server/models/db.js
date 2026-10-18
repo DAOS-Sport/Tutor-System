@@ -1,9 +1,20 @@
 const { Pool } = require('pg');
+
+// Preserve pg's current certificate verification when its SSL aliases change.
+function verifiedConnectionString(value) {
+  if (!value) return value;
+  const url = new URL(value);
+  if (url.searchParams.get('uselibpqcompat') !== 'true' &&
+      ['prefer', 'require', 'verify-ca'].includes(url.searchParams.get('sslmode'))) {
+    url.searchParams.set('sslmode', 'verify-full');
+  }
+  return url.toString();
+}
 // PostgreSQL startup option applies before the connection is handed to any
 // caller. This avoids a race between pool.on('connect') SET TIME ZONE and the
 // caller's first query, while still enforcing Taipei on every pooled session.
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: verifiedConnectionString(process.env.DATABASE_URL),
   options: '-c timezone=Asia/Taipei',
 });
 

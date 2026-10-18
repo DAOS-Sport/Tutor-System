@@ -1,26 +1,24 @@
 import React from 'react';
 import { formatTWD } from '../utils/format';
-import { resolveUnitPrice } from '../../../shared/coursePricing';
+import { hasCoursePricing, resolvePricingMultiplier, resolveCurrentUnitPrice, resolveTrialUnitPrice } from '../../../shared/coursePricing';
 
-export default function CoachCard({ coach, basePrice, tierPrices = null, onSelect, onDetail = null, isTrial = false, trialPrice = null, sessionsPerPeriod = 6 }) {
+export default function CoachCard({ coach, basePrice, tierPrices = null, onSelect, onDetail = null, isTrial = false, trialPrice = null, sessionsPerPeriod = null }) {
   const isPlaceholder = !!coach.is_placeholder;
   // 不可自己乘：課別對該加成級距若有落定明價，要以明價為準（與後端成交金額同源）。
-  const adjusted = resolveUnitPrice(basePrice, coach.multiplier ?? coach.pricing_multiplier ?? 1, tierPrices);
-  // 試上單堂顯示價（與後端 calculateTrialPrice 同語意）：
-  // F-A07 trial_price 有設＝每人固定價（不吃教練係數）；未設＝單期價×係數 ÷ 每期堂數推算。
-  const trialUnit = trialPrice != null && Number(trialPrice) > 0
-    ? Math.round(Number(trialPrice))
-    : Math.round(adjusted / Math.max(1, Number(sessionsPerPeriod) || 6));
+  const multiplier = resolvePricingMultiplier(coach.multiplier, coach.pricing_multiplier);
+  const priceReady = multiplier != null && hasCoursePricing(basePrice, sessionsPerPeriod);
+  const adjusted = priceReady ? resolveCurrentUnitPrice(basePrice, multiplier, tierPrices) : null;
+  const trialUnit = resolveTrialUnitPrice(basePrice, multiplier, tierPrices, trialPrice, sessionsPerPeriod);
   const displayPrice = isTrial ? trialUnit : adjusted;
   const initial = isPlaceholder ? '待' : (coach.name || '？').slice(0, 1);
   const [avatarFailed, setAvatarFailed] = React.useState(false);
-  const coefficientPct = Math.round((coach.multiplier ?? 1) * 100);
-  const isAdjustedCoefficient = coefficientPct !== 100;
+  const coefficientPct = multiplier == null ? null : Math.round(multiplier * 100);
+  const isAdjustedCoefficient = coefficientPct != null && coefficientPct !== 100;
 
   return (
-    <button
+    <button data-guide-placeholder={isPlaceholder || coach.name === '待分配' || undefined}
       type="button"
-      onClick={() => onSelect?.(coach)}
+      onClick={() => displayPrice != null && onSelect?.(coach)}
       className={`group block w-full rounded-2xl border-2 p-4 text-left transition active:scale-[0.99] ${
         isPlaceholder
           ? 'border-dashed border-brand-teal/60 bg-brand-teal/5'
@@ -110,9 +108,9 @@ export default function CoachCard({ coach, basePrice, tierPrices = null, onSelec
           {isPlaceholder ? '待場館分派正式教練' : <>
           修課係數{' '}
           <span className={`font-bold ${isAdjustedCoefficient ? 'text-brand-amber' : 'text-brand-primary'}`}>
-            {coefficientPct}%
+            {coefficientPct == null ? '待確認' : `${coefficientPct}%`}
           </span>
-          <span className="ml-2">{isTrial ? '/ 試上 1 堂' : '/ 6 堂'}</span>
+          <span className="ml-2">{isTrial ? '/ 試上 1 堂' : priceReady ? `/ ${Number(sessionsPerPeriod)} 堂` : '/ 堂數待確認'}</span>
           </>}
         </div>
         <div className="text-right">
@@ -122,9 +120,10 @@ export default function CoachCard({ coach, basePrice, tierPrices = null, onSelec
           {!isTrial && isAdjustedCoefficient && (
             <div className="text-[11px] text-gray-400 line-through">{formatTWD(basePrice)}</div>
           )}
-          <div className="text-lg font-bold text-brand-primary">{formatTWD(displayPrice)}</div>
+          <div className="text-lg font-bold text-brand-primary">{displayPrice == null ? '價格待確認' : formatTWD(displayPrice)}</div>
         </div>
       </div>
     </button>
   );
 }
+

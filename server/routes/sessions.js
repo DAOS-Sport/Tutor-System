@@ -71,6 +71,53 @@ const COACH_ENROLLMENT_STATUSES = "('pending_payment','confirmed')";
  * batch_key 用 COALESCE(...::text, id)：confirmed 上 enrollment_batch_id 實測從不為
  * NULL，但這支也吃 pending_payment，退回自己的 id 等於「自成一筆」，不會整列消失。
  */
+/**
+ * 課程期限：對帳完成時間的「一年後」，時間釘在那一天的 23:59（台北）。
+ *
+ * 2026-09-01 需求（使用者明確指定「期限是這個時間的一年後」）。
+ *
+ * 用日曆年（同月同日的隔年）而不是 365 天：使用者說的是「一年後」，
+ * 而閏年會讓 365 天比一年少一天 —— 8/7 對帳的單期限會變成隔年 8/6，
+ * 家長會覺得少一天，而且看不出為什麼。
+ *
+ * 釘 23:59 而不是「同一時刻」，是因為期限是講給人聽的日期概念 ——
+ * 早上十點對帳完成的單，期限應該是那天整天結束，不是隔年早上十點。
+ *
+ * 2/29 對帳的單，隔年沒有 2/29，Date.UTC 會滾到 3/1 —— 刻意不夾回 2/28：
+ * 期限往後一天對家長無害，往前一天則是憑空少了一天權益。
+ *
+ * 全程用 UTC 分量做日期運算再扣回時區偏移：直接 new Date(...) 取本地分量的話，
+ * 伺服器時區設錯就整批偏一天，而且沒有任何跡象。
+ */
+function courseExpiryAt(invoiceIssuedAt) {
+  if (!invoiceIssuedAt) return null;
+  const at = new Date(invoiceIssuedAt);
+  if (Number.isNaN(at.getTime())) return null;
+  const taipei = new Date(at.getTime() + 8 * 3600 * 1000);
+  const end = Date.UTC(
+    taipei.getUTCFullYear() + 1, taipei.getUTCMonth(), taipei.getUTCDate(), 23, 59, 0
+  );
+  return new Date(end - 8 * 3600 * 1000);
+}
+
+/** 距離期限的台北曆日差：同日 0、昨天 -1、明天 1。 */
+function daysLeftUntil(expiresAt, now = new Date()) {
+  if (!expiresAt) return null;
+  const taipeiDay = (value) => {
+    const shifted = new Date(value.getTime() + 8 * 3600 * 1000);
+    return Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate()) / 86400000;
+  };
+  return taipeiDay(expiresAt) - taipeiDay(now);
+}
+
+// 台北日期起算三個曆月，月底截尾；不是固定 92 天。
+function expiringWindowEnd(now) {
+  const local = new Date(now.getTime() + 8 * 3600 * 1000);
+  const month = local.getUTCMonth() + 3;
+  const last = new Date(Date.UTC(local.getUTCFullYear(), month + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(local.getUTCFullYear(), month, Math.min(local.getUTCDate(), last), 23, 59, 59, 999) - 8 * 3600 * 1000);
+}
+
 const COACH_ORDER_CTE = `
   WITH scoped AS (
     SELECT ae.id, ae.status::text AS status, ae.parent_name, ae.students,
@@ -199,8 +246,7 @@ router.get('/coach/:coachId/enrollments', requireCoach, requireCoachOwner('coach
            LEFT JOIN names   n ON n.batch_key = b.batch_key AND n.period_number = b.period_number
            LEFT JOIN payers  p ON p.batch_key = b.batch_key AND p.period_number = b.period_number
            LEFT JOIN classes c ON c.batch_key = b.batch_key AND c.period_number = b.period_number
-          ORDER BY b.submitted_at DESC
-          LIMIT 200`,
+          ORDER BY b.submitted_at DESC`,
         [coachId]
       ),
       pool.query(
@@ -217,7 +263,37 @@ router.get('/coach/:coachId/enrollments', requireCoach, requireCoachOwner('coach
       if (counts[row.bucket] !== undefined) counts[row.bucket] = row.n;
       total += row.n;
     }
-    res.json({ counts, total, items: rowsRes.rows });
+    // 期限與剩餘天數在這裡算，不寫進 SQL：日期運算要釘台北時區與日曆年，
+    // 在 JS 裡看得懂也測得到；塞進三層 CTE 只會讓下一個人不敢動它。
+    const now = new Date();
+    const windowEnd = expiringWindowEnd(now);
+    const items = rowsRes.rows.map((row) => {
+      const expiresAt = courseExpiryAt(row.invoice_issued_at);
+      return {
+        ...row,
+        course_expires_at: expiresAt ? expiresAt.toISOString() : null,
+        days_left: daysLeftUntil(expiresAt, now),
+      };
+    });
+    // 只算「還在上的」：已完成的課期滿了本來就該過期，待對帳的還沒有期限可言。
+    // 把它們算進來，教練首頁會冒出一堆他根本不需要處理的數字。
+    const expiringItems = items
+      .filter((it) => it.bucket === 'in_progress'
+        && it.days_left !== null && new Date(it.course_expires_at).getTime() <= windowEnd.getTime()
+        && new Date(it.course_expires_at).getTime() >= now.getTime())
+      .sort((a, b) => a.days_left - b.days_left);
+    res.json({
+      counts,
+      total,
+      items,
+      expiring: {
+        within_days: daysLeftUntil(windowEnd, now),
+        within_months: 3,
+        through_at: windowEnd.toISOString(),
+        count: expiringItems.length,
+        items: expiringItems,
+      },
+    });
   } catch (err) {
     console.error('[sessions coach enrollments]', err.message);
     res.status(500).json({ error: '報名狀態載入失敗' });
@@ -498,3 +574,6 @@ router.get('/:id', requireCoach, async (req, res) => {
 });
 
 module.exports = router;
+// 期限與剩餘天數是純日期運算，錯了不會有任何人立刻發現（家長要到隔年才知道
+// 自己少了一天）。匯出來做真行為測試，而不是用 regex 掃原始碼。
+module.exports.__test__ = { courseExpiryAt, daysLeftUntil, expiringWindowEnd };

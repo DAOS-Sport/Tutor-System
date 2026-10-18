@@ -52,7 +52,7 @@ const router = express.Router();
 //     → { role:'coach',  ...coach,  token }
 //     | { role:'parent', id, name, phone, students, token }
 //   僅在 ALLOW_DEMO_LOGIN=1 時開放（未設則回 404，避免成為永久後門）。
-//   對應到 Ragic 測試帳號：教練「(測試帳號)教練」、家長 0912345678「(測試帳號)家長」。
+//   對應到 Ragic 測試帳號：教練「(測試帳號)教練」、家長 0900796878「(測試帳號)家長」。
 //   demo 完請移除此 secret。
 // ─────────────────────────────────────────────────────────────
 const DEMO_ACCOUNTS = {
@@ -60,9 +60,9 @@ const DEMO_ACCOUNTS = {
   // 第二測試教練：供 demo 測「課程轉換教練（後台改派）」與「教練端寫授課日誌」。
   // 以名稱精準比對 Ragic/DB 測試帳號「(測試帳號)教練2」（server/scripts/seed-demo-coach2.js 建立）。
   coach2:  { password: 'coach2',  role: 'coach', coachName: '(測試帳號)教練2' },
-  custom:  { password: 'custom',  role: 'parent', phone: '0912345678' },
+  custom:  { password: 'custom',  role: 'parent', phone: '0900796878' },
   // 第二測試家庭：供 demo 測「他人加入團報」（團主 custom + 加入者 custom2）。
-  custom2: { password: 'custom2', role: 'parent', phone: '0922222222' },
+  custom2: { password: 'custom2', role: 'parent', phone: '0900637854' },
 };
 
 router.post('/demo-login', async (req, res) => {
@@ -530,9 +530,13 @@ router.post('/verify-phone', requireFlowToken, verifyPhoneRateLimit, async (req,
       multipleZ03Families = true;
     }
     if (z03ByPhone || multipleZ03Families) {
-      const newToken = signFlowToken({
-        lineUid, phone, attempts: 0, studentName: normalizeStudentName(studentName),
-      });
+      // S2 只驗電話，學員姓名要到 S3 才問 —— 這裡不可能知道它。
+      // 原本這行寫 studentName: normalizeStudentName(studentName)，而 studentName
+      // 在這個 scope 從未宣告，於是只要電話命中 Z03 待處理記錄就必定拋
+      // ReferenceError → 500「查詢失敗」。命中這條分支的正是「註冊到一半沒完成」
+      // 的那群人（正式站 873 支電話），他們會卡在第一關而且看不出原因。
+      // 與下面 Ragic 命中的分支一致：只帶 phone，姓名交給 S3 驗證後再寫進 token。
+      const newToken = signFlowToken({ lineUid, phone, attempts: 0 });
       return respond(200, { status: 'found', reason: 'z03_pending', flow_token: newToken });
     }
 
@@ -707,7 +711,12 @@ router.post('/bind', requireFlowToken, async (req, res) => {
         const duplicateUidCorrelationId = crypto.randomUUID();
         await createParentIdentityBackofficeTask({
           phone,
-          sourceRecordIds: sourceIds,
+          // sourceIds 在這個 scope 不存在（它宣告在 _registerParentCore 裡），
+          // 引用它會拋 ReferenceError → 500，而且這張「請後台協助」的工單
+          // 根本不會被建立 —— 換手機／換 LINE 想找回帳號的家長就這樣卡住，
+          // 而沒有任何人知道他們卡住了。
+          // 這裡手上有的來源就是這支電話對到的那筆 Z01。
+          sourceRecordIds: [mapped.ragic_record_id].filter(Boolean),
           reasonCode: 'MULTIPLE_UID_SOURCE_NO_WINNER',
           suggestedAction: 'Review source links/student evidence, select one primary Z01, and retain the others as aliases.',
           correlationId: duplicateUidCorrelationId,
@@ -1100,6 +1109,15 @@ async function _registerParentCore(req, res, resolveLineUid) {
       }
       if (!ISO_DATE_RE.test(birthDate) || Number.isNaN(new Date(`${birthDate}T00:00:00+08:00`).getTime())) {
         return res.status(400).json({ error: `第 ${i + 1} 位學員出生年月日格式錯誤`, code: 'STUDENT_BIRTH_DATE_INVALID' });
+      }
+      // 還沒出生的學員不存在。原本只驗格式，所以 2119-01-01 會被原封不動收下 ——
+      // 手滑把年份打成 21xx 沒有任何提示，錯誤要等到分齡分班或保險資料才被發現。
+      // 在入口擋住比事後對帳便宜太多。
+      if (new Date(`${birthDate}T00:00:00+08:00`).getTime() > Date.now()) {
+        return res.status(400).json({
+          error: `第 ${i + 1} 位學員出生年月日不可以是未來日期`,
+          code: 'STUDENT_BIRTH_DATE_INVALID',
+        });
       }
       const studentGender = String(s.gender || '').trim();
       if (!studentGender) {

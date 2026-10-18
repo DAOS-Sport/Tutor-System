@@ -17,6 +17,7 @@
 const { pool } = require('../models/db');
 const { ensureUnassignedCoach } = require('../services/unassignedCoach');
 const { addCalendarDays, taipeiToday } = require('../utils/dateTime');
+const { ensureCanonicalLessonSchema } = require('../services/canonicalLessons');
 
 const DDL = `
 -- ENUMs（重複建立會 throw duplicate_object）
@@ -272,6 +273,7 @@ CREATE TABLE IF NOT EXISTS group_order_members (
   student_ids       UUID[] NOT NULL DEFAULT '{}',
   transfer_last_5   VARCHAR(5),
   carrier           TEXT,
+  tax_id            VARCHAR(20),
   payment_proof_url TEXT,
   is_leader         BOOLEAN NOT NULL DEFAULT FALSE,
   status            VARCHAR(20) NOT NULL DEFAULT 'joined',
@@ -389,6 +391,23 @@ CREATE INDEX IF NOT EXISTS idx_coaches_active ON coaches(is_active);
 DO $$ BEGIN ALTER TABLE coach_availability_slots ADD COLUMN IF NOT EXISTS notes TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE coach_availability_slots ADD COLUMN IF NOT EXISTS booked_session_id UUID; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE course_periods ADD COLUMN IF NOT EXISTS is_experience_course BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+-- F-R01：購買當下的係數快照。NULL 是「歷史無可信證據」，不得以現任教練係數或金額回填。
+DO $$ BEGIN ALTER TABLE group_orders ADD COLUMN IF NOT EXISTS purchased_pricing_multiplier NUMERIC(5,2); EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE group_orders ADD COLUMN IF NOT EXISTS purchased_unit_price NUMERIC(10,2); EXCEPTION WHEN undefined_table THEN NULL; END $$;
+-- Nullable purchase-time session entitlement snapshot. No legacy backfill.
+ALTER TABLE group_orders ADD COLUMN IF NOT EXISTS purchased_sessions_per_period INTEGER;
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'group_orders'::regclass AND conname = 'chk_group_purchase_sessions'
+  ) THEN
+    ALTER TABLE group_orders ADD CONSTRAINT chk_group_purchase_sessions
+      CHECK (purchased_sessions_per_period IS NULL OR purchased_sessions_per_period > 0);
+  END IF;
+END $$;
+
+DO $$ BEGIN ALTER TABLE admin_enrollments ADD COLUMN IF NOT EXISTS purchased_pricing_multiplier NUMERIC(5,2); EXCEPTION WHEN undefined_table THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE course_periods ADD COLUMN IF NOT EXISTS purchased_pricing_multiplier NUMERIC(5,2); EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
 -- Task #67：admin_course_intros 增 title_overridden 旗標（true 表示 admin 改過 title，label 同步時不再覆蓋）
 DO $$ BEGIN
@@ -461,6 +480,21 @@ CREATE INDEX IF NOT EXISTS idx_manual_deductions_status_created ON manual_lesson
 -- 共享課期手動扣課（整班簽到語意）：快照扣課當下的整班 active 名單 [{id,name}]，
 -- 稽核可追「這堂扣課涵蓋哪些學員」。單人課期亦寫入（一人名單），格式一致。
 DO $$ BEGIN ALTER TABLE manual_lesson_deductions ADD COLUMN IF NOT EXISTS roster_snapshot JSONB; EXCEPTION WHEN undefined_table THEN NULL; END $$;
+
+-- 2026-10-07 owner: save the chosen coefficient for this whole-class lesson.
+-- Nullable, no backfill; original purchase prices and coach settings stay intact.
+ALTER TABLE manual_lesson_deductions
+  ADD COLUMN IF NOT EXISTS lesson_pricing_multiplier NUMERIC(5,2),
+  ADD COLUMN IF NOT EXISTS coach_original_pricing_multiplier NUMERIC(5,2);
+DO $$ BEGIN ALTER TABLE manual_lesson_deductions ADD CONSTRAINT chk_manual_lesson_multiplier
+  CHECK (lesson_pricing_multiplier IS NULL OR lesson_pricing_multiplier BETWEEN 1.00 AND 1.50);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE manual_lesson_deductions ADD CONSTRAINT chk_manual_original_multiplier
+  CHECK (coach_original_pricing_multiplier IS NULL OR coach_original_pricing_multiplier BETWEEN 1.00 AND 1.50);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE manual_lesson_deductions ADD CONSTRAINT chk_manual_multiplier_snapshot_pair
+  CHECK ((lesson_pricing_multiplier IS NULL) = (coach_original_pricing_multiplier IS NULL));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS attendance_status TEXT NOT NULL DEFAULT 'ATTENDED'; EXCEPTION WHEN undefined_table THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE checkin_records ADD COLUMN IF NOT EXISTS reversed_by TEXT; EXCEPTION WHEN undefined_table THEN NULL; END $$;
@@ -611,6 +645,73 @@ CREATE TABLE IF NOT EXISTS coach_personal_tags (
 DO $$ BEGIN
   ALTER TABLE coach_personal_tags ADD COLUMN IF NOT EXISTS category_id UUID REFERENCES tag_categories(id) ON DELETE SET NULL;
 EXCEPTION WHEN undefined_table THEN NULL; END $$;
+
+-- 新庫先建 session_records，避免下方舊庫升級區因 undefined_table 整段回滾。
+-- 授課記錄（F-C05）：每堂課一筆，draft → submitted；submitted 之後改寫入 versions
+CREATE TABLE IF NOT EXISTS session_records (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  course_session_id UUID NOT NULL REFERENCES course_sessions(id) ON DELETE CASCADE,
+  course_period_id UUID NOT NULL REFERENCES course_periods(id) ON DELETE CASCADE,
+  coach_id UUID NOT NULL REFERENCES coaches(id) ON DELETE RESTRICT,
+  summary TEXT NOT NULL DEFAULT '',         -- 上課摘要
+  highlights TEXT NOT NULL DEFAULT '',      -- 表現亮點
+  improvements TEXT NOT NULL DEFAULT '',    -- 待加強
+  homework TEXT NOT NULL DEFAULT '',        -- 回家練習
+  notes TEXT NOT NULL DEFAULT '',           -- 備註（給家長的提醒）
+  status VARCHAR(10) NOT NULL DEFAULT 'draft', -- draft | submitted
+  media JSONB NOT NULL DEFAULT '[]'::jsonb, -- [{ url, mime, name, size }]
+  student_records JSONB NOT NULL DEFAULT '{}'::jsonb, -- { mode, records: { studentName: fields } }
+  submitted_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(course_session_id)
+);
+
+-- 團購升級會引用 promotions；新庫也必須先建立它。
+CREATE TABLE IF NOT EXISTS promotions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name VARCHAR(100) NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  type VARCHAR(20) NOT NULL CHECK (type IN ('PERCENTAGE','FIXED_AMOUNT')),
+  discount_value NUMERIC(10,4) NOT NULL,             -- PERCENTAGE: 0..1（0.9 = 9折）；FIXED_AMOUNT: 整數元
+  min_threshold_type VARCHAR(20) CHECK (min_threshold_type IN ('PERIOD_COUNT')),
+  min_threshold_value INTEGER,
+  applicable_course_types INTEGER[],                 -- NULL = 全組別
+  applicable_venue_ids VARCHAR(10)[],                -- NULL = 全場館
+  applicable_coach_multipliers NUMERIC(5,2)[],       -- NULL = 不限教練加成（存 coaches.pricing_multiplier 值，如 1.30）
+  show_on_parent_home BOOLEAN NOT NULL DEFAULT TRUE, -- 是否顯示在家長首頁
+  coupon_code VARCHAR(40) UNIQUE,                    -- NULL = 自動套用；有值 = 需輸入代碼
+  start_date TIMESTAMPTZ NOT NULL,                   -- 起始時刻（台灣時間；預設當日 00:00）
+  end_date TIMESTAMPTZ NOT NULL,                      -- 結束時刻（台灣時間；預設當日 23:59:59）
+  max_uses INTEGER,
+  current_uses INTEGER NOT NULL DEFAULT 0,
+  platform_total_period_cap INTEGER,
+  parent_period_cap INTEGER,
+  current_period_uses INTEGER NOT NULL DEFAULT 0,
+  status VARCHAR(20) NOT NULL DEFAULT 'draft'
+    CHECK (status IN ('draft','pending_review','active','rejected','archived')),
+  review_note TEXT,
+  created_by TEXT REFERENCES admin_users(id) ON DELETE SET NULL,
+  reviewed_by TEXT REFERENCES admin_users(id) ON DELETE SET NULL,
+  reviewed_at TIMESTAMPTZ,
+  submitted_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CHECK (end_date >= start_date)
+);
+
+-- promotion_usages：每次套用紀錄；資料隔離供日後對帳。
+CREATE TABLE IF NOT EXISTS promotion_usages (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  promotion_id UUID NOT NULL REFERENCES promotions(id) ON DELETE RESTRICT,
+  parent_id UUID REFERENCES parents(id) ON DELETE SET NULL,
+  course_period_id UUID REFERENCES course_periods(id) ON DELETE CASCADE,
+  original_price INTEGER NOT NULL,
+  discount_amount INTEGER NOT NULL,
+  final_price INTEGER NOT NULL,
+  used_periods INTEGER NOT NULL DEFAULT 1,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
 -- ── 升級舊版（001_initial_schema.sql 已建立、欄位不同）── 與 005 migration 一致
 DO $$ BEGIN
@@ -1002,6 +1103,7 @@ DO $$ BEGIN
   ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS proof_uploaded_at   TIMESTAMPTZ;
   ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS transfer_last_5     VARCHAR(5);
   ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS carrier             TEXT;
+  ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS tax_id              VARCHAR(20);
   ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS payment_confirmed   BOOLEAN NOT NULL DEFAULT FALSE;
   ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS payment_confirmed_at TIMESTAMPTZ;
   ALTER TABLE group_order_members ADD COLUMN IF NOT EXISTS payment_confirmed_by VARCHAR(50);
@@ -1079,25 +1181,7 @@ CREATE TABLE IF NOT EXISTS lesson_plans (
   UNIQUE(course_period_id)
 );
 
--- 授課記錄（F-C05）：每堂課一筆，draft → submitted；submitted 之後改寫入 versions
-CREATE TABLE IF NOT EXISTS session_records (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  course_session_id UUID NOT NULL REFERENCES course_sessions(id) ON DELETE CASCADE,
-  course_period_id UUID NOT NULL REFERENCES course_periods(id) ON DELETE CASCADE,
-  coach_id UUID NOT NULL REFERENCES coaches(id) ON DELETE RESTRICT,
-  summary TEXT NOT NULL DEFAULT '',         -- 上課摘要
-  highlights TEXT NOT NULL DEFAULT '',      -- 表現亮點
-  improvements TEXT NOT NULL DEFAULT '',    -- 待加強
-  homework TEXT NOT NULL DEFAULT '',        -- 回家練習
-  notes TEXT NOT NULL DEFAULT '',           -- 備註（給家長的提醒）
-  status VARCHAR(10) NOT NULL DEFAULT 'draft', -- draft | submitted
-  media JSONB NOT NULL DEFAULT '[]'::jsonb, -- [{ url, mime, name, size }]
-  student_records JSONB NOT NULL DEFAULT '{}'::jsonb, -- { mode, records: { studentName: fields } }
-  submitted_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE(course_session_id)
-);
+
 CREATE INDEX IF NOT EXISTS idx_records_period ON session_records(course_period_id);
 
 CREATE TABLE IF NOT EXISTS session_record_versions (
@@ -1394,6 +1478,8 @@ ALTER TABLE ragic_z03_students ADD COLUMN IF NOT EXISTS reason_code TEXT;
 ALTER TABLE ragic_z03_students ADD COLUMN IF NOT EXISTS present_in_latest_payload BOOLEAN NOT NULL DEFAULT TRUE;
 ALTER TABLE ragic_z03_students ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 ALTER TABLE ragic_z03_students ADD COLUMN IF NOT EXISTS canonical_student_id UUID REFERENCES students(id) ON DELETE SET NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_ragic_z03_student_source_row
+  ON ragic_z03_students(z03_record_id, source_row_key);
 ALTER TABLE ragic_sync_outbox ADD COLUMN IF NOT EXISTS target_record_id TEXT;
 ALTER TABLE ragic_sync_outbox ADD COLUMN IF NOT EXISTS field_id TEXT;
 
@@ -1571,37 +1657,7 @@ EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
 -- ── Phase 6 (上)：優惠活動 + 折價券 + 套用紀錄 ────────────────────────
 -- F-M07 主管建立 → F-A05 管理員核准 → 進入 active；LIFF 購課讀 active 自動比對 / 折價券代碼。
-CREATE TABLE IF NOT EXISTS promotions (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  name VARCHAR(100) NOT NULL,
-  description TEXT NOT NULL DEFAULT '',
-  type VARCHAR(20) NOT NULL CHECK (type IN ('PERCENTAGE','FIXED_AMOUNT')),
-  discount_value NUMERIC(10,4) NOT NULL,             -- PERCENTAGE: 0..1（0.9 = 9折）；FIXED_AMOUNT: 整數元
-  min_threshold_type VARCHAR(20) CHECK (min_threshold_type IN ('PERIOD_COUNT')),
-  min_threshold_value INTEGER,
-  applicable_course_types INTEGER[],                 -- NULL = 全組別
-  applicable_venue_ids VARCHAR(10)[],                -- NULL = 全場館
-  applicable_coach_multipliers NUMERIC(5,2)[],       -- NULL = 不限教練加成（存 coaches.pricing_multiplier 值，如 1.30）
-  show_on_parent_home BOOLEAN NOT NULL DEFAULT TRUE, -- 是否顯示在家長首頁
-  coupon_code VARCHAR(40) UNIQUE,                    -- NULL = 自動套用；有值 = 需輸入代碼
-  start_date TIMESTAMPTZ NOT NULL,                   -- 起始時刻（台灣時間；預設當日 00:00）
-  end_date TIMESTAMPTZ NOT NULL,                      -- 結束時刻（台灣時間；預設當日 23:59:59）
-  max_uses INTEGER,
-  current_uses INTEGER NOT NULL DEFAULT 0,
-  platform_total_period_cap INTEGER,
-  parent_period_cap INTEGER,
-  current_period_uses INTEGER NOT NULL DEFAULT 0,
-  status VARCHAR(20) NOT NULL DEFAULT 'draft'
-    CHECK (status IN ('draft','pending_review','active','rejected','archived')),
-  review_note TEXT,
-  created_by TEXT REFERENCES admin_users(id) ON DELETE SET NULL,
-  reviewed_by TEXT REFERENCES admin_users(id) ON DELETE SET NULL,
-  reviewed_at TIMESTAMPTZ,
-  submitted_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CHECK (end_date >= start_date)
-);
+
 CREATE INDEX IF NOT EXISTS idx_promotions_active_dates
   ON promotions(status, start_date, end_date);
 CREATE INDEX IF NOT EXISTS idx_promotions_coupon
@@ -1622,18 +1678,7 @@ DO $$ BEGIN
   END IF;
 EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
--- promotion_usages：每次套用紀錄；資料隔離供日後對帳。
-CREATE TABLE IF NOT EXISTS promotion_usages (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  promotion_id UUID NOT NULL REFERENCES promotions(id) ON DELETE RESTRICT,
-  parent_id UUID REFERENCES parents(id) ON DELETE SET NULL,
-  course_period_id UUID REFERENCES course_periods(id) ON DELETE CASCADE,
-  original_price INTEGER NOT NULL,
-  discount_amount INTEGER NOT NULL,
-  final_price INTEGER NOT NULL,
-  used_periods INTEGER NOT NULL DEFAULT 1,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+
 CREATE INDEX IF NOT EXISTS idx_promo_usages_promo ON promotion_usages(promotion_id);
 CREATE INDEX IF NOT EXISTS idx_promo_usages_parent ON promotion_usages(parent_id);
 DO $$ BEGIN ALTER TABLE promotion_usages ADD COLUMN IF NOT EXISTS used_periods INTEGER NOT NULL DEFAULT 1; EXCEPTION WHEN undefined_table THEN NULL; END $$;
@@ -1951,6 +1996,12 @@ ALTER TABLE ragic_z01_shadow ADD COLUMN IF NOT EXISTS missing_since TIMESTAMPTZ;
 ALTER TABLE ragic_z01_shadow ADD COLUMN IF NOT EXISTS present_in_latest_pull BOOLEAN NOT NULL DEFAULT TRUE;
 CREATE INDEX IF NOT EXISTS idx_ragic_z01_shadow_fetched ON ragic_z01_shadow(fetched_at);
 
+-- Preserve the independent student source, including rows absent from a parent subtable.
+CREATE TABLE IF NOT EXISTS ragic_z02_shadow (LIKE ragic_z01_shadow INCLUDING ALL);
+ALTER TABLE ragic_z02_shadow ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;
+ALTER TABLE ragic_z02_shadow ADD COLUMN IF NOT EXISTS missing_since TIMESTAMPTZ;
+ALTER TABLE ragic_z02_shadow ADD COLUMN IF NOT EXISTS present_in_latest_pull BOOLEAN NOT NULL DEFAULT TRUE;
+
 -- H01（員工）/H05（場館）影子表：同一套「無腦 pull → 從 shadow 清洗」分工，補上
 -- 決策9「所有 RAGIC 的同步都用影子表格式」原本沒收斂到的兩個表單（見 ragicAdmin.js
 -- _shadowPullH01Impl/_reconcileH01FromShadowImpl、_shadowPullH05Impl/
@@ -1998,6 +2049,23 @@ CREATE TABLE IF NOT EXISTS ragic_h23_shadow (
 );
 CREATE INDEX IF NOT EXISTS idx_ragic_h23_shadow_fetched ON ragic_h23_shadow(fetched_at);
 CREATE INDEX IF NOT EXISTS idx_ragic_h23_shadow_staff ON ragic_h23_shadow(staff_emp_id, staff_name);
+
+CREATE TABLE IF NOT EXISTS ragic_webhook_inbox (
+  sheet_code TEXT NOT NULL,
+  ragic_record_id TEXT NOT NULL,
+  event_type TEXT,
+  revision BIGINT NOT NULL DEFAULT 1,
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','retryable','completed','blocked')),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 8,
+  last_error_code TEXT,
+  next_retry_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  completed_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (sheet_code,ragic_record_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ragic_webhook_inbox_pending
+  ON ragic_webhook_inbox(next_retry_at) WHERE state IN ('pending','retryable');
 
 CREATE TABLE IF NOT EXISTS ragic_webhook_log (
   id BIGSERIAL PRIMARY KEY,
@@ -2114,10 +2182,10 @@ const VENUES = [
 ];
 
 const COACHES = [
-  { ragic_id: 'C001', name: '王志強', phone: '0911000001', is_senior: true,  multiplier: 1.30, venues: ['B', 'C'], bio: '前國家代表隊選手，10 年青少年訓練經驗。' },
-  { ragic_id: 'C002', name: '林佳穎', phone: '0911000002', is_senior: true,  multiplier: 1.50, venues: ['B'],      bio: '英國 LTA Level 3 認證教練，擅長 6-12 歲基礎培訓。' },
-  { ragic_id: 'C003', name: '張嘉豪', phone: '0911000003', is_senior: false, multiplier: 1.00, venues: ['B','C'], bio: '熱情活潑、耐心十足。' },
-  { ragic_id: 'C004', name: '黃詩涵', phone: '0911000004', is_senior: false, multiplier: 1.10, venues: ['C'], bio: '具備 5 年場館團體班經驗。' },
+  { ragic_id: 'C001', name: '王志強', phone: '0900660770', is_senior: true,  multiplier: 1.30, venues: ['B', 'C'], bio: '前國家代表隊選手，10 年青少年訓練經驗。' },
+  { ragic_id: 'C002', name: '林佳穎', phone: '0900662684', is_senior: true,  multiplier: 1.50, venues: ['B'],      bio: '英國 LTA Level 3 認證教練，擅長 6-12 歲基礎培訓。' },
+  { ragic_id: 'C003', name: '張嘉豪', phone: '0900484236', is_senior: false, multiplier: 1.00, venues: ['B','C'], bio: '熱情活潑、耐心十足。' },
+  { ragic_id: 'C004', name: '黃詩涵', phone: '0900988813', is_senior: false, multiplier: 1.10, venues: ['C'], bio: '具備 5 年場館團體班經驗。' },
 ];
 
 // demoLogin: true 的兩筆是 POST /api/auth/demo-login 依電話對應的帳密測試帳號。
@@ -2125,11 +2193,11 @@ const COACHES = [
 //  (1) 不算「未綁」→ 不會被 pull 掃尾停用、不佔後台未綁殘留檢視；
 //  (2) 哨兵前綴讓 backup / 即時回寫全部略過 → demo 資料永不寫進 Ragic Z01。
 const PARENTS = [
-  { phone: '0912345678', name: '張媽媽', venue: 'B', demoLogin: true, students: [{ name: '張小明', birth: '2015-03-12' }, { name: '張小美', birth: '2017-08-05' }] },
-  { phone: '0922333444', name: '李爸爸', venue: 'B', students: [{ name: '李小龍', birth: '2014-11-30' }] },
-  { phone: '0933555777', name: '陳媽媽', venue: 'C', students: [{ name: '陳小米', birth: '2016-02-20' }] },
+  { phone: '0900796878', name: '張媽媽', venue: 'B', demoLogin: true, students: [{ name: '張小明', birth: '2015-03-12' }, { name: '張小美', birth: '2017-08-05' }] },
+  { phone: '0900932354', name: '李爸爸', venue: 'B', students: [{ name: '李小龍', birth: '2014-11-30' }] },
+  { phone: '0900549610', name: '陳媽媽', venue: 'C', students: [{ name: '陳小米', birth: '2016-02-20' }] },
   // Demo 第二測試家庭（custom2 / custom2，供測「他人加入團報」）。idempotent，正式環境發布後 bootstrap 自動建立。
-  { phone: '0922222222', name: '(測試帳號)家長2', venue: 'B', demoLogin: true, students: [{ name: '測試-學員A', birth: '2016-04-10' }, { name: '測試-學員B', birth: '2018-09-22' }] },
+  { phone: '0900637854', name: '(測試帳號)家長2', venue: 'B', demoLogin: true, students: [{ name: '測試-學員A', birth: '2016-04-10' }, { name: '測試-學員B', birth: '2018-09-22' }] },
 ];
 
 // 給定要建立的「期課程 + 已預約 session」demo（讓教練今日 / 排課表能看到 booked 槽位）
@@ -2222,10 +2290,23 @@ async function seedVenuesCoachesParents() {
         [parentId, s.name]
       );
       if (exist.rows.length === 0) {
-        await pool.query(
-          `INSERT INTO students (parent_id, name, birth_date) VALUES ($1, $2, $3)`,
-          [parentId, s.name, s.birth]
-        );
+        const seedClient = await pool.connect();
+        try {
+          await seedClient.query('BEGIN');
+          const inserted = await seedClient.query(
+            `INSERT INTO students (parent_id, name, birth_date) VALUES ($1, $2, $3) RETURNING id`,
+            [parentId, s.name, s.birth]
+          );
+          await require('../services/studentAudit').writeStudentAudit(seedClient, inserted.rows[0].id, 'create', {
+            byUser: 'system:demo-seed', byRole: 'system', note: 'demo-student-seed',
+          });
+          await seedClient.query('COMMIT');
+        } catch (err) {
+          await seedClient.query('ROLLBACK').catch(() => {});
+          throw err;
+        } finally {
+          seedClient.release();
+        }
       }
     }
   }
@@ -2245,11 +2326,11 @@ async function seedSlotsAndSessions() {
   if (exist.rows.length > 0) return;
 
   // 取家長學員 → 開一個 active period（張媽媽 + 張小明 + 王志強 1v1 板橋館）
-  const parent = await pool.query("SELECT id FROM parents WHERE phone = '0912345678'");
+  const parent = await pool.query("SELECT id FROM parents WHERE phone = '0900796878'");
   const student = await pool.query(
     `SELECT s.id FROM students s
      JOIN parents p ON s.parent_id = p.id
-     WHERE p.phone = '0912345678' AND s.name = '張小明' LIMIT 1`
+     WHERE p.phone = '0900796878' AND s.name = '張小明' LIMIT 1`
   );
   if (parent.rows.length === 0 || student.rows.length === 0) return;
   const parentId = parent.rows[0].id;
@@ -2361,6 +2442,205 @@ const DEFAULT_THRESHOLDS = [
  * 第 3 步是關鍵：換完之後「同一個課別在不同區可以有不同價」才成立。
  * 換主鍵前一定要先回填完 —— 主鍵欄位隱含 NOT NULL，有 NULL 就換不過去。
  */
+/**
+ * admin_staff.role 的 CHECK 要允許 lifeguard。
+ *
+ * 舊限制只允許 admin/manager/staff/coach，於是救生員這個身份在畫面上看得到、
+ * 在篩選裡選得到，卻永遠存不進去。正式庫有 54 位在職救生員的 role 因此被迫
+ * 落在 'staff'（行政櫃檯）—— 那不是他們的身份，只是沒有別的值可以填。
+ *
+ * 放寬 CHECK 不會改變任何人現有的權限：能不能登入後台由 BACKOFFICE_ROLES 決定，
+ * 而 lifeguard 不在其中。這一步只是讓「指派救生員」這件事變得可能。
+ */
+/**
+ * F-A06 角色權限：哪個角色看得到哪些頁面。
+ *
+ * ── 為什麼是「有列＝允許」而不是布林欄位 ──
+ * 缺列一律視為拒絕（fail-closed）。新增一個後台頁面時，它預設對所有非管理員
+ * 關閉，要由管理員明確打開 —— 反過來（預設開放、要記得關）遲早會漏。
+ *
+ * ── 為什麼 admin 不進這張表 ──
+ * 系統管理員永遠全開，而且不可調整。把它做成可編輯的，代表有人可以在畫面上
+ * 把自己鎖在門外，而解鎖的唯一入口正好也被鎖住了。
+ */
+/**
+ * F-A06 第二層：個別人員的權限例外。
+ *
+ * ── 為什麼掛在登入帳號而不是員工 ──
+ * 有帳號才有權限可談。員工有 426 位、能登入後台的只有十幾個，把例外掛在員工上
+ * 等於維護一張大部分是空的表。而且 token 裡本來就有 admin_users.id（sub），
+ * 掛在這裡不必改 token、既有登入不必重來。
+ *
+ * ── 為什麼 allowed 是布林而不是「有列＝允許」──
+ * 角色層可以用「有列＝允許」，因為它是從零開始描述。但例外是相對角色的差異，
+ * 有兩個方向：角色沒有、這個人要有（開通）；角色有、這個人不要（收回）。
+ * 只有「有列＝允許」的話表達不了收回，而收回正是例外最常見的用途 ——
+ * 例如某位櫃檯暫時不該碰退款。
+ *
+ * 判定順序：admin 全開 → 個人例外 → 角色預設 → 拒絕。
+ */
+async function ensureUserPermissionOverrides() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_permission_overrides (
+      user_id       TEXT NOT NULL,
+      resource_key  TEXT NOT NULL,
+      allowed       BOOLEAN NOT NULL,
+      updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_by    TEXT,
+      PRIMARY KEY (user_id, resource_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_perm_overrides_user ON user_permission_overrides(user_id);
+  `);
+  // 這張表刻意不灌初始值：沒有例外才是正常狀態。
+  // 灌東西進去等於系統先幫人做了決定，而這個功能的重點正好相反。
+}
+
+/**
+ * 員工的「手動指派身分」（F-A06）。
+ *
+ * ── 為什麼不直接寫 is_counter / is_coach / is_lifeguard ──
+ * 那三個旗標是 Ragic H01 的權威欄位，本系統只讀不寫（見 ragicSchema 的政策註記）。
+ * 寫進去下一次同步就被蓋回來，而且是無聲的 —— 管理員會以為存好了。
+ *
+ * ── 為什麼不擴充 admin_staff.role ──
+ * 那是單值欄位，登入、既有查詢、CHECK constraint 都靠它。改成陣列的話
+ * 要動的地方太多，而且 role 仍需要一個「代表值」給登入用。
+ * 所以這裡只存「額外手動加上的身分」，admin_staff.role 保留為其中優先序最高者。
+ *
+ * 最終權限 = Ragic 推導的身分 ∪ 這張表的手動身分。
+ */
+async function ensureStaffManualRoles() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS admin_staff_roles (
+      staff_id    TEXT NOT NULL,
+      role        TEXT NOT NULL,
+      updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_by  TEXT,
+      PRIMARY KEY (staff_id, role)
+    );
+    CREATE INDEX IF NOT EXISTS idx_admin_staff_roles_staff ON admin_staff_roles(staff_id);
+  `);
+
+  // 刻意不灌初始值。
+  //
+  // 一度灌過「每個人現有的 admin_staff.role」，想讓多選畫面一打開就有東西。
+  // 那是錯的：這張表的語意是「管理員額外手動加上的身分」，把推導出來的值
+  // 塞進來，等於把它變成永久的。實測踩到的情形是——某位員工的 role 當時
+  // 還是保底值 'staff'，救生員身分修正後，那筆「手動 staff」仍留在表裡，
+  // 權限聯集就把整套櫃檯權限加了回去，而畫面上完全看不出來。
+  //
+  // 不灌也不會讓畫面空：rowToStaff 在沒有手動身分時會回退成 [role]，
+  // 編輯視窗照樣顯示他目前的角色。
+}
+
+async function ensureRolePermissions() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS role_permissions (
+      role          TEXT NOT NULL,
+      resource_key  TEXT NOT NULL,
+      updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_by    TEXT,
+      PRIMARY KEY (role, resource_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_role_permissions_role ON role_permissions(role);
+  `);
+
+  // 只灌一次初始值。灌完之後權威就是這張表 ——
+  // 管理員在後台調過的設定，不該被下一次部署默默改回程式碼裡的預設。
+  //
+  // 判斷「灌過了沒」用的是一個明確的旗標，不是「表裡有沒有列」。
+  // 用列數會 fail-open：setRolePermissions 是 DELETE 再 INSERT，送空陣列
+  // 就只剩 DELETE。可編輯的只有 manager / staff / lifeguard 三欄，出事時
+  // 管理員很可能就是全部取消勾選先把門關上 —— 表變空，下次部署這裡判定
+  // 「還沒初始化」，把整份預設矩陣灌回去，權限自己打開，而且沒有任何紀錄。
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS schema_seed_marks (
+      mark_key   text PRIMARY KEY,
+      marked_at  timestamptz NOT NULL DEFAULT now()
+    );
+  `);
+  const MARK = 'role_permissions_seeded';
+  const seeded = await pool.query(
+    'SELECT 1 FROM schema_seed_marks WHERE mark_key = $1', [MARK]);
+  if (seeded.rowCount) return;
+  // 舊環境沒有旗標但表裡已經有列（這次改動之前就灌過了）：補記旗標後結束，
+  // 不要重灌。
+  const existing = await pool.query('SELECT 1 FROM role_permissions LIMIT 1');
+  if (existing.rowCount) {
+    await pool.query(
+      'INSERT INTO schema_seed_marks (mark_key) VALUES ($1) ON CONFLICT DO NOTHING', [MARK]);
+    return;
+  }
+
+  const { ADMIN_RESOURCES } = require('../constants/adminResources');
+  const { BACKOFFICE_ROLES } = require('../constants/roles');
+  const rows = [];
+  for (const res of ADMIN_RESOURCES) {
+    // defaultRoles 為空＝原本「所有登入者皆可見」，灌給每個後台角色。
+    const roles = res.defaultRoles.length ? res.defaultRoles : [...BACKOFFICE_ROLES];
+    for (const role of roles) {
+      if (role === 'admin') continue;   // admin 永遠全開，不入表
+      rows.push([role, res.key]);
+    }
+  }
+  if (!rows.length) {
+    await pool.query(
+      'INSERT INTO schema_seed_marks (mark_key) VALUES ($1) ON CONFLICT DO NOTHING', [MARK]);
+    return;
+  }
+  const values = rows.map((_, i) => `($${i * 2 + 1}, $${i * 2 + 2}, 'bootstrap')`).join(', ');
+  await pool.query(
+    `INSERT INTO role_permissions (role, resource_key, updated_by) VALUES ${values}
+     ON CONFLICT DO NOTHING`,
+    rows.flat()
+  );
+  await pool.query(
+    'INSERT INTO schema_seed_marks (mark_key) VALUES ($1) ON CONFLICT DO NOTHING', [MARK]);
+  console.log(`[core bootstrap] role_permissions 初始灌入 ${rows.length} 筆（沿用原本寫死的矩陣，行為不變）`);
+}
+
+/**
+ * admin_users.role 的 CHECK 要允許所有「能登入後台」的角色。
+ *
+ * 這裡刻意用 BACKOFFICE_ROLES 而不是 ASSIGNABLE_ROLES：admin_users 存的是
+ * 登入帳號，而教練走 LIFF、永遠不會有後台帳號。把 coach 放進來只會讓一個
+ * 不可能出現的值通過檢查。
+ *
+ * 為什麼會漏掉：admin_staff 與 admin_users 是兩張表、各有一個 CHECK。
+ * 先前放寬救生員時只改了前者，於是「員工可以是救生員」但「救生員登入時
+ * 建不出帳號」—— 症狀是登入回 500，而錯誤訊息只說違反 check constraint，
+ * 看不出是哪一個角色卡住。靜態檢查抓不到，只有真的跑一次登入才會現形。
+ */
+async function ensureAdminUserRoleCheck() {
+  const { BACKOFFICE_ROLES } = require('../constants/roles');
+  const cur = await pool.query(`
+    SELECT pg_get_constraintdef(con.oid) AS def
+      FROM pg_constraint con JOIN pg_class rel ON rel.oid = con.conrelid
+     WHERE rel.relname = 'admin_users' AND con.conname = 'admin_users_role_check'`);
+  const list = BACKOFFICE_ROLES.map((r) => `'${r}'`).join(', ');
+  if (cur.rowCount && BACKOFFICE_ROLES.every((r) => cur.rows[0].def.includes(`'${r}'`))) return;
+  await pool.query(`
+    ALTER TABLE admin_users DROP CONSTRAINT IF EXISTS admin_users_role_check;
+    ALTER TABLE admin_users ADD CONSTRAINT admin_users_role_check
+      CHECK (role = ANY (ARRAY[${list}]::text[]));`);
+  console.log('[core bootstrap] admin_users.role CHECK 已放寬為：' + list);
+}
+
+async function ensureStaffRoleCheck() {
+  const cur = await pool.query(`
+    SELECT pg_get_constraintdef(con.oid) AS def
+      FROM pg_constraint con JOIN pg_class rel ON rel.oid = con.conrelid
+     WHERE rel.relname = 'admin_staff' AND con.conname = 'admin_staff_role_check'`);
+  if (cur.rowCount && /lifeguard/.test(cur.rows[0].def)) return;   // 已經放寬過
+  const { ASSIGNABLE_ROLES } = require('../constants/roles');
+  const list = ASSIGNABLE_ROLES.map((r) => `'${r}'`).join(', ');
+  await pool.query(`
+    ALTER TABLE admin_staff DROP CONSTRAINT IF EXISTS admin_staff_role_check;
+    ALTER TABLE admin_staff ADD CONSTRAINT admin_staff_role_check
+      CHECK (role = ANY (ARRAY[${list}]::text[]));`);
+  console.log('[core bootstrap] admin_staff.role CHECK 已放寬為：' + list);
+}
+
 async function ensurePricingZones() {
   const zoneCount = await pool.query('SELECT COUNT(*)::int AS n FROM pricing_zones');
   if (zoneCount.rows[0].n === 0) {
@@ -2569,9 +2849,39 @@ async function ensureCourseIntroFK() {
   `);
 }
 
+/**
+ * 前端診斷回報。
+ *
+ * 家長回報「註冊填生日就跳掉」查不到任何東西，是因為畫面在送出前就壞了，
+ * 伺服器端沒收到請求。八月有 71 人登入後從未完成建檔（24%），全部沒有痕跡。
+ * 這張表就是把那段空白補起來。
+ *
+ * 保留 30 天：這是拿來查現行問題的，不是稽核紀錄，沒有長期保存的理由，
+ * 而且它是對外開放端點寫入的，必須有上界。
+ */
+async function ensureClientDiagnostics() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS client_diagnostics (
+      id          BIGSERIAL PRIMARY KEY,
+      kind        TEXT NOT NULL,
+      reason      TEXT,
+      path        TEXT,
+      user_agent  TEXT,
+      events      JSONB NOT NULL DEFAULT '[]'::jsonb,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_client_diag_created ON client_diagnostics(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_client_diag_kind    ON client_diagnostics(kind, created_at DESC);
+  `);
+  await pool.query(
+    `DELETE FROM client_diagnostics WHERE created_at < NOW() - INTERVAL '30 days'`
+  ).catch(() => {});
+}
+
 async function bootstrap() {
   try {
     await ensureSchema();
+    await ensureCanonicalLessonSchema(pool);
     // 啟動流程只能做向前相容的 schema / seed；不可清除 Ragic 暫存或 Z03 歷史資料。
     await seedVenuesCoachesParents();
     await ensureUnassignedCoach();
@@ -2579,10 +2889,16 @@ async function bootstrap() {
     await seedKeywords();
     await seedTagsAndThresholds();
     // 必須排在 seedCourseTypeConfigs 之前：後者要用換好的 (pricing_zone_id, course_type) 主鍵。
+    await ensureStaffRoleCheck();
+    await ensureAdminUserRoleCheck();
+    await ensureStaffManualRoles();
+    await ensureRolePermissions();
+    await ensureUserPermissionOverrides();
     await ensurePricingZones();
     await seedCourseTypeConfigs();
     await ensureCourseIntroFK();
     await ensureChatRoomsForActivePeriods();
+    await ensureClientDiagnostics();
     console.log('[core bootstrap] ready');
   } catch (err) {
     console.error('[core bootstrap] FAILED:', err.message);

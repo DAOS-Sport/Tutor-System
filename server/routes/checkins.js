@@ -3,6 +3,7 @@
 // 本檔全檔屬凍結範圍（整班簽到寫入、FOR UPDATE OF cp 鎖序、usageSync 同步）。
 // 修改凍結範圍前，必須先向使用者嚴格詢問並取得明確同意。
 // 政策與完整範圍清單：repo 根目錄 CLAUDE.md、replit.md「簽到／扣課政策」節。
+// Owner 2026-10-07 已授權：固定整班、每筆購買訂單每日限家長一堂；第二堂由櫃檯補登。
 // ═══════════════════════════════════════════════════════════════════
 /**
  * Task #60：學員自助報到（LIFF 端）
@@ -19,24 +20,26 @@ const router = express.Router();
 const { pool } = require('../models/db');
 const { requireParent } = require('../middlewares/parentAuth');
 const { broadcastAdminEvent } = require('../services/websocket');
-const { getFeatureFlag, flagAllowsPhone } = require('../services/featureFlags');
+const { lockParentPurchase, assertLockedPurchase, withPurchaseSource, findPurchaseAttendance, dailyConflict } = require('../services/parentPurchaseCheckin');
 const { syncStoredUsage } = require('../services/usageSync');
 const { notifyCheckinSafely } = require('../services/checkinNotify');
+const { assertCourseEntitlement } = require('../services/courseEntitlements');
+const familyScope = require('../services/familyScope');
 
 /**
  * U13 免預約自助簽到 —— checkin_mode='self' 的課程期，家長不需先排課：
  * 按「今日上課簽到」→ 同交易「即時補建一堂當日課堂（created_via='self_checkin'、
- * status='completed'）＋勾選學員的簽到紀錄」。因為是真實 course_session，
+ * status='completed'）＋有效整班的簽到紀錄」。因為是真實 course_session，
  * 堂數計算／教練上課紀錄／學習歷程／報表全部沿用既有資料路徑，零分岔。
  *
  * 防呆層次（server 為唯一真相，前端顯示過期只會收到明確 409）：
- *  1. 同一期每日限一次：uq_sessions_self_checkin_daily partial unique index 硬保證，
- *     雙擊／斷網重送／多裝置並發都不可能扣兩堂（撞鍵回 409 ALREADY_CHECKED_IN_TODAY）。
+ *  1. 2026-10-07 Owner：同一購買訂單每日家長限一堂，跨家長／期數／模式共同判斷。
+ *     同堂重送回原結果；另一堂回 ALREADY_CHECKED_IN_TODAY。舊 self unique index 留作第二層。
  *  2. 堂數上限：非取消課堂數 >= total_sessions → 409 NO_SESSIONS_LEFT（與 slots 容量同款）。
- *  3. advisory lock 序列化同期並發，容量檢查與建堂之間無競態。
+ *  3. coach → purchase advisory → period row 序列化並發，容量檢查與建堂之間無競態。
  *  4. 共班一堂＝一個 session，多位學員掛同一堂的多筆 checkin（不會一堂扣多堂）。
  *  5. 過渡保護（預約制→自助切換期，既有已排課堂/既有簽到照舊有效）：
- *     a. 同一期「今天」已有任何簽到（含預約課堂由家長/櫃檯簽，或舊制的教練代簽）→ 409，杜絕跨模式一天雙扣；
+ *     a. 同購買訂單台北今天已有有效課堂，不能再由家長追加；櫃檯仍可補登第二堂。
  *     b. 今天已排、未簽到的預約課堂 → 直接簽進該堂（reused_booked_session=true，不另建），
  *        預約課堂不會變成佔堂數的幽靈課堂。
  * 家長不可自行撤銷（營運規則）；誤點由櫃檯走 DELETE /api/admin/checkins/self-sessions/:id。
@@ -55,8 +58,8 @@ router.post('/self', requireParent, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    // 同期並發簽到序列化（容量檢查 → 建堂之間無競態）
-    await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`self-checkin:${periodId}`]);
+    // 2026-10-07 Owner：全體家長／跨期共用購買訂單每日鎖，不按客人計次。
+    const purchase = await lockParentPurchase(client, periodId);
 
     const pr = await client.query(
       `SELECT cp.id, cp.status::text AS status, cp.checkin_mode, cp.total_sessions,
@@ -75,7 +78,9 @@ router.post('/self', requireParent, async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: '找不到課程期', code: 'PERIOD_NOT_FOUND' });
     }
-    const period = pr.rows[0];
+    const purchaseSource = await assertLockedPurchase(client, periodId, purchase);
+    const period = withPurchaseSource(pr.rows[0], purchaseSource);
+    const purchaseKey = purchaseSource.purchase_key;
     if (period.checkin_mode !== 'self') {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '此課程為預約制，請先預約課程再簽到', code: 'SELF_CHECKIN_NOT_ENABLED' });
@@ -88,8 +93,22 @@ router.post('/self', requireParent, async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '此課程期已到期，請洽櫃檯', code: 'PERIOD_EXPIRED' });
     }
+    const entitledStudents = await assertCourseEntitlement(client, periodId, null, { purchaseSource });
+    // 2026-09-22（凍結檔改動，已取得 Owner 同意）：這裡原本是「送上來的名單有任何
+    // 一位不在有效名單就整批 409」。前端 SelfCheckinModal 已刻意移除勾選框，一律送出
+    // 這位家長在本期的全部學員 —— 正式庫 45% 的家長有 2 個以上小孩、54% 的 active
+    // 課期是「同一家長多個小孩在同一期」，所以只要其中一個孩子被停學，整家每天都
+    // 簽不進去。改成把不合格的濾掉；全部都不合格才擋。
+    // 附帶效果：下面的 own 吃收斂後的名單，回傳的 checked_in_students 就不會再
+    // 誤報那位沒被寫入出席的停學學員。
+    const eligibleIds = studentIds.filter((id) => entitledStudents.includes(id));
+    if (!eligibleIds.length) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '所選學員已退費或權益停用', code: 'STUDENT_ENTITLEMENT_INACTIVE' });
+    }
 
-    // 請求中的學員必須屬於本家長且在本期 active 名單中（防越權／防誤選）。
+    // 請求中的學員必須屬於本家長（家庭帳號：全家，凍結檔改動、擁有者 2026-09-23 同意）且在本期 active 名單中（防越權／防誤選）。
+    // 簽到人（checked_in_by_parent_id）仍記實際操作的家長。
     // v2 對共享課期的實際 attendance 會由後端重新取得完整 active roster，不能
     // 信任某一位家長送來的清單來決定其他家庭是否扣課。
     const own = await client.query(
@@ -97,29 +116,29 @@ router.post('/self', requireParent, async (req, res) => {
          FROM students s
          JOIN course_period_enrollments cpe
            ON cpe.course_period_id = $2 AND cpe.student_id = s.id AND cpe.status = 'active'
-        WHERE s.id = ANY($1::uuid[]) AND s.parent_id = $3`,
-      [studentIds, periodId, req.parent.id]
+        WHERE s.id = ANY($1::uuid[]) AND s.parent_id::text = ANY($3::text[])`,
+      [eligibleIds, periodId, (await familyScope.actingParentIds(req)).map(String)]
     );
-    if (own.rowCount !== studentIds.length) {
+    // 比對的是收斂後的名單：別家的學員 id 若仍在有效名單裡會活過收斂，
+    // 在這裡才被 own 濾掉 → 403，越權防線不變。
+    if (own.rowCount !== eligibleIds.length) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: '所選學員不在此課程名單中', code: 'STUDENT_NOT_IN_PERIOD' });
     }
 
-    const sharedFlag = await getFeatureFlag('SHARED_CHECKIN_USAGE_V2', client);
-    const useSharedUsageV2 = flagAllowsPhone(sharedFlag, req.parent.phone);
-    const activeParticipants = useSharedUsageV2
-      ? await client.query(
+    // 整班是固定政策，不可用舊 flag／手機白名單降回個別學生簽到。
+    const activeParticipants = await client.query(
         `SELECT s.id, s.name, s.parent_id
            FROM course_period_enrollments cpe
            JOIN students s ON s.id = cpe.student_id
           WHERE cpe.course_period_id = $1
             AND cpe.status = 'active'
+            AND cpe.student_id = ANY($2::uuid[])
             AND COALESCE(s.is_active, TRUE) = TRUE
           ORDER BY s.id
           FOR SHARE OF cpe, s`,
-        [periodId]
-      )
-      : own;
+        [periodId, entitledStudents]
+      );
     if (!activeParticipants.rowCount) {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '此課程目前沒有有效學員', code: 'NO_ACTIVE_PARTICIPANTS' });
@@ -127,18 +146,9 @@ router.post('/self', requireParent, async (req, res) => {
 
     // 已成功建立的自助課堂是 retry 的冪等結果。advisory lock 讓雙擊與多裝置
     // 並發在這裡序列化；第二個請求回同一 session，而不是再扣一堂或模糊 409。
-    const existingSelf = await client.query(
-      `SELECT id, scheduled_at
-         FROM course_sessions
-        WHERE course_period_id = $1
-          AND created_via = 'self_checkin'
-          AND self_checkin_date = (NOW() AT TIME ZONE 'Asia/Taipei')::date
-        ORDER BY created_at
-        LIMIT 1`,
-      [periodId]
-    );
-    if (existingSelf.rowCount) {
-      const existing = existingSelf.rows[0];
+    const todayAttendance = await findPurchaseAttendance(client, purchaseKey);
+    const existing = todayAttendance.find((session) => session.course_period_id === periodId);
+    if (existing) {
       const usedRes = await client.query(
         `SELECT COUNT(DISTINCT cr.course_session_id)::int AS n
            FROM checkin_records cr
@@ -155,7 +165,7 @@ router.post('/self', requireParent, async (req, res) => {
         ok: true,
         idempotent: true,
         session_id: existing.id,
-        reused_booked_session: false,
+        reused_booked_session: existing.created_via !== 'self_checkin',
         checked_in_students: own.rows.map((s) => s.name),
         total_sessions: period.total_sessions,
         used_sessions: used,
@@ -163,26 +173,8 @@ router.post('/self', requireParent, async (req, res) => {
       });
     }
 
-    // 過渡保護 1（預約制→自助切換期）：同一期「今天」已有任何簽到——不論是
-    // 預約課堂的逐堂簽到（家長/教練/櫃檯）或自助簽到——一律擋。每日一次的
-    // unique index 只涵蓋自助建立的課堂，這裡把跨模式的「一天雙扣」也關掉。
-    const todayCheckedIn = await client.query(
-      `SELECT 1 FROM checkin_records cr
-         JOIN course_sessions cs ON cs.id = cr.course_session_id
-        WHERE cs.course_period_id = $1
-          AND cs.status NOT IN ('cancelled_normal','cancelled_penalty')
-          AND cr.attendance_status = 'ATTENDED'
-          AND (cr.checked_in_at AT TIME ZONE 'Asia/Taipei')::date = (NOW() AT TIME ZONE 'Asia/Taipei')::date
-        LIMIT 1`,
-      [periodId]
-    );
-    if (todayCheckedIn.rowCount) {
-      await client.query('ROLLBACK');
-      return res.status(409).json({
-        error: '今日此課程已有簽到紀錄（每日限一堂）；如需更正請洽櫃檯',
-        code: 'ALREADY_CHECKED_IN_TODAY',
-      });
-    }
+    // 同購買訂單另一課期今天已上課，不能改期號／換家長／切模式再扣一堂。
+    if (todayAttendance.length) throw dailyConflict();
 
     // 過渡保護 2：今天已排、尚未簽到的預約課堂 → 直接簽進「那一堂」，不另建課堂。
     // 否則預約那堂會變成佔用堂數的幽靈課堂（家長看似扣了兩堂）。
@@ -236,7 +228,7 @@ router.post('/self', requireParent, async (req, res) => {
         if (e.code === '23505') {
           await client.query('ROLLBACK');
           return res.status(409).json({
-            error: '今日已完成簽到（同一課程每日限簽一次）；如需更正請洽櫃檯',
+            error: '本筆購買訂單今日已簽到（每日限一堂）；追加課堂請洽櫃檯補登',
             code: 'ALREADY_CHECKED_IN_TODAY',
           });
         }
@@ -269,10 +261,9 @@ router.post('/self', requireParent, async (req, res) => {
     const used = usedRes.rows[0].n;
     await syncStoredUsage(client, period, used);
     await client.query('COMMIT');
+    // 每堂通知一次；不依全班人數重發同一通知。
+    notifyCheckinSafely(sessionRow.id, null);
     for (const s of activeParticipants.rows) {
-      // 簽到通知（教練／家長）。fire-and-forget：簽到已 COMMIT，推播不該把它拖下水。
-      notifyCheckinSafely(sessionRow.id, null);
-
       try {
         broadcastAdminEvent('checkin:created', {
           // 合成唯一 key：缺 checkin_id 時 CheckinPage 去重會把第 2 位起的事件誤吞
@@ -304,6 +295,7 @@ router.post('/self', requireParent, async (req, res) => {
     });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
+    if (err.status === 409) return res.status(409).json({ error: err.message, code: err.code });
     console.error('[checkins/self POST]', err);
     res.status(500).json({ error: '簽到失敗，請稍後再試或洽櫃檯', code: 'SELF_CHECKIN_FAILED' });
   } finally {
@@ -319,15 +311,21 @@ router.post('/', requireParent, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    // 驗證 student 屬於該 parent
+    // 驗證 student 屬於該 parent（家庭帳號：全家；簽到人仍記實際操作的家長）
     const own = await client.query(
-      `SELECT 1 FROM students WHERE id = $1 AND parent_id = $2`,
-      [studentId, req.parent.id]
+      `SELECT 1 FROM students WHERE id = $1 AND parent_id::text = ANY($2::text[])`,
+      [studentId, (await familyScope.actingParentIds(req)).map(String)]
     );
     if (!own.rowCount) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: '學員不屬於該家長' });
     }
+    const sessionHint = (await client.query('SELECT course_period_id FROM course_sessions WHERE id = $1', [sessionId])).rows[0];
+    if (!sessionHint) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: '找不到課堂', code: 'SESSION_NOT_FOUND' });
+    }
+    const purchase = await lockParentPurchase(client, sessionHint.course_period_id);
     // 驗證 session 存在 + 取上下文 + 該 student 必須是該 course_period 的 enrollment 名單成員
     const ctx = await client.query(
       `SELECT cs.id AS session_id, cs.status::text AS session_status,
@@ -343,7 +341,7 @@ router.post('/', requireParent, async (req, res) => {
         WHERE cs.id = $1
           AND EXISTS (
                 SELECT 1 FROM course_period_enrollments cpe
-                 WHERE cpe.course_period_id = cp.id AND cpe.student_id = $2
+                 WHERE cpe.course_period_id = cp.id AND cpe.student_id = $2 AND cpe.status = 'active'
               )
         FOR UPDATE OF cp`,
       [sessionId, studentId]
@@ -354,8 +352,20 @@ router.post('/', requireParent, async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: '該學員未在此課程名單中' });
     }
+    const purchaseSource = await assertLockedPurchase(client, ctx.rows[0].period_id, purchase);
+    const purchaseKey = purchaseSource.purchase_key;
 
-    const sessionStatus = ctx.rows[0].session_status;
+    // 2026-09-22（凍結檔改動，已取得擁有者同意）：這條路徑一定指名單一學員，
+    // 停用學員必須在守門就被擋。原本會放行 → 寫入依 is_active 過濾成 0 筆 →
+    // COMMIT 之後才讀 ins.rows[0] 撞 undefined 拋 500，結果是「堂數扣了、
+    // 出席沒有、家長看到錯誤」。迴歸鎖：tests/course_entitlement_is_active_db_test.js。
+    const entitledStudents = await assertCourseEntitlement(
+      client, ctx.rows[0].period_id, studentId, { requireActiveStudent: true, purchaseSource });
+    const freshSession = await client.query(
+      `SELECT status, course_period_id,
+              (scheduled_at AT TIME ZONE 'Asia/Taipei')::date = (NOW() AT TIME ZONE 'Asia/Taipei')::date AS is_today
+         FROM course_sessions WHERE id = $1 FOR UPDATE`, [sessionId]);
+    const sessionStatus = freshSession.rows[0]?.status;
     if (!['confirmed', 'completed'].includes(sessionStatus)) {
       await client.query('ROLLBACK');
       return res.status(409).json({
@@ -365,10 +375,21 @@ router.post('/', requireParent, async (req, res) => {
         code: 'SESSION_NOT_CHECKINABLE',
       });
     }
-
-    const sharedFlag = await getFeatureFlag('SHARED_CHECKIN_USAGE_V2', client);
-    if (flagAllowsPhone(sharedFlag, req.parent.phone)) {
-      await client.query(
+    if (freshSession.rows[0].course_period_id !== ctx.rows[0].period_id) throw dailyConflict();
+    if (!freshSession.rows[0].is_today) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '家長只能簽到今日課堂；其他日期請洽櫃檯補登', code: 'PARENT_CHECKIN_DATE_NOT_TODAY' });
+    }
+    const todayAttendance = await findPurchaseAttendance(client, purchaseKey);
+    const alreadyAttended = todayAttendance.some((session) => session.id === sessionId);
+    if (todayAttendance.length && !alreadyAttended) throw dailyConflict();
+    const reversed = await client.query(
+      `SELECT 1 FROM checkin_records WHERE course_session_id = $1 AND attendance_status <> 'ATTENDED' LIMIT 1`, [sessionId]);
+    if (reversed.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '此課堂有已歸還的簽到紀錄，請洽櫃檯核對', code: 'CHECKIN_RECORD_REVERSED' });
+    }
+    const inserted = await client.query(
         `INSERT INTO checkin_records
            (course_session_id, student_id, checked_in_by_student_id,
             checked_in_source, checked_in_by_parent_id)
@@ -376,20 +397,11 @@ router.post('/', requireParent, async (req, res) => {
            FROM course_period_enrollments cpe
            JOIN students s ON s.id = cpe.student_id
           WHERE cpe.course_period_id = $3 AND cpe.status = 'active'
+            AND cpe.student_id = ANY($4::uuid[])
             AND COALESCE(s.is_active, TRUE) = TRUE
          ON CONFLICT (course_session_id, student_id) DO NOTHING`,
-        [sessionId, req.parent.id, ctx.rows[0].period_id]
+        [sessionId, req.parent.id, ctx.rows[0].period_id, entitledStudents]
       );
-    } else {
-      await client.query(
-        `INSERT INTO checkin_records
-           (course_session_id, student_id, checked_in_by_student_id,
-            checked_in_source, checked_in_by_parent_id)
-         VALUES ($1, $2, $2, 'parent', $3)
-         ON CONFLICT (course_session_id, student_id) DO NOTHING`,
-        [sessionId, studentId, req.parent.id]
-      );
-    }
     const ins = await client.query(
       `SELECT id, checked_in_at, checked_in_source
          FROM checkin_records WHERE course_session_id = $1 AND student_id = $2`,
@@ -403,18 +415,19 @@ router.post('/', requireParent, async (req, res) => {
       [ctx.rows[0].period_id]
     );
     await client.query(
-      `UPDATE course_sessions SET session_deducted = TRUE, updated_at = NOW() WHERE id = $1`,
+      `UPDATE course_sessions SET status = 'completed', completed_at = COALESCE(completed_at, NOW()),
+        session_deducted = TRUE, updated_at = NOW() WHERE id = $1`,
       [sessionId]
     );
-    await syncStoredUsage(client, { ...ctx.rows[0], id: ctx.rows[0].period_id }, Number(usedRes.rows[0]?.n || 0));
+    await syncStoredUsage(client, withPurchaseSource({ ...ctx.rows[0], id: ctx.rows[0].period_id }, purchaseSource), Number(usedRes.rows[0]?.n || 0));
     await client.query('COMMIT');
 
     const row = ins.rows[0];
     const x = ctx.rows[0];
     // 簽到通知（教練／家長）。fire-and-forget：簽到已 COMMIT，推播不該把它拖下水。
-    notifyCheckinSafely(sessionId, null);
+    if (inserted.rowCount > 0) notifyCheckinSafely(sessionId, null);
 
-    try {
+    if (inserted.rowCount > 0) try {
       broadcastAdminEvent('checkin:created', {
         checkin_id: row.id,
         at: row.checked_in_at instanceof Date ? row.checked_in_at.toISOString() : String(row.checked_in_at),
@@ -429,9 +442,10 @@ router.post('/', requireParent, async (req, res) => {
       });
     } catch (e) { console.warn('[checkins] broadcast skipped:', e?.message); }
 
-    res.json({ ok: true, checkin_id: row.id, checked_in_at: row.checked_in_at, source: row.checked_in_source || 'parent' });
+    res.json({ ok: true, idempotent: inserted.rowCount === 0, checkin_id: row.id, checked_in_at: row.checked_in_at, source: row.checked_in_source || 'parent' });
   } catch (err) {
     await client.query('ROLLBACK');
+    if (err.status === 409) return res.status(409).json({ error: err.message, code: err.code });
     console.error('[checkins POST]', err);
     res.status(500).json({ error: 'checkin failed' });
   } finally {

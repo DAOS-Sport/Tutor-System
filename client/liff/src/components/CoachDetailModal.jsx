@@ -1,3 +1,4 @@
+import { useCoachGuideDemo } from '../utils/coachGuideDemo';
 import React, { useEffect, useState } from 'react';
 import { coachesApi } from '../api/coaches';
 import { promotionsApi } from '../api/promotions';
@@ -13,11 +14,13 @@ import { promotionValueLabel } from '../utils/promotionLabel';
  * 「介紹已發布」的教練的圖。前端不必再判一次，拿到什麼就畫什麼。
  */
 export default function CoachDetailModal({ coach, venueNames = [], onClose, onSelect, priceLabel, priceNote }) {
+  const guide = useCoachGuideDemo();
   const [media, setMedia] = useState(null);
   const [idx, setIdx] = useState(0);
   const [promos, setPromos] = useState(null);
 
   useEffect(() => {
+    if (guide) { setMedia(guide.media); setPromos(guide.promotions); setIdx(0); return undefined; }
     if (!coach?.id) return undefined;
     let alive = true;
     setMedia(null); setIdx(0);
@@ -29,7 +32,7 @@ export default function CoachDetailModal({ coach, venueNames = [], onClose, onSe
       .then((d) => alive && setPromos(Array.isArray(d) ? d : []))
       .catch(() => alive && setPromos([]));
     return () => { alive = false; };
-  }, [coach?.id]);
+  }, [coach?.id, guide]);
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
@@ -46,7 +49,7 @@ export default function CoachDetailModal({ coach, venueNames = [], onClose, onSe
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 sm:items-center"
       onClick={(e) => e.target === e.currentTarget && onClose()}
       role="dialog" aria-modal="true" aria-label="教練詳細介紹">
-      <div className="flex h-[88vh] w-full max-w-md flex-col overflow-hidden rounded-t-2xl bg-white sm:rounded-2xl">
+      <div data-coach-guide="profile-preview-modal" className="flex h-[88vh] w-full max-w-md flex-col overflow-hidden rounded-t-2xl bg-white sm:rounded-2xl">
 
         {/* 關閉鍵浮在整個 modal 上，不綁在照片區 —— 沒有照片時它一樣要在。
             z-10 蓋過照片與縮圖列。 */}
@@ -57,7 +60,7 @@ export default function CoachDetailModal({ coach, venueNames = [], onClose, onSe
 
         {/* 照片放進捲動區內，跟著內容一起滑。放在外面固定住的話，
             照片會像卡在上面、文字從它底下鑽過去。 */}
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div data-coach-guide-scroll className="min-h-0 flex-1 overflow-y-auto">
           {photos.length > 0 && (
             <div className="relative aspect-[4/3] bg-gray-900">
               <img src={photos[idx]?.storage_url} alt="" className="h-full w-full object-contain" />

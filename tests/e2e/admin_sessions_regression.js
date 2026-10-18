@@ -106,9 +106,13 @@ async function call(base, method, routePath, { token, body } = {}) {
     });
 
     step('F-R01 session lists/backfill keep shared venue scope fail-closed');
+    // 2026-09-09（76a5d51）起：篩選與授權範圍無交集時回空清單，不再退回授權範圍。
     const range = await call(route.base, 'GET', `/api/admin/sessions?from=${today}&to=${today}&venueIds=${encodeURIComponent(venueB)}`, { token: staffA });
-    assert(range.status === 200 && range.data.some((row) => row.id === todayA), 'out-of-scope filter cannot suppress the authorized scope into a cross-venue query');
+    assert(range.status === 200 && Array.isArray(range.data) && range.data.length === 0, 'out-of-scope-only filter returns an empty list instead of a cross-venue query');
     assert(!range.data.some((row) => row.id === todayB), 'F-R01 range never leaks the out-of-scope venue');
+    const mixed = await call(route.base, 'GET', `/api/admin/sessions?from=${today}&to=${today}&venueIds=${encodeURIComponent(`${venueA},${venueB}`)}`, { token: staffA });
+    assert(mixed.status === 200 && mixed.data.some((row) => row.id === todayA) && !mixed.data.some((row) => row.id === todayB),
+      'mixed filter keeps only the authorized venue');
     const backfill = await call(route.base, 'POST', `/api/admin/sessions/${todayA}/backfill-checkin`, {
       token: staffA,
       body: { checkin_at: `${today}T09:05:00.000Z` },
@@ -141,19 +145,20 @@ async function call(base, method, routePath, { token, body } = {}) {
     );
     assert(!!checkinDb.rows[0].experience_checked_in_at && checkinDb.rows[0].audits === 1, 'F-R03 persists timestamp and one existing audit entry');
 
-    step('F-M05 remains manager-only, venue-scoped, and restores exactly one lesson');
+    // 2026-08-07（0a720fa）使用者同意解凍：櫃台（staff）也能做扣課復活；場館範圍與必填原因不變。
+    step('F-M05 is open to staff, stays venue-scoped, and restores exactly one lesson');
     const cancelledList = await call(route.base, 'GET', '/api/admin/sessions/cancelled', { token: staffA });
     assert(cancelledList.status === 200 && cancelledList.data.some((row) => row.id === cancelledA), 'staff may inspect own-venue cancelled sessions');
     assert(!cancelledList.data.some((row) => row.id === cancelledB), 'cancelled list hides another venue');
     // 2026-07 起 revive 必填 reason（REASON_REQUIRED）；本測試對齊該既定行為。
-    const staffRevive = await call(route.base, 'POST', `/api/admin/sessions/${cancelledA}/revive`, { token: staffA, body: { reason: 'E2E 回歸測試' } });
-    assert(staffRevive.status === 403, 'staff cannot execute F-M05 restore');
-    const noReason = await call(route.base, 'POST', `/api/admin/sessions/${cancelledA}/revive`, { token: managerA, body: {} });
+    const noReason = await call(route.base, 'POST', `/api/admin/sessions/${cancelledA}/revive`, { token: staffA, body: {} });
     assert(noReason.status === 400 && noReason.data?.code === 'REASON_REQUIRED', 'revive without reason is rejected');
-    const foreignRevive = await call(route.base, 'POST', `/api/admin/sessions/${cancelledB}/revive`, { token: managerA, body: { reason: 'E2E 回歸測試' } });
-    assert(foreignRevive.status === 403, 'manager cannot revive an out-of-scope venue');
-    const revive = await call(route.base, 'POST', `/api/admin/sessions/${cancelledA}/revive`, { token: managerA, body: { reason: 'E2E 回歸測試' } });
-    assert(revive.status === 200 && revive.data?.refunded === true, 'manager revives an authorized cancelled session');
+    const foreignRevive = await call(route.base, 'POST', `/api/admin/sessions/${cancelledB}/revive`, { token: staffA, body: { reason: 'E2E 回歸測試' } });
+    assert(foreignRevive.status === 403, 'staff cannot revive an out-of-scope venue');
+    const managerForeign = await call(route.base, 'POST', `/api/admin/sessions/${cancelledB}/revive`, { token: managerA, body: { reason: 'E2E 回歸測試' } });
+    assert(managerForeign.status === 403, 'manager cannot revive an out-of-scope venue');
+    const revive = await call(route.base, 'POST', `/api/admin/sessions/${cancelledA}/revive`, { token: staffA, body: { reason: 'E2E 回歸測試' } });
+    assert(revive.status === 200 && revive.data?.refunded === true, 'staff revives an authorized cancelled session');
     const reviveDb = await pg.query(
       `SELECT ae.used_sessions,
               (SELECT COUNT(*)::int FROM admin_enrollment_audit_logs

@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "runId": "preview-guide-z03-build-20260930-v1",
+  "indexRawByteSha256": {
+    "admin": "24ee6dfd6f61e81b3e16a7cf39f0e081b5134e2a670c082542e3fa35c1144951",
+    "liff": "86d0828c281bc0bf5f1a0c339f26d9b4a98b9ebd7bbd392d94e407577b0bc056"
+  },
+  "sourceCanonicalLfSha256": {
+    "client/liff/src/pages/GuidePage.jsx": "abd84ca5028511891e34d3180354eb1e63c06d63b1cb3866ffe65fc51d8d6512",
+    "client/liff/src/components/GuideLesson.jsx": "1a4273afcc797d83f6ebb75169ae5841211c30c316da278b1d5947e908fe49ba",
+    "client/liff/src/utils/guideCatalog.mjs": "ed70dcc43880b29c7add2850fd0a9694dea2978e581f66626062cff5f9da9747",
+    "server/public/brand/guides/parent.html": "c7f89fed69fd15c3c9964b630d05564cdc1a0a71a21c431a130400b3465c2bac",
+    "server/public/brand/guides/coach.html": "abe078ca2f15ca45d602ce0c12bc89792bb6dfd7b0e2e951bc4cfea01d251346",
+    "server/services/z03ReviewArchive.js": "8c61de976f826ac0818184c84a61845557d019ff6fe18cf49dcdb5cb81f70ed1",
+    "server/routes/admin/ragicZ03.js": "691d82e3ad1fa7ff6ccda1a5e701b5391329b1f182b967e9576d7b3aabe68029",
+    "client/admin/src/api/ragicZ03.js": "d03c0e804246b71eac31fe0a5ef11354fcbf4d8b95e9ef86bc590507ee731309",
+    "client/admin/src/pages/RagicZ03Page.jsx": "da18d2082c3cf74dcd4c1370ec1a301cad6a9681a3f14b15fc353d612a48eb43",
+    "server/services/ragicAdmin.js": "72a0faa852ae6197d12ad86a4436eb388376b823ed9bbd04b3cac5bcf0c41a8d"
+  },
+  "sourceCanonicalization": "UTF-8 text; CRLF and lone CR become LF; trimEnd; append exactly one LF",
+  "status": "REVIEWED_SOURCE_READBACK_BUILD_PENDING"
+}

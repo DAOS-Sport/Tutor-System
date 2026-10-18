@@ -17,7 +17,7 @@ function testField1003633IsPreferred() {
 }
 
 function testExactDisplayNameFallback() {
-  const uid = 'U9e92f89d85709c449664973fbba2af32';
+  const uid = 'Ub59c472b49d6882b9cefbede4c83b2e3';
   const row = {
     '400Line訊息': 'U00000000000000000000000000000000',
     'LINE userid': 'U11111111111111111111111111111111',

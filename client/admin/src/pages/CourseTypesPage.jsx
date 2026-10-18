@@ -255,8 +255,7 @@ export default function CourseTypesPage() {
       await courseTypesApi.create(zoneId, {
         course_type: ct,
         label: form.label,
-        min_students: form.min_students,
-        max_students: form.max_students,
+        // 人數＝組別（2026-10-14）：最少／最多不再由畫面送出，後端一律存組別人數。
         base_price: form.base_price,
         data_group: form.data_group.trim() || null,
         trial_enabled: form.trial_enabled,
@@ -321,8 +320,6 @@ export default function CourseTypesPage() {
     const patch = {
       label: editing.label,
       base_price: editing.base_price,
-      min_students: editing.min_students,
-      max_students: editing.max_students,
       is_active: editing.is_active,
       data_group: editing.data_group.trim() || null,
       trial_enabled: editing.trial_enabled,
@@ -507,10 +504,8 @@ export default function CourseTypesPage() {
                 <div className="lbl">資料管理群組</div>
                 {ecell({ field: 'data_group', type: 'text', display: editing.data_group, editValue: editing.data_group, placeholder: '例：新北高中【櫃台】', apply: (v) => setEditing((s) => ({ ...s, data_group: v })) })}
 
-                <div className="lbl"><span className="req">＊</span>最少學生</div>
-                {ecell({ field: 'min_students', type: 'number', display: editing.min_students, editValue: editing.min_students, apply: (v) => setEditing((s) => ({ ...s, min_students: v })) })}
-                <div className="lbl"><span className="req">＊</span>最多學生</div>
-                {ecell({ field: 'max_students', type: 'number', display: editing.max_students, editValue: editing.max_students, apply: (v) => setEditing((s) => ({ ...s, max_students: v })) })}
+                <div className="lbl">人數</div>
+                <div className="cell readonly"><span className="cell-tx">{editing.course_type} 人（＝組別，不能改）</span></div>
 
                 <div className="lbl">提供試上</div>
                 {ecell({ field: 'trial_enabled', type: 'select', options: ['提供', '不提供'], display: editing.trial_enabled ? '提供' : '不提供', editValue: editing.trial_enabled ? '提供' : '不提供', apply: (v) => setEditing((s) => ({ ...s, trial_enabled: v === '提供' })) })}
@@ -819,12 +814,8 @@ export default function CourseTypesPage() {
               <input type="number" step="100" value={form.base_price} onChange={(e) => setForm((f) => ({ ...f, base_price: e.target.value }))} className={inputCls} placeholder="例：9000" />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-gray-600">最少學生人數</label>
-              <input type="number" value={form.min_students} onChange={(e) => setForm((f) => ({ ...f, min_students: e.target.value }))} className={inputCls} placeholder="例：2" />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-medium text-gray-600">最多學生人數</label>
-              <input type="number" value={form.max_students} onChange={(e) => setForm((f) => ({ ...f, max_students: e.target.value }))} className={inputCls} placeholder="例：4" />
+              <label className="mb-1 block text-xs font-medium text-gray-600">人數</label>
+              <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600">{form.course_type ? `${form.course_type} 人（＝組別）` : '＝組別編號'}</div>
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-gray-600">資料管理群組（選填）</label>
@@ -858,8 +849,7 @@ export default function CourseTypesPage() {
               <th className="px-4 py-3 text-left font-semibold text-gray-600">課程需求</th>
               <th className="px-4 py-3 text-left font-semibold text-gray-600">每期價格</th>
               <th className="px-4 py-3 text-left font-semibold text-gray-600">試上</th>
-              <th className="px-4 py-3 text-left font-semibold text-gray-600">最少</th>
-              <th className="px-4 py-3 text-left font-semibold text-gray-600">最多</th>
+              <th className="px-4 py-3 text-left font-semibold text-gray-600">人數</th>
               <th className="px-4 py-3 text-left font-semibold text-gray-600">系統代碼</th>
               <th className="px-4 py-3 text-left font-semibold text-gray-600">狀態</th>
               <th className="px-4 py-3 text-left font-semibold text-gray-600">排程</th>
@@ -869,7 +859,7 @@ export default function CourseTypesPage() {
           </thead>
           <tbody className="divide-y divide-gray-100">
             {rows.length === 0 && (
-              <tr><td colSpan={10} className="py-12 text-center text-gray-400">尚無課程需求設定</td></tr>
+              <tr><td colSpan={9} className="py-12 text-center text-gray-400">尚無課程需求設定</td></tr>
             )}
             {rows.map((row) => {
               const isEditing = editing?.course_type === row.course_type;
@@ -883,8 +873,7 @@ export default function CourseTypesPage() {
                         ? <span className="rounded-full bg-teal-100 px-2 py-1 font-semibold text-teal-700">{row.trial_price != null ? fmtMoney(row.trial_price) : '推算'}</span>
                         : <span className="text-gray-400">—</span>}
                     </td>
-                    <td className="px-4 py-4 text-gray-600">{row.min_students ?? 1} 人</td>
-                    <td className="px-4 py-4 text-gray-600">{row.max_students} 人</td>
+                    <td className="px-4 py-4 text-gray-600">{row.course_type} 人</td>
                     <td className="px-4 py-4"><span className="rounded bg-gray-100 px-2 py-0.5 font-mono text-xs text-gray-500">{row.course_type}</span></td>
                     <td className="px-4 py-4">
                       {row.is_active
@@ -914,7 +903,7 @@ export default function CourseTypesPage() {
                   </tr>
                   {isEditing && (
                     <tr className="bg-brand-primary/5">
-                      <td colSpan={10} className="px-4 pb-5 pt-1">
+                      <td colSpan={9} className="px-4 pb-5 pt-1">
                         {renderEditPanel()}
                       </td>
                     </tr>

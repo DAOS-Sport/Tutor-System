@@ -6,7 +6,8 @@ import { formatTWD, formatTWDate, paymentStatusColor, paymentStatusLabel, course
  *  - variant="catalog"：首頁三組別卡片（display only + CTA）
  *  - variant="period"：「我的課程」用，顯示已開通/待對帳的課程期
  */
-export default function CourseCard({ variant = 'period', period, type, onClick, ctaLabel = '立即報名', actions = [] }) {
+// purchaser：家庭帳號下，家人買的課會出現在我的清單，標示購買人（規格 §8）；自己買的不傳
+export default function CourseCard({ variant = 'period', period, type, onClick, ctaLabel = '立即報名', actions = [], purchaser = null }) {
   if (variant === 'catalog') {
     return (
       <button
@@ -23,10 +24,7 @@ export default function CourseCard({ variant = 'period', period, type, onClick, 
         </div>
         <div className="p-4">
           {type.description && <p className="mb-3 whitespace-pre-line text-sm text-gray-600">{type.description}</p>}
-          <div className="mb-3 flex items-baseline justify-between">
-            <span className="text-xs text-gray-500">每期 6 堂</span>
-            <span className="text-lg font-bold text-brand-primary">{formatTWD(type.basePrice)}/人</span>
-          </div>
+          <p className="mb-3 text-xs text-gray-500">選擇場館後查看課程堂數與價格</p>
           <div className="w-full rounded-lg bg-brand-teal py-2.5 text-center text-sm font-bold text-white">
             {ctaLabel}
           </div>
@@ -85,6 +83,7 @@ export default function CourseCard({ variant = 'period', period, type, onClick, 
           <h3 className="mt-1 truncate text-base font-bold text-brand-primary">{summaryLine}</h3>
           <p className="mt-0.5 truncate text-xs text-gray-500">
             {period.venue?.name ? `${period.venue.name} · ` : ''}學員：{studentNames || '—'}
+            {purchaser ? ` · 購買人：${purchaser}` : ''}
           </p>
           <p className="mt-0.5 truncate font-mono text-[11px] text-gray-400">
             {period.is_checkout_aggregate ? '付款單編號' : '訂單編號'}：{period.id || '—'}

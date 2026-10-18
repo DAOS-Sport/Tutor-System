@@ -5,12 +5,16 @@
 // 4) 直接 SQL 模擬家長端 timeline 查詢（同 routes/learn.js GET /history/:periodId 邏輯）→ 應同時包含 plan + record
 const { Client } = require('../../server/node_modules/pg');
 const { call, assert, step, loginAdmin } = require('./_lib');
+const { withAdminAccount } = require('./_accounts');
 
-(async () => {
+// 全新 bootstrap 沒有 manager 帳號：由 withAdminAccount 自建（已存在就沿用）。
+const MANAGER = { username: process.env.ADMIN_USERNAME || 'manager', password: process.env.ADMIN_PASSWORD || 'manager', role: 'manager', venueId: 'B' };
+
+async function main() {
   step('Path G: 學習歷程 plan + record + timeline');
   const pg = new Client({ connectionString: process.env.DATABASE_URL });
   await pg.connect();
-  const token = await loginAdmin(process.env.ADMIN_USERNAME || 'manager', process.env.ADMIN_PASSWORD || 'manager');
+  const token = await loginAdmin(MANAGER.username, MANAGER.password);
 
   const cur = await pg.query(
     `SELECT cp.id AS period_id, cp.coach_id
@@ -72,4 +76,6 @@ const { call, assert, step, loginAdmin } = require('./_lib');
     await pg.end();
   }
   step('done');
-})().catch((e) => { console.error(e); process.exit(1); });
+}
+
+withAdminAccount(MANAGER, main).catch((e) => { console.error(e); process.exit(1); });

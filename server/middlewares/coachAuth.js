@@ -58,6 +58,7 @@ function requireCoachOwner(paramName = 'id') {
  */
 const ATTEMPTS = new Map(); // key = ip → { count, windowStart }
 const WINDOW_MS = 5 * 60 * 1000;
+const { rateLimitEnabled } = require('./rateLimit');
 const MAX_ATTEMPTS = 5;
 
 function byPhoneRateLimit(req, res, next) {
@@ -69,7 +70,7 @@ function byPhoneRateLimit(req, res, next) {
     return next();
   }
   rec.count += 1;
-  if (rec.count > MAX_ATTEMPTS) {
+  if (rateLimitEnabled() && rec.count > MAX_ATTEMPTS) {
     console.warn(`[coachAuth] rate-limited: ip=${ip} attempts=${rec.count} phone=${req.query?.phone || ''}`);
     return res.status(429).json({ error: 'Too many login attempts. Please retry in 5 minutes.' });
   }
@@ -90,7 +91,7 @@ function byLineUidRateLimit(req, res, next) {
     return next();
   }
   rec.count += 1;
-  if (rec.count > MAX_ATTEMPTS) {
+  if (rateLimitEnabled() && rec.count > MAX_ATTEMPTS) {
     console.warn(`[coachAuth] rate-limited by-line-uid: ip=${ip} attempts=${rec.count}`);
     return res.status(429).json({ error: 'Too many login attempts. Please retry in 5 minutes.' });
   }

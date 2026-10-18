@@ -105,14 +105,14 @@ async function rightsCounts() {
     };
 
     const schemaGuard = async () => ({ verified: true });
-    const timeout = await processRagicSyncOutbox({ limit: 1, idempotencyKey: outboxKey, schemaGuard });
+    const timeout = await processRagicSyncOutbox({ limit: 1, idempotencyKey: outboxKey, schemaGuard, reader: async () => remoteExists ? { _ragicId: remoteRecordId, 1006846: lineUid } : null });
     assert.deepStrictEqual(timeout, { processed: 1, synced: 0, retryable: 1, blocked: 0 });
     assert.ok(await parentSync.findActiveParentByLineUid(lineUid), 'Ragic timeout must not remove local login identity');
     await pool.query(`UPDATE ragic_sync_outbox SET next_retry_at=NOW() WHERE idempotency_key=$1`, [outboxKey]);
-    const success = await processRagicSyncOutbox({ limit: 1, idempotencyKey: outboxKey, schemaGuard });
+    const success = await processRagicSyncOutbox({ limit: 1, idempotencyKey: outboxKey, schemaGuard, reader: async () => remoteExists ? { _ragicId: remoteRecordId, 1006846: lineUid } : null });
     assert.deepStrictEqual(success, { processed: 1, synced: 1, retryable: 0, blocked: 0 });
     assert.strictEqual(capturedUid, lineUid);
-    const duplicateDelivery = await processRagicSyncOutbox({ limit: 1, idempotencyKey: outboxKey, schemaGuard });
+    const duplicateDelivery = await processRagicSyncOutbox({ limit: 1, idempotencyKey: outboxKey, schemaGuard, reader: async () => remoteExists ? { _ragicId: remoteRecordId, 1006846: lineUid } : null });
     assert.deepStrictEqual(duplicateDelivery, { processed: 0, synced: 0, retryable: 0, blocked: 0 });
     assert.strictEqual(createCalls, 1, 'timeout replay must discover the committed record and not create again');
 

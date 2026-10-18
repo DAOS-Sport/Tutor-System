@@ -8,6 +8,7 @@
 const express = require('express');
 const { requireParent } = require('../middlewares/parentAuth');
 const evaluations = require('../services/evaluations');
+const familyScope = require('../services/familyScope');
 
 const router = express.Router();
 
@@ -17,7 +18,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 router.get('/mine', requireParent, async (req, res) => {
   try {
-    const list = await evaluations.listForParent(req.parent.id);
+    const list = await evaluations.listForParent(await familyScope.actingParentIds(req));
     res.json(list);
   } catch (e) {
     console.error('[eval/mine]', e);
@@ -28,7 +29,7 @@ router.get('/mine', requireParent, async (req, res) => {
 router.get('/:id', requireParent, async (req, res) => {
   try {
     if (!UUID_RE.test(String(req.params.id || ''))) return res.status(404).json({ error: 'not found' });
-    const row = await evaluations.getMine(req.params.id, req.parent.id);
+    const row = await evaluations.getMine(req.params.id, await familyScope.actingParentIds(req));
     if (!row) return res.status(404).json({ error: 'not found' });
     res.json(row);
   } catch (e) {
@@ -40,7 +41,7 @@ router.get('/:id', requireParent, async (req, res) => {
 router.post('/:id/submit', requireParent, async (req, res) => {
   try {
     if (!UUID_RE.test(String(req.params.id || ''))) return res.status(404).json({ error: 'not found' });
-    const row = await evaluations.submit(req.params.id, req.parent.id, req.body || {});
+    const row = await evaluations.submit(req.params.id, await familyScope.actingParentIds(req), req.body || {});
     res.json(row);
   } catch (e) {
     if (e.status) return res.status(e.status).json({ error: e.message });

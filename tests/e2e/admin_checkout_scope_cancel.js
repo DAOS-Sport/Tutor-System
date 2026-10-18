@@ -119,7 +119,7 @@ function idsFromList(data) {
     const managerHash = await bcrypt.hash('e2e-manager-password', 8);
     await pg.query(
       `INSERT INTO admin_staff (id, name, role, venue_id, phone, active)
-       VALUES ($1, 'E2E 主管 B', 'manager', $2, '0900000000', TRUE)`,
+       VALUES ($1, 'E2E 主管 B', 'manager', $2, '0900215261', TRUE)`,
       [ids.managerStaff, venueB]
     );
     await pg.query(

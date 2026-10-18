@@ -44,9 +44,6 @@ function registerErrorMessage(err) {
   const serverMsg = err?.response?.data?.error;
   // 完全沒有 response：請求根本沒送達（離線 / DNS / CORS / 逾時無回應），跟「伺服器回了 4xx/5xx」不同狀況。
   if (!err?.response) return '網路連線異常，請檢查網路連線後再試一次。';
-  if (/^(RAGIC_|SYNC_|LOCAL_UPSERT_|LOCAL_STUDENT_REFRESH_|PARENT_REFRESH_|Z03_RESOLVE_)/i.test(String(code || ''))) {
-    return '登入資料已保留，歷史資料正在背景整理中，請勿重複註冊。';
-  }
 
   const MAP = {
     // —— 必填 / 格式 ——
@@ -56,7 +53,7 @@ function registerErrorMessage(err) {
     GENDER_REQUIRED:          '請選擇家長性別。',
     VENUE_REQUIRED:           '請選擇館別。',
     VENUE_NOT_FOUND:          '館別不存在，請重新選擇。',
-    ID_NUMBER_INVALID:        '學員身分證字號格式錯誤（如 A123456789）。',
+    ID_NUMBER_INVALID:        '學員身分證字號格式錯誤（如 A132702114）。',
     // —— 重複 / 衝突 ——
     STUDENT_ID_NUMBER_EXISTS: '此學員身分證字號已被系統內其他學員使用，請確認是否填錯；若確為本人請聯絡客服。',
     LINE_ALREADY_REGISTERED:  '此 LINE 帳號已註冊過，請直接從 LINE 開啟連結登入。',
@@ -77,6 +74,7 @@ function registerErrorMessage(err) {
     LINE_VERIFY_FAILED:       'LINE 驗證失敗，請重新由 LINE 開啟註冊頁。',
     LINE_ID_TOKEN_REQUIRED:   'LINE 驗證已逾時，請重新由 LINE 開啟註冊頁。',
     // —— 系統 / 同步 ——
+    RAGIC_VALIDATION_ERROR: '資料未通過檢查，請確認填寫內容；若資料正確，請聯絡客服協助。',
     RAGIC_TIMEOUT:            'Ragic 回應較慢，請稍候片刻再試一次。',
     RAGIC_UNAVAILABLE:        '資料同步服務暫時無法連線，請稍後再試。',
     RAGIC_WRITE_FAILED:       '資料暫時無法完成同步，請稍後再試；若持續發生請聯絡客服。',
@@ -104,6 +102,10 @@ function registerErrorMessage(err) {
     return `${MAP.ACCOUNT_RECOVERY_REQUIRED} 案件編號：${data.recovery_request_id}；一次性驗證碼：${data.recovery_token}（短效，請只提供給客服）。`;
   }
   if (code && MAP[code]) return MAP[code];
+  if (/^(RAGIC_|SYNC_|LOCAL_UPSERT_|LOCAL_STUDENT_REFRESH_|PARENT_REFRESH_|Z03_RESOLVE_)/i.test(String(code || ''))) {
+    return '登入資料已保留，歷史資料正在背景整理中，請勿重複註冊。';
+  }
+
   if (status === 429) return MAP.RATE_LIMITED;
   // 後端有給可讀訊息就用它，否則泛用
   if (serverMsg && typeof serverMsg === 'string') return serverMsg;
@@ -275,7 +277,7 @@ export default function RegisterPage() {
       line_id: data.line_id || null,
       home_address: data.home_address || null,
     };
-    const cleanStudents = data.students.map((s) => ({
+    const cleanStudents = (Array.isArray(data.students) ? data.students : []).map((s) => ({
       name: (s.name || '').trim(),
       id_number: (s.id_number || '').toUpperCase(),
       birth_date: s.birth_date || '',
@@ -388,6 +390,12 @@ export default function RegisterPage() {
         finishRegistration();
       }
     } catch (err) {
+      const rawCode = String(err?.response?.data?.code || '');
+      if (/^(GENDER_REQUIRED|VENUE_REQUIRED|STUDENT_(NAME|ID|BIRTH_DATE|GENDER|BLOOD_TYPE)_REQUIRED)$/.test(rawCode)) {
+        setMissingFields([{ path: 'server-required', label: '請補填資料', message: registerErrorMessage(err) }]);
+        setFailed(false);
+        return;
+      }
       const code = publicErrorCode(err?.response?.data?.code || err?.code || '');
       // 手機已存在於系統（Ragic）：這不是「使用者填錯」，是身分核對議題 → 專屬引導彈窗，
       // 不提供自助認領表單；請使用者透過本館 LINE 官方帳號請客服協助核對身分（見彈窗文案）。
@@ -426,7 +434,7 @@ export default function RegisterPage() {
         {demoMode && (
           <div className="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs leading-5 text-amber-800">
             🧪 <b>Demo 測試註冊</b>（模擬全新未註冊用戶）。送出會<b>真的建立測試資料</b>，
-            line_uid 以 <code>DEMOTEST_</code> 標記，方便事後依此前綴清除。
+            系統會標記為測試資料，供管理員後續整理。
             請填一個<b>尚未在系統內的手機號</b>，以免撞到既有資料而被導去「手機綁定」。
           </div>
         )}
@@ -566,10 +574,10 @@ export default function RegisterPage() {
                           className={fieldCls(!!errors.students?.[idx]?.name)} />
                       </Field>
                       <Field label="身分證字號" required error={errors.students?.[idx]?.id_number?.message}>
-                        <input placeholder="A123456789"
+                        <input placeholder="A132702114"
                           {...register(`students.${idx}.id_number`, {
                             required: '請填寫身分證字號',
-                            validate: (v) => isValidTWId(v) || '身分證格式錯誤（如 A123456789）',
+                            validate: (v) => isValidTWId(v) || '身分證格式錯誤（如 A132702114）',
                           })} className={`${fieldCls(!!errors.students?.[idx]?.id_number)} uppercase`} />
                       </Field>
                       <div className="grid grid-cols-2 gap-2">
@@ -690,13 +698,13 @@ export default function RegisterPage() {
 
       <ConfirmModal
         open={missingFields.length > 0}
-        title={`尚有 ${missingFields.length} 個欄位需要補填`}
-        confirmLabel="知道了"
+        title="還差一點點，請確認以下資料"
+        confirmLabel="返回填寫"
         cancelLabel="關閉"
         onCancel={() => setMissingFields([])}
         onConfirm={() => setMissingFields([])}
       >
-        <p className="mb-3 text-xs leading-5 text-gray-500">請完成以下資料後再送出。</p>
+        <p className="mb-3 text-xs leading-5 text-gray-500">填好的內容都還在，補齊或修正下列欄位後就可以再送出。</p>
         <div className="space-y-2">
           {missingFields.map((item) => (
             <div

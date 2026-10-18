@@ -26,7 +26,10 @@ function stripComments(src) {
 
 const SERVER = path.join(ROOT, 'server/routes/admin/manualDeductions.js');
 const PAGE = path.join(ROOT, 'client/admin/src/pages/ManualDeductionPage.jsx');
-const PICKER = path.join(ROOT, 'client/admin/src/components/DateTimePicker.jsx');
+// 這個元件在 2026-08 搬到 client/shared/（liff 端也要用）。
+// 路徑沒跟著改，於是這支測試每次都在 ENOENT —— 而檔尾沒有 process.exitCode，
+// 整支照樣 exit 0，runner 記成 PASS。它已經瞎了一段時間。
+const PICKER = path.join(ROOT, 'client/shared/DateTimePicker.jsx');
 
 check('後端：未來的 occurred_at 必須被擋，且在開 transaction 之前', () => {
   const src = stripComments(fs.readFileSync(SERVER, 'utf8'));
@@ -139,15 +142,31 @@ check('選擇器：未來日期不可點，且不吃瀏覽器本機時區', () =
   const src = stripComments(fs.readFileSync(PICKER, 'utf8'));
   assert.ok(/grid-cols-7/.test(src), '掃描已失效：找不到日曆網格');
 
-  // max 之後的日子必須是 disabled，不是只有變灰 —— 只變灰照樣點得下去。
-  assert.ok(/const\s+blocked\s*=\s*!!maxDay\s*&&\s*k\s*>\s*maxDay/.test(src),
-    '找不到「超過 max 的日期」判定');
-  assert.ok(/disabled=\{blocked\}/.test(src), '未來日期沒有 disabled，仍然點得下去');
+  // ── 判準盯行為，不盯長相 ──
+  // 原本這幾條寫的是精確的運算式（`const blocked = !!maxDay && k > maxDay`）。
+  // 元件後來加了 min 邊界，變成
+  //     const blocked = (!!maxDay && k > maxDay) || (!!minDay && k < minDay);
+  // 行為是對的、而且更完整，但精確比對的正則會直接紅。那種紅會被當成
+  // 「測試又壞了」而不是「程式有問題」，久了就沒有人理它。
+  //
+  // 真正要守的是：超過 max 的日子必須是 disabled —— 只變灰照樣點得下去，
+  // 而這一頁是手動扣課，點得下去就等於可以倒填扣課時間。
+  const blockedDecl = src.match(/const\s+blocked\s*=[^;]+;/g) || [];
+  assert.ok(blockedDecl.length > 0, '找不到 blocked 的判定');
+  assert.ok(blockedDecl.some((d) => /maxDay/.test(d) && d.includes('>')),
+    '日期格的 blocked 沒有把「超過 max」算進去');
+  assert.ok(/disabled=\{blocked\}/.test(src),
+    '未來日期沒有 disabled，仍然點得下去（只變灰是不夠的）');
 
-  // 選到 max 當天時，時與分也要跟著封上限，否則今天可以選到晚上的時間。
-  assert.ok(/hourMax/.test(src) && /minuteMax/.test(src), '缺少時分的上限');
-  assert.ok(/disabled=\{h > hourMax\}/.test(src), '小時沒有封上限');
-  assert.ok(/disabled=\{m > minuteMax\}/.test(src), '分鐘沒有封上限');
+  // 選到 max 當天時，時與分也要跟著封上限，否則今天可以選到還沒發生的時間。
+  const hourOpt = src.match(/<option[^>]*disabled=\{[^}]*\}[^>]*>\s*\{pad2\(h\)\}/);
+  assert.ok(hourOpt, '找不到小時的選項');
+  assert.ok(/h\s*>\s*\w*[Mm]ax/.test(hourOpt[0]),
+    '小時沒有封上限（max 當天可以選到還沒發生的時間）：' + hourOpt[0].slice(0, 80));
+  const minOpt = src.match(/<option[^>]*disabled=\{[^}]*\}[^>]*>\s*\{pad2\(m\)\}/);
+  assert.ok(minOpt, '找不到分鐘的選項');
+  assert.ok(/m\s*>\s*\w*[Mm]ax/.test(minOpt[0]),
+    '分鐘沒有封上限：' + minOpt[0].slice(0, 80));
 
   // 月曆的星期／月份天數一律走 UTC。用本地時區的 Date 會在 UTC+8 的月底差一天。
   assert.ok(/Date\.UTC\(/.test(src), '日期運算沒有釘 UTC');
@@ -169,3 +188,11 @@ check('前端：時區固定台北，不吃瀏覽器本機時區', () => {
   assert.ok(!/new Date\(\s*occurredAt\s*\)/.test(src),
     '有直接 new Date(occurredAt)：櫃台電腦時區設錯，寫進資料庫的時間就整段偏移');
 });
+
+// 沒有這一行，上面每一條 check 失敗都只印在 stderr，程序照樣 exit 0，
+// runner 記成 PASS。這支測試因此瞎了一段時間 —— 它指向的元件早就搬到
+// client/shared/，每次都在 ENOENT，而沒有任何人知道。
+//
+// 一支假裝在守門的測試，比沒有測試更危險：沒有測試至少大家知道那件事沒人看。
+console.log(failures ? '\n' + failures + ' FAILED' : '\nmanual_deduction_backdate: ALL PASS');
+process.exitCode = failures ? 1 : 0;

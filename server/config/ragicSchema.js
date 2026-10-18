@@ -82,6 +82,17 @@ const STABILITY_FLAGS = Object.freeze({
   get EXISTING_USER_LOCAL_FASTPATH() { return envFlag('EXISTING_USER_LOCAL_FASTPATH', true); },
   get PARENT_IDENTITY_RESOLVER_V2() { return envFlag('PARENT_IDENTITY_RESOLVER_V2', false); },
   get PARENT_LOCAL_FIRST() { return envFlag('PARENT_LOCAL_FIRST', true); },
+  // 預設 false 是刻意的 fail-closed：這支 worker 會寫進 Ragic（外部系統），
+  // 必須有人明確打開，不該因為部署就自己開始動。tests/ragic_parent_outbox_flag_test
+  // 在守這條線。
+  //
+  // 但關著的代價要寫清楚：註冊走 local-first（建本地 + 排進 outbox），
+  // 寫回 Ragic 的唯一途徑就是這支 worker。它沒開 → 從 07/14 起累積 300+ 筆
+  // pending、attempts 全是 0，家長每次開 App 都看到「Ragic Z01 查無剛寫入的
+  // 會員資料」。有些人有 Ragic 編號，是靠另一條直接寫入的備援補上的；
+  // 備援沒跑到就整筆漏 —— 所以症狀是「有時成功有時失敗」而不是全壞。
+  //
+  // 要啟用：在部署環境設 RAGIC_PARENT_OUTBOX=1（不需要改這裡）。
   get RAGIC_PARENT_OUTBOX() { return envFlag('RAGIC_PARENT_OUTBOX', false); },
   get LEGACY_CLAIM_AUTO_CREATE() { return envFlag('LEGACY_CLAIM_AUTO_CREATE', false); },
   get DESTRUCTIVE_RECONCILE_ENABLED() { return envFlag('DESTRUCTIVE_RECONCILE_ENABLED', false); },
@@ -129,6 +140,7 @@ const Z01_FIELDS = {
 // ─────────────────────────────────────────────────────────────
 const Z01_STUDENTS_SUBTABLE_ID = '1001119';
 const Z01_STUDENT_FIELDS = {
+  '學員身分':       '1002178',
   '學員姓名':       '1001115',
   '出生年月日':     '1001116',
   // Ragic 後台顯示名稱已改為「(學)性別」（原「學(性別)」），2026-07-07 由
@@ -192,6 +204,11 @@ const H01 = {
   // 角色關鍵字（roleText = 應徵職務 + 職稱 的字串化）
   ROLE_MATCH: {
     ADMIN: /系統管理員|管理員|admin/i,
+    // 「主管職」是 應徵職務 的十個選項之一。少了這一條，主管會落到最後的
+    // 保底 'staff'（行政櫃檯）—— 這就是「同步永遠產生不出 manager」的原因。
+    // 刻意不寫成 /主管/：那會連「主管職」以外的字串也命中，例如職稱欄位裡
+    // 出現「非主管」之類的描述時會誤判。
+    MANAGER: /主管職/,
     COACH: '教練',
     COUNTER: /櫃檯|櫃台|行政|counter|front\s*desk/i,
     // 救生員（Workstream A）：與 COACH/COUNTER 同層獨立比對，非互斥判斷——

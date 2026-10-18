@@ -5,10 +5,10 @@ const { classifyRagicError, sanitizeMessage } = require('../server/services/sync
 
 // ── 去識別化：不得洩漏個資 ──
 assert.strictEqual(sanitizeMessage('聯絡 poyu@gmail.com 補資料'), '聯絡 <email> 補資料');
-assert.strictEqual(sanitizeMessage('手機 0956736161 有誤'), '手機 <phone> 有誤');
+assert.strictEqual(sanitizeMessage('手機 0900015376 有誤'), '手機 <phone> 有誤');
 assert.strictEqual(sanitizeMessage('市話 02-27001234'), '市話 <phone>');
-assert.strictEqual(sanitizeMessage('身分證 A123456789'), '身分證 <id>');
-assert.strictEqual(sanitizeMessage('uid Ufd5b5ffdc9e72df19862f1b3f823747a'), 'uid <line_uid>');
+assert.strictEqual(sanitizeMessage('身分證 A132702114'), '身分證 <id>');
+assert.strictEqual(sanitizeMessage('uid U1bbfaf7cecf58cddba26e121d69d4481'), 'uid <line_uid>');
 assert.strictEqual(sanitizeMessage(''), '');
 assert.strictEqual(sanitizeMessage(null), '');
 // 欄位名稱與錯誤碼必須保留（那是診斷所需，非個資）

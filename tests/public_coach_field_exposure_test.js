@@ -94,12 +94,12 @@ check('實際執行過濾器：餵一列完整資料，敏感欄位不得出現�
     pricing_multiplier: 1.2, bio_rich_text: '介紹', intro_review_status: 'published',
     venue_ids: ['B'], venues: ['B'],
     // 以下全部不該外流
-    phone: '0912345678', email: 'coach@example.com', line_uid: 'U123',
+    phone: '0900796878', email: 'coach@example.com', line_uid: 'U123',
     ragic_employee_id: '0605065', ragic_record_id: '123', ragic_data_no: '9',
     intro_review_note: '主管內部評語：照片請換', intro_reviewed_by: 'admin01',
     staff_active: true, coach_profile_active: true,
     // 未來新增的欄位，預設就不該外流（fail-closed）
-    salary: 99999, id_number: 'A123456789',
+    salary: 99999, id_number: 'A132702114',
   };
   const out = publicCoach(row);
   const keys = Object.keys(out);

@@ -1,4 +1,6 @@
+import { useCoachGuideDemo } from '../utils/coachGuideDemo';
 import React, { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { sessionsApi } from '../api/sessions';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
@@ -38,12 +40,21 @@ function FilterChip({ active, onClick, children }) {
 }
 
 export default function CoachOrdersPage() {
-  const { coach } = useAuth();
+  const guide = useCoachGuideDemo();
+  const { coach: signedInCoach } = useAuth();
+  const coach = guide?.coach || signedInCoach;
   const toast = useToast();
   const [data, setData] = useState(null);
   const [filter, setFilter] = useState('all');
+  const [searchParams] = useSearchParams();
+  const selectedId = searchParams.get('enrollment');
 
   useEffect(() => {
+    if (selectedId && data) document.getElementById(`enrollment-${selectedId}`)?.scrollIntoView({ block: 'center' });
+  }, [data, selectedId]);
+
+  useEffect(() => {
+    if (guide) { setData(guide.enrollments); return undefined; }
     if (!coach?.id) return undefined;
     let alive = true;
     sessionsApi.enrollmentsByCoach(coach.id)
@@ -54,7 +65,7 @@ export default function CoachOrdersPage() {
         toast.error('訂單記錄載入失敗');
       });
     return () => { alive = false; };
-  }, [coach?.id, toast]);
+  }, [coach?.id, toast, guide]);
 
   // 只列真的有資料的狀態。全給的話會出現永遠點不出東西的死 chip ——
   // 'active' 在整個 codebase 沒有任何寫入點（只有舊匯入資料才有），
@@ -83,7 +94,7 @@ export default function CoachOrdersPage() {
   if (!coach) return null;
 
   return (
-    <div className="pb-4">
+    <div data-coach-guide="orders-overview" className="pb-4">
       <header className="sticky top-0 z-10 border-b border-gray-100 bg-white px-4 py-2.5">
         <div className="mb-2 flex items-baseline justify-between">
           <h1 className="text-base font-bold text-brand-primary">報名記錄</h1>
@@ -118,13 +129,15 @@ export default function CoachOrdersPage() {
                   訂單資料裡（後端刻意不回教練資訊給教練自己的清單），
                   從登入態帶下去即可。 */}
               {items.map((it) => (
+                <div key={it.id} id={`enrollment-${it.id}`} className={selectedId === it.id ? 'scroll-mt-28 rounded-xl ring-2 ring-brand-teal' : ''}>
+                  {selectedId === it.id && <p className="px-3 pt-2 text-xs font-bold text-brand-teal">此次查看的報名</p>}
                 <EnrollmentRow
-                  key={it.id}
                   item={it}
                   detailed
                   coachName={coach?.name}
                   multiplier={coach?.multiplier ?? coach?.pricing_multiplier}
                 />
+                </div>
               ))}
             </div>
             {/* 教練看得到「卡住」，但處理是櫃檯的事 —— 講清楚下一步該找誰，

@@ -230,7 +230,7 @@ async function postJson(port, path, body) {
             primary_venue_id: venue.id,
           },
           students: [{
-            name: sample.selectedStudent, id_number: 'A123456789', birth_date: '2018-03-04',
+            name: sample.selectedStudent, id_number: 'A132702114', birth_date: '2018-03-04',
             gender: '生理男', blood_type: '不清楚',
           }],
         });

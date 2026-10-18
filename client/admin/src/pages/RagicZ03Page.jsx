@@ -14,11 +14,19 @@ import { formatTWDateTime } from '../utils/format';
 // 預設全部唯讀；只有按下「編輯」才會把家長欄位切成輸入框，交給 PATCH /ragic-z03/:id/draft
 // 儲存（完整時後端會寫回 Ragic；LINE UID 由家長登入流程自動綁定）。
 
+const AWAITING_LOGIN_POLICY = 'REVIEWED_AWAITING_PARENT_LOGIN';
 const STATUS_LABEL = {
   pending:   { text: '待處理', cls: 'bg-amber-100 text-amber-800' },
   resolved:  { text: '已修正', cls: 'bg-brand-green/15 text-brand-green' },
   manual_review: { text: '人工審核', cls: 'bg-red-100 text-red-700' },
   dismissed: { text: '已忽略', cls: 'bg-gray-200 text-gray-600' },
+};
+const REVIEW_REASON_LABEL = {
+  NOT_PENDING: '不在待處理狀態', IDENTITY_REVIEW_REQUIRED: '身分或來源需人工核對',
+  PHONE_CONFLICT_OR_INVALID: '家長手機格式或唯一性需核對', OTHER_PARENT_GAPS: '其他家長必填資料待補',
+  PARENT_EMAIL_FORMAT: '家長 Email 格式需核對', OTHER_STUDENT_GAPS: '其他學員資料待補或需核對',
+  INVALID_STUDENT_PHONE: '學員登記電話格式需核對', STUDENT_BIRTH_FORMAT: '學員生日格式需核對',
+  UID_REQUIRES_CANONICAL_REVIEW: '登入綁定來源需人工核對',
 };
 
 // 讀模式顯示的家長欄位（比照舊版卡片：2 欄排版，住家地址獨佔一整列）
@@ -201,7 +209,8 @@ function StudentEditTable({ students, onChange, onRemove }) {
 }
 
 function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft, onDeleteRequest, canDelete }) {
-  const st = STATUS_LABEL[row.status] || STATUS_LABEL.pending;
+  const awaitingLogin = row.status === 'resolved' && row.reason_code === AWAITING_LOGIN_POLICY;
+  const st = awaitingLogin ? { text: '待登入補齊', cls: 'bg-gray-100 text-gray-700' } : STATUS_LABEL[row.status] || STATUS_LABEL.pending;
   const [fixedName, setFixedName] = useState('');
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(() => rowToDraft(row));
@@ -380,7 +389,10 @@ function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft, onDeleteRequ
         </div>
       ) : (
         <div className="mt-auto border-t border-gray-100 px-3 py-2 text-[11px] text-gray-500">
-          {row.status === 'resolved' ? `已改為「${row.fixed_name}」` : '已標記為誤判，不會寫回 Ragic'}
+          {awaitingLogin ? '已歸檔，等待家長登入後填寫並核對資料' : row.status === 'resolved'
+            ? row.reason_code === 'REVIEWED_OPTIONAL_CONTACT_GAPS' ? '已核對歸檔，UID／登記電話可留空'
+              : row.fixed_name ? `已改為「${row.fixed_name}」` : '已完成處理'
+            : '已標記為誤判，不會寫回 Ragic'}
           {row.resolved_at ? ` ・ ${fmtDate(row.resolved_at)}` : ''}
         </div>
       )}
@@ -419,6 +431,26 @@ export default function RagicZ03Page() {
   const [stats, setStats] = useState(null);
   const [pendingDelete, setPendingDelete] = useState(null); // Z03 row 待確認永久刪除
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [reviewPreview, setReviewPreview] = useState(null);
+  const [reviewBusy, setReviewBusy] = useState(false);
+
+  async function previewArchive() {
+    setReviewBusy(true);
+    setReviewPreview(null);
+    try { setReviewPreview(await ragicZ03Api.reviewPreview(AWAITING_LOGIN_POLICY)); }
+    catch (e) { toast.error(e?.response?.data?.error || '核對失敗'); }
+    finally { setReviewBusy(false); }
+  }
+  async function applyArchive() {
+    setReviewBusy(true);
+    try {
+      const result = await ragicZ03Api.reviewArchive(reviewPreview.candidates, reviewPreview.policy);
+      toast.success(`已歸檔 ${result.archived.length} 筆，等待家長登入補齊資料`);
+      setReviewPreview(null);
+      await Promise.all([load(), loadStats()]);
+    } catch (e) { toast.error(e?.response?.data?.error || '歸檔失敗'); setReviewPreview(null); }
+    finally { setReviewBusy(false); }
+  }
 
   useEffect(() => {
     const timer = setTimeout(() => setQuery(queryInput.trim()), 300);
@@ -590,7 +622,7 @@ export default function RagicZ03Page() {
             onClick={() => setStatus(s)}
             className={`rounded px-3 py-1 text-xs font-bold ${status === s ? 'bg-brand-primary text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
           >
-            {s === 'all' ? '全部' : STATUS_LABEL[s]?.text}
+            {s === 'all' ? '全部' : s === 'resolved' ? '已處理／歸檔' : STATUS_LABEL[s]?.text}
             {cnt != null ? <span className={`ml-1 rounded-full px-1.5 py-0.5 text-[10px] ${status === s ? 'bg-white/20' : 'bg-gray-300 text-gray-600'}`}>{cnt}</span> : null}
           </button>
           );
@@ -613,6 +645,9 @@ export default function RagicZ03Page() {
       </div>
 
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-gray-500">
+        {isAdmin && <button type="button" disabled={reviewBusy} onClick={previewArchive} className="rounded border px-3 py-2 text-brand-primary disabled:opacity-50">
+          歸檔尚未登入資料
+        </button>}
         <span>{hasMore ? `已載入 ${rows.length} 筆（還有更多）` : `共 ${rows.length} 筆`}</span>
         <button
           type="button"
@@ -621,6 +656,12 @@ export default function RagicZ03Page() {
         >重新整理</button>
       </div>
 
+      {reviewPreview && <section className="mb-3 rounded border border-amber-300 bg-amber-50 p-3 text-sm" aria-label="核對歸檔預覽">
+        <p>已核對全部 {reviewPreview.reviewed} 筆待處理，可歸檔 {reviewPreview.candidates.length} 筆；其餘保留待處理。</p>
+        <p>家教 UID 空白、家長手機有效且未發現身分／手機衝突的資料，移至「已處理／歸檔」，標記「待登入補齊」。資料缺漏保留，等待家長登入後填寫與身分核對。</p>
+        <p>排除原因：{Object.entries(reviewPreview.excluded).map(([reason, n]) => `${REVIEW_REASON_LABEL[reason] || '其他資料需人工核對'}：${n}`).join('、') || '無'}</p>
+        <button type="button" disabled={reviewBusy || !reviewPreview.candidates.length} onClick={applyArchive} className="mt-2 rounded bg-brand-primary px-3 py-2 text-white disabled:opacity-50">確認移至待登入補齊</button>
+      </section>}
       {items === null && !loadError ? (
         <LoadingSpinner />
       ) : loadError ? (

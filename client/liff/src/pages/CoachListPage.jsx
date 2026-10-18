@@ -9,10 +9,18 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import PaymentDisclaimerModal from '../components/PaymentDisclaimerModal';
 import { useToast } from '../context/ToastContext';
 import { courseTypeLabel, formatTWD } from '../utils/format';
-import { resolveUnitPrice } from '../../../shared/coursePricing';
+import { hasCoursePricing, resolvePricingMultiplier, resolveCurrentUnitPrice, resolveTrialUnitPrice } from '../../../shared/coursePricing';
 import { coachMatchesVenue } from '../utils/venues';
+import { useGuideDemo } from '../utils/guideDemo';
+
+function guidePriceInfo(guide) {
+  const data = guide?.bootData;
+  return data ? { original_price: data.basePrice, tier_prices: data.tierPrices,
+    trial_price: data.trialPrice, sessions_per_period: data.sessionsPerPeriod } : null;
+}
 
 export default function CoachListPage() {
+  const guide = useGuideDemo();
   const [params] = useSearchParams();
   const venueId = params.get('venue');
   const courseType = Number(params.get('courseType') || 1);
@@ -20,10 +28,10 @@ export default function CoachListPage() {
   const navigate = useNavigate();
   const toast = useToast();
 
-  const [coaches, setCoaches] = useState(null);
-  const [venue, setVenue] = useState(null);
-  const [basePrice, setBasePrice] = useState(0);
-  const [priceInfo, setPriceInfo] = useState(null); // base-price 完整回應（trial_price / sessions_per_period）
+  const [coaches, setCoaches] = useState(() => guide?.coach ? [guide.coach] : null);
+  const [venue, setVenue] = useState(() => guide?.venue || null);
+  const [basePrice, setBasePrice] = useState(() => guide?.bootData?.basePrice || 0);
+  const [priceInfo, setPriceInfo] = useState(() => guidePriceInfo(guide)); // base-price 完整回應（trial_price / sessions_per_period）
   const [detailCoach, setDetailCoach] = useState(null);   // 「看詳細介紹」開啟的教練
   const [loadError, setLoadError] = useState(null);
   const [levelFilter, setLevelFilter] = useState('all'); // 'all' | 'senior' | 'regular'
@@ -31,6 +39,14 @@ export default function CoachListPage() {
   const [pendingCoach, setPendingCoach] = useState(null);
 
   useEffect(() => {
+    if (guide?.venue && guide?.coach) {
+      setCoaches([guide.coach]);
+      setVenue(guide.venue);
+      setBasePrice(guide.bootData?.basePrice || 0);
+      setPriceInfo(guidePriceInfo(guide));
+      setLoadError(null);
+      return undefined;
+    }
     if (!venueId) {
       setLoadError('未指定場館，請從首頁重新選擇');
       return;
@@ -48,6 +64,9 @@ export default function CoachListPage() {
           setLoadError('找不到此場館');
           return;
         }
+        if (!hasCoursePricing(bp?.original_price, bp?.sessions_per_period)) {
+          throw new Error('課程定價資料不完整');
+        }
         setCoaches(cs || []);
         setVenue(v);
         setBasePrice(bp.original_price);
@@ -61,13 +80,15 @@ export default function CoachListPage() {
     return () => {
       alive = false;
     };
-  }, [venueId, courseType, toast]);
+  }, [venueId, courseType, toast, guide?.index]);
 
   function handleCoachSelect(coach) {
+    if (guide) return;
     setPendingCoach(coach);
   }
 
   function handleDisclaimerAgree() {
+    if (guide) return;
     const c = pendingCoach;
     setPendingCoach(null);
     navigate(`/enroll?venue=${venueId}&courseType=${courseType}&coach=${c.id}${isTrial ? '&trial=1' : ''}`);
@@ -174,6 +195,7 @@ export default function CoachListPage() {
               isTrial={isTrial}
               trialPrice={priceInfo?.trial_price}
               sessionsPerPeriod={priceInfo?.sessions_per_period}
+              demo={!!guide}
               onSelect={() => handleCoachSelect(c)}
               onDetail={() => setDetailCoach(c)}
             />
@@ -184,23 +206,21 @@ export default function CoachListPage() {
       {detailCoach && (() => {
         // 詳細頁底部的價格要與小卡一致 —— 兩邊各算一次遲早會分岔，所以用同一支
         // resolveUnitPrice（課別對該加成級距若有明價，以明價為準）。
-        const adjusted = resolveUnitPrice(
-          basePrice,
-          detailCoach.multiplier ?? detailCoach.pricing_multiplier ?? 1,
-          priceInfo?.tier_prices
-        );
-        const per = Math.max(1, Number(priceInfo?.sessions_per_period) || 6);
-        const trialUnit = priceInfo?.trial_price > 0
-          ? Math.round(Number(priceInfo.trial_price))
-          : Math.round(adjusted / per);
+        const multiplier = resolvePricingMultiplier(detailCoach.multiplier, detailCoach.pricing_multiplier);
+        const adjusted = multiplier != null && hasCoursePricing(basePrice, priceInfo?.sessions_per_period)
+          ? resolveCurrentUnitPrice(basePrice, multiplier, priceInfo?.tier_prices) : null;
+        const per = Number(priceInfo?.sessions_per_period);
+        const trialUnit = resolveTrialUnitPrice(basePrice,
+          multiplier,
+          priceInfo?.tier_prices, priceInfo?.trial_price, per);
         return (
           <CoachDetailModal
             coach={detailCoach}
             venueNames={venue?.name ? [venue.name] : []}
-            priceLabel={formatTWD(isTrial ? trialUnit : adjusted)}
+            priceLabel={(isTrial ? trialUnit : adjusted) == null ? '價格待確認' : formatTWD(isTrial ? trialUnit : adjusted)}
             priceNote={isTrial ? '試上 1 堂' : `${per} 堂`}
             onClose={() => setDetailCoach(null)}
-            onSelect={() => { const c = detailCoach; setDetailCoach(null); handleCoachSelect(c); }}
+            onSelect={() => { if ((isTrial ? trialUnit : adjusted) == null) return; const c = detailCoach; setDetailCoach(null); handleCoachSelect(c); }}
           />
         );
       })()}

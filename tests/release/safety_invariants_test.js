@@ -42,7 +42,7 @@ async function cleanup() {
     parentId = parent.id;
     const student = (await pool.query(
       `INSERT INTO students(parent_id,name,id_number,is_active)
-       VALUES ($1,'安全學員','A123456789',TRUE) RETURNING *`, [parent.id]
+       VALUES ($1,'安全學員','A132702114',TRUE) RETURNING *`, [parent.id]
     )).rows[0];
     const family = (await pool.query(
       `INSERT INTO ragic_z03_records
@@ -61,7 +61,7 @@ async function cleanup() {
     );
     await claimZ03Identity({ phone, studentName: '安全學員', lineUid, parentName: 'safety parent' });
     const afterStudent = (await pool.query(`SELECT id,id_number FROM students WHERE parent_id=$1`, [parent.id])).rows;
-    assert.deepStrictEqual(afterStudent, [{ id: student.id, id_number: 'A123456789' }],
+    assert.deepStrictEqual(afterStudent, [{ id: student.id, id_number: 'A132702114' }],
       'national ID conflict must not overwrite or create a second student');
 
     process.env.DESTRUCTIVE_RECONCILE_ENABLED = 'true';

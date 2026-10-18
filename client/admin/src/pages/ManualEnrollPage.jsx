@@ -8,9 +8,9 @@ import { venuesApi } from '../api/venues';
 import { staffApi } from '../api/staff';
 import { customerParentsApi } from '../api/customers';
 import { courseTypesApi } from '../api/courseTypes';
-import { resolveUnitPrice } from '../../../shared/coursePricing';
+import { hasCoursePricing, hasCoursePeriodBounds, isCoursePeriodCount, resolveCurrentUnitPrice, resolveTrialUnitPrice } from '../../../shared/coursePricing';
+import { openVenues } from '../utils/venueSelection.mjs';
 
-const SESSIONS_PER_PERIOD = 6; // 一期固定 6 堂；總堂數 > 6 後端自動拆單。
 const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
 
 // ── 內嵌 SVG 圖示（Lucide 風格 stroke，免外部依賴） ──────────────────────
@@ -37,7 +37,7 @@ const I = {
 function Label({ children }) {
   return <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-500">{children}</label>;
 }
-function Inp({ value, onChange, type = 'text', placeholder, disabled, className = '' }) {
+function Inp({ value, onChange, type = 'text', placeholder, disabled, min, step, className = '' }) {
   // 生日這類日期欄位走共用選擇器（面板標題可點，直接跳年份 —— 用月份箭頭
   // 從今年退到 2015 年要按 130 次）。其餘型別維持原生 input。
   if (type === 'date') {
@@ -51,16 +51,16 @@ function Inp({ value, onChange, type = 'text', placeholder, disabled, className 
   }
   return (
     <input
-      type={type} value={value} disabled={disabled} placeholder={placeholder}
+      type={type} value={value} disabled={disabled} placeholder={placeholder} min={min} step={step}
       onChange={(e) => onChange(e.target.value)}
       className={`w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-semibold outline-none transition-all focus:border-indigo-500 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 ${className}`}
     />
   );
 }
-function Sel({ value, onChange, children, disabled }) {
+function Sel({ value, onChange, children, disabled, id }) {
   return (
     <select
-      value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}
+      id={id} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}
       className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-semibold outline-none transition-all focus:border-indigo-500 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 disabled:bg-slate-100 disabled:text-slate-400"
     >
       {children}
@@ -141,13 +141,14 @@ const FRESH = {
   // 試上＝單堂體驗課，固定 1 堂、現場付費、價格取課程品項的 trial_price。
   // 後端 admin/enrollments.js 會再強制一次（前端只是讓櫃檯看得到、少填錯）。
   orderKind: 'standard',
-  courseType: '', periodCount: 1,
+  courseType: '', periodCount: 1, purchaseMultiplier: '',
   basePrice: '', allowance: '', actual: '', paymentMethod: '轉帳', paymentDetail: '',
   payer: '', taxId: '', carrier: '',
 };
 
 export default function ManualEnrollPage() {
-  const { user, isStaff, venueIds } = useAuth();
+  const { user, isAdmin, venueIds } = useAuth();
+  const isStaff = user?.role === 'staff';
   const toast = useToast();
 
   const [formOpen, setFormOpen] = useState(true);
@@ -197,9 +198,9 @@ export default function ManualEnrollPage() {
     return () => { alive = false; };
   }, [venueId]);
   useEffect(() => {
-    if (isStaff && user?.venue_id) { setVenueId(user.venue_id); return; }
+    if (!isAdmin && user?.venue_id) { setVenueId(user.venue_id); return; }
     if (parent?.primary_venue_id) setVenueId(parent.primary_venue_id);
-  }, [parent, isStaff, user]);
+  }, [parent, isAdmin, user]);
   useEffect(() => {
     if (!venueId) { setCoaches([]); return undefined; }
     let alive = true; setCoachesLoading(true);
@@ -210,22 +211,39 @@ export default function ManualEnrollPage() {
     return () => { alive = false; };
   }, [venueId]);
 
-  // C-1：註冊館別只列「場館設定(F-A03)」已啟用的館。後端 venuesApi.list() 刻意回傳全部
-  // （POST /api/admin/enrollments 允許對停用館補登歷史資料），這裡只過濾下拉選單顯示。
-  const activeVenues = useMemo(() => venues.filter((v) => v.is_active !== false), [venues]);
+  // 新建報名只能選目前明確開放的場館；未帶狀態也不推定為開放。
+  const activeVenues = useMemo(() => openVenues(venues), [venues]);
   // Task #90 修正：staff 可在自己所屬全部場館間選擇報名館別（原本鎖死單一主場館＝新北）。
   const venueOptions = useMemo(
-    () => (isStaff ? activeVenues.filter((v) => venueIds.includes(v.id)) : activeVenues),
-    [isStaff, activeVenues, venueIds],
+    () => (isAdmin ? activeVenues : activeVenues.filter((v) => venueIds.includes(v.id))),
+    [isAdmin, activeVenues, venueIds],
   );
   const venueName = (id) => venues.find((v) => v.id === id)?.name || id || '—';
   const coachName = useMemo(() => coaches.find((c) => c.id === coachId)?.name || '', [coaches, coachId]);
-  // C-4：期數直接輸入，總堂數 = 期數 × 6（不再有「最後一期吃餘數」的情況，輸入保證是 6 的倍數）。
+  const coachOriginalMultiplier = (id) => {
+    const coach = coaches.find((c) => c.id === id);
+    const raw = coach?.multiplier ?? coach?.pricing_multiplier;
+    if (!['number', 'string'].includes(typeof raw) || String(raw).trim() === '') return null;
+    const value = Number(raw);
+    return Number.isFinite(value) && value > 0 ? value : null;
+  };
+  const coachMultiplier = (id) => coachOriginalMultiplier(id);
+  const originalMultiplier = coachOriginalMultiplier(coachId);
+  const purchaseMultiplier = Number(f.purchaseMultiplier || coachMultiplier(coachId));
+  const multiplierOptions = [...new Set([1, 1.2, 1.5, coachMultiplier(coachId)])].filter((v) => Number.isFinite(v) && v > 0).sort((a, b) => a - b);
+  // 期數直接輸入；一期堂數取已選場館需求頁，未載入不得猜成六堂。
   const isTrial = f.orderKind === 'trial';
+  const selectedCourseType = activeCourseTypes.find((c) => String(c.course_type) === String(f.courseType));
+  const sessionsPerPeriod = Number(selectedCourseType?.sessions_per_period);
+  const validSessionsPerPeriod = Number.isSafeInteger(sessionsPerPeriod) && sessionsPerPeriod > 0;
   // 試上不走期數：固定 1 堂。後端也會強制（admin/enrollments.js 的 `sessions`），
   // 這裡先算對，是為了讓畫面上的單價／總堂數不會顯示成 6 堂而誤導櫃檯。
-  const numPeriods = isTrial ? 1 : Math.max(1, Number(f.periodCount) || 1);
-  const lessons = isTrial ? 1 : numPeriods * SESSIONS_PER_PERIOD;
+  const numPeriods = isTrial ? 1 : Number(f.periodCount);
+  const periodCountMin = selectedCourseType?.period_count_min;
+  const periodCountMax = selectedCourseType?.period_count_max;
+  const validPeriodBounds = hasCoursePeriodBounds(periodCountMin, periodCountMax);
+  const validPeriods = isTrial ? numPeriods === 1 : isCoursePeriodCount(numPeriods, periodCountMin, periodCountMax);
+  const lessons = isTrial ? 1 : validPeriods && validSessionsPerPeriod ? numPeriods * sessionsPerPeriod : 0;
   // 試上只列出「課程需求管理」裡有開放試上（trial_enabled）的品項 ——
   // 後端是 fail-closed 擋下的，這裡先過濾，讓櫃檯不會選到才被退件。
   const selectableCourseTypes = useMemo(
@@ -252,43 +270,50 @@ export default function ManualEnrollPage() {
   // 帶完仍可手動覆蓋，跟原價欄位的既有編輯行為一致。applyCourseType 是純套用邏輯，
   // 手動選（下方 <Sel> onChange）跟自動比對（下面 C-9 useEffect）都呼叫它，
   // 但只有「使用者親自選」才設 touched 旗標——自動帶入不能算「使用者已介入」。
-  // 原價 = 課程需求管理的每期價格 × 該教練的修課係數。
+  // 原價取課程需求管理對本單係數的明價，未另訂明價才乘倍率。
   // 若那個係數在課程需求管理已落定明價（tier_prices），以明價為準 ——
   // 與家長端自助報名、團購、後台核准走的是同一套解析（shared/coursePricing）。
   // 沒選教練時以係數 1.0 計，選了教練會重算（見下方 applyPriceForCoach）。
-  function basePriceFor(courseTypeValue, coachIdValue, trialFlag = isTrial) {
+  function basePriceFor(courseTypeValue, coachIdValue, trialFlag = isTrial, multiplierValue = f.purchaseMultiplier) {
     const cfg = activeCourseTypes.find((c) => String(c.course_type) === String(courseTypeValue));
-    if (!cfg) return null;
-    // 試上是單堂固定價，取課程品項的 trial_price，**不乘教練係數** ——
-    // 與家長端 services/trialEnrollment.js 的 calculateTrialPrice 同一個來源與規則。
-    if (trialFlag) {
-      const tp = Number(cfg.trial_price);
-      return Number.isFinite(tp) && tp > 0 ? tp : null;
-    }
-    const co = coaches.find((c) => c.id === coachIdValue);
-    const mult = Number(co?.multiplier ?? co?.pricing_multiplier ?? 1) || 1;
-    return resolveUnitPrice(cfg.base_price, mult, cfg.tier_prices);
+    if (!cfg || !hasCoursePricing(cfg.base_price, cfg.sessions_per_period)) return null;
+    const mult = Number(multiplierValue || coachMultiplier(coachIdValue));
+    if (!Number.isFinite(mult) || mult <= 0 || (coachIdValue && coachOriginalMultiplier(coachIdValue) === null)) return null;
+    if (trialFlag) return resolveTrialUnitPrice(cfg.base_price, mult, cfg.tier_prices,
+      cfg.trial_price, cfg.sessions_per_period);
+    return resolveCurrentUnitPrice(cfg.base_price, mult, cfg.tier_prices);
   }
   // 帶出價格；折讓沿用現有值重算實收。帶完仍可手動覆蓋（與原本行為一致）。
   //
   // 原價欄位是「這張單的總額」—— 後端 original_price 是照收的，不會再乘任何東西。
-  // 所以這裡要乘上人頭數：選了 2 位學員報一對二 → 3,750 × 2 = 7,500。
+  // 每人每期價必須乘人數和期數，例如6,900 × 2人 × 2期 = 27,600。
   // 不乘的話櫃檯會照單價收，兩個人只收一個人的錢，而且畫面上完全看不出來。
-  function applyPrice(courseTypeValue, coachIdValue, trialFlag = isTrial) {
-    const unit = basePriceFor(courseTypeValue, coachIdValue, trialFlag);
+  function applyPrice(courseTypeValue, coachIdValue, trialFlag = isTrial, multiplierValue = f.purchaseMultiplier) {
+    const unit = basePriceFor(courseTypeValue, coachIdValue, trialFlag, multiplierValue);
     const heads = Math.max(1, studentNames.length);
-    const bp = unit === null ? null : unit * heads;
+    const cfg = activeCourseTypes.find((c) => String(c.course_type) === String(courseTypeValue));
+    const resetPeriods = !trialFlag && (String(f.courseType) !== String(courseTypeValue) || isTrial);
+    const periods = trialFlag ? 1 : resetPeriods ? Number(cfg?.period_count_min) : Number(f.periodCount);
+    const validCount = trialFlag ? periods === 1 : isCoursePeriodCount(periods, cfg?.period_count_min, cfg?.period_count_max);
+    const bp = unit === null || !validCount ? null : unit * heads * periods;
     priceTouchedRef.current = false;   // 自動帶入不算「櫃檯自己改過」
     setF((p) => ({
       ...p,
       courseType: courseTypeValue,
-      ...(bp === null ? {} : { basePrice: String(bp), actual: String(Math.max(0, bp - num(p.allowance))) }),
+      ...(resetPeriods && Number.isSafeInteger(periods) ? { periodCount: periods } : {}),
+      ...(bp === null ? { basePrice: '', actual: '' } : { basePrice: String(bp), actual: String(Math.max(0, bp - num(p.allowance))) }),
     }));
   }
   function applyCourseType(v) { applyPrice(v, coachId); }
   // 換教練＝換係數，價格要跟著重算；沒選組別就沒有價格可算。
   function applyPriceForCoach(nextCoachId) {
-    if (f.courseType) applyPrice(f.courseType, nextCoachId);
+    const multiplier = coachMultiplier(nextCoachId);
+    setF((p) => ({ ...p, purchaseMultiplier: nextCoachId && multiplier != null ? String(multiplier) : '' }));
+    if (f.courseType) applyPrice(f.courseType, nextCoachId, isTrial, multiplier);
+  }
+  function onPurchaseMultiplier(value) {
+    setF((p) => ({ ...p, purchaseMultiplier: value }));
+    if (f.courseType) applyPrice(f.courseType, coachId, isTrial, value);
   }
   function onCourseType(v) {
     courseTypeTouchedRef.current = true; // 使用者親自選過 → 之後學員數再變動不再自動覆蓋（見下方 C-9 useEffect）
@@ -333,23 +358,20 @@ export default function ManualEnrollPage() {
   }, [studentNames.length, activeCourseTypes]);
   // 人頭數變了，總額要跟著變。C-9 只在「還沒手動選過組別」時才會重帶價格，
   // 所以櫃檯若已自己選過組別，少了這段就會停在舊人數的金額。
-  const lastPricedCountRef = useRef(null);
   useEffect(() => {
     const n = studentNames.length;
     if (!f.courseType || n === 0) return;
-    if (lastPricedCountRef.current === n) return;
-    lastPricedCountRef.current = n;
     if (priceTouchedRef.current) return;
     applyPrice(f.courseType, coachId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [studentNames.length, f.courseType, coachId, activeCourseTypes]);
+  }, [studentNames.length, f.courseType, coachId, f.purchaseMultiplier, f.periodCount, isTrial, activeCourseTypes, coaches]);
 
   // 畫面上把算式寫出來，金額才不是憑空冒出來的
   const priceFormula = (() => {
     const unit = f.courseType ? basePriceFor(f.courseType, coachId) : null;
     const heads = studentNames.length;
-    if (unit === null || heads === 0) return '';
-    return `${unit.toLocaleString()} × ${heads} 人 = ${(unit * heads).toLocaleString()}`;
+    if (unit === null || heads === 0 || !validPeriods) return '';
+    return `${unit.toLocaleString('en-US')} × ${heads} 人 × ${numPeriods} ${isTrial ? '堂' : '期'} = ${(unit * heads * numPeriods).toLocaleString('en-US')}`;
   })();
 
   function preset(p) {
@@ -404,6 +426,7 @@ export default function ManualEnrollPage() {
     createRequestIdRef.current = null;
     courseTypeTouchedRef.current = false;
     lastAutoMatchedCountRef.current = null;
+    priceTouchedRef.current = false;
   }
 
   async function fileOne() {
@@ -412,8 +435,10 @@ export default function ManualEnrollPage() {
     if (!venueId) { toast.error('請選擇報名館別'); return; }
     if (!coachId && !coachName) { toast.error('請選擇授課教練'); return; }
     if (!f.courseType) { toast.error('請選擇組別型態（需先於「課程需求管理」建立）'); return; }
-    if (lessons < 1) { toast.error('請填寫有效的總堂數'); return; }
-    if (num(f.basePrice) < 0 || num(f.actual) < 0) { toast.error('金額不正確'); return; }
+    if (!validPeriods || !Number.isSafeInteger(lessons) || lessons < 1) { toast.error('請核對購買期數與需求頁的一期堂數'); return; }
+    if (originalMultiplier === null || !validSessionsPerPeriod || (!isTrial && !validPeriodBounds) || (!priceTouchedRef.current && basePriceFor(f.courseType, coachId) === null)) { toast.error('課程定價資料不完整，請至課程需求管理核對'); return; }
+    if (!selectableCourseTypes.some((c) => String(c.course_type) === String(f.courseType))) { toast.error('請重新選擇本館可用的課程需求'); return; }
+    if ([f.basePrice, f.actual].some((v) => String(v).trim() === '' || !Number.isFinite(Number(v)) || Number(v) < 0)) { toast.error('金額不正確'); return; }
     const last5 = f.paymentMethod === '轉帳' && /^\d{5}$/.test(f.paymentDetail.trim()) ? f.paymentDetail.trim() : '';
     if (f.paymentMethod === '轉帳' && f.paymentDetail.trim() && !last5) { toast.error('轉帳末 5 碼需為 5 位數字'); return; }
 
@@ -424,6 +449,7 @@ export default function ManualEnrollPage() {
       groupType: courseTypes.find((t) => String(t.course_type) === String(f.courseType))?.label,
       lessons, basePrice: num(f.basePrice), discount: num(f.allowance),
       actual: num(f.actual), unit: unitPrice, paymentMethod: f.paymentMethod, paymentDetail: f.paymentDetail.trim() || '—',
+      purchaseMultiplier,
     };
     try {
       if (!createRequestIdRef.current) {
@@ -439,13 +465,16 @@ export default function ManualEnrollPage() {
         venue_id: venueId, coach: coachName || '（待指派）', coach_id: coachId || null,
         course_type: Number(f.courseType), total_sessions: lessons,
         order_kind: f.orderKind,
+        purchase_multiplier: purchaseMultiplier,
+        purchase_period_count: numPeriods,
+        pricing_mode: priceTouchedRef.current ? 'manual' : 'automatic',
         original_price: num(f.basePrice), final_price: num(f.actual),
         allowance_amount: num(f.allowance), unit_price: unitPrice,
         payment_method: f.paymentMethod, transfer_last_5: last5,
         payer: f.payer.trim(), tax_id: f.taxId.trim(), carrier: f.carrier.trim(),
         full_sessions: lessons,
       });
-      setFiled((prev) => [...prev, { ...snap, key: (res.enrollment_ids || [res.id]).join(','), ids: res.enrollment_ids || [res.id], count: res.count || 1 }]);
+      setFiled((prev) => [...prev, { ...snap, purchaseMultiplier: res.purchased_pricing_multiplier ?? snap.purchaseMultiplier, key: (res.enrollment_ids || [res.id]).join(','), ids: res.enrollment_ids || [res.id], count: res.count || 1 }]);
       toast.success(`已建檔 ${res.count || 1} 張訂單（待對帳）`);
       resetCourseForm();
     } catch (err) { toast.error(err?.response?.data?.error || '手動建檔失敗'); }
@@ -454,8 +483,8 @@ export default function ManualEnrollPage() {
 
   function exportCsv() {
     if (!filed.length) return;
-    const head = ['編號', '家長', '電話', '學員', '館別', '組別', '教練', '堂數', '原價', '折讓', '實收', '單價', '付款', '對帳碼'];
-    const rows = filed.map((r) => [r.ids.join(' '), r.parentName, r.parentPhone, r.students.join(' '), r.venue, r.groupType, r.coach, r.lessons, r.basePrice, r.discount, r.actual, r.unit, r.paymentMethod, r.paymentDetail]);
+    const head = ['編號', '家長', '電話', '學員', '館別', '組別', '教練', '購入修課係數', '堂數', '原價', '折讓', '實收', '單價', '付款', '對帳碼'];
+    const rows = filed.map((r) => [r.ids.join(' '), r.parentName, r.parentPhone, r.students.join(' '), r.venue, r.groupType, r.coach, Number(r.purchaseMultiplier).toFixed(2), r.lessons, r.basePrice, r.discount, r.actual, r.unit, r.paymentMethod, r.paymentDetail]);
     const csv = [head, ...rows].map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
     const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
     const a = document.createElement('a');
@@ -560,7 +589,11 @@ export default function ManualEnrollPage() {
                 <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
                   <div>
                     <Label>註冊館別 *</Label>
-                    <Sel value={venueId} onChange={(v) => { setVenueId(v); setCoachId(''); }} disabled={isStaff && venueOptions.length <= 1}>
+                    <Sel value={venueId} onChange={(v) => {
+                      setVenueId(v); setCoachId(''); priceTouchedRef.current = false;
+                      setF((p) => ({ ...p, courseType: '', purchaseMultiplier: '', basePrice: '', actual: '', allowance: '' }));
+                      lastAutoMatchedCountRef.current = null;
+                    }} disabled={isStaff && venueOptions.length <= 1}>
                       <option value="">請選擇</option>
                       {venueOptions.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
                     </Sel>
@@ -571,7 +604,7 @@ export default function ManualEnrollPage() {
                       <div className="flex items-center gap-2 rounded-xl border border-dashed border-slate-200 bg-slate-50/50 px-4 py-3 text-sm font-semibold text-slate-400">請先選館別</div>
                     ) : coachId ? (
                       <div className="flex items-center justify-between rounded-xl border border-indigo-200 bg-indigo-50/40 px-3.5 py-2.5">
-                        <div className="text-sm font-extrabold text-indigo-900">{coachName}{coaches.find((c) => c.id === coachId)?.is_senior ? ' ⭐' : ''}</div>
+                        <div className="text-sm font-extrabold text-indigo-900">{coachName}{coaches.find((c) => c.id === coachId)?.is_senior ? ' ⭐' : ''}<span className="ml-2 text-xs font-semibold">{originalMultiplier === null ? '教練原係數待核對' : `教練原係數 ${originalMultiplier.toFixed(2)}（${Math.round(originalMultiplier * 100)}%）`}</span></div>
                         <button type="button" onClick={() => { setCoachId(''); applyPriceForCoach(''); }} className="text-slate-400 hover:text-slate-600"><Svg d={I.x} /></button>
                       </div>
                     ) : (
@@ -582,10 +615,19 @@ export default function ManualEnrollPage() {
                         onSearch={(q) => coaches.filter((c) => c.name.toLowerCase().includes(q.toLowerCase()))}
                         onPick={(c) => { setCoachId(c.id); applyPriceForCoach(c.id); }}
                         renderOption={(c) => (
-                          <div className="flex items-center gap-2"><span className="text-sm font-extrabold text-slate-800">{c.name}{c.is_senior ? ' ⭐' : ''}</span></div>
+                          <div className="flex items-center gap-2"><span className="text-sm font-extrabold text-slate-800">{c.name}{c.is_senior ? ' ⭐' : ''}</span><span className="text-xs text-slate-500">{coachOriginalMultiplier(c.id) === null ? '修課係數待核對' : `修課係數 ${coachMultiplier(c.id).toFixed(2)}（${Math.round(coachMultiplier(c.id) * 100)}%）`}</span></div>
                         )}
                       />
                     )}
+                    {coachId && <div className="mt-3">
+                      <label htmlFor="manual-purchase-multiplier" className="mb-1.5 block text-xs font-bold text-slate-500">本單修課係數</label>
+                      <Sel id="manual-purchase-multiplier" value={purchaseMultiplier} onChange={onPurchaseMultiplier}>
+                        {multiplierOptions.map((multiplier) => <option key={multiplier} value={multiplier}>
+                          {multiplier.toFixed(2)}（{Math.round(multiplier * 100)}%{multiplier > 1 ? `，加成 ${Math.round((multiplier - 1) * 100)}%` : '，無加成'}）{multiplier === originalMultiplier ? ' ★ 教練原係數' : ''}
+                        </option>)}
+                      </Sel>
+                      <p className="mt-1.5 text-[11px] text-slate-500">{isTrial ? '試上價依本單係數計算；未設定試上明價時，依需求頁每期價與堂數推算。' : '按本單保存，教練日後調價不會更動本單。'}</p>
+                    </div>}
                   </div>
                   <div>
                     <Label>訂單類型 *</Label>
@@ -605,8 +647,8 @@ export default function ManualEnrollPage() {
                       <option value="">{courseTypesLoading ? '載入中…' : (selectableCourseTypes.length === 0 ? (isTrial ? '沒有開放試上的品項' : '尚無可用課程需求') : '請選擇組別')}</option>
                       {selectableCourseTypes.map((t) => (
                         <option key={t.course_type} value={t.course_type}>
-                          {t.label}・NT$ {Number((isTrial ? t.trial_price : t.base_price) || 0).toLocaleString('en-US')}
-                          {isTrial ? '／堂' : ''}
+                          {t.label}・{basePriceFor(t.course_type, coachId) == null ? '價格待確認' : `NT$ ${basePriceFor(t.course_type, coachId).toLocaleString('en-US')}`}
+                          {isTrial ? '／人／堂' : '／人／期'}
                         </option>
                       ))}
                     </Sel>
@@ -636,8 +678,9 @@ export default function ManualEnrollPage() {
                       </>
                     ) : (
                       <>
-                        <Inp type="number" min="1" value={f.periodCount} onChange={upd('periodCount')} className="font-extrabold" />
-                        <p className="mt-1.5 text-[11px] font-semibold text-slate-500">{numPeriods} 期 × 6 堂 = {lessons} 堂</p>
+                        <Inp type="number" min={validPeriodBounds ? Number(periodCountMin) : undefined} max={validPeriodBounds ? Number(periodCountMax) : undefined} step="1" disabled={!validPeriodBounds} value={f.periodCount} onChange={upd('periodCount')} className="font-extrabold" />
+                        <p className="mt-1.5 text-[11px] font-semibold text-slate-500">{validSessionsPerPeriod ? `${numPeriods} 期 × ${sessionsPerPeriod} 堂 = ${lessons} 堂` : '請先選擇已設定一期堂數的課程需求'}</p>
+                        {!validPeriods && <p className="mt-1 text-[11px] text-red-600">{validPeriodBounds ? `購買期數需為 ${periodCountMin}–${periodCountMax} 期的整數` : '需求頁期數範圍尚未設定'}</p>}
                       </>
                     )}
                   </div>
@@ -648,7 +691,7 @@ export default function ManualEnrollPage() {
                     </div>
                   </div>
                 </div>
-                {numPeriods > 1 && <p className="mt-3 text-xs font-bold text-amber-600">將依期數拆成 {numPeriods} 張訂單（每期 6 堂）。</p>}
+                {numPeriods > 1 && <p className="mt-3 text-xs font-bold text-amber-600">將依期數拆成 {numPeriods} 張訂單（每期 {validSessionsPerPeriod ? sessionsPerPeriod : '待確認'} 堂）。</p>}
               </StepCard>
             </div>
 
@@ -657,7 +700,7 @@ export default function ManualEnrollPage() {
               <StepCard no="03" title="財務金額與對帳" color={{ bar: 'bg-emerald-500', badge: 'bg-emerald-500/10 text-emerald-600' }}>
                 <div className="space-y-4">
                   <div>
-                    <Label>原始費用（原價）*</Label>
+                    <Label>原始費用（整筆原價）*</Label>
                     <div className="relative">
                       <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 text-sm font-extrabold text-slate-400">$</span>
                       <input type="number" value={f.basePrice} onChange={(e) => onBase(e.target.value)} placeholder="請輸入金額"
@@ -666,7 +709,7 @@ export default function ManualEnrollPage() {
                     {priceFormula && (
                       <div className="mt-1 text-[11px] text-slate-500">
                         {priceFormula}
-                        {priceTouchedRef.current && <span className="ml-1 text-amber-600">（已手動調整，不再自動重算）</span>}
+                        {priceTouchedRef.current && <span className="ml-1 text-amber-600">（已手動調整整筆總額）<button type="button" onClick={() => applyPrice(f.courseType, coachId)} className="ml-2 underline">恢復自動計價</button></span>}
                       </div>
                     )}
                   </div>
@@ -739,8 +782,8 @@ export default function ManualEnrollPage() {
             {extraOpen && (
               <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
                 <div><Label>收款人</Label><Inp value={f.payer} onChange={upd('payer')} placeholder="行政人員" /></div>
-                <div><Label>統一編號</Label><Inp value={f.taxId} onChange={upd('taxId')} placeholder="8 碼統編" className="font-mono" /></div>
-                <div><Label>發票載具</Label><Inp value={f.carrier} onChange={upd('carrier')} placeholder="/ABC1234" className="font-mono" /></div>
+                <div><Label>統一編號</Label><Inp value={f.taxId} onChange={(v) => setF((p) => ({ ...p, taxId: String(v).replace(/\D/g, '').slice(0, 8), carrier: '' }))} placeholder="8 碼統編（與載具擇一）" className="font-mono" /></div>
+                <div><Label>發票載具</Label><Inp value={f.carrier} onChange={(v) => setF((p) => ({ ...p, carrier: v, taxId: '' }))} placeholder="/ABC1234（與統編擇一）" className="font-mono" /></div>
               </div>
             )}
           </div>
@@ -799,7 +842,7 @@ export default function ManualEnrollPage() {
                       <div className="mt-1 text-[10px] text-slate-400">家長：{r.parentName}（{r.parentPhone}）· <span className="font-mono">{r.ids.join('、')}</span></div>
                     </td>
                     <td className="p-4"><span className="mb-1.5 inline-block rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-extrabold text-slate-700">{r.venue}</span><div className="mt-0.5 text-[10px] text-slate-400">{r.groupType}</div></td>
-                    <td className="p-4"><div className="font-bold text-slate-800">{r.coach}</div><div className="mt-1 text-[10px] text-slate-400">規劃 <b className="text-slate-700">{r.lessons} 堂</b>{r.count > 1 ? ` · ${r.count} 期` : ''}</div></td>
+                    <td className="p-4"><div className="font-bold text-slate-800">{r.coach}</div><div className="mt-1 text-[10px] text-indigo-700">購入修課係數 {Number(r.purchaseMultiplier).toFixed(2)}（{Math.round(Number(r.purchaseMultiplier) * 100)}%）</div><div className="mt-1 text-[10px] text-slate-400">規劃 <b className="text-slate-700">{r.lessons} 堂</b>{r.count > 1 ? ` · ${r.count} 期` : ''}</div></td>
                     <td className="p-4"><div className="text-slate-500">原價 ${r.basePrice.toLocaleString()}</div><div className="mt-0.5 text-red-500">折讓 -${r.discount.toLocaleString()}</div></td>
                     <td className="p-4"><div className="text-sm font-black text-emerald-700">${r.actual.toLocaleString()}</div><div className="mt-1 text-[10px] text-slate-400">均價 ${r.unit}/堂</div></td>
                     <td className="p-4"><div className="text-xs font-extrabold text-slate-800">{r.paymentMethod}</div><div className="mt-1 text-[10px] text-slate-400">{r.paymentDetail}</div></td>

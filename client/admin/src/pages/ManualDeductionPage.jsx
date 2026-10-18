@@ -8,6 +8,10 @@
 // 2026-08-17 owner 明示要求（原話：「幫我在手動寇克那邊讓櫃台押上時間 可以讓櫃台
 //   針對過去時間做補扣」）：新增選填的「扣課時間」欄位。扣課邏輯、整班簽到語意、
 //   冪等機制一律不動 —— 只是把後端本來就支援的 occurred_at 開給櫃台填。
+// 2026-10-07 owner 明示授權：每課期選本堂修課係數，預設並標記教練原係數；
+//   保存本堂／原值快照，仍為整班一堂，通知與時間政策不變。
+// 2026-10-08 owner 明示授權取代上述選單：直接依購入修課係數扣課，不提供選擇；
+//   購入值由後端交易解析保存，整班仍共扣一堂，通知與時間政策不變。
 // ═══════════════════════════════════════════════════════════════════
 import React, { useEffect, useRef, useState } from 'react';
 import PageHeader from '../components/PageHeader';
@@ -22,6 +26,35 @@ function createRequestId() {
     if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
   } catch { /* noop */ }
   return `manual-deduct-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function validMultiplier(value) {
+  return typeof value === 'number' && Number.isFinite(value)
+    && value >= 1 && value <= 1.5
+    && Math.abs(value * 100 - Math.round(value * 100)) < 1e-8;
+}
+
+function multiplierText(value) {
+  if (!validMultiplier(value)) return '未取得';
+  const percent = Math.round(value * 100);
+  return `${value.toFixed(2)}＝${percent}%（加成 ${percent - 100}%）`;
+}
+
+// 僅初次回覆的明確 pre-write／rollback guard 可判定沒有扣課。
+// 網路、5xx 與冪等衝突都不能證明首次 COMMIT 的狀態。
+const NO_WRITE_CODES = new Set([
+  'REQUEST_ID_REQUIRED', 'REQUEST_ID_INVALID', 'INPUT_INVALID', 'REASON_REQUIRED',
+  'OCCURRED_AT_INVALID', 'OCCURRED_AT_FUTURE', 'LESSON_MULTIPLIER_INVALID', 'COACH_MULTIPLIER_INVALID',
+  'PERIOD_NOT_FOUND', 'PERIOD_COACH_MISSING', 'PERIOD_COACH_CHANGED_RETRY', 'PERIOD_NOT_ACTIVE',
+  'COACH_MULTIPLIER_UNAVAILABLE', 'COACH_MULTIPLIER_CHANGED_RETRY', 'VENUE_OUT_OF_SCOPE',
+  'PURCHASED_MULTIPLIER_UNAVAILABLE', 'PURCHASED_MULTIPLIER_MISMATCH',
+  'STUDENT_NOT_IN_PERIOD', 'INSUFFICIENT_SESSIONS',
+]);
+
+function confirmsNoWrite(error) {
+  const status = Number(error?.response?.status);
+  return status >= 400 && status < 500
+    && (status === 401 || status === 403 || NO_WRITE_CODES.has(error?.response?.data?.code));
 }
 
 // 後台沒有 icon font，圖示一律 inline SVG（比照其他頁）。
@@ -47,17 +80,6 @@ const WarnIcon = () => (
   </svg>
 );
 
-// 稿子裡「寫入欄位稽核對照」的那幾行。刻意用資料表欄位原名而不是中文別名：
-// 這塊是給日後查帳的人對照資料庫用的，翻成中文反而對不回去。
-function ContractRow({ label, value, tone = 'green' }) {
-  return (
-    <div className="flex items-baseline justify-between gap-3">
-      <span className="shrink-0 text-gray-400">{label}</span>
-      <span className={`truncate font-bold ${tone === 'amber' ? 'text-brand-amber' : tone === 'teal' ? 'text-brand-teal' : 'text-brand-green'}`}>{value}</span>
-    </div>
-  );
-}
-
 /**
  * 扣課成功後的結果視窗：把「哪個時間寫進哪個欄位」攤開來。
  * 補扣最容易被誤解的就是這件事 —— 上課時間被押到過去，但「誰在什麼時候按的」
@@ -75,20 +97,37 @@ function ResultModal({ data, onClose }) {
   if (!data) return null;
   return (
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-4"
+      className="fixed inset-0 z-40 flex items-end justify-center bg-black/40 md:items-center md:px-4"
       onClick={(e) => e.target === e.currentTarget && onClose()}
       role="dialog"
       aria-modal="true"
       aria-label="扣課結果"
     >
-      <div className="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-xl">
-        <div className="flex items-start justify-between gap-3 bg-brand-green px-5 py-4 text-white">
+      {/* 這張結果卡是全站最長的：彩色標頭 + 對照表 + 五行 request 欄位 + 一整段說明，
+          內容高度約 600–700px。原本 overflow-hidden 但沒有 max-h —— 面板長到多高就多高，
+          被 items-center 置中後上下同時溢出視窗，而 overflow-hidden 又把溢出的部分
+          直接裁掉，375×812 上「關閉視窗」跟一半的欄位對照表根本畫不出來，也捲不到。
+          overflow-hidden 要留著（彩色標頭要吃圓角），改為配上 90dvh + 中段內捲，
+          寫法對齊 ReconcilePage.jsx:372。
+
+          另外，原本在 375px 上這張卡是置中的：即使高度收好了，底部的「關閉視窗」
+          仍停在螢幕垂直中線附近，而扣課是櫃檯單手拿手機在做的事，拇指構不到。
+          改成 md 以下貼底升起的面板（滿版、上緣圓角、85dvh），md 以上原封不動
+          回到 items-center + max-w-lg + rounded-2xl + 90dvh。 */}
+      <div className="flex max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-2xl bg-white shadow-xl pb-[env(safe-area-inset-bottom)] md:max-h-[90dvh] md:max-w-lg md:rounded-2xl">
+        {/* grabber：行動裝置上「這個可以往下拉」的通用暗示，桌機沒有這個手勢所以 md:hidden。
+            這支的面板頂端是彩色標頭，所以底色跟著標頭走、grabber 改用白色半透明；
+            其餘彈窗頂端是白底，用規格指定的 bg-gray-300。 */}
+        <div className="shrink-0 bg-brand-green pt-2 md:hidden" aria-hidden="true">
+          <div className="mx-auto h-1 w-10 rounded-full bg-white/50" />
+        </div>
+        <div className="flex shrink-0 items-start justify-between gap-3 bg-brand-green px-5 py-4 text-white">
           <div className="min-w-0">
             <h3 className="text-base font-bold leading-tight">{data.idempotent ? '已確認原操作（未重複扣除）' : '扣課成功'}</h3>
             <p className="mt-0.5 text-xs text-white/85">
               {data.idempotent
-                ? '這組請求先前已完成，系統回傳同一筆紀錄'
-                : '已寫入上課紀錄、簽到、餘額與不可覆寫的稽核紀錄'}
+                ? '這次操作先前已完成，沒有再次扣課'
+                : '已更新上課紀錄、出席與剩餘堂數'}
             </p>
           </div>
           <button type="button" onClick={onClose} aria-label="關閉" className="shrink-0 rounded p-1 text-white/80 hover:bg-white/15 hover:text-white">
@@ -96,7 +135,7 @@ function ResultModal({ data, onClose }) {
           </button>
         </div>
 
-        <div className="space-y-4 p-5">
+        <div className="flex-1 space-y-4 overflow-y-auto p-5">
           <div className="space-y-1.5 rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs">
             <div className="flex justify-between"><span className="text-gray-500">學員</span><span className="text-sm font-bold text-gray-800">{data.studentName || '—'}</span></div>
             <div className="flex justify-between"><span className="text-gray-500">扣除堂數</span><span className="text-sm font-bold text-brand-error">−{data.idempotent ? 0 : 1} 堂</span></div>
@@ -106,20 +145,12 @@ function ResultModal({ data, onClose }) {
             )}
           </div>
 
-          <div>
-            <div className="mb-2 text-xs font-bold text-gray-800">寫入欄位對照</div>
-            <div className="space-y-1.5 overflow-x-auto rounded-lg bg-brand-primary p-3 font-mono text-[11px]">
-              <ContractRow label="course_sessions.scheduled_at" value={data.scheduledAtText} />
-              <ContractRow label="checkin_records.checked_in_at" value={data.scheduledAtText} />
-              <div className="mt-1 space-y-1.5 border-t border-white/15 pt-1.5">
-                <ContractRow label="course_sessions.completed_at" value={`${data.completedAtText}（當下）`} tone="amber" />
-                <ContractRow label="manual_lesson_deductions.created_at" value={`${data.completedAtText}（當下）`} tone="amber" />
-              </div>
-              <div className="mt-1 border-t border-white/15 pt-1.5">
-                <ContractRow label="request_id" value={data.requestId || '—'} tone="teal" />
-              </div>
-            </div>
-          </div>
+          <dl className="space-y-2 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm">
+            <div className="flex justify-between gap-3"><dt className="text-gray-500">購入修課係數</dt><dd>{multiplierText(data.lessonMultiplier)}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-gray-500">教練原係數（參考）</dt><dd>{multiplierText(data.coachOriginalMultiplier)}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-gray-500">上課時間</dt><dd>{data.scheduledAtText}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-gray-500">實際操作時間</dt><dd>{data.completedAtText}</dd></div>
+          </dl>
 
           <p className="flex items-start gap-2 rounded-lg border border-brand-teal/30 bg-brand-teal/5 p-2.5 text-[11px] leading-5 text-gray-700">
             <span className="mt-0.5 text-brand-teal"><InfoIcon /></span>
@@ -132,8 +163,8 @@ function ResultModal({ data, onClose }) {
           </p>
         </div>
 
-        <div className="flex justify-end border-t border-gray-200 bg-gray-50 px-5 py-3">
-          <button type="button" onClick={onClose} className="rounded-lg bg-brand-primary px-5 py-2 text-xs font-bold text-white hover:bg-brand-primary/90">關閉視窗</button>
+        <div className="flex shrink-0 justify-end border-t border-gray-200 bg-gray-50 px-5 py-3">
+          <button type="button" onClick={onClose} className="inline-flex min-h-[44px] items-center justify-center rounded-lg bg-brand-primary px-5 py-2 text-xs font-bold text-white hover:bg-brand-primary/90 md:min-h-0">關閉視窗</button>
         </div>
       </div>
     </div>
@@ -165,14 +196,29 @@ export default function ManualDeductionPage() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [busyKey, setBusyKey] = useState('');
+  const [pendingOperation, setPendingOperation] = useState(null);
+  const pendingOperationRef = useRef(null);
+  const sendingRef = useRef(false);
   const requestIdsRef = useRef(new Map());
+  const inputsLocked = !!busyKey || !!pendingOperation;
+
+  function rememberOperation(operation) {
+    pendingOperationRef.current = operation;
+    setPendingOperation(operation);
+  }
+
+  function clearOperation(operation) {
+    requestIdsRef.current.delete(operation.reqKey);
+    rememberOperation(null);
+  }
 
   // 沒動過的欄位要跟著現在走，否則頁面開著半小時，上面寫的還是進來那一刻，
   // 而實際送出的是伺服器當下 —— 畫面說一套、做一套。輸入框正在被操作時跳過，
   // 免得使用者選日期選到一半值被抽換。
   useEffect(() => {
-    if (occurredTouched) return undefined;
+    if (occurredTouched || pendingOperation) return undefined;
     const id = setInterval(() => {
+      if (pendingOperationRef.current) return;
       // 使用者正在這個欄位裡操作（按鈕或展開的面板）就不要抽換值。
       const el = document.getElementById('manual-deduction-occurred-at');
       const root = el && el.parentElement;
@@ -180,10 +226,11 @@ export default function ManualDeductionPage() {
       setOccurredAt(toTaipeiDateTimeInput(new Date()));
     }, 30000);
     return () => clearInterval(id);
-  }, [occurredTouched]);
+  }, [occurredTouched, pendingOperation]);
 
   async function search(e) {
     e?.preventDefault();
+    if (pendingOperationRef.current || sendingRef.current || loading) return;
     const q = query.trim();
     if (q.length < 2) {
       toast.warning('請輸入至少 2 個字元（報名單號、家長姓名／手機或學員姓名）');
@@ -192,7 +239,8 @@ export default function ManualDeductionPage() {
     setLoading(true);
     try {
       const result = await manualDeductionsApi.search(q);
-      setRows(Array.isArray(result) ? result : []);
+      const nextRows = Array.isArray(result) ? result : [];
+      setRows(nextRows);
       if (!Array.isArray(result) || result.length === 0) toast.info('查無可手動扣課的進行中課期');
     } catch (err) {
       toast.error(err?.response?.data?.error || '查詢課期失敗');
@@ -203,6 +251,7 @@ export default function ManualDeductionPage() {
   }
 
   async function deduct(row, student) {
+    if (pendingOperationRef.current || sendingRef.current || loading) return;
     const trimmedReason = reason.trim();
     if (!trimmedReason) {
       toast.warning('請先填寫扣課原因');
@@ -210,6 +259,10 @@ export default function ManualDeductionPage() {
     }
     if (Number(row.remaining_sessions) < 1) {
       toast.error('此課期已無剩餘堂數，不能扣成負數');
+      return;
+    }
+    if (!validMultiplier(row.purchased_pricing_multiplier)) {
+      toast.warning('未取得有效購入修課係數，請先核對購買資料後重新查詢');
       return;
     }
     // 沒動過＝不送 occurred_at，後端用接收當下時間（原本的行為，且重試仍冪等）。
@@ -225,22 +278,35 @@ export default function ManualDeductionPage() {
     }
     const key = `${row.course_period_id}:${student.id}`;
     // request_id 的快取鍵必須含「會進後端 fingerprint 的欄位」。後端以
-    // (request_id, fingerprint) 判冪等：同一個 request_id 配上不同的原因或時間
-    // 會被擋成 409 IDEMPOTENCY_CONFLICT。扣課失敗後改字改時間再送是常見動作，
-    // 沿用舊 request_id 會讓櫃台看到一個他無法理解的錯誤。
+    // (request_id, fingerprint) 判冪等；可信未寫入的失敗可修改後另送，
+    // 不明結果則鎖住整份 payload，只能確認同一原操作。
     const reqKey = `${key}:${trimmedReason}:${occurredIso || ''}`;
-    if (busyKey) return;
     const requestId = requestIdsRef.current.get(reqKey) || createRequestId();
     requestIdsRef.current.set(reqKey, requestId);
-    setBusyKey(key);
-    try {
-      const result = await manualDeductionsApi.create({
+    const operation = {
+      key, reqKey, row: { ...row }, student: { ...student }, unconfirmed: false,
+      payload: {
         course_period_id: row.course_period_id,
         student_id: student.id,
         reason: trimmedReason,
         request_id: requestId,
         ...(occurredIso ? { occurred_at: occurredIso } : {}),
-      });
+      },
+    };
+    rememberOperation(operation);
+    await sendOperation(operation);
+  }
+
+  async function sendOperation(operation) {
+    if (sendingRef.current) return;
+    sendingRef.current = true;
+    const { key, row, student, payload } = operation;
+    const requestId = payload.request_id;
+    const trimmedReason = payload.reason;
+    const occurredIso = payload.occurred_at || null;
+    setBusyKey(key);
+    try {
+      const result = await manualDeductionsApi.create(payload);
       const after = Number(result?.deduction?.remaining_after);
       setRows((prev) => prev.map((item) => (
         item.course_period_id === row.course_period_id
@@ -253,7 +319,7 @@ export default function ManualDeductionPage() {
           }
           : item
       )));
-      requestIdsRef.current.delete(reqKey);
+      clearOperation(operation);
       const attendanceCount = Number(result?.attendance_count)
         || (Array.isArray(result?.deduction?.roster_snapshot) ? result.deduction.roster_snapshot.length : 0);
       const d = result?.deduction || {};
@@ -266,6 +332,9 @@ export default function ManualDeductionPage() {
         requestId: d.request_id || requestId,
         studentName: d.student_name || student.name || '',
         reason: d.reason || trimmedReason,
+        // 以 ledger 回覆的已保存購入快照為準，冪等回覆保留原操作的值。
+        lessonMultiplier: d.lesson_pricing_multiplier,
+        coachOriginalMultiplier: d.coach_original_pricing_multiplier,
         scheduledAtText: scheduledSrc ? formatTWDateTimeSeconds(scheduledSrc) : '—',
         completedAtText: d.created_at ? formatTWDateTimeSeconds(d.created_at) : '—',
         backdated: !!occurredIso,
@@ -281,9 +350,17 @@ export default function ManualDeductionPage() {
           ? `已扣除 1 堂，並為整班 ${attendanceCount} 位學員登記出席`
           : '已手動扣除 1 堂，餘額與上課紀錄已同步'));
     } catch (err) {
-      // 保留 request_id，網路逾時後同一操作 retry 會回到同一筆 ledger，而非再扣一次。
-      toast.error(err?.response?.data?.error || '手動扣課失敗，尚未變更畫面餘額');
+      if (!operation.unconfirmed && confirmsNoWrite(err)) {
+        clearOperation(operation);
+        toast.error(err?.response?.data?.error || '此操作未扣課，請核對資料後再送出');
+      } else {
+        // 一旦首次提交已不明，後續 4xx 也不能排除首次 COMMIT。
+        // 固定原 payload/request_id；確認前不容許改資料生成第二筆扣課。
+        rememberOperation({ ...operation, unconfirmed: true });
+        toast.warning('原扣課結果尚未確認，可能已完成；請確認原扣課後再操作');
+      }
     } finally {
+      sendingRef.current = false;
       setBusyKey('');
     }
   }
@@ -295,17 +372,34 @@ export default function ManualDeductionPage() {
     <div>
       <PageHeader title="手動扣課" subtitle="輸入報名單號、家長或學員查詢；每次扣 1 堂並留下不可覆寫的稽核紀錄" />
 
+      {pendingOperation?.unconfirmed && (
+        <div className="mb-4 rounded-xl border border-brand-amber/40 bg-brand-amber/10 p-4" role="status">
+          <p className="text-sm font-bold text-gray-800">原扣課結果尚未確認，可能已完成</p>
+          <p className="mt-1 text-xs leading-5 text-gray-700">確認前暫停新增扣課與修改資料。請重送原操作確認結果；若持續無法確認，請由管理員核對上課紀錄與原操作編號。</p>
+          <p className="mt-1 break-all text-xs text-gray-600">原操作編號：{pendingOperation.payload.request_id}</p>
+          <button
+            type="button"
+            disabled={!!busyKey}
+            onClick={() => { if (pendingOperationRef.current) return sendOperation(pendingOperationRef.current); return undefined; }}
+            className="mt-2 rounded-lg bg-brand-primary px-4 py-2 text-sm font-bold text-white disabled:opacity-50"
+          >
+            {busyKey ? '正在確認原扣課…' : '確認原扣課'}
+          </button>
+        </div>
+      )}
+
       <form onSubmit={search} className="mb-4 rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
         <label htmlFor="manual-deduction-search" className="mb-1 block text-xs font-medium text-gray-600">查詢課期</label>
         <div className="flex flex-col gap-2 sm:flex-row">
           <input
             id="manual-deduction-search"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            disabled={inputsLocked}
+            onChange={(e) => { if (!pendingOperationRef.current && !sendingRef.current) setQuery(e.target.value); }}
             placeholder="報名單號、家長姓名／手機或學員姓名"
             className="min-w-0 flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none"
           />
-          <button type="submit" disabled={loading} className="rounded-lg bg-brand-primary px-4 py-2 text-sm font-bold text-white disabled:opacity-50">
+          <button type="submit" disabled={loading || inputsLocked} className="rounded-lg bg-brand-primary px-4 py-2 text-sm font-bold text-white disabled:opacity-50">
             {loading ? '查詢中…' : '查詢'}
           </button>
         </div>
@@ -325,7 +419,8 @@ export default function ManualDeductionPage() {
               {occurredTouched && (
                 <button
                   type="button"
-                  onClick={() => { setOccurredTouched(false); setOccurredAt(toTaipeiDateTimeInput(new Date())); }}
+                  disabled={inputsLocked}
+                  onClick={() => { if (pendingOperationRef.current || sendingRef.current) return; setOccurredTouched(false); setOccurredAt(toTaipeiDateTimeInput(new Date())); }}
                   className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-brand-teal hover:bg-brand-teal/10"
                 >
                   <ResetIcon />重設為現在
@@ -339,7 +434,8 @@ export default function ManualDeductionPage() {
               mode="datetime"
               value={occurredAt}
               max={toTaipeiDateTimeInput(new Date())}
-              onChange={(v) => { setOccurredTouched(true); setOccurredAt(v); }}
+              disabled={inputsLocked}
+              onChange={(v) => { if (pendingOperationRef.current || sendingRef.current) return; setOccurredTouched(true); setOccurredAt(v); }}
             />
           </div>
 
@@ -350,7 +446,8 @@ export default function ManualDeductionPage() {
             <textarea
               id="manual-deduction-reason"
               value={reason}
-              onChange={(e) => setReason(e.target.value.slice(0, 1000))}
+              disabled={inputsLocked}
+              onChange={(e) => { if (!pendingOperationRef.current && !sendingRef.current) setReason(e.target.value.slice(0, 1000)); }}
               rows={1}
               placeholder="例如：經家長確認，補登 2026/07/12 已完成的課程"
               className="w-full resize-y rounded-lg border border-gray-300 px-3 py-2 text-sm leading-6 focus:border-brand-teal focus:outline-none"
@@ -384,7 +481,10 @@ export default function ManualDeductionPage() {
         <div className="rounded-xl border border-dashed border-gray-300 bg-white px-4 py-10 text-center text-sm text-gray-500">尚無可扣課結果</div>
       )}
       <div className="space-y-3">
-        {rows.map((row) => (
+        {rows.map((row) => {
+          const purchasedMultiplier = row.purchased_pricing_multiplier;
+          const hasPurchased = validMultiplier(purchasedMultiplier);
+          return (
           <section key={row.course_period_id} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
@@ -392,7 +492,9 @@ export default function ManualDeductionPage() {
                 <p className="mt-1 text-xs text-gray-500">{row.venue_name || row.venue_id} · {row.coach || '未標示教練'} · 報名 {row.admin_enrollment_id || '—'}</p>
               </div>
               <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-bold ${Number(row.remaining_sessions) > 0 ? 'bg-brand-green/10 text-brand-primary' : 'bg-gray-100 text-gray-500'}`}>
-                剩餘 {row.remaining_sessions} / {row.total_sessions} 堂
+                {pendingOperation?.unconfirmed && pendingOperation.payload.course_period_id === row.course_period_id ? '最後確認剩餘 ' : '剩餘 '}
+                {row.remaining_sessions} / {row.total_sessions} 堂
+                {pendingOperation?.unconfirmed && pendingOperation.payload.course_period_id === row.course_period_id ? '（待確認）' : ''}
               </span>
             </div>
             {row.is_shared_period && (
@@ -401,6 +503,12 @@ export default function ManualDeductionPage() {
                 扣課會建立一堂完成課程並為整班登記出席，整期共扣 1 堂，餘額與所有成員訂單同步。
               </p>
             )}
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <span id={`manual-purchased-multiplier-${row.course_period_id}`} className="rounded-full bg-brand-teal/10 px-2.5 py-1 text-xs font-medium text-brand-teal">
+                購入修課係數 {hasPurchased ? multiplierText(purchasedMultiplier) : '待核對'}
+              </span>
+            </div>
+            {!hasPurchased && <p className="mt-1 text-xs text-brand-error">未取得有效購入修課係數，請先核對購買資料後重新查詢。</p>}
             <div className="mt-3 flex flex-wrap gap-2 border-t border-gray-100 pt-3">
               {row.is_shared_period ? (() => {
                 // 共享課期＝整班一堂：只給一顆整班按鈕（點任一學員效果相同，
@@ -413,7 +521,7 @@ export default function ManualDeductionPage() {
                   return <span className="text-xs text-gray-400">此課期沒有有效學員，無法扣課</span>;
                 }
                 const key = `${row.course_period_id}:${anchorStudent.id}`;
-                const disabled = Number(row.remaining_sessions) < 1 || !!busyKey;
+                const disabled = Number(row.remaining_sessions) < 1 || inputsLocked || loading || !hasPurchased;
                 return (
                   <button
                     type="button"
@@ -426,7 +534,7 @@ export default function ManualDeductionPage() {
                 );
               })() : (row.students || []).map((student) => {
                 const key = `${row.course_period_id}:${student.id}`;
-                const disabled = Number(row.remaining_sessions) < 1 || !!busyKey;
+                const disabled = Number(row.remaining_sessions) < 1 || inputsLocked || loading || !hasPurchased;
                 return (
                   <button
                     key={student.id}
@@ -441,7 +549,8 @@ export default function ManualDeductionPage() {
               })}
             </div>
           </section>
-        ))}
+          );
+        })}
       </div>
 
       {log.length > 0 && (
@@ -451,17 +560,19 @@ export default function ManualDeductionPage() {
             {/* 刻意不寫「近期紀錄」：這張表是本頁這次開著時送出的那幾筆，
                 不是去資料庫查歷史（目前沒有列表 API）。寫成「近期」會讓櫃台
                 以為重新整理後還在，然後懷疑資料掉了。 */}
-            <span className="text-[11px] text-gray-400">只顯示本頁本次送出的；完整稽核在資料庫，不可覆寫</span>
+            <span className="text-[11px] text-gray-400">僅顯示本次操作；重新整理後可到「上課紀錄查詢」查看</span>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full min-w-[720px] border-collapse text-left text-xs">
               <thead>
                 <tr className="border-b border-gray-200 bg-gray-50 text-gray-600">
-                  <th className="p-2.5 font-bold">紀錄 ID</th>
+                  <th className="p-2.5 font-bold">紀錄編號</th>
                   <th className="p-2.5 font-bold">學員</th>
                   <th className="p-2.5 font-bold">扣課原因</th>
-                  <th className="p-2.5 font-bold">上課時間<span className="ml-1 font-mono font-normal text-gray-400">scheduled_at</span></th>
-                  <th className="p-2.5 font-bold">實際操作時間<span className="ml-1 font-mono font-normal text-gray-400">created_at</span></th>
+                  <th className="p-2.5 font-bold">購入修課係數</th>
+                  <th className="p-2.5 font-bold">教練原係數（參考）</th>
+                  <th className="p-2.5 font-bold">上課時間</th>
+                  <th className="p-2.5 font-bold">實際操作時間</th>
                   <th className="p-2.5 font-bold">標籤</th>
                 </tr>
               </thead>
@@ -471,6 +582,8 @@ export default function ManualDeductionPage() {
                     <td className="p-2.5 font-mono text-gray-500" title={e.id}>{e.id ? e.id.slice(0, 8) : '—'}</td>
                     <td className="p-2.5 font-medium">{e.studentName || '—'}</td>
                     <td className="max-w-[220px] truncate p-2.5" title={e.reason}>{e.reason}</td>
+                    <td className="whitespace-nowrap p-2.5">{multiplierText(e.lessonMultiplier)}</td>
+                    <td className="whitespace-nowrap p-2.5">{multiplierText(e.coachOriginalMultiplier)}</td>
                     <td className="whitespace-nowrap p-2.5 font-mono text-gray-600">{e.scheduledAtText}</td>
                     <td className="whitespace-nowrap p-2.5 font-mono text-gray-600">{e.completedAtText}</td>
                     <td className="whitespace-nowrap p-2.5">

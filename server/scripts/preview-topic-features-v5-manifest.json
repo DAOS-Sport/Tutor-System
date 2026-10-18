@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "runId": "preview-topic-features-20260930-v5",
+  "indexRawByteSha256": {
+    "admin": "5b63c73278ccf31d0b8b300b38be6a97d5d813db619b0f42af9c56eabeeaed5c",
+    "liff": "a57eac8712e3dc27df84426a9982cb10165dae401887706f571b620e5fdf0f2b"
+  },
+  "sourceCanonicalLfSha256": {
+    "client/liff/src/utils/parentTopicTours.mjs": "5b743a66bc3c9ccc3eda1799c89384c57cb6e14dbdb1a02384031bf4a116ce2a",
+    "client/liff/src/components/TopicFeatureTour.jsx": "56a254bfa2fb57d9f4898ab3e85e787525b6d37624f0deb80591e9a3ea566bfd",
+    "client/liff/src/pages/GuidePage.jsx": "2eb532e84bce01214a945364c93c9eaa82f79391d4689ea56718e09d72331602",
+    "client/liff/src/components/GuideTour.jsx": "2fc7d1cd45d5ef89da5337b130afc800635d775e369fb720bbf348704d49f239",
+    "client/liff/src/utils/guideTour.mjs": "2e6aabd8bb96803274ebebc24b07d45cc08fa2b1ae7cbc9eee3481e5c21d1397"
+  },
+  "sourceCanonicalization": "UTF-8 text; CRLF and lone CR become LF; trimEnd; append exactly one LF",
+  "status": "REVIEWED_SOURCE_READBACK_BUILD_PENDING"
+}

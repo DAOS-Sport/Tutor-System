@@ -18,8 +18,10 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const { pool } = require('../../models/db');
-const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
-const { syncStaffFromRagic, kickoffSyncStaffAsync, isJobRunning } = require('../../services/ragicAdmin');
+const { requireAdminAuth } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定。
+const { requireResource, requireAnyBackoffice } = require('../../middlewares/requireResource');
+const { syncStaffFromRagic, isJobRunning } = require('../../services/ragicAdmin');
 const lineService = require('../../services/line');
 const {
   cleanVenueList,
@@ -29,9 +31,15 @@ const {
 
 const router = express.Router();
 
-const VALID_ROLES = ['admin', 'manager', 'staff', 'coach'];
+// 可指派的身份清單。原本寫死四個、漏了救生員，於是「篩選選得到、編輯存不了」——
+// normalizeRoleFilter 早就認得 lifeguard，這裡卻會回 400「角色不合法」。
+const { ASSIGNABLE_ROLES: VALID_ROLES, BACKOFFICE_ROLES, highestRole } = require('../../constants/roles');
 const MULTIPLIER_MIN = 1.00;
 const MULTIPLIER_MAX = 1.50;
+
+// 「誰能發出 admin 身分」的守衛。抽在 services/adminGrantGuard.js，
+// 那裡是純模組，測試 require 得動，才驗得到行為而不只是長相。
+const { adminGrantBlocked } = require('../../services/adminGrantGuard');
 
 function quoteIdent(name) {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(String(name || ''))) {
@@ -283,11 +291,22 @@ function rowToStaff(r) {
   const isCounterFlag = !!r.is_counter;
   const isCoachFlag = !!r.is_coach;
   const isLifeguardFlag = !!r.is_lifeguard;
+  // 後台在 F-A02 手動勾的身分（admin_staff_roles）。刻意讀原始值，不用下面那個
+  // manual_roles —— 它有「空就退回 [r.role]」的 fallback，而純救生員的 r.role 是
+  // CHECK constraint 的保底值 'staff'，套了 fallback 會讓他被誤判成「明確指派過櫃檯」。
+  const assignedRoles = Array.isArray(r.manual_roles) ? r.manual_roles.filter(Boolean) : [];
   const includeImpliedRole = ['admin', 'manager'].includes(r.role) || isCounterFlag || (!isCoachFlag && !isLifeguardFlag);
   const knownRoles = Array.from(new Set([
     ...(includeImpliedRole ? [r.role] : []),
     ...(hasCoachProfile ? ['coach'] : []),
     ...(isLifeguardFlag ? ['lifeguard'] : []),
+    // 手動指派的身分也要算進來。少了這一段，管理員勾了「救生員」、資料確實寫進
+    // admin_staff_roles，但清單那排徽章從頭到尾沒看過那張表 —— 畫面毫無變化，
+    // 看起來就是「勾了沒存到」。登入與權限早就讀這張表了，只有這條路徑漏掉。
+    //
+    // 2026-08-27：這段被 488ec43（登入限流修正）連同測試一起誤刪過一次 ——
+    // 那個 commit 的訊息完全沒提徽章，是帶著舊工作區提交造成的覆蓋。重貼。
+    ...assignedRoles,
   ]));
   // Task #90：venue_ids 是真實多場館清單；venue_id 維持作為「第一筆」相容
   const venueIds = cleanVenueList(r.venue_ids);
@@ -308,6 +327,14 @@ function rowToStaff(r) {
     is_coach_profile: isDualRoleCoach,
     coach_profile_status: coachProfileStatus,
     known_roles: knownRoles,
+    // 原始的手動指派清單（沒有 fallback）。前端要靠它分辨「管理員真的勾過 staff」
+    // 與「role 只是保底值」—— 兩者在 manual_roles 裡長得一模一樣。
+    assigned_roles: assignedRoles,
+    // 後台手動指派的身分（可多選）。與 Ragic 的旗標取聯集才是實際權限 ——
+    // 畫面上 Ragic 來的那幾個會鎖住，因為寫回去下次同步也會被蓋掉。
+    manual_roles: Array.isArray(r.manual_roles) && r.manual_roles.length
+      ? r.manual_roles
+      : (r.role ? [r.role] : []),
     // Workstream A：Ragic 來源的獨立身份旗標（唯讀，不影響 admin_staff.role 本身）
     is_coach: isCoachFlag,
     is_counter: isCounterFlag,
@@ -341,6 +368,9 @@ function rowToStaff(r) {
 
 const STAFF_SELECT = `
   SELECT s.*,
+         COALESCE(ARRAY(
+           SELECT sr.role FROM admin_staff_roles sr WHERE sr.staff_id = s.id ORDER BY sr.role
+         ), '{}') AS manual_roles,
          c.id AS coach_id,
          c.is_active AS coach_active,
          c.bio_rich_text AS coach_bio,
@@ -532,10 +562,9 @@ async function ensureCoachRow(client, staffRow, opts = {}) {
   return coachId;
 }
 
-router.get('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.get('/', requireAdminAuth, requireResource('staff'), async (req, res) => {
   try {
-    // 不再阻塞：背景觸發 Ragic 同步（10 分鐘節流），下一次 GET 就會看到新資料
-    kickoffSyncStaffAsync();
+    // 列表只讀本地資料；自動同步統一每日 03:30，手動同步仍由專用入口觸發。
 
     const { status, venueId, role, name, phone, senior } = req.query;
     const roleFilter = normalizeRoleFilter(role);
@@ -581,7 +610,7 @@ router.get('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =>
 // 立刻回 202，實際同步在背景跑並寫入 ragic_sync_log；不再讓這個 HTTP request
 // 卡在 freshness-canary 重試 + 全表拉取的耗時上（docs/ragic_sync_audit.md §1）。
 // _singleflight（services/ragicAdmin.js）仍會把重複觸發合併成同一個背景 Promise。
-router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.post('/sync', requireAdminAuth, requireResource('staff'), async (req, res) => {
   const alreadyRunning = isJobRunning('staff');
   setImmediate(async () => {
     try {
@@ -600,7 +629,7 @@ router.post('/sync', requireAdminAuth, requireAdminRole('admin'), async (req, re
   });
 });
 
-router.delete('/bulk', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.delete('/bulk', requireAdminAuth, requireResource('staff'), async (req, res) => {
   const staffIds = normalizeStaffIds(req.body?.staff_ids);
   if (!staffIds.length) return res.status(400).json({ error: 'staff_ids 不能為空' });
 
@@ -711,7 +740,7 @@ router.delete('/bulk', requireAdminAuth, requireAdminRole('admin'), async (req, 
  */
 router.get('/coaches',
   requireAdminAuth,
-  requireAdminRole('admin', 'manager', 'staff'),
+  requireAnyBackoffice(),
   async (req, res) => {
     try {
       const { venueId, status = 'active' } = req.query;
@@ -750,8 +779,8 @@ router.get('/coaches',
         name: row.name,
         phone: row.phone,
         is_senior: !!row.is_senior,
-        pricing_multiplier: Number(row.pricing_multiplier),
-        multiplier: Number(row.pricing_multiplier),
+        pricing_multiplier: row.pricing_multiplier == null ? null : Number(row.pricing_multiplier),
+        multiplier: row.pricing_multiplier == null ? null : Number(row.pricing_multiplier),
         is_active: !!row.is_active,
         is_placeholder: !!row.is_placeholder,
         venue_ids: cleanVenueList(row.venue_ids),
@@ -766,7 +795,7 @@ router.get('/coaches',
 /**
  * Task #91：單筆員工詳細（給編輯彈窗 prefetch 完整 coach_profile + bio_media）
  */
-router.get('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.get('/:id', requireAdminAuth, requireResource('staff'), async (req, res) => {
   try {
     const r = await pool.query(`${STAFF_SELECT} WHERE s.id = $1`, [req.params.id]);
     if (!r.rowCount) return res.status(404).json({ error: 'staff not found' });
@@ -788,7 +817,7 @@ router.get('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, res)
 });
 
 // Task #81：新建員工（admin_staff + admin_users + 可選 coaches，一個 transaction）
-router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.post('/', requireAdminAuth, requireResource('staff'), async (req, res) => {
   const client = await pool.connect();
   try {
     const body = req.body || {};
@@ -809,6 +838,10 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
     if (!name) return res.status(400).json({ error: '姓名必填' });
     if (!phone) return res.status(400).json({ error: '手機必填，預設密碼會使用手機號碼' });
     if (!VALID_ROLES.includes(role)) return res.status(400).json({ error: '角色不合法' });
+    {
+      const blocked = adminGrantBlocked(req, [role]);
+      if (blocked) return res.status(403).json(blocked);
+    }
     if (role === 'coach') {
       if (Number.isNaN(multiplier) || multiplier < MULTIPLIER_MIN || multiplier > MULTIPLIER_MAX) {
         return res.status(400).json({ error: `修課係數需在 ${MULTIPLIER_MIN.toFixed(2)}–${MULTIPLIER_MAX.toFixed(2)} 之間` });
@@ -826,7 +859,15 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
 
     const pwdHash = await bcrypt.hash(phone, 10);
     const userId = `U_${id}`;
-    const loginRole = role === 'coach' ? 'staff' : role;
+    // 登入帳號的角色。與 auth.js 的登入裁決用同一套優先序，不要再手寫映射 ——
+    // 原本是 role === 'coach' ? 'staff' : role，那是第三套算法（另外兩套在
+    // constants/roles 的 highestRole 與 auth.js 的 _effectiveLoginUser）。
+    //
+    // 純教練沒有任何後台身分，但 admin_users.role 有 CHECK constraint、必須有值，
+    // 所以仍然落在 'staff'。真正防止他因此拿到櫃檯權限的是讀取端 ——
+    // auth.js 的 _usableRole 與 rolePermissions.js 的身分過濾都會認出
+    // 「這個 staff 只是保底值」。這個欄位本身擋不住，也不該由它來擋。
+    const loginRole = highestRole([role].filter((r) => BACKOFFICE_ROLES.includes(r))) || 'staff';
 
     await client.query('BEGIN');
     await client.query(
@@ -862,7 +903,7 @@ router.post('/', requireAdminAuth, requireAdminRole('admin'), async (req, res) =
   }
 });
 
-router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.patch('/:id', requireAdminAuth, requireResource('staff'), async (req, res) => {
   const client = await pool.connect();
   try {
     const { id } = req.params;
@@ -875,6 +916,34 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
 
     if (patch.role && !VALID_ROLES.includes(patch.role)) {
       return res.status(400).json({ error: '角色不合法' });
+    }
+    // 多選身分。admin_staff.role 仍保留為「代表值」（登入與既有查詢都靠它），
+    // 取這次選取集合中優先序最高的那一個；完整集合另外存進 admin_staff_roles。
+    let manualRoles = null;
+    if (patch.roles !== undefined) {
+      if (!Array.isArray(patch.roles)) {
+        return res.status(400).json({ error: 'roles 必須是陣列', code: 'ROLES_INVALID' });
+      }
+      manualRoles = [...new Set(patch.roles.map((r) => String(r).trim()).filter(Boolean))];
+      const bad = manualRoles.filter((r) => !VALID_ROLES.includes(r));
+      if (bad.length) {
+        return res.status(400).json({ error: '角色不合法：' + bad.join('、'), code: 'ROLE_INVALID' });
+      }
+      if (!manualRoles.length) {
+        return res.status(400).json({ error: '至少要選一個角色', code: 'ROLES_REQUIRED' });
+      }
+      // 代表值：優先序由 constants/roles 的陣列順序定義，與 Ragic 推導同一套 ——
+      // 兩邊各寫一份的話，同一個人在同步與手動存檔會算出不同的主要角色。
+      patch.role = highestRole(manualRoles) || manualRoles[0];
+    }
+    // 發出 admin、或動到一個現在就是 admin 的人，都要求呼叫者本身是 admin。
+    {
+      const blocked = adminGrantBlocked(req, [
+        patch.role,
+        ...(manualRoles || []),
+        cur.rows[0] && cur.rows[0].role,
+      ]);
+      if (blocked) return res.status(403).json(blocked);
     }
     // Multiplier 範圍校驗：只要這次請求會讓 coach.pricing_multiplier 生效就檢查。
     // 觸發條件（涵蓋所有教練生效路徑，含序列攻擊：先存壞值 → 再啟用 coach_active）：
@@ -964,7 +1033,11 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
        merged.is_senior, merged.multiplier, merged.active, activeChanged]
     );
 
-    const loginRole = merged.role === 'coach' ? 'staff' : merged.role;
+    // 同上，但這裡還要把這次送出的多選身分算進去：
+    // 「教練兼救生員」的代表值是 coach（優先序上 coach 在 lifeguard 之前），
+    // 舊寫法會把他的登入帳號記成 'staff' —— 一個他其實沒有的身分。
+    const loginRole = highestRole([merged.role, ...(manualRoles || [])]
+      .filter((r) => BACKOFFICE_ROLES.includes(r))) || 'staff';
     await client.query(
       `UPDATE admin_users
           SET name = $2,
@@ -1071,6 +1144,17 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
         }
       }
     }
+    // 多選身分：整組取代。前端送來的就是畫面上的完整勾選狀態，
+    // 逐項 diff 只會多一種不同步的可能。
+    if (manualRoles) {
+      await client.query('DELETE FROM admin_staff_roles WHERE staff_id = $1', [id]);
+      for (const r of manualRoles) {
+        await client.query(
+          `INSERT INTO admin_staff_roles (staff_id, role, updated_by)
+           VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+          [id, r, req.adminUser?.name || req.adminUser?.username || 'admin']);
+      }
+    }
     await client.query('COMMIT');
 
     const after = await pool.query(`${STAFF_SELECT} WHERE s.id = $1`, [r.rows[0].id]);
@@ -1093,22 +1177,36 @@ router.patch('/:id', requireAdminAuth, requireAdminRole('admin'), async (req, re
 //
 // 解綁後該教練回到「未綁定」狀態，下次用 LINE 登入走姓名 fallback 即可重新綁上。
 // 限 admin；寫 critical 等級 audit（這是身分綁定變更，必須可追查是誰解的）。
-router.post('/:id/unbind-line', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.post('/:id/unbind-line', requireAdminAuth, requireResource('staff'), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // 第一步只做「這是誰」的判斷，不上鎖。
+    //
+    // 原本這裡是 LEFT JOIN 加 FOR UPDATE OF c，但 Postgres 不允許鎖 outer join
+    // 可為 null 的那一側（0A000: FOR UPDATE cannot be applied to the nullable
+    // side of an outer join）。錯誤發生在跑 SQL 的當下，連下面那三個判斷都還沒
+    // 執行到，所以不管傳什麼 id 一律 500 —— 這支端點從上線起沒有成功過一次。
     const r = await client.query(
-      `SELECT s.id, s.name, c.id AS coach_id, c.line_uid
+      `SELECT s.id, s.name, c.id AS coach_id
          FROM admin_staff s
          LEFT JOIN coaches c ON c.ragic_employee_id = s.id
-        WHERE s.id = $1
-        FOR UPDATE OF c`,
+        WHERE s.id = $1`,
       [req.params.id]
     );
     const row = r.rows[0];
     if (!row) { await client.query('ROLLBACK'); return res.status(404).json({ error: '找不到該員工' }); }
     if (!row.coach_id) { await client.query('ROLLBACK'); return res.status(400).json({ error: '該員工沒有教練資料', code: 'NOT_A_COACH' }); }
-    const previous = String(row.line_uid || '').trim();
+
+    // 第二步才鎖 coaches 那一列（這時候已經確定它存在，是 inner 的語意）。
+    // line_uid 一律以「鎖住之後讀到的值」為準，不用上面那次未上鎖的讀 ——
+    // 兩個管理員同時按解綁時，後到的那個才會正確地拿到 NOT_BOUND，
+    // 而不是兩邊都以為自己是先到的、都寫一筆 audit。
+    const locked = await client.query(
+      `SELECT line_uid FROM coaches WHERE id = $1 FOR UPDATE`,
+      [row.coach_id]
+    );
+    const previous = String(locked.rows[0]?.line_uid || '').trim();
     if (!previous) { await client.query('ROLLBACK'); return res.status(400).json({ error: '該教練目前沒有綁定 LINE', code: 'NOT_BOUND' }); }
 
     await client.query(`UPDATE coaches SET line_uid = NULL, updated_at = NOW() WHERE id = $1`, [row.coach_id]);
@@ -1137,11 +1235,11 @@ router.post('/:id/unbind-line', requireAdminAuth, requireAdminRole('admin'), asy
   }
 });
 
-router.post('/:id/reset-password', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
+router.post('/:id/reset-password', requireAdminAuth, requireResource('staff'), async (req, res) => {
   try {
     const { id } = req.params;
     const staffRes = await pool.query(
-      `SELECT s.id, s.name, s.venue_id, s.phone, c.line_uid AS coach_line_uid
+      `SELECT s.id, s.name, s.role, s.venue_id, s.phone, c.line_uid AS coach_line_uid
          FROM admin_staff s
          LEFT JOIN coaches c ON c.ragic_employee_id = s.id
         WHERE s.id = $1`,
@@ -1149,6 +1247,11 @@ router.post('/:id/reset-password', requireAdminAuth, requireAdminRole('admin'), 
     );
     const staff = staffRes.rows[0];
     if (!staff) return res.status(404).json({ error: '找不到該員工' });
+    // 重設密碼等於取得那個帳號 —— 對象是系統管理員時，呼叫者本身要是管理員。
+    {
+      const blocked = adminGrantBlocked(req, [staff.role]);
+      if (blocked) return res.status(403).json(blocked);
+    }
 
     const userRes = await pool.query(
       `SELECT id, line_uid FROM admin_users WHERE staff_id = $1`,
@@ -1222,3 +1325,4 @@ router.post('/:id/reset-password', requireAdminAuth, requireAdminRole('admin'), 
 });
 
 module.exports = router;
+module.exports._rowToStaff = rowToStaff;   // 供測試直接驗行為，不用起整個 router

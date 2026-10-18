@@ -4,22 +4,42 @@
  * 靜態斷言看不到的東西在這裡驗：中介層有沒有真的掛上、金鑰錯了是不是真的 401、
  * 遮罩有沒有真的套用在「從資料庫撈出來的真名」上、取消的課會不會真的消失。
  *
- * 需要 server 啟動時帶 INTEGRATION_KEYS（見下方 KEY / BAD_KEY）。
+ * INTEGRATION_KEYS 由本程序自行設定，真路由掛在程序內的 Express（見下方 KEY / BAD_KEY）。
  * 測試資料在 finally 全部刪除。
  */
 const assert = require('assert');
 const path = require('path');
+const { randomUUID } = require('crypto');
 
 const SERVER = path.resolve(__dirname, '../../server');
+const express = require(path.join(SERVER, 'node_modules', 'express'));
 const { pool } = require(path.join(SERVER, 'models', 'db'));
 
-const BASE = process.env.BASE_URL || 'http://localhost:3000';
 const KEY = process.env.E2E_INTEGRATION_KEY || ('e2e' + 'k'.repeat(45));
 const BAD_KEY = 'b'.repeat(48);
 const VENUE = 'B';
 const OTHER_VENUE = 'C';
 const KILL_KEY = process.env.E2E_INTEGRATION_KILL_KEY || ('e2ekill' + 'x'.repeat(41));
 const KILL_VENUE = 'K';
+
+// 金鑰設定屬於伺服器環境，測試管不到外部伺服器（沒設就是 503）→ 在本程序設好
+// INTEGRATION_KEYS，並把真路由（含 requireIntegrationKey）掛在程序內的 Express 上。
+process.env.INTEGRATION_KEYS = JSON.stringify({
+  [KEY]: { label: 'e2e 整合測試', venue_ids: [VENUE] },
+  [KILL_KEY]: { label: 'e2e 場館停用測試', venue_ids: [KILL_VENUE] },
+});
+const integrationsRouter = require(path.join(SERVER, 'routes', 'integrations'));
+let BASE = null;
+let server = null;
+
+async function startRouteServer() {
+  const app = express();
+  app.use('/api/integrations', integrationsRouter);
+  server = await new Promise((resolve) => {
+    const candidate = app.listen(0, '127.0.0.1', () => resolve(candidate));
+  });
+  BASE = `http://127.0.0.1:${server.address().port}`;
+}
 
 async function api(qs, { key } = {}) {
   const r = await fetch(`${BASE}/api/integrations/sessions${qs}`, {
@@ -31,9 +51,12 @@ async function api(qs, { key } = {}) {
 }
 
 const created = { periods: [], sessions: [] };
+// 家長、學員、教練自建，不借用庫裡現成的資料。
+const suffix = randomUUID().replace(/-/g, '').slice(0, 8);
+const parentId = randomUUID();
+const coach = randomUUID();
 
 async function makeSession({ minutesFromNow, status = 'confirmed', studentIds, isExperience }) {
-  const coach = (await pool.query('SELECT id FROM coaches LIMIT 1')).rows[0].id;
   const cp = await pool.query(
     `INSERT INTO course_periods (coach_id, venue_id, course_type, expires_at,
                                  original_price, final_price, is_experience_course)
@@ -54,8 +77,18 @@ async function makeSession({ minutesFromNow, status = 'confirmed', studentIds, i
 }
 
 (async () => {
-  const students = (await pool.query('SELECT id, name FROM students ORDER BY created_at LIMIT 3')).rows;
-  assert.ok(students.length === 3, 'need 3 students in the dev DB');
+  await startRouteServer();
+  const digits = String(parseInt(suffix, 16)).padStart(10, '0').slice(-8);
+  await pool.query(
+    `INSERT INTO coaches (id, name, phone, ragic_employee_id, is_active, pricing_multiplier)
+     VALUES ($1, $2, $3, $4, TRUE, 1.00)`,
+    [coach, `整合測試教練${suffix}`, `03${digits}`, `E2E-INTEG-${suffix}`]);
+  await pool.query(
+    `INSERT INTO parents (id, name, phone, is_active) VALUES ($1, $2, $3, TRUE)`,
+    [parentId, `整合測試家長${suffix}`, `09${digits}`]);
+  const students = (await pool.query(
+    `INSERT INTO students (parent_id, name) VALUES ($1, $2), ($1, $3), ($1, $4) RETURNING id, name`,
+    [parentId, `整合甲${suffix}`, `整合乙${suffix}`, `整合丙${suffix}`])).rows;
 
   const liveId = await makeSession({ minutesFromNow: 10, studentIds: students.map((s) => s.id), isExperience: true });
   const deadId = await makeSession({ minutesFromNow: 20, status: 'cancelled_normal', studentIds: [students[0].id] });
@@ -155,6 +188,10 @@ async function makeSession({ minutesFromNow, status = 'confirmed', studentIds, i
       await pool.query('DELETE FROM course_period_enrollments WHERE course_period_id = ANY($1)', [created.periods]);
       await pool.query('DELETE FROM course_periods WHERE id = ANY($1)', [created.periods]);
     }
+    await pool.query('DELETE FROM students WHERE parent_id = $1', [parentId]).catch(() => {});
+    await pool.query('DELETE FROM parents WHERE id = $1', [parentId]).catch(() => {});
+    await pool.query('DELETE FROM coaches WHERE id = $1', [coach]).catch(() => {});
     console.log(`(已清除 ${created.sessions.length} 堂測試課、${created.periods.length} 個測試課期)`);
+    if (server) await new Promise((resolve) => server.close(resolve));
     await pool.end();
   });

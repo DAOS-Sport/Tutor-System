@@ -9,6 +9,8 @@
 const express = require('express');
 const multer = require('multer');
 const { requireAdminAuth } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定。
+const { requireAnyBackoffice } = require('../../middlewares/requireResource');
 const { saveBuffer } = require('../../services/objectStorage');
 const { processReceiptImage } = require('../../services/receiptImage');
 
@@ -51,7 +53,7 @@ async function handleImageUpload(label, req, res) {
   }
 }
 
-router.post('/invoice', requireAdminAuth, uploadSingle(invoiceUpload), async (req, res) => {
+router.post('/invoice', requireAdminAuth, requireAnyBackoffice(), uploadSingle(invoiceUpload), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: '請選擇檔案' });
     const result = await processReceiptImage({
@@ -68,7 +70,7 @@ router.post('/invoice', requireAdminAuth, uploadSingle(invoiceUpload), async (re
 });
 
 // 通用後台圖片上傳（課程介紹封面等）
-router.post('/image', requireAdminAuth, uploadSingle(genericImageUpload), (req, res) =>
+router.post('/image', requireAdminAuth, requireAnyBackoffice(), uploadSingle(genericImageUpload), (req, res) =>
   handleImageUpload('image', req, res));
 
 module.exports = router;

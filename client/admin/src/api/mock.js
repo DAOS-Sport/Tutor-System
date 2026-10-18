@@ -1,3 +1,4 @@
+import { familyMock } from './familyMock';
 // Centralized mock dataset for Admin Phase 3.
 // 所有 admin API 模組在 mock 模式或後端 501 時，從這裡讀寫。
 
@@ -9,7 +10,7 @@ const todayISO = () => {
 const USERS = [
   { id: 'U001', username: 'admin',   password: 'admin',   name: '系統管理員',  role: 'admin',   venue_id: null },
   { id: 'U003', username: 'staff',   password: 'staff',   name: '小林櫃檯',    role: 'staff',   venue_id: 'B' },
-  { id: 'U_S001', username: 'S001',  password: '0933000001', name: '小林櫃檯', role: 'staff',   venue_id: 'B', staff_id: 'S001', must_change_credentials: true },
+  { id: 'U_S001', username: 'S001',  password: '0900999607', name: '小林櫃檯', role: 'staff',   venue_id: 'B', staff_id: 'S001', must_change_credentials: true },
 ];
 
 const VENUES = [
@@ -31,46 +32,46 @@ const VENUES = [
 ];
 
 const STAFF = [
-  { id: 'C001', name: '王志強', role: 'coach',   venue_id: 'B', phone: '0911000001', is_senior: true,  multiplier: 1.30, active: true },
-  { id: 'C002', name: '林佳穎', role: 'coach',   venue_id: 'B', phone: '0911000002', is_senior: true,  multiplier: 1.50, active: true },
-  { id: 'C003', name: '張嘉豪', role: 'coach',   venue_id: 'C', phone: '0911000003', is_senior: false, multiplier: 1.00, active: true },
-  { id: 'C004', name: '黃詩涵', role: 'coach',   venue_id: 'X', phone: '0911000004', is_senior: false, multiplier: 1.10, active: true },
-  { id: 'M001', name: '王主管', role: 'manager', venue_id: 'B', phone: '0922000001', is_senior: false, multiplier: 1.00, active: true },
-  { id: 'S001', name: '小林櫃檯', role: 'staff', venue_id: 'B', phone: '0933000001', is_senior: false, multiplier: 1.00, active: true },
+  { id: 'C001', name: '王志強', role: 'coach',   venue_id: 'B', phone: '0900660770', is_senior: true,  multiplier: 1.30, active: true },
+  { id: 'C002', name: '林佳穎', role: 'coach',   venue_id: 'B', phone: '0900662684', is_senior: true,  multiplier: 1.50, active: true },
+  { id: 'C003', name: '張嘉豪', role: 'coach',   venue_id: 'C', phone: '0900484236', is_senior: false, multiplier: 1.00, active: true },
+  { id: 'C004', name: '黃詩涵', role: 'coach',   venue_id: 'X', phone: '0900988813', is_senior: false, multiplier: 1.10, active: true },
+  { id: 'M001', name: '王主管', role: 'manager', venue_id: 'B', phone: '0900403619', is_senior: false, multiplier: 1.00, active: true },
+  { id: 'S001', name: '小林櫃檯', role: 'staff', venue_id: 'B', phone: '0900999607', is_senior: false, multiplier: 1.00, active: true },
 ];
 
 // Task #32 — 教練資料 mock（USE_MOCK 模式或後端 501 fallback）
 // 真實環境會由 syncStaffFromRagic 在 staff approve 階段透過 ensureCoachRow 同步寫入 coaches
 const COACHES_ADMIN = [
-  { id: 'c-001', ragic_employee_id: 'C001', name: '王志強', phone: '0911000001',
+  { id: 'c-001', ragic_employee_id: 'C001', name: '王志強', phone: '0900660770',
     email: '', line_uid: 'U_c001', line_bound: true,
     is_senior: true, pricing_multiplier: 1.30,
     specialties: ['基礎技巧', '青少年班'],
     bio_rich_text: '專注青少年網球啟蒙 8 年。',
     is_active: true, intro_review_status: 'published',
     venue_ids: ['B'] },
-  { id: 'c-002', ragic_employee_id: 'C002', name: '林佳穎', phone: '0911000002',
+  { id: 'c-002', ragic_employee_id: 'C002', name: '林佳穎', phone: '0900662684',
     email: 'jiaying@daos.tw', line_uid: 'U_c002', line_bound: true,
     is_senior: true, pricing_multiplier: 1.50,
     specialties: ['體能訓練', '比賽選手'],
     bio_rich_text: '前國手，10 年競技指導經驗。',
     is_active: true, intro_review_status: 'published',
     venue_ids: ['B'] },
-  { id: 'c-003', ragic_employee_id: 'C003', name: '張嘉豪', phone: '0911000003',
+  { id: 'c-003', ragic_employee_id: 'C003', name: '張嘉豪', phone: '0900484236',
     email: '', line_uid: '', line_bound: false,
     is_senior: false, pricing_multiplier: 1.00,
     specialties: ['基礎技巧'],
     bio_rich_text: '熱情活潑、耐心十足。',
     is_active: true, intro_review_status: 'pending',
     venue_ids: ['B', 'C'] },
-  { id: 'c-004', ragic_employee_id: 'C004', name: '黃詩涵', phone: '0911000004',
+  { id: 'c-004', ragic_employee_id: 'C004', name: '黃詩涵', phone: '0900988813',
     email: '', line_uid: '', line_bound: false,
     is_senior: false, pricing_multiplier: 1.10,
     specialties: ['團體班'],
     bio_rich_text: '具備 5 年場館團體班經驗。',
     is_active: true, intro_review_status: 'draft',
     venue_ids: ['C'] },
-  { id: 'c-s001', ragic_employee_id: 'S001', name: '小林櫃檯', phone: '0933000001',
+  { id: 'c-s001', ragic_employee_id: 'S001', name: '小林櫃檯', phone: '0900999607',
     email: '', line_uid: '', line_bound: false,
     is_senior: false, pricing_multiplier: 1.00,
     specialties: ['現場接待', '基礎技巧'],
@@ -88,7 +89,14 @@ function withCoachProfile(row) {
     has_coach_profile: hasCoachProfile,
     is_coach_profile: hasCoachProfile && row.role !== 'coach',
     coach_profile_status: coachProfileStatus,
-    known_roles: Array.from(new Set([row.role, ...(hasCoachProfile ? ['coach'] : [])])),
+    // 形狀要跟後端一致，含手動指派的身分。mock 少一個欄位的下場已經發生過一次：
+    // 假資料每筆都自帶 audit_logs，於是清單 API 不回它造成的正式站崩潰，開發時看不到。
+    known_roles: Array.from(new Set([
+      row.role,
+      ...(hasCoachProfile ? ['coach'] : []),
+      ...(Array.isArray(row.manual_roles) ? row.manual_roles.filter(Boolean) : []),
+    ])),
+    assigned_roles: Array.isArray(row.manual_roles) ? row.manual_roles.filter(Boolean) : [],
     coach_id: coach?.id || null,
     coach_active: coach ? !!coach.is_active : false,
     line_uid: coach?.line_uid || row.line_uid || null,
@@ -172,41 +180,41 @@ function relDays(days, hh = 9, mm = 0) {
 
 const ENROLLMENTS = [
   // ===== 待對帳 8 筆（pending_payment）=====
-  { id: 'CP1001', parent_name: '張媽媽', parent_phone: '0912345678', students: ['張小明'],
+  { id: 'CP1001', parent_name: '張媽媽', parent_phone: '0900796878', students: ['張小明'],
     coach: '王志強', venue_id: 'B', course_type: 1, original_price: 11700, final_price: 11115,
     transfer_last_5: '12345', status: 'pending_payment', submitted_at: relDays(0, 9, 30),
     audit_logs: [{ at: relDays(0, 9, 30), action: '家長送出報名', by: '張媽媽' }] },
-  { id: 'CP1002', parent_name: '李爸爸', parent_phone: '0922333444', students: ['李小龍', '張小美'],
+  { id: 'CP1002', parent_name: '李爸爸', parent_phone: '0900932354', students: ['李小龍', '張小美'],
     coach: '林佳穎', venue_id: 'B', course_type: 2, original_price: 9000, final_price: 8550,
     transfer_last_5: '67890', status: 'pending_payment', submitted_at: relDays(0, 10, 15),
     audit_logs: [{ at: relDays(0, 10, 15), action: '家長送出報名', by: '李爸爸' }] },
-  { id: 'CP1006', parent_name: '吳爸爸', parent_phone: '0955123456', students: ['吳大寶'],
+  { id: 'CP1006', parent_name: '吳爸爸', parent_phone: '0900316937', students: ['吳大寶'],
     coach: '王志強', venue_id: 'B', course_type: 1, original_price: 11700, final_price: 11115,
     transfer_last_5: '33344', status: 'pending_payment', submitted_at: relDays(-1, 14, 20),
     audit_logs: [{ at: relDays(-1, 14, 20), action: '家長送出報名', by: '吳爸爸' }] },
-  { id: 'CP1007', parent_name: '林媽媽', parent_phone: '0966234567', students: ['林小綠', '林小紅'],
+  { id: 'CP1007', parent_name: '林媽媽', parent_phone: '0900496827', students: ['林小綠', '林小紅'],
     coach: '張嘉豪', venue_id: 'C', course_type: 2, original_price: 6000, final_price: 5700,
     transfer_last_5: '55566', status: 'pending_payment', submitted_at: relDays(-1, 11, 5),
     audit_logs: [{ at: relDays(-1, 11, 5), action: '家長送出報名', by: '林媽媽' }] },
-  { id: 'CP1008', parent_name: '蔡媽媽', parent_phone: '0977345678', students: ['蔡安安', '蔡平平', '蔡靜靜'],
+  { id: 'CP1008', parent_name: '蔡媽媽', parent_phone: '0900283931', students: ['蔡安安', '蔡平平', '蔡靜靜'],
     coach: '黃詩涵', venue_id: 'X', course_type: 3, original_price: 4950, final_price: 4702,
     transfer_last_5: '77788', status: 'pending_payment', submitted_at: relDays(-2, 9, 0),
     audit_logs: [{ at: relDays(-2, 9, 0), action: '家長送出報名', by: '蔡媽媽' }] },
-  { id: 'CP1009', parent_name: '謝爸爸', parent_phone: '0988456789', students: ['謝小恩'],
+  { id: 'CP1009', parent_name: '謝爸爸', parent_phone: '0900526401', students: ['謝小恩'],
     coach: '林佳穎', venue_id: 'B', course_type: 1, original_price: 13500, final_price: 12825,
     transfer_last_5: '88899', status: 'pending_payment', submitted_at: relDays(-2, 16, 30),
     audit_logs: [{ at: relDays(-2, 16, 30), action: '家長送出報名', by: '謝爸爸' }] },
-  { id: 'CP1010', parent_name: '黃媽媽', parent_phone: '0999567890', students: ['黃小傑'],
+  { id: 'CP1010', parent_name: '黃媽媽', parent_phone: '0900267623', students: ['黃小傑'],
     coach: '張嘉豪', venue_id: 'C', course_type: 1, original_price: 9000, final_price: 8550,
     transfer_last_5: '00011', status: 'pending_payment', submitted_at: relDays(-3, 13, 0),
     audit_logs: [{ at: relDays(-3, 13, 0), action: '家長送出報名', by: '黃媽媽' }] },
-  { id: 'CP1011', parent_name: '楊媽媽', parent_phone: '0911678901', students: ['楊小綺', '王小華'],
+  { id: 'CP1011', parent_name: '楊媽媽', parent_phone: '0900166548', students: ['楊小綺', '王小華'],
     coach: '王志強', venue_id: 'B', course_type: 2, original_price: 7800, final_price: 7410,
     transfer_last_5: '22233', status: 'pending_payment', submitted_at: relDays(-3, 17, 45),
     audit_logs: [{ at: relDays(-3, 17, 45), action: '家長送出報名', by: '楊媽媽' }] },
 
   // ===== 已對帳尚未開課 3 筆（confirmed）=====
-  { id: 'CP1003', parent_name: '陳媽媽', parent_phone: '0933555777', students: ['陳小米'],
+  { id: 'CP1003', parent_name: '陳媽媽', parent_phone: '0900549610', students: ['陳小米'],
     coach: '張嘉豪', venue_id: 'C', course_type: 1, original_price: 9000, final_price: 8550,
     transfer_last_5: '24680', status: 'confirmed', submitted_at: relDays(-4, 14, 0),
     total_sessions: 6, used_sessions: 1,
@@ -214,7 +222,7 @@ const ENROLLMENTS = [
       { at: relDays(-4, 14, 0), action: '家長送出報名', by: '陳媽媽' },
       { at: relDays(-4, 15, 20), action: '對帳通過', by: '王主管' },
     ] },
-  { id: 'CP1012', parent_name: '蘇爸爸', parent_phone: '0922789012', students: ['蘇小明'],
+  { id: 'CP1012', parent_name: '蘇爸爸', parent_phone: '0900427255', students: ['蘇小明'],
     coach: '林佳穎', venue_id: 'B', course_type: 1, original_price: 13500, final_price: 12825,
     transfer_last_5: '44455', status: 'confirmed', submitted_at: relDays(-5, 10, 30),
     total_sessions: 6, used_sessions: 0,
@@ -222,7 +230,7 @@ const ENROLLMENTS = [
       { at: relDays(-5, 10, 30), action: '家長送出報名', by: '蘇爸爸' },
       { at: relDays(-5, 11, 0), action: '對帳通過', by: '王主管' },
     ] },
-  { id: 'CP1013', parent_name: '鄭媽媽', parent_phone: '0933890123', students: ['鄭小俠', '鄭小俐'],
+  { id: 'CP1013', parent_name: '鄭媽媽', parent_phone: '0900059724', students: ['鄭小俠', '鄭小俐'],
     coach: '黃詩涵', venue_id: 'X', course_type: 2, original_price: 6600, final_price: 6270,
     transfer_last_5: '66677', status: 'confirmed', submitted_at: relDays(-6, 9, 15),
     total_sessions: 6, used_sessions: 0,
@@ -232,7 +240,7 @@ const ENROLLMENTS = [
     ] },
 
   // ===== 進行中 6 筆（active）=====
-  { id: 'CP1004', parent_name: '張媽媽', parent_phone: '0912345678', students: ['張小明'],
+  { id: 'CP1004', parent_name: '張媽媽', parent_phone: '0900796878', students: ['張小明'],
     coach: '王志強', venue_id: 'B', course_type: 1, original_price: 11700, final_price: 11115,
     transfer_last_5: '99999', status: 'active', submitted_at: relDays(-22, 9, 0),
     total_sessions: 6, used_sessions: 3,
@@ -240,7 +248,7 @@ const ENROLLMENTS = [
       { at: relDays(-22, 9, 0), action: '家長送出報名', by: '張媽媽' },
       { at: relDays(-22, 11, 0), action: '對帳通過', by: '王主管' },
     ] },
-  { id: 'CP1014', parent_name: '王媽媽', parent_phone: '0944901234', students: ['王小皓'],
+  { id: 'CP1014', parent_name: '王媽媽', parent_phone: '0900502386', students: ['王小皓'],
     coach: '林佳穎', venue_id: 'B', course_type: 1, original_price: 13500, final_price: 12825,
     transfer_last_5: '11000', status: 'active', submitted_at: relDays(-30, 9, 0),
     total_sessions: 6, used_sessions: 5,
@@ -248,7 +256,7 @@ const ENROLLMENTS = [
       { at: relDays(-30, 9, 0), action: '家長送出報名', by: '王媽媽' },
       { at: relDays(-30, 10, 0), action: '對帳通過', by: '王主管' },
     ] },
-  { id: 'CP1015', parent_name: '陳爸爸', parent_phone: '0955012345', students: ['陳小宇'],
+  { id: 'CP1015', parent_name: '陳爸爸', parent_phone: '0900115363', students: ['陳小宇'],
     coach: '張嘉豪', venue_id: 'C', course_type: 1, original_price: 9000, final_price: 8550,
     transfer_last_5: '22000', status: 'active', submitted_at: relDays(-15, 14, 0),
     total_sessions: 6, used_sessions: 2,
@@ -256,7 +264,7 @@ const ENROLLMENTS = [
       { at: relDays(-15, 14, 0), action: '家長送出報名', by: '陳爸爸' },
       { at: relDays(-15, 15, 0), action: '對帳通過', by: '王主管' },
     ] },
-  { id: 'CP1016', parent_name: '林爸爸', parent_phone: '0966123456', students: ['林小杰', '林小妤'],
+  { id: 'CP1016', parent_name: '林爸爸', parent_phone: '0900892637', students: ['林小杰', '林小妤'],
     coach: '王志強', venue_id: 'B', course_type: 2, original_price: 7800, final_price: 7410,
     transfer_last_5: '33000', status: 'active', submitted_at: relDays(-18, 16, 0),
     total_sessions: 6, used_sessions: 4,
@@ -264,7 +272,7 @@ const ENROLLMENTS = [
       { at: relDays(-18, 16, 0), action: '家長送出報名', by: '林爸爸' },
       { at: relDays(-18, 17, 0), action: '對帳通過', by: '王主管' },
     ] },
-  { id: 'CP1017', parent_name: '徐媽媽', parent_phone: '0977234567', students: ['徐小柔'],
+  { id: 'CP1017', parent_name: '徐媽媽', parent_phone: '0900784634', students: ['徐小柔'],
     coach: '黃詩涵', venue_id: 'X', course_type: 1, original_price: 9900, final_price: 9405,
     transfer_last_5: '44000', status: 'active', submitted_at: relDays(-25, 10, 0),
     total_sessions: 6, used_sessions: 1,
@@ -272,7 +280,7 @@ const ENROLLMENTS = [
       { at: relDays(-25, 10, 0), action: '家長送出報名', by: '徐媽媽' },
       { at: relDays(-25, 11, 0), action: '對帳通過', by: '王主管' },
     ] },
-  { id: 'CP1018', parent_name: '高媽媽', parent_phone: '0988345678', students: ['高小琳'],
+  { id: 'CP1018', parent_name: '高媽媽', parent_phone: '0900624742', students: ['高小琳'],
     coach: '林佳穎', venue_id: 'B', course_type: 1, original_price: 13500, final_price: 12825,
     transfer_last_5: '55000', status: 'active', submitted_at: relDays(-12, 9, 0),
     total_sessions: 6, used_sessions: 0,
@@ -282,7 +290,7 @@ const ENROLLMENTS = [
     ] },
 
   // ===== 取消 / 退費 4 筆（cancelled / refunded）=====
-  { id: 'CP1005', parent_name: '陳媽媽', parent_phone: '0933555777', students: ['陳小米'],
+  { id: 'CP1005', parent_name: '陳媽媽', parent_phone: '0900549610', students: ['陳小米'],
     coach: '黃詩涵', venue_id: 'X', course_type: 3, original_price: 4950, final_price: 4702,
     transfer_last_5: '11122', status: 'cancelled', submitted_at: relDays(-45, 8, 30),
     total_sessions: 6, used_sessions: 0,
@@ -291,7 +299,7 @@ const ENROLLMENTS = [
       { at: relDays(-45, 10, 0), action: '對帳通過', by: '王主管' },
       { at: relDays(-7, 16, 0), action: '主管取消', by: '王主管' },
     ] },
-  { id: 'CP1019', parent_name: '何爸爸', parent_phone: '0911456789', students: ['何小晴'],
+  { id: 'CP1019', parent_name: '何爸爸', parent_phone: '0900586610', students: ['何小晴'],
     coach: '王志強', venue_id: 'B', course_type: 1, original_price: 11700, final_price: 11115,
     transfer_last_5: '66000', status: 'refunded', submitted_at: relDays(-50, 11, 0),
     total_sessions: 6, used_sessions: 2,
@@ -300,7 +308,7 @@ const ENROLLMENTS = [
       { at: relDays(-50, 12, 0), action: '對帳通過', by: '王主管' },
       { at: relDays(-10, 14, 30), action: '退課（理由：搬家無法繼續上課，退款 NT$ 6,669）', by: '王主管' },
     ] },
-  { id: 'CP1020', parent_name: '葉媽媽', parent_phone: '0922567890', students: ['葉小晨'],
+  { id: 'CP1020', parent_name: '葉媽媽', parent_phone: '0900714593', students: ['葉小晨'],
     coach: '張嘉豪', venue_id: 'C', course_type: 1, original_price: 9000, final_price: 8550,
     transfer_last_5: '77000', status: 'refunded', submitted_at: relDays(-60, 10, 0),
     total_sessions: 6, used_sessions: 4,
@@ -309,7 +317,7 @@ const ENROLLMENTS = [
       { at: relDays(-60, 11, 0), action: '對帳通過', by: '王主管' },
       { at: relDays(-15, 15, 0), action: '退課（理由：時間衝突，退款 NT$ 2,565）', by: '王主管' },
     ] },
-  { id: 'CP1021', parent_name: '邱媽媽', parent_phone: '0933678901', students: ['邱小宸'],
+  { id: 'CP1021', parent_name: '邱媽媽', parent_phone: '0900741279', students: ['邱小宸'],
     coach: '林佳穎', venue_id: 'B', course_type: 1, original_price: 13500, final_price: 12825,
     transfer_last_5: '88000', status: 'cancelled', submitted_at: relDays(-35, 13, 0),
     total_sessions: 6, used_sessions: 0,
@@ -320,7 +328,7 @@ const ENROLLMENTS = [
     ] },
 
   // ===== 進行中（補到 24 筆，剛好涵蓋三場館 + 三組別 + 多數教練）=====
-  { id: 'CP1022', parent_name: '游爸爸', parent_phone: '0944789012', students: ['游小薇', '小婷', '小芯'],
+  { id: 'CP1022', parent_name: '游爸爸', parent_phone: '0900802389', students: ['游小薇', '小婷', '小芯'],
     coach: '黃詩涵', venue_id: 'X', course_type: 3, original_price: 4950, final_price: 4702,
     transfer_last_5: '99000', status: 'active', submitted_at: relDays(-20, 11, 0),
     total_sessions: 6, used_sessions: 3,
@@ -328,7 +336,7 @@ const ENROLLMENTS = [
       { at: relDays(-20, 11, 0), action: '家長送出報名', by: '游爸爸' },
       { at: relDays(-20, 12, 0), action: '對帳通過', by: '王主管' },
     ] },
-  { id: 'CP1023', parent_name: '宋媽媽', parent_phone: '0955890123', students: ['宋小芳'],
+  { id: 'CP1023', parent_name: '宋媽媽', parent_phone: '0900289622', students: ['宋小芳'],
     coach: '張嘉豪', venue_id: 'C', course_type: 1, original_price: 9000, final_price: 8550,
     transfer_last_5: '12300', status: 'active', submitted_at: relDays(-8, 9, 0),
     total_sessions: 6, used_sessions: 1,
@@ -336,7 +344,7 @@ const ENROLLMENTS = [
       { at: relDays(-8, 9, 0), action: '家長送出報名', by: '宋媽媽' },
       { at: relDays(-8, 10, 30), action: '對帳通過', by: '王主管' },
     ] },
-  { id: 'CP1024', parent_name: '紀媽媽', parent_phone: '0966901234', students: ['紀小美', '紀小華'],
+  { id: 'CP1024', parent_name: '紀媽媽', parent_phone: '0900128929', students: ['紀小美', '紀小華'],
     coach: '王志強', venue_id: 'B', course_type: 2, original_price: 7800, final_price: 7410,
     transfer_last_5: '45600', status: 'active', submitted_at: relDays(-5, 16, 0),
     total_sessions: 6, used_sessions: 0,
@@ -363,17 +371,24 @@ const CANCELLED_SESSIONS = [
 // 真實的 ragicStatusApi 直連後端、刻意不吃 mock（這頁只反映線上即時同步狀態），
 // 因此 demo / VITE_USE_MOCK 模式下原本「連開都開不了」。此處補一份假快照，
 // 讓這頁在無後端時也能開，並讓「立即同步」按出「同步中 → 成功」動畫（5 秒輪詢驅動）。
-function _ragicNextCron(now = new Date()) {
-  // 對齊 server/routes/admin/ragicStatus.js 的 '*/10 * * * *'
-  const next = new Date(now.getTime());
-  next.setSeconds(0, 0);
-  const m = next.getMinutes();
-  next.setMinutes(m + (10 - (m % 10)));
-  return next.toISOString();
-}
+// 排程對照表抄自 server/constants/ragicJobSchedules.js（demo 用，真實模式一律以後端回傳為準）。
+const RAGIC_MOCK_SCHEDULES = {
+  jobs: {
+    backup:     { name: '家長與學員寫回 Ragic', sheet: 'Z01／Z02', direction: 'out',   cron: '30 0 * * *', text: '每天 00:30' },
+    pull:       { name: '從 Ragic 拉回家長與學員', sheet: 'Z01／Z02', direction: 'in', cron: '30 2 * * *', text: '每天 02:30' },
+    staff:     { name: '員工與教練',         sheet: 'H01',      direction: 'in',    cron: '30 3 * * *', text: '每天 03:30' },
+    venues:     { name: '場館',               sheet: 'H05',      direction: 'in',    cron: '30 3 * * *', text: '每天 03:30' },
+    parents:    { name: '家長表連線測試',     sheet: 'Z01',      direction: 'check', cron: null,         text: '手動' },
+    students:   { name: '學員表連線測試',     sheet: 'Z02',      direction: 'check', cron: null,         text: '手動' },
+  },
+  background: [
+    { key: 'outbox',  name: '新註冊家長寫入 Ragic', cron: '10 0 * * *', text: '每天 00:10' },
+    { key: 'webhook', name: 'Ragic 即時通知重試',   cron: '* * * * *',  text: '每分鐘' },
+  ],
+};
 const RAGIC_MOCK_ENV = {
   RAGIC_API_KEY: true, RAGIC_BASE_URL: true,
-  RAGIC_FORM_H01: true, RAGIC_FORM_H05: true,
+  RAGIC_FORM_H01: true, RAGIC_FORM_H23: true, RAGIC_FORM_H05: true,
   RAGIC_FORM_Z01: true, RAGIC_FORM_Z02: true,
 };
 const RAGIC_MOCK_LIVE_PROBE = {
@@ -382,6 +397,7 @@ const RAGIC_MOCK_LIVE_PROBE = {
   checked_at: new Date(Date.now() - 30000).toISOString(),
   forms: {
     h01: { label: 'H01 員工 API', env: 'RAGIC_FORM_H01', configured: true, status: 'ok', ok: true, empty: false, record_count: 1, duration_ms: 420 },
+    h23: { label: 'H23 新生/基本資料 API', env: 'RAGIC_FORM_H23', configured: true, status: 'ok', ok: true, empty: false, record_count: 1, duration_ms: 304 },
     h05: { label: 'H05 場館 API', env: 'RAGIC_FORM_H05', configured: true, status: 'ok', ok: true, empty: false, record_count: 1, duration_ms: 380 },
     z01: { label: 'Z01 家長 API', env: 'RAGIC_FORM_Z01', configured: true, status: 'ok', ok: true, empty: false, record_count: 1, duration_ms: 510 },
     z02: { label: 'Z02 學員 API', env: 'RAGIC_FORM_Z02', configured: true, status: 'ok', ok: true, empty: false, record_count: 1, duration_ms: 490 },
@@ -422,12 +438,15 @@ const RAGIC_MOCK_FORMS = {
     last_success_at: new Date(Date.now() - 6 * 60000).toISOString(),
     last_count: 0, last_duration_ms: 610,
   },
+  // 比照正式站常態：每晚有寫回幾筆，但少數資料不完整的學員一直寫不進 Ragic → 整體記為 error。
   backup: {
     form_code: 'Z01_Z02_BACKUP', label: 'Z01/Z02 本地→Ragic 每日備份同步', kind: 'sync',
     admin_enabled: true,
-    in_progress: false, last_status: 'ok', last_triggered_by: 'cron', last_error: null,
+    in_progress: false, last_status: 'error', last_triggered_by: 'cron',
+    last_error: '61 筆同步失敗（詳見伺服器 log）：localId=00000000-0000-0000-0000-000000000000 — RAGIC_VALIDATION_ERROR: 請補齊學員：生日',
     last_run_at: new Date(Date.now() - 5 * 3600000).toISOString(),
-    last_success_at: new Date(Date.now() - 5 * 3600000).toISOString(),
+    last_run_count: 7,
+    last_success_at: new Date(Date.now() - 78 * 86400000).toISOString(),
     last_count: 2, last_duration_ms: 980,
   },
   pull: {
@@ -442,28 +461,28 @@ const RAGIC_MOCK_FORMS = {
 
 // ── 客戶資料管理 mock（Z01 家長&學員關係 / Z02 學員資料含購買紀錄）──────────────
 const CUSTOMER_PARENTS = [
-  { id: 'p-uuid-001', line_uid: 'U11223344556677889900abcdef', phone: '0919488314', name: 'Mandy',
+  { id: 'p-uuid-001', line_uid: 'U11223344556677889900abcdef', phone: '0900269329', name: 'Mandy',
     gender: '生理女', email: 'mandy@example.com', primary_venue_id: 'B', identity: '一般身份',
     home_phone: '02-29887766', home_address: '新北市板橋區文化路一段188號', line_id: 'mandy_line',
     ragic_record_id: 'ragic-node-101', is_active: true, last_synced_at: '2026-06-30 19:12', family_id: 'fam-uuid-101' },
-  { id: 'p-uuid-002', line_uid: 'U99887766554433221100fedcba', phone: '0935141499', name: '戴凱莉',
+  { id: 'p-uuid-002', line_uid: 'U99887766554433221100fedcba', phone: '0900582490', name: '戴凱莉',
     gender: '生理女', email: 'kelly.tai@example.com', primary_venue_id: 'C', identity: '一般身份',
     home_phone: '02-27654321', home_address: '台北市信義區忠孝東路五段100號', line_id: 'kelly_line_99',
     ragic_record_id: 'ragic-node-102', is_active: true, last_synced_at: '2026-06-28 14:30', family_id: 'fam-uuid-102' },
-  { id: 'p-uuid-003', line_uid: null, phone: '0919136455', name: '蕭宇成',
+  { id: 'p-uuid-003', line_uid: null, phone: '0900810787', name: '蕭宇成',
     gender: '生理男', email: 'yc.hsiao@example.com', primary_venue_id: 'X', identity: '教練/員工',
     home_phone: '03-5778899', home_address: '新竹市東區光復路二段101號', line_id: 'yucheng_s',
     ragic_record_id: 'ragic-node-103', is_active: true, last_synced_at: '2026-06-29 09:15', family_id: 'fam-uuid-103' },
-  { id: 'p-uuid-004', line_uid: null, phone: '0900000000', name: '行政櫃檯(測試)',
+  { id: 'p-uuid-004', line_uid: null, phone: '0900215261', name: '行政櫃檯(測試)',
     gender: '生理男', email: 'counter.test@example.com', primary_venue_id: 'B', identity: '行政櫃檯',
     home_phone: '02-25001122', home_address: '新北市板橋區文化路一段200號', line_id: '',
     ragic_record_id: 'ragic-node-104', is_active: false, last_synced_at: '2026-06-25 18:22', family_id: 'fam-uuid-104' },
 ];
 const CUSTOMER_STUDENTS = [
-  { id: 's-uuid-201', parent_id: 'p-uuid-001', name: '張景祥', id_number: 'A133677361', gender: '生理男',
+  { id: 's-uuid-201', parent_id: 'p-uuid-001', name: '張景祥', id_number: 'A162207257', gender: '生理男',
     birth_date: '2019-04-04', blood_type: '不清楚', student_code: 'STD-133677', ragic_record_id: 'ragic-stud-201',
     is_active: true, last_synced_at: '2026-06-30 19:12' },
-  { id: 's-uuid-202', parent_id: 'p-uuid-002', name: '林小寶', id_number: 'A123456789', gender: '生理男',
+  { id: 's-uuid-202', parent_id: 'p-uuid-002', name: '林小寶', id_number: 'A132702114', gender: '生理男',
     birth_date: '2018-05-12', blood_type: 'O', student_code: 'STD-112001', ragic_record_id: 'ragic-stud-202',
     is_active: true, last_synced_at: '2026-06-28 14:30' },
   { id: 's-uuid-203', parent_id: 'p-uuid-001', name: '張景惠', id_number: 'A233677362', gender: '生理女',
@@ -483,8 +502,10 @@ const CUSTOMER_PURCHASES = {
 export const mockDb = {
   // ── 客戶資料管理 ───────────────────────────────────────────
   customerParents(filters = {}) {
-    const { status = 'all', venueId = '', name = '', phone = '', identity = '' } = filters;
+    const { status = 'all', venueId = '', name = '', phone = '', identity = '', hasFamily = '' } = filters;
     return CUSTOMER_PARENTS.filter((p) => {
+      if (hasFamily === 'yes' && !familyMock.summaryFor(p.id)) return false;
+      if (hasFamily === 'no' && familyMock.summaryFor(p.id)) return false;
       if (status === 'active' && !p.is_active) return false;
       if (status === 'inactive' && p.is_active) return false;
       if (venueId && p.primary_venue_id !== venueId) return false;
@@ -494,6 +515,7 @@ export const mockDb = {
       return true;
     }).map((p) => ({
       ...p, line_bound: !!p.line_uid,
+      family: familyMock.summaryFor(p.id),
       student_count: CUSTOMER_STUDENTS.filter((s) => s.parent_id === p.id).length,
     }));
   },
@@ -592,8 +614,7 @@ export const mockDb = {
         ...RAGIC_MOCK_LIVE_PROBE,
         cached: true,
       })),
-      cron_schedule: '*/10 * * * *',
-      next_cron_run_at: _ragicNextCron(now),
+      schedules: JSON.parse(JSON.stringify(RAGIC_MOCK_SCHEDULES)),
       // 深拷貝：避免頁面拿到 module 內部物件而被後續 setTimeout 變更「偷改」既有 render
       forms: JSON.parse(JSON.stringify(RAGIC_MOCK_FORMS)),
       now: now.toISOString(),
@@ -621,6 +642,34 @@ export const mockDb = {
     return {
       ok: true, accepted: true, queued_jobs: jobs,
       message: '（demo）已排入背景同步，狀態會自動更新…',
+    };
+  },
+  // GET /ragic-status/webhook-attempts 的 demo 版：一筆被拒、一筆成功
+  ragicWebhookAttempts() {
+    const t = Date.now();
+    return {
+      recent: [
+        { received_at: new Date(t - 2 * 60000).toISOString(), method: 'POST', sheet_code: 'Z01', status: 200, outcome: 'ok', content_type: 'text/plain', body_kind: 'array', id_count: 1 },
+        { received_at: new Date(t - 40 * 60000).toISOString(), method: 'POST', sheet_code: 'Z02', status: 401, outcome: 'unauthorized', content_type: 'application/json', body_kind: null, id_count: null },
+      ],
+      summary: [{ outcome: 'ok', count: 1 }, { outcome: 'unauthorized', count: 1 }],
+    };
+  },
+  // GET /ragic-status/sync-failures 的 demo 版（數字比照 2026-09-23 正式站）
+  ragicSyncFailures() {
+    return {
+      window_days: 2,
+      summary: [{ error_kind: 'permanent', entity_kind: 'student', n: 122, distinct_records: 61, latest: new Date().toISOString() }],
+      by_error_code: [
+        { error_code: 'STUDENT_ID_NUMBER_EXISTS', n: 62, distinct_records: 31 },
+        { error_code: 'RAGIC_VALIDATION_ERROR', n: 60, distinct_records: 30 },
+      ],
+      by_job_code: [
+        { job_name: 'backup', error_code: 'STUDENT_ID_NUMBER_EXISTS', error_kind: 'permanent', distinct_records: 31 },
+        { job_name: 'backup', error_code: 'RAGIC_VALIDATION_ERROR', error_kind: 'permanent', distinct_records: 30 },
+      ],
+      repeat_permanent_failures: [],
+      recent: [],
     };
   },
   // POST /ragic-status/toggle 的 demo 版：就地改 admin_enabled，下一次 ragicStatus() 反映。
@@ -764,6 +813,16 @@ export const mockDb = {
       image_url: next.image_url || '',
       title_overridden: !!next.title_overridden,
       base_price: cfg ? Number(cfg.base_price || 0) : 0,
+    };
+  },
+
+  // 走跟 enrollments() 同一份資料再數，不另外寫一組假數字：
+  // 兩邊各自維護的話，mock 的首頁數字會跟 mock 的清單對不起來。
+  enrollmentStats(filters = {}) {
+    const rows = this.enrollments(filters);
+    return {
+      pending: rows.filter((e) => e.status === 'pending_payment').length,
+      active: rows.filter((e) => e.status === 'active' || e.status === 'confirmed').length,
     };
   },
 

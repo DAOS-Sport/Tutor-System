@@ -35,7 +35,7 @@ function studentRow(fixture, rowIndex) {
     1001115: `批次既有學員${String(fixture.index).padStart(2, '0')}-${rowIndex + 1}`,
     1001116: `201${rowIndex + 4}/0${(rowIndex % 8) + 1}/1${rowIndex}`,
     1001117: rowIndex % 2 ? '生理女' : '生理男',
-    1001118: rowIndex === 0 ? 'A123456789' : '',
+    1001118: rowIndex === 0 ? 'A132702114' : '',
     1001132: `SIM50-${fixture.index}-${rowIndex + 1}`,
     1004090: fixture.phone,
   };
@@ -175,7 +175,7 @@ async function postJson(port, path, body) {
         },
         students: [{
           name: fixture.selectedStudent,
-          id_number: 'A123456789',
+          id_number: 'A132702114',
           birth_date: '2018-03-04',
           gender: fixture.index % 2 ? '生理女' : '生理男',
           blood_type: '不清楚',

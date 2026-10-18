@@ -10,6 +10,7 @@ import ConfirmModal from './ConfirmModal';
 import LoadingSpinner from './LoadingSpinner';
 import { useToast } from '../context/ToastContext';
 import { addDaysToTaipeiYMD, courseTypeLabel, formatTWDate, formatTWTime, formatTWYMD, todayTaipeiYMD } from '../utils/format';
+import { useGuideDemo } from '../utils/guideDemo';
 
 // 早上／下午／晚上：以開始時間的「時」分段。色調沿用品牌主色（晨=amber、午=teal、晚=navy）。
 const BANDS = [
@@ -35,8 +36,9 @@ const slotHour = (s) => Number(formatTWTime(s.start_at).slice(0, 2)) || 0;
  *      embedded  true＝內嵌（不顯示資訊卡、不黏底，較精簡）；false＝獨立頁
  */
 export default function SlotPicker({ periodId, onBooked, embedded = false }) {
+  const guide = useGuideDemo();
   const toast = useToast();
-  const [data, setData] = useState(null);
+  const [data, setData] = useState(() => guide?.booking || null);
   const [error, setError] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
   const [activeDate, setActiveDate] = useState('');
@@ -44,6 +46,12 @@ export default function SlotPicker({ periodId, onBooked, embedded = false }) {
   const [busy, setBusy] = useState(false);
 
   function load() {
+    if (guide?.booking) {
+      setError(null);
+      setData(guide.booking);
+      setSelectedId(null);
+      return;
+    }
     setError(null);
     setData(null);
     setSelectedId(null);
@@ -62,6 +70,13 @@ export default function SlotPicker({ periodId, onBooked, embedded = false }) {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [periodId]);
+
+  useEffect(() => {
+    if (!guide?.booking) return;
+    setData(guide.booking);
+    const first = guide.booking.slots?.[0]?.id || null;
+    setSelectedId(['selected', 'submit'].includes(guide.view) ? first : null);
+  }, [guide?.index]);
 
   const period = data?.period || {};
   const quota = Number(data?.sessions_left || 0);
@@ -108,6 +123,7 @@ export default function SlotPicker({ periodId, onBooked, embedded = false }) {
   }, [byDate, activeDate]);
 
   async function submit() {
+    if (guide) return;
     if (!selectedId || busy) return;
     setBusy(true);
     try {
@@ -137,7 +153,7 @@ export default function SlotPicker({ periodId, onBooked, embedded = false }) {
 
   // 資訊卡（教練/課程）：僅獨立頁顯示。
   const infoCard = (
-    <div className="px-4 pt-4">
+    <div data-guide-booking-info className="px-4 pt-4">
       <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
         <div className="flex flex-wrap items-center gap-2">
           <span className="rounded-md bg-brand-primary/10 px-2 py-0.5 text-xs font-semibold text-brand-primary">
@@ -174,7 +190,7 @@ export default function SlotPicker({ periodId, onBooked, embedded = false }) {
       )}
 
       {/* 日期列 */}
-      <div className={embedded ? 'px-3 pt-2' : 'sticky top-0 z-10 mt-4 border-b border-gray-100 bg-white px-4 py-3'}>
+      <div data-guide-booking-dates className={embedded ? 'px-3 pt-2' : 'sticky top-0 z-10 mt-4 border-b border-gray-100 bg-white px-4 py-3'}>
         <div className="flex gap-2 overflow-x-auto">
           {days.map((d) => (
             <DayChip key={d.date} d={d} active={d.date === activeDate}
@@ -185,7 +201,7 @@ export default function SlotPicker({ periodId, onBooked, embedded = false }) {
       </div>
 
       {/* 時段（依早/午/晚分段、水平捲動） */}
-      <div className={embedded ? 'space-y-4 px-3 py-3' : 'flex-1 space-y-5 px-4 py-4'}>
+      <div data-guide-booking-slots className={embedded ? 'space-y-4 px-3 py-3' : 'flex-1 space-y-5 px-4 py-4'}>
         {bandGroups.length === 0 ? (
           <EmptyBlock text="這天教練尚未開放時段，請改選其他日期。" />
         ) : (
@@ -196,7 +212,7 @@ export default function SlotPicker({ periodId, onBooked, embedded = false }) {
       </div>
 
       {/* 送出列 */}
-      <div className={embedded ? 'px-3 pb-3' : 'sticky bottom-0 z-10 border-t border-gray-100 bg-white px-4 py-3'}>
+      <div data-guide-booking-submit className={embedded ? 'px-3 pb-3' : 'sticky bottom-0 z-10 border-t border-gray-100 bg-white px-4 py-3'}>
         <div className="flex items-center justify-between gap-3">
           <div className="text-xs text-gray-500">
             已選 <span className="font-bold text-brand-primary">{selectedId ? 1 : 0}</span> 堂・尚可選 {Math.max(0, quota - (selectedId ? 1 : 0))} 堂

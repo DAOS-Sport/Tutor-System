@@ -15,6 +15,7 @@
 const crypto = require('crypto');
 const { pool } = require('../models/db');
 const promotions = require('./promotions');
+const familyScope = require('./familyScope');
 
 const REWARD_PERCENTAGE = 0.9; // 9 折
 const TOKEN_BYTES = 16; // 22~24 char base64url
@@ -145,6 +146,12 @@ async function issueRewardForEnrollment(enrollmentId, { line, BRAND_LIFF_URL } =
     }
     const r = ref.rows[0];
 
+    // 家庭帳號（§5 第二階段）：同一個家庭互相推薦不給獎勵。推薦照常推進到 checked_in，
+    // 只是不發券。判斷時間點是發獎這一刻（體驗簽到觸發）。
+    const sameFamily = !!r.referee_parent_id
+      && (await familyScope.parentIdsFor(r.referrer_parent_id, client))
+        .includes(String(r.referee_parent_id));
+
     // 2. 先把 referral 推進到 checked_in（顯式狀態機 trial_paid → checked_in）
     await client.query(
       `UPDATE referral_records
@@ -153,6 +160,11 @@ async function issueRewardForEnrollment(enrollmentId, { line, BRAND_LIFF_URL } =
         WHERE id = $1 AND status = 'trial_paid'`,
       [r.id]
     );
+    if (sameFamily) {
+      await client.query('COMMIT');
+      console.log('[referrals.issueReward] 同一家庭互推，不發獎勵：referral', r.id);
+      return null;
+    }
 
     // 3. 建立綁 referrer parent_id 的 9 折 promotion（coupon_code 採每筆唯一）
     const code = `MGM${Date.now().toString(36).toUpperCase().slice(-6)}${Math.floor(Math.random()*36).toString(36).toUpperCase()}`;

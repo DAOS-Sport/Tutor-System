@@ -2,7 +2,8 @@ import { callApi } from './client';
 import { mockDb } from './mock';
 
 export const venuesApi = {
-  list: () => callApi('/venues', {}, () => mockDb.venues()),
+  list: ({ activeOnly = false } = {}) => callApi('/venues', { params: activeOnly ? { activeOnly: 1 } : undefined },
+    () => activeOnly ? mockDb.venues().filter((v) => v.is_active === true) : mockDb.venues()),
   update: (id, patch) =>
     callApi(`/venues/${id}`, { method: 'patch', data: patch }, () => mockDb.updateVenue(id, patch)),
   // Task #84：場館啟用 / 停用（admin only；同步寫 admin_venues + venues）

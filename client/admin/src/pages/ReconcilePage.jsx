@@ -87,6 +87,7 @@ function checkoutInvoiceFamilies(checkout) {
     parent_name: checkout?.parent_name || orders[0]?.parent_name || null,
     parent_phone: checkout?.parent_phone || orders[0]?.parent_phone || null,
     carrier: checkout?.carrier || orders[0]?.carrier || '',
+    tax_id: checkout?.tax_id || orders[0]?.tax_id || '',
     amount: Number(checkout?.total_amount) || 0,
     order_ids: orders.map((order) => order.id).filter(Boolean),
     order_count: orders.length,
@@ -173,6 +174,13 @@ function FamilyInvoiceFields({ family, familyIndex, orders, value, onChange, bus
         </div>
 
         <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3">
+          {value.taxId && (
+            <div className="mb-2 rounded-lg border border-indigo-200 bg-white px-3 py-2 text-sm text-indigo-900">
+              <span className="text-xs font-semibold text-indigo-700">家長填寫的統一編號：</span>{' '}
+              <span className="font-mono font-bold tracking-widest">{value.taxId}</span>
+            </div>
+          )}
+          {!value.taxId && <>
           <label className="mb-1 block text-xs font-semibold text-indigo-700" htmlFor={`family-carrier-${familyIndex}`}>
             此家庭電子發票載具（選填，可直接用掃描器刷入）
           </label>
@@ -186,11 +194,12 @@ function FamilyInvoiceFields({ family, familyIndex, orders, value, onChange, bus
             placeholder="例如 /ABC+123"
             className="w-full rounded-lg border border-indigo-200 bg-white px-3 py-2 font-mono text-sm text-indigo-900 focus:border-brand-teal focus:outline-none disabled:bg-gray-100"
           />
-          {value.carrier && (
+          {value.carrier && !value.taxId && (
             <div className="mt-2 inline-block rounded-lg bg-white p-2">
               <Barcode value={value.carrier} />
             </div>
           )}
+          </>}
         </div>
 
         <div>
@@ -272,13 +281,15 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
   const invoiceFamilies = useMemo(() => checkoutInvoiceFamilies(checkout), [checkout]);
   const multiFamily = invoiceFamilies.length > 1;
   const [invoiceNumber, setInvoiceNumber] = useState('');
-  const [carrier, setCarrier] = useState(checkout.carrier || '');
+  const [taxId] = useState(() => checkoutInvoiceFamilies(checkout)[0]?.tax_id || checkout.tax_id || '');
+  const [carrier, setCarrier] = useState(taxId ? '' : (checkout.carrier || ''));
   const [note, setNote] = useState('');
   const [imageFile, setImageFile] = useState(null);
   const [familyForms, setFamilyForms] = useState(() => Object.fromEntries(
     checkoutInvoiceFamilies(checkout).map((family) => [family.family_key, {
       invoiceNumber: '',
-      carrier: family.carrier || '',
+      carrier: family.tax_id ? '' : (family.carrier || ''),
+      taxId: family.tax_id || '',
       imageFile: null,
     }])
   ));
@@ -333,7 +344,8 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
             family_key: family.family_key,
             invoice_number: form.invoiceNumber,
             invoice_image_url: uploaded.preview_url || uploaded.url,
-            carrier: form.carrier.trim() || undefined,
+            carrier: form.taxId ? '' : (form.carrier.trim() || undefined),
+            tax_id: form.taxId || undefined,
           })),
           note: note.trim() || undefined,
         });
@@ -351,7 +363,8 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
       await checkoutsApi.reconcile(checkout.checkout_id, {
         invoice_number: invoiceNumber,
         invoice_image_url: imageUrl,
-        carrier: carrier.trim() || undefined,
+        carrier: taxId ? '' : (carrier.trim() || undefined),
+        tax_id: taxId || undefined,
         note: note.trim() || undefined,
       });
       toast.success(`對帳通過，發票 ${invoiceNumber} 已記錄並推播家長`);
@@ -365,11 +378,19 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
 
   return (
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 px-4"
+      className="fixed inset-0 z-40 flex items-end justify-center bg-black/40 md:items-center md:px-4"
       onClick={(e) => e.target === e.currentTarget && !busy && onCancel()}
       role="dialog" aria-modal="true" aria-label="對帳通過 — 輸入發票資訊"
     >
-      <div className={`flex w-full ${multiFamily ? 'max-w-3xl' : 'max-w-lg'} flex-col rounded-2xl bg-white shadow-xl`} style={{ maxHeight: '90dvh' }}>
+      {/* 原本在 375px 會發生什麼：面板置中浮在畫面中央，底部那排「取消 / 確認通過」
+          停在螢幕垂直中線附近。櫃檯對帳是一手拿手機、一手比對匯款單，能用的只有拇指，
+          中線以上的按鈕每次都要換手。多家庭時面板更高、按鈕又被往上推得更遠。
+          改成 md 以下貼底升起的面板：滿版、上緣圓角、85dvh，主要動作留在拇指區。
+          md 以上完全不動 —— 一樣是 items-center + max-w-3xl/lg + rounded-2xl + 90dvh。
+          maxHeight 從 inline style 改成 class，因為 inline style 沒辦法分斷點。 */}
+      <div className={`flex max-h-[85dvh] w-full flex-col rounded-t-2xl bg-white shadow-xl pb-[env(safe-area-inset-bottom)] md:max-h-[90dvh] md:rounded-2xl ${multiFamily ? 'md:max-w-3xl' : 'md:max-w-lg'}`}>
+        {/* grabber：行動裝置上「這個可以往下拉」的通用暗示，桌機沒有這個手勢所以 md:hidden。 */}
+        <div className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-gray-300 md:hidden" aria-hidden="true" />
         {/* ── 固定 Header ── */}
         <div className="shrink-0 border-b border-gray-100 px-6 pt-5 pb-4">
           <h3 className="text-lg font-bold text-brand-primary">對帳通過 — 輸入發票資訊</h3>
@@ -428,6 +449,13 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
           ) : (
             <>
           <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3">
+            {taxId && (
+              <div className="mb-2 rounded-lg border border-indigo-200 bg-white px-3 py-2 text-sm text-indigo-900">
+                <span className="text-xs font-semibold text-indigo-700">家長填寫的統一編號：</span>{' '}
+                <span className="font-mono font-bold tracking-widest">{taxId}</span>
+              </div>
+            )}
+            {!taxId && <>
             <label className="mb-1 block text-xs font-semibold text-indigo-700" htmlFor="reconcile-carrier">
               電子發票載具（選填，可直接用掃描器刷入）
             </label>
@@ -441,11 +469,12 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
               placeholder="例如 /ABC+123；舊團購可在此補刷"
               className="w-full rounded-lg border border-indigo-200 bg-white px-3 py-2 font-mono text-sm text-indigo-900 focus:border-brand-teal focus:outline-none disabled:bg-gray-100"
             />
-            {carrier && (
+            {carrier && !taxId && (
               <div className="mt-2 inline-block rounded-lg bg-white p-2">
                 <Barcode value={carrier} />
               </div>
             )}
+            </>}
           </div>
 
           <div className="rounded-lg border border-gray-200 bg-white p-3">
@@ -567,8 +596,13 @@ export default function ReconcilePage() {
   const canReconcile = true;
   const [list, setList] = useState(null);
   const [venues, setVenues] = useState([]);
+  const [loadError, setLoadError] = useState('');
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [confirming, setConfirming] = useState(null);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
+  // 團購對帳：核准時每個家庭一張 checkout，同團的會散在清單各處。
+  // 點「同團」就把畫面收斂到那一團，方便一起核對帳款。空字串＝沒有聚焦。
+  const [groupFocus, setGroupFocus] = useState('');
   const [cancelling, setCancelling] = useState(null);
   // U14 退回補件：與「取消付款單」並存。多數退回其實只是付款資料填錯，
   // 用取消會讓家長得從頭報名一次。
@@ -582,24 +616,32 @@ export default function ReconcilePage() {
 
   async function load(venueId = filters.venueId) {
     const loadVersion = ++loadVersionRef.current;
+    setIsRefreshing(true);
+    setLoadError('');
     try {
       // 場館篩選送進 API；後端仍以 token venue_ids 交集裁判，不能只相信前端下拉選單。
       const [data, vs] = await Promise.all([
-        checkoutsApi.list({ status: 'pending', venueId: venueId || undefined }),
+        checkoutsApi.list({
+          status: 'pending', venueId: venueId || undefined,
+          submittedFrom: filters.submittedFrom || undefined,
+          submittedTo: filters.submittedTo || undefined,
+        }),
         venuesApi.list(),
       ]);
       // 場館下拉快速切換時，舊請求不可覆蓋較新的篩選結果。
       if (loadVersion !== loadVersionRef.current) return;
       setList(Array.isArray(data) ? data : []);
       setVenues(Array.isArray(vs) ? vs : []);
+      setIsRefreshing(false);
     } catch (err) {
       if (loadVersion !== loadVersionRef.current) return;
-      setList([]);
-      setVenues([]);
-      toast.error(err?.response?.data?.error || '載入待對帳清單失敗');
+      const message = err?.response?.data?.error || '載入待對帳清單失敗';
+      setLoadError(message);
+      setIsRefreshing(false);
+      toast.error(message);
     }
   }
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [filters.venueId]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [filters.venueId, filters.submittedFrom, filters.submittedTo]);
 
   const coachOptions = useMemo(() => {
     const names = new Set((list || []).flatMap((r) => (r.sub_orders || []).map((o) => o.coach)).filter(Boolean));
@@ -623,7 +665,7 @@ export default function ReconcilePage() {
   }, [venues, isVenueScoped, venueIds]);
 
   const filterFields = [
-    { key: 'submitted', label: '報名日期', type: 'dateRange' },
+    { key: 'submitted', label: '報名日期', type: 'dateRange', maxMonths: 3 },
     { key: 'phone', label: '行動電話', type: 'input', placeholder: '家長手機' },
     { key: 'parentName', label: '家長姓名', type: 'input' },
     { key: 'studentName', label: '學員姓名', type: 'input' },
@@ -645,6 +687,7 @@ export default function ReconcilePage() {
     const last5Q = filters.last5.trim();
     const venueQ = filters.venueId;
     return list.filter((r) => {
+      if (groupFocus && String(r.group_order?.id || '') !== groupFocus) return false;
       // submitted_at 是帶 Z 的 UTC 時刻，直接 slice 拿到的是 UTC 日期 —— 台北 00:00~08:00
       // 送出的單會被歸到前一天，日期篩選就會漏單。先轉台北日期再比。
       const submittedYMD = r.submitted_at ? toTaipeiDateTimeInput(r.submitted_at).slice(0, 10) : '';
@@ -662,7 +705,16 @@ export default function ReconcilePage() {
       if (filters.orderKind === 'standard' && isTrialCheckout(r)) return false;
       return true;
     });
-  }, [list, filters]);
+  }, [list, filters, groupFocus]);
+
+  // 聚焦中那一團的摘要。從清單任一筆拿即可 —— 同團每張付款單帶的是同一份。
+  // 必須放在下面 `if (!list) return` 之前：hook 數量每次 render 都要一樣，放在後面的話
+  // 清單載入前後 hook 數不同，React 丟 #310，整頁變成「頁面發生錯誤」（2026-09-23 正式站）。
+  const groupFocusInfo = useMemo(() => {
+    if (!groupFocus) return null;
+    const hit = (list || []).find((r) => String(r.group_order?.id || '') === groupFocus);
+    return hit ? hit.group_order : null;
+  }, [list, groupFocus]);
 
   async function handleCancelConfirm() {
     if (!cancelling) return;
@@ -705,7 +757,20 @@ export default function ReconcilePage() {
     }
   }
 
-  if (!list) return <LoadingSpinner fullPage />;
+  if (!list && !loadError) return <LoadingSpinner fullPage />;
+
+  if (loadError) {
+    return (
+      <>
+        <PageHeader title="待對帳清單" subtitle="目前無法確認查詢結果" />
+        <FilterBar fields={filterFields} values={filters} onChange={setFilters} onReset={() => setFilters(EMPTY_FILTERS)} />
+        <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+          <p>{loadError}。目前不顯示舊結果或空清單，避免誤判。</p>
+          <button type="button" onClick={() => load()} className="mt-2 rounded border border-red-300 bg-white px-3 py-1.5 font-semibold">重新查詢</button>
+        </div>
+      </>
+    );
+  }
 
   const venueName = (id) => venues.find((v) => v.id === id)?.name || id;
 
@@ -759,6 +824,19 @@ export default function ReconcilePage() {
             <span className="mt-1 inline-flex rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-700">
               {r.family_count} 張家庭發票
             </span>
+          )}
+          {/* 團購核准時是「每個家庭一張 checkout」，同團的會散在清單各處，櫃檯很難
+              知道它們是同一團。只有「已核准」而且不只一家才給入口 —— 一家的團點下去
+              畫面不會變，等於騙人按。 */}
+          {r.group_order?.status === 'approved' && r.group_order.checkout_count > 1 && (
+            <button
+              type="button"
+              onClick={() => setGroupFocus(r.group_order.id)}
+              title={'只顯示這一團的付款單（同團 ' + r.group_order.checkout_count + ' 家）'}
+              className="mt-1 inline-flex items-center gap-1 rounded-full border border-indigo-300 bg-indigo-50 px-2 py-0.5 text-[11px] font-bold text-indigo-700 hover:bg-indigo-100"
+            >
+              團購・同團 {r.group_order.checkout_count} 家 →
+            </button>
           )}
         </div>
       ),
@@ -833,7 +911,7 @@ export default function ReconcilePage() {
     <div>
       <PageHeader
         title="待對帳清單"
-        subtitle={`F-M02 · 共 ${list.length} 筆等待對帳${isVenueScoped ? '（限您管轄的場館）' : ''}`}
+        subtitle={`F-M02 · ${isRefreshing ? '查詢更新中' : `目前篩選 ${filteredList.length} 筆／符合日期的待對帳共 ${list.length} 筆`}${isVenueScoped ? '（限您管轄的場館）' : ''}`}
         actions={
           <ExportMenu
             disabled={!list || list.length === 0}
@@ -851,7 +929,35 @@ export default function ReconcilePage() {
         }
       />
       <FilterBar fields={filterFields} values={filters} onChange={setFilters} onReset={() => setFilters(EMPTY_FILTERS)} />
-      <DataTable columns={columns} rows={filteredList} rowKey={(r) => r.checkout_id} empty="目前沒有符合條件的待對帳付款單" />
+      {/* 條件是 groupFocus 而不是 groupFocusInfo：把該團最後一張對帳完之後，
+          list 裡就再也找不到這個 group id，groupFocusInfo 會變 null。若橫幅跟著消失，
+          過濾條件卻還在，表格會永久空白而且沒有出口。 */}
+      {groupFocus && (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-indigo-300 bg-indigo-50 px-4 py-2">
+          <div className="text-sm text-indigo-900">
+            {!groupFocusInfo && '這一團的付款單都已經對帳完了。'}
+            {groupFocusInfo && <>只顯示這一團的付款單・同團 <b>{groupFocusInfo.checkout_count}</b> 家</>}
+            {/* 清單只載入「待對帳」的，同團已經對完的那幾家不在畫面上。講清楚，
+                不然櫃檯會以為這團只有這幾家。 */}
+            {groupFocusInfo && groupFocusInfo.checkout_count > groupFocusInfo.pending_checkout_count && (
+              <span className="ml-1 text-indigo-700">
+                （其中 {groupFocusInfo.checkout_count - groupFocusInfo.pending_checkout_count} 家已不在待對帳清單）
+              </span>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => setGroupFocus('')}
+            className="rounded-full border border-indigo-300 bg-white px-3 py-1 text-xs font-bold text-indigo-700 hover:bg-indigo-100"
+          >
+            顯示全部
+          </button>
+        </div>
+      )}
+      {isRefreshing
+        ? <div role="status" className="rounded-lg border border-gray-200 bg-white p-6 text-center text-sm text-gray-600">正在更新符合條件的付款單…</div>
+        : <DataTable columns={columns} rows={filteredList} rowKey={(r) => r.checkout_id} empty="目前沒有符合條件的待對帳付款單" />}
+
       {confirming && (
         <InvoiceModal
           checkout={confirming}

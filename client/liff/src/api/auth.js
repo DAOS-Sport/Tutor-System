@@ -58,6 +58,6 @@ export const authApi = {
   //   → { role:'coach'|'parent', ...payload, token }
   demoLogin: ({ username, password }) =>
     callApi('/auth/demo-login', { method: 'post', data: { username, password }, skipAuthRedirect: true },
-      () => ({ role: 'parent', id: 'mock-parent-demo', name: '示範家長', phone: '0912345678', students: [], token: 'mock.jwt.token' })
+      () => ({ role: 'parent', id: 'mock-parent-demo', name: '示範家長', phone: '0900796878', students: [], token: 'mock.jwt.token' })
     ),
 };

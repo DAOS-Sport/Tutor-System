@@ -3,17 +3,24 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { venuesApi } from '../api/venues';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
+import { useGuideDemo } from '../utils/guideDemo';
 
 export default function VenueSelectPage() {
+  const guide = useGuideDemo();
   const [params] = useSearchParams();
   const courseType = params.get('courseType') || '1';
   const isTrial = params.get('trial') === '1'; // 試上流程（/trial 入口）一路帶到報名頁
   const navigate = useNavigate();
   const toast = useToast();
-  const [venues, setVenues] = useState(null);
+  const [venues, setVenues] = useState(() => guide?.venue ? [guide.venue] : null);
   const [loadError, setLoadError] = useState(null);
 
   useEffect(() => {
+    if (guide?.venue) {
+      setVenues([guide.venue]);
+      setLoadError(null);
+      return undefined;
+    }
     let alive = true;
     setLoadError(null);
     venuesApi
@@ -30,7 +37,7 @@ export default function VenueSelectPage() {
     return () => {
       alive = false;
     };
-  }, [toast]);
+  }, [toast, guide?.venue]);
 
   if (loadError) {
     return (
@@ -69,6 +76,7 @@ export default function VenueSelectPage() {
       <div className="space-y-3">
         {venues.map((v) => (
           <button
+            data-guide-venue
             key={v.id}
             type="button"
             onClick={() => navigate(`/coaches?venue=${v.id}&courseType=${courseType}${isTrial ? '&trial=1' : ''}`)}

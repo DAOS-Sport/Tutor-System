@@ -3,6 +3,7 @@ import DateTimePicker from '../../../../shared/DateTimePicker.jsx';
 
 // 生日不可能在未來。釘 UTC+8 取「今天」，不吃瀏覽器時區。
 const todayTaipeiYMD = () => new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+import { useGuideDemo, demoStudent } from '../../utils/guideDemo';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 
@@ -22,11 +23,12 @@ const emptyNewStudent = () => ({ name: '', id_number: '', birth_date: '', gender
 export default function GroupMemberFields({ value, onChange, maxStudents, error = '' }) {
   const toast = useToast();
   const { parent } = useAuth();
-  const myStudents = (parent?.students || []).filter((s) => s && s.id && s.name && s.is_active !== false);
+  const guide = useGuideDemo();
+  const myStudents = (guide ? [demoStudent] : (parent?.students || [])).filter((s) => s && s.id && s.name && s.is_active !== false);
 
   const studentIds = value.studentIds || [];
   const newStudents = value.newStudents || [];
-  const [showNew, setShowNew] = useState(myStudents.length === 0);
+  const [showNew, setShowNew] = useState(!!guide || myStudents.length === 0);
 
   // 依課程組別限制可選學生數（1對2→2、1對3→3）；未指定則不限。
   const cap = Number.isFinite(maxStudents) && maxStudents > 0 ? maxStudents : Infinity;
@@ -162,3 +164,5 @@ export function memberFieldsPayload(value) {
       })),
   };
 }
+
+

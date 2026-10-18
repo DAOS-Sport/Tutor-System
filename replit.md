@@ -79,7 +79,7 @@
 - 開關：env flag `ALLOW_DEMO_LOGIN=1` 才啟用 `POST /api/auth/demo-login`；未設則回 404。**Demo 結束務必刪除此 flag**（含 production），避免變成後門。
 - 帳密（硬寫在 `server/routes/auth.js` 的 `DEMO_ACCOUNTS`）：
   - 教練端 `coach` / `coach` → 簽 coach token，登入 Ragic「(測試帳號)教練」。**fail-closed**：DB 無「測試帳號」教練則回 404，不退回任一真實教練（避免冒用）。
-  - 家長端 `custom` / `custom` → 簽 parent token，登入 phone `0912345678`（Ragic「(測試帳號)家長」+ 測試學員）。
+  - 家長端 `custom` / `custom` → 簽 parent token，登入 phone `0900796878`（Ragic「(測試帳號)家長」+ 測試學員）。
 - 入口：以一般瀏覽器開 `https://daos-tutoring-courses.replit.app/liff/demo`。`client/liff/src/main.jsx#isDemoPath` 會在 `/liff/demo` 略過 `liff.init`/`liff.login`，否則 production 未登入 LINE 會被導去 OAuth。
 - 登入成功依 `role` 導頁（coach→`/coach`、parent→`/`）；token 走既有 AuthContext，line_uid 一律去敏不落地。
 
@@ -226,7 +226,7 @@ get_architecture(...)  # 整體架構摘要
 - 2026-06-04：正式 DB demo 測試資料腳本（`server/scripts/demo_seed_prod.sql` + `demo_cleanup_prod.sql`）。
   - **用途**：在正式站用 demo 帳號測「家長報名→後台換教練」與「團購邀請連結加入」兩流程。鐵則：只寫 local 表不回寫 Ragic；資料標 `(測試帳號)`；全 idempotent。
   - **限制**：`executeSql({environment:"production"})` 唯讀，無法直接寫 prod → 交付腳本由使用者跑 `psql "$PROD_DATABASE_URL" -f ...`；腳本內以手機/名稱/`ragic_employee_id` self-resolve id（不照抄 dev UUID，dev/prod 不同 DB）。已對 dev 跑完整循環驗證（cleanup→0→seed→精確數→再 seed 不變）。
-  - **seed 內容**：venue B 教練帳號、`(測試帳號)教練`(0605065)/`教練2`(0605066)（coaches+coach_venues+admin_staff role=coach+admin_staff_venues）、`(測試帳號)家長`(0912345678)/`家長2`(0922222222)+學員、venue B 轉帳帳號（僅空白時填）、教練1 active period（未來 confirmed session，供換教練/轉讓）+completed period+待填評鑑、教練2 active period+今日 session+slots+published lesson_plan、團購 forming 一對三(2/3) leader=家長 join_token=`demotestgroup3invite0001`（家長2 不加入，留給邀請連結測試）。
+  - **seed 內容**：venue B 教練帳號、`(測試帳號)教練`(0605065)/`教練2`(0605066)（coaches+coach_venues+admin_staff role=coach+admin_staff_venues）、`(測試帳號)家長`(0900796878)/`家長2`(0900637854)+學員、venue B 轉帳帳號（僅空白時填）、教練1 active period（未來 confirmed session，供換教練/轉讓）+completed period+待填評鑑、教練2 active period+今日 session+slots+published lesson_plan、團購 forming 一對三(2/3) leader=家長 join_token=`demotestgroup3invite0001`（家長2 不加入，留給邀請連結測試）。
   - **團購邀請連結**：`https://liff.line.me/<LIFF_ID_PARENT>/group/join/demotestgroup3invite0001`（站內 fallback：`https://daos-tutoring-courses.replit.app/liff/group/join/demotestgroup3invite0001`）。
   - **測前**：prod Secrets 設 `ALLOW_DEMO_LOGIN=1`（測完務必刪）；測後跑 cleanup 腳本（marker-scoped，venue B 轉帳帳號僅在等於測試值時還原為空）。
 - 2026-06-03：U11 批次修補（workflow 調查+對抗驗證後逐項實作）：
@@ -256,7 +256,7 @@ get_architecture(...)  # 整體架構摘要
   - **修正**：`groupOrders.js` 發起時 `min_students/max_students` 改讀 `course_type_configs`；加入/送審沿用 `group_orders` 落地值（自動正確）。常數改名 `DRAFT_MAX_STUDENTS`（僅草稿陣列防呆絕對上限）。
   - **前端**：`GroupMemberFields` 加 `maxStudents` 上限（達上限擋選 + 顯示「已選 X/max」）；`GroupCreatePage` 傳 `courseType`、`GroupJoinPage` 傳剩餘可加入數，與一般報名「0/N」一致。團主可選滿（不擋，依使用者決策）。
   - 注意：**修正前建立的舊團報單**仍存著 1–6（顯示「開團需 1–6 人」），需新建一筆才會看到正確區間。
-  - demo：新增第二測試家庭 `custom2`/`custom2`（0922222222，學員 測試-學員A/B）供「他人加入團報」測試。
+  - demo：新增第二測試家庭 `custom2`/`custom2`（0900637854，學員 測試-學員A/B）供「他人加入團報」測試。
 - 2026-06-02：團報 U9（複數期數 + 對帳自動開通課程期，含教練端可見）：
   - **複數期數**：`group_orders` / `admin_enrollments` 新增 `period_count`（idempotent，預設 1，範圍 1–6）。發起頁 `GroupCreatePage` 加「購買期數」選擇器 + 草稿/還原一併帶 period_count；`groupOrders.js` POST 收驗（`normalizePeriodCount`）並落地；`shapeOrder`/`/mine`/admin 列表與詳情皆回傳 period_count；`GroupStatusPage` 與後台 `GroupOrdersPage` 顯示「· N 期」徽章。核准建 `admin_enrollments` 時價格 = 單期價 × 學生數 × **期數**。名單鎖定沿用送審後狀態機（4.5 / 4.7）。
   - **對帳自動開通課程期（補上架構 v7 §9.1 Step 7「立即自動開通」缺口）**：`admin/enrollments.js` reconcile 交易內新增 `ensureGroupCoursePeriod()` —— **僅針對團報**（`group_order_id` 有值）以 `group_order_id` 做冪等 get-or-create 一個**共用** `course_period`（`status='active'`、`coach_id`/`venue_id`/`course_type` 取自報名、`total_sessions = 每期堂數 × 期數`、`expires_at = 365 × 期數` 天、金額 = 整團費用總和），並把該成員 `group_order_members.student_ids` 加入 `course_period_enrollments`（`ON CONFLICT DO NOTHING`）。一般報名路徑**完全不變**（`period_count` 預設 1，且 `group_order_id` 為 NULL 時直接 return）。教練端課表讀 `course_periods`/`course_sessions`，自此團報核准+對帳後教練看得到、家長進得了「已開通課程期」可選槽。

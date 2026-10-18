@@ -5,10 +5,14 @@
 // 4) 呼叫 /api/admin/reports/mgm-conversion → 驗 kpis.total_links 涵蓋
 const { Client } = require('../../server/node_modules/pg');
 const { call, assert, step, loginAdmin } = require('./_lib');
+const { withAdminAccount } = require('./_accounts');
 
-(async () => {
+// 全新 bootstrap 沒有 manager 帳號：由 withAdminAccount 自建（已存在就沿用）。
+const MANAGER = { username: process.env.ADMIN_USERNAME || 'manager', password: process.env.ADMIN_PASSWORD || 'manager', role: 'manager', venueId: 'B' };
+
+async function main() {
   step('Path F: MGM 漏斗 5 段');
-  const token = await loginAdmin(process.env.ADMIN_USERNAME || 'manager', process.env.ADMIN_PASSWORD || 'manager');
+  const token = await loginAdmin(MANAGER.username, MANAGER.password);
   const pg = new Client({ connectionString: process.env.DATABASE_URL });
   await pg.connect();
 
@@ -63,4 +67,6 @@ const { call, assert, step, loginAdmin } = require('./_lib');
     await pg.end();
   }
   step('done');
-})().catch((e) => { console.error(e); process.exit(1); });
+}
+
+withAdminAccount(MANAGER, main).catch((e) => { console.error(e); process.exit(1); });

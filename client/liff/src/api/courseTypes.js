@@ -1,4 +1,4 @@
-import { callApi } from './client';
+import { callApi, USE_MOCK } from './client';
 
 const FALLBACK = [
   { course_type: 1, label: '一對一', max_students: 1, is_active: true, sort_order: 1, base_price: 9000, title: '1 對 1 個別教學', body: '完全客製化進度，最高效率提升技術。', image_url: '' },
@@ -10,5 +10,5 @@ const FALLBACK = [
 ];
 
 export const courseTypesApi = {
-  listActive: () => callApi('/courses/types', {}, () => FALLBACK),
+  listActive: () => callApi('/courses/types', {}, USE_MOCK ? () => FALLBACK : undefined),
 };

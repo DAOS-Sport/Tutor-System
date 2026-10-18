@@ -5,6 +5,8 @@
 // 政策與完整範圍清單：repo 根目錄 CLAUDE.md、replit.md「簽到／扣課政策」節。
 //
 // ── 已取得同意的變更紀錄 ──
+// 2026-10-07 owner 授權本堂係數選擇／教練原值快照；整班共扣1堂保持。
+// 2026-10-08 owner 改為固定購入係數，取消選擇；原始記錄、整班共扣1堂保持。
 // 2026-08-17 owner 明示同意（原話：「最需要決定的推撥給教練是不用 櫃台代扣都不用 B
 //   因為已經會出現在今日簽到那邊」）：本路由不再對教練發簽到推播。
 //   扣課、簽到、ledger、audit、後台即時廣播一律不動 —— 只拿掉推播那一步。
@@ -17,17 +19,16 @@
  * admin audit；course_periods/admin_enrollments 的 used_sessions 只同步作相容顯示。
  */
 const express = require('express');
+const { assertCourseEntitlement } = require('../../services/courseEntitlements');
 const { pool } = require('../../models/db');
 const { validateRequestId, payloadFingerprint } = require('../../services/idempotency');
 const { syncStoredUsage, listLinkedEnrollmentIds } = require('../../services/usageSync');
 const { broadcastAdminEvent } = require('../../services/websocket');
+const { normalizeManualMultiplier, resolveManualPurchaseCoefficients } = require('../../services/manualLessonCoefficient');
 // checkinNotify 不再 require —— 手動扣課不發推播（見檔頭 2026-08-17 同意紀錄）。
-const {
-  requireAdminAuth,
-  requireAdminRole,
-  getScopedVenueIds,
-  isVenueInScope,
-} = require('../../middlewares/adminAuth');
+const { requireAdminAuth, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定，不再寫死角色清單。
+const { requireResource } = require('../../middlewares/requireResource');
 
 const router = express.Router();
 const STRICT_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -59,6 +60,8 @@ function publicRow(row) {
     created_at: row.created_at,
     // 這堂扣課實際登記出席的整班名單快照 [{id,name}]（單人課期為一人）。
     roster_snapshot: Array.isArray(row.roster_snapshot) ? row.roster_snapshot : null,
+    lesson_pricing_multiplier: row.lesson_pricing_multiplier == null ? null : Number(row.lesson_pricing_multiplier),
+    coach_original_pricing_multiplier: row.coach_original_pricing_multiplier == null ? null : Number(row.coach_original_pricing_multiplier),
   };
 }
 
@@ -77,7 +80,7 @@ async function readDeduction(client, periodId, id) {
  * GET /api/admin/manual-deductions?search=<報名單號/家長/學員/電話>
  * 只回可扣的 active course_period，且場館裁判與所有其他 admin route 共用。
  */
-router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.get('/', requireAdminAuth, requireResource('manual-deduction'), async (req, res) => {
   try {
     const q = text(req.query.search || req.query.q, 120);
     if (q.length < 2) return res.json([]);
@@ -117,6 +120,7 @@ router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'),
               ae.parent_name,
               ae.parent_phone,
               ae.coach,
+              COALESCE(coefficient_staff.multiplier, c.pricing_multiplier) AS coach_original_pricing_multiplier,
               ae.id AS enrollment_id,
               COALESCE(session_usage.attended_sessions, 0)::int AS used_sessions,
               COALESCE(session_usage.reserved_sessions, 0)::int AS reserved_sessions,
@@ -125,6 +129,8 @@ router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'),
               COALESCE(member_count.active_student_count, 0)::int AS active_student_count
          FROM course_periods cp
     LEFT JOIN admin_enrollments ae ON ae.id = cp.admin_enrollment_id
+    LEFT JOIN coaches c ON c.id = cp.coach_id
+    LEFT JOIN admin_staff coefficient_staff ON coefficient_staff.id = c.ragic_employee_id
     LEFT JOIN venues v ON v.id = cp.venue_id
     LEFT JOIN admin_venues av ON av.id = cp.venue_id
     LEFT JOIN LATERAL (
@@ -158,6 +164,7 @@ router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'),
       args
     );
 
+    const purchased = await resolveManualPurchaseCoefficients(pool, r.rows.map(row => row.course_period_id));
     res.json(r.rows.map((row) => ({
       course_period_id: row.course_period_id,
       admin_enrollment_id: row.admin_enrollment_id || row.enrollment_id || null,
@@ -167,6 +174,10 @@ router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'),
       parent_name: row.parent_name || '',
       parent_phone: row.parent_phone || '',
       coach: row.coach || '',
+      coach_original_pricing_multiplier: normalizeManualMultiplier(row.coach_original_pricing_multiplier),
+      purchased_pricing_multiplier: purchased.get(String(row.course_period_id))?.multiplier ?? null,
+      purchased_coefficient_source: purchased.get(String(row.course_period_id))?.source ?? null,
+      purchased_coefficient_reason: purchased.get(String(row.course_period_id))?.reason || 'missing_purchase_context',
       total_sessions: Number(row.total_sessions) || 0,
       used_sessions: Number(row.used_sessions) || 0,
       reserved_sessions: Number(row.reserved_sessions) || 0,
@@ -186,9 +197,11 @@ router.get('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'),
 
 /**
  * POST /api/admin/manual-deductions
- * { course_period_id, student_id, reason, request_id, occurred_at? }
+ * { course_period_id, student_id, reason, request_id, occurred_at?,
+ *   lesson_pricing_multiplier?, coach_original_pricing_multiplier? }
+ * Legacy coefficient fields are accepted for retry fingerprints, never as overrides.
  */
-router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff'), async (req, res) => {
+router.post('/', requireAdminAuth, requireResource('manual-deduction'), async (req, res) => {
   const body = req.body || {};
   const periodId = text(body.course_period_id, 64);
   const studentId = text(body.student_id, 64);
@@ -199,6 +212,16 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
   }
   const idempotencyKey = requestCheck.requestId;
   const occurredAt = body.occurred_at ? new Date(body.occurred_at) : new Date();
+  const hasLessonMultiplier = Object.hasOwn(body, 'lesson_pricing_multiplier');
+  const hasOriginalMultiplier = Object.hasOwn(body, 'coach_original_pricing_multiplier');
+  const selectedMultiplier = hasLessonMultiplier ? normalizeManualMultiplier(body.lesson_pricing_multiplier) : null;
+  const expectedOriginal = hasOriginalMultiplier ? normalizeManualMultiplier(body.coach_original_pricing_multiplier) : null;
+  if (hasLessonMultiplier && selectedMultiplier === null) {
+    return res.status(400).json({ error: '本堂修課係數格式不正確', code: 'LESSON_MULTIPLIER_INVALID' });
+  }
+  if (hasOriginalMultiplier && expectedOriginal === null) {
+    return res.status(400).json({ error: '教練原係數格式不正確', code: 'COACH_MULTIPLIER_INVALID' });
+  }
 
   if (!STRICT_UUID_RE.test(periodId) || !STRICT_UUID_RE.test(studentId)) {
     return res.status(400).json({ error: '課期或學員識別碼格式不正確', code: 'INPUT_INVALID' });
@@ -221,6 +244,9 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
     // 未指定時間代表「伺服器接收時間」，retry 時仍是同一語意，不能把每次產生的
     // now 放進 fingerprint；明確指定時則以 ISO canonical value 比對。
     occurred_at: body.occurred_at ? occurredAt.toISOString() : null,
+    // Omitted fields keep pre-existing request fingerprints exactly compatible.
+    ...(hasLessonMultiplier ? { lesson_pricing_multiplier: selectedMultiplier } : {}),
+    ...(hasOriginalMultiplier ? { coach_original_pricing_multiplier: expectedOriginal } : {}),
   });
 
   const by = text(req.adminUser?.name || req.adminUser?.username || req.adminUser?.sub || 'unknown', 120);
@@ -256,11 +282,12 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
               cp.admin_enrollment_id, cp.group_order_id, cp.enrollment_batch_id,
               cp.period_number, cp.status, cp.course_type,
               COALESCE(NULLIF(av.name, ''), v.name, cp.venue_id) AS venue_name,
-              c.name AS coach_name
+              c.name AS coach_name, COALESCE(coefficient_staff.multiplier, c.pricing_multiplier) AS coach_original_pricing_multiplier
          FROM course_periods cp
     LEFT JOIN admin_venues av ON av.id = cp.venue_id
     LEFT JOIN venues v ON v.id = cp.venue_id
     LEFT JOIN coaches c ON c.id = cp.coach_id
+    LEFT JOIN admin_staff coefficient_staff ON coefficient_staff.id = c.ragic_employee_id
         WHERE cp.id = $1
         FOR UPDATE OF cp`,
       [periodId]
@@ -312,18 +339,44 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
       return res.json({ ok: true, idempotent: true, deduction });
     }
 
+    // Replay above uses the saved result even if the coach has changed since.
+    // New operations must use the current authoritative original value.
+    const originalMultiplier = normalizeManualMultiplier(period.coach_original_pricing_multiplier);
+    if (originalMultiplier === null) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '教練修課係數尚未設定正確，請先核對教練資料', code: 'COACH_MULTIPLIER_UNAVAILABLE' });
+    }
+    if (hasOriginalMultiplier && expectedOriginal !== originalMultiplier) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '教練原係數已更新，請重新查詢後再扣課', code: 'COACH_MULTIPLIER_CHANGED_RETRY' });
+    }
+    const purchased = (await resolveManualPurchaseCoefficients(client, [periodId])).get(String(periodId));
+    const lessonMultiplier = purchased?.multiplier ?? null;
+    if (lessonMultiplier === null) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '此訂單購入修課係數無法確認，請先核對購入資料',
+        code: 'PURCHASED_MULTIPLIER_UNAVAILABLE', reason: purchased?.reason || 'missing_purchase_context' });
+    }
+    if (hasLessonMultiplier && selectedMultiplier !== lessonMultiplier) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '手動扣課固定使用此訂單購入修課係數，請重新查詢後操作',
+        code: 'PURCHASED_MULTIPLIER_MISMATCH' });
+    }
+
     // 整班簽到語意：共享課期（團報/家庭共班）以「同一個 session 對所有成員」計堂，
     // 手動扣課建立的 completed session 為整班 active 名單各寫一筆出席紀錄——
     // 整期共扣 1 堂、每位成員都拿到該堂出席，與家長/教練/自助簽到四路資料契約一致，
     // 因此不再擋共享課期（原 SHARED_PERIOD_REQUIRES_CHECKIN 409 已移除）。
+    const entitledStudents = await assertCourseEntitlement(client, periodId, studentId);
     const rosterRes = await client.query(
       `SELECT s.id, s.name, COALESCE(s.is_active, TRUE) AS is_active
          FROM course_period_enrollments cpe
          JOIN students s ON s.id = cpe.student_id
         WHERE cpe.course_period_id = $1 AND cpe.status = 'active'
+          AND cpe.student_id = ANY($2::uuid[])
         ORDER BY s.name
         FOR SHARE OF cpe`,
-      [periodId]
+      [periodId, entitledStudents]
     );
     const anchor = rosterRes.rows.find((r) => String(r.id) === String(studentId));
     if (!anchor) {
@@ -381,12 +434,14 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
     const ledger = await client.query(
       `INSERT INTO manual_lesson_deductions
          (request_id, payload_fingerprint, course_period_id, admin_enrollment_id, course_session_id, student_id,
-          venue_id, quantity, remaining_before, remaining_after, reason, deducted_by, roster_snapshot)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8,$9,$10,$11,$12::jsonb)
+          venue_id, quantity, remaining_before, remaining_after, reason, deducted_by, roster_snapshot,
+          lesson_pricing_multiplier, coach_original_pricing_multiplier)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8,$9,$10,$11,$12::jsonb,$13,$14)
        RETURNING id`,
       [
         idempotencyKey, fingerprint, periodId, period.admin_enrollment_id || null, courseSessionId, studentId,
         period.venue_id, remainingBefore, remainingAfter, reason, by, JSON.stringify(rosterSnapshot),
+        lessonMultiplier, originalMultiplier,
       ]
     );
 
@@ -406,9 +461,10 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
 
     // 稽核：對共享此 period 的所有訂單各寫一筆（單人課期即 anchor 一筆）。
     const isSharedPeriod = !!period.group_order_id || rosterRes.rows.length > 1;
-    const auditAction = isSharedPeriod
+    const classAuditAction = isSharedPeriod
       ? `手動扣課 1 堂（整班出席 ${attendanceRoster.length} 名：${attendanceRoster.map((m) => m.name).join('、')}；剩餘 ${remainingAfter} 堂）`
       : `手動扣課 1 堂（學員：${anchor.name}；剩餘 ${remainingAfter} 堂）`;
+    const auditAction = `${classAuditAction}；購入修課係數 ${lessonMultiplier.toFixed(2)}，教練原係數 ${originalMultiplier.toFixed(2)}`;
     const linkedEnrollmentIds = await listLinkedEnrollmentIds(client, period);
     for (const enrollmentId of linkedEnrollmentIds) {
       await client.query(
@@ -480,6 +536,7 @@ router.post('/', requireAdminAuth, requireAdminRole('admin', 'manager', 'staff')
       } catch { /* fall through to the explicit conflict */ }
       return res.status(409).json({ error: '重複扣課請求，請重新整理後確認堂數', code: 'IDEMPOTENCY_CONFLICT' });
     }
+    if (err.status === 409) return res.status(409).json({ error: err.message, code: err.code });
     console.error('[admin/manual-deductions create]', { code: err?.code || 'UNEXPECTED' });
     res.status(500).json({ error: '手動扣課失敗，尚未扣除堂數', code: 'MANUAL_DEDUCTION_FAILED' });
   } finally {

@@ -15,8 +15,13 @@ const referrals = require('../services/referrals');
 const ragic = require('../services/ragic');
 const ragicWriteback = require('../services/ragicWriteback');
 const { refreshParentMirrorFromRagic, ParentRefreshError, assertZ01Complete } = require('../services/parentRefresh');
-const { diffChanges, writeStudentAudit } = require('./admin/_customerShared');
+const { diffChanges, writeStudentAudit, parentActor } = require('../services/studentAudit');
 const { formatPlainDate } = require('../utils/dateTime');
+const familyProfile = require('../services/familyProfile');
+const familyScope = require('../services/familyScope');
+const familyAdmin = require('../services/familyAdmin');
+const familyNotify = require('../services/familyNotify');
+const { nameMatches } = require('../services/familyRules');
 
 const router = express.Router();
 
@@ -107,12 +112,20 @@ async function loadMe(parentId) {
       ORDER BY created_at ASC`,
     [parentId]
   );
+  // 家庭區塊（家庭帳號，規格 §8）：開關沒開＝null。讀不到也不能讓個人頁整頁壞掉。
+  let family = null;
+  try {
+    family = await familyProfile.familyBlock({ id: pr.rows[0].id, phone: pr.rows[0].phone });
+  } catch (err) {
+    console.warn('[parents.me] event=family_block_unavailable');
+  }
   return {
     ...pr.rows[0],
     students: sr.rows.map((student) => ({
       ...student,
       birth_date: formatPlainDate(student.birth_date),
     })),
+    family,
   };
 }
 
@@ -162,6 +175,9 @@ function ragicError(res, err) {
       code: err.code,
     });
   }
+  if (err.code === '23505' && err.constraint === 'uq_parents_phone_canonical_active') {
+    return res.status(409).json({ error: '此行動電話已由其他家長使用，請確認後再試。', code: 'PHONE_AMBIGUOUS' });
+  }
   if (err.code === '23505') {
     return res.status(409).json({ error: '資料已存在，請確認後再試；若需協助請聯絡客服。', code: 'DUPLICATED_VALUE' });
   }
@@ -194,11 +210,7 @@ async function parentForStrictStudentSync(parent, lineUid) {
     if (base.line_uid) z01Row = await ragic.getParentByLineUid(base.line_uid);
     if (!z01Row && base.phone) z01Row = await ragic.getParentByPhone(base.phone);
   } catch (lookupErr) {
-    console.warn('[student-sync] 本地家長資料不完整，Ragic 補查失敗', {
-      phone: base.phone,
-      code: lookupErr.code,
-      msg: lookupErr.message,
-    });
+    console.warn('[student-sync] event=ragic_parent_lookup_failed');
   }
 
   const mapped = ragic.mapZ01Parent(z01Row);
@@ -263,14 +275,25 @@ async function persistStudentMirrorAfterRagic({ parentId, studentId = null, stud
       if (existing.rowCount) savedId = existing.rows[0].id;
     }
 
+    const before = savedId ? (await client.query(
+      'SELECT * FROM students WHERE id = $1 AND parent_id = $2 FOR UPDATE', [savedId, parentId]
+    )).rows[0] : null;
+    if (savedId && !before) throw new Error('STUDENT_MIRROR_OWNERSHIP_CHANGED');
+
     if (z02Id) {
-      await client.query(
+      const released = await client.query(
         `UPDATE students
             SET ragic_record_id = NULL, updated_at = NOW()
           WHERE ragic_record_id = $1
-            AND ($2::uuid IS NULL OR id <> $2::uuid)`,
+            AND ($2::uuid IS NULL OR id <> $2::uuid) RETURNING id`,
         [z02Id, savedId || null]
       );
+      for (const row of released.rows) {
+        await writeStudentAudit(client, row.id, 'edit', {
+          byUser: 'system:ragic-link-reconciliation', byRole: 'system',
+          changes: { ragic_record_id: { before: z02Id, after: null } }, note: 'release-ragic-link-after-parent-write',
+        });
+      }
     }
 
     if (savedId) {
@@ -299,6 +322,12 @@ async function persistStudentMirrorAfterRagic({ parentId, studentId = null, stud
       );
       savedId = inserted.rows[0]?.id || null;
     }
+
+    const after = savedId ? (await client.query('SELECT * FROM students WHERE id = $1', [savedId])).rows[0] : null;
+    if (!after) throw new Error('STUDENT_MIRROR_WRITE_MISSING');
+    await writeStudentAudit(client, savedId, before ? 'edit' : 'create', {
+      ...parentActor(parentId, 'parent-student-mirror'), changes: diffChanges(before, after),
+    });
 
     if (parentRagicId) {
       await client.query(
@@ -386,12 +415,7 @@ async function refreshAfterStudentWrite(req, parent, {
     return await loadMe(refreshed.local.id);
   } catch (err) {
     if (!isStudentRefreshPendingError(err)) throw err;
-    console.warn('[student-sync] Ragic 寫入成功，但刷新本地鏡像失敗；先回本地鏡像待下次收斂', {
-      reason,
-      phone: parent.phone,
-      code: err.code,
-      msg: err.message,
-    });
+    console.warn('[student-sync] event=parent_mirror_refresh_failed_after_ragic_write');
     return pendingResponse(err);
   }
 }
@@ -410,7 +434,7 @@ router.get('/me', requireParent, async (req, res) => {
     if (!me) return res.status(404).json({ error: '找不到家長帳號' });
     res.json(me);
   } catch (err) {
-    console.error('[parents.me]', err);
+    console.error('[parents.me] error_code=PARENT_LOAD_FAILED');
     res.status(500).json({ error: 'load failed' });
   }
 });
@@ -424,7 +448,15 @@ router.get('/me', requireParent, async (req, res) => {
 router.post('/me/sync', requireParent, async (req, res) => {
   try {
     const meRow = await pool.query(
-      `SELECT id, phone, line_uid, last_synced_at FROM parents WHERE id = $1`,
+      `SELECT p.id, p.phone, p.line_uid, p.last_synced_at,
+              EXISTS (
+                SELECT 1 FROM ragic_sync_outbox o
+                JOIN identity_claims c ON c.id = o.claim_id
+                WHERE p.ragic_record_id IS NULL AND c.canonical_parent_id = p.id
+                  AND o.operation = 'CREATE_Z01_PARENT'
+                  AND o.state IN ('pending', 'processing')
+              ) AS registration_pending
+         FROM parents p WHERE p.id = $1`,
       [req.parent.id]
     );
     if (!meRow.rowCount) return res.status(404).json({ error: '找不到家長帳號' });
@@ -433,8 +465,8 @@ router.post('/me/sync', requireParent, async (req, res) => {
     const last = p.last_synced_at ? new Date(p.last_synced_at).getTime() : 0;
     const fresh = last > 0 && (Date.now() - last) < SYNC_THROTTLE_MS;
 
-    let syncStatus = fresh ? 'fresh' : 'synced';
-    if (!fresh && p.line_uid && !String(p.line_uid).startsWith('demo:')) {
+    let syncStatus = p.registration_pending ? 'pending_ragic' : (fresh ? 'fresh' : 'synced');
+    if (!p.registration_pending && !fresh && p.line_uid && !String(p.line_uid).startsWith('demo:')) {
       try {
         await refreshParentMirrorFromRagic({
           lineUid: p.line_uid,
@@ -449,7 +481,7 @@ router.post('/me/sync', requireParent, async (req, res) => {
         });
       } catch (err) {
         // 開頁同步不是簽 token 的安全門檻；失敗時保留既有鏡像，避免使用者進不了個資頁。
-        console.warn('[parents/me/sync] refresh 失敗，保留既有鏡像：', err.message);
+        console.warn('[parents/me/sync] event=refresh_failed_using_existing_mirror');
         syncStatus = err.code === 'RAGIC_REFRESH_NOT_FOUND' ? 'not_found_in_ragic' : 'stale';
       }
     }
@@ -458,7 +490,7 @@ router.post('/me/sync', requireParent, async (req, res) => {
     if (!me) return res.status(404).json({ error: '找不到家長帳號' });
     res.json({ ...me, sync_status: syncStatus });
   } catch (err) {
-    console.error('[parents/me/sync]', err);
+    console.error('[parents/me/sync] error_code=PARENT_SYNC_FAILED');
     // 同步出錯也盡量回 DB 鏡像，不讓前端拿不到資料。
     try {
       const me = await loadMe(req.parent.id);
@@ -509,7 +541,7 @@ router.patch('/me', requireParent, async (req, res) => {
         [req.parent.id, patch.name, patch.primary_venue_id, patch.identity, patch.gender,
          patch.email, patch.home_phone, patch.line_id, patch.home_address]
       );
-      console.log('[parent-sync] demo 帳號編輯：僅更新本地鏡像', { parent: patch.name, venue: patch.primary_venue_id });
+      console.log('[parent-sync] event=demo_parent_edit_local_only');
       return res.json(await loadMe(req.parent.id));
     }
 
@@ -546,10 +578,41 @@ router.patch('/me', requireParent, async (req, res) => {
     const me = await loadMe(req.parent.id);
     res.json({ ...me, sync_status: 'pending' });
   } catch (err) {
-    console.error('[parent-sync] 編輯家長 失敗', { code: err.code, msg: err.message });
+    console.error('[parent-sync] error_code=PARENT_EDIT_FAILED');
     return ragicError(res, err);
   }
 });
+
+// 新增學員時身分證＋姓名對得上家人帳號下的孩子 → 綁進那個家庭（見 familyAdmin.linkByStudent）。
+// 回傳跟新增成功一樣的完整 profile，多一個 family_linked 讓畫面說明「已綁定」。
+async function linkToExistingChild(req, res, student) {
+  const c = await pool.connect();
+  let out;
+  try {
+    await c.query('BEGIN');
+    out = await familyAdmin.linkByStudent(c, { parentId: req.parent.id, studentId: student.id, actor: `parent:${req.parent.id}:student` });
+    await c.query('COMMIT');
+  } catch (err) {
+    await c.query('ROLLBACK').catch(() => {});
+    c.release();
+    if (!(err instanceof familyAdmin.FamilyError)) throw err;
+    console.warn('[student-sync] 綁定家人的孩子失敗', { code: err.code });
+    return res.status(409).json({
+      error: err.code === 'ALREADY_IN_FAMILY'
+        ? '這位孩子登記在另一位家長的帳號下，但您已經在別的家庭裡，請聯絡櫃台協助。'
+        : '這位孩子登記在另一位家長的帳號下，目前無法自動綁定，請聯絡櫃台協助。',
+      code: 'FAMILY_LINK_FAILED',
+      reason: err.code,
+    });
+  }
+  c.release();
+  familyNotify.sendNotices(out.notices).catch(() => {});
+  const owner = (await pool.query('SELECT name FROM parents WHERE id = $1', [out.result.owner_parent_id])).rows[0];
+  return res.json({
+    ...(await loadMe(req.parent.id)),
+    family_linked: { student_name: student.name, owner_name: owner?.name || null },
+  });
+}
 
 router.post('/me/students', requireParent, async (req, res) => {
   const s = cleanStudentInput(req.body || {});
@@ -568,13 +631,50 @@ router.post('/me/students', requireParent, async (req, res) => {
         return res.status(409).json({ error: '此身分證字號已有學員資料', code: 'STUDENT_ID_DUPLICATED' });
       }
       if (!dupDemo.rowCount) {
-        await pool.query(
-          `INSERT INTO students (parent_id, name, id_number, birth_date, gender, blood_type)
-           VALUES ($1,$2,$3,$4,$5,NULLIF($6,''))`,
-          [req.parent.id, s.name, s.id_number, s.birth_date, s.gender || null, s.blood_type || '']
-        );
+        await persistStudentMirrorAfterRagic({ parentId: req.parent.id, student: s });
       }
       return res.status(201).json(await loadMe(req.parent.id));
+    }
+
+    // 身分證查重放在 Ragic 相關檢查之前：綁到家人帳號下的孩子不需要碰 Ragic。
+    // 排序：自己名下的優先 → 有效的 → 在 Ragic 的 → 早建的（原本 LIMIT 1 沒排序，同一身分證有兩份時結果不固定）
+    const dupRows = (await pool.query(
+      `SELECT id, parent_id, is_active, name, id_number, birth_date, gender, blood_type, student_code, ragic_record_id
+         FROM students
+        WHERE id_number = $1
+        ORDER BY (parent_id::text = $2) DESC, COALESCE(is_active, TRUE) DESC,
+                 (ragic_record_id IS NOT NULL) DESC, created_at ASC`,
+      [s.id_number, String(req.parent.id)]
+    )).rows;
+    const own = dupRows.find((r) => String(r.parent_id) === String(req.parent.id)) || null;
+    const others = dupRows.filter((r) => String(r.parent_id) !== String(req.parent.id));
+    if (others.length && !(own && own.is_active !== false)) {
+      // 家庭帳號（規格 §8、§14）：已在同一家庭 → 直接說明
+      const scope = await familyScope.forRequest(req);
+      const activeOthers = others.filter((r) => r.is_active !== false);
+      if (scope.enabled && activeOthers.some((r) => scope.parentIds.map(String).includes(String(r.parent_id)))) {
+        return res.status(409).json({
+          error: '這位孩子已在您的家庭中，不需要再新增。',
+          code: 'STUDENT_IN_FAMILY',
+        });
+      }
+      // 擁有者 2026-09-23：身分證＋姓名都對得上 → 直接綁到那位孩子的家庭（不另建學員、不碰 Ragic）
+      const match = scope.enabled ? activeOthers.find((r) => nameMatches(r.name, s.name)) : null;
+      if (match) return linkToExistingChild(req, res, match);
+      // 對不上 → 前端改顯示「申請加入家庭」
+      if (!own) {
+        return res.status(409).json({
+          error: '此身分證字號已有學員資料，請確認後再試；若需協助請聯絡客服。',
+          code: 'STUDENT_ID_DUPLICATED',
+          can_apply_family: scope.enabled,
+        });
+      }
+    }
+    if (own && own.is_active === false) {
+      return res.status(409).json({
+        error: '此學員曾由櫃台停用或移除，請聯絡客服協助恢復或重新建檔。',
+        code: 'STUDENT_INACTIVE_CONTACT_COUNTER',
+      });
     }
 
     // 場館可能在家長註冊後被停用/改代碼（五大場館重構期間風險最高）；不先擋，
@@ -588,42 +688,22 @@ router.post('/me/students', requireParent, async (req, res) => {
         [req.parent.id]
       )).rows[0]?.n || 0
     );
-    const dup = await pool.query(
-      `SELECT id, parent_id, is_active, name, id_number, birth_date, gender, blood_type, student_code, ragic_record_id
-         FROM students
-        WHERE id_number = $1
-        LIMIT 1`,
-      [s.id_number]
-    );
     let expectedMin = activeCount + 1;
     let mergedExisting = false;
     let sync = null;
     let fallbackStudentId = null;
-    if (dup.rowCount) {
-      const existing = dup.rows[0];
-      if (String(existing.parent_id) !== String(req.parent.id)) {
-        return res.status(409).json({
-          error: '此身分證字號已有學員資料，請確認後再試；若需協助請聯絡客服。',
-          code: 'STUDENT_ID_DUPLICATED',
-        });
-      }
-      if (existing.is_active === false) {
-        return res.status(409).json({
-          error: '此學員曾由櫃台停用或移除，請聯絡客服協助恢復或重新建檔。',
-          code: 'STUDENT_INACTIVE_CONTACT_COUNTER',
-        });
-      }
-
+    if (own) {
+      const existing = own;
       mergedExisting = true;
       fallbackStudentId = existing.id;
       expectedMin = activeCount;
-      console.log('[student-sync] 新增學員比對到既有資料，改為嚴格更新', { parent: parent.name, phone: parent.phone, student: s.name });
+      console.log('[student-sync] event=student_match_existing');
       sync = await ragic.updateStudentZ01Z02Strict({
         parent: parentForSync,
         student: { ...existing, ...s, _match_id_number: existing.id_number },
       });
     } else {
-      console.log('[student-sync] 新增學員 start', { parent: parent.name, phone: parent.phone, student: s.name });
+      console.log('[student-sync] event=student_create_start');
       sync = await ragic.createStudentZ01Z02Strict({ parent: parentForSync, student: s, startIndex: activeCount });
       console.log('[student-sync] 新增學員 Ragic 同步完成', { z02: sync?.z02?.ragicRecordId });
     }
@@ -641,14 +721,9 @@ router.post('/me/students', requireParent, async (req, res) => {
       studentId: fallbackStudentId,
       sync,
     });
-    const saved = (me?.students || []).find((row) => String(row.id_number || '').toUpperCase() === s.id_number);
-    if (saved && !mergedExisting) {
-      writeStudentAudit(pool, saved.id, 'create', { byUser: parent.name, byRole: 'parent' })
-        .catch((err) => console.warn('[student-audit] 家長新增稽核寫入失敗:', err.message));
-    }
     res.status(mergedExisting ? 200 : 201).json(me);
   } catch (err) {
-    console.error('[student-sync] 新增學員 失敗', { code: err.code, msg: err.message });
+    console.error('[student-sync] error_code=STUDENT_CREATE_FAILED');
     return ragicError(res, err);
   }
 });
@@ -681,14 +756,9 @@ router.patch('/me/students/:id', requireParent, async (req, res) => {
       });
     }
 
-    // demo 帳號：學員直接改本地，不進 Ragic。
+    // Demo uses the same atomic local mutation/audit path without Ragic writes.
     if (isDemoParent(parent, req.parent.lineUid)) {
-      await pool.query(
-        `UPDATE students SET name = $2, id_number = $3, birth_date = $4,
-                gender = $5, blood_type = NULLIF($6,''), updated_at = NOW()
-          WHERE id = $1`,
-        [req.params.id, s.name, s.id_number, s.birth_date, s.gender || null, s.blood_type || '']
-      );
+      await persistStudentMirrorAfterRagic({ parentId: req.parent.id, studentId: req.params.id, student: s });
       return res.json(await loadMe(req.parent.id));
     }
 
@@ -699,7 +769,7 @@ router.patch('/me/students/:id', requireParent, async (req, res) => {
     const parentForSync = await parentForStrictStudentSync(parent, req.parent.lineUid);
     const before = cur.rows[0];
     const syncStudent = { ...before, ...s, _match_id_number: before.id_number };
-    console.log('[student-sync] 編輯學員 start', { parent: parent.name, phone: parent.phone, student: s.name, studentId: req.params.id });
+    console.log('[student-sync] event=student_edit_start');
     const sync = await ragic.updateStudentZ01Z02Strict({ parent: parentForSync, student: syncStudent });
     await persistStudentMirrorAfterRagic({
       parentId: req.parent.id,
@@ -723,14 +793,9 @@ router.patch('/me/students/:id', requireParent, async (req, res) => {
       sync,
     });
 
-    // 稽核：家長自己改學員資料，記錄實際變動欄位（不含身分證/血型以外的敏感值以外的判斷，
-    // 這裡沿用既有欄位白名單）。best-effort：稽核寫入失敗不擋家長編輯本身。
-    const studentChanges = diffChanges(before, s, ['name', 'id_number', 'birth_date', 'gender', 'blood_type']);
-    writeStudentAudit(pool, req.params.id, 'edit', { byUser: parent.name, byRole: 'parent', changes: studentChanges })
-      .catch((err) => console.warn('[student-audit] 家長編輯稽核寫入失敗:', err.message));
     res.json(me);
   } catch (err) {
-    console.error('[student-sync] 編輯學員 失敗', { code: err.code, msg: err.message });
+    console.error('[student-sync] error_code=STUDENT_UPDATE_FAILED');
     return ragicError(res, err);
   }
 });
@@ -795,6 +860,7 @@ router.post('/', async (req, res) => {
          RETURNING id, name, id_number, birth_date, gender`,
         [parent.id, s.name.trim(), String(s.id_number).toUpperCase(), s.birth_date, s.gender || null]
       );
+      await writeStudentAudit(client, sIns.rows[0].id, 'create', { byUser: 'legacy-development-registration', byRole: 'system', note: 'unauthenticated-development-only' });
       studentRows.push(sIns.rows[0]);
     }
     await client.query('COMMIT');
@@ -824,7 +890,10 @@ router.post('/', async (req, res) => {
     });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
-    console.error('[parents.create]', err);
+    console.error('[parents.create] error_code=CREATE_FAILED');
+    if (err.code === '23505' && err.constraint === 'uq_parents_phone_canonical_active') {
+      return res.status(409).json({ error: '此行動電話已由其他家長使用，請改用登入。', code: 'PHONE_AMBIGUOUS' });
+    }
     res.status(500).json({ error: 'create failed' });
   } finally {
     client.release();

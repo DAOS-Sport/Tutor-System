@@ -8,10 +8,12 @@
  */
 const express = require('express');
 const { pool } = require('../../models/db');
-const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
+const { requireAdminAuth } = require('../../middlewares/adminAuth');
+// F-A06：權限改由「角色權限管理」的設定決定，不再寫死角色清單。
+const { requireResource } = require('../../middlewares/requireResource');
 
 const router = express.Router();
-const AM = requireAdminRole('admin', 'manager');
+const AM = requireResource('course-intros');
 
 router.get('/', requireAdminAuth, AM, async (req, res) => {
   try {

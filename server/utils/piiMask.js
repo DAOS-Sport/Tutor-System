@@ -11,18 +11,29 @@
  *  - 身分證字號等重要識別碼：全遮（回傳等長星號，空值回空字串）。
  */
 
+// 一律以 Unicode code point 切字，不用 s[0] / s.length。
+//
+// 2026-09-07 正式站事故：家長名字開頭是 emoji（LINE 顯示名很常見）。emoji 在 JS 字串裡是
+// 代理對（兩個 UTF-16 code unit），s[0] 只拿到前半個孤立高代理。JSON.stringify 照樣輸出，
+// 但 Postgres ::jsonb 拒收（22P02: Unicode low surrogate must follow a high surrogate）。
+// 這句發生在 outbox _markFailure → createParentIdentityBackofficeTask 的 $2::jsonb，交易整個
+// rollback、錯誤碼永遠空白、錯誤再往上炸 → 夜間排空中止。兩位家長卡 45 天、其他 pending 陪葬，
+// log 只有一行 22P02。dev 用中文假名重現三次都不炸，最後對正式站那一筆實跑一次才抓到 stack。
+const cps = (v) => Array.from(v);   // 以 code point 為單位，emoji / 罕見字不會被切半
+
 function maskName(name) {
   const s = (name == null ? '' : String(name)).trim();
-  if (s.length <= 1) return s;
-  if (s.length === 2) return s[0] + 'X';
-  return s[0] + 'X'.repeat(s.length - 2) + s[s.length - 1];
+  const c = cps(s);
+  if (c.length <= 1) return s;
+  if (c.length === 2) return c[0] + 'X';
+  return c[0] + 'X'.repeat(c.length - 2) + c[c.length - 1];
 }
 
 // 學生姓名跨家庭顯示：姓氏第一個字 + 「同學」（保護隱私，且家長一眼看得懂是學生）。
 function maskStudentName(name) {
   const s = (name == null ? '' : String(name)).trim();
   if (!s) return s;
-  return s[0] + '同學';
+  return cps(s)[0] + '同學';
 }
 
 function maskNames(names) {

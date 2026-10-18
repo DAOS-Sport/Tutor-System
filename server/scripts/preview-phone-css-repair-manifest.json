@@ -1,0 +1,14 @@
+{
+  "sources": {
+    "server/routes/admin/families.js": "84f6e3dae7468a16e1d6cd1411a6573591e0f559ea28a36f8bc459a1b69b6d70",
+    "client/admin/src/api/families.js": "231b44edab1a70871ff1dde7f65a16ac24f7a9b3d5371a55e2aac236e4e41795",
+    "client/admin/src/components/FamilyPanel.jsx": "530f251872b3d7082d3340f6bc1c822f2f205d481743e4a739115a67fa71847c",
+    "server/routes/parents.js": "69b2dfa29920d63acfb5beb7496526a3a2e9f9b3f9f6656e1f6852842340facc",
+    "server/routes/admin/customerParents.js": "4ffdbfbd0968df00b742c6ab2f64ad0e5354f62c6bf4e7f55b4f0f181e40dde6",
+    "server/services/parentSync.js": "d4ba43acf736fc30612ca8885dc32ad3b8050516b0e82066d740fd08d74ba272",
+    "server/services/z03IdentityClaim.js": "fba6f2069c36b34fc19e59df9a23eacf58e15a0545339fbe951133068238bc94"
+  },
+  "runId": "preview-phone-css-repair-20260930",
+  "liveIndexHash": "5579181d24311f46dd711850f9df3f5a2a8966d46ba8f14312f9a6a15443abc6",
+  "version": 1
+}

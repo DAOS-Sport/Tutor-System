@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "runId": "preview-sync-failures-ui-20260930-v1",
+  "indexRawByteSha256": {
+    "admin": "0dbf5ca0b610015b0f9250a97c595585754663cd9022838250ce3cc26d0f12fc",
+    "liff": "ca004841aebba01dbe9d6f16dbae566f2398c7347e34c8d8ea6d30cb6fb5044c"
+  },
+  "sourceCanonicalLfSha256": {
+    "client/admin/src/pages/RagicStatusPage.jsx": "da4914d16e6d5f88f1c1ddb59a68d7b5e4088d6d7548b32bd0226b83423dda40",
+    "client/admin/src/api/ragicStatus.js": "56926359fb71208f93ccc51bcc3d3c41513c9a4444df249b9fe2cdd6ad4bd5be"
+  },
+  "sourceCanonicalization": "UTF-8 text; CRLF and lone CR become LF; trimEnd; append exactly one LF",
+  "status": "REVIEWED_SOURCE_READBACK_BUILD_PENDING"
+}

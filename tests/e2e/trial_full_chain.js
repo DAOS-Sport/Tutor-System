@@ -73,7 +73,7 @@ async function call(base, method, path, token, body, headers = {}) {
 
   try {
     const reference = await pg.query(
-      `SELECT c.id AS coach_id, v.id AS venue_id
+      `SELECT c.id AS coach_id, v.id AS venue_id, COALESCE(c.pricing_multiplier, 1)::float8 AS coach_multiplier
          FROM coaches c CROSS JOIN venues v
         WHERE c.is_active = TRUE
           AND COALESCE(c.is_placeholder, FALSE) = FALSE
@@ -82,7 +82,9 @@ async function call(base, method, path, token, body, headers = {}) {
         LIMIT 1`
     );
     if (!reference.rowCount) throw new Error('test database needs one active non-placeholder coach and venue');
-    const { coach_id: coachId, venue_id: venueId } = reference.rows[0];
+    const { coach_id: coachId, venue_id: venueId, coach_multiplier: coachMultiplier } = reference.rows[0];
+    // 2026-09-07：試上價 = F-A07 trial_price × 教練係數（規格改變）。
+    const EXPECTED_TRIAL = Math.round(TRIAL_PRICE * (Number(coachMultiplier) || 1));
     const adminActor = (await pg.query(
       `SELECT id, username, name FROM admin_users WHERE is_active = TRUE ORDER BY created_at, id LIMIT 1`
     )).rows[0];
@@ -140,8 +142,8 @@ async function call(base, method, path, token, body, headers = {}) {
     )).rows[0];
     assert(orderRow.order_kind === 'trial' && orderRow.payment_method === 'on_site' && orderRow.total_sessions === 1,
       `訂單為試上/現場付費/1 堂（${orderRow.order_kind}/${orderRow.payment_method}/${orderRow.total_sessions}）`);
-    assert(orderRow.original_price === TRIAL_PRICE && orderRow.final_price === TRIAL_PRICE,
-      `價格快照＝F-A07 trial_price ${TRIAL_PRICE}（實際 ${orderRow.original_price}/${orderRow.final_price}）`);
+    assert(Number(orderRow.original_price) === EXPECTED_TRIAL && Number(orderRow.final_price) === EXPECTED_TRIAL,
+      `價格快照＝F-A07 trial_price ${TRIAL_PRICE} × 係數 ${coachMultiplier} = ${EXPECTED_TRIAL}（實際 ${orderRow.original_price}/${orderRow.final_price}）`);
     assert(orderRow.status === 'pending_payment', `初始 status=pending_payment（${orderRow.status}）`);
 
     step('F-M02 checkout 對帳：發票必填、total=1、自動開通 1 堂試上課期');
@@ -270,7 +272,7 @@ async function call(base, method, path, token, body, headers = {}) {
     assert(multi.status === 201, `2 學員 × 2 堂試上建單成功（${multi.status} ${multi.data?.code || multi.data?.error || ''}）`);
     assert(multi.data.order_count === 4 && (multi.data.enrollment_ids || []).length === 4,
       `拆 4 筆子訂單（order_count=${multi.data.order_count}）`);
-    assert(Number(multi.data.final_price) === TRIAL_PRICE * 4,
+    assert(Number(multi.data.final_price) === EXPECTED_TRIAL * 4,
       `總額＝試上單堂價 × 2 學員 × 2 堂（${multi.data.final_price}）`);
     const childRows = await pg.query(
       `SELECT original_price::float8 AS original_price, final_price::float8 AS final_price,
@@ -280,7 +282,7 @@ async function call(base, method, path, token, body, headers = {}) {
     );
     assert(childRows.rowCount === 4
       && childRows.rows.every((r) => r.order_kind === 'trial' && r.total_sessions === 1
-        && r.original_price === TRIAL_PRICE && r.final_price === TRIAL_PRICE),
+        && r.original_price === EXPECTED_TRIAL && r.final_price === EXPECTED_TRIAL),
       '每筆子訂單＝1 堂、單價快照 F-A07 試上價');
 
     step('多學員 × 多堂：對帳一次通過 → 逐筆開通獨立 1 堂體驗課期');

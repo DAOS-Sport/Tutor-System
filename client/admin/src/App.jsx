@@ -6,6 +6,7 @@ import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
 import SettingsPage from './pages/SettingsPage';
 import StaffPage from './pages/StaffPage';
+import RolePermissionsPage from './pages/RolePermissionsPage';
 import CoachesRedirect from './pages/CoachesRedirect';
 import VenuesPage from './pages/VenuesPage';
 import CourseIntrosPage from './pages/CourseIntrosPage';
@@ -31,6 +32,7 @@ import MgmStatsPage from './pages/MgmStatsPage';
 import TransfersReviewPage from './pages/TransfersReviewPage';
 import ReportsPage from './pages/ReportsPage';
 import SopPage from './pages/SopPage';
+import CounterManualPage from './pages/CounterManualPage';
 import CourseTypesPage from './pages/CourseTypesPage';
 import GroupOrdersPage from './pages/GroupOrdersPage';
 import RagicStatusPage from './pages/RagicStatusPage';
@@ -39,10 +41,17 @@ import RagicZ03Page from './pages/RagicZ03Page';
 import CustomerParentsPage from './pages/CustomerParentsPage';
 import CustomerStudentsPage from './pages/CustomerStudentsPage';
 import MockBanner from './components/MockBanner';
+import { BACKOFFICE_ROLES } from './constants/roles.js';
 
 // 後台登入角色須與 server/middlewares/adminAuth.js 的共用裁判一致。
 // manager 仍由 API 依 venue_ids 限制可見場館，並非取得 admin 全館權限。
-const ALL = ['admin', 'manager', 'staff'];
+//
+// 由 ROLES 推導，不要手寫。原本寫死成三個、漏了 lifeguard，而 RequireAuth
+// 在權限還沒載到時就是退回這個陣列判定 —— 於是救生員每次重新整理都會先閃
+// 一次「沒有權限存取此頁面」；權限 API 只要失敗一次（載不到就不會再重試），
+// 他就被永久鎖在整個後台外面。/sessions /checkin /checkin-modes 三頁也吃
+// 這個常數，正好是救生員的主要工作畫面。
+const ALL = BACKOFFICE_ROLES;
 
 export default function App() {
   return (
@@ -59,6 +68,7 @@ export default function App() {
         {/* 系統設定（admin only） */}
         <Route path="/settings"      element={<RequireAuth roles={['admin']}><SettingsPage /></RequireAuth>} />
         <Route path="/staff"         element={<RequireAuth roles={['admin']}><StaffPage /></RequireAuth>} />
+        <Route path="/role-permissions" element={<RequireAuth roles={['admin']}><RolePermissionsPage /></RequireAuth>} />
         {/* Task #91：F-C-Admin 已合併進員工帳號管理，舊路徑保留 redirect + toast */}
         <Route path="/coaches"       element={<CoachesRedirect />} />
         <Route path="/venues"        element={<RequireAuth roles={['admin']}><VenuesPage /></RequireAuth>} />
@@ -103,6 +113,7 @@ export default function App() {
         <Route path="/eval-threshold"      element={<RequireAuth roles={['admin']}><EvalThresholdPage /></RequireAuth>} />
         <Route path="/coach-intros-review"  element={<RequireAuth roles={['admin', 'manager']}><CoachIntrosReviewPage /></RequireAuth>} />
         <Route path="/sop" element={<SopPage />} />
+        <Route path="/counter-manual" element={<CounterManualPage />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/dashboard" replace />} />

@@ -52,26 +52,19 @@ export default function SelfCheckinModal({ course, onClose, onDone }) {
     if (!info) return null;
     if (info.self_checked_in_today) {
       if (info.partner_checkin_name) {
-        return `已由 ${info.partner_checkin_name} 完成簽到（整組共用堂數，每日限簽一次）；如需更正請洽櫃檯。`;
+        return `已由 ${info.partner_checkin_name} 完成整班簽到（本筆購買訂單每日限一堂）；追加課堂請洽櫃檯補登。`;
       }
       return info.partner_checkin_label
-        ? `${info.partner_checkin_label}已代為簽到；如需更正請洽櫃檯。`
-        : '今日已完成簽到（同一課程每日限簽一次）；如需更正請洽櫃檯。';
+        ? `${info.partner_checkin_label}已代為整班簽到；追加課堂請洽櫃檯補登。`
+        : '本筆購買訂單今日已簽到（每日限一堂）；追加課堂請洽櫃檯補登。';
     }
     if (remaining <= 0) return '本期堂數已用完，如需續課請重新報名。';
     if (info.checkin_mode !== 'self') return '此課程為預約制，請改用「預約劃課」。';
     return null;
   }, [info, remaining]);
 
-  // 全班一起簽到，不再讓家長勾選誰有到。
-  //
-  // 原本這裡有一組 checkbox，但那是假的選擇：後端 checkins.js 在
-  // SHARED_CHECKIN_USAGE_V2 開啟時（正式站已全開、白名單為空＝全體適用）
-  // 會忽略送上來的 student_ids，改用該課期完整的 active 名單去建 checkin_records
-  //   `const activeParticipants = useSharedUsageV2 ? (完整 roster) : own`
-  // 理由寫在那支路由的註解：不能信任某一位家長送來的清單，去決定其他家庭
-  // 要不要被扣課。所以取消勾選在畫面上看起來有效，實際上完全沒作用 ——
-  // 這個 UI 一直在誤導家長。現在改成照實顯示：整組一起簽。
+  // 2026-10-07 Owner：任一家長簽到代表有效整班，一筆購買訂單每日限一堂。
+  // 完整有效名單由後端決定，不受舊開關／手機白名單／前端清單限縮。
   async function submit() {
     if (busy || !info || blocked || !students.length) return;
     setBusy(true);
@@ -105,7 +98,7 @@ export default function SelfCheckinModal({ course, onClose, onDone }) {
       <div role="dialog" aria-modal="true" className="w-full max-w-[390px] rounded-2xl bg-white p-5 shadow-xl">
         <h2 className="mb-1 text-center text-base font-bold text-brand-primary">今日上課簽到</h2>
         <p className="mb-3 text-center text-xs text-gray-500">
-          簽到後將使用 1 堂課程堂數（每日限簽一次）
+          全班一起簽到，本筆購買訂單每日限 1 堂；追加請洽櫃檯補登
         </p>
 
         {loadError ? (

@@ -89,13 +89,13 @@ async function addParent({ phone, sourceId, lineUid = null, student = null }) {
       `INSERT INTO students(parent_id,name,birth_date,gender,id_number,blood_type,is_active,last_synced_at)
        VALUES ($1,$2,$3::date,$4,$5,$6,TRUE,NOW()) RETURNING *`,
       [parent.id, student.name, student.birth_date || '2014-01-02', student.gender || '生理女',
-       student.id_number || 'A123456789', student.blood_type || '不清楚']
+       student.id_number || 'A132702114', student.blood_type || '不清楚']
     )).rows[0];
   }
   return { parent, student: child };
 }
 
-function newStudent(name, id = 'A123456789') {
+function newStudent(name, id = 'A132702114') {
   return { name, id_number: id, birth_date: '2014-01-02', gender: '生理女', blood_type: '不清楚' };
 }
 
@@ -188,7 +188,7 @@ async function T26() {
       body: JSON.stringify({
         id_token: 'closure-token',
         parent: { name: '路由家長', phone: routePhone, email: '', gender: '生理女', primary_venue_id: venue.id },
-        students: [newStudent('路由新增學員', 'H123456789')],
+        students: [newStudent('路由新增學員', 'H138544480')],
       }),
     });
     const body = await response.json();
@@ -210,7 +210,7 @@ async function T27() {
   const phone = phoneFor(7);
   const sourceId = `ZZT27${suffix}`;
   const lineUid = uid('T27');
-  const first = newStudent('第一位學員', 'B123456789');
+  const first = newStudent('第一位學員', 'B130591500');
   await addFamily({ sourceId, phone, student: first });
   const fixture = await addParent({ phone, sourceId, student: first });
   await pool.query(
@@ -220,7 +220,7 @@ async function T27() {
     [sourceId, fixture.parent.id, fixture.student.id]
   );
   const beforeFirst = (await pool.query(`SELECT * FROM students WHERE id=$1`, [fixture.student.id])).rows[0];
-  const second = newStudent('第二位學員', 'C123456789');
+  const second = newStudent('第二位學員', 'C166697130');
   const result = await claimZ03Identity({
     phone, studentName: second.name, studentInput: second, lineUid,
     parentProfile: { name: '既有家長', phone }, allowStudentAppend: true, ownershipVerified: true,
@@ -240,7 +240,7 @@ async function T28() {
   const phone = phoneFor(8);
   const sourceId = `ZZT28A${suffix}`;
   const lineUid = uid('T28');
-  const child = newStudent('Email 學員', 'D123456789');
+  const child = newStudent('Email 學員', 'D171937320');
   await addFamily({ sourceId, phone, email: '', student: child });
   const result = await claimZ03Identity({
     phone, studentName: child.name, studentInput: child, lineUid,
@@ -267,9 +267,9 @@ async function T28() {
   const blockedSource = `ZZT28B${suffix}`;
   const blockedPhone = phoneFor(9);
   const blockedUid = uid('T28B');
-  await addFamily({ sourceId: blockedSource, phone: blockedPhone, student: newStudent('拒絕學員', 'E123456789') });
+  await addFamily({ sourceId: blockedSource, phone: blockedPhone, student: newStudent('拒絕學員', 'E170494860') });
   const blocked = await claimZ03Identity({
-    phone: blockedPhone, studentName: '拒絕學員', studentInput: newStudent('拒絕學員', 'E123456789'),
+    phone: blockedPhone, studentName: '拒絕學員', studentInput: newStudent('拒絕學員', 'E170494860'),
     lineUid: blockedUid, parentProfile: { name: '拒絕家長', phone: blockedPhone },
     allowStudentAppend: true, ownershipVerified: true,
   });
@@ -309,7 +309,7 @@ async function T30() {
   const phone = phoneFor(0);
   const sourceId = `ZZT30${suffix}`;
   const lineUid = uid('T30');
-  const child = newStudent('團班舊生', 'F123456789');
+  const child = newStudent('團班舊生', 'F196122260');
   await addFamily({ sourceId, phone, student: child, rawName: '團班歷史家長' });
   const before = await rightsSnapshot();
   const result = await claimZ03Identity({
@@ -333,7 +333,7 @@ async function T31() {
   const phone = `0971${suffix}`;
   const sourceId = `ZZT31${suffix}`;
   const lineUid = uid('T31');
-  const child = newStudent('權益學員', 'G123456789');
+  const child = newStudent('權益學員', 'G197814540');
   await addFamily({ sourceId, phone, email: '', student: child });
   const before = await rightsSnapshot();
   const result = await claimZ03Identity({
