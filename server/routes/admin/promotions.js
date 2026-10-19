@@ -20,7 +20,7 @@ const crypto = require('crypto');
 const { pool } = require('../../models/db');
 const { requireAdminAuth } = require('../../middlewares/adminAuth');
 // F-A06：權限改由「角色權限管理」的設定決定。
-const { requireResource } = require('../../middlewares/requireResource');
+const { requireResource, requireAnyResource } = require('../../middlewares/requireResource');
 
 const router = express.Router();
 router.use(requireAdminAuth);
@@ -116,7 +116,8 @@ router.get('/', requireResource('promotions'), async (req, res) => {
   }
 });
 
-router.get('/active', requireResource('promotions-active'), async (req, res) => {
+// 優惠設定頁建立優惠時要拿進行中的優惠做重疊偵測。
+router.get('/active', requireAnyResource('promotions-active', 'promotions'), async (req, res) => {
   try {
     const r = await pool.query(
       `SELECT ${PROMO_FIELDS} FROM promotions
@@ -133,7 +134,8 @@ router.get('/active', requireResource('promotions-active'), async (req, res) => 
 });
 
 // 表單「適用教練加成（％）」選項來源：目前 active 教練的相異加成值（存 pricing_multiplier）。
-router.get('/coach-multipliers', requireResource('promotions'), async (req, res) => {
+// 課程需求頁用它顯示教練加成價格欄位。
+router.get('/coach-multipliers', requireAnyResource('promotions', 'course-types'), async (req, res) => {
   try {
     const r = await pool.query(
       `SELECT DISTINCT pricing_multiplier AS multiplier

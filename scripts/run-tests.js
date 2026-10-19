@@ -161,6 +161,8 @@ const UNIT = [
   'tests/sync_failure_log_test.js',
   'tests/taipei_input_test.js',
   'tests/ragic_timeline_gate_test.js',
+  'tests/page_read_permission_test.js',
+  'tests/customer_parent_reveal_scope_test.js',
   'tests/release/canary_config_test.js',
   'tests/release/reconcile_image_pipeline_test.js',
 ];

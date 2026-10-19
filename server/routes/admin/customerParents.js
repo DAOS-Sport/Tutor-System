@@ -23,7 +23,8 @@ const { pool } = require('../../models/db');
 const { parsePaging, pagingSql } = require('../../utils/paging');
 const { requireAdminAuth, getScopedVenueIds, isVenueInScope } = require('../../middlewares/adminAuth');
 // F-A06：權限改由「角色權限管理」的設定決定。
-const { requireResource } = require('../../middlewares/requireResource');
+const { requireResource, requireAnyResource } = require('../../middlewares/requireResource');
+const { canUserAccess } = require('../../services/rolePermissions');
 const { parseRocOrIso, maskId, maskBlood, looksMasked, wantReveal, auditReveal, diffChanges, writeStudentAudit, adminActorName } = require('./_customerShared');
 const ragicWriteback = require('../../services/ragicWriteback');
 const ragicWriter = require('../../services/ragicWriter');
@@ -105,7 +106,8 @@ async function parentInScope(client, req, id) {
 }
 
 // GET / — 家長清單（+ 學員數）
-router.get('/', requireAdminAuth, requireResource('customer-parents'), async (req, res) => {
+// 手動建檔頁要搜尋、帶出家長，所以清單與單筆讀取也接受 manual-enroll。
+router.get('/', requireAdminAuth, requireAnyResource('customer-parents', 'manual-enroll'), async (req, res) => {
   try {
     const { status = 'all', venueId = '', name = '', phone = '', identity = '', hasFamily = '' } = req.query;
     const where = [];
@@ -145,13 +147,15 @@ router.get('/', requireAdminAuth, requireResource('customer-parents'), async (re
 });
 
 // GET /:id — 家長 + 旗下學員
-router.get('/:id', requireAdminAuth, requireResource('customer-parents'), async (req, res) => {
+router.get('/:id', requireAdminAuth, requireAnyResource('customer-parents', 'manual-enroll'), async (req, res) => {
   try {
     const p = await pool.query(`SELECT ${PARENT_COLS} FROM parents p WHERE p.id = $1`, [req.params.id]);
     if (!p.rowCount || !isVenueInScope(req, p.rows[0].primary_venue_id)) {
       return res.status(404).json({ error: '找不到此家長' });
     }
-    const reveal = wantReveal(req);
+    // 只靠 manual-enroll 進來的人看遮罩值；顯示原值仍要有 Z01 頁權限。
+    const reveal = wantReveal(req)
+      && await canUserAccess({ role: req.adminUser.role, userId: req.adminUser.sub }, 'customer-parents');
     const kids = await pool.query(`SELECT ${KID_COLS} FROM students WHERE parent_id = $1 ORDER BY is_active DESC, created_at ASC`, [req.params.id]);
     if (reveal && kids.rowCount) auditReveal(req, 'parent-students', kids.rowCount);
     res.json({ ...rowToParent(p.rows[0]), students: kids.rows.map((k) => rowToStudent(k, reveal)) });
