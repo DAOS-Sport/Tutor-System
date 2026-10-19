@@ -106,14 +106,38 @@ async function submit(evalId, parentId, payload) {
   return r.rows[0];
 }
 
-async function listInvitesForReminder() {
-  const r = await pool.query(
-    `SELECT ce.id, ce.parent_id, ce.course_period_id, ce.coach_id, cp.venue_id
-       FROM course_evaluations ce
-       JOIN course_periods cp ON cp.id = ce.course_period_id
-      WHERE ce.submitted_at IS NULL
-        AND ce.reminder_sent_at IS NULL
-        AND ce.invited_at < NOW() - INTERVAL '7 days'`
+// 認領租約：同一筆邀請在這段時間內只會交給一個排程執行。
+// 排程每小時 :05 跑一次，租約 30 分鐘 → 推播失敗（reminder_sent_at 沒寫上）時，
+// 下一小時會重新認領重試，行為與改版前相同。
+const REMINDER_CLAIM_LEASE_MINUTES = 30;
+
+/**
+ * 取出「邀請超過 7 天未填、尚未提醒」的評鑑，並同時認領推播權（GitHub #10）。
+ *
+ * 正式站 autoscale 可能同時有 2–3 台在跑排程；原本只是 SELECT，兩台在同一個 :05
+ * 都會拿到同一批、各推一次 → 家長收到重複提醒（推播成功後才寫 reminder_sent_at，
+ * 擋不住並發）。改成在 notification_log 插一筆認領列（UNIQUE(kind,ref_id,recipient_uid)），
+ * 搶到的那台才回傳；與上課提醒／到期提醒「先 claim 再推」是同一套去重方式，不新增資料表。
+ * 認領列的 sent_at 當作租約起點，超過租約可被重新認領（推播失敗或那台當掉的重試）。
+ */
+async function listInvitesForReminder({ db = pool, leaseMinutes = REMINDER_CLAIM_LEASE_MINUTES } = {}) {
+  const r = await db.query(
+    `WITH due AS (
+       SELECT ce.id, ce.parent_id, ce.course_period_id, ce.coach_id, cp.venue_id
+         FROM course_evaluations ce
+         JOIN course_periods cp ON cp.id = ce.course_period_id
+        WHERE ce.submitted_at IS NULL
+          AND ce.reminder_sent_at IS NULL
+          AND ce.invited_at < NOW() - INTERVAL '7 days'
+     ), claimed AS (
+       INSERT INTO notification_log (kind, ref_id, recipient_uid)
+       SELECT 'evaluation_reminder_claim', due.id::text, due.parent_id::text FROM due
+       ON CONFLICT (kind, ref_id, recipient_uid) DO UPDATE SET sent_at = NOW()
+        WHERE notification_log.sent_at < NOW() - make_interval(mins => $1::int)
+       RETURNING ref_id
+     )
+     SELECT due.* FROM due JOIN claimed ON claimed.ref_id = due.id::text`,
+    [leaseMinutes]
   );
   return r.rows;
 }

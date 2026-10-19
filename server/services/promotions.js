@@ -129,9 +129,9 @@ function promoDisplayOrderSql(alias = 'p') {
            ${alias}.id`;
 }
 
-async function listActivePromotions() {
+async function listActivePromotions(db = pool) {
   // 起迄為 TIMESTAMPTZ → 直接以 NOW()（絕對時刻）判定是否在檔期內（含 23:59:59 端點）。
-  const r = await pool.query(
+  const r = await db.query(
     `SELECT id, name, description, type, discount_value, min_threshold_type, min_threshold_value,
             applicable_course_types, applicable_venue_ids, applicable_coach_multipliers,
             applicable_to_group_orders,
@@ -153,13 +153,16 @@ async function listActivePromotions() {
  *   - 若有 couponCode → 嚴格驗證該代碼（必須符合 status/日期/scope/max_uses）。
  *   - 若無 couponCode → 自動從 active 且 coupon_code IS NULL 的活動中挑「折抵最大」一筆。
  */
-async function previewBestDiscount({ originalPrice, courseType, venueId, periodCount = 1, couponCode = null, parentId = null, coachMultiplier = null, isGroupOrder = false }) {
+// db：在交易內呼叫時務必傳入同一個 client（GitHub #10 尖峰壓測發現）。報名路由先借一條
+// 連線開交易，若這裡再用 pool 借第二條，並發數 ≥ 連線池上限（預設 10）時每個交易都在等
+// 一條永遠不會歸還的連線 —— 整台伺服器卡死（連 /health 都不回）。
+async function previewBestDiscount({ originalPrice, courseType, venueId, periodCount = 1, couponCode = null, parentId = null, coachMultiplier = null, isGroupOrder = false, db = pool }) {
   const op = Math.max(0, Math.round(Number(originalPrice) || 0));
   const requestPeriods = normalizeRequestPeriods(periodCount);
   if (!op) return { originalPrice: 0, discountAmount: 0, finalPrice: 0, promotion: null };
 
   if (couponCode) {
-    const rc = await pool.query(
+    const rc = await db.query(
       `SELECT * FROM promotions WHERE UPPER(coupon_code) = UPPER($1)`,
       [String(couponCode).trim()]
     );
@@ -181,7 +184,7 @@ async function previewBestDiscount({ originalPrice, courseType, venueId, periodC
       throw quotaError('該活動優惠總額度已達上限');
     }
     if (p.parent_period_cap != null && parentId) {
-      const { used, familyWide } = await getParentPeriodUses(pool, p.id, parentId);
+      const { used, familyWide } = await getParentPeriodUses(db, p.id, parentId);
       if (used + requestPeriods > Number(p.parent_period_cap)) {
         throw quotaError(parentCapMessage(familyWide));
       }
@@ -201,7 +204,7 @@ async function previewBestDiscount({ originalPrice, courseType, venueId, periodC
     };
   }
 
-  const candidates = await listActivePromotions();
+  const candidates = await listActivePromotions(db);
   let best = null;
   let bestDiscount = 0;
   for (const p of candidates) {
@@ -210,7 +213,7 @@ async function previewBestDiscount({ originalPrice, courseType, venueId, periodC
     if (!matchScope(p, { courseType, venueId, periodCount, coachMultiplier, isGroupOrder })) continue;
     if (!hasPlatformPeriodCapacity(p, requestPeriods)) continue;
     if (p.parent_period_cap != null && parentId) {
-      const { used } = await getParentPeriodUses(pool, p.id, parentId);
+      const { used } = await getParentPeriodUses(db, p.id, parentId);
       if (used + requestPeriods > Number(p.parent_period_cap)) continue;
     }
     const d = computeDiscount(p, op);

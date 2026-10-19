@@ -601,7 +601,8 @@ router.post('/', async (req, res) => {
 
     let bound;
     try {
-      bound = await resolveBoundStudents(client, req.parent.id, studentIds, newStudents, await familyScope.actingParentIds(req));
+      // 交易內一律走同一個 client，不另向 pool 借連線（GitHub #10：並發 ≥ 連線池上限會互等卡死）。
+      bound = await resolveBoundStudents(client, req.parent.id, studentIds, newStudents, await familyScope.actingParentIds(req, client));
     } catch (e) {
       await client.query('ROLLBACK');
       return res.status(e.code === 'STUDENT_NOT_OWNED' ? 403 : 400).json({ error: e.message, code: e.code });
@@ -639,6 +640,7 @@ router.post('/', async (req, res) => {
         parentId: req.parent.id,
         coachMultiplier,
         isGroupOrder: true,
+        db: client,
       });
       if (preview.promotion && preview.discountAmount > 0) {
         promoId = preview.promotion.id;
@@ -859,7 +861,7 @@ router.post('/by-token/:token/join', async (req, res) => {
     }
 
     // 決策 6：同一個家庭在同一團只算一戶 —— 家人已經在團裡，就不能再用另一個帳號加入（不會拿到第二份優惠）
-    const joinFamilyIds = (await familyScope.actingParentIds(req)).map(String);
+    const joinFamilyIds = (await familyScope.actingParentIds(req, client)).map(String); // 交易內不另借連線（GitHub #10）
     const dup = await client.query(
       `SELECT parent_id FROM group_order_members WHERE group_order_id = $1 AND parent_id::text = ANY($2::text[])`,
       [order.id, joinFamilyIds]
@@ -1046,7 +1048,7 @@ router.post('/:id/my-proof', async (req, res) => {
       return res.status(409).json({ error: '此團購狀態無法上傳付款資料', code: 'NOT_UPLOADABLE' });
     }
     // 家人可以幫忙付款（規格 §2）：自己在團內就付自己那一戶，否則付家人那一戶
-    const familyIds = await familyScope.actingParentIds(req);
+    const familyIds = await familyScope.actingParentIds(req, client); // 交易內不另借連線（GitHub #10）
     const m = await client.query(
       `SELECT id, payment_confirmed, transfer_last_5, carrier, tax_id, payment_proof_url
          FROM group_order_members

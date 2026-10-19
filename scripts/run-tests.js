@@ -58,6 +58,7 @@ const UNIT = [
   'tests/manual_enroll_frozen_test.js',
   // Issue #11：日期邏輯在不同 TZ 子行程下結果必須相同（台北跨日邊界）。
   'tests/timezone_independence_test.js',
+  'tests/tx_single_connection_test.js',
   'tests/shared_class_checkin_contract_test.js',
   'tests/reconcile_email_test.js',
   'tests/venue_oa_deeplink_test.js',
@@ -180,6 +181,7 @@ const DB = [
   'tests/family_accounts_db_test.js',
   'tests/refund_entitlement_db_test.js',
   'tests/cron_slots_db_test.js',
+  'tests/cron_dedupe_retention_db_test.js',
   'tests/course_entitlement_is_active_db_test.js',
   'tests/counter_entitlement_routes_db_test.js',
   'tests/expiry_reminder_scope_db_test.js',
