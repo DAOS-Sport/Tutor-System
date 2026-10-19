@@ -444,6 +444,8 @@ process.once('SIGINT', () => shutdown('SIGINT'));
     console.log(`DAOS Server running on port ${PORT}`);
     // 排程只在 schema ready 後啟動，避免剛部署時對尚未升級的資料表讀寫。
     initCronJobs();
+    // 對帳通知信補寄：RECONCILE_MAIL_SWEEP=1 才排程，預設什麼都不做。
+    require('./services/reconcileMailSweep').startReconcileMailSweep();
     // 背景預壓前端資產（依序、不阻塞 listen）；沒壓到的檔案第一次被請求時才壓。
     (async () => {
       for (const [name, router] of Object.entries(FRONTEND_ROUTERS)) {

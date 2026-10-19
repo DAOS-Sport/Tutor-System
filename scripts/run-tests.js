@@ -180,6 +180,7 @@ const UNIT = [
   'tests/representative_role_rule_test.js',
   'tests/mcp_auth_key_test.js',
   'tests/e2e_test_db_guard_test.js',
+  'tests/reconcile_mail_sweep_flag_test.js',
   'tests/release/canary_config_test.js',
   'tests/release/reconcile_image_pipeline_test.js',
   // #12 假成功／路由不明稽核：未知 /api JSON 404、SPA fallback、路由重複／遮蔽、catch 回成功。
@@ -211,6 +212,7 @@ const DB = [
   // 端到端：自己 spawn 一台 server、自己建 smoke_ 帳號、try/finally 清乾淨。
   // 不破壞既有資料，但需要真實 DATABASE_URL，所以歸在這一層而不是 unit。
   'tests/permission_smoke_test.js',
+  'tests/reconcile_mail_sweep_db_test.js',
   'tests/coach_session_date_range_db_test.js',
   // Issue #11：業務日期 SQL 在連線 TimeZone=UTC／洛杉磯下仍得到台北答案。只算常數式，不碰資料表。
   'tests/timezone_sql_db_test.js',
