@@ -5,7 +5,7 @@ const { Client } = require('../../server/node_modules/pg');
 const { assert, step } = require('./_lib');
 const enrollmentRouter = require('../../server/routes/admin/enrollments');
 
-const { ensureGroupCoursePeriod } = enrollmentRouter._checkoutInternals;
+const { ensureGroupCoursePeriod } = require('../../server/services/periodProvisioning');
 
 (async () => {
   step('Checkout group isolation: all related checkouts must be paid before opening group course');

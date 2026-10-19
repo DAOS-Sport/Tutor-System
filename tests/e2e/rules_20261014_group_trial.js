@@ -162,7 +162,7 @@ async function call(base, method, path, token, body, headers = {}) {
       `試上整班退費（${tp.status} family_shared=${tp.data?.family_shared} siblings=${(tp.data?.sibling_ids || []).length}）`);
 
     step('C6 舊形狀（每人一張、不掛批號）的試上重跑開課 → 新增課期＝0');
-    const { ensureSoloCoursePeriod } = adminEnrollmentRouter._checkoutInternals;
+    const { ensureSoloCoursePeriod } = require('../../server/services/periodProvisioning');
     const legacyBatch = randomUUID();
     const legacyIds = [`ELEG${suffix.toUpperCase()}A`, `ELEG${suffix.toUpperCase()}B`];
     for (const [i, kidId] of [trialKidA, trialKidB].entries()) {

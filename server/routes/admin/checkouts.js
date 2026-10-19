@@ -15,9 +15,7 @@ const {
 } = require('../../services/checkoutFamilies');
 const { enqueueReconcileMailDetailed, deliverOutbox } = require('../../services/reconcileNotify');
 const { isValidTaiwanTaxId, validateCarrier } = require('../../services/invoiceIdentity');
-const enrollmentRouter = require('./enrollments');
-
-const { getSettings, ensureGroupCoursePeriod, ensureSoloCoursePeriod } = enrollmentRouter._checkoutInternals;
+const { getSettings, ensureGroupCoursePeriod, ensureSoloCoursePeriod } = require('../../services/periodProvisioning');
 
 const router = express.Router();
 
