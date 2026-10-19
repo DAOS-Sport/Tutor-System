@@ -11,7 +11,7 @@ import { useAuth } from '../context/AuthContext';
 import { enrollmentsApi } from '../api/enrollments';
 import { venuesApi } from '../api/venues';
 import { formatTWD, formatTWDateTime, courseTypeLabel, paymentStatusLabel, paymentStatusTone, formatTWDateTimeSeconds } from '../utils/format';
-import { exportEnrollmentsCsv, exportEnrollmentsXlsx } from '../utils/csvExport';
+import { exportEnrollmentsCsv, exportEnrollmentsXlsx } from '../utils/tableExport';
 import { useToast } from '../context/ToastContext';
 import ExportMenu from '../components/ExportMenu';
 import EditEnrollmentModal from './enrollments/EditEnrollmentModal';
@@ -88,7 +88,7 @@ export default function EnrollmentsPage() {
       const all = await fetchAllForExport();
       if (all.length === 0) { toast.error('沒有可匯出的資料'); return; }
       const args = { filenamePrefix: 'enrollments', enrollments: all, venueName: (id) => venueMap[id] || id };
-      if (kind === 'csv') exportEnrollmentsCsv(args); else exportEnrollmentsXlsx(args);
+      if (kind === 'csv') exportEnrollmentsCsv(args); else await exportEnrollmentsXlsx(args);
       toast.success(`已匯出 ${all.length} 筆報名資料 (${kind === 'csv' ? 'CSV' : 'XLSX'})`);
     } catch (e) {
       toast.error(e?.response?.data?.error || '匯出失敗，請稍後再試');

@@ -5,7 +5,7 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
 import { adminReportsApi } from '../api/reports';
 import { venuesApi } from '../api/venues';
-import { rowsToCsv, downloadCsv, downloadXlsx } from '../utils/csvExport';
+import { rowsToCsv, downloadCsv, downloadXlsx } from '../utils/tableExport';
 import ExportMenu from '../components/ExportMenu';
 import { formatPlainDate, todayISO } from '../utils/format';
 
@@ -75,7 +75,7 @@ export default function ReportsPage() {
   function exportXlsx() {
     if (!data) return;
     const { headers, rows, baseName, label } = buildExport();
-    downloadXlsx(`${baseName}.xlsx`, headers, rows, label);
+    downloadXlsx(`${baseName}.xlsx`, headers, rows, label).catch(() => toast.error('匯出失敗，請稍後再試'));
   }
 
   return (

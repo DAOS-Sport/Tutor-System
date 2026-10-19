@@ -5,7 +5,7 @@ import StatusBadge from '../components/StatusBadge';
 import ExportMenu from '../components/ExportMenu';
 import { useToast } from '../context/ToastContext';
 import { adminEvalApi } from '../api/learn';
-import { rowsToCsv, downloadCsv, downloadXlsx } from '../utils/csvExport';
+import { rowsToCsv, downloadCsv, downloadXlsx } from '../utils/tableExport';
 import { formatTWDate, todayISO } from '../utils/format';
 
 const COACH_EVAL_HEADERS = ['教練', '資深', '件數', '整體 avg', '教學 avg', '續報率', '不達標項目'];
@@ -64,12 +64,14 @@ export default function CoachEvalPage() {
     if (!list || list.length === 0) { toast.error('沒有可匯出的資料'); return; }
     const rows = list.map(coachEvalRow);
     const base = `coach_eval_${todayStamp()}`;
+    const done = () => toast.success(`已匯出 ${list.length} 筆教練資料 (${kind.toUpperCase()})`);
     if (kind === 'csv') {
       downloadCsv(`${base}.csv`, rowsToCsv(COACH_EVAL_HEADERS, rows));
+      done();
     } else {
-      downloadXlsx(`${base}.xlsx`, COACH_EVAL_HEADERS, rows, '教練考核');
+      downloadXlsx(`${base}.xlsx`, COACH_EVAL_HEADERS, rows, '教練考核')
+        .then(done, () => toast.error('匯出失敗，請稍後再試'));
     }
-    toast.success(`已匯出 ${list.length} 筆教練資料 (${kind.toUpperCase()})`);
   }
 
   return (
