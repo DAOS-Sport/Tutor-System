@@ -3,13 +3,13 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { coachesApi } from '../api/coaches';
 import { coursesApi } from '../api/courses';
 import { venuesApi } from '../api/venues';
-import CoachCard from '../components/CoachCard';
+import CoachCard, { coachCardPrice } from '../components/CoachCard';
 import CoachDetailModal from '../components/CoachDetailModal';
 import LoadingSpinner from '../components/LoadingSpinner';
 import PaymentDisclaimerModal from '../components/PaymentDisclaimerModal';
 import { useToast } from '../context/ToastContext';
 import { courseTypeLabel, formatTWD } from '../utils/format';
-import { hasCoursePricing, resolvePricingMultiplier, resolveCurrentUnitPrice, resolveTrialUnitPrice } from '../../../shared/coursePricing';
+import { hasCoursePricing } from '../../../shared/coursePricing';
 import { coachMatchesVenue } from '../utils/venues';
 import { useGuideDemo } from '../utils/guideDemo';
 
@@ -195,6 +195,7 @@ export default function CoachListPage() {
               isTrial={isTrial}
               trialPrice={priceInfo?.trial_price}
               sessionsPerPeriod={priceInfo?.sessions_per_period}
+              seats={courseType}
               demo={!!guide}
               onSelect={() => handleCoachSelect(c)}
               onDetail={() => setDetailCoach(c)}
@@ -204,23 +205,19 @@ export default function CoachListPage() {
       )}
 
       {detailCoach && (() => {
-        // 詳細頁底部的價格要與小卡一致 —— 兩邊各算一次遲早會分岔，所以用同一支
-        // resolveUnitPrice（課別對該加成級距若有明價，以明價為準）。
-        const multiplier = resolvePricingMultiplier(detailCoach.multiplier, detailCoach.pricing_multiplier);
-        const adjusted = multiplier != null && hasCoursePricing(basePrice, priceInfo?.sessions_per_period)
-          ? resolveCurrentUnitPrice(basePrice, multiplier, priceInfo?.tier_prices) : null;
-        const per = Number(priceInfo?.sessions_per_period);
-        const trialUnit = resolveTrialUnitPrice(basePrice,
-          multiplier,
-          priceInfo?.tier_prices, priceInfo?.trial_price, per);
+        // 詳細頁底部的價格要與小卡一致 —— 兩邊各算一次遲早會分岔，所以用小卡同一支 coachCardPrice。
+        const { total, note } = coachCardPrice({
+          coach: detailCoach, basePrice, tierPrices: priceInfo?.tier_prices, isTrial,
+          trialPrice: priceInfo?.trial_price, sessionsPerPeriod: priceInfo?.sessions_per_period, seats: courseType,
+        });
         return (
           <CoachDetailModal
             coach={detailCoach}
             venueNames={venue?.name ? [venue.name] : []}
-            priceLabel={(isTrial ? trialUnit : adjusted) == null ? '價格待確認' : formatTWD(isTrial ? trialUnit : adjusted)}
-            priceNote={isTrial ? '試上 1 堂' : `${per} 堂`}
+            priceLabel={total == null ? '價格待確認' : formatTWD(total)}
+            priceNote={note}
             onClose={() => setDetailCoach(null)}
-            onSelect={() => { if ((isTrial ? trialUnit : adjusted) == null) return; const c = detailCoach; setDetailCoach(null); handleCoachSelect(c); }}
+            onSelect={() => { if (total == null) return; const c = detailCoach; setDetailCoach(null); handleCoachSelect(c); }}
           />
         );
       })()}
