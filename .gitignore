@@ -35,3 +35,6 @@ commit.sh
 /probe*.js
 /patch*.py
 /mut*.py
+
+# Replit ⇄ GitHub 同步工具的真值對照（scripts/github-sync.js），不可進 git
+.local/github-sync/
