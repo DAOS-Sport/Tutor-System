@@ -79,7 +79,7 @@ function initWebSocket(server) {
       socket.destroy();
     }
   });
-  wssAdmin.on('connection', (ws, req) => {
+  wssAdmin.on('connection', async (ws, req) => {
     let payload;
     try {
       const url = new URL(req.url, 'http://localhost');
@@ -92,6 +92,9 @@ function initWebSocket(server) {
     } catch {
       return ws.close(4001, 'Invalid token');
     }
+    // 角色權限 A 期：與 requireAdminAuth 同一套比對 —— 已停用、改過密碼、
+    // 身分或場館被調整的舊憑證不能再接上即時通知。
+    if (!(await _adminSessionOk(payload))) return ws.close(4001, 'Session no longer valid');
     ws.adminRole = payload.role;
     // Task #90：支援多場館員工 — 收 venue_ids 陣列；舊 token 退回 [venue_id]
     ws.adminVenueIds = cleanVenueList(payload.venue_ids || (payload.venue_id ? [payload.venue_id] : []));
@@ -126,6 +129,7 @@ function initWebSocket(server) {
     else if (payload.type === 'coach') { role = 'coach'; userId = payload.coachId; }
     else if (payload.role && ['admin', 'staff'].includes(payload.role)) {
       // admin token 走 routes/admin/auth.js 簽發，payload.role/venue_id 帶角色與場館
+      if (!(await _adminSessionOk(payload))) return ws.close(4001, 'Session no longer valid');
       role = payload.role;
       userId = payload.sub || null;
       venueId = payload.venue_id || null;
@@ -191,6 +195,16 @@ function broadcastAdminEvent(eventType, payload) {
       if (!payload?.venue_id || !ids.length || !ids.includes(payload.venue_id)) continue;
     }
     try { c.send(data); } catch { /* ignore */ }
+  }
+}
+
+// 讀不到資料庫時拒絕連線：即時通知斷線會自動重連，不像 HTTP 會把人登出。
+async function _adminSessionOk(payload) {
+  try {
+    // eslint-disable-next-line global-require
+    return !(await require('./adminSession').checkToken(payload));
+  } catch {
+    return false;
   }
 }
 

@@ -18,8 +18,8 @@
  */
 'use strict';
 
-const { canUserAccess } = require('../services/rolePermissions');
-const { isResourceKey } = require('../constants/adminResources');
+const { canUserAccess, canUserDo } = require('../services/rolePermissions');
+const { isResourceKey, isActionKey } = require('../constants/adminResources');
 
 function deny(res) {
   return res.status(403).json({
@@ -95,5 +95,35 @@ function requireAnyResource(...resourceKeys) {
   };
 }
 
-module.exports = { requireResource, requireAnyResource, requireAnyBackoffice };
+/**
+ * 角色權限 C 期：頁面裡的單一動作（例如「刪除 Z03 紀錄」）。
+ * 取代原本寫死的 requireAdminRole('admin')。動作預設只有系統管理員，
+ * 之後可在「角色權限管理」開給其他角色或個人。
+ *
+ * 路由上要疊在頁面閘門之後：requireResource('ragic-z03'), requireAction('ragic-z03:delete')。
+ */
+function requireAction(actionKey) {
+  if (!isActionKey(actionKey)) {
+    throw new Error(`requireAction: 未知的動作代號「${actionKey}」`);
+  }
+  return async (req, res, next) => {
+    const role = req.adminUser?.role;
+    if (!role) return res.status(401).json({ error: 'Unauthenticated' });
+    const who = { role, userId: req.adminUser.sub };
+    try {
+      if (await canUserDo(who, actionKey)) return next();
+      return res.status(403).json({
+        error: '沒有權限執行這個動作，請聯絡系統管理員調整角色權限',
+        code: 'ACTION_FORBIDDEN',
+        action: actionKey,
+      });
+    } catch (err) {
+      // 與頁面閘門同一個原則：讀不到設定就拒絕。
+      console.error('[requireAction] 權限查詢失敗，一律拒絕：', err.message);
+      return deny(res);
+    }
+  };
+}
+
+module.exports = { requireResource, requireAnyResource, requireAnyBackoffice, requireAction };
 

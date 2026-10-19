@@ -26,8 +26,8 @@
  */
 const express = require('express');
 const { pool } = require('../../models/db');
-const { requireAdminAuth, isVenueInScope, getScopedVenueIds, requireAdminRole } = require('../../middlewares/adminAuth');
-const { requireResource } = require('../../middlewares/requireResource');
+const { requireAdminAuth, isVenueInScope, getScopedVenueIds } = require('../../middlewares/adminAuth');
+const { requireResource, requireAction } = require('../../middlewares/requireResource');
 const { adminActorName } = require('../../services/studentAudit');
 const familyAdmin = require('../../services/familyAdmin');
 const familyNotify = require('../../services/familyNotify');
@@ -349,7 +349,8 @@ router.post('/:id/members/:parentId/revoke', async (req, res) => {
   }), '移出成員失敗');
 });
 
-router.post('/:id/transfer-owner', requireAdminRole('admin'), async (req, res) => {
+// 角色權限 C 期：轉移擁有者會改變「誰看得到哪些孩子的資料」，預設只有系統管理員（規格 §7）。
+router.post('/:id/transfer-owner', requireAction('customer-parents:transfer-owner'), async (req, res) => {
   if (!(await familyInScope(req, req.params.id))) return notFound(res);
   await run(res, (c) => familyAdmin.transferOwner(c, {
     familyId: req.params.id, newOwnerParentId: String(req.body?.parent_id || ''), actor: actorOf(req),

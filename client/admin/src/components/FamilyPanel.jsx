@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import ConfirmDialog from './ConfirmDialog';
 import StatusBadge from './StatusBadge';
 import { useToast } from '../context/ToastContext';
-import { useAuth } from '../context/AuthContext';
+import { usePermissions } from '../context/PermissionContext';
 import { familiesApi, RELATIONSHIP_OPTIONS } from '../api/families';
 import { formatTWDateTime } from '../utils/format';
 
@@ -109,7 +109,9 @@ function AddMemberForm({ parentId, busy, act }) {
 
 export default function FamilyPanel({ parent }) {
   const toast = useToast();
-  const { isAdmin } = useAuth();
+  // 角色權限 C 期：轉移擁有者改讀動作權限（預設仍只有系統管理員）。
+  const { canDo } = usePermissions();
+  const canTransferOwner = canDo('customer-parents:transfer-owner');
   const [data, setData] = useState(null); // { family } | null（載入中）
   const [loadError, setLoadError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -214,7 +216,7 @@ export default function FamilyPanel({ parent }) {
                             onClick={() => act({ run: () => familiesApi.addMember(family.id, { parentId: m.parent_id, relationship: m.relationship || null }), ok: '已重新綁定' })}>
                             重新綁定</button>
                         )}
-                        {isAdmin && m.role !== 'owner' && (
+                        {canTransferOwner && m.role !== 'owner' && (
                           <button type="button" disabled={busy || m.member_enabled === false} className="font-semibold text-brand-primary hover:underline disabled:opacity-50"
                             onClick={() => setTransferTo(m)}>設為擁有者</button>
                         )}

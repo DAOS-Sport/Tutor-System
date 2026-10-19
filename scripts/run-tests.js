@@ -41,6 +41,9 @@ const UNIT = [
   'tests/trial_price_multiplier_test.js',
   'tests/staff_badge_manual_roles_test.js',
   'tests/dashboard_permission_test.js',
+  // 角色權限 A 期（憑證即時失效）與 B、C 期（變更紀錄、動作權限）。假的 pool，不連 DB。
+  'tests/admin_session_revocation_test.js',
+  'tests/permission_audit_actions_test.js',
   'tests/error_boundary_test.js',
   // 測試套件本身的體檢。放第一個：它抓的是「其他測試有沒有在說謊」，
   // 而 manual_deduction_backdate 就這樣瞎了一段時間 —— 指向的元件早已搬走、

@@ -12,11 +12,11 @@
  */
 const express = require('express');
 const { parsePaging } = require('../../utils/paging');
-const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
+const { requireAdminAuth } = require('../../middlewares/adminAuth');
 // F-A06：權限改由「角色權限管理」的設定決定。
-// 保留 requireAdminRole('admin') 的地方＝頁面看得到、但這個動作仍限管理員；
-// 頁面層級的權限表達不了「看得到但不能做」，硬塞會讓主管突然拿到刪除權。
-const { requireResource } = require('../../middlewares/requireResource');
+// 頁面裡「看得到但不一定能做」的動作走 requireAction（角色權限 C 期），
+// 預設只有系統管理員，之後可在畫面上開給其他角色或個人。
+const { requireResource, requireAction } = require('../../middlewares/requireResource');
 const ragicAdmin = require('../../services/ragicAdmin');
 const { pool } = require('../../models/db');
 const reviewArchive = require('../../services/z03ReviewArchive').createArchiveService(pool);
@@ -27,11 +27,11 @@ router.use(requireAdminAuth);
 router.use(requireResource('ragic-z03'));
 
 // Review metadata only: never invoke Ragic, activation, registration or push.
-router.get('/review-archive/preview', requireAdminRole('admin'), async (req, res) => {
+router.get('/review-archive/preview', requireAction('ragic-z03:review-archive'), async (req, res) => {
   try { res.json(await reviewArchive.preview(req.query?.policy)); }
   catch (err) { res.status(err.status || 500).json({ error: err.status ? err.message : '核對預覽失敗，未改動資料' }); }
 });
-router.post('/review-archive', requireAdminRole('admin'), async (req, res) => {
+router.post('/review-archive', requireAction('ragic-z03:review-archive'), async (req, res) => {
   try { res.json(await reviewArchive.apply(req.body?.items, req.adminUser?.sub, req.body?.policy)); }
   catch (err) { res.status(err.status || 500).json({ error: err.status ? err.message : '歸檔失敗，請重新預覽' }); }
 });
@@ -105,7 +105,7 @@ router.post('/:id/dismiss', async (req, res) => {
 
 // Destructive local Z03 delete. Admin-only and requires explicit confirmation;
 // the Ragic source record is not modified.
-router.delete('/:id', requireAdminRole('admin'), async (req, res) => {
+router.delete('/:id', requireAction('ragic-z03:delete'), async (req, res) => {
   try {
     if (String(req.query.confirm || '') !== 'true') {
       return res.status(400).json({

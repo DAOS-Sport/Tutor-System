@@ -10,16 +10,19 @@
  * - POST   /api/admin/ragic-staging/:id/reject      ({ reason })
  * - POST   /api/admin/ragic-staging/bulk-approve    ({ ids: [...] })
  *
- * 全部要求 admin 角色。staff/manager 不應審核外部資料來源。
+ * 權限：動作 ragic-status:staging-review（角色權限 C 期）。預設只有系統管理員 ——
+ * 外部資料來源的審核影響全公司資料，開給其他人要在「角色權限管理」明確勾選。
  */
 const express = require('express');
-const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
+const { requireAdminAuth } = require('../../middlewares/adminAuth');
+const { requireAction } = require('../../middlewares/requireResource');
 const ragicAdmin = require('../../services/ragicAdmin');
 
 const router = express.Router();
 
 router.use(requireAdminAuth);
-router.use(requireAdminRole('admin')); // 待審核屬外部資料治理，僅 admin 可見
+// 待審核區不是側邊選單上的頁面，所以只掛動作閘門、不掛頁面閘門。
+router.use(requireAction('ragic-status:staging-review'));
 
 router.get('/count', async (req, res) => {
   try {

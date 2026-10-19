@@ -12,22 +12,26 @@ import { rolePermissionsApi } from '../api/rolePermissions';
  * loading 期間一律當作「還不知道」而不是「沒有權限」：把載入中畫成無權限，
  * 使用者每次重新整理都會先看到一閃而過的「權限不足」，那比慢半秒糟得多。
  */
-const PermCtx = createContext({ allowed: null, can: () => true, reload: () => {} });
+const PermCtx = createContext({ allowed: null, actions: null, can: () => true, reload: () => {} });
 
 export function PermissionProvider({ children }) {
   const { isAuthed, role } = useAuth();
   const [allowed, setAllowed] = useState(null);
+  // 動作層級權限（C 期），例如「刪除 Z03 紀錄」。代號長得像「頁面:動作」。
+  const [actions, setActions] = useState(null);
 
   async function load() {
-    if (!isAuthed) { setAllowed(null); return; }
+    if (!isAuthed) { setAllowed(null); setActions(null); return; }
     try {
       const d = await rolePermissionsApi.mine();
       setAllowed(Array.isArray(d?.allowed) ? d.allowed : []);
+      setActions(Array.isArray(d?.actions) ? d.actions : []);
     } catch {
       // 讀不到就退回 null＝「還不知道」，讓 can() 放行。
       // 這裡不 fail-closed 是刻意的：真正的把關在後端，前端擋不住的東西
       // 後端會擋；反過來把暫時讀不到當成沒權限，只會讓人以為系統壞了。
       setAllowed(null);
+      setActions(null);
     }
   }
 
@@ -39,7 +43,15 @@ export function PermissionProvider({ children }) {
     return allowed.includes(key);
   };
 
-  return <PermCtx.Provider value={{ allowed, can, reload: load }}>{children}</PermCtx.Provider>;
+  // 動作按鈕要不要畫出來。跟 can() 不同：還沒載到時回 false ——
+  // 按鈕晚半秒出現無傷大雅，先畫出來、點下去才吃 403 才讓人困惑。
+  // 真正的把關一樣在後端（requireAction）。
+  const canDo = (key) => {
+    if (role === 'admin') return true;
+    return Array.isArray(actions) && actions.includes(key);
+  };
+
+  return <PermCtx.Provider value={{ allowed, actions, can, canDo, reload: load }}>{children}</PermCtx.Provider>;
 }
 
 export function usePermissions() { return useContext(PermCtx); }

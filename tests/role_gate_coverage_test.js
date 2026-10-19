@@ -15,29 +15,14 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
 
 // 每一項都要寫得出「為什麼這裡不能用資源權限」。寫不出來的就不該在名單上。
+// 角色權限 C 期之後，「頁面看得到但動作限管理員」那幾支（標籤分類刪除、Z03 刪除與封存、
+// 家庭擁有者轉移、Ragic 待審核區、Ragic 時間軸）改走 requireAction，已從名單移除。
+// 剩下的兩項不是「動作」—— 它們故意不讓設定表管，理由寫在 why。
 const ALLOWED = [
-  {
-    file: 'server/routes/admin/learn.js',
-    why: '刪標籤分類：標籤庫這一頁主管看得到，但刪分類會連帶影響既有標籤，限管理員。'
-       + '頁面層級的權限表達不了「看得到但不能做」，硬塞會讓主管突然拿到刪除權。',
-  },
-  {
-    file: 'server/routes/admin/ragicZ03.js',
-    why: '刪 Z03 紀錄：同上，頁面開給 admin/manager/staff，但刪除限管理員。',
-  },
   {
     file: 'server/routes/admin/rolePermissions.js',
     why: '寫入權限設定：只用 requireResource 會開出提權路徑 —— 管理員把這一頁'
        + '勾給主管，主管就能把任何權限發給自己。讀取跟著設定走，能改的只有管理員。',
-  },
-  {
-    file: 'server/routes/admin/ragicStaging.js',
-    why: '待審核資料治理不是側邊選單的頁面，沒有對應的資源代號可綁。',
-  },
-  {
-    file: 'server/routes/admin/families.js',
-    why: '轉移家庭擁有者、凍結家庭：家庭區塊在 Z01 頁（admin／manager／staff 都能用、能加減成員），'
-       + '但這兩個動作會改變「誰看得到哪些孩子的資料」，規格 §7 限管理員。頁面層級權限表達不了「能用這頁但不能做這兩件事」。',
   },
   {
     file: 'server/routes/auth.js',

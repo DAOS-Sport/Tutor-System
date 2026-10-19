@@ -2,15 +2,16 @@ import React, { useEffect, useMemo, useState } from 'react';
 import PageHeader from '../components/PageHeader';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
-import { useAuth } from '../context/AuthContext';
+import { usePermissions } from '../context/PermissionContext';
 import { adminTagsApi } from '../api/learn';
 
 const EMPTY_TAG = { category_id: '', label: '', text_template: '', is_active: true };
 
 export default function TagsPage() {
   const toast = useToast();
-  const { user } = useAuth();
-  const canDeleteCategory = user?.role === 'admin';
+  // 角色權限 C 期：原本寫死只有系統管理員，改讀動作權限（預設仍只有管理員）。
+  const { canDo } = usePermissions();
+  const canDeleteCategory = canDo('tags:delete-category');
   const [data, setData] = useState(null);
   const [tagForm, setTagForm] = useState(EMPTY_TAG);
   const [editId, setEditId] = useState(null);

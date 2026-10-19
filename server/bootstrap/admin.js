@@ -294,6 +294,11 @@ async function ensureSchema() {
   await pool.query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE`);
   await pool.query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS active_overridden_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS credentials_changed_at TIMESTAMPTZ`);
+  // 角色權限 A 期：憑證版本。改密碼、被重設密碼時 +1，舊憑證立即失效
+  // （登入時把這個值簽進 JWT 的 av，requireAdminAuth 每次請求比對）。
+  await pool.query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS auth_version INTEGER NOT NULL DEFAULT 1`);
+  // 角色權限 B 期：權限變更紀錄（只增不改）。結構定義在 services/permissionAudit.js。
+  await pool.query(require('../services/permissionAudit').SCHEMA_SQL);
   // Task #81：admin_users 加 staff_id 連回 admin_staff（單一事實來源）
   // 之前舊資料以 name 對應，這裡 backfill；新建員工會直接帶 staff_id。
   await pool.query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS staff_id TEXT`);
