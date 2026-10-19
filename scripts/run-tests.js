@@ -182,6 +182,7 @@ const UNIT = [
   'tests/mcp_auth_key_test.js',
   'tests/e2e_test_db_guard_test.js',
   'tests/reconcile_mail_sweep_flag_test.js',
+  'tests/compress_json_test.js',
   'tests/favicon_size_test.js',
   'tests/coach_card_group_total_test.js',
   'tests/release/canary_config_test.js',
