@@ -179,6 +179,7 @@ const UNIT = [
   'tests/customer_parent_reveal_scope_test.js',
   'tests/representative_role_rule_test.js',
   'tests/mcp_auth_key_test.js',
+  'tests/e2e_test_db_guard_test.js',
   'tests/release/canary_config_test.js',
   'tests/release/reconcile_image_pipeline_test.js',
   // #12 假成功／路由不明稽核：未知 /api JSON 404、SPA fallback、路由重複／遮蔽、catch 回成功。
@@ -315,7 +316,7 @@ if (tier === 'db') {
     console.error('TEST_DATABASE_URL 與 DATABASE_URL 相同，拒絕執行。');
     process.exit(1);
   }
-  process.exit(report(runFiles(DB, { DATABASE_URL: url }), 'db') ? 0 : 1);
+  process.exit(report(runFiles(DB, { DATABASE_URL: url, E2E_TEST_DATABASE_VERIFIED: url }), 'db') ? 0 : 1);
 }
 
 if (tier === 'e2e') {

@@ -14,6 +14,7 @@
  *   保留整份測試邏輯以利日後恢復折扣時重新啟用。
  */
 const path = require('path');
+require('./_testDb').useTestDatabase();
 const SERVER = path.join(__dirname, '..', '..', 'server');
 const { Client } = require(path.join(SERVER, 'node_modules', 'pg'));
 const { randomUUID } = require('crypto');

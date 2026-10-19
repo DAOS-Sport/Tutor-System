@@ -5,9 +5,10 @@ const path = require('path');
 const SERVER = path.join(__dirname, '..', '..', 'server');
 const { Client } = require(path.join(SERVER, 'node_modules', 'pg'));
 const bcrypt = require(path.join(SERVER, 'node_modules', 'bcryptjs'));
+const { requireTestDatabaseUrl } = require('./_testDb');
 
 async function query(sql, params) {
-  const pg = new Client({ connectionString: process.env.DATABASE_URL });
+  const pg = new Client({ connectionString: requireTestDatabaseUrl() });
   await pg.connect();
   try { return await pg.query(sql, params); } finally { await pg.end(); }
 }

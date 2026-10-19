@@ -9,6 +9,7 @@
  *   修後（加 is_active=TRUE）→ 404 → 斷言通過。
  */
 const path = require('path');
+require('./_testDb').useTestDatabase();
 const { Client } = require(path.join(__dirname, '..', '..', 'server', 'node_modules', 'pg'));
 
 const BASE = process.env.BASE_URL || 'http://localhost:3100';
