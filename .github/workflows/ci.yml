@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: 安裝相依
+        # lockfile 的套件網址指向 Replit 內部鏡像，只在 CI 機器上改走 npm 官方 registry，repo 內的 lockfile 不動。
+        run: |
+          for d in server client/admin client/liff; do
+            sed -i 's#http://package-firewall.replit.local/npm/#https://registry.npmjs.org/#g' "$d/package-lock.json"
+            (cd "$d" && npm ci --no-audit --no-fund)
+          done
+      - name: unit 測試（只擋已知清單以外的新失敗）
+        run: |
+          set +e
+          node scripts/run-tests.js unit 2>&1 | tee unit.log
+          set -e
+          grep -q 'unit：' unit.log || { echo '::error::unit runner 沒有跑完（找不到統計列）'; exit 1; }
+          grep -E '^\s+FAIL  ' unit.log | sed -E 's/^\s+FAIL  //' | sort -u > failed.txt
+          grep -vE '^\s*(#|$)' .github/ci-known-unit-failures.txt | sort -u > known.txt
+          echo '== 本次失敗'; cat failed.txt
+          new=$(comm -23 failed.txt known.txt)
+          fixed=$(comm -13 failed.txt known.txt)
+          if [ -n "$fixed" ]; then echo "::notice::已知清單中這些已通過，可從 .github/ci-known-unit-failures.txt 移除：$(echo $fixed)"; fi
+          if [ -n "$new" ]; then echo "::error::新增失敗：$(echo $new)"; exit 1; fi
+
+  dependency-rules:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: 相依規則（報告模式：列出違規，不擋）
+        run: npx --yes dependency-cruiser@16 server client tests scripts --config .dependency-cruiser.cjs --output-type err || true
