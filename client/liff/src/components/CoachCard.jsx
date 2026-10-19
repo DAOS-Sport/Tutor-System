@@ -2,14 +2,33 @@ import React from 'react';
 import { formatTWD } from '../utils/format';
 import { hasCoursePricing, resolvePricingMultiplier, resolveCurrentUnitPrice, resolveTrialUnitPrice } from '../../../shared/coursePricing';
 
-export default function CoachCard({ coach, basePrice, tierPrices = null, onSelect, onDetail = null, isTrial = false, trialPrice = null, sessionsPerPeriod = null }) {
-  const isPlaceholder = !!coach.is_placeholder;
-  // 不可自己乘：課別對該加成級距若有落定明價，要以明價為準（與後端成交金額同源）。
+// 1對N 個人報名一次要選滿 N 位（min=max=組別），結帳金額＝單價 × N，所以卡片顯示這個最終金額。
+// 小卡與詳細介紹共用這一支，兩邊才不會各算各的。
+export function coachCardPrice({ coach, basePrice, tierPrices = null, isTrial = false, trialPrice = null, sessionsPerPeriod = null, seats = 1 }) {
+  // 不可自己乘係數：課別對該加成級距若有落定明價，要以明價為準（與後端成交金額同源）。
   const multiplier = resolvePricingMultiplier(coach.multiplier, coach.pricing_multiplier);
   const priceReady = multiplier != null && hasCoursePricing(basePrice, sessionsPerPeriod);
   const adjusted = priceReady ? resolveCurrentUnitPrice(basePrice, multiplier, tierPrices) : null;
   const trialUnit = resolveTrialUnitPrice(basePrice, multiplier, tierPrices, trialPrice, sessionsPerPeriod);
-  const displayPrice = isTrial ? trialUnit : adjusted;
+  const unit = isTrial ? trialUnit : adjusted;
+  const n = Math.max(1, Math.floor(Number(seats)) || 1);
+  const unitLabel = isTrial ? '試上 1 堂' : priceReady ? `${Number(sessionsPerPeriod)} 堂` : '堂數待確認';
+  return {
+    multiplier,
+    priceReady,
+    unit,
+    seats: n,
+    total: unit == null ? null : unit * n,
+    originalTotal: Number(basePrice) * n,
+    note: n > 1 ? `${n} 人・${unitLabel}` : unitLabel,
+  };
+}
+
+export default function CoachCard({ coach, basePrice, tierPrices = null, onSelect, onDetail = null, isTrial = false, trialPrice = null, sessionsPerPeriod = null, seats = 1 }) {
+  const isPlaceholder = !!coach.is_placeholder;
+  const { multiplier, unit, seats: n, total: displayPrice, originalTotal, note } = coachCardPrice({
+    coach, basePrice, tierPrices, isTrial, trialPrice, sessionsPerPeriod, seats,
+  });
   const initial = isPlaceholder ? '待' : (coach.name || '？').slice(0, 1);
   const [avatarFailed, setAvatarFailed] = React.useState(false);
   const coefficientPct = multiplier == null ? null : Math.round(multiplier * 100);
@@ -110,7 +129,7 @@ export default function CoachCard({ coach, basePrice, tierPrices = null, onSelec
           <span className={`font-bold ${isAdjustedCoefficient ? 'text-brand-amber' : 'text-brand-primary'}`}>
             {coefficientPct == null ? '待確認' : `${coefficientPct}%`}
           </span>
-          <span className="ml-2">{isTrial ? '/ 試上 1 堂' : priceReady ? `/ ${Number(sessionsPerPeriod)} 堂` : '/ 堂數待確認'}</span>
+          <span className="ml-2">/ {note}</span>
           </>}
         </div>
         <div className="text-right">
@@ -118,9 +137,12 @@ export default function CoachCard({ coach, basePrice, tierPrices = null, onSelec
             <div className="text-[11px] text-gray-400">試上 1 堂</div>
           )}
           {!isTrial && isAdjustedCoefficient && (
-            <div className="text-[11px] text-gray-400 line-through">{formatTWD(basePrice)}</div>
+            <div className="text-[11px] text-gray-400 line-through">{formatTWD(originalTotal)}</div>
           )}
           <div className="text-lg font-bold text-brand-primary">{displayPrice == null ? '價格待確認' : formatTWD(displayPrice)}</div>
+          {n > 1 && unit != null && (
+            <div className="text-[11px] text-gray-400">每人 {formatTWD(unit)}</div>
+          )}
         </div>
       </div>
     </button>
