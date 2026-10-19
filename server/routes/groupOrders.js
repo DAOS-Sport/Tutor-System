@@ -605,7 +605,8 @@ router.post('/', async (req, res) => {
     }
     if (bound.names.length > max_students) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ error: `學生人數已超過上限（最多 ${max_students} 人）` });
+      // 帶 code 與加入端（OVER_CAPACITY）一致，前端與測試不必比對中文字串（D18／GitHub #13）。
+      return res.status(400).json({ error: `學生人數已超過上限（最多 ${max_students} 人）`, code: 'OVER_CAPACITY' });
     }
     createdForRagic = bound.createdForRagic;
 

@@ -401,6 +401,18 @@ process.once('SIGINT', () => shutdown('SIGINT'));
     process.exit(1);
     return;
   }
+  // 課程需求人數校正（D18／GitHub #13）：min／max_students 一律＝組別。冪等、每筆寫稽核。
+  // 失敗不擋開機：判斷端只看組別、不讀這兩欄放寬人數，max 不符的組別個人報名會 fail-closed
+  // 回 COURSE_CAPACITY_CONFIG_MISMATCH；但一定要大聲記錄，讓人知道資料還沒校正。
+  try {
+    const fixed = await require('./services/courseTypeHeadcount').normalizeCourseTypeHeadcounts();
+    if (fixed.length) {
+      console.log(`[bootstrap] 課程需求人數校正 ${fixed.length} 筆：`
+        + fixed.map((f) => `區${f.pricing_zone_id}/一對${f.course_type} ${f.before.min}–${f.before.max}→${f.course_type}`).join('、'));
+    }
+  } catch (err) {
+    console.error('[bootstrap] 課程需求人數校正失敗（資料仍是舊人數，請人工檢查 course_type_configs）:', err.message);
+  }
   try {
     await objectStore.assertProductionStorageReady();
   } catch (err) {

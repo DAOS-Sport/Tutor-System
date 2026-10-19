@@ -28,6 +28,13 @@ async function applyDueScheduledCourseTypeChanges(db = pool) {
     const sets = [];
     const vals = [row.course_type];
     for (const k of EDITABLE) {
+      // 人數＝組別（使用者 2026-10-14）：規則上線前排定的 pending_changes 可能還帶著 min 2／max 3
+      // 之類的舊人數，排程生效時不可把它們寫回去（D18／GitHub #13）。一律存組別人數。
+      if (k === 'min_students' || k === 'max_students') {
+        vals.push(Number(row.course_type));
+        sets.push(`${k} = $${vals.length}`);
+        continue;
+      }
       if (pc[k] === undefined) continue;
       // tier_prices 是 jsonb：明確轉型，否則 pg 送出的 JSON 會被當 text 而失敗。
       if (k === 'tier_prices') {
@@ -74,6 +81,9 @@ async function applyDueScheduledCourseTypeChanges(db = pool) {
     try {
       const changes = {};
       for (const k of EDITABLE) if (pc[k] !== undefined) changes[k] = { after: pc[k] };
+      // 稽核記實際寫入的人數（組別），不是 pending 裡可能過時的舊值。
+      if (changes.min_students) changes.min_students = { after: Number(row.course_type) };
+      if (changes.max_students) changes.max_students = { after: Number(row.course_type) };
       const eff = r.rows[0] || {};
       await db.query(
         `INSERT INTO course_type_config_audit_logs (course_type, pricing_zone_id, action, by_user, changes, note)

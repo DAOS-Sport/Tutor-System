@@ -200,6 +200,14 @@ const DB = [
   'tests/coach_session_date_range_db_test.js',
   // Issue #11：業務日期 SQL 在連線 TimeZone=UTC／洛杉磯下仍得到台北答案。只算常數式，不碰資料表。
   'tests/timezone_sql_db_test.js',
+  // D18／GitHub #13 業務規則盤點的後端證據（docs/business_rules_audit_2026-10.md）：
+  // 人數＝組別、價格重算、團報快照、簽到守門、評價門檻。自建定價區與合成資料，finally 清乾淨。
+  'tests/business_rules_audit_db_test.js',
+  // 同一批規則的既有 in-process e2e（掛 router、只吃 DATABASE_URL、不需起 server）。
+  // 原本只在 run_all.js 裡，而那一層要先起 server、平常沒人跑 —— 放進 db 層讓規則有固定的回歸。
+  'tests/e2e/rules_20261014_group_trial.js',
+  'tests/e2e/rules_20261015_d18_remaining.js',
+  'tests/e2e/rules_20261014_d18_booking_cancel.js',
   'tests/parent_identity_closure_test.js',
   'tests/push_gate_test.js',
   'tests/ragic_incremental_sync_test.js',
