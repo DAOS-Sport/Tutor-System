@@ -29,6 +29,14 @@ function check(name, fn) {
   try { fn(); console.log('  ok   ' + name); } catch (e) { failures++; console.error('  FAIL ' + name + '\n       ' + e.message); }
 }
 
+check('排除規則：快照外的目錄、反斜線檔名的舊備份、前端打包檔', () => {
+  const { EXCLUDE } = require(TOOL);
+  for (const p of ['outputs/a.txt', 'outputs\\two-specs\\backup-before-FilterBar.jsx', 'artifacts/x', '.local/github-sync/pii-map.json', 'server/public/admin/assets/i.js', 'server/public/liff/index.html']) {
+    assert.ok(EXCLUDE.test(p), p);
+  }
+  for (const p of ['server/index.js', 'outputs.md', 'server/public/brand/favicon-64.png', 'tests/outputs_test.js']) assert.ok(!EXCLUDE.test(p), p);
+});
+
 try {
   // GitHub：去個資快照
   g(tmp, 'init', '-q', '--bare', '-b', 'main', GHB);

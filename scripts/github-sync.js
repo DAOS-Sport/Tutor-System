@@ -31,7 +31,8 @@ const REF_GH = 'refs/github-sync/github';
 const REF_RP = 'refs/github-sync/replit';
 const PULL_TRAILER = 'GitHub-Sync-Pull:';
 // 不同步：快照刻意排除的目錄、私有資料、前端打包檔（GitHub 端保留它自己的版本）
-const EXCLUDE = /^(outputs|artifacts|attached_assets|\.tmp|\.local|reports)(\/|$)|^server\/public\/(admin|liff)\//;
+// 根目錄有些舊備份的檔名直接含反斜線（例如 outputs\two-specs-…\backup-before-FilterBar.jsx），也要排除。
+const EXCLUDE = /^(outputs|artifacts|attached_assets|\.tmp|\.local|reports)(\/|\\|$)|^server\/public\/(admin|liff)\//;
 const PII = /(?<![0-9])(?:\+?886[- ]?0?|0)9\d{2}[- ]?\d{3}[- ]?\d{3}(?![0-9])|(?<![A-Za-z0-9])[A-Z][12]\d{8}(?![0-9])|(?<![0-9A-Za-z])U[0-9a-f]{32}(?![0-9a-f])|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 
 function git(args, opts = {}) {
@@ -340,7 +341,7 @@ function fakeFor(v) {
   let k = 0; return v.replace(/\d/g, () => fd[k++]);
 }
 
-module.exports = { scrub, unscrub, alignPair, candidates, fakeFor, pull, push, init, status };
+module.exports = { scrub, unscrub, alignPair, candidates, fakeFor, pull, push, init, status, EXCLUDE };
 
 if (require.main === module) {
   const [cmd, arg] = process.argv.slice(2);
