@@ -375,7 +375,11 @@ router.post('/logout', async (req, res) => {
     await session.revoke(session.readToken(req));
     res.json({ ok: true });
   } catch (err) {
-    res.json({ ok: true }); // 撤銷失敗也視為已登出
+    // 以前這裡也回 ok:true（「撤銷失敗也視為已登出」）—— 但 portal token 仍在 DB、
+    // 30 天內照樣能換新 JWT，回成功等於騙使用者「這台裝置已登出」。
+    // 照實回 5xx，讓呼叫端知道要重試（#12 假成功稽核）。
+    console.error('[coach-portal/logout] revoke failed:', err.code || err.message);
+    res.status(500).json({ error: '登出失敗，請稍後再試', code: 'LOGOUT_REVOKE_FAILED' });
   }
 });
 

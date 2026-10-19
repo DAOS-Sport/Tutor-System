@@ -3,6 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { coachesApi } from '../api/coaches';
 import { promotionsApi } from '../api/promotions';
 import { promotionValueLabel } from '../utils/promotionLabel';
+import { formatPlainDate } from '../utils/format';
 
 /**
  * 教練詳細介紹（家長端從小卡的「看詳細介紹」進來；教練端也用同一支做自己的預覽）。
@@ -130,7 +131,9 @@ export default function CoachDetailModal({ coach, venueNames = [], onClose, onSe
                     </div>
                     {(p.expires_at || p.end_date) && (
                       <div className="mt-0.5 text-[11px] text-amber-800/80">
-                        至 {String(p.expires_at || p.end_date).slice(0, 10)}
+                        {/* end_date 是 timestamptz（JSON 為 UTC ISO），要投影到台北日曆日；
+                            直接 slice(0, 10) 取到的是 UTC 日期（Issue #11）。 */}
+                        至 {formatPlainDate(p.expires_at || p.end_date)}
                       </div>
                     )}
                   </div>

@@ -135,7 +135,8 @@ router.get('/', requireAdminAuth, requireAnyResource('course-types', 'manual-enr
               c.effective_date::text AS effective_date,
               c.effective_until::text AS effective_until,
               c.scheduled_effective_date, c.scheduled_effective_until, c.pending_changes,
-              CURRENT_DATE::text AS current_date
+              -- 台北「今天」：不用 CURRENT_DATE（吃連線 TimeZone，Issue #11）。
+              ((NOW() AT TIME ZONE 'Asia/Taipei')::date)::text AS current_date
          FROM course_type_configs c JOIN pricing_zones z ON z.id = c.pricing_zone_id
         WHERE c.pricing_zone_id = $1
         ORDER BY c.sort_order, c.course_type`,
@@ -185,7 +186,7 @@ router.post('/', requireAdminAuth, requireResource('course-types'), async (req, 
 
     const r = await client.query(
       `INSERT INTO course_type_configs (pricing_zone_id, course_type, label, min_students, max_students, sort_order, base_price, data_group, trial_enabled, trial_price, tier_prices, effective_date, updated_at)
-       VALUES ($11,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,CURRENT_DATE,NOW())
+       VALUES ($11,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,(NOW() AT TIME ZONE 'Asia/Taipei')::date,NOW())
        ON CONFLICT (pricing_zone_id, course_type) DO NOTHING
        RETURNING *`,
       [ct, lb, mn, ms, nextOrder, bp, dg, te, tp, tprc === null ? null : JSON.stringify(tprc), zoneId]
@@ -322,7 +323,7 @@ router.patch('/:type', requireAdminAuth, requireResource('course-types'), async 
         `UPDATE course_type_configs
             SET label=$2, max_students=$3, is_active=$4, base_price=$5, min_students=$6, data_group=$7,
                 trial_enabled=$8, trial_price=$9, tier_prices=$10::jsonb,
-                effective_date=CURRENT_DATE, scheduled_effective_date=NULL, scheduled_effective_until=NULL,
+                effective_date=(NOW() AT TIME ZONE 'Asia/Taipei')::date, scheduled_effective_date=NULL, scheduled_effective_until=NULL,
                 pending_changes=NULL, updated_at=NOW()
           WHERE course_type=$1 AND pricing_zone_id=$11 RETURNING *`,
         [ct, label, max_students, is_active, base_price, min_students, data_group, trial_enabled, trial_price,

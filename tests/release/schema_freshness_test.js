@@ -38,7 +38,11 @@ function captureDb() {
   const rows = [];
   return {
     rows,
-    query: async (_sql, params) => { rows.push(params); return { rows: [] }; },
+    // 只記 INSERT：寫入後還會跑保留期清理（DELETE，GitHub #10），那不是「證據」。
+    query: async (sql, params) => {
+      if (/^\s*INSERT\b/i.test(sql)) rows.push(params);
+      return { rows: [], rowCount: 0 };
+    },
   };
 }
 

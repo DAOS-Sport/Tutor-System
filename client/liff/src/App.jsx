@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { Suspense } from 'react';
 import { Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 import AppLayout from './components/AppLayout';
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -6,45 +6,52 @@ import { ToastProvider } from './context/ToastContext';
 import { PendingPaymentsProvider } from './context/PendingPaymentsContext';
 import MockBanner from './components/MockBanner';
 import GuideTour from './components/GuideTour';
-import GuidePage from './pages/GuidePage';
 
 import LoginPage from './pages/LoginPage';
-import DemoLoginPage from './pages/DemoLoginPage';
 import RegisterPage from './pages/RegisterPage';
 import CoachPortalLoginPage from './pages/CoachPortalLoginPage';
 import HomePage from './pages/HomePage';
-import VenueSelectPage from './pages/VenueSelectPage';
-import CoachListPage from './pages/CoachListPage';
-import EnrollmentPage from './pages/EnrollmentPage';
-import EnrollmentSuccessPage from './pages/EnrollmentSuccessPage';
-import EnrollStatusPage from './pages/EnrollStatusPage';
-import CheckoutPage from './pages/CheckoutPage';
-import MyCoursesPage from './pages/MyCoursesPage';
-import CourseDetailPage from './pages/CourseDetailPage';
-import ChatListPage from './pages/ChatListPage';
-import ChatRoomPage from './pages/ChatRoomPage';
-import ProfilePage from './pages/ProfilePage';
 
 import CoachTodayPage from './pages/CoachTodayPage';
-import CoachScheduleWeekPage from './pages/CoachScheduleWeekPage';
-import CoachProfilePage from './pages/CoachProfilePage';
-import CoachSessionPage from './pages/CoachSessionPage';
-import CoachHistoryPage from './pages/CoachHistoryPage';
-import CoachOrdersPage from './pages/CoachOrdersPage';
-import LessonPlanFormPage from './pages/LessonPlanFormPage';
-import SessionRecordFormPage from './pages/SessionRecordFormPage';
-import LearningHistoryPage from './pages/LearningHistoryPage';
-import EvaluationFormPage from './pages/EvaluationFormPage';
-import ReferralPage from './pages/ReferralPage';
-import TransferRequestPage from './pages/TransferRequestPage';
-import MyLessonsPage from './pages/MyLessonsPage';
-import GroupCreatePage from './pages/GroupCreatePage';
-import GroupJoinPage from './pages/GroupJoinPage';
-import FamilyJoinPage from './pages/FamilyJoinPage';
-import GroupStatusPage from './pages/GroupStatusPage';
-import SlotBookingPage from './pages/SlotBookingPage';
-import TrialSelectPage from './pages/TrialSelectPage';
 import LineBindPage from './pages/LineBindPage';
+
+// 路由層級切分（#15 第 3 步）：登入／綁定／註冊流程與兩個第一屏（家長首頁、教練今日）
+// 維持同步載入 —— LIFF 本來就要先等 liff.init，第一屏再多等一個 chunk 不划算。
+// 其餘頁面各自成 chunk，第一次進入時才下載；lazyPage 處理「部署後舊 chunk 不見」
+// （重試一次、再不行重新整理一次），見 client/shared/lazyPage.jsx。
+import { lazyPage, PageLoading } from '../../shared/lazyPage.jsx';
+
+const GuidePage = lazyPage(() => import('./pages/GuidePage'));
+const DemoLoginPage = lazyPage(() => import('./pages/DemoLoginPage'));
+const VenueSelectPage = lazyPage(() => import('./pages/VenueSelectPage'));
+const CoachListPage = lazyPage(() => import('./pages/CoachListPage'));
+const EnrollmentPage = lazyPage(() => import('./pages/EnrollmentPage'));
+const EnrollmentSuccessPage = lazyPage(() => import('./pages/EnrollmentSuccessPage'));
+const EnrollStatusPage = lazyPage(() => import('./pages/EnrollStatusPage'));
+const CheckoutPage = lazyPage(() => import('./pages/CheckoutPage'));
+const MyCoursesPage = lazyPage(() => import('./pages/MyCoursesPage'));
+const CourseDetailPage = lazyPage(() => import('./pages/CourseDetailPage'));
+const ChatListPage = lazyPage(() => import('./pages/ChatListPage'));
+const ChatRoomPage = lazyPage(() => import('./pages/ChatRoomPage'));
+const ProfilePage = lazyPage(() => import('./pages/ProfilePage'));
+const CoachScheduleWeekPage = lazyPage(() => import('./pages/CoachScheduleWeekPage'));
+const CoachProfilePage = lazyPage(() => import('./pages/CoachProfilePage'));
+const CoachSessionPage = lazyPage(() => import('./pages/CoachSessionPage'));
+const CoachHistoryPage = lazyPage(() => import('./pages/CoachHistoryPage'));
+const CoachOrdersPage = lazyPage(() => import('./pages/CoachOrdersPage'));
+const LessonPlanFormPage = lazyPage(() => import('./pages/LessonPlanFormPage'));
+const SessionRecordFormPage = lazyPage(() => import('./pages/SessionRecordFormPage'));
+const LearningHistoryPage = lazyPage(() => import('./pages/LearningHistoryPage'));
+const EvaluationFormPage = lazyPage(() => import('./pages/EvaluationFormPage'));
+const ReferralPage = lazyPage(() => import('./pages/ReferralPage'));
+const TransferRequestPage = lazyPage(() => import('./pages/TransferRequestPage'));
+const MyLessonsPage = lazyPage(() => import('./pages/MyLessonsPage'));
+const GroupCreatePage = lazyPage(() => import('./pages/GroupCreatePage'));
+const GroupJoinPage = lazyPage(() => import('./pages/GroupJoinPage'));
+const FamilyJoinPage = lazyPage(() => import('./pages/FamilyJoinPage'));
+const GroupStatusPage = lazyPage(() => import('./pages/GroupStatusPage'));
+const SlotBookingPage = lazyPage(() => import('./pages/SlotBookingPage'));
+const TrialSelectPage = lazyPage(() => import('./pages/TrialSelectPage'));
 
 function RequireAuth() {
   const { isAuthed } = useAuth();
@@ -80,6 +87,9 @@ export default function App() {
       <AuthProvider>
         <PendingPaymentsProvider>
         <MockBanner />
+        {/* 外層後備：AppLayout 內另有一層（保住頁首／底部導覽），這層接住沒有 layout 的頁面
+            （聊天室、學習歷程、評鑑、教練課前規劃等全屏頁）。 */}
+        <Suspense fallback={<PageLoading />}>
         <Routes>
           <Route element={<AppLayout />}>
             <Route path="/login" element={<LoginPage />} />
@@ -193,6 +203,7 @@ export default function App() {
 
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        </Suspense>
         <GuideTour />
         </PendingPaymentsProvider>
       </AuthProvider>

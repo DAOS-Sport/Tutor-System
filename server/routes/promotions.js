@@ -18,15 +18,13 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // 查不到時才退回前端傳入的 coachMultiplier（相容舊版前端）。避免因前端漏傳/過時而誤判「不適用」。
 async function resolveCoachMultiplier(coachId, clientMultiplier) {
   if (coachId && UUID_RE.test(String(coachId))) {
-    try {
-      const r = await pool.query(`SELECT COALESCE(s.multiplier, c.pricing_multiplier) AS pricing_multiplier
-        FROM coaches c LEFT JOIN admin_staff s ON s.id = c.ragic_employee_id WHERE c.id = $1`, [String(coachId)]);
-      const value = r.rows[0]?.pricing_multiplier == null ? null : Number(r.rows[0].pricing_multiplier);
-      return Number.isFinite(value) && value > 0 ? value : null;
-    } catch (err) {
-      console.warn('[preview resolveCoachMultiplier]', err.message);
-      return null;
-    }
+    // 查詢失敗不可吞成 null：null 會被呼叫端當成「教練係數尚未設定」回 409，
+    // 家長看到的是錯的原因（以為教練沒設定好），櫃台也會往錯的方向查。
+    // DB 出錯就讓它往上丟，由路由統一回 500（#12 假成功稽核）。
+    const r = await pool.query(`SELECT COALESCE(s.multiplier, c.pricing_multiplier) AS pricing_multiplier
+      FROM coaches c LEFT JOIN admin_staff s ON s.id = c.ragic_employee_id WHERE c.id = $1`, [String(coachId)]);
+    const value = r.rows[0]?.pricing_multiplier == null ? null : Number(r.rows[0].pricing_multiplier);
+    return Number.isFinite(value) && value > 0 ? value : null;
   }
   return clientMultiplier != null ? Number(clientMultiplier) : null;
 }

@@ -8,6 +8,7 @@ const { pool } = require('../../models/db');
 const { requireAdminAuth } = require('../../middlewares/adminAuth');
 // F-A06：權限改由「角色權限管理」的設定決定，不再寫死角色清單。
 const { requireResource } = require('../../middlewares/requireResource');
+const { taipeiDayStart } = require('../../utils/sessionDateSql');
 
 const router = express.Router();
 router.use(requireAdminAuth, requireResource('mgm-stats'));
@@ -20,8 +21,9 @@ router.get('/', async (req, res) => {
     const where = ['1=1'];
     const args = [];
     if (coachId) { args.push(coachId); where.push(`rr.coach_id = $${args.length}`); }
-    if (isISO(from)) { args.push(from); where.push(`rr.created_at >= $${args.length}::date`); }
-    if (isISO(to))   { args.push(to);   where.push(`rr.created_at <  ($${args.length}::date + INTERVAL '1 day')`); }
+    // 起訖日是台北日曆日：轉成台北 00:00 的絕對時刻再比，不吃 DB 連線 TimeZone（Issue #11）。
+    if (isISO(from)) { args.push(from); where.push(`rr.created_at >= ${taipeiDayStart(`$${args.length}`)}`); }
+    if (isISO(to))   { args.push(to);   where.push(`rr.created_at <  ${taipeiDayStart(`$${args.length}::date + 1`)}`); }
     let venueJoin = '';
     if (venueId) {
       args.push(venueId);

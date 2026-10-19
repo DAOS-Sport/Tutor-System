@@ -1,0 +1,1 @@
+import{B as s,a as t,j as a}from"./index-DXRoJu66.js";import{S as r}from"./SlotPicker-OP701icH.js";import"./slots-DrvzESzP.js";function p(){const{periodId:o}=s(),e=t();return a.jsx(r,{periodId:o,onBooked:()=>e(`/my-lessons?period=${o}`,{replace:!0})})}export{p as default};

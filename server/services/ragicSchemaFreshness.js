@@ -11,6 +11,15 @@ const {
 const UID_FIELD_ID = RAGIC_Z01_FIELDS.PARENT_SYSTEM_LINE_UID;
 const UID_FIELD_NAME = RAGIC_Z01_FIELD_NAMES.PARENT_SYSTEM_LINE_UID;
 const DEFAULT_TTL_MS = 15 * 60 * 1000;
+// 驗證紀錄保留天數（GitHub #10）：排程每 5 分鐘寫一列、從不清理，一年約 10 萬列。
+// 判斷新鮮度只讀「最新一列」（getLatestRagicZ01UidSchemaEvidence），舊紀錄只剩稽核
+// 用途；30 天足夠回頭查「哪天開始 schema 不符」。可用環境變數調整，但夾在 7–365 天，
+// 避免設錯（例如 0）把稽核紀錄一次清光。
+const DEFAULT_RETENTION_DAYS = 30;
+const MIN_RETENTION_DAYS = 7;
+const MAX_RETENTION_DAYS = 365;
+// 一次最多刪這麼多列：上線第一次要清掉累積的數萬列，分批避免長交易；之後每輪只有個位數。
+const PRUNE_BATCH_LIMIT = 5000;
 
 function _isoOrNull(value) {
   if (!value) return null;
@@ -77,6 +86,43 @@ function schemaGuardFailureDetails(evidence, now = new Date()) {
 function schemaTtlMs() {
   const configured = Number(process.env.RAGIC_Z01_UID_SCHEMA_TTL_MS);
   return Number.isFinite(configured) && configured >= 60_000 ? configured : DEFAULT_TTL_MS;
+}
+
+function schemaRetentionDays() {
+  const raw = process.env.RAGIC_Z01_UID_SCHEMA_RETENTION_DAYS;
+  if (raw == null || String(raw).trim() === '') return DEFAULT_RETENTION_DAYS;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return DEFAULT_RETENTION_DAYS;
+  return Math.min(MAX_RETENTION_DAYS, Math.max(MIN_RETENTION_DAYS, Math.floor(n)));
+}
+
+/**
+ * 清掉超過保留天數的驗證紀錄。永遠保留「最新一列」與「最新一列 verified=true」：
+ * 前者是 assertRagicZ01UidSchemaFresh 判斷的依據，後者是排查「最後一次通過是何時」
+ * 的唯一線索 —— 即使 Ragic 連續失敗超過保留天數也不能把它們刪掉。
+ */
+async function pruneRagicZ01UidSchemaVerifications({
+  db = pool,
+  retentionDays = schemaRetentionDays(),
+  now = new Date(),
+  limit = PRUNE_BATCH_LIMIT,
+} = {}) {
+  const r = await db.query(
+    `DELETE FROM ragic_z01_uid_schema_verifications
+      WHERE id IN (
+        SELECT v.id FROM ragic_z01_uid_schema_verifications v
+         WHERE v.fetched_at < $1::timestamptz - make_interval(days => $2::int)
+           AND v.id NOT IN (
+             SELECT id FROM ragic_z01_uid_schema_verifications
+              ORDER BY fetched_at DESC, created_at DESC LIMIT 1)
+           AND v.id NOT IN (
+             SELECT id FROM ragic_z01_uid_schema_verifications WHERE verified = TRUE
+              ORDER BY fetched_at DESC, created_at DESC LIMIT 1)
+         ORDER BY v.fetched_at
+         LIMIT $3)`,
+    [now, retentionDays, limit]
+  );
+  return r.rowCount || 0;
 }
 
 function canonicalJson(value) {
@@ -237,6 +283,14 @@ async function verifyRagicZ01UidSchemaFreshness({
     blocked.cause = err;
     throw blocked;
   }
+  // 保留期清理放在寫入成功之後、且失敗只記 log：清理是維運需求，不能因為它出錯
+  // 就讓這次驗證失敗、連帶暫停 UID 回寫。
+  try {
+    const removed = await pruneRagicZ01UidSchemaVerifications({ db, now });
+    if (removed) console.log(`[RagicSchema] pruned ${removed} verification row(s) older than ${schemaRetentionDays()} days`);
+  } catch (err) {
+    console.warn('[RagicSchema] retention prune failed:', err.code || err.message);
+  }
   return evidence;
 }
 
@@ -271,6 +325,8 @@ module.exports = {
   UID_FIELD_ID,
   UID_FIELD_NAME,
   schemaTtlMs,
+  schemaRetentionDays,
+  pruneRagicZ01UidSchemaVerifications,
   responseHash,
   extractSchemaEvidence,
   schemaGuardFailureDetails,

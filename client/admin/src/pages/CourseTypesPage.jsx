@@ -5,14 +5,17 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import { useToast } from '../context/ToastContext';
 import { courseTypesApi } from '../api/courseTypes';
 import { pricingZonesApi } from '../api/pricingZones';
-import { formatTWDateTime, formatTWDateTimeSeconds, toTaipeiDateTimeInput, taipeiInputToDate } from '../utils/format';
+import { formatTWDateTime, formatTWDateTimeSeconds, toTaipeiDateTimeInput, taipeiInputToDate, formatPlainDate, todayISO } from '../utils/format';
 
 const autoLabel = (ct) => {
   const map = { 1: '一對一', 2: '一對二', 3: '一對三', 4: '一對四', 5: '一對五', 6: '一對六' };
   return map[ct] || `一對${ct}`;
 };
 
-const fmtDate = (v) => (v ? String(v).slice(0, 10).replace(/-/g, '/') : '—');
+// 純日期字串（effective_date 等 DATE::text）原樣；timestamptz（created_at／updated_at）
+// 投影到台北日曆日。原本一律 slice(0, 10)，對 ISO 時刻取到的是 UTC 日期，
+// 台北 00:00–08:00 建立的資料會顯示成前一天（Issue #11）。
+const fmtDate = (v) => (v ? (formatPlainDate(v) || '—').replace(/-/g, '/') : '—');
 const fmtMoney = (v) => `NT$ ${Number(v || 0).toLocaleString('en-US')}`;
 const fmtDateTime = formatTWDateTime;
 const fmtDateTimeSec = formatTWDateTimeSeconds;
@@ -134,7 +137,7 @@ export default function CourseTypesPage() {
   const escRef = React.useRef(false);                  // 標記 Esc 取消，讓接著觸發的 blur 還原
   const cellOrigRef = React.useRef('');                // 進入格子編輯時的原值（Esc 還原用）
 
-  const today = (rows && rows[0]?.current_date) ? fmtDate(rows[0].current_date) : fmtDate(new Date().toISOString());
+  const today = (rows && rows[0]?.current_date) ? fmtDate(rows[0].current_date) : fmtDate(todayISO());
 
   async function load(zid = zoneId) {
     if (!zid) return;

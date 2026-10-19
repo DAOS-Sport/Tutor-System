@@ -29,6 +29,10 @@ const UNIT = [
   'tests/demo_seed_production_guard_test.js',
   'tests/error_boundary_taipei_test.js',
   'tests/graceful_shutdown_test.js',
+  // #15 第 2 步：前端靜態檔快取／壓縮／舊 chunk 回 404。起本機 express，不連 DB。
+  'tests/static_frontend_headers_test.js',
+  // #15 第 3 步：路由切分護欄（第一屏同步、lazyPage 重試／重整策略）。純原始碼＋Node，不需前端依賴。
+  'tests/route_code_splitting_test.js',
   'tests/open_errors_test.js',
   'tests/profile_information_notice_test.js',
   'tests/sync_hardening_test.js',
@@ -56,6 +60,9 @@ const UNIT = [
   'tests/coach_checkin_badge_style_test.js',
   'tests/coach_checkin_removed_test.js',
   'tests/manual_enroll_frozen_test.js',
+  // Issue #11：日期邏輯在不同 TZ 子行程下結果必須相同（台北跨日邊界）。
+  'tests/timezone_independence_test.js',
+  'tests/tx_single_connection_test.js',
   'tests/shared_class_checkin_contract_test.js',
   'tests/reconcile_email_test.js',
   'tests/venue_oa_deeplink_test.js',
@@ -173,6 +180,8 @@ const UNIT = [
   'tests/representative_role_rule_test.js',
   'tests/release/canary_config_test.js',
   'tests/release/reconcile_image_pipeline_test.js',
+  // #12 假成功／路由不明稽核：未知 /api JSON 404、SPA fallback、路由重複／遮蔽、catch 回成功。
+  'tests/false_success_audit_test.js',
 ];
 
 // 需要真實 Postgres。多數含破壞性前置清理，只可對拋棄式測試庫執行。
@@ -180,6 +189,7 @@ const DB = [
   'tests/family_accounts_db_test.js',
   'tests/refund_entitlement_db_test.js',
   'tests/cron_slots_db_test.js',
+  'tests/cron_dedupe_retention_db_test.js',
   'tests/course_entitlement_is_active_db_test.js',
   'tests/counter_entitlement_routes_db_test.js',
   'tests/expiry_reminder_scope_db_test.js',
@@ -200,6 +210,16 @@ const DB = [
   // 不破壞既有資料，但需要真實 DATABASE_URL，所以歸在這一層而不是 unit。
   'tests/permission_smoke_test.js',
   'tests/coach_session_date_range_db_test.js',
+  // Issue #11：業務日期 SQL 在連線 TimeZone=UTC／洛杉磯下仍得到台北答案。只算常數式，不碰資料表。
+  'tests/timezone_sql_db_test.js',
+  // D18／GitHub #13 業務規則盤點的後端證據（docs/business_rules_audit_2026-10.md）：
+  // 人數＝組別、價格重算、團報快照、簽到守門、評價門檻。自建定價區與合成資料，finally 清乾淨。
+  'tests/business_rules_audit_db_test.js',
+  // 同一批規則的既有 in-process e2e（掛 router、只吃 DATABASE_URL、不需起 server）。
+  // 原本只在 run_all.js 裡，而那一層要先起 server、平常沒人跑 —— 放進 db 層讓規則有固定的回歸。
+  'tests/e2e/rules_20261014_group_trial.js',
+  'tests/e2e/rules_20261015_d18_remaining.js',
+  'tests/e2e/rules_20261014_d18_booking_cancel.js',
   'tests/parent_identity_closure_test.js',
   'tests/push_gate_test.js',
   'tests/ragic_incremental_sync_test.js',
@@ -221,6 +241,8 @@ const DB = [
   'tests/release/z03_random_sample_login_test.js',
   'tests/release/z03_registration_form_50_batch_test.js',
   'tests/release/z03_same_source_duplicate_student_bind_test.js',
+  // #12 假成功稽核：團購取消與名額回沖同交易、系統設定先驗後寫（真實路由 + 拋棄式庫）。
+  'tests/false_success_db_test.js',
 ];
 
 /** 漏網檢查：tests/ 與 tests/release/ 的每個 .js 都必須被分層，否則整輪失敗。 */

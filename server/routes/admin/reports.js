@@ -14,6 +14,10 @@ const { requireAdminAuth, getScopedVenueIds } = require('../../middlewares/admin
 // F-A06：權限改由「角色權限管理」的設定決定，不再寫死角色清單。
 const { requireResource } = require('../../middlewares/requireResource');
 const { formatPlainDate, taipeiToday } = require('../../utils/dateTime');
+// 報表區間一律以台北日曆日切（Issue #11）。`created_at::date` 與 CURRENT_DATE 吃的是
+// DB 連線的 TimeZone：models/db.js 有釘 Asia/Taipei，但那是連線設定不是查詢語意，
+// 任何沒釘的連線（psql、報表腳本、其他雲端環境）就會把台北 00:00–08:00 的單算到前一天。
+const { taipeiDate: tpDate, taipeiToday: tpTodaySql } = require('../../utils/sessionDateSql');
 
 const router = express.Router();
 router.use(requireAdminAuth, requireResource('reports'));
@@ -61,7 +65,7 @@ router.get('/revenue', async (req, res) => {
   try {
     const { from, to } = parseRange(req.query);
     const venueIds = venueScope(req);
-    const conds = [`cp.created_at::date BETWEEN $1 AND $2`, `COALESCE(co.is_placeholder, FALSE) = FALSE`];
+    const conds = [`${tpDate('cp.created_at')} BETWEEN $1::date AND $2::date`, `COALESCE(co.is_placeholder, FALSE) = FALSE`];
     const args = [from, to];
     if (venueIds) { args.push(venueIds); conds.push(`cp.venue_id = ANY($${args.length}::text[])`); }
     if (req.query.coachId) { args.push(req.query.coachId); conds.push(`cp.coach_id = $${args.length}`); }
@@ -86,7 +90,7 @@ router.get('/sessions', async (req, res) => {
   try {
     const { from, to } = parseRange(req.query);
     const venueIds = venueScope(req);
-    const conds = [`cp.created_at::date <= $2`, `COALESCE(co.is_placeholder, FALSE) = FALSE`];
+    const conds = [`${tpDate('cp.created_at')} <= $2::date`, `COALESCE(co.is_placeholder, FALSE) = FALSE`];
     const args = [from, to];
     if (venueIds) { args.push(venueIds); conds.push(`cp.venue_id = ANY($${args.length}::text[])`); }
     if (req.query.coachId) { args.push(req.query.coachId); conds.push(`cp.coach_id = $${args.length}`); }
@@ -94,8 +98,8 @@ router.get('/sessions', async (req, res) => {
       `SELECT cp.venue_id, cp.coach_id, co.name AS coach_name,
               SUM(cp.used_sessions)::int AS used,
               SUM(cp.total_sessions - cp.used_sessions)::int AS remaining,
-              SUM(CASE WHEN cp.expires_at < CURRENT_DATE THEN (cp.total_sessions - cp.used_sessions) ELSE 0 END)::int AS expired,
-              SUM(CASE WHEN cp.created_at::date BETWEEN $1 AND $2 THEN cp.total_sessions ELSE 0 END)::int AS new_this_period
+              SUM(CASE WHEN cp.expires_at < ${tpTodaySql()} THEN (cp.total_sessions - cp.used_sessions) ELSE 0 END)::int AS expired,
+              SUM(CASE WHEN ${tpDate('cp.created_at')} BETWEEN $1::date AND $2::date THEN cp.total_sessions ELSE 0 END)::int AS new_this_period
          FROM course_periods cp JOIN coaches co ON co.id = cp.coach_id
         WHERE ${conds.join(' AND ')}
         GROUP BY cp.venue_id, cp.coach_id, co.name
@@ -110,7 +114,7 @@ router.get('/discounts', async (req, res) => {
   try {
     const { from, to } = parseRange(req.query);
     const venueIds = venueScope(req);
-    const conds = [`pu.created_at::date BETWEEN $1 AND $2`];
+    const conds = [`${tpDate('pu.created_at')} BETWEEN $1::date AND $2::date`];
     const args = [from, to];
     if (venueIds) {
       args.push(venueIds);
@@ -152,11 +156,11 @@ router.get('/mgm-conversion', async (req, res) => {
     const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
     const r = await pool.query(
       `SELECT
-         COUNT(*) FILTER (WHERE rr.created_at::date BETWEEN $1 AND $2)::int AS total_links,
-         COUNT(*) FILTER (WHERE rr.registered_at::date BETWEEN $1 AND $2)::int AS registered,
-         COUNT(*) FILTER (WHERE rr.trial_paid_at::date BETWEEN $1 AND $2)::int AS trial_paid,
-         COUNT(*) FILTER (WHERE rr.checked_in_at::date BETWEEN $1 AND $2)::int AS checked_in,
-         COUNT(*) FILTER (WHERE rr.reward_issued_at::date BETWEEN $1 AND $2)::int AS rewarded
+         COUNT(*) FILTER (WHERE ${tpDate('rr.created_at')} BETWEEN $1::date AND $2::date)::int AS total_links,
+         COUNT(*) FILTER (WHERE ${tpDate('rr.registered_at')} BETWEEN $1::date AND $2::date)::int AS registered,
+         COUNT(*) FILTER (WHERE ${tpDate('rr.trial_paid_at')} BETWEEN $1::date AND $2::date)::int AS trial_paid,
+         COUNT(*) FILTER (WHERE ${tpDate('rr.checked_in_at')} BETWEEN $1::date AND $2::date)::int AS checked_in,
+         COUNT(*) FILTER (WHERE ${tpDate('rr.reward_issued_at')} BETWEEN $1::date AND $2::date)::int AS rewarded
        FROM referral_records rr
        ${where}`,
       args
@@ -181,7 +185,7 @@ router.get('/learning-completion', async (req, res) => {
     const { from, to } = parseRange(req.query);
     const venueIds = venueScope(req);
     const conds = [
-      `cp.created_at::date BETWEEN $1 AND $2`,
+      `${tpDate('cp.created_at')} BETWEEN $1::date AND $2::date`,
       `co.is_senior = TRUE`,
       `COALESCE(co.is_placeholder, FALSE) = FALSE`,
     ];

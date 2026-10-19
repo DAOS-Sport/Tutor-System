@@ -73,9 +73,10 @@ export default function CoachHistoryPage() {
     let alive = true;
     sessionsApi.historyPeriodsByCoach(coach.id)
       .then((d) => alive && setPeriods(d || []))
-      .catch(() => { if (alive) setPeriods([]); });
+      // 失敗要講出來：空的學員下拉看起來像「名下沒有學員」（#12 假成功稽核）。
+      .catch(() => { if (alive) { setPeriods([]); toast.error('學員清單載入失敗'); } });
     return () => { alive = false; };
-  }, [coach?.id, guide]);
+  }, [coach?.id, guide, toast]);
 
   // 場次清單：任一篩選條件變動即重查（sessions 先設 null 顯示載入中）
   useEffect(() => {
