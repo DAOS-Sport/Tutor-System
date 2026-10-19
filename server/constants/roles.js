@@ -52,9 +52,20 @@ function highestRole(list) {
   return ASSIGNABLE_ROLES.find((r) => set.has(r)) || null;
 }
 
+/**
+ * admin_staff.role / admin_users.role 是有 CHECK constraint 的「代表值」：純教練、
+ * 純救生員都落在保底值 'staff'。直接採用會讓他們憑空多一個「行政櫃檯」身分，
+ * 拿到客戶資料、對帳、退款權限。登入、算權限、員工徽章三處都用這一條判準，
+ * 同一個人才不會在列表上、登入時、算權限時被當成不同身分。
+ */
+function isRepresentativeRoleReal({ role, is_counter, is_coach, is_lifeguard }) {
+  if (role === 'admin' || role === 'manager') return true;
+  return !!is_counter || (!is_coach && !is_lifeguard);
+}
+
 function roleLabel(key) {
   return ROLE_LABELS[key] || String(key || '');
 }
 
-module.exports = { ROLES, ASSIGNABLE_ROLES, BACKOFFICE_ROLES, PORTAL_ADMIN_ROLES, ROLE_LABELS, roleLabel, highestRole };
+module.exports = { ROLES, ASSIGNABLE_ROLES, BACKOFFICE_ROLES, PORTAL_ADMIN_ROLES, ROLE_LABELS, roleLabel, highestRole, isRepresentativeRoleReal };
 

@@ -174,6 +174,10 @@ const UNIT = [
   // z03 待登入封存：合成 pool / VM seam，不連 DB、不出網路。
   'tests/z03_awaiting_login_archive_test.js',
   'tests/z03_awaiting_login_sync_seam_test.js',
+  'tests/ragic_timeline_gate_test.js',
+  'tests/page_read_permission_test.js',
+  'tests/customer_parent_reveal_scope_test.js',
+  'tests/representative_role_rule_test.js',
   'tests/release/canary_config_test.js',
   'tests/release/reconcile_image_pipeline_test.js',
   // #12 假成功／路由不明稽核：未知 /api JSON 404、SPA fallback、路由重複／遮蔽、catch 回成功。

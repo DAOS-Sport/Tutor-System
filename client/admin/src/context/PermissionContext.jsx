@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { useAuth } from './AuthContext';
 import { rolePermissionsApi } from '../api/rolePermissions';
 
@@ -14,28 +14,45 @@ import { rolePermissionsApi } from '../api/rolePermissions';
  */
 const PermCtx = createContext({ allowed: null, actions: null, can: () => true, reload: () => {} });
 
+// 讀不到時的重試間隔。只失敗一次就停在「還不知道」的話，畫面會一直用後備
+// roles 陣列，直到使用者自己重新整理才拿到真正的設定。
+export const PERMISSION_RETRY_MS = [2000, 5000, 15000];
+
 export function PermissionProvider({ children }) {
   const { isAuthed, role } = useAuth();
   const [allowed, setAllowed] = useState(null);
   // 動作層級權限（C 期），例如「刪除 Z03 紀錄」。代號長得像「頁面:動作」。
   const [actions, setActions] = useState(null);
+  const retryTimer = useRef(null);
+  const generation = useRef(0);
 
-  async function load() {
+  async function load(attempt = 0) {
+    clearTimeout(retryTimer.current);
+    const gen = ++generation.current;
     if (!isAuthed) { setAllowed(null); setActions(null); return; }
     try {
       const d = await rolePermissionsApi.mine();
+      if (gen !== generation.current) return;
       setAllowed(Array.isArray(d?.allowed) ? d.allowed : []);
       setActions(Array.isArray(d?.actions) ? d.actions : []);
     } catch {
+      if (gen !== generation.current) return;
       // 讀不到就退回 null＝「還不知道」，讓 can() 放行。
       // 這裡不 fail-closed 是刻意的：真正的把關在後端，前端擋不住的東西
       // 後端會擋；反過來把暫時讀不到當成沒權限，只會讓人以為系統壞了。
       setAllowed(null);
       setActions(null);
+      if (attempt < PERMISSION_RETRY_MS.length) {
+        retryTimer.current = setTimeout(() => load(attempt + 1), PERMISSION_RETRY_MS[attempt]);
+      }
     }
   }
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [isAuthed, role]);
+  useEffect(() => {
+    load();
+    return () => { clearTimeout(retryTimer.current); generation.current += 1; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed, role]);
 
   const can = (key) => {
     if (allowed === null) return true;     // 還沒載到
@@ -51,7 +68,7 @@ export function PermissionProvider({ children }) {
     return Array.isArray(actions) && actions.includes(key);
   };
 
-  return <PermCtx.Provider value={{ allowed, actions, can, canDo, reload: load }}>{children}</PermCtx.Provider>;
+  return <PermCtx.Provider value={{ allowed, actions, can, canDo, reload: () => load() }}>{children}</PermCtx.Provider>;
 }
 
 export function usePermissions() { return useContext(PermCtx); }

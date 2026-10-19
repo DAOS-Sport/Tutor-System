@@ -11,7 +11,7 @@ const bcrypt = require('bcryptjs');
 const { pool } = require('../../models/db');
 const { signToken, requireAdminAuth, BACKOFFICE_ROLES } = require('../../middlewares/adminAuth');
 // 身分優先序的唯一來源；登入時用它決定 JWT 上的代表角色。
-const { highestRole } = require('../../constants/roles');
+const { highestRole, isRepresentativeRoleReal } = require('../../constants/roles');
 const {
   cleanVenueList,
   ADMIN_USER_VENUE_IDS_SELECT,
@@ -66,15 +66,12 @@ function _backofficeRole(value) {
  * 直接採用這兩個欄位，教練登入後就會拿到整套櫃檯權限（客戶資料、對帳、退款），
  * 而且畫面上完全看不出來。
  *
- * 判準與 routes/admin/staff.js 的 rowToStaff 一致（那裡決定徽章要不要顯示
- * 「行政櫃檯」）—— 兩邊各寫一套的話，同一個人在列表上和登入時會被當成不同身分。
+ * 判準共用 constants/roles.js 的 isRepresentativeRoleReal（員工徽章、權限聯集也用它）。
  */
 function _usableRole(u, value) {
   const role = String(value || '').trim();
   if (!BACKOFFICE_ROLE_SET.has(role)) return null;
-  if (role === 'admin' || role === 'manager') return role;
-  if (u.is_counter || (!u.is_coach && !u.is_lifeguard)) return role;
-  return null;
+  return isRepresentativeRoleReal({ ...u, role }) ? role : null;
 }
 
 /**

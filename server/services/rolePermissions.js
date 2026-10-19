@@ -12,7 +12,7 @@ const { pool } = require('../models/db');
 const {
   RESOURCE_KEYS, isResourceKey, ACTION_KEYS, isActionKey, isPermissionKey,
 } = require('../constants/adminResources');
-const { ROLES, PORTAL_ADMIN_ROLES, roleLabel } = require('../constants/roles');
+const { ROLES, PORTAL_ADMIN_ROLES, roleLabel, isRepresentativeRoleReal } = require('../constants/roles');
 const audit = require('./permissionAudit');
 
 const CACHE_MS = 15_000;
@@ -66,19 +66,8 @@ async function _load() {
     // Ragic 說他是救生員就是救生員，管理員只能再加，不能在這裡否認，
     // 否認了下次同步也會回來，那種「存了又變回去」最讓人不信任系統。
     for (const r of row.manual_roles || []) if (r) set.add(r);
-    // admin_staff.role 是「代表值」，最後才加，而且要過濾。
-    //
-    // 這個欄位有 CHECK constraint、一定要有值，所以純教練與純救生員都落在
-    // 保底值 'staff' —— 原本這裡是無條件 set.add(row.role)，於是那些人的
-    // 身分聯集裡憑空多一個「行政櫃檯」，拿到客戶資料、對帳、退款的全部權限，
-    // 而且畫面上完全看不出來（他們的徽章顯示的是救生員）。
-    //
-    // 判準與 auth.js 的 _usableRole、staff.js 的 rowToStaff 一致 ——
-    // 三個地方各寫一套的話，同一個人在列表上、登入時、算權限時會是不同身分。
-    if (row.role && (row.role === 'admin' || row.role === 'manager'
-        || row.is_counter || (!row.is_coach && !row.is_lifeguard))) {
-      set.add(row.role);
-    }
+    // admin_staff.role 是「代表值」，最後才加，而且要過濾（判準見 isRepresentativeRoleReal）。
+    if (row.role && isRepresentativeRoleReal(row)) set.add(row.role);
     im.set(String(row.user_id), set);
   }
 

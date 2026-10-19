@@ -29,7 +29,7 @@ const ragicAdmin = require('../../services/ragicAdmin');
 const { RAGIC_JOB_SCHEDULES, RAGIC_BACKGROUND_SCHEDULES } = require('../../constants/ragicJobSchedules');
 const { requireAdminAuth } = require('../../middlewares/adminAuth');
 // F-A06：權限改由「角色權限管理」的設定決定。
-const { requireResource } = require('../../middlewares/requireResource');
+const { requireResource, requireAnyResource } = require('../../middlewares/requireResource');
 
 const router = express.Router();
 
@@ -54,7 +54,8 @@ async function activeJobSnapshot() {
   return forms;
 }
 
-router.get('/', requireAdminAuth, requireResource('ragic-status'), async (req, res) => {
+// 員工頁按「同步 H01」後會輪詢這支等同步跑完，所以有員工頁權限也要讀得到。
+router.get('/', requireAdminAuth, requireAnyResource('ragic-status', 'staff'), async (req, res) => {
   try {
     const env = ragicAdmin.getRagicEnvFlags();
     const missing = Object.entries(env).filter(([, v]) => !v).map(([k]) => k);
