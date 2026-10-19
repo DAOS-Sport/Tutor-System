@@ -3,6 +3,7 @@
 //
 // csvExport.js 仍保留同步版本給上課紀錄頁（屬凍結範圍，同步使用匯出結果），
 // 共用的列定義與 CSV 邏輯都在這裡，兩邊只有「xlsx 何時載入」不同。
+import { importWithRetry } from '../../../shared/chunkRetry.js';
 import {
   formatTWDateTime,
   courseTypeLabel,
@@ -44,8 +45,10 @@ export function writeXlsxFile(XLSX, filename, headers, rows, sheetName = 'Sheet1
   XLSX.writeFile(wb, filename);
 }
 
+// 跟路由頁面一樣走 importWithRetry：部署後還開著舊分頁時，舊的 xlsx chunk 已被刪掉，
+// 要先重試、再重新整理一次拿新版，而不是每按一次匯出就跳一次錯誤。
 export async function downloadXlsx(filename, headers, rows, sheetName = 'Sheet1') {
-  const XLSX = await import('xlsx');
+  const XLSX = await importWithRetry(() => import('xlsx'));
   writeXlsxFile(XLSX, filename, headers, rows, sheetName);
 }
 
