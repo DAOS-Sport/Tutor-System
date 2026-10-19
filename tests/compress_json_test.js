@@ -51,6 +51,7 @@ const decode = (r) => {
 
     const none = await request(server, '/api/big', { headers: {} });
     assert.equal(none.headers['content-encoding'], undefined, '沒有 Accept-Encoding 不壓縮');
+    assert.match(none.headers.vary || '', /Accept-Encoding/i, '大回應沒壓縮也要帶 Vary，快取才不會把未壓縮版回給支援壓縮的客戶端');
     assert.deepEqual(decode(none), big);
 
     const s = await request(server, '/api/small', { headers: { 'accept-encoding': 'br' } });

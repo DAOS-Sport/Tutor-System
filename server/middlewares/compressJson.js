@@ -30,14 +30,15 @@ function compress(buf, encoding) {
 function compressLargeJson({ threshold = THRESHOLD_BYTES } = {}) {
   return (req, res, next) => {
     const encoding = req.method === 'HEAD' ? null : pickEncoding(req.headers['accept-encoding']);
-    if (!encoding) return next();
     const original = res.json.bind(res);
     res.json = (body) => {
       const text = JSON.stringify(body);
       if (text === undefined || Buffer.byteLength(text) < threshold || res.getHeader('Content-Encoding')) {
         return original(body);
       }
+      // 大回應不論這次有沒有壓縮都要帶 Vary，否則快取可能把未壓縮版回給支援壓縮的客戶端。
       res.vary('Accept-Encoding');
+      if (!encoding) return original(body);
       compress(Buffer.from(text), encoding).then((buf) => {
         if (res.headersSent) return;
         res.set('Content-Type', 'application/json; charset=utf-8');
