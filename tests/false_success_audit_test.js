@@ -142,6 +142,9 @@ function walkJs(dir) {
     assert.ok(fallbackAt > 0, '缺少 /api JSON 404 兜底');
     const lastApiMount = INDEX.lastIndexOf("app.use('/api/");
     assert.ok(lastApiMount < fallbackAt, '有 /api router 掛在兜底之後，會被 404 吃掉');
+    // #39 起大部分 /api router 由 server/routeRegistry.js 的清冊依序掛載，清冊迴圈同樣要在兜底之前。
+    const registryAt = INDEX.indexOf("require('./routeRegistry').API_ROUTES");
+    assert.ok(registryAt > 0 && registryAt < fallbackAt, '路由清冊沒有掛在 /api 兜底之前');
     // #15 起前端靜態檔改由 createFrontendRouter 掛載（快取／壓縮），兜底仍須在它之前。
     const staticAt = INDEX.indexOf("app.use('/admin', FRONTEND_ROUTERS.admin)");
     assert.ok(staticAt > 0, '找不到前端靜態檔掛載');
@@ -156,7 +159,10 @@ function walkJs(dir) {
 
   // ── 2. 路由表：重複註冊與遮蔽 ─────────────────────────────────
   const mounts = [...INDEX.matchAll(/app\.use\('(\/api\/[^']+)',\s*require\('\.\/routes\/([^']+)'\)\)/g)]
-    .map((m) => [m[1], m[2]]);
+    .map((m) => [m[1], m[2]])
+    // #39：清冊裡的路由也要列入（index.js 只剩一行迴圈）
+    .concat(require(path.join(SERVER, 'routeRegistry')).API_ROUTES
+      .map(([p, load]) => [p, load.toString().match(/require\('\.\/routes\/([^']+)'\)/)[1]]));
   await check('index.js 的 /api mount 都抓得到（防止正則失效造成假綠）', () => {
     assert.ok(mounts.length >= 20, 'mount 數 ' + mounts.length);
   });
