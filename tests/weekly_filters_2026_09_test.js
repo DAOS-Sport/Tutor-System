@@ -83,6 +83,7 @@ const click = (owner, label) => {
     '../context/AuthContext': { useAuth: () => ({ coach }) },
     '../context/ToastContext': { useToast: () => toast },
     '../utils/promotionLabel': { promotionValueLabel: () => '' },
+    '../utils/coachGuideDemo': { useCoachGuideDemo: () => null },
   });
   await home.settle();
   // 2026-09-22 改版：標題從「3 個月內即將到期 N 組」改成「即將到期通知」＋組數徽章。
@@ -92,13 +93,13 @@ const click = (owner, label) => {
   click(home, '查看這筆報名');
   assert.equal(navigation.pop(), '/coach/orders?enrollment=ORDER-EXPIRES');
 
-  const calls = []; const venues = [{ id: 'B', name: '新北高中' }, { id: 'K', name: '三重商工' }, { id: 'L', name: '三民高中' }, { id: 'C', name: '松山國小' }];
+  const calls = []; const venues = [{ id: 'B', name: '新北高中', is_active: true }, { id: 'K', name: '三重商工', is_active: true }, { id: 'L', name: '三民高中', is_active: true }, { id: 'C', name: '松山國小', is_active: true }];
   const records = [{ id: 's1', date: '2026-01-01', start: '10:00', venue_id: 'B', students: [], course_type: 1 }];
   let rejectQuery = false;
   const sessionPage = mount('client/admin/src/pages/SessionsPage.jsx', {
     '../context/AuthContext': { useAuth: () => ({ role: 'lifeguard', isAdmin: false, isStaff: false, venueIds: ['B', 'K', 'L', 'C'] }) },
     '../context/ToastContext': { useToast: () => toast },
-    '../api/sessions': { sessionsApi: { range: async q => { calls.push(q); if (rejectQuery) throw Error('offline'); return records; }, venueOptions: async () => venues } },
+    '../api/sessions': { sessionsApi: { range: async q => { calls.push(q); if (rejectQuery) throw Error('offline'); return records; }, venueOptions: async () => venues, coefficientCategories: async () => [] } },
     '../api/venues': { venuesApi: { list: async () => venues } },
     '../utils/csvExport': { exportSessionsCsv() {}, exportSessionsXlsx() {} },
   });
@@ -123,7 +124,7 @@ const click = (owner, label) => {
   pickers()[1].props.onChange('2026-05-01'); sessionPage.render();
   click(sessionPage, '查詢'); await sessionPage.settle();
   assert.equal(calls.length, 3, 'Over-limit query must be rejected without losing the page');
-  assert.ok(messages.some(m => m.includes('三個月')));
+  assert.ok(messages.some(m => /三個(曆)?月/.test(m)));
   click(sessionPage, '當日');
   assert.equal(calls.length, 3, 'Today shortcut must only edit the draft');
   rejectQuery = true; click(sessionPage, '查詢'); await sessionPage.settle();
