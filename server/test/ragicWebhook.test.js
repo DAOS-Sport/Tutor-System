@@ -10,6 +10,7 @@ function route(handler, recorded = []) {
   const router = { post: (_path, ...fns) => { post = fns[fns.length - 1]; }, all: () => {} };
   const modules = {
     express: { Router: () => router, text: () => (_req, _res, next) => next() },
+    crypto: require('crypto'),
     '../services/ragicAdmin': { handleRagicWebhook: handler },
     '../services/ragicWebhookBody': require('../services/ragicWebhookBody'),
     '../services/ragicWebhookAttempts': { record: (entry) => { recorded.push(entry); } },

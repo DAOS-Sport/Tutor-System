@@ -72,8 +72,8 @@ async function check(label, fn) {
     const src = fs.readFileSync(path.join(SERVER, 'index.js'), 'utf8');
     const line = src.split('\n').find((l) => l.includes("console.error('[unhandled]'"));
     assert.ok(line && !/req\.originalUrl,/.test(line), '[unhandled] log 直接印 originalUrl');
-    const redact = (u) => String(u || '').replace(/([?&]secret=)[^&]*/gi, '$1***');
-    assert.ok(line.includes(".replace(/([?&]secret=)[^&]*/gi, '$1***')"), '遮罩規則與預期不同');
+    const redact = (u) => String(u || '').replace(/([?&]secret=)[^&]+/gi, '$1***');
+    assert.ok(line.includes(".replace(/([?&]secret=)[^&]+/gi, '$1***')"), '遮罩規則與預期不同');
     assert.equal(redact('/api/ragic-webhook/Z01?secret=abc&x=1'), '/api/ragic-webhook/Z01?secret=***&x=1');
     assert.equal(redact('/api/x?a=1&SECRET=abc'), '/api/x?a=1&SECRET=***');
     assert.equal(redact('/api/x?a=1'), '/api/x?a=1');

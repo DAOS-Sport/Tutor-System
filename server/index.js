@@ -320,7 +320,7 @@ app.use((err, req, res, next) => {
     });
   }
   // Ragic webhook 可能把 secret 放在網址參數，寫進 log 前先遮掉。
-  console.error('[unhandled]', req.method, String(req.originalUrl || '').replace(/([?&]secret=)[^&]*/gi, '$1***'), err.message);
+  console.error('[unhandled]', req.method, String(req.originalUrl || '').replace(/([?&]secret=)[^&]+/gi, '$1***'), err.message);
   res.status(err.status || 500).json({ error: err.message || 'Internal Server Error' });
 });
 
