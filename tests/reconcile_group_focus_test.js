@@ -138,7 +138,7 @@ function build(list = LIST) {
     '../api/enrollments': { enrollmentsApi: {} },
     '../api/checkouts': { checkoutsApi: { list: async () => list } },
     '../api/venues': { venuesApi: { list: async () => [{ id: 'B', name: '測試場館' }] } },
-    '../utils/csvExport': { exportEnrollmentsCsv() {}, exportEnrollmentsXlsx() {} },
+    '../utils/tableExport': { exportEnrollmentsCsv() {}, exportEnrollmentsXlsx: async () => {} },
     '../utils/imagePreview.mjs': { isSupportedImageCandidate: () => false, RECEIPT_IMAGE_ACCEPT: '' },
   });
 }

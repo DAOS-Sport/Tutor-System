@@ -11,7 +11,7 @@ import { enrollmentsApi } from '../api/enrollments';
 import { checkoutsApi } from '../api/checkouts';
 import { venuesApi } from '../api/venues';
 import { formatTWD, formatTWDateTime, courseTypeLabel, toTaipeiDateTimeInput } from '../utils/format';
-import { exportEnrollmentsCsv, exportEnrollmentsXlsx } from '../utils/csvExport';
+import { exportEnrollmentsCsv, exportEnrollmentsXlsx } from '../utils/tableExport';
 import ExportMenu from '../components/ExportMenu';
 import Barcode from '../components/Barcode';
 import ImageLightbox from '../components/ImageLightbox';
@@ -944,8 +944,9 @@ export default function ReconcilePage() {
             }}
             onExportXlsx={() => {
               if (!list || list.length === 0) { toast.error('沒有可匯出的資料'); return; }
-              exportEnrollmentsXlsx({ filenamePrefix: 'reconcile', enrollments: exportRows, venueName });
-              toast.success(`已匯出 ${exportRows.length} 筆子訂單資料 (XLSX)`);
+              exportEnrollmentsXlsx({ filenamePrefix: 'reconcile', enrollments: exportRows, venueName })
+                .then(() => toast.success(`已匯出 ${exportRows.length} 筆子訂單資料 (XLSX)`))
+                .catch(() => toast.error('匯出失敗，請稍後再試'));
             }}
           />
         }

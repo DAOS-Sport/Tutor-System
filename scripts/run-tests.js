@@ -138,6 +138,7 @@ const UNIT = [
   // 的資料當詳情 API 用（.map on undefined → ErrorBoundary → 整頁掛掉，
   // 而 mock 資料補齊了欄位，開發時看不到）。專案沒有 eslint。
   'tests/frontend_undefined_call_test.js',
+  'tests/lazy_xlsx_test.js',
   'tests/react_hooks_order_test.js',
   // 清單分批載入。全量載入的壞法只在正式庫（破千筆）才會撞到 axios 的 10 秒逾時，
   // 開發機 151 筆怎麼點都是好的 —— 所以只能靠測試盯著 limit 有沒有被拿掉。
@@ -182,6 +183,8 @@ const UNIT = [
   'tests/e2e_test_db_guard_test.js',
   'tests/reconcile_mail_sweep_flag_test.js',
   'tests/compress_json_test.js',
+  'tests/favicon_size_test.js',
+  'tests/coach_card_group_total_test.js',
   'tests/release/canary_config_test.js',
   'tests/release/reconcile_image_pipeline_test.js',
   // #12 假成功／路由不明稽核：未知 /api JSON 404、SPA fallback、路由重複／遮蔽、catch 回成功。

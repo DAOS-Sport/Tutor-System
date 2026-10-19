@@ -85,6 +85,14 @@ check('沒有呼叫檔案裡不存在的本地函式', () => {
     const boundNames = new Set();
     for (const m of src.matchAll(/function\s+([A-Za-z0-9_]+)/g)) boundNames.add(m[1]);
     for (const m of src.matchAll(/(?:const|let|var)\s+([A-Za-z0-9_]+)\s*=/g)) boundNames.add(m[1]);
+    // import { a, b as c } from '…' 與 import x from '…'（await 匯入的 async 函式是正常寫法）
+    for (const m of src.matchAll(/import\s+([A-Za-z0-9_]+)?\s*,?\s*(?:\{([^}]*)\})?\s*from\s/g)) {
+      if (m[1]) boundNames.add(m[1]);
+      for (const part of (m[2] || '').split(',')) {
+        const clean = part.split(/\s+as\s+/).pop().trim();
+        if (/^[A-Za-z0-9_]+$/.test(clean)) boundNames.add(clean);
+      }
+    }
     // 所有大括號解構區塊（含函式參數列），逐個取出裡面的識別字
     for (const m of src.matchAll(/\{([^{}]*)\}\s*(?:=|\)|,)/g)) {
       for (const part of m[1].split(',')) {
