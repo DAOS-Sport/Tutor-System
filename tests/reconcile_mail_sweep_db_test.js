@@ -29,7 +29,7 @@ require.cache[mailerPath] = {
 
 const { Pool } = require(path.join(__dirname, '../server/node_modules/pg'));
 const { pool } = require('../server/models/db');
-const { sweepPendingMail, SWEEP_MAX_ATTEMPTS, KIND } = require('../server/services/reconcileNotify');
+const { sweepPendingMail, deliverOutbox, SWEEP_MAX_ATTEMPTS, KIND } = require('../server/services/reconcileNotify');
 
 const PREFIX = `sweeptest_${Date.now().toString(36)}_`;
 let passed = 0;
@@ -111,6 +111,37 @@ const to = (ref) => `${PREFIX}${ref}@example.invalid`;
     assert.equal((await rowOf(staleId)).status, 'sent');
     assert.deepEqual([(await rowOf(busyId)).status, sends.has(to('busy'))], ['sending', false]);
     ok('sending 超過租約重新認領；租約內的不碰');
+
+    // 6. 補寄沒開：對帳當下的即時寄送維持原行為（失敗記 failed，不留給補寄）
+    delete process.env.RECONCILE_MAIL_SWEEP;
+    outcome.set(to('legacyfail'), 'failed');
+    const legacyId = await insert('legacyfail', { ageMin: 0 });
+    await deliverOutbox([legacyId]);
+    assert.deepEqual([(await rowOf(legacyId)).status, (await rowOf(legacyId)).attempts], ['failed', 1]);
+    ok('補寄沒開：即時寄送失敗照舊記 failed');
+
+    // 7. 補寄開著：即時寄送失敗留在 pending 給補寄；成功照常 sent
+    process.env.RECONCILE_MAIL_SWEEP = '1';
+    outcome.set(to('nowfail'), 'failed');
+    const nowFail = await insert('nowfail', { ageMin: 0 });
+    const nowOk = await insert('nowok', { ageMin: 0 });
+    const r7 = await deliverOutbox([nowFail, nowOk]);
+    assert.deepEqual([(await rowOf(nowFail)).status, (await rowOf(nowFail)).attempts, (await rowOf(nowFail)).sent_at], ['pending', 1, null]);
+    assert.equal((await rowOf(nowOk)).status, 'sent');
+    assert.deepEqual([r7.sent, r7.failed], [1, 1], '回傳格式不變：失敗仍算在 failed，讓畫面照舊提示');
+    ok('補寄開著：即時寄送失敗留在 pending、次數 +1；成功照常 sent');
+
+    // 8. 補寄開著：即時寄送與補寄同時碰到同一封，只寄一次
+    const raceId = await insert('race', { ageMin: 10 });
+    await Promise.all([deliverOutbox([raceId]), sweepPendingMail({ db: machineA, limit: 50 })]);
+    assert.equal(sends.get(to('race')), 1, '即時寄送與補寄不可重複寄');
+    assert.equal((await rowOf(raceId)).status, 'sent');
+    ok('補寄開著：即時寄送與補寄同時碰到同一封，只寄一次');
+    delete process.env.RECONCILE_MAIL_SWEEP;
+
+    // 9. 認領查詢失敗要丟出，讓 runWithLock 記成 error
+    await assert.rejects(sweepPendingMail({ db: { query: async () => { throw new Error('db down'); } } }), /db down/);
+    ok('認領查詢失敗會丟出（排程紀錄成 error，不會假裝成功）');
 
     console.log(`reconcile_mail_sweep_db: ${passed} PASS`);
   } finally {

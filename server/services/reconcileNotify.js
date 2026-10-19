@@ -245,6 +245,9 @@ async function sendOutboxRow(rowData) {
 async function deliverOutbox(ids) {
   const list = (ids || []).filter((x) => x != null);
   if (!list.length) return { sent: 0, dryRun: 0, failed: 0 };
+  // 補寄開著時，即時寄送也走「先認領再寄、失敗留給補寄」：避免與補寄同時寄同一封，
+  // 也讓 SMTP 暫時失敗的信有機會被補寄。沒開時維持原本行為（失敗即記為 failed）。
+  if (require('./reconcileMailSweep').isEnabled()) return deliverClaimed(list);
   const out = { sent: 0, dryRun: 0, failed: 0 };
   for (const id of list) {
     try {
@@ -280,64 +283,96 @@ const SWEEP_MAX_ATTEMPTS = 5;
 // 認領後超過這段時間還停在 sending，視為那台機器寄到一半掛掉，可以重新認領。
 const SWEEP_LEASE_MINUTES = 15;
 
+// 寄送結果 → 下一個狀態。失敗退回 pending 等補寄，連續失敗到上限才 failed。
+function nextStatusAfterSend(res, attemptsBefore) {
+  if (res.status !== 'failed') return res.status;
+  return attemptsBefore + 1 >= SWEEP_MAX_ATTEMPTS ? 'failed' : 'pending';
+}
+
+// 寄出已認領（status=sending）的一列並回寫結果；回傳寫回的狀態。
+async function sendClaimedRow(db, row) {
+  let res;
+  try {
+    res = await sendOutboxRow(row);
+  } catch (e) {
+    res = { status: 'failed', reason: String(e.message || e).slice(0, 300) };
+  }
+  const next = nextStatusAfterSend(res, row.attempts);
+  try {
+    await db.query(
+      `UPDATE mail_outbox
+          SET status = $2, reason = $3, attempts = attempts + 1,
+              sent_at = CASE WHEN $2 = 'sent' THEN NOW() ELSE sent_at END,
+              updated_at = NOW()
+        WHERE id = $1 AND status = 'sending'`,
+      [row.id, next, res.reason || null]
+    );
+  } catch (e) {
+    // 寫不回結果時列會停在 sending，租約到期後重新認領（可能重寄一次，不會漏寄）。
+    console.warn('[reconcileNotify] 回寫寄送結果失敗 outbox#' + row.id + '：' + e.message);
+  }
+  return next;
+}
+
+function tally(out, next) {
+  if (next === 'sent') out.sent += 1;
+  else if (next === 'dry_run') out.dryRun += 1;
+  else if (next === 'pending') out.retry += 1;
+  else if (next === 'failed') out.failed += 1;
+  else out.skipped += 1;
+}
+
+// 補寄開著時的即時寄送：逐筆認領（pending → sending）再寄。回傳格式與 deliverOutbox 相同，
+// 失敗（含留給補寄的）都算在 failed，呼叫端的提示照舊。
+async function deliverClaimed(list) {
+  const out = { sent: 0, dryRun: 0, failed: 0 };
+  for (const id of list) {
+    try {
+      const r = await pool.query(
+        `UPDATE mail_outbox SET status = 'sending', updated_at = NOW()
+          WHERE id = $1 AND status = 'pending'
+          RETURNING id, recipient, payload, attempts`,
+        [id]
+      );
+      if (!r.rowCount) continue;
+      const next = await sendClaimedRow(pool, r.rows[0]);
+      if (next === 'sent') out.sent += 1;
+      else if (next === 'dry_run') out.dryRun += 1;
+      else out.failed += 1;
+    } catch (e) {
+      out.failed += 1;
+      console.warn('[reconcileNotify] 寄送失敗 outbox#' + id + '：' + e.message);
+    }
+  }
+  return out;
+}
+
 /**
- * 補寄：撿出還卡在 pending 的（進程在寄信前掛掉、或當時 SMTP 暫時不通）。
+ * 補寄：撿出還卡在 pending 的（進程在寄信前掛掉、SMTP 暫時不通、或即時寄送失敗）。
  *
  * 先認領再寄：同一個 UPDATE 用 FOR UPDATE SKIP LOCKED 把列從 pending 改成 sending，
  * 多台機器同時跑也只有一台拿得到同一封。寄送失敗退回 pending（次數 +1）等下一輪，
  * 不會被標成 sent；連續失敗到上限才標 failed，交給櫃檯人工通知。
- * 只補建立超過 olderThanMinutes 的列，避開對帳當下 deliverOutbox 正在寄的那一封。
+ * 只補建立超過 olderThanMinutes 的列，給對帳當下的即時寄送先處理。
+ * 認領查詢失敗時直接丟出，讓 runWithLock 在 job_runs 記成 error，而不是假裝成功。
  * 排程由 services/reconcileMailSweep.js 註冊（feature flag，預設關閉）。
  */
 async function sweepPendingMail({ limit = 20, olderThanMinutes = 5, db = pool } = {}) {
   const out = { sent: 0, dryRun: 0, failed: 0, retry: 0, skipped: 0 };
-  let claimed;
-  try {
-    claimed = await db.query(
-      `UPDATE mail_outbox
-          SET status = 'sending', updated_at = NOW()
-        WHERE id IN (
-          SELECT id FROM mail_outbox
-           WHERE (status = 'pending' AND created_at < NOW() - ($2 || ' minutes')::interval)
-              OR (status = 'sending' AND updated_at < NOW() - ($3 || ' minutes')::interval)
-           ORDER BY created_at
-           LIMIT $1
-           FOR UPDATE SKIP LOCKED)
-        RETURNING id, recipient, payload, attempts`,
-      [limit, String(olderThanMinutes), String(SWEEP_LEASE_MINUTES)]
-    );
-  } catch (e) {
-    console.warn('[reconcileNotify] sweep 認領失敗：' + e.message);
-    return out;
-  }
-  for (const row of claimed.rows) {
-    let res;
-    try {
-      res = await sendOutboxRow(row);
-    } catch (e) {
-      res = { status: 'failed', reason: String(e.message || e).slice(0, 300) };
-    }
-    let next = res.status;
-    if (next === 'failed') next = row.attempts + 1 >= SWEEP_MAX_ATTEMPTS ? 'failed' : 'pending';
-    try {
-      await db.query(
-        `UPDATE mail_outbox
-            SET status = $2, reason = $3, attempts = attempts + 1,
-                sent_at = CASE WHEN $2 = 'sent' THEN NOW() ELSE sent_at END,
-                updated_at = NOW()
-          WHERE id = $1 AND status = 'sending'`,
-        [row.id, next, res.reason || null]
-      );
-    } catch (e) {
-      // 寫不回結果時列會停在 sending，租約到期後重新認領（可能重寄一次，不會漏寄）。
-      console.warn('[reconcileNotify] sweep 回寫失敗 outbox#' + row.id + '：' + e.message);
-    }
-    if (next === 'sent') out.sent += 1;
-    else if (next === 'dry_run') out.dryRun += 1;
-    else if (next === 'pending') out.retry += 1;
-    else if (next === 'failed') out.failed += 1;
-    else out.skipped += 1;
-  }
+  const claimed = await db.query(
+    `UPDATE mail_outbox
+        SET status = 'sending', updated_at = NOW()
+      WHERE id IN (
+        SELECT id FROM mail_outbox
+         WHERE (status = 'pending' AND created_at < NOW() - ($2 || ' minutes')::interval)
+            OR (status = 'sending' AND updated_at < NOW() - ($3 || ' minutes')::interval)
+         ORDER BY created_at
+         LIMIT $1
+         FOR UPDATE SKIP LOCKED)
+      RETURNING id, recipient, payload, attempts`,
+    [limit, String(olderThanMinutes), String(SWEEP_LEASE_MINUTES)]
+  );
+  for (const row of claimed.rows) tally(out, await sendClaimedRow(db, row));
   return out;
 }
 
