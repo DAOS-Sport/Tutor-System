@@ -63,6 +63,9 @@ const { rejectNulBytes } = require('./middlewares/rejectNulBytes');
 app.use(rejectNulBytes);
 
 // ── Routes ──────────────────────────────────
+// 超過 64 KB 的 API JSON 以 br／gzip 回傳（例如桌機一次載入全部報名）。
+app.use('/api', require('./middlewares/compressJson').compressLargeJson());
+
 // ── MCP Server（Claude Desktop / Claude.ai 工作區遠端操控）────────────
 const { createMcpRouter } = require('./mcp');
 app.use('/mcp', createMcpRouter());
