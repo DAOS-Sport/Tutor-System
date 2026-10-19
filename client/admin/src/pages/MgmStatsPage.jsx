@@ -5,7 +5,7 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import ExportMenu from '../components/ExportMenu';
 import { useToast } from '../context/ToastContext';
 import { mgmStatsApi } from '../api/mgmStats';
-import { rowsToCsv, downloadCsv, downloadXlsx } from '../utils/csvExport';
+import { rowsToCsv, downloadCsv, downloadXlsx } from '../utils/tableExport';
 import { todayISO } from '../utils/format';
 
 const RANK_HEADERS = ['排名', '教練', '推薦總數', '已發獎勵', '轉換率'];
@@ -46,12 +46,14 @@ export default function MgmStatsPage() {
     const suffix = [filters.venueId && `v${filters.venueId}`, filters.coachId && `c${filters.coachId.slice(0, 6)}`]
       .filter(Boolean).join('_');
     const base = `mgm_ranking_${filters.from || 'all'}_${filters.to || todayStamp()}${suffix ? '_' + suffix : ''}`;
+    const done = () => toast.success(`已匯出 ${rows.length} 筆推薦排行 (${kind.toUpperCase()})`);
     if (kind === 'csv') {
       downloadCsv(`${base}.csv`, rowsToCsv(RANK_HEADERS, rows));
+      done();
     } else {
-      downloadXlsx(`${base}.xlsx`, RANK_HEADERS, rows, '教練推薦排行');
+      downloadXlsx(`${base}.xlsx`, RANK_HEADERS, rows, '教練推薦排行')
+        .then(done, () => toast.error('匯出失敗，請稍後再試'));
     }
-    toast.success(`已匯出 ${rows.length} 筆推薦排行 (${kind.toUpperCase()})`);
   }
 
   useEffect(() => {
