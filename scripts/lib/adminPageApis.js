@@ -135,6 +135,23 @@ function routePages() {
       const r = resolveImport(app, p.node.source.value);
       for (const s of p.node.specifiers) if (r) importMap[s.local.name] = r;
     },
+    // 路由切分後頁面改成 const XxxPage = lazyPage(() => import('./pages/XxxPage'))
+    VariableDeclarator(p) {
+      if (p.node.id.type !== 'Identifier' || !p.node.init) return;
+      p.get('init').traverse({
+        CallExpression(q) {
+          const [arg] = q.node.arguments;
+          if (q.node.callee.type !== 'Import' || !arg || arg.type !== 'StringLiteral') return;
+          const r = resolveImport(app, arg.value);
+          if (r) importMap[p.node.id.name] = r;
+        },
+        ImportExpression(q) {
+          if (q.node.source.type !== 'StringLiteral') return;
+          const r = resolveImport(app, q.node.source.value);
+          if (r) importMap[p.node.id.name] = r;
+        },
+      });
+    },
   });
   traverse(astOf(app), {
     JSXOpeningElement(p) {
