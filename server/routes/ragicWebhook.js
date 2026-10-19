@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const express = require('express');
 const ragicAdmin = require('../services/ragicAdmin');
 const { parseWebhookBody, describeBody } = require('../services/ragicWebhookBody');
@@ -18,7 +19,14 @@ function _authorized(req) {
     req.query.secret ||
     ''
   ).trim();
-  return got && got === secret;
+  return got && sameSecret(got, secret);
+}
+
+// 固定時間比對，避免從回應時間逐字元猜出 secret；長度不同直接不符（timingSafeEqual 遇到長度不同會丟例外）。
+function sameSecret(got, secret) {
+  const a = Buffer.from(got);
+  const b = Buffer.from(secret);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
 function _requestMeta(req) {
