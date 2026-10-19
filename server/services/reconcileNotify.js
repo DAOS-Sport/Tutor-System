@@ -215,6 +215,32 @@ async function enqueueReconcileMailDetailed(client, { refId, orders, invoice, ve
   }
 }
 
+/** 依 outbox 一列組信並交給 mailer；回 mailer 的結果（附件缺漏記在 reason）。 */
+async function sendOutboxRow(rowData) {
+  const p = rowData.payload || {};
+  const att = await buildAttachments({ invoiceImageUrl: p.invoiceImageUrl, invoiceNumber: p.invoiceNumber });
+  const built = templates.reconcileSuccess({
+    parentName: p.parentName,
+    venueName: p.venueName,
+    orders: p.orders || [],
+    invoiceNumber: p.invoiceNumber,
+    totalAmount: p.totalAmount,
+    ...loginCta(p.venueId),
+    issuedAt: p.issuedAt,
+    hasInvoiceAttachment: att.hasInvoice,
+  });
+  const res = await mailer.sendMail({
+    to: rowData.recipient,
+    subject: built.subject,
+    html: built.html,
+    text: built.text,
+    attachments: att.attachments,
+  });
+  // 附件缺漏要記下來，否則「信寄出了但沒發票」會查無原因。
+  if (att.notes.length) res.reason = [res.reason, att.notes.join(',')].filter(Boolean).join(' | ');
+  return res;
+}
+
 /** 依 outbox id 實際寄出。永不 throw —— 呼叫點都在 COMMIT 之後。 */
 async function deliverOutbox(ids) {
   const list = (ids || []).filter((x) => x != null);
@@ -228,27 +254,7 @@ async function deliverOutbox(ids) {
       );
       const rowData = r.rows[0];
       if (!rowData) continue;
-      const p = rowData.payload || {};
-      const att = await buildAttachments({ invoiceImageUrl: p.invoiceImageUrl, invoiceNumber: p.invoiceNumber });
-      const built = templates.reconcileSuccess({
-        parentName: p.parentName,
-        venueName: p.venueName,
-        orders: p.orders || [],
-        invoiceNumber: p.invoiceNumber,
-        totalAmount: p.totalAmount,
-        ...loginCta(p.venueId),
-        issuedAt: p.issuedAt,
-        hasInvoiceAttachment: att.hasInvoice,
-      });
-      const res = await mailer.sendMail({
-        to: rowData.recipient,
-        subject: built.subject,
-        html: built.html,
-        text: built.text,
-        attachments: att.attachments,
-      });
-      // 附件缺漏要記下來，否則「信寄出了但沒發票」會查無原因。
-      if (att.notes.length) res.reason = [res.reason, att.notes.join(',')].filter(Boolean).join(' | ');
+      const res = await sendOutboxRow(rowData);
       // dry_run 是「沒寄出」，狀態照實記錄，不可以寫成 sent。
       await pool.query(
         `UPDATE mail_outbox
@@ -269,24 +275,70 @@ async function deliverOutbox(ids) {
   return out;
 }
 
+// 補寄的重試上限：SMTP 一直拒收（例如信箱不存在）時不要每 5 分鐘無限重寄。
+const SWEEP_MAX_ATTEMPTS = 5;
+// 認領後超過這段時間還停在 sending，視為那台機器寄到一半掛掉，可以重新認領。
+const SWEEP_LEASE_MINUTES = 15;
+
 /**
  * 補寄：撿出還卡在 pending 的（進程在寄信前掛掉、或當時 SMTP 暫時不通）。
- * 可接到 cron，也可以人工呼叫。
+ *
+ * 先認領再寄：同一個 UPDATE 用 FOR UPDATE SKIP LOCKED 把列從 pending 改成 sending，
+ * 多台機器同時跑也只有一台拿得到同一封。寄送失敗退回 pending（次數 +1）等下一輪，
+ * 不會被標成 sent；連續失敗到上限才標 failed，交給櫃檯人工通知。
+ * 只補建立超過 olderThanMinutes 的列，避開對帳當下 deliverOutbox 正在寄的那一封。
+ * 排程由 services/reconcileMailSweep.js 註冊（feature flag，預設關閉）。
  */
-async function sweepPendingMail({ limit = 20, olderThanMinutes = 5 } = {}) {
+async function sweepPendingMail({ limit = 20, olderThanMinutes = 5, db = pool } = {}) {
+  const out = { sent: 0, dryRun: 0, failed: 0, retry: 0, skipped: 0 };
+  let claimed;
   try {
-    const r = await pool.query(
-      `SELECT id FROM mail_outbox
-        WHERE status = 'pending' AND created_at < NOW() - ($2 || ' minutes')::interval
-        ORDER BY created_at
-        LIMIT $1`,
-      [limit, String(olderThanMinutes)]
+    claimed = await db.query(
+      `UPDATE mail_outbox
+          SET status = 'sending', updated_at = NOW()
+        WHERE id IN (
+          SELECT id FROM mail_outbox
+           WHERE (status = 'pending' AND created_at < NOW() - ($2 || ' minutes')::interval)
+              OR (status = 'sending' AND updated_at < NOW() - ($3 || ' minutes')::interval)
+           ORDER BY created_at
+           LIMIT $1
+           FOR UPDATE SKIP LOCKED)
+        RETURNING id, recipient, payload, attempts`,
+      [limit, String(olderThanMinutes), String(SWEEP_LEASE_MINUTES)]
     );
-    return await deliverOutbox(r.rows.map((x) => x.id));
   } catch (e) {
-    console.warn('[reconcileNotify] sweep 失敗：' + e.message);
-    return { sent: 0, dryRun: 0, failed: 0 };
+    console.warn('[reconcileNotify] sweep 認領失敗：' + e.message);
+    return out;
   }
+  for (const row of claimed.rows) {
+    let res;
+    try {
+      res = await sendOutboxRow(row);
+    } catch (e) {
+      res = { status: 'failed', reason: String(e.message || e).slice(0, 300) };
+    }
+    let next = res.status;
+    if (next === 'failed') next = row.attempts + 1 >= SWEEP_MAX_ATTEMPTS ? 'failed' : 'pending';
+    try {
+      await db.query(
+        `UPDATE mail_outbox
+            SET status = $2, reason = $3, attempts = attempts + 1,
+                sent_at = CASE WHEN $2 = 'sent' THEN NOW() ELSE sent_at END,
+                updated_at = NOW()
+          WHERE id = $1 AND status = 'sending'`,
+        [row.id, next, res.reason || null]
+      );
+    } catch (e) {
+      // 寫不回結果時列會停在 sending，租約到期後重新認領（可能重寄一次，不會漏寄）。
+      console.warn('[reconcileNotify] sweep 回寫失敗 outbox#' + row.id + '：' + e.message);
+    }
+    if (next === 'sent') out.sent += 1;
+    else if (next === 'dry_run') out.dryRun += 1;
+    else if (next === 'pending') out.retry += 1;
+    else if (next === 'failed') out.failed += 1;
+    else out.skipped += 1;
+  }
+  return out;
 }
 
 module.exports = {
@@ -295,6 +347,8 @@ module.exports = {
   enqueueReconcileMailDetailed,
   deliverOutbox,
   sweepPendingMail,
+  SWEEP_MAX_ATTEMPTS,
+  SWEEP_LEASE_MINUTES,
   buildAttachments,
   __test__: { normalizePhone, slimOrder, liffUrl, readUploadBuffer, loginCta },
 };
