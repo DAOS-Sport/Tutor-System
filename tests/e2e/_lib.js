@@ -1,4 +1,6 @@
 // 共用 helper：fetch 包裝 + 簡易斷言 + 顏色 log
+// 單獨執行路徑檔時也只連測試庫（見 _testDb.js）；經 run_all 時已檢查過，這裡直接通過。
+require('./_testDb').useTestDatabase();
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
