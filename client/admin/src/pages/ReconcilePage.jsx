@@ -120,7 +120,9 @@ export function reconcileNotifyMessage(base, notify) {
   if (!notify) return { level: 'success', text: base }; // 舊版後端沒有 notify：不宣稱通知狀態
   const problems = [];
   if (notify.not_queued > 0) problems.push(`${notify.not_queued} 個家庭沒有可寄的 Email，未發送通知`);
-  if (notify.failed > 0) problems.push(`${notify.failed} 封通知信寄送失敗，系統稍後會自動重寄`);
+  if (notify.enqueue_failed > 0) problems.push(`${notify.enqueue_failed} 封通知信排入失敗、未發送，請手動通知家長`);
+  // 寄送失敗的信不在自動補寄範圍（補寄只撿 pending），不可承諾「稍後重寄」。
+  if (notify.failed > 0) problems.push(`${notify.failed} 封通知信寄送失敗，請手動通知家長`);
   if (notify.dry_run > 0) problems.push(`${notify.dry_run} 封通知信為演練模式，未實際寄出`);
   if (problems.length) return { level: 'warning', text: `${base}；${problems.join('；')}` };
   if (notify.sent > 0) return { level: 'success', text: `${base}，已寄出 Email 通知家長` };

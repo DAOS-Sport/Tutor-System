@@ -302,7 +302,7 @@ function walkJs(dir) {
   await check('對帳成功提示照實講通知信結果，不再一律宣稱「已推播家長」', () => {
     const server = read('server/routes/admin/checkouts.js');
     assert.ok(/const mail = await deliverOutbox\(mailOutboxIds\);/.test(server));
-    assert.ok(/notify: \{[\s\S]*not_queued[\s\S]*failed: mail\?\.failed/.test(server));
+    assert.ok(/notify: \{[\s\S]*not_queued: mailNoEmail[\s\S]*enqueue_failed: mailEnqueueFailed[\s\S]*failed: mail\?\.failed/.test(server));
     const page = read('client/admin/src/pages/ReconcilePage.jsx');
     assert.ok(!/並推播家長|並分別推播/.test(page), '又出現不看結果的「已推播」字樣');
     assert.strictEqual((page.match(/showReconcileNotify\(toast, result, `/g) || []).length, 2);
@@ -314,6 +314,11 @@ function walkJs(dir) {
     assert.strictEqual(msg('對帳通過', { not_queued: 1, sent: 0, failed: 0, dry_run: 0 }).level, 'warning');
     assert.strictEqual(msg('對帳通過', { not_queued: 0, sent: 0, failed: 1, dry_run: 0 }).level, 'warning');
     assert.strictEqual(msg('對帳通過', { not_queued: 0, sent: 0, failed: 0, dry_run: 2 }).level, 'warning');
+    // 排信出錯要獨立講，不可講成「沒有 Email」；寄送失敗不可承諾自動重寄（補寄只撿 pending）。
+    const enqFail = msg('對帳通過', { not_queued: 0, enqueue_failed: 1, sent: 0, failed: 0, dry_run: 0 });
+    assert.strictEqual(enqFail.level, 'warning');
+    assert.ok(!/沒有可寄的 Email/.test(enqFail.text), enqFail.text);
+    assert.ok(!/重寄/.test(msg('對帳通過', { not_queued: 0, sent: 0, failed: 1, dry_run: 0 }).text));
     const ok = msg('對帳通過', { not_queued: 0, sent: 1, failed: 0, dry_run: 0 });
     assert.strictEqual(ok.level, 'success');
     assert.ok(/已寄出 Email/.test(ok.text));

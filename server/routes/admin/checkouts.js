@@ -13,7 +13,7 @@ const {
   groupCheckoutFamilies,
   normalizeFamilyPhone,
 } = require('../../services/checkoutFamilies');
-const { enqueueReconcileMail, deliverOutbox } = require('../../services/reconcileNotify');
+const { enqueueReconcileMailDetailed, deliverOutbox } = require('../../services/reconcileNotify');
 const { isValidTaiwanTaxId, validateCarrier } = require('../../services/invoiceIdentity');
 const enrollmentRouter = require('./enrollments');
 
@@ -285,6 +285,8 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
   const createdStudentIds = [];
   const mailOutboxIds = [];
   let mailFamilies = 0; // 應通知的家庭數（有子訂單的發票家庭）
+  let mailNoEmail = 0; // 查無家長 Email、沒排入的家庭數
+  let mailEnqueueFailed = 0; // 排信本身出錯（DB／SAVEPOINT）的家庭數
   try {
     await client.query('BEGIN');
     // 稽核操作者只能取自已驗證的後台 JWT；不可接受 client 自填的 by，
@@ -477,7 +479,7 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
       if (!familyOrders.length) continue;
       mailFamilies += 1;
       const venueRow = await client.query(`SELECT name FROM venues WHERE id = $1`, [familyOrders[0].venue_id]);
-      const mailId = await enqueueReconcileMail(client, {
+      const enq = await enqueueReconcileMailDetailed(client, {
         // 去重鍵：同一張付款單的同一個家庭只會有一封。
         refId: `${req.params.checkoutId}:${invoice.familyKey}`,
         orders: familyOrders,
@@ -487,7 +489,9 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
         parentPhone: invoice.family.parent_phone,
         parentName: invoice.family.parent_name,
       });
-      if (mailId) mailOutboxIds.push(mailId);
+      if (enq.id) mailOutboxIds.push(enq.id);
+      else if (enq.outcome === 'no_email') mailNoEmail += 1;
+      else if (enq.outcome === 'error') mailEnqueueFailed += 1;
     }
 
     await client.query('COMMIT');
@@ -515,7 +519,10 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
       notify: {
         families: mailFamilies,
         queued: mailOutboxIds.length,
-        not_queued: Math.max(0, mailFamilies - mailOutboxIds.length),
+        // not_queued 只算「真的查無 Email」；排信本身出錯另計 enqueue_failed，
+        // 不可讓 outbox 故障看起來像家長資料缺 Email。已排過（重複對帳）兩邊都不算。
+        not_queued: mailNoEmail,
+        enqueue_failed: mailEnqueueFailed,
         sent: mail?.sent || 0,
         dry_run: mail?.dryRun || 0,
         failed: mail?.failed || 0,
