@@ -7,7 +7,7 @@ config/parent-identity-monitoring.json
 db/migrations/022_ragic_z01_z03_claim_closure.sql
 db/migrations/023_parent_identity_local_first.sql
 db/migrations/024_parent_identity_release_hardening.sql
-docs/parent-identity-release-evidence-2026-07-13.md
+docs/release/parent-identity-release-evidence-2026-07-13.md
 scripts/explain-ragic-z01.js
 scripts/force_trigger_outbox.js
 scripts/parent-identity-canary-status.js
