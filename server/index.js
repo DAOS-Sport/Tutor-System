@@ -70,32 +70,7 @@ app.use('/api', require('./middlewares/compressJson').compressLargeJson());
 const { createMcpRouter } = require('./mcp');
 app.use('/mcp', createMcpRouter());
 
-app.use('/api/auth',          require('./routes/auth'));
-app.use('/api/venues',        require('./routes/venues'));
-app.use('/api/coaches',       require('./routes/coaches'));
-app.use('/api/coach-portal',  require('./routes/coachPortal')); // 教練端 LINE OAuth 登入模組（與家長端分離）
-app.use('/api/parents',       require('./routes/parents'));
-app.use('/api/family',        require('./routes/family'));       // 家庭帳號：家長端申請合併、退出
-app.use('/api/courses',       require('./routes/courses'));
-app.use('/api/slots',         require('./routes/slots'));        // coach_availability_slots
-app.use('/api/sessions',      require('./routes/sessions'));     // course_sessions
-app.use('/api/checkins',      require('./routes/checkins'));
-app.use('/api/promotions',    require('./routes/promotions'));
-app.use('/api/enrollments',   require('./routes/enrollments'));  // F-S02 LIFF 報名建立 + promotion_usages
-app.use('/api/checkout',      require('./routes/checkout'));     // checkout 母單付款頁
-app.use('/api/group-orders',  require('./routes/groupOrders'));  // U6 團購（家長端）
-app.use('/api/uploads',       require('./routes/uploads'));      // U3 家長端匯款證明上傳
-app.use('/api/referrals',     require('./routes/referrals'));    // MGM
-app.use('/api/transfers',     require('./routes/transfers'));
-app.use('/api/chat',          require('./routes/chat'));
-app.use('/api/learn',         require('./routes/learn'));        // 學習歷程
-app.use('/api/evaluations',   require('./routes/evaluations'));  // 期末評鑑
-app.use('/api/admin',         require('./routes/admin'));
-// U16 整合 API：場館現場的外部前端（救生台等）查當下課表。服務金鑰 + 場館綁定，唯讀。
-app.use('/api/integrations', require('./routes/integrations'));
-// 前端診斷回報：家長端畫面壞在送出之前時，唯一留得下證據的通道。
-app.use('/api/diagnostics', require('./routes/diagnostics'));
-app.use('/api/onboarding', require('./routes/onboarding'));
+for (const [prefix, load] of require('./routeRegistry').API_ROUTES) app.use(prefix, load());
 // 兜底：沒有任何 router 認得的 /api/* 一律 JSON 404（#12）。必須放在所有 /api mount 之後、
 // 靜態檔與 SPA fallback 之前；以前會掉到 Express 內建的 HTML「Cannot GET」頁。
 const { apiNotFound, spaFallback } = require('./middlewares/spaFallback');

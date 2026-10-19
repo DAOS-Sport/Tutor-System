@@ -186,6 +186,7 @@ const UNIT = [
   'tests/favicon_size_test.js',
   'tests/coach_card_group_total_test.js',
   'tests/ragic_webhook_secret_test.js',
+  'tests/period_provisioning_test.js',
   'tests/with_transaction_test.js',
   'tests/release/canary_config_test.js',
   'tests/release/reconcile_image_pipeline_test.js',
