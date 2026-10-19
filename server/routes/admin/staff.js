@@ -33,7 +33,7 @@ const router = express.Router();
 
 // 可指派的身份清單。原本寫死四個、漏了救生員，於是「篩選選得到、編輯存不了」——
 // normalizeRoleFilter 早就認得 lifeguard，這裡卻會回 400「角色不合法」。
-const { ASSIGNABLE_ROLES: VALID_ROLES, BACKOFFICE_ROLES, highestRole } = require('../../constants/roles');
+const { ASSIGNABLE_ROLES: VALID_ROLES, BACKOFFICE_ROLES, highestRole, isRepresentativeRoleReal } = require('../../constants/roles');
 const MULTIPLIER_MIN = 1.00;
 const MULTIPLIER_MAX = 1.50;
 
@@ -295,7 +295,7 @@ function rowToStaff(r) {
   // manual_roles —— 它有「空就退回 [r.role]」的 fallback，而純救生員的 r.role 是
   // CHECK constraint 的保底值 'staff'，套了 fallback 會讓他被誤判成「明確指派過櫃檯」。
   const assignedRoles = Array.isArray(r.manual_roles) ? r.manual_roles.filter(Boolean) : [];
-  const includeImpliedRole = ['admin', 'manager'].includes(r.role) || isCounterFlag || (!isCoachFlag && !isLifeguardFlag);
+  const includeImpliedRole = isRepresentativeRoleReal(r);
   const knownRoles = Array.from(new Set([
     ...(includeImpliedRole ? [r.role] : []),
     ...(hasCoachProfile ? ['coach'] : []),

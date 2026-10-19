@@ -1,7 +1,7 @@
 /**
  * Admin Phase 3 後台 JWT 驗證 middleware
  * - Token 簽發於 routes/admin/auth.js（POST /api/admin/auth/login）
- * - payload 至少含 { sub, username, name, role: 'admin'|'manager'|'staff', venue_id }
+ * - payload 至少含 { sub, username, name, role（BACKOFFICE_ROLES 之一）, venue_ids }
  * - 前端把 token 寫進 localStorage 後，由 client.js interceptor 帶 Authorization: Bearer
  *
  * 安全規則：
@@ -16,9 +16,7 @@ const IS_PROD = process.env.NODE_ENV === 'production';
 const DEV_FALLBACK_SECRET = '__DEV_ONLY_admin_jwt_fallback__';
 // 後台共用角色裁判。所有受保護的 admin route 都必須先通過 requireAdminAuth，
 // 場館範圍再由 getScopedVenueIds / isVenueInScope 統一判定；manager 不是全館 admin。
-// 改讀 constants/roles 的單一來源。內容此刻仍是 admin/manager/staff —— 這一步
-// 只是消除重複定義，不放寬任何權限。要讓救生員能登入後台是 F-A06 第 2 期的事，
-// 屆時把 roles.js 裡該角色的 backoffice 改成 true 即可，不必再改這裡。
+// 能登入後台的角色以 constants/roles 的 backoffice 旗標為準。
 const { BACKOFFICE_ROLES } = require('../constants/roles');
 
 let warnedFallback = false;

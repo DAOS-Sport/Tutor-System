@@ -163,6 +163,7 @@ const UNIT = [
   'tests/ragic_timeline_gate_test.js',
   'tests/page_read_permission_test.js',
   'tests/customer_parent_reveal_scope_test.js',
+  'tests/representative_role_rule_test.js',
   'tests/release/canary_config_test.js',
   'tests/release/reconcile_image_pipeline_test.js',
 ];
