@@ -315,7 +315,7 @@ if (tier === 'db') {
     console.error('TEST_DATABASE_URL 與 DATABASE_URL 相同，拒絕執行。');
     process.exit(1);
   }
-  process.exit(report(runFiles(DB, { DATABASE_URL: url }), 'db') ? 0 : 1);
+  process.exit(report(runFiles(DB, { DATABASE_URL: url, E2E_TEST_DATABASE_VERIFIED: url }), 'db') ? 0 : 1);
 }
 
 if (tier === 'e2e') {

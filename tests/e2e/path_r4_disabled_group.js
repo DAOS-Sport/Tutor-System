@@ -9,6 +9,7 @@
  *   修後 → 400 COURSE_TYPE_INACTIVE → 斷言通過。
  */
 const path = require('path');
+require('./_testDb').useTestDatabase();
 const SERVER = path.join(__dirname, '..', '..', 'server');
 const { Client } = require(path.join(SERVER, 'node_modules', 'pg'));
 const { randomUUID } = require('crypto');

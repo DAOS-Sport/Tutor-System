@@ -1,6 +1,6 @@
 'use strict';
-// e2e 只能連 TEST_DATABASE_URL：用兩個假的資料庫埠（「正式庫」與「測試庫」）
-// 記錄連線，證明拒絕時沒有任何連線、通過時子行程拿到的是測試庫。
+// e2e 只能連 TEST_DATABASE_URL：用兩個假的資料庫埠（「正式庫」與「測試庫」）記錄連線，
+// 證明拒絕時沒有任何連線；通過時 run_all 自己起的 server 與每個子行程都拿到測試庫。
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -10,6 +10,7 @@ const { spawn } = require('node:child_process');
 
 const ROOT = path.resolve(__dirname, '..');
 const RUN_ALL = path.join(ROOT, 'tests/e2e/run_all.js');
+const LIB = path.join(ROOT, 'tests/e2e/_lib.js');
 const ACCOUNTS = path.join(ROOT, 'tests/e2e/_accounts.js');
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-db-guard-'));
 
@@ -17,7 +18,8 @@ function fakeDb() {
   const db = { hits: 0 };
   db.server = net.createServer((sock) => { db.hits += 1; sock.destroy(); });
   return new Promise((resolve) => db.server.listen(0, '127.0.0.1', () => {
-    db.url = `postgres://e2e:e2e@127.0.0.1:${db.server.address().port}/e2e`;
+    db.port = db.server.address().port;
+    db.url = `postgres://e2e:e2e@127.0.0.1:${db.port}/e2e_test`;
     resolve(db);
   }));
 }
@@ -35,52 +37,95 @@ function run(args, env) {
   });
 }
 
-// 攔截 run_all.js 的 spawnSync：只記錄要傳給子行程的 DATABASE_URL，不真的跑 e2e。
-const HOOK = path.join(TMP, 'capture-spawn.js');
-const CAPTURE = path.join(TMP, 'child-env.jsonl');
+// 攔截 run_all.js 的子行程：spawn（測試 server）改成在指定埠回 /health 200 的假 server，
+// spawnSync（各路徑）只記錄環境變數，都不真的執行。
+const HOOK = path.join(TMP, 'capture.js');
+const CAPTURE = path.join(TMP, 'capture.jsonl');
 fs.writeFileSync(HOOK, `
 const cp = require('child_process');
+const fs = require('fs');
+const http = require('http');
+const { EventEmitter } = require('events');
+const log = (o) => fs.appendFileSync(${JSON.stringify(CAPTURE)}, JSON.stringify(o) + '\\n');
+cp.spawn = (cmd, args, opts) => {
+  const e = opts.env;
+  log({ kind: 'server', db: e.DATABASE_URL, safe: e.PREVIEW_SAFE_MODE, storage: e.OBJECT_STORAGE_DRIVER,
+        ragic: e.RAGIC_API_KEY || null, nodeEnv: e.NODE_ENV || null, port: e.PORT });
+  const srv = http.createServer((q, r) => { r.writeHead(q.url === '/health' ? 200 : 404); r.end('ok'); }).listen(Number(e.PORT), '127.0.0.1');
+  const child = new EventEmitter();
+  child.exitCode = null;
+  child.kill = () => { log({ kind: 'server-stopped' }); srv.close(); child.exitCode = 0; };
+  return child;
+};
 cp.spawnSync = (cmd, args, opts) => {
-  require('fs').appendFileSync(${JSON.stringify(CAPTURE)}, JSON.stringify({ file: args[0], db: (opts.env || process.env).DATABASE_URL }) + '\\n');
+  log({ kind: 'path', file: args[0], db: opts.env.DATABASE_URL, base: opts.env.BASE_URL });
   return { status: 0 };
 };
 `);
+const captured = () => (fs.existsSync(CAPTURE) ? fs.readFileSync(CAPTURE, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
+const reset = () => fs.rmSync(CAPTURE, { force: true });
 
 (async () => {
   const prod = await fakeDb();
   const test = await fakeDb();
+  const refused = async (label, args, env, pattern) => {
+    reset();
+    const r = await run(args, env);
+    assert.notEqual(r.code, 0, `${label}：必須非 0 結束`);
+    if (pattern) assert.match(r.out, pattern, label);
+    assert.deepEqual(captured(), [], `${label}：不可啟動任何 server 或子行程`);
+  };
   try {
-    // 1. 只設 DATABASE_URL：runner 拒絕、非 0、沒有任何連線、沒有啟動子行程
-    const onlyProd = await run(['--require', HOOK, RUN_ALL], { DATABASE_URL: prod.url });
-    assert.notEqual(onlyProd.code, 0, '只設 DATABASE_URL 時 runner 必須非 0 結束');
-    assert.match(onlyProd.out, /TEST_DATABASE_URL/);
-    assert.equal(fs.existsSync(CAPTURE), false, '拒絕時不可啟動任何子行程');
+    const hooked = ['--require', HOOK, RUN_ALL];
+    await refused('只設 DATABASE_URL', hooked, { DATABASE_URL: prod.url }, /TEST_DATABASE_URL/);
+    await refused('兩者字串相同', hooked, { DATABASE_URL: prod.url, TEST_DATABASE_URL: prod.url }, /同一個資料庫/);
+    // 同一個庫的不同寫法：postgresql://、不同帳密、查詢參數、localhost
+    const sameDbOtherSpelling = `postgresql://someone:else@localhost:${prod.port}/e2e_test?sslmode=disable`;
+    await refused('同一個庫的不同寫法', hooked, { DATABASE_URL: prod.url, TEST_DATABASE_URL: sameDbOtherSpelling }, /同一個資料庫/);
+    await refused('TEST_DATABASE_URL 無法解析', hooked, { DATABASE_URL: prod.url, TEST_DATABASE_URL: 'not a url' }, /無法解析/);
+    await refused('BASE_URL 指向無法確認的 server', hooked,
+      { DATABASE_URL: prod.url, TEST_DATABASE_URL: test.url, BASE_URL: 'http://127.0.0.1:3000' }, /E2E_EXTERNAL_SERVER=1/);
 
-    // 2. 兩者相同：拒絕
-    const same = await run(['--require', HOOK, RUN_ALL], { DATABASE_URL: prod.url, TEST_DATABASE_URL: prod.url });
-    assert.notEqual(same.code, 0, 'TEST_DATABASE_URL 與 DATABASE_URL 相同必須拒絕');
-    assert.match(same.out, /相同/);
-    assert.equal(fs.existsSync(CAPTURE), false);
-
-    // 3. 設了不同的 TEST_DATABASE_URL：每個子行程拿到的 DATABASE_URL 都是測試庫
-    const ok = await run(['--require', HOOK, RUN_ALL], { DATABASE_URL: prod.url, TEST_DATABASE_URL: test.url });
+    // 正常：run_all 自己用測試庫起 server（安全模式），每個子行程拿到測試庫與那台 server
+    reset();
+    const ok = await run(hooked, { DATABASE_URL: prod.url, TEST_DATABASE_URL: test.url, RAGIC_API_KEY: 'should-be-removed', NODE_ENV: 'production' });
     assert.equal(ok.code, 0, ok.out);
-    const children = fs.readFileSync(CAPTURE, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-    assert.ok(children.length >= 30, `應啟動全部 e2e 路徑，實際 ${children.length}`);
-    for (const c of children) assert.equal(c.db, test.url, `${path.basename(c.file)} 拿到的不是測試庫`);
+    const events = captured();
+    const server = events.find((e) => e.kind === 'server');
+    assert.deepEqual({ db: server.db, safe: server.safe, storage: server.storage, ragic: server.ragic, nodeEnv: server.nodeEnv },
+      { db: test.url, safe: '1', storage: 'local', ragic: null, nodeEnv: null }, '測試 server 必須連測試庫且關掉對外副作用');
+    const paths = events.filter((e) => e.kind === 'path');
+    assert.ok(paths.length >= 30, `應啟動全部 e2e 路徑，實際 ${paths.length}`);
+    for (const p of paths) {
+      assert.equal(p.db, test.url, `${path.basename(p.file)} 拿到的不是測試庫`);
+      assert.equal(p.base, `http://127.0.0.1:${server.port}`, `${path.basename(p.file)} 沒有打測試 server`);
+    }
+    assert.equal(events[events.length - 1].kind, 'server-stopped', '跑完要關掉測試 server');
 
-    // 4. 單獨跑用到 _accounts 的路徑：只設 DATABASE_URL 也要在連線前拒絕；設了測試庫就只連測試庫
+    // 明確聲明既有 server 連測試庫時，才允許沿用 BASE_URL（不另起 server）
+    reset();
+    const ext = await run(hooked, { DATABASE_URL: prod.url, TEST_DATABASE_URL: test.url, BASE_URL: 'http://127.0.0.1:3999', E2E_EXTERNAL_SERVER: '1' });
+    assert.equal(ext.code, 0, ext.out);
+    assert.equal(captured().filter((e) => e.kind === 'server').length, 0);
+    assert.ok(captured().every((e) => e.base === 'http://127.0.0.1:3999' && e.db === test.url));
+
+    // 單獨執行路徑檔（載入 _lib）：同樣只連測試庫，且要聲明 server
+    const loadLib = ['-e', `require(${JSON.stringify(LIB)}); console.log('DB=' + process.env.DATABASE_URL)`];
+    assert.notEqual((await run(loadLib, { DATABASE_URL: prod.url })).code, 0, '單獨執行只設 DATABASE_URL 必須拒絕');
+    assert.notEqual((await run(loadLib, { DATABASE_URL: prod.url, TEST_DATABASE_URL: test.url })).code, 0, '單獨執行沒聲明 server 必須拒絕');
+    const single = await run(loadLib, { DATABASE_URL: prod.url, TEST_DATABASE_URL: test.url, E2E_EXTERNAL_SERVER: '1' });
+    assert.equal(single.code, 0, single.out);
+    assert.match(single.out, new RegExp(`DB=${test.url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`), '載入 _lib 後 DATABASE_URL 要換成測試庫');
+
+    // _accounts：拒絕時零連線；設了測試庫只連測試庫
     const callAccounts = ['-e', `require(${JSON.stringify(ACCOUNTS)}).withAdminAccount({ username: 'g', password: 'g', role: 'manager' }, async () => {}).catch(() => process.exit(3))`];
-    const accProd = await run(callAccounts, { DATABASE_URL: prod.url });
-    assert.equal(accProd.code, 1, '_accounts 只設 DATABASE_URL 必須拒絕');
-    const accSame = await run(callAccounts, { DATABASE_URL: prod.url, TEST_DATABASE_URL: prod.url });
-    assert.equal(accSame.code, 1, '_accounts 兩者相同必須拒絕');
-    const accTest = await run(callAccounts, { DATABASE_URL: prod.url, TEST_DATABASE_URL: test.url });
-    assert.equal(accTest.code, 3, '設了測試庫時會去連（假 DB 立刻斷線，所以以錯誤結束）');
+    assert.equal((await run(callAccounts, { DATABASE_URL: prod.url })).code, 1);
+    assert.equal((await run(callAccounts, { DATABASE_URL: prod.url, TEST_DATABASE_URL: prod.url })).code, 1);
+    assert.equal((await run(callAccounts, { DATABASE_URL: prod.url, TEST_DATABASE_URL: test.url })).code, 3);
     assert.ok(test.hits >= 1, '_accounts 應該連到測試庫');
 
     assert.equal(prod.hits, 0, '「正式庫」一次都不可以被連到');
-    console.log('PASS e2e 只連 TEST_DATABASE_URL：缺或相同即拒絕且零連線，子行程 DATABASE_URL＝測試庫');
+    console.log('PASS e2e 只連 TEST_DATABASE_URL：缺／同庫／無法確認 server 即拒絕且零連線；run_all 自己用測試庫起 server');
   } finally {
     prod.server.close();
     test.server.close();
