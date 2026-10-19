@@ -4,7 +4,7 @@
 
 你正在續作 `/home/runner/workspace` 的 DAOS 場館系統發布修復。先完整閱讀：
 
-1. `docs/release_handover_2026-07-12.md`
+1. `docs/release/release_handover_2026-07-12.md`
 2. `README.md`、`docs/`、`.replit`、`server/package.json`
 3. `git status --short` 與 `git diff --check`
 

@@ -268,7 +268,7 @@ agent 全程禁止連資料庫。全程沒有修改任何檔案、沒有異動�
 
 - 誰能做：家長自己（看得到但用不了）
 - 依據：server/routes/courses.js:552-561 `(SELECT COALESCE(jsonb_agg(jsonb_build_object('id', s.id, 'name', s.name) ORDER BY s.name), '[]'::jsonb) FROM course_period_enrollments cpe JOIN students s ON s.id = cpe.student_id WHERE cpe.course_period_id = cper.id AND cpe.status = 'active' AND s.parent_id = $2) AS students_detail`；:619-620 `const ownStudents = Array.isArray(row.students_detail) ? row.students_detail : []; const canAccessPeriod = !!row.course_period_id && ownStudents.length > 0;`
-- 註：文件宣告的對照正確（docs/entitlement_repair_2026-09-22.md:45-46）。要補一點：**/mine 也自己算了一份 canAccessPeriod**（courses.js:245，用 :160-169 那份同樣未過濾的 students_detail），所以「看得到但用不了」在課程列表頁與詳情頁**兩處**都在，不只詳情頁。原清單只提到 /mine 有同樣的子查詢，沒指出 /mine 也據此畫按鈕。
+- 註：文件宣告的對照正確（docs/release/entitlement_repair_2026-09-22.md:45-46）。要補一點：**/mine 也自己算了一份 canAccessPeriod**（courses.js:245，用 :160-169 那份同樣未過濾的 students_detail），所以「看得到但用不了」在課程列表頁與詳情頁**兩處**都在，不只詳情頁。原清單只提到 /mine 有同樣的子查詢，沒指出 /mine 也據此畫按鈕。
 
 **30. 停學學員的學習歷程，家長仍然打得開。守門只看「名下有學員在這一期，狀態是 active 或 transferred_out」，不看學籍。**
 
@@ -303,7 +303,7 @@ agent 全程禁止連資料庫。全程沒有修改任何檔案、沒有異動�
 **35. 同一個例外，文件寫的條件與程式的條件不同：文件說是「單人課期」，程式的條件是「名單裡已經沒有任何在籍學員」——那可以是三人全部停學的共享課期。**
 
 - 誰能做：櫃檯／主管／管理員
-- 依據：docs/entitlement_repair_2026-09-22.md:106 `| **T1** | server/services/courseEntitlements.js | 名單查詢排除 is_active = false 的學員；唯一例外是**單人課期**中被呼叫端明確指名的那一位 | ...` vs server/services/courseEntitlements.js:116-121 `// 例外的條件是「名單裡已經沒有任何未停用的學員」，不是「名單只有一人」。... 用「只有一人」當條件會讓「全員停用的共享課期」被擋掉，那是對共享課期單獨加的硬擋，踩到凍結令第 3 條。`
+- 依據：docs/release/entitlement_repair_2026-09-22.md:106 `| **T1** | server/services/courseEntitlements.js | 名單查詢排除 is_active = false 的學員；唯一例外是**單人課期**中被呼叫端明確指名的那一位 | ...` vs server/services/courseEntitlements.js:116-121 `// 例外的條件是「名單裡已經沒有任何未停用的學員」，不是「名單只有一人」。... 用「只有一人」當條件會讓「全員停用的共享課期」被擋掉，那是對共享課期單獨加的硬擋，踩到凍結令第 3 條。`
 - 註：程式註解本身就明文反駁文件，核實無誤。同一份文件的另一處（:106 同一格「為什麼」欄）也寫「單人課期停用學員的補登」，manualDeductions.js:333-334 的註解同樣寫「單人課期」——所以「單人課期」這個錯誤說法在文件與另一支程式的註解裡共三處，只有 courseEntitlements.js 的實作與註解是對的。交接以程式為準。
 
 **36. 課程轉讓核准時，轉入方的學員是用「姓名字串完全相同」去找的，而且不看學籍——可能把課轉進一位已經休學的同名學員身上。**
@@ -1116,7 +1116,7 @@ agent 全程禁止連資料庫。全程沒有修改任何檔案、沒有異動�
 
 - 誰能做：沒有人（沒有強制登出機制）
 - 依據：server/middlewares/parentAuth.js:14 `const TTL = '12h';`；:43 `SELECT 1 FROM parents WHERE id = $1 AND is_active = TRUE`（無 line_uid 比對）；:50 `req.parent = { id: p.parentId, phone: p.phone, lineUid: p.lineUid || null };`
-- 註：requireLiffUser（parentAuth.js:67）與 optionalParent（:87-89）用同一套判準，也不比對 UID。要立刻切斷只能改走「停用家長」（is_active=FALSE），但停用會讓帳號整個不能用。交付文件也只說舊憑證「自然過期」（docs/parent-identity-release-evidence-2026-07-13.md:58 `Existing old JWTs naturally expire under the frozen JWT contract`）。
+- 註：requireLiffUser（parentAuth.js:67）與 optionalParent（:87-89）用同一套判準，也不比對 UID。要立刻切斷只能改走「停用家長」（is_active=FALSE），但停用會讓帳號整個不能用。交付文件也只說舊憑證「自然過期」（docs/release/parent-identity-release-evidence-2026-07-13.md:58 `Existing old JWTs naturally expire under the frozen JWT contract`）。
 
 **8. 解除綁定之後家長重新綁定，走的是一般的「電話＋學員姓名認領」流程，不是帳號救援：系統靠 Ragic 來源記錄與家長的對應表（source_record_links）認回原本那位家長，確認電話一致且該家長目前沒綁任何 LINE，就直接把新 UID 寫進去，不需要任何人核准。**
 
@@ -1176,7 +1176,7 @@ agent 全程禁止連資料庫。全程沒有修改任何檔案、沒有異動�
 
 - 誰能做：家長自己（口述／轉貼給客服）
 - 依據：client/liff/src/pages/LoginPage.jsx:123 `return `${MAP.ACCOUNT_RECOVERY_REQUIRED} 案件編號：${data.recovery_request_id}；一次性驗證碼：${data.recovery_token}（短效，請只提供給客服）。`;`（client/liff/src/pages/RegisterPage.jsx:101-102 同樣邏輯）
-- 註：驗證碼只以 sha256 存在資料庫（parentAccountRecovery.js:215 `... requestedUid, sha256(token), initiatedBy,`；欄位 recovery_token_hash CHAR(64) NOT NULL，coreSchema.js:1498），系統事後無法還原原文。專案沒有接任何簡訊/推播服務（docs/parent-identity-release-evidence-2026-07-13.md:56 `No OTP provider exists in the project`）。
+- 註：驗證碼只以 sha256 存在資料庫（parentAccountRecovery.js:215 `... requestedUid, sha256(token), initiatedBy,`；欄位 recovery_token_hash CHAR(64) NOT NULL，coreSchema.js:1498），系統事後無法還原原文。專案沒有接任何簡訊/推播服務（docs/release/parent-identity-release-evidence-2026-07-13.md:56 `No OTP provider exists in the project`）。
 
 **18. 完成帳號換綁只有系統管理員（role='admin'）做得到，manager/staff 一律不行；而且五樣東西缺一不可：案件編號、家長那支一次性驗證碼、複核人、原因、證據編號。**
 
@@ -1487,7 +1487,7 @@ agent 全程禁止連資料庫。全程沒有修改任何檔案、沒有異動�
 **17. 復學的做法：後台把 is_active 改回在籍就結束了。不需要重新報名、不需要動課期名單，權益立刻回來。**
 
 - 誰能做：櫃檯／主管／管理員
-- 依據：server/routes/admin/customerStudents.js:194（PATCH 只改 students 一張表，SET 清單不含任何 course_period_enrollments 操作）；docs/entitlement_repair_2026-09-22.md:38-40 `- **學員其實該復學**（帳號解綁重綁那一類，例如慧娟案）→ 由櫃檯在後台把 students.is_active 改回 true。資料就自然一致，不需要碰 course_period_enrollments。`
+- 依據：server/routes/admin/customerStudents.js:194（PATCH 只改 students 一張表，SET 清單不含任何 course_period_enrollments 操作）；docs/release/entitlement_repair_2026-09-22.md:38-40 `- **學員其實該復學**（帳號解綁重綁那一類，例如慧娟案）→ 由櫃檯在後台把 students.is_active 改回 true。資料就自然一致，不需要碰 course_period_enrollments。`
 - 註：對稱性成立（停學從來沒動過 course_period_enrollments）。前置條件是第 8 條的「家長必須綁真實 LINE」。
 
 **18. 兩個狀態欄位的分工：course_period_enrollments.status 管「這個人在這一期的名單裡嗎」，students.is_active 管「這個人還在籍嗎」。要看得到、用得到這一期，兩個條件必須同時成立。**
@@ -1499,8 +1499,8 @@ agent 全程禁止連資料庫。全程沒有修改任何檔案、沒有異動�
 **19. 停學完全不碰課期名單，所以會長期存在「停學學員仍掛在有效名單上」的資料，而且沒有任何自動清理。**
 
 - 誰能做：系統自動（無人清理）
-- 依據：停學路徑只寫 students 一張表：server/routes/admin/customerStudents.js:194、server/routes/admin/customerParents.js:357；docs/entitlement_repair_2026-09-22.md:23-34 `## 1. T1：停學學員仍掛在有效名單上（4 筆 / 3 課期 / 2 名學員）... 四筆**全部**落在「名單含 2 個以上家長」的跨家庭共享課期`
-- 註：機制部分（停學不動名單、沒有介面能改名單、新資料會持續產生）是 implemented，由程式確認。但「4 筆 / 3 課期 / 2 名學員」與「used_sessions 全為 0」這些數字是 doc_only：只在 docs/entitlement_repair_2026-09-22.md:27-30、:48 出現，本次不連資料庫所以**無法重算**。交接時這兩個數字要標成「2026-09-22 當時的盤點值」，不能當現況。
+- 依據：停學路徑只寫 students 一張表：server/routes/admin/customerStudents.js:194、server/routes/admin/customerParents.js:357；docs/release/entitlement_repair_2026-09-22.md:23-34 `## 1. T1：停學學員仍掛在有效名單上（4 筆 / 3 課期 / 2 名學員）... 四筆**全部**落在「名單含 2 個以上家長」的跨家庭共享課期`
+- 註：機制部分（停學不動名單、沒有介面能改名單、新資料會持續產生）是 implemented，由程式確認。但「4 筆 / 3 課期 / 2 名學員」與「used_sessions 全為 0」這些數字是 doc_only：只在 docs/release/entitlement_repair_2026-09-22.md:27-30、:48 出現，本次不連資料庫所以**無法重算**。交接時這兩個數字要標成「2026-09-22 當時的盤點值」，不能當現況。
 
 **20. 停學學員被排除在有效名單外，只有一個例外：當整個課期名單裡已經沒有任何在籍學員、而呼叫端又明確指名了某位停學學員時，那一位仍算在名單內——這是留給櫃檯手動扣課補登出席用的。**
 
@@ -1584,7 +1584,7 @@ agent 全程禁止連資料庫。全程沒有修改任何檔案、沒有異動�
 
 - 誰能做：系統自動（阻擋）
 - 依據：server/services/parentAccountRecovery.js:74-88 `SELECT * FROM students WHERE parent_id=$1 AND is_active=TRUE ORDER BY id FOR UPDATE` → `.rows.filter((row) => normalizeStudentName(row.name) === studentNameNormalized)` → `if (rows.length !== 1) { throw new AccountRecoveryError(rows.length ? 'ACCOUNT_RECOVERY_FAILED' : 'IDENTITY_NOT_FOUND', 'Account recovery requires one exact canonical student match'); }`
-- 註：停學的不直覺連帶後果成立：停學後那位家長的換手機／換 LINE 救援會壞掉，錯誤碼 IDENTITY_NOT_FOUND（看起來像「查無此人」），不會說是停學造成的。docs/entitlement_repair_2026-09-22.md:38 提到的「慧娟案」即這一類。
+- 註：停學的不直覺連帶後果成立：停學後那位家長的換手機／換 LINE 救援會壞掉，錯誤碼 IDENTITY_NOT_FOUND（看起來像「查無此人」），不會說是停學造成的。docs/release/entitlement_repair_2026-09-22.md:38 提到的「慧娟案」即這一類。
 
 **34. 學員稽核紀錄記的是：哪一位學員、什麼時候、是新增還是編輯、誰改的、什麼身分改的、哪些欄位從什麼變成什麼、一行備註。**
 
@@ -1674,7 +1674,7 @@ agent 全程禁止連資料庫。全程沒有修改任何檔案、沒有異動�
 
 - 誰能做：家長自己（看得到但用不了）
 - 依據：server/routes/courses.js:552-561 `(SELECT COALESCE(jsonb_agg(jsonb_build_object('id', s.id, 'name', s.name) ORDER BY s.name), '[]'::jsonb) FROM course_period_enrollments cpe JOIN students s ON s.id = cpe.student_id WHERE cpe.course_period_id = cper.id AND cpe.status = 'active' AND s.parent_id = $2) AS students_detail`；:619-620 `const ownStudents = Array.isArray(row.students_detail) ? row.students_detail : []; const canAccessPeriod = !!row.course_period_id && ownStudents.length > 0;`
-- 註：文件宣告的對照正確（docs/entitlement_repair_2026-09-22.md:45-46）。要補一點：**/mine 也自己算了一份 canAccessPeriod**（courses.js:245，用 :160-169 那份同樣未過濾的 students_detail），所以「看得到但用不了」在課程列表頁與詳情頁**兩處**都在，不只詳情頁。原清單只提到 /mine 有同樣的子查詢，沒指出 /mine 也據此畫按鈕。
+- 註：文件宣告的對照正確（docs/release/entitlement_repair_2026-09-22.md:45-46）。要補一點：**/mine 也自己算了一份 canAccessPeriod**（courses.js:245，用 :160-169 那份同樣未過濾的 students_detail），所以「看得到但用不了」在課程列表頁與詳情頁**兩處**都在，不只詳情頁。原清單只提到 /mine 有同樣的子查詢，沒指出 /mine 也據此畫按鈕。
 
 **4. 停學學員的學習歷程，家長仍然打得開。守門只看「名下有學員在這一期，狀態是 active 或 transferred_out」，不看學籍。**
 
@@ -1709,7 +1709,7 @@ agent 全程禁止連資料庫。全程沒有修改任何檔案、沒有異動�
 **9. 同一個例外，文件寫的條件與程式的條件不同：文件說是「單人課期」，程式的條件是「名單裡已經沒有任何在籍學員」——那可以是三人全部停學的共享課期。**
 
 - 誰能做：櫃檯／主管／管理員
-- 依據：docs/entitlement_repair_2026-09-22.md:106 `| **T1** | server/services/courseEntitlements.js | 名單查詢排除 is_active = false 的學員；唯一例外是**單人課期**中被呼叫端明確指名的那一位 | ...` vs server/services/courseEntitlements.js:116-121 `// 例外的條件是「名單裡已經沒有任何未停用的學員」，不是「名單只有一人」。... 用「只有一人」當條件會讓「全員停用的共享課期」被擋掉，那是對共享課期單獨加的硬擋，踩到凍結令第 3 條。`
+- 依據：docs/release/entitlement_repair_2026-09-22.md:106 `| **T1** | server/services/courseEntitlements.js | 名單查詢排除 is_active = false 的學員；唯一例外是**單人課期**中被呼叫端明確指名的那一位 | ...` vs server/services/courseEntitlements.js:116-121 `// 例外的條件是「名單裡已經沒有任何未停用的學員」，不是「名單只有一人」。... 用「只有一人」當條件會讓「全員停用的共享課期」被擋掉，那是對共享課期單獨加的硬擋，踩到凍結令第 3 條。`
 - 註：程式註解本身就明文反駁文件，核實無誤。同一份文件的另一處（:106 同一格「為什麼」欄）也寫「單人課期停用學員的補登」，manualDeductions.js:333-334 的註解同樣寫「單人課期」——所以「單人課期」這個錯誤說法在文件與另一支程式的註解裡共三處，只有 courseEntitlements.js 的實作與註解是對的。交接以程式為準。
 
 **10. 課程轉讓核准時，轉入方的學員是用「姓名字串完全相同」去找的，而且不看學籍——可能把課轉進一位已經休學的同名學員身上。**
@@ -1760,7 +1760,7 @@ agent 全程禁止連資料庫。全程沒有修改任何檔案、沒有異動�
 **1. 反過來，「這個學員確實不再上課了，要把他從課期名單移除」目前沒有任何後台介面可以做，只能直接改資料庫。**
 
 - 誰能做：沒有人（僅 DB 可改）
-- 依據：文件 docs/entitlement_repair_2026-09-22.md:41-43 `- **學員確實停學不再上課** → 把該學員在這些課期的 course_period_enrollments.status 改成非 active（沿用現有的退出狀態值，不要自創）。`；實作：`grep -rn "UPDATE course_period_enrollments" server/` 全 repo 只命中 server/services/transfers.js:151 `UPDATE course_period_enrollments SET status = 'transferred_out' WHERE course_period_id = $1 AND student_id = $2`（課程轉讓核准）
+- 依據：文件 docs/release/entitlement_repair_2026-09-22.md:41-43 `- **學員確實停學不再上課** → 把該學員在這些課期的 course_period_enrollments.status 改成非 active（沿用現有的退出狀態值，不要自創）。`；實作：`grep -rn "UPDATE course_period_enrollments" server/` 全 repo 只命中 server/services/transfers.js:151 `UPDATE course_period_enrollments SET status = 'transferred_out' WHERE course_period_id = $1 AND student_id = $2`（課程轉讓核准）
 - 註：核實無誤，而且文件那句「沿用現有的退出狀態值」本身沒有可用的值可沿用：enrollment_status 列舉只有 active / transferred_out（coreSchema.js:26），transferred_out 的語意是「課轉給別人了」，用來代表「退出／停課」會讓轉讓報表跟停學混在一起。這是文件開了一條櫃檯做不到、而且連 DB 也沒有正確值可填的路。
 
 **2. 權威同步不會軟刪除也不會硬刪除學員——文件寫的「只硬刪無業務 FK 的殘留」實際上沒有執行。**
@@ -2363,7 +2363,7 @@ agent 全程禁止連資料庫。全程沒有修改任何檔案、沒有異動�
 **1. #38 「家長自助取消課程」—— 距上課 24 小時前取消歸還 1 堂、24 小時內取消扣堂、兩者都釋回時段、並推播通知教練與家長。**
 
 - 誰能做：沒有人（程式裡沒有任何入口）
-- 依據：docs/architecture_v7.md:274-277 表格「正常取消｜距上課時間 > 24 小時｜歸還 1 堂｜槽位釋回 available」「逾時取消｜距上課時間 ≤ 24 小時｜扣堂，不歸還｜槽位釋回 available」；docs/architecture_v7.md:282「點選『取消本堂課』」；docs/dev_schedule.md:201-207；docs/uat_playbook.md:91-93
+- 依據：docs/architecture_v7.md:274-277 表格「正常取消｜距上課時間 > 24 小時｜歸還 1 堂｜槽位釋回 available」「逾時取消｜距上課時間 ≤ 24 小時｜扣堂，不歸還｜槽位釋回 available」；docs/architecture_v7.md:282「點選『取消本堂課』」；docs/dev_schedule.md:201-207；docs/release/uat_playbook.md:91-93
 - 註：我獨立覆核過「沒有落地」這件事：(1) `cancelSession` 定義在 server/services/slots.js:125，grep 全 repo 的呼叫點只有 tests/e2e/path_d_self_cancel.js:39 直接呼叫函式；(2) CLAUDE.md:18 明列它是死碼且不得接進任何 requireCoach 端點；(3) LIFF 端沒有取消課堂的按鈕（grep 只找到 checkout/courses/group-orders 的『取消報名』）；(4) 後台也沒有 —— server/routes/admin/sessions.js 的路由只有 GET ×5 ＋ revive／backfill-checkin／checkin 三支 POST，沒有取消課堂的端點。全 repo 會把課堂轉成取消狀態的只有三處：退費流程（courseEntitlements.js:146）、撤銷簽到／扣課復活（deductionRevival.js:106）、舊 cancelled_penalty→cancelled_normal 分支（admin/sessions.js:521）。
 
 **2. #39 「取消通知教練」的 Flex 訊息模板（含正常取消／逾時取消兩種文案）已經寫好但沒有接線。**

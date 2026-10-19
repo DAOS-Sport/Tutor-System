@@ -1,6 +1,6 @@
 # 課程權益守門 —— 發布與回滾（2026-09-22）
 
-搭配 `docs/entitlement_repair_2026-09-22.md` 一起看。**歷史資料先處理，程式才發布。**
+搭配 `docs/release/entitlement_repair_2026-09-22.md` 一起看。**歷史資料先處理，程式才發布。**
 
 分支 `fix/tutor-audit-20260918`，基底 Draft PR #8 `bfacacd4`。
 正式環境目前跑 `76a5d51`，**PR #8 與本輪修補都還沒上線**。
@@ -34,7 +34,7 @@
 
 ### 文件
 
-`docs/entitlement_repair_2026-09-22.md`（歷史修復計畫）、本文、
+`docs/release/entitlement_repair_2026-09-22.md`（歷史修復計畫）、本文、
 `docs/parent_account_business_logic_2026-09-22.md`（家長帳號業務邏輯盤點）。
 
 **沒有 schema 變更、沒有 migration、沒有 feature flag 變更。**

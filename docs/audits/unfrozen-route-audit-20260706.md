@@ -27,9 +27,9 @@ Scope: `server/index.js`, `server/routes/**`, `client/liff/src/App.jsx`, `client
 ## 文件漂移 / 過時點
 
 - `docs/route-map-audit.md` 仍是 2026-07-02 的 215 backend / 199 frontend API caller；現況是 219 / 203。
-- `docs/route-freeze-inventory.html` 寫 admin/LIFF 頁面 33/31；現況 audit 是 36/34。
-- `docs/route-freeze-inventory.html` 寫 admin 25 子模組；現況 `server/routes/admin.js` 實際 mount 是 24，`_customerShared` 是 helper。
-- `docs/route-freeze-inventory.html` 仍把 R9/R3/R4 當風險列在 route 清冊；現況程式碼已修，`docs/路由.html` 也記錄已修。
+- `docs/specs/route-freeze-inventory.html` 寫 admin/LIFF 頁面 33/31；現況 audit 是 36/34。
+- `docs/specs/route-freeze-inventory.html` 寫 admin 25 子模組；現況 `server/routes/admin.js` 實際 mount 是 24，`_customerShared` 是 helper。
+- `docs/specs/route-freeze-inventory.html` 仍把 R9/R3/R4 當風險列在 route 清冊；現況程式碼已修，`docs/路由.html` 也記錄已修。
 - `docs/路由.html` 寫 LIFF 家長 route 已改 `/parent` 前綴；現況 source 仍是 `/liff` basename 下的 `/`, `/login`, `/my-courses` 等路徑。
 
 ## 前端文件漏列 / 標示不準

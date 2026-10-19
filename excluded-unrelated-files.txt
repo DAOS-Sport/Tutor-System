@@ -12,7 +12,7 @@
 .release-safety/pre-z01-z03-20260713-status.txt
 .release-safety/pre-z01-z03-20260713.patch
 client/admin/src/pages/RagicZ03Page.jsx
-docs/shotscreen/螢幕擷取畫面 2026-07-13 164756.png
+docs/images/shotscreen/螢幕擷取畫面 2026-07-13 164756.png
 
 # The two narrow admin backend compatibility routes are allowlisted because
 # they directly enforce the parent Z03 no-hard-delete boundary. No admin UI,

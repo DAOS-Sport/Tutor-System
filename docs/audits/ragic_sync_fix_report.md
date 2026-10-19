@@ -112,7 +112,7 @@
 
 **文件**
 - `docs/ragic_sync_audit.md`（新增，Phase 1 診斷）
-- `docs/ragic_sync_fix_report.md`（本文件）
+- `docs/audits/ragic_sync_fix_report.md`（本文件）
 
 ## 6. 待決策事項的最終處理
 

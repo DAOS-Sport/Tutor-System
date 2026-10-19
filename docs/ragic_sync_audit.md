@@ -14,7 +14,7 @@ Covered in full: `server/services/ragic.js`, `server/config/ragicSchema.js`,
 `server/routes/admin/venues.js`, `server/routes/auth.js` (Ragic-touching sections),
 `server/scripts/ragic-auth-smoke.js`, all 5 `tests/ragic_*_test.js` files, `tests/perf/ragic_concurrency.js`,
 `server/bootstrap/coreSchema.js` (Ragic tables), and the project's own prior investigation docs
-`docs/ragic-recon-investigation-20260707.md` and `docs/ragic-freshness-canary-20260707.md`.
+`docs/ragic-recon-investigation-20260707.md` and `docs/audits/ragic-freshness-canary-20260707.md`.
 
 **This is not a greenfield system.** On 2026-07-07 (one day before this audit) the team ran its own
 read-only investigation, decided a data-authority matrix, and shipped a real rearchitecture: per-form
@@ -38,7 +38,7 @@ of sleep alone), and **each retry calls `fetchSnapshot()` again** (line 222-228)
 boundary-mismatch recheck GET. Worst case: 1 initial + 5 retries = **up to 6 full paginated H01 fetches**,
 each bound by the 60s axios timeout, plus 31s of backoff sleep, before giving up and returning
 `stale_read: true`. This composes very plausibly to the reported 224,509ms and directly explains the
-`stale_read` symptom. This mechanism was added yesterday (`docs/ragic-freshness-canary-20260707.md`) —
+`stale_read` symptom. This mechanism was added yesterday (`docs/audits/ragic-freshness-canary-20260707.md`) —
 it is very likely the actual regression, not the pre-existing pagination/auth/timeout config.
 **Same mechanism is worse for Z01**: `getAllParentsWithIntegrityAndFreshness` passes `concurrency=3`
 (`ragic.js:448-449`), so each of those up-to-6 full-snapshot re-fetches internally fans out 3 concurrent
