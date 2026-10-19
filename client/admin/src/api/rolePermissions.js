@@ -8,7 +8,9 @@ export const rolePermissionsApi = {
     callApi(`/role-permissions/${role}`, { method: 'put', data: { resource_keys: resourceKeys } },
       () => ({ ok: true })),
   // 目前登入者看得到哪些頁面（選單與路由守衛用）
-  mine: () => callApi('/role-permissions/mine', {}, () => ({ role: 'admin', allowed: [] })),
+  mine: () => callApi('/role-permissions/mine', {}, () => ({ role: 'admin', allowed: [], actions: [] })),
+  // 權限變更紀錄（B 期，唯讀）
+  audit: (params = {}) => callApi('/role-permissions/audit', { params }, () => ({ total: 0, rows: [] })),
   // 第二層：個別人員例外
   users:   ()        => callApi('/role-permissions/users', {}, () => []),
   user:    (id)      => callApi(`/role-permissions/users/${id}`, {},

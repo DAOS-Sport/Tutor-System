@@ -151,6 +151,12 @@ get_architecture(...)  # 整體架構摘要
 受控驗證腳本：`cd server && npm run smoke:ragic-auth`（read-only by default；寫入須 `ENABLE_RAGIC_WRITE_SMOKE=1` + `TEST_PHONE` / `TEST_PARENT_NAME` / `TEST_LINE_UID`）。
 
 ## 變更紀錄
+- 2026-10-19：角色權限管理 A／B／C 期（專案擁有者於規劃書核准三期全做）：
+  - **A 期｜後台憑證即時失效**：`requireAdminAuth` 驗完簽章後，用 `services/adminSession.js` 比對資料庫現況（停用、`admin_users.auth_version`、身分重算、負責場館），不一致回 401（`ACCOUNT_DISABLED` / `SESSION_REVOKED` / `SESSION_STALE`），資料庫讀不到回 503（不登出人）。身分用 `auth.js` 的 `_effectiveLoginUser` 重算，與登入同一個函式。改密碼／被重設密碼時 `auth_version + 1`；改密碼會換發新憑證。快照記憶體快取 30 秒，員工管理任何寫入即清快取；單機 Reserved VM 故不引入 Redis（日後多台再把 `invalidate()` 換成 ioredis pub/sub）。後台 WebSocket 同套比對。舊憑證（沒有 `av`）視為版本 1，上線不會全員登出。
+  - **B 期｜權限變更紀錄**：新表 `permission_audit_log`（`bootstrap/admin.js` 建、只增不改），`setRolePermissions` / `setUserOverrides` / 員工身分（`admin_staff_roles`）在同一交易寫差異；`GET /api/admin/role-permissions/audit` 唯讀；角色權限管理頁新增「變更紀錄」分頁。
+  - **C 期｜動作層級權限**：`constants/adminResources.js` 新增 `ADMIN_ACTIONS`（`頁面:動作`），與頁面存在同一張 `role_permissions`；新 middleware `requireAction`。原本寫死 `requireAdminRole('admin')` 的標籤分類刪除、Z03 刪除與封存、家庭擁有者轉移、Ragic 待審核區、Ragic 時間軸改掛動作閘門，**預設仍只有系統管理員**（行為不變），之後可在畫面上開給角色或個人。`/mine` 多回 `actions`，前端 `canDo()`。凍結區（簽到、扣課、復活、手動建檔）不收動作。
+  - **測試**：新增 `tests/admin_session_revocation_test.js`、`tests/permission_audit_actions_test.js`（unit 層）；`role_gate_coverage_test` 白名單收斂為 rolePermissions 寫入與家長救援兩項。
+  - **注意**：e2e 有幾支（trial_full_chain 等）拿「最早建立的啟用帳號」自簽 `role: 'admin'` 憑證；若該帳號實際不是管理員，A 期會判成身分不符而 401，需改成挑真正的 admin 帳號。
 - 2026-07-16：試上課程補完（PRP 計劃 P1-P5，凍結區改動經使用者批准 PLAN §10 後實作）：
   - **背景**：`order_kind='trial'` 全鏈（建單/對帳 total=1/開通 `is_experience_course` 課期/自助簽到）原本已上線，本輪補「後台設定、前台入口、辨識標記、續報」四塊缺口。
   - **F-A07 試上設定（P1）**：`course_type_configs` 加 `trial_enabled BOOLEAN DEFAULT FALSE` + `trial_price NUMERIC(10,2)`（coreSchema 冪等 DDL）；courseTypes API 兩份白名單（`EDITABLE_FIELDS`/排程 `EDITABLE`）、GET/POST/PATCH、CourseTypesPage 表單+列表「試上」欄全接上，稽核自動涵蓋。試上價來源改「F-A07 config 優先 → admin_settings 舊鍵 fallback → 每期價推算」（`calculateTrialPrice` 加 `configTrialPrice`）；`POST /api/enrollments` 加 `TRIAL_NOT_ENABLED` fail-closed gate；`GET /courses/base-price`、`/courses/types` 回 `trial_enabled`/`trial_price`。

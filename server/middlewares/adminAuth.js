@@ -62,10 +62,28 @@ function requireAdminAuth(req, res, next) {
     payload.venue_ids = cleanVenueList(payload.venue_ids || (payload.venue_id ? [payload.venue_id] : []));
     payload.venue_id = payload.venue_ids[0] || payload.venue_id || null;
     req.adminUser = payload;
-    next();
   } catch (err) {
     return res.status(401).json({ error: 'Invalid or expired token' });
   }
+  // 角色權限 A 期：簽章對了還不夠，要確認這張憑證現在仍然代表這個人。
+  // 停用、改密碼、身分或場館被調整之後，舊憑證立即失效，不用等 7 天自然過期。
+  // 規則細節見 services/adminSession.js。
+  //
+  // 資料庫讀不到時回 503 而不是 401：前端收到 401 會把人登出，
+  // 資料庫抖一下就把整間公司踢出去，比讓人稍後重試糟得多。
+  return checkSession(req.adminUser).then((bad) => {
+    if (bad) return res.status(401).json(bad);
+    return next();
+  }, (err) => {
+    console.error('[adminAuth] 驗證登入狀態失敗：', err.message);
+    return res.status(503).json({ error: '暫時無法確認登入狀態，請稍後再試', code: 'AUTH_CHECK_UNAVAILABLE' });
+  });
+}
+
+function checkSession(payload) {
+  // 延遲載入：adminSession → routes/admin/auth → 本檔，頂端 require 會循環。
+  // eslint-disable-next-line global-require
+  return require('../services/adminSession').checkToken(payload);
 }
 
 /**

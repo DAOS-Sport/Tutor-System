@@ -22,11 +22,11 @@
  */
 const express = require('express');
 const { pool } = require('../../models/db');
-const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
+const { requireAdminAuth } = require('../../middlewares/adminAuth');
 // F-A06：權限改由「角色權限管理」的設定決定。
-// 保留 requireAdminRole('admin') 的地方＝頁面看得到、但這個動作仍限管理員；
-// 頁面層級的權限表達不了「看得到但不能做」，硬塞會讓主管突然拿到刪除權。
-const { requireResource } = require('../../middlewares/requireResource');
+// 頁面裡「看得到但不一定能做」的動作走 requireAction（角色權限 C 期），
+// 預設只有系統管理員，之後可在畫面上開給其他角色或個人。
+const { requireResource, requireAction } = require('../../middlewares/requireResource');
 const evals = require('../../services/evaluations');
 
 const router = express.Router();
@@ -65,7 +65,7 @@ router.post('/tag-categories', requireResource('tags'), wrap(async (req, res) =>
   }
 }));
 
-router.delete('/tag-categories/:id', requireResource('tags'), requireAdminRole('admin'), wrap(async (req, res) => {
+router.delete('/tag-categories/:id', requireResource('tags'), requireAction('tags:delete-category'), wrap(async (req, res) => {
   await pool.query(`DELETE FROM tag_categories WHERE id = $1`, [req.params.id]);
   res.json({ ok: true });
 }));

@@ -54,6 +54,8 @@ export default function AppLayout() {
           setUser({
             ...user,
             username: result.username || user.username,
+            // 改密碼會讓舊憑證失效（角色權限 A 期），伺服器換發新的一張。
+            token: result.token || user.token,
             must_change_credentials: false,
           });
         }}

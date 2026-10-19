@@ -67,4 +67,44 @@ function isResourceKey(key) {
   return RESOURCE_KEYS.includes(String(key || ''));
 }
 
-module.exports = { ADMIN_RESOURCES, RESOURCE_KEYS, RESOURCE_GROUPS, isResourceKey };
+/**
+ * 動作層級權限（角色權限 C 期）。
+ *
+ * 頁面權限只表達得了「看不看得到這一頁」。有些動作是「這頁大家都能用，
+ * 但這件事只有少數人能做」—— 原本只能在路由上寫死 requireAdminRole('admin')，
+ * 畫面上完全調不動。這裡把那些動作列出來，跟頁面存在同一張 role_permissions。
+ *
+ * 規則：
+ *   - key 寫成「頁面:動作」，冒號前必須是 ADMIN_RESOURCES 裡的頁面
+ *   - 沒有 defaultRoles：一律只有系統管理員（admin 永遠全開、不入表）。
+ *     所以上線當天的行為＝上線前的行為，之後才由管理員在畫面上開給別人。
+ *   - 動作閘門疊在頁面閘門之後（路由上兩個都掛），開了動作但沒開頁面仍然進不去，
+ *     唯一例外是本來就不是頁面的 Ragic 待審核區，見 ragic-status:staging-review。
+ *
+ * 不收凍結區的動作：簽到、手動扣課、扣課復活、手動建檔這幾頁的寫入動作
+ * 受 CLAUDE.md 凍結令保護，要細分得先經專案擁有者同意。
+ */
+const ADMIN_ACTIONS = Object.freeze([
+  { key: 'tags:delete-category',            resource: 'tags',             label: '刪除標籤分類（會連帶影響既有標籤）' },
+  { key: 'ragic-z03:review-archive',        resource: 'ragic-z03',        label: '核對並封存舊系統資料（含預覽）' },
+  { key: 'ragic-z03:delete',                resource: 'ragic-z03',        label: '刪除 Z03 紀錄（不影響 Ragic 原始資料）' },
+  { key: 'customer-parents:transfer-owner', resource: 'customer-parents', label: '轉移家庭擁有者' },
+  { key: 'ragic-status:staging-review',     resource: 'ragic-status',     label: 'Ragic 待審核區（核准／退回外部資料）' },
+  { key: 'ragic-status:timeline',           resource: 'ragic-status',     label: '查看 Ragic 同步時間軸' },
+].map(Object.freeze));
+
+const ACTION_KEYS = Object.freeze(ADMIN_ACTIONS.map((a) => a.key));
+
+function isActionKey(key) {
+  return ACTION_KEYS.includes(String(key || ''));
+}
+
+/** 頁面或動作：可以存進 role_permissions / user_permission_overrides 的代號。 */
+function isPermissionKey(key) {
+  return isResourceKey(key) || isActionKey(key);
+}
+
+module.exports = {
+  ADMIN_RESOURCES, RESOURCE_KEYS, RESOURCE_GROUPS, isResourceKey,
+  ADMIN_ACTIONS, ACTION_KEYS, isActionKey, isPermissionKey,
+};

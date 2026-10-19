@@ -31,6 +31,16 @@ const {
 
 const router = express.Router();
 
+// 角色權限 A 期：這裡的任何寫入（改身分、改場館、停用、重設密碼、同步、刪除）
+// 都可能讓某些人手上的登入憑證不再正確。寫入完成就清掉登入狀態快取，
+// 讓 requireAdminAuth 下一次請求立刻重新比對，而不是等 30 秒快取過期。
+const adminSession = require('../../services/adminSession');
+const permissionAudit = require('../../services/permissionAudit');
+router.use((req, res, next) => {
+  if (req.method !== 'GET') res.on('finish', () => adminSession.invalidate());
+  next();
+});
+
 // 可指派的身份清單。原本寫死四個、漏了救生員，於是「篩選選得到、編輯存不了」——
 // normalizeRoleFilter 早就認得 lifeguard，這裡卻會回 400「角色不合法」。
 const { ASSIGNABLE_ROLES: VALID_ROLES, BACKOFFICE_ROLES, highestRole } = require('../../constants/roles');
@@ -1147,6 +1157,19 @@ router.patch('/:id', requireAdminAuth, requireResource('staff'), async (req, res
     // 多選身分：整組取代。前端送來的就是畫面上的完整勾選狀態，
     // 逐項 diff 只會多一種不同步的可能。
     if (manualRoles) {
+      // 角色權限 B 期：身分變更也是權限變更 —— 加一個救生員身分，
+      // 等於發出救生員那一整欄的頁面。留下差異紀錄。
+      const prevRoles = await client.query(
+        'SELECT role FROM admin_staff_roles WHERE staff_id = $1', [id]);
+      await permissionAudit.record(client, {
+        actor: req.adminUser,
+        targetType: 'staff_roles',
+        targetId: id,
+        targetLabel: cur.rows[0] && cur.rows[0].name,
+        changes: permissionAudit.diff(
+          permissionAudit.setToMap(prevRoles.rows.map((x) => x.role)),
+          permissionAudit.setToMap(manualRoles)),
+      });
       await client.query('DELETE FROM admin_staff_roles WHERE staff_id = $1', [id]);
       for (const r of manualRoles) {
         await client.query(
@@ -1280,6 +1303,8 @@ router.post('/:id/reset-password', requireAdminAuth, requireResource('staff'), a
           SET username = $2,
               password_hash = $3,
               credentials_changed_at = NULL,
+              -- 角色權限 A 期：被重設密碼的人，所有裝置上的舊憑證立即失效。
+              auth_version = COALESCE(auth_version, 1) + 1,
               updated_at = NOW()
         WHERE id = $1`,
       [adminUser.id, loginUsername, newHash]

@@ -3,9 +3,9 @@ import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { usePermissions } from '../context/PermissionContext';
 
-export default function RequireAuth({ children, roles }) {
+export default function RequireAuth({ children, roles, action }) {
   const { isAuthed, role } = useAuth();
-  const { allowed, can } = usePermissions();
+  const { allowed, can, canDo } = usePermissions();
   const loc = useLocation();
   if (!isAuthed) {
     return <Navigate to="/login" replace state={{ from: loc.pathname }} />;
@@ -16,9 +16,10 @@ export default function RequireAuth({ children, roles }) {
   // 這裡擋不住的東西後端仍會擋（第 4 期會把 83 處 requireAdminRole 也接上同一份設定）。
   // 在那之前，這一層只是選單以外的第二道提示，不是真正的把關。
   const key = loc.pathname.replace(/^\//, '').split('/')[0];
+  // action：不在側邊選單上、靠單一動作權限進入的頁面（例如 Ragic 待審核區，C 期）。
   const denied = allowed === null
     ? (roles && roles.length > 0 && !roles.includes(role))
-    : !can(key);
+    : (action ? !canDo(action) : !can(key));
   if (denied) {
     return (
       <div className="p-8 text-center">

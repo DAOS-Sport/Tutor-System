@@ -17,6 +17,8 @@ const {
   ADMIN_USER_VENUE_IDS_SELECT,
 } = require('../../services/coachVenueScope');
 
+const adminSession = require('../../services/adminSession');
+
 const router = express.Router();
 
 // Task #68：per-IP 登入速率限制（5 次 / 5 分鐘 → 429），與 LIFF 家長 / 教練同策略,
@@ -138,16 +140,6 @@ function _loginPayload(u, password, token) {
 async function _issueLogin(u, password) {
   const loginUser = _effectiveLoginUser(u);
   if (!loginUser) return null;
-  const venueIds = cleanVenueList(loginUser.venue_ids);
-  const primaryVenue = venueIds[0] || loginUser.venue_id || null;
-  const token = signToken({
-    sub: loginUser.id,
-    username: loginUser.username,
-    name: loginUser.name,
-    role: loginUser.role,
-    venue_id: primaryVenue,       // Task #90：相容欄位（= venue_ids[0]）
-    venue_ids: venueIds,          // Task #90：多場館
-  });
   if (loginUser.role !== u.role) {
     await pool.query(
       `UPDATE admin_users SET role = $2, updated_at = NOW() WHERE id = $1`,
@@ -156,7 +148,24 @@ async function _issueLogin(u, password) {
   } else {
     await pool.query(`UPDATE admin_users SET updated_at = NOW() WHERE id = $1`, [loginUser.id]);
   }
-  return _loginPayload(loginUser, password, token);
+  // 角色權限 A 期：簽憑證前，用 requireAdminAuth 之後每次請求比對的同一份快照
+  // 決定場館與版本。登入查詢與快照查詢只要有一點不同（例如櫃檯預設登入剛把
+  // admin_users.venue_id 改掉），新憑證在下一次請求就會被判成「場館已調整」，
+  // 變成登入後立刻被登出的迴圈。用同一份來源就不可能對不上。
+  adminSession.invalidate(loginUser.id);
+  const snap = await adminSession.snapshot(loginUser.id);
+  const venueIds = snap ? snap.venueIds : cleanVenueList(loginUser.venue_ids);
+  const primaryVenue = venueIds[0] || loginUser.venue_id || null;
+  const token = signToken({
+    sub: loginUser.id,
+    username: loginUser.username,
+    name: loginUser.name,
+    role: loginUser.role,
+    venue_id: primaryVenue,       // Task #90：相容欄位（= venue_ids[0]）
+    venue_ids: venueIds,          // Task #90：多場館
+    av: snap ? snap.authVersion : (Number(loginUser.auth_version) || 1),
+  });
+  return _loginPayload({ ...loginUser, venue_ids: venueIds }, password, token);
 }
 
 async function _counterStaffDefaultLogin(username, password) {
@@ -239,7 +248,7 @@ async function _counterStaffDefaultLogin(username, password) {
        staff_id = EXCLUDED.staff_id,
        credentials_changed_at = NULL,
        updated_at = NOW()
-     RETURNING id, username, password_hash, name, role, venue_id, is_active,
+     RETURNING id, username, password_hash, name, role, venue_id, is_active, auth_version,
                staff_id, $8::text AS staff_phone, NULL::timestamptz AS credentials_changed_at,
                $9::text[] AS venue_ids, $10::text AS staff_role,
                $11::boolean AS is_counter, $12::boolean AS is_coach, $13::boolean AS is_lifeguard,
@@ -273,6 +282,7 @@ router.post('/login', async (req, res) => {
     }
     const r = await pool.query(
       `SELECT u.id, u.username, u.password_hash, u.name, u.role, u.venue_id, u.is_active,
+              COALESCE(u.auth_version, 1) AS auth_version,
               u.staff_id, s.phone AS staff_phone, s.role AS staff_role,
               s.is_counter, s.is_coach, s.is_lifeguard, u.credentials_changed_at,
               -- 手動指派的身分。沒有這個，F-A02 的多選身分對登入完全無效。
@@ -352,16 +362,31 @@ router.post('/change-password', requireAdminAuth, async (req, res) => {
       if (dup.rowCount) return res.status(409).json({ error: '此帳號已被使用' });
     }
     const newHash = await bcrypt.hash(String(newPassword), 10);
-    await pool.query(
+    // auth_version +1：其他裝置上的舊憑證立即失效（例如密碼外流後改密碼）。
+    // 目前這台裝置換發一張新憑證，不用重新登入。
+    const upd = await pool.query(
       `UPDATE admin_users
           SET username = COALESCE(NULLIF($2, ''), username),
               password_hash = $3,
               credentials_changed_at = NOW(),
+              auth_version = COALESCE(auth_version, 1) + 1,
               updated_at = NOW()
-        WHERE id = $1`,
+        WHERE id = $1
+        RETURNING username, auth_version`,
       [u.id, newUsername, newHash]
     );
-    res.json({ ok: true, username: newUsername || u.username, must_change_credentials: false });
+    adminSession.invalidate(u.id);
+    const cur = req.adminUser;
+    const token = signToken({
+      sub: cur.sub,
+      username: upd.rows[0].username,
+      name: cur.name,
+      role: cur.role,
+      venue_id: cur.venue_id,
+      venue_ids: cur.venue_ids,
+      av: upd.rows[0].auth_version,
+    });
+    res.json({ ok: true, username: upd.rows[0].username, must_change_credentials: false, token });
   } catch (err) {
     console.error('[admin/auth/change-password]', err);
     res.status(500).json({ error: '修改密碼失敗' });

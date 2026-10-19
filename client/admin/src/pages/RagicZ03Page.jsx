@@ -4,6 +4,7 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import ConfirmDialog from '../components/ConfirmDialog';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
+import { usePermissions } from '../context/PermissionContext';
 import { ragicZ03Api } from '../api/ragicZ03';
 import { formatTWDateTime } from '../utils/format';
 
@@ -416,7 +417,11 @@ function LoadError({ onRetry }) {
 
 export default function RagicZ03Page() {
   const toast = useToast();
-  const { logout, isAdmin } = useAuth();
+  const { logout } = useAuth();
+  // 角色權限 C 期：核對封存與刪除改讀動作權限（預設仍只有系統管理員）。
+  const { canDo } = usePermissions();
+  const canReviewArchive = canDo('ragic-z03:review-archive');
+  const canDeleteZ03 = canDo('ragic-z03:delete');
   const [items, setItems] = useState(null);
   const [loadError, setLoadError] = useState(false);
   const [status, setStatus] = useState('pending');
@@ -645,7 +650,7 @@ export default function RagicZ03Page() {
       </div>
 
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-gray-500">
-        {isAdmin && <button type="button" disabled={reviewBusy} onClick={previewArchive} className="rounded border px-3 py-2 text-brand-primary disabled:opacity-50">
+        {canReviewArchive && <button type="button" disabled={reviewBusy} onClick={previewArchive} className="rounded border px-3 py-2 text-brand-primary disabled:opacity-50">
           歸檔尚未登入資料
         </button>}
         <span>{hasMore ? `已載入 ${rows.length} 筆（還有更多）` : `共 ${rows.length} 筆`}</span>
@@ -682,7 +687,7 @@ export default function RagicZ03Page() {
                 onDismiss={dismiss}
                 onSaveDraft={saveDraft}
                 onDeleteRequest={setPendingDelete}
-                canDelete={isAdmin}
+                canDelete={canDeleteZ03}
               />
             ))}
           </div>
