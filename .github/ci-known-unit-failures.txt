@@ -1,0 +1,11 @@
+# CI 允許的既有 unit 失敗（#34）。這裡以外的失敗一律擋下。
+# 修好其中一支後，CI 會提示可以把它從這裡移除。
+
+# 凍結範圍守門測試：測試過時，正式程式不用改，但修測試要 Owner 同意（見 #22）
+tests/course_expiry_test.js
+tests/manual_deduction_backdate_test.js
+tests/sessions_requirements_2026_09_test.js
+tests/shared_class_checkin_contract_test.js
+
+# 既有失敗，待查
+tests/timezone_independence_test.js
