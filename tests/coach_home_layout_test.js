@@ -121,6 +121,7 @@ function build(expiring = EXPIRING, sessions = []) {
     '../context/AuthContext': { useAuth: () => ({ coach: { id: 'c1', name: '測試教練' } }) },
     '../context/ToastContext': { useToast: () => ({ error() {}, warning() {}, success() {} }) },
     '../utils/promotionLabel': { promotionValueLabel: () => '' },
+    '../utils/coachGuideDemo': { useCoachGuideDemo: () => null, coachGuideContext: () => ({}) },
   });
   return { owner, navigation };
 }
