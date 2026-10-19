@@ -59,3 +59,5 @@ function get(server, headers) {
     server.close();
   }
 })().catch((e) => { console.error(e); process.exit(1); });
+
+throw new Error('CI 紅燈驗證：故意失敗，下一個 commit 會撤掉');
