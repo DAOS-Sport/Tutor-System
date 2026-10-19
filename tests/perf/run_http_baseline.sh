@@ -13,11 +13,17 @@ if [[ -z "$JWT" ]]; then
   exit 1
 fi
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FAILED=0
+
 run() {
   local name="$1"; local path="$2"
   echo "── $name ── $path"
-  npx --yes autocannon -d "$DUR" -c "$CONN" \
-    -H "authorization: Bearer $JWT" "$BASE$path" || true
+  if ! npx --yes autocannon@8.0.0 --json -d "$DUR" -c "$CONN" \
+      -H "authorization: Bearer $JWT" "$BASE$path" \
+      | node "$HERE/assert_autocannon.js" "$name"; then
+    FAILED=1
+  fi
   echo
 }
 
@@ -25,3 +31,5 @@ run "courses list"          "/api/admin/courseIntros"
 run "enrollments list"      "/api/admin/enrollments"
 run "reports/revenue"       "/api/admin/reports/revenue"
 run "reports/sessions"      "/api/admin/reports/sessions"
+
+exit "$FAILED"
