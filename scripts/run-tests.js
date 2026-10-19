@@ -185,6 +185,7 @@ const UNIT = [
   'tests/compress_json_test.js',
   'tests/favicon_size_test.js',
   'tests/coach_card_group_total_test.js',
+  'tests/with_transaction_test.js',
   'tests/release/canary_config_test.js',
   'tests/release/reconcile_image_pipeline_test.js',
   // #12 假成功／路由不明稽核：未知 /api JSON 404、SPA fallback、路由重複／遮蔽、catch 回成功。
