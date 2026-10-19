@@ -51,6 +51,13 @@ const DRAFT_MAX_STUDENTS = 20;
 // 團報人數＝組別（使用者 2026-10-14：一對三＝3 人、一對六＝6 人，不要 min／max）。
 // 發起時仍把 min／max_students 落地（欄位 NOT NULL、舊畫面與報表會讀），兩者都存組別人數；
 // 判斷一律走 services/groupOrderSubmit.requiredGroupSize，舊團存的 2–3 不再放寬。
+// 優惠規則錯誤（services/promotions.recordUsage 丟出的 code 一律以 COUPON_ 開頭）：
+// 名額已滿、券失效等「業務上不給折扣」的情況。只有這類錯誤可以降級為原價繼續；
+// 其他錯誤代表系統壞了，不能偽裝成「沒折扣但成功」。
+function isPromotionRuleError(err) {
+  return String(err?.code || '').startsWith('COUPON_');
+}
+
 function fixedGroupBounds(courseType) {
   const size = requiredGroupSize({ course_type: courseType });
   return { min_students: size, max_students: size };
@@ -594,7 +601,8 @@ router.post('/', async (req, res) => {
 
     let bound;
     try {
-      bound = await resolveBoundStudents(client, req.parent.id, studentIds, newStudents, await familyScope.actingParentIds(req));
+      // 交易內一律走同一個 client，不另向 pool 借連線（GitHub #10：並發 ≥ 連線池上限會互等卡死）。
+      bound = await resolveBoundStudents(client, req.parent.id, studentIds, newStudents, await familyScope.actingParentIds(req, client));
     } catch (e) {
       await client.query('ROLLBACK');
       return res.status(e.code === 'STUDENT_NOT_OWNED' ? 403 : 400).json({ error: e.message, code: e.code });
@@ -605,7 +613,8 @@ router.post('/', async (req, res) => {
     }
     if (bound.names.length > max_students) {
       await client.query('ROLLBACK');
-      return res.status(400).json({ error: `學生人數已超過上限（最多 ${max_students} 人）` });
+      // 帶 code 與加入端（OVER_CAPACITY）一致，前端與測試不必比對中文字串（D18／GitHub #13）。
+      return res.status(400).json({ error: `學生人數已超過上限（最多 ${max_students} 人）`, code: 'OVER_CAPACITY' });
     }
     createdForRagic = bound.createdForRagic;
 
@@ -631,6 +640,7 @@ router.post('/', async (req, res) => {
         parentId: req.parent.id,
         coachMultiplier,
         isGroupOrder: true,
+        db: client,
       });
       if (preview.promotion && preview.discountAmount > 0) {
         promoId = preview.promotion.id;
@@ -698,6 +708,10 @@ router.post('/', async (req, res) => {
         await client.query('RELEASE SAVEPOINT promo_create');
       } catch (e) {
         await client.query('ROLLBACK TO SAVEPOINT promo_create');
+        // 只有「優惠規則不允許」（名額滿、券失效等，code 一律 COUPON_*）才降級為原價。
+        // 其他錯誤（DB 斷線、語法錯）以前也被吞成「本團不帶折扣」→ 家長看到建立成功，
+        // 優惠卻無聲消失。改成照實往外丟、整筆回 500 讓家長重試（#12 假成功稽核）。
+        if (!isPromotionRuleError(e)) throw e;
         console.warn('[group-orders create] 優惠名額已滿，本團不帶折扣:', e.code || e.message);
         await client.query(
           `UPDATE group_order_members SET discount_amount = 0, final_amount = original_amount WHERE id = $1`,
@@ -847,7 +861,7 @@ router.post('/by-token/:token/join', async (req, res) => {
     }
 
     // 決策 6：同一個家庭在同一團只算一戶 —— 家人已經在團裡，就不能再用另一個帳號加入（不會拿到第二份優惠）
-    const joinFamilyIds = (await familyScope.actingParentIds(req)).map(String);
+    const joinFamilyIds = (await familyScope.actingParentIds(req, client)).map(String); // 交易內不另借連線（GitHub #10）
     const dup = await client.query(
       `SELECT parent_id FROM group_order_members WHERE group_order_id = $1 AND parent_id::text = ANY($2::text[])`,
       [order.id, joinFamilyIds]
@@ -940,6 +954,8 @@ router.post('/by-token/:token/join', async (req, res) => {
         await client.query('RELEASE SAVEPOINT promo_join');
       } catch (e) {
         await client.query('ROLLBACK TO SAVEPOINT promo_join');
+        // 同發起團購：只有 COUPON_* 規則錯誤才降級原價，其他錯誤照實回 500（#12）。
+        if (!isPromotionRuleError(e)) throw e;
         console.warn('[group-orders join] 優惠名額不足，此家庭照原價加入:', e.code || e.message);
         await client.query(
           `UPDATE group_order_members
@@ -1032,7 +1048,7 @@ router.post('/:id/my-proof', async (req, res) => {
       return res.status(409).json({ error: '此團購狀態無法上傳付款資料', code: 'NOT_UPLOADABLE' });
     }
     // 家人可以幫忙付款（規格 §2）：自己在團內就付自己那一戶，否則付家人那一戶
-    const familyIds = await familyScope.actingParentIds(req);
+    const familyIds = await familyScope.actingParentIds(req, client); // 交易內不另借連線（GitHub #10）
     const m = await client.query(
       `SELECT id, payment_confirmed, transfer_last_5, carrier, tax_id, payment_proof_url
          FROM group_order_members
@@ -1240,13 +1256,16 @@ router.post('/:id/submit', async (req, res) => {
 
 // ── POST /:id/cancel 團主取消 ───────────────────────────────
 router.post('/:id/cancel', async (req, res) => {
+  const client = await pool.connect();
+  let committed = false;
   try {
-    const o = await pool.query(`SELECT leader_parent_id FROM group_orders WHERE id = $1`, [req.params.id]);
+    const o = await client.query(`SELECT leader_parent_id FROM group_orders WHERE id = $1`, [req.params.id]);
     if (!o.rowCount) return res.status(404).json({ error: '找不到此團購' });
     if (o.rows[0].leader_parent_id !== req.parent.id) return res.status(403).json({ error: '只有團主可以取消' });
+    await client.query('BEGIN');
     // 原子轉換：只在 forming/submitted 時可取消，避免覆蓋已核准/已退回的終態。
     // 以 CTE 讓「狀態變更 + 操作紀錄」同一語句落地，不會取消成功卻漏記稽核。
-    const r = await pool.query(
+    const r = await client.query(
       `WITH upd AS (
          UPDATE group_orders SET status='cancelled', updated_at=NOW()
           WHERE id=$1 AND status IN ('forming','submitted') RETURNING id
@@ -1256,19 +1275,29 @@ router.post('/:id/cancel', async (req, res) => {
        RETURNING group_order_id`,
       [req.params.id, parentActor(req)]
     );
-    if (!r.rowCount) return res.status(409).json({ error: '此團購狀態無法取消' });
+    if (!r.rowCount) {
+      await client.query('ROLLBACK');
+      committed = true;
+      return res.status(409).json({ error: '此團購狀態無法取消' });
+    }
     // U14：團購取消 → 回沖整團已扣的優惠名額（冪等：沒有 usage 就刪 0 筆不報錯）。
-    // best-effort：名額回沖失敗不該讓「已經成功取消」的結果變成 500。
-    await promotions.revertUsage({ groupOrderId: req.params.id })
-      .catch((e) => console.warn('[group-orders cancel revertUsage]', e.message));
+    // 與取消同一交易（#12 假成功稽核）：以前是 COMMIT 後 best-effort、失敗只記 log，
+    // 畫面顯示「團購已取消」但優惠名額永遠被佔著，沒有人會發現。其他取消／退費路徑
+    // （checkout.js、courses.js、admin/checkouts.js、admin/enrollments.js）早就同交易回沖，這裡補齊。
+    await promotions.revertUsage({ groupOrderId: req.params.id }, client);
+    await client.query('COMMIT');
+    committed = true;
     res.json({ ok: true });
   } catch (err) {
+    if (!committed) await client.query('ROLLBACK').catch(() => {});
     console.error('[group-orders cancel]', err);
     res.status(500).json({ error: '取消失敗' });
+  } finally {
+    client.release();
   }
 });
 
 // 純函式只供不連 DB 的 regression test 使用；路由對外行為不受影響。
-router.__test__ = { parseProofInput, isSamePaymentPayload, resolveBoundStudents };
+router.__test__ = { parseProofInput, isSamePaymentPayload, resolveBoundStudents, isPromotionRuleError };
 
 module.exports = router;

@@ -1,5 +1,7 @@
 'use strict';
 
+const { formatPlainDate } = require('../utils/dateTime');
+
 // Callers must use the same transaction as the student mutation. Never catch an
 // audit failure and commit the mutation: both records are one business write.
 const STUDENT_AUDIT_FIELDS = Object.freeze([
@@ -11,8 +13,9 @@ function valueForAudit(value, field) {
   if (value == null || value === '') return null;
   if (field === 'birth_date') {
     if (value instanceof Date) {
-      // pg parses DATE in the process timezone; preserve the calendar date.
-      return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
+      // pg 的 DATE 由 models/db.js 以台北午夜解讀；用台北日曆投影取回原日期，
+      // 不用 getFullYear() 等本地 getter（那會跟著 Node 行程 TZ 走，Issue #11）。
+      return formatPlainDate(value);
     }
     return String(value).slice(0, 10);
   }

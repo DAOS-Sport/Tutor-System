@@ -148,12 +148,22 @@ async function findParentEmail(db, rawPhone) {
  * 在對帳交易內排入一封信。永不 throw、永不讓交易 abort。
  * @returns {Promise<number|null>} outbox id（新排入才有；已存在或被跳過回 null）
  */
-async function enqueueReconcileMail(client, { refId, orders, invoice, venueId, venueName, parentPhone, parentName }) {
+async function enqueueReconcileMail(client, args) {
+  return (await enqueueReconcileMailDetailed(client, args)).id;
+}
+
+/**
+ * 同上，但把「為什麼沒排入」講清楚（#12 假成功稽核，Codex review）：
+ * 以前 null 同時代表「家長沒 Email」「已排過」「DB 出錯」，櫃台畫面會把
+ * outbox 故障講成「家長沒有 Email」，讓人去改錯的資料。
+ * @returns {Promise<{id: number|null, outcome: 'queued'|'duplicate'|'no_email'|'error'}>}
+ */
+async function enqueueReconcileMailDetailed(client, { refId, orders, invoice, venueId, venueName, parentPhone, parentName }) {
   try {
     await client.query('SAVEPOINT mail_enqueue');
   } catch (e) {
     console.warn('[reconcileNotify] SAVEPOINT 失敗，略過排信：' + e.message);
-    return null;
+    return { id: null, outcome: 'error' };
   }
   try {
     const list = (orders || []).filter(Boolean).map(slimOrder);
@@ -193,13 +203,15 @@ async function enqueueReconcileMail(client, { refId, orders, invoice, venueId, v
       [KIND, String(refId), email || '', built.subject, JSON.stringify(payload), status, reason]
     );
     await client.query('RELEASE SAVEPOINT mail_enqueue');
-    return status === 'pending' ? (r.rows[0]?.id || null) : null;
+    if (!r.rows[0]) return { id: null, outcome: 'duplicate' };
+    if (status !== 'pending') return { id: null, outcome: 'no_email' };
+    return { id: r.rows[0].id, outcome: 'queued' };
   } catch (e) {
     // 只回滾到 SAVEPOINT：對帳本身完全不受影響。
     try { await client.query('ROLLBACK TO SAVEPOINT mail_enqueue'); } catch (_) { /* 交易已死，外層會處理 */ }
     try { await client.query('RELEASE SAVEPOINT mail_enqueue'); } catch (_) { /* 同上 */ }
     console.warn('[reconcileNotify] 排信失敗（對帳不受影響）：' + e.message);
-    return null;
+    return { id: null, outcome: 'error' };
   }
 }
 
@@ -280,6 +292,7 @@ async function sweepPendingMail({ limit = 20, olderThanMinutes = 5 } = {}) {
 module.exports = {
   KIND,
   enqueueReconcileMail,
+  enqueueReconcileMailDetailed,
   deliverOutbox,
   sweepPendingMail,
   buildAttachments,

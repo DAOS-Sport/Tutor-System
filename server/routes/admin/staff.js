@@ -621,6 +621,10 @@ router.get('/', requireAdminAuth, requireResource('staff'), async (req, res) => 
 // 卡在 freshness-canary 重試 + 全表拉取的耗時上（docs/ragic_sync_audit.md §1）。
 // _singleflight（services/ragicAdmin.js）仍會把重複觸發合併成同一個背景 Promise。
 router.post('/sync', requireAdminAuth, requireResource('staff'), async (req, res) => {
+  // accepted_at：前端輪詢時用來分辨「這一次」的結果與「上一次」的舊紀錄。
+  // in_progress 是單一行程記憶體旗標，輪詢打到另一台實例（Autoscale）時一律是 false，
+  // 沒有這個時間戳記，前端會把上一輪的成功當成這一輪「已同步 N 筆」（#12 假成功稽核）。
+  const acceptedAt = new Date().toISOString();
   const alreadyRunning = isJobRunning('staff');
   setImmediate(async () => {
     try {
@@ -632,6 +636,7 @@ router.post('/sync', requireAdminAuth, requireResource('staff'), async (req, res
   res.status(202).json({
     ok: true,
     accepted: true,
+    accepted_at: acceptedAt,
     already_running: alreadyRunning,
     message: alreadyRunning
       ? '已有一次 H01 員工同步正在背景執行中，本次觸發會併入該次結果，請至「Ragic 連線狀態」查看。'

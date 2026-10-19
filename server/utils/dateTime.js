@@ -69,6 +69,37 @@ function formatTaipeiTime(value) {
   return p ? `${p.hour}:${p.minute}` : '';
 }
 
+// 台北「年-月」（YYYY-MM）。不可用 new Date().toISOString().slice(0, 7) ——
+// 那是 UTC 的月份，每月 1 日台北 00:00–08:00 會算成上個月。
+function taipeiMonthKey(value = new Date()) {
+  return taipeiToday(value).slice(0, 7);
+}
+
+// ── pg 回傳值解析（無時區型別）────────────────────────────────────────────
+// pg 預設把 DATE（1082）與 TIMESTAMP WITHOUT TIME ZONE（1114）以「Node 行程的
+// 本地時區」解讀成 Date。正式機 TZ=Asia/Taipei 所以剛好正確，但那是靠
+// server/index.js 的 process.env.TZ 撐著；測試、腳本或任何沒載入 index.js 的
+// 行程只要 TZ 不同，DATE 就會變成別的時刻（例如 TZ=Asia/Tokyo 時，經台北投影
+// 會退回前一天）。這裡固定以台北牆鐘解讀：在 TZ=Asia/Taipei 下與 pg 預設逐位元
+// 相同（不改變正式站任何輸出），在其他 TZ 下也得到同一個絕對時刻。
+// infinity / BC 等罕見值交回 pg 原本的解析器，不在這裡猜。
+const PG_PLAIN_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const PG_PLAIN_TIMESTAMP_RE = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})(\.\d{1,6})?$/;
+
+function parsePgDateAsTaipei(text, fallback) {
+  const m = PG_PLAIN_DATE_RE.exec(String(text));
+  if (!m) return fallback ? fallback(text) : text;
+  return new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00+08:00`);
+}
+
+function parsePgTimestampAsTaipei(text, fallback) {
+  const m = PG_PLAIN_TIMESTAMP_RE.exec(String(text));
+  if (!m) return fallback ? fallback(text) : text;
+  // 小數秒最多取到毫秒（JS Date 精度），與 pg 預設行為一致。
+  const ms = m[7] ? m[7].slice(0, 4).padEnd(4, '0') : '.000';
+  return new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}${ms}+08:00`);
+}
+
 module.exports = {
   TAIPEI_TIME_ZONE,
   formatPlainDate,
@@ -78,4 +109,7 @@ module.exports = {
   taipeiWeekStart,
   formatTaipeiDateTime,
   formatTaipeiTime,
+  taipeiMonthKey,
+  parsePgDateAsTaipei,
+  parsePgTimestampAsTaipei,
 };

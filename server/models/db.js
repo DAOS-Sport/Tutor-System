@@ -1,4 +1,16 @@
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
+const { parsePgDateAsTaipei, parsePgTimestampAsTaipei } = require('../utils/dateTime');
+
+// 無時區型別一律以台北牆鐘解讀，不依賴 Node 行程的 TZ（Issue #11）。
+// DATE（1082）、TIMESTAMP（1114）原本由 pg 以「本地時區」解讀，正確性全靠
+// server/index.js 的 process.env.TZ；在 TZ=Asia/Taipei 下以下解析結果與預設逐位元相同。
+// 注意：這是 pg 全域設定，同一行程內其他 Pool/Client 也會套用（正是想要的）。
+{
+  const defaultDate = types.getTypeParser(1082, 'text');
+  const defaultTimestamp = types.getTypeParser(1114, 'text');
+  types.setTypeParser(1082, (v) => parsePgDateAsTaipei(v, defaultDate));
+  types.setTypeParser(1114, (v) => parsePgTimestampAsTaipei(v, defaultTimestamp));
+}
 
 // Preserve pg's current certificate verification when its SSL aliases change.
 function verifiedConnectionString(value) {

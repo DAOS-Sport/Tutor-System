@@ -28,6 +28,14 @@ function taipeiDate(expr) {
   return `((${expr}) ${TAIPEI})::date`;
 }
 
+/**
+ * 台北某日 00:00 的 timestamptz（給「timestamptz 欄位 >= / < 某日」用，保留欄位索引）。
+ * 不可寫成 `col >= $1::date` —— date 轉 timestamptz 用的是連線 TimeZone（Issue #11）。
+ */
+function taipeiDayStart(dateExpr) {
+  return `((${dateExpr})::date::timestamp ${TAIPEI})`;
+}
+
 /** 今天（台北）。 */
 function taipeiToday() {
   return taipeiDate('NOW()');
@@ -56,4 +64,4 @@ function weekRangeWhere(col, fromParam, toParam) {
   return `${d} >= ${fromParam}::date AND ${d} < ${toParam}::date`;
 }
 
-module.exports = { taipeiDate, taipeiToday, todayWhere, historyRangeWhere, weekRangeWhere };
+module.exports = { taipeiDate, taipeiDayStart, taipeiToday, todayWhere, historyRangeWhere, weekRangeWhere };

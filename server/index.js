@@ -36,12 +36,6 @@ const BUILD_INFO = (() => {
   } catch { return { sha: 'unknown', time: null }; }
 })();
 
-// SPA 的 index.html 一律不快取（JS/CSS 是 content-hash 檔，可長快取；只有 index.html
-// 被 LINE 內建瀏覽器 / CDN 快取住，就會一直載到舊的 asset 參照 → 舊碼殘留）。
-function noStoreHtml(res, filePath) {
-  if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-store');
-}
-
 app.use(cors({ origin: process.env.LIFF_URL_PARENT || process.env.LIFF_URL || '*' }));
 // Ragic webhook 必須掛在全域 body parser 之前：Ragic 沒保證 Content-Type，下面的 json／urlencoded
 // parser 只要遇到不是 application/json 的請求就會解析錯或不解析，整批通知被 400 擋掉又不留紀錄。
@@ -99,6 +93,10 @@ app.use('/api/integrations', require('./routes/integrations'));
 // 前端診斷回報：家長端畫面壞在送出之前時，唯一留得下證據的通道。
 app.use('/api/diagnostics', require('./routes/diagnostics'));
 app.use('/api/onboarding', require('./routes/onboarding'));
+// 兜底：沒有任何 router 認得的 /api/* 一律 JSON 404（#12）。必須放在所有 /api mount 之後、
+// 靜態檔與 SPA fallback 之前；以前會掉到 Express 內建的 HTML「Cannot GET」頁。
+const { apiNotFound, spaFallback } = require('./middlewares/spaFallback');
+app.use('/api', apiNotFound);
 
 // 舊 LINE Console 曾被文件指向無 `/api` 前綴的 callback。相容入口不接收 OAuth
 // code/state，也不會建立或綁定帳號；安全地丟棄 query 後回正式 LIFF bind 頁，
@@ -114,6 +112,7 @@ app.get('/health', async (req, res) => {
   const now = new Date();
   let dbTimeZone = null;
   let dbNowUtc = null;
+  let dbOk = false;
   try {
     const db = await pool.query(
       `SELECT current_setting('TimeZone') AS timezone,
@@ -121,6 +120,7 @@ app.get('/health', async (req, res) => {
     );
     dbTimeZone = db.rows[0]?.timezone || null;
     dbNowUtc = db.rows[0]?.utc_now || null;
+    dbOk = true;
   } catch (err) {
     console.warn('[health] DB timezone probe failed:', err.message);
   }
@@ -171,8 +171,11 @@ app.get('/health', async (req, res) => {
     storage = { error: String(err.message || err).slice(0, 120) };
   }
 
-  res.json({
-    status: 'ok',
+  // DB 連不上時不可以回 status:'ok' + 200：啟動流程的註解寫明「health=ok 代表 API 可使用」，
+  // 部署平台與 smoke 腳本也只看狀態碼。資料庫掛了 API 一定不能用，照實回 503（#12）。
+  res.status(dbOk ? 200 : 503).json({
+    status: dbOk ? 'ok' : 'degraded',
+    database_ok: dbOk,
     ts: now.toISOString(),
     build: BUILD_INFO,
     mail,
@@ -197,8 +200,16 @@ app.get('/r/:token', (req, res) => {
 // ── Static frontends ────────────────────────
 // Vite 會把 admin / liff 兩個前端 build 到 server/public/{admin,liff}
 const PUBLIC_DIR = path.join(__dirname, 'public');
-app.use('/admin', express.static(path.join(PUBLIC_DIR, 'admin'), { setHeaders: noStoreHtml }));
-app.use('/liff', express.static(path.join(PUBLIC_DIR, 'liff'), { setHeaders: noStoreHtml }));
+// 快取與壓縮規則在 middlewares/staticFrontend.js（#15 第 2 步）：index.html 一律 no-store
+// （被 LINE 內建瀏覽器 / CDN 快取住就會一直載到舊的 asset 參照）；assets/ 是 content-hash 檔，
+// 長快取一年 + immutable，並以內建 zlib 回 br／gzip。找不到的檔案交給下面的 spaFallback 回 404。
+const { createFrontendRouter, warmCompressedAssets } = require('./middlewares/staticFrontend');
+const FRONTEND_ROUTERS = {
+  admin: createFrontendRouter(path.join(PUBLIC_DIR, 'admin')),
+  liff: createFrontendRouter(path.join(PUBLIC_DIR, 'liff')),
+};
+app.use('/admin', FRONTEND_ROUTERS.admin);
+app.use('/liff', FRONTEND_ROUTERS.liff);
 
 // LINE 推播樣板用的品牌圖示（Flex 的 icon 只吃公開可達的 HTTPS 圖檔，沒有內建圖示集）。
 //
@@ -265,14 +276,10 @@ app.get('/uploads/*', async (req, res) => {
 });
 
 // SPA fallback：將子路徑導回對應前端的 index.html，讓 React Router 接手
-app.get('/admin/*', (req, res, next) => {
-  res.set('Cache-Control', 'no-store');
-  res.sendFile(path.join(PUBLIC_DIR, 'admin', 'index.html'), (err) => err && next(err));
-});
-app.get('/liff/*', (req, res, next) => {
-  res.set('Cache-Control', 'no-store');
-  res.sendFile(path.join(PUBLIC_DIR, 'liff', 'index.html'), (err) => err && next(err));
-});
+// 只接頁面路徑：/assets/*、帶靜態副檔名、或 /admin/api、/liff/api 一律 404，
+// 不再回 index.html 200 假裝成功（舊 bundle 要已刪除的 chunk 時會白畫面卻查無錯誤，#12）。
+app.get('/admin/*', spaFallback('/admin', path.join(PUBLIC_DIR, 'admin', 'index.html')));
+app.get('/liff/*', spaFallback('/liff', path.join(PUBLIC_DIR, 'liff', 'index.html')));
 
 // 根路徑：若是從 LINE LIFF 開啟（會帶 liff.state / liff.referrer 等 query），
 // 導去 /liff/ 並保留原本 query；其餘一律導向後台首頁。
@@ -401,6 +408,18 @@ process.once('SIGINT', () => shutdown('SIGINT'));
     process.exit(1);
     return;
   }
+  // 課程需求人數校正（D18／GitHub #13）：min／max_students 一律＝組別。冪等、每筆寫稽核。
+  // 失敗不擋開機：判斷端只看組別、不讀這兩欄放寬人數，max 不符的組別個人報名會 fail-closed
+  // 回 COURSE_CAPACITY_CONFIG_MISMATCH；但一定要大聲記錄，讓人知道資料還沒校正。
+  try {
+    const fixed = await require('./services/courseTypeHeadcount').normalizeCourseTypeHeadcounts();
+    if (fixed.length) {
+      console.log(`[bootstrap] 課程需求人數校正 ${fixed.length} 筆：`
+        + fixed.map((f) => `區${f.pricing_zone_id}/一對${f.course_type} ${f.before.min}–${f.before.max}→${f.course_type}`).join('、'));
+    }
+  } catch (err) {
+    console.error('[bootstrap] 課程需求人數校正失敗（資料仍是舊人數，請人工檢查 course_type_configs）:', err.message);
+  }
   try {
     await objectStore.assertProductionStorageReady();
   } catch (err) {
@@ -425,5 +444,13 @@ process.once('SIGINT', () => shutdown('SIGINT'));
     console.log(`DAOS Server running on port ${PORT}`);
     // 排程只在 schema ready 後啟動，避免剛部署時對尚未升級的資料表讀寫。
     initCronJobs();
+    // 背景預壓前端資產（依序、不阻塞 listen）；沒壓到的檔案第一次被請求時才壓。
+    (async () => {
+      for (const [name, router] of Object.entries(FRONTEND_ROUTERS)) {
+        const t0 = Date.now();
+        const { files } = await warmCompressedAssets(path.join(PUBLIC_DIR, name), router.compressedCache);
+        console.log(`[static] ${name}: precompressed ${files} asset(s) in ${Date.now() - t0}ms`);
+      }
+    })().catch((err) => console.warn('[static] warm-up failed:', err.message));
   });
 })();

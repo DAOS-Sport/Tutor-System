@@ -102,7 +102,10 @@ router.patch('/tags/:id', requireResource('tags'), wrap(async (req, res) => {
     `UPDATE tag_library SET ${sets.join(', ')} WHERE id = $${args.length} RETURNING *`,
     args
   );
-  res.json(r.rows[0] || null);
+  // 找不到就照實回 404：以前回 200 + null，標籤頁照樣跳「已儲存」，
+  // 實際上什麼都沒改（例如另一個分頁已刪掉這個標籤）（#12 假成功稽核）。
+  if (!r.rowCount) return res.status(404).json({ error: '找不到此標籤，可能已被刪除', code: 'TAG_NOT_FOUND' });
+  res.json(r.rows[0]);
 }));
 
 router.delete('/tags/:id', requireResource('tags'), wrap(async (req, res) => {

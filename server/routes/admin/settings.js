@@ -48,24 +48,45 @@ router.get('/', requireAdminAuth, requireResource('settings'), async (req, res) 
 });
 
 router.patch('/', requireAdminAuth, requireResource('settings'), async (req, res) => {
+  // #12 假成功稽核：以前不認得的 key 直接 continue、照回 200，畫面跳「系統設定已儲存」，
+  // 實際上那個值根本沒寫（前後端 key 名對不上時沒有人會發現）；而且是邊驗邊寫，
+  // 第三個值不是數字時前兩個已經寫進去了，畫面卻說「儲存失敗」。
+  // 改成：先全部驗完（未知 key 一律 400），再在同一交易裡寫入。
+  const patch = req.body || {};
+  const entries = [];
+  for (const [k, v] of Object.entries(patch)) {
+    if (!ALLOWED_KEYS.includes(k)) {
+      return res.status(400).json({ error: `不認得的設定項目「${k}」，未儲存任何變更`, code: 'SETTING_KEY_UNKNOWN' });
+    }
+    const n = Number(v);
+    if (v === null || v === '' || Number.isNaN(n)) {
+      return res.status(400).json({ error: `「${k}」必須為數字`, code: 'SETTING_NOT_NUMBER' });
+    }
+    entries.push([k, n]);
+  }
+  const client = await pool.connect();
   try {
-    const patch = req.body || {};
-    for (const [k, v] of Object.entries(patch)) {
-      if (!ALLOWED_KEYS.includes(k)) continue;
-      const n = Number(v);
-      if (Number.isNaN(n)) {
-        return res.status(400).json({ error: `「${k}」必須為數字` });
-      }
-      await pool.query(
+    await client.query('BEGIN');
+    for (const [k, n] of entries) {
+      await client.query(
         `INSERT INTO admin_settings (key, value, updated_at) VALUES ($1, $2, NOW())
          ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
         [k, n]
       );
     }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('[admin/settings PATCH]', err);
+    return res.status(500).json({ error: 'update settings failed' });
+  } finally {
+    client.release();
+  }
+  try {
     res.json(await readAll());
   } catch (err) {
-    console.error('[admin/settings PATCH]', err);
-    res.status(500).json({ error: 'update settings failed' });
+    console.error('[admin/settings PATCH readAll]', err);
+    res.status(500).json({ error: '設定已儲存，但重新讀取失敗，請重新整理頁面確認', code: 'SETTINGS_READBACK_FAILED' });
   }
 });
 

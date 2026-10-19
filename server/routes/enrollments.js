@@ -429,7 +429,9 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: '學員資料重複，請重新選擇', code: 'DUPLICATE_STUDENT' });
     }
     // 家庭帳號（第二階段，決策 4）：可以替家人名下的孩子報名；購買人仍是下單的人（parentRow）
-    const familyIds = (await familyScope.actingParentIds(req)).map(String);
+    // 交易內的查詢一律走同一個 client，不可再向 pool 借第二條連線：尖峰時並發報名 ≥ 連線池
+    // 上限就會互等到天荒地老、整台卡死（GitHub #10 壓測實測重現）。
+    const familyIds = (await familyScope.actingParentIds(req, client)).map(String);
     const studentRows = await client.query(
       `SELECT id, name FROM students
         WHERE parent_id::text = ANY($1::text[]) AND id = ANY($2::uuid[]) AND COALESCE(is_active, TRUE) = TRUE`,
@@ -507,6 +509,7 @@ router.post('/', async (req, res) => {
           couponCode,
           parentId: parentRow.id,
           coachMultiplier: multiplier, // 權威值：來自 DB coaches.pricing_multiplier（第 155 行），不信前端
+          db: client, // 同上：交易內不另借連線
         });
       } catch (err) {
         await client.query('ROLLBACK');

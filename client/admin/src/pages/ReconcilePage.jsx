@@ -113,6 +113,28 @@ function validateInvoiceImage(file, toast) {
   return true;
 }
 
+// 對帳成功後的提示，照後端回的 notify 實際結果講「通知信有沒有寄出」（#12 假成功稽核）。
+// 以前不看結果一律宣稱已推播給家長：家長沒有 Email、SMTP 失敗、演練模式都顯示成已通知，
+// 櫃台以為家長收到了。對帳本身已成功，所以通知沒寄到用警告色而不是錯誤。
+export function reconcileNotifyMessage(base, notify) {
+  if (!notify) return { level: 'success', text: base }; // 舊版後端沒有 notify：不宣稱通知狀態
+  const problems = [];
+  if (notify.not_queued > 0) problems.push(`${notify.not_queued} 個家庭沒有可寄的 Email，未發送通知`);
+  if (notify.enqueue_failed > 0) problems.push(`${notify.enqueue_failed} 封通知信排入失敗、未發送，請手動通知家長`);
+  // 寄送失敗的信不在自動補寄範圍（補寄只撿 pending），不可承諾「稍後重寄」。
+  if (notify.failed > 0) problems.push(`${notify.failed} 封通知信寄送失敗，請手動通知家長`);
+  if (notify.dry_run > 0) problems.push(`${notify.dry_run} 封通知信為演練模式，未實際寄出`);
+  if (problems.length) return { level: 'warning', text: `${base}；${problems.join('；')}` };
+  if (notify.sent > 0) return { level: 'success', text: `${base}，已寄出 Email 通知家長` };
+  return { level: 'success', text: base };
+}
+
+function showReconcileNotify(toast, result, base) {
+  const { level, text } = reconcileNotifyMessage(base, result?.notify);
+  if (level === 'warning') toast.warning(text, 8000);
+  else toast.success(text);
+}
+
 function FamilyInvoiceFields({ family, familyIndex, orders, value, onChange, busy, toast }) {
   const fileRef = useRef(null);
   const numOk = INVOICE_RE.test(value.invoiceNumber);
@@ -339,7 +361,7 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
         if (uploadedFamilies.some(({ uploaded }) => uploaded.conversion_status === 'pending')) {
           toast.warning('原始圖片已保存，部分預覽轉檔處理中；本次對帳仍可繼續');
         }
-        await checkoutsApi.reconcile(checkout.checkout_id, {
+        const result = await checkoutsApi.reconcile(checkout.checkout_id, {
           family_invoices: uploadedFamilies.map(({ family, form, uploaded }) => ({
             family_key: family.family_key,
             invoice_number: form.invoiceNumber,
@@ -349,7 +371,7 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
           })),
           note: note.trim() || undefined,
         });
-        toast.success(`對帳通過，已依 ${invoiceFamilies.length} 個家庭記錄 ${invoiceFamilies.length} 張發票並分別推播`);
+        showReconcileNotify(toast, result, `對帳通過，已依 ${invoiceFamilies.length} 個家庭記錄 ${invoiceFamilies.length} 張發票`);
         onDone();
         return;
       }
@@ -360,14 +382,14 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
       if (uploaded.conversion_status === 'pending') {
         toast.warning('原始圖片已保存，預覽轉檔處理中；本次對帳仍可繼續');
       }
-      await checkoutsApi.reconcile(checkout.checkout_id, {
+      const result = await checkoutsApi.reconcile(checkout.checkout_id, {
         invoice_number: invoiceNumber,
         invoice_image_url: imageUrl,
         carrier: taxId ? '' : (carrier.trim() || undefined),
         tax_id: taxId || undefined,
         note: note.trim() || undefined,
       });
-      toast.success(`對帳通過，發票 ${invoiceNumber} 已記錄並推播家長`);
+      showReconcileNotify(toast, result, `對帳通過，發票 ${invoiceNumber} 已記錄`);
       onDone();
     } catch (err) {
       setUploading(false);

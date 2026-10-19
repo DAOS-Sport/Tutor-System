@@ -61,7 +61,10 @@ export default function CustomerParentsPage() {
   }
   useEffect(() => {
     let cancel = false;
-    customerParentsApi.list(filters).then((d) => { if (!cancel) setParents(d); }).catch(() => { if (!cancel) setParents([]); });
+    // 同學員頁：讀取失敗只清成空清單＝看起來像「查無家長」，會誘發重複建檔（#12 假成功稽核）。
+    customerParentsApi.list(filters).then((d) => { if (!cancel) setParents(d); }).catch(() => {
+      if (!cancel) { setParents([]); toast.error('讀取家長清單失敗，畫面上的空清單不代表查無資料'); }
+    });
     return () => { cancel = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters]);
