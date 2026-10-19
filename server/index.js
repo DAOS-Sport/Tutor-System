@@ -99,6 +99,10 @@ app.use('/api/integrations', require('./routes/integrations'));
 // 前端診斷回報：家長端畫面壞在送出之前時，唯一留得下證據的通道。
 app.use('/api/diagnostics', require('./routes/diagnostics'));
 app.use('/api/onboarding', require('./routes/onboarding'));
+// 兜底：沒有任何 router 認得的 /api/* 一律 JSON 404（#12）。必須放在所有 /api mount 之後、
+// 靜態檔與 SPA fallback 之前；以前會掉到 Express 內建的 HTML「Cannot GET」頁。
+const { apiNotFound, spaFallback } = require('./middlewares/spaFallback');
+app.use('/api', apiNotFound);
 
 // 舊 LINE Console 曾被文件指向無 `/api` 前綴的 callback。相容入口不接收 OAuth
 // code/state，也不會建立或綁定帳號；安全地丟棄 query 後回正式 LIFF bind 頁，
@@ -114,6 +118,7 @@ app.get('/health', async (req, res) => {
   const now = new Date();
   let dbTimeZone = null;
   let dbNowUtc = null;
+  let dbOk = false;
   try {
     const db = await pool.query(
       `SELECT current_setting('TimeZone') AS timezone,
@@ -121,6 +126,7 @@ app.get('/health', async (req, res) => {
     );
     dbTimeZone = db.rows[0]?.timezone || null;
     dbNowUtc = db.rows[0]?.utc_now || null;
+    dbOk = true;
   } catch (err) {
     console.warn('[health] DB timezone probe failed:', err.message);
   }
@@ -171,8 +177,11 @@ app.get('/health', async (req, res) => {
     storage = { error: String(err.message || err).slice(0, 120) };
   }
 
-  res.json({
-    status: 'ok',
+  // DB 連不上時不可以回 status:'ok' + 200：啟動流程的註解寫明「health=ok 代表 API 可使用」，
+  // 部署平台與 smoke 腳本也只看狀態碼。資料庫掛了 API 一定不能用，照實回 503（#12）。
+  res.status(dbOk ? 200 : 503).json({
+    status: dbOk ? 'ok' : 'degraded',
+    database_ok: dbOk,
     ts: now.toISOString(),
     build: BUILD_INFO,
     mail,
@@ -265,14 +274,10 @@ app.get('/uploads/*', async (req, res) => {
 });
 
 // SPA fallback：將子路徑導回對應前端的 index.html，讓 React Router 接手
-app.get('/admin/*', (req, res, next) => {
-  res.set('Cache-Control', 'no-store');
-  res.sendFile(path.join(PUBLIC_DIR, 'admin', 'index.html'), (err) => err && next(err));
-});
-app.get('/liff/*', (req, res, next) => {
-  res.set('Cache-Control', 'no-store');
-  res.sendFile(path.join(PUBLIC_DIR, 'liff', 'index.html'), (err) => err && next(err));
-});
+// 只接頁面路徑：/assets/*、帶靜態副檔名、或 /admin/api、/liff/api 一律 404，
+// 不再回 index.html 200 假裝成功（舊 bundle 要已刪除的 chunk 時會白畫面卻查無錯誤，#12）。
+app.get('/admin/*', spaFallback('/admin', path.join(PUBLIC_DIR, 'admin', 'index.html')));
+app.get('/liff/*', spaFallback('/liff', path.join(PUBLIC_DIR, 'liff', 'index.html')));
 
 // 根路徑：若是從 LINE LIFF 開啟（會帶 liff.state / liff.referrer 等 query），
 // 導去 /liff/ 並保留原本 query；其餘一律導向後台首頁。

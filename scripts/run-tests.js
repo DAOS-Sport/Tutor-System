@@ -171,6 +171,8 @@ const UNIT = [
   'tests/z03_awaiting_login_sync_seam_test.js',
   'tests/release/canary_config_test.js',
   'tests/release/reconcile_image_pipeline_test.js',
+  // #12 假成功／路由不明稽核：未知 /api JSON 404、SPA fallback、路由重複／遮蔽、catch 回成功。
+  'tests/false_success_audit_test.js',
 ];
 
 // 需要真實 Postgres。多數含破壞性前置清理，只可對拋棄式測試庫執行。
@@ -229,6 +231,8 @@ const DB = [
   'tests/release/z03_random_sample_login_test.js',
   'tests/release/z03_registration_form_50_batch_test.js',
   'tests/release/z03_same_source_duplicate_student_bind_test.js',
+  // #12 假成功稽核：團購取消與名額回沖同交易、系統設定先驗後寫（真實路由 + 拋棄式庫）。
+  'tests/false_success_db_test.js',
 ];
 
 /** 漏網檢查：tests/ 與 tests/release/ 的每個 .js 都必須被分層，否則整輪失敗。 */

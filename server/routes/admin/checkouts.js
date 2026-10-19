@@ -284,6 +284,7 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
   const client = await pool.connect();
   const createdStudentIds = [];
   const mailOutboxIds = [];
+  let mailFamilies = 0; // 應通知的家庭數（有子訂單的發票家庭）
   try {
     await client.query('BEGIN');
     // 稽核操作者只能取自已驗證的後台 JWT；不可接受 client 自填的 by，
@@ -474,6 +475,7 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
     for (const invoice of invoicePlans) {
       const familyOrders = children.rows.filter((r0) => checkoutFamilyKey(r0) === invoice.familyKey);
       if (!familyOrders.length) continue;
+      mailFamilies += 1;
       const venueRow = await client.query(`SELECT name FROM venues WHERE id = $1`, [familyOrders[0].venue_id]);
       const mailId = await enqueueReconcileMail(client, {
         // 去重鍵：同一張付款單的同一個家庭只會有一封。
@@ -502,9 +504,23 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
     // 家長端改走 Email（Owner 決定：家長不用 LINE）。
     // 寄信失敗絕不能影響對帳 —— 已經 COMMIT 了。deliverOutbox 內部不會 throw，
     // 沒寄成的留在 outbox 等 sweepPendingMail 補。
-    await deliverOutbox(mailOutboxIds);
+    const mail = await deliverOutbox(mailOutboxIds);
 
-    res.json(await readCheckout(pool, req.params.checkoutId));
+    // notify：讓櫃台畫面照實講「通知到底寄出去沒有」（#12 假成功稽核）。
+    // 以前前端不論結果一律跳「已記錄並推播家長」—— 家長沒 Email、SMTP 失敗、
+    // 演練模式都長得一樣，櫃台以為家長收到了。對帳本身的成敗不受這裡影響。
+    const checkout = await readCheckout(pool, req.params.checkoutId);
+    res.json({
+      ...checkout,
+      notify: {
+        families: mailFamilies,
+        queued: mailOutboxIds.length,
+        not_queued: Math.max(0, mailFamilies - mailOutboxIds.length),
+        sent: mail?.sent || 0,
+        dry_run: mail?.dryRun || 0,
+        failed: mail?.failed || 0,
+      },
+    });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('[admin/checkouts reconcile]', err);

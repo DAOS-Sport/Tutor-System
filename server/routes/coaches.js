@@ -619,14 +619,23 @@ router.patch('/:id/media/reorder', requireCoach, requireCoachOwner('id'), async 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // #12 假成功稽核：以前不檢查每一筆有沒有真的更新到，回 count = ids.length。
+    // 清單已過期（另一台裝置刪了某張圖）或混入別人的 id 時，排序只做了一半卻回成功。
+    // 改成逐筆數實際更新數，對不上就整批回滾並回 409，請前端重新整理。
+    let updated = 0;
     for (let i = 0; i < ids.length; i++) {
-      await client.query(
+      const u = await client.query(
         `UPDATE coach_bio_media SET sort_order = $1 WHERE id = $2 AND coach_id = $3`,
         [i, ids[i], req.params.id]
       );
+      updated += u.rowCount;
+    }
+    if (updated !== ids.length) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '圖片清單已變動，請重新整理後再排序', code: 'MEDIA_REORDER_STALE' });
     }
     await client.query('COMMIT');
-    res.json({ ok: true, count: ids.length });
+    res.json({ ok: true, count: updated });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });

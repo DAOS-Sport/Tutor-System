@@ -274,7 +274,8 @@ export default function CoachProfilePage() {
 
   async function handleMove(idx, dir) {
     if (guide) return;
-    const list = [...(media || [])];
+    const before = media || [];
+    const list = [...before];
     const target = idx + dir;
     if (target < 0 || target >= list.length) return;
     [list[idx], list[target]] = [list[target], list[idx]];
@@ -284,8 +285,11 @@ export default function CoachProfilePage() {
         coach.id,
         list.map((m) => m.id),
       );
-    } catch {
-      toast.error("排序失敗");
+    } catch (err) {
+      // 先畫後存（樂觀更新）：存失敗一定要退回原順序，否則畫面停在「已排好」，
+      // 教練以為改好了，重開頁面才發現沒存（#12 假成功稽核）。
+      setMedia(before);
+      toast.error(err?.response?.data?.error || "排序失敗");
     }
   }
 

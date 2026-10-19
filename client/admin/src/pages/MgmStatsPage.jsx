@@ -64,7 +64,8 @@ export default function MgmStatsPage() {
     if (filters.coachId) params.coachId = filters.coachId;
     mgmStatsApi.query(params)
       .then((d) => alive && setData(d))
-      .catch(() => alive && setData(null))
+      // 失敗要講出來，否則跟「這段期間沒有推薦」看起來一樣（#12 假成功稽核）。
+      .catch((e) => { if (alive) { setData(null); toast.error(e?.response?.data?.error || '推薦統計載入失敗'); } })
       .finally(() => alive && setLoading(false));
     return () => { alive = false; };
   }, [filters]);

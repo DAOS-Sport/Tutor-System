@@ -33,7 +33,11 @@ export default function CustomerStudentsPage() {
   useEffect(() => {
     let cancel = false;
     // reveal 進 deps：切換「顯示個資」會重新向後端取（後端依 reveal 回原值/遮罩 + 寫稽核）
-    customerStudentsApi.list(listParams()).then((d) => { if (!cancel) setStudents(d); }).catch(() => { if (!cancel) setStudents([]); });
+    // 讀取失敗必須明講：只清成空清單的話，畫面跟「查無學員」一模一樣，
+    // 櫃台會以為這位學員不存在而重複建檔（#12 假成功稽核）。
+    customerStudentsApi.list(listParams()).then((d) => { if (!cancel) setStudents(d); }).catch(() => {
+      if (!cancel) { setStudents([]); toast.error('讀取學員清單失敗，畫面上的空清單不代表查無資料'); }
+    });
     return () => { cancel = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters, reveal]);

@@ -131,8 +131,11 @@ export default function StaffPage() {
       if (r.notified) {
         toast.success(`已重設 ${r.staff_name || resetting.name} 的密碼，並已透過 LINE 通知`);
       } else {
+        // 密碼確實已重設，但通知沒送到：用警告色，讓櫃台知道「還有一件事要自己做」，
+        // 不要跟完整成功長得一樣（#12 假成功稽核）。
         const hint = r.default_password_hint || resetting.phone || '手機號碼';
-        toast.success(`已重設 ${r.staff_name || resetting.name} 的密碼為手機號碼（${hint}），未發送 LINE 通知，請另行告知`);
+        const why = r.notify_error ? 'LINE 通知發送失敗' : '未發送 LINE 通知（未綁定 LINE 或無場館）';
+        toast.warning(`已重設 ${r.staff_name || resetting.name} 的密碼為手機號碼（${hint}），${why}，請另行告知`);
       }
       setResetting(null);
     } catch (err) {
@@ -190,18 +193,25 @@ export default function StaffPage() {
       if (started.already_running) {
         toast.info('已有一次 H01 同步在背景執行中，將等待該次完成…');
       }
+      // 只認「觸發之後」寫入的那一筆紀錄：in_progress 是後端單一行程的記憶體旗標，
+      // 輪詢打到別台實例時會是 false，若不比對時間，會把上一輪的結果當成這一輪
+      // 顯示「已同步 N 筆」（#12 假成功稽核）。舊後端沒回 accepted_at 時退回舊判斷。
+      const acceptedAtMs = started?.accepted_at ? Date.parse(started.accepted_at) : NaN;
+      const isThisRun = (s) => !Number.isFinite(acceptedAtMs)
+        || (s?.last_run_at && Date.parse(s.last_run_at) >= acceptedAtMs);
       let status = null;
+      let finished = false;
       for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt += 1) {
         // eslint-disable-next-line no-await-in-loop
         const snapshot = await ragicStatusApi.get();
         status = snapshot?.forms?.staff;
-        if (!status?.in_progress) break;
+        if (status && !status.in_progress && isThisRun(status)) { finished = true; break; }
         // eslint-disable-next-line no-await-in-loop
         await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
       }
       if (!status) {
         toast.error('Ragic 同步狀態查詢失敗');
-      } else if (status.in_progress) {
+      } else if (!finished) {
         toast.info('同步仍在背景執行中，請稍候至「Ragic 連線狀態」頁查看結果。');
       } else if (status.last_status === 'error') {
         toast.error(`Ragic 同步失敗：${status.last_error || '未知錯誤'}`);
