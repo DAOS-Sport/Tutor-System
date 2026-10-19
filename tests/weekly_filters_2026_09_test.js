@@ -101,7 +101,6 @@ const click = (owner, label) => {
     '../api/sessions': { sessionsApi: { range: async q => { calls.push(q); if (rejectQuery) throw Error('offline'); return records; }, venueOptions: async () => venues } },
     '../api/venues': { venuesApi: { list: async () => venues } },
     '../utils/csvExport': { exportSessionsCsv() {}, exportSessionsXlsx() {} },
-    '../components/DateRangeSelect': { rangeForPreset() {} },
   });
   await sessionPage.settle();
   assert.equal(calls.length, 1);
