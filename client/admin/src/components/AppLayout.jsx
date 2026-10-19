@@ -1,10 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { Suspense, useEffect, useState } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import Header from './Header';
 import NewVersionBanner from './NewVersionBanner';
 import ChangePasswordModal from './ChangePasswordModal';
 import { useAuth } from '../context/AuthContext';
+import { PageLoading } from '../../../shared/lazyPage.jsx';
 
 // 行政櫃檯（staff）仍用預設帳密登入時，強制引導一次修改帳密；系統管理員絕不觸發。
 // 用 localStorage 記「已引導」，即使使用者按取消略過，同一瀏覽器對這個帳號也不會再跳出。
@@ -41,7 +42,10 @@ export default function AppLayout() {
         <NewVersionBanner />
         {/* 375px 螢幕上 p-6 兩邊就吃掉 48px。 */}
         <main className="flex-1 overflow-y-auto p-4 md:p-6">
-          <Outlet />
+          {/* 頁面是 lazy chunk（#15）：下載中只在內容區顯示載入中，側邊欄與頁首不消失。 */}
+          <Suspense fallback={<PageLoading />}>
+            <Outlet />
+          </Suspense>
         </main>
       </div>
       <ChangePasswordModal

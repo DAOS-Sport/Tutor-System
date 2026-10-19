@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { Suspense } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import BottomNav from './BottomNav';
+import { PageLoading } from '../../../shared/lazyPage.jsx';
 
 const TAB_PATHS = [
   '/', '/my-courses', '/my-lessons', '/chat', '/profile',
@@ -49,7 +50,10 @@ export default function AppLayout({ showBackButton = false, title }) {
         )}
 
         <main className="flex-1 overflow-y-auto overscroll-contain">
-          <Outlet />
+          {/* 頁面是 lazy chunk（#15）：下載中只在內容區顯示載入中，頁首與底部導覽不消失。 */}
+          <Suspense fallback={<PageLoading />}>
+            <Outlet />
+          </Suspense>
         </main>
 
         {isTabPage && <BottomNav />}

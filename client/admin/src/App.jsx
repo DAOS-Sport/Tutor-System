@@ -1,47 +1,52 @@
-import React from 'react';
+import React, { Suspense } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import AppLayout from './components/AppLayout';
 import RequireAuth from './components/RequireAuth';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
-import SettingsPage from './pages/SettingsPage';
-import StaffPage from './pages/StaffPage';
-import RolePermissionsPage from './pages/RolePermissionsPage';
 import CoachesRedirect from './pages/CoachesRedirect';
-import VenuesPage from './pages/VenuesPage';
-import CourseIntrosPage from './pages/CourseIntrosPage';
-import ReconcilePage from './pages/ReconcilePage';
-import EnrollmentsPage from './pages/EnrollmentsPage';
-import ManualEnrollPage from './pages/ManualEnrollPage';
-import RefundPage from './pages/RefundPage';
-import SessionsPage from './pages/SessionsPage';
-import CheckinPage from './pages/CheckinPage';
-import CheckinModesPage from './pages/CheckinModesPage';
-import RevivePage from './pages/RevivePage';
-import ManualDeductionPage from './pages/ManualDeductionPage';
-import ChatLogsPage from './pages/ChatLogsPage';
-import AlertsPage from './pages/AlertsPage';
-import KeywordsPage from './pages/KeywordsPage';
-import TagsPage from './pages/TagsPage';
-import CoachEvalPage from './pages/CoachEvalPage';
-import EvalThresholdPage from './pages/EvalThresholdPage';
-import CoachIntrosReviewPage from './pages/CoachIntrosReviewPage';
-import PromotionsPage from './pages/PromotionsPage';
-import PromotionsActivePage from './pages/PromotionsActivePage';
-import MgmStatsPage from './pages/MgmStatsPage';
-import TransfersReviewPage from './pages/TransfersReviewPage';
-import ReportsPage from './pages/ReportsPage';
-import SopPage from './pages/SopPage';
-import CounterManualPage from './pages/CounterManualPage';
-import CourseTypesPage from './pages/CourseTypesPage';
-import GroupOrdersPage from './pages/GroupOrdersPage';
-import RagicStatusPage from './pages/RagicStatusPage';
-import RagicStagingPage from './pages/RagicStagingPage';
-import RagicZ03Page from './pages/RagicZ03Page';
-import CustomerParentsPage from './pages/CustomerParentsPage';
-import CustomerStudentsPage from './pages/CustomerStudentsPage';
 import MockBanner from './components/MockBanner';
 import { BACKOFFICE_ROLES } from './constants/roles.js';
+// 路由層級切分（#15 第 3 步）：登入頁與登入後第一屏（儀表板）維持同步載入，
+// 其餘頁面各自成 chunk，第一次進入時才下載。lazyPage 會處理「部署後舊 chunk 不見」
+// 的情況（重試一次、再不行重新整理一次），見 client/shared/lazyPage.jsx。
+import { lazyPage, PageLoading } from '../../shared/lazyPage.jsx';
+
+const SettingsPage = lazyPage(() => import('./pages/SettingsPage'));
+const StaffPage = lazyPage(() => import('./pages/StaffPage'));
+const RolePermissionsPage = lazyPage(() => import('./pages/RolePermissionsPage'));
+const VenuesPage = lazyPage(() => import('./pages/VenuesPage'));
+const CourseIntrosPage = lazyPage(() => import('./pages/CourseIntrosPage'));
+const ReconcilePage = lazyPage(() => import('./pages/ReconcilePage'));
+const EnrollmentsPage = lazyPage(() => import('./pages/EnrollmentsPage'));
+const ManualEnrollPage = lazyPage(() => import('./pages/ManualEnrollPage'));
+const RefundPage = lazyPage(() => import('./pages/RefundPage'));
+const SessionsPage = lazyPage(() => import('./pages/SessionsPage'));
+const CheckinPage = lazyPage(() => import('./pages/CheckinPage'));
+const CheckinModesPage = lazyPage(() => import('./pages/CheckinModesPage'));
+const RevivePage = lazyPage(() => import('./pages/RevivePage'));
+const ManualDeductionPage = lazyPage(() => import('./pages/ManualDeductionPage'));
+const ChatLogsPage = lazyPage(() => import('./pages/ChatLogsPage'));
+const AlertsPage = lazyPage(() => import('./pages/AlertsPage'));
+const KeywordsPage = lazyPage(() => import('./pages/KeywordsPage'));
+const TagsPage = lazyPage(() => import('./pages/TagsPage'));
+const CoachEvalPage = lazyPage(() => import('./pages/CoachEvalPage'));
+const EvalThresholdPage = lazyPage(() => import('./pages/EvalThresholdPage'));
+const CoachIntrosReviewPage = lazyPage(() => import('./pages/CoachIntrosReviewPage'));
+const PromotionsPage = lazyPage(() => import('./pages/PromotionsPage'));
+const PromotionsActivePage = lazyPage(() => import('./pages/PromotionsActivePage'));
+const MgmStatsPage = lazyPage(() => import('./pages/MgmStatsPage'));
+const TransfersReviewPage = lazyPage(() => import('./pages/TransfersReviewPage'));
+const ReportsPage = lazyPage(() => import('./pages/ReportsPage'));
+const SopPage = lazyPage(() => import('./pages/SopPage'));
+const CounterManualPage = lazyPage(() => import('./pages/CounterManualPage'));
+const CourseTypesPage = lazyPage(() => import('./pages/CourseTypesPage'));
+const GroupOrdersPage = lazyPage(() => import('./pages/GroupOrdersPage'));
+const RagicStatusPage = lazyPage(() => import('./pages/RagicStatusPage'));
+const RagicStagingPage = lazyPage(() => import('./pages/RagicStagingPage'));
+const RagicZ03Page = lazyPage(() => import('./pages/RagicZ03Page'));
+const CustomerParentsPage = lazyPage(() => import('./pages/CustomerParentsPage'));
+const CustomerStudentsPage = lazyPage(() => import('./pages/CustomerStudentsPage'));
 
 // 後台登入角色須與 server/middlewares/adminAuth.js 的共用裁判一致。
 // manager 仍由 API 依 venue_ids 限制可見場館，並非取得 admin 全館權限。
@@ -57,6 +62,8 @@ export default function App() {
   return (
     <>
     <MockBanner />
+    {/* 外層後備：AppLayout 內另有一層（換頁時保住側邊欄），這層接住 layout 以外的情況。 */}
+    <Suspense fallback={<PageLoading />}>
     <Routes>
       <Route path="/login" element={<LoginPage />} />
 
@@ -118,6 +125,7 @@ export default function App() {
 
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
+    </Suspense>
     </>
   );
 }

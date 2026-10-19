@@ -142,7 +142,10 @@ function walkJs(dir) {
     assert.ok(fallbackAt > 0, '缺少 /api JSON 404 兜底');
     const lastApiMount = INDEX.lastIndexOf("app.use('/api/");
     assert.ok(lastApiMount < fallbackAt, '有 /api router 掛在兜底之後，會被 404 吃掉');
-    assert.ok(fallbackAt < INDEX.indexOf("express.static(path.join(PUBLIC_DIR, 'admin')"));
+    // #15 起前端靜態檔改由 createFrontendRouter 掛載（快取／壓縮），兜底仍須在它之前。
+    const staticAt = INDEX.indexOf("app.use('/admin', FRONTEND_ROUTERS.admin)");
+    assert.ok(staticAt > 0, '找不到前端靜態檔掛載');
+    assert.ok(fallbackAt < staticAt);
     assert.ok(/app\.get\('\/admin\/\*', spaFallback\(/.test(INDEX));
     assert.ok(/app\.get\('\/liff\/\*', spaFallback\(/.test(INDEX));
   });

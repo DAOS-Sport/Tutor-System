@@ -27,7 +27,9 @@ run() {
   echo
 }
 
-run "courses list"          "/api/admin/courseIntros"
+# 路由早已是 /course-intros（routes/admin.js）；舊寫法 /courseIntros 回 404，
+# 在第 0 步修好「失敗不再回報成功」之前，這條一直被當成通過。
+run "course intros list"    "/api/admin/course-intros"
 run "enrollments list"      "/api/admin/enrollments"
 run "reports/revenue"       "/api/admin/reports/revenue"
 run "reports/sessions"      "/api/admin/reports/sessions"

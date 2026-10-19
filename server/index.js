@@ -36,12 +36,6 @@ const BUILD_INFO = (() => {
   } catch { return { sha: 'unknown', time: null }; }
 })();
 
-// SPA 的 index.html 一律不快取（JS/CSS 是 content-hash 檔，可長快取；只有 index.html
-// 被 LINE 內建瀏覽器 / CDN 快取住，就會一直載到舊的 asset 參照 → 舊碼殘留）。
-function noStoreHtml(res, filePath) {
-  if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-store');
-}
-
 app.use(cors({ origin: process.env.LIFF_URL_PARENT || process.env.LIFF_URL || '*' }));
 // Ragic webhook 必須掛在全域 body parser 之前：Ragic 沒保證 Content-Type，下面的 json／urlencoded
 // parser 只要遇到不是 application/json 的請求就會解析錯或不解析，整批通知被 400 擋掉又不留紀錄。
@@ -206,8 +200,16 @@ app.get('/r/:token', (req, res) => {
 // ── Static frontends ────────────────────────
 // Vite 會把 admin / liff 兩個前端 build 到 server/public/{admin,liff}
 const PUBLIC_DIR = path.join(__dirname, 'public');
-app.use('/admin', express.static(path.join(PUBLIC_DIR, 'admin'), { setHeaders: noStoreHtml }));
-app.use('/liff', express.static(path.join(PUBLIC_DIR, 'liff'), { setHeaders: noStoreHtml }));
+// 快取與壓縮規則在 middlewares/staticFrontend.js（#15 第 2 步）：index.html 一律 no-store
+// （被 LINE 內建瀏覽器 / CDN 快取住就會一直載到舊的 asset 參照）；assets/ 是 content-hash 檔，
+// 長快取一年 + immutable，並以內建 zlib 回 br／gzip。找不到的檔案交給下面的 spaFallback 回 404。
+const { createFrontendRouter, warmCompressedAssets } = require('./middlewares/staticFrontend');
+const FRONTEND_ROUTERS = {
+  admin: createFrontendRouter(path.join(PUBLIC_DIR, 'admin')),
+  liff: createFrontendRouter(path.join(PUBLIC_DIR, 'liff')),
+};
+app.use('/admin', FRONTEND_ROUTERS.admin);
+app.use('/liff', FRONTEND_ROUTERS.liff);
 
 // LINE 推播樣板用的品牌圖示（Flex 的 icon 只吃公開可達的 HTTPS 圖檔，沒有內建圖示集）。
 //
@@ -442,5 +444,13 @@ process.once('SIGINT', () => shutdown('SIGINT'));
     console.log(`DAOS Server running on port ${PORT}`);
     // 排程只在 schema ready 後啟動，避免剛部署時對尚未升級的資料表讀寫。
     initCronJobs();
+    // 背景預壓前端資產（依序、不阻塞 listen）；沒壓到的檔案第一次被請求時才壓。
+    (async () => {
+      for (const [name, router] of Object.entries(FRONTEND_ROUTERS)) {
+        const t0 = Date.now();
+        const { files } = await warmCompressedAssets(path.join(PUBLIC_DIR, name), router.compressedCache);
+        console.log(`[static] ${name}: precompressed ${files} asset(s) in ${Date.now() - t0}ms`);
+      }
+    })().catch((err) => console.warn('[static] warm-up failed:', err.message));
   });
 })();

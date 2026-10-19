@@ -29,6 +29,10 @@ const UNIT = [
   'tests/demo_seed_production_guard_test.js',
   'tests/error_boundary_taipei_test.js',
   'tests/graceful_shutdown_test.js',
+  // #15 第 2 步：前端靜態檔快取／壓縮／舊 chunk 回 404。起本機 express，不連 DB。
+  'tests/static_frontend_headers_test.js',
+  // #15 第 3 步：路由切分護欄（第一屏同步、lazyPage 重試／重整策略）。純原始碼＋Node，不需前端依賴。
+  'tests/route_code_splitting_test.js',
   'tests/open_errors_test.js',
   'tests/profile_information_notice_test.js',
   'tests/sync_hardening_test.js',
