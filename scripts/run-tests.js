@@ -41,6 +41,9 @@ const UNIT = [
   'tests/trial_price_multiplier_test.js',
   'tests/staff_badge_manual_roles_test.js',
   'tests/dashboard_permission_test.js',
+  // 角色權限 A 期（憑證即時失效）與 B、C 期（變更紀錄、動作權限）。假的 pool，不連 DB。
+  'tests/admin_session_revocation_test.js',
+  'tests/permission_audit_actions_test.js',
   'tests/error_boundary_test.js',
   // 測試套件本身的體檢。放第一個：它抓的是「其他測試有沒有在說謊」，
   // 而 manual_deduction_backdate 就這樣瞎了一段時間 —— 指向的元件早已搬走、
@@ -160,6 +163,10 @@ const UNIT = [
   'tests/reconcile_payment_proof_visibility_test.js',
   'tests/sync_failure_log_test.js',
   'tests/taipei_input_test.js',
+  'tests/perf_baseline_assert_test.js',
+  // z03 待登入封存：合成 pool / VM seam，不連 DB、不出網路。
+  'tests/z03_awaiting_login_archive_test.js',
+  'tests/z03_awaiting_login_sync_seam_test.js',
   'tests/ragic_timeline_gate_test.js',
   'tests/page_read_permission_test.js',
   'tests/customer_parent_reveal_scope_test.js',

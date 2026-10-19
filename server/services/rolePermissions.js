@@ -9,8 +9,11 @@
 'use strict';
 
 const { pool } = require('../models/db');
-const { RESOURCE_KEYS, isResourceKey } = require('../constants/adminResources');
-const { ROLES, PORTAL_ADMIN_ROLES, isRepresentativeRoleReal } = require('../constants/roles');
+const {
+  RESOURCE_KEYS, isResourceKey, ACTION_KEYS, isActionKey, isPermissionKey,
+} = require('../constants/adminResources');
+const { ROLES, PORTAL_ADMIN_ROLES, roleLabel, isRepresentativeRoleReal } = require('../constants/roles');
+const audit = require('./permissionAudit');
 
 const CACHE_MS = 15_000;
 let cache = null;
@@ -138,6 +141,47 @@ async function canUserAccess(user, resourceKey) {
   return false;
 }
 
+/**
+ * 動作層級權限（C 期）。判定順序與 canUserAccess 完全相同：
+ * admin 全開 → 個人例外 → 各身分的角色設定取聯集 → 拒絕。
+ * 分成兩支而不是讓 canUserAccess 也收動作代號：頁面清單（選單、/mine 的
+ * allowed）只該有頁面，混進動作代號會讓「看得到幾頁」這類計數全部失真。
+ */
+async function canUserDo(user, actionKey) {
+  if (!isActionKey(actionKey)) return false;   // 認不得的動作一律拒絕
+  const roles = await _rolesOf(user);
+  if (roles.has('admin')) return true;
+  const ov = await _overridesFor(user && user.userId);
+  if (ov.has(actionKey)) return ov.get(actionKey);
+  for (const r of roles) {
+    if ((await allowedActions(r)).includes(actionKey)) return true;
+  }
+  return false;
+}
+
+/** 某個角色能做的動作。不走後台的身分（教練）一律沒有。 */
+async function allowedActions(role) {
+  if (role === 'admin') return [...ACTION_KEYS];
+  if (!PORTAL_ADMIN_ROLES.includes(role)) return [];
+  const m = await _load();
+  const set = m.get(role);
+  return set ? ACTION_KEYS.filter((k) => set.has(k)) : [];
+}
+
+/** 某個登入帳號實際能做的動作（角色預設套上個人例外）。 */
+async function effectiveActions(user) {
+  const roles = await _rolesOf(user);
+  if (roles.has('admin')) return [...ACTION_KEYS];
+  const ov = await _overridesFor(user && user.userId);
+  const base = new Set();
+  for (const r of roles) for (const k of await allowedActions(r)) base.add(k);
+  for (const [k, allowed] of ov) {
+    if (!isActionKey(k)) continue;
+    if (allowed) base.add(k); else base.delete(k);
+  }
+  return ACTION_KEYS.filter((k) => base.has(k));
+}
+
 /** 某個登入帳號實際看得到的頁面（角色預設套上個人例外）。 */
 async function effectiveResources(user) {
   const roles = await _rolesOf(user);
@@ -166,7 +210,7 @@ async function getMatrix() {
   // 只列會用到後台的身分。原本走 ROLES 全集，於是矩陣多出一個 coach 欄 ——
   // API 送給前端時又把它濾掉，結果是「設定得了、看不見、卻會生效」。
   for (const key of PORTAL_ADMIN_ROLES) {
-    out[key] = key === 'admin' ? [...RESOURCE_KEYS] : [...(m.get(key) || [])];
+    out[key] = key === 'admin' ? [...RESOURCE_KEYS, ...ACTION_KEYS] : [...(m.get(key) || [])];
   }
   return out;
 }
@@ -191,7 +235,8 @@ async function setRolePermissions(role, resourceKeys, actor = 'admin') {
     throw err;
   }
   const keys = [...new Set((resourceKeys || []).map(String))];
-  const bad = keys.filter((k) => !isResourceKey(k));
+  // 頁面與動作（C 期）存在同一張表、同一次整組取代。
+  const bad = keys.filter((k) => !isPermissionKey(k));
   if (bad.length) {
     const err = new Error(`未知的頁面代號：${bad.join('、')}`);
     err.code = 'UNKNOWN_RESOURCE';
@@ -201,14 +246,25 @@ async function setRolePermissions(role, resourceKeys, actor = 'admin') {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // 先讀舊值再刪，差異寫進變更紀錄（B 期）。FOR UPDATE 讓兩個管理員同時存檔時
+    // 依序進行，否則兩筆紀錄會各自以為自己是從同一份舊值改起。
+    const prev = await client.query(
+      'SELECT resource_key FROM role_permissions WHERE role = $1 FOR UPDATE', [role]);
     await client.query('DELETE FROM role_permissions WHERE role = $1', [role]);
     if (keys.length) {
       const values = keys.map((_, i) => `($1, $${i + 2}, $${keys.length + 2})`).join(', ');
       await client.query(
         `INSERT INTO role_permissions (role, resource_key, updated_by) VALUES ${values}`,
-        [role, ...keys, actor]
+        [role, ...keys, audit.actorOf(actor).name]
       );
     }
+    await audit.record(client, {
+      actor,
+      targetType: 'role',
+      targetId: role,
+      targetLabel: roleLabel(role),
+      changes: audit.diff(audit.setToMap(prev.rows.map((r) => r.resource_key)), audit.setToMap(keys)),
+    });
     await client.query('COMMIT');
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
@@ -238,7 +294,7 @@ async function setUserOverrides(userId, overrides, actor = 'admin') {
     throw err;
   }
   const entries = Object.entries(overrides || {});
-  const bad = entries.map(([k]) => k).filter((k) => !isResourceKey(k));
+  const bad = entries.map(([k]) => k).filter((k) => !isPermissionKey(k));
   if (bad.length) {
     const err = new Error(`未知的頁面代號：${bad.join('、')}`);
     err.code = 'UNKNOWN_RESOURCE';
@@ -248,17 +304,34 @@ async function setUserOverrides(userId, overrides, actor = 'admin') {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const prev = await client.query(
+      'SELECT resource_key, allowed FROM user_permission_overrides WHERE user_id = $1 FOR UPDATE', [uid]);
     await client.query('DELETE FROM user_permission_overrides WHERE user_id = $1', [uid]);
     if (entries.length) {
       const values = entries.map((_, i) => `($1, $${i * 2 + 2}, $${i * 2 + 3}, $${entries.length * 2 + 2})`).join(', ');
       const args = [uid];
       for (const [k, v] of entries) args.push(k, !!v);
-      args.push(actor);
+      args.push(audit.actorOf(actor).name);
       await client.query(
         `INSERT INTO user_permission_overrides (user_id, resource_key, allowed, updated_by) VALUES ${values}`,
         args
       );
     }
+    // 例外記成 'allow' / 'deny' / null（跟著角色走），比 true/false 好讀。
+    const word = (v) => (v ? 'allow' : 'deny');
+    const before = {};
+    for (const r of prev.rows) before[r.resource_key] = word(r.allowed);
+    const after = {};
+    for (const [k, v] of entries) after[k] = word(!!v);
+    const who = await client.query(
+      `SELECT COALESCE(NULLIF(u.name, ''), u.username) AS label FROM admin_users u WHERE u.id = $1`, [uid]);
+    await audit.record(client, {
+      actor,
+      targetType: 'user',
+      targetId: uid,
+      targetLabel: who.rows[0] ? who.rows[0].label : null,
+      changes: audit.diff(before, after),
+    });
     await client.query('COMMIT');
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
@@ -272,6 +345,7 @@ async function setUserOverrides(userId, overrides, actor = 'admin') {
 
 module.exports = {
   canAccess, canUserAccess, allowedResources, effectiveResources, rolesOf: _rolesOf,
+  canUserDo, allowedActions, effectiveActions,
   getMatrix, setRolePermissions, getUserOverrides, setUserOverrides, invalidate,
 };
 

@@ -5,6 +5,7 @@ import { useToast } from '../context/ToastContext';
 import { rolePermissionsApi } from '../api/rolePermissions';
 import { usePermissions } from '../context/PermissionContext';
 import UserOverridesPanel from './UserOverridesPanel';
+import PermissionAuditPanel from './PermissionAuditPanel';
 
 /**
  * F-A06 角色權限管理
@@ -69,11 +70,16 @@ export default function RolePermissionsPage() {
     });
   }
 
+  // 「全選」只動頁面，不動底下的動作（C 期）。動作預設只給管理員，
+  // 一鍵全選順手發出「刪除紀錄」這類權限，正是動作層級要避免的事。
   function toggleGroup(roleKey, items, on) {
     setDraft((cur) => {
       const next = { ...cur };
       const s = new Set(next[roleKey] || []);
-      for (const it of items) { if (on) s.add(it.key); else s.delete(it.key); }
+      for (const it of items) {
+        if (it.kind === 'action') continue;
+        if (on) s.add(it.key); else s.delete(it.key);
+      }
       next[roleKey] = s;
       return next;
     });
@@ -99,6 +105,7 @@ export default function RolePermissionsPage() {
   if (!data) return <LoadingSpinner fullPage />;
 
   const nonBackoffice = data.roles.filter((r) => !r.backoffice);
+  const pageKeys = new Set(data.resources.filter((r) => r.kind !== 'action').map((r) => r.key));
 
   return (
     <div>
@@ -107,7 +114,7 @@ export default function RolePermissionsPage() {
 
       {/* 兩層：先依角色定調，再針對特定人員開例外。 */}
       <div className="mb-4 flex gap-1 border-b border-gray-200">
-        {[['role', '依角色'], ['user', '個別人員例外']].map(([k, label]) => (
+        {[['role', '依角色'], ['user', '個別人員例外'], ['audit', '變更紀錄']].map(([k, label]) => (
           <button key={k} type="button" onClick={() => setTab(k)}
             className={`-mb-px border-b-2 px-4 py-2 text-sm ${
               tab === k ? 'border-brand-primary font-bold text-brand-primary'
@@ -133,6 +140,8 @@ export default function RolePermissionsPage() {
       )}
 
       {tab === 'user' && <UserOverridesPanel resources={data.resources} groups={groups} />}
+
+      {tab === 'audit' && <PermissionAuditPanel resources={data.resources} roles={data.roles} />}
 
       {tab === 'role' && nonBackoffice.length > 0 && (
         <p className="mb-4 max-w-4xl rounded-lg bg-amber-50 px-4 py-2.5 text-xs leading-6 text-amber-800">
@@ -162,7 +171,8 @@ export default function RolePermissionsPage() {
                   <div className="mt-0.5 text-[11px] font-normal text-gray-400">
                     {r.immutable
                       ? '全開'
-                      : (draft[r.key] || new Set()).size + ' / ' + data.resources.length}
+                      : [...(draft[r.key] || new Set())].filter((k) => pageKeys.has(k)).length
+                        + ' / ' + pageKeys.size + ' 頁'}
                   </div>
                 </th>
               ))}
@@ -175,7 +185,7 @@ export default function RolePermissionsPage() {
                   <td className="px-4 py-2 text-[13px] font-bold tracking-wide text-gray-700">{g.title}</td>
                   {data.roles.map((r) => {
                     const s = draft[r.key] || new Set();
-                    const all = g.items.every((it) => s.has(it.key));
+                    const all = g.items.filter((it) => it.kind !== 'action').every((it) => s.has(it.key));
                     return (
                       <td key={r.key} className="px-1 py-1.5 text-center">
                         {r.immutable ? <span className="text-[10px] text-gray-300">—</span> : (
@@ -195,10 +205,19 @@ export default function RolePermissionsPage() {
                         捲動距離變長、對照欄位更容易看錯行。 */}
                     {/* 路徑用 11px 而不是 10px：它是拿來核對「這一列是不是我要的頁面」的，
                         10px 的等寬數字在一般螢幕上要湊近看。 */}
+                    {it.kind === 'action' ? (
+                      // 動作（C 期）縮排在所屬頁面底下。只勾動作不勾頁面不會生效 ——
+                      // 後端兩道閘門都要過。
+                      <td className="py-2 pl-10 pr-4">
+                        <span className="mr-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">動作</span>
+                        <span className="text-[13px] text-gray-700">{it.label}</span>
+                      </td>
+                    ) : (
                     <td className="px-4 py-2">
                       <span className="text-[14px] text-gray-800">{it.label}</span>
                       <span className="ml-2 font-mono text-[11px] text-gray-400">{it.path}</span>
                     </td>
+                    )}
                     {data.roles.map((r) => {
                       const checked = r.immutable || (draft[r.key] || new Set()).has(it.key);
                       return (
@@ -208,7 +227,7 @@ export default function RolePermissionsPage() {
                           <label
                             className={`flex h-full w-full items-center justify-center py-1.5 ${
                               r.immutable ? 'cursor-not-allowed' : 'cursor-pointer'}`}
-                            title={r.immutable ? '系統管理員永遠可見全部頁面'
+                            title={r.immutable ? '系統管理員永遠可見全部頁面、可做全部動作'
                               : `${r.label}：${it.label}`}>
                             <input type="checkbox" checked={checked} disabled={r.immutable}
                               onChange={() => toggle(r.key, it.key)}

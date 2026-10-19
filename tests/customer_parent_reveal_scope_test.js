@@ -29,6 +29,12 @@ pool.query = async (sql) => {
   throw new Error(`unexpected query: ${sql.slice(0, 60)}`);
 };
 
+// 憑證即時失效檢查（adminSession）要查 DB；這裡只測權限閘門，視為有效憑證。
+const adminSessionPath = require.resolve('../server/services/adminSession');
+require.cache[adminSessionPath] = {
+  id: adminSessionPath, filename: adminSessionPath, loaded: true,
+  exports: { checkToken: async () => null, invalidate: () => {}, snapshot: async () => null },
+};
 const { signToken } = require('../server/middlewares/adminAuth');
 const app = express();
 app.use('/cp', require('../server/routes/admin/customerParents'));

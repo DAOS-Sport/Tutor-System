@@ -203,14 +203,25 @@ export default function UserOverridesPanel({ resources, groups }) {
                         const roleHas = detail.role_allowed.includes(it.key);
                         const v = draft[it.key] || FOLLOW;
                         const effective = v === GRANT ? true : v === REVOKE ? false : roleHas;
+                        // 動作（C 期）用「可做 / 不可做」，頁面用「可見 / 不可見」。
+                        const isAction = it.kind === 'action';
+                        const yes = isAction ? '可做' : '可見';
+                        const no = isAction ? '不可做' : '不可見';
                         return (
                           <tr key={it.key} className="border-t border-gray-100">
+                            {isAction ? (
+                              <td className="py-2 pl-10 pr-4">
+                                <span className="mr-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">動作</span>
+                                <span className="text-gray-700">{it.label}</span>
+                              </td>
+                            ) : (
                             <td className="px-4 py-2">
                               <div className="text-gray-800">{it.label}</div>
                               <div className="font-mono text-[10px] text-gray-400">{it.path}</div>
                             </td>
+                            )}
                             <td className="px-3 py-2 text-center text-xs text-gray-400">
-                              {roleHas ? '可見' : '不可見'}
+                              {roleHas ? yes : no}
                             </td>
                             <td className="px-3 py-2 text-center">
                               <select value={v}
@@ -220,12 +231,12 @@ export default function UserOverridesPanel({ resources, groups }) {
                                     : v === GRANT ? 'border-brand-green bg-brand-green/5 font-bold text-brand-green'
                                       : 'border-red-300 bg-red-50 font-bold text-red-700'
                                 }`}>
-                                <option value={FOLLOW}>跟隨角色（{roleHas ? '可見' : '不可見'}）</option>
+                                <option value={FOLLOW}>跟隨角色（{roleHas ? yes : no}）</option>
                                 <option value={GRANT}>單獨開通</option>
                                 <option value={REVOKE}>單獨收回</option>
                               </select>
                               <div className="mt-0.5 text-[10px] text-gray-400">
-                                實際：{effective ? '看得到' : '看不到'}
+                                實際：{isAction ? (effective ? '可以做' : '不能做') : (effective ? '看得到' : '看不到')}
                               </div>
                             </td>
                           </tr>

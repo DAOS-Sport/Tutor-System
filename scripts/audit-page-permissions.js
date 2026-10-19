@@ -18,8 +18,6 @@ const { ADMIN_RESOURCES } = require(path.join(__dirname, '..', 'server', 'consta
 const EXPECTED_GAPS = [
   { page: '/dashboard', api: 'GET /enrollments/stats',
     why: 'DashboardPage 以 canEnrollStats（同一組 key）判斷，沒權限就不呼叫，統計卡顯示空值' },
-  { page: '/ragic-z03', api: 'GET /ragic-z03/review-archive/preview',
-    why: '歸檔預覽是 admin 專屬操作，RagicZ03Page 只對 isAdmin 顯示按鈕；後端名單見 role_gate_coverage_test' },
 ];
 
 // `${qs}` 接在非斜線後面是查詢字串，不是路徑參數
@@ -41,6 +39,8 @@ function blockedGates(route, key) {
   return route.gates.filter((g) => {
     if (g.type === 'login' || g.type === 'anyBackoffice') return false;
     if (g.type === 'resource') return !g.keys.includes(key);
+    // 動作權限是管理員在 F-A06 另外勾的細項（刪除、歸檔…），不屬於「看得到這頁」
+    if (g.type === 'action') return false;
     return true;
   });
 }

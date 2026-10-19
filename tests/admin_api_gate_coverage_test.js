@@ -37,14 +37,15 @@ const ALLOWED = {
   },
 };
 
-const GATE = /require(?:Any)?Resource\(|requireAnyBackoffice\(|requireAdminRole\(/;
+// requireAction：角色權限 C 期的動作閘門，讀同一張設定表，一樣算數。
+const GATE = /require(?:Any)?Resource\(|requireAction\(|requireAnyBackoffice\(|requireAdminRole\(/;
 const HEAD = /router\.(get|post|put|patch|delete)\(\s*'([^']*)'/gm;
 const STOP = /async\s*\(|\(req\s*,|wrap\(/;
 
 function bareRoutes(src) {
   // 提升成常數的閘門
   const hoisted = [...src.matchAll(
-    /const\s+(\w+)\s*=\s*(?:require(?:Any)?Resource\(|requireAnyBackoffice\(|requireAdminRole\()/g,
+    /const\s+(\w+)\s*=\s*(?:require(?:Any)?Resource\(|requireAction\(|requireAnyBackoffice\(|requireAdminRole\()/g,
   )].map((m) => m[1]);
   // 檔案層 router.use(...)：參數裡含閘門就算，允許多參數
   for (const m of src.matchAll(/router\.use\(([^;]*?)\);/g)) {

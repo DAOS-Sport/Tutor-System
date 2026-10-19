@@ -18,6 +18,8 @@ function installTaggedGates() {
   rr.requireResource = (key) => tag(origResource(key), { type: 'resource', keys: [key] });
   rr.requireAnyResource = (...keys) => tag(origAny(...keys), { type: 'resource', keys });
   rr.requireAnyBackoffice = () => tag((req, res, next) => next(), { type: 'anyBackoffice' });
+  const origAction = rr.requireAction;
+  rr.requireAction = (key) => tag(origAction(key), { type: 'action', keys: [key] });
 
   const auth = require(path.join(SERVER, 'middlewares/adminAuth'));
   const origRole = auth.requireAdminRole;
