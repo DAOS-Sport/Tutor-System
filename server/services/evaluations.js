@@ -12,6 +12,7 @@
  *   - listPendingAlerts() / markAlertNotified(id)
  */
 const { pool } = require('../models/db');
+const { taipeiMonthKey } = require('../utils/dateTime');
 
 const MAX_COMMENT = 1000;
 const RENEW_VALUES = new Set(['yes', 'no', 'unknown']);
@@ -141,7 +142,8 @@ async function coachReport(coachId, { from, to } = {}) {
   );
 
   const monthly = await pool.query(
-    `SELECT TO_CHAR(DATE_TRUNC('month', submitted_at), 'YYYY-MM') AS month,
+    // 月份以台北切：DATE_TRUNC 直接作用在 timestamptz 會用連線 TimeZone（Issue #11）。
+    `SELECT TO_CHAR(DATE_TRUNC('month', submitted_at AT TIME ZONE 'Asia/Taipei'), 'YYYY-MM') AS month,
             COUNT(*)::int AS n,
             ROUND(AVG(score_overall)::numeric, 2) AS avg_overall,
             ROUND(AVG(score_teaching)::numeric, 2) AS avg_teaching
@@ -254,7 +256,9 @@ async function listAllCoachReports() {
 // 不達標偵測（cron 用）：每個教練 / 每個啟用門檻 → 同月寫一次，UNIQUE 防重。
 async function detectBelowThreshold() {
   const reports = await listAllCoachReports();
-  const month = new Date().toISOString().slice(0, 7); // YYYY-MM
+  // 台北月份（YYYY-MM）。原本 toISOString().slice(0, 7) 是 UTC 月份，
+  // 每月 1 日台北 00:00–08:00 會寫成上個月（Issue #11）。
+  const month = taipeiMonthKey();
   const created = [];
   for (const r of reports) {
     for (const metric of r.failed_metrics || []) {

@@ -56,6 +56,8 @@ const UNIT = [
   'tests/coach_checkin_badge_style_test.js',
   'tests/coach_checkin_removed_test.js',
   'tests/manual_enroll_frozen_test.js',
+  // Issue #11：日期邏輯在不同 TZ 子行程下結果必須相同（台北跨日邊界）。
+  'tests/timezone_independence_test.js',
   'tests/shared_class_checkin_contract_test.js',
   'tests/reconcile_email_test.js',
   'tests/venue_oa_deeplink_test.js',
@@ -196,6 +198,8 @@ const DB = [
   // 不破壞既有資料，但需要真實 DATABASE_URL，所以歸在這一層而不是 unit。
   'tests/permission_smoke_test.js',
   'tests/coach_session_date_range_db_test.js',
+  // Issue #11：業務日期 SQL 在連線 TimeZone=UTC／洛杉磯下仍得到台北答案。只算常數式，不碰資料表。
+  'tests/timezone_sql_db_test.js',
   'tests/parent_identity_closure_test.js',
   'tests/push_gate_test.js',
   'tests/ragic_incremental_sync_test.js',
