@@ -16,36 +16,7 @@
 const express = require('express');
 const router = express.Router();
 
-router.use('/auth',          require('./admin/auth'));
-router.use('/staff',         require('./admin/staff'));
-router.use('/coaches',       require('./admin/coaches'));   // F-C-Admin (Task #32)
-router.use('/venues',        require('./admin/venues'));
-router.use('/settings',      require('./admin/settings'));
-router.use('/course-intros', require('./admin/courseIntros'));
-router.use('/checkouts',     require('./admin/checkouts'));
-router.use('/enrollments',   require('./admin/enrollments'));
-router.use('/sessions',      require('./admin/sessions'));
-router.use('/manual-deductions', require('./admin/manualDeductions')); // F-R02 手動扣課（非 F-M05 扣課復活）
-router.use('/checkins',      require('./admin/checkins'));   // Task #60
-router.use('/chat',          require('./admin/chat'));
-router.use('/periods',       require('./admin/periods'));
-router.use('/learn',         require('./admin/learn'));   // F-A08 / F-M09 / F-A09 / F-C06
-router.use('/promotions',    require('./admin/promotions')); // F-M07 / F-A05 / F-R05
-router.use('/mgm-stats',     require('./admin/mgmStats'));   // F-M10
-router.use('/transfers',     require('./admin/transfers'));  // F-M04
-router.use('/reports',       require('./admin/reports'));    // F-M01
-router.use('/uploads',       require('./admin/uploads'));    // Task #39 發票上傳
-router.use('/role-permissions', require('./admin/rolePermissions')); // F-A06 角色權限管理
-router.use('/pricing-zones', require('./admin/pricingZones'));  // F-A08 定價區（課程需求管理的分頁）
-router.use('/course-types',  require('./admin/courseTypes')); // 課程需求管理
-router.use('/group-orders',  require('./admin/groupOrders')); // U6 團購審核
-router.use('/ragic-status',  require('./admin/ragicStatus')); // Task #65 Ragic 健康檢查
-router.use('/ragic-timeline', require('./admin/ragicTimeline')); // Read-only completed daily nodes.
-router.use('/ragic-staging', require('./admin/ragicStaging')); // Task #66 Ragic 待審核區
-router.use('/ragic-z03',     require('./admin/ragicZ03'));     // Z03 舊系統壞姓名人工整理表
-router.use('/customer-parents',  require('./admin/customerParents'));  // 客戶資料管理 Z01 家長&學員關係
-router.use('/customer-students', require('./admin/customerStudents')); // 客戶資料管理 Z02 學員資料（含購買紀錄）
-router.use('/families',          require('./admin/families'));         // 家庭帳號（Z01 頁的家庭區塊與申請審核）
+for (const [prefix, load] of require('../routeRegistry').ADMIN_ROUTES) router.use(prefix, load());
 
 // 兜底：呼叫到沒實作的路徑時，明確回 404 而不是被前面的 401 吞掉
 router.all('*', (req, res) => {
