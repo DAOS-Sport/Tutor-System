@@ -177,6 +177,9 @@ async function listRoomsForAdmin({ search, venueId, venueIds } = {}) {
   return _hydrate(r.rows, { type: 'admin', id: null });
 }
 
+// 聊天室進入權刻意不讀 F-A06 角色權限：admin 全部、manager 限自己場館、staff 與
+// lifeguard 一律不行（F-M03，docs/adr_phase4_chat.md §4）。在 F-A06 把 chat-logs
+// 開給其他角色，只影響後台 HTTP 列表，不會讓 WebSocket 進得了房間（2026-10-19 Owner 決定維持）。
 // phone：家長的手機（家庭帳號開關可依手機試點）；舊呼叫端不帶也能用
 async function canAccess({ roomId, role, userId, venueId, phone } = {}) {
   if (!roomId) return false;

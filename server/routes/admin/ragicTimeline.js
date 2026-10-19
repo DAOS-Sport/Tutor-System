@@ -1,11 +1,11 @@
 'use strict';
 const express = require('express');
-const { requireAdminAuth, requireAdminRole } = require('../../middlewares/adminAuth');
+const { requireAdminAuth } = require('../../middlewares/adminAuth');
 const { requireResource } = require('../../middlewares/requireResource');
 const { createTimeline, createReplayRunner } = require('../../services/ragicTimeline');
 function createRouter(service) {
   const router = express.Router();
-  router.use(requireAdminAuth, requireAdminRole('admin'), requireResource('ragic-status'));
+  router.use(requireAdminAuth, requireResource('ragic-status'));
   const endpoint = (action) => async (req, res) => {
     try { res.set('Cache-Control', 'no-store'); res.json(await action(req)); }
     catch (error) { res.status(error.status || 503).json({ code: /^TIMELINE_[A-Z_]+$/.test(error.code || '') ? error.code : 'TIMELINE_UNAVAILABLE' }); }
