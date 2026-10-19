@@ -73,5 +73,5 @@
 1. 凍結 Ragic 主檔修改 30 分鐘
 2. 跑一次手動備份
 3. Publish → 驗證 §5 健康檢查
-4. 用 4 個 UAT 帳號（`docs/uat_playbook.md`）走 smoke 路徑 A / B / G
+4. 用 4 個 UAT 帳號（`docs/release/uat_playbook.md`）走 smoke 路徑 A / B / G
 5. 解除凍結，宣布上線

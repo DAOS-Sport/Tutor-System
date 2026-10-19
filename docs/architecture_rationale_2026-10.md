@@ -158,3 +158,26 @@ server/modules/enrollment/
 3. **`xlsx` 改為點擊匯出時才動態載入**：`client/admin/src/utils/csvExport.js` 改成 `await import('xlsx')`；呼叫端需改為 async。注意 `SessionsPage` 屬凍結區頁面。
 4. **LIFF 首屏**：`@line/liff` 佔入口 chunk 大宗；教練路徑與 demo 路徑根本不 init LIFF，可評估在 `main.jsx` 動態載入 SDK（需實機驗證）。
 5. **品牌 favicon**：`/brand/company-1b122f0a.png` 992 KB，每個頁面都會載入當 favicon；換成小尺寸圖檔即可，零風險。
+
+### 7.1 處理狀態（2026-10-19 更新）
+
+| # | 候選 | 狀態 |
+| --- | --- | --- |
+| 1 | 報名清單分頁 | 不改：手機版已經每批 50 筆；桌機版刻意一次載全部（篩選、匯出要用）。傳輸量交給 #2 處理 |
+| 2 | API JSON 壓縮 | PR #30：只壓縮 ≥64 KB 的 JSON，用內建 zlib，沒有新增套件。本機 1,038,562 B → 34,282 B |
+| 3 | xlsx 改成按下匯出才載入 | PR #29：5 頁改成動態載入（首屏 gzip 約少 130–150 KB）；凍結的 `SessionsPage` 不動 |
+| 4 | LIFF SDK 動態載入 | **評估後暫不做**，原因見下 |
+| 5 | favicon | PR #28：992 KB 換成 2.8 KB／13.8 KB 小圖 |
+
+**#4 評估（`@line/liff` ^2.23）**
+
+- 量測：SDK 單獨 minify 後 123,540 B，gzip 34,249 B。LIFF 入口檔（`index-*.js`）共 588,912 B，gzip 189,755 B，SDK 約占 18%。
+- 誰會受益：只有教練端（`/liff/coach*`）與 demo 路徑，因為這兩條不會 init LIFF。家長端是主要使用者，一進來就要 `liff.init`，SDK 一樣得先下載，沒有省到。
+- 要改哪裡：有 5 個檔案靜態 `import liff`。只有 `GroupStatusPage` 是 lazy chunk；另外 4 個都在入口檔裡，都得改：
+  - `main.jsx`：家長端啟動時要 `liff.init`，改成先 `await import('@line/liff')`。
+  - `api/client.js`：只有在 request 回 401、要靜默重新驗證時（`silentReauthParent()`，本身已是 async）才呼叫 `liff.getIDToken()`，一般 request 只帶 localStorage 裡的 JWT。在這裡動態載入，不影響其他 API 呼叫。
+  - `LoginPage`、`RegisterPage`（`App.jsx` 同步 import）：要改成 lazy 頁面，或把裡面的 `liff.*` 呼叫改成動態取得。`LoginPage` 有「只刷一次 token」守衛，屬登入核心流程。
+- 代價：家長端是主要使用者，首屏會多一段「入口檔下載完 → 再下載 SDK chunk → 才能 `liff.init`」的串接等待。在 LINE 內建瀏覽器加行動網路下，這通常比省下的 34 KB 還慢。
+- 風險：LINE 內建瀏覽器的 init 與 redirect 時序只能靠實機驗證，本機沙盒做不到。
+- 結論：教練端與 demo 省約 34 KB gzip，代價是家長端首屏多一段等待，暫不做。若之後教練端首屏變成瓶頸，可以照上面 4 個檔案的做法改，並在 LINE 實機量家長端首屏有沒有變慢再決定；或把教練端拆成獨立入口。
+

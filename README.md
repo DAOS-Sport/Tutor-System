@@ -56,7 +56,8 @@ cd client/admin && npm run dev
 | 文件 | 說明 |
 |---|---|
 | `docs/architecture_v7.md` | 系統需求架構書 v7.0（完整版）|
-| `docs/schema_v2.sql` | 資料庫 Schema（含 v7 更新）|
+| `docs/README.md` | 完整文件索引（含 audits／release／specs 子目錄）|
+| `server/bootstrap/`、`db/migrations/` | 資料庫 Schema（以程式內 bootstrap 為準）|
 | `docs/dev_schedule.md` | 開發優先順序排程 |
 | `docs/brand_colors.md` | 品牌色系規範 |
 | `docs/replit_notes.md` | Replit 開發注意事項 |

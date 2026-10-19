@@ -235,9 +235,9 @@ Admin：
 
 ### 文件
 - `docs/flex_message_checklist.md`：18 種 Flex Message 對應表（spec # → 模板函數 → 觸發點 → 接收者 → 驗證紀錄欄）。
-- `docs/deploy_checklist.md`：上線前 8 大項檢查（Replit Secrets / LINE / Ragic / DB / Build / 備份 / 監控 / Cutover）。
+- `docs/release/deploy_checklist.md`：上線前 8 大項檢查（Replit Secrets / LINE / Ragic / DB / Build / 備份 / 監控 / Cutover）。
 - `docs/perf_baseline.md`：HTTP（autocannon）/ WS / 上傳 三個基線量測流程與表格樣板（驗收線：API P95 <500ms、WS P95 <200ms、上傳成功率 >99%）。
-- `docs/uat_playbook.md`：行政 / 主管 / 教練 / 家長 4 角色共 14 條 UAT 案例 + P1/P2/P3 缺陷分級 + 簽核表。
+- `docs/release/uat_playbook.md`：行政 / 主管 / 教練 / 家長 4 角色共 14 條 UAT 案例 + P1/P2/P3 缺陷分級 + 簽核表。
 
 ### 程式碼
 - `server/services/ragic.js` 加 in-process LRU+TTL 快取（預設 5 分鐘，可由 `RAGIC_CACHE_TTL_MS` 調整）：`getActiveCoaches/getCounterStaff/getAllStaff/getActiveVenues` 走 cache；`upsertParent/upsertStudent` 寫回後自動 invalidate `z01:` / `z02:`。
