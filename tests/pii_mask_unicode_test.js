@@ -58,7 +58,7 @@ check('maskStudentName 同樣不切半（若有匯出）', () => {
 });
 
 check('maskPhone 不受影響', () => {
-  assert.strictEqual(maskPhone('0900796878'), '0912****78');
+  assert.strictEqual(maskPhone('0900796878'), '0900****78');
 });
 
 check('實作真的改成以 code point 切（不是靠碰巧）', () => {

@@ -13,6 +13,7 @@
 
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
@@ -265,8 +266,11 @@ function createMcpRouter() {
     if (!key) {
       return res.status(503).json({ error: 'MCP 未設定：請在 Replit Secrets 加入 MCP_API_KEY' });
     }
-    const auth = req.headers.authorization || '';
-    if (auth !== `Bearer ${key}`) {
+    // 固定時間比對，避免從回應時間逐字元猜出金鑰。timingSafeEqual 遇到長度
+    // 不同會丟例外，所以先比位元組長度，不同就直接當成錯誤金鑰。
+    const given = Buffer.from(req.headers.authorization || '');
+    const expected = Buffer.from(`Bearer ${key}`);
+    if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) {
       return res.status(401).json({ error: '認證失敗：Authorization: Bearer <MCP_API_KEY>' });
     }
     next();

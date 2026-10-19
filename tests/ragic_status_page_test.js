@@ -87,7 +87,7 @@ check('quarantine 退役：不在狀態頁、不能手動觸發、排程經閘�
 });
 
 // ── 3. 頁面：原本的卡片，只改必要處 ─────────────────────────────────────────
-const page = read('client/admin/src/pages/RagicStatusPage.jsx');
+const page = read('client/admin/src/pages/RagicStatusPage.jsx').replace(/"/g, "'").replace(/\n\s+/g, ' ');
 check('維持原本的卡片版面', () => {
   for (const needle of ['function FormCard(', '<LiveProbePanel probe={data.live_probe} />', '單獨同步此表', '發送連線 Ping']) {
     assert.ok(page.includes(needle), `少了 ${needle}`);

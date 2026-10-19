@@ -178,6 +178,7 @@ const UNIT = [
   'tests/page_read_permission_test.js',
   'tests/customer_parent_reveal_scope_test.js',
   'tests/representative_role_rule_test.js',
+  'tests/mcp_auth_key_test.js',
   'tests/e2e_test_db_guard_test.js',
   'tests/release/canary_config_test.js',
   'tests/release/reconcile_image_pipeline_test.js',
@@ -297,7 +298,7 @@ const tier = process.argv[2] || 'unit';
 if (tier === 'unit') {
   assertNoUnclassified();
   // server/ 內建的 node:test 單元測試（原本的 npm test 內容）
-  const nodeTest = spawnSync(process.execPath, ['--test', 'test/'], { cwd: SERVER, stdio: 'inherit' });
+  const nodeTest = spawnSync(process.execPath, ['--test', ...fs.readdirSync(path.join(SERVER, 'test')).filter((f) => f.endsWith('.test.js')).sort().map((f) => path.join('test', f))], { cwd: SERVER, stdio: 'inherit' });
   const ok = report(runFiles(UNIT), 'unit') && nodeTest.status === 0;
   if (nodeTest.status !== 0) console.log('   FAIL  server/test（node --test）');
   process.exit(ok ? 0 : 1);

@@ -33,27 +33,27 @@ async function testProofInput() {
 function testRetryAndPreservationRules() {
   const member = { payment_proof_url: VALID_PROOF, transfer_last_5: '12345', carrier: '/E2ETEST' };
   assert.strictEqual(
-    isSamePaymentPayload(member, { supplied: true, value: VALID_PROOF, last5: '12345' }),
+    isSamePaymentPayload(member, { supplied: true, value: VALID_PROOF, last5: '12345', invoiceIdentity: { supplied: false, carrier: null, taxId: null } }),
     true,
     'same request retry should be idempotent',
   );
   assert.strictEqual(
-    isSamePaymentPayload(member, { value: '/uploads/2026-07/aaaaaaaaaaaaaaaaaaaaaaaa.png', last5: '12345' }),
+    isSamePaymentPayload(member, { value: '/uploads/2026-07/aaaaaaaaaaaaaaaaaaaaaaaa.png', last5: '12345', invoiceIdentity: { supplied: false, carrier: null, taxId: null } }),
     false,
     'a different proof must not be treated as an idempotent retry',
   );
   assert.strictEqual(
-    isSamePaymentPayload(member, { value: null, last5: '' }),
+    isSamePaymentPayload(member, { value: null, last5: '', invoiceIdentity: { supplied: false, carrier: null, taxId: null } }),
     false,
     'omitted payment fields do not authorize a write or clear existing proof',
   );
   assert.strictEqual(
-    isSamePaymentPayload(member, { carrier: '/E2ETEST' }),
+    isSamePaymentPayload(member, { invoiceIdentity: { supplied: true, carrier: '/E2ETEST', taxId: null } }),
     true,
     'same carrier-only retry should be idempotent',
   );
   assert.strictEqual(
-    isSamePaymentPayload(member, { carrier: '/DIFFERENT' }),
+    isSamePaymentPayload(member, { invoiceIdentity: { supplied: true, carrier: '/DIFFERENT', taxId: null } }),
     false,
     'a different carrier must not be treated as an idempotent retry',
   );
