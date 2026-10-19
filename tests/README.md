@@ -15,7 +15,7 @@ tests/
 cd server
 npm test          # unit：19 支零外部相依測試 + server/test 的 node:test；隨時可跑
 npm run test:db   # 需 TEST_DATABASE_URL 指向拋棄式測試庫（含 DELETE，刻意不吃 DATABASE_URL）
-npm run test:e2e  # 委派 tests/e2e/run_all.js，需先起 server
+npm run test:e2e  # 委派 tests/e2e/run_all.js，需先起 server，且需 TEST_DATABASE_URL（與 DATABASE_URL 不同，否則拒絕）
 npm run test:server  # 只跑 server/test 的 node:test（原本的 npm test）
 ```
 
@@ -32,6 +32,7 @@ export ADMIN_USERNAME=admin
 export ADMIN_PASSWORD=...
 export PARENT_PHONE=0900215261
 export BASE_URL=http://localhost:3000
+export TEST_DATABASE_URL=postgres://...  # 拋棄式測試庫；沒設或與 DATABASE_URL 相同時 run_all 直接拒絕
 
 # 1. 全部 E2E
 node tests/e2e/run_all.js

@@ -2,6 +2,10 @@
 const { spawnSync } = require('child_process');
 const path = require('path');
 const { clearTokenCache } = require('./_lib');
+const { requireTestDatabaseUrl, childEnv } = require('./_testDb');
+
+// 只認 TEST_DATABASE_URL；沒設或與 DATABASE_URL 相同就在任何子行程與連線之前結束。
+const TEST_DATABASE_URL = requireTestDatabaseUrl();
 
 // 整輪開始先清掉舊的 token 快取（避免用到上一輪過期 token）。
 // 之後各子行程經 _lib.loginAdmin 以檔案快取共用 token，同帳號整輪只登入一次，
@@ -47,7 +51,7 @@ const PATHS = [
 
 const results = [];
 for (const [tag, file] of PATHS) {
-  const r = spawnSync('node', [path.join(__dirname, file)], { stdio: 'inherit' });
+  const r = spawnSync('node', [path.join(__dirname, file)], { stdio: 'inherit', env: childEnv(TEST_DATABASE_URL) });
   results.push({ tag, ok: r.status === 0 });
 }
 
