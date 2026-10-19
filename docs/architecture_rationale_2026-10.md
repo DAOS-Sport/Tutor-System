@@ -173,7 +173,11 @@ server/modules/enrollment/
 
 - 量測：SDK 單獨 minify 後 123,540 B，gzip 34,249 B。LIFF 入口檔（`index-*.js`）共 588,912 B，gzip 189,755 B，SDK 約占 18%。
 - 誰會受益：只有教練端（`/liff/coach*`）與 demo 路徑，因為這兩條不會 init LIFF。家長端是主要使用者，一進來就要 `liff.init`，SDK 一樣得先下載，沒有省到。
-- 成本：有 5 個檔案用靜態 `import liff`（`main.jsx`、`api/client.js`、`LoginPage`、`RegisterPage`、`GroupStatusPage`）。其中 `api/client.js` 每次發 request 都會同步呼叫 `liff.getIDToken()`，改成非同步會碰到全部 API 呼叫，以及登入刷新守衛（只刷一次、避免無限跳轉）。
+- 要改哪裡：有 5 個檔案靜態 `import liff`。只有 `GroupStatusPage` 是 lazy chunk；另外 4 個都在入口檔裡，都得改：
+  - `main.jsx`：家長端啟動時要 `liff.init`，改成先 `await import('@line/liff')`。
+  - `api/client.js`：只有在 request 回 401、要靜默重新驗證時（`silentReauthParent()`，本身已是 async）才呼叫 `liff.getIDToken()`，一般 request 只帶 localStorage 裡的 JWT。在這裡動態載入，不影響其他 API 呼叫。
+  - `LoginPage`、`RegisterPage`（`App.jsx` 同步 import）：要改成 lazy 頁面，或把裡面的 `liff.*` 呼叫改成動態取得。`LoginPage` 有「只刷一次 token」守衛，屬登入核心流程。
+- 代價：家長端是主要使用者，首屏會多一段「入口檔下載完 → 再下載 SDK chunk → 才能 `liff.init`」的串接等待。在 LINE 內建瀏覽器加行動網路下，這通常比省下的 34 KB 還慢。
 - 風險：LINE 內建瀏覽器的 init 與 redirect 時序只能靠實機驗證，本機沙盒做不到。
-- 結論：效益只有教練端約 34 KB gzip，卻要改到登入核心流程，不划算。若之後教練端首屏變成瓶頸，比較好的做法是把教練端拆成獨立入口，而不是讓家長端共用的 `client.js` 改成非同步。
+- 結論：教練端與 demo 省約 34 KB gzip，代價是家長端首屏多一段等待，暫不做。若之後教練端首屏變成瓶頸，可以照上面 4 個檔案的做法改，並在 LINE 實機量家長端首屏有沒有變慢再決定；或把教練端拆成獨立入口。
 
