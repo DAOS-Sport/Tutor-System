@@ -203,15 +203,15 @@ function StudentEditTable({ students, onChange, onRemove }) {
               className={student.removedFromRagic ? 'bg-gray-200' : 'bg-white'}
               title={student.removedFromRagic ? '舊匯入列，已不在 Ragic，儲存時不會寫回' : undefined}
             >
-              {STUDENT_EDIT_FIELDS.map(([field]) => (
+              {STUDENT_EDIT_FIELDS.map(([field], fieldIndex) => (
                 <td key={field} className="border border-blue-100 p-1 align-top">
                   <FieldInput value={student[field]} onChange={(v) => onChange(index, field, v)} />
+                  {fieldIndex === 0 && student.removedFromRagic && (
+                    <div className="mt-0.5 whitespace-nowrap text-[10px] font-bold leading-3 text-gray-600">已不在 Ragic<br />不會寫回</div>
+                  )}
                 </td>
               ))}
               <td className="border border-blue-100 p-1 text-center align-middle">
-                {student.removedFromRagic && (
-                  <div className="mb-1 whitespace-nowrap text-[10px] font-bold text-gray-600">已不在 Ragic<br />不會寫回</div>
-                )}
                 <button
                   type="button"
                   onClick={() => onRemove(index)}
