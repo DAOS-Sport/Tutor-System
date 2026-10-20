@@ -38,6 +38,7 @@ const _fuzzyEligible = (row) => row.present_in_latest_payload !== false && row.c
 // 註冊頁一次最多填 MAX_PREBUILT_CLAIM_STUDENTS 位學員，填了幾位就算猜了幾次。照 claimZ03Identity 的順序（同名 → 身分證 → 只差一字）
 // 挑一位當核對對象，家長不必把已登記的孩子填在第一位；家庭範圍與比對資料都和 claimZ03Identity 相同。
 // 其餘交給 claimZ03Identity 在同一筆交易裡連結或新增。
+// 同名但身分證和登記的不同不算對上（學員以身分證為唯一鍵），所以優先挑同名且身分證不衝突的那位，填寫順序不影響結果。
 // 好幾位都沒有同名／身分證對上、只靠其中一位差一字：視為新戶（Owner 2026-10-20），另建帳號、不碰舊系統那一戶。
 async function pickRegistrationClaimStudent(phone, students, db = pool) {
   if (students.length > MAX_PREBUILT_CLAIM_STUDENTS) {
@@ -50,17 +51,18 @@ async function pickRegistrationClaimStudent(phone, students, db = pool) {
         AND r.status IN ('pending','resolved','manual_review')`, [normalizePhone(phone)]
   )).rows;
   const fuzzyRows = rows.filter(_fuzzyEligible);
-  const exact = students.findIndex((s) =>
-    rows.some((row) => normalizeStudentName(row.name) === normalizeStudentName(s.name)));
+  const sameName = (s) => rows.filter((row) => normalizeStudentName(row.name) === normalizeStudentName(s.name));
+  const exact = students.findIndex((s) => sameName(s).length > 0);
+  const strictExact = students.findIndex((s) => matchStudent(sameName(s), s, { allowNear: false })?.method === 'EXACT');
   const byId = students.findIndex((s) => matchStudent(fuzzyRows, s, { allowNear: false })?.method === 'ID');
   const near = students.map((s) => _nearByName(fuzzyRows, s.name));
   const firstNear = near.findIndex(Boolean);
-  const index = [exact, byId, firstNear].find((i) => i >= 0) ?? 0;
+  const index = [strictExact, byId, firstNear, exact].find((i) => i >= 0) ?? 0;
   return {
     student: students[index],
     extraStudents: students.filter((_, i) => i !== index),
     guesses: students.length,
-    newAccount: exact < 0 && byId < 0 && firstNear >= 0 && students.length > 1,
+    newAccount: strictExact < 0 && byId < 0 && firstNear >= 0 && students.length > 1,
     similarNames: near.filter(Boolean).map((v) => String(v.candidates[0].name || '').trim()),
   };
 }
@@ -287,7 +289,9 @@ async function registerNewParentLocalFirst({
       attemptResult = { outcome: 'REPLAYED' };
       return { parent: replay, replayed: true, sync_state: replay.state, correlation_id: replay.correlation_id };
     }
-    if (attempt.coolingDown) {
+    // 從舊系統那一戶轉來的新戶也是核對過名字的，和 Z03 認領一樣按名字數算到上限，免得兩種回應透露哪個名字差一字。
+    if (attempt.coolingDown
+        || (similarOnFile.length && attempt.priorGuesses + cleanStudents.length > claimAttempts.FAILURE_LIMIT)) {
       attemptResult = { outcome: 'COOLDOWN' };
       throw _cooldownError();
     }
@@ -766,8 +770,12 @@ async function claimZ03Identity({
       }
     }
     // 註冊頁其餘填寫的學員：至少要有一位同名／身分證對上（exactMatches）才處理其餘的（Owner 2026-10-20）。
+    // 同名但身分證和登記的不同不算對上：只填一位時沿用既有行為，填好幾位時整筆擋下，免得靠它把其他孩子帶進這一戶。
     const extras = _classifyExtraStudents(childRows, exactMatches, extraStudents);
-    if (extraStudents.length && (extras.invalid || !exactMatches.length)) {
+    const primaryIdConflict = Boolean(matchStudent(
+      exactMatches.map((row) => ({ name: row.name_raw, id_number: row.id_number_raw })),
+      { name: claimStudentName, id_number: submittedIdNumber }, { allowNear: false })?.conflict);
+    if (extraStudents.length && (extras.invalid || !exactMatches.length || primaryIdConflict)) {
       failedAttempt = { sourceRecordId: families.length === 1 ? families[0].id : null };
       throw new Z03ClaimError('CLAIM_VERIFICATION_FAILED', CLAIM_MISMATCH_MESSAGE, 409, { reason: 'IDENTITY_NOT_FOUND' });
     }

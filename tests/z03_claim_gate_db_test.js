@@ -60,7 +60,7 @@ async function family(tag, { status = 'pending', reason = 'TRUE_LINE_UID_EMPTY',
     await pool.query(
       `INSERT INTO ragic_z03_students (z03_record_id,name_raw,name_normalized,id_number_raw,source_row_key,classification,present_in_latest_payload)
        VALUES ($1,$2,$3,$4,$5,'VALID',TRUE)`, [rec.id, s.name, s.name, s.id || null, `row-${i + 1}`]);
-    sub[`row-${i + 1}`] = { 1001115: s.name, 1004090: phone };
+    sub[`row-${i + 1}`] = { 1001115: s.name, 1004090: phone, ...(s.id ? { 1001118: s.id } : {}) };
   }
   const raw = { _ragicId: sourceId, 1001101: '閘門測試家長', 1001100: phone, 1006846: '', _subtable_1001119: sub };
   shadows.set(phone, raw);
@@ -327,8 +327,8 @@ async function cleanup() {
 
     const venue = (await pool.query(`SELECT id FROM venues ORDER BY id LIMIT 1`)).rows[0].id;
     const kid = (name, id_number) => ({ name, id_number, birth_date: '2019-01-01', gender: '生理男', blood_type: '不清楚' });
-    const register = async (f, students) => {
-      currentUid = uid();
+    const register = async (f, students, asUid = uid()) => {
+      currentUid = asUid;
       process.env.RAGIC_PARENT_OUTBOX = 'true';
       const res = await fetch(`http://127.0.0.1:${server.address().port}/api/auth/parent-register-line`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
@@ -443,10 +443,51 @@ async function cleanup() {
     await t('G25 其餘學員靠身分證比對也只看 Ragic 還在的學員：對到已移除的那位就當新孩子', async () => {
       const f = await family('Y', { students: [{ name: '簡現在', id: 'M123456789' }, { name: '簡舊生', id: 'M223456789' }] });
       await pool.query(`UPDATE ragic_z03_students SET present_in_latest_payload = FALSE WHERE z03_record_id=$1 AND name_raw='簡舊生'`, [f.id]);
+      // Ragic 最新資料裡也已經沒有簡舊生（路由會先用 shadow 重建學員列）。
+      const raw = shadows.get(f.phone);
+      raw._subtable_1001119 = Object.fromEntries(Object.entries(raw._subtable_1001119).filter(([, row]) => row[1001115] !== '簡舊生'));
+      await pool.query(`UPDATE ragic_z01_shadow SET raw_data=$2::jsonb WHERE ragic_record_id=$1`, [f.sourceId, JSON.stringify(raw)]);
       const r = await register(f, [kid('簡現在', 'M123456789'), kid('簡改名', 'M223456789')]);
       assert.equal(r.status, 200, JSON.stringify(r.body));
       assert.deepEqual(await kids(f), ['簡改名', '簡現在']);
       assert.deepEqual(await appended(f), ['簡改名']);
+    });
+
+    await t('G26 身分證不同的同名孩子放第一位：照樣整筆擋下（填寫順序不影響）', async () => {
+      const f = await family('d', { students: [{ name: '鄭甲', id: 'F123456789' }, { name: '鄭乙乙', id: 'F223456789' }] });
+      const r = await register(f, [kid('鄭乙乙', 'G123456789'), kid('鄭甲', 'F123456789')]);
+      assert.equal(r.status, 409, JSON.stringify(r.body));
+      assert.equal(r.body.code, 'CLAIM_VERIFICATION_FAILED');
+      assert.deepEqual(await kids(f), []);
+      assert.equal((await z03(f)).status, 'pending');
+    });
+
+    await t('G27 只有身分證不同的同名孩子＋新孩子：擋下，不把新孩子帶進這一戶', async () => {
+      const f = await family('a', { students: [{ name: '鄭丙丙', id: 'F323456789' }] });
+      const r = await register(f, [kid('鄭丙丙', 'G223456789'), kid('全新人', 'G123456780')]);
+      assert.equal(r.status, 409, JSON.stringify(r.body));
+      assert.equal(r.body.code, 'CLAIM_VERIFICATION_FAILED');
+      assert.deepEqual(await kids(f), []);
+      assert.deepEqual(await outbox(f), []);
+    });
+
+    await t('G28 建新帳號的路徑也照名字數算冷靜：已錯 4 個名字，再送 2 個就冷靜', async () => {
+      const f = await family('b', { students: [{ name: '林語彤', id: 'Q200000001' }] });
+      const bad = uid();
+      for (let i = 0; i < 4; i += 1) assert.equal((await claim(f, `錯名${i}號`, {}, bad)).status, 409);
+      const r = await register(f, [kid('林語桐', 'K123456780'), kid('周新新', 'K223456780')], bad);
+      assert.equal(r.status, 429, JSON.stringify(r.body));
+      assert.equal(r.body.code, 'CLAIM_COOLDOWN');
+      assert.deepEqual(await kids(f), []);
+    });
+
+    await t('G29 走註冊頁：靠身分證對上登記的孩子（姓名打錯）＋新孩子 → 連結登記的、新孩子送 Ragic', async () => {
+      const f = await family('c', { students: [{ name: '王大明', id: 'N123456789' }] });
+      const r = await register(f, [kid('王大名', 'N123456789'), kid('王小新', 'N223456789')]);
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.deepEqual(await kids(f), ['王大明', '王小新']);
+      assert.deepEqual((await attempts(f)).map((a) => a.outcome), ['PASSED_ID']);
+      assert.deepEqual(await appended(f), ['王小新']);
     });
 
     console.log(`\n${passed} 個測試全數通過`);
