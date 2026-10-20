@@ -2,18 +2,19 @@
 // 同一位家長名下，一筆 Ragic 學員資料對到本地哪一位（Owner 2026-10-20：中文同名者很多，學員以身分證為主）。
 //   1. Ragic 紀錄編號相同 → 就是那一位（Ragic 端改名照改）
 //   2. 身分證相同且同名 → 那一位。同一輪已被對走的那位又被同名同號命中：生日、性別也一樣才是同一個孩子重複出現
-//      （回 duplicate，不再更新）；不一樣多半是兄弟姊妹的身分證打錯 → 分不出來；
+//      （回 duplicate，只補空白欄位）；不一樣多半是兄弟姊妹的身分證打錯 → 分不出來；
 //      身分證相同但不同名（兄弟姊妹撞號、填反）→ 分不出來，不憑身分證改名
 //   3. 同名：本地那位沒有身分證 → 就是那一位（同一輪另有一位同名、身分證不同、又對不到本地其他人的，就分不出來）；
 //      本地那位身分證不同：它的身分證還在這一輪 Ragic 資料裡 → 另一個孩子，新建；不在了 → 多半是更正，沿用那一位
 //   沒有身分證可分辨時照舊：同名只有一位就沿用，多位分不出來。
-// batch：這一輪同步的全部 Ragic 學員（判斷「另一位還在不在」）；taken：Map(本地學員 id → 這一輪對上它的那筆 Ragic 資料)。
+// batch：這一輪同步的全部 Ragic 學員（判斷「另一位還在不在」）；taken：Map(本地學員 id → 這一輪對上它的那筆 Ragic 資料)；
+// normalizeGender：比性別前先統一寫法（「男」與「生理男」是同一個值），由呼叫端傳入 ragic.normalizeGender。
 // 回傳 { row }、{ row, duplicate: true }、{ ambiguous: reason }（SAME_NAME_NO_ID 是原本就有的「同名多筆」）或 {}（沒有對上，要新建）。
 const { normalizeStudentName } = require('./identityNormalizer');
 
 const normalizeId = (value) => String(value || '').trim().toUpperCase();
 
-function matchFamilyStudent(rows, incoming, { taken = new Map(), batch = [incoming] } = {}) {
+function matchFamilyStudent(rows, incoming, { taken = new Map(), batch = [incoming], normalizeGender = (v) => v } = {}) {
   const id = normalizeId(incoming?.id_number);
   const name = normalizeStudentName(incoming?.name);
   const sameName = (row) => normalizeStudentName(row.name) === name;
@@ -35,12 +36,12 @@ function matchFamilyStudent(rows, incoming, { taken = new Map(), batch = [incomi
   if (byIdNamedFree.length === 1) return { row: byIdNamedFree[0] };
   if (byIdNamed.length) {
     const first = taken.get(byIdNamed[0].id);
-    const differs = (key) => {
-      const a = String(first?.[key] || '').trim();
-      const b = String(incoming?.[key] || '').trim();
+    const differs = (key, norm = (v) => v) => {
+      const a = String(norm(first?.[key]) || '').trim();
+      const b = String(norm(incoming?.[key]) || '').trim();
       return Boolean(a && b && a !== b);
     };
-    return differs('birth_date') || differs('gender')
+    return differs('birth_date') || differs('gender', normalizeGender)
       ? { ambiguous: 'SAME_ID_CONFLICTING_DATA' } : { row: byIdNamed[0], duplicate: true };
   }
   if (free.some((row) => normalizeId(row.id_number) === id)) return { ambiguous: 'ID_NAME_MISMATCH' };

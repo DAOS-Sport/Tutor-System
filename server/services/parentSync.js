@@ -390,7 +390,7 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
     )).rows;
     // 身分證為主：同一戶可以有兩位同名、身分證不同的孩子（familyStudentMatch）。
     // 原本就有的「同名多筆又沒身分證」照舊整位家長轉人工；其餘分不出來的只略過這一位、開人工整理單，不擋整戶登入／刷新。
-    const verdict = matchFamilyStudent(familyRows, s, { taken, batch: ordered });
+    const verdict = matchFamilyStudent(familyRows, s, { taken, batch: ordered, normalizeGender: ragic.normalizeGender });
     if (verdict.ambiguous === 'SAME_NAME_NO_ID') {
       throw new BindConflictError('DATA_RECONCILIATION_PENDING', '同一家庭內學員姓名精準命中多筆');
     }
@@ -406,7 +406,29 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
       });
       continue;
     }
-    if (verdict.duplicate) continue; // 同一個孩子在這一輪重複出現：第一筆已更新過
+    if (verdict.duplicate) {
+      // 同一個孩子在這一輪重複出現：第一筆已更新過，這筆只補還空著的欄位，不覆蓋（也不碰 Ragic 紀錄編號，免得撞唯一鍵）。
+      const before = (await client.query('SELECT * FROM students WHERE id = $1 FOR UPDATE', [verdict.row.id])).rows[0];
+      const filled = (await client.query(
+        `UPDATE students SET
+           birth_date   = COALESCE(birth_date, $2::date),
+           gender       = COALESCE(NULLIF(gender,''), NULLIF($3,'')),
+           blood_type   = COALESCE(NULLIF(blood_type,''), NULLIF($4,'')),
+           student_code = COALESCE(NULLIF(student_code,''), NULLIF($5,'')),
+           updated_at   = NOW()
+         WHERE id = $1
+           AND ((birth_date IS NULL AND $2::date IS NOT NULL)
+             OR (COALESCE(gender,'') = '' AND COALESCE($3,'') <> '')
+             OR (COALESCE(blood_type,'') = '' AND COALESCE($4,'') <> '')
+             OR (COALESCE(student_code,'') = '' AND COALESCE($5,'') <> ''))
+         RETURNING *`,
+        [verdict.row.id, s.birth_date || null, ragic.normalizeGender(s.gender), s.blood_type || '', s.student_code || '']
+      )).rows[0];
+      if (filled) {
+        await writeStudentAudit(client, filled.id, 'edit', { byUser: 'ragic:parent-sync', byRole: 'system', changes: diffChanges(before, filled), note: 'ragic-student-mirror' });
+      }
+      continue;
+    }
     const matched = verdict.row || null;
     if (matched) taken.set(matched.id, s);
 

@@ -19,6 +19,8 @@
 //   S15 parentSync 對不出是哪一位而略過時，開一張人工整理單；重跑不會多開
 //   S16 #52 之後的家庭：舊孩子沒身分證＋新註冊的同名孩子有身分證，Ragic 兩位都在 → 各自對上、不開整理單
 //   S17 同名兄弟姊妹、Ragic 把第二位的身分證打成第一位的 → 第一位不被蓋掉，開整理單
+//   S18 同一個孩子出現兩次、第二筆才有生日血型 → 補上空白欄位，不覆蓋
+//   S19 同一個孩子兩筆只是性別寫法不同 → 不算衝突
 // 不碰 Ragic（寫入一律用替身）；所有資料 finally 自己刪乾淨。
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -328,6 +330,29 @@ async function syncFormal(raw) {
       const row = (await pool.query(`SELECT to_char(birth_date,'YYYY-MM-DD') AS b, gender FROM students WHERE id=$1`, [x])).rows[0];
       assert.deepEqual(row, { b: '2012-01-01', gender: ragic.normalizeGender('男') }, JSON.stringify(row));
       assert.deepEqual(await tasks(p.id), ['STUDENT_MATCH_AMBIGUOUS']);
+    });
+
+    await t('S18 同一個孩子出現兩次、第二筆才有生日血型 → 補上空白欄位，不覆蓋已有的', async () => {
+      const p = await makeParent('j');
+      const x = await addStudent(p.id, '王小明', 'A123456789', null, { synced: true });
+      await inTx((c) => parentSync.upsertLocalStudents(c, p.id, [
+        { name: '王小明', id_number: 'A123456789', gender: '男' },
+        { name: '王小明', id_number: 'A123456789', birth_date: '2013-03-03', blood_type: 'O' },
+      ]));
+      const row = (await pool.query(
+        `SELECT to_char(birth_date,'YYYY-MM-DD') AS b, blood_type, gender FROM students WHERE id=$1`, [x])).rows[0];
+      assert.deepEqual(row, { b: '2013-03-03', blood_type: 'O', gender: ragic.normalizeGender('男') });
+      assert.equal((await names(p.id)).length, 1);
+    });
+
+    await t('S19 同一個孩子兩筆只是性別寫法不同（男／生理男）→ 不算衝突、不開整理單', async () => {
+      const p = await makeParent('k');
+      await addStudent(p.id, '王小明', 'A123456789', null, { synced: true });
+      await inTx((c) => parentSync.upsertLocalStudents(c, p.id, [
+        { name: '王小明', id_number: 'A123456789', gender: '男' },
+        { name: '王小明', id_number: 'A123456789', gender: '生理男' },
+      ]));
+      assert.deepEqual(await tasks(p.id), []);
     });
 
     console.log(`\n${passed} 個測試全數通過`);

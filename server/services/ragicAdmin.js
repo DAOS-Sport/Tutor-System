@@ -2929,7 +2929,7 @@ async function _syncCanonicalZ01Record(client, z01Row, mapped, venuesMap) {
       studentIssues.push({ code: 'AMBIGUOUS_STUDENT_MATCH', name: normalizedName });
       continue;
     }
-    const verdict = matchFamilyStudent(existingStudents, entry, { taken, batch: ordered });
+    const verdict = matchFamilyStudent(existingStudents, entry, { taken, batch: ordered, normalizeGender: ragic.normalizeGender });
     if (verdict.ambiguous) {
       studentIssues.push({ code: 'AMBIGUOUS_STUDENT_MATCH', name: normalizedName });
       continue;
