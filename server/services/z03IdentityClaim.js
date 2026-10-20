@@ -25,9 +25,9 @@ const CLAIM_COOLDOWN_MESSAGE = `學員資料核對錯誤次數過多，請 ${cla
 const MAX_PREBUILT_CLAIM_STUDENTS = 3;
 const CLAIM_TOO_MANY_STUDENTS_MESSAGE = `一次最多填 ${MAX_PREBUILT_CLAIM_STUDENTS} 位學員，其他學員請登入後再新增。`;
 
-// 會新增學員的路徑判斷「和登記的只差一字」只看姓名：身分證不同正好表示是另一個孩子，照樣另建並標 NEW_SIMILAR。
+// 會新增學員的路徑判斷「和登記的只差一字」只比姓名、不帶身分證：身分證不同正好表示是另一個孩子，照樣另建並標 NEW_SIMILAR。
 function _nearByName(rows, name) {
-  const v = matchStudent(rows.map((row) => ({ ...row, id_number: '' })), { name });
+  const v = matchStudent(rows, { name });
   return v?.method === 'NEAR' ? v : null;
 }
 
