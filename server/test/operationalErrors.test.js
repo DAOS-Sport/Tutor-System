@@ -85,13 +85,15 @@ test('student validation names missing fields and rejects malformed IDs before w
   await assert.rejects(ctx.syncParentStudentsStrict(input), /身分證字號格式錯誤/);
 });
 
+// 學員以身分證為主（Owner 2026-10-20）：同名但身分證不同是另一個孩子，另建一筆；既有那位的身分證不被覆蓋、也不被併入。
 test('canonical family import copies source identity as data, never uses it to transfer or merge', async () => {
   const code = service('ragicAdmin').match(/async function _syncCanonicalZ01Record\([\s\S]*?\n\}/)[0];
   for (const existing of [[], [{ id: 'student', name: 'child', id_number: '' }], [{ id: 'student', name: 'child', id_number: 'B223456780' }]]) {
     const hadExisting = existing.length > 0;
+    const otherChild = existing.some((row) => row.id_number && row.id_number !== 'A132702114');
     const writes = []; const parent = { id: 'family', phone: '0900215261', line_uid: 'uid' };
     const child = { name: 'child', birth_date: '2010-01-02', gender: '男', id_number: 'A132702114' };
-    const ctx = { ...require('../services/studentAudit'), normalizePhone: x => x, normalizeStudentName: x => x, _trueZ01LineUid: () => 'uid', _venueIdFromMap: () => 'B', _z01SyncError: (c,m) => Error(m), ragic: { normalizeGender: x => x, parseZ01StudentsRaw: () => [], parseZ01Students: () => [child] } };
+    const ctx = { ...require('../services/studentAudit'), normalizePhone: x => x, normalizeStudentName: x => x, _trueZ01LineUid: () => 'uid', _venueIdFromMap: () => 'B', _z01SyncError: (c,m) => Error(m), matchFamilyStudent: require('../services/familyStudentMatch').matchFamilyStudent, ragic: { normalizeGender: x => x, parseZ01StudentsRaw: () => [], parseZ01Students: () => [child] } };
     vm.createContext(ctx); vm.runInContext(code, ctx);
     const client = { query: async (sql, args) => {
       if (/FROM parents|UPDATE parents/.test(sql)) return { rows: [parent] };
@@ -102,7 +104,8 @@ test('canonical family import copies source identity as data, never uses it to t
     await ctx._syncCanonicalZ01Record(client, { _ragicId: '1' }, { phone: parent.phone }, new Map());
     assert.equal(writes.length, 1);
     assert.equal(writes[0].args[6], child.id_number, 'source ID must reach the local mirror');
-    if (hadExisting) assert.match(writes[0].sql, /id_number = COALESCE\(NULLIF\(id_number,''\), NULLIF\(\$7,''\)\)/, 'existing identities remain unchanged');
+    if (otherChild) assert.match(writes[0].sql, /INSERT INTO students/, 'same name with a different ID is another child, never merged');
+    else if (hadExisting) assert.match(writes[0].sql, /id_number = COALESCE\(NULLIF\(id_number,''\), NULLIF\(\$7,''\)\)/, 'existing identities remain unchanged');
     else assert.ok(writes[0].sql.includes('id_number'));
   }
 });

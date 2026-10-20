@@ -20,6 +20,7 @@ const { writeStudentAudit, diffChanges } = require('./studentAudit');
 const ragic = require('./ragic');
 const { maskName, maskPhone } = require('../utils/piiMask');
 const { normalizePhone, normalizeStudentName } = require('./identityNormalizer');
+const { matchFamilyStudent } = require('./familyStudentMatch');
 const { STABILITY_FLAGS, getTrueRagicLineUid } = require('../config/ragicSchema');
 
 class BindConflictError extends Error {
@@ -369,22 +370,23 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
   // tier-3（name+birth）候選的既有列 id：待人工複核期間，權威掃尾不可把它當「Ragic
   // 已無此人」硬刪掉——否則等於繞過複核直接刪除，與決策7的初衷矛盾。
   const reviewCandidateIds = [];
+  const taken = new Set();
   for (const s of students || []) {
     if (!s || !s.name) continue;
     const idNum  = s.id_number ? String(s.id_number).toUpperCase().trim() : null;
     const ragicId = s.ragic_record_id ? String(s.ragic_record_id).trim() : null;
-    let matched = null;
-    const incomingName = normalizeStudentName(s.name);
     const familyRows = existingStudents || (await client.query(
       `SELECT id,name,birth_date,id_number,ragic_record_id
          FROM students WHERE parent_id=$1 ORDER BY created_at,id FOR UPDATE`,
       [parentId]
     )).rows;
-    const exactNameMatches = familyRows.filter((row) => normalizeStudentName(row.name) === incomingName);
-    if (exactNameMatches.length > 1) {
+    // 身分證為主：同一戶可以有兩位同名、身分證不同的孩子（familyStudentMatch）。
+    const verdict = matchFamilyStudent(familyRows, s, taken);
+    if (verdict.ambiguous) {
       throw new BindConflictError('DATA_RECONCILIATION_PENDING', '同一家庭內學員姓名精準命中多筆');
     }
-    matched = exactNameMatches[0] || null;
+    const matched = verdict.row || null;
+    if (matched) taken.add(matched.id);
 
     // 單一學員撞唯一鍵（並發競態等）不應讓整位家長同步失敗：SAVEPOINT 隔離，
     // 失敗記 log 跳下一位（該位學員下一輪同步會再收斂）。
@@ -445,6 +447,7 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
            idNum || '', s.blood_type || '', s.student_code || '', ragicId || '']
         );
         await writeStudentAudit(client, inserted.rows[0].id, 'create', { byUser: 'ragic:parent-sync', byRole: 'system', note: 'ragic-student-mirror' });
+        taken.add(inserted.rows[0].id);
         if (existingStudents) existingStudents.push({
           id: inserted.rows[0].id,
           name: s.name,

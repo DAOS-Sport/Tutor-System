@@ -39,7 +39,8 @@ async function main() {
     await db.query('INSERT INTO parents(id) VALUES ($1)', [parentId]);
     const context = { ...audit, studentAuditParentActor: audit.parentActor, pool: { connect: async () => ({ query: db.query.bind(db), release() {} }) },
       normalizeStudentName: value => String(value || '').trim(), Z03ClaimError: Error,
-      ragic: { normalizeGender: value => value }, console: { warn() {} }, BindConflictError: Error };
+      ragic: { normalizeGender: value => value }, console: { warn() {} }, BindConflictError: Error,
+      matchFamilyStudent: require('../server/services/familyStudentMatch').matchFamilyStudent };
     vm.createContext(context);
     for (const [file, name] of [
       ['server/routes/parents.js', 'persistStudentMirrorAfterRagic'],

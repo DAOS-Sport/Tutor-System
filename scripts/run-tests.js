@@ -260,6 +260,8 @@ const DB = [
   'tests/false_success_db_test.js',
   'tests/z03_prebuilt_parent_claim_db_test.js',
   'tests/z03_claim_gate_db_test.js',
+  // 同一戶兩位同名、身分證不同的孩子：Ragic ↔ 本地學員以身分證為主（Owner 2026-10-20）。
+  'tests/student_sync_by_id_db_test.js',
   'tests/legacy_expiry_countdown_db_test.js',
 ];
 
