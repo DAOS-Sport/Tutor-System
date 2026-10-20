@@ -160,6 +160,7 @@ export default function CheckinPage() {
     if (row.session_created_via === 'self_checkin') return <StatusBadge tone="amber">自助</StatusBadge>;
     if (row.source === 'coach') return <StatusBadge tone="teal">教練</StatusBadge>;
     if (row.source === 'staff') return <StatusBadge tone="gray">櫃檯</StatusBadge>;
+    if (row.source === 'legacy_import') return <StatusBadge tone="gray">舊系統轉移</StatusBadge>;
     return <StatusBadge tone="green">家長</StatusBadge>;
   }
 

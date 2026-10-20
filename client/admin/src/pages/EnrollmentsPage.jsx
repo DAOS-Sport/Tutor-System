@@ -10,7 +10,7 @@ import useIsDesktop from '../hooks/useIsDesktop';
 import { useAuth } from '../context/AuthContext';
 import { enrollmentsApi } from '../api/enrollments';
 import { venuesApi } from '../api/venues';
-import { formatTWD, formatTWDateTime, courseTypeLabel, paymentStatusLabel, paymentStatusTone, formatTWDateTimeSeconds } from '../utils/format';
+import { formatTWD, formatTWDateTime, courseTypeLabel, paymentStatusLabel, paymentStatusTone, formatTWDateTimeSeconds, isLegacyImportOrder } from '../utils/format';
 import { exportEnrollmentsCsv, exportEnrollmentsXlsx } from '../utils/tableExport';
 import { useToast } from '../context/ToastContext';
 import ExportMenu from '../components/ExportMenu';
@@ -110,7 +110,7 @@ export default function EnrollmentsPage() {
   }
 
   const columns = [
-    { key: 'id', label: '編號', render: (r) => <button className="font-mono text-xs text-brand-teal hover:underline" onClick={() => openDetail(r)}>{r.id}</button> },
+    { key: 'id', label: '編號', render: (r) => <div><button className="font-mono text-xs text-brand-teal hover:underline" onClick={() => openDetail(r)}>{r.id}</button>{isLegacyImportOrder(r) && <div className="mt-1"><StatusBadge tone="gray">舊系統轉移</StatusBadge></div>}</div> },
     { key: 'submitted_at', label: '送出', render: (r) => <span className="text-xs text-gray-600">{formatTWDateTime(r.submitted_at)}</span> },
     { key: 'parent', label: '家長', render: (r) => <div className="text-sm"><div className="font-medium">{r.parent_name}</div><div className="text-xs text-gray-500">{r.parent_phone}</div></div> },
     { key: 'students', label: '學員', render: (r) => r.students.join('、') },
@@ -216,7 +216,10 @@ export default function EnrollmentsPage() {
             <div className="flex-1 overflow-y-auto p-6">
               <div className="mb-4 flex items-center justify-between">
                 <h3 className="text-lg font-bold text-brand-primary">報名明細 {detail.id}</h3>
-                <StatusBadge tone={paymentStatusTone(detail.status)}>{paymentStatusLabel(detail.status)}</StatusBadge>
+                <div className="flex gap-2">
+                  {isLegacyImportOrder(detail) && <StatusBadge tone="gray">舊系統轉移</StatusBadge>}
+                  <StatusBadge tone={paymentStatusTone(detail.status)}>{paymentStatusLabel(detail.status)}</StatusBadge>
+                </div>
               </div>
               <dl className="grid grid-cols-2 gap-3 text-sm">
                 <div><dt className="text-gray-500">家長</dt><dd>{detail.parent_name} ({detail.parent_phone})</dd></div>

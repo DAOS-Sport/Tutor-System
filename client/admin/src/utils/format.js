@@ -117,10 +117,16 @@ export function checkinStatusLabel(s) {
   return ({ checked_in: '已簽到', absent: '未到', not_yet: '尚未開始' }[s] || s);
 }
 
-// checkin_records.checked_in_source 的三種值。認不得的值原樣顯示 ——
+// checkin_records.checked_in_source 的值。認不得的值原樣顯示 ——
 // 印出英文比印出空白好：至少看得出「有東西但我們沒對應到」。
+// legacy_import：舊家教系統（ABLEPOS）移轉時補進來的上課紀錄，薪資與統計要能分辨新舊。
 export function checkinSourceLabel(s) {
-  return ({ parent: '家長自助', coach: '教練', staff: '櫃檯' }[s] || s || '—');
+  return ({ parent: '家長自助', coach: '教練', staff: '櫃檯', legacy_import: '舊系統轉移' }[s] || s || '—');
+}
+
+// 舊系統移轉匯入的報名單以 external_order_no='ABLEPOS:<單據序號>' 為冪等鍵。
+export function isLegacyImportOrder(enrollment) {
+  return String(enrollment?.external_order_no || '').startsWith('ABLEPOS:');
 }
 
 /**

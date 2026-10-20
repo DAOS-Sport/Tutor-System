@@ -53,6 +53,9 @@ export function sessionReportNote(session) {
   if (session.whole_class_consumed && session.whole_class_policy) {
     lines.unshift('［整班核消］依原報名名單，全班核消，教練核薪計 1 堂；以下保留原始簽到操作。');
   }
+  if (checkins.some(detail => detail.source === 'legacy_import')) {
+    lines.unshift('［舊系統轉移］本堂為舊家教系統（ABLEPOS）移轉的上課紀錄，非新系統簽到。');
+  }
   for (const detail of deductions) {
     if (detail.reason) lines.push(noteLine('櫃檯手動', detail.at, '手動扣課：' + detail.reason + (detail.by ? '（' + detail.by + '）' : '')));
     if (detail.status === 'REVERSED') lines.push(`［櫃檯手動］已退回${detail.reversal_reason ? `：${detail.reversal_reason}` : ''}`);

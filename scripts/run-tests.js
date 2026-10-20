@@ -98,6 +98,7 @@ const UNIT = [
   'tests/public_coach_field_exposure_test.js',
   'tests/refund_reason_parity_test.js',
   'tests/session_note_visibility_test.js',
+  'tests/legacy_import_marker_test.js',
   'tests/promotion_label_test.js',
   'tests/promotion_order_test.js',
   'tests/parent_missing_email_test.js',

@@ -164,6 +164,7 @@ function shapeEnrollmentRow(row, { lineDisplayName = '', lineProfileState = 'NOT
     invoice_issued_at: tsToString(row.invoice_issued_at),
     extra_parent_phones: row.extra_parent_phones || [],
     notes: row.notes || null,
+    external_order_no: row.external_order_no || null,
     group_order_id: row.group_order_id || null,
     is_group_shared: !!row.is_group_shared,
     period_count: Number(row.period_count) || 1,
