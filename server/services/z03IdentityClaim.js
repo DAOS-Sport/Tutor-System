@@ -167,21 +167,30 @@ async function registerNewParentLocalFirst({
       // 2026-10 舊家教移轉：櫃台預建檔的家長（本地有、還沒綁 LINE、Ragic 沒有）。
       // 原本這裡沿用 parent 卻不寫 line_uid → 家長下次用 LINE 登入找不到人，
       // CREATE_Z01_PARENT 也會因 LINE_UID_REQUIRED 卡在 outbox。
-      // 綁定前比照 Z03 認領：電話＋任一位既有學員姓名都對上才綁，只知道電話不能接走別人的課。
+      // 綁定前比照 Z03 認領：電話＋任一位在學學員姓名對上才綁，只知道電話不能接走別人的課；
+      // 姓名對上的學員若已存身分證，送來的必須相同（parentSync.classifyStudentClaim 同規則）。
       // 名下沒有學員的預建家長無從核對，一律轉櫃台，不靠電話單獨綁定。
-      const known = new Set((await client.query(
-        `SELECT name FROM students WHERE parent_id=$1`, [parent.id]
-      )).rows.map((row) => normalizeStudentName(row.name)));
-      if (!cleanStudents.some((s) => known.has(normalizeStudentName(s.name)))) {
-        throw new Z03ClaimError('CLAIM_VERIFICATION_FAILED', '學員姓名與既有資料不符，請洽櫃台協助', 409);
+      const onFile = new Map((await client.query(
+        `SELECT name, id_number FROM students WHERE parent_id=$1 AND is_active`, [parent.id]
+      )).rows.map((row) => [normalizeStudentName(row.name), String(row.id_number || '').trim().toUpperCase()]));
+      const verdicts = cleanStudents
+        .filter((s) => onFile.has(normalizeStudentName(s.name)))
+        .map((s) => {
+          const idOnFile = onFile.get(normalizeStudentName(s.name));
+          return !idOnFile || idOnFile === String(s.id_number || '').trim().toUpperCase();
+        });
+      if (!verdicts.length || verdicts.includes(false)) {
+        parentSync.auditClaim({ phone: phoneCanonical, lineUid: uid, result: 'failed', reason: 'prebuilt_parent_claim_mismatch' });
+        throw new Z03ClaimError('CLAIM_VERIFICATION_FAILED', '學員資料與既有資料不符，請洽櫃台協助', 409);
       }
+      // 館別沿用預建時的，免得家長被移出原場館櫃台的範圍；其餘以家長本人填的為準。
       parent = (await client.query(
         `UPDATE parents
             SET line_uid=$2, is_active=TRUE,
                 name=COALESCE(NULLIF($3,''),name), gender=COALESCE(NULLIF($4,''),gender),
-                email=COALESCE(NULLIF($5,''),email), primary_venue_id=COALESCE(NULLIF($6,''),primary_venue_id),
+                email=COALESCE(NULLIF($5,''),email), primary_venue_id=COALESCE(NULLIF(primary_venue_id,''),NULLIF($6,'')),
                 identity=COALESCE(NULLIF($7,''),identity), updated_at=NOW()
-          WHERE id=$1 AND line_uid IS NULL
+          WHERE id=$1 AND (line_uid IS NULL OR line_uid='')
           RETURNING *`,
         [parent.id, uid, String(parentInput?.name || '').trim(), parentInput?.gender || '',
          parentInput?.email || '', parentInput?.primary_venue_id || '', parentInput?.identity || '']
@@ -211,9 +220,9 @@ async function registerNewParentLocalFirst({
         student = (await client.query(
           `UPDATE students
               SET birth_date=COALESCE(birth_date,$2::date),
-                  gender=COALESCE(gender,NULLIF($3,'')),
-                  blood_type=COALESCE(blood_type,NULLIF($4,'')),
-                  id_number=CASE WHEN id_number IS NULL AND NULLIF($5,'') IS NOT NULL
+                  gender=COALESCE(NULLIF(gender,''),NULLIF($3,'')),
+                  blood_type=COALESCE(NULLIF(blood_type,''),NULLIF($4,'')),
+                  id_number=CASE WHEN NULLIF(id_number,'') IS NULL AND NULLIF($5,'') IS NOT NULL
                                   AND NOT EXISTS (SELECT 1 FROM students x
                                                    WHERE x.parent_id=students.parent_id AND x.id_number=$5 AND x.id<>students.id)
                                  THEN $5 ELSE id_number END,
@@ -242,6 +251,24 @@ async function registerNewParentLocalFirst({
       linkedStudents.push(student);
     }
 
+    let outboxPayload = payload;
+    if (claimingPrebuilt) {
+      // 預建學員以本地合併後的值送 Ragic：既有值不被家長送來的覆蓋、同家長重複的身分證不補，
+      // outbox 照原始送出的值建 Ragic 的話，之後 Ragic→本地同步會反過來蓋掉本地。
+      const merged = new Map((await client.query(
+        `SELECT id, name, to_char(birth_date,'YYYY-MM-DD') AS birth_date, gender, id_number, blood_type
+           FROM students WHERE id = ANY($1::uuid[])`, [linkedStudents.map((s) => s.id)]
+      )).rows.map((row) => [row.id, row]));
+      outboxPayload = {
+        ...payload,
+        students: cleanStudents.map((s, i) => {
+          const row = merged.get(linkedStudents[i].id);
+          return { ...s, name: row.name, birth_date: row.birth_date || '', gender: row.gender || '',
+            id_number: row.id_number || '', blood_type: row.blood_type || '' };
+        }),
+      };
+    }
+
     const pendingSourceId = `PENDING:${requestKey}`;
     const claim = (await client.query(
       `INSERT INTO identity_claims
@@ -258,7 +285,7 @@ async function registerNewParentLocalFirst({
          (idempotency_key,claim_id,operation,source_system,source_table,source_record_id,
           payload_reference,state,correlation_id,field_id)
        VALUES ($1,$2,'CREATE_Z01_PARENT','RAGIC','Z01',$3,$4::jsonb,'pending',$5,'1006846')`,
-      [`create-z01-parent:${requestKey}`, claim.id, pendingSourceId, JSON.stringify(payload), correlationId]
+      [`create-z01-parent:${requestKey}`, claim.id, pendingSourceId, JSON.stringify(outboxPayload), correlationId]
     );
     await client.query(
       `INSERT INTO parent_identity_requests

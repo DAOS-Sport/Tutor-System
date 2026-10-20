@@ -13,7 +13,10 @@
 //   5. 身分證與同家長另一位學員重複時不補、不報錯
 //   6. 只知道電話、學員姓名不符 → CLAIM_VERIFICATION_FAILED，不綁、不多建學員
 //   7. 預建家長名下沒有學員 → 無從核對，同樣擋下
-//   8. 全新電話照舊：建家長＋學員並綁 LINE
+//   8. 姓名對上但已存的身分證不同 → 擋下；身分證相同 → 綁定（同 Z03 認領規則）
+//   9. 停用學員的姓名不能拿來過關
+//  10. 館別沿用預建時的；送 Ragic 的佇列內容是本地合併後的值，不是家長原始送出的
+//  11. 全新電話照舊：建家長＋學員並綁 LINE
 //
 // 真實 public schema、合成資料、try/finally 自己刪乾淨。不碰 LINE / Ragic / 正式資料。
 const assert = require('node:assert/strict');
@@ -36,7 +39,7 @@ const t = async (name, fn) => { await fn(); passed += 1; console.log('PASS ' + n
 const phone = () => `09${String(Math.floor(Math.random() * 1e8)).padStart(8, '0')}`;
 const lineUid = () => `Utest${randomUUID().replace(/-/g, '')}`.slice(0, 33);
 
-async function prebuilt(p, venue, kids) {
+async function prebuilt(p, venue, kids, { active = true } = {}) {
   const parent = (await pool.query(
     `INSERT INTO parents (phone,name,primary_venue_id,is_active) VALUES ($1,'預建家長',$2,TRUE) RETURNING id`,
     [p, venue])).rows[0];
@@ -44,8 +47,8 @@ async function prebuilt(p, venue, kids) {
   const studentIds = [];
   for (const k of kids) {
     studentIds.push((await pool.query(
-      `INSERT INTO students (parent_id,name,birth_date,id_number,is_active) VALUES ($1,$2,$3::date,$4,TRUE) RETURNING id`,
-      [parent.id, k.name, k.birth_date || null, k.id_number || null])).rows[0].id);
+      `INSERT INTO students (parent_id,name,birth_date,id_number,is_active) VALUES ($1,$2,$3::date,$4,$5) RETURNING id`,
+      [parent.id, k.name, k.birth_date || null, k.id_number || null, active])).rows[0].id);
   }
   return { parentId: parent.id, studentIds };
 }
@@ -59,6 +62,9 @@ const register = (p, venue, parent, students, uid) => registerNewParentLocalFirs
 
 const rejection = (fn) => fn().then(() => null, (e) => e);
 const parentRow = async (id) => (await pool.query(`SELECT * FROM parents WHERE id=$1`, [id])).rows[0];
+const queuedStudents = async (parentId) => (await pool.query(
+  `SELECT o.payload_reference FROM ragic_sync_outbox o JOIN identity_claims c ON c.id=o.claim_id
+    WHERE c.canonical_parent_id=$1 AND o.operation='CREATE_Z01_PARENT'`, [parentId])).rows.map((r) => r.payload_reference.students);
 const studentRows = async (parentId) => (await pool.query(
   `SELECT *, to_char(birth_date,'YYYY-MM-DD') AS bd FROM students WHERE parent_id=$1 ORDER BY created_at`, [parentId])).rows;
 
@@ -119,6 +125,41 @@ const studentRows = async (parentId) => (await pool.query(
       assert.equal(s.gender, '女');
       assert.equal(s.id_number, null);
       assert.equal((await parentRow(f.parentId)).line_uid, uid);
+      const queued = await queuedStudents(f.parentId);
+      assert.equal(queued.length, 1);
+      assert.equal(queued[0][0].birth_date, '2014-01-01');
+      assert.equal(queued[0][0].gender, '女');
+      assert.equal(queued[0][0].id_number, '');
+    });
+
+    await t('姓名對上但已存的身分證不同：擋下；相同：綁定', async () => {
+      const p = phone();
+      const f = await prebuilt(p, venue, [{ name: '張小芳', id_number: 'C123456789' }]);
+      const err = await rejection(() => register(p, venue, { name: '張家長' }, [{ name: '張小芳', id_number: 'C223456789' }], lineUid()));
+      assert.equal(err?.code, 'CLAIM_VERIFICATION_FAILED');
+      const noId = await rejection(() => register(p, venue, { name: '張家長' }, [{ name: '張小芳' }], lineUid()));
+      assert.equal(noId?.code, 'CLAIM_VERIFICATION_FAILED');
+      assert.equal((await parentRow(f.parentId)).line_uid, null);
+      const uid = lineUid();
+      await register(p, venue, { name: '張家長' }, [{ name: '張小芳', id_number: 'c123456789' }], uid);
+      assert.equal((await parentRow(f.parentId)).line_uid, uid);
+    });
+
+    await t('停用學員的姓名不能拿來過關', async () => {
+      const p = phone();
+      const f = await prebuilt(p, venue, [{ name: '林小停' }], { active: false });
+      const err = await rejection(() => register(p, venue, { name: '林家長' }, [{ name: '林小停' }], lineUid()));
+      assert.equal(err?.code, 'CLAIM_VERIFICATION_FAILED');
+      assert.equal((await parentRow(f.parentId)).line_uid, null);
+    });
+
+    await t('館別沿用預建時的', async () => {
+      const venues = (await pool.query(`SELECT id FROM venues ORDER BY id LIMIT 2`)).rows.map((r) => r.id);
+      assert.equal(venues.length, 2, '測試庫至少要有兩個場館');
+      const p = phone();
+      const f = await prebuilt(p, venues[0], [{ name: '吳小館' }]);
+      await register(p, venues[1], { name: '吳家長' }, [{ name: '吳小館' }], lineUid());
+      assert.equal((await parentRow(f.parentId)).primary_venue_id, venues[0]);
     });
 
     await t('只知道電話、學員姓名不符：擋下，不綁、不多建學員', async () => {
