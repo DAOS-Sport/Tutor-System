@@ -31,14 +31,15 @@ function _nearByName(rows, name) {
   return v?.method === 'NEAR' ? v : null;
 }
 
-// 註冊頁可一次填好幾位學員，但 Z03 認領只核對一位：挑能對上登記學員的那位（同名／身分證優先，再來只差一字），
+// 註冊頁可一次填好幾位學員，但 Z03 認領只核對一位（條件與 claimZ03Identity 的家庭查詢相同）：挑能對上登記學員的那位（同名／身分證優先，再來只差一字），
 // 家長不必把已登記的孩子填在第一位。最多看 MAX_PREBUILT_CLAIM_STUDENTS 位，看了幾位就算猜了幾次。
 async function pickRegistrationClaimStudent(phone, students, db = pool) {
   const considered = students.slice(0, MAX_PREBUILT_CLAIM_STUDENTS);
   const rows = (await db.query(
     `SELECT s.name_raw AS name, s.id_number_raw AS id_number
        FROM ragic_z03_students s JOIN ragic_z03_records r ON r.id = s.z03_record_id
-      WHERE r.phone_canonical = $1`, [normalizePhone(phone)]
+      WHERE (r.phone_canonical = $1 OR regexp_replace(COALESCE(r.phone,''), '\\D', '', 'g') = $1)
+        AND r.status IN ('pending','resolved','manual_review')`, [normalizePhone(phone)]
   )).rows;
   const strict = considered.findIndex((s) => {
     const v = matchStudent(rows, s, { allowNear: false });

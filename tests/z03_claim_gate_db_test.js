@@ -13,6 +13,7 @@
 //   G11 Z03 名下沒有學員的家庭從註冊頁新增 → 無從核對，擋下
 //   G12 註冊頁已登記的孩子不在第一位 → 照樣過（挑對得上的那位核對，看了幾位算幾次）
 //   G13 註冊新增：只差一字、登記那位有不同身分證 → 另建、標 NEW_SIMILAR
+//   G14 註冊頁挑核對對象時不看已作廢（dismissed）的 Z03 紀錄（與核對端條件一致）
 // 不碰 Ragic（同步呼叫一律丟錯）；所有資料 finally 自己刪乾淨。
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -21,7 +22,7 @@ const axios = require('../server/node_modules/axios');
 const { pool } = require('../server/models/db');
 const ragic = require('../server/services/ragic');
 const claimAttempts = require('../server/services/claimAttempts');
-const { claimZ03Identity } = require('../server/services/z03IdentityClaim');
+const { claimZ03Identity, pickRegistrationClaimStudent } = require('../server/services/z03IdentityClaim');
 
 const url = new URL(process.env.DATABASE_URL);
 assert.ok(['localhost', '127.0.0.1'].includes(url.hostname), '必須是 loopback 的拋棄式測試庫');
@@ -271,6 +272,22 @@ async function cleanup() {
         studentInput: { name: '蔡承安', id_number: 'H223456789' }, allowStudentAppend: true });
       assert.equal(r.student.name, '蔡承安');
       assert.deepEqual(await attempts(f), [{ outcome: 'NEW_SIMILAR', matched_name: '蔡承恩' }]);
+    });
+
+    await t('G14 註冊頁挑核對對象時不看已作廢（dismissed）的 Z03 紀錄', async () => {
+      const f = await family('N', { students: [{ name: '林小北' }] });
+      const staleId = `ZZGATEN2${suffix}`;
+      made.sources.push(staleId);
+      const stale = (await pool.query(
+        `INSERT INTO ragic_z03_records (z01_ragic_record_id,raw_name,phone,phone_canonical,status,classification,reason_code,claim_state)
+         VALUES ($1,'閘門測試家長',$2,$2,'dismissed','PENDING_Z03','TRUE_LINE_UID_EMPTY','PENDING_Z03') RETURNING id`,
+        [staleId, f.phone])).rows[0];
+      await pool.query(
+        `INSERT INTO ragic_z03_students (z03_record_id,name_raw,name_normalized,source_row_key,classification,present_in_latest_payload)
+         VALUES ($1,'王小南','王小南','row-1','VALID',TRUE)`, [stale.id]);
+      const pick = await pickRegistrationClaimStudent(f.phone, [{ name: '王小南' }, { name: '林小北' }]);
+      assert.equal(pick.student.name, '林小北');
+      assert.equal(pick.guesses, 2);
     });
 
     console.log(`\n${passed} 個測試全數通過`);
