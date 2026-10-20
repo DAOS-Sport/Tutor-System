@@ -12,7 +12,10 @@ const { processRagicSyncOutbox } = require('../../server/services/ragicSyncOutbo
 const BATCH_SIZE = 50;
 const runId = `${Date.now()}${process.pid}`;
 const fixtures = Array.from({ length: BATCH_SIZE }, (_, index) => {
-  const studentCount = index < 10 ? 0 : (index < 30 ? 1 : (index < 45 ? 2 : 3));
+  // 前 10 戶：登記一位學員（沒有身分證），家長註冊時填的名字和登記的只差一字 → 另建新學員（NEW_SIMILAR）。
+  // 名字完全對不上就不再只憑電話新增（Owner 2026-10-20），所以新增學員這條路改用「只差一字」走。
+  const appendsNew = index < 10;
+  const studentCount = index < 30 ? 1 : (index < 45 ? 2 : 3);
   const phoneTail = String((Number(runId.slice(-7)) + index) % 10_000_000).padStart(7, '0');
   return {
     index,
@@ -22,9 +25,8 @@ const fixtures = Array.from({ length: BATCH_SIZE }, (_, index) => {
     parentName: `批次匿名家長${String(index).padStart(2, '0')}`,
     email: `form50.${runId}.${index}@example.invalid`,
     studentCount,
-    selectedStudent: studentCount === 0
-      ? `批次新增學員${String(index).padStart(2, '0')}`
-      : `批次既有學員${String(index).padStart(2, '0')}-1`,
+    appendsNew,
+    selectedStudent: `批次既有學員${String(index).padStart(2, '0')}-${appendsNew ? 9 : 1}`,
     existingParentId: null,
     resultParentId: null,
   };
@@ -35,7 +37,7 @@ function studentRow(fixture, rowIndex) {
     1001115: `批次既有學員${String(fixture.index).padStart(2, '0')}-${rowIndex + 1}`,
     1001116: `201${rowIndex + 4}/0${(rowIndex % 8) + 1}/1${rowIndex}`,
     1001117: rowIndex % 2 ? '生理女' : '生理男',
-    1001118: rowIndex === 0 ? 'A132702114' : '',
+    1001118: rowIndex === 0 && !fixture.appendsNew ? 'A132702114' : '',
     1001132: `SIM50-${fixture.index}-${rowIndex + 1}`,
     1004090: fixture.phone,
   };
@@ -143,7 +145,7 @@ async function postJson(port, path, body) {
         [fixture.sourceId, JSON.stringify(raw)]
       );
       await ragicAdmin.hydrateZ03RecordFromRagicRow(raw);
-      if (fixture.studentCount === 0) {
+      if (fixture.appendsNew) {
         fixture.existingParentId = (await pool.query(
           `INSERT INTO parents(phone,name,ragic_record_id,is_active)
            VALUES ($1,$2,$3,TRUE) RETURNING id`,
@@ -223,7 +225,7 @@ async function postJson(port, path, body) {
       assert.strictEqual(job.payload_reference.profile_patch['1006846'], fixture.lineUid);
       assert.strictEqual(job.payload_reference.profile_patch['1002820'], fixture.email);
       const appendCount = (job.payload_reference.students_to_append || []).length;
-      assert.strictEqual(appendCount, fixture.studentCount === 0 ? 1 : 0);
+      assert.strictEqual(appendCount, fixture.appendsNew ? 1 : 0);
       expectedStudentAppends += appendCount;
     }
 
@@ -292,7 +294,7 @@ async function postJson(port, path, body) {
       test: 'Z03 registration form 50-record batch simulation',
       result: 'PASS',
       fixtures: 50,
-      shape: { zero_students: 10, one_student: 20, two_students: 15, three_students: 5 },
+      shape: { near_name_appends: 10, one_student: 20, two_students: 15, three_students: 5 },
       registration_http_200: registrationResults.length,
       parents_created_or_reused: aggregate.parents,
       students_created: aggregate.students,

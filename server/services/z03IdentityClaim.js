@@ -649,8 +649,10 @@ async function claimZ03Identity({
       }
     }
     if (exactMatches.length === 0) {
-      if (allowStudentAppend) {
-        attemptResult = similarOnFile ? { outcome: 'NEW_SIMILAR', matchedName: similarOnFile } : { outcome: 'APPENDED' };
+      // 註冊新增學員也要先證明是這一戶：名字和登記的孩子只差一字才另建（標 NEW_SIMILAR），
+      // 完全對不上就當核對失敗，不再只憑電話把 LINE 綁進這一戶（Owner 2026-10-20）。
+      if (allowStudentAppend && similarOnFile) {
+        attemptResult = { outcome: 'NEW_SIMILAR', matchedName: similarOnFile };
         const localCandidates = (await client.query(
           `SELECT * FROM parents
             WHERE line_uid=$1 OR phone=$2 OR regexp_replace(COALESCE(phone,''),'\\D','','g')=$2

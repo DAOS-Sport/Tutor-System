@@ -9,6 +9,7 @@
 //   G7 兩個字的姓名只差一字 → 不算（不然只要知道手機＋姓氏就能過）
 //   G8 同一個 LINE 帳號同時送 10 筆錯的：最多 5 筆進得去核對，其餘冷靜；連線池不會卡死
 //   G9 註冊新增學員（allowStudentAppend）：只差一字的兄弟姊妹另建、記 NEW_SIMILAR，不併到既有學員
+//   G10 註冊新增學員但名字完全對不上 → 擋下（不再只憑電話新增並綁進這一戶）
 // 不碰 Ragic（同步呼叫一律丟錯）；所有資料 finally 自己刪乾淨。
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -218,6 +219,15 @@ async function cleanup() {
       assert.deepEqual(await attempts(f), [{ outcome: 'NEW_SIMILAR', matched_name: '陳冠宇' }]);
       const z03Kids = (await pool.query(`SELECT name_raw FROM ragic_z03_students WHERE z03_record_id=$1 ORDER BY name_raw`, [f.id])).rows;
       assert.ok(z03Kids.some((k) => k.name_raw === '陳冠宇'), '既有學員陳冠宇沒被改名');
+    });
+
+    await t('G10 註冊新增學員但名字完全對不上：擋下、不綁、記 FAILED（不再只憑電話新增）', async () => {
+      const f = await family('J', { students: [{ name: '何小安' }] });
+      const r = await claimZ03Identity({ phone: f.phone, studentName: '不相干', lineUid: uid(),
+        studentInput: { name: '不相干' }, allowStudentAppend: true }).then(() => null, (e) => e);
+      assert.equal(r?.code, 'CLAIM_VERIFICATION_FAILED');
+      assert.deepEqual(await kids(f), []);
+      assert.deepEqual((await attempts(f)).map((a) => a.outcome), ['FAILED']);
     });
 
     console.log(`\n${passed} 個測試全數通過`);
