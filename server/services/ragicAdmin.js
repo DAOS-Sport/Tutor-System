@@ -2948,6 +2948,7 @@ async function _syncCanonicalZ01Record(client, z01Row, mapped, venuesMap) {
          WHERE id = $1 RETURNING *`,
         [student.id, s.name, birthDate, ragic.normalizeGender(s.gender), s.blood_type || '', s.student_code || '', String(s.id_number || '').trim().toUpperCase()]
       )).rows[0];
+      existingStudents[existingStudents.indexOf(beforeStudent)] = student;
     } else {
       student = (await client.query(
         `INSERT INTO students

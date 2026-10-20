@@ -21,6 +21,7 @@ const ragic = require('./ragic');
 const { maskName, maskPhone } = require('../utils/piiMask');
 const { normalizePhone, normalizeStudentName } = require('./identityNormalizer');
 const { matchFamilyStudent, withIdFirst } = require('./familyStudentMatch');
+const { createParentIdentityBackofficeTask } = require('./parentIdentityBackoffice');
 const { STABILITY_FLAGS, getTrueRagicLineUid } = require('../config/ragicSchema');
 
 class BindConflictError extends Error {
@@ -366,6 +367,12 @@ async function _queryWithLineUidRetry(client, sql, buildParams, lineUidForWrite,
  *    （至少含 id/id_number/ragic_record_id/name/birth_date）傳入，三層比對改成在記憶體裡
  *    做，省掉每位學員 3 次序列 SELECT；不傳就照舊逐筆查 DB（既有單筆呼叫端行為不變）。
  */
+// 同一件事每輪同步都算出同一個 UUID：人工整理單只開一張，之後只更新。
+function _stableUuid(key) {
+  const h = crypto.createHash('sha256').update(String(key)).digest('hex');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+}
+
 async function upsertLocalStudents(client, parentId, students, { authoritative = false, existingStudents = null, preservePending = true } = {}) {
   // tier-3（name+birth）候選的既有列 id：待人工複核期間，權威掃尾不可把它當「Ragic
   // 已無此人」硬刪掉——否則等於繞過複核直接刪除，與決策7的初衷矛盾。
@@ -382,7 +389,7 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
       [parentId]
     )).rows;
     // 身分證為主：同一戶可以有兩位同名、身分證不同的孩子（familyStudentMatch）。
-    // 原本就有的「同名多筆又沒身分證」照舊整位家長轉人工；其餘分不出來的只略過這一位，不擋整戶登入／刷新。
+    // 原本就有的「同名多筆又沒身分證」照舊整位家長轉人工；其餘分不出來的只略過這一位、開人工整理單，不擋整戶登入／刷新。
     const verdict = matchFamilyStudent(familyRows, s, { taken, batch: ordered });
     if (verdict.ambiguous === 'SAME_NAME_NO_ID') {
       throw new BindConflictError('DATA_RECONCILIATION_PENDING', '同一家庭內學員姓名精準命中多筆');
@@ -390,6 +397,13 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
     if (verdict.ambiguous) {
       console.warn('[parent-sync] 學員對不出是哪一位（%s），略過待人工整理 (parent=%s, name=%s)',
         verdict.ambiguous, parentId, maskName(s.name));
+      await createParentIdentityBackofficeTask({
+        client,
+        parent: { id: parentId },
+        reasonCode: 'STUDENT_MATCH_AMBIGUOUS',
+        suggestedAction: `Ragic 學員對不出是本地哪一位（${verdict.ambiguous}），請核對姓名與身分證後手動對應；這位學員暫不從 Ragic 同步。`,
+        correlationId: _stableUuid(`student-match:${parentId}:${normalizeStudentName(s.name)}:${verdict.ambiguous}`),
+      });
       continue;
     }
     const matched = verdict.row || null;

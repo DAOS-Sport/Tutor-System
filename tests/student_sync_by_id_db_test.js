@@ -14,6 +14,10 @@
 //   S11 身分證在 Ragic 更正（舊號已不在 Ragic）→ 不多建，沿用原本那位（parentSync 與正式 Z01）
 //   S12 正式 Z01：本地一位同名沒身分證、Ragic 兩位同名不同身分證 → 交人工，不配給任一位、不新建
 //   S13 parentSync：本地兩位不同名但身分證相同、Ragic 換新紀錄編號 → 不整位失敗，各自對上
+// 複審補強：
+//   S14 同一個孩子在 Ragic 出現兩次（同名同身分證）→ 只有一位（本地已有／本地還沒有都一樣）
+//   S15 parentSync 對不出是哪一位而略過時，開一張人工整理單；重跑不會多開
+//   S16 #52 之後的家庭：舊孩子沒身分證＋新註冊的同名孩子有身分證，Ragic 兩位都在 → 各自對上、不開整理單
 // 不碰 Ragic（寫入一律用替身）；所有資料 finally 自己刪乾淨。
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -75,6 +79,7 @@ async function cleanup() {
   await pool.query(`DELETE FROM source_record_links WHERE source_record_id = ANY($1::text[])`, [made.sources]);
   if (claimIds.length) await pool.query(`DELETE FROM identity_claims WHERE id = ANY($1::uuid[])`, [claimIds]);
   if (parentIds.length) {
+    await pool.query(`DELETE FROM parent_identity_backoffice_tasks WHERE canonical_parent_id = ANY($1::uuid[])`, [parentIds]);
     await pool.query(`DELETE FROM parent_line_uid_bindings WHERE canonical_parent_id = ANY($1::uuid[])`, [parentIds]);
     await pool.query(`DELETE FROM student_audit_logs WHERE student_id IN (SELECT id FROM students WHERE parent_id = ANY($1::uuid[]))`, [parentIds]);
     await pool.query(`DELETE FROM students WHERE parent_id = ANY($1::uuid[])`, [parentIds]);
@@ -264,6 +269,47 @@ async function syncFormal(raw) {
       ]));
       assert.deepEqual((await kids(p.id)).map((k) => [k.name, k.ragic_record_id]).sort(),
         [['王小明', `R13new1${suffix}`], ['王小華', `R13new2${suffix}`]].sort());
+    });
+
+    const tasks = async (parentId) => (await pool.query(
+      `SELECT reason_code FROM parent_identity_backoffice_tasks WHERE canonical_parent_id=$1`, [parentId])).rows.map((r) => r.reason_code);
+
+    await t('S14 同一個孩子在 Ragic 出現兩次（同名同身分證）→ 只有一位', async () => {
+      const p = await makeParent('d');
+      await addStudent(p.id, '王小明', 'A123456789', `R14a${suffix}`, { synced: true });
+      await inTx((c) => parentSync.upsertLocalStudents(c, p.id, [
+        { name: '王小明', id_number: 'A123456789', ragic_record_id: `R14a${suffix}` },
+        { name: '王小明', id_number: 'A123456789', ragic_record_id: `R14b${suffix}` },
+      ]));
+      assert.equal((await names(p.id)).length, 1);
+      const q = await makeParent('e');
+      await inTx((c) => parentSync.upsertLocalStudents(c, q.id, [
+        { name: '王小明', id_number: 'A123456789' }, { name: '王小明', id_number: 'A123456789' },
+      ]));
+      assert.equal((await names(q.id)).length, 1);
+    });
+
+    await t('S15 parentSync 對不出是哪一位而略過時，開一張人工整理單；重跑不會多開', async () => {
+      const p = await makeParent('f');
+      await addStudent(p.id, '陳同名', null, null, { synced: true });
+      await addStudent(p.id, '陳同名', null, null, { synced: true });
+      for (let i = 0; i < 2; i += 1) {
+        await inTx((c) => parentSync.upsertLocalStudents(c, p.id, [{ name: '陳同名', id_number: 'D123456789' }]));
+      }
+      assert.equal((await names(p.id)).length, 2);
+      assert.deepEqual(await tasks(p.id), ['STUDENT_MATCH_AMBIGUOUS']);
+    });
+
+    await t('S16 舊孩子沒身分證＋新註冊的同名孩子有身分證、Ragic 兩位都在 → 各自對上、不開整理單', async () => {
+      for (const [tag, order] of [['g', ['F223456789', 'G123456789']], ['h', ['G123456789', 'F223456789']]]) {
+        const p = await makeParent(tag);
+        const old = await addStudent(p.id, '鄭乙乙', null, null, { synced: true });
+        const fresh = await addStudent(p.id, '鄭乙乙', 'G123456789', null, { synced: true });
+        await inTx((c) => parentSync.upsertLocalStudents(c, p.id, order.map((id) => ({ name: '鄭乙乙', id_number: id }))));
+        const rows = await names(p.id);
+        assert.deepEqual(rows.map((r) => [r.id, r.id_number]), [[old, 'F223456789'], [fresh, 'G123456789']]);
+        assert.deepEqual(await tasks(p.id), []);
+      }
     });
 
     console.log(`\n${passed} 個測試全數通過`);
