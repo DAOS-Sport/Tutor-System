@@ -17,6 +17,9 @@
 //   9. 停用學員的姓名不能拿來過關
 //  10. 館別沿用預建時的；送 Ragic 的佇列內容是本地合併後的值，不是家長原始送出的
 //  11. 全新電話照舊：建家長＋學員並綁 LINE
+//  12. 和還沒被對上的登記學員只差一字 → 算核對過關，但另建新學員、記 NEW_SIMILAR 給櫃台反查（Owner 2026-10-20）
+//  13. 同一個 LINE 帳號 30 分鐘錯 5 次冷靜（一次送幾個名字算幾次）；並發也最多 5 筆進得去核對；冷靜期不擋成功註冊的重送
+//  14. 一次最多核對 3 位；只差一字只在只填一位時能當過關依據
 //
 // 真實 public schema、合成資料、try/finally 自己刪乾淨。不碰 LINE / Ragic / 正式資料。
 const assert = require('node:assert/strict');
@@ -32,6 +35,7 @@ const pool = new Pool({ connectionString: url, options: '-c statement_timeout=20
 const dbId = require.resolve('../server/models/db');
 require.cache[dbId] = { id: dbId, filename: dbId, loaded: true, exports: { pool } };
 const { registerNewParentLocalFirst } = require('../server/services/z03IdentityClaim');
+const claimAttempts = require('../server/services/claimAttempts');
 
 let passed = 0;
 const made = { parents: [] };
@@ -60,6 +64,14 @@ const register = (p, venue, parent, students, uid) => registerNewParentLocalFirs
   idempotencyKey: `t-${randomUUID()}`,
 });
 
+// 塞 n 筆核對失敗紀錄給這個 LINE 帳號（模擬先前錯過幾次）。
+async function seedFailures(lineUid, phone, n) {
+  for (let i = 0; i < n; i += 1) {
+    const a = await claimAttempts.reserveClaimAttempt({ lineUid, phone, path: 'TEST', submittedName: `錯${i}` });
+    await claimAttempts.finishClaimAttempt(a.id, { outcome: 'FAILED' });
+  }
+}
+
 const rejection = (fn) => fn().then(() => null, (e) => e);
 const parentRow = async (id) => (await pool.query(`SELECT * FROM parents WHERE id=$1`, [id])).rows[0];
 const queuedStudents = async (parentId) => (await pool.query(
@@ -70,6 +82,12 @@ const studentRows = async (parentId) => (await pool.query(
 
 (async () => {
   try {
+    // 舊版建過的表沒有 guess_count：SCHEMA_SQL 要能補上（不然開機後每筆註冊都會 42703）。
+    await pool.query(claimAttempts.SCHEMA_SQL);
+    await pool.query('ALTER TABLE parent_claim_attempts DROP COLUMN guess_count');
+    await pool.query(claimAttempts.SCHEMA_SQL);
+    assert.equal((await pool.query(
+      "SELECT count(*)::int AS n FROM information_schema.columns WHERE table_name='parent_claim_attempts' AND column_name='guess_count'")).rows[0].n, 1);
     const venue = (await pool.query(`SELECT id FROM venues WHERE COALESCE(is_active, TRUE) ORDER BY id LIMIT 1`)).rows[0].id;
 
     await t('電話＋姓名對上：綁 LINE、補學員資料、稽核、回寫候選與佇列一致', async () => {
@@ -137,12 +155,143 @@ const studentRows = async (parentId) => (await pool.query(
       const f = await prebuilt(p, venue, [{ name: '張小芳', id_number: 'C123456789' }]);
       const err = await rejection(() => register(p, venue, { name: '張家長' }, [{ name: '張小芳', id_number: 'C223456789' }], lineUid()));
       assert.equal(err?.code, 'CLAIM_VERIFICATION_FAILED');
-      const noId = await rejection(() => register(p, venue, { name: '張家長' }, [{ name: '張小芳' }], lineUid()));
-      assert.equal(noId?.code, 'CLAIM_VERIFICATION_FAILED');
       assert.equal((await parentRow(f.parentId)).line_uid, null);
       const uid = lineUid();
       await register(p, venue, { name: '張家長' }, [{ name: '張小芳', id_number: 'c123456789' }], uid);
       assert.equal((await parentRow(f.parentId)).line_uid, uid);
+    });
+
+    await t('只填一位登記上沒有、和既有學員只差一字的：綁定、另建新學員、既有的不動、留 NEW_SIMILAR', async () => {
+      const p = phone(); const uid = lineUid();
+      const f = await prebuilt(p, venue, [{ name: '陳冠宇' }]);
+      await register(p, venue, { name: '陳家長' }, [{ name: '陳冠廷', birth_date: '2019-05-05', id_number: 'A299999999' }], uid);
+      assert.equal((await parentRow(f.parentId)).line_uid, uid);
+      const kids = await studentRows(f.parentId);
+      assert.deepEqual(kids.map((k) => [k.name, k.bd, k.id_number]), [['陳冠宇', null, null], ['陳冠廷', '2019-05-05', 'A299999999']]);
+      assert.deepEqual((await queuedStudents(f.parentId))[0].map((s) => s.name), ['陳冠廷']);
+      const att = (await pool.query(`SELECT outcome, matched_name FROM parent_claim_attempts WHERE source_record_id=$1`, [f.parentId])).rows;
+      assert.deepEqual(att, [{ outcome: 'NEW_SIMILAR', matched_name: '陳冠宇' }]);
+    });
+
+    await t('兄弟姊妹只差一字（登記沒身分證）：既有那位照舊、新的一位另建，資料不互相污染', async () => {
+      const p = phone(); const uid = lineUid();
+      const f = await prebuilt(p, venue, [{ name: '陳冠宇' }]);
+      await register(p, venue, { name: '陳家長' }, [{ name: '陳冠宇' }, { name: '陳冠廷', birth_date: '2019-05-05' }], uid);
+      assert.equal((await parentRow(f.parentId)).line_uid, uid);
+      const kids = await studentRows(f.parentId);
+      assert.deepEqual(kids.map((k) => [k.name, k.bd]), [['陳冠宇', null], ['陳冠廷', '2019-05-05']]);
+      assert.deepEqual((await queuedStudents(f.parentId))[0].map((s) => s.name), ['陳冠宇', '陳冠廷']);
+    });
+
+    await t('兄弟姊妹只差一字（登記有身分證、新的一位身分證不同）：照常綁定並另建', async () => {
+      const p = phone(); const uid = lineUid();
+      const f = await prebuilt(p, venue, [{ name: '蔡承恩', id_number: 'H123456789' }]);
+      await register(p, venue, { name: '蔡家長' },
+        [{ name: '蔡承恩', id_number: 'h123456789' }, { name: '蔡承安', id_number: 'H223456789' }], uid);
+      assert.equal((await parentRow(f.parentId)).line_uid, uid);
+      assert.deepEqual((await studentRows(f.parentId)).map((k) => k.name), ['蔡承恩', '蔡承安']);
+    });
+
+    await t('同一個 LINE 帳號同時送 8 筆錯的：最多 5 筆進得去核對，其餘冷靜、不綁', async () => {
+      const p = phone(); const uid = lineUid();
+      const f = await prebuilt(p, venue, [{ name: '黃小並' }]);
+      const errs = await Promise.all(Array.from({ length: 8 }, (_, i) =>
+        rejection(() => register(p, venue, { name: '黃家長' }, [{ name: `錯名${i}號` }], uid))));
+      const codes = errs.map((e) => e?.code);
+      assert.ok(codes.every((c) => c === 'CLAIM_VERIFICATION_FAILED' || c === 'CLAIM_COOLDOWN'), JSON.stringify(codes));
+      assert.ok(codes.filter((c) => c === 'CLAIM_VERIFICATION_FAILED').length <= claimAttempts.FAILURE_LIMIT, JSON.stringify(codes));
+      assert.ok(codes.includes('CLAIM_COOLDOWN'), JSON.stringify(codes));
+      assert.equal((await parentRow(f.parentId)).line_uid, null);
+    });
+
+    await t('一位完全對上、另一位和未送出的登記學員只差一字：另建並標 NEW_SIMILAR', async () => {
+      const p = phone(); const uid = lineUid();
+      const f = await prebuilt(p, venue, [{ name: '林小樂' }, { name: '林語彤' }]);
+      await register(p, venue, { name: '林家長' }, [{ name: '林小樂' }, { name: '林語桐' }], uid);
+      assert.equal((await parentRow(f.parentId)).line_uid, uid);
+      assert.deepEqual((await studentRows(f.parentId)).map((k) => k.name), ['林小樂', '林語彤', '林語桐']);
+      const att = (await pool.query(`SELECT outcome, matched_name FROM parent_claim_attempts WHERE source_record_id=$1`, [f.parentId])).rows;
+      assert.deepEqual(att, [{ outcome: 'NEW_SIMILAR', matched_name: '林語彤' }]);
+    });
+
+    await t('一次塞好幾個名字、只靠其中一個差一字：不過關，且按名字數計入冷靜', async () => {
+      const p = phone(); const uid = lineUid();
+      const f = await prebuilt(p, venue, [{ name: '林語彤' }]);
+      const guess = (names) => rejection(() => register(p, venue, { name: '猜名者' }, names.map((name) => ({ name })), uid));
+      assert.equal((await guess(['陳小明', '林雨涵', '林語桐']))?.code, 'CLAIM_VERIFICATION_FAILED');
+      assert.equal((await guess(['王大同', '李小華']))?.code, 'CLAIM_VERIFICATION_FAILED');
+      assert.equal((await guess(['林語彤']))?.code, 'CLAIM_COOLDOWN');
+      assert.equal((await parentRow(f.parentId)).line_uid, null);
+      const rows = (await pool.query(
+        `SELECT outcome, guess_count FROM parent_claim_attempts WHERE source_record_id=$1 ORDER BY id`, [f.parentId])).rows;
+      assert.deepEqual(rows, [{ outcome: 'FAILED', guess_count: 3 }, { outcome: 'FAILED', guess_count: 2 }]);
+    });
+
+    await t('已錯 4 個名字：再送 2 個名字就冷靜（上限是名字數 5）；只送 1 個對的仍可綁', async () => {
+      const p = phone(); const uid = lineUid();
+      const f = await prebuilt(p, venue, [{ name: '孫小邊' }]);
+      await seedFailures(uid, p, claimAttempts.FAILURE_LIMIT - 1);
+      const err = await rejection(() => register(p, venue, { name: '孫家長' }, [{ name: '孫小邊' }, { name: '孫小界' }], uid));
+      assert.equal(err?.code, 'CLAIM_COOLDOWN');
+      assert.equal((await parentRow(f.parentId)).line_uid, null);
+      await register(p, venue, { name: '孫家長' }, [{ name: '孫小邊' }], uid);
+      assert.equal((await parentRow(f.parentId)).line_uid, uid);
+    });
+
+    await t('一次超過 3 位學員：比對前就擋下、不計冷靜；改填一位就能綁', async () => {
+      const p = phone(); const uid = lineUid();
+      const f = await prebuilt(p, venue, [{ name: '吳小四' }]);
+      const err = await rejection(() => register(p, venue, { name: '吳家長' },
+        [{ name: '吳小四' }, { name: '吳小五' }, { name: '吳小六' }, { name: '吳小七' }], uid));
+      assert.equal(err?.code, 'CLAIM_TOO_MANY_STUDENTS');
+      assert.equal((await parentRow(f.parentId)).line_uid, null);
+      await register(p, venue, { name: '吳家長' }, [{ name: '吳小四' }], uid);
+      assert.equal((await parentRow(f.parentId)).line_uid, uid);
+    });
+
+    await t('只填一位只差一字的兄弟姊妹、登記那位有不同身分證：綁定、另建、標 NEW_SIMILAR', async () => {
+      const p = phone(); const uid = lineUid();
+      const f = await prebuilt(p, venue, [{ name: '蔡承恩', id_number: 'H123456789' }]);
+      await register(p, venue, { name: '蔡家長' }, [{ name: '蔡承安', id_number: 'H223456789' }], uid);
+      assert.equal((await parentRow(f.parentId)).line_uid, uid);
+      assert.deepEqual((await studentRows(f.parentId)).map((k) => [k.name, k.id_number]), [['蔡承恩', 'H123456789'], ['蔡承安', 'H223456789']]);
+      const att = (await pool.query(`SELECT outcome, matched_name FROM parent_claim_attempts WHERE source_record_id=$1`, [f.parentId])).rows;
+      assert.deepEqual(att, [{ outcome: 'NEW_SIMILAR', matched_name: '蔡承恩' }]);
+    });
+
+    await t('兄弟姊妹同名那位也有送出：新的一位另建、不標相近', async () => {
+      const p = phone(); const uid = lineUid();
+      const f = await prebuilt(p, venue, [{ name: '鄭冠宇' }]);
+      await register(p, venue, { name: '鄭家長' }, [{ name: '鄭冠宇' }, { name: '鄭冠廷' }], uid);
+      const att = (await pool.query(`SELECT outcome FROM parent_claim_attempts WHERE source_record_id=$1`, [f.parentId])).rows;
+      assert.deepEqual(att, [{ outcome: 'PASSED_EXACT' }]);
+    });
+
+    await t('冷靜期不擋已成功註冊的重送（idempotent replay）', async () => {
+      const p = phone(); const uid = lineUid(); const key = `t-${randomUUID()}`;
+      const f = await prebuilt(p, venue, [{ name: '高小重' }]);
+      const args = { parent: { phone: p, primary_venue_id: venue, name: '高家長' }, students: [{ name: '高小重' }], lineUid: uid, idempotencyKey: key };
+      await registerNewParentLocalFirst(args);
+      await seedFailures(uid, p, claimAttempts.FAILURE_LIMIT);
+      assert.equal((await registerNewParentLocalFirst(args)).replayed, true);
+      assert.equal((await rejection(() => registerNewParentLocalFirst({ ...args, idempotencyKey: `t-${randomUUID()}` })))?.code, 'CLAIM_COOLDOWN');
+    });
+
+    await t('姓名不對但身分證相同：綁定、沿用既有學員', async () => {
+      const p = phone(); const uid = lineUid();
+      const f = await prebuilt(p, venue, [{ name: '許小涵', id_number: 'E223456789' }]);
+      await register(p, venue, { name: '許家長' }, [{ name: '許曉晗晗', id_number: 'e223456789' }], uid);
+      assert.equal((await parentRow(f.parentId)).line_uid, uid);
+      assert.deepEqual((await studentRows(f.parentId)).map((k) => k.name), ['許小涵']);
+    });
+
+    await t('核對失敗會留下 FAILED 紀錄（同一個 LINE 帳號錯 5 次會冷靜）', async () => {
+      const p = phone(); const uid = lineUid();
+      const f = await prebuilt(p, venue, [{ name: '鄭小安' }]);
+      const err = await rejection(() => register(p, venue, { name: '冒領者' }, [{ name: '毫無關係' }], uid));
+      assert.equal(err?.code, 'CLAIM_VERIFICATION_FAILED');
+      const att = (await pool.query(`SELECT outcome FROM parent_claim_attempts WHERE source_record_id=$1`, [f.parentId])).rows;
+      assert.deepEqual(att.map((a) => a.outcome), ['FAILED']);
     });
 
     await t('停用學員的姓名不能拿來過關', async () => {
@@ -200,6 +349,9 @@ const studentRows = async (parentId) => (await pool.query(
       await pool.query(`DELETE FROM identity_claims WHERE canonical_parent_id = ANY($1::uuid[])`, [ids]);
       await pool.query(`DELETE FROM student_audit_logs WHERE student_id IN (SELECT id FROM students WHERE parent_id = ANY($1::uuid[]))`, [ids]);
       await pool.query(`DELETE FROM students WHERE parent_id = ANY($1::uuid[])`, [ids]);
+      await pool.query(
+        `DELETE FROM parent_claim_attempts WHERE source_record_id = ANY($1::text[])
+            OR phone_canonical IN (SELECT phone FROM parents WHERE id = ANY($2::uuid[]))`, [ids.map(String), ids]);
       await pool.query(`DELETE FROM parents WHERE id = ANY($1::uuid[])`, [ids]);
     } catch (e) {
       console.error('清除失敗：' + e.message);

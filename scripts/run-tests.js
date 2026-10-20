@@ -99,6 +99,7 @@ const UNIT = [
   'tests/refund_reason_parity_test.js',
   'tests/session_note_visibility_test.js',
   'tests/legacy_import_marker_test.js',
+  'tests/claim_student_matcher_test.js',
   'tests/legacy_settled_payroll_test.js',
   'tests/promotion_label_test.js',
   'tests/promotion_order_test.js',
@@ -258,6 +259,7 @@ const DB = [
   // #12 假成功稽核：團購取消與名額回沖同交易、系統設定先驗後寫（真實路由 + 拋棄式庫）。
   'tests/false_success_db_test.js',
   'tests/z03_prebuilt_parent_claim_db_test.js',
+  'tests/z03_claim_gate_db_test.js',
   'tests/legacy_expiry_countdown_db_test.js',
 ];
 

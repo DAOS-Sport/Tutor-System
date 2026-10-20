@@ -15,6 +15,55 @@ const {
   buildParentProfilePatch,
   insertProfilePatchAudit,
 } = require('./parentRegistrationProfile');
+const { matchStudent } = require('./claimStudentMatcher');
+const claimAttempts = require('./claimAttempts');
+
+const CLAIM_MISMATCH_MESSAGE = '學員資料與登記資料不符：請確認學員姓名，或填寫學員身分證字號後再試；仍無法通過請洽櫃台協助。';
+const CLAIM_COOLDOWN_MESSAGE = `學員資料核對錯誤次數過多，請 ${claimAttempts.COOLDOWN_MINUTES} 分鐘後再試，或洽櫃台協助。`;
+
+// 預建家長一次最多核對幾位學員：名字越多等於一次猜越多次（其餘學員登入後再新增）。
+const MAX_PREBUILT_CLAIM_STUDENTS = 3;
+const CLAIM_TOO_MANY_STUDENTS_MESSAGE = `一次最多填 ${MAX_PREBUILT_CLAIM_STUDENTS} 位學員，其他學員請登入後再新增。`;
+
+// 會新增學員的路徑判斷「和登記的只差一字」只比姓名、不帶身分證：身分證不同正好表示是另一個孩子，照樣另建並標 NEW_SIMILAR。
+function _nearByName(rows, name) {
+  const v = matchStudent(rows, { name });
+  return v?.method === 'NEAR' ? v : null;
+}
+
+// 靠身分證或差一字比對時只用 Ragic 最新資料裡還在的學員：已移除的歷史學員不能拿來過關。
+// （缺生日、同名重複的 INVALID_ROW／DUPLICATE_CANDIDATE 仍是真的孩子，照樣可比；完全同名的比對不受這條限制。）
+const _fuzzyEligible = (row) => row.present_in_latest_payload !== false && row.classification !== 'EMPTY_TEMPLATE_ROW';
+
+// 註冊頁可一次填好幾位學員，但 Z03 認領只核對一位：照 claimZ03Identity 的順序（同名 → 身分證 → 只差一字）
+// 挑對得上的那位，家長不必把已登記的孩子填在第一位。家庭範圍與比對資料都和 claimZ03Identity 相同。
+// 最多看 MAX_PREBUILT_CLAIM_STUDENTS 位，看了幾位就算猜了幾次。
+async function pickRegistrationClaimStudent(phone, students, db = pool) {
+  const considered = students.slice(0, MAX_PREBUILT_CLAIM_STUDENTS);
+  const rows = (await db.query(
+    `SELECT s.name_raw AS name, s.id_number_raw AS id_number, s.present_in_latest_payload, s.classification
+       FROM ragic_z03_students s JOIN ragic_z03_records r ON r.id = s.z03_record_id
+      WHERE (r.phone_canonical = $1 OR regexp_replace(COALESCE(r.phone,''), '\\D', '', 'g') = $1)
+        AND r.status IN ('pending','resolved','manual_review')`, [normalizePhone(phone)]
+  )).rows;
+  const fuzzyRows = rows.filter(_fuzzyEligible);
+  const exact = considered.findIndex((s) =>
+    rows.some((row) => normalizeStudentName(row.name) === normalizeStudentName(s.name)));
+  const byId = considered.findIndex((s) => matchStudent(fuzzyRows, s, { allowNear: false })?.method === 'ID');
+  const near = considered.findIndex((s) => _nearByName(fuzzyRows, s.name));
+  const pick = [exact, byId, near].find((i) => i >= 0) ?? 0;
+  return { student: considered[pick], guesses: considered.length };
+}
+
+const _cooldownError = () => new Z03ClaimError('CLAIM_COOLDOWN', CLAIM_COOLDOWN_MESSAGE, 429);
+
+// 認領結果寫回嘗試紀錄：用同一條連線（交易已結束），寫不進去只記 log，不改變回給家長的結果。
+async function _finishClaimAttempt(client, attempt, result) {
+  if (!attempt) return;
+  await claimAttempts.finishClaimAttempt(attempt.id, result, client).catch((err) => {
+    console.error('[claimAttempts] 結果寫入失敗：', err.code || err.message);
+  });
+}
 
 class Z03ClaimError extends Error {
   constructor(code, message, http = 409, details = {}) {
@@ -134,7 +183,16 @@ async function registerNewParentLocalFirst({
   const payload = { parent: { ...parentInput, phone: phoneCanonical }, students: cleanStudents };
   const payloadHash = _payloadHash(payload);
   const client = await pool.connect();
+  let attempt = null;
+  let attemptResult = { outcome: 'REGISTERED' };
+  let failedPrebuiltClaim = null;
   try {
+    attempt = await claimAttempts.reserveClaimAttempt({
+      lineUid: uid, phone: phoneCanonical, path: 'REGISTER',
+      submittedName: cleanStudents.map((s) => s.name).join('、'),
+      submittedIdNumber: cleanStudents.map((s) => s.id_number || '').join(''),
+      guesses: cleanStudents.length,
+    }, client);
     await client.query('BEGIN');
     await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`canonical-parent:${phoneCanonical}`]);
     await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`line-uid:${lineUidHash}`]);
@@ -149,7 +207,12 @@ async function registerNewParentLocalFirst({
         throw new Z03ClaimError('LOCAL_LINK_FAILED', '相同 idempotency key 的 payload 不一致', 409);
       }
       await client.query('COMMIT');
+      attemptResult = { outcome: 'REPLAYED' };
       return { parent: replay, replayed: true, sync_state: replay.state, correlation_id: replay.correlation_id };
+    }
+    if (attempt.coolingDown) {
+      attemptResult = { outcome: 'COOLDOWN' };
+      throw _cooldownError();
     }
 
     const byUid = (await client.query(`SELECT * FROM parents WHERE line_uid=$1 FOR UPDATE`, [uid])).rows[0] || null;
@@ -162,27 +225,49 @@ async function registerNewParentLocalFirst({
     if (byUid && parent && byUid.id !== parent.id) throw new Z03ClaimError('ACCOUNT_RECOVERY_REQUIRED', 'LINE UID 與手機指向不同 parent');
     if (parent?.line_uid && parent.line_uid !== uid) throw new Z03ClaimError('ACCOUNT_RECOVERY_REQUIRED', '手機已綁定另一個 LINE UID');
     let claimingPrebuilt = false;
+    let claimStudents = cleanStudents;
     if (parent && !parent.line_uid) {
       claimingPrebuilt = true;
+      if (cleanStudents.length > MAX_PREBUILT_CLAIM_STUDENTS) {
+        throw new Z03ClaimError('CLAIM_TOO_MANY_STUDENTS', CLAIM_TOO_MANY_STUDENTS_MESSAGE, 400);
+      }
+      if (attempt.priorGuesses + cleanStudents.length > claimAttempts.FAILURE_LIMIT) {
+        attemptResult = { outcome: 'COOLDOWN' };
+        throw _cooldownError();
+      }
       // 2026-10 舊家教移轉：櫃台預建檔的家長（本地有、還沒綁 LINE、Ragic 沒有）。
       // 原本這裡沿用 parent 卻不寫 line_uid → 家長下次用 LINE 登入找不到人，
       // CREATE_Z01_PARENT 也會因 LINE_UID_REQUIRED 卡在 outbox。
-      // 綁定前比照 Z03 認領：電話＋任一位在學學員姓名對上才綁，只知道電話不能接走別人的課；
-      // 姓名對上的學員若已存身分證，送來的必須相同（parentSync.classifyStudentClaim 同規則）。
+      // 綁定前核對（claimStudentMatcher）：電話＋任一位在學學員的身分證相同、姓名相同或只差一字才綁，
+      // 只知道電話不能接走別人的課；任何一位送來的身分證和登記的不同就不綁。
       // 名下沒有學員的預建家長無從核對，一律轉櫃台，不靠電話單獨綁定。
-      const onFile = new Map((await client.query(
+      const onFile = (await client.query(
         `SELECT name, id_number FROM students WHERE parent_id=$1 AND is_active`, [parent.id]
-      )).rows.map((row) => [normalizeStudentName(row.name), String(row.id_number || '').trim().toUpperCase()]));
-      const verdicts = cleanStudents
-        .filter((s) => onFile.has(normalizeStudentName(s.name)))
-        .map((s) => {
-          const idOnFile = onFile.get(normalizeStudentName(s.name));
-          return !idOnFile || idOnFile === String(s.id_number || '').trim().toUpperCase();
-        });
-      if (!verdicts.length || verdicts.includes(false)) {
+      )).rows;
+      // 這條路會新增學員，NEAR 分不出打錯字和只差一字的兄弟姊妹（Owner 2026-10-20：當成新的一位、標成「名字相近」）：
+      // EXACT/ID 對上的沿用既有學員；其餘和「還沒被對上」的登記學員只差一字的，仍算核對過關的依據，
+      // 但另建成新學員，嘗試紀錄記 NEW_SIMILAR 給櫃台反查（打錯字就由櫃台合併）。
+      const strict = cleanStudents.map((s) => matchStudent(onFile, s, { allowNear: false }));
+      const strictlyMatched = new Set(strict.filter((v) => v && !v.conflict).map((v) => v.name));
+      const unmatchedOnFile = onFile.filter((row) => !strictlyMatched.has(normalizeStudentName(row.name)));
+      const similar = strict.map((v, i) => (v ? null : _nearByName(unmatchedOnFile, cleanStudents[i].name)));
+      const matchedNames = strict.filter((v) => v && !v.conflict).map((v) => v.name);
+      const similarNames = similar.filter(Boolean).map((v) => v.candidates[0].name);
+      // 只差一字只在只填一位時能當過關依據；填好幾個名字只靠其中一個差一字，等於一次猜好幾次。
+      const nearProves = cleanStudents.length === 1 && similarNames.length === 1;
+      if (strict.some((v) => v?.conflict) || (!matchedNames.length && !nearProves)
+          || new Set(matchedNames).size !== matchedNames.length) {
         parentSync.auditClaim({ phone: phoneCanonical, lineUid: uid, result: 'failed', reason: 'prebuilt_parent_claim_mismatch' });
-        throw new Z03ClaimError('CLAIM_VERIFICATION_FAILED', '學員資料與既有資料不符，請洽櫃台協助', 409);
+        failedPrebuiltClaim = { parentId: parent.id };
+        throw new Z03ClaimError('CLAIM_VERIFICATION_FAILED', CLAIM_MISMATCH_MESSAGE, 409);
       }
+      // 以登記的姓名為準：靠身分證對上的沿用既有學員，不另建一位。
+      claimStudents = cleanStudents.map((s, i) => (strict[i] ? { ...s, name: strict[i].candidates[0].name } : s));
+      const byId = strict.filter((v) => v?.method === 'ID').map((v) => v.candidates[0].name);
+      attemptResult = similarNames.length
+        ? { outcome: 'NEW_SIMILAR', path: 'PREBUILT', sourceRecordId: parent.id, matchedName: similarNames.join('、') }
+        : { outcome: byId.length ? 'PASSED_ID' : 'PASSED_EXACT', path: 'PREBUILT', sourceRecordId: parent.id,
+            matchedName: byId.join('、') || null };
       // 館別沿用預建時的，免得家長被移出原場館櫃台的範圍；其餘以家長本人填的為準。
       parent = (await client.query(
         `UPDATE parents
@@ -210,7 +295,7 @@ async function registerNewParentLocalFirst({
 
     const localStudents = (await client.query(`SELECT * FROM students WHERE parent_id=$1 FOR UPDATE`, [parent.id])).rows;
     const linkedStudents = [];
-    for (const sourceStudent of cleanStudents) {
+    for (const sourceStudent of claimStudents) {
       const normalized = normalizeStudentName(sourceStudent.name);
       const matches = localStudents.filter((row) => normalizeStudentName(row.name) === normalized);
       if (matches.length > 1) throw new Z03ClaimError('DATA_RECONCILIATION_PENDING', '同名學員命中多筆');
@@ -261,7 +346,7 @@ async function registerNewParentLocalFirst({
       )).rows.map((row) => [row.id, row]));
       outboxPayload = {
         ...payload,
-        students: cleanStudents.map((s, i) => {
+        students: claimStudents.map((s, i) => {
           const row = merged.get(linkedStudents[i].id);
           return { ...s, name: row.name, birth_date: row.birth_date || '', gender: row.gender || '',
             id_number: row.id_number || '', blood_type: row.blood_type || '' };
@@ -277,7 +362,7 @@ async function registerNewParentLocalFirst({
           correlation_id,verified_at,linked_at)
        VALUES ('NEW_REGISTRATION','SYNC_PENDING',$1,$2,$3,$4,$5,'RAGIC','Z01',$6,$7,NOW(),NOW())
        RETURNING *`,
-      [phoneCanonical, normalizeStudentName(cleanStudents[0].name), parent.id, linkedStudents[0].id,
+      [phoneCanonical, normalizeStudentName(claimStudents[0].name), parent.id, linkedStudents[0].id,
        lineUidHash, pendingSourceId, correlationId]
     )).rows[0];
     await client.query(
@@ -298,6 +383,11 @@ async function registerNewParentLocalFirst({
     return { parent, students: linkedStudents, replayed: false, sync_state: 'SYNC_PENDING', correlation_id: correlationId };
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
+    if (attemptResult.outcome !== 'COOLDOWN') {
+      attemptResult = failedPrebuiltClaim
+        ? { outcome: 'FAILED', path: 'PREBUILT', sourceRecordId: failedPrebuiltClaim.parentId }
+        : { outcome: 'ERROR' };
+    }
     if (err instanceof Z03ClaimError) throw err;
     // 這是新戶註冊唯一的寫入交易。原本直接把 err 換成 LOCAL_LINK_FAILED 丟出去，
     // 家長看到「註冊失敗」，而後台一行線索都沒有 —— 家長回報「填一填就跳掉」
@@ -313,6 +403,7 @@ async function registerNewParentLocalFirst({
       constraint: err.constraint || null,
     });
   } finally {
+    await _finishClaimAttempt(client, attempt, attemptResult);
     client.release();
   }
 }
@@ -503,21 +594,36 @@ async function claimZ03Identity({
   ownershipVerified = false,
   z03Id = null,
   sourceRecordId = null,
+  claimIdNumber = '',
+  claimGuesses = 1,
   actor = 'parent-auth',
   correlationId = crypto.randomUUID(),
 } = {}) {
   const phoneCanonical = normalizePhone(phone);
-  const studentNameNormalized = normalizeStudentName(studentName);
+  let studentNameNormalized = normalizeStudentName(studentName);
+  let claimStudentName = String(studentName || '').trim();
   if (!isCanonicalMobilePhone(phoneCanonical)) throw new Z03ClaimError('INVALID_PHONE', '手機無法安全正規化', 400);
   if (!studentNameNormalized) throw new Z03ClaimError('STUDENT_NAME_REQUIRED', '學員姓名必填', 400);
   if (!String(lineUid || '').trim()) throw new Z03ClaimError('LINE_UID_REQUIRED', 'LINE UID 必填', 400);
   const submittedStudent = { ...(studentInput || {}), name: String(studentInput?.name || studentName || '').trim() };
   const submittedProfile = { ...(parentProfile || {}), name: String(parentProfile?.name || parentName || '').trim(), phone: phoneCanonical };
   const registrationCompletion = Boolean(parentProfile || studentInput || allowStudentAppend);
+  const submittedIdNumber = String(claimIdNumber || studentInput?.id_number || '').trim();
 
   const client = await pool.connect();
+  let attempt = null;
+  let attemptResult = { outcome: 'PASSED_EXACT' };
+  let similarOnFile = null;
   let reviewContext = null;
+  let failedAttempt = null;
   try {
+    attempt = await claimAttempts.reserveClaimAttempt({
+      lineUid, phone: phoneCanonical, path: 'Z03', submittedName: studentName, submittedIdNumber, guesses: claimGuesses,
+    }, client);
+    if (attempt.priorGuesses + claimGuesses > claimAttempts.FAILURE_LIMIT) {
+      attemptResult = { outcome: 'COOLDOWN' };
+      throw _cooldownError();
+    }
     await client.query('BEGIN');
     await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`canonical-parent:${phoneCanonical}`]);
     await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`line-uid:${_lineUidHash(lineUid)}`]);
@@ -557,7 +663,33 @@ async function claimZ03Identity({
     )).rows;
     let exactMatches = childRows.filter((row) => normalizeStudentName(row.name_raw) === studentNameNormalized);
     if (exactMatches.length === 0) {
-      if (allowStudentAppend) {
+      // 姓名沒有完全相同：身分證相同或姓名只差一字也算對上（claimStudentMatcher），之後以登記的姓名為準。
+      // 註冊新增學員（allowStudentAppend）時不認 NEAR：只差一字的可能是還沒登記的兄弟姊妹，
+      // 照樣另建，但記 NEW_SIMILAR 給櫃台反查（Owner 2026-10-20）。
+      const candidates = childRows
+        .filter(_fuzzyEligible)
+        .map((row) => ({ name: row.name_raw, id_number: row.id_number_raw, row }));
+      const submitted = { name: studentName, id_number: submittedIdNumber };
+      const verdict = matchStudent(candidates, submitted, { allowNear: !allowStudentAppend });
+      if (!verdict && allowStudentAppend) {
+        const near = _nearByName(candidates, studentName);
+        if (near) similarOnFile = String(near.candidates[0].row.name_raw || '').trim();
+      }
+      if (verdict && !verdict.conflict) {
+        exactMatches = verdict.candidates.map((candidate) => candidate.row);
+        studentNameNormalized = verdict.name;
+        claimStudentName = String(exactMatches[0].name_raw || '').trim();
+        submittedStudent.name = claimStudentName;
+        attemptResult = {
+          outcome: `PASSED_${verdict.method}`, sourceRecordId: exactMatches[0].z03_record_id, matchedName: claimStudentName,
+        };
+      }
+    }
+    if (exactMatches.length === 0) {
+      // 註冊新增學員也要先證明是這一戶：名字和登記的孩子只差一字才另建（標 NEW_SIMILAR），
+      // 完全對不上就當核對失敗，不再只憑電話把 LINE 綁進這一戶（Owner 2026-10-20）。
+      if (allowStudentAppend && similarOnFile) {
+        attemptResult = { outcome: 'NEW_SIMILAR', matchedName: similarOnFile };
         const localCandidates = (await client.query(
           `SELECT * FROM parents
             WHERE line_uid=$1 OR phone=$2 OR regexp_replace(COALESCE(phone,''),'\\D','','g')=$2
@@ -782,12 +914,10 @@ async function claimZ03Identity({
         return { parent, student, replayed: false, student_appended: true,
           sync_state: 'SYNC_PENDING', correlation_id: claim.correlation_id };
       }
-      reviewContext = {
-        z03Ids: familyIds,
-        sourceRecordId: families.length === 1 ? families[0].z01_ragic_record_id : null,
-        code: 'IDENTITY_NOT_FOUND',
-      };
-      throw new Z03ClaimError('MANUAL_REVIEW_REQUIRED', '家庭內沒有 exact normalized student match', 409, {
+      // 核對失敗只記這一次（同一個 LINE 帳號錯 5 次才冷靜），不再把整個家庭鎖成人工審核
+      // （Owner 2026-10-20：一次打錯字就整戶鎖死，家長之後填對也進不來）。
+      failedAttempt = { sourceRecordId: families.length === 1 ? families[0].id : null };
+      throw new Z03ClaimError('CLAIM_VERIFICATION_FAILED', CLAIM_MISMATCH_MESSAGE, 409, {
         reason: 'IDENTITY_NOT_FOUND',
       });
     }
@@ -857,7 +987,7 @@ async function claimZ03Identity({
         if (studentRows.length > 1) throw new Z03ClaimError('DATA_RECONCILIATION_PENDING', 'canonical student 命中多筆', 409);
         const student = studentRows[0] || (await client.query(
           `INSERT INTO students (parent_id,name,is_active) VALUES ($1,$2,TRUE) RETURNING *`,
-          [parent.id, studentName]
+          [parent.id, claimStudentName]
         )).rows[0];
         if (!studentRows[0]) await writeStudentAudit(client, student.id, 'create', parentActor(parent.id, 'legacy-claim-local-identity'));
         await client.query(
@@ -913,8 +1043,9 @@ async function claimZ03Identity({
       && family.reason_code === 'AMBIGUOUS_STUDENT_MATCH'
       && matchedFamilyIds.length === 1
       && exactMatches.length > 1;
-    if (family.status === 'manual_review' && !recoverableSameSourceDuplicate) {
-      throw new Z03ClaimError('MANUAL_REVIEW_REQUIRED', '此 Z03 family 已進人工處理', 409, {
+    // 以前打錯字留下的 IDENTITY_NOT_FOUND 不算人工鎖：這次核對已通過就放行。櫃台手動轉人工的照樣擋。
+    if (family.status === 'manual_review' && !recoverableSameSourceDuplicate && family.reason_code !== 'IDENTITY_NOT_FOUND') {
+      throw new Z03ClaimError('MANUAL_REVIEW_REQUIRED', '這個家庭的資料正在由櫃台確認中，請洽櫃台協助完成綁定。', 409, {
         reason: family.reason_code || 'MANUAL_REVIEW',
       });
     }
@@ -1148,6 +1279,9 @@ async function claimZ03Identity({
     return { parent, student, replayed: false, sync_state: 'SYNC_PENDING', correlation_id: claim.correlation_id };
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
+    if (attemptResult.outcome !== 'COOLDOWN') {
+      attemptResult = failedAttempt ? { outcome: 'FAILED', sourceRecordId: failedAttempt.sourceRecordId } : { outcome: 'ERROR' };
+    }
     if (reviewContext) {
       await _persistManualReview({
         ...reviewContext,
@@ -1171,6 +1305,7 @@ async function claimZ03Identity({
       causeCode: err.code || null,
     });
   } finally {
+    await _finishClaimAttempt(client, attempt, attemptResult);
     client.release();
   }
 }
@@ -1178,6 +1313,7 @@ async function claimZ03Identity({
 module.exports = {
   Z03ClaimError,
   claimZ03Identity,
+  pickRegistrationClaimStudent,
   registerNewParentLocalFirst,
   completeTrueUidRegistration,
   __test__: {
