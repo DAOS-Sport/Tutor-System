@@ -123,22 +123,26 @@ function rowToDraft(row) {
   };
 }
 
+// toast 超過 300 字會被換成通用訊息，清單太長時只列前幾項，後面補「等 N 項」。
+function joinWithinLimit(labels, unit, limit = 200) {
+  for (let shown = labels.length; shown >= 1; shown -= 1) {
+    const more = labels.length > shown ? ` 等 ${labels.length} ${unit}` : '';
+    const out = `${labels.slice(0, shown).join('、')}${more}`;
+    if (out.length <= limit || shown === 1) return out;
+  }
+  return '';
+}
+
 function missingText(missing) {
-  return (missing || []).map((m) => m.label || m.key).filter(Boolean).join('、');
+  return joinWithinLimit((missing || []).map((m) => m.label || m.key).filter(Boolean), '項');
 }
 
 // 儲存後提示哪些舊列沒寫回 Ragic。「第 N 位」是後端照編輯表格順序算的位置。
-// toast 超過 300 字會被換成通用訊息，所以姓名太多時只列前幾位。
 function skippedRemovedText(skipped) {
   const items = Array.isArray(skipped) ? skipped : [];
   if (!items.length) return '';
-  const label = (s) => `第 ${s.position} 位「${s.name || '未填姓名'}」`;
-  for (let shown = Math.min(items.length, 5); shown >= 1; shown -= 1) {
-    const more = items.length > shown ? ` 等 ${items.length} 筆` : '';
-    const msg = `已不在 Ragic 的舊列沒有寫回：${items.slice(0, shown).map(label).join('、')}${more}（同名的現存學員照常寫回）`;
-    if (msg.length <= 200 || shown === 1) return msg;
-  }
-  return '';
+  const names = joinWithinLimit(items.map((s) => `第 ${s.position} 位「${s.name || '未填姓名'}」`), '筆', 150);
+  return `已不在 Ragic 的舊列沒有寫回：${names}（Ragic 裡還在的學員照常寫回）`;
 }
 
 function FieldInput({ value, onChange, placeholder = '', className = '' }) {
