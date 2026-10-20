@@ -28,6 +28,7 @@ const { refreshParentMirrorFromRagic, ParentRefreshError } = parentRefresh;
 const { cleanVenueList, COACH_STAFF_PROFILE_SELECT } = require('../services/coachVenueScope');
 const {
   claimZ03Identity,
+  pickRegistrationClaimStudent,
   registerNewParentLocalFirst,
   completeTrueUidRegistration,
   Z03ClaimError,
@@ -259,6 +260,7 @@ async function _completeLocalZ03Claim(req, res, {
   parentProfile = null,
   studentInput = null,
   ownershipVerified = false,
+  claimGuesses = 1,
 } = {}) {
   const claim = req.body?.claim || {};
   const studentName = String(claim.student_name || claim.name || '').trim();
@@ -282,6 +284,7 @@ async function _completeLocalZ03Claim(req, res, {
       lineUid,
       parentName: claim.parent_name || '',
       claimIdNumber: claim.student_id_number || '',
+      claimGuesses,
       parentProfile,
       allowStudentAppend,
       ownershipVerified,
@@ -1331,9 +1334,9 @@ async function _registerParentCore(req, res, resolveLineUid) {
           ownershipVerified: true,
         });
       }
-      // Phone exists but the submitted child is new (including zero-student
-      // legacy rows). Hydrate every blank-UID source, then let the multi-source
-      // claim resolver append under one canonical parent.
+      // Phone exists but the first submitted child is not an exact match. Hydrate every blank-UID
+      // source, then let the claim pick the child that matches a registered one; a new child is
+      // appended only when its name is one character off a registered child (Owner 2026-10-20).
       for (const source of phoneSources) {
         if (!getTrueRagicLineUid(source)) await ragicAdmin.hydrateZ03RecordFromRagicRow(source);
       }
@@ -1358,15 +1361,17 @@ async function _registerParentCore(req, res, resolveLineUid) {
       z03Match = { multiple_candidates: true, z03_ids: err.z03Ids || [] };
     }
     if (z03Match) {
-      req.body.claim = { student_name: cleanStudents[0].name, phone, parent_name: name };
+      const pick = await pickRegistrationClaimStudent(phone, cleanStudents);
+      req.body.claim = { student_name: pick.student.name, phone, parent_name: name };
       return _completeLocalZ03Claim(req, res, {
         phone,
         lineUid,
         successStatus: 'registered_and_logged_in',
         allowStudentAppend: true,
         parentProfile: { ...parentIn, name, phone, email },
-        studentInput: cleanStudents[0],
+        studentInput: pick.student,
         ownershipVerified: true,
+        claimGuesses: pick.guesses,
       });
     }
     let ragicRowByPhone = null;
@@ -1437,8 +1442,9 @@ async function _registerParentCore(req, res, resolveLineUid) {
       // families. Exact-name students are linked; a missing student is appended
       // under the same canonical parent/source record through the local-first
       // transaction and outbox. No synchronous Ragic failure can block login.
+      const pick = await pickRegistrationClaimStudent(phone, cleanStudents);
       req.body.claim = {
-        student_name: cleanStudents[0].name,
+        student_name: pick.student.name,
         phone,
         parent_name: name,
       };
@@ -1448,8 +1454,9 @@ async function _registerParentCore(req, res, resolveLineUid) {
         successStatus: 'registered_and_logged_in',
         allowStudentAppend: true,
         parentProfile: { ...parentIn, name, phone, email },
-        studentInput: cleanStudents[0],
+        studentInput: pick.student,
         ownershipVerified: true,
+        claimGuesses: pick.guesses,
       });
       /* istanbul ignore next -- frozen rollback-only legacy code */
       const existing = z03Match.parent || {};

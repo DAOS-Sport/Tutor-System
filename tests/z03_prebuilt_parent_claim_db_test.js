@@ -249,6 +249,16 @@ const studentRows = async (parentId) => (await pool.query(
       assert.equal((await parentRow(f.parentId)).line_uid, uid);
     });
 
+    await t('只填一位只差一字的兄弟姊妹、登記那位有不同身分證：綁定、另建、標 NEW_SIMILAR', async () => {
+      const p = phone(); const uid = lineUid();
+      const f = await prebuilt(p, venue, [{ name: '蔡承恩', id_number: 'H123456789' }]);
+      await register(p, venue, { name: '蔡家長' }, [{ name: '蔡承安', id_number: 'H223456789' }], uid);
+      assert.equal((await parentRow(f.parentId)).line_uid, uid);
+      assert.deepEqual((await studentRows(f.parentId)).map((k) => [k.name, k.id_number]), [['蔡承恩', 'H123456789'], ['蔡承安', 'H223456789']]);
+      const att = (await pool.query(`SELECT outcome, matched_name FROM parent_claim_attempts WHERE source_record_id=$1`, [f.parentId])).rows;
+      assert.deepEqual(att, [{ outcome: 'NEW_SIMILAR', matched_name: '蔡承恩' }]);
+    });
+
     await t('兄弟姊妹同名那位也有送出：新的一位另建、不標相近', async () => {
       const p = phone(); const uid = lineUid();
       const f = await prebuilt(p, venue, [{ name: '鄭冠宇' }]);

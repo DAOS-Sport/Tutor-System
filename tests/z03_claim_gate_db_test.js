@@ -10,6 +10,9 @@
 //   G8 同一個 LINE 帳號同時送 10 筆錯的：最多 5 筆進得去核對，其餘冷靜；連線池不會卡死
 //   G9 註冊新增學員（allowStudentAppend）：只差一字的兄弟姊妹另建、記 NEW_SIMILAR，不併到既有學員
 //   G10 註冊新增學員但名字完全對不上 → 擋下（不再只憑電話新增並綁進這一戶）
+//   G11 Z03 名下沒有學員的家庭從註冊頁新增 → 無從核對，擋下
+//   G12 註冊頁已登記的孩子不在第一位 → 照樣過（挑對得上的那位核對，看了幾位算幾次）
+//   G13 註冊新增：只差一字、登記那位有不同身分證 → 另建、標 NEW_SIMILAR
 // 不碰 Ragic（同步呼叫一律丟錯）；所有資料 finally 自己刪乾淨。
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -76,6 +79,7 @@ async function cleanup() {
   await pool.query(`DELETE FROM parent_claim_attempts WHERE phone_canonical = ANY($1::text[])`, [made.phones]);
   if (parentIds.length) {
     await pool.query(`DELETE FROM parent_line_uid_bindings WHERE canonical_parent_id = ANY($1::uuid[])`, [parentIds]);
+    await pool.query(`DELETE FROM parent_profile_patch_audit WHERE canonical_parent_id = ANY($1::uuid[])`, [parentIds]);
     await pool.query(`DELETE FROM student_audit_logs WHERE student_id IN (SELECT id FROM students WHERE parent_id = ANY($1::uuid[]))`, [parentIds]);
     await pool.query(`DELETE FROM students WHERE parent_id = ANY($1::uuid[])`, [parentIds]);
     await pool.query(`DELETE FROM parents WHERE id = ANY($1::uuid[])`, [parentIds]);
@@ -230,6 +234,45 @@ async function cleanup() {
       assert.deepEqual((await attempts(f)).map((a) => a.outcome), ['FAILED']);
     });
 
+    await t('G11 Z03 名下沒有學員的家庭從註冊頁新增：無從核對，擋下', async () => {
+      const f = await family('K', { students: [] });
+      const r = await claimZ03Identity({ phone: f.phone, studentName: '新來的', lineUid: uid(),
+        studentInput: { name: '新來的' }, allowStudentAppend: true }).then(() => null, (e) => e);
+      assert.equal(r?.code, 'CLAIM_VERIFICATION_FAILED');
+      assert.deepEqual(await kids(f), []);
+    });
+
+    await t('G12 註冊頁先填新弟弟、第二位才填已登記的孩子：照樣過，連到已登記的那位', async () => {
+      const f = await family('L', { students: [{ name: '陳冠宇', id: 'H123456789' }] });
+      const venue = (await pool.query(`SELECT id FROM venues ORDER BY id LIMIT 1`)).rows[0].id;
+      currentUid = uid();
+      process.env.RAGIC_PARENT_OUTBOX = 'true';
+      const res = await fetch(`http://127.0.0.1:${server.address().port}/api/auth/parent-register-line`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id_token: `tok-${crypto.randomUUID()}`,
+          parent: { name: '閘門測試家長', phone: f.phone, email: `gate.${suffix}@example.invalid`, gender: '生理女', primary_venue_id: venue },
+          students: [
+            { name: '林小華', id_number: 'A123456789', birth_date: '2020-01-01', gender: '生理男', blood_type: '不清楚' },
+            { name: '陳冠宇', id_number: 'H123456789', birth_date: '2018-03-04', gender: '生理男', blood_type: '不清楚' },
+          ] }),
+      });
+      const body = await res.json();
+      assert.equal(res.status, 200, JSON.stringify(body));
+      assert.equal(body.status, 'registered_and_logged_in');
+      assert.ok((await kids(f)).includes('陳冠宇'));
+      assert.deepEqual((await attempts(f)).map((a) => a.outcome), ['PASSED_EXACT']);
+      const guesses = (await pool.query(`SELECT guess_count FROM parent_claim_attempts WHERE phone_canonical=$1`, [f.phone])).rows;
+      assert.deepEqual(guesses, [{ guess_count: 2 }]);
+    });
+
+    await t('G13 註冊新增：只差一字的兄弟姊妹、登記那位有不同身分證 → 另建、標 NEW_SIMILAR', async () => {
+      const f = await family('M', { students: [{ name: '蔡承恩', id: 'H123456789' }] });
+      const r = await claimZ03Identity({ phone: f.phone, studentName: '蔡承安', lineUid: uid(),
+        studentInput: { name: '蔡承安', id_number: 'H223456789' }, allowStudentAppend: true });
+      assert.equal(r.student.name, '蔡承安');
+      assert.deepEqual(await attempts(f), [{ outcome: 'NEW_SIMILAR', matched_name: '蔡承恩' }]);
+    });
+
     console.log(`\n${passed} 個測試全數通過`);
   } finally {
     if (server) await new Promise((resolve) => server.close(resolve));
@@ -237,6 +280,7 @@ async function cleanup() {
     Object.assign(ragic, originalRagic);
     delete process.env.PARENT_IDENTITY_RESOLVER_V2;
     delete process.env.PARENT_LOCAL_FIRST;
+    delete process.env.RAGIC_PARENT_OUTBOX;
     try { await cleanup(); } catch (e) { console.error('清除失敗：' + e.message); process.exitCode = 1; }
     await pool.end();
   }

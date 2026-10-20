@@ -25,6 +25,29 @@ const CLAIM_COOLDOWN_MESSAGE = `學員資料核對錯誤次數過多，請 ${cla
 const MAX_PREBUILT_CLAIM_STUDENTS = 3;
 const CLAIM_TOO_MANY_STUDENTS_MESSAGE = `一次最多填 ${MAX_PREBUILT_CLAIM_STUDENTS} 位學員，其他學員請登入後再新增。`;
 
+// 會新增學員的路徑判斷「和登記的只差一字」只看姓名：身分證不同正好表示是另一個孩子，照樣另建並標 NEW_SIMILAR。
+function _nearByName(rows, name) {
+  const v = matchStudent(rows.map((row) => ({ ...row, id_number: '' })), { name });
+  return v?.method === 'NEAR' ? v : null;
+}
+
+// 註冊頁可一次填好幾位學員，但 Z03 認領只核對一位：挑能對上登記學員的那位（同名／身分證優先，再來只差一字），
+// 家長不必把已登記的孩子填在第一位。最多看 MAX_PREBUILT_CLAIM_STUDENTS 位，看了幾位就算猜了幾次。
+async function pickRegistrationClaimStudent(phone, students, db = pool) {
+  const considered = students.slice(0, MAX_PREBUILT_CLAIM_STUDENTS);
+  const rows = (await db.query(
+    `SELECT s.name_raw AS name, s.id_number_raw AS id_number
+       FROM ragic_z03_students s JOIN ragic_z03_records r ON r.id = s.z03_record_id
+      WHERE r.phone_canonical = $1`, [normalizePhone(phone)]
+  )).rows;
+  const strict = considered.findIndex((s) => {
+    const v = matchStudent(rows, s, { allowNear: false });
+    return Boolean(v && !v.conflict);
+  });
+  const near = considered.findIndex((s) => _nearByName(rows, s.name));
+  return { student: considered[strict >= 0 ? strict : Math.max(near, 0)], guesses: considered.length };
+}
+
 const _cooldownError = () => new Z03ClaimError('CLAIM_COOLDOWN', CLAIM_COOLDOWN_MESSAGE, 429);
 
 // 認領結果寫回嘗試紀錄：用同一條連線（交易已結束），寫不進去只記 log，不改變回給家長的結果。
@@ -220,7 +243,7 @@ async function registerNewParentLocalFirst({
       const strict = cleanStudents.map((s) => matchStudent(onFile, s, { allowNear: false }));
       const strictlyMatched = new Set(strict.filter((v) => v && !v.conflict).map((v) => v.name));
       const unmatchedOnFile = onFile.filter((row) => !strictlyMatched.has(normalizeStudentName(row.name)));
-      const similar = strict.map((v, i) => (v ? null : matchStudent(unmatchedOnFile, cleanStudents[i])));
+      const similar = strict.map((v, i) => (v ? null : _nearByName(unmatchedOnFile, cleanStudents[i].name)));
       const matchedNames = strict.filter((v) => v && !v.conflict).map((v) => v.name);
       const similarNames = similar.filter(Boolean).map((v) => v.candidates[0].name);
       // 只差一字只在只填一位時能當過關依據；填好幾個名字只靠其中一個差一字，等於一次猜好幾次。
@@ -565,6 +588,7 @@ async function claimZ03Identity({
   z03Id = null,
   sourceRecordId = null,
   claimIdNumber = '',
+  claimGuesses = 1,
   actor = 'parent-auth',
   correlationId = crypto.randomUUID(),
 } = {}) {
@@ -587,9 +611,9 @@ async function claimZ03Identity({
   let failedAttempt = null;
   try {
     attempt = await claimAttempts.reserveClaimAttempt({
-      lineUid, phone: phoneCanonical, path: 'Z03', submittedName: studentName, submittedIdNumber,
+      lineUid, phone: phoneCanonical, path: 'Z03', submittedName: studentName, submittedIdNumber, guesses: claimGuesses,
     }, client);
-    if (attempt.coolingDown) {
+    if (attempt.priorGuesses + claimGuesses > claimAttempts.FAILURE_LIMIT) {
       attemptResult = { outcome: 'COOLDOWN' };
       throw _cooldownError();
     }
@@ -639,8 +663,8 @@ async function claimZ03Identity({
       const submitted = { name: studentName, id_number: submittedIdNumber };
       const verdict = matchStudent(candidates, submitted, { allowNear: !allowStudentAppend });
       if (!verdict && allowStudentAppend) {
-        const near = matchStudent(candidates, submitted);
-        if (near?.method === 'NEAR') similarOnFile = String(near.candidates[0].row.name_raw || '').trim();
+        const near = _nearByName(candidates, studentName);
+        if (near) similarOnFile = String(near.candidates[0].row.name_raw || '').trim();
       }
       if (verdict && !verdict.conflict) {
         exactMatches = verdict.candidates.map((candidate) => candidate.row);
@@ -1280,6 +1304,7 @@ async function claimZ03Identity({
 module.exports = {
   Z03ClaimError,
   claimZ03Identity,
+  pickRegistrationClaimStudent,
   registerNewParentLocalFirst,
   completeTrueUidRegistration,
   __test__: {
