@@ -16,7 +16,7 @@
 //   G14 註冊頁挑核對對象時不看已作廢（dismissed）的 Z03 紀錄（與核對端條件一致）
 //   G15 Ragic 已移除的歷史學員不能拿來靠身分證或差一字過關
 //   G16 註冊頁挑核對對象和核對端一致（完全同名照樣看已移除的學員，填寫順序不影響）
-//   G17–G33 註冊頁填好幾位學員（最多 3 位）：每一位都要處理，不再只核對一位、其餘靜默丟掉
+//   G17–G34 註冊頁填好幾位學員（最多 3 位）：每一位都要處理，不再只核對一位、其餘靜默丟掉
 //     G17 [只差一字的新弟弟, 已登記的孩子]：連結已登記的、另建弟弟並記 NEW_SIMILAR、弟弟送 Ragic
 //     G18 [兩位都已登記]：兩位都連結，不送 Ragic 新增
 //     G19 [已登記的放第一位, 完全新的孩子]：有一位核對通過才新增其他孩子
@@ -31,6 +31,7 @@
 //     G31 同名孩子有已移除、身分證不同的舊列：不拿舊列擋人
 //     G32 只填一位、同名但身分證不同：不擋，當新孩子掛在這一戶下，不連到登記的那位
 //     G33 本地已有同名但身分證不同的學員：新孩子另建一筆，不沿用那一筆
+//     G34 Ragic 已綁這個 LINE（completeTrueUidRegistration）、子表有同名但身分證不同：新孩子照樣送 Ragic
 // 不碰 Ragic（同步呼叫一律丟錯）；所有資料 finally 自己刪乾淨。
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -39,7 +40,7 @@ const axios = require('../server/node_modules/axios');
 const { pool } = require('../server/models/db');
 const ragic = require('../server/services/ragic');
 const claimAttempts = require('../server/services/claimAttempts');
-const { claimZ03Identity, pickRegistrationClaimStudent } = require('../server/services/z03IdentityClaim');
+const { claimZ03Identity, pickRegistrationClaimStudent, completeTrueUidRegistration } = require('../server/services/z03IdentityClaim');
 
 const url = new URL(process.env.DATABASE_URL);
 assert.ok(['localhost', '127.0.0.1'].includes(url.hostname), '必須是 loopback 的拋棄式測試庫');
@@ -567,6 +568,21 @@ async function cleanup() {
       assert.equal(r.status, 200, JSON.stringify(r.body));
       assert.deepEqual(sorted(await localId(f, '鄭戊戊')), ['F523456789', 'G123456782']);
       assert.deepEqual(await appended(f), ['鄭戊戊']);
+    });
+
+    await t('G34 Ragic 已綁這個 LINE、子表有同名但身分證不同的孩子：新孩子照樣送 Ragic，不回已同步', async () => {
+      const phone = `0988${suffix}`;
+      const sourceId = `ZZGATEUID${suffix}`;
+      const lineUid = uid();
+      made.phones.push(phone); made.sources.push(sourceId);
+      const source = { _ragicId: sourceId, 1001101: '閘門測試家長', 1001100: phone, 1006846: lineUid,
+        _subtable_1001119: { 'row-1': { 1001115: '鄭己己', 1001118: 'F623456789', 1004090: phone } } };
+      const r = await completeTrueUidRegistration({ source, lineUid, ownershipVerified: true,
+        parentProfile: { name: '閘門測試家長', phone }, students: [kid('鄭己己', 'G123456783')] });
+      assert.notEqual(r.sync_state, 'SYNCED');
+      const f = { phone };
+      assert.deepEqual(sorted(await localId(f, '鄭己己')), ['F623456789', 'G123456783']);
+      assert.deepEqual(await appended(f), ['鄭己己']);
     });
 
     console.log(`\n${passed} 個測試全數通過`);

@@ -548,13 +548,19 @@ async function completeTrueUidRegistration({
     parent = await _applyAllowlistedLocalProfile(client, parent,
       { ...parentProfile, phone: phoneCanonical }, ownershipVerified);
 
-    const sourceStudentNames = new Set(ragic.parseZ01Students(source).map((row) => normalizeStudentName(row.name)));
+    // Z01 子表已有這位孩子才不送：同名但身分證不同是另一個孩子（身分證為主，Owner 2026-10-20）。
+    const sourceStudents = ragic.parseZ01Students(source);
+    const inSource = (input) => {
+      const id = String(input.id_number || '').trim().toUpperCase();
+      return sourceStudents.some((row) => normalizeStudentName(row.name) === normalizeStudentName(input.name)
+        && !(id && row.id_number && row.id_number !== id));
+    };
     const localStudents = [];
     const studentsToAppend = [];
     for (const studentInput of submitted) {
       const local = await _insertOrReuseStudent(client, parent.id, studentInput);
       localStudents.push(local.student);
-      if (!sourceStudentNames.has(normalizeStudentName(studentInput.name))) studentsToAppend.push(studentInput);
+      if (!inSource(studentInput)) studentsToAppend.push(studentInput);
     }
     await client.query(
       `INSERT INTO source_record_links
