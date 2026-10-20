@@ -16,19 +16,20 @@
 //   G14 註冊頁挑核對對象時不看已作廢（dismissed）的 Z03 紀錄（與核對端條件一致）
 //   G15 Ragic 已移除的歷史學員不能拿來靠身分證或差一字過關
 //   G16 註冊頁挑核對對象和核對端一致（完全同名照樣看已移除的學員，填寫順序不影響）
-//   G17–G31 註冊頁填好幾位學員（最多 3 位）：每一位都要處理，不再只核對一位、其餘靜默丟掉
+//   G17–G32 註冊頁填好幾位學員（最多 3 位）：每一位都要處理，不再只核對一位、其餘靜默丟掉
 //     G17 [只差一字的新弟弟, 已登記的孩子]：連結已登記的、另建弟弟並記 NEW_SIMILAR、弟弟送 Ragic
 //     G18 [兩位都已登記]：兩位都連結，不送 Ragic 新增
 //     G19 [已登記的放第一位, 完全新的孩子]：有一位核對通過才新增其他孩子
 //     G20 填 4 位：擋下（不靜默丟掉第 4 位），不算一次猜測
-//     G21 其中一位同名但身分證和登記的不同：整筆擋下
+//     G21 其中一位同名但身分證和登記的不同：身分證為主，當成這一戶的新孩子另建（Owner 2026-10-20）
 //     G22 同一位孩子填兩次：擋下
 //     G23 沒有一位同名／身分證對上、只靠一位差一字（Owner 2026-10-20）：建新帳號、不碰舊系統那一戶
 //     G24 舊資料要櫃台整理（多筆來源分不出主檔）：已登記的連結，新孩子回傳「已忽略」讓家長登入後再新增
 //     G25 其餘學員靠身分證比對也只看 Ragic 還在的學員（同 G15）
-//     G26–G29 審查補強：衝突放第一位照樣擋、衝突＋新孩子擋、新戶路徑照名字數冷靜、走路由靠身分證＋新孩子
-//     G30 同名但身分證打錯＋差一字新孩子：擋下，不另開一戶
+//     G26–G29 審查補強：同名身分證不同放第一位結果相同、同名身分證不同＋新孩子綁進這一戶、新戶路徑照名字數冷靜、走路由靠身分證＋新孩子
+//     G30 同名但身分證不同＋差一字新孩子：綁進這一戶、兩位都另建，不另開一戶
 //     G31 同名孩子有已移除、身分證不同的舊列：不拿舊列擋人
+//     G32 只填一位、同名但身分證不同：不擋，當新孩子掛在這一戶下，不連到登記的那位
 // 不碰 Ragic（同步呼叫一律丟錯）；所有資料 finally 自己刪乾淨。
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -345,6 +346,13 @@ async function cleanup() {
       `SELECT o.operation, o.payload_reference FROM ragic_sync_outbox o JOIN identity_claims c ON c.id=o.claim_id
         WHERE c.phone_canonical=$1 ORDER BY o.created_at`, [f.phone])).rows;
     const appended = async (f) => (await outbox(f)).flatMap((o) => (o.payload_reference.students_to_append || []).map((s) => s.name));
+    const sorted = (list) => [...list].sort();
+    // 登記的這位孩子有沒有被連到本地學員（身分證不同就不該連）
+    const onFileLinked = async (f, name) => (await pool.query(
+      `SELECT count(*)::int AS n FROM ragic_z03_students s JOIN ragic_z03_records r ON r.id=s.z03_record_id
+        WHERE r.phone_canonical=$1 AND s.name_raw=$2 AND s.canonical_student_id IS NOT NULL`, [f.phone, name])).rows[0].n;
+    const localId = async (f, name) => (await pool.query(
+      `SELECT s.id_number FROM students s JOIN parents p ON p.id=s.parent_id WHERE p.phone=$1 AND s.name=$2`, [f.phone, name])).rows.map((r) => r.id_number);
     const guessCounts = async (f) => (await pool.query(
       `SELECT guess_count FROM parent_claim_attempts WHERE phone_canonical=$1 ORDER BY id`, [f.phone])).rows.map((r) => r.guess_count);
 
@@ -390,13 +398,16 @@ async function cleanup() {
       assert.deepEqual(await attempts(f), []);
     });
 
-    await t('G21 一位同名但身分證和登記的不同：整筆擋下', async () => {
+    await t('G21 一位同名但身分證和登記的不同：身分證為主，另建成這一戶的新孩子、不連到登記的那位', async () => {
       const f = await family('S', { students: [{ name: '鄭甲', id: 'F123456789' }, { name: '鄭乙乙', id: 'F223456789' }] });
       const r = await register(f, [kid('鄭甲', 'F123456789'), kid('鄭乙乙', 'G123456789')]);
-      assert.equal(r.status, 409, JSON.stringify(r.body));
-      assert.equal(r.body.code, 'CLAIM_VERIFICATION_FAILED');
-      assert.deepEqual(await kids(f), []);
-      assert.deepEqual((await attempts(f)).map((a) => a.outcome), ['FAILED']);
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.deepEqual(sorted(await kids(f)), sorted(['鄭甲', '鄭乙乙']));
+      assert.deepEqual(await localId(f, '鄭乙乙'), ['G123456789']);
+      assert.equal(await onFileLinked(f, '鄭乙乙'), 0);
+      assert.ok(await onFileLinked(f, '鄭甲') > 0);
+      assert.deepEqual(await appended(f), ['鄭乙乙']);
+      assert.deepEqual(await attempts(f), [{ outcome: 'NEW_SIMILAR', matched_name: '鄭乙乙' }]);
     });
 
     await t('G22 同一位孩子填兩次：擋下', async () => {
@@ -456,22 +467,27 @@ async function cleanup() {
       assert.deepEqual(await appended(f), ['簡改名']);
     });
 
-    await t('G26 身分證不同的同名孩子放第一位：照樣整筆擋下（填寫順序不影響）', async () => {
+    await t('G26 身分證不同的同名孩子放第一位：結果和 G21 相同（填寫順序不影響）', async () => {
       const f = await family('d', { students: [{ name: '鄭甲', id: 'F123456789' }, { name: '鄭乙乙', id: 'F223456789' }] });
       const r = await register(f, [kid('鄭乙乙', 'G123456789'), kid('鄭甲', 'F123456789')]);
-      assert.equal(r.status, 409, JSON.stringify(r.body));
-      assert.equal(r.body.code, 'CLAIM_VERIFICATION_FAILED');
-      assert.deepEqual(await kids(f), []);
-      assert.equal((await z03(f)).status, 'pending');
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.deepEqual(sorted(await kids(f)), sorted(['鄭甲', '鄭乙乙']));
+      assert.deepEqual(await localId(f, '鄭乙乙'), ['G123456789']);
+      assert.equal(await onFileLinked(f, '鄭乙乙'), 0);
+      assert.ok(await onFileLinked(f, '鄭甲') > 0);
+      assert.deepEqual(await appended(f), ['鄭乙乙']);
+      assert.deepEqual(await attempts(f), [{ outcome: 'NEW_SIMILAR', matched_name: '鄭乙乙' }]);
     });
 
-    await t('G27 只有身分證不同的同名孩子＋新孩子：擋下，不把新孩子帶進這一戶', async () => {
+    await t('G27 只有身分證不同的同名孩子＋新孩子：同名證明是這一戶，兩位都另建並送 Ragic', async () => {
       const f = await family('a', { students: [{ name: '鄭丙丙', id: 'F323456789' }] });
       const r = await register(f, [kid('鄭丙丙', 'G223456789'), kid('全新人', 'G123456780')]);
-      assert.equal(r.status, 409, JSON.stringify(r.body));
-      assert.equal(r.body.code, 'CLAIM_VERIFICATION_FAILED');
-      assert.deepEqual(await kids(f), []);
-      assert.deepEqual(await outbox(f), []);
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.equal((await z03(f)).status, 'resolved');
+      assert.deepEqual(sorted(await kids(f)), sorted(['鄭丙丙', '全新人']));
+      assert.equal(await onFileLinked(f, '鄭丙丙'), 0);
+      assert.deepEqual(sorted(await appended(f)), sorted(['鄭丙丙', '全新人']));
+      assert.deepEqual(await attempts(f), [{ outcome: 'NEW_SIMILAR', matched_name: '鄭丙丙' }]);
     });
 
     await t('G28 建新帳號的路徑也照名字數算冷靜：已錯 4 個名字，再送 2 個就冷靜', async () => {
@@ -493,15 +509,19 @@ async function cleanup() {
       assert.deepEqual(await appended(f), ['王小新']);
     });
 
-    await t('G30 同名但身分證打錯＋差一字的新孩子：擋下請家長更正，不另開一戶（免得 Ragic 重複建檔）', async () => {
-      const f = await family('e', { students: [{ name: '鄭丙丙', id: 'F323456789' }] });
-      for (const order of [[kid('鄭丙丙', 'G223456789'), kid('鄭丙乙', 'G123456780')], [kid('鄭丙乙', 'G123456780'), kid('鄭丙丙', 'G223456789')]]) {
+    await t('G30 同名但身分證不同＋差一字的新孩子：綁進這一戶、兩位都另建，不另開一戶', async () => {
+      for (const [tag, order] of [['e', [kid('鄭丙丙', 'G223456789'), kid('鄭丙乙', 'G123456780')]],
+                                  ['h', [kid('鄭丙乙', 'G123456780'), kid('鄭丙丙', 'G223456789')]]]) {
+        const f = await family(tag, { students: [{ name: '鄭丙丙', id: 'F323456789' }] });
         const r = await register(f, order);
-        assert.equal(r.status, 409, JSON.stringify(r.body));
-        assert.equal(r.body.code, 'CLAIM_VERIFICATION_FAILED');
+        assert.equal(r.status, 200, JSON.stringify(r.body));
+        assert.equal((await z03(f)).status, 'resolved');
+        assert.deepEqual((await outbox(f)).map((o) => o.operation), ['BIND_Z01_LINE_UID']);
+        assert.deepEqual(sorted(await kids(f)), sorted(['鄭丙丙', '鄭丙乙']));
+        assert.equal(await onFileLinked(f, '鄭丙丙'), 0);
+        assert.deepEqual(sorted(await appended(f)), sorted(['鄭丙丙', '鄭丙乙']));
+        assert.deepEqual(await attempts(f), [{ outcome: 'NEW_SIMILAR', matched_name: '鄭丙丙' }]);
       }
-      assert.deepEqual(await kids(f), []);
-      assert.deepEqual(await outbox(f), []);
     });
 
     await t('G31 同名孩子在 Ragic 留有已移除、身分證不同的舊列：不拿舊列擋人', async () => {
@@ -523,6 +543,18 @@ async function cleanup() {
       assert.equal(r2.status, 200, JSON.stringify(r2.body));
       assert.equal((await z03(g)).status, 'resolved', '連進舊家庭，不是另開新帳號');
       assert.deepEqual((await outbox(g)).map((o) => o.operation), ['BIND_Z01_LINE_UID']);
+    });
+
+    await t('G32 只填一位、同名但身分證不同：不擋，當新孩子掛在這一戶下、不連到登記的那位', async () => {
+      const f = await family('i', { students: [{ name: '鄭丁丁', id: 'F423456789' }] });
+      const r = await register(f, [kid('鄭丁丁', 'G123456781')]);
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.equal((await z03(f)).status, 'resolved');
+      assert.deepEqual(await kids(f), ['鄭丁丁']);
+      assert.deepEqual(await localId(f, '鄭丁丁'), ['G123456781']);
+      assert.equal(await onFileLinked(f, '鄭丁丁'), 0);
+      assert.deepEqual(await appended(f), ['鄭丁丁']);
+      assert.deepEqual(await attempts(f), [{ outcome: 'NEW_SIMILAR', matched_name: '鄭丁丁' }]);
     });
 
     console.log(`\n${passed} 個測試全數通過`);
