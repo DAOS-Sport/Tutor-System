@@ -328,6 +328,8 @@ function initCronJobs() {
               SELECT 1 FROM checkin_records cr
                WHERE cr.course_session_id = ls.session_id
                  AND cr.attendance_status = 'ATTENDED'
+                 -- 舊系統移轉補進來的簽到不發評鑑邀請（Owner 2026-10-20 同意改凍結檔：切換不推播）
+                 AND cr.checked_in_source <> 'legacy_import'
                  AND cr.checked_in_at >= NOW() - INTERVAL '25 hours'
             )
             -- 不再以「period 已有任一 invitation」為前置過濾，
