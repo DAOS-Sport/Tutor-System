@@ -2,6 +2,9 @@
 // 家長認領的嘗試紀錄（Owner 2026-10-20）：
 // - 核對失敗只記在這裡，不再把整個家庭鎖成人工審核；同一個 LINE 帳號 30 分鐘內錯 5 次就要冷靜。
 // - 靠身分證或姓名只差一字通過的也記下來，櫃台可在反查清單修正登記姓名。
+// - 每次認領先登記一筆 PENDING 再數（PENDING＋FAILED 達上限就冷靜）：並發送出的請求彼此看得到，
+//   同時最多只有 FAILURE_LIMIT 筆能進來。用認領本身的連線在交易外寫，不另借連線、不用綁連線的鎖
+//   （cron/lock.js：正式庫可能走 transaction pooler）。
 // 開機時建表（bootstrap/admin.js）；發布前要先在 dev 庫跑過 SCHEMA_SQL，否則發布會提議刪表。
 const crypto = require('crypto');
 const { pool } = require('../models/db');
@@ -30,45 +33,32 @@ CREATE INDEX IF NOT EXISTS idx_parent_claim_attempts_open ON parent_claim_attemp
 
 const lineUidHash = (lineUid) => crypto.createHash('sha256').update(String(lineUid || '')).digest('hex');
 
-// outcome：FAILED（核對失敗）、PASSED_ID、PASSED_NEAR（姓名不完全相同但通過，待櫃台確認登記姓名）
-async function recordClaimAttempt({ lineUid, phone, path, sourceRecordId = null, submittedName, submittedIdNumber, outcome, matchedName = null }, db = pool) {
-  await db.query(
-    `INSERT INTO parent_claim_attempts
-       (line_uid_hash, phone_canonical, path, source_record_id, submitted_name, submitted_id_present, outcome, matched_name)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-    [lineUidHash(lineUid), String(phone || ''), path, sourceRecordId == null ? null : String(sourceRecordId),
-     String(submittedName || '').trim(), Boolean(String(submittedIdNumber || '').trim()), outcome, matchedName]
-  );
-}
-
-async function recentFailures(lineUid, db = pool) {
-  const r = await db.query(
+// outcome：PENDING（處理中）、FAILED（核對失敗）——這兩種計入冷靜；
+//          PASSED_EXACT／PASSED_ID／PASSED_NEAR、REGISTERED（全新家長）、REPLAYED、COOLDOWN、ERROR（系統錯誤）不計。
+async function reserveClaimAttempt({ lineUid, phone, path, submittedName, submittedIdNumber }, db = pool) {
+  const hash = lineUidHash(lineUid);
+  const { id } = (await db.query(
+    `INSERT INTO parent_claim_attempts (line_uid_hash, phone_canonical, path, submitted_name, submitted_id_present, outcome)
+     VALUES ($1,$2,$3,$4,$5,'PENDING') RETURNING id`,
+    [hash, String(phone || ''), path, String(submittedName || '').trim(), Boolean(String(submittedIdNumber || '').trim())]
+  )).rows[0];
+  const others = (await db.query(
     `SELECT count(*)::int AS n FROM parent_claim_attempts
-      WHERE line_uid_hash = $1 AND outcome = 'FAILED' AND created_at > NOW() - make_interval(mins => $2)`,
-    [lineUidHash(lineUid), COOLDOWN_MINUTES]
+      WHERE line_uid_hash = $1 AND id <> $2 AND outcome IN ('PENDING','FAILED')
+        AND created_at > NOW() - make_interval(mins => $3)`,
+    [hash, id, COOLDOWN_MINUTES]
+  )).rows[0].n;
+  return { id, coolingDown: others >= FAILURE_LIMIT };
+}
+
+async function finishClaimAttempt(id, { outcome, path = null, sourceRecordId = null, matchedName = null }, db = pool) {
+  await db.query(
+    `UPDATE parent_claim_attempts
+        SET outcome = $2, path = COALESCE($3, path), source_record_id = COALESCE($4, source_record_id),
+            matched_name = COALESCE($5, matched_name)
+      WHERE id = $1`,
+    [id, outcome, path, sourceRecordId == null ? null : String(sourceRecordId), matchedName]
   );
-  return r.rows[0].n;
 }
 
-async function isCoolingDown(lineUid, db = pool) {
-  return (await recentFailures(lineUid, db)) >= FAILURE_LIMIT;
-}
-
-// 同一個 LINE 帳號的認領一筆一筆排隊：失敗紀錄要等交易回滾後才寫入，
-// 不排隊的話並發送出的請求會在任何一筆失敗寫入前全數通過冷靜檢查。
-// 排隊而不是直接拒絕：同一帳號重送要照舊拿到 replay（source_claim_concurrency_test）。
-// 這是 session 鎖，要在連線歸還前放掉。
-const slotKey = (lineUid) => `claim-attempt:${lineUidHash(lineUid)}`;
-
-async function acquireClaimSlot(client, lineUid) {
-  await client.query(`SELECT pg_advisory_lock(hashtext($1))`, [slotKey(lineUid)]);
-}
-
-async function releaseClaimSlot(client, lineUid) {
-  await client.query(`SELECT pg_advisory_unlock(hashtext($1))`, [slotKey(lineUid)]);
-}
-
-module.exports = {
-  SCHEMA_SQL, recordClaimAttempt, recentFailures, isCoolingDown, acquireClaimSlot, releaseClaimSlot,
-  FAILURE_LIMIT, COOLDOWN_MINUTES,
-};
+module.exports = { SCHEMA_SQL, reserveClaimAttempt, finishClaimAttempt, FAILURE_LIMIT, COOLDOWN_MINUTES };

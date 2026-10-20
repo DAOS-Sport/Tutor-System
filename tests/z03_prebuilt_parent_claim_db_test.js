@@ -61,11 +61,11 @@ const register = (p, venue, parent, students, uid) => registerNewParentLocalFirs
   idempotencyKey: `t-${randomUUID()}`,
 });
 
-// 等到有請求卡在 advisory lock 上（排隊中）；舊程式不排隊，等不到就照常往下走，讓斷言去抓。
-async function lockWaiter(db) {
-  for (let i = 0; i < 60; i += 1) {
-    if ((await db.query(`SELECT count(*)::int AS n FROM pg_locks WHERE locktype='advisory' AND NOT granted`)).rows[0].n) return;
-    await new Promise((resolve) => setTimeout(resolve, 50));
+// 塞 n 筆核對失敗紀錄給這個 LINE 帳號（模擬先前錯過幾次）。
+async function seedFailures(lineUid, phone, n) {
+  for (let i = 0; i < n; i += 1) {
+    const a = await claimAttempts.reserveClaimAttempt({ lineUid, phone, path: 'TEST', submittedName: `錯${i}` });
+    await claimAttempts.finishClaimAttempt(a.id, { outcome: 'FAILED' });
   }
 }
 
@@ -184,25 +184,24 @@ const studentRows = async (parentId) => (await pool.query(
       assert.deepEqual((await studentRows(f.parentId)).map((k) => k.name), ['蔡承恩', '蔡承安']);
     });
 
-    await t('同一個 LINE 帳號的認領排隊：前面錯滿 5 次，排在後面的那筆冷靜、不綁', async () => {
+    await t('同一個 LINE 帳號同時送 8 筆錯的：最多 5 筆進得去核對，其餘冷靜、不綁', async () => {
       const p = phone(); const uid = lineUid();
       const f = await prebuilt(p, venue, [{ name: '黃小並' }]);
-      const holder = await pool.connect();
-      let pending;
-      try {
-        await claimAttempts.acquireClaimSlot(holder, uid);
-        pending = rejection(() => register(p, venue, { name: '黃家長' }, [{ name: '黃小並' }], uid));
-        await lockWaiter(pool);
-        for (let i = 0; i < claimAttempts.FAILURE_LIMIT; i += 1) {
-          await claimAttempts.recordClaimAttempt({ lineUid: uid, phone: p, path: 'PREBUILT', sourceRecordId: f.parentId,
-            submittedName: `錯${i}`, outcome: 'FAILED' });
-        }
-      } finally {
-        await claimAttempts.releaseClaimSlot(holder, uid);
-        holder.release();
-      }
-      assert.equal((await pending)?.code, 'CLAIM_COOLDOWN');
+      const errs = await Promise.all(Array.from({ length: 8 }, (_, i) =>
+        rejection(() => register(p, venue, { name: '黃家長' }, [{ name: `錯名${i}號` }], uid))));
+      const codes = errs.map((e) => e?.code);
+      assert.ok(codes.every((c) => c === 'CLAIM_VERIFICATION_FAILED' || c === 'CLAIM_COOLDOWN'), JSON.stringify(codes));
+      assert.ok(codes.filter((c) => c === 'CLAIM_VERIFICATION_FAILED').length <= claimAttempts.FAILURE_LIMIT, JSON.stringify(codes));
+      assert.ok(codes.includes('CLAIM_COOLDOWN'), JSON.stringify(codes));
       assert.equal((await parentRow(f.parentId)).line_uid, null);
+    });
+
+    await t('一位完全對上、另一位打錯一字：打錯的那位沿用既有學員，不另建', async () => {
+      const p = phone(); const uid = lineUid();
+      const f = await prebuilt(p, venue, [{ name: '林小樂' }, { name: '林語彤' }]);
+      await register(p, venue, { name: '林家長' }, [{ name: '林小樂' }, { name: '林語桐' }], uid);
+      assert.equal((await parentRow(f.parentId)).line_uid, uid);
+      assert.deepEqual((await studentRows(f.parentId)).map((k) => k.name), ['林小樂', '林語彤']);
     });
 
     await t('冷靜期不擋已成功註冊的重送（idempotent replay）', async () => {
@@ -210,11 +209,7 @@ const studentRows = async (parentId) => (await pool.query(
       const f = await prebuilt(p, venue, [{ name: '高小重' }]);
       const args = { parent: { phone: p, primary_venue_id: venue, name: '高家長' }, students: [{ name: '高小重' }], lineUid: uid, idempotencyKey: key };
       await registerNewParentLocalFirst(args);
-      for (let i = 0; i < claimAttempts.FAILURE_LIMIT; i += 1) {
-        await claimAttempts.recordClaimAttempt({ lineUid: uid, phone: p, path: 'PREBUILT', sourceRecordId: f.parentId,
-          submittedName: `錯${i}`, outcome: 'FAILED' });
-      }
-      assert.equal(await claimAttempts.isCoolingDown(uid), true);
+      await seedFailures(uid, p, claimAttempts.FAILURE_LIMIT);
       assert.equal((await registerNewParentLocalFirst(args)).replayed, true);
       assert.equal((await rejection(() => registerNewParentLocalFirst({ ...args, idempotencyKey: `t-${randomUUID()}` })))?.code, 'CLAIM_COOLDOWN');
     });
@@ -291,7 +286,9 @@ const studentRows = async (parentId) => (await pool.query(
       await pool.query(`DELETE FROM identity_claims WHERE canonical_parent_id = ANY($1::uuid[])`, [ids]);
       await pool.query(`DELETE FROM student_audit_logs WHERE student_id IN (SELECT id FROM students WHERE parent_id = ANY($1::uuid[]))`, [ids]);
       await pool.query(`DELETE FROM students WHERE parent_id = ANY($1::uuid[])`, [ids]);
-      await pool.query(`DELETE FROM parent_claim_attempts WHERE source_record_id = ANY($1::text[])`, [ids.map(String)]);
+      await pool.query(
+        `DELETE FROM parent_claim_attempts WHERE source_record_id = ANY($1::text[])
+            OR phone_canonical IN (SELECT phone FROM parents WHERE id = ANY($2::uuid[]))`, [ids.map(String), ids]);
       await pool.query(`DELETE FROM parents WHERE id = ANY($1::uuid[])`, [ids]);
     } catch (e) {
       console.error('清除失敗：' + e.message);

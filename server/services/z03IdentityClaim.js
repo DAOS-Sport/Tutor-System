@@ -21,25 +21,14 @@ const claimAttempts = require('./claimAttempts');
 const CLAIM_MISMATCH_MESSAGE = '學員資料與登記資料不符：請確認學員姓名，或填寫學員身分證字號後再試；仍無法通過請洽櫃台協助。';
 const CLAIM_COOLDOWN_MESSAGE = `學員資料核對錯誤次數過多，請 ${claimAttempts.COOLDOWN_MINUTES} 分鐘後再試，或洽櫃台協助。`;
 
-// 先排到這個 LINE 帳號的認領鎖，再檢查冷靜期（並發請求不能一起通過檢查，見 claimAttempts）。
-async function _acquireClaimSlot(client, lineUid) {
-  await claimAttempts.acquireClaimSlot(client, lineUid);
-  return true;
-}
+const _cooldownError = () => new Z03ClaimError('CLAIM_COOLDOWN', CLAIM_COOLDOWN_MESSAGE, 429);
 
-async function _assertClaimNotCoolingDown(lineUid, db) {
-  if (await claimAttempts.isCoolingDown(lineUid, db)) throw new Z03ClaimError('CLAIM_COOLDOWN', CLAIM_COOLDOWN_MESSAGE, 429);
-}
-
-// session 鎖跟著連線走：放不掉就丟棄這條連線，不讓鎖回到連線池。
-async function _releaseClient(client, lineUid, slotHeld) {
-  if (!slotHeld) return client.release();
-  try {
-    await claimAttempts.releaseClaimSlot(client, lineUid);
-    client.release();
-  } catch (err) {
-    client.release(err);
-  }
+// 認領結果寫回嘗試紀錄：用同一條連線（交易已結束），寫不進去只記 log，不改變回給家長的結果。
+async function _finishClaimAttempt(client, attempt, result) {
+  if (!attempt) return;
+  await claimAttempts.finishClaimAttempt(attempt.id, result, client).catch((err) => {
+    console.error('[claimAttempts] 結果寫入失敗：', err.code || err.message);
+  });
 }
 
 class Z03ClaimError extends Error {
@@ -160,10 +149,15 @@ async function registerNewParentLocalFirst({
   const payload = { parent: { ...parentInput, phone: phoneCanonical }, students: cleanStudents };
   const payloadHash = _payloadHash(payload);
   const client = await pool.connect();
-  let slotHeld = false;
+  let attempt = null;
+  let attemptResult = { outcome: 'REGISTERED' };
   let failedPrebuiltClaim = null;
   try {
-    slotHeld = await _acquireClaimSlot(client, uid);
+    attempt = await claimAttempts.reserveClaimAttempt({
+      lineUid: uid, phone: phoneCanonical, path: 'REGISTER',
+      submittedName: cleanStudents.map((s) => s.name).join('、'),
+      submittedIdNumber: cleanStudents.map((s) => s.id_number || '').join(''),
+    }, client);
     await client.query('BEGIN');
     await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`canonical-parent:${phoneCanonical}`]);
     await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`line-uid:${lineUidHash}`]);
@@ -178,9 +172,13 @@ async function registerNewParentLocalFirst({
         throw new Z03ClaimError('LOCAL_LINK_FAILED', '相同 idempotency key 的 payload 不一致', 409);
       }
       await client.query('COMMIT');
+      attemptResult = { outcome: 'REPLAYED' };
       return { parent: replay, replayed: true, sync_state: replay.state, correlation_id: replay.correlation_id };
     }
-    await _assertClaimNotCoolingDown(uid, client);
+    if (attempt.coolingDown) {
+      attemptResult = { outcome: 'COOLDOWN' };
+      throw _cooldownError();
+    }
 
     const byUid = (await client.query(`SELECT * FROM parents WHERE line_uid=$1 FOR UPDATE`, [uid])).rows[0] || null;
     const phoneRows = (await client.query(
@@ -204,11 +202,13 @@ async function registerNewParentLocalFirst({
       const onFile = (await client.query(
         `SELECT name, id_number FROM students WHERE parent_id=$1 AND is_active`, [parent.id]
       )).rows;
-      // 這條路會新增學員，NEAR 分不出打錯字和只差一字的兄弟姊妹，所以先只認 EXACT/ID；
-      // 沒有任何一位靠 EXACT/ID 對上時，才讓 NEAR 當過關依據，且只沿用既有學員、不補資料。
+      // 這條路會新增學員，NEAR 分不出打錯字和只差一字的兄弟姊妹：先只認 EXACT/ID，
+      // 剩下的才拿去和「還沒被對上」的登記學員比 NEAR（兄弟姊妹那位已被同名對上，就不會被併過去）。
+      // NEAR 對上的只沿用既有學員、不補資料。
       const strict = cleanStudents.map((s) => matchStudent(onFile, s, { allowNear: false }));
-      const strictNames = strict.filter((v) => v && !v.conflict).map((v) => v.name);
-      const verdicts = strictNames.length ? strict : cleanStudents.map((s) => matchStudent(onFile, s));
+      const strictlyMatched = new Set(strict.filter((v) => v && !v.conflict).map((v) => v.name));
+      const unmatchedOnFile = onFile.filter((row) => !strictlyMatched.has(normalizeStudentName(row.name)));
+      const verdicts = strict.map((v, i) => v || matchStudent(unmatchedOnFile, cleanStudents[i]));
       const matchedNames = verdicts.filter((v) => v && !v.conflict).map((v) => v.name);
       if (verdicts.some((v) => v?.conflict) || !matchedNames.length || new Set(matchedNames).size !== matchedNames.length) {
         parentSync.auditClaim({ phone: phoneCanonical, lineUid: uid, result: 'failed', reason: 'prebuilt_parent_claim_mismatch' });
@@ -221,15 +221,12 @@ async function registerNewParentLocalFirst({
         if (!v) return s;
         return v.method === 'NEAR' ? { name: v.candidates[0].name, nearOnly: true } : { ...s, name: v.candidates[0].name };
       });
-      for (const [i, v] of verdicts.entries()) {
-        if (v && v.method !== 'EXACT') {
-          await claimAttempts.recordClaimAttempt({
-            lineUid: uid, phone: phoneCanonical, path: 'PREBUILT', sourceRecordId: parent.id,
-            submittedName: cleanStudents[i].name, submittedIdNumber: cleanStudents[i].id_number,
-            outcome: `PASSED_${v.method}`, matchedName: v.candidates[0].name,
-          }, client);
-        }
-      }
+      const passed = verdicts.filter((v) => v && !v.conflict);
+      const weakest = ['NEAR', 'ID', 'EXACT'].find((method) => passed.some((v) => v.method === method));
+      attemptResult = {
+        outcome: `PASSED_${weakest}`, path: 'PREBUILT', sourceRecordId: parent.id,
+        matchedName: passed.filter((v) => v.method !== 'EXACT').map((v) => v.candidates[0].name).join('、') || null,
+      };
       // 館別沿用預建時的，免得家長被移出原場館櫃台的範圍；其餘以家長本人填的為準。
       parent = (await client.query(
         `UPDATE parents
@@ -345,12 +342,10 @@ async function registerNewParentLocalFirst({
     return { parent, students: linkedStudents, replayed: false, sync_state: 'SYNC_PENDING', correlation_id: correlationId };
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
-    if (failedPrebuiltClaim) {
-      await claimAttempts.recordClaimAttempt({
-        lineUid: uid, phone: phoneCanonical, path: 'PREBUILT', sourceRecordId: failedPrebuiltClaim.parentId,
-        submittedName: cleanStudents.map((s) => s.name).join('、'),
-        submittedIdNumber: cleanStudents.map((s) => s.id_number || '').join(''), outcome: 'FAILED',
-      }).catch((recordErr) => { err.claimAttemptRecordError = recordErr.code || recordErr.message; });
+    if (attemptResult.outcome !== 'COOLDOWN') {
+      attemptResult = failedPrebuiltClaim
+        ? { outcome: 'FAILED', path: 'PREBUILT', sourceRecordId: failedPrebuiltClaim.parentId }
+        : { outcome: 'ERROR' };
     }
     if (err instanceof Z03ClaimError) throw err;
     // 這是新戶註冊唯一的寫入交易。原本直接把 err 換成 LOCAL_LINK_FAILED 丟出去，
@@ -367,7 +362,8 @@ async function registerNewParentLocalFirst({
       constraint: err.constraint || null,
     });
   } finally {
-    await _releaseClient(client, uid, slotHeld);
+    await _finishClaimAttempt(client, attempt, attemptResult);
+    client.release();
   }
 }
 
@@ -573,12 +569,18 @@ async function claimZ03Identity({
   const submittedIdNumber = String(claimIdNumber || studentInput?.id_number || '').trim();
 
   const client = await pool.connect();
-  let slotHeld = false;
+  let attempt = null;
+  let attemptResult = { outcome: 'PASSED_EXACT' };
   let reviewContext = null;
   let failedAttempt = null;
   try {
-    slotHeld = await _acquireClaimSlot(client, lineUid);
-    await _assertClaimNotCoolingDown(lineUid, client);
+    attempt = await claimAttempts.reserveClaimAttempt({
+      lineUid, phone: phoneCanonical, path: 'Z03', submittedName: studentName, submittedIdNumber,
+    }, client);
+    if (attempt.coolingDown) {
+      attemptResult = { outcome: 'COOLDOWN' };
+      throw _cooldownError();
+    }
     await client.query('BEGIN');
     await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`canonical-parent:${phoneCanonical}`]);
     await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`line-uid:${_lineUidHash(lineUid)}`]);
@@ -630,14 +632,14 @@ async function claimZ03Identity({
         studentNameNormalized = verdict.name;
         claimStudentName = String(exactMatches[0].name_raw || '').trim();
         submittedStudent.name = claimStudentName;
-        await claimAttempts.recordClaimAttempt({
-          lineUid, phone: phoneCanonical, path: 'Z03', sourceRecordId: exactMatches[0].z03_record_id,
-          submittedName: studentName, submittedIdNumber, outcome: `PASSED_${verdict.method}`, matchedName: claimStudentName,
-        }, client);
+        attemptResult = {
+          outcome: `PASSED_${verdict.method}`, sourceRecordId: exactMatches[0].z03_record_id, matchedName: claimStudentName,
+        };
       }
     }
     if (exactMatches.length === 0) {
       if (allowStudentAppend) {
+        attemptResult = { outcome: 'APPENDED' };
         const localCandidates = (await client.query(
           `SELECT * FROM parents
             WHERE line_uid=$1 OR phone=$2 OR regexp_replace(COALESCE(phone,''),'\\D','','g')=$2
@@ -1227,11 +1229,8 @@ async function claimZ03Identity({
     return { parent, student, replayed: false, sync_state: 'SYNC_PENDING', correlation_id: claim.correlation_id };
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
-    if (failedAttempt) {
-      await claimAttempts.recordClaimAttempt({
-        lineUid, phone: phoneCanonical, path: 'Z03', sourceRecordId: failedAttempt.sourceRecordId,
-        submittedName: studentName, submittedIdNumber, outcome: 'FAILED',
-      }).catch((recordErr) => { err.claimAttemptRecordError = recordErr.code || recordErr.message; });
+    if (attemptResult.outcome !== 'COOLDOWN') {
+      attemptResult = failedAttempt ? { outcome: 'FAILED', sourceRecordId: failedAttempt.sourceRecordId } : { outcome: 'ERROR' };
     }
     if (reviewContext) {
       await _persistManualReview({
@@ -1256,7 +1255,8 @@ async function claimZ03Identity({
       causeCode: err.code || null,
     });
   } finally {
-    await _releaseClient(client, lineUid, slotHeld);
+    await _finishClaimAttempt(client, attempt, attemptResult);
+    client.release();
   }
 }
 

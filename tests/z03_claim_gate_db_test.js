@@ -7,7 +7,7 @@
 //   G5 同一個 LINE 帳號 30 分鐘內錯 5 次 → 第 6 次就算填對也冷靜（429）；別的 LINE 帳號照常
 //   G6 櫃台手動轉人工（ADMIN_DISMISSED）的照樣擋
 //   G7 兩個字的姓名只差一字 → 不算（不然只要知道手機＋姓氏就能過）
-//   G8 同一個 LINE 帳號的認領排隊：前一筆失敗寫入後，排在後面的那筆才檢查冷靜期（並發不能一起繞過）
+//   G8 同一個 LINE 帳號同時送 10 筆錯的：最多 5 筆進得去核對，其餘冷靜；連線池不會卡死
 //   G9 註冊新增學員（allowStudentAppend）：只差一字的兄弟姊妹另建，不併到既有學員
 // 不碰 Ragic（同步呼叫一律丟錯）；所有資料 finally 自己刪乾淨。
 const assert = require('node:assert/strict');
@@ -53,13 +53,6 @@ async function family(tag, { status = 'pending', reason = 'TRUE_LINE_UID_EMPTY',
   return { id: rec.id, sourceId, phone };
 }
 
-// 等到有請求卡在 advisory lock 上（排隊中）；舊程式不排隊，等不到就照常往下走，讓斷言去抓。
-async function lockWaiter(db) {
-  for (let i = 0; i < 60; i += 1) {
-    if ((await db.query(`SELECT count(*)::int AS n FROM pg_locks WHERE locktype='advisory' AND NOT granted`)).rows[0].n) return;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
 
 async function cleanup() {
   const claims = (await pool.query(
@@ -198,25 +191,22 @@ async function cleanup() {
       assert.equal(r.body.code, 'CLAIM_VERIFICATION_FAILED');
     });
 
-    await t('G8 同一個 LINE 帳號的認領排隊：前面錯滿 5 次，排在後面的那筆就算填對也冷靜', async () => {
+    await t('G8 同一個 LINE 帳號同時送 10 筆錯的：最多 5 筆進得去核對，其餘冷靜；連線池不卡死', async () => {
       const f = await family('H', { students: [{ name: '謝小並' }] });
       const busy = uid();
-      const holder = await pool.connect();
-      let pending;
-      try {
-        await claimAttempts.acquireClaimSlot(holder, busy);
-        pending = claim(f, '謝小並', {}, busy);
-        await lockWaiter(pool);
-        for (let i = 0; i < claimAttempts.FAILURE_LIMIT; i += 1) {
-          await claimAttempts.recordClaimAttempt({ lineUid: busy, phone: f.phone, path: 'Z03', submittedName: `錯${i}`, outcome: 'FAILED' });
-        }
-      } finally {
-        await claimAttempts.releaseClaimSlot(holder, busy);
-        holder.release();
-      }
-      const r = await pending;
-      assert.equal(r.status, 429, JSON.stringify(r.body));
-      assert.equal(r.body.code, 'CLAIM_COOLDOWN');
+      const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('並發認領 20 秒內沒有全部回來')), 20000));
+      const codes = await Promise.race([
+        Promise.all(Array.from({ length: 10 }, (_, i) =>
+          claimZ03Identity({ phone: f.phone, studentName: `錯名${i}號`, lineUid: busy }).then(() => 'BOUND', (e) => e.code))),
+        timeout,
+      ]);
+      assert.ok(codes.every((c) => c === 'CLAIM_VERIFICATION_FAILED' || c === 'CLAIM_COOLDOWN'), JSON.stringify(codes));
+      const failed = codes.filter((c) => c === 'CLAIM_VERIFICATION_FAILED').length;
+      assert.ok(failed <= claimAttempts.FAILURE_LIMIT, JSON.stringify(codes));
+      const rows = await attempts(f);
+      assert.equal(rows.filter((r) => r.outcome === 'FAILED').length, failed);
+      assert.equal(rows.filter((r) => r.outcome === 'PENDING').length, 0);
+      assert.equal((await pool.query('SELECT 1 AS ok')).rows[0].ok, 1);
     });
 
     await t('G9 註冊新增學員：只差一字的兄弟姊妹另建，不併到既有學員', async () => {
@@ -224,8 +214,10 @@ async function cleanup() {
       const r = await claimZ03Identity({ phone: f.phone, studentName: '陳冠廷', lineUid: uid(),
         studentInput: { name: '陳冠廷', birth_date: '2019-05-05' }, allowStudentAppend: true });
       assert.equal(r.student.name, '陳冠廷');
-      assert.ok((await kids(f)).includes('陳冠廷'));
-      assert.deepEqual(await attempts(f), []);
+      assert.deepEqual(await kids(f), ['陳冠廷']);
+      assert.deepEqual(await attempts(f), [{ outcome: 'APPENDED', matched_name: null }]);
+      const z03Kids = (await pool.query(`SELECT name_raw FROM ragic_z03_students WHERE z03_record_id=$1 ORDER BY name_raw`, [f.id])).rows;
+      assert.ok(z03Kids.some((k) => k.name_raw === '陳冠宇'), '既有學員陳冠宇沒被改名');
     });
 
     console.log(`\n${passed} 個測試全數通過`);
