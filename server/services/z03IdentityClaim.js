@@ -31,41 +31,51 @@ function _nearByName(rows, name) {
   return v?.method === 'NEAR' ? v : null;
 }
 
-// 註冊頁一次最多填 MAX_PREBUILT_CLAIM_STUDENTS 位學員，填了幾位就算猜了幾次。挑一位當核對對象（條件與 claimZ03Identity 的家庭查詢相同）：
-// 同名／身分證優先，再來只差一字，家長不必把已登記的孩子填在第一位；其餘交給 claimZ03Identity 在同一筆交易裡連結或新增。
+// 靠身分證或差一字比對時只用 Ragic 最新資料裡還在的學員：已移除的歷史學員不能拿來過關。
+// （缺生日、同名重複的 INVALID_ROW／DUPLICATE_CANDIDATE 仍是真的孩子，照樣可比；完全同名的比對不受這條限制。）
+const _fuzzyEligible = (row) => row.present_in_latest_payload !== false && row.classification !== 'EMPTY_TEMPLATE_ROW';
+
+// 註冊頁一次最多填 MAX_PREBUILT_CLAIM_STUDENTS 位學員，填了幾位就算猜了幾次。照 claimZ03Identity 的順序（同名 → 身分證 → 只差一字）
+// 挑一位當核對對象，家長不必把已登記的孩子填在第一位；家庭範圍與比對資料都和 claimZ03Identity 相同。
+// 其餘交給 claimZ03Identity 在同一筆交易裡連結或新增。
 // 好幾位都沒有同名／身分證對上、只靠其中一位差一字：視為新戶（Owner 2026-10-20），另建帳號、不碰舊系統那一戶。
 async function pickRegistrationClaimStudent(phone, students, db = pool) {
   if (students.length > MAX_PREBUILT_CLAIM_STUDENTS) {
     throw new Z03ClaimError('CLAIM_TOO_MANY_STUDENTS', CLAIM_TOO_MANY_STUDENTS_MESSAGE, 400);
   }
   const rows = (await db.query(
-    `SELECT s.name_raw AS name, s.id_number_raw AS id_number
+    `SELECT s.name_raw AS name, s.id_number_raw AS id_number, s.present_in_latest_payload, s.classification
        FROM ragic_z03_students s JOIN ragic_z03_records r ON r.id = s.z03_record_id
       WHERE (r.phone_canonical = $1 OR regexp_replace(COALESCE(r.phone,''), '\\D', '', 'g') = $1)
         AND r.status IN ('pending','resolved','manual_review')`, [normalizePhone(phone)]
   )).rows;
-  const strict = students.findIndex((s) => {
-    const v = matchStudent(rows, s, { allowNear: false });
-    return Boolean(v && !v.conflict);
-  });
-  const near = students.map((s) => _nearByName(rows, s.name));
+  const fuzzyRows = rows.filter(_fuzzyEligible);
+  const exact = students.findIndex((s) =>
+    rows.some((row) => normalizeStudentName(row.name) === normalizeStudentName(s.name)));
+  const byId = students.findIndex((s) => matchStudent(fuzzyRows, s, { allowNear: false })?.method === 'ID');
+  const near = students.map((s) => _nearByName(fuzzyRows, s.name));
   const firstNear = near.findIndex(Boolean);
-  const index = strict >= 0 ? strict : Math.max(firstNear, 0);
+  const index = [exact, byId, firstNear].find((i) => i >= 0) ?? 0;
   return {
     student: students[index],
     extraStudents: students.filter((_, i) => i !== index),
     guesses: students.length,
-    newAccount: strict < 0 && firstNear >= 0 && students.length > 1,
+    newAccount: exact < 0 && byId < 0 && firstNear >= 0 && students.length > 1,
     similarNames: near.filter(Boolean).map((v) => String(v.candidates[0].name || '').trim()),
   };
 }
 
 // 註冊頁其餘填寫的學員對照登記的孩子（Owner 2026-10-20）：同名／身分證對上的連結；其餘另建，和任一位登記學員只差一字的記 NEW_SIMILAR。
+// 比對資料同主核對對象：同名看全部，身分證／差一字只看 _fuzzyEligible。
 // 任一位同名但身分證不同、兩位對到同一位登記學員、或同一個新名字填兩次，整筆當核對失敗（同 PREBUILT）。
 function _classifyExtraStudents(childRows, primaryRows, students) {
   const candidates = childRows.map((row) => ({ name: row.name_raw, id_number: row.id_number_raw, row }));
+  const fuzzy = candidates.filter((c) => _fuzzyEligible(c.row));
   const taken = new Set(primaryRows.map((row) => row.id));
-  const verdicts = students.map((s) => matchStudent(candidates, s, { allowNear: false }));
+  const verdicts = students.map((s) => {
+    const sameName = candidates.filter((c) => normalizeStudentName(c.name) === normalizeStudentName(s.name));
+    return sameName.length ? matchStudent(sameName, s, { allowNear: false }) : matchStudent(fuzzy, s, { allowNear: false });
+  });
   const linked = [];
   for (const v of verdicts) {
     if (!v) continue;
@@ -78,7 +88,7 @@ function _classifyExtraStudents(childRows, primaryRows, students) {
   const appended = students.filter((_, i) => !verdicts[i]);
   const newNames = appended.map((s) => normalizeStudentName(s.name));
   if (new Set(newNames).size !== newNames.length) return { invalid: true };
-  const similarNames = appended.map((s) => _nearByName(candidates, s.name)).filter(Boolean)
+  const similarNames = appended.map((s) => _nearByName(fuzzy, s.name)).filter(Boolean)
     .map((v) => String(v.candidates[0].name || '').trim());
   return { linked, appended, similarNames };
 }
@@ -736,7 +746,9 @@ async function claimZ03Identity({
       // 姓名沒有完全相同：身分證相同或姓名只差一字也算對上（claimStudentMatcher），之後以登記的姓名為準。
       // 註冊新增學員（allowStudentAppend）時不認 NEAR：只差一字的可能是還沒登記的兄弟姊妹，
       // 照樣另建，但記 NEW_SIMILAR 給櫃台反查（Owner 2026-10-20）。
-      const candidates = childRows.map((row) => ({ name: row.name_raw, id_number: row.id_number_raw, row }));
+      const candidates = childRows
+        .filter(_fuzzyEligible)
+        .map((row) => ({ name: row.name_raw, id_number: row.id_number_raw, row }));
       const submitted = { name: studentName, id_number: submittedIdNumber };
       const verdict = matchStudent(candidates, submitted, { allowNear: !allowStudentAppend });
       if (!verdict && allowStudentAppend) {

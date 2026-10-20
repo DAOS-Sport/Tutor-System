@@ -14,15 +14,18 @@
 //   G12 註冊頁已登記的孩子不在第一位 → 照樣過（挑對得上的那位核對，看了幾位算幾次）
 //   G13 註冊新增：只差一字、登記那位有不同身分證 → 另建、標 NEW_SIMILAR
 //   G14 註冊頁挑核對對象時不看已作廢（dismissed）的 Z03 紀錄（與核對端條件一致）
-//   G15–G22 註冊頁填好幾位學員（最多 3 位）：每一位都要處理，不再只核對一位、其餘靜默丟掉
-//     G15 [只差一字的新弟弟, 已登記的孩子]：連結已登記的、另建弟弟並記 NEW_SIMILAR、弟弟送 Ragic
-//     G16 [兩位都已登記]：兩位都連結，不送 Ragic 新增
-//     G17 [已登記的放第一位, 完全新的孩子]：有一位核對通過才新增其他孩子
-//     G18 填 4 位：擋下（不靜默丟掉第 4 位），不算一次猜測
-//     G19 其中一位同名但身分證和登記的不同：整筆擋下
-//     G20 同一位孩子填兩次：擋下
-//     G21 沒有一位同名／身分證對上、只靠一位差一字（Owner 2026-10-20）：建新帳號、不碰舊系統那一戶
-//     G22 舊資料要櫃台整理（多筆來源分不出主檔）：已登記的連結，新孩子回傳「已忽略」讓家長登入後再新增
+//   G15 Ragic 已移除的歷史學員不能拿來靠身分證或差一字過關
+//   G16 註冊頁挑核對對象和核對端一致（完全同名照樣看已移除的學員，填寫順序不影響）
+//   G17–G25 註冊頁填好幾位學員（最多 3 位）：每一位都要處理，不再只核對一位、其餘靜默丟掉
+//     G17 [只差一字的新弟弟, 已登記的孩子]：連結已登記的、另建弟弟並記 NEW_SIMILAR、弟弟送 Ragic
+//     G18 [兩位都已登記]：兩位都連結，不送 Ragic 新增
+//     G19 [已登記的放第一位, 完全新的孩子]：有一位核對通過才新增其他孩子
+//     G20 填 4 位：擋下（不靜默丟掉第 4 位），不算一次猜測
+//     G21 其中一位同名但身分證和登記的不同：整筆擋下
+//     G22 同一位孩子填兩次：擋下
+//     G23 沒有一位同名／身分證對上、只靠一位差一字（Owner 2026-10-20）：建新帳號、不碰舊系統那一戶
+//     G24 舊資料要櫃台整理（多筆來源分不出主檔）：已登記的連結，新孩子回傳「已忽略」讓家長登入後再新增
+//     G25 其餘學員靠身分證比對也只看 Ragic 還在的學員（同 G15）
 // 不碰 Ragic（同步呼叫一律丟錯）；所有資料 finally 自己刪乾淨。
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -303,6 +306,25 @@ async function cleanup() {
       assert.equal(pick.guesses, 2);
     });
 
+    await t('G15 Ragic 已移除的歷史學員不能拿來靠身分證或差一字過關', async () => {
+      const f = await family('P', { students: [{ name: '張舊生', id: 'K123456789' }, { name: '張現生' }] });
+      await pool.query(`UPDATE ragic_z03_students SET present_in_latest_payload = FALSE WHERE z03_record_id=$1 AND name_raw='張舊生'`, [f.id]);
+      const byId = await claim(f, '某某某', { student_id_number: 'K123456789' });
+      assert.equal(byId.status, 409, JSON.stringify(byId.body));
+      const near = await claim(f, '張舊升');
+      assert.equal(near.status, 409, JSON.stringify(near.body));
+      assert.equal((await claim(f, '張現升')).status, 200);
+    });
+
+    await t('G16 註冊頁挑核對對象和核對端一致：完全同名照樣看 Ragic 已移除的學員，填寫順序不影響', async () => {
+      const f = await family('Q', { students: [{ name: '張舊生', id: 'K123456789' }] });
+      await pool.query(`UPDATE ragic_z03_students SET present_in_latest_payload = FALSE WHERE z03_record_id=$1`, [f.id]);
+      const pick = await pickRegistrationClaimStudent(f.phone, [{ name: '新弟弟' }, { name: '張舊生' }]);
+      assert.equal(pick.student.name, '張舊生');
+      const byIdOnRemoved = await pickRegistrationClaimStudent(f.phone, [{ name: '新弟弟' }, { name: '某某某', id_number: 'K123456789' }]);
+      assert.equal(byIdOnRemoved.student.name, '新弟弟');
+    });
+
     const venue = (await pool.query(`SELECT id FROM venues ORDER BY id LIMIT 1`)).rows[0].id;
     const kid = (name, id_number) => ({ name, id_number, birth_date: '2019-01-01', gender: '生理男', blood_type: '不清楚' });
     const register = async (f, students) => {
@@ -323,7 +345,7 @@ async function cleanup() {
     const guessCounts = async (f) => (await pool.query(
       `SELECT guess_count FROM parent_claim_attempts WHERE phone_canonical=$1 ORDER BY id`, [f.phone])).rows.map((r) => r.guess_count);
 
-    await t('G15 [只差一字的新弟弟, 已登記的孩子]：連結已登記的、另建弟弟、記 NEW_SIMILAR、弟弟送 Ragic', async () => {
+    await t('G17 [只差一字的新弟弟, 已登記的孩子]：連結已登記的、另建弟弟、記 NEW_SIMILAR、弟弟送 Ragic', async () => {
       const f = await family('O', { students: [{ name: '陳冠宇', id: 'H123456789' }] });
       const r = await register(f, [kid('陳冠廷', 'H223456789'), kid('陳冠宇', 'H123456789')]);
       assert.equal(r.status, 200, JSON.stringify(r.body));
@@ -334,8 +356,8 @@ async function cleanup() {
       assert.deepEqual(r.body.ignored_students || [], []);
     });
 
-    await t('G16 [兩位都已登記]：兩位都連結、不送 Ragic 新增', async () => {
-      const f = await family('P', { students: [{ name: '黃大寶', id: 'A123456789' }, { name: '黃二寶', id: 'A223456789' }] });
+    await t('G18 [兩位都已登記]：兩位都連結、不送 Ragic 新增', async () => {
+      const f = await family('W', { students: [{ name: '黃大寶', id: 'A123456789' }, { name: '黃二寶', id: 'A223456789' }] });
       const r = await register(f, [kid('黃二寶', 'A223456789'), kid('黃大寶', 'A123456789')]);
       assert.equal(r.status, 200, JSON.stringify(r.body));
       assert.deepEqual(await kids(f), ['黃二寶', '黃大寶']);
@@ -346,8 +368,8 @@ async function cleanup() {
       assert.deepEqual(links, { unlinked: 0, kids: 2 });
     });
 
-    await t('G17 [已登記的放第一位, 完全新的孩子]：兩位都建、新孩子送 Ragic', async () => {
-      const f = await family('Q', { students: [{ name: '張小明', id: 'B123456789' }] });
+    await t('G19 [已登記的放第一位, 完全新的孩子]：兩位都建、新孩子送 Ragic', async () => {
+      const f = await family('X', { students: [{ name: '張小明', id: 'B123456789' }] });
       const r = await register(f, [kid('張小明', 'B123456789'), kid('李大同', 'C123456789')]);
       assert.equal(r.status, 200, JSON.stringify(r.body));
       assert.deepEqual(await kids(f), ['張小明', '李大同']);
@@ -356,7 +378,7 @@ async function cleanup() {
       assert.deepEqual(await guessCounts(f), [2]);
     });
 
-    await t('G18 填 4 位：擋下、不靜默丟掉第 4 位、不算猜測', async () => {
+    await t('G20 填 4 位：擋下、不靜默丟掉第 4 位、不算猜測', async () => {
       const f = await family('R', { students: [{ name: '許一號', id: 'D123456789' }] });
       const r = await register(f, [kid('許一號', 'D123456789'), kid('許二號', 'D223456789'), kid('許三號', 'E123456789'), kid('許四號', 'E223456789')]);
       assert.equal(r.status, 400, JSON.stringify(r.body));
@@ -365,7 +387,7 @@ async function cleanup() {
       assert.deepEqual(await attempts(f), []);
     });
 
-    await t('G19 一位同名但身分證和登記的不同：整筆擋下', async () => {
+    await t('G21 一位同名但身分證和登記的不同：整筆擋下', async () => {
       const f = await family('S', { students: [{ name: '鄭甲', id: 'F123456789' }, { name: '鄭乙乙', id: 'F223456789' }] });
       const r = await register(f, [kid('鄭甲', 'F123456789'), kid('鄭乙乙', 'G123456789')]);
       assert.equal(r.status, 409, JSON.stringify(r.body));
@@ -374,7 +396,7 @@ async function cleanup() {
       assert.deepEqual((await attempts(f)).map((a) => a.outcome), ['FAILED']);
     });
 
-    await t('G20 同一位孩子填兩次：擋下', async () => {
+    await t('G22 同一位孩子填兩次：擋下', async () => {
       const f = await family('T', { students: [{ name: '蘇小晴', id: 'J123456789' }] });
       const r = await register(f, [kid('蘇小晴', 'J123456789'), kid('蘇小晴', 'J123456789')]);
       assert.equal(r.status, 409, JSON.stringify(r.body));
@@ -382,7 +404,7 @@ async function cleanup() {
       assert.deepEqual(await kids(f), []);
     });
 
-    await t('G21 沒有同名／身分證對上、只靠一位差一字：建新帳號、不碰舊系統那一戶', async () => {
+    await t('G23 沒有同名／身分證對上、只靠一位差一字：建新帳號、不碰舊系統那一戶', async () => {
       const f = await family('U', { students: [{ name: '林語彤', id: 'Q200000001' }] });
       const r = await register(f, [kid('林語桐', 'K123456789'), kid('周新新', 'K223456789')]);
       assert.equal(r.status, 200, JSON.stringify(r.body));
@@ -397,7 +419,7 @@ async function cleanup() {
       assert.deepEqual(await guessCounts(f), [2]);
     });
 
-    await t('G22 多筆來源分不出主檔：已登記的連結、新孩子回傳已忽略', async () => {
+    await t('G24 多筆來源分不出主檔：已登記的連結、新孩子回傳已忽略', async () => {
       const f = await family('V', { students: [{ name: '溫小一', id: 'L123456789' }] });
       const twinId = `ZZGATEV2${suffix}`;
       made.sources.push(twinId);
@@ -416,6 +438,15 @@ async function cleanup() {
       assert.equal(r.body.sync_state, 'DATA_RECONCILIATION_PENDING');
       assert.deepEqual(await kids(f), ['溫小一']);
       assert.deepEqual(r.body.ignored_students, ['溫小二']);
+    });
+
+    await t('G25 其餘學員靠身分證比對也只看 Ragic 還在的學員：對到已移除的那位就當新孩子', async () => {
+      const f = await family('Y', { students: [{ name: '簡現在', id: 'M123456789' }, { name: '簡舊生', id: 'M223456789' }] });
+      await pool.query(`UPDATE ragic_z03_students SET present_in_latest_payload = FALSE WHERE z03_record_id=$1 AND name_raw='簡舊生'`, [f.id]);
+      const r = await register(f, [kid('簡現在', 'M123456789'), kid('簡改名', 'M223456789')]);
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.deepEqual(await kids(f), ['簡改名', '簡現在']);
+      assert.deepEqual(await appended(f), ['簡改名']);
     });
 
     console.log(`\n${passed} 個測試全數通過`);
