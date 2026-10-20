@@ -2,7 +2,7 @@
 
 const crypto = require('crypto');
 const { pool } = require('../models/db');
-const { writeStudentAudit, parentActor } = require('./studentAudit');
+const { writeStudentAudit, parentActor, diffChanges } = require('./studentAudit');
 const ragic = require('./ragic');
 const parentSync = require('./parentSync');
 const { BindConflictError } = parentSync;
@@ -161,6 +161,32 @@ async function registerNewParentLocalFirst({
     let parent = phoneRows[0] || byUid || null;
     if (byUid && parent && byUid.id !== parent.id) throw new Z03ClaimError('ACCOUNT_RECOVERY_REQUIRED', 'LINE UID 與手機指向不同 parent');
     if (parent?.line_uid && parent.line_uid !== uid) throw new Z03ClaimError('ACCOUNT_RECOVERY_REQUIRED', '手機已綁定另一個 LINE UID');
+    let claimingPrebuilt = false;
+    if (parent && !parent.line_uid) {
+      claimingPrebuilt = true;
+      // 2026-10 舊家教移轉：櫃台預建檔的家長（本地有、還沒綁 LINE、Ragic 沒有）。
+      // 原本這裡沿用 parent 卻不寫 line_uid → 家長下次用 LINE 登入找不到人，
+      // CREATE_Z01_PARENT 也會因 LINE_UID_REQUIRED 卡在 outbox。
+      // 綁定前比照 Z03 認領：電話＋任一位既有學員姓名都對上才綁，只知道電話不能接走別人的課。
+      // 名下沒有學員的預建家長無從核對，一律轉櫃台，不靠電話單獨綁定。
+      const known = new Set((await client.query(
+        `SELECT name FROM students WHERE parent_id=$1`, [parent.id]
+      )).rows.map((row) => normalizeStudentName(row.name)));
+      if (!cleanStudents.some((s) => known.has(normalizeStudentName(s.name)))) {
+        throw new Z03ClaimError('CLAIM_VERIFICATION_FAILED', '學員姓名與既有資料不符，請洽櫃台協助', 409);
+      }
+      parent = (await client.query(
+        `UPDATE parents
+            SET line_uid=$2, is_active=TRUE,
+                name=COALESCE(NULLIF($3,''),name), gender=COALESCE(NULLIF($4,''),gender),
+                email=COALESCE(NULLIF($5,''),email), primary_venue_id=COALESCE(NULLIF($6,''),primary_venue_id),
+                identity=COALESCE(NULLIF($7,''),identity), updated_at=NOW()
+          WHERE id=$1 AND line_uid IS NULL
+          RETURNING *`,
+        [parent.id, uid, String(parentInput?.name || '').trim(), parentInput?.gender || '',
+         parentInput?.email || '', parentInput?.primary_venue_id || '', parentInput?.identity || '']
+      )).rows[0];
+    }
     if (!parent) {
       parent = (await client.query(
         `INSERT INTO parents
@@ -180,6 +206,27 @@ async function registerNewParentLocalFirst({
       const matches = localStudents.filter((row) => normalizeStudentName(row.name) === normalized);
       if (matches.length > 1) throw new Z03ClaimError('DATA_RECONCILIATION_PENDING', '同名學員命中多筆');
       let student = matches[0] || null;
+      if (student && claimingPrebuilt) {
+        const beforeFill = student;
+        student = (await client.query(
+          `UPDATE students
+              SET birth_date=COALESCE(birth_date,$2::date),
+                  gender=COALESCE(gender,NULLIF($3,'')),
+                  blood_type=COALESCE(blood_type,NULLIF($4,'')),
+                  id_number=CASE WHEN id_number IS NULL AND NULLIF($5,'') IS NOT NULL
+                                  AND NOT EXISTS (SELECT 1 FROM students x
+                                                   WHERE x.parent_id=students.parent_id AND x.id_number=$5 AND x.id<>students.id)
+                                 THEN $5 ELSE id_number END,
+                  updated_at=NOW()
+            WHERE id=$1
+            RETURNING *`,
+          [student.id, _safeDate(sourceStudent.birth_date), sourceStudent.gender || '',
+           sourceStudent.blood_type || '', String(sourceStudent.id_number || '').trim().toUpperCase()]
+        )).rows[0];
+        await writeStudentAudit(client, student.id, 'edit', {
+          ...parentActor(parent.id, 'prebuilt-claim-fill'), changes: diffChanges(beforeFill, student),
+        });
+      }
       if (!student) {
         student = (await client.query(
           `INSERT INTO students
