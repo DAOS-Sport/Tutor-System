@@ -2913,9 +2913,11 @@ async function _syncCanonicalZ01Record(client, z01Row, mapped, venuesMap) {
     `SELECT * FROM students WHERE parent_id = $1 ORDER BY created_at, id FOR UPDATE`, [parent.id]
   )).rows;
   const syncedStudentIds = [];
-  const taken = new Set();
+  const taken = new Map();
   // 子表列的 Ragic 編號和本地學員存的 Z02 編號不是同一套，這裡只比身分證與姓名。
-  const ordered = withIdFirst(sourceStudents.map((source) => ({ source, name: source.name, id_number: source.id_number })));
+  const ordered = withIdFirst(sourceStudents.map((source) => ({
+    source, name: source.name, id_number: source.id_number, birth_date: source.birth_date, gender: source.gender,
+  })));
   for (const entry of ordered) {
     const s = entry.source;
     const normalizedName = normalizeStudentName(s.name);
@@ -2932,6 +2934,7 @@ async function _syncCanonicalZ01Record(client, z01Row, mapped, venuesMap) {
       studentIssues.push({ code: 'AMBIGUOUS_STUDENT_MATCH', name: normalizedName });
       continue;
     }
+    if (verdict.duplicate) continue;
     let student = verdict.row || null;
     const beforeStudent = student;
     const birthDate = /^\d{4}-\d{2}-\d{2}$/.test(String(s.birth_date || '')) ? s.birth_date : null;
@@ -2964,7 +2967,7 @@ async function _syncCanonicalZ01Record(client, z01Row, mapped, venuesMap) {
       changes: diffChanges(beforeStudent, student), note: 'ragic-canonical-family-import',
     });
     syncedStudentIds.push(student.id);
-    taken.add(student.id);
+    taken.set(student.id, entry);
   }
   if (syncedStudentIds.length === 1) {
     await client.query(

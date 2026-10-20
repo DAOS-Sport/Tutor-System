@@ -377,7 +377,7 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
   // tier-3（name+birth）候選的既有列 id：待人工複核期間，權威掃尾不可把它當「Ragic
   // 已無此人」硬刪掉——否則等於繞過複核直接刪除，與決策7的初衷矛盾。
   const reviewCandidateIds = [];
-  const taken = new Set();
+  const taken = new Map();
   const ordered = withIdFirst(students);
   for (const s of ordered) {
     if (!s || !s.name) continue;
@@ -406,8 +406,9 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
       });
       continue;
     }
+    if (verdict.duplicate) continue; // 同一個孩子在這一輪重複出現：第一筆已更新過
     const matched = verdict.row || null;
-    if (matched) taken.add(matched.id);
+    if (matched) taken.set(matched.id, s);
 
     // 單一學員撞唯一鍵（並發競態等）不應讓整位家長同步失敗：SAVEPOINT 隔離，
     // 失敗記 log 跳下一位（該位學員下一輪同步會再收斂）。
@@ -468,7 +469,7 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
            idNum || '', s.blood_type || '', s.student_code || '', ragicId || '']
         );
         await writeStudentAudit(client, inserted.rows[0].id, 'create', { byUser: 'ragic:parent-sync', byRole: 'system', note: 'ragic-student-mirror' });
-        taken.add(inserted.rows[0].id);
+        taken.set(inserted.rows[0].id, s);
         if (existingStudents) existingStudents.push({
           id: inserted.rows[0].id,
           name: s.name,
