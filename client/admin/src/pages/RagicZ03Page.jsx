@@ -116,7 +116,7 @@ function rowToDraft(row) {
   return {
     record,
     students: cleanStudentRows(row.students).map((s) => {
-      const out = { id: s.id };
+      const out = { id: s.id, removedFromRagic: s.present_in_latest_payload === false };
       STUDENT_EDIT_FIELDS.forEach(([field]) => { out[field] = text(s[field]); });
       return out;
     }),
@@ -125,6 +125,20 @@ function rowToDraft(row) {
 
 function missingText(missing) {
   return (missing || []).map((m) => m.label || m.key).filter(Boolean).join('、');
+}
+
+// 儲存後提示哪些舊列沒寫回 Ragic。「第 N 位」是後端照編輯表格順序算的位置。
+// toast 超過 300 字會被換成通用訊息，所以姓名太多時只列前幾位。
+function skippedRemovedText(skipped) {
+  const items = Array.isArray(skipped) ? skipped : [];
+  if (!items.length) return '';
+  const label = (s) => `第 ${s.position} 位「${s.name || '未填姓名'}」`;
+  for (let shown = Math.min(items.length, 5); shown >= 1; shown -= 1) {
+    const more = items.length > shown ? ` 等 ${items.length} 筆` : '';
+    const msg = `已不在 Ragic 的舊列沒有寫回：${items.slice(0, shown).map(label).join('、')}${more}（同名的現存學員照常寫回）`;
+    if (msg.length <= 200 || shown === 1) return msg;
+  }
+  return '';
 }
 
 function FieldInput({ value, onChange, placeholder = '', className = '' }) {
@@ -184,13 +198,20 @@ function StudentEditTable({ students, onChange, onRemove }) {
         </thead>
         <tbody>
           {students.map((student, index) => (
-            <tr key={student.id || index} className="bg-white">
+            <tr
+              key={student.id || index}
+              className={student.removedFromRagic ? 'bg-gray-200' : 'bg-white'}
+              title={student.removedFromRagic ? '舊匯入列，已不在 Ragic，儲存時不會寫回' : undefined}
+            >
               {STUDENT_EDIT_FIELDS.map(([field]) => (
                 <td key={field} className="border border-blue-100 p-1 align-top">
                   <FieldInput value={student[field]} onChange={(v) => onChange(index, field, v)} />
                 </td>
               ))}
               <td className="border border-blue-100 p-1 text-center align-middle">
+                {student.removedFromRagic && (
+                  <div className="mb-1 whitespace-nowrap text-[10px] font-bold text-gray-600">已不在 Ragic<br />不會寫回</div>
+                )}
                 <button
                   type="button"
                   onClick={() => onRemove(index)}
@@ -250,10 +271,11 @@ function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft, onDeleteRequ
   const dismissing = busyKey === `dismiss:${row.id}`;
   const saving = busyKey === `save:${row.id}`;
   // 檢視時只列 Ragic 最新資料裡還在的學員；舊匯入留下、已不在 Ragic 的列收進折疊區，免得看起來像重複。
-  // 編輯模式仍帶全部列：儲存時沒送回的列會被刪除，這裡只改顯示、不動資料。
+  // 編輯模式仍帶全部列（儲存時沒送回的列會被刪除），舊列以灰底標出；儲存時後端只寫回現存學員。
   const rawStudents = cleanStudentRows(row.students);
   const viewStudents = rawStudents.filter((s) => s.present_in_latest_payload !== false);
   const removedStudents = rawStudents.filter((s) => s.present_in_latest_payload === false);
+  const draftRemovedCount = draft.students.filter((s) => s.removedFromRagic).length;
 
   function startEdit() {
     setDraft(rowToDraft(row));
@@ -344,7 +366,12 @@ function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft, onDeleteRequ
 
       {editing ? (
         <div className="min-w-0 border-t border-gray-100 bg-blue-50 px-3 py-2">
-          <div className="mb-1 text-[11px] font-bold text-blue-800">學員資料（{draft.students.length} 位，可編輯）</div>
+          <div className="mb-1 text-[11px] font-bold text-blue-800">
+            學員資料（{draft.students.length} 位，可編輯）
+            {draftRemovedCount > 0 && (
+              <span className="ml-1 font-normal text-gray-600">灰底 {draftRemovedCount} 列已不在 Ragic，儲存不會寫回</span>
+            )}
+          </div>
           <StudentEditTable students={draft.students} onChange={updateStudent} onRemove={removeStudent} />
         </div>
       ) : rawStudents.length > 0 ? (
@@ -354,7 +381,7 @@ function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft, onDeleteRequ
           {removedStudents.length > 0 && (
             <details className="mt-1">
               <summary className="cursor-pointer text-[11px] text-gray-500">
-                已不在 Ragic 最新資料的舊列（{removedStudents.length} 筆；編輯、儲存時仍會帶入）
+                已不在 Ragic 最新資料的舊列（{removedStudents.length} 筆；編輯時以灰底列出，儲存不會寫回 Ragic）
               </summary>
               <StudentRawTable students={removedStudents} muted />
             </details>
@@ -582,10 +609,13 @@ export default function RagicZ03Page() {
     try {
       const result = await ragicZ03Api.saveDraft(id, draft);
       replaceItem(result.item);
-      if (result.upgraded) {
-        toast.success('已儲存、寫回 Ragic 並同步正式客戶資料');
-      } else if (result.synced_to_ragic) {
-        toast.success('已儲存並寫回 Ragic；LINE UID 會在家長登入時自動綁定');
+      const skipped = skippedRemovedText(result.skipped_removed_students);
+      if (result.synced_to_ragic) {
+        const done = result.upgraded
+          ? '已儲存、寫回 Ragic 並同步正式客戶資料'
+          : '已儲存並寫回 Ragic；LINE UID 會在家長登入時自動綁定';
+        if (skipped) toast.warning(`${done}。${skipped}`, 12000);
+        else toast.success(done);
       } else if (result.skipped === 'dismissed') {
         toast.info('已儲存；已忽略資料不會寫回 Ragic');
       } else {
@@ -738,6 +768,7 @@ export default function RagicZ03Page() {
           <li>卡片預設唯讀；點右上「編輯」後才會出現輸入框。</li>
           <li>「確認修正並寫回 Ragic」只更動 Ragic 該筆的姓名欄位；適合只有姓名錯誤、其他資料都正確的情況。</li>
           <li>資料補齊後按「儲存」會寫回 Ragic；住家電話、LINE ID、學生數、住家地址、LINE 對話網址不由此頁回填。</li>
+          <li>編輯時灰底的學員列是舊匯入、已不在 Ragic 的資料；儲存只更新本系統，不會寫回 Ragic，儲存後的提示會列出這些列。</li>
           <li>家長完成登入綁定後，系統會自動寫入 LINE UID 並同步到正式客戶資料；每日凌晨 01:30 全量同步會再次依此規則分流。</li>
         </ul>
       </div>
