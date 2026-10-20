@@ -116,7 +116,9 @@ function parentErrorMessage(err) {
     PARENT_REFRESH_FAILED:      '會員資料重新整理失敗，請稍後再試。',
     RATE_LIMITED:               '嘗試次數過多，請稍後再試。',
     PHONE_FORMAT_INVALID:       '手機格式錯誤（需 09xxxxxxxx）。',
-    CLAIM_VERIFICATION_FAILED:  '學員姓名或登記手機號碼與資料不符，無法認領。請確認後再試，或洽櫃台 / LINE 客服。',
+    CLAIM_VERIFICATION_FAILED:  '學員資料與登記資料不符：請確認學員姓名，或填寫學員身分證字號後再試；仍無法通過請洽櫃台 / LINE 客服。',
+    CLAIM_COOLDOWN:             '學員資料核對錯誤次數過多，請 30 分鐘後再試，或洽櫃台 / LINE 客服協助。',
+    MANUAL_REVIEW_REQUIRED:     '這個家庭的資料正在由櫃台確認中，請洽櫃台 / LINE 客服協助完成綁定。',
     CLAIM_NO_ID_ON_FILE:        '系統資料不完整，無法自動核對，請透過本館 LINE 官方帳號聯繫櫃檯協助綁定。',
   };
   if (code === 'ACCOUNT_RECOVERY_REQUIRED' && data.recovery_request_id && data.recovery_token) {
@@ -154,6 +156,7 @@ export default function LoginPage() {
   const [idToken, setIdToken] = useState(null);
   const [phone, setPhone] = useState('');
   const [claimName, setClaimName] = useState('');
+  const [claimIdNumber, setClaimIdNumber] = useState('');
   const [claimPhone, setClaimPhone] = useState('');
   // 家長本人真實姓名：舊生綁定時一併補上，後端只在既有姓名是「電話佔位」時據以清洗回寫 Ragic。
   const [claimParentName, setClaimParentName] = useState('');
@@ -326,7 +329,7 @@ export default function LoginPage() {
       }
       const r = await authApi.parentBindPhone({
         idToken: tk, phone: phone.trim(),
-        claim: { student_name: name, phone: claimPhoneValue, parent_name: parentName },
+        claim: { student_name: name, phone: claimPhoneValue, parent_name: parentName, student_id_number: claimIdNumber.trim().toUpperCase() },
       });
       if (r?.status === 'bound_and_logged_in' && r.parent) {
         const parent = { ...r.parent, token: r.token || r.parent.token || null };
@@ -350,6 +353,11 @@ export default function LoginPage() {
       const code = err?.response?.data?.code;
       if (code === 'CLAIM_NO_ID_ON_FILE') {
         showPhoneEntry(parentErrorMessage(err));
+        return;
+      }
+      // 核對沒過：留在這個畫面，讓家長直接改學員姓名或補身分證再送。
+      if (code === 'CLAIM_VERIFICATION_FAILED') {
+        toast.error(parentErrorMessage(err));
         return;
       }
       showPhoneEntry(parentErrorMessage(err));
@@ -450,6 +458,15 @@ export default function LoginPage() {
             <input
               id="claimName" type="text" value={claimName}
               onChange={(e) => setClaimName(e.target.value)}
+              className="w-full rounded-lg border border-gray-300 px-4 py-3 text-base focus:border-brand-teal focus:outline-none focus:ring-2 focus:ring-brand-teal/30"
+              disabled={busy}
+            />
+          </div>
+          <div>
+            <label htmlFor="claimIdNumber" className="mb-1 block text-sm font-medium text-gray-700">學員身分證字號（選填）</label>
+            <input
+              id="claimIdNumber" type="text" placeholder="姓名一直對不上時可改用身分證核對" value={claimIdNumber}
+              onChange={(e) => setClaimIdNumber(e.target.value.replace(/\s/g, '').slice(0, 10))}
               className="w-full rounded-lg border border-gray-300 px-4 py-3 text-base focus:border-brand-teal focus:outline-none focus:ring-2 focus:ring-brand-teal/30"
               disabled={busy}
             />

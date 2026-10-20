@@ -281,6 +281,7 @@ async function _completeLocalZ03Claim(req, res, {
       studentInput,
       lineUid,
       parentName: claim.parent_name || '',
+      claimIdNumber: claim.student_id_number || '',
       parentProfile,
       allowStudentAppend,
       ownershipVerified,
