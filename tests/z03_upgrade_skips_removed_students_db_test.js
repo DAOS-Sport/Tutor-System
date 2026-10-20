@@ -9,7 +9,7 @@
 //   U6 學員全是舊列 → 提示缺學員、不寫 Ragic
 //   U5 本地舊列都還在（儲存不刪資料）
 //   每一案也核對回傳的 skipped_removed_students（略過的舊列，位置同後台編輯表格）
-//   U7 缺欄提示的「第 N 位」照編輯表格的順序算（舊列也佔位）
+//   U7 缺欄提示的「編輯時第 N 位」照編輯表格的順序算（舊列也佔位）
 //   U8 項次相同的學員列，清單順序以 id 決定（不隨資料列實體位置變動）
 // Ragic 讀寫全部 stub：讀取依網址回假資料、寫入只記錄；任何沒預期到的網址直接丟錯。
 // 姓名、電話、身分證都是虛構值；所有資料 finally 自己刪乾淨。
@@ -249,7 +249,7 @@ async function main() {
     assert.equal(n, 5);
   });
 
-  await t('U7 缺欄提示的「第 N 位」對得上編輯表格（舊列排在前面也佔位）', async () => {
+  await t('U7 缺欄提示的「編輯時第 N 位」對得上編輯表格（舊列排在前面也佔位）', async () => {
     const phone = '0990000107';
     const ragicStudents = [{ name: '測試壬', code: '', id_number: '', birth_date: '2013-08-08' }];
     const rows = [
@@ -261,7 +261,7 @@ async function main() {
       record: {}, students: draftStudents(rows, f.ids),
     }, 'test-admin');
     assert.deepEqual(result.missing, [
-      { key: 'students.1.student_code', label: '第 2 位學員「測試壬」的學員編號或身分證字號' },
+      { key: 'students.1.student_code', label: '編輯時第 2 位學員「測試壬」的學員編號或身分證字號' },
     ]);
     assert.deepEqual(result.skipped_removed_students, [{ id: f.ids[0], name: '測試辛', position: 1 }]);
     assert.equal(writes.length, 0, '缺欄不寫 Ragic');

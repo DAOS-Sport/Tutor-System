@@ -3418,7 +3418,7 @@ function _z03UpgradeStudents(row) {
 }
 
 // 後台編輯表格列出的學員列（任一可編輯欄位有值，同前端 cleanStudentRows），順序同畫面（seq_raw, id）。
-// 提示裡的「第 N 位」用這裡的位置，櫃台打開編輯就對得上。
+// 提示裡的「編輯時第 N 位」用這裡的位置，櫃台打開編輯就對得上。
 function _z03EditableStudentRows(row) {
   return (row.students || [])
     .filter((s) => Z03_STUDENT_UPDATE_FIELDS.some((field) => _cleanText(s[field], 255)))
@@ -3463,7 +3463,7 @@ function getZ03UpgradeMissingFields(row) {
     if (!student.id_number && !student.student_code) {
       missing.push({
         key: `students.${position - 1}.student_code`,
-        label: `第 ${position} 位學員「${student.name}」的學員編號或身分證字號`,
+        label: `編輯時第 ${position} 位學員「${student.name}」的學員編號或身分證字號`,
       });
     }
   });

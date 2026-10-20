@@ -137,11 +137,11 @@ function missingText(missing) {
   return joinWithinLimit((missing || []).map((m) => m.label || m.key).filter(Boolean), '項');
 }
 
-// 儲存後提示哪些舊列沒寫回 Ragic。「第 N 位」是後端照編輯表格順序算的位置。
+// 儲存後提示哪些舊列沒寫回 Ragic。「編輯時第 N 位」是後端照編輯表格順序算的位置。
 function skippedRemovedText(skipped) {
   const items = Array.isArray(skipped) ? skipped : [];
   if (!items.length) return '';
-  const names = joinWithinLimit(items.map((s) => `第 ${s.position} 位「${s.name || '未填姓名'}」`), '筆', 150);
+  const names = joinWithinLimit(items.map((s) => `編輯時第 ${s.position} 位「${s.name || '未填姓名'}」`), '筆', 150);
   return `已不在 Ragic 的舊列沒有寫回：${names}（Ragic 裡還在的學員照常寫回）`;
 }
 
