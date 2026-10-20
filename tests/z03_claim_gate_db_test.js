@@ -14,6 +14,7 @@
 //   G12 註冊頁已登記的孩子不在第一位 → 照樣過（挑對得上的那位核對，看了幾位算幾次）
 //   G13 註冊新增：只差一字、登記那位有不同身分證 → 另建、標 NEW_SIMILAR
 //   G14 註冊頁挑核對對象時不看已作廢（dismissed）的 Z03 紀錄（與核對端條件一致）
+//   G15 Ragic 已移除的歷史學員不能拿來靠身分證或差一字過關
 // 不碰 Ragic（同步呼叫一律丟錯）；所有資料 finally 自己刪乾淨。
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -288,6 +289,16 @@ async function cleanup() {
       const pick = await pickRegistrationClaimStudent(f.phone, [{ name: '王小南' }, { name: '林小北' }]);
       assert.equal(pick.student.name, '林小北');
       assert.equal(pick.guesses, 2);
+    });
+
+    await t('G15 Ragic 已移除的歷史學員不能拿來靠身分證或差一字過關', async () => {
+      const f = await family('P', { students: [{ name: '張舊生', id: 'K123456789' }, { name: '張現生' }] });
+      await pool.query(`UPDATE ragic_z03_students SET present_in_latest_payload = FALSE WHERE z03_record_id=$1 AND name_raw='張舊生'`, [f.id]);
+      const byId = await claim(f, '某某某', { student_id_number: 'K123456789' });
+      assert.equal(byId.status, 409, JSON.stringify(byId.body));
+      const near = await claim(f, '張舊升');
+      assert.equal(near.status, 409, JSON.stringify(near.body));
+      assert.equal((await claim(f, '張現升')).status, 200);
     });
 
     console.log(`\n${passed} 個測試全數通過`);

@@ -39,7 +39,8 @@ async function pickRegistrationClaimStudent(phone, students, db = pool) {
     `SELECT s.name_raw AS name, s.id_number_raw AS id_number
        FROM ragic_z03_students s JOIN ragic_z03_records r ON r.id = s.z03_record_id
       WHERE (r.phone_canonical = $1 OR regexp_replace(COALESCE(r.phone,''), '\\D', '', 'g') = $1)
-        AND r.status IN ('pending','resolved','manual_review')`, [normalizePhone(phone)]
+        AND r.status IN ('pending','resolved','manual_review')
+        AND s.present_in_latest_payload IS NOT FALSE AND s.classification <> 'EMPTY_TEMPLATE_ROW'`, [normalizePhone(phone)]
   )).rows;
   const strict = considered.findIndex((s) => {
     const v = matchStudent(rows, s, { allowNear: false });
@@ -660,7 +661,11 @@ async function claimZ03Identity({
       // 姓名沒有完全相同：身分證相同或姓名只差一字也算對上（claimStudentMatcher），之後以登記的姓名為準。
       // 註冊新增學員（allowStudentAppend）時不認 NEAR：只差一字的可能是還沒登記的兄弟姊妹，
       // 照樣另建，但記 NEW_SIMILAR 給櫃台反查（Owner 2026-10-20）。
-      const candidates = childRows.map((row) => ({ name: row.name_raw, id_number: row.id_number_raw, row }));
+      // 只拿 Ragic 最新資料裡還在的學員比：已移除的歷史學員不能拿來靠身分證或差一字過關。
+      // （缺生日、同名重複的 INVALID_ROW／DUPLICATE_CANDIDATE 仍是真的孩子，照樣可比。）
+      const candidates = childRows
+        .filter((row) => row.present_in_latest_payload !== false && row.classification !== 'EMPTY_TEMPLATE_ROW')
+        .map((row) => ({ name: row.name_raw, id_number: row.id_number_raw, row }));
       const submitted = { name: studentName, id_number: submittedIdNumber };
       const verdict = matchStudent(candidates, submitted, { allowNear: !allowStudentAppend });
       if (!verdict && allowStudentAppend) {
