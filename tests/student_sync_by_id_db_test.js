@@ -7,6 +7,13 @@
 //   S5 正式 Z01 同步：子表兩位同名不同身分證 → 兩位都建，不記 AMBIGUOUS_STUDENT_MATCH
 //   S6 正式 Z01 同步：子表兩位同名都沒身分證 → 照舊記 AMBIGUOUS_STUDENT_MATCH、不建
 //   S7 outbox 送出新孩子後回填 Ragic 紀錄編號：同名時依身分證找對人
+// 審查補強（不同名同身分證、先無後有身分證、身分證更正；本地列設 last_synced_at，改名才看得到）：
+//   S8 正式 Z01：兄弟姊妹身分證撞號 → 不改名，各自留在原本那位
+//   S9 parentSync：兄弟姊妹身分證填反 → 不改名、不互換，也不整位家長失敗
+//   S10 parentSync：同一個孩子先一筆沒身分證、再一筆有身分證 → 只有一位，補上身分證
+//   S11 身分證在 Ragic 更正（舊號已不在 Ragic）→ 不多建，沿用原本那位（parentSync 與正式 Z01）
+//   S12 正式 Z01：本地一位同名沒身分證、Ragic 兩位同名不同身分證 → 交人工，不配給任一位、不新建
+//   S13 parentSync：本地兩位不同名但身分證相同、Ragic 換新紀錄編號 → 不整位失敗，各自對上
 // 不碰 Ragic（寫入一律用替身）；所有資料 finally 自己刪乾淨。
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -32,9 +39,12 @@ async function makeParent(tag, { lineUid = null } = {}) {
   return (await pool.query(
     `INSERT INTO parents (phone,name,line_uid,is_active) VALUES ($1,'同步測試家長',$2,TRUE) RETURNING *`, [phone, lineUid])).rows[0];
 }
-const addStudent = async (parentId, name, idNumber, ragicId = null) => (await pool.query(
-  `INSERT INTO students (parent_id,name,id_number,ragic_record_id,is_active) VALUES ($1,$2,$3,$4,TRUE) RETURNING id`,
-  [parentId, name, idNumber, ragicId])).rows[0].id;
+const addStudent = async (parentId, name, idNumber, ragicId = null, { synced = false } = {}) => (await pool.query(
+  `INSERT INTO students (parent_id,name,id_number,ragic_record_id,is_active,last_synced_at)
+   VALUES ($1,$2,$3,$4,TRUE,CASE WHEN $5 THEN NOW() END) RETURNING id`,
+  [parentId, name, idNumber, ragicId, synced])).rows[0].id;
+const names = async (parentId) => (await pool.query(
+  `SELECT id, name, id_number FROM students WHERE parent_id=$1 ORDER BY created_at, id`, [parentId])).rows;
 const kids = async (parentId) => (await pool.query(
   `SELECT name, id_number, ragic_record_id FROM students WHERE parent_id=$1 ORDER BY id_number NULLS LAST, name`, [parentId])).rows;
 
@@ -182,6 +192,78 @@ async function syncFormal(raw) {
       const rid = async (id) => (await pool.query(`SELECT ragic_record_id FROM students WHERE id=$1`, [id])).rows[0].ragic_record_id;
       assert.equal(await rid(newer), `R7G${suffix}`);
       assert.equal(await rid(older), null);
+    });
+
+    await t('S8 正式 Z01：兄弟姊妹身分證撞號 → 不改名，各自留在原本那位', async () => {
+      const lineUid = uid();
+      const phone = `0981${suffix}`; made.phones.push(phone);
+      const sourceId = `ZZSYNC8${suffix}`; made.sources.push(sourceId);
+      const first = await syncFormal(z01Row(sourceId, phone, lineUid, [{ name: '王小明', id: 'A123456789' }]));
+      const ming = (await names(first.parent.id))[0].id;
+      const hua = await addStudent(first.parent.id, '王小華', null, null, { synced: true });
+      await syncFormal(z01Row(sourceId, phone, lineUid, [{ name: '王小明', id: 'A123456789' }, { name: '王小華', id: 'A123456789' }]));
+      const rows = await names(first.parent.id);
+      assert.deepEqual(rows.map((r) => [r.id, r.name]), [[ming, '王小明'], [hua, '王小華']]);
+    });
+
+    await t('S9 parentSync：兄弟姊妹身分證填反 → 不改名、不互換，也不整位家長失敗', async () => {
+      const p = await makeParent('9');
+      const ming = await addStudent(p.id, '王小明', 'A123456789', null, { synced: true });
+      const hua = await addStudent(p.id, '王小華', 'B123456789', null, { synced: true });
+      await inTx((c) => parentSync.upsertLocalStudents(c, p.id, [
+        { name: '王小明', id_number: 'B123456789', ragic_record_id: `R9A${suffix}` },
+        { name: '王小華', id_number: 'A123456789', ragic_record_id: `R9B${suffix}` },
+      ]));
+      const rows = await names(p.id);
+      assert.deepEqual(rows.map((r) => [r.id, r.name, r.id_number]),
+        [[ming, '王小明', 'A123456789'], [hua, '王小華', 'B123456789']]);
+    });
+
+    await t('S10 parentSync：同一個孩子先一筆沒身分證、再一筆有身分證 → 只有一位，補上身分證', async () => {
+      const p = await makeParent('a');
+      await addStudent(p.id, '王小明', null, null, { synced: true });
+      await inTx((c) => parentSync.upsertLocalStudents(c, p.id, [
+        { name: '王小明', ragic_record_id: `R10${suffix}` },
+        { name: '王小明', id_number: 'A123456789' },
+      ]));
+      assert.deepEqual((await names(p.id)).map((r) => [r.name, r.id_number]), [['王小明', 'A123456789']]);
+    });
+
+    await t('S11 身分證在 Ragic 更正（舊號已不在 Ragic）→ 不多建，沿用原本那位', async () => {
+      const p = await makeParent('b');
+      const ming = await addStudent(p.id, '王小明', 'A123456780', null, { synced: true });
+      await inTx((c) => parentSync.upsertLocalStudents(c, p.id, [{ name: '王小明', id_number: 'A123456789', ragic_record_id: `R11${suffix}` }]));
+      assert.deepEqual((await names(p.id)).map((r) => r.id), [ming]);
+      const lineUid = uid();
+      const phone = `0982${suffix}`; made.phones.push(phone);
+      const sourceId = `ZZSYNC11${suffix}`; made.sources.push(sourceId);
+      const first = await syncFormal(z01Row(sourceId, phone, lineUid, [{ name: '王小美', id: 'C123456780' }]));
+      await syncFormal(z01Row(sourceId, phone, lineUid, [{ name: '王小美', id: 'C123456789' }]));
+      assert.equal((await names(first.parent.id)).length, 1);
+    });
+
+    await t('S12 正式 Z01：本地一位同名沒身分證、Ragic 兩位同名不同身分證 → 交人工，不配給任一位、不新建', async () => {
+      const lineUid = uid();
+      const phone = `0983${suffix}`; made.phones.push(phone);
+      const sourceId = `ZZSYNC12${suffix}`; made.sources.push(sourceId);
+      const first = await syncFormal(z01Row(sourceId, phone, lineUid, [{ name: '陳大寶' }]));
+      const old = (await names(first.parent.id))[0];
+      const result = await syncFormal(z01Row(sourceId, phone, lineUid,
+        [{ name: '陳大寶', id: 'D123456789' }, { name: '陳大寶', id: 'D223456789' }]));
+      assert.ok(result.studentIssues.some((i) => i.code === 'AMBIGUOUS_STUDENT_MATCH'), JSON.stringify(result.studentIssues));
+      assert.deepEqual(await names(first.parent.id), [old]);
+    });
+
+    await t('S13 parentSync：本地兩位不同名但身分證相同、Ragic 換新紀錄編號 → 不整位失敗，各自對上', async () => {
+      const p = await makeParent('c');
+      await addStudent(p.id, '王小明', 'E123456789', `R13old1${suffix}`, { synced: true });
+      await addStudent(p.id, '王小華', 'E123456789', `R13old2${suffix}`, { synced: true });
+      await inTx((c) => parentSync.upsertLocalStudents(c, p.id, [
+        { name: '王小明', id_number: 'E123456789', ragic_record_id: `R13new1${suffix}` },
+        { name: '王小華', id_number: 'E123456789', ragic_record_id: `R13new2${suffix}` },
+      ]));
+      assert.deepEqual((await kids(p.id)).map((k) => [k.name, k.ragic_record_id]).sort(),
+        [['王小明', `R13new1${suffix}`], ['王小華', `R13new2${suffix}`]].sort());
     });
 
     console.log(`\n${passed} 個測試全數通過`);

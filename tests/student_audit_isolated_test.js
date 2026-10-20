@@ -40,7 +40,7 @@ async function main() {
     const context = { ...audit, studentAuditParentActor: audit.parentActor, pool: { connect: async () => ({ query: db.query.bind(db), release() {} }) },
       normalizeStudentName: value => String(value || '').trim(), Z03ClaimError: Error,
       ragic: { normalizeGender: value => value }, console: { warn() {} }, BindConflictError: Error,
-      matchFamilyStudent: require('../server/services/familyStudentMatch').matchFamilyStudent };
+      ...require('../server/services/familyStudentMatch') };
     vm.createContext(context);
     for (const [file, name] of [
       ['server/routes/parents.js', 'persistStudentMirrorAfterRagic'],

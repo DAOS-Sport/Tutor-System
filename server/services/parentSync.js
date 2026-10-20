@@ -20,7 +20,7 @@ const { writeStudentAudit, diffChanges } = require('./studentAudit');
 const ragic = require('./ragic');
 const { maskName, maskPhone } = require('../utils/piiMask');
 const { normalizePhone, normalizeStudentName } = require('./identityNormalizer');
-const { matchFamilyStudent } = require('./familyStudentMatch');
+const { matchFamilyStudent, withIdFirst } = require('./familyStudentMatch');
 const { STABILITY_FLAGS, getTrueRagicLineUid } = require('../config/ragicSchema');
 
 class BindConflictError extends Error {
@@ -371,7 +371,8 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
   // 已無此人」硬刪掉——否則等於繞過複核直接刪除，與決策7的初衷矛盾。
   const reviewCandidateIds = [];
   const taken = new Set();
-  for (const s of students || []) {
+  const ordered = withIdFirst(students);
+  for (const s of ordered) {
     if (!s || !s.name) continue;
     const idNum  = s.id_number ? String(s.id_number).toUpperCase().trim() : null;
     const ragicId = s.ragic_record_id ? String(s.ragic_record_id).trim() : null;
@@ -381,9 +382,15 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
       [parentId]
     )).rows;
     // 身分證為主：同一戶可以有兩位同名、身分證不同的孩子（familyStudentMatch）。
-    const verdict = matchFamilyStudent(familyRows, s, taken);
-    if (verdict.ambiguous) {
+    // 原本就有的「同名多筆又沒身分證」照舊整位家長轉人工；其餘分不出來的只略過這一位，不擋整戶登入／刷新。
+    const verdict = matchFamilyStudent(familyRows, s, { taken, batch: ordered });
+    if (verdict.ambiguous === 'SAME_NAME_NO_ID') {
       throw new BindConflictError('DATA_RECONCILIATION_PENDING', '同一家庭內學員姓名精準命中多筆');
+    }
+    if (verdict.ambiguous) {
+      console.warn('[parent-sync] 學員對不出是哪一位（%s），略過待人工整理 (parent=%s, name=%s)',
+        verdict.ambiguous, parentId, maskName(s.name));
+      continue;
     }
     const matched = verdict.row || null;
     if (matched) taken.add(matched.id);
