@@ -354,7 +354,7 @@ function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft, onDeleteRequ
           {removedStudents.length > 0 && (
             <details className="mt-1">
               <summary className="cursor-pointer text-[11px] text-gray-500">
-                已從 Ragic 移除的舊資料（{removedStudents.length} 筆，不列入學員）
+                已不在 Ragic 最新資料的舊列（{removedStudents.length} 筆；編輯、儲存時仍會帶入）
               </summary>
               <StudentRawTable students={removedStudents} muted />
             </details>
