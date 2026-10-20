@@ -3408,6 +3408,15 @@ function _z03StudentFromRow(row) {
   };
 }
 
+// 升級寫回 Ragic 只處理 Ragic 最新資料裡還在的學員：present_in_latest_payload = FALSE 是舊匯入
+// 留下的列，Ragic 已經沒有了；寫回去會用舊值蓋掉同編號的現存學員，或讓整筆儲存失敗。
+function _z03UpgradeStudents(row) {
+  return (row.students || [])
+    .filter((s) => s.present_in_latest_payload !== false)
+    .map(_z03StudentFromRow)
+    .filter((s) => s.name);
+}
+
 function getZ03UpgradeMissingFields(row) {
   const parent = _z03ParentFromRow(row);
   const missing = [];
@@ -3428,7 +3437,7 @@ function getZ03UpgradeMissingFields(row) {
   if (parent.name && isPlaceholderParentName(parent.name) && !missing.some((m) => m.key === 'name')) {
     missing.push({ key: 'name', label: '家長姓名' });
   }
-  const validStudents = (row.students || []).map(_z03StudentFromRow).filter((s) => s.name);
+  const validStudents = _z03UpgradeStudents(row);
   if (!validStudents.length) missing.push({ key: 'students', label: '至少一位學員姓名' });
   validStudents.forEach((s, idx) => {
     if (!s.id_number && !s.student_code) {
@@ -3781,7 +3790,7 @@ async function _upgradeZ03RecordToZ01(row, adminUsername) {
   if (missing.length) return { upgraded: false, missing };
 
   const parent = _z03ParentFromRow(row);
-  const students = (row.students || []).map(_z03StudentFromRow).filter((s) => s.name);
+  const students = _z03UpgradeStudents(row);
 
   const venueName = await ragic.venueLabel(parent.primary_venue_id);
   const payload = {
