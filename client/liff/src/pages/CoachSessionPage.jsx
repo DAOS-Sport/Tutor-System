@@ -41,7 +41,9 @@ const SESSION_STATUS = {
 // 簽到來源顯示。
 // ⚠️ 'coach' 分支僅供歷史記錄：教練代簽已於 2026-08-10 移除，系統不會再產生此來源，
 //    但資料庫既有列仍是 'coach'。拿掉這個分支會把舊記錄錯標成「家長簽到」。
+// 'legacy_import'：舊家教系統移轉補進來的上課記錄。
 function checkinSourceLabel(source) {
+  if (source === 'legacy_import') return '舊系統轉移';
   return source === 'coach' ? '教練代簽（舊制）' : '家長簽到';
 }
 
