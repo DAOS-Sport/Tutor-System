@@ -269,16 +269,20 @@ async function main() {
   });
 
   await t('U8 項次相同的學員列，清單順序以 id 決定', async () => {
-    const phone = '0990000108';
-    const rows = [
-      { seq: '1', name: '測試癸', code: 'ZZ-U8-A', id_number: 'Z900000108', present: true, source_row_key: '1:0' },
-      { seq: '1', name: '測試子', code: 'ZZ-U8-B', id_number: 'Z900000118', present: true, source_row_key: '2:0' },
-    ];
-    const f = await family('U8', { phone, ragicStudents: [], localStudents: rows });
-    // 更新 id 較小的那列，讓它的資料列實體位置移到後面；只靠 seq_raw 排序時順序就會跟著變。
-    await pool.query(`UPDATE ragic_z03_students SET gender_raw = '女' WHERE id = $1`, [f.ids[0]]);
+    const f = await family('U8', { phone: '0990000108', ragicStudents: [], localStudents: [] });
+    // 先插 id 較大的列：只靠 seq_raw 排序時，同項次的兩列會照插入順序回來（id 大的在前）。
+    const [small, large] = (await pool.query(
+      `SELECT nextval(pg_get_serial_sequence('ragic_z03_students','id'))::text AS id FROM generate_series(1,2)`
+    )).rows.map((r) => r.id);
+    for (const [sid, name] of [[large, '測試子'], [small, '測試癸']]) {
+      await pool.query(
+        `INSERT INTO ragic_z03_students (id, z03_record_id, seq_raw, name_raw, classification, present_in_latest_payload)
+         VALUES ($1,$2,'1',$3,'VALID',TRUE)`,
+        [sid, f.id, name]
+      );
+    }
     const [item] = await ragicAdmin.listZ03Records({ status: 'all', q: f.sourceId });
-    assert.deepEqual(item.students.map((s) => s.id), f.ids);
+    assert.deepEqual(item.students.map((s) => s.id), [small, large]);
   });
 }
 
