@@ -209,6 +209,34 @@ function StudentEditTable({ students, onChange, onRemove }) {
   );
 }
 
+function StudentRawTable({ students, muted = false }) {
+  return (
+    <div className="max-w-full overflow-x-auto">
+      <table className={`w-full min-w-[520px] text-[11px] ${muted ? 'text-gray-400' : ''}`}>
+        <thead>
+          <tr className="text-left text-gray-500">
+            <th className="pr-2">姓名</th><th className="pr-2">學員身分</th><th className="pr-2">出生年月日</th>
+            <th className="pr-2">性別</th><th className="pr-2">身分證字號</th><th className="pr-2">血型</th><th>登記電話</th>
+          </tr>
+        </thead>
+        <tbody>
+          {students.map((s, index) => (
+            <tr key={s.id || index}>
+              <td className={`pr-2 text-sm font-bold ${muted ? 'text-gray-400' : 'text-gray-800'}`}>{s.name_raw || '—'}</td>
+              <td className="pr-2">{s.student_status_raw || '—'}</td>
+              <td className="pr-2">{s.birth_date_raw || '—'}</td>
+              <td className="pr-2">{s.gender_raw || '—'}</td>
+              <td className="pr-2">{s.id_number_raw || '—'}</td>
+              <td className="pr-2">{s.blood_type_raw || '—'}</td>
+              <td>{s.registered_phone_raw || '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft, onDeleteRequest, canDelete }) {
   const awaitingLogin = row.status === 'resolved' && row.reason_code === AWAITING_LOGIN_POLICY;
   const st = awaitingLogin ? { text: '待登入補齊', cls: 'bg-gray-100 text-gray-700' } : STATUS_LABEL[row.status] || STATUS_LABEL.pending;
@@ -221,7 +249,11 @@ function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft, onDeleteRequ
   const resolving = busyKey === `resolve:${row.id}`;
   const dismissing = busyKey === `dismiss:${row.id}`;
   const saving = busyKey === `save:${row.id}`;
-  const viewStudents = cleanStudentRows(row.students);
+  // 檢視時只列 Ragic 最新資料裡還在的學員；舊匯入留下、已不在 Ragic 的列收進折疊區，免得看起來像重複。
+  // 編輯模式仍帶全部列：儲存時沒送回的列會被刪除，這裡只改顯示、不動資料。
+  const rawStudents = cleanStudentRows(row.students);
+  const viewStudents = rawStudents.filter((s) => s.present_in_latest_payload !== false);
+  const removedStudents = rawStudents.filter((s) => s.present_in_latest_payload === false);
 
   function startEdit() {
     setDraft(rowToDraft(row));
@@ -315,32 +347,18 @@ function Z03Card({ row, busyKey, onResolve, onDismiss, onSaveDraft, onDeleteRequ
           <div className="mb-1 text-[11px] font-bold text-blue-800">學員資料（{draft.students.length} 位，可編輯）</div>
           <StudentEditTable students={draft.students} onChange={updateStudent} onRemove={removeStudent} />
         </div>
-      ) : viewStudents.length > 0 ? (
+      ) : rawStudents.length > 0 ? (
         <div className="min-w-0 border-t border-gray-100 bg-blue-50 px-3 py-2">
           <div className="mb-1 text-[11px] font-bold text-blue-800">學員資料（{viewStudents.length} 位，原始值）</div>
-          <div className="max-w-full overflow-x-auto">
-            <table className="w-full min-w-[520px] text-[11px]">
-              <thead>
-                <tr className="text-left text-gray-500">
-                  <th className="pr-2">姓名</th><th className="pr-2">學員身分</th><th className="pr-2">出生年月日</th>
-                  <th className="pr-2">性別</th><th className="pr-2">身分證字號</th><th className="pr-2">血型</th><th>登記電話</th>
-                </tr>
-              </thead>
-              <tbody>
-                {viewStudents.map((s, index) => (
-                  <tr key={s.id || index}>
-                    <td className="pr-2 text-sm font-bold text-gray-800">{s.name_raw || '—'}</td>
-                    <td className="pr-2">{s.student_status_raw || '—'}</td>
-                    <td className="pr-2">{s.birth_date_raw || '—'}</td>
-                    <td className="pr-2">{s.gender_raw || '—'}</td>
-                    <td className="pr-2">{s.id_number_raw || '—'}</td>
-                    <td className="pr-2">{s.blood_type_raw || '—'}</td>
-                    <td>{s.registered_phone_raw || '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          {viewStudents.length > 0 && <StudentRawTable students={viewStudents} />}
+          {removedStudents.length > 0 && (
+            <details className="mt-1">
+              <summary className="cursor-pointer text-[11px] text-gray-500">
+                已從 Ragic 移除的舊資料（{removedStudents.length} 筆，不列入學員）
+              </summary>
+              <StudentRawTable students={removedStudents} muted />
+            </details>
+          )}
         </div>
       ) : null}
 
