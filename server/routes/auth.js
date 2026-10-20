@@ -43,6 +43,7 @@ const { requireAdminAuth, requireAdminRole } = require('../middlewares/adminAuth
 const { captureParentLineProfile } = require('../services/parentLineProfile');
 const { createParentIdentityBackofficeTask } = require('../services/parentIdentityBackoffice');
 const { formatPlainDate } = require('../utils/dateTime');
+const { startLegacyExpiryCountdown } = require('../services/legacyExpiryCountdown');
 
 const router = express.Router();
 
@@ -207,6 +208,10 @@ async function loadStudents(parentId) {
 }
 
 function _issue(parent) {
+  // 舊系統轉移課程在家長加入（登入）時才開始倒數到期；背景執行，失敗只記錄、不擋登入。
+  startLegacyExpiryCountdown(parent.id).catch((err) => {
+    console.error('[auth] 舊系統轉移課程到期起算失敗：', 'code=' + (err?.code || '-'), err?.message);
+  });
   const token = signParentToken({
     parentId: parent.id, phone: parent.phone, lineUid: parent.line_uid,
   });

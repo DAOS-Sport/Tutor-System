@@ -79,6 +79,11 @@ export default function CourseCard({ variant = 'period', period, type, onClick, 
                 試上・單堂
               </span>
             )}
+            {period.is_legacy_import && (
+              <span className="rounded-md bg-gray-200 px-2 py-0.5 text-xs font-medium text-gray-700">
+                舊系統轉移
+              </span>
+            )}
           </div>
           <h3 className="mt-1 truncate text-base font-bold text-brand-primary">{summaryLine}</h3>
           <p className="mt-0.5 truncate text-xs text-gray-500">

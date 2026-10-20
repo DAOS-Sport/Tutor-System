@@ -155,7 +155,7 @@ router.get('/mine', requireParent, async (req, res) => {
                       cs.order_kind AS checkout_order_kind,
                       cs.created_at AS checkout_created_at,
                       invoice_number, invoice_image_url, invoice_url, invoice_issued_at,
-                      extra_parent_phones, notes, group_order_id, is_group_shared,
+                      extra_parent_phones, notes, group_order_id, is_group_shared, admin_enrollments.external_order_no,
                       -- 已開通正式 course_period（團報走 group_order_id 共用、家庭共班走
                       -- enrollment_batch_id+period_number 共用、其餘走 admin_enrollment_id），
                       -- 以 LATERAL 一次解析，供 期id / 到期 / 總堂數 / 教練修課係數 / 資深旗標 共用。
@@ -267,6 +267,8 @@ router.get('/mine', requireParent, async (req, res) => {
       const remaining = Math.max(0, total - used);
       return {
       id: row.id,
+      // 舊家教系統（ABLEPOS）移轉的課程包，卡片標「舊系統轉移」（Owner 2026-10-20 同意改凍結檔）。
+      is_legacy_import: String(row.external_order_no || '').startsWith('ABLEPOS:'),
       parent_name: row.parent_name,
       parent_phone: row.parent_phone,
       students: row.students || [],

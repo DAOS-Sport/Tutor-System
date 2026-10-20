@@ -67,6 +67,20 @@ const parent = { session_id: 's2', source: 'parent', by: '王大明', student: '
     assert.ok(/'coach'/.test(src));
   });
 
+  check('家長端課程卡：/api/courses/mine 帶 is_legacy_import，卡片顯示舊系統轉移', () => {
+    const api = fs.readFileSync(path.join(ROOT, 'server/routes/courses.js'), 'utf8');
+    assert.ok(/admin_enrollments\.external_order_no/.test(api), '/mine 沒有選出 external_order_no');
+    assert.ok(/is_legacy_import:\s*String\(row\.external_order_no \|\| ''\)\.startsWith\('ABLEPOS:'\)/.test(api));
+    const card = fs.readFileSync(path.join(ROOT, 'client/liff/src/components/CourseCard.jsx'), 'utf8');
+    assert.ok(/period\.is_legacy_import && \(/.test(card) && card.includes('舊系統轉移'));
+  });
+
+  check('家長登入發憑證時起算舊系統課程到期', () => {
+    const auth = fs.readFileSync(path.join(ROOT, 'server/routes/auth.js'), 'utf8');
+    const issue = auth.slice(auth.indexOf('function _issue('), auth.indexOf('const token = signParentToken({', auth.indexOf('function _issue(')));
+    assert.ok(/startLegacyExpiryCountdown\(parent\.id\)\.catch\(/.test(issue), '_issue 沒有呼叫到期起算');
+  });
+
   if (failed) {
     console.error('\nlegacy_import_marker_test: ' + failed + ' failed');
     process.exit(1);

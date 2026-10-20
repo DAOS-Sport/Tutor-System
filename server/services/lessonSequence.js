@@ -62,6 +62,11 @@ function instant(value) {
 }
 const lessonTime = row => instant(row.checkin_at) ?? instant(row.report_identity?.scheduled_at) ?? Infinity;
 const countsAsLesson = row => Number(row.payroll_lesson_count ?? (row.checkin_status === 'checked_in' ? 1 : 0)) > 0;
+// Owner 2026-10-20：舊家教系統移轉補進來的上課紀錄已在舊系統結算，只有在新系統簽到的才算薪資。
+function settledInLegacySystem(row) {
+  const attended = (row.checkin_details || []).filter(item => text(item.status || 'ATTENDED') === 'ATTENDED');
+  return attended.length > 0 && attended.every(item => item.source === 'legacy_import');
+}
 function taipeiMinute(value) {
   const time = instant(value);
   if (time === null) return '時間未記錄';
@@ -99,13 +104,22 @@ function lessonNo(row, slot) {
 // lessons：mergeSessionRecords 的輸出（一列＝一堂）。inRange：這一堂是否在本次查詢要回傳的範圍內。
 function numberLessons(lessons, capacities = new Map(), inRange = () => true, periodCaps = new Map()) {
   const classes = new Map();
+  const unclassed = [];
   lessons.forEach((row, index) => {
     const key = classKey(row);
-    if (!key || !countsAsLesson(row)) return;
+    if (!countsAsLesson(row)) return;
+    if (!key) { unclassed.push(index); return; }
     if (!classes.has(key)) classes.set(key, []);
     classes.get(key).push(index);
   });
   const output = lessons.map(row => ({ ...row }));
+  const markLegacySettled = (row) => {
+    row.legacy_settled = true;
+    row.payroll_lesson_count = 0;
+    row.legacy_checkin_at = row.checkin_at;
+    row.checkin_at = null;
+  };
+  for (const index of unclassed) if (settledInLegacySystem(output[index])) markLegacySettled(output[index]);
   for (const [key, indexes] of classes) {
     indexes.sort((a, b) => lessonTime(lessons[a]) - lessonTime(lessons[b])
       || text(lessons[a].id).localeCompare(text(lessons[b].id)));
@@ -120,6 +134,9 @@ function numberLessons(lessons, capacities = new Map(), inRange = () => true, pe
       row.lesson_period_seq = slot ? slot.seq : null;
       row.lesson_no = slot ? lessonNo(row, slot) : null;
       if (capacity === null || sequence <= capacity) {
+        // 舊系統的課照樣佔堂號與購買上限（新簽到才會接著編第幾堂、超過才擋得住），
+        // 但不計教練堂數；清掉 checkin_at 的理由同下方超過購買堂數，原時間留在 legacy_checkin_at。
+        if (settledInLegacySystem(row)) { markLegacySettled(row); return; }
         lastCounted = row;
         if (inRange(row)) lastCountedInRange = row;
         return;
