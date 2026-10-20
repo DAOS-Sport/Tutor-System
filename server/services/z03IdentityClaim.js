@@ -31,23 +31,28 @@ function _nearByName(rows, name) {
   return v?.method === 'NEAR' ? v : null;
 }
 
-// 註冊頁可一次填好幾位學員，但 Z03 認領只核對一位（條件與 claimZ03Identity 的家庭查詢相同）：挑能對上登記學員的那位（同名／身分證優先，再來只差一字），
-// 家長不必把已登記的孩子填在第一位。最多看 MAX_PREBUILT_CLAIM_STUDENTS 位，看了幾位就算猜了幾次。
+// 靠身分證或差一字比對時只用 Ragic 最新資料裡還在的學員：已移除的歷史學員不能拿來過關。
+// （缺生日、同名重複的 INVALID_ROW／DUPLICATE_CANDIDATE 仍是真的孩子，照樣可比；完全同名的比對不受這條限制。）
+const _fuzzyEligible = (row) => row.present_in_latest_payload !== false && row.classification !== 'EMPTY_TEMPLATE_ROW';
+
+// 註冊頁可一次填好幾位學員，但 Z03 認領只核對一位：照 claimZ03Identity 的順序（同名 → 身分證 → 只差一字）
+// 挑對得上的那位，家長不必把已登記的孩子填在第一位。家庭範圍與比對資料都和 claimZ03Identity 相同。
+// 最多看 MAX_PREBUILT_CLAIM_STUDENTS 位，看了幾位就算猜了幾次。
 async function pickRegistrationClaimStudent(phone, students, db = pool) {
   const considered = students.slice(0, MAX_PREBUILT_CLAIM_STUDENTS);
   const rows = (await db.query(
-    `SELECT s.name_raw AS name, s.id_number_raw AS id_number
+    `SELECT s.name_raw AS name, s.id_number_raw AS id_number, s.present_in_latest_payload, s.classification
        FROM ragic_z03_students s JOIN ragic_z03_records r ON r.id = s.z03_record_id
       WHERE (r.phone_canonical = $1 OR regexp_replace(COALESCE(r.phone,''), '\\D', '', 'g') = $1)
-        AND r.status IN ('pending','resolved','manual_review')
-        AND s.present_in_latest_payload IS NOT FALSE AND s.classification <> 'EMPTY_TEMPLATE_ROW'`, [normalizePhone(phone)]
+        AND r.status IN ('pending','resolved','manual_review')`, [normalizePhone(phone)]
   )).rows;
-  const strict = considered.findIndex((s) => {
-    const v = matchStudent(rows, s, { allowNear: false });
-    return Boolean(v && !v.conflict);
-  });
-  const near = considered.findIndex((s) => _nearByName(rows, s.name));
-  return { student: considered[strict >= 0 ? strict : Math.max(near, 0)], guesses: considered.length };
+  const fuzzyRows = rows.filter(_fuzzyEligible);
+  const exact = considered.findIndex((s) =>
+    rows.some((row) => normalizeStudentName(row.name) === normalizeStudentName(s.name)));
+  const byId = considered.findIndex((s) => matchStudent(fuzzyRows, s, { allowNear: false })?.method === 'ID');
+  const near = considered.findIndex((s) => _nearByName(fuzzyRows, s.name));
+  const pick = [exact, byId, near].find((i) => i >= 0) ?? 0;
+  return { student: considered[pick], guesses: considered.length };
 }
 
 const _cooldownError = () => new Z03ClaimError('CLAIM_COOLDOWN', CLAIM_COOLDOWN_MESSAGE, 429);
@@ -661,10 +666,8 @@ async function claimZ03Identity({
       // 姓名沒有完全相同：身分證相同或姓名只差一字也算對上（claimStudentMatcher），之後以登記的姓名為準。
       // 註冊新增學員（allowStudentAppend）時不認 NEAR：只差一字的可能是還沒登記的兄弟姊妹，
       // 照樣另建，但記 NEW_SIMILAR 給櫃台反查（Owner 2026-10-20）。
-      // 只拿 Ragic 最新資料裡還在的學員比：已移除的歷史學員不能拿來靠身分證或差一字過關。
-      // （缺生日、同名重複的 INVALID_ROW／DUPLICATE_CANDIDATE 仍是真的孩子，照樣可比。）
       const candidates = childRows
-        .filter((row) => row.present_in_latest_payload !== false && row.classification !== 'EMPTY_TEMPLATE_ROW')
+        .filter(_fuzzyEligible)
         .map((row) => ({ name: row.name_raw, id_number: row.id_number_raw, row }));
       const submitted = { name: studentName, id_number: submittedIdNumber };
       const verdict = matchStudent(candidates, submitted, { allowNear: !allowStudentAppend });
