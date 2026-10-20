@@ -8,7 +8,7 @@
 //   G6 櫃台手動轉人工（ADMIN_DISMISSED）的照樣擋
 //   G7 兩個字的姓名只差一字 → 不算（不然只要知道手機＋姓氏就能過）
 //   G8 同一個 LINE 帳號同時送 10 筆錯的：最多 5 筆進得去核對，其餘冷靜；連線池不會卡死
-//   G9 註冊新增學員（allowStudentAppend）：只差一字的兄弟姊妹另建，不併到既有學員
+//   G9 註冊新增學員（allowStudentAppend）：只差一字的兄弟姊妹另建、記 NEW_SIMILAR，不併到既有學員
 // 不碰 Ragic（同步呼叫一律丟錯）；所有資料 finally 自己刪乾淨。
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -209,13 +209,13 @@ async function cleanup() {
       assert.equal((await pool.query('SELECT 1 AS ok')).rows[0].ok, 1);
     });
 
-    await t('G9 註冊新增學員：只差一字的兄弟姊妹另建，不併到既有學員', async () => {
+    await t('G9 註冊新增學員：只差一字的兄弟姊妹另建、標 NEW_SIMILAR，不併到既有學員', async () => {
       const f = await family('I', { students: [{ name: '陳冠宇' }] });
       const r = await claimZ03Identity({ phone: f.phone, studentName: '陳冠廷', lineUid: uid(),
         studentInput: { name: '陳冠廷', birth_date: '2019-05-05' }, allowStudentAppend: true });
       assert.equal(r.student.name, '陳冠廷');
       assert.deepEqual(await kids(f), ['陳冠廷']);
-      assert.deepEqual(await attempts(f), [{ outcome: 'APPENDED', matched_name: null }]);
+      assert.deepEqual(await attempts(f), [{ outcome: 'NEW_SIMILAR', matched_name: '陳冠宇' }]);
       const z03Kids = (await pool.query(`SELECT name_raw FROM ragic_z03_students WHERE z03_record_id=$1 ORDER BY name_raw`, [f.id])).rows;
       assert.ok(z03Kids.some((k) => k.name_raw === '陳冠宇'), '既有學員陳冠宇沒被改名');
     });

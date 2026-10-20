@@ -202,31 +202,28 @@ async function registerNewParentLocalFirst({
       const onFile = (await client.query(
         `SELECT name, id_number FROM students WHERE parent_id=$1 AND is_active`, [parent.id]
       )).rows;
-      // 這條路會新增學員，NEAR 分不出打錯字和只差一字的兄弟姊妹：先只認 EXACT/ID，
-      // 剩下的才拿去和「還沒被對上」的登記學員比 NEAR（兄弟姊妹那位已被同名對上，就不會被併過去）。
-      // NEAR 對上的只沿用既有學員、不補資料。
+      // 這條路會新增學員，NEAR 分不出打錯字和只差一字的兄弟姊妹（Owner 2026-10-20：當成新的一位、標成「名字相近」）：
+      // EXACT/ID 對上的沿用既有學員；其餘和「還沒被對上」的登記學員只差一字的，仍算核對過關的依據，
+      // 但另建成新學員，嘗試紀錄記 NEW_SIMILAR 給櫃台反查（打錯字就由櫃台合併）。
       const strict = cleanStudents.map((s) => matchStudent(onFile, s, { allowNear: false }));
       const strictlyMatched = new Set(strict.filter((v) => v && !v.conflict).map((v) => v.name));
       const unmatchedOnFile = onFile.filter((row) => !strictlyMatched.has(normalizeStudentName(row.name)));
-      const verdicts = strict.map((v, i) => v || matchStudent(unmatchedOnFile, cleanStudents[i]));
-      const matchedNames = verdicts.filter((v) => v && !v.conflict).map((v) => v.name);
-      if (verdicts.some((v) => v?.conflict) || !matchedNames.length || new Set(matchedNames).size !== matchedNames.length) {
+      const similar = strict.map((v, i) => (v ? null : matchStudent(unmatchedOnFile, cleanStudents[i])));
+      const matchedNames = strict.filter((v) => v && !v.conflict).map((v) => v.name);
+      const similarNames = similar.filter(Boolean).map((v) => v.candidates[0].name);
+      if (strict.some((v) => v?.conflict) || (!matchedNames.length && !similarNames.length)
+          || new Set(matchedNames).size !== matchedNames.length) {
         parentSync.auditClaim({ phone: phoneCanonical, lineUid: uid, result: 'failed', reason: 'prebuilt_parent_claim_mismatch' });
         failedPrebuiltClaim = { parentId: parent.id };
         throw new Z03ClaimError('CLAIM_VERIFICATION_FAILED', CLAIM_MISMATCH_MESSAGE, 409);
       }
-      // 以登記的姓名為準：打錯一字或靠身分證對上的，沿用既有學員，不另建一位。
-      claimStudents = cleanStudents.map((s, i) => {
-        const v = verdicts[i];
-        if (!v) return s;
-        return v.method === 'NEAR' ? { name: v.candidates[0].name, nearOnly: true } : { ...s, name: v.candidates[0].name };
-      });
-      const passed = verdicts.filter((v) => v && !v.conflict);
-      const weakest = ['NEAR', 'ID', 'EXACT'].find((method) => passed.some((v) => v.method === method));
-      attemptResult = {
-        outcome: `PASSED_${weakest}`, path: 'PREBUILT', sourceRecordId: parent.id,
-        matchedName: passed.filter((v) => v.method !== 'EXACT').map((v) => v.candidates[0].name).join('、') || null,
-      };
+      // 以登記的姓名為準：靠身分證對上的沿用既有學員，不另建一位。
+      claimStudents = cleanStudents.map((s, i) => (strict[i] ? { ...s, name: strict[i].candidates[0].name } : s));
+      const byId = strict.filter((v) => v?.method === 'ID').map((v) => v.candidates[0].name);
+      attemptResult = similarNames.length
+        ? { outcome: 'NEW_SIMILAR', path: 'PREBUILT', sourceRecordId: parent.id, matchedName: similarNames.join('、') }
+        : { outcome: byId.length ? 'PASSED_ID' : 'PASSED_EXACT', path: 'PREBUILT', sourceRecordId: parent.id,
+            matchedName: byId.join('、') || null };
       // 館別沿用預建時的，免得家長被移出原場館櫃台的範圍；其餘以家長本人填的為準。
       parent = (await client.query(
         `UPDATE parents
@@ -259,7 +256,7 @@ async function registerNewParentLocalFirst({
       const matches = localStudents.filter((row) => normalizeStudentName(row.name) === normalized);
       if (matches.length > 1) throw new Z03ClaimError('DATA_RECONCILIATION_PENDING', '同名學員命中多筆');
       let student = matches[0] || null;
-      if (student && claimingPrebuilt && !sourceStudent.nearOnly) {
+      if (student && claimingPrebuilt) {
         const beforeFill = student;
         student = (await client.query(
           `UPDATE students
@@ -305,7 +302,7 @@ async function registerNewParentLocalFirst({
       )).rows.map((row) => [row.id, row]));
       outboxPayload = {
         ...payload,
-        students: claimStudents.map(({ nearOnly, ...s }, i) => {
+        students: claimStudents.map((s, i) => {
           const row = merged.get(linkedStudents[i].id);
           return { ...s, name: row.name, birth_date: row.birth_date || '', gender: row.gender || '',
             id_number: row.id_number || '', blood_type: row.blood_type || '' };
@@ -571,6 +568,7 @@ async function claimZ03Identity({
   const client = await pool.connect();
   let attempt = null;
   let attemptResult = { outcome: 'PASSED_EXACT' };
+  let similarOnFile = null;
   let reviewContext = null;
   let failedAttempt = null;
   try {
@@ -621,12 +619,15 @@ async function claimZ03Identity({
     let exactMatches = childRows.filter((row) => normalizeStudentName(row.name_raw) === studentNameNormalized);
     if (exactMatches.length === 0) {
       // 姓名沒有完全相同：身分證相同或姓名只差一字也算對上（claimStudentMatcher），之後以登記的姓名為準。
-      // 註冊新增學員（allowStudentAppend）時不認 NEAR：只差一字的可能是還沒登記的兄弟姊妹。
-      const verdict = matchStudent(
-        childRows.map((row) => ({ name: row.name_raw, id_number: row.id_number_raw, row })),
-        { name: studentName, id_number: submittedIdNumber },
-        { allowNear: !allowStudentAppend }
-      );
+      // 註冊新增學員（allowStudentAppend）時不認 NEAR：只差一字的可能是還沒登記的兄弟姊妹，
+      // 照樣另建，但記 NEW_SIMILAR 給櫃台反查（Owner 2026-10-20）。
+      const candidates = childRows.map((row) => ({ name: row.name_raw, id_number: row.id_number_raw, row }));
+      const submitted = { name: studentName, id_number: submittedIdNumber };
+      const verdict = matchStudent(candidates, submitted, { allowNear: !allowStudentAppend });
+      if (!verdict && allowStudentAppend) {
+        const near = matchStudent(candidates, submitted);
+        if (near?.method === 'NEAR') similarOnFile = String(near.candidates[0].row.name_raw || '').trim();
+      }
       if (verdict && !verdict.conflict) {
         exactMatches = verdict.candidates.map((candidate) => candidate.row);
         studentNameNormalized = verdict.name;
@@ -639,7 +640,7 @@ async function claimZ03Identity({
     }
     if (exactMatches.length === 0) {
       if (allowStudentAppend) {
-        attemptResult = { outcome: 'APPENDED' };
+        attemptResult = similarOnFile ? { outcome: 'NEW_SIMILAR', matchedName: similarOnFile } : { outcome: 'APPENDED' };
         const localCandidates = (await client.query(
           `SELECT * FROM parents
             WHERE line_uid=$1 OR phone=$2 OR regexp_replace(COALESCE(phone,''),'\\D','','g')=$2

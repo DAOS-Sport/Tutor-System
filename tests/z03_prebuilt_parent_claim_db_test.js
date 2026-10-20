@@ -17,6 +17,8 @@
 //   9. 停用學員的姓名不能拿來過關
 //  10. 館別沿用預建時的；送 Ragic 的佇列內容是本地合併後的值，不是家長原始送出的
 //  11. 全新電話照舊：建家長＋學員並綁 LINE
+//  12. 和還沒被對上的登記學員只差一字 → 算核對過關，但另建新學員、記 NEW_SIMILAR 給櫃台反查（Owner 2026-10-20）
+//  13. 同一個 LINE 帳號 30 分鐘錯 5 次冷靜；並發也最多 5 筆進得去核對；冷靜期不擋成功註冊的重送
 //
 // 真實 public schema、合成資料、try/finally 自己刪乾淨。不碰 LINE / Ragic / 正式資料。
 const assert = require('node:assert/strict');
@@ -153,16 +155,16 @@ const studentRows = async (parentId) => (await pool.query(
       assert.equal((await parentRow(f.parentId)).line_uid, uid);
     });
 
-    await t('姓名只差一字：綁定、沿用既有學員（不另建、不補資料）、留 PASSED_NEAR 紀錄', async () => {
+    await t('只填一位登記上沒有、和既有學員只差一字的：綁定、另建新學員、既有的不動、留 NEW_SIMILAR', async () => {
       const p = phone(); const uid = lineUid();
-      const f = await prebuilt(p, venue, [{ name: '林語彤' }]);
-      await register(p, venue, { name: '林家長' }, [{ name: '林語桐', birth_date: '2021-03-15', id_number: 'A299999999' }], uid);
+      const f = await prebuilt(p, venue, [{ name: '陳冠宇' }]);
+      await register(p, venue, { name: '陳家長' }, [{ name: '陳冠廷', birth_date: '2019-05-05', id_number: 'A299999999' }], uid);
       assert.equal((await parentRow(f.parentId)).line_uid, uid);
       const kids = await studentRows(f.parentId);
-      assert.deepEqual(kids.map((k) => [k.name, k.bd, k.id_number]), [['林語彤', null, null]]);
-      assert.equal(JSON.stringify(await queuedStudents(f.parentId)).includes('nearOnly'), false);
+      assert.deepEqual(kids.map((k) => [k.name, k.bd, k.id_number]), [['陳冠宇', null, null], ['陳冠廷', '2019-05-05', 'A299999999']]);
+      assert.deepEqual((await queuedStudents(f.parentId))[0].map((s) => s.name), ['陳冠廷']);
       const att = (await pool.query(`SELECT outcome, matched_name FROM parent_claim_attempts WHERE source_record_id=$1`, [f.parentId])).rows;
-      assert.deepEqual(att, [{ outcome: 'PASSED_NEAR', matched_name: '林語彤' }]);
+      assert.deepEqual(att, [{ outcome: 'NEW_SIMILAR', matched_name: '陳冠宇' }]);
     });
 
     await t('兄弟姊妹只差一字（登記沒身分證）：既有那位照舊、新的一位另建，資料不互相污染', async () => {
@@ -196,12 +198,22 @@ const studentRows = async (parentId) => (await pool.query(
       assert.equal((await parentRow(f.parentId)).line_uid, null);
     });
 
-    await t('一位完全對上、另一位打錯一字：打錯的那位沿用既有學員，不另建', async () => {
+    await t('一位完全對上、另一位和未送出的登記學員只差一字：另建並標 NEW_SIMILAR', async () => {
       const p = phone(); const uid = lineUid();
       const f = await prebuilt(p, venue, [{ name: '林小樂' }, { name: '林語彤' }]);
       await register(p, venue, { name: '林家長' }, [{ name: '林小樂' }, { name: '林語桐' }], uid);
       assert.equal((await parentRow(f.parentId)).line_uid, uid);
-      assert.deepEqual((await studentRows(f.parentId)).map((k) => k.name), ['林小樂', '林語彤']);
+      assert.deepEqual((await studentRows(f.parentId)).map((k) => k.name), ['林小樂', '林語彤', '林語桐']);
+      const att = (await pool.query(`SELECT outcome, matched_name FROM parent_claim_attempts WHERE source_record_id=$1`, [f.parentId])).rows;
+      assert.deepEqual(att, [{ outcome: 'NEW_SIMILAR', matched_name: '林語彤' }]);
+    });
+
+    await t('兄弟姊妹同名那位也有送出：新的一位另建、不標相近', async () => {
+      const p = phone(); const uid = lineUid();
+      const f = await prebuilt(p, venue, [{ name: '鄭冠宇' }]);
+      await register(p, venue, { name: '鄭家長' }, [{ name: '鄭冠宇' }, { name: '鄭冠廷' }], uid);
+      const att = (await pool.query(`SELECT outcome FROM parent_claim_attempts WHERE source_record_id=$1`, [f.parentId])).rows;
+      assert.deepEqual(att, [{ outcome: 'PASSED_EXACT' }]);
     });
 
     await t('冷靜期不擋已成功註冊的重送（idempotent replay）', async () => {
