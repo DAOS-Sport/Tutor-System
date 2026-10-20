@@ -201,6 +201,10 @@ async function registerNewParentLocalFirst({
       if (cleanStudents.length > MAX_PREBUILT_CLAIM_STUDENTS) {
         throw new Z03ClaimError('CLAIM_TOO_MANY_STUDENTS', CLAIM_TOO_MANY_STUDENTS_MESSAGE, 400);
       }
+      if (attempt.priorGuesses + cleanStudents.length > claimAttempts.FAILURE_LIMIT) {
+        attemptResult = { outcome: 'COOLDOWN' };
+        throw _cooldownError();
+      }
       // 2026-10 舊家教移轉：櫃台預建檔的家長（本地有、還沒綁 LINE、Ragic 沒有）。
       // 原本這裡沿用 parent 卻不寫 line_uid → 家長下次用 LINE 登入找不到人，
       // CREATE_Z01_PARENT 也會因 LINE_UID_REQUIRED 卡在 outbox。

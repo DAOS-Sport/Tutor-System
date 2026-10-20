@@ -82,7 +82,12 @@ const studentRows = async (parentId) => (await pool.query(
 
 (async () => {
   try {
+    // 舊版建過的表沒有 guess_count：SCHEMA_SQL 要能補上（不然開機後每筆註冊都會 42703）。
     await pool.query(claimAttempts.SCHEMA_SQL);
+    await pool.query('ALTER TABLE parent_claim_attempts DROP COLUMN guess_count');
+    await pool.query(claimAttempts.SCHEMA_SQL);
+    assert.equal((await pool.query(
+      "SELECT count(*)::int AS n FROM information_schema.columns WHERE table_name='parent_claim_attempts' AND column_name='guess_count'")).rows[0].n, 1);
     const venue = (await pool.query(`SELECT id FROM venues WHERE COALESCE(is_active, TRUE) ORDER BY id LIMIT 1`)).rows[0].id;
 
     await t('電話＋姓名對上：綁 LINE、補學員資料、稽核、回寫候選與佇列一致', async () => {
@@ -220,6 +225,17 @@ const studentRows = async (parentId) => (await pool.query(
       const rows = (await pool.query(
         `SELECT outcome, guess_count FROM parent_claim_attempts WHERE source_record_id=$1 ORDER BY id`, [f.parentId])).rows;
       assert.deepEqual(rows, [{ outcome: 'FAILED', guess_count: 3 }, { outcome: 'FAILED', guess_count: 2 }]);
+    });
+
+    await t('已錯 4 個名字：再送 2 個名字就冷靜（上限是名字數 5）；只送 1 個對的仍可綁', async () => {
+      const p = phone(); const uid = lineUid();
+      const f = await prebuilt(p, venue, [{ name: '孫小邊' }]);
+      await seedFailures(uid, p, claimAttempts.FAILURE_LIMIT - 1);
+      const err = await rejection(() => register(p, venue, { name: '孫家長' }, [{ name: '孫小邊' }, { name: '孫小界' }], uid));
+      assert.equal(err?.code, 'CLAIM_COOLDOWN');
+      assert.equal((await parentRow(f.parentId)).line_uid, null);
+      await register(p, venue, { name: '孫家長' }, [{ name: '孫小邊' }], uid);
+      assert.equal((await parentRow(f.parentId)).line_uid, uid);
     });
 
     await t('一次超過 3 位學員：比對前就擋下、不計冷靜；改填一位就能綁', async () => {
