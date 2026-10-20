@@ -42,6 +42,11 @@ const parent = { session_id: 's2', source: 'parent', by: '王大明', student: '
     assert.ok(lines.some((line) => line.includes('｜舊系統轉移｜')), lines.join(' / '));
   });
 
+  check('薪資匯出備註依計薪寫：不計的寫已結算、混合照計的寫照常計', () => {
+    assert.ok(report.sessionReportNote({ checkin_details: [legacy], payroll_lesson_count: 0 }).split('\n')[0].includes('已於舊系統結算，不計教練堂數'));
+    assert.ok(report.sessionReportNote({ checkin_details: [legacy, parent], payroll_lesson_count: 1 }).split('\n')[0].includes('照常計堂數'));
+  });
+
   check('薪資匯出備註：新系統簽到不加舊系統標記', () => {
     assert.ok(!report.sessionReportNote({ checkin_details: [parent] }).includes('舊系統轉移'));
   });

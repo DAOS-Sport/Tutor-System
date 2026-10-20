@@ -133,10 +133,11 @@ function numberLessons(lessons, capacities = new Map(), inRange = () => true, pe
       row.lesson_period_number = slot ? slot.period : null;
       row.lesson_period_seq = slot ? slot.seq : null;
       row.lesson_no = slot ? lessonNo(row, slot) : null;
+      // 舊系統的課照樣佔堂號與購買上限（新簽到才會接著編第幾堂、超過才擋得住），
+      // 但不計教練堂數；清掉 checkin_at 的理由同下方超過購買堂數，原時間留在 legacy_checkin_at。
+      // 舊系統本來就超用的也只標已結算，不標成新的超額簽到。
+      if (settledInLegacySystem(row)) { markLegacySettled(row); return; }
       if (capacity === null || sequence <= capacity) {
-        // 舊系統的課照樣佔堂號與購買上限（新簽到才會接著編第幾堂、超過才擋得住），
-        // 但不計教練堂數；清掉 checkin_at 的理由同下方超過購買堂數，原時間留在 legacy_checkin_at。
-        if (settledInLegacySystem(row)) { markLegacySettled(row); return; }
         lastCounted = row;
         if (inRange(row)) lastCountedInRange = row;
         return;

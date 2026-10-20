@@ -75,6 +75,19 @@ check('同一堂有新系統的有效簽到就照常計薪；已註銷的新簽�
   assert.strictEqual(reversed.payroll_lesson_count, 0);
 });
 
+check('舊系統本來就超用的：只標已結算，不標成新的超額簽到', () => {
+  const small = { ...identity, total_sessions: 1 };
+  const out = numberLessons([
+    { ...legacy('O1', '2026-09-03T02:00:00Z'), report_identity: small },
+    { ...legacy('O2', '2026-09-10T02:00:00Z'), report_identity: small },
+  ]);
+  for (const row of out) {
+    assert.strictEqual(row.legacy_settled, true);
+    assert.notStrictEqual(row.lesson_over_cap, true);
+    assert.strictEqual((row.lesson_cap_notes || []).length, 0);
+  }
+});
+
 check('沒有購買身分的舊系統簽到也不計', () => {
   const [row] = numberLessons([{ ...legacy('U1', '2026-09-03T02:00:00Z'), report_identity: null }]);
   assert.strictEqual(row.payroll_lesson_count, 0);

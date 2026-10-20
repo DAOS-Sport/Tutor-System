@@ -6,6 +6,7 @@
 //   1. 這位家長名下、ABLEPOS 訂單、尚未起算的課期 → 改成台北今天＋1 年，並寫訂單稽核。
 //   2. 再呼叫一次不會把日期往後推、不多寫稽核。
 //   3. 已有到期日的 ABLEPOS 課期、非 ABLEPOS 的 9999 課期、別位家長的課期都不動。
+//   4. 家人先登入也算加入：買課家長已綁 LINE 但沒登入過時，同家庭成員登入，他的舊課一起起算。
 //
 // 真實 public schema、合成資料、try/finally 自己刪乾淨。
 const assert = require('node:assert/strict');
@@ -23,7 +24,7 @@ require.cache[dbId] = { id: dbId, filename: dbId, loaded: true, exports: { pool 
 const { startLegacyExpiryCountdown } = require('../server/services/legacyExpiryCountdown');
 
 let passed = 0;
-const made = { parents: [], orders: [], periods: [], coaches: [] };
+const made = { parents: [], orders: [], periods: [], coaches: [], families: [] };
 const t = async (name, fn) => { await fn(); passed += 1; console.log('PASS ' + name); };
 const suffix = randomUUID().slice(0, 8);
 const phone = () => `09${String(Math.floor(Math.random() * 1e8)).padStart(8, '0')}`;
@@ -94,9 +95,30 @@ const audits = async (orderId) => (await pool.query(
       assert.equal(await expiry(b.periods[0]), '9999-12-31');
     });
 
+    await t('家人先登入：同家庭成員登入，買課家長的舊課一起起算', async () => {
+      process.env.FAMILY_ACCOUNTS_V1 = 'all';
+      const c = await family(venue, coach, [{ external: `ABLEPOS:${suffix}4`, expires: '9999-12-31' }]);
+      const member = (await pool.query(
+        `INSERT INTO parents (phone, name, primary_venue_id, is_active, line_uid) VALUES ($1,'到期測試家人',$2,TRUE,$3) RETURNING id, line_uid`,
+        [phone(), venue, `Utest${suffix}m`])).rows[0];
+      made.parents.push(member.id);
+      // 買課家長的 LINE 是被同步或後台綁上的，本人沒登入過（家庭 active 成員一定已綁 LINE）。
+      await pool.query(`UPDATE parents SET line_uid=$2 WHERE id=$1`, [c.parent, `Utest${suffix}o`]);
+      const fam = (await pool.query(`INSERT INTO families (owner_parent_id, name) VALUES ($1,'到期測試家庭') RETURNING id`, [c.parent])).rows[0].id;
+      made.families.push(fam);
+      await pool.query(`INSERT INTO family_members (family_id, parent_id, line_uid, role, status) VALUES ($1,$2,$3,'owner','active')`,
+        [fam, c.parent, `Utest${suffix}o`]);
+      await pool.query(`INSERT INTO family_members (family_id, parent_id, line_uid, role, status) VALUES ($1,$2,$3,'member','active')`,
+        [fam, member.id, member.line_uid]);
+      assert.equal(await startLegacyExpiryCountdown(member.id, pool), 1);
+      assert.equal(await expiry(c.periods[0]), today);
+    });
+
     console.log(`\n${passed} 個測試全數通過`);
   } finally {
+    delete process.env.FAMILY_ACCOUNTS_V1;
     try {
+      await pool.query(`DELETE FROM families WHERE id = ANY($1::uuid[])`, [made.families]);
       await pool.query(`DELETE FROM course_period_enrollments WHERE course_period_id = ANY($1::uuid[])`, [made.periods]);
       await pool.query(`DELETE FROM course_periods WHERE id = ANY($1::uuid[])`, [made.periods]);
       await pool.query(`DELETE FROM admin_enrollment_audit_logs WHERE enrollment_id = ANY($1::text[])`, [made.orders]);

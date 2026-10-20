@@ -54,7 +54,9 @@ export function sessionReportNote(session) {
     lines.unshift('［整班核消］依原報名名單，全班核消，教練核薪計 1 堂；以下保留原始簽到操作。');
   }
   if (checkins.some(detail => detail.source === 'legacy_import')) {
-    lines.unshift('［舊系統轉移］本堂為舊家教系統（ABLEPOS）移轉的上課紀錄，已於舊系統結算，不計教練堂數。');
+    lines.unshift(Number(session.payroll_lesson_count) === 0
+      ? '［舊系統轉移］本堂為舊家教系統（ABLEPOS）移轉的上課紀錄，已於舊系統結算，不計教練堂數。'
+      : '［舊系統轉移］本堂含舊家教系統（ABLEPOS）移轉的簽到紀錄；另有新系統簽到，照常計堂數。');
   }
   for (const detail of deductions) {
     if (detail.reason) lines.push(noteLine('櫃檯手動', detail.at, '手動扣課：' + detail.reason + (detail.by ? '（' + detail.by + '）' : '')));
