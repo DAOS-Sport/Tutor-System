@@ -261,6 +261,7 @@ async function _completeLocalZ03Claim(req, res, {
   studentInput = null,
   ownershipVerified = false,
   claimGuesses = 1,
+  extraStudents = [],
 } = {}) {
   const claim = req.body?.claim || {};
   const studentName = String(claim.student_name || claim.name || '').trim();
@@ -285,6 +286,7 @@ async function _completeLocalZ03Claim(req, res, {
       parentName: claim.parent_name || '',
       claimIdNumber: claim.student_id_number || '',
       claimGuesses,
+      extraStudents,
       parentProfile,
       allowStudentAppend,
       ownershipVerified,
@@ -301,6 +303,79 @@ async function _completeLocalZ03Claim(req, res, {
       replayed: result.replayed,
       correlation_id: result.correlation_id,
       parent_state: result.sync_state === 'SYNCED' ? 'AUTHENTICATED' : 'SYNC_IN_PROGRESS',
+      ignored_students: result.ignored_students || [],
+    });
+  } catch (err) {
+    if (err instanceof Z03ClaimError) return _sendClaimError(res, err);
+    throw err;
+  }
+}
+
+function _sendClaimError(res, err) {
+  return res.status(err.http || 409).json({
+    error: err.message,
+    code: err.code,
+    internalCode: err.code,
+    retryable: false,
+    correlationId: err.correlationId || crypto.randomUUID(),
+    loginAllowed: false,
+    syncState: err.code === 'ACCOUNT_RECOVERY_REQUIRED' ? 'ACCOUNT_RECOVERY_REQUIRED' : null,
+    reason: err.reason || null,
+  });
+}
+
+// 這支電話在舊系統（Z03）有家庭：註冊頁填的每一位學員都要處理（最多 3 位，見 pickRegistrationClaimStudent）。
+// 好幾位都沒有同名／身分證對上、只靠一位差一字 → 建新帳號、不碰舊系統那一戶（Owner 2026-10-20）。
+async function _registerWithZ03Family(req, res, { phone, lineUid, parentProfile, newParent, students }) {
+  let pick;
+  try {
+    pick = await pickRegistrationClaimStudent(phone, students);
+  } catch (err) {
+    if (err instanceof Z03ClaimError) return _sendClaimError(res, err);
+    throw err;
+  }
+  if (pick.newAccount && STABILITY_FLAGS.PARENT_LOCAL_FIRST) {
+    return _registerNewParentLocalFirst(req, res, { parent: newParent, students, lineUid, similarOnFile: pick.similarNames });
+  }
+  req.body.claim = { student_name: pick.student.name, phone, parent_name: parentProfile.name };
+  return _completeLocalZ03Claim(req, res, {
+    phone,
+    lineUid,
+    successStatus: 'registered_and_logged_in',
+    allowStudentAppend: true,
+    parentProfile,
+    studentInput: pick.student,
+    extraStudents: pick.extraStudents,
+    ownershipVerified: true,
+    claimGuesses: pick.guesses,
+  });
+}
+
+async function _registerNewParentLocalFirst(req, res, { parent, students, lineUid, similarOnFile = [] }) {
+  try {
+    const localFirst = await registerNewParentLocalFirst({
+      parent,
+      students,
+      lineUid,
+      similarOnFile,
+      idempotencyKey: req.get('Idempotency-Key') || req.body?.idempotency_key || null,
+    });
+    const issued = _issue(localFirst.parent);
+    const localStudents = await loadStudents(localFirst.parent.id);
+    return res.json({
+      status: 'registered_and_logged_in',
+      parent: { ...issued, students: localStudents },
+      token: issued.token,
+      linked_existing: false,
+      sync_state: localFirst.sync_state,
+      sync_pending: true,
+      internalCode: 'RAGIC_UID_WRITE_PENDING',
+      retryable: true,
+      correlationId: localFirst.correlation_id,
+      loginAllowed: true,
+      replayed: localFirst.replayed,
+      ref_bound: false,
+      ref_error: req.body?.ref_token ? 'REF_SYNC_PENDING' : null,
     });
   } catch (err) {
     if (err instanceof Z03ClaimError) {
@@ -311,8 +386,7 @@ async function _completeLocalZ03Claim(req, res, {
         retryable: false,
         correlationId: err.correlationId || crypto.randomUUID(),
         loginAllowed: false,
-        syncState: err.code === 'ACCOUNT_RECOVERY_REQUIRED' ? 'ACCOUNT_RECOVERY_REQUIRED' : null,
-        reason: err.reason || null,
+        syncState: err.code,
       });
     }
     throw err;
@@ -1170,6 +1244,13 @@ async function _registerParentCore(req, res, resolveLineUid) {
       });
     }
 
+    const z03Registration = {
+      phone,
+      lineUid,
+      students: cleanStudents,
+      parentProfile: { ...parentIn, name, phone, email },
+      newParent: { ...parentIn, name, phone, primary_venue_id: venueId, gender, email },
+    };
     const GENERIC_PHONE_CONFLICT = {
       error: '此手機已存在於系統，請改用「以手機綁定」流程',
       code: 'PHONE_EXISTS_USE_BINDING',
@@ -1319,20 +1400,7 @@ async function _registerParentCore(req, res, resolveLineUid) {
         for (const source of sourceMatches) {
           if (!getTrueRagicLineUid(source)) await ragicAdmin.hydrateZ03RecordFromRagicRow(source);
         }
-        req.body.claim = {
-          student_name: cleanStudents[0].name,
-          phone,
-          parent_name: name,
-        };
-        return _completeLocalZ03Claim(req, res, {
-          phone,
-          lineUid,
-          successStatus: 'registered_and_logged_in',
-          allowStudentAppend: true,
-          parentProfile: { ...parentIn, name, phone, email },
-          studentInput: cleanStudents[0],
-          ownershipVerified: true,
-        });
+        return _registerWithZ03Family(req, res, z03Registration);
       }
       // Phone exists but the first submitted child is not an exact match. Hydrate every blank-UID
       // source, then let the claim pick the child that matches a registered one; a new child is
@@ -1360,20 +1428,7 @@ async function _registerParentCore(req, res, resolveLineUid) {
       // reconciliation queue while still keeping one local identity.
       z03Match = { multiple_candidates: true, z03_ids: err.z03Ids || [] };
     }
-    if (z03Match) {
-      const pick = await pickRegistrationClaimStudent(phone, cleanStudents);
-      req.body.claim = { student_name: pick.student.name, phone, parent_name: name };
-      return _completeLocalZ03Claim(req, res, {
-        phone,
-        lineUid,
-        successStatus: 'registered_and_logged_in',
-        allowStudentAppend: true,
-        parentProfile: { ...parentIn, name, phone, email },
-        studentInput: pick.student,
-        ownershipVerified: true,
-        claimGuesses: pick.guesses,
-      });
-    }
+    if (z03Match) return _registerWithZ03Family(req, res, z03Registration);
     let ragicRowByPhone = null;
 
     // Ragic same-UID guard：註冊前的防重複建檔保險。登入仍只看本地 Z01；
@@ -1442,22 +1497,7 @@ async function _registerParentCore(req, res, resolveLineUid) {
       // families. Exact-name students are linked; a missing student is appended
       // under the same canonical parent/source record through the local-first
       // transaction and outbox. No synchronous Ragic failure can block login.
-      const pick = await pickRegistrationClaimStudent(phone, cleanStudents);
-      req.body.claim = {
-        student_name: pick.student.name,
-        phone,
-        parent_name: name,
-      };
-      return _completeLocalZ03Claim(req, res, {
-        phone,
-        lineUid,
-        successStatus: 'registered_and_logged_in',
-        allowStudentAppend: true,
-        parentProfile: { ...parentIn, name, phone, email },
-        studentInput: pick.student,
-        ownershipVerified: true,
-        claimGuesses: pick.guesses,
-      });
+      return _registerWithZ03Family(req, res, z03Registration);
       /* istanbul ignore next -- frozen rollback-only legacy code */
       const existing = z03Match.parent || {};
       if (z03Match.row?.status === 'dismissed') {
@@ -1551,51 +1591,7 @@ async function _registerParentCore(req, res, resolveLineUid) {
       linkedExisting = true;
     } else {
       if (STABILITY_FLAGS.PARENT_LOCAL_FIRST) {
-        try {
-          const localFirst = await registerNewParentLocalFirst({
-            parent: {
-              ...parentIn,
-              name,
-              phone,
-              primary_venue_id: venueId,
-              gender,
-              email,
-            },
-            students: cleanStudents,
-            lineUid,
-            idempotencyKey: req.get('Idempotency-Key') || req.body?.idempotency_key || null,
-          });
-          const issued = _issue(localFirst.parent);
-          const localStudents = await loadStudents(localFirst.parent.id);
-          return res.json({
-            status: 'registered_and_logged_in',
-            parent: { ...issued, students: localStudents },
-            token: issued.token,
-            linked_existing: false,
-            sync_state: localFirst.sync_state,
-            sync_pending: true,
-            internalCode: 'RAGIC_UID_WRITE_PENDING',
-            retryable: true,
-            correlationId: localFirst.correlation_id,
-            loginAllowed: true,
-            replayed: localFirst.replayed,
-            ref_bound: false,
-            ref_error: req.body?.ref_token ? 'REF_SYNC_PENDING' : null,
-          });
-        } catch (err) {
-          if (err instanceof Z03ClaimError) {
-            return res.status(err.http || 409).json({
-              error: err.message,
-              code: err.code,
-              internalCode: err.code,
-              retryable: false,
-              correlationId: err.correlationId || crypto.randomUUID(),
-              loginAllowed: false,
-              syncState: err.code,
-            });
-          }
-          throw err;
-        }
+        return _registerNewParentLocalFirst(req, res, { parent: z03Registration.newParent, students: cleanStudents, lineUid });
       }
 
       // Rollback-only legacy path when PARENT_LOCAL_FIRST=false.

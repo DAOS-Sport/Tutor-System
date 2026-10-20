@@ -31,22 +31,56 @@ function _nearByName(rows, name) {
   return v?.method === 'NEAR' ? v : null;
 }
 
-// 註冊頁可一次填好幾位學員，但 Z03 認領只核對一位（條件與 claimZ03Identity 的家庭查詢相同）：挑能對上登記學員的那位（同名／身分證優先，再來只差一字），
-// 家長不必把已登記的孩子填在第一位。最多看 MAX_PREBUILT_CLAIM_STUDENTS 位，看了幾位就算猜了幾次。
+// 註冊頁一次最多填 MAX_PREBUILT_CLAIM_STUDENTS 位學員，填了幾位就算猜了幾次。挑一位當核對對象（條件與 claimZ03Identity 的家庭查詢相同）：
+// 同名／身分證優先，再來只差一字，家長不必把已登記的孩子填在第一位；其餘交給 claimZ03Identity 在同一筆交易裡連結或新增。
+// 好幾位都沒有同名／身分證對上、只靠其中一位差一字：視為新戶（Owner 2026-10-20），另建帳號、不碰舊系統那一戶。
 async function pickRegistrationClaimStudent(phone, students, db = pool) {
-  const considered = students.slice(0, MAX_PREBUILT_CLAIM_STUDENTS);
+  if (students.length > MAX_PREBUILT_CLAIM_STUDENTS) {
+    throw new Z03ClaimError('CLAIM_TOO_MANY_STUDENTS', CLAIM_TOO_MANY_STUDENTS_MESSAGE, 400);
+  }
   const rows = (await db.query(
     `SELECT s.name_raw AS name, s.id_number_raw AS id_number
        FROM ragic_z03_students s JOIN ragic_z03_records r ON r.id = s.z03_record_id
       WHERE (r.phone_canonical = $1 OR regexp_replace(COALESCE(r.phone,''), '\\D', '', 'g') = $1)
         AND r.status IN ('pending','resolved','manual_review')`, [normalizePhone(phone)]
   )).rows;
-  const strict = considered.findIndex((s) => {
+  const strict = students.findIndex((s) => {
     const v = matchStudent(rows, s, { allowNear: false });
     return Boolean(v && !v.conflict);
   });
-  const near = considered.findIndex((s) => _nearByName(rows, s.name));
-  return { student: considered[strict >= 0 ? strict : Math.max(near, 0)], guesses: considered.length };
+  const near = students.map((s) => _nearByName(rows, s.name));
+  const firstNear = near.findIndex(Boolean);
+  const index = strict >= 0 ? strict : Math.max(firstNear, 0);
+  return {
+    student: students[index],
+    extraStudents: students.filter((_, i) => i !== index),
+    guesses: students.length,
+    newAccount: strict < 0 && firstNear >= 0 && students.length > 1,
+    similarNames: near.filter(Boolean).map((v) => String(v.candidates[0].name || '').trim()),
+  };
+}
+
+// 註冊頁其餘填寫的學員對照登記的孩子（Owner 2026-10-20）：同名／身分證對上的連結；其餘另建，和任一位登記學員只差一字的記 NEW_SIMILAR。
+// 任一位同名但身分證不同、兩位對到同一位登記學員、或同一個新名字填兩次，整筆當核對失敗（同 PREBUILT）。
+function _classifyExtraStudents(childRows, primaryRows, students) {
+  const candidates = childRows.map((row) => ({ name: row.name_raw, id_number: row.id_number_raw, row }));
+  const taken = new Set(primaryRows.map((row) => row.id));
+  const verdicts = students.map((s) => matchStudent(candidates, s, { allowNear: false }));
+  const linked = [];
+  for (const v of verdicts) {
+    if (!v) continue;
+    if (v.conflict) return { invalid: true };
+    const rows = v.candidates.map((c) => c.row);
+    if (rows.some((row) => taken.has(row.id))) return { invalid: true };
+    rows.forEach((row) => taken.add(row.id));
+    linked.push(rows);
+  }
+  const appended = students.filter((_, i) => !verdicts[i]);
+  const newNames = appended.map((s) => normalizeStudentName(s.name));
+  if (new Set(newNames).size !== newNames.length) return { invalid: true };
+  const similarNames = appended.map((s) => _nearByName(candidates, s.name)).filter(Boolean)
+    .map((v) => String(v.candidates[0].name || '').trim());
+  return { linked, appended, similarNames };
 }
 
 const _cooldownError = () => new Z03ClaimError('CLAIM_COOLDOWN', CLAIM_COOLDOWN_MESSAGE, 429);
@@ -135,6 +169,41 @@ async function _insertOrReuseStudent(client, parentId, studentInput) {
   return { student, appended: true };
 }
 
+// 登記在 Z03 的孩子鏡射成本地學員（資料以登記的為準）。
+async function _mirrorSourceStudent(client, parentId, child) {
+  const student = (await client.query(
+    `INSERT INTO students
+       (parent_id,name,birth_date,gender,blood_type,student_code,is_active,last_synced_at)
+     VALUES ($1,$2,$3::date,NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),TRUE,NOW())
+     RETURNING *`,
+    [parentId, child.name_raw, _safeDate(child.birth_date_raw),
+     child.gender_raw || '', child.blood_type_raw || '', child.student_code_raw || '']
+  )).rows[0];
+  await writeStudentAudit(client, student.id, 'create', parentActor(parentId, 'legacy-claim-source-mirror'));
+  return student;
+}
+
+// 其餘學員（_classifyExtraStudents 的結果）寫進本地：對上登記的鏡射並回填 canonical_student_id；
+// 新的另建，回傳要送 Ragic 的那幾位。canAppend 為 false（這筆認領沒有 outbox 可送 Ragic）時新的不建，回傳已忽略的姓名。
+async function _attachExtraStudents(client, parentId, extras, { canAppend }) {
+  for (const rows of extras.linked) {
+    const wanted = normalizeStudentName(rows[0].name_raw);
+    const same = (await client.query(
+      `SELECT * FROM students WHERE parent_id=$1 ORDER BY created_at,id FOR UPDATE`, [parentId]
+    )).rows.filter((row) => normalizeStudentName(row.name) === wanted);
+    if (same.length > 1) throw new Z03ClaimError('DATA_RECONCILIATION_PENDING', 'canonical family 內同名 student 命中多筆', 409);
+    const student = same[0] || await _mirrorSourceStudent(client, parentId, rows[0]);
+    await client.query(`UPDATE ragic_z03_students SET canonical_student_id=$2 WHERE id=ANY($1::bigint[])`,
+      [rows.map((row) => row.id), student.id]);
+  }
+  if (!canAppend) return { toRagic: [], ignored: extras.appended.map((s) => String(s.name || '').trim()) };
+  const toRagic = [];
+  for (const input of extras.appended) {
+    if ((await _insertOrReuseStudent(client, parentId, input)).appended) toRagic.push(input);
+  }
+  return { toRagic, ignored: [] };
+}
+
 function _payloadHash(value) {
   return crypto.createHash('sha256').update(JSON.stringify(value || {})).digest('hex');
 }
@@ -164,6 +233,7 @@ async function registerNewParentLocalFirst({
   students = [],
   lineUid,
   idempotencyKey,
+  similarOnFile = [],
   correlationId = crypto.randomUUID(),
 } = {}) {
   const phoneCanonical = normalizePhone(parentInput?.phone);
@@ -178,7 +248,10 @@ async function registerNewParentLocalFirst({
   const payloadHash = _payloadHash(payload);
   const client = await pool.connect();
   let attempt = null;
-  let attemptResult = { outcome: 'REGISTERED' };
+  // 舊系統有這支電話、但視為新戶另建（Owner 2026-10-20）：和登記的孩子只差一字的記 NEW_SIMILAR 給櫃台反查。
+  let attemptResult = similarOnFile.length
+    ? { outcome: 'NEW_SIMILAR', matchedName: similarOnFile.join('、') }
+    : { outcome: 'REGISTERED' };
   let failedPrebuiltClaim = null;
   try {
     attempt = await claimAttempts.reserveClaimAttempt({
@@ -590,6 +663,7 @@ async function claimZ03Identity({
   sourceRecordId = null,
   claimIdNumber = '',
   claimGuesses = 1,
+  extraStudents = [],
   actor = 'parent-auth',
   correlationId = crypto.randomUUID(),
 } = {}) {
@@ -612,7 +686,9 @@ async function claimZ03Identity({
   let failedAttempt = null;
   try {
     attempt = await claimAttempts.reserveClaimAttempt({
-      lineUid, phone: phoneCanonical, path: 'Z03', submittedName: studentName, submittedIdNumber, guesses: claimGuesses,
+      lineUid, phone: phoneCanonical, path: 'Z03', guesses: claimGuesses,
+      submittedName: [studentName, ...extraStudents.map((s) => s.name)].join('、'),
+      submittedIdNumber: [submittedIdNumber, ...extraStudents.map((s) => s.id_number || '')].join(''),
     }, client);
     if (attempt.priorGuesses + claimGuesses > claimAttempts.FAILURE_LIMIT) {
       attemptResult = { outcome: 'COOLDOWN' };
@@ -676,6 +752,15 @@ async function claimZ03Identity({
           outcome: `PASSED_${verdict.method}`, sourceRecordId: exactMatches[0].z03_record_id, matchedName: claimStudentName,
         };
       }
+    }
+    // 註冊頁其餘填寫的學員：至少要有一位同名／身分證對上（exactMatches）才處理其餘的（Owner 2026-10-20）。
+    const extras = _classifyExtraStudents(childRows, exactMatches, extraStudents);
+    if (extraStudents.length && (extras.invalid || !exactMatches.length)) {
+      failedAttempt = { sourceRecordId: families.length === 1 ? families[0].id : null };
+      throw new Z03ClaimError('CLAIM_VERIFICATION_FAILED', CLAIM_MISMATCH_MESSAGE, 409, { reason: 'IDENTITY_NOT_FOUND' });
+    }
+    if (extras.similarNames.length) {
+      attemptResult = { outcome: 'NEW_SIMILAR', sourceRecordId: exactMatches[0].z03_record_id, matchedName: extras.similarNames.join('、') };
     }
     if (exactMatches.length === 0) {
       // 註冊新增學員也要先證明是這一戶：名字和登記的孩子只差一字才另建（標 NEW_SIMILAR），
@@ -987,6 +1072,7 @@ async function claimZ03Identity({
             WHERE id=ANY($1::bigint[])`,
           [allExactMatchIds, student.id]
         );
+        const extra = await _attachExtraStudents(client, parent.id, extras, { canAppend: false });
         for (const source of matchedFamilies) {
           const claim = (await client.query(
             `INSERT INTO identity_claims
@@ -1024,7 +1110,7 @@ async function claimZ03Identity({
         );
         await client.query('COMMIT');
         return { parent, student, replayed: false, sync_state: 'DATA_RECONCILIATION_PENDING',
-          correlation_id: correlationId, ambiguous_source_resolved: false };
+          correlation_id: correlationId, ambiguous_source_resolved: false, ignored_students: extra.ignored };
       }
     }
 
@@ -1091,8 +1177,10 @@ async function claimZ03Identity({
            WHERE id=$1`,
           [family.id, linkedParent.id, linkedStudent.id, actor, correlationId]
         );
+        const extra = await _attachExtraStudents(client, linkedParent.id, extras, { canAppend: false });
         await client.query('COMMIT');
-        return { parent: linkedParent, student: linkedStudent, replayed: true, sync_state: 'SYNC_PENDING', correlation_id: correlationId };
+        return { parent: linkedParent, student: linkedStudent, replayed: true, sync_state: 'SYNC_PENDING',
+          correlation_id: correlationId, ignored_students: extra.ignored };
       }
     }
 
@@ -1154,18 +1242,11 @@ async function claimZ03Identity({
       reviewContext = { z03Ids: [family.id], sourceRecordId: family.z01_ragic_record_id, code: 'AMBIGUOUS_STUDENT_MATCH' };
       throw new Z03ClaimError('AMBIGUOUS_STUDENT_MATCH', 'canonical family 內同名 student 命中多筆', 409);
     }
-    let student = canonicalStudents[0] || null;
-    if (!student) {
-      student = (await client.query(
-        `INSERT INTO students
-           (parent_id,name,birth_date,gender,blood_type,student_code,is_active,last_synced_at)
-         VALUES ($1,$2,$3::date,NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),TRUE,NOW())
-         RETURNING *`,
-        [parent.id, matchedChild.name_raw, _safeDate(matchedChild.birth_date_raw),
-         matchedChild.gender_raw || '', matchedChild.blood_type_raw || '', matchedChild.student_code_raw || '']
-      )).rows[0];
-      await writeStudentAudit(client, student.id, 'create', parentActor(parent.id, 'legacy-claim-source-mirror'));
-    }
+    const student = canonicalStudents[0] || await _mirrorSourceStudent(client, parent.id, matchedChild);
+    // 新的學員跟這筆 outbox 一起送 Ragic；這個來源之前已排過 outbox 就加不進去，回傳已忽略讓家長登入後再新增。
+    const bindKey = `bind-z01-line-uid:${family.z01_ragic_record_id}`;
+    const bindQueued = (await client.query(`SELECT 1 FROM ragic_sync_outbox WHERE idempotency_key=$1`, [bindKey])).rowCount > 0;
+    const extra = await _attachExtraStudents(client, parent.id, extras, { canAppend: !bindQueued });
 
     const claim = (await client.query(
       `INSERT INTO identity_claims
@@ -1251,9 +1332,9 @@ async function claimZ03Identity({
           payload_reference,state,correlation_id,target_record_id,field_id)
        VALUES ($1,$2,'BIND_Z01_LINE_UID','RAGIC','Z01',$3,$4::jsonb,'pending',$5,$3,'1006846')
       ON CONFLICT (idempotency_key) DO NOTHING`,
-      [`bind-z01-line-uid:${family.z01_ragic_record_id}`, claim.id, family.z01_ragic_record_id,
+      [bindKey, claim.id, family.z01_ragic_record_id,
        JSON.stringify({ canonical_parent_id: parent.id, profile_patch: profile.patch,
-         students_to_append: [], verify_readback: registrationCompletion,
+         students_to_append: extra.toRagic, verify_readback: registrationCompletion,
          skip_uid_write: remoteUid === lineUid }),
        claim.correlation_id]
     );
@@ -1268,7 +1349,8 @@ async function claimZ03Identity({
     );
 
     await client.query('COMMIT');
-    return { parent, student, replayed: false, sync_state: 'SYNC_PENDING', correlation_id: claim.correlation_id };
+    return { parent, student, replayed: false, sync_state: 'SYNC_PENDING', correlation_id: claim.correlation_id,
+      ignored_students: extra.ignored };
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     if (attemptResult.outcome !== 'COOLDOWN') {

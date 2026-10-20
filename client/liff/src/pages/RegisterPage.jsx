@@ -328,6 +328,10 @@ export default function RegisterPage() {
               ? '登入完成，歷史資料整理中，請勿重複註冊'
               : '登入完成，Ragic 資料正在背景同步');
           }
+          // 舊資料待櫃台整理時，新填的學員這次沒有一起建立（後端 ignored_students），請家長登入後再新增。
+          if (r.ignored_students?.length) {
+            toast.warning(`${r.ignored_students.join('、')} 這次沒有一起建立，請登入後再新增學員。`);
+          }
           // MGM：ref_bound=true → 綁定推薦關係（推薦折扣 TRIAL50 已停用，不再寫 pendingCoupon）
           if (refInfo && refInfo.coach && r.ref_bound) {
             toast.success('註冊完成！請選擇組別與場館開始報名');
