@@ -176,9 +176,12 @@ async function _applyAllowlistedLocalProfile(client, parent, parentProfile = {},
 
 async function _insertOrReuseStudent(client, parentId, studentInput) {
   const normalized = normalizeStudentName(studentInput?.name);
+  const submittedId = String(studentInput?.id_number || '').trim().toUpperCase();
+  // 身分證為主（Owner 2026-10-20）：同名但身分證不同是另一個孩子，不沿用那一筆。
   const existing = (await client.query(
     `SELECT * FROM students WHERE parent_id=$1 ORDER BY created_at,id FOR UPDATE`, [parentId]
-  )).rows.filter((row) => normalizeStudentName(row.name) === normalized);
+  )).rows.filter((row) => normalizeStudentName(row.name) === normalized
+    && !(submittedId && row.id_number && String(row.id_number).trim().toUpperCase() !== submittedId));
   if (existing.length > 1) {
     throw new Z03ClaimError('DATA_RECONCILIATION_PENDING', 'canonical family 內同名 student 命中多筆', 409);
   }

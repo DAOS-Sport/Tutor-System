@@ -16,7 +16,7 @@
 //   G14 註冊頁挑核對對象時不看已作廢（dismissed）的 Z03 紀錄（與核對端條件一致）
 //   G15 Ragic 已移除的歷史學員不能拿來靠身分證或差一字過關
 //   G16 註冊頁挑核對對象和核對端一致（完全同名照樣看已移除的學員，填寫順序不影響）
-//   G17–G32 註冊頁填好幾位學員（最多 3 位）：每一位都要處理，不再只核對一位、其餘靜默丟掉
+//   G17–G33 註冊頁填好幾位學員（最多 3 位）：每一位都要處理，不再只核對一位、其餘靜默丟掉
 //     G17 [只差一字的新弟弟, 已登記的孩子]：連結已登記的、另建弟弟並記 NEW_SIMILAR、弟弟送 Ragic
 //     G18 [兩位都已登記]：兩位都連結，不送 Ragic 新增
 //     G19 [已登記的放第一位, 完全新的孩子]：有一位核對通過才新增其他孩子
@@ -30,6 +30,7 @@
 //     G30 同名但身分證不同＋差一字新孩子：綁進這一戶、兩位都另建，不另開一戶
 //     G31 同名孩子有已移除、身分證不同的舊列：不拿舊列擋人
 //     G32 只填一位、同名但身分證不同：不擋，當新孩子掛在這一戶下，不連到登記的那位
+//     G33 本地已有同名但身分證不同的學員：新孩子另建一筆，不沿用那一筆
 // 不碰 Ragic（同步呼叫一律丟錯）；所有資料 finally 自己刪乾淨。
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -555,6 +556,17 @@ async function cleanup() {
       assert.equal(await onFileLinked(f, '鄭丁丁'), 0);
       assert.deepEqual(await appended(f), ['鄭丁丁']);
       assert.deepEqual(await attempts(f), [{ outcome: 'NEW_SIMILAR', matched_name: '鄭丁丁' }]);
+    });
+
+    await t('G33 本地已有同名但身分證不同的學員（例如櫃台預建）：新孩子另建一筆，不沿用那一筆', async () => {
+      const f = await family('j', { students: [{ name: '鄭戊戊', id: 'F523456789' }] });
+      const parentId = (await pool.query(
+        `INSERT INTO parents (phone,name,is_active) VALUES ($1,'閘門測試家長',TRUE) RETURNING id`, [f.phone])).rows[0].id;
+      await pool.query(`INSERT INTO students (parent_id,name,id_number,is_active) VALUES ($1,'鄭戊戊','F523456789',TRUE)`, [parentId]);
+      const r = await register(f, [kid('鄭戊戊', 'G123456782')]);
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.deepEqual(sorted(await localId(f, '鄭戊戊')), ['F523456789', 'G123456782']);
+      assert.deepEqual(await appended(f), ['鄭戊戊']);
     });
 
     console.log(`\n${passed} 個測試全數通過`);
