@@ -16,7 +16,7 @@
 //   G14 註冊頁挑核對對象時不看已作廢（dismissed）的 Z03 紀錄（與核對端條件一致）
 //   G15 Ragic 已移除的歷史學員不能拿來靠身分證或差一字過關
 //   G16 註冊頁挑核對對象和核對端一致（完全同名照樣看已移除的學員，填寫順序不影響）
-//   G17–G25 註冊頁填好幾位學員（最多 3 位）：每一位都要處理，不再只核對一位、其餘靜默丟掉
+//   G17–G31 註冊頁填好幾位學員（最多 3 位）：每一位都要處理，不再只核對一位、其餘靜默丟掉
 //     G17 [只差一字的新弟弟, 已登記的孩子]：連結已登記的、另建弟弟並記 NEW_SIMILAR、弟弟送 Ragic
 //     G18 [兩位都已登記]：兩位都連結，不送 Ragic 新增
 //     G19 [已登記的放第一位, 完全新的孩子]：有一位核對通過才新增其他孩子
@@ -26,6 +26,9 @@
 //     G23 沒有一位同名／身分證對上、只靠一位差一字（Owner 2026-10-20）：建新帳號、不碰舊系統那一戶
 //     G24 舊資料要櫃台整理（多筆來源分不出主檔）：已登記的連結，新孩子回傳「已忽略」讓家長登入後再新增
 //     G25 其餘學員靠身分證比對也只看 Ragic 還在的學員（同 G15）
+//     G26–G29 審查補強：衝突放第一位照樣擋、衝突＋新孩子擋、新戶路徑照名字數冷靜、走路由靠身分證＋新孩子
+//     G30 同名但身分證打錯＋差一字新孩子：擋下，不另開一戶
+//     G31 同名孩子有已移除、身分證不同的舊列：不拿舊列擋人
 // 不碰 Ragic（同步呼叫一律丟錯）；所有資料 finally 自己刪乾淨。
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -488,6 +491,38 @@ async function cleanup() {
       assert.deepEqual(await kids(f), ['王大明', '王小新']);
       assert.deepEqual((await attempts(f)).map((a) => a.outcome), ['PASSED_ID']);
       assert.deepEqual(await appended(f), ['王小新']);
+    });
+
+    await t('G30 同名但身分證打錯＋差一字的新孩子：擋下請家長更正，不另開一戶（免得 Ragic 重複建檔）', async () => {
+      const f = await family('e', { students: [{ name: '鄭丙丙', id: 'F323456789' }] });
+      for (const order of [[kid('鄭丙丙', 'G223456789'), kid('鄭丙乙', 'G123456780')], [kid('鄭丙乙', 'G123456780'), kid('鄭丙丙', 'G223456789')]]) {
+        const r = await register(f, order);
+        assert.equal(r.status, 409, JSON.stringify(r.body));
+        assert.equal(r.body.code, 'CLAIM_VERIFICATION_FAILED');
+      }
+      assert.deepEqual(await kids(f), []);
+      assert.deepEqual(await outbox(f), []);
+    });
+
+    await t('G31 同名孩子在 Ragic 留有已移除、身分證不同的舊列：不拿舊列擋人', async () => {
+      const withRemovedTwin = async (tag) => {
+        const f = await family(tag, { students: [{ name: '林小華', id: 'S123456789' }, { name: '林小華', id: 'S223456789' }] });
+        await pool.query(`UPDATE ragic_z03_students SET present_in_latest_payload = FALSE WHERE z03_record_id=$1 AND id_number_raw='S223456789'`, [f.id]);
+        const raw = shadows.get(f.phone);
+        raw._subtable_1001119 = Object.fromEntries(Object.entries(raw._subtable_1001119).filter(([, row]) => row[1001118] !== 'S223456789'));
+        await pool.query(`UPDATE ragic_z01_shadow SET raw_data=$2::jsonb WHERE ragic_record_id=$1`, [f.sourceId, JSON.stringify(raw)]);
+        return f;
+      };
+      const f = await withRemovedTwin('f');
+      const r = await register(f, [kid('林小華', 'S123456789'), kid('新寶寶', 'S123456780')]);
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.deepEqual(await kids(f), ['新寶寶', '林小華']);
+      assert.equal((await z03(f)).status, 'resolved');
+      const g = await withRemovedTwin('g');
+      const r2 = await register(g, [kid('林小華', 'S123456789'), kid('林小樺', 'S223456780')]);
+      assert.equal(r2.status, 200, JSON.stringify(r2.body));
+      assert.equal((await z03(g)).status, 'resolved', '連進舊家庭，不是另開新帳號');
+      assert.deepEqual((await outbox(g)).map((o) => o.operation), ['BIND_Z01_LINE_UID']);
     });
 
     console.log(`\n${passed} 個測試全數通過`);
