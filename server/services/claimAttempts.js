@@ -5,6 +5,7 @@
 // - 每次認領先登記一筆 PENDING 再數（PENDING＋FAILED 達上限就冷靜）：並發送出的請求彼此看得到，
 //   同時最多只有 FAILURE_LIMIT 筆能進來。用認領本身的連線在交易外寫，不另借連線、不用綁連線的鎖
 //   （cron/lock.js：正式庫可能走 transaction pooler）。
+// - 一次送好幾個名字＝猜好幾次：guess_count 記這筆送了幾個名字，冷靜期按名字數加總。
 // 開機時建表（bootstrap/admin.js）；發布前要先在 dev 庫跑過 SCHEMA_SQL，否則發布會提議刪表。
 const crypto = require('crypto');
 const { pool } = require('../models/db');
@@ -21,6 +22,7 @@ CREATE TABLE IF NOT EXISTS parent_claim_attempts (
   source_record_id     TEXT,
   submitted_name       TEXT NOT NULL,
   submitted_id_present BOOLEAN NOT NULL DEFAULT FALSE,
+  guess_count          INTEGER NOT NULL DEFAULT 1,
   outcome              TEXT NOT NULL,
   matched_name         TEXT,
   created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -36,15 +38,17 @@ const lineUidHash = (lineUid) => crypto.createHash('sha256').update(String(lineU
 // outcome：PENDING（處理中）、FAILED（核對失敗）——這兩種計入冷靜；
 //          PASSED_EXACT／PASSED_ID／PASSED_NEAR、NEW_SIMILAR（另建的學員和登記的只差一字，待櫃台確認）、
 //          REGISTERED（全新家長）、APPENDED、REPLAYED、COOLDOWN、ERROR（系統錯誤）不計。
-async function reserveClaimAttempt({ lineUid, phone, path, submittedName, submittedIdNumber }, db = pool) {
+async function reserveClaimAttempt({ lineUid, phone, path, submittedName, submittedIdNumber, guesses = 1 }, db = pool) {
   const hash = lineUidHash(lineUid);
   const { id } = (await db.query(
-    `INSERT INTO parent_claim_attempts (line_uid_hash, phone_canonical, path, submitted_name, submitted_id_present, outcome)
-     VALUES ($1,$2,$3,$4,$5,'PENDING') RETURNING id`,
-    [hash, String(phone || ''), path, String(submittedName || '').trim(), Boolean(String(submittedIdNumber || '').trim())]
+    `INSERT INTO parent_claim_attempts
+       (line_uid_hash, phone_canonical, path, submitted_name, submitted_id_present, guess_count, outcome)
+     VALUES ($1,$2,$3,$4,$5,$6,'PENDING') RETURNING id`,
+    [hash, String(phone || ''), path, String(submittedName || '').trim(), Boolean(String(submittedIdNumber || '').trim()),
+     Math.max(1, guesses)]
   )).rows[0];
   const others = (await db.query(
-    `SELECT count(*)::int AS n FROM parent_claim_attempts
+    `SELECT COALESCE(sum(guess_count), 0)::int AS n FROM parent_claim_attempts
       WHERE line_uid_hash = $1 AND id <> $2 AND outcome IN ('PENDING','FAILED')
         AND created_at > NOW() - make_interval(mins => $3)`,
     [hash, id, COOLDOWN_MINUTES]

@@ -95,6 +95,7 @@ function registerErrorMessage(err) {
     LOGIN_FAILED:             '系統忙線，請稍後再試。',
     RATE_LIMITED:             '嘗試次數過多，請稍後再試。',
     CLAIM_COOLDOWN:           '學員資料核對錯誤次數過多，請 30 分鐘後再試，或洽櫃台 / LINE 客服協助。',
+    CLAIM_TOO_MANY_STUDENTS:  '一次最多填 3 位學員，其他學員請登入後再新增。',
     CLAIM_VERIFICATION_FAILED:'學員資料與登記資料不符：請確認學員姓名與身分證字號後再試；仍無法通過請洽櫃台 / LINE 客服。',
     // —— 前端自設 ——
     REGISTER_NO_STATUS:       '註冊未完成（伺服器未回傳成功狀態），請稍後再試。',

@@ -18,7 +18,8 @@
 //  10. 館別沿用預建時的；送 Ragic 的佇列內容是本地合併後的值，不是家長原始送出的
 //  11. 全新電話照舊：建家長＋學員並綁 LINE
 //  12. 和還沒被對上的登記學員只差一字 → 算核對過關，但另建新學員、記 NEW_SIMILAR 給櫃台反查（Owner 2026-10-20）
-//  13. 同一個 LINE 帳號 30 分鐘錯 5 次冷靜；並發也最多 5 筆進得去核對；冷靜期不擋成功註冊的重送
+//  13. 同一個 LINE 帳號 30 分鐘錯 5 次冷靜（一次送幾個名字算幾次）；並發也最多 5 筆進得去核對；冷靜期不擋成功註冊的重送
+//  14. 一次最多核對 3 位；只差一字只在只填一位時能當過關依據
 //
 // 真實 public schema、合成資料、try/finally 自己刪乾淨。不碰 LINE / Ragic / 正式資料。
 const assert = require('node:assert/strict');
@@ -206,6 +207,30 @@ const studentRows = async (parentId) => (await pool.query(
       assert.deepEqual((await studentRows(f.parentId)).map((k) => k.name), ['林小樂', '林語彤', '林語桐']);
       const att = (await pool.query(`SELECT outcome, matched_name FROM parent_claim_attempts WHERE source_record_id=$1`, [f.parentId])).rows;
       assert.deepEqual(att, [{ outcome: 'NEW_SIMILAR', matched_name: '林語彤' }]);
+    });
+
+    await t('一次塞好幾個名字、只靠其中一個差一字：不過關，且按名字數計入冷靜', async () => {
+      const p = phone(); const uid = lineUid();
+      const f = await prebuilt(p, venue, [{ name: '林語彤' }]);
+      const guess = (names) => rejection(() => register(p, venue, { name: '猜名者' }, names.map((name) => ({ name })), uid));
+      assert.equal((await guess(['陳小明', '林雨涵', '林語桐']))?.code, 'CLAIM_VERIFICATION_FAILED');
+      assert.equal((await guess(['王大同', '李小華']))?.code, 'CLAIM_VERIFICATION_FAILED');
+      assert.equal((await guess(['林語彤']))?.code, 'CLAIM_COOLDOWN');
+      assert.equal((await parentRow(f.parentId)).line_uid, null);
+      const rows = (await pool.query(
+        `SELECT outcome, guess_count FROM parent_claim_attempts WHERE source_record_id=$1 ORDER BY id`, [f.parentId])).rows;
+      assert.deepEqual(rows, [{ outcome: 'FAILED', guess_count: 3 }, { outcome: 'FAILED', guess_count: 2 }]);
+    });
+
+    await t('一次超過 3 位學員：比對前就擋下、不計冷靜；改填一位就能綁', async () => {
+      const p = phone(); const uid = lineUid();
+      const f = await prebuilt(p, venue, [{ name: '吳小四' }]);
+      const err = await rejection(() => register(p, venue, { name: '吳家長' },
+        [{ name: '吳小四' }, { name: '吳小五' }, { name: '吳小六' }, { name: '吳小七' }], uid));
+      assert.equal(err?.code, 'CLAIM_TOO_MANY_STUDENTS');
+      assert.equal((await parentRow(f.parentId)).line_uid, null);
+      await register(p, venue, { name: '吳家長' }, [{ name: '吳小四' }], uid);
+      assert.equal((await parentRow(f.parentId)).line_uid, uid);
     });
 
     await t('兄弟姊妹同名那位也有送出：新的一位另建、不標相近', async () => {

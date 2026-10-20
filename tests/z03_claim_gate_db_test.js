@@ -202,7 +202,7 @@ async function cleanup() {
       ]);
       assert.ok(codes.every((c) => c === 'CLAIM_VERIFICATION_FAILED' || c === 'CLAIM_COOLDOWN'), JSON.stringify(codes));
       const failed = codes.filter((c) => c === 'CLAIM_VERIFICATION_FAILED').length;
-      assert.ok(failed <= claimAttempts.FAILURE_LIMIT, JSON.stringify(codes));
+      assert.ok(failed >= 1 && failed <= claimAttempts.FAILURE_LIMIT, JSON.stringify(codes));
       const rows = await attempts(f);
       assert.equal(rows.filter((r) => r.outcome === 'FAILED').length, failed);
       assert.equal(rows.filter((r) => r.outcome === 'PENDING').length, 0);

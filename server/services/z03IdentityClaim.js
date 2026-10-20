@@ -21,6 +21,10 @@ const claimAttempts = require('./claimAttempts');
 const CLAIM_MISMATCH_MESSAGE = '學員資料與登記資料不符：請確認學員姓名，或填寫學員身分證字號後再試；仍無法通過請洽櫃台協助。';
 const CLAIM_COOLDOWN_MESSAGE = `學員資料核對錯誤次數過多，請 ${claimAttempts.COOLDOWN_MINUTES} 分鐘後再試，或洽櫃台協助。`;
 
+// 預建家長一次最多核對幾位學員：名字越多等於一次猜越多次（其餘學員登入後再新增）。
+const MAX_PREBUILT_CLAIM_STUDENTS = 3;
+const CLAIM_TOO_MANY_STUDENTS_MESSAGE = `一次最多填 ${MAX_PREBUILT_CLAIM_STUDENTS} 位學員，其他學員請登入後再新增。`;
+
 const _cooldownError = () => new Z03ClaimError('CLAIM_COOLDOWN', CLAIM_COOLDOWN_MESSAGE, 429);
 
 // 認領結果寫回嘗試紀錄：用同一條連線（交易已結束），寫不進去只記 log，不改變回給家長的結果。
@@ -157,6 +161,7 @@ async function registerNewParentLocalFirst({
       lineUid: uid, phone: phoneCanonical, path: 'REGISTER',
       submittedName: cleanStudents.map((s) => s.name).join('、'),
       submittedIdNumber: cleanStudents.map((s) => s.id_number || '').join(''),
+      guesses: cleanStudents.length,
     }, client);
     await client.query('BEGIN');
     await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`canonical-parent:${phoneCanonical}`]);
@@ -193,6 +198,9 @@ async function registerNewParentLocalFirst({
     let claimStudents = cleanStudents;
     if (parent && !parent.line_uid) {
       claimingPrebuilt = true;
+      if (cleanStudents.length > MAX_PREBUILT_CLAIM_STUDENTS) {
+        throw new Z03ClaimError('CLAIM_TOO_MANY_STUDENTS', CLAIM_TOO_MANY_STUDENTS_MESSAGE, 400);
+      }
       // 2026-10 舊家教移轉：櫃台預建檔的家長（本地有、還沒綁 LINE、Ragic 沒有）。
       // 原本這裡沿用 parent 卻不寫 line_uid → 家長下次用 LINE 登入找不到人，
       // CREATE_Z01_PARENT 也會因 LINE_UID_REQUIRED 卡在 outbox。
@@ -211,7 +219,9 @@ async function registerNewParentLocalFirst({
       const similar = strict.map((v, i) => (v ? null : matchStudent(unmatchedOnFile, cleanStudents[i])));
       const matchedNames = strict.filter((v) => v && !v.conflict).map((v) => v.name);
       const similarNames = similar.filter(Boolean).map((v) => v.candidates[0].name);
-      if (strict.some((v) => v?.conflict) || (!matchedNames.length && !similarNames.length)
+      // 只差一字只在只填一位時能當過關依據；填好幾個名字只靠其中一個差一字，等於一次猜好幾次。
+      const nearProves = cleanStudents.length === 1 && similarNames.length === 1;
+      if (strict.some((v) => v?.conflict) || (!matchedNames.length && !nearProves)
           || new Set(matchedNames).size !== matchedNames.length) {
         parentSync.auditClaim({ phone: phoneCanonical, lineUid: uid, result: 'failed', reason: 'prebuilt_parent_claim_mismatch' });
         failedPrebuiltClaim = { parentId: parent.id };
