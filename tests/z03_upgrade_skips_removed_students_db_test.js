@@ -6,6 +6,8 @@
 //   U2 舊列和現存學員共用編號、但姓名是舊的 → 不可把舊姓名寫進 Z01 子表，儲存也不能失敗
 //   U3 舊列的編號在 Ragic 已不存在 → 不可去新增學員，儲存也不能失敗
 //   U4 舊列沒有編號也沒有身分證 → 不能因此擋住升級
+//   U6 學員全是舊列 → 提示缺學員、不寫 Ragic
+//   U5 本地舊列都還在（儲存不刪資料）
 // Ragic 讀寫全部 stub：讀取依網址回假資料、寫入只記錄；任何沒預期到的網址直接丟錯。
 // 姓名、電話、身分證都是虛構值；所有資料 finally 自己刪乾淨。
 process.env.RAGIC_BASE_URL = 'http://127.0.0.1:9';
@@ -215,13 +217,27 @@ async function main() {
     assert.equal(await statusOf(f.id), 'resolved');
   });
 
+  await t('U6 學員全是舊列的家庭：提示缺學員、不寫 Ragic', async () => {
+    const phone = '0990000106';
+    const rows = [
+      { seq: '1', name: '測試庚', code: 'ZZ-U6', id_number: 'Z900000106', birth_date: '2014-07-07', present: false },
+    ];
+    const f = await family('U6', { phone, ragicStudents: [], localStudents: rows });
+    const result = await ragicAdmin.saveZ03RecordDraft(f.id, {
+      record: {}, students: draftStudents(rows, f.ids),
+    }, 'test-admin');
+    assert.deepEqual(result.missing.map((m) => m.key), ['students']);
+    assert.equal(writes.length, 0, '不寫 Ragic');
+    assert.equal(await statusOf(f.id), 'pending');
+  });
+
   await t('U5 儲存不會刪掉舊列（本地資料原樣保留）', async () => {
     const n = (await pool.query(
       `SELECT COUNT(*)::int n FROM ragic_z03_students s JOIN ragic_z03_records r ON r.id = s.z03_record_id
         WHERE r.z01_ragic_record_id LIKE $1 AND s.present_in_latest_payload = FALSE`,
       [`${SOURCE_PREFIX}%`]
     )).rows[0].n;
-    assert.equal(n, 4);
+    assert.equal(n, 5);
   });
 }
 
