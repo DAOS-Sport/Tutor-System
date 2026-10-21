@@ -366,6 +366,8 @@ async function _queryWithLineUidRetry(client, sql, buildParams, lineUidForWrite,
  *  - existingStudents（選用）：批次呼叫端可預先撈好「這位家長目前的學員列」陣列
  *    （至少含 id/id_number/ragic_record_id/name/birth_date）傳入，三層比對改成在記憶體裡
  *    做，省掉每位學員 3 次序列 SELECT；不傳就照舊逐筆查 DB（既有單筆呼叫端行為不變）。
+ *  - ragic_record_id 是 Z02 連結；舊的直接呼叫維持 Z02 契約。parser 標記的 Z01 子表 ID
+ *    不參與本地比對、連結寫入或解除別戶的連結，也不能混入權威 Z02 ID 清單。
  */
 // 同一件事每輪同步都算出同一個 UUID：人工整理單只開一張，之後只更新。
 function _stableUuid(key) {
@@ -382,7 +384,8 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
   for (const s of ordered) {
     if (!s || !s.name) continue;
     const idNum  = s.id_number ? String(s.id_number).toUpperCase().trim() : null;
-    const ragicId = s.ragic_record_id ? String(s.ragic_record_id).trim() : null;
+    const ragicIdNamespace = s.ragic_id_namespace || 'Z02';
+    const ragicId = ragicIdNamespace === 'Z02' && s.ragic_record_id ? String(s.ragic_record_id).trim() : null;
     const familyRows = existingStudents || (await client.query(
       `SELECT id,name,birth_date,id_number,ragic_record_id
          FROM students WHERE parent_id=$1 ORDER BY created_at,id FOR UPDATE`,
@@ -390,7 +393,7 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
     )).rows;
     // 身分證為主：同一戶可以有兩位同名、身分證不同的孩子（familyStudentMatch）。
     // 原本就有的「同名多筆又沒身分證」照舊整位家長轉人工；其餘分不出來的只略過這一位、開人工整理單，不擋整戶登入／刷新。
-    const verdict = matchFamilyStudent(familyRows, s, { taken, batch: ordered, normalizeGender: ragic.normalizeGender });
+    const verdict = matchFamilyStudent(familyRows, s, { taken, batch: ordered, normalizeGender: ragic.normalizeGender, ragicIdNamespace });
     if (verdict.ambiguous === 'SAME_NAME_NO_ID') {
       throw new BindConflictError('DATA_RECONCILIATION_PENDING', '同一家庭內學員姓名精準命中多筆');
     }
@@ -417,16 +420,23 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
            student_code = COALESCE(NULLIF(student_code,''), NULLIF($5,'')),
            updated_at   = NOW()
          WHERE id = $1
+           AND NOT ($6::boolean AND last_synced_at IS NULL)
            AND ((birth_date IS NULL AND $2::date IS NOT NULL)
              OR (COALESCE(gender,'') = '' AND COALESCE($3,'') <> '')
              OR (COALESCE(blood_type,'') = '' AND COALESCE($4,'') <> '')
              OR (COALESCE(student_code,'') = '' AND COALESCE($5,'') <> ''))
          RETURNING *`,
-        [verdict.row.id, s.birth_date || null, ragic.normalizeGender(s.gender), s.blood_type || '', s.student_code || '']
+        [verdict.row.id, s.birth_date || null, ragic.normalizeGender(s.gender), s.blood_type || '', s.student_code || '', preservePending]
       )).rows[0];
       if (filled) {
         await writeStudentAudit(client, filled.id, 'edit', { byUser: 'ragic:parent-sync', byRole: 'system', changes: diffChanges(before, filled), note: 'ragic-student-mirror' });
       }
+      // 後面的來源也要核對這筆才補上的生日／性別，不能只看第一筆的空值。
+      const first = taken.get(verdict.row.id);
+      taken.set(verdict.row.id, { ...first,
+        birth_date: first?.birth_date || s.birth_date,
+        gender: first?.gender || s.gender,
+      });
       continue;
     }
     const matched = verdict.row || null;
@@ -521,6 +531,7 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
     )];
     const presentRagicIds = [...new Set(
       (students || [])
+        .filter((s) => !s?.ragic_id_namespace || s.ragic_id_namespace === 'Z02')
         .map((s) => (s && s.ragic_record_id ? String(s.ragic_record_id).trim() : null))
         .filter(Boolean)
     )];

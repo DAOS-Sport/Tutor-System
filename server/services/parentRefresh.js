@@ -76,7 +76,7 @@ function _studentKey(student) {
   const idNum = String(student?.id_number || '').trim().toUpperCase();
   if (idNum) return `id:${idNum}`;
   const rid = String(student?.ragic_record_id || '').trim();
-  if (rid) return `rid:${rid}`;
+  if (rid) return `rid:${student.ragic_id_namespace || 'Z02'}:${rid}`;
   return `name:${String(student?.name || '').trim()}|birth:${String(student?.birth_date || '').slice(0, 10)}`;
 }
 

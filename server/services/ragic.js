@@ -879,6 +879,8 @@ function parseZ01Students(record) {
       blood_type: pick(row, ['1001880', '血型']),
       student_code: pick(row, ['1001132', '學員編號']),
       registered_phone: pick(row, ['1004090', '登記電話']),
+      // 保留子表 ID 給來源列操作，但不能拿來比對／寫入本地的 Z02 連結。
+      ragic_id_namespace: 'Z01_SUBTABLE',
       ragic_record_id: pick(row, ['_ragicId', 'ragicId']),
     };
   }).filter((s) => s.name);
@@ -914,6 +916,7 @@ function mapZ02Student(record) {
     id_number: get(FIELD.Z02.ID_NUMBER, '身分證字號').toUpperCase(),
     blood_type: get(FIELD.Z02.BLOOD_TYPE, '血型'),
     student_code: get(FIELD.Z02.STUDENT_CODE, '學員編號'),
+    ragic_id_namespace: 'Z02',
     ragic_record_id: record._ragicId || record.ragicId || null,
   };
 }

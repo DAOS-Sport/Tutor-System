@@ -1,6 +1,6 @@
 'use strict';
 // 同一位家長名下，一筆 Ragic 學員資料對到本地哪一位（Owner 2026-10-20：中文同名者很多，學員以身分證為主）。
-//   1. Ragic 紀錄編號相同 → 就是那一位（Ragic 端改名照改）
+//   1. 來源明確是 Z02，且 Ragic 紀錄編號相同 → 就是那一位（Ragic 端改名照改）；Z01 子表 ID 不參與
 //   2. 身分證相同且同名 → 那一位。同一輪已被對走的那位又被同名同號命中：生日、性別也一樣才是同一個孩子重複出現
 //      （回 duplicate，只補空白欄位）；不一樣多半是兄弟姊妹的身分證打錯 → 分不出來；
 //      身分證相同但不同名（兄弟姊妹撞號、填反）→ 分不出來，不憑身分證改名
@@ -14,20 +14,34 @@ const { normalizeStudentName } = require('./identityNormalizer');
 
 const normalizeId = (value) => String(value || '').trim().toUpperCase();
 
-function matchFamilyStudent(rows, incoming, { taken = new Map(), batch = [incoming], normalizeGender = (v) => v } = {}) {
+function matchFamilyStudent(rows, incoming, { taken = new Map(), batch = [incoming], normalizeGender = (v) => v,
+  ragicIdNamespace = incoming?.ragic_id_namespace } = {}) {
   const id = normalizeId(incoming?.id_number);
   const name = normalizeStudentName(incoming?.name);
   const sameName = (row) => normalizeStudentName(row.name) === name;
+  const repeated = (row, reason) => {
+    if (!taken.has(row.id)) return { row };
+    const first = taken.get(row.id);
+    const differs = (key, norm = (v) => v) => {
+      const a = String(norm(first?.[key]) || '').trim();
+      const b = String(norm(incoming?.[key]) || '').trim();
+      return Boolean(a && b && a !== b);
+    };
+    return differs('name', normalizeStudentName) || differs('id_number', normalizeId)
+      || differs('birth_date') || differs('gender', normalizeGender)
+      ? { ambiguous: reason } : { row, duplicate: true };
+  };
   const ragicId = String(incoming?.ragic_record_id || '').trim();
-  if (ragicId) {
+  if (ragicIdNamespace === 'Z02' && ragicId) {
     const byRagicId = rows.find((row) => String(row.ragic_record_id || '').trim() === ragicId);
     const rowId = normalizeId(byRagicId?.id_number);
-    if (byRagicId) return id && rowId && rowId !== id && taken.has(byRagicId.id) ? { ambiguous: 'RAGIC_ID_TAKEN' } : { row: byRagicId };
+    if (byRagicId) return id && rowId && rowId !== id && taken.has(byRagicId.id)
+      ? { ambiguous: 'RAGIC_ID_TAKEN' } : repeated(byRagicId, 'RAGIC_ID_TAKEN');
   }
   if (!id) {
     const named = rows.filter(sameName);
     if (named.length > 1) return { ambiguous: 'SAME_NAME_NO_ID' };
-    return named.length ? { row: named[0] } : {};
+    return named.length ? repeated(named[0], 'SAME_NAME_CONFLICTING_DATA') : {};
   }
   const free = rows.filter((row) => !taken.has(row.id));
   const byIdNamed = rows.filter((row) => normalizeId(row.id_number) === id && sameName(row));
@@ -35,14 +49,7 @@ function matchFamilyStudent(rows, incoming, { taken = new Map(), batch = [incomi
   if (byIdNamedFree.length > 1) return { ambiguous: 'SAME_ID_SAME_NAME' };
   if (byIdNamedFree.length === 1) return { row: byIdNamedFree[0] };
   if (byIdNamed.length) {
-    const first = taken.get(byIdNamed[0].id);
-    const differs = (key, norm = (v) => v) => {
-      const a = String(norm(first?.[key]) || '').trim();
-      const b = String(norm(incoming?.[key]) || '').trim();
-      return Boolean(a && b && a !== b);
-    };
-    return differs('birth_date') || differs('gender', normalizeGender)
-      ? { ambiguous: 'SAME_ID_CONFLICTING_DATA' } : { row: byIdNamed[0], duplicate: true };
+    return repeated(byIdNamed[0], 'SAME_ID_CONFLICTING_DATA');
   }
   if (free.some((row) => normalizeId(row.id_number) === id)) return { ambiguous: 'ID_NAME_MISMATCH' };
   const named = free.filter(sameName);

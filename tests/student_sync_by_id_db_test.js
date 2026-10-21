@@ -21,6 +21,10 @@
 //   S17 同名兄弟姊妹、Ragic 把第二位的身分證打成第一位的 → 第一位不被蓋掉，開整理單
 //   S18 同一個孩子出現兩次、第二筆才有生日血型 → 補上空白欄位，不覆蓋
 //   S19 同一個孩子兩筆只是性別寫法不同 → 不算衝突
+// PR #56 Codex 審查回歸：
+//   S20/S25 Z01 子表 ID 不得碰撞 Z02 連結（登入、local-first、嚴格刷新、同戶／別戶）
+//   S21 重複來源保留待同步本地清空；S22/S23 無身分證列核對 taken、相容時只補空白
+//   S24 Z02 改名仍保持本地 id；S26 第二筆補上的生日也要用來核對第三筆（含快取列）
 // 不碰 Ragic（寫入一律用替身）；所有資料 finally 自己刪乾淨。
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -353,6 +357,138 @@ async function syncFormal(raw) {
         { name: '王小明', id_number: 'A123456789', gender: '生理男' },
       ]));
       assert.deepEqual(await tasks(p.id), []);
+    });
+
+    await t('S20 Z01 登入與 local-first：子表 ID 碰撞不錯認同戶學員，也不解除別戶的 Z02 連結', async () => {
+      let scenario = 0;
+      for (const sync of [parentSync.syncFromRagicRecord, parentSync.linkFromRagicRecordLocalFirst]) {
+        for (const sameFamily of [true, false]) {
+          const p = await makeParent(String(30 + scenario), { lineUid: uid() });
+          const other = sameFamily ? p : await makeParent(String(40 + scenario));
+          const rid = `R20collision${scenario}${suffix}`;
+          const targetRid = `R20target${scenario}${suffix}`;
+          const target = await addStudent(p.id, '目標學員', 'A123456789', targetRid, { synced: true });
+          const sibling = await addStudent(other.id, '另一位學員', 'B123456789', rid, { synced: true });
+          const sourceId = `ZZSYNC20${scenario}${suffix}`; made.sources.push(sourceId);
+          const raw = z01Row(sourceId, p.phone, p.line_uid, [{ name: '目標學員', id: 'A123456789' }]);
+          raw._subtable_1001119['row-1']._ragicId = rid;
+          await sync(raw, p.line_uid);
+          const rows = (await pool.query(
+            `SELECT id,name,id_number,ragic_record_id FROM students WHERE id=ANY($1::uuid[]) ORDER BY name`, [[target, sibling]])).rows;
+          assert.deepEqual(rows, [
+            { id: sibling, name: '另一位學員', id_number: 'B123456789', ragic_record_id: rid },
+            { id: target, name: '目標學員', id_number: 'A123456789', ragic_record_id: targetRid },
+          ].sort((a, b) => a.name < b.name ? -1 : 1));
+          scenario++;
+        }
+      }
+    });
+
+    await t('S21 重複來源遵守 preservePending：本地清空維持待同步；已同步與嚴格刷新仍補空白', async () => {
+      for (const [tag, synced, preservePending] of [['50', false, true], ['51', true, true], ['52', false, false]]) {
+        const p = await makeParent(tag);
+        const id = await addStudent(p.id, '待同步學員', 'A123456789', null, { synced });
+        await pool.query(`UPDATE students SET birth_date=NULL,gender='',blood_type='',student_code='' WHERE id=$1`, [id]);
+        await inTx((c) => parentSync.upsertLocalStudents(c, p.id, [
+          { name: '待同步學員', id_number: 'A123456789' },
+          { name: '待同步學員', id_number: 'A123456789', birth_date: '2012-01-01', gender: '男', blood_type: 'O', student_code: 'REMOTE' },
+        ], { preservePending }));
+        const row = (await pool.query(
+          `SELECT to_char(birth_date,'YYYY-MM-DD') AS birth_date,gender,blood_type,student_code,last_synced_at IS NULL AS pending
+             FROM students WHERE id=$1`, [id])).rows[0];
+        assert.deepEqual(row, !synced && preservePending
+          ? { birth_date: null, gender: '', blood_type: '', student_code: '', pending: true }
+          : { birth_date: '2012-01-01', gender: ragic.normalizeGender('男'), blood_type: 'O', student_code: 'REMOTE', pending: false });
+        if (!synced && preservePending) {
+          assert.equal((await pool.query(`SELECT id FROM student_audit_logs WHERE student_id=$1`, [id])).rowCount, 0);
+        }
+      }
+    });
+
+    await t('S22 同名無身分證列不能覆蓋已配對學員：生日／性別衝突、來源順序與相同 Z02 ID 都受保護', async () => {
+      let scenario = 0;
+      for (const conflict of [{ birth_date: '2015-06-06' }, { gender: '女' }]) {
+        for (const reverse of [false, true]) {
+          for (const repeatRagicId of [false, true]) {
+            const p = await makeParent(String(60 + scenario));
+            const rid = `R22${scenario}${suffix}`;
+            const id = await addStudent(p.id, '同名學員', 'A123456789', rid, { synced: true });
+            const first = { name: '同名學員', id_number: 'A123456789', ragic_record_id: rid,
+              birth_date: '2012-01-01', gender: '男', blood_type: 'A', student_code: 'ORIGINAL' };
+            const noId = { name: '同名學員', ...conflict, blood_type: 'B', student_code: 'WRONG',
+              ...(repeatRagicId ? { ragic_record_id: rid } : {}) };
+            await inTx((c) => parentSync.upsertLocalStudents(c, p.id,
+              reverse ? [noId, first] : [first, noId], { preservePending: false }));
+            const row = (await pool.query(
+              `SELECT id_number,ragic_record_id,to_char(birth_date,'YYYY-MM-DD') AS birth_date,gender,blood_type,student_code
+                 FROM students WHERE id=$1`, [id])).rows[0];
+            assert.deepEqual(row, { id_number: 'A123456789', ragic_record_id: rid, birth_date: '2012-01-01',
+              gender: ragic.normalizeGender('男'), blood_type: 'A', student_code: 'ORIGINAL' });
+            assert.equal((await names(p.id)).length, 1);
+            assert.deepEqual(await tasks(p.id), ['STUDENT_MATCH_AMBIGUOUS']);
+            scenario++;
+          }
+        }
+      }
+    });
+
+    await t('S23 相容的同名無身分證列只補空白，不覆蓋欄位或 Z02 連結', async () => {
+      const p = await makeParent('70');
+      const rid = `R23${suffix}`;
+      const id = await addStudent(p.id, '同名學員', 'A123456789', rid, { synced: true });
+      await inTx((c) => parentSync.upsertLocalStudents(c, p.id, [
+        { name: '同名學員', id_number: 'A123456789', ragic_record_id: rid, gender: '男', student_code: 'ORIGINAL' },
+        { name: '同名學員', ragic_record_id: rid, gender: '生理男', birth_date: '2012-01-01', blood_type: 'O', student_code: 'WRONG' },
+      ], { preservePending: false }));
+      const row = (await pool.query(
+        `SELECT ragic_record_id,to_char(birth_date,'YYYY-MM-DD') AS birth_date,gender,blood_type,student_code FROM students WHERE id=$1`, [id])).rows[0];
+      assert.deepEqual(row, { ragic_record_id: rid, birth_date: '2012-01-01', gender: ragic.normalizeGender('男'), blood_type: 'O', student_code: 'ORIGINAL' });
+      assert.deepEqual(await tasks(p.id), []);
+    });
+
+    await t('S24 Z02 主檔仍可透過紀錄編號改名，保留本地 student.id', async () => {
+      const p = await makeParent('71');
+      const rid = `R24${suffix}`;
+      const id = await addStudent(p.id, '原學員姓名', 'A123456789', rid, { synced: true });
+      const incoming = ragic.mapZ02Student({ _ragicId: rid, 學員姓名: '更正學員姓名', 身分證字號: 'A123456789' });
+      await inTx((c) => parentSync.upsertLocalStudents(c, p.id, [incoming], { preservePending: false }));
+      assert.deepEqual(await names(p.id), [{ id, name: '更正學員姓名', id_number: 'A123456789' }]);
+    });
+
+    await t('S25 嚴格刷新合併 Z01／Z02：相同數字的跨來源 ID 不會吞掉另一位無身分證學員', async () => {
+      const { refreshParentMirrorFromRagic } = require('../server/services/parentRefresh');
+      const p = await makeParent('72', { lineUid: uid() });
+      const rid = `R25${suffix}`;
+      await addStudent(p.id, '主檔學員', null, rid, { synced: true });
+      const sourceId = `ZZSYNC25${suffix}`; made.sources.push(sourceId);
+      const raw = z01Row(sourceId, p.phone, p.line_uid, [{ name: '子表學員' }]);
+      raw._subtable_1001119['row-1']._ragicId = rid;
+      const saved = { getParentByLineUid: ragic.getParentByLineUid, getStudentsByParentPhone: ragic.getStudentsByParentPhone };
+      try {
+        ragic.getParentByLineUid = async () => raw;
+        ragic.getStudentsByParentPhone = async () => [ragic.mapZ02Student({ _ragicId: rid, 學員姓名: '主檔學員' })];
+        await refreshParentMirrorFromRagic({ lineUid: p.line_uid, phone: p.phone, minStudents: 2,
+          requireComplete: false, markZ03Resolved: false });
+        assert.deepEqual((await kids(p.id)).map((k) => [k.name, k.ragic_record_id]).sort(),
+          [['主檔學員', rid], ['子表學員', null]].sort());
+      } finally { Object.assign(ragic, saved); }
+    });
+
+    await t('S26 第三筆來源也要核對第二筆補上的生日，不得把另一位同名學員的欄位補進來', async () => {
+      for (const [tag, cached] of [['73', false], ['74', true]]) {
+        const p = await makeParent(tag);
+        const id = await addStudent(p.id, '同名學員', 'A123456789', null, { synced: true });
+        const existingStudents = cached ? (await pool.query(`SELECT * FROM students WHERE parent_id=$1`, [p.id])).rows : null;
+        await inTx((c) => parentSync.upsertLocalStudents(c, p.id, [
+          { name: '同名學員', id_number: 'A123456789', gender: '男', student_code: 'ORIGINAL' },
+          { name: '同名學員', birth_date: '2012-01-01', gender: '男' },
+          { name: '同名學員', birth_date: '2015-06-06', gender: '男', blood_type: 'B', student_code: 'WRONG' },
+        ], { preservePending: false, existingStudents }));
+        const row = (await pool.query(
+          `SELECT to_char(birth_date,'YYYY-MM-DD') AS birth_date,blood_type,student_code FROM students WHERE id=$1`, [id])).rows[0];
+        assert.deepEqual(row, { birth_date: '2012-01-01', blood_type: null, student_code: 'ORIGINAL' });
+        assert.deepEqual(await tasks(p.id), ['STUDENT_MATCH_AMBIGUOUS']);
+      }
     });
 
     console.log(`\n${passed} 個測試全數通過`);
