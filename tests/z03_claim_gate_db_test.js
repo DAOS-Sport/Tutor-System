@@ -558,13 +558,13 @@ async function cleanup() {
     });
 
     await t('G25 其餘學員靠身分證比對也只看 Ragic 還在的學員：對到已移除的那位就當新孩子', async () => {
-      const f = await family('Y', { students: [{ name: '簡現在', id: 'M123456789' }, { name: '簡舊生', id: 'M223456789' }] });
+      const f = await family('Y', { students: [{ name: '簡現在', id: 'M123456780' }, { name: '簡舊生', id: 'M223456789' }] });
       await pool.query(`UPDATE ragic_z03_students SET present_in_latest_payload = FALSE WHERE z03_record_id=$1 AND name_raw='簡舊生'`, [f.id]);
       // Ragic 最新資料裡也已經沒有簡舊生（路由會先用 shadow 重建學員列）。
       const raw = shadows.get(f.phone);
       raw._subtable_1001119 = Object.fromEntries(Object.entries(raw._subtable_1001119).filter(([, row]) => row[1001115] !== '簡舊生'));
       await pool.query(`UPDATE ragic_z01_shadow SET raw_data=$2::jsonb WHERE ragic_record_id=$1`, [f.sourceId, JSON.stringify(raw)]);
-      const r = await register(f, [kid('簡現在', 'M123456789'), kid('簡改名', 'M223456789')]);
+      const r = await register(f, [kid('簡現在', 'M123456780'), kid('簡改名', 'M223456789')]);
       assert.equal(r.status, 200, JSON.stringify(r.body));
       assert.deepEqual(await kids(f), ['簡改名', '簡現在']);
       assert.deepEqual(await appended(f), ['簡改名']);
@@ -597,7 +597,7 @@ async function cleanup() {
       const f = await family('b', { students: [{ name: '林語彤', id: 'Q200000001' }] });
       const bad = uid();
       for (let i = 0; i < 4; i += 1) assert.equal((await claim(f, `錯名${i}號`, {}, bad)).status, 409);
-      const r = await register(f, [kid('林語桐', 'K123456780'), kid('周新新', 'K223456780')], bad);
+      const r = await register(f, [kid('林語桐', 'K123456780'), kid('周新新', 'K223456781')], bad);
       assert.equal(r.status, 429, JSON.stringify(r.body));
       assert.equal(r.body.code, 'CLAIM_COOLDOWN');
       assert.deepEqual(await kids(f), []);
