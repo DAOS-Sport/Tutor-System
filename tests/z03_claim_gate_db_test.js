@@ -37,7 +37,7 @@
 //     G34 Ragic 已綁這個 LINE（completeTrueUidRegistration）、子表有同名但身分證不同：新孩子照樣送 Ragic
 //     G35 舊系統預建家長同時是 Z03 家庭：多填的舊系統孩子對上沒身分證的預建學員 → 補上身分證／生日、照樣送 Ragic、不另建
 //     G36 多填的孩子對上的本地學員已有 Ragic 編號（已在 Ragic）：不重複送 Ragic
-//     G37 同一次註冊兩位學員身分證相同：入口擋下（400），不建學員、不算猜測
+//     G37 同一次註冊兩位新孩子身分證相同：入口擋下（400），不建學員、不算猜測
 // 不碰 Ragic（同步呼叫一律丟錯）；所有資料 finally 自己刪乾淨。
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -719,9 +719,9 @@ async function cleanup() {
       assert.deepEqual(await appended(f), []);
     });
 
-    await t('G37 同一次註冊兩位學員身分證相同：入口擋下、不建學員、不算猜測', async () => {
+    await t('G37 同一次註冊兩位新孩子身分證相同：入口擋下、不建學員、不算猜測', async () => {
       const f = await family('n', { students: [{ name: '鄭子子', id: 'F193456781' }] });
-      const r = await register(f, [kid('鄭子子', 'F193456781'), kid('鄭丑丑', 'F193456781')]);
+      const r = await register(f, [kid('鄭子子', 'F193456781'), kid('鄭丑丑', 'G193456782'), kid('鄭寅寅', 'G193456782')]);
       assert.equal(r.status, 400, JSON.stringify(r.body));
       assert.equal(r.body.code, 'STUDENT_ID_DUPLICATED');
       assert.deepEqual(await kids(f), []);
