@@ -701,27 +701,27 @@ async function cleanup() {
         WHERE p.phone=$1 AND s.name=$2`, [f.phone, name])).rows;
 
     await t('G35 舊系統預建家長同時是 Z03 家庭：多填的舊系統孩子補上身分證、照樣送 Ragic、不另建', async () => {
-      const f = await family('l', { students: [{ name: '鄭庚庚', id: 'F723456781' }] });
+      const f = await family('l', { students: [{ name: '鄭庚庚', id: 'F173456781' }] });
       await prebuilt(f, [{ name: '鄭庚庚' }, { name: '鄭辛辛' }]);
-      const r = await register(f, [kid('鄭庚庚', 'F723456781'), kid('鄭辛辛', 'G723456782')]);
+      const r = await register(f, [kid('鄭庚庚', 'F173456781'), kid('鄭辛辛', 'G173456782')]);
       assert.equal(r.status, 200, JSON.stringify(r.body));
-      assert.deepEqual(await localRows(f, '鄭辛辛'), [{ id_number: 'G723456782', birth_date: '2019-01-01', gender: '生理男' }]);
+      assert.deepEqual(await localRows(f, '鄭辛辛'), [{ id_number: 'G173456782', birth_date: '2019-01-01', gender: '生理男' }]);
       assert.deepEqual(await appended(f), ['鄭辛辛']);
       assert.deepEqual(r.body.ignored_students || [], []);
     });
 
     await t('G36 多填的孩子對上的本地學員已在 Ragic（有 Ragic 編號）：不重複送 Ragic', async () => {
-      const f = await family('m', { students: [{ name: '鄭壬壬', id: 'F823456781' }] });
+      const f = await family('m', { students: [{ name: '鄭壬壬', id: 'F183456781' }] });
       await prebuilt(f, [{ name: '鄭壬壬' }, { name: '鄭癸癸', ragicId: `ZZR${suffix}` }]);
-      const r = await register(f, [kid('鄭壬壬', 'F823456781'), kid('鄭癸癸', 'G823456782')]);
+      const r = await register(f, [kid('鄭壬壬', 'F183456781'), kid('鄭癸癸', 'G183456782')]);
       assert.equal(r.status, 200, JSON.stringify(r.body));
       assert.equal((await localRows(f, '鄭癸癸')).length, 1);
       assert.deepEqual(await appended(f), []);
     });
 
     await t('G37 同一次註冊兩位學員身分證相同：入口擋下、不建學員、不算猜測', async () => {
-      const f = await family('n', { students: [{ name: '鄭子子', id: 'F923456781' }] });
-      const r = await register(f, [kid('鄭子子', 'F923456781'), kid('鄭丑丑', 'F923456781')]);
+      const f = await family('n', { students: [{ name: '鄭子子', id: 'F193456781' }] });
+      const r = await register(f, [kid('鄭子子', 'F193456781'), kid('鄭丑丑', 'F193456781')]);
       assert.equal(r.status, 400, JSON.stringify(r.body));
       assert.equal(r.body.code, 'STUDENT_ID_DUPLICATED');
       assert.deepEqual(await kids(f), []);
