@@ -18,6 +18,7 @@
 //   G16 註冊頁挑核對對象和核對端一致（完全同名照樣看已移除的學員，填寫順序不影響）
 //   G17 Preview 的 Demo 新用戶：用預建家長電話＋學員名註冊 → 綁上示範 LINE、不查 Ragic
 //   G18／G19 不是 Preview 安全模式、或正式環境：Demo 新用戶照舊停用
+//   G20 Preview 的 Demo 新用戶整體上限：30 分鐘最多 30 次（G17 已用掉 1 次）
 // 不碰 Ragic（同步呼叫一律丟錯）；所有資料 finally 自己刪乾淨。
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -378,7 +379,28 @@ async function cleanup() {
         assert.equal(r.status, 410, JSON.stringify(r.body));
         assert.equal((await pool.query(`SELECT line_uid FROM parents WHERE id=$1`, [f.id])).rows[0].line_uid, null);
       } finally {
-        process.env.NODE_ENV = savedEnv;
+        if (savedEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = savedEnv;
+        delete process.env.ALLOW_DEMO_LOGIN;
+        delete process.env.PREVIEW_SAFE_MODE;
+      }
+    });
+
+    await t('G20 Preview 的 Demo 新用戶整體有次數上限：30 分鐘最多 30 次，之後回 429', async () => {
+      process.env.ALLOW_DEMO_LOGIN = '1';
+      process.env.PREVIEW_SAFE_MODE = '1';
+      try {
+        const statuses = [];
+        for (let i = 0; i < 31; i += 1) {
+          const res = await fetch(`http://127.0.0.1:${server.address().port}/api/auth/parent-register-line`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ demo: true, parent: {}, students: [] }),
+          });
+          statuses.push(res.status);
+        }
+        assert.ok(statuses.includes(400), JSON.stringify(statuses));
+        assert.equal(statuses[statuses.length - 1], 429, JSON.stringify(statuses));
+        assert.equal(statuses.filter((st) => st !== 429).length, 30 - 1, JSON.stringify(statuses));
+      } finally {
         delete process.env.ALLOW_DEMO_LOGIN;
         delete process.env.PREVIEW_SAFE_MODE;
       }

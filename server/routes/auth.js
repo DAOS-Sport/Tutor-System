@@ -75,6 +75,19 @@ function _previewDemoRegistrationAllowed() {
     && process.env.ALLOW_DEMO_LOGIN === '1'
     && process.env.PREVIEW_SAFE_MODE === '1';
 }
+// Preview 網址是公開的、資料庫也有真實家庭；每次示範註冊都換新的示範 UID，按 UID 計的冷靜期管不到，
+// 所以整體再設上限：30 分鐘內最多 30 次。
+const PREVIEW_DEMO_REGISTER_LIMIT = 30;
+const PREVIEW_DEMO_REGISTER_WINDOW_MS = 30 * 60 * 1000;
+const _previewDemoRegisterTimes = [];
+function _takePreviewDemoRegisterSlot(now = Date.now()) {
+  while (_previewDemoRegisterTimes.length && now - _previewDemoRegisterTimes[0] > PREVIEW_DEMO_REGISTER_WINDOW_MS) {
+    _previewDemoRegisterTimes.shift();
+  }
+  if (_previewDemoRegisterTimes.length >= PREVIEW_DEMO_REGISTER_LIMIT) return false;
+  _previewDemoRegisterTimes.push(now);
+  return true;
+}
 const _isPreviewDemoUid = (lineUid) =>
   String(lineUid || '').startsWith(PREVIEW_DEMO_UID_PREFIX) && _previewDemoRegistrationAllowed();
 
@@ -1695,7 +1708,13 @@ router.post('/parent-register-line', async (req, res) => {
       // 走真正的註冊／認領流程；其他環境一律停用，固定測試帳號請走 /api/auth/demo-login。
       const demoNewUser = process.env.ALLOW_DEMO_LOGIN === '1' && req.body?.demo === true;
       if (demoNewUser) {
-        if (_previewDemoRegistrationAllowed()) return `${PREVIEW_DEMO_UID_PREFIX}${crypto.randomUUID()}`;
+        if (_previewDemoRegistrationAllowed()) {
+          if (!_takePreviewDemoRegisterSlot()) {
+            res.status(429).json({ error: 'Demo 註冊次數過多，請 30 分鐘後再試', code: 'DEMO_REGISTER_RATE_LIMITED' });
+            return null;
+          }
+          return `${PREVIEW_DEMO_UID_PREFIX}${crypto.randomUUID()}`;
+        }
         res.status(410).json({
           error: 'Demo 新用戶註冊已停用；請使用固定測試帳號登入',
           code: 'DEMO_REGISTER_DISABLED',

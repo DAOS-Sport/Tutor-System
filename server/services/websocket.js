@@ -24,7 +24,7 @@
 const WebSocket = require('ws');
 const jwt = require('jsonwebtoken');
 const { canAccess } = require('./chatRooms');
-const { getSecret } = require('../middlewares/parentAuth');
+const { getSecret, demoTokenAllowed } = require('../middlewares/parentAuth');
 const { pool } = require('../models/db');
 const { cleanVenueList } = require('./coachVenueScope');
 
@@ -122,6 +122,7 @@ function initWebSocket(server) {
     let role, userId, venueId = null;
     if (payload.type === 'parent') {
       role = 'parent'; userId = payload.parentId;
+      if (!demoTokenAllowed(payload)) return ws.close(4001, 'Invalid token');
       // 家長被刪除/停用即斷線（與 requireParent 一致）
       const active = await pool.query('SELECT 1 FROM parents WHERE id = $1 AND is_active = TRUE', [userId]).catch(() => null);
       if (!active || !active.rowCount) return ws.close(4001, 'Parent account not found');

@@ -24,6 +24,13 @@ function signParentToken({ parentId, phone, lineUid = null }) {
   return jwt.sign(payload, getSecret(), { expiresIn: TTL });
 }
 
+// 示範帳號（LINE UID 以 demo: 開頭）的憑證只在開了 Demo 登入的非正式環境有效。
+// Preview 與正式站可能共用 JWT_SECRET、家長 ID 也可能相同，Preview 發出的示範憑證不能拿到正式站用。
+function demoTokenAllowed(payload) {
+  if (!String(payload?.lineUid || '').startsWith('demo:')) return true;
+  return process.env.NODE_ENV !== 'production' && process.env.ALLOW_DEMO_LOGIN === '1';
+}
+
 async function requireParent(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Unauthorized' });
@@ -37,6 +44,7 @@ async function requireParent(req, res, next) {
   // 避免讓呼叫端從狀態碼反推出「這是一個有效但錯誤類型的 token」（規格 §7 PASS
   // 判準：以 flowToken 打家長業務 API 需回 401，而非透露 token 類型資訊的 403）。
   if (p.type !== 'parent') return res.status(401).json({ error: 'Unauthorized', code: 'PARENT_TOKEN_REQUIRED' });
+  if (!demoTokenAllowed(p)) return res.status(401).json({ error: 'Unauthorized', code: 'DEMO_TOKEN_NOT_ALLOWED' });
 
   // 每次請求都跟資料庫即時比對：帳號被刪除或停用(is_active=FALSE)即失效，前端會收到 401 並登出。
   try {
@@ -62,6 +70,7 @@ async function requireLiffUser(req, res, next) {
     return res.status(401).json({ error: 'Invalid or expired token' });
   }
   if (p.type === 'parent') {
+    if (!demoTokenAllowed(p)) return res.status(401).json({ error: 'Unauthorized', code: 'DEMO_TOKEN_NOT_ALLOWED' });
     // 家長被刪除/停用即失效（與 requireParent 一致）
     try {
       const r = await pool.query('SELECT 1 FROM parents WHERE id = $1 AND is_active = TRUE', [p.parentId]);
@@ -85,7 +94,7 @@ function optionalParent(req, _res, next) {
   if (token) {
     try {
       const p = jwt.verify(token, getSecret());
-      if (p.type === 'parent') {
+      if (p.type === 'parent' && demoTokenAllowed(p)) {
         req.parent = { id: p.parentId, phone: p.phone, lineUid: p.lineUid || null };
       }
     } catch { /* 忽略，視為訪客 */ }
@@ -93,4 +102,4 @@ function optionalParent(req, _res, next) {
   next();
 }
 
-module.exports = { signParentToken, requireParent, requireLiffUser, optionalParent, getSecret };
+module.exports = { signParentToken, requireParent, requireLiffUser, optionalParent, getSecret, demoTokenAllowed };
