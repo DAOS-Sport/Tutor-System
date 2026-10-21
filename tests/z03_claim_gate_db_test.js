@@ -35,6 +35,9 @@
 //     G32 只填一位、同名但身分證不同：不擋，當新孩子掛在這一戶下，不連到登記的那位
 //     G33 本地已有同名但身分證不同的學員：新孩子另建一筆，不沿用那一筆
 //     G34 Ragic 已綁這個 LINE（completeTrueUidRegistration）、子表有同名但身分證不同：新孩子照樣送 Ragic
+//     G35 舊系統預建家長同時是 Z03 家庭：多填的舊系統孩子對上沒身分證的預建學員 → 補上身分證／生日、照樣送 Ragic、不另建
+//     G36 多填的孩子對上的本地學員已有 Ragic 編號（已在 Ragic）：不重複送 Ragic
+//     G37 同一次註冊兩位學員身分證相同：入口擋下（400），不建學員、不算猜測
 // 不碰 Ragic（同步呼叫一律丟錯）；所有資料 finally 自己刪乾淨。
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -681,6 +684,49 @@ async function cleanup() {
       const f = { phone };
       assert.deepEqual(sorted(await localId(f, '鄭己己')), ['F623456789', 'G123456783']);
       assert.deepEqual(await appended(f), ['鄭己己']);
+    });
+
+    // 舊系統預建：同一支電話的本地家長（未綁 LINE），學員只有姓名
+    const prebuilt = async (f, students) => {
+      const parentId = (await pool.query(
+        `INSERT INTO parents (phone,name,is_active) VALUES ($1,'閘門測試家長',TRUE) RETURNING id`, [f.phone])).rows[0].id;
+      for (const s of students) {
+        await pool.query(`INSERT INTO students (parent_id,name,ragic_record_id,is_active) VALUES ($1,$2,$3,TRUE)`,
+          [parentId, s.name, s.ragicId || null]);
+      }
+      return parentId;
+    };
+    const localRows = async (f, name) => (await pool.query(
+      `SELECT s.id_number, to_char(s.birth_date,'YYYY-MM-DD') AS birth_date, s.gender FROM students s JOIN parents p ON p.id=s.parent_id
+        WHERE p.phone=$1 AND s.name=$2`, [f.phone, name])).rows;
+
+    await t('G35 舊系統預建家長同時是 Z03 家庭：多填的舊系統孩子補上身分證、照樣送 Ragic、不另建', async () => {
+      const f = await family('l', { students: [{ name: '鄭庚庚', id: 'F723456781' }] });
+      await prebuilt(f, [{ name: '鄭庚庚' }, { name: '鄭辛辛' }]);
+      const r = await register(f, [kid('鄭庚庚', 'F723456781'), kid('鄭辛辛', 'G723456782')]);
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.deepEqual(await localRows(f, '鄭辛辛'), [{ id_number: 'G723456782', birth_date: '2019-01-01', gender: '生理男' }]);
+      assert.deepEqual(await appended(f), ['鄭辛辛']);
+      assert.deepEqual(r.body.ignored_students || [], []);
+    });
+
+    await t('G36 多填的孩子對上的本地學員已在 Ragic（有 Ragic 編號）：不重複送 Ragic', async () => {
+      const f = await family('m', { students: [{ name: '鄭壬壬', id: 'F823456781' }] });
+      await prebuilt(f, [{ name: '鄭壬壬' }, { name: '鄭癸癸', ragicId: `ZZR${suffix}` }]);
+      const r = await register(f, [kid('鄭壬壬', 'F823456781'), kid('鄭癸癸', 'G823456782')]);
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.equal((await localRows(f, '鄭癸癸')).length, 1);
+      assert.deepEqual(await appended(f), []);
+    });
+
+    await t('G37 同一次註冊兩位學員身分證相同：入口擋下、不建學員、不算猜測', async () => {
+      const f = await family('n', { students: [{ name: '鄭子子', id: 'F923456781' }] });
+      const r = await register(f, [kid('鄭子子', 'F923456781'), kid('鄭丑丑', 'F923456781')]);
+      assert.equal(r.status, 400, JSON.stringify(r.body));
+      assert.equal(r.body.code, 'STUDENT_ID_DUPLICATED');
+      assert.deepEqual(await kids(f), []);
+      assert.deepEqual(await attempts(f), []);
+      assert.deepEqual(await appended(f), []);
     });
 
     console.log(`\n${passed} 個測試全數通過`);
