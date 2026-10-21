@@ -21,6 +21,7 @@ const { pool } = require('../models/db');
 const { signCoachToken, requireCoach, requireCoachOwner, byPhoneRateLimit, byLineUidRateLimit, logFailedLogin } = require('../middlewares/coachAuth');
 const jwt = require('jsonwebtoken');
 const { getSecret: getJwtSecret } = require('../middlewares/adminAuth');
+const { demoTokenAllowed } = require('../middlewares/parentAuth');
 const guaiGuai = require('../middlewares/guaiGuai');
 const { verifyLineIdToken, isLineVerificationRequired } = require('../services/lineAuth');
 const { saveBuffer } = require('../services/objectStorage');
@@ -179,6 +180,9 @@ function requireParentOrCoach(req, res, next) {
     // 會讓所有用正則剝註解的掃描工具從這裡吃掉後面一大段（本測試已踩過一次）。
     if (payload.type !== 'parent' && payload.type !== 'coach') {
       return guaiGuai.deny(req, res, '這個帳號沒有查看教練清單的權限。');
+    }
+    if (payload.type === 'parent' && !demoTokenAllowed(payload)) {
+      return guaiGuai.deny(req, res, '登入已逾時，請重新登入。');
     }
     // 把身分掛上去，讓下游分得出「本人」與「其他登入者」。
     // 沒有這兩行的話 /:id/media 的本人判斷永遠是 false，教練會看不到自己
