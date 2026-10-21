@@ -1251,6 +1251,18 @@ async function _registerParentCore(req, res, resolveLineUid) {
         blood_type: bloodType,
       });
     }
+    // 同一次註冊兩位不同名的學員身分證相同：一定有一位填錯。放行會讓第二位寫 Ragic 時被擋（不可重試），
+    // 連帶卡住 LINE UID 回寫。同名同號是同一位填兩次，照原本流程擋（CLAIM_VERIFICATION_FAILED）。
+    const sameIdOtherName = (s, x) => x.id_number === s.id_number
+      && normalizeStudentName(x.name) !== normalizeStudentName(s.name);
+    const dupIdAt = cleanStudents.findIndex((s) => cleanStudents.some((x) => sameIdOtherName(s, x)));
+    if (dupIdAt >= 0) {
+      const firstAt = cleanStudents.findIndex((x) => x !== cleanStudents[dupIdAt] && sameIdOtherName(cleanStudents[dupIdAt], x));
+      return res.status(400).json({
+        error: `第 ${Math.min(firstAt, dupIdAt) + 1} 位和第 ${Math.max(firstAt, dupIdAt) + 1} 位學員的身分證字號相同，請確認`,
+        code: 'STUDENT_ID_DUPLICATED',
+      });
+    }
 
     // 衝突檢查 1：本地 line_uid 已綁不同手機（只看 active；inactive 舊列不擋重新綁定）
     const dupLine = await pool.query(`SELECT phone FROM parents WHERE line_uid = $1 AND is_active = TRUE LIMIT 1`, [lineUid]);

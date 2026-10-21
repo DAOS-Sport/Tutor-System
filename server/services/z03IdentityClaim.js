@@ -199,6 +199,29 @@ async function _insertOrReuseStudent(client, parentId, studentInput) {
   return { student, appended: true };
 }
 
+// 本地已有的學員只補空白欄位（不覆蓋）；身分證不和同戶其他學員重複才補。
+async function _fillBlankStudentFields(client, parentId, student, input, note) {
+  const filled = (await client.query(
+    `UPDATE students
+        SET birth_date=COALESCE(birth_date,$2::date),
+            gender=COALESCE(NULLIF(gender,''),NULLIF($3,'')),
+            blood_type=COALESCE(NULLIF(blood_type,''),NULLIF($4,'')),
+            id_number=CASE WHEN NULLIF(id_number,'') IS NULL AND NULLIF($5,'') IS NOT NULL
+                            AND NOT EXISTS (SELECT 1 FROM students x
+                                             WHERE x.parent_id=students.parent_id AND x.id_number=$5 AND x.id<>students.id)
+                           THEN $5 ELSE id_number END,
+            updated_at=NOW()
+      WHERE id=$1
+      RETURNING *`,
+    [student.id, _safeDate(input.birth_date), input.gender || '',
+     input.blood_type || '', String(input.id_number || '').trim().toUpperCase()]
+  )).rows[0];
+  await writeStudentAudit(client, filled.id, 'edit', {
+    ...parentActor(parentId, note), changes: diffChanges(student, filled),
+  });
+  return filled;
+}
+
 // 登記在 Z03 的孩子鏡射成本地學員（資料以登記的為準）。
 async function _mirrorSourceStudent(client, parentId, child) {
   const student = (await client.query(
@@ -229,7 +252,13 @@ async function _attachExtraStudents(client, parentId, extras, { canAppend }) {
   if (!canAppend) return { toRagic: [], ignored: extras.appended.map((s) => String(s.name || '').trim()) };
   const toRagic = [];
   for (const input of extras.appended) {
-    if ((await _insertOrReuseStudent(client, parentId, input)).appended) toRagic.push(input);
+    const { student, appended } = await _insertOrReuseStudent(client, parentId, input);
+    if (appended) { toRagic.push(input); continue; }
+    // 沿用的本地學員還不在 Ragic（例如舊系統預建、只有姓名）：補上這次填的資料，照樣送 Ragic。
+    if (!student.ragic_record_id) {
+      await _fillBlankStudentFields(client, parentId, student, input, 'identity-registration-append-fill');
+      toRagic.push(input);
+    }
   }
   return { toRagic, ignored: [] };
 }
@@ -400,25 +429,7 @@ async function registerNewParentLocalFirst({
       if (matches.length > 1) throw new Z03ClaimError('DATA_RECONCILIATION_PENDING', '同名學員命中多筆');
       let student = matches[0] || null;
       if (student && claimingPrebuilt) {
-        const beforeFill = student;
-        student = (await client.query(
-          `UPDATE students
-              SET birth_date=COALESCE(birth_date,$2::date),
-                  gender=COALESCE(NULLIF(gender,''),NULLIF($3,'')),
-                  blood_type=COALESCE(NULLIF(blood_type,''),NULLIF($4,'')),
-                  id_number=CASE WHEN NULLIF(id_number,'') IS NULL AND NULLIF($5,'') IS NOT NULL
-                                  AND NOT EXISTS (SELECT 1 FROM students x
-                                                   WHERE x.parent_id=students.parent_id AND x.id_number=$5 AND x.id<>students.id)
-                                 THEN $5 ELSE id_number END,
-                  updated_at=NOW()
-            WHERE id=$1
-            RETURNING *`,
-          [student.id, _safeDate(sourceStudent.birth_date), sourceStudent.gender || '',
-           sourceStudent.blood_type || '', String(sourceStudent.id_number || '').trim().toUpperCase()]
-        )).rows[0];
-        await writeStudentAudit(client, student.id, 'edit', {
-          ...parentActor(parent.id, 'prebuilt-claim-fill'), changes: diffChanges(beforeFill, student),
-        });
+        student = await _fillBlankStudentFields(client, parent.id, student, sourceStudent, 'prebuilt-claim-fill');
       }
       if (!student) {
         student = (await client.query(
