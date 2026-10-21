@@ -18,7 +18,7 @@
 //   G16 註冊頁挑核對對象和核對端一致（完全同名照樣看已移除的學員，填寫順序不影響）
 //   G17 Preview 的 Demo 新用戶：用預建家長電話＋學員名註冊 → 綁上示範 LINE、不查 Ragic
 //   G18／G19 不是 Preview 安全模式、或正式環境：Demo 新用戶照舊停用
-//   G20 Preview 的 Demo 新用戶整體上限：30 分鐘最多 30 次（G17 已用掉 1 次）
+//   G20 Preview 的 Demo 新用戶上限：同一支電話 30 分鐘 5 次、整體 30 次；沒填手機不扣名額
 // 不碰 Ragic（同步呼叫一律丟錯）；所有資料 finally 自己刪乾淨。
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -385,21 +385,24 @@ async function cleanup() {
       }
     });
 
-    await t('G20 Preview 的 Demo 新用戶整體有次數上限：30 分鐘最多 30 次，之後回 429', async () => {
+    await t('G20 Preview 的 Demo 新用戶上限：同一支電話 30 分鐘 5 次、整體 30 次；沒填手機不扣名額', async () => {
       process.env.ALLOW_DEMO_LOGIN = '1';
       process.env.PREVIEW_SAFE_MODE = '1';
+      const post = async (parent) => (await fetch(`http://127.0.0.1:${server.address().port}/api/auth/parent-register-line`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ demo: true, parent, students: [] }),
+      })).status;
       try {
-        const statuses = [];
-        for (let i = 0; i < 31; i += 1) {
-          const res = await fetch(`http://127.0.0.1:${server.address().port}/api/auth/parent-register-line`, {
-            method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ demo: true, parent: {}, students: [] }),
-          });
-          statuses.push(res.status);
-        }
-        assert.ok(statuses.includes(400), JSON.stringify(statuses));
-        assert.equal(statuses[statuses.length - 1], 429, JSON.stringify(statuses));
-        assert.equal(statuses.filter((st) => st !== 429).length, 30 - 1, JSON.stringify(statuses));
+        for (let i = 0; i < 40; i += 1) assert.equal(await post({}), 400, `沒填手機第 ${i + 1} 次`);
+        const same = `0966${suffix}`;
+        const samePhone = [];
+        for (let i = 0; i < 6; i += 1) samePhone.push(await post({ phone: same }));
+        assert.deepEqual(samePhone, [400, 400, 400, 400, 400, 429]);
+        // G17 用掉 1 次、同一支電話 5 次，整體剩 24 次
+        const others = [];
+        for (let i = 0; i < 25; i += 1) others.push(await post({ phone: `0944${String(i).padStart(2, '0')}${suffix.slice(2)}` }));
+        assert.deepEqual(others.slice(0, 24), Array(24).fill(400), JSON.stringify(others));
+        assert.equal(others[24], 429, JSON.stringify(others));
       } finally {
         delete process.env.ALLOW_DEMO_LOGIN;
         delete process.env.PREVIEW_SAFE_MODE;

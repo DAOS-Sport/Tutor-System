@@ -71,6 +71,29 @@ async function call(mw, lineUid) {
     assert.strictEqual(r.req.parent, undefined);
   }));
 
+  await check('正式環境：教練清單（GET /api/coaches）也擋示範憑證、不查資料庫；真實 LINE 帳號照常進得去', () => withEnv({ NODE_ENV: 'production', ALLOW_DEMO_LOGIN: undefined }, async () => {
+    const express = require(path.join('..', 'server/node_modules/express'));
+    const app = express();
+    app.use('/api/coaches', require(path.join('..', 'server/routes/coaches')));
+    const server = await new Promise((resolve) => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
+    try {
+      const get = async (lineUid) => {
+        const token = signParentToken({ parentId: '00000000-0000-0000-0000-000000000001', phone: '0900000000', lineUid });
+        dbCalls = 0;
+        const res = await fetch(`http://127.0.0.1:${server.address().port}/api/coaches`, { headers: { authorization: `Bearer ${token}` } });
+        return { status: res.status, dbCalls };
+      };
+      const demo = await get('demo:register-abc');
+      assert.strictEqual(demo.status, 401);
+      assert.strictEqual(demo.dbCalls, 0);
+      const real = await get('U0123456789abcdef0123456789abcdef');
+      assert.notStrictEqual(real.status, 401);
+      assert.ok(real.dbCalls > 0, '真實帳號應該進到查詢');
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  }));
+
   if (failed) {
     console.error('\nparent_demo_token_test: ' + failed + ' failed');
     process.exit(1);

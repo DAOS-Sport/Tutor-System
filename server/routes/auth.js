@@ -75,18 +75,22 @@ function _previewDemoRegistrationAllowed() {
     && process.env.ALLOW_DEMO_LOGIN === '1'
     && process.env.PREVIEW_SAFE_MODE === '1';
 }
-// Preview 網址是公開的、資料庫也有真實家庭；每次示範註冊都換新的示範 UID，按 UID 計的冷靜期管不到，
-// 所以整體再設上限：30 分鐘內最多 30 次。
-const PREVIEW_DEMO_REGISTER_LIMIT = 30;
+// Preview 網址是公開的、資料庫也有真實家庭；每次示範註冊都換新的示範 UID，按 UID 計的冷靜期管不到。
+// 改按電話計：同一支電話 30 分鐘最多 5 次（每次最多 3 個名字），整體最多 30 次。
+// 沒填有效手機的請求不扣名額（核心流程會直接回 400），免得垃圾請求把名額用光。
 const PREVIEW_DEMO_REGISTER_WINDOW_MS = 30 * 60 * 1000;
-const _previewDemoRegisterTimes = [];
-function _takePreviewDemoRegisterSlot(now = Date.now()) {
-  while (_previewDemoRegisterTimes.length && now - _previewDemoRegisterTimes[0] > PREVIEW_DEMO_REGISTER_WINDOW_MS) {
-    _previewDemoRegisterTimes.shift();
-  }
-  if (_previewDemoRegisterTimes.length >= PREVIEW_DEMO_REGISTER_LIMIT) return false;
-  _previewDemoRegisterTimes.push(now);
-  return true;
+const PREVIEW_DEMO_REGISTER_PER_PHONE = 5;
+const PREVIEW_DEMO_REGISTER_TOTAL = 30;
+const _previewDemoRegisterTimes = new Map();
+function _takePreviewDemoRegisterSlot(phone, now = Date.now()) {
+  const fresh = (key) => (_previewDemoRegisterTimes.get(key) || []).filter((t) => now - t <= PREVIEW_DEMO_REGISTER_WINDOW_MS);
+  const mine = fresh(phone);
+  const all = fresh('*');
+  const ok = mine.length < PREVIEW_DEMO_REGISTER_PER_PHONE && all.length < PREVIEW_DEMO_REGISTER_TOTAL;
+  if (ok) { mine.push(now); all.push(now); }
+  _previewDemoRegisterTimes.set(phone, mine);
+  _previewDemoRegisterTimes.set('*', all);
+  return ok;
 }
 const _isPreviewDemoUid = (lineUid) =>
   String(lineUid || '').startsWith(PREVIEW_DEMO_UID_PREFIX) && _previewDemoRegistrationAllowed();
@@ -1709,7 +1713,8 @@ router.post('/parent-register-line', async (req, res) => {
       const demoNewUser = process.env.ALLOW_DEMO_LOGIN === '1' && req.body?.demo === true;
       if (demoNewUser) {
         if (_previewDemoRegistrationAllowed()) {
-          if (!_takePreviewDemoRegisterSlot()) {
+          const demoPhone = String(req.body?.parent?.phone || '').trim();
+          if (TW_PHONE_RE.test(demoPhone) && !_takePreviewDemoRegisterSlot(demoPhone)) {
             res.status(429).json({ error: 'Demo 註冊次數過多，請 30 分鐘後再試', code: 'DEMO_REGISTER_RATE_LIMITED' });
             return null;
           }
