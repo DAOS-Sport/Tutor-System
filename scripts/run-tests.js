@@ -100,6 +100,7 @@ const UNIT = [
   'tests/session_note_visibility_test.js',
   'tests/legacy_import_marker_test.js',
   'tests/claim_student_matcher_test.js',
+  'tests/parent_demo_token_test.js',
   'tests/legacy_settled_payroll_test.js',
   'tests/promotion_label_test.js',
   'tests/promotion_order_test.js',
