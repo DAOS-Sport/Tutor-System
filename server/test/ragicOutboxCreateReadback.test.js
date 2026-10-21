@@ -28,6 +28,7 @@ function fixture({ remoteUid = '', mismatch = false, studentFailure = false, att
       if (name === './ragicSchemaFreshness') return {};
       if (name === './parentRegistrationProfile') return {};
       if (name === './parentIdentityBackoffice') return { createParentIdentityBackofficeTask: async () => {} };
+      if (name === './familyStudentMatch') return require('../services/familyStudentMatch');
       throw Error(name);
     },
   });

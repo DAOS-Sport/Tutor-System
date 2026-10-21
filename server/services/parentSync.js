@@ -20,6 +20,8 @@ const { writeStudentAudit, diffChanges } = require('./studentAudit');
 const ragic = require('./ragic');
 const { maskName, maskPhone } = require('../utils/piiMask');
 const { normalizePhone, normalizeStudentName } = require('./identityNormalizer');
+const { matchFamilyStudent, withIdFirst } = require('./familyStudentMatch');
+const { createParentIdentityBackofficeTask } = require('./parentIdentityBackoffice');
 const { STABILITY_FLAGS, getTrueRagicLineUid } = require('../config/ragicSchema');
 
 class BindConflictError extends Error {
@@ -364,27 +366,81 @@ async function _queryWithLineUidRetry(client, sql, buildParams, lineUidForWrite,
  *  - existingStudents（選用）：批次呼叫端可預先撈好「這位家長目前的學員列」陣列
  *    （至少含 id/id_number/ragic_record_id/name/birth_date）傳入，三層比對改成在記憶體裡
  *    做，省掉每位學員 3 次序列 SELECT；不傳就照舊逐筆查 DB（既有單筆呼叫端行為不變）。
+ *  - ragic_record_id 是 Z02 連結；舊的直接呼叫維持 Z02 契約。parser 標記的 Z01 子表 ID
+ *    不參與本地比對、連結寫入或解除別戶的連結，也不能混入權威 Z02 ID 清單。
  */
+// 同一件事每輪同步都算出同一個 UUID：人工整理單只開一張，之後只更新。
+function _stableUuid(key) {
+  const h = crypto.createHash('sha256').update(String(key)).digest('hex');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+}
+
 async function upsertLocalStudents(client, parentId, students, { authoritative = false, existingStudents = null, preservePending = true } = {}) {
   // tier-3（name+birth）候選的既有列 id：待人工複核期間，權威掃尾不可把它當「Ragic
   // 已無此人」硬刪掉——否則等於繞過複核直接刪除，與決策7的初衷矛盾。
   const reviewCandidateIds = [];
-  for (const s of students || []) {
+  const taken = new Map();
+  const ordered = withIdFirst(students);
+  for (const s of ordered) {
     if (!s || !s.name) continue;
     const idNum  = s.id_number ? String(s.id_number).toUpperCase().trim() : null;
-    const ragicId = s.ragic_record_id ? String(s.ragic_record_id).trim() : null;
-    let matched = null;
-    const incomingName = normalizeStudentName(s.name);
+    const ragicIdNamespace = s.ragic_id_namespace || 'Z02';
+    const ragicId = ragicIdNamespace === 'Z02' && s.ragic_record_id ? String(s.ragic_record_id).trim() : null;
     const familyRows = existingStudents || (await client.query(
       `SELECT id,name,birth_date,id_number,ragic_record_id
          FROM students WHERE parent_id=$1 ORDER BY created_at,id FOR UPDATE`,
       [parentId]
     )).rows;
-    const exactNameMatches = familyRows.filter((row) => normalizeStudentName(row.name) === incomingName);
-    if (exactNameMatches.length > 1) {
+    // 身分證為主：同一戶可以有兩位同名、身分證不同的孩子（familyStudentMatch）。
+    // 原本就有的「同名多筆又沒身分證」照舊整位家長轉人工；其餘分不出來的只略過這一位、開人工整理單，不擋整戶登入／刷新。
+    const verdict = matchFamilyStudent(familyRows, s, { taken, batch: ordered, normalizeGender: ragic.normalizeGender, ragicIdNamespace });
+    if (verdict.ambiguous === 'SAME_NAME_NO_ID') {
       throw new BindConflictError('DATA_RECONCILIATION_PENDING', '同一家庭內學員姓名精準命中多筆');
     }
-    matched = exactNameMatches[0] || null;
+    if (verdict.ambiguous) {
+      console.warn('[parent-sync] 學員對不出是哪一位（%s），略過待人工整理 (parent=%s, name=%s)',
+        verdict.ambiguous, parentId, maskName(s.name));
+      await createParentIdentityBackofficeTask({
+        client,
+        parent: { id: parentId },
+        reasonCode: 'STUDENT_MATCH_AMBIGUOUS',
+        suggestedAction: `Ragic 學員對不出是本地哪一位（${verdict.ambiguous}），請核對姓名與身分證後手動對應；這位學員暫不從 Ragic 同步。`,
+        correlationId: _stableUuid(`student-match:${parentId}:${normalizeStudentName(s.name)}:${verdict.ambiguous}`),
+      });
+      continue;
+    }
+    if (verdict.duplicate) {
+      // 同一個孩子在這一輪重複出現：第一筆已更新過，這筆只補還空著的欄位，不覆蓋（也不碰 Ragic 紀錄編號，免得撞唯一鍵）。
+      const before = (await client.query('SELECT * FROM students WHERE id = $1 FOR UPDATE', [verdict.row.id])).rows[0];
+      const filled = (await client.query(
+        `UPDATE students SET
+           birth_date   = COALESCE(birth_date, $2::date),
+           gender       = COALESCE(NULLIF(gender,''), NULLIF($3,'')),
+           blood_type   = COALESCE(NULLIF(blood_type,''), NULLIF($4,'')),
+           student_code = COALESCE(NULLIF(student_code,''), NULLIF($5,'')),
+           updated_at   = NOW()
+         WHERE id = $1
+           AND NOT ($6::boolean AND last_synced_at IS NULL)
+           AND ((birth_date IS NULL AND $2::date IS NOT NULL)
+             OR (COALESCE(gender,'') = '' AND COALESCE($3,'') <> '')
+             OR (COALESCE(blood_type,'') = '' AND COALESCE($4,'') <> '')
+             OR (COALESCE(student_code,'') = '' AND COALESCE($5,'') <> ''))
+         RETURNING *`,
+        [verdict.row.id, s.birth_date || null, ragic.normalizeGender(s.gender), s.blood_type || '', s.student_code || '', preservePending]
+      )).rows[0];
+      if (filled) {
+        await writeStudentAudit(client, filled.id, 'edit', { byUser: 'ragic:parent-sync', byRole: 'system', changes: diffChanges(before, filled), note: 'ragic-student-mirror' });
+      }
+      // 後面的來源也要核對這筆才補上的生日／性別，不能只看第一筆的空值。
+      const first = taken.get(verdict.row.id);
+      taken.set(verdict.row.id, { ...first,
+        birth_date: first?.birth_date || s.birth_date,
+        gender: first?.gender || s.gender,
+      });
+      continue;
+    }
+    const matched = verdict.row || null;
+    if (matched) taken.set(matched.id, s);
 
     // 單一學員撞唯一鍵（並發競態等）不應讓整位家長同步失敗：SAVEPOINT 隔離，
     // 失敗記 log 跳下一位（該位學員下一輪同步會再收斂）。
@@ -445,6 +501,7 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
            idNum || '', s.blood_type || '', s.student_code || '', ragicId || '']
         );
         await writeStudentAudit(client, inserted.rows[0].id, 'create', { byUser: 'ragic:parent-sync', byRole: 'system', note: 'ragic-student-mirror' });
+        taken.set(inserted.rows[0].id, s);
         if (existingStudents) existingStudents.push({
           id: inserted.rows[0].id,
           name: s.name,
@@ -474,6 +531,7 @@ async function upsertLocalStudents(client, parentId, students, { authoritative =
     )];
     const presentRagicIds = [...new Set(
       (students || [])
+        .filter((s) => !s?.ragic_id_namespace || s.ragic_id_namespace === 'Z02')
         .map((s) => (s && s.ragic_record_id ? String(s.ragic_record_id).trim() : null))
         .filter(Boolean)
     )];

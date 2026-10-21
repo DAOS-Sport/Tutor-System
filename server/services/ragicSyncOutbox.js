@@ -10,6 +10,7 @@ const {
 const { assertRagicZ01UidSchemaFresh } = require('./ragicSchemaFreshness');
 const { sanitizeAllowlistedProfilePatch } = require('./parentRegistrationProfile');
 const { createParentIdentityBackofficeTask } = require('./parentIdentityBackoffice');
+const { matchFamilyStudent } = require('./familyStudentMatch');
 
 const RETRYABLE_CODES = new Set([
   'RAGIC_TIMEOUT',
@@ -543,11 +544,11 @@ async function processClaimedRagicSyncOutboxJob(job, {
         });
         metadata.write_performed = true;
         metadata.http_status = metadata.http_status || _httpStatusFromWriterResult(studentResult);
-        const localStudent = (await pool.query(
-          `SELECT id FROM students WHERE parent_id=$1 AND regexp_replace(lower(name),'\\s','','g')=regexp_replace(lower($2),'\\s','','g')
-            ORDER BY created_at,id LIMIT 1`,
-          [parent.id, String(student?.name || '').trim()]
-        )).rows[0];
+        // 同一戶可能有兩位同名、身分證不同的孩子：依身分證找對人，分不出來就不回填（familyStudentMatch）。
+        const familyRows = (await pool.query(
+          `SELECT id,name,id_number,ragic_record_id FROM students WHERE parent_id=$1 ORDER BY created_at,id`, [parent.id]
+        )).rows;
+        const localStudent = matchFamilyStudent(familyRows, { name: student?.name, id_number: student?.id_number }).row;
         const z02Id = studentResult?.z02?.ragicRecordId || null;
         if (localStudent && z02Id) {
           await pool.query(

@@ -26,6 +26,7 @@ const line = require('./line');
 const { maskPhone } = require('../utils/piiMask');
 const { cleanVenueList } = require('./coachVenueScope');
 const { normalizePhone, normalizeStudentName, isCanonicalMobilePhone } = require('./identityNormalizer');
+const { matchFamilyStudent, withIdFirst } = require('./familyStudentMatch');
 const { createParentIdentityBackofficeTask } = require('./parentIdentityBackoffice');
 // Ragic 表單 / 欄位對應唯一來源（凍結點）：H01 LINE UID 欄位、場館欄位、角色關鍵字
 const {
@@ -2893,8 +2894,8 @@ async function _syncCanonicalZ01Record(client, z01Row, mapped, venuesMap) {
     [ragicRecordId, parent.id]
   );
 
-  // Exact normalized name inside this canonical family only. National ID is
-  // copied into a blank local field, never used as a match/merge key here.
+  // 只在這個 canonical family 裡比對。學員以身分證為主（Owner 2026-10-20，familyStudentMatch）：
+  // 同名但身分證不同是兩個孩子；沒有身分證可分辨的同名才算分不出來（AMBIGUOUS_STUDENT_MATCH）。
   const rawStudentRows = ragic.parseZ01StudentsRaw(z01Row);
   const studentIssues = [];
   for (const raw of rawStudentRows) {
@@ -2904,31 +2905,37 @@ async function _syncCanonicalZ01Record(client, z01Row, mapped, venuesMap) {
     else if (!normalizeStudentName(raw.name_raw)) studentIssues.push({ code: 'STUDENT_NAME_MISSING', source_row_id: raw.seq_raw || null });
   }
   const sourceStudents = ragic.parseZ01Students(z01Row);
-  const sourceNameCounts = new Map();
-  for (const s of sourceStudents) {
-    const key = normalizeStudentName(s.name);
-    if (key) sourceNameCounts.set(key, (sourceNameCounts.get(key) || 0) + 1);
-  }
+  const sourceId = (s) => String(s.id_number || '').trim().toUpperCase();
+  const indistinguishable = (s) => sourceStudents.some((other) => other !== s
+    && normalizeStudentName(other.name) === normalizeStudentName(s.name)
+    && (!sourceId(s) || !sourceId(other) || sourceId(s) === sourceId(other)));
   const existingStudents = (await client.query(
     `SELECT * FROM students WHERE parent_id = $1 ORDER BY created_at, id FOR UPDATE`, [parent.id]
   )).rows;
   const syncedStudentIds = [];
-  for (const s of sourceStudents) {
+  const taken = new Map();
+  // 子表列的 Ragic 編號和本地學員存的 Z02 編號不是同一套，這裡只比身分證與姓名。
+  const ordered = withIdFirst(sourceStudents.map((source) => ({
+    source, name: source.name, id_number: source.id_number, birth_date: source.birth_date, gender: source.gender,
+  })));
+  for (const entry of ordered) {
+    const s = entry.source;
     const normalizedName = normalizeStudentName(s.name);
     if (!normalizedName) {
       studentIssues.push({ code: 'STUDENT_NAME_MISSING', source_row_id: s.seq_raw || null });
       continue;
     }
-    if (sourceNameCounts.get(normalizedName) > 1) {
+    if (indistinguishable(s)) {
       studentIssues.push({ code: 'AMBIGUOUS_STUDENT_MATCH', name: normalizedName });
       continue;
     }
-    const matches = existingStudents.filter((row) => normalizeStudentName(row.name) === normalizedName);
-    if (matches.length > 1) {
+    const verdict = matchFamilyStudent(existingStudents, entry, { taken, batch: ordered, normalizeGender: ragic.normalizeGender });
+    if (verdict.ambiguous) {
       studentIssues.push({ code: 'AMBIGUOUS_STUDENT_MATCH', name: normalizedName });
       continue;
     }
-    let student = matches[0] || null;
+    if (verdict.duplicate) continue;
+    let student = verdict.row || null;
     const beforeStudent = student;
     const birthDate = /^\d{4}-\d{2}-\d{2}$/.test(String(s.birth_date || '')) ? s.birth_date : null;
     if (student) {
@@ -2944,6 +2951,7 @@ async function _syncCanonicalZ01Record(client, z01Row, mapped, venuesMap) {
          WHERE id = $1 RETURNING *`,
         [student.id, s.name, birthDate, ragic.normalizeGender(s.gender), s.blood_type || '', s.student_code || '', String(s.id_number || '').trim().toUpperCase()]
       )).rows[0];
+      existingStudents[existingStudents.indexOf(beforeStudent)] = student;
     } else {
       student = (await client.query(
         `INSERT INTO students
@@ -2959,6 +2967,7 @@ async function _syncCanonicalZ01Record(client, z01Row, mapped, venuesMap) {
       changes: diffChanges(beforeStudent, student), note: 'ragic-canonical-family-import',
     });
     syncedStudentIds.push(student.id);
+    taken.set(student.id, entry);
   }
   if (syncedStudentIds.length === 1) {
     await client.query(
