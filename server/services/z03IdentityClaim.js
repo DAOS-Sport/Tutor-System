@@ -104,10 +104,11 @@ function _classifyExtraStudents(childRows, primaryRows, students, primaryName = 
     linked.push(rows);
   }
   const appended = students.filter((_, i) => !verdicts[i] || verdicts[i].newChild);
+  const newChildNames = new Set(students.filter((_, i) => verdicts[i]?.newChild).map((s) => normalizeStudentName(s.name)));
   const similarNames = students.map((s, i) => verdicts[i]?.newChild
     || (!verdicts[i] && _nearByName(fuzzy, s.name)?.candidates[0].name)).filter(Boolean)
     .map((name) => String(name).trim());
-  return { linked, appended, similarNames };
+  return { linked, appended, newChildNames, similarNames };
 }
 
 const _cooldownError = () => new Z03ClaimError('CLAIM_COOLDOWN', CLAIM_COOLDOWN_MESSAGE, 429);
@@ -174,14 +175,17 @@ async function _applyAllowlistedLocalProfile(client, parent, parentProfile = {},
   )).rows[0];
 }
 
-async function _insertOrReuseStudent(client, parentId, studentInput) {
+// reuseWithoutId=false：已知和登記的同名孩子身分證不同（另一個孩子）時，本地沒身分證的同名學員
+// 多半就是登記的那位（例如舊系統預建、只有姓名），不能拿來沿用，要另建。
+async function _insertOrReuseStudent(client, parentId, studentInput, { reuseWithoutId = true } = {}) {
   const normalized = normalizeStudentName(studentInput?.name);
   const submittedId = String(studentInput?.id_number || '').trim().toUpperCase();
   // 身分證為主（Owner 2026-10-20）：同名但身分證不同是另一個孩子，不沿用那一筆。
   const existing = (await client.query(
     `SELECT * FROM students WHERE parent_id=$1 ORDER BY created_at,id FOR UPDATE`, [parentId]
   )).rows.filter((row) => normalizeStudentName(row.name) === normalized
-    && !(submittedId && row.id_number && String(row.id_number).trim().toUpperCase() !== submittedId));
+    && !(submittedId && row.id_number && String(row.id_number).trim().toUpperCase() !== submittedId)
+    && (reuseWithoutId || String(row.id_number || '').trim()));
   if (existing.length > 1) {
     throw new Z03ClaimError('DATA_RECONCILIATION_PENDING', 'canonical family 內同名 student 命中多筆', 409);
   }
@@ -251,16 +255,25 @@ async function _attachExtraStudents(client, parentId, extras, { canAppend }) {
   }
   if (!canAppend) return { toRagic: [], ignored: extras.appended.map((s) => String(s.name || '').trim()) };
   const toRagic = [];
+  const ignored = [];
   for (const input of extras.appended) {
-    const { student, appended } = await _insertOrReuseStudent(client, parentId, input);
+    const reuseWithoutId = !extras.newChildNames?.has(normalizeStudentName(input.name));
+    const { student, appended } = await _insertOrReuseStudent(client, parentId, input, { reuseWithoutId });
     if (appended) { toRagic.push(input); continue; }
-    // 沿用的本地學員還不在 Ragic（例如舊系統預建、只有姓名）：補上這次填的資料，照樣送 Ragic。
-    if (!student.ragic_record_id) {
-      await _fillBlankStudentFields(client, parentId, student, input, 'identity-registration-append-fill');
-      toRagic.push(input);
+    if (student.ragic_record_id) continue;
+    // 沿用的本地學員還不在 Ragic（例如舊系統預建、只有姓名）：補上這次填的資料，以本地合併後的值送 Ragic
+    // （同預建認領：送原始值的話，之後 Ragic→本地同步會反過來蓋掉本地）。身分證補不進去（同戶已有人用）就不送。
+    const filled = await _fillBlankStudentFields(client, parentId, student, input, 'identity-registration-append-fill');
+    const wantedId = String(input.id_number || '').trim().toUpperCase();
+    if (wantedId && String(filled.id_number || '').trim().toUpperCase() !== wantedId) {
+      ignored.push(String(input.name || '').trim());
+      continue;
     }
+    const birth = (await client.query(`SELECT to_char(birth_date,'YYYY-MM-DD') AS d FROM students WHERE id=$1`, [filled.id])).rows[0].d;
+    toRagic.push({ ...input, name: filled.name, id_number: filled.id_number || '', gender: filled.gender || '',
+      blood_type: filled.blood_type || '', birth_date: birth || '' });
   }
-  return { toRagic, ignored: [] };
+  return { toRagic, ignored };
 }
 
 function _payloadHash(value) {
@@ -883,7 +896,8 @@ async function claimZ03Identity({
             )).rows[0];
           }
           parent = await _applyAllowlistedLocalProfile(client, parent, submittedProfile, ownershipVerified);
-          const { student } = await _insertOrReuseStudent(client, parent.id, submittedStudent);
+          const { student } = await _insertOrReuseStudent(client, parent.id, submittedStudent,
+            { reuseWithoutId: !sameNameNewChild });
           const extra = await _attachExtraStudents(client, parent.id, extras, { canAppend: false });
           for (const source of families) {
             const claim = (await client.query(
@@ -979,7 +993,8 @@ async function claimZ03Identity({
           )).rows[0];
         }
         parent = await _applyAllowlistedLocalProfile(client, parent, submittedProfile, ownershipVerified);
-        const { student } = await _insertOrReuseStudent(client, parent.id, submittedStudent);
+        const { student } = await _insertOrReuseStudent(client, parent.id, submittedStudent,
+          { reuseWithoutId: !sameNameNewChild });
         const appendKey = `bind-z01-line-uid:${family.z01_ragic_record_id}`;
         const appendQueued = (await client.query(`SELECT 1 FROM ragic_sync_outbox WHERE idempotency_key=$1`, [appendKey])).rowCount > 0;
         const extra = await _attachExtraStudents(client, parent.id, extras, { canAppend: !appendQueued });

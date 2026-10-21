@@ -1251,15 +1251,13 @@ async function _registerParentCore(req, res, resolveLineUid) {
         blood_type: bloodType,
       });
     }
-    // 同一次註冊兩位不同名的學員身分證相同：一定有一位填錯。放行會讓第二位寫 Ragic 時被擋（不可重試），
-    // 連帶卡住 LINE UID 回寫。同名同號是同一位填兩次，照原本流程擋（CLAIM_VERIFICATION_FAILED）。
-    const sameIdOtherName = (s, x) => x.id_number === s.id_number
-      && normalizeStudentName(x.name) !== normalizeStudentName(s.name);
-    const dupIdAt = cleanStudents.findIndex((s) => cleanStudents.some((x) => sameIdOtherName(s, x)));
+    // 同一次註冊兩位學員身分證相同（不同名＝有一位填錯；同名＝同一位填兩次）：放行的話第二位寫 Ragic 時被擋
+    // （STUDENT_ID_NUMBER_EXISTS，不可重試），連帶卡住這一戶建檔與 LINE UID 回寫。入口一律擋，不算猜測。
+    const dupIdAt = cleanStudents.findIndex((s, i) => cleanStudents.findIndex((x) => x.id_number === s.id_number) !== i);
     if (dupIdAt >= 0) {
-      const firstAt = cleanStudents.findIndex((x) => x !== cleanStudents[dupIdAt] && sameIdOtherName(cleanStudents[dupIdAt], x));
+      const firstAt = cleanStudents.findIndex((x) => x.id_number === cleanStudents[dupIdAt].id_number);
       return res.status(400).json({
-        error: `第 ${Math.min(firstAt, dupIdAt) + 1} 位和第 ${Math.max(firstAt, dupIdAt) + 1} 位學員的身分證字號相同，請確認`,
+        error: `第 ${firstAt + 1} 位和第 ${dupIdAt + 1} 位學員的身分證字號相同，請確認`,
         code: 'STUDENT_ID_DUPLICATED',
       });
     }
