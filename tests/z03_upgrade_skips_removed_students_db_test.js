@@ -8,6 +8,9 @@
 //   U4 舊列沒有編號也沒有身分證 → 不能因此擋住升級
 //   U6 學員全是舊列 → 提示缺學員、不寫 Ragic
 //   U5 本地舊列都還在（儲存不刪資料）
+//   每一案也核對回傳的 skipped_removed_students（略過的舊列，位置同後台編輯表格）
+//   U7 缺欄提示的「編輯時第 N 位」照編輯表格的順序算（舊列也佔位）
+//   U8 項次相同的學員列，清單順序以 id 決定（不隨資料列實體位置變動）
 // Ragic 讀寫全部 stub：讀取依網址回假資料、寫入只記錄；任何沒預期到的網址直接丟錯。
 // 姓名、電話、身分證都是虛構值；所有資料 finally 自己刪乾淨。
 process.env.RAGIC_BASE_URL = 'http://127.0.0.1:9';
@@ -157,6 +160,7 @@ async function main() {
       record: {}, students: draftStudents(rows, f.ids, { 0: { birth_date_raw: '2018-02-02' } }),
     }, 'test-admin');
     assert.equal(result.synced_to_ragic, true);
+    assert.deepEqual(result.skipped_removed_students, [{ id: f.ids[1], name: '測試甲', position: 2 }]);
     const newBirth = formatRagicDate('2018-02-02');
     const subtableBirths = z01Writes(f.sourceId).map((w) => w.fields[`${S.BIRTH_DATE}_1`]).filter(Boolean);
     assert.deepEqual(subtableBirths, [newBirth], 'Z01 子表只寫一次、而且是新生日');
@@ -177,6 +181,7 @@ async function main() {
       record: {}, students: draftStudents(rows, f.ids),
     }, 'test-admin');
     assert.equal(result.synced_to_ragic, true);
+    assert.deepEqual(result.skipped_removed_students, [{ id: f.ids[0], name: '測試已', position: 1 }]);
     assert.equal(studentNameWrites('測試已').length, 0, '舊姓名不可寫進 Ragic');
     assert.equal(studentNameWrites('測試乙').length, 2, '現存學員照常寫 Z01 子表與 Z02');
     assertNoCreate();
@@ -195,6 +200,7 @@ async function main() {
       record: {}, students: draftStudents(rows, f.ids),
     }, 'test-admin');
     assert.equal(result.synced_to_ragic, true);
+    assert.deepEqual(result.skipped_removed_students, [{ id: f.ids[1], name: '測試丁', position: 2 }]);
     assert.equal(studentNameWrites('測試丁').length, 0, 'Ragic 已移除的學員不寫回');
     assertNoCreate();
     assert.equal(await statusOf(f.id), 'resolved');
@@ -213,6 +219,7 @@ async function main() {
     }, 'test-admin');
     assert.deepEqual(result.missing, []);
     assert.equal(result.synced_to_ragic, true);
+    assert.deepEqual(result.skipped_removed_students, [{ id: f.ids[1], name: '測試己', position: 2 }]);
     assert.equal(studentNameWrites('測試己').length, 0);
     assert.equal(await statusOf(f.id), 'resolved');
   });
@@ -227,6 +234,8 @@ async function main() {
       record: {}, students: draftStudents(rows, f.ids),
     }, 'test-admin');
     assert.deepEqual(result.missing.map((m) => m.key), ['students']);
+    assert.match(result.missing[0].label, /Ragic 現存學員/);
+    assert.deepEqual(result.skipped_removed_students, [{ id: f.ids[0], name: '測試庚', position: 1 }]);
     assert.equal(writes.length, 0, '不寫 Ragic');
     assert.equal(await statusOf(f.id), 'pending');
   });
@@ -238,6 +247,42 @@ async function main() {
       [`${SOURCE_PREFIX}%`]
     )).rows[0].n;
     assert.equal(n, 5);
+  });
+
+  await t('U7 缺欄提示的「編輯時第 N 位」對得上編輯表格（舊列排在前面也佔位）', async () => {
+    const phone = '0990000107';
+    const ragicStudents = [{ name: '測試壬', code: '', id_number: '', birth_date: '2013-08-08' }];
+    const rows = [
+      { seq: '1', name: '測試辛', code: 'ZZ-U7-OLD', id_number: 'Z900000197', birth_date: '2012-09-09', present: false },
+      { seq: '2', name: '測試壬', birth_date: '2013-08-08', present: true, source_row_key: '1:0' },
+    ];
+    const f = await family('U7', { phone, ragicStudents, localStudents: rows });
+    const result = await ragicAdmin.saveZ03RecordDraft(f.id, {
+      record: {}, students: draftStudents(rows, f.ids),
+    }, 'test-admin');
+    assert.deepEqual(result.missing, [
+      { key: 'students.1.student_code', label: '編輯時第 2 位學員「測試壬」的學員編號或身分證字號' },
+    ]);
+    assert.deepEqual(result.skipped_removed_students, [{ id: f.ids[0], name: '測試辛', position: 1 }]);
+    assert.equal(writes.length, 0, '缺欄不寫 Ragic');
+    assert.equal(await statusOf(f.id), 'pending');
+  });
+
+  await t('U8 項次相同的學員列，清單順序以 id 決定', async () => {
+    const f = await family('U8', { phone: '0990000108', ragicStudents: [], localStudents: [] });
+    // 先插 id 較大的列：只靠 seq_raw 排序時，同項次的兩列會照插入順序回來（id 大的在前）。
+    const [small, large] = (await pool.query(
+      `SELECT nextval(pg_get_serial_sequence('ragic_z03_students','id'))::text AS id FROM generate_series(1,2)`
+    )).rows.map((r) => r.id);
+    for (const [sid, name] of [[large, '測試子'], [small, '測試癸']]) {
+      await pool.query(
+        `INSERT INTO ragic_z03_students (id, z03_record_id, seq_raw, name_raw, classification, present_in_latest_payload)
+         VALUES ($1,$2,'1',$3,'VALID',TRUE)`,
+        [sid, f.id, name]
+      );
+    }
+    const [item] = await ragicAdmin.listZ03Records({ status: 'all', q: f.sourceId });
+    assert.deepEqual(item.students.map((s) => s.id), [small, large]);
   });
 }
 
