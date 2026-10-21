@@ -16,6 +16,8 @@
 //   G14 註冊頁挑核對對象時不看已作廢（dismissed）的 Z03 紀錄（與核對端條件一致）
 //   G15 Ragic 已移除的歷史學員不能拿來靠身分證或差一字過關
 //   G16 註冊頁挑核對對象和核對端一致（完全同名照樣看已移除的學員，填寫順序不影響）
+//   G17 Preview 的 Demo 新用戶：用預建家長電話＋學員名註冊 → 綁上示範 LINE、不查 Ragic
+//   G18／G19 不是 Preview 安全模式、或正式環境：Demo 新用戶照舊停用
 // 不碰 Ragic（同步呼叫一律丟錯）；所有資料 finally 自己刪乾淨。
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -76,6 +78,7 @@ async function cleanup() {
   }
   await pool.query(`DELETE FROM parent_identity_backoffice_tasks WHERE source_record_ids && $1::text[]`, [made.sources]);
   await pool.query(`DELETE FROM source_record_links WHERE source_record_id = ANY($1::text[])`, [made.sources]);
+  if (parentIds.length) await pool.query(`DELETE FROM parent_identity_requests WHERE canonical_parent_id = ANY($1::uuid[])`, [parentIds]);
   if (claimIds.length) await pool.query(`DELETE FROM identity_claims WHERE id = ANY($1::uuid[])`, [claimIds]);
   await pool.query(`DELETE FROM ragic_z03_records WHERE z01_ragic_record_id = ANY($1::text[])`, [made.sources]);
   await pool.query(`DELETE FROM ragic_z01_shadow WHERE ragic_record_id = ANY($1::text[])`, [made.sources]);
@@ -309,6 +312,76 @@ async function cleanup() {
       assert.equal(pick.student.name, '張舊生');
       const byIdOnRemoved = await pickRegistrationClaimStudent(f.phone, [{ name: '新弟弟' }, { name: '某某某', id_number: 'K123456789' }]);
       assert.equal(byIdOnRemoved.student.name, '新弟弟');
+    });
+
+    const demoRegister = async (phone, kid) => {
+      const venue = (await pool.query(`SELECT id FROM venues WHERE is_active ORDER BY id LIMIT 1`)).rows[0].id;
+      const res = await fetch(`http://127.0.0.1:${server.address().port}/api/auth/parent-register-line`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ demo: true,
+          parent: { name: '示範家長', phone, email: `demo.${suffix}@example.invalid`, gender: '生理女', primary_venue_id: venue },
+          students: [{ name: kid, id_number: 'A123456789', birth_date: '2019-01-01', gender: '生理男', blood_type: '不清楚' }] }),
+      });
+      return { status: res.status, body: await res.json() };
+    };
+    const prebuiltDemo = async (tag, kid) => {
+      const phone = `0955${tag}${suffix.slice(1)}`;
+      made.phones.push(phone);
+      const venue = (await pool.query(`SELECT id FROM venues WHERE is_active ORDER BY id LIMIT 1`)).rows[0].id;
+      const p = (await pool.query(
+        `INSERT INTO parents (phone, name, primary_venue_id, is_active) VALUES ($1,'預建示範家長',$2,TRUE) RETURNING id`, [phone, venue])).rows[0];
+      await pool.query(`INSERT INTO students (parent_id, name, is_active) VALUES ($1,$2,TRUE)`, [p.id, kid]);
+      return { id: p.id, phone };
+    };
+
+    await t('G17 Preview 的 Demo 新用戶：用舊系統預建家長的電話＋學員名註冊 → 綁上示範 LINE、不查 Ragic', async () => {
+      const f = await prebuiltDemo('1', '示範小樂');
+      const saved = ragic.getParentByPhone;
+      ragic.getParentByPhone = async () => { throw new Error('unexpected Ragic call: getParentByPhone'); };
+      process.env.ALLOW_DEMO_LOGIN = '1';
+      process.env.PREVIEW_SAFE_MODE = '1';
+      try {
+        const r = await demoRegister(f.phone, '示範小樂');
+        assert.equal(r.status, 200, JSON.stringify(r.body));
+        assert.equal(r.body.status, 'registered_and_logged_in');
+        const p = (await pool.query(`SELECT line_uid FROM parents WHERE id=$1`, [f.id])).rows[0];
+        assert.match(p.line_uid, /^demo:register-/);
+        assert.deepEqual((await pool.query(`SELECT name FROM students WHERE parent_id=$1`, [f.id])).rows.map((s) => s.name), ['示範小樂']);
+      } finally {
+        ragic.getParentByPhone = saved;
+        delete process.env.ALLOW_DEMO_LOGIN;
+        delete process.env.PREVIEW_SAFE_MODE;
+      }
+    });
+
+    await t('G18 不是 Preview 安全模式：Demo 新用戶照舊停用（410）', async () => {
+      const f = await prebuiltDemo('2', '示範小安');
+      process.env.ALLOW_DEMO_LOGIN = '1';
+      try {
+        const r = await demoRegister(f.phone, '示範小安');
+        assert.equal(r.status, 410, JSON.stringify(r.body));
+        assert.equal(r.body.code, 'DEMO_REGISTER_DISABLED');
+        assert.equal((await pool.query(`SELECT line_uid FROM parents WHERE id=$1`, [f.id])).rows[0].line_uid, null);
+      } finally {
+        delete process.env.ALLOW_DEMO_LOGIN;
+      }
+    });
+
+    await t('G19 正式環境就算設了 Preview 安全模式：Demo 新用戶照舊停用（410）', async () => {
+      const f = await prebuiltDemo('3', '示範小平');
+      const savedEnv = process.env.NODE_ENV;
+      process.env.ALLOW_DEMO_LOGIN = '1';
+      process.env.PREVIEW_SAFE_MODE = '1';
+      process.env.NODE_ENV = 'production';
+      try {
+        const r = await demoRegister(f.phone, '示範小平');
+        assert.equal(r.status, 410, JSON.stringify(r.body));
+        assert.equal((await pool.query(`SELECT line_uid FROM parents WHERE id=$1`, [f.id])).rows[0].line_uid, null);
+      } finally {
+        process.env.NODE_ENV = savedEnv;
+        delete process.env.ALLOW_DEMO_LOGIN;
+        delete process.env.PREVIEW_SAFE_MODE;
+      }
     });
 
     console.log(`\n${passed} 個測試全數通過`);
