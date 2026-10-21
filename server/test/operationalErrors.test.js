@@ -91,7 +91,7 @@ test('canonical family import copies source identity as data, never uses it to t
     const hadExisting = existing.length > 0;
     const writes = []; const parent = { id: 'family', phone: '0900215261', line_uid: 'uid' };
     const child = { name: 'child', birth_date: '2010-01-02', gender: '男', id_number: 'A132702114' };
-    const ctx = { ...require('../services/studentAudit'), normalizePhone: x => x, normalizeStudentName: x => x, _trueZ01LineUid: () => 'uid', _venueIdFromMap: () => 'B', _z01SyncError: (c,m) => Error(m), ragic: { normalizeGender: x => x, parseZ01StudentsRaw: () => [], parseZ01Students: () => [child] } };
+    const ctx = { ...require('../services/studentAudit'), normalizePhone: x => x, normalizeStudentName: x => x, _trueZ01LineUid: () => 'uid', _venueIdFromMap: () => 'B', _z01SyncError: (c,m) => Error(m), ...require('../services/familyStudentMatch'), ragic: { normalizeGender: x => x, parseZ01StudentsRaw: () => [], parseZ01Students: () => [child] } };
     vm.createContext(ctx); vm.runInContext(code, ctx);
     const client = { query: async (sql, args) => {
       if (/FROM parents|UPDATE parents/.test(sql)) return { rows: [parent] };

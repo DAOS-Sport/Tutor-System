@@ -26,6 +26,7 @@ const line = require('./line');
 const { maskPhone } = require('../utils/piiMask');
 const { cleanVenueList } = require('./coachVenueScope');
 const { normalizePhone, normalizeStudentName, isCanonicalMobilePhone } = require('./identityNormalizer');
+const { matchFamilyStudent, withIdFirst } = require('./familyStudentMatch');
 const { createParentIdentityBackofficeTask } = require('./parentIdentityBackoffice');
 // Ragic 表單 / 欄位對應唯一來源（凍結點）：H01 LINE UID 欄位、場館欄位、角色關鍵字
 const {
@@ -2893,8 +2894,8 @@ async function _syncCanonicalZ01Record(client, z01Row, mapped, venuesMap) {
     [ragicRecordId, parent.id]
   );
 
-  // Exact normalized name inside this canonical family only. National ID is
-  // copied into a blank local field, never used as a match/merge key here.
+  // 只在這個 canonical family 裡比對。學員以身分證為主（Owner 2026-10-20，familyStudentMatch）：
+  // 同名但身分證不同是兩個孩子；沒有身分證可分辨的同名才算分不出來（AMBIGUOUS_STUDENT_MATCH）。
   const rawStudentRows = ragic.parseZ01StudentsRaw(z01Row);
   const studentIssues = [];
   for (const raw of rawStudentRows) {
@@ -2904,31 +2905,37 @@ async function _syncCanonicalZ01Record(client, z01Row, mapped, venuesMap) {
     else if (!normalizeStudentName(raw.name_raw)) studentIssues.push({ code: 'STUDENT_NAME_MISSING', source_row_id: raw.seq_raw || null });
   }
   const sourceStudents = ragic.parseZ01Students(z01Row);
-  const sourceNameCounts = new Map();
-  for (const s of sourceStudents) {
-    const key = normalizeStudentName(s.name);
-    if (key) sourceNameCounts.set(key, (sourceNameCounts.get(key) || 0) + 1);
-  }
+  const sourceId = (s) => String(s.id_number || '').trim().toUpperCase();
+  const indistinguishable = (s) => sourceStudents.some((other) => other !== s
+    && normalizeStudentName(other.name) === normalizeStudentName(s.name)
+    && (!sourceId(s) || !sourceId(other) || sourceId(s) === sourceId(other)));
   const existingStudents = (await client.query(
     `SELECT * FROM students WHERE parent_id = $1 ORDER BY created_at, id FOR UPDATE`, [parent.id]
   )).rows;
   const syncedStudentIds = [];
-  for (const s of sourceStudents) {
+  const taken = new Map();
+  // 子表列的 Ragic 編號和本地學員存的 Z02 編號不是同一套，這裡只比身分證與姓名。
+  const ordered = withIdFirst(sourceStudents.map((source) => ({
+    source, name: source.name, id_number: source.id_number, birth_date: source.birth_date, gender: source.gender,
+  })));
+  for (const entry of ordered) {
+    const s = entry.source;
     const normalizedName = normalizeStudentName(s.name);
     if (!normalizedName) {
       studentIssues.push({ code: 'STUDENT_NAME_MISSING', source_row_id: s.seq_raw || null });
       continue;
     }
-    if (sourceNameCounts.get(normalizedName) > 1) {
+    if (indistinguishable(s)) {
       studentIssues.push({ code: 'AMBIGUOUS_STUDENT_MATCH', name: normalizedName });
       continue;
     }
-    const matches = existingStudents.filter((row) => normalizeStudentName(row.name) === normalizedName);
-    if (matches.length > 1) {
+    const verdict = matchFamilyStudent(existingStudents, entry, { taken, batch: ordered, normalizeGender: ragic.normalizeGender });
+    if (verdict.ambiguous) {
       studentIssues.push({ code: 'AMBIGUOUS_STUDENT_MATCH', name: normalizedName });
       continue;
     }
-    let student = matches[0] || null;
+    if (verdict.duplicate) continue;
+    let student = verdict.row || null;
     const beforeStudent = student;
     const birthDate = /^\d{4}-\d{2}-\d{2}$/.test(String(s.birth_date || '')) ? s.birth_date : null;
     if (student) {
@@ -2944,6 +2951,7 @@ async function _syncCanonicalZ01Record(client, z01Row, mapped, venuesMap) {
          WHERE id = $1 RETURNING *`,
         [student.id, s.name, birthDate, ragic.normalizeGender(s.gender), s.blood_type || '', s.student_code || '', String(s.id_number || '').trim().toUpperCase()]
       )).rows[0];
+      existingStudents[existingStudents.indexOf(beforeStudent)] = student;
     } else {
       student = (await client.query(
         `INSERT INTO students
@@ -2959,6 +2967,7 @@ async function _syncCanonicalZ01Record(client, z01Row, mapped, venuesMap) {
       changes: diffChanges(beforeStudent, student), note: 'ragic-canonical-family-import',
     });
     syncedStudentIds.push(student.id);
+    taken.set(student.id, entry);
   }
   if (syncedStudentIds.length === 1) {
     await client.query(
@@ -3408,6 +3417,30 @@ function _z03StudentFromRow(row) {
   };
 }
 
+// 升級寫回 Ragic 只處理 Ragic 最新資料裡還在的學員：present_in_latest_payload = FALSE 是舊匯入
+// 留下的列，Ragic 已經沒有了；寫回去會用舊值蓋掉同編號的現存學員，或讓整筆儲存失敗。
+function _z03UpgradeStudents(row) {
+  return (row.students || [])
+    .filter((s) => s.present_in_latest_payload !== false)
+    .map(_z03StudentFromRow)
+    .filter((s) => s.name);
+}
+
+// 後台編輯表格列出的學員列（任一可編輯欄位有值，同前端 cleanStudentRows），順序同畫面（seq_raw, id）。
+// 提示裡的「編輯時第 N 位」用這裡的位置，櫃台打開編輯就對得上。
+function _z03EditableStudentRows(row) {
+  return (row.students || [])
+    .filter((s) => Z03_STUDENT_UPDATE_FIELDS.some((field) => _cleanText(s[field], 255)))
+    .map((s, idx) => ({ s, position: idx + 1 }));
+}
+
+// 儲存時沒寫回 Ragic 的舊列，回給前端提示櫃台。
+function _z03SkippedRemovedStudents(row) {
+  return _z03EditableStudentRows(row)
+    .filter(({ s }) => s.present_in_latest_payload === false)
+    .map(({ s, position }) => ({ id: s.id, name: _cleanText(s.name_raw, 100), position }));
+}
+
 function getZ03UpgradeMissingFields(row) {
   const parent = _z03ParentFromRow(row);
   const missing = [];
@@ -3428,11 +3461,19 @@ function getZ03UpgradeMissingFields(row) {
   if (parent.name && isPlaceholderParentName(parent.name) && !missing.some((m) => m.key === 'name')) {
     missing.push({ key: 'name', label: '家長姓名' });
   }
-  const validStudents = (row.students || []).map(_z03StudentFromRow).filter((s) => s.name);
-  if (!validStudents.length) missing.push({ key: 'students', label: '至少一位學員姓名' });
-  validStudents.forEach((s, idx) => {
-    if (!s.id_number && !s.student_code) {
-      missing.push({ key: `students.${idx}.student_code`, label: `第 ${idx + 1} 位學員編號或身分證字號` });
+  const presentStudents = _z03EditableStudentRows(row)
+    .filter(({ s }) => s.present_in_latest_payload !== false)
+    .map(({ s, position }) => ({ student: _z03StudentFromRow(s), position }))
+    .filter(({ student }) => student.name);
+  if (!presentStudents.length) {
+    missing.push({ key: 'students', label: '至少一位 Ragic 現存學員的姓名（已不在 Ragic 的舊列不算）' });
+  }
+  presentStudents.forEach(({ student, position }) => {
+    if (!student.id_number && !student.student_code) {
+      missing.push({
+        key: `students.${position - 1}.student_code`,
+        label: `編輯時第 ${position} 位學員「${student.name}」的學員編號或身分證字號`,
+      });
     }
   });
   return missing;
@@ -3762,7 +3803,7 @@ async function listZ03Records({ status = 'pending', q = '', limit = null, offset
   if (!records.length) return records;
 
   const students = (await pool.query(
-    `SELECT * FROM ragic_z03_students WHERE z03_record_id = ANY($1) ORDER BY seq_raw`,
+    `SELECT * FROM ragic_z03_students WHERE z03_record_id = ANY($1) ORDER BY seq_raw, id`,
     [records.map((r) => r.id)]
   )).rows;
   const byRecord = new Map();
@@ -3774,14 +3815,15 @@ async function listZ03Records({ status = 'pending', q = '', limit = null, offset
 }
 
 async function _upgradeZ03RecordToZ01(row, adminUsername) {
+  const skippedRemovedStudents = _z03SkippedRemovedStudents(row);
   if (row.status === 'dismissed') {
-    return { upgraded: false, skipped: 'dismissed', missing: [] };
+    return { upgraded: false, skipped: 'dismissed', missing: [], skipped_removed_students: skippedRemovedStudents };
   }
   const missing = getZ03UpgradeMissingFields(row);
-  if (missing.length) return { upgraded: false, missing };
+  if (missing.length) return { upgraded: false, missing, skipped_removed_students: skippedRemovedStudents };
 
   const parent = _z03ParentFromRow(row);
-  const students = (row.students || []).map(_z03StudentFromRow).filter((s) => s.name);
+  const students = _z03UpgradeStudents(row);
 
   const venueName = await ragic.venueLabel(parent.primary_venue_id);
   const payload = {
@@ -3829,7 +3871,7 @@ async function _upgradeZ03RecordToZ01(row, adminUsername) {
     [row.id, parent.name, adminUsername || null]
   );
 
-  return { upgraded, synced_to_ragic: true, missing: [], refreshed };
+  return { upgraded, synced_to_ragic: true, missing: [], refreshed, skipped_removed_students: skippedRemovedStudents };
 }
 
 async function saveZ03RecordDraft(id, payload = {}, adminUsername = null) {

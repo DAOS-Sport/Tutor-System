@@ -100,6 +100,7 @@ const UNIT = [
   'tests/session_note_visibility_test.js',
   'tests/legacy_import_marker_test.js',
   'tests/claim_student_matcher_test.js',
+  'tests/parent_demo_token_test.js',
   'tests/legacy_settled_payroll_test.js',
   'tests/promotion_label_test.js',
   'tests/promotion_order_test.js',
@@ -260,6 +261,10 @@ const DB = [
   'tests/false_success_db_test.js',
   'tests/z03_prebuilt_parent_claim_db_test.js',
   'tests/z03_claim_gate_db_test.js',
+  // Z03 卡片儲存寫回 Ragic 時跳過 Ragic 已移除的舊匯入學員（present_in_latest_payload=FALSE）；Ragic 讀寫全 stub。
+  'tests/z03_upgrade_skips_removed_students_db_test.js',
+  // 同一戶兩位同名、身分證不同的孩子：Ragic ↔ 本地學員以身分證為主（Owner 2026-10-20）。
+  'tests/student_sync_by_id_db_test.js',
   'tests/legacy_expiry_countdown_db_test.js',
 ];
 

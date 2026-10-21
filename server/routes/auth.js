@@ -67,6 +67,36 @@ const DEMO_ACCOUNTS = {
   custom2: { password: 'custom2', role: 'parent', phone: '0900637854' },
 };
 
+// Preview 示範註冊（Owner 2026-10-21）：讓註冊頁的「Demo 新用戶」在 Preview 拿舊系統資料測配對。
+// Preview 連不出去，Ragic 讀取對這種示範 UID 一律視為查無資料，配對只用本地資料（Z03、預建家長）。
+const PREVIEW_DEMO_UID_PREFIX = 'demo:register-';
+function _previewDemoRegistrationAllowed() {
+  return process.env.NODE_ENV !== 'production'
+    && process.env.ALLOW_DEMO_LOGIN === '1'
+    && process.env.PREVIEW_SAFE_MODE === '1';
+}
+// Preview 網址是公開的、資料庫也有真實家庭；每次示範註冊都換新的示範 UID，按 UID 計的冷靜期管不到。
+// 改按電話計：同一支電話 30 分鐘最多 5 次（每次最多 3 個名字），整體最多 30 次。
+// 沒填有效手機的請求不扣名額（核心流程會直接回 400），免得垃圾請求把名額用光。
+const PREVIEW_DEMO_REGISTER_WINDOW_MS = 30 * 60 * 1000;
+const PREVIEW_DEMO_REGISTER_PER_PHONE = 5;
+const PREVIEW_DEMO_REGISTER_TOTAL = 30;
+const _previewDemoRegisterTimes = new Map();
+function _takePreviewDemoRegisterSlot(phone, now = Date.now()) {
+  const fresh = (key) => (_previewDemoRegisterTimes.get(key) || []).filter((t) => now - t <= PREVIEW_DEMO_REGISTER_WINDOW_MS);
+  const mine = fresh(phone);
+  const all = fresh('*');
+  const ok = mine.length < PREVIEW_DEMO_REGISTER_PER_PHONE && all.length < PREVIEW_DEMO_REGISTER_TOTAL;
+  if (ok) { mine.push(now); all.push(now); }
+  for (const [key, list] of [[phone, mine], ['*', all]]) {
+    if (list.length) _previewDemoRegisterTimes.set(key, list);
+    else _previewDemoRegisterTimes.delete(key);
+  }
+  return ok;
+}
+const _isPreviewDemoUid = (lineUid) =>
+  String(lineUid || '').startsWith(PREVIEW_DEMO_UID_PREFIX) && _previewDemoRegistrationAllowed();
+
 router.post('/demo-login', async (req, res) => {
   // 即使有人誤把 ALLOW_DEMO_LOGIN 放進 production Secrets，也絕不可開啟 demo
   // 身分。production 只接受真實的 LINE / JWT 身分流程。
@@ -1434,7 +1464,7 @@ async function _registerParentCore(req, res, resolveLineUid) {
     // Ragic same-UID guard：註冊前的防重複建檔保險。登入仍只看本地 Z01；
     // 這裡只避免「本地鏡像缺失 + 同 UID 換電話註冊」時在 Ragic 建出第二筆 Z01。
     try {
-      const existsByLine = await ragic.getParentByLineUid(lineUid);
+      const existsByLine = _isPreviewDemoUid(lineUid) ? null : await ragic.getParentByLineUid(lineUid);
       if (existsByLine) {
         const byLine = _mapZ01ParentForIdentity(existsByLine);
         if (byLine.phone && byLine.phone !== phone) {
@@ -1468,7 +1498,7 @@ async function _registerParentCore(req, res, resolveLineUid) {
 
     if (!z03Match) {
       try {
-        ragicRowByPhone = ragicRowByPhone || await ragic.getParentByPhone(phone);
+        ragicRowByPhone = ragicRowByPhone || (_isPreviewDemoUid(lineUid) ? null : await ragic.getParentByPhone(phone));
       } catch (err) {
         console.warn('[auth/parent-register-line] ragic.getParentByPhone hydrate failed:', err.code || '', err.message);
         const r = _ragicErrorResponse(err);
@@ -1675,10 +1705,19 @@ async function _registerParentCore(req, res, resolveLineUid) {
 router.post('/parent-register-line', async (req, res) => {
   try {
     await _registerParentCore(req, res, async () => {
-      // 測試用「Demo 新用戶」已停用：Z01 只允許真實 LINE UID，demo 註冊不得再寫
-      // DEMOTEST_ 假 UID 到 Ragic。固定測試帳號請走 /api/auth/demo-login（本地 demo:<phone> sentinel）。
+      // 測試用「Demo 新用戶」：Z01 只允許真實 LINE UID，demo 註冊不得把假 UID 寫到 Ragic。
+      // 只有 Preview 安全模式（previewSafeEntry 擋掉所有對外連線）才開放，用 demo:register- 示範 UID
+      // 走真正的註冊／認領流程；其他環境一律停用，固定測試帳號請走 /api/auth/demo-login。
       const demoNewUser = process.env.ALLOW_DEMO_LOGIN === '1' && req.body?.demo === true;
       if (demoNewUser) {
+        if (_previewDemoRegistrationAllowed()) {
+          const demoPhone = String(req.body?.parent?.phone || '').trim();
+          if (TW_PHONE_RE.test(demoPhone) && !_takePreviewDemoRegisterSlot(demoPhone)) {
+            res.status(429).json({ error: 'Demo 註冊次數過多，請 30 分鐘後再試', code: 'DEMO_REGISTER_RATE_LIMITED' });
+            return null;
+          }
+          return `${PREVIEW_DEMO_UID_PREFIX}${crypto.randomUUID()}`;
+        }
         res.status(410).json({
           error: 'Demo 新用戶註冊已停用；請使用固定測試帳號登入',
           code: 'DEMO_REGISTER_DISABLED',
