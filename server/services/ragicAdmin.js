@@ -3417,6 +3417,30 @@ function _z03StudentFromRow(row) {
   };
 }
 
+// 升級寫回 Ragic 只處理 Ragic 最新資料裡還在的學員：present_in_latest_payload = FALSE 是舊匯入
+// 留下的列，Ragic 已經沒有了；寫回去會用舊值蓋掉同編號的現存學員，或讓整筆儲存失敗。
+function _z03UpgradeStudents(row) {
+  return (row.students || [])
+    .filter((s) => s.present_in_latest_payload !== false)
+    .map(_z03StudentFromRow)
+    .filter((s) => s.name);
+}
+
+// 後台編輯表格列出的學員列（任一可編輯欄位有值，同前端 cleanStudentRows），順序同畫面（seq_raw, id）。
+// 提示裡的「編輯時第 N 位」用這裡的位置，櫃台打開編輯就對得上。
+function _z03EditableStudentRows(row) {
+  return (row.students || [])
+    .filter((s) => Z03_STUDENT_UPDATE_FIELDS.some((field) => _cleanText(s[field], 255)))
+    .map((s, idx) => ({ s, position: idx + 1 }));
+}
+
+// 儲存時沒寫回 Ragic 的舊列，回給前端提示櫃台。
+function _z03SkippedRemovedStudents(row) {
+  return _z03EditableStudentRows(row)
+    .filter(({ s }) => s.present_in_latest_payload === false)
+    .map(({ s, position }) => ({ id: s.id, name: _cleanText(s.name_raw, 100), position }));
+}
+
 function getZ03UpgradeMissingFields(row) {
   const parent = _z03ParentFromRow(row);
   const missing = [];
@@ -3437,11 +3461,19 @@ function getZ03UpgradeMissingFields(row) {
   if (parent.name && isPlaceholderParentName(parent.name) && !missing.some((m) => m.key === 'name')) {
     missing.push({ key: 'name', label: '家長姓名' });
   }
-  const validStudents = (row.students || []).map(_z03StudentFromRow).filter((s) => s.name);
-  if (!validStudents.length) missing.push({ key: 'students', label: '至少一位學員姓名' });
-  validStudents.forEach((s, idx) => {
-    if (!s.id_number && !s.student_code) {
-      missing.push({ key: `students.${idx}.student_code`, label: `第 ${idx + 1} 位學員編號或身分證字號` });
+  const presentStudents = _z03EditableStudentRows(row)
+    .filter(({ s }) => s.present_in_latest_payload !== false)
+    .map(({ s, position }) => ({ student: _z03StudentFromRow(s), position }))
+    .filter(({ student }) => student.name);
+  if (!presentStudents.length) {
+    missing.push({ key: 'students', label: '至少一位 Ragic 現存學員的姓名（已不在 Ragic 的舊列不算）' });
+  }
+  presentStudents.forEach(({ student, position }) => {
+    if (!student.id_number && !student.student_code) {
+      missing.push({
+        key: `students.${position - 1}.student_code`,
+        label: `編輯時第 ${position} 位學員「${student.name}」的學員編號或身分證字號`,
+      });
     }
   });
   return missing;
@@ -3771,7 +3803,7 @@ async function listZ03Records({ status = 'pending', q = '', limit = null, offset
   if (!records.length) return records;
 
   const students = (await pool.query(
-    `SELECT * FROM ragic_z03_students WHERE z03_record_id = ANY($1) ORDER BY seq_raw`,
+    `SELECT * FROM ragic_z03_students WHERE z03_record_id = ANY($1) ORDER BY seq_raw, id`,
     [records.map((r) => r.id)]
   )).rows;
   const byRecord = new Map();
@@ -3783,14 +3815,15 @@ async function listZ03Records({ status = 'pending', q = '', limit = null, offset
 }
 
 async function _upgradeZ03RecordToZ01(row, adminUsername) {
+  const skippedRemovedStudents = _z03SkippedRemovedStudents(row);
   if (row.status === 'dismissed') {
-    return { upgraded: false, skipped: 'dismissed', missing: [] };
+    return { upgraded: false, skipped: 'dismissed', missing: [], skipped_removed_students: skippedRemovedStudents };
   }
   const missing = getZ03UpgradeMissingFields(row);
-  if (missing.length) return { upgraded: false, missing };
+  if (missing.length) return { upgraded: false, missing, skipped_removed_students: skippedRemovedStudents };
 
   const parent = _z03ParentFromRow(row);
-  const students = (row.students || []).map(_z03StudentFromRow).filter((s) => s.name);
+  const students = _z03UpgradeStudents(row);
 
   const venueName = await ragic.venueLabel(parent.primary_venue_id);
   const payload = {
@@ -3838,7 +3871,7 @@ async function _upgradeZ03RecordToZ01(row, adminUsername) {
     [row.id, parent.name, adminUsername || null]
   );
 
-  return { upgraded, synced_to_ragic: true, missing: [], refreshed };
+  return { upgraded, synced_to_ragic: true, missing: [], refreshed, skipped_removed_students: skippedRemovedStudents };
 }
 
 async function saveZ03RecordDraft(id, payload = {}, adminUsername = null) {
