@@ -88,8 +88,10 @@ function _takePreviewDemoRegisterSlot(phone, now = Date.now()) {
   const all = fresh('*');
   const ok = mine.length < PREVIEW_DEMO_REGISTER_PER_PHONE && all.length < PREVIEW_DEMO_REGISTER_TOTAL;
   if (ok) { mine.push(now); all.push(now); }
-  _previewDemoRegisterTimes.set(phone, mine);
-  _previewDemoRegisterTimes.set('*', all);
+  for (const [key, list] of [[phone, mine], ['*', all]]) {
+    if (list.length) _previewDemoRegisterTimes.set(key, list);
+    else _previewDemoRegisterTimes.delete(key);
+  }
   return ok;
 }
 const _isPreviewDemoUid = (lineUid) =>
