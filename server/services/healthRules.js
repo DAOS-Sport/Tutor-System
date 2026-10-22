@@ -29,6 +29,7 @@ const SWEEP_GRACE_MS = 15 * MINUTE;
 const DAILY_JOBS = [
   { name: 'ragic_outbox_nightly', hhmm: '00:10', catchUp: 'any', label: '新註冊家長寫入 Ragic（每天 00:10）' },
   { name: 'ragic_backup', hhmm: '00:30', catchUp: 'any', label: '家長與學員寫回 Ragic（每天 00:30）' },
+  { name: 'yazheng_snapshot', hhmm: '01:30', catchUp: 'any', label: '雅正轉全量快照推送（每天 01:30）' },
   { name: 'ragic_pull', hhmm: '02:30', catchUp: 'any', label: '從 Ragic 拉回家長與學員（每天 02:30）' },
   { name: 'ragic_staff_venues', hhmm: '03:30', catchUp: 'any', label: 'Ragic 員工與場館同步（每天 03:30）' },
   { name: 'expiry_reminder', hhmm: '09:00', catchUp: 'same_day', label: '堂數到期提醒（每天 09:00）' },
