@@ -35,11 +35,25 @@ function _nearByName(rows, name) {
 // （缺生日、同名重複的 INVALID_ROW／DUPLICATE_CANDIDATE 仍是真的孩子，照樣可比；完全同名的比對不受這條限制。）
 const _fuzzyEligible = (row) => row.present_in_latest_payload !== false && row.classification !== 'EMPTY_TEMPLATE_ROW';
 
-// 註冊頁可一次填好幾位學員，但 Z03 認領只核對一位：照 claimZ03Identity 的順序（同名 → 身分證 → 只差一字）
-// 挑對得上的那位，家長不必把已登記的孩子填在第一位。家庭範圍與比對資料都和 claimZ03Identity 相同。
-// 最多看 MAX_PREBUILT_CLAIM_STUDENTS 位，看了幾位就算猜了幾次。
+// 同名的登記列和送來的身分證衝不衝突（學員以身分證為唯一鍵）：有一筆身分證相同就算對上；
+// 否則只拿還在的列比，Ragic 刪掉重打留下的已移除舊列不拿來擋人。rows：{ id_number, row（_fuzzyEligible 用）}
+function _sameNameIdConflict(rows, idNumber) {
+  const id = String(idNumber || '').trim().toUpperCase();
+  const ids = (list) => list.map((r) => String(r.id_number || '').trim().toUpperCase()).filter(Boolean);
+  if (!id || ids(rows).includes(id)) return false;
+  return ids(rows.filter((r) => _fuzzyEligible(r.row))).length > 0;
+}
+
+// 註冊頁一次最多填 MAX_PREBUILT_CLAIM_STUDENTS 位學員，填了幾位就算猜了幾次。照 claimZ03Identity 的順序（同名 → 身分證 → 只差一字）
+// 挑一位當核對對象，家長不必把已登記的孩子填在第一位；家庭範圍與比對資料都和 claimZ03Identity 相同。
+// 其餘交給 claimZ03Identity 在同一筆交易裡連結或新增。
+// 身分證為主（Owner 2026-10-20）：同名但身分證和登記的不同（_sameNameIdConflict）是這一戶的另一個孩子，
+// 同名仍證明是這一戶，但優先挑同名且身分證相符的那位當核對對象，填寫順序不影響結果。
+// 好幾位都沒有同名／身分證對上、只靠其中一位差一字：視為新戶（Owner 2026-10-20），另建帳號、不碰舊系統那一戶。
 async function pickRegistrationClaimStudent(phone, students, db = pool) {
-  const considered = students.slice(0, MAX_PREBUILT_CLAIM_STUDENTS);
+  if (students.length > MAX_PREBUILT_CLAIM_STUDENTS) {
+    throw new Z03ClaimError('CLAIM_TOO_MANY_STUDENTS', CLAIM_TOO_MANY_STUDENTS_MESSAGE, 400);
+  }
   const rows = (await db.query(
     `SELECT s.name_raw AS name, s.id_number_raw AS id_number, s.present_in_latest_payload, s.classification
        FROM ragic_z03_students s JOIN ragic_z03_records r ON r.id = s.z03_record_id
@@ -47,12 +61,54 @@ async function pickRegistrationClaimStudent(phone, students, db = pool) {
         AND r.status IN ('pending','resolved','manual_review')`, [normalizePhone(phone)]
   )).rows;
   const fuzzyRows = rows.filter(_fuzzyEligible);
-  const exact = considered.findIndex((s) =>
-    rows.some((row) => normalizeStudentName(row.name) === normalizeStudentName(s.name)));
-  const byId = considered.findIndex((s) => matchStudent(fuzzyRows, s, { allowNear: false })?.method === 'ID');
-  const near = considered.findIndex((s) => _nearByName(fuzzyRows, s.name));
-  const pick = [exact, byId, near].find((i) => i >= 0) ?? 0;
-  return { student: considered[pick], guesses: considered.length };
+  const sameName = (s) => rows.filter((row) => normalizeStudentName(row.name) === normalizeStudentName(s.name))
+    .map((row) => ({ id_number: row.id_number, row }));
+  const exact = students.findIndex((s) => sameName(s).length > 0);
+  const strictExact = students.findIndex((s) => sameName(s).length > 0 && !_sameNameIdConflict(sameName(s), s.id_number));
+  const byId = students.findIndex((s) => matchStudent(fuzzyRows, s, { allowNear: false })?.method === 'ID');
+  const near = students.map((s) => _nearByName(fuzzyRows, s.name));
+  const firstNear = near.findIndex(Boolean);
+  const index = [strictExact, byId, exact, firstNear].find((i) => i >= 0) ?? 0;
+  return {
+    student: students[index],
+    extraStudents: students.filter((_, i) => i !== index),
+    guesses: students.length,
+    newAccount: exact < 0 && byId < 0 && firstNear >= 0 && students.length > 1,
+    similarNames: near.filter(Boolean).map((v) => String(v.candidates[0].name || '').trim()),
+  };
+}
+
+// 註冊頁其餘填寫的學員對照登記的孩子（Owner 2026-10-20）：同名且身分證相符、或身分證對上的連結；其餘另建，
+// 同名但身分證不同（身分證為主，是另一個孩子）或和登記學員只差一字的記 NEW_SIMILAR。
+// 比對資料同主核對對象：同名看全部（身分證衝突照 _sameNameIdConflict），身分證／差一字只看 _fuzzyEligible。
+// 同一個名字填兩次（含核對對象）、或兩位對到同一位登記學員，整筆當核對失敗。
+function _classifyExtraStudents(childRows, primaryRows, students, primaryName = '') {
+  const names = [primaryName, ...students.map((s) => s.name)].map(normalizeStudentName).filter(Boolean);
+  if (new Set(names).size !== names.length) return { invalid: true };
+  const candidates = childRows.map((row) => ({ name: row.name_raw, id_number: row.id_number_raw, row }));
+  const fuzzy = candidates.filter((c) => _fuzzyEligible(c.row));
+  const taken = new Set(primaryRows.map((row) => row.id));
+  const verdicts = students.map((s) => {
+    const sameName = candidates.filter((c) => normalizeStudentName(c.name) === normalizeStudentName(s.name));
+    if (!sameName.length) return matchStudent(fuzzy, s, { allowNear: false });
+    if (_sameNameIdConflict(sameName, s.id_number)) return { newChild: String(sameName[0].name || '').trim() };
+    return { method: 'EXACT', candidates: sameName };
+  });
+  const linked = [];
+  for (const v of verdicts) {
+    if (!v || v.newChild) continue;
+    if (v.conflict) return { invalid: true };
+    const rows = v.candidates.map((c) => c.row);
+    if (rows.some((row) => taken.has(row.id))) return { invalid: true };
+    rows.forEach((row) => taken.add(row.id));
+    linked.push(rows);
+  }
+  const appended = students.filter((_, i) => !verdicts[i] || verdicts[i].newChild);
+  const newChildNames = new Set(students.filter((_, i) => verdicts[i]?.newChild).map((s) => normalizeStudentName(s.name)));
+  const similarNames = students.map((s, i) => verdicts[i]?.newChild
+    || (!verdicts[i] && _nearByName(fuzzy, s.name)?.candidates[0].name)).filter(Boolean)
+    .map((name) => String(name).trim());
+  return { linked, appended, newChildNames, similarNames };
 }
 
 const _cooldownError = () => new Z03ClaimError('CLAIM_COOLDOWN', CLAIM_COOLDOWN_MESSAGE, 429);
@@ -119,11 +175,17 @@ async function _applyAllowlistedLocalProfile(client, parent, parentProfile = {},
   )).rows[0];
 }
 
-async function _insertOrReuseStudent(client, parentId, studentInput) {
+// reuseWithoutId=false：已知和登記的同名孩子身分證不同（另一個孩子）時，本地沒身分證的同名學員
+// 多半就是登記的那位（例如舊系統預建、只有姓名），不能拿來沿用，要另建。
+async function _insertOrReuseStudent(client, parentId, studentInput, { reuseWithoutId = true } = {}) {
   const normalized = normalizeStudentName(studentInput?.name);
+  const submittedId = String(studentInput?.id_number || '').trim().toUpperCase();
+  // 身分證為主（Owner 2026-10-20）：同名但身分證不同是另一個孩子，不沿用那一筆。
   const existing = (await client.query(
     `SELECT * FROM students WHERE parent_id=$1 ORDER BY created_at,id FOR UPDATE`, [parentId]
-  )).rows.filter((row) => normalizeStudentName(row.name) === normalized);
+  )).rows.filter((row) => normalizeStudentName(row.name) === normalized
+    && !(submittedId && row.id_number && String(row.id_number).trim().toUpperCase() !== submittedId)
+    && (reuseWithoutId || String(row.id_number || '').trim()));
   if (existing.length > 1) {
     throw new Z03ClaimError('DATA_RECONCILIATION_PENDING', 'canonical family 內同名 student 命中多筆', 409);
   }
@@ -139,6 +201,79 @@ async function _insertOrReuseStudent(client, parentId, studentInput) {
   )).rows[0];
   await writeStudentAudit(client, student.id, 'create', parentActor(parentId, 'identity-registration-append'));
   return { student, appended: true };
+}
+
+// 本地已有的學員只補空白欄位（不覆蓋）；身分證不和同戶其他學員重複才補。
+async function _fillBlankStudentFields(client, parentId, student, input, note) {
+  const filled = (await client.query(
+    `UPDATE students
+        SET birth_date=COALESCE(birth_date,$2::date),
+            gender=COALESCE(NULLIF(gender,''),NULLIF($3,'')),
+            blood_type=COALESCE(NULLIF(blood_type,''),NULLIF($4,'')),
+            id_number=CASE WHEN NULLIF(id_number,'') IS NULL AND NULLIF($5,'') IS NOT NULL
+                            AND NOT EXISTS (SELECT 1 FROM students x
+                                             WHERE x.parent_id=students.parent_id AND x.id_number=$5 AND x.id<>students.id)
+                           THEN $5 ELSE id_number END,
+            updated_at=NOW()
+      WHERE id=$1
+      RETURNING *`,
+    [student.id, _safeDate(input.birth_date), input.gender || '',
+     input.blood_type || '', String(input.id_number || '').trim().toUpperCase()]
+  )).rows[0];
+  await writeStudentAudit(client, filled.id, 'edit', {
+    ...parentActor(parentId, note), changes: diffChanges(student, filled),
+  });
+  return filled;
+}
+
+// 登記在 Z03 的孩子鏡射成本地學員（資料以登記的為準）。
+async function _mirrorSourceStudent(client, parentId, child) {
+  const student = (await client.query(
+    `INSERT INTO students
+       (parent_id,name,birth_date,gender,blood_type,student_code,is_active,last_synced_at)
+     VALUES ($1,$2,$3::date,NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),TRUE,NOW())
+     RETURNING *`,
+    [parentId, child.name_raw, _safeDate(child.birth_date_raw),
+     child.gender_raw || '', child.blood_type_raw || '', child.student_code_raw || '']
+  )).rows[0];
+  await writeStudentAudit(client, student.id, 'create', parentActor(parentId, 'legacy-claim-source-mirror'));
+  return student;
+}
+
+// 其餘學員（_classifyExtraStudents 的結果）寫進本地：對上登記的鏡射並回填 canonical_student_id；
+// 新的另建，回傳要送 Ragic 的那幾位。canAppend 為 false（這筆認領沒有 outbox 可送 Ragic）時新的不建，回傳已忽略的姓名。
+async function _attachExtraStudents(client, parentId, extras, { canAppend }) {
+  for (const rows of extras.linked) {
+    const wanted = normalizeStudentName(rows[0].name_raw);
+    const same = (await client.query(
+      `SELECT * FROM students WHERE parent_id=$1 ORDER BY created_at,id FOR UPDATE`, [parentId]
+    )).rows.filter((row) => normalizeStudentName(row.name) === wanted);
+    if (same.length > 1) throw new Z03ClaimError('DATA_RECONCILIATION_PENDING', 'canonical family 內同名 student 命中多筆', 409);
+    const student = same[0] || await _mirrorSourceStudent(client, parentId, rows[0]);
+    await client.query(`UPDATE ragic_z03_students SET canonical_student_id=$2 WHERE id=ANY($1::bigint[])`,
+      [rows.map((row) => row.id), student.id]);
+  }
+  if (!canAppend) return { toRagic: [], ignored: extras.appended.map((s) => String(s.name || '').trim()) };
+  const toRagic = [];
+  const ignored = [];
+  for (const input of extras.appended) {
+    const reuseWithoutId = !extras.newChildNames?.has(normalizeStudentName(input.name));
+    const { student, appended } = await _insertOrReuseStudent(client, parentId, input, { reuseWithoutId });
+    if (appended) { toRagic.push(input); continue; }
+    if (student.ragic_record_id) continue;
+    // 沿用的本地學員還不在 Ragic（例如舊系統預建、只有姓名）：補上這次填的資料，以本地合併後的值送 Ragic
+    // （同預建認領：送原始值的話，之後 Ragic→本地同步會反過來蓋掉本地）。身分證補不進去（同戶已有人用）就不送。
+    const filled = await _fillBlankStudentFields(client, parentId, student, input, 'identity-registration-append-fill');
+    const wantedId = String(input.id_number || '').trim().toUpperCase();
+    if (wantedId && String(filled.id_number || '').trim().toUpperCase() !== wantedId) {
+      ignored.push(String(input.name || '').trim());
+      continue;
+    }
+    const birth = (await client.query(`SELECT to_char(birth_date,'YYYY-MM-DD') AS d FROM students WHERE id=$1`, [filled.id])).rows[0].d;
+    toRagic.push({ ...input, name: filled.name, id_number: filled.id_number || '', gender: filled.gender || '',
+      blood_type: filled.blood_type || '', birth_date: birth || '' });
+  }
+  return { toRagic, ignored };
 }
 
 function _payloadHash(value) {
@@ -170,6 +305,7 @@ async function registerNewParentLocalFirst({
   students = [],
   lineUid,
   idempotencyKey,
+  similarOnFile = [],
   correlationId = crypto.randomUUID(),
 } = {}) {
   const phoneCanonical = normalizePhone(parentInput?.phone);
@@ -184,7 +320,10 @@ async function registerNewParentLocalFirst({
   const payloadHash = _payloadHash(payload);
   const client = await pool.connect();
   let attempt = null;
-  let attemptResult = { outcome: 'REGISTERED' };
+  // 舊系統有這支電話、但視為新戶另建（Owner 2026-10-20）：和登記的孩子只差一字的記 NEW_SIMILAR 給櫃台反查。
+  let attemptResult = similarOnFile.length
+    ? { outcome: 'NEW_SIMILAR', matchedName: similarOnFile.join('、') }
+    : { outcome: 'REGISTERED' };
   let failedPrebuiltClaim = null;
   try {
     attempt = await claimAttempts.reserveClaimAttempt({
@@ -210,7 +349,9 @@ async function registerNewParentLocalFirst({
       attemptResult = { outcome: 'REPLAYED' };
       return { parent: replay, replayed: true, sync_state: replay.state, correlation_id: replay.correlation_id };
     }
-    if (attempt.coolingDown) {
+    // 從舊系統那一戶轉來的新戶也是核對過名字的，和 Z03 認領一樣按名字數算到上限，免得兩種回應透露哪個名字差一字。
+    if (attempt.coolingDown
+        || (similarOnFile.length && attempt.priorGuesses + cleanStudents.length > claimAttempts.FAILURE_LIMIT)) {
       attemptResult = { outcome: 'COOLDOWN' };
       throw _cooldownError();
     }
@@ -301,25 +442,7 @@ async function registerNewParentLocalFirst({
       if (matches.length > 1) throw new Z03ClaimError('DATA_RECONCILIATION_PENDING', '同名學員命中多筆');
       let student = matches[0] || null;
       if (student && claimingPrebuilt) {
-        const beforeFill = student;
-        student = (await client.query(
-          `UPDATE students
-              SET birth_date=COALESCE(birth_date,$2::date),
-                  gender=COALESCE(NULLIF(gender,''),NULLIF($3,'')),
-                  blood_type=COALESCE(NULLIF(blood_type,''),NULLIF($4,'')),
-                  id_number=CASE WHEN NULLIF(id_number,'') IS NULL AND NULLIF($5,'') IS NOT NULL
-                                  AND NOT EXISTS (SELECT 1 FROM students x
-                                                   WHERE x.parent_id=students.parent_id AND x.id_number=$5 AND x.id<>students.id)
-                                 THEN $5 ELSE id_number END,
-                  updated_at=NOW()
-            WHERE id=$1
-            RETURNING *`,
-          [student.id, _safeDate(sourceStudent.birth_date), sourceStudent.gender || '',
-           sourceStudent.blood_type || '', String(sourceStudent.id_number || '').trim().toUpperCase()]
-        )).rows[0];
-        await writeStudentAudit(client, student.id, 'edit', {
-          ...parentActor(parent.id, 'prebuilt-claim-fill'), changes: diffChanges(beforeFill, student),
-        });
+        student = await _fillBlankStudentFields(client, parent.id, student, sourceStudent, 'prebuilt-claim-fill');
       }
       if (!student) {
         student = (await client.query(
@@ -449,13 +572,19 @@ async function completeTrueUidRegistration({
     parent = await _applyAllowlistedLocalProfile(client, parent,
       { ...parentProfile, phone: phoneCanonical }, ownershipVerified);
 
-    const sourceStudentNames = new Set(ragic.parseZ01Students(source).map((row) => normalizeStudentName(row.name)));
+    // Z01 子表已有這位孩子才不送：同名但身分證不同是另一個孩子（身分證為主，Owner 2026-10-20）。
+    const sourceStudents = ragic.parseZ01Students(source);
+    const inSource = (input) => {
+      const id = String(input.id_number || '').trim().toUpperCase();
+      return sourceStudents.some((row) => normalizeStudentName(row.name) === normalizeStudentName(input.name)
+        && !(id && row.id_number && row.id_number !== id));
+    };
     const localStudents = [];
     const studentsToAppend = [];
     for (const studentInput of submitted) {
       const local = await _insertOrReuseStudent(client, parent.id, studentInput);
       localStudents.push(local.student);
-      if (!sourceStudentNames.has(normalizeStudentName(studentInput.name))) studentsToAppend.push(studentInput);
+      if (!inSource(studentInput)) studentsToAppend.push(studentInput);
     }
     await client.query(
       `INSERT INTO source_record_links
@@ -596,6 +725,7 @@ async function claimZ03Identity({
   sourceRecordId = null,
   claimIdNumber = '',
   claimGuesses = 1,
+  extraStudents = [],
   actor = 'parent-auth',
   correlationId = crypto.randomUUID(),
 } = {}) {
@@ -618,7 +748,9 @@ async function claimZ03Identity({
   let failedAttempt = null;
   try {
     attempt = await claimAttempts.reserveClaimAttempt({
-      lineUid, phone: phoneCanonical, path: 'Z03', submittedName: studentName, submittedIdNumber, guesses: claimGuesses,
+      lineUid, phone: phoneCanonical, path: 'Z03', guesses: claimGuesses,
+      submittedName: [studentName, ...extraStudents.map((s) => s.name)].join('、'),
+      submittedIdNumber: [submittedIdNumber, ...extraStudents.map((s) => s.id_number || '')].join(''),
     }, client);
     if (attempt.priorGuesses + claimGuesses > claimAttempts.FAILURE_LIMIT) {
       attemptResult = { outcome: 'COOLDOWN' };
@@ -662,6 +794,15 @@ async function claimZ03Identity({
       [familyIds]
     )).rows;
     let exactMatches = childRows.filter((row) => normalizeStudentName(row.name_raw) === studentNameNormalized);
+    // 身分證為主（Owner 2026-10-20）：註冊時同名但身分證和登記的不同，是這一戶的另一個孩子。
+    // 同名仍證明是這一戶，但不連到登記的那位：另建、記 NEW_SIMILAR 給櫃台反查。
+    let sameNameNewChild = false;
+    if (allowStudentAppend && _sameNameIdConflict(
+      exactMatches.map((row) => ({ id_number: row.id_number_raw, row })), submittedIdNumber)) {
+      similarOnFile = String(exactMatches[0].name_raw || '').trim();
+      sameNameNewChild = true;
+      exactMatches = [];
+    }
     if (exactMatches.length === 0) {
       // 姓名沒有完全相同：身分證相同或姓名只差一字也算對上（claimStudentMatcher），之後以登記的姓名為準。
       // 註冊新增學員（allowStudentAppend）時不認 NEAR：只差一字的可能是還沒登記的兄弟姊妹，
@@ -685,11 +826,21 @@ async function claimZ03Identity({
         };
       }
     }
+    // 註冊頁其餘填寫的學員：核對對象要先證明是這一戶（同名或身分證對上）才處理其餘的（Owner 2026-10-20）。
+    const extras = _classifyExtraStudents(childRows, exactMatches, extraStudents, claimStudentName);
+    if (extraStudents.length && (extras.invalid || !(exactMatches.length || sameNameNewChild))) {
+      failedAttempt = { sourceRecordId: families.length === 1 ? families[0].id : null };
+      throw new Z03ClaimError('CLAIM_VERIFICATION_FAILED', CLAIM_MISMATCH_MESSAGE, 409, { reason: 'IDENTITY_NOT_FOUND' });
+    }
+    const similarNames = [...new Set([similarOnFile, ...extras.similarNames].filter(Boolean))];
+    if (exactMatches.length && extras.similarNames.length) {
+      attemptResult = { outcome: 'NEW_SIMILAR', sourceRecordId: exactMatches[0].z03_record_id, matchedName: similarNames.join('、') };
+    }
     if (exactMatches.length === 0) {
       // 註冊新增學員也要先證明是這一戶：名字和登記的孩子只差一字才另建（標 NEW_SIMILAR），
       // 完全對不上就當核對失敗，不再只憑電話把 LINE 綁進這一戶（Owner 2026-10-20）。
       if (allowStudentAppend && similarOnFile) {
-        attemptResult = { outcome: 'NEW_SIMILAR', matchedName: similarOnFile };
+        attemptResult = { outcome: 'NEW_SIMILAR', matchedName: similarNames.join('、') };
         const localCandidates = (await client.query(
           `SELECT * FROM parents
             WHERE line_uid=$1 OR phone=$2 OR regexp_replace(COALESCE(phone,''),'\\D','','g')=$2
@@ -745,7 +896,9 @@ async function claimZ03Identity({
             )).rows[0];
           }
           parent = await _applyAllowlistedLocalProfile(client, parent, submittedProfile, ownershipVerified);
-          const { student } = await _insertOrReuseStudent(client, parent.id, submittedStudent);
+          const { student } = await _insertOrReuseStudent(client, parent.id, submittedStudent,
+            { reuseWithoutId: !sameNameNewChild });
+          const extra = await _attachExtraStudents(client, parent.id, extras, { canAppend: false });
           for (const source of families) {
             const claim = (await client.query(
               `INSERT INTO identity_claims
@@ -791,7 +944,7 @@ async function claimZ03Identity({
           });
           await client.query('COMMIT');
           return { parent, student, replayed: false, student_appended: true,
-            sync_state: 'DATA_RECONCILIATION_PENDING', correlation_id: correlationId };
+            sync_state: 'DATA_RECONCILIATION_PENDING', correlation_id: correlationId, ignored_students: extra.ignored };
         }
 
         await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [
@@ -840,7 +993,11 @@ async function claimZ03Identity({
           )).rows[0];
         }
         parent = await _applyAllowlistedLocalProfile(client, parent, submittedProfile, ownershipVerified);
-        const { student } = await _insertOrReuseStudent(client, parent.id, submittedStudent);
+        const { student } = await _insertOrReuseStudent(client, parent.id, submittedStudent,
+          { reuseWithoutId: !sameNameNewChild });
+        const appendKey = `bind-z01-line-uid:${family.z01_ragic_record_id}`;
+        const appendQueued = (await client.query(`SELECT 1 FROM ragic_sync_outbox WHERE idempotency_key=$1`, [appendKey])).rowCount > 0;
+        const extra = await _attachExtraStudents(client, parent.id, extras, { canAppend: !appendQueued });
         const claim = (await client.query(
           `INSERT INTO identity_claims
              (purpose,state,phone_canonical,student_name_normalized,canonical_parent_id,
@@ -898,9 +1055,9 @@ async function claimZ03Identity({
               payload_reference,state,correlation_id,target_record_id,field_id)
            VALUES ($1,$2,'BIND_Z01_LINE_UID','RAGIC','Z01',$3,$4::jsonb,'pending',$5,$3,'1006846')
            ON CONFLICT (idempotency_key) DO NOTHING`,
-          [`bind-z01-line-uid:${family.z01_ragic_record_id}`, claim.id, family.z01_ragic_record_id,
+          [appendKey, claim.id, family.z01_ragic_record_id,
            JSON.stringify({ canonical_parent_id: parent.id, profile_patch: profile.patch,
-             students_to_append: [submittedStudent], verify_readback: true,
+             students_to_append: [submittedStudent, ...extra.toRagic], verify_readback: true,
              skip_uid_write: remoteUid === lineUid }), claim.correlation_id]
         );
         await client.query(
@@ -912,7 +1069,7 @@ async function claimZ03Identity({
         );
         await client.query('COMMIT');
         return { parent, student, replayed: false, student_appended: true,
-          sync_state: 'SYNC_PENDING', correlation_id: claim.correlation_id };
+          sync_state: 'SYNC_PENDING', correlation_id: claim.correlation_id, ignored_students: extra.ignored };
       }
       // 核對失敗只記這一次（同一個 LINE 帳號錯 5 次才冷靜），不再把整個家庭鎖成人工審核
       // （Owner 2026-10-20：一次打錯字就整戶鎖死，家長之後填對也進不來）。
@@ -995,6 +1152,7 @@ async function claimZ03Identity({
             WHERE id=ANY($1::bigint[])`,
           [allExactMatchIds, student.id]
         );
+        const extra = await _attachExtraStudents(client, parent.id, extras, { canAppend: false });
         for (const source of matchedFamilies) {
           const claim = (await client.query(
             `INSERT INTO identity_claims
@@ -1032,7 +1190,7 @@ async function claimZ03Identity({
         );
         await client.query('COMMIT');
         return { parent, student, replayed: false, sync_state: 'DATA_RECONCILIATION_PENDING',
-          correlation_id: correlationId, ambiguous_source_resolved: false };
+          correlation_id: correlationId, ambiguous_source_resolved: false, ignored_students: extra.ignored };
       }
     }
 
@@ -1099,8 +1257,10 @@ async function claimZ03Identity({
            WHERE id=$1`,
           [family.id, linkedParent.id, linkedStudent.id, actor, correlationId]
         );
+        const extra = await _attachExtraStudents(client, linkedParent.id, extras, { canAppend: false });
         await client.query('COMMIT');
-        return { parent: linkedParent, student: linkedStudent, replayed: true, sync_state: 'SYNC_PENDING', correlation_id: correlationId };
+        return { parent: linkedParent, student: linkedStudent, replayed: true, sync_state: 'SYNC_PENDING',
+          correlation_id: correlationId, ignored_students: extra.ignored };
       }
     }
 
@@ -1162,18 +1322,11 @@ async function claimZ03Identity({
       reviewContext = { z03Ids: [family.id], sourceRecordId: family.z01_ragic_record_id, code: 'AMBIGUOUS_STUDENT_MATCH' };
       throw new Z03ClaimError('AMBIGUOUS_STUDENT_MATCH', 'canonical family 內同名 student 命中多筆', 409);
     }
-    let student = canonicalStudents[0] || null;
-    if (!student) {
-      student = (await client.query(
-        `INSERT INTO students
-           (parent_id,name,birth_date,gender,blood_type,student_code,is_active,last_synced_at)
-         VALUES ($1,$2,$3::date,NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),TRUE,NOW())
-         RETURNING *`,
-        [parent.id, matchedChild.name_raw, _safeDate(matchedChild.birth_date_raw),
-         matchedChild.gender_raw || '', matchedChild.blood_type_raw || '', matchedChild.student_code_raw || '']
-      )).rows[0];
-      await writeStudentAudit(client, student.id, 'create', parentActor(parent.id, 'legacy-claim-source-mirror'));
-    }
+    const student = canonicalStudents[0] || await _mirrorSourceStudent(client, parent.id, matchedChild);
+    // 新的學員跟這筆 outbox 一起送 Ragic；這個來源之前已排過 outbox 就加不進去，回傳已忽略讓家長登入後再新增。
+    const bindKey = `bind-z01-line-uid:${family.z01_ragic_record_id}`;
+    const bindQueued = (await client.query(`SELECT 1 FROM ragic_sync_outbox WHERE idempotency_key=$1`, [bindKey])).rowCount > 0;
+    const extra = await _attachExtraStudents(client, parent.id, extras, { canAppend: !bindQueued });
 
     const claim = (await client.query(
       `INSERT INTO identity_claims
@@ -1259,9 +1412,9 @@ async function claimZ03Identity({
           payload_reference,state,correlation_id,target_record_id,field_id)
        VALUES ($1,$2,'BIND_Z01_LINE_UID','RAGIC','Z01',$3,$4::jsonb,'pending',$5,$3,'1006846')
       ON CONFLICT (idempotency_key) DO NOTHING`,
-      [`bind-z01-line-uid:${family.z01_ragic_record_id}`, claim.id, family.z01_ragic_record_id,
+      [bindKey, claim.id, family.z01_ragic_record_id,
        JSON.stringify({ canonical_parent_id: parent.id, profile_patch: profile.patch,
-         students_to_append: [], verify_readback: registrationCompletion,
+         students_to_append: extra.toRagic, verify_readback: registrationCompletion,
          skip_uid_write: remoteUid === lineUid }),
        claim.correlation_id]
     );
@@ -1276,7 +1429,8 @@ async function claimZ03Identity({
     );
 
     await client.query('COMMIT');
-    return { parent, student, replayed: false, sync_state: 'SYNC_PENDING', correlation_id: claim.correlation_id };
+    return { parent, student, replayed: false, sync_state: 'SYNC_PENDING', correlation_id: claim.correlation_id,
+      ignored_students: extra.ignored };
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     if (attemptResult.outcome !== 'COOLDOWN') {
