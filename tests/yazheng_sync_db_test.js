@@ -140,6 +140,44 @@ console.log('yazheng_sync_db_test');
   } finally {
     await db.query('ROLLBACK').catch(() => {});
     db.release();
+  }
+
+  // 游標唯一的存放處是 runWithLock 寫進 job_runs 的 result_summary：走一次真的路徑。
+  // lock.js 用全域 pool，不能包在交易裡；先清掉這個工作名稱的紀錄，結束後連同測試訂單一起刪。
+  const { runWithLock } = require(path.join(ROOT, 'server/cron/lock'));
+  const cleanup = async () => {
+    await pool.query('DELETE FROM job_runs WHERE job_name = $1', [yz.CHANGE_JOB]);
+    await pool.query('DELETE FROM job_locks WHERE job_name = $1', [yz.CHANGE_JOB]);
+    await pool.query("DELETE FROM admin_enrollments WHERE id = 'yz-lock-1'");
+  };
+  try {
+    await cleanup();
+    const venue = (await pool.query('SELECT id FROM venues ORDER BY id LIMIT 1')).rows[0].id;
+    await pool.query(
+      `INSERT INTO admin_enrollments (id, parent_name, parent_phone, students, coach, venue_id, course_type, original_price,
+         final_price, status, submitted_at, created_at, updated_at)
+       VALUES ('yz-lock-1', '測試家長', '0912000909', ARRAY['測試學員'], '測試教練', $1, 1, 0, 0, 'confirmed',
+               '2031-03-01T10:00:00.654321+08:00', '2031-03-01T10:00:00.654321+08:00', '2031-03-01T10:00:00.654321+08:00')`, [venue]);
+
+    await check('YZ-A3 runWithLock 路徑：成功 → 游標存進 job_runs，下一輪讀得回來、預檢變 false', async () => {
+      const r = receiver(200);
+      const out = await runWithLock(yz.CHANGE_JOB, () => yz.pushChanges({ env: ENV, fetchImpl: r.fetchImpl }));
+      assert.equal(out.status, 'success');
+      assert.ok(out.result.sent >= 1);
+      assert.equal(await yz.readChangeCursor(), out.result.cursor);
+      assert.equal(await yz.hasChanges(), false);
+    });
+
+    await check('YZ-A3 runWithLock 路徑：對方回 500 → 記 error，游標不動', async () => {
+      const before = await yz.readChangeCursor();
+      await pool.query("UPDATE admin_enrollments SET updated_at = '2031-03-02T10:00:00+08:00' WHERE id = 'yz-lock-1'");
+      assert.equal(await yz.hasChanges(), true);
+      const out = await runWithLock(yz.CHANGE_JOB, () => yz.pushChanges({ env: ENV, fetchImpl: receiver(500).fetchImpl }));
+      assert.equal(out.status, 'error');
+      assert.equal(await yz.readChangeCursor(), before);
+    });
+  } finally {
+    await cleanup().catch(() => {});
     await pool.end();
   }
   if (failures) { console.error(`yazheng_sync_db_test: ${failures} 項失敗`); process.exit(1); }
