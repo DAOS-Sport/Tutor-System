@@ -23,7 +23,10 @@ const CHANGE_MAX_BATCHES = 10;
 const SNAPSHOT_PAGE = 500;
 const PUSH_TIMEOUT_MS = 15 * 1000;
 
-// changed_at＝GREATEST(created_at, updated_at)；匯入工具只填 created_at 的列也算得到。
+// changed_at＝GREATEST(created_at, updated_at)，截到毫秒：資料庫有微秒，但 Node 的 Date 只到毫秒，
+// 游標若存毫秒、比對卻用微秒，最後一筆會永遠「大於游標」而被重送（預檢永遠為真、分頁重複）。
+// 選取、比對、排序、篩選一律用同一個式子，同一毫秒內的再用 id 排先後。
+const CHANGED_AT = "date_trunc('milliseconds', GREATEST(ae.created_at, COALESCE(ae.updated_at, ae.created_at)))";
 const ORDER_COLUMNS = `
   ae.id::text AS enrollment_id,
   ae.external_order_no,
@@ -38,7 +41,7 @@ const ORDER_COLUMNS = `
   ae.status,
   ae.created_at,
   ae.updated_at,
-  GREATEST(ae.created_at, COALESCE(ae.updated_at, ae.created_at)) AS changed_at`;
+  ${CHANGED_AT} AS changed_at`;
 
 function toRecord(row) {
   const iso = (v) => (v ? new Date(v).toISOString() : null);
@@ -79,11 +82,11 @@ async function listOrders({ since = null, after = null, limit = SNAPSHOT_PAGE, d
   const where = [];
   if (since) {
     params.push(since);
-    where.push(`GREATEST(ae.created_at, COALESCE(ae.updated_at, ae.created_at)) >= $${params.length}::timestamptz`);
+    where.push(`${CHANGED_AT} >= $${params.length}::timestamptz`);
   }
   if (after) {
     params.push(after.at, after.id);
-    where.push(`(GREATEST(ae.created_at, COALESCE(ae.updated_at, ae.created_at)), ae.id::text)
+    where.push(`(${CHANGED_AT}, ae.id::text)
                 > ($${params.length - 1}::timestamptz, $${params.length}::text)`);
   }
   params.push(n + 1);
@@ -151,7 +154,7 @@ async function hasChanges(db = pool) {
   const { rows } = c
     ? await db.query(
       `SELECT 1 FROM admin_enrollments ae
-        WHERE (GREATEST(ae.created_at, COALESCE(ae.updated_at, ae.created_at)), ae.id::text) > ($1::timestamptz, $2::text)
+        WHERE (${CHANGED_AT}, ae.id::text) > ($1::timestamptz, $2::text)
         LIMIT 1`, [c.at, c.id])
     : await db.query('SELECT 1 FROM admin_enrollments LIMIT 1');
   return rows.length > 0;

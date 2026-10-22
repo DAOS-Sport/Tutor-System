@@ -52,18 +52,21 @@ console.log('yazheng_sync_db_test');
     await ins('yz-test-1', { phone: '0912-000-101', notes: '雅正轉｜單據序號 99001｜測試', ext: 'ABLEPOS:99001', at: '2031-02-01T10:00:00+08:00' });
     await ins('yz-test-2', { phone: '+886912000202', inv: ' zz00000001 ', at: '2031-02-01T10:00:00+08:00' });
     await ins('yz-test-3', { phone: '0912000303', notes: '一般訂單', at: '2031-02-01T11:00:00+08:00', status: 'refunded' });
+    // 正式庫的時間有微秒；Node 讀出來只到毫秒。兩筆落在同一毫秒、id 不同，分頁和預檢都不能重複或卡住。
+    await ins('yz-test-4a', { phone: '0912000404', at: '2031-02-01T12:00:00.123456+08:00' });
+    await ins('yz-test-4b', { phone: '0912000405', at: '2031-02-01T12:00:00.123999+08:00' });
 
     await check('YZ-A2 欄位：單據序號、雅正轉標記、發票正規化、電話只給末 4 碼', async () => {
       const { orders, next } = await yz.listOrders({ since: SINCE, db });
       assert.equal(next, null);
-      assert.deepEqual(orders.map((o) => o.enrollment_id), ['yz-test-1', 'yz-test-2', 'yz-test-3']);
+      assert.deepEqual(orders.map((o) => o.enrollment_id), ['yz-test-1', 'yz-test-2', 'yz-test-3', 'yz-test-4a', 'yz-test-4b']);
       const [a, b, c] = orders;
       assert.equal(a.legacy_seq, '99001');
       assert.equal(a.yazheng_tag, true);
       assert.equal(b.yazheng_tag, false);
       assert.equal(b.legacy_seq, null);
       assert.equal(b.invoice_number, 'ZZ00000001');
-      assert.deepEqual(orders.map((o) => o.parent_phone_last4), ['0101', '0202', '0303']);
+      assert.deepEqual(orders.map((o) => o.parent_phone_last4), ['0101', '0202', '0303', '0404', '0405']);
       assert.equal(c.status, 'refunded');
       assert.ok(!/09\d{8}/.test(JSON.stringify(orders)), '輸出不可出現完整手機號碼');
       assert.ok(!JSON.stringify(orders).includes('測試家長'), '輸出不可出現姓名');
@@ -72,13 +75,13 @@ console.log('yazheng_sync_db_test');
     await check('YZ-A2 分頁：一頁一筆，接起來不重複、不漏、最後 next=null', async () => {
       const seen = [];
       let after = null;
-      for (let i = 0; i < 5; i += 1) {
+      for (let i = 0; i < 10; i += 1) {
         const { orders, next } = await yz.listOrders({ since: SINCE, after, limit: 1, db });
         seen.push(...orders.map((o) => o.enrollment_id));
         if (!next) break;
         after = yz.decodeCursor(next);
       }
-      assert.deepEqual(seen, ['yz-test-1', 'yz-test-2', 'yz-test-3']);
+      assert.deepEqual(seen, ['yz-test-1', 'yz-test-2', 'yz-test-3', 'yz-test-4a', 'yz-test-4b']);
     });
 
     await check('YZ-A3 沒設定就不推送', async () => {
@@ -107,11 +110,11 @@ console.log('yazheng_sync_db_test');
       assert.equal(r.got.length, 1);
       const { headers, body, raw } = r.got[0];
       assert.equal(body.type, 'changes');
-      assert.deepEqual(body.orders.map((o) => o.enrollment_id), ['yz-test-1', 'yz-test-2', 'yz-test-3']);
+      assert.deepEqual(body.orders.map((o) => o.enrollment_id), ['yz-test-1', 'yz-test-2', 'yz-test-3', 'yz-test-4a', 'yz-test-4b']);
       assert.equal(headers['X-YZ-Event-Id'], body.event_id);
       assert.equal(headers['X-YZ-Signature'], yz.sign(ENV.YZ_WEBHOOK_SECRET, headers['X-YZ-Timestamp'], raw));
-      assert.equal(res.sent, 3);
-      assert.deepEqual(yz.decodeCursor(res.cursor), { at: new Date('2031-02-01T11:00:00+08:00').toISOString(), id: 'yz-test-3' });
+      assert.equal(res.sent, 5);
+      assert.deepEqual(yz.decodeCursor(res.cursor), { at: '2031-02-01T04:00:00.123Z', id: 'yz-test-4b' });
     });
 
     await check('YZ-A3 預檢：游標之後有變動 → true；游標已在最後一筆 → false（不因重疊視窗永遠為真）', async () => {
