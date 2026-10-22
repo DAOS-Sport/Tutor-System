@@ -140,14 +140,20 @@ async function readChangeCursor(db = pool) {
   return rows[0]?.cursor || null;
 }
 
-/** 便宜的預檢：沒有變動就不必掛鎖、也不留執行紀錄（每 5 分鐘一次）。 */
+/**
+ * 便宜的預檢：游標之後有沒有新變動。沒有就不必掛鎖、也不留執行紀錄（每 5 分鐘一次）。
+ * 這裡刻意不加 CHANGE_OVERLAP_MS：重疊視窗裡一定有上一輪送過的最後一筆，加了就永遠是 true。
+ * 交易晚提交、落在游標之前的列，由下一次真的推送的重疊視窗或每晚快照補上。
+ */
 async function hasChanges(db = pool) {
   const cursor = await readChangeCursor(db);
-  const since = cursor ? new Date(decodeCursor(cursor).at).getTime() - CHANGE_OVERLAP_MS : 0;
-  const { rows } = await db.query(
-    `SELECT 1 FROM admin_enrollments ae
-      WHERE GREATEST(ae.created_at, COALESCE(ae.updated_at, ae.created_at)) >= to_timestamp($1::double precision / 1000)
-      LIMIT 1`, [since]);
+  const c = cursor ? decodeCursor(cursor) : null;
+  const { rows } = c
+    ? await db.query(
+      `SELECT 1 FROM admin_enrollments ae
+        WHERE (GREATEST(ae.created_at, COALESCE(ae.updated_at, ae.created_at)), ae.id::text) > ($1::timestamptz, $2::text)
+        LIMIT 1`, [c.at, c.id])
+    : await db.query('SELECT 1 FROM admin_enrollments LIMIT 1');
   return rows.length > 0;
 }
 

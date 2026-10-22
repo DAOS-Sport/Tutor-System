@@ -114,8 +114,14 @@ console.log('yazheng_sync_db_test');
       assert.deepEqual(yz.decodeCursor(res.cursor), { at: new Date('2031-02-01T11:00:00+08:00').toISOString(), id: 'yz-test-3' });
     });
 
-    await check('YZ-A3 預檢：有變動才回 true', async () => {
+    await check('YZ-A3 預檢：游標之後有變動 → true；游標已在最後一筆 → false（不因重疊視窗永遠為真）', async () => {
       assert.equal(await yz.hasChanges(db), true);
+      const last = (await yz.listOrders({ db, limit: 1000 })).orders.at(-1);
+      await db.query(
+        `INSERT INTO job_runs (id, job_name, holder_id, status, triggered_by, started_at, finished_at, result_summary)
+         VALUES (gen_random_uuid(), $1, 'yz-test', 'success', 'cron', NOW() + interval '2 day', NOW() + interval '2 day', $2::jsonb)`,
+        [yz.CHANGE_JOB, JSON.stringify({ cursor: yz.encodeCursor(last) })]);
+      assert.equal(await yz.hasChanges(db), false);
     });
 
     await check('YZ-A3 全量快照：分頁送出、snapshot_id 相同、只有最後一頁 is_last', async () => {
