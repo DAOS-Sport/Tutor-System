@@ -197,6 +197,9 @@ const UNIT = [
   'tests/release/reconcile_image_pipeline_test.js',
   // #12 假成功／路由不明稽核：未知 /api JSON 404、SPA fallback、路由重複／遮蔽、catch 回成功。
   'tests/false_success_audit_test.js',
+  // 健康 API（health-v1）：燈號規則的邊界、HEALTH_TOKEN 的 503／401／200。假的 pool，不連 DB。
+  'tests/health_rules_test.js',
+  'tests/health_pipelines_route_test.js',
 ];
 
 // 需要真實 Postgres。多數含破壞性前置清理，只可對拋棄式測試庫執行。
@@ -266,6 +269,8 @@ const DB = [
   // 同一戶兩位同名、身分證不同的孩子：Ragic ↔ 本地學員以身分證為主（Owner 2026-10-20）。
   'tests/student_sync_by_id_db_test.js',
   'tests/legacy_expiry_countdown_db_test.js',
+  // 健康 API 的收集器在現行 schema 上逐支查詢；單一交易、結束 ROLLBACK。
+  'tests/health_pipelines_db_test.js',
 ];
 
 /** 漏網檢查：tests/ 與 tests/release/ 的每個 .js 都必須被分層，否則整輪失敗。 */

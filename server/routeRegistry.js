@@ -30,6 +30,8 @@ const API_ROUTES = [
   // 前端診斷回報：家長端畫面壞在送出之前時，唯一留得下證據的通道。
   ['/api/diagnostics', () => require('./routes/diagnostics')],
   ['/api/onboarding', () => require('./routes/onboarding')],
+  // 監控中樞讀的 health-v1 報告；路由自己驗 HEALTH_TOKEN。
+  ['/api/health', () => require('./routes/health')],
 ];
 
 // 掛在 /api/admin 底下（server/routes/admin.js）。

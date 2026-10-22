@@ -1,0 +1,35 @@
+{
+  "system": "workforce-scheduling",
+  "build": "2cac1c3",
+  "checkedAt": "2026-10-21T08:00:00+08:00",
+  "overall": "red",
+  "pipelines": [
+    {
+      "id": "holiday-table",
+      "name": "國定假日表",
+      "level": "red",
+      "reason": "最後一天是 2026-10-10，已過期 11 天",
+      "lastSuccessAt": null,
+      "lastFailureAt": null,
+      "source": "system.service.ts 內建表"
+    },
+    {
+      "id": "ragic.employee-sync",
+      "name": "Ragic 員工同步",
+      "level": "green",
+      "reason": "最近一次成功 03:00:12，耗時 41 秒",
+      "lastSuccessAt": "2026-10-21T03:00:12+08:00",
+      "lastFailureAt": null,
+      "source": "job_runs"
+    },
+    {
+      "id": "h01-webhook",
+      "name": "H01 webhook",
+      "level": "yellow",
+      "reason": "無法觀測：沒有紀錄可查",
+      "lastSuccessAt": null,
+      "lastFailureAt": null,
+      "source": "none"
+    }
+  ]
+}
