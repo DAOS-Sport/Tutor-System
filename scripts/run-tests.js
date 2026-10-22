@@ -200,6 +200,7 @@ const UNIT = [
   // 健康 API（health-v1）：燈號規則的邊界、HEALTH_TOKEN 的 503／401／200。假的 pool，不連 DB。
   'tests/health_rules_test.js',
   'tests/health_pipelines_route_test.js',
+  'tests/yazheng_sync_test.js',
 ];
 
 // 需要真實 Postgres。多數含破壞性前置清理，只可對拋棄式測試庫執行。
@@ -271,6 +272,7 @@ const DB = [
   'tests/legacy_expiry_countdown_db_test.js',
   // 健康 API 的收集器在現行 schema 上逐支查詢；單一交易、結束 ROLLBACK。
   'tests/health_pipelines_db_test.js',
+  'tests/yazheng_sync_db_test.js',
 ];
 
 /** 漏網檢查：tests/ 與 tests/release/ 的每個 .js 都必須被分層，否則整輪失敗。 */

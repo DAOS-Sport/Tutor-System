@@ -22,6 +22,8 @@ const { STABILITY_FLAGS } = require('../config/ragicSchema');
 const { applyDueScheduledCourseTypeChanges } = require('../services/courseTypeSchedule');
 // 每日排程「時段認領＋補跑」（2026-10-14，GitHub #10）：autoscale 多台不重複、縮到 0 台錯過的會補。
 const slots = require('./slots');
+const yazhengSync = require('../services/yazhengSync');
+const { runWithLock } = require('./lock');
 
 // 對家長推播的 LIFF base URL；新版用 LIFF_URL_PARENT，舊版 LIFF_URL 為 fallback
 const LIFF_URL = process.env.LIFF_URL_PARENT || process.env.LIFF_URL || 'https://liff.line.me/-';
@@ -537,6 +539,24 @@ function initCronJobs() {
       throw e;
     }
   }), { timezone: 'Asia/Taipei' });
+
+  // ── 雅正轉同步（雅正轉同步 SPEC v1，YZ-A3）──
+  // 沒設 YZ_WEBHOOK_URL／YZ_WEBHOOK_SECRET 就什麼都不做。每 5 分鐘：先便宜地看有沒有變動，
+  // 有才掛鎖推送（避免每 5 分鐘都留一筆 job_runs）；對方失敗時游標不動，下一輪重送。
+  scheduleTaipei('*/5 * * * *', async () => {
+    if (!yazhengSync.webhookConfig()) return;
+    try {
+      if (!(await yazhengSync.hasChanges())) return;
+      await runWithLock(yazhengSync.CHANGE_JOB, () => yazhengSync.pushChanges());
+    } catch (err) {
+      console.warn('[Cron/Yazheng] change push failed:', err.code || err.message);
+    }
+  });
+  // 每晚 01:30 全量快照，補 Webhook 漏送與櫃台手動建檔（接收端收齊後完整對帳）。
+  scheduleTaipei('30 1 * * *', slots.daily('yazheng_snapshot', '01:30', async () => {
+    if (!yazhengSync.webhookConfig()) return { skipped: 'not_configured' };
+    return yazhengSync.pushSnapshot();
+  }));
 
   // ── 每日排程補跑檢查（2026-10-14，GitHub #10）──
   // 每 5 分鐘＋服務啟動後 1 分鐘：上面 8 支每日排程若「最近一個應執行時段」沒有任何
