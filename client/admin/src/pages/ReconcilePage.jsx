@@ -376,14 +376,25 @@ function LegacyMatchPanel({ match, loading, picked, onToggle, newSessions }) {
       </>
     );
   }
-  const chosenRemaining = match.status === 'CHOOSE'
-    ? (match.packages || []).filter((p) => picked.has(p.seq)).reduce((sum, p) => sum + (p.remaining_sessions || 0), 0)
-    : match.remaining_total;
-  const sessionHint = (match.ok || (match.status === 'CHOOSE' && picked.size > 0)) && Number.isFinite(newSessions)
-    && Number.isFinite(chosenRemaining) && chosenRemaining !== newSessions
-    ? <p className="mt-2 text-xs text-amber-700">提醒：舊課程包快照剩 {chosenRemaining} 堂，這張付款單是 {newSessions} 堂（只提醒，不影響對帳）。</p>
+  // v1.1（YZM-08，D7）：對帳通過後的堂數＝所選舊包「已用＋剩餘」，建檔填的堂數會被取代。
+  const chosen = (match.packages || []).filter((p) => !p.built
+    && (match.status === 'CHOOSE' ? picked.has(p.seq) : true));
+  const sum = (key) => chosen.reduce((total, p) => total + (Number(p[key]) || 0), 0);
+  const plan = { total: sum('total_sessions'), used: sum('used_sessions'), remaining: sum('remaining_sessions') };
+  const planLine = (match.ok || (match.status === 'CHOOSE' && picked.size > 0)) && chosen.length
+    ? (
+      <p className="mt-2 rounded-md bg-white px-2 py-1.5 text-xs text-gray-700">
+        對帳通過後：<b>總 {plan.total} 堂</b>（舊系統已用 {plan.used} 堂、剩 <b>{plan.remaining}</b> 堂）。
+        {Number.isFinite(newSessions) && newSessions !== plan.total ? `建檔填的 ${newSessions} 堂會被取代。` : ''}
+        {plan.used ? `舊系統上過的 ${plan.used} 堂會補成「舊系統轉移」上課紀錄，家長看得到，不計教練薪資。` : ''}
+      </p>
+    )
     : null;
-  return <div className="mt-2 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm">{body}{sessionHint}</div>;
+  // D9／D10：會被擋的原因先講，櫃台不用送出才知道。
+  const blockerLines = (match.blockers || []).length
+    ? <ul className="mt-2 space-y-1">{match.blockers.map((b) => <li key={b.code} className="text-red-700">✕ {b.message}</li>)}</ul>
+    : null;
+  return <div className="mt-2 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm">{body}{planLine}{blockerLines}</div>;
 }
 
 function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
@@ -442,7 +453,8 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
       return next;
     });
   }
-  const legacyOk = !!legacyMatch && !matchLoading && (legacyMatch.ok || (legacyMatch.status === 'CHOOSE' && picked.size > 0));
+  const legacyOk = !!legacyMatch && !matchLoading && !(legacyMatch.blockers || []).length
+    && (legacyMatch.ok || (legacyMatch.status === 'CHOOSE' && picked.size > 0));
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape' && !busy) onCancel(); };
@@ -518,7 +530,10 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
             ? { mode: 'seqs', seqs: seqInput }
             : { mode: 'invoice', seqs: legacyMatch?.status === 'CHOOSE' ? [...picked] : undefined },
         });
-        toast.success(`對帳通過（雅正轉），涵蓋舊單 ${(result?.legacy?.seqs || []).join('、') || '—'}；5 分鐘內同步到 GPT 反查網站`);
+        const lg = result?.legacy || {};
+        toast.success(`對帳通過（雅正轉），涵蓋舊單 ${(lg.seqs || []).join('、') || '—'}`
+          + (Number.isFinite(lg.total) ? `；總 ${lg.total} 堂、舊系統已用 ${lg.used} 堂、剩 ${lg.remaining} 堂` : '')
+          + '；5 分鐘內同步到 GPT 反查網站');
         onDone();
         return;
       }

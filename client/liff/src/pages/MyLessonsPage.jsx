@@ -366,8 +366,12 @@ function RecordCard({ r, e, busy, onCheckin, onOpen }) {
   // 簽到方家長姓名（團報一方簽到即整組生效）：有姓名顯示「已簽 · 姓名」；
   // 舊 API 快取只有稱謂 label 時退回「已代簽」。
   const signerName = r.checked_in_by_name || null;
+  // 舊系統上過、已從堂數扣掉的課（雅正轉補進來的記錄）。Owner 2026-10-27 同意改凍結檔（SPEC YZM-08 D11）。
+  const legacy = r.checkin_source === 'legacy_import';
   let btn;
-  if (r.checked_in_at || signerName || r.partner_checkin_label) {
+  if (legacy) {
+    btn = <StatusSquare label={['舊系統']} tone="attended" disabled />;
+  } else if (r.checked_in_at || signerName || r.partner_checkin_label) {
     btn = (
       <StatusSquare
         label={signerName ? ['已簽', signerName] : (r.partner_checkin_label ? ['已代簽'] : ['已出席'])}
@@ -391,7 +395,9 @@ function RecordCard({ r, e, busy, onCheckin, onOpen }) {
           <div className="text-sm font-bold tabular-nums text-gray-900">{dateStr}{timeStr}</div>
           <div className="mt-1 text-sm text-gray-700">{coachLine}</div>
           <div className="mt-0.5 text-sm text-gray-500">學員：{r.student_name || e.student}</div>
-          {checkinTimeStr && (
+          {legacy ? (
+            <div className="mt-1 inline-block rounded-md bg-gray-100 px-2 py-0.5 text-xs text-gray-600">在舊系統上課，已從堂數扣除</div>
+          ) : checkinTimeStr && (
             <div className="mt-0.5 text-xs text-gray-400">簽到時間：{checkinTimeStr}</div>
           )}
           {(signerName || r.partner_checkin_label) && (

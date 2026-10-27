@@ -76,8 +76,20 @@ const parent = { session_id: 's2', source: 'parent', by: '王大明', student: '
     const api = fs.readFileSync(path.join(ROOT, 'server/routes/courses.js'), 'utf8');
     assert.ok(/admin_enrollments\.external_order_no/.test(api), '/mine 沒有選出 external_order_no');
     assert.ok(/is_legacy_import:\s*String\(row\.external_order_no \|\| ''\)\.startsWith\('ABLEPOS:'\)/.test(api));
+    // 雅正轉手動建檔（收付方式「舊系統轉移」）也標（SPEC YZM-08 D11）
+    assert.ok(/startsWith\('ABLEPOS:'\) \|\| row\.payment_method === '舊系統轉移'/.test(api), '手動建檔的舊系統轉移沒有標章');
     const card = fs.readFileSync(path.join(ROOT, 'client/liff/src/components/CourseCard.jsx'), 'utf8');
     assert.ok(/period\.is_legacy_import && \(/.test(card) && card.includes('舊系統轉移'));
+  });
+
+  check('家長上課紀錄：/lessons 帶簽到來源，舊系統那幾堂標「舊系統」、不給簽到鈕（SPEC YZM-08 D11）', () => {
+    const api = fs.readFileSync(path.join(ROOT, 'server/routes/courses.js'), 'utf8');
+    const lessons = api.slice(api.indexOf("router.get('/lessons'"), api.indexOf("router.get('/mine'"));
+    assert.ok(/cr\.checked_in_source AS checkin_source/.test(lessons), '/lessons 沒有回 checkin_source');
+    const page = fs.readFileSync(path.join(ROOT, 'client/liff/src/pages/MyLessonsPage.jsx'), 'utf8');
+    assert.ok(/const legacy = r\.checkin_source === 'legacy_import';/.test(page));
+    assert.ok(/if \(legacy\) \{\s*btn = <StatusSquare label=\{\['舊系統'\]\}/.test(page), '舊系統那幾堂要先判斷、顯示「舊系統」');
+    assert.ok(page.includes('在舊系統上課，已從堂數扣除'));
   });
 
   check('家長登入發憑證時起算舊系統課程到期', () => {

@@ -25,10 +25,15 @@ CREATE TABLE IF NOT EXISTS yz_legacy_packages (
   course_type         INTEGER,
   total_sessions      INTEGER,
   remaining_sessions  INTEGER,
+  used_sessions       INTEGER,
+  uses                JSONB NOT NULL DEFAULT '[]'::jsonb,
   purchase_date       DATE,
   snapshot_at         TIMESTAMPTZ NOT NULL,
   loaded_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- v1.1（YZM-08）：舊系統已用堂數與每一堂的時間／教練（[{ at, coach }]），對帳時補成「舊系統轉移」上課紀錄。
+ALTER TABLE yz_legacy_packages ADD COLUMN IF NOT EXISTS used_sessions INTEGER;
+ALTER TABLE yz_legacy_packages ADD COLUMN IF NOT EXISTS uses JSONB NOT NULL DEFAULT '[]'::jsonb;
 CREATE INDEX IF NOT EXISTS idx_yz_legacy_packages_invoice ON yz_legacy_packages (invoice);
 CREATE TABLE IF NOT EXISTS yz_legacy_links (
   seq              TEXT NOT NULL REFERENCES yz_legacy_packages (seq),
@@ -78,6 +83,9 @@ async function builtMap(db, seqs) {
   return out;
 }
 
+const usedOf = (p) => (p.used_sessions != null ? Number(p.used_sessions)
+  : Math.max(0, (Number(p.total_sessions) || 0) - (Number(p.remaining_sessions) || 0)));
+
 function view(p, built) {
   const b = built.get(p.seq);
   return {
@@ -89,6 +97,7 @@ function view(p, built) {
     course_type: p.course_type,
     total_sessions: p.total_sessions,
     remaining_sessions: p.remaining_sessions,
+    used_sessions: usedOf(p),
     built: b ? { enrollment_id: b.enrollment_id, at: b.at, source: b.source } : null,
   };
 }
@@ -215,7 +224,130 @@ async function linkForReconcile(db, { seqs, children, checkoutId, invoice, by })
   }
 }
 
+// ── v1.1（YZM-08，B 方案）：對帳時帶入舊系統堂數＋補舊上課紀錄 ─────────────────────────
+
+const LEGACY_SOURCE = 'legacy_import'; // 和匯入工具同一個來源值：不計薪資、不發評鑑、前端標「舊系統轉移」
+
+// 家長要有真實 LINE 綁定，對帳才開得了課期（條件和 periodProvisioning.ensureSoloCoursePeriod 一致）。
+const BOUND_PARENT_SQL = `SELECT 1 FROM parents
+  WHERE phone = $1 AND is_active = TRUE
+    AND line_uid IS NOT NULL AND line_uid <> ''
+    AND line_uid NOT LIKE 'demo:%' AND line_uid NOT LIKE 'DEMOTEST_%'
+  LIMIT 1`;
+
+/** 對帳前就知道會被擋的原因（D9 一次 1 期、D10 家長未綁 LINE）。預覽與對帳共用。 */
+async function reconcileBlockers(db, children) {
+  const out = [];
+  if (children.length !== 1) {
+    out.push({ code: 'LEGACY_ONE_PERIOD', message: `舊系統轉移一次只能建 1 期，這張付款單有 ${children.length} 期。請取消後重建，堂數填 6 以內即可，對帳時系統會自動帶入舊包堂數` });
+  }
+  const phones = [...new Set(children.map((c) => c.parent_phone).filter(Boolean))];
+  for (const phone of phones) {
+    if (!(await db.query(BOUND_PARENT_SQL, [phone])).rowCount) {
+      out.push({ code: 'LEGACY_PARENT_NOT_BOUND', message: '家長還沒加入新系統（綁 LINE），系統開不了課期。請家長先加入，再回來對帳' });
+    }
+  }
+  return out;
+}
+
+/**
+ * 所選舊單號的堂數試算（D7）：總＝各包「已用＋剩餘」加總；uses＝舊系統每一堂，依時間排序。
+ * 快照的 uses 筆數必須等於已用，不然補出來的紀錄會和剩餘堂數對不上 → 回 error。
+ */
+async function planForReconcile(db, seqs) {
+  const { rows } = await db.query(
+    `SELECT seq, total_sessions, remaining_sessions, used_sessions, uses FROM yz_legacy_packages
+      WHERE seq = ANY($1::text[]) ORDER BY seq`, [seqs]);
+  if (rows.length !== seqs.length) return { error: '快照裡找不到部分舊單號', code: 'LEGACY_SEQ_NOT_FOUND' };
+  let used = 0;
+  let remaining = 0;
+  const uses = [];
+  for (const r of rows) {
+    const u = usedOf(r);
+    const list = Array.isArray(r.uses) ? r.uses : [];
+    if (list.length !== u || list.some((x) => !x || Number.isNaN(Date.parse(x.at)))) {
+      return { error: `舊單 ${r.seq} 的快照缺上課紀錄（已用 ${u} 堂，紀錄 ${list.length} 筆），請洽工程`, code: 'LEGACY_SNAPSHOT_INCOMPLETE' };
+    }
+    used += u;
+    remaining += Number(r.remaining_sessions) || 0;
+    for (const x of list) uses.push({ at: x.at, coach: x.coach || null, seq: r.seq });
+  }
+  if (remaining <= 0) return { error: '所選的舊課程包已經沒有剩餘堂數', code: 'LEGACY_NOTHING_LEFT' };
+  uses.sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.seq.localeCompare(b.seq));
+  return { total: used + remaining, used, remaining, uses };
+}
+
+/** 舊系統那一堂的教練：新系統有唯一一位同名教練（排除佔位；同名多位時取唯一在職）才用，否則用課期教練。 */
+function coachResolver(coaches, fallbackId) {
+  const byName = new Map();
+  for (const c of coaches) {
+    const k = normCoach(c.name);
+    if (k) byName.set(k, [...(byName.get(k) || []), c]);
+  }
+  return (name) => {
+    const real = (byName.get(normCoach(name)) || []).filter((c) => !c.is_placeholder);
+    if (real.length === 1) return real[0].id;
+    const active = real.filter((c) => c.is_active);
+    return active.length === 1 ? active[0].id : fallbackId;
+  };
+}
+
+/**
+ * 對帳交易內、課期開好之後（D8）：舊系統每一堂補一筆已完成、已扣課的 course_sessions（形狀與匯入工具 legacy_import.js 相同，
+ * 建立時間也記那一堂的時間），
+ * 全班學員各一筆 checkin_records（legacy_import、ATTENDED）；已用堂數由出席紀錄重算（和 usageSync 同一真相），
+ * 寫回課期與訂單。課期沒開成（家長未綁 LINE、教練對不到）→ 回 error，呼叫端整筆 ROLLBACK。
+ */
+async function applyLegacyUsage(db, { enrollment, plan, seqs, by }) {
+  const period = (await db.query(
+    `SELECT id, coach_id, total_sessions FROM course_periods
+      WHERE admin_enrollment_id = $1 AND group_order_id IS NULL ORDER BY created_at, id LIMIT 1 FOR UPDATE`,
+    [enrollment.id])).rows[0];
+  if (!period) {
+    return { error: '課期開不起來：家長還沒加入新系統（綁 LINE），或教練對不到。這筆沒有對帳，請處理後再試', code: 'LEGACY_PERIOD_NOT_OPENED' };
+  }
+  const students = (await db.query(
+    `SELECT student_id FROM course_period_enrollments WHERE course_period_id = $1 AND status = 'active' ORDER BY student_id`,
+    [period.id])).rows.map((r) => r.student_id);
+  if (!students.length) {
+    return { error: '課期沒有學員，無法補舊上課紀錄。這筆沒有對帳，請洽工程', code: 'LEGACY_PERIOD_NO_STUDENTS' };
+  }
+  const coaches = (await db.query(
+    `SELECT id, name, is_active, COALESCE(is_placeholder, FALSE) AS is_placeholder FROM coaches`)).rows;
+  const coachFor = coachResolver(coaches, period.coach_id);
+  for (const use of plan.uses) {
+    const sess = (await db.query(
+      `INSERT INTO course_sessions
+         (course_period_id, coach_id, scheduled_at, duration_minutes, status, completed_at,
+          session_deducted, created_at, updated_at)
+       VALUES ($1, $2, $3::timestamptz, 60, 'completed', $3::timestamptz, TRUE, $3::timestamptz, $3::timestamptz)
+       RETURNING id`, [period.id, coachFor(use.coach), use.at])).rows[0];
+    for (const sid of students) {
+      await db.query(
+        `INSERT INTO checkin_records
+           (course_session_id, student_id, checked_in_by_student_id, is_auto_linked,
+            checked_in_source, checked_in_at, attendance_status)
+         VALUES ($1, $2, $2, FALSE, $3, $4::timestamptz, 'ATTENDED')`, [sess.id, sid, LEGACY_SOURCE, use.at]);
+    }
+  }
+  const used = Number((await db.query(
+    `SELECT COUNT(DISTINCT cs.id)::int AS n FROM course_sessions cs
+       JOIN checkin_records cr ON cr.course_session_id = cs.id
+      WHERE cs.course_period_id = $1 AND cs.status::text NOT LIKE 'cancelled%' AND cr.attendance_status = 'ATTENDED'`,
+    [period.id])).rows[0].n);
+  if (used !== plan.used) throw new Error(`雅正轉補舊紀錄後已用 ${used} 堂，應為 ${plan.used}`);
+  await db.query(`UPDATE course_periods SET used_sessions = $2, updated_at = NOW() WHERE id = $1`, [period.id, used]);
+  await db.query(`UPDATE admin_enrollments SET used_sessions = $2, updated_at = NOW() WHERE id = $1`, [enrollment.id, used]);
+  await db.query(
+    `INSERT INTO admin_enrollment_audit_logs (enrollment_id, action, by_user) VALUES ($1, $2, $3)`,
+    [enrollment.id, `雅正轉帶入舊系統堂數：共 ${plan.total} 堂（舊系統已用 ${plan.used}、剩 ${plan.remaining}），`
+      + `補 ${plan.used} 筆舊上課紀錄（舊單 ${seqs.join(',')}）`, String(by || '').slice(0, 80)]
+  );
+  return { period_id: period.id, total: plan.total, used, remaining: plan.remaining, sessions: plan.uses.length };
+}
+
 module.exports = {
-  LEGACY_PAYMENT_METHOD, SCHEMA_SQL, ensureSchema, legacyKind, matchLegacy, resolveForReconcile,
+  LEGACY_PAYMENT_METHOD, LEGACY_SOURCE, SCHEMA_SQL, ensureSchema, legacyKind, matchLegacy, resolveForReconcile,
   linkForReconcile, builtMap, normInvoice, normCoach, parseSeqs,
+  reconcileBlockers, planForReconcile, applyLegacyUsage,
 };

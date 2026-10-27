@@ -1007,6 +1007,11 @@ router.post('/:id/reconcile', requireAdminAuth, requireResource('reconcile'), as
       await client.query('ROLLBACK');
       return res.status(400).json({ error: '此筆狀態非待對帳' });
     }
+    // 雅正轉（SPEC YZM-08）：舊系統轉移只能走待對帳清單（checkouts reconcile），才會帶入舊包堂數、補舊紀錄、記舊單號。
+    if (String(cur.rows[0].payment_method || '').trim() === '舊系統轉移') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '舊系統轉移請到待對帳清單對帳', code: 'LEGACY_USE_CHECKOUT_RECONCILE' });
+    }
 
     // Sold session counts are transaction snapshots, never current zone quotations.
     const total = cur.rows[0].order_kind === 'trial' ? 1 : Number(cur.rows[0].total_sessions);

@@ -288,7 +288,7 @@ router.get('/:checkoutId/legacy-match', requireAdminAuth, AMS, async (req, res) 
   if (!/^[0-9a-f-]{36}$/i.test(req.params.checkoutId)) return res.status(404).json({ error: '找不到付款單' });
   try {
     const { rows } = await pool.query(
-      `SELECT id, coach, coach_id, venue_id, payment_method, status FROM admin_enrollments WHERE checkout_id = $1`,
+      `SELECT id, coach, coach_id, venue_id, payment_method, status, parent_phone FROM admin_enrollments WHERE checkout_id = $1`,
       [req.params.checkoutId]
     );
     if (!rows.length) return res.status(404).json({ error: '找不到付款單' });
@@ -299,7 +299,9 @@ router.get('/:checkoutId/legacy-match', requireAdminAuth, AMS, async (req, res) 
       return res.status(400).json({ error: '這張付款單不是舊系統轉移', code: 'NOT_LEGACY_CHECKOUT' });
     }
     const input = req.query.seqs ? { seqs: String(req.query.seqs) } : { invoice: String(req.query.invoice || '') };
-    res.json(await yzLegacy.matchLegacy(pool, rows, input));
+    // v1.1（YZM-08）：一併回傳會被擋的原因（一次 1 期、家長未綁 LINE），櫃台送出前就看得到。
+    const blockers = await yzLegacy.reconcileBlockers(pool, rows);
+    res.json({ ...(await yzLegacy.matchLegacy(pool, rows, input)), blockers });
   } catch (err) {
     console.error('[admin/checkouts legacy-match]', err.message);
     res.status(500).json({ error: '比對失敗' });
@@ -375,6 +377,14 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
       await client.query('ROLLBACK');
       return res.status(409).json({ error: '舊系統轉移的付款單只能有一個家庭', code: 'LEGACY_MULTI_FAMILY' });
     }
+    if (isLegacy) {
+      // v1.1（YZM-08，D9／D10）：一次只建 1 期、家長要已綁 LINE（否則課期開不了，舊紀錄沒地方放）。
+      const blockers = await yzLegacy.reconcileBlockers(client, children.rows);
+      if (blockers.length) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: blockers[0].message, code: blockers[0].code });
+      }
+    }
     const invoiceResult = buildInvoicePlans(families, req.body || {}, checkoutRow, { legacy: isLegacy });
     if (invoiceResult.error) {
       await client.query('ROLLBACK');
@@ -383,6 +393,7 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
     const invoicePlans = Array.isArray(invoiceResult.value) ? invoiceResult.value : [invoiceResult.value];
     // 雅正轉（YZM-05）：舊發票＋教練到快照找課程包；伺服器重新比對、鎖住舊單號，不相信前端。
     let legacySeqs = null;
+    let legacyPlan = null;
     if (isLegacy) {
       const body = req.body || {};
       const legacyInput = body.legacy && typeof body.legacy === 'object'
@@ -394,6 +405,12 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
         return res.status(400).json({ error: resolved.error, code: resolved.code });
       }
       legacySeqs = resolved.seqs;
+      // v1.1（YZM-08，D7）：總堂數改成所選舊包的「已用＋剩餘」，櫃台建檔填的堂數被取代。
+      legacyPlan = await yzLegacy.planForReconcile(client, legacySeqs);
+      if (legacyPlan.error) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: legacyPlan.error, code: legacyPlan.code });
+      }
     }
     const invoiceByFamily = new Map(invoicePlans.map((plan) => [plan.familyKey, plan]));
 
@@ -403,9 +420,11 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
       const invoice = invoiceByFamily.get(checkoutFamilyKey(row));
       if (!invoice) throw new Error('invoice family mapping missing after validation');
       // 試上是明確的一次課；不可因 checkout 批次對帳被通用每期堂數放大成 6 堂。
-      const total = row.order_kind === 'trial'
-        ? 1
-        : Number(row.total_sessions);
+      const total = legacyPlan
+        ? legacyPlan.total
+        : row.order_kind === 'trial'
+          ? 1
+          : Number(row.total_sessions);
       if (!Number.isSafeInteger(total) || total <= 0) {
         await client.query('ROLLBACK');
         return res.status(409).json({ error: '原訂單堂數缺失，請先核對成交資料', code: 'PURCHASE_SESSION_SNAPSHOT_MISSING' });
@@ -543,6 +562,18 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
       createdStudentIds.push(...ids);
     }
 
+    // v1.1（YZM-08，D8）：課期開好後補舊系統的上課紀錄（legacy_import）。課期沒開成就整筆退回。
+    let legacyUsage = null;
+    if (legacyPlan) {
+      legacyUsage = await yzLegacy.applyLegacyUsage(client, {
+        enrollment: children.rows[0], plan: legacyPlan, seqs: legacySeqs, by,
+      });
+      if (legacyUsage.error) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: legacyUsage.error, code: legacyUsage.code });
+      }
+    }
+
     // 家長通知信排進 outbox —— 刻意在 COMMIT 之前：COMMIT 了就一定留得住，
     // 之後進程掛掉還能補寄。enqueue 內部有 SAVEPOINT 保護，絕不會弄壞對帳。
     // 雅正轉（YZM-04）：舊系統轉移沒有新的付款或發票，不寄對帳通知信。
@@ -588,7 +619,7 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
     const checkout = await readCheckout(pool, req.params.checkoutId);
     res.json({
       ...checkout,
-      ...(legacySeqs ? { legacy: { seqs: legacySeqs } } : {}),
+      ...(legacySeqs ? { legacy: { seqs: legacySeqs, ...(legacyUsage || {}) } } : {}),
       notify: {
         families: mailFamilies,
         queued: mailOutboxIds.length,

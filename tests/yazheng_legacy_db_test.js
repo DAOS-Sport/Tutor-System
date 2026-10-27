@@ -4,7 +4,9 @@
  *
  * 只動「舊系統轉移」的待對帳：預覽比對、對帳通過寫連結、擋重複、兩個櫃台同時對同一包、取消後可再建；
  * 一般付款單的發票格式與照片規則不變；舊系統轉移不寄通知信；同步推送帶 legacy_seqs。
- * 對帳路由實際以 HTTP 呼叫（express＋真的 checkouts 路由）；登入、權限、開課期、寄信換成替身，只驗雅正轉邏輯。
+ * 對帳路由實際以 HTTP 呼叫（express＋真的 checkouts 路由）；登入、權限、寄信換成替身，只驗雅正轉邏輯。
+ * v1.1（YZM-08）：開課期用真的 periodProvisioning（B 方案要在課期上補舊紀錄）；
+ *   堂數帶入、一次 1 期、家長未綁 LINE 擋下、補 legacy_import 紀錄、家長端 /lessons 與 /mine 的標記。
  * 資料全部虛構（公開 repo），結束時刪掉本測試建立的列。
  */
 const assert = require('node:assert/strict');
@@ -29,7 +31,13 @@ stub('middlewares/adminAuth', {
   isVenueInScope: () => true,
 });
 stub('middlewares/requireResource', { requireResource: () => (_req, _res, next) => next(), requireAnyResource: () => (_req, _res, next) => next() });
-stub('services/periodProvisioning', { getSettings: async () => ({}), ensureGroupCoursePeriod: async () => [], ensureSoloCoursePeriod: async () => [] });
+let parentCtx = null; // 家長端 API 的登入身分（替身）
+stub('middlewares/parentAuth', {
+  requireParent: (req, _res, next) => { req.parent = parentCtx; next(); },
+  optionalParent: (req, _res, next) => { req.parent = parentCtx; next(); },
+  requireLiffUser: (_req, _res, next) => next(),
+  signParentToken: () => 'test', getSecret: () => 'test', demoTokenAllowed: () => false,
+});
 const mailCalls = [];
 stub('services/reconcileNotify', {
   enqueueReconcileMailDetailed: async (_c, args) => { mailCalls.push(args.refId); return { outcome: 'no_email' }; },
@@ -44,6 +52,7 @@ const yz = require(path.join(SERVER, 'services/yazhengLegacy'));
 const { listOrders } = require(path.join(SERVER, 'services/yazhengSync'));
 const router = require(path.join(SERVER, 'routes/admin/checkouts'));
 const enrollRouter = require(path.join(SERVER, 'routes/admin/enrollments'));
+const coursesRouter = require(path.join(SERVER, 'routes/courses'));
 
 let failures = 0;
 async function check(label, fn) {
@@ -53,6 +62,7 @@ async function check(label, fn) {
 
 const T = `yzt${Date.now().toString(36)}`;
 const manualIds = []; // 走真實建檔 API 建出的訂單（id 由系統產生，不帶測試前綴），結束時一併刪
+let legacyEnrollment = null; // YZM-08 帶入堂數那筆訂單，家長端測試用
 const COACH = '測試教練甲';
 const SNAP = '2026-10-22T21:06:00+08:00';
 const pkgs = [
@@ -69,18 +79,30 @@ const pkgs = [
   ['990110', 'ZZ00000110', [], COACH, ['壬同學'], 6],          // 給「匯入工具已建」用
 ];
 
+// 舊系統每一堂：第一堂的教練是新系統有的（測教練對應），其他是新系統沒有的（用課期教練）。
+const usesFor = (seq, n) => Array.from({ length: n }, (_, k) => ({
+  at: `2026-08-${String(10 + k).padStart(2, '0')}T1${k}:00:00+08:00`,
+  coach: k === 0 ? coachB.name : '舊系統離職教練',
+  seq,
+}));
 async function seed() {
   for (const [seq, inv, cands, coach, names, rem] of pkgs) {
     await pool.query(
       `INSERT INTO yz_legacy_packages (seq, invoice, invoice_candidates, coach, student_names, course_name, course_type,
-         total_sessions, remaining_sessions, purchase_date, snapshot_at)
-       VALUES ($1, $2, $3::text[], $4, $5::text[], '家教1VS1', 1, 6, $6, '2026-07-01', $7)`,
-      [seq, inv, cands, coach, names, rem, SNAP]);
+         total_sessions, remaining_sessions, used_sessions, uses, purchase_date, snapshot_at)
+       VALUES ($1, $2, $3::text[], $4, $5::text[], '家教1VS1', 1, 6, $6, $7, $8::jsonb, '2026-07-01', $9)`,
+      [seq, inv, cands, coach, names, rem, 6 - rem,
+        JSON.stringify(usesFor(seq, 6 - rem).map(({ at, coach: c }) => ({ at, coach: c }))), SNAP]);
   }
 }
 
 let venueId;
-async function newCheckout({ paymentMethod = '舊系統轉移', coach = COACH, periods = 1 } = {}) {
+let coachA; // 課期教練（訂單的 coach_id）
+let coachB; // 舊系統某一堂的教練，新系統有同名的人
+let parentId; // 已綁 LINE 的測試家長（電話 BOUND_PHONE）
+const BOUND_PHONE = '0912000999';
+const UNBOUND_PHONE = '0912000998';
+async function newCheckout({ paymentMethod = '舊系統轉移', coach = COACH, periods = 1, phone = BOUND_PHONE } = {}) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -90,11 +112,11 @@ async function newCheckout({ paymentMethod = '舊系統轉移', coach = COACH, p
       const id = `${T}${Math.random().toString(36).slice(2, 7)}`.toUpperCase();
       ids.push(id);
       await client.query(
-        `INSERT INTO admin_enrollments (id, parent_name, parent_phone, students, coach, venue_id, course_type,
+        `INSERT INTO admin_enrollments (id, parent_name, parent_phone, students, coach, coach_id, venue_id, course_type,
            original_price, final_price, status, submitted_at, total_sessions, used_sessions, period_count, period_number,
            checkout_id, payment_method, order_kind)
-         VALUES ($1, '測試家長', '0912000999', ARRAY['測試學員'], $2, $3, 1, 0, 0, 'pending_payment', NOW(), 6, 0, $4, $5, $6, $7, 'standard')`,
-        [id, `${coach}(50%)`, venueId, periods, i, co.checkoutId, paymentMethod]);
+         VALUES ($1, '測試家長', $8, ARRAY['測試學員'], $2, $9, $3, 1, 0, 0, 'pending_payment', NOW(), 6, 0, $4, $5, $6, $7, 'standard')`,
+        [id, `${coach}(50%)`, venueId, periods, i, co.checkoutId, paymentMethod, phone, coachA.id]);
     }
     await client.query('COMMIT');
     return { checkoutId: co.checkoutId, ids };
@@ -108,6 +130,7 @@ console.log('yazheng_legacy_db_test');
   app.use(express.json());
   app.use('/api/admin/checkouts', router);
   app.use('/api/admin/enrollments', enrollRouter);
+  app.use('/api/courses', coursesRouter);
   const srv = app.listen(0, '127.0.0.1');
   await new Promise((r) => srv.once('listening', r));
   const base = `http://127.0.0.1:${srv.address().port}/api/admin/checkouts`;
@@ -119,6 +142,17 @@ console.log('yazheng_legacy_db_test');
   try {
     venueId = (await pool.query('SELECT id FROM venues ORDER BY id LIMIT 1')).rows[0].id;
     adminId = (await pool.query('SELECT id FROM admin_users ORDER BY id LIMIT 1')).rows[0]?.id || null;
+    // 名字在新系統唯一、不是佔位的教練兩位：A 當課期教練，B 當舊系統某一堂的教練
+    [coachA, coachB] = (await pool.query(
+      `SELECT c.id, c.name FROM coaches c
+        WHERE NOT COALESCE(c.is_placeholder, FALSE) AND COALESCE(c.name, '') <> ''
+          AND (SELECT count(*) FROM coaches c2 WHERE c2.name = c.name) = 1
+        ORDER BY c.id LIMIT 2`)).rows;
+    assert.ok(coachA && coachB, '測試庫需要至少兩位教練');
+    parentId = (await pool.query(
+      `INSERT INTO parents (phone, name, line_uid, is_active) VALUES ($1, '測試家長', $2, TRUE) RETURNING id`,
+      [BOUND_PHONE, `TEST_${T}`])).rows[0].id;
+    parentCtx = { id: parentId, phone: BOUND_PHONE, lineUid: `TEST_${T}` };
     await seed();
     const co = await newCheckout();
     const children = [{ coach: `${COACH}(50%)` }];
@@ -199,16 +233,16 @@ console.log('yazheng_legacy_db_test');
     });
 
     await check('YZM-04/05 CHOOSE 沒點選不能對帳；點選後通過、不寄信、記連結與備註', async () => {
-      const c = await newCheckout({ periods: 2 });
+      const c = await newCheckout();
       const none = await post(`/${c.checkoutId}/reconcile`, { invoice_number: 'ZE12345678' });
       assert.deepEqual([none.status, none.body.code], [400, 'LEGACY_SELECTION_REQUIRED']);
       const before = mailCalls.length;
       const ok = await post(`/${c.checkoutId}/reconcile`, { invoice_number: 'ZE12345678', legacy: { mode: 'invoice', seqs: ['990104'] } });
       assert.equal(ok.status, 200, JSON.stringify(ok.body));
-      assert.deepEqual(ok.body.legacy, { seqs: ['990104'] });
+      assert.deepEqual(ok.body.legacy.seqs, ['990104']);
       assert.equal(mailCalls.length, before, '舊系統轉移不寄通知信');
       const links = (await pool.query(`SELECT seq, enrollment_id FROM yz_legacy_links WHERE seq = '990104' ORDER BY enrollment_id`)).rows;
-      assert.equal(links.length, 2, '兩期兩筆訂單都要連結');
+      assert.equal(links.length, 1);
       const rows = (await pool.query(`SELECT status, invoice_number, invoice_image_url, notes FROM admin_enrollments WHERE id = ANY($1)`, [c.ids])).rows;
       for (const row of rows) {
         assert.equal(row.status, 'confirmed');
@@ -291,10 +325,112 @@ console.log('yazheng_legacy_db_test');
       }
     });
 
+    await check('YZM-08 預覽：回傳舊系統已用堂數；建 2 期、家長未綁 LINE 都列為會被擋的原因', async () => {
+      const ok = await get(`/${(await newCheckout()).checkoutId}/legacy-match?invoice=ZZ00000102`);
+      assert.deepEqual(ok.body.blockers, []);
+      assert.deepEqual(ok.body.packages.map((p) => [p.seq, p.total_sessions, p.used_sessions, p.remaining_sessions]),
+        [['990102', 6, 3, 3], ['990103', 6, 2, 4]]);
+      const two = await get(`/${(await newCheckout({ periods: 2 })).checkoutId}/legacy-match?invoice=ZZ00000102`);
+      assert.deepEqual(two.body.blockers.map((b) => b.code), ['LEGACY_ONE_PERIOD']);
+      const unbound = await get(`/${(await newCheckout({ phone: UNBOUND_PHONE })).checkoutId}/legacy-match?invoice=ZZ00000102`);
+      assert.deepEqual(unbound.body.blockers.map((b) => b.code), ['LEGACY_PARENT_NOT_BOUND']);
+    });
+
+    await check('YZM-08 對帳：建 2 期擋下（LEGACY_ONE_PERIOD），什麼都沒寫', async () => {
+      const c = await newCheckout({ periods: 2 });
+      const r = await post(`/${c.checkoutId}/reconcile`, { invoice_number: 'ZZ00000102' });
+      assert.deepEqual([r.status, r.body.code], [409, 'LEGACY_ONE_PERIOD']);
+      const rows = (await pool.query(`SELECT status FROM admin_enrollments WHERE id = ANY($1)`, [c.ids])).rows;
+      assert.ok(rows.every((x) => x.status === 'pending_payment'));
+      assert.equal((await pool.query(`SELECT 1 FROM yz_legacy_links WHERE enrollment_id = ANY($1)`, [c.ids])).rowCount, 0);
+    });
+
+    await check('YZM-08 對帳：家長未綁 LINE 擋下（LEGACY_PARENT_NOT_BOUND），沒開課期、沒連結', async () => {
+      const c = await newCheckout({ phone: UNBOUND_PHONE });
+      const r = await post(`/${c.checkoutId}/reconcile`, { invoice_number: 'ZZ00000102' });
+      assert.deepEqual([r.status, r.body.code], [409, 'LEGACY_PARENT_NOT_BOUND']);
+      assert.equal((await pool.query(`SELECT status FROM admin_enrollments WHERE id = $1`, [c.ids[0]])).rows[0].status, 'pending_payment');
+      assert.equal((await pool.query(`SELECT 1 FROM course_periods WHERE admin_enrollment_id = $1`, [c.ids[0]])).rowCount, 0);
+      assert.equal((await pool.query(`SELECT 1 FROM yz_legacy_links WHERE enrollment_id = $1`, [c.ids[0]])).rowCount, 0);
+    });
+
+    await check('YZM-08 對帳：同學員兩包 → 總堂數＝已用＋剩餘、補舊上課紀錄（legacy_import）、已用由紀錄重算', async () => {
+      const c = await newCheckout();
+      const r = await post(`/${c.checkoutId}/reconcile`, { invoice_number: 'ZZ00000102' });
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.deepEqual([r.body.legacy.total, r.body.legacy.used, r.body.legacy.remaining, r.body.legacy.sessions], [12, 5, 7, 5]);
+      const ae = (await pool.query(`SELECT status, total_sessions, used_sessions FROM admin_enrollments WHERE id = $1`, [c.ids[0]])).rows[0];
+      assert.deepEqual([ae.status, ae.total_sessions, ae.used_sessions], ['confirmed', 12, 5], '建檔填的 6 堂要被取代成 12');
+      const cp = (await pool.query(`SELECT id, coach_id, total_sessions, used_sessions FROM course_periods WHERE admin_enrollment_id = $1`, [c.ids[0]])).rows[0];
+      assert.deepEqual([cp.total_sessions, cp.used_sessions], [12, 5]);
+      const sess = (await pool.query(
+        `SELECT cs.scheduled_at, cs.status::text AS status, cs.session_deducted, cs.coach_id,
+                array_agg(cr.checked_in_source || ':' || cr.attendance_status) AS checkins
+           FROM course_sessions cs JOIN checkin_records cr ON cr.course_session_id = cs.id
+          WHERE cs.course_period_id = $1 GROUP BY cs.id ORDER BY cs.scheduled_at`, [cp.id])).rows;
+      const want = [...usesFor('990102', 3), ...usesFor('990103', 2)]
+        .sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.seq.localeCompare(b.seq));
+      assert.deepEqual(sess.map((s) => new Date(s.scheduled_at).toISOString()), want.map((u) => new Date(u.at).toISOString()));
+      assert.ok(sess.every((s) => s.status === 'completed' && s.session_deducted === true));
+      const created = (await pool.query(`SELECT bool_and(created_at = scheduled_at) AS ok FROM course_sessions WHERE course_period_id = $1`, [cp.id])).rows[0];
+      assert.equal(created.ok, true, '建立時間比照匯入工具，記那一堂的時間');
+      assert.ok(sess.every((s) => s.checkins.length === 1 && s.checkins[0] === 'legacy_import:ATTENDED'), JSON.stringify(sess.map((s) => s.checkins)));
+      assert.deepEqual(sess.map((s) => s.coach_id), want.map((u) => (u.coach === coachB.name ? coachB.id : coachA.id)),
+        '新系統有同名教練就用他，沒有就用課期教練');
+      const audit = (await pool.query(`SELECT action FROM admin_enrollment_audit_logs WHERE enrollment_id = $1 AND action LIKE '雅正轉帶入%'`, [c.ids[0]])).rows;
+      assert.equal(audit.length, 1);
+      assert.ok(audit[0].action.includes('共 12 堂（舊系統已用 5、剩 7）'), audit[0].action);
+      legacyEnrollment = c.ids[0];
+    });
+
+    await check('YZM-08 家長端：課程卡標舊系統轉移；上課紀錄回傳來源 legacy_import', async () => {
+      const lessonsRes = await fetch(base.replace('/admin/checkouts', '/courses/lessons'));
+      const lessons = await lessonsRes.json();
+      assert.equal(lessonsRes.status, 200, JSON.stringify(lessons));
+      const periodId = (await pool.query(`SELECT id FROM course_periods WHERE admin_enrollment_id = $1`, [legacyEnrollment])).rows[0].id;
+      const mine = lessons.filter((l) => l.period_id === periodId);
+      assert.equal(mine.length, 5, '舊系統上過的 5 堂都在上課紀錄');
+      assert.ok(mine.every((l) => l.checkin_source === 'legacy_import' && l.checked_in_at), JSON.stringify(mine.map((l) => l.checkin_source)));
+      const mineRes = await fetch(base.replace('/admin/checkouts', '/courses/mine'));
+      const courses = await mineRes.json();
+      assert.equal(mineRes.status, 200, JSON.stringify(courses));
+      const list = Array.isArray(courses) ? courses : (courses.items || courses.rows || courses.courses || []);
+      const card = list.find((x) => x.id === legacyEnrollment);
+      assert.ok(card, '課程卡要找得到這筆');
+      assert.equal(card.is_legacy_import, true);
+      assert.deepEqual([card.total_sessions, card.used_sessions, card.remaining_sessions], [12, 5, 7],
+        '課程卡：總＝舊包已用＋剩餘，已用＝舊系統紀錄，剩餘＝快照剩餘');
+    });
+
+    await check('YZM-08 對帳：剩 0 堂擋下（LEGACY_NOTHING_LEFT）；快照缺上課紀錄擋下（LEGACY_SNAPSHOT_INCOMPLETE）', async () => {
+      await pool.query(
+        `INSERT INTO yz_legacy_packages (seq, invoice, coach, student_names, total_sessions, remaining_sessions, used_sessions, uses, snapshot_at)
+         VALUES ('990112', 'ZZ00000112', $1, ARRAY['子同學'], 1, 0, 1, $2::jsonb, $3),
+                ('990113', 'ZZ00000113', $1, ARRAY['丑同學'], 6, 4, 2, '[]'::jsonb, $3)`,
+        [COACH, JSON.stringify([{ at: '2026-08-01T10:00:00+08:00', coach: null }]), SNAP]);
+      const none = await post(`/${(await newCheckout()).checkoutId}/reconcile`, { invoice_number: 'ZZ00000112' });
+      assert.deepEqual([none.status, none.body.code], [409, 'LEGACY_NOTHING_LEFT']);
+      const c = await newCheckout();
+      const bad = await post(`/${c.checkoutId}/reconcile`, { invoice_number: 'ZZ00000113' });
+      assert.deepEqual([bad.status, bad.body.code], [409, 'LEGACY_SNAPSHOT_INCOMPLETE']);
+      assert.equal((await pool.query(`SELECT 1 FROM yz_legacy_links WHERE enrollment_id = $1`, [c.ids[0]])).rowCount, 0);
+    });
+
+    await check('YZM-08 逐筆對帳（/enrollments/:id/reconcile）不能拿來對舊系統轉移', async () => {
+      const c = await newCheckout();
+      const r = await fetch(base.replace('/checkouts', `/enrollments/${c.ids[0]}/reconcile`), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ invoice_number: 'ZZ00000101', invoice_image_url: 'https://x.invalid/a.png' }),
+      });
+      const body = await r.json();
+      assert.deepEqual([r.status, body.code], [409, 'LEGACY_USE_CHECKOUT_RECONCILE']);
+      assert.equal((await pool.query(`SELECT status FROM admin_enrollments WHERE id = $1`, [c.ids[0]])).rows[0].status, 'pending_payment');
+    });
+
     await check('YZM-06 同步推送：legacy_seqs 帶出涵蓋的舊單號，yazheng_tag 為 true', async () => {
       const { orders } = await listOrders({ since: new Date(Date.now() - 3600e3).toISOString(), limit: 1000 });
       const mine = orders.filter((o) => o.legacy_seqs.includes('990104'));
-      assert.equal(mine.length, 2);
+      assert.equal(mine.length, 1);
       assert.ok(mine.every((o) => o.yazheng_tag));
       const imp = orders.find((o) => o.legacy_seq === '990110');
       assert.deepEqual(imp.legacy_seqs, ['990110']);
@@ -310,12 +446,22 @@ console.log('yazheng_legacy_db_test');
       await pool.query(`DELETE FROM request_idempotency_ledger WHERE normalized_request_id LIKE $1`, [`%${T}%`]).catch(() => {});
     }
     await pool.query(`DELETE FROM yz_legacy_links WHERE seq LIKE '9901%'`).catch(() => {});
+    const periods = (await pool.query(`SELECT id FROM course_periods WHERE admin_enrollment_id LIKE $1`, [like])).rows.map((r) => r.id);
+    await pool.query(`DELETE FROM checkin_records WHERE course_session_id IN (SELECT id FROM course_sessions WHERE course_period_id = ANY($1::uuid[]))`, [periods]).catch(() => {});
+    await pool.query(`DELETE FROM course_sessions WHERE course_period_id = ANY($1::uuid[])`, [periods]).catch(() => {});
+    await pool.query(`DELETE FROM course_period_enrollments WHERE course_period_id = ANY($1::uuid[])`, [periods]).catch(() => {});
+    await pool.query(`DELETE FROM course_periods WHERE id = ANY($1::uuid[])`, [periods]).catch(() => {});
     await pool.query(`DELETE FROM admin_enrollment_audit_logs WHERE enrollment_id LIKE $1`, [like]).catch(() => {});
     const cos = (await pool.query(`SELECT DISTINCT checkout_id FROM admin_enrollments WHERE id LIKE $1`, [like])).rows.map((r) => r.checkout_id).filter(Boolean);
     await pool.query(`DELETE FROM checkout_invoices WHERE checkout_id = ANY($1::uuid[])`, [cos]).catch(() => {});
     await pool.query(`DELETE FROM admin_enrollments WHERE id LIKE $1`, [like]).catch(() => {});
     await pool.query(`DELETE FROM checkout_sessions WHERE checkout_id = ANY($1::uuid[])`, [cos]).catch(() => {});
     await pool.query(`DELETE FROM yz_legacy_packages WHERE seq LIKE '9901%'`).catch(() => {});
+    if (parentId) {
+      await pool.query(`DELETE FROM student_audit_logs WHERE student_id IN (SELECT id FROM students WHERE parent_id = $1)`, [parentId]).catch(() => {});
+      await pool.query(`DELETE FROM students WHERE parent_id = $1`, [parentId]).catch(() => {});
+      await pool.query(`DELETE FROM parents WHERE id = $1`, [parentId]).catch(() => {});
+    }
     await pool.end();
   }
   if (failures) { console.error(`yazheng_legacy_db_test: ${failures} 項失敗`); process.exit(1); }
