@@ -22,8 +22,9 @@ const stub = (rel, exports) => {
   const p = require.resolve(path.join(SERVER, rel));
   require.cache[p] = { id: p, filename: p, loaded: true, exports };
 };
+let adminId = null; // 測試開始時取一個真實的後台帳號，當建檔人（created_by 有外鍵）
 stub('middlewares/adminAuth', {
-  requireAdminAuth: (req, _res, next) => { req.adminUser = { sub: null, name: '測試櫃台', role: 'admin' }; next(); },
+  requireAdminAuth: (req, _res, next) => { req.adminUser = { sub: adminId, name: '測試櫃台', role: 'admin' }; next(); },
   getScopedVenueIds: () => null,
   isVenueInScope: () => true,
 });
@@ -42,6 +43,7 @@ const { createCheckoutSession } = require(path.join(SERVER, 'services/checkouts'
 const yz = require(path.join(SERVER, 'services/yazhengLegacy'));
 const { listOrders } = require(path.join(SERVER, 'services/yazhengSync'));
 const router = require(path.join(SERVER, 'routes/admin/checkouts'));
+const enrollRouter = require(path.join(SERVER, 'routes/admin/enrollments'));
 
 let failures = 0;
 async function check(label, fn) {
@@ -50,6 +52,7 @@ async function check(label, fn) {
 }
 
 const T = `yzt${Date.now().toString(36)}`;
+const manualIds = []; // 走真實建檔 API 建出的訂單（id 由系統產生，不帶測試前綴），結束時一併刪
 const COACH = '測試教練甲';
 const SNAP = '2026-10-22T21:06:00+08:00';
 const pkgs = [
@@ -104,6 +107,7 @@ console.log('yazheng_legacy_db_test');
   const app = express();
   app.use(express.json());
   app.use('/api/admin/checkouts', router);
+  app.use('/api/admin/enrollments', enrollRouter);
   const srv = app.listen(0, '127.0.0.1');
   await new Promise((r) => srv.once('listening', r));
   const base = `http://127.0.0.1:${srv.address().port}/api/admin/checkouts`;
@@ -114,9 +118,36 @@ console.log('yazheng_legacy_db_test');
   };
   try {
     venueId = (await pool.query('SELECT id FROM venues ORDER BY id LIMIT 1')).rows[0].id;
+    adminId = (await pool.query('SELECT id FROM admin_users ORDER BY id LIMIT 1')).rows[0]?.id || null;
     await seed();
     const co = await newCheckout();
     const children = [{ coach: `${COACH}(50%)` }];
+
+    await check('YZM-02 真的呼叫手動建檔 API：「舊系統轉移」原樣存下、進待對帳、預覽比對可用', async () => {
+      assert.ok(adminId, '測試庫需要至少一個後台帳號');
+      const enrollBase = base.replace('/checkouts', '/enrollments');
+      const r = await fetch(enrollBase, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          request_id: `admin-enrollment:${T}-manual`, parent_name: '測試家長', parent_phone: '0912000998',
+          students: ['測試學員'], venue_id: venueId, coach: COACH, course_type: 1, total_sessions: 6,
+          original_price: 0, final_price: 0, payment_method: '舊系統轉移', transfer_last_5: '',
+        }),
+      });
+      const body = await r.json();
+      assert.ok(r.status === 200 || r.status === 201, `建檔失敗：${r.status} ${JSON.stringify(body)}`);
+      const ids = body.enrollment_ids || [body.id];
+      const rows = (await pool.query(`SELECT id, status, payment_method, checkout_id FROM admin_enrollments WHERE id = ANY($1)`, [ids])).rows;
+      assert.ok(rows.length >= 1);
+      for (const row of rows) assert.deepEqual([row.status, row.payment_method], ['pending_payment', '舊系統轉移']);
+      const list = await get('/?status=pending');
+      const listed = (Array.isArray(list.body) ? list.body : list.body.items || list.body.rows || [])
+        .some((c) => c.checkout_id === rows[0].checkout_id);
+      assert.ok(listed, '待對帳清單應該看得到這張付款單');
+      const m = await get(`/${rows[0].checkout_id}/legacy-match?invoice=ZZ00000101`);
+      assert.deepEqual([m.status, m.body.status], [200, 'MATCH']);
+      manualIds.push(...ids);
+    });
 
     await check('YZM-05 對到 1 包 → MATCH', async () => {
       const m = await yz.matchLegacy(pool, children, { invoice: ' zz00000101 ' });
@@ -271,6 +302,13 @@ console.log('yazheng_legacy_db_test');
   } finally {
     await new Promise((r) => srv.close(r));
     const like = `${T.toUpperCase()}%`;
+    if (manualIds.length) {
+      const mc = (await pool.query(`SELECT DISTINCT checkout_id FROM admin_enrollments WHERE id = ANY($1)`, [manualIds])).rows.map((r) => r.checkout_id);
+      await pool.query(`DELETE FROM admin_enrollment_audit_logs WHERE enrollment_id = ANY($1)`, [manualIds]).catch(() => {});
+      await pool.query(`DELETE FROM admin_enrollments WHERE id = ANY($1)`, [manualIds]).catch(() => {});
+      await pool.query(`DELETE FROM checkout_sessions WHERE checkout_id = ANY($1::uuid[])`, [mc]).catch(() => {});
+      await pool.query(`DELETE FROM request_idempotency_ledger WHERE normalized_request_id LIKE $1`, [`%${T}%`]).catch(() => {});
+    }
     await pool.query(`DELETE FROM yz_legacy_links WHERE seq LIKE '9901%'`).catch(() => {});
     await pool.query(`DELETE FROM admin_enrollment_audit_logs WHERE enrollment_id LIKE $1`, [like]).catch(() => {});
     const cos = (await pool.query(`SELECT DISTINCT checkout_id FROM admin_enrollments WHERE id LIKE $1`, [like])).rows.map((r) => r.checkout_id).filter(Boolean);
