@@ -8,7 +8,10 @@
  *   DATABASE_URL=... node scripts/yz_load_snapshot.js verify --data <快照.json>
  *
  * 快照.json：陣列，每筆 { seq, invoice, invoice_candidates[], coach, student_names[], member_code, course_name,
- *   course_type, total_sessions, remaining_sessions, purchase_date(YYYY-MM-DD), snapshot_at(ISO) }。
+ *   course_type, total_sessions, remaining_sessions, used_sessions, uses[{ at(ISO), coach }],
+ *   purchase_date(YYYY-MM-DD), snapshot_at(ISO) }。
+ * v1.1（YZM-08）：used_sessions＋uses 是舊系統每一堂，對帳時補成「舊系統轉移」上課紀錄；
+ *   檢核 已用＋剩餘＝總堂數、uses 筆數＝已用。
  * 含學員姓名，只放執行者本機，不進 repo。
  *
  * plan：在交易裡完整跑一次再 ROLLBACK，回報會新增／更新／不變幾筆。apply：同樣的寫法但 COMMIT。可重複執行（以 seq upsert）。
@@ -26,7 +29,7 @@ if (!['plan', 'apply', 'verify'].includes(mode) || !rest.includes('--data') || !
 }
 
 const FIELDS = ['invoice', 'invoice_candidates', 'coach', 'student_names', 'member_code', 'course_name', 'course_type',
-  'total_sessions', 'remaining_sessions', 'purchase_date', 'snapshot_at'];
+  'total_sessions', 'remaining_sessions', 'used_sessions', 'uses', 'purchase_date', 'snapshot_at'];
 
 function validate(rows) {
   const seen = new Set();
@@ -36,6 +39,15 @@ function validate(rows) {
     seen.add(String(r.seq));
     if (!Array.isArray(r.invoice_candidates) || !Array.isArray(r.student_names)) throw new Error(`第 ${i + 1} 筆陣列欄位不正確`);
     if (!r.snapshot_at || Number.isNaN(Date.parse(r.snapshot_at))) throw new Error(`第 ${i + 1} 筆 snapshot_at 不正確`);
+    if (!Array.isArray(r.uses) || !Number.isInteger(r.used_sessions) || r.uses.length !== r.used_sessions) {
+      throw new Error(`第 ${i + 1} 筆（seq ${r.seq}）uses 筆數和 used_sessions 不一致`);
+    }
+    if (r.uses.some((u) => !u || Number.isNaN(Date.parse(u.at)) || !/[+-]\d{2}:\d{2}$|Z$/.test(String(u.at)))) {
+      throw new Error(`第 ${i + 1} 筆（seq ${r.seq}）uses 的時間要帶時區`);
+    }
+    if (r.total_sessions != null && r.used_sessions + (Number(r.remaining_sessions) || 0) !== Number(r.total_sessions)) {
+      throw new Error(`第 ${i + 1} 筆（seq ${r.seq}）已用＋剩餘≠總堂數`);
+    }
   });
 }
 
@@ -47,10 +59,17 @@ function validate(rows) {
   try {
     if (mode === 'verify') {
       const { rows: [r] } = await db.query(
-        `SELECT count(*)::int AS n, COALESCE(sum(remaining_sessions), 0)::int AS remaining FROM yz_legacy_packages
+        `SELECT count(*)::int AS n, COALESCE(sum(remaining_sessions), 0)::int AS remaining,
+                COALESCE(sum(used_sessions), 0)::int AS used, COALESCE(sum(jsonb_array_length(uses)), 0)::int AS uses
+           FROM yz_legacy_packages
           WHERE seq = ANY($1::text[])`, [rows.map((x) => String(x.seq))]);
-      const want = { n: rows.length, remaining: rows.reduce((s, x) => s + (Number(x.remaining_sessions) || 0), 0) };
-      const ok = r.n === want.n && r.remaining === want.remaining;
+      const want = {
+        n: rows.length,
+        remaining: rows.reduce((s, x) => s + (Number(x.remaining_sessions) || 0), 0),
+        used: rows.reduce((s, x) => s + x.used_sessions, 0),
+        uses: rows.reduce((s, x) => s + x.uses.length, 0),
+      };
+      const ok = r.n === want.n && r.remaining === want.remaining && r.used === want.used && r.uses === want.uses;
       console.log(JSON.stringify({ mode, db: r, file: want, ok }));
       process.exitCode = ok ? 0 : 1;
       return;
@@ -60,10 +79,10 @@ function validate(rows) {
     for (const r of rows) {
       const values = [String(r.seq), r.invoice || null, r.invoice_candidates, r.coach || null, r.student_names,
         r.member_code || null, r.course_name || null, r.course_type ?? null, r.total_sessions ?? null,
-        r.remaining_sessions ?? null, r.purchase_date || null, r.snapshot_at];
+        r.remaining_sessions ?? null, r.used_sessions, JSON.stringify(r.uses), r.purchase_date || null, r.snapshot_at];
       const res = await db.query(
         `INSERT INTO yz_legacy_packages (seq, ${FIELDS.join(', ')})
-         VALUES ($1, $2, $3::text[], $4, $5::text[], $6, $7, $8, $9, $10, $11::date, $12::timestamptz)
+         VALUES ($1, $2, $3::text[], $4, $5::text[], $6, $7, $8, $9, $10, $11, $12::jsonb, $13::date, $14::timestamptz)
          ON CONFLICT (seq) DO UPDATE SET ${FIELDS.map((f) => `${f} = EXCLUDED.${f}`).join(', ')}, loaded_at = NOW()
            WHERE (${FIELDS.map((f) => `yz_legacy_packages.${f}`).join(', ')}) IS DISTINCT FROM (${FIELDS.map((f) => `EXCLUDED.${f}`).join(', ')})
          RETURNING (xmax = 0) AS inserted`, values);
@@ -72,7 +91,8 @@ function validate(rows) {
       else counts.updated += 1;
     }
     const { rows: [t] } = await db.query(
-      `SELECT count(*)::int AS n, COALESCE(sum(remaining_sessions), 0)::int AS remaining FROM yz_legacy_packages`);
+      `SELECT count(*)::int AS n, COALESCE(sum(remaining_sessions), 0)::int AS remaining,
+              COALESCE(sum(used_sessions), 0)::int AS used FROM yz_legacy_packages`);
     await db.query(mode === 'apply' ? 'COMMIT' : 'ROLLBACK');
     console.log(JSON.stringify({ mode, file: rows.length, ...counts, table_after: t }));
   } catch (err) {

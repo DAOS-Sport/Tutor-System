@@ -71,6 +71,9 @@ router.get('/lessons', requireParent, async (req, res) => {
               s.id AS student_id, s.name AS student_name,
               cr.id AS checkin_id, cr.checked_in_at,
               cr.checked_in_by_parent_id,
+              -- 簽到來源：legacy_import＝舊系統上過、已扣的課，家長端標「舊系統」
+              -- （Owner 2026-10-27 同意改凍結檔，SPEC YZM-08 D11）
+              cr.checked_in_source AS checkin_source,
               sr.id AS record_id, sr.status AS record_status,
               pc.partner_parent_id, pc.partner_name, pc.partner_gender
          FROM course_period_enrollments cpe
@@ -268,7 +271,8 @@ router.get('/mine', requireParent, async (req, res) => {
       return {
       id: row.id,
       // 舊家教系統（ABLEPOS）移轉的課程包，卡片標「舊系統轉移」（Owner 2026-10-20 同意改凍結檔）。
-      is_legacy_import: String(row.external_order_no || '').startsWith('ABLEPOS:'),
+      // 雅正轉手動建檔（收付方式「舊系統轉移」）也標（Owner 2026-10-27 同意改凍結檔，SPEC YZM-08 D11）。
+      is_legacy_import: String(row.external_order_no || '').startsWith('ABLEPOS:') || row.payment_method === '舊系統轉移',
       parent_name: row.parent_name,
       parent_phone: row.parent_phone,
       students: row.students || [],
