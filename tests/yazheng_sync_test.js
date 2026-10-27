@@ -66,7 +66,7 @@ const KEY = 'k'.repeat(40);
       yazheng_tag: true, invoice_number: 'ZZ00000001', parent_phone_last4: '0101', course_type: '1', total_sessions: 6,
       used_sessions: 2, status: 'confirmed', created_at: '2031-01-01T00:00:00Z', updated_at: null, changed_at: '2031-01-01T00:00:00Z' });
     assert.deepStrictEqual(Object.keys(rec).sort(), ['changed_at', 'course_type', 'created_at', 'enrollment_id', 'external_order_no',
-      'invoice_number', 'legacy_seq', 'parent_phone_last4', 'status', 'total_sessions', 'updated_at', 'used_sessions', 'yazheng_tag']);
+      'invoice_number', 'legacy_seq', 'legacy_seqs', 'parent_phone_last4', 'status', 'total_sessions', 'updated_at', 'used_sessions', 'yazheng_tag']);
     assert.ok(!JSON.stringify(rec).includes('0912000101'));
     assert.strictEqual(rec.course_type, 1);
   });

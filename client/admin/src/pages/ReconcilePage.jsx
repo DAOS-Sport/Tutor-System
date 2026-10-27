@@ -297,6 +297,95 @@ function FamilyInvoiceFields({ family, familyIndex, orders, value, onChange, bus
   );
 }
 
+// 雅正轉（SPEC YZM-05）：付款單的子訂單全部是「舊系統轉移」。
+const LEGACY_PAYMENT_METHOD = '舊系統轉移';
+const isLegacyCheckout = (checkout) => {
+  const orders = checkout?.sub_orders || [];
+  return orders.length > 0 && orders.every((o) => o.payment_method === LEGACY_PAYMENT_METHOD);
+};
+const formatTaipeiDate = (v) => (v ? new Date(v).toLocaleDateString('zh-TW', { timeZone: 'Asia/Taipei' }) : '');
+
+function LegacyPackageLine({ p }) {
+  return (
+    <span>
+      舊單 <b className="font-mono">{p.seq}</b>・{(p.students || []).join('、') || '—'}・{p.course_name || '—'}・快照剩 <b>{p.remaining_sessions ?? '—'}</b> 堂
+      {p.invoice ? <span className="text-gray-500">・發票 {p.invoice}</span> : null}
+    </span>
+  );
+}
+
+/** 比對結果（打舊發票或舊單號時即時顯示）。picked／onToggle 只在 CHOOSE（不同學員要點選）時用到。 */
+function LegacyMatchPanel({ match, loading, picked, onToggle, newSessions }) {
+  if (loading) return <p className="mt-2 text-xs text-gray-500">比對中…</p>;
+  if (!match) return null;
+  const built = (match.packages || []).filter((p) => p.built);
+  const builtLines = built.map((p) => (
+    <li key={`b-${p.seq}`} className="text-red-700">
+      ✕ 舊單 <b className="font-mono">{p.seq}</b> 已在 {formatTaipeiDate(p.built.at)} 建檔（訂單 <span className="font-mono">{p.built.enrollment_id}</span>），不能再轉
+    </li>
+  ));
+  let body;
+  if (match.status === 'NOT_FOUND') {
+    body = (
+      <p className="text-red-700">
+        {match.reason === 'COACH_MISMATCH'
+          ? `✕ 這張舊發票的課程包不是這位教練的（快照教練：${(match.other_coaches || []).join('、')}）。請確認教練，或改打舊單號。`
+          : match.reason === 'EMPTY' ? '請輸入舊系統發票號碼。'
+            : match.reason === 'ERROR' ? '比對失敗，請稍後再試。' : '✕ 快照裡找不到這張舊發票。請回 GPT 網站確認，或改打舊單號。'}
+      </p>
+    );
+  } else if (match.status === 'ALL_BUILT') {
+    body = <ul className="space-y-1">{builtLines}</ul>;
+  } else if (match.status === 'SEQS') {
+    body = (
+      <ul className="space-y-1">
+        {(match.packages || []).filter((p) => !p.built).map((p) => <li key={p.seq} className="text-emerald-800">✓ <LegacyPackageLine p={p} /></li>)}
+        {builtLines}
+        {(match.missing || []).map((s) => <li key={`m-${s}`} className="text-red-700">✕ 快照裡找不到舊單 <b className="font-mono">{s}</b></li>)}
+      </ul>
+    );
+  } else if (match.status === 'MATCH') {
+    const open = (match.packages || []).filter((p) => !p.built);
+    body = (
+      <>
+        <p className="font-semibold text-emerald-800">
+          ✓ {open.length > 1 ? `這張發票有 ${open.length} 包同學員同課程，共剩 ${match.remaining_total} 堂，全部轉入` : '對到 1 包'}
+        </p>
+        <ul className="mt-1 space-y-1 text-emerald-800">{open.map((p) => <li key={p.seq}><LegacyPackageLine p={p} /></li>)}</ul>
+        {builtLines.length ? <ul className="mt-1 space-y-1">{builtLines}</ul> : null}
+      </>
+    );
+  } else if (match.status === 'CHOOSE') {
+    body = (
+      <>
+        <p className="font-semibold text-amber-800">這張發票＋教練對到不同學員的課程包，請點選這次要轉的學員（可多選）：</p>
+        <div className="mt-2 space-y-2">
+          {(match.options || []).map((opt) => {
+            const on = opt.seqs.every((s) => picked.has(s));
+            return (
+              <label key={opt.seqs.join(',')} className={`flex cursor-pointer items-start gap-2 rounded-lg border px-3 py-2 ${on ? 'border-brand-teal bg-white' : 'border-amber-200 bg-white/60'}`}>
+                <input type="checkbox" className="mt-0.5" checked={on} onChange={() => onToggle(opt.seqs, !on)} />
+                <span>
+                  <b>{(opt.students || []).join('、') || '—'}</b>・舊單 <span className="font-mono">{opt.seqs.join('、')}</span>・快照剩 {opt.remaining_total} 堂
+                </span>
+              </label>
+            );
+          })}
+        </div>
+        {builtLines.length ? <ul className="mt-1 space-y-1">{builtLines}</ul> : null}
+      </>
+    );
+  }
+  const chosenRemaining = match.status === 'CHOOSE'
+    ? (match.packages || []).filter((p) => picked.has(p.seq)).reduce((sum, p) => sum + (p.remaining_sessions || 0), 0)
+    : match.remaining_total;
+  const sessionHint = (match.ok || (match.status === 'CHOOSE' && picked.size > 0)) && Number.isFinite(newSessions)
+    && Number.isFinite(chosenRemaining) && chosenRemaining !== newSessions
+    ? <p className="mt-2 text-xs text-amber-700">提醒：舊課程包快照剩 {chosenRemaining} 堂，這張付款單是 {newSessions} 堂（只提醒，不影響對帳）。</p>
+    : null;
+  return <div className="mt-2 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm">{body}{sessionHint}</div>;
+}
+
 function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
   const toast = useToast();
   const fileRef = useRef(null);
@@ -318,6 +407,42 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
   const [uploading, setUploading] = useState(false);
   const [busy, setBusy] = useState(false);
   const paymentProofUrls = checkoutProofUrls(checkout);
+  // 雅正轉（YZM-05）：舊系統轉移的付款單，打舊發票（或舊單號）即時比對快照。
+  const isLegacy = isLegacyCheckout(checkout) && !multiFamily;
+  const [legacyMode, setLegacyMode] = useState('invoice');
+  const [seqInput, setSeqInput] = useState('');
+  const [legacyMatch, setLegacyMatch] = useState(null);
+  const [matchLoading, setMatchLoading] = useState(false);
+  const [picked, setPicked] = useState(() => new Set());
+  const newSessions = (checkout.sub_orders || []).reduce((sum, o) => sum + (Number(o.total_sessions) || 0), 0);
+  useEffect(() => {
+    if (!isLegacy) return undefined;
+    const query = legacyMode === 'seqs' ? { seqs: seqInput.trim() } : { invoice: invoiceNumber.trim() };
+    if (!(query.seqs || query.invoice)) { setLegacyMatch(null); setMatchLoading(false); return undefined; }
+    let alive = true;
+    setMatchLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const result = await checkoutsApi.legacyMatch(checkout.checkout_id, query);
+        if (!alive) return;
+        setLegacyMatch(result);
+        setPicked(new Set());
+      } catch {
+        if (alive) setLegacyMatch({ status: 'NOT_FOUND', reason: 'ERROR', packages: [], selectable: [], ok: false });
+      } finally {
+        if (alive) setMatchLoading(false);
+      }
+    }, 350);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [isLegacy, legacyMode, seqInput, invoiceNumber, checkout.checkout_id]);
+  function togglePicked(seqs, on) {
+    setPicked((previous) => {
+      const next = new Set(previous);
+      seqs.forEach((seq) => (on ? next.add(seq) : next.delete(seq)));
+      return next;
+    });
+  }
+  const legacyOk = !!legacyMatch && !matchLoading && (legacyMatch.ok || (legacyMatch.status === 'CHOOSE' && picked.size > 0));
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape' && !busy) onCancel(); };
@@ -344,7 +469,7 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
     const form = familyForms[family.family_key];
     return form && INVOICE_RE.test(form.invoiceNumber) && form.imageFile;
   }) && new Set(familyNumbers).size === familyNumbers.length;
-  const canSubmit = (multiFamily ? familyFormsOk : (numOk && imageFile)) && !busy && canReconcile;
+  const canSubmit = (multiFamily ? familyFormsOk : isLegacy ? legacyOk : (numOk && imageFile)) && !busy && canReconcile;
 
   async function handleSubmit() {
     if (!canSubmit) return;
@@ -372,6 +497,28 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
           note: note.trim() || undefined,
         });
         showReconcileNotify(toast, result, `對帳通過，已依 ${invoiceFamilies.length} 個家庭記錄 ${invoiceFamilies.length} 張發票`);
+        onDone();
+        return;
+      }
+
+      if (isLegacy) {
+        let legacyImageUrl;
+        if (imageFile) {
+          const legacyUpload = await enrollmentsApi.uploadInvoice(imageFile);
+          legacyImageUrl = legacyUpload.preview_url || legacyUpload.url;
+        }
+        setUploading(false);
+        const result = await checkoutsApi.reconcile(checkout.checkout_id, {
+          invoice_number: invoiceNumber.trim() || undefined,
+          invoice_image_url: legacyImageUrl,
+          carrier: taxId ? '' : (carrier.trim() || undefined),
+          tax_id: taxId || undefined,
+          note: note.trim() || undefined,
+          legacy: legacyMode === 'seqs'
+            ? { mode: 'seqs', seqs: seqInput }
+            : { mode: 'invoice', seqs: legacyMatch?.status === 'CHOOSE' ? [...picked] : undefined },
+        });
+        toast.success(`對帳通過（雅正轉），涵蓋舊單 ${(result?.legacy?.seqs || []).join('、') || '—'}；5 分鐘內同步到 GPT 反查網站`);
         onDone();
         return;
       }
@@ -418,6 +565,7 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
           <h3 className="text-lg font-bold text-brand-primary">對帳通過 — 輸入發票資訊</h3>
           <p className="mt-0.5 text-xs text-gray-500">
             {checkout.checkout_id} ／ {multiFamily ? `${invoiceFamilies.length} 個家庭` : checkout.parent_name} ／ 應收 {formatTWD(checkout.total_amount)}，末 5 碼 <b>{checkout.transfer_last_5 || '—'}</b>
+            {isLegacy && <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 font-semibold text-amber-800">舊系統轉移</span>}
           </p>
         </div>
 
@@ -516,23 +664,37 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
 
           <div>
             <label className="mb-1 block text-sm font-semibold text-gray-700">
-              發票號碼 <span className="text-red-500">*</span>
+              {isLegacy ? '舊系統發票號碼' : '發票號碼'} {!(isLegacy && legacyMode === 'seqs') && <span className="text-red-500">*</span>}
             </label>
             <input
-              type="text" maxLength={10}
-              className={`w-full rounded-lg border px-3 py-2 font-mono text-sm uppercase tracking-widest focus:outline-none focus:ring-2 ${numOk || !invoiceNumber ? 'border-gray-300 focus:ring-brand-teal' : 'border-red-400 focus:ring-red-400'}`}
-              placeholder="AA00000000"
+              type="text" maxLength={isLegacy ? 20 : 10}
+              className={`w-full rounded-lg border px-3 py-2 font-mono text-sm uppercase tracking-widest focus:outline-none focus:ring-2 ${isLegacy || numOk || !invoiceNumber ? 'border-gray-300 focus:ring-brand-teal' : 'border-red-400 focus:ring-red-400'}`}
+              placeholder={isLegacy ? '舊系統發票（打錯的也照打）' : 'AA00000000'}
               value={invoiceNumber}
               onChange={(e) => setInvoiceNumber(e.target.value.toUpperCase())}
             />
-            {invoiceNumber && !numOk && (
+            {!isLegacy && invoiceNumber && !numOk && (
               <p className="mt-1 text-xs text-red-500">格式：2 大寫英文 + 8 數字，例如 AB12345678</p>
+            )}
+            {isLegacy && (
+              <>
+                <button type="button" className="mt-1 text-xs text-brand-teal underline"
+                  onClick={() => setLegacyMode((mode) => (mode === 'seqs' ? 'invoice' : 'seqs'))}>
+                  {legacyMode === 'seqs' ? '改回用舊發票比對' : '沒有發票？改打舊單號'}
+                </button>
+                {legacyMode === 'seqs' && (
+                  <input type="text" maxLength={200} value={seqInput} onChange={(e) => setSeqInput(e.target.value)}
+                    placeholder="舊單號，多個用逗號分開，例如 4231, 4232"
+                    className="mt-2 w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-brand-teal" />
+                )}
+                <LegacyMatchPanel match={legacyMatch} loading={matchLoading} picked={picked} onToggle={togglePicked} newSessions={newSessions} />
+              </>
             )}
           </div>
 
           <div>
             <label className="mb-1 block text-sm font-semibold text-gray-700">
-              發票照片 <span className="text-red-500">*</span>
+              發票照片 {isLegacy ? <span className="font-normal text-gray-400">（舊系統轉移可不上傳）</span> : <span className="text-red-500">*</span>}
               <span className="ml-2 font-normal text-gray-400">（JPG / PNG / WebP / HEIC / HEIF / AVIF，≤ 5MB）</span>
             </label>
             <div
@@ -589,7 +751,9 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
           </div>
 
           <div className="rounded-lg bg-amber-50 p-3 text-xs text-amber-700">
-            {multiFamily
+            {isLegacy
+              ? `舊系統轉移：對帳後開通此付款單的 ${checkout.sub_orders?.length || 0} 筆子訂單，不寄通知信給家長；涵蓋的舊單號 5 分鐘內同步到 GPT 反查網站。`
+              : multiFamily
               ? `對帳後系統將一次開通此付款單的 ${checkout.sub_orders?.length || 0} 筆子訂單，並依家庭分別保存及推播各自的發票。`
               : `對帳後系統將一次開通此付款單的 ${checkout.sub_orders?.length || 0} 筆子訂單，並透過 LINE 推播發票通知給家長。`}
           </div>

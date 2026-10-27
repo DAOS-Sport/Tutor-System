@@ -273,6 +273,7 @@ const DB = [
   // 健康 API 的收集器在現行 schema 上逐支查詢；單一交易、結束 ROLLBACK。
   'tests/health_pipelines_db_test.js',
   'tests/yazheng_sync_db_test.js',
+  'tests/yazheng_legacy_db_test.js',
 ];
 
 /** 漏網檢查：tests/ 與 tests/release/ 的每個 .js 都必須被分層，否則整輪失敗。 */

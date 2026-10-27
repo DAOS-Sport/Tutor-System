@@ -2899,6 +2899,8 @@ async function bootstrap() {
     await ensureCourseIntroFK();
     await ensureChatRoomsForActivePeriods();
     await ensureClientDiagnostics();
+    // 雅正轉：舊系統課程包快照與舊單號連結（雅正轉_手動建檔與對帳 SPEC v1，YZM-01／03）
+    await require('../services/yazhengLegacy').ensureSchema(pool);
     console.log('[core bootstrap] ready');
   } catch (err) {
     console.error('[core bootstrap] FAILED:', err.message);
