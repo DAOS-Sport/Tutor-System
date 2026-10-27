@@ -416,6 +416,17 @@ console.log('yazheng_legacy_db_test');
       assert.equal((await pool.query(`SELECT 1 FROM yz_legacy_links WHERE enrollment_id = $1`, [c.ids[0]])).rowCount, 0);
     });
 
+    await check('YZM-08 逐筆對帳（/enrollments/:id/reconcile）不能拿來對舊系統轉移', async () => {
+      const c = await newCheckout();
+      const r = await fetch(base.replace('/checkouts', `/enrollments/${c.ids[0]}/reconcile`), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ invoice_number: 'ZZ00000101', invoice_image_url: 'https://x.invalid/a.png' }),
+      });
+      const body = await r.json();
+      assert.deepEqual([r.status, body.code], [409, 'LEGACY_USE_CHECKOUT_RECONCILE']);
+      assert.equal((await pool.query(`SELECT status FROM admin_enrollments WHERE id = $1`, [c.ids[0]])).rows[0].status, 'pending_payment');
+    });
+
     await check('YZM-06 同步推送：legacy_seqs 帶出涵蓋的舊單號，yazheng_tag 為 true', async () => {
       const { orders } = await listOrders({ since: new Date(Date.now() - 3600e3).toISOString(), limit: 1000 });
       const mine = orders.filter((o) => o.legacy_seqs.includes('990104'));
