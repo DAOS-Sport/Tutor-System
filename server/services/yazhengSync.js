@@ -39,6 +39,7 @@ const ORDER_COLUMNS = `
   ae.total_sessions,
   ae.used_sessions,
   ae.status,
+  ARRAY(SELECT l.seq FROM yz_legacy_links l WHERE l.enrollment_id = ae.id ORDER BY l.seq) AS link_seqs,
   ae.created_at,
   ae.updated_at,
   ${CHANGED_AT} AS changed_at`;
@@ -49,7 +50,9 @@ function toRecord(row) {
     enrollment_id: row.enrollment_id,
     external_order_no: row.external_order_no || null,
     legacy_seq: row.legacy_seq || null,
-    yazheng_tag: Boolean(row.yazheng_tag),
+    // 雅正轉 SPEC YZM-06：這筆訂單涵蓋的所有舊單號（匯入工具的 ABLEPOS:<舊單號>＋手動建檔對帳時的連結）。
+    legacy_seqs: [...new Set([row.legacy_seq, ...(row.link_seqs || [])].filter(Boolean).map(String))].sort(),
+    yazheng_tag: Boolean(row.yazheng_tag) || (row.link_seqs || []).length > 0,
     invoice_number: row.invoice_number || null,
     parent_phone_last4: row.parent_phone_last4 || null,
     course_type: row.course_type == null ? null : Number(row.course_type),

@@ -760,12 +760,14 @@ export default function ManualEnrollPage() {
                           ? <option value="現場付費">現場付費</option>
                           : <>
                               <option value="轉帳">銀行轉帳</option><option value="現金">現金</option><option value="信用卡">信用卡</option><option value="LINE Pay">LINE Pay</option>
+                              {/* 雅正轉（2026-10-27 使用者同意改凍結區）：發票到待對帳清單填舊系統發票，那裡比對舊課程包。 */}
+                              <option value="舊系統轉移">舊系統轉移</option>
                             </>}
                       </Sel>
                     </div>
                     <div>
-                      <Label>{f.paymentMethod === '轉帳' ? '轉帳末 5 碼' : f.paymentMethod === '現金' ? '備註' : '交易末碼'}</Label>
-                      <Inp value={f.paymentDetail} onChange={upd('paymentDetail')} disabled={f.paymentMethod === '現金'} placeholder={f.paymentMethod === '轉帳' ? '後 5 碼' : '對帳代碼'} className="font-mono" />
+                      <Label>{f.paymentMethod === '轉帳' ? '轉帳末 5 碼' : f.paymentMethod === '現金' ? '備註' : f.paymentMethod === '舊系統轉移' ? '舊系統發票' : '交易末碼'}</Label>
+                      <Inp value={f.paymentMethod === '舊系統轉移' ? '' : f.paymentDetail} onChange={upd('paymentDetail')} disabled={f.paymentMethod === '現金' || f.paymentMethod === '舊系統轉移'} placeholder={f.paymentMethod === '轉帳' ? '後 5 碼' : f.paymentMethod === '舊系統轉移' ? '建檔後到待對帳清單填' : '對帳代碼'} className="font-mono" />
                     </div>
                   </div>
                 </div>

@@ -16,6 +16,7 @@ const {
 const { enqueueReconcileMailDetailed, deliverOutbox } = require('../../services/reconcileNotify');
 const { isValidTaiwanTaxId, validateCarrier } = require('../../services/invoiceIdentity');
 const { getSettings, ensureGroupCoursePeriod, ensureSoloCoursePeriod } = require('../../services/periodProvisioning');
+const yzLegacy = require('../../services/yazhengLegacy');
 
 const router = express.Router();
 
@@ -50,7 +51,7 @@ function courseTypeLabel(courseType) {
   return { 1: '1 對 1', 2: '1 對 2', 3: '1 對 3' }[Number(courseType)] || `1 對 ${courseType}`;
 }
 
-function normalizeInvoiceEntry(source, family, fallbackCarrier = '', { familyRequired = false } = {}) {
+function normalizeInvoiceEntry(source, family, fallbackCarrier = '', { familyRequired = false, legacy = false } = {}) {
   const invoiceNumber = String(source?.invoice_number || '').trim().toUpperCase();
   const invoiceImageUrl = String(source?.invoice_image_url || '').trim();
   const invoiceUrl = String(source?.invoice_url || '').trim();
@@ -68,6 +69,24 @@ function normalizeInvoiceEntry(source, family, fallbackCarrier = '', { familyReq
   }
   if (taxId && !isValidTaiwanTaxId(taxId)) {
     return { error: '統一編號格式或檢查碼錯誤', code: 'TAX_ID_INVALID' };
+  }
+  if (legacy) {
+    // 雅正轉（YZM-04）：舊系統發票原樣記錄（舊系統打錯的也收），照片選填；
+    // 是否真的對得到課程包由 yazhengLegacy.resolveForReconcile 決定。
+    if (invoiceNumber.length > 20) return { error: '舊系統發票號碼最多 20 個字', code: 'LEGACY_INVOICE_TOO_LONG' };
+    return {
+      value: {
+        family,
+        familyKey: family.family_key,
+        invoiceNumber: invoiceNumber || null,
+        invoiceImageUrl: invoiceImageUrl || null,
+        invoiceUrl: invoiceUrl || null,
+        buyerName,
+        taxId,
+        carrier: carrier || null,
+        amount: Number(family.amount) || 0,
+      },
+    };
   }
   if (!invoiceNumber) {
     return {
@@ -106,13 +125,13 @@ function normalizeInvoiceEntry(source, family, fallbackCarrier = '', { familyReq
  * 單家庭維持舊 payload；只有真的混合兩戶以上，才要求 family_invoices。
  * 家庭與金額完全由 locked child orders 重算，client 只能填發票資料，不能指定品項或金額。
  */
-function buildInvoicePlans(families, body, checkoutRow) {
+function buildInvoicePlans(families, body, checkoutRow, { legacy = false } = {}) {
   if (families.length <= 1) {
     const family = families[0];
     const supplied = Array.isArray(body?.family_invoices) && body.family_invoices.length === 1
       ? body.family_invoices[0]
       : body;
-    return normalizeInvoiceEntry(supplied, family, checkoutRow.carrier || family.carrier || '');
+    return normalizeInvoiceEntry(supplied, family, checkoutRow.carrier || family.carrier || '', { legacy });
   }
 
   if (!Array.isArray(body?.family_invoices)) {
@@ -264,6 +283,29 @@ router.get('/', requireAdminAuth, AMS, async (req, res) => {
   }
 });
 
+// 雅正轉（YZM-05）：待對帳打舊發票（或舊單號）時即時預覽比對結果。只讀。
+router.get('/:checkoutId/legacy-match', requireAdminAuth, AMS, async (req, res) => {
+  if (!/^[0-9a-f-]{36}$/i.test(req.params.checkoutId)) return res.status(404).json({ error: '找不到付款單' });
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, coach, coach_id, venue_id, payment_method, status FROM admin_enrollments WHERE checkout_id = $1`,
+      [req.params.checkoutId]
+    );
+    if (!rows.length) return res.status(404).json({ error: '找不到付款單' });
+    if (!rows.every((row) => isVenueInScope(req, row.venue_id))) {
+      return res.status(403).json({ error: '此付款單含有您無權檢視的場館' });
+    }
+    if (yzLegacy.legacyKind(rows) !== 'legacy') {
+      return res.status(400).json({ error: '這張付款單不是舊系統轉移', code: 'NOT_LEGACY_CHECKOUT' });
+    }
+    const input = req.query.seqs ? { seqs: String(req.query.seqs) } : { invoice: String(req.query.invoice || '') };
+    res.json(await yzLegacy.matchLegacy(pool, rows, input));
+  } catch (err) {
+    console.error('[admin/checkouts legacy-match]', err.message);
+    res.status(500).json({ error: '比對失敗' });
+  }
+});
+
 router.get('/:checkoutId', requireAdminAuth, AMS, async (req, res) => {
   try {
     const checkout = await readCheckout(pool, req.params.checkoutId);
@@ -322,13 +364,37 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
       return res.status(409).json({ error: '此付款單含有非待對帳子訂單，請重新整理後再試' });
     }
 
+    const legacyKind = yzLegacy.legacyKind(children.rows);
+    if (legacyKind === 'mixed') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '此付款單混有舊系統轉移與一般訂單，請洽工程', code: 'LEGACY_MIXED_CHECKOUT' });
+    }
+    const isLegacy = legacyKind === 'legacy';
     const families = groupCheckoutFamilies(children.rows);
-    const invoiceResult = buildInvoicePlans(families, req.body || {}, checkoutRow);
+    if (isLegacy && families.length > 1) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: '舊系統轉移的付款單只能有一個家庭', code: 'LEGACY_MULTI_FAMILY' });
+    }
+    const invoiceResult = buildInvoicePlans(families, req.body || {}, checkoutRow, { legacy: isLegacy });
     if (invoiceResult.error) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: invoiceResult.error, code: invoiceResult.code });
     }
     const invoicePlans = Array.isArray(invoiceResult.value) ? invoiceResult.value : [invoiceResult.value];
+    // 雅正轉（YZM-05）：舊發票＋教練到快照找課程包；伺服器重新比對、鎖住舊單號，不相信前端。
+    let legacySeqs = null;
+    if (isLegacy) {
+      const body = req.body || {};
+      const legacyInput = body.legacy && typeof body.legacy === 'object'
+        ? { ...body.legacy, invoice: invoicePlans[0].invoiceNumber }
+        : { invoice: invoicePlans[0].invoiceNumber };
+      const resolved = await yzLegacy.resolveForReconcile(client, children.rows, legacyInput);
+      if (resolved.error) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: resolved.error, code: resolved.code });
+      }
+      legacySeqs = resolved.seqs;
+    }
     const invoiceByFamily = new Map(invoicePlans.map((plan) => [plan.familyKey, plan]));
 
     const groupPaymentMarked = new Set();
@@ -393,6 +459,13 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
         }
       }
       rowsToOpen.push({ row, total, invoice });
+    }
+
+    if (legacySeqs) {
+      await yzLegacy.linkForReconcile(client, {
+        seqs: legacySeqs, children: children.rows, checkoutId: req.params.checkoutId,
+        invoice: invoicePlans[0].invoiceNumber, by,
+      });
     }
 
     if (invoicePlans.length === 1) {
@@ -472,7 +545,8 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
 
     // 家長通知信排進 outbox —— 刻意在 COMMIT 之前：COMMIT 了就一定留得住，
     // 之後進程掛掉還能補寄。enqueue 內部有 SAVEPOINT 保護，絕不會弄壞對帳。
-    for (const invoice of invoicePlans) {
+    // 雅正轉（YZM-04）：舊系統轉移沒有新的付款或發票，不寄對帳通知信。
+    for (const invoice of (isLegacy ? [] : invoicePlans)) {
       const familyOrders = children.rows.filter((r0) => checkoutFamilyKey(r0) === invoice.familyKey);
       if (!familyOrders.length) continue;
       mailFamilies += 1;
@@ -514,6 +588,7 @@ router.post('/:checkoutId/reconcile', requireAdminAuth, AMS, async (req, res) =>
     const checkout = await readCheckout(pool, req.params.checkoutId);
     res.json({
       ...checkout,
+      ...(legacySeqs ? { legacy: { seqs: legacySeqs } } : {}),
       notify: {
         families: mailFamilies,
         queued: mailOutboxIds.length,
