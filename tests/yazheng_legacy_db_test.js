@@ -372,6 +372,8 @@ console.log('yazheng_legacy_db_test');
         .sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.seq.localeCompare(b.seq));
       assert.deepEqual(sess.map((s) => new Date(s.scheduled_at).toISOString()), want.map((u) => new Date(u.at).toISOString()));
       assert.ok(sess.every((s) => s.status === 'completed' && s.session_deducted === true));
+      const created = (await pool.query(`SELECT bool_and(created_at = scheduled_at) AS ok FROM course_sessions WHERE course_period_id = $1`, [cp.id])).rows[0];
+      assert.equal(created.ok, true, '建立時間比照匯入工具，記那一堂的時間');
       assert.ok(sess.every((s) => s.checkins.length === 1 && s.checkins[0] === 'legacy_import:ATTENDED'), JSON.stringify(sess.map((s) => s.checkins)));
       assert.deepEqual(sess.map((s) => s.coach_id), want.map((u) => (u.coach === coachB.name ? coachB.id : coachA.id)),
         '新系統有同名教練就用他，沒有就用課期教練');
@@ -396,6 +398,8 @@ console.log('yazheng_legacy_db_test');
       const card = list.find((x) => x.id === legacyEnrollment);
       assert.ok(card, '課程卡要找得到這筆');
       assert.equal(card.is_legacy_import, true);
+      assert.deepEqual([card.total_sessions, card.used_sessions, card.remaining_sessions], [12, 5, 7],
+        '課程卡：總＝舊包已用＋剩餘，已用＝舊系統紀錄，剩餘＝快照剩餘');
     });
 
     await check('YZM-08 對帳：剩 0 堂擋下（LEGACY_NOTHING_LEFT）；快照缺上課紀錄擋下（LEGACY_SNAPSHOT_INCOMPLETE）', async () => {

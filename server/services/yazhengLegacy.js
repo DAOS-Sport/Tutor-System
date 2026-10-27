@@ -293,7 +293,8 @@ function coachResolver(coaches, fallbackId) {
 }
 
 /**
- * 對帳交易內、課期開好之後（D8）：舊系統每一堂補一筆已完成、已扣課的 course_sessions，
+ * 對帳交易內、課期開好之後（D8）：舊系統每一堂補一筆已完成、已扣課的 course_sessions（形狀與匯入工具 legacy_import.js 相同，
+ * 建立時間也記那一堂的時間），
  * 全班學員各一筆 checkin_records（legacy_import、ATTENDED）；已用堂數由出席紀錄重算（和 usageSync 同一真相），
  * 寫回課期與訂單。課期沒開成（家長未綁 LINE、教練對不到）→ 回 error，呼叫端整筆 ROLLBACK。
  */
@@ -319,7 +320,7 @@ async function applyLegacyUsage(db, { enrollment, plan, seqs, by }) {
       `INSERT INTO course_sessions
          (course_period_id, coach_id, scheduled_at, duration_minutes, status, completed_at,
           session_deducted, created_at, updated_at)
-       VALUES ($1, $2, $3::timestamptz, 60, 'completed', $3::timestamptz, TRUE, NOW(), NOW())
+       VALUES ($1, $2, $3::timestamptz, 60, 'completed', $3::timestamptz, TRUE, $3::timestamptz, $3::timestamptz)
        RETURNING id`, [period.id, coachFor(use.coach), use.at])).rows[0];
     for (const sid of students) {
       await db.query(
