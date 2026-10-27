@@ -366,7 +366,7 @@ function RecordCard({ r, e, busy, onCheckin, onOpen }) {
   // 簽到方家長姓名（團報一方簽到即整組生效）：有姓名顯示「已簽 · 姓名」；
   // 舊 API 快取只有稱謂 label 時退回「已代簽」。
   const signerName = r.checked_in_by_name || null;
-  // 舊系統上過、已從堂數扣掉的課（雅正轉補進來的紀錄）。Owner 2026-10-27 同意改凍結檔（SPEC YZM-08 D11）。
+  // 舊系統上過、已從堂數扣掉的課（雅正轉補進來的記錄）。Owner 2026-10-27 同意改凍結檔（SPEC YZM-08 D11）。
   const legacy = r.checkin_source === 'legacy_import';
   let btn;
   if (legacy) {
