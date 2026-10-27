@@ -232,6 +232,34 @@ console.log('yazheng_legacy_db_test');
       assert.equal(n, 1);
     });
 
+    await check('YZM-05 鎖：第一個交易比對後鎖住舊單號，第二個要等它提交，之後看到「已經建過」', async () => {
+      await pool.query(
+        `INSERT INTO yz_legacy_packages (seq, invoice, coach, student_names, remaining_sessions, snapshot_at)
+         VALUES ('990111', 'ZZ00000111', $1, ARRAY['癸同學'], 2, $2)`, [COACH, SNAP]);
+      const a = await newCheckout();
+      const t1 = await pool.connect();
+      const t2 = await pool.connect();
+      try {
+        await t1.query('BEGIN');
+        await t2.query('BEGIN');
+        const r1 = await yz.resolveForReconcile(t1, children, { invoice: 'ZZ00000111' });
+        assert.deepEqual(r1.seqs, ['990111']);
+        let r2 = null;
+        const p2 = yz.resolveForReconcile(t2, children, { invoice: 'ZZ00000111' }).then((r) => { r2 = r; });
+        await new Promise((r) => setTimeout(r, 400));
+        assert.equal(r2, null, '第二個交易應該被鎖住、還在等');
+        await yz.linkForReconcile(t1, { seqs: r1.seqs, children: [{ id: a.ids[0] }], checkoutId: a.checkoutId, invoice: 'ZZ00000111', by: 't1' });
+        await t1.query('COMMIT');
+        await p2;
+        assert.equal(r2.code, 'LEGACY_ALREADY_BUILT');
+      } finally {
+        await t1.query('ROLLBACK').catch(() => {});
+        await t2.query('ROLLBACK').catch(() => {});
+        t1.release();
+        t2.release();
+      }
+    });
+
     await check('YZM-06 同步推送：legacy_seqs 帶出涵蓋的舊單號，yazheng_tag 為 true', async () => {
       const { orders } = await listOrders({ since: new Date(Date.now() - 3600e3).toISOString(), limit: 1000 });
       const mine = orders.filter((o) => o.legacy_seqs.includes('990104'));
