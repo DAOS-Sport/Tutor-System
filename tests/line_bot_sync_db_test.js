@@ -287,7 +287,13 @@ console.log('line_bot_sync_db_test');
       const extra = [];
       for (const t of Object.keys(coach)) extra.push(await lb.__test__.buildCoachRecord(pool, ctx2, coach[t]));
       const text = cap.calls.map((c) => c.body).join('\n') + JSON.stringify(extra);
-      assert.ok(!/09\d{8}/.test(text), '電話');
+      // UUID 與 sha256 雜湊是 16 進位字串，偶爾會剛好含「09＋8 位數字」：電話只掃人看的文字欄位。
+      const ID_KEYS = new Set(['coach_id', 'line_uid_hashes', 'key', 'snapshot_id', 'event_id']);
+      const strip = (v) => (Array.isArray(v) ? v.map(strip)
+        : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).filter(([k]) => !ID_KEYS.has(k)).map(([k, x]) => [k, strip(x)])) : v);
+      const human = JSON.stringify(strip([...cap.calls.map((c) => JSON.parse(c.body)), ...extra]));
+      assert.ok(!/09\d{8}/.test(human), '電話');
+      assert.ok(/09\d{8}/.test(JSON.stringify(strip({ students: ['0912000999'] }))), '這條檢查本身抓得到電話');
       assert.ok(!/Ulbtest_/.test(text), '原始 LINE userId');
       for (const w of ['測試家長', 'parent', 'price', 'invoice', 'phone', '6900']) assert.ok(!text.includes(w), w);
     });
