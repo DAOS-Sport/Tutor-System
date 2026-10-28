@@ -29,6 +29,8 @@ const router = express.Router();
 router.use('/reconciliation', require('./reconciliation'));
 // 雅正轉對帳（GPT 反查網站拉清單）；自己驗 YZ_SYNC_API_KEY，不走下面的場館金鑰。
 router.use('/yazheng', require('./yazhengSync'));
+// LINE 小助理教練查課（拉取 API）；自己驗 LB_SYNC_API_KEY，不走下面的場館金鑰。
+router.use('/line-bot', require('./lineBotSync'));
 
 const DEFAULT_WINDOW_MIN = 90;
 const MAX_WINDOW_MIN = 480;     // 8 小時，一個班表的長度；再長就不是「現在」了
