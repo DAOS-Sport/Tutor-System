@@ -274,6 +274,8 @@ const DB = [
   'tests/health_pipelines_db_test.js',
   'tests/yazheng_sync_db_test.js',
   'tests/yazheng_legacy_db_test.js',
+  // 雅正轉 YZM-09：對上的舊課自動轉入。
+  'tests/yazheng_auto_transfer_db_test.js',
   'tests/line_bot_sync_db_test.js',
 ];
 
