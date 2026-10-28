@@ -577,3 +577,6 @@ module.exports = router;
 // 期限與剩餘天數是純日期運算，錯了不會有任何人立刻發現（家長要到隔年才知道
 // 自己少了一天）。匯出來做真行為測試，而不是用 regex 掃原始碼。
 module.exports.__test__ = { courseExpiryAt, daysLeftUntil, expiringWindowEnd };
+// LINE 小助理教練查課（SPEC v1.0 D8，擁有者 2026-10-28 同意）：只把教練訂單的 SQL 與期限算法共用出去，
+// 讓 services/lineBotSync.js 推給小助理的數字和教練端「報名狀態」同一套算法。本檔邏輯一行未改。
+module.exports.coachOrders = { COACH_ORDER_CTE, COACH_ENROLLMENT_SCOPE, COACH_ENROLLMENT_STATUSES, courseExpiryAt };

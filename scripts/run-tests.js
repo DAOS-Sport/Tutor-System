@@ -274,6 +274,7 @@ const DB = [
   'tests/health_pipelines_db_test.js',
   'tests/yazheng_sync_db_test.js',
   'tests/yazheng_legacy_db_test.js',
+  'tests/line_bot_sync_db_test.js',
 ];
 
 /** 漏網檢查：tests/ 與 tests/release/ 的每個 .js 都必須被分層，否則整輪失敗。 */

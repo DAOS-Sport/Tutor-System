@@ -23,6 +23,7 @@ const { applyDueScheduledCourseTypeChanges } = require('../services/courseTypeSc
 // 每日排程「時段認領＋補跑」（2026-10-14，GitHub #10）：autoscale 多台不重複、縮到 0 台錯過的會補。
 const slots = require('./slots');
 const yazhengSync = require('../services/yazhengSync');
+const lineBotSync = require('../services/lineBotSync');
 const { runWithLock } = require('./lock');
 
 // 對家長推播的 LIFF base URL；新版用 LIFF_URL_PARENT，舊版 LIFF_URL 為 fallback
@@ -558,8 +559,28 @@ function initCronJobs() {
     return yazhengSync.pushSnapshot();
   }));
 
+  // ── LINE 小助理教練查課同步（SPEC v1.0 §4.2，做法比照雅正轉同步）──
+  // 本檔在凍結清單內：依 SPEC D9 與 §6 改動清單（擁有者 2026-10-28 確認）只新增下面兩個同步工作，
+  // 未動任何簽到／扣課相關排程。
+  // 沒設 LB_WEBHOOK_URL／LB_WEBHOOK_SECRET 就什麼都不做。每 5 分鐘先便宜地看有沒有變動，有才掛鎖推送；
+  // 對方失敗時游標不動，下一輪重送。
+  scheduleTaipei('*/5 * * * *', async () => {
+    if (!lineBotSync.webhookConfig()) return;
+    try {
+      if (!(await lineBotSync.hasChanges())) return;
+      await runWithLock(lineBotSync.CHANGE_JOB, () => lineBotSync.pushChanges());
+    } catch (err) {
+      console.warn('[Cron/LineBot] change push failed:', err.code || err.message);
+    }
+  });
+  // 每晚 01:45 全量快照（錯開雅正轉 01:30）；小助理收齊且筆數相符才整批換，補 5 分鐘推送漏掉的。
+  scheduleTaipei('45 1 * * *', slots.daily('line_bot_snapshot', '01:45', async () => {
+    if (!lineBotSync.webhookConfig()) return { skipped: 'not_configured' };
+    return lineBotSync.pushSnapshot();
+  }));
+
   // ── 每日排程補跑檢查（2026-10-14，GitHub #10）──
-  // 每 5 分鐘＋服務啟動後 1 分鐘：上面 9 支每日排程若「最近一個應執行時段」沒有任何
+  // 每 5 分鐘＋服務啟動後 1 分鐘：上面 10 支每日排程若「最近一個應執行時段」沒有任何
   // instance 認領（例如 00:30 時沒有機器在線），就補跑一次。依登記順序執行，
   // 夜間 Ragic 鏈（回寫佇列 → 備份 → 拉回 → 姓名掃描）的先後不變。
   scheduleTaipei('*/5 * * * *', () => slots.runMissedDailySlots());
