@@ -113,6 +113,7 @@ console.log('line_bot_sync_db_test');
     await addCoach('E2', { name: ` 同名教練${T} `, coachLine: `Ulbtest_E2_${T}` });   // 正規化後同名
     await addCoach('F', { name: `戊教練${T}`, coachLine: LINE.AS });                 // 和 A 的員工檔共用同一個 LINE
     await addCoach('G', { name: `己教練${T}`, staffActive: false, coachLine: `Ulbtest_G_${T}` }); // 員工檔停用
+    await addCoach('H', { name: `庚教練${T}`, active: false, coachLine: LINE.B });                 // 離職回任：舊檔停用、和 B 同一個 LINE
 
     await addOrder({ coachTag: 'A', used: 2, students: ['林測一'] });                         // 進行中
     await addOrder({ coachTag: 'A', status: 'pending_payment', students: ['林測二'] });       // 待付款
@@ -162,9 +163,15 @@ console.log('line_bot_sync_db_test');
       assert.deepEqual([g.active, g.new_system.length], [false, 0]);
     });
 
-    await check('C1／C3 刪除：沒綁 LINE 的、LINE 被共用而沒剩雜湊的 → {deleted:true}', async () => {
+    await check('C1／C3 刪除：沒綁 LINE 的、LINE 被兩位可查教練共用而沒剩雜湊的 → {deleted:true}', async () => {
       assert.deepEqual(await rec('D'), { coach_id: coach.D, deleted: true });
       assert.deepEqual(await rec('F'), { coach_id: coach.F, deleted: true });
+    });
+
+    await check('C3 離職回任：同一個 LINE 只有一位可查、其餘停用 → 雜湊留給可查的那位', async () => {
+      const b = await rec('B');
+      assert.deepEqual([b.active, b.line_uid_hashes], [true, [sha(LINE.B)]], 'B 保留雜湊');
+      assert.deepEqual(await rec('H'), { coach_id: coach.H, deleted: true }, '停用的舊檔沒剩雜湊 → 刪除');
     });
 
     await check('BOT-05 雅正：姓名唯一才推、沒學員姓名不推、已轉入不推；括號裡的 % 不影響對應', async () => {
@@ -295,7 +302,8 @@ console.log('line_bot_sync_db_test');
       assert.ok(!/09\d{8}/.test(human), '電話');
       assert.ok(/09\d{8}/.test(JSON.stringify(strip({ students: ['0912000999'] }))), '這條檢查本身抓得到電話');
       assert.ok(!/Ulbtest_/.test(text), '原始 LINE userId');
-      for (const w of ['測試家長', 'parent', 'price', 'invoice', 'phone', '6900']) assert.ok(!text.includes(w), w);
+      for (const w of ['測試家長', 'parent', 'price', 'invoice', 'phone', '6900']) assert.ok(!human.includes(w), w);
+      assert.ok(JSON.stringify(strip({ students: ['6900'] })).includes('6900'), '這條檢查本身抓得到金額');
     });
 
     await check('§4.1 格式：和 tests/fixtures/line_bot_payload.json 的四種情況欄位完全一致', async () => {

@@ -45,12 +45,22 @@ async function loadCoachIdentities(db) {
   const owners = new Map(); // hash → Set(coach_id)
   const byId = new Map();
   for (const r of rows) {
+    // userId 原字串（去頭尾空白）算 sha256，小寫 16 進位、不加鹽、不截斷；小助理用 source.userId 算同一個值。
     const hashes = r.is_placeholder || !r.has_staff ? [] : [...new Set([r.coach_line, r.staff_line].filter(Boolean).map(sha256))];
     for (const h of hashes) owners.set(h, new Set([...(owners.get(h) || []), r.id]));
     byId.set(r.id, { ...r, hashes });
   }
-  const shared = new Set([...owners].filter(([, ids]) => ids.size > 1).map(([h]) => h));
-  for (const c of byId.values()) c.hashes = c.hashes.filter((h) => !shared.has(h));
+  // C3：同一個 LINE 對到多位教練時，只有「一位可查、其餘停用」才把雜湊留給可查的那位（例如離職回任、
+  // 舊檔停用但 LINE 還在）；兩位以上都可查就全部拿掉（安全側），小助理那邊會回「查不到」。
+  const eligible = (c) => c.is_active && c.staff_active;
+  let sharedHashes = 0;
+  for (const [h, ids] of owners) {
+    if (ids.size < 2) continue;
+    const live = [...ids].filter((id) => eligible(byId.get(id)));
+    const keep = live.length === 1 ? live[0] : null;
+    if (!keep) sharedHashes += 1;
+    for (const id of ids) if (id !== keep) byId.get(id).hashes = byId.get(id).hashes.filter((x) => x !== h);
+  }
   // 雅正姓名對應：只在姓名全平台唯一時成立（BOT-05），兩邊都用 yazhengLegacy.normCoach。
   const nameCount = new Map();
   for (const r of rows) {
@@ -62,7 +72,7 @@ async function loadCoachIdentities(db) {
     const k = normCoach(r.name);
     if (k && nameCount.get(k) === 1) coachByLegacyName.set(k, r.id);
   }
-  return { byId, coachByLegacyName, sharedHashes: shared.size };
+  return { byId, coachByLegacyName, sharedHashes };
 }
 
 /** 有綁 LINE（扣掉共用的）才出現在小助理；教練與員工檔都啟用才算「可查」。 */
