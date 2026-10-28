@@ -124,8 +124,8 @@ const ok = (label) => { passed += 1; console.log('  PASS ' + label); };
       assert.equal(Number(m[1]), Number(m[5]), `${m[3]} 分鐘不一致`);
       assert.equal(Number(m[2]), Number(m[4]), `${m[3]} 小時不一致`);
     }
-    assert.equal(k, 10); // 2026-10-22 加 yazheng_snapshot（01:30）；2026-10-28 加 line_bot_snapshot（01:45）
-    ok('cron/index.js 的 10 支每日排程：cron 運算式與登記時段一致');
+    assert.equal(k, 11); // 2026-10-22 加 yazheng_snapshot（01:30）；2026-10-28 加 line_bot_snapshot（01:45）、yazheng_auto_transfer（01:15）
+    ok('cron/index.js 的 11 支每日排程：cron 運算式與登記時段一致');
   } finally {
     await pool.query(`DELETE FROM job_runs WHERE job_name LIKE $1`, [slots.JOB_PREFIX + PREFIX + '%']).catch(() => {});
     await pool.end();

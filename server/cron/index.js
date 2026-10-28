@@ -24,6 +24,7 @@ const { applyDueScheduledCourseTypeChanges } = require('../services/courseTypeSc
 const slots = require('./slots');
 const yazhengSync = require('../services/yazhengSync');
 const lineBotSync = require('../services/lineBotSync');
+const yazhengAutoTransfer = require('../services/yazhengAutoTransfer');
 const { runWithLock } = require('./lock');
 
 // 對家長推播的 LIFF base URL；新版用 LIFF_URL_PARENT，舊版 LIFF_URL 為 fallback
@@ -541,6 +542,15 @@ function initCronJobs() {
     }
   }), { timezone: 'Asia/Taipei' });
 
+  // ── 雅正轉：對上的舊課自動轉入（雅正轉 SPEC YZM-09）──
+  // 本檔在凍結清單內：擁有者 2026-10-28 要求「有對上的自己拋轉」，只新增這一個每日工作，未動任何簽到／扣課排程。
+  // 01:15 跑，早於 01:30 GPT 網站與 01:45 小助理快照；YZ_AUTO_TRANSFER=off 可關掉。
+  scheduleTaipei('15 1 * * *', slots.daily('yazheng_auto_transfer', '01:15', async () => {
+    if (!yazhengAutoTransfer.enabled()) return { skipped: 'disabled' };
+    const r = await yazhengAutoTransfer.runAutoTransfer();
+    return { transferred: r.transferred, held: r.held, errors: r.errors };
+  }));
+
   // ── 雅正轉同步（雅正轉同步 SPEC v1，YZ-A3）──
   // 沒設 YZ_WEBHOOK_URL／YZ_WEBHOOK_SECRET 就什麼都不做。每 5 分鐘：先便宜地看有沒有變動，
   // 有才掛鎖推送（避免每 5 分鐘都留一筆 job_runs）；對方失敗時游標不動，下一輪重送。
@@ -580,7 +590,7 @@ function initCronJobs() {
   }));
 
   // ── 每日排程補跑檢查（2026-10-14，GitHub #10）──
-  // 每 5 分鐘＋服務啟動後 1 分鐘：上面 10 支每日排程若「最近一個應執行時段」沒有任何
+  // 每 5 分鐘＋服務啟動後 1 分鐘：上面 11 支每日排程若「最近一個應執行時段」沒有任何
   // instance 認領（例如 00:30 時沒有機器在線），就補跑一次。依登記順序執行，
   // 夜間 Ragic 鏈（回寫佇列 → 備份 → 拉回 → 姓名掃描）的先後不變。
   scheduleTaipei('*/5 * * * *', () => slots.runMissedDailySlots());

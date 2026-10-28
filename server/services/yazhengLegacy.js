@@ -45,6 +45,16 @@ CREATE TABLE IF NOT EXISTS yz_legacy_links (
   PRIMARY KEY (seq, enrollment_id)
 );
 CREATE INDEX IF NOT EXISTS idx_yz_legacy_links_enrollment ON yz_legacy_links (enrollment_id);
+-- YZM-09：自動轉入要用、快照表沒有的欄位（10/22 快照的手機、建議場館、燈號、過期堂數）。含個資，只從本機檔載入。
+CREATE TABLE IF NOT EXISTS yz_legacy_package_meta (
+  seq               TEXT PRIMARY KEY REFERENCES yz_legacy_packages (seq),
+  phone             TEXT,
+  venue_id          TEXT,
+  light             TEXT,
+  expired_sessions  INTEGER NOT NULL DEFAULT 0,
+  loaded_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_yz_legacy_package_meta_phone ON yz_legacy_package_meta (phone);
 `;
 
 async function ensureSchema(db) {
