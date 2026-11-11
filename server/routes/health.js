@@ -7,6 +7,7 @@
 const crypto = require('crypto');
 const express = require('express');
 const { buildHealthReport } = require('../services/healthSignals');
+const { buildErrorsReport, parseSince } = require('../services/healthErrors');
 
 const router = express.Router();
 
@@ -28,6 +29,25 @@ router.get('/pipelines', async (req, res) => {
   } catch (err) {
     console.error('[health/pipelines]', err.message);
     res.status(500).json({ error: 'HEALTH_REPORT_FAILED' });
+  }
+});
+
+router.get('/errors', async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const expected = String(process.env.HEALTH_TOKEN || '').trim();
+  if (!expected) return res.status(503).json({ error: 'HEALTH_TOKEN_NOT_CONFIGURED' });
+  const header = String(req.get('authorization') || '');
+  const received = header.startsWith('Bearer ') ? header.slice('Bearer '.length) : '';
+  if (!received || !tokenMatches(received, expected)) return res.status(401).json({ error: 'INVALID_HEALTH_TOKEN' });
+  const now = new Date();
+  let since;
+  try { since = parseSince(req.query.since, now); }
+  catch { return res.status(400).json({ error: 'INVALID_HEALTH_SINCE' }); }
+  try {
+    res.json(await buildErrorsReport(now, since));
+  } catch {
+    console.error('[health/errors] 無法讀取錯誤來源');
+    res.status(500).json({ error: 'HEALTH_ERRORS_FAILED' });
   }
 });
 

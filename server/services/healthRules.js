@@ -42,6 +42,13 @@ const DAILY_JOBS = [
 const RETIRED_DAILY_JOBS = ['ragic_quarantine'];
 const SAME_DAY_CATCH_UP_UNTIL = '20:00';
 
+// 兩支增量推送都每 5 分鐘檢查變動；容許兩個間隔重試，連續 3 個間隔（15 分鐘）未恢復才紅。
+const INTERVAL_FAILURE_LIMIT = 3;
+const INTERVAL_JOBS = [
+  { name: 'line_bot_webhook', intervalMs: 5 * MINUTE, label: 'LINE 小助理教練課程增量推送（每 5 分鐘）' },
+  { name: 'yazheng_webhook', intervalMs: 5 * MINUTE, label: '雅正轉訂單增量推送（每 5 分鐘）' },
+];
+
 function worst(levels) {
   return levels.reduce((acc, l) => (LEVELS.indexOf(l) > LEVELS.indexOf(acc) ? l : acc), 'green');
 }
@@ -163,6 +170,28 @@ function evaluateDailyJob(job, signal, { now, schedulerActive }) {
     default:
       return r('yellow', `${slotLabel(keys.current)} 這一輪狀態不明（${clip(row.status, 30)}）`);
   }
+}
+
+/** 增量排程只在有變動時寫 job_runs；以待送變動與未成功起點判斷，不把正常閒置算漏跑。 */
+function evaluateIntervalJob(job, signal, { now, schedulerActive }) {
+  if (isReadError(signal)) return unreadable(signal);
+  const times = { lastSuccessAt: iso(signal.lastSuccessAt), lastFailureAt: iso(signal.lastFailureAt) };
+  const r = (level, reason) => result(level, reason, times);
+  if (!schedulerActive) return r('yellow', '無法觀測：這個環境不跑排程（PREVIEW_SAFE_MODE=1）');
+  if (!signal.configured) return r('yellow', '無法觀測：尚未設定有效的推送 Webhook');
+  const row = signal.latest;
+  if (!row) return r('yellow', '無法觀測：還沒有執行紀錄（無變動時不留紀錄）');
+  if (row.status === 'skipped_lock') return r('green', '上一輪仍持有鎖，這一輪略過，等待上一輪完成');
+  if (!signal.hasChanges) return r('green', '沒有待推送變動（無變動時不留執行紀錄）');
+  const since = ms(signal.unsuccessfulSince);
+  if (now.getTime() - since >= job.intervalMs * INTERVAL_FAILURE_LIMIT) {
+    return r('red', `仍有待推送變動，連續 ${INTERVAL_FAILURE_LIMIT} 個間隔沒有成功（${at(since)} 起）`);
+  }
+  if (row.status === 'running') return r('green', `執行中（${at(row.started_at)} 開始）`);
+  if (row.status === 'error' || row.status === 'aborted') {
+    return r('yellow', '最近一輪執行未成功，等下一個 5 分鐘間隔重試');
+  }
+  return r('yellow', '有待推送變動，等待下一個 5 分鐘間隔；尚無連續未成功的紀錄');
 }
 
 function evaluateDatabase(signal) {
@@ -328,6 +357,13 @@ const PIPELINES = [
     signal: (s) => (isReadError(s.dailyJobs) ? s.dailyJobs : s.dailyJobs[job.name]),
     evaluate: (sig, ctx) => evaluateDailyJob(job, sig, ctx),
   })),
+  ...INTERVAL_JOBS.map((job) => ({
+    id: `job.${job.name}`,
+    name: job.label,
+    source: `job_runs（${job.name}）＋待推送變動預檢`,
+    signal: (s) => (isReadError(s.intervalJobs) ? s.intervalJobs : s.intervalJobs?.[job.name]),
+    evaluate: (sig, ctx) => evaluateIntervalJob(job, sig, ctx),
+  })),
   { id: 'ragic.outbox', name: '新家長 LINE UID 寫回 Ragic 佇列', source: 'ragic_sync_outbox', signal: 'ragicOutbox', evaluate: evaluateRagicOutbox },
   { id: 'ragic.webhook', name: 'Ragic 即時通知', source: 'ragic_webhook_attempts＋ragic_webhook_inbox', signal: 'ragicWebhook', evaluate: evaluateRagicWebhook },
   { id: 'ragic.z01-schema', name: 'Ragic Z01 欄位驗證', source: 'ragic_z01_uid_schema_verifications', signal: 'z01Schema', evaluate: evaluateZ01Schema },
@@ -375,6 +411,8 @@ module.exports = {
   SYSTEM_ID,
   LEVELS,
   DAILY_JOBS,
+  INTERVAL_JOBS,
+  INTERVAL_FAILURE_LIMIT,
   RETIRED_DAILY_JOBS,
   PIPELINES,
   worst,
@@ -382,6 +420,7 @@ module.exports = {
   slotTime,
   assembleReport,
   evaluateDailyJob,
+  evaluateIntervalJob,
   evaluateDatabase,
   evaluateRagicOutbox,
   evaluateRagicWebhook,

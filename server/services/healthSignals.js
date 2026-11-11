@@ -96,6 +96,47 @@ async function readDailyJobs(db, now) {
   return out;
 }
 
+async function readIntervalJobs(db) {
+  const services = {
+    line_bot_webhook: require('./lineBotSync'),
+    yazheng_webhook: require('./yazhengSync'),
+  };
+  const entries = await Promise.all(rules.INTERVAL_JOBS.map(async (job) => [job.name, await attempt(async () => {
+    const service = services[job.name];
+    if (!service.webhookConfig()) return { configured: false };
+    const [runs, hasChanges] = await Promise.all([
+      db.query(
+        `WITH history AS (
+           SELECT MAX(finished_at) FILTER (WHERE status = 'success') AS last_success,
+                  MAX(finished_at) FILTER (WHERE status = 'error') AS last_failure
+             FROM job_runs WHERE job_name = $1
+         )
+         SELECT latest.status, latest.started_at, latest.finished_at,
+                history.last_success, history.last_failure,
+                (SELECT MIN(started_at) FROM job_runs
+                  WHERE job_name = $1 AND status IN ('running', 'error', 'aborted')
+                    AND (history.last_success IS NULL OR started_at > history.last_success)) AS unsuccessful_since
+           FROM history
+           LEFT JOIN LATERAL (
+             SELECT status, started_at, finished_at FROM job_runs WHERE job_name = $1
+              ORDER BY started_at DESC LIMIT 1
+           ) latest ON TRUE`, [job.name]),
+      // 共用 cron 的純本機預檢；閒置不寫 job_runs，不能只看最後成功時間。
+      service.hasChanges(db),
+    ]);
+    const row = runs.rows[0] || {};
+    return {
+      configured: true,
+      latest: row.status ? { status: row.status, started_at: row.started_at, finished_at: row.finished_at } : null,
+      lastSuccessAt: row.last_success || null,
+      lastFailureAt: row.last_failure || null,
+      unsuccessfulSince: row.unsuccessful_since || null,
+      hasChanges,
+    };
+  })]));
+  return Object.fromEntries(entries);
+}
+
 async function readRagicOutbox(db) {
   const [open, last] = await Promise.all([
     db.query(
@@ -215,9 +256,10 @@ async function readChatRooms(db) {
 }
 
 async function collectSignals(now, { db = pool } = {}) {
-  const [database, dailyJobs, ragicOutbox, ragicWebhook, z01Schema, linePush, mail, courseTypeSchedule, chatRooms] = await Promise.all([
+  const [database, dailyJobs, intervalJobs, ragicOutbox, ragicWebhook, z01Schema, linePush, mail, courseTypeSchedule, chatRooms] = await Promise.all([
     attempt(() => readDatabase(db)),
     attempt(() => readDailyJobs(db, now)),
+    attempt(() => readIntervalJobs(db)),
     attempt(() => readRagicOutbox(db)),
     attempt(() => readRagicWebhook(db, now)),
     attempt(() => readZ01Schema(db)),
@@ -234,6 +276,7 @@ async function collectSignals(now, { db = pool } = {}) {
     isProduction: process.env.NODE_ENV === 'production',
     database,
     dailyJobs,
+    intervalJobs,
     ragicOutbox,
     ragicWebhook,
     z01Schema,

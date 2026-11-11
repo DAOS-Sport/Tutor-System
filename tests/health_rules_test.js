@@ -294,6 +294,10 @@ function healthySignals(now) {
     isProduction: true,
     database: { latencyMs: 12 },
     dailyJobs: daily,
+    intervalJobs: Object.fromEntries(rules.INTERVAL_JOBS.map((job) => [job.name, {
+      configured: true, hasChanges: false, latest: run('success', { started: now, finished: now }),
+      lastSuccessAt: now, lastFailureAt: null, unsuccessfulSince: null,
+    }])),
     ragicOutbox: { open: [], lastSyncedAt: T('2026-10-22T00:10:07') },
     ragicWebhook: { secretConfigured: true, attempts24h: { ok: 3 }, lastAttemptAt: T('2026-10-22T09:00:00'), open: [], lastCompletedAt: T('2026-10-22T09:00:01') },
     z01Schema: { configured: true, latest: { fetched_at: T('2026-10-22T09:55:00'), verified: true }, lastVerifiedAt: T('2026-10-22T09:55:00') },
@@ -310,7 +314,7 @@ check('整份報告：全部正常 → 符合 health-v1、system=daos-tutoring�
   assert.deepStrictEqual(contractProblems(report), []);
   assert.strictEqual(report.system, 'daos-tutoring');
   assert.strictEqual(report.overall, 'green', JSON.stringify(report.pipelines.filter((p) => p.level !== 'green')));
-  assert.strictEqual(report.pipelines.length, 9 + rules.DAILY_JOBS.length);
+  assert.strictEqual(report.pipelines.length, 9 + rules.DAILY_JOBS.length + rules.INTERVAL_JOBS.length);
   assert.strictEqual(report.checkedAt, NOW.toISOString());
 });
 
@@ -328,7 +332,8 @@ check('整份報告：一個訊號讀不到只讓那一條變紅，overall 跟�
 check('整份報告：每日排程整批讀不到 → 每一支都紅；缺一支訊號 → 那一支黃「無法觀測」', () => {
   const s = healthySignals(NOW);
   s.dailyJobs = { readError: 'timeout' };
-  const all = rules.assembleReport(s).pipelines.filter((p) => p.id.startsWith('job.'));
+  const dailyIds = new Set(rules.DAILY_JOBS.map((job) => `job.${job.name}`));
+  const all = rules.assembleReport(s).pipelines.filter((p) => dailyIds.has(p.id));
   assert.strictEqual(all.length, rules.DAILY_JOBS.length);
   assert.ok(all.every((p) => p.level === 'red'));
   const s2 = healthySignals(NOW);
