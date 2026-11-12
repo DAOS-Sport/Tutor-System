@@ -288,8 +288,13 @@ async function collectSignals(now, { db = pool } = {}) {
   };
 }
 
-async function buildHealthReport(now = new Date(), options) {
-  return rules.assembleReport(await collectSignals(now, options));
+async function buildHealthReport(now = new Date(), options = {}) {
+  const { collectEvidence, addDrilldown } = require('./healthDrilldown');
+  const [signals, evidence] = await Promise.all([
+    collectSignals(now, options),
+    collectEvidence(now, { db: options.db || pool, withTimeout, timeoutMs: READ_TIMEOUT_MS }),
+  ]);
+  return addDrilldown(rules.assembleReport(signals), evidence);
 }
 
 module.exports = { collectSignals, buildHealthReport };

@@ -202,6 +202,7 @@ const UNIT = [
   'tests/health_pipelines_route_test.js',
   'tests/health_interval_jobs_test.js',
   'tests/health_errors_test.js',
+  'tests/health_drilldown_test.js',
   'tests/yazheng_sync_test.js',
 ];
 

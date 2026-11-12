@@ -5,7 +5,7 @@
  */
 const crypto = require('crypto');
 const path = require('path');
-const { SYSTEM_ID, DAILY_JOBS } = require('./healthRules');
+const { SYSTEM_ID, DAILY_JOBS, ERROR_PIPELINES } = require('./healthRules');
 const DAY_MS = 86400000;
 const MAX_FINGERPRINTS = 200;
 const RING_CAPACITY = 1000;
@@ -189,7 +189,8 @@ async function buildErrorsReport(now = new Date(), since = parseSince(undefined,
     truncated: all.length > MAX_FINGERPRINTS || ring.truncated(since),
     errors: all.slice(0, MAX_FINGERPRINTS).map((event) => ({ system: SYSTEM_ID, env: event.env, ts: taipei(event.last_seen),
       level: event.level, code: event.code, message: event.message, request_id: event.request_id, route: event.route,
-      fingerprint: event.fingerprint, count: event.count, first_seen: taipei(event.first_seen), last_seen: taipei(event.last_seen), release: event.release })) };
+      fingerprint: event.fingerprint, count: event.count, first_seen: taipei(event.first_seen), last_seen: taipei(event.last_seen), release: event.release,
+      pipeline: event.source === 'http' ? null : ERROR_PIPELINES[event.route] || null })) };
 }
 
-module.exports = { parseSince, createErrorRing, errorRing, buildErrorsReport };
+module.exports = { parseSince, createErrorRing, errorRing, buildErrorsReport, safeCode, taipei };

@@ -12,7 +12,7 @@ const FIRST = '2026-11-11T06:00:00Z';
 const LAST = '2026-11-11T07:00:00Z';
 const TOP_KEYS = ['system', 'build', 'checkedAt', 'since', 'retainedSince', 'truncated', 'errors'].sort();
 const ERROR_KEYS = ['system', 'env', 'ts', 'level', 'code', 'message', 'request_id', 'route',
-  'fingerprint', 'count', 'first_seen', 'last_seen', 'release'].sort();
+  'fingerprint', 'count', 'first_seen', 'last_seen', 'release', 'pipeline'].sort();
 
 function fakeDb(rows = {}) {
   const calls = [];

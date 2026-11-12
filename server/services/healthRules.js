@@ -374,6 +374,19 @@ const PIPELINES = [
   { id: 'storage.uploads', name: '上傳檔案儲存', source: 'objectStorage driver', signal: 'storage', evaluate: evaluateStorage },
 ];
 
+// errors 的來源對應只指向現有管線；排程同時接受 slot 與非 slot 名稱。
+const ERROR_PIPELINES = Object.freeze({
+  ...Object.fromEntries(PIPELINES.filter((p) => p.id.startsWith('job.')).flatMap((p) => {
+    const name = p.id.slice(4);
+    return [[`job_runs/${name}`, p.id], [`job_runs/slot:${name}`, p.id]];
+  })),
+  line_push_log: 'line.push',
+  mail_outbox: 'mail.reconcile',
+  ragic_sync_outbox: 'ragic.outbox',
+  ragic_webhook_inbox: 'ragic.webhook',
+  ragic_sync_failures: 'job.ragic_backup',
+});
+
 /**
  * signals：{ now, build, processStartedAt, schedulerActive, isProduction, ...各管線訊號 }。
  * 訊號讀不到時是 { readError }，只有那一條變紅。
@@ -415,6 +428,7 @@ module.exports = {
   INTERVAL_FAILURE_LIMIT,
   RETIRED_DAILY_JOBS,
   PIPELINES,
+  ERROR_PIPELINES,
   worst,
   slotsToJudge,
   slotTime,
