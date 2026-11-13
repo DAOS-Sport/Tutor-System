@@ -37,6 +37,7 @@ const {
 } = require('../services/groupOrderSubmit');
 const { getCourseConfig, CourseConfigError } = require('../services/courseConfig');
 const { rateLimitEnabled } = require('../middlewares/rateLimit');
+const { checkPolicyAck } = require('../services/policyHandshake');
 
 // 家長端操作者標記：token 只含 id/phone，櫃檯亦以手機辨識家長。
 const parentActor = (req) => `家長 ${req.parent?.phone || req.parent?.id || 'unknown'}`;
@@ -524,6 +525,9 @@ router.delete('/draft', async (req, res) => {
 // ── POST / 發起團購 ──────────────────────────────────────────
 router.post('/', async (req, res) => {
   const p = req.body || {};
+  // 握手：團主沒勾選同意使用期限及退費說明（或條文已改版）就不發起。
+  const ackError = checkPolicyAck(p);
+  if (ackError) return res.status(ackError.status).json(ackError.body);
   const courseType = parseInt(p.course_type, 10);
   const venueId = p.venue_id ? String(p.venue_id).trim() : '';
   const coachId = p.coach_id ? String(p.coach_id).trim() : null;
@@ -804,6 +808,9 @@ router.get('/:id', async (req, res) => {
 // ── POST /by-token/:token/join 加入團購（綁定本人學員 + best-effort 回寫 Ragic）──
 router.post('/by-token/:token/join', async (req, res) => {
   const p = req.body || {};
+  // 握手：每一家加入時都要自己勾選同意，不能沿用團主的同意。
+  const ackError = checkPolicyAck(p);
+  if (ackError) return res.status(ackError.status).json(ackError.body);
   const studentIds = Array.isArray(p.student_ids) ? p.student_ids : [];
   const newStudents = cleanNewStudents(p.new_students);
   // U10：證明改送審後上傳，加入時不再要求；若帶了則沿用。

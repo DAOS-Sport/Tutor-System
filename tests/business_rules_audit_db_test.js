@@ -40,6 +40,8 @@ const { assertCourseEntitlement, lockRefundPeriods } = require('../server/servic
 const { normalizeCourseTypeHeadcounts, AUDIT_ACTION } = require('../server/services/courseTypeHeadcount');
 const { applyDueScheduledCourseTypeChanges } = require('../server/services/courseTypeSchedule');
 const evaluations = require('../server/services/evaluations');
+// 報名握手（2026-11-03）：建單請求都要帶目前條文版本；這支測的是後面的業務規則，所以一律帶上。
+const { REFUND_POLICY_VERSION } = require('../server/services/policyHandshake');
 
 let passed = 0;
 function ok(cond, label) {
@@ -69,7 +71,7 @@ async function call(base, method, path, token, body, headers = {}) {
   const response = await fetch(`${base}${path}`, {
     method,
     headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}), ...headers },
-    body: body ? JSON.stringify(body) : undefined,
+    body: body ? JSON.stringify({ policy_ack: REFUND_POLICY_VERSION, ...body }) : undefined,
   });
   let data = null;
   try { data = await response.json(); } catch { /* 非 JSON */ }

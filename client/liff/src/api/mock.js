@@ -53,7 +53,7 @@ function venueMatches(values, selectedVenue) {
 const PARENTS = {
   '0900796878': { id: 'P0001', name: '張媽媽', phone: '0900796878', gender: '女', email: 'mama.chang@example.com',
     primary_venue_id: 'B', students: [
-      { id: 'S0001', name: '張小明', id_number: 'A132702114', birth_date: '2015-03-12', gender: '男' },
+      { id: 'S0001', name: '張小明', id_number: 'A123456789', birth_date: '2015-03-12', gender: '男' },
       { id: 'S0002', name: '張小美', id_number: 'A223456788', birth_date: '2017-08-05', gender: '女' }] },
   '0900932354': { id: 'P0002', name: '李爸爸', phone: '0900932354', gender: '男', email: 'lee.papa@example.com',
     primary_venue_id: 'B', students: [

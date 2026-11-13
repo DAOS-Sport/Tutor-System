@@ -415,7 +415,10 @@ async function readCheckout(clientOrPool, checkoutId) {
                   'is_group_shared', ae.is_group_shared,
                   'period_count', ae.period_count,
                   'period_number', ae.period_number,
-                  'checkout_id', ae.checkout_id
+                  'checkout_id', ae.checkout_id,
+                  -- 待對帳「建單人」篩選（2026-11-03）：誰建的單。家長自己報名的沒有 created_by。
+                  'created_by', ae.created_by,
+                  'created_by_name', (SELECT au_cb.name FROM admin_users au_cb WHERE au_cb.id = ae.created_by)
                 )
                 ORDER BY ae.submitted_at, ae.period_number, ae.id
               ) FILTER (WHERE ae.id IS NOT NULL),

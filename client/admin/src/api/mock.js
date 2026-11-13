@@ -482,7 +482,7 @@ const CUSTOMER_STUDENTS = [
   { id: 's-uuid-201', parent_id: 'p-uuid-001', name: '張景祥', id_number: 'A162207257', gender: '生理男',
     birth_date: '2019-04-04', blood_type: '不清楚', student_code: 'STD-133677', ragic_record_id: 'ragic-stud-201',
     is_active: true, last_synced_at: '2026-06-30 19:12' },
-  { id: 's-uuid-202', parent_id: 'p-uuid-002', name: '林小寶', id_number: 'A132702114', gender: '生理男',
+  { id: 's-uuid-202', parent_id: 'p-uuid-002', name: '林小寶', id_number: 'A123456789', gender: '生理男',
     birth_date: '2018-05-12', blood_type: 'O', student_code: 'STD-112001', ragic_record_id: 'ragic-stud-202',
     is_active: true, last_synced_at: '2026-06-28 14:30' },
   { id: 's-uuid-203', parent_id: 'p-uuid-001', name: '張景惠', id_number: 'A233677362', gender: '生理女',

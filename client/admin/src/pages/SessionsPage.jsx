@@ -17,6 +17,7 @@ import { courseTypeLabel, checkinStatusLabel, formatTWDateTime, formatHM, sessio
 import { exportSessionsXlsx } from '../utils/csvExport';
 import { normalizeSessionDateRange, sessionEndBounds } from '../utils/sessionDateRange.mjs';
 import { venueColor } from '../utils/venueColors.mjs';
+import { filterSessions, dateVariants } from '../utils/sessionSearch.mjs';
 
 const CHECKIN_TONE = { checked_in: 'green', not_yet: 'gray', absent: 'error' };
 const QUICK_VENUES = { B: '新北', K: '三重', L: '三民', C: '松山' };
@@ -56,6 +57,8 @@ export default function SessionsPage() {
   const [coefficientLoading, setCoefficientLoading] = useState(true);
   const [coefficientLoadError, setCoefficientLoadError] = useState(false);
   const [loadError, setLoadError] = useState(false);
+  // 2026-11-03 需求：篩選列上方的快速搜尋。只篩已查出的結果（起訖日、場館照樣套用），打字即時生效。
+  const [search, setSearch] = useState('');
   const requestId = useRef(0);
   const [detail, setDetail] = useState(null);
   // 補簽到：backfilling = 目前要補簽到的時段列；backfillAt = datetime-local 字串
@@ -104,6 +107,22 @@ export default function SessionsPage() {
   }, [applied.from, applied.to, appliedVenue, isAdmin, queryVersion]);
 
   const venueName = (id) => venues.find((v) => v.id === id)?.name || id;
+  // 快速搜尋看得到的欄位：日期（多種寫法）、時段、簽到時間、教練、組別、學員、場館、簽到狀態、
+  // 備註／扣課原因、每位學員的簽到人、堂號。
+  const sessionSearchFields = (r) => {
+    const note = sessionNoteSummary(r);
+    return [
+      dateVariants(r.date), r.start, r.end,
+      r.checkin_at ? formatHM(r.checkin_at) : '', r.checkin_at ? formatTWDateTime(r.checkin_at) : '',
+      r.coach, courseTypeLabel(r.course_type), r.is_experience_course ? '試上' : '',
+      r.students, venueName(r.venue_id), QUICK_VENUES[r.venue_id],
+      checkinStatusLabel(r.checkin_status), note ? [note.tag, note.text] : '',
+      (r.checkin_details || []).map((d) => [d.student, d.by]),
+      r.deduction_reason, r.deducted_by, r.lesson_no, r.transaction_no,
+    ];
+  };
+  const shown = useMemo(() => filterSessions(list, search, sessionSearchFields), [list, search, venues]);
+  const searching = search.trim() !== '';
   // 按本次指定列出新北／三重／三民／松山；只顯示啟用且有權限的館。
   const selectableVenues = Object.keys(QUICK_VENUES)
     .map((id) => venues.find((v) => v.id === id && v.is_active === true))
@@ -147,12 +166,13 @@ export default function SessionsPage() {
   }
 
   function doExport() {
-    if (!list || list.length === 0) { toast.error('沒有可匯出的資料'); return; }
+    if (!shown || shown.length === 0) { toast.error('沒有可匯出的資料'); return; }
     if (coefficientLoading || coefficientLoadError) { toast.warning('請等候係數類別載入完成，或重新查詢'); return; }
     // 檔名：家教上課紀錄{起訖日}_{匯出日期}（_匯出日期 由匯出工具自動接上）
     const opts = {
       filenamePrefix: `家教上課紀錄${applied.from}~${applied.to}`,
-      sessions: list,
+      // 有輸入快速搜尋時只匯出搜尋結果（檔名後面加「_搜尋」以免和完整核薪檔搞混）。
+      sessions: shown,
       venueName,
       venues,
       // A historical purchased tier can be absent from today's coach settings.
@@ -163,6 +183,7 @@ export default function SessionsPage() {
           .filter((value) => Number.isFinite(value) && value > 0),
       ])].map((multiplier) => ({ multiplier })),
     };
+    if (searching) opts.filenamePrefix += '_搜尋';
     try {
       const counts = exportSessionsXlsx(opts);
       toast.success(`已匯出 ${counts.attendedCount} 堂簽到明細與總堂數表`);
@@ -203,7 +224,13 @@ export default function SessionsPage() {
       key: 'checkin_at', label: '簽到時間',
       render: (r) => (r.checkin_at
         ? <span className="font-mono text-brand-primary" title={formatTWDateTime(r.checkin_at)}>{formatHM(r.checkin_at)} 簽到</span>
-        : <span className="text-xs text-gray-300">尚未簽到</span>),
+        : r.legacy_settled
+          // 舊系統轉移、已在舊系統結算：不是沒簽到，是不計薪（使用者 2026-11-04）。
+          ? <span className="inline-flex flex-col items-start gap-0.5" title="已於舊系統結算，不計教練堂數">
+              <StatusBadge tone="amber">舊系統轉移・不計薪</StatusBadge>
+              {r.legacy_checkin_at && <span className="font-mono text-[11px] text-gray-500">{formatHM(r.legacy_checkin_at)} 舊系統簽到</span>}
+            </span>
+          : <span className="text-xs text-gray-300">尚未簽到</span>),
     },
     { key: 'coach', label: '教練' },
     { key: 'course_type', label: '組別', render: (r) => (
@@ -275,10 +302,10 @@ export default function SessionsPage() {
   // 週課表依場館上色，圖例列出目前畫面上真的有課的場館。
   // 用結果反推而不是列出所有場館：沒有課的場館出現在圖例只會讓人找不到對應的色塊。
   const legendVenues = useMemo(() => {
-    if (!list) return [];
-    const ids = [...new Set(list.map((r) => r.venue_id))].filter(Boolean);
+    if (!shown) return [];
+    const ids = [...new Set(shown.map((r) => r.venue_id))].filter(Boolean);
     return ids.map((id) => ({ id, name: venueName(id) }));
-  }, [list, venues]);
+  }, [shown, venues]);
 
   return (
     <div>
@@ -306,6 +333,17 @@ export default function SessionsPage() {
           </div>
         }
       />
+
+      {/* 2026-11-03 需求：篩選列上方加快速搜尋。只在已查出的結果裡找，所以起訖日與場館照樣生效。 */}
+      <div className="mb-2">
+        <label htmlFor="session-quick-search" className="sr-only">快速搜尋上課紀錄</label>
+        <input
+          id="session-quick-search" type="search" value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="快速搜尋：學員、教練、場館、日期（如 11/01）、簽到時間、備註…（空白分開可多條件）"
+          className="w-full min-h-[44px] rounded-lg border border-gray-300 bg-white px-3 text-sm shadow-sm focus:border-brand-teal focus:outline-none md:min-h-0 md:py-2"
+        />
+      </div>
 
       {/* 收編進共用 FilterBar：這一列原本自己手搓，外框那串 class
           （mb-4 / rounded-lg / border-gray-200 / bg-white / p-3 / shadow-sm，
@@ -379,6 +417,7 @@ export default function SessionsPage() {
         <div className="w-full text-xs text-gray-500 md:ml-auto md:w-auto">
           {applied.from} ~ {applied.to}（{applied.days} 天）
           {list && <span className="ml-2 text-gray-400">共 {list.length} 筆</span>}
+          {list && searching && <span className="ml-2 font-medium text-brand-teal">搜尋符合 {shown.length} 筆</span>}
           {/* 靜態篩選最容易出的錯是「改了條件以為已經查了」。
               把「還沒套用」直接寫在結果旁邊，比只把按鈕變色更難忽略。 */}
           {dirty && <div className="mt-0.5 font-medium text-brand-amber">條件已修改，按「查詢」套用</div>}
@@ -412,7 +451,7 @@ export default function SessionsPage() {
             </div>
           )}
           <WeekGridView
-            sessions={list}
+            sessions={shown}
             from={applied.from}
             to={applied.to}
             venues={venues}
@@ -422,9 +461,9 @@ export default function SessionsPage() {
       ) : (
         <DataTable
           columns={columns}
-          rows={list}
+          rows={shown}
           rowKey={(r) => r.id}
-          empty="所選範圍 / 場館內沒有課程"
+          empty={searching ? '沒有符合搜尋的課程（搜尋只在目前起訖日／場館的結果裡找）' : '所選範圍 / 場館內沒有課程'}
           onRowClick={(r) => setDetail(r)}
         />
       )}

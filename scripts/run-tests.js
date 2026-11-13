@@ -26,6 +26,13 @@ const SERVER = path.join(ROOT, 'server');
 
 // 零外部相依：Ragic/LINE/物件儲存都是 stub 或純字串斷言，不碰 DB 也不出網路。
 const UNIT = [
+  // 11/03–11/04 在 Replit 新增的純 unit 測試（不連 DB），補進清單。
+  'tests/legacy_settled_display_test.js',
+  'tests/manual_enroll_records_test.js',
+  'tests/policy_handshake_test.js',
+  'tests/promotion_form_defaults_test.js',
+  'tests/refund_policy_notice_test.js',
+  'tests/session_quick_search_test.js',
   'tests/demo_seed_production_guard_test.js',
   'tests/error_boundary_taipei_test.js',
   'tests/graceful_shutdown_test.js',

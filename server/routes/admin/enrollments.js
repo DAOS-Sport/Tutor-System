@@ -22,6 +22,7 @@ const { enqueueReconcileMail, deliverOutbox } = require('../../services/reconcil
 const ragicWriteback = require('../../services/ragicWriteback');
 const promotions = require('../../services/promotions');
 const { resolveParentLineDisplayName } = require('../../services/parentLineProfile');
+const { pushCreatedByMe } = require('../../services/createdByFilter');
 const { logGroupOrderAudit } = require('../../services/groupOrderAudit');
 const { parseInvoiceIdentityInput } = require('../../services/invoiceIdentity');
 const { resolveCurrentUnitPrice, resolveTrialUnitPrice, coursePeriodTerms, coursePeriodCount } = require('../../services/coursePricing');
@@ -586,6 +587,8 @@ router.get('/', requireAdminAuth, requireAnyResource('enrollments', 'refund', 'r
     const scope = getScopedVenueIds(req);
     const where = [];
     const args = [];
+    // 手動建檔的「建檔記錄」：createdBy=me 只列登入帳號自己建的單（2026-11-03）。
+    if (!pushCreatedByMe(req, args, where)) return res.status(403).json({ error: '無法確認登入帳號', code: 'ACTOR_REQUIRED' });
     if (status) { args.push(status); where.push(`ae.status = $${args.length}`); }
     if (scope) {
       args.push(scope);

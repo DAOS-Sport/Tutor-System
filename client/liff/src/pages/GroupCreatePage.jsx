@@ -7,6 +7,7 @@ import { useGuideDemo, demoStudent } from '../utils/guideDemo';
 import GroupMemberFields, { memberFieldsReady, memberFieldsPayload } from '../components/group/GroupMemberFields';
 import { useToast } from '../context/ToastContext';
 import { courseTypeLabel } from '../utils/format';
+import { PolicyAgreement, REFUND_POLICY_VERSION } from '../components/RefundPolicyNotice';
 
 
 // 把目前表單狀態整理成「草稿暫存」用的 payload（後端會再做白名單 / 大小過濾）。
@@ -55,6 +56,8 @@ export default function GroupCreatePage() {
   const [fields, setFields] = useState({ studentIds: carriedStudentIds, newStudents: guide ? [demoStudent] : [], proofUrl: '' });
   const [submitting, setSubmitting] = useState(false);
   const [createError, setCreateError] = useState('');
+  // 報名握手：團主勾選同意使用期限及退費說明才放行（示範模式預設已勾）。
+  const [policyAgreed, setPolicyAgreed] = useState(!!guide);
   const [note, setNote] = useState(guide ? 'DEMO' : '');
   // U14：團購折價券。空白＝不輸入（後端仍會嘗試自動套用有勾選「可用於團購」的促銷）。
   const [couponCode, setCouponCode] = useState('');
@@ -157,7 +160,7 @@ export default function GroupCreatePage() {
     return () => clearTimeout(t);
   }, [fields, note, courseType, venueId, coachId, periodCount]);
 
-  const canSubmit = !!venueId && validPeriodCount && memberFieldsReady(fields) && !submitting;
+  const canSubmit = !!venueId && validPeriodCount && memberFieldsReady(fields) && policyAgreed && !submitting;
 
   async function handleCreate() {
     if (guide) return;
@@ -166,6 +169,7 @@ export default function GroupCreatePage() {
     setSubmitting(true);
     try {
       const order = await groupOrdersApi.create({
+        policy_ack: REFUND_POLICY_VERSION,
         course_type: courseType,
         venue_id: venueId,
         coach_id: coachId || undefined,
@@ -250,6 +254,8 @@ export default function GroupCreatePage() {
           className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-teal focus:outline-none"
         />
       </div>
+
+      <PolicyAgreement checked={policyAgreed} onChange={setPolicyAgreed} />
 
       <button
         type="button"

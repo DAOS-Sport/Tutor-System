@@ -21,7 +21,7 @@ require.cache[rolePermissionsPath] = {
 const { pool } = require('../server/models/db');
 pool.query = async (sql) => {
   if (sql.includes('FROM parents p WHERE p.id')) {
-    return { rowCount: 1, rows: [{ id: 'p1', name: '合成家長', phone: '0900000000', primary_venue_id: 'v1' }] };
+    return { rowCount: 1, rows: [{ id: 'p1', name: '合成家長', phone: '0900215261', primary_venue_id: 'v1' }] };
   }
   if (sql.includes('FROM students WHERE parent_id')) {
     return { rowCount: 1, rows: [{ id: 's1', parent_id: 'p1', name: '合成學員', id_number: 'A123456789' }] };

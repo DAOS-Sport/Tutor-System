@@ -60,6 +60,12 @@ export default function SessionDetailModal({ session, venueName, onClose }) {
             </StatusBadge>
           } />
           {session.checkin_at && <Row k="簽到時間" v={<span className="font-mono">{formatTWDateTime(session.checkin_at)}</span>} />}
+          {session.legacy_settled && <Row k="計薪" v={
+            <span className="inline-flex flex-wrap items-center gap-1.5">
+              <StatusBadge tone="amber">舊系統轉移・不計薪</StatusBadge>
+              <span className="text-xs text-gray-600">已於舊系統結算，不計教練堂數{session.legacy_checkin_at ? '（舊系統簽到 ' + formatTWDateTime(session.legacy_checkin_at) + '）' : ''}</span>
+            </span>
+          } />}
 
           {/* ── 備註 ──
               櫃檯反映：手動扣課與家長扣課的原因在畫面上完全看不到，出事時查不出

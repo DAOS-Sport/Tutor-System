@@ -39,7 +39,7 @@ log 裡 9 類訊息，**2 類是程式 bug（已修）、4 類是資料問題、
 | 3 | `[ragic-backup] parent sync failed … (報)Email 為必填` | **資料** | 正式庫 **56 位**啟用中、有 LINE 的家長 email 空白；Ragic Z01 Email 必填 | 需補資料。SQL 已備（前幾輪）。程式面：這些會被 `stuckExclusionSql` 排除，除非家長列 `updated_at` 又被推進（見 #5） |
 | 4 | `[ragic-backup] student sync failed … 學員編號/出生年月日/身分證字號 為必填` | **資料＋產品決策** | 125 個待備份學員：**114 缺學員編號**、21 缺生日、25 缺身分證。`_backupStudentToRagic` 原樣送 `student_code: null` → Ragic 必退 | 學員編號誰產生？若應由本系統配號，現在沒配 → 114 人永遠進不去；若應由 Ragic 自動編號，則不該送空值而該**省略該欄**。這是規格問題，**不盲修**，請決定 |
 | 5 | 同一批學員每晚重複失敗 | **設計** | 失敗已記 `permanent`，但 `stuckExclusionSql` 用 `occurred_at >= GREATEST(s.updated_at, p.updated_at)`；11 筆因**家長列 updated_at 被其他路徑推進**而重回佇列。註：是**每晚 00:30 一趟**噴一次，不是每小時 | 行為上算合理（資料變了就重試）。若嫌吵：對 permanent 失敗改用「資料指紋（生日/身分證/編號）沒變就不重送」 |
-| 6 | `STUDENT_ID_NUMBER_EXISTS: 身分證字號 X 已被其他學員使用` | **資料** | 正式庫 **23 組重複身分證、48 名學員**，其中 **2 組是測試碼**（A132702114 / F196122260 / F193553109 這類） | 清資料：測試碼直接清；其餘 21 組要人工判斷是重複建檔還是輸入錯 |
+| 6 | `STUDENT_ID_NUMBER_EXISTS: 身分證字號 X 已被其他學員使用` | **資料** | 正式庫 **23 組重複身分證、48 名學員**，其中 **2 組是測試碼**（A123456789 / F196122260 / F193553109 這類） | 清資料：測試碼直接清；其餘 21 組要人工判斷是重複建檔還是輸入錯 |
 | 7 | `[ragicFreshness] H01/H05 canary 未設定` | **設定提醒（非 bug）** | 程式已刻意做成每小時一次的提醒（`_warnOncePerHour`） | 要消音就把 canary 設起來：在 Ragic H01/H05 各建一筆永久測試列，填 `RAGIC_CANARY_H01_RECORD_ID`、`_H01_NONCE_FIELD_ID`（H05 同）；要硬擋再加 `RAGIC_FRESHNESS_REQUIRE_CANARY=1` |
 | 8 | `[ragic-pull] Z01_Z02_BACKUP_MISSING` | **設計提醒** | pull 前檢查 3 小時內有無 `ok/skipped` 的備份紀錄；備份只要有任何一筆失敗就記 `error` → 觸發此警告 | 語意上「部分成功」該不該算 ok 是設計選擇。建議備份紀錄改成 `partial`，pull 把 `partial` 也視為近期有備份 |
 | 9 | `[auth] verifyLineIdToken failed: LINE_TOKEN_EXPIRED` | **良性** | 家長用過期的 LINE id_token 開舊分頁；client 端 `LoginPage`/`RegisterPage` 已有對應訊息並重走 `liff.login` | 不處理 |

@@ -140,6 +140,8 @@ export function sessionNoteSummary(s) {
   if (!s) return null;
   // 超過購買堂數的簽到：保留紀錄但不計教練堂數，排在最前面讓它一定被看見。
   if (s.lesson_over_cap) return { tone: 'error', tag: '超過購買堂數', text: (s.lesson_cap_notes || []).join('／') || '不計教練堂數' };
+  // 舊系統轉移、已在舊系統結算：核薪人員要一眼看出不計薪（使用者 2026-11-04）。
+  if (s.legacy_settled) return { tone: 'amber', tag: '舊系統轉移・不計薪', text: '已於舊系統結算，不計教練堂數' };
   if (s.merge_method && s.deduction_details?.length) {
     const allReversed = s.deduction_details.every(detail => detail.status === 'REVERSED');
     return { tone: allReversed ? 'error' : 'amber', tag: allReversed ? '扣課已退回' : '手動扣課',

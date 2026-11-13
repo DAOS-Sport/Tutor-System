@@ -13,6 +13,7 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { resolveRouteInstruction } from '../utils/routeInstruction';
 import { coursePeriodOptions, isCoursePeriodCount } from '../../../shared/coursePricing';
+import { PolicyAgreement, REFUND_POLICY_VERSION } from '../components/RefundPolicyNotice';
 
 function createSubmitRequestId() {
   try {
@@ -48,6 +49,8 @@ export default function EnrollmentPage() {
   const [paymentMethod, setPaymentMethod] = useState(initialTrial ? 'on_site' : 'bank_transfer');
   const [selectedSelfStudents, setSelectedSelfStudents] = useState(() => guideStudents?.map((student) => student.id) || []);
   const [submitting, setSubmitting] = useState(false);
+  // 報名握手：勾選同意使用期限及退費說明才放行（示範模式預設已勾，導覽不卡）。
+  const [policyAgreed, setPolicyAgreed] = useState(!!guide);
   const [couponInput, setCouponInput] = useState(guide ? 'DEMO' : initialCoupon);
   const [activeCoupon, setActiveCoupon] = useState(initialTrial ? '' : initialCoupon);
 
@@ -148,6 +151,7 @@ export default function EnrollmentPage() {
     totalSelected <= maxStudents &&
     selectionResolved &&
     !submitting &&
+    policyAgreed &&
     periodOptions.includes(periodCount) &&
     !pricing.previewLoading &&
     !pricing.previewError;
@@ -178,6 +182,7 @@ export default function EnrollmentPage() {
     try {
       const result = await enrollmentsApi.create({
         request_id: submitRequestIdRef.current,
+        policy_ack: REFUND_POLICY_VERSION,
         parent_id: parent.id,
         parent_name: parent.name,
         parent_phone: parent.phone,
@@ -344,6 +349,8 @@ export default function EnrollmentPage() {
           <p className="mt-1 text-xs text-brand-green">已套用：{pricing.promo.name}（折抵 NT${pricing.discount.toLocaleString()}）</p>
         )}
       </div>}
+
+      <PolicyAgreement checked={policyAgreed} onChange={setPolicyAgreed} />
 
       <button
         type="button"

@@ -15,6 +15,9 @@
  *   2026-10-15 建立凍結（指紋取自正式站 build a91490e ＋ 本次只加入的兩行凍結標記）。
  *   2026-10-27 擁有者同意（雅正轉_手動建檔與對帳 SPEC v1，決定 D1）：手動建檔頁收付方式加「舊系統轉移」，
  *              選了之後末碼欄改成提示「建檔後到待對帳清單填」。只改頁面；路由（凍結區）不動，路由指紋不變。
+ *   2026-11-03 擁有者同意（「本次操作建檔歷程（暫存累計）」改成「建檔記錄」，每個帳號建過的單都要列出來）：
+ *              頁面底部的暫存清單換成 components/ManualEnrollRecords.jsx（從資料庫列出登入帳號建的單），
+ *              移除只存在畫面上的暫存陣列與其 CSV 匯出。只改頁面；路由（凍結區）不動，路由指紋不變。
  */
 const fs = require('fs');
 const path = require('path');
@@ -23,7 +26,7 @@ const assert = require('assert');
 
 const ROOT = path.join(__dirname, '..');
 const EXPECTED_ROUTE = '3b59adad7aa32bedd61323be260cc9905a7a6ec72f4be5ae275bb3e2821bbbf6';
-const EXPECTED_PAGE = 'fa5085380c92e8db1662ddde41c367d9520455fe2bbc49723a211495759ec46f';
+const EXPECTED_PAGE = 'd693c26a31484902ad0c0c17044c4aa754ffb7ec3af92cb4cca435deed17240e';
 const HOW_TO = '手動建檔是凍結區（CLAUDE.md「手動建檔凍結令」）：改之前必須先取得擁有者明確同意；同意後才在同一次變更更新本測試的指紋與同意紀錄。';
 
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');

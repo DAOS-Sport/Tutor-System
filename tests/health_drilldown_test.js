@@ -189,7 +189,7 @@ test('links 使用固定自家 HTTPS 網域、無 query 或凍結頁，且只用
 });
 
 test('虛構個資塞入原文、代碼與 payload，完整 pipelines／errors JSON 都不外露', async () => {
-  const privateValues = ['fake-parent@example.invalid', '0912345678', 'Uabcdefabcdefabcdefabcdefabcdefab',
+  const privateValues = ['fake-parent@example.invalid', '0900796878', 'Uabcdefabcdefabcdefabcdefabcdefab',
     '虛構王小明', 'A123456789', '98765432109876543210'];
   for (const value of privateValues) {
     const bad = row({ error_message: value, error_code: value, last_error_code: value, payload: { value },

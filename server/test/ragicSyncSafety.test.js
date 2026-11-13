@@ -16,7 +16,7 @@ test('whole family is validated before parent creation, including malformed ID a
     _assertRealLineUidForZ01:uid=>uid, getStudentByIdNumber:async()=>null,
     ragicWriter:{createRecord:async()=>{writes++;}},
   });
-  const child={name:'child',birth_date:'2020-01-01',gender:'男',id_number:'A132702114'};
+  const child={name:'child',birth_date:'2020-01-01',gender:'男',id_number:'A123456789'};
   for(const children of [[child,{...child,birth_date:''}],[{...child,id_number:'A123'}],[child,child]]) {
     await assert.rejects(ctx.createParentWithStudentsInRagic({parent:{phone:'fixture'},lineUid:'fixture',students:children}));
   }
@@ -26,7 +26,7 @@ test('existing source student never leads to a second parent or failed lookup tr
   for(const lookup of [async()=>({_ragicId:'1'}),async()=>{throw Object.assign(Error('timeout'),{code:'RAGIC_TIMEOUT'});}]){
     let writes=0;
     const ctx=load(['validateNewSourceStudent','createParentWithStudentsInRagic'],{_assertRealLineUidForZ01:uid=>uid,getStudentByIdNumber:lookup,ragicWriter:{createRecord:async()=>{writes++;}}});
-    await assert.rejects(ctx.createParentWithStudentsInRagic({parent:{phone:'fixture'},lineUid:'fixture',students:[{name:'child',birth_date:'2020-01-01',gender:'男',id_number:'A132702114'}]}));
+    await assert.rejects(ctx.createParentWithStudentsInRagic({parent:{phone:'fixture'},lineUid:'fixture',students:[{name:'child',birth_date:'2020-01-01',gender:'男',id_number:'A123456789'}]}));
     assert.equal(writes,0);
   }
 });

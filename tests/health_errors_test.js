@@ -30,7 +30,7 @@ function options(extra = {}) {
 }
 function request(ring, { status = 500, baseUrl = '/api/orders', route = '/:id/refund', url = '/api/orders/123/refund?email=hidden@example.invalid', error } = {}) {
   const req = { method: 'POST', baseUrl, route: route === null ? undefined : { path: route }, originalUrl: url,
-    headers: { 'x-request-id': '0912345678', authorization: 'Bearer private' }, body: { name: '虛構家長' } };
+    headers: { 'x-request-id': '0900796878', authorization: 'Bearer private' }, body: { name: '虛構家長' } };
   const res = new EventEmitter();
   res.statusCode = status;
   ring.middleware(req, res, () => {});
@@ -86,7 +86,7 @@ test('六張已定義失敗表使用參數化唯讀彙整，排除 skipped_lock�
 test('DB 來源不輸出 UID／Email／姓名／電話／記錄 ID 或原始 message', async () => {
   const privateData = { recipient_uid: 'Uabcdefabcdefabcdefabcdefabcdefab', recipient: 'parent@example.invalid',
     local_id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', ragic_record_id: '7654321098', name: '虛構家長甲',
-    message: '虛構學員乙 0912345678 parent@example.invalid', reason: '虛構學員乙 parent@example.invalid',
+    message: '虛構學員乙 0900796878 parent@example.invalid', reason: '虛構學員乙 parent@example.invalid',
     sanitized_error: '虛構學員乙' };
   const base = { ...privateData, count: 1, first_seen: FIRST, last_seen: LAST };
   const db = fakeDb({ job_runs: [{ ...base, job_name: 'line_bot_webhook', error_message: '操作中止' }],
@@ -101,10 +101,10 @@ test('DB 來源不輸出 UID／Email／姓名／電話／記錄 ID 或原始 mes
 });
 test('job_runs 任意原文採固定句，不輸出個資且不超過 200 字', async () => {
   const db = fakeDb({ job_runs: [{ job_name: 'line_bot_webhook', count: 1, first_seen: FIRST, last_seen: LAST,
-    error_message: 'parent@example.invalid 0912345678 A123456789 Uabcdefabcdefabcdefabcdefabcdefab ' + '錯'.repeat(250) }] });
+    error_message: 'parent@example.invalid 0900796878 A123456789 Uabcdefabcdefabcdefabcdefabcdefab ' + '錯'.repeat(250) }] });
   const e = (await health.buildErrorsReport(NOW, health.parseSince(undefined, NOW), options({ db }))).errors[0];
   assert.ok(e.message.length <= 200);
-  assert.doesNotMatch(e.message, /parent@example|0912345678|123456789|Uabcdef/);
+  assert.doesNotMatch(e.message, /parent@example|0900796878|123456789|Uabcdef/);
 });
 test('等級：job／webhook error；推播 4xx／永久驗證／outbox 衝突 warn', async () => {
   const base = { count: 1, first_seen: FIRST, last_seen: LAST };
@@ -121,7 +121,7 @@ test('等級：job／webhook error；推播 4xx／永久驗證／outbox 衝突 w
 });
 test('記憶體收 500 與直接 503，不收 4xx；無既有請求 ID 時為 null、不採外來 header', () => {
   const ring = health.createErrorRing({ startedAt: NOW });
-  request(ring, { error: new TypeError('虛構家長 parent@example.invalid 0912345678') });
+  request(ring, { error: new TypeError('虛構家長 parent@example.invalid 0900796878') });
   request(ring, { status: 503 }); request(ring, { status: 400 });
   const events = ring.read(new Date(0));
   assert.equal(events.length, 2);
@@ -129,7 +129,7 @@ test('記憶體收 500 與直接 503，不收 4xx；無既有請求 ID 時為 nu
   assert.equal(events[0].level, 'error');
   assert.match(events[0].message, /TypeError/);
   assert.deepEqual(events.map((e) => e.request_id), [null, null]);
-  assert.doesNotMatch(JSON.stringify(events), /虛構家長|parent@example|0912345678|private|email=/);
+  assert.doesNotMatch(JSON.stringify(events), /虛構家長|parent@example|0900796878|private|email=/);
 });
 test('路由 fallback 遮數字段、UUID、Email、UID 且去 query', () => {
   const ring = health.createErrorRing();

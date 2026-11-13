@@ -79,7 +79,7 @@ test('student validation names missing fields and rejects malformed IDs before w
   const code = service('ragic').match(/function validateNewSourceStudent\([\s\S]*?\n\}/)[0] + '\n' + service('ragic').match(/async function syncParentStudentsStrict\([\s\S]*?\n\}/)[0];
   const ctx = { FIELD: { Z01: { PHONE: 'phone', LINE_UID: 'uid' } }, getParentRecordByRagicId: async () => ({ phone: '0900215261' }), parseZ01Students: () => [] };
   vm.createContext(ctx); vm.runInContext(code, ctx);
-  const input = { parent: { phone: '0900215261' }, ragicRecordId: '1', students: [{ name: 'child', birth_date: '', gender: '男', id_number: 'A132702114' }] };
+  const input = { parent: { phone: '0900215261' }, ragicRecordId: '1', students: [{ name: 'child', birth_date: '', gender: '男', id_number: 'A123456789' }] };
   await assert.rejects(ctx.syncParentStudentsStrict(input), /請補齊學員：生日$/);
   input.students[0].birth_date = '2010-01-01'; input.students[0].id_number = 'A12345678901';
   await assert.rejects(ctx.syncParentStudentsStrict(input), /身分證字號格式錯誤/);
@@ -90,7 +90,7 @@ test('canonical family import copies source identity as data, never uses it to t
   for (const existing of [[], [{ id: 'student', name: 'child', id_number: '' }], [{ id: 'student', name: 'child', id_number: 'B223456780' }]]) {
     const hadExisting = existing.length > 0;
     const writes = []; const parent = { id: 'family', phone: '0900215261', line_uid: 'uid' };
-    const child = { name: 'child', birth_date: '2010-01-02', gender: '男', id_number: 'A132702114' };
+    const child = { name: 'child', birth_date: '2010-01-02', gender: '男', id_number: 'A123456789' };
     const ctx = { ...require('../services/studentAudit'), normalizePhone: x => x, normalizeStudentName: x => x, _trueZ01LineUid: () => 'uid', _venueIdFromMap: () => 'B', _z01SyncError: (c,m) => Error(m), ...require('../services/familyStudentMatch'), ragic: { normalizeGender: x => x, parseZ01StudentsRaw: () => [], parseZ01Students: () => [child] } };
     vm.createContext(ctx); vm.runInContext(code, ctx);
     const client = { query: async (sql, args) => {

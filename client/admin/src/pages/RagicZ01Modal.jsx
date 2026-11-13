@@ -166,7 +166,7 @@ export default function RagicZ01Modal({ isNew, parent: initParent, students: ini
                         </select>
                       </td>
                       <td className="border-r border-gray-200 p-2">
-                        <input className={`${inputCls} font-mono`} value={kid.id_number || ''} onChange={(e) => setKid(i, { id_number: e.target.value.toUpperCase() })} placeholder="A132702114" />
+                        <input className={`${inputCls} font-mono`} value={kid.id_number || ''} onChange={(e) => setKid(i, { id_number: e.target.value.toUpperCase() })} placeholder="A123456789" />
                       </td>
                       <td className="border-r border-gray-200 p-2">
                         <select className={inputCls} value={kid.blood_type || '不清楚'} onChange={(e) => setKid(i, { blood_type: e.target.value })}>

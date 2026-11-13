@@ -19,7 +19,7 @@ import { isSupportedImageCandidate, RECEIPT_IMAGE_ACCEPT } from '../utils/imageP
 
 const EMPTY_FILTERS = {
   submittedFrom: '', submittedTo: '', phone: '', parentName: '', studentName: '',
-  coach: '', courseType: '', last5: '', venueId: '', orderKind: '',
+  coach: '', courseType: '', last5: '', venueId: '', orderKind: '', createdBy: '',
 };
 
 // 試上判斷：母單 order_kind 為主，子訂單任一筆 trial 亦視為試上（防母單欄位缺值的舊資料）。
@@ -792,7 +792,7 @@ function InvoiceModal({ checkout, canReconcile, onCancel, onDone }) {
 
 export default function ReconcilePage() {
   const toast = useToast();
-  const { isAdmin, venueIds } = useAuth();
+  const { isAdmin, venueIds, user } = useAuth();
   // 對帳改由行政櫃檯處理：staff 亦可對帳（後端 reconcile 已開放 staff）。
   const canReconcile = true;
   const [list, setList] = useState(null);
@@ -854,6 +854,17 @@ export default function ReconcilePage() {
     return [...types].sort((a, b) => a - b).map((t) => ({ value: String(t), label: courseTypeLabel(t) }));
   }, [list]);
 
+  // 建單人（2026-11-03）：每個帳號都能篩出自己建的單；家長自己報名的沒有建單人。
+  const createdByOptions = useMemo(() => {
+    const names = new Set((list || []).flatMap((r) => (r.sub_orders || []).map((o) => o.created_by_name)).filter(Boolean));
+    return [
+      { value: '', label: '全部' },
+      { value: '__me__', label: '我建的' },
+      { value: '__parent__', label: '家長自己報名' },
+      ...[...names].sort().map((name) => ({ value: name, label: name })),
+    ];
+  }, [list]);
+
   const isVenueScoped = !isAdmin;
   const venueOptions = useMemo(() => {
     const allowed = isVenueScoped
@@ -877,6 +888,7 @@ export default function ReconcilePage() {
     { key: 'last5', label: '末五碼', type: 'input', placeholder: '轉帳末 5 碼' },
     { key: 'orderKind', label: '訂單類型', type: 'select',
       options: [{ value: '', label: '全部' }, { value: 'trial', label: '試上' }, { value: 'standard', label: '一般' }] },
+    { key: 'createdBy', label: '建單人', type: 'select', options: createdByOptions },
   ];
 
   const filteredList = useMemo(() => {
@@ -904,6 +916,9 @@ export default function ReconcilePage() {
       if (last5Q && !(r.transfer_last_5 || '').includes(last5Q)) return false;
       if (filters.orderKind === 'trial' && !isTrialCheckout(r)) return false;
       if (filters.orderKind === 'standard' && isTrialCheckout(r)) return false;
+      if (filters.createdBy === '__me__' && !orders.some((o) => user && o.created_by && String(o.created_by) === String(user.id))) return false;
+      if (filters.createdBy === '__parent__' && orders.some((o) => o.created_by)) return false;
+      if (filters.createdBy && !filters.createdBy.startsWith('__') && !orders.some((o) => o.created_by_name === filters.createdBy)) return false;
       return true;
     });
   }, [list, filters, groupFocus]);

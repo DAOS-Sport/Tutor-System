@@ -82,8 +82,8 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
     applicable_venue_ids: initial?.applicable_venue_ids || [],
     applicable_coach_multipliers: (initial?.applicable_coach_multipliers || []).map(Number),
     show_on_parent_home: initial?.show_on_parent_home !== false,
-    // U14 團購通路開關：預設 false —— 既有促銷不會突然套用到團購而改變定價。
-    applicable_to_group_orders: initial?.applicable_to_group_orders === true,
+    // U14 團購通路開關：新建（含複製）預設開啟（使用者 2026-11-03）；編輯既有優惠照原值，不會突然改變定價。
+    applicable_to_group_orders: initial?.id ? initial.applicable_to_group_orders === true : true,
     coupon_code: initial?.coupon_code || '',
     generate_coupon_code: false,
     start_date: initial?.start_date ? taipeiDate(initial.start_date) : todayTaipeiDate(),
@@ -459,7 +459,7 @@ export default function PromotionFormModal({ initial, onClose, onSaved, readOnly
                     <input type="checkbox" checked={d.applicable_to_group_orders} onChange={(e) => setD({ ...d, applicable_to_group_orders: e.target.checked })} />
                     可套用於團購
                   </label>
-                  <p className="mt-1 text-[11px] leading-snug text-gray-400">預設關閉。開啟後，團主發起團購時可套用此優惠，折扣會「各家獨立計算」並在加入當下鎖定金額（家長看到的金額＝轉帳金額＝核准金額）。名額於加入時扣除，取消團購時自動回沖。</p>
+                  <p className="mt-1 text-[11px] leading-snug text-gray-400">新建時預設開啟。開啟後，團主發起團購時可套用此優惠，折扣會「各家獨立計算」並在加入當下鎖定金額（家長看到的金額＝轉帳金額＝核准金額）。名額於加入時扣除，取消團購時自動回沖。</p>
                 </div>
               </div>
             </section>

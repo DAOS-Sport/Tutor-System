@@ -157,6 +157,9 @@ function rowToSession(r) {
     lesson_period_seq: r.lesson_period_seq ?? null,
     lesson_over_cap: r.lesson_over_cap === true,
     over_cap_checkin_at: r.over_cap_checkin_at || null,
+    // 舊系統轉移、已在舊系統結算（lessonSequence 標的）：畫面要標出不計薪，原簽到時間另存。
+    legacy_settled: r.legacy_settled === true,
+    legacy_checkin_at: r.legacy_checkin_at || null,
     lesson_cap_notes: Array.isArray(r.lesson_cap_notes) ? r.lesson_cap_notes : [],
     whole_class_policy: r.whole_class_policy || null,
     date: formatPlainDate(r.date),

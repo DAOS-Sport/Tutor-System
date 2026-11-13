@@ -8,6 +8,7 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { setAfterAuth } from '../utils/afterAuth';
 import { courseTypeLabel } from '../utils/format';
+import { PolicyAgreement, REFUND_POLICY_VERSION } from '../components/RefundPolicyNotice';
 
 /**
  * 以邀請碼加入團購頁（/group/join/:token）— 公開頁（免登入可先看狀態）。
@@ -38,6 +39,8 @@ export default function GroupJoinPage() {
   const [fields, setFields] = useState({ studentIds: [], newStudents: guide ? [demoStudent] : [], proofUrl: '' });
   const [joining, setJoining] = useState(false);
   const [joinError, setJoinError] = useState('');
+  // 報名握手：每一家加入都要自己勾選同意（示範模式預設已勾）。要放在下面的提早 return 之前。
+  const [policyAgreed, setPolicyAgreed] = useState(!!guide);
 
   useEffect(() => {
     if (guide) { setPreview(demoGroup(guide, true)); return; }
@@ -100,7 +103,7 @@ export default function GroupJoinPage() {
     navigate('/login', { state: { from: { pathname: `/group/join/${token}` } } });
   }
 
-  const canJoin = authedParent && memberFieldsReady(fields) && !joining;
+  const canJoin = authedParent && memberFieldsReady(fields) && policyAgreed && !joining;
 
   async function handleJoin() {
     if (guide) return;
@@ -108,7 +111,7 @@ export default function GroupJoinPage() {
     setJoinError('');
     setJoining(true);
     try {
-      const order = await groupOrdersApi.join(token, { ...memberFieldsPayload(fields) });
+      const order = await groupOrdersApi.join(token, { policy_ack: REFUND_POLICY_VERSION, ...memberFieldsPayload(fields) });
       toast.success('已加入團購！');
       navigate(`/group/${order.id}`, { replace: true });
     } catch (e) {
@@ -174,6 +177,7 @@ export default function GroupJoinPage() {
             maxStudents={Math.max(0, (preview.max_students || 0) - (preview.total_students || 0))}
             error={joinError}
           /></div>
+          <PolicyAgreement checked={policyAgreed} onChange={setPolicyAgreed} />
           <button
             type="button"
             disabled={!canJoin}

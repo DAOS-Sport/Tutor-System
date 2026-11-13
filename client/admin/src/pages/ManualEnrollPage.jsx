@@ -10,6 +10,7 @@ import { customerParentsApi } from '../api/customers';
 import { courseTypesApi } from '../api/courseTypes';
 import { hasCoursePricing, hasCoursePeriodBounds, isCoursePeriodCount, resolveCurrentUnitPrice, resolveTrialUnitPrice } from '../../../shared/coursePricing';
 import { openVenues } from '../utils/venueSelection.mjs';
+import ManualEnrollRecords from '../components/ManualEnrollRecords';
 
 const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
 
@@ -182,7 +183,9 @@ export default function ManualEnrollPage() {
   const upd = (k) => (v) => setF((p) => ({ ...p, [k]: v }));
 
   const [busy, setBusy] = useState(false);
-  const [filed, setFiled] = useState([]);
+  // 建檔記錄（2026-11-03 擁有者同意改凍結檔）：改由 ManualEnrollRecords 從資料庫列出這個帳號建過的單；
+  // 建檔成功就把版本號加一，讓它重新載入。
+  const [recordsVersion, setRecordsVersion] = useState(0);
 
   useEffect(() => { venuesApi.list().then((v) => setVenues(v || [])).catch(() => {}); }, []);
   // 課程需求（含價格）依「已選館別」載入：價格由該場館所屬的定價區決定，
@@ -443,14 +446,6 @@ export default function ManualEnrollPage() {
     if (f.paymentMethod === '轉帳' && f.paymentDetail.trim() && !last5) { toast.error('轉帳末 5 碼需為 5 位數字'); return; }
 
     setBusy(true);
-    const snap = {
-      parentName: parent.name, parentPhone: parent.phone, students: [...studentNames],
-      venue: venueName(venueId), coach: coachName || '（待指派）',
-      groupType: courseTypes.find((t) => String(t.course_type) === String(f.courseType))?.label,
-      lessons, basePrice: num(f.basePrice), discount: num(f.allowance),
-      actual: num(f.actual), unit: unitPrice, paymentMethod: f.paymentMethod, paymentDetail: f.paymentDetail.trim() || '—',
-      purchaseMultiplier,
-    };
     try {
       if (!createRequestIdRef.current) {
         const nonce = globalThis.crypto?.randomUUID?.()
@@ -474,23 +469,11 @@ export default function ManualEnrollPage() {
         payer: f.payer.trim(), tax_id: f.taxId.trim(), carrier: f.carrier.trim(),
         full_sessions: lessons,
       });
-      setFiled((prev) => [...prev, { ...snap, purchaseMultiplier: res.purchased_pricing_multiplier ?? snap.purchaseMultiplier, key: (res.enrollment_ids || [res.id]).join(','), ids: res.enrollment_ids || [res.id], count: res.count || 1 }]);
+      setRecordsVersion((v) => v + 1);
       toast.success(`已建檔 ${res.count || 1} 張訂單（待對帳）`);
       resetCourseForm();
     } catch (err) { toast.error(err?.response?.data?.error || '手動建檔失敗'); }
     finally { setBusy(false); }
-  }
-
-  function exportCsv() {
-    if (!filed.length) return;
-    const head = ['編號', '家長', '電話', '學員', '館別', '組別', '教練', '購入修課係數', '堂數', '原價', '折讓', '實收', '單價', '付款', '對帳碼'];
-    const rows = filed.map((r) => [r.ids.join(' '), r.parentName, r.parentPhone, r.students.join(' '), r.venue, r.groupType, r.coach, Number(r.purchaseMultiplier).toFixed(2), r.lessons, r.basePrice, r.discount, r.actual, r.unit, r.paymentMethod, r.paymentDetail]);
-    const csv = [head, ...rows].map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
-    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob); a.download = `手動建檔_${filed.length}筆.csv`; a.click();
-    URL.revokeObjectURL(a.href);
-    toast.success('已匯出 CSV');
   }
 
   const filteredStudents = parent?.students || [];
@@ -806,59 +789,8 @@ export default function ManualEnrollPage() {
         </div>
       )}
 
-      {/* 已建檔清單 */}
-      <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
-        <div className="flex flex-col justify-between gap-4 border-b border-slate-200/80 bg-slate-50/80 p-5 sm:flex-row sm:items-center">
-          <div className="flex items-center gap-3">
-            <h2 className="text-sm font-extrabold tracking-wide text-slate-800">本次操作建檔歷程（暫存累計）</h2>
-            <span className="rounded-full bg-indigo-600 px-2.5 py-0.5 text-[11px] font-black text-white">{filed.length} 筆</span>
-          </div>
-          {filed.length > 0 && (
-            <div className="flex gap-2">
-              <button onClick={exportCsv} className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50"><Svg d={I.download} className="h-3.5 w-3.5 text-emerald-600" />導出 CSV</button>
-              <Link to="/reconcile" className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50">前往待對帳</Link>
-            </div>
-          )}
-        </div>
-        {filed.length === 0 ? (
-          <div className="py-16 text-center">
-            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full border border-slate-100 bg-slate-50 text-slate-400"><Svg d={I.db} className="h-6 w-6" /></div>
-            <h4 className="text-sm font-bold text-slate-700">目前尚無已建檔紀錄</h4>
-            <p className="mx-auto mt-1 max-w-sm text-xs text-slate-400">完成上方建檔流程後，會一筆一筆往下累加於此供複查與匯出。</p>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-left text-xs">
-              <thead>
-                <tr className="border-b border-slate-200 bg-slate-50/50 text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                  <th className="p-4 pl-6">關聯學員</th><th className="p-4">館別 / 組別</th><th className="p-4">教練 & 堂數</th>
-                  <th className="p-4">定價 / 折讓</th><th className="p-4">實收 & 單價</th><th className="p-4">付款 / 對帳</th>
-                  <th className="p-4 text-center">狀態</th><th className="p-4 pr-6 text-right">移除</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 font-semibold text-slate-700">
-                {filed.map((r) => (
-                  <tr key={r.key} className="transition hover:bg-slate-50/80">
-                    <td className="p-4 pl-6">
-                      <div className="flex items-center gap-1.5 text-sm font-extrabold text-slate-950"><span className="h-1.5 w-1.5 rounded-full bg-indigo-500" />{r.students.join('、')}</div>
-                      <div className="mt-1 text-[10px] text-slate-400">家長：{r.parentName}（{r.parentPhone}）· <span className="font-mono">{r.ids.join('、')}</span></div>
-                    </td>
-                    <td className="p-4"><span className="mb-1.5 inline-block rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-extrabold text-slate-700">{r.venue}</span><div className="mt-0.5 text-[10px] text-slate-400">{r.groupType}</div></td>
-                    <td className="p-4"><div className="font-bold text-slate-800">{r.coach}</div><div className="mt-1 text-[10px] text-indigo-700">購入修課係數 {Number(r.purchaseMultiplier).toFixed(2)}（{Math.round(Number(r.purchaseMultiplier) * 100)}%）</div><div className="mt-1 text-[10px] text-slate-400">規劃 <b className="text-slate-700">{r.lessons} 堂</b>{r.count > 1 ? ` · ${r.count} 期` : ''}</div></td>
-                    <td className="p-4"><div className="text-slate-500">原價 ${r.basePrice.toLocaleString()}</div><div className="mt-0.5 text-red-500">折讓 -${r.discount.toLocaleString()}</div></td>
-                    <td className="p-4"><div className="text-sm font-black text-emerald-700">${r.actual.toLocaleString()}</div><div className="mt-1 text-[10px] text-slate-400">均價 ${r.unit}/堂</div></td>
-                    <td className="p-4"><div className="text-xs font-extrabold text-slate-800">{r.paymentMethod}</div><div className="mt-1 text-[10px] text-slate-400">{r.paymentDetail}</div></td>
-                    <td className="p-4 text-center"><span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[10px] font-black text-amber-800"><span className="h-1 w-1 rounded-full bg-amber-500" />待對帳</span></td>
-                    <td className="p-4 pr-6 text-right">
-                      <button onClick={() => setFiled((p) => p.filter((x) => x.key !== r.key))} title="僅從本次清單移除，不會刪除已建檔的訂單" className="rounded-lg p-2 text-slate-400 transition hover:bg-red-50 hover:text-red-600"><Svg d={I.trash} /></button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+      {/* 建檔記錄：這個帳號建過的單（從資料庫讀，重新整理也在） */}
+      <ManualEnrollRecords refreshKey={recordsVersion} venueName={venueName} />
     </div>
   );
 }

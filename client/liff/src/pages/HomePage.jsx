@@ -4,6 +4,7 @@ import CourseCard from '../components/CourseCard';
 import GuideEntry from '../components/GuideEntry';
 import PendingPaymentBanner from '../components/PendingPaymentBanner';
 import IncompleteGroupOrdersBanner from '../components/IncompleteGroupOrdersBanner';
+import RefundPolicyNotice from '../components/RefundPolicyNotice';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { promotionsApi } from '../api/promotions';
 import { courseTypesApi } from '../api/courseTypes';
@@ -95,6 +96,9 @@ export default function HomePage() {
         <h2 className="mt-1 text-lg font-bold">準備好開始今天的訓練了嗎？</h2>
         <p className="mt-1 text-xs opacity-80">挑選喜愛的組別與教練，立即報名 ✨</p>
       </section>
+
+      {/* 2026-11-03 老闆指示：使用期限與退費說明放在首頁橫幅上方，每位家長一進來就看得到（告知義務）。 */}
+      <RefundPolicyNotice />
 
       <PendingPaymentBanner />
 

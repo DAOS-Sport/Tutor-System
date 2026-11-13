@@ -31,6 +31,7 @@ const {
   acquireRequestLock,
 } = require('../services/idempotency');
 const { requireParent } = require('../middlewares/parentAuth');
+const { checkPolicyAck } = require('../services/policyHandshake');
 const { resolveCurrentUnitPrice, coursePeriodTerms, coursePeriodCount } = require('../services/coursePricing');
 const { getCourseConfig, CourseConfigError } = require('../services/courseConfig');
 const {
@@ -110,6 +111,9 @@ function genEnrollmentId() {
 
 router.post('/', async (req, res) => {
   const p = req.body || {};
+  // 握手：沒勾選同意使用期限及退費說明（或條文已改版）就不建單。
+  const ackError = checkPolicyAck(p);
+  if (ackError) return res.status(ackError.status).json(ackError.body);
   const identityInput = parseInvoiceIdentityInput(p);
   if (identityInput.error) {
     return res.status(400).json({ error: identityInput.error, code: identityInput.code });

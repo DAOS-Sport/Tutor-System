@@ -7,7 +7,7 @@ const React = req('react');
 const { renderToStaticMarkup } = req('react-dom/server');
 const { transformSync } = req('esbuild');
 const code = transformSync(fs.readFileSync('client/liff/src/pages/ProfilePage.jsx', 'utf8'), {loader:'jsx', format:'cjs'}).code;
-const complete = {id:'fixture', name:'測試學員', id_number:'A132702114', birth_date:'2015-01-15', gender:'生理男'};
+const complete = {id:'fixture', name:'測試學員', id_number:'A123456789', birth_date:'2015-01-15', gender:'生理男'};
 function render(student) {
   const parent = {name:'測試家長', students:[student]};
   const module = {exports:{}};
