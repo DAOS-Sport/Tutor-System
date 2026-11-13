@@ -200,6 +200,9 @@ const UNIT = [
   // 健康 API（health-v1）：燈號規則的邊界、HEALTH_TOKEN 的 503／401／200。假的 pool，不連 DB。
   'tests/health_rules_test.js',
   'tests/health_pipelines_route_test.js',
+  'tests/health_interval_jobs_test.js',
+  'tests/health_errors_test.js',
+  'tests/health_drilldown_test.js',
   'tests/yazheng_sync_test.js',
 ];
 

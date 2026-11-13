@@ -36,6 +36,8 @@ const BUILD_INFO = (() => {
   } catch { return { sha: 'unknown', time: null }; }
 })();
 
+const { errorRing } = require('./services/healthErrors');
+app.use(errorRing.middleware);
 app.use(cors({ origin: process.env.LIFF_URL_PARENT || process.env.LIFF_URL || '*' }));
 // Ragic webhook 必須掛在全域 body parser 之前：Ragic 沒保證 Content-Type，下面的 json／urlencoded
 // parser 只要遇到不是 application/json 的請求就會解析錯或不解析，整批通知被 400 擋掉又不留紀錄。
@@ -278,6 +280,7 @@ app.get('/', (req, res) => {
 // （Ragic 連線狀態頁「連不上」的真正成因）。這裡一律改回乾淨 JSON，讓前端顯示
 // 友善中文、並提示重新整理（多半是瀏覽器卡在舊版 bundle 送出異常 body）。
 app.use((err, req, res, next) => {
+  errorRing.captureError(err, req, res);
   if (res.headersSent) return next(err);
   const isBodyParse =
     err.type === 'entity.parse.failed' ||
