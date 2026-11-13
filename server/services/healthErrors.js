@@ -79,9 +79,8 @@ function createErrorRing({ capacity = RING_CAPACITY, startedAt = PROCESS_STARTED
   const retainedSince = new Date(startedAt);
   return {
     retainedSince,
-    // 不信任外來 X-Request-Id；自行產生識別碼，不收 body、query 或 header 值。
+    // 目前沒有既有的伺服器請求 ID，request_id 為 null；不採用外來 X-Request-Id。
     middleware(req, res, next) {
-      const requestId = crypto.randomUUID();
       res.once('finish', () => {
         if (res.statusCode < 500) return;
         const code = String(res.statusCode);
@@ -89,7 +88,7 @@ function createErrorRing({ capacity = RING_CAPACITY, startedAt = PROCESS_STARTED
         const ts = new Date();
         events.push({ source: 'http', route: requestRoute(req), code, level: 'error',
           message: `程式回應 HTTP ${code}${kind ? `（${kind}）` : ''}`,
-          request_id: requestId, count: 1, first_seen: ts, last_seen: ts, release: build, env: envName() });
+          request_id: null, count: 1, first_seen: ts, last_seen: ts, release: build, env: envName() });
         if (events.length > capacity) droppedThrough = events.shift().last_seen;
       });
       next();

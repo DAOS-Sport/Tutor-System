@@ -119,7 +119,7 @@ test('等級：job／webhook error；推播 4xx／永久驗證／outbox 衝突 w
   assert.equal(level('RAGIC_WEBHOOK_FAILED'), 'error');
   assert.equal(level('blocked_data_conflict'), 'warn'); assert.equal(level('blocked_retry_exhausted'), 'error');
 });
-test('記憶體收 500 與直接 503，不收 4xx；error hook 不重複計數、不存原文或 header', () => {
+test('記憶體收 500 與直接 503，不收 4xx；無既有請求 ID 時為 null、不採外來 header', () => {
   const ring = health.createErrorRing({ startedAt: NOW });
   request(ring, { error: new TypeError('虛構家長 parent@example.invalid 0912345678') });
   request(ring, { status: 503 }); request(ring, { status: 400 });
@@ -128,7 +128,7 @@ test('記憶體收 500 與直接 503，不收 4xx；error hook 不重複計數�
   assert.equal(events[0].route, 'POST /api/orders/:id/refund');
   assert.equal(events[0].level, 'error');
   assert.match(events[0].message, /TypeError/);
-  assert.match(events[0].request_id, /^[0-9a-f-]{36}$/);
+  assert.deepEqual(events.map((e) => e.request_id), [null, null]);
   assert.doesNotMatch(JSON.stringify(events), /虛構家長|parent@example|0912345678|private|email=/);
 });
 test('路由 fallback 遮數字段、UUID、Email、UID 且去 query', () => {
@@ -235,5 +235,6 @@ test('真 Express 的直接 500、拋錯與掛載根路由，各留下完整樣�
   const events = ring.read(new Date(0));
   assert.equal(events.length, 3);
   assert.deepEqual(events.map((e) => e.route), ['GET /api/orders/:token/direct', 'GET /api/orders/:token/throw', 'GET /api/orders/']);
+  assert.deepEqual(events.map((e) => e.request_id), [null, null, null]);
   assert.doesNotMatch(JSON.stringify(events), /fake-opaque-token|parent@example|虛構學員/);
 });
